@@ -907,13 +907,39 @@ uint64_t eager_captures() {
     static const uint64_t v = getenv("RX_VK_CAPTURE_EAGER") ? (uint64_t)atoll(getenv("RX_VK_CAPTURE_EAGER")) : 0;
     return v;
 }
+// (hookshot) Every pool's pages, merged: what of a mirrored import the captures take (cap_ranges_clipped). An import is
+// whole 16 MB chunks around what was bound, and the rest of a chunk is the game's heap, which the GPU never reads: in
+// OoT's Kokiri Forest 69% of the pages the captures copied and mirror-synced (~10 MB a frame). RX_VK_CAPTURE_CHUNKS=1:
+// the whole imports, as before
+std::vector<std::pair<uint64_t, uint64_t>> all_pool_ranges;   // (cap_ranges_mu)
+bool capture_chunks() {
+    static const bool v = getenv("RX_VK_CAPTURE_CHUNKS") != nullptr;
+    return v;
+}
 void refresh_pool_ranges_locked() {   // (cap_ranges_mu held)
-    if (!capture_pool_max()) return;
+    if (!capture_pool_max() && capture_chunks()) return;
     const uint32_t g = host->maps_generation();
     if (g == pool_cap_gen && captures_made - pool_cap_built < 64) return;   // (and every 64: the old ones out)
+    const bool pools_changed = g != pool_cap_gen;
     pool_cap_gen = g, pool_cap_built = captures_made;
     static std::vector<std::array<uint64_t, 2>> list(8192);
     const int n = host->gpu_pools(reinterpret_cast<uint64_t(*)[2]>(list.data()), (int)list.size());
+    if (!capture_chunks() && pools_changed) {
+        std::vector<std::pair<uint64_t, uint64_t>> a;
+        a.reserve((size_t)std::max(n, 0));
+        for (int i = 0; i < n; i++)
+            if (list[i][1]) a.push_back({list[i][0] & ~4095ull, (list[i][0] + list[i][1] + 4095) & ~4095ull});
+        std::sort(a.begin(), a.end());
+        all_pool_ranges.clear();
+        for (const auto& r : a) {
+            if (!all_pool_ranges.empty() && r.first <= all_pool_ranges.back().second)
+                all_pool_ranges.back().second = std::max(all_pool_ranges.back().second, r.second);
+            else
+                all_pool_ranges.push_back(r);
+        }
+    }
+    cap_ranges_ver++;
+    if (!capture_pool_max()) return;
     std::vector<std::pair<uint64_t, uint64_t>> v;
     std::unordered_map<uint64_t, uint64_t> seen;
     seen.reserve((size_t)std::max(n, 0));
@@ -926,7 +952,6 @@ void refresh_pool_ranges_locked() {   // (cap_ranges_mu held)
             v.push_back({list[i][0] & ~4095ull, (list[i][0] + list[i][1] + 4095) & ~4095ull});
     }
     pool_first_seen.swap(seen);
-    cap_ranges_ver++;
     std::sort(v.begin(), v.end());
     std::vector<std::pair<uint64_t, uint64_t>> m;
     for (const auto& r : v) {
@@ -934,6 +959,24 @@ void refresh_pool_ranges_locked() {   // (cap_ranges_mu held)
         else m.push_back(r);
     }
     pool_cap_ranges.swap(m);
+}
+/// The mirrored imports (cap_ranges) as the captures take them: each cut to the pools' pages in it, or whole when no
+/// pool the table lists lies in it (cap_ranges_mu held)
+void cap_ranges_clipped(std::vector<std::pair<uint64_t, uint64_t>>& out) {
+    if (capture_chunks() || all_pool_ranges.empty()) {
+        out.insert(out.end(), cap_ranges.begin(), cap_ranges.end());
+        return;
+    }
+    for (const auto& [lo, hi] : cap_ranges) {
+        auto it = std::upper_bound(all_pool_ranges.begin(), all_pool_ranges.end(), std::make_pair(lo, ~uint64_t(0)));
+        if (it != all_pool_ranges.begin() && std::prev(it)->second > lo) --it;
+        bool any = false;
+        for (; it != all_pool_ranges.end() && it->first < hi; ++it) {
+            const uint64_t a = std::max(it->first, lo), b = std::min(it->second, hi);
+            if (a < b) out.push_back({a, b}), any = true;
+        }
+        if (!any) out.push_back({lo, hi});
+    }
 }
 bool capture_on() {
     static const bool on = [] {
@@ -1463,7 +1506,8 @@ std::unique_ptr<Capture> capture_make() {
         static thread_local uint64_t ver = 0;
         if (ver != cap_ranges_ver) {   // (the three lists overlap: their union, sorted, once each time one changes)
             ver = cap_ranges_ver;
-            std::vector<std::pair<uint64_t, uint64_t>> all = cap_ranges;
+            std::vector<std::pair<uint64_t, uint64_t>> all;
+            cap_ranges_clipped(all);
             all.insert(all.end(), tex_cap_ranges.begin(), tex_cap_ranges.end());
             all.insert(all.end(), pool_cap_ranges.begin(), pool_cap_ranges.end());
             std::sort(all.begin(), all.end());
@@ -1559,7 +1603,8 @@ const std::vector<std::pair<uint64_t, uint64_t>>& capture_ranges_merged() {
     refresh_pool_ranges_locked();   // (a pool made since the last capture: the next one takes its pages, not this)
     if (ver != cap_ranges_ver) {
         ver = cap_ranges_ver;
-        std::vector<std::pair<uint64_t, uint64_t>> all = cap_ranges;
+        std::vector<std::pair<uint64_t, uint64_t>> all;
+        cap_ranges_clipped(all);
         all.insert(all.end(), tex_cap_ranges.begin(), tex_cap_ranges.end());
         all.insert(all.end(), pool_cap_ranges.begin(), pool_cap_ranges.end());
         std::sort(all.begin(), all.end());

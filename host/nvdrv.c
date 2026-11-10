@@ -190,17 +190,33 @@ int hos_gpu_guest_ranges(uint64_t (*out)[2], int max) {
         }
         for (int i = 0; i < ntracked; i++) merged[nmaps + i][0] = tracked[i].lo, merged[nmaps + i][1] = tracked[i].hi;
         qsort(merged, (size_t)nall, sizeof *merged, cmp_range);
-        nmerged = 0;
         /* ranges less than 16 MB apart are one: a GetWriteWatch call costs about what 16 MB of range does, and
-           TOTK maps ~4000 pieces */
-        for (int i = 0; i < nall; i++) {
-            if (nmerged && merged[i][0] <= merged[nmerged - 1][1] + (16ULL << 20)) {
-                if (merged[i][1] > merged[nmerged - 1][1]) merged[nmerged - 1][1] = merged[i][1];
-            } else {
-                merged[nmerged][0] = merged[i][0];
-                merged[nmerged][1] = merged[i][1];
-                nmerged++;
+           TOTK maps ~4000 pieces. Not with the soft write watch, whose scan costs by page, not by call: there the gaps
+           are the game's heap, and its writes were collected with the GPU's memory (OoT's Kokiri: ~2,500 heap pages a
+           frame, 69% of the pages the captures took). Its ranges are merged only where they touch, the gap growing
+           while more than 2048 are left (the callers take 4096). HOS_GPU_RANGE_GAP_MB=16: as before */
+        static int64_t gap0 = -1;
+        if (gap0 < 0) {
+#if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
+            const char *e = getenv("HOS_GPU_RANGE_GAP_MB");
+            gap0 = (int64_t)(e ? atoll(e) : 0) << 20;
+#else
+            gap0 = 16ll << 20;
+#endif
+        }
+        int count = nall;   /* (a retry merges the last pass's ranges again: sorted still, the same result) */
+        for (uint64_t gap = (uint64_t)gap0;; gap = gap ? gap * 2 : 1ull << 20, count = nmerged) {
+            nmerged = 0;
+            for (int i = 0; i < count; i++) {
+                if (nmerged && merged[i][0] <= merged[nmerged - 1][1] + gap) {
+                    if (merged[i][1] > merged[nmerged - 1][1]) merged[nmerged - 1][1] = merged[i][1];
+                } else {
+                    merged[nmerged][0] = merged[i][0];
+                    merged[nmerged][1] = merged[i][1];
+                    nmerged++;
+                }
             }
+            if (nmerged <= 2048 || gap >= (1ull << 40)) break;
         }
     }
     int n = nmerged < max ? nmerged : max;

@@ -209,6 +209,11 @@ So the game survives more cores once the task path is off the async ring, and th
 a correct picture in Kokiri Forest. Open: which task program hangs natively, and why (a RADV gang-submit issue, or a
 task shader that loops on data it reads too early).
 
+GPU hangs since, all with the fallback on: `rblog` and `rb_nowait` (readback front, `work/sa/zstd`, the old whole-chunk
+captures; `rb_nowait` with `RX_VK_NO_READBACK_WAIT=1`): a **graphics-ring** timeout (`gfx_0.0.0`, guilty thread
+sead::MainThread, mode-1 reset) at ~67 s, both while walking on the scripted route (`45:LUP/10000,56:RRIGHT/6000,...`).
+Reproducible with the wait on and off; not seen on the short `40:LUP/12000` route (8 runs of exact capture ranges).
+
 ### Pool census, first pass (110 s of Kokiri Forest with scripted walking)
 
 4,573 pools: 3.6 GB CPU-cached + GPU-cached, 0.87 GB GPU-only compressible (render targets), 0.5 GB physical
@@ -259,6 +264,26 @@ are totals at the end of the first gameplay window (present 720).
   makes a driver-cold start 41 -> 23 s; what remains cold there is compute: dispatches and the mesh fallback's dispatches
   are still compute pipelines (next: compute shader objects through the same cache).
 - Cold, a stage compiles in ~25 ms on a worker (vs ~62 ms a pipeline): 13.3 s of waits instead of 18.5 s.
+
+### Exact capture ranges (2026-11-10)
+
+The submit-time capture took whole 16 MB import chunks and the soft-watch collection merged GPU ranges < 16 MB apart (a
+GetWriteWatch rule), so the game's heap between pools was captured and mirror-synced. Now a capture takes only the
+pools' pages of a mirrored import (`cap_ranges_clipped`, vk_memory.cpp; an import with no listed pool stays whole), and
+the soft watch's collection merges ranges only where they touch (`hos_gpu_guest_ranges`, nvdrv.c; the gap doubles while
+more than 2048 are left; the GetWriteWatch build keeps 16 MB). Old behaviour: `RX_VK_CAPTURE_CHUNKS=1
+HOS_GPU_RANGE_GAP_MB=16`. One build (`work/sa/ranges`), Kokiri, 80 s, `40:LUP/12000`, standing presents 840-1800, walking
+1920-2400 (`work/proto/capture-ranges/ab.sh`, `report.py`), two runs each:
+
+| | Captured a frame | Mirror syncs a frame | Capture thread CPU | fps standing / walking | `HOS_NO_PACING=1` gameplay |
+|---|---|---|---|---|---|
+| whole chunks | 487 pages/submit, **11.4 MB** | 10.6 MB | 2.1-2.3 ms | 48.6 / 45.7, 47.5 / 46.0 | 48 standing, 45.5 walking |
+| **exact ranges** | 180 pages/submit, **4.2 MB** | **5.5 MB** | 0.85 ms | 49.8 / 47.8, 48.2 / 46.3 | 49 standing, 47.5 walking |
+
+- Captured bytes -63%, mirror syncs -48%; ~+1 fps. The replay thread (Presentation Thread, ~8 ms a frame) is unchanged:
+  the frame is still held by the readback wait, which no-pacing shows (48 -> 49 only).
+- Picture: correct; screenshots differ between the modes only by timing (Link's pose, the walk's position at a present),
+  same-mode pairs 1.4-2.4 standing. No GPU hang in 8 runs.
 
 ## Fronts surveyed (2026-11-10; reports in work/assets/native/*.md, tools and data in work/proto/<front>/)
 
@@ -333,3 +358,6 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   fed by `nvnProgramSetShaders` (MKWVK_API_VERSION 13). Warm: 0 pipeline waits and 0 draws left out (pipelines: 400 waits,
   402 left out), same fps; driver-cold start 41 -> 23 s with binaries kept. Left: compute programs as shader objects, the
   binaries made offline from the seed (step 3 of shader-stream.md 2.4).
+- 2026-11-10: exact capture ranges (step 3, first half): captures take the pools' pages of a mirrored import, the soft
+  watch's collection no longer merges 16 MB gaps. Kokiri: 11.4 -> 4.2 MB captured and 10.6 -> 5.5 MB mirror-synced a frame,
+  ~+1 fps (`RX_VK_CAPTURE_CHUNKS=1 HOS_GPU_RANGE_GAP_MB=16`: as before).
