@@ -339,7 +339,10 @@ is and feeds is being traced (`readback.md`); the exposure meter's read must sta
 2. **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits.
 3. **Exact capture ranges** (69% of captured pages are outside pools) and no mirror for pools the game invalidates.
 4. **Transient targets**: per-texture invalidation instead of `destroy_gen`; a moved target takes over the image it
-   drew over; skip creation clears the game overwrites. GPU unswizzle for every format and size.
+   drew over; skip creation clears the game overwrites. GPU unswizzle for every format and size. Trap:
+   `texture_view_of` (vk_draw.cpp) caches misses too (a deferred ASTC upload, `upload_defer`, samples the dummy) and
+   retries them only when the slot version or `destroy_gen` moves; today `destroy_gen` moves every frame, so with
+   per-texture invalidation a deferred texture could stay the dummy. Do not cache misses, or retry after the upload.
 5. **Second-map validation**: rerun the censuses (pool, alloc-transfer shim, readback) on Hyrule Field and across a
    map change; root-cause the walking gfx-ring hang (`work/runs/rblog`, ~67 s, workarounds on). Census v3: pool
    creation sites, and whether the 3,504 pools of <= 64 KB are the per-draw constant rings (if so, placement per
