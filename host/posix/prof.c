@@ -341,8 +341,12 @@ static DWORD WINAPI sample_all_thread(void *p) {
             Sleep(200);
             continue;
         }
-        if (!out) {
-            out = fopen(path, "a");
+        /* (native-vk) the threads listed again every 250 rounds (~0.5 s): a .go made before the game's threads exist
+           sampled the main thread alone, and the loaders that start later were never seen */
+        static int rounds;
+        if (!out || ++rounds % 250 == 0) {
+            const int fresh = !out;
+            if (fresh) out = fopen(path, "a");
             if (!out) { Sleep(1000); continue; }
             static Task all[512];
             const int n = tasks(all, 512);
@@ -354,8 +358,10 @@ static DWORD WINAPI sample_all_thread(void *p) {
                 for (char *q = tn[nt]; *q; q++) if (*q == ' ' || *q == '|') *q = '_';
                 nt++;
             }
-            t0 = hos_now_ns();
-            hos_log("prof: all-thread sampling of %d threads into %s", nt, path);
+            if (fresh) {
+                t0 = hos_now_ns();
+                hos_log("prof: all-thread sampling of %d threads into %s", nt, path);
+            }
         }
         Sleep(2);
         const long ms = (long)((hos_now_ns() - t0) / 1000000);

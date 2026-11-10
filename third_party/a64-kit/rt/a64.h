@@ -87,14 +87,29 @@ extern uint8_t a64_dirty[1u << 20];
 #define A64_MARK(a, n) ((void)0)
 #endif
 
-A64_INLINE uint64_t recomp_load8(GuestContext *c, uint64_t a) { (void)c; return *(const uint8_t *)A64_PTR(a); }
-A64_INLINE uint64_t recomp_load16(GuestContext *c, uint64_t a) { uint16_t v; (void)c; memcpy(&v, A64_PTR(a), 2); return v; }
-A64_INLINE uint64_t recomp_load32(GuestContext *c, uint64_t a) { uint32_t v; (void)c; memcpy(&v, A64_PTR(a), 4); return v; }
-A64_INLINE uint64_t recomp_load64(GuestContext *c, uint64_t a) { uint64_t v; (void)c; memcpy(&v, A64_PTR(a), 8); return v; }
-A64_INLINE void recomp_store8(GuestContext *c, uint64_t a, uint64_t v) { (void)c; *(uint8_t *)A64_PTR(a) = (uint8_t)v; A64_MARK(a, 1); }
-A64_INLINE void recomp_store16(GuestContext *c, uint64_t a, uint64_t v) { uint16_t t = (uint16_t)v; (void)c; memcpy(A64_PTR(a), &t, 2); A64_MARK(a, 2); }
-A64_INLINE void recomp_store32(GuestContext *c, uint64_t a, uint64_t v) { uint32_t t = (uint32_t)v; (void)c; memcpy(A64_PTR(a), &t, 4); A64_MARK(a, 4); }
-A64_INLINE void recomp_store64(GuestContext *c, uint64_t a, uint64_t v) { (void)c; memcpy(A64_PTR(a), &v, 8); A64_MARK(a, 8); }
+
+/* (hookshot, native-vk) The pool census (build.py RX_POOL_CENSUS=1, host/hos_pool_census.c): every lifted load and
+   store whose 4 KB page belongs to a live NVN memory pool calls a64_census_hit, which counts it under its place in
+   the lifted code. The table covers the 512 GB window (nx2/rtgen.py), indexed by the full address. */
+#if defined(A64_POOL_CENSUS)
+#define A64_CENSUS_PAGES (1ull << 27)
+extern uint16_t a64_pool_page[A64_CENSUS_PAGES];
+void a64_census_hit(uint64_t a, uint32_t n, int w, uint64_t lr);
+/* (lr: the guest x30, the caller of a leaf such as memcpy) */
+#define A64_CENSUS(a, n, w) (__builtin_expect(a64_pool_page[((uint64_t)(a) >> 12) & (A64_CENSUS_PAGES - 1)] != 0, 0) ? \
+                             a64_census_hit((a), (n), (w), (c)->x[30]) : (void)0)
+#else
+#define A64_CENSUS(a, n, w) ((void)0)
+#endif
+
+A64_INLINE uint64_t recomp_load8(GuestContext *c, uint64_t a) { (void)c; A64_CENSUS(a, 1, 0); return *(const uint8_t *)A64_PTR(a); }
+A64_INLINE uint64_t recomp_load16(GuestContext *c, uint64_t a) { uint16_t v; (void)c; A64_CENSUS(a, 2, 0); memcpy(&v, A64_PTR(a), 2); return v; }
+A64_INLINE uint64_t recomp_load32(GuestContext *c, uint64_t a) { uint32_t v; (void)c; A64_CENSUS(a, 4, 0); memcpy(&v, A64_PTR(a), 4); return v; }
+A64_INLINE uint64_t recomp_load64(GuestContext *c, uint64_t a) { uint64_t v; (void)c; A64_CENSUS(a, 8, 0); memcpy(&v, A64_PTR(a), 8); return v; }
+A64_INLINE void recomp_store8(GuestContext *c, uint64_t a, uint64_t v) { (void)c; *(uint8_t *)A64_PTR(a) = (uint8_t)v; A64_MARK(a, 1); A64_CENSUS(a, 1, 1); }
+A64_INLINE void recomp_store16(GuestContext *c, uint64_t a, uint64_t v) { uint16_t t = (uint16_t)v; (void)c; memcpy(A64_PTR(a), &t, 2); A64_MARK(a, 2); A64_CENSUS(a, 2, 1); }
+A64_INLINE void recomp_store32(GuestContext *c, uint64_t a, uint64_t v) { uint32_t t = (uint32_t)v; (void)c; memcpy(A64_PTR(a), &t, 4); A64_MARK(a, 4); A64_CENSUS(a, 4, 1); }
+A64_INLINE void recomp_store64(GuestContext *c, uint64_t a, uint64_t v) { (void)c; memcpy(A64_PTR(a), &v, 8); A64_MARK(a, 8); A64_CENSUS(a, 8, 1); }
 /* Stores through SP (stack_stores in lift/a64_lift.py): the guest stack is never memory the GPU reads, so they mark no
    page. They are a quarter of TOTK's store sites (prologue saves, nearly every STP). */
 A64_INLINE void recomp_store8_sp(GuestContext *c, uint64_t a, uint64_t v) { (void)c; *(uint8_t *)A64_PTR(a) = (uint8_t)v; }
@@ -106,8 +121,8 @@ A64_INLINE void recomp_stp64_sp(GuestContext *c, uint64_t a, uint64_t v0, uint64
 A64_INLINE void recomp_ldp32(GuestContext *c, uint64_t a, uint64_t *lo, uint64_t *hi) { *lo = recomp_load32(c, a); *hi = recomp_load32(c, a + 4); }
 A64_INLINE void recomp_ldp64(GuestContext *c, uint64_t a, uint64_t *lo, uint64_t *hi) { *lo = recomp_load64(c, a); *hi = recomp_load64(c, a + 8); }
 /* (a pair marks once, for its whole span) */
-A64_INLINE void recomp_stp32(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store32_sp(c, a, v0); recomp_store32_sp(c, a + 4, v1); A64_MARK(a, 8); }
-A64_INLINE void recomp_stp64(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store64_sp(c, a, v0); recomp_store64_sp(c, a + 8, v1); A64_MARK(a, 16); }
+A64_INLINE void recomp_stp32(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store32_sp(c, a, v0); recomp_store32_sp(c, a + 4, v1); A64_MARK(a, 8); A64_CENSUS(a, 8, 1); }
+A64_INLINE void recomp_stp64(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store64_sp(c, a, v0); recomp_store64_sp(c, a + 8, v1); A64_MARK(a, 16); A64_CENSUS(a, 16, 1); }
 
 /* Everything is lifted at its final guest address, so the translator's module base is a constant 0. */
 #define g_module_base ((uint64_t)0)

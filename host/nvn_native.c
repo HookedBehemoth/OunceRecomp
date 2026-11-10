@@ -26,6 +26,7 @@
 #include <windows.h>
 uint64_t hos_hostcall(const char *name, void (*fn)(Ctx *, void *), void *user);   /* hos_hostcall.c */
 void hos_gpu_track(uint64_t guest, uint64_t size, int on);                          /* nvdrv.c */
+void hos_census_pool(uint64_t base, uint64_t size, uint32_t flags, int on);          /* hos_pool_census.c */
 
 /* ---- calling convention: arguments from the guest registers ---- */
 #define NV(name) static void n_##name(Ctx *c, void *u_)
@@ -306,6 +307,7 @@ NV(nvnMemoryPoolInitialize) {
     o->mem = b->mem;
     o->gpu = b->mem;
     hos_gpu_track(o->gpu, o->size, 1);   /* (the CPU's writes to it reach the renderer through write watch) */
+    hos_census_pool(o->gpu, o->size, o->flags, 1);
     rx_nvn_pool_created(o->gpu, o->size);
     OLOG("pool %#llx size %#llx flags %#x", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags);
     RET(1);
@@ -344,6 +346,7 @@ NV(nvnMemoryPoolFinalize) {
         ReleaseSRWLockExclusive(&vmap_lock);
     } else if (o->mem) {
         hos_gpu_track(o->gpu, o->size, 0);
+        hos_census_pool(o->gpu, o->size, o->flags, 0);
     }
     o->magic = 0;
 }
@@ -2551,6 +2554,7 @@ NV(nvnNativeImageInitialize) {
     o->size = (uint64_t)NVN_WINDOW_W * NVN_WINDOW_H * 4;
     o->storage = hos_region_alloc(o->size, 0x10000);
     if (o->storage) hos_gpu_track(o->storage, o->size, 1);
+    if (o->storage) hos_census_pool(o->storage, o->size, 0x80000000u, 1);   /* (flag 1<<31: a native image) */
     hos_log("nvn: native image %dx%d format %#x (handle %#llx) at %#llx", o->width, o->height, o->format,
             (unsigned long long)b->handle, (unsigned long long)o->storage);
     RET(o->storage != 0);

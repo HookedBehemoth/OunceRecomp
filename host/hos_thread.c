@@ -1188,6 +1188,8 @@ int hos_vcores_on(void) {
 static int vc_cores(void) { return hos_cores() > 8 ? 8 : hos_cores(); }
 static unsigned vc_allowed(HosThread *t) {
     const unsigned all = (1u << vc_cores()) - 1;
+    /* (native-vk, tried 2026-11-10: any free core for any thread, one thread per core number still: Kokiri's load grew
+       to 24 GB and played at 27 fps. The game's per-core data follows its core masks, not only the core number) */
     unsigned m = (unsigned)(t->core_mask & all);
     if (!m) m = 1u << hos_thread_core(t);
     return m;
