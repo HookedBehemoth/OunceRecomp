@@ -50,7 +50,7 @@ From `vulkaninfo` (Mesa 26.2.4): `VK_EXT_map_memory_placed` (4 KB alignment), a 
 1. **Commands.** Command buffers translated at submit into Vulkan in submit order, with honest syncs
    (`nvnSync` = timeline semaphore value), so the GPU reads live memory exactly when the console's would. No
    submit-time captures.
-2. **Shaders.** All 10,154 `Nin_Ounce_NVN2` programs are known from the romfs: translated offline, pipelines (or
+2. **Shaders.** All 38,809 programs (42,856 unique stages, `Nin_Ounce_NVN2` and effects) are known from the romfs: translated offline, pipelines (or
    shader objects) built before play, kept in a pipeline binary cache. Replacements for hot or broken shaders as
    hand-written GLSL keyed by program hash.
 3. **Textures and assets.** The loaders above NVN (agl / gsys texture resources, bntx) replaced: textures prepared
@@ -263,26 +263,43 @@ Kokiri, `work/sa/zstd` build, ~47 fps, 6 submits a frame. One line each; the rep
   Layer 0 prototype (`layer0_proto.c`, 64 KB sparse pages, 2 GB-stepped 4 GB windows, 1024-entry address table,
   udmabuf host class + BAR dma-buf VRAM class) passes all checks.
 
-### Order of work
+### Order of work (revised after review, 2026-11-10)
 
-Quick wins on the current renderer first (each behind a switch, measured with `scripts/launch_time.py` and fps):
+The second survey round (`alloc-transfer.md`, `nvn-callpaths.md`, `cpu-to-gpu.md`) found the frame's limiter: one
+readback, `f_800998a0` -> `f_80365f00` -> `nvnMemoryPoolInvalidateMappedRange` at lr 0x803665d4, waits 7.4-8.8 ms every
+frame on a job worker on the critical path. The game reads the previous frame's slot of a double-buffered pair, but
+`memory_writeback_value` (vk_memory.cpp) waits for the newest submission that wrote any 4 KB page of the range, i.e.
+this frame's. `RX_VK_NO_READBACK_WAIT=1`: standing 47 -> 60 fps (vsync cap), walking 38-41 -> 46-55. What the data
+is and feeds is being traced (`readback.md`); the exposure meter's read must stay strict (white-flash race).
 
-1. **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits.
-2. **Transient targets**: per-texture invalidation instead of `destroy_gen`; a moved target takes over the image it
-   drew over; skip creation clears the game overwrites.
-3. **GPU unswizzle for every format and size** (no CPU unswizzle left).
-4. **Timeline semaphores and events** inside the current replay (replaces the CPU queue scheduler).
+1. **Readback wait per written range** (exposure meter strict). A/B with `HOS_NO_PACING=1`, walking, exposure checked.
+2. **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits.
+3. **Exact capture ranges** (69% of captured pages are outside pools) and no mirror for pools the game invalidates.
+4. **Transient targets**: per-texture invalidation instead of `destroy_gen`; a moved target takes over the image it
+   drew over; skip creation clears the game overwrites. GPU unswizzle for every format and size.
+5. **Second-map validation**: rerun the censuses (pool, alloc-transfer shim, readback) on Hyrule Field and across a
+   map change; root-cause the walking gfx-ring hang (`work/runs/rblog`, ~67 s, workarounds on). Census v3: pool
+   creation sites, and whether the 3,504 pools of <= 64 KB are the per-draw constant rings (if so, placement per
+   64 KB granule rather than per pool, or they never reach VRAM).
+6. **Timelines and events** in the current replay. Hard prerequisite of layer 0 (captures can only go once syncs are
+   honest) and the riskiest step. Caveat: wait-before-signal on ONE Vulkan queue deadlocks (a submission blocked on a
+   timeline wait holds everything behind it, including the signal), and the five NVN queues map to one graphics
+   queue. Keep a host-side hold for waits whose signal is not yet submitted; count them first.
+7. **Layer 0**: windows with the host class only is a correctness milestone, expected slower than mirrors (GPU reads
+   over PCIe) -> VRAM class for CPU-no-access pools -> write-only pools -> virtual pools as sparse binds. Render-target
+   pool as one device-local heap with images cached by (offset, create info).
+8. **Layer 1**: lists by reference with per-thread arenas (3.3 ms of copies under one lock today); record-time packet
+   translation with state deduplication (5,700 of 15,100 ops repeat bound state); descriptor buffer indexed by NVN
+   handle; precise barriers; real queries + conditional rendering; then structure-keyed command caching.
+9. **Layer 3**: buys memory (-2.35 GB RAM + mirror) and first-frame upload stutter (590 MB, a 155 ms frame), not launch
+   time: the load's bottleneck is not diagnosed (idle 48% of samples, textures < 0.5 s). Profile what the loaders
+   wait on before committing. Needs an offline ASTC -> BC7 encoder.
 
-Then the layers:
-
-5. **Layer 0**: census v3 (pool creation sites, placement policy file) -> windows with the host class only
-   (`RX_VK_POOLS=native RX_VK_POOLS_VRAM=0`: no imports, mirrors, captures, write-backs, page table) -> VRAM class for
-   CPU-no-access pools -> write-only pools -> virtual pools as sparse binds. Render-target pool as one device-local
-   heap with images cached by (offset, create info).
-6. **Layer 1**: lists by reference with per-thread arenas; record-time packet translation; descriptor buffer indexed by
-   NVN handle; real queries; then structure-keyed command caching.
-7. **Layer 3**: prepared BCn textures served as stubs with a memcpy identity registry (pool 127 stays backed until
-   ASTC is converted), offline ASTC -> BCn, then pool 127 unbacked (-2.35 GB RAM + mirror). Texel calls as Vulkan copies.
+Expectations: the game is ~33 of 41 ms of CPU a frame standing, the GPU ~7 ms; layers 0+1 remove ~8 ms of renderer
+work, not all on the critical path. After the readback, the larger CPU lever is the lifted floating-point helpers
+(`a64_fpx_*`, 5.5-10 ms a frame): a lift option emitting host FP for hot functions (full rebuild), then host-native
+hot kernels (`f_812342c0`, `f_808226e0`, Vfx3 `f_8125f0e0`, Havok cloth). More cores do not help until the readback
+and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
 
 ## Status
 
