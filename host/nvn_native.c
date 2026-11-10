@@ -370,9 +370,24 @@ NV(nvnMemoryPoolGetBufferAddress) {
     RET(((const nvn_pool *)P(0))->gpu);
 }
 NV(nvnMemoryPoolFlushMappedRange) {}   /* CPU writes are seen through write watch */
+/* (hookshot, OoT) agl::utl::DepthBufferEx's coarse occlusion grid (f_800998a0 -> f_80365f00): two 0x3980-byte slots the GPU
+   writes a frame each, with the frame's camera and a GPU-written frame stamp at +0x1540. The game takes the slot stamped
+   frame-1, else the other one stamped frame-2, else culls without it that frame: it never needs the GPU done, and on the
+   console the invalidate is a cache op. Here the invalidate waits for the submission writing the slot back, ~8 ms every
+   frame on a job worker on the frame's critical path (the replay is a frame behind the game). No wait for any of its four
+   invalidates: lr 0x803665d4 and 0x80366168 (the current slot, before and after the copy), 0x8036635c (the other slot),
+   and the tail call's (lr the caller's, 0x80099d84). The exposure meter (f_80357060, read and zeroed) keeps its wait.
+   HOS_NVN_READBACK_WAIT_ALL=1: every invalidate waits, as before (work/assets/native/readback.md) */
+static int readback_stamped(const Ctx *c) {
+    static int all = -1;
+    if (all < 0) all = getenv("HOS_NVN_READBACK_WAIT_ALL") != NULL || hos_game_is_mkw();
+    const uint64_t lr = c->x[30];
+    return !all && c->x[2] == 0x3980 && ((lr >= 0x80365f00ull && lr < 0x80366600ull) || lr == 0x80099d84ull);
+}
 NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the GPU wrote */
     if (no_pool(c, "invalidate mapped range")) return;
     const nvn_pool *o = (const nvn_pool *)P(0);
+    if (readback_stamped(c)) return;
     if ((int64_t)U64(1) >= 0) rx_nvn_invalidate(o->gpu + U64(1), U64(2));
 }
 NV(nvnMemoryPoolSetDebugLabel) {}

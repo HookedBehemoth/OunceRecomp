@@ -49,10 +49,12 @@ def main():
     map_ = block(source, "NV(nvnMemoryPoolMap)")
     address = block(source, "NV(nvnMemoryPoolGetBufferAddress)")
     invalidate = block(source, "NV(nvnMemoryPoolInvalidateMappedRange)")
+    stamped = block(source, "static int readback_stamped(const Ctx *c)")
 
     fixture = r'''#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 typedef struct { uint64_t x[32]; } Ctx;
 typedef struct {
@@ -73,8 +75,10 @@ static void die(const char *fmt, ...) { (void)fmt; }
 static uint64_t h2g(void *p) { return (uint64_t)(uintptr_t)p; }
 #define RETP(p) RET(h2g(p))
 #define U64(i) (c->x[i])
-static void rx_nvn_invalidate(uint64_t a, uint64_t b) { (void)a; (void)b; }
-''' + guard + "\n" + flags + "\n" + size + "\n" + map_ + "\n" + address + "\n" + invalidate + r'''
+static int invalidated;
+static void rx_nvn_invalidate(uint64_t a, uint64_t b) { (void)a; (void)b; invalidated++; }
+static int hos_game_is_mkw(void) { return 0; }
+''' + stamped + "\n" + guard + "\n" + flags + "\n" + size + "\n" + map_ + "\n" + address + "\n" + invalidate + r'''
 int main(void) {
     Ctx c;
     memset(&c, 0, sizeof c);
@@ -136,6 +140,28 @@ int main(void) {
     }
     c.x[0] = (uint64_t)(uintptr_t)&pool;
     n_nvnMemoryPoolInvalidateMappedRange(&c, NULL);
+    if (invalidated != 1) {
+        fprintf(stderr, "FAIL: a real pool's invalidate reached the renderer %d times\n", invalidated);
+        return 1;
+    }
+    /* OoT's occlusion grid slots (0x3980 bytes, read from f_80365f00 or its tail call): no wait; others as before */
+    static const uint64_t lrs[] = {0x803665d4, 0x80366168, 0x8036635c, 0x80099d84};
+    for (int i = 0; i < 4; i++) {
+        c.x[0] = (uint64_t)(uintptr_t)&pool, c.x[1] = 0, c.x[2] = 0x3980, c.x[30] = lrs[i];
+        n_nvnMemoryPoolInvalidateMappedRange(&c, NULL);
+    }
+    if (invalidated != 1) {
+        fprintf(stderr, "FAIL: the occlusion grid's invalidates reached the renderer\n");
+        return 1;
+    }
+    c.x[0] = (uint64_t)(uintptr_t)&pool, c.x[2] = 0xc0, c.x[30] = 0x80357d40;   /* (the exposure meter: waits) */
+    n_nvnMemoryPoolInvalidateMappedRange(&c, NULL);
+    c.x[0] = (uint64_t)(uintptr_t)&pool, c.x[2] = 0x3980, c.x[30] = 0x80357d40;
+    n_nvnMemoryPoolInvalidateMappedRange(&c, NULL);
+    if (invalidated != 3) {
+        fprintf(stderr, "FAIL: an invalidate elsewhere skipped the renderer\n");
+        return 1;
+    }
     puts("PASS: a null memory pool answers 0; a real pool keeps its flags, size, mapping and address");
     return 0;
 }

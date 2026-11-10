@@ -285,6 +285,20 @@ HOS_GPU_RANGE_GAP_MB=16`. One build (`work/sa/ranges`), Kokiri, 80 s, `40:LUP/12
 - Picture: correct; screenshots differ between the modes only by timing (Link's pose, the walk's position at a present),
   same-mode pairs 1.4-2.4 standing. No GPU hang in 8 runs.
 
+### The occlusion grid's readback without its wait (2026-11-10)
+
+`readback_stamped` (host/nvn_native.c): none of the four invalidates of DepthBufferEx's two 0x3980 slots
+(`f_80365f00`, tail call lr 0x80099d84) waits (`HOS_NVN_READBACK_WAIT_ALL=1`: all wait). rbshim, 3054 frames: the
+invalidate 7.85 ms mean -> 0.00; the current slot holds frame-3 then and the game takes the other slot, stamped frame-2,
+in 3050 of 3054 frames (4 frame-1); before, the wait brought frame-1 in 3130 of 3131. Picture the same (new vs old as two
+runs of one mode); no culling pop found on a camera turn (`40:RRIGHT/4000,46:RLEFT/4000`, a shot every 6 presents).
+**fps unchanged** (standing 50, walking 48, with and without `HOS_NO_PACING=1`): the same ~8 ms wait moves to the next
+readback of the frame, `f_80362ff0` (lr **0x803633cc**), invalidating 0x9b040 bytes of one of a double-buffered pair
+(0x117cf04000 / 0x117cf9f040, ~7.8 ms each frame for the newest submission; its sibling pair 0x117d9ec000 / 0x117da87040
+does not wait). It read 0.1 KB a frame in the census. Next: what it reads and whether it tolerates a frame's age; the
+exposure meter (0x11371e7f00) keeps waiting. `RX_VK_EXPOSURE_LOG=2` logged only 3-4 frames on this build (the final
+pass's program not matched), so the exposure was checked by the screenshots only.
+
 ## Fronts surveyed (2026-11-10; reports in work/assets/native/*.md, tools and data in work/proto/<front>/)
 
 Kokiri, `work/sa/zstd` build, ~47 fps, 6 submits a frame. One line each; the reports have addresses and evidence.
@@ -361,3 +375,5 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
 - 2026-11-10: exact capture ranges (step 3, first half): captures take the pools' pages of a mirrored import, the soft
   watch's collection no longer merges 16 MB gaps. Kokiri: 11.4 -> 4.2 MB captured and 10.6 -> 5.5 MB mirror-synced a frame,
   ~+1 fps (`RX_VK_CAPTURE_CHUNKS=1 HOS_GPU_RANGE_GAP_MB=16`: as before).
+- 2026-11-10: the occlusion grid's four invalidates no longer wait (step 1, part): its 8 ms is gone, but the next readback
+  (`f_80362ff0`, lr 0x803633cc, 0x9b040 bytes) now waits the same, so no fps yet.
