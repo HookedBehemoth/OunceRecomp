@@ -1273,32 +1273,67 @@ void memory_drop_shadow(uint64_t guest, uint64_t size) {
 // from a mirror, and small bindings written in place). RX_VK_NO_READBACK_WAIT=1: none
 namespace {
 std::mutex wb_pages_mu;
-// (each page's value: the timeline value of its last write-back, 0 for never, in chunks of kChunkPages made when a page of
+// (each page's values: the timeline value of its last write-back, 0 for never, in chunks of kChunkPages made when a page of
 // the chunk is first written back, as the page generations above. Write-backs are of imported pools only, which lie in the
 // GPU's windows, so few chunks are ever made. Values are never lowered or dropped: the readers (memory_writeback_value's
 // "ever written back" and its value against the GPU's progress, and the capture's wait, the same compare) read one the GPU
 // is past as "written back, nothing to wait for", whatever it is. tests/test_wb_pages.py)
+// (hookshot, 11-11) Two values a page, each with the bytes of the page it was written back over. OoT's per-frame result
+// buffers lie in pairs back to back, one written each frame (f_80362ff0's six double-buffered culling outputs, 0x9b040
+// bytes a slot, the second slot starting 0x40 into the first one's last page): with one value a page, reading the slot the
+// frame before wrote, done long ago, waited for the newest submission, which wrote the other slot's first bytes on that
+// shared page (~8 ms a frame in Kokiri Forest, the frame's longest wait). A third value merges the two older ones (the
+// larger value over both their bytes: a wait too many, never one too few). RX_VK_WB_PAGES=1: whole pages, as before
 struct WbPages {
-    std::vector<std::unique_ptr<uint64_t[]>> chunks = std::vector<std::unique_ptr<uint64_t[]>>(kPages / kChunkPages);
+    struct Page {
+        uint64_t v[2];
+        uint16_t lo[2], hi[2];   // (bytes [lo, hi) of the page; v 0: no value)
+        uint64_t max() const { return std::max(v[0], v[1]); }
+        uint64_t max_in(uint64_t a, uint64_t b) const {   // (a value over any of the bytes [a, b) of the page)
+            uint64_t m = 0;
+            for (int i = 0; i < 2; i++)
+                if (v[i] && lo[i] < b && a < hi[i]) m = std::max(m, v[i]);
+            return m;
+        }
+        void set(uint64_t value, uint16_t a, uint16_t b) {
+            for (int i = 0; i < 2; i++)   // (the same submission, or a later one over all of a value's bytes: replaced)
+                if (v[i] && (v[i] == value || (a <= lo[i] && hi[i] <= b))) {
+                    if (v[i] == value) a = std::min(a, lo[i]), b = std::max(b, hi[i]);
+                    v[i] = 0;
+                }
+            if (v[0] && !v[1]) v[1] = v[0], lo[1] = lo[0], hi[1] = hi[0], v[0] = 0;
+            if (v[0] && v[1]) {   // (both taken: merged into one, conservatively)
+                v[1] = std::max(v[0], v[1]), lo[1] = std::min(lo[0], lo[1]), hi[1] = std::max(hi[0], hi[1]);
+                v[0] = 0;
+            }
+            v[0] = value, lo[0] = a, hi[0] = b;
+            if (v[1] && v[1] == value) v[0] = value, lo[0] = std::min(a, lo[1]), hi[0] = std::max(b, hi[1]), v[1] = 0;
+        }
+    };
+    static constexpr uint64_t kPage = 1ull << 12;
+    std::vector<std::unique_ptr<Page[]>> chunks = std::vector<std::unique_ptr<Page[]>>(kPages / kChunkPages);
     bool any = false;
-    void set(uint64_t page, uint64_t value) {
-        if (page >= kPages) return;
+    /// bytes [a, b) of page (0 < b - a <= 4096), written back by value
+    void set(uint64_t page, uint64_t value, uint64_t a = 0, uint64_t b = kPage) {
+        if (page >= kPages || !value || a >= b) return;
         auto& c = chunks[page / kChunkPages];
         if (!c) {
-            c.reset(new uint64_t[kChunkPages]);
-            std::fill(c.get(), c.get() + kChunkPages, 0ull);
+            c.reset(new Page[kChunkPages]);
+            std::fill(c.get(), c.get() + kChunkPages, Page{});
         }
-        c[page % kChunkPages] = value;
+        c[page % kChunkPages].set(value, (uint16_t)a, (uint16_t)std::min(b, kPage));
         any = true;
     }
-    uint64_t get(uint64_t page) const {
+    uint64_t get(uint64_t page) const {   // (any of the page's bytes: the capture copies whole pages)
         if (page >= kPages) return 0;
         const auto& c = chunks[page / kChunkPages];
-        return c ? c[page % kChunkPages] : 0;
+        return c ? c[page % kChunkPages].max() : 0;
     }
-    /// the largest value of pages first..last (0: none), and whether any had one; a chunk never made is skipped whole
-    uint64_t max_in(uint64_t first, uint64_t last, bool* ever) const {
+    /// the largest value over the bytes [lo, hi) (0: none), and whether any had one; a chunk never made is skipped whole
+    uint64_t max_in(uint64_t lo, uint64_t hi, bool* ever) const {
         uint64_t v = 0;
+        if (hi <= lo) return 0;
+        const uint64_t first = lo / kPage, last = (hi - 1) / kPage;
         for (uint64_t p = first; p <= last && p < kPages;) {
             const uint64_t end = (p / kChunkPages + 1) * kChunkPages;   // (the first page past p's chunk)
             const auto& c = chunks[p / kChunkPages];
@@ -1306,11 +1341,14 @@ struct WbPages {
                 p = end;
                 continue;
             }
-            for (; p <= last && p < end; p++)
-                if (const uint64_t pv = c[p % kChunkPages]) {
+            for (; p <= last && p < end; p++) {
+                const Page& g = c[p % kChunkPages];
+                const uint64_t a = p == first ? lo % kPage : 0, b = p == last ? (hi - 1) % kPage + 1 : kPage;
+                if (const uint64_t pv = g.max_in(a, b)) {
                     if (ever) *ever = true;
                     v = std::max(v, pv);
                 }
+            }
         }
         return v;
     }
@@ -1318,9 +1356,14 @@ struct WbPages {
 } wb_pages;
 void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value) {
     static const bool off = getenv("RX_VK_NO_READBACK_WAIT") != nullptr;
+    static const bool whole = getenv("RX_VK_WB_PAGES") && atoi(getenv("RX_VK_WB_PAGES")) != 0;
     if (off || !value || guest_hi <= guest_lo) return;
     std::lock_guard lk(wb_pages_mu);
-    for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) wb_pages.set(p, value);
+    for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) {
+        const uint64_t a = whole ? 0 : std::max(guest_lo, p << kPageShift) - (p << kPageShift);
+        const uint64_t b = whole ? 4096 : std::min(guest_hi, (p + 1) << kPageShift) - (p << kPageShift);
+        wb_pages.set(p, value, a, b);
+    }
 }
 } // namespace
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
@@ -1329,7 +1372,7 @@ uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
     if (!size) return 0;
     std::lock_guard lk(wb_pages_mu);
     if (wb_pages.empty()) return 0;
-    v = wb_pages.max_in(guest >> kPageShift, (guest + size - 1) >> kPageShift, ever);
+    v = wb_pages.max_in(guest, guest + size, ever);
     return v;
 }
 

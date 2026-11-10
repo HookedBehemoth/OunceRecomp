@@ -299,6 +299,22 @@ does not wait). It read 0.1 KB a frame in the census. Next: what it reads and wh
 exposure meter (0x11371e7f00) keeps waiting. `RX_VK_EXPOSURE_LOG=2` logged only 3-4 frames on this build (the final
 pass's program not matched), so the exposure was checked by the screenshots only.
 
+### Exact write-back ranges: the frame's last readback wait (2026-11-11; work/assets/native/readback2.md)
+
+After the grid, the frame's ~8 ms wait was `f_80362ff0`'s (lr 0x803633cc): the CPU reads and zeroes the counter
+headers of six double-buffered GPU culling lists (0x9b040 / 0x44b040 / 0x8b040 bytes a slot), the slot frame N-2
+filled, which the game had waited for (`nvnSyncWait` lr 0x8042cde0). It waited anyway because the write-back table
+kept one value per page and the second slot starts 0x40 into the first one's last page: the newest submission, writing
+the other slot, stamped the shared page. `WbPages` (gpu/vk/vk_memory.cpp) now keeps two values a page with the bytes
+each covers (`RX_VK_WB_PAGES=1`: whole pages). Every invalidate of the frame then waits ~0 (7.91 -> 0.07 ms a frame);
+the grid still waits when its exemption is off (`HOS_NVN_READBACK_WAIT_ALL=1`: 7.8 ms), so real dependencies stay.
+Kokiri, `work/sa/rb2`, A/B with the same binary: **standing 48.8 -> 56.3 fps, walking 46.7 -> 54.6** (`HOS_NO_PACING=1`:
+48.1 -> 55.3, 44.4 -> 54.8; camera turn 46.4 -> 54.7, 44.2 -> 50.2). Exposure block float steady (no frame-to-frame
+step > 1% in 2,300 frames, either mode), no flash or pop in ~1,000 shots, no GPU hang in 15 runs. Next limit: the
+main thread's submits block 5.3 ms a frame (the replay / GPU is behind). The rule kept: an invalidate waits for the
+write-back of exactly the bytes it reads; every readback but the grid is already covered by the game's own sync
+waits. `RX_VK_EXPOSURE_LOG` logs only the title (it keys on a draw program; gameplay's final passes are compute).
+
 ## Fronts surveyed (2026-11-10; reports in work/assets/native/*.md, tools and data in work/proto/<front>/)
 
 Kokiri, `work/sa/zstd` build, ~47 fps, 6 submits a frame. One line each; the reports have addresses and evidence.
@@ -380,3 +396,7 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   ~+1 fps (`RX_VK_CAPTURE_CHUNKS=1 HOS_GPU_RANGE_GAP_MB=16`: as before).
 - 2026-11-10: the occlusion grid's four invalidates no longer wait (step 1, part): its 8 ms is gone, but the next readback
   (`f_80362ff0`, lr 0x803633cc, 0x9b040 bytes) now waits the same, so no fps yet.
+- 2026-11-11: write-back values by byte range (two a page) instead of by page: the false dependency of `f_80362ff0`'s
+  back-to-back slots is gone, no invalidate of the frame waits (7.91 -> 0.07 ms). Kokiri 48.8 -> 56.3 fps standing,
+  46.7 -> 54.6 walking (`RX_VK_WB_PAGES=1`: as before). Native replacements of the readback systems (two-phase GPU
+  occlusion, real queries, exposure on the GPU, indirect counts): work/assets/native/readback2.md.
