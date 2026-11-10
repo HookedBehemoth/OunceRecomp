@@ -97,8 +97,9 @@ work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` (output `work/sa
   lifted body first: `grep -l "^void f_<addr>(Ctx \*__restrict" work/sa/gen/code_*.c`.
 - New host `.c` files appear in the next build only (the list is taken at the start).
 - Keep builds side by side: copy `hookshot`, `hookshot_vk.so`, `hookshot.map` and the caches (`*.bin`, `*.idx` from a
-  warm run) to `work/sa/<name>/` and run with `EXE=`. Present: `base` (no hooks), `census` (census v2), `hooks`
-  (libc), `zstd` (libc + zstd, the current best).
+  warm run) to `work/sa/<name>/` and run with `EXE=`. Present: `census` (census v2), `zstd` (libc + zstd;
+  its caches predate the shader-object stamp change), `so` (shader objects; warm caches in `so_caches_warm`), `rb2`
+  (byte-range readback waits, the current best). Older ones were removed 2026-11-11.
 
 **Run.** `OVERLAY=work/overlay/chisel_kokiri EXE=work/sa/zstd/hookshot scripts/run-vk.sh <name> <seconds> -- [VAR=..]`:
 straight into Kokiri Forest (no title, no intro), headless, muted, shots every `SHOT_EVERY` presents in
