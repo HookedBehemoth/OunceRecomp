@@ -352,9 +352,9 @@ frame on a job worker on the critical path. The game reads the previous frame's 
 this frame's. `RX_VK_NO_READBACK_WAIT=1`: standing 47 -> 60 fps (vsync cap), walking 38-41 -> 46-55. What the data
 is and feeds is being traced (`readback.md`); the exposure meter's read must stay strict (white-flash race).
 
-1. **Readback wait per written range** (exposure meter strict). A/B with `HOS_NO_PACING=1`, walking, exposure checked.
-2. **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits.
-3. **Exact capture ranges** (69% of captured pages are outside pools) and no mirror for pools the game invalidates.
+1. *Done (73a798c, 0d50991: 48.8 -> 56.3 fps standing, 46.7 -> 54.6 walking).* **Readback wait per written range** (exposure meter strict). A/B with `HOS_NO_PACING=1`, walking, exposure checked.
+2. *Done (9aac6fe; off by default).* **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits.
+3. *Done for the ranges (68fde05: captures 11.4 -> 4.2 MB a frame); mirrors of invalidated pools remain.* **Exact capture ranges** (69% of captured pages are outside pools) and no mirror for pools the game invalidates.
 4. **Transient targets**: per-texture invalidation instead of `destroy_gen`; a moved target takes over the image it
    drew over; skip creation clears the game overwrites. GPU unswizzle for every format and size. Trap:
    `texture_view_of` (vk_draw.cpp) caches misses too (a deferred ASTC upload, `upload_defer`, samples the dummy) and
