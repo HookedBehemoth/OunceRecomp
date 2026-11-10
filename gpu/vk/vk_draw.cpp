@@ -41,6 +41,7 @@
 #include "vk_gprof.h"
 #include "vk_jobs.h"
 #include "vk_shader.h"
+#include "vk_shader_object.h"
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
@@ -647,6 +648,10 @@ VkFormat supported_vertex_format(VkFormat f) {
 constexpr uint32_t kPushSize = Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END;
 
 void ensure_layout(Program& p) {
+    if (p.layout) return;
+    // (native-vk: the shader objects' prefetch thread makes layouts too, beside the draws)
+    static std::mutex layout_mu;
+    std::lock_guard layout_lk(layout_mu);
     if (p.layout) return;
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     uint64_t total = 0;   // (64-bit: a sum of 32-bit counts)
@@ -2885,6 +2890,10 @@ struct Pushed {
 };
 TLS_OBJECT(pushed, std::array<Pushed, 2>)   // [graphics, compute]
 } // namespace
+void program_layout(Program& p) { ensure_layout(p); }   // (vk_shader_object.h)
+uint32_t so_push_size() { return kPushSize; }
+namespace {
+} // namespace
 /// (hookshot) The pipeline cache the game's pipelines are kept in across runs (mkw_vk_pipelines.bin), for the back end's own
 /// pipelines made elsewhere (vk_fsr3.cpp); VK_NULL_HANDLE before it is loaded. (Outside the unnamed namespace: vk_fsr3.cpp links
 /// to it)
@@ -3746,6 +3755,104 @@ void dynamic_state(VkCommandBuffer cmd, const NvnState& s, const Targets& at, Vk
     pass().wm_or |= dyn_fast.wm0, pass().wm_n = dyn_fast.wm_n;
 }
 #undef DYN_CHANGED
+
+// ---- (native-vk) shader objects (vk_shader_object.h, RX_VK_SHADER_OBJECTS=1): the state a pipeline bakes, set at the draw ----
+/// last_pipeline while a draw's shader objects are bound: a pipeline bound since (a clear's, a masked clear, the actor motion) or a
+/// new recording sets last_pipeline to another value, and the next shader-object draw binds its stages and sets all its state again
+const VkPipeline kSoBound = reinterpret_cast<VkPipeline>(uintptr_t(0x50b0b));
+thread_local const SoProg* last_so = nullptr;
+struct SoDyn {
+    bool valid = false;
+    uint64_t vi_sig = 0;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+};
+thread_local SoDyn so_dyn;
+std::atomic<int64_t> st_so_binds{0}, st_so_vi{0};
+
+/// The draw's stages bound (every graphics stage the device has: the ones it does not use bound to none)
+void so_bind(VkCommandBuffer cmd, const SoProg& so) {
+    VkShaderStageFlagBits st[7];
+    VkShaderEXT sh[7];
+    uint32_t n = 0;
+    st[n] = VK_SHADER_STAGE_VERTEX_BIT, sh[n++] = so.vs;
+    st[n] = VK_SHADER_STAGE_FRAGMENT_BIT, sh[n++] = so.fs;   // (none: a depth-only draw)
+    if (dev.features.tessellationShader) {
+        st[n] = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, sh[n++] = VK_NULL_HANDLE;
+        st[n] = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, sh[n++] = VK_NULL_HANDLE;
+    }
+    if (dev.features.geometryShader) st[n] = VK_SHADER_STAGE_GEOMETRY_BIT, sh[n++] = VK_NULL_HANDLE;
+    if (dev.mesh_shader) {
+        st[n] = VK_SHADER_STAGE_TASK_BIT_EXT, sh[n++] = so.ts;
+        st[n] = VK_SHADER_STAGE_MESH_BIT_EXT, sh[n++] = so.ms;
+    }
+    vkCmdBindShadersEXT(cmd, n, st, sh);
+    st_so_binds++;
+}
+
+/// What build_graphics bakes into a pipeline and dynamic_state leaves to it: the vertex input (as build_graphics lays it out),
+/// samples, the sample mask, and the fixed rest (no alpha to one, no logic op, the last vertex provoking, depth 0 to 1)
+void so_state(VkCommandBuffer cmd, const Program& p, const NvnState& s, const Targets& at) {
+    if (!so_dyn.valid) {
+        if (dev.features.alphaToOne) vkCmdSetAlphaToOneEnableEXT(cmd, VK_FALSE);
+        if (dev.features.logicOp) vkCmdSetLogicOpEnableEXT(cmd, VK_FALSE);
+        if (dev.provoking_vertex) vkCmdSetProvokingVertexModeEXT(cmd, VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT);
+        if (dev.depth_clip_control) vkCmdSetDepthClipNegativeOneToOneEXT(cmd, VK_FALSE);
+    }
+    if (!so_dyn.valid || so_dyn.samples != at.samples) {
+        const VkSampleMask mask[2] = {~0u, ~0u};
+        vkCmdSetRasterizationSamplesEXT(cmd, at.samples);
+        vkCmdSetSampleMaskEXT(cmd, at.samples, mask);
+        so_dyn.samples = at.samples;
+    }
+    if (p.mesh && !p.fallback) return void(so_dyn.valid = true);   // (no vertex stage: no vertex input)
+    VkVertexInputBindingDescription2EXT vb[16];
+    VkVertexInputAttributeDescription2EXT va[16];
+    uint32_t nb = 0, na = 0;
+    std::memset(vb, 0, sizeof vb), std::memset(va, 0, sizeof va);
+    if (!p.mesh && !p.fallback) {
+        const Shader::Info& vs = *vertex_info(p);
+        bool stream_used[16]{};
+        bool zero_used = false;
+        for (uint32_t i = 0; i < 16; i++) {
+            if (!vs.loads.Generic(i)) continue;
+            const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
+            const VkFormat f = (int)i < s.nvattr ? vertex_format(a.fmt) : VK_FORMAT_UNDEFINED;
+            VkVertexInputAttributeDescription2EXT& d = va[na++];
+            d.sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
+            d.location = i;
+            if (f == VK_FORMAT_UNDEFINED || a.stream >= 15) {
+                d.binding = 15, d.format = VK_FORMAT_R32_SFLOAT, d.offset = 0;   // (an unset attribute reads (0, 0, 0, 1))
+                zero_used = true;
+                continue;
+            }
+            d.binding = a.stream, d.format = supported_vertex_format(f), d.offset = a.offset & 0x3FFF;
+            stream_used[a.stream] = true;
+        }
+        for (uint32_t b = 0; b < 15; b++)
+            if (stream_used[b]) {
+                VkVertexInputBindingDescription2EXT& d = vb[nb++];
+                d.sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT;
+                d.binding = b, d.stride = s.vstream[b].stride;
+                d.inputRate = s.vstream[b].divisor ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+                d.divisor = s.vstream[b].divisor > 1 && dev.vertex_divisor ? s.vstream[b].divisor : 1;
+            }
+        if (zero_used) {
+            VkVertexInputBindingDescription2EXT& d = vb[nb++];
+            d.sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT;
+            d.binding = 15, d.stride = 0, d.inputRate = VK_VERTEX_INPUT_RATE_VERTEX, d.divisor = 1;
+        }
+    }
+    uint64_t sig = 0xcbf29ce484222325ull ^ (nb << 8 | na);
+    for (uint32_t i = 0; i < nb; i++) sig = mix(sig, (uint64_t)vb[i].binding << 48 ^ (uint64_t)vb[i].stride << 16 ^ vb[i].inputRate ^ (uint64_t)vb[i].divisor << 32);
+    for (uint32_t i = 0; i < na; i++) sig = mix(sig, (uint64_t)va[i].location << 56 ^ (uint64_t)va[i].binding << 48 ^ (uint64_t)va[i].format << 16 ^ va[i].offset);
+    if (!so_dyn.valid || so_dyn.vi_sig != sig) {
+        vkCmdSetVertexInputEXT(cmd, nb, vb, na, va);
+        so_dyn.vi_sig = sig;
+        st_so_vi++;
+        last_vb_valid = false, vertex_set.on = false;   // (the strides set again by the draw's vertex bind, as it has them)
+    }
+    so_dyn.valid = true;
+}
 
 void make_dummies() {
     if (dummies.view[0] || dev.null_descriptor) return;
@@ -5708,22 +5815,47 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
     }
     if (p.fallback) topo = p.fallback_topology;   // (the mesh program's points, lines or triangles)
-    PipeEntry* pe;
-    {
+    // (native-vk, RX_VK_SHADER_OBJECTS=1: the program's vertex and fragment stages as shader objects, every state dynamic; the
+    // native task and mesh programs too unless RX_VK_SO_MESH=0. The state list still notes the draw, for the pipeline path's precompile)
+    const bool use_so = so_on() && (!p.mesh || so_mesh_on());
+    SoProg* so = nullptr;
+    VkPipeline pl = VK_NULL_HANDLE;
+    if (use_so) {
         PROF_HOT(PROF_PIPE);
         if (!p.layout) {
             PROF_EXACT();
             ParLock lk;
             ensure_layout(p);
         }
-        pe = graphics_pipeline(p, s, at, topo, types);
+        so = so_for(p, kPushSize);
+        if (!so->ready.load(std::memory_order_acquire)) {
+            if (may_skip) return void(st_pending_skips++);
+            wait_for(so->ready);
+        }
+        if (so->failed || !(so->vs || so->ms)) SKIP_HERE();
+        {   // (the state list: once a program variant and state, as graphics_pipeline notes it)
+            static thread_local std::unordered_set<uint64_t> noted;
+            const uint64_t k = pipeline_key(p, s, at, topo);
+            if (noted.insert(k).second) state_record(p, s, at, topo, types);
+        }
+    } else {
+        PipeEntry* pe;
+        {
+            PROF_HOT(PROF_PIPE);
+            if (!p.layout) {
+                PROF_EXACT();
+                ParLock lk;
+                ensure_layout(p);
+            }
+            pe = graphics_pipeline(p, s, at, topo, types);
+        }
+        if (!pe->ready.load(std::memory_order_acquire)) {
+            if (may_skip) return void(st_pending_skips++);
+            wait_for(pe->ready);
+        }
+        pl = pe->pipeline;
+        if (!pl) SKIP_HERE();
     }
-    if (!pe->ready.load(std::memory_order_acquire)) {
-        if (may_skip) return void(st_pending_skips++);
-        wait_for(pe->ready);
-    }
-    const VkPipeline pl = pe->pipeline;
-    if (!pl) SKIP_HERE();
     cur_program = &p;
     dlss_trace_draw(s, p, d, at);
     skin_check(s, p, d, at);
@@ -5899,9 +6031,18 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (slot >= 0) pass().sampled_targets |= (uint16_t)(1u << slot);
     }
     pass().written |= writes;
-    if (pl != last_pipeline) {
+    if (so) {
+        if (last_pipeline != kSoBound || last_so != so) {
+            FINE_SCOPE(FT_BINDPL);
+            FINE_N(FC_BIND_PIPE, 1);
+            if (last_pipeline != kSoBound) last_dyn_valid = false, so_dyn = SoDyn{};   // (a pipeline's state before: all set again)
+            so_bind(cmd, *so);
+            last_pipeline = kSoBound, last_so = so;
+        }
+    } else if (pl != last_pipeline) {
         FINE_SCOPE(FT_BINDPL);
         FINE_N(FC_BIND_PIPE, 1);
+        if (last_pipeline == kSoBound) last_dyn_valid = false;   // (from shader objects: the pipeline's dynamic state set again)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl), last_pipeline = pl;
     }
     if (!same_desc) {
@@ -5939,6 +6080,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     {
         FINE_SCOPE(FT_DYN);
         dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback);
+        if (so) so_state(cmd, p, s, at);
     }
     if (trace_tex_hit && texture_frame_no() % 30 == 0) {
         static std::atomic<int> told{0};

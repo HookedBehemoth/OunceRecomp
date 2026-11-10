@@ -236,6 +236,30 @@ host-cached memory.
 - Next: name the gameplay read pools (what each holds: report buffers, a constant ring, GPU results the CPU reads),
   then layer 0 with the placement rule above, the census's list as the host-cached set.
 
+### Shader objects (`RX_VK_SHADER_OBJECTS=1`, 2026-11-10; details `work/assets/native/shader-objects-impl.md`)
+
+Chiseled Kokiri boot, 80 s, walking 12 s from 40 s (`HOS_INPUT_SCRIPT=40:LUP/12000`), one build (`work/sa/so`) for both paths,
+caches restored before each run (`work/proto/shader-objects/ab.sh`, `summary.py`). "Driver cold": empty
+`MESA_SHADER_CACHE_DIR` and no `mkw_vk_pipelines.bin`; the program cache (SPIR-V) is warm in every row. Waits and draws left out
+are totals at the end of the first gameplay window (present 720).
+
+| Run | Playable | Waits (time) | Draws left out | Compile (driver, workers) | fps standing / walking |
+|---|---|---|---|---|---|
+| pipelines, all warm | 18 s | 400 (10 ms) | 402 | 607 pipelines, 15 ms | 48.7 / 46.2 |
+| **shader objects, binaries warm** | **18 s** | **0** | **0** | 0 compiled; 812 from binaries, 406 programs prefetched (0.26 s on the prefetch thread) | 48.6 / 46.3 |
+| pipelines, driver cold | 41 s | 457 (18.5 s) | 903 | 634 pipelines, 39.5 s | 45.7 / 45.8 |
+| shader objects, no binaries, driver cold | 36 s | 301 (13.3 s) | 839 | 664 stages, 16.3 s (+ 92 compute pipelines, 18 s) | 45.6 / 45.7 |
+| shader objects, binaries warm, driver cold | 23 s | 0 | 217 (compute pipelines, not shader objects yet) | 0 stages; compute 17 s | 47.6 / 45.2 |
+
+- No fps cost on RADV: unlinked stages with dynamic vertex input, blend, samples draw as fast as the pipelines (within run
+  noise, +-1 fps). Screenshots match the pipeline path to the run-to-run noise (mean |diff| 1.8-2.2 standing, the same as two
+  pipeline runs). No GPU hang in 9 runs (native mesh-only programs as shader objects included; task programs stay on the
+  RDNA2 compute fallback).
+- The binary cache (`hookshot_shader_objects.bin`, 5 MB for this route: 639 binaries, ~8 KB each, plus 379 program notes)
+  makes a driver-cold start 41 -> 23 s; what remains cold there is compute: dispatches and the mesh fallback's dispatches
+  are still compute pipelines (next: compute shader objects through the same cache).
+- Cold, a stage compiles in ~25 ms on a worker (vs ~62 ms a pipeline): 13.3 s of waits instead of 18.5 s.
+
 ## Fronts surveyed (2026-11-10; reports in work/assets/native/*.md, tools and data in work/proto/<front>/)
 
 Kokiri, `work/sa/zstd` build, ~47 fps, 6 submits a frame. One line each; the reports have addresses and evidence.
@@ -304,3 +328,8 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
 ## Status
 
 - 2026-11-10: dump extracted, lifted (295k functions), first Linux build. Pool census written.
+- 2026-11-10: shader objects (`RX_VK_SHADER_OBJECTS=1`, off by default; gpu/vk/vk_shader_object.cpp): graphics and native
+  mesh programs as VkShaderEXT with all state dynamic, driver binaries kept in `hookshot_shader_objects.bin`, a prefetch thread
+  fed by `nvnProgramSetShaders` (MKWVK_API_VERSION 13). Warm: 0 pipeline waits and 0 draws left out (pipelines: 400 waits,
+  402 left out), same fps; driver-cold start 41 -> 23 s with binaries kept. Left: compute programs as shader objects, the
+  binaries made offline from the seed (step 3 of shader-stream.md 2.4).

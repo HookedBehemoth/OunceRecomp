@@ -49,6 +49,7 @@
 #include "vk_present_trace.h"
 
 #include "vk_internal.h"
+#include "vk_shader_object.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -2732,6 +2733,14 @@ void log_frame_stats() {
              "translation %.0f ms in all, %d jobs queued%s",
              (pskip - l_pskip) / 120.0, (pwaits - l_pwaits) / 120.0, (pwait_ms - l_pwait_ms) / 120.0,
              shader_translate_ms(), jobs_pending(), libs);
+        {   // (native-vk) the waits since the start, and the shader objects' (RX_VK_SHADER_OBJECTS): what docs/native-vk.md measures
+            int64_t so_bin = 0, so_comp = 0, so_pf = 0;
+            double so_ms = 0, so_pf_ms = 0;
+            so_stats(&so_bin, &so_comp, &so_ms, &so_pf, &so_pf_ms);
+            logf("vk: in all: %lld waits for shaders or pipelines (%.0f ms), %lld draws left out not ready; shader objects %lld from "
+                 "binaries, %lld compiled (%.0f ms), %lld programs prefetched (%.0f ms)", (long long)pwaits, pwait_ms, (long long)pskip,
+                 (long long)so_bin, (long long)so_comp, so_ms, (long long)so_pf, so_pf_ms);
+        }
         l_pskip = pskip, l_pwaits = pwaits, l_pwait_ms = pwait_ms, l_links = links, l_link_ms = link_ms;
         {
             static const char* names[PROF_COUNT] = {"submit", "present", "draw", "descriptors", "texture lookups",
@@ -4212,6 +4221,7 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_set_texture_pool_size = set_texture_pool_size;
     t.nvn_texture_released = texture_released_of;
     t.nvn_program_released = program_released_locked;
+    t.nvn_program_set = so_program_set;
     t.nvn_read_texels = read_texels;
     t.nvn_write_texels = write_texels;
     t.nvn_invalidate = invalidate;

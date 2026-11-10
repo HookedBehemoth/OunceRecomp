@@ -244,6 +244,9 @@ bool create_device() {
     optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, dev.stencil_export);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev.memory_budget);
     optional(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME, dev.view_2d_of_3d);
+    // (native-vk) RX_VK_SHADER_OBJECTS=1: graphics programs as shader objects (vk_shader_object.cpp); off by default
+    if (getenv("RX_VK_SHADER_OBJECTS") && atoi(getenv("RX_VK_SHADER_OBJECTS")) != 0)
+        optional(VK_EXT_SHADER_OBJECT_EXTENSION_NAME, dev.shader_object);
     // (hookshot) on by default: with a marker before each draw and dispatch the device has not been lost (five
     // runs); without them it was, every run, shortly after OoT's first gameplay frames (nvlddmkm event 153; the
     // extension alone, RX_VK_CHECKPOINTS=ext, did not keep it). The race they hide is not found yet.
@@ -334,6 +337,8 @@ bool create_device() {
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vdiv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     if (dev.vertex_divisor) *tail = &vdiv, tail = &vdiv.pNext;
     if (dev.graphics_pipeline_library) *tail = &gpl, tail = &gpl.pNext;
+    VkPhysicalDeviceShaderObjectFeaturesEXT shobj{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
+    if (dev.shader_object) *tail = &shobj, tail = &shobj.pNext;
     VkPhysicalDeviceFaultFeaturesEXT fault{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
     if (dev.device_fault) *tail = &fault, tail = &fault.pNext;
     VkPhysicalDeviceImage2DViewOf3DFeaturesEXT v2d3d{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
@@ -395,6 +400,19 @@ bool create_device() {
     dev.eds3_blend = dev.dynamic_state3 && eds3.extendedDynamicState3ColorBlendEnable &&
                      eds3.extendedDynamicState3ColorBlendEquation && eds3.extendedDynamicState3ColorWriteMask;
     dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;
+    // (shader objects need the blend, polygon, clamp and alpha-to-coverage state dynamic too: what the pipelines take from EDS3)
+    dev.shader_object = dev.shader_object && shobj.shaderObject && dev.eds3_blend && dev.eds3_polygon && dev.eds3_clamp && dev.eds3_a2c;
+    if (!dev.shader_object) shobj.shaderObject = VK_FALSE;
+    if (dev.shader_object) {
+        VkPhysicalDeviceShaderObjectPropertiesEXT sp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &sp;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        std::memcpy(dev.shader_binary_uuid, sp.shaderBinaryUUID, VK_UUID_SIZE);
+        dev.shader_binary_version = sp.shaderBinaryVersion;
+        logf("vk: shader objects on (RX_VK_SHADER_OBJECTS): graphics programs bind VkShaderEXT stages, binary version %u",
+             sp.shaderBinaryVersion);
+    }
     dev.vk12 = f12;
     dev.vk13 = f13;
     {   // (hookshot, after TotK Recomp's vk_caps.c) NVN's programs are written for 32 lanes: the translator is told 32, and the lane

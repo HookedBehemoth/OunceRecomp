@@ -79,6 +79,7 @@ void vkDestroyShaderModule(uintptr_t device, VkShaderModule module, const void* 
     ++releases;
 }
 void disk_init() {}
+void so_module_made(VkShaderModule, const uint32_t*, size_t) {}   // (vk_shader_object.cpp: shader objects off here)
 void logf(const char*, ...) {}
 bool disk_on = true, disk_listing = true;
 FILE* disk_in = nullptr;

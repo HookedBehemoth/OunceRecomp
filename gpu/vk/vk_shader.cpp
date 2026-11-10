@@ -35,6 +35,7 @@
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "vk_shader_object.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -585,6 +586,7 @@ VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
     ci.pCode = spirv.data();
     VkShaderModule m = VK_NULL_HANDLE;
     vkCreateShaderModule(dev.device, &ci, nullptr, &m);
+    so_module_made(m, spirv.data(), spirv.size());   // (native-vk: what its shader objects compile from, RX_VK_SHADER_OBJECTS)
     return m;
 }
 
@@ -2722,6 +2724,44 @@ const Program* seed_variant_of(const uint64_t code[3], bool mesh, const uint32_t
         }
     variants.push_back(std::move(p));
     return variants.back().get();
+}
+
+// (native-vk, vk_shader_object.cpp's prefetch) the stage keys of a program the game set, as program_pick (graphics: vertex, fragment)
+// and mesh_program_locked (mesh, fragment, task, the header-only stage) put them in Program::codes. Read from guest memory here, on
+// the prefetch thread: the codes_of cache by serial is the draws'
+bool program_stage_keys(const nvn_prog& prog, uint64_t codes[4], bool* mesh) {
+    const Code *vs = nullptr, *fs = nullptr, *task = nullptr, *ms = nullptr, *prim = nullptr;
+    std::vector<Code> cs;
+    cs.reserve(prog.nstage);
+    for (uint32_t i = 0; i < prog.nstage && i < 6; i++) {
+        Code c = read_code(prog.sd[i]);
+        if (c.ok) cs.push_back(std::move(c));
+    }
+    for (const Code& c : cs) {
+        if (c.header_only) prim = &c;
+        else if (c.stage == 0) vs = &c;
+        else if (c.stage == 1) fs = &c;
+        else if (c.stage == 6) task = &c;
+        else if (c.stage == 7) ms = &c;
+    }
+    *mesh = ms != nullptr;
+    if (ms) {
+        codes[0] = ms->key, codes[1] = fs ? fs->key : 0, codes[2] = task ? task->key : 0, codes[3] = prim ? prim->key : 0;
+        return true;
+    }
+    if (!vs) return false;
+    codes[0] = vs->key, codes[1] = fs ? fs->key : 0, codes[2] = 0, codes[3] = 0;
+    return true;
+}
+const Program* program_load(uint64_t key, uint64_t variant, const uint64_t codes[4]) {
+    std::lock_guard lk(shader_mu);
+    auto& variants = programs[key];
+    program_cache_load(key, variants);
+    for (auto& p : variants)
+        if (!p->codes[0]) std::memcpy(p->codes, codes, sizeof p->codes);
+    for (auto& p : variants)
+        if (p->variant == variant && p->ready.load(std::memory_order_acquire) && !p->failed) return p.get();
+    return nullptr;
 }
 
 const Program* program_find(uint64_t key, uint64_t variant) {

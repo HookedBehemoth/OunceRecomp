@@ -248,6 +248,9 @@ void rx_nvn_set_texture_pool_size(int n);
 void rx_nvn_texture_released(const nvn_tex *t);
 void rx_nvn_texture_created(const nvn_tex *t);
 void rx_nvn_program_released(const nvn_prog *p);
+/* (native-vk) a program's stages set (nvnProgramSetShaders[Ext], InitializeFromBuilder): the Vulkan back end's shader objects
+   prefetch them (gpu/vk/vk_shader_object.cpp); the WebGPU renderer has nothing to do */
+void rx_nvn_program_set(const nvn_prog *p);
 /* CPU reads / writes of a texture (ReadTexels / WriteTexels) */
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img);
