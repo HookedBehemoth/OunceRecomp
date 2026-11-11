@@ -99,7 +99,8 @@ work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` (output `work/sa
 - Keep builds side by side: copy `hookshot`, `hookshot_vk.so`, `hookshot.map` and the caches (`*.bin`, `*.idx` from a
   warm run) to `work/sa/<name>/` and run with `EXE=`. Present: `census` (census v2), `zstd` (libc + zstd;
   its caches predate the shader-object stamp change), `so` (shader objects; warm caches in `so_caches_warm`), `rb2`
-  (byte-range readback waits), `tt` (transient targets, step 4: the current best). Older ones were removed 2026-11-11.
+  (byte-range readback waits), `tt` (transient targets, step 4), `rt` (stable render-target slots, step 4e: the
+  current best). Older ones were removed 2026-11-11.
 
 **Run.** `OVERLAY=work/overlay/chisel_kokiri EXE=work/sa/zstd/hookshot scripts/run-vk.sh <name> <seconds> -- [VAR=..]`:
 straight into Kokiri Forest (no title, no intro), headless, muted, shots every `SHOT_EVERY` presents in
@@ -339,6 +340,25 @@ textures retired 2,150 -> 538. Walking straight (`40:LUP/12000`): 55 fps in ever
 alone 52.8-54.4), new images 0.10 -> 0.05 a frame. The textures' VRAM peak is about the same (VMA keeps freed blocks).
 Pictures unchanged (shot diffs at the noise of two old runs), no GPU hang in ~30 runs.
 
+### Stable render-target slots (2026-11-11; work/assets/native/rt-slots-impl.md, design rt-alloc.md)
+
+agl's DynamicTextureAllocator (`f_8005ed00` alloc, `f_802737a0` free) places ~66 transient targets a frame in 7
+per-worker arenas over the same 512 MB, so they move every frame and lanes alias. `host/rt_slots.c` keeps the arenas'
+bookkeeping but rewrites the offset each texture uses (block +0x38, spliced after its two stores with
+`SPLICE_AFTER_EACH`, now implemented in nx2/entry_hooks.py) to a slot of its family (caller lr, name, format, type) in the
+top 256 MB, which the arenas are shrunk away from at first use. On by default; `HOS_GUEST_RT_ALLOC=1` the game's
+allocator, `RX_RT_SLOTS_MB` the range, `HOS_RT_SLOTS_LOG=1` slots by name; one `rt slots:` line every 600 presents.
+- Checked in every run: each transient allocation reaches the splice and each block comes back through `f_802737a0`
+  (0 unmatched); no slot busy at a present; 65-74 slots, 130-177 MB, no back-off, no eviction.
+- Kokiri A/B (two runs each, turn / walk): distinct (shape, address) pairs **460 -> 147 / 188 -> 71**; textures let go
+  1.37 -> 0.22 / 0.30 -> 0.05 a frame, take-overs 0.87 -> 0 / 0.22 -> 0; fps 52.7 -> 53.8 / 55.6 -> 55.2 (noise);
+  renderer 19.0 -> 18.6 / 18.0 -> 18.1 ms. Hyrule Field (`chisel_hf_market`): texture VRAM 4.55 -> 3.65 GB, 48.4 /
+  47.1 fps (one run each). Pictures at the noise of two runs.
+- nvnTextureInitialize stays ~43 a frame: the game's registration compare would skip it, but the free clears the entry's
+  registration. The variable shapes (local shadows sized by distance, mip chains) still make new images. No renderer
+  change was needed (no `nvn_rt_slot` API).
+- `chisel_kokiri_lw` with `16:RRIGHT/4000,22:LUP/8000` hangs the GPU 6 of 6 runs, with and without slots (3 each).
+
 ## Fronts surveyed (2026-11-10; reports in work/assets/native/*.md, tools and data in work/proto/<front>/)
 
 Kokiri, `work/sa/zstd` build, ~47 fps, 6 submits a frame. One line each; the reports have addresses and evidence.
@@ -384,6 +404,9 @@ is and feeds is being traced (`readback.md`); the exposure meter's read must sta
    `texture_view_of` (vk_draw.cpp) caches misses too (a deferred ASTC upload, `upload_defer`, samples the dummy) and
    retries them only when the slot version or `destroy_gen` moves; today `destroy_gen` moves every frame, so with
    per-texture invalidation a deferred texture could stay the dummy. Do not cache misses, or retry after the upload.
+   *e, done (on by default, `HOS_GUEST_RT_ALLOC=1` off):* **stable slots** for the game's transient targets
+   (host/rt_slots.c): pairs a third, take-overs gone, same fps. Left: the ~43 initializations a frame (keep entry,
+   descriptor slot and slot together) and the variable shapes.
 5. **Second-map validation**: rerun the censuses (pool, alloc-transfer shim, readback) on Hyrule Field and across a
    map change; root-cause the walking gfx-ring hang (`work/runs/rblog`, ~67 s, workarounds on). Census v3: pool
    creation sites, and whether the 3,504 pools of <= 64 KB are the per-draw constant rings (if so, placement per
@@ -429,3 +452,8 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   over, on by default; turning the camera in Kokiri 47.4 -> 53.7 fps, new target images 0.34 -> 0.14 a frame, dead targets
   4.7 -> 1.2 GB. The lazy creation clear (`RX_VK_LAZY_CLEAR=1`) and the GPU unswizzle of BC and small textures
   (`RX_VK_CPU_UNSWIZZLE=0`) are kept behind switches: no gain on this PC (work/assets/native/transient-targets-impl.md).
+- 2026-11-11: stable render-target slots (step 4e, host/rt_slots.c with SPLICE_AFTER in nx2/entry_hooks.py): the game's
+  transient targets keep their address frame to frame; Kokiri's distinct (shape, address) pairs 460 -> 147 turning,
+  textures let go 1.37 -> 0.22 a frame, Hyrule Field texture VRAM 4.55 -> 3.65 GB; fps the same
+  (work/assets/native/rt-slots-impl.md). The Lost Woods exit start with a turn and a walk hangs the GPU every run, with
+  or without slots.
