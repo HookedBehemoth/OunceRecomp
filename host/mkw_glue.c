@@ -4,6 +4,7 @@
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #ifndef _WIN32
@@ -191,6 +192,64 @@ static DWORD WINAPI stats_after(void *p) {
     return 0;
 }
 
+/* HOS_STALL_DUMP=<seconds> (diagnosis): when no present came for that long after the first, every guest thread's registers
+   and frames (hos_thread_dump), the process's RSS and its largest mappings by RSS (linux), every 10 s, 4 times: what a stalled
+   game waits in, and what its memory grew in */
+static void stall_mem_report(void) {
+#ifdef __linux__
+    FILE *f = fopen("/proc/self/smaps", "r");
+    if (!f) return;
+    struct Map { unsigned long long rss; char name[160]; } top[10] = {0}, cur = {0};
+    char line[512];
+    unsigned long long total = 0;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long long a, b, kb;
+        if (sscanf(line, "%llx-%llx", &a, &b) == 2 && strchr(line, ' ')) {
+            const char *nm = line;
+            for (int sp = 0; sp < 5 && nm; sp++) nm = strchr(nm + 1, ' ');
+            while (nm && *nm == ' ') nm++;
+            snprintf(cur.name, sizeof cur.name, "%llx-%llx %s", a, b, nm && *nm ? nm : "[anon]\n");
+            cur.rss = 0;
+        } else if (sscanf(line, "Rss: %llu kB", &kb) == 1) {
+            cur.rss = kb, total += kb;
+            for (int i = 0; i < 10; i++)
+                if (kb > top[i].rss) {
+                    memmove(&top[i + 1], &top[i], sizeof top[0] * (9 - i));
+                    top[i] = cur;
+                    break;
+                }
+        }
+    }
+    fclose(f);
+    hos_log("stall: RSS %llu MB; largest mappings:", total >> 10);
+    for (int i = 0; i < 10 && top[i].rss; i++) {
+        char *nl = strchr(top[i].name, '\n');
+        if (nl) *nl = 0;
+        hos_log("stall:   %6llu MB %s", top[i].rss >> 10, top[i].name);
+    }
+#endif
+}
+static DWORD WINAPI stall_watch(void *p) {
+    extern volatile long hos_presents_seen;
+    const unsigned limit = (unsigned)(uintptr_t)p;
+    long last = 0;
+    unsigned still = 0, dumps = 0;
+    for (;;) {
+        Sleep(1000);
+        const long now = hos_presents_seen;
+        if (now != last || !now) { last = now, still = 0; continue; }
+        if (++still < limit || dumps >= 4) continue;
+        if ((still - limit) % 10) continue;
+        dumps++;
+        void hos_thread_dump(void);
+        hos_log("stall: no present for %u s (present %ld): the threads", still, now);
+        hos_thread_dump();
+        stall_mem_report();
+        hos_log_flush();
+    }
+    return 0;
+}
+
 /* heap corruption and fail-fast reports go to the process's end without reaching the unhandled filter: reported here
    first (the backtrace is where the heap noticed, after the bad write) */
 static LONG CALLBACK report_fatal(EXCEPTION_POINTERS *info) {
@@ -205,6 +264,8 @@ void hos_commit_init(void) {
     SetUnhandledExceptionFilter(report_crash);
     const char *after = getenv("HOS_STATS_AFTER");
     if (after && atoi(after) > 0) CreateThread(NULL, 0, stats_after, (void *)(uintptr_t)atoi(after), 0, NULL);
+    const char *stall = getenv("HOS_STALL_DUMP");
+    if (stall && atoi(stall) > 0) CreateThread(NULL, 0, stall_watch, (void *)(uintptr_t)atoi(stall), 0, NULL);
 }
 
 /* ---- stand-ins --------------------------------------------------------------------------------------------- */

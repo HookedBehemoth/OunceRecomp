@@ -2334,6 +2334,7 @@ struct HeapCopy { VkBuffer src; uint64_t src_off; VkBuffer dst; uint64_t dst_off
 TLS_OBJECT(heap_instream, std::vector<HeapCopy>)   // (entries the recording used before, rewritten: copied in the stream before the draw)
 // (the last heap draw's push data: a draw that keeps its descriptors pushes it again)
 thread_local const Program* heap_last_prog = nullptr;
+thread_local uint32_t heap_rec_gen = 1;   // (the recording: a ring block kept is good within it)
 thread_local uint8_t heap_last_push[256];
 thread_local uint32_t heap_last_push_n = 0;
 
@@ -2487,9 +2488,31 @@ VkDeviceAddress heap_bank(const NvnState& s, const Stage& st, uint32_t index, ui
 /// (after build_descriptors, a heap draw) the draw's ring block (its buffers and storage images), its banks, its push data
 /// (data: the classic push constants filled; the heap's words added). false: the draw cannot be made (ring full, no stream room)
 bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8_t* data) {
+    // (the draw's buffers and storage images as built: a draw of the program with the same ones in this recording takes the block it
+    // wrote; RX_VK_DESC_HEAP_REUSE=0: a block written every draw)
+    static const bool reuse = !getenv("RX_VK_DESC_HEAP_REUSE") || atoi(getenv("RX_VK_DESC_HEAP_REUSE")) != 0;
+    uint64_t sig = 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)&p;
+    if (reuse)
+        for (const VkWriteDescriptorSet& w : dw().writes) {
+            if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                for (uint32_t k = 0; k < w.descriptorCount; k++) {
+                    const VkDescriptorBufferInfo& b = w.pBufferInfo[k];
+                    sig = mix(mix(mix(sig, (uint64_t)(uintptr_t)b.buffer), b.offset), b.range ^ (uint64_t)w.descriptorType << 60);
+                }
+            else if (w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                for (uint32_t k = 0; k < w.descriptorCount; k++) sig = mix(sig, (uint64_t)(uintptr_t)w.pImageInfo[k].imageView);
+        }
+    struct Kept { const Program* p; uint32_t gen; uint32_t index; uint64_t sig; };
+    static thread_local Kept kept[1024];
+    Kept& kp = kept[((uintptr_t)&p >> 4) & 1023];
     uint32_t index = 0;
+    if (reuse && kp.p == &p && kp.gen == heap_rec_gen && kp.sig == sig) {
+        index = kp.index;
+        desc_heap_count(HC_BLOCKS_KEPT);
+    } else {
     uint8_t* block = nullptr;
     if (!desc_heap_ring_alloc(hp.block_bytes, &index, &block)) return false;
+    kp = {&p, heap_rec_gen, index, sig};
     size_t bi = 0, ii = 0;
     for (const VkWriteDescriptorSet& w : dw().writes) {
         if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
@@ -2503,6 +2526,7 @@ bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8
             for (uint32_t k = 0; k < w.descriptorCount && ii < hp.img_at.size(); k++, ii++)
                 desc_heap_encode_image(w.pImageInfo[k].imageView, true, block + hp.img_at[ii]);
         }
+    }
     }
     const uint32_t base = desc_heap_push_base();
     std::memcpy(data + base, &index, 4);
@@ -2521,6 +2545,7 @@ bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8
 
 void heap_recording_begun(int slot, uint64_t value) {
     if (!desc_heap_on()) return;
+    heap_rec_gen++;   // (the blocks kept by program are the last recording's: its ring is another)
     desc_heap_begin_recording(slot, value, replay_completed_value());
     for (auto& row : heap_banks())
         for (HeapBank& c : row) c = HeapBank{};

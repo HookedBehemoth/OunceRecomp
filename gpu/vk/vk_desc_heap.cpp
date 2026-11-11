@@ -190,7 +190,8 @@ std::atomic<int64_t> counts[HC_COUNT];
 const char* const kCountNames[HC_COUNT] = {"draws", "dispatches", "classic", "scans", "resolves", "in place", "upload copies",
                                            "in-stream copies", "sampler writes", "registrations invalidated", "of them hot",
                                            "retired", "ring full", "CHECK mismatches", "CHECK draws", "bank uploads",
-                                           "ids past the regions", "custom borders as black", "slots sampled as a second view type"};
+                                           "ids past the regions", "custom borders as black", "slots sampled as a second view type", "ring blocks kept", "buffer descriptors from the cache",
+                                           "buffer descriptors written"};
 
 uint64_t mix64(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
@@ -645,8 +646,31 @@ bool desc_heap_encode_buffer(VkBuffer b, VkDeviceSize offset, VkDeviceSize range
     } else if (!dev.null_descriptor) {
         return true;   // (zeros)
     }
+    // (a buffer descriptor is made from its address, size and type alone: kept by them, the driver asked once. RX_VK_DESC_HEAP_BUFCACHE=0: not)
+    static const bool cache_on = !getenv("RX_VK_DESC_HEAP_BUFCACHE") || atoi(getenv("RX_VK_DESC_HEAP_BUFCACHE")) != 0;
+    struct Cached { uint64_t addr, size; uint32_t type; uint8_t bytes[16]; };
+    static thread_local Cached cache[4096];
+    Cached* c = nullptr;
+    if (cache_on) {
+        const uint64_t h = (ar.address * 0x9E3779B97F4A7C15ull) ^ (ar.size * 0xC2B2AE3D27D4EB4Full) ^ (uint64_t)ri.type;
+        c = &cache[(h >> 52) & 4095];
+        if (c->addr == ar.address && c->size == ar.size && c->type == (uint32_t)ri.type) {
+            std::memcpy(out, c->bytes, bsz);
+            desc_heap_count(HC_BUF_CACHED);
+            return true;
+        }
+    }
     VkHostAddressRangeEXT dst{out, (size_t)bsz};
-    return p_write_res(dev.device, 1, &ri, &dst) == VK_SUCCESS;
+    uint8_t tmp[16]{};
+    if (c) dst.address = tmp;
+    if (p_write_res(dev.device, 1, &ri, &dst) != VK_SUCCESS) return false;
+    desc_heap_count(HC_BUF_WRITTEN);
+    if (c) {
+        c->addr = ar.address, c->size = ar.size, c->type = (uint32_t)ri.type;
+        std::memcpy(c->bytes, tmp, bsz);
+        std::memcpy(out, tmp, bsz);
+    }
+    return true;
 }
 uint64_t desc_heap_image_offset(uint32_t region, uint32_t slot) {
     return region_base + ((uint64_t)region * kHeapSlots + slot) * isz;

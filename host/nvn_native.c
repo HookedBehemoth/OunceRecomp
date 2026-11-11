@@ -2611,8 +2611,10 @@ NV(nvnWindowAcquireTexture) {
     if (s) s->fenced = 3, s->fence = 0;
     RET(NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS);
 }
+volatile long hos_presents_seen;   /* (HOS_STALL_DUMP, mkw_glue.c: progress the stall watchdog reads) */
 NV(nvnQueuePresentTexture) {
     nvn_win *o = (nvn_win *)P(1);
+    hos_presents_seen++;
     const int i = I(2);
     if (i < 0 || i >= o->ntex) die("present of window texture %d", i);
     fw_flush((uint64_t)(uintptr_t)P(0));   /* (RX_VK_TIMELINES: a fence wait asked on the presenting queue, before it) */
