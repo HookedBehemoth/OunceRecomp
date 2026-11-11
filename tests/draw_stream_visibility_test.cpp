@@ -68,6 +68,8 @@ std::unordered_map<int,int>& handle_hits() { static std::unordered_map<int,int> 
 bool packets_on(){return false;}   // (RX_VK_PACKETS: vk_packets.h; off here)
 void pk_touch_all(){}
 uint64_t pk_rec=0;
+bool sub_handoff=false;   // (RX_VK_SUBMIT_THREAD: off here)
+void sub_drain(){}
 struct BankCache { uint64_t at=0; };
 std::array<std::array<BankCache,2>,2>& bank_cache() { static std::array<std::array<BankCache,2>,2> b;return b; }
 void make_dummies() {}
