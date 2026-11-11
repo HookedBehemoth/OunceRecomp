@@ -1078,7 +1078,7 @@ static int sync_log(void) {   /* (the first 30000 calls; HOS_NVN_SYNC_LOG=<n>: f
    flashed as walls for a frame, we thought; measured, holding made them far more frequent (61 vs 0-9 in a 60 s drive):
    MKW writes some of a frame's data in place right after its submit, as the console's GPU has read it by then. Off by
    default; HOS_NVN_HOLD=1: held. */
-typedef struct { int n; uint64_t h[64]; } held_submit;
+typedef struct { int n; uint64_t h[65]; } held_submit;   /* (65: RX_VK_TIMELINES' fence wait and 64 of the game's) */
 static held_submit held[256];
 static volatile LONG nheld;
 static CRITICAL_SECTION held_cs;
@@ -1097,8 +1097,94 @@ static void held_flush(void) {
 }
 static uint64_t held_count(void) { return (uint64_t)nheld; }
 
+/* ---- (native-vk, plan step 6) RX_VK_TIMELINES=1 (gpu/vk/vk_timelines.h): nvnQueueWaitSync becomes a record at the start
+   of the waiting queue's next submission (NOP_WAIT_FENCE), which the replay holds on the host until the fence's work is
+   recorded (one Vulkan queue: a GPU-side wait for a signal submitted later would hold the signal too). And the census:
+   the game's sync calls by kind, every 600 presents (RX_VK_TIMELINES=1 or RX_VK_SYNC_CENSUS=1) ---- */
+static int tl_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("RX_VK_TIMELINES"); v = e && atoi(e) != 0; }
+    return v;
+}
+static int sync_census_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("RX_VK_SYNC_CENSUS"); v = tl_on() || (e && atoi(e) != 0); }
+    return v;
+}
+enum { SC_FENCE, SC_WAIT_FENCED, SC_WAIT_UNFENCED, SC_WAIT_SIGNALED, SC_QWAIT, SC_QWAIT_UNFENCED, SC_QWAIT_SIGNALED,
+       SC_CB_WAITSYNC, SC_EV_CPU, SC_EV_GET, SC_CB_SIGNAL, SC_CB_WAIT, SC_FINISH, SC_COUNT };
+static volatile LONG64 sc_n[SC_COUNT];
+static void sc_add(int k) { InterlockedIncrement64(&sc_n[k]); }
+static void sync_census_log(LONG64 presents) {
+    if (!sync_census_on() || presents % 600) return;
+    static const char *const names[SC_COUNT] = {"QueueFenceSync", "SyncWait (fenced)", "SyncWait (never fenced)",
+        "SyncWait (signalled: window or native)", "QueueWaitSync", "QueueWaitSync (never fenced)",
+        "QueueWaitSync (signalled)", "CommandBufferWaitSync", "EventSignal (CPU)", "EventGetValue",
+        "CommandBufferSignalEvent", "CommandBufferWaitEvent", "QueueFinish"};
+    char line[768];
+    int k = 0;
+    for (int i = 0; i < SC_COUNT && k < (int)sizeof line; i++)
+        k += snprintf(line + k, sizeof line - (size_t)k, "%s%s %lld", i ? ", " : "", names[i], (long long)InterlockedExchange64(&sc_n[i], 0));
+    hos_log("nvn: sync calls in 600 presents: %s", line);
+}
+/* the fence waits not submitted yet, per queue (a queue waits for the newest fence asked) */
+typedef struct { uint64_t queue, fence; } fw_pending_t;
+static fw_pending_t fw_pending[16];
+static SRWLOCK fw_lock = SRWLOCK_INIT;
+static uint64_t fw_take(uint64_t queue) {   /* the queue's pending fence wait (0: none), taken */
+    uint64_t f = 0;
+    AcquireSRWLockExclusive(&fw_lock);
+    for (int i = 0; i < 16; i++)
+        if (fw_pending[i].queue == queue) { f = fw_pending[i].fence; fw_pending[i].queue = 0; fw_pending[i].fence = 0; break; }
+    ReleaseSRWLockExclusive(&fw_lock);
+    return f;
+}
+static void fw_put(uint64_t queue, uint64_t fence) {
+    AcquireSRWLockExclusive(&fw_lock);
+    int at = -1;
+    for (int i = 0; i < 16; i++) {
+        if (fw_pending[i].queue == queue) { at = i; break; }
+        if (at < 0 && !fw_pending[i].queue) at = i;
+    }
+    if (at >= 0) {
+        if (fw_pending[at].queue != queue) fw_pending[at].fence = 0;
+        fw_pending[at].queue = queue;
+        if (fence > fw_pending[at].fence) fw_pending[at].fence = fence;
+    }
+    ReleaseSRWLockExclusive(&fw_lock);
+    if (at < 0) { static int logged; if (logged++ < 4) hos_log("nvn: timelines: more than 16 queues wait for fences: one not held"); }
+}
+/* a recording of its own holding the wait: BEGIN, WAIT_FENCE, END. From a ring: the replay holds it at most while its queue
+   is held (RX_VK_HOLD_MS, then it goes on), long before the ring comes round (1024 waits, ~17 s at one a frame) */
+static uint64_t fw_record(uint64_t fence) {
+    enum { kSlot = 8 + 8 + sizeof(nvn_p_wait_fence) + 8 };
+    static _Alignas(8) uint8_t ring[1024][kSlot];
+    static volatile LONG at;
+    uint8_t *p = ring[(uint32_t)InterlockedIncrement(&at) % 1024];
+    nvn_op_hdr h = {NOP_BEGIN, 8};
+    memcpy(p, &h, 8);
+    h.op = NOP_WAIT_FENCE, h.size = 8 + sizeof(nvn_p_wait_fence);
+    memcpy(p + 8, &h, 8);
+    nvn_p_wait_fence w = {fence};
+    memcpy(p + 16, &w, sizeof w);
+    h.op = NOP_END, h.size = 8;
+    memcpy(p + 16 + sizeof w, &h, 8);
+    return (uint64_t)(uintptr_t)p;
+}
+/* a queue's pending fence wait on its own (before a fence or a present on it with no submit since) */
+static void fw_flush(uint64_t queue) {
+    const uint64_t f = tl_on() ? fw_take(queue) : 0;
+    if (!f) return;
+    const uint64_t h = fw_record(f);
+    const int away = hos_vcore_away();
+    rx_nvn_submit_q(&h, 1, queue);
+    if (away) hos_vcore_back();
+}
+
 NV(nvnQueueFenceSync) {
     held_init();
+    sc_add(SC_FENCE);
+    fw_flush((uint64_t)(uintptr_t)P(0));   /* (RX_VK_TIMELINES: a wait asked on this queue is part of what the fence covers) */
     nvn_sync *s = (nvn_sync *)P(1); s->fenced = 1;
     /* (hookshot) the queue's own work: with nothing held, its last submission (a wait for it no longer waits for another
        queue's work stopped at an event wait) */
@@ -1127,6 +1213,7 @@ NV(nvnSyncWait) {
     if (sync_log()) hos_log("nvn: SyncWait %p fence %llu timeout %llu (lr %#llx); latest %llu, done %llu", (void *)s,
                             (unsigned long long)s->fence, (unsigned long long)U64(1), (unsigned long long)c->x[30],
                             (unsigned long long)rx_nvn_fence(), (unsigned long long)rx_nvn_replayed());
+    sc_add(!s->fenced ? SC_WAIT_UNFENCED : s->fenced == 1 ? SC_WAIT_FENCED : SC_WAIT_SIGNALED);
     if (!s->fenced) { RET(NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED); return; }
     if (s->fenced == 1 && s->fence > rx_nvn_fence()) held_flush();   /* (a wait flushes what it waits for) */
     if (rx_nvn_wait(s->fence, 0)) { RET(NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED); return; }
@@ -1166,11 +1253,13 @@ NV(nvnEventGetValue) {
         if (nowait < 0) nowait = getenv("HOS_PRESENT_NOWAIT") && atoi(getenv("HOS_PRESENT_NOWAIT")) != 0;
         if (nowait && (c->x[30] == 0x805904a0 || c->x[30] == 0x80590530)) { RET(1); return; }
     }
+    sc_add(SC_EV_GET);
     uint32_t v = 0; nvn_gpu_read(((const nvn_event *)P(0))->gpu, &v, 4); RET(v);
     if (sync_log()) hos_log("nvn: EventGetValue %p = %u (lr %#llx)", P(0), v, (unsigned long long)c->x[30]);
 }
 NV(nvnEventSignal) {
     const nvn_event *e = (const nvn_event *)P(0);
+    sc_add(SC_EV_CPU);
     {   /* (the CPU's signals, 40 then every 5000: what the GPU's waits above wait for) */
         static volatile LONG n;
         const LONG k = InterlockedIncrement(&n);
@@ -1208,6 +1297,8 @@ NV(nvnQueueFinalize) { ((nvn_queue *)P(0))->magic = 0; }
 NV(nvnQueueGetError) { if (P(1)) memset(P(1), 0, sizeof(NVNqueueErrorInfo)); RET(NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR); }
 NV(nvnQueueFlush) { held_flush(); }
 NV(nvnQueueFinish) {
+    sc_add(SC_FINISH);
+    fw_flush((uint64_t)(uintptr_t)P(0));
     held_flush();
     const int away = hos_vcore_away();
     const int64_t t0 = hos_now_ns();
@@ -1725,6 +1816,7 @@ NV(nvnCommandBufferSignalEvent) {
             hos_log("nvn: CommandBufferSignalEvent #%ld: event %#llx mode %u value %u (lr %#llx)", (long)k,
                     (unsigned long long)((const nvn_event *)P(1))->gpu, U32(2), U32(5), (unsigned long long)c->x[30]);
     }
+    sc_add(SC_CB_SIGNAL);
     nvn_p_signal *s = REC(CB(P(0)), NOP_SIGNAL_EVENT, nvn_p_signal);
     s->gpu = ((const nvn_event *)P(1))->gpu;
     s->mode = U32(2);
@@ -1743,11 +1835,13 @@ NV(nvnCommandBufferWaitEvent) {
         hos_log("nvn: CommandBufferWaitEvent #%ld: event %#llx mode %u value %u (now %u) (lr %#llx)", (long)k,
                 (unsigned long long)(e ? e->gpu : 0), U32(2), U32(3), now, (unsigned long long)c->x[30]);
     }
+    sc_add(SC_CB_WAIT);
     if (!e) return;
     nvn_p_wait_event *w = REC(CB(P(0)), NOP_WAIT_EVENT, nvn_p_wait_event);
     w->gpu = e->gpu, w->mode = U32(2), w->value = U32(3);
 }
 NV(nvnCommandBufferWaitSync) {
+    sc_add(SC_CB_WAITSYNC);
     static volatile LONG n;
     const LONG k = InterlockedIncrement(&n);
     if (k <= 40 || k % 5000 == 0) hos_log("nvn: CommandBufferWaitSync #%ld (lr %#llx)", (long)k, (unsigned long long)c->x[30]);
@@ -1772,10 +1866,13 @@ NV(nvnCommandBufferPushComputeConstants) {
    fenced yet (a wait on a fence another queue submits later) cannot be honored that way and is logged. */
 NV(nvnQueueWaitSync) {
     const nvn_sync *s = (const nvn_sync *)P(1);
+    sc_add(!s || !s->fenced ? SC_QWAIT_UNFENCED : s->fenced == 1 ? SC_QWAIT : SC_QWAIT_SIGNALED);
     static volatile LONG n;
     if (s && !s->fenced && InterlockedIncrement(&n) <= 8)
         hos_log("nvn: QueueWaitSync on a sync not fenced yet (%p, lr %#llx): not waited for", (void *)s,
                 (unsigned long long)c->x[30]);
+    /* (RX_VK_TIMELINES) the queue's next submission waits for the fence's work to be recorded (vk_replay.cpp NOP_WAIT_FENCE) */
+    if (tl_on() && s && s->fenced == 1 && s->fence) fw_put((uint64_t)(uintptr_t)P(0), s->fence);
 }
 NV(nvnCommandBufferResetCounter) { REC(CB(P(0)), NOP_RESET_COUNTER, nvn_p_counter)->type = U32(1); }
 /* HOS_COND_RECORD (a test, default 0: conditions read at replay). 1: words seen holding 1 read at record, 2: every condition, 3 and 4:
@@ -2381,8 +2478,8 @@ static void resolve_deferred(uint8_t *p) {
 NV(nvnQueueSubmitCommands) {
     { void hos_renderer_wait(void); static volatile LONG up; if (!up) { hos_renderer_wait(); up = 1; } }   /* (display.c) */
     nvn_queue *q = (nvn_queue *)P(0);
-    const int n = I(1);
-    uint64_t h[64];
+    int n = I(1);
+    uint64_t hs[65], *h = hs + 1;   /* (hs[0]: RX_VK_TIMELINES' fence wait, before the game's handles) */
     if (n < 0 || n > 64) die("submit of %d handles", n);
     memcpy(h, PN(2, 8 * (size_t)n), 8 * (size_t)n);
     q->submits++;
@@ -2398,6 +2495,10 @@ NV(nvnQueueSubmitCommands) {
         resolve_deferred((uint8_t *)(uintptr_t)h[i]);
     }
     held_init();
+    if (tl_on()) {   /* (a fence wait asked on this queue: first in its submission) */
+        const uint64_t f = fw_take((uint64_t)(uintptr_t)q);
+        if (f) hs[0] = fw_record(f), h = hs, n++;
+    }
     if (!hold_on) {
         /* (the replay runs here, on this thread, for ~9 ms a frame (vk_replay.cpp submit_q, RX_VK_ASYNC off): the virtual
            core is given up for it, as Present and AcquireTexture do, so the game's other threads run on it meanwhile.
@@ -2514,6 +2615,7 @@ NV(nvnQueuePresentTexture) {
     nvn_win *o = (nvn_win *)P(1);
     const int i = I(2);
     if (i < 0 || i >= o->ntex) die("present of window texture %d", i);
+    fw_flush((uint64_t)(uintptr_t)P(0));   /* (RX_VK_TIMELINES: a fence wait asked on the presenting queue, before it) */
     held_flush();   /* (a present flushes the queue) */
     {
         const int away = hos_vcore_away();
@@ -2524,7 +2626,7 @@ NV(nvnQueuePresentTexture) {
     void rt_slots_frame(void);   /* rt_slots.c */
     rt_slots_frame();
     extern volatile LONG64 hos_present_count;   /* display.c */
-    InterlockedIncrement64(&hos_present_count);
+    sync_census_log(InterlockedIncrement64(&hos_present_count));
     hos_vi_native_presented();
 }
 

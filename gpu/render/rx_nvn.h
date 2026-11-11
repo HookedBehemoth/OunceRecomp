@@ -155,6 +155,7 @@ enum {
     NOP_WAIT_EVENT,                             /* (mkw-recomp: a wait for an event another queue's work signals) */
     NOP_PUSH_CONST,                             /* (hookshot: nvnCommandBufferPushComputeConstants) */
     NOP_CLEAR_BUF,                              /* (hookshot: nvnCommandBufferClearBuffer) */
+    NOP_WAIT_FENCE,                             /* (hookshot, RX_VK_TIMELINES: nvnQueueWaitSync, before the queue's next submit) */
     NOP_COUNT_
 };
 typedef struct { int32_t n; const nvn_tex *color[8]; nvn_view cview[8]; uint8_t has_cview[8]; const nvn_tex *depth; nvn_view dview; uint8_t has_dview; } nvn_p_set_rt;
@@ -188,6 +189,7 @@ typedef struct { int64_t stride; } nvn_p_copy_stride;
 typedef struct { float rgba[4]; } nvn_p_blend_color;
 typedef struct { uint64_t gpu; uint32_t mode, value; } nvn_p_signal;   /* event: its 32-bit value's GPU address */
 typedef struct { uint64_t gpu; uint32_t mode, value; } nvn_p_wait_event;   /* (the same, and the wait's condition) */
+typedef struct { uint64_t fence; } nvn_p_wait_fence;   /* (hookshot) a fence's value (rx_nvn_fence_q's): its queue's work up to it first */
 typedef struct { uint64_t type, addr; } nvn_p_counter;
 #define NVN_COUNTER_WRITTEN (1ull << 32)   /* (type: the report's counter word is in memory already: a clear flag, host/nvn_native.c) */
 typedef struct { uint64_t src, dst, size; } nvn_p_copy_bb;
