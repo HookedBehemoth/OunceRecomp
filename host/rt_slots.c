@@ -125,6 +125,7 @@ static uint64_t lo, hi, used, peak;   /* the slot range [lo, hi) of pool offsets
 static volatile uint64_t frame;
 static SRWLOCK mu = SRWLOCK_INIT;
 static volatile int state = -1;   /* -1 not tried, 0 off (never or backed off), 1 on */
+static uint64_t dta_seen;   /* (the DTA the allocs come for: rt_slots_dump) */
 static uint32_t nrecs0, narenas;
 static uint64_t arenas0;   /* (the log: the fullest arena) */
 static uint64_t pools[16];   /* the virtual pools the slots were checked against */
@@ -132,7 +133,7 @@ static int npools;
 
 static struct {   /* counters (under mu, or read racily for the log) */
     uint64_t calls, transient, spliced, unspliced, stale, frees, freed_slot, unseen_free, made, evicted, game_offset,
-        same_shape, other_shape, parked, handed_back, released, park_full, quantized;
+        same_shape, other_shape, parked, handed_back, released, park_full, quantized, drained, blockless;
 } n;
 static uint64_t last_n_calls, last_n_spliced, last_n_inits, last_n_dta_inits, last_n_made, last_frame_log;
 extern volatile LONG64 nvn_texture_inits, nvn_texture_inits_dta;   /* (nvn_native.c) */
@@ -211,17 +212,50 @@ static int same_key(const Cur *a, const Cur *b) {
     return a->lr == b->lr && a->dta == b->dta && a->arg == b->arg && !memcmp(a->desc, b->desc, sizeof a->desc);
 }
 /* a parked entry of this key (the oldest parked first: instances keep their order), out of the list; 0: none */
-static uint64_t unpark(const Cur *k) {
+/* The arena an entry's block came from: pool record +0x13a, its lane's (+0x108) arena index +0x281 (the free's own
+   lookup, f_802737a0 0x802737cc..). 0: not known */
+static uint64_t arena_of(uint64_t dta, uint64_t e) {
+    const uint64_t lane = G64(e + 0x108);
+    const uint32_t ri = *(uint8_t *)GP(e + 0x13a);
+    if (!hos_guest_range(lane, 0x288) || ri >= *(uint32_t *)GP(dta + DTA_NRECS)) return 0;
+    const uint64_t rec = G64(G64(dta + DTA_RECS) + 8ull * ri);
+    const uint32_t ai = *(uint8_t *)GP(lane + 0x281), na = G32(rec + REC_NARENAS);
+    return G64(rec + REC_ARENAS) + (uint64_t)(ai < na ? ai : 0) * 0xe8;
+}
+/* Parked and handed-back entries keep the block of the lane that first allocated them, and hand-backs cross lanes
+   (a pass records on whichever worker runs it): one lane's arena then holds the blocks of targets every lane uses,
+   while the arenas are shrunk to 192 MB of bookkeeping. On Hyrule Field one arena reached 174 MB with a 17 MB hole,
+   the next large alloc on that lane found no block, and the game's alloc went on with block 0 (0x8005fd14: on the
+   console its 512 MB never run out): the later free of that entry linked a node at null into the arena's lists, and
+   f_802737a0 looped or crashed in them (work/assets/native/cores.md). So an entry whose arena is fuller than
+   HOS_RT_PARK_FILL percent (default 40) of its end, or has fewer than 16 spare list nodes (+0x98: an alloc that
+   splits a block with none left writes near null, 0x80061068), is not handed back: it is released, which gives
+   its bookkeeping back, and the caller's own lane allocates. */
+static uint32_t park_fill(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("HOS_RT_PARK_FILL") ? atoi(getenv("HOS_RT_PARK_FILL")) : 40;
+    return (uint32_t)(v > 0 ? v : 100);
+}
+static int arena_tight(uint64_t ar) {
+    return ar && (G64(ar + AR_BYTES) * 100 > G64(ar + AR_END) * park_fill() || (int32_t)G32(ar + 0x98) < 16);
+}
+static uint64_t unpark(const Cur *k, uint64_t *drain) {
     uint64_t e = 0;
     AcquireSRWLockExclusive(&mu);
     for (int i = 0; i < nparked; i++)
         if (same_key(&parked[i].key, k)) {
             e = parked[i].entry;
-            for (int j = 0; j < nslots; j++)
-                if (slots[j].block == parked[i].block) { slots[j].last_frame = frame; break; }
+            if (arena_tight(arena_of(k->dta, e))) {   /* (released by the caller, outside mu) */
+                *drain = e;
+                e = 0;
+                n.drained++;
+            } else {
+                for (int j = 0; j < nslots; j++)
+                    if (slots[j].block == parked[i].block) { slots[j].last_frame = frame; break; }
+                n.handed_back++;
+            }
             memmove(&parked[i], &parked[i + 1], (size_t)(nparked - i - 1) * sizeof *parked);
             nparked--;
-            n.handed_back++;
             break;
         }
     ReleaseSRWLockExclusive(&mu);
@@ -276,6 +310,7 @@ static void sweep(Ctx *c, uint64_t dta) {
 
 ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
     if (off_()) return 0;
+    dta_seen = ARG(0);
     __atomic_add_fetch(&n.calls, 1, __ATOMIC_RELAXED);
     if (cur.valid) __atomic_add_fetch(&n.stale, 1, __ATOMIC_RELAXED);   /* the last transient call never reached the splice */
     cur.valid = 0;
@@ -300,7 +335,19 @@ ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
              G32(d + 0x1c), G32(d + 0x30), (uint32_t)ARG(3), {0}, 1};
     memcpy(k.desc, GP(d), sizeof k.desc);
     if (park_on()) {
-        const uint64_t e = unpark(&k);
+        uint64_t drain = 0;
+        const uint64_t e = unpark(&k, &drain);
+        if (drain) {   /* its arena is tight: back to the game now (this thread holds neither DTA mutex at an alloc's
+                          entry, as sweep checks), the caller's own lane allocates below */
+            if (!holds(c, ARG(0) + 0x29e8) && !holds(c, ARG(0) + 0x2a08)) {
+                release_now(c, ARG(0), drain);
+                __atomic_add_fetch(&n.released, 1, __ATOMIC_RELAXED);
+            } else {   /* (not expected) parked again: the sweep releases it */
+                AcquireSRWLockExclusive(&mu);
+                if (nparked < MAX_PARKED) parked[nparked++] = (Parked){k, drain, G64(drain + ENT_BLOCK), 0};
+                ReleaseSRWLockExclusive(&mu);
+            }
+        }
         if (e) {   /* the same target as last frame: its entry, whole */
             RET(e);
             return 1;
@@ -452,6 +499,16 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
     const uint64_t e = ARG(1);
     if (!hos_guest_range(e, 0x180)) return 0;
     const uint64_t block = G64(e + ENT_BLOCK);
+    if (!block && (*(uint8_t *)GP(e + 0xba) & 3)) {
+        /* an entry the game's alloc gave no block (its arena was full): its free would read block 0 and link a node at
+           null into the arena's lists. Left as it is (the entry is not reused) */
+        static volatile LONG told;
+        if (InterlockedIncrement(&told) <= 10)
+            hos_log("rt slots: free of entry %#llx without a block (an arena ran out), skipped; lr %#llx",
+                    (unsigned long long)e, (unsigned long long)c->x[30]);
+        __atomic_add_fetch(&n.blockless, 1, __ATOMIC_RELAXED);
+        return 1;
+    }
     if (park_on() && !releasing) sweep(c, ARG(0));
     int park = 0;
     AcquireSRWLockExclusive(&mu);
@@ -508,6 +565,44 @@ void rt_slots_texture_init(uint64_t obj, uint64_t gpu, uint32_t w, uint32_t h, u
     ReleaseSRWLockExclusive(&mu);
 }
 
+/* a sead list (circular: node +0 previous, +8 next; the sentinel its own when empty; count at sentinel +0x10): 0 when
+   every node's previous is the one before it and count nodes lead back to the sentinel; else where it is not (1 + k:
+   a previous link, 1000: no way back, 2000 + k: another count, 3000 + k: a link out of guest memory) */
+static int list_bad(uint64_t sentinel) {
+    const uint32_t count = G32(sentinel + 0x10);
+    uint64_t prev = sentinel, p = G64(sentinel + 8);
+    for (uint32_t k = 0; k <= count + 64; k++) {
+        if (p == sentinel) return k == count && G64(sentinel) == prev ? 0 : 2000 + (int)k;
+        if (!hos_guest_range(p, 16)) return 3000 + (int)k;
+        if (G64(p) != prev) return 1 + (int)k;
+        prev = p;
+        p = G64(p + 8);
+    }
+    return 1000;
+}
+/* (HOS_DUMP_FILE) the DTA's lists, checked: each arena's used (+0x58), free (+0x70) and spare-node (+0x88) lists with
+   its bytes in use, the 256 descriptor buckets (+0x11d0) and the free-entry LRU (+0x29d0) */
+void rt_slots_dump(void) {
+    const uint64_t dta = dta_seen;
+    if (!dta || state < 0) return;
+    static const int lists[3] = {0x58, 0x70, 0x88};
+    const uint64_t recs = G64(dta + DTA_RECS);
+    for (uint32_t r = 0; r < *(uint32_t *)GP(dta + DTA_NRECS) && r < 4; r++) {
+        const uint64_t rec = G64(recs + 8ull * r), ar = G64(rec + REC_ARENAS);
+        for (uint32_t i = 0; i < G32(rec + REC_NARENAS) && i < 16; i++) {
+            const uint64_t a = ar + (uint64_t)i * 0xe8;
+            hos_log("rt dump: record %u arena %u: %llu MB used; used list %u (%d), free list %u (%d), spare nodes %u (%d)",
+                    r, i, (unsigned long long)(G64(a + AR_BYTES) >> 20), G32(a + lists[0] + 0x10), list_bad(a + lists[0]),
+                    G32(a + lists[1] + 0x10), list_bad(a + lists[1]), G32(a + lists[2] + 0x10), list_bad(a + lists[2]));
+        }
+    }
+    for (int i = -1; i < 256; i++) {
+        const uint64_t b = i < 0 ? dta + 0x29d0 : dta + 0x11d0 + (uint64_t)i * 0x18;
+        const int r = list_bad(b);
+        if (r || i < 0) hos_log("rt dump: %s %d: %u (%d)", i < 0 ? "LRU" : "bucket", i, G32(b + 0x10), r);
+    }
+}
+
 /* (nvn_native.c, at each present) one line every 600 presents */
 void rt_slots_frame(void) {
     const uint64_t f = __atomic_add_fetch(&frame, 1, __ATOMIC_RELAXED);
@@ -525,7 +620,7 @@ void rt_slots_frame(void) {
             "%llu evicted, %llu game's; reused %llu same shape, %llu other), %llu splices without a "
             "note (persistent), %llu notes without a splice; %llu frees (%llu of slots, %llu unseen); allocator inits: %llu "
             "as before, %llu moved, %llu new; parking %s: %d parked, %llu parked in all, %llu handed back, %llu released, "
-            "%llu over the limit; %llu shadow sizes rounded",
+            "%llu over the limit, %llu released for a tight arena; %llu shadow sizes rounded; %llu frees without a block",
             state == 1 ? "on" : "off", nslots, busy, (unsigned long long)(used >> 20), (unsigned long long)(peak >> 20),
             (unsigned long long)((hi - lo) >> 20), (unsigned long long)(full >> 20), (n.calls - last_n_calls) / fr, (n.spliced - last_n_spliced) / fr,
             (n.made - last_n_made) / fr, (inits - last_n_inits) / fr, (dta_inits - last_n_dta_inits) / fr,
@@ -536,7 +631,8 @@ void rt_slots_frame(void) {
             (unsigned long long)n.freed_slot, (unsigned long long)n.unseen_free,
             (unsigned long long)init_same, (unsigned long long)init_moved, (unsigned long long)init_new,
             park_on() ? "on" : "off", nparked, (unsigned long long)n.parked, (unsigned long long)n.handed_back,
-            (unsigned long long)n.released, (unsigned long long)n.park_full, (unsigned long long)n.quantized);
+            (unsigned long long)n.released, (unsigned long long)n.park_full, (unsigned long long)n.drained,
+            (unsigned long long)n.quantized, (unsigned long long)n.blockless);
     last_n_calls = n.calls, last_n_spliced = n.spliced, last_n_inits = inits, last_n_dta_inits = dta_inits;
     last_n_made = n.made, last_frame_log = f;
     ReleaseSRWLockShared(&mu);

@@ -631,6 +631,8 @@ static DWORD WINAPI dump_thread(void *p) {
         DeleteFileA(path);
         hos_log("dump: asked");
         hos_vcore_dump();
+        void rt_slots_dump(void);
+        rt_slots_dump();
         hos_thread_dump();
         hos_log_flush();
     }
