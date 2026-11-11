@@ -327,6 +327,19 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
             break;
         }
         st_compiled++;
+        {   // (which stages were compiled, with what the binary key is made of: a key that changes from run to run misses every time)
+            static std::atomic<int> told{0};
+            if (told++ < 300) {
+                uint64_t sh = 0;
+                {
+                    std::lock_guard ml(mod_mu);
+                    if (const auto it = mod_src.find(o.st->module); it != mod_src.end()) sh = it->second.hash;
+                }
+                logf("vk: shader objects: compiled stage %#x of %016llx variant %016llx%s: SPIR-V %016llx (%zu words), layout %016llx, key %016llx",
+                     (unsigned)o.st->vk_stage, (unsigned long long)p.key, (unsigned long long)p.variant, p.fallback ? " (fallback)" : "",
+                     (unsigned long long)sh, words.size(), (unsigned long long)layout_sig(p, push_size), (unsigned long long)o.key);
+            }
+        }
         size_t sz = 0;
         if (vkGetShaderBinaryDataEXT(dev.device, o.out, &sz, nullptr) == VK_SUCCESS && sz && sz < (64u << 20)) {
             std::vector<uint8_t> bin(sz);
