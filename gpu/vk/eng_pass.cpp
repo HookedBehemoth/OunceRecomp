@@ -113,10 +113,7 @@ bool eng_pass_mixed() {
 #ifdef VK_EXT_nested_command_buffer
         on |= nested_listed && nested_feat.nestedCommandBuffer && nested_feat.nestedCommandBufferRendering;
 #endif
-        // (off by default: on RADV 26.2 a depth clear recorded inline (vkCmdClearAttachments) and then a secondary's depth draws
-        // in the same rendering drew shadow-acne stripes in the depth probes and the cascades (HF's bridge pillars; e4-impl.md);
-        // an execute in a rendering of its own was clean. HOS_ENG_PASS_MIX=1: mixed, where the device has it)
-        if (!env_on("HOS_ENG_PASS_MIX")) on = false;
+        if (env_on("HOS_ENG_PASS_NO_MIX")) on = false;   // (a test: an execute in a rendering of its own, as without the feature)
         if (eng_passes_on())
             logf("eng: inline draws and secondaries %s one rendering (%s)", on ? "mixed in" : "NOT mixed in",
                  on ? (m7_listed ? "VK_KHR_maintenance7" : "VK_EXT_nested_command_buffer") : "each execute in a rendering of its own");
