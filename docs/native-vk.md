@@ -506,6 +506,15 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   over, on by default; turning the camera in Kokiri 47.4 -> 53.7 fps, new target images 0.34 -> 0.14 a frame, dead targets
   4.7 -> 1.2 GB. The lazy creation clear (`RX_VK_LAZY_CLEAR=1`) and the GPU unswizzle of BC and small textures
   (`RX_VK_CPU_UNSWIZZLE=0`) are kept behind switches: no gain on this PC (work/assets/native/transient-targets-impl.md).
+- 2026-11-11: render-target parking and shadow rounding (c22846a, host/rt_slots.c, on by default): the game's free
+  (`f_802737a0`) only returns the arena block, so the free hook keeps the whole entry (block, registration, descriptor
+  slot, texture object) and the next alloc with the same caller and 0x38-byte descriptor gets it back without the alloc
+  running; entries unused 6 presents go through the game's own free (DRS, map changes). `local_shadow_depth` (384-2432)
+  is rounded up to a multiple of 128 (the pass takes viewport/scissor from the texture's size). Slot range 320 MB.
+  Allocator inits 41-45 -> 2-5 a frame; new target images turning 0.17 -> 0.02 a frame; retired 500 -> 140; fps and
+  renderer time unchanged; pictures match. One deadlock in ~40 runs (MainThread holding a DTA mutex while a parked entry
+  was freed from the alloc hook), fixed in c22846a (real frees only on the game's free path, never under the DTA mutex;
+  blocks with an on-free callback not parked), 18 clean runs since. `HOS_RT_PARK=0`, `HOS_RT_QUANT=0` turn them off.
 - 2026-11-11: stable render-target slots (step 4e, host/rt_slots.c with SPLICE_AFTER in nx2/entry_hooks.py): the game's
   transient targets keep their address frame to frame; Kokiri's distinct (shape, address) pairs 460 -> 147 turning,
   textures let go 1.37 -> 0.22 a frame, Hyrule Field texture VRAM 4.55 -> 3.65 GB; fps the same
