@@ -227,6 +227,21 @@ volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lift
                                             +0xd58 is the game clock in 1/60 s: nx2/oot_patches.py) */
 volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step) */
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
+/* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
+   step is 1/60: discarding it made alternating short/long frames advance more game time than elapsed wall time.
+   Keep at most four nominal frames of debt so unpaced fast presents cannot leave a long recovery. Steps beyond
+   1/15 s are still dropped, rather than caught up after a long stall. */
+static int realtime_rate(double ratio, int maximum, double *carry) {
+    ratio += *carry;
+    if (ratio > 4.0) ratio = 4.0;
+    const double least = 60.0 / maximum;
+    const double bounded = ratio < least ? least : ratio;
+    int fps = (int)(60.0 / bounded + 0.5);
+    fps = fps < 15 ? 15 : fps > maximum ? maximum : fps;
+    *carry = ratio - 60.0 / fps;
+    if (*carry < -4.0) *carry = -4.0;
+    return fps;
+}
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
     /* The game's dynamic resolution steps the 3D's scale with the GPU time, and each new scale makes a new set of render
@@ -355,19 +370,17 @@ static void realtime_step(int64_t now) {
         hos_frame_seconds_bits = 0;
     }
     const int top = timed ? 60 : fps_max();
-    double ratio = sum / count * 60.0 + carry;
-    const double least = 60.0 / top;
-    ratio = ratio < least ? least : ratio > 4.0 ? 4.0 : ratio;
-    int fps = (int)(60.0 / ratio + 0.5);
-    fps = fps < 15 ? 15 : fps > top ? top : fps;
+    const double ratio = sum / count * 60.0;
     int *slot = (int *)GP(mod + 0x2c8);
     if (*slot < 15 || *slot > fps_max()) {
         static int logged;
         if (!logged++) hos_log("vi: the graphics module's frame rate reads %d: no real-time step", *slot);
         return;
     }
-    carry = ratio - 60.0 / fps;
-    carry = carry > 0.5 ? 0.5 : carry < -0.5 ? -0.5 : carry;
+    /* The timed hook already supplies the actual frame time. Its nominal rate tracks this frame without debt. */
+    double frame_carry = timed ? 0 : carry;
+    const int fps = realtime_rate(ratio, top, &frame_carry);
+    carry = timed ? 0 : frame_carry;
     *slot = fps;
     if (!(steps++ % 3000)) hos_log("vi: real-time step on: ratio %.3f, game's frame rate %d", ratio, fps);
 }
