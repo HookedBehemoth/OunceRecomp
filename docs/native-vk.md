@@ -411,7 +411,27 @@ allocator, `RX_RT_SLOTS_MB` the range, `HOS_RT_SLOTS_LOG=1` slots by name; one `
 
 ### Layer 0: window buffers (2026-11-11; work/assets/native/layer0-impl.md, PoC work/proto/layer0/)
 
-Steps 7a and 7b are written, behind switches, **not yet run in the game** (test plan `work/proto/layer0/plan.sh`).
+Steps 7a and 7b are written, behind switches (off by default), and measured (2026-11-11, `work/proto/layer0/plan.sh`,
+`ab2.sh`; build `work/sa/l0r`, native-vk 5169c1e + layer 0). RUN=timing, one binary, frame trace from 16 s:
+
+| | Kokiri walk (2 runs) | Kokiri turn | Hyrule Field walk | memory work a frame | worst load frame |
+|---|---|---|---|---|---|
+| default (mirrors) | 53.6, 53.4 fps | 49.6 | 45.6 | 6.1 ms | 1.0-1.4 s |
+| `RX_VK_MIRROR=0` (old imports, no mirrors) | 54.5, 60.0 | 54.2 | - | 0.4 ms | 0.85-0.95 s |
+| **`RX_VK_LAYER0=1`** (7a) | **60.0, 60.0** (vsync) | **57.0** | **55.7** | 0.4 ms | 1.9-2.2 s |
+| **`RX_VK_LAYER0=2`** (7b) | **60.0, 60.0** | **56.9** | **56.8** | 0.4 ms | 1.7-1.9 s |
+
+- GPU time ~8-9 ms a frame in every mode (not the limit: the GPU reading pools over PCIe costs it little here); the gain
+  is the mirrors' memory work (6 ms a frame of syncs and write-backs on the replay thread). Before the fix in 0d37a80
+  layer 0 was slower (51.6 / 47 fps): the capture waited ~1 ms a submit for pages the GPU writes, a wait only a mirror
+  sync needs. No device loss in ~60 runs; pictures at the noise of two runs (Kokiri), the map change through to Hyrule
+  Field correct in all modes. Load: first uses import chunks on the replay thread (fresh pages: a 64 MB one up to 225 ms,
+  hence 16 MB chunks); the worst load frame is ~1 s longer than the default's: next to fix (import on the loader thread
+  for the pools of a load). `RX_VK_LAYER0_EAGER=1` binds every pool the game makes (8 GB pinned in Kokiri): not useful.
+- 7b in Kokiri: 87-90 CPU_NO_ACCESS pools, ~790 MB in VRAM in 88 runs (4 blocks), 0 mixed granules; at the map change
+  the two render-target pools come back identical and are handed back (639 MB, no rebind: 3 waits, 262 ms, against 9
+  waits, 796 ms with `RX_VK_LAYER0_KEEP_S=0`). The replay reads 37-50 of these pools on the CPU, once each, whole, at
+  their first texture's upload (render-target storage whose bytes are undefined anyway): counted, harmless.
 - **`RX_VK_LAYER0=1` (7a, host class):** guest memory reaches the GPU through 4 GB sparse aliased window buffers, one
   every 2 GB of guest space, so a binding of up to 2 GB is `(window[g >> 31], g & 0x7fffffff)`
   (gpu/vk/vk_pools.cpp, arithmetic in layer0_windows.h). Memory is bound in chunks (64 MB, `RX_VK_LAYER0_CHUNK_MB`) that
