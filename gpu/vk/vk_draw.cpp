@@ -9701,7 +9701,7 @@ const char* draw_sec_leave(bool restore) {
     return why;
 }
 void draw_cmd_state_lost() { cmd_caches_reset(); }
-int draw_tex_check(const uint32_t* tex, uint32_t n) {
+int draw_tex_check(const uint32_t* tex, uint32_t n, bool make) {
     const Pass& ps = pass();
     for (uint32_t i = 0; i < n; i++) {
         if (!tex[i]) continue;
@@ -9710,7 +9710,7 @@ int draw_tex_check(const uint32_t* tex, uint32_t n) {
         bool hv = false;
         if (!texture_of((int)(tex[i] & 0xFFFFF), &t, &v, &hv)) continue;   // (unregistered: the draw would read nothing either)
         Texture* x = texture_find(&t);
-        if (!x || !(x->uploaded || x->gpu_written)) {   // (made resident now: made and uploaded by the recording's upload buffer)
+        if (make && (!x || !(x->uploaded || x->gpu_written))) {   // (made resident now: made and uploaded by the recording's upload buffer)
             ParLock lk;
             x = texture_get(&t, true);
         }

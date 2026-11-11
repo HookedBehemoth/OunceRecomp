@@ -1959,7 +1959,21 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
         eng_pass_note_ex(sc.view, f, e.site, w, h, c0, d0);
     }
     const EngJob* job = eng_job_lookup(e.a);
+    if (job && !job->cb) job = nullptr;   // (E3 could not record it: its NVN records)
     const bool self = !job;
+    {   // (bisection switches, read once: HOS_ENG_PASS_SITE=<site hex> only that call site's jobs; HOS_ENG_PASS_DEPTH_ONLY=1 / =2 only
+        // depth-only passes / only passes with colour)
+        static const uint32_t only_site = getenv("HOS_ENG_PASS_SITE") ? (uint32_t)strtoul(getenv("HOS_ENG_PASS_SITE"), nullptr, 16) : 0;
+        static const int depth_only = getenv("HOS_ENG_PASS_DEPTH_ONLY") ? atoi(getenv("HOS_ENG_PASS_DEPTH_ONLY")) : 0;
+        if (only_site && e.site != only_site) return eng_count(EC_FB_MODE), false;
+        if (depth_only) {
+            EngPassFormats f{};
+            uint32_t w = 0, h = 0;
+            uint64_t c0 = 0, d0 = 0;
+            draw_pass_info(s, &f, &w, &h, &c0, &d0);
+            if ((depth_only == 1) != (f.ncolor == 0)) return eng_count(EC_FB_MODE), false;
+        }
+    }
     if (self && !eng_pass_selftest()) return eng_count(EC_FB_NO_JOB), false;
     if (sc.bad) {
         eng_count(EC_FB_OP);
@@ -1980,8 +1994,13 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
     if (!draw_open_pass(cmd, s, !mixed, &pf)) return fall(EC_FB_NOPASS);
     if (job && !eng_formats_equal(job->fmt, pf)) return fall(EC_FB_FORMATS);
     {
-        const int t = job ? draw_tex_check(job->tex, job->ntex) : draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size());
-        if (t == 1 && !self) return fall(EC_FB_HAZARD);
+        // (a texture the job binds that is not resident: its NVN records. Made resident here (HOS_ENG_PASS_RESIDE=1, a test), the
+        // bound-but-unsampled ones went too: this frame's transient targets in the system-texture table, not written yet, took the
+        // CPU's stale bytes, and the pillars at Hyrule Field's bridge showed blocks of another frame's shadow; e4-impl.md)
+        static const bool reside = getenv("HOS_ENG_PASS_RESIDE") && atoi(getenv("HOS_ENG_PASS_RESIDE")) != 0;
+        const int t = job ? draw_tex_check(job->tex, job->ntex, reside) : draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size(), reside);
+        static const bool strict = getenv("HOS_ENG_PASS_STRICT") && atoi(getenv("HOS_ENG_PASS_STRICT")) != 0;   // (E3's rule in the self-test too)
+        if (t == 1 && (!self || strict)) return fall(EC_FB_HAZARD);
         if (t == 1) eng_count(EC_BOUND_ATTACHMENT);   // (the self-test: what the job's draws sample decides, at their recording)
         if (t == 2) return fall(EC_FB_RESIDENT);
     }

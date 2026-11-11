@@ -65,7 +65,7 @@ const char* draw_sec_leave(bool restore);
 /// (E4) a secondary executed: what the draw path kept bound on the command buffer is gone
 void draw_cmd_state_lost();
 /// (E4) the handles a job binds against the open pass: 0 fine, 1 one is an attachment of it, 2 one is not resident
-int draw_tex_check(const uint32_t* tex, uint32_t n);
+int draw_tex_check(const uint32_t* tex, uint32_t n, bool make);   // (make: not resident ones made so first)
 /// Clears of the bound targets, inside the open pass (NOP_CLEAR_COLOR, NOP_CLEAR_DS)
 void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float rgba[4], uint32_t mask);
 void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool depth_mask, uint32_t stencil,
