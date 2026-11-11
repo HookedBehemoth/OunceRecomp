@@ -1172,21 +1172,20 @@ struct Guard {   // (a replay() call: the op it runs inside resumes at its retur
         else ps = was;
     }
 };
-int cls_of(uint32_t op) {
-    switch (op) {
-    case NOP_DRAW: case NOP_DRAW_IDX: case NOP_DRAW_INDIRECT: case NOP_DRAW_MESH: return K_DRAW;
-    case NOP_PKT: return K_PKT;
-    case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: return K_DISPATCH;
-    case NOP_CLEAR_COLOR: case NOP_CLEAR_DS: case NOP_CLEAR_TEX: case NOP_CLEAR_BUF: return K_CLEAR;
-    case NOP_BARRIER: return K_BARRIER;
-    case NOP_SET_RT: return K_TARGETS;
-    case NOP_SIGNAL_EVENT: case NOP_WAIT_EVENT: case NOP_WAIT_FENCE: return K_SYNC;
-    case NOP_COPY_B2B: case NOP_COPY_B2T: case NOP_COPY_T2B: case NOP_COPY_T2T: return K_COPY;
-    case NOP_REPORT_COUNTER: case NOP_RESET_COUNTER: case NOP_RENDER_COND: return K_REPORT;
-    case NOP_UPDATE_UB: return K_UBO;
-    case NOP_ENG: case NOP_JOB: case NOP_BEGIN: case NOP_END: case NOP_CALL: case NOP_JUMP: return K_MARK;
-    default: return K_STATE;
-    }
+int cls_of(uint32_t op) {   // (by comparisons, not a switch: tests/ find the replay's own case labels by their text)
+    const auto in = [op](std::initializer_list<uint32_t> l) { return std::find(l.begin(), l.end(), op) != l.end(); };
+    if (in({NOP_DRAW, NOP_DRAW_IDX, NOP_DRAW_INDIRECT, NOP_DRAW_MESH})) return K_DRAW;
+    if (op == NOP_PKT) return K_PKT;
+    if (in({NOP_DISPATCH, NOP_DISPATCH_INDIRECT})) return K_DISPATCH;
+    if (in({NOP_CLEAR_COLOR, NOP_CLEAR_DS, NOP_CLEAR_TEX, NOP_CLEAR_BUF})) return K_CLEAR;
+    if (op == NOP_BARRIER) return K_BARRIER;
+    if (op == NOP_SET_RT) return K_TARGETS;
+    if (in({NOP_SIGNAL_EVENT, NOP_WAIT_EVENT, NOP_WAIT_FENCE})) return K_SYNC;
+    if (in({NOP_COPY_B2B, NOP_COPY_B2T, NOP_COPY_T2B, NOP_COPY_T2T})) return K_COPY;
+    if (in({NOP_REPORT_COUNTER, NOP_RESET_COUNTER, NOP_RENDER_COND})) return K_REPORT;
+    if (op == NOP_UPDATE_UB) return K_UBO;
+    if (in({NOP_ENG, NOP_JOB, NOP_BEGIN, NOP_END, NOP_CALL, NOP_JUMP})) return K_MARK;
+    return K_STATE;
 }
 /// At an op's start (serial replay only)
 inline void op(uint32_t op, const uint8_t* a, uint32_t avail) {
