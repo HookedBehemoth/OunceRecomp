@@ -23,7 +23,7 @@
 // textures' storage; RX_VK_CAPTURE=0 drops them once the syncs are honest (step 6). A CPU read by the replay of a VRAM granule
 // would see guest memory, not what the GPU wrote there: counted and logged (layer0_cpu_read).
 //
-// Switches, read once: RX_VK_LAYER0=1|2; RX_VK_LAYER0_CHUNK_MB=<2..64> the chunk size (default 64: fewer buffer objects, which
+// Switches, read once: RX_VK_LAYER0=1|2; RX_VK_LAYER0_CHUNK_MB=<2..64> the chunk size (default 16: a fresh 64 MB chunk cost up to 225 ms to import; 64 is fewer buffer objects, which
 // RADV lists in every submission, ~0.7 us each); RX_VK_LAYER0_EAGER=1 a pool's chunks bound when the game makes it rather than
 // at its first binding; RX_VK_LAYER0_SPAN_MB=<n> a first use binds the whole pool when it is at most n MB (default 64);
 // RX_VK_LAYER0_LOG=1 each chunk bound and each pool placed (with its key); (=2) RX_VK_LAYER0_KEEP_S=<s> (default 10, 0: none);
@@ -528,7 +528,7 @@ bool layer0_on() {
     }
     level = want;
     const char* c = getenv("RX_VK_LAYER0_CHUNK_MB");
-    chunk = l0::chunk_bytes(c ? (uint64_t)std::max(1, atoi(c)) : 64, limit);
+    chunk = l0::chunk_bytes(c ? (uint64_t)std::max(1, atoi(c)) : 16, limit);
     const char* sp = getenv("RX_VK_LAYER0_SPAN_MB");
     span_bytes = (uint64_t)(sp ? std::max(0, atoi(sp)) : 64) << 20;
     eager = getenv("RX_VK_LAYER0_EAGER") && atoi(getenv("RX_VK_LAYER0_EAGER")) != 0;

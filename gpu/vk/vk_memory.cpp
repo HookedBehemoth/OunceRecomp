@@ -1615,7 +1615,9 @@ std::unique_ptr<Capture> capture_make() {
 // ~2150-draw scene), so those pages are copied again by the replay, before it uses this capture, once the submission is
 // done: the replay waits instead, while the game goes on. RX_VK_CAPTURE_WAIT=1: the game's thread waits, 0: no wait
     if (n > 0) {
-        static const int cap_wait = getenv("RX_VK_CAPTURE_WAIT") ? atoi(getenv("RX_VK_CAPTURE_WAIT")) : 2;
+        // (native-vk layer 0: no mirror sync puts the copy back over the GPU's words, so the copy's pages need not wait for the GPU:
+        // the replay waited ~1 ms a submit there, 6.7 ms a frame of memory work in Kokiri against 0.4 without)
+        static const int cap_wait = getenv("RX_VK_CAPTURE_WAIT") ? atoi(getenv("RX_VK_CAPTURE_WAIT")) : layer0_on() ? 0 : 2;
         uint64_t v = 0;
         if (cap_wait) {
             const uint64_t done = vk_timeline_completed();
