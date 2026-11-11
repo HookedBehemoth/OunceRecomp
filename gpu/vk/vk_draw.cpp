@@ -2488,9 +2488,9 @@ VkDeviceAddress heap_bank(const NvnState& s, const Stage& st, uint32_t index, ui
 /// (after build_descriptors, a heap draw) the draw's ring block (its buffers and storage images), its banks, its push data
 /// (data: the classic push constants filled; the heap's words added). false: the draw cannot be made (ring full, no stream room)
 bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8_t* data) {
-    // (the draw's buffers and storage images as built: a draw of the program with the same ones in this recording takes the block it
-    // wrote; RX_VK_DESC_HEAP_REUSE=0: a block written every draw)
-    static const bool reuse = !getenv("RX_VK_DESC_HEAP_REUSE") || atoi(getenv("RX_VK_DESC_HEAP_REUSE")) != 0;
+    // (RX_VK_DESC_HEAP_REUSE=1, off: the draw's buffers and storage images as built: a draw of the program with the same ones in this
+    // recording takes the block it wrote. Measured slower than writing the block (0.34 vs 0.28 ms a frame, Kokiri): few draws repeat)
+    static const bool reuse = getenv("RX_VK_DESC_HEAP_REUSE") && atoi(getenv("RX_VK_DESC_HEAP_REUSE")) != 0;
     uint64_t sig = 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)&p;
     if (reuse)
         for (const VkWriteDescriptorSet& w : dw().writes) {

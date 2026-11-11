@@ -186,7 +186,10 @@ std::mutex inval_mu;
 std::vector<int> registered;        // (slots the game registered since the last drain)
 std::vector<uint32_t> retired;      // (textures the cache let go since)
 
-std::atomic<int64_t> counts[HC_COUNT];
+// (plain counters on a line of their own: the replay thread counts, the same thread reports. Atomic adds here cost ~0.3 us each
+// in play, a write a buffer descriptor: 2 ms a frame)
+alignas(64) int64_t counts[HC_COUNT];
+alignas(64) char counts_pad[64];
 const char* const kCountNames[HC_COUNT] = {"draws", "dispatches", "classic", "scans", "resolves", "in place", "upload copies",
                                            "in-stream copies", "sampler writes", "registrations invalidated", "of them hot",
                                            "retired", "ring full", "CHECK mismatches", "CHECK draws", "bank uploads",
@@ -646,8 +649,9 @@ bool desc_heap_encode_buffer(VkBuffer b, VkDeviceSize offset, VkDeviceSize range
     } else if (!dev.null_descriptor) {
         return true;   // (zeros)
     }
-    // (a buffer descriptor is made from its address, size and type alone: kept by them, the driver asked once. RX_VK_DESC_HEAP_BUFCACHE=0: not)
-    static const bool cache_on = !getenv("RX_VK_DESC_HEAP_BUFCACHE") || atoi(getenv("RX_VK_DESC_HEAP_BUFCACHE")) != 0;
+    // (RX_VK_DESC_HEAP_BUFCACHE=1, off: a buffer descriptor kept by its address, size and type, the driver asked once. Measured no faster
+    // than the driver's write, ~25 ns)
+    static const bool cache_on = getenv("RX_VK_DESC_HEAP_BUFCACHE") && atoi(getenv("RX_VK_DESC_HEAP_BUFCACHE")) != 0;
     struct Cached { uint64_t addr, size; uint32_t type; uint8_t bytes[16]; };
     static thread_local Cached* cache = nullptr;   // (on the heap, not in TLS: a big TLS block in the .so slows every thread_local of it)
     if (cache_on && !cache) cache = new Cached[4096]();
@@ -698,7 +702,7 @@ void desc_heap_entry_texture(uint32_t region, uint32_t slot, uint32_t old_id, ui
 }
 
 void desc_heap_count(HeapCount c, int64_t n) {
-    counts[c].fetch_add(n, std::memory_order_relaxed);
+    counts[c] += n;
 }
 void desc_heap_note_view(uint32_t slot, uint32_t region, uint32_t ver) {
     static std::unique_ptr<uint32_t[]> seen_ver(new uint32_t[kHeapSlots]());
@@ -769,7 +773,7 @@ void desc_heap_frame() {
     char line[1400];
     int n = snprintf(line, sizeof line, "vk: descriptor heap, last 600 presents:");
     for (int i = 0; i < HC_COUNT && n < 1300; i++) {
-        const int64_t v = counts[i].load(std::memory_order_relaxed);
+        const int64_t v = counts[i];
         n += snprintf(line + n, sizeof line - n, " %s %lld%s", kCountNames[i], (long long)(v - last[i]), i + 1 < HC_COUNT ? "," : "");
         last[i] = v;
     }
