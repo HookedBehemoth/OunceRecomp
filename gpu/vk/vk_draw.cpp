@@ -2049,7 +2049,8 @@ struct HandleHit {
     Texture* tex;
     uint32_t level;   // (the image level the view starts at)
     uint32_t version; // (the slot's, when resolved)
-    uint64_t destroy_gen;
+    uint64_t destroy_gen;   // (texture_destroy_generation then; with RX_VK_TEX_SERIAL a miss's texture_miss_generation)
+    uint32_t tex_id;        // (RX_VK_TEX_SERIAL: the texture's id, valid while texture_alive says so)
     bool sampling;    // (its use reads the texture's contents)
     uint64_t tex_epoch;   // (the texture epoch it was last touched in)
 };
@@ -2090,10 +2091,24 @@ bool log_img_wanted(uint64_t key) {   // (hookshot) RX_VK_LOG_IMG=<key prefix,..
     return false;
 }
 
+// (native-vk step 4a, RX_VK_TEX_SERIAL) the ids of the textures the descriptors being built resolved: the draw keeps them while
+// every one is alive, not while no texture at all went
+thread_local bool desc_ids_on = false;
+TLS_OBJECT(desc_ids, std::vector<uint32_t>)
+
+/// (RX_VK_TEX_SERIAL) whether a resolved handle still stands: its texture alive, or for a miss (nothing resolved, or a new texture
+/// left for a later frame: upload_defer) no frame left textures for later since. A miss is not kept past that: a deferred upload's
+/// texture is uploaded by the next frame's first look, which only a look made again reaches
+bool handle_hit_stands(const HandleHit& h, uint64_t dgen, bool serial) {
+    if (!serial) return h.destroy_gen == dgen;
+    return h.tex ? texture_alive(h.tex_id) : h.destroy_gen == dgen;
+}
+
 VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, VkFormat storage_as = VK_FORMAT_UNDEFINED,
                             Texture** tex_out = nullptr, uint32_t* level_out = nullptr) {
     const uint32_t version = texture_slot_version((int)(handle & 0xFFFFF));
-    const uint64_t dgen = texture_destroy_generation();
+    const bool serial = texture_serial_on();
+    const uint64_t dgen = serial ? texture_miss_generation() : texture_destroy_generation();
     const uint64_t key = (uint64_t)(handle & 0xFFFFF) | (uint64_t)want << 20 | (uint64_t)use << 28 | (uint64_t)storage_as << 32;
     static const bool log_hits = getenv("RX_VK_LOG_HITS") != nullptr;
     static int64_t st_hit, st_new, st_ver, st_gen, st_n;
@@ -2104,10 +2119,10 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
                  (long long)st_new, (long long)st_ver, (long long)st_gen);
         if (it == handle_hits().end()) st_new++;
         else if (it->second.version != version) st_ver++;
-        else if (it->second.destroy_gen != dgen) st_gen++;
+        else if (!handle_hit_stands(it->second, dgen, serial)) st_gen++;
         else st_hit++;
     }
-    if (it != handle_hits().end() && it->second.version == version && it->second.destroy_gen == dgen) {
+    if (it != handle_hits().end() && it->second.version == version && handle_hit_stands(it->second, dgen, serial)) {
         if (it->second.tex && it->second.tex_epoch != texture_epoch()) {   // (once a submission: its age and contents)
             if (!texture_touch_quick(it->second.tex, it->second.sampling)) {
                 ParLock lk;
@@ -2117,6 +2132,7 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
         }
         if (tex_out) *tex_out = it->second.tex;
         if (level_out) *level_out = it->second.level;
+        if (desc_ids_on && it->second.tex) desc_ids().push_back(it->second.tex_id);
         return it->second.view;
     }
     ParLock lk;
@@ -2145,7 +2161,9 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
                      has_view && v.set_format ? v.format : 0, has_view && v.set_target ? v.target : -1, (int)want, (int)use);
         }
     }
-    handle_hits()[key] = {view, tex, level, version, dgen, use == ViewUse::Sample || use == ViewUse::Storage, texture_epoch()};
+    handle_hits()[key] = {view, tex, level, version, dgen, tex ? tex->id : 0u, use == ViewUse::Sample || use == ViewUse::Storage,
+                          texture_epoch()};
+    if (desc_ids_on && tex) desc_ids().push_back(tex->id);
     if (tex_out) *tex_out = tex;
     if (level_out) *level_out = level;
     return view;
@@ -3329,9 +3347,16 @@ int64_t st_desc_slotgen_saves;   // (reuses the global registrations' generation
 /// (RX_VK_DESC_SLOTGEN) Whether every slot the last build resolved still holds what it did: no registration since touched a
 /// slot this draw samples, so its descriptors stand through the streaming's churn. A build that sampled an unregistered slot
 /// keeps the old check: a registration is the only thing that could make such a handle resolve, and no slot version moved.
+TLS_OBJECT(last_desc_ids, std::vector<uint32_t>)   // (RX_VK_TEX_SERIAL: the textures the last build resolved, by id)
+/// (RX_VK_TEX_SERIAL) every texture the last build resolved still alive: the views its set names are still theirs
+bool desc_textures_alive() {
+    for (const uint32_t id : last_desc_ids())
+        if (!texture_alive(id)) return false;
+    return true;
+}
 bool desc_slots_kept(uint64_t reg_gen) {
     if (last_desc_samp != sampler_registrations_generation()) return false;
-    if (last_desc_destroy != texture_destroy_generation()) return false;   // (an eviction sweep: destroy_later retires the
+    if (!texture_serial_on() && last_desc_destroy != texture_destroy_generation()) return false;   // (an eviction sweep: destroy_later retires the
     if (last_desc_fp_dummy && last_desc_reg != reg_gen) return false;      // (views without bumping any slot, so they alone stay silent)
     for (const uint64_t e : last_desc_fp())
         if (texture_slot_version((int)(e & 0xFFFFF)) != (uint32_t)(e >> 20)) return false;
@@ -5902,14 +5927,16 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const uint64_t reg_gen = registrations_generation(), ub_gen = ub_generation();
     static const bool no_reuse = getenv("RX_VK_NO_DESC_REUSE") != nullptr;   // (A/B: every draw builds its own)
     static const bool dgen_off = getenv("RX_VK_DESC_REUSE_DGEN") && atoi(getenv("RX_VK_DESC_REUSE_DGEN")) == 0;
-    const uint64_t dgen = dgen_off ? 0 : texture_destroy_generation();
+    // (RX_VK_TEX_SERIAL: the textures the last build resolved still alive instead, and no frame left textures for later since)
+    const bool serial = texture_serial_on();
+    const uint64_t dgen = dgen_off ? 0 : serial ? texture_miss_generation() : texture_destroy_generation();
     // (hookshot, issue 640: a mesh fallback draw also pushes the writes at the compute bind point, for its task and mesh
     // dispatches, so they must be its own. A dispatch since its last draw built the compute program's over them: pushed
     // with the fallback's layout, its task and mesh stages read another program's buffers, and descriptors the push left
     // as they were: stale addresses, like the one RADV faulted on in Hyrule Field (#792))
     const bool slotgen = desc_slotgen_on();
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
-                           last_desc_ub == ub_gen && last_desc_dgen == dgen &&
+                           last_desc_ub == ub_gen && last_desc_dgen == dgen && (!serial || dgen_off || desc_textures_alive()) &&
                            (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
                            (!p.fallback || dw().prog == &p);
     if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
@@ -5921,7 +5948,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         PROF_HOT(PROF_DESC);
         FINE_N(FC_BUILDS, 1);
         trace_tex_hit = nullptr, trace_tex_mask = 0;
+        desc_ids().clear(), desc_ids_on = serial;
         build_descriptors(s, p);   // (textures first used here are uploaded by the recording's upload command buffer)
+        desc_ids_on = false;
         FINE_N(FC_WRITES, (int64_t)dw().writes.size());
         static std::string last_logged;
         if (dump_on()) {
@@ -6050,6 +6079,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
         last_desc_ub = ub_gen, last_desc_dgen = dgen;
+        if (serial) last_desc_ids().swap(desc_ids());
         if (slotgen)   // (RX_VK_DESC_SLOTGEN: what its handles resolved; the next such draw may keep it through other slots' churn)
             last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
             last_desc_destroy = desc_destroy_seen;

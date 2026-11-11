@@ -1662,9 +1662,27 @@ bool texture_dirty(Texture& tex, uint32_t gen, Ranges& out) {
 }
 
 uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to them goes stale)
+uint64_t miss_gen = 1;      // (bumped when a frame left new textures for later: what resolved to the placeholder goes stale)
+
+// (native-vk step 4a) Which textures are alive, by id (Texture::id, never reused): a texture's own invalidation. The handle cache and
+// the draws' descriptor reuse check the textures they resolved instead of the global destroy_gen, which every dead transient target
+// moved, so one gone made every draw look all of its textures up again. Chunks of 64K flags, made on first use and never freed:
+// read without a lock by the recording threads while create and destroy_later (under the texture lock) write
+constexpr uint32_t kAliveChunk = 1u << 16;
+std::atomic<uint8_t*> alive_chunks[1u << 16];
+void alive_set(uint32_t id, bool on) {
+    std::atomic<uint8_t*>& c = alive_chunks[id >> 16];
+    uint8_t* p = c.load(std::memory_order_acquire);
+    if (!p) {
+        p = new uint8_t[kAliveChunk]();
+        c.store(p, std::memory_order_release);
+    }
+    __atomic_store_n(&p[id & (kAliveChunk - 1)], (uint8_t)on, __ATOMIC_RELEASE);
+}
 
 void destroy_later(Texture& tex) {
     destroy_gen++;
+    alive_set(tex.id, false);
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
         d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
@@ -2020,6 +2038,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     redirect.done();
     static uint32_t ids;
     p->id = ++ids;
+    alive_set(p->id, true);
     p->first_seen = frame_no;
     st_made++;
     p->key_layout = key.layout, p->key_cls = key.cls;
@@ -2221,6 +2240,21 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
 
 uint64_t texture_destroy_generation() {
     return destroy_gen;
+}
+
+
+bool texture_serial_on() {
+    static const bool on = !getenv("RX_VK_TEX_SERIAL") || atoi(getenv("RX_VK_TEX_SERIAL")) != 0;
+    return on;
+}
+
+bool texture_alive(uint32_t id) {
+    const uint8_t* p = alive_chunks[id >> 16].load(std::memory_order_acquire);
+    return p && __atomic_load_n(&p[id & (kAliveChunk - 1)], __ATOMIC_ACQUIRE);
+}
+
+uint64_t texture_miss_generation() {
+    return miss_gen;
 }
 
 uint32_t texture_epoch() {
@@ -3321,7 +3355,7 @@ void texture_frame(uint64_t completed) {
     if (const int64_t d = st_deferred_frame.exchange(0, std::memory_order_relaxed)) {
         // (the views and descriptor sets resolved to the placeholder this frame go stale, as when textures go: the next frame
         // looks those textures up again, and uploads them)
-        destroy_gen++;
+        destroy_gen++, miss_gen++;
         static int told;
         if (told++ < 40 || st_deferred.load(std::memory_order_relaxed) % 2000 < d)
             logf("vk: %lld new ASTC textures left for a later frame (this frame's uploads took their budget; %lld so far)", (long long)d,

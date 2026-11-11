@@ -131,6 +131,13 @@ int texture_segment_end(int index);
 uint32_t texture_epoch();
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
 uint64_t texture_destroy_generation();
+/// (native-vk step 4a) Whether what was resolved to a texture is checked by the texture's own life (texture_alive of its id)
+/// instead of texture_destroy_generation. RX_VK_TEX_SERIAL=0: the global generation, as before
+bool texture_serial_on();
+/// Whether the texture with this id (Texture::id) is still the cache's (false once destroy_later took it); any thread
+bool texture_alive(uint32_t id);
+/// Changes when a frame left textures for a later frame (upload_defer): what resolved to the placeholder is looked up again
+uint64_t texture_miss_generation();
 /// The texture an NVN texture's storage is (made and uploaded at first use, uploaded again when the CPU wrote its
 /// storage since). null for formats and targets that have no image (buffers, unknown formats).
 Texture* texture_get(const nvn_tex* t, bool for_sampling);
