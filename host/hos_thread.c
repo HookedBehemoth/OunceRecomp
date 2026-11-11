@@ -294,13 +294,27 @@ static void log_flush(void) {}
 
 void hos_log_flush(void) { log_flush(); }
 
+/* HOS_LOG_TIME=1: each line carries the seconds since the process started, "[hos 12.345 <thread>] ...", to time the boot
+   (docs/native-vk.md, launch time). The start is taken when the image loads, before main */
+static LARGE_INTEGER log_t0;
+static int log_time = -1;
+__attribute__((constructor)) static void log_time_start(void) { QueryPerformanceCounter(&log_t0); }
+
 void hos_log(const char *fmt, ...) {
     char buf[1024], line[1100];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    snprintf(line, sizeof line, "[hos %s] %s\n", cur ? cur->name : "host", buf);
+    if (log_time < 0) log_time = getenv("HOS_LOG_TIME") && atoi(getenv("HOS_LOG_TIME")) > 0;
+    if (log_time) {
+        LARGE_INTEGER now, f;
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&f);
+        snprintf(line, sizeof line, "[hos %.3f %s] %s\n", (double)(now.QuadPart - log_t0.QuadPart) / (double)f.QuadPart,
+                 cur ? cur->name : "host", buf);
+    } else
+        snprintf(line, sizeof line, "[hos %s] %s\n", cur ? cur->name : "host", buf);
     if (log_queue(line)) return;
     fputs(line, stderr);
     fflush(stderr);
@@ -1177,7 +1191,7 @@ static SRWLOCK vc_lock = SRWLOCK_INIT;
 static HosThread *vc_owner[8];
 static HosThread *vc_queue[1024];
 static int vc_nq;
-static struct { int64_t takes, waits, wait_ns, max_ns, escapes, kicks, yields, since; } vc_st;
+static struct { int64_t takes, waits, wait_ns, max_ns, escapes, kicks, yields, lends, since; } vc_st;
 
 int hos_vcores_on(void) {
     static int on = -1;
@@ -1237,10 +1251,10 @@ static void vc_grant(int c) {
 static void vc_stats_locked(int64_t now) {
     if (!vc_st.since) vc_st.since = now;
     if (now - vc_st.since < 5000000000LL) return;
-    hos_log("vcores: %lld takes, %lld waits (mean %.0f us, longest %.1f ms), %lld kicks, %lld yields, %lld escapes in %.0f s",
+    hos_log("vcores: %lld takes, %lld waits (mean %.0f us, longest %.1f ms), %lld kicks, %lld yields, %lld escapes, %lld lent in %.0f s",
             (long long)vc_st.takes, (long long)vc_st.waits, vc_st.waits ? vc_st.wait_ns / 1e3 / vc_st.waits : 0.0,
             vc_st.max_ns / 1e6, (long long)vc_st.kicks, (long long)vc_st.yields, (long long)vc_st.escapes,
-            (now - vc_st.since) / 1e9);
+            (long long)vc_st.lends, (now - vc_st.since) / 1e9);
     memset(&vc_st, 0, sizeof vc_st);
     vc_st.since = now;
 }
@@ -1248,12 +1262,21 @@ static int64_t vc_env_ns(const char *name, int64_t us) {
     const char *e = getenv(name);
     return (e ? atoll(e) : us) * 1000;
 }
+/* HOS_VCORE_LEND_US=<us> (experiment, native-vk boot speed; 0: off): a waiter whose own cores have all been held that
+   long takes any free core outside its mask. The loading screen had ~4.9 threads waiting for their cores on average
+   while ~3.3 ran (work/assets/native/boot-speed.md); a free core is lent, still one thread per core number */
+static int vc_free_any(void) {
+    for (int c = 0; c < vc_cores(); c++)
+        if (!vc_owner[c]) return c;
+    return -1;
+}
 static void vc_acquire(HosThread *t) {
-    static int64_t esc_better = -1, esc_eq, slice;
+    static int64_t esc_better = -1, esc_eq, slice, lend;
     if (esc_better < 0) {
         esc_eq = vc_env_ns("HOS_VCORE_ESCAPE_EQ_US", 250000);
         esc_better = vc_env_ns("HOS_VCORE_ESCAPE_US", 250000);
         slice = vc_env_ns("HOS_VCORE_SLICE_US", 2000);
+        lend = vc_env_ns("HOS_VCORE_LEND_US", 0);
     }
     AcquireSRWLockExclusive(&vc_lock);
     vc_st.takes++;
@@ -1296,6 +1319,12 @@ static void vc_acquire(HosThread *t) {
             break;
         }
         const int64_t waited = hos_now_ns() - t0;
+        if (lend && waited > lend && (c = vc_free_any()) >= 0) {
+            vc_dequeue(t);
+            vc_take(t, c);
+            vc_st.lends++;
+            break;
+        }
         if (waited > (worst ? esc_better : esc_eq)) {
             vc_dequeue(t);
             vc_st.escapes++;

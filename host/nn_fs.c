@@ -394,7 +394,12 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
         if (fs_trace()) hos_log("fs: read %s at %lld, %llu bytes", fh->path, (long long)off, (unsigned long long)size);
         hos_sleep_ns(delay_ns);
     }
-    const int away = hos_vcore_away();   /* (as OpenFile: no core held through the read) */
+    /* (as OpenFile: no core held through the read). HOS_FS_KEEP_CORE_KB=<KB> (experiment, native-vk boot speed): reads
+       up to that size keep the core. The loading screen's reads come from the page cache in well under a millisecond,
+       while taking the core back cost ARes Loading 0 580 ms of 5.5 s (work/assets/native/boot-speed.md) */
+    static int64_t keep_core = -1;
+    if (keep_core < 0) keep_core = getenv("HOS_FS_KEEP_CORE_KB") ? atoll(getenv("HOS_FS_KEEP_CORE_KB")) * 1024 : 0;
+    const int away = (int64_t)size <= keep_core ? 0 : hos_vcore_away();
     while (done < size) {
         OVERLAPPED ov = {0};
         int64_t o = off + (int64_t)done;
