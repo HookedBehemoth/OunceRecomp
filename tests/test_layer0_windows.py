@@ -64,10 +64,21 @@ class Layer0WindowTests(unittest.TestCase):
         for hot in ("BufferRef layer0_bind(", "BufferRef layer0_buffer(", "bool ready_for(", "bool layer0_bound(", "void layer0_cpu_read("):
             self.assertNotIn("getenv", block(pools, hot), hot)
         # chunks are bound before their bits are set (a reader without the lock sees a bit only for a bound chunk)
-        b = block(pools, "void bind_range_locked(")
+        b = block(pools, "void bind_claimed(")
         self.assertLess(b.index("submit_binds(binds)"), b.index("bits->set(c)"))
         self.assertIn("vkWaitForFences", block(pools, "VkResult submit_binds("))
         self.assertLess(b.index("table_set("), b.index("bits->set(c)"))
+        # the imports run outside mu (other bindings go on); the chunk's state is published after its bits
+        self.assertLess(b.index("memory_guest_dma_buf("), b.index("std::lock_guard lk(mu)"))
+        self.assertLess(b.index("bits->set(c)"), b.index("cstate[c].store(CH_BOUND"))
+        # a binding claims a chunk nobody imports (compare-exchange) and waits for one another thread imports
+        r = block(pools, "void bind_range(")
+        self.assertIn("compare_exchange_weak(st, CH_IMPORTING", r)
+        self.assertIn("cv.wait(", r)
+        self.assertNotIn("lock_guard lk(mu)", r)
+        # the importer claims only what is still queued; the host's discard check counts chunks being imported
+        self.assertIn("compare_exchange_strong(st, CH_IMPORTING", block(pools, "void worker_main("))
+        self.assertIn("CH_IMPORTING", block(pools, "bool layer0_bound("))
 
     def test_vram_class(self):
         """(7b) API 14 carries pool flags and creation keys; placement and give-back keep their order"""

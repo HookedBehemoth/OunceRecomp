@@ -33,7 +33,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
+#include <deque>
 #include <list>
+#include <thread>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -99,12 +102,22 @@ std::vector<uint64_t> host_keys;
 VkFence bind_fence = VK_NULL_HANDLE;
 uint32_t vram_type = UINT32_MAX;
 bool log_each = false, eager = false;
+uint64_t prefetch_bytes = 0;
+// (chunk states, read and moved without mu: NONE -> QUEUED (a pool made: the worker imports it ahead) -> IMPORTING (claimed by
+// the worker or by a binding that needs it now) -> BOUND or FAILED. A binding that finds a chunk IMPORTING by another waits for
+// it on cv instead of importing it again)
+enum : uint8_t { CH_NONE, CH_QUEUED, CH_IMPORTING, CH_BOUND, CH_FAILED };
+std::unique_ptr<std::atomic<uint8_t>[]> cstate;
+std::mutex cv_mu;
+std::condition_variable cv, work_cv;
+std::deque<uint64_t> prefetch_q;   // (cv_mu)
+std::atomic<int64_t> st_prefetched{0}, st_waited{0}, st_wait_us{0}, st_own{0};
 std::multimap<uint64_t, LivePool> live;   // (7b: every pool the game has, by base)
 std::list<VPool> vpools;
 std::map<uint64_t, Run> vram;             // (by first granule: disjoint)
 std::vector<Block> blocks;
 // counts (mu held unless atomic), logged every 600 submissions
-int64_t st_chunks = 0, st_windows = 0, st_bind_calls = 0, st_failed = 0, st_eager = 0;
+int64_t st_chunks = 0, st_windows = 0, st_bind_calls = 0, st_failed = 0;
 int64_t st_vpools = 0, st_handback = 0, st_released = 0, st_demoted = 0, st_vram_failed = 0, st_waits = 0;
 uint64_t st_handback_bytes = 0, st_mixed_granules = 0;
 double st_import_ms = 0, st_bind_ms = 0, st_max_ms = 0, st_wait_ms = 0;
@@ -211,71 +224,142 @@ void vram_cut(uint64_t g0, uint64_t g1, std::vector<std::pair<uint64_t, uint64_t
         if (it->second.g1 > g0) out.push_back({it->first, it->second.g1});
 }
 
-/// The chunks of guest [lo, hi) not bound yet whose granules there are not all bound already (VRAM): imported, their host
-/// granules (all but the VRAM runs) bound into their windows in one vkQueueBindSparse (waited for: nothing submitted can use
-/// them before), then their page-table entries and their bits (mu held)
-void bind_range_locked(uint64_t lo, uint64_t hi) {
+/// Claimed chunks (IMPORTING, by this thread) imported, then under mu their host granules (all but the VRAM runs) bound into
+/// their windows in one vkQueueBindSparse (waited for: nothing submitted can use them before), their page-table entries, bits
+/// and states; the waiters told. The imports run without mu (a fresh 16 MB chunk is 5-100 ms: the other bindings go on)
+void bind_claimed(const std::vector<uint64_t>& claimed, const char* who) {
+    if (claimed.empty()) return;
+    const auto t0 = clk::now();
+    std::vector<std::pair<uint64_t, VkDeviceMemory>> got;
+    std::vector<uint64_t> failed;
+    for (uint64_t c : claimed) {
+        const VkDeviceMemory m = memory_guest_dma_buf(c * chunk, chunk);
+        if (m) got.push_back({c, m});
+        else failed.push_back(c);
+    }
+    const auto t1 = clk::now();
+    clk::time_point t2 = t1;
+    {
+        std::lock_guard lk(mu);
+        std::vector<One> binds;
+        for (const auto& [c, m] : got) {
+            l0::Place pl[2];
+            const int n = l0::chunk_places(c, chunk, pl);
+            for (int i = 0; i < n; i++) window_make(pl[i].window);
+            chunk_memory[c] = m;
+            const uint64_t base = c * chunk;
+            std::vector<std::pair<uint64_t, uint64_t>> cut, host;
+            vram_cut(base / G, (base + chunk) / G, cut);
+            l0::granules_minus(base / G, (base + chunk) / G, cut, host);
+            for (const auto& [g0, g1] : host) add_binds(binds, g0 * G, g1 * G, m, g0 * G - base);
+        }
+        const VkResult r = got.empty() ? VK_SUCCESS : submit_binds(binds);
+        t2 = clk::now();
+        if (r != VK_SUCCESS) {
+            logf("vk: layer 0: %zu chunks not bound (VkResult %d): their bindings stay empty", got.size(), (int)r);
+            for (const auto& [c, m] : got) vkFreeMemory(dev.device, m, nullptr), chunk_memory[c] = VK_NULL_HANDLE, failed.push_back(c);
+            got.clear();
+        }
+        for (const auto& [c, m] : got) {
+            const uint64_t g = c * chunk;
+            table_set(g, g + chunk, true);
+            bits->set(c);
+            for (uint64_t q = g / G; q < (g + chunk) / G; q++) ready->set(q);
+            cstate[c].store(CH_BOUND, std::memory_order_release);
+            if (log_each)
+                logf("vk: layer 0: chunk %#llx..%#llx bound (window %u at %#llx)", (unsigned long long)g, (unsigned long long)(g + chunk),
+                     l0::window_of(g), (unsigned long long)l0::window_offset(g));
+        }
+        for (uint64_t c : failed) {
+            cstate[c].store(CH_FAILED, std::memory_order_release);
+            if (st_failed++ < 8)
+                logf("vk: layer 0: chunk %#llx..%#llx not imported: its bindings stay empty", (unsigned long long)(c * chunk),
+                     (unsigned long long)((c + 1) * chunk));
+        }
+        const double ms_imp = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const double ms_bind = std::chrono::duration<double, std::milli>(t2 - t1).count();
+        st_chunks += (int64_t)got.size(), st_import_ms += ms_imp, st_bind_ms += ms_bind;
+        st_max_ms = std::max(st_max_ms, ms_imp + ms_bind);
+        static int slow_logged;
+        if (ms_imp + ms_bind > 20 && slow_logged++ < 12)
+            logf("vk: layer 0: %zu chunks (%llu MB) bound in %.1f ms (imports %.1f, binds %.1f) %s", got.size(),
+                 (unsigned long long)(got.size() * chunk >> 20), ms_imp + ms_bind, ms_imp, ms_bind, who);
+    }
+    { std::lock_guard ck(cv_mu); }
+    cv.notify_all();
+}
+
+/// The chunks of guest [lo, hi) not bound whose granules there are not all bound already (VRAM): those nobody imports claimed
+/// and bound here; those another thread imports waited for (no mu held)
+void bind_range(uint64_t lo, uint64_t hi) {
     uint64_t c0, c1;
     l0::chunk_span(lo, hi, chunk, c0, c1);
     if (c1 > bits->chunks) c1 = bits->chunks;
-    std::vector<uint64_t> fresh;
+    std::vector<uint64_t> claimed, others;
     for (uint64_t c = c0; c < c1; c++) {
         if (bits->has(c)) continue;
         const uint64_t a = std::max(lo, c * chunk), b = std::min(hi, (c + 1) * chunk);
         if (a < b && ready->all(a, b)) continue;   // (the part needed is VRAM already)
-        fresh.push_back(c);
-    }
-    if (fresh.empty()) return;
-    const auto t0 = clk::now();
-    std::vector<One> binds;
-    std::vector<uint64_t> made;
-    for (uint64_t c : fresh) {
-        l0::Place pl[2];
-        const int n = l0::chunk_places(c, chunk, pl);
-        bool ok = n > 0;
-        for (int i = 0; i < n && ok; i++) ok = window_make(pl[i].window) != nullptr;
-        const VkDeviceMemory m = ok ? memory_guest_dma_buf(c * chunk, chunk) : VK_NULL_HANDLE;
-        if (!m) {
-            if (st_failed++ < 8)
-                logf("vk: layer 0: chunk %#llx..%#llx not imported: its bindings stay empty", (unsigned long long)(c * chunk),
-                     (unsigned long long)((c + 1) * chunk));
-            continue;
+        uint8_t st = cstate[c].load(std::memory_order_acquire);
+        for (;;) {
+            if ((st == CH_NONE || st == CH_QUEUED) &&
+                !cstate[c].compare_exchange_weak(st, CH_IMPORTING, std::memory_order_acq_rel))
+                continue;
+            if (st == CH_NONE || st == CH_QUEUED) claimed.push_back(c);
+            else if (st == CH_IMPORTING) others.push_back(c);
+            break;
         }
-        chunk_memory[c] = m;
-        made.push_back(c);
-        const uint64_t base = c * chunk;
-        std::vector<std::pair<uint64_t, uint64_t>> cut, host;
-        vram_cut(base / G, (base + chunk) / G, cut);
-        l0::granules_minus(base / G, (base + chunk) / G, cut, host);
-        for (const auto& [g0, g1] : host) add_binds(binds, g0 * G, g1 * G, m, g0 * G - base);
     }
-    const auto t1 = clk::now();
-    if (made.empty()) return;
-    const VkResult r = submit_binds(binds);
-    const auto t2 = clk::now();
-    if (r != VK_SUCCESS) {
-        logf("vk: layer 0: %zu chunks not bound (VkResult %d): their bindings stay empty", made.size(), (int)r);
-        for (uint64_t c : made) vkFreeMemory(dev.device, chunk_memory[c], nullptr), chunk_memory[c] = VK_NULL_HANDLE;
-        st_failed += (int64_t)made.size();
-        return;
+    st_own.fetch_add((int64_t)claimed.size(), std::memory_order_relaxed);
+    bind_claimed(claimed, "at a binding");
+    if (others.empty()) return;
+    const auto w0 = clk::now();
+    std::unique_lock ck(cv_mu);
+    cv.wait(ck, [&] {
+        for (uint64_t c : others)
+            if (cstate[c].load(std::memory_order_acquire) == CH_IMPORTING) return false;
+        return true;
+    });
+    st_waited.fetch_add((int64_t)others.size(), std::memory_order_relaxed);
+    st_wait_us.fetch_add(std::chrono::duration_cast<std::chrono::microseconds>(clk::now() - w0).count(), std::memory_order_relaxed);
+}
+
+/// The importer: chunks queued by the pools the game makes, imported and bound ahead of their first binding (a few at a time:
+/// one vkQueueBindSparse for them)
+void worker_main() {
+    SetThreadDescription(GetCurrentThread(), L"mkw_vk layer 0");
+    for (;;) {
+        std::vector<uint64_t> claimed;
+        {
+            std::unique_lock ck(cv_mu);
+            work_cv.wait(ck, [] { return !prefetch_q.empty(); });
+            while (!prefetch_q.empty() && claimed.size() < 8) {
+                const uint64_t c = prefetch_q.front();
+                prefetch_q.pop_front();
+                uint8_t st = CH_QUEUED;
+                if (cstate[c].compare_exchange_strong(st, CH_IMPORTING, std::memory_order_acq_rel)) claimed.push_back(c);
+            }
+        }
+        st_prefetched.fetch_add((int64_t)claimed.size(), std::memory_order_relaxed);
+        bind_claimed(claimed, "ahead");
     }
-    for (uint64_t c : made) {
-        const uint64_t g = c * chunk;
-        table_set(g, g + chunk, true);
-        bits->set(c);
-        for (uint64_t q = g / G; q < (g + chunk) / G; q++) ready->set(q);
-        if (log_each)
-            logf("vk: layer 0: chunk %#llx..%#llx bound (window %u at %#llx)", (unsigned long long)g, (unsigned long long)(g + chunk),
-                 l0::window_of(g), (unsigned long long)l0::window_offset(g));
+}
+/// A pool made: its chunks queued for the importer (pools up to RX_VK_LAYER0_PREFETCH_MB; the parts not VRAM already)
+void prefetch_pool(uint64_t lo, uint64_t hi) {
+    uint64_t c0, c1;
+    l0::chunk_span(lo, hi, chunk, c0, c1);
+    if (c1 > bits->chunks) c1 = bits->chunks;
+    bool any = false;
+    {
+        std::lock_guard ck(cv_mu);
+        for (uint64_t c = c0; c < c1; c++) {
+            const uint64_t a = std::max(lo, c * chunk), b = std::min(hi, (c + 1) * chunk);
+            if (bits->has(c) || (a < b && ready->all(a, b))) continue;
+            uint8_t st = CH_NONE;
+            if (cstate[c].compare_exchange_strong(st, CH_QUEUED, std::memory_order_acq_rel)) prefetch_q.push_back(c), any = true;
+        }
     }
-    const double ms_imp = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    const double ms_bind = std::chrono::duration<double, std::milli>(t2 - t1).count();
-    st_chunks += (int64_t)made.size(), st_import_ms += ms_imp, st_bind_ms += ms_bind;
-    st_max_ms = std::max(st_max_ms, ms_imp + ms_bind);
-    static int slow_logged;
-    if (ms_imp + ms_bind > 20 && slow_logged++ < 12)
-        logf("vk: layer 0: %zu chunks (%llu MB) bound in %.1f ms (imports %.1f, binds %.1f)", made.size(),
-             (unsigned long long)(made.size() * chunk >> 20), ms_imp + ms_bind, ms_imp, ms_bind);
+    if (any) work_cv.notify_one();
 }
 
 // ---- (7b) the VRAM class ----
@@ -468,8 +552,7 @@ void vram_pool_made(uint64_t base, uint64_t size, uint32_t flags, uint64_t key) 
 bool bind_now(uint64_t guest, uint64_t size, uint64_t pool_lo, uint64_t pool_hi) {
     uint64_t lo, hi;
     l0::bind_span(guest, size, pool_lo, pool_hi, span_bytes, guest_bytes, lo, hi);
-    std::lock_guard lk(mu);
-    bind_range_locked(lo, hi);
+    bind_range(lo, hi);
     return ready->all(guest, guest + size);
 }
 
@@ -531,7 +614,9 @@ bool layer0_on() {
     chunk = l0::chunk_bytes(c ? (uint64_t)std::max(1, atoi(c)) : 16, limit);
     const char* sp = getenv("RX_VK_LAYER0_SPAN_MB");
     span_bytes = (uint64_t)(sp ? std::max(0, atoi(sp)) : 64) << 20;
-    eager = getenv("RX_VK_LAYER0_EAGER") && atoi(getenv("RX_VK_LAYER0_EAGER")) != 0;
+    eager = getenv("RX_VK_LAYER0_EAGER") && atoi(getenv("RX_VK_LAYER0_EAGER")) != 0;   // (every pool queued ahead, whatever its size)
+    const char* pf = getenv("RX_VK_LAYER0_PREFETCH_MB");
+    prefetch_bytes = (uint64_t)(pf ? std::max(0, atoi(pf)) : 64) << 20;
     log_each = getenv("RX_VK_LAYER0_LOG") && atoi(getenv("RX_VK_LAYER0_LOG")) != 0;
     if (const char* k = getenv("RX_VK_LAYER0_KEEP_S")) keep_s = std::max(0.0, atof(k));
     const char* vm = getenv("RX_VK_LAYER0_VRAM_MB");
@@ -549,9 +634,12 @@ bool layer0_on() {
     ready = new l0::ChunkBits(guest_bytes, G);
     vhint = new l0::ChunkBits(guest_bytes, 2ull << 20);
     chunk_memory.assign(bits->chunks, VK_NULL_HANDLE);
+    cstate.reset(new std::atomic<uint8_t>[bits->chunks]);
+    for (uint64_t c = 0; c < bits->chunks; c++) cstate[c].store(CH_NONE, std::memory_order_relaxed);
+    std::thread(worker_main).detach();
     logf("vk: layer 0 on (step %s): guest memory in 4 GB windows every 2 GB, chunks of %llu MB (udmabuf's limit %llu MB), bound %s; "
          "no imports, mirrors or write-backs", level >= 2 ? "7b: CPU_NO_ACCESS pools in VRAM" : "7a: host class",
-         (unsigned long long)(chunk >> 20), (unsigned long long)(limit >> 20), eager ? "when the game makes a pool" : "at their first use");
+         (unsigned long long)(chunk >> 20), (unsigned long long)(limit >> 20), eager ? "ahead when the game makes a pool (all)" : prefetch_bytes ? "ahead when the game makes a pool (up to the prefetch size)" : "at their first use");
     if (level >= 2)
         logf("vk: layer 0: VRAM class up to %llu MB, finalized pools kept %.0f s, %zu creation keys kept host",
              (unsigned long long)(vram_limit >> 20), keep_s, host_keys.size());
@@ -573,10 +661,8 @@ BufferRef layer0_buffer(uint64_t guest, uint64_t size) {
 }
 
 void layer0_pool_created(uint64_t gpu, uint64_t size) {
-    if (!eager || !size || gpu >= (1ull << 40) || !layer0_on()) return;   // (virtual pools are ranges of physical ones)
-    std::lock_guard lk(mu);
-    st_eager++;
-    bind_range_locked(gpu, std::min(gpu + size, guest_bytes));
+    if (!size || gpu >= (1ull << 40) || !layer0_on()) return;   // (virtual pools are ranges of physical ones)
+    if (eager || size <= prefetch_bytes) prefetch_pool(gpu, std::min(gpu + size, guest_bytes));
 }
 
 void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
@@ -622,8 +708,15 @@ void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t ke
         }
 }
 
-bool layer0_bound(uint64_t lo, uint64_t hi) {
-    return bits && bits->any(lo, hi);
+bool layer0_bound(uint64_t lo, uint64_t hi) {   // (bound or being imported: a dma-buf may pin its pages any moment now)
+    if (!bits || hi <= lo) return false;
+    uint64_t c0, c1;
+    l0::chunk_span(lo, hi, chunk, c0, c1);
+    for (uint64_t c = c0; c < c1 && c < bits->chunks; c++) {
+        const uint8_t st = cstate[c].load(std::memory_order_acquire);
+        if (st == CH_IMPORTING || st == CH_BOUND) return true;
+    }
+    return false;
 }
 
 void layer0_cpu_read(uint64_t lo, uint64_t n) {
@@ -649,11 +742,13 @@ void layer0_submission() {
     static int64_t n = 0;
     if (++n % 600) return;
     std::lock_guard lk(mu);
-    logf("vk: layer 0: %lld chunks bound (%llu MB) in %lld windows; %lld bind calls (%lld eager), imports %.1f ms, binds %.1f ms, "
+    logf("vk: layer 0: %lld chunks bound (%llu MB) in %lld windows; %lld bind calls, imports %.1f ms, binds %.1f ms, "
          "longest %.1f ms; bindings (600 submits): %lld, %lld first uses, %lld outside a pool, %lld over 2 GB; %lld failed",
          (long long)st_chunks, (unsigned long long)(st_chunks * (int64_t)chunk >> 20), (long long)st_windows, (long long)st_bind_calls,
-         (long long)st_eager, st_import_ms, st_bind_ms, st_max_ms, (long long)st_fast.exchange(0), (long long)st_slow.exchange(0),
+         st_import_ms, st_bind_ms, st_max_ms, (long long)st_fast.exchange(0), (long long)st_slow.exchange(0),
          (long long)st_refused_pool.exchange(0), (long long)st_refused_long.exchange(0), (long long)st_failed);
+    logf("vk: layer 0: chunks imported ahead %lld, at a binding %lld; bindings that waited for the importer %lld (%.1f ms)",
+         (long long)st_prefetched.load(), (long long)st_own.load(), (long long)st_waited.load(), st_wait_us.load() / 1000.0);
     if (level >= 2) {
         int64_t kept = 0, livev = 0;
         for (const VPool& v : vpools) (v.live ? livev : kept)++;
