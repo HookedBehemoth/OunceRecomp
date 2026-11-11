@@ -2423,6 +2423,27 @@ VkImageView heap_texture(uint32_t handle, const HeapTex& ht, VkImageViewType vt,
     const uint64_t gen = serial ? texture_miss_generation() : texture_destroy_generation();
     const uint32_t epoch = texture_epoch();
     const bool stands = e.valid && e.ver == ver && (serial ? (e.tex ? texture_alive(e.tex_id) : e.gen == gen) : e.gen == gen);
+    // (RX_VK_DESC_HEAP_TOUCH_ENTRY=1: as first made, an entry standing is resolved again once a submission for its texture's touch)
+    static const bool touch_by_entry = getenv("RX_VK_DESC_HEAP_TOUCH_ENTRY") && atoi(getenv("RX_VK_DESC_HEAP_TOUCH_ENTRY")) != 0;
+    if (stands && e.epoch != epoch && !touch_by_entry) {
+        // (the texture touched once a submission, as texture_view_of's kept hits are: its age, its last submission, its contents;
+        // by texture, not by entry: the textures a frame samples through several slots and view types are touched once)
+        if (e.tex) {
+            struct Touched { uint32_t id, epoch; };
+            static thread_local Touched* touched = nullptr;
+            if (!touched) touched = new Touched[1u << 16]();
+            Touched& t = touched[e.tex_id & 0xFFFF];
+            if (t.id != e.tex_id || t.epoch != epoch) {
+                if (!texture_touch_quick(e.tex, true)) {
+                    ParLock lk;
+                    texture_touch(e.tex, true);
+                }
+                t = {e.tex_id, epoch};
+                desc_heap_count(HC_TOUCHES);
+            }
+        }
+        e.epoch = epoch;
+    }
     if (!(stands && e.epoch == epoch)) {
         // (resolved anew, or touched once this submission: the classic lookup, which caches and touches; slot 0 is never a texture
         // here (handle 0, nothing bound, reads it): the classic path samples handle 0 as the dummy)
@@ -2544,6 +2565,86 @@ bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8
     return true;
 }
 
+/// (RX_VK_DESC_HEAP_STAGE_KEEP=0: off) A stage's texture elements as built for the program's last heap draw in this recording, kept
+/// while nothing they depend on moved: the stage's bound textures (tex_gen: c2's handle words), every slot's registration, the
+/// samplers' registrations, the textures' lives (or, without RX_VK_TEX_SERIAL, no texture destroyed). Pushed handles (a user
+/// cbuf's word, a handle program) are read anew: a stage with one is not kept
+void desc_fp_note(uint32_t handle);   // (below: RX_VK_DESC_SLOTGEN's fingerprint)
+struct HeapKeptTex { VkImageView view; Texture* tex; uint32_t tex_id, handle, slot, ver; uint8_t region; };
+struct HeapKeptStage {
+    const Program* p = nullptr;
+    uint64_t key = 0, variant = 0;
+    uint32_t rec = 0;
+    uint64_t gen = 0, dgen = 0, sgen = 0;
+    std::vector<HeapKeptTex> el;
+};
+HeapKeptStage& heap_kept_slot(const Program& p, const Stage& st) {
+    static thread_local HeapKeptStage* tab = nullptr;
+    if (!tab) tab = new HeapKeptStage[2048];
+    const uintptr_t h = ((uintptr_t)&p >> 4) * 8 + (uintptr_t)(&st - p.stages.data());
+    return tab[(h ^ (h >> 11)) & 2047];
+}
+bool heap_stage_keep_on() {
+    static const bool on = (!getenv("RX_VK_DESC_HEAP_STAGE_KEEP") || atoi(getenv("RX_VK_DESC_HEAP_STAGE_KEEP")) != 0) &&
+                           !getenv("RX_VK_TRACE_TEX") && !getenv("RX_VK_LOG_IMG") && !getenv("RX_VK_WATCH_PROG");
+    return on && !dump_on();
+}
+uint64_t heap_stage_gen(const NvnState& s, const Stage& st) {
+    const int bank_stage = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
+    return bank_stage > 4 ? s.bind_gen : s.tex_gen[bank_stage];
+}
+uint64_t heap_dgen() {
+    return texture_serial_on() ? texture_miss_generation() : texture_destroy_generation();
+}
+bool heap_stage_kept(const NvnState& s, const Program& p, const Stage& st, uint32_t& binding) {
+    if (!heap_stage_keep_on() || st.info.texture_descriptors.empty()) return false;
+    const HeapKeptStage& c = heap_kept_slot(p, st);
+    if (c.p != &p || c.key != p.key || c.variant != p.variant || c.rec != heap_rec_gen || c.gen != heap_stage_gen(s, st) ||
+        c.dgen != heap_dgen() || c.sgen != sampler_registrations_generation() || c.el.size() != st.info.texture_descriptors.size())
+        return false;
+    const bool serial = texture_serial_on();
+    for (const HeapKeptTex& t : c.el) {
+        if (t.slot && t.slot < kHeapSlots && texture_slot_version((int)t.slot) != t.ver) return false;
+        if (serial && t.tex && !texture_alive(t.tex_id)) return false;
+    }
+    for (const HeapKeptTex& t : c.el) {   // (what the scan would have left: the same as when kept)
+        desc_fp_note(t.handle);
+        if (desc_ids_on && t.tex) desc_ids().push_back(t.tex_id);
+        if (t.tex && t.tex->gpu_written) draw_sampled().push_back(t.tex);
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstBinding = binding++, w.descriptorCount = 1, w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        dw().imgs.push_back({VK_NULL_HANDLE, t.view, VK_IMAGE_LAYOUT_GENERAL});
+        w.pImageInfo = &dw().imgs.back();
+        dw().writes.push_back(w);
+        heap_handles().push_back(t.handle), heap_tex_i++;
+    }
+    desc_heap_count(HC_STAGES_KEPT);
+    return true;
+}
+void heap_stage_keep(const NvnState& s, const Program& p, const Stage& st, size_t tex_first, size_t img_first) {
+    if (!heap_stage_keep_on() || st.info.texture_descriptors.empty()) return;
+    HeapKeptStage& c = heap_kept_slot(p, st);
+    c.p = nullptr;
+    const size_t n = st.info.texture_descriptors.size();
+    if (heap_tex_i != tex_first + n || heap_handles().size() < tex_first + n || dw().imgs.size() < img_first + n) return;
+    c.el.clear();
+    for (size_t i = 0; i < n; i++) {
+        const HeapTex& ht = heap_prog->tex[tex_first + i];
+        if (ht.kind == HeapTex::PushIndex) return;   // (its handle read anew each draw)
+        const uint32_t handle = heap_handles()[tex_first + i], slot = handle & 0xFFFFF;
+        HeapKeptTex t{};
+        t.handle = handle, t.slot = ht.kind == HeapTex::Null ? 0 : slot, t.region = ht.region;
+        if (t.slot && slot < kHeapSlots) {
+            const HeapEntry& e = desc_heap_entry(ht.region, slot);
+            if (!e.valid) return;
+            t.tex = e.tex, t.tex_id = e.tex_id, t.ver = e.ver;
+        }
+        t.view = dw().imgs[img_first + i].imageView;   // (as built: the dummy where nothing resolved)
+        c.el.push_back(t);
+    }
+    c.p = &p, c.key = p.key, c.variant = p.variant, c.rec = heap_rec_gen, c.gen = heap_stage_gen(s, st), c.dgen = heap_dgen();
+    c.sgen = sampler_registrations_generation();
+}
 void heap_recording_begun(int slot, uint64_t value) {
     if (!desc_heap_on()) return;
     heap_rec_gen++;   // (the blocks kept by program are the last recording's: its ring is another)
@@ -3087,6 +3188,14 @@ void build_descriptors(const NvnState& s, const Program& p) {
         };
         texel_views(info.texture_buffer_descriptors, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, false);
         texel_views(info.image_buffer_descriptors, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, true);
+#ifdef VK_EXT_descriptor_heap
+        // (RX_VK_DESC_HEAP: the stage's textures as the program's last heap draw in this recording resolved them, while its texture
+        // bindings (c2: tex_gen), the slots' registrations, the samplers and the textures' lives stand: no handle read, no scan)
+        const size_t heap_tex_first = heap_tex_i, heap_img_first = dw().imgs.size();
+        const bool heap_kept = heap_build && heap_stage_kept(s, p, st, binding);
+        if (heap_kept) {
+        } else
+#endif
         for (const auto& d : info.texture_descriptors) {
             FINE_SCOPE(FT_TEX);
             VkWriteDescriptorSet w = write(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, d.count);
@@ -3152,6 +3261,9 @@ void build_descriptors(const NvnState& s, const Program& p) {
             w.pImageInfo = &dw().imgs[first];
             dw().writes.push_back(w);
         }
+#ifdef VK_EXT_descriptor_heap
+        if (heap_build && !heap_kept) heap_stage_keep(s, p, st, heap_tex_first, heap_img_first);
+#endif
         for (const auto& d : info.image_descriptors) {
             VkWriteDescriptorSet w = write(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, d.count);
             const size_t first = dw().imgs.size();

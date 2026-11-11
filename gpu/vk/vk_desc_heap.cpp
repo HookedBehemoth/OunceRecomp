@@ -194,7 +194,7 @@ const char* const kCountNames[HC_COUNT] = {"draws", "dispatches", "classic", "sc
                                            "in-stream copies", "sampler writes", "registrations invalidated", "of them hot",
                                            "retired", "ring full", "CHECK mismatches", "CHECK draws", "bank uploads",
                                            "ids past the regions", "custom borders as black", "slots sampled as a second view type", "ring blocks kept", "buffer descriptors from the cache",
-                                           "buffer descriptors written"};
+                                           "buffer descriptors written", "stages' textures kept", "texture touches"};
 
 uint64_t mix64(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
