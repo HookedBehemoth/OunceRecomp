@@ -9715,6 +9715,15 @@ int draw_tex_check(const uint32_t* tex, uint32_t n, bool make) {
             x = texture_get(&t, true);
         }
         if (!x || !(x->uploaded || x->gpu_written)) return 2;
+#ifdef VK_EXT_descriptor_heap
+        if (desc_heap_on()) {   // (the heap's entry for it is what the job's secondary reads: written (E1's drain), and this texture's)
+            const uint32_t slot = tex[i] & 0xFFFFF;
+            if (slot < kHeapSlots) {
+                const HeapEntry& e = desc_heap_entry(eng_reg_primary_region(t, hv ? &v : nullptr), slot);
+                if (!e.valid || e.tex != x) return 2;
+            }
+        }
+#endif
         for (int k = 0; k < ps.n; k++)
             if (ps.tex[k] == x) return 1;
         if (ps.depth_tex == x) return 1;

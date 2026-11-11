@@ -1991,7 +1991,9 @@ bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t
         return false;
     }
     if (self && !sc.ndraws) return eng_count(EC_FB_EMPTY), false;
-    if (rmode != Mode::Serial || !rec_cur || cmd != rec_cur->cmd || dump_on() || desc_heap_on())
+    // (the self-test not with the descriptor heap: heap entries rewritten mid-recording are copied in the stream before the pass,
+    // heap_flush_instream; E3's secondaries carry their own heap descriptors)
+    if (rmode != Mode::Serial || !rec_cur || cmd != rec_cur->cmd || dump_on() || (self && desc_heap_on()))
         return eng_count(EC_FB_MODE), false;
     const bool mixed = eng_pass_mixed();
     EngPassFormats pf{};
