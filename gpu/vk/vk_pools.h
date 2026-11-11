@@ -12,6 +12,12 @@ bool layer0_on();
 /// game's pools, for a range past its pool's end or longer than 2 GB (as the old lookup). layer0_buffer: with the device address
 BufferRef layer0_bind(uint64_t guest, uint64_t size);
 BufferRef layer0_buffer(uint64_t guest, uint64_t size);
+/// 0 off, 1 step 7a (host class), 2 step 7b (CPU_NO_ACCESS pools in VRAM)
+int layer0_level();
+/// (API 14, MkwVkRenderer::nvn_pool_native) a pool made (on 1) or finalized (on 0) with its flags and creation key: placed (7b)
+void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);
+/// A CPU read of guest memory by the replay: counted and logged when it lands in VRAM granules (7b)
+void layer0_cpu_read(uint64_t lo, uint64_t n);
 /// A pool the game made (nvnMemoryPoolInitialize): its chunks bound now with RX_VK_LAYER0_EAGER=1
 void layer0_pool_created(uint64_t gpu, uint64_t size);
 /// Any chunk of guest [lo, hi) bound (its pages pinned: the host zeroes them instead of discarding them)
@@ -26,5 +32,6 @@ VkDeviceMemory memory_guest_dma_buf(uint64_t lo, uint64_t size);
 uint64_t memory_dma_buf_limit();
 bool memory_game_pool(uint64_t guest, uint64_t* lo, uint64_t* hi);
 void guest_pages_set(uint64_t lo, uint64_t hi, uint64_t address);
+uint64_t vk_timeline_pushed();   // (vk_replay.cpp)
 
 } // namespace mkwvk

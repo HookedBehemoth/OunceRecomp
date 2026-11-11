@@ -392,6 +392,10 @@ void rx_nvn_texture_created(const nvn_tex *t) {
 }
 void rx_nvn_program_released(const nvn_prog *p) { vk ? vk->nvn_program_released(p) : wgr_nvn_program_released(p); }
 void rx_nvn_program_set(const nvn_prog *p) { if (vk && vk->nvn_program_set) vk->nvn_program_set(p); }
+/* (native-vk layer 0) a pool made or finalized, with its flags and creation key (gpu/vk/vk_pools.cpp) */
+void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
+    if (vk && vk->nvn_pool_native) vk->nvn_pool_native(gpu, size, flags, key, on);
+}
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img) {
     vk ? vk->nvn_read_texels(t, level, layer0, r, dst, row, img) : wgr_nvn_read_texels(t, level, layer0, r, dst, row, img);

@@ -1,5 +1,5 @@
-// (native-vk, layer 0, step 7a: RX_VK_LAYER0=1, off by default) Guest memory for the GPU in window buffers, one backing for
-// every pool byte. The scheme and its arithmetic: layer0_windows.h; measured on this GPU: work/proto/layer0/l0_poc.c.
+// (native-vk, layer 0: RX_VK_LAYER0=1 step 7a, =2 step 7b; off by default) Guest memory for the GPU in window buffers, one
+// backing for every pool byte. The scheme and its arithmetic: layer0_windows.h; measured on this GPU: work/proto/layer0/l0_poc.c.
 //
 // What it replaces (vk_memory.cpp, all still there with the switch off): pools imported as 16 MB chunks on demand, merged and
 // imported again as they grow, retired and given back; VRAM mirrors kept in step from the submit captures; write-backs of
@@ -8,20 +8,33 @@
 // GPU's writes land in guest memory, a readback waits only for the submission that wrote the range (wb_pages_note in
 // gpu_buffer_bind). The pointer-following shaders' page table gets each chunk's window address.
 //
-// Step 7a is the host class only: the GPU reads every pool over PCIe (28.6 GB/s streaming, 10.7 GB/s scattered 64-byte
-// reads against VRAM's 560 / 450 GB/s, l0_poc.out): a correctness milestone, expected slower than the mirrors. The VRAM class
-// (CPU_NO_ACCESS pools, then the write-only ones), virtual pools as sparse binds and the policy by creation chain come next
-// (work/assets/native/layer0-impl.md). The submit-time captures stay on: they serve the replay's own CPU reads as submitted
-// (memory_read_as_submitted) and the textures' storage; RX_VK_CAPTURE=0 drops them once the syncs are honest (step 6).
+// Step 7a (=1) is the host class only: the GPU reads every pool over PCIe (28.6 GB/s streaming, 10.3 GB/s scattered 64-byte
+// reads against VRAM's 560 / 444 GB/s, l0_poc.out): a correctness milestone, expected slower than the mirrors.
+// Step 7b (=2) adds the VRAM class for pools the CPU cannot reach (NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS: the render-target and
+// GPU-only pools): their whole 64 KB granules are bound to device-local memory instead, in slots that follow the guest order
+// (a pool is one contiguous run of a 256 MB block, or a block of its own: scattered sparse binds cost 127 us each and read 5x
+// slower). Nothing is copied (the CPU never wrote them) and the CPU's view does not change. Granules a CPU-visible pool also
+// covers, and a pool's partial edge granules, stay host. A finalized VRAM pool is kept for RX_VK_LAYER0_KEEP_S seconds and
+// handed back whole on an Initialize with the same base, size and flags (the 288 MB and 32 MB render-target pools at every
+// map change, second-map.md); a different pool over it, or the time, gives its granules back to the host chunk (or unbinds
+// them), once the GPU is past the work handed out until its finalize. The pools come with their flags and their creation key
+// (a hash of the creating call chain, host/nvn_native.c) through MkwVkRenderer::nvn_pool_native (API version 14).
+// The submit-time captures stay on: they serve the replay's own CPU reads as submitted (memory_read_as_submitted) and the
+// textures' storage; RX_VK_CAPTURE=0 drops them once the syncs are honest (step 6). A CPU read by the replay of a VRAM granule
+// would see guest memory, not what the GPU wrote there: counted and logged (layer0_cpu_read).
 //
-// Switches, read once: RX_VK_LAYER0=1 on; RX_VK_LAYER0_CHUNK_MB=<2..64> the chunk size (default 64: fewer buffer objects,
-// which RADV lists in every submission, ~0.75 us each); RX_VK_LAYER0_EAGER=1 a pool's chunks bound when the game makes it
-// (on the game's thread) rather than at its first binding; RX_VK_LAYER0_SPAN_MB=<n> a first use binds the whole pool when
-// it is at most n MB (default 64), else only the chunks of the range; RX_VK_LAYER0_LOG=1 each chunk bound.
+// Switches, read once: RX_VK_LAYER0=1|2; RX_VK_LAYER0_CHUNK_MB=<2..64> the chunk size (default 64: fewer buffer objects, which
+// RADV lists in every submission, ~0.7 us each); RX_VK_LAYER0_EAGER=1 a pool's chunks bound when the game makes it rather than
+// at its first binding; RX_VK_LAYER0_SPAN_MB=<n> a first use binds the whole pool when it is at most n MB (default 64);
+// RX_VK_LAYER0_LOG=1 each chunk bound and each pool placed (with its key); (=2) RX_VK_LAYER0_KEEP_S=<s> (default 10, 0: none);
+// RX_VK_LAYER0_HOST_KEYS=<hex>,<hex>... creation keys kept host whatever their flags; RX_VK_LAYER0_VRAM_MB=<n> the VRAM
+// class's limit (default 2048).
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <list>
+#include <map>
 #include <mutex>
 #include <vector>
 
@@ -31,6 +44,11 @@
 
 namespace mkwvk {
 namespace {
+
+using clk = std::chrono::steady_clock;
+constexpr uint64_t G = l0::kGran;
+constexpr uint32_t kCpuNoAccess = 0x1, kGpuNoAccess = 0x8, kPhysical = 0x100, kVirtual = 0x200;   // (NVNmemoryPoolFlags)
+constexpr uint64_t kBlock = 256ull << 20;
 
 constexpr VkBufferUsageFlags kWindowUsage =
     VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
@@ -42,18 +60,55 @@ struct Window {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceAddress address = 0;
 };
+// (7b) a VRAM pool: its granule runs, live or kept after its finalize
+struct VPool {
+    uint64_t base, size, key;
+    uint32_t flags;
+    std::vector<std::pair<uint64_t, uint64_t>> runs;   // (granule indices [g0, g1))
+    bool live = true;
+    uint64_t value = 0;   // (finalized: the newest submission handed out then)
+    clk::time_point dead_at{};
+};
+struct Run {
+    uint64_t g1;
+    uint32_t block;
+    uint64_t off;   // (the slot of granule g0 in the block)
+    VPool* owner;
+};
+struct Block {
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    uint64_t size = 0;
+    l0::SlotRanges slots;
+};
+struct LivePool {
+    uint64_t size;
+    uint32_t flags;
+    bool vram;
+};
 
-std::mutex mu;   // (binding: imports, windows, the sparse binds; never held while taking vk_memory.cpp's pools_mu)
+std::mutex mu;   // (binding: imports, windows, the sparse binds, the VRAM class; never held while taking vk_memory.cpp's pools_mu)
+int level = 0;
 Window windows[l0::kWindows];
-l0::ChunkBits* bits = nullptr;                      // (made with the switch's answer, never freed)
+l0::ChunkBits* bits = nullptr;     // (host chunks imported and bound: never cleared)
+l0::ChunkBits* ready = nullptr;    // (64 KB granules bound, host or VRAM: the bindings' check, without the lock)
+l0::ChunkBits* vhint = nullptr;    // (2 MB regions that ever held a VRAM granule: the CPU-read check's quick no)
 std::vector<VkDeviceMemory> chunk_memory;           // (by chunk index: its import; mu held)
-uint64_t chunk = 0, guest_bytes = 0, span_bytes = 0;
+uint64_t chunk = 0, guest_bytes = 0, span_bytes = 0, vram_limit = 0, vram_used = 0;
+double keep_s = 10;
+std::vector<uint64_t> host_keys;
 VkFence bind_fence = VK_NULL_HANDLE;
+uint32_t vram_type = UINT32_MAX;
 bool log_each = false, eager = false;
-// counts (mu held), logged every 600 submissions
+std::multimap<uint64_t, LivePool> live;   // (7b: every pool the game has, by base)
+std::list<VPool> vpools;
+std::map<uint64_t, Run> vram;             // (by first granule: disjoint)
+std::vector<Block> blocks;
+// counts (mu held unless atomic), logged every 600 submissions
 int64_t st_chunks = 0, st_windows = 0, st_bind_calls = 0, st_failed = 0, st_eager = 0;
-double st_import_ms = 0, st_bind_ms = 0, st_max_ms = 0;
-std::atomic<int64_t> st_refused_pool{0}, st_refused_long{0}, st_slow{0}, st_fast{0};
+int64_t st_vpools = 0, st_handback = 0, st_released = 0, st_demoted = 0, st_vram_failed = 0, st_waits = 0;
+uint64_t st_handback_bytes = 0, st_mixed_granules = 0;
+double st_import_ms = 0, st_bind_ms = 0, st_max_ms = 0, st_wait_ms = 0;
+std::atomic<int64_t> st_refused_pool{0}, st_refused_long{0}, st_slow{0}, st_fast{0}, st_cpu_reads{0}, st_early{0};
 
 Window* window_make(uint32_t k) {   // (mu held)
     Window& w = windows[k];
@@ -70,6 +125,17 @@ Window* window_make(uint32_t k) {   // (mu held)
         logf("vk: layer 0: window %u (guest %#llx): no sparse buffer", k, (unsigned long long)l0::window_base(k));
         return nullptr;
     }
+    if (vram_type == UINT32_MAX) {   // (the VRAM class's memory type: device-local, not host-visible, one the windows take)
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(dev.device, b, &req);
+        for (int pass = 0; pass < 2 && vram_type == UINT32_MAX; pass++)
+            for (uint32_t i = 0; i < dev.memory.memoryTypeCount && vram_type == UINT32_MAX; i++) {
+                const VkMemoryPropertyFlags f = dev.memory.memoryTypes[i].propertyFlags;
+                if ((req.memoryTypeBits >> i & 1) && (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+                    (pass || !(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)))
+                    vram_type = i;
+            }
+    }
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = b;
     w.address = vkGetBufferDeviceAddress(dev.device, &da);
@@ -78,39 +144,14 @@ Window* window_make(uint32_t k) {   // (mu held)
     return &w;
 }
 
-/// The chunks of guest [lo, hi) not bound yet: imported, bound into their windows in one vkQueueBindSparse (waited for:
-/// nothing submitted can use them before), then their page-table entries and their bits (mu held)
-void bind_range_locked(uint64_t lo, uint64_t hi) {
-    uint64_t c0, c1;
-    l0::chunk_span(lo, hi, chunk, c0, c1);
-    if (c1 > bits->chunks) c1 = bits->chunks;
-    std::vector<uint64_t> fresh;
-    for (uint64_t c = c0; c < c1; c++)
-        if (!bits->has(c)) fresh.push_back(c);
-    if (fresh.empty()) return;
-    using clk = std::chrono::steady_clock;
-    const auto t0 = clk::now();
-    struct One { uint32_t window; VkSparseMemoryBind bind; };
-    std::vector<One> binds;
-    std::vector<uint64_t> made;
-    for (uint64_t c : fresh) {
-        l0::Place pl[2];
-        const int n = l0::chunk_places(c, chunk, pl);
-        bool ok = n > 0;
-        for (int i = 0; i < n && ok; i++) ok = window_make(pl[i].window) != nullptr;
-        const VkDeviceMemory m = ok ? memory_guest_dma_buf(c * chunk, chunk) : VK_NULL_HANDLE;
-        if (!m) {
-            if (st_failed++ < 8)
-                logf("vk: layer 0: chunk %#llx..%#llx not imported: its bindings stay empty", (unsigned long long)(c * chunk),
-                     (unsigned long long)((c + 1) * chunk));
-            continue;
-        }
-        chunk_memory[c] = m;
-        made.push_back(c);
-        for (int i = 0; i < n; i++) binds.push_back({pl[i].window, {pl[i].offset, chunk, m, 0, 0}});
-    }
-    const auto t1 = clk::now();
-    if (made.empty()) return;
+struct One {
+    uint32_t window;
+    VkSparseMemoryBind bind;
+};
+/// Binds into the windows, one vkQueueBindSparse waited for (mu held). On the queue, as vk_memory.cpp's sparse imports: the
+/// batched submits out first
+VkResult submit_binds(std::vector<One>& binds) {
+    if (binds.empty()) return VK_SUCCESS;
     std::sort(binds.begin(), binds.end(), [](const One& a, const One& b) {
         return a.window != b.window ? a.window < b.window : a.bind.resourceOffset < b.bind.resourceOffset;
     });
@@ -132,7 +173,7 @@ void bind_range_locked(uint64_t lo, uint64_t hi) {
         vkCreateFence(dev.device, &fi, nullptr, &bind_fence);
     }
     VkResult r;
-    {   // (on the queue, as vk_memory.cpp's sparse imports: the batched submits out first)
+    {
         std::lock_guard qk(dev.present_mu);
         queue_flush_locked();
         r = vkQueueBindSparse(dev.queue, 1, &si, bind_fence);
@@ -141,6 +182,73 @@ void bind_range_locked(uint64_t lo, uint64_t hi) {
         r = vkWaitForFences(dev.device, 1, &bind_fence, VK_TRUE, UINT64_MAX);
         vkResetFences(dev.device, 1, &bind_fence);
     }
+    st_bind_calls++;
+    return r;
+}
+/// guest [lo, hi) bound to mem at off (VK_NULL_HANDLE: unbound) in both windows of each of its pieces, appended to binds
+void add_binds(std::vector<One>& binds, uint64_t lo, uint64_t hi, VkDeviceMemory mem, uint64_t off) {
+    std::vector<l0::Piece> ps;
+    l0::range_places(lo, hi, ps);
+    for (const l0::Piece& p : ps)
+        if (window_make(p.window)) binds.push_back({p.window, {p.offset, p.size, mem, mem ? off + p.from : 0, 0}});
+}
+/// the page table's entries of guest [lo, hi): each 2 GB stretch through the window of its start (0: unbound)
+void table_set(uint64_t lo, uint64_t hi, bool bound) {
+    for (uint64_t a = lo; a < hi;) {
+        const uint64_t b = std::min(hi, (a / l0::kStride + 1) * l0::kStride);
+        guest_pages_set(a, b, bound ? windows[l0::window_of(a)].address + l0::window_offset(a) : 0);
+        a = b;
+    }
+}
+/// the VRAM runs over granules [g0, g1), merged (mu held)
+void vram_cut(uint64_t g0, uint64_t g1, std::vector<std::pair<uint64_t, uint64_t>>& out) {
+    auto it = vram.upper_bound(g0);
+    if (it != vram.begin()) --it;
+    for (; it != vram.end() && it->first < g1; ++it)
+        if (it->second.g1 > g0) out.push_back({it->first, it->second.g1});
+}
+
+/// The chunks of guest [lo, hi) not bound yet whose granules there are not all bound already (VRAM): imported, their host
+/// granules (all but the VRAM runs) bound into their windows in one vkQueueBindSparse (waited for: nothing submitted can use
+/// them before), then their page-table entries and their bits (mu held)
+void bind_range_locked(uint64_t lo, uint64_t hi) {
+    uint64_t c0, c1;
+    l0::chunk_span(lo, hi, chunk, c0, c1);
+    if (c1 > bits->chunks) c1 = bits->chunks;
+    std::vector<uint64_t> fresh;
+    for (uint64_t c = c0; c < c1; c++) {
+        if (bits->has(c)) continue;
+        const uint64_t a = std::max(lo, c * chunk), b = std::min(hi, (c + 1) * chunk);
+        if (a < b && ready->all(a, b)) continue;   // (the part needed is VRAM already)
+        fresh.push_back(c);
+    }
+    if (fresh.empty()) return;
+    const auto t0 = clk::now();
+    std::vector<One> binds;
+    std::vector<uint64_t> made;
+    for (uint64_t c : fresh) {
+        l0::Place pl[2];
+        const int n = l0::chunk_places(c, chunk, pl);
+        bool ok = n > 0;
+        for (int i = 0; i < n && ok; i++) ok = window_make(pl[i].window) != nullptr;
+        const VkDeviceMemory m = ok ? memory_guest_dma_buf(c * chunk, chunk) : VK_NULL_HANDLE;
+        if (!m) {
+            if (st_failed++ < 8)
+                logf("vk: layer 0: chunk %#llx..%#llx not imported: its bindings stay empty", (unsigned long long)(c * chunk),
+                     (unsigned long long)((c + 1) * chunk));
+            continue;
+        }
+        chunk_memory[c] = m;
+        made.push_back(c);
+        const uint64_t base = c * chunk;
+        std::vector<std::pair<uint64_t, uint64_t>> cut, host;
+        vram_cut(base / G, (base + chunk) / G, cut);
+        l0::granules_minus(base / G, (base + chunk) / G, cut, host);
+        for (const auto& [g0, g1] : host) add_binds(binds, g0 * G, g1 * G, m, g0 * G - base);
+    }
+    const auto t1 = clk::now();
+    if (made.empty()) return;
+    const VkResult r = submit_binds(binds);
     const auto t2 = clk::now();
     if (r != VK_SUCCESS) {
         logf("vk: layer 0: %zu chunks not bound (VkResult %d): their bindings stay empty", made.size(), (int)r);
@@ -150,16 +258,16 @@ void bind_range_locked(uint64_t lo, uint64_t hi) {
     }
     for (uint64_t c : made) {
         const uint64_t g = c * chunk;
-        const uint32_t k = l0::window_of(g);
-        guest_pages_set(g, g + chunk, windows[k].address + l0::window_offset(g));
+        table_set(g, g + chunk, true);
         bits->set(c);
+        for (uint64_t q = g / G; q < (g + chunk) / G; q++) ready->set(q);
         if (log_each)
-            logf("vk: layer 0: chunk %#llx..%#llx bound (window %u at %#llx)", (unsigned long long)g, (unsigned long long)(g + chunk), k,
-                 (unsigned long long)l0::window_offset(g));
+            logf("vk: layer 0: chunk %#llx..%#llx bound (window %u at %#llx)", (unsigned long long)g, (unsigned long long)(g + chunk),
+                 l0::window_of(g), (unsigned long long)l0::window_offset(g));
     }
     const double ms_imp = std::chrono::duration<double, std::milli>(t1 - t0).count();
     const double ms_bind = std::chrono::duration<double, std::milli>(t2 - t1).count();
-    st_chunks += (int64_t)made.size(), st_bind_calls++, st_import_ms += ms_imp, st_bind_ms += ms_bind;
+    st_chunks += (int64_t)made.size(), st_import_ms += ms_imp, st_bind_ms += ms_bind;
     st_max_ms = std::max(st_max_ms, ms_imp + ms_bind);
     static int slow_logged;
     if (ms_imp + ms_bind > 20 && slow_logged++ < 12)
@@ -167,17 +275,202 @@ void bind_range_locked(uint64_t lo, uint64_t hi) {
              (unsigned long long)(made.size() * chunk >> 20), ms_imp + ms_bind, ms_imp, ms_bind);
 }
 
-/// The first use of a range: its chunks (or its small pool's) bound; true when all of the range's are
+// ---- (7b) the VRAM class ----
+bool slot_take(uint64_t len, uint32_t& block, uint64_t& off) {   // (mu held; contiguous, first fit)
+    if (vram_used + len > vram_limit) return false;
+    for (uint32_t i = 0; i < blocks.size(); i++)
+        if (blocks[i].mem && blocks[i].slots.take(len, off)) {
+            block = i, vram_used += len;
+            return true;
+        }
+    if (vram_type == UINT32_MAX) return false;
+    Block b;
+    b.size = std::max(kBlock, (len + G - 1) / G * G);
+    VkMemoryAllocateFlagsInfo fl{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    fl.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.pNext = &fl;
+    ai.allocationSize = b.size;
+    ai.memoryTypeIndex = vram_type;
+    if (vkAllocateMemory(dev.device, &ai, nullptr, &b.mem) != VK_SUCCESS) return false;
+    b.slots = l0::SlotRanges(b.size);
+    uint32_t at = 0;
+    while (at < blocks.size() && blocks[at].mem) at++;
+    if (at == blocks.size()) blocks.emplace_back();
+    blocks[at] = std::move(b);
+    blocks[at].slots.take(len, off);
+    block = at, vram_used += len;
+    return true;
+}
+void slot_give(uint32_t block, uint64_t off, uint64_t len) {   // (mu held; the GPU is past every use of it)
+    Block& b = blocks[block];
+    b.slots.give(off, len);
+    vram_used -= len;
+    if (b.slots.free_bytes() == b.size) {   // (an empty block goes back to the driver)
+        vkFreeMemory(dev.device, b.mem, nullptr);
+        b = Block{};
+    }
+}
+void wait_for(uint64_t value) {   // (bounded: vk_timeline_wait gives up after 250 ms)
+    if (!value || vk_timeline_completed() >= value) return;
+    const auto t0 = clk::now();
+    vk_timeline_wait(value);
+    st_waits++, st_wait_ms += std::chrono::duration<double, std::milli>(clk::now() - t0).count();
+}
+/// Granules [g0, g1) out of the VRAM class: back to their host chunk where it is bound, else unbound (and out of the bindings'
+/// and the page table's view); their slots freed. After the GPU is past `value` (mu held)
+void vram_release(uint64_t g0, uint64_t g1, uint64_t value) {
+    std::vector<std::pair<uint64_t, uint64_t>> cut;
+    vram_cut(g0, g1, cut);
+    if (cut.empty()) return;
+    wait_for(value);
+    std::vector<One> binds;
+    std::vector<std::pair<uint64_t, uint64_t>> unbound;
+    for (auto [a, b] : cut) {
+        auto it = vram.find(a);
+        const uint64_t r0 = it->first;
+        Run run = it->second;
+        vram.erase(it);
+        const uint64_t x0 = std::max(r0, g0), x1 = std::min(run.g1, g1);
+        if (r0 < x0) vram[r0] = Run{x0, run.block, run.off, run.owner};
+        if (x1 < run.g1) vram[x1] = Run{run.g1, run.block, run.off + (x1 - r0) * G, run.owner};
+        slot_give(run.block, run.off + (x0 - r0) * G, (x1 - x0) * G);
+        if (run.owner) {   // (the owner's runs: what is left of them)
+            std::vector<std::pair<uint64_t, uint64_t>> left;
+            for (const auto& [p0, p1] : run.owner->runs) l0::granules_minus(p0, p1, {{x0, x1}}, left);
+            run.owner->runs.swap(left);
+        }
+        for (uint64_t q = x0; q < x1;) {   // (by host chunk)
+            const uint64_t c = q * G / chunk, end = std::min(x1, (c + 1) * chunk / G);
+            if (bits->has(c)) add_binds(binds, q * G, end * G, chunk_memory[c], q * G - c * chunk);
+            else add_binds(binds, q * G, end * G, VK_NULL_HANDLE, 0), unbound.push_back({q, end});
+            q = end;
+        }
+    }
+    for (const auto& [a, b] : unbound)   // (the bindings' check first: nothing new reaches them)
+        for (uint64_t q = a; q < b; q++) ready->clear(q);
+    if (submit_binds(binds) != VK_SUCCESS) logf("vk: layer 0: granules %#llx..%#llx not given back", (unsigned long long)(g0 * G),
+                                                (unsigned long long)(g1 * G));
+    for (const auto& [a, b] : unbound) table_set(a * G, b * G, false);
+}
+void vpool_release(std::list<VPool>::iterator it) {   // (a kept pool's runs given back, the pool forgotten; mu held)
+    const auto runs = it->runs;
+    for (const auto& [a, b] : runs) vram_release(a, b, it->value);
+    vpools.erase(it);
+    st_released++;
+}
+void kept_expire() {   // (mu held)
+    const auto now = clk::now();
+    for (auto it = vpools.begin(); it != vpools.end();) {
+        auto next = std::next(it);
+        if (!it->live && std::chrono::duration<double>(now - it->dead_at).count() >= keep_s) vpool_release(it);
+        it = next;
+    }
+}
+/// Kept pools overlapping guest [lo, hi) given back; live VRAM granules there moved out (a CPU-visible pool over them: they are
+/// mixed, the CPU's view wins) (mu held)
+void vram_clear_over(uint64_t lo, uint64_t hi, bool demote_live) {
+    for (auto it = vpools.begin(); it != vpools.end();) {
+        auto next = std::next(it);
+        if (!it->live && it->base < hi && lo < it->base + it->size) vpool_release(it);
+        it = next;
+    }
+    if (!demote_live) return;
+    const uint64_t g0 = lo / G, g1 = (hi + G - 1) / G;
+    std::vector<std::pair<uint64_t, uint64_t>> cut;
+    vram_cut(g0, g1, cut);
+    for (const auto& [a, b] : cut) {
+        const uint64_t x0 = std::max(a, g0), x1 = std::min(b, g1);
+        st_demoted++, st_mixed_granules += x1 - x0;
+        vram_release(x0, x1, vk_timeline_pushed());
+    }
+}
+bool vram_class(uint64_t size, uint32_t flags, uint64_t key) {
+    if (level < 2 || !(flags & kCpuNoAccess) || (flags & (kGpuNoAccess | kPhysical | kVirtual)) || size < G) return false;
+    return std::find(host_keys.begin(), host_keys.end(), key) == host_keys.end();
+}
+/// A kept pool of the same base, size and flags made live again: true (mu held)
+bool vram_hand_back(uint64_t base, uint64_t size, uint32_t flags, uint64_t key) {
+    for (auto it = vpools.begin(); it != vpools.end(); ++it)
+        if (!it->live && it->base == base && it->size == size && it->flags == flags) {
+            it->live = true, it->key = key;
+            st_handback++;
+            for (const auto& [a, b] : it->runs) st_handback_bytes += (b - a) * G;
+            if (log_each) logf("vk: layer 0: pool %#llx+%#llx (flags %#x) handed back", (unsigned long long)base, (unsigned long long)size, flags);
+            return true;
+        }
+    return false;
+}
+/// A VRAM-class pool made: its interior granules not covered by a CPU-visible pool, in slots that follow the guest order (mu held)
+void vram_pool_made(uint64_t base, uint64_t size, uint32_t flags, uint64_t key) {
+    vram_clear_over(base, base + size, false);   // (kept ones under it go first)
+    uint64_t g0, g1;
+    l0::interior_granules(base, base + size, g0, g1);
+    std::vector<std::pair<uint64_t, uint64_t>> cut, runs;
+    for (const auto& [b, p] : live)   // (CPU-visible pools over it: their granules stay host)
+        if (!p.vram && b < g1 * G && g0 * G < b + p.size) cut.push_back({b / G, (b + p.size + G - 1) / G});
+    vram_cut(g0, g1, cut);   // (and another live VRAM pool's)
+    std::sort(cut.begin(), cut.end());
+    l0::granules_minus(g0, g1, cut, runs);
+    uint64_t want = 0;
+    for (const auto& [a, b] : runs) want += b - a;
+    st_mixed_granules += (g1 - g0) - want;
+    if (runs.empty()) return;
+    vpools.push_back(VPool{base, size, key, flags, {}, true, 0, {}});
+    VPool* vp = &vpools.back();
+    std::vector<One> binds;
+    std::vector<std::pair<uint64_t, uint64_t>> placed;
+    for (const auto& [a, b] : runs) {
+        uint32_t blk;
+        uint64_t off;
+        if (!slot_take((b - a) * G, blk, off)) {
+            if (st_vram_failed++ < 8)
+                logf("vk: layer 0: pool %#llx+%#llx: no VRAM for %llu MB (limit %llu MB): stays host", (unsigned long long)base,
+                     (unsigned long long)size, (unsigned long long)((b - a) * G >> 20), (unsigned long long)(vram_limit >> 20));
+            continue;
+        }
+        add_binds(binds, a * G, b * G, blocks[blk].mem, off);
+        vram[a] = Run{b, blk, off, vp};
+        placed.push_back({a, b});
+    }
+    if (placed.empty()) {
+        vpools.pop_back();
+        return;
+    }
+    if (submit_binds(binds) != VK_SUCCESS) {
+        logf("vk: layer 0: pool %#llx+%#llx not bound in VRAM", (unsigned long long)base, (unsigned long long)size);
+        for (const auto& [a, b] : placed) {
+            const Run r = vram[a];
+            vram.erase(a);
+            slot_give(r.block, r.off, (b - a) * G);
+        }
+        vpools.pop_back();
+        return;
+    }
+    vp->runs = placed;
+    for (const auto& [a, b] : placed) {
+        for (uint64_t q = a; q < b; q++) ready->set(q);
+        for (uint64_t r = a * G >> 21; r <= (b * G - 1) >> 21; r++) vhint->set(r);
+        table_set(a * G, b * G, true);
+    }
+    st_vpools++;
+    if (log_each)
+        logf("vk: layer 0: pool %#llx+%#llx (flags %#x, key %016llx) in VRAM: %zu runs, %llu of %llu granules", (unsigned long long)base,
+             (unsigned long long)size, flags, (unsigned long long)key, placed.size(), (unsigned long long)want,
+             (unsigned long long)(g1 - g0));
+}
+
+/// The first use of a range: its chunks (or its small pool's) bound; true when all of the range's granules are
 bool bind_now(uint64_t guest, uint64_t size, uint64_t pool_lo, uint64_t pool_hi) {
     uint64_t lo, hi;
     l0::bind_span(guest, size, pool_lo, pool_hi, span_bytes, guest_bytes, lo, hi);
     std::lock_guard lk(mu);
     bind_range_locked(lo, hi);
-    return bits->all(guest, guest + size);
+    return ready->all(guest, guest + size);
 }
 
-/// (guest, size): in one game pool and whole in a window, its chunks bound; false: an empty binding
-bool ready(uint64_t guest, uint64_t size) {
+/// (guest, size): in one game pool and whole in a window, its granules bound; false: an empty binding
+bool ready_for(uint64_t guest, uint64_t size) {
     if (!size || !l0::fits_window(guest, size)) {
         st_refused_long.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -187,17 +480,25 @@ bool ready(uint64_t guest, uint64_t size) {
         st_refused_pool.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    if (bits->all(guest, guest + size)) return true;
+    if (ready->all(guest, guest + size)) return true;
     st_slow.fetch_add(1, std::memory_order_relaxed);
     return bind_now(guest, size, lo, hi);
 }
 
 } // namespace
 
-bool layer0_on() {
-    static const bool want = [] {
+int layer0_level() {
+    static const int want = [] {
         const char* e = getenv("RX_VK_LAYER0");
-        return e && atoi(e) != 0;
+        return e ? std::clamp(atoi(e), 0, 2) : 0;
+    }();
+    return layer0_on() ? want : 0;
+}
+
+bool layer0_on() {
+    static const int want = [] {
+        const char* e = getenv("RX_VK_LAYER0");
+        return e ? std::clamp(atoi(e), 0, 2) : 0;
     }();
     if (!want) return false;
     static std::atomic<int> state{-1};   // (-1: not asked with a device yet; 0 off, 1 on)
@@ -217,35 +518,52 @@ bool layer0_on() {
     const uint64_t limit = why ? 0 : memory_dma_buf_limit();
     if (!why && !limit) why = "guest memory is not a memfd shared as dma-bufs";
     if (why) {
-        logf("vk: layer 0 (RX_VK_LAYER0=1) off: %s", why);
+        logf("vk: layer 0 (RX_VK_LAYER0=%d) off: %s", want, why);
         state.store(0, std::memory_order_release);
         return false;
     }
+    level = want;
     const char* c = getenv("RX_VK_LAYER0_CHUNK_MB");
     chunk = l0::chunk_bytes(c ? (uint64_t)std::max(1, atoi(c)) : 64, limit);
     const char* sp = getenv("RX_VK_LAYER0_SPAN_MB");
     span_bytes = (uint64_t)(sp ? std::max(0, atoi(sp)) : 64) << 20;
     eager = getenv("RX_VK_LAYER0_EAGER") && atoi(getenv("RX_VK_LAYER0_EAGER")) != 0;
     log_each = getenv("RX_VK_LAYER0_LOG") && atoi(getenv("RX_VK_LAYER0_LOG")) != 0;
+    if (const char* k = getenv("RX_VK_LAYER0_KEEP_S")) keep_s = std::max(0.0, atof(k));
+    const char* vm = getenv("RX_VK_LAYER0_VRAM_MB");
+    vram_limit = (uint64_t)(vm ? std::max(0, atoi(vm)) : 2048) << 20;
+    if (const char* hk = getenv("RX_VK_LAYER0_HOST_KEYS"))
+        for (const char* p = hk; *p;) {
+            char* end = nullptr;
+            const unsigned long long v = strtoull(p, &end, 16);
+            if (end == p) break;
+            host_keys.push_back(v);
+            p = *end ? end + 1 : end;
+        }
     guest_bytes = std::min<uint64_t>(host->guest_size(), (uint64_t)l0::kWindows * l0::kStride);
     bits = new l0::ChunkBits(guest_bytes, chunk);
+    ready = new l0::ChunkBits(guest_bytes, G);
+    vhint = new l0::ChunkBits(guest_bytes, 2ull << 20);
     chunk_memory.assign(bits->chunks, VK_NULL_HANDLE);
-    logf("vk: layer 0 on: guest memory in 4 GB windows every 2 GB, chunks of %llu MB (udmabuf's limit %llu MB), bound %s; "
-         "no imports, mirrors or write-backs", (unsigned long long)(chunk >> 20), (unsigned long long)(limit >> 20),
-         eager ? "when the game makes a pool" : "at their first use");
+    logf("vk: layer 0 on (step %s): guest memory in 4 GB windows every 2 GB, chunks of %llu MB (udmabuf's limit %llu MB), bound %s; "
+         "no imports, mirrors or write-backs", level >= 2 ? "7b: CPU_NO_ACCESS pools in VRAM" : "7a: host class",
+         (unsigned long long)(chunk >> 20), (unsigned long long)(limit >> 20), eager ? "when the game makes a pool" : "at their first use");
+    if (level >= 2)
+        logf("vk: layer 0: VRAM class up to %llu MB, finalized pools kept %.0f s, %zu creation keys kept host",
+             (unsigned long long)(vram_limit >> 20), keep_s, host_keys.size());
     state.store(1, std::memory_order_release);
     return true;
 }
 
 BufferRef layer0_bind(uint64_t guest, uint64_t size) {
-    if (!ready(guest, size)) return {};
+    if (!ready_for(guest, size)) return {};
     st_fast.fetch_add(1, std::memory_order_relaxed);
     const uint32_t k = l0::window_of(guest);
     return {windows[k].buffer, l0::window_offset(guest), size, 0};
 }
 
 BufferRef layer0_buffer(uint64_t guest, uint64_t size) {
-    if (!ready(guest, size)) return {};
+    if (!ready_for(guest, size)) return {};
     const uint32_t k = l0::window_of(guest);
     return {windows[k].buffer, l0::window_offset(guest), size, windows[k].address + l0::window_offset(guest)};
 }
@@ -257,17 +575,70 @@ void layer0_pool_created(uint64_t gpu, uint64_t size) {
     bind_range_locked(gpu, std::min(gpu + size, guest_bytes));
 }
 
+void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
+    if (!size || gpu >= (1ull << 40)) return;
+    if (!layer0_on()) {
+        st_early.fetch_add(1, std::memory_order_relaxed);   // (before the device, or off)
+        return;
+    }
+    if (level < 2) return;
+    const bool vr = vram_class(size, flags, key);
+    if (on && vr) {
+        {   // (the same pool again, kept since its finalize: handed back, nothing bound)
+            std::lock_guard lk(mu);
+            if (vram_hand_back(gpu, size, flags, key)) {
+                live.insert({gpu, LivePool{size, flags, vr}});
+                return;
+            }
+        }
+        // (a VRAM pool over granules the GPU may still use as host memory: the work handed out so far finished first, outside
+        // the lock: the replay that finishes it may need the lock for its own bindings)
+        uint64_t g0, g1;
+        l0::interior_granules(gpu, gpu + size, g0, g1);
+        if (g1 > g0 && ready->any(g0 * G, g1 * G)) wait_for(vk_timeline_pushed());
+    }
+    std::lock_guard lk(mu);
+    kept_expire();
+    if (on) {
+        live.insert({gpu, LivePool{size, flags, vr}});
+        if (vr && !vram_hand_back(gpu, size, flags, key)) vram_pool_made(gpu, size, flags, key);
+        else vram_clear_over(gpu, gpu + size, true);   // (a CPU-visible pool over VRAM granules: they go back to host)
+        return;
+    }
+    for (auto [it, end] = live.equal_range(gpu); it != end; ++it)
+        if (it->second.size == size && it->second.flags == flags) {
+            live.erase(it);
+            break;
+        }
+    for (auto it = vpools.begin(); it != vpools.end(); ++it)
+        if (it->live && it->base == gpu && it->size == size && it->flags == flags) {
+            it->live = false, it->value = vk_timeline_pushed(), it->dead_at = clk::now();
+            if (keep_s <= 0) vpool_release(it);
+            break;
+        }
+}
+
 bool layer0_bound(uint64_t lo, uint64_t hi) {
     return bits && bits->any(lo, hi);
+}
+
+void layer0_cpu_read(uint64_t lo, uint64_t n) {
+    if (!vhint || !n || !vhint->any(lo, lo + n)) return;
+    std::lock_guard lk(mu);
+    std::vector<std::pair<uint64_t, uint64_t>> cut;
+    vram_cut(lo / G, (lo + n + G - 1) / G, cut);
+    if (cut.empty()) return;
+    static int logged;
+    if (st_cpu_reads.fetch_add(1, std::memory_order_relaxed) < 20 && logged++ < 20)
+        logf("vk: layer 0: the replay read %#llx+%#llx on the CPU, which is VRAM (the GPU's writes there are not in guest memory)",
+             (unsigned long long)lo, (unsigned long long)n);
 }
 
 void layer0_fill_table() {
     std::lock_guard lk(mu);
     for (uint64_t c = 0; c < bits->chunks; c++)
-        if (bits->has(c)) {
-            const uint64_t g = c * chunk;
-            guest_pages_set(g, g + chunk, windows[l0::window_of(g)].address + l0::window_offset(g));
-        }
+        if (bits->has(c)) table_set(c * chunk, (c + 1) * chunk, true);
+    for (const auto& [g0, r] : vram) table_set(g0 * G, r.g1 * G, true);
 }
 
 void layer0_submission() {
@@ -279,6 +650,17 @@ void layer0_submission() {
          (long long)st_chunks, (unsigned long long)(st_chunks * (int64_t)chunk >> 20), (long long)st_windows, (long long)st_bind_calls,
          (long long)st_eager, st_import_ms, st_bind_ms, st_max_ms, (long long)st_fast.exchange(0), (long long)st_slow.exchange(0),
          (long long)st_refused_pool.exchange(0), (long long)st_refused_long.exchange(0), (long long)st_failed);
+    if (level >= 2) {
+        int64_t kept = 0, livev = 0;
+        for (const VPool& v : vpools) (v.live ? livev : kept)++;
+        logf("vk: layer 0 VRAM: %lld pools live, %lld kept; %llu MB in %zu runs (%zu blocks); %lld placed, %lld handed back (%llu MB), "
+             "%lld given back, %lld demoted, %llu mixed granules host; %lld waits (%.1f ms); %lld not placed; CPU reads of VRAM %lld; "
+             "%lld pool calls before the device",
+             (long long)livev, (long long)kept, (unsigned long long)(vram_used >> 20), vram.size(), blocks.size(), (long long)st_vpools,
+             (long long)st_handback, (unsigned long long)(st_handback_bytes >> 20), (long long)st_released, (long long)st_demoted,
+             (unsigned long long)st_mixed_granules, (long long)st_waits, st_wait_ms, (long long)st_vram_failed,
+             (long long)st_cpu_reads.load(), (long long)st_early.load());
+    }
 }
 
 } // namespace mkwvk

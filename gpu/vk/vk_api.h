@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 13
+#define MKWVK_API_VERSION 14
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA };
 /* (hookshot) the Motion page's rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
    or off, the horizontal's and the vertical's sensitivity in percent, each turned around, and the deadzone (0 to 2) */
@@ -182,6 +182,10 @@ typedef struct MkwVkRenderer {
     /* (native-vk, version 13) a program's stages set (nvnProgramSetShaders[Ext], InitializeFromBuilder), on the game's thread:
        queued for the shader objects' prefetch (vk_shader_object.cpp), nothing done here */
     void (*nvn_program_set)(const nvn_prog *p);
+    /* (native-vk layer 0, version 14) a memory pool made (on 1) or finalized (on 0), not virtual ones: its NVN flags and the key of
+       its creation chain (a hash of the caller's return address and the guest frame-pointer chain above it, 6 deep; 0 at a
+       finalize): what the renderer places it by (gpu/vk/vk_pools.cpp, RX_VK_LAYER0=2) */
+    void (*nvn_pool_native)(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */

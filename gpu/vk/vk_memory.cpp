@@ -1174,6 +1174,7 @@ SubmittedPage& submitted_slot() { return submitted_pages[submitted_next++ % (uns
 std::atomic<int64_t> st_page_copies{0};
 
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
+    if (n && layer0_level() >= 2) layer0_cpu_read(gpu < (1ull << 40) ? gpu : host->gpu_guest(gpu), n);   // (native-vk 7b: counted when VRAM)
     // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. The next words are
     // the same page: the answer is kept until a stamp or a new capture)
     if (n && capture_on() && captures_seen.load(std::memory_order_relaxed)) {
@@ -1268,6 +1269,7 @@ bool overlay_off() {
 std::atomic<int64_t> st_overlaid{0}, st_differed{0};   // (pages read from the shadow; of them, ones guest memory had changed)
 
 const uint8_t* memory_as_submitted(uint64_t guest, const uint8_t* live, uint64_t n, std::vector<uint8_t>& scratch) {
+    if (n && layer0_level() >= 2) layer0_cpu_read(guest, n);   // (native-vk 7b: counted when VRAM)
     if (!n || !shadow_n.load(std::memory_order_relaxed) || overlay_off()) return live;
     std::lock_guard lk(shadow_mu);
     bool any = false;

@@ -60,13 +60,42 @@ class Layer0WindowTests(unittest.TestCase):
         self.assertLess(created.index("layer0_pool_created("), created.index("bg_start()"))
         # the switch is read once, and the hot path never asks the environment
         on = block(pools, "bool layer0_on() {")
-        self.assertIn('static const bool want', on)
-        for hot in ("BufferRef layer0_bind(", "BufferRef layer0_buffer(", "bool ready(", "bool layer0_bound("):
+        self.assertIn('static const int want', on)
+        for hot in ("BufferRef layer0_bind(", "BufferRef layer0_buffer(", "bool ready_for(", "bool layer0_bound(", "void layer0_cpu_read("):
             self.assertNotIn("getenv", block(pools, hot), hot)
         # chunks are bound before their bits are set (a reader without the lock sees a bit only for a bound chunk)
         b = block(pools, "void bind_range_locked(")
-        self.assertLess(b.index("vkWaitForFences"), b.index("bits->set(c)"))
-        self.assertLess(b.index("guest_pages_set("), b.index("bits->set(c)"))
+        self.assertLess(b.index("submit_binds(binds)"), b.index("bits->set(c)"))
+        self.assertIn("vkWaitForFences", block(pools, "VkResult submit_binds("))
+        self.assertLess(b.index("table_set("), b.index("bits->set(c)"))
+
+    def test_vram_class(self):
+        """(7b) API 14 carries pool flags and creation keys; placement and give-back keep their order"""
+        api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
+        replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
+        native = (ROOT / "host" / "nvn_native.c").read_text(encoding="utf-8")
+        pools = (ROOT / "gpu" / "vk" / "vk_pools.cpp").read_text(encoding="utf-8")
+        self.assertIn("#define MKWVK_API_VERSION 14", api)
+        self.assertIn("void (*nvn_pool_native)(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);", api)
+        self.assertIn("t.nvn_pool_native = layer0_pool_native;", replay)
+        init = block(native, "NV(nvnMemoryPoolInitialize) {")
+        self.assertLess(init.index("rx_nvn_pool_native("), init.index("rx_nvn_pool_created("))   # (placed before any eager binding)
+        self.assertIn("pool_creation_key(c)", init)
+        self.assertIn("rx_nvn_pool_native(o->gpu, o->size, o->flags, 0, 0)", block(native, "NV(nvnMemoryPoolFinalize) {"))
+        key = block(native, "static uint64_t pool_creation_key(")
+        for guard in ("fp + 16 <= top", "!(fp & 7)", "next <= fp"):
+            self.assertIn(guard, key)
+        cls = block(pools, "bool vram_class(")
+        for need in ("kCpuNoAccess", "kGpuNoAccess", "kPhysical", "kVirtual", "host_keys"):
+            self.assertIn(need, cls)
+        made = block(pools, "void vram_pool_made(")
+        self.assertLess(made.index("submit_binds(binds)"), made.index("ready->set(q)"))   # (bound before the bindings see it)
+        rel = block(pools, "void vram_release(")
+        self.assertLess(rel.index("wait_for(value)"), rel.index("submit_binds(binds)"))  # (the GPU past its users first)
+        self.assertLess(rel.index("ready->clear(q)"), rel.index("submit_binds(binds)"))  # (no new binding of what is unbound)
+        native_fn = block(pools, "void layer0_pool_native(")
+        self.assertLess(native_fn.index("vram_hand_back("), native_fn.index("wait_for("))  # (a handed-back pool waits for nothing)
+        self.assertIn("vram_clear_over(gpu, gpu + size, true)", native_fn)                 # (a CPU-visible pool over VRAM: host)
 
 
 if __name__ == "__main__":

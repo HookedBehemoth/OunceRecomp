@@ -40,6 +40,7 @@
 #include "vk_gprof.h"
 #include "vk_framegen.h"
 #include "vk_menu.h"
+#include "vk_pools.h"   // (native-vk layer 0)
 #include "vk_jobs.h"
 #include "vk_shader.h"
 #include "vk_state.h"
@@ -4368,6 +4369,9 @@ bool init_pools_make(const VkCommandPoolCreateInfo& pi) {
 
 } // namespace
 
+/// (native-vk layer 0) the newest submission value handed out: work up to it may still reach memory being rebound (vk_pools.cpp)
+uint64_t vk_timeline_pushed() { return fence(); }
+
 bool replay_start() {
     menu_init();
     if (!memory_init() || !vma_init(instance_proc())) return false;
@@ -4457,6 +4461,7 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_texture_released = texture_released_of;
     t.nvn_program_released = program_released_locked;
     t.nvn_program_set = so_program_set;
+    t.nvn_pool_native = layer0_pool_native;   // (native-vk layer 0: vk_pools.cpp)
     t.nvn_read_texels = read_texels;
     t.nvn_write_texels = write_texels;
     t.nvn_invalidate = invalidate;

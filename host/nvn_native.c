@@ -27,6 +27,30 @@
 uint64_t hos_hostcall(const char *name, void (*fn)(Ctx *, void *), void *user);   /* hos_hostcall.c */
 void hos_gpu_track(uint64_t guest, uint64_t size, int on);                          /* nvdrv.c */
 void hos_census_pool(uint64_t base, uint64_t size, uint32_t flags, int on);          /* hos_pool_census.c */
+void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);   /* rx_backend.c (native-vk layer 0) */
+uint64_t hos_guest_size(void);                                                       /* hos_main.c */
+
+/* (native-vk layer 0) a pool's creation key: FNV-1a over the caller's return address and up to 5 more from the guest frame-pointer
+   chain above it (census v3's method, work/assets/native/second-map.md: the policy keys on where a pool is made, not its address,
+   which differs between maps). The chain stops at a frame outside the guest window or a return address outside the code */
+static uint64_t pool_creation_key(const Ctx *c) {
+    uint64_t ra[6];
+    int n = 0;
+    ra[n++] = c->x[30];
+    uint64_t fp = c->x[29];
+    const uint64_t top = hos_guest_size();
+    while (n < 6 && fp >= 0x10000ull && fp + 16 <= top && !(fp & 7)) {
+        const uint64_t next = *(const uint64_t *)GP(fp), r = *(const uint64_t *)GP(fp + 8);
+        if (r < 0x80000000ull || r >= 0x90000000ull) break;
+        ra[n++] = r;
+        if (next <= fp) break;
+        fp = next;
+    }
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (int i = 0; i < n; i++)
+        for (int b = 0; b < 8; b++) h = (h ^ (ra[i] >> (8 * b) & 0xff)) * 0x100000001b3ull;
+    return h;
+}
 
 /* ---- calling convention: arguments from the guest registers ---- */
 #define NV(name) static void n_##name(Ctx *c, void *u_)
@@ -308,6 +332,7 @@ NV(nvnMemoryPoolInitialize) {
     o->gpu = b->mem;
     hos_gpu_track(o->gpu, o->size, 1);   /* (the CPU's writes to it reach the renderer through write watch) */
     hos_census_pool(o->gpu, o->size, o->flags, 1);
+    rx_nvn_pool_native(o->gpu, o->size, o->flags, pool_creation_key(c), 1);   /* (native-vk layer 0: placed by its flags, before any binding) */
     rx_nvn_pool_created(o->gpu, o->size);
     OLOG("pool %#llx size %#llx flags %#x", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags);
     RET(1);
@@ -345,6 +370,7 @@ NV(nvnMemoryPoolFinalize) {
         InterlockedIncrement(&vmap_gen);
         ReleaseSRWLockExclusive(&vmap_lock);
     } else if (o->mem) {
+        rx_nvn_pool_native(o->gpu, o->size, o->flags, 0, 0);   /* (native-vk layer 0: kept a while for an identical Initialize) */
         hos_gpu_track(o->gpu, o->size, 0);
         hos_census_pool(o->gpu, o->size, o->flags, 0);
     }
