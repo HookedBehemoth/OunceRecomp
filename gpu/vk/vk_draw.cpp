@@ -2570,7 +2570,7 @@ bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8
 /// samplers' registrations, the textures' lives (or, without RX_VK_TEX_SERIAL, no texture destroyed). Pushed handles (a user
 /// cbuf's word, a handle program) are read anew: a stage with one is not kept
 void desc_fp_note(uint32_t handle);   // (below: RX_VK_DESC_SLOTGEN's fingerprint)
-struct HeapKeptTex { VkImageView view; Texture* tex; uint32_t tex_id, handle, slot, ver; uint8_t region; };
+struct HeapKeptTex { VkImageView view, entry_view; Texture* tex; uint32_t tex_id, handle, slot, ver; uint8_t region; };
 struct HeapKeptStage {
     const Program* p = nullptr;
     uint64_t key = 0, variant = 0;
@@ -2604,7 +2604,10 @@ bool heap_stage_kept(const NvnState& s, const Program& p, const Stage& st, uint3
         return false;
     const bool serial = texture_serial_on();
     for (const HeapKeptTex& t : c.el) {
-        if (t.slot && t.slot < kHeapSlots && texture_slot_version((int)t.slot) != t.ver) return false;
+        if (t.slot && t.slot < kHeapSlots) {   // (and the entry as kept: another draw's scan may have resolved it anew)
+            const HeapEntry& e = desc_heap_entry(t.region, t.slot);
+            if (texture_slot_version((int)t.slot) != t.ver || !e.valid || e.view != t.entry_view || e.tex_id != t.tex_id) return false;
+        }
         if (serial && t.tex && !texture_alive(t.tex_id)) return false;
     }
     for (const HeapKeptTex& t : c.el) {   // (what the scan would have left: the same as when kept)
@@ -2637,7 +2640,7 @@ void heap_stage_keep(const NvnState& s, const Program& p, const Stage& st, size_
         if (t.slot && slot < kHeapSlots) {
             const HeapEntry& e = desc_heap_entry(ht.region, slot);
             if (!e.valid) return;
-            t.tex = e.tex, t.tex_id = e.tex_id, t.ver = e.ver;
+            t.tex = e.tex, t.tex_id = e.tex_id, t.ver = e.ver, t.entry_view = e.view;
         }
         t.view = dw().imgs[img_first + i].imageView;   // (as built: the dummy where nothing resolved)
         c.el.push_back(t);
