@@ -98,7 +98,8 @@ work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` (output `work/sa
 - New host `.c` files appear in the next build only (the list is taken at the start).
 - Keep builds side by side: copy `hookshot`, `hookshot_vk.so`, `hookshot.map` and the caches (`*.bin`, `*.idx` from a
   warm run) to `work/sa/<name>/` and run with `EXE=`. Present: `census` (census v2), `zstd` (libc + zstd;
-  its caches predate the shader-object stamp change), `so` (shader objects; warm caches in `so_caches_warm`), `rb2`
+  its caches predate the shader-object stamp change), `so` (shader objects; warm caches in `so_caches_warm`), `so2` (compute
+  shader objects, 578f409; HF caches in `so2_caches_hf`), `so3` (its bisection build), `rb2`
   (byte-range readback waits), `tt` (transient targets, step 4), `rt` (stable render-target slots, step 4e: the
   current best). Older ones were removed 2026-11-11.
 
@@ -267,6 +268,32 @@ are totals at the end of the first gameplay window (present 720).
   are still compute pipelines (next: compute shader objects through the same cache).
 - Cold, a stage compiles in ~25 ms on a worker (vs ~62 ms a pipeline): 13.3 s of waits instead of 18.5 s.
 
+### Compute shader objects (2026-11-11; details `work/assets/native/compute-so-impl.md`)
+
+Under `RX_VK_SHADER_OBJECTS=1`, dispatches and the mesh fallback's task/mesh dispatches bind compute VkShaderEXT from the same
+binary cache (`RX_VK_SO_COMPUTE=0`, `RX_VK_SO_FALLBACK=0`: their pipelines); every compute variant noted is made from its
+binaries when the prefetch thread starts (92 in 53 ms). Build `work/sa/so2`, `work/proto/compute-so/ab2.sh`, runs with
+`HOS_GUEST_RT_ALLOC=1`. Kokiri `chisel_kokiri` 60 s; Hyrule Field `chisel_hf_market` 45 s.
+
+| Run | Kokiri playable | HF playable | Compiled at play |
+|---|---|---|---|
+| pipelines, all warm | 18 s | 17 s | 0 |
+| pipelines, driver cold | 41 s | 49 s | 634 / 788 pipelines |
+| SO graphics only, binaries warm, driver cold (the 23 s row above, rerun) | 21 s | 24 s | 92 / 94 compute pipelines |
+| **SO + compute, binaries warm, driver cold** | **17-18 s** | **20-21 s** | **0** |
+| SO + compute, all warm | 16 s | 17 s | 0 |
+| SO + compute, no binaries, driver cold | 35 s | 45 s | 822 / 1137 stages |
+
+- The fallback's GPU hang with shader objects (10 of 10 runs, every mesh stage, one program alone too) was a RADV bug, not the
+  optimizer: a compute shader object's bind does not mark the push constants dirty (a pipeline's does; 26.2.4 and main), so the
+  mesh stage bound after the task stage's dispatch ran without them. `fallback_record` pushes them again after each bind: no hang
+  in 22 runs since. Optimized fallback pipelines (`RX_VK_FALLBACK_OPT=1`) did not hang either on this GPU.
+- fps: Kokiri within noise (~1 fps); **Hyrule Field ~3 fps lower than pipelines** (51.0 / 52.8 vs 48.3 / 49.1 standing / walking),
+  nearly all from the graphics stages (graphics-only shader objects 48.8 / 50.5). Pictures match (standing mean |diff| 1.5-2.3).
+- A route's binaries need more than one run: HF's variants drawn depend on the load's timing (69 stages missed by one warm-up).
+- Not yet the default: next a hybrid (shader objects until each pipeline is built behind them), or linked VS+FS, then the
+  default on RADV. Whole-game binaries offline: planned (needs a re-prepare after the stamp change, ~1.2 GB, an indexed cache).
+
 ### Exact capture ranges (2026-11-10)
 
 The submit-time capture took whole 16 MB import chunks and the soft-watch collection merged GPU ranges < 16 MB apart (a
@@ -396,7 +423,7 @@ this frame's. `RX_VK_NO_READBACK_WAIT=1`: standing 47 -> 60 fps (vsync cap), wal
 is and feeds is being traced (`readback.md`); the exposure meter's read must stay strict (white-flash race).
 
 1. *Done (73a798c, 0d50991: 48.8 -> 56.3 fps standing, 46.7 -> 54.6 walking).* **Readback wait per written range** (exposure meter strict). A/B with `HOS_NO_PACING=1`, walking, exposure checked.
-2. *Done (9aac6fe; off by default).* **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits.
+2. *Done (9aac6fe, compute a41a58c..419da13; off by default).* **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits; with compute, a driver-cold start is as fast as a warm one (Kokiri 17-18 s, HF 20-21 s). Left: the HF fps cost (hybrid with pipelines), whole-game binaries offline.
 3. *Done for the ranges (68fde05: captures 11.4 -> 4.2 MB a frame); mirrors of invalidated pools remain.* **Exact capture ranges** (69% of captured pages are outside pools) and no mirror for pools the game invalidates.
 4. *Done for a and b (on by default: turning 47.4 -> 53.7 fps); c and d behind switches, off (no gain measured).*
    **Transient targets**: per-texture invalidation instead of `destroy_gen`; a moved target takes over the image it
@@ -439,6 +466,9 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   fed by `nvnProgramSetShaders` (MKWVK_API_VERSION 13). Warm: 0 pipeline waits and 0 draws left out (pipelines: 400 waits,
   402 left out), same fps; driver-cold start 41 -> 23 s with binaries kept. Left: compute programs as shader objects, the
   binaries made offline from the seed (step 3 of shader-stream.md 2.4).
+- 2026-11-11: compute programs and the mesh fallback's dispatches as shader objects too (a41a58c, 578f409): driver-cold start
+  with binaries kept 23 -> 17-18 s (Kokiri), 24 -> 20-21 s (HF), 0 compiles. The fallback's hang was a RADV push-constant bug
+  (worked around). HF fps ~3 lower with shader objects (graphics stages), so still off by default.
 - 2026-11-10: exact capture ranges (step 3, first half): captures take the pools' pages of a mirrored import, the soft
   watch's collection no longer merges 16 MB gaps. Kokiri: 11.4 -> 4.2 MB captured and 10.6 -> 5.5 MB mirror-synced a frame,
   ~+1 fps (`RX_VK_CAPTURE_CHUNKS=1 HOS_GPU_RANGE_GAP_MB=16`: as before).
