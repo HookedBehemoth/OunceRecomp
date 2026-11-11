@@ -307,10 +307,25 @@ bool create_device() {
             if ((families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
                 compute_family = i;
     }
-    VkDeviceQueueCreateInfo qs[2] = {q, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
+    VkDeviceQueueCreateInfo qs[3] = {q, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
     qs[1].queueFamilyIndex = compute_family;
     qs[1].queueCount = 1;
     qs[1].pQueuePriorities = &priority;
+    // (native-vk layer 0, RX_VK_LAYER0) a queue of a sparse-binding-only family (RADV has one) for the window buffers' binds: on the
+    // replay's queue a bind waited for the work queued before it, 36-222 ms in Kokiri (RX_VK_LAYER0_BIND_QUEUE=0: that queue)
+    uint32_t sparse_family = UINT32_MAX;
+    {
+        const char* l0 = getenv("RX_VK_LAYER0");
+        const char* bq = getenv("RX_VK_LAYER0_BIND_QUEUE");
+        if (l0 && atoi(l0) > 0 && !(bq && atoi(bq) == 0))
+            for (uint32_t i = 0; i < n && sparse_family == UINT32_MAX; i++)
+                if (i != dev.queue_family && i != compute_family && (families[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) &&
+                    !(families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)))
+                    sparse_family = i;
+    }
+    qs[2].queueFamilyIndex = sparse_family;
+    qs[2].queueCount = 1;
+    qs[2].pQueuePriorities = &priority;
 
     // features: what the hardware has of what the replay uses (all of them on the GPUs MKW-class hardware maps to)
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -468,6 +483,10 @@ bool create_device() {
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
     ci.queueCreateInfoCount = compute_family != UINT32_MAX ? 2 : 1;
+    if (sparse_family != UINT32_MAX) {   // (after the compute one, or in its place)
+        if (compute_family == UINT32_MAX) qs[1] = qs[2];
+        ci.queueCreateInfoCount++;
+    }
     ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
@@ -482,6 +501,10 @@ bool create_device() {
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;
     if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
+    if (sparse_family != UINT32_MAX) {
+        vkGetDeviceQueue(dev.device, sparse_family, 0, &dev.sparse_queue);
+        logf("vk: layer 0's sparse binds on queue family %u (sparse binding only)", sparse_family);
+    }
     if (dev.buffer_marker) buffer_markers_init();
     desc_heap_device_created();
     coopmat_init();

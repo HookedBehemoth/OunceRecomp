@@ -173,7 +173,10 @@ VkResult submit_binds(std::vector<One>& binds) {
         vkCreateFence(dev.device, &fi, nullptr, &bind_fence);
     }
     VkResult r;
-    {
+    if (dev.sparse_queue) {   // (a queue of its own: the bind does not wait for the replay's work queued before it)
+        std::lock_guard qk(dev.sparse_queue_mu);
+        r = vkQueueBindSparse(dev.sparse_queue, 1, &si, bind_fence);
+    } else {
         std::lock_guard qk(dev.present_mu);
         queue_flush_locked();
         r = vkQueueBindSparse(dev.queue, 1, &si, bind_fence);

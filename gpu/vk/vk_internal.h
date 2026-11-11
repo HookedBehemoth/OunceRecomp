@@ -94,6 +94,9 @@ struct Device {
     VkQueue present_queue = VK_NULL_HANDLE;
     std::mutex present_queue_mu;
     uint32_t present_family = 0;   // (present_queue's family, the swapchain's images shared with it)
+    // (native-vk layer 0) a sparse-binding-only queue for the window buffers' binds (vk_pools.cpp), under its own lock
+    VkQueue sparse_queue = VK_NULL_HANDLE;
+    std::mutex sparse_queue_mu;
 };
 extern Device dev;
 
