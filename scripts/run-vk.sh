@@ -66,6 +66,10 @@ t0=$(date +%s)
 env "${env_args[@]}" "$@" "$exe" "$root/work/sa/image/image.bin" --romfs "$romfs" \
     --user "$out/user" > stdout.txt 2> log.txt &
 pid=$!
+# (the game dies with this script: killed or interrupted, it would otherwise keep running, holding the GPU lock and a
+# slot through the descriptors it inherited)
+trap 'kill -9 $pid 2>/dev/null' EXIT
+trap 'exit 130' INT TERM HUP
 peak=0
 for ((t = 0; t < seconds; t++)); do
     kill -0 $pid 2>/dev/null || break
