@@ -1106,6 +1106,8 @@ void mismatch_line(const RState& r, size_t i, uint32_t groups, const DrawTrace& 
             return v;
         }();
         if (!views.empty() && std::find(views.begin(), views.end(), r.j ? r.j->view : 0) == views.end()) return;
+        static const size_t most = getenv("HOS_ENG_CHECK_MAXDRAWS") ? (size_t)atoi(getenv("HOS_ENG_CHECK_MAXDRAWS")) : 0;   // (only jobs of at most that many draws)
+        if (most && r.j && r.j->trace.size() > most) return;
     }
     std::atomic<int>& budget = groups == 1u << G_RENDER ? render_told : groups & (1u << G_BLEND | 1u << G_CHMASK) ? target_told : mismatch_told;
     if (budget.fetch_add(1, std::memory_order_relaxed) >= (&budget == &render_told ? 5 : &budget == &target_told ? 20 : 40)) return;
