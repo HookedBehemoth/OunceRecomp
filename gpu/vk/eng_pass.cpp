@@ -216,10 +216,10 @@ void eng_pass_report(double frames) {
     const auto d = [&](int i) { return (now[i] - last[i]) / frames; };
     logf("eng passes: a frame: %.1f job calls (%.1f layer lists), %.1f with a view (%.1f without); executed %.1f (%.0f draws); fallen back: "
          "no host job %.1f, formats %.1f, hazard %.1f, not resident %.1f, op %.1f, empty %.1f, mode %.1f, no pass %.1f, abort %.1f, "
-         "malformed %.1f; restarts %.1f, state walks %.1f",
+         "malformed %.1f; restarts %.1f, state walks %.1f; in recorded jobs: draws gated off %.1f, gated on %.1f; binding an attachment %.1f",
          d(EC_CALLS), d(EC_LAYER_CALLS), d(EC_JOBS), d(EC_NO_VIEW), d(EC_EXECUTED), d(EC_EXEC_DRAWS), d(EC_FB_NO_JOB), d(EC_FB_FORMATS),
          d(EC_FB_HAZARD), d(EC_FB_RESIDENT), d(EC_FB_OP), d(EC_FB_EMPTY), d(EC_FB_MODE), d(EC_FB_NOPASS), d(EC_FB_ABORT),
-         d(EC_FB_MALFORMED), d(EC_RESTARTS), d(EC_STATE_WALKS));
+         d(EC_FB_MALFORMED), d(EC_RESTARTS), d(EC_STATE_WALKS), d(EC_GATED_OFF), d(EC_GATED_ON), d(EC_BOUND_ATTACHMENT));
     std::memcpy(last, now, sizeof last);
     if (reports % 5 == 0) {
         std::lock_guard lk(abort_mu);

@@ -1120,6 +1120,7 @@ namespace {
 // secondary, the walk to go on at *resume (its CALL_END); false: its NVN records replayed as they are (below replay())
 bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
                   const uint8_t** resume);
+thread_local bool eng_cond_seen = false;    // (E4 self-test: a render condition met inside the job being recorded)
 thread_local bool eng_state_only = false;   // (E4: an executed E3 job's records walked for their state: no draws)
 
 /// The records from p (inside the calls from_calls names) up to end (inside end_calls) or the END they are in
@@ -1661,6 +1662,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (dump_on()) logf("vk: dump-op %03d RENDER_ENABLE %d", dump_seq(), (int)s.render_enabled);
             break;
         case NOP_RENDER_COND: {   // (read on the CPU for now; VK_EXT_conditional_rendering later)
+            if (eng_sec_active()) eng_cond_seen = true;   // (E4 self-test: the job's draws from here are gated)
             if (worker) {   // (as the dry pass found it, with the reports before it written and none after)
                 s.render_enabled = cond_at < par_conds.size() ? par_conds[cond_at] != 0 : true;
                 cond_at++;
@@ -1800,6 +1802,9 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         default: break;
         }
+        if ((h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT || h.op == NOP_DRAW_MESH) && eng_sec_active() &&
+            (eng_cond_seen || !s.render_enabled))   // (E4 self-test: a job's draws a render condition decides, which E3 records before it is known)
+            eng_count(s.render_enabled ? EC_GATED_ON : EC_GATED_OFF);
         if (h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT || h.op == NOP_DRAW_MESH ||
             h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT) {
             if (dry) {
@@ -1976,7 +1981,8 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
     if (job && !eng_formats_equal(job->fmt, pf)) return fall(EC_FB_FORMATS);
     {
         const int t = job ? draw_tex_check(job->tex, job->ntex) : draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size());
-        if (t == 1) return fall(EC_FB_HAZARD);
+        if (t == 1 && !self) return fall(EC_FB_HAZARD);
+        if (t == 1) eng_count(EC_BOUND_ATTACHMENT);   // (the self-test: what the job's draws sample decides, at their recording)
         if (t == 2) return fall(EC_FB_RESIDENT);
     }
     VkCommandBuffer cb = job ? job->cb : VK_NULL_HANDLE;
@@ -1997,9 +2003,11 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
         eng_snap = s;
         const size_t ubn = ub_updates.size();
         draw_sec_enter();
+        eng_cond_seen = !s.render_enabled;   // (a job called with rendering off: all its draws gated)
         VkCommandBuffer sec = cb;
         replay(sec, s, p + size, sc.end, &calls, &calls);
         const char* why = draw_sec_leave(false);
+        eng_cond_seen = false;
         vkEndCommandBuffer(cb);
         if (why) {   // (it left the pass: the state as before it, the job replayed inline from its CALL_BEGIN)
             s = eng_snap;

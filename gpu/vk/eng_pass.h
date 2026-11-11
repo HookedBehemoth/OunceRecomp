@@ -57,6 +57,9 @@ enum EngCount {
     EC_FB_MALFORMED,   // no CALL_END after a CALL_BEGIN
     EC_RESTARTS,       // renderings ended and begun again around an execute (no mixing)
     EC_STATE_WALKS,    // E3 jobs executed: their NVN records walked for state only
+    EC_GATED_OFF,      // (self-test) draws inside recorded jobs left out by a render condition or render enable (E3 cannot know them at record time)
+    EC_GATED_ON,
+    EC_BOUND_ATTACHMENT, // (self-test) jobs that bind a handle of one of the pass's attachments (E3's rule falls back; the self-test records, the draws' own hazard check decides)       // (self-test) draws inside recorded jobs under a render condition that held
     EC_N
 };
 void eng_count(int c, int64_t n = 1);
