@@ -76,6 +76,8 @@ const char* const kGroup[G_N] = {"program", "viewport", "scissor", "depth range"
 struct DrawTrace {
     uint64_t h[G_N];
     bool filtered;   // (the groups a program reads made by what it reads: reads_of; false: the job had no program for it)
+    int8_t ncolor;   // (the colour targets it was made for: the pass formats' / the replay's)
+    VkFormat color0, depth;
 };
 /// The groups made from what a program reads (the rest of a stage's bindings may be anything a job inherits: unused)
 constexpr uint32_t kFiltered = 1u << G_BLEND | 1u << G_CHMASK | 1u << G_VATTR | 1u << G_VSTREAM | 1u << G_VBUF | 1u << G_UBO |
@@ -257,6 +259,8 @@ struct Job {
     std::vector<uint32_t> tex;
     std::vector<uint64_t> deferred;
     std::vector<DrawTrace> trace;
+    std::vector<EngDescPatch> patches;   // (bank words from deferred handles: rewritten at the submit)
+    std::vector<EngDrawDesc> descs;      // (check: per job draw, its descriptors as made here; why EDW_N: none made)
     std::atomic<uint64_t> used_value{0};   // (E4: the recording that executed it)
     std::atomic<bool> replayed{false};
 };
@@ -271,19 +275,23 @@ std::atomic<uint64_t> retired_through{0};
 // ---- counts (relaxed atomics; the frame log reads them every 120 presents) ----
 enum Count { C_JOBS, C_DRAWS, C_DRAWS_REC, C_DRAWS_SKIPPED, C_PKT, C_PKT_STALE, C_DEFERRED, C_DEFERRED_BUFS, C_REC_NS, C_DEC_NS,
              C_CHECK_JOBS, C_CHECK_DRAWS, C_CHECK_MISMATCH_DRAWS, C_CHECK_NO_JOB, C_CHECK_COUNT_DIFF, C_PUBLISHED, C_LOOKUPS,
-             C_LOOKUP_HITS, C_PROG_ANSWERS, C_CHECK_UNFILTERED, C_CHECK_FILTERED, C_N };
+             C_LOOKUP_HITS, C_PROG_ANSWERS, C_CHECK_UNFILTERED, C_CHECK_FILTERED, C_DESC_CHECKED, C_DESC_MISMATCH, C_DESC_NONE, C_PATCHED, C_PATCH_NO_JOB, C_KIND_INDIRECT, C_KIND_MESH_OTHER, C_KIND_PRIM, C_MESH_REC, C_N };
 std::atomic<int64_t> cnt[C_N];
 std::atomic<int64_t> why_n[WHY_N];
 std::atomic<int64_t> group_mismatch[G_N];
 std::atomic<int64_t> op_refused[NOP_COUNT_];
+std::atomic<int64_t> desc_why[EDW_N];
+const char* const kDescWhy[EDW_N] = {"made", "no heap program", "uniform buffer not in layer 0", "uniform buffer unaligned",
+                                     "storage buffer not bound in layer 0", "written storage buffer", "storage buffer not read by address", "texel buffer", "storage image",
+                                     "handle program", "handle in a uniform buffer", "deferred handle pushed", "ring", "stream"};
 inline void add(Count c, int64_t v = 1) { cnt[c].fetch_add(v, std::memory_order_relaxed); }
 
 // ---- the programs the replay picked for job draws: by what program_for picks by, the job threads' lookup ----
 struct Pub { const Program* p; const SoProg* so; };
 std::shared_mutex pub_mu;
 std::unordered_map<uint64_t, Pub> published;
-uint64_t pick_key(const NvnState& s, const uint8_t ct[8]) {
-    uint64_t h = fnv(kFnv0, s.vattr, sizeof s.vattr);
+uint64_t pick_key(const NvnState& s, const uint8_t ct[8], bool mesh = false) {
+    uint64_t h = fnv(mesh ? kFnv0 ^ 0x4d455348 : kFnv0, s.vattr, sizeof s.vattr);
     h = fnv(h, &s.nvattr, 4);
     h = fnv(h, ct, 8);
     const uint64_t sig = prog_stage_sig(s.prog);
@@ -386,6 +394,11 @@ struct Walk {
     std::vector<DrawTrace> trace;
     uint32_t npkt = 0;
     uint16_t ops[NOP_COUNT_];
+    EngBindRefs refs;      // (the deferred bind each slot's word came from: the submit's rewrite of the banks)
+    uint32_t nbinds = 0;   // (the job's deferred handle binds so far, in record order: as resolve_deferred meets them)
+    std::vector<EngDescPatch> patches;
+    std::vector<EngDrawDesc> descs;
+    EngDrawDesc desc;
 };
 thread_local Walk* walk_tls = nullptr;
 Walk& walk() {
@@ -407,12 +420,21 @@ struct Rec {
 };
 
 /// Handle words bound (what: 0 texture, 1 sampler, 2 image; 3 uniform, 4 storage ranges), immediate (src 0) or deferred
-void note_bind(Walk& w, int what, int stage, int first, int n, const uint64_t* h, uint64_t src) {
+/// (resolve_deferred's rule: a handle bind that reads the game's array at the submit)
+inline bool deferred_handles(uint32_t op, const uint8_t* a, uint32_t avail) {
+    if (op != NOP_BIND_TEX && op != NOP_BIND_IMG && op != NOP_BIND_SAMP) return false;
+    nvn_p_bind_handles b;
+    std::memset(&b, 0, sizeof b);
+    std::memcpy(&b, a, std::min<size_t>(sizeof b, avail));
+    return b.src && b.n > 0 && b.n <= 32;
+}
+void note_bind(Walk& w, int what, int stage, int first, int n, const uint64_t* h, uint64_t src, uint32_t bind = 0) {
     if (stage < 0 || stage >= kNvnStages || first < 0) return;
     const int lim = what == 2 ? 32 : what >= 3 ? 16 : 128;
     const uint64_t step = what >= 3 ? sizeof(NVNbufferRange) : 8;
     for (int k = 0; k < n && first + k < lim; k++) {
         w.d.src[what][stage][first + k] = src ? src + step * (uint64_t)k : 0;
+        if (what < 3) w.refs[what][stage][first + k] = src && bind ? bind << 8 | (uint32_t)k : 0;
         if (src) {
             if (what < 3) w.deferred.push_back(src + step * (uint64_t)k);
         } else if (h && (what == 0 || what == 2) && h[k]) {
@@ -428,30 +450,50 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
         if (!s.render_enabled) r.gated++;
         return;
     }
-    if (op != NOP_DRAW && op != NOP_DRAW_IDX) return r.fail(WHY_DRAW_KIND);
+    const bool mesh = op == NOP_DRAW_MESH;
     nvn_p_draw dr{};
     nvn_p_draw_idx di{};
+    nvn_p_draw_mesh dm{};
     if (op == NOP_DRAW) std::memcpy(&dr, pl, sizeof dr);
-    else std::memcpy(&di, pl, sizeof di);
+    else if (op == NOP_DRAW_IDX) std::memcpy(&di, pl, sizeof di);
+    else if (mesh) std::memcpy(&dm, pl, sizeof dm);
+    else return r.fail(WHY_DRAW_KIND), void(add(C_KIND_INDIRECT));
+    // (a mesh draw: DrawMeshTasks(0, n) only; a first task other than 0 or an indirect one takes the replay's argument ring)
+    if (mesh && (dm.kind != 0 || dm.x != 0 || dm.indirect)) return r.fail(WHY_DRAW_KIND), void(add(C_KIND_MESH_OTHER));
     const int prim = op == NOP_DRAW ? dr.prim : di.prim;
-    VkPrimitiveTopology topo;
-    if (prim == NVN_DRAW_PRIMITIVE_QUADS || !eng_draw_topology(prim, &topo)) return r.fail(WHY_DRAW_KIND);
+    VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    if (!mesh && (prim == NVN_DRAW_PRIMITIVE_QUADS || !eng_draw_topology(prim, &topo))) return r.fail(WHY_DRAW_KIND), void(add(C_KIND_PRIM));
     if (!s.has_prog) return r.fail(WHY_NO_PROG);
     Pub pub{};
     {
         std::shared_lock lk(pub_mu);
-        const auto it = published.find(pick_key(s, r.types));
+        const auto it = published.find(pick_key(s, r.types, mesh));
         if (it == published.end()) return r.fail(WHY_NO_PROG);
         pub = it->second;
     }
     const Program& p = *pub.p;
     const SoProg& so = *pub.so;
-    if (!p.ready.load(std::memory_order_acquire) || p.failed || !so.ready.load(std::memory_order_acquire) || so.failed || !so.vs ||
-        p.mesh || p.fallback)
+    if (!p.ready.load(std::memory_order_acquire) || p.failed || !so.ready.load(std::memory_order_acquire) || so.failed ||
+        p.mesh != mesh || p.fallback || !(mesh ? so.ms : so.vs))
         return r.fail(WHY_PROG_NOT_READY);
-    eng_draw_state(r.cb, s, p, so, r.at, topo, r.first);
+    const HeapProgram* hp = so.heap ? desc_heap_program(p) : nullptr;
+    if (!hp) return r.fail(WHY_DESCRIPTORS), void(desc_why[EDW_NO_HEAP].fetch_add(1, std::memory_order_relaxed));
+    EngDrawDesc& dd = sw().check && !w.descs.empty() ? w.descs.back() : w.desc;
+    if (!eng_draw_descriptors(s, p, *hp, r.at, w.refs, dd)) {
+        desc_why[std::min<uint32_t>(dd.why, EDW_N - 1)].fetch_add(1, std::memory_order_relaxed);
+        return r.fail(WHY_DESCRIPTORS);
+    }
+    w.patches.insert(w.patches.end(), dd.patches.begin(), dd.patches.end());
+    eng_draw_state(r.cb, s, p, so, r.at, topo, r.first, mesh);
+    if (r.first) desc_heap_bind_job(r.cb);
     r.first = false;
-    r.fail(WHY_DESCRIPTORS);   // (the program's banks, buffers and texture words: not recorded yet, see the head of this file)
+    desc_heap_push(r.cb, dd.push, dd.push_bytes);
+    if (mesh) {
+        vkCmdDrawMeshTasksEXT(r.cb, (uint32_t)std::max(dm.y, 0), 1, 1);
+        r.ndraws++;
+        add(C_DRAWS_REC), add(C_MESH_REC);
+        return;
+    }
     // vertex streams, from layer 0's windows (a range not bound there yet: the replay binds it, the job cannot)
     VkBuffer vb[16];
     VkDeviceSize vo[16], vz[16], vs[16];
@@ -486,6 +528,8 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
 void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
     add(C_DRAWS);
     if (sw().check) {
+        w.descs.emplace_back();
+        w.descs.back().why = EDW_N;   // (none made, until record_draw makes it)
         w.trace.emplace_back();
         DrawTrace& t = w.trace.back();
         trace_of(w.s, w.d, op, pl, n, t);
@@ -495,11 +539,12 @@ void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
             Pub pub{};
             {
                 std::shared_lock lk(pub_mu);
-                const auto it = published.find(pick_key(w.s, r->types));
+                const auto it = published.find(pick_key(w.s, r->types, op == NOP_DRAW_MESH));
                 if (it != published.end()) pub = it->second;
             }
             if (pub.p && pub.p->ready.load(std::memory_order_acquire) && !pub.p->failed) {
                 reads_of(w.s, w.d, *pub.p, r->at.n, t);
+                t.ncolor = (int8_t)r->at.n, t.color0 = r->at.color[0], t.depth = r->at.depth;
                 t.h[G_VKPROG] = pub.p->key ^ pub.p->variant * 31;
             }
         }
@@ -561,6 +606,14 @@ void walk_records(Walk& w, Rec* r, const uint8_t* p, const uint8_t* end) {
             w.npkt++;
             if (const nvn_pkt* k = nvn_pkt_live(&rp)) {
                 walk_packet(w, r, *k);
+                // (the records it stands for are walked at the submit all the same: their deferred binds keep the numbering)
+                for (const uint8_t *q = p + h.size, *qe = std::min(p + h.size + rp.skip, end); q + 8 <= qe;) {
+                    nvn_op_hdr qh;
+                    std::memcpy(&qh, q, sizeof qh);
+                    if (qh.size < 8 || (qh.size & 7)) break;
+                    if (deferred_handles(qh.op, q + 8, qh.size - 8)) w.nbinds++;
+                    q += qh.size;
+                }
                 p += h.size + rp.skip;
                 continue;
             }
@@ -654,7 +707,8 @@ void walk_records(Walk& w, Rec* r, const uint8_t* p, const uint8_t* end) {
             int n = 0;
             while (n < b.n && b.first + n < lim) n++;
             for (int k = 0; k < n; k++) to[b.first + k] = b.h[k];
-            note_bind(w, h.op == NOP_BIND_TEX ? 0 : h.op == NOP_BIND_SAMP ? 1 : 2, b.stage, b.first, n, b.h, b.src);
+            const uint32_t bind = deferred_handles(h.op, a, avail) ? ++w.nbinds : 0;
+            note_bind(w, h.op == NOP_BIND_TEX ? 0 : h.op == NOP_BIND_SAMP ? 1 : 2, b.stage, b.first, n, b.h, b.src, bind);
             if (b.src) add(C_DEFERRED, n);
             break;
         }
@@ -728,6 +782,7 @@ struct RState {
     size_t i = 0;
     int64_t pending = -1;   // (the job draw whose program draw() picks next)
     DrawTrace pend{};       // (its trace as the replay has it)
+    int64_t desc_i = -1;    // (the job draw whose descriptors heap_draw gives next)
     uint32_t pend_groups = ~0u;
     Deferred d;
     int told = 0;
@@ -750,7 +805,10 @@ void flush_pending(RState& r) {
     r.pend_groups = ~0u;
 }
 void mismatch_line(const RState& r, size_t i, uint32_t groups, const DrawTrace& a, const DrawTrace& b) {
-    if (mismatch_told.fetch_add(1, std::memory_order_relaxed) >= 40) return;
+    static std::atomic<int> render_told{0};
+    if (groups == 1u << G_RENDER ? render_told.fetch_add(1, std::memory_order_relaxed) >= 5
+                                 : mismatch_told.fetch_add(1, std::memory_order_relaxed) >= 40)
+        return;
     char line[600];
     int n = snprintf(line, sizeof line, "vk: eng jobs: MISMATCH job %u (view %#llx) draw %zu of %zu:", r.serial,
                      (unsigned long long)(r.j ? r.j->view : 0), i, r.j ? r.j->trace.size() : 0);
@@ -758,6 +816,9 @@ void mismatch_line(const RState& r, size_t i, uint32_t groups, const DrawTrace& 
         if (groups >> g & 1)
             n += snprintf(line + n, sizeof line - n, " %s (%016llx job, %016llx replay);", kGroup[g], (unsigned long long)a.h[g],
                           (unsigned long long)b.h[g]);
+    if (groups & (1u << G_BLEND | 1u << G_CHMASK))
+        snprintf(line + n, sizeof line - n, " targets: job %d colour (%d, depth %d), replay %d (%d, depth %d)", a.ncolor, (int)a.color0,
+                 (int)a.depth, b.ncolor, (int)b.color0, (int)b.depth);
     logf("%s", line);
 }
 
@@ -890,8 +951,9 @@ void eng_job_replay_program(const NvnState& s, const Program& p, const SoProg* s
     if (!r.active || r.pending < 0) return;
     const size_t i = (size_t)r.pending;
     r.pending = -1;
-    if (so && !p.mesh && !p.fallback) {   // (for the job threads: the program these draws pick, by what program_for picks by)
-        const uint64_t k = pick_key(s, ct);
+    r.desc_i = (int64_t)i;
+    if (so && !p.fallback) {   // (for the job threads: the program these draws pick, by what program_for picks by)
+        const uint64_t k = pick_key(s, ct, p.mesh);
         bool fresh = false;
         {
             std::shared_lock lk(pub_mu);
@@ -926,6 +988,7 @@ void eng_job_replay_program(const NvnState& s, const Program& p, const SoProg* s
         DrawTrace& t = r.pend;
         uint32_t groups = r.pend_groups;
         reads_of(s, r.d, p, at.n, t);
+        t.ncolor = (int8_t)at.n, t.color0 = at.color[0], t.depth = at.depth;
         for (int g = 0; g < G_N; g++)
             if ((kFiltered >> g & 1) && t.h[g] != w.h[g]) groups |= 1u << g;
         t.h[G_VKPROG] = p.key ^ p.variant * 31;
@@ -938,6 +1001,114 @@ void eng_job_replay_program(const NvnState& s, const Program& p, const SoProg* s
         if (groups) add(C_CHECK_MISMATCH_DRAWS), mismatch_line(r, i, groups, w, t);
         add(C_CHECK_FILTERED);
         r.pend_groups = ~0u;
+    }
+}
+
+bool eng_job_stream_alloc(uint32_t n, uint64_t align, VkBuffer* buf, uint64_t* off, uint8_t** map, VkDeviceAddress* addr) {
+    // (one host-visible buffer for every job thread, taken in turn and wrapping: a block is reused ~64 MB of banks later, dozens
+    // of frames after the GPU read it)
+    struct Stream { VkBuffer b = VK_NULL_HANDLE; VmaAllocation a = nullptr; uint8_t* map = nullptr; VkDeviceAddress addr = 0; uint64_t size = 0; };
+    static const Stream st = [] {
+        Stream x;
+        void* m = nullptr;
+        x.size = 64ull << 20;
+        if (!create_buffer(x.size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                           true, x.b, x.a, &m, true) || !m) {
+            logf("vk: eng jobs: the job stream was not made");
+            return Stream{};
+        }
+        x.map = (uint8_t*)m;
+        VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        da.buffer = x.b;
+        x.addr = vkGetBufferDeviceAddress(dev.device, &da);
+        return x;
+    }();
+    static std::atomic<uint64_t> at{0};
+    if (!st.map || !n || n > (1u << 20)) return false;
+    align = std::max<uint64_t>(align, 16);
+    uint64_t was = at.load(std::memory_order_relaxed), from;
+    do {
+        from = (was + align - 1) & ~(align - 1);
+        if (from + n > st.size) from = 0;
+    } while (!at.compare_exchange_weak(was, from + n, std::memory_order_relaxed));
+    *buf = st.b, *off = from, *map = st.map + from, *addr = st.addr + from;
+    return true;
+}
+
+/// The words of a stage's driver bank (c0 / c2) or c1 the program reads (its handles, its storage tables; c1 and others: all of it)
+bool read_same(const Program& p, uint32_t stage, uint32_t index, const uint8_t* a, const uint8_t* b, uint32_t n) {
+    if (stage >= p.stages.size() || (index != 0 && index != 2)) return !std::memcmp(a, b, n);
+    const Shader::Info& info = p.stages[stage].info;
+    const auto word = [&](uint32_t o, uint32_t len) { return o + len > n || !std::memcmp(a + o, b + o, len); };
+    for (const auto& x : info.texture_descriptors)
+        for (uint32_t k = 0; k < x.count; k++) {
+            const uint32_t step = 1u << x.size_shift;
+            if (x.handle_program == ~0U && x.cbuf_index == index && !word(x.cbuf_offset + k * step, 4)) return false;
+            if (x.has_secondary && x.secondary_cbuf_index == index && !word(x.secondary_cbuf_offset + k * step, 4)) return false;
+        }
+    for (const auto& x : info.image_descriptors)
+        for (uint32_t k = 0; k < x.count; k++)
+            if (x.handle_program == ~0U && x.cbuf_index == index && !word(x.cbuf_offset + k * (1u << x.size_shift), 4)) return false;
+    for (const auto& x : info.storage_buffers_descriptors)
+        for (uint32_t k = 0; k < x.count; k++)
+            if (x.cbuf_index == index && !word(x.cbuf_offset + k * 16, 16)) return false;
+    return true;
+}
+/// An Indirect bank (HeapProgram::banks[k]): the handle words its textures read
+bool bank_read_same(const Program& p, size_t k, const uint8_t* a, const uint8_t* b, uint32_t n) {
+    const HeapProgram* hp = desc_heap_program(p);
+    if (!hp || k >= hp->banks.size()) return !std::memcmp(a, b, n);
+    for (const HeapTex& t : hp->tex)
+        if (t.kind == HeapTex::Indirect && t.bank == k && t.cbuf_offset + 4 <= n && std::memcmp(a + t.cbuf_offset, b + t.cbuf_offset, 4))
+            return false;
+    return true;
+}
+void eng_job_replay_desc(const EngDrawDesc& d) {
+    RState& r = rs();
+    if (!r.active || !r.j || r.desc_i < 0 || !sw().check) return;
+    const size_t i = (size_t)r.desc_i;
+    r.desc_i = -1;
+    if (i >= r.j->descs.size()) return;
+    const EngDrawDesc& w = r.j->descs[i];
+    if (w.why != EDW_OK) return add(C_DESC_NONE);
+    add(C_DESC_CHECKED);
+    const char* what = nullptr;
+    size_t at = 0;
+    if (w.els.size() != d.els.size()) what = "buffer element count";
+    for (size_t k = 0; !what && k < w.els.size(); k++) {
+        const EngDescEl &a = w.els[k], &b = d.els[k];
+        at = k;
+        if (a.kind != b.kind) what = "buffer element kind";
+        else if (a.kind == 1 && (a.buffer != b.buffer || a.offset != b.offset || a.range != b.range)) what = "buffer range";
+        else if (a.kind == 2 && (a.n != b.n || !read_same(*w.prog, a.stage, a.index, a.bytes, b.bytes, a.n))) what = "uploaded bank bytes";
+    }
+    if (!what && w.handles != d.handles) what = "pushed handles";
+    if (!what && w.banks.size() != d.banks.size()) what = "bank count";
+    for (size_t k = 0; !what && k < w.banks.size(); k++)
+        if (w.banks[k].second != d.banks[k].second || !d.banks[k].first ||
+            !bank_read_same(*w.prog, k, w.banks[k].first, d.banks[k].first, w.banks[k].second))
+            what = "indirect bank bytes", at = k;
+    if (!what && (w.push_bytes != d.push_bytes || std::memcmp(w.push, d.push, desc_heap_push_base()))) what = "classic push words";
+    if (!what) return;
+    add(C_DESC_MISMATCH);
+    static std::atomic<int> told{0};
+    if (told++ < 30) {
+        char extra[200] = "";
+        if (!std::strcmp(what, "uploaded bank bytes") || !std::strcmp(what, "indirect bank bytes")) {
+            const EngDescEl* a = !std::strcmp(what, "uploaded bank bytes") ? &w.els[at] : nullptr;
+            const uint8_t* pa = a ? a->bytes : w.banks[at].first;
+            const uint8_t* pb = a ? d.els[at].bytes : d.banks[at].first;
+            const uint32_t n = a ? a->n : w.banks[at].second;
+            for (uint32_t o = 0; o + 4 <= n; o += 4)
+                if (std::memcmp(pa + o, pb + o, 4)) {
+                    uint32_t x, y;
+                    std::memcpy(&x, pa + o, 4), std::memcpy(&y, pb + o, 4);
+                    snprintf(extra, sizeof extra, ": first at +%#x, %#x job / %#x replay", o, x, y);
+                    break;
+                }
+        }
+        logf("vk: eng jobs: DESC MISMATCH job %u (view %#llx) draw %zu: %s (element %zu)%s", r.serial, (unsigned long long)r.j->view, i,
+             what, at, extra);
     }
 }
 
@@ -976,6 +1147,26 @@ void eng_job_report(double frames) {
              (c[C_CHECK_UNFILTERED] - last[C_CHECK_UNFILTERED]) / frames, (c[C_CHECK_MISMATCH_DRAWS] - last[C_CHECK_MISMATCH_DRAWS]) / frames,
              (long long)c[C_CHECK_MISMATCH_DRAWS], (long long)c[C_CHECK_COUNT_DIFF], gl[0] ? gl : " none");
     }
+    {
+        static int64_t last_d[EDW_N];
+        char dl[600];
+        n = 0;
+        dl[0] = 0;
+        for (int i = 0; i < EDW_N && n < 580; i++) {
+            const int64_t v = desc_why[i].load(std::memory_order_relaxed);
+            if (v != last_d[i]) n += snprintf(dl + n, sizeof dl - n, " %s %.1f,", kDescWhy[i], (v - last_d[i]) / frames);
+            last_d[i] = v;
+        }
+        logf("vk: eng jobs: draws whose descriptors were not made, a frame:%s; patched at the submit %.1f words a frame (%.2f jobs not "
+             "found); draws not taken: %.1f indirect, %.1f mesh with a first or indirect, %.1f quads or other primitives; %.1f mesh draws recorded",
+             dl[0] ? dl : " none", (c[C_PATCHED] - last[C_PATCHED]) / frames, (c[C_PATCH_NO_JOB] - last[C_PATCH_NO_JOB]) / frames,
+             (c[C_KIND_INDIRECT] - last[C_KIND_INDIRECT]) / frames, (c[C_KIND_MESH_OTHER] - last[C_KIND_MESH_OTHER]) / frames,
+             (c[C_KIND_PRIM] - last[C_KIND_PRIM]) / frames, (c[C_MESH_REC] - last[C_MESH_REC]) / frames);
+        if (sw().check)
+            logf("vk: eng jobs check: descriptors: %.1f draws a frame compared with the replay's, %.2f differ (%lld so far), %.1f not made "
+                 "on the job thread", (c[C_DESC_CHECKED] - last[C_DESC_CHECKED]) / frames, (c[C_DESC_MISMATCH] - last[C_DESC_MISMATCH]) / frames,
+                 (long long)c[C_DESC_MISMATCH], (c[C_DESC_NONE] - last[C_DESC_NONE]) / frames);
+    }
     {   // (the ops that kept a job from being recorded, so far)
         static int told = 0;
         if (told++ % 5 == 0) {
@@ -1009,6 +1200,8 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     w.s = NvnState{};
     w.d.clear();
     w.tex.clear(), w.deferred.clear(), w.trace.clear(), w.npkt = 0;
+    std::memset(w.refs, 0, sizeof w.refs);
+    w.nbinds = 0, w.patches.clear(), w.descs.clear();
     std::memset(w.ops, 0, sizeof w.ops);
     Rec r;
     EngPassFormats fmt{};
@@ -1054,6 +1247,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     j.why = r.why, j.bytes = (uint32_t)bytes, j.npkt = w.npkt;
     std::memcpy(j.ops, w.ops, sizeof j.ops);
     j.tex.swap(w.tex), j.deferred.swap(w.deferred), j.trace.swap(w.trace);
+    j.patches.swap(w.patches), j.descs.swap(w.descs);
     j.used_value.store(0, std::memory_order_relaxed);
     j.replayed.store(false, std::memory_order_relaxed);
     j.pub.view_key = ji->view;
@@ -1074,4 +1268,17 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     why_n[r.why].fetch_add(1, std::memory_order_relaxed);
     add(C_JOBS);
     add(C_REC_NS, now_ns() - t0);
+}
+
+/// (the host, at the submit, host/nvn_native.c resolve_deferred, on the submitting thread) a job's deferred handle bind number bind
+/// (1 first) as the game's array holds it now: the bank words made from it rewritten
+extern "C" void mkwvk_eng_job_deferred(uint32_t serial, uint32_t bind, const uint64_t* h, int n) {
+    using namespace mkwvk;
+    if (!sw().on || !serial || !bind) return;
+    Job& j = ring()[serial % kRing];
+    if (j.serial.load(std::memory_order_acquire) != serial) return add(C_PATCH_NO_JOB);
+    int64_t done = 0;
+    for (const EngDescPatch& pt : j.patches)
+        if (pt.bind == bind - 1 && (int)pt.index < n) *pt.word = (uint32_t)h[pt.index], done++;
+    add(C_PATCHED, done);
 }

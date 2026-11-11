@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "vk_internal.h"
 #include "vk_state.h"
@@ -70,8 +71,41 @@ void eng_job_report(double frames);
 // through the draw path's own functions and the calling thread's caches. reset: a new command buffer, all set again)
 bool eng_draw_topology(int prim, VkPrimitiveTopology* t);
 void eng_draw_state(VkCommandBuffer cmd, const NvnState& s, const Program& p, const struct SoProg& so, const EngTargets& at,
-                    VkPrimitiveTopology topo, bool reset);
+                    VkPrimitiveTopology topo, bool reset, bool mesh = false);
 VkBuffer eng_draw_zero_buffer();   // (the stream unset attributes read: binding 15)
+
+// ---- (E3 step 2) a job draw's descriptors for the heap, made on the job thread (vk_draw.cpp eng_draw_descriptors), and the
+// replay's for the same draw (the check) ----
+/// A bank word made from a deferred handle (the game's array is read at the submit): rewritten then (eng_job.cpp, from the
+/// submitted records: the job's deferred bind number bind, its handle index)
+struct EngDescPatch { uint32_t* word; uint32_t bind; uint32_t index; };
+/// One buffer element of the draw (build_descriptors' order): a descriptor of a buffer range, or the bytes of an upload (a driver
+/// bank, c1), compared by their bytes; or none (a null descriptor, a storage buffer read through its address)
+struct EngDescEl { uint8_t kind; VkBuffer buffer; uint64_t offset, range; const uint8_t* bytes; uint32_t n; uint8_t stage = 0, index = 0; };
+enum EngDescWhy { EDW_OK, EDW_NO_HEAP, EDW_UBO_MEM, EDW_UBO_UNALIGNED, EDW_SSBO, EDW_SSBO_WRITTEN, EDW_SSBO_CLASSIC, EDW_TEXEL, EDW_IMAGE, EDW_HANDLE_PROGRAM,
+                  EDW_USER_HANDLE, EDW_DEFERRED_PUSH, EDW_RING, EDW_STREAM, EDW_N };
+struct EngDrawDesc {
+    uint32_t why = EDW_OK;
+    const Program* prog = nullptr;
+    uint8_t push[256];
+    uint32_t push_bytes = 0;
+    std::vector<EngDescEl> els;
+    std::vector<uint32_t> handles;   // (per texture element: the pushed handle, 0 for the others)
+    std::vector<std::pair<const uint8_t*, uint32_t>> banks;   // (per HeapProgram::banks: its bytes)
+    std::vector<EngDescPatch> patches;
+    void clear() { why = EDW_OK, push_bytes = 0, els.clear(), handles.clear(), banks.clear(), patches.clear(); }
+};
+/// The deferred binds a job's state came from: per (texture 0, sampler 1, image 2), stage, slot: (bind number + 1) << 8 | index
+/// (0: an immediate bind)
+using EngBindRefs = uint32_t[3][8][128];
+/// A job draw's descriptors (ring block in the job threads' ring, banks and c1 in the job stream) and its push data; false: why set
+struct HeapProgram;
+bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& at, const EngBindRefs& refs,
+                          EngDrawDesc& out);
+/// (vk_draw.cpp heap_draw, inside a job's records) the replay's descriptors for the job draw it is drawing
+void eng_job_replay_desc(const EngDrawDesc& d);
+/// The job threads' upload memory (banks, c1): n bytes at align, its buffer, offset, mapping and device address; false: none
+bool eng_job_stream_alloc(uint32_t n, uint64_t align, VkBuffer* buf, uint64_t* off, uint8_t** map, VkDeviceAddress* addr);
 
 } // namespace mkwvk
 
@@ -83,4 +117,10 @@ __declspec(dllexport)
 __attribute__((visibility("default")))
 #endif
 void mkwvk_eng_job_recorded(const struct rx_eng_job_info* j, const uint8_t* rec, uint64_t bytes, uint64_t handle);
+#ifdef _WIN32
+__declspec(dllexport)
+#else
+__attribute__((visibility("default")))
+#endif
+void mkwvk_eng_job_deferred(uint32_t serial, uint32_t bind, const uint64_t* h, int n);
 }

@@ -105,6 +105,9 @@ bool desc_heap_classic_since(VkCommandBuffer cmd);
 void desc_heap_push(VkCommandBuffer cmd, const void* data, uint32_t bytes);
 /// A block of the recording's ring: its push index (64-byte units) and where to write; false: the ring is full
 bool desc_heap_ring_alloc(uint32_t bytes, uint32_t* index, uint8_t** at);
+/// (E3) the job threads' ring (any thread) and the heaps bound on a job's command buffer
+bool desc_heap_job_ring_alloc(uint32_t bytes, uint32_t* index, uint8_t** at);
+void desc_heap_bind_job(VkCommandBuffer cmd);
 
 /// A resource heap entry's state (region = view type, slot = texture id)
 struct HeapEntry {

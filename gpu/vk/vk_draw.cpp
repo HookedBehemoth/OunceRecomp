@@ -4114,7 +4114,8 @@ bool heap_draw(VkCommandBuffer cmd, const NvnState& s, const Program& p, const H
                uint32_t fallback_first = 0) {
     checkpoint(cmd, p, at ? 'd' : 'c');
     uint8_t data[256]{};
-    if (rebuilt || heap_last_prog != &p) {
+    const bool filled = rebuilt || heap_last_prog != &p;
+    if (filled) {
         if (!heap_fill(s, p, hp, data)) return false;
         if (desc_heap_check()) heap_check(s, p, hp, data);
         heap_last_prog = &p;
@@ -4123,6 +4124,37 @@ bool heap_draw(VkCommandBuffer cmd, const NvnState& s, const Program& p, const H
     }
     push_bytes(data, p, at, fallback_first);   // (the classic words, which change per draw: the render area)
     std::memcpy(heap_last_push, data, hp.push_bytes), heap_last_push_n = hp.push_bytes;
+    static const bool eng_chk = eng_job_check();
+    if (at && eng_chk) {   // (HOS_ENG_JOBS_CHECK: the descriptors as the replay made them, for the job draws')
+        static thread_local EngDrawDesc* cap = nullptr;
+        if (!cap) cap = new EngDrawDesc;
+        if (filled || !cap->push_bytes) {
+            cap->clear();
+            const auto stream_bytes = [](VkBuffer b, uint64_t off) -> const uint8_t* {
+                for (const RecordingRes::Stream& st : cur->streams)
+                    if (st.buffer == b) return st.mapped + off;
+                return b == cur->stream ? cur->mapped + off : nullptr;
+            };
+            for (const VkWriteDescriptorSet& w : dw().writes) {
+                if (w.descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && w.descriptorType != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) continue;
+                for (uint32_t k = 0; k < w.descriptorCount; k++) {
+                    const VkDescriptorBufferInfo& b = w.pBufferInfo[k];
+                    if (!b.buffer && b.range == kBdaUnused) cap->els.push_back({3, VK_NULL_HANDLE, 0, 0, nullptr, 0});
+                    else if (!b.buffer) cap->els.push_back({0, VK_NULL_HANDLE, 0, 0, nullptr, 0});
+                    else if (const uint8_t* m = stream_bytes(b.buffer, b.offset)) cap->els.push_back({2, b.buffer, b.offset, b.range, m, (uint32_t)b.range});
+                    else cap->els.push_back({1, b.buffer, b.offset, b.range, nullptr, 0});
+                }
+            }
+            for (size_t t = 0; t < hp.tex.size() && t < heap_handles().size(); t++)
+                cap->handles.push_back(hp.tex[t].kind == HeapTex::PushIndex && heap_handles()[t] & 0xFFFFF ? heap_handles()[t] : 0);
+            for (const HeapProgram::Bank& bk : hp.banks) {
+                const HeapBank& c = heap_banks()[bk.index == 2][std::clamp(p.stages[bk.stage].nvn_stage, 0, kNvnStages - 1)];
+                cap->banks.push_back({c.mapped, std::clamp<uint32_t>((bk.bytes + 15) & ~15u, 16, 0xA00)});
+            }
+        }
+        std::memcpy(cap->push, data, hp.push_bytes), cap->push_bytes = hp.push_bytes;
+        if (eng_job_replay_active()) eng_job_replay_desc(*cap);
+    }
     desc_heap_bind(cmd);
     desc_heap_push(cmd, data, hp.push_bytes);
     descriptors_disturbed();   // (the command buffer is in heap mode: push descriptors pushed before are gone)
@@ -5119,7 +5151,7 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
 bool eng_draw_topology(int prim, VkPrimitiveTopology* t) { return topology(prim, *t); }
 VkBuffer eng_draw_zero_buffer() { return zero_buffer; }
 void eng_draw_state(VkCommandBuffer cmd, const NvnState& s, const Program& p, const SoProg& so, const EngTargets& e,
-                    VkPrimitiveTopology topo, bool reset) {
+                    VkPrimitiveTopology topo, bool reset, bool mesh) {
     static Texture* const kDepth = reinterpret_cast<Texture*>(uintptr_t(64));   // (dynamic_state only asks whether there is one)
     Targets at;
     at.n = std::clamp(e.n, 0, 8);
@@ -5128,10 +5160,195 @@ void eng_draw_state(VkCommandBuffer cmd, const NvnState& s, const Program& p, co
     at.width = e.width, at.height = e.height, at.samples = e.samples;
     if (reset) last_dyn_valid = false, dyn_fast.on = false, so_dyn = SoDyn{}, last_so = nullptr;
     cur_program = &p;
-    dynamic_state(cmd, s, at, topo, false);
+    dynamic_state(cmd, s, at, topo, mesh);
     so_state(cmd, p, s, at);
     if (last_so != &so) so_bind(cmd, so), last_so = &so;
 }
+
+/// (E3) the bytes a uniform buffer element of a stage reads (as uniform_range sizes it)
+static uint32_t eng_cbuf_used(const Stage& st, uint32_t index) {
+    uint32_t used = index < Shader::Info::MAX_CBUFS ? st.info.constant_buffer_used_sizes[index] : 0;
+    if (st.info.uses_global_memory)
+        for (const auto& d : st.info.storage_buffers_descriptors)
+            if (d.cbuf_index == index) used = std::max(used, d.cbuf_offset + d.count * 16u);
+    return used;
+}
+/// (E3, a job thread) a word of a stage's constant bank: the driver banks and c1 as the replay has them, a uniform buffer's from
+/// guest memory now (the replay's ub_read reads its stream's overlays: replay state)
+static uint32_t eng_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset) {
+    if (index <= 2) return stage_cbuf_word(s, st, index, offset);
+    if (index >= 3 + 16 || st.nvn_stage < 0 || st.nvn_stage >= kNvnStages) return 0;
+    const nvn_p_bind_buf& u = s.ubo[st.nvn_stage][index - 3];
+    uint32_t v = 0;
+    if (u.addr && (!u.size || (uint64_t)offset + 4 <= (uint64_t)u.size)) host->gpu_read(u.addr + offset, &v, 4);
+    return v;
+}
+template <class D>
+static uint32_t eng_handle_of(const NvnState& s, const Stage& st, const D& d, uint32_t k) {
+    if (d.handle_program != ~0U) {
+        if (d.handle_program >= st.info.handle_programs.size()) return 0;
+        return Shader::EvaluateHandleProgram(
+                   st.info.handle_programs[d.handle_program], [&](u32 index, u32 offset) -> u32 { return eng_word(s, st, index, offset); },
+                   [&](u32 binding, u32 offset) -> u32 {
+                       if (binding >= st.info.storage_buffers_descriptors.size()) return 0U;
+                       const auto& b = st.info.storage_buffers_descriptors[binding];
+                       const uint64_t base = eng_word(s, st, b.cbuf_index, b.cbuf_offset) |
+                                             (uint64_t)eng_word(s, st, b.cbuf_index, b.cbuf_offset + 4) << 32;
+                       uint32_t v = 0;
+                       if (base) host->gpu_read(base + offset, &v, 4);
+                       return v;
+                   })
+            .value_or(0U);
+    }
+    const uint32_t step = 1u << d.size_shift;
+    uint32_t h = eng_word(s, st, d.cbuf_index, d.cbuf_offset + k * step);
+    if (d.has_secondary)
+        h = h << d.shift_left | eng_word(s, st, d.secondary_cbuf_index, d.secondary_cbuf_offset + k * step) << d.secondary_shift_left;
+    return h;
+}
+#ifdef VK_EXT_descriptor_heap
+bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& e, const EngBindRefs& refs,
+                          EngDrawDesc& out) {
+    out.clear();
+    out.prog = &p;
+    std::memset(out.push, 0, sizeof out.push);
+    const auto fail = [&](uint32_t w) {
+        if (!out.why) out.why = w;
+        return false;
+    };
+    const uint64_t ualign = std::max<uint64_t>(dev.props.limits.minUniformBufferOffsetAlignment, 16);
+    const uint64_t salign = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    // a driver bank, filled from the state; its words made from deferred handles noted for the submit's rewrite
+    const auto bank = [&](int index, int stage, uint32_t n, EngDescEl& el, VkDeviceAddress* addr) {
+        VkBuffer b;
+        uint64_t off;
+        uint8_t* map;
+        if (!eng_job_stream_alloc(n, ualign, &b, &off, &map, addr)) return fail(EDW_STREAM);
+        const int ns = std::clamp(stage, 0, kNvnStages - 1);
+        driver_bank_fill(s, index, ns, map, n);
+        if (index == 2)
+            for (uint32_t o = 0; o + 4 <= n; o += 8) {
+                int what = -1, slot = -1;
+                if (o >= 0x568 && o < 0x568 + 8 * 128) what = 1, slot = (int)(o - 0x568) / 8;
+                else if (o >= 0x168 && o < 0x168 + 8 * 128) what = 0, slot = (int)(o - 0x168) / 8;
+                else if (o >= 0x120 && o < 0x120 + 8 * 9) what = 2, slot = (int)(o - 0x120) / 8;
+                else if (o >= 0x20 && o < 0x20 + 8 * 32) what = 0, slot = (int)(o - 0x20) / 8;
+                if (what < 0) continue;
+                const uint32_t r = refs[what][ns][slot];
+                if (r) out.patches.push_back({reinterpret_cast<uint32_t*>(map + o), (r >> 8) - 1, r & 0xFF});
+            }
+        el = {2, b, off, n, map, n};
+        return true;
+    };
+    for (const Stage& st : p.stages) {
+        const Shader::Info& info = st.info;
+        const int ns = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
+        for (const auto& d : info.constant_buffer_descriptors)
+            for (uint32_t k = 0; k < d.count; k++) {
+                const uint32_t idx = d.index + k;
+                const uint32_t used = eng_cbuf_used(st, idx);
+                EngDescEl el{0, VK_NULL_HANDLE, 0, 0, nullptr, 0};
+                if (idx == 0 || idx == 2) {
+                    VkDeviceAddress a;
+                    if (!bank((int)idx, st.nvn_stage, std::clamp<uint32_t>((used + 15) & ~15u, 16, 0xA00), el, &a)) return false;
+                    el.stage = (uint8_t)(&st - p.stages.data()), el.index = (uint8_t)idx;
+                } else if (idx == 1) {
+                    const uint32_t n = (uint32_t)std::max<uint64_t>((st.c1.size() + 15) & ~15ull, 16);
+                    VkBuffer b;
+                    uint64_t off;
+                    uint8_t* map;
+                    VkDeviceAddress a;
+                    if (!eng_job_stream_alloc(n, ualign, &b, &off, &map, &a)) return fail(EDW_STREAM);
+                    std::memset(map, 0, n);
+                    std::memcpy(map, st.c1.data(), st.c1.size());
+                    el = {2, b, off, n, map, n, (uint8_t)(&st - p.stages.data()), 1};
+                } else if (idx >= 3 && idx < 3 + 16) {
+                    const nvn_p_bind_buf& u = s.ubo[ns][idx - 3];
+                    if (u.addr) {
+                        const uint64_t want = used ? std::max<uint64_t>(used, 16) : std::max<uint64_t>(u.size, 16);
+                        const uint64_t n = std::min<uint64_t>(std::min<uint64_t>(want, u.size ? std::max<uint64_t>(u.size, 16) : want),
+                                                              dev.props.limits.maxUniformBufferRange);
+                        const BufferRef r = u.addr < (1ull << 40) ? layer0_buffer(u.addr, n) : BufferRef{};
+                        if (!r.buffer) return fail(EDW_UBO_MEM);
+                        if (r.offset % ualign) return fail(EDW_UBO_UNALIGNED);
+                        el = {1, r.buffer, r.offset, n, nullptr, 0};
+                    }
+                }
+                out.els.push_back(el);
+            }
+        for (const auto& d : info.storage_buffers_descriptors)
+            for (uint32_t k = 0; k < d.count; k++) {   // (only read-only ones read through their address: as bda_storage_read)
+                if (!info.ssbo_bda) return fail(EDW_SSBO_CLASSIC);
+                if (d.is_written) return fail(EDW_SSBO_WRITTEN);
+                const uint32_t off = d.cbuf_offset + k * 16;
+                const uint64_t addr = eng_word(s, st, d.cbuf_index, off) | (uint64_t)eng_word(s, st, d.cbuf_index, off + 4) << 32;
+                if (addr) {
+                    const uint64_t base = addr - (addr & (salign - 1));
+                    const uint64_t size = eng_word(s, st, d.cbuf_index, off + 8);
+                    const uint64_t n = std::max<uint64_t>(((size + (addr - base)) + 3) & ~3ull, 16);
+                    if (base >= (1ull << 40) || !layer0_ready(base, base + n)) return fail(EDW_SSBO);
+                }
+                out.els.push_back({3, VK_NULL_HANDLE, 0, 0, nullptr, 0});
+            }
+        if (!info.texture_buffer_descriptors.empty() || !info.image_buffer_descriptors.empty()) return fail(EDW_TEXEL);
+        for (const auto& d : info.texture_descriptors)
+            for (uint32_t k = 0; k < d.count; k++) {
+                const size_t t = out.handles.size();
+                const HeapTex& ht = hp.tex[std::min(t, hp.tex.size() - 1)];
+                uint32_t h = 0;
+                if (ht.kind == HeapTex::PushIndex && !texture_handle_is_pointer(st, d, k)) {
+                    // (a handle program's or a uniform buffer's word: read from guest memory now; the check compares it with the replay's)
+                    static const bool user_ok = !getenv("HOS_ENG_JOBS_NO_USER_HANDLES");
+                    if (!user_ok && d.handle_program != ~0U) return fail(EDW_HANDLE_PROGRAM);
+                    if (!user_ok && (d.cbuf_index > 2 || (d.has_secondary && d.secondary_cbuf_index > 2))) return fail(EDW_USER_HANDLE);
+                    const uint32_t step = 1u << d.size_shift;
+                    for (uint32_t o : {d.cbuf_offset + k * step, d.has_secondary ? d.secondary_cbuf_offset + k * step : ~0u}) {
+                        if (o == ~0u || d.cbuf_index != 2) continue;
+                        int what = -1, slot = -1;   // (a deferred word: only the bank's copy is rewritten at the submit)
+                        if (o >= 0x568 && o < 0x568 + 8 * 128) what = 1, slot = (int)(o - 0x568) / 8;
+                        else if (o >= 0x168 && o < 0x168 + 8 * 128) what = 0, slot = (int)(o - 0x168) / 8;
+                        else if (o >= 0x120 && o < 0x120 + 8 * 9) what = 2, slot = (int)(o - 0x120) / 8;
+                        else if (o >= 0x20 && o < 0x20 + 8 * 32) what = 0, slot = (int)(o - 0x20) / 8;
+                        if (what >= 0 && refs[what][ns][slot]) return fail(EDW_DEFERRED_PUSH);
+                    }
+                    h = eng_handle_of(s, st, d, k);
+                    h = h & 0xFFFFF ? h : 0;
+                }
+                out.handles.push_back(h);
+            }
+        if (!info.image_descriptors.empty()) return fail(EDW_IMAGE);
+    }
+    for (const HeapProgram::Bank& bk : hp.banks) {
+        EngDescEl el;
+        VkDeviceAddress a = 0;
+        if (!bank(bk.index, p.stages[bk.stage].nvn_stage, std::clamp<uint32_t>((bk.bytes + 15) & ~15u, 16, 0xA00), el, &a)) return false;
+        out.banks.push_back({el.bytes, el.n});
+        std::memcpy(out.push + bk.push_off, &a, 8);
+    }
+    uint32_t index = 0;
+    uint8_t* block = nullptr;
+    if (!desc_heap_job_ring_alloc(std::max<uint32_t>(hp.block_bytes, 64), &index, &block)) return fail(EDW_RING);
+    for (size_t bi = 0; bi < out.els.size() && bi < hp.buf_at.size(); bi++) {
+        const EngDescEl& el = out.els[bi];
+        if (el.kind == 3) continue;   // (read through its address: no descriptor)
+        desc_heap_encode_buffer(el.kind ? el.buffer : VK_NULL_HANDLE, el.kind ? el.offset : 0, el.kind ? el.range : 0, false,
+                                block + hp.buf_at[bi]);
+    }
+    std::memcpy(out.push + desc_heap_push_base(), &index, 4);
+    for (size_t t = 0; t < hp.tex.size() && t < out.handles.size(); t++)
+        if (hp.tex[t].kind == HeapTex::PushIndex) std::memcpy(out.push + hp.tex[t].push_off, &out.handles[t], 4);
+    Targets at;
+    at.n = std::clamp(e.n, 0, 8), at.width = e.width, at.height = e.height, at.samples = e.samples;
+    push_bytes(out.push, p, &at, 0);
+    out.push_bytes = hp.push_bytes;
+    return true;
+}
+#else
+bool eng_draw_descriptors(const NvnState&, const Program&, const HeapProgram&, const EngTargets&, const EngBindRefs&, EngDrawDesc& out) {
+    out.why = EDW_NO_HEAP;
+    return false;
+}
+#endif
 namespace {
 } // namespace
 

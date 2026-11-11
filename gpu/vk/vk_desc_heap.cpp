@@ -599,6 +599,34 @@ bool desc_heap_ring_alloc(uint32_t bytes, uint32_t* index, uint8_t** at) {
     *at = res_heap.map + off;
     return true;
 }
+// (native-vk E3, HOS_ENG_JOBS) the job threads' ring: the recording slots past vk_replay.cpp's 48 (16 x the slot's size), taken in
+// turn by any job thread (atomic), wrapping: a block is reused ~16 MB of job descriptors later (dozens of frames), long after
+// the GPU read it. And the heaps bound on a job's command buffer (not the replay's bound_cmd)
+std::atomic<uint64_t> job_ring_at{0};
+bool desc_heap_job_ring_alloc(uint32_t bytes, uint32_t* index, uint8_t** at) {
+    if (!heap_ready) return false;
+    bytes = (bytes + 63) & ~63u;
+    const uint64_t lo = 48 * ring_slot_bytes, size = (uint64_t)(kRingSlots - 48) * ring_slot_bytes;
+    if (!bytes || bytes > size) return false;
+    uint64_t was = job_ring_at.load(std::memory_order_relaxed), next;
+    do {
+        const uint64_t from = was + bytes > size ? 0 : was;   // (a block never straddles the end)
+        next = from + bytes;
+        if (job_ring_at.compare_exchange_weak(was, next, std::memory_order_relaxed)) {
+            *index = (uint32_t)((lo + from) / 64);
+            *at = res_heap.map + lo + from;
+            return true;
+        }
+    } while (true);
+}
+void desc_heap_bind_job(VkCommandBuffer cmd) {
+    VkBindHeapInfoEXT rb{VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT};
+    rb.heapRange = {res_heap.address, res_heap.size}, rb.reservedRangeOffset = res_heap.reserved_at, rb.reservedRangeSize = res_heap.reserved;
+    VkBindHeapInfoEXT sb{VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT};
+    sb.heapRange = {smp_heap.address, smp_heap.size}, sb.reservedRangeOffset = smp_heap.reserved_at, sb.reservedRangeSize = smp_heap.reserved;
+    p_bind_res(cmd, &rb);
+    p_bind_smp(cmd, &sb);
+}
 void desc_heap_push(VkCommandBuffer cmd, const void* data, uint32_t bytes) {
     VkPushDataInfoEXT pi{VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT};
     pi.offset = 0;

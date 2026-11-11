@@ -2818,14 +2818,22 @@ NV(nvnVertexStreamStateSetDivisor) { ST(nvn_vs_st, P(0))->divisor = U32(1); }
 /* ---- submit ---- */
 /* deferred binds read the game's handle arrays now (it fills them for the next frame as soon as the submit returns) */
 static void resolve_deferred(uint8_t *p) {
+    uint32_t job = 0, bind = 0;   /* (HOS_ENG_JOBS: inside a job's records, its deferred binds by number: its banks rewritten) */
     for (;;) {
         nvn_op_hdr h;
         memcpy(&h, p, sizeof h);
         if (h.size < 8 || (h.size & 7) || h.op >= NOP_COUNT_) die("corrupt recording at submit (op %u size %u)", h.op, h.size);
         if (h.op == NOP_END) return;
+        if (h.op == NOP_JOB) {
+            const nvn_p_job *j = (const nvn_p_job *)(p + 8);
+            job = j->end ? 0 : j->serial, bind = 0;
+        }
         if (h.op == NOP_BIND_TEX || h.op == NOP_BIND_IMG || h.op == NOP_BIND_SAMP) {
             nvn_p_bind_handles *b = (nvn_p_bind_handles *)(p + 8);
-            if (b->src && b->n > 0 && b->n <= 32) memcpy(b->h, gw(b->src, 8 * (size_t)b->n), 8 * (size_t)b->n);
+            if (b->src && b->n > 0 && b->n <= 32) {
+                memcpy(b->h, gw(b->src, 8 * (size_t)b->n), 8 * (size_t)b->n);
+                if (job) rx_eng_job_deferred(job, ++bind, b->h, b->n);
+            }
         }
         if (h.op == NOP_BIND_BUFS) {
             nvn_p_bind_bufs *b = (nvn_p_bind_bufs *)(p + 8);

@@ -228,6 +228,8 @@ typedef struct rx_eng_job_info {
 } rx_eng_job_info;
 /* (the Vulkan back end's mkwvk_eng_job_recorded, when it has one: gpu/vk/eng_job.h) */
 void rx_eng_job_recorded(const rx_eng_job_info *j, const uint8_t *rec, uint64_t bytes, uint64_t handle);
+/* (E3, at the submit) a job's deferred handle bind number bind (1 first) as the game's array holds it now */
+void rx_eng_job_deferred(uint32_t serial, uint32_t bind, const uint64_t *h, int n);
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
    first index, base vertex, base instance; arrays: count, instances, first, base instance), as many as the 32-bit
    value at count_addr says when there is one; read at replay, after the GPU's writes there reached guest memory */

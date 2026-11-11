@@ -297,6 +297,17 @@ void rx_eng_job_recorded(const rx_eng_job_info *j, const uint8_t *rec, uint64_t 
     }
     if (fn) fn(j, rec, bytes, handle);
 }
+void rx_eng_job_deferred(uint32_t serial, uint32_t bind, const uint64_t *h, int n) {
+    typedef void (*fn_t)(uint32_t, uint32_t, const uint64_t *, int);
+    static fn_t fn;
+    static volatile LONG looked;
+    if (!vk_module || !vk) return;
+    if (!looked) {
+        fn = (fn_t)(void *)GetProcAddress(vk_module, "mkwvk_eng_job_deferred");
+        InterlockedExchange(&looked, 1);
+    }
+    if (fn) fn(serial, bind, h, n);
+}
 void rx_resize(int width, int height) { vk ? vk->resize(width, height) : wgr_resize(width, height); }
 const char *rx_describe(void) { return vk ? vk->describe() : wgr_describe(); }
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines) {
