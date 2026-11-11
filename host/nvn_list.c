@@ -44,14 +44,14 @@ static void spin_unlock(volatile int32_t *l) { __atomic_store_n(l, 0, __ATOMIC_R
 
 static volatile uint64_t st_made, st_live, st_live_bytes, st_calls, st_calls_expanded, st_released, st_freed, st_clones,
     st_conflicts, st_in_place, st_grown, st_shrunk, st_swept, st_check_handles, st_check_bytes, st_check_mismatch,
-    st_check_early, st_check_changed;
+    st_check_early, st_check_changed, st_copied;
 #define COUNT(v, n) __atomic_add_fetch(&(v), (uint64_t)(n), __ATOMIC_RELAXED)
 void nvn_list_get_stats(nvn_list_stats *s) {
 #define G(v) __atomic_load_n(&(v), __ATOMIC_RELAXED)
     s->made = G(st_made), s->live = G(st_live), s->live_bytes = G(st_live_bytes), s->calls = G(st_calls);
     s->calls_expanded = G(st_calls_expanded), s->released = G(st_released), s->freed = G(st_freed);
     s->clones = G(st_clones), s->conflicts = G(st_conflicts), s->resolved_in_place = G(st_in_place);
-    s->grown = G(st_grown), s->shrunk = G(st_shrunk), s->swept = G(st_swept);
+    s->grown = G(st_grown), s->shrunk = G(st_shrunk), s->swept = G(st_swept), s->copied = G(st_copied);
     s->check_handles = G(st_check_handles), s->check_bytes = G(st_check_bytes), s->check_mismatch = G(st_check_mismatch);
     s->check_early_free = G(st_check_early), s->check_changed = G(st_check_changed);
 #undef G
@@ -469,6 +469,7 @@ void nvn_list_reserve(nvn_lw *w, size_t need) {
     while (cap < used + need + NVN_LIST_SLACK) cap *= 2;
     nvn_lrec *n = rec_alloc(cap - sizeof(nvn_lrec));
     memcpy(n + 1, w->seg, used);
+    COUNT(st_copied, used);
     nvn_lrec *old = w->rec;
     __atomic_sub_fetch(&st_live_bytes, old->cap, __ATOMIC_RELAXED);
     blk_put(old, old->cls);
@@ -532,6 +533,7 @@ nvn_lrec *nvn_list_end(nvn_lw *w, uint64_t ctl, int marked, uint64_t *handle) {
     if (r->cap >= 8192 && bytes * 4 < r->cap) {   /* (a guess far too big: into one that fits, once) */
         nvn_lrec *n = rec_alloc((size_t)bytes);
         memcpy(n + 1, w->seg, (size_t)bytes);
+        COUNT(st_copied, bytes);
         __atomic_sub_fetch(&st_live_bytes, r->cap, __ATOMIC_RELAXED);
         blk_put(r, r->cls);
         r = n;
@@ -545,7 +547,10 @@ nvn_lrec *nvn_list_end(nvn_lw *w, uint64_t ctl, int marked, uint64_t *handle) {
     r->ctl = ctl;
     if (w->key) {
         lhint *h = &tl_hints[hint_at(w->key)];
-        h->key = w->key, h->bytes = bytes;
+        /* (the biggest of the last ones, let down by an eighth a recording: a job's command buffer on a worker's stack
+           records lists of every size at one address; the last size alone left a third of them growing) */
+        const uint64_t was = h->key == w->key ? h->bytes - h->bytes / 8 : 0;
+        h->key = w->key, h->bytes = bytes > was ? bytes : was;
     }
     if (check_on) {
         r->hash = rec_hash(r);

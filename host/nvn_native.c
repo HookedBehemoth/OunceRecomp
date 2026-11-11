@@ -1362,10 +1362,10 @@ static void list_log(const char *why) {
     nvn_list_get_stats(&t);
     hos_log("nvn: lists (%s): %llu recordings made, %llu live (%.1f MB), %llu released, %llu freed; %llu calls by reference, "
             "%llu copied in (too deep); deferred binds: %llu read in place, %llu private copies for %llu conflicts; %llu grown, "
-            "%llu shrunk, %llu swept", why, (unsigned long long)t.made, (unsigned long long)t.live, t.live_bytes / 1048576.0,
+            "%llu shrunk (%.1f MB moved), %llu swept", why, (unsigned long long)t.made, (unsigned long long)t.live, t.live_bytes / 1048576.0,
             (unsigned long long)t.released, (unsigned long long)t.freed, (unsigned long long)t.calls,
             (unsigned long long)t.calls_expanded, (unsigned long long)t.resolved_in_place, (unsigned long long)t.clones,
-            (unsigned long long)t.conflicts, (unsigned long long)t.grown, (unsigned long long)t.shrunk, (unsigned long long)t.swept);
+            (unsigned long long)t.conflicts, (unsigned long long)t.grown, (unsigned long long)t.shrunk, t.copied / 1048576.0, (unsigned long long)t.swept);
     if (nvn_list_check_on())
         hos_log("nvn: list check: %llu submitted handles compared (%.1f MB), %llu mismatches, %llu frees while a submit not "
                 "replayed walks them, %llu recordings changed after EndRecording", (unsigned long long)t.check_handles,

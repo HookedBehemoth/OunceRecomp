@@ -90,7 +90,7 @@ typedef struct nvn_lw {
 
 typedef struct {
     uint64_t made, live, live_bytes, calls, calls_expanded, released, freed, clones, conflicts, resolved_in_place;
-    uint64_t grown, shrunk, swept;
+    uint64_t grown, shrunk, swept, copied;   /* (copied: bytes moved by growing and shrinking) */
     uint64_t check_handles, check_bytes, check_mismatch, check_early_free, check_changed;
 } nvn_list_stats;
 
