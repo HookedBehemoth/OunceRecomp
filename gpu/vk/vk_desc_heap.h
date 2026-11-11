@@ -153,7 +153,7 @@ VkBuffer desc_heap_resource_buffer();
 VkBuffer desc_heap_sampler_buffer();
 /// The reverse map: entry (region, slot) now points at texture id (0: none); was at old_id
 void desc_heap_entry_texture(uint32_t region, uint32_t slot, uint32_t old_id, uint32_t new_id);
-/// (HOS_ENG_REG) the entries (region << 20 | slot) pointing at texture id
+/// (HOS_ENG_REG, a texture retired) the entries (region << 20 | slot) that pointed at texture id, taken (some may point elsewhere now)
 void desc_heap_entries_of(uint32_t id, std::vector<uint32_t>& out);
 
 /// Counters (RX_VK_DESC_HEAP_LOG, the frame line)

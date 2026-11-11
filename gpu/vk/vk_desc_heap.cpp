@@ -172,6 +172,8 @@ struct ViewCi {
     VkComponentMapping cm;
     VkImageSubresourceRange range;
     VkImageUsageFlags usage;
+    uint8_t enc[2][64];      // (its descriptors as sampled / storage image, once made: the driver asked once a view)
+    bool has_enc[2];
 };
 std::mutex view_mu;
 std::unordered_map<VkImageView, ViewCi> view_cis;
@@ -639,6 +641,7 @@ bool desc_heap_encode_image(VkImageView view, bool storage, uint8_t out[64]) {
             std::lock_guard lk(view_mu);
             const auto it = view_cis.find(view);
             if (it == view_cis.end()) return false;
+            if (it->second.has_enc[storage]) return std::memcpy(out, it->second.enc[storage], isz), true;
             c = it->second;
         }
         uci.usage = c.usage;
@@ -651,7 +654,13 @@ bool desc_heap_encode_image(VkImageView view, bool storage, uint8_t out[64]) {
         return true;   // (zeros: what RDNA reads as nothing)
     }
     VkHostAddressRangeEXT dst{out, (size_t)isz};
-    return p_write_res(dev.device, 1, &ri, &dst) == VK_SUCCESS;
+    if (p_write_res(dev.device, 1, &ri, &dst) != VK_SUCCESS) return false;
+    if (view) {
+        std::lock_guard lk(view_mu);
+        if (const auto it = view_cis.find(view); it != view_cis.end())
+            std::memcpy(it->second.enc[storage], out, isz), it->second.has_enc[storage] = true;
+    }
+    return true;
 }
 bool desc_heap_encode_sampler(VkSampler s, uint8_t out[16]) {
     SamplerCi c;
@@ -729,19 +738,23 @@ VkBuffer desc_heap_sampler_buffer() { return smp_heap.buffer; }
 void desc_heap_entry_texture(uint32_t region, uint32_t slot, uint32_t old_id, uint32_t new_id) {
     if (old_id == new_id) return;
     const uint32_t rs = region << 20 | slot;
-    if (old_id) {
-        const auto it = by_texture.find(old_id);
-        if (it != by_texture.end()) {
-            std::erase(it->second, rs);
-            if (it->second.empty()) by_texture.erase(it);
-        }
+    // (the old texture's list keeps the entry until compacted: its readers check entry.tex_id. A texture that stays (the Hi-Z behind
+    // the per-frame mip views, registered under a new ring id every frame) gathered thousands of entries, and each move away was a
+    // linear erase: half the registration drain's time. The list is compacted when it doubled since)
+    if (!new_id) return;
+    std::vector<uint32_t>& l = by_texture[new_id];
+    l.push_back(rs);
+    if (l.size() >= 64 && !(l.size() & (l.size() - 1))) {
+        std::erase_if(l, [&](uint32_t e) { return entries[e >> 20][e & 0xFFFFF].tex_id != new_id; });
+        std::sort(l.begin(), l.end());
+        l.erase(std::unique(l.begin(), l.end()), l.end());
+        l.reserve(l.size() * 2);
     }
-    if (new_id) by_texture[new_id].push_back(rs);
 }
 
 void desc_heap_entries_of(uint32_t id, std::vector<uint32_t>& out) {
-    out.clear();
-    if (const auto it = by_texture.find(id); it != by_texture.end()) out = it->second;
+    out.clear();   // (taken: the texture is gone)
+    if (const auto it = by_texture.find(id); it != by_texture.end()) out.swap(it->second), by_texture.erase(it);
 }
 
 void desc_heap_count(HeapCount c, int64_t n) {
@@ -796,7 +809,7 @@ void desc_heap_texture_retired(uint32_t id) {
 void desc_heap_view_made(VkImageView view, const VkImageViewCreateInfo& ci, VkImageUsageFlags usage) {
     if (!desc_heap_wanted() || !view) return;
     std::lock_guard lk(view_mu);
-    view_cis[view] = {ci.image, ci.viewType, ci.format, ci.components, ci.subresourceRange, usage};
+    view_cis[view] = {ci.image, ci.viewType, ci.format, ci.components, ci.subresourceRange, usage, {}, {}};
 }
 void desc_heap_view_destroyed(VkImageView view) {
     if (!desc_heap_wanted() || !view) return;
