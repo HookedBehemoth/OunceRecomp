@@ -117,6 +117,8 @@ constexpr int kNvnStages = 8;
 /* BANK_CACHE */
 std::array<std::array<BankCache, kNvnStages>, 2>& bank_cache() { static thread_local std::array<std::array<BankCache, kNvnStages>, 2> b; return b; }
 void make_dummies() {}
+void heap_recording_begun(int, uint64_t) {}   // (RX_VK_DESC_HEAP: off here)
+bool desc_heap_wanted() { return false; }
 /* BEGIN */
 #define FINE_SCOPE(...) ((void)0)
 #define FINE_N(...) ((void)0)

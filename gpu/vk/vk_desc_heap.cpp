@@ -190,7 +190,7 @@ std::atomic<int64_t> counts[HC_COUNT];
 const char* const kCountNames[HC_COUNT] = {"draws", "dispatches", "classic", "scans", "resolves", "in place", "upload copies",
                                            "in-stream copies", "sampler writes", "registrations invalidated", "of them hot",
                                            "retired", "ring full", "CHECK mismatches", "CHECK draws", "bank uploads",
-                                           "ids past the regions", "custom borders as black"};
+                                           "ids past the regions", "custom borders as black", "slots sampled as a second view type"};
 
 uint64_t mix64(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
@@ -675,9 +675,35 @@ void desc_heap_entry_texture(uint32_t region, uint32_t slot, uint32_t old_id, ui
 void desc_heap_count(HeapCount c, int64_t n) {
     counts[c].fetch_add(n, std::memory_order_relaxed);
 }
+void desc_heap_note_view(uint32_t slot, uint32_t region, uint32_t ver) {
+    static std::unique_ptr<uint32_t[]> seen_ver(new uint32_t[kHeapSlots]());
+    static std::unique_ptr<uint8_t[]> seen_mask(new uint8_t[kHeapSlots]());
+    if (seen_ver[slot] != ver) seen_ver[slot] = ver, seen_mask[slot] = 0;
+    const uint8_t bit = (uint8_t)(1u << region);
+    if (seen_mask[slot] & bit) return;
+    if (seen_mask[slot]) {
+        desc_heap_count(HC_TWO_VIEWS);
+        static std::atomic<int> told{0};
+        if (told++ < 30) logf("vk: descriptor heap: slot %#x (version %u) sampled as view types %#x and %u", slot, ver, seen_mask[slot], region);
+    }
+    seen_mask[slot] |= bit;
+}
 
 // ---- hooks ----
+std::atomic<int64_t> presents_seen{0};
 void desc_heap_registered(int id) {
+    // (RX_VK_DESC_HEAP_REGLOG=<file>, heap on or off: "present id" per game registration, for the id ring's size and the rate)
+    static FILE* reglog = [] {
+        const char* e = getenv("RX_VK_DESC_HEAP_REGLOG");
+        FILE* f = e && *e ? fopen(e, "w") : nullptr;
+        if (f) setvbuf(f, nullptr, _IOLBF, 0);   // (the run ends with the process killed)
+        return f;
+    }();
+    if (reglog) {
+        static std::mutex m;
+        std::lock_guard lk(m);
+        fprintf(reglog, "%lld %d\n", (long long)presents_seen.load(std::memory_order_relaxed), id);
+    }
     if (!heap_ready) return;
     std::lock_guard lk(inval_mu);
     registered.push_back(id);
@@ -710,6 +736,7 @@ void desc_heap_sampler_made(VkSampler s, const VkSamplerCreateInfo& ci) {
     sampler_cis[s] = c;
 }
 void desc_heap_frame() {
+    presents_seen.fetch_add(1, std::memory_order_relaxed);
     if (!heap_ready || !desc_heap_log()) return;
     static int64_t frames = 0;
     static int64_t last[HC_COUNT]{};

@@ -63,6 +63,7 @@ const PointerEntry* pointer_table(const NvnState& s, int stage);
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
 uint64_t sampler_registrations_generation();   // (vk_bank.cpp: sampler_for's cache)
 uint64_t replay_completed_value();   // (vk_replay.cpp: the timeline value the GPU finished; RX_VK_DESC_HEAP)
+bool texture_handle_is_pointer(const Stage& st, const Shader::TextureDescriptor& d, uint32_t k);   // (below)
 namespace {
 // ---- (hookshot) this file's per-thread objects that need a constructor or a destructor ----
 // With llvm-mingw every use of such a thread_local calls the file's TLS init function, which saves registers, finds the
@@ -2318,7 +2319,9 @@ struct DescWriter {
 TLS_OBJECT(dw, DescWriter)
 TLS_OBJECT(draw_sampled, std::vector<const Texture*>)   // (the textures the descriptors being built sample or store)
 TLS_OBJECT(gfx_sampled, std::vector<const Texture*>)    // (the last draw's: kept while its descriptors are reused)
-#ifdef VK_EXT_descriptor_heap
+#ifndef VK_EXT_descriptor_heap
+void heap_recording_begun(int, uint64_t) {}
+#else
 // ---- (native-vk, RX_VK_DESC_HEAP=1) the draw's half of the descriptor heap (vk_desc_heap.h): the scan of its handles, its bank
 // uploads, its ring block, its push data. build_descriptors builds a heap draw's buffers and storage images as for push descriptors
 // (every side effect of theirs kept: stamps, write marks, binds); its textures go through heap_texture instead of the view lookup
@@ -2414,6 +2417,7 @@ VkImageView heap_texture(uint32_t handle, const HeapTex& ht, VkImageViewType vt,
     }
     HeapEntry& e = desc_heap_entry(ht.region, slot);
     const uint32_t ver = texture_slot_version((int)slot);
+    if (desc_heap_log()) desc_heap_note_view(slot, ht.region, ver);
     const bool serial = texture_serial_on();
     const uint64_t gen = serial ? texture_miss_generation() : texture_destroy_generation();
     const uint32_t epoch = texture_epoch();
@@ -2515,6 +2519,14 @@ bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8
     return true;
 }
 
+void heap_recording_begun(int slot, uint64_t value) {
+    if (!desc_heap_on()) return;
+    desc_heap_begin_recording(slot, value, replay_completed_value());
+    for (auto& row : heap_banks())
+        for (HeapBank& c : row) c = HeapBank{};
+    heap_last_prog = nullptr;
+    heap_instream().clear();
+}
 /// (RX_VK_DESC_HEAP_CHECK=1) the heap draw's textures and samplers resolved the classic way too, and its Indirect handles read back
 /// from the bank the GPU reads: any difference is logged (60 lines) and counted
 void heap_check(const NvnState& s, const Program& p, const HeapProgram& hp, const uint8_t* data) {
@@ -4500,15 +4512,7 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     }
     for (auto& row : bank_cache())
         for (BankCache& c : row) c = BankCache{}, c.at = UINT64_MAX;
-#ifdef VK_EXT_descriptor_heap
-    if (desc_heap_on()) {   // (RX_VK_DESC_HEAP: the recording's ring, its banks uploaded afresh, invalidations at a submission's start)
-        desc_heap_begin_recording(slot, value, replay_completed_value());
-        for (auto& row : heap_banks())
-            for (HeapBank& c : row) c = HeapBank{};
-        heap_last_prog = nullptr;
-        heap_instream().clear();
-    }
-#endif
+    heap_recording_begun(slot, value);   // (RX_VK_DESC_HEAP: the recording's ring, its banks afresh, invalidations at a submission's start)
     if (!zero_buffer) {
         void* mapped = nullptr;
         create_buffer(65536, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |

@@ -136,10 +136,12 @@ void desc_heap_entry_texture(uint32_t region, uint32_t slot, uint32_t old_id, ui
 /// Counters (RX_VK_DESC_HEAP_LOG, the frame line)
 enum HeapCount {
     HC_DRAWS, HC_DISPATCHES, HC_CLASSIC, HC_SCANS, HC_RESOLVES, HC_IN_PLACE, HC_UPLOAD, HC_IN_STREAM, HC_SAMPLER_WRITES,
-    HC_REG_INVALID, HC_REG_HOT, HC_RETIRED, HC_RING_FULL, HC_CHECK_BAD, HC_CHECK_DRAWS, HC_BANK_UPLOADS, HC_BIG_ID, HC_BORDER,
+    HC_REG_INVALID, HC_REG_HOT, HC_RETIRED, HC_RING_FULL, HC_CHECK_BAD, HC_CHECK_DRAWS, HC_BANK_UPLOADS, HC_BIG_ID, HC_BORDER, HC_TWO_VIEWS,
     HC_COUNT
 };
 void desc_heap_count(HeapCount c, int64_t n = 1);
+/// (the open question: is a slot sampled as two view types in play?) slot sampled as view type region at registration version ver
+void desc_heap_note_view(uint32_t slot, uint32_t region, uint32_t ver);
 #endif
 
 /// (vk_replay.cpp) a game registration of texture slot id (its entries go stale at the next submission)

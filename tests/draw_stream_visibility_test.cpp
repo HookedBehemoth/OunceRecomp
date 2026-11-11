@@ -66,6 +66,8 @@ std::unordered_map<int,int>& handle_hits() { static std::unordered_map<int,int> 
 struct BankCache { uint64_t at=0; };
 std::array<std::array<BankCache,2>,2>& bank_cache() { static std::array<std::array<BankCache,2>,2> b;return b; }
 void make_dummies() {}
+void heap_recording_begun(int, uint64_t) {}   // (RX_VK_DESC_HEAP: off here)
+bool desc_heap_wanted() { return false; }
 /* FLUSH */
 /* BEGIN */
 struct Recording { int slot;VkCommandBuffer cmd,upload,init; VkFence fence;uint64_t value=1,batch=0;bool submitted=false; };
