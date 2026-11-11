@@ -15,6 +15,9 @@
 #             are not raced (cache updates made by the run are not kept)
 #   (RUN unset: as before; the caller holds `flock work/run.lock`, and no other hookshot may run)
 set -euo pipefail
+# (the whole script is read before any of it runs, so editing this file while runs use it cannot break them: bash
+# reads a script as it goes, and an edit made under a running copy shifted it into a syntax error, orphaning its game)
+{
 root=$(cd "$(dirname "$0")/.." && pwd)
 name=${1:?name}; seconds=${2:-90}; shift $(( $# >= 2 ? 2 : 1 )) || true
 [ "${1:-}" = "--" ] && shift
@@ -92,3 +95,5 @@ if [ "$mode" = check ]; then
   rm -rf "$out/bin"
 fi
 echo "run '$name': $(( $(date +%s) - t0 )) s, $how, peak RSS $peak MB${mode:+ (RUN=$mode)}"
+exit
+}
