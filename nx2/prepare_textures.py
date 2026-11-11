@@ -56,7 +56,8 @@ Store (all little-endian; FORMAT_VERSION 1):
                   88 u32 BRTI offset in the BNTX  92 u32 image size (BRTI+0x50)  96 u32 data offset (mip 0 in the BNTX)
                  100 f32 PSNR (dB, all images; 0 when not converted)  104 f32 worst image's PSNR (images >= 4096 px)
                  108 u32 alignment (BRTI+0x54)  112 u32 ASTC blocks with HDR endpoint modes  116..127 0
-                 mip record (16 B): u64 offset of the mip in the texture's raw data, u32 bytes of one layer, u32 0.
+                 mip record (16 B): u64 offset of the mip in the texture's raw data (a multiple of 4: zero padding
+                     before it when the mip above ends unaligned), u32 bytes of one layer, u32 0.
                      Layer l of mip m is at offset + l * layer bytes; rows of blocks, packed (bufferRowLength 0). A
                      texture with status ok has `mips` of them from its first; the others have none.
                  frame record (32 B): u16 pack, u16 0, u32 compressed size, u64 offset in the pack, u64 offset in the
@@ -95,6 +96,7 @@ FLAG_BH1 = 1            # bh_log2 == 1: the block height asked about in formats.
 FLAG_ALPHA_FORCED = 2   # alpha set to 255 (the swizzle does not read it)
 FLAG_ASTC_HDR = 4       # HDR endpoint blocks seen in the ASTC source
 FLAG_DEDUP = 8          # frames shared with an earlier texture of the same content
+MIP_ALIGN = 4           # every mip's data starts at a multiple of this in the texture's raw data
 SW_ZERO, SW_ONE, SW_R, SW_G, SW_B, SW_A = 1, 2, 3, 4, 5, 6   # VkComponentSwizzle
 
 # BNTX format high byte -> (name, block w, block h, bytes per block). Low byte: VARIANT.
@@ -562,6 +564,9 @@ def convert_texture(nat, arr, b, t, opts, cctx):
         else:
             data = lin
         if m != cur_mip:
+            if raw_off % MIP_ALIGN:   # (a mip starts at a multiple of 4: vkCmdCopyBufferToImage on a transfer queue)
+                parts.append(bytes(MIP_ALIGN - raw_off % MIP_ALIGN))
+                raw_off += MIP_ALIGN - raw_off % MIP_ALIGN
             cur_mip, mip_start, layer_bytes = m, raw_off, len(data)
             mips.append((mip_start, layer_bytes))
         parts.append(data.tobytes())
@@ -582,7 +587,8 @@ def convert_texture(nat, arr, b, t, opts, cctx):
             return out
     rec["status"] = "ok"
     out["mips"] = mips
-    ranges = [(o, n * t.layers) for o, n in mips]
+    starts = [o for o, _n in mips] + [len(raw)]
+    ranges = [(starts[i], starts[i + 1] - starts[i]) for i in range(len(mips))]   # (with a mip's padding)
     for a, n in frames_of(len(raw), ranges, opts.frame_kb << 10):
         out["frames"].append((a, n, cctx.compress(raw[a:a + n])))
     return out
@@ -913,7 +919,7 @@ def run(opts):
     keep, jobs = {}, []
     for p, size, mtime in todo_files:
         o = old.get(p)
-        if o and o[0]["src_size"] == size and o[0]["mtime"] == mtime:
+        if o and o[0]["src_size"] == size and o[0]["mtime"] == mtime and all(records_sound(e) for e in o):
             keep[p] = o
         elif not o and scan.get(p) == [size, mtime]:
             continue
@@ -1025,6 +1031,11 @@ def run(opts):
     print(text, end="", flush=True)
     stats["code"] = 1 if stats["errors"] else 0
     return stats
+
+
+def records_sound(e):
+    """A kept record still meets the layout rules (else its file is made again): mips start at MIP_ALIGN"""
+    return all(mo % MIP_ALIGN == 0 for t in e["textures"] for mo, _lb in t["mips"])
 
 
 def dedup_key(rec):
@@ -1146,6 +1157,8 @@ def verify(opts):
                         se += float(np.dot(d.ravel(), d.ravel()))
                         nv += w * h_
                 pos += lb
+                if layer == src_t.layers - 1 and m + 1 < src_t.mips and pos % MIP_ALIGN:
+                    pos += MIP_ALIGN - pos % MIP_ALIGN
             if pos != r["raw_size"]:
                 raise ValueError("raw size %d, the images add up to %d" % (r["raw_size"], pos))
             msg = "ok"

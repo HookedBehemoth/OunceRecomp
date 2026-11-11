@@ -238,8 +238,9 @@ def check_run(nat, tmp, encoders, bc7enc, ispc):
     cz = zstandard.ZstdCompressor(level=3)
     kept = [tex_spec("Kept_BC1", (0x1a << 8) | 6, 100, 60, 1, 5, 2, seed=1),
             tex_spec("Kept_RGBA8_Array", (0x0b << 8) | 1, 33, 17, 4, 3, 1, target=5, seed=2),
-            tex_spec("Kept_BC4_Big", (0x1d << 8) | 1, 2048, 1024, 1, 3, 4, seed=3)]
-    files = {"Tex/Kept_BC1.bntx.zs": [kept[0]], "Tex/Kept_Two.bntx.zs": [kept[1], kept[2]]}
+            tex_spec("Kept_BC4_Big", (0x1d << 8) | 1, 2048, 1024, 1, 3, 4, seed=3),
+            tex_spec("Kept_R16_Odd", (0x0a << 8) | 1, 5, 3, 3, 3, 0, target=5, seed=4)]
+    files = {"Tex/Kept_BC1.bntx.zs": [kept[0]], "Tex/Kept_Two.bntx.zs": [kept[1], kept[2]], "Tex/Kept_R16.bntx.zs": [kept[3]]}
     conv = []
     if encoders:
         colour = lambda m, layer, i: ((i * 7 + m * 40) % 256, (i * 13 + layer * 50) % 256, (i * 3) % 256, (255 - i) % 256)
@@ -274,6 +275,7 @@ def check_run(nat, tmp, encoders, bc7enc, ispc):
             raw = P.read_frames(str(out), t["frames"], r["raw_size"])
             for m in range(spec_t["mips"]):
                 mo, lb = t["mips"][m]
+                assert mo % 4 == 0 and (m == 0 or mo >= t["mips"][m - 1][0] + t["mips"][m - 1][1] * spec_t["layers"]), t["mips"]
                 for layer in range(spec_t["layers"]):
                     seg = raw[mo + layer * lb:mo + (layer + 1) * lb]
                     w, h = max(1, spec_t["w"] >> m), max(1, spec_t["h"] >> m)
