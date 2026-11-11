@@ -70,7 +70,8 @@ def source_checks():
     need("calls.ret[calls.depth++] = p + h.size" in call and "p = k.target" in call, "the replay does not walk into NOP_CALL")
     endc = rep[rep.index("case NOP_END:"):rep.index("case NOP_CALL:")]
     need("p = calls.ret[--calls.depth]" in endc, "the replay does not go back after a called list's END")
-    need(rep.count("suspend_calls = calls;") == 2, "a wait inside a called list loses its calls when the replay stops there")
+    need(rep.count("suspend_calls = calls;") == 3,   # (the two waits, and a job call stopped for its job's wait: E6 pre-work)
+         "a wait inside a called list (or a job call stopped for its wait) loses its calls when the replay stops there")
     need("calls.same(" in rep[:rep.index("switch (h.op)")], "a segment's end is not compared with its calls")
     need("par_points.push_back({p + h.size, calls," in rep, "the dry pass's segment points lose their calls")
     need("replay(cmd, s, g.p, g.end, &g.calls, &g.end_calls);" in block(vk, "void record_segment("),
