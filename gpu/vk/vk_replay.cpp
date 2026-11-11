@@ -567,6 +567,23 @@ uint32_t event_value_in(const EvMap& ev, uint64_t gpu) {   // (one the stream ne
 thread_local bool suspend_ok = false;               // (a serial replay that stops at a wait not met: submit_job)
 bool fence_wait_met(uint64_t f);                    // (NOP_WAIT_FENCE: the fence's work recorded; sync_order_mu held)
 thread_local const uint8_t* suspend_at = nullptr;   // (the wait it stopped at)
+// (native-vk layer 1, HOS_NVN_LIST_REF=1: host/nvn_list.h) A called list is not copied into its caller: NOP_CALL names it
+// (nvn_p_call), and the walk goes into it and back after it at its END. A place in the stream is then the record and the
+// calls it is inside: every place kept to go on from (a wait it stopped at, a segment's start and end) keeps its calls.
+// The host bounds the depth (NVN_LIST_MAX_DEPTH 7: deeper callees are copied in). Without the switch the stack stays empty
+struct CallStack {
+    static constexpr int kMax = 8;
+    int depth = 0;
+    const uint8_t* ret[kMax];
+    bool same(const CallStack& o) const {
+        if (depth != o.depth) return false;
+        for (int i = 0; i < depth; i++)
+            if (ret[i] != o.ret[i]) return false;
+        return true;
+    }
+};
+thread_local CallStack suspend_calls;               // (the calls the wait it stopped at is inside)
+const CallStack kNoCalls{};
 uint64_t ts_anchor_ns = 0;   // (the last present's time: counter timestamps are scaled from it)
 
 /// A GPU-timeline write of guest memory (the stream's own writes: they reach memory in command order)
@@ -607,6 +624,7 @@ thread_local size_t cond_at = 0;           // (a worker: the next render conditi
 std::vector<uint8_t> par_conds;            // (the render conditions' results, in stream order: the dry pass's)
 struct ParPoint {
     const uint8_t* p;
+    CallStack calls;   // (the calls p is inside)
     NvnState s;
     size_t ub, cond;
     int64_t work;
@@ -834,11 +852,14 @@ bool buf_unchanged(int32_t stage, int32_t index, uint64_t addr, uint64_t size, i
     return stage == nstage && index == nindex && addr == naddr && size == nsize;
 }
 
-void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {
+/// The records from p (inside the calls from_calls names) up to end (inside end_calls) or the END they are in
+void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr,
+            const CallStack* from_calls = nullptr, const CallStack* end_calls = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
+    CallStack calls = from_calls ? *from_calls : kNoCalls;
     for (;;) {
-        if (p == end) return;
+        if (p == end && calls.same(end_calls ? *end_calls : kNoCalls)) return;
         nvn_op_hdr h;
         std::memcpy(&h, p, sizeof h);
         const uint8_t* a = p + 8;
@@ -846,8 +867,27 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         const bool l1c_op = l1c::on && !dry && !worker;   // (RX_VK_L1_CENSUS: this op's time and what its command touches)
         const int64_t l1c_t0 = l1c_op ? (l1c::op_begin(h.op), prof_now()) : 0;
         switch (h.op) {
-        case NOP_END: return;
-        case NOP_BEGIN: case NOP_JUMP: case NOP_CALL: break;
+        case NOP_END:   // (the end of a called list: on after its call; of the command buffer: done)
+            if (calls.depth) {
+                if (l1c_op) l1c::op_done(h.op, prof_now() - l1c_t0);
+                p = calls.ret[--calls.depth];
+                continue;
+            }
+            return;
+        case NOP_CALL: {   // (HOS_NVN_LIST_REF: into the called list, back at its END)
+            const auto k = payload<nvn_p_call>(a, avail);
+            if (!k.target || avail < sizeof(nvn_p_call)) break;
+            if (calls.depth == CallStack::kMax) {
+                static int told;
+                if (told++ < 4) logf("vk: a called list %d deep: left out", calls.depth + 1);
+                break;
+            }
+            if (l1c_op) l1c::op_done(h.op, prof_now() - l1c_t0);
+            calls.ret[calls.depth++] = p + h.size;
+            p = k.target;
+            continue;
+        }
+        case NOP_BEGIN: case NOP_JUMP: break;
         // ---- memory the stream writes: on the GPU timeline ----
         case NOP_SIGNAL_EVENT: {
             if (!worker) {   // (in stream order: the replay thread's pass)
@@ -882,6 +922,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 census.add(tl::EV_MET);
             } else if (suspend_ok) {   // (on once that work is replayed; a dry pass: its part up to here)
                 suspend_at = p;
+                suspend_calls = calls;
                 return;
             } else {
                 st_waits_unmet++;
@@ -901,6 +942,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 census.add(tl::FW_MET);
             } else if (suspend_ok) {
                 suspend_at = p;
+                suspend_calls = calls;
                 return;
             } else {
                 census.add(tl::FW_FORCED);
@@ -1389,7 +1431,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (dry) {
                 const bool compute = h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT;
                 if (s.render_enabled && (compute || !s.raster_discard)) dry_mark_written(s, compute, dry_work == 0);
-                if (++dry_work % 64 == 0) par_points.push_back({p + h.size, s, ub_updates.size(), par_conds.size(), dry_work});
+                if (++dry_work % 64 == 0) par_points.push_back({p + h.size, calls, s, ub_updates.size(), par_conds.size(), dry_work});
             } else if (!worker) {
                 maybe_split(cmd);
             }
@@ -1489,6 +1531,7 @@ struct Segment {
     const uint8_t *p, *end;
     const NvnState* s;
     size_t ub, cond;
+    CallStack calls, end_calls;   // (the calls p and end are inside)
 };
 /// One segment recorded into cmd from the state at its start (any thread: the replay thread's own included)
 void record_segment(VkCommandBuffer& cmd, const Segment& g) {
@@ -1497,7 +1540,7 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
     ub_limit = g.ub, cond_at = g.cond;
     ub_gen++;
     full_barrier(cmd);   // (after what the command buffers before it did)
-    replay(cmd, s, g.p, g.end);
+    replay(cmd, s, g.p, g.end, &g.calls, &g.end_calls);
     end_pass(cmd);
     full_barrier(cmd);
     rmode = Mode::Serial;
@@ -1519,14 +1562,17 @@ std::recursive_mutex par_mu;
 
 /// A command buffer of the submission from h (its start, or where it stopped at a wait): on the replay thread alone
 /// (RX_VK_PARALLEL off, a small one, dumps and profiles), or its dry pass there and its segments on the threads.
-/// may_stop: up to a wait not met, which it returns (null: the command buffer done)
-const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop = false) {
+/// may_stop: up to a wait not met, which it returns (null: the command buffer done), the calls it is inside in
+/// suspend_calls. calls: the calls h is inside (going on from a wait inside a called list)
+const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop = false, const CallStack* calls = nullptr) {
     const int threads = par_threads();
     NvnState& state = *cur_state;
+    const CallStack from = calls ? *calls : kNoCalls;
     suspend_at = nullptr;
+    suspend_calls = kNoCalls;
     if (threads < 2 || !rec_cur || dump_on() || gprof_on() || probe_serial()) {
         suspend_ok = may_stop;
-        replay(cmd, state, h);
+        replay(cmd, state, h, nullptr, &from);
         suspend_ok = false;
         return suspend_at;
     }
@@ -1539,10 +1585,11 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     rmode = Mode::Dry;
     VkCommandBuffer none = cmd;
     suspend_ok = may_stop;
-    replay(none, state, h);
+    replay(none, state, h, nullptr, &from);
     suspend_ok = false;
     rmode = Mode::Serial;
     const uint8_t* const stop = suspend_at;   // (the segments end there)
+    const CallStack stop_calls = suspend_calls;
     const int64_t total = dry_work;
     static double dry_ms, seg_ms, segs_n;
     static int64_t timed;
@@ -1552,19 +1599,20 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     static const int64_t per = getenv("RX_VK_PARALLEL_SEG") ? std::max(32, atoi(getenv("RX_VK_PARALLEL_SEG"))) : 160;
     const int nseg = (int)std::clamp<int64_t>(total / per, 1, kMaxBatch);
     std::vector<Segment> seg;
-    seg.push_back({h, nullptr, &start, ub0, 0});
+    seg.push_back({h, nullptr, &start, ub0, 0, from, kNoCalls});
     for (int k = 1; k < nseg; k++) {
         const int64_t want = total * k / nseg;
         const ParPoint* at = nullptr;
         for (const ParPoint& q : par_points)
             if (q.work >= want) { at = &q; break; }
-        if (!at || at->p == seg.back().p) continue;
-        seg.back().end = at->p;
-        seg.push_back({at->p, nullptr, &at->s, at->ub, at->cond});
+        if (!at || (at->p == seg.back().p && at->calls.same(seg.back().calls))) continue;
+        seg.back().end = at->p, seg.back().end_calls = at->calls;
+        seg.push_back({at->p, nullptr, &at->s, at->ub, at->cond, at->calls, kNoCalls});
     }
-    seg.back().end = stop;
+    seg.back().end = stop, seg.back().end_calls = stop_calls;
     if (seg.size() == 1) {   // (one segment: here, as the dry pass left the reports and conditions)
         record_segment(cmd, seg[0]);
+        suspend_calls = stop_calls;
         return stop;
     }
     if (!par_pool.started) {
@@ -1630,8 +1678,9 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         cmd = rest.cmd;
         rec_parts++;
         Segment whole = seg[0];
-        whole.end = stop;
+        whole.end = stop, whole.end_calls = stop_calls;
         record_segment(cmd, whole);
+        suspend_calls = stop_calls;
         return stop;
     }
     texture_segments_begin(inits.data(), inits.size());
@@ -1717,6 +1766,7 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     rec_cur = &nr;
     cmd = nr.cmd;
     rec_parts += (int)seg.size() + 1;
+    suspend_calls = stop_calls;
     return stop;
 }
 
@@ -1873,6 +1923,7 @@ struct QueueRun {   // (a queue stopped at a wait)
     std::vector<uint64_t> handles;   // (the submission it stopped in)
     int cb = 0;                      // (its command buffer, and the wait there)
     const uint8_t* p = nullptr;
+    CallStack calls;                 // (the called lists the wait is inside: HOS_NVN_LIST_REF)
     uint64_t value = 0;
     std::chrono::steady_clock::time_point held_at{};   // (when it stopped: the census's longest hold)
     std::deque<LaterSubmit> later;   // (its queue's submits since)
@@ -2059,7 +2110,7 @@ struct ReplayPin {
 /// submitted: true when it finished; false when it stopped at a wait not met (may_stop), its place kept in qruns.
 /// memory_work: its memory work first (else done as it came)
 bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, bool memory_work, int cb = 0,
-                const uint8_t* p = nullptr, bool may_stop = false) {
+                const uint8_t* p = nullptr, bool may_stop = false, const CallStack* calls = nullptr) {
     std::lock_guard lk(replay_mu);
     ReplayPin pin;
     SlowWatch slow("submit");
@@ -2086,9 +2137,9 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
     }
     VkCommandBuffer cmd = rec_cur->cmd;
     const uint8_t* stop = nullptr;
-    for (; cb < n; cb++, p = nullptr) {
+    for (; cb < n; cb++, p = nullptr, calls = nullptr) {
         if (!handles[cb]) continue;
-        stop = replay_handle(cmd, p ? p : reinterpret_cast<const uint8_t*>(handles[cb]), may_stop);
+        stop = replay_handle(cmd, p ? p : reinterpret_cast<const uint8_t*>(handles[cb]), may_stop, p ? calls : nullptr);
         if (stop) break;
     }
     if (stop) {
@@ -2096,6 +2147,7 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         q.waiting = true;
         q.handles.assign(handles, handles + n);
         q.cb = cb, q.p = stop, q.value = value;
+        q.calls = suspend_calls;
         q.held_at = std::chrono::steady_clock::now();
         const bool fw = is_fence_wait(stop);
         census.add(fw ? tl::FW_HELD : tl::EV_HELD);
@@ -2157,8 +2209,9 @@ void resume_queue(uint64_t queue, bool forced) {
             std::vector<uint64_t> handles = std::move(q.handles);
             q.handles.clear();
             const uint8_t* from = forced ? op_next(q.p) : q.p;
+            const CallStack calls = q.calls;   // (q is written again when it stops once more)
             (forced ? st_forced_waits : st_resumed)++;
-            if (!run_submit(handles.data(), (int)handles.size(), q.value, queue, false, q.cb, from, true)) return;
+            if (!run_submit(handles.data(), (int)handles.size(), q.value, queue, false, q.cb, from, true, &calls)) return;
             continue;
         }
         if (q.later.empty()) return;

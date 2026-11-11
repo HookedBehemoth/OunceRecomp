@@ -37,7 +37,7 @@ def main():
     block = helpers.block
     nvn = (ROOT / "host/nvn_native.c").read_text(encoding="utf-8")
     hos = (ROOT / "host/hos.h").read_text(encoding="utf-8")
-    start = nvn.index("typedef struct { uint64_t owner; uint8_t *seg, *cur, *end; } cmd_rec;")
+    start = nvn.index("typedef struct { uint64_t owner; union { struct { uint8_t *seg, *cur, *end; }; nvn_lw lw; }; } cmd_rec;")
     table_decls = nvn[start:nvn.index("static cmd_rec *cmd_slot(", start)]
     live_decls_start = nvn.index("static uint64_t *live_handles;")
     live_decls = nvn[live_decls_start:nvn.index("static void live_handle_add(", live_decls_start)]
@@ -47,6 +47,10 @@ def main():
         block(nvn, "static const void *in_window("),
         table_decls,
         block(nvn, "static cmd_rec *cmd_slot("),
+        block(nvn, "static uint32_t cmd_slot_new_locked("),
+        "static _Thread_local uint32_t cmd_tl_free[64];\nstatic _Thread_local uint32_t cmd_tl_n;",
+        block(nvn, "static uint32_t cmd_slot_take("),
+        block(nvn, "static void cmd_slot_give("),
         block(nvn, "static cmd_rec *cmd_adopt("),
         block(nvn, "static cmd_rec *cmd_host("),
         "static volatile LONG64 seg_bytes, seg_count;",
@@ -64,6 +68,11 @@ def main():
 #include <stdarg.h>
 #include <setjmp.h>
 #include "rx_nvn.h"
+#include "nvn_list.h"
+static int list_ref_mode;   /* (HOS_NVN_LIST_REF: the slots from each thread's own list; nvn_list_drop at Finalize) */
+static int list_ref(void) { return list_ref_mode; }
+static int drops;
+void nvn_list_drop(nvn_lw *w) { (void)w; drops++; }
 
 #define WINDOW (1u << 20)
 static uint8_t *A64_MEM;
@@ -136,6 +145,31 @@ int main(void) {
     b->slot = a_slot;   /* a freed slot is no one's */
     require(cmd_host(b) != NULL && cmd_host(b)->seg == NULL, "a freed slot's buffer was used");
 
+    /* (HOS_NVN_LIST_REF) the same through each thread's free slots: a slot names its object, Finalize gives it back and
+       drops the open recording, and a slot given back is no one's */
+    list_ref_mode = 1;
+    {
+        nvn_cmd *c1 = (nvn_cmd *)GP(0x6000), *c2 = (nvn_cmd *)GP(0x7000);
+        cmd_rec *r1 = cmd_adopt(c1), *r2 = cmd_adopt(c2);
+        require(r1 != r2 && c1->slot && c2->slot && c1->slot != c2->slot, "list mode: two command buffers share a slot");
+        require(cmd_host(c1) == r1 && r1->owner == h2g(c1), "list mode: a command buffer lost its own slot");
+        const uint32_t s1 = c1->slot;
+        c2->slot = s1;
+        require(cmd_host(c2) != r1 && c2->slot != s1, "list mode: a command buffer got another one's slot");
+        drops = 0;
+        cmd_release(c1);
+        require(drops == 1 && c1->slot == 0 && r1->owner == 0, "list mode: Finalize did not drop the recording and give the slot back");
+        for (int i = 0; i < 200; i++) {   /* (past the thread's list: some go back to the shared one) */
+            nvn_cmd *t = (nvn_cmd *)GP(0x8000 + 0x100 * (uint64_t)i);
+            cmd_adopt(t);
+        }
+        for (int i = 0; i < 200; i++) cmd_release((nvn_cmd *)GP(0x8000 + 0x100 * (uint64_t)i));
+        nvn_cmd *t = (nvn_cmd *)GP(0x8000);
+        t->slot = s1;
+        require(cmd_host(t) != NULL && t->slot != 0, "list mode: a freed slot was used by another object");
+    }
+    list_ref_mode = 0;
+
     /* recording handles */
     uint64_t h[5000];
     for (int i = 0; i < 5000; i++) { h[i] = 0x7f0000000000ull + (uint64_t)i * 0x40; live_handle_add(h[i]); }
@@ -164,7 +198,7 @@ int main(void) {
         authored = path / "fixture.c"
         executable = path / "fixture.exe"
         authored.write_text(fixture, encoding="utf-8")
-        subprocess.run([cc, "-std=gnu11", "-O1", "-fno-strict-aliasing", "-I", str(ROOT / "gpu/render"), str(authored),
+        subprocess.run([cc, "-std=gnu11", "-O1", "-fno-strict-aliasing", "-I", str(ROOT / "gpu/render"), "-I", str(ROOT / "host"), str(authored),
                         "-o", str(executable)], check=True)
         result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
         print(result.stdout, end="")

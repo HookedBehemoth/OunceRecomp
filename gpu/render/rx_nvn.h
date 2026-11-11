@@ -203,6 +203,10 @@ typedef struct { uint32_t offset, size; /* data follows */ } nvn_p_push_const;
 /* (hookshot) a buffer range filled with a 32-bit value */
 typedef struct { uint64_t dst, size; uint32_t value, pad; } nvn_p_clear_buf;
 typedef struct { int32_t enable, index; } nvn_p_restart;
+/* (native-vk layer 1, HOS_NVN_LIST_REF=1) a called list by reference (host/nvn_list.c): the replay walks the records from
+   target (the callee's BEGIN) to its END and goes on after this one. next: the caller's next NOP_CALL (offset from its
+   BEGIN, 0: none), bytes: the callee's BEGIN .. END. Without the switch the callee's records are copied in instead */
+typedef struct { const uint8_t *target; uint32_t next, bytes; } nvn_p_call;
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
    first index, base vertex, base instance; arrays: count, instances, first, base instance), as many as the 32-bit
    value at count_addr says when there is one; read at replay, after the GPU's writes there reached guest memory */
