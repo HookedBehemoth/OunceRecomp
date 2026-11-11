@@ -36,6 +36,7 @@
 #include "vk_desc_heap.h"
 #include "vk_menu.h"
 #include "vk_draw.h"
+#include "vk_l1_census.h"   // (RX_VK_L1_CENSUS)
 #include "vk_gprof.h"
 #include "vk_dump.h"
 #include "vk_jobs.h"
@@ -2220,6 +2221,7 @@ void full_barrier(VkCommandBuffer cmd, const char* why) {
         return;
     }
     st_barriers_made.fetch_add(1, std::memory_order_relaxed);
+    if (l1c::on) l1c::barrier(why, __builtin_return_address(0));   // (the census: by reason, against the hazards around it)
     GprofSpan gp(cmd, why);   // (RX_VK_PASS_TIMING: what a barrier costs the GPU that has nothing left to wait for)
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -2256,6 +2258,7 @@ void pass_start_barrier(VkCommandBuffer cmd) {
     // (the previous pass's writes, all stages, made visible to this pass's fragment-side stages; its vertex, task and mesh stages run
     // as soon as they can, as on the console's GPU)
     st_pass_relaxed.fetch_add(1, std::memory_order_relaxed);
+    if (l1c::on) l1c::barrier("barrier (pass start, fragments)", nullptr);
     GprofSpan gp(cmd, "barrier (pass start, fragments)");
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -3148,6 +3151,8 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
 
 void texture_written(Texture* tex, const char* why) {
     if (!tex) return;
+    // (the census: a command's image write; a pass's attachments are noted by begin_pass, as attachments)
+    if (l1c::on && !(why && !std::strncmp(why, "a pass's", 8))) l1c::img(tex, true);
     if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) {   // (a parallel replay's order broken: see dry_mark_written)
         static int64_t n;
         if (n++ < 40 || n % 500 == 0)

@@ -33,6 +33,7 @@
 
 #include "vk_paths.h"
 #include "vk_draw.h"
+#include "vk_l1_census.h"   // (RX_VK_L1_CENSUS)
 #include "dlss_actor.h"
 #include "vk_temporal.h"
 #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
@@ -2940,6 +2941,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
     draw_sampled().clear();
     dump_written().clear();
     dump_inputs().clear();
+    if (l1c::on) l1c::desc_begin();   // (the census: what this build binds, kept for the draws that keep it)
     size_t nbuf = 0, nimg = 0, nview = 0;
     for (const Stage& st : p.stages) {
         for (const auto& d : st.info.constant_buffer_descriptors) nbuf += d.count;
@@ -2991,6 +2993,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 const uint64_t addr = stage_cbuf_word(s, st, d.cbuf_index, off) |
                                       (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, off + 4) << 32;
                 uint64_t size = stage_cbuf_word(s, st, d.cbuf_index, off + 8);
+                if (l1c::on) l1c::ssbo_src(d.cbuf_index);   // (the census: where storage buffer addresses come from)
                 // (EvilOOT) a table entry that is a bare pointer (its size word 0, as OoT's culling setup keeps them): bound up to
                 // 1 MB of its pool, as the mesh pointer table's regions are; the shader takes the binding's length as its end.
                 // Not marked written: the 1 MB is a guess past the real buffer, and its copy back to guest memory overwrote
@@ -3240,6 +3243,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
         } else
 #endif
         for (const auto& d : info.texture_descriptors) {
+            if (l1c::on) l1c::handle_src(d.cbuf_index, d.count);   // (the census: where draws find their handles)
             FINE_SCOPE(FT_TEX);
             VkWriteDescriptorSet w = write(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, d.count);
             const size_t first = dw().imgs.size();
@@ -3308,6 +3312,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
         if (heap_build && !heap_kept) heap_stage_keep(s, p, st, heap_tex_first, heap_img_first);
 #endif
         for (const auto& d : info.image_descriptors) {
+            if (l1c::on) l1c::handle_src(d.cbuf_index, d.count);   // (the census: where draws find their handles)
             VkWriteDescriptorSet w = write(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, d.count);
             const size_t first = dw().imgs.size();
             const VkImageViewType vt = view_type(d.type);
@@ -3343,6 +3348,10 @@ void build_descriptors(const NvnState& s, const Program& p) {
             w.pImageInfo = &dw().imgs[first];
             dw().writes.push_back(w);
         }
+    }
+    if (l1c::on) {   // (the census: the rendered textures it samples or stores, read)
+        for (const Texture* t : draw_sampled()) l1c::img(t, false);
+        l1c::desc_end();
     }
 }
 
@@ -3959,6 +3968,11 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     end_pass(cmd);
     pass_start_barrier(cmd);   // (what the pass before wrote, and the transfers before it: vk_texture.cpp)
     work_since_barrier = true;
+    if (l1c::on) {   // (the census: the pass's attachments, written by its draws)
+        l1c::pass_begin();
+        for (int i = 0; i < at.n; i++) l1c::pass_attachment(at.color[i]);
+        l1c::pass_attachment(at.depth);
+    }
     VkRenderingAttachmentInfo ca[8]{};
     bool marks = !texture_marked(at.depth);
     for (int i = 0; i < at.n && !marks; i++) marks = !texture_marked(at.color[i]);
@@ -6483,6 +6497,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
     }
     if (same_desc && slotgen && last_desc_reg != reg_gen) st_desc_slotgen_saves++;   // (the global check would have rebuilt)
+    if (same_desc && l1c::on) l1c::desc_reuse();   // (the census: it touches what the build it keeps touched)
     if (!same_desc) {
         PROF_HOT(PROF_DESC);
         FINE_N(FC_BUILDS, 1);

@@ -46,6 +46,7 @@ static bool log_addr() {
 }
 #include "shaders/wb_diff_comp_spv.h"
 #include "vk_pools.h"  // (native-vk layer 0, RX_VK_LAYER0=1)
+#include "vk_l1_census.h"   // (RX_VK_L1_CENSUS)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -2757,6 +2758,7 @@ struct BindMemo {
 thread_local BindMemo bind_memo[256];
 
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
+    if (l1c::on) l1c::buf(gpu, size, written);   // (the census: what the replay's command touches)
     if (written) texture_gpu_wrote(gpu, size);
     // (below 1 TB a GPU address is the guest address itself, and a pool holds the whole range or nothing: the host's
     // two translations are for the virtual pools above)
