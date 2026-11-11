@@ -4736,16 +4736,19 @@ struct PkKeep {
         std::memcpy(g, pk_gen, sizeof g);
     }
 };
-struct PkProg {   // (the draw before's program: program_for's inputs as they were)
+struct PkProg {   // (a recent draw's program: program_for's inputs as they were)
     bool ok = false, mesh = false;
     const NvnState* s = nullptr;
     const Program* p = nullptr;
-    uint64_t g_prog = 0, g_vi = 0, reg = 0, ub = 0, bind = 0;
+    uint64_t sig = 0, reg = 0, ub = 0, bind = 0;
     uint64_t tex_gen[kNvnStages]{};
+    uint32_t vattr[16]{};
+    int nvattr = 0;
     uint32_t amask = ~0u;
     uint8_t ct[8]{};
 };
-struct PkMemo { PkKeep dyn, vi, note; PkProg prog; };
+constexpr int kPkProgs = 8;   // (the programs of the last few draws: a pass's draws take turns among a handful)
+struct PkMemo { PkKeep dyn, vi, note; PkProg prog[kPkProgs]; int prog_next = 0; };
 TLS_OBJECT(pk_memo, PkMemo)
 enum PkCount { PKC_DRAWS, PKC_DYN, PKC_VI, PKC_NOTE, PKC_PROG, PKC_CHECKED, PKC_MISMATCH, PKC_N };
 int64_t pk_n[PKC_N];   // (the serial replay's: replay_mu)
@@ -6649,18 +6652,25 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         // (RX_VK_PACKETS: the draw before's program while nothing program_for picks by was set since: the program, the vertex
         // layouts, the colour types, the registrations, the inline updates, and the bindings its answers read (the stages' textures
         // when every answer is a c2 handle of its own stage, as program_for's own pair has it; any binding otherwise))
-        PkProg* const pm = pkm ? &pkm->prog : nullptr;
+        PkProg* pm = nullptr;
         bool kept = false;
-        uint64_t reg_now = 0, ub_now = 0;
-        if (pm) {
-            reg_now = registrations_generation(), ub_now = ub_generation();
-            kept = pm->ok && pm->s == &s && pm->mesh == d.mesh && pm->g_prog == pk_gen[PKG_PROG] && pm->g_vi == pk_gen[PKG_VI] &&
-                   pm->reg == reg_now && pm->ub == ub_now && !std::memcmp(pm->ct, types, 8);
-            if (kept && pm->amask == ~0u) kept = pm->bind == s.bind_gen;
-            else
-                for (int k = 0; kept && k < kNvnStages; k++)
-                    if ((pm->amask >> k & 1) && pm->tex_gen[k] != s.tex_gen[k]) kept = false;
-            if (kept && !(pm->p->ready.load(std::memory_order_acquire) && !pm->p->failed)) kept = false;
+        uint64_t reg_now = 0, ub_now = 0, sig_now = 0;
+        if (pkm && s.has_prog) {
+            reg_now = registrations_generation(), ub_now = ub_generation(), sig_now = prog_stage_sig(s.prog);
+            for (PkProg& e : pkm->prog) {
+                if (!e.ok || e.sig != sig_now || e.s != &s || e.mesh != d.mesh || e.reg != reg_now || e.ub != ub_now ||
+                    e.nvattr != s.nvattr || std::memcmp(e.ct, types, 8) || std::memcmp(e.vattr, s.vattr, sizeof e.vattr))
+                    continue;
+                bool same = true;
+                if (e.amask == ~0u) same = e.bind == s.bind_gen;
+                else
+                    for (int k = 0; same && k < kNvnStages; k++)
+                        if ((e.amask >> k & 1) && e.tex_gen[k] != s.tex_gen[k]) same = false;
+                if (same && e.p->ready.load(std::memory_order_acquire) && !e.p->failed) {
+                    pm = &e, kept = true;
+                    break;
+                }
+            }
         }
         if (kept) pk_n[PKC_PROG]++;
         if (kept && !pk_check) {
@@ -6672,14 +6682,16 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                 pk_n[PKC_CHECKED]++;
                 if (cp != pm->p) pk_mismatch("program", *pm->p);
             }
-            if (pm) {
-                pm->ok = cp && cp->ready.load(std::memory_order_acquire) && !cp->failed;
-                if (pm->ok) {
-                    pm->s = &s, pm->mesh = d.mesh, pm->p = cp, pm->g_prog = pk_gen[PKG_PROG], pm->g_vi = pk_gen[PKG_VI];
-                    pm->reg = reg_now, pm->ub = ub_now, pm->bind = s.bind_gen, pm->amask = answer_stage_mask(*cp);
-                    std::memcpy(pm->tex_gen, s.tex_gen, sizeof pm->tex_gen);
-                    std::memcpy(pm->ct, types, 8);
-                }
+            if (pkm && s.has_prog && cp && cp->ready.load(std::memory_order_acquire) && !cp->failed) {
+                if (!pm) pm = &pkm->prog[pkm->prog_next], pkm->prog_next = (pkm->prog_next + 1) % kPkProgs;
+                pm->ok = true, pm->s = &s, pm->mesh = d.mesh, pm->p = cp, pm->sig = sig_now;
+                pm->reg = reg_now, pm->ub = ub_now, pm->bind = s.bind_gen, pm->amask = answer_stage_mask(*cp);
+                std::memcpy(pm->tex_gen, s.tex_gen, sizeof pm->tex_gen);
+                std::memcpy(pm->vattr, s.vattr, sizeof pm->vattr);
+                pm->nvattr = s.nvattr;
+                std::memcpy(pm->ct, types, 8);
+            } else if (pm) {
+                pm->ok = false;
             }
         }
     }

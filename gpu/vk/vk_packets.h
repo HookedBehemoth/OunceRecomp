@@ -30,6 +30,7 @@ extern uint64_t pk_gen[PKG_N];     // (replay_mu) the clock when the group was l
 inline void pk_touch(int g) { pk_gen[g] = ++pk_clock; }
 struct Program;
 uint32_t answer_stage_mask(const Program& p);   // (vk_shader.cpp: the stages whose c2 handles a program's answers read, ~0: any binding)
+uint64_t prog_stage_sig(const nvn_prog& p);     // (vk_shader.cpp: a program's stages and serial, as program_for keys its picks)
 
 inline void pk_touch_all() {
     ++pk_clock;
