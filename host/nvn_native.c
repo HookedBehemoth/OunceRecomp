@@ -1357,6 +1357,10 @@ static int list_ref(void) {
     return on;
 }
 static void *guest_or_null(uint64_t a, uint64_t n) { return hos_guest_range(a, n); }
+/* (the replay's progress as the last submit read it: AddControlMemory frees by it. rx_nvn_replayed polls the batched queue
+   under the present lock, which the replay holds while it submits: the workers' AddControlMemory waited there, up to
+   0.9 ms, and a poll could hand the batch to the GPU from a worker) */
+static volatile uint64_t list_done;
 static void list_log(const char *why) {
     nvn_list_stats t;
     nvn_list_get_stats(&t);
@@ -1772,7 +1776,7 @@ NV(nvnCommandBufferAddControlMemory) {
     nvn_cmd *o = CB(P(0));
     if (list_ref()) {   /* (the range's recordings released: their bytes go once the replay is past what was handed in) */
         nvn_list_release(U64(1), U64(1) + U64(2), rx_nvn_pushed() + held_count());
-        nvn_list_drain(rx_nvn_replayed());
+        nvn_list_drain(__atomic_load_n(&list_done, __ATOMIC_ACQUIRE));
     } else {
         release_copies(U64(1), U64(1) + U64(2));
     }
@@ -2743,7 +2747,9 @@ NV(nvnQueueSubmitCommands) {
                     (unsigned long long)q->submits, n, (unsigned long long)c->x[30]);
     }
     if (list_ref()) {   /* (the handles' BEGIN records for the replay, their deferred binds read now: host/nvn_list.c) */
-        const int bad = nvn_list_submit(h, h, n, rx_nvn_replayed(), gw);
+        const uint64_t done = rx_nvn_replayed();
+        __atomic_store_n(&list_done, done, __ATOMIC_RELEASE);
+        const int bad = nvn_list_submit(h, h, n, done, gw);
         if (bad) die("command handle %#llx is not a live recording", (unsigned long long)h[bad - 1]);
         static volatile LONG k;
         if (nvn_list_check_on() && InterlockedIncrement(&k) % 600 == 0) list_log("check, every 600 submits");
