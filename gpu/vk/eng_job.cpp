@@ -646,7 +646,14 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
 }
 
 /// (HOS_ENG_JOBS_SPLIT) the run being recorded ends before an op the replay does between runs (an empty open run stays open)
-void split_cut(Rec* r) {
+void split_cut(Rec* r, int op = 0) {
+    {   // (HOS_ENG_CUTLOG=1: where the runs are cut, the first ones after the start)
+        static const bool cl = getenv("HOS_ENG_CUTLOG") && atoi(getenv("HOS_ENG_CUTLOG")) != 0;
+        static std::atomic<int> told{0};
+        if (cl && cnt[C_JOBS].load(std::memory_order_relaxed) > 100000 && told++ < 60)
+            logf("eng cutlog: job %u view %#llx: op %d at draw op %u (run from %u, %u draws recorded)", r->serial, (unsigned long long)r->view, op,
+                 r->draw_i, r->seg_first, r->ndraws);
+    }
     r->cut = true;
     if (!r->cb) return;
     if (r->draw_i > r->seg_first) {
@@ -657,8 +664,22 @@ void split_cut(Rec* r) {
         r->seg_first = r->draw_i;
     }
 }
+thread_local std::vector<std::pair<uint64_t, uint64_t>> cut_inputs;   // (HOS_ENG_CUTLOG: the job's draws' vertex and storage ranges)
+bool cutlog_on() {
+    static const bool cl = getenv("HOS_ENG_CUTLOG") && atoi(getenv("HOS_ENG_CUTLOG")) != 0;
+    return cl;
+}
 void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
     add(C_DRAWS);
+    if (cutlog_on()) {
+        for (int b = 0; b < 16; b++)
+            if (w.s.vbuf[b].address) cut_inputs.push_back({w.s.vbuf[b].address, w.s.vbuf[b].size});
+        for (int st = 0; st < 5; st++)
+            for (int i = 0; i < 16; i++) {
+                if (w.s.ssbo[st][i].addr) cut_inputs.push_back({w.s.ssbo[st][i].addr, w.s.ssbo[st][i].size});
+                if (w.s.ubo[st][i].addr) cut_inputs.push_back({w.s.ubo[st][i].addr, w.s.ubo[st][i].size});
+            }
+    }
     r->any_draw = true;
     if (sw().check) {
         w.descs.emplace_back();
@@ -986,17 +1007,41 @@ void walk_records(Walk& w, Rec* r, const uint8_t* p, const uint8_t* end) {
                 w.pre_barrier = true;
                 break;
             }
-            if (r->split && (sw().split_mask & kSplitCut)) {   // (split: the run so far ends here; the replay records the barrier between the runs)
-                split_cut(r);
+            static const bool seg_nobar = getenv("HOS_ENG_SEG_NOBARRIER") && atoi(getenv("HOS_ENG_SEG_NOBARRIER")) != 0;   // (bisection)
+            if (r->split && (sw().split_mask & kSplitCut) && !seg_nobar) {   // (split: the run so far ends here; the replay records the barrier between the runs)
+                split_cut(r, (int)h.op);
                 break;
             }
             if (h.op < NOP_COUNT_) op_refused[h.op].fetch_add(1, std::memory_order_relaxed);
             r->fail(WHY_OPS);
             break;
         case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:
-            if (r->split && (sw().split_mask & kSplitCut)) {   // (split: the replay dispatches it between the runs)
+            // (HOS_ENG_JOBS_SEGMENTS: a dispatch is not a cut, the job goes back to the replay. Cut there, the two 1536x864 colour passes
+            // (views ...c10c0, ...5cf80: 18-21 draws, then one dispatch of a 23 KB storage buffer none of the draws read) lost Link's body
+            // at some camera angles (the bridge walk + pan route, e6-impl.md); drawn inline by the split walk instead, they did not.
+            // HOS_ENG_SEG_DISPATCH=1: cut there, for the investigation)
+            static const bool seg_nodis = !(getenv("HOS_ENG_SEG_DISPATCH") && atoi(getenv("HOS_ENG_SEG_DISPATCH")) != 0);
+            if (cutlog_on() && cnt[C_JOBS].load(std::memory_order_relaxed) > 100000) {   // (what the dispatch binds, against the job's draws so far)
+                static std::atomic<int> told{0};
+                if (told++ < 40) {
+                    std::string l;
+                    char t[160];
+                    for (int st = 5; st < kNvnStages; st++)
+                        for (int i = 0; i < 16; i++) {
+                            const nvn_p_bind_buf& b = s.ssbo[st][i];
+                            if (!b.addr) continue;
+                            int hits = 0;
+                            for (const auto& in : cut_inputs) hits += b.addr < in.first + std::max<uint64_t>(in.second, 1) && in.first < b.addr + std::max<uint64_t>(b.size, 1);
+                            std::snprintf(t, sizeof t, " st%d sb%d %#llx+%#llx (%d draw inputs overlap)", st, i, (unsigned long long)b.addr, (unsigned long long)b.size, hits);
+                            l += t;
+                        }
+                    logf("eng cutlog: job %u view %#llx dispatch after %u draw ops, prog %016llx:%s", r->serial, (unsigned long long)r->view, r->draw_i,
+                         (unsigned long long)(s.has_prog ? prog_stage_sig(s.prog) : 0), l.c_str());
+                }
+            }
+            if (r->split && (sw().split_mask & kSplitCut) && !seg_nodis) {   // (split: the replay dispatches it between the runs)
                 add(C_DRAWS);
-                split_cut(r);
+                split_cut(r, (int)h.op);
                 break;
             }
             on_draw(w, r, (int)h.op, a, avail);
@@ -1049,6 +1094,19 @@ void flush_pending(RState& r) {
 }
 void mismatch_line(const RState& r, size_t i, uint32_t groups, const DrawTrace& a, const DrawTrace& b) {
     static std::atomic<int> render_told{0}, target_told{0};
+    {   // (HOS_ENG_CHECK_VIEWS=<a>,<b>: only those views' draws logged)
+        static const std::vector<uint64_t> views = [] {
+            std::vector<uint64_t> v;
+            if (const char* e = getenv("HOS_ENG_CHECK_VIEWS"))
+                for (const char* q = e; *q;) {
+                    char* end;
+                    v.push_back(strtoull(q, &end, 0));
+                    q = *end ? end + 1 : end;
+                }
+            return v;
+        }();
+        if (!views.empty() && std::find(views.begin(), views.end(), r.j ? r.j->view : 0) == views.end()) return;
+    }
     std::atomic<int>& budget = groups == 1u << G_RENDER ? render_told : groups & (1u << G_BLEND | 1u << G_CHMASK) ? target_told : mismatch_told;
     if (budget.fetch_add(1, std::memory_order_relaxed) >= (&budget == &render_told ? 5 : &budget == &target_told ? 20 : 40)) return;
     char line[600];
@@ -1488,6 +1546,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     Walk& w = walk();
     w.s = NvnState{};
     w.d.clear();
+    cut_inputs.clear();
     w.tex.clear(), w.deferred.clear(), w.trace.clear(), w.ubo.clear(), w.pre.clear(), w.waits.clear(), w.pre_barrier = false, w.writes.clear(), w.npkt = 0;
     std::memset(w.refs, 0, sizeof w.refs);
     w.nbinds = 0, w.patches.clear(), w.descs.clear();
