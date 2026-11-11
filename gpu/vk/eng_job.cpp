@@ -43,6 +43,7 @@ namespace mkwvk {
 
 uint64_t ub_recording_value();   // (vk_replay.cpp)
 
+bool program_answers_hold(const NvnState& s, const Program& p);   // (vk_shader.cpp)
 namespace {
 
 int64_t now_ns() { return host ? host->now_ns() : 0; }
@@ -247,9 +248,10 @@ void reads_of(const NvnState& s, const Deferred& d, const Program& p, int ncolor
 
 // ---- the jobs: a ring by serial (kRing jobs: ~80 frames of 102) ----
 enum Why { WHY_OK, WHY_NO_PASS, WHY_NO_PROG, WHY_PROG_NOT_READY, WHY_DRAW_KIND, WHY_VERTEX_MEM, WHY_INDEX_MEM, WHY_OPS, WHY_POOL, WHY_DESCRIPTORS,
-           WHY_NOT_RECORDED, WHY_GATED, WHY_N };
+           WHY_NOT_RECORDED, WHY_GATED, WHY_TEX_VARIANT, WHY_N };
 const char* const kWhy[WHY_N] = {"recorded", "no pass formats", "program not seen", "program not ready", "draw kind", "vertex memory",
-                               "index memory", "ops not taken", "command pool full", "descriptors", "not recorded", "draws left out by a condition"};
+                               "index memory", "ops not taken", "command pool full", "descriptors", "not recorded", "draws left out by a condition",
+                               "texture variant"};
 constexpr uint32_t kRing = 8192;
 struct Job {
     std::atomic<uint32_t> serial{0};   // (0 while it is written)
@@ -478,6 +480,9 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     if (!p.ready.load(std::memory_order_acquire) || p.failed || !so.ready.load(std::memory_order_acquire) || so.failed ||
         p.mesh != mesh || p.fallback || !(mesh ? so.ms : so.vs))
         return r.fail(WHY_PROG_NOT_READY);
+    // (the program's texture answers: the published one is the variant the replay picked for other textures of these inputs; a
+    // texture of another type or integer-ness here needs another variant, which only the replay picks)
+    if (!program_answers_hold(s, p)) return r.fail(WHY_TEX_VARIANT);
     const HeapProgram* hp = so.heap ? desc_heap_program(p) : nullptr;
     if (!hp) return r.fail(WHY_DESCRIPTORS), void(desc_why[EDW_NO_HEAP].fetch_add(1, std::memory_order_relaxed));
     EngDrawDesc& dd = sw().check && !w.descs.empty() ? w.descs.back() : w.desc;

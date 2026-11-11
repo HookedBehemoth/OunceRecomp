@@ -598,6 +598,7 @@ VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
 } // namespace
 
 /// A word of a stage's constant bank: c0 / c2 the driver's banks, c1 its own constants, c3.. its uniform buffers
+thread_local bool cbuf_live = false;   // (program_answers_hold on a job thread: user buffers read from guest memory, not the replay's stream)
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset) {
     if (index == 1) {
         uint32_t v = 0;
@@ -614,7 +615,7 @@ uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uin
         static const bool live = getenv("RX_VK_HANDLES_LIVE") != nullptr;
         // (EvilOOT: and a binding of no recorded size read as far as asked, as the storage buffer descriptors had it before)
         if (u.addr && (!u.size || (uint64_t)offset + 4 <= (uint64_t)u.size)) {
-            if (live) host->gpu_read(u.addr + offset, &v, 4);
+            if (live || cbuf_live) host->gpu_read(u.addr + offset, &v, 4);
             else ub_read(u.addr + offset, &v, 4);
         }
         return v;
@@ -635,7 +636,7 @@ uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program) {
                    uint32_t v = 0;
                    static const bool live = getenv("RX_VK_HANDLES_LIVE") != nullptr;
                    if (base) {
-                       if (live) host->gpu_read(base + offset, &v, 4);
+                       if (live || cbuf_live) host->gpu_read(base + offset, &v, 4);
                        else ub_read(base + offset, &v, 4);
                    }
                    return v;
@@ -822,6 +823,17 @@ const std::vector<Code>& codes_of(const NvnState& s) {
 std::atomic<int64_t> st_translated, st_failed, st_translate_ns;
 
 } // namespace
+
+/// (native-vk E3, on a job thread) whether the textures a job draw binds answer what the program the replay published for its
+/// inputs was translated for (still_valid; a handle in a user uniform buffer or read by a handle program from guest memory, as
+/// the job's own descriptors read it). False: another variant of the program, which the replay picks: the job falls back
+bool program_answers_hold(const NvnState& s, const Program& p) {
+    if (p.answers.empty()) return true;
+    cbuf_live = true;
+    const bool ok = still_valid(s, p);
+    cbuf_live = false;
+    return ok;
+}
 
 Shader::AttributeType attribute_type_of(uint32_t vattr) {
     // (NVN vertex formats: the integer ones read as integers, everything else as float)
