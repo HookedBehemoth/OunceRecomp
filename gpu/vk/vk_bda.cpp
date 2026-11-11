@@ -36,8 +36,13 @@ struct alignas(64) Counts {
     int64_t v[BC_COUNT]{};
 };
 Counts counts;
+struct alignas(64) WhyCounts {
+    int64_t v[B::kWhyBits]{};
+};
+WhyCounts why_counts;   // (BC_CLASSIC stage draws by each reason, Info::bda_why)
 const char* const kNames[BC_COUNT] = {"stage draws by address", "read-only skipped", "written (noted)", "bound on the CPU first",
-                                      "virtual (the draw's range)", "virtual lost (read 0)", "stage draws on descriptors"};
+                                      "virtual (the draw's range)", "virtual lost (read 0)", "stage draws on descriptors",
+                                      "table entries and candidates kept bound"};
 
 bool make_table() {
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -99,6 +104,33 @@ bool bda_on() {
     return !why;
 }
 
+bool bda_wide() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_DESC_HEAP_BDA");
+        return e && atoi(e) >= 2;
+    }();
+    return on && bda_on();
+}
+
+bool bda_why_log() {
+    static const bool on = bda_wanted() && env_on("RX_VK_LOG_BDA_WHY");
+    return on;
+}
+
+const char* bda_why_text(uint32_t why, char* buf, size_t n) {
+    size_t len = 0;
+    buf[0] = 0;
+    for (uint32_t b = 0; b < B::kWhyBits && len + 1 < n; b++)
+        if (why & (1u << b)) len += snprintf(buf + len, n - len, "%s%s", len ? ", " : "", B::WhyName(b));
+    if (!len) snprintf(buf, n, "none");
+    return buf;
+}
+
+void bda_count_why(uint32_t why) {
+    for (uint32_t b = 0; b < B::kWhyBits; b++)
+        if (why & (1u << b)) why_counts.v[b]++;
+}
+
 bool bda_check_on() {
     static const bool on = bda_wanted() && env_on("RX_VK_BDA_CHECK");
     return on;
@@ -133,7 +165,7 @@ void bda_frame() {
     }
     static int64_t frames = 0, last[BC_COUNT]{};
     if (++frames % 600) return;
-    char line[600];
+    char line[900];
     int len = snprintf(line, sizeof line, "vk: storage buffers by address, last 600 presents:");
     for (int i = 0; i < BC_COUNT && len < 520; i++) {
         len += snprintf(line + len, sizeof line - len, " %s %lld%s", kNames[i], (long long)(counts.v[i] - last[i]),
@@ -143,6 +175,18 @@ void bda_frame() {
     if (bda_check_on()) {
         const volatile uint32_t* w = (const volatile uint32_t*)((const uint8_t*)t + B::kCheckOffset);
         len += snprintf(line + len, sizeof line - len, "; out of range so far %u", w[B::kCheckCount]);
+    }
+    {   // (why the ones on descriptors are: each reason's stage draws, a draw counted under each of its reasons)
+        static int64_t why_last[B::kWhyBits]{};
+        bool any = false;
+        for (uint32_t b = 0; b < B::kWhyBits && len < 860; b++) {
+            const int64_t d = why_counts.v[b] - why_last[b];
+            why_last[b] = why_counts.v[b];
+            if (!d) continue;
+            len += snprintf(line + len, sizeof line - len, "%s %s %lld", any ? "," : "; on descriptors for:", B::WhyName(b),
+                            (long long)d);
+            any = true;
+        }
     }
     logf("%s", line);
 }

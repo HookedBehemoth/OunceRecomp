@@ -548,6 +548,9 @@ Shader::Profile make_profile() {
     // Info::ssbo_bda; vk_bda.cpp. In the cache's stamp, as bda_on() decided it)
     p.ssbo_bda = bda_on();
     p.ssbo_bda_check = p.ssbo_bda && bda_check_on();
+    // (RX_VK_DESC_HEAP_BDA=2: and the tables, render-area, CAS-loop, native-bounds and no-u32-view stages, bda_emit.h kWideAllowed.
+    // The switch's value is in the stamp: disk_stamp's RX_VK_DESC_HEAP_BDA)
+    p.ssbo_bda_wide = p.ssbo_bda && bda_wide();
     return p;
 }
 
@@ -1085,7 +1088,8 @@ uint64_t disk_stamp() {
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)dev.sg32_stages};
     add(lanes, sizeof lanes);
-    const uint32_t bda = (profile().ssbo_bda ? 1u : 0u) | (profile().ssbo_bda_check ? 2u : 0u);   // (RX_VK_DESC_HEAP_BDA as decided)
+    const uint32_t bda = (profile().ssbo_bda ? 1u : 0u) | (profile().ssbo_bda_check ? 2u : 0u) |
+                         (profile().ssbo_bda_wide ? 4u : 0u);   // (RX_VK_DESC_HEAP_BDA as decided)
     add(&bda, sizeof bda);
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)

@@ -34,6 +34,34 @@ constexpr std::uint32_t kCheckLastBound = 4;            //  and its buffer's bou
 constexpr std::uint32_t kScratchOffset = kCheckOffset + 64;   // (64 bytes the clamped accesses go to)
 constexpr std::uint32_t kTableBytes = kScratchOffset + 64;
 
+/// Why a stage's storage buffers stay on descriptors (Info::bda_why, BdaStage in spirv_emit_context.cpp): one bit for each
+/// condition the stage meets, so that a log names all of them. kWideAllowed: the ones RX_VK_DESC_HEAP_BDA=2 translates
+enum Why : std::uint32_t {
+    kWhyMeshFallback = 1u << 0,    // (the compute fallback's task and mesh stages, and its generated vertex stage)
+    kWhyRenderArea = 1u << 1,      // (the render area's push block; =2: the window table's words in that block)
+    kWhyRenderAreaScale = 1u << 2, // (and the rescaling words, which share its offsets)
+    kWhyGlobalOff = 1u << 3,       // (global memory with RX_VK_BDA_GLOBAL=0)
+    kWhyNativeBounds = 1u << 4,    // (Info::native_global_bounds: the candidates' search; =2: the accesses translated instead)
+    kWhyMeshFirst = 1u << 5,       // (the task stage under RX_VK_MESH_FIRST: its own block)
+    kWhyCasLoop = 1u << 6,         // (inc/dec, f32/f16x2/f32x2 atomics: CAS loops; =2: the loops on a device address)
+    kWhyNoU32View = 1u << 7,       // (no constant buffer read as u32 words; =2: the view declared)
+    kWhyTable = 1u << 8,           // (a storage table, count > 1: the global tables, c0+0x880; =2: no base, the accesses translated)
+    kWhyMissLog = 1u << 9,         // (RX_VK_MISS_LOG's buffer at c0+0xff0)
+    kWhyUnaligned = 1u << 10,      // (an address word not on a u32 boundary)
+    kWhyUndeclared = 1u << 11,     // (its address in a constant buffer the stage does not declare)
+    kWhyCaps = 1u << 12,           // (the device lacks int64/8/16-bit storage or descriptor aliasing)
+};
+constexpr std::uint32_t kWhyBits = 13;
+constexpr std::uint32_t kWideAllowed = kWhyRenderArea | kWhyNativeBounds | kWhyCasLoop | kWhyNoU32View | kWhyTable;
+inline const char* WhyName(std::uint32_t bit) {
+    static const char* const names[kWhyBits] = {"mesh fallback", "render area",     "render area with rescaling",
+                                                "global off",    "native bounds",   "mesh first",
+                                                "CAS loop",      "no u32 cbuf view", "table (count > 1)",
+                                                "miss log",      "unaligned word",  "cbuf not declared",
+                                                "device caps"};
+    return bit < kWhyBits ? names[bit] : "?";
+}
+
 /// The basic types the helpers use, as the module defines them
 struct Types {
     Id u1, u32, u64, void_t;
@@ -159,6 +187,7 @@ struct Access {
     Id pointer{};
     Id inside{};
     std::uint32_t align{};
+    Id address{};   // (the u64 the pointer was made of: the CAS loops take it, DefineCasLoop)
 };
 
 /// The access of a `type` value of `size` bytes at byte `offset` (u32) of the buffer whose device address is `base`.
@@ -176,6 +205,7 @@ inline Access Make(Sirit::Module& m, const Types& t, PtrCache& ptrs, Id type, st
         m.OpFunctionCall(t.void_t, flag, m.OpLogicalNot(t.u1, a.inside), table, offset, bound);
     }
     a.pointer = PointerAt(m, t, p, address);
+    a.address = address;
     return a;
 }
 
@@ -193,6 +223,56 @@ inline void Store(Sirit::Module& m, const Access& a, Id value) {
 /// An atomic's or another read's result through an access: 0 when it was out of range
 inline Id Result(Sirit::Module& m, const Access& a, Id type, Id value) {
     return Sirit::ValidId(a.inside) ? m.OpSelect(type, a.inside, value, m.ConstantNull(type)) : value;
+}
+
+/// (RX_VK_DESC_HEAP_BDA=2) value_type f(u64 address, value_type b): Eden's storage CAS loop (spirv_emit_context.cpp CasLoop) on
+/// the u32 word at a device address: the word read, op(word as value_type, b) compare-exchanged in until it holds or `max_tries`
+/// attempts were made, the old value returned. `op` is value_type op(value_type, value_type) (CasFunction). The word holds a
+/// u32, an f32 or f16x2 (bitcast), or an f32x2 packed as two halves (`packed_half`, needs GLSL.std.450). Defined before main
+inline Id DefineCasLoop(Sirit::Module& m, const Types& t, PtrCache& ptrs, Id value_type, Id op, bool packed_half,
+                        std::uint32_t max_tries) {
+    const bool is_u32{value_type.value == t.u32.value};
+    const Id zero{m.Constant(t.u32, 0U)};
+    const Id scope{m.Constant(t.u32, static_cast<std::uint32_t>(spv::Scope::Device))};
+    const Id fn{m.OpFunction(value_type, spv::FunctionControlMask::MaskNone, m.TypeFunction(value_type, t.u64, value_type))};
+    const Id address{m.OpFunctionParameter(t.u64)};
+    const Id op_b{m.OpFunctionParameter(value_type)};
+    m.AddLabel();
+    const Id fn_u32{m.TypePointer(spv::StorageClass::Function, t.u32)};
+    // (the function's variables before any other instruction: the expected word, the attempts)
+    const Id expected_var{m.AddLocalVariable(fn_u32, spv::StorageClass::Function)};
+    const Id tries_var{m.AddLocalVariable(fn_u32, spv::StorageClass::Function)};
+    m.OpStore(tries_var, zero);
+    const Id word_pointer{PointerAt(m, t, ptrs.Get(m, t.u32), address)};
+    m.OpStore(expected_var, m.OpLoad(t.u32, word_pointer, spv::MemoryAccessMask::Aligned, 4U));
+    const Id loop_header{m.OpLabel()};
+    const Id continue_block{m.OpLabel()};
+    const Id merge_block{m.OpLabel()};
+    m.OpBranch(loop_header);
+    m.AddLabel(loop_header);
+    m.OpLoopMerge(merge_block, continue_block, spv::LoopControlMask::MaskNone);
+    m.OpBranch(continue_block);
+    m.AddLabel(continue_block);
+    const auto from_word{[&](Id word) {
+        if (packed_half) {
+            return m.OpUnpackHalf2x16(value_type, word);
+        }
+        return is_u32 ? word : m.OpBitcast(value_type, word);
+    }};
+    const Id expected{m.OpLoad(t.u32, expected_var)};
+    const Id new_value{m.OpFunctionCall(value_type, op, from_word(expected), op_b)};
+    const Id new_word{packed_half ? m.OpPackHalf2x16(t.u32, new_value) : is_u32 ? new_value : m.OpBitcast(t.u32, new_value)};
+    const Id result{m.OpAtomicCompareExchange(t.u32, word_pointer, scope, zero, zero, new_word, expected)};
+    m.OpStore(expected_var, result);
+    const Id success{m.OpIEqual(t.u1, result, expected)};
+    const Id tries{m.OpIAdd(t.u32, m.OpLoad(t.u32, tries_var), m.Constant(t.u32, 1U))};
+    m.OpStore(tries_var, tries);
+    const Id done{m.OpLogicalOr(t.u1, success, m.OpUGreaterThanEqual(t.u1, tries, m.Constant(t.u32, max_tries)))};
+    m.OpBranchConditional(done, merge_block, loop_header);
+    m.AddLabel(merge_block);
+    m.OpReturnValue(from_word(result));
+    m.OpFunctionEnd();
+    return fn;
 }
 
 } // namespace Shader::Backend::SPIRV::Bda

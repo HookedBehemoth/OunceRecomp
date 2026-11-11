@@ -323,6 +323,7 @@ public:
     // (hookshot, RX_VK_DESC_HEAP_BDA: Info::ssbo_bda) the storage buffers through device addresses (bda_emit.h)
     bool ssbo_bda{};
     bool ssbo_bda_check{};
+    bool bda_render_area{};           // (RX_VK_DESC_HEAP_BDA=2: a render-area stage, its area in ResolutionInfo at offset 0)
     u32 window_table_member_index{};  // (WINDOW_TABLE_PUSH_OFFSET's member, then the virtual range's three: Bda::Pushed)
     Bda::Pushed bda_pushed;           // (main's, loaded in the entry block)
     Id bda_table{};                   // (the window table's address, loaded in the entry block)

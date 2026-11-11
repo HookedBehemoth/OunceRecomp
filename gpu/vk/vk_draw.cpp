@@ -711,6 +711,13 @@ void ensure_layout(Program& p) {
                        st.info.uses_global_memory;
     for (const Stage& st : p.stages) p.uses_push |= (st.vk_stage & VK_SHADER_STAGE_TASK_BIT_EXT) != 0;   // (its first workgroup)
     for (const Stage& st : p.stages) p.uses_push |= st.info.ssbo_bda;   // (RX_VK_DESC_HEAP_BDA: the window table's address)
+    if (bda_why_log())   // (RX_VK_LOG_BDA_WHY=1: why a stage's storage buffers stayed on descriptors, once a program)
+        for (const Stage& st : p.stages)
+            if (st.info.bda_why) {
+                char why[256];
+                logf("vk: storage buffers by address: program %016llx stage %d (%u buffers) on descriptors: %s", (unsigned long long)p.key,
+                     st.nvn_stage, (unsigned)st.info.storage_buffers_descriptors.size(), bda_why_text(st.info.bda_why, why, sizeof why));
+            }
     if (p.fallback) p.uses_push = true;   // (its records' and payloads' addresses)
     std::atomic_thread_fence(std::memory_order_release);   // (the layout last: a thread that sees it sees the rest)
     p.layout = layout;
@@ -3193,6 +3200,39 @@ void bda_storage_read(const NvnState& s, const Stage& st, uint32_t cbuf, uint32_
     bda_count(BC_BOUND_NOW);
     (void)gpu_buffer_bind(base, n, false);
 }
+/// (RX_VK_DESC_HEAP_BDA=2) a read-only table entry (count > 1: Info::global_tables, the pointer table at c0+0x880) or a
+/// native_global_bounds candidate of a by-address stage: the shader has no base for it (its global accesses translate their
+/// own addresses), so it needs no descriptor; only the range the classic block would have bound kept bound, by its rules (a
+/// bare entry to its pool's end, at most bare_read; a candidate without an NVN size to its pool's end, 8 MB at most; table
+/// entries past the table's end, which hold no buffer, nothing)
+bool bda_storage_guess(const NvnState& s, const Stage& st, const Shader::StorageBufferDescriptor& d, uint32_t off, uint64_t salign) {
+    const bool table = d.count > 1;
+    const bool candidate = !table && st.info.native_global_bounds && d.cbuf_index != 0;
+    if (!table && !candidate) return false;
+    const uint64_t addr = stage_cbuf_word(s, st, d.cbuf_index, off) | (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, off + 4) << 32;
+    bda_count(BC_GUESSED);
+    if (!addr || (addr & 3) || addr >= (1ull << 40)) return true;   // (a virtual one: not translated, the null window, as before)
+    uint64_t size = stage_cbuf_word(s, st, d.cbuf_index, off + 8);
+    static const uint64_t bare_read = [] {   // (as the classic block's)
+        const uint64_t reach = std::min<uint64_t>(dev.props.limits.maxStorageBufferRange, 1ull << 30);
+        const uint64_t cap = getenv("RX_VK_BARE_READ_MB") ? (uint64_t)atoll(getenv("RX_VK_BARE_READ_MB")) << 20 : reach;
+        return std::max<uint64_t>(1ull << 20, std::min(cap, reach - std::min<uint64_t>(reach, 64ull << 10)));
+    }();
+    if (table && !size && host->gpu_guest(addr))
+        if (const uint64_t end = gpu_pool_end(addr); end > addr) size = std::min<uint64_t>(end - addr, bare_read) & ~3ull;
+    if (candidate && host->gpu_guest(addr)) {
+        const uint64_t end = gpu_pool_end(addr);
+        const bool sized = size && !stage_cbuf_word(s, st, d.cbuf_index, off + 12) && end > addr && size <= end - addr;
+        if (!sized && end > addr) size = std::min<uint64_t>(end - addr, 8ull << 20) & ~3ull;
+    }
+    const uint64_t base = addr - (addr & (salign - 1));   // (spelled apart from the classic block's line: tests cut it by its text)
+    const uint64_t n = std::max<uint64_t>(((size + (addr - base)) + 3) & ~3ull, 16);
+    if (table && !(size && size <= (256ull << 20) && host->gpu_guest(base))) return true;   // (not plausible: as the classic block)
+    if (layer0_ready(base, base + n)) return true;
+    bda_count(BC_BOUND_NOW);
+    (void)gpu_buffer_bind(base, n, false);
+    return true;
+}
 /// (RX_VK_DESC_HEAP_BDA) the descriptor of a storage buffer the shader does not read through it: a null one (push descriptors),
 /// or in a heap draw none at all (heap_fill leaves its place in the ring block as it is: the shader never reads it)
 VkDescriptorBufferInfo bda_unused_buffer() {
@@ -3419,7 +3459,10 @@ void build_descriptors(const NvnState& s, const Program& p) {
             w.pBufferInfo = &dwr.bufs[first];
             dwr.writes.push_back(w);
         }
-        if (bda_on_now && !info.storage_buffers_descriptors.empty()) bda_count(info.ssbo_bda ? BC_STAGES : BC_CLASSIC);
+        if (bda_on_now && !info.storage_buffers_descriptors.empty()) {
+            bda_count(info.ssbo_bda ? BC_STAGES : BC_CLASSIC);
+            if (!info.ssbo_bda) bda_count_why(info.bda_why);   // (RX_VK_DESC_HEAP_BDA: why, in the counters' line)
+        }
         // (RX_VK_PACKETS: a stage of read-only c0 storage buffers as the program's last build in this recording bound them)
         const size_t pks_first = dwr.bufs.size();
         const int pks_kept = pk_handles ? pk_ssbo_kept(s, p, st, binding, dwr, bda_on_now) : 0;
@@ -3433,7 +3476,8 @@ void build_descriptors(const NvnState& s, const Program& p) {
             for (uint32_t k = 0; k < d.count; k++) {
                 const uint32_t off = d.cbuf_offset + k * 16;
                 if (info.ssbo_bda && !d.is_written) {   // (RX_VK_DESC_HEAP_BDA: the shader reads it through its address)
-                    bda_storage_read(s, st, d.cbuf_index, off, salign);
+                    if (!bda_storage_guess(s, st, d, off, salign))   // (=2: a table entry or a candidate, no base: kept bound)
+                        bda_storage_read(s, st, d.cbuf_index, off, salign);
                     dwr.bufs.push_back(bda_unused_buffer());
                     continue;
                 }
@@ -5235,6 +5279,23 @@ void eng_draw_sampled(const NvnState& s, const Program& p, const EngBindRefs& re
         // (storage images: a job draw with one is not recorded, EDW_IMAGE)
     }
 }
+/// (E3, a job thread; RX_VK_LOG_BDA_WHY=1) a job draw refused for a stage whose storage buffers are on descriptors: the program, the
+/// stage and every reason (Info::bda_why), once a (program, stage), 64 lines at most
+void eng_bda_why_note(const Program& p, const Stage& st) {
+    static std::mutex m;
+    static std::unordered_set<uint64_t> told;
+    const uint64_t key = p.key ^ ((uint64_t)(&st - p.stages.data()) << 58);
+    {
+        std::lock_guard lk(m);
+        if (told.size() >= 64 || !told.insert(key).second) return;
+    }
+    char why[256];
+    logf("vk: eng jobs: storage buffer not read by address: program %016llx stage %d (%u buffers%s): %s", (unsigned long long)p.key,
+         st.nvn_stage, (unsigned)st.info.storage_buffers_descriptors.size(),
+         std::any_of(st.info.storage_buffers_descriptors.begin(), st.info.storage_buffers_descriptors.end(),
+                     [](const auto& d) { return d.is_written; }) ? ", written ones" : "",
+         bda_why_text(st.info.bda_why, why, sizeof why));
+}
 #ifdef VK_EXT_descriptor_heap
 bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& e, const EngBindRefs& refs,
                           EngDrawDesc& out) {
@@ -5307,10 +5368,25 @@ bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram
             }
         for (const auto& d : info.storage_buffers_descriptors)
             for (uint32_t k = 0; k < d.count; k++) {   // (only read-only ones read through their address: as bda_storage_read)
-                if (!info.ssbo_bda) return fail(EDW_SSBO_CLASSIC);
+                if (!info.ssbo_bda) {
+                    if (bda_why_log()) eng_bda_why_note(p, st);   // (RX_VK_LOG_BDA_WHY=1: the program and why, once)
+                    return fail(EDW_SSBO_CLASSIC);
+                }
                 if (d.is_written) return fail(EDW_SSBO_WRITTEN);
                 const uint32_t off = d.cbuf_offset + k * 16;
                 const uint64_t addr = eng_word(s, st, d.cbuf_index, off) | (uint64_t)eng_word(s, st, d.cbuf_index, off + 4) << 32;
+                if (d.count > 1 || (info.native_global_bounds && d.cbuf_index != 0)) {
+                    // (RX_VK_DESC_HEAP_BDA=2: a table entry or a candidate, which the shader has no base for: as bda_storage_guess,
+                    // but without its guesses (pool ends): its first bytes bound in layer 0, by the replay at an earlier draw)
+                    if (addr && !(addr & 3) && addr < (1ull << 40)) {
+                        const uint64_t base = addr - (addr & (salign - 1));
+                        const uint64_t size = eng_word(s, st, d.cbuf_index, off + 8);
+                        const bool plausible = d.count == 1 || (size && size <= (256ull << 20));
+                        if (plausible && !layer0_ready(base, base + 16)) return fail(EDW_SSBO);
+                    }
+                    out.els.push_back({3, VK_NULL_HANDLE, 0, 0, nullptr, 0});
+                    continue;
+                }
                 if (addr) {
                     const uint64_t base = addr - (addr & (salign - 1));
                     const uint64_t size = eng_word(s, st, d.cbuf_index, off + 8);

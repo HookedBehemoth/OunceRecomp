@@ -499,46 +499,80 @@ Id DescType(EmitContext& ctx, Id sampled_type, Id pointer_type, u32 count) {
 /// one a single buffer named by a constant buffer the stage declares as u32 words, and none of what still needs the
 /// descriptors: the global memory helpers (they search the bound buffers by their lengths), the CAS loop functions (they take
 /// descriptor pointers), the miss log, the render area's push block (a stage has one push block; the table's address is in
-/// ResolutionInfo), the mesh fallback, the task stage's RX_VK_MESH_FIRST block
-bool BdaStage(const Profile& profile, const RuntimeInfo& runtime_info, Stage stage, const Info& info) {
-    if (!profile.ssbo_bda || !profile.support_int64 || !profile.unified_descriptor_binding ||
-        !profile.support_descriptor_aliasing || !profile.support_int8 || !profile.support_storage_buffer_8bit ||
-        !profile.support_int16 || !profile.support_storage_buffer_16bit || info.storage_buffers_descriptors.empty()) {
-        return false;
+/// ResolutionInfo), the mesh fallback, the task stage's RX_VK_MESH_FIRST block.
+/// Returns every condition the stage meets (Bda::Why bits, kept in Info::bda_why for the logs); the stage goes by address when
+/// none is left that the profile refuses. RX_VK_DESC_HEAP_BDA=2 (Profile::ssbo_bda_wide) takes Bda::kWideAllowed too: tables
+/// (no base: their only readers, the global memory functions, translate the address instead), native_global_bounds (the same),
+/// the render area (one block: render_area at 0 and the table's words, DefineRescalingInputPushConstant), the CAS loops (on the
+/// word's device address, Bda::DefineCasLoop), no u32 view (declared for the address words)
+u32 BdaStage(const Profile& profile, const RuntimeInfo& runtime_info, Stage stage, const Info& info) {
+    if (!profile.ssbo_bda || info.storage_buffers_descriptors.empty()) {
+        return 0;
     }
-    if (runtime_info.mesh_fallback || runtime_info.mesh_fallback_vertex || info.uses_render_area) {
-        return false;
+    u32 why{};
+    if (!profile.support_int64 || !profile.unified_descriptor_binding || !profile.support_descriptor_aliasing ||
+        !profile.support_int8 || !profile.support_storage_buffer_8bit || !profile.support_int16 ||
+        !profile.support_storage_buffer_16bit) {
+        why |= Bda::kWhyCaps;
+    }
+    if (runtime_info.mesh_fallback || runtime_info.mesh_fallback_vertex) {
+        why |= Bda::kWhyMeshFallback;
+    }
+    if (info.uses_render_area) {
+        why |= Bda::kWhyRenderArea;
+        if (info.uses_rescaling_uniform) {
+            why |= Bda::kWhyRenderAreaScale;   // (its rescaling words would lie under the render area)
+        }
     }
     // (the global accesses are then translated as the storage buffers are, no search: RX_VK_BDA_GLOBAL=0 leaves such stages
     // on descriptors)
     static const bool global{!std::getenv("RX_VK_BDA_GLOBAL") || std::atoi(std::getenv("RX_VK_BDA_GLOBAL")) != 0};
-    if (info.uses_global_memory && (!global || info.native_global_bounds)) {
-        return false;
+    if (info.uses_global_memory && !global) {
+        why |= Bda::kWhyGlobalOff;
+    }
+    if (info.uses_global_memory && info.native_global_bounds) {
+        why |= Bda::kWhyNativeBounds;
     }
     if (stage == Stage::Task && std::getenv("RX_VK_MESH_FIRST")) {
-        return false;
+        why |= Bda::kWhyMeshFirst;
     }
     if (info.uses_global_increment || info.uses_global_decrement || info.uses_atomic_f32_add || info.uses_atomic_f16x2_add ||
         info.uses_atomic_f16x2_min || info.uses_atomic_f16x2_max || info.uses_atomic_f32x2_add || info.uses_atomic_f32x2_min ||
         info.uses_atomic_f32x2_max) {
-        return false;
+        why |= Bda::kWhyCasLoop;
     }
     if (False((info.used_constant_buffer_types | info.used_indirect_cbuf_types) & IR::Type::U32)) {
-        return false;
+        why |= Bda::kWhyNoU32View;
     }
     for (const StorageBufferDescriptor& d : info.storage_buffers_descriptors) {
-        if (d.count != 1 || (d.cbuf_index == 0 && d.cbuf_offset == 0xff0U) || d.cbuf_offset % 4 != 0) {
-            return false;
+        if (d.count != 1) {
+            why |= Bda::kWhyTable;
+        }
+        if (d.cbuf_index == 0 && d.cbuf_offset == 0xff0U) {
+            why |= Bda::kWhyMissLog;
+        }
+        if (d.cbuf_offset % 4 != 0) {
+            why |= Bda::kWhyUnaligned;
         }
         bool declared{};
         for (const ConstantBufferDescriptor& c : info.constant_buffer_descriptors) {
             declared |= c.index == d.cbuf_index && c.count == 1;
         }
-        if (!declared) {
-            return false;
+        if (!declared && d.count == 1) {
+            why |= Bda::kWhyUndeclared;   // (a table's base is not read: it may name a constant buffer the stage lacks)
         }
     }
-    return true;
+    return why;
+}
+/// Whether the conditions BdaStage found leave the stage by address
+bool BdaTaken(const Profile& profile, const Info& info, u32 why) {
+    if (!profile.ssbo_bda || info.storage_buffers_descriptors.empty()) {
+        return false;
+    }
+    if (profile.ssbo_bda_wide && (why & Bda::kWhyTable) && !info.uses_global_memory) {
+        return false;   // (a table without global memory: nothing would reach it. Not seen; kept on descriptors)
+    }
+    return (why & ~(profile.ssbo_bda_wide ? Bda::kWideAllowed : 0U)) == 0;
 }
 } // Anonymous namespace
 
@@ -572,7 +606,10 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
-    if (BdaStage(profile, runtime_info, stage, program.info)) {   // (hookshot, RX_VK_DESC_HEAP_BDA: before any push block is made)
+    // (hookshot, RX_VK_DESC_HEAP_BDA: before any push block is made)
+    if (const u32 why{BdaStage(profile, runtime_info, stage, program.info)}; BdaTaken(profile, program.info, why)) {
+        program.info.bda_why = 0;
+        bda_render_area = program.info.uses_render_area;
         ssbo_bda = true;
         ssbo_bda_check = profile.ssbo_bda_check;
         program.info.ssbo_bda = true;
@@ -584,6 +621,8 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
         AddExtension("SPV_KHR_physical_storage_buffer");
         SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+    } else {
+        program.info.bda_why = why;
     }
     // (RX_VK_MESH_FIRST=1, with RX_VK_MESH_ARGS=1: off, one task program with it hung or ended the game at its first draw)
     if (stage == Stage::Task && !runtime_info.mesh_fallback && getenv("RX_VK_MESH_FIRST") &&
@@ -669,6 +708,13 @@ void EmitContext::EmitBdaPrologue() {
         return OpLoad(U32[1], OpAccessChain(uniform_types.U32, cbufs[cbuf].U32, u32_zero_value, Const(offset / 4)));
     }};
     for (const StorageBufferDescriptor& d : bda_descs) {
+        if (d.count != 1) {   // (RX_VK_DESC_HEAP_BDA=2: a table, which only the global memory functions read, and they translate)
+            bda_base.push_back(Id{});
+            if (ssbo_bda_check) {
+                bda_bound.push_back(Id{});
+            }
+            continue;
+        }
         const Id guest{OpBitcast(U64, OpCompositeConstruct(U32[2], word(d.cbuf_index, d.cbuf_offset),
                                                            word(d.cbuf_index, d.cbuf_offset + 4)))};
         bda_base.push_back(Bda::Base(*this, t, bda_ptrs, bda_pushed, guest, alignment));
@@ -692,7 +738,7 @@ Bda::Access EmitContext::BdaAccess(const IR::Value& binding, const IR::Value& of
         throw NotImplementedException("Dynamic storage buffer indexing");
     }
     const u32 index{binding.U32()};
-    if (index >= bda_base.size() || !Sirit::ValidId(type_def.value)) {
+    if (index >= bda_base.size() || !Sirit::ValidId(bda_base[index]) || !Sirit::ValidId(type_def.value)) {
         throw LogicError("Storage buffer {} through a device address without its base", index);
     }
     // (the byte offset as StorageIndex indexes: whole elements, then index_offset more)
@@ -1707,15 +1753,23 @@ void EmitContext::DefineRescalingInputPushConstant() {
     boost::container::static_vector<Id, 12> members{};
     u32 member_index{0};
 
-    rescaling_textures_type = TypeArray(U32[1], Const(4u));
-    Decorate(rescaling_textures_type, spv::Decoration::ArrayStride, 4u);
-    members.push_back(rescaling_textures_type);
-    rescaling_textures_member_index = member_index++;
+    // (hookshot, RX_VK_DESC_HEAP_BDA=2) a render-area stage by address: one block, the render area at offset 0 where the host
+    // pushes it (vk_draw.cpp push_bytes) in place of the rescaling words (BdaStage keeps a stage that reads those on descriptors)
+    const bool area{ssbo_bda && bda_render_area};
+    if (area) {
+        members.push_back(F32[4]);
+        render_are_member_index = member_index++;
+    } else {
+        rescaling_textures_type = TypeArray(U32[1], Const(4u));
+        Decorate(rescaling_textures_type, spv::Decoration::ArrayStride, 4u);
+        members.push_back(rescaling_textures_type);
+        rescaling_textures_member_index = member_index++;
 
-    rescaling_images_type = TypeArray(U32[1], Const(NUM_IMAGE_SCALING_WORDS));
-    Decorate(rescaling_images_type, spv::Decoration::ArrayStride, 4u);
-    members.push_back(rescaling_images_type);
-    rescaling_images_member_index = member_index++;
+        rescaling_images_type = TypeArray(U32[1], Const(NUM_IMAGE_SCALING_WORDS));
+        Decorate(rescaling_images_type, spv::Decoration::ArrayStride, 4u);
+        members.push_back(rescaling_images_type);
+        rescaling_images_member_index = member_index++;
+    }
 
     if (stage != Stage::Compute) {
         members.push_back(F32[1]);
@@ -1750,13 +1804,19 @@ void EmitContext::DefineRescalingInputPushConstant() {
     Decorate(push_constant_struct, spv::Decoration::Block);
     Name(push_constant_struct, "ResolutionInfo");
 
-    MemberDecorate(push_constant_struct, rescaling_textures_member_index, spv::Decoration::Offset,
-                   static_cast<u32>(offsetof(RescalingLayout, rescaling_textures)));
-    MemberName(push_constant_struct, rescaling_textures_member_index, "rescaling_textures");
+    if (area) {
+        static_assert(RENDERAREA_LAYOUT_OFFSET + 16 <= offsetof(RescalingLayout, down_factor), "the area lies before down_factor");
+        MemberDecorate(push_constant_struct, render_are_member_index, spv::Decoration::Offset, RENDERAREA_LAYOUT_OFFSET);
+        MemberName(push_constant_struct, render_are_member_index, "render_area");
+    } else {
+        MemberDecorate(push_constant_struct, rescaling_textures_member_index, spv::Decoration::Offset,
+                       static_cast<u32>(offsetof(RescalingLayout, rescaling_textures)));
+        MemberName(push_constant_struct, rescaling_textures_member_index, "rescaling_textures");
 
-    MemberDecorate(push_constant_struct, rescaling_images_member_index, spv::Decoration::Offset,
-                   static_cast<u32>(offsetof(RescalingLayout, rescaling_images)));
-    MemberName(push_constant_struct, rescaling_images_member_index, "rescaling_images");
+        MemberDecorate(push_constant_struct, rescaling_images_member_index, spv::Decoration::Offset,
+                       static_cast<u32>(offsetof(RescalingLayout, rescaling_images)));
+        MemberName(push_constant_struct, rescaling_images_member_index, "rescaling_images");
+    }
 
     if (stage != Stage::Compute) {
         MemberDecorate(push_constant_struct, rescaling_downfactor_member_index,
@@ -1795,6 +1855,9 @@ void EmitContext::DefineRescalingInputPushConstant() {
     const Id pointer_type{TypePointer(spv::StorageClass::PushConstant, push_constant_struct)};
     rescaling_push_constants = AddGlobalVariable(pointer_type, spv::StorageClass::PushConstant);
     Name(rescaling_push_constants, "rescaling_push_constants");
+    if (area) {
+        render_area_push_constant = rescaling_push_constants;   // (EmitRenderArea reads it here; DefineRenderArea makes none)
+    }
 
     if (profile.supported_spirv >= 0x00010400) {
         interfaces.push_back(rescaling_push_constants);
@@ -1824,7 +1887,7 @@ void EmitContext::DefineRescalingInputUniformConstant() {
 }
 
 void EmitContext::DefineRenderArea(const Info& info) {
-    if (!info.uses_render_area) {
+    if (!info.uses_render_area || Sirit::ValidId(render_area_push_constant)) {   // (hookshot: or in ResolutionInfo, BDA=2)
         return;
     }
 
@@ -1866,6 +1929,9 @@ void EmitContext::DefineConstantBuffers(const Info& info, u32& binding) {
         return;
     }
     IR::Type types{info.used_constant_buffer_types | info.used_indirect_cbuf_types};
+    if (ssbo_bda) {
+        types |= IR::Type::U32;   // (RX_VK_DESC_HEAP_BDA: the storage buffers' address words are read as u32: EmitBdaPrologue)
+    }
     if (True(types & IR::Type::U8)) {
         if (profile.support_int8 && profile.support_uniform_and_storage_buffer_8bit) {
             DefineConstBuffers(*this, info, &UniformDefinitions::U8, binding, U8, 'u', sizeof(u8));
@@ -1989,12 +2055,27 @@ void EmitContext::DefineStorageBuffers(const Info& info, u32& binding) {
         define(storage_types.U32x2, U32[2]);
         define(storage_types.U32x4, U32[4]);
         for (const StorageBufferDescriptor& desc : info.storage_buffers_descriptors) {
-            binding += desc.count;
+            binding += desc.count > 1 ? 1 : desc.count;   // (a table: one binding, as the classic path and the back end lay it out)
         }
         DefineRescalingInputPushConstant();   // (the table's address is in it)
         if (ssbo_bda_check) {
             bda_flag = Bda::DefineFlag(*this, {U1, U32[1], U64, void_id}, bda_ptrs, bda_check_id);
         }
+        // (RX_VK_DESC_HEAP_BDA=2) the CAS-loop atomics on the word's device address: f(u64 address, value), emit_spirv_atomic.cpp
+        // BdaCas. The f16x2 ones need F16, which a stage that uses them has
+        const auto cas{[&](Id& fn, Operation op, Id value_type) {
+            fn = Bda::DefineCasLoop(*this, {U1, U32[1], U64, void_id}, bda_ptrs, value_type, CasFunction(*this, op, value_type),
+                                    value_type.value == F32[2].value, CAS_LOOP_MAX_TRIES);
+        }};
+        if (info.uses_global_increment) cas(increment_cas_ssbo, Operation::Increment, U32[1]);
+        if (info.uses_global_decrement) cas(decrement_cas_ssbo, Operation::Decrement, U32[1]);
+        if (info.uses_atomic_f32_add) cas(f32_add_cas, Operation::FPAdd, F32[1]);
+        if (info.uses_atomic_f16x2_add) cas(f16x2_add_cas, Operation::FPAdd, F16[2]);
+        if (info.uses_atomic_f16x2_min) cas(f16x2_min_cas, Operation::FPMin, F16[2]);
+        if (info.uses_atomic_f16x2_max) cas(f16x2_max_cas, Operation::FPMax, F16[2]);
+        if (info.uses_atomic_f32x2_add) cas(f32x2_add_cas, Operation::FPAdd, F32[2]);
+        if (info.uses_atomic_f32x2_min) cas(f32x2_min_cas, Operation::FPMin, F32[2]);
+        if (info.uses_atomic_f32x2_max) cas(f32x2_max_cas, Operation::FPMax, F32[2]);
         return;
     }
 
