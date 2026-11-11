@@ -69,8 +69,10 @@ struct Sw {
         split = on && !check && sp && strtoul(sp, nullptr, 0) != 0;
         split_mask = split ? (uint32_t)strtoul(sp, nullptr, 0) : 0;
         if (split_mask == 1) split_mask = kSplitDefault;
-        const char* sa = getenv("HOS_ENG_JOBS_SAMPLED");   // (EngJob.tex: what the recorded draws' programs read, not every bound word)
-        sampled = on && sa && atoi(sa) != 0;
+        // (EngJob.tex: what the recorded draws' programs read, not every bound word; on by default, HOS_ENG_JOBS_SAMPLED=0: every bound
+        // word, as before: e6-impl.md 3, not-resident fallbacks 2.6 / 3.0 -> 0 a frame)
+        const char* sa = getenv("HOS_ENG_JOBS_SAMPLED");
+        sampled = on && !(sa && atoi(sa) == 0);
     }
 };
 const Sw& sw() {
