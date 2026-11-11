@@ -392,7 +392,10 @@ VkCommandBuffer take_cb(uint32_t serial) {
     TPool& t = *tpool;
     if (!t.pool) return VK_NULL_HANDLE;
     for (size_t i = 0; i < t.busy.size();) {
-        if (job_retired(t.busy[i].second, serial)) {
+        // (not the job being recorded: its ring slot still holds an older job until it is published, which job_retired reads as
+        // "retired": a split job's next run took an earlier run's command buffer, reset, and that run's draws were gone (Link's body
+        // on the Hyrule Field bridge, cut at a dispatch with draws after it; his eyes, in the last run, stayed))
+        if (t.busy[i].second != serial && job_retired(t.busy[i].second, serial)) {
             vkResetCommandBuffer(t.busy[i].first, 0);
             t.free.push_back(t.busy[i].first);
             t.busy[i] = t.busy.back(), t.busy.pop_back();
@@ -1016,11 +1019,8 @@ void walk_records(Walk& w, Rec* r, const uint8_t* p, const uint8_t* end) {
             r->fail(WHY_OPS);
             break;
         case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:
-            // (HOS_ENG_JOBS_SEGMENTS: a dispatch is not a cut, the job goes back to the replay. Cut there, the two 1536x864 colour passes
-            // (views ...c10c0, ...5cf80: 18-21 draws, then one dispatch of a 23 KB storage buffer none of the draws read) lost Link's body
-            // at some camera angles (the bridge walk + pan route, e6-impl.md); drawn inline by the split walk instead, they did not.
-            // HOS_ENG_SEG_DISPATCH=1: cut there, for the investigation)
-            static const bool seg_nodis = !(getenv("HOS_ENG_SEG_DISPATCH") && atoi(getenv("HOS_ENG_SEG_DISPATCH")) != 0);
+            // (HOS_ENG_SEG_NODISPATCH=1: a dispatch is not a cut, the job goes back to the replay: the bisection that found take_cb's reset)
+            static const bool seg_nodis = getenv("HOS_ENG_SEG_NODISPATCH") && atoi(getenv("HOS_ENG_SEG_NODISPATCH")) != 0;
             if (cutlog_on() && cnt[C_JOBS].load(std::memory_order_relaxed) > 100000) {   // (what the dispatch binds, against the job's draws so far)
                 static std::atomic<int> told{0};
                 if (told++ < 40) {
