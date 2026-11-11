@@ -361,6 +361,12 @@ static void live_input(void) {
                 if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
                 extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
                 if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
+                void hos_oot_warp_request(const char *args);   /* host/hos_main.c: "!warp <banc> [startpos|-] [boot event]" */
+                if (!strncmp(line, "!warp ", 6)) {
+                    char args[384];
+                    snprintf(args, sizeof args, "%.*s", (int)(n > 7 ? n - 7 : 0), line + 6);
+                    hos_oot_warp_request(args);
+                }
                 hos_log("hid: live command at %.1f s: %.*s", at / 1000.0, (int)(n > 1 ? n - 1 : 0), line);
                 continue;
             }

@@ -748,8 +748,30 @@ static struct {
     unsigned destination;
 } teleport;
 
+static int oot_request_banc(Ctx *c, uint64_t actor, const char *banc, const char *start, const char *boot, int child,
+                            unsigned index);
+
 static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     if (index >= sizeof oot_destinations / sizeof oot_destinations[0]) return 0;
+    int child = 1;
+    if (!oot_gamedata_bool(c, 0xcea220d3u, &child)) hos_log("cheats: Sequence_IsChildhood not found, using child maps");
+    const OotDestination *d = &oot_destinations[index];
+    const char *banc = child ? d->child_banc : d->adult_banc;
+    if (!banc) {
+        hos_log("cheats: teleport %u has no %s map", index, child ? "child" : "adult");
+        return 0;
+    }
+    return oot_request_banc(c, actor, banc, child ? d->child_start : d->adult_start, child ? d->child_boot : d->adult_boot,
+                            child, index);
+}
+
+/* (test runs) the map change asked last, until the game reports it loaded: "scene: ready" in the log, which the scene
+   cycle (work/proto/scenecycle) waits for. Set by oot_request_banc, checked on each player update. */
+static struct { char banc[96]; int64_t at; int armed; } scene_wait;
+
+/* The map change itself: banc, start position (empty: the banc's default) and boot event, as the entrance actors send it. */
+static int oot_request_banc(Ctx *c, uint64_t actor, const char *banc, const char *start, const char *boot, int child,
+                            unsigned index) {
     const int64_t now = hos_now_ns();
     if (teleport.requested_at && now - teleport.requested_at < 8000000000LL) {
         hos_log("cheats: teleport ignored, a request is still in progress");
@@ -766,20 +788,12 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         hos_log("cheats: teleport waits until the current event ends");
         return 0;
     }
-    int loading = 0, child = 1;
+    int loading = 0;
     if (oot_gamedata_bool(c, 0xef2b60c2u, &loading) && loading) {   /* Sequence_IsLoadingBanc */
         hos_log("cheats: teleport ignored while a map loads");
         return 0;
     }
-    if (!oot_gamedata_bool(c, 0xcea220d3u, &child)) hos_log("cheats: Sequence_IsChildhood not found, using child maps");
-    const OotDestination *d = &oot_destinations[index];
-    const char *banc = child ? d->child_banc : d->adult_banc;
-    const char *start = child ? d->child_start : d->adult_start;
-    const char *boot = child ? d->child_boot : d->adult_boot;
-    if (!banc) {
-        hos_log("cheats: teleport %u has no %s map", index, child ? "child" : "adult");
-        return 0;
-    }
+    if (strlen(banc) >= 128 || strlen(start) >= 128 || strlen(boot) >= 256) return 0;
 
     /* The event reads its string arguments after this request returns, so they live in memory that stays. */
     static uint64_t strings;
@@ -835,6 +849,10 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     teleport.requested_at = now;
     teleport.check_at = now + 1500000000LL;
     teleport.destination = index;
+    if (ok) {
+        snprintf(scene_wait.banc, sizeof scene_wait.banc, "%s", banc);
+        scene_wait.at = now, scene_wait.armed = 1;
+    }
     hos_log("cheats: teleport %s to %s at %s (boot %s, event %s, starter %d): request %s, result %#llx",
             child ? "child" : "adult", banc, start, boot, event, with_starter, ok ? "sent" : "not built",
             (unsigned long long)result);
@@ -892,7 +910,48 @@ static void oot_toggle_age(Ctx *c, uint64_t actor) {
     }
 }
 
+static void oot_scene_ready_check(Ctx *c) {
+    if (!scene_wait.armed) return;
+    const int64_t now = hos_now_ns();
+    if (now - scene_wait.at > 120000000000LL) {
+        hos_log("scene: not ready after 120 s: %s", scene_wait.banc);
+        scene_wait.armed = 0;
+        return;
+    }
+    int loading = 0;
+    if (oot_gamedata_bool(c, 0xef2b60c2u, &loading) && loading) return;   /* Sequence_IsLoadingBanc */
+    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+    if (events && recomp_load64(c, events + 104)) return;   /* the arrival event still plays */
+    char current[96];
+    oot_gamedata_string(c, 0x1d6189dau, current, sizeof current);   /* Sequence_CurrentBanc */
+    if (strcmp(current, scene_wait.banc)) return;
+    scene_wait.armed = 0;
+    hos_log("scene: ready %s after %.2f s", current, (now - scene_wait.at) / 1e9);
+}
+
+/* (test runs) "!warp <banc> [startpos] [boot event]" from the live input file (host/nn_hid.c): any map, not only the
+   teleport table's. Written by the input thread, taken by the player update. */
+static char warp_line[384];
+static volatile int warp_pending;
+void hos_oot_warp_request(const char *args) {
+    if (__atomic_load_n(&warp_pending, __ATOMIC_ACQUIRE)) return;
+    snprintf(warp_line, sizeof warp_line, "%s", args);
+    __atomic_store_n(&warp_pending, 1, __ATOMIC_RELEASE);
+}
+static void oot_warp_take(Ctx *c, uint64_t actor) {
+    if (!__atomic_load_n(&warp_pending, __ATOMIC_ACQUIRE)) return;
+    char banc[128] = "", start[128] = "", boot[128] = "";
+    sscanf(warp_line, "%127s %127s %127s", banc, start, boot);
+    if (!strcmp(start, "-")) start[0] = 0;
+    if (!boot[0]) snprintf(boot, sizeof boot, "Dm_SY_BancChangeArrive");
+    int child = 1;
+    oot_gamedata_bool(c, 0xcea220d3u, &child);
+    if (!banc[0] || oot_request_banc(c, actor, banc, start, boot, child, ~0u) || !banc[0])
+        __atomic_store_n(&warp_pending, 0, __ATOMIC_RELEASE);   /* (kept when the request must wait: an event or a load) */
+}
+
 static void oot_teleport_followup(Ctx *c) {
+    oot_scene_ready_check(c);
     if (!teleport.check_at || hos_now_ns() < teleport.check_at) return;
     teleport.check_at = 0;
     char next[80], current[80];
@@ -937,6 +996,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     int action = rx_option(HOS_OPT_CHEAT_ACTION, 0);
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     oot_teleport_followup(c);
+    oot_warp_take(c, actor);
     oot_inventory_refresh(c, now);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
