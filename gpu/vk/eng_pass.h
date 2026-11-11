@@ -65,6 +65,10 @@ enum EngCount {
     EC_SPLIT_INLINE,   // their draw ops the replay drew inline (the refused ones, and the runs that could not execute)
     EC_SPLIT_RUN_INLINE, // runs drawn inline after all (no rendering to execute them in, or other formats)
     EC_FB_SPLIT_COUNT, // fallen back: the job's draw ops are not as many as E3 counted
+    EC_FB_WAIT,        // fallen back: a wait its records hold not met in replay order (HOS_ENG_JOBS_PREWORK)
+    EC_PRE_BATCHES,    // pre-work recorded at a job-call site (one barrier pair each)
+    EC_PRE_JOBS,       // jobs in them
+    EC_PRE_COPIES,     // indirect mesh argument copies
     EC_FB_UBUPD,       // fallen back: a uniform update earlier in this recording overlaps a range it reads by address
     EC_FB_DEFERRED,    // fallen back: a deferred word it binds (resolved at the submit) names a texture not resident in the heap
     EC_N

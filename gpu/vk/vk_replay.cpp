@@ -1882,7 +1882,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_BARRIER:
-            if (dry) break;
+            if (dry || eng_state_only) break;   // (an executed job's barrier: its pre-work's, HOS_ENG_JOBS_PREWORK)
             {
                 const int32_t bits = payload<int32_t>(a, avail);
                 std::lock_guard lk(st_barrier_flags_mu);
@@ -2039,6 +2039,7 @@ struct EngScan {
     uint64_t view = 0, slot = 0;
     uint32_t ndraws = 0, bad_op = 0;
     bool bad = false, bad_other = false;   // (bad_other: an op beside a barrier or a dispatch: a split job takes only those)
+    bool bad_nonpre = false;   // (an op beside a barrier and a wait: a job with pre-work takes those, HOS_ENG_JOBS_PREWORK)
     std::vector<uint32_t> tex;      // (the handle words its BIND_TEX / BIND_IMG name)
 };
 /// The records of a job call from p (after its CALL_BEGIN) to its CALL_END: into called lists (HOS_NVN_LIST_REF) and back
@@ -2067,7 +2068,7 @@ void eng_scan(const uint8_t* p, EngScan& sc) {
             const auto e = payload<nvn_p_eng>(a, avail);
             if (e.kind == NVN_ENG_CALL_END && !depth) return void(sc.end = p);
             if (e.kind == NVN_ENG_JOB && !sc.view) sc.view = e.a, sc.slot = e.b;
-            if (e.kind == NVN_ENG_CALL_BEGIN) sc.bad = sc.bad_other = true, sc.bad_op = h.op;   // (a job call inside a job: not seen)
+            if (e.kind == NVN_ENG_CALL_BEGIN) sc.bad = sc.bad_other = sc.bad_nonpre = true, sc.bad_op = h.op;   // (a job call inside a job: not seen)
             break;
         }
         case NOP_DRAW: case NOP_DRAW_IDX: case NOP_DRAW_INDIRECT: case NOP_DRAW_MESH: sc.ndraws++; break;
@@ -2090,6 +2091,7 @@ void eng_scan(const uint8_t* p, EngScan& sc) {
         default:   // (barriers, dispatches, copies, clears, events, waits, targets: not inside one rendering's secondary)
             if (!sc.bad) sc.bad = true, sc.bad_op = h.op;
             if (h.op != NOP_BARRIER && h.op != NOP_DISPATCH && h.op != NOP_DISPATCH_INDIRECT) sc.bad_other = true;
+            if (h.op != NOP_BARRIER && h.op != NOP_WAIT_EVENT) sc.bad_nonpre = true;
             break;
         }
         p += h.size;
@@ -2121,6 +2123,47 @@ VkCommandBuffer eng_secondary(Recording& r) {
 }
 bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
                    const uint8_t** resume, uint64_t* view);
+/// (HOS_ENG_JOBS_PREWORK, fallbacks.md 4-5) the pre-work of the jobs this call site calls from this one on (the six of a pass, once,
+/// at the first that has any): outside the rendering, one barrier, every job's copies, one barrier; the next job calls find theirs done
+thread_local std::vector<uint32_t> eng_pre_done;   // (serials whose pre-work is recorded)
+void eng_prework(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const nvn_p_eng& e0) {
+    std::vector<const EngJob*> jobs;
+    const uint8_t* q = p;
+    for (int k = 0; k < 8; k++) {   // (this call and the ones that follow it at the same site)
+        nvn_op_hdr h;
+        std::memcpy(&h, q, sizeof h);
+        if (h.op != NOP_ENG || h.size < 8) break;
+        const auto e = payload<nvn_p_eng>(q + 8, h.size - 8);
+        if (e.kind != NVN_ENG_CALL_BEGIN || e.site != e0.site) break;
+        EngScan sc;
+        eng_scan(q + h.size, sc);
+        if (!sc.end) break;
+        const EngJob* j = eng_job_lookup(e.a);
+        if (j && j->cb && (j->npre || j->pre_barrier) &&
+            std::find(eng_pre_done.begin(), eng_pre_done.end(), j->serial) == eng_pre_done.end())
+            jobs.push_back(j);
+        nvn_op_hdr eh;
+        std::memcpy(&eh, sc.end, sizeof eh);
+        q = sc.end + eh.size;
+    }
+    if (jobs.empty()) return;
+    if (eng_pre_done.size() > 64) eng_pre_done.erase(eng_pre_done.begin(), eng_pre_done.begin() + 32);
+    end_pass(cmd);
+    full_barrier(cmd, "barrier (E6 pre-work: the job's producers before its copies and draws)");
+    for (const EngJob* j : jobs) {
+        eng_pre_done.push_back(j->serial);
+        for (uint32_t i = 0; i < j->npre; i++) {
+            const EngPreCopy& c = j->pre[i];
+            const VkBufferCopy r{c.src_off, c.dst_off, c.bytes};
+            vkCmdCopyBuffer(cmd, c.src, c.dst, 1, &r);
+            eng_count(EC_PRE_COPIES);
+        }
+        eng_count(EC_PRE_JOBS);
+    }
+    full_barrier(cmd, "barrier (E6 pre-work: the converted arguments before the draws)");
+    eng_count(EC_PRE_BATCHES);
+    (void)s;
+}
 bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
                   const uint8_t** resume) {
     uint64_t view = 0;
@@ -2175,7 +2218,8 @@ bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t
         }
     }
     if (self && !eng_pass_selftest()) return eng_count(EC_FB_NO_JOB), false;
-    if (sc.bad && (sc.bad_other || !job || !job->nsegs)) {   // (a split job: its barriers and dispatches are the replay's, between its runs)
+    const bool pre_ok = job && (job->nwaits || job->pre_barrier) && !sc.bad_nonpre;   // (its waits and leading barrier: the pre-work's)
+    if (sc.bad && !pre_ok && (sc.bad_other || !job || !job->nsegs)) {   // (a split job: its barriers and dispatches are the replay's, between its runs)
         eng_count(EC_FB_OP);
         eng_abort_reason(eng_op_name(sc.bad_op));
         return false;
@@ -2185,6 +2229,13 @@ bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t
     // heap_flush_instream; E3's secondaries carry their own heap descriptors)
     if (rmode != Mode::Serial || !rec_cur || cmd != rec_cur->cmd || dump_on() || (self && desc_heap_on()))
         return eng_count(EC_FB_MODE), false;
+    if (job && job->nwaits) {   // (HOS_ENG_JOBS_PREWORK: its waits, in replay order; one not met: its records, where the replay waits)
+        ev_cpu_apply();
+        for (uint32_t k = 0; k < job->nwaits; k++)
+            if (!event_wait_met(event_value_in(ev_values, job->waits[k].gpu), job->waits[k].mode, job->waits[k].value))
+                return eng_count(EC_FB_WAIT), false;
+    }
+    if (job && (job->npre || job->pre_barrier)) eng_prework(cmd, s, p, e);
     const bool mixed = eng_pass_mixed();
     EngPassFormats pf{};
     // (without mixing the rendering opened here takes secondaries only: a job replayed inline after all needs it ended)

@@ -32,6 +32,11 @@ struct EngPassFormats { uint32_t ncolor; VkFormat color[8]; VkFormat depth, sten
 /// DRAW_INDIRECT, DRAW_MESH in record order, counted from 0 as its records hold them) recorded into one secondary; the draw ops
 /// between the runs are the replay's, drawn inline in the same rendering
 struct EngSeg { uint32_t first, n; VkCommandBuffer cb; uint32_t ndraws; };
+/// (HOS_ENG_JOBS_PREWORK=1, fallbacks.md 4-5) work a job needs before the rendering it is executed in: copies of GPU-made indirect
+/// mesh arguments into the job's own slots (NVN's {count, ...} records -> Vulkan's {x, 1, 1}), and the cross-queue waits its
+/// records hold (their order is the job-call site's)
+struct EngPreCopy { VkBuffer src; uint64_t src_off; VkBuffer dst; uint64_t dst_off; uint32_t bytes; };
+struct EngWait { uint64_t gpu; uint32_t mode, value; };
 struct EngJob {
     uint64_t view_key;            // the job's view record (guest address): the pass identity
     EngPassFormats fmt;           // the formats it was recorded for (from eng_pass_formats at record time)
@@ -49,6 +54,11 @@ struct EngJob {
     // earlier in the same recording are written to guest memory only at the recording's end (flush_ub_updates), so a job whose
     // ranges one of them overlaps would read the value from before it
     const uint64_t* ubo; uint32_t nubo;
+    // (HOS_ENG_JOBS_PREWORK) before the job's rendering: these copies, a full barrier if pre_barrier (the job's own barrier
+    // before its first draw, e.g. 0x28 after the culling waits), and its waits met in replay order
+    const EngPreCopy* pre; uint32_t npre;
+    const EngWait* waits; uint32_t nwaits;
+    bool pre_barrier;
 };
 /// (E6) the hash of a draw op's payload both sides make
 uint32_t eng_draw_sig(int op, const void* payload, size_t n);

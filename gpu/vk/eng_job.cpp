@@ -55,7 +55,7 @@ constexpr uint32_t kSplitCut = 1u << 13;
 // one Hyrule Field pass (e6-impl.md), not yet understood)
 constexpr uint32_t kSplitDefault = (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 12) | kSplitCut;
 struct Sw {
-    bool on = false, check = false, rec = true, self_pass = true, split = false, sampled = false;
+    bool on = false, check = false, rec = true, self_pass = true, split = false, sampled = false, prework = false;
     uint32_t split_mask = 0;   // (HOS_ENG_JOBS_SPLIT=<mask>: 1 << why for the refusals a job is split at, 1 << 13 the barrier / dispatch cuts; 1: the default set)
     Sw() {
         const char* e = getenv("HOS_ENG_JOBS");
@@ -74,6 +74,8 @@ struct Sw {
         // word, as before: e6-impl.md 3, not-resident fallbacks 2.6 / 3.0 -> 0 a frame)
         const char* sa = getenv("HOS_ENG_JOBS_SAMPLED");
         sampled = on && !(sa && atoi(sa) == 0);
+        const char* pw = getenv("HOS_ENG_JOBS_PREWORK");   // (fallbacks.md 4: indirect mesh draws, waits and the barrier after them)
+        prework = on && pw && atoi(pw) != 0;
     }
 };
 const Sw& sw() {
@@ -282,6 +284,9 @@ struct Job {
     std::vector<EngSeg> segs;            // (HOS_ENG_JOBS_SPLIT: the runs of draws recorded)
     std::vector<uint32_t> dsig;          // (and each draw op's payload hash)
     std::vector<uint64_t> ubo;           // (the uniform ranges its recorded draws read, pairs)
+    std::vector<EngPreCopy> pre;         // (HOS_ENG_JOBS_PREWORK)
+    std::vector<EngWait> waits;
+    bool pre_barrier = false;
     std::atomic<uint64_t> used_value{0};   // (E4: the recording that executed it)
     std::atomic<bool> replayed{false};
 };
@@ -417,6 +422,9 @@ struct Walk {
     std::vector<uint64_t> deferred;
     std::vector<DrawTrace> trace;
     std::vector<uint64_t> ubo;   // (E6: the recorded draws' uniform ranges, pairs)
+    std::vector<EngPreCopy> pre;   // (HOS_ENG_JOBS_PREWORK)
+    std::vector<EngWait> waits;
+    bool pre_barrier = false;
     uint32_t npkt = 0;
     uint16_t ops[NOP_COUNT_];
     EngBindRefs refs;      // (the deferred bind each slot's word came from: the submit's rewrite of the banks)
@@ -447,6 +455,7 @@ struct Rec {
     uint32_t dwhy = WHY_OK, first_dwhy = WHY_OK, draw_i = 0, seg_first = 0, seg_ndraws = 0, ninline = 0, serial = 0;
     bool cut = false;   // (a run ended at an op the replay does between runs: a barrier, a dispatch)
     const Program* dprog = nullptr;   // (R1: the program record_draw found for the draw, before a refusal)
+    bool any_draw = false;            // (a draw op met: a barrier after it is not the pre-work's)
     uint64_t view = 0;
     const VkCommandBufferBeginInfo* bi = nullptr;
     std::vector<EngSeg> segs;
@@ -504,7 +513,8 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     else return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_INDIRECT));
     if (ind && (dn.max < 0 || dn.stride < 0)) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_INDIRECT));
     // (a mesh draw: DrawMeshTasks(first, n); an indirect one takes the replay's argument conversion (fallbacks.md 2c))
-    if (mesh && (dm.kind != 0 || dm.indirect || (dm.x != 0 && !ind_on))) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_MESH_OTHER));
+    const bool mesh_ind = mesh && dm.indirect && sw().prework && dm.max >= 0 && dm.max <= 64 && dm.stride >= 0;   // (fallbacks.md 2c)
+    if (mesh && !mesh_ind && (dm.kind != 0 || dm.indirect || (dm.x != 0 && !ind_on))) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_MESH_OTHER));
     const int prim = op == NOP_DRAW ? dr.prim : ind ? dn.prim : di.prim;
     VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     if (!mesh && (prim == NVN_DRAW_PRIMITIVE_QUADS || !eng_draw_topology(prim, &topo))) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_PRIM));
@@ -551,6 +561,27 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     if (r.first) desc_heap_bind_job(r.cb);
     r.first = false;
     desc_heap_push(r.cb, dd.push, dd.push_bytes);
+    if (mesh_ind) {   // (its arguments, made by the GPU culling, converted into slots of the job stream by the pre-work at the call site)
+        const uint32_t n = (uint32_t)std::max(dm.max, 1), stride = (uint32_t)std::max(dm.stride, 12);
+        VkBuffer sb;
+        uint64_t soff;
+        uint8_t* smap;
+        VkDeviceAddress sa;
+        const BufferRef src = dm.indirect < (1ull << 40) ? layer0_buffer(dm.indirect, (uint64_t)(n - 1) * stride + 4) : BufferRef{};
+        const BufferRef cnt = dm.count_addr && dm.count_addr < (1ull << 40) ? layer0_buffer(dm.count_addr, 4) : BufferRef{};
+        if (!src.buffer || (dm.count_addr && !cnt.buffer) || !eng_job_stream_alloc(n * 12, 16, &sb, &soff, &smap, &sa))
+            return r.refuse(WHY_INDEX_MEM);
+        for (uint32_t i = 0; i < n; i++) {   // ({x, 1, 1}: x copied from the record's count word, as mesh_indirect_convert)
+            const uint32_t one[3] = {0, 1, 1};
+            std::memcpy(smap + i * 12, one, 12);
+            w.pre.push_back({src.buffer, src.offset + (uint64_t)i * stride, sb, soff + (uint64_t)i * 12, 4});
+        }
+        if (cnt.buffer) vkCmdDrawMeshTasksIndirectCountEXT(r.cb, sb, soff, cnt.buffer, cnt.offset, n, 12);
+        else vkCmdDrawMeshTasksIndirectEXT(r.cb, sb, soff, n, 12);
+        r.ndraws++;
+        add(C_DRAWS_REC), add(C_MESH_REC);
+        return;
+    }
     if (mesh) {
         vkCmdDrawMeshTasksEXT(r.cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         r.ndraws++;
@@ -621,6 +652,7 @@ void split_cut(Rec* r) {
 }
 void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
     add(C_DRAWS);
+    r->any_draw = true;
     if (sw().check) {
         w.descs.emplace_back();
         w.descs.back().why = EDW_N;   // (none made, until record_draw makes it)
@@ -933,7 +965,20 @@ void walk_records(Walk& w, Rec* r, const uint8_t* p, const uint8_t* end) {
             on_draw(w, r, (int)h.op, a, avail);
             s.samples_passed += 16;
             break;
+        case NOP_WAIT_EVENT:
+            if (sw().prework) {   // (fallbacks.md 4: met at the job-call site, in replay order)
+                const auto e = payload<nvn_p_wait_event>(a, avail);
+                w.waits.push_back({e.gpu, e.mode, e.value});
+                break;
+            }
+            if (h.op < NOP_COUNT_) op_refused[h.op].fetch_add(1, std::memory_order_relaxed);
+            r->fail(WHY_OPS);
+            break;
         case NOP_BARRIER:
+            if (sw().prework && !r->any_draw) {   // (before the job's first draw: the pre-work's)
+                w.pre_barrier = true;
+                break;
+            }
             if (r->split && (sw().split_mask & kSplitCut)) {   // (split: the run so far ends here; the replay records the barrier between the runs)
                 split_cut(r);
                 break;
@@ -1228,7 +1273,8 @@ bool eng_job_stream_alloc(uint32_t n, uint64_t align, VkBuffer* buf, uint64_t* o
         Stream x;
         void* m = nullptr;
         x.size = 64ull << 20;
-        if (!create_buffer(x.size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        if (!create_buffer(x.size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                               VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                            true, x.b, x.a, &m, true) || !m) {
             logf("vk: eng jobs: the job stream was not made");
             return Stream{};
@@ -1435,7 +1481,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     Walk& w = walk();
     w.s = NvnState{};
     w.d.clear();
-    w.tex.clear(), w.deferred.clear(), w.trace.clear(), w.ubo.clear(), w.npkt = 0;
+    w.tex.clear(), w.deferred.clear(), w.trace.clear(), w.ubo.clear(), w.pre.clear(), w.waits.clear(), w.pre_barrier = false, w.npkt = 0;
     std::memset(w.refs, 0, sizeof w.refs);
     w.nbinds = 0, w.patches.clear(), w.descs.clear();
     std::memset(w.ops, 0, sizeof w.ops);
@@ -1497,6 +1543,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     j.segs.swap(r.segs);
     j.dsig.swap(r.dsig);
     j.ubo.swap(w.ubo);
+    j.pre.swap(w.pre), j.waits.swap(w.waits), j.pre_barrier = w.pre_barrier;
     j.used_value.store(0, std::memory_order_relaxed);
     j.replayed.store(false, std::memory_order_relaxed);
     j.pub.view_key = ji->view;
@@ -1509,6 +1556,8 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     j.pub.segs = j.segs.data(), j.pub.nsegs = (uint32_t)j.segs.size(), j.pub.ndrawops = r.draw_i;
     j.pub.dsig = j.dsig.data();
     j.pub.ubo = j.ubo.data(), j.pub.nubo = (uint32_t)(j.ubo.size() / 2);
+    j.pub.pre = j.pre.data(), j.pub.npre = (uint32_t)j.pre.size();
+    j.pub.waits = j.waits.data(), j.pub.nwaits = (uint32_t)j.waits.size(), j.pub.pre_barrier = j.pre_barrier;
     j.serial.store(ji->serial, std::memory_order_release);
     {
         std::lock_guard lk(handle_mu);
