@@ -2503,7 +2503,8 @@ bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8
                 for (uint32_t k = 0; k < w.descriptorCount; k++) sig = mix(sig, (uint64_t)(uintptr_t)w.pImageInfo[k].imageView);
         }
     struct Kept { const Program* p; uint32_t gen; uint32_t index; uint64_t sig; };
-    static thread_local Kept kept[1024];
+    static thread_local Kept* kept = nullptr;   // (on the heap: see desc_heap_encode_buffer's cache)
+    if (!kept) kept = new Kept[1024]();
     Kept& kp = kept[((uintptr_t)&p >> 4) & 1023];
     uint32_t index = 0;
     if (reuse && kp.p == &p && kp.gen == heap_rec_gen && kp.sig == sig) {

@@ -649,7 +649,8 @@ bool desc_heap_encode_buffer(VkBuffer b, VkDeviceSize offset, VkDeviceSize range
     // (a buffer descriptor is made from its address, size and type alone: kept by them, the driver asked once. RX_VK_DESC_HEAP_BUFCACHE=0: not)
     static const bool cache_on = !getenv("RX_VK_DESC_HEAP_BUFCACHE") || atoi(getenv("RX_VK_DESC_HEAP_BUFCACHE")) != 0;
     struct Cached { uint64_t addr, size; uint32_t type; uint8_t bytes[16]; };
-    static thread_local Cached cache[4096];
+    static thread_local Cached* cache = nullptr;   // (on the heap, not in TLS: a big TLS block in the .so slows every thread_local of it)
+    if (cache_on && !cache) cache = new Cached[4096]();
     Cached* c = nullptr;
     if (cache_on) {
         const uint64_t h = (ar.address * 0x9E3779B97F4A7C15ull) ^ (ar.size * 0xC2B2AE3D27D4EB4Full) ^ (uint64_t)ri.type;
