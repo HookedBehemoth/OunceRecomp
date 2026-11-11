@@ -82,6 +82,7 @@ struct Texture {
     uint32_t key_layout = 0, key_cls = 0;   // (the key's storage layout and format class)
     bool vw_listed = false;   // (in the list of GPU-written textures of virtual pools: texture_flush_to_guest)
     uint64_t pool_key = 0;    // (a render target's image: its create info's key in the pool it goes to when the texture does)
+    bool clear_pending = false;   // (RX_VK_LAZY_CLEAR: its creation clear not recorded yet: a pass's load op or texture_clear_now does it)
     std::unordered_map<uint64_t, VkImageView> views;
 };
 
@@ -154,6 +155,9 @@ unsigned view_level(const nvn_view* v);
 unsigned image_level(const Texture* tex, unsigned level);
 unsigned view_layer(const nvn_view* v);
 /// The GPU wrote it (in the submission being recorded)
+/// (RX_VK_LAZY_CLEAR) a new render target's creation clear, recorded now into the recording's upload command buffer if it is still
+/// pending (a pass that covers it all clears it with its load op instead: begin_pass). Under the texture lock
+void texture_clear_now(Texture* tex);
 void texture_written(Texture* tex, const char* why = "?");   // (why: who wrote it, for the parallel replay's order warning)
 /// The GPU writes [gpu, gpu + size) in the submission being recorded (a storage buffer, a buffer copy): textures over
 /// it are uploaded again from guest memory once that submission is done

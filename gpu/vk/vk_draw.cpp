@@ -3459,6 +3459,11 @@ bool targets_persistent(const Targets& at) {
     return at.depth && at.depth->first_render_frame && at.depth->first_render_frame < now;
 }
 
+/// (RX_VK_LAZY_CLEAR) whether a pass's area covers a target of one level and layer: its load op then makes its creation clear
+bool pass_covers(const Targets& at, const Texture* t) {
+    return t->levels == 1 && t->layers == 1 && at.width >= t->width && at.height >= t->height;
+}
+
 void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     bool same = pass().open && pass().depth == at.depth_view && pass().n == at.n && pass().width == at.width &&
                 pass().height == at.height;
@@ -3479,6 +3484,8 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
         ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         pass().color[i] = at.color_view[i];
         pass().tex[i] = at.color[i], pass().level[i] = at.color_level[i], pass().layer[i] = at.color_layer[i];
+        if (at.color[i] && at.color[i]->clear_pending && pass_covers(at, at.color[i]))   // (RX_VK_LAZY_CLEAR: its creation clear)
+            ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, ca[i].clearValue = {}, at.color[i]->clear_pending = false;
         texture_written(at.color[i], "a pass's colour target");
         texture_rendered(at.color[i]);
     }
@@ -3489,6 +3496,8 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
         da.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        if (at.depth->clear_pending && pass_covers(at, at.depth))   // (RX_VK_LAZY_CLEAR: its creation clear, depth and stencil 0)
+            da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, da.clearValue = {}, at.depth->clear_pending = false;
         texture_written(at.depth, "a pass's depth target");
         texture_rendered(at.depth);
     }
