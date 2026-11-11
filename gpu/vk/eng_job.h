@@ -121,6 +121,11 @@ using EngBindRefs = uint32_t[3][8][128];
 struct HeapProgram;
 bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& at, const EngBindRefs& refs,
                           EngDrawDesc& out);
+/// (fallbacks.md 2b) a direct mesh draw's first task: a 16-byte slot of the job stream ({0, 0, 0, first}) whose word 3 the task stage
+/// reads, its address in the draw's push data (as the replay's mesh_args entry); false: no stream
+bool eng_draw_mesh_first(EngDrawDesc& dd, uint32_t first);
+/// (E6 R1) BdaStage's refusals for the program's stages, worked out from their Info ("" none)
+std::string eng_bda_refusal(const Program& p);
 /// (E6) every vertex stream the program loads has a buffer in the job's own state (else it is inherited from the caller)
 bool eng_draw_vertex_bound(const NvnState& s, const Program& p, bool strict);
 /// (HOS_ENG_JOBS_SAMPLED) the handle words a job draw's program reads (textures, images), deferred ones left out

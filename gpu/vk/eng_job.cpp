@@ -23,6 +23,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "vk_shader.h"
@@ -295,7 +296,7 @@ std::atomic<uint64_t> retired_through{0};
 // ---- counts (relaxed atomics; the frame log reads them every 120 presents) ----
 enum Count { C_JOBS, C_DRAWS, C_DRAWS_REC, C_DRAWS_SKIPPED, C_PKT, C_PKT_STALE, C_DEFERRED, C_DEFERRED_BUFS, C_REC_NS, C_DEC_NS,
              C_CHECK_JOBS, C_CHECK_DRAWS, C_CHECK_MISMATCH_DRAWS, C_CHECK_NO_JOB, C_CHECK_COUNT_DIFF, C_PUBLISHED, C_LOOKUPS,
-             C_LOOKUP_HITS, C_PROG_ANSWERS, C_CHECK_UNFILTERED, C_CHECK_FILTERED, C_DESC_CHECKED, C_DESC_MISMATCH, C_DESC_NONE, C_PATCHED, C_PATCH_NO_JOB, C_KIND_INDIRECT, C_KIND_MESH_OTHER, C_KIND_PRIM, C_MESH_REC, C_VTX_UNSET, C_N };
+             C_LOOKUP_HITS, C_PROG_ANSWERS, C_CHECK_UNFILTERED, C_CHECK_FILTERED, C_DESC_CHECKED, C_DESC_MISMATCH, C_DESC_NONE, C_PATCHED, C_PATCH_NO_JOB, C_KIND_INDIRECT, C_KIND_MESH_OTHER, C_KIND_PRIM, C_MESH_REC, C_VTX_UNSET, C_IND_REC, C_N };
 std::atomic<int64_t> cnt[C_N];
 std::atomic<int64_t> why_n[WHY_N];
 std::atomic<int64_t> why_draw_n[WHY_N];   // (HOS_ENG_JOBS_SPLIT: draws left to the replay inside split jobs, by why)
@@ -312,6 +313,7 @@ inline void add(Count c, int64_t v = 1) { cnt[c].fetch_add(v, std::memory_order_
 struct Pub { const Program* p; const SoProg* so; };
 std::shared_mutex pub_mu;
 std::unordered_map<uint64_t, Pub> published;
+std::unordered_set<uint64_t> fallback_keys;   // (R1, HOS_ENG_WHYLOG: pick keys whose program is the task/mesh fallback)
 uint64_t pick_key(const NvnState& s, const uint8_t ct[8], bool mesh = false) {
     uint64_t h = fnv(mesh ? kFnv0 ^ 0x4d455348 : kFnv0, s.vattr, sizeof s.vattr);
     h = fnv(h, &s.nvattr, 4);
@@ -444,6 +446,7 @@ struct Rec {
     bool split = false;
     uint32_t dwhy = WHY_OK, first_dwhy = WHY_OK, draw_i = 0, seg_first = 0, seg_ndraws = 0, ninline = 0, serial = 0;
     bool cut = false;   // (a run ended at an op the replay does between runs: a barrier, a dispatch)
+    const Program* dprog = nullptr;   // (R1: the program record_draw found for the draw, before a refusal)
     uint64_t view = 0;
     const VkCommandBufferBeginInfo* bi = nullptr;
     std::vector<EngSeg> segs;
@@ -489,13 +492,20 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     nvn_p_draw dr{};
     nvn_p_draw_idx di{};
     nvn_p_draw_mesh dm{};
+    nvn_p_draw_indirect dn{};
+    // (HOS_ENG_JOBS_INDIRECT=1, fallbacks.md 2a/2b: DrawArrays/ElementsIndirect(+Count) from their records in layer 0 (Vulkan's layout),
+    // and a direct mesh draw's first task from a slot of the job stream)
+    static const bool ind_on = getenv("HOS_ENG_JOBS_INDIRECT") && atoi(getenv("HOS_ENG_JOBS_INDIRECT")) != 0;
+    const bool ind = op == NOP_DRAW_INDIRECT;
     if (op == NOP_DRAW) std::memcpy(&dr, pl, sizeof dr);
     else if (op == NOP_DRAW_IDX) std::memcpy(&di, pl, sizeof di);
     else if (mesh) std::memcpy(&dm, pl, sizeof dm);
+    else if (ind && ind_on) std::memcpy(&dn, pl, sizeof dn);
     else return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_INDIRECT));
-    // (a mesh draw: DrawMeshTasks(0, n) only; a first task other than 0 or an indirect one takes the replay's argument ring)
-    if (mesh && (dm.kind != 0 || dm.x != 0 || dm.indirect)) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_MESH_OTHER));
-    const int prim = op == NOP_DRAW ? dr.prim : di.prim;
+    if (ind && (dn.max < 0 || dn.stride < 0)) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_INDIRECT));
+    // (a mesh draw: DrawMeshTasks(first, n); an indirect one takes the replay's argument conversion (fallbacks.md 2c))
+    if (mesh && (dm.kind != 0 || dm.indirect || (dm.x != 0 && !ind_on))) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_MESH_OTHER));
+    const int prim = op == NOP_DRAW ? dr.prim : ind ? dn.prim : di.prim;
     VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     if (!mesh && (prim == NVN_DRAW_PRIMITIVE_QUADS || !eng_draw_topology(prim, &topo))) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_PRIM));
     if (!s.has_prog) return r.refuse(WHY_NO_PROG);
@@ -508,6 +518,7 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     }
     const Program& p = *pub.p;
     const SoProg& so = *pub.so;
+    r.dprog = &p;
     if (!p.ready.load(std::memory_order_acquire) || p.failed || !so.ready.load(std::memory_order_acquire) || so.failed ||
         p.mesh != mesh || p.fallback || !(mesh ? so.ms : so.vs))
         return r.refuse(WHY_PROG_NOT_READY);
@@ -528,6 +539,7 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     if (sw().sampled) {   // (the textures this draw reads; a draw refused below adds its own too: conservative)
         eng_draw_sampled(s, p, w.refs, w.tex);
     }
+    if (mesh && dm.x != 0 && !eng_draw_mesh_first(dd, (uint32_t)dm.x)) return r.refuse(WHY_DESCRIPTORS);
     w.patches.insert(w.patches.end(), dd.patches.begin(), dd.patches.end());
     for (size_t k = 0; k + 1 < dd.ubos.size(); k += 2) {   // (consecutive draws bind the same ranges: kept once in a row)
         const size_t m = w.ubo.size();
@@ -562,7 +574,25 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     }
     if (r.dwhy) return;   // (split: this draw is the replay's)
     vkCmdBindVertexBuffers2(r.cb, 0, 16, vb, vo, vz, vs);
-    if (op == NOP_DRAW_IDX) {
+    if (ind) {   // (fallbacks.md 2a: the game's records are VkDrawIndirectCommand / VkDrawIndexedIndirectCommand)
+        const uint32_t stride = (uint32_t)std::max(dn.stride, dn.indexed ? 20 : 16), n = (uint32_t)std::max(dn.max, 1);
+        const BufferRef args = dn.indirect < (1ull << 40) ? layer0_buffer(dn.indirect, (uint64_t)n * stride) : BufferRef{};
+        const BufferRef cnt = dn.count_addr && dn.count_addr < (1ull << 40) ? layer0_buffer(dn.count_addr, 4) : BufferRef{};
+        if (!args.buffer || (dn.count_addr && !cnt.buffer)) return r.refuse(WHY_INDEX_MEM);
+        if (dn.indexed) {
+            if (dn.itype == 0 && !dev.index_uint8) return r.refuse(WHY_DRAW_KIND);
+            const BufferRef ib = dn.ibuf < (1ull << 40) ? layer0_buffer(dn.ibuf, 4) : BufferRef{};
+            if (!ib.buffer) return r.refuse(WHY_INDEX_MEM);
+            vkCmdBindIndexBuffer(r.cb, ib.buffer, ib.offset,
+                                 dn.itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : dn.itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+            if (cnt.buffer) vkCmdDrawIndexedIndirectCount(r.cb, args.buffer, args.offset, cnt.buffer, cnt.offset, n, stride);
+            else vkCmdDrawIndexedIndirect(r.cb, args.buffer, args.offset, n, stride);
+        } else {
+            if (cnt.buffer) vkCmdDrawIndirectCount(r.cb, args.buffer, args.offset, cnt.buffer, cnt.offset, n, stride);
+            else vkCmdDrawIndirect(r.cb, args.buffer, args.offset, n, stride);
+        }
+        add(C_IND_REC);
+    } else if (op == NOP_DRAW_IDX) {
         if (di.itype == 0 && !dev.index_uint8) return r.refuse(WHY_DRAW_KIND);
         const uint32_t unit = di.itype == 0 ? 1 : di.itype == 1 ? 2 : 4;
         const BufferRef ib = di.ibuf < (1ull << 40) ? layer0_buffer(di.ibuf, (uint64_t)std::max(di.count, 1) * unit) : BufferRef{};
@@ -626,6 +656,7 @@ void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
         r->first = true, r->seg_first = i, r->seg_ndraws = r->ndraws;
     }
     r->dwhy = WHY_OK;
+    r->dprog = nullptr;
     {   // (bisection: HOS_ENG_SPLIT_VIEW=<view> HOS_ENG_SPLIT_LO=a HOS_ENG_SPLIT_HI=b: that view's draw ops outside [a, b) left to the replay)
         static const uint64_t bv = getenv("HOS_ENG_SPLIT_VIEW") ? strtoull(getenv("HOS_ENG_SPLIT_VIEW"), nullptr, 0) : 0;
         static const uint32_t lo = getenv("HOS_ENG_SPLIT_LO") ? (uint32_t)atoi(getenv("HOS_ENG_SPLIT_LO")) : 0;
@@ -651,6 +682,37 @@ void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
     }
     if (r->dwhy == WHY_OK) return;
     why_draw_n[r->dwhy].fetch_add(1, std::memory_order_relaxed);
+    {   // (R1, HOS_ENG_WHYLOG=1: each (program, verdict, descriptor kind) once: what the refusal needs)
+        static const bool wl = getenv("HOS_ENG_WHYLOG") && atoi(getenv("HOS_ENG_WHYLOG")) != 0;
+        static std::mutex wm;
+        static std::unordered_set<uint64_t> seen;
+        if (wl) {
+            const NvnState& q = w.s;
+            const uint64_t key = q.has_prog ? prog_stage_sig(q.prog) : 0;
+            const uint32_t dk = r->dwhy == WHY_DESCRIPTORS ? w.desc.why : 0;
+            const uint64_t k = fnv(fnv(kFnv0, &key, 8), &r->dwhy, 4) ^ (uint64_t)dk * 0x9e3779b97f4a7c15ull;
+            bool fresh;
+            {
+                std::lock_guard lk(wm);
+                fresh = seen.insert(k).second;
+            }
+            if (fresh) {
+                nvn_p_draw_mesh dm{};
+                if (op == NOP_DRAW_MESH) std::memcpy(&dm, pl, sizeof dm);
+                const Program* pr = r->dprog;
+                bool fb_key = false;
+                {
+                    std::shared_lock lk(pub_mu);
+                    fb_key = fallback_keys.count(pick_key(q, r->types, op == NOP_DRAW_MESH)) != 0;
+                }
+                const std::string bda = pr && r->dwhy == WHY_DESCRIPTORS ? eng_bda_refusal(*pr) : std::string();
+                logf("eng whylog: view %#llx program %016llx: %s%s%s; op %d mesh kind %d x %d indirect %#llx max %d stride %d; fallback %d mesh %d (replay's pick a fallback: %d)%s%s",
+                     (unsigned long long)r->view, (unsigned long long)key, kWhy[r->dwhy], dk ? ": " : "", dk ? kDescWhy[std::min<uint32_t>(dk, EDW_N - 1)] : "",
+                     op, dm.kind, dm.x, (unsigned long long)dm.indirect, dm.max, dm.stride, pr ? (int)pr->fallback : -1, pr ? (int)pr->mesh : -1, (int)fb_key,
+                     bda.empty() ? "" : "; storage on descriptors: ", bda.c_str());
+            }
+        }
+    }
     {
         static std::atomic<int> told{0};
         if (told < 40 && cnt[C_JOBS].load(std::memory_order_relaxed) > 120000 && told++ < 40)
@@ -1102,6 +1164,10 @@ void eng_job_replay_program(const NvnState& s, const Program& p, const SoProg* s
     const size_t i = (size_t)r.pending;
     r.pending = -1;
     r.desc_i = (int64_t)i;
+    if (p.fallback) {   // (R1: a job draw's program the replay picked is the task/mesh compute fallback: never published)
+        std::unique_lock lk(pub_mu);
+        fallback_keys.insert(pick_key(s, ct, p.mesh));
+    }
     if (so && !p.fallback) {   // (for the job threads: the program these draws pick, by what program_for picks by)
         const uint64_t k = pick_key(s, ct, p.mesh);
         bool fresh = false;
@@ -1327,11 +1393,11 @@ void eng_job_report(double frames) {
         }
         logf("vk: eng jobs: draws whose descriptors were not made, a frame:%s; patched at the submit %.1f words a frame (%.2f jobs not "
              "found); draws not taken: %.1f indirect, %.1f mesh with a first or indirect, %.1f quads or other primitives; %.1f mesh draws recorded; "
-             "%.1f with a vertex stream the job does not bind",
+             "%.1f with a vertex stream the job does not bind; %.1f indirect draws recorded",
              dl[0] ? dl : " none", (c[C_PATCHED] - last[C_PATCHED]) / frames, (c[C_PATCH_NO_JOB] - last[C_PATCH_NO_JOB]) / frames,
              (c[C_KIND_INDIRECT] - last[C_KIND_INDIRECT]) / frames, (c[C_KIND_MESH_OTHER] - last[C_KIND_MESH_OTHER]) / frames,
              (c[C_KIND_PRIM] - last[C_KIND_PRIM]) / frames, (c[C_MESH_REC] - last[C_MESH_REC]) / frames,
-             (c[C_VTX_UNSET] - last[C_VTX_UNSET]) / frames);
+             (c[C_VTX_UNSET] - last[C_VTX_UNSET]) / frames, (c[C_IND_REC] - last[C_IND_REC]) / frames);
         if (sw().check)
             logf("vk: eng jobs check: descriptors: %.1f draws a frame compared with the replay's, %.2f differ (%lld so far), %.1f not made "
                  "on the job thread", (c[C_DESC_CHECKED] - last[C_DESC_CHECKED]) / frames, (c[C_DESC_MISMATCH] - last[C_DESC_MISMATCH]) / frames,

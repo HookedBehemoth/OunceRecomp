@@ -5256,6 +5256,51 @@ static uint32_t eng_handle_of(const NvnState& s, const Stage& st, const D& d, ui
         h = h << d.shift_left | eng_word(s, st, d.secondary_cbuf_index, d.secondary_cbuf_offset + k * step) << d.secondary_shift_left;
     return h;
 }
+bool eng_draw_mesh_first(EngDrawDesc& dd, uint32_t first) {
+    VkBuffer b;
+    uint64_t off;
+    uint8_t* map;
+    VkDeviceAddress a;
+    if (!eng_job_stream_alloc(16, 16, &b, &off, &map, &a)) return false;
+    const uint32_t words[4] = {0, 0, 0, first};
+    std::memcpy(map, words, sizeof words);
+    const uint64_t firsts = a + 12;
+    std::memcpy(dd.push + Shader::Backend::SPIRV::MESH_FIRST_PUSH_OFFSET, &firsts, 8);
+    return true;
+}
+/// (E6 R1, HOS_ENG_WHYLOG) why a program's stages keep their storage buffers on descriptors: BdaStage's (spirv_emit_context.cpp)
+/// refusals, worked out again from the stages' Info (no translator change); "" when every stage with storage buffers reads them by address
+std::string eng_bda_refusal(const Program& p) {
+    std::string out;
+    for (const Stage& st : p.stages) {
+        const Shader::Info& i = st.info;
+        if (i.storage_buffers_descriptors.empty() || i.ssbo_bda) continue;
+        const char* why = "other (profile)";
+        bool written = false;
+        for (const auto& d : i.storage_buffers_descriptors) written |= d.is_written;
+        if (p.fallback || p.mesh) why = "mesh / fallback stage";
+        else if (i.uses_render_area) why = "render area";
+        else if (i.uses_global_memory && i.native_global_bounds) why = "global memory, native bounds";
+        else if (i.uses_global_increment || i.uses_global_decrement || i.uses_atomic_f32_add || i.uses_atomic_f16x2_add ||
+                 i.uses_atomic_f16x2_min || i.uses_atomic_f16x2_max || i.uses_atomic_f32x2_add || i.uses_atomic_f32x2_min ||
+                 i.uses_atomic_f32x2_max)
+            why = "CAS-loop atomics";
+        else if (False((i.used_constant_buffer_types | i.used_indirect_cbuf_types) & Shader::IR::Type::U32)) why = "no u32 cbuf reads";
+        else
+            for (const auto& d : i.storage_buffers_descriptors) {
+                bool declared = false;
+                for (const auto& c : i.constant_buffer_descriptors) declared |= c.index == d.cbuf_index && c.count == 1;
+                if (d.count != 1) { why = "descriptor count != 1"; break; }
+                if (d.cbuf_index == 0 && d.cbuf_offset == 0xff0U) { why = "c0+0xff0"; break; }
+                if (d.cbuf_offset % 4) { why = "unaligned cbuf offset"; break; }
+                if (!declared) { why = "base in an undeclared cbuf"; break; }
+            }
+        char b[160];
+        snprintf(b, sizeof b, "%sstage %d: %s%s", out.empty() ? "" : "; ", st.nvn_stage, why, written ? " (written)" : "");
+        out += b;
+    }
+    return out;
+}
 /// (E3/E6, a job thread) every vertex attribute the program loads reads a stream with a buffer in the job's own state. A job's
 /// state starts from nothing, but a stream can be bound by its layer list before the call (vertex buffer 1 of the 1536x864 colour
 /// passes' draws in Hyrule Field: a transient buffer): recorded from the job's state alone, those draws read the zero buffer and
