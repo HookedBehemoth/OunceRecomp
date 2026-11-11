@@ -716,8 +716,17 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out) {
 }
 
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* (below) */
+/* (rt_slots.c's log: texture initializations, and those made by agl's DynamicTextureAllocator::alloc, f_8005ed00) */
+volatile LONG64 nvn_texture_inits, nvn_texture_inits_dta;
 NV(nvnTextureInitialize) {
+    InterlockedIncrement64(&nvn_texture_inits);
     const nvn_tex_builder *b = CTB(P(1));
+    if (c->x[30] >= 0x8005ed00ull && c->x[30] < 0x80062b6cull) {
+        void rt_slots_texture_init(uint64_t obj, uint64_t gpu, uint32_t w, uint32_t h, uint32_t fmt);   /* rt_slots.c */
+        InterlockedIncrement64(&nvn_texture_inits_dta);
+        rt_slots_texture_init(c->x[0], b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0, b->d.width, b->d.height,
+                              b->d.format);
+    }
     nvn_tex *o = TX(P(0));
     if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {   /* initialised again without Finalize */
         live_del(o);
@@ -2512,6 +2521,8 @@ NV(nvnQueuePresentTexture) {
         if (away) hos_vcore_back();
     }
     o->presents++;
+    void rt_slots_frame(void);   /* rt_slots.c */
+    rt_slots_frame();
     extern volatile LONG64 hos_present_count;   /* display.c */
     InterlockedIncrement64(&hos_present_count);
     hos_vi_native_presented();
