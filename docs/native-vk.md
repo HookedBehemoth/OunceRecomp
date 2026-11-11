@@ -152,6 +152,10 @@ which hangs the GPU under faster timing). Other overlays: `work/tools/make_chise
   `FirstBancParam` (`Work/Banc/GameBancParam/KokiriForest_Child...`) names the map, Opening's intro events are cut
   (`--keep-intro` keeps them). Maps: `KokiriForest_Child`, `HyruleField_Child`/`_Adult`, `KakarikoVillage_Child`,
   `InsideTheDekuTree`. Run with a scratch `--user`: the new-game route saves. Details: `work/assets/boot.md`.
+  The movie in it is the title screen's background (event `Title_Background`, `Dm_Title_0005.webm`): BeforeTitle waits
+  for it to start, which is why `HOS_NO_MOVIES=1` (an MKW switch: no `.webm` found) never leaves the boot.
+  `--skip-title` leaves the event out and `--skip-fades` the loading fades; both are opt-in because neither shortens
+  launch (below).
 
 ## The engine (what is known)
 
@@ -197,6 +201,16 @@ So every stage the game can run is known before it runs (~39k unique): translate
 | baseline (6 virtual cores, task/mesh fallback) | 25 s | |
 | + native libc: `ENTRY_HOOK`s spliced at last (`nx2/entry_hooks.py`), `__memcpy_aarch64` hooked | 21 s | the hooks in host/nn_libc.c had never been linked |
 | + native zstd (host/nn_zstd.c: `f_8010b380` whole files, `f_80115c80` ParallelDecompThread streams) | **18 s** | 6,000 files, 3.3 GB in the first 50 s, no failures |
+
+Where the 18 s go (2026-11-11, `HOS_LOG_TIME=1`, a Superluminal capture; `work/assets/native/boot-speed.md`):
+0-0.6 s image, device, first submit; **0.6-4.4 s single-threaded guest init** on sead::MainThread (effect resources
+`f_812eed00`/`f_812ef8c0` 1.3 s, `f_8017ed80` 0.6 s; loaders idle; the program and pipeline caches load in ~120 ms at
+4.4 s, off the critical path); 4.4-6.1 s the title's setup (resident events, the title event, frame-paced); 6.1-8.6 s
+the new-game transition, with the title movie playing (no file opened 5.5-8.0 s); 8.6-13.2 s the black loading screen
+(3.3 of 6 vcores busy: threads queue for their masked cores, 27 s of thread time in `vc_acquire`); 13.2-17.5 s the
+first scene frames at ~28 fps (renderer work). Cutting the movie (`--skip-title`) made it 1-2 s slower: the first
+scene frame then waits for ~2200 more actor files. Cutting the fades started the load 1 s earlier but did not end it
+earlier. `HOS_VCORE_LEND_US=2000` (experiment, off: a vcore waiter takes any free core after 2 ms) ended the load 0.85 s earlier (3 runs) but playable only once of three and steady fps looked lower; `HOS_FS_KEEP_CORE_KB` no change.
 
 Tried and dropped: `HOS_VCORE_ANY` (any free core for any thread: 24 GB and 27 fps, the game's per-core data follows
 its core masks), `HOS_VCORE_SLICE_US=10000` (22 s, no gain), `HOS_NO_MOVIES=1` (never leaves the load: the boot
