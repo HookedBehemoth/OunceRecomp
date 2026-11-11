@@ -53,6 +53,19 @@ bool stream_holds(const uint8_t* base, uint64_t at, uint64_t n);
 /// The open render pass ends (before transfers, clears, barriers and the recording's end)
 void end_pass(VkCommandBuffer cmd);
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d);
+/// (native-vk E4, eng_pass.h) the formats, size and target objects of the state's targets (the pass table's note)
+struct EngPassFormats;
+void draw_pass_info(NvnState& s, EngPassFormats* f, uint32_t* w, uint32_t* h, uint64_t* color0, uint64_t* depth);
+/// (E4) the rendering of the state's targets open on cmd (secondary_only: one of its own for an execute); false: none
+bool draw_open_pass(VkCommandBuffer cmd, NvnState& s, bool secondary_only, EngPassFormats* f);
+/// (E4, HOS_ENG_PASS_SELFTEST) a job's secondary recorded by this path from here: what would leave the pass breaks it
+void draw_sec_enter();
+/// (E4) back on the primary: the reason it broke (null: whole); the pass as before it when restore or broken
+const char* draw_sec_leave(bool restore);
+/// (E4) a secondary executed: what the draw path kept bound on the command buffer is gone
+void draw_cmd_state_lost();
+/// (E4) the handles a job binds against the open pass: 0 fine, 1 one is an attachment of it, 2 one is not resident
+int draw_tex_check(const uint32_t* tex, uint32_t n);
 /// Clears of the bound targets, inside the open pass (NOP_CLEAR_COLOR, NOP_CLEAR_DS)
 void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float rgba[4], uint32_t mask);
 void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool depth_mask, uint32_t stencil,

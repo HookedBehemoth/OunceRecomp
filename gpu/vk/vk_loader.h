@@ -108,6 +108,7 @@
     X(vkCreateSampler)                                                                                                \
     X(vkCmdBeginRendering)                                                                                            \
     X(vkCmdEndRendering)                                                                                              \
+    X(vkCmdExecuteCommands)                                                                                           \
     X(vkCmdBindPipeline)                                                                                              \
     X(vkCmdBindDescriptorSets)                                                                                        \
     X(vkCmdBindVertexBuffers)                                                                                         \

@@ -45,6 +45,7 @@
 #include "vk_shader.h"
 #include "vk_shader_object.h"
 #include "vk_desc_heap.h"
+#include "eng_pass.h"
 #include "vk_bda.h"
 #include "vk_pools.h"
 #include "layer0_windows.h"
@@ -3859,7 +3860,7 @@ namespace {
 /// to it)
 VkPipelineCache shared_pipeline_cache() { return pcache; }
 namespace { void packets_report(double frames); }   // (RX_VK_PACKETS: below, with the draws' kept resolutions)
-void draw_skip_report(double frames) { skip_report_impl(frames), fine_report(frames), packets_report(frames); }
+void draw_skip_report(double frames) { skip_report_impl(frames), fine_report(frames), packets_report(frames), eng_pass_report(frames); }
 void descriptors_disturbed() {
     pushed()[0].cmd = pushed()[1].cmd = VK_NULL_HANDLE;
 }
@@ -4474,11 +4475,13 @@ bool pass_covers(const Targets& at, const Texture* t) {
     return t->levels == 1 && t->layers == 1 && at.width >= t->width && at.height >= t->height;
 }
 
+thread_local VkRenderingFlags eng_force_flags = 0;   // (HOS_ENG_PASSES without mixing: a rendering for secondaries only)
 void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     bool same = pass().open && pass().depth == at.depth_view && pass().n == at.n && pass().width == at.width &&
                 pass().height == at.height;
     for (int i = 0; i < at.n && same; i++) same = pass().color[i] == at.color_view[i];
     if (same) return;
+    if (eng_sec_trap("other targets")) return;   // (HOS_ENG_PASS_SELFTEST: a job's secondary is inside one rendering)
     end_pass(cmd);
     pass_start_barrier(cmd);   // (what the pass before wrote, and the transfers before it: vk_texture.cpp)
     work_since_barrier = true;
@@ -4520,6 +4523,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
     pass().depth_tex = at.depth, pass().depth_level = at.depth_level, pass().depth_layer = at.depth_layer;
     pass().n = at.n, pass().width = at.width, pass().height = at.height;
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.flags = eng_force_flags ? eng_force_flags : eng_rendering_flags();   // (HOS_ENG_PASSES: secondaries executed in it)
     ri.renderArea = {{0, 0}, {at.width, at.height}};
     ri.layerCount = 1;
     ri.colorAttachmentCount = (uint32_t)at.n;
@@ -5730,6 +5734,7 @@ TLS_OBJECT(dump_mesh_indirect, std::vector<std::pair<uint64_t, uint64_t>>)   // 
 } // namespace
 void end_pass(VkCommandBuffer cmd) {
     if (!pass().open) return;
+    if (eng_sec_trap("the pass ended")) return;   // (HOS_ENG_PASS_SELFTEST: inside a job's secondary; the job is replayed inline)
     vkCmdEndRendering(cmd);
     pass().open = false;
     note_pass_end(cmd);   // (before the dumps and probes below: they record work, and the next pass's barrier is then a full one)
@@ -9630,5 +9635,82 @@ BufferRef stream_copy(const void* src, uint64_t n) {
     if (at == UINT64_MAX) return {};
     std::memcpy(cur->mapped + at, src, n);
     return {cur->stream, at, n, 0};
+}
+// ---- (native-vk engine cut E4, eng_pass.h) the draw path's side of the job consumer: the pass a job call is in, a job's
+// secondary recorded by this path on this thread, and the command buffer's state after an execute ----
+namespace {
+EngPassFormats formats_of(const Targets& at) {
+    EngPassFormats f{};
+    f.ncolor = (uint32_t)at.n;
+    for (int i = 0; i < at.n && i < 8; i++) f.color[i] = at.color_view[i] ? at.color_format[i] : VK_FORMAT_UNDEFINED;
+    f.depth = at.depth && depth_aspect(at.depth_format) ? at.depth_format : VK_FORMAT_UNDEFINED;
+    f.stencil = at.depth && has_stencil(at.depth_format) ? at.depth_format : VK_FORMAT_UNDEFINED;
+    f.samples = at.samples;
+    return f;
+}
+TLS_OBJECT(sec_saved_pass, Pass)
+/// What the draw path keeps of the command buffer it records (bound pipeline, state, descriptors, vertex streams): gone, as at a
+/// recording's start (draw_begin_recording)
+void cmd_caches_reset() {
+    last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
+    vertex_set.on = false, last_ib.on = false;
+    descriptors_disturbed();
+    if (packets_on()) pk_touch_all(), pk_rec++;
+#ifdef VK_EXT_descriptor_heap
+    heap_last_prog = nullptr;
+    if (desc_heap_on()) desc_heap_forget_bound();
+#endif
+}
+} // namespace
+
+void draw_pass_info(NvnState& s, EngPassFormats* f, uint32_t* w, uint32_t* h, uint64_t* color0, uint64_t* depth) {
+    const Targets at = bare_targets(s, targets(s));
+    *f = formats_of(at);
+    *w = at.width, *h = at.height;
+    *color0 = at.n && at.color[0] ? at.color[0]->gpu : 0;
+    *depth = at.depth ? at.depth->gpu : 0;
+}
+bool draw_open_pass(VkCommandBuffer cmd, NvnState& s, bool secondary_only, EngPassFormats* f) {
+    const Targets at = bare_targets(s, targets(s));
+    if (!at.width || !at.height) return false;
+    *f = formats_of(at);
+    if (secondary_only) {   // (no mixing: a rendering of its own, for the secondary alone)
+        end_pass(cmd);
+        eng_force_flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
+        begin_pass(cmd, at);
+        eng_force_flags = 0;
+    } else {
+        begin_pass(cmd, at);
+    }
+    return pass().open;
+}
+void draw_sec_enter() {
+    sec_saved_pass() = pass();
+    cmd_caches_reset();
+    eng_sec_set(true);
+}
+const char* draw_sec_leave(bool restore) {
+    const char* why = eng_sec_broken();
+    eng_sec_set(false);
+    if (restore || why) pass() = sec_saved_pass();
+    cmd_caches_reset();
+    return why;
+}
+void draw_cmd_state_lost() { cmd_caches_reset(); }
+int draw_tex_check(const uint32_t* tex, uint32_t n) {
+    const Pass& ps = pass();
+    for (uint32_t i = 0; i < n; i++) {
+        if (!tex[i]) continue;
+        nvn_tex t;
+        nvn_view v;
+        bool hv = false;
+        if (!texture_of((int)(tex[i] & 0xFFFFF), &t, &v, &hv)) continue;   // (unregistered: the draw would read nothing either)
+        Texture* x = texture_find(&t);
+        if (!x || !(x->uploaded || x->gpu_written)) return 2;
+        for (int k = 0; k < ps.n; k++)
+            if (ps.tex[k] == x) return 1;
+        if (ps.depth_tex == x) return 1;
+    }
+    return 0;
 }
 } // namespace mkwvk

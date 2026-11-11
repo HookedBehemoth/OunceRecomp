@@ -17,6 +17,7 @@
 #include "vk_api.h"
 #include "vk_draw.h"
 #include "vk_desc_heap.h"
+#include "eng_pass.h"
 #include "vk_framegen.h"
 #include "vk_internal.h"
 #include "vk_pools.h"   // (native-vk layer 0: its sparse queue)
@@ -365,6 +366,7 @@ bool create_device() {
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
     desc_heap_device_extensions(exts, want, tail);   // (native-vk, RX_VK_DESC_HEAP=1: VK_EXT_descriptor_heap, vk_desc_heap.cpp)
+    eng_pass_device_extensions(exts, want, tail);   // (native-vk E4, HOS_ENG_PASSES=1: inline draws and secondaries in one rendering, eng_pass.cpp)
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     antilag_device_features(tail);   // (AMD Anti-Lag 2's, when its extension is there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);

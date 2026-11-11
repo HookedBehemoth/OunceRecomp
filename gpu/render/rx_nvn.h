@@ -158,6 +158,7 @@ enum {
     NOP_WAIT_FENCE,                             /* (hookshot, RX_VK_TIMELINES: nvnQueueWaitSync, before the queue's next submit) */
     NOP_PKT,                                    /* (native-vk E2, HOS_ENG_LISTS: a called list's packet, gpu/render/nvn_pkt.h) */
     NOP_JOB,                                    /* (native-vk E3, HOS_ENG_JOBS: a render job's recording begins / ends, gpu/vk/eng_job.h) */
+    NOP_ENG,                                    /* (native-vk E4, HOS_ENG_PASSES: a job-call site's bounds, a job's view; nvn_p_eng) */
     NOP_COUNT_
 };
 typedef struct { int32_t n; const nvn_tex *color[8]; nvn_view cview[8]; uint8_t has_cview[8]; const nvn_tex *depth; nvn_view dview; uint8_t has_dview; } nvn_p_set_rt;
@@ -230,6 +231,12 @@ typedef struct rx_eng_job_info {
 void rx_eng_job_recorded(const rx_eng_job_info *j, const uint8_t *rec, uint64_t bytes, uint64_t handle);
 /* (E3, at the submit) a job's deferred handle bind number bind (1 first) as the game's array holds it now */
 void rx_eng_job_deferred(uint32_t serial, uint32_t bind, const uint64_t *h, int n);
+/* (native-vk engine cut E4, HOS_ENG_PASSES=1) marks for the replay, no GPU work: around each handle a job-call site calls
+   (CALL_BEGIN before the callee's records, CALL_END after them: a = the handle, b = index | count << 32, site = the guest
+   return address of the CallCommands), and first in a render job's own recording (JOB: a = its view record, b = its cmd
+   slot; f_80084de0). The game's command memory accounting leaves them out */
+enum { NVN_ENG_CALL_BEGIN = 1, NVN_ENG_CALL_END = 2, NVN_ENG_JOB = 3 };
+typedef struct { uint32_t kind, site; uint64_t a, b; } nvn_p_eng;
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
    first index, base vertex, base instance; arrays: count, instances, first, base instance), as many as the 32-bit
    value at count_addr says when there is one; read at replay, after the GPU's writes there reached guest memory */

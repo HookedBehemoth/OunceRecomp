@@ -580,6 +580,7 @@ void desc_heap_bind(VkCommandBuffer cmd) {
     p_bind_smp(cmd, &sb);
     bound_cmd = cmd, bound_epoch = ep;
 }
+void desc_heap_forget_bound() { bound_cmd = VK_NULL_HANDLE; }
 bool desc_heap_classic_since(VkCommandBuffer cmd) {
     return cmd != bound_cmd || classic_epoch.load(std::memory_order_relaxed) != bound_epoch;
 }

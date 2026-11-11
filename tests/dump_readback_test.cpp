@@ -83,6 +83,7 @@ void wait_value(uint64_t) {
 void write_png(const char*,const uint8_t* p,uint32_t w,uint32_t h){png.assign(p,p+(size_t)w*h*4);}
 int _mkdir(const char*){return 0;}
 namespace l1c { constexpr bool on = false; inline void barrier(const char*, const void*) {} }   // (vk_l1_census.h, off)
+inline bool eng_sec_trap(const char*) { return false; }   // (eng_pass.h: no job secondary records here)
 /* FULL_BARRIER */
 } // namespace mkwvk
 

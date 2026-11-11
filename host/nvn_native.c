@@ -1464,6 +1464,7 @@ typedef struct {
     int32_t eng_kind;        /* (HOS_ENG_LISTS) the open recording's kind (nvn_pkt.h NVN_PK_*), from where it began */
     uint64_t eng_meta[4];    /* (and what the kind's builder had then: nvn_pkt.meta) */
     uint32_t eng_job;        /* (HOS_ENG_JOBS) the open recording's render job (host/eng_jobs.h), 0: not a job's */
+    uint64_t eng_view, eng_slot;   /* (HOS_ENG_PASSES) a render job's view record and cmd slot, from its Initialize (0: not a job) */
 } cmd_rec;
 #define CMD_CHUNK_BITS 10
 #define CMD_CHUNKS 4096u                     /* (4M command buffers at once) */
@@ -1572,6 +1573,34 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
     ReleaseSRWLockExclusive(&cmd_lock);
     o->slot = 0;
 }
+/* (native-vk engine cut E4) HOS_ENG_PASSES=1: marks for the replay's pass table and job consumer (gpu/vk/eng_pass.h): a
+   NOP_ENG around each handle the job-call sites call (CALL_BEGIN / CALL_END, the site's return address), and one first in
+   every render job's recording naming its view record (f_80084de0's Initialize, x25 = the view record, x24 = the cmd slot:
+   work/assets/native/engine-jobs.md). The game's command memory accounting leaves them out */
+#define ENG_JOB_INIT_LR 0x800852c0ull
+static int eng_passes(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("HOS_ENG_PASSES");
+        on = e && atoi(e) != 0;
+        if (on) hos_log("eng: job-call sites and job views marked for the replay (HOS_ENG_PASSES)");
+    }
+    return on;
+}
+static int eng_call_site(uint64_t lr) {   /* f_806688c0, f_8028a2a0 (the jobs, six at a time), f_807cd380 (the 9 layer lists) */
+    return lr == 0x80668c84ull || lr == 0x8028a538ull || lr == 0x807cd418ull;
+}
+static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size);
+static void put_hdr(uint8_t *p, uint32_t op, uint32_t size);
+static void eng_mark(nvn_cmd *o, uint32_t kind, uint32_t site, uint64_t a, uint64_t b) {
+    const uint32_t sz = (uint32_t)((8 + sizeof(nvn_p_eng) + 7) & ~(size_t)7);
+    uint8_t *p = cmd_alloc(o, sz);
+    put_hdr(p, NOP_ENG, sz);
+    const nvn_p_eng e = {kind, site, a, b};
+    memcpy(p + 8, &e, sizeof e);
+    o->hw_used -= sz;   /* (no hardware equivalent: the game sizes its heaps by what it is told is used) */
+    o->last_rec = 0;
+}
 NV(nvnCommandBufferInitialize) {
     nvn_cmd *o = CB(P(0));
     cmd_release(o);   /* (initialized again without Finalize: its recording buffer back) */
@@ -1579,7 +1608,8 @@ NV(nvnCommandBufferInitialize) {
     o->magic = NVN_MAGIC('C', 'M', 'D', 'B');
     o->inline_cur = ~0ull;
     o->inline_end = 0;
-    cmd_adopt(o);
+    cmd_rec *r = cmd_adopt(o);
+    if (eng_passes() && c->x[30] == ENG_JOB_INIT_LR) r->eng_view = c->x[25], r->eng_slot = c->x[24];
     RET(1);
 }
 NV(nvnCommandBufferFinalize) {
@@ -1856,6 +1886,7 @@ NV(nvnCommandBufferBeginRecording) {
         o->hw_used -= 8 + sizeof *j;
         o->hw_start = o->hw_used;
     }
+    if (r->eng_view) eng_mark(o, NVN_ENG_JOB, 0, r->eng_view, r->eng_slot);   /* (HOS_ENG_PASSES: the job's view, first) */
 }
 /* the recording, BEGIN to END, is contiguous in the command buffer's segment: one copy of it */
 static uint8_t *flatten(const uint8_t *p, size_t n) {
@@ -2055,9 +2086,14 @@ static void inline_recording_raw(nvn_cmd *o, uint64_t h) {
 }
 NV(nvnCommandBufferCallCommands) {
     const uint64_t *h = (const uint64_t *)PN(2, 8ull * (uint32_t)I(1));
+    const uint64_t lr = c->x[30];
+    const int eng = eng_passes() && eng_call_site(lr);   /* (HOS_ENG_PASSES: the job-call site's bounds for the replay) */
     for (int i = 0; i < I(1); i++) {
         if (nwatch_handles) watch_handle_called(c, h[i], "called");
+        const uint64_t at = (uint64_t)(uint32_t)i | (uint64_t)(uint32_t)I(1) << 32;
+        if (eng) eng_mark(CB(P(0)), NVN_ENG_CALL_BEGIN, (uint32_t)lr, h[i], at);
         inline_recording(CB(P(0)), h[i]);
+        if (eng) eng_mark(CB(P(0)), NVN_ENG_CALL_END, (uint32_t)lr, h[i], at);
     }
 }
 NV(nvnCommandBufferCopyCommands) {

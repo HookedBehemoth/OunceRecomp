@@ -52,6 +52,7 @@
 
 #include "vk_internal.h"
 #include "vk_shader_object.h"
+#include "eng_pass.h"   // (native-vk E4: the pass table and the job consumer, NOP_ENG)
 #include "vk_desc_heap.h"
 #include "vk_bda.h"
 #include "vk_timelines.h"
@@ -227,6 +228,8 @@ struct Recording {
     VkFence fence = VK_NULL_HANDLE;
     bool submitted = false;
     uint64_t batch = 0;   // (RX_VK_BATCH: the batch it went out in, waited for on batch_tl; 0: its own fence)
+    std::vector<VkCommandBuffer> secs;   // (HOS_ENG_PASS_SELFTEST: jobs' secondaries, from pool: reset with it)
+    size_t nsec = 0;
 };
 // (24: the event waits cut a frame's command buffers into pieces, each with recordings of its own, and with 16 the
 // replay waited ~1.5 ms a frame for a slot the GPU still had)
@@ -513,6 +516,7 @@ Recording& begin_recording(uint64_t value) {
         gprof_collect(r.slot);
     }
     vkResetCommandPool(dev.device, r.pool, 0);
+    r.nsec = 0;   // (the jobs' secondaries reset with the pool)
     vkResetCommandPool(dev.device, r.upload_pool, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -522,6 +526,7 @@ Recording& begin_recording(uint64_t value) {
     gprof_begin_recording(r.slot, r.cmd, r.upload);
     r.value = value;
     memory_recording_value(value, completed());
+    if (eng_passes_on()) eng_job_retire_through(completed());   // (E4: host jobs' command buffers the GPU is past)
     texture_begin_recording(r.upload, value);
     draw_begin_recording(r.slot, r.cmd, value);
     return r;
@@ -1111,6 +1116,11 @@ void eng_lists_report(double frames) {
     std::memcpy(last_k, eng_kind_n, sizeof last_k);
 }
 namespace {
+// (native-vk E4, HOS_ENG_PASSES) a job-call site's handle (its CALL_BEGIN at p): true when its job was executed from a
+// secondary, the walk to go on at *resume (its CALL_END); false: its NVN records replayed as they are (below replay())
+bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
+                  const uint8_t** resume);
+thread_local bool eng_state_only = false;   // (E4: an executed E3 job's records walked for their state: no draws)
 
 /// The records from p (inside the calls from_calls names) up to end (inside end_calls) or the END they are in
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr,
@@ -1134,6 +1144,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             eng_end = nullptr;
         }
         if (p == end && calls.same(end_calls ? *end_calls : kNoCalls)) return;
+        if (eng_sec_broken()) return;   // (E4 self-test: the job's secondary left its pass; the job is replayed inline)
         nvn_op_hdr h;
         std::memcpy(&h, p, sizeof h);
         const uint8_t* a = p + 8;
@@ -1170,7 +1181,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             }
             break;
         case NOP_PKT: {   // (HOS_ENG_LISTS: the called list's packet in place of the records after this one)
-            if (!eng || eng_end) break;   // (off, or inside the records a checked packet stands for: they decode)
+            if (!eng || eng_end || eng_state_only) break;   // (off, or inside the records a checked packet stands for: they decode; E4: no draws)
             const auto r = payload<nvn_p_pkt>(a, avail);
             eng_n[ENC_SEEN]++;
             if (mode != Mode::Serial || ubo_census_on() || l1c::on) {
@@ -1200,6 +1211,19 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             eng_n[ENC_NS] += prof_now() - t0;
             p += h.size + r.skip;
             continue;
+        }
+        case NOP_ENG: {   // (native-vk E4, HOS_ENG_PASSES: a job-call site's handle: the pass table, the job consumer)
+            static const bool eng4 = eng_passes_on();
+            if (!eng4 || dry || worker || eng_sec_active() || eng_state_only) break;
+            const auto e = payload<nvn_p_eng>(a, avail);
+            if (e.kind != NVN_ENG_CALL_BEGIN) break;
+            const uint8_t* resume = nullptr;
+            if (eng_job_call(cmd, s, p, h.size, e, calls, &resume)) {
+                if (l1c_op) l1c::op_done(h.op, prof_now() - l1c_t0);
+                p = resume;   // (its CALL_END)
+                continue;
+            }
+            break;
         }
         // ---- memory the stream writes: on the GPU timeline ----
         case NOP_SIGNAL_EVENT: {
@@ -1717,7 +1741,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
                 eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.d = d;
-            } else if (s.render_enabled && !s.raster_discard && !dry) {
+            } else if (s.render_enabled && !s.raster_discard && !dry && !eng_state_only) {
                 draw(cmd, s, draw_args(d));
             }
             s.samples_passed += 16;
@@ -1728,7 +1752,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
                 eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.di = d;
-            } else if (s.render_enabled && !s.raster_discard && !dry) {
+            } else if (s.render_enabled && !s.raster_discard && !dry && !eng_state_only) {
                 draw(cmd, s, draw_args(d));
             }
             s.samples_passed += 16;
@@ -1737,7 +1761,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         case NOP_DRAW_INDIRECT: {
             const auto d = payload<nvn_p_draw_indirect>(a, avail);
             if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
-            if (s.render_enabled && !s.raster_discard && !dry) {
+            if (s.render_enabled && !s.raster_discard && !dry && !eng_state_only) {
                 DrawArgs da;
                 da.prim = d.prim, da.indexed = d.indexed != 0, da.itype = d.itype;
                 da.indirect = d.indirect, da.count_addr = d.count_addr, da.max = d.max, da.stride = d.stride;
@@ -1756,7 +1780,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                      d.z, (unsigned long long)d.indirect, (unsigned long long)d.count_addr, d.max, d.stride);
             if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
                 eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.dm = d;
-            } else if (s.render_enabled && !s.raster_discard && !dry) {
+            } else if (s.render_enabled && !s.raster_discard && !dry && !eng_state_only) {
                 draw(cmd, s, draw_args(d));
             }
             s.samples_passed += 16;
@@ -1782,7 +1806,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 const bool compute = h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT;
                 if (s.render_enabled && (compute || !s.raster_discard)) dry_mark_written(s, compute, dry_work == 0);
                 if (++dry_work % 64 == 0) par_points.push_back({p + h.size, calls, s, ub_updates.size(), par_conds.size(), dry_work});
-            } else if (!worker && !eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet's draw split already)
+            } else if (!worker && !eng_end && !eng_sec_active() && !eng_state_only) {   // (HOS_ENG_LISTS_CHECK: the packet's draw split already; E4: not inside a job's secondary)
                 maybe_split(cmd);
             }
         }
@@ -1821,6 +1845,186 @@ void maybe_split(VkCommandBuffer& cmd) {
     cmd = r.cmd;
     part_work = 0;
     rec_parts++;
+}
+
+// ---- (native-vk engine cut E4, HOS_ENG_PASSES=1) the job-call sites (eng_pass.h). A layer list calls a pass's six jobs at
+// f_806688c0 / f_8028a2a0; host/nvn_native.c brackets each handle with NOP_ENG CALL_BEGIN / CALL_END and puts the job's view
+// record first in its recording. Here: the pass table's note, then the job's host secondary (E3's, or with
+// HOS_ENG_PASS_SELFTEST=1 one recorded now from its NVN records by the draw path) executed in the pass when its formats
+// are the rendering's, it binds no attachment of the pass and its textures are resident; otherwise its NVN records as
+// they are ----
+struct EngScan {
+    const uint8_t* end = nullptr;   // (its CALL_END, in the list the CALL_BEGIN is in)
+    uint64_t view = 0, slot = 0;
+    uint32_t ndraws = 0, bad_op = 0;
+    bool bad = false;
+    std::vector<uint32_t> tex;      // (the handle words its BIND_TEX / BIND_IMG name)
+};
+/// The records of a job call from p (after its CALL_BEGIN) to its CALL_END: into called lists (HOS_NVN_LIST_REF) and back
+void eng_scan(const uint8_t* p, EngScan& sc) {
+    const uint8_t* ret[CallStack::kMax];
+    int depth = 0;
+    for (int guard = 0; guard < (1 << 20); guard++) {
+        nvn_op_hdr h;
+        std::memcpy(&h, p, sizeof h);
+        if (h.size < 8 || (h.size & 7)) return;
+        const uint8_t* a = p + 8;
+        const uint32_t avail = h.size - 8;
+        switch (h.op) {
+        case NOP_END:
+            if (!depth) return;   // (the caller's END before the CALL_END: malformed)
+            p = ret[--depth];
+            continue;
+        case NOP_CALL: {
+            const auto k = payload<nvn_p_call>(a, avail);
+            if (!k.target || depth == CallStack::kMax) break;
+            ret[depth++] = p + h.size;
+            p = k.target;
+            continue;
+        }
+        case NOP_ENG: {
+            const auto e = payload<nvn_p_eng>(a, avail);
+            if (e.kind == NVN_ENG_CALL_END && !depth) return void(sc.end = p);
+            if (e.kind == NVN_ENG_JOB && !sc.view) sc.view = e.a, sc.slot = e.b;
+            if (e.kind == NVN_ENG_CALL_BEGIN) sc.bad = true, sc.bad_op = h.op;   // (a job call inside a job: not seen)
+            break;
+        }
+        case NOP_DRAW: case NOP_DRAW_IDX: case NOP_DRAW_INDIRECT: case NOP_DRAW_MESH: sc.ndraws++; break;
+        case NOP_BIND_TEX: case NOP_BIND_IMG: {
+            nvn_p_bind_handles b;
+            std::memset(&b, 0, sizeof b);
+            std::memcpy(&b, a, std::min<size_t>(sizeof b, avail));
+            for (int i = 0; i < b.n && i < 32; i++)
+                if (b.h[i]) sc.tex.push_back((uint32_t)b.h[i]);
+            break;
+        }
+        // (state and CPU-side work: a secondary holds them, or the replay does them as it walks)
+        case NOP_BEGIN: case NOP_JUMP: case NOP_REPORT_COUNTER: case NOP_RESET_COUNTER: case NOP_UPDATE_UB:
+        case NOP_VIEWPORTS: case NOP_SCISSOR: case NOP_DEPTH_RANGE: case NOP_BIND_PROGRAM: case NOP_BIND_STATE:
+        case NOP_BIND_VATTR: case NOP_BIND_VSTREAM: case NOP_BIND_VBUF: case NOP_BIND_UBO: case NOP_BIND_SSBO: case NOP_BIND_SAMP:
+        case NOP_BIND_BUFS: case NOP_STENCIL: case NOP_POLY_OFFSET: case NOP_BLEND_COLOR: case NOP_DEPTH_CLAMP:
+        case NOP_RENDER_ENABLE: case NOP_RASTER_DISCARD: case NOP_RENDER_COND: case NOP_PRIMITIVE_RESTART: case NOP_PUSH_CONST:
+        case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL: case NOP_COPY_STRIDE: case NOP_PKT: case NOP_JOB:   // (E2's packet: state and its draw; E3's job bounds)
+            break;
+        default:   // (barriers, dispatches, copies, clears, events, waits, targets: not inside one rendering's secondary)
+            if (!sc.bad) sc.bad = true, sc.bad_op = h.op;
+            break;
+        }
+        p += h.size;
+    }
+}
+const char* eng_op_name(uint32_t op) {
+    switch (op) {
+    case NOP_BARRIER: return "op barrier";
+    case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: return "op dispatch";
+    case NOP_WAIT_EVENT: return "op wait event";
+    case NOP_SIGNAL_EVENT: return "op signal event";
+    case NOP_SET_RT: return "op set targets";
+    case NOP_CLEAR_COLOR: case NOP_CLEAR_DS: case NOP_CLEAR_TEX: case NOP_CLEAR_BUF: return "op clear";
+    case NOP_COPY_B2B: case NOP_COPY_B2T: case NOP_COPY_T2B: case NOP_COPY_T2T: return "op copy";
+    case NOP_ENG: return "op nested job call";
+    default: return "op other";
+    }
+}
+thread_local NvnState eng_snap;
+VkCommandBuffer eng_secondary(Recording& r) {
+    if (r.nsec == r.secs.size()) {
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = r.pool, ai.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY, ai.commandBufferCount = 1;
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        if (vkAllocateCommandBuffers(dev.device, &ai, &cb) != VK_SUCCESS) return VK_NULL_HANDLE;
+        r.secs.push_back(cb);
+    }
+    return r.secs[r.nsec++];
+}
+bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
+                  const uint8_t** resume) {
+    eng_count(EC_CALLS);
+    if (e.site == 0x807cd418u) return eng_count(EC_LAYER_CALLS), false;   // (the gate primary's call of the 9 layer lists)
+    EngScan sc;
+    eng_scan(p + size, sc);
+    if (!sc.end) return eng_count(EC_FB_MALFORMED), false;
+    if (!sc.view) return eng_count(EC_NO_VIEW), false;
+    eng_count(EC_JOBS);
+    {   // (the pass table: the job's pass and the targets in force at its call)
+        EngPassFormats f{};
+        uint32_t w = 0, h = 0;
+        uint64_t c0 = 0, d0 = 0;
+        draw_pass_info(s, &f, &w, &h, &c0, &d0);
+        eng_pass_note_ex(sc.view, f, e.site, w, h, c0, d0);
+    }
+    const EngJob* job = eng_job_lookup(e.a);
+    const bool self = !job;
+    if (self && !eng_pass_selftest()) return eng_count(EC_FB_NO_JOB), false;
+    if (sc.bad) {
+        eng_count(EC_FB_OP);
+        eng_abort_reason(eng_op_name(sc.bad_op));
+        return false;
+    }
+    if (self && !sc.ndraws) return eng_count(EC_FB_EMPTY), false;
+    if (rmode != Mode::Serial || !rec_cur || cmd != rec_cur->cmd || dump_on() || desc_heap_on())
+        return eng_count(EC_FB_MODE), false;
+    const bool mixed = eng_pass_mixed();
+    EngPassFormats pf{};
+    // (without mixing the rendering opened here takes secondaries only: a job replayed inline after all needs it ended)
+    const auto fall = [&](int why) {
+        if (!mixed) end_pass(cmd);
+        eng_count(why);
+        return false;
+    };
+    if (!draw_open_pass(cmd, s, !mixed, &pf)) return fall(EC_FB_NOPASS);
+    if (job && !eng_formats_equal(job->fmt, pf)) return fall(EC_FB_FORMATS);
+    {
+        const int t = job ? draw_tex_check(job->tex, job->ntex) : draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size());
+        if (t == 1) return fall(EC_FB_HAZARD);
+        if (t == 2) return fall(EC_FB_RESIDENT);
+    }
+    VkCommandBuffer cb = job ? job->cb : VK_NULL_HANDLE;
+    uint32_t ndraws = job ? job->ndraws : sc.ndraws;
+    if (self) {   // (HOS_ENG_PASS_SELFTEST: the job's records into a secondary of this recording, by today's draw path)
+        cb = eng_secondary(*rec_cur);
+        if (!cb) return fall(EC_FB_MODE);
+        VkCommandBufferInheritanceRenderingInfo ir{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};
+        ir.colorAttachmentCount = pf.ncolor, ir.pColorAttachmentFormats = pf.color;
+        ir.depthAttachmentFormat = pf.depth, ir.stencilAttachmentFormat = pf.stencil;
+        ir.rasterizationSamples = pf.samples ? pf.samples : VK_SAMPLE_COUNT_1_BIT;
+        VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+        ii.pNext = &ir;
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+        bi.pInheritanceInfo = &ii;
+        vkBeginCommandBuffer(cb, &bi);
+        eng_snap = s;
+        const size_t ubn = ub_updates.size();
+        draw_sec_enter();
+        VkCommandBuffer sec = cb;
+        replay(sec, s, p + size, sc.end, &calls, &calls);
+        const char* why = draw_sec_leave(false);
+        vkEndCommandBuffer(cb);
+        if (why) {   // (it left the pass: the state as before it, the job replayed inline from its CALL_BEGIN)
+            s = eng_snap;
+            if (ub_updates.size() > ubn) {
+                ub_updates.resize(ubn);
+                ub_list_epoch.fetch_add(1, std::memory_order_relaxed);
+            }
+            ub_gen++;
+            eng_abort_reason(why);
+            return fall(EC_FB_ABORT);
+        }
+    }
+    vkCmdExecuteCommands(cmd, 1, &cb);
+    draw_cmd_state_lost();
+    if (!mixed) end_pass(cmd), eng_count(EC_RESTARTS);   // (its rendering: the next inline draw begins another)
+    eng_count(EC_EXECUTED);
+    eng_count(EC_EXEC_DRAWS, ndraws);
+    if (!self) {   // (E3's job: its NVN records for their state and CPU-side work only)
+        eng_state_only = true;
+        replay(cmd, s, p + size, sc.end, &calls, &calls);
+        eng_state_only = false;
+        eng_count(EC_STATE_WALKS);
+    }
+    *resume = sc.end;
+    return true;
 }
 
 // ---- parallel replay: the threads and a command buffer's segments ----

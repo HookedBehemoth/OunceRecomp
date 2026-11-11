@@ -99,6 +99,7 @@ void desc_heap_take_registrations(std::vector<int>& slots, std::vector<uint32_t>
 uint64_t desc_heap_rec_value();
 /// The heaps bound on cmd before a heap draw or dispatch (again after any classic descriptor command)
 void desc_heap_bind(VkCommandBuffer cmd);
+void desc_heap_forget_bound();   // (E4: a secondary executed in the command buffer; its heaps are bound again at the next draw)
 /// After a heap draw: the classic bindings pushed before are gone (the command buffer is in heap mode)
 bool desc_heap_classic_since(VkCommandBuffer cmd);
 /// The draw's push data (offset 0: the classic push constants, then the heap's words)
