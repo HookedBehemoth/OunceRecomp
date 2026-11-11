@@ -2216,14 +2216,15 @@ bool sync_waits_on() {
     static const bool v = !getenv("RX_VK_SYNC_WAITS") || atoi(getenv("RX_VK_SYNC_WAITS")) != 0;
     return v && event_waits_on() && !async_on() && !dump_on();
 }
-/// (native-vk, plan step 6) RX_VK_TIMELINES=1: the NVN queues' timelines (vk_timelines.h). Needs the submitting thread's
+/// (native-vk, plan step 6) RX_VK_TIMELINES (on by default; =0 the old waits, whose fence can name the recording a submission
+/// started in and so report it done early): the NVN queues' timelines (vk_timelines.h). Needs the submitting thread's
 /// replay with its event waits and per-queue fences (the default)
 bool timelines_on() {
     static const bool v = [] {
         const char* e = getenv("RX_VK_TIMELINES");
-        if (!e || atoi(e) == 0) return false;
+        if (e && *e && atoi(e) == 0) return false;
         const bool ok = sync_waits_on() && !per_queue_fences_off() && rec_timeline != VK_NULL_HANDLE;
-        logf("vk: timelines: %s (RX_VK_TIMELINES=1): a timeline per NVN queue, CPU waits on it, nvnQueueWaitSync held on the host",
+        logf("vk: timelines: %s (RX_VK_TIMELINES): a timeline per NVN queue, CPU waits on it, nvnQueueWaitSync held on the host",
              ok ? "on" : "off: needs RX_VK_ASYNC, RX_VK_SYNC_WAITS, RX_VK_EVENT_WAITS and RX_VK_PER_QUEUE_FENCES as by default");
         return ok;
     }();
