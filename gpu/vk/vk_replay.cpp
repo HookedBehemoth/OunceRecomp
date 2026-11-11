@@ -1942,8 +1942,17 @@ VkCommandBuffer eng_secondary(Recording& r) {
     }
     return r.secs[r.nsec++];
 }
+bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
+                   const uint8_t** resume, uint64_t* view);
 bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
                   const uint8_t** resume) {
+    uint64_t view = 0;
+    const bool ran = eng_job_call_(cmd, s, p, size, e, calls, resume, &view);
+    if (view) eng_pass_result(view, ran);
+    return ran;
+}
+bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
+                   const uint8_t** resume, uint64_t* view) {
     eng_count(EC_CALLS);
     if (e.site == 0x807cd418u) return eng_count(EC_LAYER_CALLS), false;   // (the gate primary's call of the 9 layer lists)
     EngScan sc;
@@ -1951,6 +1960,7 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
     if (!sc.end) return eng_count(EC_FB_MALFORMED), false;
     if (!sc.view) return eng_count(EC_NO_VIEW), false;
     eng_count(EC_JOBS);
+    *view = sc.view;
     {   // (the pass table: the job's pass and the targets in force at its call)
         EngPassFormats f{};
         uint32_t w = 0, h = 0;
@@ -2021,7 +2031,7 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
         vkBeginCommandBuffer(cb, &bi);
         eng_snap = s;
         const size_t ubn = ub_updates.size();
-        draw_sec_enter();
+        draw_sec_enter(cb);
         eng_cond_seen = !s.render_enabled;   // (a job called with rendering off: all its draws gated)
         VkCommandBuffer sec = cb;
         replay(sec, s, p + size, sc.end, &calls, &calls);

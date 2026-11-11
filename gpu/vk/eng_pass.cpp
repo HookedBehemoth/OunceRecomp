@@ -41,6 +41,7 @@ struct Row {
     uint64_t color0 = 0, depth = 0;      // (the targets' guest addresses as last seen)
     int64_t notes = 0, fmt_changes = 0, size_changes = 0, color_changes = 0, depth_changes = 0;
     int64_t first = 0;                   // (the note count when it was first seen: its order)
+    int64_t executed = 0, fell_back = 0; // (its jobs: run from a secondary / from their NVN records)
 };
 std::shared_mutex table_mu;
 std::unordered_map<uint64_t, Row> table;
@@ -52,6 +53,7 @@ std::map<std::string, int64_t> aborts;
 
 thread_local bool sec_active = false;
 thread_local const char* sec_broken = nullptr;
+thread_local VkCommandBuffer sec_cmd = VK_NULL_HANDLE;
 
 const char* fmt_name(VkFormat f) {
     switch (f) {
@@ -84,10 +86,11 @@ void log_table(const char* why) {
         int n = 0;
         for (uint32_t i = 0; i < r->fmt.ncolor && i < 8 && n < 80; i++) n += snprintf(col + n, sizeof col - n, "%s%s", i ? "," : "", fmt_name(r->fmt.color[i]));
         logf("eng:   view %#llx site %#x: %ux%u, %u colour [%s], depth %s, stencil %s, %d samples; %lld notes, changes: formats %lld, "
-             "size %lld, colour 0 object %lld, depth object %lld (colour 0 %#llx, depth %#llx)",
+             "size %lld, colour 0 object %lld, depth object %lld (colour 0 %#llx, depth %#llx); jobs executed %lld, fell back %lld",
              (unsigned long long)k, r->site, r->w, r->h, r->fmt.ncolor, col, fmt_name(r->fmt.depth), fmt_name(r->fmt.stencil),
              (int)r->fmt.samples, (long long)r->notes, (long long)r->fmt_changes, (long long)r->size_changes, (long long)r->color_changes,
-             (long long)r->depth_changes, (unsigned long long)r->color0, (unsigned long long)r->depth);
+             (long long)r->depth_changes, (unsigned long long)r->color0, (unsigned long long)r->depth, (long long)r->executed,
+             (long long)r->fell_back);
     }
 }
 
@@ -110,7 +113,10 @@ bool eng_pass_mixed() {
 #ifdef VK_EXT_nested_command_buffer
         on |= nested_listed && nested_feat.nestedCommandBuffer && nested_feat.nestedCommandBufferRendering;
 #endif
-        if (env_on("HOS_ENG_PASS_NO_MIX")) on = false;   // (a test: an execute in a rendering of its own, as without the feature)
+        // (off by default: on RADV 26.2 a depth clear recorded inline (vkCmdClearAttachments) and then a secondary's depth draws
+        // in the same rendering drew shadow-acne stripes in the depth probes and the cascades (HF's bridge pillars; e4-impl.md);
+        // an execute in a rendering of its own was clean. HOS_ENG_PASS_MIX=1: mixed, where the device has it)
+        if (!env_on("HOS_ENG_PASS_MIX")) on = false;
         if (eng_passes_on())
             logf("eng: inline draws and secondaries %s one rendering (%s)", on ? "mixed in" : "NOT mixed in",
                  on ? (m7_listed ? "VK_KHR_maintenance7" : "VK_EXT_nested_command_buffer") : "each execute in a rendering of its own");
@@ -202,6 +208,11 @@ void eng_pass_note_ex(uint64_t view_key, const EngPassFormats& f, uint32_t site,
     r.notes++;
 }
 
+void eng_pass_result(uint64_t view_key, bool executed) {
+    std::unique_lock lk(table_mu);
+    auto it = table.find(view_key);
+    if (it != table.end()) (executed ? it->second.executed : it->second.fell_back)++;
+}
 void eng_count(int c, int64_t n) {
     if (c >= 0 && c < EC_N) counts[c].fetch_add(n, std::memory_order_relaxed);
 }
@@ -214,6 +225,7 @@ void eng_pass_report(double frames) {
     static int64_t reports;
     reports++;
     if (reports == 5) log_table("after 600 presents");
+    if (reports == 15) log_table("after 1800 presents");
     if (reports == 30) log_table("after 3600 presents");
     static int64_t last[EC_N];
     int64_t now[EC_N];
@@ -236,7 +248,11 @@ void eng_pass_report(double frames) {
 
 bool eng_sec_active() { return sec_active; }
 const char* eng_sec_broken() { return sec_active ? sec_broken : nullptr; }
-void eng_sec_set(bool active) { sec_active = active, sec_broken = nullptr; }
+void eng_sec_set(bool active, VkCommandBuffer secondary) { sec_active = active, sec_broken = nullptr, sec_cmd = active ? secondary : VK_NULL_HANDLE; }
+bool eng_sec_trap_on(VkCommandBuffer cmd, const char* why) {
+    if (!sec_active || cmd != sec_cmd) return false;
+    return eng_sec_trap(why);
+}
 bool eng_sec_trap(const char* why) {
     if (!sec_active) return false;
     if (!sec_broken) sec_broken = why;

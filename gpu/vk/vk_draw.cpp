@@ -4481,7 +4481,7 @@ void begin_pass(VkCommandBuffer cmd, const Targets& at) {
                 pass().height == at.height;
     for (int i = 0; i < at.n && same; i++) same = pass().color[i] == at.color_view[i];
     if (same) return;
-    if (eng_sec_trap("other targets")) return;   // (HOS_ENG_PASS_SELFTEST: a job's secondary is inside one rendering)
+    if (eng_sec_trap_on(cmd, "other targets")) return;   // (HOS_ENG_PASS_SELFTEST: a job's secondary is inside one rendering)
     end_pass(cmd);
     pass_start_barrier(cmd);   // (what the pass before wrote, and the transfers before it: vk_texture.cpp)
     work_since_barrier = true;
@@ -5736,7 +5736,7 @@ TLS_OBJECT(dump_mesh_indirect, std::vector<std::pair<uint64_t, uint64_t>>)   // 
 } // namespace
 void end_pass(VkCommandBuffer cmd) {
     if (!pass().open) return;
-    if (eng_sec_trap("the pass ended")) return;   // (HOS_ENG_PASS_SELFTEST: inside a job's secondary; the job is replayed inline)
+    if (eng_sec_trap_on(cmd, "the pass ended")) return;   // (HOS_ENG_PASS_SELFTEST: inside a job's secondary; the job is replayed inline)
     vkCmdEndRendering(cmd);
     pass().open = false;
     note_pass_end(cmd);   // (before the dumps and probes below: they record work, and the next pass's barrier is then a full one)
@@ -9688,10 +9688,10 @@ bool draw_open_pass(VkCommandBuffer cmd, NvnState& s, bool secondary_only, EngPa
     }
     return pass().open;
 }
-void draw_sec_enter() {
+void draw_sec_enter(VkCommandBuffer secondary) {
     sec_saved_pass() = pass();
     cmd_caches_reset();
-    eng_sec_set(true);
+    eng_sec_set(true, secondary);
 }
 const char* draw_sec_leave(bool restore) {
     const char* why = eng_sec_broken();

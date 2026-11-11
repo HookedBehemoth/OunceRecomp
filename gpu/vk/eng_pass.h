@@ -63,13 +63,17 @@ enum EngCount {
     EC_N
 };
 void eng_count(int c, int64_t n = 1);
+void eng_pass_result(uint64_t view_key, bool executed);   // (the pass table's row: its job ran from a secondary or not)
 void eng_abort_reason(const char* why);   // (self-test aborts by what left the pass, logged with the counters)
 void eng_pass_report(double frames);      // (every 120 presents, with the frame statistics)
 
 // ---- a secondary being recorded on this thread by today's draw path (the self-test): what would leave the pass breaks it ----
 bool eng_sec_active();
 const char* eng_sec_broken();          // (null: not broken)
-void eng_sec_set(bool active);
+void eng_sec_set(bool active, VkCommandBuffer secondary = VK_NULL_HANDLE);
+/// The same for a command on cmd: only the secondary's own (a barrier the draw path records into the recording's upload buffer
+/// while the secondary records is not one of the secondary's, and is recorded)
+bool eng_sec_trap_on(VkCommandBuffer cmd, const char* why);
 /// Called where the draw path would end the pass or record outside it: true while a secondary records (the caller does
 /// nothing then, the secondary is dropped and the job replayed inline)
 bool eng_sec_trap(const char* why);

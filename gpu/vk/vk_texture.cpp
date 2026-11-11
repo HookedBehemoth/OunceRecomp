@@ -2215,7 +2215,7 @@ void barrier_stats(int64_t* made, int64_t* left_out) {
 // (vk_work.h counts them), orders nothing the first did not: left out. The game's own barrier (end of a pass), then the next pass's
 // start barrier, then a dispatch's, were two or three in a row. RX_VK_BARRIER_DEDUPE_OFF=1: all recorded, as before.
 void full_barrier(VkCommandBuffer cmd, const char* why) {
-    if (eng_sec_trap("a barrier")) return;   // (HOS_ENG_PASS_SELFTEST: a job's secondary holds none: it is replayed inline)
+    if (eng_sec_trap_on(cmd, "a barrier")) return;   // (only the secondary's own: an upload buffer's barrier is recorded)   // (HOS_ENG_PASS_SELFTEST: a job's secondary holds none: it is replayed inline)
     static const bool off = getenv("RX_VK_BARRIER_DEDUPE_OFF") != nullptr;
     const bool dedupe = !off && !par_active.load(std::memory_order_relaxed);   // (a parallel replay's threads share command buffers and the count)
     if (dedupe && cmd == last_barrier_cmd && work_epoch.load(std::memory_order_relaxed) == last_barrier_epoch) {

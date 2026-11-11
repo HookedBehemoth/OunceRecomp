@@ -25,5 +25,10 @@ int main() {
     if (std::string(eng_sec_broken()) != "first") return 7;
     eng_sec_set(false);
     if (eng_sec_broken()) return 8;
+    VkCommandBuffer sec = reinterpret_cast<VkCommandBuffer>(uintptr_t(0x10)), other = reinterpret_cast<VkCommandBuffer>(uintptr_t(0x20));
+    eng_sec_set(true, sec);
+    if (eng_sec_trap_on(other, "the upload buffer") || eng_sec_broken()) return 9;   // (another command buffer's: recorded)
+    if (!eng_sec_trap_on(sec, "the secondary's") || !eng_sec_broken()) return 10;
+    eng_sec_set(false);
     printf("PASS\n");
 }

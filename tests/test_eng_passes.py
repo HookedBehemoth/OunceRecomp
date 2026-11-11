@@ -62,14 +62,16 @@ def main():
                "NOP_COPY_T2B", "NOP_COPY_T2T"):
         need(op + ":" not in allowed and op + " " not in allowed.replace(op + "_", ""), op + " is let into a job's secondary")
     need("if (!sc.bad) sc.bad = true" in scan[scan.index("default:"):], "an op the scan does not know is let through")
-    need('eng_sec_trap("the pass ended")' in block(draw, "void end_pass(VkCommandBuffer cmd) {"), "end_pass is not trapped")
+    need('eng_sec_trap_on(cmd, "the pass ended")' in block(draw, "void end_pass(VkCommandBuffer cmd) {"), "end_pass is not trapped")
     bp = block(draw, "void begin_pass(VkCommandBuffer cmd, const Targets& at) {")
-    need(bp.index("eng_sec_trap(") < bp.index("end_pass(cmd);"), "begin_pass on other targets is not trapped")
-    need("eng_sec_trap(" in block(tex, "void full_barrier(VkCommandBuffer cmd, const char* why) {"), "full_barrier is not trapped")
+    need(bp.index("eng_sec_trap_on(cmd,") < bp.index("end_pass(cmd);"), "begin_pass on other targets is not trapped")
+    fb = block(tex, "void full_barrier(VkCommandBuffer cmd, const char* why) {")
+    need("eng_sec_trap_on(cmd," in fb and "eng_sec_trap(" not in fb,
+         "full_barrier is not trapped, or trapped for every command buffer (the upload buffer's barriers recorded while a secondary records)")
     loop = block(replay, "void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p")
     need("if (eng_sec_broken()) return;" in loop, "the replay goes on recording a broken secondary")
     need("!eng_sec_active() && !eng_state_only" in loop, "a submission is split inside a job's secondary")
-    job = block(replay, "const uint8_t** resume) {")
+    job = block(replay, "const uint8_t** resume, uint64_t* view) {")
     need(job.index("draw_sec_leave(") < job.index("vkCmdExecuteCommands("), "a secondary is executed before its recording ended")
     need("s = eng_snap;" in job and "ub_updates.resize(ubn)" in job, "a broken secondary leaves the state it changed")
 

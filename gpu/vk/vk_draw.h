@@ -59,7 +59,7 @@ void draw_pass_info(NvnState& s, EngPassFormats* f, uint32_t* w, uint32_t* h, ui
 /// (E4) the rendering of the state's targets open on cmd (secondary_only: one of its own for an execute); false: none
 bool draw_open_pass(VkCommandBuffer cmd, NvnState& s, bool secondary_only, EngPassFormats* f);
 /// (E4, HOS_ENG_PASS_SELFTEST) a job's secondary recorded by this path from here: what would leave the pass breaks it
-void draw_sec_enter();
+void draw_sec_enter(VkCommandBuffer secondary);
 /// (E4) back on the primary: the reason it broke (null: whole); the pass as before it when restore or broken
 const char* draw_sec_leave(bool restore);
 /// (E4) a secondary executed: what the draw path kept bound on the command buffer is gone
