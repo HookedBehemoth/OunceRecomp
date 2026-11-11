@@ -101,7 +101,11 @@ struct HeapEntry {
     VkImageView view = VK_NULL_HANDLE;   // (what the heap holds, or will once its copy runs; null: a null descriptor)
     uint64_t last_value = 0;    // (the submission value of the last recording that used it)
     uint32_t last_rec = 0;      // (that recording's serial)
+    uint32_t write_rec = 0;     // (RX_VK_DESC_HEAP_CHECK's log: the recording serial and epoch it was last resolved in)
+    uint32_t write_epoch = 0;
 };
+/// The recording serial (RX_VK_DESC_HEAP_CHECK's log)
+uint32_t desc_heap_rec_serial();
 HeapEntry& desc_heap_entry(uint32_t region, uint32_t slot);
 struct HeapSamplerEntry {
     uint32_t ver = 0;
@@ -136,7 +140,7 @@ void desc_heap_entry_texture(uint32_t region, uint32_t slot, uint32_t old_id, ui
 /// Counters (RX_VK_DESC_HEAP_LOG, the frame line)
 enum HeapCount {
     HC_DRAWS, HC_DISPATCHES, HC_CLASSIC, HC_SCANS, HC_RESOLVES, HC_IN_PLACE, HC_UPLOAD, HC_IN_STREAM, HC_SAMPLER_WRITES,
-    HC_REG_INVALID, HC_REG_HOT, HC_RETIRED, HC_RING_FULL, HC_CHECK_BAD, HC_CHECK_DRAWS, HC_BANK_UPLOADS, HC_BIG_ID, HC_BORDER, HC_TWO_VIEWS, HC_BLOCKS_KEPT, HC_BUF_CACHED, HC_BUF_WRITTEN, HC_STAGES_KEPT, HC_TOUCHES,
+    HC_REG_INVALID, HC_REG_HOT, HC_RETIRED, HC_RING_FULL, HC_CHECK_BAD, HC_CHECK_DRAWS, HC_BANK_UPLOADS, HC_BIG_ID, HC_BORDER, HC_TWO_VIEWS, HC_BLOCKS_KEPT, HC_BUF_CACHED, HC_BUF_WRITTEN, HC_STAGES_KEPT, HC_TOUCHES, HC_CHECK_RACED,
     HC_COUNT
 };
 void desc_heap_count(HeapCount c, int64_t n = 1);

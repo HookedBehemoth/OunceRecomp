@@ -2330,6 +2330,7 @@ thread_local bool heap_build = false;            // (build_descriptors is buildi
 thread_local const HeapProgram* heap_prog = nullptr;
 thread_local size_t heap_tex_i = 0;              // (the texture element being built)
 TLS_OBJECT(heap_handles, std::vector<uint32_t>)  // (per texture element: the handle read, for the pushed ones)
+TLS_OBJECT(heap_elem_kept, std::vector<uint8_t>)  // (per texture element: 1 kept from the stage's last build (heap_stage_kept), 0 scanned)
 struct HeapCopy { VkBuffer src; uint64_t src_off; VkBuffer dst; uint64_t dst_off; uint32_t n; };
 TLS_OBJECT(heap_instream, std::vector<HeapCopy>)   // (entries the recording used before, rewritten: copied in the stream before the draw)
 // (the last heap draw's push data: a draw that keeps its descriptors pushes it again)
@@ -2468,6 +2469,7 @@ VkImageView heap_texture(uint32_t handle, const HeapTex& ht, VkImageViewType vt,
             desc_heap_entry_texture(ht.region, slot, e.tex_id, id);
             e.tex = id ? tex : nullptr, e.tex_id = id, e.sampling = true;
             e.ver = ver, e.gen = gen, e.epoch = epoch, e.valid = true;
+            e.write_rec = desc_heap_rec_serial(), e.write_epoch = epoch;
         } else {
             e.valid = false;
         }
@@ -2620,6 +2622,7 @@ bool heap_stage_kept(const NvnState& s, const Program& p, const Stage& st, uint3
         w.pImageInfo = &dw().imgs.back();
         dw().writes.push_back(w);
         heap_handles().push_back(t.handle), heap_tex_i++;
+        heap_elem_kept().push_back(1);
     }
     desc_heap_count(HC_STAGES_KEPT);
     return true;
@@ -2681,6 +2684,22 @@ void heap_check(const NvnState& s, const Program& p, const HeapProgram& hp, cons
                 if (!bad && gpu_word != handle) bad = "the bank's word is not the handle read";
             }
             const uint32_t slot = handle & 0xFFFFF;
+            // (a slot the game registered again since this draw's scan (another thread of the game registers while the replay
+            // records): the classic lookup asked now resolves the new registration, which neither path's descriptors for this draw
+            // hold (both resolve at the build). Not a mismatch: the next draw's scan takes the new one)
+            if (slot && slot < kHeapSlots && desc_heap_entry(ht.region, slot).ver != texture_slot_version((int)slot)) {
+                desc_heap_count(HC_CHECK_RACED);
+                continue;
+            }
+            // (the classic lookup's kept hit as it was before this check asks it: whether the check itself resolves the slot anew)
+            const VkImageViewType cvt = view_type(d.type);
+            const uint64_t hkey = (uint64_t)slot | (uint64_t)cvt << 20 | (uint64_t)ViewUse::Sample << 28 | (uint64_t)VK_FORMAT_UNDEFINED << 32;
+            HandleHit before{};
+            bool had = false;
+            if (const auto hit = handle_hits().find(hkey); hit != handle_hits().end()) before = hit->second, had = true;
+            const bool before_stands = had && before.version == texture_slot_version((int)slot) &&
+                                       handle_hit_stands(before, texture_serial_on() ? texture_miss_generation() : texture_destroy_generation(),
+                                                         texture_serial_on());
             Texture* old_tex = nullptr;
             const VkImageView old_view =
                 handle ? texture_view_of(handle, view_type(d.type), ViewUse::Sample, VK_FORMAT_UNDEFINED, &old_tex) : VK_NULL_HANDLE;
@@ -2691,11 +2710,32 @@ void heap_check(const NvnState& s, const Program& p, const HeapProgram& hp, cons
             if (bad) {
                 desc_heap_count(HC_CHECK_BAD);
                 static std::atomic<int> told{0};
-                if (told++ < 60)
+                if (told++ < 60) {
                     logf("vk: descriptor heap CHECK: program %016llx stage %d texture %zu (%s c%u+%#x): handle %#x (GPU reads %#x): %s "
                          "(classic view %p texture #%u, heap view %p)", (unsigned long long)p.key, st.nvn_stage, t - 1,
                          ht.kind == HeapTex::Indirect ? "indirect" : "pushed", d.cbuf_index, d.cbuf_offset, handle, gpu_word, bad,
                          (void*)old_view, old_tex ? old_tex->id : 0u, (void*)heap_view);
+                    if (slot && slot < kHeapSlots) {
+                        // (both sides: the entry, the classic hit before the check asked, and the registration resolved afresh)
+                        const HeapEntry& e = desc_heap_entry(ht.region, slot);
+                        nvn_tex tt;
+                        nvn_view vv;
+                        bool hv = false;
+                        Texture* fresh = nullptr;
+                        if (texture_of((int)slot, &tt, &vv, &hv)) { ParLock lk; fresh = texture_get(&tt, true); }
+                        logf("vk: descriptor heap CHECK:   slot %#x view type %d region %u, %s; slot version now %u; gens now: destroy %llu miss %llu "
+                             "epoch %u rec %u; entry: valid %d ver %u gen %llu texture #%u (alive %d) written rec %u epoch %u, last used rec %u; "
+                             "classic hit before the check: %s (ver %u gen %llu texture #%u alive %d epoch %u); classic now texture #%u (alive %d); "
+                             "the registration now resolves to texture #%u",
+                             slot, (int)cvt, ht.region, t - 1 < heap_elem_kept().size() && heap_elem_kept()[t - 1] ? "kept (cut 1)" : "scanned",
+                             texture_slot_version((int)slot), (unsigned long long)texture_destroy_generation(),
+                             (unsigned long long)texture_miss_generation(), texture_epoch(), desc_heap_rec_serial(), e.valid, e.ver,
+                             (unsigned long long)e.gen, e.tex_id, e.tex_id ? (int)texture_alive(e.tex_id) : -1, e.write_rec, e.write_epoch,
+                             e.last_rec, had ? (before_stands ? "standing" : "STALE") : "NONE", before.version, (unsigned long long)before.destroy_gen,
+                             before.tex_id, before.tex ? (int)texture_alive(before.tex_id) : -1, before.tex_epoch, old_tex ? old_tex->id : 0u,
+                             old_tex ? (int)texture_alive(old_tex->id) : -1, fresh ? fresh->id : 0u);
+                    }
+                }
             }
         }
 }
@@ -2892,7 +2932,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
     dw().prog = &p;
 #ifdef VK_EXT_descriptor_heap
     heap_tex_i = 0;
-    if (heap_build) heap_handles().clear();
+    if (heap_build) heap_handles().clear(), heap_elem_kept().clear();
 #endif
     desc_fp().clear(), desc_fp_dummy = false;   // (RX_VK_DESC_SLOTGEN: the samplers' generation is read before the first handle,
     desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
@@ -3221,7 +3261,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 VkImageView view = heap_build ? heap_texture(handle, heap_prog->tex[std::min(heap_tex_i, heap_prog->tex.size() - 1)], vt, &tex)
                                  : handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex)
                                           : VK_NULL_HANDLE;
-                if (heap_build) heap_handles().push_back(handle), heap_tex_i++;
+                if (heap_build) heap_handles().push_back(handle), heap_elem_kept().push_back(0), heap_tex_i++;
 #else
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex)
                                           : VK_NULL_HANDLE;

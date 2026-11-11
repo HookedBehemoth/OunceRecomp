@@ -194,7 +194,8 @@ const char* const kCountNames[HC_COUNT] = {"draws", "dispatches", "classic", "sc
                                            "in-stream copies", "sampler writes", "registrations invalidated", "of them hot",
                                            "retired", "ring full", "CHECK mismatches", "CHECK draws", "bank uploads",
                                            "ids past the regions", "custom borders as black", "slots sampled as a second view type", "ring blocks kept", "buffer descriptors from the cache",
-                                           "buffer descriptors written", "stages' textures kept", "texture touches"};
+                                           "buffer descriptors written", "stages' textures kept", "texture touches",
+                                           "CHECK: slots registered again during the draw"};
 
 uint64_t mix64(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
@@ -264,6 +265,9 @@ bool same(const ProgEntry& e, const Program& p) {
 
 std::unique_ptr<HeapProgram> make_program(const Program& p, const char** why) {
     if (p.fallback) return *why = "the mesh fallback", nullptr;
+    // (RX_VK_DESC_HEAP_NO_INDIRECT=1: every texture handle pushed as the CPU read it, none read by the driver from the bank: the
+    // GPU-side cost of the indirect index (a dependent load before each texture's descriptor), measured against it)
+    static const bool no_indirect = getenv("RX_VK_DESC_HEAP_NO_INDIRECT") && atoi(getenv("RX_VK_DESC_HEAP_NO_INDIRECT")) != 0;
     auto hp = std::make_unique<HeapProgram>();
     const uint32_t base = desc_heap_push_base();
     uint32_t push = base + 8;   // (the ring index, then the banks' addresses, then pushed handles)
@@ -326,7 +330,7 @@ std::unique_ptr<HeapProgram> make_program(const Program& p, const char** why) {
                 m.sourceData.constantOffset.samplerHeapOffset = smp_off;
                 m.sourceData.constantOffset.samplerHeapArrayStride = (uint32_t)ssz;
                 maps.push_back(m);
-            } else if ((d.cbuf_index == 0 || d.cbuf_index == 2) && !d.has_secondary && d.handle_program == ~0u && d.cbuf_offset + 4 <= 0xA00 &&
+            } else if (!no_indirect && (d.cbuf_index == 0 || d.cbuf_index == 2) && !d.has_secondary && d.handle_program == ~0u && d.cbuf_offset + 4 <= 0xA00 &&
                        !(d.cbuf_offset & 3)) {
                 // (a driver bank's word: the bank uploaded for the draw, its address in push data, the driver reads the handle)
                 t.kind = HeapTex::Indirect;
@@ -569,6 +573,9 @@ void desc_heap_push(VkCommandBuffer cmd, const void* data, uint32_t bytes) {
     p_push_data(cmd, &pi);
 }
 
+uint32_t desc_heap_rec_serial() {
+    return rec_serial;
+}
 HeapEntry& desc_heap_entry(uint32_t region, uint32_t slot) {
     return entries[region][slot];
 }
