@@ -103,6 +103,15 @@ work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` (output `work/sa
   (byte-range readback waits), `tt` (transient targets, step 4), `rt` (stable render-target slots, step 4e: the
   current best). Older ones were removed 2026-11-11.
 
+**Parallel work (2026-11-11).** `RUN=timing scripts/run-vk.sh ...` takes the GPU lock exclusively (fps, launch time,
+anything that may hang the GPU: a reset kills every run beside it); `RUN=check` takes it shared, at most `RUN_SLOTS=2`
+runs at once, each on a private reflink copy of the build folder (caches not raced; `frames_trace.csv` copied into the
+run). Do not wrap either in flock (plain `flock work/run.lock scripts/run-vk.sh` still works, exclusive). Two check runs
+fit (trial: 16.1 of 16 GB VRAM with 8 GB spilled to GTT, 4.2 GB RAM left, ~36 fps each), three do not.
+`scripts/agent-worktree.sh new <name>` gives an agent its own worktree (work/wt/<name>, branch agent/<name>) with its
+own `work/sa/gen` and `work/sa/build` (reflink copies) and the shared object cache: a host-only build in ~10 s;
+`land` rebases and fast-forwards, `drop` removes it.
+
 **Run.** `OVERLAY=work/overlay/chisel_kokiri EXE=work/sa/zstd/hookshot scripts/run-vk.sh <name> <seconds> -- [VAR=..]`:
 straight into Kokiri Forest (no title, no intro), headless, muted, shots every `SHOT_EVERY` presents in
 `work/runs/<name>/shots`, `timeline.txt` (second, presents, RSS MB), `log.txt`. It sets the RDNA2 workarounds
