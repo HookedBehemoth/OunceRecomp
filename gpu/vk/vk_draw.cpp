@@ -7116,7 +7116,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_SCOPE(FT_DYN);
         // (RX_VK_PACKETS: the draw before's dynamic state stands when nothing it is packed from was set since; its pack and compare skipped)
         const bool dmesh = d.mesh && !p.fallback;
-        const bool dyn_kept = pkm && last_dyn_valid && dyn_fast.on && !dump_on() && pkm->dyn.same(&s, &p, (int)topo, dmesh, kPkDyn);
+        // (keyed as dyn_pack keys it: by what the program makes of the write masks, not the program)
+        static const bool dyn_by_program = getenv("RX_VK_DYN_PROG_KEY") != nullptr;
+        const void* const dyn_prog = pkm && !dyn_by_program ? (const void*)(uintptr_t)(program_wm_sig(p) | 1ull << 63) : &p;
+        const bool dyn_kept = pkm && last_dyn_valid && dyn_fast.on && !dump_on() && pkm->dyn.same(&s, dyn_prog, (int)topo, dmesh, kPkDyn);
         if (dyn_kept && !pk_check) {
             pk_n[PKC_DYN]++;
             pass().wm_or |= dyn_fast.wm0, pass().wm_n = dyn_fast.wm_n;   // (as dynamic_state's own path for a repeat)
@@ -7131,7 +7134,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
                     pk_mismatch("dynamic state", p);
             }
             dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback);
-            if (pkm) pkm->dyn.keep(&s, &p, (int)topo, dmesh);
+            if (pkm) pkm->dyn.keep(&s, dyn_prog, (int)topo, dmesh);
         }
         if (so) {
             // (RX_VK_PACKETS: the vertex input stands while the layouts, the program and the samples do)
