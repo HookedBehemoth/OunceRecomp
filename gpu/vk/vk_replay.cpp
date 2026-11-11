@@ -4337,7 +4337,13 @@ void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) {
     if (skipped) *skipped = v[1];
     if (pipelines) *pipelines = v[3];
 }
-void register_texture_locked(int id, const nvn_tex* t, const nvn_view* v) { register_texture(id, t, v), desc_heap_registered(id); }
+void register_texture_locked(int id, const nvn_tex* t, const nvn_view* v) {
+    // (RX_VK_DESC_HEAP_LOG: the game thread's time in it, the renderer's part of a registration: the slot table and the heap's list)
+    if (!desc_heap_log()) return register_texture(id, t, v), desc_heap_registered(id);
+    const auto t0 = std::chrono::steady_clock::now();
+    register_texture(id, t, v), desc_heap_registered(id);
+    desc_heap_registration_time(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+}
 void do_program_released(const nvn_prog* p) {
     std::lock_guard lk(replay_mu);   // (the replay may be translating it)
     program_released(p);
@@ -4446,7 +4452,7 @@ void replay_thread_main() {
             do_program_released(&j.prog);
             break;
         case JOB_REGISTER_TEXTURE: register_texture_copy(j.id, j.tex, j.has_view ? &j.view : nullptr), desc_heap_registered(j.id); break;
-        case JOB_REGISTER_SAMPLER: register_sampler_copy(j.id, j.samp); break;
+        case JOB_REGISTER_SAMPLER: register_sampler_copy(j.id, j.samp), desc_heap_sampler_registered(j.id); break;
         case JOB_EVENT_SIGNAL:   // (the CPU set an event: the stopped ones may go on)
             ev_values[j.ev_gpu] = j.ev_value;
             burst_begin(0);
@@ -4685,7 +4691,7 @@ void event_signal_queued(uint64_t gpu, uint32_t value) {
     enqueue(std::move(j));
 }
 void register_sampler_queued(int id, const nvn_samp_par* p) {
-    if (!async_on() || register_at_once()) return register_sampler(id, p);
+    if (!async_on() || register_at_once()) return register_sampler(id, p), desc_heap_sampler_registered(id);
     if (id < 0 || id >= (1 << 12) || !p) return;
     p = (const nvn_samp_par*)descriptor_ok(p, sizeof(nvn_samp_par));
     if (!p) return;

@@ -2467,12 +2467,19 @@ VkSampler heap_sampler(uint32_t id, bool compare) {
 
 /// (build_descriptors, a heap draw) a texture element: its heap entries made current for the handle as read now, the texture
 /// touched once a submission as texture_view_of does (its contents, its age). Returns the view the entry holds (null: none)
+/// (HOS_ENG_REG) the view types each slot was sampled as (bit = region): a registration writes these and its target's
+uint8_t* eng_reg_regions() {
+    static uint8_t* m = new uint8_t[kHeapSlots]();
+    return m;
+}
 VkImageView heap_texture(uint32_t handle, const HeapTex& ht, VkImageViewType vt, Texture** tex_out) {
     desc_heap_count(HC_SCANS);
     *tex_out = nullptr;
     if (ht.kind == HeapTex::Null) return VK_NULL_HANDLE;   // (no handle: a null descriptor, as the classic path's dummy)
     const uint32_t slot = handle & 0xFFFFF;
-    heap_sampler(handle >> 20, ht.compare);
+    // (HOS_ENG_REG: the sampler entries are written at registration; only one never written is made here)
+    static const bool e1 = eng_reg_on();
+    if (!e1 || !desc_heap_sampler_entry(ht.compare, handle >> 20).valid) heap_sampler(handle >> 20, ht.compare);
     if (slot >= kHeapSlots) {   // (the GPU reads another region's entry or the zero tail: as unregistered)
         desc_heap_count(HC_BIG_ID);
         static std::atomic<int> told{0};
@@ -2485,7 +2492,9 @@ VkImageView heap_texture(uint32_t handle, const HeapTex& ht, VkImageViewType vt,
     const bool serial = texture_serial_on();
     const uint64_t gen = serial ? texture_miss_generation() : texture_destroy_generation();
     const uint32_t epoch = texture_epoch();
-    const bool stands = e.valid && e.ver == ver && (serial ? (e.tex ? texture_alive(e.tex_id) : e.gen == gen) : e.gen == gen);
+    // (HOS_ENG_REG: what the entry holds is what the GPU reads; the slot's registrations since are written at the next submission's
+    // start, so its registration version is not asked here)
+    const bool stands = e.valid && (e1 || e.ver == ver) && (serial ? (e.tex ? texture_alive(e.tex_id) : e.gen == gen) : e.gen == gen);
     // (RX_VK_DESC_HEAP_TOUCH_ENTRY=1: as first made, an entry standing is resolved again once a submission for its texture's touch)
     static const bool touch_by_entry = getenv("RX_VK_DESC_HEAP_TOUCH_ENTRY") && atoi(getenv("RX_VK_DESC_HEAP_TOUCH_ENTRY")) != 0;
     if (stands && e.epoch != epoch && !touch_by_entry) {
@@ -2511,6 +2520,7 @@ VkImageView heap_texture(uint32_t handle, const HeapTex& ht, VkImageViewType vt,
         // (resolved anew, or touched once this submission: the classic lookup, which caches and touches; slot 0 is never a texture
         // here (handle 0, nothing bound, reads it): the classic path samples handle 0 as the dummy)
         desc_heap_count(HC_RESOLVES);
+        if (e1) desc_heap_count(HC_E1_LAZY), eng_reg_regions()[slot] |= (uint8_t)(1u << ht.region);
         Texture* tex = nullptr;
         const VkImageView view = slot ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex) : VK_NULL_HANDLE;
         bool ok = true;
@@ -2664,14 +2674,16 @@ uint64_t heap_dgen() {
 bool heap_stage_kept(const NvnState& s, const Program& p, const Stage& st, uint32_t& binding) {
     if (!heap_stage_keep_on() || st.info.texture_descriptors.empty()) return false;
     const HeapKeptStage& c = heap_kept_slot(p, st);
+    // (HOS_ENG_REG: the entries are the truth, kept current by the registrations: neither the slots' versions nor the samplers' asked)
+    static const bool e1 = eng_reg_on();
     if (c.p != &p || c.key != p.key || c.variant != p.variant || c.rec != heap_rec_gen || c.gen != heap_stage_gen(s, st) ||
-        c.dgen != heap_dgen() || c.sgen != sampler_registrations_generation() || c.el.size() != st.info.texture_descriptors.size())
+        c.dgen != heap_dgen() || (!e1 && c.sgen != sampler_registrations_generation()) || c.el.size() != st.info.texture_descriptors.size())
         return false;
     const bool serial = texture_serial_on();
     for (const HeapKeptTex& t : c.el) {
         if (t.slot && t.slot < kHeapSlots) {   // (and the entry as kept: another draw's scan may have resolved it anew)
             const HeapEntry& e = desc_heap_entry(t.region, t.slot);
-            if (texture_slot_version((int)t.slot) != t.ver || !e.valid || e.view != t.entry_view || e.tex_id != t.tex_id) return false;
+            if ((!e1 && texture_slot_version((int)t.slot) != t.ver) || !e.valid || e.view != t.entry_view || e.tex_id != t.tex_id) return false;
         }
         if (serial && t.tex && !texture_alive(t.tex_id)) return false;
     }
@@ -2714,14 +2726,133 @@ void heap_stage_keep(const NvnState& s, const Program& p, const Stage& st, size_
     c.p = &p, c.key = p.key, c.variant = p.variant, c.rec = heap_rec_gen, c.gen = heap_stage_gen(s, st), c.dgen = heap_dgen();
     c.sgen = sampler_registrations_generation();
 }
+/// (HOS_ENG_REG) the view type region a registration is sampled as first: its view's target, else its texture's
+uint32_t eng_reg_primary_region(const nvn_tex& t, const nvn_view* v) {
+    switch (v && v->set_target ? (int)v->target : (int)t.d.target) {
+    case NVN_TEXTURE_TARGET_1D: return VK_IMAGE_VIEW_TYPE_1D;
+    case NVN_TEXTURE_TARGET_3D: return VK_IMAGE_VIEW_TYPE_3D;
+    case NVN_TEXTURE_TARGET_1D_ARRAY: return VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+    case NVN_TEXTURE_TARGET_2D_ARRAY: case NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY: return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    case NVN_TEXTURE_TARGET_CUBEMAP: return VK_IMAGE_VIEW_TYPE_CUBE;
+    case NVN_TEXTURE_TARGET_CUBEMAP_ARRAY: return VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+    default: return VK_IMAGE_VIEW_TYPE_2D;   // (2D, rectangle, 2D multisample)
+    }
+}
+/// (HOS_ENG_REG, a new submission's start, before any of its draws) the game's registrations since the last submission written into
+/// the heap at their pool ids:
+/// - a texture slot: for the view types it was sampled as and its target's, the view of its texture when the texture is resident
+///   (made, with contents: uploaded or rendered); a texture not made yet keeps a null entry, left invalid: the first draw that reads
+///   the slot makes it (upload budget, deferral and creation as the classic lookup has them) and writes the entry there
+/// - a retired texture: its entries nulled
+/// - a sampler id: its plain and compare entries
+/// An entry that work in flight used is written by the recording's upload command buffer (after that work, before this recording),
+/// otherwise in place. The texture behind an entry is touched (contents, age) by the first draw of the submission that reads it
+void eng_reg_drain() {
+    static thread_local std::vector<int> slots, samplers;
+    static thread_local std::vector<uint32_t> gone, where;
+    desc_heap_take_registrations(slots, gone, samplers);
+    if (slots.empty() && gone.empty() && samplers.empty()) return;
+    const bool timed = desc_heap_log();
+    const auto t0 = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    const bool serial = texture_serial_on();
+    const uint64_t gen = serial ? texture_miss_generation() : texture_destroy_generation();
+    auto put_image = [&](uint32_t region, uint32_t slot, HeapEntry& e, VkImageView view) {
+        uint8_t d[64];
+        if (!desc_heap_encode_image(view, false, d)) return false;
+        const HeapPut kind = desc_heap_put_kind(e.last_value, e.last_rec);
+        heap_put(desc_heap_resource_buffer(), desc_heap_resource_map(), desc_heap_image_offset(region, slot), d, 64, kind);
+        if (kind != HeapPut::InPlace) desc_heap_count(HC_E1_HOT), desc_heap_use(e);   // (the copy is this recording's: what follows orders after it)
+        e.view = view;
+        return true;
+    };
+    for (uint32_t id : gone) {
+        desc_heap_entries_of(id, where);
+        for (uint32_t rs : where) {
+            const uint32_t region = rs >> 20, slot = rs & 0xFFFFF;
+            HeapEntry& e = desc_heap_entry(region, slot);
+            if (e.tex_id != id) continue;
+            if (e.view) put_image(region, slot, e, VK_NULL_HANDLE);
+            desc_heap_entry_texture(region, slot, id, 0);
+            e.tex = nullptr, e.tex_id = 0, e.valid = false;
+            desc_heap_count(HC_E1_NULLED);
+        }
+    }
+    static uint32_t* seen = new uint32_t[kHeapSlots]();
+    static uint32_t stamp = 0;
+    stamp++;
+    uint8_t* regions = eng_reg_regions();
+    for (int sid : slots) {
+        if (sid <= 0 || (uint32_t)sid >= kHeapSlots || seen[sid] == stamp) continue;   // (slot 0 is never written: handle 0)
+        const uint32_t id = (uint32_t)sid;
+        seen[id] = stamp;
+        desc_heap_count(HC_E1_SLOTS);
+        const uint32_t ver = texture_slot_version((int)id);   // (read first: a registration after it is taken at the next drain)
+        nvn_tex t;
+        nvn_view v;
+        bool hv = false;
+        const bool known = texture_of((int)id, &t, &v, &hv);
+        Texture* tex = known ? texture_find(&t) : nullptr;
+        const bool resident = tex && (tex->uploaded || tex->gpu_written);
+        if (!known) desc_heap_count(HC_E1_UNREG);
+        else if (!resident) desc_heap_count(HC_E1_PENDING);
+        uint32_t mask = regions[id];
+        if (known) mask |= 1u << eng_reg_primary_region(t, hv ? &v : nullptr), regions[id] = (uint8_t)mask;
+        for (uint32_t r = 0; r < kHeapRegions; r++) {
+            if (!(mask >> r & 1)) continue;
+            HeapEntry& e = desc_heap_entry(r, id);
+            VkImageView view = VK_NULL_HANDLE;
+            if (resident) {
+                ParLock lk;
+                view = texture_view(tex, &t, hv ? &v : nullptr, (VkImageViewType)r, ViewUse::Sample, &last_view_format, VK_FORMAT_UNDEFINED);
+            }
+            if (view != e.view) {
+                if (!put_image(r, id, e, view)) { e.valid = false; continue; }
+                desc_heap_count(HC_E1_WRITTEN);
+            } else if (view) {
+                desc_heap_count(HC_E1_SAME);
+            }
+            const uint32_t nid = view ? tex->id : 0u;
+            desc_heap_entry_texture(r, id, e.tex_id, nid);
+            e.tex = nid ? tex : nullptr, e.tex_id = nid, e.sampling = true;
+            e.ver = ver, e.gen = gen, e.epoch = ~0u;   // (touched by the first draw that reads it)
+            e.valid = view != VK_NULL_HANDLE;           // (not resident: the first draw that reads it resolves it)
+            if (e.valid) e.write_rec = desc_heap_rec_serial(), e.write_epoch = texture_epoch();
+        }
+    }
+    for (int sid : samplers) {
+        if (sid < 0 || sid >= (int)kHeapSamplers) continue;
+        for (int cmp = 0; cmp < 2; cmp++) {
+            HeapSamplerEntry& e = desc_heap_sampler_entry(cmp != 0, (uint32_t)sid);
+            const uint32_t ver = sampler_slot_version(sid);
+            const VkSampler sm = sampler_for(sid, cmp != 0);
+            if (!sm) continue;
+            if (sm != e.sampler) {
+                uint8_t d[16];
+                if (!desc_heap_encode_sampler(sm, d)) continue;
+                // (the draws do not mark the sampler entries they read with HOS_ENG_REG: always after the work in flight)
+                heap_put(desc_heap_sampler_buffer(), desc_heap_sampler_map(), desc_heap_sampler_offset(cmp != 0, (uint32_t)sid), d, 16,
+                         HeapPut::Upload);
+                desc_heap_use(e);
+                e.sampler = sm;
+                desc_heap_count(HC_E1_SAMPLERS);
+            }
+            e.ver = ver, e.valid = true;
+        }
+    }
+    if (timed)
+        desc_heap_count(HC_E1_DRAIN_US,
+                        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
+}
 void heap_recording_begun(int slot, uint64_t value) {
     if (!desc_heap_on()) return;
     heap_rec_gen++;   // (the blocks kept by program are the last recording's: its ring is another)
-    desc_heap_begin_recording(slot, value, replay_completed_value());
+    const bool new_submission = desc_heap_begin_recording(slot, value, replay_completed_value());
     for (auto& row : heap_banks())
         for (HeapBank& c : row) c = HeapBank{};
     heap_last_prog = nullptr;
     heap_instream().clear();
+    static const bool e1 = eng_reg_on();
+    if (e1 && new_submission) eng_reg_drain();
 }
 /// (RX_VK_DESC_HEAP_CHECK=1) the heap draw's textures and samplers resolved the classic way too, and its Indirect handles read back
 /// from the bank the GPU reads: any difference is logged (60 lines) and counted
@@ -2750,10 +2881,16 @@ void heap_check(const NvnState& s, const Program& p, const HeapProgram& hp, cons
             // (a slot the game registered again since this draw's scan (another thread of the game registers while the replay
             // records): the classic lookup asked now resolves the new registration, which neither path's descriptors for this draw
             // hold (both resolve at the build). Not a mismatch: the next draw's scan takes the new one)
-            if (slot && slot < kHeapSlots && desc_heap_entry(ht.region, slot).ver != texture_slot_version((int)slot)) {
+            // (HOS_ENG_REG: the entries take registrations at a submission's start: compared all the same, a difference of a slot
+            // or sampler registered (or finalized) since its entry was written counted as that race, any other as a mismatch)
+            static const bool e1 = eng_reg_on();
+            const bool raced = (slot && slot < kHeapSlots && desc_heap_entry(ht.region, slot).ver != texture_slot_version((int)slot)) ||
+                               (e1 && desc_heap_sampler_entry(d.is_depth, handle >> 20).ver != sampler_slot_version((int)(handle >> 20)));
+            if (raced && !e1) {
                 desc_heap_count(HC_CHECK_RACED);
                 continue;
             }
+            if (e1) desc_heap_count(HC_E1_CHECKED);
             // (the classic lookup's kept hit as it was before this check asks it: whether the check itself resolves the slot anew)
             const VkImageViewType cvt = view_type(d.type);
             const uint64_t hkey = (uint64_t)slot | (uint64_t)cvt << 20 | (uint64_t)ViewUse::Sample << 28 | (uint64_t)VK_FORMAT_UNDEFINED << 32;
@@ -2770,6 +2907,10 @@ void heap_check(const NvnState& s, const Program& p, const HeapProgram& hp, cons
             if (!bad && old_view != heap_view) bad = "the entry holds another view";
             const VkSampler old_s = sampler_for((int)(handle >> 20), d.is_depth);
             if (!bad && old_s != desc_heap_sampler_entry(d.is_depth, handle >> 20).sampler) bad = "the sampler entry holds another sampler";
+            if (bad && raced) {
+                desc_heap_count(HC_CHECK_RACED);
+                continue;
+            }
             if (bad) {
                 desc_heap_count(HC_CHECK_BAD);
                 static std::atomic<int> told{0};

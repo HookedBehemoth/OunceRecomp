@@ -37,6 +37,17 @@ bool desc_heap_check();
 bool desc_heap_log();
 /// The heap is in use: wanted, the device has it (and shader objects), the heaps made
 bool desc_heap_on();
+/// (engine cut E1, HOS_ENG_REG=1, needs RX_VK_DESC_HEAP=1; work/assets/native/e1-impl.md) native registration: the heap's entries
+/// at the NVN pool ids (texture region[view type][texture id], sampler region[compare][sampler id]) are written when the game
+/// registers the slot (at the next submission's start, on the replay thread: the textures already resident get their descriptor
+/// there; the others keep the slot and are made by the first draw that reads them), rewritten on re-registration and nulled when
+/// their texture goes. A draw's scan then only finds the texture behind the slot for its touch and hazards. Read once
+bool eng_reg_wanted();
+/// eng_reg_wanted() and the heap is on
+bool eng_reg_on();
+/// HOS_ENG_REG_CHECK=1: each heap draw's textures and samplers resolved the classic way too (RX_VK_DESC_HEAP_CHECK's check), every
+/// difference counted, those of a slot registered (or finalized) since its entry was written apart
+bool eng_reg_check();
 
 /// (vk_main.cpp create_device) the extensions it needs, when wanted and present; its feature structures chained at *tail
 void desc_heap_device_extensions(const std::vector<VkExtensionProperties>& exts, std::vector<const char*>& want, void**& tail);
@@ -78,8 +89,14 @@ const HeapProgram* desc_heap_program(const Program& p);
 uint32_t desc_heap_push_base();
 
 // ---- the draw path (one recording thread: the heap is off with RX_VK_PARALLEL) ----
-/// A recording begins: its ring block, the submission's value and serial (a new submission: invalidations drained)
-void desc_heap_begin_recording(int slot, uint64_t value, uint64_t completed);
+/// A recording begins: its ring block, the submission's value and serial (a new submission: invalidations drained; with
+/// HOS_ENG_REG they are left for desc_heap_take_registrations). true: a new submission
+bool desc_heap_begin_recording(int slot, uint64_t value, uint64_t completed);
+/// (HOS_ENG_REG, a new submission's start) the texture slots registered, the textures retired and the sampler ids registered since
+/// the last call
+void desc_heap_take_registrations(std::vector<int>& slots, std::vector<uint32_t>& retired, std::vector<int>& samplers);
+/// The submission value and recording serial of the recording being made (an entry written by a GPU copy counts as used by it)
+uint64_t desc_heap_rec_value();
 /// The heaps bound on cmd before a heap draw or dispatch (again after any classic descriptor command)
 void desc_heap_bind(VkCommandBuffer cmd);
 /// After a heap draw: the classic bindings pushed before are gone (the command buffer is in heap mode)
@@ -136,11 +153,16 @@ VkBuffer desc_heap_resource_buffer();
 VkBuffer desc_heap_sampler_buffer();
 /// The reverse map: entry (region, slot) now points at texture id (0: none); was at old_id
 void desc_heap_entry_texture(uint32_t region, uint32_t slot, uint32_t old_id, uint32_t new_id);
+/// (HOS_ENG_REG) the entries (region << 20 | slot) pointing at texture id
+void desc_heap_entries_of(uint32_t id, std::vector<uint32_t>& out);
 
 /// Counters (RX_VK_DESC_HEAP_LOG, the frame line)
 enum HeapCount {
     HC_DRAWS, HC_DISPATCHES, HC_CLASSIC, HC_SCANS, HC_RESOLVES, HC_IN_PLACE, HC_UPLOAD, HC_IN_STREAM, HC_SAMPLER_WRITES,
     HC_REG_INVALID, HC_REG_HOT, HC_RETIRED, HC_RING_FULL, HC_CHECK_BAD, HC_CHECK_DRAWS, HC_BANK_UPLOADS, HC_BIG_ID, HC_BORDER, HC_TWO_VIEWS, HC_BLOCKS_KEPT, HC_BUF_CACHED, HC_BUF_WRITTEN, HC_STAGES_KEPT, HC_TOUCHES, HC_CHECK_RACED,
+    // (HOS_ENG_REG)
+    HC_E1_SLOTS, HC_E1_WRITTEN, HC_E1_SAME, HC_E1_PENDING, HC_E1_UNREG, HC_E1_HOT, HC_E1_NULLED, HC_E1_SAMPLERS, HC_E1_LAZY, HC_E1_CHECKED, HC_E1_DRAIN_US,
+    HC_E1_REG_US, HC_E1_REGS,
     HC_COUNT
 };
 void desc_heap_count(HeapCount c, int64_t n = 1);
@@ -150,6 +172,10 @@ void desc_heap_note_view(uint32_t slot, uint32_t region, uint32_t ver);
 
 /// (vk_replay.cpp) a game registration of texture slot id (its entries go stale at the next submission)
 void desc_heap_registered(int id);
+/// (vk_replay.cpp, HOS_ENG_REG) a game registration of sampler id (its two entries written at the next submission)
+void desc_heap_sampler_registered(int id);
+/// (vk_replay.cpp, RX_VK_DESC_HEAP_LOG) the game thread's time in one registration (the renderer's part of it), for the log
+void desc_heap_registration_time(int64_t ns);
 /// (vk_texture.cpp destroy_later, the texture lock held) texture id leaves the cache: the entries pointing at it go
 void desc_heap_texture_retired(uint32_t id);
 /// (vk_texture.cpp make_view) a view made: what it was made from, for the heap's descriptors (no VkImageView in a heap)

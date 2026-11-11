@@ -567,6 +567,8 @@ NV(nvnSamplerPoolInitialize) {
     o->pool = (const nvn_pool *)P(1);
     o->off = (int64_t)U64(2);
     o->n = I(3);
+    /* (the renderer's sampler heap holds 4,096 ids a region: a handle's sampler id is its 12 high bits) */
+    hos_log("nvn: sampler pool of %d descriptors%s", o->n, o->n > 4096 ? " (over the 4,096 a handle can name)" : "");
     RET(1);
 }
 NV(nvnSamplerPoolFinalize) {}

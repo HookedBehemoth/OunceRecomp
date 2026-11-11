@@ -34,7 +34,18 @@ bool desc_heap_wanted() {
     return on;
 }
 bool desc_heap_check() {
-    static const bool on = desc_heap_wanted() && env_on("RX_VK_DESC_HEAP_CHECK");
+    static const bool on = desc_heap_wanted() && (env_on("RX_VK_DESC_HEAP_CHECK") || eng_reg_check());
+    return on;
+}
+bool eng_reg_wanted() {
+    static const bool on = desc_heap_wanted() && env_on("HOS_ENG_REG");
+    return on;
+}
+bool eng_reg_on() {
+    return eng_reg_wanted() && desc_heap_on();
+}
+bool eng_reg_check() {
+    static const bool on = eng_reg_wanted() && env_on("HOS_ENG_REG_CHECK");
     return on;
 }
 bool desc_heap_log() {
@@ -51,6 +62,8 @@ void desc_heap_device_extensions(const std::vector<VkExtensionProperties>&, std:
 void desc_heap_features_resolved(bool, bool) {}
 void desc_heap_device_created() {}
 void desc_heap_registered(int) {}
+void desc_heap_sampler_registered(int) {}
+void desc_heap_registration_time(int64_t) {}
 void desc_heap_texture_retired(uint32_t) {}
 void desc_heap_view_made(VkImageView, const VkImageViewCreateInfo&, VkImageUsageFlags) {}
 void desc_heap_view_destroyed(VkImageView) {}
@@ -185,6 +198,8 @@ uint64_t ring_used = 0;
 std::mutex inval_mu;
 std::vector<int> registered;        // (slots the game registered since the last drain)
 std::vector<uint32_t> retired;      // (textures the cache let go since)
+std::vector<int> samplers_registered;   // (HOS_ENG_REG: sampler ids the game registered since)
+std::atomic<int64_t> reg_ns{0}, reg_n{0};   // (RX_VK_DESC_HEAP_LOG: the game threads' time in registrations, the renderer's part)
 
 // (plain counters on a line of their own: the replay thread counts, the same thread reports. Atomic adds here cost ~0.3 us each
 // in play, a write a buffer descriptor: 2 ms a frame)
@@ -195,7 +210,11 @@ const char* const kCountNames[HC_COUNT] = {"draws", "dispatches", "classic", "sc
                                            "retired", "ring full", "CHECK mismatches", "CHECK draws", "bank uploads",
                                            "ids past the regions", "custom borders as black", "slots sampled as a second view type", "ring blocks kept", "buffer descriptors from the cache",
                                            "buffer descriptors written", "stages' textures kept", "texture touches",
-                                           "CHECK: slots registered again during the draw"};
+                                           "CHECK: slots registered again during the draw",
+                                           "E1: slots taken at submission starts", "E1: entries written", "E1: entries already so",
+                                           "E1: slots left to first sight (not resident)", "E1: slots not registered", "E1: of the writes by GPU copy",
+                                           "E1: entries of retired textures nulled", "E1: sampler entries written", "E1: draw-time resolves (misses)",
+                                           "E1: CHECK elements compared", "E1: drain us", "E1: registration us (game threads)", "E1: registrations"};
 
 uint64_t mix64(uint64_t h, uint64_t v) {
     h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
@@ -524,8 +543,8 @@ const HeapProgram* desc_heap_program(const Program& p) {
 }
 
 // ---- the recording ----
-void desc_heap_begin_recording(int slot, uint64_t value, uint64_t completed) {
-    if (!heap_ready) return;
+bool desc_heap_begin_recording(int slot, uint64_t value, uint64_t completed) {
+    if (!heap_ready) return false;
     rec_slot = std::clamp(slot, 0, kRingSlots - 1);
     rec_value = value, rec_completed = completed;
     rec_serial++;
@@ -533,8 +552,20 @@ void desc_heap_begin_recording(int slot, uint64_t value, uint64_t completed) {
     bound_cmd = VK_NULL_HANDLE;
     if (value != last_submission) {   // (a new submission, not a part of one: registrations come between submissions)
         last_submission = value;
-        drain_invalidations();
+        if (!eng_reg_wanted()) drain_invalidations();   // (HOS_ENG_REG: vk_draw.cpp eng_reg_drain takes them)
+        return true;
     }
+    return false;
+}
+void desc_heap_take_registrations(std::vector<int>& slots, std::vector<uint32_t>& gone, std::vector<int>& samplers) {
+    std::lock_guard lk(inval_mu);
+    slots.swap(registered);
+    gone.swap(retired);
+    samplers.swap(samplers_registered);
+    registered.clear(), retired.clear(), samplers_registered.clear();
+}
+uint64_t desc_heap_rec_value() {
+    return rec_value;
 }
 void desc_heap_bind(VkCommandBuffer cmd) {
     const uint64_t ep = classic_epoch.load(std::memory_order_relaxed);
@@ -708,6 +739,11 @@ void desc_heap_entry_texture(uint32_t region, uint32_t slot, uint32_t old_id, ui
     if (new_id) by_texture[new_id].push_back(rs);
 }
 
+void desc_heap_entries_of(uint32_t id, std::vector<uint32_t>& out) {
+    out.clear();
+    if (const auto it = by_texture.find(id); it != by_texture.end()) out = it->second;
+}
+
 void desc_heap_count(HeapCount c, int64_t n) {
     counts[c] += n;
 }
@@ -744,6 +780,14 @@ void desc_heap_registered(int id) {
     std::lock_guard lk(inval_mu);
     registered.push_back(id);
 }
+void desc_heap_sampler_registered(int id) {
+    if (!heap_ready || !eng_reg_wanted()) return;
+    std::lock_guard lk(inval_mu);
+    samplers_registered.push_back(id);
+}
+void desc_heap_registration_time(int64_t ns) {
+    reg_ns.fetch_add(ns, std::memory_order_relaxed), reg_n.fetch_add(1, std::memory_order_relaxed);
+}
 void desc_heap_texture_retired(uint32_t id) {
     if (!heap_ready) return;
     std::lock_guard lk(inval_mu);
@@ -777,14 +821,20 @@ void desc_heap_frame() {
     static int64_t frames = 0;
     static int64_t last[HC_COUNT]{};
     if (++frames % 600) return;
-    char line[1400];
-    int n = snprintf(line, sizeof line, "vk: descriptor heap, last 600 presents:");
-    for (int i = 0; i < HC_COUNT && n < 1300; i++) {
-        const int64_t v = counts[i];
-        n += snprintf(line + n, sizeof line - n, " %s %lld%s", kCountNames[i], (long long)(v - last[i]), i + 1 < HC_COUNT ? "," : "");
-        last[i] = v;
+    counts[HC_E1_REG_US] = reg_ns.load(std::memory_order_relaxed) / 1000, counts[HC_E1_REGS] = reg_n.load(std::memory_order_relaxed);
+    // (two lines: logf's buffer is 1 KB. The second, HOS_ENG_REG's, only with it)
+    for (int part = 0; part < 2; part++) {
+        const int from = part ? HC_E1_SLOTS : 0, to = part ? HC_COUNT : HC_E1_SLOTS;
+        if (part && !eng_reg_wanted()) break;
+        char line[1000];
+        int n = snprintf(line, sizeof line, "vk: descriptor heap%s, last 600 presents:", part ? " (HOS_ENG_REG)" : "");
+        for (int i = from; i < to && n < 900; i++) {
+            const int64_t v = counts[i];
+            n += snprintf(line + n, sizeof line - n, " %s %lld%s", kCountNames[i], (long long)(v - last[i]), i + 1 < to ? "," : "");
+            last[i] = v;
+        }
+        logf("%s", line);
     }
-    logf("%s", line);
 }
 
 #endif   // VK_EXT_descriptor_heap

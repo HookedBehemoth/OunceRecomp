@@ -142,6 +142,8 @@ uint64_t texture_miss_generation();
 /// The texture an NVN texture's storage is (made and uploaded at first use, uploaded again when the CPU wrote its
 /// storage since). null for formats and targets that have no image (buffers, unknown formats).
 Texture* texture_get(const nvn_tex* t, bool for_sampling);
+/// (HOS_ENG_REG) the texture the cache already has for t (none made, nothing touched); null: not made yet
+Texture* texture_find(const nvn_tex* t);
 /// A view of it: the view's levels and layers (all when v is null), as view_type, in the view's format
 /// (attachment: one level, one layer; storage: one level, every layer, in a storage-capable format)
 enum class ViewUse { Sample, Attachment, Storage };

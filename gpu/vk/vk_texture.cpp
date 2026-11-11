@@ -2306,20 +2306,21 @@ unsigned view_layer(const nvn_view* v) {
     return v && v->set_layers ? v->min_layer : 0;
 }
 
-Texture* texture_get(const nvn_tex* t, bool for_sampling) {
-    PROF_HOT(PROF_TEXGET);
-    if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return nullptr;
-    const VkFormatInfo fi = vk_format(t->d.format);
+namespace {
+/// The cache's key of an NVN texture (texture_get, texture_find); false: no image is made for it
+bool texture_key(const nvn_tex* t, Key& k, VkFormatInfo& fi, int& bw, int& bh, int& bpb) {
+    if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return false;
+    fi = vk_format(t->d.format);
     if (fi.format == VK_FORMAT_UNDEFINED) {
         static int seen[256];
         if (t->d.format >= 0 && t->d.format < 256 && seen[t->d.format]++ < 2)
             logf("vk: NVN format %#x has no Vulkan format: its textures are left out", t->d.format);
-        return nullptr;
+        return false;
     }
-    int bw = 1, bh = 1;
-    const int bpb = nvn_block_size(t->d.format, &bw, &bh);
-    if (bpb <= 0) return nullptr;
-    Key k{};
+    bw = 1, bh = 1;
+    bpb = nvn_block_size(t->d.format, &bw, &bh);
+    if (bpb <= 0) return false;
+    k = Key{};
     k.gpu = t->gpu;
     k.target = (uint32_t)t->d.target;
     // (a cube map and a 2D array of 6 layers over the same storage are one image; MS targets stay apart)
@@ -2334,6 +2335,26 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
     k.layout = nvn_tex_is_linear(&t->d) ? 0x80000000u | (t->d.stride ? t->d.stride : host->tex_linear_stride(&t->d))
                                         : t->L.tileH | t->L.tileD << 4;
     k.cls = format_class(fi.format, t->d.format, bpb, fi.astc);
+    return true;
+}
+} // namespace
+
+/// (HOS_ENG_REG) the texture the cache has for t, without making one or touching it: null when none is made yet
+Texture* texture_find(const nvn_tex* t) {
+    Key k;
+    VkFormatInfo fi;
+    int bw, bh, bpb;
+    if (!texture_key(t, k, fi, bw, bh, bpb)) return nullptr;
+    const auto it = textures.find(k);
+    return it == textures.end() ? nullptr : it->second.get();
+}
+
+Texture* texture_get(const nvn_tex* t, bool for_sampling) {
+    PROF_HOT(PROF_TEXGET);
+    Key k;
+    VkFormatInfo fi;
+    int bw, bh, bpb;
+    if (!texture_key(t, k, fi, bw, bh, bpb)) return nullptr;
     Texture* tex;
     auto it = textures.find(k);
     if (it == textures.end()) {
