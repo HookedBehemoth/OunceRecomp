@@ -461,7 +461,7 @@ is and feeds is being traced (`readback.md`); the exposure meter's read must sta
    map change; root-cause the walking gfx-ring hang (`work/runs/rblog`, ~67 s, workarounds on). Census v3: pool
    creation sites, and whether the 3,504 pools of <= 64 KB are the per-draw constant rings (if so, placement per
    64 KB granule rather than per pool, or they never reach VRAM).
-6. **Timelines and events** in the current replay. Hard prerequisite of layer 0 (captures can only go once syncs are
+6. *Done behind `RX_VK_TIMELINES=1` (off by default; work/assets/native/timelines-impl.md): fps the same, present drains and the gate's 1 ms wake gone; the game never waits on unrecorded work.* **Timelines and events** in the current replay. Hard prerequisite of layer 0 (captures can only go once syncs are
    honest) and the riskiest step. Caveat: wait-before-signal on ONE Vulkan queue deadlocks (a submission blocked on a
    timeline wait holds everything behind it, including the signal), and the five NVN queues map to one graphics
    queue. Keep a host-side hold for waits whose signal is not yet submitted; count them first.
@@ -520,3 +520,9 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   textures let go 1.37 -> 0.22 a frame, Hyrule Field texture VRAM 4.55 -> 3.65 GB; fps the same
   (work/assets/native/rt-slots-impl.md). The Lost Woods exit start with a turn and a walk hangs the GPU every run, with
   or without slots.
+- 2026-11-11: NVN syncs as timelines (step 6, `RX_VK_TIMELINES=1`, off by default): a timeline semaphore per NVN queue,
+  nvnSyncWait on it, nvnQueueWaitSync as a host-held `NOP_WAIT_FENCE`, never a GPU-side wait (one queue deadlocks on a wait
+  before its signal: measured, work/proto/timelines/onequeue.c). Census (`RX_VK_SYNC_CENSUS=1`): per frame 25 event waits,
+  7 held on the host, 0 forced; the one QueueWaitSync is on the window's signalled sync; no CPU wait on unrecorded work.
+  Warm A/B: Kokiri 53.6/53.2 vs 53.6-53.8 fps, HF 46.1/46.4 vs 45.6/46.4; present drains 43-71 a run -> 0 in steady state;
+  pictures the same; the Lost Woods hang reproducer did not hang (0/4, either mode, on the new base).
