@@ -5092,6 +5092,7 @@ void clear_after_draws(VkCommandBuffer cmd) {
     if (logged++ < 6)
         logf("vk: a clear after %d draws of its pass (%ux%u, %d colour targets%s, last program %016llx): a pass of its own",
              pass().draws, pass().width, pass().height, pass().n, pass().depth ? " + depth" : "", (unsigned long long)pass().prog);
+    eng_sec_trap("a clear after draws");
     end_pass(cmd);
 }
 
@@ -5144,6 +5145,7 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
     if (logged++ < 8)
         logf("vk: a draw (program %016llx) %s, after %d draws of the pass (%ux%u): a pass of its own", (unsigned long long)p.key,
              kind, pass().draws, pass().width, pass().height);
+    eng_sec_trap(kind);   // (HOS_ENG_PASS_SELFTEST: named for the counters)
     end_pass(cmd);
     return writes;
 }
@@ -7021,6 +7023,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PkMemo* const pkm = pk_on ? &pk_memo() : nullptr;
     if (pkm) pk_n[PKC_DRAWS]++;
     stats_tick();
+    if (d.mesh && d.indirect) eng_sec_trap("an indirect mesh draw's conversion");   // (HOS_ENG_PASS_SELFTEST: before the pass)
     mesh_indirect_convert(cmd, d);   // (EvilOOT: before the pass opens; sets mesh_conv_buf for the mesh draw below)
     VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     if (!d.mesh && !topology(d.prim, topo)) {
@@ -7450,6 +7453,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             mesh_args = {mesh_args_buffer, (VkDeviceSize)mesh_args_at * 16, (VkDeviceSize)n * 16, 0};
         }
     }
+    if (p.fallback && d.mesh) eng_sec_trap("a mesh fallback's dispatches");   // (HOS_ENG_PASS_SELFTEST: named for the counters)
     if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();
     {
         FINE_SCOPE(FT_HAZARD);
@@ -9706,6 +9710,10 @@ int draw_tex_check(const uint32_t* tex, uint32_t n) {
         bool hv = false;
         if (!texture_of((int)(tex[i] & 0xFFFFF), &t, &v, &hv)) continue;   // (unregistered: the draw would read nothing either)
         Texture* x = texture_find(&t);
+        if (!x || !(x->uploaded || x->gpu_written)) {   // (made resident now: made and uploaded by the recording's upload buffer)
+            ParLock lk;
+            x = texture_get(&t, true);
+        }
         if (!x || !(x->uploaded || x->gpu_written)) return 2;
         for (int k = 0; k < ps.n; k++)
             if (ps.tex[k] == x) return 1;
