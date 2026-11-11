@@ -548,6 +548,7 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
 ## Status
 
 - 2026-11-10: dump extracted, lifted (295k functions), first Linux build. Pool census written.
+- 2026-11-11: user uniform buffers resolved once per slot and recording (`RX_VK_UBO_SLOT_MEMO`, on by default; `=0` off, `=2` resolves every hit again and logs differences): 0 differences in 10.2 M checked hits (Kokiri, Hyrule Field); the user-UBO row in Hyrule Field 0.97 -> 0.78-0.82 ms a frame. How the game builds its uniform buffers: work/assets/native/uniform-buffers.md.
 - 2026-11-11: shader objects on by default (the user: pipelines bring back the stutter at each new pipeline; the ~3 fps they cost in Hyrule Field is GPU work, for later). `RX_VK_SHADER_OBJECTS=0`: pipelines.
 - 2026-11-10: shader objects (`RX_VK_SHADER_OBJECTS=1`, off by default then; gpu/vk/vk_shader_object.cpp): graphics and native
   mesh programs as VkShaderEXT with all state dynamic, driver binaries kept in `hookshot_shader_objects.bin`, a prefetch thread

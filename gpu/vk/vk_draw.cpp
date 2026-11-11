@@ -2300,7 +2300,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         const uint64_t want = used ? std::max<uint64_t>(used, 16) : std::max<uint64_t>(u.size, 16);
         const uint64_t n = std::min<uint64_t>(std::min<uint64_t>(want, u.size ? std::max<uint64_t>(u.size, 16) : want),
                                               dev.props.limits.maxUniformBufferRange);
-        static const int slot_memo = [] { const char* e = getenv("RX_VK_UBO_SLOT_MEMO"); return e ? atoi(e) : 0; }();
+        static const int slot_memo = [] { const char* e = getenv("RX_VK_UBO_SLOT_MEMO"); return e && *e ? atoi(e) : 1; }();
         UboSlotMemo* memo = nullptr;
         VkDescriptorBufferInfo hit{};
         if (slot_memo) {
