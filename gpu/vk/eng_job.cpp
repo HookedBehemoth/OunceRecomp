@@ -601,7 +601,7 @@ void walk_records(Walk& w, Rec* r, const uint8_t* p, const uint8_t* end) {
         if (h.op < NOP_COUNT_) w.ops[h.op]++;
         switch (h.op) {
         case NOP_END: return;
-        case NOP_BEGIN: case NOP_JUMP: case NOP_JOB: break;
+        case NOP_BEGIN: case NOP_JUMP: case NOP_JOB: case NOP_ENG: break;   // (NOP_ENG: E4's marks, no GPU work)
         case NOP_PKT: {
             const auto rp = payload<nvn_p_pkt>(a, avail);
             add(C_PKT);
