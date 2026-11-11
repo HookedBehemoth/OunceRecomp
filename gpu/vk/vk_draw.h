@@ -89,5 +89,7 @@ void pipeline_cache_save(bool force);
 uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, const std::function<uint64_t(uint64_t)>& alloc);
 /// Guest memory as the stream's place sees it: as submitted, the stream's uniform updates before it over it
 bool ub_read(uint64_t addr, void* dst, uint64_t n);
+/// The value of the recording being replayed (vk_replay.cpp: its uniform updates' tag)
+uint64_t ub_recording_value();
 
 } // namespace mkwvk

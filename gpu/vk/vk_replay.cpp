@@ -34,6 +34,7 @@
 #include "status_line.h"
 #include "vk_reflex.h"
 #include "vk_antilag.h"
+#include "vk_ubo_census.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
 #include "vk_paths.h"   // (game_module_path: the frame trace beside the game)
@@ -572,6 +573,9 @@ void ub_prune(uint64_t done) {
 uint64_t ub_generation() {
     return ub_gen;
 }
+uint64_t ub_recording_value() {
+    return rec_value_now;
+}
 void ub_thread_off() {
     ub_limit = 0;
 }
@@ -1093,6 +1097,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                         logf("vk: bind (many) %s stage %d index %d addr %#llx size %#llx", b.ssbo ? "ssbo" : "ubo", b.stage, index,
                              (unsigned long long)b.r[i].address, (unsigned long long)b.r[i].size);
                 }
+                if (!b.ssbo && ubo_census_on()) ubo_census_bind(&s, b.stage, index, nullptr, 0);   // (deferred: no site)
                 nvn_p_bind_buf& u = (b.ssbo ? s.ssbo : s.ubo)[b.stage][index];
                 if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, index, b.r[i].address, b.r[i].size)) {
                     s.bind_gen++;
@@ -1119,6 +1124,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                     if (h.op == NOP_BIND_SSBO) s.ssbo_gen[b.stage] = s.bind_gen;
                 }
                 u = b;
+                if (h.op == NOP_BIND_UBO && ubo_census_on()) ubo_census_bind(&s, b.stage, b.index, a, avail);
             }
             break;
         }

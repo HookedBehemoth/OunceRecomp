@@ -1936,12 +1936,15 @@ NV(nvnCommandBufferCopyBufferToBuffer) {
     nvn_p_copy_bb *r = REC(CB(P(0)), NOP_COPY_B2B, nvn_p_copy_bb);
     r->src = U64(1), r->dst = U64(2), r->size = U64(3);
 }
+static int ubo_census_on(void);
+static uint32_t ubo_site(const Ctx *c, int update, uint64_t bytes);
 /* the data is copied at record time (the caller may change it afterwards); written in GPU order at replay */
 NV(nvnCommandBufferUpdateUniformBuffer) {
     const uint64_t n = U64(4);
     /* (hookshot) NVN's limit is 64 KiB an update; a larger size is not recorded (its record size is 32-bit) */
     if (n > 0x10000) die("UpdateUniformBuffer of %#llx bytes", (unsigned long long)n);
     nvn_cmd *o = CB(P(0));
+    if (ubo_census_on()) ubo_site(c, 1, n);
     const uint32_t sz = (uint32_t)(8 + sizeof(nvn_p_update_ub) + n);
     uint8_t *p = cmd_alloc(o, sz);
     put_hdr(p, NOP_UPDATE_UB, (sz + 7) & ~7u);
@@ -2115,11 +2118,94 @@ static void bind_buf(nvn_cmd *o, uint32_t op, int stage, int index, uint64_t add
     r->stage = stage, r->index = index, r->addr = addr, r->size = size;
     hw_fix(o, 20);
 }
-NV(nvnCommandBufferBindUniformBuffer) { bind_buf(CB(P(0)), NOP_BIND_UBO, I(1), I(2), U64(3), U64(4)); }
+/* (native-vk, RX_VK_UBO_CENSUS=<file>: work/assets/native/uniform-buffers.md) each uniform buffer bind carries a trailer after
+   its payload (nvn_p_ubo_census: the binding site and a hash of the range as it was when the bind was recorded); the
+   replay's census (gpu/vk/vk_ubo_census.cpp) reads it. The sites (the return address and three more from the guest frame
+   pointers, the recording thread) go to <file>.sites. Off: the record is as before */
+static int ubo_census_on(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("RX_VK_UBO_CENSUS") && *getenv("RX_VK_UBO_CENSUS");
+    return v;
+}
+typedef struct { uint64_t ra[4]; uint64_t binds, updates, update_bytes; char thread[24]; } ubo_site_t;
+static ubo_site_t ubo_sites[4096];
+static volatile LONG ubo_sites_n, ubo_sites_lock, ubo_sites_dirty;
+static void ubo_sites_write(void) {
+    static char path[512];
+    if (!path[0]) snprintf(path, sizeof path, "%s.sites", getenv("RX_VK_UBO_CENSUS"));
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    for (LONG i = 0; i < ubo_sites_n; i++) {
+        const ubo_site_t *e = &ubo_sites[i];
+        fprintf(f, "%ld %#llx %#llx %#llx %#llx %llu %llu %llu %s\n", (long)i + 1, (unsigned long long)e->ra[0],
+                (unsigned long long)e->ra[1], (unsigned long long)e->ra[2], (unsigned long long)e->ra[3],
+                (unsigned long long)e->binds, (unsigned long long)e->updates, (unsigned long long)e->update_bytes,
+                e->thread[0] ? e->thread : "-");
+    }
+    fclose(f);
+}
+static uint32_t ubo_site(const Ctx *c, int update, uint64_t bytes) {
+    uint64_t ra[4] = {c->x[30], 0, 0, 0};
+    uint64_t fp = c->x[29];
+    const uint64_t top = hos_guest_size();
+    for (int n = 1; n < 4 && fp >= 0x10000ull && fp + 16 <= top && !(fp & 7); n++) {
+        const uint64_t next = *(const uint64_t *)GP(fp), r = *(const uint64_t *)GP(fp + 8);
+        if (r < 0x80000000ull || r >= 0x90000000ull) break;
+        ra[n] = r;
+        if (next <= fp) break;
+        fp = next;
+    }
+    while (InterlockedCompareExchange(&ubo_sites_lock, 1, 0)) {}
+    LONG i = 0;
+    for (; i < ubo_sites_n; i++)
+        if (!memcmp(ubo_sites[i].ra, ra, sizeof ra)) break;
+    if (i == ubo_sites_n && i < (LONG)(sizeof ubo_sites / sizeof ubo_sites[0])) {
+        memcpy(ubo_sites[i].ra, ra, sizeof ra);
+        const HosThread *t = hos_self();
+        const char *nm = t ? hos_thread_name((HosThread *)t) : NULL;
+        if (nm) snprintf(ubo_sites[i].thread, sizeof ubo_sites[i].thread, "%s", nm);
+        ubo_sites_n = i + 1;
+        ubo_sites_dirty = 1;
+    }
+    uint32_t id = 0;
+    if (i < ubo_sites_n) {
+        ubo_site_t *e = &ubo_sites[i];
+        if (update) e->updates++, e->update_bytes += bytes; else e->binds++;
+        id = (uint32_t)i + 1;
+        static uint64_t calls;
+        if (ubo_sites_dirty || !(++calls & 0xfffff)) ubo_sites_write(), ubo_sites_dirty = 0;
+    }
+    ubo_sites_lock = 0;
+    return id;
+}
+static uint64_t ubo_hash(const uint8_t *p, uint64_t n) {   /* (FNV-1a over 8-byte words, the tail bytewise: vk_ubo_census.cpp's) */
+    uint64_t h = 0xcbf29ce484222325ull;
+    uint64_t i = 0;
+    for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, p + i, 8); h = (h ^ w) * 0x100000001b3ull; }
+    for (; i < n; i++) h = (h ^ p[i]) * 0x100000001b3ull;
+    return h ^ n;
+}
+static void bind_ubo_census(Ctx *c, nvn_cmd *o, int stage, int index, uint64_t addr, uint64_t size) {
+    nvn_p_bind_buf *r = (nvn_p_bind_buf *)rec(o, NOP_BIND_UBO, sizeof(nvn_p_bind_buf) + sizeof(nvn_p_ubo_census));
+    r->stage = stage, r->index = index, r->addr = addr, r->size = size;
+    nvn_p_ubo_census *t = (nvn_p_ubo_census *)(r + 1);
+    t->magic = NVN_UBO_CENSUS_MAGIC;
+    t->site = ubo_site(c, 0, 0);
+    const uint64_t n = size > 0x10000 ? 0x10000 : size;
+    const uint8_t *g = n ? (const uint8_t *)hos_guest_range(addr, n) : NULL;
+    t->rec_hash = g ? ubo_hash(g, n) : 0;
+    hw_fix(o, 20);
+}
+NV(nvnCommandBufferBindUniformBuffer) {
+    if (ubo_census_on()) { bind_ubo_census(c, CB(P(0)), I(1), I(2), U64(3), U64(4)); return; }
+    bind_buf(CB(P(0)), NOP_BIND_UBO, I(1), I(2), U64(3), U64(4));
+}
 NV(nvnCommandBufferBindStorageBuffer) { bind_buf(CB(P(0)), NOP_BIND_SSBO, I(1), I(2), U64(3), U64(4)); }
 static void bind_bufs(Ctx *c, uint32_t op) {
     const NVNbufferRange *r = (const NVNbufferRange *)PN(4, I(3) > 0 ? sizeof *r * (uint64_t)I(3) : 0);
-    for (int i = 0; i < I(3); i++) bind_buf(CB(P(0)), op, I(1), I(2) + i, r[i].address, r[i].size);
+    for (int i = 0; i < I(3); i++)
+        if (op == NOP_BIND_UBO && ubo_census_on()) bind_ubo_census(c, CB(P(0)), I(1), I(2) + i, r[i].address, r[i].size);
+        else bind_buf(CB(P(0)), op, I(1), I(2) + i, r[i].address, r[i].size);
 }
 NV(nvnCommandBufferBindUniformBuffers) { bind_bufs(c, NOP_BIND_UBO); }
 NV(nvnCommandBufferBindStorageBuffers) { bind_bufs(c, NOP_BIND_SSBO); }

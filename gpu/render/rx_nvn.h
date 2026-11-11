@@ -172,6 +172,10 @@ typedef struct { int32_t first, n; uint32_t st[16]; } nvn_p_bind_vattr;
 typedef struct { int32_t first, n; nvn_vs_st st[16]; } nvn_p_bind_vstream;
 typedef struct { int32_t first, n; NVNbufferRange r[16]; } nvn_p_bind_vbuf;
 typedef struct { int32_t stage, index; uint64_t addr, size; } nvn_p_bind_buf;   /* uniform / storage buffer */
+/* (native-vk, RX_VK_UBO_CENSUS) after a uniform buffer bind's payload when the census is on: where it was bound and a hash
+   of the range when it was recorded (host/nvn_native.c, gpu/vk/vk_ubo_census.cpp) */
+#define NVN_UBO_CENSUS_MAGIC 0x55424f43u
+typedef struct { uint32_t magic, site; uint64_t rec_hash; } nvn_p_ubo_census;
 /* src: deferred binds keep the game's handle array (guest address) and read it at submit; 0: immediate */
 typedef struct { int32_t stage, first, n, pad_; uint64_t src; uint64_t h[32]; } nvn_p_bind_handles;
 /* deferred uniform / storage buffer ranges: read from the game's array (src, guest address) at submit */

@@ -32,6 +32,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
 #include "vk_paths.h"
+#include "vk_ubo_census.h"
 #include "vk_draw.h"
 #include "vk_l1_census.h"   // (RX_VK_L1_CENSUS)
 #include "dlss_actor.h"
@@ -113,13 +114,14 @@ const char* const kFineT[] = {"banks", "c1", "user uniform buffers", "storage bu
                                       "bind descriptors", "of it the push call", "push constants", "dynamic state", "vertex+index binds",
                                       "draw call"};
 enum FineC { FC_DRAWS, FC_BUILDS, FC_DESCS, FC_WRITES, FC_BANK_CALLS, FC_BANK_GEN, FC_BANK_FILLS, FC_BANK_FILL_BYTES, FC_BANK_SAME,
-             FC_BANK_NEW, FC_BANK_NEW_BYTES, FC_C1_CALLS, FC_UBO_CALLS, FC_UBO_OVERLAY, FC_UBO_STREAM, FC_PUSH_FULL, FC_PUSH_DELTA,
+             FC_BANK_NEW, FC_BANK_NEW_BYTES, FC_C1_CALLS, FC_UBO_CALLS, FC_UBO_OVERLAY, FC_UBO_STREAM, FC_UBO_MEMO, FC_PUSH_FULL, FC_PUSH_DELTA,
              FC_PUSH_NONE, FC_PUSH_WRITES, FC_PUSH_DESCS, FC_BIND_PIPE, FC_DYN_FAST, FC_DYN_FULL, FC_DYN_CALLS, FC_VBIND, FC_IBIND,
              FC_PUSHC, FC_PIPE_FAST, FC_PIPE_MAP, FC_POOL_SETS, FC_POOL_DESCS, FC_SSBO_DESCS, FC_COUNT };
 const char* const kFineC[] = {"draws", "descriptor builds", "descriptors", "descriptor writes", "bank calls",
                                       "bank kept by its stage's generation", "bank fills", "bank bytes filled", "bank refills equal",
                                       "bank copies into the stream", "bank bytes copied", "c1 calls", "user uniform buffer calls",
                                       "uniform ranges copied with an update's overlay", "uniform ranges copied into the stream",
+                                      "user uniform buffers as resolved before (RX_VK_UBO_SLOT_MEMO)",
                                       "full pushes", "pushes of changed writes only", "pushes of nothing (all as pushed)",
                                       "writes pushed", "descriptors pushed", "pipeline binds", "dynamic state from the draw before",
                                       "dynamic state worked out", "dynamic state commands", "vertex stream binds", "index buffer binds",
@@ -2196,6 +2198,19 @@ thread_local bool grid_patch_want = false;
 thread_local uint64_t grid_patch_at = UINT64_MAX;
 thread_local VkBuffer grid_patch_buf = VK_NULL_HANDLE;   // (the stream c0 went to: PR 585's streams can move on)
 
+struct UboSlotMemo {   // (RX_VK_UBO_SLOT_MEMO: a user uniform buffer slot as it last resolved, below)
+    const Stage* st = nullptr;
+    const void* res = nullptr;
+    uint64_t addr = 0, size = 0, rec = 0, ub = 0, bind_stamp = 0, view = 0;
+    VkDescriptorBufferInfo bi{};
+    bool on = false;
+};
+struct UboSlotMemos {
+    UboSlotMemo m[kNvnStages][16];
+    UboSlotMemo* operator[](int i) { return m[i]; }
+};
+TLS_OBJECT(ubo_slot_memo, UboSlotMemos)
+
 VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_t index) {
     VkDescriptorBufferInfo bi{VK_NULL_HANDLE, 0, VK_WHOLE_SIZE};
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minUniformBufferOffsetAlignment, 16);
@@ -2278,6 +2293,29 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         FINE_N(FC_UBO_CALLS, 1);
         const nvn_p_bind_buf& u = s.ubo[std::clamp(st.nvn_stage, 0, kNvnStages - 1)][index - 3];
         if (!u.addr) return bi;
+        // (native-vk, RX_VK_UBO_SLOT_MEMO=1: work/assets/native/uniform-buffers.md) a draw's descriptors are built again whenever any
+        // binding changed (nearly every draw: a uniform buffer bound for it), and every constant buffer of the program was resolved
+        // again with them. A slot whose binding, program stage and overlays (ub_generation) are as the last time it was resolved in
+        // this recording, with the pools and captures as they were (gpu_bind_stamp, memory_capture_view), resolves as it did then
+        static const bool slot_memo = [] { const char* e = getenv("RX_VK_UBO_SLOT_MEMO"); return e && atoi(e) != 0; }();
+        UboSlotMemo* memo = nullptr;
+        if (slot_memo) {
+            memo = &ubo_slot_memo()[std::clamp(st.nvn_stage, 0, kNvnStages - 1)][index - 3];
+            const uint64_t rec = ub_recording_value(), ubg = ub_generation(), bst = gpu_bind_stamp(), view = memory_capture_view();
+            if (memo->on && memo->st == &st && memo->addr == u.addr && memo->size == u.size && memo->rec == rec &&
+                memo->ub == ubg && memo->bind_stamp == bst && memo->view == view && memo->res == cur &&
+                (memo->bi.buffer != (cur ? cur->stream : VK_NULL_HANDLE) || stream_holds(cur->mapped, memo->bi.offset, memo->bi.range))) {
+                FINE_N(FC_UBO_MEMO, 1);
+                return memo->bi;
+            }
+            *memo = {};
+            memo->st = &st, memo->addr = u.addr, memo->size = u.size, memo->rec = rec, memo->ub = ubg, memo->bind_stamp = bst;
+            memo->view = view, memo->res = cur;
+        }
+        const auto keep = [&](VkDescriptorBufferInfo r) {
+            if (memo && r.buffer) memo->bi = r, memo->on = true;
+            return r;
+        };
         const uint64_t want = used ? std::max<uint64_t>(used, 16) : std::max<uint64_t>(u.size, 16);
         const uint64_t n = std::min<uint64_t>(std::min<uint64_t>(want, u.size ? std::max<uint64_t>(u.size, 16) : want),
                                               dev.props.limits.maxUniformBufferRange);
@@ -2287,12 +2325,12 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
             if (const uint64_t at = ub_overlay(u.addr, n, cur->mapped, [&](uint64_t bytes) { return stream_alloc(bytes, align); });
                 at != UINT64_MAX) {
                 FINE_N(FC_UBO_OVERLAY, 1);
-                return {cur->stream, at, n};
+                return keep({cur->stream, at, n});
             }
         // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
         static const bool snapshot = getenv("RX_VK_UB_SNAPSHOT") != nullptr;
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
-        if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
+        if (b && b.offset % align == 0) return keep({b.buffer, b.offset, n});
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
         if (at == UINT64_MAX) return bi;
         FINE_N(FC_UBO_STREAM, 1);
@@ -2302,7 +2340,7 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         if (++copied % 5000 == 1)
             logf("vk: uniform buffer %#llx +%#llx copied into the stream (%s; %lld so)", (unsigned long long)u.addr,
                  (unsigned long long)n, b ? "unaligned" : "outside the pools", (long long)copied);
-        return {cur->stream, at, n};
+        return keep({cur->stream, at, n});
     }
     return bi;
 }
@@ -2962,6 +3000,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
         return w;
     };
     const uint64_t salign = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    if (ubo_census_on()) ubo_census_begin();
     for (const Stage& st : p.stages) {
         const Shader::Info& info = st.info;
         const int ns = st.nvn_stage;
@@ -2971,6 +3010,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             for (uint32_t k = 0; k < d.count; k++) {
                 const auto t0 = slow_desc_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 dw().bufs.push_back(uniform_range(s, st, d.index + k));
+                if (ubo_census_on()) ubo_census_note(s, p, st, d.index + k, dw().bufs.back());
                 if (slow_desc_timing()) slow_descriptor(t0, "uniform buffer", d.index + k, dw().bufs.back().range);
             }
             w.pBufferInfo = &dw().bufs[first];
