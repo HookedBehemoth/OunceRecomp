@@ -70,6 +70,10 @@ struct Sw {
         split = on && !check && sp && strtoul(sp, nullptr, 0) != 0;
         split_mask = split ? (uint32_t)strtoul(sp, nullptr, 0) : 0;
         if (split_mask == 1) split_mask = kSplitDefault;
+        // (HOS_ENG_JOBS_SEGMENTS=1, fallbacks.md 7: a job cut into runs only at its dispatches and barriers, which the job-call site
+        // records between them; any draw the thread cannot record still sends the whole job back: no replay-inline draws)
+        const char* sg = getenv("HOS_ENG_JOBS_SEGMENTS");
+        if (on && !check && !split && sg && atoi(sg) != 0) split = true, split_mask = kSplitCut;
         // (EngJob.tex: what the recorded draws' programs read, not every bound word; on by default, HOS_ENG_JOBS_SAMPLED=0: every bound
         // word, as before: e6-impl.md 3, not-resident fallbacks 2.6 / 3.0 -> 0 a frame)
         const char* sa = getenv("HOS_ENG_JOBS_SAMPLED");

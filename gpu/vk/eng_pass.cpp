@@ -236,9 +236,9 @@ void eng_pass_report(double frames) {
          d(EC_FB_HAZARD), d(EC_FB_RESIDENT), d(EC_FB_OP), d(EC_FB_EMPTY), d(EC_FB_MODE), d(EC_FB_NOPASS), d(EC_FB_ABORT),
          d(EC_FB_MALFORMED), d(EC_RESTARTS), d(EC_STATE_WALKS), d(EC_GATED_OFF), d(EC_GATED_ON), d(EC_BOUND_ATTACHMENT));
     if (now[EC_FB_DEFERRED]) logf("eng passes: a frame: fallen back for a deferred word not resident %.1f", d(EC_FB_DEFERRED));
-    if (now[EC_PRE_BATCHES] || now[EC_FB_WAIT])
-        logf("eng passes: a frame: pre-work batches %.1f (%.1f jobs, %.1f argument copies); fallen back for a wait not met %.1f", d(EC_PRE_BATCHES),
-             d(EC_PRE_JOBS), d(EC_PRE_COPIES), d(EC_FB_WAIT));
+    if (now[EC_PRE_BATCHES] || now[EC_FB_WAIT] || now[EC_WAIT_STOPS])
+        logf("eng passes: a frame: pre-work batches %.1f (%.1f jobs, %.1f argument copies); stops at a job call for its wait %.1f; fallen back for a wait not met %.1f",
+             d(EC_PRE_BATCHES), d(EC_PRE_JOBS), d(EC_PRE_COPIES), d(EC_WAIT_STOPS), d(EC_FB_WAIT));
     if (now[EC_FB_UBUPD]) logf("eng passes: a frame: fallen back for a uniform update of this recording %.1f", d(EC_FB_UBUPD));
     if (now[EC_SPLIT_JOBS] || now[EC_FB_SPLIT_COUNT])
         logf("eng passes: a frame: split jobs %.1f, their runs executed %.1f, draws drawn inline %.1f, runs drawn inline after all %.1f; "

@@ -1132,6 +1132,7 @@ struct EngSplit {
 };
 thread_local EngSplit eng_split;
 thread_local bool eng_split_active = false;
+extern thread_local bool eng_call_suspend;
 /// At a draw op of the split job: true when a run covers it (executed at its first draw op), false when the replay draws it
 bool eng_split_at(VkCommandBuffer& cmd, NvnState& s, uint32_t op, const uint8_t* a, uint32_t avail);
 /// (E6) an executed job's targets marked written in the pass (draw_pass_written_all); HOS_ENG_PASS_WRITTEN=0: not (as E4 had it)
@@ -1395,7 +1396,16 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             const auto e = payload<nvn_p_eng>(a, avail);
             if (e.kind != NVN_ENG_CALL_BEGIN) break;
             const uint8_t* resume = nullptr;
-            if (eng_job_call(cmd, s, p, h.size, e, calls, &resume)) {
+            eng_call_suspend = false;
+            const bool ran = eng_job_call(cmd, s, p, h.size, e, calls, &resume);
+            if (!ran && eng_call_suspend) {   // (stopped at the job call; replay_handle calls it again from here)
+                eng_call_suspend = false;
+                eng_count(EC_WAIT_STOPS);
+                suspend_at = p;
+                suspend_calls = calls;
+                return;
+            }
+            if (ran) {
                 if (l1c_op) l1c::op_done(h.op, prof_now() - l1c_t0);
                 p = resume;   // (its CALL_END)
                 continue;
@@ -2123,6 +2133,7 @@ VkCommandBuffer eng_secondary(Recording& r) {
 }
 bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
                    const uint8_t** resume, uint64_t* view);
+thread_local bool eng_call_suspend = false;   // (HOS_ENG_JOBS_PREWORK: a job's wait not met yet: the replay stops at its call)
 /// (HOS_ENG_JOBS_PREWORK, fallbacks.md 4-5) the pre-work of the jobs this call site calls from this one on (the six of a pass, once,
 /// at the first that has any): outside the rendering, one barrier, every job's copies, one barrier; the next job calls find theirs done
 thread_local std::vector<uint32_t> eng_pre_done;   // (serials whose pre-work is recorded)
@@ -2172,6 +2183,16 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
     if (ep) for (int i = 0; i < EC_N; i++) before[i] = eng_count_get(i);
     const bool ran = eng_job_call_(cmd, s, p, size, e, calls, resume, &view);
     if (view) eng_pass_result(view, ran);
+    {   // (HOS_ENG_STRICT=1, fallbacks.md 8: a job that goes back to the replay is an error, counted, the first ones named)
+        static const bool strict = getenv("HOS_ENG_STRICT") && atoi(getenv("HOS_ENG_STRICT")) != 0;
+        if (strict && !ran && e.site != 0x807cd418u && !eng_call_suspend) {
+            static int64_t n = 0;
+            const int why = eng_job_why(e.a);
+            if (n++ < 40 || n % 6000 == 0)
+                logf("eng strict: error: a job fell back (view %#llx, site %#x, E3 verdict %s; %lld so far)", (unsigned long long)view, e.site,
+                     eng_job_why_name(why), (long long)n);
+        }
+    }
     if (ep && !ran && e.site != 0x807cd418u) {   // (HOS_ENG_PROF: the fallback's records follow, by why)
         const auto moved = [&](int c) { return eng_count_get(c) != before[c]; };
         int x = eprof::X_FB_OTHER;
@@ -2232,8 +2253,12 @@ bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t
     if (job && job->nwaits) {   // (HOS_ENG_JOBS_PREWORK: its waits, in replay order; one not met: its records, where the replay waits)
         ev_cpu_apply();
         for (uint32_t k = 0; k < job->nwaits; k++)
-            if (!event_wait_met(event_value_in(ev_values, job->waits[k].gpu), job->waits[k].mode, job->waits[k].value))
+            if (!event_wait_met(event_value_in(ev_values, job->waits[k].gpu), job->waits[k].mode, job->waits[k].value)) {
+                // (a serial replay that may stop: it stops at the job call, as it would at the wait inside the job, and calls the job
+                // again from here once the signalling work is replayed (eng_call_suspend); else the job's records, as before)
+                if (suspend_ok) return eng_call_suspend = true, false;
                 return eng_count(EC_FB_WAIT), false;
+            }
     }
     if (job && (job->npre || job->pre_barrier)) eng_prework(cmd, s, p, e);
     const bool mixed = eng_pass_mixed();
@@ -2895,9 +2920,18 @@ const uint8_t* op_next(const uint8_t* p) {
     std::memcpy(&h, p, sizeof h);
     return p + h.size;
 }
-nvn_p_wait_event wait_at(const uint8_t* p) {   // (p: a wait op)
+nvn_p_wait_event wait_at(const uint8_t* p) {   // (p: a wait op, or a job call stopped for its job's wait: HOS_ENG_JOBS_PREWORK)
     nvn_op_hdr h;
     std::memcpy(&h, p, sizeof h);
+    if (h.op == NOP_ENG) {   // (the job's first wait not met; none: one that is met, so the queue goes on)
+        const auto e = payload<nvn_p_eng>(p + 8, h.size - 8);
+        const EngJob* j = eng_job_lookup(e.a);
+        ev_cpu_apply();
+        for (uint32_t k = 0; j && k < j->nwaits; k++)
+            if (!event_wait_met(event_value_in(ev_values, j->waits[k].gpu), j->waits[k].mode, j->waits[k].value))
+                return nvn_p_wait_event{j->waits[k].gpu, j->waits[k].mode, j->waits[k].value};
+        return nvn_p_wait_event{0, 1, 0};
+    }
     return payload<nvn_p_wait_event>(p + 8, h.size - 8);
 }
 bool is_fence_wait(const uint8_t* p) {   // (p: a wait op: NOP_WAIT_FENCE, or NOP_WAIT_EVENT)

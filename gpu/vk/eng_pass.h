@@ -65,6 +65,7 @@ enum EngCount {
     EC_SPLIT_INLINE,   // their draw ops the replay drew inline (the refused ones, and the runs that could not execute)
     EC_SPLIT_RUN_INLINE, // runs drawn inline after all (no rendering to execute them in, or other formats)
     EC_FB_SPLIT_COUNT, // fallen back: the job's draw ops are not as many as E3 counted
+    EC_WAIT_STOPS,     // the replay stopped at a job call for a wait the job holds (called again once it is met)
     EC_FB_WAIT,        // fallen back: a wait its records hold not met in replay order (HOS_ENG_JOBS_PREWORK)
     EC_PRE_BATCHES,    // pre-work recorded at a job-call site (one barrier pair each)
     EC_PRE_JOBS,       // jobs in them
