@@ -767,7 +767,7 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
 
 /* (test runs) the map change asked last, until the game reports it loaded: "scene: ready" in the log, which the scene
    cycle (work/proto/scenecycle) waits for. Set by oot_request_banc, checked on each player update. */
-static struct { char banc[96]; int64_t at; int armed; } scene_wait;
+static struct { char banc[96]; int64_t at, seen; int armed, loaded; uint64_t actor; } scene_wait;
 
 /* The map change itself: banc, start position (empty: the banc's default) and boot event, as the entrance actors send it. */
 static int oot_request_banc(Ctx *c, uint64_t actor, const char *banc, const char *start, const char *boot, int child,
@@ -851,7 +851,7 @@ static int oot_request_banc(Ctx *c, uint64_t actor, const char *banc, const char
     teleport.destination = index;
     if (ok) {
         snprintf(scene_wait.banc, sizeof scene_wait.banc, "%s", banc);
-        scene_wait.at = now, scene_wait.armed = 1;
+        scene_wait.at = now, scene_wait.seen = now, scene_wait.armed = 1, scene_wait.loaded = 0, scene_wait.actor = actor;
     }
     hos_log("cheats: teleport %s to %s at %s (boot %s, event %s, starter %d): request %s, result %#llx",
             child ? "child" : "adult", banc, start, boot, event, with_starter, ok ? "sent" : "not built",
@@ -910,7 +910,7 @@ static void oot_toggle_age(Ctx *c, uint64_t actor) {
     }
 }
 
-static void oot_scene_ready_check(Ctx *c) {
+static void oot_scene_ready_check(Ctx *c, uint64_t actor) {
     if (!scene_wait.armed) return;
     const int64_t now = hos_now_ns();
     if (now - scene_wait.at > 120000000000LL) {
@@ -919,13 +919,21 @@ static void oot_scene_ready_check(Ctx *c) {
         return;
     }
     int loading = 0;
-    if (oot_gamedata_bool(c, 0xef2b60c2u, &loading) && loading) return;   /* Sequence_IsLoadingBanc */
+    if (oot_gamedata_bool(c, 0xef2b60c2u, &loading) && loading) {   /* Sequence_IsLoadingBanc */
+        scene_wait.loaded = 1;
+        return;
+    }
+    if (actor != scene_wait.actor) scene_wait.loaded = 1;   /* (a new Link: the map was made again) */
+    if (now - scene_wait.seen > 300000000LL) scene_wait.loaded = 1;   /* (no player update for a while: a load ran) */
+    scene_wait.seen = now;
+    if (!scene_wait.loaded) return;   /* (the same banc again: its name matches before the load) */
     const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
     if (events && recomp_load64(c, events + 104)) return;   /* the arrival event still plays */
     char current[96];
     oot_gamedata_string(c, 0x1d6189dau, current, sizeof current);   /* Sequence_CurrentBanc */
     if (strcmp(current, scene_wait.banc)) return;
     scene_wait.armed = 0;
+    teleport.requested_at = 0;   /* (the next map change may go at once: this one is done) */
     hos_log("scene: ready %s after %.2f s", current, (now - scene_wait.at) / 1e9);
 }
 
@@ -940,18 +948,27 @@ void hos_oot_warp_request(const char *args) {
 }
 static void oot_warp_take(Ctx *c, uint64_t actor) {
     if (!__atomic_load_n(&warp_pending, __ATOMIC_ACQUIRE)) return;
+    {   /* (quietly wait for the last change, a load or an event to finish: oot_request_banc would log each try) */
+        int loading = 0;
+        const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+        if ((teleport.requested_at && hos_now_ns() - teleport.requested_at < 8000000000LL) ||
+            (oot_gamedata_bool(c, 0xef2b60c2u, &loading) && loading) || (events && recomp_load64(c, events + 104)))
+            return;
+    }
     char banc[128] = "", start[128] = "", boot[128] = "";
     sscanf(warp_line, "%127s %127s %127s", banc, start, boot);
     if (!strcmp(start, "-")) start[0] = 0;
     if (!boot[0]) snprintf(boot, sizeof boot, "Dm_SY_BancChangeArrive");
+    else if (!strcmp(boot, "-")) boot[0] = 0;   /* (none: AfterChangeBanc plays the banc's own BootEvent) */
     int child = 1;
     oot_gamedata_bool(c, 0xcea220d3u, &child);
-    if (!banc[0] || oot_request_banc(c, actor, banc, start, boot, child, ~0u) || !banc[0])
-        __atomic_store_n(&warp_pending, 0, __ATOMIC_RELEASE);   /* (kept when the request must wait: an event or a load) */
+    /* (sent once: the request's result is 0 also when the event is taken; the scene cycle sends it again if no
+       "scene: ready" follows) */
+    if (banc[0]) oot_request_banc(c, actor, banc, start, boot, child, ~0u);
+    __atomic_store_n(&warp_pending, 0, __ATOMIC_RELEASE);
 }
 
 static void oot_teleport_followup(Ctx *c) {
-    oot_scene_ready_check(c);
     if (!teleport.check_at || hos_now_ns() < teleport.check_at) return;
     teleport.check_at = 0;
     char next[80], current[80];
@@ -996,6 +1013,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     int action = rx_option(HOS_OPT_CHEAT_ACTION, 0);
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     oot_teleport_followup(c);
+    oot_scene_ready_check(c, actor);
     oot_warp_take(c, actor);
     oot_inventory_refresh(c, now);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
