@@ -33,6 +33,7 @@ struct SoProg {
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ts = VK_NULL_HANDLE, ms = VK_NULL_HANDLE;   // (task, mesh: native mesh programs)
     // (compute stages, by stage index: a compute program's stage 0, a mesh fallback program's task and mesh dispatches)
     VkShaderEXT cs[8]{};
+    bool heap = false;        // (RX_VK_DESC_HEAP: made with the descriptor heap mapping, vk_desc_heap.h: drawn through the heap)
     bool cs_failed = false;   // (a fallback's compute stage not made: its dispatches take the pipelines, its draw stays a shader object)
 };
 /// Every compute stage of p has its shader object in so (ready, not failed): a dispatch binds them, not pipelines

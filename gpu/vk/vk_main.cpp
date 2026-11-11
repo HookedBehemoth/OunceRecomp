@@ -16,6 +16,7 @@
 
 #include "vk_api.h"
 #include "vk_draw.h"
+#include "vk_desc_heap.h"
 #include "vk_framegen.h"
 #include "vk_internal.h"
 #include "gpu_choice.h"
@@ -348,6 +349,7 @@ bool create_device() {
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
+    desc_heap_device_extensions(exts, want, tail);   // (native-vk, RX_VK_DESC_HEAP=1: VK_EXT_descriptor_heap, vk_desc_heap.cpp)
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     antilag_device_features(tail);   // (AMD Anti-Lag 2's, when its extension is there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
@@ -414,6 +416,7 @@ bool create_device() {
         logf("vk: shader objects on (RX_VK_SHADER_OBJECTS): graphics programs bind VkShaderEXT stages, binary version %u",
              sp.shaderBinaryVersion);
     }
+    desc_heap_features_resolved(dev.shader_object, f12.bufferDeviceAddress);
     dev.vk12 = f12;
     dev.vk13 = f13;
     {   // (hookshot, after TotK Recomp's vk_caps.c) NVN's programs are written for 32 lanes: the translator is told 32, and the lane
@@ -480,6 +483,7 @@ bool create_device() {
     dev.present_family = dev.queue_family;
     if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
     if (dev.buffer_marker) buffer_markers_init();
+    desc_heap_device_created();
     coopmat_init();
     reflex_device_created();
     antilag_device_created();

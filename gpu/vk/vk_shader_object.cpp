@@ -32,6 +32,7 @@
 #include "vk_shader_object.h"
 #include "vk_jobs.h"
 #include "vk_draw.h"   // (ub_thread_off)
+#include "vk_desc_heap.h"
 
 namespace mkwvk {
 namespace {
@@ -230,7 +231,13 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
     };
     One ones[8];
     int n = 0;
-    const uint64_t lsig = layout_sig(p, push_size);
+#ifdef VK_EXT_descriptor_heap
+    // (RX_VK_DESC_HEAP: a program the heap can draw is made with its mapping, no set layout, no push range; its binaries keyed by it)
+    const HeapProgram* hp = desc_heap_program(p);
+#else
+    const void* hp = nullptr;
+#endif
+    const uint64_t lsig = hp ? so_mix(0x48454150ull, hp->sig) : layout_sig(p, push_size);
     {
         std::lock_guard lk(cache_mu);
         cache_init_locked();
@@ -273,6 +280,18 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
         ci.pushConstantRangeCount = 1;
         ci.pPushConstantRanges = &range;
         if (dev.sg32_stages & o.st->vk_stage) ci.pNext = &size32;
+#ifdef VK_EXT_descriptor_heap
+        VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
+        VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size32_heap = size32;
+        if (hp) {
+            const auto& maps = hp->maps[o.index];
+            mi.mappingCount = (uint32_t)maps.size(), mi.pMappings = maps.data();
+            if (ci.pNext) size32_heap.pNext = &mi, ci.pNext = &size32_heap;
+            else ci.pNext = &mi;
+            ci.flags |= VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+            ci.setLayoutCount = 0, ci.pSetLayouts = nullptr, ci.pushConstantRangeCount = 0, ci.pPushConstantRanges = nullptr;
+        }
+#endif
         VkResult r = VK_ERROR_UNKNOWN;
         if (o.bin) {
             ci.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT;
@@ -362,6 +381,7 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
         for (int i = 0; i < n; i++)
             if (ones[i].st->vk_stage == VK_SHADER_STAGE_COMPUTE_BIT && ones[i].out)
                 vkDestroyShaderEXT(dev.device, ones[i].out, nullptr), ones[i].out = VK_NULL_HANDLE;
+    so.heap = hp != nullptr;
     for (int i = 0; i < n; i++) {
         const VkShaderStageFlagBits st = ones[i].st->vk_stage;
         if (st == VK_SHADER_STAGE_COMPUTE_BIT) {

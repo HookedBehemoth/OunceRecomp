@@ -50,6 +50,7 @@
 
 #include "vk_internal.h"
 #include "vk_shader_object.h"
+#include "vk_desc_heap.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -161,6 +162,9 @@ bool batch_on() {
     return on && batch_tl != VK_NULL_HANDLE;
 }
 } // namespace
+uint64_t replay_completed_value() {   // (RX_VK_DESC_HEAP: whether a heap entry's last user is done)
+    return completed();
+}
 void queue_flush_locked() {   // (dev.present_mu held)
     if (pend.cbs.empty()) return;
     VkSemaphoreSubmitInfo sig[3]{{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO},
@@ -2966,6 +2970,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                        framegen_record(r.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample), sw,
                                        sh, crop);
         texture_frame(completed());
+        desc_heap_frame();
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;
@@ -3745,7 +3750,7 @@ void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) {
     if (skipped) *skipped = v[1];
     if (pipelines) *pipelines = v[3];
 }
-void register_texture_locked(int id, const nvn_tex* t, const nvn_view* v) { register_texture(id, t, v); }
+void register_texture_locked(int id, const nvn_tex* t, const nvn_view* v) { register_texture(id, t, v), desc_heap_registered(id); }
 void do_program_released(const nvn_prog* p) {
     std::lock_guard lk(replay_mu);   // (the replay may be translating it)
     program_released(p);
@@ -3853,7 +3858,7 @@ void replay_thread_main() {
             drain(1);
             do_program_released(&j.prog);
             break;
-        case JOB_REGISTER_TEXTURE: register_texture_copy(j.id, j.tex, j.has_view ? &j.view : nullptr); break;
+        case JOB_REGISTER_TEXTURE: register_texture_copy(j.id, j.tex, j.has_view ? &j.view : nullptr), desc_heap_registered(j.id); break;
         case JOB_REGISTER_SAMPLER: register_sampler_copy(j.id, j.samp); break;
         case JOB_EVENT_SIGNAL:   // (the CPU set an event: the stopped ones may go on)
             ev_values[j.ev_gpu] = j.ev_value;

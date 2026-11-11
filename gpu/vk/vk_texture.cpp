@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "vk_texture.h"
+#include "vk_desc_heap.h"
 #include "vk_menu.h"
 #include "vk_draw.h"
 #include "vk_gprof.h"
@@ -264,7 +265,7 @@ bool pool_take(uint64_t key, VkImage& image, VmaAllocation& allocation, std::uno
 }
 void pool_destroy(Pooled& p) {
     for (auto& kv : p.views)
-        if (kv.second) vkDestroyImageView(dev.device, kv.second, nullptr);
+        if (kv.second) desc_heap_view_destroyed(kv.second), vkDestroyImageView(dev.device, kv.second, nullptr);
     destroy_image(p.image, p.allocation);
     st_pool_destroyed++;
 }
@@ -504,12 +505,13 @@ VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAsp
     vi.components = cm;
     vi.subresourceRange = {aspect, level0, nlevels, layer0, nlayers};
     VkImageView v = VK_NULL_HANDLE;
-    if (vkCreateImageView(dev.device, &vi, nullptr, &v) == VK_SUCCESS) return v;
+    if (vkCreateImageView(dev.device, &vi, nullptr, &v) == VK_SUCCESS) return desc_heap_view_made(v, vi, uci.usage), v;
     if (!block_view || nlayers == 1) return VK_NULL_HANDLE;
     // (Vulkan 1.1 says a block-texel view is of a single layer; some drivers hold to it)
     vi.subresourceRange.layerCount = 1;
     if (vi.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY) vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     if (vkCreateImageView(dev.device, &vi, nullptr, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
+    desc_heap_view_made(v, vi, uci.usage);   // (RX_VK_DESC_HEAP: what a heap descriptor of it is written from)
     return v;
 }
 
@@ -1722,6 +1724,7 @@ void alive_set(uint32_t id, bool on) {
 void destroy_later(Texture& tex) {
     destroy_gen++;
     alive_set(tex.id, false);
+    desc_heap_texture_retired(tex.id);   // (RX_VK_DESC_HEAP: the heap entries pointing at it go at the next submission)
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
         d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
@@ -3583,7 +3586,7 @@ void texture_frame(uint64_t completed) {
             it = dead.erase(it);
             continue;
         }
-        for (VkImageView v : it->views) vkDestroyImageView(dev.device, v, nullptr);
+        for (VkImageView v : it->views) desc_heap_view_destroyed(v), vkDestroyImageView(dev.device, v, nullptr);
         destroy_image(it->image, it->allocation);
         if (it->buffer) destroy_buffer(it->buffer, it->buffer_alloc);
         for (VkDeviceMemory m : it->memory) vkFreeMemory(dev.device, m, nullptr);

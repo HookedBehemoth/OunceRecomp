@@ -42,6 +42,7 @@
 #include "vk_jobs.h"
 #include "vk_shader.h"
 #include "vk_shader_object.h"
+#include "vk_desc_heap.h"
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
@@ -61,6 +62,7 @@ struct PointerEntry { uint64_t addr, size; };
 const PointerEntry* pointer_table(const NvnState& s, int stage);
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset);   // (vk_shader.cpp)
 uint64_t sampler_registrations_generation();   // (vk_bank.cpp: sampler_for's cache)
+uint64_t replay_completed_value();   // (vk_replay.cpp: the timeline value the GPU finished; RX_VK_DESC_HEAP)
 namespace {
 // ---- (hookshot) this file's per-thread objects that need a constructor or a destructor ----
 // With llvm-mingw every use of such a thread_local calls the file's TLS init function, which saves registers, finds the
@@ -420,7 +422,8 @@ VkDescriptorPool make_pool() {
     return vkCreateDescriptorPool(dev.device, &ci, nullptr, &p) == VK_SUCCESS ? p : VK_NULL_HANDLE;
 }
 
-constexpr VkBufferUsageFlags kStreamUse = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+const VkBufferUsageFlags kStreamUse = (desc_heap_wanted() ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0) |   // (RX_VK_DESC_HEAP: the banks' addresses)
+                                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;   // (vertex too: a binding served from a copy, gpu_buffer_bind)
 // Commit ownership only after the complete mapping and its container entry exist.
@@ -1966,6 +1969,7 @@ VkSampler sampler_make(int id, bool compare) {
         remember_failure();   // (an error's output handle is undefined, not a resource to cache or destroy)
         return VK_NULL_HANDLE;
     }
+    desc_heap_sampler_made(sm, ci);   // (RX_VK_DESC_HEAP: what its heap descriptor is written from)
     try {
         samplers.emplace(key, sm);
     } catch (const std::exception&) {
@@ -2314,6 +2318,246 @@ struct DescWriter {
 TLS_OBJECT(dw, DescWriter)
 TLS_OBJECT(draw_sampled, std::vector<const Texture*>)   // (the textures the descriptors being built sample or store)
 TLS_OBJECT(gfx_sampled, std::vector<const Texture*>)    // (the last draw's: kept while its descriptors are reused)
+#ifdef VK_EXT_descriptor_heap
+// ---- (native-vk, RX_VK_DESC_HEAP=1) the draw's half of the descriptor heap (vk_desc_heap.h): the scan of its handles, its bank
+// uploads, its ring block, its push data. build_descriptors builds a heap draw's buffers and storage images as for push descriptors
+// (every side effect of theirs kept: stamps, write marks, binds); its textures go through heap_texture instead of the view lookup
+// and the sampler table ----
+thread_local bool heap_build = false;            // (build_descriptors is building a heap draw's)
+thread_local const HeapProgram* heap_prog = nullptr;
+thread_local size_t heap_tex_i = 0;              // (the texture element being built)
+TLS_OBJECT(heap_handles, std::vector<uint32_t>)  // (per texture element: the handle read, for the pushed ones)
+struct HeapCopy { VkBuffer src; uint64_t src_off; VkBuffer dst; uint64_t dst_off; uint32_t n; };
+TLS_OBJECT(heap_instream, std::vector<HeapCopy>)   // (entries the recording used before, rewritten: copied in the stream before the draw)
+// (the last heap draw's push data: a draw that keeps its descriptors pushes it again)
+thread_local const Program* heap_last_prog = nullptr;
+thread_local uint8_t heap_last_push[256];
+thread_local uint32_t heap_last_push_n = 0;
+
+/// A descriptor into the heap at dst: in place (nothing in flight used the entry), by the upload command buffer (submitted work
+/// used it: copied after that work, before this recording) or in the stream before this draw (this recording used it)
+void heap_put(VkBuffer heap, uint8_t* map, uint64_t dst, const uint8_t* bytes, uint32_t n, HeapPut kind) {
+    if (kind != HeapPut::InPlace) {
+        const uint64_t at = stream_alloc(n, 16);
+        if (at == UINT64_MAX) {   // (no room to stage it: written in place, counted with the hot ones)
+            static std::atomic<int> told{0};
+            if (told++ < 8) logf("vk: descriptor heap: no stream room to stage a rewrite: written in place");
+            kind = HeapPut::InPlace;
+        } else {
+            std::memcpy(cur->mapped + at, bytes, n);
+            if (kind == HeapPut::Upload) {
+                const VkBufferCopy c{at, dst, n};
+                vkCmdCopyBuffer(upload_command_buffer(), cur->stream, heap, 1, &c);
+                desc_heap_count(HC_UPLOAD);
+            } else {
+                heap_instream().push_back({cur->stream, at, heap, dst, n});
+                desc_heap_count(HC_IN_STREAM);
+            }
+            return;
+        }
+    }
+    std::memcpy(map + dst, bytes, n);
+    desc_heap_count(HC_IN_PLACE);
+}
+/// The in-stream rewrites the draw being built needs, before it: the pass ended, the work before done with the old entries
+void heap_flush_instream(VkCommandBuffer cmd) {
+    if (heap_instream().empty()) return;
+    end_pass(cmd);
+    full_barrier(cmd, "barrier (descriptor heap rewrite)");
+    for (const HeapCopy& c : heap_instream()) {
+        const VkBufferCopy r{c.src_off, c.dst_off, c.n};
+        vkCmdCopyBuffer(cmd, c.src, c.dst, 1, &r);
+    }
+    VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT, b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
+    VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &d);
+    heap_instream().clear();
+}
+
+/// The sampler entry a handle's sampler id names, current (written when its registration changed what it makes)
+VkSampler heap_sampler(uint32_t id, bool compare) {
+    HeapSamplerEntry& e = desc_heap_sampler_entry(compare, id);
+    const uint32_t v = sampler_slot_version((int)id);
+    if (!e.valid || e.ver != v) {
+        const VkSampler sm = sampler_for((int)id, compare);
+        if (sm && sm != e.sampler) {
+            uint8_t d[16];
+            if (desc_heap_encode_sampler(sm, d)) {
+                heap_put(desc_heap_sampler_buffer(), desc_heap_sampler_map(), desc_heap_sampler_offset(compare, id), d, 16,
+                         desc_heap_put_kind(e.last_value, e.last_rec));
+                e.sampler = sm;
+                desc_heap_count(HC_SAMPLER_WRITES);
+            }
+        }
+        e.ver = v, e.valid = sm != VK_NULL_HANDLE && e.sampler == sm;
+    }
+    desc_heap_use(e);
+    return e.sampler;
+}
+
+/// (build_descriptors, a heap draw) a texture element: its heap entries made current for the handle as read now, the texture
+/// touched once a submission as texture_view_of does (its contents, its age). Returns the view the entry holds (null: none)
+VkImageView heap_texture(uint32_t handle, const HeapTex& ht, VkImageViewType vt, Texture** tex_out) {
+    desc_heap_count(HC_SCANS);
+    *tex_out = nullptr;
+    if (ht.kind == HeapTex::Null) return VK_NULL_HANDLE;   // (no handle: a null descriptor, as the classic path's dummy)
+    const uint32_t slot = handle & 0xFFFFF;
+    heap_sampler(handle >> 20, ht.compare);
+    if (slot >= kHeapSlots) {   // (the GPU reads another region's entry or the zero tail: as unregistered)
+        desc_heap_count(HC_BIG_ID);
+        static std::atomic<int> told{0};
+        if (slot != 0xFFFFF && told++ < 8) logf("vk: descriptor heap: texture id %#x past the regions (%u)", slot, kHeapSlots);
+        return VK_NULL_HANDLE;
+    }
+    HeapEntry& e = desc_heap_entry(ht.region, slot);
+    const uint32_t ver = texture_slot_version((int)slot);
+    const bool serial = texture_serial_on();
+    const uint64_t gen = serial ? texture_miss_generation() : texture_destroy_generation();
+    const uint32_t epoch = texture_epoch();
+    const bool stands = e.valid && e.ver == ver && (serial ? (e.tex ? texture_alive(e.tex_id) : e.gen == gen) : e.gen == gen);
+    if (!(stands && e.epoch == epoch)) {
+        // (resolved anew, or touched once this submission: the classic lookup, which caches and touches; slot 0 is never a texture
+        // here (handle 0, nothing bound, reads it): the classic path samples handle 0 as the dummy)
+        desc_heap_count(HC_RESOLVES);
+        Texture* tex = nullptr;
+        const VkImageView view = slot ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex) : VK_NULL_HANDLE;
+        bool ok = true;
+        if (view != e.view) {
+            uint8_t d[64];
+            ok = desc_heap_encode_image(view, false, d);
+            if (ok) {
+                heap_put(desc_heap_resource_buffer(), desc_heap_resource_map(), desc_heap_image_offset(ht.region, slot), d, 64,
+                         desc_heap_put_kind(e.last_value, e.last_rec));
+                e.view = view;
+            } else {
+                static std::atomic<int> told{0};
+                if (told++ < 16) logf("vk: descriptor heap: no descriptor for the view of slot %#x (view type %d)", slot, (int)vt);
+            }
+        }
+        if (ok) {   // (a pooled view taken over by another texture is the same view: only the reverse map moves)
+            const uint32_t id = view && tex ? tex->id : 0u;
+            desc_heap_entry_texture(ht.region, slot, e.tex_id, id);
+            e.tex = id ? tex : nullptr, e.tex_id = id, e.sampling = true;
+            e.ver = ver, e.gen = gen, e.epoch = epoch, e.valid = true;
+        } else {
+            e.valid = false;
+        }
+    } else if (desc_ids_on && e.tex) {
+        desc_ids().push_back(e.tex_id);   // (RX_VK_TEX_SERIAL: a kept draw checks these textures alive, as texture_view_of notes them)
+    }
+    desc_heap_use(e);
+    *tex_out = e.tex;
+    return e.view;
+}
+
+/// A driver bank as the draw has it, uploaded into the stream: its device address (the Indirect textures read their handles there)
+struct HeapBank { uint64_t gen = ~0ull; uint32_t bytes = 0; VkDeviceAddress addr = 0; uint64_t at = 0; uint8_t* mapped = nullptr; };
+TLS_OBJECT(heap_banks, std::array<std::array<HeapBank, kNvnStages>, 2>)   // [c0 or c2][NVN stage]
+VkDeviceAddress heap_bank(const NvnState& s, const Stage& st, uint32_t index, uint32_t bytes, const uint8_t** words = nullptr) {
+    const int bank_stage = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
+    static const bool stage_gen_off = getenv("RX_VK_BANK_GEN_OFF") != nullptr;   // (as uniform_range's)
+    const uint64_t gen = stage_gen_off || bank_stage > 4 ? s.bind_gen : index == 2 ? s.tex_gen[bank_stage] : s.ssbo_gen[bank_stage];
+    HeapBank& c = heap_banks()[index == 2][bank_stage];
+    if (c.addr && c.gen == gen && c.bytes >= bytes) {
+        if (words) *words = c.mapped;
+        return c.addr;
+    }
+    const uint32_t n = std::clamp<uint32_t>((bytes + 15) & ~15u, 16, 0xA00);
+    const uint64_t align = std::max<uint64_t>(dev.props.limits.minUniformBufferOffsetAlignment, 16);
+    const uint64_t at = stream_alloc(n, align);
+    if (at == UINT64_MAX) return 0;
+    driver_bank_fill(s, (int)index, st.nvn_stage, cur->mapped + at, n);
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = cur->stream;
+    const VkDeviceAddress base = vkGetBufferDeviceAddress(dev.device, &da);
+    if (!base) return 0;
+    c = {gen, n, base + at, at, cur->mapped + at};
+    desc_heap_count(HC_BANK_UPLOADS);
+    if (words) *words = c.mapped;
+    return c.addr;
+}
+
+/// (after build_descriptors, a heap draw) the draw's ring block (its buffers and storage images), its banks, its push data
+/// (data: the classic push constants filled; the heap's words added). false: the draw cannot be made (ring full, no stream room)
+bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8_t* data) {
+    uint32_t index = 0;
+    uint8_t* block = nullptr;
+    if (!desc_heap_ring_alloc(hp.block_bytes, &index, &block)) return false;
+    size_t bi = 0, ii = 0;
+    for (const VkWriteDescriptorSet& w : dw().writes) {
+        if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+            for (uint32_t k = 0; k < w.descriptorCount && bi < hp.buf_at.size(); k++, bi++) {
+                const VkDescriptorBufferInfo& b = w.pBufferInfo[k];
+                VkDeviceSize range = b.range;
+                if (b.buffer && range == VK_WHOLE_SIZE) range = 0;   // (no whole-buffer ranges here: a null descriptor)
+                desc_heap_encode_buffer(b.buffer, b.offset, range, w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, block + hp.buf_at[bi]);
+            }
+        } else if (w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+            for (uint32_t k = 0; k < w.descriptorCount && ii < hp.img_at.size(); k++, ii++)
+                desc_heap_encode_image(w.pImageInfo[k].imageView, true, block + hp.img_at[ii]);
+        }
+    }
+    const uint32_t base = desc_heap_push_base();
+    std::memcpy(data + base, &index, 4);
+    for (const HeapProgram::Bank& bk : hp.banks) {
+        const VkDeviceAddress a = heap_bank(s, p.stages[bk.stage], bk.index, bk.bytes);
+        if (!a) return false;
+        std::memcpy(data + bk.push_off, &a, 8);
+    }
+    for (size_t t = 0; t < hp.tex.size() && t < heap_handles().size(); t++)
+        if (hp.tex[t].kind == HeapTex::PushIndex) {
+            const uint32_t h = heap_handles()[t] & 0xFFFFF ? heap_handles()[t] : 0;
+            std::memcpy(data + hp.tex[t].push_off, &h, 4);
+        }
+    return true;
+}
+
+/// (RX_VK_DESC_HEAP_CHECK=1) the heap draw's textures and samplers resolved the classic way too, and its Indirect handles read back
+/// from the bank the GPU reads: any difference is logged (60 lines) and counted
+void heap_check(const NvnState& s, const Program& p, const HeapProgram& hp, const uint8_t* data) {
+    desc_heap_count(HC_CHECK_DRAWS);
+    size_t t = 0;
+    for (const Stage& st : p.stages)
+        for (const auto& d : st.info.texture_descriptors) {
+            if (t >= hp.tex.size()) return;
+            const HeapTex& ht = hp.tex[t];
+            const uint32_t handle = t < heap_handles().size() ? heap_handles()[t] : 0;
+            t++;
+            if (ht.kind == HeapTex::Null) continue;
+            const char* bad = nullptr;
+            uint32_t gpu_word = handle;
+            if (ht.kind == HeapTex::Indirect) {
+                VkDeviceAddress a = 0;
+                std::memcpy(&a, data + ht.push_off, 8);
+                const uint8_t* words = nullptr;
+                const HeapProgram::Bank& bk = hp.banks[ht.bank];
+                if (heap_bank(s, p.stages[bk.stage], bk.index, bk.bytes, &words) != a || !words) bad = "the bank's address moved";
+                else std::memcpy(&gpu_word, words + ht.cbuf_offset, 4);
+                if (!bad && gpu_word != handle) bad = "the bank's word is not the handle read";
+            }
+            const uint32_t slot = handle & 0xFFFFF;
+            Texture* old_tex = nullptr;
+            const VkImageView old_view =
+                handle ? texture_view_of(handle, view_type(d.type), ViewUse::Sample, VK_FORMAT_UNDEFINED, &old_tex) : VK_NULL_HANDLE;
+            const VkImageView heap_view = slot < kHeapSlots ? desc_heap_entry(ht.region, slot).view : VK_NULL_HANDLE;
+            if (!bad && old_view != heap_view) bad = "the entry holds another view";
+            const VkSampler old_s = sampler_for((int)(handle >> 20), d.is_depth);
+            if (!bad && old_s != desc_heap_sampler_entry(d.is_depth, handle >> 20).sampler) bad = "the sampler entry holds another sampler";
+            if (bad) {
+                desc_heap_count(HC_CHECK_BAD);
+                static std::atomic<int> told{0};
+                if (told++ < 60)
+                    logf("vk: descriptor heap CHECK: program %016llx stage %d texture %zu (%s c%u+%#x): handle %#x (GPU reads %#x): %s "
+                         "(classic view %p texture #%u, heap view %p)", (unsigned long long)p.key, st.nvn_stage, t - 1,
+                         ht.kind == HeapTex::Indirect ? "indirect" : "pushed", d.cbuf_index, d.cbuf_offset, handle, gpu_word, bad,
+                         (void*)old_view, old_tex ? old_tex->id : 0u, (void*)heap_view);
+            }
+        }
+}
+#endif
 
 /// Fills dw with the program's descriptors for the bound state (bindings in Eden's order). Storage the program
 /// writes is noted: textures it stores into are GPU-written, buffers it stores into are stamped (vk_memory.cpp).
@@ -2504,6 +2748,10 @@ bool table_track_open(int logged, int seen, int unlimited) {
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
     dw().prog = &p;
+#ifdef VK_EXT_descriptor_heap
+    heap_tex_i = 0;
+    if (heap_build) heap_handles().clear();
+#endif
     desc_fp().clear(), desc_fp_dummy = false;   // (RX_VK_DESC_SLOTGEN: the samplers' generation is read before the first handle,
     desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
     desc_destroy_seen = texture_destroy_generation();      // (an eviction retires views behind the slots' backs: it bumps only this)
@@ -2814,14 +3062,20 @@ void build_descriptors(const NvnState& s, const Program& p) {
                 // every other frame. No texture there now. RX_VK_HANDLE_POINTER=1: the old handle
                 // (fragment stages only, the water's case: in other stages (the foliage culling's) the textures went missing and
                 // the foliage was culled whenever Link swung his sword. RX_VK_HANDLE_POINTER_ALL=1: every stage, as before)
-                static const bool all_stages = getenv("RX_VK_HANDLE_POINTER_ALL") != nullptr;
-                const uint32_t handle = ((all_stages || st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) && handle_is_storage_pointer(info, d, k))
-                                            ? 0u : handle_of(s, st, d, k);
+                const uint32_t handle = texture_handle_is_pointer(st, d, k) ? 0u : handle_of(s, st, d, k);
                 desc_fp_note(handle);   // (RX_VK_DESC_SLOTGEN)
                 Texture* tex = nullptr;
                 upload_defer_ok = st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT;   // (a draw's: its new ASTC textures may wait a frame)
+#ifdef VK_EXT_descriptor_heap
+                // (RX_VK_DESC_HEAP: its heap entries made current instead; the GPU reads the handle itself)
+                VkImageView view = heap_build ? heap_texture(handle, heap_prog->tex[std::min(heap_tex_i, heap_prog->tex.size() - 1)], vt, &tex)
+                                 : handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex)
+                                          : VK_NULL_HANDLE;
+                if (heap_build) heap_handles().push_back(handle), heap_tex_i++;
+#else
                 VkImageView view = handle ? texture_view_of(handle, vt, ViewUse::Sample, VK_FORMAT_UNDEFINED, &tex)
                                           : VK_NULL_HANDLE;
+#endif
                 upload_defer_ok = false;
                 if (dump_on()) dump_input('t', (uint32_t)(dw().imgs.size() - 0), handle, view ? tex : nullptr);
                 if (view && tex && trace_tex_wanted(tex)) trace_tex_hit = tex;
@@ -2849,6 +3103,12 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                (void*)view, view ? "" : " (dummy)");
                 if (view && tex && tex->gpu_written) draw_sampled().push_back(tex);
                 if (!view) view = dummies.view[(int)vt], st_dummy_textures += handle != 0;
+#ifdef VK_EXT_descriptor_heap
+                if (heap_build) {   // (its sampler is in the sampler heap; the view kept for the stand-ins that read it here)
+                    dw().imgs.push_back({VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL});
+                    continue;
+                }
+#endif
                 dw().imgs.push_back({sampler_for((int)(handle >> 20), d.is_depth), view, VK_IMAGE_LAYOUT_GENERAL});
             }
             w.pImageInfo = &dw().imgs[first];
@@ -2909,6 +3169,12 @@ struct Pushed {
 TLS_OBJECT(pushed, std::array<Pushed, 2>)   // [graphics, compute]
 } // namespace
 void program_layout(Program& p) { ensure_layout(p); }   // (vk_shader_object.h)
+/// (vk_desc_heap.cpp) whether texture element k's handle word is a storage buffer's address (sampled as the dummy, not as a handle)
+bool texture_handle_is_pointer(const Stage& st, const Shader::TextureDescriptor& d, uint32_t k) {
+    static const bool all_stages = getenv("RX_VK_HANDLE_POINTER_ALL") != nullptr;
+    return (all_stages || st.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT) && handle_is_storage_pointer(st.info, d, k);
+}
+VkImageViewType texture_view_type(Shader::TextureType t) { return view_type(t); }
 uint32_t so_push_size() { return kPushSize; }
 namespace {
 } // namespace
@@ -3120,11 +3386,8 @@ const char* checkpoint_kind(char c) {
 thread_local uint64_t fallback_payload_address = 0, fallback_records_address = 0;   // (the draw's fallback buffers)
 thread_local uint64_t fallback_indirect_input = 0;
 
-void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, uint32_t fallback_first = 0) {
-    checkpoint(cmd, p, at ? 'd' : 'c');
-    if (!p.uses_push) return;   // (most programs read none: a push a draw was ~5% of the replay's commands)
-    FINE_N(FC_PUSHC, 1);
-    uint8_t data[kPushSize]{};
+/// The push constants' bytes for a draw (at) or dispatch
+void push_bytes(uint8_t* data, const Program& p, const Targets* at, uint32_t fallback_first) {
     const float one = 1.0f;
     std::memcpy(data + Shader::Backend::SPIRV::RESCALING_LAYOUT_DOWN_FACTOR_OFFSET, &one, 4);
     {   // (guest memory's page table, for the pointers compute, task and mesh stages follow)
@@ -3150,8 +3413,39 @@ void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, ui
         const float ra[4] = {(float)at->width, (float)at->height, 0.0f, 0.0f};
         std::memcpy(data + Shader::Backend::SPIRV::RENDERAREA_LAYOUT_OFFSET, ra, sizeof ra);
     }
+}
+void push_constants(VkCommandBuffer cmd, const Program& p, const Targets* at, uint32_t fallback_first = 0) {
+    checkpoint(cmd, p, at ? 'd' : 'c');
+    if (!p.uses_push) return;   // (most programs read none: a push a draw was ~5% of the replay's commands)
+    FINE_N(FC_PUSHC, 1);
+    uint8_t data[kPushSize]{};
+    push_bytes(data, p, at, fallback_first);
     vkCmdPushConstants(cmd, p.layout, p.push_stages, 0, kPushSize, data);
 }
+#ifdef VK_EXT_descriptor_heap
+/// (RX_VK_DESC_HEAP) a heap draw's or dispatch's descriptors bound: its ring block written, its banks uploaded, the heaps bound on cmd
+/// and its push data pushed (the classic push constants first: the shaders' push constant block reads push data from 0).
+/// rebuilt: build_descriptors ran for it; else the last heap draw's push data stands (its descriptors kept). false: left out
+bool heap_draw(VkCommandBuffer cmd, const NvnState& s, const Program& p, const HeapProgram& hp, const Targets* at, bool rebuilt,
+               uint32_t fallback_first = 0) {
+    checkpoint(cmd, p, at ? 'd' : 'c');
+    uint8_t data[256]{};
+    if (rebuilt || heap_last_prog != &p) {
+        if (!heap_fill(s, p, hp, data)) return false;
+        if (desc_heap_check()) heap_check(s, p, hp, data);
+        heap_last_prog = &p;
+    } else {
+        std::memcpy(data, heap_last_push, heap_last_push_n);
+    }
+    push_bytes(data, p, at, fallback_first);   // (the classic words, which change per draw: the render area)
+    std::memcpy(heap_last_push, data, hp.push_bytes), heap_last_push_n = hp.push_bytes;
+    desc_heap_bind(cmd);
+    desc_heap_push(cmd, data, hp.push_bytes);
+    descriptors_disturbed();   // (the command buffer is in heap mode: push descriptors pushed before are gone)
+    desc_heap_count(at ? HC_DRAWS : HC_DISPATCHES);
+    return true;
+}
+#endif
 
 } // namespace
 
@@ -4206,10 +4500,20 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     }
     for (auto& row : bank_cache())
         for (BankCache& c : row) c = BankCache{}, c.at = UINT64_MAX;
+#ifdef VK_EXT_descriptor_heap
+    if (desc_heap_on()) {   // (RX_VK_DESC_HEAP: the recording's ring, its banks uploaded afresh, invalidations at a submission's start)
+        desc_heap_begin_recording(slot, value, replay_completed_value());
+        for (auto& row : heap_banks())
+            for (HeapBank& c : row) c = HeapBank{};
+        heap_last_prog = nullptr;
+        heap_instream().clear();
+    }
+#endif
     if (!zero_buffer) {
         void* mapped = nullptr;
         create_buffer(65536, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, zero_buffer, zero_alloc, &mapped);
+                                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | (desc_heap_wanted() ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0),
+                      true, zero_buffer, zero_alloc, &mapped);
         if (mapped) std::memset(mapped, 0, 65536);
         make_dummies();
     }
@@ -5923,6 +6227,10 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         pl = pe->pipeline;
         if (!pl) SKIP_HERE();
     }
+#ifdef VK_EXT_descriptor_heap
+    // (RX_VK_DESC_HEAP: a program whose shader objects were made for the heap: its descriptors are heap entries and push data)
+    const HeapProgram* hp = so && so->heap ? desc_heap_program(p) : nullptr;
+#endif
     cur_program = &p;
     dlss_trace_draw(s, p, d, at);
     skin_check(s, p, d, at);
@@ -5980,7 +6288,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
                            last_desc_ub == ub_gen && last_desc_dgen == dgen && (!serial || dgen_off || desc_textures_alive()) &&
                            (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
-                           (!p.fallback || dw().prog == &p);
+                           (!p.fallback || dw().prog == &p)
+#ifdef VK_EXT_descriptor_heap
+                           && (!hp || heap_last_prog == &p)   // (a heap draw keeps the last heap draw's push data: its own)
+#endif
+        ;
     if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
         static std::atomic<int> told{0};
         if (told++ < 3) logf("vk: fallback: %016llx's descriptors built again after a dispatch", (unsigned long long)p.key);
@@ -5991,7 +6303,14 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_N(FC_BUILDS, 1);
         trace_tex_hit = nullptr, trace_tex_mask = 0;
         desc_ids().clear(), desc_ids_on = serial;
+#ifdef VK_EXT_descriptor_heap
+        heap_build = hp != nullptr, heap_prog = hp;
+#endif
         build_descriptors(s, p);   // (textures first used here are uploaded by the recording's upload command buffer)
+#ifdef VK_EXT_descriptor_heap
+        heap_build = false;
+        heap_flush_instream(cmd);   // (entries this recording used before, rewritten: copied here, before the pass begins again)
+#endif
         desc_ids_on = false;
         FINE_N(FC_WRITES, (int64_t)dw().writes.size());
         static std::string last_logged;
@@ -6118,6 +6437,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     if (!same_desc) {
         FINE_SCOPE(FT_BINDDESC);
+#ifdef VK_EXT_descriptor_heap
+        if (!hp)   // (a heap draw's are bound with its push data, below)
+#endif
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
         last_desc_ub = ub_gen, last_desc_dgen = dgen;
@@ -6130,6 +6452,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     {
         FINE_SCOPE(FT_PUSHC);
+#ifdef VK_EXT_descriptor_heap
+        if (hp) {
+            if (!heap_draw(cmd, s, p, *hp, &at, !same_desc)) SKIP_HERE();
+        } else
+#endif
         push_constants(cmd, p, &at);
     }
     if (watched(p.key)) {   // (RX_VK_WATCH_PROG: the draw's state, 80 lines)
@@ -7841,7 +8168,16 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     end_pass(cmd);
     static const bool no_grid_patch = getenv("RX_VK_NO_GRID_PATCH") != nullptr;
     grid_patch_want = indirect && !no_grid_patch, grid_patch_at = UINT64_MAX;
+#ifdef VK_EXT_descriptor_heap
+    // (RX_VK_DESC_HEAP: a compute shader object made for the heap: its descriptors are heap entries and push data)
+    const HeapProgram* hp = cso && cso->heap ? desc_heap_program(p) : nullptr;
+    heap_build = hp != nullptr, heap_prog = hp;
+#endif
     build_descriptors(s, p);
+#ifdef VK_EXT_descriptor_heap
+    heap_build = false;
+    heap_flush_instream(cmd);
+#endif
     grid_patch_want = false;
     dclock.t_desc = slow_dispatch_timing() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     if (dump_on())
@@ -7901,8 +8237,15 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     } else {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.compute_pipeline);
     }
-    if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) SKIP_HERE();
-    push_constants(cmd, p, nullptr);
+#ifdef VK_EXT_descriptor_heap
+    if (hp) {
+        if (!heap_draw(cmd, s, p, *hp, nullptr, true)) SKIP_HERE();
+    } else
+#endif
+    {
+        if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) SKIP_HERE();
+        push_constants(cmd, p, nullptr);
+    }
     gprof_begin(cmd);
     if (stats_frame_now()) {   // (EvilOOT, RX_VK_DRAW_STATS) the pointers this dispatch's small buffers hold
         const auto scan = [&](const nvn_p_bind_buf& b, uint64_t most) {
