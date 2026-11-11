@@ -12,7 +12,10 @@
 // fewer buffer objects, which RADV lists in every submission (~0.75 us each a submit: work/proto/layer0/l0_poc.out).
 #include <atomic>
 #include <cstdint>
+#include <algorithm>
+#include <map>
 #include <memory>
+#include <vector>
 
 namespace mkwvk {
 namespace l0 {
@@ -72,14 +75,25 @@ struct ChunkBits {
     void set(uint64_t c) {
         if (c < chunks) words[c / 64].fetch_or(1ull << (c % 64), std::memory_order_release);
     }
+    void clear(uint64_t c) {
+        if (c < chunks) words[c / 64].fetch_and(~(1ull << (c % 64)), std::memory_order_release);
+    }
+    /// bits [c0, c1) all set (a word at a time: a 2 GB range of 64 KB granules is 512 words)
+    bool all_bits(uint64_t c0, uint64_t c1) const {
+        if (c0 >= c1 || c1 > chunks) return false;
+        while (c0 < c1) {
+            const uint64_t w = c0 / 64, lo = c0 % 64, n = std::min<uint64_t>(64 - lo, c1 - c0);
+            const uint64_t mask = (n == 64 ? ~0ull : ((1ull << n) - 1)) << lo;
+            if ((words[w].load(std::memory_order_acquire) & mask) != mask) return false;
+            c0 += n;
+        }
+        return true;
+    }
     /// every chunk of guest [lo, hi) bound (false for an empty or out-of-range one)
     bool all(uint64_t lo, uint64_t hi) const {
         uint64_t c0, c1;
         chunk_span(lo, hi, chunk, c0, c1);
-        if (c0 >= c1 || c1 > chunks) return false;
-        for (uint64_t c = c0; c < c1; c++)
-            if (!has(c)) return false;
-        return true;
+        return all_bits(c0, c1);
     }
     /// any chunk of guest [lo, hi) bound
     bool any(uint64_t lo, uint64_t hi) const {
@@ -99,6 +113,84 @@ inline void bind_span(uint64_t guest, uint64_t size, uint64_t pool_lo, uint64_t 
     if (pool_hi > pool_lo && pool_lo <= guest && hi <= pool_hi && pool_hi - pool_lo <= span) lo = pool_lo, hi = pool_hi;
     if (hi > guest_bytes) hi = guest_bytes;
     if (lo > hi) lo = hi;
+}
+
+// ---- step 7b: the VRAM class (RX_VK_LAYER0=2) ----
+constexpr uint64_t kGran = 64ull << 10;   // (the sparse page: what a pool's VRAM is bound in)
+
+/// The whole granules of [lo, hi) (edges shared with other data stay host): [g0, g1) in granule indices, empty when none
+inline void interior_granules(uint64_t lo, uint64_t hi, uint64_t& g0, uint64_t& g1) {
+    g0 = (lo + kGran - 1) / kGran;
+    g1 = hi / kGran;
+    if (g1 < g0) g1 = g0;
+}
+
+/// A guest range's pieces as bound: each piece within one 2 GB stretch, at its offset in window k and 2 GB further in k - 1
+struct Piece {
+    uint32_t window;
+    uint64_t offset;      // (in the window)
+    uint64_t from;        // (bytes from the range's start: the memory offset is the slot's plus this)
+    uint64_t size;
+};
+inline void range_places(uint64_t lo, uint64_t hi, std::vector<Piece>& out) {
+    for (uint64_t a = lo; a < hi;) {
+        const uint64_t line = (a / kStride + 1) * kStride, b = std::min(hi, line);
+        const uint32_t k = window_of(a);
+        if (k < kWindows) out.push_back({k, window_offset(a), a - lo, b - a});
+        if (k > 0 && k - 1 < kWindows) out.push_back({k - 1, window_offset(a) + kStride, a - lo, b - a});
+        a = b;
+    }
+}
+
+/// Free space of one VRAM block: first fit, freed ranges merged with their neighbours (offsets and sizes in granules' bytes)
+struct SlotRanges {
+    std::map<uint64_t, uint64_t> free;   // (offset -> length)
+    SlotRanges() = default;
+    explicit SlotRanges(uint64_t size) {
+        if (size) free[0] = size;
+    }
+    bool take(uint64_t len, uint64_t& off) {
+        for (auto it = free.begin(); it != free.end(); ++it)
+            if (it->second >= len) {
+                off = it->first;
+                const uint64_t rest = it->second - len;
+                free.erase(it);
+                if (rest) free[off + len] = rest;
+                return true;
+            }
+        return false;
+    }
+    void give(uint64_t off, uint64_t len) {
+        auto next = free.lower_bound(off);
+        if (next != free.end() && off + len == next->first) len += next->second, next = free.erase(next);
+        if (next != free.begin()) {
+            auto prev = std::prev(next);
+            if (prev->first + prev->second == off) {
+                prev->second += len;
+                return;
+            }
+        }
+        free[off] = len;
+    }
+    uint64_t free_bytes() const {
+        uint64_t n = 0;
+        for (const auto& kv : free) n += kv.second;
+        return n;
+    }
+};
+
+/// [g0, g1) without the granules some other range covers (sorted, merged [a, b) granule ranges): the runs left, in order
+inline void granules_minus(uint64_t g0, uint64_t g1, const std::vector<std::pair<uint64_t, uint64_t>>& cut,
+                           std::vector<std::pair<uint64_t, uint64_t>>& out) {
+    uint64_t a = g0;
+    for (const auto& [c0, c1] : cut) {
+        if (c1 <= a) continue;
+        if (c0 >= g1) break;
+        if (c0 > a) out.push_back({a, std::min(c0, g1)});
+        a = std::max(a, c1);
+        if (a >= g1) return;
+    }
+    if (a < g1) out.push_back({a, g1});
 }
 
 } // namespace l0

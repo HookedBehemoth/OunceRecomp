@@ -116,6 +116,82 @@ int main() {
         bind_span(0x1000010000ull, 0x100, 0x1000000000ull, 0x1000400000ull, 0, 512ull << 30, lo, hi);   // (span 0: the range only)
         CHECK(lo == 0x1000010000ull && hi == 0x1000010100ull);
     }
-    std::printf("PASS: layer 0 windows (bindings whole in a window, aliased chunk places, chunk sizes, bits, first-use spans)\n");
+
+    // (7b) word-wise bit ranges against bit by bit
+    {
+        ChunkBits b(1ull << 30, kGran);   // (16384 granules)
+        std::mt19937_64 r2(9);
+        for (int i = 0; i < 3000; i++) b.set(r2() % b.chunks);
+        for (uint64_t c = 1000; c < 1300; c++) b.set(c);
+        for (int i = 0; i < 20000; i++) {
+            uint64_t c0 = r2() % b.chunks, c1 = c0 + r2() % 400;
+            if (i % 3 == 0) c0 = 1000 + r2() % 200, c1 = c0 + r2() % 120;
+            if (c1 > b.chunks) c1 = b.chunks;
+            bool want = c0 < c1;
+            for (uint64_t c = c0; c < c1; c++) want = want && b.has(c);
+            CHECK(b.all_bits(c0, c1) == want);
+        }
+        b.clear(1100);
+        CHECK(!b.all(1000 * kGran, 1300 * kGran) && b.all(1101 * kGran, 1300 * kGran));
+    }
+    // interior granules: the partial edges stay out
+    {
+        uint64_t g0, g1;
+        interior_granules(0x1000007000ull, 0x1000007000ull + 0x300000, g0, g1);
+        CHECK(g0 * kGran == 0x1000010000ull && g1 * kGran == 0x1000300000ull);
+        interior_granules(0x1000000000ull, 0x1000020000ull, g0, g1);
+        CHECK(g0 * kGran == 0x1000000000ull && g1 * kGran == 0x1000020000ull);
+        interior_granules(0x1000001000ull, 0x100000f000ull, g0, g1);
+        CHECK(g0 == g1);   // (inside one granule: none)
+    }
+    // a range's pieces: each in one 2 GB stretch, in window k and 2 GB further in k - 1, memory offsets in order
+    {
+        std::vector<Piece> ps;
+        range_places(0x107ff00000ull, 0x1080100000ull, ps);   // (across the line at 0x1080000000)
+        CHECK(ps.size() == 4);
+        CHECK(ps[0].window == 32 && ps[0].offset == 0x7ff00000ull && ps[0].from == 0 && ps[0].size == 0x100000);
+        CHECK(ps[1].window == 31 && ps[1].offset == 0x7ff00000ull + kStride && ps[1].from == 0);
+        CHECK(ps[2].window == 33 && ps[2].offset == 0 && ps[2].from == 0x100000 && ps[2].size == 0x100000);
+        CHECK(ps[3].window == 32 && ps[3].offset == kStride && ps[3].from == 0x100000);
+        for (const Piece& p : ps) CHECK(p.offset + p.size <= kWindow);
+        for (const Piece& p : ps) CHECK(window_base(p.window) + p.offset == 0x107ff00000ull + p.from);
+        ps.clear();
+        range_places(0x1000, 0x2000, ps);   // (window 0 has no lower neighbour)
+        CHECK(ps.size() == 1 && ps[0].window == 0);
+    }
+    // slots: first fit, contiguous, freed neighbours merged, a full give-back is one range again
+    {
+        SlotRanges s(256ull << 20);
+        uint64_t a, b, c, d;
+        CHECK(s.take(64ull << 20, a) && a == 0);
+        CHECK(s.take(32ull << 20, b) && b == (64ull << 20));
+        CHECK(s.take(160ull << 20, c) && c == (96ull << 20));
+        CHECK(!s.take(kGran, d));
+        s.give(b, 32ull << 20);
+        CHECK(s.take(16ull << 20, d) && d == b);   // (first fit in the hole)
+        s.give(a, 64ull << 20);
+        s.give(d, 16ull << 20);
+        CHECK(s.free.size() == 1 && s.free.begin()->first == 0 && s.free.begin()->second == (96ull << 20));
+        s.give(c, 160ull << 20);
+        CHECK(s.free.size() == 1 && s.free_bytes() == (256ull << 20));
+        SlotRanges e;
+        CHECK(!e.take(kGran, d) && e.free_bytes() == 0);
+    }
+    // a pool's granules without those other pools cover
+    {
+        std::vector<std::pair<uint64_t, uint64_t>> out;
+        granules_minus(10, 20, {{0, 11}, {14, 15}, {19, 30}}, out);
+        CHECK(out.size() == 2 && out[0].first == 11 && out[0].second == 14 && out[1].first == 15 && out[1].second == 19);
+        out.clear();
+        granules_minus(10, 20, {}, out);
+        CHECK(out.size() == 1 && out[0].first == 10 && out[0].second == 20);
+        out.clear();
+        granules_minus(10, 20, {{5, 25}}, out);
+        CHECK(out.empty());
+        out.clear();
+        granules_minus(10, 20, {{12, 13}, {12, 16}}, out);   // (overlapping cuts, sorted by start)
+        CHECK(out.size() == 2 && out[0].second == 12 && out[1].first == 16);
+    }
+    std::printf("PASS: layer 0 windows (bindings whole in a window, aliased chunk places, chunk sizes, bits, first-use spans; 7b: granule ranges, pieces, slots)\n");
     return 0;
 }
