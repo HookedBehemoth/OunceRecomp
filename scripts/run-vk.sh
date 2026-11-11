@@ -21,17 +21,25 @@ name=${1:?name}; seconds=${2:-90}; shift $(( $# >= 2 ? 2 : 1 )) || true
 mode=${RUN:-}
 case "$mode" in
   "") ;;
-  timing) exec 8>"$root/work/run.lock"; flock -x 8 ;;
+  # (work/run.gate makes a waiting timing run block new check runs, so back-to-back checks cannot starve it: a timing
+  # run holds the gate until it has the lock; a check run passes the gate only to take its shared lock, and does not
+  # hold the shared lock while it waits for a slot.)
+  timing)
+    exec 7>"$root/work/run.gate"; flock -x 7
+    exec 8>"$root/work/run.lock"; flock -x 8
+    exec 7>&- ;;
   check)
-    exec 8>"$root/work/run.lock"; flock -s 8
     slots=${RUN_SLOTS:-2}; got=
     while [ -z "$got" ]; do
+      exec 7>"$root/work/run.gate"; flock -x 7
+      exec 8>"$root/work/run.lock"; flock -s 8
+      exec 7>&-
       for ((i = 0; i < slots; i++)); do
         exec 9>"$root/work/run.slot.$i"
         if flock -n 9; then got=$i; break; fi
         exec 9>&-
       done
-      [ -n "$got" ] || sleep 1
+      [ -n "$got" ] || { exec 8>&-; sleep 1; }
     done ;;
   *) echo "RUN=$mode: timing or check"; exit 2 ;;
 esac
