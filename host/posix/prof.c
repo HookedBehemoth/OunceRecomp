@@ -499,7 +499,27 @@ static DWORD WINAPI watch_thread(void *p) {
     return 0;
 }
 
+/* HOS_DUMP_FILE=<path> (diagnostic): when <path> exists, every guest thread's guest frames (hos_thread_dump) and the
+   virtual cores' owners and waiters (hos_vcore_dump) go to the log, and <path> is removed: what a stalled game waits in
+   without a debugger (ptrace is limited to a process's ancestors here) */
+static DWORD WINAPI dump_thread(void *p) {
+    const char *path = (const char *)p;
+    void hos_thread_dump(void);
+    for (;;) {
+        Sleep(500);
+        if (access(path, F_OK)) continue;
+        unlink(path);
+        hos_log("dump: asked");
+        hos_vcore_dump();
+        hos_thread_dump();
+        hos_log_flush();
+    }
+    return 0;
+}
+
 void hos_prof_start(void) {
+    const char *dump = getenv("HOS_DUMP_FILE");
+    if (dump && *dump) CreateThread(NULL, 0, dump_thread, (void *)dump, 0, NULL);
     const char *tt = getenv("HOS_THREAD_TIMES");
     if (tt && atoi(tt) > 0) CreateThread(NULL, 0, thread_times_thread, (void *)(uintptr_t)atoi(tt), 0, NULL);
     const char *e = getenv("HOS_PROFILE");

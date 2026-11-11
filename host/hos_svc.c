@@ -437,7 +437,7 @@ void a64_svc(Ctx *c, uint32_t imm) {
         return;
     }
     case 0x10:   /* GetCurrentProcessorNumber */
-        c->x[0] = (uint32_t)hos_thread_core(hos_self());
+        c->x[0] = (uint32_t)hos_current_core(c->x[30]);
         return;
     case 0x1E:   /* GetSystemTick */
         c->x[0] = hos_ticks();

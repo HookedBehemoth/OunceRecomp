@@ -37,6 +37,10 @@ struct HosThread {
     volatile int vc_kick;
     int64_t vc_since;
     CONDITION_VARIABLE vc_cv;
+    /* (HOS_DUMP_FILE) how often it asked for its core number, the guest callers of its first and last asks, its time
+       waiting for a core */
+    int64_t core_asks, vc_wait_ns;
+    uint64_t core_ask_lr, core_ask_last_lr;
     /* (hookshot) fibers: the context running now (NULL: ctx, the thread's own), the thread's host fiber once it
        switched to a guest fiber */
     Ctx *volatile run_ctx;
@@ -114,6 +118,18 @@ int hos_cores(void) {
         if (!e && hos_game_cores()) n = hos_game_cores();   /* (totk_cores.c: the game set up for more cores) */
     }
     return n;
+}
+/* The core number the running thread reads (GetCurrentCoreNumber, svc GetCurrentProcessorNumber; lr: the guest
+   caller, counted for HOS_DUMP_FILE). OoT's sead thread entry (0x834a2e50) keeps a one-core thread's number + 1 in
+   a TLS slot at its start, and 324 call sites read that slot, falling back to asking (166 of them index a six-entry
+   per-core array: `cmp w0, #6`, core 6 and up sharing core 0's entry). So a one-core thread asks once, at its start,
+   and uses that number from then on: work/assets/native/cores.md */
+int hos_current_core(uint64_t lr) {
+    HosThread *t = cur;
+    if (!t) return 0;
+    if (!t->core_asks++) t->core_ask_lr = lr;
+    t->core_ask_last_lr = lr;
+    return hos_thread_core(t);
 }
 int hos_thread_core(HosThread *t) {
     if (!t) return 0;
@@ -381,6 +397,12 @@ int hos_thread_handles(HANDLE *out, const char **names, int max) {
    frame chain from x29: what each thread of a stalled game waits in (mkw_glue.c, HOS_STATS_AFTER). */
 void hos_thread_dump(void) {
     AcquireSRWLockShared(&threads_lock);
+    for (int i = 0; i < nthreads; i++)   /* (placement: masks, the core it holds or would, how it waits for one) */
+        hos_log("thread %s: priority %d, ideal %d, mask %#llx, core %d%s; asked its core %lld times (first lr %#llx, last %#llx), waited %.0f ms for a core",
+                threads[i]->name, threads[i]->priority, threads[i]->ideal_core, (unsigned long long)threads[i]->core_mask,
+                hos_thread_core(threads[i]), threads[i]->vc_held ? " (held)" : threads[i]->vc_queued ? " (waiting)" : "",
+                (long long)threads[i]->core_asks, (unsigned long long)threads[i]->core_ask_lr,
+                (unsigned long long)threads[i]->core_ask_last_lr, threads[i]->vc_wait_ns / 1e6);
     for (int i = 0; i < nthreads; i++) {
         const Ctx *c = &threads[i]->ctx;
         char bt[400];
@@ -864,7 +886,7 @@ HLE(_ZN2nn2os17SetThreadCoreMaskEPNS0_10ThreadTypeEim) {
     hos_thread_affinity(t, (int)ARG(1), ARG(2));
 }
 
-HLE(_ZN2nn2os20GetCurrentCoreNumberEv) { RET((uint32_t)hos_thread_core(cur)); }
+HLE(_ZN2nn2os20GetCurrentCoreNumberEv) { RET((uint32_t)hos_current_core(c->x[30])); }
 HLE(_ZN2nn2os26GetThreadAvailableCoreMaskEv) { RET((1u << hos_cores()) - 1); }   /* cores 0-2: what an application gets */
 
 HLE(_ZN2nn2os19GetCurrentStackInfoEPmS1_) {
@@ -1345,6 +1367,7 @@ static void vc_acquire(HosThread *t) {
     }
     const int64_t waited = hos_now_ns() - t0;
     vc_st.wait_ns += waited;
+    t->vc_wait_ns += waited;
     if (waited > vc_st.max_ns) vc_st.max_ns = waited;
     vc_stats_locked(hos_now_ns());
     ReleaseSRWLockExclusive(&vc_lock);
@@ -1411,7 +1434,22 @@ int hos_cv_sleep(void *cv, void *lk, unsigned ms) {
     }
     return r;
 }
+void hos_vcore_dump(void) {
+    if (!hos_vcores_on()) return;
+    AcquireSRWLockExclusive(&vc_lock);
+    const int64_t now = hos_now_ns();
+    for (int k = 0; k < vc_cores(); k++) {
+        HosThread *h = vc_owner[k];
+        hos_log("vcores: core %d: %s (priority %d, mask %#llx)%s", k, h ? h->name : "-", h ? h->priority : 0,
+                h ? (unsigned long long)h->core_mask : 0ULL, h && h->vc_kick ? " asked" : "");
+    }
+    for (int i = 0; i < vc_nq; i++)
+        hos_log("vcores: waiting %.1f ms: %s (priority %d, mask %#llx, allowed %#x)", (now - vc_queue[i]->vc_since) / 1e6,
+                vc_queue[i]->name, vc_queue[i]->priority, (unsigned long long)vc_queue[i]->core_mask, vc_allowed(vc_queue[i]));
+    ReleaseSRWLockExclusive(&vc_lock);
+}
 #else
+void hos_vcore_dump(void) {}
 int hos_vcores_on(void) { return 0; }
 int hos_vcore_away(void) { return 0; }
 void hos_vcore_back(void) {}
