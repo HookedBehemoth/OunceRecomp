@@ -12,7 +12,8 @@ Checks, against the golden dir (work/smoke/<scene>/: game-derived, never committ
     free memory and the most shared memory (layer 0's guest window) the sampler saw; shown beside the golden run's;
   - warnings and errors: log lines that look like one, normalised (numbers and addresses masked), minus the known ones
     (known.txt: one normalised line per entry, or "re:<regex>"; '#' comments). New groups are printed, counted.
---golden: records this run as the golden one (hashes, numbers, and every warning group as known).
+--golden: adds this run to the golden set (hashes, numbers, and every warning group as known); GOLDEN=reset starts
+  the set anew. Record 2-3 golden runs for a scene that moves while standing (Kokiri's idle pose).
 Exit status 0 = PASS, 1 = FAIL (fatal, pictures, a stall, or new error groups; new warnings alone do not fail)."""
 import json
 import os
@@ -136,19 +137,27 @@ def main():
     status = open(os.path.join(run, "run.out")).read().strip().splitlines()[-1:] if os.path.exists(
         os.path.join(run, "run.out")) else []
     if golden:
-        json.dump({"numbers": num, "shots": {str(k): [h, m] for k, (h, m) in sh.items()}},
-                  open(os.path.join(gd, "golden.json"), "w"), indent=1)
+        gp = os.path.join(gd, "golden.json")
+        runs = []
+        if os.path.exists(gp) and os.environ.get("GOLDEN") != "reset":
+            old = json.load(open(gp))
+            runs = old.get("runs", [old] if "shots" in old else [])
+        runs.append({"numbers": num, "shots": {str(k): [h, m] for k, (h, m) in sh.items()}})
+        json.dump({"runs": runs}, open(gp, "w"), indent=1)
         with open(os.path.join(gd, "known.txt"), "a") as f:
             f.write("# from golden run %s\n" % os.path.basename(run))
             known = load_known(gd)
             for k in sorted(g):
                 if not known(k):
                     f.write(k + "\n")
-        print("golden recorded: %d shots, %d warning groups as known; %s" % (len(sh), len(g), json.dumps(num)))
+        print("golden recorded (%d golden run(s) now): %d shots, %d warning groups as known; %s" % (
+            len(runs), len(sh), len(g), json.dumps(num)))
         if fatal:
             print("NOTE: the golden run has fatal lines:\n  " + "\n  ".join(fatal))
         return 0
     gj = json.load(open(os.path.join(gd, "golden.json"))) if os.path.exists(os.path.join(gd, "golden.json")) else None
+    gruns = (gj.get("runs", [gj] if "shots" in gj else []) if gj else [])
+    gj = gruns[-1] if gruns else None
     fails = []
     print("run: %s" % (status[0] if status else os.path.basename(run)))
     if fatal:
@@ -156,26 +165,36 @@ def main():
         print("FATAL (%d shown):\n  %s" % (len(fatal), "\n  ".join(fatal)))
     # pictures
     if gj:
-        gs = {int(k): v for k, v in gj["shots"].items()}
+        # (several golden runs: a shot passes when it is close to any of them, so a scene's own run-to-run motion,
+        # e.g. an idle pose's clock, is in the golden set rather than a failure)
+        gsets = [{int(k): v for k, v in r["shots"].items()} for r in gruns]
+        gs = gsets[-1]
         common = sorted(p for p in set(gs) & set(sh) if p >= SKIP_BEFORE)
         bad, worst = [], (0, None)
         for p in common:
-            (h, m), (gh, gm) = sh[p], gs[p]
-            if h is None or gh is None:
-                bad.append((p, "unreadable"))
-                continue
-            if m < DARK and gm < DARK:
-                continue
-            if (m < DARK) != (gm < DARK):
-                bad.append((p, "black vs not (mean %.0f vs %.0f)" % (m, gm)))
-                continue
-            d = bin(h ^ gh).count("1")
-            worst = max(worst, (d, p))
-            if d > HASH_BAD:
-                bad.append((p, "hash distance %d" % d))
+            h, m = sh[p]
+            best = None
+            for gset in gsets:
+                if p not in gset:
+                    continue
+                gh, gm = gset[p]
+                if h is None or gh is None:
+                    why = (99, "unreadable")
+                elif m < DARK and gm < DARK:
+                    why = (0, None)
+                elif (m < DARK) != (gm < DARK):
+                    why = (98, "black vs not (mean %.0f vs %.0f)" % (m, gm))
+                else:
+                    d = bin(h ^ gh).count("1")
+                    why = (d, "hash distance %d" % d if d > HASH_BAD else None)
+                best = why if best is None or why[0] < best[0] else best
+            if best[0] < 98:
+                worst = max(worst, (best[0], p))
+            if best[1]:
+                bad.append((p, best[1]))
         missing = sorted(p for p in set(gs) - set(sh) if p >= SKIP_BEFORE)
-        print("pictures: %d compared, worst distance %d (present %s), %d bad%s" % (
-            len(common), worst[0], worst[1], len(bad), ", %d golden shots missing" % len(missing) if missing else ""))
+        print("pictures: %d compared against %d golden run(s), worst distance %d (present %s), %d bad%s" % (
+            len(common), len(gsets), worst[0], worst[1], len(bad), ", %d golden shots missing" % len(missing) if missing else ""))
         for p, why in bad[:6]:
             print("  present %d: %s" % (p, why))
         if bad:
