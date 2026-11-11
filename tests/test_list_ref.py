@@ -44,7 +44,10 @@ def need(ok, what):
 
 def source_checks():
     nvn = (ROOT / "host/nvn_native.c").read_text(encoding="utf-8")
-    inline = block(nvn, "static void inline_recording(")
+    # (HOS_ENG_LISTS: inline_recording records a packet's NOP_PKT, then the call as inline_recording_raw does)
+    outer = block(nvn, "static void inline_recording(")
+    need(outer.count("inline_recording_raw(o, h);") == 2, "CallCommands with HOS_ENG_LISTS does not record the call itself")
+    inline = block(nvn, "static void inline_recording_raw(nvn_cmd *o, uint64_t h) {")
     ref = inline[:inline.index("check_handle(h);")]
     need("list_ref()" in ref and "nvn_list_call(" in ref and "memcpy" not in ref,
          "CallCommands with HOS_NVN_LIST_REF copies the callee (or does not call nvn_list_call)")

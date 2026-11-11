@@ -37,7 +37,7 @@ def main():
     block = helpers.block
     nvn = (ROOT / "host/nvn_native.c").read_text(encoding="utf-8")
     hos = (ROOT / "host/hos.h").read_text(encoding="utf-8")
-    start = nvn.index("typedef struct { uint64_t owner; union { struct { uint8_t *seg, *cur, *end; }; nvn_lw lw; }; } cmd_rec;")
+    start = nvn.rindex("typedef struct {", 0, nvn.index("} cmd_rec;"))
     table_decls = nvn[start:nvn.index("static cmd_rec *cmd_slot(", start)]
     live_decls_start = nvn.index("static uint64_t *live_handles;")
     live_decls = nvn[live_decls_start:nvn.index("static void live_handle_add(", live_decls_start)]

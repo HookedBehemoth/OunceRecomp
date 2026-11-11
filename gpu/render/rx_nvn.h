@@ -156,6 +156,7 @@ enum {
     NOP_PUSH_CONST,                             /* (hookshot: nvnCommandBufferPushComputeConstants) */
     NOP_CLEAR_BUF,                              /* (hookshot: nvnCommandBufferClearBuffer) */
     NOP_WAIT_FENCE,                             /* (hookshot, RX_VK_TIMELINES: nvnQueueWaitSync, before the queue's next submit) */
+    NOP_PKT,                                    /* (native-vk E2, HOS_ENG_LISTS: a called list's packet, gpu/render/nvn_pkt.h) */
     NOP_COUNT_
 };
 typedef struct { int32_t n; const nvn_tex *color[8]; nvn_view cview[8]; uint8_t has_cview[8]; const nvn_tex *depth; nvn_view dview; uint8_t has_dview; } nvn_p_set_rt;
@@ -207,6 +208,10 @@ typedef struct { int32_t enable, index; } nvn_p_restart;
    target (the callee's BEGIN) to its END and goes on after this one. next: the caller's next NOP_CALL (offset from its
    BEGIN, 0: none), bytes: the callee's BEGIN .. END. Without the switch the callee's records are copied in instead */
 typedef struct { const uint8_t *target; uint32_t next, bytes; } nvn_p_call;
+/* (native-vk engine cut E2, HOS_ENG_LISTS=1) the packet of the list called next (gpu/render/nvn_pkt.h), while it holds serial;
+   skip: the bytes after this record that record the call the default way (the callee copied in, or a NOP_CALL) */
+struct nvn_pkt;
+typedef struct { const struct nvn_pkt *pkt; uint32_t serial, skip; } nvn_p_pkt;
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
    first index, base vertex, base instance; arrays: count, instances, first, base instance), as many as the 32-bit
    value at count_addr says when there is one; read at replay, after the GPU's writes there reached guest memory */

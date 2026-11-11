@@ -25,6 +25,10 @@ void nvn_list_init(int check, void (*log)(const char *fmt, ...), void (*die)(con
     fatal = die ? die : fatal_abort;
 }
 int nvn_list_check_on(void) { return check_on; }
+static void (*user_released)(nvn_lrec *r), (*user_freed)(nvn_lrec *r);
+void nvn_list_set_user_hooks(void (*released)(nvn_lrec *r), void (*freed)(nvn_lrec *r)) {
+    user_released = released, user_freed = freed;
+}
 
 /* ---- small locks: held for a few loads and stores (a bucket chain, a free list, the dead list's head) ---- */
 static void spin_lock(volatile int32_t *l) {
@@ -361,6 +365,7 @@ static void rec_free_storage(nvn_lrec *r) {
     if (!(r->flags & NVN_LREC_PRIVATE)) __atomic_sub_fetch(&st_live, 1, __ATOMIC_RELAXED);
     __atomic_sub_fetch(&st_live_bytes, r->cap, __ATOMIC_RELAXED);
     free(r->shadow);
+    if (r->user && user_freed) user_freed(r);
     const uint32_t cls = r->cls;
     if (check_on) memset(r, 0, sizeof *r + (size_t)(r->bytes ? r->bytes : 8));   /* (a walk into freed bytes meets END: op 0) */
     else r->magic = 0;
@@ -434,6 +439,7 @@ static void w_reset(nvn_lw *w) {
     w->last_call = w->first_call = w->first_def = w->last_def = 0;
     w->flags = w->depth = 0;
     w->flat_extra = 0;
+    w->user = NULL;
 }
 /* the open recording's calls up to cur let go (dropped records: their references on the callees) */
 static void w_drop_calls(nvn_lw *w) {
@@ -545,6 +551,7 @@ nvn_lrec *nvn_list_end(nvn_lw *w, uint64_t ctl, int marked, uint64_t *handle) {
     r->flags = w->flags | (marked ? NVN_LREC_MARKED : 0), r->depth = w->depth;
     r->refs = 1;
     r->ctl = ctl;
+    r->user = w->user, w->user = NULL;
     if (w->key) {
         lhint *h = &tl_hints[hint_at(w->key)];
         /* (the biggest of the last ones, let down by an eighth a recording: a job's command buffer on a worker's stack
@@ -584,6 +591,7 @@ static void release_list(nvn_lrec *list, uint64_t after) {
         list = r->next;
         lid_retire(r);
         r->flags |= NVN_LREC_RELEASED;
+        if (r->user && user_released) user_released(r);
         r->after = after;
         r->next = NULL;
         batch[n++] = r;
@@ -680,6 +688,7 @@ static nvn_lrec *rec_clone(const nvn_lrec *r) {
     c->flags = (r->flags & ~NVN_LREC_RELEASED) | NVN_LREC_PRIVATE;
     c->def_busy = 0, c->def_after = 0, c->reached = 0, c->visit = 0;
     c->shadow = NULL;
+    c->user = NULL;
     c->hash = 0;   /* (its call targets change: no check of its bytes) */
     for (uint32_t off = c->first_call; off; off = call_at(c, off)->next)
         __atomic_add_fetch(&hdr_of(call_at(c, off)->target)->refs, 1, __ATOMIC_ACQ_REL);

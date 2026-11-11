@@ -57,6 +57,7 @@
 #include "vk_timelines.h"
 #include "vk_l1_census.h"   // (RX_VK_L1_CENSUS: barriers against hazards, the replay's time by op)
 #include "vk_packets.h"   // (RX_VK_PACKETS: the state groups' stamps, for the draws' kept resolutions)
+#include "../render/nvn_pkt.h"   // (HOS_ENG_LISTS: the load-time lists' packets)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -956,14 +957,178 @@ bool buf_unchanged(int32_t stage, int32_t index, uint64_t addr, uint64_t size, i
     return stage == nstage && index == nindex && addr == naddr && size == nsize;
 }
 
+// ---- (native-vk engine cut E2) HOS_ENG_LISTS=1: a called load-time list's packet (gpu/render/nvn_pkt.h, host/eng_lists.c)
+// applied in place of its records: the state its records would leave bound, set as their ops set it (the same "unchanged"
+// tests, generations and RX_VK_PACKETS stamps), then its draw. HOS_ENG_LISTS_REPLAY=0: NOP_PKT ignored (the records decode).
+// HOS_ENG_LISTS_CHECK=1: the packet is applied (its draw recorded), the state kept, the state before it put back, and the
+// records it stands for decoded (their draws held back): the bound state and the draw compared at their end. Serial replay
+// only (not with RX_VK_PARALLEL, a dry pass, RX_VK_UBO_CENSUS or RX_VK_L1_CENSUS: the records decode there). ----
+DrawArgs draw_args(const nvn_p_draw& d) {
+    DrawArgs da;
+    da.prim = d.prim, da.first = d.first, da.count = d.count;
+    da.base_instance = d.base_instance, da.instances = d.instances;
+    return da;
+}
+DrawArgs draw_args(const nvn_p_draw_idx& d) {
+    DrawArgs da;
+    da.prim = d.prim, da.indexed = true, da.itype = d.itype, da.count = d.count;
+    da.base_vertex = d.base_vertex, da.base_instance = d.base_instance, da.instances = d.instances;
+    da.ibuf = d.ibuf;
+    return da;
+}
+DrawArgs draw_args(const nvn_p_draw_mesh& d) {
+    DrawArgs da;
+    da.mesh = true;
+    // (DrawMeshTasks(first, count): the count of task workgroups, as Eden draws NVN2's mesh draws; a
+    // first task other than 0 has no Vulkan counterpart)
+    da.groups[0] = d.y, da.groups[1] = 1, da.groups[2] = 1;
+    if (d.kind == 0) da.first_task = d.x;   // (hookshot: the task programs add it, vk_draw.cpp's mesh_args)
+    da.indirect = d.indirect, da.count_addr = d.count_addr, da.max = d.max, da.stride = d.stride;
+    return da;
+}
+bool eng_replay_on() {
+    static const bool on = [] {
+        const char* e = getenv("HOS_ENG_LISTS");
+        const char* r = getenv("HOS_ENG_LISTS_REPLAY");
+        const bool par = getenv("RX_VK_PARALLEL") && std::clamp(atoi(getenv("RX_VK_PARALLEL")), 0, 8) >= 2;   // (par_threads)
+        const bool v = e && atoi(e) == 1 && !(r && atoi(r) == 0) && !par;
+        if (e && atoi(e) == 1) logf("vk: load-time lists' packets (HOS_ENG_LISTS): %s", v ? "applied" : par ? "not applied (RX_VK_PARALLEL)" : "not applied (HOS_ENG_LISTS_REPLAY=0)");
+        return v;
+    }();
+    return on;
+}
+bool eng_check_on() {
+    static const bool on = getenv("HOS_ENG_LISTS_CHECK") && atoi(getenv("HOS_ENG_LISTS_CHECK")) != 0;
+    return on;
+}
+enum EngCount { ENC_SEEN, ENC_APPLIED, ENC_STALE, ENC_OTHER_MODE, ENC_CHECKED, ENC_MISMATCH, ENC_DRAWS, ENC_SKIPPED_BYTES, ENC_NS, ENC_N };
+int64_t eng_n[ENC_N];                 // (the serial replay's: replay_mu)
+int64_t eng_kind_n[NVN_PK_KINDS];
+/// A packet's state over s (see above); its draw recorded unless the replay may not draw
+void pkt_apply(VkCommandBuffer& cmd, NvnState& s, const nvn_pkt& k, bool pk) {
+    for (int i = 0; i < k.nbuf; i++) {
+        const nvn_p_bind_buf& b = k.buf[i].b;
+        const bool ssbo = k.buf[i].ssbo != 0;
+        nvn_p_bind_buf& u = (ssbo ? s.ssbo : s.ubo)[b.stage][b.index];
+        if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, b.index, b.addr, b.size)) {
+            s.bind_gen++;
+            if (ssbo) s.ssbo_gen[b.stage] = s.bind_gen;
+        }
+        u = b;
+    }
+    if (pk && (k.flags & NVN_PKF_TEX)) pk_touch(PKG_TEX);
+    for (int i = 0; i < k.nhandle; i++) {
+        const nvn_pk_handle& e = k.hnd[i];
+        uint64_t* to = e.what == 0 ? s.tex[e.stage] : e.what == 1 ? s.samp[e.stage] : s.img[e.stage];
+        if (to[e.slot] != e.h) {   // (the same handle: the draw keeps its descriptors)
+            s.bind_gen++;
+            s.tex_gen[e.stage] = s.bind_gen;
+        }
+        to[e.slot] = e.h;
+    }
+    if (k.vtx) {
+        const nvn_pk_vertex& v = *k.vtx;
+        if (k.flags & NVN_PKF_VATTR) {
+            const bool same = s.nvattr == (int)v.nvattr && std::memcmp(s.vattr, v.vattr, sizeof s.vattr) == 0;
+            std::memcpy(s.vattr, v.vattr, sizeof s.vattr);
+            s.nvattr = (int)v.nvattr;
+            if (pk && !same) pk_touch(PKG_VI);   // (RX_VK_PACKETS: a change only)
+        }
+        for (int i = 0; i < 16; i++) {
+            if (v.vstream_mask >> i & 1) {
+                if (pk && std::memcmp(&s.vstream[i], &v.vstream[i], sizeof v.vstream[i])) pk_touch(PKG_VI);
+                s.vstream[i] = v.vstream[i];
+            }
+            if (v.vbuf_mask >> i & 1) s.vbuf[i] = v.vbuf[i];
+        }
+    }
+    if (k.draw.op) {
+        if (s.render_enabled && !s.raster_discard) {
+            draw(cmd, s, k.draw.op == NOP_DRAW ? draw_args(k.draw.u.d) : k.draw.op == NOP_DRAW_IDX ? draw_args(k.draw.u.di) : draw_args(k.draw.u.dm));
+            eng_n[ENC_DRAWS]++;
+        }
+        s.samples_passed += 16;
+        maybe_split(cmd);
+    }
+}
+/// (check) a draw the records made, held back
+struct EngCap { int32_t op = 0; int n = 0; nvn_pk_draw d{}; };
+void eng_mismatch(const nvn_pkt& k, const char* what) {
+    eng_n[ENC_MISMATCH]++;
+    static int told;
+    if (told++ < 40)
+        logf("vk: eng lists: MISMATCH %s, packet of kind %d handle %#llx (%u records, %u bytes; %lld so far)", what, k.kind,
+             (unsigned long long)k.handle, k.nops, k.raw_bytes, (long long)eng_n[ENC_MISMATCH]);
+}
+/// (check) the state the records left (raw) against the packet's (pk), from the same state before (was)
+void eng_compare(const NvnState& raw, const NvnState& pk, const NvnState& was, const nvn_pkt& k, const EngCap& cap) {
+    eng_n[ENC_CHECKED]++;
+    const int64_t before = eng_n[ENC_MISMATCH];
+#define ENG_SAME(f) if (std::memcmp(&raw.f, &pk.f, sizeof raw.f)) eng_mismatch(k, #f)
+    ENG_SAME(ubo); ENG_SAME(ssbo); ENG_SAME(tex); ENG_SAME(samp); ENG_SAME(img);
+    ENG_SAME(vattr); ENG_SAME(nvattr); ENG_SAME(vstream); ENG_SAME(vbuf); ENG_SAME(samples_passed);
+#undef ENG_SAME
+    // (generations: a packet sets a binding once where the records may set it twice, so it may bump less, never more)
+    for (int st = 0; st < kNvnStages; st++) {
+        if (pk.tex_gen[st] != was.tex_gen[st] && raw.tex_gen[st] == was.tex_gen[st]) eng_mismatch(k, "tex_gen");
+        if (pk.ssbo_gen[st] != was.ssbo_gen[st] && raw.ssbo_gen[st] == was.ssbo_gen[st]) eng_mismatch(k, "ssbo_gen");
+    }
+    if (pk.bind_gen != was.bind_gen && raw.bind_gen == was.bind_gen) eng_mismatch(k, "bind_gen");
+    if (cap.n > 1) eng_mismatch(k, "draws (the records made more than one)");
+    if (cap.op != k.draw.op) eng_mismatch(k, "draw op");
+    else if (cap.op && std::memcmp(&cap.d.u, &k.draw.u, sizeof cap.d.u)) eng_mismatch(k, "draw arguments");
+    if (eng_n[ENC_MISMATCH] != before) {
+        static int told;
+        if (told++ < 8) {
+            char line[1024];
+            int n = snprintf(line, sizeof line, "vk: eng lists: that packet: %u buffers, %u handles, vertex %d, draw %d;", k.nbuf, k.nhandle,
+                             k.vtx != nullptr, k.draw.op);
+            for (int i = 0; i < k.nbuf && n < 900; i++)
+                n += snprintf(line + n, sizeof line - n, " %s%d.%d=%llx+%llx", k.buf[i].ssbo ? "s" : "u", k.buf[i].b.stage, k.buf[i].b.index,
+                              (unsigned long long)k.buf[i].b.addr, (unsigned long long)k.buf[i].b.size);
+            logf("%s", line);
+        }
+    }
+}
+}   // namespace
+/// (the frame log, every 120 presents: what the packets served)
+void eng_lists_report(double frames) {
+    if (!eng_replay_on()) return;
+    static int64_t last[ENC_N], last_k[NVN_PK_KINDS];
+    logf("vk: a frame: eng lists: %.1f calls named a packet, %.1f served by it (%.1f vertex, %.1f draw, %.1f shape), %.1f checked, "
+         "%.1f stale, %.1f in another replay mode; %.1f draws from packets, %.1f KB of records skipped, %.3f ms applying; %lld mismatches so far",
+         (eng_n[ENC_SEEN] - last[ENC_SEEN]) / frames, (eng_n[ENC_APPLIED] - last[ENC_APPLIED]) / frames,
+         (eng_kind_n[NVN_PK_VERTEX] - last_k[NVN_PK_VERTEX]) / frames, (eng_kind_n[NVN_PK_DRAW] - last_k[NVN_PK_DRAW]) / frames,
+         (eng_kind_n[NVN_PK_SHAPE] - last_k[NVN_PK_SHAPE]) / frames, (eng_n[ENC_CHECKED] - last[ENC_CHECKED]) / frames,
+         (eng_n[ENC_STALE] - last[ENC_STALE]) / frames, (eng_n[ENC_OTHER_MODE] - last[ENC_OTHER_MODE]) / frames,
+         (eng_n[ENC_DRAWS] - last[ENC_DRAWS]) / frames, (eng_n[ENC_SKIPPED_BYTES] - last[ENC_SKIPPED_BYTES]) / frames / 1024.0,
+         (eng_n[ENC_NS] - last[ENC_NS]) / frames / 1e6, (long long)eng_n[ENC_MISMATCH]);
+    std::memcpy(last, eng_n, sizeof last);
+    std::memcpy(last_k, eng_kind_n, sizeof last_k);
+}
+namespace {
+
 /// The records from p (inside the calls from_calls names) up to end (inside end_calls) or the END they are in
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr,
             const CallStack* from_calls = nullptr, const CallStack* end_calls = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
     static const bool pk = packets_on();   // (RX_VK_PACKETS: the state ops stamp their group)
+    static const bool eng = eng_replay_on(), eng_chk = eng && eng_check_on();   // (HOS_ENG_LISTS: packets of called lists)
+    // (HOS_ENG_LISTS_CHECK: the records a packet stands for, decoded up to eng_end at the call depth eng_depth; the packet's
+    // state and the state before it kept)
+    const uint8_t* eng_end = nullptr;
+    int eng_depth = -1;
+    const nvn_pkt* eng_pkt = nullptr;
+    EngCap eng_cap;
+    static thread_local NvnState* eng_was = nullptr;
+    static thread_local NvnState* eng_got = nullptr;
     CallStack calls = from_calls ? *from_calls : kNoCalls;
     for (;;) {
+        if (eng_end && p == eng_end && calls.depth == eng_depth) {   // (HOS_ENG_LISTS_CHECK: the records' end)
+            eng_compare(s, *eng_got, *eng_was, *eng_pkt, eng_cap);
+            eng_end = nullptr;
+        }
         if (p == end && calls.same(end_calls ? *end_calls : kNoCalls)) return;
         nvn_op_hdr h;
         std::memcpy(&h, p, sizeof h);
@@ -993,6 +1158,38 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             continue;
         }
         case NOP_BEGIN: case NOP_JUMP: break;
+        case NOP_PKT: {   // (HOS_ENG_LISTS: the called list's packet in place of the records after this one)
+            if (!eng || eng_end) break;   // (off, or inside the records a checked packet stands for: they decode)
+            const auto r = payload<nvn_p_pkt>(a, avail);
+            eng_n[ENC_SEEN]++;
+            if (mode != Mode::Serial || ubo_census_on() || l1c::on) {
+                eng_n[ENC_OTHER_MODE]++;
+                break;
+            }
+            const nvn_pkt* k = nvn_pkt_live(&r);
+            if (!k) {
+                eng_n[ENC_STALE]++;
+                break;
+            }
+            eng_kind_n[k->kind]++;
+            const int64_t t0 = prof_now();
+            if (eng_chk) {
+                if (!eng_was) eng_was = new NvnState, eng_got = new NvnState;
+                *eng_was = s;
+                pkt_apply(cmd, s, *k, pk);
+                *eng_got = s;
+                s = *eng_was;
+                eng_end = p + h.size + r.skip, eng_depth = calls.depth, eng_pkt = k, eng_cap = EngCap{};
+                eng_n[ENC_NS] += prof_now() - t0;
+                break;
+            }
+            pkt_apply(cmd, s, *k, pk);
+            eng_n[ENC_APPLIED]++;
+            eng_n[ENC_SKIPPED_BYTES] += r.skip;
+            eng_n[ENC_NS] += prof_now() - t0;
+            p += h.size + r.skip;
+            continue;
+        }
         // ---- memory the stream writes: on the GPU timeline ----
         case NOP_SIGNAL_EVENT: {
             if (!worker) {   // (in stream order: the replay thread's pass)
@@ -1502,23 +1699,20 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         case NOP_DRAW: {
             const auto d = payload<nvn_p_draw>(a, avail);
-            if (s.render_enabled && !s.raster_discard && !dry) {
-                DrawArgs da;
-                da.prim = d.prim, da.first = d.first, da.count = d.count;
-                da.base_instance = d.base_instance, da.instances = d.instances;
-                draw(cmd, s, da);
+            if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
+                eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.d = d;
+            } else if (s.render_enabled && !s.raster_discard && !dry) {
+                draw(cmd, s, draw_args(d));
             }
             s.samples_passed += 16;
             break;
         }
         case NOP_DRAW_IDX: {
             const auto d = payload<nvn_p_draw_idx>(a, avail);
-            if (s.render_enabled && !s.raster_discard && !dry) {
-                DrawArgs da;
-                da.prim = d.prim, da.indexed = true, da.itype = d.itype, da.count = d.count;
-                da.base_vertex = d.base_vertex, da.base_instance = d.base_instance, da.instances = d.instances;
-                da.ibuf = d.ibuf;
-                draw(cmd, s, da);
+            if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
+                eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.di = d;
+            } else if (s.render_enabled && !s.raster_discard && !dry) {
+                draw(cmd, s, draw_args(d));
             }
             s.samples_passed += 16;
             break;
@@ -1541,15 +1735,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (logged_mesh++ < 8)
                 logf("vk: mesh draw kind %d: %d %d %d, indirect %#llx count %#llx max %d stride %d", d.kind, d.x, d.y,
                      d.z, (unsigned long long)d.indirect, (unsigned long long)d.count_addr, d.max, d.stride);
-            if (s.render_enabled && !s.raster_discard && !dry) {
-                DrawArgs da;
-                da.mesh = true;
-                // (DrawMeshTasks(first, count): the count of task workgroups, as Eden draws NVN2's mesh draws; a
-                // first task other than 0 has no Vulkan counterpart)
-                da.groups[0] = d.y, da.groups[1] = 1, da.groups[2] = 1;
-                if (d.kind == 0) da.first_task = d.x;   // (hookshot: the task programs add it, vk_draw.cpp's mesh_args)
-                da.indirect = d.indirect, da.count_addr = d.count_addr, da.max = d.max, da.stride = d.stride;
-                draw(cmd, s, da);
+            if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
+                eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.dm = d;
+            } else if (s.render_enabled && !s.raster_discard && !dry) {
+                draw(cmd, s, draw_args(d));
             }
             s.samples_passed += 16;
             break;
@@ -1572,7 +1761,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 const bool compute = h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT;
                 if (s.render_enabled && (compute || !s.raster_discard)) dry_mark_written(s, compute, dry_work == 0);
                 if (++dry_work % 64 == 0) par_points.push_back({p + h.size, calls, s, ub_updates.size(), par_conds.size(), dry_work});
-            } else if (!worker) {
+            } else if (!worker && !eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet's draw split already)
                 maybe_split(cmd);
             }
         }
@@ -3340,6 +3529,7 @@ void log_frame_stats() {
             }
             logf("%s", line);
         }
+        eng_lists_report(120.0);
         int64_t mirrors = 0, sync_b = 0, sync_c = 0, wb_b = 0;
         uint64_t mirror_mb = 0;
         memory_stats(&mirrors, &mirror_mb, &sync_b, &sync_c, &wb_b);

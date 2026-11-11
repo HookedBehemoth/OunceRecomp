@@ -75,6 +75,7 @@ struct nvn_lrec {   /* a recording: this header, then BEGIN ... END */
     uint64_t reached;        /* (check) the newest submit that walks it */
     uint64_t hash;           /* (check) its bytes at EndRecording, the deferred arrays left out */
     uint8_t *shadow;         /* (check) the default path's copy: BEGIN .. END, callees copied in */
+    void *user;              /* (HOS_ENG_LISTS, host/eng_lists.c) its packet: told when the handle goes and when the bytes go */
 };
 
 /* a command buffer's recording place (in host/nvn_native.c's cmd_rec): seg the open recording's BEGIN, cur where the
@@ -86,6 +87,7 @@ typedef struct nvn_lw {
     uint32_t last_call, first_call, first_def, last_def;
     uint32_t flags, depth;
     uint64_t flat_extra;     /* flat - bytes so far: what the callees add, less their call records */
+    void *user;              /* (HOS_ENG_LISTS) the recording's user pointer, set by nvn_list_end before its handle is published */
 } nvn_lw;
 
 typedef struct {
@@ -97,6 +99,9 @@ typedef struct {
 /* once, before any other call. check: HOS_NVN_LIST_REF_CHECK. fatal does not return */
 void nvn_list_init(int check, void (*log)(const char *fmt, ...), void (*fatal)(const char *fmt, ...));
 int nvn_list_check_on(void);
+/* (HOS_ENG_LISTS) told, for a recording with a user pointer, when its handle is released (any thread, a bucket run's lock
+   may be held) and when its bytes are freed */
+void nvn_list_set_user_hooks(void (*released)(nvn_lrec *r), void (*freed)(nvn_lrec *r));
 
 /* ---- recording (one thread at a time for a command buffer, as NVN has it) ---- */
 /* BeginRecording: an allocation (the last one's guess, or the one open), cur at its start (what was recorded since
