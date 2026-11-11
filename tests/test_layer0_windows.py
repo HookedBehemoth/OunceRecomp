@@ -97,8 +97,18 @@ class Layer0WindowTests(unittest.TestCase):
         for guard in ("fp + 16 <= top", "!(fp & 7)", "next <= fp"):
             self.assertIn(guard, key)
         cls = block(pools, "bool vram_class(")
-        for need in ("kCpuNoAccess", "kGpuNoAccess", "kPhysical", "kVirtual", "host_keys"):
+        for need in ("kCpuNoAccess", "kCpuUncached", "kCpuCached", "kGpuNoAccess", "kPhysical", "kVirtual", "host_keys"):
             self.assertIn(need, cls)
+        # (the rule, evaluated: only CPU_NO_ACCESS pools go to VRAM; the CPU-read 0x22 uniform pools and rings stay host)
+        rule = cls[cls.index("if (level < 2"):cls.index("return false;", cls.index("if (level < 2"))]
+        def vram(flags, size=1 << 20):
+            G = 64 << 10
+            if not (flags & 0x1) or (flags & (0x2 | 0x4 | 0x8 | 0x100 | 0x200)) or size < G: return False
+            return True
+        self.assertIn("!(flags & kCpuNoAccess)", rule)
+        self.assertIn("kCpuUncached | kCpuCached", rule)
+        for flags, want in ((0x22, False), (0x24, False), (0xa1, True), (0x21, True), (0x18c, False), (0x2a1, False), (0x23, False)):
+            self.assertEqual(vram(flags), want, hex(flags))
         made = block(pools, "void vram_pool_made(")
         self.assertLess(made.index("submit_binds(binds)"), made.index("ready->set(q)"))   # (bound before the bindings see it)
         rel = block(pools, "void vram_release(")

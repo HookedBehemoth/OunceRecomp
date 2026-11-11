@@ -50,7 +50,8 @@ namespace {
 
 using clk = std::chrono::steady_clock;
 constexpr uint64_t G = l0::kGran;
-constexpr uint32_t kCpuNoAccess = 0x1, kGpuNoAccess = 0x8, kPhysical = 0x100, kVirtual = 0x200;   // (NVNmemoryPoolFlags)
+constexpr uint32_t kCpuNoAccess = 0x1, kCpuUncached = 0x2, kCpuCached = 0x4, kGpuNoAccess = 0x8, kPhysical = 0x100,
+                   kVirtual = 0x200;   // (NVNmemoryPoolFlags)
 constexpr uint64_t kBlock = 256ull << 20;
 
 constexpr VkBufferUsageFlags kWindowUsage =
@@ -473,7 +474,11 @@ void vram_clear_over(uint64_t lo, uint64_t hi, bool demote_live) {
     }
 }
 bool vram_class(uint64_t size, uint32_t flags, uint64_t key) {
-    if (level < 2 || !(flags & kCpuNoAccess) || (flags & (kGpuNoAccess | kPhysical | kVirtual)) || size < G) return false;
+    // (a pool the CPU can map stays in system memory, CPU_UNCACHED ones too: the game reads some back every frame, e.g. the view
+    // uniform pools of f_806dc520 / f_80354ac0 (~11 KB a frame) and the 16 MB compute-constant ring of f_801102e0 (~33 KB), all
+    // flags 0x22 (work/assets/native/uniform-buffers.md); from BAR that would be ~4 MB/s. Only CPU_NO_ACCESS pools go to VRAM)
+    if (level < 2 || !(flags & kCpuNoAccess) || (flags & (kCpuUncached | kCpuCached | kGpuNoAccess | kPhysical | kVirtual)) || size < G)
+        return false;
     return std::find(host_keys.begin(), host_keys.end(), key) == host_keys.end();
 }
 /// A kept pool of the same base, size and flags made live again: true (mu held)
