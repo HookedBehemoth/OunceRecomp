@@ -1,4 +1,4 @@
-// (native-vk, layer 0: RX_VK_LAYER0=1 step 7a, =2 step 7b; off by default) Guest memory for the GPU in window buffers, one
+// (native-vk, layer 0: RX_VK_LAYER0=2 (the default) steps 7a + 7b, =1 step 7a alone, =0 the old path) Guest memory for the GPU in window buffers, one
 // backing for every pool byte. The scheme and its arithmetic: layer0_windows.h; measured on this GPU: work/proto/layer0/l0_poc.c.
 //
 // What it replaces (vk_memory.cpp, all still there with the switch off): pools imported as 16 MB chunks on demand, merged and
@@ -579,19 +579,20 @@ bool ready_for(uint64_t guest, uint64_t size) {
 
 } // namespace
 
-int layer0_level() {
+int layer0_wanted() {   // (RX_VK_LAYER0: 2 by default, 1 the host class only, 0 the old path: imports, mirrors, write-backs)
     static const int want = [] {
         const char* e = getenv("RX_VK_LAYER0");
-        return e ? std::clamp(atoi(e), 0, 2) : 0;
+        return e && *e ? std::clamp(atoi(e), 0, 2) : 2;
     }();
-    return layer0_on() ? want : 0;
+    return want;
+}
+
+int layer0_level() {
+    return layer0_on() ? layer0_wanted() : 0;
 }
 
 bool layer0_on() {
-    static const int want = [] {
-        const char* e = getenv("RX_VK_LAYER0");
-        return e ? std::clamp(atoi(e), 0, 2) : 0;
-    }();
+    const int want = layer0_wanted();
     if (!want) return false;
     static std::atomic<int> state{-1};   // (-1: not asked with a device yet; 0 off, 1 on)
     const int s = state.load(std::memory_order_acquire);

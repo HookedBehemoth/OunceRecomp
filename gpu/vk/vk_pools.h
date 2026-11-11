@@ -12,8 +12,10 @@ bool layer0_on();
 /// game's pools, for a range past its pool's end or longer than 2 GB (as the old lookup). layer0_buffer: with the device address
 BufferRef layer0_bind(uint64_t guest, uint64_t size);
 BufferRef layer0_buffer(uint64_t guest, uint64_t size);
-/// 0 off, 1 step 7a (host class), 2 step 7b (CPU_NO_ACCESS pools in VRAM)
+/// 0 off, 1 step 7a (host class), 2 step 7b (CPU_NO_ACCESS pools in VRAM): what the device gives of layer0_wanted()
 int layer0_level();
+/// RX_VK_LAYER0 as asked (default 2), read once; before the device is made too (vk_main.cpp's sparse queue)
+int layer0_wanted();
 /// (API 14, MkwVkRenderer::nvn_pool_native) a pool made (on 1) or finalized (on 0) with its flags and creation key: placed (7b)
 void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);
 /// A CPU read of guest memory by the replay: counted and logged when it lands in VRAM granules (7b)

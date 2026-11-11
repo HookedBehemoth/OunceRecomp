@@ -19,6 +19,7 @@
 #include "vk_desc_heap.h"
 #include "vk_framegen.h"
 #include "vk_internal.h"
+#include "vk_pools.h"   // (native-vk layer 0: its sparse queue)
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
@@ -315,9 +316,8 @@ bool create_device() {
     // replay's queue a bind waited for the work queued before it, 36-222 ms in Kokiri (RX_VK_LAYER0_BIND_QUEUE=0: that queue)
     uint32_t sparse_family = UINT32_MAX;
     {
-        const char* l0 = getenv("RX_VK_LAYER0");
         const char* bq = getenv("RX_VK_LAYER0_BIND_QUEUE");
-        if (l0 && atoi(l0) > 0 && !(bq && atoi(bq) == 0))
+        if (layer0_wanted() > 0 && !(bq && atoi(bq) == 0))
             for (uint32_t i = 0; i < n && sparse_family == UINT32_MAX; i++)
                 if (i != dev.queue_family && i != compute_family && (families[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) &&
                     !(families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)))

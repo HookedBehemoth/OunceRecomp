@@ -411,7 +411,8 @@ allocator, `RX_RT_SLOTS_MB` the range, `HOS_RT_SLOTS_LOG=1` slots by name; one `
 
 ### Layer 0: window buffers (2026-11-11; work/assets/native/layer0-impl.md, PoC work/proto/layer0/)
 
-Steps 7a and 7b are written, behind switches (off by default), and measured (2026-11-11, `work/proto/layer0/plan.sh`,
+**On by default since 2026-11-11 (`RX_VK_LAYER0=2`; `=1` the host class alone, `=0` the old path: imports, mirrors,
+write-backs).** Steps 7a and 7b measured (2026-11-11, `work/proto/layer0/plan.sh`,
 `ab2.sh`; build `work/sa/l0r`, native-vk 5169c1e + layer 0). RUN=timing, one binary, frame trace from 16 s:
 
 | | Kokiri walk (2 runs) | Kokiri turn | Hyrule Field walk | memory work a frame | worst load frame |
@@ -452,6 +453,23 @@ Steps 7a and 7b are written, behind switches (off by default), and measured (202
   A chunk's bind into both windows 0.04 ms; **scattered 64 KB binds 127 us each** and permuted pages read 5x slower
   (hence slots in guest order). A 16 MB udmabuf import 0.52 ms on touched pages, 4.5 ms on fresh ones. Buffer objects cost
   **~0.7 us each per submit, whatever their size** (hence 64 MB chunks). GPU atomics on host memory work.
+- **Load (the importer, 2026-11-11):** a pool of up to `RX_VK_LAYER0_PREFETCH_MB` (64) has its chunks imported and bound
+  ahead by a worker thread when the game makes it; a binding waits only for a chunk the worker has started. Worst load
+  frame (RUN=timing, 2 runs each): Kokiri 0.86 / 0.86 s (default renderer 1.11-1.15, first-use imports 1.25-1.88), Hyrule
+  Field 0.69 / 1.15 s (default 1.22-1.60, first use 1.58-2.15); playable at the default's 17-18 s. Every pool ahead
+  (`RX_VK_LAYER0_EAGER=1`): worst frames 0.5-0.75 s, but playable 2-9 s later. Sparse binds go on RADV's sparse-binding-only
+  queue (`RX_VK_LAYER0_BIND_QUEUE=0`: the replay's).
+- **Soak** (`work/proto/layer0/soak.sh`, RUN=check, 3-minute walks in Kokiri and Hyrule Field and the map change, 5 runs each,
+  with and without `RX_VK_TIMELINES=1`; the `chisel_kokiri_lw` hang reproducer 3 + 3 runs, RUN=timing): no device loss, no
+  stall. One GPU reset in that hour was kwin's ring (gfx_0.1.0), between two reproducer runs, not attributable.
+- **Placement rule:** only `CPU_NO_ACCESS` pools go to VRAM; any pool the CPU can map (`CPU_UNCACHED` / `CPU_CACHED`) stays in
+  system memory: the game reads back the 0x22 view uniform pools and the compute-constant ring every frame
+  (work/assets/native/uniform-buffers.md).
+- **With `RX_VK_TIMELINES=1` layer 0 is slower** (Hyrule Field 37 fps against 56 for layer 0 alone and 46 for timelines
+  alone; Kokiri 36-47 vs 46-52): the main thread's nvnSyncWait finds its sync not yet reached once a frame (586 waits in 600
+  presents, ~10 ms each) where timelines alone finds them done. Layer 0's GPU frame is longer (HF 14.5 vs 12.1 ms: pools
+  read over PCIe) and honest waits expose it. To do before the two are combined: which submission the wait is for, and
+  move its pools to VRAM (7c).
 - Next: 7c (write-only pools in BAR by creation-key policy, needs step 6), 7d (virtual pools as sparse binds in runs).
 
 ## Fronts surveyed (2026-11-10; reports in work/assets/native/*.md, tools and data in work/proto/<front>/)
@@ -510,7 +528,7 @@ is and feeds is being traced (`readback.md`); the exposure meter's read must sta
    honest) and the riskiest step. Caveat: wait-before-signal on ONE Vulkan queue deadlocks (a submission blocked on a
    timeline wait holds everything behind it, including the signal), and the five NVN queues map to one graphics
    queue. Keep a host-side hold for waits whose signal is not yet submitted; count them first.
-7. *Written for a and b, not run yet (`RX_VK_LAYER0=1`, `=2`; section "Layer 0: window buffers").* **Layer 0**: windows
+7. *Done for a and b, on by default (`RX_VK_LAYER0=2`; section "Layer 0: window buffers").* **Layer 0**: windows
    with the host class only is a correctness milestone, expected slower than mirrors (GPU reads
    over PCIe) -> VRAM class for CPU-no-access pools -> write-only pools -> virtual pools as sparse binds. Render-target
    pool as one device-local heap with images cached by (offset, create info).
@@ -576,3 +594,6 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   the pools' flags and creation keys): window buffers over udmabuf chunks instead of imports, mirrors and write-backs, and
   CPU_NO_ACCESS pools in VRAM with a hand-back across map changes. Measured standalone only (work/proto/layer0/l0_poc.out);
   the game runs are in work/proto/layer0/plan.sh.
+- 2026-11-11: layer 0 on by default (`RX_VK_LAYER0=2`, `=0` the old path), with chunks imported ahead by a worker (worst load
+  frame Kokiri 0.86 s, HF 0.69-1.15 s against the default renderer's 1.1 / 1.2-1.6 s); soaked on both maps and the map change.
+  With timelines on, layer 0 costs ~10-20 fps for now (honest CPU waits on its longer GPU frame).

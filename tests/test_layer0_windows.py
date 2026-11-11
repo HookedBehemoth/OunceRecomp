@@ -60,7 +60,10 @@ class Layer0WindowTests(unittest.TestCase):
         self.assertLess(created.index("layer0_pool_created("), created.index("bg_start()"))
         # the switch is read once, and the hot path never asks the environment
         on = block(pools, "bool layer0_on() {")
-        self.assertIn('static const int want', on)
+        wanted = block(pools, "int layer0_wanted() {")
+        self.assertIn('static const int want', wanted)                  # (read once)
+        self.assertIn(': 2;', wanted)                                    # (on by default: RX_VK_LAYER0=0 the old path)
+        self.assertIn('layer0_wanted()', on)
         for hot in ("BufferRef layer0_bind(", "BufferRef layer0_buffer(", "bool ready_for(", "bool layer0_bound(", "void layer0_cpu_read("):
             self.assertNotIn("getenv", block(pools, hot), hot)
         # chunks are bound before their bits are set (a reader without the lock sees a bit only for a bound chunk)
