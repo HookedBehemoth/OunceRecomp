@@ -38,6 +38,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
+
+// RX_VK_LOG_ADDR (diagnostics: which buffer a device fault's address is in), read once
+static bool log_addr() {
+    static const bool on = getenv("RX_VK_LOG_ADDR") != nullptr;
+    return on;
+}
 #include "shaders/wb_diff_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
@@ -308,7 +314,7 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = p.buffer;
     p.address = vkGetBufferDeviceAddress(dev.device, &da);
-    if (getenv("RX_VK_LOG_ADDR"))   // (as import_pool's: which buffer a device fault's address is in)
+    if (log_addr())   // (as import_pool's: which buffer a device fault's address is in)
         logf("vk: addr dma-buf %#llx..%#llx at gpu %#llx..%#llx", (unsigned long long)lo, (unsigned long long)hi,
              (unsigned long long)p.address, (unsigned long long)(p.address + (hi - lo)));
     static int64_t n = 0, bytes = 0, sparse = 0;
@@ -423,7 +429,7 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = p.buffer;
     p.address = vkGetBufferDeviceAddress(dev.device, &da);
-    if (getenv("RX_VK_LOG_ADDR"))   // (diagnostics: which buffer a device fault's address is in)
+    if (log_addr())   // (diagnostics: which buffer a device fault's address is in)
         logf("vk: addr import %#llx..%#llx at gpu %#llx..%#llx", (unsigned long long)lo, (unsigned long long)hi,
              (unsigned long long)p.address, (unsigned long long)(p.address + (hi - lo)));
     t4 = clk::now();
@@ -2826,7 +2832,7 @@ std::deque<DeadImport> dead_imports;
 uint64_t st_retired_imports_freed = 0, st_retired_import_bytes_freed = 0;
 void reap_mirrors() {   // (pools_mu held)
     while (!dead_mirrors.empty() && dead_mirrors.front().value <= mem_completed) {
-        if (getenv("RX_VK_LOG_ADDR")) {
+        if (log_addr()) {
             VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
             da.buffer = dead_mirrors.front().buffer;
             logf("vk: addr mirror freed at gpu %#llx (value %llu, completed %llu)", (unsigned long long)vkGetBufferDeviceAddress(dev.device, &da),
@@ -3077,7 +3083,7 @@ bool mirror_make(Pool& pool) {
             da.buffer = p->mirror;
             const uint64_t ma = vkGetBufferDeviceAddress(dev.device, &da);
             guest_pages_set(p->lo, p->hi, ma);
-            if (getenv("RX_VK_LOG_ADDR"))
+            if (log_addr())
                 logf("vk: addr mirror %#llx..%#llx at gpu %#llx..%#llx", (unsigned long long)p->lo, (unsigned long long)p->hi,
                      (unsigned long long)ma, (unsigned long long)(ma + n));
         }

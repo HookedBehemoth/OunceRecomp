@@ -329,7 +329,9 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     if (want_write && !writable) { RET(R_PATH_NOT_FOUND); return; }
     /* (mkw-recomp) HOS_NO_MOVIES=1: MKW's WebM movies (cup openings, billboards, emblems) are not found, and the
        game goes on without them (decoded by nn_video.c otherwise) */
-    if (!want_write && getenv("HOS_NO_MOVIES")) {
+    static int no_movies = -1;   /* (switches read once: OpenFile runs ~6,000 times in a load) */
+    if (no_movies < 0) no_movies = getenv("HOS_NO_MOVIES") != NULL;
+    if (!want_write && no_movies) {
         const size_t n = strlen(g);
         if (n > 5 && !_stricmp(g + n - 5, ".webm")) {
             static int logged;
@@ -343,7 +345,10 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
       if (!want_write && hos_ultrawide_redirect(g, alt, sizeof alt)) snprintf(path, sizeof path, "%s", alt); }
     if (!want_write && hos_blank_cached_icon(g, path)) { RET(R_PATH_NOT_FOUND); return; }
     {   /* HOS_FS_OVERLAY=<folder> (a test): a file of the game's data found there is read in place of the game's own */
-        const char *ov = getenv("HOS_FS_OVERLAY");
+        static const char *ov_env;
+        static int ov_read;
+        if (!ov_read) ov_env = getenv("HOS_FS_OVERLAY"), ov_read = 1;
+        const char *ov = ov_env;
         const char *rel = !want_write && ov ? strstr(g, ":/") : NULL;
         if (rel) {
             char alt[HOS_FS_PATH];

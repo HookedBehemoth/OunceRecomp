@@ -2542,7 +2542,8 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         }
         return tex;
     }
-    if (partial && getenv("RX_VK_LOG_PARTIAL")) {
+    static const bool log_partial = getenv("RX_VK_LOG_PARTIAL") != nullptr;
+    if (partial && log_partial) {
         static int logged;
         if (logged++ < 200) {
             char line[512];
@@ -3609,7 +3610,8 @@ void texture_frame(uint64_t completed) {
         // was 5.3 GB of textures on a 16 GB laptop with a Radeon 780M, and the PC ran out of memory in Hyrule Field within minutes
         // (Discord, 2026-11-09). At most 2.5 GB there unless RX_VK_VRAM_MB says otherwise
         static bool told;
-        if (!getenv("RX_VK_VRAM_MB") && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && own > (2560ull << 20)) {
+        static const bool vram_set = getenv("RX_VK_VRAM_MB") != nullptr;   // (texture_frame runs every 10 presents)
+        if (!vram_set && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && own > (2560ull << 20)) {
             own = 2560ull << 20;
             if (!told) told = true, logf("vk: an integrated GPU shares the system's RAM: textures at most 2560 MB (RX_VK_VRAM_MB=<MB>: other)");
         }
