@@ -10,7 +10,7 @@
 #   RUN=timing|check             (native-vk) the script takes the GPU lock itself; do not wrap it in flock then:
 #     timing  exclusive (flock -x work/run.lock): fps, launch time, anything that may hang the GPU (a reset kills
 #             every run beside it)
-#     check   shared (flock -s work/run.lock) plus one of RUN_SLOTS (default 2) slots: counters, screenshots,
+#     check   shared (flock -s work/run.lock) plus one of RUN_SLOTS (default 1) slots: counters, screenshots,
 #             censuses. Runs on a private reflink copy of the build's folder, so the caches beside the executable
 #             are not raced (cache updates made by the run are not kept)
 #   (RUN unset: as before; the caller holds `flock work/run.lock`, and no other hookshot may run)
@@ -32,7 +32,10 @@ case "$mode" in
     exec 8>"$root/work/run.lock"; flock -x 8
     exec 7>&- ;;
   check)
-    slots=${RUN_SLOTS:-2}; got=
+    # (one at a time by default: with layer 0 each game holds ~10 GB of guest memory in a memfd shared with the GPU,
+    # which RSS does not show; two runs and the desktop ran a 31 GB machine out of memory, and systemd-oomd killed the
+    # terminal. RUN_SLOTS=2 where there is room.)
+    slots=${RUN_SLOTS:-1}; got=
     while [ -z "$got" ]; do
       exec 7>"$root/work/run.gate"; flock -x 7
       exec 8>"$root/work/run.lock"; flock -s 8
@@ -46,6 +49,12 @@ case "$mode" in
     done ;;
   *) echo "RUN=$mode: timing or check"; exit 2 ;;
 esac
+# (RUN_MEM_GB, default 14: the memory a run needs free before it starts, waited for; 0 skips the check)
+need=${RUN_MEM_GB:-14}; said=
+while (( need > 0 )) && (( $(awk '/MemAvailable/ {print int($2 / 1048576)}' /proc/meminfo) < need )); do
+  [ -n "$said" ] || { echo "run '$name': waiting for ${need} GB of free memory"; said=1; }
+  sleep 2
+done
 out=$root/work/runs/$name
 rm -rf "$out"; mkdir -p "$out/shots" "$out/user"
 [ -n "${USER_FROM:-}" ] && cp -r "$USER_FROM"/. "$out/user/"
