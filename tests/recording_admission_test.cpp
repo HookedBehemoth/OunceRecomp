@@ -112,6 +112,9 @@ VkPipeline last_pipeline{};
 struct { bool on = false; } vertex_set, last_ib;
 void descriptors_disturbed() {}
 std::unordered_map<int, int>& handle_hits() { static thread_local std::unordered_map<int, int> h; return h; }
+bool packets_on() { return false; }   // (RX_VK_PACKETS: vk_packets.h; off here)
+void pk_touch_all() {}
+uint64_t pk_rec = 0;
 struct Program {};
 constexpr int kNvnStages = 8;
 /* BANK_CACHE */

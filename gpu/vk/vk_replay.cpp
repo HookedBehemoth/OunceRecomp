@@ -56,9 +56,27 @@
 #include "vk_bda.h"
 #include "vk_timelines.h"
 #include "vk_l1_census.h"   // (RX_VK_L1_CENSUS: barriers against hazards, the replay's time by op)
+#include "vk_packets.h"   // (RX_VK_PACKETS: the state groups' stamps, for the draws' kept resolutions)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
+// (RX_VK_PACKETS, vk_packets.h: the state groups' stamps; written by the serial replay only, under replay_mu)
+uint64_t pk_clock = 1;
+uint64_t pk_gen[PKG_N] = {1, 1, 1, 1, 1};
+bool packets_check() {
+    static const bool on = getenv("RX_VK_PACKETS_CHECK") && atoi(getenv("RX_VK_PACKETS_CHECK")) != 0;
+    return on;
+}
+bool packets_on() {
+    static const bool on = [] {
+        const bool want = (getenv("RX_VK_PACKETS") && atoi(getenv("RX_VK_PACKETS")) != 0) || packets_check();
+        const bool par = getenv("RX_VK_PARALLEL") && std::clamp(atoi(getenv("RX_VK_PARALLEL")), 0, 8) >= 2;   // (par_threads)
+        const bool v = want && !par;
+        if (want) logf("vk: packets (RX_VK_PACKETS): %s%s", v ? "on" : "off (RX_VK_PARALLEL)", v && packets_check() ? ", checked" : "");
+        return v;
+    }();
+    return on;
+}
 extern std::atomic<bool> movie_networks_slow;   // (vk_draw.cpp: the movie networks left out, issue 109)
 int64_t presents_now;   // (the presents so far, for SlowWatch)
 void hang_watch_start();   // (EvilOOT, vk_hangdump.cpp: RX_VK_HANG_DUMP)
@@ -517,6 +535,7 @@ void use_queue_state(uint64_t queue) {
     }
     if (s == cur_state) return;
     cur_state = s;
+    if (packets_on()) pk_touch_all();   // (RX_VK_PACKETS: another state object; the draws key on it too)
     static uint64_t gen_base = 0;
     gen_base += 1ull << 32;
     s->bind_gen = gen_base, s->rt_serial = gen_base;
@@ -857,6 +876,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             const CallStack* from_calls = nullptr, const CallStack* end_calls = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
+    static const bool pk = packets_on();   // (RX_VK_PACKETS: the state ops stamp their group)
     CallStack calls = from_calls ? *from_calls : kNoCalls;
     for (;;) {
         if (p == end && calls.same(end_calls ? *end_calls : kNoCalls)) return;
@@ -1109,23 +1129,32 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         // ---- state ----
-        case NOP_SET_RT: s.rt = payload<nvn_p_set_rt>(a, avail), s.rt_serial++; break;
+        case NOP_SET_RT:
+            s.rt = payload<nvn_p_set_rt>(a, avail), s.rt_serial++;
+            if (pk) pk_touch(PKG_RT);
+            break;
         case NOP_VIEWPORTS: {
             const auto v = payload<nvn_p_viewports>(a, avail);
-            for (int i = 0; i < v.n && v.first + i < 16; i++) std::memcpy(s.viewport[v.first + i], v.v[i], 16);
+            for (int i = 0; i < v.n && v.first + i < 16; i++) {
+                if (pk && std::memcmp(s.viewport[v.first + i], v.v[i], 16)) pk_touch(PKG_DYN);   // (RX_VK_PACKETS: a change only)
+                std::memcpy(s.viewport[v.first + i], v.v[i], 16);
+            }
             break;
         }
         case NOP_SCISSOR: {
             const auto c = payload<nvn_p_scissor>(a, avail);
+            if (pk && (s.scissor[0] != c.x || s.scissor[1] != c.y || s.scissor[2] != c.w || s.scissor[3] != c.h)) pk_touch(PKG_DYN);
             s.scissor[0] = c.x, s.scissor[1] = c.y, s.scissor[2] = c.w, s.scissor[3] = c.h;
             break;
         }
         case NOP_DEPTH_RANGE: {
+            if (pk) pk_touch(PKG_DYN);
             const auto d = payload<nvn_p_depth_range>(a, avail);
             s.depth_near = d.n, s.depth_far = d.f;
             break;
         }
         case NOP_BIND_PROGRAM: {
+            if (pk) pk_touch(PKG_PROG);
             const auto b = payload<nvn_p_bind_program>(a, avail);
             // (the same program bound again: its descriptors already stand)
             const bool same = b.prog && s.has_prog ? std::memcmp(&s.prog, b.prog, sizeof s.prog) == 0 : !b.prog && !s.has_prog;
@@ -1136,32 +1165,44 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_BIND_STATE: {
             const auto b = payload<nvn_p_bind_state>(a, avail);
+            // (RX_VK_PACKETS: the group stamped only when the object's bytes change: the job lists set the same ones again and again)
+            const auto put = [&](void* dst, size_t n) {
+                if (pk && std::memcmp(dst, b.bytes, n)) pk_touch(PKG_DYN);
+                std::memcpy(dst, b.bytes, n);
+            };
             switch (b.kind) {
             case 0: {
                 nvn_blend_st st;
                 std::memcpy(&st, b.bytes, sizeof st);
-                s.blend[st.target & 7] = st;
+                put(&s.blend[st.target & 7], sizeof st);
                 break;
             }
-            case 1: std::memcpy(&s.color, b.bytes, sizeof s.color); break;
-            case 2: std::memcpy(&s.chmask, b.bytes, sizeof s.chmask); break;
-            case 3: std::memcpy(&s.ms, b.bytes, sizeof s.ms); break;
-            case 4: std::memcpy(&s.poly, b.bytes, sizeof s.poly); break;
-            case 5: std::memcpy(&s.ds, b.bytes, sizeof s.ds); break;
+            case 1: put(&s.color, sizeof s.color); break;
+            case 2: put(&s.chmask, sizeof s.chmask); break;
+            case 3: put(&s.ms, sizeof s.ms); break;
+            case 4: put(&s.poly, sizeof s.poly); break;
+            case 5: put(&s.ds, sizeof s.ds); break;
             default: break;
             }
             break;
         }
         case NOP_BIND_VATTR: {
             const auto v = payload<nvn_p_bind_vattr>(a, avail);
+            uint32_t was[16];
+            if (pk) std::memcpy(was, s.vattr, sizeof was);
+            const int nwas = s.nvattr;
             std::memset(s.vattr, 0, sizeof s.vattr);
             for (int i = 0; i < v.n && i < 16; i++) s.vattr[i] = v.st[i];
             s.nvattr = std::min(v.n, 16);
+            if (pk && (nwas != s.nvattr || std::memcmp(was, s.vattr, sizeof was))) pk_touch(PKG_VI);   // (RX_VK_PACKETS: a change only)
             break;
         }
         case NOP_BIND_VSTREAM: {
             const auto v = payload<nvn_p_bind_vstream>(a, avail);
-            for (int i = 0; i < v.n && i < 16; i++) s.vstream[i] = v.st[i];
+            for (int i = 0; i < v.n && i < 16; i++) {
+                if (pk && std::memcmp(&s.vstream[i], &v.st[i], sizeof v.st[i])) pk_touch(PKG_VI);   // (RX_VK_PACKETS: a change only)
+                s.vstream[i] = v.st[i];
+            }
             break;
         }
         case NOP_BIND_VBUF: {
@@ -1237,6 +1278,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_BIND_TEX: case NOP_BIND_SAMP: case NOP_BIND_IMG: {
+            if (pk) pk_touch(PKG_TEX);
             nvn_p_bind_handles b;
             std::memset(&b, 0, sizeof b);
             std::memcpy(&b, a, std::min<size_t>(sizeof b, h.size - 8));
@@ -1259,6 +1301,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_STENCIL: {
+            if (pk) pk_touch(PKG_DYN);
             const auto st = payload<nvn_p_stencil>(a, avail);
             for (int f = 0; f < 2; f++) {
                 if (!(st.face & (1 << f))) continue;
@@ -1269,18 +1312,29 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_POLY_OFFSET: {
+            if (pk) pk_touch(PKG_DYN);
             const auto o = payload<nvn_p_poly_offset>(a, avail);
             s.poly_offset[0] = o.factor, s.poly_offset[1] = o.units, s.poly_offset[2] = o.clamp;
             break;
         }
-        case NOP_BLEND_COLOR: std::memcpy(s.blend_color, payload<nvn_p_blend_color>(a, avail).rgba, 16); break;
+        case NOP_BLEND_COLOR:
+            if (pk) pk_touch(PKG_DYN);
+            std::memcpy(s.blend_color, payload<nvn_p_blend_color>(a, avail).rgba, 16);
+            break;
         case NOP_PRIMITIVE_RESTART: {
+            if (pk) pk_touch(PKG_DYN);
             const auto r = payload<nvn_p_restart>(a, avail);
             s.restart = r.enable != 0, s.restart_index = (uint32_t)r.index;
             break;
         }
-        case NOP_DEPTH_CLAMP: s.depth_clamp = payload<nvn_p_flag>(a, avail).value != 0; break;
-        case NOP_RASTER_DISCARD: s.raster_discard = payload<nvn_p_flag>(a, avail).value != 0; break;
+        case NOP_DEPTH_CLAMP:
+            if (pk) pk_touch(PKG_DYN);
+            s.depth_clamp = payload<nvn_p_flag>(a, avail).value != 0;
+            break;
+        case NOP_RASTER_DISCARD:
+            if (pk) pk_touch(PKG_DYN);
+            s.raster_discard = payload<nvn_p_flag>(a, avail).value != 0;
+            break;
         case NOP_RENDER_ENABLE:
             s.render_enabled = payload<nvn_p_flag>(a, avail).value != 0;
             if (dump_on()) logf("vk: dump-op %03d RENDER_ENABLE %d", dump_seq(), (int)s.render_enabled);
@@ -1312,6 +1366,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL:
+            if (pk) pk_touch(PKG_TEX);
             s.bind_gen++;
             for (int k = 0; k < kNvnStages; k++) s.tex_gen[k] = s.bind_gen;
             break;
