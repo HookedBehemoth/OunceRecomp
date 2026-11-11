@@ -284,6 +284,19 @@ void rx_close_asked(void) {
     void (*close_asked)(void) = (void (*)(void))(void *)GetProcAddress(vk_module, "mkwvk_close_asked");
     if (close_asked) close_asked();
 }
+/* (native-vk E3, HOS_ENG_JOBS) a render job's recording, on the job's thread: the Vulkan back end records it (gpu/vk/eng_job.h);
+   looked up by name once, so a back end without it (WebGPU, an older one) is skipped */
+void rx_eng_job_recorded(const rx_eng_job_info *j, const uint8_t *rec, uint64_t bytes, uint64_t handle) {
+    typedef void (*fn_t)(const rx_eng_job_info *, const uint8_t *, uint64_t, uint64_t);
+    static fn_t fn;
+    static volatile LONG looked;
+    if (!vk_module || !vk) return;
+    if (!looked) {
+        fn = (fn_t)(void *)GetProcAddress(vk_module, "mkwvk_eng_job_recorded");
+        InterlockedExchange(&looked, 1);
+    }
+    if (fn) fn(j, rec, bytes, handle);
+}
 void rx_resize(int width, int height) { vk ? vk->resize(width, height) : wgr_resize(width, height); }
 const char *rx_describe(void) { return vk ? vk->describe() : wgr_describe(); }
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines) {

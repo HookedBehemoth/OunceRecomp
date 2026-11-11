@@ -60,6 +60,7 @@
 #include "shaders/movie_upscale_comp_spv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "vk_packets.h"   // (RX_VK_PACKETS: resolutions kept while the state groups they are made from stand)
+#include "eng_job.h"     // (HOS_ENG_JOBS: the job threads' draws, the replay's picks for them)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -5113,6 +5114,27 @@ uint16_t draw_hazards(VkCommandBuffer cmd, const Program& p, const NvnState& s, 
 
 } // namespace
 
+// ---- (native-vk engine cut E3, HOS_ENG_JOBS) a job draw's state on a job thread's secondary (gpu/vk/eng_job.cpp): the draw path's
+// own functions with that thread's caches (the job threads never replay, so their caches are a job's alone) ----
+bool eng_draw_topology(int prim, VkPrimitiveTopology* t) { return topology(prim, *t); }
+VkBuffer eng_draw_zero_buffer() { return zero_buffer; }
+void eng_draw_state(VkCommandBuffer cmd, const NvnState& s, const Program& p, const SoProg& so, const EngTargets& e,
+                    VkPrimitiveTopology topo, bool reset) {
+    static Texture* const kDepth = reinterpret_cast<Texture*>(uintptr_t(64));   // (dynamic_state only asks whether there is one)
+    Targets at;
+    at.n = std::clamp(e.n, 0, 8);
+    for (int i = 0; i < 8; i++) at.color_format[i] = e.color[i];
+    at.depth_format = e.depth, at.depth = e.depth ? kDepth : nullptr;
+    at.width = e.width, at.height = e.height, at.samples = e.samples;
+    if (reset) last_dyn_valid = false, dyn_fast.on = false, so_dyn = SoDyn{}, last_so = nullptr;
+    cur_program = &p;
+    dynamic_state(cmd, s, at, topo, false);
+    so_state(cmd, p, s, at);
+    if (last_so != &so) so_bind(cmd, so), last_so = &so;
+}
+namespace {
+} // namespace
+
 void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float rgba[4], uint32_t mask) {
     ParLock lk;
     mask &= 0xF;
@@ -7030,6 +7052,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const HeapProgram* hp = so && so->heap ? desc_heap_program(p) : nullptr;
 #endif
     cur_program = &p;
+    if (eng_job_replay_active()) {   // (HOS_ENG_JOBS: a job draw's program, for the job threads and the check)
+        EngTargets et{at.width, at.height, at.n, {}, at.depth_format, at.samples};
+        for (int i = 0; i < 8; i++) et.color[i] = at.color_format[i];
+        eng_job_replay_program(s, p, so, types, et);
+    }
     dlss_trace_draw(s, p, d, at);
     skin_check(s, p, d, at);
     if (!record_progs().empty() && std::find(record_progs().begin(), record_progs().end(), p.key) != record_progs().end())

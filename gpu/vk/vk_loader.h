@@ -55,6 +55,7 @@
     X(vkCreateCommandPool)                                                                                            \
     X(vkDestroyCommandPool)                                                                                           \
     X(vkResetCommandPool)                                                                                             \
+    X(vkResetCommandBuffer)                                                                                           \
     X(vkAllocateCommandBuffers)                                                                                       \
     X(vkBeginCommandBuffer)                                                                                           \
     X(vkEndCommandBuffer)                                                                                             \

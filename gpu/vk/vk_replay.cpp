@@ -57,6 +57,7 @@
 #include "vk_timelines.h"
 #include "vk_l1_census.h"   // (RX_VK_L1_CENSUS: barriers against hazards, the replay's time by op)
 #include "vk_packets.h"   // (RX_VK_PACKETS: the state groups' stamps, for the draws' kept resolutions)
+#include "eng_job.h"   // (HOS_ENG_JOBS: the render jobs' marks, the check, the programs published for the job threads)
 #include "../render/nvn_pkt.h"   // (HOS_ENG_LISTS: the load-time lists' packets)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
@@ -1015,6 +1016,7 @@ void pkt_apply(VkCommandBuffer& cmd, NvnState& s, const nvn_pkt& k, bool pk) {
             if (ssbo) s.ssbo_gen[b.stage] = s.bind_gen;
         }
         u = b;
+        if (eng_job_replay_active()) eng_job_replay_bind(ssbo ? 4 : 3, b.stage, b.index, 1, 0);
     }
     if (pk && (k.flags & NVN_PKF_TEX)) pk_touch(PKG_TEX);
     for (int i = 0; i < k.nhandle; i++) {
@@ -1025,6 +1027,7 @@ void pkt_apply(VkCommandBuffer& cmd, NvnState& s, const nvn_pkt& k, bool pk) {
             s.tex_gen[e.stage] = s.bind_gen;
         }
         to[e.slot] = e.h;
+        if (eng_job_replay_active()) eng_job_replay_bind(e.what, e.stage, e.slot, 1, 0);
     }
     if (k.vtx) {
         const nvn_pk_vertex& v = *k.vtx;
@@ -1043,6 +1046,7 @@ void pkt_apply(VkCommandBuffer& cmd, NvnState& s, const nvn_pkt& k, bool pk) {
         }
     }
     if (k.draw.op) {
+        if (eng_job_replay_active()) eng_job_replay_draw_op(s, k.draw.op, &k.draw.u, sizeof k.draw.u);
         if (s.render_enabled && !s.raster_discard) {
             draw(cmd, s, k.draw.op == NOP_DRAW ? draw_args(k.draw.u.d) : k.draw.op == NOP_DRAW_IDX ? draw_args(k.draw.u.di) : draw_args(k.draw.u.dm));
             eng_n[ENC_DRAWS]++;
@@ -1135,6 +1139,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         const uint8_t* a = p + 8;
         const uint32_t avail = h.size - 8;
         const bool l1c_op = l1c::on && !dry && !worker;   // (RX_VK_L1_CENSUS: this op's time and what its command touches)
+        if (eng_job_replay_active()) eng_job_replay_op((int)h.op);
         const int64_t l1c_t0 = l1c_op ? (l1c::op_begin(h.op), prof_now()) : 0;
         switch (h.op) {
         case NOP_END:   // (the end of a called list: on after its call; of the command buffer: done)
@@ -1158,6 +1163,12 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             continue;
         }
         case NOP_BEGIN: case NOP_JUMP: break;
+        case NOP_JOB:   // (HOS_ENG_JOBS: a render job's records begin or end here; the serial replay's check and programs)
+            if (mode == Mode::Serial) {
+                const auto j = payload<nvn_p_job>(a, avail);
+                eng_job_replay_mark(j.serial, j.end);
+            }
+            break;
         case NOP_PKT: {   // (HOS_ENG_LISTS: the called list's packet in place of the records after this one)
             if (!eng || eng_end) break;   // (off, or inside the records a checked packet stands for: they decode)
             const auto r = payload<nvn_p_pkt>(a, avail);
@@ -1223,6 +1234,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 st_waits_met++;
                 census.add(tl::EV_MET);
             } else if (suspend_ok) {   // (on once that work is replayed; a dry pass: its part up to here)
+                if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_suspend(p);   // (HOS_ENG_JOBS: the job's walk paused)
                 suspend_at = p;
                 suspend_calls = calls;
                 return;
@@ -1536,6 +1548,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 }
                 u.stage = b.stage, u.index = index, u.addr = b.r[i].address, u.size = b.r[i].size;
             }
+            if (eng_job_replay_active()) eng_job_replay_bind(b.ssbo ? 4 : 3, b.stage, b.first, std::min(b.n, 16), b.src);
             break;
         }
         case NOP_BIND_UBO: case NOP_BIND_SSBO: {
@@ -1556,6 +1569,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 }
                 u = b;
                 if (h.op == NOP_BIND_UBO && ubo_census_on()) ubo_census_bind(&s, b.stage, b.index, a, avail);
+                if (eng_job_replay_active()) eng_job_replay_bind(h.op == NOP_BIND_UBO ? 3 : 4, b.stage, b.index, 1, 0);
             }
             break;
         }
@@ -1580,6 +1594,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 s.tex_gen[b.stage] = s.bind_gen;
             }
             for (int k = 0; k < n; k++) to[b.first + k] = b.h[k];
+            if (eng_job_replay_active()) eng_job_replay_bind(h.op == NOP_BIND_TEX ? 0 : h.op == NOP_BIND_SAMP ? 1 : 2, b.stage, b.first, n, b.src);
             break;
         }
         case NOP_STENCIL: {
@@ -1699,6 +1714,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         case NOP_DRAW: {
             const auto d = payload<nvn_p_draw>(a, avail);
+            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
                 eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.d = d;
             } else if (s.render_enabled && !s.raster_discard && !dry) {
@@ -1709,6 +1725,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_DRAW_IDX: {
             const auto d = payload<nvn_p_draw_idx>(a, avail);
+            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
                 eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.di = d;
             } else if (s.render_enabled && !s.raster_discard && !dry) {
@@ -1719,6 +1736,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_DRAW_INDIRECT: {
             const auto d = payload<nvn_p_draw_indirect>(a, avail);
+            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (s.render_enabled && !s.raster_discard && !dry) {
                 DrawArgs da;
                 da.prim = d.prim, da.indexed = d.indexed != 0, da.itype = d.itype;
@@ -1731,6 +1749,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_DRAW_MESH: {
             const auto d = payload<nvn_p_draw_mesh>(a, avail);
+            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             static int logged_mesh;
             if (logged_mesh++ < 8)
                 logf("vk: mesh draw kind %d: %d %d %d, indirect %#llx count %#llx max %d stride %d", d.kind, d.x, d.y,
@@ -1745,11 +1764,13 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_DISPATCH: {
             const auto d = payload<nvn_p_dispatch>(a, avail);
+            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (s.render_enabled && !dry) dispatch(cmd, s, (uint32_t)d.x, (uint32_t)d.y, (uint32_t)d.z, 0);
             break;
         }
         case NOP_DISPATCH_INDIRECT: {
             const auto d = payload<nvn_p_dispatch_indirect>(a, avail);
+            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (s.render_enabled && !dry) dispatch(cmd, s, 1, 1, 1, d.addr);
             break;
         }
@@ -1894,6 +1915,7 @@ std::recursive_mutex par_mu;
 /// may_stop: up to a wait not met, which it returns (null: the command buffer done), the calls it is inside in
 /// suspend_calls. calls: the calls h is inside (going on from a wait inside a called list)
 const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop = false, const CallStack* calls = nullptr) {
+    if (eng_job_on()) eng_job_replay_resume(h);   // (HOS_ENG_JOBS: a job's walk paused at this wait goes on)
     const int threads = par_threads();
     NvnState& state = *cur_state;
     const CallStack from = calls ? *calls : kNoCalls;
@@ -3530,6 +3552,7 @@ void log_frame_stats() {
             logf("%s", line);
         }
         eng_lists_report(120.0);
+        eng_job_report(120.0);
         int64_t mirrors = 0, sync_b = 0, sync_c = 0, wb_b = 0;
         uint64_t mirror_mb = 0;
         memory_stats(&mirrors, &mirror_mb, &sync_b, &sync_c, &wb_b);

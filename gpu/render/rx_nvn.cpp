@@ -803,6 +803,7 @@ void cond_recheck_present() {
         case NOP_END: return;
         case NOP_BEGIN: case NOP_JUMP: break;
         case NOP_PKT: break;   // (native-vk HOS_ENG_LISTS: a called list's packet; its records follow and are replayed)
+        case NOP_JOB: break;   // (native-vk HOS_ENG_JOBS: a render job's start or end, a mark only)
         case NOP_CALL: {   // (native-vk HOS_NVN_LIST_REF: a called list by reference, its records up to its END)
             const auto k = payload<nvn_p_call>(a, avail);
             if (k.target && avail >= sizeof(nvn_p_call)) replay(s, k.target);

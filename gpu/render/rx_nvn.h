@@ -157,6 +157,7 @@ enum {
     NOP_CLEAR_BUF,                              /* (hookshot: nvnCommandBufferClearBuffer) */
     NOP_WAIT_FENCE,                             /* (hookshot, RX_VK_TIMELINES: nvnQueueWaitSync, before the queue's next submit) */
     NOP_PKT,                                    /* (native-vk E2, HOS_ENG_LISTS: a called list's packet, gpu/render/nvn_pkt.h) */
+    NOP_JOB,                                    /* (native-vk E3, HOS_ENG_JOBS: a render job's recording begins / ends, gpu/vk/eng_job.h) */
     NOP_COUNT_
 };
 typedef struct { int32_t n; const nvn_tex *color[8]; nvn_view cview[8]; uint8_t has_cview[8]; const nvn_tex *depth; nvn_view dview; uint8_t has_dview; } nvn_p_set_rt;
@@ -212,6 +213,21 @@ typedef struct { const uint8_t *target; uint32_t next, bytes; } nvn_p_call;
    skip: the bytes after this record that record the call the default way (the callee copied in, or a NOP_CALL) */
 struct nvn_pkt;
 typedef struct { const struct nvn_pkt *pkt; uint32_t serial, skip; } nvn_p_pkt;
+/* (native-vk engine cut E3, HOS_ENG_JOBS=1) the first and last record of a render job's recording (f_80084de0): the job's
+   serial (gpu/vk/eng_job.h EngJob), end 0 at its start, 1 at its end. Nothing to replay: the Vulkan replay finds the job's
+   host recording by it (its check, the programs it publishes for the job threads) */
+typedef struct { uint32_t serial, end; } nvn_p_job;
+/* (E3) what the host knows of a job when its recording ends (host/eng_jobs.c, on the job's thread): its serial (NOP_JOB's),
+   the recorder's arguments (f_80084de0: x0 the draw queue, x1 the draw context, x3 the pass key, x4 the job object, x5 the
+   item range) and the view record it found (x25 at its BeginRecording; 0: not one of the queue's), with that record's
+   target rectangle (+0x78: x0, y0, x1, y1, floats) */
+typedef struct rx_eng_job_info {
+    uint32_t serial, range_start, range_count, pad_;
+    uint64_t ctx, drawctx, key, job, view;
+    float rect[4];
+} rx_eng_job_info;
+/* (the Vulkan back end's mkwvk_eng_job_recorded, when it has one: gpu/vk/eng_job.h) */
+void rx_eng_job_recorded(const rx_eng_job_info *j, const uint8_t *rec, uint64_t bytes, uint64_t handle);
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
    first index, base vertex, base instance; arrays: count, instances, first, base instance), as many as the 32-bit
    value at count_addr says when there is one; read at replay, after the GPU's writes there reached guest memory */

@@ -22,6 +22,7 @@
 #include "../gpu/render/rx_nvn.h"
 #include "nvn_list.h"
 #include "eng_lists.h"
+#include "eng_jobs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1340,6 +1341,7 @@ NV(nvnQueueSetDebugLabel) {}
 
 /* ---- command buffers ---- */
 #define CB(p) ((nvn_cmd *)(p))
+static void *rec(nvn_cmd *o, uint32_t op, size_t payload);
 #define OP_RESERVE 24
 
 /* (native-vk layer 1, stage S1) HOS_NVN_LIST_REF=1: command lists by reference (host/nvn_list.h has the design and the
@@ -1461,6 +1463,7 @@ typedef struct {
     union { struct { uint8_t *seg, *cur, *end; }; nvn_lw lw; };
     int32_t eng_kind;        /* (HOS_ENG_LISTS) the open recording's kind (nvn_pkt.h NVN_PK_*), from where it began */
     uint64_t eng_meta[4];    /* (and what the kind's builder had then: nvn_pkt.meta) */
+    uint32_t eng_job;        /* (HOS_ENG_JOBS) the open recording's render job (host/eng_jobs.h), 0: not a job's */
 } cmd_rec;
 #define CMD_CHUNK_BITS 10
 #define CMD_CHUNKS 4096u                     /* (4M command buffers at once) */
@@ -1846,6 +1849,13 @@ NV(nvnCommandBufferBeginRecording) {
     put_hdr(p, NOP_BEGIN, 8);
     o->hw_used -= 8;   /* BEGIN / END have no hardware equivalent */
     o->hw_start = o->hw_used;
+    r->eng_job = eng_jobs_on() ? eng_jobs_begin(c) : 0;   /* (HOS_ENG_JOBS: a render job's recording, marked at both ends) */
+    if (r->eng_job) {
+        nvn_p_job *j = (nvn_p_job *)rec(o, NOP_JOB, sizeof(nvn_p_job));
+        j->serial = r->eng_job, j->end = 0;
+        o->hw_used -= 8 + sizeof *j;
+        o->hw_start = o->hw_used;
+    }
 }
 /* the recording, BEGIN to END, is contiguous in the command buffer's segment: one copy of it */
 static uint8_t *flatten(const uint8_t *p, size_t n) {
@@ -1915,6 +1925,13 @@ static uint64_t end_recording_ref(nvn_cmd *o) {
 }
 NV(nvnCommandBufferEndRecording) {
     nvn_cmd *o = CB(P(0));
+    const uint32_t job = cmd_host(o)->eng_job;
+    if (job) {   /* (HOS_ENG_JOBS: the job's end mark) */
+        nvn_p_job *j = (nvn_p_job *)rec(o, NOP_JOB, sizeof(nvn_p_job));
+        j->serial = job, j->end = 1;
+        o->hw_used -= 8 + sizeof *j;
+        cmd_host(o)->eng_job = 0;
+    }
     uint8_t *p = cmd_alloc(o, 8);
     put_hdr(p, NOP_END, 8);
     o->hw_used -= 8;
@@ -1967,6 +1984,7 @@ NV(nvnCommandBufferEndRecording) {
                 "(%.1f MB)", (unsigned long long)made, ncopies, copy_bytes / 1048576.0, npins, (long long)seg_count,
                 seg_bytes / 1048576.0);
     ReleaseSRWLockExclusive(&copy_lock);
+    if (job) eng_jobs_end(job, copy, (size_t)(r->cur - r->seg), (uint64_t)(uintptr_t)copy);   /* (on this thread, now: the back end records it) */
     if (watch_draw_cmd && watch_draw_cmd == (void *)o && nwatch_handles < 16) {
         watch_handles[nwatch_handles++] = (uint64_t)(uintptr_t)copy;
         watch_draw_cmd = NULL;
@@ -2977,7 +2995,7 @@ NV(nvnQueuePresentTexture) {
     o->presents++;
     if (eng_on()) {   /* (HOS_ENG_LISTS: the packets' counts every 600 presents) */
         static int64_t presents;
-        if (++presents % 600 == 0) eng_lists_log("every 600 presents", 600);
+        if (++presents % 600 == 0) eng_lists_log("every 600 presents", 600), eng_jobs_log(600);
     }
     void rt_slots_frame(void);   /* rt_slots.c */
     rt_slots_frame();
