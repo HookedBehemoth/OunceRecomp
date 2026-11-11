@@ -1581,8 +1581,8 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
 static int eng_passes(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = getenv("HOS_ENG_PASSES");
-        on = e && atoi(e) != 0;
+        const char *e = getenv("HOS_ENG_PASSES"), *t = getenv("HOS_ENG_PASS_SELFTEST");   /* (the self-test implies it) */
+        on = (e && atoi(e) != 0) || (t && atoi(t) != 0);
         if (on) hos_log("eng: job-call sites and job views marked for the replay (HOS_ENG_PASSES)");
     }
     return on;
