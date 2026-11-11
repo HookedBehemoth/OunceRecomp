@@ -7,11 +7,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
+#include <string>
+#include <vector>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
 namespace mkwvk {
+
+void logf(const char* fmt, ...);   // (vk_main.cpp)
 
 namespace {
 
