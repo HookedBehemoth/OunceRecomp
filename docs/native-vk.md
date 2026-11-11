@@ -99,7 +99,7 @@ work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` (output `work/sa
 - Keep builds side by side: copy `hookshot`, `hookshot_vk.so`, `hookshot.map` and the caches (`*.bin`, `*.idx` from a
   warm run) to `work/sa/<name>/` and run with `EXE=`. Present: `census` (census v2), `zstd` (libc + zstd;
   its caches predate the shader-object stamp change), `so` (shader objects; warm caches in `so_caches_warm`), `rb2`
-  (byte-range readback waits, the current best). Older ones were removed 2026-11-11.
+  (byte-range readback waits), `tt` (transient targets, step 4: the current best). Older ones were removed 2026-11-11.
 
 **Run.** `OVERLAY=work/overlay/chisel_kokiri EXE=work/sa/zstd/hookshot scripts/run-vk.sh <name> <seconds> -- [VAR=..]`:
 straight into Kokiri Forest (no title, no intro), headless, muted, shots every `SHOT_EVERY` presents in
@@ -316,6 +316,29 @@ main thread's submits block 5.3 ms a frame (the replay / GPU is behind). The rul
 write-back of exactly the bytes it reads; every readback but the grid is already covered by the game's own sync
 waits. `RX_VK_EXPOSURE_LOG` logs only the title (it keys on a draw program; gameplay's final passes are compute).
 
+### Transient targets (2026-11-11; work/assets/native/transient-targets-impl.md)
+
+Four changes, measured separately with one binary (`work/sa/tt`; runs `tt_*`, scripts `work/proto/transient/`):
+- **a, per-texture invalidation** (`RX_VK_TEX_SERIAL=0`: the global `destroy_gen` as before): the handle cache and the
+  draws' descriptor reuse check the textures they resolved by id (`texture_alive`). A miss is kept only until a frame
+  defers uploads (`texture_miss_generation`, where `texture_frame` counts them), so a deferred ASTC texture is looked up
+  again by the next frame (the trap above).
+- **b, take-over** (`RX_VK_TARGET_TAKEOVER=0`: off): a new render target made over the storage of one of the same create
+  info that this frame and recording have not used takes its image at once (not in a parallel replay).
+- **c, lazy creation clear** (`RX_VK_LAZY_CLEAR=1`, off): a new single-level target is cleared by its first pass's load
+  op when the pass covers it, else before its first other use. 750-1,600 clears a run moved, 0-3 made late; no gain.
+- **d, GPU unswizzle for BC and textures under 8 MB** (`RX_VK_CPU_UNSWIZZLE=0`, off): no faster on this PC. Kokiri's
+  load: CPU 113-161 ms for 210-293 MB; GPU from staging 127-188 ms for 260 MB (copying into the BAR's VRAM at the PCIe
+  rate costs what the CPU's unswizzle does), from the pools 199-467 ms (imports). Launch 16-18 s either way. Offline
+  conversion (block-linear.md step 3) is the lever.
+
+Turning (`40:RRIGHT/4000,46:RLEFT/4000,52:LUP/6000`, 80 s), defaults vs `RX_VK_TEX_SERIAL=0 RX_VK_TARGET_TAKEOVER=0`:
+**47.4 -> 53.7 fps** (standing 52.1 -> 57.0), renderer 21.3 -> 18.8 ms a frame (draw 5.9 -> 4.8, descriptors 2.1 -> 1.7),
+render-target images made new 0.34 -> 0.14 a frame (taken over 0.79), dead targets let go 1,880 (4.7 GB) -> 262 (1.2 GB),
+textures retired 2,150 -> 538. Walking straight (`40:LUP/12000`): 55 fps in every mode (old 55.4, all 55.0; a, b, c, d
+alone 52.8-54.4), new images 0.10 -> 0.05 a frame. The textures' VRAM peak is about the same (VMA keeps freed blocks).
+Pictures unchanged (shot diffs at the noise of two old runs), no GPU hang in ~30 runs.
+
 ## Fronts surveyed (2026-11-10; reports in work/assets/native/*.md, tools and data in work/proto/<front>/)
 
 Kokiri, `work/sa/zstd` build, ~47 fps, 6 submits a frame. One line each; the reports have addresses and evidence.
@@ -355,7 +378,8 @@ is and feeds is being traced (`readback.md`); the exposure meter's read must sta
 1. *Done (73a798c, 0d50991: 48.8 -> 56.3 fps standing, 46.7 -> 54.6 walking).* **Readback wait per written range** (exposure meter strict). A/B with `HOS_NO_PACING=1`, walking, exposure checked.
 2. *Done (9aac6fe; off by default).* **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits.
 3. *Done for the ranges (68fde05: captures 11.4 -> 4.2 MB a frame); mirrors of invalidated pools remain.* **Exact capture ranges** (69% of captured pages are outside pools) and no mirror for pools the game invalidates.
-4. **Transient targets**: per-texture invalidation instead of `destroy_gen`; a moved target takes over the image it
+4. *Done for a and b (on by default: turning 47.4 -> 53.7 fps); c and d behind switches, off (no gain measured).*
+   **Transient targets**: per-texture invalidation instead of `destroy_gen`; a moved target takes over the image it
    drew over; skip creation clears the game overwrites. GPU unswizzle for every format and size. Trap:
    `texture_view_of` (vk_draw.cpp) caches misses too (a deferred ASTC upload, `upload_defer`, samples the dummy) and
    retries them only when the slot version or `destroy_gen` moves; today `destroy_gen` moves every frame, so with
@@ -401,3 +425,7 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   back-to-back slots is gone, no invalidate of the frame waits (7.91 -> 0.07 ms). Kokiri 48.8 -> 56.3 fps standing,
   46.7 -> 54.6 walking (`RX_VK_WB_PAGES=1`: as before). Native replacements of the readback systems (two-phase GPU
   occlusion, real queries, exposure on the GPU, indirect counts): work/assets/native/readback2.md.
+- 2026-11-11: transient targets (step 4): per-texture invalidation and render targets taking over the image they are made
+  over, on by default; turning the camera in Kokiri 47.4 -> 53.7 fps, new target images 0.34 -> 0.14 a frame, dead targets
+  4.7 -> 1.2 GB. The lazy creation clear (`RX_VK_LAZY_CLEAR=1`) and the GPU unswizzle of BC and small textures
+  (`RX_VK_CPU_UNSWIZZLE=0`) are kept behind switches: no gain on this PC (work/assets/native/transient-targets-impl.md).
