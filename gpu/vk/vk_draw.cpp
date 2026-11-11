@@ -5441,9 +5441,17 @@ bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram
                     if (bda_why_log()) eng_bda_why_note(p, st);   // (RX_VK_LOG_BDA_WHY=1: the program and why, once)
                     return fail(EDW_SSBO_CLASSIC);
                 }
-                if (d.is_written) return fail(EDW_SSBO_WRITTEN);
+                // (HOS_ENG_JOBS_WRITES=1, fallbacks.md 1: a written one read and written through its address too; its range noted in
+                // EngJob.writes for the job-call site, which notes it as the GPU's, as the replay's binding does)
+                static const bool writes_on = getenv("HOS_ENG_JOBS_WRITES") && atoi(getenv("HOS_ENG_JOBS_WRITES")) != 0;
+                if (d.is_written && (!writes_on || d.count > 1)) return fail(EDW_SSBO_WRITTEN);
                 const uint32_t off = d.cbuf_offset + k * 16;
                 const uint64_t addr = eng_word(s, st, d.cbuf_index, off) | (uint64_t)eng_word(s, st, d.cbuf_index, off + 4) << 32;
+                if (d.is_written && addr) {
+                    const uint64_t size = eng_word(s, st, d.cbuf_index, off + 8);
+                    if (addr >= (1ull << 40) || !size || !layer0_ready(addr, addr + size)) return fail(EDW_SSBO_WRITTEN);
+                    out.writes.push_back(addr), out.writes.push_back(size);
+                }
                 if (d.count > 1 || (info.native_global_bounds && d.cbuf_index != 0)) {
                     // (RX_VK_DESC_HEAP_BDA=2: a table entry or a candidate, which the shader has no base for: as bda_storage_guess,
                     // but without its guesses (pool ends): its first bytes bound in layer 0, by the replay at an earlier draw)

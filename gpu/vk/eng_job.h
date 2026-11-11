@@ -59,6 +59,8 @@ struct EngJob {
     const EngPreCopy* pre; uint32_t npre;
     const EngWait* waits; uint32_t nwaits;
     bool pre_barrier;
+    // (HOS_ENG_JOBS_WRITES) the storage ranges its draws write, (address, size) pairs: noted as the GPU's at the call
+    const uint64_t* writes; uint32_t nwrites;
 };
 /// (E6) the hash of a draw op's payload both sides make
 uint32_t eng_draw_sig(int op, const void* payload, size_t n);
@@ -122,7 +124,8 @@ struct EngDrawDesc {
     std::vector<std::pair<const uint8_t*, uint32_t>> banks;   // (per HeapProgram::banks: its bytes)
     std::vector<EngDescPatch> patches;
     std::vector<uint64_t> ubos;   // (E6: the user uniform ranges it reads by address, guest address << 0 and size, in pairs)
-    void clear() { why = EDW_OK, push_bytes = 0, els.clear(), handles.clear(), banks.clear(), patches.clear(), ubos.clear(); }
+    std::vector<uint64_t> writes; // (HOS_ENG_JOBS_WRITES: the storage ranges it writes, (address, size) pairs)
+    void clear() { why = EDW_OK, push_bytes = 0, els.clear(), handles.clear(), banks.clear(), patches.clear(), ubos.clear(), writes.clear(); }
 };
 /// The deferred binds a job's state came from: per (texture 0, sampler 1, image 2), stage, slot: (bind number + 1) << 8 | index
 /// (0: an immediate bind)

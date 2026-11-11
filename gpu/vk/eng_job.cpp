@@ -291,6 +291,7 @@ struct Job {
     std::vector<EngPreCopy> pre;         // (HOS_ENG_JOBS_PREWORK)
     std::vector<EngWait> waits;
     bool pre_barrier = false;
+    std::vector<uint64_t> writes;        // (HOS_ENG_JOBS_WRITES)
     std::atomic<uint64_t> used_value{0};   // (E4: the recording that executed it)
     std::atomic<bool> replayed{false};
 };
@@ -429,6 +430,7 @@ struct Walk {
     std::vector<EngPreCopy> pre;   // (HOS_ENG_JOBS_PREWORK)
     std::vector<EngWait> waits;
     bool pre_barrier = false;
+    std::vector<uint64_t> writes;  // (HOS_ENG_JOBS_WRITES)
     uint32_t npkt = 0;
     uint16_t ops[NOP_COUNT_];
     EngBindRefs refs;      // (the deferred bind each slot's word came from: the submit's rewrite of the banks)
@@ -555,6 +557,7 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     }
     if (mesh && dm.x != 0 && !eng_draw_mesh_first(dd, (uint32_t)dm.x)) return r.refuse(WHY_DESCRIPTORS);
     w.patches.insert(w.patches.end(), dd.patches.begin(), dd.patches.end());
+    w.writes.insert(w.writes.end(), dd.writes.begin(), dd.writes.end());
     for (size_t k = 0; k + 1 < dd.ubos.size(); k += 2) {   // (consecutive draws bind the same ranges: kept once in a row)
         const size_t m = w.ubo.size();
         bool seen = false;
@@ -1485,7 +1488,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     Walk& w = walk();
     w.s = NvnState{};
     w.d.clear();
-    w.tex.clear(), w.deferred.clear(), w.trace.clear(), w.ubo.clear(), w.pre.clear(), w.waits.clear(), w.pre_barrier = false, w.npkt = 0;
+    w.tex.clear(), w.deferred.clear(), w.trace.clear(), w.ubo.clear(), w.pre.clear(), w.waits.clear(), w.pre_barrier = false, w.writes.clear(), w.npkt = 0;
     std::memset(w.refs, 0, sizeof w.refs);
     w.nbinds = 0, w.patches.clear(), w.descs.clear();
     std::memset(w.ops, 0, sizeof w.ops);
@@ -1548,6 +1551,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     j.dsig.swap(r.dsig);
     j.ubo.swap(w.ubo);
     j.pre.swap(w.pre), j.waits.swap(w.waits), j.pre_barrier = w.pre_barrier;
+    j.writes.swap(w.writes);
     j.used_value.store(0, std::memory_order_relaxed);
     j.replayed.store(false, std::memory_order_relaxed);
     j.pub.view_key = ji->view;
@@ -1562,6 +1566,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     j.pub.ubo = j.ubo.data(), j.pub.nubo = (uint32_t)(j.ubo.size() / 2);
     j.pub.pre = j.pre.data(), j.pub.npre = (uint32_t)j.pre.size();
     j.pub.waits = j.waits.data(), j.pub.nwaits = (uint32_t)j.waits.size(), j.pub.pre_barrier = j.pre_barrier;
+    j.pub.writes = j.writes.data(), j.pub.nwrites = (uint32_t)(j.writes.size() / 2);
     j.serial.store(ji->serial, std::memory_order_release);
     {
         std::lock_guard lk(handle_mu);

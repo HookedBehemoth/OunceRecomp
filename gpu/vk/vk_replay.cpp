@@ -2336,6 +2336,8 @@ bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t
         }
     }
     if (!self) draw_job_uses(job->tex, job->ntex);   // (E3's job: its textures kept alive and its heap entries stamped, as draws do)
+    for (uint32_t k = 0; job && k < job->nwrites; k++)   // (HOS_ENG_JOBS_WRITES: its storage writes the GPU's, as the replay's binding notes them)
+        gpu_buffer_bind(job->writes[2 * k], job->writes[2 * k + 1], true);
     // (E6: and its deferred words as the records hold them now: the system textures' entries the secondary reads, stamped too, so a
     // later rewrite of one in this recording goes by copy in the stream, after the job, not in place under it. HOS_ENG_PASS_STAMP_ALL=1:
     // on; off by default: it fixed nothing seen and costs a lookup per word on the Presentation Thread, e6-impl.md)
