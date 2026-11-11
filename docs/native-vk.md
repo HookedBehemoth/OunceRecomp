@@ -87,6 +87,19 @@ before the first `nx2/lift.py --standalone --write` (it does not make it); `nup.
 for this dump's three zero-headed textures. The builder cache's `hot_funcs.txt`, `hot_order.txt`,
 `hookshot_pieces.prof` were copied to `work/`.
 
+**Test plan (2026-11-11): the smoke test first, one emulator task at a time.** Prototyping only asks whether
+anything blew up. `scripts/smoke.sh <name> [kokiri|hf] [-- SWITCH=1 ...]` runs one standing scene for 40 s (RUN=timing,
+warm caches) and `scripts/smoke.py` prints a verdict of ~10 lines: fatal log lines (device lost, Vulkan errors, crashes,
+traps), pictures (a perceptual hash of every shot after the load vs the golden run's shot of the same present; Hamming
+distance > 12 of 64 fails), rough numbers beside the golden run's (steady fps, replay submit and draw ms, peak RSS, the
+least free and most shared memory), and warning/error groups not in the known list (`work/smoke/<scene>/known.txt`,
+normalised lines or `re:` patterns; a new error-like group fails, new warnings are listed). Record the golden run once
+per build with the switches off: `GOLDEN=1 scripts/smoke.sh <name> kokiri`; then A/B is the same build with the
+switch on, against it. Read the verdict, not the log (open log.txt only for a failure the verdict names). Shots are
+deleted after the check (KEEP_SHOTS=1 keeps them).
+- One task that launches the game at a time; no long scene cycles while prototyping (they are for a release check).
+- Timing A/B in alternated pairs only when the smoke numbers suggest a change worth measuring.
+
 **Build.** Always with the headers:
 `HOOKSHOT_SPIRV_HEADERS=$PWD/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$PWD/work/deps/VulkanMemoryAllocator
 work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` (output `work/sa/build/`).
