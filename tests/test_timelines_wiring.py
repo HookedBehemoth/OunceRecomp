@@ -35,13 +35,16 @@ def main():
     need("pend.qs.merge(qs)" in sub, "a batched recording drops its queues' signals")
     need("tl_waiters.load(" in sub, "a batched recording waits for the next flush while a CPU thread waits for its signal")
     need("queue_signals_into(qs, sigv)" in sub, "a direct submit drops its queues' signals")
+    need("batch_feed_due()" in sub, "a batched recording waits for a flush point while the GPU has nothing (section 9)")
+    feed = body(replay, "bool batch_feed_due() {")
+    need("batch_flushed" in feed and "pend_since" in feed, "the feed no longer looks at the GPU's progress and the batch's age")
     flush = body(replay, "void queue_flush_locked() {")
     need("queue_signals_into(pend.qs, sig)" in flush and "pend.qs.clear()" in flush, "the batch flush drops the queues' signals")
 
     run = body(replay, "bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue")
     need("rec_open_q.add(queue, value)" in run, "run_submit no longer notes a finished value with its queue")
 
-    wait = body(replay, "int wait(uint64_t f, uint64_t timeout_ns) {")
+    wait = body(replay, "int wait_inner(uint64_t f, uint64_t timeout_ns) {")   # (wait(): RX_VK_WAIT_LOG's wrapper around it)
     tl_at, spin_at = wait.find("wait_timelines("), wait.find("sync_drain(2)")
     need(tl_at >= 0 and tl_at < spin_at, "wait() reaches the old spin-and-force path before the queue's timeline")
     wt = body(replay, "bool wait_timelines(uint64_t f, uint64_t timeout_ns, int* out) {")

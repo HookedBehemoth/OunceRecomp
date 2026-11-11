@@ -88,13 +88,19 @@ std::multimap<uint64_t,uint64_t> value_rec;
 std::set<uint64_t> rec_open_values;
 namespace tl { struct QueueSignals { std::vector<std::pair<uint64_t,uint64_t>> v; bool empty() const { return v.empty(); } void merge(const QueueSignals& o) { v.insert(v.end(),o.v.begin(),o.v.end()); } }; }   // (RX_VK_TIMELINES: off here)
 bool timelines_on() { return false; }
+bool wait_log_on() { return false; }   // (RX_VK_WAIT_LOG: off here)
+void wl_made(uint64_t,uint64_t) {}
+void wl_held(uint64_t) {}
+void wl_sent(uint64_t,int) {}
 std::mutex rec_cv_mu;std::condition_variable rec_cv;
 tl::QueueSignals rec_open_q;std::atomic<int> tl_waiters{0};
 void queue_signals_into(const tl::QueueSignals&, std::vector<VkSemaphoreSubmitInfo>&) {}
 struct { std::vector<VkCommandBufferSubmitInfo> cbs;uint64_t signal=0,rec=0;bool any_signal=false;tl::QueueSignals qs; } pend;
 uint64_t batch_next=0;std::chrono::steady_clock::time_point pend_since;
 bool batch=false;bool batch_on() { return batch; }
-int flush_reason=0;constexpr int FR_CAP=1,FR_WAIT=2;
+int flush_reason=0;constexpr int FR_CAP=1,FR_WAIT=2,FR_FEED=3;
+bool batch_feed_on() { return false; }   // (RX_VK_TIMELINES: off here)
+bool batch_feed_due() { return false; }
 void device_lost() { require(false,"unexpected device loss"); }
 #define PROF(x) ((void)0)
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue,uint32_t count,const VkSubmitInfo2* submits,VkFence) {
