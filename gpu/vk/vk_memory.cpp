@@ -45,6 +45,7 @@ static bool log_addr() {
     return on;
 }
 #include "shaders/wb_diff_comp_spv.h"
+#include "vk_pools.h"  // (native-vk layer 0, RX_VK_LAYER0=1)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -263,8 +264,12 @@ bool import_dma_buf_pieces(uint64_t lo, uint64_t hi, uint64_t piece, Pool& p) {
     return true;
 }
 
-bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
-    static uint64_t piece = 0;
+uint64_t dmabuf_piece = 0;
+/// The guest memfd and /dev/udmabuf, opened at the first use (logged once); false without them
+bool dmabuf_ready() {
+    static std::mutex mu;   // (native-vk layer 0 asks from the game's threads too)
+    std::lock_guard lk(mu);
+    uint64_t& piece = dmabuf_piece;
     if (dmabuf_memfd == -2) {
         dmabuf_memfd = -1;
         typedef int (*MemfdFn)(void);
@@ -291,7 +296,12 @@ bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
                  (unsigned long long)(dmabuf_limit >> 20),
                  dev.sparse_buffers ? "are several, in a sparse buffer" : "are host-pointer imports (no sparse binding)");
     }
-    if (dmabuf_memfd < 0 || (lo & 4095) || (hi & 4095)) return false;
+    return dmabuf_memfd >= 0;
+}
+
+bool import_dma_buf(uint64_t lo, uint64_t hi, Pool& p) {
+    if (!dmabuf_ready() || (lo & 4095) || (hi & 4095)) return false;
+    const uint64_t piece = dmabuf_piece;
     if (hi - lo > piece) {
         if (!dev.sparse_buffers || !import_dma_buf_pieces(lo, hi, piece, p)) return false;
     } else {
@@ -438,6 +448,24 @@ bool import_pool(uint64_t lo, uint64_t hi, Pool& p) {
 
 } // namespace
 
+// (native-vk, layer 0: gpu/vk/vk_pools.cpp) guest [lo, lo + size) of the memfd window as an imported dma-buf (VK_NULL_HANDLE:
+// none), and udmabuf's size limit (0: no dma-bufs of guest memory here)
+VkDeviceMemory memory_guest_dma_buf(uint64_t lo, uint64_t size) {
+#ifdef __linux__
+    return dmabuf_ready() ? dma_buf_memory(lo, size) : VK_NULL_HANDLE;
+#else
+    (void)lo, (void)size;
+    return VK_NULL_HANDLE;
+#endif
+}
+uint64_t memory_dma_buf_limit() {
+#ifdef __linux__
+    return dmabuf_ready() ? dmabuf_limit : 0;
+#else
+    return 0;
+#endif
+}
+
 // (hookshot) guest memory's page table, for the pointers shaders follow (spirv_emit_context.cpp): a page's device address, 0 for none. Written as
 // pools come and go, before the submissions that can reach them
 uint64_t* guest_pages = nullptr;
@@ -534,6 +562,7 @@ uint64_t memory_guest_pages() {
     std::lock_guard pk(pools_mu);
     guest_pages = (uint64_t*)mapped;
     for (auto& kv : imported) guest_pages_set(kv.second.lo, kv.second.hi, kv.second.address);
+    if (layer0_on()) layer0_fill_table();   // (native-vk layer 0: the chunks bound in the windows)
     logf("vk: page table of guest memory at %#llx (%zu pools)", (unsigned long long)guest_pages_address, imported.size());
     return guest_pages_address;
 }
@@ -2131,8 +2160,9 @@ bool mirror_on() {
     static const int on = [] {
         const char* e = getenv("RX_VK_MIRROR");
         const bool discrete = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
-        const int v = e ? atoi(e) != 0 : discrete;
-        logf("vk: VRAM mirror of buffer pools %s", v ? "on" : "off");
+        // (native-vk layer 0: no mirrors; the GPU reads and writes the pools where they are)
+        const int v = layer0_on() ? 0 : e ? atoi(e) != 0 : discrete;
+        logf("vk: VRAM mirror of buffer pools %s%s", v ? "on" : "off", layer0_on() ? " (layer 0)" : "");
         return v;
     }();
     return on != 0;
@@ -2564,6 +2594,7 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
     uint64_t avail = 0;
     if (!host->gpu_ptr(gpu, &avail) || avail < size) return {};
     const uint64_t guest = host->gpu_guest(gpu);
+    if (layer0_on()) return layer0_buffer(guest, size);   // (native-vk layer 0: the window that holds it, vk_pools.cpp)
     std::lock_guard lk(pools_mu);
     Pool* p = pool_of(guest, size);
     if (!p) return {};
@@ -2572,6 +2603,10 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
 }
 
 void memory_pool_created(uint64_t gpu, uint64_t size) {
+    if (layer0_on()) {   // (native-vk layer 0: bound now with RX_VK_LAYER0_EAGER=1, else at its first use)
+        layer0_pool_created(gpu, size);
+        return;
+    }
     // (RX_VK_BG_IMPORT=1 only: imported eagerly, every pool the game made, most never used by the GPU, the thread's
     // page locking stalled the game's threads (3-7 fps); chunked imports at first use are the default)
     static const bool on = getenv("RX_VK_BG_IMPORT") != nullptr;
@@ -2586,6 +2621,7 @@ void memory_pool_created(uint64_t gpu, uint64_t size) {
 }
 
 int memory_guest_imported(uint64_t lo, uint64_t hi) {
+    if (layer0_on()) return layer0_bound(lo, hi) ? 1 : 0;   // (native-vk layer 0: its chunks' pages are pinned by their dma-bufs)
     std::lock_guard lk(pools_mu);
     auto it = imported.upper_bound(hi);   // (pools by lo: those starting below hi, the last ones checked first)
     while (it != imported.begin()) {
@@ -2668,6 +2704,29 @@ uint64_t gpu_pool_start(uint64_t gpu) {   // (EvilOOT) where it begins
     return p ? p->lo : 0;
 }
 
+/// (native-vk layer 0) the game's pool holding guest (below 1 TB), as gpu_pool_start/end find it, and a per-thread table by 64 KB
+/// page in front (bindings jump between a few pools: the one-entry span alone missed). False: in no pool
+struct TlSpan { uint64_t lo, hi, gen; };
+thread_local TlSpan tl_spans[1024];
+bool memory_game_pool(uint64_t guest, uint64_t* lo, uint64_t* hi) {
+    const uint64_t gen = guest_pools_gen.load(std::memory_order_relaxed);
+    TlSpan& t = tl_spans[(guest >> 16) & 1023];
+    if (guest_span_covers(guest, t.lo, t.hi, t.gen, gen)) {
+        *lo = t.lo, *hi = t.hi;
+        return true;
+    }
+    if (guest_span_cached(guest, lo, hi)) {
+        t = {*lo, *hi, gen};
+        return true;
+    }
+    ParLock plk;
+    std::lock_guard lk(pools_mu);
+    if (!game_pool_of(guest, *lo, *hi)) return false;
+    guest_span_store(*lo, *hi);
+    t = {*lo, *hi, guest_pools_gen.load(std::memory_order_relaxed)};
+    return true;
+}
+
 // (pools leaving, a mirror made, or the next submission: a remembered read binding is looked up again)
 uint64_t gpu_bind_stamp() {
     return pools_gen.load(std::memory_order_relaxed) ^ (mirror_epoch * 0x9E3779B97F4A7C15ull);
@@ -2702,6 +2761,11 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         uint64_t avail = 0;
         if (!host->gpu_ptr(gpu, &avail) || avail < size) return {};
         guest = host->gpu_guest(gpu);
+    }
+    if (layer0_on()) {   // (native-vk layer 0: the window holding the range at its offset there, vk_pools.cpp: no import, mirror or write-back)
+        const BufferRef r = layer0_bind(guest, size);
+        if (r && written && size <= (1u << 20)) wb_pages_note(guest, guest + size, mem_rec_value);   // (the readbacks wait for the GPU)
+        return r;
     }
     // (the same read, while that stamp still stands: the buffer and the offset are the ones found before. a miss
     // runs the lookup below, including a mirror sync, and remembers what it returned. a write is not remembered)
@@ -3010,6 +3074,7 @@ void imports_give_back() {   // (pools_mu held)
 }
 
 void memory_begin_submission() {
+    if (layer0_on()) layer0_submission();   // (native-vk layer 0: its counts, every 600)
     std::lock_guard lk(pools_mu);
     reap_mirrors();
     retired_imports_give_back();
