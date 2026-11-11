@@ -5212,6 +5212,29 @@ static uint32_t eng_handle_of(const NvnState& s, const Stage& st, const D& d, ui
         h = h << d.shift_left | eng_word(s, st, d.secondary_cbuf_index, d.secondary_cbuf_offset + k * step) << d.secondary_shift_left;
     return h;
 }
+/// (E3, a job thread; HOS_ENG_JOBS_SAMPLED) the texture and image handle words a job draw's program reads, from the state as the
+/// draw has it; the words of deferred binds (the system textures, final only at the submit) left out, as the bound list leaves them
+void eng_draw_sampled(const NvnState& s, const Program& p, const EngBindRefs& refs, std::vector<uint32_t>& out) {
+    const auto deferred = [&](const Stage& st, uint32_t index, uint32_t o) {
+        if (index != 2) return false;
+        const int ns = std::clamp(st.nvn_stage, 0, kNvnStages - 1);
+        int what = -1, slot = -1;
+        if (o >= 0x168 && o < 0x168 + 8 * 128) what = 0, slot = (int)(o - 0x168) / 8;
+        else if (o >= 0x120 && o < 0x120 + 8 * 9) what = 2, slot = (int)(o - 0x120) / 8;
+        else if (o >= 0x20 && o < 0x20 + 8 * 32) what = 0, slot = (int)(o - 0x20) / 8;
+        return what >= 0 && refs[what][ns][slot] != 0;
+    };
+    for (const Stage& st : p.stages) {
+        for (const auto& d : st.info.texture_descriptors)
+            for (uint32_t k = 0; k < d.count; k++) {
+                const uint32_t step = 1u << d.size_shift;
+                if (d.handle_program == ~0U && deferred(st, d.cbuf_index, d.cbuf_offset + k * step)) continue;
+                const uint32_t h = eng_handle_of(s, st, d, k);
+                if (h & 0xFFFFF) out.push_back(h);
+            }
+        // (storage images: a job draw with one is not recorded, EDW_IMAGE)
+    }
+}
 #ifdef VK_EXT_descriptor_heap
 bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& e, const EngBindRefs& refs,
                           EngDrawDesc& out) {
@@ -9701,7 +9724,12 @@ const char* draw_sec_leave(bool restore) {
     return why;
 }
 void draw_cmd_state_lost() { cmd_caches_reset(); }
-int draw_tex_check(const uint32_t* tex, uint32_t n, bool make) {
+void draw_pass_written_all() {   // (a host job's secondary drew into the open rendering: its targets count as written)
+    Pass& ps = pass();
+    if (!ps.open) return;
+    ps.written |= (uint16_t)(((1u << std::clamp(ps.n, 0, 8)) - 1) | (ps.depth ? 1u << 8 : 0u));
+}
+int draw_tex_check(const uint32_t* tex, uint32_t n, bool make, bool hazards) {
     const Pass& ps = pass();
     for (uint32_t i = 0; i < n; i++) {
         if (!tex[i]) continue;
@@ -9724,6 +9752,7 @@ int draw_tex_check(const uint32_t* tex, uint32_t n, bool make) {
             }
         }
 #endif
+        if (!hazards) continue;
         for (int k = 0; k < ps.n; k++)
             if (ps.tex[k] == x) return 1;
         if (ps.depth_tex == x) return 1;

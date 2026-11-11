@@ -58,6 +58,9 @@ struct EngPassFormats;
 void draw_pass_info(NvnState& s, EngPassFormats* f, uint32_t* w, uint32_t* h, uint64_t* color0, uint64_t* depth);
 /// (E4) the rendering of the state's targets open on cmd (secondary_only: one of its own for an execute); false: none
 bool draw_open_pass(VkCommandBuffer cmd, NvnState& s, bool secondary_only, EngPassFormats* f);
+/// (E4/E6) after an execute of a host job's secondary: the open rendering's targets count as written by it, so a later draw of the
+/// pass that samples one of them is a hazard (a pass of its own after a barrier), as it is after the replay's own draws
+void draw_pass_written_all();
 /// (E4, HOS_ENG_PASS_SELFTEST) a job's secondary recorded by this path from here: what would leave the pass breaks it
 void draw_sec_enter(VkCommandBuffer secondary);
 /// (E4) back on the primary: the reason it broke (null: whole); the pass as before it when restore or broken
@@ -65,7 +68,7 @@ const char* draw_sec_leave(bool restore);
 /// (E4) a secondary executed: what the draw path kept bound on the command buffer is gone
 void draw_cmd_state_lost();
 /// (E4) the handles a job binds against the open pass: 0 fine, 1 one is an attachment of it, 2 one is not resident
-int draw_tex_check(const uint32_t* tex, uint32_t n, bool make);
+int draw_tex_check(const uint32_t* tex, uint32_t n, bool make, bool hazards = true);   // (hazards false: residency only)
 /// (E4) an executed host job's textures: touched, their heap entries stamped with this recording
 void draw_job_uses(const uint32_t* tex, uint32_t n);   // (make: not resident ones made so first)
 /// Clears of the bound targets, inside the open pass (NOP_CLEAR_COLOR, NOP_CLEAR_DS)

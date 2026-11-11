@@ -28,6 +28,10 @@ namespace mkwvk {
 struct Program;
 struct SoProg;
 struct EngPassFormats { uint32_t ncolor; VkFormat color[8]; VkFormat depth, stencil; VkSampleCountFlagBits samples; };
+/// (HOS_ENG_JOBS_SPLIT=1) a job split around the draws its thread could not record: a run of its draw ops (every DRAW, DRAW_IDX,
+/// DRAW_INDIRECT, DRAW_MESH in record order, counted from 0 as its records hold them) recorded into one secondary; the draw ops
+/// between the runs are the replay's, drawn inline in the same rendering
+struct EngSeg { uint32_t first, n; VkCommandBuffer cb; uint32_t ndraws; };
 struct EngJob {
     uint64_t view_key;            // the job's view record (guest address): the pass identity
     EngPassFormats fmt;           // the formats it was recorded for (from eng_pass_formats at record time)
@@ -37,7 +41,13 @@ struct EngJob {
     const uint32_t *tex; uint32_t ntex;   // every NVN texture/image handle word it binds (residency + hazards, at submit)
     const uint64_t *deferred; uint32_t ndeferred;  // guest addresses of deferred handle words it binds (system table)
     uint32_t serial;              // 0 = retired
+    // (HOS_ENG_JOBS_SPLIT) nsegs 0: cb holds all the job's draws. Else the runs in order (cb = segs[0].cb), ndrawops the job's draw
+    // ops in all (the call site checks its own count against it)
+    const EngSeg* segs; uint32_t nsegs; uint32_t ndrawops;
+    const uint32_t* dsig;          // (split: per draw op, a hash of its payload: the call site checks it meets the same draws)
 };
+/// (E6) the hash of a draw op's payload both sides make
+uint32_t eng_draw_sig(int op, const void* payload, size_t n);
 /// The fake slot handle E3 writes back (while the game's recorder runs: the job recording's own NVN handle) -> its job, or NULL.
 /// On the replay thread: the job is noted as used by the recording being made (ub_recording_value), retired by
 /// eng_job_retire_through once the GPU passed that value
@@ -106,6 +116,8 @@ using EngBindRefs = uint32_t[3][8][128];
 struct HeapProgram;
 bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& at, const EngBindRefs& refs,
                           EngDrawDesc& out);
+/// (HOS_ENG_JOBS_SAMPLED) the handle words a job draw's program reads (textures, images), deferred ones left out
+void eng_draw_sampled(const NvnState& s, const Program& p, const EngBindRefs& refs, std::vector<uint32_t>& out);
 /// (vk_draw.cpp heap_draw, inside a job's records) the replay's descriptors for the job draw it is drawing
 void eng_job_replay_desc(const EngDrawDesc& d, const NvnState& s);
 /// The job threads' upload memory (banks, c1): n bytes at align, its buffer, offset, mapping and device address; false: none

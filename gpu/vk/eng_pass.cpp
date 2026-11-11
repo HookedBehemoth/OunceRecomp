@@ -235,6 +235,11 @@ void eng_pass_report(double frames) {
          d(EC_CALLS), d(EC_LAYER_CALLS), d(EC_JOBS), d(EC_NO_VIEW), d(EC_EXECUTED), d(EC_EXEC_DRAWS), d(EC_FB_NO_JOB), d(EC_FB_FORMATS),
          d(EC_FB_HAZARD), d(EC_FB_RESIDENT), d(EC_FB_OP), d(EC_FB_EMPTY), d(EC_FB_MODE), d(EC_FB_NOPASS), d(EC_FB_ABORT),
          d(EC_FB_MALFORMED), d(EC_RESTARTS), d(EC_STATE_WALKS), d(EC_GATED_OFF), d(EC_GATED_ON), d(EC_BOUND_ATTACHMENT));
+    if (now[EC_FB_DEFERRED]) logf("eng passes: a frame: fallen back for a deferred word not resident %.1f", d(EC_FB_DEFERRED));
+    if (now[EC_SPLIT_JOBS] || now[EC_FB_SPLIT_COUNT])
+        logf("eng passes: a frame: split jobs %.1f, their runs executed %.1f, draws drawn inline %.1f, runs drawn inline after all %.1f; "
+             "fallen back for a draw count %.1f", d(EC_SPLIT_JOBS), d(EC_SPLIT_RUNS), d(EC_SPLIT_INLINE), d(EC_SPLIT_RUN_INLINE),
+             d(EC_FB_SPLIT_COUNT));
     std::memcpy(last, now, sizeof last);
     if (reports % 5 == 0) {
         std::lock_guard lk(abort_mu);
