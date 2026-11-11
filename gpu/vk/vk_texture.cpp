@@ -1696,9 +1696,20 @@ void destroy_later(Texture& tex) {
     total_bytes -= std::min(total_bytes, tex.bytes + tex.pad);
 }
 
+// (native-vk step 4b) The live textures whose images were made for a render target (pool_key), by that key: a new target of the
+// same create info takes the image of one it is made over (take_over)
+std::unordered_map<uint64_t, std::vector<Texture*>> by_pool_key;
 void vw_forget(const Texture& t);   // (below: a destroyed texture leaves the list of GPU-written ones)
 void forget_gpu(Texture* tex) {
     vw_forget(*tex);
+    if (tex->pool_key) {
+        auto pk = by_pool_key.find(tex->pool_key);
+        if (pk != by_pool_key.end()) {
+            auto& v = pk->second;
+            v.erase(std::remove(v.begin(), v.end(), tex), v.end());
+            if (v.empty()) by_pool_key.erase(pk);
+        }
+    }
     auto [a, b] = by_gpu.equal_range(tex->gpu);
     for (auto it = a; it != b; ++it)
         if (it->second == tex) {
@@ -1706,6 +1717,53 @@ void forget_gpu(Texture* tex) {
             break;
         }
 }
+
+// (native-vk step 4b) A render target made over the storage of another of the same create info that is not used in this frame or
+// recording (a transient target whose offset moved with the frame's mix: shader-maps.md) takes that one's image, views and all, at
+// once: the old one's texels are gone from that memory on the console too (the dead-target sweep's drawn_over_shifted, which let
+// it go only every 10 presents and 3 presents unused, meanwhile holding its VRAM, while the new one made or pooled an image). The
+// old texture leaves the cache now; its object is freed two presents later (pointers a recording still holds stay valid).
+// RX_VK_TARGET_TAKEOVER=0: as before
+bool takeover_on() {
+    static const bool on = !getenv("RX_VK_TARGET_TAKEOVER") || atoi(getenv("RX_VK_TARGET_TAKEOVER")) != 0;
+    return on;
+}
+std::vector<std::pair<uint64_t, std::unique_ptr<Texture>>> taken_over;   // (the present each was taken at: freed after two)
+uint64_t st_taken_over;
+bool take_over(uint64_t key, uint64_t lo, uint64_t size, Texture& x) {
+    auto pk = by_pool_key.find(key);
+    if (pk == by_pool_key.end()) return false;
+    const uint64_t hi = lo + std::max<uint64_t>(size, 1);
+    Texture* o = nullptr;
+    for (Texture* c : pk->second) {
+        if (c->last_frame >= frame_no || c->last_value == rec_value || !c->gpu_written || !c->first_render_frame ||
+            !c->guest_size || c->levels != 1 || c->layers != 1 || c->depth > 1 || c->sparse || !c->allocation || !c->image)
+            continue;
+        const uint64_t clo = c->gpu, chi = c->gpu + c->guest_size;
+        if (clo == lo ? hi > clo && chi > lo : target_overlap::shifted_over(clo, chi, c->last_frame, lo, hi, frame_no)) {
+            o = c;
+            break;
+        }
+    }
+    if (!o) return false;
+    x.image = o->image, x.allocation = o->allocation, x.views = std::move(o->views);
+    o->image = VK_NULL_HANDLE, o->allocation = nullptr, o->views.clear();
+    destroy_gen++;
+    alive_set(o->id, false);
+    total_bytes -= std::min(total_bytes, o->bytes + o->pad);
+    remade.erase(o);
+    watch_tex(o, "taken over");
+    forget_gpu(o);
+    for (auto it = textures.begin(); it != textures.end(); ++it)
+        if (it->second.get() == o) {
+            taken_over.push_back({frame_no, std::move(it->second)});
+            textures.erase(it);
+            break;
+        }
+    st_taken_over++;
+    return true;
+}
+
 
 /// (as_target: texture_get's for a render target or a copy's destination, not for sampling: its image goes to the render targets'
 /// blocks, and to the target pool when its texture goes)
@@ -1940,6 +1998,9 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
                                   ? pool_key_of(ci)
                                   : 0;
     x.pool_key = pool_key;
+    // (not in a parallel replay: its dry pass resolves a frame's targets ahead of the draws that may still sample the old one)
+    const bool taken = pool_key && takeover_on() && !par_active.load(std::memory_order_relaxed) &&
+                       take_over(pool_key, t->gpu, t->L.size, x);
     if (x.sparse) {
         ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
         bool ok = vkCreateImage(dev.device, &ci, nullptr, &x.image) == VK_SUCCESS;
@@ -1974,7 +2035,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
              x.sparse_req.formatProperties.imageGranularity.width, x.sparse_req.formatProperties.imageGranularity.height,
              x.sparse_req.imageMipTailFirstLod, (unsigned long long)(x.sparse_req.imageMipTailSize >> 10),
              x.sparse_req.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? ", one for all layers" : " a layer");
-    } else if (!(pool_key && pool_take(pool_key, x.image, x.allocation, x.views)) && (st_pool_made += pool_key != 0, true) &&
+    } else if (!taken && !(pool_key && pool_take(pool_key, x.image, x.allocation, x.views)) && (st_pool_made += pool_key != 0, true) &&
                !create_image(ci, x.image, x.allocation, false, as_target && !is_bc(x.format) && !is_astc(x.format)) &&
                // (a compressed image refused: made again without its raw attachment usage, then without its raw storage
                // usage, as #1332 does; its raw views are then not made, as before)
@@ -2007,6 +2068,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
     b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    if (taken) b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;   // (an image taken over: its last writes may still be in flight)
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = x.image;
     b.subresourceRange = {x.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
@@ -2057,6 +2119,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     }
     textures.emplace(key, std::move(tex));
     by_gpu.emplace(p->gpu, p);
+    if (p->pool_key) by_pool_key[p->pool_key].push_back(p);
     watch_tex(p, "made");
     if (remade_log_on()) {   // (one evicted not long ago, made again)
         std::lock_guard lk(evicted_mu);
@@ -3429,6 +3492,7 @@ void texture_frame(uint64_t completed) {
         }
     }
     bc_scratch_idle();
+    while (!taken_over.empty() && taken_over.front().first + 2 <= frame_no) taken_over.erase(taken_over.begin());
     for (auto it = dead.begin(); it != dead.end();) {
         if (it->value > completed) {
             ++it;
@@ -3510,9 +3574,9 @@ void texture_frame(uint64_t completed) {
         vma_log_image_blocks();
         {
             std::lock_guard lk(pool_mu);
-            logf("vk: render target images: %llu reused from the pool, %llu made new, %llu destroyed from it; it holds %llu "
-                 "(%llu MB)%s", (unsigned long long)st_pool_reused, (unsigned long long)st_pool_made,
-                 (unsigned long long)st_pool_destroyed, (unsigned long long)pool_n, (unsigned long long)(pool_bytes >> 20),
+            logf("vk: render target images: %llu reused from the pool, %llu made new, %llu destroyed from it, %llu taken over from "
+                 "a target made over; it holds %llu (%llu MB)%s", (unsigned long long)st_pool_reused, (unsigned long long)st_pool_made,
+                 (unsigned long long)st_pool_destroyed, (unsigned long long)st_taken_over, (unsigned long long)pool_n,
                  pool_cap() ? (pool_pressed ? ", VRAM short: given back" : "") : " (RX_VK_TARGET_POOL_MB=0)");
         }
         logf("vk: VRAM: %llu MB used of %llu MB allowed (%llu MB of it free in the blocks); textures %llu MB (budget %llu "
