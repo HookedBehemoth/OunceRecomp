@@ -1042,16 +1042,30 @@ bool unswizzle_ready() {
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (r != VK_SUCCESS) return false;
     state = 1;
-    logf("vk: big block-linear textures are unswizzled on the GPU from their pools (RX_VK_GPU_UNSWIZZLE=0: the CPU)");
+    logf("vk: big block-linear textures are unswizzled on the GPU from their pools (RX_VK_GPU_UNSWIZZLE=0: the CPU; "
+         "RX_VK_CPU_UNSWIZZLE=0: BC and smaller ones too)");
     return true;
 }
 
 /// The whole texture (every level and layer dirty overlaps) unswizzled on the GPU; false: not a texture for it
+/// (native-vk step 4d, RX_VK_CPU_UNSWIZZLE=0) every size, and BC textures too, as their blocks (R32G32_UINT / R32G32B32A32_UINT views
+/// of the BC image, one texel a block). Off by default: it costs the replay thread as much as the CPU's unswizzle on this PC (Kokiri's
+/// load: 260 MB in 127-188 ms on the GPU against 210-267 MB in 113-161 ms on the CPU), the time going into the copy of the swizzled
+/// bytes into staging (VRAM behind the BAR) or, read from the pools, into importing them. The fix is assets converted offline
+/// (work/assets/native/transient-targets-impl.md). Unset or 1: the CPU for BC and for textures under 8 MB, as before
+bool cpu_unswizzle_small() {
+    static const bool on = !getenv("RX_VK_CPU_UNSWIZZLE") || atoi(getenv("RX_VK_CPU_UNSWIZZLE")) != 0;
+    return on;
+}
 bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
+    const bool cpu_small = cpu_unswizzle_small();
+    const bool bc = is_bc(tex.format);
     if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
-        is_bc(tex.format) || is_astc(tex.format) || is_depth_format(tex.format) || nvn_tex_is_linear(&tex.d))
+        (bc && cpu_small) || is_astc(tex.format) || is_depth_format(tex.format) || nvn_tex_is_linear(&tex.d))
         return false;
-    if (total < (8u << 20) || tex.block_w != 1 || tex.block_h != 1) return false;
+    if (cpu_small && total < (8u << 20)) return false;
+    if (bc ? tex.block_w != 4 || tex.block_h != 4 || (tex.bpb != 8 && tex.bpb != 16) : tex.block_w != 1 || tex.block_h != 1)
+        return false;
     int widen_from = 0;
     widened(tex.d.format ? vk_format(tex.nvn_format).format : tex.format, &widen_from);
     if (widen_from) return false;
@@ -1065,15 +1079,32 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     default: return false;
     }
     if (!unswizzle_ready()) return false;
-    const BufferRef src = gpu_buffer(tex.gpu, total);
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 16);
-    if (!src || (src.offset % align)) return false;
+    // (the ones step 4d added, BC and under 8 MB, from a staging copy of their storage, not from the pool: a pool's first GPU use
+    // imports it, 5-45 ms a 16 MB chunk, and the resource heap's textures are never read by the GPU otherwise: read from the pools,
+    // an area's 323 textures took 94 ms, as long as the CPU's unswizzle. RX_VK_UNSWIZZLE_STAGED=0: from the pools too)
+    static const bool staged_on = !getenv("RX_VK_UNSWIZZLE_STAGED") || atoi(getenv("RX_VK_UNSWIZZLE_STAGED")) != 0;
+    const bool staged = staged_on && (bc || total < (8u << 20));
+    BufferRef src{};
+    if (!staged) {
+        src = gpu_buffer(tex.gpu, total);
+        if (!src || (src.offset % align)) return false;
+    }
     for (uint32_t level = 0; level < tex.levels; level++) {   // (every level must be possible before any is done)
         const LevelGeo g = level_geo(tex, level);
         if (g.td != 1 || g.tile_d || (g.offset % align) || g.offset >= total) return false;
         // (the shader reads whole GOB-block rows: a level whose last one runs past the storage, which the CPU path
         // reads from a zero-padded copy, would read past the pool and fault the device)
         if (g.offset + (uint64_t)(tex.layers - 1) * tex.L.layer_size + g.swizzled > total) return false;
+        if (bc && tex.layers > 1 && (tex.L.layer_size % align)) return false;   // (BC: a dispatch a layer, below)
+    }
+    if (staged) {
+        const Staging st = staging((total + 15) & ~15ull, align);
+        if (!st.buffer) return false;
+        static thread_local std::vector<uint8_t> scratch;
+        const uint8_t* p = guest_bytes(tex.gpu, total, scratch);   // (the storage as at the submit replayed, as the CPU path's)
+        std::memcpy(st.data, p, total);
+        src.buffer = st.buffer, src.offset = st.offset;
     }
     VkCommandBuffer cmd = upload_cmd();
     full_barrier(cmd);
@@ -1085,11 +1116,17 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             any = overlaps(dirty, g.offset + (uint64_t)layer * tex.L.layer_size,
                            g.offset + (uint64_t)layer * tex.L.layer_size + g.swizzled);
         if (!any) continue;
-        const uint64_t key = mix(0x5B1Cu, mix(level, (uint64_t)vf));
+        // (a BC image's block-texel views: one layer each, which every driver takes (Vulkan 1.1 allows no more), a dispatch each)
+        const uint32_t per_view = bc ? 1 : tex.layers;
+        for (uint32_t layer0 = 0; layer0 < tex.layers; layer0 += per_view) {
+        if (bc && !overlaps(dirty, g.offset + (uint64_t)layer0 * tex.L.layer_size,
+                            g.offset + (uint64_t)layer0 * tex.L.layer_size + g.swizzled))
+            continue;
+        const uint64_t key = mix(0x5B1Cu, mix(level, (uint64_t)vf)) ^ ((uint64_t)layer0 << 40) ^ (bc ? 0xBC00ull << 48 : 0);
         VkImageView view;
         if (auto it = tex.views.find(key); it != tex.views.end()) view = it->second;
-        else view = tex.views[key] = make_view(&tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, vf, VK_IMAGE_ASPECT_COLOR_BIT, level, 1, 0,
-                                               tex.layers, {}, VK_IMAGE_USAGE_STORAGE_BIT);
+        else view = tex.views[key] = make_view(&tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, vf, VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer0,
+                                               per_view, {}, VK_IMAGE_USAGE_STORAGE_BIT);
         if (!view) return false;
         UnswizzlePush pc{};
         pc.bytes_per_block_log2 = (uint32_t)std::countr_zero((uint32_t)tex.bpb);
@@ -1100,7 +1137,8 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         pc.block_height = g.tile_h;
         pc.block_height_mask = (1u << g.tile_h) - 1;
         pc.native_tiling = 1;
-        VkDescriptorBufferInfo bi{src.buffer, src.offset + g.offset, total - g.offset};
+        const uint64_t at = g.offset + (uint64_t)layer0 * tex.L.layer_size;
+        VkDescriptorBufferInfo bi{src.buffer, src.offset + at, total - at};
         VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
         w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1110,8 +1148,9 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, unsw_layout, 0, 2, w);
         vkCmdPushConstants(cmd, unsw_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
         checkpoint_mark(cmd, tex.gpu, 'g');
-        vkCmdDispatch(cmd, (g.tw + 31) / 32, (g.th + 31) / 32, tex.layers);
-        st_bytes += (int64_t)g.swizzled * tex.layers;
+        vkCmdDispatch(cmd, (g.tw + 31) / 32, (g.th + 31) / 32, per_view);
+        st_bytes += (int64_t)g.swizzled * per_view;
+        }
     }
     full_barrier(cmd);
     descriptors_disturbed();
