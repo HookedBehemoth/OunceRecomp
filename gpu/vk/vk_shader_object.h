@@ -15,6 +15,11 @@ namespace mkwvk {
 bool so_on();
 /// Native task / mesh programs as shader objects too (RX_VK_SO_MESH=0: they keep their pipelines)
 bool so_mesh_on();
+/// Compute programs (dispatches) as compute shader objects too (RX_VK_SO_COMPUTE=0, or RX_VK_NOOPT: their pipelines)
+bool so_compute_on();
+/// The mesh fallback's task and mesh stages (compute) as shader objects too: by default only where their pipelines are optimized (not
+/// under the task/mesh fallback, whose pipelines take DISABLE_OPTIMIZATION, which a shader object has no flag for). RX_VK_SO_FALLBACK=0/1
+bool so_fallback_on();
 /// (make_module) a module's SPIR-V: what its shader objects are compiled from, until they are made
 void so_module_made(VkShaderModule m, const uint32_t* words, size_t n);
 
@@ -27,11 +32,17 @@ struct SoProg {
     VkShaderModule mods[8]{};   // (the stages it was made for: a Program made again at the same address is another one)
     uint32_t nmods = 0;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ts = VK_NULL_HANDLE, ms = VK_NULL_HANDLE;   // (task, mesh: native mesh programs)
+    // (compute stages, by stage index: a compute program's stage 0, a mesh fallback program's task and mesh dispatches)
+    VkShaderEXT cs[8]{};
+    bool cs_failed = false;   // (a fallback's compute stage not made: its dispatches take the pipelines, its draw stays a shader object)
 };
+/// Every compute stage of p has its shader object in so (ready, not failed): a dispatch binds them, not pipelines
+bool so_compute_made(const SoProg& so, const Program& p);
 
 /// (p's layout made) p's shader objects: made here when every stage's binary is kept (microseconds), else queued for a worker
 /// (ready later: the draw leaves itself out or waits, as for a pipeline). push_size: the push constant range's size
-SoProg* so_for(const Program& p, uint32_t push_size);
+/// *started: this call began the making (a compute dispatch waits for it a little, as for its pipeline)
+SoProg* so_for(const Program& p, uint32_t push_size, bool* started = nullptr);
 /// (the frame statistics) made from kept binaries, compiled from SPIR-V, their time; prefetched programs; draws that found theirs ready
 void so_stats(int64_t* from_binary, int64_t* compiled, double* compile_ms, int64_t* prefetched, double* prefetch_ms);
 
@@ -46,6 +57,7 @@ bool program_stage_keys(const nvn_prog& prog, uint64_t codes[4], bool* mesh);
 const Program* program_load(uint64_t key, uint64_t variant, const uint64_t codes[4]);
 // (vk_draw.cpp)
 void program_layout(Program& p);   // (ensure_layout)
+void fallback_prefetch(Program& p);   // (a mesh fallback program's compute pipelines begun on a worker)
 uint32_t so_push_size();
 
 } // namespace mkwvk

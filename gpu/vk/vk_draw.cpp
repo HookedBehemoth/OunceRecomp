@@ -5527,7 +5527,11 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         return false;
     }
     FallbackBuffers* f = nullptr;
-    if (!fallback_buffers_of(p, f) || !fallback_pipelines_ready(p)) return false;
+    // (native-vk, RX_VK_SHADER_OBJECTS=1: the task and mesh dispatches as the program's compute shader objects, made with its draw
+    // stages (so_for in draw()); RX_VK_SO_FALLBACK=0, or one the driver refused: the pipelines)
+    const SoProg* so = so_fallback_on() ? so_for(p, kPushSize) : nullptr;
+    if (so && !so_compute_made(*so, p)) so = nullptr;
+    if (!fallback_buffers_of(p, f) || (!so && !fallback_pipelines_ready(p))) return false;
     const BufferRef input = p.fallback_task && d.indirect ? gpu_buffer_bind(d.indirect, 8, false) : BufferRef{};
     const VkDeviceAddress input_base = input ? fallback_buffer_address(input.buffer) : 0;
     fallback_indirect_input = input_base ? input_base + input.offset : 0;
@@ -5559,8 +5563,14 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     }
     const bool indirect{d.indirect && mesh_conv_buf != VK_NULL_HANDLE};
     auto send = [&](size_t stage, bool mesh_stage) {
-        if (stage >= p.fallback_compute.size() || !p.fallback_compute[stage]) return false;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.fallback_compute[stage]);
+        if (so) {
+            if (stage >= 8 || !so->cs[stage]) return false;
+            const VkShaderStageFlagBits cs = VK_SHADER_STAGE_COMPUTE_BIT;
+            vkCmdBindShadersEXT(cmd, 1, &cs, &so->cs[stage]);
+        } else {
+            if (stage >= p.fallback_compute.size() || !p.fallback_compute[stage]) return false;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.fallback_compute[stage]);
+        }
         if (mesh_stage && p.fallback_task) {
             // (the mesh workgroups the task's started threads counted into the records' header, each its slot in the map:
             // direct or indirect, the CPU need not know the task count (DrawMeshTasksIndirect records none))
@@ -5592,6 +5602,21 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     return true;
 }
 } // namespace
+
+/// (native-vk, the shader objects' prefetch) A mesh fallback program's compute pipelines, begun on a worker when the game sets the program,
+/// not at its first draw: driver-cold, its draws were left out while they compiled (24 in Kokiri's first gameplay). As
+/// fallback_pipelines_ready's build, not urgent
+void fallback_prefetch(Program& p) {
+    if (!p.fallback || p.compute_state.load(std::memory_order_acquire) != 0) return;
+    int none = 0;
+    if (!p.compute_state.compare_exchange_strong(none, 1)) return;
+    { ParLock lk; pcache_init(); }
+    Program* job = &p;
+    jobs_push([job] {
+        fallback_compute_pipelines(*job);
+        job->compute_state.store(2, std::memory_order_release);
+    });
+}
 
 /// The vertex streams already bound on this command buffer (a new recording, or a mirror made since, is not)
 bool vertex_set_same(uint64_t stamp, const uint64_t* addr, const uint64_t* size, const uint32_t* stride,
@@ -7677,7 +7702,32 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     // 2026-11-08). The dispatch waits up to 50 ms for it, which covers NVIDIA's compiles; one still compiling after that is left
     // out until it is ready, as graphics draws are. RX_VK_COMPUTE_WAIT=1: waited for, as before)
     static const bool compute_wait = getenv("RX_VK_COMPUTE_WAIT") != nullptr;
-    if (!compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
+    // (native-vk, RX_VK_SHADER_OBJECTS=1: the program's compute stage as a shader object, made from the binary kept by an earlier
+    // run in microseconds (vk_shader_object.cpp), else compiled on a worker as the pipeline is, with the same 50 ms wait and leave-out.
+    // One the driver refuses takes the pipeline below. RX_VK_SO_COMPUTE=0: pipelines)
+    SoProg* cso = nullptr;
+    if (so_compute_on() && !p.compute_pipeline && !taau_key(p.key)) {
+        bool started = false;
+        SoProg* so = so_for(p, kPushSize, &started);
+        const auto t0 = std::chrono::steady_clock::now();
+        while (started && !so->ready.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(50))
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        if (!so->ready.load(std::memory_order_acquire) && !compute_wait) {
+            static std::atomic<int> told{0};
+            if (told++ < 40) logf("vk: dispatch of %016llx left out: its compute shader object is still compiling", (unsigned long long)p.key);
+            st_pending_skips++;
+            return;
+        }
+        if (!so->ready.load(std::memory_order_acquire)) jobs_wait(so->ready);
+        if (so_compute_made(*so, p)) {
+            cso = so;
+        } else {
+            static std::atomic<int> told{0};
+            if (told++ < 20) logf("vk: compute shader object of %016llx not made: its pipeline instead", (unsigned long long)p.key);
+        }
+    }
+    if (!cso && !compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
         int none = 0;
         const bool fresh = p.compute_state.compare_exchange_strong(none, 1);
         if (fresh) {
@@ -7744,8 +7794,8 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         }
         if (p.failed || !p.compute_pipeline) SKIP_HERE();
     }
-    ParLock plk(!p.compute_pipeline);
-    if (!p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
+    ParLock plk(!cso && !p.compute_pipeline);
+    if (!cso && !p.compute_pipeline && !taau_key(p.key)) {   // (a stood-in network is never compiled)
         pcache_init();
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -7834,10 +7884,15 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (fsr3_stand_in(cmd, s, p)) return void(st_dispatches++);
     if (temporal_stand_in(cmd, s, p)) return void(st_dispatches++);
     if (taau_stand_in(cmd, s, p)) return void(st_dispatches++);
-    if (!p.compute_pipeline) SKIP_HERE();
+    if (!cso && !p.compute_pipeline) SKIP_HERE();
     dump_ssbos(cmd, p, "before");
     if (!p.dispatched.exchange(true, std::memory_order_relaxed)) compute_note(p.key);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.compute_pipeline);
+    if (cso) {
+        const VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        vkCmdBindShadersEXT(cmd, 1, &stage, &cso->cs[0]);
+    } else {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.compute_pipeline);
+    }
     if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) SKIP_HERE();
     push_constants(cmd, p, nullptr);
     gprof_begin(cmd);

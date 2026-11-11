@@ -51,7 +51,7 @@ std::unordered_map<VkShaderModule, ModSrc> mod_src;
 
 // ---- the binary cache ----
 constexpr char kMagic[8] = {'H', 'K', 'S', 'O', 'B', 'J', '0', '1'};
-constexpr uint32_t kTagBinary = 1, kTagProgram = 2;
+constexpr uint32_t kTagBinary = 1, kTagProgram = 2, kTagCompute = 3;   // (3: a compute program variant made, a ProgNote)
 struct ProgNote { uint64_t codes[4], key, variant; };
 static_assert(sizeof(ProgNote) == 48, "a file format");
 std::mutex cache_mu;
@@ -60,6 +60,7 @@ FILE* cache_out = nullptr;
 std::unordered_map<uint64_t, std::vector<uint8_t>> binaries;
 std::unordered_map<uint64_t, std::vector<ProgNote>> notes_by_codes;   // (by the hash of the codes)
 std::unordered_set<uint64_t> noted;                                   // (key ^ variant mixes noted)
+std::vector<ProgNote> compute_notes;   // (the compute program variants made in earlier runs: the prefetch makes them all at its start)
 
 std::atomic<int64_t> st_from_binary{0}, st_compiled{0}, st_compile_us{0}, st_prefetched{0}, st_prefetch_us{0};
 
@@ -108,7 +109,7 @@ void cache_init_locked() {
         }
         fclose(f);
     }
-    size_t good = 0, nbin = 0, nprog = 0;
+    size_t good = 0, nbin = 0, nprog = 0, ncomp = 0;
     if (data.size() >= sizeof(Head) && !std::memcmp(data.data(), &want, sizeof want)) {
         good = sizeof(Head);
         while (good + 16 <= data.size()) {
@@ -119,10 +120,13 @@ void cache_init_locked() {
             const uint8_t* b = data.data() + good + 16;
             if (tag == kTagBinary) {
                 binaries[key].assign(b, b + size), nbin++;
-            } else if (tag == kTagProgram && size == sizeof(ProgNote)) {
+            } else if ((tag == kTagProgram || tag == kTagCompute) && size == sizeof(ProgNote)) {
                 ProgNote pn;
                 std::memcpy(&pn, b, sizeof pn);
-                if (noted.insert(so_mix(pn.key, pn.variant)).second) notes_by_codes[codes_hash(pn.codes)].push_back(pn), nprog++;
+                if (noted.insert(so_mix(pn.key, pn.variant)).second) {
+                    if (tag == kTagCompute) compute_notes.push_back(pn), ncomp++;
+                    else notes_by_codes[codes_hash(pn.codes)].push_back(pn), nprog++;
+                }
             }
             good += 16 + size;
         }
@@ -135,7 +139,8 @@ void cache_init_locked() {
         cache_out = fopen(path.c_str(), "wb");
         if (cache_out) fwrite(&want, sizeof want, 1, cache_out), fflush(cache_out);
     }
-    logf("vk: shader objects: binary cache %s: %zu binaries, %zu programs (%zu KB)%s", path.c_str(), nbin, nprog, good >> 10,
+    logf("vk: shader objects: binary cache %s: %zu binaries, %zu programs, %zu compute programs (%zu KB)%s", path.c_str(), nbin, nprog,
+         ncomp, good >> 10,
          data.size() && !good ? " (another driver's: started again)" : "");
 }
 void cache_put_locked(uint32_t tag, uint64_t key, const void* d, uint32_t size) {
@@ -172,6 +177,16 @@ VkShaderStageFlags next_stage(VkShaderStageFlagBits s) {
     return s == VK_SHADER_STAGE_VERTEX_BIT || s == VK_SHADER_STAGE_MESH_BIT_EXT ? VK_SHADER_STAGE_FRAGMENT_BIT
          : s == VK_SHADER_STAGE_TASK_BIT_EXT ? VK_SHADER_STAGE_MESH_BIT_EXT : 0;
 }
+/// A stage made a shader object: the graphics ones, and the compute ones of compute programs and of the mesh fallback (when on)
+bool so_stage(const Program& p, const Stage& st) {
+    if (graphics_stage(p, st)) return true;
+    return st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT && ((p.compute && so_compute_on()) || (p.fallback && so_fallback_on()));
+}
+/// A compute program's stage asks for full subgroups, as pin_subgroup (vk_draw.cpp) asks its pipeline (the fallback's: never)
+bool full_subgroups(const Program& p, const Stage& st) {
+    return p.compute && st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT && (dev.sg32_stages & st.vk_stage) && p.workgroup[0] &&
+           !(p.workgroup[0] % 32) && dev.vk13.computeFullSubgroups;
+}
 bool has_task(const Program& p) {
     for (const Stage& st : p.stages)
         if (st.vk_stage == VK_SHADER_STAGE_TASK_BIT_EXT) return true;
@@ -182,18 +197,20 @@ bool has_task(const Program& p) {
 bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
     struct One {
         const Stage* st;
+        uint32_t index;   // (in p.stages: where a compute stage's object goes)
         uint64_t key;
         const std::vector<uint8_t>* bin;
         VkShaderEXT out;
     };
-    One ones[4];
+    One ones[8];
     int n = 0;
     const uint64_t lsig = layout_sig(p, push_size);
     {
         std::lock_guard lk(cache_mu);
         cache_init_locked();
-        for (const Stage& st : p.stages) {
-            if (!graphics_stage(p, st) || n == 4) continue;
+        for (uint32_t si = 0; si < p.stages.size(); si++) {
+            const Stage& st = p.stages[si];
+            if (!so_stage(p, st) || n == 8) continue;
             uint64_t sh = 0;
             {
                 std::lock_guard ml(mod_mu);
@@ -202,11 +219,11 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
                 sh = it->second.hash;
             }
             const VkShaderStageFlags next = next_stage(st.vk_stage);
-            const uint64_t flags = st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT && !has_task(p) ? 1 : 0;
+            const uint64_t flags = (st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT && !has_task(p) ? 1 : 0) | (full_subgroups(p, st) ? 2 : 0);
             const uint64_t key = so_mix(so_mix(so_mix(sh, (uint64_t)st.vk_stage << 32 | next), lsig),
                                         (dev.sg32_stages & st.vk_stage ? 32 : 0) | flags << 8);
             const auto b = binaries.find(key);
-            ones[n++] = {&st, key, b != binaries.end() ? &b->second : nullptr, VK_NULL_HANDLE};
+            ones[n++] = {&st, si, key, b != binaries.end() ? &b->second : nullptr, VK_NULL_HANDLE};
             if (!compile && b == binaries.end()) return false;
         }
     }
@@ -223,6 +240,7 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
         ci.stage = o.st->vk_stage;
         ci.nextStage = next_stage(o.st->vk_stage);
         if (o.st->vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT && !has_task(p)) ci.flags |= VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT;
+        if (full_subgroups(p, *o.st)) ci.flags |= VK_SHADER_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT;
         ci.pName = "main";
         ci.setLayoutCount = 1;
         ci.pSetLayouts = &p.set_layout;
@@ -251,9 +269,15 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
             const auto it = mod_src.find(o.st->module);
             if (it != mod_src.end()) words = it->second.words;
         }
+        // (a mesh fallback's compute stage not made: its dispatches go on with the pipelines, the draw keeps its shader objects)
+        const bool fallback_cs = p.fallback && o.st->vk_stage == VK_SHADER_STAGE_COMPUTE_BIT;
         if (words.empty()) {
             static std::atomic<int> told{0};
             if (told++ < 10) logf("vk: shader objects: %016llx's SPIR-V is gone and no binary is kept: drawn without", (unsigned long long)p.key);
+            if (fallback_cs) {
+                so.cs_failed = true;
+                continue;
+            }
             so.failed = true;
             break;
         }
@@ -265,8 +289,14 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
         st_compile_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
         if (r != VK_SUCCESS) {
             static std::atomic<int> told{0};
-            if (told++ < 20) logf("vk: shader objects: stage %#x of %016llx not made (%d)", (unsigned)o.st->vk_stage, (unsigned long long)p.key, (int)r);
+            if (told++ < 20)
+                logf("vk: shader objects: stage %#x of %016llx not made (%d)%s", (unsigned)o.st->vk_stage, (unsigned long long)p.key, (int)r,
+                     o.st->vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? ": its compute pipeline instead" : "");
             o.out = VK_NULL_HANDLE;
+            if (fallback_cs) {
+                so.cs_failed = true;
+                continue;
+            }
             so.failed = true;
             break;
         }
@@ -289,15 +319,24 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
             if (ones[i].out) vkDestroyShaderEXT(dev.device, ones[i].out, nullptr);
         return true;
     }
+    if (so.cs_failed)   // (the fallback's dispatches all take their pipelines, not some of each)
+        for (int i = 0; i < n; i++)
+            if (ones[i].st->vk_stage == VK_SHADER_STAGE_COMPUTE_BIT && ones[i].out)
+                vkDestroyShaderEXT(dev.device, ones[i].out, nullptr), ones[i].out = VK_NULL_HANDLE;
     for (int i = 0; i < n; i++) {
         const VkShaderStageFlagBits st = ones[i].st->vk_stage;
+        if (st == VK_SHADER_STAGE_COMPUTE_BIT) {
+            if (ones[i].index < 8) so.cs[ones[i].index] = ones[i].out;
+            continue;
+        }
         (st == VK_SHADER_STAGE_VERTEX_BIT ? so.vs : st == VK_SHADER_STAGE_FRAGMENT_BIT ? so.fs : st == VK_SHADER_STAGE_TASK_BIT_EXT ? so.ts : so.ms) =
             ones[i].out;
     }
     {   // (made: the SPIR-V copies go; the hashes stay for the binary keys)
         std::lock_guard ml(mod_mu);
         for (int i = 0; i < n; i++)
-            if (auto it = mod_src.find(ones[i].st->module); it != mod_src.end()) std::vector<uint32_t>().swap(it->second.words);
+            if (ones[i].out)
+                if (auto it = mod_src.find(ones[i].st->module); it != mod_src.end()) std::vector<uint32_t>().swap(it->second.words);
     }
     if (p.codes[0]) {   // (the variant noted for the prefetch of a later run)
         ProgNote pn{};
@@ -305,8 +344,13 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
         pn.key = p.key, pn.variant = p.variant;
         std::lock_guard lk(cache_mu);
         if (noted.insert(so_mix(pn.key, pn.variant)).second) {
-            notes_by_codes[codes_hash(pn.codes)].push_back(pn);
-            cache_put_locked(kTagProgram, pn.key, &pn, sizeof pn);
+            if (p.compute) {
+                compute_notes.push_back(pn);
+                cache_put_locked(kTagCompute, pn.key, &pn, sizeof pn);
+            } else {
+                notes_by_codes[codes_hash(pn.codes)].push_back(pn);
+                cache_put_locked(kTagProgram, pn.key, &pn, sizeof pn);
+            }
         }
     }
     return true;
@@ -357,8 +401,9 @@ void prefetch_one(const nvn_prog& prog) {
     for (const ProgNote& pn : want) {
         const auto t0 = std::chrono::steady_clock::now();
         const Program* p = program_load(pn.key, pn.variant, codes);
-        if (!p || (p->mesh && !so_mesh_on())) continue;
+        if (!p || (p->mesh && !so_mesh_on()) || p->compute) continue;
         if (!p->layout) program_layout(const_cast<Program&>(*p));
+        if (p->fallback && !so_fallback_on()) fallback_prefetch(const_cast<Program&>(*p));   // (its dispatches' pipelines)
         SoProg* so = entry_of(*p);
         int none = 0;
         if (!so->state.compare_exchange_strong(none, 1)) continue;   // (made, or being made by a draw's worker)
@@ -371,9 +416,48 @@ void prefetch_one(const nvn_prog& prog) {
     }
 }
 
+/// (the prefetch thread's start) every compute program variant made in an earlier run, from the binaries: a compute program is set
+/// by the game moments before its first dispatch (the culling programs: in the same frame), so it is made from the index, not at its
+/// SetShaders. One whose binary is missing is left to its dispatch (a worker's compile, as the pipeline's)
+void prefetch_computes() {
+    if (!so_compute_on()) return;
+    std::vector<ProgNote> want;
+    {
+        std::lock_guard lk(cache_mu);
+        cache_init_locked();
+        want = compute_notes;
+    }
+    const auto t_all = std::chrono::steady_clock::now();
+    size_t made = 0, missing = 0;
+    for (const ProgNote& pn : want) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const Program* p = program_load(pn.key, pn.variant, pn.codes);
+        if (!p || !p->compute) continue;
+        if (!p->layout) program_layout(const_cast<Program&>(*p));
+        SoProg* so = entry_of(*p);
+        int none = 0;
+        if (!so->state.compare_exchange_strong(none, 1)) continue;
+        if (!so_make(*so, *p, so_push_size(), false)) {   // (a binary missing: its dispatch makes it)
+            so->state.store(0, std::memory_order_release);
+            missing++;
+            continue;
+        }
+        so->state.store(2, std::memory_order_release);
+        so->ready.store(true, std::memory_order_release);
+        jobs_notify();
+        made++;
+        st_prefetched++;
+        st_prefetch_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    }
+    if (!want.empty())
+        logf("vk: shader objects: %zu of %zu compute programs prefetched from binaries (%zu without one) in %.0f ms", made, want.size(), missing,
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_all).count());
+}
+
 void prefetch_thread() {
     ub_thread_off();
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    prefetch_computes();
     for (;;) {
         nvn_prog prog;
         {
@@ -396,6 +480,44 @@ bool so_mesh_on() {
     return so_on() && on;
 }
 
+bool so_compute_on() {
+    static const bool on = [] {
+        if (!so_on()) return false;
+        if (getenv("RX_VK_SO_COMPUTE") && atoi(getenv("RX_VK_SO_COMPUTE")) == 0) return false;
+        if (getenv("RX_VK_NOOPT")) {   // (a shader object has no DISABLE_OPTIMIZATION: the pipelines, which have)
+            logf("vk: shader objects: compute programs keep their pipelines (RX_VK_NOOPT)");
+            return false;
+        }
+        logf("vk: shader objects: compute programs as shader objects (RX_VK_SO_COMPUTE=0: pipelines)");
+        return true;
+    }();
+    return on;
+}
+bool so_fallback_on() {
+    static const bool on = [] {
+        if (!so_compute_on() || !(dev.mesh_fallback || dev.task_mesh_fallback)) return false;
+        // (not by default under the task/mesh fallback (RDNA2), whose pipelines are built with DISABLE_OPTIMIZATION, which a shader
+        // object cannot ask for: optimized, the fallback's dispatches hung the GPU (gfx ring timeout) at Kokiri's first gameplay frames
+        // in 2 of 2 runs on a 6950 XT, 2026-11-11. RX_VK_SO_FALLBACK=1: shader objects anyway; =0: pipelines on any GPU)
+        const char* e = getenv("RX_VK_SO_FALLBACK");
+        const bool on = e ? atoi(e) != 0 : !dev.task_mesh_fallback;
+        logf("vk: shader objects: the mesh fallback's task and mesh dispatches %s", on ? "as shader objects (RX_VK_SO_FALLBACK=0: pipelines)"
+             : "keep their pipelines (DISABLE_OPTIMIZATION under the task/mesh fallback; RX_VK_SO_FALLBACK=1: shader objects)");
+        return on;
+    }();
+    return on;
+}
+bool so_compute_made(const SoProg& so, const Program& p) {
+    if (!so.ready.load(std::memory_order_acquire) || so.failed || so.cs_failed) return false;
+    bool any = false;
+    for (size_t i = 0; i < p.stages.size(); i++)
+        if (p.stages[i].vk_stage == VK_SHADER_STAGE_COMPUTE_BIT) {
+            if (i >= 8 || !so.cs[i]) return false;
+            any = true;
+        }
+    return any;
+}
+
 void so_module_made(VkShaderModule m, const uint32_t* words, size_t n) {
     if (!so_on() || !m) return;
     uint64_t h = 0xcbf29ce484222325ull ^ n;
@@ -406,7 +528,8 @@ void so_module_made(VkShaderModule m, const uint32_t* words, size_t n) {
     s.words.assign(words, words + n);
 }
 
-SoProg* so_for(const Program& p, uint32_t push_size) {
+SoProg* so_for(const Program& p, uint32_t push_size, bool* started) {
+    if (started) *started = false;
     thread_local const Program* last_p = nullptr;
     thread_local SoProg* last_so = nullptr;
     SoProg* so;
@@ -418,6 +541,7 @@ SoProg* so_for(const Program& p, uint32_t push_size) {
     if (so->state.load(std::memory_order_acquire) != 0) return so;
     int none = 0;
     if (!so->state.compare_exchange_strong(none, 1)) return so;
+    if (started) *started = true;
     if (so_make(*so, p, push_size, false)) {   // (every binary kept: made here, now)
         so->state.store(2, std::memory_order_release);
         so->ready.store(true, std::memory_order_release);
@@ -428,7 +552,7 @@ SoProg* so_for(const Program& p, uint32_t push_size) {
         so_make(*so, *pp, push_size, true);
         so->state.store(2, std::memory_order_release);
         so->ready.store(true, std::memory_order_release);
-    }, false, &so->ready);
+    }, p.compute || p.fallback, &so->ready);   // (urgent for compute, as their pipelines' builds: a dispatch is left out meanwhile)
     return so;
 }
 
