@@ -2199,9 +2199,8 @@ thread_local uint64_t grid_patch_at = UINT64_MAX;
 thread_local VkBuffer grid_patch_buf = VK_NULL_HANDLE;   // (the stream c0 went to: PR 585's streams can move on)
 
 struct UboSlotMemo {   // (RX_VK_UBO_SLOT_MEMO: a user uniform buffer slot as it last resolved, below)
-    const Stage* st = nullptr;
     const void* res = nullptr;
-    uint64_t addr = 0, size = 0, rec = 0, ub = 0, bind_stamp = 0, view = 0;
+    uint64_t addr = 0, size = 0, n = 0, rec = 0, ub = 0, bind_stamp = 0, view = 0;
     VkDescriptorBufferInfo bi{};
     bool on = false;
 };
@@ -2295,30 +2294,45 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
         if (!u.addr) return bi;
         // (native-vk, RX_VK_UBO_SLOT_MEMO=1: work/assets/native/uniform-buffers.md) a draw's descriptors are built again whenever any
         // binding changed (nearly every draw: a uniform buffer bound for it), and every constant buffer of the program was resolved
-        // again with them. A slot whose binding, program stage and overlays (ub_generation) are as the last time it was resolved in
+        // again with them. A slot whose binding, range read (n) and overlays (ub_generation) are as the last time it was resolved in
         // this recording, with the pools and captures as they were (gpu_bind_stamp, memory_capture_view), resolves as it did then
-        static const bool slot_memo = [] { const char* e = getenv("RX_VK_UBO_SLOT_MEMO"); return e && atoi(e) != 0; }();
-        UboSlotMemo* memo = nullptr;
-        if (slot_memo) {
-            memo = &ubo_slot_memo()[std::clamp(st.nvn_stage, 0, kNvnStages - 1)][index - 3];
-            const uint64_t rec = ub_recording_value(), ubg = ub_generation(), bst = gpu_bind_stamp(), view = memory_capture_view();
-            if (memo->on && memo->st == &st && memo->addr == u.addr && memo->size == u.size && memo->rec == rec &&
-                memo->ub == ubg && memo->bind_stamp == bst && memo->view == view && memo->res == cur &&
-                (memo->bi.buffer != (cur ? cur->stream : VK_NULL_HANDLE) || stream_holds(cur->mapped, memo->bi.offset, memo->bi.range))) {
-                FINE_N(FC_UBO_MEMO, 1);
-                return memo->bi;
-            }
-            *memo = {};
-            memo->st = &st, memo->addr = u.addr, memo->size = u.size, memo->rec = rec, memo->ub = ubg, memo->bind_stamp = bst;
-            memo->view = view, memo->res = cur;
-        }
-        const auto keep = [&](VkDescriptorBufferInfo r) {
-            if (memo && r.buffer) memo->bi = r, memo->on = true;
-            return r;
-        };
+        // (RX_VK_UBO_SLOT_MEMO=2: each hit resolved again and compared, mismatches counted and logged)
         const uint64_t want = used ? std::max<uint64_t>(used, 16) : std::max<uint64_t>(u.size, 16);
         const uint64_t n = std::min<uint64_t>(std::min<uint64_t>(want, u.size ? std::max<uint64_t>(u.size, 16) : want),
                                               dev.props.limits.maxUniformBufferRange);
+        static const int slot_memo = [] { const char* e = getenv("RX_VK_UBO_SLOT_MEMO"); return e ? atoi(e) : 0; }();
+        UboSlotMemo* memo = nullptr;
+        VkDescriptorBufferInfo hit{};
+        if (slot_memo) {
+            memo = &ubo_slot_memo()[std::clamp(st.nvn_stage, 0, kNvnStages - 1)][index - 3];
+            const uint64_t rec = ub_recording_value(), ubg = ub_generation(), bst = gpu_bind_stamp(), view = memory_capture_view();
+            if (memo->on && memo->n == n && memo->addr == u.addr && memo->size == u.size && memo->rec == rec &&
+                memo->ub == ubg && memo->bind_stamp == bst && memo->view == view && memo->res == cur &&
+                (memo->bi.buffer != (cur ? cur->stream : VK_NULL_HANDLE) || stream_holds(cur->mapped, memo->bi.offset, memo->bi.range))) {
+                FINE_N(FC_UBO_MEMO, 1);
+                if (slot_memo != 2) return memo->bi;
+                hit = memo->bi;
+            }
+            *memo = {};
+            memo->n = n, memo->addr = u.addr, memo->size = u.size, memo->rec = rec, memo->ub = ubg, memo->bind_stamp = bst;
+            memo->view = view, memo->res = cur;
+        }
+        const auto keep = [&](VkDescriptorBufferInfo r) {
+            if (hit.buffer) {   // (the check: the same range, or the same bytes for two copies in the stream)
+                const bool stream_pair = cur && hit.buffer == cur->stream && r.buffer == cur->stream && hit.range == r.range;
+                const bool same = (hit.buffer == r.buffer && hit.offset == r.offset && hit.range == r.range) ||
+                                  (stream_pair && !std::memcmp(cur->mapped + hit.offset, cur->mapped + r.offset, r.range));
+                static std::atomic<int64_t> checked{0}, bad{0};
+                const int64_t k = ++checked;
+                if (!same && bad++ < 40)
+                    logf("vk: uniform slot memo mismatch: stage %d c%u %#llx +%#llx: memo %p +%#llx, now %p +%#llx", st.nvn_stage, index,
+                         (unsigned long long)u.addr, (unsigned long long)u.size, (void*)hit.buffer, (unsigned long long)hit.offset,
+                         (void*)r.buffer, (unsigned long long)r.offset);
+                if (k % 200000 == 0) logf("vk: uniform slot memo: %lld hits checked, %lld differed", (long long)k, (long long)bad.load());
+            }
+            if (memo && r.buffer) memo->bi = r, memo->on = true;
+            return r;
+        };
         // (updates the stream made to this range in this submission or ones still in flight: a copy with them in)
         // (room first: the overlay copies into the stream's mapping, which a move to a bigger stream in the middle would change)
         if (stream_reserve(n, align))
