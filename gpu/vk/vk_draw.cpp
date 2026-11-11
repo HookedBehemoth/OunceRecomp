@@ -4153,7 +4153,7 @@ bool heap_draw(VkCommandBuffer cmd, const NvnState& s, const Program& p, const H
             }
         }
         std::memcpy(cap->push, data, hp.push_bytes), cap->push_bytes = hp.push_bytes;
-        if (eng_job_replay_active()) eng_job_replay_desc(*cap);
+        if (eng_job_replay_active()) eng_job_replay_desc(*cap, s);
     }
     desc_heap_bind(cmd);
     desc_heap_push(cmd, data, hp.push_bytes);

@@ -77,6 +77,7 @@ struct DrawTrace {
     uint64_t h[G_N];
     bool filtered;   // (the groups a program reads made by what it reads: reads_of; false: the job had no program for it)
     int8_t ncolor;   // (the colour targets it was made for: the pass formats' / the replay's)
+    int16_t op;
     VkFormat color0, depth;
 };
 /// The groups made from what a program reads (the rest of a stage's bindings may be anything a job inherits: unused)
@@ -132,6 +133,7 @@ size_t op_args(int op) {
 void trace_of(const NvnState& s, const Deferred& d, int op, const void* payload, size_t n, DrawTrace& t) {
     std::memset(&t, 0, sizeof t);
     n = std::min(n, op_args(op));
+    t.op = (int16_t)op;
     t.h[G_PROG] = s.has_prog ? prog_stage_sig(s.prog) : 0;
     t.h[G_VP] = fnv(kFnv0, s.viewport[0], 16);
     t.h[G_SC] = hv(s.scissor);
@@ -805,13 +807,12 @@ void flush_pending(RState& r) {
     r.pend_groups = ~0u;
 }
 void mismatch_line(const RState& r, size_t i, uint32_t groups, const DrawTrace& a, const DrawTrace& b) {
-    static std::atomic<int> render_told{0};
-    if (groups == 1u << G_RENDER ? render_told.fetch_add(1, std::memory_order_relaxed) >= 5
-                                 : mismatch_told.fetch_add(1, std::memory_order_relaxed) >= 40)
-        return;
+    static std::atomic<int> render_told{0}, target_told{0};
+    std::atomic<int>& budget = groups == 1u << G_RENDER ? render_told : groups & (1u << G_BLEND | 1u << G_CHMASK) ? target_told : mismatch_told;
+    if (budget.fetch_add(1, std::memory_order_relaxed) >= (&budget == &render_told ? 5 : &budget == &target_told ? 20 : 40)) return;
     char line[600];
-    int n = snprintf(line, sizeof line, "vk: eng jobs: MISMATCH job %u (view %#llx) draw %zu of %zu:", r.serial,
-                     (unsigned long long)(r.j ? r.j->view : 0), i, r.j ? r.j->trace.size() : 0);
+    int n = snprintf(line, sizeof line, "vk: eng jobs: MISMATCH job %u (view %#llx) draw %zu of %zu (op %d):", r.serial,
+                     (unsigned long long)(r.j ? r.j->view : 0), i, r.j ? r.j->trace.size() : 0, (int)a.op);
     for (int g = 0; g < G_N && n < 560; g++)
         if (groups >> g & 1)
             n += snprintf(line + n, sizeof line - n, " %s (%016llx job, %016llx replay);", kGroup[g], (unsigned long long)a.h[g],
@@ -1063,7 +1064,7 @@ bool bank_read_same(const Program& p, size_t k, const uint8_t* a, const uint8_t*
             return false;
     return true;
 }
-void eng_job_replay_desc(const EngDrawDesc& d) {
+void eng_job_replay_desc(const EngDrawDesc& d, const NvnState& s) {
     RState& r = rs();
     if (!r.active || !r.j || r.desc_i < 0 || !sw().check) return;
     const size_t i = (size_t)r.desc_i;
@@ -1103,7 +1104,10 @@ void eng_job_replay_desc(const EngDrawDesc& d) {
                 if (std::memcmp(pa + o, pb + o, 4)) {
                     uint32_t x, y;
                     std::memcpy(&x, pa + o, 4), std::memcpy(&y, pb + o, 4);
-                    snprintf(extra, sizeof extra, ": first at +%#x, %#x job / %#x replay", o, x, y);
+                    const uint32_t st = a && a->stage < w.prog->stages.size() ? (uint32_t)w.prog->stages[a->stage].nvn_stage : 0;
+                    const uint32_t now = a ? driver_bank_word(s, a->index, (int)st, o) : 0;
+                    snprintf(extra, sizeof extra, ": first at +%#x, %#x job / %#x replay (bank c%u stage %u; the replay's state now %#x)", o, x,
+                             y, a ? a->index : 0, st, now);
                     break;
                 }
         }

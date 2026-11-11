@@ -103,7 +103,7 @@ struct HeapProgram;
 bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& at, const EngBindRefs& refs,
                           EngDrawDesc& out);
 /// (vk_draw.cpp heap_draw, inside a job's records) the replay's descriptors for the job draw it is drawing
-void eng_job_replay_desc(const EngDrawDesc& d);
+void eng_job_replay_desc(const EngDrawDesc& d, const NvnState& s);
 /// The job threads' upload memory (banks, c1): n bytes at align, its buffer, offset, mapping and device address; false: none
 bool eng_job_stream_alloc(uint32_t n, uint64_t align, VkBuffer* buf, uint64_t* off, uint8_t** map, VkDeviceAddress* addr);
 
