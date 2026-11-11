@@ -409,6 +409,31 @@ allocator, `RX_RT_SLOTS_MB` the range, `HOS_RT_SLOTS_LOG=1` slots by name; one `
   change was needed (no `nvn_rt_slot` API).
 - `chisel_kokiri_lw` with `16:RRIGHT/4000,22:LUP/8000` hangs the GPU 6 of 6 runs, with and without slots (3 each).
 
+### Layer 0: window buffers (2026-11-11; work/assets/native/layer0-impl.md, PoC work/proto/layer0/)
+
+Steps 7a and 7b are written, behind switches, **not yet run in the game** (test plan `work/proto/layer0/plan.sh`).
+- **`RX_VK_LAYER0=1` (7a, host class):** guest memory reaches the GPU through 4 GB sparse aliased window buffers, one
+  every 2 GB of guest space, so a binding of up to 2 GB is `(window[g >> 31], g & 0x7fffffff)`
+  (gpu/vk/vk_pools.cpp, arithmetic in layer0_windows.h). Memory is bound in chunks (64 MB, `RX_VK_LAYER0_CHUNK_MB`) that
+  are udmabufs of the memfd's own pages, imported once, never merged or moved. No imports by pool, mirrors, mirror syncs or
+  write-backs; GPU writes land in guest memory and a readback waits for the submission that wrote it. The 4 KB page table
+  of the pointer-following shaders gets the window addresses (no shader or cache change). Captures stay on (the replay's
+  CPU reads as submitted, texture storage); `RX_VK_CAPTURE=0` drops them once step 6 lands. `RX_VK_LAYER0_EAGER=1` binds
+  a pool's chunks when the game makes it; `RX_VK_LAYER0_SPAN_MB` (64) a first use binds a small pool whole.
+- **`RX_VK_LAYER0=2` (7b, + VRAM class):** pools with `CPU_NO_ACCESS` (render-target and GPU-only pools) get their whole
+  64 KB granules in device-local memory, one contiguous slot run in guest order; partial edges and granules a CPU-visible
+  pool shares stay host. A finalized one is kept `RX_VK_LAYER0_KEEP_S` (10) seconds and handed back on an Initialize of
+  the same base, size and flags (the map change's render-target pools). `RX_VK_LAYER0_HOST_KEYS` keeps creation keys
+  host, `RX_VK_LAYER0_VRAM_MB` caps the class (2048). Needs **MKWVK_API_VERSION 14**: `nvn_pool_native` carries each pool's
+  flags and creation key (a hash of the caller's return address and the guest frame-pointer chain, host/nvn_native.c).
+  The replay's CPU reads of VRAM granules are logged (`CPU reads of VRAM`).
+- PoC on this GPU (`l0_poc.out`): GPU reads of host chunks over PCIe **28.6 GB/s** streaming, **10.3 GB/s** scattered
+  64-byte reads, against VRAM's 560 / 444 (BAR the same as VRAM; VRAM in a window with contiguous 64 KB pages 561 / 424).
+  A chunk's bind into both windows 0.04 ms; **scattered 64 KB binds 127 us each** and permuted pages read 5x slower
+  (hence slots in guest order). A 16 MB udmabuf import 0.52 ms on touched pages, 4.5 ms on fresh ones. Buffer objects cost
+  **~0.7 us each per submit, whatever their size** (hence 64 MB chunks). GPU atomics on host memory work.
+- Next: 7c (write-only pools in BAR by creation-key policy, needs step 6), 7d (virtual pools as sparse binds in runs).
+
 ## Fronts surveyed (2026-11-10; reports in work/assets/native/*.md, tools and data in work/proto/<front>/)
 
 Kokiri, `work/sa/zstd` build, ~47 fps, 6 submits a frame. One line each; the reports have addresses and evidence.
@@ -465,7 +490,8 @@ is and feeds is being traced (`readback.md`); the exposure meter's read must sta
    honest) and the riskiest step. Caveat: wait-before-signal on ONE Vulkan queue deadlocks (a submission blocked on a
    timeline wait holds everything behind it, including the signal), and the five NVN queues map to one graphics
    queue. Keep a host-side hold for waits whose signal is not yet submitted; count them first.
-7. **Layer 0**: windows with the host class only is a correctness milestone, expected slower than mirrors (GPU reads
+7. *Written for a and b, not run yet (`RX_VK_LAYER0=1`, `=2`; section "Layer 0: window buffers").* **Layer 0**: windows
+   with the host class only is a correctness milestone, expected slower than mirrors (GPU reads
    over PCIe) -> VRAM class for CPU-no-access pools -> write-only pools -> virtual pools as sparse binds. Render-target
    pool as one device-local heap with images cached by (offset, create info).
 8. **Layer 1**: lists by reference with per-thread arenas (3.3 ms of copies under one lock today); record-time packet
@@ -526,3 +552,7 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
   7 held on the host, 0 forced; the one QueueWaitSync is on the window's signalled sync; no CPU wait on unrecorded work.
   Warm A/B: Kokiri 53.6/53.2 vs 53.6-53.8 fps, HF 46.1/46.4 vs 45.6/46.4; present drains 43-71 a run -> 0 in steady state;
   pictures the same; the Lost Woods hang reproducer did not hang (0/4, either mode, on the new base).
+- 2026-11-11: layer 0 steps 7a and 7b written behind `RX_VK_LAYER0=1` / `=2` (gpu/vk/vk_pools.cpp, MKWVK_API_VERSION 14 for
+  the pools' flags and creation keys): window buffers over udmabuf chunks instead of imports, mirrors and write-backs, and
+  CPU_NO_ACCESS pools in VRAM with a hand-back across map changes. Measured standalone only (work/proto/layer0/l0_poc.out);
+  the game runs are in work/proto/layer0/plan.sh.
