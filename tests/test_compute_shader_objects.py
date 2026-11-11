@@ -2,8 +2,8 @@
 
 A dispatch binds its program's compute VkShaderEXT, made from the driver's binary an earlier run kept, and takes the
 compute pipeline only when shader objects are off or the driver refused the stage. The mesh fallback's task and mesh
-dispatches do the same, except under the task/mesh fallback, whose pipelines are built with DISABLE_OPTIMIZATION (a
-shader object cannot ask for that; optimized, they hung an RX 6950 XT). The compute variants made are noted in the
+dispatches do the same, the push constants sent again after each bind (RADV sends them to a compute pipeline bound after
+them, not to a shader object: the mesh stage hung an RX 6950 XT). The compute variants made are noted in the
 binary cache under a tag of their own, and the prefetch thread makes them all from their binaries when it starts.
 
 python -I -B tests/test_compute_shader_objects.py
@@ -35,9 +35,6 @@ def main():
         raise SystemExit("compute and fallback stages are not made as shader objects")
     if "VK_SHADER_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT" not in so or "full_subgroups(p, st) ? 2 : 0" not in so:
         raise SystemExit("a compute shader object does not ask for full subgroups as its pipeline does (or its binary key misses it)")
-    fallback = block(so, "bool so_fallback_on() {")
-    if "!dev.task_mesh_fallback" not in fallback:
-        raise SystemExit("the fallback's dispatches are optimized shader objects under the task/mesh fallback (GPU hang on RDNA2)")
     if "RX_VK_NOOPT" not in block(so, "bool so_compute_on() {"):
         raise SystemExit("RX_VK_NOOPT, which a shader object cannot express, does not keep the compute pipelines")
     if "kTagCompute" not in block(so, "void cache_init_locked() {"):
@@ -58,6 +55,11 @@ def main():
     record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
     if "(!all_so && !fallback_pipelines_ready(p))" not in record or "vkCmdBindShadersEXT(cmd, 1, &cs, &so->cs[stage]);" not in record:
         raise SystemExit("the fallback's dispatches do not bind their shader objects, or wait for pipelines they do not use")
+    # (RADV marks the push constants dirty at a compute pipeline's bind, not a compute shader object's: the mesh stage bound after the
+    # task stage's dispatch ran with no push constants and hung the GPU. Pushed again after each bind)
+    bind = record.index("vkCmdBindShadersEXT(cmd, 1, &cs, &so->cs[stage]);")
+    if "push_constants(cmd, p, nullptr, d.first_task);" not in record[bind:bind + 900]:
+        raise SystemExit("a fallback stage's shader object is bound without its push constants sent again (RADV: GPU hang)")
     if "fallback_prefetch(const_cast<Program&>(*p))" not in so:
         raise SystemExit("the fallback programs' pipelines are not begun at the prefetch (left out at their first draws)")
     print("compute shader objects ok")

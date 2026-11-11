@@ -530,13 +530,14 @@ bool so_compute_on() {
 bool so_fallback_on() {
     static const bool on = [] {
         if (!so_compute_on() || !(dev.mesh_fallback || dev.task_mesh_fallback)) return false;
-        // (not by default under the task/mesh fallback (RDNA2), whose pipelines are built with DISABLE_OPTIMIZATION, which a shader
-        // object cannot ask for: optimized, the fallback's dispatches hung the GPU (gfx ring timeout) at Kokiri's first gameplay frames
-        // in 2 of 2 runs on a 6950 XT, 2026-11-11. RX_VK_SO_FALLBACK=1: shader objects anyway; =0: pipelines on any GPU)
+        // (optimized, which their pipelines are not under the task/mesh fallback (DISABLE_OPTIMIZATION): that was not what hung the
+        // GPU when they were first made shader objects (10 of 10 runs, every mesh stage, one alone too), but RADV not sending the push
+        // constants to a compute shader object bound after them: fallback_record pushes them again after each bind. Optimized
+        // pipelines (RX_VK_FALLBACK_OPT=1) never hung. RX_VK_SO_FALLBACK=0: their pipelines)
         const char* e = getenv("RX_VK_SO_FALLBACK");
-        const bool on = e ? atoi(e) != 0 : !dev.task_mesh_fallback;
-        logf("vk: shader objects: the mesh fallback's task and mesh dispatches %s", on ? "as shader objects (RX_VK_SO_FALLBACK=0: pipelines)"
-             : "keep their pipelines (DISABLE_OPTIMIZATION under the task/mesh fallback; RX_VK_SO_FALLBACK=1: shader objects)");
+        const bool on = !e || atoi(e) != 0;
+        logf("vk: shader objects: the mesh fallback's task and mesh dispatches %s",
+             on ? "as shader objects (RX_VK_SO_FALLBACK=0: pipelines)" : "keep their pipelines (RX_VK_SO_FALLBACK=0)");
         return on;
     }();
     return on;

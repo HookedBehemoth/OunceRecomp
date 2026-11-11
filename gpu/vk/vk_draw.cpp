@@ -5570,6 +5570,11 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
         if (so && stage < 8 && so->cs[stage]) {
             const VkShaderStageFlagBits cs = VK_SHADER_STAGE_COMPUTE_BIT;
             vkCmdBindShadersEXT(cmd, 1, &cs, &so->cs[stage]);
+            // (pushed again for this shader: RADV (26.2.4, and main of 2026-11) marks the push constants dirty when a compute pipeline
+            // is bound, not a compute shader object, and a shader inlines them in its own user SGPRs. The mesh stage, bound after the
+            // task stage's dispatch had sent them, ran with none: the records' and payloads' addresses garbage, a gfx ring timeout
+            // in every run, any program alone)
+            push_constants(cmd, p, nullptr, d.first_task);
         } else {
             if (stage >= p.fallback_compute.size() || !p.fallback_compute[stage]) return false;
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.fallback_compute[stage]);

@@ -17,8 +17,7 @@ bool so_on();
 bool so_mesh_on();
 /// Compute programs (dispatches) as compute shader objects too (RX_VK_SO_COMPUTE=0, or RX_VK_NOOPT: their pipelines)
 bool so_compute_on();
-/// The mesh fallback's task and mesh stages (compute) as shader objects too: by default only where their pipelines are optimized (not
-/// under the task/mesh fallback, whose pipelines take DISABLE_OPTIMIZATION, which a shader object has no flag for). RX_VK_SO_FALLBACK=0/1
+/// The mesh fallback's task and mesh stages (compute) as shader objects too (RX_VK_SO_FALLBACK=0: their pipelines)
 bool so_fallback_on();
 /// (make_module) a module's SPIR-V: what its shader objects are compiled from, until they are made
 void so_module_made(VkShaderModule m, const uint32_t* words, size_t n);
