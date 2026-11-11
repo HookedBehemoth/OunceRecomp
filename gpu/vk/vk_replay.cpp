@@ -283,7 +283,75 @@ bool batch_on() {
 uint64_t replay_completed_value() {   // (RX_VK_DESC_HEAP: whether a heap entry's last user is done)
     return completed();
 }
+// ---- (native-vk) RX_VK_SUBMIT_THREAD=1: the replay's batched submits (a FEED or CAP flush from submit_recording) handed to a thread
+// of their own, so the replaying thread does not wait in vkQueueSubmit2 (2.3-2.4 ms a frame in HF, 1.7 in Kokiri: l1s2-impl.md).
+// Every other use of the queue goes through queue_flush_locked first, which waits for what the thread holds (sub_drain): the
+// queue is then that caller's alone, as before. The thread never takes dev.present_mu; jobs are only handed over under it ----
+struct SubJob {
+    std::vector<VkCommandBufferSubmitInfo> cbs;
+    std::vector<VkSemaphoreSubmitInfo> sig;
+    uint64_t batch = 0;
+};
+struct SubThread {
+    std::mutex mu;
+    std::condition_variable cv, done_cv;
+    std::deque<SubJob> jobs;
+    int inflight = 0;   // (handed over, not yet submitted)
+    bool started = false;
+    std::vector<SubJob> spare;   // (vectors kept for the next hand-over)
+} sub;
+bool sub_thread_on() {
+    static const bool on = [] {
+        const bool v = getenv("RX_VK_SUBMIT_THREAD") && atoi(getenv("RX_VK_SUBMIT_THREAD")) != 0;
+        if (v) logf("vk: the replay's batched submits on a thread of their own (RX_VK_SUBMIT_THREAD)");
+        return v;
+    }();
+    return on;
+}
+std::atomic<int64_t> st_sub_jobs{0}, st_sub_drain_waits{0};
+bool sub_handoff = false;   // (dev.present_mu: set by submit_recording around its FEED and CAP flushes only)
+void sub_main() {
+    for (;;) {
+        SubJob j;
+        {
+            std::unique_lock lk(sub.mu);
+            sub.cv.wait(lk, [] { return !sub.jobs.empty(); });
+            j = std::move(sub.jobs.front());
+            sub.jobs.pop_front();
+        }
+        VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+        si.commandBufferInfoCount = (uint32_t)j.cbs.size();
+        si.pCommandBufferInfos = j.cbs.data();
+        si.signalSemaphoreInfoCount = (uint32_t)j.sig.size();
+        si.pSignalSemaphoreInfos = j.sig.data();
+        const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
+        static int failures;
+        if (res != VK_SUCCESS && failures++ < 8) logf("vk: batched submit %llu failed (%d, the submit thread)", (unsigned long long)j.batch, (int)res);
+        if (res == VK_ERROR_DEVICE_LOST) device_lost();
+        st_sub_jobs.fetch_add(1, std::memory_order_relaxed);
+        {
+            std::lock_guard lk(sub.mu);
+            j.cbs.clear(), j.sig.clear();
+            if (sub.spare.size() < 4) sub.spare.push_back(std::move(j));
+            sub.inflight--;
+        }
+        sub.done_cv.notify_all();
+    }
+}
+/// (dev.present_mu held) what the submit thread holds, submitted: the queue is the caller's after this
+void sub_drain() {
+    if (!sub_thread_on()) return;
+    std::unique_lock lk(sub.mu);
+    if (!sub.inflight) return;
+    st_sub_drain_waits.fetch_add(1, std::memory_order_relaxed);
+    sub.done_cv.wait(lk, [] { return sub.inflight == 0; });
+}
+
 void queue_flush_locked() {   // (dev.present_mu held)
+    // (RX_VK_SUBMIT_THREAD: a FEED or CAP flush of the replay's own recordings is handed over; anything else waits for the thread first)
+    const bool hand_over = sub_thread_on() && sub_handoff;
+    sub_handoff = false;
+    if (!hand_over) sub_drain();
     if (pend.cbs.empty()) return;
     std::vector<VkSemaphoreSubmitInfo> sig(3, VkSemaphoreSubmitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO});
     uint32_t n = 0;
@@ -305,7 +373,23 @@ void queue_flush_locked() {   // (dev.present_mu held)
     si.signalSemaphoreInfoCount = (uint32_t)sig.size();
     si.pSignalSemaphoreInfos = sig.data();
     PROF(PROF_QSUBMIT);
-    const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
+    VkResult res = VK_SUCCESS;
+    if (hand_over) {
+        {
+            std::lock_guard lk(sub.mu);
+            if (!sub.started) sub.started = true, std::thread(sub_main).detach();
+            SubJob j;
+            if (!sub.spare.empty()) j = std::move(sub.spare.back()), sub.spare.pop_back();
+            j.cbs.assign(pend.cbs.begin(), pend.cbs.end());
+            j.sig = sig;
+            j.batch = batch_next;
+            sub.jobs.push_back(std::move(j));
+            sub.inflight++;
+        }
+        sub.cv.notify_one();
+    } else {
+        res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
+    }
     if (wait_log_on()) {
         uint64_t d = 0;
         vkGetSemaphoreCounterValue(dev.device, rec_timeline, &d);
@@ -493,17 +577,18 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         r.submitted = true;
         // (RX_VK_BATCH_MAX=<command buffers>: held at most this many, default 32)
         static const size_t cap = getenv("RX_VK_BATCH_MAX") ? (size_t)std::max(1, atoi(getenv("RX_VK_BATCH_MAX"))) : 32;
-        if (pend.cbs.size() >= cap) flush_reason = FR_CAP, queue_flush_locked();
+        if (pend.cbs.size() >= cap) flush_reason = FR_CAP, sub_handoff = true, queue_flush_locked();
         // (a CPU thread waits for a signal not sent yet: it goes now, not at the next flush point)
         else if (!qs.empty() && tl_waiters.load(std::memory_order_acquire)) flush_reason = FR_WAIT, queue_flush_locked();
         // (RX_VK_TIMELINES: the GPU has run out of work, or the oldest held one has waited RX_VK_BATCH_POLL_US: it goes now)
-        else if (batch_feed_on() && batch_feed_due()) flush_reason = FR_FEED, queue_flush_locked();
+        else if (batch_feed_on() && batch_feed_due()) flush_reason = FR_FEED, sub_handoff = true, queue_flush_locked();
         return;
     }
     queue_signals_into(qs, sigv);
     si.signalSemaphoreInfoCount = (uint32_t)sigv.size();
     si.pSignalSemaphoreInfos = sigv.empty() ? nullptr : sigv.data();
     PROF(PROF_QSUBMIT);
+    sub_drain();   // (RX_VK_SUBMIT_THREAD: nothing handed over without the batch, but the queue is this thread's only after it)
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
     if (wait_log_on() && seq) wl_sent(seq, (int)n);
     r.submitted = res == VK_SUCCESS;
