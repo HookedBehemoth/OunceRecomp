@@ -5256,6 +5256,29 @@ static uint32_t eng_handle_of(const NvnState& s, const Stage& st, const D& d, ui
         h = h << d.shift_left | eng_word(s, st, d.secondary_cbuf_index, d.secondary_cbuf_offset + k * step) << d.secondary_shift_left;
     return h;
 }
+/// (E3/E6, a job thread) every vertex attribute the program loads reads a stream with a buffer in the job's own state. A job's
+/// state starts from nothing, but a stream can be bound by its layer list before the call (vertex buffer 1 of the 1536x864 colour
+/// passes' draws in Hyrule Field: a transient buffer): recorded from the job's state alone, those draws read the zero buffer and
+/// drew nothing visible (Link missing, the water white: e6-impl.md). False: the draw is the replay's
+bool eng_draw_vertex_bound(const NvnState& s, const Program& p, bool strict) {
+    if (p.mesh || p.fallback) return true;
+    const Shader::Info* vs = vertex_info(p);
+    if (!vs) return true;
+    for (uint32_t i = 0; i < 16; i++) {
+        if (!vs->loads.Generic(i)) continue;
+        if ((int)i >= s.nvattr) {   // (strict: an attribute the job never set: maybe its caller's)
+            if (strict) return false;
+            continue;
+        }
+        const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
+        if (vertex_format(a.fmt) == VK_FORMAT_UNDEFINED || a.stream >= 15) {
+            if (strict) return false;
+            continue;
+        }
+        if (!s.vbuf[a.stream].address) return false;
+    }
+    return true;
+}
 /// (E3, a job thread; HOS_ENG_JOBS_SAMPLED) the texture and image handle words a job draw's program reads, from the state as the
 /// draw has it; the words of deferred binds (the system textures, final only at the submit) left out, as the bound list leaves them
 void eng_draw_sampled(const NvnState& s, const Program& p, const EngBindRefs& refs, std::vector<uint32_t>& out) {
@@ -5362,6 +5385,7 @@ bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram
                         if (!r.buffer) return fail(EDW_UBO_MEM);
                         if (r.offset % ualign) return fail(EDW_UBO_UNALIGNED);
                         el = {1, r.buffer, r.offset, n, nullptr, 0};
+                        out.ubos.push_back(u.addr), out.ubos.push_back(n);
                     }
                 }
                 out.els.push_back(el);

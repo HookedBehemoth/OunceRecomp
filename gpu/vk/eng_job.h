@@ -45,6 +45,10 @@ struct EngJob {
     // ops in all (the call site checks its own count against it)
     const EngSeg* segs; uint32_t nsegs; uint32_t ndrawops;
     const uint32_t* dsig;          // (split: per draw op, a hash of its payload: the call site checks it meets the same draws)
+    // (E6) the uniform ranges its draws read from guest memory by address, (address, size) pairs: the replay's own uniform updates
+    // earlier in the same recording are written to guest memory only at the recording's end (flush_ub_updates), so a job whose
+    // ranges one of them overlaps would read the value from before it
+    const uint64_t* ubo; uint32_t nubo;
 };
 /// (E6) the hash of a draw op's payload both sides make
 uint32_t eng_draw_sig(int op, const void* payload, size_t n);
@@ -107,7 +111,8 @@ struct EngDrawDesc {
     std::vector<uint32_t> handles;   // (per texture element: the pushed handle, 0 for the others)
     std::vector<std::pair<const uint8_t*, uint32_t>> banks;   // (per HeapProgram::banks: its bytes)
     std::vector<EngDescPatch> patches;
-    void clear() { why = EDW_OK, push_bytes = 0, els.clear(), handles.clear(), banks.clear(), patches.clear(); }
+    std::vector<uint64_t> ubos;   // (E6: the user uniform ranges it reads by address, guest address << 0 and size, in pairs)
+    void clear() { why = EDW_OK, push_bytes = 0, els.clear(), handles.clear(), banks.clear(), patches.clear(), ubos.clear(); }
 };
 /// The deferred binds a job's state came from: per (texture 0, sampler 1, image 2), stage, slot: (bind number + 1) << 8 | index
 /// (0: an immediate bind)
@@ -116,6 +121,8 @@ using EngBindRefs = uint32_t[3][8][128];
 struct HeapProgram;
 bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& at, const EngBindRefs& refs,
                           EngDrawDesc& out);
+/// (E6) every vertex stream the program loads has a buffer in the job's own state (else it is inherited from the caller)
+bool eng_draw_vertex_bound(const NvnState& s, const Program& p, bool strict);
 /// (HOS_ENG_JOBS_SAMPLED) the handle words a job draw's program reads (textures, images), deferred ones left out
 void eng_draw_sampled(const NvnState& s, const Program& p, const EngBindRefs& refs, std::vector<uint32_t>& out);
 /// (vk_draw.cpp heap_draw, inside a job's records) the replay's descriptors for the job draw it is drawing

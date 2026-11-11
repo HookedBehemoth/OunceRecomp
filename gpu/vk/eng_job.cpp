@@ -66,7 +66,7 @@ struct Sw {
         const char* p = getenv("HOS_ENG_JOBS_SELFPASS");
         self_pass = !ENG_JOB_HAVE_PASS || (p && atoi(p) != 0);
         const char* sp = getenv("HOS_ENG_JOBS_SPLIT");   // (a job split around the draws it cannot record; not with the check)
-        split = on && !check && sp && atoi(sp) != 0;
+        split = on && !check && sp && strtoul(sp, nullptr, 0) != 0;
         split_mask = split ? (uint32_t)strtoul(sp, nullptr, 0) : 0;
         if (split_mask == 1) split_mask = kSplitDefault;
         const char* sa = getenv("HOS_ENG_JOBS_SAMPLED");   // (EngJob.tex: what the recorded draws' programs read, not every bound word)
@@ -278,6 +278,7 @@ struct Job {
     std::vector<EngDrawDesc> descs;      // (check: per job draw, its descriptors as made here; why EDW_N: none made)
     std::vector<EngSeg> segs;            // (HOS_ENG_JOBS_SPLIT: the runs of draws recorded)
     std::vector<uint32_t> dsig;          // (and each draw op's payload hash)
+    std::vector<uint64_t> ubo;           // (the uniform ranges its recorded draws read, pairs)
     std::atomic<uint64_t> used_value{0};   // (E4: the recording that executed it)
     std::atomic<bool> replayed{false};
 };
@@ -292,7 +293,7 @@ std::atomic<uint64_t> retired_through{0};
 // ---- counts (relaxed atomics; the frame log reads them every 120 presents) ----
 enum Count { C_JOBS, C_DRAWS, C_DRAWS_REC, C_DRAWS_SKIPPED, C_PKT, C_PKT_STALE, C_DEFERRED, C_DEFERRED_BUFS, C_REC_NS, C_DEC_NS,
              C_CHECK_JOBS, C_CHECK_DRAWS, C_CHECK_MISMATCH_DRAWS, C_CHECK_NO_JOB, C_CHECK_COUNT_DIFF, C_PUBLISHED, C_LOOKUPS,
-             C_LOOKUP_HITS, C_PROG_ANSWERS, C_CHECK_UNFILTERED, C_CHECK_FILTERED, C_DESC_CHECKED, C_DESC_MISMATCH, C_DESC_NONE, C_PATCHED, C_PATCH_NO_JOB, C_KIND_INDIRECT, C_KIND_MESH_OTHER, C_KIND_PRIM, C_MESH_REC, C_N };
+             C_LOOKUP_HITS, C_PROG_ANSWERS, C_CHECK_UNFILTERED, C_CHECK_FILTERED, C_DESC_CHECKED, C_DESC_MISMATCH, C_DESC_NONE, C_PATCHED, C_PATCH_NO_JOB, C_KIND_INDIRECT, C_KIND_MESH_OTHER, C_KIND_PRIM, C_MESH_REC, C_VTX_UNSET, C_N };
 std::atomic<int64_t> cnt[C_N];
 std::atomic<int64_t> why_n[WHY_N];
 std::atomic<int64_t> why_draw_n[WHY_N];   // (HOS_ENG_JOBS_SPLIT: draws left to the replay inside split jobs, by why)
@@ -411,6 +412,7 @@ struct Walk {
     std::vector<uint32_t> tex;
     std::vector<uint64_t> deferred;
     std::vector<DrawTrace> trace;
+    std::vector<uint64_t> ubo;   // (E6: the recorded draws' uniform ranges, pairs)
     uint32_t npkt = 0;
     uint16_t ops[NOP_COUNT_];
     EngBindRefs refs;      // (the deferred bind each slot's word came from: the submit's rewrite of the banks)
@@ -510,6 +512,10 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     // (the program's texture answers: the published one is the variant the replay picked for other textures of these inputs; a
     // texture of another type or integer-ness here needs another variant, which only the replay picks)
     if (!program_answers_hold(s, p)) return r.refuse(WHY_TEX_VARIANT);
+    // (HOS_ENG_JOBS_VTX_CHECK=1: a vertex stream it loads with no buffer in the job; =2 also an attribute the job never set: both
+    // its caller's. Off by default: =2 refuses ~98 HF draws a frame, which inherit the vertex state of their layer list, e6-impl.md)
+    static const int vtx_check = getenv("HOS_ENG_JOBS_VTX_CHECK") ? atoi(getenv("HOS_ENG_JOBS_VTX_CHECK")) : 0;
+    if (vtx_check && !eng_draw_vertex_bound(s, p, vtx_check >= 2)) return add(C_VTX_UNSET), r.refuse(WHY_VERTEX_MEM);
     const HeapProgram* hp = so.heap ? desc_heap_program(p) : nullptr;
     if (!hp) return r.refuse(WHY_DESCRIPTORS), void(desc_why[EDW_NO_HEAP].fetch_add(1, std::memory_order_relaxed));
     EngDrawDesc& dd = sw().check && !w.descs.empty() ? w.descs.back() : w.desc;
@@ -521,6 +527,12 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
         eng_draw_sampled(s, p, w.refs, w.tex);
     }
     w.patches.insert(w.patches.end(), dd.patches.begin(), dd.patches.end());
+    for (size_t k = 0; k + 1 < dd.ubos.size(); k += 2) {   // (consecutive draws bind the same ranges: kept once in a row)
+        const size_t m = w.ubo.size();
+        bool seen = false;
+        for (size_t q = m >= 16 ? m - 16 : 0; q + 1 < m && !seen; q += 2) seen = w.ubo[q] == dd.ubos[k] && w.ubo[q + 1] == dd.ubos[k + 1];
+        if (!seen) w.ubo.push_back(dd.ubos[k]), w.ubo.push_back(dd.ubos[k + 1]);
+    }
     eng_draw_state(r.cb, s, p, so, r.at, topo, r.first, mesh);
     if (r.first) desc_heap_bind_job(r.cb);
     r.first = false;
@@ -618,7 +630,23 @@ void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
         static const uint32_t hi = getenv("HOS_ENG_SPLIT_HI") ? (uint32_t)atoi(getenv("HOS_ENG_SPLIT_HI")) : ~0u;
         if (bv && r->view == bv && (i < lo || i >= hi)) r->dwhy = WHY_DESCRIPTORS;
     }
-    if (r->dwhy == WHY_OK) record_draw(w, *r, op, pl);
+    if (r->dwhy == WHY_OK) {
+        static const uint64_t lv = getenv("HOS_ENG_SPLIT_LOGVIEW") ? strtoull(getenv("HOS_ENG_SPLIT_LOGVIEW"), nullptr, 0) : 0;
+        static std::atomic<int> told{0};
+        if (lv && r->view == lv && i == 0 && cnt[C_JOBS].load(std::memory_order_relaxed) > 100000 && told++ < 12) {
+            const NvnState& q = w.s;
+            uint32_t cntv = 0, inst = 0;
+            if (op == NOP_DRAW_IDX) { nvn_p_draw_idx di; std::memcpy(&di, pl, sizeof di); cntv = di.count, inst = di.instances; }
+            else if (op == NOP_DRAW) { nvn_p_draw dr; std::memcpy(&dr, pl, sizeof dr); cntv = dr.count, inst = dr.instances; }
+            logf("vk: e6 job %u draw 0: op %d count %u inst %u vb0 %#llx+%llu vb1 %#llx vp %.0f %.0f %.0f %.0f sc %d %d %d %d dr %.2f %.2f "
+                 "re %d rd %d prog %016llx vb0 buf %p+%llu", r->serial, op, cntv, inst, (unsigned long long)q.vbuf[0].address, (unsigned long long)q.vbuf[0].size,
+                 (unsigned long long)q.vbuf[1].address, q.viewport[0][0], q.viewport[0][1], q.viewport[0][2], q.viewport[0][3], q.scissor[0],
+                 q.scissor[1], q.scissor[2], q.scissor[3], q.depth_near, q.depth_far, (int)q.render_enabled, (int)q.raster_discard,
+                 (unsigned long long)prog_stage_sig(q.prog), (void*)layer0_buffer(q.vbuf[0].address, 1).buffer,
+                 (unsigned long long)layer0_buffer(q.vbuf[0].address, 1).offset);
+        }
+        record_draw(w, *r, op, pl);
+    }
     if (r->dwhy == WHY_OK) return;
     why_draw_n[r->dwhy].fetch_add(1, std::memory_order_relaxed);
     {
@@ -1296,10 +1324,12 @@ void eng_job_report(double frames) {
             last_d[i] = v;
         }
         logf("vk: eng jobs: draws whose descriptors were not made, a frame:%s; patched at the submit %.1f words a frame (%.2f jobs not "
-             "found); draws not taken: %.1f indirect, %.1f mesh with a first or indirect, %.1f quads or other primitives; %.1f mesh draws recorded",
+             "found); draws not taken: %.1f indirect, %.1f mesh with a first or indirect, %.1f quads or other primitives; %.1f mesh draws recorded; "
+             "%.1f with a vertex stream the job does not bind",
              dl[0] ? dl : " none", (c[C_PATCHED] - last[C_PATCHED]) / frames, (c[C_PATCH_NO_JOB] - last[C_PATCH_NO_JOB]) / frames,
              (c[C_KIND_INDIRECT] - last[C_KIND_INDIRECT]) / frames, (c[C_KIND_MESH_OTHER] - last[C_KIND_MESH_OTHER]) / frames,
-             (c[C_KIND_PRIM] - last[C_KIND_PRIM]) / frames, (c[C_MESH_REC] - last[C_MESH_REC]) / frames);
+             (c[C_KIND_PRIM] - last[C_KIND_PRIM]) / frames, (c[C_MESH_REC] - last[C_MESH_REC]) / frames,
+             (c[C_VTX_UNSET] - last[C_VTX_UNSET]) / frames);
         if (sw().check)
             logf("vk: eng jobs check: descriptors: %.1f draws a frame compared with the replay's, %.2f differ (%lld so far), %.1f not made "
                  "on the job thread", (c[C_DESC_CHECKED] - last[C_DESC_CHECKED]) / frames, (c[C_DESC_MISMATCH] - last[C_DESC_MISMATCH]) / frames,
@@ -1337,7 +1367,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     Walk& w = walk();
     w.s = NvnState{};
     w.d.clear();
-    w.tex.clear(), w.deferred.clear(), w.trace.clear(), w.npkt = 0;
+    w.tex.clear(), w.deferred.clear(), w.trace.clear(), w.ubo.clear(), w.npkt = 0;
     std::memset(w.refs, 0, sizeof w.refs);
     w.nbinds = 0, w.patches.clear(), w.descs.clear();
     std::memset(w.ops, 0, sizeof w.ops);
@@ -1398,6 +1428,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     if (!r.split || !(r.ninline || r.cut)) r.segs.clear();
     j.segs.swap(r.segs);
     j.dsig.swap(r.dsig);
+    j.ubo.swap(w.ubo);
     j.used_value.store(0, std::memory_order_relaxed);
     j.replayed.store(false, std::memory_order_relaxed);
     j.pub.view_key = ji->view;
@@ -1409,6 +1440,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     j.pub.serial = ji->serial;
     j.pub.segs = j.segs.data(), j.pub.nsegs = (uint32_t)j.segs.size(), j.pub.ndrawops = r.draw_i;
     j.pub.dsig = j.dsig.data();
+    j.pub.ubo = j.ubo.data(), j.pub.nubo = (uint32_t)(j.ubo.size() / 2);
     j.serial.store(ji->serial, std::memory_order_release);
     {
         std::lock_guard lk(handle_mu);

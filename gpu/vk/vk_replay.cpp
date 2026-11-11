@@ -2133,6 +2133,7 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
         const auto moved = [&](int c) { return eng_count_get(c) != before[c]; };
         int x = eprof::X_FB_OTHER;
         if (moved(EC_FB_RESIDENT) || moved(EC_FB_DEFERRED)) x = eprof::X_FB_RES;
+        else if (moved(EC_FB_UBUPD)) x = eprof::X_FB_OTHER;
         else if (moved(EC_FB_HAZARD)) x = eprof::X_FB_HAZ;
         else if (moved(EC_FB_FORMATS)) x = eprof::X_FB_FMT;
         else if (moved(EC_FB_NO_JOB)) x = eprof::X_FB_E3 + 1 + std::clamp(eng_job_why(e.a), -1, eprof::kWhys - 2);
@@ -2208,6 +2209,18 @@ bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t
         // resolved at the submit: a secondary reads their heap entries as they are, and only a draw of the replay writes a missing
         // one. HOS_ENG_PASS_DEFERRED_CHECK=1: checked; off by default: 0.0 jobs a frame failed it in Hyrule Field, e6-impl.md)
         static const bool dcheck = getenv("HOS_ENG_PASS_DEFERRED_CHECK") && atoi(getenv("HOS_ENG_PASS_DEFERRED_CHECK")) != 0;
+        // (E6: a uniform update of this recording, not in guest memory until its end, over a range the job reads by address: the
+        // job would read the value from before it. HOS_ENG_PASS_UB_CHECK=0: not checked, as E4 had it)
+        static const bool ubcheck = !getenv("HOS_ENG_PASS_UB_CHECK") || atoi(getenv("HOS_ENG_PASS_UB_CHECK")) != 0;
+        if (job && ubcheck && job->nubo && ub_first_of_recording < ub_updates.size()) {
+            for (size_t u = ub_first_of_recording; u < ub_updates.size(); u++) {
+                const uint64_t a = ub_updates[u].dst, b = a + ub_updates[u].bytes.size();
+                for (uint32_t k = 0; k < job->nubo; k++)
+                    if (a < job->ubo[2 * k] + job->ubo[2 * k + 1] && job->ubo[2 * k] < b) return fall(EC_FB_UBUPD);
+            }
+        }
+        static const bool hz_all = getenv("HOS_ENG_PASS_HAZARD_ALL") && atoi(getenv("HOS_ENG_PASS_HAZARD_ALL")) != 0;   // (test: every bound word)
+        if (job && hz_all && draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size(), false, true) == 1) return fall(EC_FB_HAZARD);
         if (job && dcheck && job->ndeferred && draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size(), false, false) == 2)
             return fall(EC_FB_DEFERRED);
     }
@@ -2313,9 +2326,26 @@ bool eng_split_at(VkCommandBuffer& cmd, NvnState& s, uint32_t op, const uint8_t*
         if (all_inline == 2 && e.run_state == 0) draw_cmd_state_lost(), e.run_state = 2;
         return eng_count(EC_SPLIT_INLINE), false;
     }
+    {
+        static const uint64_t lv = getenv("HOS_ENG_SPLIT_LOGVIEW") ? strtoull(getenv("HOS_ENG_SPLIT_LOGVIEW"), nullptr, 0) : 0;
+        static int told = 0;
+        if (lv && j.view_key == lv && i == 0 && presents_now > 1500 && told++ < 12) {
+            uint32_t cntv = 0, inst = 0;
+            if (op == NOP_DRAW_IDX) { nvn_p_draw_idx di = payload<nvn_p_draw_idx>(a, avail); cntv = di.count, inst = di.instances; }
+            else if (op == NOP_DRAW) { nvn_p_draw dr = payload<nvn_p_draw>(a, avail); cntv = dr.count, inst = dr.instances; }
+            const BufferRef vr = gpu_buffer_bind(s.vbuf[0].address, 1, false);
+            logf("vk: e6 replay job %u draw 0: op %u count %u inst %u vb0 %#llx+%llu vb1 %#llx vp %.0f %.0f %.0f %.0f sc %d %d %d %d dr %.2f %.2f re %d rd %d buf %p+%llu",
+                 j.serial, op, cntv, inst, (unsigned long long)s.vbuf[0].address, (unsigned long long)s.vbuf[0].size, (unsigned long long)s.vbuf[1].address,
+                 s.viewport[0][0], s.viewport[0][1], s.viewport[0][2], s.viewport[0][3], s.scissor[0], s.scissor[1], s.scissor[2], s.scissor[3],
+                 s.depth_near, s.depth_far, (int)s.render_enabled, (int)s.raster_discard, (void*)vr.buffer, (unsigned long long)vr.offset);
+        }
+    }
     if (e.run_state == 0) {   // (the run's first draw op: executed here, in a rendering of the state's targets of the job's formats)
         EngPassFormats pf{};
-        if (draw_open_pass(cmd, s, !e.mixed, &pf) && eng_formats_equal(j.fmt, pf)) {
+        static const bool noexec = getenv("HOS_ENG_SPLIT_NOEXEC") && atoi(getenv("HOS_ENG_SPLIT_NOEXEC")) != 0;   // (bisection: covered draws dropped)
+        if (noexec) {
+            e.run_state = 1;
+        } else if (draw_open_pass(cmd, s, !e.mixed, &pf) && eng_formats_equal(j.fmt, pf)) {
             const VkCommandBuffer cb = j.segs[e.k].cb;
             vkCmdExecuteCommands(cmd, 1, &cb);
             draw_cmd_state_lost();
