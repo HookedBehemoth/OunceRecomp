@@ -432,7 +432,7 @@ this frame's. `RX_VK_NO_READBACK_WAIT=1`: standing 47 -> 60 fps (vsync cap), wal
 is and feeds is being traced (`readback.md`); the exposure meter's read must stay strict (white-flash race).
 
 1. *Done (73a798c, 0d50991: 48.8 -> 56.3 fps standing, 46.7 -> 54.6 walking).* **Readback wait per written range** (exposure meter strict). A/B with `HOS_NO_PACING=1`, walking, exposure checked.
-2. *Done (9aac6fe, compute a41a58c..419da13; off by default).* **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits; with compute, a driver-cold start is as fast as a warm one (Kokiri 17-18 s, HF 20-21 s). Left: the HF fps cost (hybrid with pipelines), whole-game binaries offline.
+2. *Done (9aac6fe, compute a41a58c..419da13; on by default since 2026-11-11, `RX_VK_SHADER_OBJECTS=0` for pipelines).* **Shader objects + binary cache** (`RX_VK_SHADER_OBJECTS=1`): removes the 15.9 s / 4.7 s pipeline waits; with compute, a driver-cold start is as fast as a warm one (Kokiri 17-18 s, HF 20-21 s). Left: the HF fps cost (hybrid with pipelines), whole-game binaries offline.
 3. *Done for the ranges (68fde05: captures 11.4 -> 4.2 MB a frame); mirrors of invalidated pools remain.* **Exact capture ranges** (69% of captured pages are outside pools) and no mirror for pools the game invalidates.
 4. *Done for a and b (on by default: turning 47.4 -> 53.7 fps); c and d behind switches, off (no gain measured).*
    **Transient targets**: per-texture invalidation instead of `destroy_gen`; a moved target takes over the image it
@@ -470,7 +470,8 @@ and the Presentation-Thread replay are fixed (`HOS_CORES=8` was slower).
 ## Status
 
 - 2026-11-10: dump extracted, lifted (295k functions), first Linux build. Pool census written.
-- 2026-11-10: shader objects (`RX_VK_SHADER_OBJECTS=1`, off by default; gpu/vk/vk_shader_object.cpp): graphics and native
+- 2026-11-11: shader objects on by default (the user: pipelines bring back the stutter at each new pipeline; the ~3 fps they cost in Hyrule Field is GPU work, for later). `RX_VK_SHADER_OBJECTS=0`: pipelines.
+- 2026-11-10: shader objects (`RX_VK_SHADER_OBJECTS=1`, off by default then; gpu/vk/vk_shader_object.cpp): graphics and native
   mesh programs as VkShaderEXT with all state dynamic, driver binaries kept in `hookshot_shader_objects.bin`, a prefetch thread
   fed by `nvnProgramSetShaders` (MKWVK_API_VERSION 13). Warm: 0 pipeline waits and 0 draws left out (pipelines: 400 waits,
   402 left out), same fps; driver-cold start 41 -> 23 s with binaries kept. Left: compute programs as shader objects, the

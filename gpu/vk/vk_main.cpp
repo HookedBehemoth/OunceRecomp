@@ -244,8 +244,9 @@ bool create_device() {
     optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, dev.stencil_export);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev.memory_budget);
     optional(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME, dev.view_2d_of_3d);
-    // (native-vk) RX_VK_SHADER_OBJECTS=1: graphics programs as shader objects (vk_shader_object.cpp); off by default
-    if (getenv("RX_VK_SHADER_OBJECTS") && atoi(getenv("RX_VK_SHADER_OBJECTS")) != 0)
+    // (native-vk) graphics and compute programs as shader objects (vk_shader_object.cpp): on by default, since pipelines
+    // stutter at every new state combination met in play; RX_VK_SHADER_OBJECTS=0: pipelines
+    if (!getenv("RX_VK_SHADER_OBJECTS") || atoi(getenv("RX_VK_SHADER_OBJECTS")) != 0)
         optional(VK_EXT_SHADER_OBJECT_EXTENSION_NAME, dev.shader_object);
     // (hookshot) on by default: with a marker before each draw and dispatch the device has not been lost (five
     // runs); without them it was, every run, shortly after OoT's first gameplay frames (nvlddmkm event 153; the
