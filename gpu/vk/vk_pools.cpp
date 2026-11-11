@@ -419,6 +419,7 @@ void vram_pool_made(uint64_t base, uint64_t size, uint32_t flags, uint64_t key) 
     for (const auto& [a, b] : runs) want += b - a;
     st_mixed_granules += (g1 - g0) - want;
     if (runs.empty()) return;
+    window_make(l0::window_of(base));   // (the first one also finds the VRAM memory type: the pools before any binding were left host)
     vpools.push_back(VPool{base, size, key, flags, {}, true, 0, {}});
     VPool* vp = &vpools.back();
     std::vector<One> binds;
