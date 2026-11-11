@@ -40,6 +40,7 @@ struct HosThread {
     /* (HOS_DUMP_FILE) how often it asked for its core number, the guest callers of its first and last asks, its time
        waiting for a core */
     int64_t core_asks, vc_wait_ns;
+    int vc_slot;   /* (the owner slot it holds: its core, or core and priority with HOS_VCORE_BY_PRIO) */
     uint64_t core_ask_lr, core_ask_last_lr;
     /* (hookshot) fibers: the context running now (NULL: ctx, the thread's own), the thread's host fiber once it
        switched to a guest fiber */
@@ -1210,7 +1211,21 @@ void hos_thread_log_handles(void) {
    core a thread holds. */
 #if !defined(__EMSCRIPTEN__)
 static SRWLOCK vc_lock = SRWLOCK_INIT;
-static HosThread *vc_owner[8];
+/* HOS_VCORE_BY_PRIO=1 (experiment): a core number is held per priority: threads of one core and different priorities
+   run at once, threads of one core and one priority one at a time. The engine's per-core data (it caches a one-core
+   thread's number at its start, work/assets/native/cores.md) is safe on Horizon only against threads it cannot be
+   preempted by mid-update, which are those of its own core and priority (Horizon does not time-slice equal
+   priorities, and a better thread may preempt it anywhere, so data shared across priorities must already be locked).
+   So this keeps the guarantee the game can rely on and lets the ~20 threads of core 1 run side by side. Owners are
+   indexed by vc_slot(core, priority) */
+static HosThread *vc_owner[8 * 64];
+static int vc_by_prio(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("HOS_VCORE_BY_PRIO") && atoi(getenv("HOS_VCORE_BY_PRIO")) > 0;
+    return on;
+}
+static int vc_slot(int c, int priority) { return vc_by_prio() ? c * 64 + (priority & 63) : c; }
+#define OWN(c, t) vc_owner[vc_slot((c), (t)->priority)]
 static HosThread *vc_queue[1024];
 static int vc_nq;
 static struct { int64_t takes, waits, wait_ns, max_ns, escapes, kicks, yields, lends, since; } vc_st;
@@ -1239,15 +1254,16 @@ static int vc_better(HosThread *a, HosThread *b) {
 /* a free core t may run on (its last one, its ideal one, then the lowest), or -1; holding vc_lock */
 static int vc_free_for(HosThread *t) {
     const unsigned m = vc_allowed(t);
-    if (t->vc_last > 0 && (m >> (t->vc_last - 1) & 1) && !vc_owner[t->vc_last - 1]) return t->vc_last - 1;
+    if (t->vc_last > 0 && (m >> (t->vc_last - 1) & 1) && !OWN(t->vc_last - 1, t)) return t->vc_last - 1;
     const int ideal = hos_thread_core(t);
-    if ((m >> ideal & 1) && !vc_owner[ideal]) return ideal;
+    if ((m >> ideal & 1) && !OWN(ideal, t)) return ideal;
     for (int c = 0; c < vc_cores(); c++)
-        if ((m >> c & 1) && !vc_owner[c]) return c;
+        if ((m >> c & 1) && !OWN(c, t)) return c;
     return -1;
 }
 static void vc_take(HosThread *t, int c) {
-    vc_owner[c] = t;
+    t->vc_slot = vc_slot(c, t->priority);
+    vc_owner[t->vc_slot] = t;
     t->vc_held = c + 1;
     t->vc_last = c + 1;
     t->vc_kick = 0;
@@ -1261,10 +1277,12 @@ static void vc_dequeue(HosThread *t) {
     t->vc_queued = 0;
 }
 /* core c is free: to the best waiter allowed on it; holding vc_lock */
-static void vc_grant(int c) {
+static void vc_grant(int c, int slot) {
     HosThread *best = NULL;
     for (int i = 0; i < vc_nq; i++)
-        if ((vc_allowed(vc_queue[i]) >> c & 1) && (!best || vc_better(vc_queue[i], best))) best = vc_queue[i];
+        if ((vc_allowed(vc_queue[i]) >> c & 1) && vc_slot(c, vc_queue[i]->priority) == slot &&
+            (!best || vc_better(vc_queue[i], best)))
+            best = vc_queue[i];
     if (!best) return;
     vc_dequeue(best);
     vc_take(best, c);
@@ -1287,9 +1305,9 @@ static int64_t vc_env_ns(const char *name, int64_t us) {
 /* HOS_VCORE_LEND_US=<us> (experiment, native-vk boot speed; 0: off): a waiter whose own cores have all been held that
    long takes any free core outside its mask. The loading screen had ~4.9 threads waiting for their cores on average
    while ~3.3 ran (work/assets/native/boot-speed.md); a free core is lent, still one thread per core number */
-static int vc_free_any(void) {
+static int vc_free_any(HosThread *t) {
     for (int c = 0; c < vc_cores(); c++)
-        if (!vc_owner[c]) return c;
+        if (!OWN(c, t)) return c;
     return -1;
 }
 static void vc_acquire(HosThread *t) {
@@ -1321,12 +1339,12 @@ static void vc_acquire(HosThread *t) {
         const unsigned m = vc_allowed(t);
         HosThread *worst = NULL;
         for (int k = 0; k < vc_cores(); k++) {
-            HosThread *h = vc_owner[k];
+            HosThread *h = OWN(k, t);
             if ((m >> k & 1) && h && h->priority > t->priority && (!worst || h->priority > worst->priority)) worst = h;
         }
         if (!worst && hos_now_ns() - t0 > slice)
             for (int k = 0; k < vc_cores() && !worst; k++)
-                if ((m >> k & 1) && vc_owner[k] && vc_owner[k]->priority == t->priority) worst = vc_owner[k];
+                if ((m >> k & 1) && OWN(k, t) && OWN(k, t)->priority == t->priority) worst = OWN(k, t);
         if (worst && !worst->vc_kick) {
             worst->vc_kick = worst->priority > t->priority ? 1 : 2;
             Ctx *rc = worst->run_ctx;   /* (a fiber's context while it runs one) */
@@ -1341,7 +1359,7 @@ static void vc_acquire(HosThread *t) {
             break;
         }
         const int64_t waited = hos_now_ns() - t0;
-        if (lend && waited > lend && (c = vc_free_any()) >= 0) {
+        if (lend && waited > lend && (c = vc_free_any(t)) >= 0) {
             vc_dequeue(t);
             vc_take(t, c);
             vc_st.lends++;
@@ -1358,8 +1376,8 @@ static void vc_acquire(HosThread *t) {
                 for (int k = 0; k < vc_cores() && len < 200; k++)
                     if (m >> k & 1)
                         len += snprintf(who + len, sizeof who - len, " core %d: %s (%d)%s;", k,
-                                        vc_owner[k] ? vc_owner[k]->name : "-", vc_owner[k] ? vc_owner[k]->priority : 0,
-                                        vc_owner[k] && vc_owner[k]->vc_kick ? " asked" : "");
+                                        OWN(k, t) ? OWN(k, t)->name : "-", OWN(k, t) ? OWN(k, t)->priority : 0,
+                                        OWN(k, t) && OWN(k, t)->vc_kick ? " asked" : "");
                 hos_log("vcores: %s (priority %d) ran without a core after %.1f ms:%s", t->name, t->priority, waited / 1e6, who);
             }
             break;
@@ -1376,10 +1394,10 @@ static void vc_release(HosThread *t) {
     if (!t->vc_held) return;
     AcquireSRWLockExclusive(&vc_lock);
     const int c = t->vc_held - 1;
-    vc_owner[c] = NULL;
+    vc_owner[t->vc_slot] = NULL;
     t->vc_held = 0;
     t->vc_kick = 0;
-    vc_grant(c);
+    vc_grant(c, t->vc_slot);
     ReleaseSRWLockExclusive(&vc_lock);
 }
 /* gives the core to a waiter allowed on it that is better than t (strict) or as good (a yield) */
@@ -1390,7 +1408,8 @@ static void vc_yield(HosThread *t, int strict) {
     int any = 0;
     for (int i = 0; i < vc_nq && !any; i++) {
         HosThread *w = vc_queue[i];
-        any = (vc_allowed(w) >> c & 1) && (strict ? w->priority < t->priority : w->priority <= t->priority);
+        any = (vc_allowed(w) >> c & 1) && vc_slot(c, w->priority) == t->vc_slot &&
+              (strict ? w->priority < t->priority : w->priority <= t->priority);
     }
     t->vc_kick = 0;
     if (any) vc_st.yields++;
@@ -1438,10 +1457,11 @@ void hos_vcore_dump(void) {
     if (!hos_vcores_on()) return;
     AcquireSRWLockExclusive(&vc_lock);
     const int64_t now = hos_now_ns();
-    for (int k = 0; k < vc_cores(); k++) {
+    for (int k = 0; k < vc_cores() * (vc_by_prio() ? 64 : 1); k++) {
         HosThread *h = vc_owner[k];
-        hos_log("vcores: core %d: %s (priority %d, mask %#llx)%s", k, h ? h->name : "-", h ? h->priority : 0,
-                h ? (unsigned long long)h->core_mask : 0ULL, h && h->vc_kick ? " asked" : "");
+        if (h || !vc_by_prio())
+            hos_log("vcores: core %d: %s (priority %d, mask %#llx)%s", vc_by_prio() ? k / 64 : k, h ? h->name : "-",
+                    h ? h->priority : 0, h ? (unsigned long long)h->core_mask : 0ULL, h && h->vc_kick ? " asked" : "");
     }
     for (int i = 0; i < vc_nq; i++)
         hos_log("vcores: waiting %.1f ms: %s (priority %d, mask %#llx, allowed %#x)", (now - vc_queue[i]->vc_since) / 1e6,
