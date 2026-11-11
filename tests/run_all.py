@@ -134,6 +134,7 @@ ARGS = {
     "tests/test_parallel_init_order.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_device_lost_exit.py": ["--cxx", "{cxx}"],
     "tests/test_mesh_unreachable_outputs.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
+    "tests/test_bda_emit.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_default_point_size.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_unsigned_image_types.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_depth_sample_types.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],

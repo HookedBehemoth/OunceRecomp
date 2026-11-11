@@ -45,6 +45,9 @@
 #include "vk_shader.h"
 #include "vk_shader_object.h"
 #include "vk_desc_heap.h"
+#include "vk_bda.h"
+#include "vk_pools.h"
+#include "layer0_windows.h"
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
@@ -651,8 +654,9 @@ VkFormat supported_vertex_format(VkFormat f) {
 }
 
 // ---- pipeline layouts and pipelines ----
-// (+ the guest page table's address, a task draw's first, and the fallback's two buffer addresses)
-constexpr uint32_t kPushSize = Shader::Backend::SPIRV::MESH_FALLBACK_PUSH_END;
+// (+ the guest page table's address, a task draw's first, the fallback's two buffer addresses, and RX_VK_DESC_HEAP_BDA's window
+// table)
+constexpr uint32_t kPushSize = Shader::Backend::SPIRV::PUSH_CONSTANTS_END;
 
 void ensure_layout(Program& p) {
     if (p.layout) return;
@@ -703,6 +707,7 @@ void ensure_layout(Program& p) {
                         follow_graphics) &&
                        st.info.uses_global_memory;
     for (const Stage& st : p.stages) p.uses_push |= (st.vk_stage & VK_SHADER_STAGE_TASK_BIT_EXT) != 0;   // (its first workgroup)
+    for (const Stage& st : p.stages) p.uses_push |= st.info.ssbo_bda;   // (RX_VK_DESC_HEAP_BDA: the window table's address)
     if (p.fallback) p.uses_push = true;   // (its records' and payloads' addresses)
     std::atomic_thread_fence(std::memory_order_release);   // (the layout last: a thread that sees it sees the rest)
     p.layout = layout;
@@ -2372,6 +2377,9 @@ struct DescWriter {
 TLS_OBJECT(dw, DescWriter)
 TLS_OBJECT(draw_sampled, std::vector<const Texture*>)   // (the textures the descriptors being built sample or store)
 TLS_OBJECT(gfx_sampled, std::vector<const Texture*>)    // (the last draw's: kept while its descriptors are reused)
+constexpr VkDeviceSize kBdaUnused = 1;   // (RX_VK_DESC_HEAP_BDA: a buffer info's range for "no descriptor": bda_unused_buffer)
+struct BdaVirtual { uint64_t lo, hi, delta; };
+thread_local BdaVirtual bda_virt{};   // (RX_VK_DESC_HEAP_BDA: the draw's virtual range, set by build_descriptors: bda_virtual)
 #ifndef VK_EXT_descriptor_heap
 void heap_recording_begun(int, uint64_t) {}
 #else
@@ -2595,6 +2603,7 @@ bool heap_fill(const NvnState& s, const Program& p, const HeapProgram& hp, uint8
         if (w.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             for (uint32_t k = 0; k < w.descriptorCount && bi < hp.buf_at.size(); k++, bi++) {
                 const VkDescriptorBufferInfo& b = w.pBufferInfo[k];
+                if (!b.buffer && b.range == kBdaUnused) continue;   // (RX_VK_DESC_HEAP_BDA: read through its address)
                 VkDeviceSize range = b.range;
                 if (b.buffer && range == VK_WHOLE_SIZE) range = 0;   // (no whole-buffer ranges here: a null descriptor)
                 desc_heap_encode_buffer(b.buffer, b.offset, range, w.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, block + hp.buf_at[bi]);
@@ -2980,8 +2989,56 @@ bool table_track_open(int logged, int seen, int unlimited) {
     return logged < 60 && (unlimited || seen < kTableTrackLooks);
 }
 
+/// (RX_VK_DESC_HEAP_BDA) a storage buffer at a virtual pool's address (from 1 TB: no window holds it) in a stage that reads it through
+/// its address: the draw's virtual range (pushed, bda_emit.h Pushed) becomes its run of the pool, as gpu_buffer_bind would bind it
+/// (a run that is contiguous in guest memory), with the distance to that memory's device address. One range a draw: a second
+/// one elsewhere is counted and reads the null window
+void bda_virtual(uint64_t base, uint64_t n) {
+    bda_count(BC_VIRTUAL);
+    if (bda_virt.lo <= base && base + n <= bda_virt.hi) return;
+    uint64_t avail = 0;
+    const uint64_t guest = host->gpu_ptr(base, &avail) && avail >= n ? host->gpu_guest(base) : 0;
+    const BufferRef r = guest ? layer0_buffer(guest, n) : BufferRef{};
+    if (!r.address || bda_virt.hi) {
+        bda_count(BC_VIRTUAL_LOST);
+        static int told;
+        if (told < 20) told++, logf("vk: storage buffer by address at %#llx+%#llx, a virtual pool's: %s", (unsigned long long)base,
+                                    (unsigned long long)n, bda_virt.hi ? "the draw has another virtual range (read as 0)" : "not bound (read as 0)");
+        return;
+    }
+    bda_virt = {base, base + std::min<uint64_t>(avail, l0::kMaxRange - (guest & (l0::kStride - 1))), r.address - base};
+}
+/// (RX_VK_DESC_HEAP_BDA) a read-only storage buffer of a stage that reads it through its address (Info::ssbo_bda): no descriptor
+/// and none of the classic block's guesses (bare, stretch, wide, tables are not ssbo_bda stages); only its declared range kept
+/// bound, as the classic binding would have bound it. Past it the shader reaches what is bound anyway, and 0 where nothing is
+/// (the windows' unbound pages: residencyNonResidentStrict). A range bound already costs a look at layer 0's granule bits
+void bda_storage_read(const NvnState& s, const Stage& st, uint32_t cbuf, uint32_t off, uint64_t salign) {
+    const uint64_t addr = stage_cbuf_word(s, st, cbuf, off) | (uint64_t)stage_cbuf_word(s, st, cbuf, off + 4) << 32;
+    bda_count(BC_SKIPPED);
+    if (!addr) return;
+    const uint64_t base = addr - (addr & (salign - 1));
+    const uint64_t size = stage_cbuf_word(s, st, cbuf, off + 8);
+    const uint64_t n = std::max<uint64_t>(((size + (addr - base)) + 3) & ~3ull, 16);
+    if (base >= (1ull << 40)) {   // (a virtual pool's: the draw's virtual range, its guest range bound by layer0_buffer there)
+        bda_virtual(base, n);
+        return;
+    }
+    if (layer0_ready(base, base + n)) return;
+    bda_count(BC_BOUND_NOW);
+    (void)gpu_buffer_bind(base, n, false);
+}
+/// (RX_VK_DESC_HEAP_BDA) the descriptor of a storage buffer the shader does not read through it: a null one (push descriptors),
+/// or in a heap draw none at all (heap_fill leaves its place in the ring block as it is: the shader never reads it)
+VkDescriptorBufferInfo bda_unused_buffer() {
+#ifdef VK_EXT_descriptor_heap
+    if (heap_build) return VkDescriptorBufferInfo{VK_NULL_HANDLE, 0, kBdaUnused};
+#endif
+    return VkDescriptorBufferInfo{dev.null_descriptor ? VK_NULL_HANDLE : zero_buffer, 0, dev.null_descriptor ? VK_WHOLE_SIZE : 16};
+}
+
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
+    bda_virt = {};
     dw().prog = &p;
 #ifdef VK_EXT_descriptor_heap
     heap_tex_i = 0;
@@ -3015,6 +3072,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
     };
     const uint64_t salign = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
     if (ubo_census_on()) ubo_census_begin();
+    static const bool bda_on_now = bda_on();
     for (const Stage& st : p.stages) {
         const Shader::Info& info = st.info;
         const int ns = st.nvn_stage;
@@ -3030,6 +3088,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             w.pBufferInfo = &dw().bufs[first];
             dw().writes.push_back(w);
         }
+        if (bda_on_now && !info.storage_buffers_descriptors.empty()) bda_count(info.ssbo_bda ? BC_STAGES : BC_CLASSIC);
         for (const auto& d : info.storage_buffers_descriptors) {
             FINE_SCOPE(FT_STORAGE);
             FINE_N(FC_SSBO_DESCS, d.count);
@@ -3037,6 +3096,19 @@ void build_descriptors(const NvnState& s, const Program& p) {
             const size_t first = dw().bufs.size();
             for (uint32_t k = 0; k < d.count; k++) {
                 const uint32_t off = d.cbuf_offset + k * 16;
+                if (info.ssbo_bda && !d.is_written) {   // (RX_VK_DESC_HEAP_BDA: the shader reads it through its address)
+                    bda_storage_read(s, st, d.cbuf_index, off, salign);
+                    dw().bufs.push_back(bda_unused_buffer());
+                    continue;
+                }
+                if (info.ssbo_bda) {   // (written: noted as before below; its descriptor is not read. A virtual one: the draw's range)
+                    bda_count(BC_WRITTEN);
+                    const uint64_t a = stage_cbuf_word(s, st, d.cbuf_index, off) |
+                                       (uint64_t)stage_cbuf_word(s, st, d.cbuf_index, off + 4) << 32;
+                    if (a >= (1ull << 40))
+                        bda_virtual(a & ~(salign - 1),
+                                    std::max<uint64_t>(((stage_cbuf_word(s, st, d.cbuf_index, off + 8) + (a & (salign - 1))) + 3) & ~3ull, 16));
+                }
                 if (d.count == 1 && d.cbuf_index == 0 && d.cbuf_offset == 0xff0) {   // (EvilOOT, RX_VK_MISS_LOG)
                     dw().bufs.push_back(miss_binding(p.key));
                     continue;
@@ -3649,6 +3721,13 @@ void push_bytes(uint8_t* data, const Program& p, const Targets* at, uint32_t fal
     {   // (guest memory's page table, for the pointers compute, task and mesh stages follow)
         static const uint64_t pages = memory_guest_pages();
         std::memcpy(data + Shader::Backend::SPIRV::GUEST_PAGES_PUSH_OFFSET, &pages, 8);
+    }
+    {   // (RX_VK_DESC_HEAP_BDA: the window table, for the stages whose storage buffers are read through addresses, and the draw's
+        // virtual range: bda_virtual)
+        static const uint64_t table = bda_table_address();
+        const uint64_t words[4] = {table, bda_virt.lo, bda_virt.hi, bda_virt.delta};
+        static_assert(Shader::Backend::SPIRV::WINDOW_TABLE_PUSH_OFFSET + sizeof words <= kPushSize, "the push range holds the words");
+        std::memcpy(data + Shader::Backend::SPIRV::WINDOW_TABLE_PUSH_OFFSET, words, sizeof words);
     }
     if (p.fallback_task) {
         std::memcpy(data + Shader::Backend::SPIRV::MESH_FIRST_PUSH_OFFSET, &fallback_first, sizeof fallback_first);

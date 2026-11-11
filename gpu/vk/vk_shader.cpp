@@ -94,6 +94,7 @@ void ptr_diag_log(uint64_t key, const char* kind) {
 }
 } // namespace
 #include "vk_shader.h"
+#include "vk_bda.h"
 
 namespace mkwvk {
 namespace {
@@ -543,6 +544,10 @@ Shader::Profile make_profile() {
     // driver; in the cache's stamp)
     if (const char* e = getenv("RX_VK_FRAG_SHUFFLE_FALLBACK")) p.has_broken_spirv_fragment_shuffle = e[0] == '1';
     p.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
+    // (native-vk, RX_VK_DESC_HEAP_BDA=1 with layer 0: storage buffers through device addresses where a stage allows it,
+    // Info::ssbo_bda; vk_bda.cpp. In the cache's stamp, as bda_on() decided it)
+    p.ssbo_bda = bda_on();
+    p.ssbo_bda_check = p.ssbo_bda && bda_check_on();
     return p;
 }
 
@@ -1068,6 +1073,8 @@ uint64_t disk_stamp() {
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)dev.sg32_stages};
     add(lanes, sizeof lanes);
+    const uint32_t bda = (profile().ssbo_bda ? 1u : 0u) | (profile().ssbo_bda_check ? 2u : 0u);   // (RX_VK_DESC_HEAP_BDA as decided)
+    add(&bda, sizeof bda);
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)
     const uint32_t abi[] = {(uint32_t)sizeof(Shader::Info), (uint32_t)sizeof(Program), (uint32_t)sizeof(std::vector<uint32_t>),
@@ -1093,7 +1100,7 @@ uint64_t disk_stamp() {
     // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
     // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "RX_VK_DESC_HEAP_BDA", "RX_VK_BDA_", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -1487,6 +1494,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
     const auto t0 = std::chrono::steady_clock::now();
     QuestionsNoted noted{p};
     ptr_diag_reset();
+    Shader::Backend::SPIRV::bda_check_id = (uint32_t)p.key;   // (RX_VK_BDA_CHECK: what this program's checked accesses record)
     try {
         Shader::Backend::Bindings bindings{};
         int questions = 0;

@@ -44,6 +44,7 @@
 #include "vk_internal.h"
 #include "vk_pools.h"
 #include "layer0_windows.h"
+#include "vk_bda.h"
 
 namespace mkwvk {
 namespace {
@@ -155,6 +156,7 @@ Window* window_make(uint32_t k) {   // (mu held)
     w.address = vkGetBufferDeviceAddress(dev.device, &da);
     w.buffer = b;
     st_windows++;
+    bda_window_made(k, w.address);   // (RX_VK_DESC_HEAP_BDA: its entry in the shaders' window table)
     return &w;
 }
 
@@ -712,6 +714,16 @@ void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t ke
             if (keep_s <= 0) vpool_release(it);
             break;
         }
+}
+
+uint64_t layer0_window_address(uint32_t k) {
+    if (k >= l0::kWindows || !layer0_on()) return 0;
+    std::lock_guard lk(mu);
+    return windows[k].address;
+}
+
+bool layer0_ready(uint64_t lo, uint64_t hi) {
+    return ready && hi > lo && hi <= guest_bytes && ready->all(lo, hi);
 }
 
 bool layer0_bound(uint64_t lo, uint64_t hi) {   // (bound or being imported: a dma-buf may pin its pages any moment now)

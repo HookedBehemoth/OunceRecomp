@@ -28,6 +28,10 @@ bool layer0_bound(uint64_t lo, uint64_t hi);
 void layer0_fill_table();
 /// At each submission's start: counts every 600
 void layer0_submission();
+/// (RX_VK_DESC_HEAP_BDA, vk_bda.cpp) window k's device address, 0 while it is not made (a window made later tells
+/// bda_window_made); and whether every granule of guest [lo, hi) is bound, without the lock
+uint64_t layer0_window_address(uint32_t k);
+bool layer0_ready(uint64_t lo, uint64_t hi);
 
 // (vk_memory.cpp, for vk_pools.cpp)
 VkDeviceMemory memory_guest_dma_buf(uint64_t lo, uint64_t size);

@@ -43,6 +43,9 @@ Id StoragePointer(EmitContext& ctx, const StorageTypeDefinition& type_def,
     if (!binding.IsImmediate()) {
         throw NotImplementedException("Dynamic storage buffer indexing");
     }
+    if (ctx.ssbo_bda) {
+        throw LogicError("Storage buffer atomic without its device address path");
+    }
     const Id ssbo{ctx.ssbos[binding.U32()].*member_ptr};
     const Id index{StorageIndex(ctx, offset, element_size)};
     return ctx.OpAccessChain(type_def.element, ssbo, ctx.u32_zero_value, index);
@@ -63,6 +66,11 @@ Id SharedAtomicU32(EmitContext& ctx, Id offset, Id value,
 
 Id StorageAtomicU32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id value,
                     Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
+    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA: through the buffer's device address; checked: 0 out of range)
+        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32, sizeof(u32))};
+        const auto [scope, semantics]{AtomicArgs(ctx)};
+        return Bda::Result(ctx, a, ctx.U32[1], (ctx.*atomic_func)(ctx.U32[1], a.pointer, scope, semantics, value));
+    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32, &StorageDefinitions::U32, binding,
                                     offset, sizeof(u32))};
     const auto [scope, semantics]{AtomicArgs(ctx)};
@@ -77,6 +85,11 @@ Id StorageAtomicU64(EmitContext& ctx, const IR::Value& binding, const IR::Value&
         return ctx.ConstantNull(ctx.U64);
     }
 
+    if (ctx.profile.support_int64_atomics && ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U64, sizeof(u64))};
+        const auto [scope, semantics]{AtomicArgs(ctx)};
+        return Bda::Result(ctx, a, ctx.U64, (ctx.*atomic_func)(ctx.U64, a.pointer, scope, semantics, value));
+    }
     if (ctx.profile.support_int64_atomics) {
         const Id pointer{StoragePointer(ctx, ctx.storage_types.U64, &StorageDefinitions::U64,
                                         binding, offset, sizeof(u64))};
@@ -84,6 +97,12 @@ Id StorageAtomicU64(EmitContext& ctx, const IR::Value& binding, const IR::Value&
         return (ctx.*atomic_func)(ctx.U64, pointer, scope, semantics, value);
     }
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
+    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
+        const Id original_value{ctx.OpBitcast(ctx.U64, Bda::Load(ctx, a, ctx.U32[2]))};
+        Bda::Store(ctx, a, ctx.OpBitcast(ctx.U32[2], (ctx.*non_atomic_func)(ctx.U64, value, original_value)));
+        return original_value;
+    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32x2, &StorageDefinitions::U32x2,
                                     binding, offset, sizeof(u32[2]))};
     const Id original_value{ctx.OpBitcast(ctx.U64, ctx.OpLoad(ctx.U32[2], pointer))};
@@ -100,6 +119,12 @@ Id StorageAtomicU32x2(EmitContext& ctx, const IR::Value& binding, const IR::Valu
     }
 
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
+    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
+        const Id original_value{Bda::Load(ctx, a, ctx.U32[2])};
+        Bda::Store(ctx, a, (ctx.*non_atomic_func)(ctx.U32[2], value, original_value));
+        return original_value;
+    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32x2, &StorageDefinitions::U32x2,
                                     binding, offset, sizeof(u32[2]))};
     const Id original_value{ctx.OpLoad(ctx.U32[2], pointer)};
@@ -250,6 +275,12 @@ Id EmitStorageAtomicExchange32(EmitContext& ctx, const IR::Value& binding, const
 
 Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                                       Id comparator, Id value) {   // (hookshot: ATOMG.CAS)
+    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32, sizeof(u32))};
+        const auto [scope, semantics]{AtomicArgs(ctx)};
+        return Bda::Result(ctx, a, ctx.U32[1],
+                           ctx.OpAtomicCompareExchange(ctx.U32[1], a.pointer, scope, semantics, semantics, value, comparator));
+    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32, &StorageDefinitions::U32, binding,
                                     offset, sizeof(u32))};
     const auto [scope, semantics]{AtomicArgs(ctx)};
@@ -306,6 +337,11 @@ Id EmitStorageAtomicXor64(EmitContext& ctx, const IR::Value& binding, const IR::
 
 Id EmitStorageAtomicExchange64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                                Id value) {
+    if (ctx.profile.support_int64_atomics && ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U64, sizeof(u64))};
+        const auto [scope, semantics]{AtomicArgs(ctx)};
+        return Bda::Result(ctx, a, ctx.U64, ctx.OpAtomicExchange(ctx.U64, a.pointer, scope, semantics, value));
+    }
     if (ctx.profile.support_int64_atomics) {
         const Id pointer{StoragePointer(ctx, ctx.storage_types.U64, &StorageDefinitions::U64,
                                         binding, offset, sizeof(u64))};
@@ -313,6 +349,12 @@ Id EmitStorageAtomicExchange64(EmitContext& ctx, const IR::Value& binding, const
         return ctx.OpAtomicExchange(ctx.U64, pointer, scope, semantics, value);
     }
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
+    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
+        const Id original{ctx.OpBitcast(ctx.U64, Bda::Load(ctx, a, ctx.U32[2]))};
+        Bda::Store(ctx, a, ctx.OpBitcast(ctx.U32[2], value));
+        return original;
+    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32x2, &StorageDefinitions::U32x2,
                                     binding, offset, sizeof(u32[2]))};
     const Id original{ctx.OpBitcast(ctx.U64, ctx.OpLoad(ctx.U32[2], pointer))};
@@ -363,6 +405,12 @@ Id EmitStorageAtomicXor32x2(EmitContext& ctx, const IR::Value& binding, const IR
 Id EmitStorageAtomicExchange32x2(EmitContext& ctx, const IR::Value& binding,
                                  const IR::Value& offset, Id value) {
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
+    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
+        const Id original{Bda::Load(ctx, a, ctx.U32[2])};
+        Bda::Store(ctx, a, value);
+        return original;
+    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32x2, &StorageDefinitions::U32x2,
                                     binding, offset, sizeof(u32[2]))};
     const Id original{ctx.OpLoad(ctx.U32[2], pointer)};

@@ -53,6 +53,7 @@
 #include "vk_internal.h"
 #include "vk_shader_object.h"
 #include "vk_desc_heap.h"
+#include "vk_bda.h"
 #include "vk_timelines.h"
 #include "vk_l1_census.h"   // (RX_VK_L1_CENSUS: barriers against hazards, the replay's time by op)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -3207,6 +3208,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                                        sh, crop);
         texture_frame(completed());
         desc_heap_frame();
+        bda_frame();   // (RX_VK_DESC_HEAP_BDA: RX_VK_BDA_CHECK's misses, the counters)
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;

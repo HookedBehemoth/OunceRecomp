@@ -113,6 +113,10 @@ struct Profile {
     bool has_broken_robust{};
 
     u64 min_ssbo_alignment{};
+    /// (hookshot, RX_VK_DESC_HEAP_BDA=1 with layer 0) storage buffers through device addresses where a stage allows it
+    /// (Info::ssbo_bda); ssbo_bda_check (RX_VK_BDA_CHECK=1): each such access checked against its buffer's size
+    bool ssbo_bda{};
+    bool ssbo_bda_check{};
     u32 max_user_clip_distances{};
 
     bool SupportsSubgroupStage(Stage stage) const {
