@@ -243,9 +243,9 @@ void reads_of(const NvnState& s, const Deferred& d, const Program& p, int ncolor
 
 // ---- the jobs: a ring by serial (kRing jobs: ~80 frames of 102) ----
 enum Why { WHY_OK, WHY_NO_PASS, WHY_NO_PROG, WHY_PROG_NOT_READY, WHY_DRAW_KIND, WHY_VERTEX_MEM, WHY_INDEX_MEM, WHY_OPS, WHY_POOL, WHY_DESCRIPTORS,
-           WHY_NOT_RECORDED, WHY_N };
+           WHY_NOT_RECORDED, WHY_GATED, WHY_N };
 const char* const kWhy[WHY_N] = {"recorded", "no pass formats", "program not seen", "program not ready", "draw kind", "vertex memory",
-                               "index memory", "ops not taken", "command pool full", "descriptors", "not recorded"};
+                               "index memory", "ops not taken", "command pool full", "descriptors", "not recorded", "draws left out by a condition"};
 constexpr uint32_t kRing = 8192;
 struct Job {
     std::atomic<uint32_t> serial{0};   // (0 while it is written)
@@ -400,7 +400,7 @@ struct Rec {
     uint8_t types[8]{};
     bool first = true, have_fmt = false;
     uint32_t why = WHY_OK;
-    uint32_t ndraws = 0;
+    uint32_t ndraws = 0, gated = 0;
     void fail(uint32_t w) {
         if (why == WHY_OK) why = w;
     }
@@ -423,7 +423,11 @@ void note_bind(Walk& w, int what, int stage, int first, int n, const uint64_t* h
 
 void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     const NvnState& s = w.s;
-    if (!s.render_enabled || s.raster_discard) return void(add(C_DRAWS_SKIPPED));   // (as the replay leaves them out)
+    if (!s.render_enabled || s.raster_discard) {   // (as the replay leaves them out; a condition read now may read otherwise there)
+        add(C_DRAWS_SKIPPED);
+        if (!s.render_enabled) r.gated++;
+        return;
+    }
     if (op != NOP_DRAW && op != NOP_DRAW_IDX) return r.fail(WHY_DRAW_KIND);
     nvn_p_draw dr{};
     nvn_p_draw_idx di{};
@@ -1039,6 +1043,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
         if (vkBeginCommandBuffer(r.cb, &bi) != VK_SUCCESS) r.cb = VK_NULL_HANDLE, r.why = WHY_POOL;
     }
     walk_records(w, &r, rec, rec + bytes);
+    if (r.why == WHY_OK && r.gated) r.why = WHY_GATED;   // (E5's conditional rendering, not a guess made at record time)
     if (r.cb) vkEndCommandBuffer(r.cb);
     uniq(w.tex), uniq(w.deferred);
     // (published in the ring before the handle: the replay meets the job's records after this returns)
