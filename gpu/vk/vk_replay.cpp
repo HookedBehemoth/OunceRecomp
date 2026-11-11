@@ -2051,6 +2051,7 @@ bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t
             return fall(EC_FB_ABORT);
         }
     }
+    if (!self) draw_job_uses(job->tex, job->ntex);   // (E3's job: its textures kept alive and its heap entries stamped, as draws do)
     vkCmdExecuteCommands(cmd, 1, &cb);
     draw_cmd_state_lost();
     if (!mixed) end_pass(cmd), eng_count(EC_RESTARTS);   // (its rendering: the next inline draw begins another)

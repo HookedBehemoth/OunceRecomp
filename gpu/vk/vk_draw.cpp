@@ -9730,4 +9730,33 @@ int draw_tex_check(const uint32_t* tex, uint32_t n, bool make) {
     }
     return 0;
 }
+/// (E4) an executed host job's textures used by this recording, as its draws would have: each touched once (its age: not evicted
+/// while the job samples it), and with the heap its entries stamped with this recording (a later rewrite of one goes by GPU copy,
+/// after the job, not in place under it)
+void draw_job_uses(const uint32_t* tex, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        if (!tex[i]) continue;
+        nvn_tex t;
+        nvn_view v;
+        bool hv = false;
+        if (!texture_of((int)(tex[i] & 0xFFFFF), &t, &v, &hv)) continue;
+        Texture* x = texture_find(&t);
+        if (x && !texture_touch_quick(x, true)) {
+            ParLock lk;
+            texture_touch(x, true);
+        }
+#ifdef VK_EXT_descriptor_heap
+        if (desc_heap_on()) {
+            const uint32_t slot = tex[i] & 0xFFFFF, sid = tex[i] >> 20;
+            if (slot < kHeapSlots)
+                for (uint32_t r = 0; r < kHeapRegions; r++) {
+                    HeapEntry& e = desc_heap_entry(r, slot);
+                    if (e.valid) desc_heap_use(e);
+                }
+            desc_heap_use(desc_heap_sampler_entry(false, sid));
+            desc_heap_use(desc_heap_sampler_entry(true, sid));
+        }
+#endif
+    }
+}
 } // namespace mkwvk
