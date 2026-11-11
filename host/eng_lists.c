@@ -234,6 +234,7 @@ static int decode(bld *b, const uint8_t *p, const uint8_t *end, int depth) {
                 if (v.first + i >= 0) b->vtx.vbuf[v.first + i] = v.r[i], b->vtx.vbuf_mask |= (uint16_t)(1u << (v.first + i));
             break;
         }
+        case NOP_ENG: break;   /* (E4/E6's marks: no GPU work, no state) */
         case NOP_DRAW: b->draw.op = NOP_DRAW; PAYLOAD(nvn_p_draw, a, avail, b->draw.u.d); break;
         case NOP_DRAW_IDX: b->draw.op = NOP_DRAW_IDX; PAYLOAD(nvn_p_draw_idx, a, avail, b->draw.u.di); break;
         case NOP_DRAW_MESH: b->draw.op = NOP_DRAW_MESH; PAYLOAD(nvn_p_draw_mesh, a, avail, b->draw.u.dm); break;

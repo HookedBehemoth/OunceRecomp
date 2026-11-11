@@ -63,6 +63,7 @@ enum EngCount {
     EC_N
 };
 void eng_count(int c, int64_t n = 1);
+int64_t eng_count_get(int c);   // (E6's measurement: a counter now)
 void eng_pass_result(uint64_t view_key, bool executed);   // (the pass table's row: its job ran from a secondary or not)
 void eng_abort_reason(const char* why);   // (self-test aborts by what left the pass, logged with the counters)
 void eng_pass_report(double frames);      // (every 120 presents, with the frame statistics)

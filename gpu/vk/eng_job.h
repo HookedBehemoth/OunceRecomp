@@ -44,6 +44,10 @@ struct EngJob {
 const EngJob* eng_job_lookup(uint64_t slot_handle);
 /// Command buffers reused after the GPU passed them
 void eng_job_retire_through(uint64_t replay_value);
+/// (E6's measurement, HOS_ENG_PROF) why the job under a slot handle has no command buffer: its verdict (0 = recorded), -1 none
+/// there; the verdict's name
+int eng_job_why(uint64_t slot_handle);
+const char* eng_job_why_name(int why);
 
 // ---- the rest: E3's own (the host's entry, the replay's hooks, vk_draw.cpp's state for a job's draw) ----
 bool eng_job_on();        // HOS_ENG_JOBS=1 (with RX_VK_DESC_HEAP=1 and shader objects)

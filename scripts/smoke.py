@@ -188,8 +188,8 @@ def main():
                     d = bin(h ^ gh).count("1")
                     why = (d, "hash distance %d" % d if d > HASH_BAD else None)
                 best = why if best is None or why[0] < best[0] else best
-            if best[0] < 98:
-                worst = max(worst, (best[0], p))
+            if best[0] < 98 and (worst[1] is None or best[0] > worst[0]):
+                worst = (best[0], p)
             if best[1]:
                 bad.append((p, best[1]))
         missing = sorted(p for p in set(gs) - set(sh) if p >= SKIP_BEFORE)

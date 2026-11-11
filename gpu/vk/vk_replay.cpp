@@ -1123,6 +1123,159 @@ bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t 
 thread_local bool eng_cond_seen = false;    // (E4 self-test: a render condition met inside the job being recorded)
 thread_local bool eng_state_only = false;   // (E4: an executed E3 job's records walked for their state: no draws)
 
+// ---- (native-vk E6's measurement, HOS_ENG_PROF=1) the serial replay's time split by where it is spent: outside the layer lists,
+// each layer list's own records, the job calls (scan, checks, execute), executed jobs' state walks, fallen-back jobs by why (E4's
+// reason, and for "no host job" E3's verdict), each by op class; and the layer lists' own records by the call site of the handle
+// they came from (host/nvn_native.c marks every other call of a non-job recording, NVN_ENG_OTHER_*). Exclusive: the time from one
+// op's start to the next op's start (or the replay's return) is the op's. Read once; off: one test of a constant per op ----
+namespace eprof {
+bool on() {
+    static const bool v = getenv("HOS_ENG_PROF") && atoi(getenv("HOS_ENG_PROF")) != 0;
+    return v;
+}
+enum Cls { K_DRAW, K_PKT, K_DISPATCH, K_CLEAR, K_BARRIER, K_TARGETS, K_SYNC, K_COPY, K_REPORT, K_UBO, K_STATE, K_MARK, K_N };
+const char* const kCls[K_N] = {"draw", "packet", "dispatch", "clear", "barrier", "targets", "sync", "copy", "report/cond", "ub update",
+                               "state", "marks"};
+constexpr int kLayers = 10, kWhys = 16;
+enum Ctx { X_OUT, X_LAYER0, X_CALL = X_LAYER0 + kLayers, X_WALK, X_FB_RES, X_FB_HAZ, X_FB_FMT, X_FB_OTHER, X_FB_E3, X_N = X_FB_E3 + kWhys + 1 };
+int64_t ns[X_N][K_N], cnt[X_N][K_N], jobs[X_N];
+struct Site { int64_t ns = 0, draws = 0, dispatches = 0, calls = 0; int layer = -1; };
+std::unordered_map<uint32_t, Site> sites;
+struct PState { int layer = -1, fb = -1; uint32_t site[8]; int nsite = 0; };
+std::unordered_map<const NvnState*, PState> states;   // (per queue state: a replay suspended at a wait goes on later)
+PState* ps = nullptr;
+int depth = 0;
+int cur_x = -1, cur_k = 0;
+uint32_t cur_site = 0;
+int64_t t_last = 0;
+inline void tick(int x, int k, uint32_t site) {
+    const int64_t now = prof_now();
+    if (cur_x >= 0) {
+        ns[cur_x][cur_k] += now - t_last;
+        if (cur_site) sites[cur_site].ns += now - t_last;
+    }
+    cur_x = x, cur_k = k, cur_site = site, t_last = now;
+}
+struct Guard {   // (a replay() call: the op it runs inside resumes at its return)
+    int x, k;
+    uint32_t site;
+    PState* was;
+    bool live;
+    Guard(const NvnState& s, bool serial) : x(cur_x), k(cur_k), site(cur_site), was(ps), live(on() && serial) {
+        if (!live) return;
+        if (!depth++) ps = &states[&s];
+    }
+    ~Guard() {
+        if (!live) return;
+        tick(x, k, site);
+        if (!--depth) ps = nullptr;
+        else ps = was;
+    }
+};
+int cls_of(uint32_t op) {
+    switch (op) {
+    case NOP_DRAW: case NOP_DRAW_IDX: case NOP_DRAW_INDIRECT: case NOP_DRAW_MESH: return K_DRAW;
+    case NOP_PKT: return K_PKT;
+    case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: return K_DISPATCH;
+    case NOP_CLEAR_COLOR: case NOP_CLEAR_DS: case NOP_CLEAR_TEX: case NOP_CLEAR_BUF: return K_CLEAR;
+    case NOP_BARRIER: return K_BARRIER;
+    case NOP_SET_RT: return K_TARGETS;
+    case NOP_SIGNAL_EVENT: case NOP_WAIT_EVENT: case NOP_WAIT_FENCE: return K_SYNC;
+    case NOP_COPY_B2B: case NOP_COPY_B2T: case NOP_COPY_T2B: case NOP_COPY_T2T: return K_COPY;
+    case NOP_REPORT_COUNTER: case NOP_RESET_COUNTER: case NOP_RENDER_COND: return K_REPORT;
+    case NOP_UPDATE_UB: return K_UBO;
+    case NOP_ENG: case NOP_JOB: case NOP_BEGIN: case NOP_END: case NOP_CALL: case NOP_JUMP: return K_MARK;
+    default: return K_STATE;
+    }
+}
+/// At an op's start (serial replay only)
+inline void op(uint32_t op, const uint8_t* a, uint32_t avail) {
+    int x;
+    const int k = cls_of(op);
+    if (op == NOP_ENG && ps) {
+        const auto e = payload<nvn_p_eng>(a, avail);
+        if (e.kind == NVN_ENG_CALL_BEGIN && e.site == 0x807cd418u) ps->layer = (int)(uint32_t)e.b, ps->nsite = 0;
+        else if (e.kind == NVN_ENG_CALL_END && e.site == 0x807cd418u) ps->layer = -1, ps->nsite = 0;
+        else if (e.kind == NVN_ENG_CALL_END) ps->fb = -1;   // (a job's end: its fallback, if it was one, is over)
+        else if (e.kind == NVN_ENG_OTHER_BEGIN && ps->fb < 0 && !eng_state_only) {
+            if (ps->nsite < 8) ps->site[ps->nsite] = e.site;
+            ps->nsite++;
+            Site& st = sites[e.site];
+            st.calls++;
+            st.layer = ps->layer;
+        } else if (e.kind == NVN_ENG_OTHER_END && ps->fb < 0 && !eng_state_only && ps->nsite > 0) ps->nsite--;
+        if (e.kind == NVN_ENG_CALL_BEGIN && e.site != 0x807cd418u) return tick(X_CALL, K_MARK, 0);
+    }
+    uint32_t site = 0;
+    if (eng_state_only) x = X_WALK;
+    else if (ps && ps->fb >= 0) x = ps->fb;
+    else {
+        x = ps && ps->layer >= 0 ? X_LAYER0 + std::min(ps->layer, kLayers - 1) : X_OUT;
+        if (ps && ps->nsite > 0) site = ps->site[std::min(ps->nsite, 8) - 1];
+    }
+    cnt[x][k]++;
+    if (site && k == K_DRAW) sites[site].draws++;
+    if (site && k == K_DISPATCH) sites[site].dispatches++;
+    tick(x, k, site);
+}
+/// A job call fell back: its records that follow are the fallback's (reason: E4's count that moved; E3's verdict for no host job)
+void fell_back(int x) {
+    if (ps) ps->fb = x;
+    jobs[x]++;
+}
+void report(double frames) {
+    if (!on()) return;
+    static int64_t lns[X_N][K_N], lcnt[X_N][K_N], ljobs[X_N];
+    static std::unordered_map<uint32_t, Site> lsites;
+    const auto name = [](int x, char* b, size_t n) -> const char* {
+        if (x == X_OUT) return "outside the layer lists";
+        if (x >= X_LAYER0 && x < X_CALL) return snprintf(b, n, "layer list %d own", x - X_LAYER0), b;
+        if (x == X_CALL) return "job calls (scan, checks, execute)";
+        if (x == X_WALK) return "executed jobs' state walks";
+        if (x == X_FB_RES) return "fallback: not resident";
+        if (x == X_FB_HAZ) return "fallback: binds an attachment";
+        if (x == X_FB_FMT) return "fallback: formats";
+        if (x == X_FB_OTHER) return "fallback: other";
+        return snprintf(b, n, "fallback: no host job: %s", eng_job_why_name(x - X_FB_E3 - 1)), b;
+    };
+    double total = 0;
+    for (int x = 0; x < X_N; x++)
+        for (int k = 0; k < K_N; k++) total += (double)(ns[x][k] - lns[x][k]);
+    logf("eng prof: a frame: %.2f ms in the serial replay's ops", total / frames * 1e-6);
+    for (int x = 0; x < X_N; x++) {
+        double t = 0;
+        for (int k = 0; k < K_N; k++) t += (double)(ns[x][k] - lns[x][k]);
+        if (t / frames < 1e3) continue;   // (under 1 us a frame)
+        char nb[96], line[1200];
+        int n = snprintf(line, sizeof line, "eng prof: %s: %.3f ms", name(x, nb, sizeof nb), t / frames * 1e-6);
+        if (jobs[x] - ljobs[x]) n += snprintf(line + n, sizeof line - n, ", %.1f jobs", (jobs[x] - ljobs[x]) / frames);
+        for (int k = 0; k < K_N && n < (int)sizeof line - 80; k++) {
+            const int64_t c = cnt[x][k] - lcnt[x][k];
+            if (!c) continue;
+            n += snprintf(line + n, sizeof line - n, "; %s %.3f (%.1f)", kCls[k], (ns[x][k] - lns[x][k]) / frames * 1e-6, c / frames);
+        }
+        logf("%s", line);
+    }
+    std::vector<std::pair<double, uint32_t>> top;
+    for (const auto& [site, st] : sites) {
+        const Site& l = lsites[site];
+        if (st.ns - l.ns > 0) top.push_back({(double)(st.ns - l.ns), site});
+    }
+    std::sort(top.rbegin(), top.rend());
+    char line[1600];
+    int n = snprintf(line, sizeof line, "eng prof: the layer lists' own records by call site (ms, draws, dispatches, calls a frame):");
+    for (size_t i = 0; i < top.size() && i < 16 && n < (int)sizeof line - 100; i++) {
+        const Site& st = sites[top[i].second];
+        const Site& l = lsites[top[i].second];
+        n += snprintf(line + n, sizeof line - n, " %#x (L%d) %.3f %.1f %.1f %.1f;", top[i].second, st.layer, top[i].first / frames * 1e-6,
+                      (st.draws - l.draws) / frames, (st.dispatches - l.dispatches) / frames, (st.calls - l.calls) / frames);
+    }
+    logf("%s", line);
+    std::memcpy(lns, ns, sizeof ns), std::memcpy(lcnt, cnt, sizeof cnt), std::memcpy(ljobs, jobs, sizeof jobs);
+    lsites = sites;
+}
+} // namespace eprof
+
 /// The records from p (inside the calls from_calls names) up to end (inside end_calls) or the END they are in
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr,
             const CallStack* from_calls = nullptr, const CallStack* end_calls = nullptr) {
@@ -1139,6 +1292,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
     static thread_local NvnState* eng_was = nullptr;
     static thread_local NvnState* eng_got = nullptr;
     CallStack calls = from_calls ? *from_calls : kNoCalls;
+    const bool ep = eprof::on() && mode == Mode::Serial;   // (HOS_ENG_PROF: the split of this time)
+    eprof::Guard ep_guard(s, ep);
     for (;;) {
         if (eng_end && p == eng_end && calls.depth == eng_depth) {   // (HOS_ENG_LISTS_CHECK: the records' end)
             eng_compare(s, *eng_got, *eng_was, *eng_pkt, eng_cap);
@@ -1152,6 +1307,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         const uint32_t avail = h.size - 8;
         const bool l1c_op = l1c::on && !dry && !worker;   // (RX_VK_L1_CENSUS: this op's time and what its command touches)
         if (eng_job_replay_active()) eng_job_replay_op((int)h.op);
+        if (ep) eprof::op(h.op, a, avail);
         const int64_t l1c_t0 = l1c_op ? (l1c::op_begin(h.op), prof_now()) : 0;
         switch (h.op) {
         case NOP_END:   // (the end of a called list: on after its call; of the command buffer: done)
@@ -1947,8 +2103,20 @@ bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t
 bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
                   const uint8_t** resume) {
     uint64_t view = 0;
+    static const bool ep = eprof::on();
+    int64_t before[EC_N];
+    if (ep) for (int i = 0; i < EC_N; i++) before[i] = eng_count_get(i);
     const bool ran = eng_job_call_(cmd, s, p, size, e, calls, resume, &view);
     if (view) eng_pass_result(view, ran);
+    if (ep && !ran && e.site != 0x807cd418u) {   // (HOS_ENG_PROF: the fallback's records follow, by why)
+        const auto moved = [&](int c) { return eng_count_get(c) != before[c]; };
+        int x = eprof::X_FB_OTHER;
+        if (moved(EC_FB_RESIDENT)) x = eprof::X_FB_RES;
+        else if (moved(EC_FB_HAZARD)) x = eprof::X_FB_HAZ;
+        else if (moved(EC_FB_FORMATS)) x = eprof::X_FB_FMT;
+        else if (moved(EC_FB_NO_JOB)) x = eprof::X_FB_E3 + 1 + std::clamp(eng_job_why(e.a), -1, eprof::kWhys - 2);
+        eprof::fell_back(x);
+    }
     return ran;
 }
 bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
@@ -3797,6 +3965,8 @@ void log_frame_stats() {
         }
         eng_lists_report(120.0);
         eng_job_report(120.0);
+        static int eprof_n = 0;
+        if (++eprof_n % 5 == 0) eprof::report(600.0);   // (HOS_ENG_PROF: every 600 presents)
         int64_t mirrors = 0, sync_b = 0, sync_c = 0, wb_b = 0;
         uint64_t mirror_mb = 0;
         memory_stats(&mirrors, &mirror_mb, &sync_b, &sync_c, &wb_b);

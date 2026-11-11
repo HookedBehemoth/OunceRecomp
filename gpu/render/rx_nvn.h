@@ -234,8 +234,9 @@ void rx_eng_job_deferred(uint32_t serial, uint32_t bind, const uint64_t *h, int 
 /* (native-vk engine cut E4, HOS_ENG_PASSES=1) marks for the replay, no GPU work: around each handle a job-call site calls
    (CALL_BEGIN before the callee's records, CALL_END after them: a = the handle, b = index | count << 32, site = the guest
    return address of the CallCommands), and first in a render job's own recording (JOB: a = its view record, b = its cmd
-   slot; f_80084de0). The game's command memory accounting leaves them out */
-enum { NVN_ENG_CALL_BEGIN = 1, NVN_ENG_CALL_END = 2, NVN_ENG_JOB = 3 };
+   slot; f_80084de0). The game's command memory accounting leaves them out. (E6's measurement, HOS_ENG_PROF=1: OTHER_BEGIN /
+   OTHER_END the same around every other handle a recording that is not a job calls, for the replay's split by call site) */
+enum { NVN_ENG_CALL_BEGIN = 1, NVN_ENG_CALL_END = 2, NVN_ENG_JOB = 3, NVN_ENG_OTHER_BEGIN = 4, NVN_ENG_OTHER_END = 5 };
 typedef struct { uint32_t kind, site; uint64_t a, b; } nvn_p_eng;
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
    first index, base vertex, base instance; arrays: count, instances, first, base instance), as many as the 32-bit

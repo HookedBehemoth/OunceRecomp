@@ -213,6 +213,7 @@ void eng_pass_result(uint64_t view_key, bool executed) {
 void eng_count(int c, int64_t n) {
     if (c >= 0 && c < EC_N) counts[c].fetch_add(n, std::memory_order_relaxed);
 }
+int64_t eng_count_get(int c) { return c >= 0 && c < EC_N ? counts[c].load(std::memory_order_relaxed) : 0; }
 void eng_abort_reason(const char* why) {
     std::lock_guard lk(abort_mu);
     aborts[why ? why : "?"]++;

@@ -845,6 +845,21 @@ const EngJob* eng_job_lookup(uint64_t slot_handle) {
     return &j.pub;
 }
 
+int eng_job_why(uint64_t slot_handle) {
+    if (!sw().on) return -1;
+    uint32_t serial;
+    {
+        std::lock_guard lk(handle_mu);
+        const auto it = by_handle.find(slot_handle);
+        if (it == by_handle.end()) return -1;
+        serial = it->second;
+    }
+    const Job& j = ring()[serial % kRing];
+    if (j.serial.load(std::memory_order_acquire) != serial) return -1;
+    return (int)j.why;
+}
+const char* eng_job_why_name(int why) { return why >= 0 && why < WHY_N ? kWhy[why] : "no job"; }
+
 void eng_job_retire_through(uint64_t replay_value) {
     uint64_t was = retired_through.load(std::memory_order_relaxed);
     while (replay_value > was && !retired_through.compare_exchange_weak(was, replay_value, std::memory_order_release)) {}

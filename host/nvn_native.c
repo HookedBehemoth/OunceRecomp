@@ -1587,6 +1587,14 @@ static int eng_passes(void) {
     }
     return on;
 }
+static int eng_prof(void) {   /* (HOS_ENG_PROF=1, E6's measurement: the other calls marked too; gpu/vk/vk_replay.cpp eprof) */
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("HOS_ENG_PROF");
+        on = e && atoi(e) != 0;
+    }
+    return on;
+}
 static int eng_call_site(uint64_t lr) {   /* f_806688c0, f_8028a2a0 (the jobs, six at a time), f_807cd380 (the 9 layer lists) */
     return lr == 0x80668c84ull || lr == 0x8028a538ull || lr == 0x807cd418ull;
 }
@@ -2087,13 +2095,15 @@ static void inline_recording_raw(nvn_cmd *o, uint64_t h) {
 NV(nvnCommandBufferCallCommands) {
     const uint64_t *h = (const uint64_t *)PN(2, 8ull * (uint32_t)I(1));
     const uint64_t lr = c->x[30];
-    const int eng = eng_passes() && eng_call_site(lr);   /* (HOS_ENG_PASSES: the job-call site's bounds for the replay) */
+    int eng = eng_passes() && eng_call_site(lr);   /* (HOS_ENG_PASSES: the job-call site's bounds for the replay) */
+    /* (HOS_ENG_PROF: every other call of a recording that is not a job, for the replay's split of its time by call site) */
+    const int other = !eng && eng_passes() && eng_prof() && !cmd_host(CB(P(0)))->eng_view;
     for (int i = 0; i < I(1); i++) {
         if (nwatch_handles) watch_handle_called(c, h[i], "called");
         const uint64_t at = (uint64_t)(uint32_t)i | (uint64_t)(uint32_t)I(1) << 32;
-        if (eng) eng_mark(CB(P(0)), NVN_ENG_CALL_BEGIN, (uint32_t)lr, h[i], at);
+        if (eng || other) eng_mark(CB(P(0)), eng ? NVN_ENG_CALL_BEGIN : NVN_ENG_OTHER_BEGIN, (uint32_t)lr, h[i], at);
         inline_recording(CB(P(0)), h[i]);
-        if (eng) eng_mark(CB(P(0)), NVN_ENG_CALL_END, (uint32_t)lr, h[i], at);
+        if (eng || other) eng_mark(CB(P(0)), eng ? NVN_ENG_CALL_END : NVN_ENG_OTHER_END, (uint32_t)lr, h[i], at);
     }
 }
 NV(nvnCommandBufferCopyCommands) {
