@@ -28,6 +28,9 @@ bool packets_check();   // RX_VK_PACKETS_CHECK=1 (implies RX_VK_PACKETS)
 extern uint64_t pk_clock;          // (replay_mu)
 extern uint64_t pk_gen[PKG_N];     // (replay_mu) the clock when the group was last set
 inline void pk_touch(int g) { pk_gen[g] = ++pk_clock; }
+struct Program;
+uint32_t answer_stage_mask(const Program& p);   // (vk_shader.cpp: the stages whose c2 handles a program's answers read, ~0: any binding)
+
 inline void pk_touch_all() {
     ++pk_clock;
     for (int g = 0; g < PKG_N; g++) pk_gen[g] = pk_clock;

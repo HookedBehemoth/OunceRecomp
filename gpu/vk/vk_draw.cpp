@@ -3136,6 +3136,69 @@ void pk_tex_keep(const NvnState& s, const Program& p, const Stage& st, size_t im
     pk_tex_stages_n++;
 }
 
+// ---- (RX_VK_PACKETS) a stage's storage buffers kept, the same way: stages whose every storage buffer is a single read-only one
+// named in c0 (made from the stage's storage bindings alone: ssbo_gen), while those bindings and the pools (gpu_bind_stamp) stand ----
+struct PkSsboStage {
+    const Program* p = nullptr;
+    uint64_t key = 0, variant = 0, rec = 0, gen = 0, stamp = 0;
+    std::vector<VkDescriptorBufferInfo> el;
+};
+int64_t pk_ssbo_kept_n, pk_ssbo_checked_n, pk_ssbo_mismatch_n;   // (serial replay)
+PkSsboStage& pk_ssbo_slot(const Program& p, const Stage& st) {
+    static thread_local PkSsboStage* tab = nullptr;
+    if (!tab) tab = new PkSsboStage[2048];
+    const uintptr_t h = ((uintptr_t)&p >> 4) * 8 + (uintptr_t)(&st - p.stages.data());
+    return tab[(h ^ (h >> 11)) & 2047];
+}
+bool pk_ssbo_stage_ok(const Stage& st, bool bda) {
+    static const bool diag = getenv("RX_VK_DRAW_STATS") || getenv("RX_VK_PEEK_PROG") || getenv("RX_VK_SSBO_STRETCH") ||
+                             getenv("RX_VK_SSBO_WIDE") || getenv("RX_VK_LOG_WRITTEN") || getenv("RX_VK_MISS_LOG");
+    if (diag || st.nvn_stage < 0 || st.nvn_stage > 4 || st.info.storage_buffers_descriptors.empty() || (bda && st.info.ssbo_bda))
+        return false;
+    for (const auto& d : st.info.storage_buffers_descriptors)
+        if (d.cbuf_index != 0 || d.count != 1 || d.is_written || d.cbuf_offset == 0xff0) return false;
+    return true;
+}
+int pk_ssbo_kept(const NvnState& s, const Program& p, const Stage& st, uint32_t& binding, DescWriter& dwr, bool bda) {
+    if (!pk_ssbo_stage_ok(st, bda)) return 0;
+    const PkSsboStage& c = pk_ssbo_slot(p, st);
+    if (c.p != &p || c.key != p.key || c.variant != p.variant || c.rec != pk_rec || c.gen != s.ssbo_gen[st.nvn_stage] ||
+        c.stamp != gpu_bind_stamp() || c.el.size() != st.info.storage_buffers_descriptors.size())
+        return 0;
+    pk_ssbo_kept_n++;
+    if (packets_check()) return 1;
+    for (const VkDescriptorBufferInfo& b : c.el) {
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstBinding = binding++, w.descriptorCount = 1, w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        dwr.bufs.push_back(b);
+        w.pBufferInfo = &dwr.bufs.back();
+        dwr.writes.push_back(w);
+    }
+    return 2;
+}
+void pk_ssbo_keep(const NvnState& s, const Program& p, const Stage& st, size_t first, int kept, DescWriter& dwr, bool bda) {
+    if (!pk_ssbo_stage_ok(st, bda)) return;
+    PkSsboStage& c = pk_ssbo_slot(p, st);
+    const size_t n = st.info.storage_buffers_descriptors.size();
+    if (dwr.bufs.size() < first + n) return void(c.p = nullptr);
+    if (kept == 1) {
+        pk_ssbo_checked_n++;
+        bool same = c.el.size() == n;
+        for (size_t i = 0; same && i < n; i++) {
+            const VkDescriptorBufferInfo& a = c.el[i], & b = dwr.bufs[first + i];
+            same = a.buffer == b.buffer && a.offset == b.offset && a.range == b.range;
+        }
+        if (!same) {
+            pk_ssbo_mismatch_n++;
+            static int told;
+            if (told++ < 40) logf("vk: packets: MISMATCH storage buffers kept for program %016llx stage %d (%lld so far)",
+                                  (unsigned long long)p.key, st.nvn_stage, (long long)pk_ssbo_mismatch_n);
+        }
+    }
+    c.el.assign(dwr.bufs.begin() + (std::ptrdiff_t)first, dwr.bufs.begin() + (std::ptrdiff_t)(first + n));
+    c.p = &p, c.key = p.key, c.variant = p.variant, c.rec = pk_rec, c.gen = s.ssbo_gen[st.nvn_stage], c.stamp = gpu_bind_stamp();
+}
+
 void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
     bda_virt = {};
@@ -3192,6 +3255,11 @@ void build_descriptors(const NvnState& s, const Program& p) {
             dwr.writes.push_back(w);
         }
         if (bda_on_now && !info.storage_buffers_descriptors.empty()) bda_count(info.ssbo_bda ? BC_STAGES : BC_CLASSIC);
+        // (RX_VK_PACKETS: a stage of read-only c0 storage buffers as the program's last build in this recording bound them)
+        const size_t pks_first = dwr.bufs.size();
+        const int pks_kept = pk_handles ? pk_ssbo_kept(s, p, st, binding, dwr, bda_on_now) : 0;
+        if (pks_kept == 2) {
+        } else
         for (const auto& d : info.storage_buffers_descriptors) {
             FINE_SCOPE(FT_STORAGE);
             FINE_N(FC_SSBO_DESCS, d.count);
@@ -3440,6 +3508,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
             w.pBufferInfo = &dwr.bufs[first];
             dwr.writes.push_back(w);
         }
+        if (pk_handles && pks_kept != 2) pk_ssbo_keep(s, p, st, pks_first, pks_kept, dwr, bda_on_now);
         auto texel_views = [&](const auto& list, VkDescriptorType type, bool storage) {
             for (const auto& d : list) {
                 VkWriteDescriptorSet w = write(type, d.count);
@@ -4667,9 +4736,18 @@ struct PkKeep {
         std::memcpy(g, pk_gen, sizeof g);
     }
 };
-struct PkMemo { PkKeep dyn, vi, note; };
+struct PkProg {   // (the draw before's program: program_for's inputs as they were)
+    bool ok = false, mesh = false;
+    const NvnState* s = nullptr;
+    const Program* p = nullptr;
+    uint64_t g_prog = 0, g_vi = 0, reg = 0, ub = 0, bind = 0;
+    uint64_t tex_gen[kNvnStages]{};
+    uint32_t amask = ~0u;
+    uint8_t ct[8]{};
+};
+struct PkMemo { PkKeep dyn, vi, note; PkProg prog; };
 TLS_OBJECT(pk_memo, PkMemo)
-enum PkCount { PKC_DRAWS, PKC_DYN, PKC_VI, PKC_NOTE, PKC_CHECKED, PKC_MISMATCH, PKC_N };
+enum PkCount { PKC_DRAWS, PKC_DYN, PKC_VI, PKC_NOTE, PKC_PROG, PKC_CHECKED, PKC_MISMATCH, PKC_N };
 int64_t pk_n[PKC_N];   // (the serial replay's: replay_mu)
 void pk_mismatch(const char* what, const Program& p) {
     pk_n[PKC_MISMATCH]++;
@@ -4681,14 +4759,15 @@ void packets_report(double frames) {
     if (!packets_on()) return;
     static int64_t last[PKC_N];
     const double draws = std::max<double>(1.0, (double)(pk_n[PKC_DRAWS] - last[PKC_DRAWS]));
-    static int64_t last_tk, last_tc, last_ts;
-    logf("vk: a frame: packets: %.0f draws; kept: dynamic state %.2f, vertex input %.2f, state list %.2f a draw, stages' textures %.1f "
-         "a frame (%.1f stages kept for later); %.0f checked, %lld mismatches so far", draws / frames,
-         (pk_n[PKC_DYN] - last[PKC_DYN]) / draws, (pk_n[PKC_VI] - last[PKC_VI]) / draws, (pk_n[PKC_NOTE] - last[PKC_NOTE]) / draws,
-         (pk_tex_kept_n - last_tk) / frames, (pk_tex_stages_n - last_ts) / frames,
-         (pk_n[PKC_CHECKED] - last[PKC_CHECKED] + pk_tex_checked_n - last_tc) / frames, (long long)(pk_n[PKC_MISMATCH] + pk_tex_mismatch_n));
+    static int64_t last_tk, last_tc, last_ts, last_sk, last_sc;
+    logf("vk: a frame: packets: %.0f draws; kept: program %.2f, dynamic state %.2f, vertex input %.2f, state list %.2f a draw, stages' "
+         "textures %.1f, storage buffers %.1f a frame (%.1f texture stages kept for later); %.0f checked, %lld mismatches so far", draws / frames,
+         (pk_n[PKC_PROG] - last[PKC_PROG]) / draws, (pk_n[PKC_DYN] - last[PKC_DYN]) / draws, (pk_n[PKC_VI] - last[PKC_VI]) / draws, (pk_n[PKC_NOTE] - last[PKC_NOTE]) / draws,
+         (pk_tex_kept_n - last_tk) / frames, (pk_ssbo_kept_n - last_sk) / frames, (pk_tex_stages_n - last_ts) / frames,
+         (pk_n[PKC_CHECKED] - last[PKC_CHECKED] + pk_tex_checked_n - last_tc + pk_ssbo_checked_n - last_sc) / frames,
+         (long long)(pk_n[PKC_MISMATCH] + pk_tex_mismatch_n + pk_ssbo_mismatch_n));
     std::memcpy(last, pk_n, sizeof last);
-    last_tk = pk_tex_kept_n, last_tc = pk_tex_checked_n, last_ts = pk_tex_stages_n;
+    last_tk = pk_tex_kept_n, last_tc = pk_tex_checked_n, last_ts = pk_tex_stages_n, last_sk = pk_ssbo_kept_n, last_sc = pk_ssbo_checked_n;
 }
 
 
@@ -6567,8 +6646,42 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const Program* cp;
     {
         PROF_HOT(PROF_PROGRAM);
-        ParLock lk(d.mesh);   // (graphics programs: each thread's picks, program_pick's own lock)
-        cp = program_for(s, d.mesh ? ProgramKind::Mesh : ProgramKind::Graphics, types);
+        // (RX_VK_PACKETS: the draw before's program while nothing program_for picks by was set since: the program, the vertex
+        // layouts, the colour types, the registrations, the inline updates, and the bindings its answers read (the stages' textures
+        // when every answer is a c2 handle of its own stage, as program_for's own pair has it; any binding otherwise))
+        PkProg* const pm = pkm ? &pkm->prog : nullptr;
+        bool kept = false;
+        uint64_t reg_now = 0, ub_now = 0;
+        if (pm) {
+            reg_now = registrations_generation(), ub_now = ub_generation();
+            kept = pm->ok && pm->s == &s && pm->mesh == d.mesh && pm->g_prog == pk_gen[PKG_PROG] && pm->g_vi == pk_gen[PKG_VI] &&
+                   pm->reg == reg_now && pm->ub == ub_now && !std::memcmp(pm->ct, types, 8);
+            if (kept && pm->amask == ~0u) kept = pm->bind == s.bind_gen;
+            else
+                for (int k = 0; kept && k < kNvnStages; k++)
+                    if ((pm->amask >> k & 1) && pm->tex_gen[k] != s.tex_gen[k]) kept = false;
+            if (kept && !(pm->p->ready.load(std::memory_order_acquire) && !pm->p->failed)) kept = false;
+        }
+        if (kept) pk_n[PKC_PROG]++;
+        if (kept && !pk_check) {
+            cp = pm->p;
+        } else {
+            ParLock lk(d.mesh);   // (graphics programs: each thread's picks, program_pick's own lock)
+            cp = program_for(s, d.mesh ? ProgramKind::Mesh : ProgramKind::Graphics, types);
+            if (kept) {
+                pk_n[PKC_CHECKED]++;
+                if (cp != pm->p) pk_mismatch("program", *pm->p);
+            }
+            if (pm) {
+                pm->ok = cp && cp->ready.load(std::memory_order_acquire) && !cp->failed;
+                if (pm->ok) {
+                    pm->s = &s, pm->mesh = d.mesh, pm->p = cp, pm->g_prog = pk_gen[PKG_PROG], pm->g_vi = pk_gen[PKG_VI];
+                    pm->reg = reg_now, pm->ub = ub_now, pm->bind = s.bind_gen, pm->amask = answer_stage_mask(*cp);
+                    std::memcpy(pm->tex_gen, s.tex_gen, sizeof pm->tex_gen);
+                    std::memcpy(pm->ct, types, 8);
+                }
+            }
+        }
     }
     {   // (hookshot, a test) RX_VK_NO_MESH=1: task / mesh draws left out, to see what they draw; =2: the others left out
         static const int no_mesh = getenv("RX_VK_NO_MESH") ? atoi(getenv("RX_VK_NO_MESH")) : 0;
