@@ -2752,7 +2752,18 @@ void eng_reg_drain() {
     static thread_local std::vector<uint32_t> gone, where;
     desc_heap_take_registrations(slots, gone, samplers);
     if (slots.empty() && gone.empty() && samplers.empty()) return;
+    FINE_SCOPE(FT_TEX);   // (RX_VK_PROF_FINE: in the textures row, the work it takes from the draws' scan)
     const bool timed = desc_heap_log();
+    // (RX_VK_DESC_HEAP_LOG: its phases, ns: the registration's lookup, the texture found, the view, the descriptor written, the maps)
+    using clk = std::chrono::steady_clock;
+    auto ns_since = [](clk::time_point& t) {
+        const clk::time_point n = clk::now();
+        const int64_t d = std::chrono::duration_cast<std::chrono::nanoseconds>(n - t).count();
+        t = n;
+        return d;
+    };
+    static int64_t ph[5]{}, ph_frames = 0;
+    clk::time_point tp = timed ? clk::now() : clk::time_point{};
     const auto t0 = timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const bool serial = texture_serial_on();
     const uint64_t gen = serial ? texture_miss_generation() : texture_destroy_generation();
@@ -2791,7 +2802,9 @@ void eng_reg_drain() {
         nvn_view v;
         bool hv = false;
         const bool known = texture_of((int)id, &t, &v, &hv);
+        if (timed) ph[0] += ns_since(tp);
         Texture* tex = known ? texture_find(&t) : nullptr;
+        if (timed) ph[1] += ns_since(tp);
         const bool resident = tex && (tex->uploaded || tex->gpu_written);
         if (!known) desc_heap_count(HC_E1_UNREG);
         else if (!resident) desc_heap_count(HC_E1_PENDING);
@@ -2805,14 +2818,17 @@ void eng_reg_drain() {
                 ParLock lk;
                 view = texture_view(tex, &t, hv ? &v : nullptr, (VkImageViewType)r, ViewUse::Sample, &last_view_format, VK_FORMAT_UNDEFINED);
             }
+            if (timed) ph[2] += ns_since(tp);
             if (view != e.view) {
                 if (!put_image(r, id, e, view)) { e.valid = false; continue; }
                 desc_heap_count(HC_E1_WRITTEN);
             } else if (view) {
                 desc_heap_count(HC_E1_SAME);
             }
+            if (timed) ph[3] += ns_since(tp);
             const uint32_t nid = view ? tex->id : 0u;
             desc_heap_entry_texture(r, id, e.tex_id, nid);
+            if (timed) ph[4] += ns_since(tp);
             e.tex = nid ? tex : nullptr, e.tex_id = nid, e.sampling = true;
             e.ver = ver, e.gen = gen, e.epoch = ~0u;   // (touched by the first draw that reads it)
             e.valid = view != VK_NULL_HANDLE;           // (not resident: the first draw that reads it resolves it)
@@ -2839,9 +2855,15 @@ void eng_reg_drain() {
             e.ver = ver, e.valid = true;
         }
     }
-    if (timed)
+    if (timed) {
         desc_heap_count(HC_E1_DRAIN_US,
                         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
+        if (++ph_frames % 3000 == 0)
+            logf("vk: HOS_ENG_REG drain phases (us, last 3000 drains): registration lookup %lld, texture found %lld, view %lld, descriptor "
+                 "written %lld, maps %lld", (long long)ph[0] / 1000, (long long)ph[1] / 1000, (long long)ph[2] / 1000, (long long)ph[3] / 1000,
+                 (long long)ph[4] / 1000),
+                std::memset(ph, 0, sizeof ph);
+    }
 }
 void heap_recording_begun(int slot, uint64_t value) {
     if (!desc_heap_on()) return;
