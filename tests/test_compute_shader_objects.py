@@ -30,7 +30,7 @@ def main():
     so = (VK / "vk_shader_object.cpp").read_text(encoding="utf-8")
     draw = (VK / "vk_draw.cpp").read_text(encoding="utf-8")
 
-    stage = block(so, "bool so_stage(const Program& p, const Stage& st) {")
+    stage = block(so, "bool so_stage(const Program& p, const Stage& st, uint32_t si) {")
     if "p.compute && so_compute_on()" not in stage or "p.fallback && so_fallback_on()" not in stage:
         raise SystemExit("compute and fallback stages are not made as shader objects")
     if "VK_SHADER_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT" not in so or "full_subgroups(p, st) ? 2 : 0" not in so:
@@ -56,7 +56,7 @@ def main():
     if "its pipeline instead" not in draw:
         raise SystemExit("a compute shader object refused is not logged")
     record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
-    if "(!so && !fallback_pipelines_ready(p))" not in record or "vkCmdBindShadersEXT(cmd, 1, &cs, &so->cs[stage]);" not in record:
+    if "(!all_so && !fallback_pipelines_ready(p))" not in record or "vkCmdBindShadersEXT(cmd, 1, &cs, &so->cs[stage]);" not in record:
         raise SystemExit("the fallback's dispatches do not bind their shader objects, or wait for pipelines they do not use")
     if "fallback_prefetch(const_cast<Program&>(*p))" not in so:
         raise SystemExit("the fallback programs' pipelines are not begun at the prefetch (left out at their first draws)")

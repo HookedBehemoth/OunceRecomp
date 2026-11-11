@@ -178,9 +178,35 @@ VkShaderStageFlags next_stage(VkShaderStageFlagBits s) {
          : s == VK_SHADER_STAGE_TASK_BIT_EXT ? VK_SHADER_STAGE_MESH_BIT_EXT : 0;
 }
 /// A stage made a shader object: the graphics ones, and the compute ones of compute programs and of the mesh fallback (when on)
-bool so_stage(const Program& p, const Stage& st) {
+/// (diagnosis, the fallback's hang) RX_VK_SO_FALLBACK_KEYS=<hex key prefixes,...>: only those programs' fallback dispatches as shader
+/// objects (the others: pipelines); RX_VK_SO_FALLBACK_STAGE=task|mesh: only that stage of them. For bisecting which one hangs
+bool fallback_stage_wanted(const Program& p, uint32_t si) {
+    static const char* keys = getenv("RX_VK_SO_FALLBACK_KEYS");
+    static const char* only = getenv("RX_VK_SO_FALLBACK_STAGE");
+    if (keys && *keys) {
+        char hex[24];
+        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)p.key);
+        bool listed = false;
+        for (const char* q = keys; *q && !listed;) {
+            const char* e = strchr(q, ',');
+            const size_t len = e ? (size_t)(e - q) : strlen(q);
+            listed = len && !strncmp(hex, q, len);
+            q = e ? e + 1 : q + len;
+        }
+        if (!listed) return false;
+    }
+    if (only && *only) {
+        uint32_t before = 0;   // (compute stages before this one: a task program's first is its task stage)
+        for (uint32_t i = 0; i < si; i++) before += p.stages[i].vk_stage == VK_SHADER_STAGE_COMPUTE_BIT;
+        const bool task = p.fallback_task && before == 0;
+        if (!strcmp(only, "task") != task) return false;
+    }
+    return true;
+}
+bool so_stage(const Program& p, const Stage& st, uint32_t si) {
     if (graphics_stage(p, st)) return true;
-    return st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT && ((p.compute && so_compute_on()) || (p.fallback && so_fallback_on()));
+    if (st.vk_stage != VK_SHADER_STAGE_COMPUTE_BIT) return false;
+    return (p.compute && so_compute_on()) || (p.fallback && so_fallback_on() && fallback_stage_wanted(p, si));
 }
 /// A compute program's stage asks for full subgroups, as pin_subgroup (vk_draw.cpp) asks its pipeline (the fallback's: never)
 bool full_subgroups(const Program& p, const Stage& st) {
@@ -210,7 +236,7 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
         cache_init_locked();
         for (uint32_t si = 0; si < p.stages.size(); si++) {
             const Stage& st = p.stages[si];
-            if (!so_stage(p, st) || n == 8) continue;
+            if (!so_stage(p, st, si) || n == 8) continue;
             uint64_t sh = 0;
             {
                 std::lock_guard ml(mod_mu);
@@ -337,6 +363,14 @@ bool so_make(SoProg& so, const Program& p, uint32_t push_size, bool compile) {
         for (int i = 0; i < n; i++)
             if (ones[i].out)
                 if (auto it = mod_src.find(ones[i].st->module); it != mod_src.end()) std::vector<uint32_t>().swap(it->second.words);
+    }
+    if (p.fallback && so_fallback_on()) {   // (which fallback programs' dispatches are shader objects: the hang's bisection reads them)
+        static std::atomic<int> told{0};
+        int ncs = 0;
+        for (int i = 0; i < n; i++) ncs += ones[i].st->vk_stage == VK_SHADER_STAGE_COMPUTE_BIT && ones[i].out;
+        if (told++ < 400)
+            logf("vk: shader objects: fallback %016llx (%s): %d compute stage(s) as shader objects", (unsigned long long)p.key,
+                 p.fallback_task ? "task + mesh" : "mesh", ncs);
     }
     if (p.codes[0]) {   // (the variant noted for the prefetch of a later run)
         ProgNote pn{};

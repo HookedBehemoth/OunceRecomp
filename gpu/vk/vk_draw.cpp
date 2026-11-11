@@ -5452,7 +5452,9 @@ bool fallback_compute_pipelines(Program& p) {
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = si;
         ci.layout = p.layout;
-        if (dev.task_mesh_fallback || getenv("RX_VK_NOOPT"))
+        // (native-vk, diagnosis: RX_VK_FALLBACK_OPT=1 optimizes them under the task/mesh fallback too, which shader objects cannot avoid)
+        static const bool opt = getenv("RX_VK_FALLBACK_OPT") && atoi(getenv("RX_VK_FALLBACK_OPT")) != 0;
+        if ((dev.task_mesh_fallback && !opt) || getenv("RX_VK_NOOPT"))
             ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         if (const VkResult r = guarded_compute(pcache, &ci, &made[i]); r != VK_SUCCESS) {
             {
@@ -5529,9 +5531,11 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     FallbackBuffers* f = nullptr;
     // (native-vk, RX_VK_SHADER_OBJECTS=1: the task and mesh dispatches as the program's compute shader objects, made with its draw
     // stages (so_for in draw()); RX_VK_SO_FALLBACK=0, or one the driver refused: the pipelines)
+    // (some stages alone, RX_VK_SO_FALLBACK_KEYS / _STAGE: those bind their shader objects, the others their pipelines)
     const SoProg* so = so_fallback_on() ? so_for(p, kPushSize) : nullptr;
-    if (so && !so_compute_made(*so, p)) so = nullptr;
-    if (!fallback_buffers_of(p, f) || (!so && !fallback_pipelines_ready(p))) return false;
+    if (so && (!so->ready.load(std::memory_order_acquire) || so->failed || so->cs_failed)) so = nullptr;
+    const bool all_so = so && so_compute_made(*so, p);
+    if (!fallback_buffers_of(p, f) || (!all_so && !fallback_pipelines_ready(p))) return false;
     const BufferRef input = p.fallback_task && d.indirect ? gpu_buffer_bind(d.indirect, 8, false) : BufferRef{};
     const VkDeviceAddress input_base = input ? fallback_buffer_address(input.buffer) : 0;
     fallback_indirect_input = input_base ? input_base + input.offset : 0;
@@ -5563,8 +5567,7 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     }
     const bool indirect{d.indirect && mesh_conv_buf != VK_NULL_HANDLE};
     auto send = [&](size_t stage, bool mesh_stage) {
-        if (so) {
-            if (stage >= 8 || !so->cs[stage]) return false;
+        if (so && stage < 8 && so->cs[stage]) {
             const VkShaderStageFlagBits cs = VK_SHADER_STAGE_COMPUTE_BIT;
             vkCmdBindShadersEXT(cmd, 1, &cs, &so->cs[stage]);
         } else {
@@ -6911,7 +6914,7 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!handle) return false;
     texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
     if (!out || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
-    const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
+    static const char* const keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS") : "fd029a317a9a4b94";
     return typed_upscale(cmd, dw().imgs[0].imageView, dw().imgs[ntex].imageView, out, level, p.key, keys, true);
 }
 
