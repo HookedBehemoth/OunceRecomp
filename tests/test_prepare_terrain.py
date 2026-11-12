@@ -27,7 +27,9 @@ def ref_offset(x, y, width_bytes, bh):
     """Byte (x, y) of a block-linear surface, written out from the GOB rule (formats.md)"""
     gobs_x = (width_bytes + 63) // 64
     block_rows = 8 * (1 << bh)
-    in_gob = ((x % 64) // 32) * 256 + ((y % 8) // 2) * 64 + ((x % 32) // 16) * 32 + (y % 2) * 16 + x % 16
+    # (the Switch 2's GOB, as host/nvn_layout.c and the frozen renderer use it; the Switch 1's rule scrambled every tile)
+    in_gob = (((x % 64) // 32) * 256 + ((y % 8) // 4) * 128 + ((x % 32) // 16) * 64 + ((y % 4) // 2) * 32 +
+              (y % 2) * 16 + x % 16)
     return ((y // block_rows) * gobs_x + x // 64) * 512 * (1 << bh) + ((y % block_rows) // 8) * 512 + in_gob
 
 

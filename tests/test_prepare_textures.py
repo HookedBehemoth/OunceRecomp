@@ -26,7 +26,9 @@ def ref_offset(x, y, width_bytes, bh):
     gobs_x = (width_bytes + 63) // 64
     block_rows = 8 * (1 << bh)
     block = (y // block_rows) * gobs_x + x // 64
-    in_gob = ((x % 64) // 32) * 256 + ((y % 8) // 2) * 64 + ((x % 32) // 16) * 32 + (y % 2) * 16 + x % 16
+    # (the Switch 2's GOB, as host/nvn_layout.c and the frozen renderer use it; the Switch 1's rule scrambled every texture)
+    in_gob = (((x % 64) // 32) * 256 + ((y % 8) // 4) * 128 + ((x % 32) // 16) * 64 + ((y % 4) // 2) * 32 +
+              (y % 2) * 16 + x % 16)
     return block * 512 * (1 << bh) + ((y % block_rows) // 8) * 512 + in_gob
 
 
