@@ -1,4 +1,5 @@
 #pragma once
+// (gpu/direct: a copy of gpu/vk/layer0_windows.h, its windows a granule shorter: kWindow below)
 // (native-vk, layer 0, RX_VK_LAYER0=1) The window scheme's arithmetic, kept apart from Vulkan so that it can be tested alone
 // (tests/layer0_windows_test.cpp). gpu/vk/vk_pools.cpp is the rest.
 //
@@ -22,8 +23,11 @@ namespace l0 {
 
 constexpr uint64_t kChunkMin = 2ull << 20, kChunkMax = 64ull << 20;   // (a host chunk: one udmabuf; its size_limit_mb is 64 by default)
 constexpr uint64_t kStride = 2ull << 30;    // (a window starts every 2 GB)
-constexpr uint64_t kWindow = 4ull << 30;    // (and is 4 GB long)
-constexpr uint64_t kMaxRange = kStride;     // (the longest range one window holds whole wherever it starts)
+// (gpu/direct: a granule short of 4 GB, RADV's maxBufferSize being 4 GB - 4 (the validation layer's VUID-VkBufferCreateInfo-
+// size-06409 on gpu/vk's 4 GB windows): the last 64 KB of each 2 GB stretch is in its own window only, and the longest range
+// one window holds whole wherever it starts is a granule short of 2 GB)
+constexpr uint64_t kWindow = (4ull << 30) - (64ull << 10);
+constexpr uint64_t kMaxRange = kStride - (64ull << 10);
 constexpr uint32_t kWindows = 512;          // (the guest's 1 TB below the virtual pools: hos's window is 512 GB)
 
 inline uint32_t window_of(uint64_t guest) { return (uint32_t)(guest >> 31); }
@@ -137,7 +141,8 @@ inline void range_places(uint64_t lo, uint64_t hi, std::vector<Piece>& out) {
         const uint64_t line = (a / kStride + 1) * kStride, b = std::min(hi, line);
         const uint32_t k = window_of(a);
         if (k < kWindows) out.push_back({k, window_offset(a), a - lo, b - a});
-        if (k > 0 && k - 1 < kWindows) out.push_back({k - 1, window_offset(a) + kStride, a - lo, b - a});
+        const uint64_t prev = window_offset(a) + kStride;   // (window k - 1 holds it up to its end)
+        if (k > 0 && k - 1 < kWindows && prev < kWindow) out.push_back({k - 1, prev, a - lo, std::min(b - a, kWindow - prev)});
         a = b;
     }
 }
