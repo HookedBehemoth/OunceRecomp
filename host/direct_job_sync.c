@@ -14,8 +14,9 @@
 
    At the job-call site, f_806688c0's CallCommands (return 0x80668c84; x21 the view record found, [sp + 0x10] the list's draw
    context, x0 the list's command buffer) is pointed at a host function too: it records the kept waits and one barrier of
-   the kept bits on the layer list's command buffer, then the CallCommands, then the kept dispatches (f_8067c310 with the
-   list's draw context). The water wait may only go here (m0-jobs-state.md B: earlier positions deadlock); f_8028a2a0's call
+   the kept bits on the layer list's command buffer, then the kept dispatches (f_8067c310 with the list's draw context;
+   M6d: before the job's commands, not after), then the CallCommands. The water wait may only go here (m0-jobs-state.md B:
+   earlier positions deadlock); f_8028a2a0's call
    site (0x8028a538) never calls a job that kept one (counted).
 
    Check that it applies: the 600-present line "direct patch job sync" (kept and placed a frame, by kind; dropped; calls of
@@ -131,19 +132,17 @@ static void call_fn(Ctx *c, void *u) {
         return;
     }
     InterlockedIncrement64(&n.calls_kept);
-    /* (M6d, HOS_DBG=gridbefore, a diagnosis: the kept grid dispatches before the job's commands instead of after them) */
-    static int before = -1;
-    if (before < 0) {
-        const char *d = getenv("HOS_DBG");
-        before = d && strstr(d, "gridbefore") != NULL;
-    }
+    /* (M6d) The kept grid dispatches go before the job's commands. Inside the job they sat between its items, before most
+       of its draws (the frozen back end runs them there: its corner table holds the depth drawn so far, 0.95-1.0); after
+       the job (M3a's place) they sampled the finished depth, the same depth 8df993dd samples later, so every corner was
+       marked unchanged (-1) and the grid compute wrote every tile negated: the CPU culler then culled almost nothing
+       (Kokiri 1079 draws a frame against the frozen back end's 685). Before the job they see the depth before its draws
+       (1.0, cleared): the grid is the frozen one's and the frame draws 684 (docs/direct/m6d-report.md). Exact would be the
+       job cut at the dispatch; not done */
     for (int i = 0; i < k.nw; i++) hos_call_guest(c, p_wait, cmd, k.w[i].ev, k.w[i].mode, k.w[i].value);
     if (k.bits) hos_call_guest(c, p_barrier, cmd, k.bits, 0, 0);
-    if (before)
-        for (int i = 0; i < k.nd; i++) hos_call_guest(c, 0x8067c310ull, k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3);
+    for (int i = 0; i < k.nd; i++) hos_call_guest(c, 0x8067c310ull, k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3);
     hos_call_guest(c, p_call, cmd, cnt, handles, 0);
-    if (!before)
-        for (int i = 0; i < k.nd; i++) hos_call_guest(c, 0x8067c310ull, k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3);
     InterlockedAdd64(&n.placed_waits, k.nw);
     InterlockedAdd64(&n.placed_barriers, k.bits ? 1 : 0);
     InterlockedAdd64(&n.placed_dispatches, k.nd);
