@@ -373,6 +373,10 @@ U32 IREmitter::WorkgroupIdZ() {
     return U32{CompositeExtract(Inst(Opcode::WorkgroupId), 2)};
 }
 
+U32 IREmitter::NumWorkgroups(u32 component) {
+    return U32{CompositeExtract(Inst(Opcode::NumWorkgroups), component)};
+}
+
 Value IREmitter::LocalInvocationId() {
     return Inst(Opcode::LocalInvocationId);
 }

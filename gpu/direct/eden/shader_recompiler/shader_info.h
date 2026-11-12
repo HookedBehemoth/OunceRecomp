@@ -26,6 +26,9 @@ enum class ReplaceConstant : u32 {
     BaseInstance,
     BaseVertex,
     DrawID,
+    NumWorkgroupsX,   // (hookshot direct, M4a: NVN2 compute's grid at c0+0x0 / 0x4 / 0x8, read as the dispatch gives it)
+    NumWorkgroupsY,
+    NumWorkgroupsZ,
 };
 
 enum class TextureType : u32 {
@@ -285,6 +288,7 @@ struct Info {
     bool is_task{}; ///< Switch 2 task program (Stage::Task)
     bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)
     bool uses_workgroup_id{};
+    bool uses_num_workgroups{};   ///< (hookshot direct, M4a) the grid as the dispatch gives it
     bool uses_local_invocation_id{};
     bool uses_invocation_id{};
     bool uses_invocation_info{};

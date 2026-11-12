@@ -1287,4 +1287,9 @@ void draw_log(double frames) {
     logf("direct: %s", out);
 }
 
+// ---- (M4a) what the dispatches share with the draws (direct_compute.cpp) ----
+bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr) { return arena_alloc(slot, bytes, map, addr); }
+VkDeviceAddress draw_window_table() { return window_table_address; }
+VkDeviceAddress draw_zero_address() { return zero_address; }
+
 }  // namespace hsd

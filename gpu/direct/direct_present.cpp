@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 
+#include "direct_compute.h"
 #include "direct_assets.h"
 #include "direct_cmd.h"
 #include "direct_draw.h"
@@ -187,6 +188,7 @@ void log_line() {
     sites_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     draw_log(frames);   // (M2b)
+    compute_log(frames);   // (M4a)
 }
 
 }  // namespace

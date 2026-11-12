@@ -48,6 +48,8 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
     }
     case NOP_BIND_PROGRAM: {
         const auto b = payload<nvn_p_bind_program>(a, size);
+        // (M4a: a compute program is bound beside the graphics one, not over it: direct_compute.cpp keeps it)
+        if ((b.stages & NVN_SHADER_STAGE_COMPUTE_BIT) && !(b.stages & ~NVN_SHADER_STAGE_COMPUTE_BIT)) return true;
         const bool had = s.has_prog;
         const uint64_t was = s.prog.serial;
         if (b.prog) s.prog = *b.prog;   // (the guest object read now: its stages are set before it is bound)

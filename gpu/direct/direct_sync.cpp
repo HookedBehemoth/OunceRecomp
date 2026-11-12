@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "direct_cmd.h"
+#include "direct_compute.h"
 #include "direct_draw.h"
 #include "direct_dump.h"
 #include "direct_internal.h"
@@ -176,6 +177,20 @@ void progress() {
                     const uint64_t up = upload_value();
                     if (up > waited) wait_value = std::max(wait_value, up), waited = up, st_upload_waits_gpu++;
                 }
+                {   // (M4a, HOS_DBG=sublog:<present>: the submissions sent while that present is the newest, in their order)
+                    static const int64_t at = [] {
+                        const char* v = dbg_value("sublog");
+                        return v ? atoll(v) : -1;
+                    }();
+                    if (at >= 0 && (int64_t)present_count() == at) {
+                        char b[600];
+                        int k = std::snprintf(b, sizeof b, "direct: sublog present %lld: queue %u seq %llu, %zu command buffers, %zu frame ops, lists:",
+                                              (long long)at, q->index, (unsigned long long)s.seq, s.cbs.size(), s.ops.size());
+                        for (const List* l : s.lists)
+                            if (k < 540) k += std::snprintf(b + k, sizeof b - k, " %u/%#llx", l->info.kind, (unsigned long long)l->info.lr);
+                        logf("%s", b);
+                    }
+                }
                 const bool dumped = dump_claim(s.dumps, s.frame);
                 const uint64_t v = sync_send(wait_value, s.cbs.data(), (uint32_t)s.cbs.size());
                 for (CmdSlot* c : s.slots) cmd_slot_sent(c, v);
@@ -337,6 +352,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
         list_ref(l);
         list_submitted(l);
         draw_list_submitted(l);   // (M2b: the deferred binds' handles as the game's arrays hold them now)
+        compute_list_submitted(l);   // (M4a: and the dispatches')
         s.lists.push_back(l);
         list_flatten(l, s.ops);
         list_buffers(l, s.cbs, s.slots, dump_recording() ? &s.dumps : nullptr);

@@ -236,8 +236,16 @@ bool storage_view(const Image* im, VkImageViewCreateInfo& vi) {
     });
     auto ok = [&](VkFormat f) { return (uint32_t)f < 256 && can[f]; };
     if (!ok(vi.format)) {
-        if (!ok(im->format)) return false;
-        vi.format = im->format;
+        if (ok(im->format)) {
+            vi.format = im->format;
+        } else {   // (M4a: a format the device cannot store (B10G11R11, E5B9G9R9, BGRA8): the unsigned one of its size, which
+                   // the game's raw stores (SUST.B) write packed as Maxwell has them; the image is made MUTABLE)
+            const VkFormat raw = im->compressed ? VK_FORMAT_UNDEFINED : im->bpb == 4 ? VK_FORMAT_R32_UINT : im->bpb == 8 ? VK_FORMAT_R32G32_UINT
+                               : im->bpb == 16 ? VK_FORMAT_R32G32B32A32_UINT : im->bpb == 2 ? VK_FORMAT_R16_UINT : im->bpb == 1 ? VK_FORMAT_R8_UINT
+                               : VK_FORMAT_UNDEFINED;
+            if (!ok(raw)) return false;
+            vi.format = raw;
+        }
     }
     vi.components = VkComponentMapping{};
     vi.subresourceRange.levelCount = 1;

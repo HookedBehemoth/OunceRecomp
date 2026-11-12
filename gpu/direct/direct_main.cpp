@@ -9,6 +9,7 @@
 #include <cstring>
 #include <string>
 
+#include "direct_compute.h"
 #include "direct_internal.h"
 #include "direct_api.h"
 #include "direct_image.h"
@@ -255,6 +256,7 @@ void texture_created(const nvn_tex* t) {
 void program_set(const nvn_prog* p) {
     count(R_PROG_SET);
     shader_program_set(p);
+    compute_program_set(p);   // (M4a)
 }
 void program_released(const nvn_prog*) { count(R_PROG_GONE); }
 void read_texels(const nvn_tex*, unsigned, unsigned, const NVNcopyRegion*, uint8_t*, uint64_t, uint64_t) { count(R_READ_TEXELS); }

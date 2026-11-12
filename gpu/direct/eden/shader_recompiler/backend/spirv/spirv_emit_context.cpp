@@ -2371,6 +2371,9 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if (info.uses_workgroup_id) {
         workgroup_id = DefineInput(*this, U32[3], false, spv::BuiltIn::WorkgroupId);
     }
+    if (info.uses_num_workgroups) {
+        num_workgroups = DefineInput(*this, U32[3], false, spv::BuiltIn::NumWorkgroups);
+    }
     if (info.uses_local_invocation_id) {
         local_invocation_id = DefineInput(*this, U32[3], false, spv::BuiltIn::LocalInvocationId);
     }

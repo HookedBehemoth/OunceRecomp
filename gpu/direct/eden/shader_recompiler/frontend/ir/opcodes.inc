@@ -65,6 +65,7 @@ OPCODE(SetSFlag,                                            Void,           U1, 
 OPCODE(SetCFlag,                                            Void,           U1,                                                                             )
 OPCODE(SetOFlag,                                            Void,           U1,                                                                             )
 OPCODE(WorkgroupId,                                         U32x3,                                                                                          )
+OPCODE(NumWorkgroups,                                       U32x3,                                                                                          )
 OPCODE(LocalInvocationId,                                   U32x3,                                                                                          )
 OPCODE(InvocationId,                                        U32,                                                                                            )
 OPCODE(InvocationInfo,                                      U32,                                                                                            )

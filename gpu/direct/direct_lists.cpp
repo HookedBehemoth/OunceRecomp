@@ -9,6 +9,7 @@
 
 #include "direct_assets.h"
 #include "direct_cmd.h"
+#include "direct_compute.h"
 #include "direct_draw.h"
 #include "direct_dump.h"
 #include "direct_internal.h"
@@ -104,6 +105,7 @@ void list_unref(List* l) {
         for (const FrameOp& o : x->ops)
             if (o.op == NOP_CALL && o.callee->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) work.push_back(o.callee);
         draw_list_free(x);
+        compute_list_free(x);
         if (x->packet && x->ended) st_pkt_bytes.fetch_sub((int64_t)x->pkt.size(), std::memory_order_relaxed), st_pkt_lists.fetch_sub(1, std::memory_order_relaxed);
         if (x->slot) cmd_slot_drop(x->slot);
         dump_free(x->dumps);
@@ -316,7 +318,8 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_end(void* list) 
     }
     l->ended = true;
     if (l->has_cmds && !l->counts[NOP_DRAW] && !l->counts[NOP_DRAW_IDX] && !l->counts[NOP_CLEAR_COLOR] && !l->counts[NOP_CLEAR_DS] &&
-        !l->counts[NOP_COPY_T2T] && !l->counts[NOP_COPY_B2T] && !l->counts[NOP_CALL] && present_count() > 1200) {
+        !l->counts[NOP_COPY_T2T] && !l->counts[NOP_COPY_B2T] && !l->counts[NOP_CALL] && !l->counts[NOP_DISPATCH] &&
+        !l->counts[NOP_DISPATCH_INDIRECT] && !l->counts[NOP_COPY_B2B] && !l->counts[NOP_CLEAR_BUF] && present_count() > 1200) {
         static std::atomic<int> told{0};   // (a list with command buffers and none of the ops that need one: named)
         if (told++ < 12) {
             char b[600];

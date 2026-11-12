@@ -275,6 +275,7 @@ public:
     Id heap_compare_samplers{};
 
     Id workgroup_id{};
+    Id num_workgroups{};
     Id local_invocation_id{};
     Id invocation_id{};
     Id patch_vertices_in{};

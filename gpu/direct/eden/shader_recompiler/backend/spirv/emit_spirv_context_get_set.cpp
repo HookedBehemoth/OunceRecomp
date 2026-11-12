@@ -566,6 +566,10 @@ void EmitSetOFlag(EmitContext&) {
     throw NotImplementedException("SPIR-V Instruction");
 }
 
+Id EmitNumWorkgroups(EmitContext& ctx) {
+    return ctx.OpLoad(ctx.U32[3], ctx.num_workgroups);
+}
+
 Id EmitWorkgroupId(EmitContext& ctx) {
     const Id id{ctx.OpLoad(ctx.U32[3], ctx.workgroup_id)};
     if (ctx.mesh_fallback && ctx.stage == Stage::Mesh && ctx.runtime_info.mesh_fallback_task) {

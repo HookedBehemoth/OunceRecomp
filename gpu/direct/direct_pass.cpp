@@ -20,6 +20,7 @@
 #include <cstring>
 
 #include "direct_cmd.h"
+#include "direct_compute.h"
 #include "direct_draw.h"
 #include "direct_dump.h"
 #include "direct_image.h"
@@ -35,9 +36,9 @@ enum {
 };
 const char* const kNames[S_COUNT] = {
     "SetRenderTargets", "with no target", "targets with no image", "renderings begun", "clears as load ops",
-    "clears in a rendering", "masked clears skipped", "clears with no target", "clears not rendered", "draws skipped",
-    "dispatches skipped", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
-    "buffer ops skipped", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
+    "clears in a rendering", "masked clears skipped", "clears with no target", "clears not rendered", "draws",
+    "dispatches", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
+    "buffer ops in lists that record nothing", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
     "records on another thread", "ops a job's rendering cannot hold (skipped)"};
 std::atomic<int64_t> st[S_COUNT];
 std::atomic<int64_t> st_bits[16];   // (barriers by NVN bit)
@@ -434,6 +435,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
         ~Last() { l->last_op2 = l->last_op, l->last_op = op; }
     } last{l, op};
     draw_state(l, op, data, size);   // (M2b: the NVN state the draws read)
+    compute_state(l, op, data, size);   // (M4a: and the dispatches)
     if (l->info.kind == HSD_LIST_GATE && draw_log_frame())
         logf("direct: drawlog gate op %u (noted %d begun %d cur %p segs %zu)", op, (int)p.noted, (int)p.begun, (void*)l->cur, l->segs.size());
     switch (op) {   // (state that clears and copies read: kept in every list)
@@ -464,12 +466,16 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
         }
         draw_emit(l, op, data, size, records(l) && p.begun);   // (M2b: drawn, or counted by why not)
         return;
-    case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:
+    case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:   // (M4a: outside the rendering; the targets stay noted)
         count(S_DISPATCHES);
         if (l->secondary) return count(S_JOB_OUTSIDE);
-        if (records(l)) suspend(l);
+        if (records(l)) suspend(l), compute_dispatch(l, op, data, size, &cmd);
         return;
-    case NOP_CLEAR_BUF: case NOP_COPY_B2B: count(S_BUF_OPS); return;
+    case NOP_CLEAR_BUF: case NOP_COPY_B2B:   // (M4a: the same)
+        if (l->secondary) return count(S_JOB_OUTSIDE);
+        if (!records(l)) return count(S_BUF_OPS);
+        suspend(l), compute_buffer_op(l, op, data, size, &cmd);
+        return;
     case NOP_SET_RT: case NOP_CLEAR_COLOR: case NOP_CLEAR_DS: case NOP_BARRIER: case NOP_COPY_B2T: case NOP_COPY_T2B:
     case NOP_COPY_T2T: case NOP_CLEAR_TEX:
         if (l->secondary && op != NOP_CLEAR_COLOR && op != NOP_CLEAR_DS) {   // (M3a: no pass change, barrier or copy inside a rendering)

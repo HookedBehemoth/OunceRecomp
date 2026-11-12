@@ -34,5 +34,10 @@ void arena_reset(Arena* a);
 
 /// The 600-present lines: draws by reason and list kind, programs, heap, state
 void draw_log(double frames);
+/// (M4a, direct_compute.cpp) bytes of the slot's frame arena; the BDA window table's address; 64 KB of zeros
+struct CmdSlot;
+bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr);
+VkDeviceAddress draw_window_table();
+VkDeviceAddress draw_zero_address();
 
 }  // namespace hsd

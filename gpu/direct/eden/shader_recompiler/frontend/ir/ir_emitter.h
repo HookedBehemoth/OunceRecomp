@@ -100,6 +100,7 @@ public:
     [[nodiscard]] U32 WorkgroupIdX();
     [[nodiscard]] U32 WorkgroupIdY();
     [[nodiscard]] U32 WorkgroupIdZ();
+    [[nodiscard]] U32 NumWorkgroups(u32 component);   // (hookshot direct, M4a: a compute grid read from c0+0..0xB)
 
     [[nodiscard]] Value LocalInvocationId();
     [[nodiscard]] U32 LocalInvocationIdX();

@@ -49,6 +49,7 @@
 #include "direct_image.h"
 #include "direct_shader.h"
 #include "direct_state.h"
+#include "direct_shader_parts.h"
 
 #ifndef HOOKSHOT_DIRECT_SHADER_STAMP
 #define HOOKSHOT_DIRECT_SHADER_STAMP 0ull
@@ -1410,3 +1411,24 @@ void shader_stats(char* out, size_t cap, double frames) {
 }
 
 }  // namespace hsd
+
+// ---- (M4a) the pieces compute programs share with these (direct_shader_parts.h; direct_compute.cpp) ----
+namespace hsd::shader_parts {
+bool read_stage(const nvn_stage_data& sd, uint8_t ctl[0xd8], std::vector<uint8_t>& area) { return read_package(sd, ctl, area); }
+const Shader::Profile& stage_profile(VkShaderStageFlags stage) { return profile_graphics(stage); }
+Shader::HostTranslateInfo translate_info() { return host_info(); }
+VkDeviceAddress put_c1(const std::vector<uint8_t>& bytes, uint32_t used) { return c1_put(bytes, used); }
+void info_put(std::vector<uint8_t>& o, const Shader::Info& i) { put_info(o, i); }
+bool info_get(const uint8_t*& p, const uint8_t* end, Shader::Info& i) {
+    Reader r{p, end};
+    get_info(r, i);
+    p = r.p;
+    return !r.bad;
+}
+uint64_t cache_stamp() { return disk_stamp(); }
+std::string program_dir() { return exe_dir(); }
+uint8_t answer_of(uint32_t handle) { return live_answer(handle); }
+uint8_t answer_canonical(uint8_t type, bool dim_fixed, uint8_t desc_type, bool depth_float) {
+    return canonical(type, dim_fixed, desc_type, depth_float);
+}
+}  // namespace hsd::shader_parts
