@@ -1563,12 +1563,6 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
         return;
     }
     if (list_ref()) {   /* (a recording never ended dropped; the ended ones live on by their handles) */
-        if (r->dl) {   /* (begun and not ended: dropped) */
-            hsd_flush();
-            void *dl = r->dl;
-            r->dl = NULL;
-            rx_direct()->list_released(dl);
-        }
         nvn_list_drop(&r->lw);
         memset(r, 0, sizeof *r);
         cmd_slot_give(o->slot);
@@ -1627,8 +1621,18 @@ static void eng_mark(nvn_cmd *o, uint32_t kind, uint32_t site, uint64_t a, uint6
     o->hw_used -= sz;   /* (no hardware equivalent: the game sizes its heaps by what it is told is used) */
     o->last_rec = 0;
 }
+/* (direct mode) a command buffer finalized or initialized again: its list begun and not ended dropped (before cmd_release) */
+static void direct_drop(nvn_cmd *o) {
+    cmd_rec *r = cmd_slot(o->slot);
+    if (!rx_direct() || !r || r->owner != h2g(o) || !r->dl) return;
+    hsd_flush();
+    void *dl = r->dl;
+    r->dl = NULL;
+    rx_direct()->list_released(dl);
+}
 NV(nvnCommandBufferInitialize) {
     nvn_cmd *o = CB(P(0));
+    direct_drop(o);
     cmd_release(o);   /* (initialized again without Finalize: its recording buffer back) */
     memset(o, 0, sizeof *o);
     o->magic = NVN_MAGIC('C', 'M', 'D', 'B');
@@ -1640,6 +1644,7 @@ NV(nvnCommandBufferInitialize) {
 }
 NV(nvnCommandBufferFinalize) {
     nvn_cmd *o = CB(P(0));
+    direct_drop(o);
     cmd_release(o);
     o->magic = 0;
 }
