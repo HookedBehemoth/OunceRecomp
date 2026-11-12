@@ -802,6 +802,7 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
     logf("%s", b);
 }
 
+std::atomic<bool> scene_seen{false};   // (M4a: draw_scene_up)
 uint64_t tsc_device = 0;
 int64_t t_device = 0;   // (host->now_ns() when the draws' device part was made: the start of the start-time lines)
 void count(List* l, Reason r) {
@@ -809,8 +810,7 @@ void count(List* l, Reason r) {
     else if (r == R_MESH || r == R_TASK_MESH) l->n_mesh++;
     else if (r == R_STEP_A) l->n_step_a++;
     if (l->info.kind == HSD_LIST_JOB) {   // (M3b: the first job draw, the scene's first frame: the start time's end)
-        static std::atomic<bool> seen{false};
-        if (!seen.load(std::memory_order_relaxed) && !seen.exchange(true))
+        if (!scene_seen.load(std::memory_order_relaxed) && !scene_seen.exchange(true))
             logf("direct: start: the first job draw at present %llu, %.2f s after the device", (unsigned long long)present_count(),
                  (host->now_ns() - t_device) / 1e9);
     }
@@ -1323,5 +1323,6 @@ void draw_log(double frames) {
 bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr) { return arena_alloc(slot, bytes, map, addr); }
 VkDeviceAddress draw_window_table() { return window_table_address; }
 VkDeviceAddress draw_zero_address() { return zero_address; }
+bool draw_scene_up() { return scene_seen.load(std::memory_order_relaxed); }
 
 }  // namespace hsd

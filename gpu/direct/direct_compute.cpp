@@ -192,6 +192,7 @@ int64_t take_buf(int i) {
 std::atomic<int64_t> st_codes{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_cs_objects{0}, st_object_failed{0}, st_translate_ns{0},
     st_object_ns{0}, st_slots{0}, st_fixups{0}, st_misses{0}, st_variants{0}, st_samp_binds{0};
 std::atomic<double> last_miss_s{0};
+std::atomic<int64_t> st_waited{0};
 
 // ---- programs: variants per code key, slots per NVN serial ----
 struct Answer {
@@ -218,6 +219,7 @@ struct Variant {
     std::vector<Ubo> ubos;
     const char* skip = nullptr;
     bool told = false;   // (its first dispatch logged)
+    uint32_t lay_ssbo_at = 0, lay_ssbo = 0;   // (its layout's storage buffer table, for that log)
     Variant* next = nullptr;
 };
 struct Family {   // (one compute code: every program slot with it shares its variants)
@@ -721,6 +723,7 @@ bool finish(Variant& v, const Layout& lay) {
         const uint32_t used = info.constant_buffer_used_sizes.empty() ? 0 : info.constant_buffer_used_sizes[0];
         v.bank_bytes = std::clamp<uint32_t>((std::max(used, lay.end()) + 15) & ~15u, 16, kBankMax);
     }
+    v.lay_ssbo_at = lay.ssbo_at(), v.lay_ssbo = lay.ssbo;
     v.c1_addr = parts::put_c1(v.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
     if (kTablePush + 8 > caps.max_push) v.skip = v.skip ? v.skip : "push data over the device's limit";
     VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
@@ -921,6 +924,12 @@ void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, cons
                           v.info.constant_buffer_descriptors.size(), v.info.storage_buffers_descriptors.size(), v.info.texture_descriptors.size(),
                           v.info.image_descriptors.size(), v.info.uses_cooperative_matrix ? ", matrix multiplies" : "",
                           v.info.uses_global_memory ? ", global memory" : "");
+    for (uint32_t i = 0; i < 16 && k < 1500; i++)   // (the storage buffers as c0's table names them)
+        if (word_of(bank, n, v.lay_ssbo_at + 16 * i) || word_of(bank, n, v.lay_ssbo_at + 16 * i + 4))
+            if (i < v.lay_ssbo)
+                k += std::snprintf(b + k, sizeof b - k, " [ssbo%u %#llx+%#x]", i,
+                                   (unsigned long long)(word_of(bank, n, v.lay_ssbo_at + 16 * i) | (uint64_t)word_of(bank, n, v.lay_ssbo_at + 16 * i + 4) << 32),
+                                   word_of(bank, n, v.lay_ssbo_at + 16 * i + 8));
     for (const auto& im : v.info.image_descriptors) {
         if (k > 1700) break;
         const uint32_t h = im.cbuf_index == 0 ? word_of(bank, n, im.cbuf_offset) : 0;
@@ -1030,6 +1039,11 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     Slot* slot = slot_find(c.prog.serial);
     if (!slot) slot = slot_make(c.prog);
     if (!slot) return count(l, D_NOT_READ);
+    // (a miss at the game's start waits (plan rule 2: load time only; a load list's LUT is computed once there); later it is
+    // skipped and counted)
+    const bool wait = !draw_scene_up();
+    const auto wait_until = clk::now() + std::chrono::seconds(120);
+    while (wait && slot->state.load(std::memory_order_acquire) == 0 && clk::now() < wait_until) std::this_thread::yield();
     const int state = slot->state.load(std::memory_order_acquire);
     if (state == 0) return count(l, D_NOT_READ);
     if (state != 1) return count(l, D_NOT_COMPUTE);
@@ -1038,15 +1052,18 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     uint8_t bank[kBankMax];
     const uint32_t lay_n = std::clamp<uint32_t>((fam.lay.end() + 15) & ~15u, 16, kBankMax);
     bank_fill(c, fam.lay, grid, bank, lay_n, false);
-    Variant* v = nullptr;
-    for (Variant* x = fam.variants.load(std::memory_order_acquire); x && !v; x = x->next) {
-        bool hold = true;
-        for (const Answer& a : x->answers) {
-            const uint32_t h = word_of(bank, lay_n, a.offset);
-            if (h && parts::answer_canonical(parts::answer_of(h), a.dim_fixed, a.desc_type, a.depth_float) != a.want) hold = false;
+    auto pick = [&]() -> Variant* {
+        for (Variant* x = fam.variants.load(std::memory_order_acquire); x; x = x->next) {
+            bool hold = true;
+            for (const Answer& a : x->answers) {
+                const uint32_t h = word_of(bank, lay_n, a.offset);
+                if (h && parts::answer_canonical(parts::answer_of(h), a.dim_fixed, a.desc_type, a.depth_float) != a.want) hold = false;
+            }
+            if (hold) return x;
         }
-        if (hold) v = x;
-    }
+        return nullptr;
+    };
+    Variant* v = pick();
     if (!v) {   // (translated on a worker, once for these answers)
         uint64_t want = fam.key;
         for (uint32_t off = fam.lay.tex_at(); off + 4 <= lay_n && off < fam.lay.img_at(); off += 8)
@@ -1074,7 +1091,16 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
             f->pending.erase(want);
             if (!ok) f->failed.insert(want);
         });
-        return count(l, D_TRANSLATING);
+        while (wait && !(v = pick()) && clk::now() < wait_until) {
+            {
+                std::lock_guard lk(fam.mu);
+                if (!fam.pending.count(want)) break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!v) v = pick();
+        if (!v) return count(l, D_TRANSLATING);
+        st_waited.fetch_add(1, std::memory_order_relaxed);
     }
     if (v->skip || !v->cs) return count(l, D_VARIANT);
     if (skipped_by_dbg(v->key)) return count(l, D_VARIANT);
@@ -1233,11 +1259,11 @@ void compute_log(double frames) {
     }
     logf("direct: compute programs (since the start): %lld slots, %lld codes, %lld variants (%lld translated in %.1f s, %lld from the cache, "
          "%lld failed), shader objects %lld (%.1f s, %lld failed; %lld from their binaries, %lld binaries refused), %lld with matrix multiplies, %lld reading the grid otherwise; misses %.1f "
-         "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld",
+         "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld; dispatches that waited for their variant at the start %lld",
          (long long)st_slots.load(), (long long)st_codes.load(), (long long)st_variants.load(), (long long)st_translated.load(),
          st_translate_ns.load() / 1e9, (long long)st_from_disk.load(), (long long)st_failed.load(), (long long)st_cs_objects.load(),
          st_object_ns.load() / 1e9, (long long)st_object_failed.load(), (long long)st_from_binary.load(), (long long)st_binary_failed.load(), (long long)st_coopmat.load(), (long long)st_grid_left.load(),
-         st_misses.exchange(0) / frames, queued, last_miss_s.load(), st_fixups.exchange(0) / frames, (long long)st_samp_binds.load());
+         st_misses.exchange(0) / frames, queued, last_miss_s.load(), st_fixups.exchange(0) / frames, (long long)st_samp_binds.load(), (long long)st_waited.load());
 }
 
 }  // namespace hsd
