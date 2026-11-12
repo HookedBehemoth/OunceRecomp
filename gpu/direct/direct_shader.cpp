@@ -1123,6 +1123,17 @@ bool finish(Variant& v) {
         if (caps.sg32_stages & st.vk_stage) sz.pNext = &mi, ci.pNext = &sz;
         else ci.pNext = &mi;
         VkShaderEXT obj = VK_NULL_HANDLE;
+        if (const char* dir = dbg_value("taskspv"); dir && v.stages.back().vk_stage == VK_SHADER_STAGE_COMPUTE_BIT) {
+            // (HOS_DBG=taskspv: a task+mesh program's stage, its SPIR-V and heap mappings, named before it is made)
+            char path[512];
+            std::snprintf(path, sizeof path, "%s/%016llx_%zu.map", dir, (unsigned long long)d.key, si);
+            if (FILE* f = std::fopen(path, "wb")) std::fwrite(maps[si].data(), sizeof maps[si][0], maps[si].size(), f), std::fclose(f);
+            std::snprintf(path, sizeof path, "%s/%016llx_%zu.spv", dir, (unsigned long long)d.key, si);
+            if (FILE* f = std::fopen(path, "wb")) std::fwrite(st.spirv.data(), 4, st.spirv.size(), f), std::fclose(f);
+            logf("direct: taskspv: making stage %zu (%#x, flags %#x, size32 %d) of %016llx", si, (unsigned)st.vk_stage, (unsigned)ci.flags,
+                 (int)((caps.sg32_stages & st.vk_stage) != 0), (unsigned long long)d.key);
+            host->log_flush();
+        }
         const auto t0 = clk::now();
         sobin::init();
         const uint64_t bkey = sobin::key_of(ci, mi, (caps.sg32_stages & st.vk_stage) != 0);
@@ -1328,11 +1339,6 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
         const uint32_t threads = ts->program.workgroup_size[0];
         if (threads == 0 || threads > 256)   // (a map entry holds the index in its task in 8 bits)
             throw Shader::NotImplementedException("task stage of {} threads", threads);
-        Shader::RuntimeInfo trt{};
-        trt.previous_stage_stores.mask.set();
-        trt.mesh_fallback = true;
-        trt.task_buffer = true;
-        std::vector<uint32_t> tspirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_COMPUTE_BIT), trt, ts->program, bindings);
         st_game_words.fetch_add(tenv.game_words, std::memory_order_relaxed);
         Env menv{s, mc, Shader::Stage::Mesh};
         menv.set_mesh(regs, prim ? prim->sph : nullptr);
@@ -1374,6 +1380,12 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
             fst.info = fs->program.info;
             fst.c1 = fsc->c1;
         }
+        // (its SPIR-V made last: the stages' bindings are numbered in the order finish() maps them, mesh, fragment, task)
+        Shader::RuntimeInfo trt{};
+        trt.previous_stage_stores.mask.set();
+        trt.mesh_fallback = true;
+        trt.task_buffer = true;
+        std::vector<uint32_t> tspirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_COMPUTE_BIT), trt, ts->program, bindings);
         VStage& tst = v.stages.emplace_back();
         tst.nvn_stage = 6, tst.vk_stage = VK_SHADER_STAGE_COMPUTE_BIT;
         tst.spirv = std::move(tspirv);
