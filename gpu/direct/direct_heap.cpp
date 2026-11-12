@@ -101,6 +101,12 @@ bool make_heap(HeapBuf& h, VkDeviceSize used, VkDeviceSize min_reserved) {
 // ---- entries ----
 std::mutex heap_mu;   // (registrations: the entries, slot_image)
 std::unique_ptr<const Image*[]> slot_image;   // (texture id -> the image its entries hold)
+struct SlotTex {
+    uint64_t gpu;
+    uint32_t w, h;
+    int format, target;
+};
+std::unique_ptr<SlotTex[]> slot_tex;   // (logs: what was registered there)
 std::unique_ptr<std::atomic<uint8_t>[]> answers;   // (texture id -> answer byte)
 
 std::atomic<int64_t> st_tex{0}, st_entries{0}, st_nulls{0}, st_big_id{0}, st_samp{0}, st_border{0}, st_gone{0}, st_no_image{0},
@@ -398,6 +404,7 @@ void draw_device_created() {
                     std::memcpy(smp_heap.map + (kHeapSamplers + i) * kSamplerDesc, d[1], kSamplerDesc);
     }
     slot_image.reset(new const Image*[kHeapSlots]());
+    slot_tex.reset(new SlotTex[kHeapSlots]());
     answers.reset(new std::atomic<uint8_t>[kHeapSlots]);
     for (uint32_t i = 0; i < kHeapSlots; i++) answers[i].store(0xFF, std::memory_order_relaxed);
     ready = true;
@@ -452,6 +459,7 @@ void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
         (ok ? st_entries : st_nulls).fetch_add(1, std::memory_order_relaxed);
     }
     slot_image[id] = im;
+    slot_tex[id] = {t->gpu, t->d.width, t->d.height, t->d.format, t->d.target};
 }
 
 void heap_sampler_registered(int id, const nvn_samp_par* p) {
@@ -484,7 +492,9 @@ void heap_describe(uint32_t id, char* out, size_t cap) {
     if (!ready || id >= kHeapSlots) return void(std::snprintf(out, cap, "-"));
     std::lock_guard lk(heap_mu);
     const Image* im = slot_image[id];
-    int k = std::snprintf(out, cap, "id %u: image #%u %ux%u vk %d%s, entries", id, im ? im->id : 0, im ? im->width : 0, im ? im->height : 0,
+    const SlotTex& st = slot_tex[id];
+    int k = std::snprintf(out, cap, "id %u: texture %#llx %ux%u NVN format %#x target %d, ", id, (unsigned long long)st.gpu, st.w, st.h, st.format, st.target);
+    k += std::snprintf(out + k, cap - k, "image #%u %ux%u vk %d%s, entries", im ? im->id : 0, im ? im->width : 0, im ? im->height : 0,
                           im ? (int)im->format : 0, im && im->placeholder ? " (placeholder)" : "");
     for (uint32_t r = 0; r < kHeapRegions; r++) {
         const uint8_t* e = res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc;

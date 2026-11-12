@@ -626,7 +626,7 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
         k += std::snprintf(b + k, sizeof b - k, " discard %d poly %u front %u", (int)s.raster_discard, s.poly.mode, s.poly.front);
         for (const auto& t : p->tex_words) {
             const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0;
-            char e[200];
+            char e[320];
             heap_describe(h & 0xFFFFF, e, sizeof e);
             k += std::snprintf(b + k, sizeof b - k, " tex c%u+%#x=%#x(%s)", t.bank, t.offset, h, e);
         }
