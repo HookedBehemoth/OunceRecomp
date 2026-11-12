@@ -421,16 +421,18 @@ extern "C" __attribute__((visibility("default"))) void hsd_texels(uint32_t sourc
                                                                   const void* region, const void* src, uint64_t row, uint64_t img) {
     const nvn_tex* t = (const nvn_tex*)tex;
     const NVNcopyRegion* r = (const NVNcopyRegion*)region;
-    const int si = source == HSD_TEXELS_TERRAIN ? S_TERRAIN : S_GLYPH;
+    const int si = source == HSD_TEXELS_TERRAIN ? S_TERRAIN : source == HSD_TEXELS_GLYPH ? S_GLYPH : S_TEXELS;
     if (!t || !r) return;
     if (!src) {   // (a tile file that was not converted: its image is drawn as the placeholder)
         if (Image* im = image_find(t); im && !im->placeholder) im->no_content = true;
         st_tiles_unconverted.fetch_add(1, std::memory_order_relaxed);
-        name_once("a terrain tile not converted (NVN format %#x %ux%u x%u at %#llx): the placeholder", t->d.format, t->d.width,
+        name_once("a %s not converted (NVN format %#x %ux%u x%u at %#llx): the placeholder",
+                  si == S_TERRAIN ? "terrain tile" : "prepared file's texture", t->d.format, t->d.width,
                   t->d.height, t->d.depth, (unsigned long long)t->gpu);
         return;
     }
-    if (!image_upload_region(t, level, layer0, r, (const uint8_t*)src, row, img, si == S_TERRAIN ? W_TERRAIN : W_GLYPH)) {
+    if (!image_upload_region(t, level, layer0, r, (const uint8_t*)src, row, img,
+                            si == S_TERRAIN ? W_TERRAIN : si == S_GLYPH ? W_GLYPH : W_TEXELS)) {
         st_skipped[si].fetch_add(1, std::memory_order_relaxed);
         name_once("a %s upload skipped (no image or outside it): NVN format %#x %ux%u, region %d,%d %dx%d x%d", kSrcNames[si],
                   t->d.format, t->d.width, t->d.height, r->xoffset, r->yoffset, r->width, r->height, r->depth);

@@ -343,6 +343,7 @@ const char *direct_assets_overlay(void) {
     return root;
 }
 void direct_assets_overlay_opened(const char *path) {
+    direct_sky_lut_opened(path);
     const LONG64 k = InterlockedIncrement64(&n_overlay);
     if (k <= 20 || k % 100000 == 0) hos_log("assets: overlay open #%lld: %s", (long long)k, path);
 }

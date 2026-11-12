@@ -54,7 +54,7 @@ void hsd_asset_rebind(const void *tex);             /* tex is initialized again 
 void hsd_asset_pool(uint64_t lo, uint64_t hi);      /* the asset heap's pool (pool 127): its textures need a load */
 /* texels from the CPU that no NVN call carries (game patches): an NVNcopyRegion of tex's level and first layer from
    src (row bytes, layer bytes; 0: packed); src NULL: none to give (the placeholder content, counted) */
-enum { HSD_TEXELS_TERRAIN = 1, HSD_TEXELS_GLYPH = 2 };
+enum { HSD_TEXELS_TERRAIN = 1, HSD_TEXELS_GLYPH = 2, HSD_TEXELS_FILE = 3 };   /* (FILE: a prepared file's linear texels, M4e) */
 void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                 uint64_t row, uint64_t img);
 

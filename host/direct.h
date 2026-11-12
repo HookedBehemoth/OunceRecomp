@@ -51,6 +51,8 @@ int direct_assets_on(void);
    from it (counted) */
 const char *direct_assets_overlay(void);
 void direct_assets_overlay_opened(const char *path);
+/* direct_sky_lut.c (M4e): a file served from the prepared overlay (direct_assets_overlay_opened) */
+void direct_sky_lut_opened(const char *path);
 /* nvn_native.c nvnTextureInitialize: packaged texture data the back end never reads, its copy into the storage skipped
    (1) in direct mode */
 int direct_assets_skip_packaged(uint64_t bytes);
