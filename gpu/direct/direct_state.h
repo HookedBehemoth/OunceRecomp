@@ -20,7 +20,8 @@ struct DState {
     nvn_prog prog{};
     bool has_prog = false;
     nvn_p_bind_buf ubo[kStages][16]{}, ssbo[kStages][16]{};
-    uint64_t tex[kStages][128]{}, samp[kStages][128]{}, img[kStages][32]{};
+    // (the handles' low words, which the banks hold: the graphics stages')
+    uint32_t tex[kBankStages][128]{}, samp[kBankStages][128]{}, img[kBankStages][32]{};
     // (a deferred bind's source: the guest address of the slot's handle in the game's array, read at the guest's submit; 0:
     // immediate. Kept for the stages whose banks a draw makes)
     uint64_t tex_src[kBankStages][128]{}, samp_src[kBankStages][128]{}, img_src[kBankStages][32]{};

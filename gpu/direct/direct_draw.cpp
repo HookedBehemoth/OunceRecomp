@@ -192,6 +192,10 @@ struct ListDraw {
         VkDeviceAddress copy;
     };
     std::vector<UbCopy> ub_copies;
+    // (the last pick, and what it was made from)
+    const DrawProg* pick = nullptr;
+    uint32_t pick_prog_gen = 0, pick_vtx_gen = 0, pick_bank_gen[kBankStages]{};
+    uint64_t pick_ct = 0;
 };
 
 namespace {
@@ -702,8 +706,18 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     uint8_t ct[8]{};   // (the targets' colour types; a list with none of its own (a job): float, as every logged pass)
     if (records)
         for (int i = 0; i < p.n; i++) ct[i] = p.color[i].view ? color_type(p.color[i].format) : 0;
-    ShaderMiss why;
-    const DrawProg* prog = shader_pick(s, ct, why);
+    ShaderMiss why = SM_NONE;
+    const DrawProg* prog;
+    uint64_t ctw;
+    std::memcpy(&ctw, ct, 8);
+    if (x.pick && x.pick_prog_gen == s.prog_gen && x.pick_vtx_gen == s.vtx_gen && x.pick_bank_gen[0] == s.bank_gen[0] &&
+        x.pick_bank_gen[1] == s.bank_gen[1] && x.pick_ct == ctw) {   // (nothing the pick reads changed since the last draw)
+        prog = x.pick;
+    } else {
+        prog = shader_pick(s, ct, why);
+        x.pick = prog, x.pick_prog_gen = s.prog_gen, x.pick_vtx_gen = s.vtx_gen, x.pick_ct = ctw;
+        x.pick_bank_gen[0] = s.bank_gen[0], x.pick_bank_gen[1] = s.bank_gen[1];
+    }
     if (!prog) {
         static const Reason map[SM_COUNT] = {R_DRAWN, R_NO_PROGRAM, R_NOT_PARSED, R_NOT_GRAPHICS, R_TRANSLATING, R_FAILED, R_STEP_A};
         return count(l, map[why]);

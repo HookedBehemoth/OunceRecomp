@@ -113,11 +113,11 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
     }
     case NOP_BIND_TEX: case NOP_BIND_SAMP: case NOP_BIND_IMG: {
         const auto b = payload<nvn_p_bind_handles>(a, size);
-        if (b.stage < 0 || b.stage >= kStages || b.first < 0) return true;
-        uint64_t* to = op == NOP_BIND_TEX ? s.tex[b.stage] : op == NOP_BIND_SAMP ? s.samp[b.stage] : s.img[b.stage];
+        if (b.stage < 0 || b.stage >= kBankStages || b.first < 0) return true;   // (compute, task, mesh: not drawn at M2b)
+        uint32_t* to = op == NOP_BIND_TEX ? s.tex[b.stage] : op == NOP_BIND_SAMP ? s.samp[b.stage] : s.img[b.stage];
         const int lim = op == NOP_BIND_IMG ? 32 : 128;
         const int n = std::clamp(std::min(b.n, lim - b.first), 0, 32);
-        for (int k = 0; k < n; k++) to[b.first + k] = b.h[k];
+        for (int k = 0; k < n; k++) to[b.first + k] = (uint32_t)b.h[k];
         if (b.stage < kBankStages) {
             uint64_t* src = op == NOP_BIND_TEX ? s.tex_src[b.stage] : op == NOP_BIND_SAMP ? s.samp_src[b.stage] : s.img_src[b.stage];
             for (int k = 0; k < n; k++) {
@@ -162,7 +162,7 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
 }
 
 uint32_t bank_word(const DState& s, int bank, int stage, uint32_t offset) {
-    if (stage < 0 || stage >= kStages || stage == 5 || offset + 4 > 0xA00 || (offset & 3)) return 0;
+    if (stage < 0 || stage >= kBankStages || offset + 4 > 0xA00 || (offset & 3)) return 0;
     auto lo = [](uint64_t v) { return (uint32_t)v; };
     if (bank == 2) {   // (handles' low words, 8 bytes a slot: textures 0x20 (32) and 0x168 (128), images 0x120 (9), samplers 0x568)
         if (offset & 7) return 0;
@@ -189,7 +189,7 @@ uint32_t bank_word(const DState& s, int bank, int stage, uint32_t offset) {
 
 void bank_fill(const DState& s, int bank, int stage, uint8_t* d, uint32_t n) {
     std::memset(d, 0, n);
-    if (stage < 0 || stage >= kStages || stage == 5) return;
+    if (stage < 0 || stage >= kBankStages) return;
     auto put = [&](uint32_t off, uint32_t v) {
         if (off + 4 <= n) std::memcpy(d + off, &v, 4);
     };
