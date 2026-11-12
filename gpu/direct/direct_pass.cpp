@@ -322,7 +322,13 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_CLEAR_BUF: case NOP_COPY_B2B: count(S_BUF_OPS); return;
     case NOP_SET_RT: case NOP_CLEAR_COLOR: case NOP_CLEAR_DS: case NOP_BARRIER: case NOP_COPY_B2T: case NOP_COPY_T2B:
     case NOP_COPY_T2T: case NOP_CLEAR_TEX:
-        if (!records(l)) return count(S_UNRECORDED);
+        if (!records(l)) {
+            static std::atomic<int> told{0};
+            if (present_count() > 1200 && told++ < 12)
+                logf("direct: op %u in a list of kind %u (lr %#llx) that records nothing at this stage: counted", op, l->info.kind,
+                     (unsigned long long)l->info.lr);
+            return count(S_UNRECORDED);
+        }
         break;
     default: return;
     }

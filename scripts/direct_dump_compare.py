@@ -26,13 +26,13 @@ NAMES = {37: "RGBA8", 43: "RGBA8_SRGB", 44: "BGRA8", 64: "A2B10G10R10", 76: "R16
 def read(path):
     """The pass targets, and the frames the dump holds (the frozen back end logs a line a frame while it dumps; the
     direct one names its count)"""
-    out, frames = [], 0
+    out, frames, direct = [], 0, False
     with open(path, errors="replace") as f:
         for line in f:
             d = re.search(r"\(direct: (\d+) frames", line)
             if d:
-                frames = int(d.group(1))
-            elif "vk: dump of the frame after present" in line:
+                frames, direct = int(d.group(1)), True
+            elif not direct and "vk: dump of the frame after present" in line:
                 frames += 1
             m = LINE.search(line)
             if not m:
