@@ -20,7 +20,8 @@ M2 is built in stages, each landed on its own.
 | `direct_present` | the swapchain image is a blit of the NVN window texture with the crop the host gives | M2a |
 | `direct_dump` | `HOS_DBG=dump:<present>`: every pass's targets of one frame written to files, in the frozen back end's `RX_VK_DUMP` naming so one tool compares both | M2a |
 | `direct_assets` | the prepared texture store's reader (`nx2/prepare_textures.py`'s docstring is the format); upload into an image on the registering thread's command buffer | A-rt |
-| `direct_heap` | descriptor-heap entries at the NVN pool ids, written at registration | A-rt |
+| `direct_heap` | descriptor-heap entries at the NVN pool ids, written at registration (moved to M2b: its mapping is the shader contract's) | M2b |
+| host patches | the texture loader hook (texel copy skipped), the terrain tile upload at `f_80c17040+0x544`, the font glyph upload after `f_81539300` (m3-patch-sites.md 6) | A-rt |
 | `direct_state` | the NVN state of a list, updated by the emitted ops | M2b |
 | `direct_shader` | programs to shader objects through the translator, a lock-free table by program, the direct back end's own cache files | M2b |
 | `direct_draw` | a draw: program, dynamic state, vertex and index buffers by layer 0, push data and bank words, the draw call | M2b |
