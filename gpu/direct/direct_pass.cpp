@@ -646,6 +646,15 @@ void task_job_step(List* l, const List* callee) {
     if (callee->task_runs.fetch_add(1, std::memory_order_relaxed)) count(S_TASK_JOB_AGAIN);
     if (l->pass.begun) suspend(l), count(S_TASK_JOB_SPLITS);
     VkCommandBuffer cb = cmd(l);
+    static const bool drain = dbg("taskdrain");   // (M6c, a diagnosis: everything before the task step finished first)
+    if (drain) {
+        VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.srcAccessMask = b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cb, &d);
+    }
     vkCmdExecuteCommands(cb, 1, &callee->task_pre);
     task_barrier(cb, false);
     vkCmdExecuteCommands(cb, 1, &callee->task_cb);
