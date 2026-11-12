@@ -25,12 +25,28 @@ std::pair<Id, Id> AtomicArgs(EmitContext& ctx) {
 
 Id ImageAtomicU32(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id coords, Id value,
                   Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
-    if (!index.IsImmediate() || index.U32() != 0) {
-        // TODO: handle layers
-        throw NotImplementedException("Image indexing");
-    }
     const auto info{inst->Flags<IR::TextureInstInfo>()};
-    const Id image{Image(ctx, info)};
+    Id image{};
+    if (ctx.profile.heap_handles && info.type != TextureType::Buffer) {
+        // (direct back end, M3b) a pointer to the storage region's entry of the handle's image id
+        const ImageDefinition def{ctx.images.at(info.descriptor_index)};
+        const Id h{index.IsImmediate() ? ctx.Const(index.U32()) : ctx.Def(index)};
+        const Id id{ctx.OpBitwiseAnd(ctx.U32[1], h, ctx.Const(0xFFFFFU))};
+        image = ctx.OpAccessChain(def.pointer_type, def.id, id);
+        if (!index.IsImmediate()) {
+            ctx.Decorate(id, spv::Decoration::NonUniform);
+            ctx.Decorate(image, spv::Decoration::NonUniform);
+            ctx.non_uniform_ids.insert(id.value);
+            ctx.non_uniform_ids.insert(image.value);
+            ctx.uses_nonuniform_storage_image = true;
+        }
+    } else {
+        if (!index.IsImmediate() || index.U32() != 0) {
+            // TODO: handle layers
+            throw NotImplementedException("Image indexing");
+        }
+        image = Image(ctx, info);
+    }
     const Id pointer{ctx.OpImageTexelPointer(ctx.image_u32, image, coords, ctx.Const(0U))};
     const auto [scope, semantics]{AtomicArgs(ctx)};
     return (ctx.*atomic_func)(ctx.U32[1], pointer, scope, semantics, value);

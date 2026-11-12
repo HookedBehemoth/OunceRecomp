@@ -59,13 +59,15 @@ void draw_device_created();
 
 // ---- the heap ----
 constexpr uint32_t kHeapSlots = 1u << 16;   // (texture ids a view type region holds)
-constexpr uint32_t kHeapRegions = 7;        // (VkImageViewType 0..6)
+constexpr uint32_t kHeapRegions = 7;        // (VkImageViewType 0..6: sampled views; then as many of storage views, M3b)
 constexpr uint32_t kHeapSamplers = 4096;    // (12-bit sampler ids)
 constexpr uint32_t kImageDesc = 64, kSamplerDesc = 16;
 
 bool heap_on();
 /// Byte offsets of a region's first descriptor, of the zero tail, of a sampler region
 uint32_t heap_region_offset(uint32_t region);
+/// (M3b) the storage-image region of a view type (images bound by draws read it, indexed by the handle's image id)
+uint32_t heap_storage_offset(uint32_t region);
 uint32_t heap_tail_offset();
 uint32_t heap_sampler_offset(bool compare);
 /// The heaps bound on a command buffer (before its first heap draw)

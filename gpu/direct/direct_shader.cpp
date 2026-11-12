@@ -297,6 +297,7 @@ Shader::Profile make_profile() {
     p.ssbo_bda = true;
     p.ssbo_bda_check = false;
     p.ssbo_bda_wide = true;
+    p.heap_handles = true;   // (M3b, step B: the shader reads every handle and indexes the heap with it)
     return p;
 }
 const Shader::Profile& profile() {
@@ -322,6 +323,7 @@ Shader::HostTranslateInfo host_info() {
     h.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
     h.support_geometry_shader_passthrough = false;
     h.support_conditional_barrier = true;
+    h.heap_handles = true;
     return h;
 }
 
@@ -758,13 +760,6 @@ bool finish(Variant& v) {
     DrawProg& d = v.d;
     std::vector<std::vector<VkDescriptorSetAndBindingMappingEXT>> maps(v.stages.size());
     uint32_t binding = 0;
-    auto pushed_slot = [&](uint8_t stage, uint8_t index) -> uint16_t {
-        for (const auto& p : d.pushed)
-            if (p.stage == stage && p.index == index) return p.push_off;
-        const uint16_t off = (uint16_t)(kTablePush + 8 + 8 * d.pushed.size());
-        d.pushed.push_back({stage, index, off});
-        return off;
-    };
     for (size_t si = 0; si < v.stages.size(); si++) {
         const VStage& st = v.stages[si];
         const Shader::Info& info = st.info;
@@ -805,34 +800,41 @@ bool finish(Variant& v) {
         }
         for (size_t k = 0; k < info.texture_buffer_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc)), d.skip = d.skip ? d.skip : "a texel buffer";
         for (size_t k = 0; k < info.image_buffer_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc)), d.skip = d.skip ? d.skip : "an image buffer";
+        // (textures: each descriptor a runtime array the shader indexes with the handle's image id, mapped to the heap's region
+        // of its view type; the samplers two arrays, plain and depth compare, indexed by the handle's sampler id (step B))
         for (const auto& t : info.texture_descriptors) {
             const uint32_t b = binding++;
             const uint32_t region = std::min<uint32_t>((uint32_t)view_type(t.type), kHeapRegions - 1);
-            const bool single = !t.has_secondary && t.handle_program == ~0u && !(t.cbuf_offset & 3) && t.count == 1;
-            if (handle_is_storage_pointer(info, t)) {   // (a storage buffer's address, not a handle: nothing, as the frozen path)
-                m.push_back(null_map(b, kImageDesc));
-                continue;
+            VkDescriptorSetAndBindingMappingEXT x = map_of(b, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
+            auto& co = x.sourceData.constantOffset;
+            if (handle_is_storage_pointer(info, t)) {   // (a storage buffer's address, not a handle: every index the zero tail)
+                co.heapOffset = heap_tail_offset(), co.heapArrayStride = 0;
+            } else {
+                co.heapOffset = heap_region_offset(region), co.heapArrayStride = kImageDesc;
             }
-            const bool bank = (t.cbuf_index == 0 || t.cbuf_index == 2) && t.cbuf_offset + 4 <= 0xA00;
-            const bool game = t.cbuf_index >= 3 && t.cbuf_index < 19;
-            if (!single || (!bank && !game)) {
-                d.skip = d.skip ? d.skip : t.handle_program != ~0u ? "a texture handle from a handle program"
-                                          : t.has_secondary ? "a two-word texture handle"
-                                          : t.count != 1 ? "a texture array" : "a texture handle not in a constant buffer";
-                m.push_back(null_map(b, kImageDesc));
-                continue;
+            m.push_back(x);
+            if (t.handle_program == ~0u && t.count == 1 && !t.has_secondary) d.tex_words.push_back({stage, (uint8_t)t.cbuf_index, (uint16_t)t.cbuf_offset});
+        }
+        if (!info.texture_descriptors.empty()) {   // (both arrays mapped: the shader declares the ones it samples with)
+            for (const bool cmp : {false, true}) {
+                VkDescriptorSetAndBindingMappingEXT x = map_of(cmp ? Shader::Backend::SPIRV::kHeapCompareSamplerBinding
+                                                                   : Shader::Backend::SPIRV::kHeapSamplerBinding,
+                                                               VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
+                                                               VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
+                auto& co = x.sourceData.constantOffset;
+                co.heapOffset = 0, co.heapArrayStride = 0;
+                co.samplerHeapOffset = heap_sampler_offset(cmp), co.samplerHeapArrayStride = kSamplerDesc;
+                m.push_back(x);
             }
-            const uint16_t po = pushed_slot(stage, (uint8_t)t.cbuf_index);
-            d.tex_words.push_back({stage, (uint8_t)t.cbuf_index, (uint16_t)t.cbuf_offset});
-            VkDescriptorSetAndBindingMappingEXT x = map_of(b, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_INDIRECT_INDEX_EXT);
-            auto& ii = x.sourceData.indirectIndex;
-            ii.heapOffset = heap_region_offset(region), ii.pushOffset = po, ii.addressOffset = t.cbuf_offset;
-            ii.heapIndexStride = kImageDesc, ii.heapArrayStride = kImageDesc, ii.useCombinedImageSamplerIndex = VK_TRUE;
-            ii.samplerHeapOffset = heap_sampler_offset(t.is_depth), ii.samplerPushOffset = po, ii.samplerAddressOffset = t.cbuf_offset;
-            ii.samplerHeapIndexStride = kSamplerDesc, ii.samplerHeapArrayStride = kSamplerDesc;
+        }
+        // (storage images: the heap's storage region of the view type, indexed by the handle's image id)
+        for (const auto& im : info.image_descriptors) {
+            const uint32_t region = std::min<uint32_t>((uint32_t)view_type(im.type), kHeapRegions - 1);
+            VkDescriptorSetAndBindingMappingEXT x = map_of(binding++, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
+            x.sourceData.constantOffset.heapOffset = heap_storage_offset(region);
+            x.sourceData.constantOffset.heapArrayStride = kImageDesc;
             m.push_back(x);
         }
-        for (size_t k = 0; k < info.image_descriptors.size(); k++) m.push_back(null_map(binding++, kImageDesc)), d.skip = d.skip ? d.skip : "a storage image";
         if (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT)
             for (uint32_t i = 0; i < 16; i++)
                 if (info.loads.Generic(i)) d.vs_loads |= 1u << i;

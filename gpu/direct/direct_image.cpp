@@ -248,6 +248,7 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     if (r != VK_SUCCESS || im.width > lim.maxExtent.width || im.height > lim.maxExtent.height || im.depth > lim.maxExtent.depth ||
         im.layers > lim.maxArrayLayers || im.levels > lim.maxMipLevels || !(lim.sampleCounts & im.samples))
         return name_placeholder(t, "the driver refuses the image", st_ph_refused), &placeholder;
+    im.storage = (usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.flags = flags;
     ci.imageType = im.type;
@@ -428,6 +429,19 @@ void image_texture_registered(const nvn_tex* t) {
     if (image_find(t)) return;
     std::unique_lock lk(images_mu);   // (registered without its initialization seen: made now)
     if (get(t)) st_registered_new.fetch_add(1, std::memory_order_relaxed);
+}
+
+void image_key_describe(const nvn_tex* t, char* out, size_t cap) {   // (M3b: why a texture's image is what it is, for logs)
+    Key k;
+    FormatInfo fi;
+    int bw, bh, bpb;
+    AssetRef a;
+    const int kind = key_of(t, k, fi, bw, bh, bpb, &a);
+    AssetRef now;
+    const bool linked = assets_of(t, now);
+    static const char* const kinds[] = {"none", "plain", "asset", "asset with no record", "linked plain"};
+    std::snprintf(out, cap, "serial %llu key %s, linked %d (record %u, plain %llu, why '%s')", t ? (unsigned long long)t->serial : 0ull,
+                  kinds[kind], (int)linked, now.rec, (unsigned long long)now.plain, now.why ? now.why : "");
 }
 
 Image* image_find(const nvn_tex* t) {

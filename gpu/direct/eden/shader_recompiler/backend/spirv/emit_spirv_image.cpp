@@ -239,8 +239,51 @@ private:
     spv::ImageOperandsMask mask{};
 };
 
+/// (direct back end, M3b, Profile::heap_handles) the handle the shader read: its image id (low 20 bits) and sampler id (high 12),
+/// both marked non-uniform where the handle is not a constant (the driver keeps it scalar where it can prove it uniform)
+struct HeapIndex {
+    Id image, sampler;
+    bool non_uniform;
+};
+HeapIndex HeapIndices(EmitContext& ctx, const IR::Value& handle, NonUniformKind kind) {
+    const Id h{handle.IsImmediate() ? ctx.Const(handle.U32()) : ctx.Def(handle)};
+    HeapIndex r{ctx.OpBitwiseAnd(ctx.U32[1], h, ctx.Const(0xFFFFFU)), ctx.OpShiftRightLogical(ctx.U32[1], h, ctx.Const(20U)),
+                MarkNonUniform(ctx, h, handle, kind)};
+    if (r.non_uniform) {
+        DecorateNonUniform(ctx, r.image);
+        DecorateNonUniform(ctx, r.sampler);
+    }
+    return r;
+}
+Id HeapImage(EmitContext& ctx, const TextureDefinition& def, const HeapIndex& x) {
+    const Id ptr{ctx.OpAccessChain(def.pointer_type, def.id, x.image)};
+    const Id image{ctx.OpLoad(def.image_type, ptr)};
+    if (x.non_uniform) {
+        DecorateNonUniform(ctx, ptr);
+        DecorateNonUniform(ctx, image);
+    }
+    return image;
+}
+Id HeapTexture(EmitContext& ctx, const TextureDefinition& def, const IR::Value& handle) {
+    const HeapIndex x{HeapIndices(ctx, handle, NonUniformKind::SampledImage)};
+    const Id image{HeapImage(ctx, def, x)};
+    const Id samplers{def.is_depth ? ctx.heap_compare_samplers : ctx.heap_samplers};
+    const Id sptr{ctx.OpAccessChain(ctx.heap_sampler_pointer, samplers, x.sampler)};
+    const Id sampler{ctx.OpLoad(ctx.heap_sampler_type, sptr)};
+    const Id sampled{ctx.OpSampledImage(def.sampled_type, image, sampler)};
+    if (x.non_uniform) {
+        DecorateNonUniform(ctx, sptr);
+        DecorateNonUniform(ctx, sampler);
+        DecorateNonUniform(ctx, sampled);
+    }
+    return sampled;
+}
+
 Id Texture(EmitContext& ctx, IR::TextureInstInfo info, [[maybe_unused]] const IR::Value& index) {
     const TextureDefinition& def{ctx.textures.at(info.descriptor_index)};
+    if (ctx.profile.heap_handles) {
+        return HeapTexture(ctx, def, index);
+    }
     if (def.count > 1) {
         auto const idx = index.IsImmediate() ? ctx.Const(index.U32()) : ctx.Def(index);
         const bool non_uniform{MarkNonUniform(ctx, idx, index, NonUniformKind::SampledImage)};
@@ -274,6 +317,9 @@ Id TextureImage(EmitContext& ctx, IR::TextureInstInfo info, const IR::Value& ind
         return ctx.OpLoad(ctx.image_buffer_type, def.id);
     } else {
         const TextureDefinition& def{ctx.textures.at(info.descriptor_index)};
+        if (ctx.profile.heap_handles) {
+            return HeapImage(ctx, def, HeapIndices(ctx, index, NonUniformKind::SampledImage));
+        }
         if (def.count > 1) {
             auto const idx = index.IsImmediate() ? ctx.Const(index.U32()) : ctx.Def(index);
             const bool non_uniform{MarkNonUniform(ctx, idx, index, NonUniformKind::SampledImage)};
@@ -309,6 +355,16 @@ std::pair<Id, bool> Image(EmitContext& ctx, const IR::Value& index, IR::TextureI
         return {ctx.OpLoad(def.image_type, def.id), def.is_integer};
     } else {
         const ImageDefinition def{ctx.images.at(info.descriptor_index)};
+        if (ctx.profile.heap_handles) {   // (direct back end, M3b: the storage region's entry of the handle's image id)
+            const HeapIndex x{HeapIndices(ctx, index, NonUniformKind::StorageImage)};
+            const Id ptr{ctx.OpAccessChain(def.pointer_type, def.id, x.image)};
+            const Id image{ctx.OpLoad(def.image_type, ptr)};
+            if (x.non_uniform) {
+                DecorateNonUniform(ctx, ptr);
+                DecorateNonUniform(ctx, image);
+            }
+            return {image, def.is_integer};
+        }
         if (def.count > 1) {
             const Id idx{index.IsImmediate() ? ctx.Const(index.U32()) : ctx.Def(index)};
             const bool non_uniform{MarkNonUniform(ctx, idx, index, NonUniformKind::StorageImage)};

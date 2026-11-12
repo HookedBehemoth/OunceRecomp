@@ -108,10 +108,25 @@ const uint8_t* map_file(const std::string& path, size_t& n) {
     return (const uint8_t*)p;
 }
 /// The record's block size: the kept formats' from the NVN format, the converted ones' from what they became
+/// (M3b) A copied record's block from its BNTX format (the record's nvn_format field holds the BNTX code, e.g. 0x1d01: high byte
+/// the type, low byte the variant), as nx2/prepare_textures.py's FMT has it; 0: not a type the converter copies
+int bntx_block(uint32_t format, int& w, int& h) {
+    struct B { uint8_t type, w, h, bytes; };
+    static const B table[] = {{0x02, 1, 1, 1}, {0x07, 1, 1, 2}, {0x09, 1, 1, 2}, {0x0a, 1, 1, 2}, {0x0b, 1, 1, 4}, {0x0c, 1, 1, 4},
+                              {0x0e, 1, 1, 4}, {0x0f, 1, 1, 4}, {0x12, 1, 1, 4}, {0x14, 1, 1, 4}, {0x15, 1, 1, 8}, {0x17, 1, 1, 8},
+                              {0x19, 1, 1, 16}, {0x1a, 4, 4, 8}, {0x1b, 4, 4, 16}, {0x1c, 4, 4, 16}, {0x1d, 4, 4, 8},
+                              {0x1e, 4, 4, 16}, {0x1f, 4, 4, 16}, {0x20, 4, 4, 16}};
+    for (const B& b : table)
+        if (b.type == (format >> 8 & 0xff)) return w = b.w, h = b.h, b.bytes;
+    return 0;
+}
+
 bool block_of(const Rec& r, uint32_t& bpb, uint32_t& bw, uint32_t& bh) {
     int w = 1, h = 1, b = 0;
     switch (r.kind) {
-    case KIND_COPY_BC: case KIND_COPY: b = nvn_block_size((int)r.nvn_format, &w, &h); break;
+    // (M3b: was nvn_block_size(r.nvn_format), an NVN format lookup given the BNTX code: 0 for every copied record, so each
+    // keyed as "an asset with no record" and drew the placeholder; the title screen's RGTC textures were three of them)
+    case KIND_COPY_BC: case KIND_COPY: b = bntx_block(r.nvn_format, w, h); break;
     case KIND_BC7: case KIND_BC5: b = 16, w = h = 4; break;
     case KIND_BC4: case KIND_BC1: b = 8, w = h = 4; break;
     case KIND_RAW:

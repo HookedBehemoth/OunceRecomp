@@ -16,6 +16,9 @@
 
 namespace Shader::Backend::SPIRV {
 
+/// (direct back end, M3b, Profile::heap_handles) the sampler arrays' bindings
+constexpr u32 kHeapSamplerBinding = 1000;
+constexpr u32 kHeapCompareSamplerBinding = 1001;
 constexpr u32 NUM_TEXTURE_SCALING_WORDS = 4;
 constexpr u32 NUM_IMAGE_SCALING_WORDS = 2;
 constexpr u32 NUM_TEXTURE_AND_IMAGE_SCALING_WORDS =

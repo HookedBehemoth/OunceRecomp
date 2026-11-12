@@ -48,6 +48,7 @@ struct TextureDefinition {
     u32 count;
     bool is_multisample;
     bool is_integer;
+    bool is_depth{};   // (Profile::heap_handles: its sampler from the depth-compare array)
 };
 
 struct TextureBufferDefinition {
@@ -267,6 +268,11 @@ public:
     std::vector<ImageBufferDefinition> image_buffers;
     std::vector<TextureDefinition> textures;
     std::vector<ImageDefinition> images;
+    // (direct back end, M3b, Profile::heap_handles) the sampler heap's two arrays, indexed by a handle's sampler bits
+    Id heap_sampler_type{};
+    Id heap_sampler_pointer{};
+    Id heap_samplers{};
+    Id heap_compare_samplers{};
 
     Id workgroup_id{};
     Id local_invocation_id{};

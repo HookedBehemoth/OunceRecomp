@@ -607,8 +607,35 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineCommonTypes(program.info);
     DefineCommonConstants();
     DefineInterfaces(program);
-    // (hookshot, RX_VK_DESC_HEAP_BDA: before any push block is made)
-    if (const u32 why{BdaStage(profile, runtime_info, stage, program.info)}; BdaTaken(profile, program.info, why)) {
+    // (direct back end, M3b, Profile::heap_handles: every stage by address. A storage buffer whose address words are in a
+    // constant buffer the stage does not declare gets that constant buffer declared; a stage that reaches global memory with
+    // no storage buffer goes by address too: its accesses translated as the storage buffers' are)
+    const bool all_bda{profile.heap_handles && profile.ssbo_bda};
+    if (all_bda) {
+        Info& info{program.info};
+        for (const StorageBufferDescriptor& d : info.storage_buffers_descriptors) {
+            if (d.count != 1 || d.cbuf_index >= Info::MAX_CBUFS) {
+                continue;
+            }
+            bool declared{};
+            for (const ConstantBufferDescriptor& c : info.constant_buffer_descriptors) {
+                declared |= c.index == d.cbuf_index && c.count == 1;
+            }
+            if (!declared) {
+                info.constant_buffer_descriptors.push_back({.index = d.cbuf_index, .count = 1});
+                std::sort(info.constant_buffer_descriptors.begin(), info.constant_buffer_descriptors.end());
+                info.constant_buffer_mask |= 1U << d.cbuf_index;
+            }
+            info.constant_buffer_used_sizes[d.cbuf_index] =
+                std::max(info.constant_buffer_used_sizes[d.cbuf_index], (d.cbuf_offset + 12U + 15U) & ~15U);
+            info.used_constant_buffer_types |= IR::Type::U32;
+        }
+    }
+    const u32 why{BdaStage(profile, runtime_info, stage, program.info)};
+    const bool global_only{all_bda && program.info.storage_buffers_descriptors.empty() && program.info.uses_global_memory &&
+                           profile.support_int64};
+    if (global_only || (all_bda ? !program.info.storage_buffers_descriptors.empty() && (why & ~(Bda::kWideAllowed | Bda::kWhyUndeclared)) == 0
+                                : BdaTaken(profile, program.info, why))) {
         program.info.bda_why = 0;
         bda_render_area = program.info.uses_render_area;
         ssbo_bda = true;
@@ -622,6 +649,9 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
         AddExtension("SPV_KHR_physical_storage_buffer");
         SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+        if (global_only) {
+            DefineRescalingInputPushConstant();   // (the window table's address is in it; DefineStorageBuffers makes none here)
+        }
     } else {
         program.info.bda_why = why;
     }
@@ -2221,6 +2251,59 @@ void EmitContext::DefineImageBuffers(const Info& info, u32& binding) {
 
 void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_index) {
     textures.reserve(info.texture_descriptors.size());
+    if (profile.heap_handles) {
+        // (direct back end, M3b) each descriptor a runtime array of its image type, which the back end maps to the heap's
+        // region of its view type; the samplers two runtime arrays. A sample indexes both with the handle it read
+        bool plain{}, compare{};
+        for (const TextureDescriptor& desc : info.texture_descriptors) {
+            const Id image_type{ImageType(*this, desc)};
+            const Id sampled_type{TypeSampledImage(image_type)};
+            const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
+            const Id array_pointer{TypePointer(spv::StorageClass::UniformConstant, TypeRuntimeArray(image_type))};
+            const Id id{AddGlobalVariable(array_pointer, spv::StorageClass::UniformConstant)};
+            Decorate(id, spv::Decoration::Binding, binding);
+            Decorate(id, spv::Decoration::DescriptorSet, 0U);
+            Name(id, NameOf(stage, desc, "tex"));
+            textures.push_back({
+                .id = id,
+                .sampled_type = sampled_type,
+                .pointer_type = pointer_type,
+                .image_type = image_type,
+                .count = 1,
+                .is_multisample = desc.is_multisample,
+                .is_integer = desc.is_integer,
+                .is_depth = desc.is_depth,
+            });
+            (desc.is_depth ? compare : plain) = true;
+            if (profile.supported_spirv >= 0x00010400) {
+                interfaces.push_back(id);
+            }
+            ++binding;
+            ++scaling_index;
+        }
+        if (!info.texture_descriptors.empty()) {
+            AddCapability(spv::Capability::RuntimeDescriptorArray);
+            heap_sampler_type = TypeSampler();
+            heap_sampler_pointer = TypePointer(spv::StorageClass::UniformConstant, heap_sampler_type);
+            const Id array_pointer{TypePointer(spv::StorageClass::UniformConstant, TypeRuntimeArray(heap_sampler_type))};
+            const auto make{[&](u32 at, const char* name) {
+                const Id id{AddGlobalVariable(array_pointer, spv::StorageClass::UniformConstant)};
+                Decorate(id, spv::Decoration::Binding, at);
+                Decorate(id, spv::Decoration::DescriptorSet, 0U);
+                Name(id, name);
+                if (profile.supported_spirv >= 0x00010400) {
+                    interfaces.push_back(id);
+                }
+                return id;
+            }};
+            if (plain) heap_samplers = make(kHeapSamplerBinding, "heap_samplers");
+            if (compare) heap_compare_samplers = make(kHeapCompareSamplerBinding, "heap_compare_samplers");
+        }
+        if (info.uses_atomic_image_u32) {
+            image_u32 = TypePointer(spv::StorageClass::Image, U32[1]);
+        }
+        return;
+    }
     for (const TextureDescriptor& desc : info.texture_descriptors) {
         const Id image_type{ImageType(*this, desc)};
         const Id sampled_type{TypeSampledImage(image_type)};
@@ -2252,11 +2335,17 @@ void EmitContext::DefineTextures(const Info& info, u32& binding, u32& scaling_in
 
 void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_index) {
     images.reserve(info.image_descriptors.size());
+    if (profile.heap_handles && !info.image_descriptors.empty()) {
+        AddCapability(spv::Capability::RuntimeDescriptorArray);
+    }
     for (const ImageDescriptor& desc : info.image_descriptors) {
         const Id sampled_type{desc.is_integer ? U32[1] : F32[1]};
         const Id image_type{ImageType(*this, desc, sampled_type)};
         const Id pointer_type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
-        const Id id{AddGlobalVariable(pointer_type, spv::StorageClass::UniformConstant)};
+        // (Profile::heap_handles: a runtime array the back end maps to the heap's storage region of its view type)
+        const Id id{AddGlobalVariable(profile.heap_handles ? TypePointer(spv::StorageClass::UniformConstant, TypeRuntimeArray(image_type))
+                                                           : pointer_type,
+                                      spv::StorageClass::UniformConstant)};
         Decorate(id, spv::Decoration::Binding, binding);
         Decorate(id, spv::Decoration::DescriptorSet, 0U);
         Name(id, NameOf(stage, desc, "img"));

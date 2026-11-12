@@ -32,7 +32,12 @@ struct TextureInst {
     ConstBufferAddr cbuf;
     IR::Inst* inst;
     IR::Block* block;
+    IR::Value handle{};   // (HostTranslateInfo::heap_handles: the handle the shader reads, which replaces Arg(0))
 };
+
+/// (heap_handles) a handle the shader computes with no single constant buffer word to name it (a handle program's, a dynamic
+/// index's, two words'): its descriptor has no answer the bound state could give
+constexpr u32 kHeapComputed = 0xFFFFFFFEU;
 
 using TextureInstVector = boost::container::small_vector<TextureInst, 24>;
 
@@ -932,6 +937,28 @@ std::optional<ConstBufferAddr> TryGetConstBuffer(const IR::Inst* inst, Environme
 
 TextureInst MakeInst(Environment& env, IR::Block* block, IR::Inst& inst, const HostTranslateInfo& host_info) {
     ConstBufferAddr addr;
+    if (host_info.heap_handles) {
+        // (the shader reads the handle: a bound instruction's from its constant buffer word, a bindless one's as the program
+        // computed it. The word it names, if one, is kept for the descriptor's answers)
+        addr = ConstBufferAddr{.index = 0, .offset = 0, .shift_left = 0, .secondary_index = 0, .secondary_offset = 0,
+                               .secondary_shift_left = 0, .dynamic_offset = {}, .count = 1, .has_secondary = false,
+                               .handle_program = kHeapComputed};
+        IR::Value handle;
+        if (IsBindless(inst)) {
+            handle = inst.Arg(0);
+            if (const std::optional<ConstBufferAddr> t{TrackCached(inst.Arg(0), env, host_info, block)};
+                t && t->count == 1 && !t->has_secondary && t->handle_program == ~0U) {
+                addr = *t;
+            }
+        } else {
+            addr.index = env.TextureBoundBuffer();
+            addr.offset = inst.Arg(0).U32();
+            addr.handle_program = ~0U;
+            IR::IREmitter ir{*block, IR::Block::InstructionList::s_iterator_to(inst)};
+            handle = ir.GetCbuf(ir.Imm32(addr.index), ir.Imm32(addr.offset));
+        }
+        return TextureInst{.cbuf = addr, .inst = &inst, .block = block, .handle = handle};
+    }
     if (IsBindless(inst)) {
         const std::optional<ConstBufferAddr> track_addr{TrackCached(inst.Arg(0), env, host_info, block)};
 
@@ -1104,11 +1131,11 @@ private:
     ImageDescriptors& image_descriptors;
 };
 
-void PatchImageSampleImplicitLod(IR::Block& block, IR::Inst& inst) {
+IR::Inst* PatchImageSampleImplicitLod(IR::Block& block, IR::Inst& inst, IR::Value heap_handle = {}) {
     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
     const auto info{inst.Flags<IR::TextureInstInfo>()};
     const IR::Value coord(inst.Arg(1));
-    const IR::Value handle(ir.Imm32(0));
+    const IR::Value handle(heap_handle.IsEmpty() ? IR::Value{ir.Imm32(0)} : heap_handle);   // (heap_handles: the sample's own)
     const IR::U32 lod{ir.Imm32(0)};
     const IR::U1 skip_mips{ir.Imm1(true)};
     const IR::Value texture_size = ir.ImageQueryDimension(handle, lod, skip_mips, info);
@@ -1118,6 +1145,7 @@ void PatchImageSampleImplicitLod(IR::Block& block, IR::Inst& inst) {
                         ir.FPRecip(ir.ConvertUToF(32, 32, ir.CompositeExtract(texture_size, 0)))),
                ir.FPMul(IR::F32(ir.CompositeExtract(coord, 1)),
                         ir.FPRecip(ir.ConvertUToF(32, 32, ir.CompositeExtract(texture_size, 1))))));
+    return texture_size.InstRecursive();
 }
 
 bool IsPixelFormatSNorm(TexturePixelFormat pixel_format) {
@@ -1271,6 +1299,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         auto flags{inst->Flags<IR::TextureInstInfo>()};
         bool is_multisample{false};
         bool type_asked{false};   // (the descriptor's type is the bound texture's: TextureDescriptor::type_fixed)
+        IR::Inst* rect_query{};   // (heap_handles: the size query a rectangle's sample made, given the sample's descriptor)
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageQueryDimensions:
             if (const auto it{handle_program_types.find(cbuf.handle_program)};
@@ -1294,7 +1323,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                 break;
             }
             if (ReadTextureTypeCached(env, cbuf) == TextureType::Color2DRect) {
-                PatchImageSampleImplicitLod(*texture_inst.block, *texture_inst.inst);
+                rect_query = PatchImageSampleImplicitLod(*texture_inst.block, *texture_inst.inst, texture_inst.handle);
             }
             break;
         case IR::Opcode::ImageFetch:
@@ -1320,7 +1349,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         }
         u32 index;
         u32 size_shift = cbuf.count > 1 ? DynamicDescriptorSizeShift(cbuf.dynamic_offset) : DESCRIPTOR_SIZE_SHIFT;
-        u32 count = cbuf.count;
+        u32 count = host_info.heap_handles ? 1 : cbuf.count;
         switch (inst->GetOpcode()) {
         case IR::Opcode::ImageRead:
         case IR::Opcode::ImageAtomicIAdd32:
@@ -1414,8 +1443,15 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         }
         flags.descriptor_index.Assign(index);
         inst->SetFlags(flags);
+        if (rect_query) {
+            auto qflags{rect_query->Flags<IR::TextureInstInfo>()};
+            qflags.descriptor_index.Assign(index);
+            rect_query->SetFlags(qflags);
+        }
 
-        if (count > 1) {
+        if (host_info.heap_handles) {
+            inst->SetArg(0, texture_inst.handle);
+        } else if (count > 1) {
             const auto insert_point{IR::Block::InstructionList::s_iterator_to(*inst)};
             IR::IREmitter ir{*texture_inst.block, insert_point};
             const IR::U32 shift{ir.Imm32(size_shift)};

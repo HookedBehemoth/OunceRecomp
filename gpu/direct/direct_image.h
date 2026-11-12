@@ -38,6 +38,7 @@ struct Image {
     uint32_t id = 0;
     bool placeholder = false;
     bool compressed = false;
+    bool storage = false;   // (M3b: made with STORAGE usage: the heap's storage regions hold views of it)
     std::atomic<uint8_t> written{0};   // (W_* bits: what has written it)
     // (A-rt) an image of a prepared texture (direct_assets): made in the store's format, shared by every texture of the
     // same content, filled once by the thread that made it (fill: 0 not an asset, 1 being filled, 2 filled, 3 failed)
@@ -60,6 +61,8 @@ void image_texture_released(const nvn_tex* t);
 void image_texture_registered(const nvn_tex* t);
 /// The image of an NVN texture (the placeholder when it has none this GPU can hold; null: a buffer texture or none made)
 Image* image_find(const nvn_tex* t);
+/// (logs) what t's image is keyed by: its kind and its asset link
+void image_key_describe(const nvn_tex* t, char* out, size_t cap);
 /// A view of one level and layer (a 3D image's slice) as an attachment, in the view's format; null when none can be
 /// made (a compressed format, a level or layer outside the image)
 VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uint32_t layer, VkFormat* format_out);

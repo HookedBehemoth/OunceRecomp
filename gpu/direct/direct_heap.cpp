@@ -109,7 +109,7 @@ struct SlotTex {
 std::unique_ptr<SlotTex[]> slot_tex;   // (logs: what was registered there)
 std::unique_ptr<std::atomic<uint8_t>[]> answers;   // (texture id -> answer byte)
 
-std::atomic<int64_t> st_tex{0}, st_entries{0}, st_nulls{0}, st_big_id{0}, st_samp{0}, st_border{0}, st_gone{0}, st_no_image{0},
+std::atomic<int64_t> st_storage{0}, st_tex{0}, st_entries{0}, st_nulls{0}, st_big_id{0}, st_samp{0}, st_border{0}, st_gone{0}, st_no_image{0},
     st_failed{0};
 
 VkComponentSwizzle component(unsigned s) {
@@ -199,21 +199,45 @@ bool sampled_view(const Image* im, const nvn_tex* t, const nvn_view* v, VkImageV
     return true;
 }
 
-bool encode_image(const VkImageViewCreateInfo* vi, uint8_t out[kImageDesc]) {
+bool encode_image(const VkImageViewCreateInfo* vi, uint8_t out[kImageDesc], bool storage = false) {
     std::memset(out, 0, kImageDesc);
     if (!vi) return true;   // (zeros: a null descriptor on RDNA)
     VkImageViewUsageCreateInfo uci{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
-    uci.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    uci.usage = storage ? VK_IMAGE_USAGE_STORAGE_BIT : VK_IMAGE_USAGE_SAMPLED_BIT;
     VkImageViewCreateInfo ci = *vi;
     ci.pNext = &uci;
     VkImageDescriptorInfoEXT ii{VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT};
     ii.pView = &ci;
     ii.layout = VK_IMAGE_LAYOUT_GENERAL;
     VkResourceDescriptorInfoEXT ri{VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT};
-    ri.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    ri.type = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     ri.data.pImage = &ii;
     VkHostAddressRangeEXT dst{out, (size_t)kImageDesc};
     return vkWriteResourceDescriptorsEXT(dev.device, 1, &ri, &dst) == VK_SUCCESS;
+}
+
+/// (M3b) A storage view of t's image as view type `type` from its sampled view: one level, no swizzle, a format the device
+/// stores to (the view's, else the image's own); false: none
+bool storage_view(const Image* im, VkImageViewCreateInfo& vi) {
+    if (!im || !im->storage || im->placeholder || (im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) return false;
+    if (vi.viewType == VK_IMAGE_VIEW_TYPE_CUBE || vi.viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) return false;
+    static std::once_flag once;
+    static uint8_t can[256];   // (VkFormat < 256: optimal tiling has STORAGE_IMAGE)
+    std::call_once(once, [] {
+        for (int f = 0; f < 256; f++) {
+            VkFormatProperties p{};
+            vkGetPhysicalDeviceFormatProperties(dev.physical, (VkFormat)f, &p);
+            can[f] = (p.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+        }
+    });
+    auto ok = [&](VkFormat f) { return (uint32_t)f < 256 && can[f]; };
+    if (!ok(vi.format)) {
+        if (!ok(im->format)) return false;
+        vi.format = im->format;
+    }
+    vi.components = VkComponentMapping{};
+    vi.subresourceRange.levelCount = 1;
+    return true;
 }
 
 /// The view types a texture of this NVN target may be sampled as (the shader's declared type picks the region)
@@ -388,8 +412,8 @@ void draw_device_created() {
         std::max<uint64_t>(hprops.samplerDescriptorSize, hprops.samplerDescriptorAlignment) > kSamplerDesc)
         return fail("descriptor sizes past the heap's layout");
     // (the resource heap: 7 regions, then the zero tail, so that an id up to 0xFFFFF from the last region's base stays inside)
-    tail_at = (uint64_t)kHeapRegions * kHeapSlots * kImageDesc;
-    const uint64_t res_used = ((uint64_t)(kHeapRegions - 1) * kHeapSlots + (1u << 20)) * kImageDesc;
+    tail_at = 2ull * kHeapRegions * kHeapSlots * kImageDesc;   // (M3b: sampled regions, then storage regions)
+    const uint64_t res_used = ((uint64_t)(2 * kHeapRegions - 1) * kHeapSlots + (1u << 20)) * kImageDesc;
     if (!make_heap(res_heap, res_used, hprops.minResourceHeapReservedRange) ||
         !make_heap(smp_heap, 2ull * kHeapSamplers * kSamplerDesc, hprops.minSamplerHeapReservedRange) ||
         res_heap.size > hprops.maxResourceHeapSize || smp_heap.size > hprops.maxSamplerHeapSize)
@@ -418,6 +442,7 @@ void draw_device_created() {
 // ---- the heap ----
 bool heap_on() { return ready; }
 uint32_t heap_region_offset(uint32_t region) { return region * kHeapSlots * kImageDesc; }
+uint32_t heap_storage_offset(uint32_t region) { return (kHeapRegions + region) * kHeapSlots * kImageDesc; }
 uint32_t heap_tail_offset() { return (uint32_t)tail_at; }
 uint32_t heap_sampler_offset(bool compare) { return compare ? kHeapSamplers * kSamplerDesc : 0; }
 
@@ -445,6 +470,15 @@ void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
     answers[id].store((uint8_t)(texture_type(target) | (integer_format(vk_format(nf).format) ? 0x80 : 0)), std::memory_order_release);
     const Image* im = t->d.target == NVN_TEXTURE_TARGET_BUFFER ? nullptr : image_find(t);
     if (!im && t->d.target != NVN_TEXTURE_TARGET_BUFFER) st_no_image.fetch_add(1, std::memory_order_relaxed);
+    if (im && im->placeholder) {   // (named: a registration that samples the placeholder)
+        static std::atomic<int> told{0};
+        if (told++ < 40) {
+            char why[256];
+            image_key_describe(t, why, sizeof why);
+            logf("direct: heap: id %d registered with the placeholder: texture %#llx %ux%u NVN format %#x target %d; %s", id,
+                 (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.format, t->d.target, why);
+        }
+    }
     const uint32_t allowed = im ? regions_of(target) : 0;
     std::lock_guard lk(heap_mu);
     for (uint32_t r = 0; r < kHeapRegions; r++) {
@@ -457,6 +491,14 @@ void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
         }
         std::memcpy(res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc, d, kImageDesc);
         (ok ? st_entries : st_nulls).fetch_add(1, std::memory_order_relaxed);
+        // (M3b: the storage entry of the same view, where the image can be stored to; zeros otherwise)
+        const bool sok = ok && storage_view(im, vi);
+        if (!encode_image(sok ? &vi : nullptr, d, true)) {
+            st_failed.fetch_add(1, std::memory_order_relaxed);
+            encode_image(nullptr, d);
+        }
+        std::memcpy(res_heap.map + heap_storage_offset(r) + (uint64_t)id * kImageDesc, d, kImageDesc);
+        if (sok) st_storage.fetch_add(1, std::memory_order_relaxed);
     }
     slot_image[id] = im;
     slot_tex[id] = {t->gpu, t->d.width, t->d.height, t->d.format, t->d.target};
@@ -478,7 +520,10 @@ void heap_image_gone(const Image* im) {
     std::lock_guard lk(heap_mu);
     for (uint32_t id = 0; id < kHeapSlots; id++) {
         if (slot_image[id] != im) continue;
-        for (uint32_t r = 0; r < kHeapRegions; r++) std::memset(res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc, 0, kImageDesc);
+        for (uint32_t r = 0; r < kHeapRegions; r++) {
+            std::memset(res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc, 0, kImageDesc);
+            std::memset(res_heap.map + heap_storage_offset(r) + (uint64_t)id * kImageDesc, 0, kImageDesc);
+        }
         slot_image[id] = nullptr;
         st_gone.fetch_add(1, std::memory_order_relaxed);
     }
@@ -505,9 +550,9 @@ void heap_describe(uint32_t id, char* out, size_t cap) {
 }
 
 void heap_stats(char* out, size_t cap) {
-    std::snprintf(out, cap, "heap (since the start): %lld texture registrations (%lld entries written, %lld null), %lld with no image, "
+    std::snprintf(out, cap, "heap (since the start): %lld texture registrations (%lld entries written, %lld null, %lld storage), %lld with no image, "
                   "%lld ids past the heap, %lld sampler registrations, %lld custom border colours as black, %lld ids nulled with their "
-                  "image, %lld descriptor writes failed", (long long)st_tex.load(), (long long)st_entries.load(), (long long)st_nulls.load(),
+                  "image, %lld descriptor writes failed", (long long)st_tex.load(), (long long)st_entries.load(), (long long)st_nulls.load(), (long long)st_storage.load(),
                   (long long)st_no_image.load(), (long long)st_big_id.load(), (long long)st_samp.load(), (long long)st_border.load(),
                   (long long)st_gone.load(), (long long)st_failed.load());
 }
