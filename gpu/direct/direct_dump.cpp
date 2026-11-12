@@ -15,7 +15,15 @@
 namespace hsd {
 namespace {
 
-constexpr uint32_t kWidth = 320;
+// (the dumped pictures' width, at most: 320; HOS_DBG=dumpw:<w> another (M4g: patterns finer than a thumbnail holds))
+uint32_t dump_width() {
+    static const uint32_t w = [] {
+        const char* v = dbg_value("dumpw");
+        const int n = v ? atoi(v) : 0;
+        return n >= 16 ? (uint32_t)n : 320u;
+    }();
+    return w;
+}
 std::mutex mu;   // (the claimed items, the graveyard)
 std::vector<DumpItem*> claimed;
 std::vector<std::pair<DumpItem*, uint64_t>> graveyard;   // (unclaimed items of freed lists, and the value they wait for)
@@ -103,7 +111,7 @@ DumpItem* copy(VkCommandBuffer cb, const Target& t, const char* what) {
         return it;
     }
     it->kind = kind_of(im->format);
-    it->w = std::min(it->src_w, kWidth);
+    it->w = std::min(it->src_w, dump_width());
     it->h = std::max(1u, (uint32_t)((uint64_t)it->src_h * it->w / it->src_w));
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D;
@@ -202,7 +210,7 @@ void write_item(DumpItem& it, int n_seq) {
     std::vector<float> depth;
     const void* map = it.map;
     if (it.depth_bytes) {   // (depth in red, green and blue, scaled to at most 320 wide)
-        const uint32_t w = std::min(it.src_w, kWidth), h = std::max(1u, (uint32_t)((uint64_t)it.src_h * w / it.src_w));
+        const uint32_t w = std::min(it.src_w, dump_width()), h = std::max(1u, (uint32_t)((uint64_t)it.src_h * w / it.src_w));
         depth.assign((size_t)w * h * 4, 1.0f);
         for (uint32_t y = 0; y < h; y++)
             for (uint32_t x = 0; x < w; x++) {
@@ -271,6 +279,18 @@ void write_item(DumpItem& it, int n_seq) {
     for (char* c = path + dir.size() + 1; *c; c++)
         if (*c == ' ' || *c == ':' || *c == '/' || *c == '\\') *c = '_';
     write_png(path, rgba.data(), it.w, it.h);
+    // (M4g, HOS_DBG=dumpraw: a colour item's floats beside its PNG, <name>.f32: u32 width, u32 height, then RGBA32F rows; the
+    // dark values of HDR targets that the PNG rounds to 0)
+    static const bool raw = dbg("dumpraw");
+    if (raw && it.kind == 0 && !it.depth_bytes) {
+        std::snprintf(path + std::strlen(path) - 4, 5, ".f32");
+        if (FILE* f = fopen(path, "wb")) {
+            const uint32_t wh[2] = {it.w, it.h};
+            fwrite(wh, 4, 2, f);
+            fwrite(map, 16, n, f);
+            fclose(f);
+        }
+    }
 }
 
 }  // namespace

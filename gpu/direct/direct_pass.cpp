@@ -232,6 +232,8 @@ void set_rt(List* l, const nvn_p_set_rt& r) {
         out.im = im, out.level = level, out.layer = layer, out.aspect = im->aspect;
         if (!any) p.samples = im->samples;
         out.w = std::max(1u, im->width >> level), out.h = std::max(1u, im->height >> level);
+        if (im->compressed)   // (M4g: a view of its blocks: the attachment is its block grid)
+            out.w = (out.w + im->bw - 1) / im->bw, out.h = (out.h + im->bh - 1) / im->bh;
         p.w = std::min(p.w, out.w), p.h = std::min(p.h, out.h);
         any = true;
     };

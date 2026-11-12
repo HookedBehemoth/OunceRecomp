@@ -39,6 +39,7 @@ struct Image {
     bool placeholder = false;
     bool compressed = false;
     bool storage = false;   // (M3b: made with STORAGE usage: the heap's storage regions hold views of it)
+    bool block_views = false;   // (M4g: a compressed image the GPU writes: uncompressed views of its blocks are attachments)
     std::atomic<uint8_t> written{0};   // (W_* bits: what has written it)
     // (A-rt) an image of a prepared texture (direct_assets): made in the store's format, shared by every texture of the
     // same content, filled once by the thread that made it (fill: 0 not an asset, 1 being filled, 2 filled, 3 failed)

@@ -1233,12 +1233,27 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
                  const char* w = dbg_value("writer");
                  return w ? strtoull(w, nullptr, 16) : 0ull;
              }(); watch) {
-        for (int i = 0; i < 16; i++)
+        bool hit = false;
+        for (int i = 0; i < 16 && !hit; i++)
             if (c.ssbo[i].addr <= watch && watch < c.ssbo[i].addr + std::max<uint64_t>(c.ssbo[i].size, 1)) {
                 logf("direct: writer: present %llu, s%d covers %#llx:", (unsigned long long)present_count(), i, (unsigned long long)watch);
                 trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
-                break;
+                hit = true;
             }
+        // (M4g: and the storage images whose texture is at that address: a texture written through another one over its memory)
+        char want[40];
+        std::snprintf(want, sizeof want, "texture %#llx ", (unsigned long long)watch);
+        for (size_t j = 0; j < v->info.image_descriptors.size() && !hit; j++) {
+            const auto& im = v->info.image_descriptors[j];
+            const uint32_t h = im.cbuf_index == 0 ? word_of(map, v->bank_bytes, im.cbuf_offset) : 0;
+            char e[320];
+            heap_describe(h & 0xFFFFF, e, sizeof e);
+            if (std::strstr(e, want)) {
+                logf("direct: writer: present %llu, image %zu is %#llx:", (unsigned long long)present_count(), j, (unsigned long long)watch);
+                trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
+                hit = true;
+            }
+        }
     }
     count(l, D_DRAWN);
     if (indirect) count(l, D_INDIRECT);

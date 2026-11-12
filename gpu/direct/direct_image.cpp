@@ -228,7 +228,11 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
         usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (im.samples == VK_SAMPLE_COUNT_1_BIT) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     } else {
-        flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // (sRGB and UNORM views)
+        // (sRGB and UNORM views; M4g: a compressed image not from the store has only what the GPU writes into it, and NVN renders
+        // into it through a view of an uncompressed format of its block size (the game BC4-encodes its noise volumes so at the
+        // load: f_809eb720's textures, program 53509044401d78d2): those views are attachments of its blocks)
+        flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+        usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     }
     if (im.type == VK_IMAGE_TYPE_2D && im.layers >= 6 && im.width == im.height && im.samples == VK_SAMPLE_COUNT_1_BIT)
         flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -249,6 +253,7 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
         im.layers > lim.maxArrayLayers || im.levels > lim.maxMipLevels || !(lim.sampleCounts & im.samples))
         return name_placeholder(t, "the driver refuses the image", st_ph_refused), &placeholder;
     im.storage = (usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
+    im.block_views = im.compressed && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.flags = flags;
     ci.imageType = im.type;
@@ -461,13 +466,16 @@ Image* image_find(const nvn_tex* t) {
 int image_view_format(const nvn_tex* t, const nvn_view* v) { return v && v->set_format ? v->format : t->d.format; }
 
 VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uint32_t layer, VkFormat* format_out) {
-    if (!im || im->placeholder || im->compressed || level >= im->levels) return VK_NULL_HANDLE;
+    if (!im || im->placeholder || (im->compressed && !im->block_views) || level >= im->levels) return VK_NULL_HANDLE;
     const bool depth = (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) == 0;
     VkFormat f = im->format;
     if (!depth) {
         bool wide = false;
-        const VkFormat vf = widened(vk_format(nvn_format).format, &wide);
+        const FormatInfo vi = vk_format(nvn_format);
+        const VkFormat vf = widened(vi.format, &wide);
         if (vf != VK_FORMAT_UNDEFINED && !is_depth_format(vf) && !is_bc(vf)) f = vf;
+        // (M4g: a compressed image's blocks, through a format of the block's size)
+        if (im->compressed && (f == im->format || wide || nvn_block_size(nvn_format, nullptr, nullptr) != im->bpb)) return VK_NULL_HANDLE;
     }
     const uint32_t slices = im->type == VK_IMAGE_TYPE_3D ? std::max(1u, im->depth >> level) : im->layers;
     if (layer >= slices) return VK_NULL_HANDLE;
