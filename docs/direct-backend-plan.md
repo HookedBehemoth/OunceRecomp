@@ -211,6 +211,16 @@ reads its payload from that buffer. Folding the task into the mesh stage is not 
 to 32 meshlets, past the mesh output limits). This is untested as a whole: its task half ran as compute in the old
 emulation without a loss, and mesh-only programs ran natively without a loss.
 
+**The dump of one loss** (m0-hang-dump.md, 2026-11-12) changes the picture: the graphics ring is the one stuck, in
+our own command buffer, with draws in the 3D pipe that never finish. The compute side had finished and was idle; no
+task shader was running and no gang semaphore was being waited on. So the hang is most likely a native mesh draw of a
+task+mesh program: either its mesh stage or data (outputs past the declared limits, a loop bounded by the payload) or
+a firmware mismatch between the task and mesh halves. Which of the two is not known, and the dump cannot tell (it
+holds no wave state and the user command buffers read back as zeros). The decision above stands as provisional: the
+compute step hands the mesh stage the same payload the old emulation produced without a loss, and removes the
+task-to-mesh hand-over. Before M4 builds it, one run with the frozen back end's draw markers (`RX_VK_CHECKPOINTS=1`)
+names the program whose draw does not finish; that costs one device loss.
+
 **Not done, and worth doing once under the hang rules below:** the same native run on Mesa main, and a reading of the
 devcoredump (it needs root). If either shows a driver fault with a fix, native task shaders come back and the compute
 step goes.
