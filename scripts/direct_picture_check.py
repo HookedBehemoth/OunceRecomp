@@ -244,10 +244,33 @@ def by_target(items):
     return out
 
 
+def pass_ends(items):
+    """(kept, merged): the items of the frame's renderings, consecutive renderings over the same targets (the same slots and
+    addresses) merged into the last of them. A back end may end a rendering and begin it again over the same targets (the
+    frozen one at each job, the direct one around a task step) in an order the other does not share; the state at the end
+    of such a run is what the next pass reads, and the one compared"""
+    rend = []
+    for it in sorted((i for i in items if not i.get("missing")), key=lambda i: i["seq"]):
+        slot = 99 if it["slot"] == "depth" else int(it["slot"][1:])
+        if not rend or slot <= rend[-1][-1][0]:
+            rend.append([])
+        rend[-1].append((slot, it))
+    kept, merged = [], []
+    for n, r in enumerate(rend):
+        key = tuple((s, i["gpu"]) for s, i in r)
+        nxt = tuple((s, i["gpu"]) for s, i in rend[n + 1]) if n + 1 < len(rend) else None
+        (merged if key == nxt else kept).extend(i for _, i in r)
+    return kept, merged
+
+
 def align(ref_items, run_items):
-    """[(ref item or None, run item or None, identity)]: per target, its states lined up by their last program, in order"""
+    """[(ref item or None, run item or None, identity)]: per target, its states (at the end of each run of renderings over
+    the same targets: pass_ends) lined up by their last program, in order; the merged states listed as such"""
+    ref_items, ref_merged = pass_ends(ref_items)
+    run_items, run_merged = pass_ends(run_items)
     rt, ut = by_target(ref_items), by_target(run_items)
-    rows = []
+    rows = [(i, "merged", "%s seq %d (merged)" % (signature(i), i["seq"])) for i in ref_merged]
+    rows += [("merged", i, "%s seq %d (merged)" % (signature(i), i["seq"])) for i in run_merged]
     for key in sorted(set(rt) | set(ut), key=lambda k: min(i["seq"] for i in rt.get(k, []) + ut.get(k, []))):
         ra, ua = rt.get(key, []), ut.get(key, [])
         sm = difflib.SequenceMatcher(None, [i["prog"] for i in ra], [i["prog"] for i in ua], autojunk=False)
@@ -261,7 +284,7 @@ def align(ref_items, run_items):
             # one back end ends and begins again where the other does not (the frozen back end ends a rendering at each job's
             # draws, M6b), their content compared in that later state; marked, not missing)
             later = any(o[0] == "equal" for o in ops[n + 1:])
-            if not later and i1 > i0 and j1 > j0:
+            if not later and i1 > i0 and j1 > j0 and (ra[i1 - 1]["prog"] == "0" * 16) == (ua[j1 - 1]["prog"] == "0" * 16):
                 # (the target's last states differ by name on both sides (its renderings end at another draw in each back end):
                 # its final states are compared, by position, as what later passes read; the rest merged into them)
                 for i in range(i0, i1 - 1):
