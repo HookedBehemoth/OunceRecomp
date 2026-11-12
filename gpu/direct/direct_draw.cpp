@@ -838,6 +838,7 @@ bool meshlog_on() { return meshlog_at() >= 0 && (int64_t)present_count() == mesh
 // buffers searched for a pointer into them)
 std::mutex meshlog_mu;
 std::vector<uint64_t> meshlog_recs;
+std::vector<std::pair<uint64_t, uint64_t>> meshlog_gpu;   // (M4a: the frame's indirect mesh records and their program serials)
 constexpr uint32_t kSentinel = 0x5a5a0000;
 bool meshlog_later() { return meshlog_at() >= 0 && (int64_t)present_count() == meshlog_at() + 120; }
 bool meshlog_next() { return meshlog_at() >= 0 && (int64_t)present_count() == meshlog_at() + 1; }
@@ -851,6 +852,10 @@ void mesh_log(const List* l, uint32_t op, const nvn_p_draw_indirect& dn, const n
                                        (w[2] & 0xffff0000u) == kSentinel ? "the sentinel stayed: no CPU reset" : "reset since");
     }
     if ((op != NOP_DRAW_INDIRECT && op != NOP_DRAW_MESH) || !meshlog_on()) return;
+    if (op == NOP_DRAW_MESH && dm.kind != 0) {   // (M4a: read again once the GPU has run the frame: draw_meshlog_after)
+        std::lock_guard lk(meshlog_mu);
+        meshlog_gpu.push_back({dm.indirect, l->dctx ? l->dctx->s.prog.serial : 0});
+    }
     static std::atomic<int> n{0};
     if (n++ > 3000) return;
     char prog[256];
@@ -1323,6 +1328,26 @@ void draw_log(double frames) {
 bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr) { return arena_alloc(slot, bytes, map, addr); }
 VkDeviceAddress draw_window_table() { return window_table_address; }
 VkDeviceAddress draw_zero_address() { return zero_address; }
+/// (M4a, HOS_DBG=meshlog) at the present after that frame: the GPU idle, its indirect mesh records as the GPU left them
+void draw_meshlog_after() {
+    if (meshlog_at() < 0 || (int64_t)present_count() != meshlog_at() + 1) return;
+    std::vector<std::pair<uint64_t, uint64_t>> recs;
+    {
+        std::lock_guard lk(meshlog_mu);
+        recs.swap(meshlog_gpu);
+    }
+    if (recs.empty()) return;
+    vkDeviceWaitIdle(dev.device);
+    int drawing = 0;
+    for (const auto& [r, serial] : recs) {
+        uint32_t w[4]{};
+        host->gpu_read(r, w, sizeof w);
+        drawing += w[0] && w[1] && w[2];
+        logf("direct: meshlog after the GPU: record %#llx (program serial %llu): %u %u %#x %u", (unsigned long long)r, (unsigned long long)serial,
+             w[0], w[1], w[2], w[3]);
+    }
+    logf("direct: meshlog after the GPU: %d of %zu indirect mesh records draw something", drawing, recs.size());
+}
 bool draw_scene_up() { return scene_seen.load(std::memory_order_relaxed); }
 
 }  // namespace hsd

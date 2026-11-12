@@ -250,6 +250,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
 }
 
 void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's mu held: one at a time)
+    draw_meshlog_after();   // (M4a: HOS_DBG=meshlog's GPU-side records)
     if (const uint64_t want = resize_to.exchange(0, std::memory_order_acquire); want || (!dev.offscreen && !swapchain))
         if (!create_swapchain(want ? (uint32_t)(want >> 32) : extent.width, want ? (uint32_t)want : extent.height)) return;
     Frame& f = frames[frame_index];
