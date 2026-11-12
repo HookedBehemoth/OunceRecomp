@@ -335,6 +335,18 @@ Sizes are relative (S, M, L); I have no basis for calendar estimates.
 Order: M0 first and alone. M1 and A in parallel (A needs no game slot for most of it). M2 needs A's textures, M3
 needs its terrain tiles. Then in sequence.
 
+## Parked, to be done eventually
+
+- **The native task and mesh hang.** Not solved (see "Task and mesh shaders"). To do at or before M4, on a fresh boot
+  with no agent mid-work: skip the bystander program's draws; drain the pipe after every native mesh draw; the same
+  run on Mesa main; and the task stage as a compute step with the mesh stage native, tried in the direct back end.
+- **A per-draw trace compared offline.** Both back ends write, for each draw of one frame, its program, vertex
+  layout, buffer addresses and sizes, texture and sampler ids and fixed state; a script lines them up per pass. The
+  direct answer to "are a job's bindings right" when a picture comparison cannot say. Not built; the user did not
+  want it yet (2026-11-12).
+- **The render-target id patch.** Its premise was wrong (`m3a-report.md`); the submit-time snapshot of the deferred
+  tables covers it meanwhile.
+
 ## How the work is run
 
 - One integration branch and one owner of this document. Delegated work is a leaf task with its interface written
