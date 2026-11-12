@@ -64,6 +64,7 @@ PFN_vkCmdDispatch pDispatch = nullptr;
 PFN_vkCmdDispatchIndirect pDispatchIndirect = nullptr;
 PFN_vkCmdCopyBuffer pCopyBuffer = nullptr;
 PFN_vkCmdFillBuffer pFillBuffer = nullptr;
+PFN_vkGetShaderBinaryDataEXT pShaderBinary = nullptr;
 void load_functions() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -71,6 +72,7 @@ void load_functions() {
         pDispatchIndirect = (PFN_vkCmdDispatchIndirect)vkGetDeviceProcAddr(dev.device, "vkCmdDispatchIndirect");
         pCopyBuffer = (PFN_vkCmdCopyBuffer)vkGetDeviceProcAddr(dev.device, "vkCmdCopyBuffer");
         pFillBuffer = (PFN_vkCmdFillBuffer)vkGetDeviceProcAddr(dev.device, "vkCmdFillBuffer");
+        pShaderBinary = (PFN_vkGetShaderBinaryDataEXT)vkGetDeviceProcAddr(dev.device, "vkGetShaderBinaryDataEXT");
         // (no cooperative matrices on this card (RDNA2): the networks' matrix multiplies in a shader function on subgroup
         // shuffles, as the frozen back end runs them here, gpu/vk/vk_coopmat.cpp software_multiplies)
         Shader::Backend::SPIRV::mma_software = true;
@@ -289,6 +291,7 @@ struct DiskRecord {
     size_t size;
 };
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_key;
+void bin_init(uint64_t stamp);
 uint64_t disk_stamp() {
     const uint64_t s[3] = {parts::cache_stamp(), kDiskVersion, Shader::Backend::SPIRV::mma_software ? 1ull : 0ull};
     return hash_bytes(s, sizeof s);
@@ -334,8 +337,61 @@ void disk_init() {
         disk_in = disk_out ? fopen(path.c_str(), "rb") : nullptr;
         disk_on = disk_out && disk_in;
         logf("direct: compute cache %s: %zu variants kept%s", path.c_str(), records, whole && !good ? "; another stamp's file was truncated" : "");
+        bin_init(stamp);
     });
 }
+// ---- (the shader objects' binaries: hookshot_direct_compute_objects.bin, good for this driver and these translations) ----
+std::mutex bin_mu;
+FILE* bin_out = nullptr;
+std::unordered_map<uint64_t, std::vector<uint8_t>> binaries;   // (by variant_id)
+std::atomic<int64_t> st_from_binary{0}, st_binary_failed{0};
+void bin_init(uint64_t stamp) {
+    static std::once_flag once;
+    std::call_once(once, [stamp] {
+        const std::string path = parts::program_dir() + "hookshot_direct_compute_objects.bin";
+        uint64_t want[3] = {stamp, 0, 0};
+        std::memcpy(&want[1], dev.props.pipelineCacheUUID, 16);
+        std::vector<uint8_t> all;
+        if (FILE* f = fopen(path.c_str(), "rb")) {
+            fseeko(f, 0, SEEK_END);
+            all.resize((size_t)ftello(f));
+            fseeko(f, 0, SEEK_SET);
+            if (fread(all.data(), 1, all.size(), f) != all.size()) all.clear();
+            fclose(f);
+        }
+        size_t good = 0;
+        if (all.size() >= 24 && !std::memcmp(all.data(), want, 24)) {
+            good = 24;
+            while (good + 16 <= all.size()) {
+                uint64_t h[2];
+                std::memcpy(h, all.data() + good, 16);
+                if (h[1] > all.size() - good - 16) break;
+                binaries[h[0]].assign(all.begin() + good + 16, all.begin() + good + 16 + h[1]);
+                good += 16 + h[1];
+            }
+        }
+        if (good) {
+            if (good != all.size() && truncate(path.c_str(), (off_t)good) != 0) binaries.clear(), good = 0;
+        }
+        if (good) {
+            bin_out = fopen(path.c_str(), "ab");
+        } else if ((bin_out = fopen(path.c_str(), "wb"))) {
+            fwrite(want, 8, 3, bin_out), fflush(bin_out);
+        }
+        logf("direct: compute shader binaries %s: %zu kept", path.c_str(), binaries.size());
+    });
+}
+void bin_save(uint64_t id, VkShaderEXT cs) {
+    if (!pShaderBinary || !bin_out) return;
+    size_t n = 0;
+    if (pShaderBinary(dev.device, cs, &n, nullptr) != VK_SUCCESS || !n) return;
+    std::vector<uint8_t> data(n);
+    if (pShaderBinary(dev.device, cs, &n, data.data()) != VK_SUCCESS) return;
+    const uint64_t h[2] = {id, n};
+    std::lock_guard lk(bin_mu);
+    fwrite(h, 8, 2, bin_out), fwrite(data.data(), 1, n, bin_out), fflush(bin_out);
+}
+
 template <class T> void put(std::vector<uint8_t>& o, const T& v) { o.insert(o.end(), (const uint8_t*)&v, (const uint8_t*)&v + sizeof v); }
 template <class T> bool get(const uint8_t*& p, const uint8_t* e, T& v) {
     if ((size_t)(e - p) < sizeof v) return false;
@@ -606,6 +662,13 @@ VkDescriptorSetAndBindingMappingEXT null_map(uint32_t b, uint32_t stride) {
     return m;
 }
 
+/// A variant's identity across runs: its code and the answers it was translated for
+uint64_t variant_id(const Variant& v) {
+    uint64_t h = 0;
+    for (const Answer& a : v.answers) h = (h ^ ((uint64_t)a.offset << 16 | a.want)) * 1099511628211ull;
+    return v.key ^ h * 0x9E3779B97F4A7C15ull;
+}
+
 bool finish(Variant& v, const Layout& lay) {
     const Shader::Info& info = v.info;
     std::vector<VkDescriptorSetAndBindingMappingEXT> m;
@@ -664,6 +727,7 @@ bool finish(Variant& v, const Layout& lay) {
     mi.mappingCount = (uint32_t)m.size(), mi.pMappings = m.data();
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sz{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     sz.requiredSubgroupSize = 32;
+    load_functions();
     VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
     ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
     ci.stage = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -674,7 +738,24 @@ bool finish(Variant& v, const Layout& lay) {
     if (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) sz.pNext = &mi, ci.pNext = &sz;
     else ci.pNext = &mi;
     const auto t0 = clk::now();
-    const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &v.cs);
+    const uint64_t id = variant_id(v);
+    VkResult r = VK_ERROR_UNKNOWN;
+    bool from_binary = false;
+    {   // (its binary, when this driver made it before: no compile)
+        std::vector<uint8_t> bin;
+        {
+            std::lock_guard lk(bin_mu);
+            if (const auto it = binaries.find(id); it != binaries.end()) bin = it->second;
+        }
+        if (!bin.empty()) {
+            VkShaderCreateInfoEXT bi = ci;
+            bi.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT, bi.codeSize = bin.size(), bi.pCode = bin.data();
+            r = vkCreateShadersEXT(dev.device, 1, &bi, nullptr, &v.cs);
+            from_binary = r == VK_SUCCESS;
+            if (!from_binary) v.cs = VK_NULL_HANDLE, st_binary_failed.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (!from_binary) r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &v.cs);
     const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count();
     st_object_ns.fetch_add(ns, std::memory_order_relaxed);
     if (ns > 2'000'000'000ll)
@@ -687,6 +768,8 @@ bool finish(Variant& v, const Layout& lay) {
     }
     st_cs_objects.fetch_add(1, std::memory_order_relaxed);
     st_objects.fetch_add(1, std::memory_order_relaxed);
+    if (from_binary) st_from_binary.fetch_add(1, std::memory_order_relaxed);
+    else bin_save(id, v.cs);
     if (v.skip) logf("direct: compute program %016llx cannot be dispatched: %s (skipped, counted)", (unsigned long long)v.key, v.skip);
     return true;
 }
@@ -1149,11 +1232,11 @@ void compute_log(double frames) {
         queued = work.size();
     }
     logf("direct: compute programs (since the start): %lld slots, %lld codes, %lld variants (%lld translated in %.1f s, %lld from the cache, "
-         "%lld failed), shader objects %lld (%.1f s, %lld failed), %lld with matrix multiplies, %lld reading the grid otherwise; misses %.1f "
+         "%lld failed), shader objects %lld (%.1f s, %lld failed; %lld from their binaries, %lld binaries refused), %lld with matrix multiplies, %lld reading the grid otherwise; misses %.1f "
          "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld",
          (long long)st_slots.load(), (long long)st_codes.load(), (long long)st_variants.load(), (long long)st_translated.load(),
          st_translate_ns.load() / 1e9, (long long)st_from_disk.load(), (long long)st_failed.load(), (long long)st_cs_objects.load(),
-         st_object_ns.load() / 1e9, (long long)st_object_failed.load(), (long long)st_coopmat.load(), (long long)st_grid_left.load(),
+         st_object_ns.load() / 1e9, (long long)st_object_failed.load(), (long long)st_from_binary.load(), (long long)st_binary_failed.load(), (long long)st_coopmat.load(), (long long)st_grid_left.load(),
          st_misses.exchange(0) / frames, queued, last_miss_s.load(), st_fixups.exchange(0) / frames, (long long)st_samp_binds.load());
 }
 
