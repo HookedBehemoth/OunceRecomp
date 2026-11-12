@@ -16,6 +16,7 @@ typedef struct {
     void (*list_released)(void *list);
     void (*submit)(uint64_t queue, void *const *lists, uint32_t n);
     void (*queue_wait_fence)(uint64_t queue, uint64_t fence);
+    void (*present_queue)(uint64_t queue);
 } hsd_fns;
 
 /* rx_backend.c: the library's list calls in direct mode (loaded at the first call, from any thread), NULL otherwise */

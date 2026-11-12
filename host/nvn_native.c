@@ -3160,6 +3160,7 @@ NV(nvnQueuePresentTexture) {
     held_flush();   /* (a present flushes the queue) */
     {
         const int away = hos_vcore_away();
+        if (rx_direct()) rx_direct()->present_queue((uint64_t)(uintptr_t)P(0));   /* (direct mode: the present runs in its queue's order) */
         rx_nvn_present(win_tex(o, i), o->crop);
         if (away) hos_vcore_back();
     }

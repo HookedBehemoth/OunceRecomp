@@ -13,6 +13,8 @@
 #include <deque>
 #include <unordered_map>
 
+#include "direct_cmd.h"
+#include "direct_dump.h"
 #include "direct_internal.h"
 #include "direct_lists.h"
 
@@ -33,6 +35,15 @@ struct Sub {
     std::vector<uint64_t> wait_fences;   // (nvnQueueWaitSync before it: fences of other queues)
     clk::time_point held_since{};
     bool held = false;
+    // (M2a: the lists' command buffers in call order, the slots they come from, the dump's copies in them)
+    std::vector<VkCommandBuffer> cbs;
+    std::vector<CmdSlot*> slots;
+    std::vector<DumpItem*> dumps;
+    uint64_t frame = 0;   // (presents before its hand-in)
+    // (a present: its GPU work runs here, in its queue's order)
+    bool present = false;
+    nvn_tex tex{};
+    int crop[4]{};
 };
 struct Queue {
     uint64_t id = 0;
@@ -43,13 +54,14 @@ struct Queue {
     std::vector<uint64_t> wait_fences;   // (for the next submission)
     std::deque<std::pair<uint64_t, uint64_t>> values;   // (seq -> timeline value of the recent ones, oldest first)
 };
+thread_local uint64_t present_queue = 0;   // (hsd_present_queue's, for the present that follows on this thread)
 std::mutex mu;   // (the queues, their submissions, the event and report writes; queue_mu is taken inside it)
 std::condition_variable sent_cv;   // (a submission sent: CPU waits for a fence not sent yet)
 std::vector<Queue*> queues;   // (by index; never freed)
 std::unordered_map<uint64_t, Queue*> by_id;
 
 // counts since the last line (mu held, or atomic)
-int64_t st_submits = 0, st_held = 0, st_waits_met = 0, st_signals = 0, st_reports = 0, st_resets = 0, st_fence_held = 0;
+int64_t st_cbs = 0, st_submits = 0, st_held = 0, st_waits_met = 0, st_signals = 0, st_reports = 0, st_resets = 0, st_fence_held = 0;
 double st_hold_max_ms = 0;
 std::atomic<int64_t> st_submit_ns{0}, st_submit_max_ns{0}, st_cpu_waits{0}, st_cpu_wait_ns{0}, st_cpu_signals{0};
 
@@ -138,6 +150,12 @@ void progress() {
         for (Queue* q : queues) {
             while (!q->subs.empty()) {
                 Sub& s = q->subs.front();
+                if (s.present) {
+                    present_run(s.tex, s.crop);
+                    q->subs.pop_front();
+                    moved = true;
+                    continue;
+                }
                 if (!run(s)) {
                     if (!s.held) s.held = true, s.held_since = clk::now(), st_held++;
                     break;
@@ -152,7 +170,11 @@ void progress() {
                     fence_value(f, v);
                     wait_value = std::max(wait_value, v);
                 }
-                const uint64_t v = sync_send(wait_value);
+                const bool dumped = dump_claim(s.dumps, s.frame);
+                const uint64_t v = sync_send(wait_value, s.cbs.data(), (uint32_t)s.cbs.size());
+                for (CmdSlot* c : s.slots) cmd_slot_sent(c, v);
+                if (dumped) dump_sent(v);
+                st_cbs += (int64_t)s.cbs.size();
                 q->seq_sent = s.seq;
                 q->values.push_back({s.seq, v});
                 while (q->values.size() > 64) q->values.pop_front();
@@ -238,7 +260,7 @@ bool sync_wait_value(uint64_t value, uint64_t timeout_ns) {
     wi.pValues = &value;
     return vkWaitSemaphores(dev.device, &wi, timeout_ns) == VK_SUCCESS;
 }
-uint64_t sync_send(uint64_t wait_value) {
+uint64_t sync_send(uint64_t wait_value, const VkCommandBuffer* cbs, uint32_t n) {
     std::lock_guard qk(dev.queue_mu);
     const uint64_t v = sent.load(std::memory_order_relaxed) + 1;
     VkSemaphoreSubmitInfo sig{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -246,6 +268,10 @@ uint64_t sync_send(uint64_t wait_value) {
     VkSemaphoreSubmitInfo wait = sig;
     wait.value = wait_value;
     VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    std::vector<VkCommandBufferSubmitInfo> cb(n, VkCommandBufferSubmitInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO});
+    for (uint32_t i = 0; i < n; i++) cb[i].commandBuffer = cbs[i];
+    si.commandBufferInfoCount = n;
+    si.pCommandBufferInfos = cb.data();
     si.signalSemaphoreInfoCount = 1;
     si.pSignalSemaphoreInfos = &sig;
     if (wait_value) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &wait;   // (sent already: never a wait before its signal)
@@ -267,14 +293,14 @@ void sync_stats(char* out, size_t cap, double frames) {
     size_t held_now = 0;
     for (const Queue* q : queues) held_now += q->subs.size();
     const int64_t ns = st_submit_ns.exchange(0), mx = st_submit_max_ns.exchange(0);
-    std::snprintf(out, cap, "submits %.1f a frame (%.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
+    std::snprintf(out, cap, "submits %.1f a frame (%.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
                   "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms; %zu held now), fence waits held %lld, "
                   "reports %.1f, resets %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); timeline %llu sent, %llu done",
-                  st_submits / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
+                  st_submits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
                   st_hold_max_ms, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
                   st_cpu_signals.exchange(0) / frames, st_cpu_waits.exchange(0) / frames, st_cpu_wait_ns.exchange(0) / 1e6 / frames,
                   (unsigned long long)sent.load(), (unsigned long long)sync_completed());
-    st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
+    st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
     st_hold_max_ms = 0;
 }
 
@@ -305,7 +331,9 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
         list_submitted(l);
         s.lists.push_back(l);
         list_flatten(l, s.ops);
+        list_buffers(l, s.cbs, s.slots, dump_recording() ? &s.dumps : nullptr);
     }
+    s.frame = present_count();
     {
         std::lock_guard lk(mu);
         Queue* q = queue_of(queue);
@@ -318,6 +346,25 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
     st_submit_ns.fetch_add(ns, std::memory_order_relaxed);
     for (int64_t m = st_submit_max_ns.load(); ns > m && !st_submit_max_ns.compare_exchange_weak(m, ns);) {}
 }
+
+namespace hsd {
+/// A present in its queue's order (the queue hsd_present_queue named on this thread; none: at once)
+void sync_present(const nvn_tex* t, const int crop[4]) {
+    Sub s;
+    s.present = true;
+    if (t) s.tex = *t;
+    else s.tex.gpu = 0;
+    for (int i = 0; i < 4; i++) s.crop[i] = crop ? crop[i] : 0;
+    std::lock_guard lk(mu);
+    if (!present_queue) return present_run(s.tex, s.crop);
+    Queue* q = queue_of(present_queue);
+    present_queue = 0;
+    q->subs.push_back(std::move(s));
+    progress();
+}
+}  // namespace hsd
+
+extern "C" __attribute__((visibility("default"))) void hsd_present_queue(uint64_t queue) { present_queue = queue; }
 
 extern "C" __attribute__((visibility("default"))) void hsd_queue_wait_fence(uint64_t queue, uint64_t fence) {
     std::lock_guard lk(mu);

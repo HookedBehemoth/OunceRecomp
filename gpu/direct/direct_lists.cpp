@@ -5,8 +5,11 @@
 #include <cstring>
 #include <mutex>
 
+#include "direct_cmd.h"
+#include "direct_dump.h"
 #include "direct_internal.h"
 #include "direct_lists.h"
+#include "direct_pass.h"
 
 namespace hsd {
 namespace {
@@ -65,6 +68,8 @@ void list_unref(List* l) {
         work.pop_back();
         for (const FrameOp& o : x->ops)
             if (o.op == NOP_CALL && o.callee->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) work.push_back(o.callee);
+        if (x->slot) cmd_slot_drop(x->slot);
+        dump_free(x->dumps);
         delete x;
         st_live.fetch_sub(1, std::memory_order_relaxed);
     }
@@ -76,6 +81,21 @@ void list_flatten(const List* l, std::vector<const FrameOp*>& out) {
     for (const FrameOp& o : l->ops) {
         if (o.op == NOP_CALL) list_flatten(o.callee, out);
         else out.push_back(&o);
+    }
+}
+
+void list_buffers(const List* l, std::vector<VkCommandBuffer>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps) {
+    if (!l->has_cmds) return;
+    if (l->slot) slots.push_back(l->slot);
+    for (const Seg& s : l->segs) {
+        if (s.callee) {
+            list_buffers(s.callee, out, slots, dumps);
+            continue;
+        }
+        out.push_back(s.cb);
+        if (dumps)
+            for (DumpItem* d : l->dumps)
+                if (d->cb == s.cb) dumps->push_back(d);
     }
 }
 
@@ -132,6 +152,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_emit(void* list, uint
         return;
     }
     l->counts[op]++;
+    pass_emit(l, op, payload, size);
     FrameOp o;
     switch (op) {
     case NOP_SIGNAL_EVENT:
@@ -160,6 +181,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_call(void* list,
     for (uint32_t i = 0; i < n; i++) {
         List* c = (List*)callees[i];
         if (!c) continue;
+        pass_call(l, c);
         list_ref(c);
         if (c->site >= 0) sites[c->site].called_by[l->info.kind].fetch_add(1, std::memory_order_relaxed);
         FrameOp o;
@@ -172,6 +194,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_call(void* list,
 extern "C" __attribute__((visibility("default"))) void hsd_list_end(void* list) {
     List* l = (List*)list;
     if (!l) return;
+    pass_list_end(l);
     l->ended = true;
     st_kinds[l->info.kind].fetch_add(1, std::memory_order_relaxed);
     for (int i = 0; i < NOP_COUNT_; i++)

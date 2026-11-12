@@ -31,6 +31,7 @@ void  hsd_list_end(void *list);                                           /* com
 void  hsd_list_released(void *list);                                      /* the handle is gone (any thread) */
 void  hsd_submit(uint64_t queue, void *const *lists, uint32_t n);         /* the guest's submit, in handle order */
 void  hsd_queue_wait_fence(uint64_t queue, uint64_t fence);               /* nvnQueueWaitSync, instead of fw_record's side record */
+void  hsd_present_queue(uint64_t queue);   /* (M2a) the queue of the present that follows on this thread (nvnQueuePresentTexture) */
 
 #ifdef __cplusplus
 }

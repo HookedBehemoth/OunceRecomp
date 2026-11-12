@@ -288,6 +288,7 @@ const hsd_fns *rx_direct(void) {
             DIRECT_FN(list_released, "hsd_list_released")
             DIRECT_FN(submit, "hsd_submit")
             DIRECT_FN(queue_wait_fence, "hsd_queue_wait_fence")
+            DIRECT_FN(present_queue, "hsd_present_queue")
 #undef DIRECT_FN
             hos_log("rx: direct mode (RX_BACKEND=direct): %s", path);
             on = 2;

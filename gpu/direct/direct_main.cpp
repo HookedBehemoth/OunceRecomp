@@ -11,6 +11,7 @@
 
 #include "direct_internal.h"
 #include "direct_api.h"
+#include "direct_image.h"
 
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
@@ -42,9 +43,25 @@ bool dbg(const char* name) {
     return list.find("," + std::string(name) + ",") != std::string::npos;
 }
 
-namespace {
-
 PFN_vkGetInstanceProcAddr get_instance_proc;
+
+const char* dbg_value(const char* name) {
+    static const std::string list = [] {
+        const char* e = getenv("HOS_DBG");
+        return "," + std::string(e ? e : "") + ",";
+    }();
+    static std::mutex mu;
+    static std::vector<std::string> kept;   // (the values handed out: their strings stay)
+    const std::string key = "," + std::string(name) + ":";
+    const size_t at = list.find(key);
+    if (at == std::string::npos) return nullptr;
+    const size_t from = at + key.size(), to = list.find(',', from);
+    std::lock_guard lk(mu);
+    kept.push_back(list.substr(from, to - from));
+    return kept.back().c_str();
+}
+
+namespace {
 
 bool load_global() {
     void* m = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
@@ -206,15 +223,28 @@ const char* describe() {
     return d.c_str();
 }
 void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) { *draws = *skipped = *pipelines = 0; }
-void register_texture(int, const nvn_tex*, const nvn_view*) { count(R_TEX); }
+void register_texture(int, const nvn_tex* t, const nvn_view*) {
+    count(R_TEX);
+    image_texture_registered(t);
+}
 void register_sampler(int, const nvn_samp_par*) { count(R_SAMP); }
 void set_texture_pool_size(int) { count(R_TEX_POOL); }
-void texture_released(const nvn_tex*) { count(R_TEX_GONE); }
-void texture_created(const nvn_tex*) { count(R_TEX_MADE); }
+void texture_released(const nvn_tex* t) {
+    count(R_TEX_GONE);
+    image_texture_released(t);
+}
+void texture_created(const nvn_tex* t) {
+    count(R_TEX_MADE);
+    image_texture_created(t);
+}
 void program_set(const nvn_prog*) { count(R_PROG_SET); }
 void program_released(const nvn_prog*) { count(R_PROG_GONE); }
 void read_texels(const nvn_tex*, unsigned, unsigned, const NVNcopyRegion*, uint8_t*, uint64_t, uint64_t) { count(R_READ_TEXELS); }
-void write_texels(const nvn_tex*, unsigned, unsigned, const NVNcopyRegion*, const uint8_t*, uint64_t, uint64_t) { count(R_WRITE_TEXELS); }
+void write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src, uint64_t row,
+                  uint64_t img) {
+    count(R_WRITE_TEXELS);
+    image_write_texels(t, level, layer0, r, src, row, img);
+}
 void invalidate(uint64_t, uint64_t) {}
 void vmap_changing(uint64_t, uint64_t) {}
 void wait_writebacks_reading(const void*, uint64_t) {}
@@ -253,7 +283,11 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
         return nullptr;
     }
     if (!create_instance() || !pick_device() || !create_device()) return nullptr;
-    logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M1: every list a counted no-op)", dev.props.deviceName,
+    if (!vma_init()) {
+        logf("direct: no memory allocator");
+        return nullptr;
+    }
+    logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2a: targets, passes, present; draws counted and skipped)", dev.props.deviceName,
          VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion);
     table.version = MKWVK_API_VERSION;
     table.start = start;

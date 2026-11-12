@@ -1,17 +1,26 @@
-// The window (M1): each present clears the swapchain's next image to one colour and presents it; with no window
-// (HOS_HEADLESS) an image of its own is cleared instead. The swapchain as gpu/vk/vk_main.cpp makes it, without HDR, the
+// The window (M2a): each present blits the NVN window texture, with the host's crop, into the swapchain's next image
+// (letterboxed by gpu/vk/vk_present_rect.h); with no window (HOS_HEADLESS) into an image of its own. The host's call is
+// noted and its GPU work runs in its queue's order (direct_sync.cpp): after every submission handed to that queue
+// before it. The swapchain as gpu/vk/vk_main.cpp makes it, without HDR, the
 // overlays' views or Reflex. Every 600 presents: the frame time and the counts of the other parts, one log line each.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 
+#include "direct_cmd.h"
+#include "direct_dump.h"
+#include "direct_image.h"
 #include "direct_internal.h"
+#include "direct_pass.h"
+#include "vk_present_rect.h"
 
 namespace hsd {
 namespace {
 
 using clk = std::chrono::steady_clock;
-const VkClearColorValue kColour{{0.10f, 0.18f, 0.24f, 1.0f}};   // (the cleared window: a dark blue-grey)
+const VkClearColorValue kBlack{{0.0f, 0.0f, 0.0f, 1.0f}};
+std::atomic<uint64_t> asked{0};   // (the host's presents)
+std::atomic<int64_t> st_no_image{0}, st_shown{0};
 
 const MkwVkWindow* window = nullptr;
 VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -114,6 +123,7 @@ bool make_offscreen() {
     ii.samples = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling = VK_IMAGE_TILING_OPTIMAL;
     ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(dev.device, &ii, nullptr, &offscreen) != VK_SUCCESS) return false;
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(dev.device, offscreen, &req);
@@ -159,6 +169,12 @@ void log_line() {
     sync_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     regs_stats(b, sizeof b);
+    logf("direct: %s", b);
+    pass_stats(b, sizeof b, frames);
+    logf("direct: %s", b);
+    image_stats(b, sizeof b);
+    logf("direct: %s; presents shown %lld, with no image %lld", b, (long long)st_shown.exchange(0), (long long)st_no_image.exchange(0));
+    cmd_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     layer0_stats(b, sizeof b);
     logf("direct: %s", b);
@@ -209,13 +225,21 @@ void present_resize(int width, int height) {   // (the window's thread: noted; t
     resize_to.store((uint64_t)(uint32_t)width << 32 | (uint32_t)height, std::memory_order_release);
 }
 
-void present(const nvn_tex*, const int*) {   // (one thread at a time: the guest's Presentation Thread)
+uint64_t present_count() { return asked.load(std::memory_order_acquire); }
+
+void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation Thread)
     const auto now = clk::now();
     if (presents) intervals_ms.push_back(std::chrono::duration<float, std::milli>(now - last_present).count());
     last_present = now;
     presents++;
     if (presents % 600 == 0) log_line();
+    const uint64_t n = asked.fetch_add(1, std::memory_order_acq_rel) + 1;
+    image_sweep(n);
+    dump_present(n);
+    sync_present(t, crop);
+}
 
+void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's mu held: one at a time)
     if (const uint64_t want = resize_to.exchange(0, std::memory_order_acquire); want || (!dev.offscreen && !swapchain))
         if (!create_swapchain(want ? (uint32_t)(want >> 32) : extent.width, want ? (uint32_t)want : extent.height)) return;
     Frame& f = frames[frame_index];
@@ -238,15 +262,44 @@ void present(const nvn_tex*, const int*) {   // (one thread at a time: the guest
         if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return;
         dst = images[index];
     }
+    Image* src = t.gpu ? image_find(&t) : nullptr;
+    if (src && (src->placeholder || !(src->aspect & VK_IMAGE_ASPECT_COLOR_BIT))) src = nullptr;
+    (src ? st_shown : st_no_image).fetch_add(1, std::memory_order_relaxed);
     vkResetFences(dev.device, 1, &f.done);
     vkResetCommandPool(dev.device, f.pool, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(f.cmd, &bi);
+    // (after the frame's work on the queue: the window texture's writes, before the blit reads it)
+    VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    mb.dstStageMask = VK_PIPELINE_STAGE_2_BLIT_BIT, mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+    VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    d.memoryBarrierCount = 1;
+    d.pMemoryBarriers = &mb;
+    vkCmdPipelineBarrier2(f.cmd, &d);
     barrier(f.cmd, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, 0,
             VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &kColour, 1, &range);
+    const mkwvk::PresentRect rect = src ? mkwvk::present_rect(src->width, src->height, crop, extent.width, extent.height)
+                                        : mkwvk::PresentRect{0, 0, 0, 0};
+    const mkwvk::PresentSourceRect from = src ? mkwvk::present_source_rect(src->width, src->height, crop) : mkwvk::PresentSourceRect{};
+    const bool bars = !src || !from.w || !from.h || rect.x || rect.y || rect.w != extent.width || rect.h != extent.height;
+    if (bars) {
+        vkCmdClearColorImage(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &kBlack, 1, &range);
+        barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    }
+    if (src && from.w && from.h && rect.w && rect.h) {
+        VkImageBlit b{};
+        b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        b.srcOffsets[0] = {(int)from.x, (int)from.y, 0};
+        b.srcOffsets[1] = {(int)(from.x + from.w), (int)(from.y + from.h), 1};
+        b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        b.dstOffsets[0] = {(int)rect.x, (int)rect.y, 0};
+        b.dstOffsets[1] = {(int)(rect.x + rect.w), (int)(rect.y + rect.h), 1};
+        vkCmdBlitImage(f.cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+    }
     if (!dev.offscreen)
         barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);

@@ -167,7 +167,7 @@ std::vector<Block> blocks;
 int64_t st_chunks = 0, st_windows = 0, st_bind_calls = 0, st_failed = 0, st_vpools = 0, st_handback = 0, st_released = 0,
         st_demoted = 0, st_vram_failed = 0, st_waits = 0;
 double st_import_ms = 0, st_bind_ms = 0, st_max_ms = 0, st_wait_ms = 0;
-std::atomic<int64_t> st_early{0};
+std::atomic<int64_t> st_early{0}, st_span_binds{0};
 
 Window* window_make(uint32_t k) {   // (mu held)
     Window& w = windows[k];
@@ -600,6 +600,32 @@ bool layer0_bound(uint64_t lo, uint64_t hi) {   // (bound or being imported: a d
     return false;
 }
 
+bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset) {
+    if (!size || gpu >= (1ull << 40) || !l0::fits_window(gpu, size) || state.load(std::memory_order_acquire) != 1) return false;
+    const uint64_t hi = std::min(gpu + size, guest_bytes);
+    if (hi <= gpu) return false;
+    if (!ready->all(gpu, hi)) {   // (not bound ahead: its chunks imported now, on this thread; others' imports waited for)
+        uint64_t c0, c1;
+        l0::chunk_span(gpu, hi, chunk, c0, c1);
+        std::vector<uint64_t> claimed;
+        for (uint64_t c = c0; c < c1 && c < bits->chunks; c++)
+            for (uint8_t st : {CH_NONE, CH_QUEUED}) {
+                uint8_t want = st;
+                if (cstate[c].compare_exchange_strong(want, CH_IMPORTING, std::memory_order_acq_rel)) claimed.push_back(c);
+            }
+        bind_claimed(claimed);
+        for (uint64_t c = c0; c < c1 && c < bits->chunks; c++)
+            while (cstate[c].load(std::memory_order_acquire) == CH_IMPORTING) std::this_thread::sleep_for(std::chrono::microseconds(100));
+        st_span_binds.fetch_add(1, std::memory_order_relaxed);
+        if (!ready->all(gpu, hi)) return false;
+    }
+    std::lock_guard lk(mu);
+    Window* w = window_make(l0::window_of(gpu));
+    if (!w) return false;
+    buffer = w->buffer, offset = l0::window_offset(gpu);
+    return true;
+}
+
 void layer0_stats(char* out, size_t cap) {
     if (state.load() != 1) {
         std::snprintf(out, cap, "layer 0 off");
@@ -610,12 +636,13 @@ void layer0_stats(char* out, size_t cap) {
     for (const VPool& v : vpools) (v.live ? livev : kept)++;
     std::snprintf(out, cap, "layer 0: %lld chunks bound (%llu MB) in %lld windows, %lld bind calls, imports %.1f ms, binds %.1f ms, "
                   "longest %.1f ms, %lld failed; VRAM: %lld pools live, %lld kept, %llu MB in %zu runs (%zu blocks), %lld placed, "
-                  "%lld handed back, %lld given back, %lld demoted, %lld not placed, %lld waits (%.1f ms); %lld pool calls before the device",
+                  "%lld handed back, %lld given back, %lld demoted, %lld not placed, %lld waits (%.1f ms); %lld pool calls before the device; "
+                  "%lld copy spans bound at their use",
                   (long long)st_chunks, (unsigned long long)(st_chunks * (int64_t)chunk >> 20), (long long)st_windows,
                   (long long)st_bind_calls, st_import_ms, st_bind_ms, st_max_ms, (long long)st_failed, (long long)livev, (long long)kept,
                   (unsigned long long)(vram_used >> 20), vram.size(), blocks.size(), (long long)st_vpools, (long long)st_handback,
                   (long long)st_released, (long long)st_demoted, (long long)st_vram_failed, (long long)st_waits, st_wait_ms,
-                  (long long)st_early.load());
+                  (long long)st_early.load(), (long long)st_span_binds.load());
 }
 
 }  // namespace hsd
