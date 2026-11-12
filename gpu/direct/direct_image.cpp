@@ -265,6 +265,10 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     ci.samples = im.samples;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage;
+    // (M6b: strict names an image the game's texture needs as made for a texture of the game (in play, a texture the game made in
+    // play: a render target of a new size, a movie's frames))
+    const ObjectsFor objects_for(usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+                                     ? "an image for a texture the game made (renderable)" : "an image for a texture the game made");
     if (!mem_image(ci, im.image, im.mem)) return name_placeholder(t, "no memory for it", st_ph_refused), &placeholder;
     init_image(im);
     im.id = next_id++;
@@ -468,6 +472,7 @@ int image_view_format(const nvn_tex* t, const nvn_view* v) { return v && v->set_
 
 VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uint32_t layer, VkFormat* format_out) {
     if (!im || im->placeholder || (im->compressed && !im->block_views) || level >= im->levels) return VK_NULL_HANDLE;
+    const ObjectsFor objects_for("an attachment view of a game's texture");   // (M6b)
     const bool depth = (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) == 0;
     VkFormat f = im->format;
     if (!depth) {

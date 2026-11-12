@@ -15,8 +15,10 @@ array, in a form that loses nothing of what the target holds: 8-bit UNORM/sRGB t
 exact), 16-bit float, B10G11R11F and smaller floats as float16 (exact: their mantissas fit), D16 as uint16, D32F, R32F and
 RGBA32F as float32, integer targets as the dump's PNG (8 bits, each channel stretched over its range by the dump itself).
 
-The pass identity. A target is (slot c<i> or depth, GPU address, Vulkan format, width, height): both back ends place the
-game's targets at the same guest addresses (host/rt_slots.c gives transient targets stable slots). A target's states are its
+The pass identity. A target is (slot c<i> or depth, Vulkan format, width, height) and its rank among the targets of that
+signature in the order they first appear in the frame: guest addresses are not used, because the slots host/rt_slots.c gives
+transient targets are made in the order the game's threads ask for them and move by a slot between runs (M6b: 120 of 281
+states of two frozen Kokiri runs had another address), while their order in the frame does not move. A target's states are its
 dumps in order; each is named by the program of its rendering's last draw (both back ends log it; 0: no draw, a cleared
 state). The states of one target in two runs are lined up by that name, in order (difflib), so a cleared state is never
 compared with a drawn one and a back end that splits a rendering in two does not shift the rest (m4c's "aligned against another
@@ -29,10 +31,11 @@ share of tiles above the threshold; texels that are NaN or Inf on one side only 
 are more than the noise had. A mean over the whole picture is printed but decides nothing: one wrong tile, or one
 wrong channel, fails the pass however the rest cancels.
 
-The threshold. From the noise table: per pass identity, per channel, the worst tile error between any two frozen runs; the
-threshold is 2 x that, at least 2/255 (two 8-bit steps). A pass whose noise is above 0.05 in some channel (13 8-bit steps in
-a tile's mean) is "not comparable at one frame" (animated, temporally accumulated, amortised cube faces): listed as such, not
-passed. A pass the noise table does not have (no three frozen runs lined it up) is "no noise measured": listed, not passed.
+The threshold. From the noise table: per pass identity, per tile and channel, the worst error between any two of >= 3 frozen
+runs; a tile's threshold is 2 x that, at least 2/255 (two 8-bit steps). A tile whose noise is above 0.05 (13 8-bit steps in a
+tile's mean: something there moves between runs) is left out and counted. A pass is "not comparable at one frame" (animated,
+temporally accumulated, amortised cube faces) when under half its tiles are comparable, or when it is not in every frozen run:
+listed as such, not passed. A pass the noise table does not have is "no noise measured": listed, not passed.
 """
 import argparse
 import difflib
@@ -98,6 +101,8 @@ def read_f32(path):
     with open(path, "rb") as f:
         w, h = struct.unpack("<II", f.read(8))
         a = N.frombuffer(f.read(), N.float32)
+    if a.size < w * h * 4:
+        return None   # (cut short: a run stopped while it was written)
     return a[: w * h * 4].reshape(h, w, 4)
 
 
@@ -142,6 +147,10 @@ def pack(log, dump_dir, out):
             kept.append(it)
             continue
         f32 = read_f32(fl["f32"]) if "f32" in fl else None
+        if "f32" in fl and f32 is None:
+            it["missing"] = True
+            kept.append(it)
+            continue
         png = read_png(fl["png"]) if "png" in fl and f32 is None else None
         arr, kind = encode(it, f32, png)
         if arr.shape[0] != it["h"] or arr.shape[1] != it["w"]:
@@ -215,16 +224,23 @@ def pair_metric(ia, a, ib, b):
 
 
 # ---- identity and alignment ----
-def target_key(it):
-    return "%s %s %s %dx%d" % (it["slot"], it["gpu"], fmt_name(it["format"]), it["w"], it["h"])
+def signature(it):
+    return "%s %s %dx%d" % (it["slot"], fmt_name(it["format"]), it["w"], it["h"])
 
 
 def by_target(items):
-    out = {}
+    """target key -> its states in dump order. The key is the signature (slot, format, size) and the target's rank among the
+    targets of that signature by first appearance: transient targets' guest addresses move between runs (the slots are made in
+    the order the game's threads ask for them), their order in the frame does not"""
+    out, ranks = {}, {}
     for it in items:
         if it.get("missing"):
             continue
-        out.setdefault(target_key(it), []).append(it)
+        sig = signature(it)
+        r = ranks.setdefault(sig, {})
+        if it["gpu"] not in r:
+            r[it["gpu"]] = len(r)
+        out.setdefault("%s t%d" % (sig, r[it["gpu"]]), []).append(it)
     return out
 
 
@@ -254,90 +270,114 @@ def read_index(packed):
 
 # ---- noise ----
 def noise(out, packs):
+    """The noise table: per pass identity (named in the first run's terms), the per-tile, per-channel worst error between
+    any two runs (a map, in <out>.npz), its summary, and in how many runs the identity lines up with the first's"""
+    N = np()
     if len(packs) < 3:
         print("noise: at least 3 frozen runs (got %d)" % len(packs))
         return 2
     idx = [read_index(p) for p in packs]
-    table = {}   # identity (in run 0's terms) -> {"max": per channel, "pairs": n, "present": runs}
-    present = {}
+    table, maps, present = {}, {}, {}
+    names = [None] + [{u["seq"]: ident for r, u, ident in align(idx[0], idx[i]) if r and u} for i in range(1, len(packs))]
+    for r, u, ident in align(idx[0], idx[0]):
+        present[ident] = {0}
+    for i in range(1, len(packs)):
+        for seq, ident in names[i].items():
+            present.setdefault(ident, set()).add(i)
     for i in range(len(packs)):
         for j in range(i + 1, len(packs)):
-            # (identities named by the first run of the pair: line every pair up against run 0's names through run 0 itself)
-            rows = align(idx[0], idx[i]) if i else None
-            names = {}
-            if rows:
-                for r, u, ident in rows:
-                    if r and u:
-                        names[u["seq"]] = ident
             for r, u, ident in align(idx[i], idx[j]):
-                name = ident if i == 0 else names.get(r["seq"]) if r else None
-                if r is None or u is None or name is None:
+                if r is None or u is None:
                     continue
-                present.setdefault(name, set()).update({i, j})
+                name = ident if i == 0 else names[i].get(r["seq"])
+                if name is None:
+                    continue
                 m = pair_metric(r, load(packs[i], r), u, load(packs[j], u))
-                e = table.setdefault(name, {"max": None, "pairs": 0})
+                e = table.setdefault(name, {"pairs": 0, "nonfinite": 0})
                 e["pairs"] += 1
                 if m is None:
                     e["shape_mismatch"] = True
                     continue
-                e["max"] = m["max"] if e["max"] is None else [max(x, y) for x, y in zip(e["max"], m["max"])]
-                e["nonfinite"] = max(e.get("nonfinite", 0), m["nonfinite"])
-    for name, e in table.items():
+                maps[name] = m["tiles"] if name not in maps else N.maximum(maps[name], m["tiles"])
+                e["nonfinite"] = max(e["nonfinite"], m["nonfinite"])
+    arrays = {}
+    for k, (name, e) in enumerate(sorted(table.items())):
         e["runs"] = len(present.get(name, ()))
-        e["unstable"] = bool(e["max"] and max(e["max"]) > UNSTABLE)
+        if name in maps:
+            t = maps[name]
+            e["map"] = "m%d" % k
+            arrays[e["map"]] = t.astype(N.float32)
+            e["max"] = [float(t[..., c].max()) for c in range(t.shape[2])]
+            e["comparable"] = float((t.max(axis=2) <= UNSTABLE).mean())
+        e["unstable"] = e["runs"] < len(packs) or "map" not in e or e["comparable"] < 0.5
+    N.savez_compressed(out + ".npz", **arrays)
     with open(out, "w") as f:
         json.dump({"runs": [os.path.abspath(p) for p in packs], "tile": TILE, "unstable_above": UNSTABLE, "floor": FLOOR,
-                   "passes": table}, f, indent=0)
+                   "maps": os.path.basename(out) + ".npz", "passes": table}, f, indent=0)
     n_un = sum(1 for e in table.values() if e["unstable"])
-    print("noise: %d pass identities from %d runs (%d pairs); %d not comparable at one frame (noise above %.2f)" %
-          (len(table), len(packs), len(packs) * (len(packs) - 1) // 2, n_un, UNSTABLE))
+    part = sum(1 for e in table.values() if not e["unstable"] and e.get("comparable", 1) < 1)
+    print("noise: %d pass identities from %d runs (%d pairs); %d not comparable at one frame (in fewer runs, or under half "
+          "their tiles with noise at most %.2f); %d comparable in part (their noisy tiles left out)" %
+          (len(table), len(packs), len(packs) * (len(packs) - 1) // 2, n_un, UNSTABLE, part))
     return 0
 
 
 # ---- compare ----
-def verdict_row(r, u, ident, golden, run, noise_table):
-    """(status, detail): status PASS, FAIL, UNSTABLE, NO-NOISE, MISSING, EXTRA"""
+def verdict_row(r, u, ident, golden, run, noise_table, noise_maps):
+    """(status, detail): status PASS, FAIL, UNSTABLE, NO-NOISE, MISSING, EXTRA. With a noise table each tile has its own
+    threshold, 2 x its noise (at least FLOOR); tiles whose noise is above UNSTABLE are left out and counted"""
+    N = np()
+    e = noise_table.get(ident) if noise_table is not None else None
     if r is None:
         return "EXTRA", "only in the checked run"
     if u is None:
+        if e is not None and e.get("unstable"):
+            return "UNSTABLE", "not in the checked run; it is in %d of the frozen runs" % e.get("runs", 0)
         return "MISSING", "not in the checked run"
     m = pair_metric(r, load(golden, r), u, load(run, u))
     if m is None:
         return "FAIL", "sizes differ"
-    e = noise_table.get(ident) if noise_table is not None else None
-    if noise_table is not None and (e is None or e.get("max") is None):
+    t = m["tiles"]
+    if noise_table is None:
+        thr = N.full(t.shape, FLOOR, N.float32)
+        keep = N.ones(t.shape, bool)
+    elif e is None or "map" not in e:
         thr = None
-    elif noise_table is None:
-        thr = [FLOOR] * len(m["max"])
     else:
-        thr = [max(2 * x, FLOOR) for x in e["max"]]
-    share = [float((m["tiles"][..., c] > (thr[c] if thr else FLOOR)).mean()) for c in range(len(m["max"]))]
-    detail = "worst tile %s; tiles over %s; picture mean diff %s" % (
-        " ".join("%.4f" % x for x in m["max"]), " ".join("%.1f%%" % (100 * x) for x in share),
-        " ".join("%+.4f" % x for x in m["mean_diff"]))
+        nm = noise_maps[e["map"]]
+        thr = N.maximum(2 * nm, FLOOR)
+        keep = nm <= UNSTABLE
+    detail = "worst tile %s; picture mean diff %s" % (" ".join("%.4f" % x for x in m["max"]), " ".join("%+.4f" % x for x in m["mean_diff"]))
     if thr is None:
         return "NO-NOISE", detail
-    detail += "; threshold %s" % " ".join("%.4f" % x for x in thr)
+    over = (t > thr) & keep
+    share = [float(over[..., c].mean()) for c in range(t.shape[2])]
+    excess = [float(((t[..., c] - thr[..., c]) * keep[..., c]).max()) for c in range(t.shape[2])]
+    detail += "; tiles over their threshold %s (worst by %s); tiles left out (noisy) %.1f%%" % (
+        " ".join("%.1f%%" % (100 * x) for x in share), " ".join("%+.4f" % x for x in excess), 100 * (1 - float(keep.all(axis=2).mean())))
     if e is not None and e.get("unstable"):
-        return "UNSTABLE", detail + "; noise %s" % " ".join("%.4f" % x for x in e["max"])
+        return "UNSTABLE", detail + "; noise %s, in %d runs, %.0f%% comparable" % (" ".join("%.4f" % x for x in e.get("max", [])),
+                                                                                    e.get("runs", 0), 100 * e.get("comparable", 0))
     allowed = e.get("nonfinite", 0) if e is not None else 0
     if m["nonfinite"] > allowed:
         return "FAIL", detail + "; %d texels NaN or Inf on one side only (noise %d)" % (m["nonfinite"], allowed)
-    if any(x > t for x, t in zip(m["max"], thr)):
+    if over.any():
         return "FAIL", detail
     return "PASS", detail
 
 
 def compare(golden, run, noise_path, show_all=False, quiet=False):
     gi, ri = read_index(golden), read_index(run)
-    table = None
+    table = maps = None
     if noise_path:
         with open(noise_path) as f:
-            table = json.load(f)["passes"]
+            nt = json.load(f)
+        table = nt["passes"]
+        maps = np().load(os.path.join(os.path.dirname(os.path.abspath(noise_path)), nt["maps"]))
     rows = align(gi, ri)
     counts, lines = {}, []
     for r, u, ident in rows:
-        st, detail = verdict_row(r, u, ident, golden, run, table)
+        st, detail = verdict_row(r, u, ident, golden, run, table, maps)
         counts[st] = counts.get(st, 0) + 1
         it = r or u
         if st != "PASS" or show_all:
@@ -427,9 +467,30 @@ def selftest():
         nd = os.path.join(t, "nan")
         write(nd, [(item(0, "0" * 16), base * 0), (item(1, P), nan)])
         r7 = compare(noise_runs[0], nd, nt, quiet=True)
+        # (8) a region noisy between the frozen runs (one tile moves) is left out; a difference elsewhere still fails
+        moving = []
+        for k in range(3):
+            d = os.path.join(t, "moving%d" % k)
+            m = base.copy()
+            m[0:16, 0:16, :3] = 0.2 * k
+            write(d, [(item(1, P), m)])
+            moving.append(d)
+        nm = os.path.join(t, "noise_moving.json")
+        noise(nm, moving)
+        inside = base.copy()
+        inside[0:16, 0:16, :3] = 0.9
+        idir = os.path.join(t, "inside")
+        write(idir, [(item(1, P), inside)])
+        r8a = compare(moving[0], idir, nm, quiet=True)
+        outside = inside.copy()
+        outside[32:48, 64:80, 1] += 0.05
+        odir = os.path.join(t, "outside")
+        write(odir, [(item(1, P), outside)])
+        r8b = compare(moving[0], odir, nm, quiet=True)
     checks = [("same picture passes", r1 == 0), ("cancelling difference (mean shift %.6f) fails" % mean_shift, r2 == 1),
               ("one flat channel fails", r3 == 1), ("one wrong tile fails", r4 == 1), ("a missing state fails", r5 == 1),
-              ("a cleared state is not lined up with a drawn one", never_crossed), ("a NaN fails", r7 == 1)]
+              ("a cleared state is not lined up with a drawn one", never_crossed), ("a NaN fails", r7 == 1),
+              ("a tile noisy between frozen runs is left out", r8a == 0), ("a difference beside a noisy tile fails", r8b == 1)]
     for name, good in checks:
         print("selftest: %s: %s" % (name, "ok" if good else "WRONG"))
         ok &= good

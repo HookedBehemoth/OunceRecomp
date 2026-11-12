@@ -22,6 +22,13 @@ namespace hsd {
 // Each entry: an event reason (as strict_event names it) or "validation:<message id>", and why strict reports it without
 // stopping. An entry stays only while its cause is understood and cannot be fixed in the stage that added it.
 const StrictKnown kStrictKnown[] = {
+    {"Vulkan object made in steady play: an image for a texture the game made (renderable)",
+     "the game makes render targets in play: its local-light shadow maps are sized by the light's distance (host/rt_slots.c, "
+     "f_802640a0, HOS_RT_QUANT rounds them to 128: about 12 sizes a light), and a size first seen is a new texture at a new "
+     "address, so a new image (Kokiri: 5 in 120 s, 1152x1152 to 1536x864 D32F). Fix: a game patch that keeps one shape a light "
+     "(docs/direct/m6b-report.md, known list)"},
+    {"Vulkan object made in steady play: an attachment view of a game's texture",
+     "the attachment view of such an image, made at its first SetRenderTargets (as the entry above)"},
     {nullptr, nullptr},
 };
 const size_t kStrictKnownCount = sizeof kStrictKnown / sizeof kStrictKnown[0] - 1;
@@ -140,6 +147,7 @@ std::atomic<bool> armed{false};
 std::atomic<uint64_t> armed_at{0}, last_miss{0};
 std::atomic<int64_t> misses_before{0};
 thread_local int debug_objects = 0;
+thread_local const char* objects_for = nullptr;   // (ObjectsFor)
 
 uint64_t strict_from() {
     static const uint64_t f = [] {
@@ -302,10 +310,14 @@ void strict_stats(char* out, size_t cap) {
 
 void object_made(int n, const char* what) {
     st_objects.fetch_add(n, std::memory_order_relaxed);
-    if (strict_enabled && !debug_objects && armed.load(std::memory_order_relaxed))
-        strict_event("Vulkan object made in steady play", "%s (%d)", what, n);
+    if (strict_enabled && !debug_objects && armed.load(std::memory_order_relaxed)) {
+        if (objects_for) strict_event((std::string("Vulkan object made in steady play: ") + objects_for).c_str(), "%s (%d)", what, n);
+        else strict_event("Vulkan object made in steady play", "%s (%d)", what, n);
+    }
 }
 DebugObjects::DebugObjects() { debug_objects++; }
 DebugObjects::~DebugObjects() { debug_objects--; }
+ObjectsFor::ObjectsFor(const char* what) : prev(objects_for) { objects_for = what; }
+ObjectsFor::~ObjectsFor() { objects_for = prev; }
 
 }  // namespace hsd

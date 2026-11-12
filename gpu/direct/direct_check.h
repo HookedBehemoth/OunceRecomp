@@ -66,5 +66,12 @@ struct DebugObjects {
     DebugObjects();
     ~DebugObjects();
 };
+/// (M6b) What the objects made in its scope are for, in strict's reason ("Vulkan object made in steady play: <what>"): the
+/// known list can name one cause and not all objects
+struct ObjectsFor {
+    const char* prev;
+    explicit ObjectsFor(const char* what);
+    ~ObjectsFor();
+};
 
 }  // namespace hsd

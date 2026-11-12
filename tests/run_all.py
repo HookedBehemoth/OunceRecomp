@@ -155,6 +155,7 @@ MODULES = {
     "tests/test_prepare_textures.py": ["numpy", "zstandard"],
     "tests/test_prepare_terrain.py": ["numpy", "zstandard"],
     "tests/test_prepare_skybin.py": ["numpy", "zstandard"],
+    "tests/test_direct_picture_check.py": ["numpy", "zstandard"],
 }
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).

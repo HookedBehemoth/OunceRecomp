@@ -549,7 +549,15 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
     return r;
 }
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
-int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
+/* (M6b) HOS_GAME_STEP_PER_FRAME=1: option 0 ("game time follows the clock") answered 0 whatever the back end's menu says, so each
+   frame steps the game by 1/60 s (nn_vi.c realtime_step) and the game's clock is the frame count: picture checks compare the
+   same animation phase (docs/direct/m6b-report.md, Determinism). Unset: as before */
+int rx_option(int id, int otherwise) {
+    static int per_frame = -1;
+    if (per_frame < 0) per_frame = getenv("HOS_GAME_STEP_PER_FRAME") && atoi(getenv("HOS_GAME_STEP_PER_FRAME")) > 0;
+    if (id == 0 && per_frame) return 0;
+    return vk && vk->option ? vk->option(id) : otherwise;
+}
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
     if (crit_rec && vk && vk->nvn_event_signal) {   /* (M6a, HOS_DBG=crit) */

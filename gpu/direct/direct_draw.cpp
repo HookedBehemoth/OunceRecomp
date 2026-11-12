@@ -1305,7 +1305,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                  l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count());
         static const bool dry = dbg("meshdry");   // (HOS_DBG=meshdry, a bring-up aid: everything but the mesh draw itself)
         if (dry) return count(l, R_MESH_DRY);
-        drawlog(l, prog->task ? mesh_ind ? "drawn task+mesh indirect" : "drawn task+mesh" : mesh_ind ? "drawn mesh indirect" : "drawn mesh", prog, &x.dyn,
+        drawlog(l, gated ? (prog->task ? mesh_ind ? "drawn gated task+mesh indirect" : "drawn gated task+mesh" : mesh_ind ? "drawn gated mesh indirect" : "drawn gated mesh")
+                         : (prog->task ? mesh_ind ? "drawn task+mesh indirect" : "drawn task+mesh" : mesh_ind ? "drawn mesh indirect" : "drawn mesh"), prog, &x.dyn,
                 mesh_ind ? nargs : (uint32_t)dm.y);
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
@@ -1318,7 +1319,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (gated) st_gated[l->info.kind].fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    drawlog(l, ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn", prog, &x.dyn,
+    drawlog(l, gated ? (ind ? "drawn gated indirect" : indexed ? "drawn gated indexed" : "drawn gated") : (ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn"),
+            prog, &x.dyn,
             ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
     if (ind) {   // (the game's records are VkDrawIndirectCommand / VkDrawIndexedIndirectCommand: fallbacks.md 2a)
         if (indexed) {
