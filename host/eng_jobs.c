@@ -8,6 +8,7 @@
    taken; engine-jobs.md "the host sees Initialize from 0x800852c0 with x25 = view record") and its EndRecording hands the
    records to the back end, on this thread. */
 #include "eng_jobs.h"
+#include "direct.h"
 #include "../gpu/render/rx_nvn.h"
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,11 @@ int eng_jobs_on(void) {
         const int want = e && atoi(e) == 1;
         const int lr = l && atoi(l) != 0;
         on = want && !lr;
+        if (rx_direct()) {   /* (direct mode: the hook names each job's pass key and view for the back end, eng_jobs_tag) */
+            hos_log("eng: render jobs: the recorder hooked for the direct back end (its pass key and view record)");
+            on = 2;
+            return on;
+        }
         if (want) hos_log("eng: render jobs (HOS_ENG_JOBS): %s", lr ? "off (HOS_NVN_LIST_REF=1: not with lists by reference)" :
                           "the recorder hooked, each job recorded as a Vulkan secondary on its thread");
     }
@@ -82,6 +88,12 @@ uint32_t eng_jobs_begin(Ctx *c) {
     if (!jt.info.view) InterlockedIncrement64(&n.no_view);
     InterlockedIncrement64(&n.tagged);
     return s;
+}
+
+int eng_jobs_tag(Ctx *c, uint64_t *key, uint64_t *view) {
+    if (!eng_jobs_begin(c)) return 0;
+    *key = jt.info.key, *view = jt.info.view;
+    return 1;
 }
 
 void eng_jobs_end(uint32_t serial, const uint8_t *rec, size_t bytes, uint64_t handle) {

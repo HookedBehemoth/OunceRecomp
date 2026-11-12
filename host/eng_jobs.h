@@ -16,6 +16,8 @@ int eng_jobs_on(void);
 /* BeginRecording, its guest registers in c: the job's serial when this is the recording of a job the hook is running on this
    thread (0: not a job's) */
 uint32_t eng_jobs_begin(Ctx *c);
+/* (direct mode: eng_jobs_on is 2) the same recording's pass key pointer (the recorder's x3) and view record; 0: not a job's */
+int eng_jobs_tag(Ctx *c, uint64_t *key, uint64_t *view);
 /* EndRecording of that recording: its records, BEGIN .. END (bytes), and its handle */
 void eng_jobs_end(uint32_t serial, const uint8_t *rec, size_t bytes, uint64_t handle);
 /* the counts since the last call, one log line (every 600 presents) */

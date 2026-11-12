@@ -10,6 +10,7 @@
 
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/dlss_math.h"
+#include "direct.h"
 
 /* the WebGPU renderer (gpu/render, renamed) */
 int wgr_start(void *hwnd);
@@ -253,7 +254,59 @@ static const MkwVkRenderer *load_vulkan(const char *dll) {
     return r;
 }
 
+/* (native-vk) RX_BACKEND=direct: the direct back end, hookshot_direct.dll (docs/direct/m1-interface.md): the version-14 table
+   for the object layer, sync and present, and the list calls the host finds by name (host/direct.h). Read once, at the first
+   call: NVN records before the window's thread starts the renderer, so the library is loaded then, its device made at
+   rx_start. No fallback: a library that does not load or start ends the game */
+static hsd_fns direct_fns;
+static volatile LONG direct_state;   /* 0 not asked yet, 1 off, 2 on */
+static SRWLOCK direct_lock = SRWLOCK_INIT;
+static HMODULE direct_module;
+static const char kDirectDll[] = "hookshot_direct.dll";
+const hsd_fns *rx_direct(void) {
+    const LONG s = direct_state;
+    if (s) return s == 2 ? &direct_fns : NULL;
+    AcquireSRWLockExclusive(&direct_lock);
+    if (!direct_state) {
+        const char *b = getenv("RX_BACKEND");
+        LONG on = 1;
+        if (b && !_stricmp(b, "direct")) {
+            char path[MAX_PATH];
+            const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+            char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;
+            if (!slash || (size_t)(slash + 1 - path) + sizeof kDirectDll > sizeof path) hos_fatal(NULL, "rx: no path for %s", kDirectDll);
+            memcpy(slash + 1, kDirectDll, sizeof kDirectDll);
+            direct_module = LoadLibraryA(path);
+            if (!direct_module) hos_fatal(NULL, "rx: RX_BACKEND=direct, but %s did not load (%lu)", path, GetLastError());
+#define DIRECT_FN(field, name)                                                                     \
+    if (!(*(void **)&direct_fns.field = (void *)GetProcAddress(direct_module, name)))               \
+        hos_fatal(NULL, "rx: %s has no %s", kDirectDll, name);
+            DIRECT_FN(list_begin, "hsd_list_begin")
+            DIRECT_FN(emit, "hsd_emit")
+            DIRECT_FN(list_call, "hsd_list_call")
+            DIRECT_FN(list_end, "hsd_list_end")
+            DIRECT_FN(list_released, "hsd_list_released")
+            DIRECT_FN(submit, "hsd_submit")
+            DIRECT_FN(queue_wait_fence, "hsd_queue_wait_fence")
+#undef DIRECT_FN
+            hos_log("rx: direct mode (RX_BACKEND=direct): %s", path);
+            on = 2;
+        }
+        InterlockedExchange(&direct_state, on);
+    }
+    ReleaseSRWLockExclusive(&direct_lock);
+    return direct_state == 2 ? &direct_fns : NULL;
+}
+
 int rx_start(void *hwnd) {
+    if (rx_direct()) {
+        const MkwVkRenderer *r = load_vulkan(kDirectDll);
+        if (!r || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectDll);
+        vk = r;
+        hos_log("rx: renderer: the direct back end (%s)", kDirectDll);
+        flush_early();
+        return 1;
+    }
     const char *b = getenv("RX_BACKEND");
     const int eden = b && !_stricmp(b, "eden");
     if (!b || !_stricmp(b, "vulkan") || eden) {   /* (hookshot: Vulkan unless told otherwise; a started game has no RX_BACKEND) */

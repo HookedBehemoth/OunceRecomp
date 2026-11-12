@@ -23,6 +23,7 @@
 #include "nvn_list.h"
 #include "eng_lists.h"
 #include "eng_jobs.h"
+#include "direct.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1134,7 +1135,7 @@ static uint64_t held_count(void) { return (uint64_t)nheld; }
    the game's sync calls by kind, every 600 presents (RX_VK_TIMELINES=1 or RX_VK_SYNC_CENSUS=1) ---- */
 static int tl_on(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("RX_VK_TIMELINES"); v = e && atoi(e) != 0; }
+    if (v < 0) { const char *e = getenv("RX_VK_TIMELINES"); v = e && atoi(e) != 0 && !rx_direct(); }
     return v;
 }
 static int sync_census_on(void) {
@@ -1350,9 +1351,17 @@ static void *rec(nvn_cmd *o, uint32_t op, size_t payload);
    EndRecording. Off (the default): the copies below. HOS_NVN_LIST_REF_CHECK=1 with it: the default path's copy is made
    as well and compared op by op with what the replay walks at every submit, and every free is checked against the
    submits not replayed yet (log lines "nvn: list check:") */
+static void direct_released_hook(nvn_lrec *r) { rx_direct()->list_released(r->user); r->user = NULL; }
 static int list_ref(void) {
     static int on = -1;
     if (on < 0) {
+        if (rx_direct()) {   /* (direct mode: lists by reference with no bytes, the back end's list in each one's user) */
+            nvn_list_init(0, hos_log, die);
+            nvn_list_set_user_hooks(direct_released_hook, NULL);
+            hos_log("nvn: direct mode: command lists by reference, their records handed to the back end as they are made");
+            on = 1;
+            return on;
+        }
         const char *e = getenv("HOS_NVN_LIST_REF"), *k = getenv("HOS_NVN_LIST_REF_CHECK");
         const int v = e && atoi(e) != 0, check = v && k && atoi(k) != 0;
         if (v) nvn_list_init(check, hos_log, die);
@@ -1370,6 +1379,7 @@ static void eng_released_hook(nvn_lrec *r) { eng_lists_released((nvn_pkt *)r->us
 static void eng_freed_hook(nvn_lrec *r) { eng_lists_freed((nvn_pkt *)r->user); r->user = NULL; }
 static int eng_on(void) {
     static int on = -1;
+    if (on < 0 && rx_direct()) on = 0;   /* (direct mode: no packets; the lists' user hooks are the back end's) */
     if (on < 0) {
         const char *e = getenv("HOS_ENG_LISTS");
         const int v = e ? atoi(e) : 0;
@@ -1465,6 +1475,8 @@ typedef struct {
     uint64_t eng_meta[4];    /* (and what the kind's builder had then: nvn_pkt.meta) */
     uint32_t eng_job;        /* (HOS_ENG_JOBS) the open recording's render job (host/eng_jobs.h), 0: not a job's */
     uint64_t eng_view, eng_slot;   /* (HOS_ENG_PASSES) a render job's view record and cmd slot, from its Initialize (0: not a job) */
+    void *volatile dl;             /* (direct mode) the open recording's list in the back end (NULL: none open) */
+    volatile int32_t dl_pending;   /* (direct mode) its last record waits on a thread for its flush (host/direct.c) */
 } cmd_rec;
 #define CMD_CHUNK_BITS 10
 #define CMD_CHUNKS 4096u                     /* (4M command buffers at once) */
@@ -1551,6 +1563,12 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
         return;
     }
     if (list_ref()) {   /* (a recording never ended dropped; the ended ones live on by their handles) */
+        if (r->dl) {   /* (begun and not ended: dropped) */
+            hsd_flush();
+            void *dl = r->dl;
+            r->dl = NULL;
+            rx_direct()->list_released(dl);
+        }
         nvn_list_drop(&r->lw);
         memset(r, 0, sizeof *r);
         cmd_slot_give(o->slot);
@@ -1635,6 +1653,7 @@ NV(nvnCommandBufferSetDebugLabel) {}
 
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) { nvn_op_hdr h = {op, size}; memcpy(p, &h, sizeof h); }
 static void cmd_reserve_rec(cmd_rec *o, size_t need) {
+    if (rx_direct()) return;   /* (no bytes: the records go to the back end, host/direct.c) */
     if (list_ref()) {
         nvn_list_reserve(&o->lw, need);
         return;
@@ -1660,6 +1679,14 @@ static void cmd_reserve_rec(cmd_rec *o, size_t need) {
 static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size) {
     size = (size + 7) & ~7u;
     cmd_rec *r = cmd_host(o);
+    if (rx_direct()) {   /* (the accounting as below; the record in this thread's scratch, to the back end at the next one) */
+        uint8_t *p = hsd_scratch(&r->dl, &r->dl_pending, size);
+        o->cmd_used += size;
+        o->hw_used += size;
+        o->last_rec = size;
+        put_hdr(p, 0, size);
+        return p;
+    }
     cmd_reserve_rec(r, size);
     uint8_t *p = r->cur;
     r->cur += size;
@@ -1870,6 +1897,25 @@ NV(nvnCommandBufferBeginRecording) {
     cmd_rec *r = cmd_host(o);
     if (list_ref()) nvn_list_open(&r->lw, h2g(o));   /* (its own allocation: no copy at its end) */
     else r->cur = r->seg;
+    if (rx_direct()) {   /* (direct mode: the back end's list, its kind from the caller; then BEGIN as below) */
+        hsd_flush();
+        if (r->dl) {   /* (begun again unended: dropped, as the records) */
+            void *dl = r->dl;
+            r->dl = NULL;
+            rx_direct()->list_released(dl);
+        }
+        hsd_list_info info = {0};
+        hsd_classify(c, &info);
+        info.cmd = h2g(o);
+        if (info.kind == HSD_LIST_JOB && !eng_jobs_tag(c, &info.pass_key, &info.view)) info.pass_key = info.view = 0;
+        r->dl = rx_direct()->list_begin(&info);
+        o->rec_start = o->cmd_used;
+        uint8_t *p = cmd_alloc(o, 8);
+        put_hdr(p, NOP_BEGIN, 8);
+        o->hw_used -= 8;   /* BEGIN / END have no hardware equivalent */
+        o->hw_start = o->hw_used;
+        return;
+    }
     r->eng_kind = eng_on() ? eng_lists_kind(c->x[30]) : 0;
     if (r->eng_kind) {
         eng_lists_begun(r->eng_kind);
@@ -1962,8 +2008,31 @@ static uint64_t end_recording_ref(nvn_cmd *o) {
     if (k % 50000 == 0) list_log("every 50000 recordings");
     return h;
 }
+/* (direct mode) the recording's end: END to the back end, its list in the handle's user; the handle as with lists by reference */
+static uint64_t end_recording_direct(nvn_cmd *o) {
+    cmd_rec *r = cmd_host(o);
+    uint8_t *p = cmd_alloc(o, 8);
+    put_hdr(p, NOP_END, 8);
+    o->hw_used -= 8;
+    o->recording = 0;
+    hsd_flush();
+    if (__atomic_load_n(&r->dl_pending, __ATOMIC_ACQUIRE)) {   /* (a record of it waits on another thread: it arrives late) */
+        static volatile LONG n;
+        if (InterlockedIncrement(&n) <= 8) hos_log("nvn: direct mode: a recording ended with a record of it pending on another thread");
+    }
+    void *dl = r->dl;
+    r->dl = NULL;
+    if (dl) rx_direct()->list_end(dl);
+    r->lw.user = dl;
+    r->lw.flat_extra = o->cmd_used - o->rec_start;   /* (no bytes: flat is the accounting, what a call of it adds) */
+    return end_recording_ref(o);
+}
 NV(nvnCommandBufferEndRecording) {
     nvn_cmd *o = CB(P(0));
+    if (rx_direct()) {
+        RET(end_recording_direct(o));
+        return;
+    }
     const uint32_t job = cmd_host(o)->eng_job;
     if (job) {   /* (HOS_ENG_JOBS: the job's end mark) */
         nvn_p_job *j = (nvn_p_job *)rec(o, NOP_JOB, sizeof(nvn_p_job));
@@ -2092,8 +2161,33 @@ static void inline_recording_raw(nvn_cmd *o, uint64_t h) {
     o->hw_used += n;
     o->last_rec = 0;
 }
+/* (direct mode) CallCommands / CopyCommands: the callees' lists to the back end, in order; the accounting as with lists by
+   reference (the callee's flat size, what the game sizes its heaps from) */
+static void call_direct(nvn_cmd *o, const uint64_t *h, int n) {
+    hsd_flush();
+    void *users[64];
+    cmd_rec *r = cmd_host(o);
+    for (int i = 0; i < n; i += 64) {
+        uint32_t k = 0;
+        for (int j = i; j < n && j < i + 64; j++) {
+            const nvn_lrec *l = nvn_list_lookup(h[j]);
+            if (!l) die("command handle %#llx is not a live recording", (unsigned long long)h[j]);
+            if (l->flat > 16) {
+                o->cmd_used += l->flat - 16;
+                o->hw_used += l->flat - 16;
+                o->last_rec = 0;
+            }
+            if (l->user) users[k++] = l->user;
+        }
+        if (r->dl && k) rx_direct()->list_call(r->dl, users, k);
+    }
+}
 NV(nvnCommandBufferCallCommands) {
     const uint64_t *h = (const uint64_t *)PN(2, 8ull * (uint32_t)I(1));
+    if (rx_direct()) {
+        call_direct(CB(P(0)), h, I(1));
+        return;
+    }
     const uint64_t lr = c->x[30];
     int eng = eng_passes() && eng_call_site(lr);   /* (HOS_ENG_PASSES: the job-call site's bounds for the replay) */
     /* (HOS_ENG_PROF: every other call of a recording that is not a job, for the replay's split of its time by call site) */
@@ -2108,6 +2202,10 @@ NV(nvnCommandBufferCallCommands) {
 }
 NV(nvnCommandBufferCopyCommands) {
     const uint64_t *h = (const uint64_t *)PN(2, 8ull * (uint32_t)I(1));
+    if (rx_direct()) {
+        call_direct(CB(P(0)), h, I(1));
+        return;
+    }
     for (int i = 0; i < I(1); i++) {
         if (nwatch_handles) watch_handle_called(c, h[i], "copied");
         inline_recording(CB(P(0)), h[i]);
@@ -2190,6 +2288,8 @@ NV(nvnQueueWaitSync) {
                 (unsigned long long)c->x[30]);
     /* (RX_VK_TIMELINES) the queue's next submission waits for the fence's work to be recorded (vk_replay.cpp NOP_WAIT_FENCE) */
     if (tl_on() && s && s->fenced == 1 && s->fence) fw_put((uint64_t)(uintptr_t)P(0), s->fence);
+    /* (direct mode) the queue's next submission waits for the fence's (gpu/direct/direct_sync.cpp) */
+    if (rx_direct() && s && s->fenced == 1 && s->fence) rx_direct()->queue_wait_fence((uint64_t)(uintptr_t)P(0), s->fence);
 }
 NV(nvnCommandBufferResetCounter) { REC(CB(P(0)), NOP_RESET_COUNTER, nvn_p_counter)->type = U32(1); }
 /* HOS_COND_RECORD (a test, default 0: conditions read at replay). 1: words seen holding 1 read at record, 2: every condition, 3 and 4:
@@ -2507,7 +2607,7 @@ static void bind_bufs_deferred(Ctx *c, int ssbo) {
     nvn_p_bind_bufs *r = RECN(CB(P(0)), NOP_BIND_BUFS, nvn_p_bind_bufs, r, n);
     r->ssbo = ssbo, r->stage = I(1), r->first = I(2), r->n = n, r->src = U64(4);
     memcpy(r->r, PN(4, sizeof(NVNbufferRange) * (size_t)n), sizeof(NVNbufferRange) * (size_t)n);
-    if (r->src && list_ref()) nvn_list_note_deferred(&cmd_host(CB(P(0)))->lw, (const uint8_t *)r - 8);
+    if (r->src && list_ref() && !rx_direct()) nvn_list_note_deferred(&cmd_host(CB(P(0)))->lw, (const uint8_t *)r - 8);
     hw_fix(CB(P(0)), 16 + 16 * (uint64_t)n);
 }
 NV(nvnCommandBufferBindUniformBuffersDeferred) { bind_bufs_deferred(c, 0); }
@@ -2518,7 +2618,7 @@ static void bind_handles(nvn_cmd *o, uint32_t op, int stage, int first, int n, c
     nvn_p_bind_handles *r = RECN(o, op, nvn_p_bind_handles, h, n);
     r->stage = stage, r->first = first, r->n = n, r->src = src;
     memcpy(r->h, h, 8 * (size_t)n);
-    if (src && list_ref()) nvn_list_note_deferred(&cmd_host(o)->lw, (const uint8_t *)r - 8);
+    if (src && list_ref() && !rx_direct()) nvn_list_note_deferred(&cmd_host(o)->lw, (const uint8_t *)r - 8);
     hw_fix(o, hw ? hw : 16 + 4 * (uint64_t)n);
 }
 /* HOS_NVN_WATCH_TEX=<handle hex> (debugging): who binds that texture handle, as guest call chains (frame pointers),
@@ -2902,6 +3002,18 @@ NV(nvnQueueSubmitCommands) {
         if (i <= 60 || i % 20000 == 0)
             hos_log("nvn: QueueSubmitCommands #%ld: queue %p (its #%llu), %d handles (lr %#llx)", (long)i, (void *)q,
                     (unsigned long long)q->submits, n, (unsigned long long)c->x[30]);
+    }
+    if (rx_direct()) {   /* (direct mode: the handles' lists to the back end, which reads their deferred arrays itself) */
+        hsd_flush();
+        void *lists[64];
+        for (int i = 0; i < n; i++) {
+            const nvn_lrec *l = nvn_list_lookup(h[i]);
+            if (!l) die("command handle %#llx is not a live recording", (unsigned long long)h[i]);
+            lists[i] = l->user;
+        }
+        __atomic_store_n(&list_done, rx_nvn_replayed(), __ATOMIC_RELEASE);
+        rx_direct()->submit((uint64_t)(uintptr_t)q, lists, (uint32_t)n);
+        return;
     }
     if (list_ref()) {   /* (the handles' BEGIN records for the replay, their deferred binds read now: host/nvn_list.c) */
         const uint64_t done = rx_nvn_replayed();
