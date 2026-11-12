@@ -71,6 +71,23 @@ TBD after
   or colour types) or other answers. Kokiri sets 12,528 programs of 5,945 distinct codes and draws 152 variants (304
   shader objects); HF 13,247 / 6,117 / 302. Before the variants were shared by code, the warm Kokiri start made 1,446
   variants and 2,904 shader objects from the cache for those 149.
+- **RADV's push data (256 B) and the address table.** After step B the push data is 128 B: Eden's block (120) and the
+  table's address; no bank addresses are pushed for textures any more. A variant reads 8.1 uniform buffers on average
+  (Kokiri; HF 8.5), at most 16, and 136 B are left, room for 17 pushed addresses: every variant seen would fit
+  `PUSH_ADDRESS` per buffer, but at the edge (16 of 17), so the table (`INDIRECT_ADDRESS`, one arena copy when a list's
+  bindings change: 134 / 293 a frame) stays the general path. Its cost was not in the profile's top entries.
+- **Uniform buffers past their bound range.** One program reads past it: `f8d01f6626632433`'s vertex stage reads c6 up
+  to 688 bytes with 128 bound (static offsets), 0.9 address tables a frame in both scenes. Through the address it reads
+  the guest memory after the buffer where Maxwell reads zeros. Making that exact needs a copy with a zero tail, which
+  needs the buffer's bytes at record time (a guest read): not done; a game patch (bind the full size) is the clean fix
+  if the picture shows it. Copies made for inline updates are zero-tailed already (static sizes).
+- **All programs before play: what stands between.** (1) The key needs the bound vertex attribute types and the pass's
+  colour types, known at the draw only; a load-time pick could take the attribute types from the load-time lists'
+  packets (M3a) and float colour types (every pass seen). (2) The game sets 5,945 distinct codes in Kokiri and draws 152
+  variants of them: translating every set code at its `SetShaders` would be ~40 times the work, so it needs that
+  prediction or an offline pass over the romfs programs with the vertex layouts. (3) Shader objects are compiled per
+  variant on two workers; their cost on a cold Mesa cache is the larger part (below). Nothing else of the bound state is
+  read, so (1) is the only input missing for a load-time translation.
 - **Translation and the bound state.** What still reads it: the vertex attribute types and the targets' colour types (the
   key, known at the draw), and the answers of textures whose handle is a driver-bank word (from the list's state, no guest
   read). Game buffer words asked by the translator: 0 (`game buffer words asked at translation`).
