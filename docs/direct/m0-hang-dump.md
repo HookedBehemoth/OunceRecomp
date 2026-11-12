@@ -2,8 +2,8 @@
 
 Analysis only; nothing was run. Inputs: `work/runs/devcoredump_h1.txt` (amdgpu devcoredump, Hyrule Field, native task +
 mesh, time 755.77, pid 380965 thread `mkw_vk order`, vmid 7), `work/runs/m0_dump_h1/{kernel,log}.txt` (grep only).
-Decoders (PM4 opcodes from `sid.h`, register fields from Mesa's `gfx103.json`, `gfx6.json` for the three CP stall
-registers Mesa has no GFX10 table for): `work/proto/direct-m0/coredump/{pm4,regs,hqd}.py`. Mesa: `../mesa` is **main
+Decoders (PM4 opcodes from `sid.h`, register fields from Mesa's `gfx103.json`; the three CP stall registers Mesa has
+no GFX10 table for were checked against a local kernel tree's `gc_10_3_0_sh_mask.h`): `work/proto/direct-m0/coredump/{pm4,regs,hqd}.py`. Mesa: `../mesa` is **main
 (27.0.0-devel)**, not the host's 26.2.4. The shallow clone still has the `mesa-26.2.4` tag, so the 26.2.4 code quoted
 below was read with `git show mesa-26.2.4:<path>`.
 
@@ -35,7 +35,7 @@ INFERRED from the sizes, since the IB contents are not in the dump.
 | CP_IB2_BASE / BUFSZ / CMD_BUFSZ | 0x8001_00025000 / 0 / 168 | a 168-dw IB2 (a secondary: `vkCmdExecuteCommands`), fully fetched |
 | GRBM_STATUS | 0xe7f10028 | GE, SPI, SC, PA, DB, CB, SX, BCI, CP busy; **TA idle** |
 | GRBM_STATUS_SE0,1,3 / SE2 | 0x0d000000 / 0xed400000 | PA, SX, SPI busy on all four SEs; SE2 also has SC, DB, CB, BCI busy |
-| CP_STALLED_STAT2 | 0x00210802 | **GFX_CNTX_NOT_AVAIL_TO_ME** (every context is held by draws in flight), **EOPD_FIFO_NEEDS_SC_EOP_DONE** (an end-of-pipe event waits for the pipe to drain), PFP/MEQ back-pressure |
+| CP_STALLED_STAT2 | 0x00210802 | **GFX_CNTX_NOT_AVAIL_TO_ME** (every context is held by draws in flight), **QU_STALLED_ON_EOP_DONE_PULSE** (an end-of-pipe event waits for the pipe to drain), PFP/MEQ back-pressure (GFX10.3 field names, checked against `gc_10_3_0_sh_mask.h`) |
 | CP_BUSY_STAT | 0x00448080 | PFP parsing, GFX context busy, EOP done busy; no SEM_* (semaphore) bits |
 | CP_CPF_STALLED_STAT1 | 0x3 | fetcher waiting on ring/IB1 data (back-pressure) |
 | CP_CPC_STATUS / CPC_BUSY_STAT / CPC_STALLED_STAT1 | 0 / 0 / 0 | **the compute CP (MEC) is idle** |
