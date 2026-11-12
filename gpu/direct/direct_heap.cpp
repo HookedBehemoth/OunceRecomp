@@ -570,6 +570,14 @@ void heap_describe(uint32_t id, char* out, size_t cap) {
     }
 }
 
+int heap_placeholder(uint32_t id) {
+    if (!ready || id >= kHeapSlots) return 0;
+    std::lock_guard lk(heap_mu);
+    const Image* im = slot_image[id];
+    if (im) return im->placeholder ? 1 : 0;
+    return slot_tex[id].gpu && slot_tex[id].target != NVN_TEXTURE_TARGET_BUFFER ? 2 : 0;
+}
+
 void heap_stats(char* out, size_t cap) {
     std::snprintf(out, cap, "heap (since the start): %lld texture registrations (%lld entries written, %lld null, %lld storage), %lld with no image, "
                   "%lld ids past the heap, %lld sampler registrations, %lld custom border colours as black, %lld ids nulled with their "

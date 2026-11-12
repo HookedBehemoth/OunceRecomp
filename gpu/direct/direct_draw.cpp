@@ -765,7 +765,33 @@ bool drawlog_on() {
     }();
     return at >= 0 && (int64_t)present_count() == at;
 }
+/// (M4d) HOS_DBG=phlog: the first draw that samples each heap id holding the placeholder (or no image), named once: the
+/// texture, the list's kind and return address, the program
+void phlog(const List* l, const DrawProg* p) {
+    static const bool on = dbg("phlog");
+    if (!on || !p) return;
+    static std::mutex mu;
+    static std::vector<uint8_t> seen(1u << 20);
+    const DState& s = l->dctx->s;
+    for (const auto& t : p->tex_words) {
+        const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0, id = h & 0xFFFFF;
+        if (!h) continue;
+        {
+            std::lock_guard lk(mu);
+            if (seen[id]) continue;
+            seen[id] = 1;
+        }
+        const int ph = heap_placeholder(id);
+        if (!ph) continue;
+        char e[320];
+        heap_describe(id, e, sizeof e);
+        logf("direct: phlog: %s sampled (handle %#x, c%u+%#x of stage %u) by a draw in a list of kind %u (lr %#llx) at present %llu, "
+             "program %016llx: %s", ph == 1 ? "the placeholder" : "no image", h, t.bank, t.offset, t.stage, l->info.kind,
+             (unsigned long long)l->info.lr, (unsigned long long)present_count(), (unsigned long long)p->key, e);
+    }
+}
 void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, uint32_t count) {
+    phlog(l, p);
     if (!drawlog_on()) return;
     static std::atomic<int> n{0};
     if (n++ > 2500) return;   // (M3b: every draw of the frame, jobs too)

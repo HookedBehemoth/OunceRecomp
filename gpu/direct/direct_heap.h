@@ -90,6 +90,8 @@ void heap_image_gone(const Image* im);
 uint8_t heap_answer(uint32_t id);
 /// (logs) what texture id's entries hold
 void heap_describe(uint32_t id, char* out, size_t cap);
+/// (M4d, HOS_DBG=phlog) 1: id is registered with the placeholder image, 2: registered with no image; 0 otherwise (locked)
+int heap_placeholder(uint32_t id);
 
 void heap_stats(char* out, size_t cap);
 
