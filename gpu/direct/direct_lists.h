@@ -65,6 +65,7 @@ struct List {
     uint64_t thread = 0;   // (the thread its command buffers come from)
     PassRec pass;
     uint64_t set_rts = 0;
+    uint32_t last_op = 0, last_op2 = 0;   // (the ops before the one being handled, for logs)
     std::vector<DumpItem*> dumps;   // (HOS_DBG=dump: its passes' copies, in order)
 };
 

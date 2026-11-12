@@ -265,6 +265,12 @@ void copy_tt(List* l, const nvn_p_copy_tt& p) {
     }
     d.im->written.fetch_or(W_COPY, std::memory_order_relaxed);
     count(S_COPIES);
+    static std::atomic<int> told{0};   // (named: the game's barriers around them are what synchronises them)
+    if (present_count() > 1200 && told++ < 8)
+        logf("direct: texture copy in list lr %#llx after its SetRenderTargets %llu (the ops before it %u, %u): #%u %#llx %ux%u vk %d "
+             "level %u -> #%u %#llx vk %d level %u", (unsigned long long)l->info.lr, (unsigned long long)l->pass.set_rt_at, l->last_op2, l->last_op,
+             s.im->id, (unsigned long long)s.im->gpu, s.w, s.h, (int)s.im->format, s.level, d.im->id, (unsigned long long)d.im->gpu,
+             (int)d.im->format, d.level);
 }
 
 void clear_tex(List* l, const nvn_p_clear_tex& p) {
@@ -294,6 +300,11 @@ bool payload(const void* p, uint32_t size, T& out) {
 
 void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     PassRec& p = l->pass;
+    struct Last {   // (the op before this one, for the copies' names)
+        List* l;
+        uint32_t op;
+        ~Last() { l->last_op2 = l->last_op, l->last_op = op; }
+    } last{l, op};
     switch (op) {   // (state that clears and copies read: kept in every list)
     case NOP_SCISSOR: {
         nvn_p_scissor s;
