@@ -1376,7 +1376,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         // (M6d, diagnoses of the market loss, one at a time: a full barrier inside the rendering, which Vulkan does not allow
         // there and RADV records as the wait it is (VS and PS partial flushes): tmsync before each task+mesh draw, tmsyncafter
         // after it, tmsyncpair only before one whose previous draw in this command buffer was a task+mesh draw too)
-        static const bool tm_before = dbg("tmsync"), tm_after = dbg("tmsyncafter"), tm_pair = dbg("tmsyncpair");
+        static const bool tm_before = dbg("tmsync"), tm_after = dbg("tmsyncafter"), tm_pair = dbg("tmsyncpair"), tm_local = dbg("tmlocal");
         const auto drain = [cb] {
             VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
             b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
@@ -1386,6 +1386,18 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             vkCmdPipelineBarrier2(cb, &d);
         };
         if (prog->task && (tm_before || (tm_pair && x.last_tm))) drain();
+        if (prog->task && tm_local && x.last_tm) {   // (tmlocal: between two task+mesh draws, the barrier a rendering may hold (dynamicRenderingLocalRead): framebuffer stages, by region)
+            const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                             VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            b.srcStageMask = b.dstStageMask = fb;
+            b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            d.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+            d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cb, &d);
+        }
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
