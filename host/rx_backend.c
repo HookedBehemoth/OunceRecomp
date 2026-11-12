@@ -296,6 +296,7 @@ const hsd_fns *rx_direct(void) {
             DIRECT_FN(texels, "hsd_texels")
             DIRECT_FN(pass_known, "hsd_pass_known")
             DIRECT_FN(pass_inline, "hsd_pass_inline")
+            DIRECT_FN(shots, "hsd_shots")
 #undef DIRECT_FN
             hos_log("rx: direct mode (RX_BACKEND=direct): %s", path);
             on = 2;
@@ -308,6 +309,10 @@ const hsd_fns *rx_direct(void) {
 
 int rx_start(void *hwnd) {
     if (rx_direct()) {
+        {   /* (M4d) RX_VK_SHOTS=<dir>, RX_VK_SHOT_EVERY=<n> (default 300): the presented frames as PNGs, as the frozen back end */
+            const char *shots = getenv("RX_VK_SHOTS"), *every = getenv("RX_VK_SHOT_EVERY");
+            if (shots && *shots) direct_fns.shots(shots, every && atoi(every) > 0 ? atoi(every) : 300);
+        }
         const MkwVkRenderer *r = load_vulkan(kDirectDll);
         if (!r || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectDll);
         vk = r;

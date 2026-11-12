@@ -27,6 +27,8 @@ typedef struct {
     /* (M3a) the format table by pass key: the job recorder's question, the game's inline path */
     int (*pass_known)(uint64_t key);
     void (*pass_inline)(void *list, uint64_t key);
+    /* (M4d) shots of the presented frame */
+    void (*shots)(const char *dir, int every);
 } hsd_fns;
 
 /* rx_backend.c: the library's list calls in direct mode (loaded at the first call, from any thread), NULL otherwise */
@@ -61,4 +63,11 @@ void *direct_cmd_list(uint64_t cmd);
 int direct_passes_recorder(Ctx *c);
 /* direct_patches.c (M3a): the game patches' counters, every 600 presents (nvn_native.c's present, direct mode) */
 void direct_patches_frame(void);
+/* direct_texwatch.c (M4d): HOS_DBG=texwatch, CPU writes into texture storage (diagnosis): nvn_native.c's texture
+   initialization and release, nn_fs.c's reads into guest memory, the present's line */
+int direct_texwatch_on(void);
+void direct_texwatch_created(const void *nvn_texture, uint64_t init_lr);
+void direct_texwatch_released(const void *nvn_texture);
+void direct_texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what);
+void direct_texwatch_frame(void);
 #endif

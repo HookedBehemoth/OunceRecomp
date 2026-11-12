@@ -770,6 +770,7 @@ NV(nvnTextureInitialize) {
     }
     nvn_tex *o = TX(P(0));
     if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {   /* initialised again without Finalize */
+        if (rx_direct()) direct_texwatch_released(o);
         live_del(o);
         rx_nvn_texture_released(o);
     }
@@ -790,6 +791,7 @@ NV(nvnTextureInitialize) {
     live_put(o);
     rx_nvn_texture_created(o);
     if (direct_assets_tiles_pending) direct_assets_texture_init(o);   /* (A-rt: a terrain tile given before its texture) */
+    if (rx_direct()) direct_texwatch_created(o, c->x[30]);   /* (M4d: HOS_DBG=texwatch, diagnosis) */
     {   /* RX_NVN_WATCH_TEX=<w>x<h> (debugging): who writes the storage of textures that size (a page watch, with call
            stacks: hos_watch_guest_writes), for writes the dirty tracking misses */
         static int on = -1;
@@ -805,6 +807,7 @@ NV(nvnTextureInitialize) {
 }
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));
+    if (rx_direct()) direct_texwatch_released(o);
     live_del(o);
     rx_nvn_texture_released(o);
     o->magic = 0;

@@ -65,6 +65,10 @@ void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer
 int  hsd_pass_known(uint64_t key);
 void hsd_pass_inline(void *list, uint64_t key);
 
+/* (M4d) Shots of the presented frame: every `every` presents a 1280x720 PNG of what is shown, <dir>/vk_<present>.png (the
+   host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, the frozen back end's names). Called once, before the renderer starts */
+void hsd_shots(const char *dir, int every);
+
 #ifdef __cplusplus
 }
 #endif

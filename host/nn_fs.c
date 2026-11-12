@@ -415,6 +415,10 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
     static int64_t keep_core = -1;
     if (keep_core < 0) keep_core = getenv("HOS_FS_KEEP_CORE_KB") ? atoll(getenv("HOS_FS_KEEP_CORE_KB")) * 1024 : 0;
     const int away = (int64_t)size <= keep_core ? 0 : hos_vcore_away();
+    {   /* (M4d: HOS_DBG=texwatch in direct mode: a read into watched texture storage, made writable first) */
+        void direct_texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what);
+        direct_texwatch_kernel_write(buf, size, fh->path);
+    }
     while (done < size) {
         OVERLAPPED ov = {0};
         int64_t o = off + (int64_t)done;

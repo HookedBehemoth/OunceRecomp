@@ -6,6 +6,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "direct_compute.h"
 #include "direct_assets.h"
@@ -33,14 +38,33 @@ std::vector<VkImage> images;
 std::vector<VkSemaphore> rendered;   // (per swapchain image: the present waits for its clear)
 std::atomic<uint64_t> resize_to{0};
 VkImage offscreen = VK_NULL_HANDLE;
-bool unseen = false;   // (no image back in 100 ms: a Wayland window that cannot be seen)
+bool unseen = false;
+bool swap_src = false;   // (M4d: the swapchain's images can be read: shots)   // (no image back in 100 ms: a Wayland window that cannot be seen)
 
 struct Frame {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence done = VK_NULL_HANDLE;
     VkSemaphore acquired = VK_NULL_HANDLE;
+    // (M4d: a shot of what this frame presented, read back into its own buffer; written once its fence has passed)
+    VkBuffer shot_buf = VK_NULL_HANDLE;
+    Mem* shot_mem = nullptr;
+    void* shot_map = nullptr;
+    int64_t shot_present = 0;   // (0: none waiting)
 };
+
+// (M4d) Shots of the presented frame (hsd_shots: the host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, as the frozen back end reads
+// them): every Nth present the image presented (the swapchain's or the offscreen one, after the blit with the crop) is
+// scaled into a 1280x720 RGBA8 image and copied into the frame slot's buffer; once that slot's fence has passed (three
+// presents later, where the present waits for it anyway) the pixels go to <dir>/vk_<present>.png on a thread of its own.
+// The image and the three buffers are made at the first shot; nothing is made or recorded when shots are off.
+constexpr uint32_t kShotW = 1280, kShotH = 720;
+std::string shot_dir;
+int shot_every = 0;
+VkImage shot_image = VK_NULL_HANDLE;
+Mem* shot_image_mem = nullptr;
+bool shot_failed = false;
+int64_t run_count = 0;   // (presents run: the shots' numbers)
 Frame frames[3];
 uint32_t frame_index = 0;
 
@@ -78,6 +102,8 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     ci.imageExtent = {width, height};
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (shot_every && (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;   // (M4d: shots)
+    swap_src = (ci.imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
     ci.preTransform = caps.currentTransform;
     ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & ci.compositeAlpha))
@@ -125,7 +151,7 @@ bool make_offscreen() {
     ii.mipLevels = ii.arrayLayers = 1;
     ii.samples = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;   // (M4d: shots read it)
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(dev.device, &ii, nullptr, &offscreen) != VK_SUCCESS) return false;
     VkMemoryRequirements req;
@@ -153,6 +179,74 @@ void barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayo
     d.imageMemoryBarrierCount = 1;
     d.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &d);
+}
+
+bool shots_ready() {
+    if (shot_image) return true;
+    if (shot_failed) return false;
+    shot_failed = true;
+    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ii.imageType = VK_IMAGE_TYPE_2D;
+    ii.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ii.extent = {kShotW, kShotH, 1};
+    ii.mipLevels = ii.arrayLayers = 1;
+    ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!mem_image(ii, shot_image, shot_image_mem)) {
+        shot_image = VK_NULL_HANDLE;
+        logf("direct: shots: no image for them");
+        return false;
+    }
+    for (Frame& f : frames)
+        if (!mem_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, f.shot_buf, f.shot_mem, &f.shot_map) || !f.shot_map) {
+            logf("direct: shots: no readback buffer");
+            return false;
+        }
+    shot_failed = false;
+    logf("direct: shots of the presented frame every %d presents, %ux%u, into %s", shot_every, kShotW, kShotH, shot_dir.c_str());
+    return true;
+}
+
+void shot_write(Frame& f) {   // (its fence has passed)
+    if (!f.shot_present) return;
+    mem_invalidate(f.shot_mem);
+    auto px = std::make_shared<std::vector<uint8_t>>((const uint8_t*)f.shot_map, (const uint8_t*)f.shot_map + (size_t)kShotW * kShotH * 4);
+    char path[1200];
+    std::snprintf(path, sizeof path, "%s/vk_%06lld.png", shot_dir.c_str(), (long long)f.shot_present);
+    f.shot_present = 0;
+    std::thread([px, p = std::string(path)] {
+        for (size_t i = 3; i < px->size(); i += 4) (*px)[i] = 255;   // (opaque, as shown)
+        if (!dump_write_png(p.c_str(), px->data(), kShotW, kShotH)) logf("direct: shots: %s not written", p.c_str());
+    }).detach();
+}
+
+// the presented image dst (TRANSFER_DST, its blit done) into the shot image and f's buffer; dst back in TRANSFER_DST
+void shot_record(Frame& f, VkImage dst) {
+    barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    barrier(f.cmd, shot_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageBlit b{};
+    b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    b.srcOffsets[1] = {(int)extent.width, (int)extent.height, 1};
+    b.dstOffsets[1] = {(int)kShotW, (int)kShotH, 1};
+    vkCmdBlitImage(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+    barrier(f.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy c{};
+    c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    c.imageExtent = {kShotW, kShotH, 1};
+    vkCmdCopyImageToBuffer(f.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, f.shot_buf, 1, &c);
+    VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    mb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, mb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    d.memoryBarrierCount = 1;
+    d.pMemoryBarriers = &mb;
+    vkCmdPipelineBarrier2(f.cmd, &d);
+    barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 }
 
 void log_line() {
@@ -256,6 +350,9 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
     Frame& f = frames[frame_index];
     frame_index = (frame_index + 1) % 3;
     vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
+    shot_write(f);   // (M4d: the shot this slot took three presents ago)
+    const int64_t number = ++run_count;
+    const bool shot = shot_every && number % shot_every == 0 && (dev.offscreen || swap_src) && shots_ready();
     uint32_t index = 0;
     VkImage dst = offscreen;
     if (!dev.offscreen) {
@@ -311,6 +408,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
         b.dstOffsets[1] = {(int)(rect.x + rect.w), (int)(rect.y + rect.h), 1};
         vkCmdBlitImage(f.cmd, src->image, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
     }
+    if (shot) shot_record(f, dst), f.shot_present = number;
     if (!dev.offscreen)
         barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
@@ -343,3 +441,8 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
 }
 
 }  // namespace hsd
+
+extern "C" __attribute__((visibility("default"))) void hsd_shots(const char* dir, int every) {   // (before the renderer starts)
+    if (!dir || !*dir || every <= 0) return;
+    hsd::shot_dir = dir, hsd::shot_every = every;
+}

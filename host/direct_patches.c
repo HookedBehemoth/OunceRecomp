@@ -12,6 +12,7 @@ void direct_mesh_system_log(double frames);
 
 void direct_patches_frame(void) {
     static long long presents;
+    direct_texwatch_frame();
     if (++presents % 600) return;
     direct_passes_log(600);
     direct_job_sync_log(600);
