@@ -85,7 +85,7 @@ std::atomic<int64_t> st_made{0}, st_destroyed{0}, st_revived{0}, st_ph{0}, st_ph
     st_made_total{0}, st_asset_images{0}, st_asset_bytes{0}, st_asset_shared{0}, st_asset_fill_waits{0}, st_asset_fail{0},
     st_ph_norec{0};
 
-enum { K_NONE, K_PLAIN, K_ASSET, K_ASSET_MISS };
+enum { K_NONE, K_PLAIN, K_ASSET, K_ASSET_MISS, K_LINKED_PLAIN };
 constexpr uint32_t kAssetClass = 0x80000u;
 /// (A-rt) The key of an asset texture's image: its record's content and descriptor, so every texture of that content
 /// (moved by compaction, or the same texture in another file) has the one image
@@ -103,7 +103,8 @@ void asset_key(const AssetDesc& d, Key& k) {
 int key_of(const nvn_tex* t, Key& k, FormatInfo& fi, int& bw, int& bh, int& bpb, AssetRef* ar = nullptr, AssetDesc* ad = nullptr) {
     if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return K_NONE;
     AssetRef a;
-    if (assets_of(t, a)) {
+    const bool linked = assets_of(t, a);
+    if (linked && !a.plain) {
         if (ar) *ar = a;
         AssetDesc d;
         if (!a.rec || !assets_desc(a.rec, d)) return K_ASSET_MISS;
@@ -131,6 +132,11 @@ int key_of(const nvn_tex* t, Key& k, FormatInfo& fi, int& bw, int& bh, int& bpb,
     k.cls = is_depth_format(fi.format) ? 0x10000u | (uint32_t)fi.format
           : is_bc(fi.format) ? 0x20000u | (uint32_t)linear_twin(fi.format)
                              : 0x40000u | (uint32_t)bpb;
+    if (linked) {   // (A-rt: a texture loaded with no data: its own image wherever its storage moves)
+        k.gpu = 0xC000000000000000ull | a.plain;
+        if (ar) *ar = a;
+        return K_LINKED_PLAIN;
+    }
     return K_PLAIN;
 }
 
@@ -319,7 +325,9 @@ Image* get(const nvn_tex* t) {
         return it->second.get();
     }
     if (kind == K_ASSET) return make_asset(t, k, d, a.rec);
-    return make(t, k, fi, bw, bh, bpb);
+    Image* im = make(t, k, fi, bw, bh, bpb);
+    if (kind == K_LINKED_PLAIN && im && !im->placeholder) im->no_data = true;
+    return im;
 }
 
 void destroy(Image* im) {
@@ -340,7 +348,7 @@ void image_texture_created(const nvn_tex* t) {
     if (t && t->d.target == NVN_TEXTURE_TARGET_BUFFER) return void(st_buffer_tex.fetch_add(1, std::memory_order_relaxed));
     AssetRef a;
     const bool asset = assets_created(t, a);   // (A-rt: the record its load named, kept for its serial)
-    if (asset && !a.rec) {
+    if (asset && !a.rec && !a.plain) {
         st_ph.fetch_add(1, std::memory_order_relaxed);
         st_ph_norec.fetch_add(1, std::memory_order_relaxed);
         assets_note_placeholder(t, a.why);
@@ -374,7 +382,7 @@ void image_texture_released(const nvn_tex* t) {
     FormatInfo fi;
     int bw, bh, bpb;
     const int kind = key_of(t, k, fi, bw, bh, bpb);
-    if (kind == K_PLAIN || kind == K_ASSET) {
+    if (kind == K_PLAIN || kind == K_ASSET || kind == K_LINKED_PLAIN) {
         std::unique_lock lk(images_mu);
         auto it = images.find(k);
         if (it != images.end()) {
@@ -385,7 +393,7 @@ void image_texture_released(const nvn_tex* t) {
             }
         }
     }
-    if (kind == K_ASSET || kind == K_ASSET_MISS) assets_released(t);
+    if (kind == K_ASSET || kind == K_ASSET_MISS || kind == K_LINKED_PLAIN) assets_released(t);
 }
 
 void image_hold(Image* im) {
@@ -548,7 +556,7 @@ bool image_upload_region(const nvn_tex* t, unsigned level, unsigned layer0, cons
     c.imageOffset = {s.x, s.y, s.z};
     c.imageExtent = {s.w, s.h, s.d};
     vkCmdCopyBufferToImage(u.cb, u.staging, s.im->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
-    if (source != W_TEXELS) assets_check_region(s.im, source, s.level, s.layer, s.layers, s.x, s.y, s.w, s.h, u.map, packed);
+    if (source != W_TEXELS) assets_check_region(s.im, source, s.level, s.layer, s.layers, s.x, s.y, s.w, s.h, u.map, packed, src, row);
     upload_end(u);
     s.im->written.fetch_or(source, std::memory_order_relaxed);
     assets_note_upload(source, packed, host->now_ns() - t0);
@@ -585,7 +593,7 @@ void image_sweep(uint64_t present) {
 
 void image_stats(char* out, size_t cap) {
     int64_t live = 0, color = 0, depth = 0, bc = 0, rendered = 0, copied = 0, texels = 0, store = 0, terrain = 0, glyph = 0,
-            untouched = 0, assets = 0, unfilled = 0, no_content = 0;
+            untouched = 0, assets = 0, unfilled = 0, no_content = 0, nd = 0, nd_bits[8] = {}, nd_never = 0;
     {
         std::shared_lock lk(images_mu);
         for (const auto& [k, im] : images) {
@@ -594,6 +602,10 @@ void image_stats(char* out, size_t cap) {
             if (im->asset) assets++, unfilled += im->fill.load(std::memory_order_relaxed) != 2;
             no_content += im->no_content;
             const uint8_t w = im->written.load(std::memory_order_relaxed);
+            if (im->no_data) {
+                nd++, nd_never += !w;
+                for (int b = 0; b < 8; b++) nd_bits[b] += w >> b & 1;
+            }
             if (w & W_ATTACHMENT) rendered++;
             else if (w & (W_COPY | W_CLEAR)) copied++;
             else if (w & W_STORE) store++;
@@ -617,6 +629,10 @@ void image_stats(char* out, size_t cap) {
                   (long long)st_asset_fail.load(), (long long)st_ph.load(), (long long)st_ph_norec.load(), (long long)st_ph_astc.load(),
                   (long long)st_ph_format.load(), (long long)st_ph_refused.load(), (long long)no_content, (long long)st_buffer_tex.load(),
                   (long long)st_registered_new.load(), (long long)st_texels.load(), (long long)st_texels_skipped.load());
+    const size_t n = std::strlen(out);
+    std::snprintf(out + n, cap > n ? cap - n : 0, "; textures loaded with no data: %lld images, written by rendering %lld, copies %lld, "
+                  "texel writes %lld, clears %lld, never %lld", (long long)nd, (long long)nd_bits[0], (long long)nd_bits[1],
+                  (long long)nd_bits[2], (long long)nd_bits[3], (long long)nd_never);
 }
 
 }  // namespace hsd

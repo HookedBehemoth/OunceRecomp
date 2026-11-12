@@ -46,7 +46,8 @@ typedef struct hsd_asset_key {
     const void *data;              /* data_offset 0: mip 0's bytes in the decompressed file (host pointer): the record whose
                                       data offset back from it is its BNTX's header is the one */
 } hsd_asset_key;
-enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2 };
+enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2, HSD_ASSET_REBIND = 3 };   /* (REBIND: a record found replaces the link; none:
+                                                                              the link stays, armed as by hsd_asset_rebind) */
 int  hsd_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */
 int  hsd_asset_load(const hsd_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
 void hsd_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */

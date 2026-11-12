@@ -128,7 +128,10 @@ struct Link {
     uint32_t rec = 0;   // (+1; 0: a miss)
     const char* why = nullptr;
     bool armed = false;
+    uint64_t plain = 0;
 };
+std::atomic<uint64_t> plain_ids{0};
+std::atomic<int64_t> st_plain{0};
 std::mutex links_mu;
 std::unordered_map<const void*, Link> links;
 std::shared_mutex serial_mu;
@@ -191,6 +194,8 @@ struct Check {
     int32_t x = 0, y = 0;
     uint32_t w = 0, h = 0;
     std::vector<uint8_t> bytes;   // (a region upload: the bytes given)
+    const uint8_t* live = nullptr;  // (a glyph atlas: its guest memory (texel 0, 0), compared whole with the image)
+    uint64_t live_row = 0;
     std::string what;
 };
 std::mutex check_mu;
@@ -278,18 +283,52 @@ bool bntx_at(const uint8_t* data, uint32_t off, uint32_t index, const char* name
     if (nm + 2 + name_len > size || rd<uint16_t>(g + nm) != name_len) return false;
     return !std::memcmp(g + nm + 2, name, name_len);
 }
-std::atomic<int64_t> st_ambiguous{0};
+std::atomic<int64_t> st_ambiguous{0}, st_by_name{0};
+}  // namespace
+
+namespace {
+std::atomic<int64_t> st_rebind_rec{0}, st_rebind_same{0}, st_rebind_changed{0}, st_rebind_kept{0};
+/// A rebind whose resource is a file's BRTI with its data there: that record (the texture's data now), else the link as it was
+int rebind_load(const hsd_asset_key* k) {
+    uint32_t found = 0;
+    if (S.ok && k->name && k->data)
+        for (uint32_t e = S.bucket[name_hash(k->name, k->name_len) & (S.nbucket - 1)]; e && !found; e = S.next[e]) {
+            Rec r;
+            rec_at(e - 1, r);
+            if (r.name_len != k->name_len || std::memcmp(S.str + r.name_off, k->name, k->name_len) || r.nvn_format != k->format ||
+                r.w != k->width || r.h != k->height || r.layers != k->layers || r.mips != k->mips || r.isz != k->image_size)
+                continue;
+            if (bntx_at((const uint8_t*)k->data, r.doff, r.index, k->name, k->name_len)) found = e;
+        }
+    st_rebinds.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard lk(links_mu);
+    auto it = links.find(k->tex);
+    if (found) {
+        st_rebind_rec.fetch_add(1, std::memory_order_relaxed);
+        if (it != links.end() && it->second.rec == found) st_rebind_same.fetch_add(1, std::memory_order_relaxed);
+        else st_rebind_changed.fetch_add(1, std::memory_order_relaxed);
+        Link l;
+        l.rec = found, l.armed = true;
+        links[k->tex] = l;
+        return 1;
+    }
+    if (it == links.end()) return st_rebind_nolink.fetch_add(1, std::memory_order_relaxed), 0;
+    st_rebind_kept.fetch_add(1, std::memory_order_relaxed);
+    it->second.armed = true;
+    return it->second.rec ? 1 : 0;
+}
 }  // namespace
 
 extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_asset_key* k) {
     if (!k || !k->tex) return 0;
+    if (k->path == HSD_ASSET_REBIND) return rebind_load(k);
     (k->path == HSD_ASSET_INPLACE ? st_inplace : st_loads).fetch_add(1, std::memory_order_relaxed);
     Link l;
     l.armed = true;
     if (!S.ok) {
         l.why = "no prepared store";
         st_miss_nostore.fetch_add(1, std::memory_order_relaxed);
-    } else if (!k->name || (!k->data_offset && !k->data)) {
+    } else if (!k->name) {
         l.why = "its data is not from a BNTX";
         st_miss_nobntx.fetch_add(1, std::memory_order_relaxed);
         name_once("a texture load whose data is not from a BNTX: '%.*s' BNTX format %#x %ux%u x%u, %u mips, %u bytes: the placeholder",
@@ -306,20 +345,35 @@ extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_a
                 r.isz != k->image_size)
                 continue;
             why = std::max(why, 3);
-            if (k->data_offset ? r.index != k->index || r.doff != k->data_offset
-                               : !bntx_at((const uint8_t*)k->data, r.doff, r.index, k->name, k->name_len))
+            // (a load with no data (src 0: the game fills the slot some other way, or never) is told by its name and
+            // descriptor alone, when every record of them has the one content)
+            const bool nodata = !k->data_offset && !k->data;
+            if (!nodata && (k->data_offset ? r.index != k->index || r.doff != k->data_offset
+                                           : !bntx_at((const uint8_t*)k->data, r.doff, r.index, k->name, k->name_len)))
                 continue;
-            if (!l.rec) l.rec = e, hash = r.hash;
-            else if (r.hash != hash) {   // (two files with this texture at the same place, of other content: the first taken)
+            if (!l.rec) {
+                l.rec = e, hash = r.hash;
+            } else if (r.hash != hash) {   // (two contents match: a load with data takes the first; one without none)
                 st_ambiguous.fetch_add(1, std::memory_order_relaxed);
-                name_once("'%.*s': records of two contents match its load: the first taken", (int)k->name_len, k->name);
+                name_once("'%.*s': records of two contents match its load%s", (int)k->name_len, k->name,
+                          nodata ? " (it has no data): the placeholder" : ": the first taken");
+                if (nodata) l.rec = 0, why = 4;
                 break;
             }
         }
+        if (l.rec && !k->data_offset && !k->data) st_by_name.fetch_add(1, std::memory_order_relaxed);
         if (l.rec) {
             st_prepared.fetch_add(1, std::memory_order_relaxed);
+        } else if (!k->data_offset && !k->data && why == 1) {
+            // (no data at its load and no BNTX of its name: not an asset; written by the GPU (copies, rendering), so a plain
+            // image, kept across its moves; counted and named)
+            l.plain = plain_ids.fetch_add(1, std::memory_order_relaxed) + 1;
+            st_plain.fetch_add(1, std::memory_order_relaxed);
+            name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips): loaded with no data and in no BNTX: a plain image", (int)k->name_len,
+                      k->name, k->format, k->width, k->height, k->layers, k->mips);
         } else {
-            l.why = why == 1 ? "no record of its name" : why == 2 ? "no record of its descriptor" : "no record of its place in its file";
+            l.why = why == 1 ? "no record of its name" : why == 2 ? "no record of its descriptor"
+                  : why == 3 ? "no record of its place in its file" : "no data and records of two contents";
             (why == 1 ? st_miss_name : why == 2 ? st_miss_desc : st_miss_place).fetch_add(1, std::memory_order_relaxed);
             name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips, #%d at %#x in its BNTX, %s): %s: the placeholder", (int)k->name_len,
                       k->name, k->format, k->width, k->height, k->layers, k->mips, k->data_offset ? (int)k->index : -1, k->data_offset,
@@ -392,7 +446,7 @@ bool assets_created(const nvn_tex* t, AssetRef& a) {
                   t->d.format, t->d.width, t->d.height, t->d.depth, t->d.levels, (unsigned long long)t->gpu);
     }
     st_created.fetch_add(1, std::memory_order_relaxed);
-    a.rec = l.rec, a.why = l.why;
+    a.rec = l.rec, a.why = l.why, a.plain = l.plain;
     if (a.rec) {
         Rec r;
         rec_at(a.rec - 1, r);
@@ -625,7 +679,7 @@ void assets_job_list() { st_jobs.fetch_add(1, std::memory_order_relaxed); }
 
 // ---- region checks (image_upload_region's bytes, sampled) ----
 void assets_check_region(Image* im, uint8_t source, uint32_t level, uint32_t layer, uint32_t layers, int32_t x, int32_t y, uint32_t w,
-                         uint32_t h, const uint8_t* bytes, uint64_t n) {
+                         uint32_t h, const uint8_t* bytes, uint64_t n, const uint8_t* src, uint64_t row) {
     dbg_read();
     const int si = src_index(source);
     if ((!check_n && !dump_on) || si == S_STORE || si == S_TEXELS || n > (8u << 20)) return;
@@ -635,7 +689,8 @@ void assets_check_region(Image* im, uint8_t source, uint32_t level, uint32_t lay
     if (check_n && (k < 16 || k % 64 == 0) && checked_regions[si] < check_n) {
         Check c;
         c.im = im, c.source = source, c.level = level, c.layer = layer, c.layers = layers, c.x = x, c.y = y, c.w = w, c.h = h;
-        c.bytes.assign(bytes, bytes + n);
+        if (si == S_GLYPH && im->bpb == 1 && im->bw == 1) c.live = src - (uint64_t)y * row - x, c.live_row = row;
+        else c.bytes.assign(bytes, bytes + n);
         c.what = kSrcNames[si];
         image_hold(im);
         checks.push_back(std::move(c));
@@ -718,6 +773,17 @@ void run_checks() {
                               (int)c.im->format, c.im->width, c.im->height, c.im->layers, r.mips, m);
                 bytes += (int64_t)mb;
             }
+        } else if (c.live) {   // (the whole atlas against its guest memory now: the CPU's copy is the truth)
+            std::vector<uint8_t> got;
+            const uint32_t w = c.im->width, h = c.im->height;
+            ok = readback(c.im, 0, 0, 1, 0, 0, w, h, (uint64_t)w * h, got);
+            int64_t bad = 0;
+            for (uint32_t y = 0; ok && y < h; y++)
+                for (uint32_t x = 0; x < w; x++) bad += got[(size_t)y * w + x] != c.live[y * c.live_row + x];
+            if (bad) logf("direct: assetcheck: glyph atlas image #%u (%ux%u): %lld texels differ from its guest memory", c.im->id, w, h,
+                          (long long)bad);
+            ok = ok && !bad;
+            bytes += (int64_t)w * h;
         } else {
             std::vector<uint8_t> got;
             ok = readback(c.im, c.level, c.layer, c.layers, c.x, c.y, c.w, c.h, c.bytes.size(), got) && got == c.bytes;
@@ -851,16 +917,17 @@ void assets_present(uint64_t present) {
 }
 
 void assets_stats(char* out, size_t cap, double frames) {
-    int k = std::snprintf(out, cap, "assets: loads %lld, in place %lld: prepared %lld; placeholders: no record of the name %lld, of the "
+    int k = std::snprintf(out, cap, "assets: loads %lld, in place %lld: prepared %lld (by name and descriptor alone, no data: %lld), no data and no BNTX (plain images) %lld; placeholders: no record of the name %lld, of the "
                           "descriptor %lld, of the place %lld (ambiguous %lld), not from a BNTX %lld, no store %lld, in the heap unseen %lld, descriptor "
-                          "at initialization %lld; initializations %lld (not armed %lld), rebinds %lld (no link %lld); fills %lld (%.0f MB "
+                          "at initialization %lld; initializations %lld (not armed %lld), rebinds %lld (a file's record %lld: the same %lld, another %lld; the link kept %lld; no link %lld); fills %lld (%.0f MB "
                           "from %.0f MB of frames, %lld uploads, staging peak %.1f MB; %.0f ms, of it zstd %.0f ms), failed %lld; "
                           "uploads a frame:",
-                          (long long)st_loads.load(), (long long)st_inplace.load(), (long long)st_prepared.load(),
+                          (long long)st_loads.load(), (long long)st_inplace.load(), (long long)st_prepared.load(), (long long)st_by_name.load(), (long long)st_plain.load(),
                           (long long)st_miss_name.load(), (long long)st_miss_desc.load(), (long long)st_miss_place.load(), (long long)st_ambiguous.load(),
                           (long long)st_miss_nobntx.load(), (long long)st_miss_nostore.load(), (long long)st_unseen.load(),
                           (long long)st_link_desc.load(), (long long)st_created.load(), (long long)st_unarmed.load(),
-                          (long long)st_rebinds.load(), (long long)st_rebind_nolink.load(), (long long)st_fills.load(),
+                          (long long)st_rebinds.load(), (long long)st_rebind_rec.load(), (long long)st_rebind_same.load(),
+                          (long long)st_rebind_changed.load(), (long long)st_rebind_kept.load(), (long long)st_rebind_nolink.load(), (long long)st_fills.load(),
                           st_fill_bytes.load() / 1048576.0, st_fill_zbytes.load() / 1048576.0, (long long)st_fill_uploads.load(),
                           st_staging_max.load() / 1048576.0, st_fill_ns.load() / 1e6, st_zstd_ns.load() / 1e6, (long long)st_read_fail.load());
     for (int i = 0; i < S_N; i++)

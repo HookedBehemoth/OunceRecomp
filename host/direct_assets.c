@@ -52,7 +52,7 @@ extern const char *hos_romfs_dir;
 
 static volatile LONG64 n_loads, n_load_skipped, n_load_bytes, n_inplace, n_rebind, n_compaction, n_compaction_cleared,
     n_replace, n_pkg, n_pkg_bytes, n_tiles, n_tile_bytes, n_tiles_unconv, n_tile_notex, n_tile_badsite, n_glyphs,
-    n_glyph_notex, n_tile_inside, n_tile_held, n_tile_held_max, n_tile_dropped, n_overlay, n_overlay_bytes, n_overlay_raw;
+    n_glyph_notex, n_rebind_logged, n_tile_inside, n_tile_held, n_tile_held_max, n_tile_dropped, n_overlay, n_overlay_bytes, n_overlay_raw;
 
 static int dbg_has(const char *name) {
     const char *d = getenv("HOS_DBG");
@@ -231,9 +231,28 @@ ENTRY_HOOK(0x807982f0) {
     if (!ready()) return 0;
     const uint64_t td = ARG(0);
     if (!hos_guest_range(td, 0x100)) return 0;
-    const uint64_t gfx = G64(td + 0xd8);
+    const uint64_t gfx = G64(td + 0xd8), res = ARG(2);
     InterlockedIncrement64(&n_rebind);
-    if (gfx) rx_direct()->asset_rebind(GP(gfx + 0x10));
+    if (!gfx) return 0;
+    /* (res: the BRTI the texture is made from now; in a file (a streamed texture's data), its mip 0 is in that file) */
+    hsd_asset_key k;
+    memset(&k, 0, sizeof k);
+    k.tex = GP(gfx + 0x10);
+    k.path = HSD_ASSET_REBIND;
+    if (res && hos_guest_range(res, 0xa0) && G32(res) == 0x49545242u) {
+        key_of_brti(&k, res);
+        uint32_t nl = 0;
+        const char *nm = bstr(G64(res + 0x60), &nl);
+        const uint64_t mt = G64(res + 0x70);
+        const uint64_t mip0 = hos_guest_range(mt, 8) ? G64(mt) : 0;
+        if (nm) k.name = nm, k.name_len = nl;
+        if (mip0 && hos_guest_range(mip0, 1)) k.data = GP(mip0);
+        if (InterlockedIncrement64(&n_rebind_logged) <= 12)
+            hos_log("assets: rebind td %#llx new base %#llx res %#llx '%.*s' mip 0 %#llx (in the heap: %d)", (unsigned long long)td,
+                    (unsigned long long)ARG(1), (unsigned long long)res, nm ? (int)nl : 0, nm ? nm : "", (unsigned long long)mip0,
+                    mip0 >= heap_lo && mip0 < heap_hi);
+    }
+    rx_direct()->asset_load(&k);
     return 0;
 }
 

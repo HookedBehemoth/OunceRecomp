@@ -45,7 +45,8 @@ struct Image {
     std::atomic<uint8_t> fill{0};
     VkImageViewType asset_view = VK_IMAGE_VIEW_TYPE_2D;
     uint8_t chan_map[4] = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A};
-    bool no_content = false;           // (a texture whose texels were not given: terrain not converted; drawn as the placeholder)
+    bool no_content = false;
+    bool no_data = false;              // (a texture loaded with no data and in no BNTX: what writes it is counted)           // (a texture whose texels were not given: terrain not converted; drawn as the placeholder)
     // (lifetime: the live NVN textures over it; images_mu held)
     int refs = 0;
     uint64_t dead_present = 0, dead_value = 0;
