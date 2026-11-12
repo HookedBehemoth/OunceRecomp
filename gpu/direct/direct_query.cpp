@@ -377,7 +377,8 @@ void query_draw(List* l, VkCommandBuffer cb) {
             count(Q_NO_ROOM);
         }
     }
-    if (x.cond_want && !x.cond_on) {
+    static const bool nocond = dbg("qnocond");   // (A/B aid: conditions not evaluated, their draws drawn)
+    if (x.cond_want && !x.cond_on && !nocond) {
         VkBuffer b;
         VkDeviceSize off;
         if (!layer0_span(x.cond_addr, 4, b, off)) return count(Q_COND_NOT_MEMORY);
@@ -450,6 +451,9 @@ void query_flush(List* l, CmdOf cmd) {
     push.windows = draw_window_table();
     push.dev0 = cal_dev.load(std::memory_order_acquire), push.host0 = cal_host.load(std::memory_order_relaxed);
     push.scale = cal_scale.load(std::memory_order_relaxed);
+    static const bool cpu_ts = dbg("qcputs"), fixed = dbg("qfixed");   // (A/B aids: timestamps of the recording time; samples 4096)
+    if (cpu_ts) push.scale = 0, push.host0 = (double)(host->ticks() * 32 * 12 / 625);
+    push.pad = fixed ? 4096 : 0;
     for (size_t i = 0; i < x.pend.size();) {
         size_t j = i;
         QSlot* q = x.pend[i].q;

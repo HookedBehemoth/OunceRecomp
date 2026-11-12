@@ -21,6 +21,7 @@ layout(push_constant) uniform P {
     double host0;    // (the same moment on the guest's counter clock)
     double scale;    // (guest counter ticks per device tick)
     uint n;
+    uint fixed_samples;   // (HOS_DBG=qfixed: a samples report reads this, not its queries)
 } p;
 
 void main() {
@@ -31,6 +32,7 @@ void main() {
     uint64_t counter = 0;
     if (r.kind == 1u)   // (NVN_COUNTER_TYPE_SAMPLES_PASSED)
         for (uint k = 0; k < r.n && k < 4u; k++) counter += p.occ.v[r.occ[k]];
+    if (r.kind == 1u && p.fixed_samples != 0u) counter = p.fixed_samples;
     const double d = double(int64_t(p.ts.v[ri] - p.dev0));
     const uint64_t ticks = uint64_t(max(0.0lf, p.host0 + d * p.scale));
     const uint64_t at = p.windows.v[uint(r.addr >> 31)] + (r.addr & 0x7fffffffUL);
