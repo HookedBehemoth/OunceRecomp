@@ -43,9 +43,11 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
     }
     case NOP_BIND_PROGRAM: {
         const auto b = payload<nvn_p_bind_program>(a, size);
+        const bool had = s.has_prog;
+        const uint64_t was = s.prog.serial;
         if (b.prog) s.prog = *b.prog;   // (the guest object read now: its stages are set before it is bound)
         s.has_prog = b.prog != nullptr && b.prog->nstage > 0;
-        s.prog_gen++;
+        if (had != s.has_prog || was != s.prog.serial) s.prog_gen++;   // (M3b: the program a draw picks by is its serial's)
         return true;
     }
     case NOP_BIND_STATE: {
@@ -68,46 +70,51 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
     }
     case NOP_BIND_VATTR: {
         const auto v = payload<nvn_p_bind_vattr>(a, size);
+        uint32_t was[16];
+        std::memcpy(was, s.vattr, sizeof was);
+        const int nwas = s.nvattr;
         std::memset(s.vattr, 0, sizeof s.vattr);
         for (int i = 0; i < v.n && i < 16; i++) s.vattr[i] = v.st[i];
         s.nvattr = std::clamp(v.n, 0, 16);
-        s.vtx_gen++;
+        if (nwas != s.nvattr || std::memcmp(was, s.vattr, sizeof was)) s.vtx_gen++;   // (M3b: the pick reads the attributes only)
         return true;
     }
     case NOP_BIND_VSTREAM: {
         const auto v = payload<nvn_p_bind_vstream>(a, size);
         for (int i = 0; i < v.n && v.first + i < 16; i++)
             if (v.first + i >= 0) s.vstream[v.first + i] = v.st[i];
-        s.vtx_gen++;
-        return true;
+        return true;   // (M3b: no generation: the pick does not read streams; the vertex input is set from them at each draw)
     }
     case NOP_BIND_VBUF: {
         const auto v = payload<nvn_p_bind_vbuf>(a, size);
         for (int i = 0; i < v.n && v.first + i < 16; i++)
             if (v.first + i >= 0) s.vbuf[v.first + i] = v.r[i];
-        s.vtx_gen++;
-        return true;
+        return true;   // (M3b: no generation: the pick does not read buffers; a draw takes them through its spans)
     }
     case NOP_BIND_BUFS: {   // (deferred ranges: the values recorded; their array is the game's to keep. Counted)
         const auto b = payload<nvn_p_bind_bufs>(a, size);
         if (b.stage < 0 || b.stage >= kStages) return true;
+        bool changed = false;   // (M3b: the generations move only when a binding does: a rebind of the same is common)
         for (int i = 0; i < b.n && i < 16; i++) {
             const int index = b.first + i;
             if (index < 0 || index >= 16) continue;
             nvn_p_bind_buf& u = (b.ssbo ? s.ssbo : s.ubo)[b.stage][index];
+            changed |= u.addr != b.r[i].address || u.size != b.r[i].size;
             u.stage = b.stage, u.index = index, u.addr = b.r[i].address, u.size = b.r[i].size;
         }
         if (b.src) st_deferred_bufs.fetch_add(1, std::memory_order_relaxed);
-        if (b.ssbo && b.stage < kBankStages) s.bank_gen[b.stage]++;
-        if (!b.ssbo) s.ubo_gen++;
+        if (changed && b.ssbo && b.stage < kBankStages) s.bank_gen[b.stage]++;
+        if (changed && !b.ssbo) s.ubo_gen++;
         return true;
     }
     case NOP_BIND_UBO: case NOP_BIND_SSBO: {
         const auto b = payload<nvn_p_bind_buf>(a, size);
         if (b.stage >= 0 && b.stage < kStages && b.index >= 0 && b.index < 16) {
-            (op == NOP_BIND_UBO ? s.ubo : s.ssbo)[b.stage][b.index] = b;
-            if (op == NOP_BIND_UBO) s.ubo_gen++;
-            else if (b.stage < kBankStages) s.bank_gen[b.stage]++;
+            nvn_p_bind_buf& u = (op == NOP_BIND_UBO ? s.ubo : s.ssbo)[b.stage][b.index];
+            const bool changed = u.addr != b.addr || u.size != b.size;
+            u = b;
+            if (changed && op == NOP_BIND_UBO) s.ubo_gen++;
+            else if (changed && b.stage < kBankStages) s.bank_gen[b.stage]++;
         }
         return true;
     }
@@ -117,15 +124,17 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
         uint32_t* to = op == NOP_BIND_TEX ? s.tex[b.stage] : op == NOP_BIND_SAMP ? s.samp[b.stage] : s.img[b.stage];
         const int lim = op == NOP_BIND_IMG ? 32 : 128;
         const int n = std::clamp(std::min(b.n, lim - b.first), 0, 32);
-        for (int k = 0; k < n; k++) to[b.first + k] = (uint32_t)b.h[k];
+        bool changed = false;
+        for (int k = 0; k < n; k++) changed |= to[b.first + k] != (uint32_t)b.h[k], to[b.first + k] = (uint32_t)b.h[k];
         if (b.stage < kBankStages) {
             uint64_t* src = op == NOP_BIND_TEX ? s.tex_src[b.stage] : op == NOP_BIND_SAMP ? s.samp_src[b.stage] : s.img_src[b.stage];
             for (int k = 0; k < n; k++) {
                 const uint64_t was = src[b.first + k], now = b.src ? b.src + 8ull * k : 0;
                 if (!was != !now) s.deferred[b.stage] += now ? 1 : (uint32_t)-1;
+                changed |= was != now;
                 src[b.first + k] = now;
             }
-            s.bank_gen[b.stage]++;
+            if (changed) s.bank_gen[b.stage]++;
         }
         if (b.src) st_deferred.fetch_add(n, std::memory_order_relaxed);
         return true;

@@ -48,7 +48,7 @@ struct DState {
     // (what changed: bumped by the ops)
     uint32_t bank_gen[kBankStages]{};   // (a stage's textures, samplers, images or storage buffers: its c0 / c2 banks)
     uint32_t ubo_gen = 0;               // (any uniform buffer)
-    uint32_t vtx_gen = 0;               // (attributes, streams, vertex buffers)
+    uint32_t vtx_gen = 0;               // (vertex attributes: what the pick reads of the vertex state)
     uint32_t prog_gen = 0;
 };
 

@@ -641,7 +641,13 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     const uint64_t size = std::max<uint64_t>(b.size, 16);
     // (the contract's open item: a program that may read past the bound range reads the guest memory after it through the
     // address, where Maxwell reads zeros; counted)
-    if (u.bytes > size) bump(me().past_range);
+    if (u.bytes > size) {
+        bump(me().past_range);
+        static std::atomic<int> told{0};
+        if (told++ < 12)
+            logf("direct: program %016llx stage %u reads c%u up to %u bytes, %llu bound (%s)", (unsigned long long)p.key, u.stage,
+                 u.index, u.bytes, (unsigned long long)b.size, u.bytes >= 0x10000 ? "indexed dynamically" : "past the bound range");
+    }
     bool updated = false;
     for (const ListDraw::Update& up : x.updates) updated |= up.dst < b.addr + size && up.dst + up.size > b.addr;
     if (!updated) {
@@ -749,10 +755,17 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
     logf("%s", b);
 }
 
+int64_t t_device = 0;   // (host->now_ns() when the draws' device part was made: the start of the start-time lines)
 void count(List* l, Reason r) {
     if (r == R_DRAWN) l->n_drawn++;
     else if (r == R_MESH) l->n_mesh++;
     else if (r == R_STEP_A) l->n_step_a++;
+    if (l->info.kind == HSD_LIST_JOB) {   // (M3b: the first job draw, the scene's first frame: the start time's end)
+        static std::atomic<bool> seen{false};
+        if (!seen.load(std::memory_order_relaxed) && !seen.exchange(true))
+            logf("direct: start: the first job draw at present %llu, %.2f s after the device", (unsigned long long)present_count(),
+                 (host->now_ns() - t_device) / 1e9);
+    }
     if (r != R_DRAWN && l->info.kind != HSD_LIST_JOB && l->info.kind != HSD_LIST_LOAD) drawlog(l, kReasons[r], nullptr, nullptr, 0);
     bump(me().by_kind[l->info.kind][r]);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
@@ -963,7 +976,9 @@ void draw_window_made(uint32_t k, uint64_t a) {
 }
 
 /// (direct_heap.cpp draw_device_created) the window table: an entry a layer-0 window, the null window past them; the zero buffer
+double seconds_since_device() { return (host->now_ns() - t_device) / 1e9; }
 void draw_window_table_init() {
+    t_device = host->now_ns();
     VkBuffer b;
     VkDeviceMemory m;
     uint8_t* map;

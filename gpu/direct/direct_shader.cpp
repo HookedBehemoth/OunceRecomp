@@ -55,6 +55,7 @@
 #endif
 
 namespace hsd {
+double seconds_since_device();   // (direct_draw.cpp)
 bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
                    VkDeviceAddress& address);   // (direct_heap.cpp)
 
@@ -408,7 +409,8 @@ struct Slot {
 constexpr uint32_t kSlots = 1u << 17;
 std::unique_ptr<std::atomic<Slot*>[]> table;
 std::mutex table_mu;
-std::atomic<int64_t> st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0},
+std::atomic<double> last_miss_s{0};
+std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0},
     st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0};
 
 uint32_t slot_hash(uint64_t serial) { return (uint32_t)((serial * 0x9E3779B97F4A7C15ull) >> 47) & (kSlots - 1); }
@@ -882,7 +884,9 @@ bool finish(Variant& v) {
         if (caps.sg32_stages & st.vk_stage) sz.pNext = &mi, ci.pNext = &sz;
         else ci.pNext = &mi;
         VkShaderEXT obj = VK_NULL_HANDLE;
+        const auto t0 = clk::now();
         const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &obj);
+        st_object_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
         if (r != VK_SUCCESS) {
             st_object_failed.fetch_add(1, std::memory_order_relaxed);
             static std::atomic<int> told{0};
@@ -1038,7 +1042,10 @@ void scan_slot(Slot* s) {
     }
     for (const DiskRecord& d : recs) {
         auto v = std::make_unique<Variant>();
-        if (!disk_read(d, *v) || (v->stages.size() == 2) != s->has_fs) continue;
+        const auto t0 = clk::now();
+        const bool read = disk_read(d, *v);
+        st_disk_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
+        if (!read || (v->stages.size() == 2) != s->has_fs) continue;
         v->d.variant = 0;
         for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
         if (!finish(*v)) continue;
@@ -1114,6 +1121,7 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     // (none: translated on a worker, once for these inputs and answers)
     const uint64_t want = key ^ (same_key ? live_hash(s, same_key->d) * 0x9E3779B97F4A7C15ull : 0);
     st_misses.fetch_add(1, std::memory_order_relaxed);
+    last_miss_s.store(seconds_since_device(), std::memory_order_relaxed);
     {
         std::lock_guard lk(slot->fam->mu);
         if (slot->fam->failed.count(want)) return why = SM_FAILED, nullptr;
@@ -1169,15 +1177,16 @@ void shader_stats(char* out, size_t cap, double frames) {
         queued = work.size();
     }
     std::snprintf(out, cap, "programs (since the start): %lld set (%lld distinct codes), %lld variants translated (%.1f s on the workers), %lld failed, %lld "
-                  "from the cache, %lld shader objects made (%lld failed), %lld stages unreadable, table full %lld; misses %.1f a frame, "
+                  "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed), %lld stages unreadable, table full %lld; misses %.1f a frame, "
                   "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
                   "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
-                  "than the push data's room for their addresses", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
-                  (long long)st_failed.load(), (long long)st_from_disk.load(), (long long)st_objects_made.load(),
+                  "than the push data's room for their addresses; the last miss %.2f s after the device", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
+                  (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
+                  st_object_ns.load() / 1e9,
                   (long long)st_object_failed.load(), (long long)st_scan_failed.load(), (long long)st_full.load(),
                   st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_multi_answers.load(),
                   (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
-                  (long long)st_ubos_max.load(), (long long)st_ubos_over.load());
+                  (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load());
 }
 
 }  // namespace hsd
