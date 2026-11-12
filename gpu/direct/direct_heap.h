@@ -80,6 +80,8 @@ struct Image;
 void heap_image_gone(const Image* im);
 /// The answer byte of texture id: the translator's texture type | 0x80 for an integer format (0xFF: none registered)
 uint8_t heap_answer(uint32_t id);
+/// (logs) what texture id's entries hold
+void heap_describe(uint32_t id, char* out, size_t cap);
 
 void heap_stats(char* out, size_t cap);
 

@@ -780,9 +780,17 @@ bool finish(Variant& v) {
                 cb += c.count;
                 continue;
             }
-            VkDescriptorSetAndBindingMappingEXT x = map_of(cb, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT);
-            x.sourceData.indirectAddress.pushOffset = kTablePush;
-            x.sourceData.indirectAddress.addressOffset = 8 * (uint32_t)d.ubos.size();
+            static const bool ubopush = dbg("ubopush");   // (HOS_DBG=ubopush, a diagnosis: the first 8 addresses pushed)
+            VkDescriptorSetAndBindingMappingEXT x;
+            if (ubopush && d.ubos.size() < 8) {
+                x = map_of(cb, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_PUSH_ADDRESS_EXT);
+                x.sourceData.pushAddressOffset = 192 + 8 * (uint32_t)d.ubos.size();
+                d.direct_ubos = (uint8_t)(d.ubos.size() + 1);
+            } else {
+                x = map_of(cb, VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT);
+                x.sourceData.indirectAddress.pushOffset = kTablePush;
+                x.sourceData.indirectAddress.addressOffset = 8 * (uint32_t)d.ubos.size();
+            }
             m.push_back(x);
             const uint32_t used = c.index < info.constant_buffer_used_sizes.size() ? info.constant_buffer_used_sizes[c.index] : 0;
             d.ubos.push_back({stage, (uint8_t)c.index, c.index == 0 || c.index == 2 ? std::clamp<uint32_t>((used + 15) & ~15u, 16, 0xA00) : used});
@@ -815,6 +823,7 @@ bool finish(Variant& v) {
                 continue;
             }
             const uint16_t po = pushed_slot(stage, (uint8_t)t.cbuf_index);
+            d.tex_words.push_back({stage, (uint8_t)t.cbuf_index, (uint16_t)t.cbuf_offset});
             VkDescriptorSetAndBindingMappingEXT x = map_of(b, VK_SPIRV_RESOURCE_TYPE_ALL_EXT, VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_INDIRECT_INDEX_EXT);
             auto& ii = x.sourceData.indirectIndex;
             ii.heapOffset = heap_region_offset(region), ii.pushOffset = po, ii.addressOffset = t.cbuf_offset;
@@ -835,6 +844,7 @@ bool finish(Variant& v) {
         if (si < 2) d.c1[si] = c1_put(st.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
     }
     d.push_bytes = kTablePush + 8 + 8 * (uint32_t)d.pushed.size();
+    if (d.direct_ubos) d.push_bytes = std::max<uint32_t>(d.push_bytes, 192 + 8 * d.direct_ubos);
     if (d.push_bytes > caps.max_push) d.skip = d.skip ? d.skip : "push data over the device's limit";
     // (the answers a draw checks: those whose handle is a driver bank word; one in a game buffer stands as translated)
     for (const RawAnswer& a : v.answers) {

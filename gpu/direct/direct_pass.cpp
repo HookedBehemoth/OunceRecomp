@@ -307,6 +307,8 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
         ~Last() { l->last_op2 = l->last_op, l->last_op = op; }
     } last{l, op};
     draw_state(l, op, data, size);   // (M2b: the NVN state the draws read)
+    if (l->info.kind == HSD_LIST_GATE && draw_log_frame())
+        logf("direct: drawlog gate op %u (noted %d begun %d cur %p segs %zu)", op, (int)p.noted, (int)p.begun, (void*)l->cur, l->segs.size());
     switch (op) {   // (state that clears and copies read: kept in every list)
     case NOP_SCISSOR: {
         nvn_p_scissor s;
@@ -403,6 +405,9 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
 }
 
 void pass_call(List* l, const List* callee) {
+    if (l->info.kind == HSD_LIST_GATE && draw_log_frame())
+        logf("direct: drawlog gate call kind %u draws %d cmds %d (noted %d begun %d)", callee->info.kind, (int)callee->draws, (int)callee->has_cmds,
+             (int)l->pass.noted, (int)l->pass.begun);
     if (callee->draws) l->draws = true;
     if ((callee->info.kind == HSD_LIST_JOB || callee->draws) && records(l) && l->pass.noted && !l->pass.begun) begin(l);
     if (!callee->has_cmds) return;

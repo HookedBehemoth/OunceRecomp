@@ -480,6 +480,20 @@ uint8_t heap_answer(uint32_t id) {
     return ready && id < kHeapSlots ? answers[id].load(std::memory_order_acquire) : 0xFF;
 }
 
+void heap_describe(uint32_t id, char* out, size_t cap) {
+    if (!ready || id >= kHeapSlots) return void(std::snprintf(out, cap, "-"));
+    std::lock_guard lk(heap_mu);
+    const Image* im = slot_image[id];
+    int k = std::snprintf(out, cap, "id %u: image #%u %ux%u vk %d%s, entries", id, im ? im->id : 0, im ? im->width : 0, im ? im->height : 0,
+                          im ? (int)im->format : 0, im && im->placeholder ? " (placeholder)" : "");
+    for (uint32_t r = 0; r < kHeapRegions; r++) {
+        const uint8_t* e = res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc;
+        bool any = false;
+        for (uint32_t i = 0; i < kImageDesc; i++) any |= e[i] != 0;
+        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %u:%s", r, any ? "set" : "0");
+    }
+}
+
 void heap_stats(char* out, size_t cap) {
     std::snprintf(out, cap, "heap (since the start): %lld texture registrations (%lld entries written, %lld null), %lld with no image, "
                   "%lld ids past the heap, %lld sampler registrations, %lld custom border colours as black, %lld ids nulled with their "

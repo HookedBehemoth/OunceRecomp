@@ -85,6 +85,7 @@ const char* const kReasons[R_COUNT] = {
     "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
     "resolved in a load-time list (M3)", "resolved in an unclassified list"};
 std::atomic<int64_t> st_by_kind[HSD_LIST_KINDS][R_COUNT];
+std::atomic<int64_t> st_ub_updates{0}, st_ub_copies{0}, st_ub_reads{0};
 std::atomic<int64_t> st_ns{0}, st_fixups{0}, st_fixup_lists{0}, st_banks{0}, st_tables{0}, st_ssbo_unbound{0};
 // (the variants' step A reasons: static strings, a few)
 struct StepA {
@@ -178,6 +179,19 @@ struct ListDraw {
     VkDeviceAddress table_addr = 0;
     std::vector<VkDeviceAddress> table_entries;
     std::vector<Fixup> fixups;
+    // (inline uniform updates, in order: later draws of the list read copies of their buffers with them applied)
+    struct Update {
+        uint64_t dst;
+        uint32_t size, at;   // (its bytes at update_bytes[at])
+    };
+    std::vector<Update> updates;
+    std::vector<uint8_t> update_bytes;
+    struct UbCopy {
+        uint64_t addr, size;
+        size_t nupdates;
+        VkDeviceAddress copy;
+    };
+    std::vector<UbCopy> ub_copies;
 };
 
 namespace {
@@ -350,6 +364,8 @@ void set_dynamic(ListDraw& x, VkCommandBuffer cb, const DState& s, const PassRec
     d.bias_en = s.poly.offset_en != 0;
     d.cull = s.poly.cull == NVN_FACE_FRONT ? VK_CULL_MODE_FRONT_BIT : s.poly.cull == NVN_FACE_BACK ? VK_CULL_MODE_BACK_BIT
            : s.poly.cull == NVN_FACE_FRONT_AND_BACK ? VK_CULL_MODE_FRONT_AND_BACK : VK_CULL_MODE_NONE;
+    static const bool nocull = dbg("nocull");   // (HOS_DBG=nocull, a diagnosis: no face culled)
+    if (nocull) d.cull = VK_CULL_MODE_NONE;
     d.front = s.poly.front == NVN_FRONT_FACE_CCW ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;   // (the flipped viewport keeps the winding)
     d.topo = topo;
     d.restart = s.restart && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
@@ -513,7 +529,30 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     if (u.index >= 3 + 16) return a = zero_address, R_DRAWN;
     const nvn_p_bind_buf& b = x.s.ubo[u.stage][u.index - 3];
     if (!b.addr) return a = zero_address, R_DRAWN;
-    return layer0_address(b.addr, std::max<uint64_t>(b.size, 16), a) ? R_DRAWN : R_UBO_MEM;
+    const uint64_t size = std::max<uint64_t>(b.size, 16);
+    bool updated = false;
+    for (const ListDraw::Update& up : x.updates) updated |= up.dst < b.addr + size && up.dst + up.size > b.addr;
+    if (!updated) return layer0_address(b.addr, size, a) ? R_DRAWN : R_UBO_MEM;
+    for (const ListDraw::UbCopy& c : x.ub_copies)   // (made for these updates already)
+        if (c.addr == b.addr && c.size == size && c.nupdates == x.updates.size()) return a = c.copy, R_DRAWN;
+    if (size > (64u << 10)) return R_UBO_MEM;
+    uint8_t* map;
+    if (!arena_alloc(l->slot, (uint32_t)size, map, a)) return R_ARENA;
+    // (what the updates do not cover is the buffer's memory as it is now: read, counted)
+    std::vector<uint8_t> covered(size, 0);
+    for (const ListDraw::Update& up : x.updates)
+        for (uint64_t i = std::max(up.dst, b.addr); i < std::min(up.dst + up.size, b.addr + size); i++) covered[i - b.addr] = 1;
+    if (std::find(covered.begin(), covered.end(), 0) != covered.end()) {
+        if (!host->gpu_read(b.addr, map, size)) std::memset(map, 0, size);
+        st_ub_reads.fetch_add(1, std::memory_order_relaxed);
+    }
+    for (const ListDraw::Update& up : x.updates) {
+        const uint64_t lo = std::max(up.dst, b.addr), hi = std::min(up.dst + up.size, b.addr + size);
+        if (lo < hi) std::memcpy(map + (lo - b.addr), x.update_bytes.data() + up.at + (lo - up.dst), hi - lo);
+    }
+    x.ub_copies.push_back({b.addr, size, x.updates.size(), a});
+    st_ub_copies.fetch_add(1, std::memory_order_relaxed);
+    return R_DRAWN;
 }
 
 /// The address table and the pushed addresses (push data from 120); false: a reason
@@ -535,6 +574,7 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
         st_tables.fetch_add(1, std::memory_order_relaxed);
     }
     std::memcpy(push + kTablePush, &x.table_addr, 8);
+    for (uint32_t i = 0; i < p.direct_ubos && i < x.table_entries.size(); i++) std::memcpy(push + 192 + 8 * i, &x.table_entries[i], 8);
     for (const DrawProg::Pushed& q : p.pushed) {
         VkDeviceAddress a = 0;
         for (size_t i = 0; i < p.ubos.size(); i++)
@@ -566,6 +606,27 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
     if (p)
         k += std::snprintf(b + k, sizeof b - k, " prog %016llx vs_loads %#x stores %#x comp %x push %u ubos %zu pushed %zu ra %d", (unsigned long long)p->key,
                            p->vs_loads, p->frag_stores, p->frag_components[0], p->push_bytes, p->ubos.size(), p->pushed.size(), p->uses_render_area);
+    if (p) {
+        for (const auto& u : p->ubos)
+            k += std::snprintf(b + k, sizeof b - k, " u%u.%u%s%llx", u.stage, u.index, u.index >= 3 ? "=" : "",
+                               u.index >= 3 && u.stage < kBankStages ? (unsigned long long)l->dctx->s.ubo[u.stage][u.index - 3].addr : 0ull);
+        for (const auto& q : p->pushed) k += std::snprintf(b + k, sizeof b - k, " p%u.%u@%u", q.stage, q.index, q.push_off);
+        const DState& s = l->dctx->s;
+        for (int i = 0; i < 16 && k < 1000; i++)
+            if (p->vs_loads >> i & 1) {
+                const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
+                k += std::snprintf(b + k, sizeof b - k, " a%d fmt %#x s%u off %u stride %u buf %#llx+%llu", i, a.fmt, a.stream, a.offset,
+                                   a.stream < 16 ? s.vstream[a.stream].stride : 0, a.stream < 16 ? (unsigned long long)s.vbuf[a.stream].address : 0ull,
+                                   a.stream < 16 ? (unsigned long long)s.vbuf[a.stream].size : 0ull);
+            }
+        k += std::snprintf(b + k, sizeof b - k, " discard %d poly %u front %u", (int)s.raster_discard, s.poly.mode, s.poly.front);
+        for (const auto& t : p->tex_words) {
+            const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0;
+            char e[200];
+            heap_describe(h & 0xFFFFF, e, sizeof e);
+            k += std::snprintf(b + k, sizeof b - k, " tex c%u+%#x=%#x(%s)", t.bank, t.offset, h, e);
+        }
+    }
     if (d)
         k += std::snprintf(b + k, sizeof b - k, " n %u vp %.0f,%.0f %.0fx%.0f z %.2f-%.2f sc %d,%d %ux%u wm0 %x en0 %u eq0 %d/%d/%d cull %u dt %u dw %u st %u count %u samples %u",
                            d->n, d->vp.x, d->vp.y, d->vp.width, d->vp.height, d->vp.minDepth, d->vp.maxDepth, d->sc.offset.x, d->sc.offset.y,
@@ -582,6 +643,8 @@ void count(List* l, Reason r) {
 
 }  // namespace
 
+bool draw_log_frame() { return drawlog_on(); }
+
 void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
     switch (op) {   // (direct_state.cpp's ops: a list's state is made at its first one)
     case NOP_VIEWPORTS: case NOP_SCISSOR: case NOP_DEPTH_RANGE: case NOP_BIND_PROGRAM: case NOP_BIND_STATE: case NOP_BIND_VATTR:
@@ -590,6 +653,18 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_DEPTH_CLAMP: case NOP_RASTER_DISCARD: case NOP_RENDER_ENABLE: case NOP_RENDER_COND:
         state_emit(ctx(l).s, op, data, size);
         return;
+    case NOP_UPDATE_UB: {   // (the bytes kept for the list's later draws: plan, Data a draw reads)
+        nvn_p_update_ub u;
+        if (size < sizeof u) return;
+        std::memcpy(&u, data, sizeof u);
+        const uint64_t n = std::min<uint64_t>(u.size, size - sizeof u);
+        ListDraw& x = ctx(l);
+        x.updates.push_back({u.dst, (uint32_t)n, (uint32_t)x.update_bytes.size()});
+        x.update_bytes.insert(x.update_bytes.end(), (const uint8_t*)data + sizeof u, (const uint8_t*)data + sizeof u + n);
+        x.s.ubo_gen++;
+        st_ub_updates.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     default: return;
     }
 }
@@ -788,7 +863,8 @@ void draw_log(double frames) {
                           st_ns.exchange(0) / 1e6 / frames, st_banks.exchange(0) / frames, st_tables.exchange(0) / frames,
                           st_fixups.exchange(0) / frames, st_fixup_lists.exchange(0) / frames, (long long)st_chunks.load(),
                           (long long)st_ssbo_unbound.load());
-    logf("direct: %s", out);
+    logf("direct: %s; inline uniform updates %.1f a frame, buffer copies with them %.1f, of them with the rest read %.1f", out,
+         st_ub_updates.exchange(0) / frames, st_ub_copies.exchange(0) / frames, st_ub_reads.exchange(0) / frames);
     static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
     for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
         k = std::snprintf(out, cap, "draws a frame in %s lists:", kinds[kind]);

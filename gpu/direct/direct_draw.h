@@ -15,6 +15,7 @@ namespace hsd {
 
 struct DState;
 /// A state op of the list (any list: its state is kept from its first one)
+bool draw_log_frame();   // (HOS_DBG=drawlog's frame)
 void draw_state(List* l, uint32_t op, const void* data, uint32_t size);
 /// A draw op (DRAW, DRAW_IDX, DRAW_INDIRECT, DRAW_MESH); recording: the list's pass is begun in l->cur
 void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recording);

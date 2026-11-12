@@ -33,6 +33,7 @@ struct DrawProg {
     uint8_t frag_stores = 0;        // (bit i: the fragment stage writes colour output i)
     uint8_t frag_components[8]{};   // (and which of its components)
     bool uses_render_area = false;
+    uint8_t direct_ubos = 0;   // (HOS_DBG=ubopush: the first ones' addresses pushed at 192)
     uint32_t push_bytes = 0;        // (the push data a draw writes: Eden's block, then the address table's and the banks')
     /// The uniform buffers in the address table's order (push data at kTablePush holds the table's address)
     struct Ubo {
@@ -59,6 +60,11 @@ struct DrawProg {
         bool depth_float;  // (a depth texture that is not integer: no integer bit)
     };
     std::vector<Answer> answers;
+    struct TexWord {
+        uint8_t stage, bank;
+        uint16_t offset;
+    };
+    std::vector<TexWord> tex_words;   // (the handle words its textures read: logs)
     const char* skip = nullptr;   // (a variant step A cannot draw: the reason)
 };
 
