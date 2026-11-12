@@ -167,8 +167,12 @@ and is compiled in the background.
 - **Terrain tiles** are the one other source of pre-swizzled texels (51,233 TARB files, 25.5 GB of texels). A
   build-time converter, a sibling of the texture tool, deswizzles them. The game's own linear branch cannot be used
   (it refuses compressed formats, 90% of tiles, and uploads a different CPU copy: m0-terrain-texels.md), so one patch
-  turns the single memcpy at `f_80c17040+0x544` into a host copy of the converted record into the image. A file that
-  was not converted is recognised by its size and draws the placeholder.
+  replaces the single memcpy at `f_80c17040+0x544` with a GPU upload: the call site is only where the host learns
+  which bytes belong to which tile texture. The converted bytes are uploaded into the tile's image and nothing is
+  written to the texture's guest storage, which stays unbacked. A file that was not converted is recognised by its
+  size and draws the placeholder. The converted files are served through the host's file overlay, so the texels
+  still pass once through the game's own file read and decompression in guest memory before the upload; taking
+  them straight from a pack, as the BNTX textures are, is a later step if the load-time cost shows.
 - **CPU-written textures** that go through WriteTexels (primitive and procedural textures, the JPEG initializer, the
   terrain polish step) and movie frames arrive linear: a region copy into the image at the call.
 - **The font glyph cache** is the exception: the CPU stores glyphs straight into the texture's memory after a GPU
