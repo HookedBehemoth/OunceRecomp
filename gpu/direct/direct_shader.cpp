@@ -49,6 +49,7 @@
 
 #include "direct_heap.h"
 #include "direct_image.h"
+#include "direct_meshcap.h"
 #include "direct_shader.h"
 #include "direct_state.h"
 #include "direct_shader_parts.h"
@@ -1105,6 +1106,15 @@ bool finish(Variant& v) {
         x.want = canonical(a.type, x.dim_fixed, x.desc_type, x.depth_float);
         d.answers.push_back(x);
     }
+    if (d.mesh && meshcap_on()) {   // (M6e: HOS_DBG=meshcap keeps every mesh program's stages, for the frame it captures)
+        std::vector<McStageIn> in;
+        for (size_t si = 0; si < v.stages.size(); si++) {
+            const VStage& st = v.stages[si];
+            in.push_back({(uint32_t)st.vk_stage, (uint32_t)st.nvn_stage, st.threads, st.payload_words, &st.spirv, maps[si].data(), (uint32_t)maps[si].size(),
+                          (uint32_t)sizeof(VkDescriptorSetAndBindingMappingEXT), &st.c1});
+        }
+        meshcap_program(d, d.task_code, in.data(), (uint32_t)in.size());
+    }
     // (the shader objects, unlinked: vertex then fragment)
     static const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size32 = [] {
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo r{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
@@ -1554,6 +1564,7 @@ void scan_slot(Slot* s) {
         v->d.variant = 0;
         for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
         v->d.codes[0] = s->vs.key, v->d.codes[1] = s->has_fs ? s->fs.key : 0, v->d.codes[2] = s->has_prim ? s->prim.key : 0;
+        v->d.task_code = s->task ? s->task_key : 0;
         if (!finish(*v)) continue;
         st_from_disk.fetch_add(1, std::memory_order_relaxed);
         publish(*s->fam, v.release(), s->serial);
@@ -1716,6 +1727,7 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
             for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
             if (!(sl.task && task_nocull())) disk_save(*v, slot_pair(sl));
             v->d.codes[0] = sl.vs.key, v->d.codes[1] = sl.has_fs ? sl.fs.key : 0, v->d.codes[2] = sl.has_prim ? sl.prim.key : 0;
+            v->d.task_code = sl.task ? sl.task_key : 0;
             ok = finish(*v);
         }
         st_translate_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);

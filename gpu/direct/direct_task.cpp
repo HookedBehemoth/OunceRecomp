@@ -11,6 +11,7 @@
 #include "direct_draw.h"
 #include "direct_heap.h"
 #include "direct_marks.h"
+#include "direct_meshcap.h"
 #include "direct_pass.h"
 #include "direct_shader.h"
 #include "direct_task.h"
@@ -324,9 +325,16 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
         task_barrier(task, true);
         pass_resume(l);
     }
+    if (meshcap_now()) meshcap_other((uint64_t)task, 4, p.key, tasks);   // (M6e)
     count(indirect ? T_INDIRECT : T_DIRECT);
     count(job ? T_JOB : T_INLINE);
     st_task_groups.fetch_add(tasks, std::memory_order_relaxed);
+    return true;
+}
+
+bool task_pool_span(CmdSlot* slot, const uint8_t*& host, uint64_t& dev, uint64_t& bytes) {
+    if (!slot || !slot->task || !slot->task->map) return false;
+    host = slot->task->map, dev = slot->task->address, bytes = slot->task->bytes;
     return true;
 }
 

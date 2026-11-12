@@ -39,6 +39,7 @@ struct DrawProg {
     VkShaderEXT ts = VK_NULL_HANDLE;
     uint32_t task_threads = 0, task_payload_words = 0;
     uint64_t codes[3]{};   // (vertex or mesh, fragment, header-only)
+    uint64_t task_code = 0;   // (M6e: a task+mesh program's task stage code key, for HOS_DBG=meshcap)
     uint16_t ssbo_slots[8]{};   // (M4b: by NVN stage, the storage buffer slots its stages read through the driver bank's table)
     mutable std::atomic<bool> used{false};
     uint32_t vs_loads = 0;          // (bit i: the vertex stage reads generic attribute i)

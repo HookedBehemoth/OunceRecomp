@@ -17,6 +17,7 @@
 #include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_marks.h"
+#include "direct_meshcap.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
 #include "direct_image.h"
@@ -778,6 +779,64 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
     return R_DRAWN;
 }
 
+/// (M6e, HOS_DBG=meshcap) a mesh draw of the captured frame, with what its mesh stage reads (direct_meshcap.h)
+void meshcap_mesh(List* l, ListDraw& x, const DrawProg& p, const uint8_t* push, bool mesh_ind, const nvn_p_draw_mesh& dm, uint32_t nargs,
+                  uint32_t stride, bool gated, VkBuffer task_hb, VkDeviceSize task_ho, VkCommandBuffer cb) {
+    static_assert(sizeof(Dyn) <= sizeof(mcap::McDraw::dyn), "the capture's dynamic state");
+    MeshCapDraw m;
+    mcap::McDraw& d = m.d;
+    d.key = p.key, d.cb = (uint64_t)cb, d.lr = l->info.lr, d.list_kind = l->info.kind;
+    d.task = p.task, d.indirect = mesh_ind, d.gated = gated;
+    d.x = dm.x, d.y = dm.y, d.z = dm.z, d.nargs = nargs, d.stride = stride, d.record = mesh_ind ? dm.indirect : 0;
+    const PassRec& ps = l->pass;
+    d.w = ps.w, d.h = ps.h, d.n = (uint32_t)ps.n, d.samples = (uint32_t)ps.samples;
+    for (int i = 0; i < 8; i++) d.color[i] = i < ps.n ? (uint32_t)ps.color[i].format : 0;
+    d.depth = (uint32_t)ps.depth.format, d.depth_aspect = ps.depth.aspect;
+    d.push_bytes = p.push_bytes;
+    std::memcpy(d.push, push, std::min<uint32_t>(p.push_bytes, sizeof d.push));
+    d.dyn_bytes = sizeof(Dyn);
+    std::memcpy(d.dyn, &x.dyn, sizeof(Dyn));
+    // (the arena's chunk that holds a device address, and its bytes there)
+    const auto in_arena = [&](VkDeviceAddress a, const uint8_t*& host, uint64_t& left) {
+        if (!l->slot || !l->slot->arena) return false;
+        for (const Arena::Chunk& c : l->slot->arena->chunks)
+            if (a >= c.address && a < c.address + c.size) return host = c.map + (a - c.address), left = c.address + c.size - a, true;
+        return false;
+    };
+    for (size_t i = 0; i < p.ubos.size() && i < x.table_entries.size(); i++) {
+        const DrawProg::Ubo& u = p.ubos[i];
+        mcap::McDrawUbo e{};
+        e.stage = u.stage, e.index = u.index, e.dev = x.table_entries[i], e.blob = ~0u;
+        const uint32_t want = std::min<uint32_t>(u.bytes ? u.bytes : 0x10000, 0x10000);
+        std::vector<uint8_t> bytes;
+        const uint8_t* host = nullptr;
+        uint64_t left = 0;
+        if (in_arena(e.dev, host, left)) {   // (a bank copy, or the list's copy of an updated buffer: as the CPU made it)
+            e.bytes = (uint32_t)std::min<uint64_t>(want, left);
+            bytes.assign(host, host + e.bytes);
+        } else if (u.index >= 3 && u.stage < kBankStages && u.index < 3 + 16) {   // (a game buffer: read at the frame's end)
+            e.guest = x.s.ubo[u.stage][u.index - 3].addr;
+            e.bytes = want;
+        } else {
+            e.bytes = want;   // (c1: the program's; or nothing bound: zeros)
+        }
+        m.ubos.push_back(e);
+        m.ubo_bytes.push_back(std::move(bytes));
+    }
+    for (int st = 6; st <= 7; st++)   // (the task and mesh stages' storage buffers, every slot bound)
+        for (int i = 0; i < 16; i++) {
+            const nvn_p_bind_buf& b = x.s.ssbo[st][i];
+            if (!b.addr) continue;
+            m.ssbos.push_back({(uint8_t)st, (uint8_t)i, 0, ~0u, b.addr, b.size});
+        }
+    if (p.task && task_hb) {
+        for (const Arena::Chunk& c : l->slot->arena->chunks)
+            if (c.buffer == task_hb) m.chunk_host = c.map, m.chunk_dev = c.address, m.chunk_bytes = c.size, m.header_dev = c.address + task_ho;
+        task_pool_span(l->slot, m.pool_host, m.pool_dev, m.pool_bytes);
+    }
+    meshcap_draw(std::move(m));
+}
+
 /// HOS_DBG=drawlog:<present>: the recording lists' draws of the frame after that present, each with what it was drawn with
 bool drawlog_on() {
     static const int64_t at = [] {
@@ -1304,6 +1363,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                  (unsigned long long)prog->key, (unsigned long long)prog->codes[0], (unsigned long long)prog->codes[1],
                  (unsigned long long)prog->codes[2], (void*)prog->ms, (void*)prog->fs, mesh_ind ? "indirect" : "direct",
                  l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count());
+        if (meshcap_now()) meshcap_mesh(l, x, *prog, push, mesh_ind, dm, nargs, stride, gated, task_hb, task_ho, cb);   // (M6e)
         static const bool dry = dbg("meshdry");   // (HOS_DBG=meshdry, a bring-up aid: everything but the mesh draw itself)
         if (dry) return count(l, R_MESH_DRY);
         drawlog(l, gated ? (prog->task ? mesh_ind ? "drawn gated task+mesh indirect" : "drawn gated task+mesh" : mesh_ind ? "drawn gated mesh indirect" : "drawn gated mesh")
@@ -1327,6 +1387,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     drawlog(l, gated ? (ind ? "drawn gated indirect" : indexed ? "drawn gated indexed" : "drawn gated") : (ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn"),
             prog, &x.dyn,
             ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
+    if (meshcap_now()) meshcap_other((uint64_t)cb, ind ? 3 : indexed ? 2 : 1, prog->key, ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);   // (M6e)
     const uint32_t mk = marks_on() ? mark_before(cb, ind ? "draw indirect" : indexed ? "draw indexed" : "draw", prog->key, l->info.kind, l->info.lr,
                                                  ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
                                                  ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances)) : 0;   // (M6c)
