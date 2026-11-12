@@ -340,8 +340,11 @@ bool whylog_on() {
     return wl;
 }
 uint64_t pick_key(const NvnState& s, const uint8_t ct[8], bool mesh = false) {
-    uint64_t h = fnv(mesh ? kFnv0 ^ 0x4d455348 : kFnv0, s.vattr, sizeof s.vattr);
-    h = fnv(h, &s.nvattr, 4);
+    // (a mesh draw reads no vertex attribute: its key leaves them out (HOS_ENG_PICK_VATTR=1: in, as before). Keyed by them, a job's
+    // mesh draw whose attribute state is its caller's (not the job's own) never met the program the replay picked: R1's "another key")
+    static const bool mesh_vattr = getenv("HOS_ENG_PICK_VATTR") && atoi(getenv("HOS_ENG_PICK_VATTR")) != 0;
+    uint64_t h = mesh ? kFnv0 ^ 0x4d455348 : kFnv0;
+    if (!mesh || mesh_vattr) h = fnv(h, s.vattr, sizeof s.vattr), h = fnv(h, &s.nvattr, 4);
     h = fnv(h, ct, 8);
     const uint64_t sig = prog_stage_sig(s.prog);
     return fnv(h, &sig, 8);
@@ -519,7 +522,10 @@ void note_bind(Walk& w, int what, int stage, int first, int n, const uint64_t* h
 /// the draw: the job-call site executes them outside the rendering, then the run that begins with this draw); the draw reads the
 /// records' header as its VkDrawIndirectCommand, as the replay's fallback draw
 void record_fallback(Walk& w, Rec& r, const Program& p, const SoProg& so, EngDrawDesc& dd, const nvn_p_draw_mesh& dm) {
-    if (dm.count_addr || dm.kind != 0 || (dm.indirect && (dm.max > 1 || dm.stride < 0))) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_MESH_OTHER));
+    // (an indirect one: its first record, as fallback_record dispatches only that one; kind is the indirect form's. A count buffer: left
+    // out by the replay too)
+    if (dm.count_addr || (!dm.indirect && dm.kind != 0) || (dm.indirect && (dm.max < 0 || dm.stride < 0)))
+        return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_MESH_OTHER));
     VkBuffer conv = VK_NULL_HANDLE;
     uint64_t conv_off = 0, input = 0;
     if (dm.indirect) {   // ({x, 1, 1}: the count word copied by the pre-work, as the replay's mesh_indirect_convert; a task reads the record)
