@@ -333,14 +333,11 @@ void draw_features_resolved(const VkPhysicalDeviceVulkan14Features* f14) {
     caps.vertex_divisor = f14 && f14->vertexAttributeInstanceRateDivisor;
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
     caps.provoking_vertex = has_ext[E_PV] && pv.provokingVertexLast;
-    caps.alpha_to_one = dev.features.alphaToOne;
-    caps.logic_op = dev.features.logicOp;
     const bool eds3_ok = has_ext[E_EDS3] && eds3.extendedDynamicState3PolygonMode && eds3.extendedDynamicState3DepthClampEnable &&
                          eds3.extendedDynamicState3ColorBlendEnable && eds3.extendedDynamicState3ColorBlendEquation &&
                          eds3.extendedDynamicState3ColorWriteMask && eds3.extendedDynamicState3AlphaToCoverageEnable &&
                          eds3.extendedDynamicState3RasterizationSamples && eds3.extendedDynamicState3SampleMask &&
-                         (!caps.alpha_to_one || eds3.extendedDynamicState3AlphaToOneEnable) &&
-                         (!caps.logic_op || eds3.extendedDynamicState3LogicOpEnable) &&
+                         eds3.extendedDynamicState3AlphaToOneEnable && eds3.extendedDynamicState3LogicOpEnable &&
                          (!caps.provoking_vertex || eds3.extendedDynamicState3ProvokingVertexMode);
     if (!has_ext[E_SHOBJ] || !shobj.shaderObject) caps.why = "no shader objects";
     else if (!has_ext[E_HEAP] || !heap_feat.descriptorHeap) caps.why = "no VK_EXT_descriptor_heap";
@@ -355,6 +352,7 @@ void draw_device_created() {
         logf("direct: no draws: %s", why);
     };
     if (!caps.ok) return void(logf("direct: no draws on this device: %s", caps.why));
+    caps.alpha_to_one = dev.features.alphaToOne, caps.logic_op = dev.features.logicOp;   // (enabled: their state must be set)
 #define HSD_VK_LOAD(f) f = (PFN_##f)vkGetDeviceProcAddr(dev.device, #f);
     HSD_VK_M2B(HSD_VK_LOAD)
 #undef HSD_VK_LOAD

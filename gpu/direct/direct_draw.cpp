@@ -4,6 +4,7 @@
 // cascade depth biases, the EQ bias, footprints: plan rule 8).
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -160,6 +161,7 @@ struct ListDraw {
     bool heap = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
     bool shaders = false;
+    uint32_t vb_bound = 0;   // (the vertex bindings given a buffer in this command buffer)
     Dyn dyn;
     uint64_t vi_sig = 0;
     VkBuffer vb[16];
@@ -325,6 +327,7 @@ void cb_fresh(ListDraw& d, VkCommandBuffer cb) {
     if (d.cb == cb) return;
     d.cb = cb;
     d.heap = d.dyn_valid = d.vi_valid = d.vb_valid = d.ib_valid = d.push_valid = d.shaders = false;
+    d.vb_bound = 0;
 }
 
 void set_dynamic(ListDraw& x, VkCommandBuffer cb, const DState& s, const PassRec& p, VkPrimitiveTopology topo, const DrawProg& prog) {
@@ -546,7 +549,33 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
     return R_DRAWN;
 }
 
+/// HOS_DBG=drawlog:<present>: the recording lists' draws of the frame after that present, each with what it was drawn with
+bool drawlog_on() {
+    static const int64_t at = [] {
+        const char* v = dbg_value("drawlog");
+        return v ? atoll(v) : -1;
+    }();
+    return at >= 0 && (int64_t)present_count() == at;
+}
+void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, uint32_t count) {
+    if (!drawlog_on()) return;
+    static std::atomic<int> n{0};
+    if (n++ > 400) return;
+    char b[1400];
+    int k = std::snprintf(b, sizeof b, "direct: drawlog lr %#llx rt %llu: %s", (unsigned long long)l->info.lr, (unsigned long long)l->pass.set_rt_at, what);
+    if (p)
+        k += std::snprintf(b + k, sizeof b - k, " prog %016llx vs_loads %#x stores %#x comp %x push %u ubos %zu pushed %zu ra %d", (unsigned long long)p->key,
+                           p->vs_loads, p->frag_stores, p->frag_components[0], p->push_bytes, p->ubos.size(), p->pushed.size(), p->uses_render_area);
+    if (d)
+        k += std::snprintf(b + k, sizeof b - k, " n %u vp %.0f,%.0f %.0fx%.0f z %.2f-%.2f sc %d,%d %ux%u wm0 %x en0 %u eq0 %d/%d/%d cull %u dt %u dw %u st %u count %u samples %u",
+                           d->n, d->vp.x, d->vp.y, d->vp.width, d->vp.height, d->vp.minDepth, d->vp.maxDepth, d->sc.offset.x, d->sc.offset.y,
+                           d->sc.extent.width, d->sc.extent.height, d->n ? d->wm[0] : 0, d->n ? d->en[0] : 0, d->n ? (int)d->eq[0].srcColorBlendFactor : 0,
+                           d->n ? (int)d->eq[0].dstColorBlendFactor : 0, d->n ? (int)d->eq[0].colorBlendOp : 0, d->cull, d->dt, d->dw, d->st, count, (unsigned)d->samples);
+    logf("%s", b);
+}
+
 void count(List* l, Reason r) {
+    if (r != R_DRAWN && l->info.kind != HSD_LIST_JOB && l->info.kind != HSD_LIST_LOAD) drawlog(l, kReasons[r], nullptr, nullptr, 0);
     st_by_kind[l->info.kind][r].fetch_add(1, std::memory_order_relaxed);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
 }
@@ -668,13 +697,15 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     bool vi_used[16]{};
     set_vertex_input(x, cb, s, *prog, vi_used);
     {
-        uint32_t first = 16, last = 0;
+        uint32_t first = 16, last = 0, want = 0;
         for (uint32_t b = 0; b < 16; b++)
-            if (vi_used[b]) first = std::min(first, b), last = b;
-        if (first < 16 && (!x.vb_valid || std::memcmp(x.vb + first, vb + first, sizeof(VkBuffer) * (last - first + 1)) ||
+            if (vi_used[b]) first = std::min(first, b), last = b, want |= 1u << b;
+        if (first < 16 && (!x.vb_valid || (want & ~x.vb_bound) || std::memcmp(x.vb + first, vb + first, sizeof(VkBuffer) * (last - first + 1)) ||
                            std::memcmp(x.vo + first, vo + first, sizeof(VkDeviceSize) * (last - first + 1)))) {
             vkCmdBindVertexBuffers2(cb, first, last - first + 1, vb + first, vo + first, nullptr, nullptr);
-            std::memcpy(x.vb, vb, sizeof vb), std::memcpy(x.vo, vo, sizeof vo);
+            std::memcpy(x.vb + first, vb + first, sizeof(VkBuffer) * (last - first + 1));
+            std::memcpy(x.vo + first, vo + first, sizeof(VkDeviceSize) * (last - first + 1));
+            for (uint32_t b = first; b <= last; b++) x.vb_bound |= 1u << b;
             x.vb_valid = true;
         }
     }
@@ -687,6 +718,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         std::memcpy(x.push, push, prog->push_bytes);
         x.push_n = prog->push_bytes, x.push_valid = true;
     }
+    drawlog(l, op == NOP_DRAW_IDX ? "drawn indexed" : "drawn", prog, &x.dyn, op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
     if (op == NOP_DRAW_IDX)
         vkCmdDrawIndexed(cb, (uint32_t)di.count, (uint32_t)std::max(1, di.instances), 0, di.base_vertex, (uint32_t)di.base_instance);
     else
