@@ -21,6 +21,7 @@
    Check that it applies: the 600-present line "direct patch job sync" (kept and placed a frame, by kind; dropped; calls of
    the procs that passed through). */
 #include "direct.h"
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 
@@ -130,10 +131,19 @@ static void call_fn(Ctx *c, void *u) {
         return;
     }
     InterlockedIncrement64(&n.calls_kept);
+    /* (M6d, HOS_DBG=gridbefore, a diagnosis: the kept grid dispatches before the job's commands instead of after them) */
+    static int before = -1;
+    if (before < 0) {
+        const char *d = getenv("HOS_DBG");
+        before = d && strstr(d, "gridbefore") != NULL;
+    }
     for (int i = 0; i < k.nw; i++) hos_call_guest(c, p_wait, cmd, k.w[i].ev, k.w[i].mode, k.w[i].value);
     if (k.bits) hos_call_guest(c, p_barrier, cmd, k.bits, 0, 0);
+    if (before)
+        for (int i = 0; i < k.nd; i++) hos_call_guest(c, 0x8067c310ull, k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3);
     hos_call_guest(c, p_call, cmd, cnt, handles, 0);
-    for (int i = 0; i < k.nd; i++) hos_call_guest(c, 0x8067c310ull, k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3);
+    if (!before)
+        for (int i = 0; i < k.nd; i++) hos_call_guest(c, 0x8067c310ull, k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3);
     InterlockedAdd64(&n.placed_waits, k.nw);
     InterlockedAdd64(&n.placed_barriers, k.bits ? 1 : 0);
     InterlockedAdd64(&n.placed_dispatches, k.nd);
