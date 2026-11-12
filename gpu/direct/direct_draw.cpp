@@ -654,8 +654,10 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     const nvn_p_bind_buf& b = x.s.ubo[u.stage][u.index - 3];
     if (!b.addr) return a = zero_address, R_DRAWN;
     const uint64_t size = std::max<uint64_t>(b.size, 16);
-    // (the contract's open item: a program that may read past the bound range reads the guest memory after it through the
-    // address, where Maxwell reads zeros; counted)
+    // (a program that may read past the bound range reads the guest memory after it through the address, where Maxwell reads
+    // zeros; counted. M4a settled it by evidence (m4a-report.md): of 316 such bindings in Kokiri 314 are dynamically indexed
+    // arrays (Eden's 64 KB used size) and 2 a vertex stage's constant offsets to 688 B on 192 bound, and zeros there instead
+    // (HOS_DBG=uboclamp) change no pass beyond run noise: the translator's interface stays the address alone, no bound)
     static const bool clamp = dbg("uboclamp");   // (M4a, a diagnosis: reads past the bound range give zeros, through a copy)
     if (u.bytes > size) {
         bump(me().past_range);
