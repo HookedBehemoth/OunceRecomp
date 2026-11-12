@@ -26,6 +26,14 @@ linear size of a layout is never its block-linear size (SIZES below).
 --out also holds index.json: per romfs file its size, mtime (ns), BLAKE2b-64 hash, and what was made of it. Incremental: a
 file with the size and mtime of its entry is kept; another mtime: the hash decides; another config (CONV_VERSION, zstd
 level) redoes everything. Output files are written to a temporary name and renamed.
+
+The resource size table (A-rt, docs/direct/a-rt-report.md): the game's loader drops a file larger than its entry in
+System/Resource/ResourceSizeTable.*.rsizetable.zs (an entry is the file's size and an allowance), and a converted file can
+be larger than the game's (linear rows compress worse: 288 of Kokiri's 1,521); the game then opens it again forever. So
+every run (and --size-table alone) writes that table into --out with each converted file's entry raised by what its file
+grew, keeping the allowance: the overlay serves it in place of the game's.
+
+    python -I nx2/prepare_terrain.py --size-table              the table from index.json, nothing converted
 """
 import argparse
 import hashlib
@@ -320,6 +328,7 @@ def run(opts):
             last_ck = now
             save_index(idx_path, cfg, files)
     save_index(idx_path, cfg, files)
+    size_table(romfs, out, files)
     wall = time.time() - t_start
     text = "run: %.0f s wall, %d files converted (%.0f MB in), %d unchanged by hash, %.0f MB out (%.0f MB linear texels), %d skipped, %d errors\n" % (
         wall, stats["done"] - stats["unchanged"], stats["in_b"] / 1e6, stats["unchanged"], stats["out_b"] / 1e6, stats["lin"] / 1e6,
@@ -329,6 +338,54 @@ def run(opts):
     print(text, end="", flush=True)
     stats["code"] = 1 if stats["errors"] else 0
     return stats
+
+
+def size_table(romfs, out, files):
+    """the game's resource size table with each converted file's entry raised by the bytes its file grew, written to
+    <out>/System/Resource/<its name> (zstd, no dictionary); the entries raised. A romfs with no table: none written"""
+    import zlib
+    import zstandard
+    spec = importlib.util.spec_from_file_location("prompt_assets", os.path.join(HERE, "prompt_assets.py"))
+    pa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pa)
+    folder = os.path.join(romfs, "System", "Resource")
+    name = next((n for n in sorted(os.listdir(folder)) if n.startswith("ResourceSizeTable.") and n.endswith(".rsizetable.zs")),
+                None) if os.path.isdir(folder) else None
+    if not name or not os.path.exists(os.path.join(romfs, "Pack", "ZsDic.pack.zs")):
+        print("prepare_terrain: no resource size table in the romfs: none written", flush=True)
+        return 0
+    b = bytearray(pa.read_zs(romfs, "System/Resource/" + name, pa.zs_dictionary(romfs)))
+    if b[:6] != b"RESTBL":
+        sys.exit("prepare_terrain: %s is not a RESTBL table" % name)
+    _ver, name_len, hashed, named = struct.unpack_from("<IIII", b, 6)
+    grew = {}
+    for rel, e in files.items():
+        if e.get("status") == "ok" and e.get("out_size", 0) > e.get("size", 0):
+            grew[rel] = e["out_size"] - e["size"]
+    by_crc = {zlib.crc32(rel.encode()): d for rel, d in grew.items()}
+    raised = 0
+    for i in range(hashed):
+        at = 22 + 8 * i
+        h, size = struct.unpack_from("<II", b, at)
+        if h in by_crc:
+            struct.pack_into("<I", b, at + 4, size + by_crc.pop(h))
+            raised += 1
+    base = 22 + 8 * hashed
+    for i in range(named):   # (paths whose CRCs collide: by name)
+        at = base + (name_len + 4) * i
+        rel = bytes(b[at:at + name_len]).split(b"\0")[0].decode("utf-8", "replace")
+        if rel in grew:
+            size, = struct.unpack_from("<I", b, at + name_len)
+            struct.pack_into("<I", b, at + name_len, size + grew[rel])
+            raised += 1
+    dst = os.path.join(out, "System", "Resource")
+    os.makedirs(dst, exist_ok=True)
+    tmp = os.path.join(dst, name + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(zstandard.ZstdCompressor(level=3).compress(bytes(b)))
+    os.replace(tmp, os.path.join(dst, name))
+    print("prepare_terrain: %s: %d entries raised (%d converted files grew)" % (name, raised, len(grew)), flush=True)
+    return raised
 
 
 def report(files, out):
@@ -426,7 +483,11 @@ def main(argv=None):
     p.add_argument("--verify", type=int, metavar="N")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--report", action="store_true")
+    p.add_argument("--size-table", action="store_true")
     opts = p.parse_args(argv)
+    if opts.size_table:
+        size_table(opts.romfs or PT.default_romfs(), opts.out, json.load(open(os.path.join(opts.out, "index.json")))["files"])
+        return 0
     if opts.verify:
         return verify(opts)
     if opts.report:

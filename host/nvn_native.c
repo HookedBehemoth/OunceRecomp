@@ -746,6 +746,15 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out) {
     ReleaseSRWLockShared(&live_lock);
     return found;
 }
+/* (native-vk A-rt, host/direct_assets.c) the live texture whose storage holds gpu (a walk of the table: rare calls) */
+int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out) {
+    int found = 0;
+    AcquireSRWLockShared(&live_lock);
+    for (unsigned j = 0; j < LIVE_SLOTS && !found; j++)
+        if (live[j].gpu && gpu >= live[j].gpu && gpu < live[j].gpu + live[j].t.L.size) *out = live[j].t, found = 1;
+    ReleaseSRWLockShared(&live_lock);
+    return found;
+}
 
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* (below) */
 /* (rt_slots.c's log: texture initializations, and those made by agl's DynamicTextureAllocator::alloc, f_8005ed00) */
@@ -780,6 +789,7 @@ NV(nvnTextureInitialize) {
     o->serial = new_serial();
     live_put(o);
     rx_nvn_texture_created(o);
+    if (direct_assets_tiles_pending) direct_assets_texture_init(o);   /* (A-rt: a terrain tile given before its texture) */
     {   /* RX_NVN_WATCH_TEX=<w>x<h> (debugging): who writes the storage of textures that size (a page watch, with call
            stacks: hos_watch_guest_writes), for writes the dirty tracking misses */
         static int on = -1;

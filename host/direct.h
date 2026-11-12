@@ -49,4 +49,7 @@ void direct_assets_overlay_opened(const char *path);
 /* nvn_native.c nvnTextureInitialize: packaged texture data the back end never reads, its copy into the storage skipped
    (1) in direct mode */
 int direct_assets_skip_packaged(uint64_t bytes);
+/* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */
+extern volatile long direct_assets_tiles_pending;
+void direct_assets_texture_init(const void *nvn_texture);   /* (an nvn_tex) */
 #endif
