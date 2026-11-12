@@ -37,6 +37,8 @@ void draw_log(double frames);
 /// (M4a, direct_compute.cpp) bytes of the slot's frame arena; the BDA window table's address; 64 KB of zeros
 struct CmdSlot;
 bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr);
+/// (M4c) the same, with the arena chunk's buffer and the offset in it (an indirect draw's arguments)
+bool draw_arena_buffer(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr, VkBuffer& buf, VkDeviceSize& off);
 VkDeviceAddress draw_window_table();
 VkDeviceAddress draw_zero_address();
 /// (M4a) a job has drawn: the game is past its start (before it, a dispatch whose program is missing waits for it)

@@ -99,6 +99,12 @@ struct List {
     bool pending_barrier = false;   // (M2b: a barrier waiting for the list's next command: recorded with it)
     ListComp* cctx = nullptr;   // (M4a: made at its first compute state op)
     ListQuery* qctx = nullptr;  // (M5: made at its first counter or condition op)
+    // (M4c: a job's task step, two plain secondaries of its slot holding the compute work of its task+mesh draws: the
+    // headers' reset and the indirect draws' header making (task_pre), then the task dispatches (task_cb). Its caller executes
+    // them before the job, outside its rendering, a barrier after each. Open until the list ends; the times it was executed)
+    VkCommandBuffer task_pre = VK_NULL_HANDLE, task_cb = VK_NULL_HANDLE;
+    bool task_open = false;
+    mutable std::atomic<int32_t> task_runs{0};
 };
 
 void list_ref(List* l);

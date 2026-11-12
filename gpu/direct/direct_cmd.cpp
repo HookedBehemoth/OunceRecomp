@@ -92,6 +92,7 @@ CmdSlot* cmd_slot_take() {
             vkResetCommandPool(dev.device, s.pool, 0);
             arena_reset(s.arena);
             query_slot_reset(s.q);
+            task_pool_reset(s.task);
             s.used = 0, s.secs_used = 0;
             st_resets.fetch_add(1, std::memory_order_relaxed);
         }
@@ -142,6 +143,24 @@ VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags
     ii.queryFlags = VK_QUERY_CONTROL_PRECISE_BIT;
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    bi.pInheritanceInfo = &ii;
+    vkBeginCommandBuffer(cb, &bi);
+    return cb;
+}
+
+VkCommandBuffer cmd_secondary_plain(CmdSlot* s) {
+    if (s->secs_used == s->secs.size()) {
+        const size_t more = std::max<size_t>(16, s->secs.size());
+        for (size_t i = 0; i < more; i++) s->secs.push_back(alloc_buffer(s->pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY));
+        static std::atomic<int> told{0};
+        if (present_count() > 1200 && told++ < 30)
+            logf("direct: secondary command buffers made at present %llu: thread slot %p now %zu", (unsigned long long)present_count(),
+                 (void*)s, s->secs.size());
+    }
+    VkCommandBuffer cb = s->secs[s->secs_used++];
+    VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
     bi.pInheritanceInfo = &ii;
     vkBeginCommandBuffer(cb, &bi);
     return cb;

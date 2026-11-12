@@ -1,0 +1,49 @@
+// (M4c, direct_task.cpp) An indirect task+mesh draw's task header made on the GPU, before its task step: the task workgroups
+// are the game's record's count (its first record, {x, 1, 1, n} in Vulkan's layout by the game patch, NVN's first 0), held to
+// the device's largest dispatch; its map (a word a mesh workgroup it can start) and payload area (one a task workgroup) are
+// taken from the recording thread's task pool for this frame slot. A draw that does not fit starts no task workgroup and is
+// counted in the pool's second word. Words of the header: emit_spirv.h TASK_HEADER_*.
+// Regenerate the header: glslangValidator -V --target-env vulkan1.3 --vn task_prep_spv -o task_prep_spv.h task_prep.comp
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x = 1) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer Words { uint w[]; };
+
+layout(push_constant) uniform P {
+    Words header;    // (the draw's task header, in the frame arena)
+    Words record;    // (the game's indirect record)
+    Words pool;      // (the task pool: word 0 words used, word 1 draws refused; its room from word 16)
+    uint pool_words; // (the pool's room)
+    uint max_tasks;  // (maxComputeWorkGroupCount[0])
+    uint max_groups; // (the mesh draw's most workgroups: maxMeshWorkGroupCount[0], maxMeshWorkGroupTotalCount)
+    uint threads;    // (the task stage's threads: the most mesh workgroups a task workgroup starts)
+    uint payload_words;
+} p;
+
+void main() {
+    uint x = min(p.record.w[0], p.max_tasks);
+    const uint64_t need = uint64_t(x) * (uint64_t(p.threads) + uint64_t(p.payload_words));
+    uint base = 0;
+    if (x != 0) {
+        if (need > uint64_t(p.pool_words)) {
+            x = 0;
+            atomicAdd(p.pool.w[1], 1u);
+        } else {
+            base = atomicAdd(p.pool.w[0], uint(need));
+            if (uint64_t(base) + need > uint64_t(p.pool_words)) {
+                x = 0;
+                atomicAdd(p.pool.w[1], 1u);
+            }
+        }
+    }
+    const uint64_t room = uint64_t(p.pool) + 64ul;
+    const uint64_t map = room + uint64_t(base) * 4ul;
+    const uint64_t payload = map + uint64_t(x) * uint64_t(p.threads) * 4ul;
+    p.header.w[4] = uint(map), p.header.w[5] = uint(map >> 32);
+    p.header.w[6] = uint(payload), p.header.w[7] = uint(payload >> 32);
+    p.header.w[8] = uint(min(uint64_t(x) * uint64_t(p.threads), uint64_t(p.max_groups)));
+    p.header.w[9] = x;
+    p.header.w[10] = x, p.header.w[11] = 1u, p.header.w[12] = 1u;
+}

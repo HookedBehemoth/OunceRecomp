@@ -26,6 +26,7 @@
 #include "direct_image.h"
 #include "direct_pass.h"
 #include "direct_query.h"
+#include "direct_task.h"
 
 namespace hsd {
 namespace {
@@ -33,14 +34,17 @@ namespace {
 enum {
     S_SET_RT, S_EMPTY_RT, S_NO_IMAGE, S_BEGUN, S_LOAD_CLEARS, S_CLEARS_IN, S_MASKED, S_CLEAR_NO_TARGET, S_CLEAR_DISABLED,
     S_DRAWS, S_DISPATCHES, S_BARRIERS, S_COPIES, S_COPY_SKIPPED, S_CLEAR_TEX, S_CLEAR_TEX_SKIPPED, S_BUF_OPS, S_UNRECORDED,
-    S_CUTS, S_OTHER_THREAD, S_JOB_OUTSIDE, S_EVENT_CUTS, S_COUNT
+    S_CUTS, S_OTHER_THREAD, S_JOB_OUTSIDE, S_EVENT_CUTS, S_TASK_JOB_STEPS, S_TASK_JOB_SPLITS, S_TASK_INLINE_SPLITS, S_TASK_JOB_AGAIN,
+    S_COUNT
 };
 const char* const kNames[S_COUNT] = {
     "SetRenderTargets", "with no target", "targets with no image", "renderings begun", "clears as load ops",
     "clears in a rendering", "masked clears skipped", "clears with no target", "clears not rendered", "draws",
     "dispatches", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
     "buffer ops in lists that record nothing", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
-    "records on another thread", "ops a job's rendering cannot hold (skipped)", "command buffers cut at an event op"};
+    "records on another thread", "ops a job's rendering cannot hold (skipped)", "command buffers cut at an event op",
+    "jobs' task steps executed (M4c)", "of them in a begun rendering (ended and begun again)", "renderings ended for an inline task step",
+    "jobs' task steps run again (a job called again)"};
 std::atomic<int64_t> st[S_COUNT];
 std::atomic<int64_t> st_bits[16];   // (barriers by NVN bit)
 void count(int k) { st[k].fetch_add(1, std::memory_order_relaxed); }
@@ -573,10 +577,29 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     }
 }
 
+/// (M4c) A job's task step (the compute work of its task+mesh draws, direct_task.cpp) executed in its caller before the job,
+/// outside the caller's rendering: ended first when it is begun (counted); its headers reset and made, a barrier, its task
+/// dispatches, a barrier that makes the headers, maps and payloads visible to the mesh draws (indirect arguments, mesh shader
+/// reads). Each call of the job runs it (a job called again: counted)
+void task_job_step(List* l, const List* callee) {
+    if (!callee->task_cb || callee->task_open || !records(l) || !l->pass.noted || l->secondary || !callee->ended || !callee->sec) return;
+    if (!callee->fmt.same(formats_of(l->pass))) return;   // (it will not be executed)
+    if (callee->task_runs.fetch_add(1, std::memory_order_relaxed)) count(S_TASK_JOB_AGAIN);
+    if (l->pass.begun) suspend(l), count(S_TASK_JOB_SPLITS);
+    VkCommandBuffer cb = cmd(l);
+    vkCmdExecuteCommands(cb, 1, &callee->task_pre);
+    task_barrier(cb, false);
+    vkCmdExecuteCommands(cb, 1, &callee->task_cb);
+    task_barrier(cb, true);
+    draw_invalidate(l);   // (the caller's state is undefined after a secondary)
+    count(S_TASK_JOB_STEPS);
+}
+
 void pass_call(List* l, const List* callee) {
     if (l->info.kind == HSD_LIST_GATE && draw_log_frame())
         logf("direct: drawlog gate call kind %u draws %d cmds %d (noted %d begun %d)", callee->info.kind, (int)callee->draws, (int)callee->has_cmds,
              (int)l->pass.noted, (int)l->pass.begun);
+    if (callee->info.kind == HSD_LIST_JOB) task_job_step(l, callee);
     if (callee->draws) l->draws = true;
     if ((callee->info.kind == HSD_LIST_JOB || callee->draws) && records(l) && l->pass.noted && !l->pass.begun) begin(l);
     if (callee->info.kind == HSD_LIST_JOB) {   // (M3a: executed inside the caller's rendering; the key's formats noted)
@@ -639,7 +662,19 @@ void pass_cut(List* l) {
     if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE, count(S_EVENT_CUTS);   // (a waiting barrier goes with the next command)
 }
 
+VkCommandBuffer pass_outside(List* l) {
+    if (l->pass.begun) suspend(l), count(S_TASK_INLINE_SPLITS);
+    return cmd(l);
+}
+void pass_resume(List* l) {
+    PassRec& p = l->pass;
+    if (!records(l) || !p.noted || p.begun || p.inherited) return;
+    begin(l);
+    query_draw(l, l->cur);   // (M5: the draw's query and condition, as before the rendering ended)
+}
+
 void pass_list_end(List* l) {
+    task_list_end(l);   // (M4c: its task step, if it has one)
     if (l->secondary) {   // (M3a: its caller executes it)
         query_suspend(l, l->cur);   // (M5: a secondary's query and condition end in it)
         if (l->cur) vkEndCommandBuffer(l->cur), l->sec = l->cur, l->cur = VK_NULL_HANDLE;

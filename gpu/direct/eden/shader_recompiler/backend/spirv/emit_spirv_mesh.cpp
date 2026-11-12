@@ -46,6 +46,10 @@ Id BufferWordAt(EmitContext& ctx, Id base, Id word);
 Id BufferWord(EmitContext& ctx, u32 member, Id word);
 
 Id PayloadWord(EmitContext& ctx, Id index) {
+    if (ctx.task_buffer && ctx.stage == Stage::Mesh) {
+        // (direct M4c: its task workgroup's payload in the draw's payload area, read through its address (EmitMeshPrologue))
+        return BufferWordAt(ctx, ctx.task_buffer_payload, Clamped(ctx, index, ctx.mesh_info.payload_words));
+    }
     if (ctx.mesh_fallback && ctx.stage == Stage::Mesh && ctx.runtime_info.mesh_fallback_task) {
         // (the task wrote it out: the mesh workgroups are a later dispatch, and read their task workgroup's payload, a slot
         // being task workgroup * threads + its index in the task)
@@ -165,6 +169,13 @@ Id LoadWord(EmitContext& ctx, Id pointer) {
 
 void StoreWord(EmitContext& ctx, Id pointer, Id value) {
     ctx.OpStore(pointer, value, spv::MemoryAccessMask::Aligned, 4U);
+}
+
+/// (direct M4c) the u64 at words word, word + 1 of a device address (low word first)
+Id LoadU64At(EmitContext& ctx, Id base, u32 word) {
+    const Id lo{LoadWord(ctx, BufferWordAt(ctx, base, ctx.Const(word)))};
+    const Id hi{LoadWord(ctx, BufferWordAt(ctx, base, ctx.Const(word + 1)))};
+    return ctx.OpBitcast(ctx.U64, ctx.OpCompositeConstruct(ctx.U32[2], lo, hi));
 }
 
 Id WorkgroupId(EmitContext& ctx) {
@@ -312,6 +323,52 @@ u32 task_cap(u32 threads) {   // (RX_VK_TASK_CAP=<n>: mesh workgroups a task may
     return n ? n : threads;
 }
 
+/// (direct M4c, RuntimeInfo::task_buffer) the task as a compute step: thread 0 takes map entries for the mesh workgroups this task
+/// workgroup starts (an atomicAdd on the header's taken word; those past the map's capacity are not placed) and raises the
+/// header's group count, the native mesh draw's indirect X, to its end; each started thread writes its entry, task workgroup
+/// << 8 | its index, and the threads copy the payload once to this task workgroup's place in the payload area. The mesh
+/// workgroups read them there (EmitMeshPrologue, PayloadWord). Primitive order within a draw follows the atomic's order
+void TaskBufferEpilogue(EmitContext& ctx, Id count) {
+    const Id header{PushU64(ctx, ctx.mesh_fallback_payload_member_index)};
+    const Id none{ctx.Const(0xFFFFFFFFU)};
+    const Id task{WorkgroupId(ctx)};
+    const Id tasks{LoadWord(ctx, BufferWordAt(ctx, header, ctx.Const(TASK_HEADER_TASKS)))};
+    const Id cap{LoadWord(ctx, BufferWordAt(ctx, header, ctx.Const(TASK_HEADER_MAP_CAP)))};
+    // (a task workgroup past the payload area's room starts nothing)
+    const Id n{ctx.OpSelect(ctx.U32[1], ctx.OpULessThan(ctx.U1, task, tasks), count, ctx.u32_zero_value)};
+    const auto atomic = [&](bool max, u32 word, Id value) {
+        const Id pointer{BufferWordAt(ctx, header, ctx.Const(word))};
+        const Id scope{ctx.Const(static_cast<u32>(spv::Scope::Device))};
+        return max ? ctx.OpAtomicUMax(ctx.U32[1], pointer, scope, ctx.u32_zero_value, value)
+                   : ctx.OpAtomicIAdd(ctx.U32[1], pointer, scope, ctx.u32_zero_value, value);
+    };
+    If(ctx, ctx.OpIEqual(ctx.U1, LocalInvocation(ctx), ctx.u32_zero_value), [&] {
+        ctx.OpStore(ctx.task_buffer_shared, none);
+        If(ctx, ctx.OpINotEqual(ctx.U1, n, ctx.u32_zero_value), [&] {
+            const Id first{atomic(false, TASK_HEADER_TAKEN, n)};
+            If(ctx, ctx.OpULessThan(ctx.U1, first, cap), [&] {
+                atomic(true, TASK_HEADER_GROUPS, ctx.OpUMin(ctx.U32[1], ctx.OpIAdd(ctx.U32[1], first, n), cap));
+                ctx.OpStore(ctx.task_buffer_shared, first);
+            });
+        });
+    });
+    Barrier(ctx);
+    const Id first{ctx.OpLoad(ctx.U32[1], ctx.task_buffer_shared)};
+    If(ctx, ctx.OpINotEqual(ctx.U1, first, none), [&] {
+        const Id invocation{LocalInvocation(ctx)};
+        const Id at{ctx.OpIAdd(ctx.U32[1], first, invocation)};
+        If(ctx, ctx.OpLogicalAnd(ctx.U1, ctx.OpULessThan(ctx.U1, invocation, n), ctx.OpULessThan(ctx.U1, at, cap)), [&] {
+            const Id entry{ctx.OpBitwiseOr(ctx.U32[1], ctx.OpShiftLeftLogical(ctx.U32[1], task, ctx.Const(8U)), invocation)};
+            StoreWord(ctx, BufferWordAt(ctx, LoadU64At(ctx, header, TASK_HEADER_MAP), at), entry);
+        });
+        const Id payload{LoadU64At(ctx, header, TASK_HEADER_PAYLOAD)};
+        const Id base{ctx.OpIMul(ctx.U32[1], task, ctx.Const(ctx.mesh_info.payload_words))};
+        Strided(ctx, ctx.mesh_info.payload_words, ctx.mesh_threads, invocation, [&](Id index) {
+            StoreWord(ctx, BufferWordAt(ctx, payload, ctx.OpIAdd(ctx.U32[1], base, index)), LoadWord(ctx, PayloadWord(ctx, index)));
+        });
+    });
+}
+
 void TaskEpilogue(EmitContext& ctx) {
     Barrier(ctx);
     // (hookshot) at most one mesh workgroup a task thread: each thread keeps or culls one meshlet (the programs compact them by subgroup
@@ -319,6 +376,10 @@ void TaskEpilogue(EmitContext& ctx) {
     // mesh workgroups for a draw held the GPU past Windows' two seconds, and the device was lost, on about half the first starts
     const Id count{ctx.OpUMin(ctx.U32[1], LoadWord(ctx, PayloadWord(ctx, ctx.Const(1U))),
                               ctx.Const(task_cap(ctx.mesh_threads)))};
+    if (ctx.task_buffer) {
+        TaskBufferEpilogue(ctx, count);
+        return;
+    }
     if (ctx.mesh_fallback) {
         // (no OpEmitMeshTasksEXT: each thread that started a mesh workgroup takes an index of the mesh dispatch
         // (MESH_FALLBACK_DISPATCH_WORD) and writes its slot, task workgroup * threads + its index, at that index of the
@@ -553,6 +614,10 @@ Id EmitIsbeRead(EmitContext& ctx, Id address) {
     }
     const Id workgroup{native_workgroup};
     const Id index{ctx.OpShiftRightLogical(ctx.U32[1], address, ctx.Const(2U))};
+    if (ctx.task_buffer) {   // (direct M4c: address 0 is its index among its task's mesh workgroups, from 0 as NVN numbers them)
+        return ctx.OpSelect(ctx.U32[1], ctx.OpIEqual(ctx.U1, address, ctx.u32_zero_value), ctx.task_buffer_index,
+                            LoadWord(ctx, PayloadWord(ctx, index)));
+    }
     const Id pointer{PayloadWord(ctx, index)};
     const Id word{ctx.mesh_fallback ? LoadWord(ctx, pointer) : ctx.OpLoad(ctx.U32[1], pointer)};   // (the fallback's: a device address)
     // (hookshot) a fallback mesh workgroup is a slot, task workgroup * threads + its index: address 0 is that index in its task,
@@ -599,6 +664,19 @@ void EmitMeshPrologue(EmitContext& ctx) {
     }
     if (ctx.stage != Stage::Mesh) {
         return;
+    }
+    if (ctx.task_buffer) {
+        // (direct M4c) its map entry, task workgroup << 8 | index, and that task's payload address, from the draw's task header
+        // (TaskBufferEpilogue placed it). Read here, in the entry block, for every use; loads, no branch (see below)
+        const Id header{PushU64(ctx, ctx.mesh_fallback_payload_member_index)};
+        const Id map{LoadU64At(ctx, header, TASK_HEADER_MAP)};
+        const Id entry{LoadWord(ctx, BufferWordAt(ctx, map, WorkgroupId(ctx)))};
+        ctx.task_buffer_task = ctx.OpShiftRightLogical(ctx.U32[1], entry, ctx.Const(8U));
+        ctx.task_buffer_index = ctx.OpBitwiseAnd(ctx.U32[1], entry, ctx.Const(0xffU));
+        const Id stride{LoadWord(ctx, BufferWordAt(ctx, header, ctx.Const(TASK_HEADER_PAYLOAD_WORDS)))};
+        const Id first{ctx.OpIMul(ctx.U32[1], ctx.task_buffer_task, stride)};
+        ctx.task_buffer_payload = ctx.OpIAdd(ctx.U64, LoadU64At(ctx, header, TASK_HEADER_PAYLOAD),
+                                             ctx.OpIMul(ctx.U64, ctx.OpUConvert(ctx.U64, first), ctx.Constant(ctx.U64, u64{4})));
     }
     if (ctx.mesh_fallback && ctx.runtime_info.mesh_fallback_task) {
         // (hookshot) the slot its task gave this workgroup, from the map at its index of the dispatch (TaskEpilogue). Read here,

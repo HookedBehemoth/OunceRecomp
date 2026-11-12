@@ -16,8 +16,10 @@ namespace hsd {
 
 struct Arena;   // (direct_draw.cpp)
 struct QSlot;   // (direct_query.cpp)
+struct TaskPool;   // (direct_task.cpp)
 void query_slot_reset(QSlot* q);
 void arena_reset(Arena* a);
+void task_pool_reset(TaskPool* p);
 struct CmdSlot {
     VkCommandPool pool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> bufs, secs;   // (the recording thread's alone)
@@ -27,6 +29,7 @@ struct CmdSlot {
     std::atomic<int32_t> live{0};     // (lists alive holding its buffers)
     Arena* arena = nullptr;   // (M2b: its frame arena, reset with it)
     QSlot* q = nullptr;       // (M5: its query pools and report records, reset with it)
+    TaskPool* task = nullptr; // (M4c: the indirect task+mesh draws' maps and payloads, reset with it)
 };
 
 /// This thread's slot for the frame now (reset first when this is its first use in a new frame), with one list more
@@ -37,6 +40,8 @@ VkCommandBuffer cmd_buffer(CmdSlot* s);
 /// (M3a) A secondary command buffer of the slot, begun to continue a dynamic rendering of those formats
 struct PassFormats;
 VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags flags);
+/// (M4c) A secondary command buffer of the slot, begun outside any rendering (a job's task step)
+VkCommandBuffer cmd_secondary_plain(CmdSlot* s);
 /// A list holding the slot's buffers is gone
 void cmd_slot_drop(CmdSlot* s);
 /// A submission holding the slot's buffers was sent with timeline value v

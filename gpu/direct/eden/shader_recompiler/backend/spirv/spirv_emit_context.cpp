@@ -601,8 +601,13 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     u32& texture_binding{is_unified ? bindings.unified : bindings.texture};
     u32& image_binding{is_unified ? bindings.unified : bindings.image};
     AddCapability(spv::Capability::Shader);
-    if (runtime_info.mesh_fallback || runtime_info.mesh_fallback_vertex) {
+    if (runtime_info.mesh_fallback || runtime_info.mesh_fallback_vertex ||
+        (runtime_info.task_buffer && (stage == Stage::Task || stage == Stage::Mesh))) {
         wants_mesh_fallback = true;   // (before any DefineRescalingInputPushConstant, which is made once)
+    }
+    if (runtime_info.task_buffer && runtime_info.mesh_fallback && stage == Stage::Task) {
+        mesh_fallback = true;       // (direct M4c: its push block's members as the fallback task's, whoever makes the block first)
+        wants_mesh_first = true;
     }
     DefineCommonTypes(program.info);
     DefineCommonConstants();
@@ -677,7 +682,21 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
         mesh_first_member_pointer = TypePointer(spv::StorageClass::PhysicalStorageBuffer, U32[1]);
         DefineRescalingInputPushConstant();
     }
+    if (runtime_info.task_buffer && stage == Stage::Mesh && !runtime_info.mesh_fallback) {
+        // (direct M4c: a native mesh stage that reads its task's outputs from the task header pushed with the fallback's members)
+        task_buffer = true;
+        wants_mesh_fallback = true;
+        if (!Sirit::ValidId(U64)) {
+            AddCapability(spv::Capability::Int64);
+            U64 = Name(TypeInt(64, false), "u64");
+        }
+        AddCapability(spv::Capability::PhysicalStorageBufferAddresses);
+        AddExtension("SPV_KHR_physical_storage_buffer");
+        SetMemoryModel(spv::AddressingModel::PhysicalStorageBuffer64, spv::MemoryModel::GLSL450);
+        DefineRescalingInputPushConstant();
+    }
     if (runtime_info.mesh_fallback && (stage == Stage::Task || stage == Stage::Mesh)) {
+        task_buffer = runtime_info.task_buffer && stage == Stage::Task;
         mesh_fallback = true;
         wants_mesh_fallback = true;
         wants_mesh_first = stage == Stage::Task;
@@ -2590,8 +2609,15 @@ void EmitContext::DefineMesh(const IR::Program& program) {
             mesh_payload_u32 = wg_pointer;
         }
         if (stage == Stage::Task) {
+            if (task_buffer) {   // (direct M4c: thread 0's first map entry, for the others)
+                task_buffer_shared = DefineVariable(*this, U32[1], std::nullopt, spv::StorageClass::Workgroup);
+                Name(task_buffer_shared, "task_first_entry");
+            }
             return;
         }
+    } else if (task_buffer) {
+        // (direct M4c: no task payload variable: there is no task stage before it; its payload words are read from the
+        // task header's payload area, PayloadWord)
     } else {
         mesh_payload = DefineVariable(*this, payload_type, std::nullopt,
                                       spv::StorageClass::TaskPayloadWorkgroupEXT);

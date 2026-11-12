@@ -111,6 +111,11 @@ struct RuntimeInfo {
     u32 mesh_fallback_task_threads{};
     /// (hookshot) the fallback's record slots: mesh workgroups past this one write nothing
     u32 mesh_fallback_capacity{};
+    /// (hookshot, direct back end M4c) the task stage as a compute step, the mesh stage native: the task (with mesh_fallback
+    /// set: a compute shader) writes each mesh workgroup it starts into the draw's map and its payload into the draw's payload
+    /// area, both named by the draw's task header (its address pushed at MESH_FALLBACK_PAYLOAD_PUSH_OFFSET); the mesh stage
+    /// (mesh_fallback not set) reads its map entry and its task's payload from there. Header words: TASK_HEADER_*
+    bool task_buffer{};
 
     TessPrimitive tess_primitive{};
     TessSpacing tess_spacing{};

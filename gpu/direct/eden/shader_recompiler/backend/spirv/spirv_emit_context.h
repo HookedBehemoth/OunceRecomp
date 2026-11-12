@@ -458,6 +458,13 @@ public:
     // the payload, map and record buffers, pushed as device addresses; a generated vertex stage reads the records.
     bool mesh_fallback{};
     bool wants_mesh_fallback{};
+    /// (hookshot, direct M4c, RuntimeInfo::task_buffer) the task stage as compute (mesh_fallback too) or the native mesh stage
+    /// reading the draw's task header; the mesh stage's map entry and payload base, read in its entry block
+    bool task_buffer{};
+    Id task_buffer_task{};      ///< (mesh) its task workgroup
+    Id task_buffer_index{};     ///< (mesh) its index among that task's mesh workgroups
+    Id task_buffer_payload{};   ///< (mesh) its task's payload address (u64)
+    Id task_buffer_shared{};    ///< (task) a workgroup word: the first map entry thread 0 took
     Id mesh_fallback_word_ptr{};   ///< PhysicalStorageBuffer pointer to a block of one u32
     u32 mesh_fallback_payload_member_index{};
     u32 mesh_fallback_records_member_index{};

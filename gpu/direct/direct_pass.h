@@ -15,6 +15,10 @@ void pass_cut(List* l);
 VkCommandBuffer pass_barrier_buffer();
 /// The list's end: its pass ended, its command buffer too
 void pass_list_end(List* l);
+/// (M4c) The list's command buffer outside any rendering: a begun rendering of its own ended (its targets stay noted)
+VkCommandBuffer pass_outside(List* l);
+/// (M4c) Its rendering begun again (loading) after pass_outside, with the draw's query and condition
+void pass_resume(List* l);
 void pass_stats(char* out, size_t cap, double frames);
 /// (M3a) A job begun: its pass key's formats known, it is one rendering secondary of its thread's slot (l->secondary)
 void pass_job_begin(List* l);

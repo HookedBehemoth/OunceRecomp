@@ -70,6 +70,18 @@ constexpr u32 MESH_FALLBACK_ALLOC_WORD = 4;       // (records taken, past the en
 constexpr u32 MESH_FALLBACK_DISPATCH_WORD = 5;
 constexpr u32 MESH_FALLBACK_HEADER_WORDS = 8;
 constexpr u32 MESH_FALLBACK_RECORD_WORDS = 16u << 20;   // (64 MB: ~47k grass primitives of 31 words are 17 MB)
+// (hookshot, direct back end M4c, RuntimeInfo::task_buffer) a task+mesh draw's task header, 64 bytes the host writes before the
+// draw (gpu/direct/direct_task.cpp): words 0-2 the mesh draw's VkDrawMeshTasksIndirectCommandEXT {groups, 1, 1}, the groups
+// raised by the task workgroups as they place their mesh workgroups; then what the task and mesh stages read
+constexpr u32 TASK_HEADER_GROUPS = 0;     // (the mesh workgroups placed in the map: atomicMax of each task's end)
+constexpr u32 TASK_HEADER_TAKEN = 3;      // (the mesh workgroups asked for: atomicAdd; past TASK_HEADER_MAP_CAP not placed)
+constexpr u32 TASK_HEADER_MAP = 4;        // (u64: the map, a word a mesh workgroup: its task workgroup << 8 | its index in it)
+constexpr u32 TASK_HEADER_PAYLOAD = 6;    // (u64: the payloads, one a task workgroup, TASK_HEADER_PAYLOAD_WORDS apart)
+constexpr u32 TASK_HEADER_MAP_CAP = 8;    // (the map's entries)
+constexpr u32 TASK_HEADER_TASKS = 9;      // (the task workgroups the payload area holds)
+constexpr u32 TASK_HEADER_DISPATCH = 10;  // (words 10-12: the task dispatch {tasks, 1, 1} of an indirect draw)
+constexpr u32 TASK_HEADER_PAYLOAD_WORDS = 13;   // (the task's payload words: the stride of the payload area)
+constexpr u32 TASK_HEADER_WORDS = 16;
 
 /// (hookshot, RX_VK_BDA_CHECK) the id the checked storage accesses of the program being translated record, this thread's
 extern thread_local u32 bda_check_id;

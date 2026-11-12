@@ -33,6 +33,11 @@ struct DrawProg {
     // whether a draw has used it yet, for the first-use log)
     bool mesh = false;
     VkShaderEXT ms = VK_NULL_HANDLE;
+    // (M4c: a task+mesh program: its task stage as a compute shader (ts), run as a compute step before the pass that draws it,
+    // its threads and payload words; the mesh stage native, reading the draw's task header)
+    bool task = false;
+    VkShaderEXT ts = VK_NULL_HANDLE;
+    uint32_t task_threads = 0, task_payload_words = 0;
     uint64_t codes[3]{};   // (vertex or mesh, fragment, header-only)
     uint16_t ssbo_slots[8]{};   // (M4b: by NVN stage, the storage buffer slots its stages read through the driver bank's table)
     mutable std::atomic<bool> used{false};
@@ -83,8 +88,10 @@ constexpr uint32_t kMeshFirstPush = 56;   // (M4b: a mesh draw's first workgroup
 void shader_program_set(const nvn_prog* p);
 /// The variant for the bound program and state; null: none ready (why says, the translation queued where it is one)
 const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], ShaderMiss& why);
-/// (M4b) A draw of the bound program, which has a task stage, counted by its stages (not drawn)
-void shader_task_mesh_draw(const DState& s, bool indirect);
+/// (M4b) A draw of the bound program, which has a task stage, counted by its stages (M4c: drawn or skipped)
+void shader_task_mesh_draw(const DState& s, bool indirect, bool drawn);
+/// (M4c) Whether the bound program has a task stage (a lookup: for a draw that has no variant to say so)
+bool shader_has_task(const DState& s);
 void shader_task_mesh_log(double frames);
 /// (M4b, logs) the bound program's stages: kind and code keys
 void shader_describe(const DState& s, char* out, size_t cap);

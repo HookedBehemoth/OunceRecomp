@@ -18,6 +18,7 @@
 #include "direct_image.h"
 #include "direct_shader.h"
 #include "direct_state.h"
+#include "direct_task.h"
 
 namespace hsd {
 bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
@@ -30,6 +31,7 @@ struct Arena {
         uint8_t* map = nullptr;
         VkDeviceAddress address = 0;
         uint64_t size = 0;
+        VkBuffer buffer = VK_NULL_HANDLE;   // (M4c: a task+mesh draw's indirect arguments are in the arena)
     };
     std::vector<Chunk> chunks;
     size_t cur = 0;
@@ -44,7 +46,7 @@ namespace {
 constexpr uint64_t kChunk = 4ull << 20;
 std::atomic<int64_t> st_chunks{0};
 
-bool arena_alloc(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr) {
+bool arena_alloc(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr, VkBuffer* buf = nullptr, VkDeviceSize* off = nullptr) {
     if (!slot) return false;
     if (!slot->arena) slot->arena = new Arena;
     Arena& a = *slot->arena;
@@ -55,14 +57,18 @@ bool arena_alloc(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& 
         Arena::Chunk c;
         VkBuffer b;
         VkDeviceMemory m;
-        if (!mapped_buffer(kChunk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, b, m, c.map, c.address)) return false;
-        c.size = kChunk;
+        if (!mapped_buffer(kChunk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                               VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                           b, m, c.map, c.address))
+            return false;
+        c.size = kChunk, c.buffer = b;
         a.chunks.push_back(c);
         a.used = 0;
         st_chunks.fetch_add(1, std::memory_order_relaxed);
     }
     Arena::Chunk& c = a.chunks[a.cur];
     map = c.map + a.used, addr = c.address + a.used;
+    if (buf) *buf = c.buffer, *off = a.used;
     a.used += bytes;
     return true;
 }
@@ -78,17 +84,19 @@ enum Reason {
     R_DRAWN, R_MESH, R_TASK_MESH, R_NO_TARGETS, R_CONDITION, R_DISABLED, R_TOPOLOGY, R_QUADS, R_NO_PROGRAM, R_NOT_PARSED,
     R_NOT_GRAPHICS, R_TRANSLATING, R_FAILED, R_STEP_A, R_VERTEX_MEM, R_INDEX_MEM, R_INDEX_U8, R_UBO_MEM, R_ARENA,
     R_RESOLVED_JOB, R_RESOLVED_LOAD, R_RESOLVED_OTHER, R_DRAWN_INDIRECT, R_DRAWN_MESH, R_DRAWN_MESH_INDIRECT, R_KIND,
-    R_ARGS_MEM, R_MESH_STRIDE, R_MESH_DRY, R_COUNT
+    R_ARGS_MEM, R_MESH_STRIDE, R_MESH_DRY, R_TASK_STEP, R_TASK_MULTI, R_DRAWN_TASK, R_COUNT
 };
 const char* const kReasons[R_COUNT] = {
-    "drawn", "mesh draws without the device's mesh stage", "task+mesh programs (M4c)", "no render targets set in the list", "under a render condition (M5)",
+    "drawn", "mesh draws without the device's mesh stage", "task+mesh programs that cannot be drawn (M4c)", "no render targets set in the list", "under a render condition (M5)",
     "rendering disabled", "a topology Vulkan lacks", "quads (indices made on the CPU)", "no program bound in the list",
     "program not read yet", "program not vertex + fragment", "variant being translated", "variant does not translate",
     "step A cannot draw the variant", "a vertex buffer not in layer 0", "the index buffer not in layer 0", "8-bit indices",
     "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
     "resolved in a load-time list (M3)", "resolved in an unclassified list", "of the drawn: indirect", "of the drawn: mesh, direct",
     "of the drawn: mesh, indirect", "a draw kind its program has no stage for", "indirect arguments or count not in layer 0",
-    "mesh argument records closer than 12 bytes", "mesh draws left out (HOS_DBG=meshdry)"};
+    "mesh argument records closer than 12 bytes", "mesh draws left out (HOS_DBG=meshdry)",
+    "task+mesh draws whose task step was not recorded (M4c)", "task+mesh indirect draws of several records or with a count (M4c)",
+    "of the drawn: task+mesh (a task step)"};
 // (M3b: the counters a draw bumps are the recording thread's own: a global atomic added to by every draw on every recording
 // thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
 struct TStats {
@@ -1070,11 +1078,17 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         x.pick = prog, x.pick_prog_gen = s.prog_gen, x.pick_vtx_gen = s.vtx_gen, x.pick_ct = ctw;
         std::memcpy(x.pick_bank_gen, s.bank_gen, sizeof x.pick_bank_gen);
     }
-    if (!prog) {
-        if (why == SM_TASK_MESH) {   // (M4b: not drawn: counted by program)
-            shader_task_mesh_draw(s, mesh_ind);
-            return count(l, mesh ? R_TASK_MESH : R_KIND);
+    // (M4c: a task+mesh program's draws counted by its stages' code, drawn or skipped (any reason): at the return)
+    struct TaskCount {
+        const DState* s = nullptr;
+        bool indirect = false, drawn = false;
+        ~TaskCount() {
+            if (s) shader_task_mesh_draw(*s, indirect, drawn);
         }
+    } task_count;
+    if (prog ? prog->task : why == SM_TASK_MESH || (why != SM_NONE && mesh && shader_has_task(s))) task_count.s = &s, task_count.indirect = mesh_ind;
+    if (!prog) {
+        if (why == SM_TASK_MESH) return count(l, mesh ? R_TASK_MESH : R_KIND);   // (M4b: not drawable: counted by program)
         static const Reason map[SM_COUNT] = {R_DRAWN, R_NO_PROGRAM, R_NOT_PARSED, R_NOT_GRAPHICS, R_TRANSLATING, R_FAILED, R_STEP_A, R_TASK_MESH};
         return count(l, map[why]);
     }
@@ -1120,6 +1134,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     VkDeviceSize ao = 0, cnto = 0;
     uint32_t nargs = 1, stride = 16;
     const uint64_t count_addr = ind ? dn.count_addr : mesh_ind ? dm.count_addr : 0;
+    if (mesh_ind && prog->task && (count_addr || std::max(dm.max, 1) > 1)) return count(l, R_TASK_MULTI);   // (M4c: none seen)
     if (ind || mesh_ind) {
         const uint32_t rec = ind ? (dn.indexed ? 20u : 16u) : 12u;
         nargs = (uint32_t)std::clamp(ind ? dn.max : dm.max, 1, 1 << 16);
@@ -1149,8 +1164,23 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (mesh) {   // (NVN draws mesh workgroups [first, first + count); an indirect one's records have no first: 0)
             const uint32_t first = mesh_ind ? 0u : (uint32_t)dm.x;
             std::memcpy(push + kMeshFirstPush, &first, 4);
-            if (first) bump(me().mesh_first);   // (M4b: a direct mesh draw from a first past 0: counted, see the report)
+            if (first && !prog->task) bump(me().mesh_first);   // (M4b: a direct mesh draw from a first past 0: counted, see the report)
         }
+    }
+    // (M4c: a task+mesh draw's task stage, a compute step outside the rendering (direct_task.h); its mesh draw reads the header)
+    VkBuffer task_hb = VK_NULL_HANDLE;
+    VkDeviceSize task_ho = 0;
+    if (prog->task) {
+        static const bool dry = dbg("taskdry");   // (HOS_DBG=taskdry, a bring-up aid: the task+mesh draws resolved, nothing recorded)
+        if (dry) return count(l, R_MESH_DRY);
+        const char* twhy = nullptr;
+        if (!task_step(l, *prog, mesh_ind, dm.indirect, mesh_ind ? 0u : (uint32_t)std::max(dm.x, 0), mesh_ind ? 0u : (uint32_t)std::max(dm.y, 0),
+                       push, task_hb, task_ho, twhy)) {
+            static std::atomic<int> told{0};
+            if (told++ < 20) logf("direct: task+mesh draw of %016llx not drawn: %s", (unsigned long long)prog->key, twhy ? twhy : "?");
+            return count(l, R_TASK_STEP);
+        }
+        if (!l->secondary) x.push_valid = false;   // (the compute step pushed into this command buffer)
     }
     // (recorded)
     if (!x.heap) heap_bind(cb), x.heap = true;
@@ -1211,12 +1241,15 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                  l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count());
         static const bool dry = dbg("meshdry");   // (HOS_DBG=meshdry, a bring-up aid: everything but the mesh draw itself)
         if (dry) return count(l, R_MESH_DRY);
-        drawlog(l, mesh_ind ? "drawn mesh indirect" : "drawn mesh", prog, &x.dyn, mesh_ind ? nargs : (uint32_t)dm.y);
-        if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
+        drawlog(l, prog->task ? mesh_ind ? "drawn task+mesh indirect" : "drawn task+mesh" : mesh_ind ? "drawn mesh indirect" : "drawn mesh", prog, &x.dyn,
+                mesh_ind ? nargs : (uint32_t)dm.y);
+        if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
+        else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
         count(l, R_DRAWN);
         sub(l, mesh_ind ? R_DRAWN_MESH_INDIRECT : R_DRAWN_MESH);
+        if (prog->task) sub(l, R_DRAWN_TASK), task_count.drawn = true;
         if (gated) st_gated[l->info.kind].fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -1365,6 +1398,8 @@ void draw_log(double frames) {
     shader_stats(out, cap, frames);
     logf("direct: %s", out);
     shader_task_mesh_log(frames);
+    task_stats(out, cap, frames);
+    logf("direct: %s", out);
     heap_stats(out, cap);
     logf("direct: %s", out);
     state_stats(out, cap, frames);
@@ -1373,6 +1408,9 @@ void draw_log(double frames) {
 
 // ---- (M4a) what the dispatches share with the draws (direct_compute.cpp) ----
 bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr) { return arena_alloc(slot, bytes, map, addr); }
+bool draw_arena_buffer(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr, VkBuffer& buf, VkDeviceSize& off) {
+    return arena_alloc(slot, bytes, map, addr, &buf, &off);
+}
 VkDeviceAddress draw_window_table() { return window_table_address; }
 VkDeviceAddress draw_zero_address() { return zero_address; }
 /// (M4a, HOS_DBG=meshlog) at the present after that frame: the GPU idle, its indirect mesh records as the GPU left them
