@@ -1,4 +1,4 @@
-// HOS_DBG=dump:<present> (docs/direct/m2-interface.md, direct_dump): every pass's targets of the frame after that present
+// HOS_DBG=dump:<present>[+<frames>] (docs/direct/m2-interface.md, direct_dump): every pass's targets of the frame after that present
 // (the submissions handed in between it and the next present), each as its rendering ends, scaled to at most 320 wide and
 // written as dump_<present>/NNN_<what>_<gpu>.png in the run's folder (HOS_DBG=dumpdir:<dir>: there), with one log line
 // each in the frozen back end's RX_VK_DUMP format (gpu/vk/vk_dump.cpp), so scripts/direct_dump_compare.py reads both.

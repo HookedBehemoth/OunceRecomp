@@ -23,13 +23,23 @@ uint64_t claimed_value = 0;
 int seq = 0;
 bool written = false;
 std::string dir;
+std::atomic<int64_t> st_recorded{0}, st_claims{0};
 
+// (HOS_DBG=dump:<present>[+<count>]: that many frames from there, in one folder, steps numbered on)
 int64_t target() {
     static const int64_t t = [] {
         const char* v = dbg_value("dump");
         return v ? atoll(v) : -1;
     }();
     return t;
+}
+int64_t frames() {
+    static const int64_t n = [] {
+        const char* v = dbg_value("dump");
+        const char* plus = v ? strchr(v, '+') : nullptr;
+        return plus ? std::max(1, atoi(plus + 1)) : 1;
+    }();
+    return n;
 }
 
 int kind_of(VkFormat f) {
@@ -269,7 +279,7 @@ bool dump_recording() {
     const int64_t t = target();
     if (t < 0 || written) return false;
     const int64_t p = (int64_t)present_count();
-    return p >= t - 2 && p <= t;
+    return p >= t - 2 && p < t + frames();
 }
 
 void dump_pass(List* l, VkCommandBuffer cb) {
@@ -280,7 +290,7 @@ void dump_pass(List* l, VkCommandBuffer cb) {
             std::snprintf(what, sizeof what, "pass c%d prog 0000000000000000 list %s rt %llu", i,
                           l->info.kind == HSD_LIST_GATE ? "gate" : l->info.kind == HSD_LIST_LAYER ? "layer" : "other",
                           (unsigned long long)l->pass.set_rt_at);
-            if (DumpItem* it = copy(cb, l->pass.color[i], what)) l->dumps.push_back(it);
+            if (DumpItem* it = copy(cb, l->pass.color[i], what)) l->dumps.push_back(it), st_recorded++;
         }
     if (l->pass.depth.view) {
         std::snprintf(what, sizeof what, "pass depth prog 0000000000000000 rt %llu", (unsigned long long)l->pass.set_rt_at);
@@ -290,8 +300,9 @@ void dump_pass(List* l, VkCommandBuffer cb) {
 
 bool dump_claim(const std::vector<DumpItem*>& items, uint64_t frame) {
     const int64_t t = target();
-    if (t < 0 || written || (int64_t)frame != t) return false;
+    if (t < 0 || written || (int64_t)frame < t || (int64_t)frame >= t + frames()) return false;
     std::lock_guard lk(mu);
+    st_claims++;
     for (DumpItem* it : items)
         if (!it->claimed) it->claimed = true, claimed.push_back(it);
     return true;
@@ -315,7 +326,7 @@ void dump_present(uint64_t present) {
                 i++;
             }
     }
-    if (t < 0 || written || (int64_t)present <= t) return;
+    if (t < 0 || written || (int64_t)present < t + frames() + 2) return;   // (its submissions sent by then: some are held at waits)
     uint64_t v;
     std::vector<DumpItem*> items;
     {
@@ -327,7 +338,8 @@ void dump_present(uint64_t present) {
     const char* d = dbg_value("dumpdir");
     dir = std::string(d ? d : ".") + "/dump_" + std::to_string(t);
     mkdir(dir.c_str(), 0755);
-    logf("vk: dumping the frame after present %lld to %s (direct: %zu items)", (long long)t, dir.c_str(), items.size());
+    logf("vk: dumping the frame after present %lld to %s (direct: %zu items; %lld recorded, %lld submissions claimed)", (long long)t,
+         dir.c_str(), items.size(), (long long)st_recorded.load(), (long long)st_claims.load());
     for (DumpItem* it : items) {
         write_item(*it, seq++);
         free_item(it);   // (the struct stays: its list may still name it)
