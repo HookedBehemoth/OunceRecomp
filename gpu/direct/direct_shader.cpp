@@ -817,9 +817,11 @@ bool finish(Variant& v) {
                                                                    : Shader::Backend::SPIRV::kHeapSamplerBinding,
                                                                VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
                                                                VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT);
+                // (a plain sampler binding takes heapOffset / heapArrayStride, into the sampler heap: the sampler fields are a
+                // combined image sampler's)
                 auto& co = x.sourceData.constantOffset;
-                co.heapOffset = 0, co.heapArrayStride = 0;
-                co.samplerHeapOffset = heap_sampler_offset(cmp), co.samplerHeapArrayStride = kSamplerDesc;
+                co.heapOffset = heap_sampler_offset(cmp), co.heapArrayStride = kSamplerDesc;
+                co.samplerHeapOffset = 0, co.samplerHeapArrayStride = 0;
                 m.push_back(x);
             }
         }
