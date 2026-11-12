@@ -324,6 +324,9 @@ void clear_tex(List* l, const nvn_p_clear_tex& p) {
     std::memcpy(&c, p.c.u, 16);
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, s.level, 1, s.layer, s.layers};
     vkCmdClearColorImage(cmd(l), s.im->image, VK_IMAGE_LAYOUT_GENERAL, &c, 1, &range);
+    // (NVN's texture clear is in the 3D engine's order, Vulkan's a transfer: the clear is made visible to what follows, M2b's
+    // validation run found renderings loading it right after)
+    record_barrier(l->cur);
     s.im->written.fetch_or(W_CLEAR, std::memory_order_relaxed);
     count(S_CLEAR_TEX);
 }
