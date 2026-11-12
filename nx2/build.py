@@ -972,9 +972,19 @@ def main():
             for f in ("win32_posix.c",):
                 vk_jobs.append((cc, os.path.join(POSIX, f), os.path.join(obj_dir, "vk_posix_" + f[:-2] + ".o"), cflags, pdeps))
         jobs += vk_jobs
+    # (native-vk) the direct back end, hookshot_direct.so beside the exe (RX_BACKEND=direct: docs/direct/m1-interface.md):
+    # gpu/direct/*.cpp with the back end's flags, its own headers first (vk_api.h still from gpu/vk). Linux only (layer 0)
+    direct_jobs = []
+    if build_vk and LINUX:
+        direct = os.path.join(GPU, "direct")
+        ddeps = tree_headers(direct, os.path.join(GPU, "render")) + open(os.path.join(vk, "vk_api.h"), "rb").read()
+        for dsrc in sorted(os.path.join(direct, f) for f in os.listdir(direct) if f.endswith(".cpp")):
+            direct_jobs.append((cxx, dsrc, os.path.join(obj_dir, "dx_" + os.path.basename(dsrc)[:-4] + ".o"),
+                                ["-I" + direct] + vflags, ddeps))
+        jobs += direct_jobs
     vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
     if vk_only:
-        jobs = list(vk_jobs)
+        jobs = list(vk_jobs) + direct_jobs
     if a.dry_run:   # (the compile starts here: what it would read, said and checked, and nothing compiled)
         missing = sorted({j[1] for j in jobs if not os.path.isfile(j[1])} |
                          ({vk_prebuilt} if vk_prebuilt and not os.path.isfile(vk_prebuilt) else set()))
@@ -1038,7 +1048,7 @@ def main():
     print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
     if still:
         return 1
-    vk_objs = {j[2] for j in vk_jobs}
+    vk_objs = {j[2] for j in vk_jobs + direct_jobs}   # (the back ends' objects: not the exe's)
     objs = [j[2] for j in jobs if j[2] not in vk_objs]
     rsp = os.path.join(out, "objs.rsp")
     open(rsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in objs))
@@ -1134,6 +1144,21 @@ def main():
         if LINUX and not check_vk_symbols(vdll):
             return 1
         print("linked %s: %d MB (%.0fs)" % (vdll, os.path.getsize(vdll) >> 20, time.time() - t))
+    if direct_jobs:   # (hookshot_direct.so: as hookshot_vk.so's link, its own objects only)
+        ddll = os.path.join(out, "hookshot_direct.so")
+        drsp = os.path.join(out, "direct_objs.rsp")
+        open(drsp, "w", encoding="utf-8").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in direct_jobs))
+        t = time.time()
+        link = [toolchain.need(toolchain.find("clang++"))] + target() + [
+            "-fuse-ld=lld", "-shared", "-o", ddll, "-Wl,-Map=" + ddll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
+            "-static-libstdc++", "-static-libgcc", "@" + drsp, "-ldl", "-lpthread", "-lm"]
+        r = subprocess.run(link, capture_output=True, text=True)
+        if r.returncode:
+            print("hookshot_direct.so link FAILED\n" + (r.stdout + r.stderr)[-3000:])
+            return 1
+        if not check_vk_symbols(ddll):
+            return 1
+        print("linked %s: %d MB (%.0fs)" % (ddll, os.path.getsize(ddll) >> 20, time.time() - t))
     if a.dll and not a.only:
         dll = os.path.join(out, "hookshot_game.dll")   # (+ hookshot_game.map: crash offsets -> f_<guest address>)
         t = time.time()

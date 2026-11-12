@@ -1,0 +1,326 @@
+// The guest's submits, its fences and its events (docs/direct/m1-interface.md; plan, Submission). One Vulkan queue with one
+// timeline semaphore: every NVN submission that has run past its waits is one vkQueueSubmit2 that signals the next value.
+//
+// An NVN queue's submissions run in order. A submission's frame-level ops (direct_lists.cpp) are applied when it runs: an
+// event signal writes the event's word in guest memory (the value the game polls), a report writes its counter, and a wait
+// whose event does not hold the value yet stops that queue there (held on the host, as the console's GPU would stall the
+// queue) until another queue's signal or the CPU's (nvnEventSignal) meets it. nvnQueueWaitSync holds the queue's next
+// submission until the fence's submission has been sent. An NVN fence names its queue and the submission (its sequence
+// number on that queue); a CPU wait for it waits until that submission is sent and then for its timeline value on the GPU.
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <deque>
+#include <unordered_map>
+
+#include "direct_internal.h"
+#include "direct_lists.h"
+
+namespace hsd {
+namespace {
+
+using clk = std::chrono::steady_clock;
+constexpr int kFenceQueueShift = 40;   // (a fence: (queue index + 1) << 40 | its sequence number on that queue)
+
+VkSemaphore timeline = VK_NULL_HANDLE;
+std::atomic<uint64_t> sent{0};   // (the newest value submitted)
+
+struct Sub {
+    std::vector<List*> lists;   // (referenced until it has run)
+    std::vector<const FrameOp*> ops;
+    size_t at = 0;
+    uint64_t seq = 0;
+    std::vector<uint64_t> wait_fences;   // (nvnQueueWaitSync before it: fences of other queues)
+    clk::time_point held_since{};
+    bool held = false;
+};
+struct Queue {
+    uint64_t id = 0;
+    uint32_t index = 0;
+    uint64_t seq = 0;        // (submissions handed in)
+    uint64_t seq_sent = 0;   // (submissions run and sent)
+    std::deque<Sub> subs;    // (not run yet: the first may be held at a wait)
+    std::vector<uint64_t> wait_fences;   // (for the next submission)
+    std::deque<std::pair<uint64_t, uint64_t>> values;   // (seq -> timeline value of the recent ones, oldest first)
+};
+std::mutex mu;   // (the queues, their submissions, the event and report writes; queue_mu is taken inside it)
+std::condition_variable sent_cv;   // (a submission sent: CPU waits for a fence not sent yet)
+std::vector<Queue*> queues;   // (by index; never freed)
+std::unordered_map<uint64_t, Queue*> by_id;
+
+// counts since the last line (mu held, or atomic)
+int64_t st_submits = 0, st_held = 0, st_waits_met = 0, st_signals = 0, st_reports = 0, st_resets = 0, st_fence_held = 0;
+double st_hold_max_ms = 0;
+std::atomic<int64_t> st_submit_ns{0}, st_submit_max_ns{0}, st_cpu_waits{0}, st_cpu_wait_ns{0}, st_cpu_signals{0};
+
+Queue* queue_of(uint64_t id) {   // (mu held)
+    auto it = by_id.find(id);
+    if (it != by_id.end()) return it->second;
+    Queue* q = new Queue;
+    q->id = id;
+    q->index = (uint32_t)queues.size();
+    queues.push_back(q);
+    by_id[id] = q;
+    logf("direct: NVN queue %#llx is queue %u", (unsigned long long)id, q->index);
+    return q;
+}
+uint64_t fence_of(const Queue* q, uint64_t seq) { return (uint64_t)(q->index + 1) << kFenceQueueShift | seq; }
+
+/// The timeline value of a fence's submission once it is sent (mu held): true and the value, false while it is not sent.
+/// A sequence number older than the ones kept: its queue's oldest kept value bounds it
+bool fence_value(uint64_t fence, uint64_t& value) {
+    const uint64_t qi = (fence >> kFenceQueueShift) - 1, seq = fence & ((1ull << kFenceQueueShift) - 1);
+    if (!fence || qi >= queues.size() || !seq) return value = 0, true;
+    const Queue* q = queues[qi];
+    if (seq > q->seq_sent) return false;
+    value = 0;
+    for (const auto& [s, v] : q->values)
+        if (s >= seq) return value = v, true;
+    return true;   // (none kept: long done)
+}
+
+bool event_wait_met(uint32_t have, uint32_t mode, uint32_t want) {
+    return mode == 0 ? have == want : (int32_t)(have - want) >= 0;   // (NVN: EQUAL, GEQUAL_WRAP)
+}
+
+/// The counter's report, as the game reads it: {value, timestamp}. Timestamps on the guest tick clock in counter ticks
+/// (19.2 MHz) at the moment the submission runs; samples passed reads 4096 (everything visible, the frozen back end's
+/// choice: RX_VK_OCC_FIXED), any other counter 0
+void write_report(const nvn_p_counter& c) {
+    const uint64_t ns = host->ticks() * 32;
+    const uint64_t rec[2] = {(uint32_t)c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 4096ull : 0ull, ns * 12 / 625};
+    host->gpu_write(c.addr, rec, sizeof rec);
+}
+
+/// A submission's ops from where it stopped; false: held at a wait not met (mu held)
+bool run(Sub& s) {
+    for (uint64_t f : s.wait_fences) {
+        uint64_t v;
+        if (!fence_value(f, v)) {
+            if (!s.held) st_fence_held++;
+            return false;
+        }
+    }
+    for (; s.at < s.ops.size(); s.at++) {
+        const FrameOp& o = *s.ops[s.at];
+        switch (o.op) {
+        case NOP_SIGNAL_EVENT: {
+            uint32_t v = o.value;
+            if (o.mode == NVN_EVENT_SIGNAL_MODE_ADD) {
+                uint32_t old = 0;
+                host->gpu_read(o.addr, &old, 4);
+                v += old;
+            }
+            host->gpu_write(o.addr, &v, 4);
+            st_signals++;
+            break;
+        }
+        case NOP_WAIT_EVENT: {
+            uint32_t have = 0;
+            host->gpu_read(o.addr, &have, 4);
+            if (!event_wait_met(have, o.mode, o.value)) return false;
+            st_waits_met++;
+            break;
+        }
+        case NOP_REPORT_COUNTER: write_report(o.counter), st_reports++; break;
+        case NOP_RESET_COUNTER: st_resets++; break;
+        default: break;
+        }
+    }
+    return true;
+}
+
+/// Every queue's first submissions run as far as they go, until none moves (a signal may let another queue on); each one
+/// that ran to its end sent (mu held)
+void progress() {
+    for (bool moved = true; moved;) {
+        moved = false;
+        for (Queue* q : queues) {
+            while (!q->subs.empty()) {
+                Sub& s = q->subs.front();
+                if (!run(s)) {
+                    if (!s.held) s.held = true, s.held_since = clk::now(), st_held++;
+                    break;
+                }
+                if (s.held) {
+                    const double ms = std::chrono::duration<double, std::milli>(clk::now() - s.held_since).count();
+                    if (ms > st_hold_max_ms) st_hold_max_ms = ms;
+                }
+                uint64_t wait_value = 0;   // (one timeline: the newest of the fences' values orders them all)
+                for (uint64_t f : s.wait_fences) {
+                    uint64_t v = 0;
+                    fence_value(f, v);
+                    wait_value = std::max(wait_value, v);
+                }
+                const uint64_t v = sync_send(wait_value);
+                q->seq_sent = s.seq;
+                q->values.push_back({s.seq, v});
+                while (q->values.size() > 64) q->values.pop_front();
+                for (List* l : s.lists) list_unref(l);
+                q->subs.pop_front();
+                st_submits++;
+                moved = true;
+            }
+        }
+    }
+    sent_cv.notify_all();
+}
+
+// ---- the table's sync entries ----
+void nvn_submit(const uint64_t*, int) {   // (the host's held submits: never in direct mode)
+    static int told;
+    if (!told++) logf("direct: nvn_submit called: the host holds submits (HOS_NVN_HOLD?), which direct mode does not use");
+}
+void nvn_submit_q(const uint64_t*, int, uint64_t) {
+    static int told;
+    if (!told++) logf("direct: nvn_submit_q called: the host should call hsd_submit in direct mode");
+}
+uint64_t nvn_fence() { return sent.load(std::memory_order_acquire); }
+uint64_t nvn_fence_q(uint64_t queue) {
+    std::lock_guard lk(mu);
+    const Queue* q = queue_of(queue);
+    return fence_of(q, q->seq);
+}
+uint64_t nvn_pushed() { return sync_pushed(); }
+uint64_t nvn_replayed() { return sync_completed(); }
+int nvn_wait(uint64_t fence, uint64_t timeout_ns) {
+    const auto t0 = clk::now();
+    uint64_t value = 0;
+    {
+        std::unique_lock lk(mu);
+        if (!fence_value(fence, value)) {
+            if (!timeout_ns) return 0;
+            const auto until = t0 + std::chrono::nanoseconds(std::min<uint64_t>(timeout_ns, 3600ull * 1000000000ull));
+            if (!sent_cv.wait_until(lk, until, [&] { return fence_value(fence, value); })) return 0;
+        }
+    }
+    if (!value || sync_completed() >= value) return 1;
+    if (!timeout_ns) return 0;
+    const uint64_t spent = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count();
+    const bool ok = sync_wait_value(value, timeout_ns > spent ? timeout_ns - spent : 0);
+    st_cpu_waits.fetch_add(1, std::memory_order_relaxed);
+    st_cpu_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
+    return ok ? 1 : 0;
+}
+void nvn_finish() {   // (what is sent done; a submission held at a wait is not: it waits for another queue or the CPU)
+    const uint64_t v = sent.load(std::memory_order_acquire);
+    if (v) sync_wait_value(v, UINT64_MAX);
+}
+void nvn_event_signal(uint64_t, uint32_t) {   // (the host wrote the value: the queues held at waits may go on)
+    st_cpu_signals.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard lk(mu);
+    progress();
+}
+
+}  // namespace
+
+bool sync_init() {
+    VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+    ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    si.pNext = &ti;
+    if (vkCreateSemaphore(dev.device, &si, nullptr, &timeline) != VK_SUCCESS) {
+        logf("direct: no timeline semaphore");
+        return false;
+    }
+    return true;
+}
+uint64_t sync_pushed() { return sent.load(std::memory_order_acquire); }
+uint64_t sync_completed() {
+    uint64_t v = 0;
+    vkGetSemaphoreCounterValue(dev.device, timeline, &v);
+    return v;
+}
+bool sync_wait_value(uint64_t value, uint64_t timeout_ns) {
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &timeline;
+    wi.pValues = &value;
+    return vkWaitSemaphores(dev.device, &wi, timeout_ns) == VK_SUCCESS;
+}
+uint64_t sync_send(uint64_t wait_value) {
+    std::lock_guard qk(dev.queue_mu);
+    const uint64_t v = sent.load(std::memory_order_relaxed) + 1;
+    VkSemaphoreSubmitInfo sig{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    sig.semaphore = timeline, sig.value = v, sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkSemaphoreSubmitInfo wait = sig;
+    wait.value = wait_value;
+    VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    si.signalSemaphoreInfoCount = 1;
+    si.pSignalSemaphoreInfos = &sig;
+    if (wait_value) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &wait;   // (sent already: never a wait before its signal)
+    const VkResult r = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
+    if (r != VK_SUCCESS) {
+        logf("direct: vkQueueSubmit2 failed (VkResult %d)", (int)r);
+        if (r == VK_ERROR_DEVICE_LOST) {
+            host->log_flush();
+            abort();
+        }
+        return 0;
+    }
+    sent.store(v, std::memory_order_release);
+    return v;
+}
+
+void sync_stats(char* out, size_t cap, double frames) {
+    std::lock_guard lk(mu);
+    size_t held_now = 0;
+    for (const Queue* q : queues) held_now += q->subs.size();
+    const int64_t ns = st_submit_ns.exchange(0), mx = st_submit_max_ns.exchange(0);
+    std::snprintf(out, cap, "submits %.1f a frame (%.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
+                  "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms; %zu held now), fence waits held %lld, "
+                  "reports %.1f, resets %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); timeline %llu sent, %llu done",
+                  st_submits / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
+                  st_hold_max_ms, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
+                  st_cpu_signals.exchange(0) / frames, st_cpu_waits.exchange(0) / frames, st_cpu_wait_ns.exchange(0) / 1e6 / frames,
+                  (unsigned long long)sent.load(), (unsigned long long)sync_completed());
+    st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
+    st_hold_max_ms = 0;
+}
+
+void sync_fill_table(MkwVkRenderer& t) {
+    t.nvn_submit = nvn_submit;
+    t.nvn_submit_q = nvn_submit_q;
+    t.nvn_fence = nvn_fence;
+    t.nvn_fence_q = nvn_fence_q;
+    t.nvn_pushed = nvn_pushed;
+    t.nvn_replayed = nvn_replayed;
+    t.nvn_wait = nvn_wait;
+    t.nvn_finish = nvn_finish;
+    t.nvn_event_signal = nvn_event_signal;
+}
+
+}  // namespace hsd
+
+using namespace hsd;
+
+extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue, void* const* lists, uint32_t n) {
+    const auto t0 = clk::now();
+    Sub s;
+    s.lists.reserve(n);
+    for (uint32_t i = 0; i < n; i++) {
+        List* l = (List*)lists[i];
+        if (!l) continue;
+        list_ref(l);
+        list_submitted(l);
+        s.lists.push_back(l);
+        list_flatten(l, s.ops);
+    }
+    {
+        std::lock_guard lk(mu);
+        Queue* q = queue_of(queue);
+        s.seq = ++q->seq;
+        s.wait_fences.swap(q->wait_fences);
+        q->subs.push_back(std::move(s));
+        progress();
+    }
+    const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count();
+    st_submit_ns.fetch_add(ns, std::memory_order_relaxed);
+    for (int64_t m = st_submit_max_ns.load(); ns > m && !st_submit_max_ns.compare_exchange_weak(m, ns);) {}
+}
+
+extern "C" __attribute__((visibility("default"))) void hsd_queue_wait_fence(uint64_t queue, uint64_t fence) {
+    std::lock_guard lk(mu);
+    Queue* q = queue_of(queue);
+    q->wait_fences.push_back(fence);
+}
