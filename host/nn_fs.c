@@ -356,6 +356,21 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
             if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
                 hos_log("fs: OpenFile(%s): from the overlay", g);
                 snprintf(path, sizeof path, "%s", alt);
+                rel = NULL;
+            }
+        }
+        /* (native-vk A-rt) direct mode: a second root after it, the converted terrain tiles (host/direct_assets.c) */
+        const char *direct_assets_overlay(void);
+        void direct_assets_overlay_opened(const char *path);
+        static const char *ov2;
+        static int ov2_read;
+        if (!ov2_read) ov2 = direct_assets_overlay(), ov2_read = 1;
+        if (ov2 && !want_write && (rel || !ov) && (rel = rel ? rel : strstr(g, ":/"))) {
+            char alt[HOS_FS_PATH];
+            snprintf(alt, sizeof alt, "%s/%s", ov2, rel + 2);
+            if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
+                snprintf(path, sizeof path, "%s", alt);
+                direct_assets_overlay_opened(alt);
             }
         }
     }

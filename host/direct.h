@@ -17,6 +17,13 @@ typedef struct {
     void (*submit)(uint64_t queue, void *const *lists, uint32_t n);
     void (*queue_wait_fence)(uint64_t queue, uint64_t fence);
     void (*present_queue)(uint64_t queue);
+    /* (A-rt) prepared assets: host/direct_assets.c's loader hooks and game patches */
+    int (*assets_open)(const char *dir);
+    int (*asset_load)(const hsd_asset_key *k);
+    void (*asset_rebind)(const void *tex);
+    void (*asset_pool)(uint64_t lo, uint64_t hi);
+    void (*texels)(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
+                   uint64_t row, uint64_t img);
 } hsd_fns;
 
 /* rx_backend.c: the library's list calls in direct mode (loaded at the first call, from any thread), NULL otherwise */
@@ -32,4 +39,14 @@ void hsd_classify(Ctx *c, hsd_list_info *info);
 uint8_t *hsd_scratch(void *volatile *list, volatile int32_t *pending, uint32_t size);
 /* direct.c: this thread's record that waits, to the back end now (EndRecording, CallCommands, CopyCommands, a submit) */
 void hsd_flush(void);
+
+/* direct_assets.c (A-rt): the host's asset patches are on (direct mode, and not HOS_DBG=noassets) */
+int direct_assets_on(void);
+/* nn_fs.c: the overlay root after HOS_FS_OVERLAY's in direct mode (the converted terrain tiles), NULL none; a file opened
+   from it (counted) */
+const char *direct_assets_overlay(void);
+void direct_assets_overlay_opened(const char *path);
+/* nvn_native.c nvnTextureInitialize: packaged texture data the back end never reads, its copy into the storage skipped
+   (1) in direct mode */
+int direct_assets_skip_packaged(uint64_t bytes);
 #endif

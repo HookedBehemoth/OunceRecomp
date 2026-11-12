@@ -773,7 +773,8 @@ NV(nvnTextureInitialize) {
     memcpy(o->layout, b->layout, 8);
     nvn_tex_layout(&o->d, &o->L);
     o->gpu = b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0;
-    if (b->pkg_data) {   /* packaged data: copied into the storage (a CPU write the dirty tracking sees) */
+    if (b->pkg_data && !direct_assets_skip_packaged(o->L.size)) {   /* packaged data: copied into the storage (a CPU write the
+                                                                       dirty tracking sees; direct mode: never read, skipped) */
         if (!o->gpu || !nvn_gpu_write(o->gpu, gw(b->pkg_data, o->L.size), o->L.size)) die("packaged texture data without storage");
     }
     o->serial = new_serial();
