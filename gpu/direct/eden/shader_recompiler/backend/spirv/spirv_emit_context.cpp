@@ -2830,6 +2830,13 @@ void EmitContext::DefineOutputs(const IR::Program& program) {
                 !profile.need_declared_frag_colors) {
                 continue;
             }
+            if (!need_dual_source && runtime_info.color_output_types[index] == AttributeType::Disabled) {
+                // (hookshot direct, M6b: no attachment at this location in the pass the variant is drawn in)
+                frag_color[index] = DefineVariable(*this, F32[4], std::nullopt, spv::StorageClass::Private);
+                frag_color_private[index] = true;
+                Name(frag_color[index], fmt::format("frag_color{}_unattached", index));
+                continue;
+            }
             const Id type{GetAttributeType(*this, runtime_info.color_output_types[index])};
             frag_color[index] = DefineOutput(*this, type, std::nullopt);
             // Correct mapping for dual-source blending

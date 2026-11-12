@@ -11,6 +11,7 @@
 
 #include "direct_dump.h"
 #include "direct_image.h"
+#include "direct_check.h"
 
 namespace hsd {
 namespace {
@@ -90,6 +91,7 @@ void to_general(VkCommandBuffer cb, VkImage image) {
 
 /// One target's copy recorded into cb (outside a rendering)
 DumpItem* copy(VkCommandBuffer cb, const Target& t, const char* what) {
+    const DebugObjects debug_aid;   // (M6b: its copies are not strict's events)
     Image* im = t.im;
     if (!im || im->placeholder || im->samples != VK_SAMPLE_COUNT_1_BIT) return nullptr;
     auto* it = new DumpItem;
@@ -279,10 +281,10 @@ void write_item(DumpItem& it, int n_seq) {
     for (char* c = path + dir.size() + 1; *c; c++)
         if (*c == ' ' || *c == ':' || *c == '/' || *c == '\\') *c = '_';
     write_png(path, rgba.data(), it.w, it.h);
-    // (M4g, HOS_DBG=dumpraw: a colour item's floats beside its PNG, <name>.f32: u32 width, u32 height, then RGBA32F rows; the
-    // dark values of HDR targets that the PNG rounds to 0)
+    // (M4g, HOS_DBG=dumpraw: a float item's values beside its PNG, <name>.f32: u32 width, u32 height, then RGBA32F rows; the
+    // dark values of HDR targets that the PNG rounds to 0. With dumpw:4096, the full-resolution dump scripts/direct_picture_check.py packs)
     static const bool raw = dbg("dumpraw");
-    if (raw && it.kind == 0 && !it.depth_bytes) {
+    if (raw && it.kind == 0) {   // (M6b: depth too, as the frozen back end's RX_VK_DUMP_RAW writes it: its value in R, G and B)
         std::snprintf(path + std::strlen(path) - 4, 5, ".f32");
         if (FILE* f = fopen(path, "wb")) {
             const uint32_t wh[2] = {it.w, it.h};
@@ -307,13 +309,14 @@ void dump_pass(List* l, VkCommandBuffer cb) {
     char what[96];
     for (int i = 0; i < l->pass.n; i++)
         if (l->pass.color[i].view) {
-            std::snprintf(what, sizeof what, "pass c%d prog 0000000000000000 list %s rt %llu", i,
+            std::snprintf(what, sizeof what, "pass c%d prog %016llx list %s rt %llu", i, (unsigned long long)l->pass.last_prog,
                           l->info.kind == HSD_LIST_GATE ? "gate" : l->info.kind == HSD_LIST_LAYER ? "layer" : "other",
                           (unsigned long long)l->pass.set_rt_at);
             if (DumpItem* it = copy(cb, l->pass.color[i], what)) l->dumps.push_back(it), st_recorded++;
         }
     if (l->pass.depth.view) {
-        std::snprintf(what, sizeof what, "pass depth prog 0000000000000000 rt %llu", (unsigned long long)l->pass.set_rt_at);
+        std::snprintf(what, sizeof what, "pass depth prog %016llx rt %llu", (unsigned long long)l->pass.last_prog,
+                      (unsigned long long)l->pass.set_rt_at);
         if (DumpItem* it = copy(cb, l->pass.depth, what)) l->dumps.push_back(it);
     }
 }

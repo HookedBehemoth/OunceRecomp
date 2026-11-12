@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 
+#include "direct_check.h"
 #include "shader_recompiler/shader_info.h"
 
 #include "direct_heap.h"
@@ -89,7 +90,7 @@ bool make_mapped(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, 
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = buffer;
     address = vkGetBufferDeviceAddress(dev.device, &da);
-    st_objects.fetch_add(2, std::memory_order_relaxed);
+    object_made(2, "a mapped buffer");
     return address != 0;
 }
 

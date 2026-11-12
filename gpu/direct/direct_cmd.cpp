@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_lists.h"
 
@@ -41,7 +42,7 @@ VkCommandPool make_pool(VkCommandPoolCreateFlags flags) {
         host->log_flush();
         abort();
     }
-    st_objects.fetch_add(1, std::memory_order_relaxed);
+    object_made(1, "a command pool");
     return p;
 }
 Thread& me() {
@@ -62,12 +63,32 @@ VkCommandBuffer alloc_buffer(VkCommandPool pool, VkCommandBufferLevel level = VK
         host->log_flush();
         abort();
     }
-    st_objects.fetch_add(1, std::memory_order_relaxed);
+    object_made(1, level == VK_COMMAND_BUFFER_LEVEL_PRIMARY ? "a command buffer" : "a secondary command buffer");
     st_buffers.fetch_add(1, std::memory_order_relaxed);
     return cb;
 }
 
+// (M6b) The command buffers all threads took in a frame, by frame (mod 4), and the most of any frame so far: a thread can be
+// handed at most a whole frame's lists, so a slot that records is grown to that at its reset, by its own thread. Its buffers
+// then grow only when a frame needs more than any frame before it (an area loads), never because the job system handed this
+// thread a larger share than it had before (M6b: that grew 80 secondaries over minutes of steady Kokiri)
+std::atomic<int64_t> frame_bufs[4], frame_secs[4];
+std::atomic<size_t> most_bufs{0}, most_secs{0};
+void grow(CmdSlot& s, std::vector<VkCommandBuffer>& v, size_t to, VkCommandBufferLevel level) {
+    to = (to + 15) & ~size_t(15);
+    while (v.size() < to) v.push_back(alloc_buffer(s.pool, level));
+}
+
 }  // namespace
+
+void cmd_frame_presented(uint64_t n) {
+    if (n < 2) return;
+    for (auto [f, most] : {std::pair{frame_bufs, &most_bufs}, std::pair{frame_secs, &most_secs}}) {
+        const size_t done = (size_t)f[(n - 2) & 3].load(std::memory_order_relaxed);
+        for (size_t m = most->load(std::memory_order_relaxed); done > m && !most->compare_exchange_weak(m, done);) {}
+        f[(n + 1) & 3].store(0, std::memory_order_relaxed);
+    }
+}
 
 CmdSlot* cmd_slot_take() {
     Thread& t = me();
@@ -95,6 +116,8 @@ CmdSlot* cmd_slot_take() {
             task_pool_reset(s.task);
             s.used = 0, s.secs_used = 0;
             st_resets.fetch_add(1, std::memory_order_relaxed);
+            if (!s.bufs.empty()) grow(s, s.bufs, most_bufs.load(std::memory_order_relaxed), VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+            if (!s.secs.empty()) grow(s, s.secs, most_secs.load(std::memory_order_relaxed), VK_COMMAND_BUFFER_LEVEL_SECONDARY);
         }
         s.frame = frame;
     }
@@ -106,7 +129,7 @@ VkCommandBuffer cmd_buffer(CmdSlot* s) {
     if (s->used == s->bufs.size()) {
         // (a slot's buffers made in batches: 16 at its first use, then as many again. One at a time, a thread's peak (the job
         // system hands it a few more lists in some frame) grew over minutes of play)
-        const size_t more = std::max<size_t>(16, s->bufs.size());
+        const size_t more = std::max<size_t>({16, s->bufs.size(), most_bufs.load(std::memory_order_relaxed)});
         for (size_t i = 0; i < more; i++) s->bufs.push_back(alloc_buffer(s->pool));
         static std::atomic<int> told{0};   // (made in play: named, with what holds the slot)
         if (present_count() > 1200 && told++ < 30)
@@ -114,6 +137,7 @@ VkCommandBuffer cmd_buffer(CmdSlot* s) {
                  (unsigned long long)present_count(), (void*)s, s->bufs.size(), (unsigned long long)s->frame, s->live.load());
     }
     VkCommandBuffer cb = s->bufs[s->used++];
+    frame_bufs[s->frame & 3].fetch_add(1, std::memory_order_relaxed);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
     vkBeginCommandBuffer(cb, &bi);
@@ -122,7 +146,7 @@ VkCommandBuffer cmd_buffer(CmdSlot* s) {
 
 VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags flags) {
     if (s->secs_used == s->secs.size()) {
-        const size_t more = std::max<size_t>(16, s->secs.size());
+        const size_t more = std::max<size_t>({16, s->secs.size(), most_secs.load(std::memory_order_relaxed)});
         for (size_t i = 0; i < more; i++) s->secs.push_back(alloc_buffer(s->pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY));
         static std::atomic<int> told{0};
         if (present_count() > 1200 && told++ < 30)
@@ -130,6 +154,7 @@ VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags
                  (void*)s, s->secs.size());
     }
     VkCommandBuffer cb = s->secs[s->secs_used++];
+    frame_secs[s->frame & 3].fetch_add(1, std::memory_order_relaxed);
     VkCommandBufferInheritanceRenderingInfo ri{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};
     ri.flags = flags;
     ri.colorAttachmentCount = f.n;
@@ -150,7 +175,7 @@ VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags
 
 VkCommandBuffer cmd_secondary_plain(CmdSlot* s) {
     if (s->secs_used == s->secs.size()) {
-        const size_t more = std::max<size_t>(16, s->secs.size());
+        const size_t more = std::max<size_t>({16, s->secs.size(), most_secs.load(std::memory_order_relaxed)});
         for (size_t i = 0; i < more; i++) s->secs.push_back(alloc_buffer(s->pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY));
         static std::atomic<int> told{0};
         if (present_count() > 1200 && told++ < 30)
@@ -158,6 +183,7 @@ VkCommandBuffer cmd_secondary_plain(CmdSlot* s) {
                  (void*)s, s->secs.size());
     }
     VkCommandBuffer cb = s->secs[s->secs_used++];
+    frame_secs[s->frame & 3].fetch_add(1, std::memory_order_relaxed);
     VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;

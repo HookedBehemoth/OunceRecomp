@@ -10,6 +10,7 @@
 #include <shared_mutex>
 #include <vector>
 
+#include "direct_check.h"
 #include "direct_assets.h"
 #include "direct_cmd.h"
 #include "direct_heap.h"
@@ -500,7 +501,7 @@ VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uin
                  level, layer);
         v = VK_NULL_HANDLE;
     } else {
-        st_objects.fetch_add(1, std::memory_order_relaxed);
+        object_made(1, "an attachment view");
     }
     im->views[key] = v;
     return v;

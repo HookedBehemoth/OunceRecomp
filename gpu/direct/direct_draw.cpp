@@ -2,6 +2,7 @@
 // topology, vertex_format, target_write_mask) and the calls gpu/vk/eng_job.cpp's (on_draw), without the replay's diff caches
 // (each command buffer sets everything once: RADV inherits no dynamic state) and without its special cases (the shadow and
 // cascade depth biases, the EQ bias, footprints: plan rule 8).
+#include <string>
 #include <algorithm>
 #include <bit>
 #include <cstdlib>
@@ -12,6 +13,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "direct_pass.h"
+#include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
@@ -669,6 +672,15 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     static const bool clamp = dbg("uboclamp");   // (M4a, a diagnosis: reads past the bound range give zeros, through a copy)
     if (u.bytes > size) {
         bump(me().past_range);
+        // (M6b: a dynamically indexed array (Eden's used size, 64 KB) is not a read past the range: the bound is the translator's
+        // not knowing the index, and the game binds the range its index stays in. A read at a constant offset past the bound
+        // range is one: Maxwell reads zeros there, this reads the memory after it. Strict's event)
+        if (strict_on() && u.bytes < 0x10000) {
+            char w[512];
+            pass_where(l, w, sizeof w);
+            strict_event("a uniform buffer read at a constant offset past its bound range", "program %016llx stage %u c%u reads %u bytes, %llu bound; %s",
+                         (unsigned long long)p.key, u.stage, u.index, u.bytes, (unsigned long long)b.size, w);
+        }
         static std::atomic<int> told{0};
         if (told.load(std::memory_order_relaxed) < 12 && told++ < 12)
             logf("direct: program %016llx stage %u reads c%u up to %u bytes, %llu bound (%s)", (unsigned long long)p.key, u.stage,
@@ -777,7 +789,7 @@ bool drawlog_on() {
 /// texture, the list's kind and return address, the program
 void phlog(const List* l, const DrawProg* p) {
     static const bool on = dbg("phlog");
-    if (!on || !p) return;
+    if ((!on && !strict_on()) || !p) return;
     static std::mutex mu;
     static std::vector<uint8_t> seen(1u << 20);
     const DState& s = l->dctx->s;
@@ -785,6 +797,17 @@ void phlog(const List* l, const DrawProg* p) {
         if (t.computed || t.secondary) continue;
         const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0, id = h & 0xFFFFF;
         if (!h) continue;
+        if (strict_on()) {   // (M6b: every draw that samples one, by a handle in a driver bank; handles in game buffers are not seen here)
+            if (const int ph = heap_placeholder(id)) {
+                char e[320], w[512];
+                heap_describe(id, e, sizeof e);
+                pass_where(l, w, sizeof w);
+                strict_event(ph == 1 ? "the placeholder texture sampled" : "a texture with no image sampled",
+                             "handle %#x (c%u+%#x of stage %u), program %016llx: %s; %s", h, t.bank, t.offset, t.stage,
+                             (unsigned long long)p->key, e, w);
+            }
+            if (!on) continue;
+        }
         {
             std::lock_guard lk(mu);
             if (seen[id]) continue;
@@ -874,7 +897,9 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
 std::atomic<bool> scene_seen{false};   // (M4a: draw_scene_up)
 uint64_t tsc_device = 0;
 int64_t t_device = 0;   // (host->now_ns() when the draws' device part was made: the start of the start-time lines)
+void strict_draw(List* l, Reason r);
 void count(List* l, Reason r) {
+    if (r != R_DRAWN && strict_on()) strict_draw(l, r);
     if (r == R_DRAWN) l->n_drawn++;
     else if (r == R_MESH || r == R_TASK_MESH) l->n_mesh++;
     else if (r == R_STEP_A) l->n_step_a++;
@@ -891,6 +916,14 @@ void count(List* l, Reason r) {
     }
     bump(me().by_kind[l->info.kind][r]);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
+}
+/// (M6b) A draw not drawn, for strict mode (direct_check.h): what (the reason, the program as the list's state names it) and where
+void strict_draw(List* l, Reason r) {
+    char where[512], prog[400] = "";
+    pass_where(l, where, sizeof where);
+    if (l->dctx) shader_describe(l->dctx->s, prog, sizeof prog);
+    if (r == R_TRANSLATING || r == R_NOT_PARSED) strict_program_miss((std::string("draw: ") + kReasons[r] + "; " + prog + "; " + where).c_str());
+    else strict_event(kReasons[r], "draw: %s; %s", prog, where);
 }
 /// (M4b) a share of the drawn, counted beside them
 void sub(List* l, Reason r) { bump(me().by_kind[l->info.kind][r]); }
@@ -1082,9 +1115,11 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (prim == NVN_DRAW_PRIMITIVE_QUADS) return count(l, R_QUADS);
         if (!topology(prim, topo)) return count(l, R_TOPOLOGY);
     }
-    uint8_t ct[8]{};   // (the targets' colour types; a list with none of its own (a job): float, as every logged pass)
+    // (the targets' colour types (Shader::AttributeType); a list with none of its own: float, as every logged pass. M6b: a location
+    // with no attachment is Disabled (5): the variant writes no output there, as Vulkan's validation asks)
+    uint8_t ct[8]{};
     if (records)
-        for (int i = 0; i < p.n; i++) ct[i] = color_type(p.color[i].format);
+        for (int i = 0; i < 8; i++) ct[i] = i < p.n && p.color[i].format != VK_FORMAT_UNDEFINED ? color_type(p.color[i].format) : 5;
     ShaderMiss why = SM_NONE;
     const DrawProg* prog;
     uint64_t ctw;
@@ -1165,9 +1200,19 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     }
     {   // (M4b: a storage buffer slot the program reads that nothing bound in this list: read as the null window, counted)
         bool unbound = false;
+        int ust = 0, uslot = 0;
         for (int st = 0; st < kStages && !unbound; st++)
-            for (uint32_t m = prog->ssbo_slots[st]; m && !unbound; m &= m - 1) unbound = !s.ssbo[st][std::countr_zero(m)].addr;
-        if (unbound) bump(mesh ? me().unbound_mesh : me().unbound_draws);
+            for (uint32_t m = prog->ssbo_slots[st]; m && !unbound; m &= m - 1)
+                if (!s.ssbo[st][std::countr_zero(m)].addr) unbound = true, ust = st, uslot = std::countr_zero(m);
+        if (unbound) {
+            bump(mesh ? me().unbound_mesh : me().unbound_draws);
+            if (strict_on()) {   // (M6b)
+                char w[512];
+                pass_where(l, w, sizeof w);
+                strict_event("a storage buffer slot read that nothing bound (the null window)", "draw: program %016llx stage %d slot %d; %s",
+                             (unsigned long long)prog->key, ust, uslot, w);
+            }
+        }
     }
     uint8_t push[256];
     std::memset(push, 0, prog->push_bytes);
@@ -1266,6 +1311,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
+        l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
         count(l, R_DRAWN);
         sub(l, mesh_ind ? R_DRAWN_MESH_INDIRECT : R_DRAWN_MESH);
         if (prog->task) sub(l, R_DRAWN_TASK), task_count.drawn = true;
@@ -1287,6 +1333,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     } else {
         vkCmdDraw(cb, (uint32_t)dr.count, (uint32_t)std::max(1, dr.instances), (uint32_t)dr.first, (uint32_t)dr.base_instance);
     }
+    l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
     count(l, R_DRAWN);
     if (ind) sub(l, R_DRAWN_INDIRECT);
     if (gated) st_gated[l->info.kind].fetch_add(1, std::memory_order_relaxed);
@@ -1344,7 +1391,7 @@ void draw_window_table_init() {
             VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
             da.buffer = nb;
             null_window = vkGetBufferDeviceAddress(dev.device, &da);
-            st_objects.fetch_add(1, std::memory_order_relaxed);
+            object_made(1, "the null window");
         }
     }
     std::memset(map, 0, kTableBytes);

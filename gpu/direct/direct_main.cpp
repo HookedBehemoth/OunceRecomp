@@ -16,6 +16,7 @@
 #include "direct_heap.h"
 #include "direct_shader.h"
 #include "direct_query.h"
+#include "direct_check.h"
 
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
@@ -112,6 +113,7 @@ bool create_instance() {
     app.apiVersion = VK_API_VERSION_1_4;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
+    validation_instance_info(ci, exts, all);   // (M6b: the messenger, when the validation layer is in the process)
     ci.enabledExtensionCount = (uint32_t)exts.size();
     ci.ppEnabledExtensionNames = exts.data();
     if (vkCreateInstance(&ci, nullptr, &dev.instance) != VK_SUCCESS) {
@@ -121,6 +123,7 @@ bool create_instance() {
 #define HSD_VK_LOAD(f) f = (PFN_##f)get_instance_proc(dev.instance, #f);
     HSD_VK_INSTANCE(HSD_VK_LOAD)
 #undef HSD_VK_LOAD
+    validation_instance_made(dev.instance);
     return true;
 }
 

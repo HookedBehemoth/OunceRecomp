@@ -57,9 +57,13 @@ struct PassRec {
     uint32_t load = 0;   // (bits 0-7 colour, 8 depth, 9 stencil: cleared by the load op at the begin)
     VkClearValue clear[10]{};
     int32_t scissor[4]{};
+    float viewport[4]{};   // (M6b: viewport 0, kept as the scissor is: a pass with no target is drawn over its area)
+    bool bare = false;     // (M6b: SetRenderTargets set no target: a rendering with no attachments, the viewport's area, as NVN draws it)
     bool render_enabled = true;
     int64_t copy_stride = 0;
     uint64_t set_rt_at = 0;   // (its SET_RT's number in the list, for the dump's names)
+    uint64_t last_prog = 0;   // (M6b: the program of its rendering's last draw, a job's executed in it included: the dump's
+                              // pass identity, as the frozen back end names its passes; 0 after each rendering's end)
 };
 /// A list's commands in call order: its own command buffers and the callees (that have commands) between them
 struct Seg {
@@ -95,6 +99,7 @@ struct List {
     uint32_t pkt_ops = 0;
     std::vector<const List*> executed;   // (secondaries executed in its renderings: their slots go with its submissions)
     uint32_t sec_draws = 0;   // (a secondary's draw ops so far: its first is timed apart)
+    uint64_t last_prog = 0;   // (M6b: its last drawn program, a job's: its caller's pass takes it at the call)
     uint32_t n_drawn = 0, n_mesh = 0, n_step_a = 0;   // (its draws drawn, skipped as mesh draws, skipped by step A: per pass in the log)
     bool pending_barrier = false;   // (M2b: a barrier waiting for the list's next command: recorded with it)
     ListComp* cctx = nullptr;   // (M4a: made at its first compute state op)

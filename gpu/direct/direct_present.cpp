@@ -22,6 +22,7 @@
 #include "direct_internal.h"
 #include "direct_pass.h"
 #include "direct_query.h"
+#include "direct_check.h"
 #include "vk_present_rect.h"
 
 namespace hsd {
@@ -299,6 +300,10 @@ void log_line() {
     logf("direct: %s", b);
     draw_log(frames);   // (M2b)
     compute_log(frames);   // (M4a)
+    validation_stats(b, sizeof b);   // (M6b)
+    logf("validation: %s", b);
+    strict_stats(b, sizeof b);
+    logf("strict: %s", b);
 }
 
 }  // namespace
@@ -364,6 +369,8 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     presents++;
     if (presents % 600 == 0) log_line();
     const uint64_t n = asked.fetch_add(1, std::memory_order_acq_rel) + 1;
+    strict_present(n);   // (M6b: arming)
+    cmd_frame_presented(n);
     image_sweep(n);
     assets_present(n);
     dump_present(n);

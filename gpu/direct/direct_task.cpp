@@ -6,6 +6,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
@@ -71,7 +72,7 @@ void init() {
         ci.pCode = task_prep_spv;
         ci.pName = "main";
         const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &prep);
-        if (r == VK_SUCCESS) st_objects.fetch_add(1, std::memory_order_relaxed);
+        if (r == VK_SUCCESS) object_made(1, "the task prep shader");
         ready = r == VK_SUCCESS && pDispatch && pDispatchIndirect && pUpdateBuffer;
         logf("direct: task steps (M4c): the task stage of task+mesh programs as a compute step, the mesh stage native; prep step %s (%d); "
              "a dispatch holds %u task workgroups, a mesh draw %u mesh workgroups", ready ? "made" : "NOT MADE: indirect task+mesh draws are skipped",
@@ -81,7 +82,7 @@ void init() {
 
 bool pool_make(TaskPool& p, uint64_t bytes) {
     if (!mapped_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, p.buffer, p.memory, p.map, p.address)) return false;
-    st_objects.fetch_add(2, std::memory_order_relaxed);
+    object_made(2, "a task pool buffer");
     p.bytes = bytes;
     std::memset(p.map, 0, kHeader);
     count(T_POOLS);
@@ -140,6 +141,8 @@ void task_pool_reset(TaskPool* p) {
     std::memcpy(w, p->map, sizeof w);   // (the GPU is past the slot's last use: its counters, for the line and the size)
     const int64_t used = (int64_t)w[0] * 4;
     for (int64_t m = st_pool_most.load(std::memory_order_relaxed); used > m && !st_pool_most.compare_exchange_weak(m, used);) {}
+    if (w[1]) strict_event(kNames[T_REFUSED], "%u draws refused by a pool of %llu MB (its use %lld bytes)", w[1], (unsigned long long)(p->bytes >> 20),
+                           (long long)used);   // (M6b)
     if (w[1] && p->bytes < kPoolMost) {
         count(T_REFUSED, w[1]);
         vkDestroyBuffer(dev.device, p->buffer, nullptr), vkFreeMemory(dev.device, p->memory, nullptr);
@@ -183,7 +186,10 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     if (!indirect) {
         if (!count_) return count(T_EMPTY), why = "no task workgroup", false;
         tasks = std::min(count_, max_tasks);
-        if (tasks < count_) count(T_CLIPPED);
+        if (tasks < count_) {
+            count(T_CLIPPED);
+            strict_event(kNames[T_CLIPPED], "program %016llx: %u task workgroups, %u dispatched", (unsigned long long)p.key, count_, tasks);   // (M6b)
+        }
         groups = (uint32_t)std::min<uint64_t>((uint64_t)tasks * threads, max_groups);
     }
     const uint64_t bytes = kHeader + 4ull * groups + 4ull * tasks * pw;

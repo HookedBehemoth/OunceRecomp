@@ -27,6 +27,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "direct_check.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -1164,7 +1165,7 @@ bool finish(Variant& v) {
                                   : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? "task (compute)" : "fragment", (int)r);
             return false;
         }
-        st_objects.fetch_add(1, std::memory_order_relaxed);
+        object_made(1, "a shader object");
         st_objects_made.fetch_add(1, std::memory_order_relaxed);
         (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? d.vs : st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? d.ms
          : st.vk_stage == VK_SHADER_STAGE_COMPUTE_BIT ? d.ts : d.fs) = obj;

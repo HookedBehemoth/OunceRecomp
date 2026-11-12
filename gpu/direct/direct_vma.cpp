@@ -3,6 +3,7 @@
 #define VMA_IMPLEMENTATION
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#include "direct_check.h"
 #include "direct_internal.h"
 #include <vk_mem_alloc.h>
 
@@ -36,7 +37,7 @@ bool mem_image(const VkImageCreateInfo& ci, VkImage& image, Mem*& mem) {
     VmaAllocation a = nullptr;
     if (vmaCreateImage(vma, &ci, &ai, &image, &a, nullptr) != VK_SUCCESS) return false;
     mem = (Mem*)a;
-    st_objects.fetch_add(1, std::memory_order_relaxed);
+    object_made(1, "an image");
     return true;
 }
 void mem_image_free(VkImage image, Mem* mem) { vmaDestroyImage(vma, image, (VmaAllocation)mem); }
@@ -53,7 +54,7 @@ bool mem_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBu
     if (vmaCreateBuffer(vma, &bi, &ai, &buffer, &a, &info) != VK_SUCCESS) return false;
     mem = (Mem*)a;
     if (mapped) *mapped = info.pMappedData;
-    st_objects.fetch_add(1, std::memory_order_relaxed);
+    object_made(1, "a buffer");
     return true;
 }
 void mem_buffer_free(VkBuffer buffer, Mem* mem) { vmaDestroyBuffer(vma, buffer, (VmaAllocation)mem); }

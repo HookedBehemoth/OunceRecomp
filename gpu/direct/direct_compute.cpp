@@ -23,6 +23,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "direct_check.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -773,7 +774,7 @@ bool finish(Variant& v, const Layout& lay) {
         return false;
     }
     st_cs_objects.fetch_add(1, std::memory_order_relaxed);
-    st_objects.fetch_add(1, std::memory_order_relaxed);
+    object_made(1, "a compute shader object");
     if (from_binary) st_from_binary.fetch_add(1, std::memory_order_relaxed);
     else bin_save(id, v.cs);
     if (v.skip) logf("direct: compute program %016llx cannot be dispatched: %s (skipped, counted)", (unsigned long long)v.key, v.skip);
@@ -944,7 +945,20 @@ ListComp& ctx(List* l) {
     return *l->cctx;
 }
 
-void count(List* l, Reason r) { bump(me().by_kind[l->info.kind][r]); }
+void strict_dispatch(List* l, Reason r);
+void count(List* l, Reason r) {
+    bump(me().by_kind[l->info.kind][r]);
+    if (strict_on() && r != D_DRAWN && r != D_INDIRECT && r != D_EMPTY) strict_dispatch(l, r);   // (M6b; an empty grid is NVN's no-op too)
+}
+
+/// (M6b) A dispatch not recorded, for strict mode: its program as the list's state names it and its list
+void strict_dispatch(List* l, Reason r) {
+    const uint64_t serial = l->cctx && l->cctx->has_prog ? l->cctx->prog.serial : 0;
+    char w[160];
+    std::snprintf(w, sizeof w, "dispatch: program serial %#llx; list kind %u lr %#llx", (unsigned long long)serial, l->info.kind, (unsigned long long)l->info.lr);
+    if (r == D_NOT_READ || r == D_TRANSLATING) strict_program_miss((std::string(kReasons[r]) + "; " + w).c_str());
+    else strict_event(kReasons[r], "%s", w);
+}
 
 /// The first dispatch of each variant, named (its grid, its list, what it binds; its images as bound)
 void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, const uint32_t grid[3], bool indirect) {
@@ -1282,7 +1296,13 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
                      (unsigned long long)present_count(), (unsigned long long)p.src, (unsigned long long)p.dst, (unsigned long long)p.size,
                      l->info.kind, (unsigned long long)l->info.lr);
         }
-        if (!p.size || !layer0_span(p.src, p.size, sb, so) || !layer0_span(p.dst, p.size, db, dof)) return bump(me().buf_ops[1]);
+        if (!p.size || !layer0_span(p.src, p.size, sb, so) || !layer0_span(p.dst, p.size, db, dof)) {
+            if (p.size)
+                strict_event("buffer copies skipped (not in layer 0)", "copy %#llx -> %#llx (%#llx bytes), list kind %u lr %#llx",
+                             (unsigned long long)p.src, (unsigned long long)p.dst, (unsigned long long)p.size, l->info.kind,
+                             (unsigned long long)l->info.lr);
+            return bump(me().buf_ops[1]);
+        }
         VkCommandBuffer cb = cmd(l);
         const VkBufferCopy r{so, dof, p.size};
         pCopyBuffer(cb, sb, db, 1, &r);
@@ -1293,7 +1313,12 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
     std::memcpy(&p, data, std::min<size_t>(sizeof p, size));
     VkBuffer db;
     VkDeviceSize dof;
-    if (!p.size || (p.dst & 3) || (p.size & 3) || !layer0_span(p.dst, p.size, db, dof)) return bump(me().buf_ops[3]);
+    if (!p.size || (p.dst & 3) || (p.size & 3) || !layer0_span(p.dst, p.size, db, dof)) {
+        if (p.size)
+            strict_event("buffer clears skipped (unaligned or not in layer 0)", "clear %#llx (%#llx bytes), list kind %u lr %#llx",
+                         (unsigned long long)p.dst, (unsigned long long)p.size, l->info.kind, (unsigned long long)l->info.lr);
+        return bump(me().buf_ops[3]);
+    }
     VkCommandBuffer cb = cmd(l);
     pFillBuffer(cb, db, dof, p.size, p.value);
     barrier(cb);

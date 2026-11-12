@@ -412,6 +412,10 @@ public:
     std::array<Id, 30> patches{};
 
     std::array<Id, 8> frag_color{};
+    // (hookshot direct, M6b) a colour output whose location has no attachment (color_output_types Disabled): a private
+    // variable, not an output, so the writes the program makes there are not written to an interface nothing reads (the
+    // alpha test still reads the first one)
+    std::array<bool, 8> frag_color_private{};
     Id sample_mask{};
     Id frag_depth{};
 

@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <mutex>
 
+#include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_compute.h"
 #include "direct_draw.h"
@@ -91,7 +92,13 @@ const char* const kNames[Q_COUNT] = {
     "conditions not in layer 0 (drawn)", "jobs executed under their caller's condition", "jobs executed in a counting rendering",
     "jobs with counters of their own executed in a counting rendering", "job reports never executed", "reports after a job with counters of its own since their reset (not NVN's value)"};
 std::atomic<int64_t> st[Q_COUNT];
-void count(int k, int64_t n = 1) { st[k].fetch_add(n, std::memory_order_relaxed); }
+void count(int k, int64_t n = 1) {
+    st[k].fetch_add(n, std::memory_order_relaxed);
+    // (M6b: a report not written, summed in part, or not NVN's value, and a condition not evaluated: strict's events)
+    if (strict_on() && (k == Q_TOO_MANY || k == Q_NO_ROOM || k == Q_NOT_MEMORY || k == Q_UNRECORDED || k == Q_COND_NOT_MEMORY ||
+                        k == Q_JOB_PENDING_LEFT || k == Q_CLOBBERED || k == Q_COND_PENDING))
+        strict_event(kNames[k], "%lld at present %llu", (long long)n, (unsigned long long)present_count());
+}
 
 ListQuery& qx(List* l) {
     if (!l->qctx) l->qctx = new ListQuery;
@@ -115,7 +122,7 @@ QSlot* slot_of(List* l) {
         host->log_flush();
         abort();
     }
-    st_objects.fetch_add(2, std::memory_order_relaxed);
+    object_made(2, "a command slot's query pools and report buffer");
     n->map = (uint8_t*)map;
     VkBufferDeviceAddressInfo ai{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     ai.buffer = n->buf;
@@ -297,7 +304,7 @@ void query_device_created() {
     ci.pCode = report_resolve_spv;
     ci.pName = "main";
     const VkResult r = heap_on() ? vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &resolve) : VK_ERROR_FEATURE_NOT_PRESENT;
-    if (r == VK_SUCCESS) st_objects.fetch_add(1, std::memory_order_relaxed);
+    if (r == VK_SUCCESS) object_made(1, "the report resolve shader");
     calibrate();
     ready = r == VK_SUCCESS && has_cond && cond_feat.conditionalRendering && pCopyResults && pCalibrated && dev.features.occlusionQueryPrecise &&
             dev.features.inheritedQueries;

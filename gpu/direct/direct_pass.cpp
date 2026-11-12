@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_compute.h"
 #include "direct_draw.h"
@@ -38,7 +39,7 @@ enum {
     S_COUNT
 };
 const char* const kNames[S_COUNT] = {
-    "SetRenderTargets", "with no target", "targets with no image", "renderings begun", "clears as load ops",
+    "SetRenderTargets", "with no target (drawn with no attachments)", "targets with no image", "renderings begun", "clears as load ops",
     "clears in a rendering", "masked clears skipped", "clears with no target", "clears not rendered", "draws",
     "dispatches", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
     "buffer ops in lists that record nothing", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
@@ -47,7 +48,26 @@ const char* const kNames[S_COUNT] = {
     "jobs' task steps run again (a job called again)"};
 std::atomic<int64_t> st[S_COUNT];
 std::atomic<int64_t> st_bits[16];   // (barriers by NVN bit)
-void count(int k) { st[k].fetch_add(1, std::memory_order_relaxed); }
+thread_local const List* tl_list = nullptr;   // (M6b: the list pass_emit, pass_call or a job's begin is handling: strict's where)
+thread_local uint32_t tl_op = 0;
+struct Handling {   // (M6b: tl_list and tl_op for the scope of one call)
+    const List* prev;
+    uint32_t prev_op;
+    Handling(const List* l, uint32_t op) : prev(tl_list), prev_op(tl_op) { tl_list = l, tl_op = op; }
+    ~Handling() { tl_list = prev, tl_op = prev_op; }
+};
+void strict_pass(int k) {
+    char w[512] = "no list";
+    if (tl_list) pass_where(tl_list, w, sizeof w);
+    strict_event(kNames[k], "op %u (after %u); %s", tl_op, tl_list ? tl_list->last_op : 0u, w);
+}
+void count(int k) {
+    st[k].fetch_add(1, std::memory_order_relaxed);
+    // (M6b: the counters of a skipped or dropped clear, copy or op are strict's events)
+    if (strict_on() && (k == S_NO_IMAGE || k == S_MASKED || k == S_CLEAR_NO_TARGET || k == S_CLEAR_DISABLED ||
+                        k == S_COPY_SKIPPED || k == S_CLEAR_TEX_SKIPPED || k == S_BUF_OPS || k == S_UNRECORDED || k == S_JOB_OUTSIDE))
+        strict_pass(k);
+}
 
 uint64_t thread_id() { return (uint64_t)pthread_self(); }
 
@@ -63,7 +83,19 @@ const char* const kJobNames[J_COUNT] = {
     "recorder asked: key known", "recorder asked: key not known (the game's early return)", "passes drawn inline",
     "passes drawn inline with no targets set"};
 std::atomic<int64_t> st_jobs[J_COUNT], st_first_ticks{0}, st_first_n{0}, st_other_ticks{0}, st_other_n{0};
-void jcount(int k) { st_jobs[k].fetch_add(1, std::memory_order_relaxed); }
+void strict_job(int k) {
+    char w[512] = "no list";
+    if (tl_list) pass_where(tl_list, w, sizeof w);
+    strict_event(kJobNames[k], "%s", w);
+}
+
+void jcount(int k) {
+    st_jobs[k].fetch_add(1, std::memory_order_relaxed);
+    // (M6b: a job not recorded, not executed or drawn inline is strict's event)
+    if (strict_on() && (k == J_NO_FORMATS || k == J_NO_NESTING || k == J_MISMATCH || k == J_UNENDED || k == J_NOT_SECONDARY || k == J_NO_PASS ||
+                        k == J_SIZE || k == J_INLINE_NO_PASS))
+        strict_job(k);
+}
 
 constexpr uint32_t kKeys = 1024, kSets = 256;
 struct KeySlot {
@@ -157,8 +189,17 @@ VkCommandBuffer cmd_raw(List* l) {
     return l->cur;
 }
 
+/// (M6b) A pass with no target: its area, the viewport's (x + w, y + h), as the frozen back end's bare_targets
+void bare_area(PassRec& p) {
+    const uint32_t most = std::min(dev.props.limits.maxFramebufferWidth, dev.props.limits.maxFramebufferHeight);
+    p.w = (uint32_t)std::clamp(p.viewport[0] + p.viewport[2], 1.0f, (float)most);
+    p.h = (uint32_t)std::clamp(p.viewport[1] + p.viewport[3], 1.0f, (float)most);
+    p.samples = VK_SAMPLE_COUNT_1_BIT;
+}
+
 void begin(List* l) {
     PassRec& p = l->pass;
+    if (p.bare) bare_area(p);   // (the viewport as the rendering begins: set after the SetRenderTargets, before the draw)
     VkCommandBuffer cb = cmd(l);
     VkRenderingAttachmentInfo ca[8]{}, da{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     for (int i = 0; i < p.n; i++) {
@@ -206,6 +247,7 @@ void suspend(List* l) {
     vkCmdEndRendering(l->cur);
     p.begun = false;
     dump_pass(l, l->cur);
+    p.last_prog = 0;
     query_flush(l, &cmd);   // (M5: its reports written, after it and before what follows)
 }
 void end_pass(List* l) {
@@ -218,10 +260,13 @@ void set_rt(List* l, const nvn_p_set_rt& r) {
     count(S_SET_RT);
     PassRec& p = l->pass;
     const int32_t scissor[4] = {p.scissor[0], p.scissor[1], p.scissor[2], p.scissor[3]};
+    float viewport[4];
+    std::memcpy(viewport, p.viewport, sizeof viewport);
     const bool enabled = p.render_enabled;
     const int64_t stride = p.copy_stride;
     p = PassRec{};
     std::memcpy(p.scissor, scissor, sizeof scissor);
+    std::memcpy(p.viewport, viewport, sizeof viewport);
     p.render_enabled = enabled, p.copy_stride = stride;
     p.set_rt_at = l->set_rts++;
     p.n = std::clamp(r.n, 0, 8);
@@ -255,7 +300,15 @@ void set_rt(List* l, const nvn_p_set_rt& r) {
         if (r.depth) std::snprintf(b + k, sizeof b - k, " depth %#llx %s", (unsigned long long)r.depth->gpu, p.depth.view ? "ok" : "none");
         logf("%s", b);
     }
-    if (!any) return count(S_EMPTY_RT);
+    if (!any) {   // (M6b: no target at all: drawn with no attachments over the viewport's area (a fragment stage that writes memory), as
+                  // NVN draws it and the frozen back end's bare_targets; a target set that has no image is counted apart, S_NO_IMAGE)
+        count(S_EMPTY_RT);
+        bool named = r.depth != nullptr;
+        for (int i = 0; i < p.n; i++) named |= r.color[i] != nullptr;
+        if (named) return;   // (targets named but none has an image: S_NO_IMAGE counted them)
+        p.n = 0, p.bare = true;
+        bare_area(p);
+    }
     p.noted = true;
 }
 
@@ -337,7 +390,7 @@ VkCommandBuffer barrier_buffer() {
         vkBeginCommandBuffer(c, &bi);
         record_barrier(c);
         vkEndCommandBuffer(c);
-        st_objects.fetch_add(2, std::memory_order_relaxed);
+        object_made(2, "the barrier command buffer");
         return c;
     }();
     return cb;
@@ -451,6 +504,7 @@ bool payload(const void* p, uint32_t size, T& out) {
 
 void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     PassRec& p = l->pass;
+    const Handling handling(l, op);
     struct Last {   // (the op before this one, for the copies' names)
         List* l;
         uint32_t op;
@@ -464,6 +518,11 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_SCISSOR: {
         nvn_p_scissor s;
         if (payload(data, size, s)) p.scissor[0] = s.x, p.scissor[1] = s.y, p.scissor[2] = s.w, p.scissor[3] = s.h;
+        return;
+    }
+    case NOP_VIEWPORTS: {   // (M6b: a pass with no target takes its area from it)
+        nvn_p_viewports v;
+        if (payload(data, size, v) && v.first == 0 && v.n > 0) std::memcpy(p.viewport, v.v[0], sizeof p.viewport);
         return;
     }
     case NOP_REPORT_COUNTER: case NOP_RESET_COUNTER: case NOP_RENDER_COND:   // (M5: on the GPU)
@@ -595,7 +654,16 @@ void task_job_step(List* l, const List* callee) {
     count(S_TASK_JOB_STEPS);
 }
 
+void pass_where(const List* l, char* out, size_t cap) {
+    const PassRec& p = l->pass;
+    const Target& t = p.n && p.color[0].im ? p.color[0] : p.depth;
+    std::snprintf(out, cap, "list kind %u lr %#llx%s, rt %llu %s %ux%u, target %#llx vk %d", l->info.kind, (unsigned long long)l->info.lr,
+                  l->secondary ? " (job)" : "", (unsigned long long)p.set_rt_at, p.noted ? "noted" : "not noted", p.w == UINT32_MAX ? 0 : p.w,
+                  p.h == UINT32_MAX ? 0 : p.h, t.im ? (unsigned long long)t.im->gpu : 0ull, (int)t.format);
+}
+
 void pass_call(List* l, const List* callee) {
+    const Handling handling(l, 0xffff);   // (a call)
     if (l->info.kind == HSD_LIST_GATE && draw_log_frame())
         logf("direct: drawlog gate call kind %u draws %d cmds %d (noted %d begun %d)", callee->info.kind, (int)callee->draws, (int)callee->has_cmds,
              (int)l->pass.noted, (int)l->pass.begun);
@@ -622,6 +690,7 @@ void pass_call(List* l, const List* callee) {
         query_execute(l, cmd(l), callee);   // (M5: no condition across it; the caller's query inherited, or ended)
         vkCmdExecuteCommands(cmd(l), 1, &callee->sec);
         query_executed(l, callee);
+        if (callee->last_prog) l->pass.last_prog = callee->last_prog;
         draw_invalidate(l);   // (the caller's dynamic state, shaders, buffers and push data are undefined after it)
         l->executed.push_back(callee);
         jcount(J_EXECUTED);
@@ -697,6 +766,7 @@ bool PassFormats::same(const PassFormats& o) const {
 }
 
 void pass_job_begin(List* l) {
+    const Handling handling(l, 0xfffe);   // (a job begun)
     const KeySlot* ks = key_slot(l->info.pass_key, false);
     const uint32_t set = ks ? ks->set.load(std::memory_order_acquire) : 0;
     if (!set) return jcount(J_NO_FORMATS);
@@ -759,6 +829,7 @@ extern "C" __attribute__((visibility("default"))) int hsd_pass_known(uint64_t ke
     const KeySlot* ks = key_slot(key, false);
     const bool known = ks && ks->set.load(std::memory_order_acquire);
     jcount(known ? J_KNOWN : J_MISSED);
+    if (!known) strict_event(kJobNames[J_MISSED], "pass key %#llx", (unsigned long long)key);   // (M6b)
     return known ? 1 : 0;
 }
 /// (M3a) The game's inline path (f_80681320) draws the pass of that key into the list now, after its SetRenderTargets: the

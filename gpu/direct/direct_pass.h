@@ -20,6 +20,8 @@ VkCommandBuffer pass_outside(List* l);
 /// (M4c) Its rendering begun again (loading) after pass_outside, with the draw's query and condition
 void pass_resume(List* l);
 void pass_stats(char* out, size_t cap, double frames);
+/// (M6b) Where a list is, for strict's events: its kind and return address, its pass (SET_RT number, size, first target)
+void pass_where(const List* l, char* out, size_t cap);
 /// (M3a) A job begun: its pass key's formats known, it is one rendering secondary of its thread's slot (l->secondary)
 void pass_job_begin(List* l);
 /// (M3a) The jobs' part of the 600-present line: recorded, executed, the format table, the keys drawn inline
