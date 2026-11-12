@@ -35,9 +35,9 @@ namespace l0 = mkwvk::l0;
 using clk = std::chrono::steady_clock;
 constexpr uint64_t G = l0::kGran;
 constexpr uint32_t kCpuNoAccess = 0x1, kCpuUncached = 0x2, kCpuCached = 0x4, kGpuNoAccess = 0x8, kPhysical = 0x100,
-                   kVirtual = 0x200;   // (NVNmemoryPoolFlags)
+                   kVirtual = 0x200, kShaderCode = 0x40;   // (NVNmemoryPoolFlags)
 constexpr uint64_t kBlock = 256ull << 20;
-constexpr uint64_t kChunkMb = 16, kPrefetchBytes = 64ull << 20, kVramLimit = 2048ull << 20;
+constexpr uint64_t kChunkMb = 16, kPrefetchBytes = 64ull << 20, kAheadMax = 1024ull << 20, kVramLimit = 2048ull << 20;
 constexpr double kKeepS = 10;
 
 constexpr VkBufferUsageFlags kWindowUsage =
@@ -563,6 +563,17 @@ void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t ke
         return;
     }
     const bool vr = vram_class(size, flags);
+    // (M4f) A host pool the GPU reads past kPrefetchBytes is bound ahead too, up to kAheadMax: shaders follow pointers the game
+    // stores in memory (probe and light tables in a 150 MB pool in Kokiri: m4f-report.md), and memory no binding names was
+    // never bound, so the window table read it as the null window: zeros. Left on use: pools the GPU cannot read, shader code
+    // (translated, never read), and the one larger than kAheadMax, the texture data pool (2.4 GB), whose texels the back end
+    // takes from the store and never from guest memory, so binding it would back pages nothing reads
+    if (on && !vr && size > kPrefetchBytes) {
+        const bool ahead = size <= kAheadMax && !(flags & (kGpuNoAccess | kVirtual | kShaderCode));
+        logf("direct: layer 0: pool %#llx+%#llx flags %#x past %llu MB: %s", (unsigned long long)gpu, (unsigned long long)size, flags,
+             (unsigned long long)(kPrefetchBytes >> 20), ahead ? "bound ahead" : "bound at its uses");
+        if (ahead) prefetch_pool(gpu, std::min(gpu + size, guest_bytes));
+    }
     if (on && vr) {
         {   // (the same pool again, kept since its finalize: handed back, nothing bound)
             std::lock_guard lk(mu);

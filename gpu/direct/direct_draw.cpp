@@ -794,9 +794,10 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
     phlog(l, p);
     if (!drawlog_on()) return;
     static std::atomic<int> n{0};
-    if (n++ > 2500) return;   // (M3b: every draw of the frame, jobs too)
+    if (n++ > 8000) return;   // (M3b: every draw of the frame, jobs too)
     char b[8192];
-    int k = std::snprintf(b, sizeof b, "direct: drawlog lr %#llx rt %llu: %s", (unsigned long long)l->info.lr, (unsigned long long)l->pass.set_rt_at, what);
+    int k = std::snprintf(b, sizeof b, "direct: drawlog lr %#llx kind %u rt %llu %ux%u c0 %d: %s", (unsigned long long)l->info.lr, l->info.kind,
+                          (unsigned long long)l->pass.set_rt_at, l->pass.w, l->pass.h, l->pass.n ? (int)l->pass.color[0].format : -1, what);
     if (p)
         k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " prog %016llx vs_loads %#x stores %#x comp %x push %u ubos %zu pushed %zu ra %d", (unsigned long long)p->key,
                            p->vs_loads, p->frag_stores, p->frag_components[0], p->push_bytes, p->ubos.size(), p->pushed.size(), p->uses_render_area);
@@ -842,7 +843,12 @@ void count(List* l, Reason r) {
             logf("direct: start: the first job draw at present %llu, %.2f s after the device", (unsigned long long)present_count(),
                  (host->now_ns() - t_device) / 1e9);
     }
-    if (r != R_DRAWN && l->info.kind != HSD_LIST_JOB && l->info.kind != HSD_LIST_LOAD) drawlog(l, kReasons[r], nullptr, nullptr, 0);
+    if (r != R_DRAWN && drawlog_on()) {   // (M4f: every list's skipped draws in the trace frame, with what was bound)
+        char why[512];
+        int k = std::snprintf(why, sizeof why, "skipped: %s; ", kReasons[r]);
+        if (l->dctx) shader_describe(l->dctx->s, why + k, sizeof why - k);
+        drawlog(l, why, nullptr, nullptr, 0);
+    }
     bump(me().by_kind[l->info.kind][r]);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
 }

@@ -53,6 +53,7 @@ extern thread_local u32 g_nvn2_compute_layout_end;
 
 namespace hsd {
 bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)
+bool layer0_bound(uint64_t lo, uint64_t hi);   // (direct_pools.cpp)
 double seconds_since_device();                                         // (direct_draw.cpp)
 
 namespace {
@@ -974,6 +975,49 @@ void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, cons
     logf("%s", b);
 }
 
+/// (M4f, HOS_DBG=drawlog:<present>, the per-draw trace's dispatch lines) every dispatch of that frame: program, grid or
+/// arguments, the storage and uniform buffers, each texture and image as its handle names it (heap_describe)
+void trace_dispatch(const Variant& v, const List* l, const uint8_t* bank, uint32_t n, const uint32_t grid[3], uint64_t args) {
+    static std::atomic<int> told{0};
+    if (told++ > 1500) return;
+    const ListComp& c = *l->cctx;
+    char b[6000];
+    int k = std::snprintf(b, sizeof b, "direct: drawlog dispatch lr %#llx kind %u prog %016llx ", (unsigned long long)l->info.lr, l->info.kind,
+                          (unsigned long long)v.key);
+    if (args) k += std::snprintf(b + k, sizeof b - k, "indirect %#llx", (unsigned long long)args);
+    else k += std::snprintf(b + k, sizeof b - k, "grid %ux%ux%u", grid[0], grid[1], grid[2]);
+    for (int i = 0; i < 16 && k < 4000; i++)
+        if (c.ssbo[i].addr) {
+            k += std::snprintf(b + k, sizeof b - k, " s%d=%#llx+%#llx", i, (unsigned long long)c.ssbo[i].addr, (unsigned long long)c.ssbo[i].size);
+            if (v.info.uses_global_memory && c.ssbo[i].size && c.ssbo[i].size <= 0x40) {   // (a table of pointers: each in layer 0 or not)
+                uint64_t w[8]{};
+                host->gpu_read(c.ssbo[i].addr, w, std::min<uint64_t>(c.ssbo[i].size, sizeof w));
+                for (int j = 0; j < 8 && k < 4000; j++) {
+                    if (!w[j]) continue;
+                    k += std::snprintf(b + k, sizeof b - k, " [+%d %#llx%s]", 8 * j, (unsigned long long)w[j],
+                                       layer0_bound(w[j], w[j] + 16) ? "" : " not bound in layer 0");
+                }
+            }
+        }
+    for (int i = 0; i < 16 && k < 4000; i++)
+        if (c.ubo[i].addr) k += std::snprintf(b + k, sizeof b - k, " u%d=%#llx+%#llx", i, (unsigned long long)c.ubo[i].addr, (unsigned long long)c.ubo[i].size);
+    for (const auto& t : v.info.texture_descriptors) {
+        if (k > 5000) break;
+        const uint32_t h = t.cbuf_index == 0 ? word_of(bank, n, t.cbuf_offset) : 0;
+        char e[320];
+        heap_describe(h & 0xFFFFF, e, sizeof e);
+        k += std::snprintf(b + k, sizeof b - k, " tex c%u+%#x=%#x(%s)", t.cbuf_index, t.cbuf_offset, h, e);
+    }
+    for (const auto& im : v.info.image_descriptors) {
+        if (k > 5600) break;
+        const uint32_t h = im.cbuf_index == 0 ? word_of(bank, n, im.cbuf_offset) : 0;
+        char e[320];
+        heap_describe(h & 0xFFFFF, e, sizeof e);
+        k += std::snprintf(b + k, sizeof b - k, " img c%u+%#x%s=%#x(%s)", im.cbuf_index, im.cbuf_offset, im.is_written ? " written" : "", h, e);
+    }
+    logf("%s", b);
+}
+
 }  // namespace
 
 void compute_state(List* l, uint32_t op, const void* a, uint32_t size) {
@@ -1184,6 +1228,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     else pDispatch(cb, grid[0], grid[1], grid[2]);
     draw_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
     tell_first(*v, l, map, v->bank_bytes, grid, indirect);
+    if (draw_log_frame()) trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
     count(l, D_DRAWN);
     if (indirect) count(l, D_INDIRECT);
 }
