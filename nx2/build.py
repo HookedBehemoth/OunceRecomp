@@ -978,17 +978,33 @@ def main():
     if build_vk and LINUX:
         direct = os.path.join(GPU, "direct")
         ddeps = tree_headers(direct, os.path.join(GPU, "render")) + open(os.path.join(vk, "vk_api.h"), "rb").read()
-        # (M2b: the direct back end's own shader stamp: the translator it links and the files that drive it, so its program
+        # (M3b: the direct back end's own fork of the translator, gpu/direct/eden: Eden's recompiler, sirit and their compat
+        # headers, built from there into dx_eden_* objects for hookshot_direct.so only. The frozen back end's objects and flags
+        # are not touched: its include folders are swapped for the fork's in the direct back end's flags, and suyu's root is
+        # left out (nothing of the fork includes it))
+        dx_eden = os.path.join(direct, "eden")
+        swap = {os.path.join(vk, "compat"): os.path.join(dx_eden, "compat"), os.path.join(vk, "eden"): dx_eden,
+                os.path.join(vk, "sirit", "include"): os.path.join(dx_eden, "sirit", "include"),
+                os.path.join(vk, "sirit", "src"): os.path.join(dx_eden, "sirit", "src")}
+        dflags = [("-I" + swap[f[2:]]) if f.startswith("-I") and f[2:] in swap else f for f in vflags
+                  if f != "-I" + os.path.join(GPU, "third_party", "suyu")]
+        # (M2b: the direct back end's own shader stamp: the translator it builds and the files that drive it, so its program
         # cache (hookshot_direct_programs.bin) is good for them only)
+        dtranslator = sorted(os.path.join(d, f) for d, _, fs in os.walk(dx_eden) for f in fs)
         dstamp = hashlib.sha1(usedforsecurity=False)
-        for f in sorted(translator) + [os.path.join(direct, n) for n in ("direct_shader.cpp", "direct_shader.h", "direct_state.h")]:
+        for f in dtranslator + [os.path.join(direct, n) for n in ("direct_shader.cpp", "direct_shader.h", "direct_state.h")]:
             if os.path.isfile(f):
                 with open(f, "rb") as src:
                     dstamp.update(os.path.relpath(f, GPU).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
         direct_stamp = "-DHOOKSHOT_DIRECT_SHADER_STAMP=0x%sull" % dstamp.hexdigest()[:16]
+        dx_eden_deps = tree_headers(dx_eden, os.path.join(GPU, "compat"))
+        for esrc in sorted(os.path.join(d, f) for sub in ("shader_recompiler", os.path.join("sirit", "src"))
+                           for d, _, fs in os.walk(os.path.join(dx_eden, sub)) for f in fs if f.endswith(".cpp")):
+            direct_jobs.append((cxx, esrc, os.path.join(obj_dir, "dx_eden_" + os.path.relpath(esrc, dx_eden).replace(os.sep, "_")[:-4] + ".o"),
+                                dflags, dx_eden_deps))
         for dsrc in sorted(os.path.join(direct, f) for f in os.listdir(direct) if f.endswith(".cpp")):
             direct_jobs.append((cxx, dsrc, os.path.join(obj_dir, "dx_" + os.path.basename(dsrc)[:-4] + ".o"),
-                                ["-I" + direct] + vflags + ["-I" + zstd] + ([direct_stamp] if os.path.basename(dsrc) == "direct_shader.cpp" else []),
+                                ["-I" + direct] + dflags + ["-I" + zstd] + ([direct_stamp] if os.path.basename(dsrc) == "direct_shader.cpp" else []),
                                 ddeps))   # (A-rt: the store's frames, direct_assets)
         jobs += direct_jobs
     vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
@@ -1156,8 +1172,8 @@ def main():
     if direct_jobs:   # (hookshot_direct.so: as hookshot_vk.so's link, its own objects only)
         ddll = os.path.join(out, "hookshot_direct.so")
         drsp = os.path.join(out, "direct_objs.rsp")
-        # (M2b: Eden's recompiler and sirit linked from the frozen back end's objects, docs/direct/m2-shader-contract.md step A)
-        translator_objs = [j[2] for j in vk_jobs if os.path.basename(j[2]).startswith(("vk_eden_", "vk_sirit_"))]
+        # (M3b: the translator is the fork's own objects, dx_eden_*, among direct_jobs; none of the frozen back end's)
+        translator_objs = []
         dzstd = [j[2] for j in vk_jobs if os.path.basename(j[2]).startswith("vk_zstd_")]   # (A-rt: zstd's decoder, as the renderer's)
         open(drsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in [j[2] for j in direct_jobs] + dzstd + translator_objs))
         t = time.time()
