@@ -32,7 +32,11 @@ are more than the noise had. A mean over the whole picture is printed but decide
 wrong channel, fails the pass however the rest cancels.
 
 The threshold. From the noise table: per pass identity, per tile and channel, the worst error between any two of >= 3 frozen
-runs; a tile's threshold is 2 x that, at least 2/255 (two 8-bit steps). A tile whose noise is above 0.05 (13 8-bit steps in a
+runs; a tile's threshold is 2 x that, at least 2/255 (two 8-bit steps). (M6d) For a float target (16- and 32-bit float colour,
+float depth) the floor is relative: 2/255 of the channel's own scale in the reference (its 99th percentile of |value|, at
+most 1, at least 1e-6), so a target whose values are all near 0.0005 fails when it is wrong by its own size (M6c: the
+occlusion grid's R16F input, negated, passed under the absolute floor); and HDR values keep their sign through
+x / (1 + |x|), so a negated target is not clipped to zero before it is compared. A tile whose noise is above 0.05 (13 8-bit steps in a
 tile's mean: something there moves between runs) is left out and counted. A pass is "not comparable at one frame" (animated,
 temporally accumulated, amortised cube faces) when under half its tiles are comparable, or when it is not in every frozen run:
 listed as such, not passed. A pass the noise table does not have is "no noise measured": listed, not passed.
@@ -49,6 +53,7 @@ LINE = re.compile(r"vk: dump (\d+) (pass (c\d+|depth) prog ([0-9a-f]{16})[^:]*):
 TILE = 16
 FLOOR = 2.0 / 255.0
 UNSTABLE = 0.05
+RELATIVE_FLOOR = True   # (M6d; `compare --absolute-floor` gives M6b's metric, for comparing verdicts across the change)
 NAMES = {37: "RGBA8", 43: "RGBA8_SRGB", 44: "BGRA8", 50: "BGRA8_SRGB", 64: "A2B10G10R10", 76: "R16F", 83: "RG16F",
          97: "RGBA16F", 98: "R32UI", 100: "R32F", 103: "RG32F", 109: "RGBA32F", 122: "B10G11R11F", 124: "D16", 126: "D32F",
          129: "S8", 130: "D32F_S8", 9: "R8", 16: "RG8", 70: "R16"}
@@ -183,8 +188,28 @@ def normalised(it, a):
     x = a.astype(N.float32)
     if it["slot"] != "depth" and it["format"] in HDR:
         with N.errstate(invalid="ignore", over="ignore"):
-            x = N.where(N.isfinite(x), N.maximum(x, 0) / (1.0 + N.maximum(x, 0)), x)
+            x = N.where(N.isfinite(x), x / (1.0 + N.abs(x)), x)   # (M6d: the sign kept)
     return x
+
+
+FLOAT_FORMATS = HDR | FLOAT32
+SCALE_MIN = 1e-6
+
+
+def channel_floor(it, na):
+    """(M6d) per channel, the smallest threshold a tile gets: FLOOR, or for a float target FLOOR x its own scale (the 99th
+    percentile of |value| in the reference, clamped to [SCALE_MIN, 1])"""
+    N = np()
+    c = na.shape[2] if na.ndim == 3 else 1
+    x = na.reshape(na.shape[0], na.shape[1], c)
+    if it["format"] not in FLOAT_FORMATS or it.get("kind") in ("u8", "u16", "png"):
+        return N.full(c, FLOOR, N.float32)
+    out = N.empty(c, N.float32)
+    for k in range(c):
+        v = N.abs(x[..., k][N.isfinite(x[..., k])])
+        sc = float(N.percentile(v, 99)) if v.size else 1.0
+        out[k] = FLOOR * min(1.0, max(SCALE_MIN, sc))
+    return out
 
 
 # ---- the metric ----
@@ -220,7 +245,8 @@ def pair_metric(ia, a, ib, b):
     with N.errstate(invalid="ignore"):
         mean = [float(N.nanmean(na[..., c]) - N.nanmean(nb[..., c])) for c in range(t.shape[2])]
     odd = int((N.isfinite(na) != N.isfinite(nb)).sum())   # (texels NaN or Inf on one side only)
-    return {"max": [float(t[..., c].max()) for c in range(t.shape[2])], "mean_diff": mean, "tiles": t, "nonfinite": odd}
+    return {"max": [float(t[..., c].max()) for c in range(t.shape[2])], "mean_diff": mean, "tiles": t, "nonfinite": odd,
+            "floor": channel_floor(ia, na)}
 
 
 # ---- identity and alignment ----
@@ -380,14 +406,15 @@ def verdict_row(r, u, ident, golden, run, noise_table, noise_maps, noise_names={
     if m is None:
         return "FAIL", "sizes differ"
     t = m["tiles"]
+    floor = m["floor"] if RELATIVE_FLOOR else N.full(t.shape[2], FLOOR, N.float32)
     if noise_table is None:
-        thr = N.full(t.shape, FLOOR, N.float32)
+        thr = N.broadcast_to(floor, t.shape).astype(N.float32)
         keep = N.ones(t.shape, bool)
     elif e is None or "map" not in e:
         thr = None
     else:
         nm = noise_maps[e["map"]]
-        thr = N.maximum(2 * nm, FLOOR)
+        thr = N.maximum(2 * nm, floor)
         keep = nm <= UNSTABLE
     detail = "worst tile %s; picture mean diff %s" % (" ".join("%.4f" % x for x in m["max"]), " ".join("%+.4f" % x for x in m["mean_diff"]))
     if thr is None:
@@ -531,10 +558,34 @@ def selftest():
         odir = os.path.join(t, "outside")
         write(odir, [(item(1, P), outside)])
         r8b = compare(moving[0], odir, nm, quiet=True)
+        # (9, M6d) a float target whose values are all tiny (about 0.0005, as the occlusion grid's R16F input): the same
+        # picture with rounding-sized noise passes; the picture negated fails (under the absolute 2/255 floor it passed)
+        tiny = (rng.random((64, 96, 1), dtype=N.float32) * 4e-4 + 1e-4).astype(N.float16).astype(N.float32)
+        tiny_runs = []
+        for k in range(3):
+            d = os.path.join(t, "tiny%d" % k)
+            write(d, [(item(1, P, fmt=76), tiny)])
+            tiny_runs.append(d)
+        ntn = os.path.join(t, "noise_tiny.json")
+        noise(ntn, tiny_runs)
+        near = (tiny * (1 + rng.normal(0, 1e-3, tiny.shape).astype(N.float32))).astype(N.float16).astype(N.float32)
+        ndir = os.path.join(t, "tiny_near")
+        write(ndir, [(item(1, P, fmt=76), near)])
+        r9a = compare(tiny_runs[0], ndir, ntn, quiet=True)
+        ngd = os.path.join(t, "tiny_negated")
+        write(ngd, [(item(1, P, fmt=76), -tiny)])
+        r9b = compare(tiny_runs[0], ngd, ntn, quiet=True)
+        global RELATIVE_FLOOR
+        RELATIVE_FLOOR = False
+        r9c = compare(tiny_runs[0], ngd, ntn, quiet=True)
+        RELATIVE_FLOOR = True
     checks = [("same picture passes", r1 == 0), ("cancelling difference (mean shift %.6f) fails" % mean_shift, r2 == 1),
               ("one flat channel fails", r3 == 1), ("one wrong tile fails", r4 == 1), ("a missing state fails", r5 == 1),
               ("a cleared state is not lined up with a drawn one", never_crossed), ("a NaN fails", r7 == 1),
-              ("a tile noisy between frozen runs is left out", r8a == 0), ("a difference beside a noisy tile fails", r8b == 1)]
+              ("a tile noisy between frozen runs is left out", r8a == 0), ("a difference beside a noisy tile fails", r8b == 1),
+              ("a tiny-valued float target with rounding noise passes", r9a == 0),
+              ("a tiny-valued float target negated fails", r9b == 1),
+              ("(under M6b's absolute floor the negated one passed)", r9c == 0)]
     for name, good in checks:
         print("selftest: %s: %s" % (name, "ok" if good else "WRONG"))
         ok &= good
@@ -556,6 +607,7 @@ def main():
     p.add_argument("run")
     p.add_argument("--noise")
     p.add_argument("--all", action="store_true")
+    p.add_argument("--absolute-floor", action="store_true", help="M6b's floor (2/255 for every target), to compare verdicts across M6d's change")
     sub.add_parser("selftest")
     a = ap.parse_args()
     if a.cmd == "pack":
@@ -565,6 +617,8 @@ def main():
     if a.cmd == "noise":
         return noise(a.out, a.packs)
     if a.cmd == "compare":
+        global RELATIVE_FLOOR
+        RELATIVE_FLOOR = not a.absolute_floor
         return compare(a.golden, a.run, a.noise, a.all)
     return selftest()
 
