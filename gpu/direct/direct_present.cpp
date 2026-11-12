@@ -23,6 +23,7 @@
 #include "direct_pass.h"
 #include "direct_query.h"
 #include "direct_check.h"
+#include "direct_marks.h"
 #include "vk_present_rect.h"
 
 namespace hsd {
@@ -479,7 +480,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
         else if (r != VK_SUCCESS) logf("direct: vkQueuePresentKHR: VkResult %d", (int)r);
     } else if (r != VK_SUCCESS) {
         logf("direct: the present's submit failed (VkResult %d)", (int)r);
-        if (r == VK_ERROR_DEVICE_LOST) host->log_flush(), abort();
+        if (r == VK_ERROR_DEVICE_LOST) marks_report("the present's submit"), host->log_flush(), abort();
     }
 }
 

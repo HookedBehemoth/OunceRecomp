@@ -23,6 +23,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "direct_marks.h"
 #include "direct_check.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -1238,8 +1239,10 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
         c.bound = v->cs;
     }
     heap_push(cb, push, sizeof push);
+    const uint32_t mk = marks_on() ? mark_before(cb, indirect ? "dispatch indirect" : "dispatch", v->key, l->info.kind, l->info.lr, grid[0], grid[1]) : 0;   // (M6c)
     if (indirect) pDispatchIndirect(cb, abuf, aoff);
     else pDispatch(cb, grid[0], grid[1], grid[2]);
+    if (marks_on()) mark_after(cb, mk);
     draw_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
     tell_first(*v, l, map, v->bank_bytes, grid, indirect);
     if (draw_log_frame()) trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);

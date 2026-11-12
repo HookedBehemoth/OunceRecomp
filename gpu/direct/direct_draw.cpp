@@ -16,6 +16,7 @@
 #include "direct_pass.h"
 #include "direct_check.h"
 #include "direct_cmd.h"
+#include "direct_marks.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
 #include "direct_image.h"
@@ -1308,10 +1309,13 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         drawlog(l, gated ? (prog->task ? mesh_ind ? "drawn gated task+mesh indirect" : "drawn gated task+mesh" : mesh_ind ? "drawn gated mesh indirect" : "drawn gated mesh")
                          : (prog->task ? mesh_ind ? "drawn task+mesh indirect" : "drawn task+mesh" : mesh_ind ? "drawn mesh indirect" : "drawn mesh"), prog, &x.dyn,
                 mesh_ind ? nargs : (uint32_t)dm.y);
+        const uint32_t mk = marks_on() ? mark_before(cb, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw", prog->key,
+                                                     l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: HOS_DBG=marks)
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
+        if (marks_on()) mark_after(cb, mk);
         l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
         count(l, R_DRAWN);
         sub(l, mesh_ind ? R_DRAWN_MESH_INDIRECT : R_DRAWN_MESH);
@@ -1322,6 +1326,9 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     drawlog(l, gated ? (ind ? "drawn gated indirect" : indexed ? "drawn gated indexed" : "drawn gated") : (ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn"),
             prog, &x.dyn,
             ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
+    const uint32_t mk = marks_on() ? mark_before(cb, ind ? "draw indirect" : indexed ? "draw indexed" : "draw", prog->key, l->info.kind, l->info.lr,
+                                                 ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
+                                                 ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances)) : 0;   // (M6c)
     if (ind) {   // (the game's records are VkDrawIndirectCommand / VkDrawIndexedIndirectCommand: fallbacks.md 2a)
         if (indexed) {
             if (cntb) vkCmdDrawIndexedIndirectCount(cb, ab, ao, cntb, cnto, nargs, stride);
@@ -1335,6 +1342,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     } else {
         vkCmdDraw(cb, (uint32_t)dr.count, (uint32_t)std::max(1, dr.instances), (uint32_t)dr.first, (uint32_t)dr.base_instance);
     }
+    if (marks_on()) mark_after(cb, mk);
     l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
     count(l, R_DRAWN);
     if (ind) sub(l, R_DRAWN_INDIRECT);

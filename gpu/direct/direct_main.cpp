@@ -10,6 +10,7 @@
 #include <string>
 
 #include "direct_compute.h"
+#include "direct_marks.h"
 #include "direct_internal.h"
 #include "direct_api.h"
 #include "direct_image.h"
@@ -198,6 +199,7 @@ bool create_device() {
     void** tail = dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14.pNext : &f13.pNext;
     draw_device_extensions(exts, want, tail);   // (M2b: shader objects, the descriptor heap, dynamic state 3)
     query_device_extensions(exts, want, tail);   // (M5: conditional rendering, calibrated timestamps)
+    marks_device_extensions(exts, want);   // (M6c: HOS_DBG=marks, breadcrumbs for a lost device)
     // (M3a: a job is a rendering secondary executed among its caller's inline commands in one rendering)
     VkPhysicalDeviceMaintenance7FeaturesKHR m7{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR};
     const bool has_m7 = has_extension(exts, VK_KHR_MAINTENANCE_7_EXTENSION_NAME);
@@ -228,6 +230,7 @@ bool create_device() {
 #undef HSD_VK_LOAD
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
     vkGetDeviceQueue(dev.device, sparse_family, 0, &dev.sparse_queue);
+    marks_init();
     return true;
 }
 

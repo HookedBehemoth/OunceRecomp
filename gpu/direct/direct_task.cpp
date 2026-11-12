@@ -10,6 +10,7 @@
 #include "direct_cmd.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
+#include "direct_marks.h"
 #include "direct_pass.h"
 #include "direct_shader.h"
 #include "direct_task.h"
@@ -242,13 +243,17 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
              threads, pw};
         vkCmdBindShadersEXT(pre, 1, &cs, &prep);
         heap_push(pre, &pp, sizeof pp);
+        const uint32_t mk = marks_on() ? mark_before(pre, "task prep step", p.key, l->info.kind, l->info.lr, 0, 0) : 0;   // (M6c)
         pDispatch(pre, 1, 1, 1);
+        if (marks_on()) mark_after(pre, mk);
     }
     if (!job) task_barrier(pre, false);
     vkCmdBindShadersEXT(task, 1, &cs, &p.ts);
     heap_push(task, push, p.push_bytes);
+    const uint32_t mk = marks_on() ? mark_before(task, indirect ? "task step indirect" : "task step", p.key, l->info.kind, l->info.lr, tasks, threads) : 0;
     if (indirect) pDispatchIndirect(task, hb, ho + 40);
     else pDispatch(task, tasks, 1, 1);
+    if (marks_on()) mark_after(task, mk);
     if (!job) {
         task_barrier(task, true);
         pass_resume(l);
