@@ -123,6 +123,34 @@ void list_flatten(const List* l, std::vector<const FrameOp*>& out) {
     }
 }
 
+void list_items(const List* l, std::vector<SubItem>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps) {
+    for (const List* j : l->executed)   // (secondaries run inside its buffers: their slots are held by this submission too)
+        if (j->slot) slots.push_back(j->slot);
+    if (l->has_cmds && l->slot) slots.push_back(l->slot);
+    size_t oi = 0;
+    auto ops_to = [&](size_t seg) {   // (the ops recorded before segment seg: a callee with commands is its segment)
+        for (; oi < l->ops.size() && l->ops[oi].seg <= seg; oi++) {
+            const FrameOp& o = l->ops[oi];
+            if (o.op != NOP_CALL) out.push_back({&o, VK_NULL_HANDLE});
+            else if (!o.callee->has_cmds) list_items(o.callee, out, slots, dumps);
+        }
+    };
+    if (l->has_cmds)
+        for (size_t i = 0; i < l->segs.size(); i++) {
+            ops_to(i);
+            const Seg& s = l->segs[i];
+            if (s.callee) {
+                list_items(s.callee, out, slots, dumps);
+                continue;
+            }
+            out.push_back({nullptr, s.cb});
+            if (dumps)
+                for (DumpItem* d : l->dumps)
+                    if (d->cb == s.cb) dumps->push_back(d);
+        }
+    ops_to(SIZE_MAX);
+}
+
 void list_buffers(const List* l, std::vector<VkCommandBuffer>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps) {
     for (const List* j : l->executed)   // (M3a: secondaries run inside its buffers: their slots are held by this submission too)
         if (j->slot) slots.push_back(j->slot);
@@ -217,7 +245,8 @@ void emit_one(List* l, uint32_t op, const void* payload, uint32_t size) {
         nvn_p_signal s;
         if (size < sizeof s) break;
         std::memcpy(&s, payload, sizeof s);
-        o.op = op, o.addr = s.gpu, o.mode = s.mode, o.value = s.value;
+        pass_cut(l);   // (M4a: its list's commands before it and after it are separate command buffers: the submit sends them apart)
+        o.op = op, o.addr = s.gpu, o.mode = s.mode, o.value = s.value, o.seg = (uint32_t)l->segs.size();
         l->ops.push_back(o);
         break;
     }
@@ -225,7 +254,7 @@ void emit_one(List* l, uint32_t op, const void* payload, uint32_t size) {
     case NOP_RESET_COUNTER:
         if (size < sizeof o.counter) break;
         std::memcpy(&o.counter, payload, sizeof o.counter);
-        o.op = op;
+        o.op = op, o.seg = (uint32_t)l->segs.size();
         l->ops.push_back(o);
         break;
     default: break;
@@ -301,7 +330,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_call(void* list,
         list_ref(c);
         if (c->site >= 0) sites[c->site].called_by[l->info.kind].fetch_add(1, std::memory_order_relaxed);
         FrameOp o;
-        o.op = NOP_CALL, o.callee = c;
+        o.op = NOP_CALL, o.callee = c, o.seg = (uint32_t)l->segs.size();
         l->ops.push_back(o);
         l->counts[NOP_CALL]++;
     }

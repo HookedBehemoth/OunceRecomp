@@ -32,14 +32,14 @@ namespace {
 enum {
     S_SET_RT, S_EMPTY_RT, S_NO_IMAGE, S_BEGUN, S_LOAD_CLEARS, S_CLEARS_IN, S_MASKED, S_CLEAR_NO_TARGET, S_CLEAR_DISABLED,
     S_DRAWS, S_DISPATCHES, S_BARRIERS, S_COPIES, S_COPY_SKIPPED, S_CLEAR_TEX, S_CLEAR_TEX_SKIPPED, S_BUF_OPS, S_UNRECORDED,
-    S_CUTS, S_OTHER_THREAD, S_JOB_OUTSIDE, S_COUNT
+    S_CUTS, S_OTHER_THREAD, S_JOB_OUTSIDE, S_EVENT_CUTS, S_COUNT
 };
 const char* const kNames[S_COUNT] = {
     "SetRenderTargets", "with no target", "targets with no image", "renderings begun", "clears as load ops",
     "clears in a rendering", "masked clears skipped", "clears with no target", "clears not rendered", "draws",
     "dispatches", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
     "buffer ops in lists that record nothing", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
-    "records on another thread", "ops a job's rendering cannot hold (skipped)"};
+    "records on another thread", "ops a job's rendering cannot hold (skipped)", "command buffers cut at an event op"};
 std::atomic<int64_t> st[S_COUNT];
 std::atomic<int64_t> st_bits[16];   // (barriers by NVN bit)
 void count(int k) { st[k].fetch_add(1, std::memory_order_relaxed); }
@@ -599,6 +599,17 @@ void pass_call(List* l, const List* callee) {
     if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE;
     l->segs.push_back({VK_NULL_HANDLE, callee});
     l->has_cmds = true;
+}
+
+void pass_cut(List* l) {
+    if (!records(l)) return;
+    if (l->secondary) {
+        static std::atomic<int> told{0};
+        if (told++ < 12) logf("direct: an event op in a job's rendering secondary (pass key %#llx): not cut", (unsigned long long)l->info.pass_key);
+        return count(S_JOB_OUTSIDE);
+    }
+    suspend(l);
+    if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE, count(S_EVENT_CUTS);   // (a waiting barrier goes with the next command)
 }
 
 void pass_list_end(List* l) {

@@ -1,5 +1,9 @@
 // The guest's submits, its fences and its events (docs/direct/m1-interface.md; plan, Submission). One Vulkan queue with one
-// timeline semaphore: every NVN submission that has run past its waits is one vkQueueSubmit2 that signals the next value.
+// timeline semaphore. (M4a) An NVN submission's command buffers and frame-level ops are run in their order (the lists cut
+// their command buffers at each event signal and wait: direct_pass.cpp pass_cut), and its command buffers are sent in
+// chunks: the ones before an event signal are sent before the signal is written, so another queue's work after its wait for
+// that signal is sent after them, as the console's GPU runs it; a chunk after an event wait waits on the GPU for everything
+// sent before it (the signal's work and its writes). Each chunk is one vkQueueSubmit2 that signals the next value.
 //
 // An NVN queue's submissions run in order. A submission's frame-level ops (direct_lists.cpp) are applied when it runs: an
 // event signal writes the event's word in guest memory (the value the game polls), a report writes its counter, and a wait
@@ -31,14 +35,17 @@ std::atomic<uint64_t> sent{0};   // (the newest value submitted)
 
 struct Sub {
     std::vector<List*> lists;   // (referenced until it has run)
-    std::vector<const FrameOp*> ops;
+    std::vector<SubItem> items;   // (M4a: its command buffers and frame-level ops in their order)
     size_t at = 0;
+    std::vector<VkCommandBuffer> pending;   // (M4a: the command buffers run past and not sent yet: the next chunk)
+    uint32_t chunks = 0;   // (sent so far)
+    bool wait_next = false;   // (the next chunk follows an event wait)
+    uint64_t last_value = 0;
     uint64_t seq = 0;
     std::vector<uint64_t> wait_fences;   // (nvnQueueWaitSync before it: fences of other queues)
     clk::time_point held_since{};
     bool held = false;
-    // (M2a: the lists' command buffers in call order, the slots they come from, the dump's copies in them)
-    std::vector<VkCommandBuffer> cbs;
+    // (M2a: the slots its command buffers come from, the dump's copies in them)
     std::vector<CmdSlot*> slots;
     std::vector<DumpItem*> dumps;
     uint64_t frame = 0;   // (presents before its hand-in)
@@ -63,7 +70,7 @@ std::vector<Queue*> queues;   // (by index; never freed)
 std::unordered_map<uint64_t, Queue*> by_id;
 
 // counts since the last line (mu held, or atomic)
-int64_t st_upload_waits_gpu = 0, st_cbs = 0, st_submits = 0, st_held = 0, st_waits_met = 0, st_signals = 0, st_reports = 0, st_resets = 0, st_fence_held = 0;
+int64_t st_chunks = 0, st_chunk_waits = 0, st_upload_waits_gpu = 0, st_cbs = 0, st_submits = 0, st_held = 0, st_waits_met = 0, st_signals = 0, st_reports = 0, st_resets = 0, st_fence_held = 0;
 double st_hold_max_ms = 0;
 std::atomic<int64_t> st_submit_ns{0}, st_submit_max_ns{0}, st_cpu_waits{0}, st_cpu_wait_ns{0}, st_cpu_signals{0};
 
@@ -106,19 +113,64 @@ void write_report(const nvn_p_counter& c) {
     host->gpu_write(c.addr, rec, sizeof rec);
 }
 
-/// A submission's ops from where it stopped; false: held at a wait not met (mu held)
-bool run(Sub& s) {
+/// (M4a) The command buffers run past and not sent yet, sent as one chunk (mu held). The first chunk of a submission waits
+/// for its fences (nvnQueueWaitSync) and the texture uploads; a chunk after an event wait for everything sent before it
+void send_chunk(Queue& q, Sub& s, bool last) {
+    if (s.pending.empty() && !last) return;
+    uint64_t wait_value = 0;   // (one timeline: the newest of the values orders them all)
+    if (!s.chunks)
+        for (uint64_t f : s.wait_fences) {
+            uint64_t v = 0;
+            fence_value(f, v);
+            wait_value = std::max(wait_value, v);
+        }
+    if (s.wait_next) wait_value = std::max(wait_value, sent.load(std::memory_order_relaxed)), st_chunk_waits++;
+    {   // (A-rt: the uploads of textures registered before it; one wait per new upload, mu held)
+        static uint64_t waited = 0;
+        const uint64_t up = upload_value();
+        if (up > waited) wait_value = std::max(wait_value, up), waited = up, st_upload_waits_gpu++;
+    }
+    {   // (M4a, HOS_DBG=sublog:<present>: the chunks sent while that present is the newest, in their order)
+        static const int64_t at = [] {
+            const char* v = dbg_value("sublog");
+            return v ? atoll(v) : -1;
+        }();
+        if (at >= 0 && (int64_t)present_count() == at) {
+            char b[600];
+            int k = std::snprintf(b, sizeof b, "direct: sublog present %lld: queue %u seq %llu chunk %u%s%s: %zu command buffers (%zu of %zu items), lists:",
+                                  (long long)at, q.index, (unsigned long long)s.seq, s.chunks, s.wait_next ? " after a wait" : "", last ? " last" : "",
+                                  s.pending.size(), s.at, s.items.size());
+            for (const List* l : s.lists)
+                if (k < 540) k += std::snprintf(b + k, sizeof b - k, " %u/%#llx", l->info.kind, (unsigned long long)l->info.lr);
+            logf("%s", b);
+        }
+    }
+    s.last_value = sync_send(wait_value, s.pending.data(), (uint32_t)s.pending.size());
+    st_cbs += (int64_t)s.pending.size(), st_chunks++;
+    s.pending.clear();
+    s.chunks++;
+    s.wait_next = false;
+}
+
+/// A submission's command buffers and ops from where it stopped; false: held at a wait not met (mu held). moved: it got on
+bool run(Queue& q, Sub& s, bool& moved) {
     for (uint64_t f : s.wait_fences) {
         uint64_t v;
-        if (!fence_value(f, v)) {
+        if (!s.chunks && !fence_value(f, v)) {
             if (!s.held) st_fence_held++;
             return false;
         }
     }
-    for (; s.at < s.ops.size(); s.at++) {
-        const FrameOp& o = *s.ops[s.at];
+    for (; s.at < s.items.size(); s.at++, moved = true) {
+        const SubItem& it = s.items[s.at];
+        if (it.cb) {
+            s.pending.push_back(it.cb);
+            continue;
+        }
+        const FrameOp& o = *it.op;
         switch (o.op) {
         case NOP_SIGNAL_EVENT: {
+            send_chunk(q, s, false);   // (the work before it on the GPU's queue before any work after its wait)
             uint32_t v = o.value;
             if (o.mode == NVN_EVENT_SIGNAL_MODE_ADD) {
                 uint32_t old = 0;
@@ -132,8 +184,13 @@ bool run(Sub& s) {
         case NOP_WAIT_EVENT: {
             uint32_t have = 0;
             host->gpu_read(o.addr, &have, 4);
-            if (!event_wait_met(have, o.mode, o.value)) return false;
+            if (!event_wait_met(have, o.mode, o.value)) {
+                send_chunk(q, s, false);   // (what came before it may run meanwhile)
+                return false;
+            }
             st_waits_met++;
+            send_chunk(q, s, false);
+            s.wait_next = true;
             break;
         }
         case NOP_REPORT_COUNTER: write_report(o.counter), st_reports++; break;
@@ -158,7 +215,7 @@ void progress() {
                     moved = true;
                     continue;
                 }
-                if (!run(s)) {
+                if (!run(*q, s, moved)) {
                     if (!s.held) s.held = true, s.held_since = clk::now(), st_held++;
                     break;
                 }
@@ -166,36 +223,11 @@ void progress() {
                     const double ms = std::chrono::duration<double, std::milli>(clk::now() - s.held_since).count();
                     if (ms > st_hold_max_ms) st_hold_max_ms = ms;
                 }
-                uint64_t wait_value = 0;   // (one timeline: the newest of the fences' values orders them all)
-                for (uint64_t f : s.wait_fences) {
-                    uint64_t v = 0;
-                    fence_value(f, v);
-                    wait_value = std::max(wait_value, v);
-                }
-                {   // (A-rt: the uploads of textures registered before it; one wait per new upload, mu held)
-                    static uint64_t waited = 0;
-                    const uint64_t up = upload_value();
-                    if (up > waited) wait_value = std::max(wait_value, up), waited = up, st_upload_waits_gpu++;
-                }
-                {   // (M4a, HOS_DBG=sublog:<present>: the submissions sent while that present is the newest, in their order)
-                    static const int64_t at = [] {
-                        const char* v = dbg_value("sublog");
-                        return v ? atoll(v) : -1;
-                    }();
-                    if (at >= 0 && (int64_t)present_count() == at) {
-                        char b[600];
-                        int k = std::snprintf(b, sizeof b, "direct: sublog present %lld: queue %u seq %llu, %zu command buffers, %zu frame ops, lists:",
-                                              (long long)at, q->index, (unsigned long long)s.seq, s.cbs.size(), s.ops.size());
-                        for (const List* l : s.lists)
-                            if (k < 540) k += std::snprintf(b + k, sizeof b - k, " %u/%#llx", l->info.kind, (unsigned long long)l->info.lr);
-                        logf("%s", b);
-                    }
-                }
                 const bool dumped = dump_claim(s.dumps, s.frame);
-                const uint64_t v = sync_send(wait_value, s.cbs.data(), (uint32_t)s.cbs.size());
+                send_chunk(*q, s, true);   // (the last, even with no command buffer: its value is the submission's fence)
+                const uint64_t v = s.last_value;
                 for (CmdSlot* c : s.slots) cmd_slot_sent(c, v);
                 if (dumped) dump_sent(v);
-                st_cbs += (int64_t)s.cbs.size();
                 q->seq_sent = s.seq;
                 q->values.push_back({s.seq, v});
                 while (q->values.size() > 64) q->values.pop_front();
@@ -314,15 +346,15 @@ void sync_stats(char* out, size_t cap, double frames) {
     size_t held_now = 0;
     for (const Queue* q : queues) held_now += q->subs.size();
     const int64_t ns = st_submit_ns.exchange(0), mx = st_submit_max_ns.exchange(0);
-    std::snprintf(out, cap, "submits %.1f a frame (%.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
+    std::snprintf(out, cap, "submits %.1f a frame (%.1f chunks, %.1f of them after an event wait; %.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
                   "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms; %zu held now), fence waits held %lld, "
                   "reports %.1f, resets %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
                   "timeline %llu sent, %llu done",
-                  st_submits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
+                  st_submits / frames, st_chunks / frames, st_chunk_waits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
                   st_hold_max_ms, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
                   st_cpu_signals.exchange(0) / frames, st_cpu_waits.exchange(0) / frames, st_cpu_wait_ns.exchange(0) / 1e6 / frames,
                   (long long)st_upload_waits_gpu, (unsigned long long)sent.load(), (unsigned long long)sync_completed());
-    st_upload_waits_gpu = st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
+    st_chunks = st_chunk_waits = st_upload_waits_gpu = st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
     st_hold_max_ms = 0;
 }
 
@@ -354,8 +386,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
         draw_list_submitted(l);   // (M2b: the deferred binds' handles as the game's arrays hold them now)
         compute_list_submitted(l);   // (M4a: and the dispatches')
         s.lists.push_back(l);
-        list_flatten(l, s.ops);
-        list_buffers(l, s.cbs, s.slots, dump_recording() ? &s.dumps : nullptr);
+        list_items(l, s.items, s.slots, dump_recording() ? &s.dumps : nullptr);
     }
     s.frame = present_count();
     {

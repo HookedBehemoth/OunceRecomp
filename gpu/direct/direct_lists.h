@@ -16,6 +16,7 @@ struct List;
 /// CALL (callee)
 struct FrameOp {
     uint32_t op = 0, mode = 0, value = 0;
+    uint32_t seg = 0;   // (M4a: its list's segments before it: where it is among the list's commands)
     uint64_t addr = 0;
     nvn_p_counter counter{};
     List* callee = nullptr;
@@ -104,6 +105,13 @@ void list_unref(List* l);   // (any thread; the last one frees it and lets go of
 void list_flatten(const List* l, std::vector<const FrameOp*>& out);
 /// The command buffers a submission of l runs, its callees' in place (l ended)
 void list_buffers(const List* l, std::vector<VkCommandBuffer>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps);
+/// (M4a) A submission's work in its order: each item a command buffer or a frame-level op
+struct SubItem {
+    const FrameOp* op = nullptr;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+};
+/// The command buffers and frame-level ops a submission of l runs, in their order, its callees' in place (l ended)
+void list_items(const List* l, std::vector<SubItem>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps);
 /// l handed to hsd_submit (counted by its return address)
 void list_submitted(const List* l);
 

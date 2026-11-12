@@ -9,6 +9,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "direct_cmd.h"
@@ -655,12 +656,43 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     const uint64_t size = std::max<uint64_t>(b.size, 16);
     // (the contract's open item: a program that may read past the bound range reads the guest memory after it through the
     // address, where Maxwell reads zeros; counted)
+    static const bool clamp = dbg("uboclamp");   // (M4a, a diagnosis: reads past the bound range give zeros, through a copy)
     if (u.bytes > size) {
         bump(me().past_range);
         static std::atomic<int> told{0};
         if (told.load(std::memory_order_relaxed) < 12 && told++ < 12)
             logf("direct: program %016llx stage %u reads c%u up to %u bytes, %llu bound (%s)", (unsigned long long)p.key, u.stage,
                  u.index, u.bytes, (unsigned long long)b.size, u.bytes >= 0x10000 ? "indexed dynamically" : "past the bound range");
+        static const bool range_log = dbg("uborange");   // (M4a, a diagnosis: each binding read past its range once, what lies there)
+        if (range_log) {
+            static std::mutex mu;
+            static std::unordered_set<uint64_t> seen;
+            const uint64_t id = p.key ^ (uint64_t)u.stage << 60 ^ (uint64_t)u.index << 52 ^ b.size << 20 ^ u.bytes;
+            bool fresh;
+            {
+                std::lock_guard lk(mu);
+                fresh = seen.size() < 400 && seen.insert(id).second;
+            }
+            if (fresh) {
+                uint8_t past[256]{};
+                const uint64_t n = std::min<uint64_t>(sizeof past, std::min<uint64_t>(u.bytes, 0x10000) - size);
+                const bool read = host->gpu_read(b.addr + size, past, n) != 0;
+                uint32_t nonzero = 0;
+                for (uint64_t i = 0; i < n; i++) nonzero += past[i] != 0;
+                logf("direct: uborange program %016llx stage %u c%u: reads to %u, bound %llu at %#llx (%s); the %llu bytes after: %s%u nonzero; list kind %u",
+                     (unsigned long long)p.key, u.stage, u.index, u.bytes, (unsigned long long)b.size, (unsigned long long)b.addr,
+                     u.bytes >= 0x10000 ? "indexed dynamically" : "constant offsets", (unsigned long long)n, read ? "" : "unreadable, ",
+                     nonzero, l->info.kind);
+            }
+        }
+    }
+    if (clamp && u.bytes > size && u.bytes < 0x10000) {   // (the bound range from guest memory now, zeros past it)
+        const uint64_t total = ((uint64_t)u.bytes + 15) & ~15ull;
+        uint8_t* map;
+        if (!arena_alloc(l->slot, (uint32_t)total, map, a)) return R_ARENA;
+        std::memset(map, 0, total);
+        if (!host->gpu_read(b.addr, map, size)) std::memset(map, 0, size);
+        return R_DRAWN;
     }
     bool updated = false;
     for (const ListDraw::Update& up : x.updates) updated |= up.dst < b.addr + size && up.dst + up.size > b.addr;

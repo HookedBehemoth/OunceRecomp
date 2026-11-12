@@ -9,6 +9,8 @@ namespace hsd {
 void pass_emit(List* l, uint32_t op, const void* data, uint32_t size);
 /// A callee joins the list at a CallCommands (ended; before it is noted in the list's ops)
 void pass_call(List* l, const List* callee);
+/// (M4a) An event's signal or wait: the list's command buffer ends here (its rendering too; the targets stay noted)
+void pass_cut(List* l);
 /// The list's end: its pass ended, its command buffer too
 void pass_list_end(List* l);
 void pass_stats(char* out, size_t cap, double frames);
