@@ -26,8 +26,8 @@ unless named. Profiles: Superluminal, 30 s of steady play.
 | Frame time, mean (p99) | same | 11.89 (13.86) → 10.78 (12.61); M2b with no job drawn: 10.73 | 12.98 (14.87) → 11.71 (13.77); M2b: 11.57 |
 | Draw path before the rebase (jobs only resolved; the brief's 1.10 / 1.85) | `m2b_ceil_*` → `m3b_c1_*_cold` | 1.10 → 0.488 | 1.85 → 0.855 |
 | The three title textures | `m3b_b3_title` (draw log), `m3b_v1_title` (dump) | the 683x683 / 341x341 RGTC1 textures sample their prepared BC4 images: the logo's glow is drawn. Placeholders left: `DummyTextureForEvent` (no record, A-rt) and two ASTC loads with no data | |
-| Validation (sync on) | `m3b_val3_k`, `m3b_val3_hf` | TBD | TBD |
-| Cold and warm start | `m3b_c3_*` | TBD | TBD |
+| Validation (sync on, jobs drawn) | `m3b_val3_k`, `m3b_val3_hf` | one type: M2b's `ShaderOutputNotConsumed-DynamicRendering` warning. The depth-copy hazards are gone (M3a). The first step-B run (`m3b_val_k`) showed two new types, the sampler arrays' mapping (a real bug, fixed in 8a01258); gone | same |
+| Start: first job draw / last program miss, s after the device; translated (worker s); shader objects (worker s) | cold `m3b_c3_*_cold` (empty program and Mesa caches), warm `m3b_c3_k_warm2`, `m3b_c3_h_warm` | cold 14.4 / 72.5 (late misses in play); 358 (15.6 s); 716 (13.1 s). Warm 15.3 / 15.9; 7 (0.4 s); 712 (12.9 s) | cold 13.8 / 25.2; 518 (22.7 s); 1,036 (18.9 s). Warm 14.7 / 14.7; 16 (1.8 s); 1,068 (20.5 s) |
 
 ## The draw path's profile (Kokiri, jobs drawn, `r1` = after the rebase, before the last cut)
 
@@ -94,8 +94,15 @@ M3a's 10.4 µs against 3.0 for later draws); M3a's emit path (`pass_emit` 0.28 o
   read the guest memory after the buffer where Maxwell reads zeros. Exact handling needs the bytes at record time (a
   guest read) or a game patch binding the full size; not done, and it may matter for the job draws' pictures.
 - **Translation and the bound state:** only the key (vertex attribute and colour types) and driver-bank texture answers
-  are read; 0 game-buffer words asked. **All programs before play** needs (1) the attribute types ahead of the draw (the
-  packets have the vertex state) and float colour types, (2) a choice of what to translate: 5,945 codes set, 333 drawn.
+  are read; 0 game-buffer words asked.
+- **Cold start.** A cold start spends its time on the two workers: translation (15.6 / 22.7 s of worker time) and shader
+  objects (13.1 / 18.9 s); a draw whose variant is not ready is skipped until it is (Kokiri's last miss 58 s after the
+  scene's first frame, HF's 11 s). Warm, every variant is there at the first job draw, but the shader objects are still
+  compiled from SPIR-V at each start (12.9 / 20.5 s of worker time, 18 ms each): Mesa's disk cache does not make them
+  cheap. **What stands between today and all programs before play:** (1) a binary cache of the shader objects
+  (`vkGetShaderBinaryDataEXT`), the larger cost; (2) the key's inputs ahead of the draw: the vertex attribute types (the
+  packets hold the vertex state) and the colour types (float in every pass seen); (3) what to translate: 5,945 codes are
+  set in Kokiri and 358 variants drawn.
 - **Validation** found one real bug: the sampler arrays were mapped with the combined-sampler fields, so every sample read
   sampler 0 (fixed, 8a01258).
 
