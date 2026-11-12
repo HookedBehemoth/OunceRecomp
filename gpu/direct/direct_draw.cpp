@@ -74,24 +74,27 @@ constexpr uint32_t kWindows = 512, kTableBytes = 8 * 520 + 128;
 
 // ---- skips, by reason ----
 enum Reason {
-    R_DRAWN, R_MESH, R_INDIRECT, R_NO_TARGETS, R_CONDITION, R_DISABLED, R_TOPOLOGY, R_QUADS, R_NO_PROGRAM, R_NOT_PARSED,
+    R_DRAWN, R_MESH, R_TASK_MESH, R_NO_TARGETS, R_CONDITION, R_DISABLED, R_TOPOLOGY, R_QUADS, R_NO_PROGRAM, R_NOT_PARSED,
     R_NOT_GRAPHICS, R_TRANSLATING, R_FAILED, R_STEP_A, R_VERTEX_MEM, R_INDEX_MEM, R_INDEX_U8, R_UBO_MEM, R_ARENA,
-    R_RESOLVED_JOB, R_RESOLVED_LOAD, R_RESOLVED_OTHER, R_COUNT
+    R_RESOLVED_JOB, R_RESOLVED_LOAD, R_RESOLVED_OTHER, R_DRAWN_INDIRECT, R_DRAWN_MESH, R_DRAWN_MESH_INDIRECT, R_KIND,
+    R_ARGS_MEM, R_MESH_STRIDE, R_MESH_DRY, R_COUNT
 };
 const char* const kReasons[R_COUNT] = {
-    "drawn", "mesh draws (M4)", "indirect draws (M4)", "no render targets set in the list", "under a render condition (M5)",
+    "drawn", "mesh draws without the device's mesh stage", "task+mesh programs (M4c)", "no render targets set in the list", "under a render condition (M5)",
     "rendering disabled", "a topology Vulkan lacks", "quads (indices made on the CPU)", "no program bound in the list",
     "program not read yet", "program not vertex + fragment", "variant being translated", "variant does not translate",
     "step A cannot draw the variant", "a vertex buffer not in layer 0", "the index buffer not in layer 0", "8-bit indices",
     "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
-    "resolved in a load-time list (M3)", "resolved in an unclassified list"};
+    "resolved in a load-time list (M3)", "resolved in an unclassified list", "of the drawn: indirect", "of the drawn: mesh, direct",
+    "of the drawn: mesh, indirect", "a draw kind its program has no stage for", "indirect arguments or count not in layer 0",
+    "mesh argument records closer than 12 bytes", "mesh draws left out (HOS_DBG=meshdry)"};
 // (M3b: the counters a draw bumps are the recording thread's own: a global atomic added to by every draw on every recording
 // thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
 struct TStats {
     std::atomic<int64_t> by_kind[HSD_LIST_KINDS][R_COUNT];
-    std::atomic<int64_t> ns, banks, tables, ub_copies, ub_reads, ub_bytes, past_range;
+    std::atomic<int64_t> ns, banks, tables, ub_copies, ub_reads, ub_bytes, past_range, mesh_first;
     int64_t seen_by_kind[HSD_LIST_KINDS][R_COUNT];   // (draw_log's: the sums it reported last)
-    int64_t seen[7];
+    int64_t seen[8];
     TStats* next = nullptr;
 };
 std::atomic<TStats*> tstats_all{nullptr};
@@ -107,7 +110,7 @@ TStats& me() {
 }
 inline void bump(std::atomic<int64_t>& c, int64_t n = 1) { c.store(c.load(std::memory_order_relaxed) + n, std::memory_order_relaxed); }
 /// (draw_log, the Presentation Thread) the change of a thread counter since it last read it, summed over the threads
-enum { T_NS, T_BANKS, T_TABLES, T_UB_COPIES, T_UB_READS, T_UB_BYTES, T_PAST };
+enum { T_NS, T_BANKS, T_TABLES, T_UB_COPIES, T_UB_READS, T_UB_BYTES, T_PAST, T_MESH_FIRST };
 int64_t take(std::atomic<int64_t> TStats::*f, int slot) {
     int64_t n = 0;
     for (TStats* t = tstats_all.load(std::memory_order_acquire); t; t = t->next) {
@@ -205,7 +208,7 @@ struct ListDraw {
     // (what the command buffer being recorded has: set again from nothing for each new one)
     VkCommandBuffer cb = VK_NULL_HANDLE;
     bool heap = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
-    VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+    VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ms = VK_NULL_HANDLE;
     bool shaders = false;
     uint32_t vb_bound = 0;   // (the vertex bindings given a buffer in this command buffer)
     Dyn dyn;
@@ -220,7 +223,7 @@ struct ListDraw {
     // (the list's: in its slot's arena, good while the list lives)
     BankCopy bank[kBankStages][2];
     const DrawProg* table_prog = nullptr;
-    uint32_t table_ubo_gen = ~0u, table_bank_gen[kBankStages]{~0u, ~0u};
+    uint32_t table_ubo_gen = ~0u, table_bank_gen[kBankStages]{~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
     VkDeviceAddress table_addr = 0;
     std::vector<VkDeviceAddress> table_entries;
     std::vector<Fixup> fixups;
@@ -688,8 +691,8 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
 
 /// The address table and the pushed addresses (push data from 120); false: a reason
 Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
-    const bool same = x.table_prog == &p && x.table_ubo_gen == x.s.ubo_gen && x.table_bank_gen[0] == x.s.bank_gen[0] &&
-                      x.table_bank_gen[1] == x.s.bank_gen[1];
+    const bool same = x.table_prog == &p && x.table_ubo_gen == x.s.ubo_gen &&
+                      !std::memcmp(x.table_bank_gen, x.s.bank_gen, sizeof x.table_bank_gen);
     if (!same) {
         x.table_entries.resize(p.ubos.size());
         for (size_t i = 0; i < p.ubos.size(); i++) {
@@ -701,7 +704,7 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
         if (!arena_alloc(l->slot, std::max<uint32_t>(8, 8 * (uint32_t)p.ubos.size()), map, a)) return x.table_prog = nullptr, R_ARENA;
         std::memcpy(map, x.table_entries.data(), 8 * p.ubos.size());
         x.table_addr = a, x.table_prog = &p, x.table_ubo_gen = x.s.ubo_gen;
-        x.table_bank_gen[0] = x.s.bank_gen[0], x.table_bank_gen[1] = x.s.bank_gen[1];
+        std::memcpy(x.table_bank_gen, x.s.bank_gen, sizeof x.table_bank_gen);
         bump(me().tables);
     }
     std::memcpy(push + kTablePush, &x.table_addr, 8);
@@ -771,7 +774,7 @@ uint64_t tsc_device = 0;
 int64_t t_device = 0;   // (host->now_ns() when the draws' device part was made: the start of the start-time lines)
 void count(List* l, Reason r) {
     if (r == R_DRAWN) l->n_drawn++;
-    else if (r == R_MESH) l->n_mesh++;
+    else if (r == R_MESH || r == R_TASK_MESH) l->n_mesh++;
     else if (r == R_STEP_A) l->n_step_a++;
     if (l->info.kind == HSD_LIST_JOB) {   // (M3b: the first job draw, the scene's first frame: the start time's end)
         static std::atomic<bool> seen{false};
@@ -782,6 +785,64 @@ void count(List* l, Reason r) {
     if (r != R_DRAWN && l->info.kind != HSD_LIST_JOB && l->info.kind != HSD_LIST_LOAD) drawlog(l, kReasons[r], nullptr, nullptr, 0);
     bump(me().by_kind[l->info.kind][r]);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
+}
+/// (M4b) a share of the drawn, counted beside them
+void sub(List* l, Reason r) { bump(me().by_kind[l->info.kind][r]); }
+
+/// (M4b) HOS_DBG=meshlog:<present>: the frame after that present's indirect and mesh draws and dispatches, with their program's
+/// stages, argument addresses and what the records hold when recorded (a guest read: a diagnosis only), and a dispatch's
+/// storage and uniform buffers: which dispatch writes which argument records
+bool meshlog_on() {
+    static const int64_t at = [] {
+        const char* v = dbg_value("meshlog");
+        return v ? atoll(v) : -1;
+    }();
+    return at >= 0 && (int64_t)present_count() == at;
+}
+void mesh_log(const List* l, uint32_t op, const nvn_p_draw_indirect& dn, const nvn_p_draw_mesh& dm) {
+    if ((op != NOP_DRAW_INDIRECT && op != NOP_DRAW_MESH) || !meshlog_on()) return;
+    static std::atomic<int> n{0};
+    if (n++ > 3000) return;
+    char prog[256];
+    shader_describe(l->dctx->s, prog, sizeof prog);
+    if (op == NOP_DRAW_INDIRECT) {
+        uint32_t w[5]{}, c = 0;
+        host->gpu_read(dn.indirect, w, sizeof w);
+        if (dn.count_addr) host->gpu_read(dn.count_addr, &c, 4);
+        return logf("direct: meshlog indirect %s prim %d max %d stride %d at %#llx count %#llx (%u): %u %u %u %u %u; list kind %u lr %#llx; %s",
+                    dn.indexed ? "elements" : "arrays", dn.prim, dn.max, dn.stride, (unsigned long long)dn.indirect, (unsigned long long)dn.count_addr,
+                    c, w[0], w[1], w[2], w[3], w[4], l->info.kind, (unsigned long long)l->info.lr, prog);
+    }
+    if (dm.kind == 0)
+        return logf("direct: meshlog mesh direct first %d count %d (%d); list kind %u lr %#llx; %s", dm.x, dm.y, dm.z, l->info.kind,
+                    (unsigned long long)l->info.lr, prog);
+    uint32_t w[8]{}, c = 0;
+    host->gpu_read(dm.indirect, w, sizeof w);
+    if (dm.count_addr) host->gpu_read(dm.count_addr, &c, 4);
+    logf("direct: meshlog mesh indirect kind %d max %d stride %d at %#llx count %#llx (%u): %u %u %u %u | %u %u %u %u; list kind %u lr %#llx; %s",
+         dm.kind, dm.max, dm.stride, (unsigned long long)dm.indirect, (unsigned long long)dm.count_addr, c, w[0], w[1], w[2], w[3], w[4], w[5],
+         w[6], w[7], l->info.kind, (unsigned long long)l->info.lr, prog);
+}
+void dispatch_log(const List* l, uint32_t op, const void* data, uint32_t size) {
+    if (!meshlog_on() || !l->dctx) return;
+    static std::atomic<int> n{0};
+    if (n++ > 3000) return;
+    const DState& s = l->dctx->s;
+    char b[4096];
+    shader_describe(s, b, 512);
+    int k = (int)std::strlen(b);
+    uint32_t g[3]{};
+    if (op == NOP_DISPATCH) std::memcpy(g, data, std::min<size_t>(sizeof g, size));
+    else if (size >= 8) {
+        uint64_t a;
+        std::memcpy(&a, data, 8);
+        k += std::snprintf(b + k, sizeof b - k, " indirect at %#llx", (unsigned long long)a);
+    }
+    for (int i = 0; i < 16 && k < 3800; i++)
+        if (s.ssbo[5][i].addr) k += std::snprintf(b + k, sizeof b - k, " s%d=%#llx+%#llx", i, (unsigned long long)s.ssbo[5][i].addr, (unsigned long long)s.ssbo[5][i].size);
+    for (int i = 0; i < 16 && k < 3800; i++)
+        if (s.ubo[5][i].addr) k += std::snprintf(b + k, sizeof b - k, " u%d=%#llx+%#llx", i, (unsigned long long)s.ubo[5][i].addr, (unsigned long long)s.ubo[5][i].size);
+    logf("direct: meshlog dispatch %u %u %u in list kind %u lr %#llx: %s", g[0], g[1], g[2], l->info.kind, (unsigned long long)l->info.lr, b);
 }
 
 }  // namespace
@@ -796,6 +857,7 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_DEPTH_CLAMP: case NOP_RASTER_DISCARD: case NOP_RENDER_ENABLE: case NOP_RENDER_COND:
         state_emit(ctx(l).s, op, data, size);
         return;
+    case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: dispatch_log(l, op, data, size); return;
     case NOP_UPDATE_UB: {   // (the bytes kept for the list's later draws: plan, Data a draw reads)
         nvn_p_update_ub u;
         if (size < sizeof u) return;
@@ -823,24 +885,35 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         uint64_t t0 = __builtin_ia32_rdtsc();
         ~Timer() { bump(me().ns, (int64_t)(__builtin_ia32_rdtsc() - t0)); }
     } timer;
-    if (op == NOP_DRAW_MESH) return count(l, R_MESH);
-    if (op == NOP_DRAW_INDIRECT) return count(l, R_INDIRECT);
     if (!heap_on()) return count(l, R_NOT_GRAPHICS);
     ListDraw& x = ctx(l);
     const DState& s = x.s;
+    // (M4b: the draw's kind: arrays, elements, either indirect (with a count or not), or mesh (direct or indirect))
+    const bool mesh = op == NOP_DRAW_MESH, ind = op == NOP_DRAW_INDIRECT;
     nvn_p_draw dr{};
     nvn_p_draw_idx di{};
+    nvn_p_draw_indirect dn{};
+    nvn_p_draw_mesh dm{};
     if (op == NOP_DRAW) std::memcpy(&dr, data, std::min<size_t>(sizeof dr, size));
-    else std::memcpy(&di, data, std::min<size_t>(sizeof di, size));
-    const int prim = op == NOP_DRAW ? dr.prim : di.prim;
+    else if (op == NOP_DRAW_IDX) std::memcpy(&di, data, std::min<size_t>(sizeof di, size));
+    else if (ind) std::memcpy(&dn, data, std::min<size_t>(sizeof dn, size));
+    else std::memcpy(&dm, data, std::min<size_t>(sizeof dm, size));
+    const bool indexed = op == NOP_DRAW_IDX || (ind && dn.indexed);
+    const bool mesh_ind = mesh && dm.kind != 0;
+    mesh_log(l, op, dn, dm);
+    if (mesh && !caps.mesh) return count(l, R_MESH);
+    const int prim = op == NOP_DRAW ? dr.prim : op == NOP_DRAW_IDX ? di.prim : ind ? dn.prim : NVN_DRAW_PRIMITIVE_TRIANGLES;
+    const int itype = op == NOP_DRAW_IDX ? di.itype : dn.itype;
     const PassRec& p = l->pass;
     const bool records = l->rec;   // (M3a: jobs with their pass's formats too)
     if (records && !p.noted) return count(l, R_NO_TARGETS);
     const bool gated = s.conditional;   // (M3a: a render condition is not evaluated: the draw is drawn, counted; M5)
     if (!s.render_enabled) return count(l, R_DISABLED);
-    VkPrimitiveTopology topo;
-    if (prim == NVN_DRAW_PRIMITIVE_QUADS) return count(l, R_QUADS);
-    if (!topology(prim, topo)) return count(l, R_TOPOLOGY);
+    VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;   // (a mesh draw: its program's own, none set)
+    if (!mesh) {
+        if (prim == NVN_DRAW_PRIMITIVE_QUADS) return count(l, R_QUADS);
+        if (!topology(prim, topo)) return count(l, R_TOPOLOGY);
+    }
     uint8_t ct[8]{};   // (the targets' colour types; a list with none of its own (a job): float, as every logged pass)
     if (records)
         for (int i = 0; i < p.n; i++) ct[i] = color_type(p.color[i].format);
@@ -848,23 +921,28 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     const DrawProg* prog;
     uint64_t ctw;
     std::memcpy(&ctw, ct, 8);
-    if (x.pick && x.pick_prog_gen == s.prog_gen && x.pick_vtx_gen == s.vtx_gen && x.pick_bank_gen[0] == s.bank_gen[0] &&
-        x.pick_bank_gen[1] == s.bank_gen[1] && x.pick_ct == ctw) {   // (nothing the pick reads changed since the last draw)
+    if (x.pick && x.pick_prog_gen == s.prog_gen && x.pick_vtx_gen == s.vtx_gen &&
+        !std::memcmp(x.pick_bank_gen, s.bank_gen, sizeof x.pick_bank_gen) && x.pick_ct == ctw) {   // (nothing the pick reads changed since the last draw)
         prog = x.pick;
     } else {
         prog = shader_pick(s, ct, why);
         x.pick = prog, x.pick_prog_gen = s.prog_gen, x.pick_vtx_gen = s.vtx_gen, x.pick_ct = ctw;
-        x.pick_bank_gen[0] = s.bank_gen[0], x.pick_bank_gen[1] = s.bank_gen[1];
+        std::memcpy(x.pick_bank_gen, s.bank_gen, sizeof x.pick_bank_gen);
     }
     if (!prog) {
-        static const Reason map[SM_COUNT] = {R_DRAWN, R_NO_PROGRAM, R_NOT_PARSED, R_NOT_GRAPHICS, R_TRANSLATING, R_FAILED, R_STEP_A};
+        if (why == SM_TASK_MESH) {   // (M4b: not drawn: counted by program)
+            shader_task_mesh_draw(s, mesh_ind);
+            return count(l, mesh ? R_TASK_MESH : R_KIND);
+        }
+        static const Reason map[SM_COUNT] = {R_DRAWN, R_NO_PROGRAM, R_NOT_PARSED, R_NOT_GRAPHICS, R_TRANSLATING, R_FAILED, R_STEP_A, R_TASK_MESH};
         return count(l, map[why]);
     }
+    if (prog->mesh != mesh) return count(l, R_KIND);
     if (prog->skip) {
         count_step_a(prog->skip, l->info.kind);
         return count(l, R_STEP_A);
     }
-    if (op == NOP_DRAW_IDX && di.itype == NVN_INDEX_TYPE_UNSIGNED_BYTE && !caps.index_uint8) return count(l, R_INDEX_U8);
+    if (indexed && itype == NVN_INDEX_TYPE_UNSIGNED_BYTE && !caps.index_uint8) return count(l, R_INDEX_U8);
     if (!recording || !l->cur) {   // (resolved this far; no command buffer to record it in at this stage)
         return count(l, l->info.kind == HSD_LIST_JOB ? R_RESOLVED_JOB : l->info.kind == HSD_LIST_LOAD ? R_RESOLVED_LOAD : R_RESOLVED_OTHER);
     }
@@ -875,7 +953,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     VkBuffer vb[16];
     VkDeviceSize vo[16];
     for (int b = 0; b < 16; b++) vb[b] = zero_buffer, vo[b] = 0;
-    {
+    if (!mesh) {
         for (uint32_t i = 0; i < 16; i++) {
             if (!(prog->vs_loads >> i & 1) || (int)i >= s.nvattr) continue;
             const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
@@ -889,15 +967,31 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     VkBuffer ib = VK_NULL_HANDLE;
     VkDeviceSize io = 0;
     VkIndexType it = VK_INDEX_TYPE_UINT16;
-    if (op == NOP_DRAW_IDX) {
-        const uint32_t unit = di.itype == 0 ? 1 : di.itype == 1 ? 2 : 4;
-        if (!span_of(x.ib_span, di.ibuf, (uint64_t)std::max(di.count, 1) * unit, ib, io)) return count(l, R_INDEX_MEM);
-        it = di.itype == 0 ? VK_INDEX_TYPE_UINT8 : di.itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+    if (indexed) {
+        // (an indirect draw's index count is the GPU's: the index buffer from its address to its window's end)
+        const uint32_t unit = itype == 0 ? 1 : itype == 1 ? 2 : 4;
+        const uint64_t at = ind ? dn.ibuf : di.ibuf, bytes = ind ? unit : (uint64_t)std::max(di.count, 1) * unit;
+        if (!span_of(x.ib_span, at, bytes, ib, io)) return count(l, R_INDEX_MEM);
+        it = itype == 0 ? VK_INDEX_TYPE_UINT8 : itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+    }
+    // (M4b: the arguments the GPU wrote, read by the GPU where they are: layer 0)
+    VkBuffer ab = VK_NULL_HANDLE, cntb = VK_NULL_HANDLE;
+    VkDeviceSize ao = 0, cnto = 0;
+    uint32_t nargs = 1, stride = 16;
+    const uint64_t count_addr = ind ? dn.count_addr : mesh_ind ? dm.count_addr : 0;
+    if (ind || mesh_ind) {
+        const uint32_t rec = ind ? (dn.indexed ? 20u : 16u) : 12u;
+        nargs = (uint32_t)std::clamp(ind ? dn.max : dm.max, 1, 1 << 16);
+        stride = (uint32_t)(ind ? dn.stride : dm.stride);
+        if (nargs == 1 && stride < rec) stride = std::max(rec, 16u);   // (one record: Vulkan does not read the stride)
+        if (stride < rec || (stride & 3)) return count(l, mesh ? R_MESH_STRIDE : R_ARGS_MEM);
+        if (!layer0_span(ind ? dn.indirect : dm.indirect, (uint64_t)(nargs - 1) * stride + rec, ab, ao)) return count(l, R_ARGS_MEM);
+        if (count_addr && !layer0_span(count_addr, 4, cntb, cnto)) return count(l, R_ARGS_MEM);
     }
     uint8_t push[256];
     std::memset(push, 0, prog->push_bytes);
     if (const Reason r = bind_data(l, x, *prog, push); r != R_DRAWN) return count(l, r);
-    {   // (Eden's block: the render area, the down factor, the window table)
+    {   // (Eden's block: the render area, the down factor, the window table; a mesh draw's first workgroup)
         const float one = 1.0f;
         std::memcpy(push + 24, &one, 4);
         std::memcpy(push + 88, &window_table_address, 8);
@@ -905,34 +999,41 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             const float ra[4] = {(float)p.w, (float)p.h, 0.0f, 0.0f};
             std::memcpy(push, ra, sizeof ra);
         }
+        if (mesh) {   // (NVN draws mesh workgroups [first, first + count); an indirect one's records have no first: 0)
+            const uint32_t first = mesh_ind ? 0u : (uint32_t)dm.x;
+            std::memcpy(push + kMeshFirstPush, &first, 4);
+            if (first) bump(me().mesh_first);   // (M4b: a direct mesh draw from a first past 0: counted, see the report)
+        }
     }
     // (recorded)
     if (!x.heap) heap_bind(cb), x.heap = true;
-    if (!x.shaders || x.vs != prog->vs || x.fs != prog->fs) {
-        // (every graphics stage the device has: the ones the program has not bound to none)
-        VkShaderStageFlagBits st[5] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
-        VkShaderEXT sh[5] = {prog->vs, prog->fs};
+    const VkShaderEXT want_vs = mesh ? VK_NULL_HANDLE : prog->vs, want_ms = mesh ? prog->ms : VK_NULL_HANDLE;
+    if (!x.shaders || x.vs != want_vs || x.fs != prog->fs || x.ms != want_ms) {
+        // (every graphics stage the device has: the ones the program has not bound to none; never a task stage)
+        VkShaderStageFlagBits st[6] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
+        VkShaderEXT sh[6] = {want_vs, prog->fs};
         uint32_t n = 2;
         if (dev.features.tessellationShader)
             st[n] = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, sh[n++] = VK_NULL_HANDLE,
             st[n] = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, sh[n++] = VK_NULL_HANDLE;
         if (dev.features.geometryShader) st[n] = VK_SHADER_STAGE_GEOMETRY_BIT, sh[n++] = VK_NULL_HANDLE;
+        if (caps.mesh) st[n] = VK_SHADER_STAGE_MESH_BIT_EXT, sh[n++] = want_ms;
         vkCmdBindShadersEXT(cb, n, st, sh);
-        x.vs = prog->vs, x.fs = prog->fs, x.shaders = true;
+        x.vs = want_vs, x.fs = prog->fs, x.ms = want_ms, x.shaders = true;
     }
     {
         const ListDraw::DynKey k{s.dyn_gen, topo, prog, p.set_rt_at, p.w, p.h, p.n};
         if (!x.dyn_valid || std::memcmp(&k, &x.dyn_key, sizeof k)) set_dynamic(x, cb, s, p, topo, *prog), x.dyn_key = k;
     }
-    bool vi_used[16]{};
-    if (!x.vi_valid || x.vi_key_gen != s.vi_gen || x.vi_key_loads != prog->vs_loads || x.vi_key_nattr != (uint32_t)s.nvattr) {
-        set_vertex_input(x, cb, s, *prog, vi_used);
-        std::memcpy(x.vi_used, vi_used, sizeof vi_used);
-        x.vi_key_gen = s.vi_gen, x.vi_key_loads = prog->vs_loads, x.vi_key_nattr = (uint32_t)s.nvattr;
-    } else {
-        std::memcpy(vi_used, x.vi_used, sizeof vi_used);
-    }
-    {
+    if (!mesh) {
+        bool vi_used[16]{};
+        if (!x.vi_valid || x.vi_key_gen != s.vi_gen || x.vi_key_loads != prog->vs_loads || x.vi_key_nattr != (uint32_t)s.nvattr) {
+            set_vertex_input(x, cb, s, *prog, vi_used);
+            std::memcpy(x.vi_used, vi_used, sizeof vi_used);
+            x.vi_key_gen = s.vi_gen, x.vi_key_loads = prog->vs_loads, x.vi_key_nattr = (uint32_t)s.nvattr;
+        } else {
+            std::memcpy(vi_used, x.vi_used, sizeof vi_used);
+        }
         uint32_t first = 16, last = 0, want = 0;
         for (uint32_t b = 0; b < 16; b++)
             if (vi_used[b]) first = std::min(first, b), last = b, want |= 1u << b;
@@ -945,7 +1046,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             x.vb_valid = true;
         }
     }
-    if (op == NOP_DRAW_IDX && (!x.ib_valid || x.ib != ib || x.io != io || x.it != it)) {
+    if (indexed && (!x.ib_valid || x.ib != ib || x.io != io || x.it != it)) {
         vkCmdBindIndexBuffer(cb, ib, io, it);
         x.ib = ib, x.io = io, x.it = it, x.ib_valid = true;
     }
@@ -954,12 +1055,41 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         std::memcpy(x.push, push, prog->push_bytes);
         x.push_n = prog->push_bytes, x.push_valid = true;
     }
-    drawlog(l, op == NOP_DRAW_IDX ? "drawn indexed" : "drawn", prog, &x.dyn, op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
-    if (op == NOP_DRAW_IDX)
+    if (mesh) {
+        if (!prog->used.load(std::memory_order_relaxed) && !prog->used.exchange(true))   // (M4b: each mesh program's first use)
+            logf("direct: mesh program first use: key %016llx, stages mesh %016llx fragment %016llx header %016llx, no task stage "
+                 "(the shader objects: mesh %p, fragment %p); a %s draw in a list of kind %u (lr %#llx) at present %llu",
+                 (unsigned long long)prog->key, (unsigned long long)prog->codes[0], (unsigned long long)prog->codes[1],
+                 (unsigned long long)prog->codes[2], (void*)prog->ms, (void*)prog->fs, mesh_ind ? "indirect" : "direct",
+                 l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count());
+        static const bool dry = dbg("meshdry");   // (HOS_DBG=meshdry, a bring-up aid: everything but the mesh draw itself)
+        if (dry) return count(l, R_MESH_DRY);
+        drawlog(l, mesh_ind ? "drawn mesh indirect" : "drawn mesh", prog, &x.dyn, mesh_ind ? nargs : (uint32_t)dm.y);
+        if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
+        else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
+        else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
+        count(l, R_DRAWN);
+        sub(l, mesh_ind ? R_DRAWN_MESH_INDIRECT : R_DRAWN_MESH);
+        if (gated) st_gated[l->info.kind].fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    drawlog(l, ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn", prog, &x.dyn,
+            ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
+    if (ind) {   // (the game's records are VkDrawIndirectCommand / VkDrawIndexedIndirectCommand: fallbacks.md 2a)
+        if (indexed) {
+            if (cntb) vkCmdDrawIndexedIndirectCount(cb, ab, ao, cntb, cnto, nargs, stride);
+            else vkCmdDrawIndexedIndirect(cb, ab, ao, nargs, stride);
+        } else {
+            if (cntb) vkCmdDrawIndirectCount(cb, ab, ao, cntb, cnto, nargs, stride);
+            else vkCmdDrawIndirect(cb, ab, ao, nargs, stride);
+        }
+    } else if (op == NOP_DRAW_IDX) {
         vkCmdDrawIndexed(cb, (uint32_t)di.count, (uint32_t)std::max(1, di.instances), 0, di.base_vertex, (uint32_t)di.base_instance);
-    else
+    } else {
         vkCmdDraw(cb, (uint32_t)dr.count, (uint32_t)std::max(1, dr.instances), (uint32_t)dr.first, (uint32_t)dr.base_instance);
+    }
     count(l, R_DRAWN);
+    if (ind) sub(l, R_DRAWN_INDIRECT);
     if (gated) st_gated[l->info.kind].fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -1051,7 +1181,9 @@ void draw_log(double frames) {
          out, st_ub_updates.exchange(0) / frames, take(&TStats::ub_copies, T_UB_COPIES) / frames,
          take(&TStats::ub_bytes, T_UB_BYTES) / 1024.0 / frames, take(&TStats::ub_reads, T_UB_READS) / frames);
     logf("direct: uniform buffers a program may read past their bound range: %.1f a frame (of the address tables made)",
-         take(&TStats::past_range, T_PAST) / frames);    static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
+         take(&TStats::past_range, T_PAST) / frames);
+    logf("direct: direct mesh draws from a first workgroup past 0: %.2f a frame", take(&TStats::mesh_first, T_MESH_FIRST) / frames);
+    static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
     for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
         k = std::snprintf(out, cap, "draws a frame in %s lists:", kinds[kind]);
         bool any = false;
@@ -1082,6 +1214,8 @@ void draw_log(double frames) {
         logf("direct: %s", out);
     }
     shader_stats(out, cap, frames);
+    logf("direct: %s", out);
+    shader_task_mesh_stats(out, cap, frames);
     logf("direct: %s", out);
     heap_stats(out, cap);
     logf("direct: %s", out);

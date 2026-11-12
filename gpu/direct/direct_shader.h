@@ -22,13 +22,19 @@ struct DState;
 
 /// Why a draw has no program to draw with (direct_draw.cpp counts them)
 enum ShaderMiss : uint8_t {
-    SM_NONE, SM_NO_PROGRAM, SM_NOT_PARSED, SM_NOT_GRAPHICS, SM_TRANSLATING, SM_FAILED, SM_UNSUPPORTED, SM_COUNT
+    SM_NONE, SM_NO_PROGRAM, SM_NOT_PARSED, SM_NOT_GRAPHICS, SM_TRANSLATING, SM_FAILED, SM_UNSUPPORTED, SM_TASK_MESH, SM_COUNT
 };
 
 /// A ready program variant, as a draw reads it
 struct DrawProg {
     uint64_t key = 0, variant = 0;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+    // (M4b: a mesh-only program: its mesh stage's object, no vertex stage; drawn by DRAW_MESH only. Its stages' code keys and
+    // whether a draw has used it yet, for the first-use log)
+    bool mesh = false;
+    VkShaderEXT ms = VK_NULL_HANDLE;
+    uint64_t codes[3]{};   // (vertex or mesh, fragment, header-only)
+    mutable std::atomic<bool> used{false};
     uint32_t vs_loads = 0;          // (bit i: the vertex stage reads generic attribute i)
     uint8_t frag_stores = 0;        // (bit i: the fragment stage writes colour output i)
     uint8_t frag_components[8]{};   // (and which of its components)
@@ -48,7 +54,7 @@ struct DrawProg {
         uint16_t push_off;
     };
     std::vector<Pushed> pushed;
-    VkDeviceAddress c1[2]{};   // (the vertex and fragment stages' c1, made at load)
+    VkDeviceAddress c1[8]{};   // (each stage's c1 by NVN stage, made at load)
     /// The variant's texture answers a draw checks (c0 / c2 words; one in a game buffer is taken as it was translated)
     struct Answer {
         uint8_t stage;
@@ -69,12 +75,18 @@ struct DrawProg {
     char shape[160]{};   // (M3b, logs: per stage the textures by their handle's source, images, storage buffers, global memory)
 };
 
-constexpr uint32_t kTablePush = 120;   // (push data: Eden's block is 120 bytes (PUSH_CONSTANTS_END rounded to 8))
+constexpr uint32_t kTablePush = 120;
+constexpr uint32_t kMeshFirstPush = 56;   // (M4b: a mesh draw's first workgroup, a u32: Eden's MESH_FIRST_PUSH_OFFSET)   // (push data: Eden's block is 120 bytes (PUSH_CONSTANTS_END rounded to 8))
 
 /// (the game's thread, nvnProgramSetShaders) the program's stages read and its kept variants made, on a worker
 void shader_program_set(const nvn_prog* p);
 /// The variant for the bound program and state; null: none ready (why says, the translation queued where it is one)
 const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], ShaderMiss& why);
+/// (M4b) A draw of the bound program, which has a task stage, counted by its stages (not drawn)
+void shader_task_mesh_draw(const DState& s, bool indirect);
+void shader_task_mesh_stats(char* out, size_t cap, double frames);
+/// (M4b, logs) the bound program's stages: kind and code keys
+void shader_describe(const DState& s, char* out, size_t cap);
 /// Whether the textures bound now answer what the variant was translated for
 bool shader_answers_hold(const DState& s, const DrawProg& p);
 void shader_stats(char* out, size_t cap, double frames);

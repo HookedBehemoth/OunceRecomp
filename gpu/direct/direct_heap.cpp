@@ -18,6 +18,7 @@
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
 HSD_VK_M2B(HSD_VK_DEFINE)
+HSD_VK_M4B(HSD_VK_DEFINE)
 }
 #undef HSD_VK_DEFINE
 
@@ -34,8 +35,11 @@ VkPhysicalDeviceDescriptorHeapFeaturesEXT heap_feat{VK_STRUCTURE_TYPE_PHYSICAL_D
 VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
 VkPhysicalDeviceProvokingVertexFeaturesEXT pv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
 VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+// (M4b: mesh shading with the mesh stage only. The task stage is never enabled: native task-stage draws lose the device on this
+// GPU (plan, "Task and mesh shaders"); with the feature off no task shader object can be made at all)
+VkPhysicalDeviceMeshShaderFeaturesEXT mesh_feat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
 bool has_ext[8]{};
-enum { E_SHOBJ, E_HEAP, E_EDS3, E_PV, E_STENCIL, E_ATOMIC_FLOAT, E_M5 };
+enum { E_SHOBJ, E_HEAP, E_EDS3, E_PV, E_STENCIL, E_ATOMIC_FLOAT, E_M5, E_MESH };
 
 VkPhysicalDeviceDescriptorHeapPropertiesEXT hprops{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
 
@@ -347,7 +351,7 @@ void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std:
         {E_SHOBJ, VK_EXT_SHADER_OBJECT_EXTENSION_NAME}, {E_HEAP, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME},
         {E_EDS3, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME}, {E_PV, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME},
         {E_STENCIL, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME}, {E_ATOMIC_FLOAT, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME},
-        {E_M5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME}};
+        {E_M5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME}, {E_MESH, VK_EXT_MESH_SHADER_EXTENSION_NAME}};
     for (const auto& e : list)
         if ((has_ext[e.k] = has(exts, e.name))) want.push_back(e.name);
     if (has_ext[E_SHOBJ]) *tail = &shobj, tail = &shobj.pNext;
@@ -355,10 +359,15 @@ void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std:
     if (has_ext[E_EDS3]) *tail = &eds3, tail = &eds3.pNext;
     if (has_ext[E_PV]) *tail = &pv, tail = &pv.pNext;
     if (has_ext[E_ATOMIC_FLOAT]) *tail = &af, tail = &af.pNext;
+    if (has_ext[E_MESH]) *tail = &mesh_feat, tail = &mesh_feat.pNext;
 }
 
 void draw_features_resolved(const VkPhysicalDeviceVulkan14Features* f14) {
     heap_feat.descriptorHeapCaptureReplay = VK_FALSE;
+    mesh_feat.taskShader = VK_FALSE;   // (never: see mesh_feat)
+    mesh_feat.multiviewMeshShader = mesh_feat.primitiveFragmentShadingRateMeshShader = mesh_feat.meshShaderQueries = VK_FALSE;
+    caps.mesh = has_ext[E_MESH] && mesh_feat.meshShader;
+    if (!caps.mesh) mesh_feat.meshShader = VK_FALSE;
     caps.index_uint8 = f14 && f14->indexTypeUint8;
     caps.vertex_divisor = f14 && f14->vertexAttributeInstanceRateDivisor;
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
@@ -385,6 +394,7 @@ void draw_device_created() {
     caps.alpha_to_one = dev.features.alphaToOne, caps.logic_op = dev.features.logicOp;   // (enabled: their state must be set)
 #define HSD_VK_LOAD(f) f = (PFN_##f)vkGetDeviceProcAddr(dev.device, #f);
     HSD_VK_M2B(HSD_VK_LOAD)
+    HSD_VK_M4B(HSD_VK_LOAD)
 #undef HSD_VK_LOAD
     bool all = true;
 #define HSD_VK_CHECK(f) all = all && f != nullptr;

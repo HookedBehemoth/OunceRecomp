@@ -126,7 +126,7 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
     }
     case NOP_BIND_TEX: case NOP_BIND_SAMP: case NOP_BIND_IMG: {
         const auto b = payload<nvn_p_bind_handles>(a, size);
-        if (b.stage < 0 || b.stage >= kBankStages || b.first < 0) return true;   // (compute, task, mesh: not drawn at M2b)
+        if (b.stage < 0 || b.stage >= kBankStages || b.first < 0) return true;
         uint32_t* to = op == NOP_BIND_TEX ? s.tex[b.stage] : op == NOP_BIND_SAMP ? s.samp[b.stage] : s.img[b.stage];
         const int lim = op == NOP_BIND_IMG ? 32 : 128;
         const int n = std::clamp(std::min(b.n, lim - b.first), 0, 32);

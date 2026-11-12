@@ -13,8 +13,8 @@ namespace hsd {
 
 /// NVN's stages: vertex 0, fragment 1, geometry 2, tessellation 3 / 4, compute 5; NVN2's task 6 and mesh 7
 constexpr int kStages = 8;
-/// The graphics stages a bank is kept for (vertex, fragment)
-constexpr int kBankStages = 2;
+/// The stages a bank is kept for, by NVN stage (M4b: every one; the mesh stage's draws read theirs)
+constexpr int kBankStages = kStages;
 
 struct DState {
     nvn_prog prog{};

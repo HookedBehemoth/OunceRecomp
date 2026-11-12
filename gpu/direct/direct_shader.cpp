@@ -55,6 +55,7 @@
 #endif
 
 namespace hsd {
+static_assert(kMeshFirstPush == Shader::Backend::SPIRV::MESH_FIRST_PUSH_OFFSET, "the mesh draw's first: Eden's push offset");
 double seconds_since_device();   // (direct_draw.cpp)
 bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
                    VkDeviceAddress& address);   // (direct_heap.cpp)
@@ -82,7 +83,18 @@ struct Code {
     bool header_only = false;
     uint8_t sph[sizeof(Shader::ProgramHeader)]{};
     bool ok = false;
+    // (M4b, NVN2's task (6) and mesh (7) stages: control section +0x58 threads 15:0, payload bytes 31:16; +0x60 max primitives
+    // 15:0, max vertices 31:16; +0x5f the output topology, 1 points, 3 triangles (vk_shader.cpp parse_code))
+    uint32_t mesh_threads = 0, payload_bytes = 0, max_vertices = 0, max_primitives = 0, topology = 0;
 };
+void mesh_fields(const uint8_t* ctl, Code& c) {
+    if (c.stage != 6 && c.stage != 7) return;
+    uint32_t w58, w60;
+    std::memcpy(&w58, ctl + 0x58, 4), std::memcpy(&w60, ctl + 0x60, 4);
+    c.mesh_threads = w58 & 0xFFFF, c.payload_bytes = w58 >> 16;
+    c.max_primitives = w60 & 0xFFFF, c.max_vertices = w60 >> 16;
+    c.topology = ctl[0x5f];
+}
 bool control_end(const uint8_t* ctl, uint32_t* end_out) {
     uint32_t magic, len, c1o, end;
     uint16_t st;
@@ -110,6 +122,7 @@ bool scan_code(const nvn_stage_data& sd, Code& c) {
     c.stage = st;
     if (st != 5) std::memcpy(c.sph, area.data(), std::min<size_t>(sizeof c.sph, area.size()));
     c.header_only = st != 5 && len <= kAmpereHeader + 16;
+    mesh_fields(ctl, c);
     return true;
 }
 /// The stage lowered to Maxwell, as the translator reads it
@@ -122,6 +135,7 @@ bool parse_code(const nvn_stage_data& sd, Code& c) {
     std::memcpy(&len, ctl + 0x38, 4), std::memcpy(&c1o, ctl + 0x40, 4), std::memcpy(&st, ctl + 0x56, 2);
     c.key = hash_bytes(area.data(), area.size(), hash_bytes(ctl, kControlSize));
     c.stage = st;
+    mesh_fields(ctl, c);
     const bool graphics = st != 5;
     const uint32_t hdr = graphics ? kAmpereHeader : 0;
     if (graphics) std::memcpy(c.sph, area.data(), std::min<size_t>(sizeof c.sph, area.size()));
@@ -234,6 +248,12 @@ public:
         }
     }
     void Dump(u64, u64) override {}
+    /// (M4b) a mesh program's SET_MESH_SHADER_A / B and SET_MESH_INIT_SHADER, and the header-only stage whose output map lists
+    /// its per-primitive outputs (vk_shader.cpp Env::set_mesh)
+    void set_mesh(const std::array<u32, 3>& registers, const uint8_t* primitive_sph) {
+        mesh_registers = registers;
+        if (primitive_sph) std::memcpy(&mesh_primitive_header, primitive_sph, sizeof mesh_primitive_header);
+    }
     int questions = 0;
     int game_words = 0;   // (words of game buffers the translator asked for: answered 0)
 
@@ -318,9 +338,10 @@ struct Translation {
     Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_blocks;
     Shader::IR::Program program;
 };
-std::unique_ptr<Translation> translate(Env& env) {
+std::unique_ptr<Translation> translate(Env& env, bool one_exit = false) {
     auto t = std::make_unique<Translation>();
-    Shader::Maxwell::Flow::CFG cfg{env, t->flow_blocks, env.StartAddress() + static_cast<u32>(sizeof(Shader::ProgramHeader)), false};
+    // (M4b: a mesh program gets one exit: its counts are set there, as the frozen back end translates it)
+    Shader::Maxwell::Flow::CFG cfg{env, t->flow_blocks, env.StartAddress() + static_cast<u32>(sizeof(Shader::ProgramHeader)), one_exit};
     t->program = Shader::Maxwell::TranslateProgram(t->insts, t->blocks, env, cfg, host_info());
     return t;
 }
@@ -357,6 +378,22 @@ uint64_t graphics_key(uint64_t vs_key, const uint8_t* vs_sph, uint64_t fs_key, c
     uint8_t written[8];
     for (int i = 0; i < 8; i++) written[i] = fs_sph && header_of(fs_sph).ps.HasOutputComponents(i) ? color_types[i] : 0;
     return hash_bytes(written, 8, key);
+}
+/// (M4b) A mesh-only program's key (vk_shader.cpp mesh_key with no task stage): its code, the header-only stage's, the colour
+/// types the fragment stage writes
+uint64_t mesh_key(uint64_t mesh_code, uint64_t fs_key, const uint8_t* fs_sph, const uint8_t* prim_sph, const uint8_t color_types[8]) {
+    uint64_t key = hash_bytes("mesh", 4, mesh_code);
+    if (fs_sph) key = key * 1099511628211ull ^ fs_key;
+    if (prim_sph) key = hash_bytes(prim_sph, sizeof(Shader::ProgramHeader), key);
+    uint8_t written[8];
+    for (int i = 0; i < 8; i++) written[i] = fs_sph && header_of(fs_sph).ps.HasOutputComponents(i) ? color_types[i] : 0;
+    return hash_bytes(written, 8, key);
+}
+/// (M4b) SET_MESH_SHADER_A / B and SET_MESH_INIT_SHADER of a mesh program with no task stage (vk_shader.cpp mesh_registers_of)
+std::array<u32, 3> mesh_registers_of(const Code& mesh) {
+    const uint32_t topology = mesh.topology == 3 ? 4 : mesh.topology == 1 ? 0 : mesh.topology;
+    const uint32_t most = std::max(mesh.max_vertices, mesh.max_primitives);
+    return {(topology & 0xF) | (std::min(most, 0x100u) << 4) | (std::min(most, 0x100u) << 13), std::min(mesh.mesh_threads, 0x3Fu) << 20, 0u};
 }
 
 // ---- variants ----
@@ -396,14 +433,48 @@ std::unordered_map<uint64_t, Family*> families;   // (by pair_key of the stages'
 std::atomic<int64_t> st_families{0};
 
 /// A program, by its NVN serial
+/// (M4b) A program with a task stage: not drawn (M4c); its draws counted by its stages' code
+struct TaskMesh {
+    std::atomic<uint64_t> id{0};
+    uint64_t task = 0, mesh = 0, fs = 0;
+    std::atomic<int64_t> direct{0}, indirect{0}, programs{0};
+    int64_t seen[2]{};
+};
+TaskMesh task_mesh[64];
+std::atomic<int64_t> st_task_mesh_full{0};
+TaskMesh* task_mesh_of(uint64_t task, uint64_t mesh, uint64_t fs) {
+    const uint64_t k = task ^ mesh * 31 ^ fs * 961;
+    for (TaskMesh& t : task_mesh) {
+        uint64_t have = t.id.load(std::memory_order_acquire);
+        if (!have) {
+            static std::mutex mu;
+            std::lock_guard lk(mu);
+            have = t.id.load(std::memory_order_acquire);
+            if (!have) {
+                t.task = task, t.mesh = mesh, t.fs = fs;
+                t.id.store(k, std::memory_order_release);
+                have = k;
+            }
+        }
+        if (have == k) return &t;
+    }
+    st_task_mesh_full.fetch_add(1, std::memory_order_relaxed);
+    return nullptr;
+}
+
 struct Slot {
     uint64_t serial = 0;
     nvn_prog prog{};
-    std::atomic<int> state{0};   // (0 being read, 1 a vertex (+ fragment) program, 2 not one, 3 its code not readable)
-    StageScan vs, fs;
-    bool has_fs = false;
+    // (0 being read, 1 a vertex (+ fragment) or mesh-only (+ fragment) program, 2 not one, 3 its code not readable, 4 a task
+    // stage (M4b: not drawn))
+    std::atomic<int> state{0};
+    StageScan vs, fs, prim;   // (M4b: vs is the mesh stage's of a mesh program; prim its header-only stage)
+    bool has_fs = false, mesh = false, has_prim = false;
     const char* why = "";
     Family* fam = nullptr;   // (set before state 1)
+    TaskMesh* tm = nullptr;  // (state 4)
+    uint64_t keys[6]{};      // (M4b, logs: each stage's code key and NVN stage, set before the state)
+    int16_t stages[6]{-1, -1, -1, -1, -1, -1};
 };
 
 constexpr uint32_t kSlots = 1u << 17;
@@ -465,6 +536,8 @@ struct DiskRecord {
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_pair;   // (vertex code key ^ fragment code key * 31)
 
 uint64_t pair_key(uint64_t vs, uint64_t fs) { return vs ^ fs * 31; }
+/// (M4b) a slot's family and cache key: a mesh program's code key salted so it never meets a vertex program's
+uint64_t pair_key_of(bool mesh, uint64_t first, uint64_t fs) { return pair_key(mesh ? hash_bytes("mesh", 4, first) : first, fs); }
 
 void put_bytes(std::vector<uint8_t>& o, const void* d, size_t n) { o.insert(o.end(), (const uint8_t*)d, (const uint8_t*)d + n); }
 template <class T> void put(std::vector<uint8_t>& o, const T& v) { put_bytes(o, &v, sizeof v); }
@@ -850,11 +923,13 @@ bool finish(Variant& v) {
             }
             const size_t k = std::strlen(d.shape);
             std::snprintf(d.shape + k, sizeof d.shape - k, "%s%s: tex %d bank %d game %d computed, img %zu, ssbo %zu%s%s",
-                          k ? "; " : "", st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? "vs" : "fs", bank, game, computed,
+                          k ? "; " : "", st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? "vs" : st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? "ms" : "fs", bank, game, computed,
                           info.image_descriptors.size(), info.storage_buffers_descriptors.size(),
                           info.uses_global_memory ? ", global memory" : "", info.texture_buffer_descriptors.size() ? ", texel buffers" : "");
         }
-        if (si < 2) d.c1[si] = c1_put(st.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
+        if (st.nvn_stage >= 0 && st.nvn_stage < 8)
+            d.c1[st.nvn_stage] = c1_put(st.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
+        if (st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) d.mesh = true;
     }
     d.push_bytes = kTablePush + 8 + 8 * (uint32_t)d.pushed.size();
     {   // (M3b: what the address table holds: uniform buffers a variant reads, against the push data a pushed address each would need)
@@ -890,8 +965,10 @@ bool finish(Variant& v) {
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sz = size32;
         VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
         ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+        // (M4b: a mesh stage never has a task stage before it: the device has none enabled)
+        if (st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) ci.flags |= VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT;
         ci.stage = st.vk_stage;
-        ci.nextStage = st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? VK_SHADER_STAGE_FRAGMENT_BIT : 0;
+        ci.nextStage = st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT || st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? VK_SHADER_STAGE_FRAGMENT_BIT : 0;
         ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
         ci.codeSize = st.spirv.size() * 4;
         ci.pCode = st.spirv.data();
@@ -906,12 +983,12 @@ bool finish(Variant& v) {
             st_object_failed.fetch_add(1, std::memory_order_relaxed);
             static std::atomic<int> told{0};
             if (told++ < 20) logf("direct: program %016llx: its %s shader object not made (%d)", (unsigned long long)d.key,
-                                  st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? "vertex" : "fragment", (int)r);
+                                  st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? "vertex" : st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? "mesh" : "fragment", (int)r);
             return false;
         }
         st_objects.fetch_add(1, std::memory_order_relaxed);
         st_objects_made.fetch_add(1, std::memory_order_relaxed);
-        (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? d.vs : d.fs) = obj;
+        (st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? d.vs : st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? d.ms : d.fs) = obj;
     }
     if (d.skip) {
         static std::mutex mu;
@@ -1013,10 +1090,67 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
     }
 }
 
+uint64_t slot_pair(const Slot& s) { return pair_key_of(s.mesh, s.vs.key, s.has_fs ? s.fs.key : 0); }
+
+/// (M4b) A mesh-only program: its mesh stage (no task stage before it: the device has no task stage enabled) and fragment
+/// stage, as vk_shader.cpp translate_mesh_into translates them without the fallback
+bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const Code* prim, const Code* fsc, const uint8_t color_types[8]) {
+    try {
+        Shader::Backend::Bindings bindings{};
+        int questions = 0;
+        Env menv{s, mc, Shader::Stage::Mesh};
+        menv.set_mesh(mesh_registers_of(mc), prim ? prim->sph : nullptr);
+        auto ms = translate(menv, true);
+        questions += menv.questions;
+        Shader::RuntimeInfo mrt{};
+        mrt.previous_stage_stores.mask.set();
+        mrt.convert_depth_mode = host->depth_minus_w() != 0;
+        mrt.mesh_without_task = true;
+        VStage& mst = v.stages.emplace_back();
+        mst.nvn_stage = 7, mst.vk_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
+        mst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_MESH_BIT_EXT), mrt, ms->program, bindings);
+        mst.info = ms->program.info;
+        mst.c1 = mc.c1;
+        st_game_words.fetch_add(menv.game_words, std::memory_order_relaxed);
+        if (fsc) {
+            Env fs_env{s, *fsc, Shader::Stage::Fragment};
+            auto fs = translate(fs_env);
+            questions += fs_env.questions;
+            st_game_words.fetch_add(fs_env.game_words, std::memory_order_relaxed);
+            Shader::RuntimeInfo frt{};
+            frt.previous_stage_stores = ms->program.info.stores;
+            for (const u32 line : ms->program.mesh.primitive_lines) {   // (its per-primitive generics: Eden's MakeRuntimeInfo)
+                const auto attribute = static_cast<Shader::IR::Attribute>(line);
+                if (Shader::IR::IsGeneric(attribute)) frt.per_primitive_generics.set(Shader::IR::GenericAttributeIndex(attribute));
+            }
+            // (points: a generic the fragment stage reads and the mesh stage never writes is the point sprite's coordinate)
+            if (ms->program.mesh.topology == 0)
+                for (size_t i = 0; i < Shader::IR::NUM_GENERICS; i++)
+                    if (fs->program.info.loads.Generic(i) && !ms->program.info.stores.Generic(i)) frt.point_coord_generics.set(i);
+            for (int i = 0; i < 8; i++) frt.color_output_types[i] = static_cast<Shader::AttributeType>(color_types[i]);
+            uint32_t float_targets = 0;
+            for (int i = 0; i < 8; i++)
+                if (frt.color_output_types[i] == Shader::AttributeType::Float) float_targets |= 1u << i;
+            Shader::Optimization::GuardFragmentOutputs(fs->program, float_targets);
+            VStage& fst = v.stages.emplace_back();
+            fst.nvn_stage = 1, fst.vk_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            fst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_FRAGMENT_BIT), frt, fs->program, bindings);
+            fst.info = fs->program.info;
+            fst.c1 = fsc->c1;
+        }
+        if (questions) record_answers(v, s);
+        return true;
+    } catch (const std::exception& e) {
+        static std::atomic<int> told{0};
+        if (told++ < 30) logf("direct: mesh program %016llx not translated: %s", (unsigned long long)v.d.key, e.what());
+        return false;
+    }
+}
+
 /// (a worker) the program's stages read, and its kept variants made
 void scan_slot(Slot* s) {
     Code codes[6];
-    int vs = -1, fs = -1;
+    int vs = -1, fs = -1, mesh = -1, task = -1, prim = -1;
     bool other = false;
     for (uint32_t i = 0; i < s->prog.nstage && i < 6; i++) {
         if (!scan_code(s->prog.sd[i], codes[i])) {
@@ -1025,18 +1159,34 @@ void scan_slot(Slot* s) {
             return s->state.store(3, std::memory_order_release);
         }
         const Code& c = codes[i];
-        if (c.header_only) continue;
-        if (c.stage == 0) vs = (int)i;
+        s->keys[i] = c.key, s->stages[i] = (int16_t)(c.header_only ? 100 + c.stage : c.stage);
+        if (c.stage == 6) task = (int)i;   // (M4b: a task stage in any form makes the program task+mesh: never drawn here)
+        else if (c.header_only) prim = (int)i;
+        else if (c.stage == 0) vs = (int)i;
         else if (c.stage == 1) fs = (int)i;
+        else if (c.stage == 7) mesh = (int)i;
         else other = true;
     }
-    if (vs < 0 || other) {
-        s->why = vs < 0 ? "no vertex stage (mesh, task or compute)" : "a geometry or tessellation stage";
+    if (task >= 0) {   // (M4b: a program with a task stage is not drawn (its native draws lose the device on this GPU: M4c))
+        s->why = "a task stage (M4c)";
+        s->tm = task_mesh_of(codes[task].key, mesh >= 0 ? codes[mesh].key : 0, fs >= 0 ? codes[fs].key : 0);
+        if (s->tm && s->tm->programs.fetch_add(1, std::memory_order_relaxed) == 0)
+            logf("direct: program serial %llu has a task stage: task %016llx mesh %016llx fragment %016llx: task+mesh, not drawn (M4c)",
+                 (unsigned long long)s->serial, (unsigned long long)codes[task].key, (unsigned long long)(mesh >= 0 ? codes[mesh].key : 0),
+                 (unsigned long long)(fs >= 0 ? codes[fs].key : 0));
+        return s->state.store(4, std::memory_order_release);
+    }
+    if (mesh >= 0 && vs < 0 && !other) {   // (M4b: a mesh-only program)
+        s->mesh = true;
+        if (prim >= 0) s->has_prim = true, s->prim.key = codes[prim].key, std::memcpy(s->prim.sph, codes[prim].sph, sizeof s->prim.sph);
+        vs = mesh;
+    } else if (vs < 0 || other || mesh >= 0) {
+        s->why = vs < 0 ? "no vertex or mesh stage (compute)" : mesh >= 0 ? "a vertex and a mesh stage" : "a geometry or tessellation stage";
         return s->state.store(2, std::memory_order_release);
     }
     s->vs.key = codes[vs].key, std::memcpy(s->vs.sph, codes[vs].sph, sizeof s->vs.sph);
     if (fs >= 0) s->has_fs = true, s->fs.key = codes[fs].key, std::memcpy(s->fs.sph, codes[fs].sph, sizeof s->fs.sph);
-    const uint64_t pair = pair_key(s->vs.key, s->has_fs ? s->fs.key : 0);
+    const uint64_t pair = slot_pair(*s);
     bool fresh = false;
     {
         std::lock_guard lk(families_mu);
@@ -1044,6 +1194,10 @@ void scan_slot(Slot* s) {
         if (made) it->second = new Family, st_families.fetch_add(1, std::memory_order_relaxed);
         s->fam = it->second, fresh = made;
     }
+    if (fresh && s->mesh)
+        logf("direct: program serial %llu is mesh-only: mesh %016llx fragment %016llx (header-only stage %016llx); no task stage",
+             (unsigned long long)s->serial, (unsigned long long)s->vs.key, (unsigned long long)(s->has_fs ? s->fs.key : 0),
+             (unsigned long long)(s->has_prim ? s->prim.key : 0));
     if (!fresh) {   // (the code's variants are made by the slot that saw it first; this one waits for them, on its worker)
         while (!s->fam->loaded.load(std::memory_order_acquire)) std::this_thread::yield();
         return s->state.store(1, std::memory_order_release);
@@ -1060,9 +1214,10 @@ void scan_slot(Slot* s) {
         const auto t0 = clk::now();
         const bool read = disk_read(d, *v);
         st_disk_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
-        if (!read || (v->stages.size() == 2) != s->has_fs) continue;
+        if (!read || (v->stages.size() == 2) != s->has_fs || (v->stages[0].vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) != s->mesh) continue;
         v->d.variant = 0;
         for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
+        v->d.codes[0] = s->vs.key, v->d.codes[1] = s->has_fs ? s->fs.key : 0, v->d.codes[2] = s->has_prim ? s->prim.key : 0;
         if (!finish(*v)) continue;
         st_from_disk.fetch_add(1, std::memory_order_relaxed);
         publish(*s->fam, v.release(), s->serial);
@@ -1110,6 +1265,36 @@ void shader_program_set(const nvn_prog* p) {
     slot_make(copy);
 }
 
+void shader_describe(const DState& s, char* out, size_t cap) {
+    const Slot* slot = s.has_prog ? slot_find(s.prog.serial) : nullptr;
+    const int state = slot ? slot->state.load(std::memory_order_acquire) : -1;
+    static const char* const kinds[] = {"being read", "drawable", "not drawable", "unreadable", "task+mesh"};
+    int k = std::snprintf(out, cap, "program serial %llu %s%s:", (unsigned long long)(s.has_prog ? s.prog.serial : 0),
+                          state < 0 ? "unknown" : kinds[std::min(state, 4)], slot && slot->mesh ? " mesh-only" : "");
+    if (state > 0)
+        for (int i = 0; i < 6 && k < (int)cap - 40; i++)
+            if (slot->stages[i] >= 0) k += std::snprintf(out + k, cap - k, " %s%d %016llx", slot->stages[i] >= 100 ? "h" : "", slot->stages[i] % 100, (unsigned long long)slot->keys[i]);
+}
+
+void shader_task_mesh_draw(const DState& s, bool indirect) {
+    const Slot* slot = s.has_prog ? slot_find(s.prog.serial) : nullptr;
+    if (slot && slot->tm) (indirect ? slot->tm->indirect : slot->tm->direct).fetch_add(1, std::memory_order_relaxed);
+}
+
+void shader_task_mesh_stats(char* out, size_t cap, double frames) {
+    int k = std::snprintf(out, cap, "task+mesh programs (not drawn, M4c), draws a frame (direct / indirect) by task, mesh, fragment code:");
+    for (TaskMesh& t : task_mesh) {
+        if (!t.id.load(std::memory_order_acquire)) break;
+        const int64_t d = t.direct.load(std::memory_order_relaxed), i = t.indirect.load(std::memory_order_relaxed);
+        const double dd = (d - t.seen[0]) / frames, di = (i - t.seen[1]) / frames;
+        t.seen[0] = d, t.seen[1] = i;
+        if ((dd || di) && k < (int)cap - 96)
+            k += std::snprintf(out + k, cap - k, " [%016llx %016llx %016llx: %.2f / %.2f, %lld programs]", (unsigned long long)t.task,
+                               (unsigned long long)t.mesh, (unsigned long long)t.fs, dd, di, (long long)t.programs.load(std::memory_order_relaxed));
+    }
+    if (const int64_t f = st_task_mesh_full.load()) std::snprintf(out + k, k < (int)cap ? cap - k : 0, " (table full: %lld)", (long long)f);
+}
+
 bool shader_answers_hold(const DState& s, const DrawProg& p) {
     for (const DrawProg::Answer& a : p.answers) {
         const uint32_t h = bank_word(s, a.bank, a.stage, a.offset);
@@ -1125,8 +1310,10 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     if (!slot) return why = SM_NOT_PARSED, nullptr;
     const int state = slot->state.load(std::memory_order_acquire);
     if (state == 0) return why = SM_NOT_PARSED, nullptr;
+    if (state == 4) return why = SM_TASK_MESH, nullptr;
     if (state != 1) return why = SM_NOT_GRAPHICS, nullptr;
-    const uint64_t key = graphics_key(slot->vs.key, slot->vs.sph, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, s.vattr, color_types);
+    const uint64_t key = slot->mesh ? mesh_key(slot->vs.key, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, slot->has_prim ? slot->prim.sph : nullptr, color_types)
+                                    : graphics_key(slot->vs.key, slot->vs.sph, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, s.vattr, color_types);
     const Variant* same_key = nullptr;
     for (const Variant* v = slot->fam->variants.load(std::memory_order_acquire); v; v = v->next) {
         if (v->d.key != key) continue;
@@ -1159,16 +1346,24 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
         bool ok = false;
         auto v = std::make_unique<Variant>();
         v->d.key = job->key;
-        int vs = -1, fs = -1;
+        int vs = -1, fs = -1, ms = -1, prim = -1;
         Code codes[6];
         for (uint32_t i = 0; i < sl.prog.nstage && i < 6; i++)
-            if (parse_code(sl.prog.sd[i], codes[i]) && !codes[i].header_only) {
-                if (codes[i].stage == 0) vs = (int)i;
-                if (codes[i].stage == 1) fs = (int)i;
+            if (parse_code(sl.prog.sd[i], codes[i])) {
+                if (codes[i].header_only) prim = codes[i].stage != 6 ? (int)i : prim;
+                else if (codes[i].stage == 0) vs = (int)i;
+                else if (codes[i].stage == 1) fs = (int)i;
+                else if (codes[i].stage == 7) ms = (int)i;
             }
-        if (vs >= 0 && (fs >= 0) == sl.has_fs && translate_variant(*v, job->s, codes[vs], fs >= 0 ? &codes[fs] : nullptr, job->ct)) {
+        bool task = false;   // (M4b: never a task stage, whatever the slot said)
+        for (uint32_t i = 0; i < sl.prog.nstage && i < 6; i++) task |= codes[i].stage == 6;
+        const bool made = !task && (fs >= 0) == sl.has_fs &&
+                          (sl.mesh ? ms >= 0 && translate_mesh_variant(*v, job->s, codes[ms], prim >= 0 ? &codes[prim] : nullptr, fs >= 0 ? &codes[fs] : nullptr, job->ct)
+                                   : vs >= 0 && translate_variant(*v, job->s, codes[vs], fs >= 0 ? &codes[fs] : nullptr, job->ct));
+        if (made) {
             for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
-            disk_save(*v, pair_key(sl.vs.key, sl.has_fs ? sl.fs.key : 0));
+            disk_save(*v, slot_pair(sl));
+            v->d.codes[0] = sl.vs.key, v->d.codes[1] = sl.has_fs ? sl.fs.key : 0, v->d.codes[2] = sl.has_prim ? sl.prim.key : 0;
             ok = finish(*v);
         }
         st_translate_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);

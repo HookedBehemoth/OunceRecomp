@@ -32,9 +32,14 @@ namespace hsd {
     X(vkCmdBindVertexBuffers2) X(vkCmdBindIndexBuffer) X(vkCmdDraw) X(vkCmdDrawIndexed)                                \
     X(vkWriteResourceDescriptorsEXT) X(vkWriteSamplerDescriptorsEXT) X(vkCmdBindResourceHeapEXT)                       \
     X(vkCmdBindSamplerHeapEXT) X(vkCmdPushDataEXT) X(vkBindBufferMemory) X(vkMapMemory)
+/// (M4b) indirect and mesh draws; the mesh ones are null without the mesh stage (caps.mesh)
+#define HSD_VK_M4B(X)                                                                                                  \
+    X(vkCmdDrawIndirect) X(vkCmdDrawIndexedIndirect) X(vkCmdDrawIndirectCount) X(vkCmdDrawIndexedIndirectCount)        \
+    X(vkCmdDrawMeshTasksEXT) X(vkCmdDrawMeshTasksIndirectEXT) X(vkCmdDrawMeshTasksIndirectCountEXT)
 #define HSD_VK_DECLARE(f) extern PFN_##f f;
 namespace vkfn {
 HSD_VK_M2B(HSD_VK_DECLARE)
+HSD_VK_M4B(HSD_VK_DECLARE)
 }
 #undef HSD_VK_DECLARE
 
@@ -47,6 +52,7 @@ struct DrawCaps {
     uint32_t subgroup_size = 64, subgroup_max = 64;
     uint32_t max_push = 0;
     VkDriverId driver_id{};
+    bool mesh = false;   // (M4b: VK_EXT_mesh_shader's mesh stage (never the task stage))
 };
 extern DrawCaps caps;
 
