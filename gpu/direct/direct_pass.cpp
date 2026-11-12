@@ -63,7 +63,8 @@ constexpr uint32_t kKeys = 1024, kSets = 256;
 struct KeySlot {
     std::atomic<uint64_t> key{0};
     std::atomic<uint32_t> set{0};   // (1 + its formats' index in sets; 0: not known)
-    std::atomic<int64_t> inl{0}, inl_all{0}, executed{0}, forgotten{0};
+    std::atomic<int64_t> inl{0}, inl_all{0}, executed{0}, forgotten{0}, drawn{0}, mesh{0}, step_a{0};
+    std::atomic<uint64_t> target{0};   // (the pass's first colour target, or its depth: the dump's name for it)
 };
 KeySlot keys[kKeys];
 PassFormats sets[kSets];
@@ -570,7 +571,13 @@ void pass_call(List* l, const List* callee) {
         draw_invalidate(l);   // (the caller's dynamic state, shaders, buffers and push data are undefined after it)
         l->executed.push_back(callee);
         jcount(J_EXECUTED);
-        if (ks) ks->executed.fetch_add(1, std::memory_order_relaxed);
+        if (ks) {
+            ks->executed.fetch_add(1, std::memory_order_relaxed);
+            ks->drawn.fetch_add(callee->n_drawn, std::memory_order_relaxed), ks->mesh.fetch_add(callee->n_mesh, std::memory_order_relaxed);
+            ks->step_a.fetch_add(callee->n_step_a, std::memory_order_relaxed);
+            const Target& t = l->pass.n && l->pass.color[0].im ? l->pass.color[0] : l->pass.depth;
+            if (t.im) ks->target.store(t.im->gpu, std::memory_order_relaxed);
+        }
         if (callee->fmt.w != now.w || callee->fmt.h != now.h) jcount(J_SIZE);
         key_put(callee->info.pass_key, now);
         return;
@@ -645,6 +652,12 @@ void jobs_stats(char* out, size_t cap, double frames) {
                        seen, known, nsets);
     for (KeySlot& s : keys)
         if (const int64_t n = s.inl.exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %#llx %lld", (unsigned long long)s.key.load(), (long long)n);
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; by pass key (its target), a frame: jobs, draws drawn, mesh (M4), step A:");
+    for (KeySlot& s : keys)
+        if (const int64_t e = s.executed.exchange(0))
+            k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %#llx (%#llx) %.2f %.1f %.1f %.1f;", (unsigned long long)s.key.load(),
+                               (unsigned long long)s.target.load(), e / frames, s.drawn.exchange(0) / frames, s.mesh.exchange(0) / frames,
+                               s.step_a.exchange(0) / frames);
     for (KeySlot& s : keys)
         if (const int64_t n = s.forgotten.exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; forgotten %#llx %lld", (unsigned long long)s.key.load(), (long long)n);
 }

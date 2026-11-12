@@ -649,6 +649,9 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
 }
 
 void count(List* l, Reason r) {
+    if (r == R_DRAWN) l->n_drawn++;
+    else if (r == R_MESH) l->n_mesh++;
+    else if (r == R_STEP_A) l->n_step_a++;
     if (r != R_DRAWN && l->info.kind != HSD_LIST_JOB && l->info.kind != HSD_LIST_LOAD) drawlog(l, kReasons[r], nullptr, nullptr, 0);
     st_by_kind[l->info.kind][r].fetch_add(1, std::memory_order_relaxed);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);

@@ -92,6 +92,7 @@ struct List {
     uint32_t pkt_ops = 0;
     std::vector<const List*> executed;   // (secondaries executed in its renderings: their slots go with its submissions)
     uint32_t sec_draws = 0;   // (a secondary's draw ops so far: its first is timed apart)
+    uint32_t n_drawn = 0, n_mesh = 0, n_step_a = 0;   // (its draws drawn, skipped as mesh draws, skipped by step A: per pass in the log)
     bool pending_barrier = false;   // (M2b: a barrier waiting for the list's next command: recorded with it)
 };
 
