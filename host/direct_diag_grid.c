@@ -61,6 +61,28 @@ ENTRY_HOOK(0x80822260) {
                 (unsigned long long)b, g32(b + 0x1540), g32(b + 0x1550), g32(b + 0x1554), lo, hi, sum / 576, vlo, vhi, w[16], w[17], w[18],
                 w[19], w[20], w[21], w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
     }
+    {   /* (M6d) the grid compute's storage input 0x113b62d000 (s1): 576 16-byte tile records (f78bce74 sets them to 0xffffff),
+           and from +0x4c00 the corner table 3237af3d fills with the main view's depth sampled at the 33x19 tile corners; the
+           grid compute negates a tile's depth when all four of its corners are negative and one is -1 */
+        const uint64_t s = 0x113b62d000ull;
+        float lo = 1e30f, hi = -1e30f;
+        int neg = 0, m1 = 0, zero = 0;
+        for (int i = 0; i < 33 * 19; i++) {
+            uint32_t a = g32(s + 0x4c00 + 4 * (uint64_t)i);
+            float v;
+            memcpy(&v, &a, 4);
+            lo = v < lo ? v : lo, hi = v > hi ? v : hi;
+            neg += v < 0, m1 += v == -1.0f, zero += v == 0.0f;
+        }
+        uint32_t rlo = 0xffffffffu, rhi = 0;
+        for (int i = 0; i < 576 * 4; i++) {
+            uint32_t a = g32(s + 4 * (uint64_t)i);
+            rlo = a < rlo ? a : rlo, rhi = a > rhi ? a : rhi;
+        }
+        hos_log("gridlog: corners at %#llx+0x4c00 (627): min %g max %g, negative %d, -1 %d, zero %d; words %08x %08x %08x %08x %08x %08x %08x %08x; "
+                "tile records min %#x max %#x", (unsigned long long)s, lo, hi, neg, m1, zero, g32(s + 0x4c00), g32(s + 0x4c04), g32(s + 0x4c08),
+                g32(s + 0x4c0c), g32(s + 0x4c00 + 4 * 300), g32(s + 0x4c00 + 4 * 301), g32(s + 0x4c00 + 4 * 600), g32(s + 0x4c00 + 4 * 626), rlo, rhi);
+    }
     for (int k = 0; k < 3; k++) {   /* (the grid compute's uniform buffers in the trace: words 768-799 and 0-7) */
         const uint64_t u = k == 0 ? 0x113b649000ull : k == 1 ? 0x113b65b000ull : 0x113b620000ull;
         hos_log("gridlog: ubo %#llx: +768.. %08x %08x %08x %08x %08x %08x %08x %08x; +0.. %08x %08x %08x %08x", (unsigned long long)u,
