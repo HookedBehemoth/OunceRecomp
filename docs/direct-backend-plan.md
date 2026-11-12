@@ -4,7 +4,8 @@ This replaces `work/assets/native/engine-cut-plan.md` and the E1-E9 steps. Those
 `fallbacks.md` and `docs/native-vk.md` are frozen: they stay as the record of what was measured and reverse-engineered,
 and this plan cites them, but nothing here continues their steps.
 
-Status of this document: a draft for review. Items marked **(verify)** are assumptions taken from the frozen notes or
+Status of this document: accepted by the user 2026-11-12; M0's answers (`docs/direct/m0-*.md`) are folded in below,
+M1 is being built (`docs/direct/m1-interface.md`). Items marked **(verify)** are assumptions taken from the frozen notes or
 from a first reading of the code, not yet checked.
 
 ## Why a new back end
@@ -56,8 +57,10 @@ platform is considered. Texture-replacing mods are ignored. The menu may be chan
 `host/nvn_native.c` keeps its object layer (device, pools, buffers, textures, samplers, syncs, events). Its command
 functions all append a record through `cmd_alloc` / `put_hdr` (`host/nvn_native.c:1601`). That append is the seam: in
 direct mode the record is handed to the back end at once, on the calling thread, as `emit(list, op, payload)`, using the
-record structs of `gpu/render/rx_nvn.h` as the call format. The host's 3,765 lines are not rewritten. **(verify:** that
-every command goes through this one path, and what `nvn_list.c` adds.**)**
+record structs of `gpu/render/rx_nvn.h` as the call format. The host's 3,765 lines are not rewritten. Confirmed
+(m0-seam.md): `cmd_alloc` is the one write path. The record is handed over at a flush point, not at the append (its
+payload is filled after the append returns), and direct mode rides on the host's lists-by-reference handle table.
+The exact interface is `docs/direct/m1-interface.md`.
 
 The NVN call alone is not enough, as the frozen notes found: at that level a job's list is anonymous. The seam is the
 NVN call for the commands, plus an engine hook for each thing NVN does not carry:
@@ -101,16 +104,24 @@ attachment-to-sampled change; the frozen S6 census is the check.**)**
 
 ### Jobs
 
-A job records 0 to 4 ms before its pass sets targets, so a rendering run inherits formats only, from a pass table
-keyed by (view record, key word 0) and filled by earlier frames. A view record alone is not a pass identity across
-scenes (e4-impl.md).
+A job records 0 to 4 ms before its pass sets targets, and the targets are allocated inside the layer list, so they
+cannot be known earlier. A rendering secondary inherits formats only (m0-job-formats.md).
 
-- Miss or mismatch at the job-call site: the job is skipped for that frame, counted, and the table corrected.
-  Expected only in the first frames of a view.
-- RADV has no dynamic-state inheritance, so each run sets all its state; and no inherited conditional rendering, so a
-  condition is begun and ended inside the run. Inherited queries are available.
-- **Open before M3:** what a job inherits from its caller. The frozen plan says targets, pools and scratch only;
-  e6-impl.md section 6 found inherited vertex state. This decides whether the job-call site must hand state down.
+- **Pass identity** is the recorder's pass key pointer (x3 of `f_80084de0`), a fixed address in the pass's owner, which
+  the two job-call sites read too. A view record is a slot handed out in arrival order and is not an identity.
+- **Formats** come from a table keyed by that pointer, written at the job-call sites (`0x80668a9c`, `0x8028a3c4`) from
+  the targets just set.
+- **Miss or mismatch:** the job is not recorded (the recorder takes its own early return) and the layer list draws the
+  pass through the game's own inline path (`f_80681320`), after its own SetRenderTargets. No job is skipped and none
+  is drawn with wrong formats. Expected on a key's first frame (about 23 keys a scene) and after a settings change.
+  **(verify by a run:** that the inline path draws a complete pass, and that keys and their formats are stable over
+  the scene cycle.**)**
+- **A job is one rendering secondary.** It inherits nothing it reads except the task and mesh storage buffers of
+  GPU-culled mesh draws (m0-jobs-state.md); a patch makes those jobs bind them. The three waits and the one dispatch
+  recorded inside jobs move to the layer list by a patch at the job-call site (the water draw's wait only to
+  `0x80668c84`: earlier deadlocks). Both patches are inferred from static analysis and need a confirming log.
+- RADV has no dynamic-state inheritance, so each secondary sets all its state; and no inherited conditional
+  rendering, so a condition is begun and ended inside it. Inherited queries are available.
 
 ### Data a draw reads
 
@@ -123,8 +134,16 @@ scenes (e4-impl.md).
 | inline uniform updates (about 80 a frame) | the bytes go to the frame arena and later draws of the same list bind that copy | a range lookup in the list |
 | GPU-made draw arguments | indirect draws; mesh arguments converted by one batched copy before the pass | none |
 
-The deferred arrays are snapshotted and not read in place because the game rewrites them right after its submit, as
-the console's driver reads them at submit. This is the one submit-time copy the design keeps: a few kilobytes.
+The deferred arrays cannot be read in place: the game keeps two copies and flips them each frame, and in Hyrule Field
+97% are rewritten one present after the submit that read them (m0-gpu-experiments.md). About 4.5 words a frame
+change, all on six render-target slots whose textures get a new id every frame; target parking keeps their memory but
+not their ids. Preferred fix, a patch: parked targets keep their id, which makes the tables constant from frame to
+frame and also ends a per-frame rewrite of descriptor-heap entries. **(open:** where the ids are handed out.**)**
+Until that patch exists, the snapshot at submit stands: a few kilobytes.
+
+Mesh draw arguments need no conversion copy: the game zeroes each 16-byte argument record every frame and the culling
+shaders write only its count words, so a patch of that zeroing writes Vulkan's layout in place (m0-task-mesh.md; the
+writer of five other indirect addresses is still to be identified).
 Inline updates assume no list reads a range another list updated in the same frame: counted, and 0 in the frozen
 measurement (e6-impl.md section 6).
 
@@ -145,20 +164,23 @@ and is compiled in the background.
   Residency follows the game's registrations and its own streaming; there is no eviction in the first version. VRAM use
   on Hyrule Field is a gate for M2.
 - **Render targets:** an image per stable target slot (`host/rt_slots.c`), made at allocation, never uploaded.
-- **Terrain tiles** are the one other source of pre-swizzled texels (46,324 TARB files; block-linear.md site 3). They
-  are deswizzled by the same build-time tool. The game already has a branch for records whose layout bytes do not
-  match the device's: it uploads them through WriteTexels from linear memory. The converter marks the records so the
-  game takes that branch, which needs no hook. **(verify:** that branch and its layout bytes, `f_80c17040`.**)**
-- **CPU-written textures** (WriteTexels: font glyphs, primitive and procedural textures, the JPEG initializer) and
-  movie frames arrive linear: a region copy into the image at the call. The game has no swizzle helper of its own
-  (block-linear.md), so nothing here touches the layout.
+- **Terrain tiles** are the one other source of pre-swizzled texels (51,233 TARB files, 25.5 GB of texels). A
+  build-time converter, a sibling of the texture tool, deswizzles them. The game's own linear branch cannot be used
+  (it refuses compressed formats, 90% of tiles, and uploads a different CPU copy: m0-terrain-texels.md), so one patch
+  turns the single memcpy at `f_80c17040+0x544` into a host copy of the converted record into the image. A file that
+  was not converted is recognised by its size and draws the placeholder.
+- **CPU-written textures** that go through WriteTexels (primitive and procedural textures, the JPEG initializer, the
+  terrain polish step) and movie frames arrive linear: a region copy into the image at the call.
+- **The font glyph cache** is the exception: the CPU stores glyphs straight into the texture's memory after a GPU
+  clear, with no call to hook. It needs a patch at the glyph writer. **(open:** the writer and its layout, from one
+  logged run.**)**
 - **The direct back end contains no block-linear code and no ASTC decoder.** Both formats end at the build-time
   tool. A texture with no prepared record (the 3 damaged dump files until they are re-dumped) draws a placeholder and
   is counted; it is never converted at run time. Besides the CPU and memory, this removes the GPU's decode work and
   the larger decoded formats from VRAM.
 - There is no texture cache keyed by guest bytes and no page tracking for textures.
-- **(verify)** the two places where texture storage is used as plain memory (the SMAA edge list handed out as a raw
-  address, and the one cross-alias buffer write seen: block-linear.md sites 13 and 16) need no layout.
+- The SMAA edge list is a texture allocated only for its memory and never bound: a patch gives it a host-owned
+  buffer. The one stray buffer write into texture storage seen before is most likely the same buffer.
 
 ### Task and mesh shaders
 
@@ -171,18 +193,30 @@ Hyrule Field) ran natively throughout. The cause was never found: a gang-submit 
 shader looping on data it read too early from the replay's stream. A second hang (one task shader's depth-grid walk,
 graphics ring) is worked around by a switch and equally undiagnosed.
 
-Order of attack:
+**Measured 2026-11-12 on the frozen back end** (m0-gpu-experiments.md): native task shaders still lose the device.
+Hyrule Field 6 of 6 runs at the map load, at default timing too; Kokiri 0 of 6 with one faster-timing setting, 1 of 1
+with all three. The kernel names the graphics ring, an async-compute ring, or both, and the compute ring's reset
+fails. `RADV_DEBUG=syncshaders` did not help (2 of 2 lost). The compute emulation lost 0 of 6. After 13 losses in one
+boot the GPU no longer came back and the PC had to be restarted.
 
-1. **Diagnose on the frozen back end** (fallbacks.md 3c, never run): the control run with native task shaders on
-   today's base; at a hang the devcoredump and wave state; `RADV_DEBUG=syncshaders`; Mesa main in a private prefix.
-   A driver fault gets a standalone reproducer, an upstream report and a local Mesa patch.
-2. **If it is our ordering or data**, the direct back end's honest order may already remove it; a task loop bounded
-   by guest data gets a clamp in translation.
-3. **If the async ring cannot be made reliable**, keep the mesh stage native and move only the task stage: a compute
-   step before the pass writes each draw's mesh group count and payload to a buffer, and the mesh shader reads its
-   payload from there (`vkCmdDrawMeshTasksIndirectEXT`, no task stage, graphics ring only). This is a translator
-   change, far smaller than the old emulation and without its records buffer. **(verify:** that the game's task
-   shaders only cull and emit, so the split is mechanical.**)**
+**What the task stages are** (m0-task-mesh.md): six task shaders in these scenes; they only read memory and emit a
+payload and mesh group counts. Two loops are bounded by data read from memory (an item count with an unsigned
+compare, 2^27 trips when it reads 0; a grid width and height). Clamping both did not stop the losses (3 of 3 lost),
+so they are not the cause, or not alone.
+
+**Decision.** The mesh stage stays native. The task stage moves off the async ring: a compute step per task
+workgroup writes its mesh group count and payload (count and payload belong to the task workgroup, not the draw; a
+draw starts up to 4096 of them), and the mesh stage, drawn with `vkCmdDrawMeshTasksIndirectEXT` and no task stage,
+reads its payload from that buffer. Folding the task into the mesh stage is not possible (one task workgroup feeds up
+to 32 meshlets, past the mesh output limits). This is untested as a whole: its task half ran as compute in the old
+emulation without a loss, and mesh-only programs ran natively without a loss.
+
+**Not done, and worth doing once under the hang rules below:** the same native run on Mesa main, and a reading of the
+devcoredump (it needs root). If either shows a driver fault with a fix, native task shaders come back and the compute
+step goes.
+
+**Hang rules** (after the restart): commit everything first; at most three device losses per boot; no other agent
+holding uncommitted work; the kernel log saved into the run folder after each loss.
 
 ### Reports and conditions
 
