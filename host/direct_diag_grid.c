@@ -42,6 +42,31 @@ ENTRY_HOOK(0x80822260) {
     if (p / 600 == last / 600) return 0;
     last = p;
     const uint64_t s0 = g64(o + 0x2bb0), s1 = g64(o + 0x2bb0 + 0x90);
+    /* (the two slots' memory, at the pools readback.md names: stamp at +0x1540, 576 tile pairs (value, depth) from +0x240) */
+    for (int k = 0; k < 2; k++) {
+        const uint64_t b = k ? 0x113b628000ull : 0x113b623000ull;
+        float lo = 1e30f, hi = -1e30f, sum = 0, vlo = 1e30f, vhi = -1e30f;
+        for (int i = 0; i < 576; i++) {
+            float v, dd;
+            uint32_t a = g32(b + 0x240 + 8 * (uint64_t)i), z = g32(b + 0x244 + 8 * (uint64_t)i);
+            memcpy(&v, &a, 4), memcpy(&dd, &z, 4);
+            lo = dd < lo ? dd : lo, hi = dd > hi ? dd : hi, sum += dd;
+            vlo = v < vlo ? v : vlo, vhi = v > vhi ? v : vhi;
+        }
+        float w[22];
+        for (int i = 0; i < 16; i++) { uint32_t x = g32(b + 0x80 + 4 * (uint64_t)i); memcpy(&w[i], &x, 4); }
+        for (int i = 0; i < 6; i++) { uint32_t x = g32(b + 0x1558 + 4 * (uint64_t)i); memcpy(&w[16 + i], &x, 4); }
+        hos_log("gridlog: slot %d at %#llx: stamp %u dims %u %u; tile depth min %g max %g mean %g; tile value min %g max %g; "
+                "+0x1558.. %g %g %g %g %g %g; projection %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g", k,
+                (unsigned long long)b, g32(b + 0x1540), g32(b + 0x1550), g32(b + 0x1554), lo, hi, sum / 576, vlo, vhi, w[16], w[17], w[18],
+                w[19], w[20], w[21], w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]);
+    }
+    for (int k = 0; k < 3; k++) {   /* (the grid compute's uniform buffers in the trace: words 768-799 and 0-7) */
+        const uint64_t u = k == 0 ? 0x113b649000ull : k == 1 ? 0x113b65b000ull : 0x113b620000ull;
+        hos_log("gridlog: ubo %#llx: +768.. %08x %08x %08x %08x %08x %08x %08x %08x; +0.. %08x %08x %08x %08x", (unsigned long long)u,
+                g32(u + 768), g32(u + 772), g32(u + 776), g32(u + 780), g32(u + 784), g32(u + 788), g32(u + 792), g32(u + 796), g32(u), g32(u + 4),
+                g32(u + 8), g32(u + 12));
+    }
     hos_log("gridlog: present %lld obj %#llx flags %#x: since the start %lld calls, grid taken %lld (of the frame before %lld); "
             "frame counter %u, slot stamps %u %u (slots %#llx %#llx, index %u)",
             (long long)p, (unsigned long long)o, f, (long long)calls, (long long)taken, (long long)fresh, g32(o + 0x18),

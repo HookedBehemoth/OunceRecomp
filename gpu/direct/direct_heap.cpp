@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 
+#include "direct_marks.h"
 #include "direct_check.h"
 #include "shader_recompiler/shader_info.h"
 
@@ -71,6 +72,7 @@ bool make_mapped(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, 
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     uint32_t type = UINT32_MAX;
     for (VkMemoryPropertyFlags w : want) {
+        if (marks_on() && (w & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;   // (M6c: HOS_DBG=marks reads the arena after a reset, which loses VRAM)
         for (uint32_t i = 0; i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++)
             if ((mr.memoryTypeBits >> i & 1) && (dev.memory.memoryTypes[i].propertyFlags & w) == w) type = i;
         if (type != UINT32_MAX) break;

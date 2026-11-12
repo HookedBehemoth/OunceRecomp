@@ -20,6 +20,7 @@ struct Entry {
     uint64_t key = 0, lr = 0, present = 0;
     VkCommandBuffer cb = VK_NULL_HANDLE;
     uint32_t kind = 0, a = 0, b = 0;
+    const uint8_t* header = nullptr;
 };
 
 bool asked = false;
@@ -87,11 +88,15 @@ uint32_t mark_before(VkCommandBuffer cb, const char* what, uint64_t key, uint32_
     Entry& e = entries[i];
     e.seq.store(0, std::memory_order_relaxed);
     words[2 * i] = words[2 * i + 1] = 0;
+    e.header = nullptr;
     e.what = what, e.key = key, e.lr = lr, e.present = present_count(), e.cb = cb, e.kind = kind, e.a = a, e.b = b;
     e.seq.store(s + 1, std::memory_order_release);
     pMarker(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, buffer, 8ull * i, (uint32_t)(s + 1));
     return i;
 }
+
+thread_local const uint8_t* task_last_header = nullptr;
+void mark_header(uint32_t i, const void* h) { entries[i].header = (const uint8_t*)h; }
 
 void mark_after(VkCommandBuffer cb, uint32_t i) {
     pMarker(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, buffer, 8ull * i + 4, (uint32_t)entries[i].seq.load(std::memory_order_relaxed));
@@ -132,6 +137,24 @@ void marks_report(const char* why) {
              (unsigned long long)r.seq, e.what, (unsigned long long)e.key, e.kind, (unsigned long long)e.lr, (unsigned long long)e.present,
              (void*)e.cb, e.a, e.b, (unsigned long long)prev,
              prev ? (words[2 * ((prev - 1) % kEntries) + 1] == (uint32_t)prev ? " (finished)" : " (not finished)") : "");
+        if (e.header && n < 4) {   // (the task header the mesh draw read, its map and its first task's payload)
+            uint32_t h[16];
+            std::memcpy(h, e.header, sizeof h);
+            logf("direct: marks:   header: groups %u y %u z %u taken %u map %#x%08x payload %#x%08x cap %u tasks %u dispatch %u %u %u payload words %u threads %u",
+                 h[0], h[1], h[2], h[3], h[5], h[4], h[7], h[6], h[8], h[9], h[10], h[11], h[12], h[13], h[14]);
+            const uint32_t* m = (const uint32_t*)(e.header + 64);
+            char b[700];
+            int k = 0;
+            const uint32_t ng = std::min<uint32_t>(h[0], 48);
+            for (uint32_t g = 0; g < ng && h[0] <= h[8]; g++) k += std::snprintf(b + k, sizeof b - k, " %x", m[g]);
+            logf("direct: marks:   map (%u of %u):%s", ng, h[0], b);
+            if (h[0] <= h[8] && h[9] && h[13] && h[13] < 4096) {
+                const uint32_t* pl = m + h[8];
+                k = 0;
+                for (uint32_t w = 0; w < std::min<uint32_t>(h[13], 24); w++) k += std::snprintf(b + k, sizeof b - k, " %x", pl[w]);
+                logf("direct: marks:   payload of task 0 (%u words):%s", h[13], b);
+            }
+        }
         if (++n == 60) break;
     }
 }

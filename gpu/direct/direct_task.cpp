@@ -257,6 +257,7 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     uint8_t* map;
     VkDeviceAddress ha;
     if (!draw_arena_buffer(l->slot, (uint32_t)bytes, map, ha, hb, ho)) return why = "no arena room", false;
+    task_last_header = map;   // (M6c: HOS_DBG=marks dumps it with its draw)
     uint32_t h[16]{};
     h[1] = h[2] = 1;
     if (!indirect) {
