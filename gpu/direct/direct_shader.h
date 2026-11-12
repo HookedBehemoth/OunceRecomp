@@ -75,6 +75,10 @@ struct DrawProg {
     struct TexWord {
         uint8_t stage, bank;
         uint16_t offset;
+        // (M4h, logs: a two-word handle's second word and the shifts, the descriptor's type and count; computed: no word)
+        uint8_t sbank = 0, shift = 0, sshift = 0, type = 0, count = 1;
+        uint16_t soffset = 0;
+        bool secondary = false, computed = false;
     };
     std::vector<TexWord> tex_words;   // (the handle words its textures read: logs)
     const char* skip = nullptr;   // (a variant step A cannot draw: the reason)

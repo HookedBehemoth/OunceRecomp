@@ -1018,7 +1018,13 @@ bool finish(Variant& v) {
                 co.heapOffset = heap_region_offset(region), co.heapArrayStride = kImageDesc;
             }
             m.push_back(x);
-            if (t.handle_program == ~0u && t.count == 1 && !t.has_secondary) d.tex_words.push_back({stage, (uint8_t)t.cbuf_index, (uint16_t)t.cbuf_offset});
+            {   // (the handle words its textures read, for the logs; M4h: every descriptor, two-word and computed ones too)
+                DrawProg::TexWord w{stage, (uint8_t)t.cbuf_index, (uint16_t)t.cbuf_offset};
+                w.secondary = t.has_secondary, w.sbank = (uint8_t)t.secondary_cbuf_index, w.soffset = (uint16_t)t.secondary_cbuf_offset;
+                w.shift = (uint8_t)t.shift_left, w.sshift = (uint8_t)t.secondary_shift_left, w.type = (uint8_t)t.type;
+                w.count = (uint8_t)std::min<uint32_t>(t.count, 255), w.computed = t.handle_program != ~0u;
+                d.tex_words.push_back(w);
+            }
         }
         if (!info.texture_descriptors.empty()) {   // (both arrays mapped: the shader declares the ones it samples with)
             for (const bool cmp : {false, true}) {

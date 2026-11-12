@@ -110,12 +110,15 @@ struct SlotTex {
     uint64_t gpu;
     uint32_t w, h;
     int format, target;
+    uint32_t depth = 0, levels = 0;   // (M4h, logs: the texture's depth or layers and levels, and its view's)
+    nvn_view view{};
+    bool has_view = false;
 };
 std::unique_ptr<SlotTex[]> slot_tex;   // (logs: what was registered there)
 std::unique_ptr<std::atomic<uint8_t>[]> answers;   // (texture id -> answer byte)
 
 std::atomic<int64_t> st_storage{0}, st_tex{0}, st_entries{0}, st_nulls{0}, st_big_id{0}, st_samp{0}, st_border{0}, st_gone{0}, st_no_image{0},
-    st_failed{0};
+    st_failed{0}, st_remapped{0};
 
 VkComponentSwizzle component(unsigned s) {
     switch (s) {
@@ -197,7 +200,16 @@ bool sampled_view(const Image* im, const nvn_tex* t, const nvn_view* v, VkImageV
     vi.image = im->image;
     vi.viewType = type;
     vi.format = f;
-    vi.components = im->placeholder ? VkComponentMapping{} : VkComponentMapping{component(sw[0]), component(sw[1]), component(sw[2]), component(sw[3])};
+    // (M4h: the game's swizzle names the source texture's channels; a prepared image keeps them where its record's channel map
+    // says (BC4 / BC5 / RG8 move them: an ASTC normal map read R,A is stored R,G), so the view reads through that map too)
+    if (im->placeholder) {
+        vi.components = VkComponentMapping{};
+    } else {
+        const VkComponentMapping game{component(sw[0]), component(sw[1]), component(sw[2]), component(sw[3])};
+        static const bool unmapped = dbg("nochanmap");   // (M4h, a diagnosis: the game's swizzle alone, as before M4h)
+        vi.components = unmapped ? game : image_swizzle(im, game);
+        if (std::memcmp(&vi.components, &game, sizeof game)) st_remapped.fetch_add(1, std::memory_order_relaxed);
+    }
     VkImageAspectFlags aspect = im->aspect;
     if (aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
     vi.subresourceRange = {aspect, vl, nlevels, layer0, nlayers};
@@ -520,12 +532,17 @@ void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
         if (sok) st_storage.fetch_add(1, std::memory_order_relaxed);
     }
     slot_image[id] = im;
-    slot_tex[id] = {t->gpu, t->d.width, t->d.height, t->d.format, t->d.target};
+    slot_tex[id] = {t->gpu, t->d.width, t->d.height, t->d.format, t->d.target, t->d.depth, t->d.levels, v ? *v : nvn_view{}, v != nullptr};
 }
 
+nvn_samp_par slot_samp[kHeapSamplers];   // (M4h, logs: what each sampler id was registered with)
 void heap_sampler_registered(int id, const nvn_samp_par* p) {
     if (!ready || !p) return;
     if (id < 0 || (uint32_t)id >= kHeapSamplers) return void(st_big_id.fetch_add(1, std::memory_order_relaxed));
+    {
+        std::lock_guard lk(heap_mu);
+        slot_samp[id] = *p;
+    }
     uint8_t d[2][kSamplerDesc];
     if (!encode_sampler(*p, false, d[0]) || !encode_sampler(*p, true, d[1])) return void(st_failed.fetch_add(1, std::memory_order_relaxed));
     std::lock_guard lk(heap_mu);
@@ -557,16 +574,23 @@ void heap_describe(uint32_t id, char* out, size_t cap) {
     std::lock_guard lk(heap_mu);
     const Image* im = slot_image[id];
     const SlotTex& st = slot_tex[id];
-    int k = std::snprintf(out, cap, "id %u: texture %#llx %ux%u NVN format %#x target %d, ", id, (unsigned long long)st.gpu, st.w, st.h, st.format, st.target);
+    int k = std::snprintf(out, cap, "id %u: texture %#llx %ux%ux%u L%u NVN format %#x target %d", id, (unsigned long long)st.gpu, st.w, st.h,
+                          st.depth, st.levels, st.format, st.target);
+    if (st.has_view)   // (M4h: the view's levels, layers, format and target where it sets them)
+        k += std::snprintf(out + k, cap - k, " view%s%u+%u%s%u+%u%s%#x%s%d", st.view.set_levels ? " levels " : " -", st.view.base_level, st.view.nlevels,
+                           st.view.set_layers ? " layers " : " -", st.view.min_layer, st.view.nlayers, st.view.set_format ? " format " : " -",
+                           st.view.format, st.view.set_target ? " target " : " -", st.view.target);
+    k += std::snprintf(out + k, cap - k, ", ");
     const unsigned w = im ? im->written.load(std::memory_order_relaxed) : 0;   // (M3b: what has written it: W_* bits)
-    k += std::snprintf(out + k, cap - k, "image #%u %ux%u vk %d%s, written %s%s%s%s%s%s%s%s, entries", im ? im->id : 0, im ? im->width : 0,
-                       im ? im->height : 0, im ? (int)im->format : 0, im && im->placeholder ? " (placeholder)" : "", w ? "" : "never",
+    k += std::snprintf(out + k, cap - k, "image #%u %ux%u x%u L%u vk %d%s, written %s%s%s%s%s%s%s%s, entries", im ? im->id : 0, im ? im->width : 0,
+                       im ? im->height : 0, im ? std::max(im->layers, im->depth) : 0, im ? im->levels : 0, im ? (int)im->format : 0, im && im->placeholder ? " (placeholder)" : "", w ? "" : "never",
                        w & W_ATTACHMENT ? "A" : "", w & W_COPY ? "C" : "", w & W_TEXELS ? "T" : "", w & W_CLEAR ? "L" : "",
                        w & W_STORE ? "S" : "", w & W_TERRAIN ? "R" : "", w & W_GLYPH ? "G" : "");
     if (im && im->asset) {   // (M4f: a prepared texture's name, for the per-draw trace)
         uint32_t n = 0;
         const char* name = assets_name(im->asset, &n);
-        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " '%.*s'", (int)std::min<uint32_t>(n, 60), name);
+        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " '%.*s' map %u%u%u%u", (int)std::min<uint32_t>(n, 60), name,
+                           im->chan_map[0], im->chan_map[1], im->chan_map[2], im->chan_map[3]);
     }
     for (uint32_t r = 0; r < kHeapRegions; r++) {
         const uint8_t* e = res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc;
@@ -574,6 +598,18 @@ void heap_describe(uint32_t id, char* out, size_t cap) {
         for (uint32_t i = 0; i < kImageDesc; i++) any |= e[i] != 0;
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %u:%s", r, any ? "set" : "0");
     }
+}
+
+void heap_sampler_describe(uint32_t id, char* out, size_t cap) {
+    if (!ready || id >= kHeapSamplers) return void(std::snprintf(out, cap, "-"));
+    nvn_samp_par p;
+    {
+        std::lock_guard lk(heap_mu);
+        p = slot_samp[id];
+    }
+    std::snprintf(out, cap, "sampler %u: min %u mag %u wrap %u/%u/%u cmp %u/%u red %u lod %.2f..%.2f bias %.2f aniso %.0f border %.2f,%.2f,%.2f,%.2f",
+                  id, p.minf, p.magf, p.ws, p.wt, p.wr, p.cmp_mode, p.cmp_func, p.reduction, p.lod_min, p.lod_max, p.lod_bias, p.aniso,
+                  p.border[0], p.border[1], p.border[2], p.border[3]);
 }
 
 int heap_placeholder(uint32_t id) {
@@ -587,9 +623,9 @@ int heap_placeholder(uint32_t id) {
 void heap_stats(char* out, size_t cap) {
     std::snprintf(out, cap, "heap (since the start): %lld texture registrations (%lld entries written, %lld null, %lld storage), %lld with no image, "
                   "%lld ids past the heap, %lld sampler registrations, %lld custom border colours as black, %lld ids nulled with their "
-                  "image, %lld descriptor writes failed", (long long)st_tex.load(), (long long)st_entries.load(), (long long)st_nulls.load(), (long long)st_storage.load(),
+                  "image, %lld descriptor writes failed, %lld views read through a prepared image's channel map", (long long)st_tex.load(), (long long)st_entries.load(), (long long)st_nulls.load(), (long long)st_storage.load(),
                   (long long)st_no_image.load(), (long long)st_big_id.load(), (long long)st_samp.load(), (long long)st_border.load(),
-                  (long long)st_gone.load(), (long long)st_failed.load());
+                  (long long)st_gone.load(), (long long)st_failed.load(), (long long)st_remapped.load());
 }
 
 }  // namespace hsd

@@ -782,6 +782,7 @@ void phlog(const List* l, const DrawProg* p) {
     static std::vector<uint8_t> seen(1u << 20);
     const DState& s = l->dctx->s;
     for (const auto& t : p->tex_words) {
+        if (t.computed || t.secondary) continue;
         const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0, id = h & 0xFFFFF;
         if (!h) continue;
         {
@@ -803,7 +804,7 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
     if (!drawlog_on()) return;
     static std::atomic<int> n{0};
     if (n++ > 8000) return;   // (M3b: every draw of the frame, jobs too)
-    char b[8192];
+    static thread_local char b[20000];
     int k = std::snprintf(b, sizeof b, "direct: drawlog lr %#llx kind %u rt %llu %ux%u c0 %d: %s", (unsigned long long)l->info.lr, l->info.kind,
                           (unsigned long long)l->pass.set_rt_at, l->pass.w, l->pass.h, l->pass.n ? (int)l->pass.color[0].format : -1, what);
     if (p)
@@ -837,11 +838,29 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
                                            layer0_bound(w[j], w[j] + 16) ? "" : " not bound in layer 0");
             }
         k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " discard %d poly %u front %u", (int)s.raster_discard, s.poly.mode, s.poly.front);
+        // (M4h: every texture descriptor: a driver bank's word, a game buffer's word (read now: a diagnosis), a second word and its
+        // shifts, the sampler the handle names; a computed handle has no word to read)
+        auto word = [&](uint8_t bank, uint8_t stage, uint16_t off) -> uint32_t {
+            if (bank == 0 || bank == 2) return bank_word(s, bank, stage, off);
+            if (bank < 3 || bank >= 3 + 16 || stage >= kBankStages || !s.ubo[stage][bank - 3].addr) return 0;
+            uint32_t v = 0;
+            host->gpu_read(s.ubo[stage][bank - 3].addr + off, &v, 4);
+            return v;
+        };
         for (const auto& t : p->tex_words) {
-            const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0;
-            char e[320];
+            if (k > 15000) break;
+            if (t.computed) {
+                k += std::snprintf(b + k, sizeof b - k, " tex[s%u type %u] computed", t.stage, t.type);
+                continue;
+            }
+            uint32_t h = word(t.bank, t.stage, t.offset) << t.shift;
+            if (t.secondary) h |= word(t.sbank, t.stage, t.soffset) << t.sshift;
+            char e[400], sm[200];
             heap_describe(h & 0xFFFFF, e, sizeof e);
-            k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " tex c%u+%#x=%#x(%s)", t.bank, t.offset, h, e);
+            heap_sampler_describe(h >> 20, sm, sizeof sm);
+            k += std::snprintf(b + k, sizeof b - k, " tex[s%u type %u] c%u+%#x", t.stage, t.type, t.bank, t.offset);
+            if (t.secondary) k += std::snprintf(b + k, sizeof b - k, "|c%u+%#x", t.sbank, t.soffset);
+            k += std::snprintf(b + k, sizeof b - k, "=%#x(%s; %s)", h, e, sm);
         }
     }
     if (d)
