@@ -15,6 +15,7 @@
 #include "direct_internal.h"
 #include "direct_lists.h"
 #include "direct_pass.h"
+#include "direct_query.h"
 
 namespace hsd {
 namespace {
@@ -106,6 +107,7 @@ void list_unref(List* l) {
             if (o.op == NOP_CALL && o.callee->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) work.push_back(o.callee);
         draw_list_free(x);
         compute_list_free(x);
+        query_list_free(x);
         if (x->packet && x->ended) st_pkt_bytes.fetch_sub((int64_t)x->pkt.size(), std::memory_order_relaxed), st_pkt_lists.fetch_sub(1, std::memory_order_relaxed);
         if (x->slot) cmd_slot_drop(x->slot);
         dump_free(x->dumps);
@@ -250,13 +252,7 @@ void emit_one(List* l, uint32_t op, const void* payload, uint32_t size) {
         l->ops.push_back(o);
         break;
     }
-    case NOP_REPORT_COUNTER:
-    case NOP_RESET_COUNTER:
-        if (size < sizeof o.counter) break;
-        std::memcpy(&o.counter, payload, sizeof o.counter);
-        o.op = op, o.seg = (uint32_t)l->segs.size();
-        l->ops.push_back(o);
-        break;
+    // (M5: REPORT_COUNTER and RESET_COUNTER are GPU work in the list's command buffers: direct_query.cpp)
     default: break;
     }
 }

@@ -91,6 +91,7 @@ CmdSlot* cmd_slot_take() {
             }
             vkResetCommandPool(dev.device, s.pool, 0);
             arena_reset(s.arena);
+            query_slot_reset(s.q);
             s.used = 0, s.secs_used = 0;
             st_resets.fetch_add(1, std::memory_order_relaxed);
         }
@@ -137,6 +138,8 @@ VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags
     ri.rasterizationSamples = f.samples;
     VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
     ii.pNext = &ri;
+    ii.occlusionQueryEnable = VK_TRUE;   // (M5: a job may run inside its caller's occlusion query)
+    ii.queryFlags = VK_QUERY_CONTROL_PRECISE_BIT;
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
     bi.pInheritanceInfo = &ii;

@@ -1029,7 +1029,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     const PassRec& p = l->pass;
     const bool records = l->rec;   // (M3a: jobs with their pass's formats too)
     if (records && !p.noted) return count(l, R_NO_TARGETS);
-    const bool gated = s.conditional;   // (M3a: a render condition is not evaluated: the draw is drawn, counted; M5)
+    const bool gated = s.conditional;   // (M5: a render condition is evaluated on the GPU: direct_query.cpp begins it before the draw)
     if (!s.render_enabled) return count(l, R_DISABLED);
     VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;   // (a mesh draw: its program's own, none set)
     if (!mesh) {
@@ -1324,7 +1324,7 @@ void draw_log(double frames) {
             any = true;
         }
         if (const int64_t g = st_gated[kind].exchange(0))
-            k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; of the drawn under a render condition (not evaluated) %.2f", g / frames), any = true;
+            k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; of the drawn under a render condition (on the GPU) %.2f", g / frames), any = true;
         if (any) logf("direct: %s", out);
     }
     k = std::snprintf(out, cap, "draws a frame that step A cannot draw, by the variant's reason:");

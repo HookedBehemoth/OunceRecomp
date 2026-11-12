@@ -1,0 +1,40 @@
+// (M5, direct_query.cpp) The reports of a pass written into guest memory as NVN lays them out: {counter, timestamp}.
+// One invocation per report: its record (written by the CPU when the report was recorded) names the guest address, the
+// counter type, the occlusion queries whose results sum to the counter (a samples-passed counter runs from its reset
+// across renderings) and, by its own index, its timestamp query. Timestamps go to the guest's counter clock (19.2 MHz)
+// on the host tick clock's epoch (calibrated). Guest addresses reach memory through layer 0's window table.
+// Regenerate the header: glslangValidator -V --target-env vulkan1.3 --vn report_resolve_spv -o report_resolve_spv.h report_resolve.comp
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+layout(local_size_x = 64) in;
+
+struct Rec { uint64_t addr; uint kind; uint n; uint occ[4]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer Recs { Rec r[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Idx { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer In64 { uint64_t v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 8) writeonly buffer Out64 { uint64_t v[]; };
+
+layout(push_constant) uniform P {
+    Recs recs; Idx idx; In64 occ; In64 ts; In64 windows;
+    uint64_t dev0;   // (a device timestamp at the calibration)
+    double host0;    // (the same moment on the guest's counter clock)
+    double scale;    // (guest counter ticks per device tick)
+    uint n;
+} p;
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) return;
+    const uint ri = p.idx.v[i];
+    const Rec r = p.recs.r[ri];
+    uint64_t counter = 0;
+    if (r.kind == 1u)   // (NVN_COUNTER_TYPE_SAMPLES_PASSED)
+        for (uint k = 0; k < r.n && k < 4u; k++) counter += p.occ.v[r.occ[k]];
+    const double d = double(int64_t(p.ts.v[ri] - p.dev0));
+    const uint64_t ticks = uint64_t(max(0.0lf, p.host0 + d * p.scale));
+    const uint64_t at = p.windows.v[uint(r.addr >> 31)] + (r.addr & 0x7fffffffUL);
+    Out64 o = Out64(at);
+    o.v[0] = counter;
+    o.v[1] = ticks;
+}

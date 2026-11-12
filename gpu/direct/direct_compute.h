@@ -27,6 +27,8 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
 /// COPY_B2B / CLEAR_BUF in a list that records, its rendering ended
 void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, CmdOf cmd);
 void compute_list_free(List* l);
+/// (M5) Another compute program was bound in the list's command buffer (direct_query.cpp's resolve step)
+void compute_invalidate(List* l);
 /// (hsd_submit) the deferred handle words of l's and its callees' banks copied from the game's arrays now
 void compute_list_submitted(const List* l);
 /// (nvnProgramSetShaders) a compute program's kept variants made, on a worker

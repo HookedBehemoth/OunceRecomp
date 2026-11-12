@@ -15,6 +15,8 @@
 namespace hsd {
 
 struct Arena;   // (direct_draw.cpp)
+struct QSlot;   // (direct_query.cpp)
+void query_slot_reset(QSlot* q);
 void arena_reset(Arena* a);
 struct CmdSlot {
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -24,6 +26,7 @@ struct CmdSlot {
     std::atomic<uint64_t> value{0};   // (the newest submission that held one of its buffers)
     std::atomic<int32_t> live{0};     // (lists alive holding its buffers)
     Arena* arena = nullptr;   // (M2b: its frame arena, reset with it)
+    QSlot* q = nullptr;       // (M5: its query pools and report records, reset with it)
 };
 
 /// This thread's slot for the frame now (reset first when this is its first use in a new frame), with one list more

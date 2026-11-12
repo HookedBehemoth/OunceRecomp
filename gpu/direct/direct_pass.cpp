@@ -25,6 +25,7 @@
 #include "direct_dump.h"
 #include "direct_image.h"
 #include "direct_pass.h"
+#include "direct_query.h"
 
 namespace hsd {
 namespace {
@@ -197,9 +198,11 @@ void suspend(List* l) {
     if (!p.noted || p.inherited) return;
     if (!p.begun && p.load) begin(l);
     if (!p.begun) return;
+    query_suspend(l, l->cur);   // (M5: its occlusion query and condition end inside it)
     vkCmdEndRendering(l->cur);
     p.begun = false;
     dump_pass(l, l->cur);
+    query_flush(l, &cmd);   // (M5: its reports written, after it and before what follows)
 }
 void end_pass(List* l) {
     suspend(l);
@@ -270,7 +273,7 @@ void clear(List* l, uint32_t bit_mask, VkImageAspectFlags aspect, uint32_t colou
     bool whole;
     const VkRect2D rect = clear_rect(p, whole);
     if (!rect.extent.width || !rect.extent.height) return;
-    if (!p.begun && whole) {
+    if (!p.begun && whole && !query_cond_wanted(l)) {   // (M5: a gated clear is no load op)
         for (int b = 0; b < 10; b++)
             if (bit_mask >> b & 1) p.clear[b < 9 ? b : 8] = v;
         if (bit_mask & 0x300) p.clear[8] = v;
@@ -283,6 +286,7 @@ void clear(List* l, uint32_t bit_mask, VkImageAspectFlags aspect, uint32_t colou
     ca.colorAttachment = colour_index;
     ca.clearValue = v;
     const VkClearRect cr{rect, 0, 1};
+    query_draw(l, l->cur);
     vkCmdClearAttachments(l->cur, 1, &ca, 1, &cr);
     count(S_CLEARS_IN);
 }
@@ -444,7 +448,11 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
         if (payload(data, size, s)) p.scissor[0] = s.x, p.scissor[1] = s.y, p.scissor[2] = s.w, p.scissor[3] = s.h;
         return;
     }
+    case NOP_REPORT_COUNTER: case NOP_RESET_COUNTER: case NOP_RENDER_COND:   // (M5: on the GPU)
+        query_op(l, op, data, size, p.begun || l->secondary, &cmd);
+        return;
     case NOP_RENDER_ENABLE: {
+        query_op(l, op, data, size, p.begun || l->secondary, &cmd);
         nvn_p_flag f;
         if (payload(data, size, f)) p.render_enabled = f.value != 0;
         return;
@@ -458,6 +466,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
         count(S_DRAWS);
         l->draws = true;
         if (records(l) && p.noted && !p.begun) begin(l);
+        if (records(l) && (p.begun || l->secondary)) query_draw(l, l->cur);   // (M5: its counter's query, its condition)
         if (l->secondary) {   // (M3a: a job's first draw sets all its state: timed apart)
             const uint64_t t0 = __builtin_ia32_rdtsc();
             draw_emit(l, op, data, size, true);
@@ -573,7 +582,9 @@ void pass_call(List* l, const List* callee) {
             return;
         }
         if (!l->pass.begun) begin(l);
+        query_execute(l, cmd(l), callee);   // (M5: no condition across it; the caller's query inherited, or ended)
         vkCmdExecuteCommands(cmd(l), 1, &callee->sec);
+        query_executed(l, callee);
         draw_invalidate(l);   // (the caller's dynamic state, shaders, buffers and push data are undefined after it)
         l->executed.push_back(callee);
         jcount(J_EXECUTED);
@@ -616,10 +627,11 @@ void pass_cut(List* l) {
 
 void pass_list_end(List* l) {
     if (l->secondary) {   // (M3a: its caller executes it)
+        query_suspend(l, l->cur);   // (M5: a secondary's query and condition end in it)
         if (l->cur) vkEndCommandBuffer(l->cur), l->sec = l->cur, l->cur = VK_NULL_HANDLE;
         return;
     }
-    if (records(l)) end_pass(l);
+    if (records(l)) end_pass(l), query_flush(l, &cmd);
     if (l->pending_barrier) {   // (its last barrier: in its buffer, or the shared one between its segments)
         l->pending_barrier = false;
         if (l->cur) record_barrier(l->cur);

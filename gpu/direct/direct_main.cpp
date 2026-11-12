@@ -15,6 +15,7 @@
 #include "direct_image.h"
 #include "direct_heap.h"
 #include "direct_shader.h"
+#include "direct_query.h"
 
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
@@ -185,6 +186,7 @@ bool create_device() {
     if (dev.props.apiVersion >= VK_API_VERSION_1_4) f13.pNext = &f14;
     void** tail = dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14.pNext : &f13.pNext;
     draw_device_extensions(exts, want, tail);   // (M2b: shader objects, the descriptor heap, dynamic state 3)
+    query_device_extensions(exts, want, tail);   // (M5: conditional rendering, calibrated timestamps)
     // (M3a: a job is a rendering secondary executed among its caller's inline commands in one rendering)
     VkPhysicalDeviceMaintenance7FeaturesKHR m7{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR};
     const bool has_m7 = has_extension(exts, VK_KHR_MAINTENANCE_7_EXTENSION_NAME);
@@ -308,6 +310,7 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
         return nullptr;
     }
     draw_device_created();   // (M2b: the heaps, the draws' functions)
+    query_device_created();  // (M5: queries, conditions, the resolve step)
     logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2b: targets, passes, present, vertex and fragment draws)", dev.props.deviceName,
          VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion);
     table.version = MKWVK_API_VERSION;

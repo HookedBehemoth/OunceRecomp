@@ -20,6 +20,7 @@
 #include "direct_image.h"
 #include "direct_internal.h"
 #include "direct_pass.h"
+#include "direct_query.h"
 #include "vk_present_rect.h"
 
 namespace hsd {
@@ -270,6 +271,8 @@ void log_line() {
     pass_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     jobs_stats(b, sizeof b, frames);   // (M3a)
+    logf("direct: %s", b);
+    query_stats(b, sizeof b, frames);   // (M5)
     logf("direct: %s", b);
     image_stats(b, sizeof b);
     logf("direct: %s; presents shown %lld, with no image %lld", b, (long long)st_shown.exchange(0), (long long)st_no_image.exchange(0));

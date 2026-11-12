@@ -1222,6 +1222,10 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
     bump(me().buf_ops[2]);
 }
 
+void compute_invalidate(List* l) {
+    if (l->cctx) l->cctx->bound = VK_NULL_HANDLE;
+}
+
 void compute_list_free(List* l) {
     delete l->cctx;
     l->cctx = nullptr;

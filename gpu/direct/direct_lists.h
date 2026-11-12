@@ -26,6 +26,7 @@ struct CmdSlot;
 struct DumpItem;
 struct ListDraw;   // (direct_draw.cpp: its state and draw caches)
 struct ListComp;   // (M4a, direct_compute.cpp: its compute state)
+struct ListQuery;  // (M5, direct_query.cpp: its counter and condition)
 /// A pass's attachment (direct_pass.cpp)
 struct Target {
     Image* im = nullptr;
@@ -97,6 +98,7 @@ struct List {
     uint32_t n_drawn = 0, n_mesh = 0, n_step_a = 0;   // (its draws drawn, skipped as mesh draws, skipped by step A: per pass in the log)
     bool pending_barrier = false;   // (M2b: a barrier waiting for the list's next command: recorded with it)
     ListComp* cctx = nullptr;   // (M4a: made at its first compute state op)
+    ListQuery* qctx = nullptr;  // (M5: made at its first counter or condition op)
 };
 
 void list_ref(List* l);

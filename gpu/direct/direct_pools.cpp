@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "direct_internal.h"
+#include "direct_query.h"
 #include "layer0_windows.h"
 
 namespace hsd {
@@ -182,7 +183,7 @@ Window* window_make(uint32_t k) {   // (mu held)
     bi.pNext = &eb;
     bi.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT | VK_BUFFER_CREATE_SPARSE_ALIASED_BIT;
     bi.size = l0::kWindow;
-    bi.usage = kWindowUsage;
+    bi.usage = kWindowUsage | query_window_usage();   // (M5: conditional rendering reads guest memory)
     VkBuffer b = VK_NULL_HANDLE;
     if (vkCreateBuffer(dev.device, &bi, nullptr, &b) != VK_SUCCESS) {
         logf("direct: layer 0: window %u (guest %#llx): no sparse buffer", k, (unsigned long long)l0::window_base(k));

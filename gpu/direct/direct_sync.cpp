@@ -106,15 +106,6 @@ bool event_wait_met(uint32_t have, uint32_t mode, uint32_t want) {
     return mode == 0 ? have == want : (int32_t)(have - want) >= 0;   // (NVN: EQUAL, GEQUAL_WRAP)
 }
 
-/// The counter's report, as the game reads it: {value, timestamp}. Timestamps on the guest tick clock in counter ticks
-/// (19.2 MHz) at the moment the submission runs; samples passed reads 4096 (everything visible, the frozen back end's
-/// choice: RX_VK_OCC_FIXED), any other counter 0
-void write_report(const nvn_p_counter& c) {
-    const uint64_t ns = host->ticks() * 32;
-    const uint64_t rec[2] = {(uint32_t)c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 4096ull : 0ull, ns * 12 / 625};
-    host->gpu_write(c.addr, rec, sizeof rec);
-}
-
 // (M4a) The chunks a pass of progress() sends, in one vkQueueSubmit2 at its end (one call costs ~0.1 ms on RADV: 34 chunks a
 // frame sent one by one took 4.2 ms). Each chunk's value is given when it is added, queue_mu held from the first until the
 // call, so no other submission (uploads, presents) comes between their values (mu held)
@@ -255,8 +246,6 @@ bool run(Queue& q, Sub& s, bool& moved) {
             s.wait_next = true;
             break;
         }
-        case NOP_REPORT_COUNTER: write_report(o.counter), st_reports++; break;
-        case NOP_RESET_COUNTER: st_resets++; break;
         default: break;
         }
     }
@@ -417,7 +406,7 @@ void sync_stats(char* out, size_t cap, double frames) {
     const int64_t ns = st_submit_ns.exchange(0), mx = st_submit_max_ns.exchange(0);
     std::snprintf(out, cap, "submits %.1f a frame (%.1f chunks, %.1f of them after an event wait; %.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
                   "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms; %zu held now), fence waits held %lld, "
-                  "reports %.1f, resets %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
+                  "reports written by the CPU %.1f, resets on the CPU %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
                   "timeline %llu sent, %llu done; vkQueueSubmit2 %.1f a frame, %.3f ms a frame (all threads)",
                   st_submits / frames, st_chunks / frames, st_chunk_waits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
                   st_hold_max_ms, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
