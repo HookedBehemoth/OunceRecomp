@@ -858,6 +858,14 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
         state_emit(ctx(l).s, op, data, size);
         return;
     case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: dispatch_log(l, op, data, size); return;
+    case NOP_CLEAR_BUF: case NOP_COPY_B2B:   // (M4b, HOS_DBG=meshlog: who clears or copies argument records)
+        if (meshlog_on() && size >= 24) {
+            uint64_t w[3]{};
+            std::memcpy(w, data, std::min<size_t>(sizeof w, size));
+            logf("direct: meshlog %s %#llx %#llx %#llx in list kind %u lr %#llx", op == NOP_CLEAR_BUF ? "clear buffer (dst, size, value)" : "copy buffer",
+                 (unsigned long long)w[0], (unsigned long long)w[1], (unsigned long long)w[2], l->info.kind, (unsigned long long)l->info.lr);
+        }
+        return;
     case NOP_UPDATE_UB: {   // (the bytes kept for the list's later draws: plan, Data a draw reads)
         nvn_p_update_ub u;
         if (size < sizeof u) return;
@@ -1215,8 +1223,7 @@ void draw_log(double frames) {
     }
     shader_stats(out, cap, frames);
     logf("direct: %s", out);
-    shader_task_mesh_stats(out, cap, frames);
-    logf("direct: %s", out);
+    shader_task_mesh_log(frames);
     heap_stats(out, cap);
     logf("direct: %s", out);
     state_stats(out, cap, frames);

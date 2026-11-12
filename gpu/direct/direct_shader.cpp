@@ -1281,18 +1281,20 @@ void shader_task_mesh_draw(const DState& s, bool indirect) {
     if (slot && slot->tm) (indirect ? slot->tm->indirect : slot->tm->direct).fetch_add(1, std::memory_order_relaxed);
 }
 
-void shader_task_mesh_stats(char* out, size_t cap, double frames) {
-    int k = std::snprintf(out, cap, "task+mesh programs (not drawn, M4c), draws a frame (direct / indirect) by task, mesh, fragment code:");
-    for (TaskMesh& t : task_mesh) {
+void shader_task_mesh_log(double frames) {
+    double all = 0;
+    for (TaskMesh& t : task_mesh) {   // (a line each: task, mesh and fragment code, draws a frame)
         if (!t.id.load(std::memory_order_acquire)) break;
         const int64_t d = t.direct.load(std::memory_order_relaxed), i = t.indirect.load(std::memory_order_relaxed);
         const double dd = (d - t.seen[0]) / frames, di = (i - t.seen[1]) / frames;
         t.seen[0] = d, t.seen[1] = i;
-        if ((dd || di) && k < (int)cap - 96)
-            k += std::snprintf(out + k, cap - k, " [%016llx %016llx %016llx: %.2f / %.2f, %lld programs]", (unsigned long long)t.task,
-                               (unsigned long long)t.mesh, (unsigned long long)t.fs, dd, di, (long long)t.programs.load(std::memory_order_relaxed));
+        all += dd + di;
+        if (dd || di)
+            logf("direct: task+mesh program (not drawn, M4c): task %016llx mesh %016llx fragment %016llx: %.2f direct and %.2f indirect "
+                 "draws a frame (%lld program objects)", (unsigned long long)t.task, (unsigned long long)t.mesh, (unsigned long long)t.fs, dd, di,
+                 (long long)t.programs.load(std::memory_order_relaxed));
     }
-    if (const int64_t f = st_task_mesh_full.load()) std::snprintf(out + k, k < (int)cap ? cap - k : 0, " (table full: %lld)", (long long)f);
+    logf("direct: task+mesh draws a frame (not drawn, M4c): %.2f; programs past the table %lld", all, (long long)st_task_mesh_full.load());
 }
 
 bool shader_answers_hold(const DState& s, const DrawProg& p) {

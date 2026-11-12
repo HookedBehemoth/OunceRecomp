@@ -84,7 +84,7 @@ void shader_program_set(const nvn_prog* p);
 const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], ShaderMiss& why);
 /// (M4b) A draw of the bound program, which has a task stage, counted by its stages (not drawn)
 void shader_task_mesh_draw(const DState& s, bool indirect);
-void shader_task_mesh_stats(char* out, size_t cap, double frames);
+void shader_task_mesh_log(double frames);
 /// (M4b, logs) the bound program's stages: kind and code keys
 void shader_describe(const DState& s, char* out, size_t cap);
 /// Whether the textures bound now answer what the variant was translated for
