@@ -1332,6 +1332,14 @@ bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const C
             fst.c1 = fsc->c1;
         }
         if (questions) record_answers(v, s);
+        if (const char* dir = dbg_value("taskspv")) {   // (M6d: the mesh-only programs' stages too, for comparing them with task+mesh ones)
+            for (const VStage& st : v.stages) {
+                char path[512];
+                std::snprintf(path, sizeof path, "%s/%016llx_meshonly_%s.spv", dir, (unsigned long long)v.d.key,
+                              st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT ? "mesh" : "frag");
+                if (FILE* f = std::fopen(path, "wb")) std::fwrite(st.spirv.data(), 4, st.spirv.size(), f), std::fclose(f);
+            }
+        }
         return true;
     } catch (const std::exception& e) {
         static std::atomic<int> told{0};

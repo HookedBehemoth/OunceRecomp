@@ -224,6 +224,7 @@ struct ListDraw {
     bool heap = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ms = VK_NULL_HANDLE;
     bool shaders = false;
+    bool last_tm = false;    // (M6d, HOS_DBG=tmsyncpair: the last draw recorded in this command buffer was a task+mesh draw)
     uint32_t vb_bound = 0;   // (the vertex bindings given a buffer in this command buffer)
     Dyn dyn;
     uint64_t vi_sig = 0;
@@ -439,7 +440,7 @@ uint64_t mix(uint64_t h, uint64_t v) {
 void cb_fresh(ListDraw& d, VkCommandBuffer cb) {
     if (d.cb == cb) return;
     d.cb = cb;
-    d.heap = d.dyn_valid = d.vi_valid = d.vb_valid = d.ib_valid = d.push_valid = d.shaders = false;
+    d.heap = d.dyn_valid = d.vi_valid = d.vb_valid = d.ib_valid = d.push_valid = d.shaders = d.last_tm = false;
     d.vb_bound = 0;
 }
 
@@ -1372,10 +1373,25 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         const uint32_t mk = marks_on() ? mark_before(cb, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw", prog->key,
                                                      l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: HOS_DBG=marks)
         if (marks_on() && prog->task) mark_header(mk, task_last_header);
+        // (M6d, diagnoses of the market loss, one at a time: a full barrier inside the rendering, which Vulkan does not allow
+        // there and RADV records as the wait it is (VS and PS partial flushes): tmsync before each task+mesh draw, tmsyncafter
+        // after it, tmsyncpair only before one whose previous draw in this command buffer was a task+mesh draw too)
+        static const bool tm_before = dbg("tmsync"), tm_after = dbg("tmsyncafter"), tm_pair = dbg("tmsyncpair");
+        const auto drain = [cb] {
+            VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+            b.srcAccessMask = b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cb, &d);
+        };
+        if (prog->task && (tm_before || (tm_pair && x.last_tm))) drain();
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
+        if (prog->task && tm_after) drain();
+        x.last_tm = prog->task;
         if (marks_on()) mark_after(cb, mk);
         l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
         count(l, R_DRAWN);
@@ -1404,6 +1420,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     } else {
         vkCmdDraw(cb, (uint32_t)dr.count, (uint32_t)std::max(1, dr.instances), (uint32_t)dr.first, (uint32_t)dr.base_instance);
     }
+    x.last_tm = false;
     if (marks_on()) mark_after(cb, mk);
     l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
     count(l, R_DRAWN);
