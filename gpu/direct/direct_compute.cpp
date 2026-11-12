@@ -1234,6 +1234,15 @@ void compute_program_set(const nvn_prog* p) {
 }
 
 void compute_log(double frames) {
+    if (const char* pk = dbg_value("peek")) {   // (HOS_DBG=peek:<guest address>: 64 KB there, nonzero bytes and a checksum)
+        const uint64_t at = strtoull(pk, nullptr, 16);
+        static std::vector<uint8_t> b(64 << 10);
+        const bool ok = host->gpu_read(at, b.data(), b.size()) != 0;
+        uint64_t nz = 0, sum = 0;
+        for (uint8_t x : b) nz += x != 0, sum = sum * 31 + x;
+        logf("direct: peek %#llx: %s %llu of %zu bytes nonzero, sum %016llx", (unsigned long long)at, ok ? "read," : "unreadable,",
+             (unsigned long long)nz, b.size(), (unsigned long long)sum);
+    }
     static char out[4096];
     const size_t cap = sizeof out;
     static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
