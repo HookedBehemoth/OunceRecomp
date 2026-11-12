@@ -300,6 +300,7 @@ NV(nvnMemoryPoolBuilderSetDefaults) { memset(P(0), 0, sizeof(nvn_pool_builder));
 NV(nvnMemoryPoolBuilderSetDevice) { ((nvn_pool_builder *)P(0))->dev = P(1); }
 NV(nvnMemoryPoolBuilderSetStorage) { ((nvn_pool_builder *)P(0))->mem = U64(1); ((nvn_pool_builder *)P(0))->size = U64(2); }
 NV(nvnMemoryPoolBuilderSetFlags) { ((nvn_pool_builder *)P(0))->flags = U32(1); }
+static void guest_chain(Ctx *c, char *b, size_t cap);
 NV(nvnMemoryPoolInitialize) {
     const nvn_pool_builder *b = (const nvn_pool_builder *)P(1);
     nvn_pool *o = (nvn_pool *)P(0);
@@ -336,6 +337,12 @@ NV(nvnMemoryPoolInitialize) {
     o->gpu = b->mem;
     hos_gpu_track(o->gpu, o->size, 1);   /* (the CPU's writes to it reach the renderer through write watch) */
     hos_census_pool(o->gpu, o->size, o->flags, 1);
+    if (getenv("HOS_NVN_LOG_POOLS")) {   /* (M4f, debugging) who makes each pool */
+        char b[400];
+        guest_chain(c, b, sizeof b);
+        hos_log("nvn: pool %#llx size %#llx flags %#x made by %s", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags, b);
+    }
+    direct_assets_pool_made(c->x[30], o->gpu, o->size);   /* (M4f: the texture data pool named to the direct back end before its binding) */
     rx_nvn_pool_native(o->gpu, o->size, o->flags, pool_creation_key(c), 1);   /* (native-vk layer 0: placed by its flags, before any binding) */
     rx_nvn_pool_created(o->gpu, o->size);
     OLOG("pool %#llx size %#llx flags %#x", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags);
@@ -799,6 +806,9 @@ NV(nvnTextureInitialize) {
         if (on < 0) on = getenv("RX_NVN_WATCH_TEX") && sscanf(getenv("RX_NVN_WATCH_TEX"), "%ux%u", &ww, &wh) == 2;
         if (on && o->d.width == ww && o->d.height == wh && o->gpu && o->gpu < VBASE)
             hos_watch_guest_writes(GP(o->gpu), o->L.size);
+        static uint64_t at = 1;   /* (M4f) RX_NVN_WATCH_TEX_AT=<hex>: the texture at that address only */
+        if (at == 1) at = getenv("RX_NVN_WATCH_TEX_AT") ? strtoull(getenv("RX_NVN_WATCH_TEX_AT"), NULL, 16) : 0;
+        if (at && o->gpu == at && o->gpu < VBASE) hos_watch_guest_writes(GP(o->gpu), o->L.size);
     }
     OLOG("texture %ux%ux%u levels %u format %#x target %d flags %#x at %#llx size %#llx", o->d.width, o->d.height,
          o->d.depth, o->d.levels, o->d.format, o->d.target, o->d.flags, (unsigned long long)o->gpu,

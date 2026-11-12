@@ -55,6 +55,11 @@ ENTRY_HOOK(0x80357060) {
                 gf(a2 + 20), gf(a2 + 24), gf(a2 + 28), gf(a2 + 16 + 136 * 16), gf(a2 + 20 + 136 * 16), gf(a2 + 24 + 136 * 16),
                 gf(a2 + 28 + 136 * 16));
     }
+    {   /* (the 64^3 BC4 noise volume's storage, m4e-report 3: zero in direct mode) */
+        int nonzero = 0;
+        for (uint64_t i = 0; i < 0x20000; i += 8) nonzero += g64(0x1140bcb000 + i) != 0;
+        hos_log("envlog: guest 0x1140bcb000+0x20000: %d of 16384 words nonzero", nonzero);
+    }
     hos_log("envlog: G %#llx L %#llx: G+0xdac %g; L+0x9c0 %g %g %g %g; L+0x960 %g 0x980 %g 0x9a0 %g 0xaf0 %g; L+0x6c0 %g %g %g",
             (unsigned long long)g, (unsigned long long)l, gf(g + 0xdac), gf(l + 0x9c0), gf(l + 0x9c4), gf(l + 0x9c8), gf(l + 0x9cc),
             gf(l + 0x960), gf(l + 0x980), gf(l + 0x9a0), gf(l + 0xaf0), gf(l + 0x6c0), gf(l + 0x6c4), gf(l + 0x6c8));

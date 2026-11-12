@@ -14,6 +14,7 @@
 
 #include "direct_heap.h"
 #include "direct_image.h"
+#include "direct_assets.h"
 
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
@@ -562,6 +563,11 @@ void heap_describe(uint32_t id, char* out, size_t cap) {
                        im ? im->height : 0, im ? (int)im->format : 0, im && im->placeholder ? " (placeholder)" : "", w ? "" : "never",
                        w & W_ATTACHMENT ? "A" : "", w & W_COPY ? "C" : "", w & W_TEXELS ? "T" : "", w & W_CLEAR ? "L" : "",
                        w & W_STORE ? "S" : "", w & W_TERRAIN ? "R" : "", w & W_GLYPH ? "G" : "");
+    if (im && im->asset) {   // (M4f: a prepared texture's name, for the per-draw trace)
+        uint32_t n = 0;
+        const char* name = assets_name(im->asset, &n);
+        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " '%.*s'", (int)std::min<uint32_t>(n, 60), name);
+    }
     for (uint32_t r = 0; r < kHeapRegions; r++) {
         const uint8_t* e = res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc;
         bool any = false;

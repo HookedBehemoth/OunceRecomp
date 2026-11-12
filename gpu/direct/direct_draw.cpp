@@ -799,7 +799,7 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
     int k = std::snprintf(b, sizeof b, "direct: drawlog lr %#llx kind %u rt %llu %ux%u c0 %d: %s", (unsigned long long)l->info.lr, l->info.kind,
                           (unsigned long long)l->pass.set_rt_at, l->pass.w, l->pass.h, l->pass.n ? (int)l->pass.color[0].format : -1, what);
     if (p)
-        k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " prog %016llx vs_loads %#x stores %#x comp %x push %u ubos %zu pushed %zu ra %d", (unsigned long long)p->key,
+        k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " prog %016llx codes %016llx/%016llx vs_loads %#x stores %#x comp %x push %u ubos %zu pushed %zu ra %d", (unsigned long long)p->key, (unsigned long long)p->codes[0], (unsigned long long)p->codes[1],
                            p->vs_loads, p->frag_stores, p->frag_components[0], p->push_bytes, p->ubos.size(), p->pushed.size(), p->uses_render_area);
     if (p) {
         for (const auto& u : p->ubos)
@@ -815,6 +815,19 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
                                    a.stream < 16 ? (unsigned long long)s.vbuf[a.stream].size : 0ull);
             }
         k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " [%s]", p->shape);
+        for (int st = 0; st < kStages && k < 7000; st++)   // (M4f: the storage buffers read, and the pointers a small one holds: bound or not)
+            for (uint32_t m = p->ssbo_slots[st]; m && k < 7000; m &= m - 1) {
+                const int i = std::countr_zero(m);
+                const nvn_p_bind_buf& sb = s.ssbo[st][i];
+                k += std::snprintf(b + k, sizeof b - k, " s%d.%d=%#llx+%#llx", st, i, (unsigned long long)sb.addr, (unsigned long long)sb.size);
+                if (!sb.addr || !sb.size || sb.size > 0x40) continue;
+                uint64_t w[8]{};
+                host->gpu_read(sb.addr, w, std::min<uint64_t>(sb.size, sizeof w));
+                for (int j = 0; j < 8 && k < 7000; j++)
+                    if (w[j] >> 32 >= 0x10 && w[j] >> 32 < 0x200)
+                        k += std::snprintf(b + k, sizeof b - k, " [+%d %#llx%s]", 8 * j, (unsigned long long)w[j],
+                                           layer0_bound(w[j], w[j] + 16) ? "" : " not bound in layer 0");
+            }
         k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " discard %d poly %u front %u", (int)s.raster_discard, s.poly.mode, s.poly.front);
         for (const auto& t : p->tex_words) {
             const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0;
@@ -828,7 +841,7 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
                            d->n, d->vp.x, d->vp.y, d->vp.width, d->vp.height, d->vp.minDepth, d->vp.maxDepth, d->sc.offset.x, d->sc.offset.y,
                            d->sc.extent.width, d->sc.extent.height, d->n ? d->wm[0] : 0, d->n ? d->en[0] : 0, d->n ? (int)d->eq[0].srcColorBlendFactor : 0,
                            d->n ? (int)d->eq[0].dstColorBlendFactor : 0, d->n ? (int)d->eq[0].colorBlendOp : 0, d->cull, d->dt, d->dw, d->st, count, (unsigned)d->samples);
-    logf("%s", b);
+    log_long(b, "direct: drawlog");
 }
 
 std::atomic<bool> scene_seen{false};   // (M4a: draw_scene_up)

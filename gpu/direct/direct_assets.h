@@ -42,6 +42,8 @@ bool assets_desc(uint32_t rec, AssetDesc& d);
 /// The record's texels into im (made by the caller in its format, layout undefined): moved to GENERAL and filled by this
 /// thread's uploads; false: the store could not be read (the image stays empty, counted)
 bool assets_fill(Image& im, uint32_t rec);
+/// (M4f) [gpu, gpu + size) is a texture data pool (hsd_texture_data_pool: its texels come from the store, nothing reads it)
+bool assets_pool_is(uint64_t gpu, uint64_t size);
 /// The record's name (logs)
 const char* assets_name(uint32_t rec, uint32_t* len);
 

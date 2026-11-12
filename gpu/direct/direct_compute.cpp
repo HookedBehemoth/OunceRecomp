@@ -1015,7 +1015,7 @@ void trace_dispatch(const Variant& v, const List* l, const uint8_t* bank, uint32
         heap_describe(h & 0xFFFFF, e, sizeof e);
         k += std::snprintf(b + k, sizeof b - k, " img c%u+%#x%s=%#x(%s)", im.cbuf_index, im.cbuf_offset, im.is_written ? " written" : "", h, e);
     }
-    logf("%s", b);
+    log_long(b, "direct: drawlog dispatch");
 }
 
 }  // namespace
@@ -1229,6 +1229,17 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     draw_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
     tell_first(*v, l, map, v->bank_bytes, grid, indirect);
     if (draw_log_frame()) trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
+    else if (static const uint64_t watch = [] {   // (M4f, HOS_DBG=writer:<hex>: every dispatch whose storage buffers cover it)
+                 const char* w = dbg_value("writer");
+                 return w ? strtoull(w, nullptr, 16) : 0ull;
+             }(); watch) {
+        for (int i = 0; i < 16; i++)
+            if (c.ssbo[i].addr <= watch && watch < c.ssbo[i].addr + std::max<uint64_t>(c.ssbo[i].size, 1)) {
+                logf("direct: writer: present %llu, s%d covers %#llx:", (unsigned long long)present_count(), i, (unsigned long long)watch);
+                trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
+                break;
+            }
+    }
     count(l, D_DRAWN);
     if (indirect) count(l, D_INDIRECT);
 }
@@ -1249,6 +1260,13 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
         std::memcpy(&p, data, std::min<size_t>(sizeof p, size));
         VkBuffer sb, db;
         VkDeviceSize so, dof;
+        if (const char* w = dbg_value("writer")) {   // (M4f, HOS_DBG=writer:<hex>: buffer copies over it)
+            const uint64_t at = strtoull(w, nullptr, 16);
+            if (p.dst <= at && at < p.dst + p.size)
+                logf("direct: writer: present %llu, copy %#llx -> %#llx (%#llx bytes) in a list of kind %u (lr %#llx)",
+                     (unsigned long long)present_count(), (unsigned long long)p.src, (unsigned long long)p.dst, (unsigned long long)p.size,
+                     l->info.kind, (unsigned long long)l->info.lr);
+        }
         if (!p.size || !layer0_span(p.src, p.size, sb, so) || !layer0_span(p.dst, p.size, db, dof)) return bump(me().buf_ops[1]);
         VkCommandBuffer cb = cmd(l);
         const VkBufferCopy r{so, dof, p.size};

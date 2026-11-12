@@ -52,6 +52,7 @@ int  hsd_assets_open(const char *dir);              /* the store's folder (index
 int  hsd_asset_load(const hsd_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
 void hsd_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */
 void hsd_asset_pool(uint64_t lo, uint64_t hi);      /* the asset heap's pool (pool 127): its textures need a load */
+void hsd_texture_data_pool(uint64_t lo, uint64_t hi);   /* (M4f) a texture data pool, named at its creation: layer 0 leaves it unbound */
 /* texels from the CPU that no NVN call carries (game patches): an NVNcopyRegion of tex's level and first layer from
    src (row bytes, layer bytes; 0: packed); src NULL: none to give (the placeholder content, counted) */
 enum { HSD_TEXELS_TERRAIN = 1, HSD_TEXELS_GLYPH = 2, HSD_TEXELS_FILE = 3 };   /* (FILE: a prepared file's linear texels, M4e) */

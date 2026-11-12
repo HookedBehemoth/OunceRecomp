@@ -23,6 +23,7 @@
 #include "direct_internal.h"
 #include "direct_query.h"
 #include "layer0_windows.h"
+#include "direct_assets.h"
 
 namespace hsd {
 void draw_window_made(uint32_t k, uint64_t a);   // (direct_draw.cpp)
@@ -37,7 +38,7 @@ constexpr uint64_t G = l0::kGran;
 constexpr uint32_t kCpuNoAccess = 0x1, kCpuUncached = 0x2, kCpuCached = 0x4, kGpuNoAccess = 0x8, kPhysical = 0x100,
                    kVirtual = 0x200, kShaderCode = 0x40;   // (NVNmemoryPoolFlags)
 constexpr uint64_t kBlock = 256ull << 20;
-constexpr uint64_t kChunkMb = 16, kPrefetchBytes = 64ull << 20, kAheadMax = 1024ull << 20, kVramLimit = 2048ull << 20;
+constexpr uint64_t kChunkMb = 16, kVramLimit = 2048ull << 20;
 constexpr double kKeepS = 10;
 
 constexpr VkBufferUsageFlags kWindowUsage =
@@ -517,6 +518,27 @@ void vram_pool_made(uint64_t base, uint64_t size, uint32_t flags, uint64_t key) 
     st_vpools++;
 }
 
+/// (M4f) A pool made: bound in full now (its host chunks queued for the importer), whatever its size, when the GPU can read it.
+/// Shaders follow pointers the game stores in memory (the probe tables of a 150 MB pool in Kokiri, m4f-report.md), so any
+/// GPU-readable pool may be read with no binding naming it; before, only pools up to 64 MB were bound ahead and the rest
+/// at a binding's use, and memory reached only by a stored pointer read the null window: zeros. Not bound: pools the GPU
+/// cannot read, virtual pools (GPU addresses past layer 0's window: their physical pools are what is bound), shader code
+/// (translated, never read), and one named pool: the texture data pool (host/direct_assets.c names it at its creation),
+/// whose texels come from the store and are never read from guest memory, bound at its uses as before. A VRAM-class pool's
+/// interior granules are in VRAM already (vram_pool_made); its partial edge granules are host and bound here. One line a
+/// pool of a chunk or more, the rest counted (mu held)
+std::atomic<int64_t> st_ahead_pools{0}, st_ahead_bytes{0}, st_left_pools[4];
+void bind_ahead(uint64_t gpu, uint64_t size, uint32_t flags, bool vr) {
+    const int why = (flags & kGpuNoAccess) ? 1 : (flags & kVirtual) ? 1 : (flags & kShaderCode) ? 2 : assets_pool_is(gpu, size) ? 3 : 0;
+    static const char* const kWhy[4] = {"bound in full", "not bound (the GPU cannot read it, or virtual)", "not bound (shader code)",
+                                        "not bound: the texture data pool, bound at its uses"};
+    if (size >= chunk) logf("direct: layer 0: pool %#llx+%#llx flags %#x%s: %s", (unsigned long long)gpu, (unsigned long long)size, flags,
+                            vr ? " (VRAM class: its edges)" : "", kWhy[why]);
+    if (why) return void(st_left_pools[why].fetch_add(1, std::memory_order_relaxed));
+    st_ahead_pools.fetch_add(1, std::memory_order_relaxed), st_ahead_bytes.fetch_add((int64_t)size, std::memory_order_relaxed);
+    prefetch_pool(gpu, std::min(gpu + size, guest_bytes));
+}
+
 }  // namespace
 
 bool layer0_on() {
@@ -544,16 +566,15 @@ bool layer0_on() {
     cstate.reset(new std::atomic<uint8_t>[bits->chunks]);
     for (uint64_t c = 0; c < bits->chunks; c++) cstate[c].store(CH_NONE, std::memory_order_relaxed);
     std::thread(worker_main).detach();
-    logf("direct: layer 0 on: guest memory in 4 GB windows every 2 GB, chunks of %llu MB (udmabuf's limit %llu MB), pools up to "
-         "%llu MB bound ahead; CPU_NO_ACCESS pools in VRAM (up to %llu MB, kept %.0f s)", (unsigned long long)(chunk >> 20),
-         (unsigned long long)(dmabuf_limit >> 20), (unsigned long long)(kPrefetchBytes >> 20), (unsigned long long)(kVramLimit >> 20), kKeepS);
+    logf("direct: layer 0 on: guest memory in 4 GB windows every 2 GB, chunks of %llu MB (udmabuf's limit %llu MB), every "
+         "GPU-readable pool bound in full at its creation (but the texture data pool); CPU_NO_ACCESS pools in VRAM (up to %llu MB, "
+         "kept %.0f s)", (unsigned long long)(chunk >> 20), (unsigned long long)(dmabuf_limit >> 20), (unsigned long long)(kVramLimit >> 20), kKeepS);
     state.store(1, std::memory_order_release);
     return true;
 }
 
-void layer0_pool_created(uint64_t gpu, uint64_t size) {
-    if (!size || gpu >= (1ull << 40) || !layer0_on()) return;   // (virtual pools are ranges of physical ones)
-    if (size <= kPrefetchBytes) prefetch_pool(gpu, std::min(gpu + size, guest_bytes));
+void layer0_pool_created(uint64_t gpu, uint64_t size) {   // (M4f: bound in layer0_pool_native, which has the flags)
+    (void)gpu, (void)size;
 }
 
 void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
@@ -563,17 +584,6 @@ void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t ke
         return;
     }
     const bool vr = vram_class(size, flags);
-    // (M4f) A host pool the GPU reads past kPrefetchBytes is bound ahead too, up to kAheadMax: shaders follow pointers the game
-    // stores in memory (probe and light tables in a 150 MB pool in Kokiri: m4f-report.md), and memory no binding names was
-    // never bound, so the window table read it as the null window: zeros. Left on use: pools the GPU cannot read, shader code
-    // (translated, never read), and the one larger than kAheadMax, the texture data pool (2.4 GB), whose texels the back end
-    // takes from the store and never from guest memory, so binding it would back pages nothing reads
-    if (on && !vr && size > kPrefetchBytes) {
-        const bool ahead = size <= kAheadMax && !(flags & (kGpuNoAccess | kVirtual | kShaderCode));
-        logf("direct: layer 0: pool %#llx+%#llx flags %#x past %llu MB: %s", (unsigned long long)gpu, (unsigned long long)size, flags,
-             (unsigned long long)(kPrefetchBytes >> 20), ahead ? "bound ahead" : "bound at its uses");
-        if (ahead) prefetch_pool(gpu, std::min(gpu + size, guest_bytes));
-    }
     if (on && vr) {
         {   // (the same pool again, kept since its finalize: handed back, nothing bound)
             std::lock_guard lk(mu);
@@ -592,6 +602,7 @@ void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t ke
         live.insert({gpu, LivePool{size, flags, vr}});
         if (vr && !vram_hand_back(gpu, size, flags, key)) vram_pool_made(gpu, size, flags, key);
         else vram_clear_over(gpu, gpu + size, true);   // (a CPU-visible pool over VRAM granules: they go back to host)
+        bind_ahead(gpu, size, flags, vr);
         return;
     }
     for (auto [it, end] = live.equal_range(gpu); it != end; ++it)
@@ -681,12 +692,15 @@ void layer0_stats(char* out, size_t cap) {
     std::snprintf(out, cap, "layer 0: %lld chunks bound (%llu MB) in %lld windows, %lld bind calls, imports %.1f ms, binds %.1f ms, "
                   "longest %.1f ms, %lld failed; VRAM: %lld pools live, %lld kept, %llu MB in %zu runs (%zu blocks), %lld placed, "
                   "%lld handed back, %lld given back, %lld demoted, %lld not placed, %lld waits (%.1f ms); %lld pool calls before the device; "
-                  "%lld copy spans bound at their use",
+                  "%lld copy spans bound at their use; pools bound in full at creation %lld (%lld MB), not bound: %lld the GPU cannot read or "
+                  "virtual, %lld shader code, %lld the texture data pool",
                   (long long)st_chunks, (unsigned long long)(st_chunks * (int64_t)chunk >> 20), (long long)st_windows,
                   (long long)st_bind_calls, st_import_ms, st_bind_ms, st_max_ms, (long long)st_failed, (long long)livev, (long long)kept,
                   (unsigned long long)(vram_used >> 20), vram.size(), blocks.size(), (long long)st_vpools, (long long)st_handback,
                   (long long)st_released, (long long)st_demoted, (long long)st_vram_failed, (long long)st_waits, st_wait_ms,
-                  (long long)st_early.load(), (long long)st_span_binds.load());
+                  (long long)st_early.load(), (long long)st_span_binds.load(), (long long)st_ahead_pools.load(),
+                  (long long)(st_ahead_bytes.load() >> 20), (long long)st_left_pools[1].load(), (long long)st_left_pools[2].load(),
+                  (long long)st_left_pools[3].load());
 }
 
 }  // namespace hsd

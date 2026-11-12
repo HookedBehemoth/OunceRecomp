@@ -46,6 +46,8 @@ using namespace vkfn;
 
 extern const MkwVkHost* host;
 void logf(const char* fmt, ...);
+/// (M4f) a line longer than logf's 2 KB, in pieces: the first as it is, the rest each "<prefix>+ ..."
+void log_long(const char* line, const char* prefix);
 /// HOS_DBG=<name>,<name>...: a debug aid named there is on (the back end's only switch, read once)
 bool dbg(const char* name);
 /// HOS_DBG=...,<name>:<value>,...: the value (null: not named)

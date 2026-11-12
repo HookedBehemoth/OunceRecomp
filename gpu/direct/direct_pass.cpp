@@ -365,13 +365,25 @@ void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
     count(S_COPIES);
 }
 
+/// (M4f) a texture copy left out, named (the first 24): which images, why
+void copy_skipped(const char* why, const nvn_p_copy_tt& p, const Sub& s, const Sub& d) {
+    count(S_COPY_SKIPPED);
+    static std::atomic<int> told{0};
+    if (told++ >= 24) return;
+    logf("direct: texture copy left out (%s): %#llx %ux%ux%u vk %d level %u layer %u (region %dx%dx%d) -> %#llx %ux%ux%u vk %d level %u "
+         "layer %u (region %dx%dx%d) at present %llu", why, (unsigned long long)(p.src ? p.src->gpu : 0), s.w, s.h, s.d,
+         s.im ? (int)s.im->format : -1, s.level, s.layer, p.sr.width, p.sr.height, p.sr.depth, (unsigned long long)(p.dst ? p.dst->gpu : 0),
+         d.w, d.h, d.d, d.im ? (int)d.im->format : -1, d.level, d.layer, p.dr.width, p.dr.height, p.dr.depth,
+         (unsigned long long)present_count());
+}
+
 void copy_tt(List* l, const nvn_p_copy_tt& p) {
     Sub s, d;
-    if (!image_sub(p.src, p.has_sv ? &p.sv : nullptr, p.sr, s) || !image_sub(p.dst, p.has_dv ? &p.dv : nullptr, p.dr, d) ||
-        (s.im == d.im && s.level == d.level && s.layer == d.layer))
-        return count(S_COPY_SKIPPED);
+    if (!image_sub(p.src, p.has_sv ? &p.sv : nullptr, p.sr, s) || !image_sub(p.dst, p.has_dv ? &p.dv : nullptr, p.dr, d))
+        return copy_skipped("no image, the placeholder or outside it", p, s, d);
+    if (s.im == d.im && s.level == d.level && s.layer == d.layer) return copy_skipped("onto itself", p, s, d);
     const bool colour = s.aspect == VK_IMAGE_ASPECT_COLOR_BIT && d.aspect == VK_IMAGE_ASPECT_COLOR_BIT;
-    if (!colour && s.im->format != d.im->format) return count(S_COPY_SKIPPED);
+    if (!colour && s.im->format != d.im->format) return copy_skipped("depth of another format", p, s, d);
     s.layers = d.layers = std::min(s.layers, d.layers);
     const bool same = s.w == d.w && s.h == d.h && s.d == d.d;
     const VkImageSubresourceLayers sl{s.aspect, s.level, s.layer, s.layers}, dl{d.aspect, d.level, d.layer, d.layers};
@@ -391,7 +403,7 @@ void copy_tt(List* l, const nvn_p_copy_tt& p) {
         vkCmdBlitImage(cb, s.im->image, VK_IMAGE_LAYOUT_GENERAL, d.im->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
                        p.flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     } else {
-        return count(S_COPY_SKIPPED);
+        return copy_skipped("sizes or block shapes differ, a compressed side", p, s, d);
     }
     d.im->written.fetch_or(W_COPY, std::memory_order_relaxed);
     count(S_COPIES);

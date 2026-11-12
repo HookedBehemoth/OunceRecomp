@@ -417,6 +417,21 @@ extern "C" __attribute__((visibility("default"))) void hsd_asset_pool(uint64_t l
          (unsigned long long)lo, (unsigned long long)((hi - lo) >> 20));
 }
 
+std::mutex tdp_mu;   // (M4f: the texture data pools named at their creation; a few)
+std::vector<std::pair<uint64_t, uint64_t>> tdp;
+bool assets_pool_is(uint64_t gpu, uint64_t size) {
+    std::lock_guard lk(tdp_mu);
+    for (const auto& [lo, hi] : tdp)
+        if (lo == gpu && hi == gpu + size) return true;
+    return false;
+}
+extern "C" __attribute__((visibility("default"))) void hsd_texture_data_pool(uint64_t lo, uint64_t hi) {
+    std::lock_guard lk(tdp_mu);
+    for (auto& p : tdp)
+        if (p.first == lo) return void(p.second = hi);
+    tdp.push_back({lo, hi});
+}
+
 extern "C" __attribute__((visibility("default"))) void hsd_texels(uint32_t source, const void* tex, unsigned level, unsigned layer0,
                                                                   const void* region, const void* src, uint64_t row, uint64_t img) {
     const nvn_tex* t = (const nvn_tex*)tex;

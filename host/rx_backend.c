@@ -293,6 +293,7 @@ const hsd_fns *rx_direct(void) {
             DIRECT_FN(asset_load, "hsd_asset_load")
             DIRECT_FN(asset_rebind, "hsd_asset_rebind")
             DIRECT_FN(asset_pool, "hsd_asset_pool")
+            DIRECT_FN(texture_data_pool, "hsd_texture_data_pool")
             DIRECT_FN(texels, "hsd_texels")
             DIRECT_FN(pass_known, "hsd_pass_known")
             DIRECT_FN(pass_inline, "hsd_pass_inline")

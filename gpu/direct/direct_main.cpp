@@ -39,6 +39,14 @@ void logf(const char* fmt, ...) {
     if (host) host->log(b);
 }
 
+void log_long(const char* line, const char* prefix) {
+    const size_t n = std::strlen(line), piece = 1900;
+    for (size_t at = 0; at < n; at += piece) {
+        if (!at) logf("%.*s", (int)std::min(piece, n), line);
+        else logf("%s+ %.*s", prefix, (int)std::min(piece, n - at), line + at);
+    }
+}
+
 bool dbg(const char* name) {
     static const std::string list = [] {
         const char* e = getenv("HOS_DBG");

@@ -22,6 +22,7 @@ typedef struct {
     int (*asset_load)(const hsd_asset_key *k);
     void (*asset_rebind)(const void *tex);
     void (*asset_pool)(uint64_t lo, uint64_t hi);
+    void (*texture_data_pool)(uint64_t lo, uint64_t hi);   /* (M4f) a pool of agl::TextureDataMgr, at its creation */
     void (*texels)(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                    uint64_t row, uint64_t img);
     /* (M3a) the format table by pass key: the job recorder's question, the game's inline path */
@@ -56,6 +57,8 @@ void direct_sky_lut_opened(const char *path);
 /* nvn_native.c nvnTextureInitialize: packaged texture data the back end never reads, its copy into the storage skipped
    (1) in direct mode */
 int direct_assets_skip_packaged(uint64_t bytes);
+/* (M4f) nvnMemoryPoolInitialize (lr its return address): agl::TextureDataMgr's pool is named to the back end */
+void direct_assets_pool_made(uint64_t lr, uint64_t gpu, uint64_t size);
 /* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */
 extern volatile long direct_assets_tiles_pending;
 void direct_assets_texture_init(const void *nvn_texture);   /* (an nvn_tex) */

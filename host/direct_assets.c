@@ -328,6 +328,18 @@ int direct_assets_skip_packaged(uint64_t bytes) {
     return 1;
 }
 
+/* (M4f) The texture data pool (pool 127, 2.4 GB) is made by agl::TextureDataMgr, whose nvnMemoryPoolInitialize returns to
+   0x80f6cb20 (HOS_NVN_LOG_POOLS=1, run m4f_pl_d: the only pool made from there). The direct back end takes every texel of
+   it from the store and never reads it, so its layer 0 leaves it unbound: named here, at its creation, before layer 0
+   binds pools (direct_pools.cpp layer0_pool_native). The manager makes more than one (Kokiri: 2432 MB at boot, 201 MB and
+   2 MB at the scene load): each is named. find_heap still names the asset heap's pool (127) to the asset path, as before. */
+void direct_assets_pool_made(uint64_t lr, uint64_t gpu, uint64_t size) {
+    if (lr != 0x80f6cb20ull || !rx_direct() || !direct_assets_on()) return;
+    hos_log("assets: the texture data pool made: %#llx + %llu MB (agl::TextureDataMgr, lr %#llx)", (unsigned long long)gpu,
+            (unsigned long long)(size >> 20), (unsigned long long)lr);
+    rx_direct()->texture_data_pool(gpu, gpu + size);
+}
+
 /* ---- the terrain overlay ---- */
 const char *direct_assets_overlay(void) {
     if (!rx_direct() || !direct_assets_on()) return NULL;
