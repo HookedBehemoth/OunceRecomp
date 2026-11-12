@@ -1,0 +1,16 @@
+// meshlab probe: a mesh shader that needs private memory (a dynamically indexed local array the compiler puts in scratch),
+// one workgroup, no output primitive; each invocation writes one word to a buffer. Expected words: arr[idx] = idx * k + lane.
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 32) in;
+layout(max_vertices = 126, max_primitives = 126, triangles) out;
+layout(buffer_reference, std430) buffer Words { uint w[]; };
+layout(push_constant) uniform P { Words out_words; uint k; } p;
+void main() {
+    uint arr[256];
+    for (uint i = 0; i < 256; i++) arr[(i * 13u + p.k) & 255u] = i * p.k + gl_LocalInvocationIndex;
+    const uint idx = (gl_LocalInvocationIndex * 7u + p.k) & 255u;
+    p.out_words.w[gl_LocalInvocationIndex] = arr[idx];
+    SetMeshOutputsEXT(0, 0);
+}

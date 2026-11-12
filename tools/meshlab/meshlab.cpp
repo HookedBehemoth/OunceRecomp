@@ -917,7 +917,65 @@ void list(const Frame& f) {
 
 }  // namespace
 
+/// meshlab probe <spv> [--groups N] [--pipeline]: a mesh stage of our own (tools/meshlab/probes) drawn once: push data {an output
+/// buffer's address, k = 3}; its first 32 words printed, and checked against the scratch probe's expectation
+int probe(int argc, char** argv) {
+    const auto code = read_spv(argv[2]);
+    if (code.empty()) die("no %s", argv[2]);
+    uint32_t groups = 1;
+    for (int i = 3; i + 1 < argc; i++)
+        if (!std::strcmp(argv[i], "--groups")) groups = (uint32_t)std::atoi(argv[i + 1]);
+    gpu_init();
+    heaps_init();
+    Buf out = make_buf(4096 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    VkShaderEXT ms = make_shader(VK_SHADER_STAGE_MESH_BIT_EXT, code, nullptr, 0);
+    if (!ms) die("the probe's mesh stage not made");
+    for (int i = 3; i < argc; i++)
+        if (!std::strcmp(argv[i], "--compile")) return std::printf("probe: made, not drawn\n"), 0;
+    mcap::McDraw d{};
+    d.w = d.h = 64, d.n = 1, d.color[0] = VK_FORMAT_R8G8B8A8_UNORM, d.samples = 1;
+    VkShaderEXT fs = simple_fs(d);
+    Target t = make_target(d);
+    VkCommandBuffer cb = new_cb();
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    VK(vkBeginCommandBuffer(cb, &bi));
+    to_attachment(cb, t);
+    heaps_bind(cb);
+    begin_rendering(cb, t, false, true);
+    Dyn dyn{};
+    dyn.vp = {0, 0, 64, 64, 0, 1}, dyn.sc = {{0, 0}, {64, 64}}, dyn.samples = VK_SAMPLE_COUNT_1_BIT, dyn.n = 1, dyn.wm[0] = 0xF;
+    dyn.front = VK_FRONT_FACE_COUNTER_CLOCKWISE, dyn.poly = VK_POLYGON_MODE_FILL, dyn.dop = VK_COMPARE_OP_ALWAYS;
+    dyn.eq[0] = {VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD};
+    set_state(cb, dyn);
+    bind_stages(cb, ms, fs);
+    struct { uint64_t a; uint32_t k, pad; } pd{out.addr, 3, 0};
+    push(cb, &pd, sizeof pd);
+    g.vkCmdDrawMeshTasksEXT(cb, groups, 1, 1);
+    vkCmdEndRendering(cb);
+    VK(vkEndCommandBuffer(cb));
+    VkFence f = new_fence();
+    submit(cb, f);
+    const VkResult r = vkWaitForFences(g.dev, 1, &f, VK_TRUE, 3ull * 1000 * 1000 * 1000);
+    if (r != VK_SUCCESS) {
+        std::printf("PROBE HUNG (%d)\n", (int)r);
+        std::fflush(stdout);
+        std::_Exit(3);
+    }
+    const uint32_t* w = (const uint32_t*)out.map;
+    int bad = 0;
+    for (uint32_t i = 0; i < 32; i++) {
+        const uint32_t idx = (i * 7u + 3u) & 255u;
+        uint32_t want = 0;
+        for (uint32_t j = 0; j < 256; j++) if (((j * 13u + 3u) & 255u) == idx) want = j * 3u + i;
+        bad += w[i] != want;
+        std::printf("%u%s ", w[i], w[i] != want ? "!" : "");
+    }
+    std::printf("\nprobe: %d of 32 words wrong (scratch probe's expectation)\n", bad);
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 3 && !std::strcmp(argv[1], "probe")) return probe(argc, argv);
     if (argc < 3) die("meshlab <frame.bin> list|compare|dump|run ...");
     Frame f;
     std::string err;
