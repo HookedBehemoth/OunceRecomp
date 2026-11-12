@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 
 #include "direct_cmd.h"
@@ -46,6 +47,7 @@ struct ListQuery {
     QSlot* open_q = nullptr;
     uint32_t segs[kSegs]{}, nsegs = 0;   // (the queries since the reset, ended)
     bool over = false;                   // (more stretches than kSegs since the reset)
+    bool clobbered = false;              // (a job with counters of its own ran since the reset: NVN's counter is the job's then)
     QSlot* segs_q = nullptr;
     std::vector<Pend> pend;
     bool cond_want = false, cond_on = false;   // (a condition set; begun in the command buffer)
@@ -76,7 +78,7 @@ enum {
     Q_REPORTS, Q_SAMPLES, Q_TIMESTAMP, Q_TOP, Q_OTHER, Q_RESETS, Q_RESETS_OTHER, Q_QUERIES, Q_STRETCHES, Q_NO_RESET,
     Q_SUMMED, Q_TOO_MANY, Q_NO_ROOM, Q_NOT_MEMORY, Q_UNRECORDED, Q_WRITTEN, Q_FLUSHES, Q_DISPATCHES, Q_IN_JOB,
     Q_CONDS, Q_COND_JOB, Q_COND_BEGUN, Q_COND_DRAWS, Q_COND_CLEARS, Q_COND_PENDING, Q_COND_Y, Q_COND_HI, Q_COND_NOT_MEMORY,
-    Q_COND_AT_EXEC, Q_EXEC_COUNTING, Q_EXEC_OWN, Q_JOB_PENDING_LEFT, Q_COUNT
+    Q_COND_AT_EXEC, Q_EXEC_COUNTING, Q_EXEC_OWN, Q_JOB_PENDING_LEFT, Q_CLOBBERED, Q_COUNT
 };
 const char* const kNames[Q_COUNT] = {
     "reports", "samples passed", "timestamp", "timestamp (top)", "other types", "resets of samples passed", "resets of other types",
@@ -87,7 +89,7 @@ const char* const kNames[Q_COUNT] = {
     "conditions begun", "gated draws", "gated clears", "conditions on a report not written yet in their list",
     "conditions whose second word is not 0 (condcheck)", "conditions whose first word is past 32 bits (condcheck)",
     "conditions not in layer 0 (drawn)", "jobs executed under their caller's condition", "jobs executed in a counting rendering",
-    "jobs with counters of their own executed in a counting rendering", "job reports never executed"};
+    "jobs with counters of their own executed in a counting rendering", "job reports never executed", "reports after a job with counters of its own since their reset (not NVN's value)"};
 std::atomic<int64_t> st[Q_COUNT];
 void count(int k, int64_t n = 1) { st[k].fetch_add(n, std::memory_order_relaxed); }
 
@@ -228,6 +230,7 @@ void report(List* l, ListQuery& x, const nvn_p_counter& c, bool rendering, CmdOf
         if (!x.counting) count(Q_NO_RESET);
         if (x.nsegs > 1) count(Q_SUMMED);
         if (x.over) count(Q_TOO_MANY);
+        if (x.clobbered) count(Q_CLOBBERED);
         if (x.segs_q == q || !x.nsegs) {
             r.n = p.n = x.nsegs;
             for (uint32_t k = 0; k < x.nsegs; k++) r.occ[k] = p.occ[k] = x.segs[k];
@@ -323,7 +326,7 @@ void query_op(List* l, uint32_t op, const void* data, uint32_t size, bool render
         count(Q_RESETS);
         x.has_ops = true;
         if (x.open >= 0) stretch_end(x, l->cur, false);   // (its samples are not counted)
-        x.counting = true, x.nsegs = 0, x.segs_q = nullptr, x.over = false;
+        x.counting = true, x.nsegs = 0, x.segs_q = nullptr, x.over = false, x.clobbered = false;
         return;
     }
     case NOP_REPORT_COUNTER: {
@@ -490,7 +493,7 @@ void query_execute(List* l, VkCommandBuffer cb, const List* job) {
     const bool own = job->qctx && job->qctx->has_ops;
     if (x.counting) {
         count(Q_EXEC_COUNTING);
-        if (own) count(Q_EXEC_OWN), query_suspend(l, cb);   // (its queries may not run inside the caller's)
+        if (own) count(Q_EXEC_OWN), query_suspend(l, cb), x.clobbered = true;   // (its queries may not run inside the caller's)
         else query_draw(l, cb);                            // (the job's draws count: the secondary inherits the query)
     }
 }
@@ -509,6 +512,20 @@ void query_list_free(List* l) {
 
 void query_stats(char* out, size_t cap, double frames) {
     calibrate();
+    if (const char* v = dbg_value("poolof")) {   // (HOS_DBG=poolof:<hex>+<hex>...: the pools of those guest addresses, at each line)
+        for (const char* s = v; *s;) {
+            char* e;
+            const uint64_t a = strtoull(s, &e, 16);
+            if (e == s) break;
+            uint64_t base = 0, size = 0;
+            uint32_t flags = 0;
+            bool in_vram = false;
+            const bool found = layer0_pool_of(a, base, size, flags, in_vram);
+            logf("direct: poolof %#llx: %s pool %#llx+%#llx flags %#x, %s", (unsigned long long)a, found ? "in" : "NOT in a", (unsigned long long)base,
+                 (unsigned long long)size, flags, in_vram ? "in VRAM" : "host memory");
+            s = *e == '+' ? e + 1 : e;
+        }
+    }
     int k = std::snprintf(out, cap, "reports a frame:");
     for (int i = 0; i < Q_COUNT; i++) {
         if (i == Q_CONDS) logf("direct: %s", out), k = std::snprintf(out, cap, "conditions a frame:");
