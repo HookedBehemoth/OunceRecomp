@@ -259,6 +259,17 @@ struct ListDraw {
         VkDeviceSize o = 0;
     };
     Span vb_span[16], ib_span;
+    // (M3b: what the dynamic state and the vertex input last set were made from: set again only when one changed)
+    struct DynKey {
+        uint32_t gen;
+        VkPrimitiveTopology topo;
+        const DrawProg* prog;
+        uint64_t rt;
+        uint32_t w, h;
+        int n;
+    } dyn_key{};
+    uint32_t vi_key_gen = 0, vi_key_loads = 0, vi_key_nattr = 0;
+    bool vi_used[16]{};
     // (the last pick, and what it was made from)
     const DrawProg* pick = nullptr;
     uint32_t pick_prog_gen = 0, pick_vtx_gen = 0, pick_bank_gen[kBankStages]{};
@@ -644,7 +655,7 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     if (u.bytes > size) {
         bump(me().past_range);
         static std::atomic<int> told{0};
-        if (told++ < 12)
+        if (told.load(std::memory_order_relaxed) < 12 && told++ < 12)
             logf("direct: program %016llx stage %u reads c%u up to %u bytes, %llu bound (%s)", (unsigned long long)p.key, u.stage,
                  u.index, u.bytes, (unsigned long long)b.size, u.bytes >= 0x10000 ? "indexed dynamically" : "past the bound range");
     }
@@ -755,6 +766,7 @@ void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, u
     logf("%s", b);
 }
 
+uint64_t tsc_device = 0;
 int64_t t_device = 0;   // (host->now_ns() when the draws' device part was made: the start of the start-time lines)
 void count(List* l, Reason r) {
     if (r == R_DRAWN) l->n_drawn++;
@@ -805,11 +817,11 @@ void draw_list_free(List* l) {
 }
 
 void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recording) {
-    const int64_t t0 = host->now_ns();
+    // (M3b: the draw path's own timer on the time-stamp counter, converted at draw_log: two host clock calls a draw were 5% of it)
     struct Timer {
-        int64_t t0;
-        ~Timer() { bump(me().ns, host->now_ns() - t0); }
-    } timer{t0};
+        uint64_t t0 = __builtin_ia32_rdtsc();
+        ~Timer() { bump(me().ns, (int64_t)(__builtin_ia32_rdtsc() - t0)); }
+    } timer;
     if (op == NOP_DRAW_MESH) return count(l, R_MESH);
     if (op == NOP_DRAW_INDIRECT) return count(l, R_INDIRECT);
     if (!heap_on()) return count(l, R_NOT_GRAPHICS);
@@ -907,9 +919,18 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         vkCmdBindShadersEXT(cb, n, st, sh);
         x.vs = prog->vs, x.fs = prog->fs, x.shaders = true;
     }
-    set_dynamic(x, cb, s, p, topo, *prog);
+    {
+        const ListDraw::DynKey k{s.dyn_gen, topo, prog, p.set_rt_at, p.w, p.h, p.n};
+        if (!x.dyn_valid || std::memcmp(&k, &x.dyn_key, sizeof k)) set_dynamic(x, cb, s, p, topo, *prog), x.dyn_key = k;
+    }
     bool vi_used[16]{};
-    set_vertex_input(x, cb, s, *prog, vi_used);
+    if (!x.vi_valid || x.vi_key_gen != s.vi_gen || x.vi_key_loads != prog->vs_loads || x.vi_key_nattr != (uint32_t)s.nvattr) {
+        set_vertex_input(x, cb, s, *prog, vi_used);
+        std::memcpy(x.vi_used, vi_used, sizeof vi_used);
+        x.vi_key_gen = s.vi_gen, x.vi_key_loads = prog->vs_loads, x.vi_key_nattr = (uint32_t)s.nvattr;
+    } else {
+        std::memcpy(vi_used, x.vi_used, sizeof vi_used);
+    }
     {
         uint32_t first = 16, last = 0, want = 0;
         for (uint32_t b = 0; b < 16; b++)
@@ -978,7 +999,7 @@ void draw_window_made(uint32_t k, uint64_t a) {
 /// (direct_heap.cpp draw_device_created) the window table: an entry a layer-0 window, the null window past them; the zero buffer
 double seconds_since_device() { return (host->now_ns() - t_device) / 1e9; }
 void draw_window_table_init() {
-    t_device = host->now_ns();
+    t_device = host->now_ns(), tsc_device = __builtin_ia32_rdtsc();
     VkBuffer b;
     VkDeviceMemory m;
     uint8_t* map;
@@ -1008,12 +1029,18 @@ void draw_window_table_init() {
     }
 }
 
+/// (draw_log) nanoseconds a time-stamp tick, from the host clock and the counter since the device was made
+double ns_per_tick() {
+    const uint64_t dt = __builtin_ia32_rdtsc() - tsc_device;
+    const int64_t dn = host->now_ns() - t_device;
+    return dt && dn > 0 ? (double)dn / (double)dt : 0.0;
+}
 void draw_log(double frames) {
     static char out[8192];
     const size_t cap = sizeof out;
     int k = std::snprintf(out, cap, "draws a frame (%.3f ms in the draw path, all threads; %.1f bank copies, %.1f address tables, %.1f "
                           "deferred words copied at submits in %.1f lists, %lld arena chunks, %lld storage buffers not bound)",
-                          take(&TStats::ns, T_NS) / 1e6 / frames, take(&TStats::banks, T_BANKS) / frames, take(&TStats::tables, T_TABLES) / frames,
+                          take(&TStats::ns, T_NS) * ns_per_tick() / 1e6 / frames, take(&TStats::banks, T_BANKS) / frames, take(&TStats::tables, T_TABLES) / frames,
                           st_fixups.exchange(0) / frames, st_fixup_lists.exchange(0) / frames, (long long)st_chunks.load(),
                           (long long)st_ssbo_unbound.load());
     if (deferred_check)

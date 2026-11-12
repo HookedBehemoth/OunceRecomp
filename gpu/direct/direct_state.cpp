@@ -25,6 +25,11 @@ constexpr uint32_t kSsboTable[kStages] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 
 }  // namespace
 
 bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
+    switch (op) {   // (M3b: the ops the dynamic state is made from move its generation)
+    case NOP_VIEWPORTS: case NOP_SCISSOR: case NOP_DEPTH_RANGE: case NOP_BIND_STATE: case NOP_STENCIL: case NOP_POLY_OFFSET:
+    case NOP_BLEND_COLOR: case NOP_PRIMITIVE_RESTART: case NOP_DEPTH_CLAMP: case NOP_RASTER_DISCARD: s.dyn_gen++; break;
+    default: break;
+    }
     switch (op) {
     case NOP_VIEWPORTS: {
         const auto v = payload<nvn_p_viewports>(a, size);
@@ -76,14 +81,15 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
         std::memset(s.vattr, 0, sizeof s.vattr);
         for (int i = 0; i < v.n && i < 16; i++) s.vattr[i] = v.st[i];
         s.nvattr = std::clamp(v.n, 0, 16);
-        if (nwas != s.nvattr || std::memcmp(was, s.vattr, sizeof was)) s.vtx_gen++;   // (M3b: the pick reads the attributes only)
+        if (nwas != s.nvattr || std::memcmp(was, s.vattr, sizeof was)) s.vtx_gen++, s.vi_gen++;   // (M3b: the pick reads the attributes only)
         return true;
     }
     case NOP_BIND_VSTREAM: {
         const auto v = payload<nvn_p_bind_vstream>(a, size);
         for (int i = 0; i < v.n && v.first + i < 16; i++)
-            if (v.first + i >= 0) s.vstream[v.first + i] = v.st[i];
-        return true;   // (M3b: no generation: the pick does not read streams; the vertex input is set from them at each draw)
+            if (v.first + i >= 0 && std::memcmp(&s.vstream[v.first + i], &v.st[i], sizeof v.st[i]))
+                s.vstream[v.first + i] = v.st[i], s.vi_gen++;
+        return true;   // (M3b: no pick generation: the pick does not read streams; the vertex input is set from them at each draw)
     }
     case NOP_BIND_VBUF: {
         const auto v = payload<nvn_p_bind_vbuf>(a, size);

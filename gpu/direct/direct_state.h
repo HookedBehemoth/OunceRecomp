@@ -50,6 +50,8 @@ struct DState {
     uint32_t ubo_gen = 0;               // (any uniform buffer)
     uint32_t vtx_gen = 0;               // (vertex attributes: what the pick reads of the vertex state)
     uint32_t prog_gen = 0;
+    uint32_t vi_gen = 0;    // (M3b: attributes or streams: the vertex input a draw sets)
+    uint32_t dyn_gen = 0;   // (M3b: any state the dynamic state is made from)
 };
 
 /// One op on the list's state (the recording thread); false: not a state op
