@@ -601,6 +601,8 @@ void pass_call(List* l, const List* callee) {
     l->has_cmds = true;
 }
 
+VkCommandBuffer pass_barrier_buffer() { return barrier_buffer(); }
+
 void pass_cut(List* l) {
     if (!records(l)) return;
     if (l->secondary) {

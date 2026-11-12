@@ -23,8 +23,10 @@
 #include "direct_dump.h"
 #include "direct_internal.h"
 #include "direct_lists.h"
+#include "direct_pass.h"
 
 namespace hsd {
+std::atomic<int64_t> st_send_ns{0}, st_send_n{0};
 namespace {
 
 using clk = std::chrono::steady_clock;
@@ -113,6 +115,65 @@ void write_report(const nvn_p_counter& c) {
     host->gpu_write(c.addr, rec, sizeof rec);
 }
 
+// (M4a) The chunks a pass of progress() sends, in one vkQueueSubmit2 at its end (one call costs ~0.1 ms on RADV: 34 chunks a
+// frame sent one by one took 4.2 ms). Each chunk's value is given when it is added, queue_mu held from the first until the
+// call, so no other submission (uploads, presents) comes between their values (mu held)
+struct Batch {
+    std::unique_lock<std::mutex> lk;
+    struct Chunk {
+        uint64_t wait = 0, value = 0;
+        size_t first = 0, n = 0;
+    };
+    std::vector<Chunk> chunks;
+    std::vector<VkCommandBuffer> cbs;
+};
+Batch batch;
+std::atomic<int64_t> st_batch_calls{0};
+/// A chunk into the batch: with the chunk before it in one submit info (its value theirs), unless it waits for a value (a
+/// fence, an upload); after an event wait a full barrier first (its first scope: all work before it on the queue)
+uint64_t batch_add(uint64_t wait_value, bool barrier, const VkCommandBuffer* cbs, uint32_t n) {
+    if (!batch.lk.owns_lock()) batch.lk = std::unique_lock<std::mutex>(dev.queue_mu);
+    if (batch.chunks.empty() || wait_value) {
+        const uint64_t v = sent.load(std::memory_order_relaxed) + 1;
+        batch.chunks.push_back({wait_value, v, batch.cbs.size(), 0});
+        sent.store(v, std::memory_order_release);
+    }
+    Batch::Chunk& c = batch.chunks.back();
+    if (barrier) batch.cbs.push_back(pass_barrier_buffer()), c.n++;
+    batch.cbs.insert(batch.cbs.end(), cbs, cbs + n), c.n += n;
+    return c.value;
+}
+void batch_flush() {
+    if (!batch.lk.owns_lock()) return;
+    const size_t k = batch.chunks.size();
+    std::vector<VkSubmitInfo2> si(k, VkSubmitInfo2{VK_STRUCTURE_TYPE_SUBMIT_INFO_2});
+    std::vector<VkSemaphoreSubmitInfo> sem(2 * k, VkSemaphoreSubmitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO});
+    std::vector<VkCommandBufferSubmitInfo> cb(batch.cbs.size(), VkCommandBufferSubmitInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO});
+    for (size_t i = 0; i < cb.size(); i++) cb[i].commandBuffer = batch.cbs[i];
+    for (size_t i = 0; i < k; i++) {
+        const Batch::Chunk& c = batch.chunks[i];
+        VkSemaphoreSubmitInfo& sig = sem[2 * i];
+        sig.semaphore = timeline, sig.value = c.value, sig.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        si[i].commandBufferInfoCount = (uint32_t)c.n, si[i].pCommandBufferInfos = c.n ? cb.data() + c.first : nullptr;
+        si[i].signalSemaphoreInfoCount = 1, si[i].pSignalSemaphoreInfos = &sig;
+        if (c.wait) {   // (a value given before this one: never a wait before its signal in submission order)
+            VkSemaphoreSubmitInfo& w = sem[2 * i + 1];
+            w = sig, w.value = c.wait;
+            si[i].waitSemaphoreInfoCount = 1, si[i].pWaitSemaphoreInfos = &w;
+        }
+    }
+    const auto t0 = clk::now();
+    const VkResult r = vkQueueSubmit2(dev.queue, (uint32_t)k, si.data(), VK_NULL_HANDLE);
+    st_send_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
+    st_send_n.fetch_add(1, std::memory_order_relaxed), st_batch_calls.fetch_add((int64_t)k, std::memory_order_relaxed);
+    if (r != VK_SUCCESS) {
+        logf("direct: vkQueueSubmit2 of %zu chunks failed (VkResult %d)", k, (int)r);
+        if (r == VK_ERROR_DEVICE_LOST) host->log_flush(), abort();
+    }
+    batch.chunks.clear(), batch.cbs.clear();
+    batch.lk.unlock();
+}
+
 /// (M4a) The command buffers run past and not sent yet, sent as one chunk (mu held). The first chunk of a submission waits
 /// for its fences (nvnQueueWaitSync) and the texture uploads; a chunk after an event wait for everything sent before it
 void send_chunk(Queue& q, Sub& s, bool last) {
@@ -124,7 +185,7 @@ void send_chunk(Queue& q, Sub& s, bool last) {
             fence_value(f, v);
             wait_value = std::max(wait_value, v);
         }
-    if (s.wait_next) wait_value = std::max(wait_value, sent.load(std::memory_order_relaxed)), st_chunk_waits++;
+    if (s.wait_next) st_chunk_waits++;
     {   // (A-rt: the uploads of textures registered before it; one wait per new upload, mu held)
         static uint64_t waited = 0;
         const uint64_t up = upload_value();
@@ -145,7 +206,8 @@ void send_chunk(Queue& q, Sub& s, bool last) {
             logf("%s", b);
         }
     }
-    s.last_value = sync_send(wait_value, s.pending.data(), (uint32_t)s.pending.size());
+    s.last_value = batch_add(wait_value, s.wait_next && !s.pending.empty(), s.pending.data(), (uint32_t)s.pending.size());
+    if (s.wait_next && s.pending.empty()) return;   // (nothing after the wait yet: the barrier goes with the next chunk)
     st_cbs += (int64_t)s.pending.size(), st_chunks++;
     s.pending.clear();
     s.chunks++;
@@ -210,6 +272,7 @@ void progress() {
             while (!q->subs.empty()) {
                 Sub& s = q->subs.front();
                 if (s.present) {
+                    batch_flush();   // (the present submits on its own)
                     present_run(s.tex, s.crop);
                     q->subs.pop_front();
                     moved = true;
@@ -238,6 +301,7 @@ void progress() {
             }
         }
     }
+    batch_flush();
     sent_cv.notify_all();
 }
 
@@ -314,6 +378,11 @@ bool sync_wait_value(uint64_t value, uint64_t timeout_ns) {
     return vkWaitSemaphores(dev.device, &wi, timeout_ns) == VK_SUCCESS;
 }
 uint64_t sync_send(uint64_t wait_value, const VkCommandBuffer* cbs, uint32_t n) {
+    const auto t0 = clk::now();
+    struct Timed {
+        clk::time_point t0;
+        ~Timed() { st_send_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed), st_send_n.fetch_add(1, std::memory_order_relaxed); }
+    } timed{t0};
     std::lock_guard qk(dev.queue_mu);
     const uint64_t v = sent.load(std::memory_order_relaxed) + 1;
     VkSemaphoreSubmitInfo sig{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
@@ -349,11 +418,11 @@ void sync_stats(char* out, size_t cap, double frames) {
     std::snprintf(out, cap, "submits %.1f a frame (%.1f chunks, %.1f of them after an event wait; %.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
                   "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms; %zu held now), fence waits held %lld, "
                   "reports %.1f, resets %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
-                  "timeline %llu sent, %llu done",
+                  "timeline %llu sent, %llu done; vkQueueSubmit2 %.1f a frame, %.3f ms a frame (all threads)",
                   st_submits / frames, st_chunks / frames, st_chunk_waits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
                   st_hold_max_ms, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
                   st_cpu_signals.exchange(0) / frames, st_cpu_waits.exchange(0) / frames, st_cpu_wait_ns.exchange(0) / 1e6 / frames,
-                  (long long)st_upload_waits_gpu, (unsigned long long)sent.load(), (unsigned long long)sync_completed());
+                  (long long)st_upload_waits_gpu, (unsigned long long)sent.load(), (unsigned long long)sync_completed(), st_send_n.exchange(0) / frames, st_send_ns.exchange(0) / 1e6 / frames);
     st_chunks = st_chunk_waits = st_upload_waits_gpu = st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
     st_hold_max_ms = 0;
 }
