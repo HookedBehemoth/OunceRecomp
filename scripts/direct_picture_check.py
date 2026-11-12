@@ -251,15 +251,29 @@ def align(ref_items, run_items):
     for key in sorted(set(rt) | set(ut), key=lambda k: min(i["seq"] for i in rt.get(k, []) + ut.get(k, []))):
         ra, ua = rt.get(key, []), ut.get(key, [])
         sm = difflib.SequenceMatcher(None, [i["prog"] for i in ra], [i["prog"] for i in ua], autojunk=False)
-        for op, i0, i1, j0, j1 in sm.get_opcodes():
+        ops = sm.get_opcodes()
+        for n, (op, i0, i1, j0, j1) in enumerate(ops):
             if op == "equal":
                 for i, j in zip(range(i0, i1), range(j0, j1)):
                     rows.append((ra[i], ua[j], "%s #%d %s" % (key, i, ra[i]["prog"])))
-            else:
-                for i in range(i0, i1):
-                    rows.append((ra[i], None, "%s #%d %s" % (key, i, ra[i]["prog"])))
-                for j in range(j0, j1):
-                    rows.append((None, ua[j], "%s +%d %s" % (key, j, ua[j]["prog"])))
+                continue
+            # (states on one side only with a lined-up state of the same target after them: intermediate states of a rendering
+            # one back end ends and begins again where the other does not (the frozen back end ends a rendering at each job's
+            # draws, M6b), their content compared in that later state; marked, not missing)
+            later = any(o[0] == "equal" for o in ops[n + 1:])
+            if not later and i1 > i0 and j1 > j0:
+                # (the target's last states differ by name on both sides (its renderings end at another draw in each back end):
+                # its final states are compared, by position, as what later passes read; the rest merged into them)
+                for i in range(i0, i1 - 1):
+                    rows.append((ra[i], "merged", "%s #%d %s" % (key, i, ra[i]["prog"])))
+                for j in range(j0, j1 - 1):
+                    rows.append(("merged", ua[j], "%s +%d %s" % (key, j, ua[j]["prog"])))
+                rows.append((ra[i1 - 1], ua[j1 - 1], "%s final %s" % (key, ra[i1 - 1]["prog"])))
+                continue
+            for i in range(i0, i1):
+                rows.append((ra[i], "merged" if later else None, "%s #%d %s" % (key, i, ra[i]["prog"])))
+            for j in range(j0, j1):
+                rows.append(("merged" if later else None, ua[j], "%s +%d %s" % (key, j, ua[j]["prog"])))
     return rows
 
 
@@ -278,7 +292,8 @@ def noise(out, packs):
         return 2
     idx = [read_index(p) for p in packs]
     table, maps, present = {}, {}, {}
-    names = [None] + [{u["seq"]: ident for r, u, ident in align(idx[0], idx[i]) if r and u} for i in range(1, len(packs))]
+    names = [None] + [{u["seq"]: ident for r, u, ident in align(idx[0], idx[i]) if isinstance(r, dict) and isinstance(u, dict)}
+                      for i in range(1, len(packs))]
     for r, u, ident in align(idx[0], idx[0]):
         present[ident] = {0}
     for i in range(1, len(packs)):
@@ -287,7 +302,7 @@ def noise(out, packs):
     for i in range(len(packs)):
         for j in range(i + 1, len(packs)):
             for r, u, ident in align(idx[i], idx[j]):
-                if r is None or u is None:
+                if not isinstance(r, dict) or not isinstance(u, dict):
                     continue
                 name = ident if i == 0 else names[i].get(r["seq"])
                 if name is None:
@@ -323,11 +338,15 @@ def noise(out, packs):
 
 
 # ---- compare ----
-def verdict_row(r, u, ident, golden, run, noise_table, noise_maps):
+def verdict_row(r, u, ident, golden, run, noise_table, noise_maps, noise_names={}):
     """(status, detail): status PASS, FAIL, UNSTABLE, NO-NOISE, MISSING, EXTRA. With a noise table each tile has its own
     threshold, 2 x its noise (at least FLOOR); tiles whose noise is above UNSTABLE are left out and counted"""
     N = np()
-    e = noise_table.get(ident) if noise_table is not None else None
+    # (the noise table names a state as the golden run lined up with itself: looked up by the golden state, whatever this
+    # alignment called it)
+    e = noise_table.get(noise_names.get(r["seq"], ident) if isinstance(r, dict) else ident) if noise_table is not None else None
+    if r == "merged" or u == "merged":
+        return "MERGED", "an intermediate state on one side only; the target's next lined-up state compares its content"
     if r is None:
         return "EXTRA", "only in the checked run"
     if u is None:
@@ -375,15 +394,16 @@ def compare(golden, run, noise_path, show_all=False, quiet=False):
         table = nt["passes"]
         maps = np().load(os.path.join(os.path.dirname(os.path.abspath(noise_path)), nt["maps"]))
     rows = align(gi, ri)
+    names = {r["seq"]: ident for r, u, ident in align(gi, gi) if isinstance(r, dict)}
     counts, lines = {}, []
     for r, u, ident in rows:
-        st, detail = verdict_row(r, u, ident, golden, run, table, maps)
+        st, detail = verdict_row(r, u, ident, golden, run, table, maps, names)
         counts[st] = counts.get(st, 0) + 1
         it = r or u
         if st != "PASS" or show_all:
-            lines.append((st, "%-8s %4s|%-4s %s: %s" % (st, "%03d" % r["seq"] if r else "-", "%03d" % u["seq"] if u else "-",
+            lines.append((st, "%-8s %4s|%-4s %s: %s" % (st, "%03d" % r["seq"] if isinstance(r, dict) else "-", "%03d" % u["seq"] if isinstance(u, dict) else "-",
                                                       ident, detail)))
-    order = {"FAIL": 0, "MISSING": 1, "EXTRA": 2, "NO-NOISE": 3, "UNSTABLE": 4, "PASS": 5}
+    order = {"FAIL": 0, "MISSING": 1, "EXTRA": 2, "NO-NOISE": 3, "UNSTABLE": 4, "MERGED": 5, "PASS": 6}
     if not quiet:
         for st, l in sorted(lines, key=lambda x: order[x[0]]):
             print(l)
@@ -460,7 +480,7 @@ def selftest():
         write(md, [(item(0, "0" * 16), base * 0)])
         r5 = compare(noise_runs[0], md, nt, quiet=True)
         rows = align(read_index(noise_runs[0]), [dict(item(5, P)), dict(item(6, "0" * 16))])
-        never_crossed = all(not (r and u and r["prog"] != u["prog"]) for r, u, _ in rows)
+        never_crossed = all(not (isinstance(r, dict) and isinstance(u, dict) and r["prog"] != u["prog"]) for r, u, _ in rows)
         # (7) NaN in the checked run where the reference is finite: must fail
         nan = base.copy()
         nan[3, 3, 1] = float("nan")
