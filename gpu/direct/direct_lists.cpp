@@ -29,13 +29,25 @@ const char* const kOpNames[NOP_COUNT_] = {
     "PKT", "JOB", "ENG"};
 const char* const kKindNames[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
 
-// (the recording threads' time in hsd_emit, in TSC ticks: summed per thread, added up every 256 records)
-std::atomic<int64_t> st_emit_ticks{0};
-thread_local uint64_t my_ticks = 0;
+// (the recording threads' time in hsd_emit and hsd_list_call, in TSC ticks, by the list's kind: summed per thread, added up
+// every 256 records)
+std::atomic<int64_t> st_emit_ticks[HSD_LIST_KINDS], st_call_ticks[HSD_LIST_KINDS];
+thread_local uint64_t my_ticks[HSD_LIST_KINDS], my_call_ticks[HSD_LIST_KINDS];
 thread_local uint32_t my_n = 0;
-void emit_ticks(uint64_t t) {
-    my_ticks += t;
-    if (++my_n == 256) st_emit_ticks.fetch_add((int64_t)my_ticks, std::memory_order_relaxed), my_ticks = 0, my_n = 0;
+void flush_ticks() {
+    for (int k = 0; k < HSD_LIST_KINDS; k++) {
+        if (my_ticks[k]) st_emit_ticks[k].fetch_add((int64_t)my_ticks[k], std::memory_order_relaxed), my_ticks[k] = 0;
+        if (my_call_ticks[k]) st_call_ticks[k].fetch_add((int64_t)my_call_ticks[k], std::memory_order_relaxed), my_call_ticks[k] = 0;
+    }
+    my_n = 0;
+}
+void emit_ticks(uint32_t kind, uint64_t t) {
+    my_ticks[kind] += t;
+    if (++my_n == 256) flush_ticks();
+}
+void call_ticks(uint32_t kind, uint64_t t) {
+    my_call_ticks[kind] += t;
+    if (++my_n == 256) flush_ticks();
 }
 double tsc_per_ns() {
     static const double r = [] {
@@ -126,8 +138,18 @@ void lists_stats(char* out, size_t cap, double frames) {
     int k = std::snprintf(out, cap, "lists a frame:");
     for (int i = 0; i < HSD_LIST_KINDS; i++)
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.1f", kKindNames[i], st_kinds[i].exchange(0) / frames);
-    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", %.3f ms a frame in hsd_emit (all recording threads)",
-                       st_emit_ticks.exchange(0) / tsc_per_ns() / 1e6 / frames);
+    double all = 0, by[HSD_LIST_KINDS], calls[HSD_LIST_KINDS];
+    for (int i = 0; i < HSD_LIST_KINDS; i++) {
+        by[i] = st_emit_ticks[i].exchange(0) / tsc_per_ns() / 1e6 / frames, calls[i] = st_call_ticks[i].exchange(0) / tsc_per_ns() / 1e6 / frames;
+        all += by[i];
+    }
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", %.3f ms a frame in hsd_emit (all recording threads; by kind:", all);
+    for (int i = 0; i < HSD_LIST_KINDS; i++)
+        if (by[i] > 0) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.3f", kKindNames[i], by[i]);
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; in hsd_list_call by the caller's kind:");
+    for (int i = 0; i < HSD_LIST_KINDS; i++)
+        if (calls[i] > 0) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.3f", kKindNames[i], calls[i]);
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ")");
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", calls %.1f; %lld lists live, %lld dropped unended, %lld records "
                        "of no op or outside a list; ops a frame:", st_calls.exchange(0) / frames, (long long)st_live.load(),
                        (long long)st_dropped.load(), (long long)st_bad_op.load());
@@ -199,12 +221,18 @@ extern "C" __attribute__((visibility("default"))) void hsd_emit(void* list, uint
         break;
     default: break;
     }
-    emit_ticks(__builtin_ia32_rdtsc() - t0);
+    emit_ticks(l->info.kind, __builtin_ia32_rdtsc() - t0);
 }
 
 extern "C" __attribute__((visibility("default"))) void hsd_list_call(void* list, void* const* callees, uint32_t n) {
     List* l = (List*)list;
     if (!l) return;
+    const uint64_t t0 = __builtin_ia32_rdtsc();
+    struct Timed {
+        uint32_t kind;
+        uint64_t t0;
+        ~Timed() { call_ticks(kind, __builtin_ia32_rdtsc() - t0); }
+    } timed{l->info.kind, t0};
     for (uint32_t i = 0; i < n; i++) {
         List* c = (List*)callees[i];
         if (!c) continue;
