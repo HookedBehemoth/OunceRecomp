@@ -950,6 +950,19 @@ int main(int argc, char** argv) {
         } else pos.push_back(a);
     }
     if (mode == "list") return list(f), 0;
+    if (mode == "extract") {   // (each program's stages as the translator made them: <dir>/<mesh code>.spv, <key>_frag.spv)
+        if (pos.empty()) die("extract <dir>");
+        for (const auto& [k, p] : f.programs)
+            for (const Stage& s : p.stages) {
+                char b[600];
+                if (s.h.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) std::snprintf(b, sizeof b, "%s/%016llx.spv", pos[0].c_str(), (unsigned long long)p.h.codes[0]);
+                else std::snprintf(b, sizeof b, "%s/%016llx_%s.spv", pos[0].c_str(), (unsigned long long)k, s.h.vk_stage == VK_SHADER_STAGE_FRAGMENT_BIT ? "frag" : "task_cs");
+                FILE* o = std::fopen(b, "wb");
+                if (!o) die("cannot write %s", b);
+                std::fwrite(s.spirv.data(), 4, s.spirv.size(), o), std::fclose(o);
+            }
+        return 0;
+    }
     std::vector<const Draw*> draws;
     if (job >= 0) {
         const Draw* j = f.by_seq((uint32_t)job);
