@@ -54,13 +54,14 @@ static void key_note(uint64_t key) {
     if (i < NKEY) keys[i].key = key, keys[i].hash = h;
     ReleaseSRWLockExclusive(&keys_lock);
 }
-/* the recorder's pointer for key bytes at a (0: no recorder asked for such a key) */
-static uint64_t key_by_bytes(uint64_t a) {
+/* the recorder's pointers for key bytes at a: every key with those bytes (the game matches records by them, so they name
+   one pass); n of them in out */
+static int keys_by_bytes(uint64_t a, uint64_t *out, int cap) {
     const uint64_t h = key_hash(a);
-    uint64_t k = 0;
+    int k = 0;
     AcquireSRWLockShared(&keys_lock);
-    for (int i = 0; i < nkeys; i++)
-        if (keys[i].hash == h) { k = keys[i].key; break; }
+    for (int i = 0; i < nkeys && k < cap; i++)
+        if (keys[i].hash == h) out[k++] = keys[i].key;
     ReleaseSRWLockShared(&keys_lock);
     return k;
 }
@@ -88,26 +89,27 @@ ENTRY_HOOK(0x80681320) {   /* (queue, drawctx, &key, owner, ...): the game's inl
     const hsd_fns *d = rx_direct();
     if (!d) return 0;
     const uint64_t lr = c->x[30], sp = c->x[31];
-    int site;
-    uint64_t key, cmd;
+    int site, nk = 0;
+    uint64_t ks[8], cmd;
     if (lr == 0x80668d84ull) {   /* f_806688c0: [sp + 0x18] = key + 0xc0, the list's draw context at [sp + 0x10] */
         site = 0;
-        key = G64(sp + 0x18) - 0xc0, cmd = G64(G64(sp + 0x10) + 216);
-        if (!key_known(key)) key = 0;
-    } else if (lr == 0x8028a58cull) {   /* f_8028a2a0: x2 a copy of the key, x1 the draw context */
+        ks[0] = G64(sp + 0x18) - 0xc0, cmd = G64(G64(sp + 0x10) + 216);
+        nk = key_known(ks[0]);
+    } else if (lr == 0x8028a58cull) {   /* f_8028a2a0: x2 a copy of the key, x1 the draw context; keys with the same bytes
+                                           (cube faces of two sets share them) all name this pass */
         site = 1;
-        key = key_by_bytes(c->x[2]), cmd = G64(c->x[1] + 216);
+        nk = keys_by_bytes(c->x[2], ks, 8), cmd = G64(c->x[1] + 216);
     } else {
         InterlockedIncrement64(&n.inl_other);
         return 0;
     }
-    if (!key) {
+    if (!nk) {
         InterlockedIncrement64(&n.inl_no_jobs[site]);
         return 0;
     }
     void *list = direct_cmd_list(cmd);
     if (!list) InterlockedIncrement64(&n.inl_no_list);
-    d->pass_inline(list, key);
+    for (int i = 0; i < nk; i++) d->pass_inline(list, ks[i]);
     InterlockedIncrement64(&n.inl[site]);
     return 0;   /* (the game's body draws the pass) */
 }
