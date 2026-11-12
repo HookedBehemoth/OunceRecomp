@@ -52,7 +52,7 @@ def main():
         raise SystemExit("a dispatch whose shader object was not made does not take its pipeline")
     if "its pipeline instead" not in draw:
         raise SystemExit("a compute shader object refused is not logged")
-    record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
+    record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d, const NvnState& s, const HeapProgram* hp) {")
     if "(!all_so && !fallback_pipelines_ready(p))" not in record or "vkCmdBindShadersEXT(cmd, 1, &cs, &so->cs[stage]);" not in record:
         raise SystemExit("the fallback's dispatches do not bind their shader objects, or wait for pipelines they do not use")
     # (RADV marks the push constants dirty at a compute pipeline's bind, not a compute shader object's: the mesh stage bound after the

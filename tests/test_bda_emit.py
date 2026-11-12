@@ -203,9 +203,9 @@ def wide(ctx, draw, shader):
     emit_h = (SPIRV / "bda_emit.h").read_text(encoding="utf-8")
     allowed = emit_h[emit_h.index("constexpr std::uint32_t kWideAllowed ="):]
     allowed = allowed[:allowed.index(";")]
-    for bit in ("kWhyRenderArea ", "kWhyNativeBounds", "kWhyCasLoop", "kWhyNoU32View", "kWhyTable"):
+    for bit in ("kWhyRenderArea ", "kWhyNativeBounds", "kWhyCasLoop", "kWhyNoU32View", "kWhyTable", "kWhyMeshFallback"):
         need(allowed, bit.strip(), "kWideAllowed lacks a condition =2 translates")
-    for bit in ("kWhyMeshFallback", "kWhyRenderAreaScale", "kWhyGlobalOff", "kWhyMeshFirst", "kWhyMissLog", "kWhyUnaligned",
+    for bit in ("kWhyRenderAreaScale", "kWhyGlobalOff", "kWhyMeshFirst", "kWhyMissLog", "kWhyUnaligned",
                 "kWhyUndeclared", "kWhyCaps"):
         if bit in allowed:
             raise SystemExit("FAIL: kWideAllowed takes %s, which has no by-address form" % bit)

@@ -85,6 +85,9 @@ struct HeapProgram {
 /// p's heap layout; null when the heap is off or p cannot be drawn through it (texel buffers, texture arrays, the mesh fallback,
 /// push data over the device's limit): such a program keeps push descriptors and its classic shader objects
 const HeapProgram* desc_heap_program(const Program& p);
+/// (HOS_ENG_JOBS_FALLBACK=1, E6 fallbacks.md 3) the mesh fallback programs through the heap too (their compute stages' descriptors
+/// as their draw stages', the replay's fallback dispatches bound by heap_draw), so that a job thread can record their draws
+bool desc_heap_fallback_on();
 /// The push data offset of the heap's words (after the classic push constants)
 uint32_t desc_heap_push_base();
 

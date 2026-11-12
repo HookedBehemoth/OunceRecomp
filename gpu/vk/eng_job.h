@@ -31,7 +31,8 @@ struct EngPassFormats { uint32_t ncolor; VkFormat color[8]; VkFormat depth, sten
 /// (HOS_ENG_JOBS_SPLIT=1) a job split around the draws its thread could not record: a run of its draw ops (every DRAW, DRAW_IDX,
 /// DRAW_INDIRECT, DRAW_MESH in record order, counted from 0 as its records hold them) recorded into one secondary; the draw ops
 /// between the runs are the replay's, drawn inline in the same rendering
-struct EngSeg { uint32_t first, n; VkCommandBuffer cb; uint32_t ndraws; };
+struct EngSeg { uint32_t first, n; VkCommandBuffer cb; uint32_t ndraws; VkCommandBuffer pre = VK_NULL_HANDLE; };   // (pre: HOS_ENG_JOBS_FALLBACK, a
+                                                                                               // fallback draw's dispatches before the run)
 /// (HOS_ENG_JOBS_PREWORK=1, fallbacks.md 4-5) work a job needs before the rendering it is executed in: copies of GPU-made indirect
 /// mesh arguments into the job's own slots (NVN's {count, ...} records -> Vulkan's {x, 1, 1}), and the cross-queue waits its
 /// records hold (their order is the job-call site's)
@@ -134,6 +135,10 @@ using EngBindRefs = uint32_t[3][8][128];
 struct HeapProgram;
 bool eng_draw_descriptors(const NvnState& s, const Program& p, const HeapProgram& hp, const EngTargets& at, const EngBindRefs& refs,
                           EngDrawDesc& out);
+/// (HOS_ENG_JOBS_FALLBACK, fallbacks.md 3) a mesh fallback program's task and mesh dispatches for a job draw into cb (a secondary outside
+/// any rendering, executed by the job-call site before the run that draws it); *records: the buffer the draw's command is the header of
+bool eng_draw_fallback(VkCommandBuffer cb, const Program& p, const SoProg& so, EngDrawDesc& dd, uint32_t groups, uint32_t first,
+                       VkBuffer conv, uint64_t conv_off, uint64_t input, VkBuffer* records);
 /// (fallbacks.md 2b) a direct mesh draw's first task: a 16-byte slot of the job stream ({0, 0, 0, first}) whose word 3 the task stage
 /// reads, its address in the draw's push data (as the replay's mesh_args entry); false: no stream
 bool eng_draw_mesh_first(EngDrawDesc& dd, uint32_t first);

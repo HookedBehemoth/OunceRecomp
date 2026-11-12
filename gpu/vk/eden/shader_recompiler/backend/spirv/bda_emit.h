@@ -52,7 +52,10 @@ enum Why : std::uint32_t {
     kWhyCaps = 1u << 12,           // (the device lacks int64/8/16-bit storage or descriptor aliasing)
 };
 constexpr std::uint32_t kWhyBits = 13;
-constexpr std::uint32_t kWideAllowed = kWhyRenderArea | kWhyNativeBounds | kWhyCasLoop | kWhyNoU32View | kWhyTable;
+// (hookshot, E6 fallbacks.md 3: the compute fallback's task and mesh stages too: their push block holds the fallback's addresses
+// below the window table's words (MESH_FALLBACK_PUSH_END = WINDOW_TABLE_PUSH_OFFSET), so a job thread can make their descriptors
+// as a heap program's; the generated vertex stage has no storage buffers)
+constexpr std::uint32_t kWideAllowed = kWhyRenderArea | kWhyNativeBounds | kWhyCasLoop | kWhyNoU32View | kWhyTable | kWhyMeshFallback;
 inline const char* WhyName(std::uint32_t bit) {
     static const char* const names[kWhyBits] = {"mesh fallback", "render area",     "render area with rescaling",
                                                 "global off",    "native bounds",   "mesh first",

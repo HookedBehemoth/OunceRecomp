@@ -285,7 +285,7 @@ bool same(const ProgEntry& e, const Program& p) {
 }
 
 std::unique_ptr<HeapProgram> make_program(const Program& p, const char** why) {
-    if (p.fallback) return *why = "the mesh fallback", nullptr;
+    if (p.fallback && !desc_heap_fallback_on()) return *why = "the mesh fallback", nullptr;
     // (RX_VK_DESC_HEAP_NO_INDIRECT=1: every texture handle pushed as the CPU read it, none read by the driver from the bank: the
     // GPU-side cost of the indirect index (a dependent load before each texture's descriptor), measured against it)
     static const bool no_indirect = getenv("RX_VK_DESC_HEAP_NO_INDIRECT") && atoi(getenv("RX_VK_DESC_HEAP_NO_INDIRECT")) != 0;
@@ -420,6 +420,10 @@ std::unique_ptr<HeapProgram> make_program(const Program& p, const char** why) {
 }
 
 } // namespace
+bool desc_heap_fallback_on() {
+    static const bool on = getenv("HOS_ENG_JOBS_FALLBACK") && atoi(getenv("HOS_ENG_JOBS_FALLBACK")) != 0;
+    return on;
+}
 
 // ---- the device ----
 void desc_heap_device_extensions(const std::vector<VkExtensionProperties>& exts, std::vector<const char*>& want, void**& tail) {

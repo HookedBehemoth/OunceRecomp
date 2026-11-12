@@ -6986,7 +6986,7 @@ bool fallback_pipelines_ready(Program& p) {
 }
 
 /// The dispatches of a mesh draw, outside any render pass, and the vertex count its graphics draw then covers.
-bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
+bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d, const NvnState& s, const HeapProgram* hp) {
     if (d.count_addr) {   // (more than one draw in the records: each its own dispatch, not one)
         static std::atomic<int> told{0};
         if (told++ < 2) logf("vk: fallback: a mesh draw with a count buffer is left out (issue 640)");
@@ -7005,6 +7005,17 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     if (so && (!so->ready.load(std::memory_order_acquire) || so->failed || so->cs_failed)) so = nullptr;
     const bool all_so = so && so_compute_made(*so, p);
     if (!fallback_buffers_of(p, f) || (!all_so && !fallback_pipelines_ready(p))) return false;
+#ifdef VK_EXT_descriptor_heap
+    // (HOS_ENG_JOBS_FALLBACK: a fallback made for the heap: its dispatches bound by heap_draw, its compute stages' shader objects
+    // only, the pipelines' layout being the classic one)
+    if (hp && !all_so) {
+        static std::atomic<int> told{0};
+        if (told++ < 4) logf("vk: fallback: %016llx is a heap program without its compute shader objects: its draw is left out", (unsigned long long)p.key);
+        return false;
+    }
+#else
+    (void)s, (void)hp;
+#endif
     const BufferRef input = p.fallback_task && d.indirect ? gpu_buffer_bind(d.indirect, 8, false) : BufferRef{};
     const VkDeviceAddress input_base = input ? fallback_buffer_address(input.buffer) : 0;
     fallback_indirect_input = input_base ? input_base + input.offset : 0;
@@ -7026,8 +7037,15 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     vkCmdFillBuffer(cmd, f->records, 24, 8, 1);   // (the dispatch's y and z)
     fallback_draw_records = f->records;
     full_barrier(cmd);
-    if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) return false;
-    push_constants(cmd, p, nullptr, d.first_task);
+#ifdef VK_EXT_descriptor_heap
+    if (hp) {
+        if (!heap_draw(cmd, s, p, *hp, nullptr, true, d.first_task)) return false;
+    } else
+#endif
+    {
+        if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p)) return false;
+        push_constants(cmd, p, nullptr, d.first_task);
+    }
     size_t stages[2] = {p.stages.size(), p.stages.size()};
     for (size_t i = 0; i < p.stages.size(); i++) {
         if (p.stages[i].vk_stage != VK_SHADER_STAGE_COMPUTE_BIT) continue;
@@ -7043,7 +7061,11 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
             // is bound, not a compute shader object, and a shader inlines them in its own user SGPRs. The mesh stage, bound after the
             // task stage's dispatch had sent them, ran with none: the records' and payloads' addresses garbage, a gfx ring timeout
             // in every run, any program alone)
-            push_constants(cmd, p, nullptr, d.first_task);
+#ifdef VK_EXT_descriptor_heap
+            if (hp) desc_heap_push(cmd, heap_last_push, heap_last_push_n);
+            else
+#endif
+                push_constants(cmd, p, nullptr, d.first_task);
         } else {
             if (stage >= p.fallback_compute.size() || !p.fallback_compute[stage]) return false;
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.fallback_compute[stage]);
@@ -7079,6 +7101,104 @@ bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {
     return true;
 }
 } // namespace
+
+#ifdef VK_EXT_descriptor_heap
+namespace {
+void eng_full_barrier(VkCommandBuffer cb) {   // (a job thread's: full_barrier's dedupe state is the replay thread's)
+    VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    d.memoryBarrierCount = 1;
+    d.pMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cb, &d);
+}
+// (the job threads' records and payload pair: one for all of them, as the job-call site executes their dispatches one draw at a time
+// in submit order, each after a full barrier; grown pairs stay, as fallback_buffers' do)
+std::mutex eng_fb_mu;
+std::vector<FallbackBuffers> eng_fb_sets;
+}   // namespace
+
+/// (HOS_ENG_JOBS_FALLBACK, E6 fallbacks.md 3) a job draw of a mesh fallback program (its stages heap shader objects, its descriptors
+/// in dd): the task and mesh dispatches recorded into cb, a secondary outside any rendering that the job-call site executes right
+/// before the run that draws it (as fallback_record before its draw). groups, first: DrawMeshTasks(first, groups); conv: an indirect
+/// draw's {x, 1, 1} (the pre-work's copy), input: its NVN record's device address (a task program reads it). dd's push data gets
+/// the records' and payloads' addresses; *records: the buffer whose header is the draw's VkDrawIndirectCommand
+bool eng_draw_fallback(VkCommandBuffer cb, const Program& p, const SoProg& so, EngDrawDesc& dd, uint32_t groups, uint32_t first,
+                       VkBuffer conv, uint64_t conv_off, uint64_t input, VkBuffer* records) {
+    if (!so_compute_made(so, p) || !p.fallback_vertices_per_workgroup || !p.fallback_record_words) return false;
+    const uint32_t capacity = Shader::Backend::SPIRV::MESH_FALLBACK_CAPACITY;
+    const uint64_t rbytes = (uint64_t)(Shader::Backend::SPIRV::MESH_FALLBACK_HEADER_WORDS + Shader::Backend::SPIRV::MESH_FALLBACK_RECORD_WORDS) * 4;
+    const uint64_t threads = std::max(1u, p.fallback_task_threads);
+    const uint64_t pbytes = p.fallback_task ? capacity * 4 + (capacity + threads - 1) / threads * (uint64_t)p.fallback_payload_words * 4 : 0;
+    FallbackBuffers f;
+    {
+        std::lock_guard lk(eng_fb_mu);
+        bool found = false;
+        for (auto it = eng_fb_sets.rbegin(); it != eng_fb_sets.rend() && !found; ++it)
+            if (it->records && it->records_bytes >= rbytes && (!pbytes || (it->payload && it->payload_bytes >= pbytes))) f = *it, found = true;
+        if (!found) {
+            void* mapped = nullptr;
+            const VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+            if (!create_buffer(rbytes, usage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, false, f.records, f.records_mem, &mapped)) return false;
+            f.records_address = fallback_buffer_address(f.records), f.records_bytes = rbytes;
+            // (the payload: the largest any program asks for so far, so that one pair serves them all)
+            uint64_t want = pbytes;
+            for (const FallbackBuffers& o : eng_fb_sets) want = std::max(want, o.payload_bytes);
+            if (want && create_buffer(want, usage, false, f.payload, f.payload_mem, &mapped))
+                f.payload_address = fallback_buffer_address(f.payload), f.payload_bytes = want;
+            if (!f.records_address || (want && !f.payload_address)) return false;
+            eng_fb_sets.push_back(f);
+            logf("vk: eng jobs: the job fallback's records (%llu MB) and payloads (%llu MB) made", (unsigned long long)(rbytes >> 20),
+                 (unsigned long long)(want >> 20));
+        }
+    }
+    {   // (its addresses in the push data, as push_bytes writes fallback_payload_address and the others for the replay's)
+        using namespace Shader::Backend::SPIRV;
+        std::memcpy(dd.push + MESH_FALLBACK_PAYLOAD_PUSH_OFFSET, &f.payload_address, 8);
+        std::memcpy(dd.push + MESH_FALLBACK_RECORDS_PUSH_OFFSET, &f.records_address, 8);
+        std::memcpy(dd.push + MESH_FALLBACK_INDIRECT_INPUT_PUSH_OFFSET, &input, 8);
+        if (p.fallback_task) std::memcpy(dd.push + MESH_FIRST_PUSH_OFFSET, &first, 4);
+    }
+    size_t stages[2] = {p.stages.size(), p.stages.size()};
+    for (size_t i = 0; i < p.stages.size(); i++) {
+        if (p.stages[i].vk_stage != VK_SHADER_STAGE_COMPUTE_BIT) continue;
+        if (stages[0] == p.stages.size()) stages[0] = i;
+        else stages[1] = i;
+    }
+    if (stages[0] >= 8 || (p.fallback_task && stages[1] >= 8)) return false;
+    groups = std::min(groups, capacity);
+    eng_full_barrier(cb);   // (the pair's last draw has read it)
+    vkCmdFillBuffer(cb, f.records, 0, 4, 0);    // (vertexCount; as fallback_record)
+    vkCmdFillBuffer(cb, f.records, 4, 4, 1);    // (instanceCount)
+    vkCmdFillBuffer(cb, f.records, 8, 16, 0);   // (firstVertex, firstInstance, the allocator, the dispatch's x)
+    vkCmdFillBuffer(cb, f.records, 24, 8, 1);   // (the dispatch's y and z)
+    eng_full_barrier(cb);
+    desc_heap_bind_job(cb);
+    const VkShaderStageFlagBits cs = VK_SHADER_STAGE_COMPUTE_BIT;
+    auto bind = [&](size_t stage) {   // (pushed again after each bind: RADV's compute shader object push constants, fallback_record)
+        vkCmdBindShadersEXT(cb, 1, &cs, &so.cs[stage]);
+        desc_heap_push(cb, dd.push, dd.push_bytes);
+    };
+    bind(stages[0]);
+    if (conv) {
+        vkCmdDispatchIndirect(cb, conv, conv_off);
+    } else {
+        const uint32_t most = p.fallback_task ? (uint32_t)std::max<uint64_t>(1, capacity / threads) : groups;
+        const uint32_t n = p.fallback_task ? std::min(groups, most) : groups;
+        if (n) vkCmdDispatch(cb, n, 1, 1);
+    }
+    if (p.fallback_task) {
+        eng_full_barrier(cb);
+        bind(stages[1]);
+        vkCmdDispatchIndirect(cb, f.records, (VkDeviceSize)Shader::Backend::SPIRV::MESH_FALLBACK_DISPATCH_WORD * 4);
+    }
+    eng_full_barrier(cb);   // (the records and the draw's command)
+    *records = f.records;
+    return true;
+}
+#endif
 
 /// (native-vk, the shader objects' prefetch) A mesh fallback program's compute pipelines, begun on a worker when the game sets the program,
 /// not at its first draw: driver-cold, its draws were left out while they compiled (24 in Kokiri's first gameplay). As
@@ -7630,7 +7750,11 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         }
     }
     if (p.fallback && d.mesh) eng_sec_trap("a mesh fallback's dispatches");   // (HOS_ENG_PASS_SELFTEST: named for the counters)
-    if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();
+#ifdef VK_EXT_descriptor_heap
+    if (p.fallback && d.mesh && !fallback_record(cmd, p, d, s, hp)) SKIP_HERE();
+#else
+    if (p.fallback && d.mesh && !fallback_record(cmd, p, d, s, nullptr)) SKIP_HERE();
+#endif
     {
         FINE_SCOPE(FT_HAZARD);
         begin_pass(cmd, at);

@@ -86,6 +86,13 @@ const Sw& sw() {
     static const Sw s;
     return s;
 }
+/// (HOS_ENG_JOBS_FALLBACK=1, fallbacks.md 3, with HOS_ENG_JOBS_SEGMENTS=1 and HOS_ENG_JOBS_PREWORK=1) a mesh fallback program's draw
+/// recorded by its job: its dispatches in a secondary the job-call site executes before the run the draw begins (one pass break,
+/// as the replay's fallback), the draw from the records' header in the run
+bool fallback_rec_on() {
+    static const bool on = desc_heap_fallback_on() && sw().split && sw().split_mask == kSplitCut && sw().prework;
+    return on;
+}
 
 // ---- a draw's state, compact: one hash per field group (both sides make it with trace_of) ----
 enum Group { G_PROG, G_VP, G_SC, G_DR, G_BLEND, G_COLOR, G_CHMASK, G_MS, G_POLY, G_DS, G_STENCIL, G_MISC, G_VATTR, G_VSTREAM,
@@ -306,7 +313,7 @@ std::atomic<uint64_t> retired_through{0};
 // ---- counts (relaxed atomics; the frame log reads them every 120 presents) ----
 enum Count { C_JOBS, C_DRAWS, C_DRAWS_REC, C_DRAWS_SKIPPED, C_PKT, C_PKT_STALE, C_DEFERRED, C_DEFERRED_BUFS, C_REC_NS, C_DEC_NS,
              C_CHECK_JOBS, C_CHECK_DRAWS, C_CHECK_MISMATCH_DRAWS, C_CHECK_NO_JOB, C_CHECK_COUNT_DIFF, C_PUBLISHED, C_LOOKUPS,
-             C_LOOKUP_HITS, C_PROG_ANSWERS, C_CHECK_UNFILTERED, C_CHECK_FILTERED, C_DESC_CHECKED, C_DESC_MISMATCH, C_DESC_NONE, C_PATCHED, C_PATCH_NO_JOB, C_KIND_INDIRECT, C_KIND_MESH_OTHER, C_KIND_PRIM, C_MESH_REC, C_VTX_UNSET, C_IND_REC, C_N };
+             C_LOOKUP_HITS, C_PROG_ANSWERS, C_CHECK_UNFILTERED, C_CHECK_FILTERED, C_DESC_CHECKED, C_DESC_MISMATCH, C_DESC_NONE, C_PATCHED, C_PATCH_NO_JOB, C_KIND_INDIRECT, C_KIND_MESH_OTHER, C_KIND_PRIM, C_MESH_REC, C_VTX_UNSET, C_IND_REC, C_FALLBACK_REC, C_N };
 std::atomic<int64_t> cnt[C_N];
 std::atomic<int64_t> why_n[WHY_N];
 std::atomic<int64_t> why_draw_n[WHY_N];   // (HOS_ENG_JOBS_SPLIT: draws left to the replay inside split jobs, by why)
@@ -324,6 +331,14 @@ struct Pub { const Program* p; const SoProg* so; };
 std::shared_mutex pub_mu;
 std::unordered_map<uint64_t, Pub> published;
 std::unordered_set<uint64_t> fallback_keys;   // (R1, HOS_ENG_WHYLOG: pick keys whose program is the task/mesh fallback)
+// (HOS_ENG_WHYLOG: what the replay picked for a program's stages under any key: a "program not seen" refusal says whether its
+// program is a fallback, was published under another key (which part differs), or was never drawn by the replay for a job)
+struct SigSeen { uint64_t key; uint64_t vattr; uint8_t ct[8]; bool fallback, has_so, mesh; };
+std::unordered_map<uint64_t, SigSeen> seen_by_sig;
+bool whylog_on() {
+    static const bool wl = getenv("HOS_ENG_WHYLOG") && atoi(getenv("HOS_ENG_WHYLOG")) != 0;
+    return wl;
+}
 uint64_t pick_key(const NvnState& s, const uint8_t ct[8], bool mesh = false) {
     uint64_t h = fnv(mesh ? kFnv0 ^ 0x4d455348 : kFnv0, s.vattr, sizeof s.vattr);
     h = fnv(h, &s.nvattr, 4);
@@ -463,6 +478,7 @@ struct Rec {
     bool split = false;
     uint32_t dwhy = WHY_OK, first_dwhy = WHY_OK, draw_i = 0, seg_first = 0, seg_ndraws = 0, ninline = 0, serial = 0;
     bool cut = false;   // (a run ended at an op the replay does between runs: a barrier, a dispatch)
+    VkCommandBuffer seg_pre = VK_NULL_HANDLE;   // (HOS_ENG_JOBS_FALLBACK: the open run's first draw's fallback dispatches)
     const Program* dprog = nullptr;   // (R1: the program record_draw found for the draw, before a refusal)
     bool any_draw = false;            // (a draw op met: a barrier after it is not the pre-work's)
     uint64_t view = 0;
@@ -497,6 +513,57 @@ void note_bind(Walk& w, int what, int stage, int first, int n, const uint64_t* h
             w.tex.push_back((uint32_t)h[k]);
         }
     }
+}
+
+/// (HOS_ENG_JOBS_FALLBACK) a mesh draw of a fallback program: its dispatches into a secondary of their own (the run is cut before
+/// the draw: the job-call site executes them outside the rendering, then the run that begins with this draw); the draw reads the
+/// records' header as its VkDrawIndirectCommand, as the replay's fallback draw
+void record_fallback(Walk& w, Rec& r, const Program& p, const SoProg& so, EngDrawDesc& dd, const nvn_p_draw_mesh& dm) {
+    if (dm.count_addr || dm.kind != 0 || (dm.indirect && (dm.max > 1 || dm.stride < 0))) return r.refuse(WHY_DRAW_KIND), void(add(C_KIND_MESH_OTHER));
+    VkBuffer conv = VK_NULL_HANDLE;
+    uint64_t conv_off = 0, input = 0;
+    if (dm.indirect) {   // ({x, 1, 1}: the count word copied by the pre-work, as the replay's mesh_indirect_convert; a task reads the record)
+        uint8_t* smap;
+        VkDeviceAddress sa;
+        const BufferRef src = dm.indirect < (1ull << 40) ? layer0_buffer(dm.indirect, 8) : BufferRef{};
+        if (!src.buffer || !src.address || !eng_job_stream_alloc(12, 16, &conv, &conv_off, &smap, &sa)) return r.refuse(WHY_INDEX_MEM);
+        const uint32_t one[3] = {0, 1, 1};
+        std::memcpy(smap, one, 12);
+        w.pre.push_back({src.buffer, src.offset, conv, conv_off, 4});
+        input = src.address;
+    }
+    VkCommandBuffer pre = take_cb(r.serial);
+    VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.pInheritanceInfo = &ii;
+    if (!pre || vkBeginCommandBuffer(pre, &bi) != VK_SUCCESS) return r.refuse(WHY_POOL);
+    VkBuffer records = VK_NULL_HANDLE;
+    const bool made = eng_draw_fallback(pre, p, so, dd, (uint32_t)std::max(dm.y, 0), (uint32_t)std::max(dm.x, 0), conv, conv_off, input, &records);
+    vkEndCommandBuffer(pre);
+    if (!made) return r.refuse(WHY_PROG_NOT_READY);
+    const uint32_t i = r.draw_i - 1;   // (this draw op: the run is cut before it unless it begins one)
+    if (i > r.seg_first || r.seg_pre) {
+        vkEndCommandBuffer(r.cb);
+        r.segs.push_back({r.seg_first, i - r.seg_first, r.cb, r.ndraws - r.seg_ndraws, r.seg_pre});
+        r.seg_pre = VK_NULL_HANDLE;
+        if (!(r.cb = take_cb(r.serial)) || vkBeginCommandBuffer(r.cb, r.bi) != VK_SUCCESS) return void(r.cb = VK_NULL_HANDLE), r.fail(WHY_POOL);
+        r.first = true, r.seg_first = i, r.seg_ndraws = r.ndraws;
+    }
+    r.seg_pre = pre, r.cut = true;
+    eng_draw_state(r.cb, w.s, p, so, r.at, p.fallback_topology, r.first, false);
+    if (r.first) desc_heap_bind_job(r.cb);
+    r.first = false;
+    desc_heap_push(r.cb, dd.push, dd.push_bytes);
+    {   // (the generated vertex stage reads no attribute: every binding the zero buffer)
+        VkBuffer vb[16];
+        VkDeviceSize vo[16], vz[16], vs[16];
+        const VkBuffer zero = eng_draw_zero_buffer();
+        for (int b = 0; b < 16; b++) vb[b] = zero, vo[b] = 0, vz[b] = 65536, vs[b] = 0;
+        vkCmdBindVertexBuffers2(r.cb, 0, 16, vb, vo, vz, vs);
+    }
+    vkCmdDrawIndirect(r.cb, records, 0, 1, sizeof(VkDrawIndirectCommand));
+    r.ndraws++;
+    add(C_DRAWS_REC), add(C_MESH_REC), add(C_FALLBACK_REC);
 }
 
 void record_draw(Walk& w, Rec& r, int op, const void* pl) {
@@ -538,8 +605,9 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
     const Program& p = *pub.p;
     const SoProg& so = *pub.so;
     r.dprog = &p;
+    const bool fb = p.fallback;   // (HOS_ENG_JOBS_FALLBACK: a mesh draw of the compute fallback)
     if (!p.ready.load(std::memory_order_acquire) || p.failed || !so.ready.load(std::memory_order_acquire) || so.failed ||
-        p.mesh != mesh || p.fallback || !(mesh ? so.ms : so.vs))
+        (fb ? !mesh || !fallback_rec_on() || !so.vs : p.mesh != mesh || !(mesh ? so.ms : so.vs)))
         return r.refuse(WHY_PROG_NOT_READY);
     // (the program's texture answers: the published one is the variant the replay picked for other textures of these inputs; a
     // texture of another type or integer-ness here needs another variant, which only the replay picks)
@@ -567,6 +635,7 @@ void record_draw(Walk& w, Rec& r, int op, const void* pl) {
         for (size_t q = m >= 16 ? m - 16 : 0; q + 1 < m && !seen; q += 2) seen = w.ubo[q] == dd.ubos[k] && w.ubo[q + 1] == dd.ubos[k + 1];
         if (!seen) w.ubo.push_back(dd.ubos[k]), w.ubo.push_back(dd.ubos[k + 1]);
     }
+    if (fb) return record_fallback(w, r, p, so, dd, dm);
     eng_draw_state(r.cb, s, p, so, r.at, topo, r.first, mesh);
     if (r.first) desc_heap_bind_job(r.cb);
     r.first = false;
@@ -661,7 +730,8 @@ void split_cut(Rec* r, int op = 0) {
     if (!r->cb) return;
     if (r->draw_i > r->seg_first) {
         vkEndCommandBuffer(r->cb);
-        r->segs.push_back({r->seg_first, r->draw_i - r->seg_first, r->cb, r->ndraws - r->seg_ndraws});
+        r->segs.push_back({r->seg_first, r->draw_i - r->seg_first, r->cb, r->ndraws - r->seg_ndraws, r->seg_pre});
+        r->seg_pre = VK_NULL_HANDLE;
         r->cb = VK_NULL_HANDLE;
     } else {
         r->seg_first = r->draw_i;
@@ -768,11 +838,26 @@ void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
                     std::shared_lock lk(pub_mu);
                     fb_key = fallback_keys.count(pick_key(q, r->types, op == NOP_DRAW_MESH)) != 0;
                 }
-                const std::string bda = pr && r->dwhy == WHY_DESCRIPTORS ? eng_bda_refusal(*pr) : std::string();
+                std::string bda = pr && r->dwhy == WHY_DESCRIPTORS ? eng_bda_refusal(*pr) : std::string();
+                if (r->dwhy == WHY_NO_PROG && q.has_prog) {   // (what the replay picked for these stages under any key)
+                    char t[200];
+                    std::shared_lock lk(pub_mu);
+                    const auto it = seen_by_sig.find(key);
+                    if (it == seen_by_sig.end()) std::snprintf(t, sizeof t, "; the replay never picked for these stages in a job");
+                    else {
+                        const SigSeen& v = it->second;
+                        const uint64_t va = fnv(fnv(kFnv0, q.vattr, sizeof q.vattr), &q.nvattr, 4);
+                        std::snprintf(t, sizeof t, "; the replay's pick: fallback %d so %d mesh %d, %s key (vertex attributes %s, colour types %s%s)",
+                                      (int)v.fallback, (int)v.has_so, (int)v.mesh, v.key == pick_key(q, r->types, op == NOP_DRAW_MESH) ? "same" : "another",
+                                      v.vattr == va ? "same" : "differ", std::memcmp(v.ct, r->types, 8) ? "differ" : "same",
+                                      v.mesh != (op == NOP_DRAW_MESH) ? ", mesh differs" : "");
+                    }
+                    bda += t;
+                }
                 logf("eng whylog: view %#llx program %016llx: %s%s%s; op %d mesh kind %d x %d indirect %#llx max %d stride %d; fallback %d mesh %d (replay's pick a fallback: %d)%s%s",
                      (unsigned long long)r->view, (unsigned long long)key, kWhy[r->dwhy], dk ? ": " : "", dk ? kDescWhy[std::min<uint32_t>(dk, EDW_N - 1)] : "",
                      op, dm.kind, dm.x, (unsigned long long)dm.indirect, dm.max, dm.stride, pr ? (int)pr->fallback : -1, pr ? (int)pr->mesh : -1, (int)fb_key,
-                     bda.empty() ? "" : "; storage on descriptors: ", bda.c_str());
+                     bda.empty() || r->dwhy != WHY_DESCRIPTORS ? "" : "; storage on descriptors: ", bda.c_str());
             }
         }
     }
@@ -786,7 +871,8 @@ void on_draw(Walk& w, Rec* r, int op, const void* pl, size_t n) {
     r->ninline++;
     if (i > r->seg_first) {   // (the run so far closed; an empty one stays open for the next draw)
         vkEndCommandBuffer(r->cb);
-        r->segs.push_back({r->seg_first, i - r->seg_first, r->cb, r->ndraws - r->seg_ndraws});
+        r->segs.push_back({r->seg_first, i - r->seg_first, r->cb, r->ndraws - r->seg_ndraws, r->seg_pre});
+        r->seg_pre = VK_NULL_HANDLE;
         r->cb = VK_NULL_HANDLE;
     } else {
         r->seg_first = i + 1;
@@ -1276,12 +1362,21 @@ void eng_job_replay_program(const NvnState& s, const Program& p, const SoProg* s
     const size_t i = (size_t)r.pending;
     r.pending = -1;
     r.desc_i = (int64_t)i;
-    if (p.fallback) {   // (R1: a job draw's program the replay picked is the task/mesh compute fallback: never published)
+    // (keyed by the draw's kind: a fallback program draws mesh draws, its p.mesh false; keyed by p.mesh, E3's lookup for the mesh draw
+    // never met it, and the R1 log's "replay's pick a fallback" was always 0)
+    const bool dmesh = p.mesh || p.fallback;
+    if (p.fallback) {   // (R1: a job draw's program the replay picked is the task/mesh compute fallback: published with HOS_ENG_JOBS_FALLBACK)
         std::unique_lock lk(pub_mu);
-        fallback_keys.insert(pick_key(s, ct, p.mesh));
+        fallback_keys.insert(pick_key(s, ct, dmesh));
     }
-    if (so && !p.fallback) {   // (for the job threads: the program these draws pick, by what program_for picks by)
-        const uint64_t k = pick_key(s, ct, p.mesh);
+    if (whylog_on()) {
+        SigSeen v{pick_key(s, ct, dmesh), fnv(fnv(kFnv0, s.vattr, sizeof s.vattr), &s.nvattr, 4), {}, p.fallback, so != nullptr, dmesh};
+        std::memcpy(v.ct, ct, 8);
+        std::unique_lock lk(pub_mu);
+        seen_by_sig[prog_stage_sig(s.prog)] = v;
+    }
+    if (so && (!p.fallback || fallback_rec_on())) {   // (for the job threads: the program these draws pick, by what program_for picks by)
+        const uint64_t k = pick_key(s, ct, dmesh);
         bool fresh = false;
         {
             std::shared_lock lk(pub_mu);
@@ -1592,7 +1687,7 @@ extern "C" void mkwvk_eng_job_recorded(const rx_eng_job_info* ji, const uint8_t*
     if (r.why == WHY_OK && r.gated) r.why = WHY_GATED;   // (E5's conditional rendering, not a guess made at record time)
     if (r.cb) vkEndCommandBuffer(r.cb);
     if (r.split && (r.ninline || r.cut)) {   // (split: the last run; none recorded at all: the first refused draw's why, as without the split)
-        if (r.cb && r.draw_i > r.seg_first) r.segs.push_back({r.seg_first, r.draw_i - r.seg_first, r.cb, r.ndraws - r.seg_ndraws});
+        if (r.cb && r.draw_i > r.seg_first) r.segs.push_back({r.seg_first, r.draw_i - r.seg_first, r.cb, r.ndraws - r.seg_ndraws, r.seg_pre});
         r.cb = r.segs.empty() ? VK_NULL_HANDLE : r.segs[0].cb;
         if (r.why == WHY_OK && r.segs.empty()) r.why = r.first_dwhy;
         if (r.why == WHY_OK) split_jobs.fetch_add(1, std::memory_order_relaxed), split_segs.fetch_add((int64_t)r.segs.size(), std::memory_order_relaxed);

@@ -62,6 +62,7 @@ enum EngCount {
     EC_BOUND_ATTACHMENT, // (self-test) jobs that bind a handle of one of the pass's attachments (E3's rule falls back; the self-test records, the draws' own hazard check decides)       // (self-test) draws inside recorded jobs under a render condition that held
     EC_SPLIT_JOBS,     // (HOS_ENG_JOBS_SPLIT) E3 jobs split around the draws the replay keeps, executed run by run
     EC_SPLIT_RUNS,     // their runs executed
+    EC_SPLIT_PRE,      // (HOS_ENG_JOBS_FALLBACK) runs whose first draw's fallback dispatches were executed before them
     EC_SPLIT_INLINE,   // their draw ops the replay drew inline (the refused ones, and the runs that could not execute)
     EC_SPLIT_RUN_INLINE, // runs drawn inline after all (no rendering to execute them in, or other formats)
     EC_FB_SPLIT_COUNT, // fallen back: the job's draw ops are not as many as E3 counted

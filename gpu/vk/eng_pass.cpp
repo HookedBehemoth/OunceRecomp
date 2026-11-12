@@ -242,8 +242,8 @@ void eng_pass_report(double frames) {
     if (now[EC_FB_UBUPD]) logf("eng passes: a frame: fallen back for a uniform update of this recording %.1f", d(EC_FB_UBUPD));
     if (now[EC_SPLIT_JOBS] || now[EC_FB_SPLIT_COUNT])
         logf("eng passes: a frame: split jobs %.1f, their runs executed %.1f, draws drawn inline %.1f, runs drawn inline after all %.1f; "
-             "fallen back for a draw count %.1f", d(EC_SPLIT_JOBS), d(EC_SPLIT_RUNS), d(EC_SPLIT_INLINE), d(EC_SPLIT_RUN_INLINE),
-             d(EC_FB_SPLIT_COUNT));
+             "fallen back for a draw count %.1f; runs after a fallback draw's dispatches %.1f", d(EC_SPLIT_JOBS), d(EC_SPLIT_RUNS), d(EC_SPLIT_INLINE),
+             d(EC_SPLIT_RUN_INLINE), d(EC_FB_SPLIT_COUNT), d(EC_SPLIT_PRE));
     std::memcpy(last, now, sizeof last);
     if (reports % 5 == 0) {
         std::lock_guard lk(abort_mu);

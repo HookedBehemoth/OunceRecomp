@@ -2421,6 +2421,13 @@ bool eng_split_at(VkCommandBuffer& cmd, NvnState& s, uint32_t op, const uint8_t*
     if (e.run_state == 0) {   // (the run's first draw op: executed here, in a rendering of the state's targets of the job's formats)
         EngPassFormats pf{};
         static const bool noexec = getenv("HOS_ENG_SPLIT_NOEXEC") && atoi(getenv("HOS_ENG_SPLIT_NOEXEC")) != 0;   // (bisection: covered draws dropped)
+        if (j.segs[e.k].pre && !noexec) {   // (HOS_ENG_JOBS_FALLBACK: the run's first draw's fallback dispatches, outside the rendering)
+            end_pass(cmd);
+            vkCmdExecuteCommands(cmd, 1, &j.segs[e.k].pre);
+            draw_cmd_state_lost();
+            desc_heap_forget_bound();
+            eng_count(EC_SPLIT_PRE);
+        }
         if (noexec) {
             e.run_state = 1;
         } else if (draw_open_pass(cmd, s, !e.mixed, &pf) && eng_formats_equal(j.fmt, pf)) {
