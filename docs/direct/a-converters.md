@@ -46,8 +46,8 @@ second try and was **worse** than BC5 on all 20 (it spends bits on the colour ch
 | Mt_Shoulder_Armor_Npc_Hylia_MS_001_Nrm | 256 | 34.83 | 30.38 | 68,608 | 87,408 | 174,762 | 0.13 M |
 | CmnTex_Metal_Well_WireMesh_C_Nrm | 768 | 34.93 | 30.49 | 541,184 | 786,480 | 1,572,862 | 1.22 M |
 
-Totals for the 20: ASTC 23.1 MB, BC5 34.7 MB, RG8 raw 69.4 MB, RG8 packed 53.2 MB (+18 MB packed over BC5 would have been
-~+30 MB of VRAM per copy resident: the cost of exactness, 0.2% of the store). Whole store: 22,576 textures, no placeholder.
+Totals for the 20: ASTC 23.1 MB, BC5 would have been 34.7 MB, RG8 raw 69.4 MB (the VRAM cost of exactness: +34.7 MB over BC5
+when all are resident), RG8 packed 53.2 MB on disk. Whole store: 22,576 textures, no placeholder.
 
 ## 2. Terrain tiles: `nx2/prepare_terrain.py` -> `work/prepared/terrain`
 
@@ -69,7 +69,7 @@ CPU copy), C, the layout bytes `4f 7a` (the memcpy branch is still taken), `+3` 
 | kind (files) | layers | block-linear B (old x2) | **linear B (new x2)** | texel |
 |---|---|---|---|---|
 | `bake_ao.extm` (22,811) | 1 | 139,264 | **67,600** (65 x 65 blocks x 16) | BC5 |
-| `bake_gi.extm` (22,808 less 3 damaged) | 6 | 835,584 | **405,600** (6 x 67,600) | BC6H |
+| `bake_gi.extm` (22,808; 3 more are damaged) | 6 | 835,584 | **405,600** (6 x 67,600) | BC6H |
 | `.hght` (2,655), `custom.extm` (702) | 1 | 417,792 | **270,400** (260 x 260 x 4) | R32F / RGBA8 |
 | `.mate` (2,257) | 2 | 835,584 | **540,800** (2 x 270,400) | RGBA8 |
 
