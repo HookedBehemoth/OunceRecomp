@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 
+#include "direct_assets.h"
 #include "direct_cmd.h"
 #include "direct_dump.h"
 #include "direct_image.h"
@@ -176,6 +177,8 @@ void log_line() {
     logf("direct: %s; presents shown %lld, with no image %lld", b, (long long)st_shown.exchange(0), (long long)st_no_image.exchange(0));
     cmd_stats(b, sizeof b, frames);
     logf("direct: %s", b);
+    assets_stats(b, sizeof b, frames);
+    logf("direct: %s", b);
     layer0_stats(b, sizeof b);
     logf("direct: %s", b);
     sites_stats(b, sizeof b, frames);
@@ -235,6 +238,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     if (presents % 600 == 0) log_line();
     const uint64_t n = asked.fetch_add(1, std::memory_order_acq_rel) + 1;
     image_sweep(n);
+    assets_present(n);
     dump_present(n);
     sync_present(t, crop);
 }

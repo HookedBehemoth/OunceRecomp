@@ -137,9 +137,12 @@ Upload upload_begin(uint64_t bytes) {
     return {u.cb, bytes <= u.cap ? u.staging : VK_NULL_HANDLE, bytes <= u.cap ? u.map : nullptr};
 }
 
-void upload_end(Upload& u) {
+std::atomic<uint64_t> newest_upload{0};
+uint64_t upload_value() { return newest_upload.load(std::memory_order_acquire); }
+
+uint64_t upload_end(Upload& u) {
     UploadSlot* s = self ? self->open : nullptr;
-    if (!s || s->cb != u.cb) return;
+    if (!s || s->cb != u.cb) return 0;
     self->open = nullptr;
     if (s->mem) mem_flush(s->mem);
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -154,6 +157,8 @@ void upload_end(Upload& u) {
     vkEndCommandBuffer(u.cb);
     s->value = sync_send(0, &u.cb, 1);
     st_uploads.fetch_add(1, std::memory_order_relaxed);
+    for (uint64_t m = newest_upload.load(std::memory_order_relaxed); s->value > m && !newest_upload.compare_exchange_weak(m, s->value);) {}
+    return s->value;
 }
 
 void cmd_stats(char* out, size_t cap, double frames) {

@@ -61,7 +61,7 @@ std::vector<Queue*> queues;   // (by index; never freed)
 std::unordered_map<uint64_t, Queue*> by_id;
 
 // counts since the last line (mu held, or atomic)
-int64_t st_cbs = 0, st_submits = 0, st_held = 0, st_waits_met = 0, st_signals = 0, st_reports = 0, st_resets = 0, st_fence_held = 0;
+int64_t st_upload_waits_gpu = 0, st_cbs = 0, st_submits = 0, st_held = 0, st_waits_met = 0, st_signals = 0, st_reports = 0, st_resets = 0, st_fence_held = 0;
 double st_hold_max_ms = 0;
 std::atomic<int64_t> st_submit_ns{0}, st_submit_max_ns{0}, st_cpu_waits{0}, st_cpu_wait_ns{0}, st_cpu_signals{0};
 
@@ -169,6 +169,11 @@ void progress() {
                     uint64_t v = 0;
                     fence_value(f, v);
                     wait_value = std::max(wait_value, v);
+                }
+                {   // (A-rt: the uploads of textures registered before it; one wait per new upload, mu held)
+                    static uint64_t waited = 0;
+                    const uint64_t up = upload_value();
+                    if (up > waited) wait_value = std::max(wait_value, up), waited = up, st_upload_waits_gpu++;
                 }
                 const bool dumped = dump_claim(s.dumps, s.frame);
                 const uint64_t v = sync_send(wait_value, s.cbs.data(), (uint32_t)s.cbs.size());
@@ -295,12 +300,13 @@ void sync_stats(char* out, size_t cap, double frames) {
     const int64_t ns = st_submit_ns.exchange(0), mx = st_submit_max_ns.exchange(0);
     std::snprintf(out, cap, "submits %.1f a frame (%.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
                   "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms; %zu held now), fence waits held %lld, "
-                  "reports %.1f, resets %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); timeline %llu sent, %llu done",
+                  "reports %.1f, resets %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
+                  "timeline %llu sent, %llu done",
                   st_submits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
                   st_hold_max_ms, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
                   st_cpu_signals.exchange(0) / frames, st_cpu_waits.exchange(0) / frames, st_cpu_wait_ns.exchange(0) / 1e6 / frames,
-                  (unsigned long long)sent.load(), (unsigned long long)sync_completed());
-    st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
+                  (long long)st_upload_waits_gpu, (unsigned long long)sent.load(), (unsigned long long)sync_completed());
+    st_upload_waits_gpu = st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
     st_hold_max_ms = 0;
 }
 

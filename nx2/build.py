@@ -980,7 +980,7 @@ def main():
         ddeps = tree_headers(direct, os.path.join(GPU, "render")) + open(os.path.join(vk, "vk_api.h"), "rb").read()
         for dsrc in sorted(os.path.join(direct, f) for f in os.listdir(direct) if f.endswith(".cpp")):
             direct_jobs.append((cxx, dsrc, os.path.join(obj_dir, "dx_" + os.path.basename(dsrc)[:-4] + ".o"),
-                                ["-I" + direct] + vflags, ddeps))
+                                ["-I" + direct] + vflags + ["-I" + zstd], ddeps))   # (A-rt: the store's frames, direct_assets)
         jobs += direct_jobs
     vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
     if vk_only:
@@ -1147,7 +1147,8 @@ def main():
     if direct_jobs:   # (hookshot_direct.so: as hookshot_vk.so's link, its own objects only)
         ddll = os.path.join(out, "hookshot_direct.so")
         drsp = os.path.join(out, "direct_objs.rsp")
-        open(drsp, "w", encoding="utf-8").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in direct_jobs))
+        dzstd = [j[2] for j in vk_jobs if os.path.basename(j[2]).startswith("vk_zstd_")]   # (A-rt: zstd's decoder, as the renderer's)
+        open(drsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in [j[2] for j in direct_jobs] + dzstd))
         t = time.time()
         link = [toolchain.need(toolchain.find("clang++"))] + target() + [
             "-fuse-ld=lld", "-shared", "-o", ddll, "-Wl,-Map=" + ddll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",

@@ -43,5 +43,7 @@ void dump_sent(uint64_t value);
 void dump_present(uint64_t present);
 /// A list's items it still owns, freed
 void dump_free(std::vector<DumpItem*>& items);
+/// An RGBA8 picture as a PNG (its alpha left out)
+bool dump_write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h);
 
 }  // namespace hsd

@@ -33,6 +33,28 @@ void  hsd_submit(uint64_t queue, void *const *lists, uint32_t n);         /* the
 void  hsd_queue_wait_fence(uint64_t queue, uint64_t fence);               /* nvnQueueWaitSync, instead of fw_record's side record */
 void  hsd_present_queue(uint64_t queue);   /* (M2a) the queue of the present that follows on this thread (nvnQueuePresentTexture) */
 
+/* (A-rt) Prepared assets (docs/direct/a-rt-report.md). The host's loader hooks name each texture load's BNTX texture;
+   the back end makes that texture's image from the prepared store (nx2/prepare_textures.py) when it is initialized,
+   filled on the initializing thread. Any thread (the game's loaders). */
+typedef struct hsd_asset_key {
+    const void *tex;               /* the NVNtexture the load initializes next (host pointer of the guest object) */
+    const char *name;              /* the BRTI's name (UTF-8, name_len bytes); NULL: the data is not from a BNTX */
+    uint32_t name_len;
+    uint32_t format, width, height, layers, mips, image_size;   /* BRTI +0x1c, +0x24, +0x28, +0x30, +0x16, +0x50 */
+    uint32_t index, data_offset;   /* the texture's index in its BNTX; mip 0's offset in the BNTX */
+    uint32_t path;                 /* HSD_ASSET_LOAD / _INPLACE (logs) */
+} hsd_asset_key;
+enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2 };
+int  hsd_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */
+int  hsd_asset_load(const hsd_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
+void hsd_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */
+void hsd_asset_pool(uint64_t lo, uint64_t hi);      /* the asset heap's pool (pool 127): its textures need a load */
+/* texels from the CPU that no NVN call carries (game patches): an NVNcopyRegion of tex's level and first layer from
+   src (row bytes, layer bytes; 0: packed); src NULL: none to give (the placeholder content, counted) */
+enum { HSD_TEXELS_TERRAIN = 1, HSD_TEXELS_GLYPH = 2 };
+void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
+                uint64_t row, uint64_t img);
+
 #ifdef __cplusplus
 }
 #endif

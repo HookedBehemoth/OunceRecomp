@@ -5,6 +5,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "direct_assets.h"
 #include "direct_cmd.h"
 #include "direct_dump.h"
 #include "direct_internal.h"
@@ -197,6 +198,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_end(void* list) 
     pass_list_end(l);
     l->ended = true;
     st_kinds[l->info.kind].fetch_add(1, std::memory_order_relaxed);
+    if (l->info.kind == HSD_LIST_JOB) assets_job_list();   // (A-rt: the first frame in play)
     for (int i = 0; i < NOP_COUNT_; i++)
         if (l->counts[i]) st_ops[i].fetch_add(l->counts[i], std::memory_order_relaxed);
     st_calls.fetch_add(l->counts[NOP_CALL], std::memory_order_relaxed);

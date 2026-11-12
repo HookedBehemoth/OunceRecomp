@@ -357,4 +357,6 @@ void dump_free(std::vector<DumpItem*>& items) {
     items.clear();
 }
 
+bool dump_write_png(const char* path, const uint8_t* rgba, uint32_t w, uint32_t h) { return write_png(path, rgba, w, h); }
+
 }  // namespace hsd

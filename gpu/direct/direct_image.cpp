@@ -10,6 +10,7 @@
 #include <shared_mutex>
 #include <vector>
 
+#include "direct_assets.h"
 #include "direct_cmd.h"
 #include "direct_image.h"
 
@@ -81,11 +82,37 @@ uint32_t next_id = 1;
 // (counts: made, destroyed and placeholders since the last line; per reason since the start)
 std::atomic<int64_t> st_made{0}, st_destroyed{0}, st_revived{0}, st_ph{0}, st_ph_astc{0}, st_ph_format{0},
     st_ph_refused{0}, st_buffer_tex{0}, st_registered_new{0}, st_texels{0}, st_texels_skipped{0}, st_bytes{0},
-    st_made_total{0};
+    st_made_total{0}, st_asset_images{0}, st_asset_bytes{0}, st_asset_shared{0}, st_asset_fill_waits{0}, st_asset_fail{0},
+    st_ph_norec{0};
 
-/// The table's key of an NVN texture (as vk_texture.cpp texture_key); false: a buffer texture or no storage
-bool key_of(const nvn_tex* t, Key& k, FormatInfo& fi, int& bw, int& bh, int& bpb) {
-    if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return false;
+enum { K_NONE, K_PLAIN, K_ASSET, K_ASSET_MISS };
+constexpr uint32_t kAssetClass = 0x80000u;
+/// (A-rt) The key of an asset texture's image: its record's content and descriptor, so every texture of that content
+/// (moved by compaction, or the same texture in another file) has the one image
+void asset_key(const AssetDesc& d, Key& k) {
+    k = Key{};
+    k.gpu = d.key;
+    k.target = (uint32_t)d.view;
+    k.width = d.width, k.height = d.height, k.depth = d.layers, k.levels = d.mips, k.samples = 1;
+    k.layout = (uint32_t)d.format;
+    k.cls = kAssetClass;
+}
+
+/// The table's key of an NVN texture (as vk_texture.cpp texture_key): K_NONE a buffer texture or no storage; K_ASSET an
+/// asset texture (d: its record's image); K_ASSET_MISS an asset texture with no record (the placeholder)
+int key_of(const nvn_tex* t, Key& k, FormatInfo& fi, int& bw, int& bh, int& bpb, AssetRef* ar = nullptr, AssetDesc* ad = nullptr) {
+    if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return K_NONE;
+    AssetRef a;
+    if (assets_of(t, a)) {
+        if (ar) *ar = a;
+        AssetDesc d;
+        if (!a.rec || !assets_desc(a.rec, d)) return K_ASSET_MISS;
+        asset_key(d, k);
+        fi = FormatInfo{d.format, false, (int)d.bw, (int)d.bh};
+        bw = (int)d.bw, bh = (int)d.bh, bpb = (int)d.bpb;
+        if (ad) *ad = d;
+        return K_ASSET;
+    }
     fi = vk_format(t->d.format);
     bw = 1, bh = 1;
     bpb = nvn_block_size(t->d.format, &bw, &bh);
@@ -104,20 +131,7 @@ bool key_of(const nvn_tex* t, Key& k, FormatInfo& fi, int& bw, int& bh, int& bpb
     k.cls = is_depth_format(fi.format) ? 0x10000u | (uint32_t)fi.format
           : is_bc(fi.format) ? 0x20000u | (uint32_t)linear_twin(fi.format)
                              : 0x40000u | (uint32_t)bpb;
-    return true;
-}
-
-void make_placeholder() {
-    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ci.imageType = VK_IMAGE_TYPE_2D;
-    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
-    ci.extent = {1, 1, 1};
-    ci.mipLevels = ci.arrayLayers = 1;
-    ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    placeholder.placeholder = true;
-    placeholder.format = ci.format;
-    if (!mem_image(ci, placeholder.image, placeholder.mem)) logf("direct: the placeholder image not made");
+    return K_PLAIN;
 }
 
 /// A new image initialized on this thread's upload: GENERAL, and zero where it can be cleared
@@ -143,6 +157,20 @@ void init_image(Image& im) {
         vkCmdClearColorImage(u.cb, im.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &b.subresourceRange);
     }
     upload_end(u);
+}
+
+void make_placeholder() {
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ci.extent = {1, 1, 1};
+    ci.mipLevels = ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    placeholder.placeholder = true;
+    placeholder.format = ci.format;
+    if (!mem_image(ci, placeholder.image, placeholder.mem)) logf("direct: the placeholder image not made");
+    else init_image(placeholder);
 }
 
 void name_placeholder(const nvn_tex* t, const char* why, std::atomic<int64_t>& counter) {
@@ -239,18 +267,66 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     return out;
 }
 
+/// (A-rt) An asset texture's image, in its record's format (images_mu held exclusively); filled by the first texture
+/// that takes it (fill 0 -> 1 there)
+Image* make_asset(const nvn_tex* t, const Key& k, const AssetDesc& d, uint32_t rec) {
+    std::call_once(placeholder_once, make_placeholder);
+    auto x = std::make_unique<Image>();
+    Image& im = *x;
+    im.format = d.format;
+    im.compressed = is_bc(d.format);
+    im.gpu = t->gpu, im.nvn_format = t->d.format, im.bpb = (int)d.bpb, im.bw = (int)d.bw, im.bh = (int)d.bh;
+    im.width = d.width, im.height = d.height, im.levels = d.mips, im.layers = d.layers;
+    im.asset = rec, im.asset_view = d.view;
+    std::memcpy(im.chan_map, d.map, 4);
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // (sRGB and UNORM views)
+    if ((d.view == VK_IMAGE_VIEW_TYPE_CUBE || d.view == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) && d.layers % 6 == 0 && d.width == d.height)
+        ci.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = d.format;
+    ci.extent = {d.width, d.height, 1};
+    ci.mipLevels = d.mips;
+    ci.arrayLayers = d.layers;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!mem_image(ci, im.image, im.mem)) return name_placeholder(t, "no memory for its prepared image", st_ph_refused), &placeholder;
+    im.id = next_id++;
+    st_made.fetch_add(1, std::memory_order_relaxed);
+    st_made_total.fetch_add(1, std::memory_order_relaxed);
+    st_bytes.fetch_add((int64_t)mem_size(im.mem), std::memory_order_relaxed);
+    st_asset_images.fetch_add(1, std::memory_order_relaxed);
+    st_asset_bytes.fetch_add((int64_t)mem_size(im.mem), std::memory_order_relaxed);
+    Image* out = x.get();
+    images.emplace(k, std::move(x));
+    return out;
+}
+
 /// Finds or makes t's image (images_mu held exclusively)
 Image* get(const nvn_tex* t) {
     Key k;
     FormatInfo fi;
     int bw, bh, bpb;
-    if (!key_of(t, k, fi, bw, bh, bpb)) return nullptr;
+    AssetRef a;
+    AssetDesc d;
+    const int kind = key_of(t, k, fi, bw, bh, bpb, &a, &d);
+    if (kind == K_NONE) return nullptr;
+    if (kind == K_ASSET_MISS) return std::call_once(placeholder_once, make_placeholder), &placeholder;
     auto it = images.find(k);
-    if (it != images.end()) return it->second.get();
+    if (it != images.end()) {
+        if (kind == K_ASSET) st_asset_shared.fetch_add(1, std::memory_order_relaxed);
+        return it->second.get();
+    }
+    if (kind == K_ASSET) return make_asset(t, k, d, a.rec);
     return make(t, k, fi, bw, bh, bpb);
 }
 
 void destroy(Image* im) {
+    if (im->asset) {
+        st_asset_images.fetch_sub(1, std::memory_order_relaxed);
+        st_asset_bytes.fetch_sub((int64_t)mem_size(im->mem), std::memory_order_relaxed);
+    }
     for (auto& [key, v] : im->views)
         if (v) vkDestroyImageView(dev.device, v, nullptr);
     st_bytes.fetch_sub((int64_t)mem_size(im->mem), std::memory_order_relaxed);
@@ -262,25 +338,79 @@ void destroy(Image* im) {
 
 void image_texture_created(const nvn_tex* t) {
     if (t && t->d.target == NVN_TEXTURE_TARGET_BUFFER) return void(st_buffer_tex.fetch_add(1, std::memory_order_relaxed));
+    AssetRef a;
+    const bool asset = assets_created(t, a);   // (A-rt: the record its load named, kept for its serial)
+    if (asset && !a.rec) {
+        st_ph.fetch_add(1, std::memory_order_relaxed);
+        st_ph_norec.fetch_add(1, std::memory_order_relaxed);
+        assets_note_placeholder(t, a.why);
+    }
     std::unique_lock lk(images_mu);
     Image* im = get(t);
     if (!im || im->placeholder) return;
     if (im->refs++ == 0 && im->dead_present) im->dead_present = im->dead_value = 0, st_revived.fetch_add(1, std::memory_order_relaxed);
+    if (!im->asset) return;
+    // (A-rt) the first texture of an asset image fills it, here, before the game can register it; another one that comes
+    // while it is being filled waits for that (the same content in another file, on another loader thread)
+    uint8_t s = 0;
+    if (im->fill.compare_exchange_strong(s, 1)) {
+        lk.unlock();
+        const bool ok = assets_fill(*im, im->asset);
+        if (ok) im->written.fetch_or(W_STORE, std::memory_order_relaxed);
+        else st_asset_fail.fetch_add(1, std::memory_order_relaxed);
+        im->fill.store(ok ? 2 : 3, std::memory_order_release);
+        im->fill.notify_all();
+        return;
+    }
+    if (s == 1) {
+        lk.unlock();
+        st_asset_fill_waits.fetch_add(1, std::memory_order_relaxed);
+        while (im->fill.load(std::memory_order_acquire) == 1) im->fill.wait(1, std::memory_order_acquire);
+    }
 }
 
 void image_texture_released(const nvn_tex* t) {
     Key k;
     FormatInfo fi;
     int bw, bh, bpb;
-    if (!key_of(t, k, fi, bw, bh, bpb)) return;
+    const int kind = key_of(t, k, fi, bw, bh, bpb);
+    if (kind == K_PLAIN || kind == K_ASSET) {
+        std::unique_lock lk(images_mu);
+        auto it = images.find(k);
+        if (it != images.end()) {
+            Image* im = it->second.get();
+            if (im->refs > 0 && --im->refs == 0) {
+                im->dead_present = present_count() + 1;
+                dying.push_back(im);
+            }
+        }
+    }
+    if (kind == K_ASSET || kind == K_ASSET_MISS) assets_released(t);
+}
+
+void image_hold(Image* im) {
+    if (!im || im->placeholder) return;
     std::unique_lock lk(images_mu);
-    auto it = images.find(k);
-    if (it == images.end()) return;
-    Image* im = it->second.get();
+    if (im->refs++ == 0 && im->dead_present) im->dead_present = im->dead_value = 0;
+}
+void image_unhold(Image* im) {
+    if (!im || im->placeholder) return;
+    std::unique_lock lk(images_mu);
     if (im->refs > 0 && --im->refs == 0) {
         im->dead_present = present_count() + 1;
         dying.push_back(im);
     }
+}
+
+VkComponentMapping image_swizzle(const Image* im, VkComponentMapping g) {
+    if (!im || !im->asset) return g;
+    auto one = [&](VkComponentSwizzle c, VkComponentSwizzle self) {
+        if (c == VK_COMPONENT_SWIZZLE_IDENTITY) c = self;
+        if (c >= VK_COMPONENT_SWIZZLE_R && c <= VK_COMPONENT_SWIZZLE_A) return (VkComponentSwizzle)im->chan_map[c - VK_COMPONENT_SWIZZLE_R];
+        return c;
+    };
+    return {one(g.r, VK_COMPONENT_SWIZZLE_R), one(g.g, VK_COMPONENT_SWIZZLE_G), one(g.b, VK_COMPONENT_SWIZZLE_B),
+            one(g.a, VK_COMPONENT_SWIZZLE_A)};
 }
 
 void image_texture_registered(const nvn_tex* t) {
@@ -294,7 +424,9 @@ Image* image_find(const nvn_tex* t) {
     Key k;
     FormatInfo fi;
     int bw, bh, bpb;
-    if (!key_of(t, k, fi, bw, bh, bpb)) return nullptr;
+    const int kind = key_of(t, k, fi, bw, bh, bpb);
+    if (kind == K_NONE) return nullptr;
+    if (kind == K_ASSET_MISS) return &placeholder;
     std::shared_lock lk(images_mu);
     auto it = images.find(k);
     if (it != images.end()) return it->second.get();
@@ -372,22 +504,40 @@ bool image_sub(const nvn_tex* t, const nvn_view* v, const NVNcopyRegion& r, Sub&
 
 void image_write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src,
                         uint64_t row, uint64_t img) {
+    if (image_upload_region(t, level, layer0, r, src, row, img, W_TEXELS)) st_texels.fetch_add(1, std::memory_order_relaxed);
+    else st_texels_skipped.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool image_upload_region(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src,
+                         uint64_t row, uint64_t img, uint8_t source) {
+    const int64_t t0 = host->now_ns();
     nvn_view v{};
     v.set_levels = 1, v.base_level = (uint8_t)level, v.nlevels = 1;
     v.set_layers = 1, v.min_layer = (uint16_t)layer0, v.nlayers = 1;
     Sub s;
     bool wide = false;
     widened(vk_format(t->d.format).format, &wide);
-    if (!r || !src || wide || !image_sub(t, &v, *r, s)) return void(st_texels_skipped.fetch_add(1, std::memory_order_relaxed));
+    if (!r || !src || wide || !image_sub(t, &v, *r, s)) return false;
     const uint64_t wb = (s.w + s.bw - 1) / s.bw * (uint64_t)s.bpb, hb = (s.h + s.bh - 1) / s.bh;
     if (!row) row = wb;
     if (!img) img = row * hb;
     const uint64_t slices = (uint64_t)s.layers * s.d, packed = wb * hb * slices;
-    if (row < wb || img < row * hb) return void(st_texels_skipped.fetch_add(1, std::memory_order_relaxed));
+    if (row < wb || img < row * hb) return false;
     Upload u = upload_begin(packed);
     if (!u.map) {
         upload_end(u);
-        return void(st_texels_skipped.fetch_add(1, std::memory_order_relaxed));
+        return false;
+    }
+    {   // (the GPU's earlier reads of the image (the frames sent before) done before the copy writes it: a tile or glyph cell
+        // written again)
+        VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        d.memoryBarrierCount = 1;
+        d.pMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(u.cb, &d);
     }
     for (uint64_t k = 0; k < slices; k++)   // (packed rows: the staging copy is the region's blocks only)
         for (uint64_t y = 0; y < hb; y++) std::memcpy(u.map + (k * hb + y) * wb, src + k * img + y * row, wb);
@@ -398,9 +548,11 @@ void image_write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const
     c.imageOffset = {s.x, s.y, s.z};
     c.imageExtent = {s.w, s.h, s.d};
     vkCmdCopyBufferToImage(u.cb, u.staging, s.im->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    if (source != W_TEXELS) assets_check_region(s.im, source, s.level, s.layer, s.layers, s.x, s.y, s.w, s.h, u.map, packed);
     upload_end(u);
-    s.im->written.fetch_or(W_TEXELS, std::memory_order_relaxed);
-    st_texels.fetch_add(1, std::memory_order_relaxed);
+    s.im->written.fetch_or(source, std::memory_order_relaxed);
+    assets_note_upload(source, packed, host->now_ns() - t0);
+    return true;
 }
 
 void image_sweep(uint64_t present) {
@@ -432,29 +584,39 @@ void image_sweep(uint64_t present) {
 }
 
 void image_stats(char* out, size_t cap) {
-    int64_t live = 0, color = 0, depth = 0, bc = 0, rendered = 0, copied = 0, texels = 0, untouched = 0;
+    int64_t live = 0, color = 0, depth = 0, bc = 0, rendered = 0, copied = 0, texels = 0, store = 0, terrain = 0, glyph = 0,
+            untouched = 0, assets = 0, unfilled = 0, no_content = 0;
     {
         std::shared_lock lk(images_mu);
         for (const auto& [k, im] : images) {
             live++;
             (im->compressed ? bc : (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ? color : depth)++;
+            if (im->asset) assets++, unfilled += im->fill.load(std::memory_order_relaxed) != 2;
+            no_content += im->no_content;
             const uint8_t w = im->written.load(std::memory_order_relaxed);
             if (w & W_ATTACHMENT) rendered++;
             else if (w & (W_COPY | W_CLEAR)) copied++;
+            else if (w & W_STORE) store++;
+            else if (w & W_TERRAIN) terrain++;
+            else if (w & W_GLYPH) glyph++;
             else if (w & W_TEXELS) texels++;
             else untouched++;
         }
     }
     std::snprintf(out, cap, "images: %lld made since the last line (%lld since the start), %lld destroyed, %lld revived; %lld "
-                  "live (%lld colour, %lld depth, %lld compressed; %lld rendered, %lld copied or cleared, %lld by texel writes, %lld "
-                  "never written: assets, zero or unfilled at this stage), %.0f MB; placeholders %lld (ASTC %lld, no format %lld, "
-                  "refused %lld), buffer textures %lld; made at registration %lld; texel writes %lld (%lld skipped)",
+                  "live (%lld colour, %lld depth, %lld compressed; by their first source: %lld rendered, %lld copied or cleared, %lld "
+                  "from the store, %lld terrain uploads, %lld glyph uploads, %lld texel writes, %lld never written), %.0f MB (assets: "
+                  "%lld images, %.0f MB, %lld not filled; %lld textures found their content's image made, %lld waited for its fill, "
+                  "%lld fills failed); placeholders %lld (no prepared record %lld, ASTC %lld, no format %lld, refused %lld; texels "
+                  "not given %lld), buffer textures %lld; made at registration %lld; texel writes %lld (%lld skipped)",
                   (long long)st_made.exchange(0), (long long)st_made_total.load(), (long long)st_destroyed.exchange(0),
                   (long long)st_revived.exchange(0), (long long)live, (long long)color, (long long)depth, (long long)bc,
-                  (long long)rendered, (long long)copied, (long long)texels, (long long)untouched, st_bytes.load() / 1048576.0,
-                  (long long)st_ph.load(), (long long)st_ph_astc.load(), (long long)st_ph_format.load(),
-                  (long long)st_ph_refused.load(), (long long)st_buffer_tex.load(), (long long)st_registered_new.load(),
-                  (long long)st_texels.load(), (long long)st_texels_skipped.load());
+                  (long long)rendered, (long long)copied, (long long)store, (long long)terrain, (long long)glyph, (long long)texels,
+                  (long long)untouched, st_bytes.load() / 1048576.0, (long long)assets, st_asset_bytes.load() / 1048576.0,
+                  (long long)unfilled, (long long)st_asset_shared.load(), (long long)st_asset_fill_waits.load(),
+                  (long long)st_asset_fail.load(), (long long)st_ph.load(), (long long)st_ph_norec.load(), (long long)st_ph_astc.load(),
+                  (long long)st_ph_format.load(), (long long)st_ph_refused.load(), (long long)no_content, (long long)st_buffer_tex.load(),
+                  (long long)st_registered_new.load(), (long long)st_texels.load(), (long long)st_texels_skipped.load());
 }
 
 }  // namespace hsd

@@ -39,13 +39,20 @@ struct Image {
     bool placeholder = false;
     bool compressed = false;
     std::atomic<uint8_t> written{0};   // (W_* bits: what has written it)
+    // (A-rt) an image of a prepared texture (direct_assets): made in the store's format, shared by every texture of the
+    // same content, filled once by the thread that made it (fill: 0 not an asset, 1 being filled, 2 filled, 3 failed)
+    uint32_t asset = 0;                // (its texture record + 1)
+    std::atomic<uint8_t> fill{0};
+    VkImageViewType asset_view = VK_IMAGE_VIEW_TYPE_2D;
+    uint8_t chan_map[4] = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A};
+    bool no_content = false;           // (a texture whose texels were not given: terrain not converted; drawn as the placeholder)
     // (lifetime: the live NVN textures over it; images_mu held)
     int refs = 0;
     uint64_t dead_present = 0, dead_value = 0;
     std::mutex views_mu;
     std::unordered_map<uint64_t, VkImageView> views;
 };
-enum : uint8_t { W_ATTACHMENT = 1, W_COPY = 2, W_TEXELS = 4, W_CLEAR = 8 };
+enum : uint8_t { W_ATTACHMENT = 1, W_COPY = 2, W_TEXELS = 4, W_CLEAR = 8, W_STORE = 16, W_TERRAIN = 32, W_GLYPH = 64 };
 
 void image_texture_created(const nvn_tex* t);
 void image_texture_released(const nvn_tex* t);
@@ -60,6 +67,15 @@ int image_view_format(const nvn_tex* t, const nvn_view* v);
 /// WriteTexels: the linear texels copied into the image at the call (the calling thread's upload, sent at once)
 void image_write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src,
                         uint64_t row, uint64_t img);
+/// The same for texels a game patch gives (W_TERRAIN, W_GLYPH: hsd_texels); false: skipped (no image, outside it)
+bool image_upload_region(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src,
+                         uint64_t row, uint64_t img, uint8_t source);
+/// (A-rt) A view's swizzle on an image: the guest's (R..A, ZERO, ONE as VkComponentSwizzle) composed with an asset
+/// image's channel map (final[c] = map[guest[c] - R]); identity map for every other image
+VkComponentMapping image_swizzle(const Image* im, VkComponentMapping guest);
+/// (A-rt) An extra reference on an image (a check reading it back), dropped by image_unhold
+void image_hold(Image* im);
+void image_unhold(Image* im);
 /// Images whose textures are all gone for a while, and done on the GPU, destroyed (the Presentation Thread, at a present)
 void image_sweep(uint64_t present);
 void image_stats(char* out, size_t cap);

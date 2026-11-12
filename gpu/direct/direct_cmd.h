@@ -40,8 +40,10 @@ struct Upload {
 };
 /// This thread's next upload: a begun command buffer and staging room for bytes (0: none)
 Upload upload_begin(uint64_t bytes);
-/// Ends it with a barrier that makes its writes visible to all later work on the queue, and sends it
-void upload_end(Upload& u);
+/// Ends it with a barrier that makes its writes visible to all later work on the queue, and sends it: its timeline value
+uint64_t upload_end(Upload& u);
+/// The newest upload's timeline value (any thread's): a submission after it waits for it (A-rt)
+uint64_t upload_value();
 
 void cmd_stats(char* out, size_t cap, double frames);
 
