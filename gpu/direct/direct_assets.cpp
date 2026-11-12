@@ -59,6 +59,7 @@ struct Store {
     const uint8_t *files = nullptr, *texs = nullptr, *mipr = nullptr, *framer = nullptr, *str = nullptr;
     std::vector<const uint8_t*> packs;
     std::vector<size_t> pack_n;
+    std::vector<int> fds;   // (frames are read with pread: one call, not a page fault at a time)
     std::vector<uint32_t> bucket, next;   // (name hash -> first record + 1; chain)
     uint32_t nbucket = 1;
 } S;
@@ -245,6 +246,7 @@ extern "C" __attribute__((visibility("default"))) int hsd_assets_open(const char
         const uint8_t* m = map_file(S.dir + p, n);
         if (!m || n < 64 || std::memcmp(m, "HKTXPAK1", 8)) logf("direct: assets: %s%s not read: its textures fail", dir, p);
         S.packs.push_back(m && n >= 64 ? m : nullptr), S.pack_n.push_back(m ? n : 0);
+        S.fds.push_back(open((S.dir + p).c_str(), O_RDONLY | O_CLOEXEC));
         packed += n;
     }
     while (S.nbucket < S.ntex * 2) S.nbucket <<= 1;
@@ -504,26 +506,26 @@ const char* assets_name(uint32_t rec, uint32_t* len) {
 
 namespace {
 thread_local ZSTD_DCtx* tl_dctx = nullptr;
-thread_local std::vector<uint8_t> tl_scratch;
+thread_local std::vector<uint8_t> tl_scratch, tl_z;
 constexpr uint64_t kGroup = 16ull << 20;   // (an upload holds whole mips up to this; a bigger mip is one upload)
 
 /// The record's frames that overlap [a, b) of its raw data, into dst (= raw a); false: a pack not readable or a bad frame
 bool read_range(const Rec& r, uint64_t a, uint64_t b, uint8_t* dst, int64_t& zbytes) {
     if (!tl_dctx && !(tl_dctx = ZSTD_createDCtx())) return false;
-    for (uint32_t i = 0; i < r.fr_n; i++) {   // (the frames' pages read ahead at once, not a fault at a time)
-        Frame f;
-        frame_at(r.fr_first + i, f);
-        if (f.raw_off + f.raw_size <= a || f.raw_off >= b || f.pack >= S.packs.size() || !S.packs[f.pack]) continue;
-        const uintptr_t p = (uintptr_t)(S.packs[f.pack] + f.off) & ~(uintptr_t)4095;
-        madvise((void*)p, (size_t)((uintptr_t)(S.packs[f.pack] + f.off + f.csize) - p), MADV_WILLNEED);
-    }
     for (uint32_t i = 0; i < r.fr_n; i++) {
         Frame f;
         frame_at(r.fr_first + i, f);
         const uint64_t fa = f.raw_off, fb = f.raw_off + f.raw_size;
         if (fb <= a || fa >= b) continue;
         if (f.pack >= S.packs.size() || !S.packs[f.pack] || f.off + f.csize > S.pack_n[f.pack] || fb > r.raw) return false;
-        const uint8_t* z = S.packs[f.pack] + f.off;
+        if (tl_z.size() < f.csize) tl_z.resize(std::max<size_t>(f.csize, 1u << 20));
+        size_t got = 0;
+        while (got < f.csize) {
+            const ssize_t r = pread(S.fds[f.pack], tl_z.data() + got, f.csize - got, (off_t)(f.off + got));
+            if (r <= 0) return false;
+            got += (size_t)r;
+        }
+        const uint8_t* z = tl_z.data();
         zbytes += f.csize;
         if (fa >= a && fb <= b) {
             const size_t n = ZSTD_decompressDCtx(tl_dctx, dst + (fa - a), f.raw_size, z, f.csize);
