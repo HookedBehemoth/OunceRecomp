@@ -556,13 +556,17 @@ void hold_for_checks(Image& im, uint32_t rec) {
         image_hold(&im);
         checks.push_back(std::move(c));
     }
-    if (dump_on) {   // (a normal map and a colour BC7 one, up to two each)
-        static int n_nrm = 0, n_bc7 = 0;
-        const bool bc7 = im.format == VK_FORMAT_BC7_SRGB_BLOCK && im.width >= 256;
-        if ((nrm && n_nrm < 2) || (bc7 && n_bc7 < 2)) {
-            (nrm ? n_nrm : n_bc7)++;
+    if (dump_on) {   // (normal maps, colour BC7 ones and UI textures, up to two each)
+        static int n_nrm = 0, n_bc7 = 0, n_ui = 0;
+        Rec r;
+        rec_at(rec - 1, r);
+        const uint8_t* fp = S.files + (size_t)r.file * 64;
+        const bool ui = rd<uint32_t>(fp + 4) >= 3 && !std::memcmp(S.str + rd<uint32_t>(fp), "UI/", 3) && im.width >= 128;
+        const bool bc7 = !ui && im.format == VK_FORMAT_BC7_SRGB_BLOCK && im.width >= 256;
+        if ((nrm && n_nrm < 2) || (bc7 && n_bc7 < 2) || (ui && n_ui < 2)) {
+            (nrm ? n_nrm : ui ? n_ui : n_bc7)++;
             Check c;
-            c.im = &im, c.rec = rec, c.what = (nrm ? "normal_" : "colour_") + name;
+            c.im = &im, c.rec = rec, c.what = (nrm ? "normal_" : ui ? "ui_" : "colour_") + name;
             image_hold(&im);
             dumps.push_back(std::move(c));
         }
@@ -698,7 +702,7 @@ void assets_check_region(Image* im, uint8_t source, uint32_t level, uint32_t lay
         checks.push_back(std::move(c));
         checked_regions[si]++;
     }
-    if (dump_on && held_dump[si] < (si == S_TERRAIN ? 3 : 1) && (si == S_TERRAIN || k > 40)) {   // (a font atlas with some glyphs in it)
+    if (dump_on && held_dump[si] < (si == S_TERRAIN ? 3 : 1)) {   // (terrain tiles, the first font atlas: dumped after the load)
         held_dump[si]++;
         Check c;
         c.im = im, c.source = source, c.layer = layer;
