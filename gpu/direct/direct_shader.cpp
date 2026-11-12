@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -825,6 +826,120 @@ VkDescriptorSetAndBindingMappingEXT null_map(uint32_t b, uint32_t stride) {
     return m;
 }
 
+// ---- (M4e) the graphics shader objects' binaries: hookshot_direct_shader_objects.bin ----
+// What a vkCreateShadersEXT from SPIR-V costs at every start (750 objects, ~14 s of worker time in Kokiri, m4d-report) is
+// paid once per driver: each object made from SPIR-V has its binary (vkGetShaderBinaryDataEXT) appended, keyed by a hash of
+// everything its create info carries (stage, next stage, flags, the subgroup size, the SPIR-V, the heap mappings); a later
+// make with the same key creates it from the binary. VK_EXT_shader_object ties a binary to shaderBinaryUUID and
+// shaderBinaryVersion: the file's header holds them, and a file of another driver is made again. A binary the driver still
+// refuses (VK_INCOMPATIBLE_SHADER_BINARY_EXT) is a cache miss: the SPIR-V is compiled, counted. The file is locked as the
+// program cache is (another Hookshot: none). Records: {key, size} then the bytes.
+namespace sobin {
+constexpr uint32_t kMagic = 0x4f445348;   // "HSDO"
+constexpr uint32_t kVersion = 1;
+std::once_flag once;
+std::mutex mu;
+int fd = -1;
+FILE* out = nullptr;
+std::unordered_map<uint64_t, std::pair<int64_t, uint32_t>> at;   // (key -> offset of the bytes, size)
+PFN_vkGetShaderBinaryDataEXT get_binary = nullptr;
+std::atomic<int64_t> st_hits{0}, st_saved{0}, st_refused{0};
+
+struct Header {
+    uint32_t magic, version;
+    uint8_t uuid[VK_UUID_SIZE];
+    uint32_t binary_version, pad;
+};
+Header want() {
+    VkPhysicalDeviceShaderObjectPropertiesEXT so{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
+    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    p2.pNext = &so;
+    vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+    Header h{};
+    h.magic = kMagic, h.version = kVersion, h.binary_version = so.shaderBinaryVersion;
+    std::memcpy(h.uuid, so.shaderBinaryUUID, VK_UUID_SIZE);
+    return h;
+}
+void init() {
+    std::call_once(once, [] {
+        get_binary = (PFN_vkGetShaderBinaryDataEXT)vkGetDeviceProcAddr(dev.device, "vkGetShaderBinaryDataEXT");
+        const std::string path = exe_dir() + "hookshot_direct_shader_objects.bin";
+        const int lock = open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+        if (!get_binary || lock < 0 || flock(lock, LOCK_EX | LOCK_NB) != 0) {
+            logf("direct: shader object binaries %s: %s: none kept or saved", path.c_str(),
+                 get_binary ? "another Hookshot is using it" : "no vkGetShaderBinaryDataEXT");
+            return;
+        }
+        const Header h = want();
+        int64_t good = 0, whole = 0;
+        if (FILE* f = fopen(path.c_str(), "rb")) {
+            fseeko(f, 0, SEEK_END);
+            whole = ftello(f);
+            fseeko(f, 0, SEEK_SET);
+            Header got{};
+            if (whole >= (int64_t)sizeof got && fread(&got, sizeof got, 1, f) == 1 && !std::memcmp(&got, &h, sizeof h)) {
+                good = sizeof h;
+                while (good + 16 <= whole) {
+                    uint64_t rec[2];
+                    fseeko(f, good, SEEK_SET);
+                    if (fread(rec, 8, 2, f) != 2 || !rec[1] || rec[1] > (uint64_t)(whole - good - 16) || rec[1] > 0xFFFFFFFFull) break;
+                    at[rec[0]] = {good + 16, (uint32_t)rec[1]};
+                    good += 16 + (int64_t)rec[1];
+                }
+            }
+            fclose(f);
+        }
+        if (good && good != whole && truncate(path.c_str(), good) != 0) good = 0;
+        if (good) {
+            out = fopen(path.c_str(), "ab");
+        } else {   // (none, or another driver's: made again)
+            at.clear();
+            if ((out = fopen(path.c_str(), "wb"))) fwrite(&h, sizeof h, 1, out), fflush(out);
+        }
+        fd = out ? open(path.c_str(), O_RDONLY | O_CLOEXEC) : -1;
+        if (fd < 0) at.clear();
+        logf("direct: shader object binaries %s: %zu kept (driver binary version %u)", path.c_str(), at.size(), h.binary_version);
+    });
+}
+uint64_t key_of(const VkShaderCreateInfoEXT& ci, const VkShaderDescriptorSetAndBindingMappingInfoEXT& mi, bool size32) {
+    const uint32_t head[4] = {(uint32_t)ci.stage, (uint32_t)ci.nextStage, (uint32_t)ci.flags, size32 ? 32u : 0u};
+    uint64_t k = hash_bytes(head, sizeof head);
+    k = hash_bytes(ci.pCode, ci.codeSize, k);
+    constexpr size_t from = offsetof(VkDescriptorSetAndBindingMappingEXT, descriptorSet);
+    for (uint32_t i = 0; i < mi.mappingCount; i++)   // (no embedded samplers: their pointers are null, the union zeroed)
+        k = hash_bytes((const uint8_t*)&mi.pMappings[i] + from, sizeof(VkDescriptorSetAndBindingMappingEXT) - from, k);
+    return k;
+}
+/// The binary kept for key, or empty
+std::vector<uint8_t> find(uint64_t key) {
+    std::pair<int64_t, uint32_t> where{0, 0};
+    {
+        std::lock_guard lk(mu);
+        const auto it = at.find(key);
+        if (it == at.end()) return {};
+        where = it->second;
+    }
+    std::vector<uint8_t> b(where.second);
+    if (pread(fd, b.data(), b.size(), where.first) != (ssize_t)b.size()) return {};
+    return b;
+}
+void save(uint64_t key, VkShaderEXT obj) {
+    if (!out || !get_binary) return;
+    size_t n = 0;
+    if (get_binary(dev.device, obj, &n, nullptr) != VK_SUCCESS || !n) return;
+    std::vector<uint8_t> data(n);
+    if (get_binary(dev.device, obj, &n, data.data()) != VK_SUCCESS) return;
+    const uint64_t h[2] = {key, n};
+    std::lock_guard lk(mu);
+    if (at.count(key)) return;
+    fseeko(out, 0, SEEK_END);
+    const int64_t pos = ftello(out);
+    if (fwrite(h, 8, 2, out) != 2 || fwrite(data.data(), 1, n, out) != n || fflush(out) != 0) return;
+    at[key] = {pos + 16, (uint32_t)n};
+    st_saved.fetch_add(1, std::memory_order_relaxed);
+}
+}  // namespace sobin
+
 /// The variant's mappings, push layout and draw-side tables (v.d), then its shader objects
 bool finish(Variant& v) {
     DrawProg& d = v.d;
@@ -986,7 +1101,20 @@ bool finish(Variant& v) {
         else ci.pNext = &mi;
         VkShaderEXT obj = VK_NULL_HANDLE;
         const auto t0 = clk::now();
-        const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &obj);
+        sobin::init();
+        const uint64_t bkey = sobin::key_of(ci, mi, (caps.sg32_stages & st.vk_stage) != 0);
+        VkResult r = VK_ERROR_UNKNOWN;
+        bool from_binary = false;
+        if (std::vector<uint8_t> bin = sobin::find(bkey); !bin.empty()) {   // (M4e: made before by this driver: no compile)
+            VkShaderCreateInfoEXT bi = ci;
+            bi.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT, bi.codeSize = bin.size(), bi.pCode = bin.data();
+            r = vkCreateShadersEXT(dev.device, 1, &bi, nullptr, &obj);
+            from_binary = r == VK_SUCCESS;
+            if (from_binary) sobin::st_hits.fetch_add(1, std::memory_order_relaxed);
+            else obj = VK_NULL_HANDLE, sobin::st_refused.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (!from_binary) r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &obj);
+        if (r == VK_SUCCESS && !from_binary) sobin::save(bkey, obj);
         st_object_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
         if (r != VK_SUCCESS) {
             st_object_failed.fetch_add(1, std::memory_order_relaxed);
@@ -1398,13 +1526,14 @@ void shader_stats(char* out, size_t cap, double frames) {
         queued = work.size();
     }
     std::snprintf(out, cap, "programs (since the start): %lld set (%lld distinct codes), %lld variants translated (%.1f s on the workers), %lld failed, %lld "
-                  "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed), %lld stages unreadable, table full %lld; misses %.1f a frame, "
+                  "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed; %lld from binaries, %lld binaries saved, %lld refused), %lld stages unreadable, table full %lld; misses %.1f a frame, "
                   "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
                   "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
                   "than the push data's room for their addresses; the last miss %.2f s after the device", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
                   st_object_ns.load() / 1e9,
-                  (long long)st_object_failed.load(), (long long)st_scan_failed.load(), (long long)st_full.load(),
+                  (long long)st_object_failed.load(), (long long)sobin::st_hits.load(), (long long)sobin::st_saved.load(),
+                  (long long)sobin::st_refused.load(), (long long)st_scan_failed.load(), (long long)st_full.load(),
                   st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_multi_answers.load(),
                   (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
                   (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load());
