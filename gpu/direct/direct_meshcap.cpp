@@ -185,6 +185,40 @@ void meshcap_after() {
         put_bytes(o, payload.data(), 4 * payload.size());
         draws.push_back(std::move(o));
     }
+    // (pointers in the first 4 KB of the storage and uniform buffers read (a pointer table: some mesh stages read through such
+    // words, e.g. 40d0c0768e874600): the 4 MB after each, or less where the guest has less, so that the harness has them too)
+    {
+        std::map<uint64_t, uint64_t> want;   // (page -> end)
+        const size_t n0 = blobs.bytes.size();
+        for (size_t i = 0; i < n0; i++) {
+            const std::vector<uint8_t>& b = blobs.bytes[i];
+            for (size_t o = 0; o + 8 <= std::min<size_t>(b.size(), 4096); o += 8) {
+                uint64_t v;
+                std::memcpy(&v, b.data() + o, 8);
+                if (v >> 32 < 0x10 || v >> 32 >= 0x200 || (v & 3)) continue;
+                const uint64_t lo = v & ~0xFFFull;
+                uint64_t& e = want[lo];
+                e = std::max(e, lo + (4ull << 20));
+            }
+        }
+        uint64_t covered = 0, total = 0;
+        for (auto& [lo, hi] : want) {
+            if (lo < covered) {
+                if (hi <= covered) continue;
+            }
+            const uint64_t from = std::max(lo, covered);
+            if (total > (1ull << 30)) break;
+            for (uint64_t n = hi - from; n >= 4096; n >>= 1) {
+                std::vector<uint8_t> b(n);
+                if (!host->gpu_read(from, b.data(), n)) continue;
+                total += n;
+                covered = from + n;
+                blobs.add(from, std::move(b));
+                break;
+            }
+        }
+        logf("direct: meshcap: %zu pointer targets in the buffers' first 4 KB, %llu MB read after them", want.size(), (unsigned long long)(total >> 20));
+    }
     mkdir("meshcap", 0755);
     FILE* f = std::fopen("meshcap/frame.bin", "wb");
     if (!f) return logf("direct: meshcap: meshcap/frame.bin not written");

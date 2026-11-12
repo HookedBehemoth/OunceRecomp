@@ -81,8 +81,8 @@ struct Gpu {
     VkInstance inst = VK_NULL_HANDLE;
     VkPhysicalDevice phys = VK_NULL_HANDLE;
     VkDevice dev = VK_NULL_HANDLE;
-    VkQueue queue = VK_NULL_HANDLE;
-    uint32_t family = 0;
+    VkQueue queue = VK_NULL_HANDLE, sparse_queue = VK_NULL_HANDLE;
+    uint32_t family = 0, sparse_family = UINT32_MAX;
     VkPhysicalDeviceProperties props{};
     VkPhysicalDeviceMemoryProperties mem{};
     VkPhysicalDeviceDescriptorHeapPropertiesEXT hprops{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
@@ -174,15 +174,25 @@ void gpu_init() {
             g.family = i;
             break;
         }
+    for (uint32_t i = 0; i < n; i++)   // (the sparse binds: a family of their own, as the game's layer 0)
+        if ((fams[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) && !(fams[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
+            g.sparse_family = i;
+            break;
+        }
+    if (g.sparse_family == UINT32_MAX && (fams[g.family].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT)) g.sparse_family = g.family;
+    if (g.sparse_family == UINT32_MAX) die("no sparse binding queue");
+    f.features.sparseBinding = VK_TRUE;
     const float prio = 1.0f;
-    VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-    q.queueFamilyIndex = g.family, q.queueCount = 1, q.pQueuePriorities = &prio;
+    VkDeviceQueueCreateInfo q[2] = {{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
+    q[0].queueFamilyIndex = g.family, q[0].queueCount = 1, q[0].pQueuePriorities = &prio;
+    q[1].queueFamilyIndex = g.sparse_family, q[1].queueCount = 1, q[1].pQueuePriorities = &prio;
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
-    ci.queueCreateInfoCount = 1, ci.pQueueCreateInfos = &q;
+    ci.queueCreateInfoCount = g.sparse_family == g.family ? 1 : 2, ci.pQueueCreateInfos = q;
     ci.enabledExtensionCount = (uint32_t)want.size(), ci.ppEnabledExtensionNames = want.data();
     VK(vkCreateDevice(g.phys, &ci, nullptr, &g.dev));
     vkGetDeviceQueue(g.dev, g.family, 0, &g.queue);
+    vkGetDeviceQueue(g.dev, g.sparse_family, 0, &g.sparse_queue);
 #define LOAD(f) g.f = (PFN_##f)vkGetDeviceProcAddr(g.dev, #f);
     LOAD(vkCreateShadersEXT) LOAD(vkCmdBindShadersEXT) LOAD(vkCmdBindResourceHeapEXT) LOAD(vkCmdBindSamplerHeapEXT) LOAD(vkCmdPushDataEXT)
     LOAD(vkCmdDrawMeshTasksEXT) LOAD(vkCmdDrawMeshTasksIndirectEXT) LOAD(vkCmdWriteBufferMarker2AMD) LOAD(vkCmdSetPolygonModeEXT)
@@ -387,31 +397,79 @@ VkShaderEXT simple_fs(const mcap::McDraw& d) {
 }
 
 // ---- a draw made ready: its memory placed, its push data written ----
-struct Guest {   // (the captured storage ranges, at addresses of our own in one buffer: window 0)
-    Buf buf;
-    std::map<uint32_t, uint64_t> at;   // (blob id -> its synthetic guest address)
-    Buf windows;                       // (the window table: 513 entries, each the buffer)
+// The guest's memory as the game's layer 0 shows it (gpu/direct/layer0_windows.h): window k a sparse buffer over guest
+// [k * 2 GB, k * 2 GB + 4 GB - 64 KB), every captured range bound at its own guest address in both windows that hold it, nothing
+// else bound (reads of it are zeros: residencyNonResidentStrict). The capture's addresses are used as they are: no relocation.
+struct Guest {
+    Buf windows;   // (the window table: 513 entries)
+    uint64_t bytes = 0;
 };
 Guest guest;
-void guest_init(const Frame& f, const std::vector<const Draw*>& draws) {
-    std::set<uint32_t> ids;
-    for (const Draw* d : draws)
-        for (const auto& s : d->ssbos)
-            if (s.blob != ~0u) ids.insert(s.blob);
-    uint64_t at = 1 << 20;   // (nothing at 0)
-    for (uint32_t id : ids) {
-        const Blob& b = f.blobs[id];
-        at = (at + 0xFFFF) & ~0xFFFFull;
-        at += b.guest & 0xFFFF;   // (the low bits of the game's address kept)
-        guest.at[id] = at;
-        at += b.bytes.size() + 4096;
+constexpr uint64_t kStride = 2ull << 30, kWindow = (4ull << 30) - (64ull << 10);
+void guest_init(const Frame& f, const std::vector<const Draw*>&) {
+    // (the pages to bind, a 64 KB page each, with their bytes)
+    std::map<uint64_t, std::vector<uint8_t>> pages;
+    for (const Blob& b : f.blobs) {
+        if (!b.guest) continue;
+        for (uint64_t o = 0; o < b.bytes.size();) {
+            const uint64_t ga = b.guest + o, page = ga & ~0xFFFFull, in = ga - page;
+            const uint64_t n = std::min<uint64_t>(0x10000 - in, b.bytes.size() - o);
+            auto& pg = pages[page];
+            if (pg.empty()) pg.resize(0x10000);
+            std::memcpy(pg.data() + in, b.bytes.data() + o, n);
+            o += n;
+        }
     }
-    if (at >= (2ull << 30) - (1 << 20)) die("the captured storage (%llu MB) does not fit one window", (unsigned long long)(at >> 20));
-    guest.buf = make_buf(at + (1 << 20), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
-    for (const auto& [id, a] : guest.at) std::memcpy(guest.buf.map + a, f.blobs[id].bytes.data(), f.blobs[id].bytes.size());
+    std::map<uint32_t, std::vector<uint64_t>> by_window;   // (window -> pages, each bound at its offset there)
+    for (const auto& [page, bytes] : pages) {
+        const uint32_t k = (uint32_t)(page >> 31);
+        if (k < 512) by_window[k].push_back(page);
+        if (k > 0 && k - 1 < 512 && (page & (kStride - 1)) + kStride + 0x10000 <= kWindow) by_window[k - 1].push_back(page);
+    }
+    VkQueue sq = g.sparse_queue;
     guest.windows = make_buf(8 * 520 + 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    uint64_t* w = (uint64_t*)guest.windows.map;
-    for (int k = 0; k <= 512; k++) w[k] = guest.buf.addr;
+    uint64_t* table = (uint64_t*)guest.windows.map;
+    auto make_window = [&](const std::vector<uint64_t>& list, uint32_t k) {
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
+        bi.size = kWindow;
+        bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        VkBuffer buf;
+        VK(vkCreateBuffer(g.dev, &bi, nullptr, &buf));
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(g.dev, buf, &mr);
+        if (mr.alignment > 0x10000) die("sparse pages of %llu bytes", (unsigned long long)mr.alignment);
+        if (!list.empty()) {
+            const uint32_t t = mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            if (t == UINT32_MAX) die("no host-visible memory for the sparse windows");
+            VkMemoryAllocateFlagsInfo fi{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+            fi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+            VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            ai.pNext = &fi, ai.allocationSize = 0x10000ull * list.size(), ai.memoryTypeIndex = t;
+            VkDeviceMemory m;
+            VK(vkAllocateMemory(g.dev, &ai, nullptr, &m));
+            void* map;
+            VK(vkMapMemory(g.dev, m, 0, VK_WHOLE_SIZE, 0, &map));
+            std::vector<VkSparseMemoryBind> binds;
+            for (size_t i = 0; i < list.size(); i++) {
+                std::memcpy((uint8_t*)map + 0x10000 * i, pages[list[i]].data(), 0x10000);
+                const uint64_t off = list[i] - (uint64_t)k * kStride;
+                binds.push_back({off, 0x10000, m, 0x10000 * i, 0});
+            }
+            guest.bytes += ai.allocationSize;
+            VkSparseBufferMemoryBindInfo sb{buf, (uint32_t)binds.size(), binds.data()};
+            VkBindSparseInfo si{VK_STRUCTURE_TYPE_BIND_SPARSE_INFO};
+            si.bufferBindCount = 1, si.pBufferBinds = &sb;
+            VK(vkQueueBindSparse(sq, 1, &si, VK_NULL_HANDLE));
+        }
+        VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        da.buffer = buf;
+        return vkGetBufferDeviceAddress(g.dev, &da);
+    };
+    const VkDeviceAddress null_window = make_window({}, 0);
+    for (uint32_t k = 0; k <= 512; k++) table[k] = null_window;
+    for (const auto& [k, list] : by_window) table[k] = make_window(list, k);
+    VK(vkQueueWaitIdle(sq));
 }
 
 struct Ready {
@@ -454,7 +512,7 @@ Ready prepare(const Frame& f, const Draw& d) {
     r.p = &pit->second;
     const Program& p = *r.p;
     if (p.ubos.size() != d.ubos.size()) die("draw %u: %zu uniform buffers, its program %zu", d.d.seq, d.ubos.size(), p.ubos.size());
-    // (uniform buffers: each its own buffer, 64 KB at least and zero past the bytes; c0's storage table pointed at our copies)
+    // (uniform buffers: each its own buffer, 64 KB at least and zero past the bytes)
     for (size_t i = 0; i < d.ubos.size(); i++) {
         const mcap::McDrawUbo& u = d.ubos[i];
         std::vector<uint8_t> bytes;
@@ -462,17 +520,6 @@ Ready prepare(const Frame& f, const Draw& d) {
         else if (u.index == 1)
             for (const Stage& s : p.stages)
                 if (s.h.nvn_stage == u.stage) bytes = s.c1;
-        if (u.index == 0 && (u.stage == 6 || u.stage == 7)) {
-            const uint32_t table = u.stage == 7 ? 0x770 : 0x670;
-            for (const auto& s : d.ssbos) {
-                if (s.stage != u.stage || table + 16 * s.slot + 8 > bytes.size()) continue;
-                uint64_t a;
-                std::memcpy(&a, bytes.data() + table + 16 * s.slot, 8);
-                const auto it = s.blob != ~0u ? guest.at.find(s.blob) : guest.at.end();
-                const uint64_t to = it != guest.at.end() ? it->second : 0;
-                if (a == s.guest) std::memcpy(bytes.data() + table + 16 * s.slot, &to, 8);
-            }
-        }
         Buf b = make_buf(std::max<uint64_t>(bytes.size(), 64 << 10) + 256, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         std::memcpy(b.map, bytes.data(), bytes.size());
         r.ubo.push_back(b);
@@ -1035,7 +1082,7 @@ int main(int argc, char** argv) {
     gpu_init();
     heaps_init();
     guest_init(f, draws);
-    std::fprintf(stderr, "meshlab: %s, %zu draws; guest memory %llu MB\n", g.props.deviceName, draws.size(), (unsigned long long)(guest.buf.size >> 20));
+    std::fprintf(stderr, "meshlab: %s, %zu draws; guest memory %llu MB\n", g.props.deviceName, draws.size(), (unsigned long long)(guest.bytes >> 20));
 
     if (mode == "dump") {
         const auto geo = run_dump(f, *draws[0], !repl_dir.empty(), err);
