@@ -841,6 +841,19 @@ bool finish(Variant& v) {
                 if (info.stores_frag_color[i]) d.frag_stores |= (uint8_t)(1u << i);
                 d.frag_components[i] = info.frag_color_components[i];
             }
+        {   // (the shape, for the draw log)
+            int bank = 0, game = 0, computed = 0;
+            for (const auto& t : info.texture_descriptors) {
+                if (t.handle_program != ~0u) computed++;
+                else if (t.cbuf_index == 0 || t.cbuf_index == 2) bank++;
+                else game++;
+            }
+            const size_t k = std::strlen(d.shape);
+            std::snprintf(d.shape + k, sizeof d.shape - k, "%s%s: tex %d bank %d game %d computed, img %zu, ssbo %zu%s%s",
+                          k ? "; " : "", st.vk_stage == VK_SHADER_STAGE_VERTEX_BIT ? "vs" : "fs", bank, game, computed,
+                          info.image_descriptors.size(), info.storage_buffers_descriptors.size(),
+                          info.uses_global_memory ? ", global memory" : "", info.texture_buffer_descriptors.size() ? ", texel buffers" : "");
+        }
         if (si < 2) d.c1[si] = c1_put(st.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
     }
     d.push_bytes = kTablePush + 8 + 8 * (uint32_t)d.pushed.size();

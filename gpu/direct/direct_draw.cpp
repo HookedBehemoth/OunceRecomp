@@ -731,35 +731,36 @@ bool drawlog_on() {
 void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, uint32_t count) {
     if (!drawlog_on()) return;
     static std::atomic<int> n{0};
-    if (n++ > 400) return;
-    char b[1400];
+    if (n++ > 2500) return;   // (M3b: every draw of the frame, jobs too)
+    char b[8192];
     int k = std::snprintf(b, sizeof b, "direct: drawlog lr %#llx rt %llu: %s", (unsigned long long)l->info.lr, (unsigned long long)l->pass.set_rt_at, what);
     if (p)
-        k += std::snprintf(b + k, sizeof b - k, " prog %016llx vs_loads %#x stores %#x comp %x push %u ubos %zu pushed %zu ra %d", (unsigned long long)p->key,
+        k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " prog %016llx vs_loads %#x stores %#x comp %x push %u ubos %zu pushed %zu ra %d", (unsigned long long)p->key,
                            p->vs_loads, p->frag_stores, p->frag_components[0], p->push_bytes, p->ubos.size(), p->pushed.size(), p->uses_render_area);
     if (p) {
         for (const auto& u : p->ubos)
-            k += std::snprintf(b + k, sizeof b - k, " u%u.%u%s%llx", u.stage, u.index, u.index >= 3 ? "=" : "",
+            k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " u%u.%u%s%llx", u.stage, u.index, u.index >= 3 ? "=" : "",
                                u.index >= 3 && u.stage < kBankStages ? (unsigned long long)l->dctx->s.ubo[u.stage][u.index - 3].addr : 0ull);
-        for (const auto& q : p->pushed) k += std::snprintf(b + k, sizeof b - k, " p%u.%u@%u", q.stage, q.index, q.push_off);
+        for (const auto& q : p->pushed) k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " p%u.%u@%u", q.stage, q.index, q.push_off);
         const DState& s = l->dctx->s;
-        for (int i = 0; i < 16 && k < 1000; i++)
+        for (int i = 0; i < 16 && k < 7000; i++)
             if (p->vs_loads >> i & 1) {
                 const nvn_va_st a = *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]);
-                k += std::snprintf(b + k, sizeof b - k, " a%d fmt %#x s%u off %u stride %u buf %#llx+%llu", i, a.fmt, a.stream, a.offset,
+                k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " a%d fmt %#x s%u off %u stride %u buf %#llx+%llu", i, a.fmt, a.stream, a.offset,
                                    a.stream < 16 ? s.vstream[a.stream].stride : 0, a.stream < 16 ? (unsigned long long)s.vbuf[a.stream].address : 0ull,
                                    a.stream < 16 ? (unsigned long long)s.vbuf[a.stream].size : 0ull);
             }
-        k += std::snprintf(b + k, sizeof b - k, " discard %d poly %u front %u", (int)s.raster_discard, s.poly.mode, s.poly.front);
+        k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " [%s]", p->shape);
+        k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " discard %d poly %u front %u", (int)s.raster_discard, s.poly.mode, s.poly.front);
         for (const auto& t : p->tex_words) {
             const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0;
             char e[320];
             heap_describe(h & 0xFFFFF, e, sizeof e);
-            k += std::snprintf(b + k, sizeof b - k, " tex c%u+%#x=%#x(%s)", t.bank, t.offset, h, e);
+            k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " tex c%u+%#x=%#x(%s)", t.bank, t.offset, h, e);
         }
     }
     if (d)
-        k += std::snprintf(b + k, sizeof b - k, " n %u vp %.0f,%.0f %.0fx%.0f z %.2f-%.2f sc %d,%d %ux%u wm0 %x en0 %u eq0 %d/%d/%d cull %u dt %u dw %u st %u count %u samples %u",
+        k += std::snprintf(b + std::min<int>(k, (int)sizeof b - 1), k < (int)sizeof b - 1 ? sizeof b - 1 - k : 1, " n %u vp %.0f,%.0f %.0fx%.0f z %.2f-%.2f sc %d,%d %ux%u wm0 %x en0 %u eq0 %d/%d/%d cull %u dt %u dw %u st %u count %u samples %u",
                            d->n, d->vp.x, d->vp.y, d->vp.width, d->vp.height, d->vp.minDepth, d->vp.maxDepth, d->sc.offset.x, d->sc.offset.y,
                            d->sc.extent.width, d->sc.extent.height, d->n ? d->wm[0] : 0, d->n ? d->en[0] : 0, d->n ? (int)d->eq[0].srcColorBlendFactor : 0,
                            d->n ? (int)d->eq[0].dstColorBlendFactor : 0, d->n ? (int)d->eq[0].colorBlendOp : 0, d->cull, d->dt, d->dw, d->st, count, (unsigned)d->samples);

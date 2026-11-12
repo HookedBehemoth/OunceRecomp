@@ -66,6 +66,7 @@ struct DrawProg {
     };
     std::vector<TexWord> tex_words;   // (the handle words its textures read: logs)
     const char* skip = nullptr;   // (a variant step A cannot draw: the reason)
+    char shape[160]{};   // (M3b, logs: per stage the textures by their handle's source, images, storage buffers, global memory)
 };
 
 constexpr uint32_t kTablePush = 120;   // (push data: Eden's block is 120 bytes (PUSH_CONSTANTS_END rounded to 8))

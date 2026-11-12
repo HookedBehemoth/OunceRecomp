@@ -539,8 +539,11 @@ void heap_describe(uint32_t id, char* out, size_t cap) {
     const Image* im = slot_image[id];
     const SlotTex& st = slot_tex[id];
     int k = std::snprintf(out, cap, "id %u: texture %#llx %ux%u NVN format %#x target %d, ", id, (unsigned long long)st.gpu, st.w, st.h, st.format, st.target);
-    k += std::snprintf(out + k, cap - k, "image #%u %ux%u vk %d%s, entries", im ? im->id : 0, im ? im->width : 0, im ? im->height : 0,
-                          im ? (int)im->format : 0, im && im->placeholder ? " (placeholder)" : "");
+    const unsigned w = im ? im->written.load(std::memory_order_relaxed) : 0;   // (M3b: what has written it: W_* bits)
+    k += std::snprintf(out + k, cap - k, "image #%u %ux%u vk %d%s, written %s%s%s%s%s%s%s%s, entries", im ? im->id : 0, im ? im->width : 0,
+                       im ? im->height : 0, im ? (int)im->format : 0, im && im->placeholder ? " (placeholder)" : "", w ? "" : "never",
+                       w & W_ATTACHMENT ? "A" : "", w & W_COPY ? "C" : "", w & W_TEXELS ? "T" : "", w & W_CLEAR ? "L" : "",
+                       w & W_STORE ? "S" : "", w & W_TERRAIN ? "R" : "", w & W_GLYPH ? "G" : "");
     for (uint32_t r = 0; r < kHeapRegions; r++) {
         const uint8_t* e = res_heap.map + heap_region_offset(r) + (uint64_t)id * kImageDesc;
         bool any = false;
