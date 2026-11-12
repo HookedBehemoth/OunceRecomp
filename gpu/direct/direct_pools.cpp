@@ -606,6 +606,18 @@ bool layer0_bound(uint64_t lo, uint64_t hi) {   // (bound or being imported: a d
     return false;
 }
 
+bool layer0_pool_of(uint64_t addr, uint64_t& base, uint64_t& size, uint32_t& flags, bool& in_vram) {
+    std::lock_guard lk(mu);
+    bool found = false;
+    for (auto it = live.begin(); it != live.end() && it->first <= addr; ++it)
+        if (addr < it->first + it->second.size) base = it->first, size = it->second.size, flags = it->second.flags, found = true;
+    in_vram = false;
+    const uint64_t g = addr / G;
+    auto r = vram.upper_bound(g);
+    if (r != vram.begin() && (--r, g < r->second.g1)) in_vram = true;
+    return found;
+}
+
 bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset) {
     if (!size || gpu >= (1ull << 40) || !l0::fits_window(gpu, size) || state.load(std::memory_order_acquire) != 1) return false;
     const uint64_t hi = std::min(gpu + size, guest_bytes);

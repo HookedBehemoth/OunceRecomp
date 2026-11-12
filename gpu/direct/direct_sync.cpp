@@ -73,7 +73,9 @@ std::unordered_map<uint64_t, Queue*> by_id;
 
 // counts since the last line (mu held, or atomic)
 int64_t st_chunks = 0, st_chunk_waits = 0, st_upload_waits_gpu = 0, st_cbs = 0, st_submits = 0, st_held = 0, st_waits_met = 0, st_signals = 0, st_reports = 0, st_resets = 0, st_fence_held = 0;
-double st_hold_max_ms = 0;
+double st_hold_max_ms = 0, st_hold_ms = 0;
+int64_t st_freed_cpu = 0, st_freed_queue = 0;   // (M5: holds ended by the CPU's nvnEventSignal / by another queue's signal)
+bool in_cpu_signal = false;   // (progress() runs for nvnEventSignal; mu held)
 std::atomic<int64_t> st_submit_ns{0}, st_submit_max_ns{0}, st_cpu_waits{0}, st_cpu_wait_ns{0}, st_cpu_signals{0};
 
 Queue* queue_of(uint64_t id) {   // (mu held)
@@ -274,6 +276,8 @@ void progress() {
                 if (s.held) {
                     const double ms = std::chrono::duration<double, std::milli>(clk::now() - s.held_since).count();
                     if (ms > st_hold_max_ms) st_hold_max_ms = ms;
+                    st_hold_ms += ms;
+                    (in_cpu_signal ? st_freed_cpu : st_freed_queue)++;
                 }
                 const bool dumped = dump_claim(s.dumps, s.frame);
                 send_chunk(*q, s, true);   // (the last, even with no command buffer: its value is the submission's fence)
@@ -337,7 +341,9 @@ void nvn_finish() {   // (what is sent done; a submission held at a wait is not:
 void nvn_event_signal(uint64_t, uint32_t) {   // (the host wrote the value: the queues held at waits may go on)
     st_cpu_signals.fetch_add(1, std::memory_order_relaxed);
     std::lock_guard lk(mu);
+    in_cpu_signal = true;
     progress();
+    in_cpu_signal = false;
 }
 
 }  // namespace
@@ -405,15 +411,15 @@ void sync_stats(char* out, size_t cap, double frames) {
     for (const Queue* q : queues) held_now += q->subs.size();
     const int64_t ns = st_submit_ns.exchange(0), mx = st_submit_max_ns.exchange(0);
     std::snprintf(out, cap, "submits %.1f a frame (%.1f chunks, %.1f of them after an event wait; %.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
-                  "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms; %zu held now), fence waits held %lld, "
+                  "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms, %.2f ms a frame in all; ended by the CPU's signal %.1f, by another queue's %.1f; %zu held now), fence waits held %lld, "
                   "reports written by the CPU %.1f, resets on the CPU %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
                   "timeline %llu sent, %llu done; vkQueueSubmit2 %.1f a frame, %.3f ms a frame (all threads)",
                   st_submits / frames, st_chunks / frames, st_chunk_waits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
-                  st_hold_max_ms, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
+                  st_hold_max_ms, st_hold_ms / frames, st_freed_cpu / frames, st_freed_queue / frames, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
                   st_cpu_signals.exchange(0) / frames, st_cpu_waits.exchange(0) / frames, st_cpu_wait_ns.exchange(0) / 1e6 / frames,
                   (long long)st_upload_waits_gpu, (unsigned long long)sent.load(), (unsigned long long)sync_completed(), st_send_n.exchange(0) / frames, st_send_ns.exchange(0) / 1e6 / frames);
     st_chunks = st_chunk_waits = st_upload_waits_gpu = st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
-    st_hold_max_ms = 0;
+    st_hold_max_ms = st_hold_ms = 0, st_freed_cpu = st_freed_queue = 0;
 }
 
 void sync_fill_table(MkwVkRenderer& t) {

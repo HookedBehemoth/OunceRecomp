@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 #include "direct_cmd.h"
 #include "direct_compute.h"
@@ -44,6 +45,7 @@ struct ListQuery {
     int32_t open = -1;       // (the occlusion query active in the command buffer now)
     QSlot* open_q = nullptr;
     uint32_t segs[kSegs]{}, nsegs = 0;   // (the queries since the reset, ended)
+    bool over = false;                   // (more stretches than kSegs since the reset)
     QSlot* segs_q = nullptr;
     std::vector<Pend> pend;
     bool cond_want = false, cond_on = false;   // (a condition set; begun in the command buffer)
@@ -133,13 +135,79 @@ void stretch_end(ListQuery& x, VkCommandBuffer cb, bool keep) {
     if (keep) {
         if (x.segs_q != x.open_q) x.nsegs = 0, x.segs_q = x.open_q;   // (the counter's stretches all of one slot: a list's)
         if (x.nsegs < kSegs) x.segs[x.nsegs++] = (uint32_t)x.open;
-        else x.segs[kSegs - 1] = (uint32_t)x.open, count(Q_TOO_MANY);   // (cannot happen with one report a reset; counted)
+        else x.segs[kSegs - 1] = (uint32_t)x.open, x.over = true;   // (counted at a report that reads it)
     }
     x.open = -1, x.open_q = nullptr;
 }
 
+// ---- (HOS_DBG=replog) a frame's reports and conditions every 600 presents (at 300 past), read back 4 presents later ----
+struct Seen {
+    uint64_t addr;
+    uint32_t kind;   // (a counter type, or 100 + a condition's mode)
+};
+std::mutex log_mu;
+std::vector<Seen> log_seen;
+std::atomic<uint64_t> log_frame{0};
+std::atomic<bool> log_due{false};
+void log_note(uint64_t addr, uint32_t kind) {
+    static const bool on = dbg("replog");
+    if (!on) return;
+    const uint64_t f = present_count();
+    if (f % 600 == 300 && f > 300) {
+        std::lock_guard lk(log_mu);
+        if (log_frame.load() != f) log_seen.clear(), log_frame.store(f), log_due.store(true);
+        if (log_seen.size() < 2048) log_seen.push_back({addr, kind});
+        return;
+    }
+    if (!log_due.load(std::memory_order_relaxed) || f < log_frame.load() + 4) return;
+    std::vector<Seen> v;
+    {
+        std::lock_guard lk(log_mu);
+        if (!log_due.exchange(false)) return;
+        v.swap(log_seen);
+    }
+    std::vector<uint64_t> samples;
+    char first[400];
+    int k = 0;
+    first[0] = 0;
+    uint32_t conds = 0, on_now = 0, ts_n = 0;
+    double ts_lag_ms = 0;
+    const uint64_t now19 = host->ticks() * 32 * 12 / 625;
+    std::vector<uint64_t> pools;
+    for (const Seen& s : v) {
+        uint64_t w[3]{};
+        host->gpu_read(s.addr, w, s.kind >= 100 ? 24 : 16);
+        if (s.kind == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
+            samples.push_back(w[0]);
+            if (k < 360) k += std::snprintf(first + k, sizeof first - k, " %llu", (unsigned long long)w[0]);
+        } else if (s.kind == NVN_COUNTER_TYPE_TIMESTAMP || s.kind == NVN_COUNTER_TYPE_TIMESTAMP_TOP) {
+            ts_n++, ts_lag_ms += (double)((int64_t)(now19 - w[1])) * 625 / 12 / 1e6;
+        } else if (s.kind >= 100) {
+            conds++;
+            if ((w[0] != w[2]) == (s.kind == 101)) on_now++;
+        }
+        uint64_t base, size;
+        uint32_t flags;
+        bool in_vram;
+        if (pools.size() < 6 && layer0_pool_of(s.addr, base, size, flags, in_vram) &&
+            std::find(pools.begin(), pools.end(), base) == pools.end()) {
+            pools.push_back(base);
+            logf("direct: replog: reports at %#llx in pool %#llx+%#llx flags %#x, %s", (unsigned long long)s.addr, (unsigned long long)base,
+                 (unsigned long long)size, flags, in_vram ? "in VRAM" : "host memory");
+        }
+    }
+    std::vector<uint64_t> sorted = samples;
+    std::sort(sorted.begin(), sorted.end());
+    const size_t zeros = (size_t)(std::upper_bound(sorted.begin(), sorted.end(), 0ull) - sorted.begin());
+    logf("direct: replog present %llu (read at %llu): %zu samples reports (%zu zero; median %llu, max %llu), first:%s; %u timestamps %.2f ms "
+         "before now (mean); %u conditions, %u of them render now", (unsigned long long)log_frame.load(), (unsigned long long)f, samples.size(), zeros,
+         sorted.empty() ? 0ull : (unsigned long long)sorted[sorted.size() / 2], sorted.empty() ? 0ull : (unsigned long long)sorted.back(), first,
+         ts_n, ts_n ? ts_lag_ms / ts_n : 0.0, conds, on_now);
+}
+
 void report(List* l, ListQuery& x, const nvn_p_counter& c, bool rendering, CmdOf cmd) {
     const uint32_t type = (uint32_t)c.type;
+    log_note(c.addr, type);
     count(Q_REPORTS);
     count(type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? Q_SAMPLES : type == NVN_COUNTER_TYPE_TIMESTAMP ? Q_TIMESTAMP
                                                   : type == NVN_COUNTER_TYPE_TIMESTAMP_TOP ? Q_TOP : Q_OTHER);
@@ -159,6 +227,7 @@ void report(List* l, ListQuery& x, const nvn_p_counter& c, bool rendering, CmdOf
         stretch_end(x, cb, true);   // (the counter goes on: the next draw opens the next stretch)
         if (!x.counting) count(Q_NO_RESET);
         if (x.nsegs > 1) count(Q_SUMMED);
+        if (x.over) count(Q_TOO_MANY);
         if (x.segs_q == q || !x.nsegs) {
             r.n = p.n = x.nsegs;
             for (uint32_t k = 0; k < x.nsegs; k++) r.occ[k] = p.occ[k] = x.segs[k];
@@ -254,7 +323,7 @@ void query_op(List* l, uint32_t op, const void* data, uint32_t size, bool render
         count(Q_RESETS);
         x.has_ops = true;
         if (x.open >= 0) stretch_end(x, l->cur, false);   // (its samples are not counted)
-        x.counting = true, x.nsegs = 0, x.segs_q = nullptr;
+        x.counting = true, x.nsegs = 0, x.segs_q = nullptr, x.over = false;
         return;
     }
     case NOP_REPORT_COUNTER: {
@@ -269,6 +338,7 @@ void query_op(List* l, uint32_t op, const void* data, uint32_t size, bool render
         if (size < sizeof r) return;
         std::memcpy(&r, data, sizeof r);
         count(Q_CONDS);
+        log_note(r.addr, 100 + (uint32_t)r.mode);
         if (l->secondary) count(Q_COND_JOB);
         if (x.cond_on && l->cur) cond_end(x, l->cur);
         x.cond_want = true, x.cond_addr = r.addr, x.cond_mode = r.mode;
@@ -435,8 +505,11 @@ void query_list_free(List* l) {
 
 void query_stats(char* out, size_t cap, double frames) {
     calibrate();
-    int k = std::snprintf(out, cap, "reports and conditions a frame:");
-    for (int i = 0; i < Q_COUNT; i++) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.1f", i ? "," : "", kNames[i], st[i].exchange(0) / frames);
+    int k = std::snprintf(out, cap, "reports a frame:");
+    for (int i = 0; i < Q_COUNT; i++) {
+        if (i == Q_CONDS) logf("direct: %s", out), k = std::snprintf(out, cap, "conditions a frame:");
+        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.1f", i == 0 || i == Q_CONDS ? "" : ",", kNames[i], st[i].exchange(0) / frames);
+    }
 }
 
 }  // namespace hsd

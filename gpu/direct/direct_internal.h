@@ -121,5 +121,7 @@ bool layer0_bound(uint64_t lo, uint64_t hi);
 /// in one window, not guest memory, or not importable
 bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& offset);
 void layer0_stats(char* out, size_t cap);
+/// (M5, debug logs) the game's pool holding guest addr: base, size, NVN flags, whether addr's granule is in VRAM; false: none
+bool layer0_pool_of(uint64_t addr, uint64_t& base, uint64_t& size, uint32_t& flags, bool& in_vram);
 
 }  // namespace hsd
