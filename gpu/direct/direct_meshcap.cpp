@@ -198,7 +198,7 @@ void meshcap_after() {
                 if (v >> 32 < 0x10 || v >> 32 >= 0x200 || (v & 3)) continue;
                 const uint64_t lo = v & ~0xFFFull;
                 uint64_t& e = want[lo];
-                e = std::max(e, lo + (4ull << 20));
+                e = std::max<uint64_t>(e, lo + (4ull << 20));
             }
         }
         uint64_t covered = 0, total = 0;
