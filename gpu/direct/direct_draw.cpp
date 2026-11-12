@@ -102,7 +102,7 @@ const char* const kReasons[R_COUNT] = {
     "mesh argument records closer than 12 bytes", "mesh draws left out (HOS_DBG=meshdry)",
     "task+mesh draws whose task step was not recorded (M4c)", "task+mesh indirect draws of several records or with a count (M4c)",
     "of the drawn: task+mesh (a task step)",
-    "of the drawn: task+mesh, kept apart from the task+mesh draw before it (M6d)"};
+    "of the drawn: task+mesh, after a wait for the work before it (M6d)"};
 // (M3b: the counters a draw bumps are the recording thread's own: a global atomic added to by every draw on every recording
 // thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
 struct TStats {
@@ -225,7 +225,7 @@ struct ListDraw {
     bool heap = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ms = VK_NULL_HANDLE;
     bool shaders = false;
-    bool last_tm = false;    // (M6d: the last draw recorded in this command buffer was a task+mesh draw: the next one is kept apart from it)
+    bool last_tm = false;    // (M6d, HOS_DBG=tmsyncpair: the last draw recorded in this command buffer was a task+mesh draw)
     uint32_t vb_bound = 0;   // (the vertex bindings given a buffer in this command buffer)
     Dyn dyn;
     uint64_t vi_sig = 0;
@@ -1374,13 +1374,16 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         const uint32_t mk = marks_on() ? mark_before(cb, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw", prog->key,
                                                      l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: HOS_DBG=marks)
         if (marks_on() && prog->task) mark_header(mk, task_last_header);
-        // (M6d) Two task+mesh draws in a row never overlap on the GPU. The native mesh stages of two such draws running together
-        // in one rendering lose the device on this GPU (RX 6950 XT, RADV 26.2.4 and main; docs/direct/m6d-report.md): with
-        // the pipe drained before every one (HOS_DBG=tmsync), or only between two in a row (tmsyncpair), or with this barrier,
-        // 0 losses against 12 of 12 without. The barrier is the one a rendering may hold (dynamicRenderingLocalRead:
-        // framebuffer stages, by region); RADV records it as a wait for the earlier draws' pixel work, which ends their mesh
-        // work too. The class is the program's shape (a mesh stage that reads its workgroups from a task step), no program is named
-        if (prog->task && x.last_tm) {
+        // (M6d) No two task+mesh draws overlap on the GPU: each waits for all work before it in the queue. The native mesh stages
+        // of two such draws running together lose the device on this GPU (RX 6950 XT, RADV 26.2.4 and main;
+        // docs/direct/m6d-report.md), 13 of 13 market runs without a separation. The wait is before every one, not only after
+        // another in the same command buffer: two can follow each other across job secondaries, renderings and submits with
+        // ordinary draws between them, which do not drain the pipe. The barrier is the one a rendering may hold
+        // (dynamicRenderingLocalRead: framebuffer stages, by region); RADV records it as a PS partial flush (and CB/DB flushes),
+        // an event in the queue's order that ends when every earlier draw's pixel work has, so also their mesh work. The class is
+        // the program's shape (a mesh stage that reads its workgroups from a task step), no program is named. A mitigation: it
+        // keeps two such mesh stages from overlapping; why overlapping loses the device is not known (the report)
+        if (prog->task) {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
             VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
