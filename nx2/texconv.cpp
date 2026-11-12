@@ -35,12 +35,15 @@ HK_API int hk_has_encoders() {
 
 // ---- block-linear ----------------------------------------------------------------------------------------------------
 // GOB = 64 bytes x 8 rows (512 B); a block is 1 GOB wide and 1 << bh_log2 GOBs tall, blocks row-major. Within a GOB the
-// byte (x, y) is at (x%64/32)*256 + (y%8/2)*64 + (x%32/16)*32 + (y%2)*16 + x%16: 16 bytes in a row are contiguous.
+// byte (x, y) is at (x%64/32)*256 + (y%8/4)*128 + (x%32/16)*64 + (y%4/2)*32 + (y%2)*16 + x%16: 16 bytes in a row are
+// contiguous. This is the Switch 2's GOB (gpu/vk/vk_texture.cpp's, suyu's with the Switch 2 swizzle; M4d): the Switch 1's
+// (x%64/32)*256 + (y%8/2)*64 + (x%32/16)*32 + (y%2)*16 + x%16 shuffled the 16-byte pieces of every GOB, which a texture's
+// last, partial GOB column showed (ASTC blocks of zeros: magenta in the decoder)
 static inline uint64_t bl_offset(uint32_t x, uint32_t y, uint32_t gobs_x, uint32_t bh_log2) {
     const uint32_t rows_per_block = 8u << bh_log2;
     const uint64_t block = (uint64_t)(y / rows_per_block) * gobs_x + x / 64;
     return block * (512ull << bh_log2) + (uint64_t)((y % rows_per_block) / 8) * 512 + ((x % 64) / 32) * 256 +
-           ((y % 8) / 2) * 64 + ((x % 32) / 16) * 32 + (y % 2) * 16 + (x % 16);
+           ((y % 8) / 4) * 128 + ((x % 32) / 16) * 64 + ((y % 4) / 2) * 32 + (y % 2) * 16 + (x % 16);
 }
 
 /// Bytes of one block-linear surface of width_bytes x rows at this block height (the mip's own, already reduced)
