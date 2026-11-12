@@ -103,6 +103,19 @@ def check_targets():
         t = P.choose_target(fmt, (2, 3, 4, 5))
         assert (t["kind"], t["vk"]) == (kind, vk), (hex(fmt), t)
     assert P.choose_target(0x7701, (2, 3, 4, 5))["kind"] == "none"
+    # the fallback rules: BC7 of the channels read (1), then exact uncompressed (2), for ASTC only
+    t = P.choose_target(astc55u, (2, 5, 0, 1), rule=1)
+    assert (t["kind"], t["vk"], t["map"], t["used"]) == ("bc7", 145, [SR, SG, SB, SA], [0, 3]), t
+    for sel, srgb, vk, pack, m in [((2, 5, 0, 1), False, 16, [0, 3], [SR, SR, SR, SG]),          # normal map R, A: RG8
+                                   ((2, 2, 2, 2), False, 9, [0], [SR] * 4), ((5, 5, 5, 5), False, 9, [3], [SR] * 4),
+                                   ((3, 3, 3, 3), False, 9, [1], [SR] * 4), ((2, 3, 4, 1), False, 37, [0, 1, 2, 3], [SR, SG, SB, SA]),
+                                   ((2, 3, 4, 5), False, 37, [0, 1, 2, 3], [SR, SG, SB, SA]),
+                                   ((2, 2, 2, 2), True, 15, [0], [SR] * 4), ((5, 5, 5, 5), True, 9, [3], [SR] * 4),
+                                   ((2, 3, 4, 5), True, 43, [0, 1, 2, 3], [SR, SG, SB, SA]), ((2, 5, 0, 1), True, 43, [0, 1, 2, 3], [SR, SG, SB, SA])]:
+        t = P.choose_target(((0x2f << 8) | (6 if srgb else 1)), sel, rule=2)
+        assert (t["kind"], t["vk"], t["pack"], t["map"]) == ("raw", vk, pack, m), (sel, srgb, t)
+    assert P.choose_target(astc55u, (2, 5, 0, 1), rule=2)["dropped"] == 0b0110
+    assert P.choose_target((0x1a << 8) | 1, (2, 3, 4, 5), rule=2)["kind"] == "copy_bc"   # (rules only touch ASTC)
 
 
 def check_frames():
@@ -320,6 +333,48 @@ def check_run(nat, tmp, encoders, bc7enc, ispc):
     assert st["files"] == len(files), st
 
 
+def check_fallback(nat, tmp, bc7enc, ispc):
+    """Textures that cannot reach the floor as BC5 / BC7 are prepared uncompressed, exactly, and the rule is recorded"""
+    romfs = Path(tmp) / "romfs2"
+    (romfs / "Tex").mkdir(parents=True)
+    out = Path(tmp) / "store2"
+    rnd = random.Random(9)
+    noise = lambda m, layer, i: tuple(rnd.randrange(256) for _ in range(4))   # (a new colour for every ASTC block)
+    specs = [tex_spec("NrmHard", (0x2f << 8) | 1, 40, 35, 1, 3, 0, sel=(2, 5, 0, 1), filler=astc_filler(noise)),
+             tex_spec("OneHard", (0x2d << 8) | 1, 32, 32, 1, 2, 0, sel=(2, 2, 2, 2), filler=astc_filler(noise)),
+             tex_spec("AlbHard", (0x2d << 8) | 6, 32, 20, 2, 2, 0, target=5, sel=(2, 3, 4, 1), filler=astc_filler(noise))]
+    b = make_bntx(nat, specs)
+    (romfs / "Tex" / "Hard.bntx.zs").write_bytes(zstandard.ZstdCompressor(level=3).compress(b))
+    P.astc_decode = fake_astc_decode
+    kw = dict(bc7enc=bc7enc, ispc=ispc, min_psnr=99.5)   # (no lossy target reaches 99.5 dB: every one ends exact)
+    assert P.run(opts_for(romfs, out, **kw))["code"] == 0
+    _cfg, entries, _n = P.read_index(str(out / "index.bin"))
+    assert len(entries) == 1
+    want = {"NrmHard": (16, [0, 3]), "OneHard": (9, [0]), "AlbHard": (43, [0, 1, 2, 3])}
+    for spec_t, t in zip(specs, entries[0]["textures"]):
+        r = t["rec"]
+        vk, pack = want[spec_t["name"]]
+        assert (r["status"], r["kind"], r["rule"], r["vk_format"]) == ("ok", "raw", P.RULE["raw"], vk), r
+        assert r["psnr"] == 99.0 and r["psnr_first"] < 99.5, r
+        raw = P.read_frames(str(out), t["frames"], r["raw_size"])
+        for m in range(spec_t["mips"]):
+            mo, lb = t["mips"][m]
+            w, h = max(1, spec_t["w"] >> m), max(1, spec_t["h"] >> m)
+            for layer in range(spec_t["layers"]):
+                src = fake_astc_decode(np.frombuffer(spec_t["lin"][(m, layer)], np.uint8), w, h, *P.FMT[spec_t["fmt"] >> 8][1:3])
+                if spec_t["name"] == "AlbHard":
+                    src = src.copy()
+                    src[..., 3] = 255   # (the swizzle reads R, G, B: the unused alpha is forced to 255)
+                    want_bytes = src.tobytes()
+                else:
+                    want_bytes = src[..., pack].tobytes()
+                assert lb == len(want_bytes) and raw[mo + layer * lb:mo + (layer + 1) * lb] == want_bytes, (spec_t["name"], m, layer)
+    assert P.verify(opts_for(romfs, out, verify=5, **kw)) == 0
+    # (a record left refused by an older run is made again, though its file is unchanged)
+    st = P.run(opts_for(romfs, out, **kw))
+    assert st["files"] == 0, st
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cxx")
@@ -339,6 +394,8 @@ def main():
         if not encoders:
             print("(no bc7enc_rdo / ISPC here: the converted textures are not checked)")
         check_run(nat, tmp, encoders, a.bc7enc, a.ispc)
+        if encoders:
+            check_fallback(nat, tmp, a.bc7enc, a.ispc)
     print("prepare_textures: ok")
 
 

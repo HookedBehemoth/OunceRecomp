@@ -21,10 +21,18 @@ What becomes of a texture (choose_target, by the texture's own channel swizzle a
     --bc1-opaque: ASTC sRGB colour whose alpha is unused or 255 everywhere -> BC1_RGB_SRGB
     BC1..BC7 (BC6H too: the HDR textures)        -> kept, blocks as they are (only deswizzled)
     R8, RG8, RGBA8, R16, RG16, RGBA16F, R11G11B10F, R32F ... -> kept, deswizzled
-    anything else, 3D, or a layout that does not add up -> not prepared (status 'unsupported': the runtime path)
+    anything else, 3D, or a layout that does not add up -> not prepared (status 'unsupported': drawn as a placeholder)
 The quality check: every converted image (each mip of each layer) is decoded back and compared with the ASTC decode on
-the used channels. A texture whose PSNR over all its images is below --min-psnr (35 dB) is refused: no data, status
-'refused', the runtime path keeps it. No RDO.
+the used channels. A texture whose PSNR over all its images is below --min-psnr (35 dB) does not stay refused: the new
+renderer has no ASTC decoder and no run-time conversion, so every texture must be prepared. The rule that applied is
+recorded (RULE, texture record byte 116):
+    0 primary   the target above
+    1 bc7       BC4 / BC5 below the floor -> BC7 of the channels read (alpha-decorrelated normal maps, ...)
+    2 raw       still below the floor (or BC7 itself below it) -> uncompressed, exact (PSNR 99), in the smallest format
+                for the channels read: R8 (one channel), RG8 (two), RGBA8 (three or four); sRGB colour stays *_SRGB
+                (R8_SRGB for one colour channel, else RGBA8_SRGB); the channel map says where each source channel is.
+Only a texture with no Vulkan format (status 'unsupported', why in the report) is left; there is none in the game's romfs.
+No RDO.
 
 Store (all little-endian; FORMAT_VERSION 1):
   pack_NNN.bin   64-byte header {char[8] "HKTXPAK1", u32 version, u32 pack id, 48 x 0}, then zstd frames back to back.
@@ -55,7 +63,8 @@ Store (all little-endian; FORMAT_VERSION 1):
                   80 u64 content hash (BLAKE2b-64 of BRTI [0x10, 0x60) and the swizzled image bytes)
                   88 u32 BRTI offset in the BNTX  92 u32 image size (BRTI+0x50)  96 u32 data offset (mip 0 in the BNTX)
                  100 f32 PSNR (dB, all images; 0 when not converted)  104 f32 worst image's PSNR (images >= 4096 px)
-                 108 u32 alignment (BRTI+0x54)  112 u32 ASTC blocks with HDR endpoint modes  116..127 0
+                 108 u32 alignment (BRTI+0x54)  112 u32 ASTC blocks with HDR endpoint modes  116 u8 RULE  120 f32 PSNR of the first target tried
+                     (rule != 0: the one that fell below the floor)  117..119, 124..127 0
                  mip record (16 B): u64 offset of the mip in the texture's raw data (a multiple of 4: zero padding
                      before it when the mip above ends unaligned), u32 bytes of one layer, u32 0.
                      Layer l of mip m is at offset + l * layer bytes; rows of blocks, packed (bufferRowLength 0). A
@@ -88,7 +97,9 @@ CONV_VERSION = 1      # bump when the output of a texture changes
 FORMAT_VERSION = 1    # bump when the index or pack layout changes
 SKIP_DIRS = ("Sound", "Voice", "TerrainArc")   # audio, and TARB terrain tiles (not BNTX: asset-path.md A6)
 
-KIND = {"none": 0, "copy_bc": 1, "copy": 2, "bc7": 3, "bc5": 4, "bc4": 5, "bc1": 6}
+KIND = {"none": 0, "copy_bc": 1, "copy": 2, "bc7": 3, "bc5": 4, "bc4": 5, "bc1": 6, "raw": 7}
+RULE = {"primary": 0, "bc7": 1, "raw": 2}
+RULE_NAME = {v: k for k, v in RULE.items()}
 KIND_NAME = {v: k for k, v in KIND.items()}
 STATUS = {"ok": 0, "refused": 1, "unsupported": 2, "error": 3}
 STATUS_NAME = {v: k for k, v in STATUS.items()}
@@ -126,6 +137,7 @@ VK_KEPT = {
     (0x15, 1): 91, (0x15, 5): 97, (0x17, 5): 103, (0x19, 5): 109,
 }
 VK_BC7, VK_BC7_SRGB, VK_BC5, VK_BC4, VK_BC1_RGB_SRGB, VK_BC1_RGB = 145, 146, 141, 139, 132, 131
+VK_R8, VK_R8_SRGB, VK_RG8, VK_RGBA8, VK_RGBA8_SRGB = 9, 15, 16, 37, 43
 # BNTX target (BRTI+0x5C) -> VkImageViewType
 VIEW = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 8: 6}
 
@@ -405,9 +417,10 @@ def used_channels(comp_sel):
     return sorted({c - 2 for c in comp_sel if 2 <= c <= 5})
 
 
-def choose_target(fmt, comp_sel, bc1_opaque=False, alpha_opaque=None):
+def choose_target(fmt, comp_sel, bc1_opaque=False, alpha_opaque=None, rule=0):
     """What the converter makes of a texture: dict(kind, vk, enc, c0, c1, map, dropped, used, fill, force_alpha), or
-    kind 'none' with why. alpha_opaque: whether every texel's alpha is 255 (only asked for --bc1-opaque)."""
+    kind 'none' with why. alpha_opaque: whether every texel's alpha is 255 (only asked for --bc1-opaque).
+    rule: RULE (0 the target by the swizzle, 1 BC7 of the channels read, 2 uncompressed); 1 and 2 only for ASTC."""
     hi, var = fmt >> 8, fmt & 0xff
     ident = [SW_R, SW_G, SW_B, SW_A]
     if hi not in FMT:
@@ -420,6 +433,13 @@ def choose_target(fmt, comp_sel, bc1_opaque=False, alpha_opaque=None):
     srgb = var == 6
     used = used_channels(comp_sel)
     dropped = sum(1 << c for c in range(4) if c not in used)
+    colour = [c for c in used if c < 3]
+    alpha_unused = 3 not in used
+    if rule == 2:
+        return raw_plan(srgb, used, dropped, colour, alpha_unused)
+    if rule == 1:
+        return dict(kind="bc7", vk=VK_BC7_SRGB if srgb else VK_BC7, enc="bc7", map=ident, dropped=dropped, used=used,
+                    fill=colour[0] if colour else None, force_alpha=alpha_unused)
     if not srgb and len(used) <= 1:
         c0 = used[0] if used else 0
         return dict(kind="bc4", vk=VK_BC4, enc="bc4", c0=c0, c1=c0, map=[SW_R] * 4, dropped=sum(1 << c for c in range(4) if c != c0), used=used)
@@ -428,13 +448,36 @@ def choose_target(fmt, comp_sel, bc1_opaque=False, alpha_opaque=None):
         m = [SW_R] * 4
         m[c1] = SW_G
         return dict(kind="bc5", vk=VK_BC5, enc="bc5", c0=c0, c1=c1, map=m, dropped=dropped, used=used)
-    colour = [c for c in used if c < 3]
-    alpha_unused = 3 not in used
     if bc1_opaque and srgb and len(colour) >= 2 and (alpha_unused or alpha_opaque):
         return dict(kind="bc1", vk=VK_BC1_RGB_SRGB, enc="bc1", map=[SW_R, SW_G, SW_B, SW_ONE], dropped=dropped | 8,
                     used=used, fill=colour[0], force_alpha=True)
     return dict(kind="bc7", vk=VK_BC7_SRGB if srgb else VK_BC7, enc="bc7", map=ident, dropped=dropped, used=used,
                 fill=colour[0] if colour else None, force_alpha=alpha_unused)
+
+
+def raw_plan(srgb, used, dropped, colour, alpha_unused):
+    """Uncompressed and exact: R8 for one channel, RG8 for two, else RGBA8 (an sRGB image keeps the *_SRGB format, and
+    a single alpha channel is linear, so R8_UNORM). pack: the source channels in the order the prepared texel holds them."""
+    used = list(used) or [0]
+    if len(used) == 1 and (not srgb or used[0] == 3):
+        c0 = used[0]
+        return dict(kind="raw", vk=VK_R8, enc="raw", pack=[c0], map=[SW_R] * 4, dropped=sum(1 << c for c in range(4) if c != c0), used=used)
+    if len(used) == 1 and srgb:
+        c0 = used[0]
+        return dict(kind="raw", vk=VK_R8_SRGB, enc="raw", pack=[c0], map=[SW_R] * 4, dropped=sum(1 << c for c in range(4) if c != c0), used=used)
+    if len(used) == 2 and not srgb:
+        m = [SW_R] * 4
+        m[used[1]] = SW_G
+        return dict(kind="raw", vk=VK_RG8, enc="raw", pack=list(used), map=m, dropped=dropped, used=used)
+    return dict(kind="raw", vk=VK_RGBA8_SRGB if srgb else VK_RGBA8, enc="raw", pack=[0, 1, 2, 3], map=[SW_R, SW_G, SW_B, SW_A],
+                dropped=dropped, used=used, fill=colour[0] if colour else None, force_alpha=alpha_unused)
+
+
+def raw_texels(rgba, plan):
+    """The uncompressed texels of a raw plan from the decoded RGBA8: (h, w, len(pack)) uint8, packed rows"""
+    import numpy as np
+    x = prepare_input(rgba, dict(plan, enc="bc7")) if len(plan["pack"]) == 4 else rgba
+    return np.ascontiguousarray(x[..., plan["pack"]])
 
 
 def prepare_input(rgba, plan):
@@ -457,6 +500,8 @@ def prepare_input(rgba, plan):
 
 def compared_channels(plan):
     """[(source channel, decoded channel)] the quality check compares"""
+    if plan["enc"] == "raw":
+        return [(c, i) for i, c in enumerate(plan["pack"]) if c in plan["used"]]
     if plan["enc"] == "bc4":
         return [(plan["c0"], 0)]
     if plan["enc"] == "bc5":
@@ -537,9 +582,43 @@ def convert_texture(nat, arr, b, t, opts, cctx):
     if plan["enc"] and opts.bc1_opaque and plan["kind"] == "bc7" and t.format & 0xff == 6 and 3 in plan["used"]:
         opaque = all((astc_decode(lin, w, h, bw, bhp)[..., 3] == 255).all() for _m, _l, w, h, lin in images(nat, arr, t))
         plan = choose_target(t.format, t.comp_sel, True, opaque)
-    rec.update(kind=plan["kind"], vk_format=plan["vk"], map=plan["map"], dropped=plan["dropped"])
+    # the rules in order: the target by the swizzle; a lossy target below the floor -> BC7 (when it was BC4 / BC5) -> exact
+    rules = [0] + ([1] if plan["enc"] in ("bc4", "bc5", "bc1") else []) + ([2] if plan["enc"] else [])
+    tried = []
+    for rule in rules:
+        if rule:
+            plan = choose_target(t.format, t.comp_sel, rule=rule)
+        res = encode_plan(nat, arr, t, plan, opts, cctx, rec_flags=rec["flags"])
+        tried.append((plan["kind"], res["psnr"]))
+        if res["psnr"] >= opts.min_psnr or rule == rules[-1]:
+            break
+    rec.update(kind=plan["kind"], vk_format=plan["vk"], map=plan["map"], dropped=plan["dropped"], rule=rule,
+               flags=res["flags"], raw_size=len(res["raw"]), psnr=res["psnr"], psnr_min=res["psnr_min"],
+               hdr_blocks=res["hdr"][0] + res["hdr"][1], astc_scan=res["hdr"])
+    if rule:
+        rec["first_try"] = tried[0]
+        rec["psnr_first"] = tried[0][1]
+    if plan["enc"] not in (None, "raw") and rec["psnr"] < opts.min_psnr:   # (not reached: the last rule is exact)
+        rec.update(status="refused", kind="none", vk_format=0, raw_size=0, rule=0,
+                   why="PSNR %.2f < %.1f (as %s)" % (rec["psnr"], opts.min_psnr, plan["kind"]), refused_kind=plan["kind"])
+        return out
+    rec["status"] = "ok"
+    raw, mips = res["raw"], res["mips"]
+    out["mips"] = mips
+    starts = [o for o, _n in mips] + [len(raw)]
+    ranges = [(starts[i], starts[i + 1] - starts[i]) for i in range(len(mips))]   # (with a mip's padding)
+    for a, n in frames_of(len(raw), ranges, opts.frame_kb << 10):
+        out["frames"].append((a, n, cctx.compress(raw[a:a + n])))
+    return out
+
+
+def encode_plan(nat, arr, t, plan, opts, cctx, rec_flags=0):
+    """Every image of the texture made as `plan` says: dict(raw, mips, psnr, psnr_min, hdr, flags)"""
+    import numpy as np
+    _n, bw, bhp, bpb = FMT[t.format >> 8]
+    flags = rec_flags
     if plan.get("force_alpha"):
-        rec["flags"] |= FLAG_ALPHA_FORCED
+        flags |= FLAG_ALPHA_FORCED
     parts, mips = [], []
     raw_off = 0
     se, n_vals, worst, hdr = 0.0, 0, 99.0, [0, 0, 0, 0]
@@ -550,17 +629,22 @@ def convert_texture(nat, arr, b, t, opts, cctx):
             for i, v in enumerate(nat.astc_scan(lin)):
                 hdr[i] += v
             src = astc_decode(lin, w, h, bw, bhp)
-            blk = nat.encode(plan["enc"], prepare_input(src, plan), plan.get("c0", 0), plan.get("c1", 1), opts.bc7_level, opts.bc45_radius)
-            dec = nat.decode(plan["enc"], blk, w, h)
-            ise = 0.0
-            for sc, dc in pairs:
-                d = dec[..., dc].astype(np.int32) - src[..., sc]
-                ise += float(np.dot(d.ravel(), d.ravel()))
-            se += ise
-            n_vals += w * h * len(pairs)
-            if w * h >= 4096 and pairs:
-                worst = min(worst, psnr_of(ise, w * h * len(pairs)))
-            data = blk
+            if plan["enc"] == "raw":
+                data = raw_texels(src, plan).reshape(-1)   # (exact: nothing to compare)
+                se += 0.0
+                n_vals += w * h * len(pairs)
+            else:
+                blk = nat.encode(plan["enc"], prepare_input(src, plan), plan.get("c0", 0), plan.get("c1", 1), opts.bc7_level, opts.bc45_radius)
+                dec = nat.decode(plan["enc"], blk, w, h)
+                ise = 0.0
+                for sc, dc in pairs:
+                    d = dec[..., dc].astype(np.int32) - src[..., sc]
+                    ise += float(np.dot(d.ravel(), d.ravel()))
+                se += ise
+                n_vals += w * h * len(pairs)
+                if w * h >= 4096 and pairs:
+                    worst = min(worst, psnr_of(ise, w * h * len(pairs)))
+                data = blk
         else:
             data = lin
         if m != cur_mip:
@@ -572,25 +656,23 @@ def convert_texture(nat, arr, b, t, opts, cctx):
         parts.append(data.tobytes())
         raw_off += len(data)
     raw = b"".join(parts)
-    del parts
-    rec["raw_size"] = len(raw)
+    res = dict(raw=raw, mips=mips, psnr=0.0, psnr_min=0.0, hdr=hdr, flags=flags)
     if plan["enc"]:
-        rec["psnr"] = psnr_of(se, n_vals) if n_vals else 99.0
-        rec["psnr_min"] = worst
-        rec["hdr_blocks"] = hdr[0] + hdr[1]
-        rec["astc_scan"] = hdr
-        if rec["hdr_blocks"]:
-            rec["flags"] |= FLAG_ASTC_HDR
-        if rec["psnr"] < opts.min_psnr:
-            rec.update(status="refused", kind="none", vk_format=0, raw_size=0,
-                       why="PSNR %.2f < %.1f (as %s)" % (rec["psnr"], opts.min_psnr, plan["kind"]), refused_kind=plan["kind"])
-            return out
-    rec["status"] = "ok"
-    out["mips"] = mips
-    starts = [o for o, _n in mips] + [len(raw)]
-    ranges = [(starts[i], starts[i + 1] - starts[i]) for i in range(len(mips))]   # (with a mip's padding)
-    for a, n in frames_of(len(raw), ranges, opts.frame_kb << 10):
-        out["frames"].append((a, n, cctx.compress(raw[a:a + n])))
+        res["psnr"] = psnr_of(se, n_vals) if n_vals else 99.0
+        res["psnr_min"] = worst
+        if hdr[0] + hdr[1]:
+            res["flags"] |= FLAG_ASTC_HDR
+    else:
+        res["psnr"] = 99.0
+    return res
+
+
+def raw_decode(seg, w, h, plan):
+    """The prepared texels of a raw plan as (h, w, 4): the packed channels first, the rest 0"""
+    import numpy as np
+    n = len(plan["pack"])
+    out = np.zeros((h, w, 4), np.uint8)
+    out[..., :n] = np.frombuffer(seg, np.uint8).reshape(h, w, n)
     return out
 
 
@@ -659,7 +741,7 @@ def work_file(job):
 IDX_MAGIC, PAK_MAGIC = b"HKTXIDX1", b"HKTXPAK1"
 FILE_REC, TEX_REC, MIP_REC, FRAME_REC = 64, 128, 16, 32
 FILE_FMT = "<IIQQQQIIIIII"
-TEX_FMT = "<IIIIIIBBBB4B4BBBHIIIIIIIIQQIIIffII12x"
+TEX_FMT = "<IIIIIIBBBB4B4BBBHIIIIIIIIQQIIIffIIB3xf4x"
 MIP_FMT = "<QII"
 FRAME_FMT = "<HHIQQII"
 assert struct.calcsize(FILE_FMT) == FILE_REC and struct.calcsize(TEX_FMT) == TEX_REC
@@ -750,7 +832,7 @@ def write_index(path, cfg_hash, entries, n_packs):
                                 r.get("width", 0), r.get("height", 0), r.get("depth", 0), r.get("layers", 0), r.get("mips", 0),
                                 mip_first, fr_first, fr_n, r.get("raw_size", 0), r.get("tex_hash", 0), r.get("brti_off", 0),
                                 r.get("image_size", 0), r.get("data_off", 0), r.get("psnr", 0.0), r.get("psnr_min", 0.0),
-                                r.get("alignment", 0), min(r.get("hdr_blocks", 0), 0xFFFFFFFF))
+                                r.get("alignment", 0), min(r.get("hdr_blocks", 0), 0xFFFFFFFF), r.get("rule", 0), r.get("psnr_first", 0.0))
             n_tex += 1
     n_files = len(files) // FILE_REC
     o_files = 128
@@ -792,12 +874,12 @@ def read_index(path):
     for i in range(n_tex):
         v = struct.unpack_from(TEX_FMT, b, o_tex + i * tr)
         (fi, idx, no, nl, nvn, vk, kind, status, view, target, m0, m1, m2, m3, c0, c1, c2, c3, dropped, bh, flags, w, h, d,
-         layers, nm, mip_first, fr_first, fr_n, raw, th, brti, isz, doff, psnr, pmin, align, hdr) = v
+         layers, nm, mip_first, fr_first, fr_n, raw, th, brti, isz, doff, psnr, pmin, align, hdr, rule, pfirst) = v
         rec = dict(index=idx, name=st[no:no + nl].decode("utf-8"), nvn_format=nvn, vk_format=vk, kind=KIND_NAME[kind],
                    status=STATUS_NAME[status], view=view, target=target, map=[m0, m1, m2, m3], comp_sel=[c0, c1, c2, c3],
                    dropped=dropped, bh_log2=bh, flags=flags, width=w, height=h, depth=d, layers=layers, mips=nm,
                    raw_size=raw, tex_hash=th, brti_off=brti, image_size=isz, data_off=doff, psnr=psnr, psnr_min=pmin,
-                   alignment=align, hdr_blocks=hdr)
+                   alignment=align, hdr_blocks=hdr, rule=rule, psnr_first=pfirst)
         texs.append((fi, dict(rec=rec, mips=mips[mip_first:mip_first + nm] if status == 0 else [],
                               frames=frames[fr_first:fr_first + fr_n], frame_span=(fr_first, fr_n))))
     entries = []
@@ -924,7 +1006,7 @@ def run(opts):
         elif not o and scan.get(p) == [size, mtime]:
             continue
         else:
-            jobs.append((p, size, mtime, o[0]["src_hash"] if o and o[0]["src_size"] == size else None))
+            jobs.append((p, size, mtime, o[0]["src_hash"] if o and o[0]["src_size"] == size and all(records_sound(e) for e in o) else None))
     for p, o in old.items():   # (files this run did not look at: kept as they are, unless --prune)
         if p not in walked and not opts.prune:
             keep[p] = o
@@ -1034,8 +1116,10 @@ def run(opts):
 
 
 def records_sound(e):
-    """A kept record still meets the layout rules (else its file is made again): mips start at MIP_ALIGN"""
-    return all(mo % MIP_ALIGN == 0 for t in e["textures"] for mo, _lb in t["mips"])
+    """A kept record still meets the layout rules (else its file is made again): mips start at MIP_ALIGN, and no texture
+    is left refused (a record of an older run: the fallback rules prepare it now)"""
+    return (all(mo % MIP_ALIGN == 0 for t in e["textures"] for mo, _lb in t["mips"]) and
+            all(t["rec"]["status"] != "refused" for t in e["textures"]))
 
 
 def dedup_key(rec):
@@ -1049,6 +1133,7 @@ def report(entries, out):
     status = collections.Counter()
     why = collections.Counter()
     refused, worst, flags = [], collections.defaultdict(list), collections.Counter()
+    fallbacks = []
     hdr = 0
     packed = 0
     for e in entries:
@@ -1068,6 +1153,8 @@ def report(entries, out):
             if not r["flags"] & FLAG_DEDUP:
                 c = sum(f[2] for f in t["frames"])
                 g["comp"] += c
+            if r.get("rule"):
+                fallbacks.append((e["path"], r, sum(f[2] for f in t["frames"])))
             if r["kind"] in ("bc7", "bc5", "bc4", "bc1"):
                 g["psnr"].append(r["psnr"])
                 worst[r["kind"]].append((r["psnr"], r["psnr_min"], e["path"], r["name"], fmt_name(r["nvn_format"])))
@@ -1097,6 +1184,11 @@ def report(entries, out):
     L.append("flags: " + ", ".join("%s %d" % kv for kv in sorted(flags.items())) + "; ASTC HDR blocks %d" % hdr)
     if why:
         L.append("not prepared: " + ", ".join("%s %s %d" % (s, f, n) for (s, f), n in sorted(why.items())))
+    L.append("textures prepared by a fallback rule (below the floor as the first target): %d" % len(fallbacks))
+    for path, r, packed_b in sorted(fallbacks, key=lambda x: (x[0], x[1]["name"])):
+        L.append("  rule %-4s %-26s %s %s: first try %s %.2f dB; now %.2f dB, source %d B, raw %d B, packed %d B" % (
+            RULE_NAME.get(r["rule"]), "%s %dx%d" % (fmt_name(r["nvn_format"]), r["width"], r["height"]), path, r["name"],
+            choose_target(r["nvn_format"], r["comp_sel"])["kind"], r.get("psnr_first", 0.0), r["psnr"], r["image_size"], r["raw_size"], packed_b))
     L.append("refused (PSNR below the floor): %d" % len(refused))
     for p, path, name in sorted(refused)[:30]:
         L.append("  %.2f dB %s %s" % (p, path, name))
@@ -1121,6 +1213,8 @@ def verify(opts):
     pool = [(e, t) for e in entries for t in e["textures"] if t["rec"]["status"] == "ok"]
     rng = random.Random(opts.seed)
     pick = rng.sample(pool, min(opts.verify, len(pool)))
+    ids = {id(x) for x in pick}
+    pick += [x for x in pool if x[1]["rec"].get("rule") and id(x) not in ids]   # (and every texture made by a fallback rule)
     bad = 0
     t0 = time.time()
     for e, t in pick:
@@ -1137,7 +1231,9 @@ def verify(opts):
             h = parse_bntx(b)
             src_t = h["textures"][r["index"]]
             arr = np.frombuffer(b, np.uint8)
-            plan = choose_target(src_t.format, src_t.comp_sel, r["kind"] == "bc1", True)
+            plan = choose_target(src_t.format, src_t.comp_sel, r["kind"] == "bc1", True, rule=r.get("rule", 0))
+            if plan["kind"] != r["kind"] or plan["vk"] != r["vk_format"]:
+                raise ValueError("record says %s / VkFormat %d, rule %d gives %s / %d" % (r["kind"], r["vk_format"], r.get("rule", 0), plan["kind"], plan["vk"]))
             _n, bw, bhp, _bpb = FMT[src_t.format >> 8]
             se, nv = 0.0, 0
             pos = 0
@@ -1151,7 +1247,7 @@ def verify(opts):
                         raise ValueError("mip %d layer %d differs from the source" % (m, layer))
                 else:
                     src = astc_decode(lin, w, h_, bw, bhp)
-                    dec = nat.decode(r["kind"], seg, w, h_)
+                    dec = raw_decode(seg, w, h_, plan) if r["kind"] == "raw" else nat.decode(r["kind"], seg, w, h_)
                     for sc, dc in compared_channels(plan):
                         d = dec[..., dc].astype(np.int32) - src[..., sc]
                         se += float(np.dot(d.ravel(), d.ravel()))
