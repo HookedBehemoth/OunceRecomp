@@ -85,10 +85,47 @@ const char* const kReasons[R_COUNT] = {
     "step A cannot draw the variant", "a vertex buffer not in layer 0", "the index buffer not in layer 0", "8-bit indices",
     "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
     "resolved in a load-time list (M3)", "resolved in an unclassified list"};
-std::atomic<int64_t> st_by_kind[HSD_LIST_KINDS][R_COUNT], st_gated[HSD_LIST_KINDS];
-std::atomic<int64_t> st_ub_updates{0}, st_ub_copies{0}, st_ub_reads{0};
-std::atomic<int64_t> st_ns{0}, st_fixups{0}, st_fixup_lists{0}, st_banks{0}, st_tables{0}, st_ssbo_unbound{0};
-// (the variants' step A reasons: static strings, a few)
+// (M3b: the counters a draw bumps are the recording thread's own: a global atomic added to by every draw on every recording
+// thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
+struct TStats {
+    std::atomic<int64_t> by_kind[HSD_LIST_KINDS][R_COUNT];
+    std::atomic<int64_t> ns, banks, tables, ub_copies, ub_reads, ub_bytes, past_range;
+    int64_t seen_by_kind[HSD_LIST_KINDS][R_COUNT];   // (draw_log's: the sums it reported last)
+    int64_t seen[7];
+    TStats* next = nullptr;
+};
+std::atomic<TStats*> tstats_all{nullptr};
+thread_local TStats* tstats = nullptr;
+TStats& me() {
+    if (!tstats) {
+        TStats* t = new TStats();
+        t->next = tstats_all.load(std::memory_order_acquire);
+        while (!tstats_all.compare_exchange_weak(t->next, t, std::memory_order_release, std::memory_order_acquire)) {}
+        tstats = t;
+    }
+    return *tstats;
+}
+inline void bump(std::atomic<int64_t>& c, int64_t n = 1) { c.store(c.load(std::memory_order_relaxed) + n, std::memory_order_relaxed); }
+/// (draw_log, the Presentation Thread) the change of a thread counter since it last read it, summed over the threads
+enum { T_NS, T_BANKS, T_TABLES, T_UB_COPIES, T_UB_READS, T_UB_BYTES, T_PAST };
+int64_t take(std::atomic<int64_t> TStats::*f, int slot) {
+    int64_t n = 0;
+    for (TStats* t = tstats_all.load(std::memory_order_acquire); t; t = t->next) {
+        const int64_t v = (t->*f).load(std::memory_order_relaxed);
+        n += v - t->seen[slot], t->seen[slot] = v;
+    }
+    return n;
+}
+int64_t take_kind(int k, int r) {
+    int64_t n = 0;
+    for (TStats* t = tstats_all.load(std::memory_order_acquire); t; t = t->next) {
+        const int64_t v = t->by_kind[k][r].load(std::memory_order_relaxed);
+        n += v - t->seen_by_kind[k][r], t->seen_by_kind[k][r] = v;
+    }
+    return n;
+}
+std::atomic<int64_t> st_ub_updates{0}, st_gated[HSD_LIST_KINDS];   // (M3a: gated draws drawn)
+std::atomic<int64_t> st_fixups{0}, st_fixup_lists{0}, st_ssbo_unbound{0};// (the variants' step A reasons: static strings, a few)
 struct StepA {
     std::atomic<const char*> why{nullptr};
     std::atomic<int64_t> n[HSD_LIST_KINDS];
@@ -200,6 +237,28 @@ struct ListDraw {
         VkDeviceAddress copy;
     };
     std::vector<UbCopy> ub_copies;
+    // (M3b) a buffer the list updates: its bytes as the list's updates leave them, read once from guest memory where no update
+    // covers them, the updates applied as they come; a draw's copy is [0, the program's used size) of it
+    struct Shadow {
+        uint64_t addr = 0, size = 0;
+        std::vector<uint8_t> bytes;
+        uint64_t valid = 0;     // (bytes [0, valid) hold the buffer: read and updated)
+        size_t applied = 0;     // (the list's updates applied to them)
+    };
+    std::vector<Shadow> shadows;
+    // (M3b) the game's uniform buffers' device addresses, per stage and index, kept while the binding is the same
+    struct UboAddr {
+        uint64_t addr = 0, size = 0;
+        VkDeviceAddress dev = 0;
+    };
+    UboAddr ubo_addr[kBankStages][16];
+    // (M3b) the vertex buffers' window spans, per stream, kept while the binding is the same; the last index buffer's
+    struct Span {
+        uint64_t addr = 0, size = 0;
+        VkBuffer b = VK_NULL_HANDLE;
+        VkDeviceSize o = 0;
+    };
+    Span vb_span[16], ib_span;
     // (the last pick, and what it was made from)
     const DrawProg* pick = nullptr;
     uint32_t pick_prog_gen = 0, pick_vtx_gen = 0, pick_bank_gen[kBankStages]{};
@@ -530,8 +589,45 @@ bool bank_copy(List* l, ListDraw& x, int stage, int bank, uint32_t bytes, VkDevi
             if (b.addr && !layer0_address(b.addr, std::max<uint64_t>(b.size, 16), unused)) st_ssbo_unbound.fetch_add(1, std::memory_order_relaxed);
         }
     c.gen = x.s.bank_gen[stage], c.bytes = bytes, c.addr = a;
-    st_banks.fetch_add(1, std::memory_order_relaxed);
+    bump(me().banks);
     return out = a, true;
+}
+
+/// (M3b) guest [addr, addr + size) in its layer-0 window, through a span kept while it is the same
+bool span_of(ListDraw::Span& c, uint64_t addr, uint64_t size, VkBuffer& b, VkDeviceSize& o) {
+    if (c.b && c.addr == addr && c.size >= size) return b = c.b, o = c.o, true;
+    if (!layer0_span(addr, size, b, o)) return false;
+    c.addr = addr, c.size = size, c.b = b, c.o = o;
+    return true;
+}
+
+/// (M3b) the list's shadow of a buffer its updates write, brought up to n bytes and to every update so far
+const uint8_t* shadow_of(ListDraw& x, uint64_t addr, uint64_t size, uint64_t n) {
+    ListDraw::Shadow* sh = nullptr;
+    for (ListDraw::Shadow& c : x.shadows)
+        if (c.addr == addr && c.size == size) sh = &c;
+    if (!sh) {
+        sh = &x.shadows.emplace_back();
+        sh->addr = addr, sh->size = size;
+    }
+    if (sh->valid < n) {   // (the part not read yet: guest memory as it is now, then the updates over it)
+        sh->bytes.resize(n);
+        if (!host->gpu_read(addr + sh->valid, sh->bytes.data() + sh->valid, n - sh->valid))
+            std::memset(sh->bytes.data() + sh->valid, 0, n - sh->valid);
+        bump(me().ub_reads);
+        for (size_t i = 0; i < sh->applied; i++) {
+            const ListDraw::Update& up = x.updates[i];
+            const uint64_t lo = std::max(up.dst, addr + sh->valid), hi = std::min(up.dst + up.size, addr + n);
+            if (lo < hi) std::memcpy(sh->bytes.data() + (lo - addr), x.update_bytes.data() + up.at + (lo - up.dst), hi - lo);
+        }
+        sh->valid = n;
+    }
+    for (; sh->applied < x.updates.size(); sh->applied++) {
+        const ListDraw::Update& up = x.updates[sh->applied];
+        const uint64_t lo = std::max(up.dst, addr), hi = std::min(up.dst + up.size, addr + sh->valid);
+        if (lo < hi) std::memcpy(sh->bytes.data() + (lo - addr), x.update_bytes.data() + up.at + (lo - up.dst), hi - lo);
+    }
+    return sh->bytes.data();
 }
 
 /// The address a uniform buffer of the variant reads (0 and a reason: none)
@@ -543,28 +639,33 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     const nvn_p_bind_buf& b = x.s.ubo[u.stage][u.index - 3];
     if (!b.addr) return a = zero_address, R_DRAWN;
     const uint64_t size = std::max<uint64_t>(b.size, 16);
+    // (the contract's open item: a program that may read past the bound range reads the guest memory after it through the
+    // address, where Maxwell reads zeros; counted)
+    if (u.bytes > size) bump(me().past_range);
     bool updated = false;
     for (const ListDraw::Update& up : x.updates) updated |= up.dst < b.addr + size && up.dst + up.size > b.addr;
-    if (!updated) return layer0_address(b.addr, size, a) ? R_DRAWN : R_UBO_MEM;
+    if (!updated) {
+        ListDraw::UboAddr& c = x.ubo_addr[u.stage][u.index - 3];
+        if (c.dev && c.addr == b.addr && c.size == size) return a = c.dev, R_DRAWN;
+        if (!layer0_address(b.addr, size, a)) return R_UBO_MEM;
+        c.addr = b.addr, c.size = size, c.dev = a;
+        return R_DRAWN;
+    }
+    // (a copy with the list's updates so far: the bytes the program reads of it (at least the 16 of a row), zeros past the bound
+    // range as Maxwell reads there)
+    const uint64_t want = std::max<uint64_t>(16, ((uint64_t)(u.bytes ? u.bytes : size) + 15) & ~15ull);
+    // (a dynamically indexed one (Eden's used size 64 KB) gets its bound range only: zeros to 64 KB a copy are not worth it)
+    const uint64_t n = std::min<uint64_t>(size, want), total = want >= (64u << 10) ? n : want;
     for (const ListDraw::UbCopy& c : x.ub_copies)   // (made for these updates already)
-        if (c.addr == b.addr && c.size == size && c.nupdates == x.updates.size()) return a = c.copy, R_DRAWN;
-    if (size > (64u << 10)) return R_UBO_MEM;
+        if (c.addr == b.addr && c.size >= total && c.nupdates == x.updates.size()) return a = c.copy, R_DRAWN;
+    if (n > (64u << 10)) return R_UBO_MEM;
     uint8_t* map;
-    if (!arena_alloc(l->slot, (uint32_t)size, map, a)) return R_ARENA;
-    // (what the updates do not cover is the buffer's memory as it is now: read, counted)
-    std::vector<uint8_t> covered(size, 0);
-    for (const ListDraw::Update& up : x.updates)
-        for (uint64_t i = std::max(up.dst, b.addr); i < std::min(up.dst + up.size, b.addr + size); i++) covered[i - b.addr] = 1;
-    if (std::find(covered.begin(), covered.end(), 0) != covered.end()) {
-        if (!host->gpu_read(b.addr, map, size)) std::memset(map, 0, size);
-        st_ub_reads.fetch_add(1, std::memory_order_relaxed);
-    }
-    for (const ListDraw::Update& up : x.updates) {
-        const uint64_t lo = std::max(up.dst, b.addr), hi = std::min(up.dst + up.size, b.addr + size);
-        if (lo < hi) std::memcpy(map + (lo - b.addr), x.update_bytes.data() + up.at + (lo - up.dst), hi - lo);
-    }
-    x.ub_copies.push_back({b.addr, size, x.updates.size(), a});
-    st_ub_copies.fetch_add(1, std::memory_order_relaxed);
+    if (!arena_alloc(l->slot, (uint32_t)std::max(n, total), map, a)) return R_ARENA;
+    std::memcpy(map, shadow_of(x, b.addr, size, n), n);
+    if (total > n) std::memset(map + n, 0, total - n);
+    x.ub_copies.push_back({b.addr, std::max(n, total), x.updates.size(), a});
+    bump(me().ub_copies);
+    bump(me().ub_bytes, (int64_t)n);
     return R_DRAWN;
 }
 
@@ -584,7 +685,7 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
         std::memcpy(map, x.table_entries.data(), 8 * p.ubos.size());
         x.table_addr = a, x.table_prog = &p, x.table_ubo_gen = x.s.ubo_gen;
         x.table_bank_gen[0] = x.s.bank_gen[0], x.table_bank_gen[1] = x.s.bank_gen[1];
-        st_tables.fetch_add(1, std::memory_order_relaxed);
+        bump(me().tables);
     }
     std::memcpy(push + kTablePush, &x.table_addr, 8);
     for (uint32_t i = 0; i < p.direct_ubos && i < x.table_entries.size(); i++) std::memcpy(push + 192 + 8 * i, &x.table_entries[i], 8);
@@ -653,7 +754,7 @@ void count(List* l, Reason r) {
     else if (r == R_MESH) l->n_mesh++;
     else if (r == R_STEP_A) l->n_step_a++;
     if (r != R_DRAWN && l->info.kind != HSD_LIST_JOB && l->info.kind != HSD_LIST_LOAD) drawlog(l, kReasons[r], nullptr, nullptr, 0);
-    st_by_kind[l->info.kind][r].fetch_add(1, std::memory_order_relaxed);
+    bump(me().by_kind[l->info.kind][r]);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
 }
 
@@ -694,7 +795,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     const int64_t t0 = host->now_ns();
     struct Timer {
         int64_t t0;
-        ~Timer() { st_ns.fetch_add(host->now_ns() - t0, std::memory_order_relaxed); }
+        ~Timer() { bump(me().ns, host->now_ns() - t0); }
     } timer{t0};
     if (op == NOP_DRAW_MESH) return count(l, R_MESH);
     if (op == NOP_DRAW_INDIRECT) return count(l, R_INDIRECT);
@@ -756,7 +857,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         }
         for (int b = 0; b < 15; b++) {
             if (!used[b] || !s.vbuf[b].address) continue;
-            if (!layer0_span(s.vbuf[b].address, std::max<uint64_t>(s.vbuf[b].size, 1), vb[b], vo[b])) return count(l, R_VERTEX_MEM);
+            if (!span_of(x.vb_span[b], s.vbuf[b].address, std::max<uint64_t>(s.vbuf[b].size, 1), vb[b], vo[b])) return count(l, R_VERTEX_MEM);
         }
     }
     VkBuffer ib = VK_NULL_HANDLE;
@@ -764,7 +865,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     VkIndexType it = VK_INDEX_TYPE_UINT16;
     if (op == NOP_DRAW_IDX) {
         const uint32_t unit = di.itype == 0 ? 1 : di.itype == 1 ? 2 : 4;
-        if (!layer0_span(di.ibuf, (uint64_t)std::max(di.count, 1) * unit, ib, io)) return count(l, R_INDEX_MEM);
+        if (!span_of(x.ib_span, di.ibuf, (uint64_t)std::max(di.count, 1) * unit, ib, io)) return count(l, R_INDEX_MEM);
         it = di.itype == 0 ? VK_INDEX_TYPE_UINT8 : di.itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     }
     uint8_t push[256];
@@ -897,20 +998,22 @@ void draw_log(double frames) {
     const size_t cap = sizeof out;
     int k = std::snprintf(out, cap, "draws a frame (%.3f ms in the draw path, all threads; %.1f bank copies, %.1f address tables, %.1f "
                           "deferred words copied at submits in %.1f lists, %lld arena chunks, %lld storage buffers not bound)",
-                          st_ns.exchange(0) / 1e6 / frames, st_banks.exchange(0) / frames, st_tables.exchange(0) / frames,
+                          take(&TStats::ns, T_NS) / 1e6 / frames, take(&TStats::banks, T_BANKS) / frames, take(&TStats::tables, T_TABLES) / frames,
                           st_fixups.exchange(0) / frames, st_fixup_lists.exchange(0) / frames, (long long)st_chunks.load(),
                           (long long)st_ssbo_unbound.load());
     if (deferred_check)
         logf("direct: deferredcheck: %.1f deferred words copied a frame, %.2f changed between bind and submit, %.2f changed since the "
              "last submit that read the same word", st_def_words.exchange(0) / frames, st_def_bind.exchange(0) / frames, st_def_frame.exchange(0) / frames);
-    logf("direct: %s; inline uniform updates %.1f a frame, buffer copies with them %.1f, of them with the rest read %.1f", out,
-         st_ub_updates.exchange(0) / frames, st_ub_copies.exchange(0) / frames, st_ub_reads.exchange(0) / frames);
-    static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
+    logf("direct: %s; inline uniform updates %.1f a frame, buffer copies with them %.1f (%.1f KB), guest reads for their rest %.1f",
+         out, st_ub_updates.exchange(0) / frames, take(&TStats::ub_copies, T_UB_COPIES) / frames,
+         take(&TStats::ub_bytes, T_UB_BYTES) / 1024.0 / frames, take(&TStats::ub_reads, T_UB_READS) / frames);
+    logf("direct: uniform buffers a program may read past their bound range: %.1f a frame (of the address tables made)",
+         take(&TStats::past_range, T_PAST) / frames);    static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
     for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
         k = std::snprintf(out, cap, "draws a frame in %s lists:", kinds[kind]);
         bool any = false;
         for (int r = 0; r < R_COUNT; r++) {
-            const int64_t n = st_by_kind[kind][r].exchange(0);
+            const int64_t n = take_kind(kind, r);
             if (!n) continue;
             k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", any ? "," : "", kReasons[r], n / frames);
             any = true;

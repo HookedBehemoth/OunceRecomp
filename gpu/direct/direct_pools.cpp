@@ -201,7 +201,7 @@ Window* window_make(uint32_t k) {   // (mu held)
     VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     da.buffer = b;
     w.address = vkGetBufferDeviceAddress(dev.device, &da);
-    w.buffer = b;
+    __atomic_store_n(&w.buffer, b, __ATOMIC_RELEASE);   // (M3b: published after its address: layer0_span reads it without mu)
     st_windows++;
     draw_window_made(k, w.address);   // (M2b: the BDA window table's entry)
     return &w;
@@ -623,6 +623,12 @@ bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& of
             while (cstate[c].load(std::memory_order_acquire) == CH_IMPORTING) std::this_thread::sleep_for(std::chrono::microseconds(100));
         st_span_binds.fetch_add(1, std::memory_order_relaxed);
         if (!ready->all(gpu, hi)) return false;
+    }
+    // (M3b: a window, once made, never changes: read without mu, which is taken only to make one. The draws call this for
+    // every vertex, index and uniform buffer)
+    if (VkBuffer made = __atomic_load_n(&windows[l0::window_of(gpu)].buffer, __ATOMIC_ACQUIRE)) {
+        buffer = made, offset = l0::window_offset(gpu);
+        return true;
     }
     std::lock_guard lk(mu);
     Window* w = window_make(l0::window_of(gpu));

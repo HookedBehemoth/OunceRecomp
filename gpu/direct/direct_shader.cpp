@@ -172,13 +172,6 @@ uint8_t canonical(uint8_t type, bool dim_fixed, uint8_t desc_type, bool depth_fl
 }
 
 // ---- the translator's questions (vk_shader.cpp Env, over a list's state) ----
-std::vector<std::pair<uint64_t, uint64_t>> pools_now() {
-    std::vector<std::pair<uint64_t, uint64_t>> out;
-    uint64_t buf[4096][2];
-    const int n = host->gpu_pools ? host->gpu_pools(buf, 4096) : 0;
-    for (int i = 0; i < n; i++) out.push_back({buf[i][0], buf[i][1]});
-    return out;
-}
 class Env final : public Shader::Environment {
 public:
     Env(const DState& state, const Code& c, Shader::Stage st) : s{state}, nvn{c} {
@@ -200,12 +193,9 @@ public:
             return v;
         }
         if (index == 0 || index == 2) return bank_word(s, (int)index, nvn.stage, offset);
-        if (index >= 3 && index < 3 + 16) {
-            const nvn_p_bind_buf& u = s.ubo[nvn.stage][index - 3];
-            uint32_t v = 0;
-            if (u.addr && (uint64_t)offset + 4 <= (uint64_t)u.size) host->gpu_read(u.addr + offset, &v, 4);
-            return v;
-        }
+        // (M3b, step B: a game buffer's word is not read. Translation answers from the program alone where the draw cannot
+        // check the answer: a handle there is the shader's to read, a texture of it answers as its instruction says)
+        if (index >= 3) game_words++;
         return 0;
     }
     Shader::TextureType ReadTextureType(u32 handle) override {
@@ -226,17 +216,12 @@ public:
     bool HasNativeInstructions() const override { return true; }
     bool IsNativeProgram() const override { return true; }
     bool IsCbufStorageBufferPointer(u32 index, u32 offset) override {
-        if (index == 1) return false;
-        const uint64_t key = (uint64_t)index << 32 | offset;
-        if (const auto it = pointer_answers.find(key); it != pointer_answers.end()) return it->second;
-        const uint64_t v = ReadCbufValue(index, offset) | (uint64_t)ReadCbufValue(index, offset + 4) << 32;
-        bool pointer = false;
-        if (v && !(v & 3) && host->gpu_guest(v)) {
-            if (pools.empty()) pools = pools_now();
-            for (const auto& [base, size] : pools) pointer |= v >= base && v < base + size;
-        }
-        pointer_answers.emplace(key, pointer);
-        return pointer;
+        // (M3b, step B: from the program alone. A word of the driver bank's storage buffer table is a storage buffer's
+        // address whatever is bound there; any other is not taken for one: its accesses stay global memory, which is read by
+        // address all the same (every stage by address))
+        static constexpr uint32_t kSsboTable[8] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 0x670, 0x770};
+        const uint32_t base = nvn.stage >= 0 && nvn.stage < 8 ? kSsboTable[nvn.stage] : 0;
+        return index == 0 && base && offset >= base && offset < base + 16 * 16 && (offset - base) % 16 == 0;
     }
     std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32 bank, u32 offset) override {
         if (bank != 0 || !HasHLEMacroState()) return std::nullopt;
@@ -249,13 +234,12 @@ public:
     }
     void Dump(u64, u64) override {}
     int questions = 0;
+    int game_words = 0;   // (words of game buffers the translator asked for: answered 0)
 
 private:
     const DState& s;
     const Code& nvn;
     uint32_t local_memory = 0;
-    std::unordered_map<uint64_t, bool> pointer_answers;
-    std::vector<std::pair<uint64_t, uint64_t>> pools;
 };
 
 // ---- the profile (vk_shader.cpp make_profile with RX_VK_DESC_HEAP_BDA=2 on layer 0) ----
@@ -397,6 +381,19 @@ struct StageScan {
     uint64_t key = 0;
     uint8_t sph[sizeof(Shader::ProgramHeader)]{};
 };
+/// (M3b) The variants of one pair of stage codes, shared by every program slot with that code (the game sets the same code in
+/// thousands of program objects: 12,528 set in Kokiri for 149 variants drawn). Made once, never freed
+struct Family {
+    std::atomic<Variant*> variants{nullptr};
+    std::atomic<bool> loaded{false};   // (its variants kept in the cache file are made)
+    std::mutex mu;   // (pending)
+    std::unordered_set<uint64_t> pending;   // (translations queued, by key and answers)
+    std::unordered_set<uint64_t> failed;    // (translations that failed)
+};
+std::mutex families_mu;
+std::unordered_map<uint64_t, Family*> families;   // (by pair_key of the stages' code keys)
+std::atomic<int64_t> st_families{0};
+
 /// A program, by its NVN serial
 struct Slot {
     uint64_t serial = 0;
@@ -405,16 +402,13 @@ struct Slot {
     StageScan vs, fs;
     bool has_fs = false;
     const char* why = "";
-    std::atomic<Variant*> variants{nullptr};
-    std::mutex mu;   // (pending)
-    std::unordered_set<uint64_t> pending;   // (translations queued, by key and answers)
-    std::unordered_set<uint64_t> failed;    // (translations that failed)
+    Family* fam = nullptr;   // (set before state 1)
 };
 
 constexpr uint32_t kSlots = 1u << 17;
 std::unique_ptr<std::atomic<Slot*>[]> table;
 std::mutex table_mu;
-std::atomic<int64_t> st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0},
+std::atomic<int64_t> st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0},
     st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0};
 
 uint32_t slot_hash(uint64_t serial) { return (uint32_t)((serial * 0x9E3779B97F4A7C15ull) >> 47) & (kSlots - 1); }
@@ -846,6 +840,13 @@ bool finish(Variant& v) {
         if (si < 2) d.c1[si] = c1_put(st.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
     }
     d.push_bytes = kTablePush + 8 + 8 * (uint32_t)d.pushed.size();
+    {   // (M3b: what the address table holds: uniform buffers a variant reads, against the push data a pushed address each would need)
+        const int64_t n = (int64_t)d.ubos.size();
+        int64_t m = st_ubos_max.load(std::memory_order_relaxed);
+        while (n > m && !st_ubos_max.compare_exchange_weak(m, n)) {}
+        st_ubos_sum.fetch_add(n, std::memory_order_relaxed), st_ubos_variants.fetch_add(1, std::memory_order_relaxed);
+        if (kTablePush + 8 * (uint32_t)n > caps.max_push) st_ubos_over.fetch_add(1, std::memory_order_relaxed);
+    }
     if (d.direct_ubos) d.push_bytes = std::max<uint32_t>(d.push_bytes, 192 + 8 * d.direct_ubos);
     if (d.push_bytes > caps.max_push) d.skip = d.skip ? d.skip : "push data over the device's limit";
     // (the answers a draw checks: those whose handle is a driver bank word; one in a game buffer stands as translated)
@@ -903,8 +904,21 @@ bool finish(Variant& v) {
     return true;
 }
 
-void publish(Slot& s, Variant* v) {
+void publish(Family& s, Variant* v, uint64_t serial) {
     Variant* head = s.variants.load(std::memory_order_acquire);
+    if (head) {   // (a program's second variant or later: for another key (inputs: vertex attribute or colour types) or answers)
+        bool same_key = false;
+        for (const Variant* o = head; o; o = o->next) same_key |= o->d.key == v->d.key;
+        (same_key ? st_multi_answers : st_multi_inputs).fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<int> told{0};
+        if (told++ < 30) {
+            int n = 1;
+            for (const Variant* o = head; o; o = o->next) n++;
+            logf("direct: program serial %llu has variant %d: %s (key %016llx)", (unsigned long long)serial, n,
+                 same_key ? "the same inputs, other texture answers" : "other inputs (vertex attribute or colour types)",
+                 (unsigned long long)v->d.key);
+        }
+    }
     do v->next = head;
     while (!s.variants.compare_exchange_weak(head, v, std::memory_order_release, std::memory_order_acquire));
 }
@@ -917,13 +931,7 @@ uint32_t cbuf_word(const DState& s, int stage, uint32_t index, uint32_t offset, 
         return v;
     }
     if (index == 0 || index == 2) return bank_word(s, (int)index, stage, offset);
-    if (index >= 3 && index < 19) {   // (at translation, on a worker: what the translator was told)
-        const nvn_p_bind_buf& u = s.ubo[stage][index - 3];
-        uint32_t v = 0;
-        if (u.addr && (!u.size || (uint64_t)offset + 4 <= (uint64_t)u.size)) host->gpu_read(u.addr + offset, &v, 4);
-        return v;
-    }
-    return 0;
+    return 0;   // (a game buffer's word: not read, as Env::ReadCbufValue)
 }
 void record_answers(Variant& v, const DState& s) {
     for (size_t k = 0; k < v.stages.size(); k++) {
@@ -962,6 +970,7 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
             Env fs_env{s, *fsc, Shader::Stage::Fragment};
             auto fs = translate(fs_env);
             questions += fs_env.questions;
+            st_game_words.fetch_add(fs_env.game_words, std::memory_order_relaxed);
             Shader::RuntimeInfo frt{};
             frt.previous_stage_stores = vs->program.info.stores;
             for (int i = 0; i < 8; i++) frt.color_output_types[i] = static_cast<Shader::AttributeType>(color_types[i]);
@@ -976,6 +985,7 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
             fst.c1 = fsc->c1;
         }
         if (questions) record_answers(v, s);
+        st_game_words.fetch_add(vs_env.game_words, std::memory_order_relaxed);
         return true;
     } catch (const std::exception& e) {
         static std::atomic<int> told{0};
@@ -1007,11 +1017,23 @@ void scan_slot(Slot* s) {
     }
     s->vs.key = codes[vs].key, std::memcpy(s->vs.sph, codes[vs].sph, sizeof s->vs.sph);
     if (fs >= 0) s->has_fs = true, s->fs.key = codes[fs].key, std::memcpy(s->fs.sph, codes[fs].sph, sizeof s->fs.sph);
+    const uint64_t pair = pair_key(s->vs.key, s->has_fs ? s->fs.key : 0);
+    bool fresh = false;
+    {
+        std::lock_guard lk(families_mu);
+        auto [it, made] = families.try_emplace(pair, nullptr);
+        if (made) it->second = new Family, st_families.fetch_add(1, std::memory_order_relaxed);
+        s->fam = it->second, fresh = made;
+    }
+    if (!fresh) {   // (the code's variants are made by the slot that saw it first; this one waits for them, on its worker)
+        while (!s->fam->loaded.load(std::memory_order_acquire)) std::this_thread::yield();
+        return s->state.store(1, std::memory_order_release);
+    }
     disk_init();
     std::vector<DiskRecord> recs;
     {
         std::lock_guard lk(disk_mu);
-        const auto it = disk_by_pair.find(pair_key(s->vs.key, s->has_fs ? s->fs.key : 0));
+        const auto it = disk_by_pair.find(pair);
         if (it != disk_by_pair.end()) recs = it->second;
     }
     for (const DiskRecord& d : recs) {
@@ -1021,8 +1043,9 @@ void scan_slot(Slot* s) {
         for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
         if (!finish(*v)) continue;
         st_from_disk.fetch_add(1, std::memory_order_relaxed);
-        publish(*s, v.release());
+        publish(*s->fam, v.release(), s->serial);
     }
+    s->fam->loaded.store(true, std::memory_order_release);
     s->state.store(1, std::memory_order_release);
 }
 
@@ -1083,7 +1106,7 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     if (state != 1) return why = SM_NOT_GRAPHICS, nullptr;
     const uint64_t key = graphics_key(slot->vs.key, slot->vs.sph, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr, s.vattr, color_types);
     const Variant* same_key = nullptr;
-    for (const Variant* v = slot->variants.load(std::memory_order_acquire); v; v = v->next) {
+    for (const Variant* v = slot->fam->variants.load(std::memory_order_acquire); v; v = v->next) {
         if (v->d.key != key) continue;
         same_key = v;
         if (shader_answers_hold(s, v->d)) return why = SM_NONE, &v->d;
@@ -1092,9 +1115,9 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     const uint64_t want = key ^ (same_key ? live_hash(s, same_key->d) * 0x9E3779B97F4A7C15ull : 0);
     st_misses.fetch_add(1, std::memory_order_relaxed);
     {
-        std::lock_guard lk(slot->mu);
-        if (slot->failed.count(want)) return why = SM_FAILED, nullptr;
-        if (!slot->pending.insert(want).second) return why = SM_TRANSLATING, nullptr;
+        std::lock_guard lk(slot->fam->mu);
+        if (slot->fam->failed.count(want)) return why = SM_FAILED, nullptr;
+        if (!slot->fam->pending.insert(want).second) return why = SM_TRANSLATING, nullptr;
     }
     struct Job {
         Slot* slot;
@@ -1128,13 +1151,13 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
         st_translate_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
         if (ok) {
             st_translated.fetch_add(1, std::memory_order_relaxed);
-            publish(sl, v.release());
+            publish(*sl.fam, v.release(), sl.serial);
         } else {
             st_failed.fetch_add(1, std::memory_order_relaxed);
         }
-        std::lock_guard lk(sl.mu);
-        sl.pending.erase(job->want);
-        if (!ok) sl.failed.insert(job->want);
+        std::lock_guard lk(sl.fam->mu);
+        sl.fam->pending.erase(job->want);
+        if (!ok) sl.fam->failed.insert(job->want);
     });
     return why = SM_TRANSLATING, nullptr;
 }
@@ -1145,12 +1168,16 @@ void shader_stats(char* out, size_t cap, double frames) {
         std::lock_guard lk(work_mu);
         queued = work.size();
     }
-    std::snprintf(out, cap, "programs (since the start): %lld set, %lld variants translated (%.1f s on the workers), %lld failed, %lld "
+    std::snprintf(out, cap, "programs (since the start): %lld set (%lld distinct codes), %lld variants translated (%.1f s on the workers), %lld failed, %lld "
                   "from the cache, %lld shader objects made (%lld failed), %lld stages unreadable, table full %lld; misses %.1f a frame, "
-                  "%zu jobs waiting", (long long)st_slots.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
+                  "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
+                  "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
+                  "than the push data's room for their addresses", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), (long long)st_objects_made.load(),
                   (long long)st_object_failed.load(), (long long)st_scan_failed.load(), (long long)st_full.load(),
-                  st_misses.exchange(0) / frames, queued);
+                  st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_multi_answers.load(),
+                  (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
+                  (long long)st_ubos_max.load(), (long long)st_ubos_over.load());
 }
 
 }  // namespace hsd
