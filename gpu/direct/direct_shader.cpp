@@ -1323,6 +1323,53 @@ bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const C
     }
 }
 
+/// (M4c, HOS_DBG=tasknocull, a diagnosis: the game's own culling-off flag (c3+2320 bit 4, which the task stages test as
+/// `(flags & 4) | ... != 0`) taken as set in every task stage, as the frozen back end's RX_VK_MESH_NOCULL does; such variants are
+/// not kept in the program cache)
+bool task_nocull() {
+    static const bool on = dbg("tasknocull");
+    return on;
+}
+bool reads_c3_2320_bit4(const Shader::IR::Value& v) {
+    using namespace Shader::IR;
+    const Value r = v.Resolve();
+    if (r.IsImmediate()) return false;
+    const Inst* and_ = r.InstRecursive();
+    if (and_->GetOpcode() != Opcode::BitwiseAnd32) return false;
+    bool four = false, cbuf = false;
+    for (size_t i = 0; i < 2; i++) {
+        const Value a = and_->Arg(i).Resolve();
+        if (a.IsImmediate()) {
+            four = four || a.U32() == 4;
+            continue;
+        }
+        const Inst* c = a.InstRecursive();
+        if (c->GetOpcode() != Opcode::GetCbufU32) continue;
+        const Value bank = c->Arg(0).Resolve(), off = c->Arg(1).Resolve();
+        cbuf = cbuf || (bank.IsImmediate() && off.IsImmediate() && bank.U32() == 3 && off.U32() == 2320);
+    }
+    return four && cbuf;
+}
+int task_nocull_apply(Shader::IR::Program& program) {
+    using namespace Shader::IR;
+    int made = 0;
+    for (Block* block : program.blocks)
+        for (Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() != Opcode::INotEqual) continue;
+            const Value zero = inst.Arg(1).Resolve();
+            if (!zero.IsImmediate() || zero.U32() != 0) continue;
+            const Value orv = inst.Arg(0).Resolve();
+            if (orv.IsImmediate()) continue;
+            const Inst* o = orv.InstRecursive();
+            if (o->GetOpcode() != Opcode::BitwiseOr32) continue;
+            if (!reads_c3_2320_bit4(o->Arg(0)) && !reads_c3_2320_bit4(o->Arg(1))) continue;
+            inst.ReplaceUsesWith(Value{true});
+            made++;
+        }
+    if (made) Shader::Optimization::DeadCodeEliminationPass(program);
+    return made;
+}
+
 /// (M4c) A task+mesh program: its task stage as a compute shader (Eden's fallback task half, RuntimeInfo::task_buffer: it writes
 /// its mesh workgroups and payload to the draw's task header), its mesh stage native with no task stage before it (it reads
 /// them from there), its fragment stage. Stages in the order mesh, fragment, task (stage 0 is the mesh stage, as a mesh-only
@@ -1336,6 +1383,7 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
         Env tenv{s, tc, Shader::Stage::Task};
         tenv.set_mesh(regs, nullptr);
         auto ts = translate(tenv, true);
+        if (task_nocull()) logf("direct: tasknocull: task %016llx: %d culling tests taken as off", (unsigned long long)tc.key, task_nocull_apply(ts->program));
         const uint32_t threads = ts->program.workgroup_size[0];
         if (threads == 0 || threads > 256)   // (a map entry holds the index in its task in 8 bits)
             throw Shader::NotImplementedException("task stage of {} threads", threads);
@@ -1483,7 +1531,7 @@ void scan_slot(Slot* s) {
     }
     disk_init();
     std::vector<DiskRecord> recs;
-    {
+    if (!(s->task && task_nocull())) {
         std::lock_guard lk(disk_mu);
         const auto it = disk_by_pair.find(pair);
         if (it != disk_by_pair.end()) recs = it->second;
@@ -1659,7 +1707,7 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
                                      : vs >= 0 && translate_variant(*v, job->s, codes[vs], fs >= 0 ? &codes[fs] : nullptr, job->ct));
         if (made) {
             for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
-            disk_save(*v, slot_pair(sl));
+            if (!(sl.task && task_nocull())) disk_save(*v, slot_pair(sl));
             v->d.codes[0] = sl.vs.key, v->d.codes[1] = sl.has_fs ? sl.fs.key : 0, v->d.codes[2] = sl.has_prim ? sl.prim.key : 0;
             ok = finish(*v);
         }
