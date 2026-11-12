@@ -46,7 +46,16 @@ bool records(const List* l) {
     return k == HSD_LIST_LAYER || k == HSD_LIST_GATE || k == HSD_LIST_COMPUTE || k == HSD_LIST_HEAD;
 }
 
+void record_barrier(VkCommandBuffer cb);
+VkCommandBuffer barrier_buffer();
+VkCommandBuffer cmd_raw(List* l);
+/// The list's command buffer, a waiting barrier recorded first
 VkCommandBuffer cmd(List* l) {
+    VkCommandBuffer cb = cmd_raw(l);
+    if (l->pending_barrier) l->pending_barrier = false, record_barrier(cb);
+    return cb;
+}
+VkCommandBuffer cmd_raw(List* l) {
     if (l->cur) {
         if (l->thread != thread_id()) count(S_OTHER_THREAD);
         return l->cur;
@@ -195,8 +204,16 @@ void barrier(List* l, int32_t bits) {
     suspend(l);
     for (int b = 0; b < 16; b++)
         if (bits >> b & 1) st_bits[b].fetch_add(1, std::memory_order_relaxed);
-    // (every NVN barrier as one full memory barrier: the order bits wait for earlier work, the invalidate bits make its
-    // writes visible; Vulkan has no invalidate without a wait, and images are all GENERAL, so no image barriers)
+    count(S_BARRIERS);
+    // (no command buffer yet: the barrier waits for the list's next command, or its end; a list of nothing but barriers then
+    // makes none, M2b)
+    if (!l->cur) return void(l->pending_barrier = true);
+    record_barrier(l->cur);
+}
+
+/// Every NVN barrier as one full memory barrier: the order bits wait for earlier work, the invalidate bits make its writes
+/// visible; Vulkan has no invalidate without a wait, and images are all GENERAL, so no image barriers
+void record_barrier(VkCommandBuffer cb) {
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -204,8 +221,29 @@ void barrier(List* l, int32_t bits) {
     VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     d.memoryBarrierCount = 1;
     d.pMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd(l), &d);
-    count(S_BARRIERS);
+    vkCmdPipelineBarrier2(cb, &d);
+}
+
+/// One command buffer holding a full barrier, recorded once (a list's last barrier with no command after it in the list)
+VkCommandBuffer barrier_buffer() {
+    static VkCommandBuffer cb = [] {
+        VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pi.queueFamilyIndex = dev.queue_family;
+        VkCommandPool pool;
+        vkCreateCommandPool(dev.device, &pi, nullptr, &pool);
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = pool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = 1;
+        VkCommandBuffer c = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(dev.device, &ai, &c);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        vkBeginCommandBuffer(c, &bi);
+        record_barrier(c);
+        vkEndCommandBuffer(c);
+        st_objects.fetch_add(2, std::memory_order_relaxed);
+        return c;
+    }();
+    return cb;
 }
 
 void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
@@ -413,6 +451,11 @@ void pass_call(List* l, const List* callee) {
     if (!callee->has_cmds) return;
     if (l->pass.begun) count(S_CUTS);
     suspend(l);
+    if (l->pending_barrier) {   // (a barrier before the call: before the callee's commands)
+        l->pending_barrier = false;
+        if (l->cur) record_barrier(l->cur);
+        else l->segs.push_back({barrier_buffer(), nullptr});
+    }
     if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE;
     l->segs.push_back({VK_NULL_HANDLE, callee});
     l->has_cmds = true;
@@ -420,6 +463,11 @@ void pass_call(List* l, const List* callee) {
 
 void pass_list_end(List* l) {
     if (records(l)) end_pass(l);
+    if (l->pending_barrier) {   // (its last barrier: in its buffer, or the shared one between its segments)
+        l->pending_barrier = false;
+        if (l->cur) record_barrier(l->cur);
+        else l->segs.push_back({barrier_buffer(), nullptr}), l->has_cmds = true;
+    }
     if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE;
 }
 

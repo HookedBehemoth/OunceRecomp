@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <chrono>
+#include <thread>
 
 #include "direct_assets.h"
 #include "direct_cmd.h"
@@ -27,6 +29,24 @@ const char* const kOpNames[NOP_COUNT_] = {
     "PKT", "JOB", "ENG"};
 const char* const kKindNames[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
 
+// (the recording threads' time in hsd_emit, in TSC ticks: summed per thread, added up every 256 records)
+std::atomic<int64_t> st_emit_ticks{0};
+thread_local uint64_t my_ticks = 0;
+thread_local uint32_t my_n = 0;
+void emit_ticks(uint64_t t) {
+    my_ticks += t;
+    if (++my_n == 256) st_emit_ticks.fetch_add((int64_t)my_ticks, std::memory_order_relaxed), my_ticks = 0, my_n = 0;
+}
+double tsc_per_ns() {
+    static const double r = [] {
+        const auto a = std::chrono::steady_clock::now();
+        const uint64_t t = __builtin_ia32_rdtsc();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        const double ns = (double)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - a).count();
+        return (double)(__builtin_ia32_rdtsc() - t) / ns;
+    }();
+    return r;
+}
 std::atomic<int64_t> st_ops[NOP_COUNT_], st_kinds[HSD_LIST_KINDS], st_calls{0}, st_live{0}, st_dropped{0}, st_bad_op{0};
 
 // (the return addresses each kind was begun from, and how their lists were used: a table that only grows, read without a
@@ -106,6 +126,8 @@ void lists_stats(char* out, size_t cap, double frames) {
     int k = std::snprintf(out, cap, "lists a frame:");
     for (int i = 0; i < HSD_LIST_KINDS; i++)
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.1f", kKindNames[i], st_kinds[i].exchange(0) / frames);
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", %.3f ms a frame in hsd_emit (all recording threads)",
+                       st_emit_ticks.exchange(0) / tsc_per_ns() / 1e6 / frames);
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", calls %.1f; %lld lists live, %lld dropped unended, %lld records "
                        "of no op or outside a list; ops a frame:", st_calls.exchange(0) / frames, (long long)st_live.load(),
                        (long long)st_dropped.load(), (long long)st_bad_op.load());
@@ -155,6 +177,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_emit(void* list, uint
         return;
     }
     l->counts[op]++;
+    const uint64_t t0 = __builtin_ia32_rdtsc();
     pass_emit(l, op, payload, size);
     FrameOp o;
     switch (op) {
@@ -176,6 +199,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_emit(void* list, uint
         break;
     default: break;
     }
+    emit_ticks(__builtin_ia32_rdtsc() - t0);
 }
 
 extern "C" __attribute__((visibility("default"))) void hsd_list_call(void* list, void* const* callees, uint32_t n) {
@@ -199,6 +223,18 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_end(void* list) 
     if (!l) return;
     pass_list_end(l);
     l->ended = true;
+    if (l->has_cmds && !l->counts[NOP_DRAW] && !l->counts[NOP_DRAW_IDX] && !l->counts[NOP_CLEAR_COLOR] && !l->counts[NOP_CLEAR_DS] &&
+        !l->counts[NOP_COPY_T2T] && !l->counts[NOP_COPY_B2T] && !l->counts[NOP_CALL] && present_count() > 1200) {
+        static std::atomic<int> told{0};   // (a list with command buffers and none of the ops that need one: named)
+        if (told++ < 12) {
+            char b[600];
+            int k = std::snprintf(b, sizeof b, "direct: list of kind %s from %#llx has command buffers but records:", kKindNames[l->info.kind],
+                                  (unsigned long long)l->info.lr);
+            for (int i = 0; i < NOP_COUNT_ && k < 560; i++)
+                if (l->counts[i]) k += std::snprintf(b + k, sizeof b - k, " %s %u", kOpNames[i], l->counts[i]);
+            logf("%s", b);
+        }
+    }
     st_kinds[l->info.kind].fetch_add(1, std::memory_order_relaxed);
     if (l->info.kind == HSD_LIST_JOB) assets_job_list();   // (A-rt: the first frame in play)
     for (int i = 0; i < NOP_COUNT_; i++)

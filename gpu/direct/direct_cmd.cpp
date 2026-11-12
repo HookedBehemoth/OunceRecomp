@@ -1,5 +1,6 @@
 // Per-thread command pools by frame slot, and the per-thread upload ring (direct_cmd.h).
 #include <chrono>
+#include <algorithm>
 #include <cstdio>
 
 #include "direct_cmd.h"
@@ -74,6 +75,10 @@ CmdSlot* cmd_slot_take() {
     if (s.frame != frame) {
         if (s.live.load(std::memory_order_acquire) > 0) {
             st_kept.fetch_add(1, std::memory_order_relaxed);   // (a list of three frames ago still alive: not reset)
+            static std::atomic<int> told{0};
+            if (present_count() > 1200 && told++ < 30)
+                logf("direct: slot %p not reset at present %llu: %d lists alive on it (frame %llu, %zu buffers used)", (void*)&s,
+                     (unsigned long long)present_count(), s.live.load(), (unsigned long long)s.frame, s.used);
         } else {
             const uint64_t v = s.value.load(std::memory_order_acquire);
             if (v && sync_completed() < v) {
@@ -95,7 +100,16 @@ CmdSlot* cmd_slot_take() {
 }
 
 VkCommandBuffer cmd_buffer(CmdSlot* s) {
-    if (s->used == s->bufs.size()) s->bufs.push_back(alloc_buffer(s->pool));
+    if (s->used == s->bufs.size()) {
+        // (a slot's buffers made in batches: 16 at its first use, then as many again. One at a time, a thread's peak (the job
+        // system hands it a few more lists in some frame) grew over minutes of play)
+        const size_t more = std::max<size_t>(16, s->bufs.size());
+        for (size_t i = 0; i < more; i++) s->bufs.push_back(alloc_buffer(s->pool));
+        static std::atomic<int> told{0};   // (made in play: named, with what holds the slot)
+        if (present_count() > 1200 && told++ < 30)
+            logf("direct: command buffer made at present %llu: thread slot %p now %zu buffers, frame %llu, %d lists alive on it",
+                 (unsigned long long)present_count(), (void*)s, s->bufs.size(), (unsigned long long)s->frame, s->live.load());
+    }
     VkCommandBuffer cb = s->bufs[s->used++];
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;

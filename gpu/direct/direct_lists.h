@@ -69,6 +69,7 @@ struct List {
     uint32_t last_op = 0, last_op2 = 0;   // (the ops before the one being handled, for logs)
     std::vector<DumpItem*> dumps;   // (HOS_DBG=dump: its passes' copies, in order)
     ListDraw* dctx = nullptr;   // (M2b: made at its first state op)
+    bool pending_barrier = false;   // (M2b: a barrier waiting for the list's next command: recorded with it)
 };
 
 void list_ref(List* l);

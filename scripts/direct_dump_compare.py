@@ -9,11 +9,15 @@ and aligned by their order (difflib); dispatch and sampled-texture items of the 
     scripts/direct_dump_compare.py <frozen run>/log.txt <direct run>/log.txt [--all]
 
 Prints a summary (targets per side, aligned, only in one side, and per (kind, format, size) the counts of both) and,
-with --all, every aligned row.
+with --all, every aligned row. With --pictures, each aligned target's picture distance: the mean absolute difference of
+the two dumps' thumbnails (0-255, RGB; the PNGs beside each log, dump_<present>/ or shots/dump_<present>/), and of the
+logged channel means (alpha too); run it on two frozen runs for the run-to-run noise.
 """
 import argparse
 import collections
 import difflib
+import glob
+import os
 import re
 import sys
 
@@ -42,6 +46,35 @@ def read(path):
             out.append({"seq": int(seq), "what": what, "kind": kind, "slot": 99 if slot == "depth" else int(slot[1:]), "gpu": gpu, "format": int(fmt), "w": int(w),
                         "h": int(h), "rest": rest.strip()})
     return out, max(1, frames)
+
+
+def pngs(log):
+    """seq -> PNG path of the dump beside a log (the first dump folder found)"""
+    base = os.path.dirname(os.path.abspath(log))
+    out = {}
+    for d in sorted(glob.glob(os.path.join(base, "dump_*")) + glob.glob(os.path.join(base, "shots", "dump_*"))):
+        for f in os.listdir(d):
+            m = re.match(r"(\d+)_pass_", f)
+            if m and int(m.group(1)) not in out:
+                out[int(m.group(1))] = os.path.join(d, f)
+    return out
+
+
+def means(rest):
+    m = re.search(r"mean ([-\de.+naif]+) ([-\de.+naif]+) ([-\de.+naif]+) ([-\de.+naif]+)", rest)
+    try:
+        return [float(x) for x in m.groups()] if m else None
+    except ValueError:
+        return None
+
+
+def picture_distance(a, b):
+    from PIL import Image   # (work/venv)
+    ia, ib = Image.open(a).convert("RGB"), Image.open(b).convert("RGB")
+    if ia.size != ib.size:
+        ib = ib.resize(ia.size)
+    pa, pb = ia.tobytes(), ib.tobytes()
+    return sum(abs(x - y) for x, y in zip(pa, pb)) / max(1, len(pa))
 
 
 def passes(items):
@@ -84,6 +117,9 @@ def main():
     ap.add_argument("frozen")
     ap.add_argument("direct")
     ap.add_argument("--all", action="store_true", help="every aligned row")
+    ap.add_argument("--pictures", action="store_true", help="each aligned target's picture distance")
+    ap.add_argument("--from-seq", type=int, nargs=2, default=(0, 0), metavar=("FROZEN", "DIRECT"),
+                    help="only targets from these dump numbers on (the frame's tail: the UI passes, the composite)")
     ap.add_argument("--frames", type=int, nargs=2, metavar=("FROZEN", "DIRECT"), help="the frames each dump holds, if the logs do not say")
     a = ap.parse_args()
     (fz, ff), (dr, df) = read(a.frozen), read(a.direct)
@@ -138,6 +174,22 @@ def main():
                 print("%s %-60s | %s" % ("=" if op == "equal" else "x",
                                          "%03d x%d %s" % (f[2][0]["seq"], f[1], pshow(psig(f))) if f else "",
                                          "%03d x%d %s" % (d[2][0]["seq"], d[1], pshow(psig(d))) if d else ""))
+    if a.pictures:
+        fp, dp = pngs(a.frozen), pngs(a.direct)
+        dist = []
+        print("pictures of aligned targets (thumbnail mean |difference| 0-255; channel means frozen / direct):")
+        for f, d, m in rows:
+            if m != "=" or f["seq"] < a.from_seq[0] or d["seq"] < a.from_seq[1]:
+                continue
+            pd_ = picture_distance(fp[f["seq"]], dp[d["seq"]]) if f["seq"] in fp and d["seq"] in dp else float("nan")
+            mf, md = means(f["rest"]), means(d["rest"])
+            dist.append(pd_)
+            print("  %03d | %03d %-28s %6.2f   %s / %s" % (f["seq"], d["seq"], show(sig(f)), pd_,
+                  " ".join("%.3g" % x for x in mf) if mf else "-", " ".join("%.3g" % x for x in md) if md else "-"))
+        good = sorted(x for x in dist if x == x)
+        if good:
+            print("picture distance over %d targets: median %.2f, mean %.2f, max %.2f" % (len(good), good[len(good) // 2],
+                  sum(good) / len(good), good[-1]))
     if a.all:
         for f, d, m in rows:
             print("%s %-44s | %s" % (m, "%03d %s" % (f["seq"], show(sig(f))) if f else "", "%03d %s" % (d["seq"], show(sig(d))) if d else ""))
