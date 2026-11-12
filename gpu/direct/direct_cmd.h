@@ -20,6 +20,8 @@ struct TaskPool;   // (direct_task.cpp)
 void query_slot_reset(QSlot* q);
 void arena_reset(Arena* a);
 void task_pool_reset(TaskPool* p);
+struct CmdSlot;
+void task_check_slot(CmdSlot* s);   // (M6c, HOS_DBG=taskcheck)
 struct CmdSlot {
     VkCommandPool pool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> bufs, secs;   // (the recording thread's alone)

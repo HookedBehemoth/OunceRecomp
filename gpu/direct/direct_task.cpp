@@ -117,6 +117,24 @@ struct Logged {
 std::mutex log_mu;
 std::vector<Logged> logged;
 
+// (M6c, HOS_DBG=taskcheck, a diagnosis: every task step's header as the CPU wrote it, checked again with its map entries when its
+// slot is reset (the GPU past it): the addresses and sizes unchanged, the groups within the map, each entry a task workgroup of
+// the draw and an index within its threads)
+bool taskcheck() {
+    static const bool on = dbg("taskcheck");
+    return on;
+}
+struct Checked {
+    CmdSlot* slot;
+    const uint8_t* header;
+    uint32_t h[16];
+    uint64_t key, present;
+    bool indirect;
+};
+std::mutex check_mu;
+std::vector<Checked> checked;
+std::atomic<int64_t> st_checked{0}, st_bad{0};
+
 }  // namespace
 
 void task_log_after() {
@@ -133,6 +151,47 @@ void task_log_after() {
         std::memcpy(h, g.header, sizeof h);
         logf("direct: tasklog %016llx %s (count %u): groups %u taken %u cap %u tasks %u dispatch %u %u %u payload words %u threads %u",
              (unsigned long long)g.key, g.indirect ? "indirect" : "direct", g.count, h[0], h[3], h[8], h[9], h[10], h[11], h[12], h[13], h[14]);
+    }
+}
+
+void task_check_slot(CmdSlot* s) {
+    if (!taskcheck()) return;
+    std::vector<Checked> mine;
+    {
+        std::lock_guard lk(check_mu);
+        for (size_t i = 0; i < checked.size();)
+            if (checked[i].slot == s) mine.push_back(checked[i]), checked[i] = checked.back(), checked.pop_back();
+            else i++;
+    }
+    for (const Checked& c : mine) {
+        uint32_t g[16];
+        std::memcpy(g, c.header, sizeof g);
+        char why[256] = "";
+        int k = 0;
+        for (int w : {13, 14})
+            if (g[w] != c.h[w]) k += std::snprintf(why + k, sizeof why - k, " word %d %#x (written %#x)", w, g[w], c.h[w]);
+        if (!c.indirect)   // (an indirect draw's map, payload area and sizes are the prep step's)
+            for (int w : {4, 5, 6, 7, 8, 9, 10})
+                if (g[w] != c.h[w]) k += std::snprintf(why + k, sizeof why - k, " word %d %#x (written %#x)", w, g[w], c.h[w]);
+        if (g[1] != 1 || g[2] != 1) k += std::snprintf(why + k, sizeof why - k, " y z %u %u", g[1], g[2]);
+        if (g[0] > g[8]) k += std::snprintf(why + k, sizeof why - k, " groups %u past the map's %u", g[0], g[8]);
+        uint32_t bad_entries = 0, first_bad = 0;
+        if (!k && g[0] <= g[8] && !c.indirect) {   // (the map: in the arena after the header, written by the GPU)
+            const uint32_t* m = (const uint32_t*)(c.header + 64);
+            for (uint32_t i = 0; i < g[0]; i++)
+                if ((m[i] >> 8) >= g[9] || (m[i] & 0xff) >= g[14]) {
+                    if (!bad_entries++) first_bad = m[i];
+                }
+            if (bad_entries) k += std::snprintf(why + k, sizeof why - k, " %u of %u map entries out of range (first %#x)", bad_entries, g[0], first_bad);
+        }
+        st_checked.fetch_add(1, std::memory_order_relaxed);
+        if (k) {
+            static std::atomic<int> told{0};
+            if (told++ < 40)
+                logf("direct: taskcheck: program %016llx %s at present %llu: groups %u taken %u cap %u tasks %u:%s", (unsigned long long)c.key,
+                     c.indirect ? "indirect" : "direct", (unsigned long long)c.present, g[0], g[3], g[8], g[9], why);
+            st_bad.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -208,6 +267,12 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     h[11] = h[12] = 1;
     h[13] = pw, h[14] = threads;
     std::memcpy(map, h, sizeof h);
+    if (taskcheck()) {
+        Checked c{l->slot, map, {}, p.key, present_count(), indirect};
+        std::memcpy(c.h, h, sizeof h);
+        std::lock_guard lk(check_mu);
+        checked.push_back(c);
+    }
     if (tasklog_at() >= 0 && (int64_t)present_count() == tasklog_at()) {
         std::lock_guard lk(log_mu);
         if (logged.size() < 400) logged.push_back({map, p.key, indirect, count_});
@@ -275,8 +340,11 @@ void task_stats(char* out, size_t cap, double frames) {
     for (int i = 0; i < T_COUNT; i++)
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", i ? "," : "", kNames[i],
                            (i == T_POOLS || i == T_GROWN ? st[i].load() : st[i].exchange(0)) / (i == T_POOLS || i == T_GROWN ? 1.0 : frames));
-    std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; direct draws' task workgroups %.1f a frame; a pool's most use %.2f MB",
-                  st_task_groups.exchange(0) / frames, st_pool_most.load() / 1048576.0);
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; direct draws' task workgroups %.1f a frame; a pool's most use %.2f MB",
+                       st_task_groups.exchange(0) / frames, st_pool_most.load() / 1048576.0);
+    if (taskcheck())
+        std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; taskcheck: %lld headers checked, %lld wrong", (long long)st_checked.load(),
+                      (long long)st_bad.load());
 }
 
 }  // namespace hsd

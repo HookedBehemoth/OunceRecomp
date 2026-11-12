@@ -111,6 +111,7 @@ CmdSlot* cmd_slot_take() {
                                            std::memory_order_relaxed);
             }
             vkResetCommandPool(dev.device, s.pool, 0);
+            task_check_slot(&s);
             arena_reset(s.arena);
             query_slot_reset(s.q);
             task_pool_reset(s.task);
