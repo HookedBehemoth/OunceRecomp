@@ -45,9 +45,12 @@ typedef struct hsd_asset_key {
     uint32_t path;                 /* HSD_ASSET_LOAD / _INPLACE (logs) */
     const void *data;              /* data_offset 0: mip 0's bytes in the decompressed file (host pointer): the record whose
                                       data offset back from it is its BNTX's header is the one */
+    const void *same_as;           /* (M4g) HSD_ASSET_SAME: the NVNtexture whose load's content this texture has */
 } hsd_asset_key;
-enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2, HSD_ASSET_REBIND = 3 };   /* (REBIND: a record found replaces the link; none:
-                                                                              the link stays, armed as by hsd_asset_rebind) */
+enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2, HSD_ASSET_REBIND = 3, HSD_ASSET_SAME = 4 };
+/* (REBIND: a record found replaces the link; none: the link stays, armed as by hsd_asset_rebind. SAME (M4g): a load with no
+   data whose texels are another texture's, same_as: it takes that texture's link (its record or its plain image) when the
+   descriptors agree; the host's game patch names it: docs/direct/m4g-report.md 1) */
 int  hsd_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */
 int  hsd_asset_load(const hsd_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
 void hsd_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */

@@ -196,6 +196,8 @@ static int index_in(uint64_t bntx, uint64_t brti, const char *nm, uint32_t nl, u
 
 /* TextureData::loadImage_(td, ctx, src) */
 ENTRY_HOOK(0x80798690) {
+    void direct_diag_nodata_load(Ctx *c);   /* (M4g: HOS_DBG=nodata, either back end) */
+    direct_diag_nodata_load(c);
     if (!rx_direct()) return 0;
     const int on = ready();
     const uint64_t td = ARG(0), src = ARG(2);
@@ -216,7 +218,11 @@ ENTRY_HOOK(0x80798690) {
     const char *nm = bstr(G64(brti + 0x60), &nl);
     if (nm) k.name = nm, k.name_len = nl;
     k.data = src && hos_guest_range(src, 1) ? GP(src) : NULL;
+    /* (M4g: a load with no data over another texture's texels, and the slot's content: direct_tex_dedup.c) */
+    const uint64_t base = G64(td + 0x18), tslot = base && hos_guest_range(base, 0x10) ? base + 0x10 : 0;
+    if (!src) direct_tex_dedup_nodata(tslot, G32(td + 0xa8), &k);
     rx_direct()->asset_load(&k);
+    if (src) direct_tex_dedup_note(tslot, k.tex, G32(td + 0xa8));
     InterlockedIncrement64(&n_loads);
     if (src) {   /* (no copy into the heap: the back end makes the image from the store, or the placeholder) */
         InterlockedIncrement64(&n_load_skipped);
@@ -253,6 +259,7 @@ ENTRY_HOOK(0x807982f0) {
                     mip0 >= heap_lo && mip0 < heap_hi);
     }
     rx_direct()->asset_load(&k);
+    direct_tex_dedup_note(ARG(1) + 0x10, k.tex, G32(td + 0xa8));   /* (M4g: its texels are at the new base now) */
     return 0;
 }
 

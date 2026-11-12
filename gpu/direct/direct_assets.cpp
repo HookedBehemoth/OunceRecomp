@@ -336,9 +336,50 @@ int rebind_load(const hsd_asset_key* k) {
 }
 }  // namespace
 
+namespace {
+std::atomic<int64_t> st_same{0}, st_same_rec{0}, st_same_plain{0}, st_same_nolink{0}, st_same_desc{0};
+/// (M4g) A load with no data whose texels are another texture's load (the host names it): that texture's link, when the
+/// descriptors agree; else a plain image as before, counted and named
+int same_load(const hsd_asset_key* k) {
+    st_same.fetch_add(1, std::memory_order_relaxed);
+    Link l;
+    l.armed = true;
+    std::lock_guard lk(links_mu);
+    auto it = links.find(k->same_as);
+    const char* why = nullptr;
+    if (it == links.end()) {
+        why = "no load of it seen";
+    } else if (it->second.rec) {
+        Rec r;
+        rec_at(it->second.rec - 1, r);
+        if (r.nvn_format == k->format && r.w == k->width && r.h == k->height && r.layers == k->layers && r.mips == k->mips &&
+            r.isz == k->image_size)
+            l.rec = it->second.rec;
+        else
+            why = "its record has another descriptor";
+    } else if (it->second.plain) {
+        l.plain = it->second.plain;
+    } else {
+        why = "it has no record either";
+    }
+    if (l.rec) st_same_rec.fetch_add(1, std::memory_order_relaxed), st_prepared.fetch_add(1, std::memory_order_relaxed);
+    else if (l.plain) st_same_plain.fetch_add(1, std::memory_order_relaxed);
+    else {
+        (it == links.end() ? st_same_nolink : st_same_desc).fetch_add(1, std::memory_order_relaxed);
+        l.plain = plain_ids.fetch_add(1, std::memory_order_relaxed) + 1;
+        st_plain.fetch_add(1, std::memory_order_relaxed);
+        name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips): loaded with no data over another texture's content, but %s: a plain image",
+                  k->name ? (int)k->name_len : 0, k->name ? k->name : "", k->format, k->width, k->height, k->layers, k->mips, why);
+    }
+    links[k->tex] = l;
+    return l.rec ? 1 : 0;
+}
+}  // namespace
+
 extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_asset_key* k) {
     if (!k || !k->tex) return 0;
     if (k->path == HSD_ASSET_REBIND) return rebind_load(k);
+    if (k->path == HSD_ASSET_SAME) return same_load(k);
     (k->path == HSD_ASSET_INPLACE ? st_inplace : st_loads).fetch_add(1, std::memory_order_relaxed);
     Link l;
     l.armed = true;
@@ -971,6 +1012,9 @@ void assets_stats(char* out, size_t cap, double frames) {
     for (int i = 0; i < S_N; i++)
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.2f (%.1f KB)", kSrcNames[i], f_n[i].exchange(0) / frames,
                            f_bytes[i].exchange(0) / 1024.0 / frames);
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; loads with no data over another texture's content %lld: its record %lld, its "
+                       "plain image %lld, no link of it %lld, another descriptor %lld", (long long)st_same.load(), (long long)st_same_rec.load(),
+                       (long long)st_same_plain.load(), (long long)st_same_nolink.load(), (long long)st_same_desc.load());
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; on the Presentation Thread:");
     for (int i = 0; i < S_N; i++) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %lld", kSrcNames[i], (long long)on_present[i].load());
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; terrain tiles not converted %lld, uploads skipped terrain %lld glyph %lld; "

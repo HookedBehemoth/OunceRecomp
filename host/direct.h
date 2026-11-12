@@ -57,6 +57,10 @@ void direct_sky_lut_opened(const char *path);
 /* nvn_native.c nvnTextureInitialize: packaged texture data the back end never reads, its copy into the storage skipped
    (1) in direct mode */
 int direct_assets_skip_packaged(uint64_t bytes);
+/* direct_tex_dedup.c (M4g, game patch): the texture at a heap slot now (a load with data, a texture moved there); a load
+   with no data at a slot: the texture whose texels it has, as an HSD_ASSET_SAME key (1), none noted (0) */
+void direct_tex_dedup_note(uint64_t slot, const void *tex, uint32_t size);
+int direct_tex_dedup_nodata(uint64_t slot, uint32_t size, hsd_asset_key *k);
 /* (M4f) nvnMemoryPoolInitialize (lr its return address): agl::TextureDataMgr's pool is named to the back end */
 void direct_assets_pool_made(uint64_t lr, uint64_t gpu, uint64_t size);
 /* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */
