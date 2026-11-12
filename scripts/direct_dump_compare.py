@@ -24,9 +24,16 @@ NAMES = {37: "RGBA8", 43: "RGBA8_SRGB", 44: "BGRA8", 64: "A2B10G10R10", 76: "R16
 
 
 def read(path):
-    out = []
+    """The pass targets, and the frames the dump holds (the frozen back end logs a line a frame while it dumps; the
+    direct one names its count)"""
+    out, frames = [], 0
     with open(path, errors="replace") as f:
         for line in f:
+            d = re.search(r"\(direct: (\d+) frames", line)
+            if d:
+                frames = int(d.group(1))
+            elif "vk: dump of the frame after present" in line:
+                frames += 1
             m = LINE.search(line)
             if not m:
                 continue
@@ -34,7 +41,7 @@ def read(path):
             kind = "depth" if slot == "depth" else "colour"
             out.append({"seq": int(seq), "what": what, "kind": kind, "slot": 99 if slot == "depth" else int(slot[1:]), "gpu": gpu, "format": int(fmt), "w": int(w),
                         "h": int(h), "rest": rest.strip()})
-    return out
+    return out, max(1, frames)
 
 
 def passes(items):
@@ -77,8 +84,12 @@ def main():
     ap.add_argument("frozen")
     ap.add_argument("direct")
     ap.add_argument("--all", action="store_true", help="every aligned row")
+    ap.add_argument("--frames", type=int, nargs=2, metavar=("FROZEN", "DIRECT"), help="the frames each dump holds, if the logs do not say")
     a = ap.parse_args()
-    fz, dr = read(a.frozen), read(a.direct)
+    (fz, ff), (dr, df) = read(a.frozen), read(a.direct)
+    if a.frames:
+        ff, df = a.frames
+    print("frames dumped: frozen %d, direct %d (counts below are a frame)" % (ff, df))
     if not fz or not dr:
         print("no pass targets in %s" % (a.frozen if not fz else a.direct))
         return 1
@@ -110,12 +121,14 @@ def main():
     print("passes (runs over the same targets merged): frozen %d (from %d renderings), direct %d (from %d); aligned %d" %
           (len(pf), sum(p[1] for p in pf), len(pd), sum(p[1] for p in pd), pm))
     pcf, pcd = collections.Counter(psf), collections.Counter(psd)
-    print("by pass targets: %d of %d frozen passes have a direct pass over the same kinds, formats and sizes; %d direct "
-          "passes have none in the frozen dump" % (sum(min(pcf[s], pcd[s]) for s in pcf), len(pf),
-                                                   sum(max(0, pcd[s] - pcf[s]) for s in pcd)))
-    for s in sorted(set(pcf) | set(pcd), key=lambda s: (-max(pcf[s], pcd[s]), s)):
-        if pcf[s] != pcd[s]:
-            print("  %3d %3d  %s" % (pcf[s], pcd[s], pshow(s)))
+    kinds = sorted(set(pcf) | set(pcd), key=lambda s: (-max(pcf[s] / ff, pcd[s] / df), s))
+    same = [s for s in kinds if abs(pcf[s] / ff - pcd[s] / df) < 1e-9]
+    print("distinct passes (by their targets' kinds, formats and sizes): frozen %d, direct %d, in both %d; with the same "
+          "count a frame %d" % (len(pcf), len(pcd), len(set(pcf) & set(pcd)), len(same)))
+    print("  frozen  direct  a frame, where they differ:")
+    for s in kinds:
+        if s not in same:
+            print("  %6.2f  %6.2f  %s" % (pcf[s] / ff, pcd[s] / df, pshow(s)))
     if a.all:
         print("passes, aligned (= same targets, x not):")
         for op, i0, i1, j0, j1 in sm.get_opcodes():

@@ -338,8 +338,8 @@ void dump_present(uint64_t present) {
     const char* d = dbg_value("dumpdir");
     dir = std::string(d ? d : ".") + "/dump_" + std::to_string(t);
     mkdir(dir.c_str(), 0755);
-    logf("vk: dumping the frame after present %lld to %s (direct: %zu items; %lld recorded, %lld submissions claimed)", (long long)t,
-         dir.c_str(), items.size(), (long long)st_recorded.load(), (long long)st_claims.load());
+    logf("vk: dumping the frame after present %lld to %s (direct: %lld frames, %zu items; %lld recorded, %lld submissions "
+         "claimed)", (long long)t, dir.c_str(), (long long)frames(), items.size(), (long long)st_recorded.load(), (long long)st_claims.load());
     for (DumpItem* it : items) {
         write_item(*it, seq++);
         free_item(it);   // (the struct stays: its list may still name it)

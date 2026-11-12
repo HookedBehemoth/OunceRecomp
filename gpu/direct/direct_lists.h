@@ -59,6 +59,7 @@ struct List {
     // (M2a: real command buffers; the recording thread's alone until it is ended)
     std::vector<Seg> segs;
     bool has_cmds = false;   // (it or a callee has a command buffer)
+    bool draws = false;      // (it or a callee draws: a call of it begins its caller's rendering, as a draw does)
     CmdSlot* slot = nullptr;
     VkCommandBuffer cur = VK_NULL_HANDLE;
     uint64_t thread = 0;   // (the thread its command buffers come from)

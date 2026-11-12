@@ -229,6 +229,11 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     st_made.fetch_add(1, std::memory_order_relaxed);
     st_made_total.fetch_add(1, std::memory_order_relaxed);
     st_bytes.fetch_add((int64_t)mem_size(im.mem), std::memory_order_relaxed);
+    static std::atomic<int> late{0};   // (images made in play, after the first 1200 presents: named)
+    if (present_count() > 1200 && late++ < 20)
+        logf("direct: image #%u made at present %llu: %#llx %ux%ux%u x%u, %u levels, NVN format %#x, target %d (%u live textures before)",
+             im.id, (unsigned long long)present_count(), (unsigned long long)im.gpu, im.width, im.height, im.depth, im.layers,
+             im.levels, im.nvn_format, d.target, (unsigned)images.size());
     Image* out = x.get();
     images.emplace(k, std::move(x));
     return out;

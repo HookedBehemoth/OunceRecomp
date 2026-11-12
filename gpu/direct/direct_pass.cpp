@@ -1,5 +1,5 @@
 // A list's Vulkan commands at M2a (docs/direct/m2-interface.md, direct_pass): SetRenderTargets notes the targets; the
-// rendering is begun at the first draw or job call after it, so the clears between become its load ops; a clear after
+// rendering is begun at the first draw, job call or call of a list that draws (the load-time draw lists) after it, so the clears between become its load ops; a clear after
 // that, or one with a scissor short of the whole area, is vkCmdClearAttachments. A barrier, a dispatch, a copy or a
 // texture clear ends the rendering (the targets stay set: the next draw begins it again, loading); the next
 // SetRenderTargets or the list's end ends the pass. A barrier is the game's NVN barrier as one pipeline barrier.
@@ -137,6 +137,18 @@ void set_rt(List* l, const nvn_p_set_rt& r) {
     };
     for (int i = 0; i < p.n; i++) target(r.color[i], r.has_cview[i] ? &r.cview[i] : nullptr, p.color[i]);
     target(r.depth, r.has_dview ? &r.dview : nullptr, p.depth);
+    static const bool log_rt = dbg("rtlog");   // (HOS_DBG=rtlog: 200 SetRenderTargets from present 1500 on, named)
+    static std::atomic<int> logged{0};
+    if (log_rt && present_count() >= 1500 && logged++ < 200) {
+        char b[1024];
+        int k = std::snprintf(b, sizeof b, "direct: rtlog present %llu list %u lr %#llx rt %llu n %d:", (unsigned long long)present_count(),
+                              l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)p.set_rt_at, p.n);
+        for (int i = 0; i < p.n && k < 900; i++)
+            k += std::snprintf(b + k, sizeof b - k, " [%#llx L%u l%u %s]", r.color[i] ? (unsigned long long)r.color[i]->gpu : 0ull,
+                               p.color[i].level, p.color[i].layer, p.color[i].view ? "ok" : "none");
+        if (r.depth) std::snprintf(b + k, sizeof b - k, " depth %#llx %s", (unsigned long long)r.depth->gpu, p.depth.view ? "ok" : "none");
+        logf("%s", b);
+    }
     if (!any) return count(S_EMPTY_RT);
     p.noted = true;
 }
@@ -300,6 +312,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     }
     case NOP_DRAW: case NOP_DRAW_IDX: case NOP_DRAW_INDIRECT: case NOP_DRAW_MESH:
         count(S_DRAWS);
+        l->draws = true;
         if (records(l) && p.noted && !p.begun) begin(l);
         return;
     case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:
@@ -370,7 +383,8 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
 }
 
 void pass_call(List* l, const List* callee) {
-    if (callee->info.kind == HSD_LIST_JOB && records(l) && l->pass.noted && !l->pass.begun) begin(l);
+    if (callee->draws) l->draws = true;
+    if ((callee->info.kind == HSD_LIST_JOB || callee->draws) && records(l) && l->pass.noted && !l->pass.begun) begin(l);
     if (!callee->has_cmds) return;
     if (l->pass.begun) count(S_CUTS);
     suspend(l);
