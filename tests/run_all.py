@@ -144,6 +144,7 @@ ARGS = {
     "nx2/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "tests/test_astc_bc_policy.py": ["--cxx", "g++"],
     "tests/test_prepare_textures.py": ["--cxx", "{cxx}"],
+    "tests/test_prepare_terrain.py": ["--cxx", "{cxx}"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
@@ -151,6 +152,7 @@ MODULES = {
     "nx2/test_nup_codec.py": ["zstandard"],
     "nx2/test_nup_verify.py": ["zstandard"],
     "tests/test_prepare_textures.py": ["numpy", "zstandard"],
+    "tests/test_prepare_terrain.py": ["numpy", "zstandard"],
 }
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
