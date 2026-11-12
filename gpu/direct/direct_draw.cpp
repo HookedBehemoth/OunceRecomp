@@ -92,9 +92,9 @@ const char* const kReasons[R_COUNT] = {
 // thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
 struct TStats {
     std::atomic<int64_t> by_kind[HSD_LIST_KINDS][R_COUNT];
-    std::atomic<int64_t> ns, banks, tables, ub_copies, ub_reads, ub_bytes, past_range, mesh_first;
+    std::atomic<int64_t> ns, banks, tables, ub_copies, ub_reads, ub_bytes, past_range, mesh_first, unbound_draws, unbound_mesh;
     int64_t seen_by_kind[HSD_LIST_KINDS][R_COUNT];   // (draw_log's: the sums it reported last)
-    int64_t seen[8];
+    int64_t seen[10];
     TStats* next = nullptr;
 };
 std::atomic<TStats*> tstats_all{nullptr};
@@ -110,7 +110,7 @@ TStats& me() {
 }
 inline void bump(std::atomic<int64_t>& c, int64_t n = 1) { c.store(c.load(std::memory_order_relaxed) + n, std::memory_order_relaxed); }
 /// (draw_log, the Presentation Thread) the change of a thread counter since it last read it, summed over the threads
-enum { T_NS, T_BANKS, T_TABLES, T_UB_COPIES, T_UB_READS, T_UB_BYTES, T_PAST, T_MESH_FIRST };
+enum { T_NS, T_BANKS, T_TABLES, T_UB_COPIES, T_UB_READS, T_UB_BYTES, T_PAST, T_MESH_FIRST, T_UNBOUND, T_UNBOUND_MESH };
 int64_t take(std::atomic<int64_t> TStats::*f, int slot) {
     int64_t n = 0;
     for (TStats* t = tstats_all.load(std::memory_order_acquire); t; t = t->next) {
@@ -792,14 +792,32 @@ void sub(List* l, Reason r) { bump(me().by_kind[l->info.kind][r]); }
 /// (M4b) HOS_DBG=meshlog:<present>: the frame after that present's indirect and mesh draws and dispatches, with their program's
 /// stages, argument addresses and what the records hold when recorded (a guest read: a diagnosis only), and a dispatch's
 /// storage and uniform buffers: which dispatch writes which argument records
-bool meshlog_on() {
+int64_t meshlog_at() {
     static const int64_t at = [] {
         const char* v = dbg_value("meshlog");
         return v ? atoll(v) : -1;
     }();
-    return at >= 0 && (int64_t)present_count() == at;
+    return at;
 }
+bool meshlog_on() { return meshlog_at() >= 0 && (int64_t)present_count() == meshlog_at(); }
+// (the argument records of that frame's indirect mesh draws that the f_80362ff0 patch did not reach ({0, 0, ...}): a sentinel is
+// put in their w2 (nothing on the GPU or CPU reads it: Vulkan's z, so the draw stays empty) and they are read again 120
+// presents later: a word still there says no CPU code resets the record; and the next frame's dispatches have their uniform
+// buffers searched for a pointer into them)
+std::mutex meshlog_mu;
+std::vector<uint64_t> meshlog_recs;
+constexpr uint32_t kSentinel = 0x5a5a0000;
+bool meshlog_later() { return meshlog_at() >= 0 && (int64_t)present_count() == meshlog_at() + 120; }
+bool meshlog_next() { return meshlog_at() >= 0 && (int64_t)present_count() == meshlog_at() + 1; }
 void mesh_log(const List* l, uint32_t op, const nvn_p_draw_indirect& dn, const nvn_p_draw_mesh& dm) {
+    if (op == NOP_DRAW_MESH && dm.kind != 0 && meshlog_later()) {
+        uint32_t w[4]{};
+        host->gpu_read(dm.indirect, w, sizeof w);
+        std::lock_guard lk(meshlog_mu);
+        for (const uint64_t r : meshlog_recs)
+            if (r == dm.indirect) logf("direct: meshlog record %#llx 120 presents later: %u %u %#x %u (%s)", (unsigned long long)r, w[0], w[1], w[2], w[3],
+                                       (w[2] & 0xffff0000u) == kSentinel ? "the sentinel stayed: no CPU reset" : "reset since");
+    }
     if ((op != NOP_DRAW_INDIRECT && op != NOP_DRAW_MESH) || !meshlog_on()) return;
     static std::atomic<int> n{0};
     if (n++ > 3000) return;
@@ -819,11 +837,42 @@ void mesh_log(const List* l, uint32_t op, const nvn_p_draw_indirect& dn, const n
     uint32_t w[8]{}, c = 0;
     host->gpu_read(dm.indirect, w, sizeof w);
     if (dm.count_addr) host->gpu_read(dm.count_addr, &c, 4);
+    if (!w[1] && !w[2]) {   // (not a patched record: the sentinel)
+        std::lock_guard lk(meshlog_mu);
+        if (std::find(meshlog_recs.begin(), meshlog_recs.end(), dm.indirect) == meshlog_recs.end() && meshlog_recs.size() < 64) {
+            meshlog_recs.push_back(dm.indirect);
+            const uint32_t v = kSentinel | (uint32_t)meshlog_recs.size();
+            host->gpu_write(dm.indirect + 8, &v, 4);
+        }
+    }
     logf("direct: meshlog mesh indirect kind %d max %d stride %d at %#llx count %#llx (%u): %u %u %u %u | %u %u %u %u; list kind %u lr %#llx; %s",
          dm.kind, dm.max, dm.stride, (unsigned long long)dm.indirect, (unsigned long long)dm.count_addr, c, w[0], w[1], w[2], w[3], w[4], w[5],
          w[6], w[7], l->info.kind, (unsigned long long)l->info.lr, prog);
 }
 void dispatch_log(const List* l, uint32_t op, const void* data, uint32_t size) {
+    if (meshlog_next() && l->dctx) {   // (a pointer into the frame's unpatched argument records in a uniform or storage buffer it binds)
+        std::vector<uint64_t> recs;
+        {
+            std::lock_guard lk(meshlog_mu);
+            recs = meshlog_recs;
+        }
+        const DState& s = l->dctx->s;
+        for (int kind = 0; kind < 2; kind++)
+            for (int i = 0; i < 16; i++) {
+                const nvn_p_bind_buf& b = (kind ? s.ssbo : s.ubo)[5][i];
+                if (!b.addr || !b.size) continue;
+                std::vector<uint64_t> q((size_t)std::min<uint64_t>(b.size, kind ? 0x400 : 0x10000) / 8);
+                if (q.empty() || !host->gpu_read(b.addr, q.data(), q.size() * 8)) continue;
+                for (size_t k = 0; k < q.size(); k++)
+                    for (const uint64_t r : recs)
+                        if (q[k] >= (r & ~0xffull) && q[k] < (r & ~0xffull) + 0x100) {
+                            char d[512];
+                            shader_describe(s, d, sizeof d);
+                            logf("direct: meshlog pointer to the records at %#llx in %s%d (%#llx) + %#zx = %#llx; %s", (unsigned long long)r,
+                                 kind ? "s" : "u", i, (unsigned long long)b.addr, k * 8, (unsigned long long)q[k], d);
+                        }
+            }
+    }
     if (!meshlog_on() || !l->dctx) return;
     static std::atomic<int> n{0};
     if (n++ > 3000) return;
@@ -995,6 +1044,12 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (stride < rec || (stride & 3)) return count(l, mesh ? R_MESH_STRIDE : R_ARGS_MEM);
         if (!layer0_span(ind ? dn.indirect : dm.indirect, (uint64_t)(nargs - 1) * stride + rec, ab, ao)) return count(l, R_ARGS_MEM);
         if (count_addr && !layer0_span(count_addr, 4, cntb, cnto)) return count(l, R_ARGS_MEM);
+    }
+    {   // (M4b: a storage buffer slot the program reads that nothing bound in this list: read as the null window, counted)
+        bool unbound = false;
+        for (int st = 0; st < kStages && !unbound; st++)
+            for (uint32_t m = prog->ssbo_slots[st]; m && !unbound; m &= m - 1) unbound = !s.ssbo[st][std::countr_zero(m)].addr;
+        if (unbound) bump(mesh ? me().unbound_mesh : me().unbound_draws);
     }
     uint8_t push[256];
     std::memset(push, 0, prog->push_bytes);
@@ -1190,7 +1245,9 @@ void draw_log(double frames) {
          take(&TStats::ub_bytes, T_UB_BYTES) / 1024.0 / frames, take(&TStats::ub_reads, T_UB_READS) / frames);
     logf("direct: uniform buffers a program may read past their bound range: %.1f a frame (of the address tables made)",
          take(&TStats::past_range, T_PAST) / frames);
-    logf("direct: direct mesh draws from a first workgroup past 0: %.2f a frame", take(&TStats::mesh_first, T_MESH_FIRST) / frames);
+    logf("direct: direct mesh draws from a first workgroup past 0: %.2f a frame; draws reading a storage buffer slot nothing bound in "
+         "their list: %.2f mesh, %.2f others a frame", take(&TStats::mesh_first, T_MESH_FIRST) / frames,
+         take(&TStats::unbound_mesh, T_UNBOUND_MESH) / frames, take(&TStats::unbound_draws, T_UNBOUND) / frames);
     static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
     for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
         k = std::snprintf(out, cap, "draws a frame in %s lists:", kinds[kind]);

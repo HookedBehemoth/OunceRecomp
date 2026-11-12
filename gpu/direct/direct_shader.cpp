@@ -440,7 +440,7 @@ struct TaskMesh {
     std::atomic<int64_t> direct{0}, indirect{0}, programs{0};
     int64_t seen[2]{};
 };
-TaskMesh task_mesh[64];
+TaskMesh task_mesh[512];
 std::atomic<int64_t> st_task_mesh_full{0};
 TaskMesh* task_mesh_of(uint64_t task, uint64_t mesh, uint64_t fs) {
     const uint64_t k = task ^ mesh * 31 ^ fs * 961;
@@ -930,6 +930,14 @@ bool finish(Variant& v) {
         if (st.nvn_stage >= 0 && st.nvn_stage < 8)
             d.c1[st.nvn_stage] = c1_put(st.c1, info.constant_buffer_used_sizes.size() > 1 ? info.constant_buffer_used_sizes[1] : 0);
         if (st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT) d.mesh = true;
+        {   // (M4b: the storage buffer slots it reads, for the count of slots read that nothing bound)
+            static constexpr uint32_t kSsboTable[8] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 0x670, 0x770};
+            const uint32_t base = st.nvn_stage >= 0 && st.nvn_stage < 8 ? kSsboTable[st.nvn_stage] : 0;
+            for (const auto& sb : info.storage_buffers_descriptors)
+                if (base && sb.cbuf_index == 0 && sb.cbuf_offset >= base && sb.cbuf_offset < base + 256)
+                    for (uint32_t j = 0; j < std::max<uint32_t>(sb.count, 1) && (sb.cbuf_offset - base) / 16 + j < 16; j++)
+                        d.ssbo_slots[st.nvn_stage] |= (uint16_t)(1u << ((sb.cbuf_offset - base) / 16 + j));
+        }
     }
     d.push_bytes = kTablePush + 8 + 8 * (uint32_t)d.pushed.size();
     {   // (M3b: what the address table holds: uniform buffers a variant reads, against the push data a pushed address each would need)

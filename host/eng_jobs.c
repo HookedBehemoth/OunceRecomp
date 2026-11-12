@@ -101,6 +101,9 @@ uint64_t eng_jobs_current(uint64_t *view) {
     return jt_cmd;
 }
 
+/* (direct mode, M4b: host/direct_mesh_system.c) the draw context of the job this thread records now (0: none) */
+uint64_t eng_jobs_drawctx(void) { return jt.active ? jt.info.drawctx : 0; }
+
 int eng_jobs_tag(Ctx *c, uint64_t *key, uint64_t *view) {
     if (!eng_jobs_begin(c)) return 0;
     *key = jt.info.key, *view = jt.info.view;

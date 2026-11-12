@@ -34,6 +34,7 @@ struct DrawProg {
     bool mesh = false;
     VkShaderEXT ms = VK_NULL_HANDLE;
     uint64_t codes[3]{};   // (vertex or mesh, fragment, header-only)
+    uint16_t ssbo_slots[8]{};   // (M4b: by NVN stage, the storage buffer slots its stages read through the driver bank's table)
     mutable std::atomic<bool> used{false};
     uint32_t vs_loads = 0;          // (bit i: the vertex stage reads generic attribute i)
     uint8_t frag_stores = 0;        // (bit i: the fragment stage writes colour output i)
