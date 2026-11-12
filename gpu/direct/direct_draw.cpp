@@ -89,7 +89,7 @@ enum Reason {
     R_DRAWN, R_MESH, R_TASK_MESH, R_NO_TARGETS, R_CONDITION, R_DISABLED, R_TOPOLOGY, R_QUADS, R_NO_PROGRAM, R_NOT_PARSED,
     R_NOT_GRAPHICS, R_TRANSLATING, R_FAILED, R_STEP_A, R_VERTEX_MEM, R_INDEX_MEM, R_INDEX_U8, R_UBO_MEM, R_ARENA,
     R_RESOLVED_JOB, R_RESOLVED_LOAD, R_RESOLVED_OTHER, R_DRAWN_INDIRECT, R_DRAWN_MESH, R_DRAWN_MESH_INDIRECT, R_KIND,
-    R_ARGS_MEM, R_MESH_STRIDE, R_MESH_DRY, R_TASK_STEP, R_TASK_MULTI, R_DRAWN_TASK, R_COUNT
+    R_ARGS_MEM, R_MESH_STRIDE, R_MESH_DRY, R_TASK_STEP, R_TASK_MULTI, R_DRAWN_TASK, R_TASK_APART, R_COUNT
 };
 const char* const kReasons[R_COUNT] = {
     "drawn", "mesh draws without the device's mesh stage", "task+mesh programs that cannot be drawn (M4c)", "no render targets set in the list", "under a render condition (M5)",
@@ -101,7 +101,8 @@ const char* const kReasons[R_COUNT] = {
     "of the drawn: mesh, indirect", "a draw kind its program has no stage for", "indirect arguments or count not in layer 0",
     "mesh argument records closer than 12 bytes", "mesh draws left out (HOS_DBG=meshdry)",
     "task+mesh draws whose task step was not recorded (M4c)", "task+mesh indirect draws of several records or with a count (M4c)",
-    "of the drawn: task+mesh (a task step)"};
+    "of the drawn: task+mesh (a task step)",
+    "of the drawn: task+mesh, kept apart from the task+mesh draw before it (M6d)"};
 // (M3b: the counters a draw bumps are the recording thread's own: a global atomic added to by every draw on every recording
 // thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
 struct TStats {
@@ -224,7 +225,7 @@ struct ListDraw {
     bool heap = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ms = VK_NULL_HANDLE;
     bool shaders = false;
-    bool last_tm = false;    // (M6d, HOS_DBG=tmsyncpair: the last draw recorded in this command buffer was a task+mesh draw)
+    bool last_tm = false;    // (M6d: the last draw recorded in this command buffer was a task+mesh draw: the next one is kept apart from it)
     uint32_t vb_bound = 0;   // (the vertex bindings given a buffer in this command buffer)
     Dyn dyn;
     uint64_t vi_sig = 0;
@@ -1373,20 +1374,13 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         const uint32_t mk = marks_on() ? mark_before(cb, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw", prog->key,
                                                      l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: HOS_DBG=marks)
         if (marks_on() && prog->task) mark_header(mk, task_last_header);
-        // (M6d, diagnoses of the market loss, one at a time: a full barrier inside the rendering, which Vulkan does not allow
-        // there and RADV records as the wait it is (VS and PS partial flushes): tmsync before each task+mesh draw, tmsyncafter
-        // after it, tmsyncpair only before one whose previous draw in this command buffer was a task+mesh draw too)
-        static const bool tm_before = dbg("tmsync"), tm_after = dbg("tmsyncafter"), tm_pair = dbg("tmsyncpair"), tm_local = dbg("tmlocal");
-        const auto drain = [cb] {
-            VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-            b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
-            b.srcAccessMask = b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-            VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-            d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
-            vkCmdPipelineBarrier2(cb, &d);
-        };
-        if (prog->task && (tm_before || (tm_pair && x.last_tm))) drain();
-        if (prog->task && tm_local && x.last_tm) {   // (tmlocal: between two task+mesh draws, the barrier a rendering may hold (dynamicRenderingLocalRead): framebuffer stages, by region)
+        // (M6d) Two task+mesh draws in a row never overlap on the GPU. The native mesh stages of two such draws running together
+        // in one rendering lose the device on this GPU (RX 6950 XT, RADV 26.2.4 and main; docs/direct/m6d-report.md): with
+        // the pipe drained before every one (HOS_DBG=tmsync), or only between two in a row (tmsyncpair), or with this barrier,
+        // 0 losses against 12 of 12 without. The barrier is the one a rendering may hold (dynamicRenderingLocalRead:
+        // framebuffer stages, by region); RADV records it as a wait for the earlier draws' pixel work, which ends their mesh
+        // work too. The class is the program's shape (a mesh stage that reads its workgroups from a task step), no program is named
+        if (prog->task && x.last_tm) {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
             VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -1397,7 +1391,21 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             d.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
             d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
             vkCmdPipelineBarrier2(cb, &d);
+            sub(l, R_TASK_APART);
         }
+        // (M6d, the diagnoses that found it, one at a time: a full barrier inside the rendering, which Vulkan does not allow there
+        // and RADV records as the wait it is (VS and PS partial flushes): tmsync before each task+mesh draw, tmsyncafter after it,
+        // tmsyncpair only before one whose previous draw in this command buffer was a task+mesh draw too)
+        static const bool tm_before = dbg("tmsync"), tm_after = dbg("tmsyncafter"), tm_pair = dbg("tmsyncpair");
+        const auto drain = [cb] {
+            VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+            b.srcAccessMask = b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cb, &d);
+        };
+        if (prog->task && (tm_before || (tm_pair && x.last_tm))) drain();
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
