@@ -1,5 +1,7 @@
 // The task stage as a compute step (direct_task.h).
 #include <algorithm>
+#include <cstdlib>
+#include <vector>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -96,7 +98,41 @@ void pipeline_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src, VkAccessFla
     vkCmdPipelineBarrier2(cb, &d);
 }
 
+// (HOS_DBG=tasklog:<present>: that frame's task headers, read once the GPU has run it: what the task steps placed)
+int64_t tasklog_at() {
+    static const int64_t at = [] {
+        const char* v = dbg_value("tasklog");
+        return v ? atoll(v) : -1;
+    }();
+    return at;
+}
+struct Logged {
+    const uint8_t* header;
+    uint64_t key;
+    bool indirect;
+    uint32_t count;
+};
+std::mutex log_mu;
+std::vector<Logged> logged;
+
 }  // namespace
+
+void task_log_after() {
+    if (tasklog_at() < 0 || (int64_t)present_count() != tasklog_at() + 1) return;
+    std::vector<Logged> v;
+    {
+        std::lock_guard lk(log_mu);
+        v.swap(logged);
+    }
+    if (v.empty()) return;
+    vkDeviceWaitIdle(dev.device);
+    for (const Logged& g : v) {
+        uint32_t h[16];
+        std::memcpy(h, g.header, sizeof h);
+        logf("direct: tasklog %016llx %s (count %u): groups %u taken %u cap %u tasks %u dispatch %u %u %u payload words %u threads %u",
+             (unsigned long long)g.key, g.indirect ? "indirect" : "direct", g.count, h[0], h[3], h[8], h[9], h[10], h[11], h[12], h[13], h[14]);
+    }
+}
 
 void task_pool_reset(TaskPool* p) {
     if (!p || !p->map) return;
@@ -165,6 +201,10 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     h[11] = h[12] = 1;
     h[13] = pw, h[14] = threads;
     std::memcpy(map, h, sizeof h);
+    if (tasklog_at() >= 0 && (int64_t)present_count() == tasklog_at()) {
+        std::lock_guard lk(log_mu);
+        if (logged.size() < 400) logged.push_back({map, p.key, indirect, count_});
+    }
     // (the task stage's push data: the draw's, the header's address in the fallback's members (Eden's task reads its first
     // from MESH_FIRST_PUSH_OFFSET and, its indirect input being 0, a word of the records' address it does not use))
     {

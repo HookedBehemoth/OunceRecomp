@@ -35,5 +35,7 @@ void task_barrier(VkCommandBuffer cb, bool to_draw);
 /// The list's end: its task step's secondaries ended
 void task_list_end(List* l);
 void task_stats(char* out, size_t cap, double frames);
+/// (HOS_DBG=tasklog:<present>) the present after it: that frame's task headers once the GPU has run it
+void task_log_after();
 
 }  // namespace hsd
