@@ -129,3 +129,54 @@ epilogue). Folding the task into the mesh stage is not possible. Order instead:
 - **(d)** Settle the indirect records by the `f_80362ff0` header patch `{0, 1, 1, 0}` and `first = 0` for these draws.
   This needs no culling-shader replacement and no conversion copy. It still needs the writer of the five other
   indirect addresses identified.
+
+## The stuck program (`m0_mark_h1`, follow-up)
+
+**What `ffb53ed102dd9908` is** (CONFIRMED). The marker prints `Program::key` (`checkpoint()`, `vk_draw.cpp:4094`, set in
+`push_constants` / `heap_draw` **before** each draw). For an ordinary program that key is `graphics_key`. Other runs
+name the stages: `in play: graphics ffb53ed102dd9908 (365b92d206544e3f acfb185a608654e9)`; the shader-object lines
+show stage 0x1 + 0x10. It is **an ordinary vertex + fragment program, not a task or mesh program**. Translated offline
+(`tm/out/g_0_365b92d206544e3f.ir.c`, `g_1_acfb185a608654e9.ir.c`):
+- The vertex stage, 59 native instructions with no branch and no loop, reads generic 0 (xyz). It applies a 3x4 model
+  matrix (c4), then a 3x4 view and 4x4 projection (c3), and writes the position only.
+- The fragment stage writes colour (1,1,1,1) and nothing else. It is the game's generic position-only depth program.
+
+**What it draws** (CONFIRMED, logs). It is a plain draw call, not a mesh draw, so there is no first-task word and no
+GPU group count. No run logs one of its draws as indirect. It draws into:
+- the depth-only passes 4096x4096 and 12288x12288 (586 pass ends each with it as the last program), the 1600x1600
+  shadow map (beside the other shadow casters), and 384x216 / 512x288;
+- the 1536x864 scene with colour writes off (`wm0`), followed by REPORT_COUNTERs: occlusion proxies.
+
+The replay writes those reports on the CPU (`vk_replay.cpp:1479`), so no GPU command sits between its draws.
+
+**Why it "fails to finish"** (INFERRED). Nothing in its shaders can run long. The markers stand before each draw:
+`last_done = 3386` means everything up to and including draw 3385 finished. `reached = 3386` means the command
+processor never reached marker 3387 (the "running" lines past 3386 are listed, not reached). So the only GPU work in
+the window is draw 3386 itself, a few hundred vertices of position-only depth. Its pass is depth-only (a 4096 or 12288
+cascade by the other runs; this log does not name the size). A draw like that does not take 10 s on its own. What
+differs from the compute emulation is the context, not this draw:
+- Natively, the task+mesh draws of the same frame run as gang submits, and the comp_1.1.1 timeout says this run's ACE
+  job was still pending. With the emulation, each mesh draw ends the pass and drains the pipe with full barriers
+  (`fallback_record`), so a plain vertex draw never follows a mesh pipeline in the same unbroken pass.
+- The 2c56 depth-grid walk was off in this run (`RX_VK_MESH_NOCULL`, logged 4 times), but the B-family n = 0 loop
+  (section 1) was not. It runs on the ACE and cannot stall a vertex draw on the graphics ring. It can, however, keep
+  the task side from ever writing the draw-ring entries that the next `DISPATCH_TASKMESH_GFX` of the same command
+  buffer waits for.
+
+The earlier dump (m0-hang-dump.md: contexts exhausted, an end-of-pipe wait, SC/DB busy on one SE, MEC idle) and this
+one (the ACE also pending) both point at **the 3D pipe wedged by state from the native mesh path**, with
+`ffb53ed102dd9908` as the first plain draw caught behind it. They do not point at the program.
+
+**Smallest experiments (one device loss at most):**
+1. **The same run with `RX_VK_SKIP_PROG=ffb53ed102dd9908`** (the existing switch; only these draws are left out).
+   - If it survives past frame 499 (say 3x the time), the trigger is these draws in their pass. The next step is the
+     pass: a full barrier before the first plain draw that follows a mesh draw in a pass.
+   - If it hangs again with the markers on another plain program, the program is a bystander and the cause is the
+     mesh-to-vertex switch or the gang.
+2. If (1) points at the switch, the same native run with a pipe drain after every native mesh draw (a
+   `vkCmdPipelineBarrier2` ALL_GRAPHICS -> ALL_GRAPHICS outside the pass, i.e. the emulation's pass split without
+   the emulation) confirms it with one more run.
+
+Both are cheaper than a shader patch. **No shader patch is indicated for this program**: it has no loop and no data
+bound. The marker record lacks the draw's counts and target. Adding vertex / instance count, indexed / indirect and
+the target size to `Checkpoint` would let the next loss say whether draw 3386 was unusual.
