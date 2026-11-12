@@ -3,6 +3,7 @@
    (debug output, ticks, info queries) or a sign that an SDK function above it wants an HLE. Unknown ones stop the
    run with the svc number and the caller, so the log says what to do next. Numbers: switchbrew.org "SVC". */
 #include "hos.h"
+#include "direct_crit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -371,7 +372,7 @@ void a64_svc(Ctx *c, uint32_t imm) {
         c->x[0] = R_OK;
         return;
     case 0x0A:   /* ExitThread */
-        hos_vcore_away();
+        hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)12);
         ExitThread(0);
         return;
     case 0x07:   /* ExitProcess */

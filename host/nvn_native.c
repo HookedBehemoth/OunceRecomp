@@ -19,6 +19,7 @@
    own procs (program builders, native images, sparse tile layouts, recording modes). The SDK's exports reach the
    same functions as the proc table (nvn2_dispatch, from gen/nvn2_exports.c). */
 #include "hos.h"
+#include "direct_crit.h"
 #include "../gpu/render/rx_nvn.h"
 #include "nvn_list.h"
 #include "eng_lists.h"
@@ -1232,7 +1233,7 @@ static void fw_flush(uint64_t queue) {
     const uint64_t f = tl_on() ? fw_take(queue) : 0;
     if (!f) return;
     const uint64_t h = fw_record(f);
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)6);
     rx_nvn_submit_q(&h, 1, queue);
     if (away) hos_vcore_back();
 }
@@ -1275,7 +1276,7 @@ NV(nvnSyncWait) {
     if (rx_nvn_wait(s->fence, 0)) { RET(NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED); return; }
     static int block = -1;   /* HOS_NVN_SYNC_BLOCK=1 (experiment): a poll waits for the GPU */
     if (block < 0) block = getenv("HOS_NVN_SYNC_BLOCK") != NULL;
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)1);
     const int64_t t0 = hos_now_ns();
     const int ok = rx_nvn_wait(s->fence, block ? ~0ull >> 1 : U64(1));
     wait_note(ok ? 0 : 1, t0);
@@ -1356,7 +1357,7 @@ NV(nvnQueueFinish) {
     sc_add(SC_FINISH);
     fw_flush((uint64_t)(uintptr_t)P(0));
     held_flush();
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)2);
     const int64_t t0 = hos_now_ns();
     rx_nvn_finish();
     wait_note(2, t0);
@@ -3077,7 +3078,7 @@ NV(nvnQueueSubmitCommands) {
         /* (the replay runs here, on this thread, for ~9 ms a frame (vk_replay.cpp submit_q, RX_VK_ASYNC off): the virtual
            core is given up for it, as Present and AcquireTexture do, so the game's other threads run on it meanwhile.
            Nothing in the replay runs guest code or needs the core) */
-        const int away = hos_vcore_away();
+        const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)5);
         rx_nvn_submit_q(h, n, (uint64_t)(uintptr_t)q);
         if (away) hos_vcore_back();
         if (list_ref()) nvn_list_submitted(rx_nvn_pushed() + held_count());   /* (after the hand-over: what names it) */
@@ -3179,7 +3180,7 @@ NV(nvnWindowAcquireTexture) {
     nvn_sync *s = (nvn_sync *)P(1);
     *(int *)P(2) = o->active ? o->next++ % o->active : 0;
     {
-        const int away = hos_vcore_away();
+        const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)3);
         hos_vi_native_acquire(o->active ? o->active : o->ntex);
         if (away) hos_vcore_back();
     }
@@ -3194,7 +3195,7 @@ NV(nvnQueuePresentTexture) {
     fw_flush((uint64_t)(uintptr_t)P(0));   /* (RX_VK_TIMELINES: a fence wait asked on the presenting queue, before it) */
     held_flush();   /* (a present flushes the queue) */
     {
-        const int away = hos_vcore_away();
+        const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)4);
         if (rx_direct()) rx_direct()->present_queue((uint64_t)(uintptr_t)P(0));   /* (direct mode: the present runs in its queue's order) */
         rx_nvn_present(win_tex(o, i), o->crop);
         if (away) hos_vcore_back();

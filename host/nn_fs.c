@@ -6,6 +6,7 @@
    hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (ReadFile with an offset), so any number
    of guest threads can read one file at once. Results: switchbrew "Error codes" (module 2 = fs). */
 #include "hos.h"
+#include "direct_crit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -376,7 +377,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     }
     /* (mkw-recomp 16bc3bc: the host's file calls block, so the virtual core goes to another thread meanwhile, as
        Horizon would run another while this one waits for the file system. OoT's ARes loaders held it up to 250 ms) */
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)9);
     HANDLE h = CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE,
                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (away) hos_vcore_back();
@@ -414,7 +415,7 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
        while taking the core back cost ARes Loading 0 580 ms of 5.5 s (work/assets/native/boot-speed.md) */
     static int64_t keep_core = -1;
     if (keep_core < 0) keep_core = getenv("HOS_FS_KEEP_CORE_KB") ? atoll(getenv("HOS_FS_KEEP_CORE_KB")) * 1024 : 0;
-    const int away = (int64_t)size <= keep_core ? 0 : hos_vcore_away();
+    const int away = (int64_t)size <= keep_core ? 0 : hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)10);
     {   /* (M4d: HOS_DBG=texwatch in direct mode: a read into watched texture storage, made writable first) */
         void direct_texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what);
         direct_texwatch_kernel_write(buf, size, fh->path);

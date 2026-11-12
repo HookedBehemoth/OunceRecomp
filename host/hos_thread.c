@@ -5,6 +5,7 @@
    there. TPIDRRO_EL0 (thread-local region): 0x200 bytes; the SDK's nn::os keeps the current ThreadType* at
    +0x1F8, so lifted SDK code that reads it inline finds the same thread the HLE knows. */
 #include "hos.h"
+#include "direct_crit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #define WIN32_LEAN_AND_MEAN
@@ -68,6 +69,10 @@ int hos_thread_prio(HosThread *t) { return t->priority; }
 int hos_trace;
 extern const uint64_t hos_thread_start_hook, hos_thread_exit_hook;   /* gen/hos_image.c */
 static _Thread_local HosThread *cur;
+/* (M6a, HOS_DBG=crit: direct_crit.h) what the block that gives the core up waits on, set by the blocking call before it */
+static _Thread_local int crit_why = CRIT_BLOCK_OTHER;
+static _Thread_local uint64_t crit_key, crit_away_t, crit_away_lr;
+static _Thread_local int crit_vc_how;
 static SRWLOCK threads_lock = SRWLOCK_INIT;
 static HosThread *threads[1024];
 static int nthreads;
@@ -466,11 +471,11 @@ HosThread *hos_thread_by_handle(uint32_t h) {
 /* Block on the thread's wake event (the kernel layer's lock must not be held). */
 void hos_thread_wait(HosThread *t, int64_t timeout_ns, int *timed_out) {
     DWORD ms = timeout_ns < 0 ? INFINITE : (DWORD)((timeout_ns + 999999) / 1000000);
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_THREAD, t);
     *timed_out = WaitForSingleObject(t->wake, ms) == WAIT_TIMEOUT;
     if (away) hos_vcore_back();
 }
-void hos_thread_wake(HosThread *t) { SetEvent(t->wake); }
+void hos_thread_wake(HosThread *t) { crit_wake(t); SetEvent(t->wake); }
 
 HosThread *hos_thread_of(uint64_t guest_tt) {
     HosThread *r = NULL;
@@ -578,7 +583,7 @@ void hos_thread_start(HosThread *t) {
 
 void hos_thread_join(HosThread *t) {
     if (!t->handle) return;
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)7);
     /* (EvilOOT, 11-07: a freeze after Load, one thread joining another for good: a join of over 10 s says who joins whom, once) */
     if (WaitForSingleObject(t->handle, 10000) == WAIT_TIMEOUT) {
         HosThread *self = hos_self();
@@ -772,7 +777,7 @@ void hos_sleep_ns(int64_t ns) {
         SwitchToThread();
         return;
     }
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_SLEEP, (const void *)(uintptr_t)ns);
     sleep_ns(ns);
     if (away) hos_vcore_back();
 }
@@ -966,7 +971,7 @@ static int present_poll(Ctx *c, int64_t ns) {
     const uint64_t ev = c->x[23] + (uint64_t)G32(c->x[22] + 0x164) * 64;
     uint32_t v = 0;
     if (!hos_nvn_event_value(ev, &v)) return 0;
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)8);
     const int64_t end = hos_now_ns() + ns;
     while (v != 1 && hos_now_ns() < end) {
         SwitchToThread();
@@ -1318,12 +1323,17 @@ static void vc_acquire(HosThread *t) {
         slice = vc_env_ns("HOS_VCORE_SLICE_US", 2000);
         lend = vc_env_ns("HOS_VCORE_LEND_US", 0);
     }
+    const uint64_t crit_t = crit_rec ? crit_tsc() : 0;   /* (M6a, HOS_DBG=crit) */
+    if (crit_t && crit_away_t) crit_span(crit_why, crit_away_t, crit_t, crit_key, crit_away_lr);
+    crit_why = CRIT_BLOCK_OTHER, crit_away_t = 0;
     AcquireSRWLockExclusive(&vc_lock);
     vc_st.takes++;
     int c = vc_free_for(t);
     if (c >= 0) {
         vc_take(t, c);
         ReleaseSRWLockExclusive(&vc_lock);
+        if (crit_t) crit_span(CRIT_VCWAIT, crit_t, crit_tsc(), 0x1000 + (uint64_t)c, crit_vc_how);
+        crit_vc_how = 0;
         return;
     }
     const int64_t t0 = hos_now_ns();
@@ -1389,6 +1399,8 @@ static void vc_acquire(HosThread *t) {
     if (waited > vc_st.max_ns) vc_st.max_ns = waited;
     vc_stats_locked(hos_now_ns());
     ReleaseSRWLockExclusive(&vc_lock);
+    if (crit_t) crit_span(CRIT_VCWAIT, crit_t, crit_tsc(), 0x1000 + (uint64_t)(t->vc_held ? t->vc_held - 1 : 255), crit_vc_how);
+    crit_vc_how = 0;
 }
 static void vc_release(HosThread *t) {
     if (!t->vc_held) return;
@@ -1411,10 +1423,17 @@ static void vc_yield(HosThread *t, int strict) {
         any = (vc_allowed(w) >> c & 1) && vc_slot(c, w->priority) == t->vc_slot &&
               (strict ? w->priority < t->priority : w->priority <= t->priority);
     }
+    const int kicked = t->vc_kick;
     t->vc_kick = 0;
     if (any) vc_st.yields++;
     ReleaseSRWLockExclusive(&vc_lock);
     if (!any) return;
+    if (crit_rec) {   /* (M6a: the core freed, then a wait for one counted as a yield or a kick) */
+        crit_emit_flush();
+        const uint64_t now = crit_tsc();
+        crit_span(CRIT_WAKE, now, now, 0x1000 + (uint64_t)c, 0);
+        crit_vc_how = kicked ? 1 + kicked : 1;
+    }
     vc_release(t);
     vc_acquire(t);
 }
@@ -1427,6 +1446,19 @@ int hos_vcore_away(void) {
 void hos_vcore_back(void) {
     HosThread *t = cur;
     if (hos_vcores_on() && t && !t->vc_held) vc_acquire(t);
+}
+/* (M6a, HOS_DBG=crit: direct_crit.h) a block's start: the core given up (released: an instant keyed by the core, which a
+   waiter for it may be woken by), what it waits on and its guest caller; vc_acquire ends it */
+int hos_vcore_away_why(int why, const void *key) {
+    HosThread *t = cur;
+    if (crit_rec && hos_vcores_on() && t && t->vc_held) {
+        crit_emit_flush();
+        const uint64_t now = crit_tsc();
+        crit_why = why, crit_key = (uint64_t)(uintptr_t)key, crit_away_t = now;
+        crit_away_lr = (t->run_ctx ? t->run_ctx : &t->ctx)->x[30];
+        crit_span(CRIT_WAKE, now, now, 0x1000 + (uint64_t)(t->vc_held - 1), 0);
+    }
+    return hos_vcore_away();
 }
 /* Lifted code calls this from its interrupt polls with the loop's guest registers still in host registers (a64_poll_cur,
    mkw_glue.c: the poll hands over no context, so the compiler need not spill them). It, and everything it calls, must never
@@ -1444,7 +1476,7 @@ void hos_vcore_yield(void) {
    core is taken again (waiting for a core while holding it could stall the thread that will wake the next waiter),
    so callers see a spurious wake-up and look at their condition again, as they do anyway */
 int hos_cv_sleep(void *cv, void *lk, unsigned ms) {
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_CV, cv);
     const BOOL r = SleepConditionVariableSRW((PCONDITION_VARIABLE)cv, (PSRWLOCK)lk, ms, 0);
     if (away) {
         ReleaseSRWLockExclusive((PSRWLOCK)lk);
@@ -1472,6 +1504,7 @@ void hos_vcore_dump(void) {
 void hos_vcore_dump(void) {}
 int hos_vcores_on(void) { return 0; }
 int hos_vcore_away(void) { return 0; }
+int hos_vcore_away_why(int why, const void *key) { (void)why, (void)key; return 0; }
 void hos_vcore_back(void) {}
 void hos_vcore_checkpoint(void) {}
 void hos_vcore_yield(void) {}

@@ -25,6 +25,14 @@
 #include "vk_present_rect.h"
 
 namespace hsd {
+// (M6a, direct_sync.cpp: HOS_DBG=gputime / frames, measurement)
+bool gputime_on();
+void gputime_present_begin(VkCommandBuffer cb, uint32_t& slot);
+void gputime_present_end(VkCommandBuffer cb, uint32_t slot);
+void gputime_read();
+bool gputime_row(double out[3]);
+void gputime_stats(char* out, size_t cap);
+extern std::atomic<int64_t> st_fence_wait_ns;
 namespace {
 
 using clk = std::chrono::steady_clock;
@@ -262,6 +270,10 @@ void log_line() {
     logf("vk: %lld presents, %.1f fps (direct); frame time %.2f ms mean, %.2f median, %.2f p99, %.2f max", (long long)presents,
          mean > 0 ? 1000.0 / mean : 0.0, mean, pct(0.5), pct(0.99), v.empty() ? 0.0 : (double)v.back());
     static char b[8192];
+    if (gputime_on()) {
+        gputime_stats(b, sizeof b);
+        logf("direct: %s", b);
+    }
     const double frames = 600;
     lists_stats(b, sizeof b, frames);
     logf("direct: %s", b);
@@ -337,6 +349,17 @@ uint64_t present_count() { return asked.load(std::memory_order_acquire); }
 void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation Thread)
     const auto now = clk::now();
     if (presents) intervals_ms.push_back(std::chrono::duration<float, std::milli>(now - last_present).count());
+    {   // (M6a, HOS_DBG=frames: each present's interval in direct_frames.csv; with gputime also the GPU's frame time, busy and idle as the
+        // timestamps of an earlier frame came in, a row late; measurement)
+        static FILE* frames_file = dbg("frames") ? std::fopen("direct_frames.csv", "w") : nullptr;
+        if (frames_file && presents) {
+            double g[3] = {0, 0, 0};
+            const bool have = gputime_row(g);
+            std::fprintf(frames_file, "%lld,%.4f,%.4f,%.4f,%.4f\n", (long long)presents, std::chrono::duration<double, std::milli>(now - last_present).count(),
+                         have ? g[0] : -1.0, have ? g[1] : -1.0, have ? g[2] : -1.0);
+            if (presents % 600 == 0) std::fflush(frames_file);
+        }
+    }
     last_present = now;
     presents++;
     if (presents % 600 == 0) log_line();
@@ -354,7 +377,12 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
         if (!create_swapchain(want ? (uint32_t)(want >> 32) : extent.width, want ? (uint32_t)want : extent.height)) return;
     Frame& f = frames[frame_index];
     frame_index = (frame_index + 1) % 3;
-    vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
+    {
+        const auto w0 = clk::now();
+        vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
+        st_fence_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - w0).count(), std::memory_order_relaxed);
+    }
+    if (gputime_on()) gputime_read();   // (M6a)
     shot_write(f);   // (M4d: the shot this slot took three presents ago)
     const int64_t number = ++run_count;
     const bool shot = shot_every && number % shot_every == 0 && (dev.offscreen || swap_src) && shots_ready();
@@ -383,6 +411,8 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(f.cmd, &bi);
+    uint32_t gt_slot = 0;
+    if (gputime_on()) gputime_present_begin(f.cmd, gt_slot);   // (M6a)
     // (after the frame's work on the queue: the window texture's writes, before the blit reads it)
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -417,6 +447,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
     if (!dev.offscreen)
         barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    if (gputime_on()) gputime_present_end(f.cmd, gt_slot);
     vkEndCommandBuffer(f.cmd);
     VkCommandBufferSubmitInfo cb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
     cb.commandBuffer = f.cmd;

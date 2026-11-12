@@ -11,6 +11,7 @@
 // queue) until another queue's signal or the CPU's (nvnEventSignal) meets it. nvnQueueWaitSync holds the queue's next
 // submission until the fence's submission has been sent. An NVN fence names its queue and the submission (its sequence
 // number on that queue); a CPU wait for it waits until that submission is sent and then for its timeline value on the GPU.
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -27,6 +28,7 @@
 
 namespace hsd {
 std::atomic<int64_t> st_send_ns{0}, st_send_n{0};
+std::unique_lock<std::mutex> lock_mu();   // (M6a: below)
 namespace {
 
 using clk = std::chrono::steady_clock;
@@ -122,6 +124,103 @@ struct Batch {
 };
 Batch batch;
 std::atomic<int64_t> st_batch_calls{0};
+
+// (M6a, HOS_DBG=gputime: measurement) The GPU's own time: each vkQueueSubmit2 of the batch and each present's command
+// buffer is bracketed by two timestamps (top of pipe before its first command, all commands after its last). In the
+// queue's order these give the time the queue had work (the union of the brackets) and its idle gaps: the GPU waiting
+// for the CPU. Read once available, at the presents; every 600 presents a line, and with HOS_DBG=frames each present's
+// row in direct_frames.csv (direct_present.cpp)
+struct GpuTime {
+    bool on = false;
+    VkQueryPool pool = VK_NULL_HANDLE;
+    static constexpr uint32_t kSlots = 2048;
+    VkCommandPool cpool = VK_NULL_HANDLE;
+    VkCommandBuffer start[kSlots]{}, end[kSlots]{};
+    uint32_t next = 0;
+    std::deque<std::pair<uint32_t, int>> fifo;   // (slots sent, in queue order: kind 0 a batch, 1 a present)
+    std::mutex mu;
+    PFN_vkCmdWriteTimestamp2 write = nullptr;
+    PFN_vkCmdResetQueryPool reset = nullptr;
+    PFN_vkGetQueryPoolResults results = nullptr;
+    double period_ns = 10;
+    uint64_t busy_end = 0;
+    double busy_ns = 0, idle_ns = 0, frame_busy = 0, frame_idle = 0, last_present_end = 0;
+    int64_t idle_gaps = 0, presents = 0;
+    double longest_gap = 0;
+    // (per present, for direct_present.cpp's rows: GPU frame time, busy, idle)
+    std::deque<std::array<double, 3>> rows;
+};
+GpuTime gt;
+void gputime_init() {
+    gt.on = dbg("gputime");
+    if (!gt.on) return;
+    gt.write = (PFN_vkCmdWriteTimestamp2)vkGetDeviceProcAddr(dev.device, "vkCmdWriteTimestamp2");
+    gt.reset = (PFN_vkCmdResetQueryPool)vkGetDeviceProcAddr(dev.device, "vkCmdResetQueryPool");
+    gt.results = (PFN_vkGetQueryPoolResults)vkGetDeviceProcAddr(dev.device, "vkGetQueryPoolResults");
+    auto create = (PFN_vkCreateQueryPool)vkGetDeviceProcAddr(dev.device, "vkCreateQueryPool");
+    VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qi.queryType = VK_QUERY_TYPE_TIMESTAMP, qi.queryCount = 2 * GpuTime::kSlots;
+    VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pi.queueFamilyIndex = dev.queue_family;
+    if (!gt.write || !gt.reset || !gt.results || !create || create(dev.device, &qi, nullptr, &gt.pool) != VK_SUCCESS ||
+        vkCreateCommandPool(dev.device, &pi, nullptr, &gt.cpool) != VK_SUCCESS) {
+        gt.on = false;
+        logf("direct: gputime: no query pool");
+        return;
+    }
+    gt.period_ns = dev.props.limits.timestampPeriod;
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool = gt.cpool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = GpuTime::kSlots;
+    vkAllocateCommandBuffers(dev.device, &ai, gt.start);
+    vkAllocateCommandBuffers(dev.device, &ai, gt.end);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    for (uint32_t i = 0; i < GpuTime::kSlots; i++) {
+        vkBeginCommandBuffer(gt.start[i], &bi);
+        gt.reset(gt.start[i], gt.pool, 2 * i, 2);
+        gt.write(gt.start[i], VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, gt.pool, 2 * i);
+        vkEndCommandBuffer(gt.start[i]);
+        vkBeginCommandBuffer(gt.end[i], &bi);
+        gt.write(gt.end[i], VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gt.pool, 2 * i + 1);
+        vkEndCommandBuffer(gt.end[i]);
+    }
+    logf("direct: gputime: every submit and present bracketed by timestamps (HOS_DBG=gputime/frames, measurement)");
+}
+/// a slot for the next submit (queue_mu held by the caller, so slots are taken in queue order)
+uint32_t gputime_slot(int kind) {
+    std::lock_guard lk(gt.mu);
+    const uint32_t s = gt.next;
+    gt.next = (gt.next + 1) % GpuTime::kSlots;
+    gt.fifo.push_back({s, kind});
+    return s;
+}
+/// the slots whose two timestamps are in, in queue order
+void gputime_poll() {
+    std::lock_guard lk(gt.mu);
+    while (!gt.fifo.empty()) {
+        const auto [s, kind] = gt.fifo.front();
+        uint64_t v[4];   // (start, its availability, end, its availability)
+        if (gt.results(dev.device, gt.pool, 2 * s, 2, sizeof v, v, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != VK_SUCCESS || !v[1] || !v[3])
+            break;
+        gt.fifo.pop_front();
+        const uint64_t a = v[0], b = v[2];
+        if (gt.busy_end && a > gt.busy_end) {
+            const double gap = (a - gt.busy_end) * gt.period_ns;
+            gt.idle_ns += gap, gt.frame_idle += gap, gt.idle_gaps++;
+            gt.longest_gap = std::max(gt.longest_gap, gap);
+        }
+        if (b > gt.busy_end) {
+            const double d = (b - std::max(a, gt.busy_end)) * gt.period_ns;
+            gt.busy_ns += d, gt.frame_busy += d;
+            gt.busy_end = b;
+        }
+        if (kind == 1) {   // (a present: a GPU frame ends)
+            const double end = b * gt.period_ns;
+            if (gt.last_present_end > 0) gt.rows.push_back({(end - gt.last_present_end) / 1e6, gt.frame_busy / 1e6, gt.frame_idle / 1e6});
+            while (gt.rows.size() > 4096) gt.rows.pop_front();
+            gt.last_present_end = end, gt.frame_busy = gt.frame_idle = 0, gt.presents++;
+        }
+    }
+}
 /// A chunk into the batch: with the chunk before it in one submit info (its value theirs), unless it waits for a value (a
 /// fence, an upload); after an event wait a full barrier first (its first scope: all work before it on the queue)
 uint64_t batch_add(uint64_t wait_value, bool barrier, const VkCommandBuffer* cbs, uint32_t n) {
@@ -141,6 +240,14 @@ void batch_flush() {
     const size_t k = batch.chunks.size();
     std::vector<VkSubmitInfo2> si(k, VkSubmitInfo2{VK_STRUCTURE_TYPE_SUBMIT_INFO_2});
     std::vector<VkSemaphoreSubmitInfo> sem(2 * k, VkSemaphoreSubmitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO});
+    if (gt.on && k) {   // (M6a: the batch's two timestamps, first and last)
+        const uint32_t slot = gputime_slot(0);
+        batch.cbs.insert(batch.cbs.begin() + (long)batch.chunks[0].first, gt.start[slot]);
+        batch.chunks[0].n++;
+        for (size_t i = 1; i < k; i++) batch.chunks[i].first++;
+        batch.cbs.insert(batch.cbs.begin() + (long)(batch.chunks[k - 1].first + batch.chunks[k - 1].n), gt.end[slot]);
+        batch.chunks[k - 1].n++;
+    }
     std::vector<VkCommandBufferSubmitInfo> cb(batch.cbs.size(), VkCommandBufferSubmitInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO});
     for (size_t i = 0; i < cb.size(); i++) cb[i].commandBuffer = batch.cbs[i];
     for (size_t i = 0; i < k; i++) {
@@ -340,7 +447,7 @@ void nvn_finish() {   // (what is sent done; a submission held at a wait is not:
 }
 void nvn_event_signal(uint64_t, uint32_t) {   // (the host wrote the value: the queues held at waits may go on)
     st_cpu_signals.fetch_add(1, std::memory_order_relaxed);
-    std::lock_guard lk(mu);
+    auto lk = lock_mu();
     in_cpu_signal = true;
     progress();
     in_cpu_signal = false;
@@ -348,7 +455,44 @@ void nvn_event_signal(uint64_t, uint32_t) {   // (the host wrote the value: the 
 
 }  // namespace
 
+// (M6a) for direct_present.cpp
+bool gputime_on() { return gt.on; }
+void gputime_present_begin(VkCommandBuffer cb, uint32_t& slot) {
+    slot = gputime_slot(1);
+    gt.reset(cb, gt.pool, 2 * slot, 2);
+    gt.write(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, gt.pool, 2 * slot);
+}
+void gputime_present_end(VkCommandBuffer cb, uint32_t slot) { gt.write(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gt.pool, 2 * slot + 1); }
+void gputime_read() { gputime_poll(); }
+bool gputime_row(double out[3]) {
+    std::lock_guard lk(gt.mu);
+    if (gt.rows.empty()) return false;
+    const auto r = gt.rows.front();
+    gt.rows.pop_front();
+    out[0] = r[0], out[1] = r[1], out[2] = r[2];
+    return true;
+}
+void gputime_stats(char* out, size_t cap) {
+    std::lock_guard lk(gt.mu);
+    const double f = gt.presents ? (double)gt.presents : 1;
+    std::snprintf(out, cap, "gputime: %lld GPU frames: busy %.3f ms a frame, idle %.3f ms a frame (%.1f gaps a frame, longest %.3f ms)",
+                  (long long)gt.presents, gt.busy_ns / 1e6 / f, gt.idle_ns / 1e6 / f, gt.idle_gaps / f, gt.longest_gap / 1e6);
+    gt.busy_ns = gt.idle_ns = 0, gt.idle_gaps = 0, gt.presents = 0, gt.longest_gap = 0;
+}
+std::atomic<int64_t> st_mu_wait_ns{0}, st_mu_waits{0}, st_fence_wait_ns{0};
+/// (M6a) mu taken, its wait counted when it was held
+std::unique_lock<std::mutex> lock_mu() {
+    std::unique_lock lk(mu, std::try_to_lock);
+    if (lk.owns_lock()) return lk;
+    const auto t0 = clk::now();
+    lk.lock();
+    st_mu_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
+    st_mu_waits.fetch_add(1, std::memory_order_relaxed);
+    return lk;
+}
+
 bool sync_init() {
+    gputime_init();
     VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
     ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -413,11 +557,13 @@ void sync_stats(char* out, size_t cap, double frames) {
     std::snprintf(out, cap, "submits %.1f a frame (%.1f chunks, %.1f of them after an event wait; %.1f command buffers; %.3f ms a frame in hsd_submit on the submitting threads, longest %.3f ms); "
                   "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms, %.2f ms a frame in all; ended by the CPU's signal %.1f, by another queue's %.1f; %zu held now), fence waits held %lld, "
                   "reports written by the CPU %.1f, resets on the CPU %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
-                  "timeline %llu sent, %llu done; vkQueueSubmit2 %.1f a frame, %.3f ms a frame (all threads)",
+                  "timeline %llu sent, %llu done; vkQueueSubmit2 %.1f a frame, %.3f ms a frame (all threads); waits for the submit lock %.1f a frame (%.3f ms a frame); "
+                  "the present's fence wait %.3f ms a frame",
                   st_submits / frames, st_chunks / frames, st_chunk_waits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
                   st_hold_max_ms, st_hold_ms / frames, st_freed_cpu / frames, st_freed_queue / frames, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
                   st_cpu_signals.exchange(0) / frames, st_cpu_waits.exchange(0) / frames, st_cpu_wait_ns.exchange(0) / 1e6 / frames,
-                  (long long)st_upload_waits_gpu, (unsigned long long)sent.load(), (unsigned long long)sync_completed(), st_send_n.exchange(0) / frames, st_send_ns.exchange(0) / 1e6 / frames);
+                  (long long)st_upload_waits_gpu, (unsigned long long)sent.load(), (unsigned long long)sync_completed(), st_send_n.exchange(0) / frames, st_send_ns.exchange(0) / 1e6 / frames,
+                  st_mu_waits.exchange(0) / frames, st_mu_wait_ns.exchange(0) / 1e6 / frames, st_fence_wait_ns.exchange(0) / 1e6 / frames);
     st_chunks = st_chunk_waits = st_upload_waits_gpu = st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
     st_hold_max_ms = st_hold_ms = 0, st_freed_cpu = st_freed_queue = 0;
 }
@@ -454,7 +600,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
     }
     s.frame = present_count();
     {
-        std::lock_guard lk(mu);
+        auto lk = lock_mu();
         Queue* q = queue_of(queue);
         s.seq = ++q->seq;
         s.wait_fences.swap(q->wait_fences);
@@ -474,7 +620,7 @@ void sync_present(const nvn_tex* t, const int crop[4]) {
     if (t) s.tex = *t;
     else s.tex.gpu = 0;
     for (int i = 0; i < 4; i++) s.crop[i] = crop ? crop[i] : 0;
-    std::lock_guard lk(mu);
+    auto lk = lock_mu();
     if (!present_queue) return present_run(s.tex, s.crop);
     Queue* q = queue_of(present_queue);
     present_queue = 0;

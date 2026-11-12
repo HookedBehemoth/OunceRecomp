@@ -6,6 +6,7 @@
    initializers) is created on first use. Mutexes are always recursive: relocking a non-recursive nn::os mutex
    would be a game bug on hardware anyway. */
 #include "hos.h"
+#include "direct_crit.h"
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
@@ -421,8 +422,8 @@ static void mutex_give(Obj *m) {   /* (the owner's count already 0) */
         AcquireSRWLockExclusive(&m->lk);
         ReleaseSRWLockExclusive(&m->lk);
         /* (all of them while one is owed it: woken alone, another sleeper would fail its take and sleep again) */
-        if (__atomic_load_n(&m->reserved, __ATOMIC_SEQ_CST) > 0) WakeAllConditionVariable(&m->cv);
-        else WakeConditionVariable(&m->cv);
+        if (__atomic_load_n(&m->reserved, __ATOMIC_SEQ_CST) > 0) crit_wake(&m->cv), WakeAllConditionVariable(&m->cv);
+        else crit_wake(&m->cv), WakeConditionVariable(&m->cv);
     }
 }
 static void mutex_lock(Obj *m, uint64_t guest, Ctx *c);
@@ -582,7 +583,7 @@ HLE(_ZN2nn2os23SignalConditionVariableEPNS0_21ConditionVariableTypeE) {
     cv_reserve(cv);
     cv->gen++;
     ReleaseSRWLockExclusive(&cv->lk);
-    WakeConditionVariable(&cv->cv);
+    crit_wake(&cv->cv), WakeConditionVariable(&cv->cv);
 }
 HLE(_ZN2nn2os21WaitConditionVariableEPNS0_21ConditionVariableTypeEPNS0_9MutexTypeE) {
     Obj *cv = obj(ARG(0), K_COND), *m = obj(ARG(1), K_MUTEX);
@@ -618,7 +619,7 @@ static void event_signal(Obj *e) {
     e->signaled = 1;
     if (wake_lat_on()) e->sig_ns = hos_now_ns();
     ReleaseSRWLockExclusive(&e->lk);
-    WakeAllConditionVariable(&e->cv);
+    crit_wake(&e->cv), WakeAllConditionVariable(&e->cv);
     poke_multiwait(e);
 }
 static void event_clear(Obj *e) {
@@ -863,7 +864,7 @@ HLE(_ZN2nn2os23StartPeriodicTimerEventEPNS0_14TimerEventTypeENS_8TimeSpanES3_) {
     t->period_ns = (int64_t)ARG(2);
     t->signaled = 0;
     ReleaseSRWLockExclusive(&t->lk);
-    WakeAllConditionVariable(&t->cv);   /* (a first wait that beat this start sleeps on the cv) */
+    crit_wake(&t->cv), WakeAllConditionVariable(&t->cv);   /* (a first wait that beat this start sleeps on the cv) */
     poke_multiwait(t);
 }
 HLE(_ZN2nn2os14WaitTimerEventEPNS0_14TimerEventTypeE) {
@@ -900,7 +901,7 @@ static void sema_release(Obj *s, int n) {
     s->sem += n;
     if (s->sem_max && s->sem > s->sem_max) s->sem = s->sem_max;
     ReleaseSRWLockExclusive(&s->lk);
-    WakeAllConditionVariable(&s->cv);
+    crit_wake(&s->cv), WakeAllConditionVariable(&s->cv);
     poke_multiwait(s);
 }
 HLE(_ZN2nn2os19InitializeSemaphoreEPNS0_13SemaphoreTypeEii) { sema_init(ARG(0), (int)ARG(1), (int)ARG(2)); }
@@ -947,7 +948,7 @@ static int queue_put(Obj *q, uint64_t v, int jam, int try_only) {
     q->qlen++;
     if (wake_lat_on()) q->sig_ns = hos_now_ns();
     ReleaseSRWLockExclusive(&q->lk);
-    WakeAllConditionVariable(&q->cv);
+    crit_wake(&q->cv), WakeAllConditionVariable(&q->cv);
     poke_multiwait(q);
     return 1;
 }
@@ -972,7 +973,7 @@ static int queue_get(Obj *q, uint64_t *out, int take, int64_t timeout_ns) {
     }
     ReleaseSRWLockExclusive(&q->lk);
     if (take) {
-        WakeAllConditionVariable(&q->cv);
+        crit_wake(&q->cv), WakeAllConditionVariable(&q->cv);
         poke_multiwait(q);
     }
     return 1;
@@ -1038,7 +1039,7 @@ static void rw_unread(Obj *l) {
     AcquireSRWLockExclusive(&l->lk);
     if (l->readers > 0) l->readers--;
     ReleaseSRWLockExclusive(&l->lk);
-    WakeAllConditionVariable(&l->cv);
+    crit_wake(&l->cv), WakeAllConditionVariable(&l->cv);
 }
 static int rw_write(Obj *l, int try_only) {
     HosThread *self = hos_self();
@@ -1057,7 +1058,7 @@ static void rw_unwrite(Obj *l) {
     AcquireSRWLockExclusive(&l->lk);
     if (l->owner == hos_self() && --l->count == 0) l->owner = NULL;
     ReleaseSRWLockExclusive(&l->lk);
-    WakeAllConditionVariable(&l->cv);
+    crit_wake(&l->cv), WakeAllConditionVariable(&l->cv);
 }
 HLE(_ZN2nn2os26InitializeReaderWriterLockEPNS0_20ReaderWriterLockTypeE) { fresh(ARG(0), K_RWLOCK); }
 HLE(_ZN2nn2os24FinalizeReaderWriterLockEPNS0_20ReaderWriterLockTypeE) { drop(ARG(0)); }
@@ -1270,7 +1271,7 @@ HLE(_ZN2nn2os22StartOneShotTimerEventEPNS0_14TimerEventTypeENS_8TimeSpanE) {
     t->period_ns = 0;
     t->signaled = 0;
     ReleaseSRWLockExclusive(&t->lk);
-    WakeAllConditionVariable(&t->cv);
+    crit_wake(&t->cv), WakeAllConditionVariable(&t->cv);
     poke_multiwait(t);
 }
 /* GenerateRandomBytes(void*, size_t) */

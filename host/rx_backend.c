@@ -11,6 +11,7 @@
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/dlss_math.h"
 #include "direct.h"
+#include "direct_crit.h"
 
 /* the WebGPU renderer (gpu/render, renamed) */
 int wgr_start(void *hwnd);
@@ -300,6 +301,10 @@ const hsd_fns *rx_direct(void) {
             DIRECT_FN(shots, "hsd_shots")
 #undef DIRECT_FN
             hos_log("rx: direct mode (RX_BACKEND=direct): %s", path);
+            {   /* (M6a, HOS_DBG=crit: the calls timed, direct_crit.c) */
+                void crit_wrap(hsd_fns *f);
+                if (crit_wanted()) crit_wrap(&direct_fns);
+            }
             on = 2;
         }
         InterlockedExchange(&direct_state, on);
@@ -390,6 +395,12 @@ uint64_t rx_nvn_fence_q(uint64_t queue) { return vk && vk->nvn_fence_q ? vk->nvn
 uint64_t rx_nvn_pushed(void) { return vk ? vk->nvn_pushed() : wgr_nvn_pushed(); }
 uint64_t rx_nvn_replayed(void) { return vk ? vk->nvn_replayed() : wgr_nvn_replayed(); }
 int rx_nvn_wait(uint64_t fence, uint64_t timeout_ns) {
+    if (crit_rec && vk) {   /* (M6a, HOS_DBG=crit) */
+        const uint64_t t0 = crit_tsc();
+        const int r = vk->nvn_wait(fence, timeout_ns);
+        crit_span(CRIT_BE_WAIT, t0, crit_tsc(), timeout_ns, (uint64_t)r);
+        return r;
+    }
     return vk ? vk->nvn_wait(fence, timeout_ns) : wgr_nvn_wait(fence, timeout_ns);
 }
 void rx_wait_writebacks_reading(const void *p, uint64_t n) {
@@ -399,6 +410,16 @@ void rx_nvn_finish(void) { vk ? vk->nvn_finish() : wgr_nvn_finish(); }
 static volatile LONG presents;   /* (the frames shown, for the camera jitter below) */
 void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
     InterlockedIncrement(&presents);
+    if (crit_wanted()) {   /* (M6a, HOS_DBG=crit) */
+        crit_present();
+        if (crit_rec && vk) {
+            crit_emit_flush();
+            const uint64_t t0 = crit_tsc();
+            vk->nvn_present(t, crop);
+            crit_span(CRIT_BE_PRESENT, t0, crit_tsc(), 0, 0);
+            return;
+        }
+    }
     vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
 }
 /* (hookshot, nx2/oot_jitter.py) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip
@@ -522,7 +543,7 @@ void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
 }
 int rx_guest_imported(uint64_t lo, uint64_t hi) {
     /* (mkw-recomp 16bc3bc: it takes the back end's pool lock, which the replay holds at times: no virtual core held) */
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)13);
     const int r = vk && vk->guest_imported ? vk->guest_imported(lo, hi) : 0;
     if (away) hos_vcore_back();
     return r;
@@ -531,13 +552,20 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
 int rx_option(int id, int otherwise) { return vk && vk->option ? vk->option(id) : otherwise; }
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
+    if (crit_rec && vk && vk->nvn_event_signal) {   /* (M6a, HOS_DBG=crit) */
+        crit_emit_flush();
+        const uint64_t t0 = crit_tsc();
+        vk->nvn_event_signal(gpu, value);
+        crit_span(CRIT_BE_EVSIG, t0, crit_tsc(), gpu, value);
+        return;
+    }
     if (vk && vk->nvn_event_signal) vk->nvn_event_signal(gpu, value);
 }
 /* (nvn_native.c: virtual pages about to be unmapped or remapped) the Vulkan back end writes what the GPU drew there into
    their memory first */
 void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size) {
     /* (mkw-recomp 16bc3bc: it may wait for the replay and the GPU's texels: no virtual core held meanwhile) */
-    const int away = hos_vcore_away();
+    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)14);
     if (vk && vk->nvn_vmap_changing) vk->nvn_vmap_changing(gpu, size);
     if (away) hos_vcore_back();
 }
