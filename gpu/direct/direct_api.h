@@ -41,8 +41,10 @@ typedef struct hsd_asset_key {
     const char *name;              /* the BRTI's name (UTF-8, name_len bytes); NULL: the data is not from a BNTX */
     uint32_t name_len;
     uint32_t format, width, height, layers, mips, image_size;   /* BRTI +0x1c, +0x24, +0x28, +0x30, +0x16, +0x50 */
-    uint32_t index, data_offset;   /* the texture's index in its BNTX; mip 0's offset in the BNTX */
+    uint32_t index, data_offset;   /* the texture's index in its BNTX; mip 0's offset in the BNTX (0: not known, data given) */
     uint32_t path;                 /* HSD_ASSET_LOAD / _INPLACE (logs) */
+    const void *data;              /* data_offset 0: mip 0's bytes in the decompressed file (host pointer): the record whose
+                                      data offset back from it is its BNTX's header is the one */
 } hsd_asset_key;
 enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2 };
 int  hsd_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */

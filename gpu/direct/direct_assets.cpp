@@ -260,6 +260,27 @@ extern "C" __attribute__((visibility("default"))) int hsd_assets_open(const char
     return (int)S.ntex;
 }
 
+namespace {
+/// A BNTX header at data - off (a texture's mip 0 is at off in its file), inside guest memory
+/// ... and the BRTI at index in its texture table has the name (pointers relocated by the loader, or offsets in the file)
+bool bntx_at(const uint8_t* data, uint32_t off, uint32_t index, const char* name, uint32_t name_len) {
+    const uint8_t* g = host->guest_base();
+    if (!data || data < g + off || off < 0x20) return false;
+    const uint8_t* b = data - off;
+    if (std::memcmp(b, "BNTX", 4) || rd<uint32_t>(b + 8) != 0x00040101u || index >= rd<uint32_t>(b + 0x24)) return false;
+    const uint64_t base = (uint64_t)(b - g), size = host->guest_size();
+    auto at = [&](uint64_t p) { return p < base ? p + base : p; };   // (guest address)
+    const uint64_t tbl = at(rd<uint64_t>(b + 0x28));
+    if (tbl + 8ull * (index + 1) > size) return false;
+    const uint64_t brti = at(rd<uint64_t>(g + tbl + 8ull * index));
+    if (brti + 0x68 > size || std::memcmp(g + brti, "BRTI", 4)) return false;
+    const uint64_t nm = at(rd<uint64_t>(g + brti + 0x60));
+    if (nm + 2 + name_len > size || rd<uint16_t>(g + nm) != name_len) return false;
+    return !std::memcmp(g + nm + 2, name, name_len);
+}
+std::atomic<int64_t> st_ambiguous{0};
+}  // namespace
+
 extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_asset_key* k) {
     if (!k || !k->tex) return 0;
     (k->path == HSD_ASSET_INPLACE ? st_inplace : st_loads).fetch_add(1, std::memory_order_relaxed);
@@ -268,14 +289,15 @@ extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_a
     if (!S.ok) {
         l.why = "no prepared store";
         st_miss_nostore.fetch_add(1, std::memory_order_relaxed);
-    } else if (!k->name) {
+    } else if (!k->name || (!k->data_offset && !k->data)) {
         l.why = "its data is not from a BNTX";
         st_miss_nobntx.fetch_add(1, std::memory_order_relaxed);
-        name_once("a texture load whose data is not from a BNTX: NVN format %#x %ux%u x%u, %u mips, %u bytes: the placeholder",
-                  k->format, k->width, k->height, k->layers, k->mips, k->image_size);
+        name_once("a texture load whose data is not from a BNTX: '%.*s' BNTX format %#x %ux%u x%u, %u mips, %u bytes: the placeholder",
+                  k->name ? (int)k->name_len : 0, k->name ? k->name : "", k->format, k->width, k->height, k->layers, k->mips, k->image_size);
     } else {
         int why = 1;   // (1 no record of the name, 2 of the descriptor, 3 of its place in the file)
-        for (uint32_t e = S.bucket[name_hash(k->name, k->name_len) & (S.nbucket - 1)]; e && !l.rec; e = S.next[e]) {
+        uint64_t hash = 0;
+        for (uint32_t e = S.bucket[name_hash(k->name, k->name_len) & (S.nbucket - 1)]; e; e = S.next[e]) {
             Rec r;
             rec_at(e - 1, r);
             if (r.name_len != k->name_len || std::memcmp(S.str + r.name_off, k->name, k->name_len)) continue;
@@ -284,16 +306,23 @@ extern "C" __attribute__((visibility("default"))) int hsd_asset_load(const hsd_a
                 r.isz != k->image_size)
                 continue;
             why = std::max(why, 3);
-            if (r.index != k->index || r.doff != k->data_offset) continue;
-            l.rec = e;
+            if (k->data_offset ? r.index != k->index || r.doff != k->data_offset
+                               : !bntx_at((const uint8_t*)k->data, r.doff, r.index, k->name, k->name_len))
+                continue;
+            if (!l.rec) l.rec = e, hash = r.hash;
+            else if (r.hash != hash) {   // (two files with this texture at the same place, of other content: the first taken)
+                st_ambiguous.fetch_add(1, std::memory_order_relaxed);
+                name_once("'%.*s': records of two contents match its load: the first taken", (int)k->name_len, k->name);
+                break;
+            }
         }
         if (l.rec) {
             st_prepared.fetch_add(1, std::memory_order_relaxed);
         } else {
             l.why = why == 1 ? "no record of its name" : why == 2 ? "no record of its descriptor" : "no record of its place in its file";
             (why == 1 ? st_miss_name : why == 2 ? st_miss_desc : st_miss_place).fetch_add(1, std::memory_order_relaxed);
-            name_once("'%.*s' (NVN format %#x %ux%u x%u, %u mips, #%u at %#x in its BNTX, %s): %s: the placeholder", (int)k->name_len,
-                      k->name, k->format, k->width, k->height, k->layers, k->mips, k->index, k->data_offset,
+            name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips, #%d at %#x in its BNTX, %s): %s: the placeholder", (int)k->name_len,
+                      k->name, k->format, k->width, k->height, k->layers, k->mips, k->data_offset ? (int)k->index : -1, k->data_offset,
                       k->path == HSD_ASSET_INPLACE ? "in place" : "loaded", l.why);
         }
     }
@@ -427,6 +456,13 @@ constexpr uint64_t kGroup = 16ull << 20;   // (an upload holds whole mips up to 
 /// The record's frames that overlap [a, b) of its raw data, into dst (= raw a); false: a pack not readable or a bad frame
 bool read_range(const Rec& r, uint64_t a, uint64_t b, uint8_t* dst, int64_t& zbytes) {
     if (!tl_dctx && !(tl_dctx = ZSTD_createDCtx())) return false;
+    for (uint32_t i = 0; i < r.fr_n; i++) {   // (the frames' pages read ahead at once, not a fault at a time)
+        Frame f;
+        frame_at(r.fr_first + i, f);
+        if (f.raw_off + f.raw_size <= a || f.raw_off >= b || f.pack >= S.packs.size() || !S.packs[f.pack]) continue;
+        const uintptr_t p = (uintptr_t)(S.packs[f.pack] + f.off) & ~(uintptr_t)4095;
+        madvise((void*)p, (size_t)((uintptr_t)(S.packs[f.pack] + f.off + f.csize) - p), MADV_WILLNEED);
+    }
     for (uint32_t i = 0; i < r.fr_n; i++) {
         Frame f;
         frame_at(r.fr_first + i, f);
@@ -816,12 +852,12 @@ void assets_present(uint64_t present) {
 
 void assets_stats(char* out, size_t cap, double frames) {
     int k = std::snprintf(out, cap, "assets: loads %lld, in place %lld: prepared %lld; placeholders: no record of the name %lld, of the "
-                          "descriptor %lld, of the place %lld, not from a BNTX %lld, no store %lld, in the heap unseen %lld, descriptor "
+                          "descriptor %lld, of the place %lld (ambiguous %lld), not from a BNTX %lld, no store %lld, in the heap unseen %lld, descriptor "
                           "at initialization %lld; initializations %lld (not armed %lld), rebinds %lld (no link %lld); fills %lld (%.0f MB "
                           "from %.0f MB of frames, %lld uploads, staging peak %.1f MB; %.0f ms, of it zstd %.0f ms), failed %lld; "
                           "uploads a frame:",
                           (long long)st_loads.load(), (long long)st_inplace.load(), (long long)st_prepared.load(),
-                          (long long)st_miss_name.load(), (long long)st_miss_desc.load(), (long long)st_miss_place.load(),
+                          (long long)st_miss_name.load(), (long long)st_miss_desc.load(), (long long)st_miss_place.load(), (long long)st_ambiguous.load(),
                           (long long)st_miss_nobntx.load(), (long long)st_miss_nostore.load(), (long long)st_unseen.load(),
                           (long long)st_link_desc.load(), (long long)st_created.load(), (long long)st_unarmed.load(),
                           (long long)st_rebinds.load(), (long long)st_rebind_nolink.load(), (long long)st_fills.load(),

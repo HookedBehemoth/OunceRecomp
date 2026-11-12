@@ -104,11 +104,14 @@ static void *mem_line(void *arg) {
         Sleep(10000);
         uint64_t heap_res = 0, guest_res = 0;
         const uint64_t gsize = hos_guest_size();
-        unsigned char *v = (unsigned char *)malloc((size_t)(gsize / (uint64_t)pg) + 1);
-        if (!v) continue;
-        if (!mincore(hos_guest_base(), (size_t)gsize, v))
-            for (uint64_t i = 0; i < gsize / (uint64_t)pg; i++) guest_res += v[i] & 1;
-        if (heap_hi && heap_hi <= gsize) {
+        {   /* (the guest memory's pages that exist: the memfd's blocks) */
+            int hos_posix_guest_memfd(void);
+            struct stat st;
+            const int fd = hos_posix_guest_memfd();
+            if (fd >= 0 && !fstat(fd, &st)) guest_res = (uint64_t)st.st_blocks * 512 / (uint64_t)pg;
+        }
+        unsigned char *v = heap_hi > heap_lo ? (unsigned char *)malloc((size_t)((heap_hi - heap_lo) / (uint64_t)pg) + 2) : NULL;
+        if (v && heap_hi <= gsize) {
             const uint64_t lo = heap_lo & ~(uint64_t)(pg - 1);
             if (!mincore(hos_guest_base() + lo, (size_t)(heap_hi - lo), v))
                 for (uint64_t i = 0; i < (heap_hi - lo) / (uint64_t)pg; i++) heap_res += v[i] & 1;
@@ -117,14 +120,13 @@ static void *mem_line(void *arg) {
         hos_log("assets: resident: the asset heap %llu of %llu MB, guest memory %llu of %llu MB; copies skipped: loads %lld of %lld "
                 "(%lld MB), packaged %lld (%lld MB), compaction steps %lld (copy flag cleared %lld); in-place textures %lld, rebinds "
                 "%lld, replaced %lld; terrain tiles %lld uploaded (%lld MB), %lld not converted, %lld with no texture, %lld odd "
-                "sites; overlay files %lld (%lld MB, %lld MB decompressed); glyph cells %lld (%lld with no texture)%s",
+                "sites; overlay opens %lld; glyph cells %lld (%lld with no texture)%s",
                 (unsigned long long)(heap_res * (uint64_t)pg >> 20), (unsigned long long)((heap_hi - heap_lo) >> 20),
                 (unsigned long long)(guest_res * (uint64_t)pg >> 20), (unsigned long long)(gsize >> 20), (long long)n_load_skipped,
                 (long long)n_loads, (long long)(n_load_bytes >> 20), (long long)n_pkg, (long long)(n_pkg_bytes >> 20),
                 (long long)n_compaction, (long long)n_compaction_cleared, (long long)n_inplace, (long long)n_rebind,
                 (long long)n_replace, (long long)n_tiles, (long long)(n_tile_bytes >> 20), (long long)n_tiles_unconv,
-                (long long)n_tile_notex, (long long)n_tile_badsite, (long long)n_overlay, (long long)(n_overlay_bytes >> 20),
-                (long long)(n_overlay_raw >> 20), (long long)n_glyphs, (long long)n_glyph_notex,
+                (long long)n_tile_notex, (long long)n_tile_badsite, (long long)n_overlay, (long long)n_glyphs, (long long)n_glyph_notex,
                 direct_assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)");
     }
     return NULL;
@@ -206,18 +208,12 @@ ENTRY_HOOK(0x80798690) {
     k.tex = GP(gfx + 0x10);
     k.path = HSD_ASSET_LOAD;
     key_of_brti(&k, brti);
-    /* (the BNTX: src is the texture's data in the decompressed file, at a multiple of 512 from its start; up to 64 MB back) */
-    uint64_t bntx = 0;
-    if (src && !(src & 0x1ff))
-        for (uint64_t a = src - 0x200; a + (64ull << 20) > src && a >= 0x200; a -= 0x200)
-            if (hos_guest_range(a, 16) && G32(a) == 0x58544e42u && G32(a + 8) == 0x00040101u) { bntx = a; break; }
+    /* (its BNTX: the store's records of its name and descriptor say where mip 0 is in their file; the one whose file
+       header is that far back from src is the one: hsd_asset_load) */
     uint32_t nl = 0;
     const char *nm = bstr(G64(brti + 0x60), &nl);
-    uint64_t file_brti = 0;
-    const int index = bntx && nm ? index_in(bntx, 0, nm, nl, &file_brti) : -1;
-    if (index >= 0) {
-        k.name = nm, k.name_len = nl, k.index = (uint32_t)index, k.data_offset = (uint32_t)(src - bntx);
-    }
+    if (nm) k.name = nm, k.name_len = nl;
+    k.data = src && hos_guest_range(src, 1) ? GP(src) : NULL;
     rx_direct()->asset_load(&k);
     InterlockedIncrement64(&n_loads);
     if (src) {   /* (no copy into the heap: the back end makes the image from the store, or the placeholder) */
@@ -326,18 +322,8 @@ const char *direct_assets_overlay(void) {
     return root;
 }
 void direct_assets_overlay_opened(const char *path) {
+    (void)path;
     InterlockedIncrement64(&n_overlay);
-    FILE *f = fopen(path, "rb");
-    unsigned char h[20];
-    if (f) {
-        if (fread(h, 1, 20, f) == 20 && !memcmp(h, "TARB", 4)) {
-            uint32_t raw, z;
-            memcpy(&raw, h + 12, 4), memcpy(&z, h + 16, 4);
-            InterlockedAdd64(&n_overlay_raw, raw);
-            InterlockedAdd64(&n_overlay_bytes, z);
-        }
-        fclose(f);
-    }
 }
 
 /* f_80c17040+0x544: memcpy(x0 the tile texture's storage, x1 the record's blob B, x2 its size), x11 the record */
