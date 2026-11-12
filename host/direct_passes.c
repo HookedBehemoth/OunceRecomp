@@ -11,7 +11,7 @@
    The two inline callers name the key differently: f_806688c0 (return 0x80668d84) holds key + 0xc0 at [sp + 0x18] (the
    recorder's pointer); f_8028a2a0 (return 0x8028a58c) passes a copy of the key on its own stack (x2), which the game itself
    matches to records by the key's first 0x70 bytes. The recorder's keys are noted here by those bytes, so that copy names
-   the recorder's pointer. A pass no recorder ever asked for (about 20 of f_8028a2a0's a frame: local passes with no jobs) is
+   the recorder's pointers (every key with those bytes: the two cube-face sets share them). A pass no recorder ever asked for (about 20 of f_8028a2a0's a frame: local passes with no jobs) is
    left alone: it is the game's own inline pass, not a miss.
 
    Check that it applies: the 600-present line "direct patch passes" (recorder asked, early returns, inline passes named per
