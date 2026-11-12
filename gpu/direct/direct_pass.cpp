@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "direct_cmd.h"
+#include "direct_draw.h"
 #include "direct_dump.h"
 #include "direct_image.h"
 #include "direct_pass.h"
@@ -305,6 +306,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
         uint32_t op;
         ~Last() { l->last_op2 = l->last_op, l->last_op = op; }
     } last{l, op};
+    draw_state(l, op, data, size);   // (M2b: the NVN state the draws read)
     switch (op) {   // (state that clears and copies read: kept in every list)
     case NOP_SCISSOR: {
         nvn_p_scissor s;
@@ -325,6 +327,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
         count(S_DRAWS);
         l->draws = true;
         if (records(l) && p.noted && !p.begun) begin(l);
+        draw_emit(l, op, data, size, records(l) && p.begun);   // (M2b: drawn, or counted by why not)
         return;
     case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:
         count(S_DISPATCHES);

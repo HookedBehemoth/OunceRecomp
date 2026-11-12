@@ -7,6 +7,7 @@
 
 #include "direct_assets.h"
 #include "direct_cmd.h"
+#include "direct_draw.h"
 #include "direct_dump.h"
 #include "direct_internal.h"
 #include "direct_lists.h"
@@ -69,6 +70,7 @@ void list_unref(List* l) {
         work.pop_back();
         for (const FrameOp& o : x->ops)
             if (o.op == NOP_CALL && o.callee->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) work.push_back(o.callee);
+        draw_list_free(x);
         if (x->slot) cmd_slot_drop(x->slot);
         dump_free(x->dumps);
         delete x;

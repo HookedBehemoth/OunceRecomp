@@ -12,6 +12,8 @@
 #include "direct_internal.h"
 #include "direct_api.h"
 #include "direct_image.h"
+#include "direct_heap.h"
+#include "direct_shader.h"
 
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
@@ -180,7 +182,10 @@ bool create_device() {
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = &f11, f11.pNext = &f12, f12.pNext = &f13;
     if (dev.props.apiVersion >= VK_API_VERSION_1_4) f13.pNext = &f14;
+    void** tail = dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14.pNext : &f13.pNext;
+    draw_device_extensions(exts, want, tail);   // (M2b: shader objects, the descriptor heap, dynamic state 3)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
+    draw_features_resolved(dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14 : nullptr);
     if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore || !f12.bufferDeviceAddress) {
         logf("direct: the GPU lacks dynamic rendering, synchronization2, timeline semaphores or buffer device addresses");
         return false;
@@ -223,11 +228,15 @@ const char* describe() {
     return d.c_str();
 }
 void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) { *draws = *skipped = *pipelines = 0; }
-void register_texture(int, const nvn_tex* t, const nvn_view*) {
+void register_texture(int id, const nvn_tex* t, const nvn_view* v) {
     count(R_TEX);
     image_texture_registered(t);
+    heap_texture_registered(id, t, v);
 }
-void register_sampler(int, const nvn_samp_par*) { count(R_SAMP); }
+void register_sampler(int id, const nvn_samp_par* p) {
+    count(R_SAMP);
+    heap_sampler_registered(id, p);
+}
 void set_texture_pool_size(int) { count(R_TEX_POOL); }
 void texture_released(const nvn_tex* t) {
     count(R_TEX_GONE);
@@ -237,7 +246,10 @@ void texture_created(const nvn_tex* t) {
     count(R_TEX_MADE);
     image_texture_created(t);
 }
-void program_set(const nvn_prog*) { count(R_PROG_SET); }
+void program_set(const nvn_prog* p) {
+    count(R_PROG_SET);
+    shader_program_set(p);
+}
 void program_released(const nvn_prog*) { count(R_PROG_GONE); }
 void read_texels(const nvn_tex*, unsigned, unsigned, const NVNcopyRegion*, uint8_t*, uint64_t, uint64_t) { count(R_READ_TEXELS); }
 void write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src, uint64_t row,
@@ -287,7 +299,8 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
         logf("direct: no memory allocator");
         return nullptr;
     }
-    logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2a: targets, passes, present; draws counted and skipped)", dev.props.deviceName,
+    draw_device_created();   // (M2b: the heaps, the draws' functions)
+    logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2b: targets, passes, present, vertex and fragment draws)", dev.props.deviceName,
          VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion);
     table.version = MKWVK_API_VERSION;
     table.start = start;

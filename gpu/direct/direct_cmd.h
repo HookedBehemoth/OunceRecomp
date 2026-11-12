@@ -14,6 +14,8 @@
 
 namespace hsd {
 
+struct Arena;   // (direct_draw.cpp)
+void arena_reset(Arena* a);
 struct CmdSlot {
     VkCommandPool pool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> bufs;   // (the recording thread's alone)
@@ -21,6 +23,7 @@ struct CmdSlot {
     uint64_t frame = UINT64_MAX;
     std::atomic<uint64_t> value{0};   // (the newest submission that held one of its buffers)
     std::atomic<int32_t> live{0};     // (lists alive holding its buffers)
+    Arena* arena = nullptr;   // (M2b: its frame arena, reset with it)
 };
 
 /// This thread's slot for the frame now (reset first when this is its first use in a new frame), with one list more

@@ -9,6 +9,7 @@
 
 #include "direct_assets.h"
 #include "direct_cmd.h"
+#include "direct_draw.h"
 #include "direct_dump.h"
 #include "direct_image.h"
 #include "direct_internal.h"
@@ -183,6 +184,7 @@ void log_line() {
     logf("direct: %s", b);
     sites_stats(b, sizeof b, frames);
     logf("direct: %s", b);
+    draw_log(frames);   // (M2b)
 }
 
 }  // namespace

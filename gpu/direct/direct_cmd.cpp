@@ -84,6 +84,7 @@ CmdSlot* cmd_slot_take() {
                                            std::memory_order_relaxed);
             }
             vkResetCommandPool(dev.device, s.pool, 0);
+            arena_reset(s.arena);
             s.used = 0;
             st_resets.fetch_add(1, std::memory_order_relaxed);
         }

@@ -23,6 +23,7 @@ struct FrameOp {
 struct Image;
 struct CmdSlot;
 struct DumpItem;
+struct ListDraw;   // (direct_draw.cpp: its state and draw caches)
 /// A pass's attachment (direct_pass.cpp)
 struct Target {
     Image* im = nullptr;
@@ -67,6 +68,7 @@ struct List {
     uint64_t set_rts = 0;
     uint32_t last_op = 0, last_op2 = 0;   // (the ops before the one being handled, for logs)
     std::vector<DumpItem*> dumps;   // (HOS_DBG=dump: its passes' copies, in order)
+    ListDraw* dctx = nullptr;   // (M2b: made at its first state op)
 };
 
 void list_ref(List* l);

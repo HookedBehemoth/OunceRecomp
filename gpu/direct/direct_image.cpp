@@ -12,6 +12,7 @@
 
 #include "direct_assets.h"
 #include "direct_cmd.h"
+#include "direct_heap.h"
 #include "direct_image.h"
 
 namespace hsd {
@@ -331,6 +332,7 @@ Image* get(const nvn_tex* t) {
 }
 
 void destroy(Image* im) {
+    heap_image_gone(im);   // (M2b: its heap entries nulled)
     if (im->asset) {
         st_asset_images.fetch_sub(1, std::memory_order_relaxed);
         st_asset_bytes.fetch_sub((int64_t)mem_size(im->mem), std::memory_order_relaxed);

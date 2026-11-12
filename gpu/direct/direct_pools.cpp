@@ -24,6 +24,10 @@
 #include "layer0_windows.h"
 
 namespace hsd {
+void draw_window_made(uint32_t k, uint64_t a);   // (direct_draw.cpp)
+}
+
+namespace hsd {
 namespace {
 
 namespace l0 = mkwvk::l0;
@@ -199,6 +203,7 @@ Window* window_make(uint32_t k) {   // (mu held)
     w.address = vkGetBufferDeviceAddress(dev.device, &da);
     w.buffer = b;
     st_windows++;
+    draw_window_made(k, w.address);   // (M2b: the BDA window table's entry)
     return &w;
 }
 
@@ -623,6 +628,15 @@ bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& of
     Window* w = window_make(l0::window_of(gpu));
     if (!w) return false;
     buffer = w->buffer, offset = l0::window_offset(gpu);
+    return true;
+}
+
+/// (M2b) guest [gpu, gpu + size) as a device address in its window (layer0_span's, bound first if it is not)
+bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a) {
+    VkBuffer b;
+    VkDeviceSize off;
+    if (!layer0_span(gpu, size, b, off)) return false;
+    a = windows[l0::window_of(gpu)].address + off;
     return true;
 }
 

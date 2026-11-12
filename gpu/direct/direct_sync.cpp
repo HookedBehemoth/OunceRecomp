@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "direct_cmd.h"
+#include "direct_draw.h"
 #include "direct_dump.h"
 #include "direct_internal.h"
 #include "direct_lists.h"
@@ -335,6 +336,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
         if (!l) continue;
         list_ref(l);
         list_submitted(l);
+        draw_list_submitted(l);   // (M2b: the deferred binds' handles as the game's arrays hold them now)
         s.lists.push_back(l);
         list_flatten(l, s.ops);
         list_buffers(l, s.cbs, s.slots, dump_recording() ? &s.dumps : nullptr);

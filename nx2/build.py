@@ -978,9 +978,18 @@ def main():
     if build_vk and LINUX:
         direct = os.path.join(GPU, "direct")
         ddeps = tree_headers(direct, os.path.join(GPU, "render")) + open(os.path.join(vk, "vk_api.h"), "rb").read()
+        # (M2b: the direct back end's own shader stamp: the translator it links and the files that drive it, so its program
+        # cache (hookshot_direct_programs.bin) is good for them only)
+        dstamp = hashlib.sha1(usedforsecurity=False)
+        for f in sorted(translator) + [os.path.join(direct, n) for n in ("direct_shader.cpp", "direct_shader.h", "direct_state.h")]:
+            if os.path.isfile(f):
+                with open(f, "rb") as src:
+                    dstamp.update(os.path.relpath(f, GPU).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
+        direct_stamp = "-DHOOKSHOT_DIRECT_SHADER_STAMP=0x%sull" % dstamp.hexdigest()[:16]
         for dsrc in sorted(os.path.join(direct, f) for f in os.listdir(direct) if f.endswith(".cpp")):
             direct_jobs.append((cxx, dsrc, os.path.join(obj_dir, "dx_" + os.path.basename(dsrc)[:-4] + ".o"),
-                                ["-I" + direct] + vflags + ["-I" + zstd], ddeps))   # (A-rt: the store's frames, direct_assets)
+                                ["-I" + direct] + vflags + ["-I" + zstd] + ([direct_stamp] if os.path.basename(dsrc) == "direct_shader.cpp" else []),
+                                ddeps))   # (A-rt: the store's frames, direct_assets)
         jobs += direct_jobs
     vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
     if vk_only:
@@ -1147,8 +1156,10 @@ def main():
     if direct_jobs:   # (hookshot_direct.so: as hookshot_vk.so's link, its own objects only)
         ddll = os.path.join(out, "hookshot_direct.so")
         drsp = os.path.join(out, "direct_objs.rsp")
+        # (M2b: Eden's recompiler and sirit linked from the frozen back end's objects, docs/direct/m2-shader-contract.md step A)
+        translator_objs = [j[2] for j in vk_jobs if os.path.basename(j[2]).startswith(("vk_eden_", "vk_sirit_"))]
         dzstd = [j[2] for j in vk_jobs if os.path.basename(j[2]).startswith("vk_zstd_")]   # (A-rt: zstd's decoder, as the renderer's)
-        open(drsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in [j[2] for j in direct_jobs] + dzstd))
+        open(drsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in [j[2] for j in direct_jobs] + dzstd + translator_objs))
         t = time.time()
         link = [toolchain.need(toolchain.find("clang++"))] + target() + [
             "-fuse-ld=lld", "-shared", "-o", ddll, "-Wl,-Map=" + ddll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
