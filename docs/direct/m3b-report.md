@@ -1,127 +1,118 @@
 # M3b report: the translator's step B and the draw path's cost (2026-11-12)
 
-Branch `agent/m3b` (from native-vk 148ba5a; M3a not landed when measured). Runs in `work/runs/m3b_*` (local), RX 6950 XT,
-RADV, `RUN=timing`, one game process at a time, chisel overlays (`chisel_kokiri`, `chisel_hf_market`), pacing off
-(`HOS_FPS_MAX=240`) unless named. Profiles: Superluminal (8 kHz, a 30 s window of steady play), kept in the scratchpad.
+Branch `agent/m3b`, rebased onto native-vk with M3a (8ec9439): jobs are drawn. Runs in `work/runs/m3b_*` (local), RX 6950 XT,
+RADV, `RUN=timing`, one game process at a time, `chisel_kokiri` / `chisel_hf_market`, pacing off (`HOS_FPS_MAX=240`)
+unless named. Profiles: Superluminal, 30 s of steady play.
 
 ## What was built
 
 | Part | Files (lines) |
 |---|---|
-| The fork | `gpu/direct/eden` (243 files, 163 `.cpp`, 48,000 lines, 2.6 MB): Eden's recompiler, sirit and the compat headers copied from `gpu/vk`; 15 files differ from the frozen copy (+267 / -45 lines). Every `getenv` (32) answers "unset" (`common/no_env.h`), as the frozen back end runs. Built into `dx_eden_*` objects for `hookshot_direct.so` only (`nx2/build.py` +26: the direct flags swap the frozen include folders for the fork's; its own stamp hashes the fork). A full build of the fork: 28 s wall, 4.5 min CPU at 12 jobs. The frozen back end's objects are byte-identical (all 217; `vk_menu.o` carries the tree's source stamp, as for any edit) |
-| Step B in the translator | `texture_pass.cpp` (`HostTranslateInfo::heap_handles`): every texture and image instruction keeps its handle (a bound one's from its constant buffer word, a bindless one as the program computes it); no handle programs, no "failed to track" errors. SPIR-V back end (`Profile::heap_handles`): each texture descriptor a runtime array of its image type, two runtime sampler arrays (plain, depth compare), indexed by the handle's id and sampler bits, non-uniform where not constant; storage images the same; every stage by address (an undeclared address bank declared; a stage with global memory and no storage buffer by address too) |
-| Programs | `direct_shader.cpp` (1,154 → 1,206): heap mappings are constant-offset arrays (no indirect indices, no pushed bank addresses: push data 128 B); `Env` answers storage-pointer questions and game-buffer words from the program alone; variants shared by every program slot of the same code (`Family`); counters for second variants, uniform buffers a variant reads, shader-object and cache-read time, the last miss |
-| Heap | `direct_heap.cpp` (515 → 560): 7 storage-image regions beside the 7 sampled ones (116 MB resource heap), written at registration for images made with STORAGE usage (one level, no swizzle, a storable format) |
-| Draw path | `direct_draw.cpp` (918 → 1,050): thread counters; layer-0 spans and uniform addresses cached per list binding; inline updates as a per-list shadow, a draw's copy only the range its program reads (zeros past the bound range when the size is static) |
-| Outside my files (small, additive) | `direct_pools.cpp` +8 (window lookup without the mutex once made), `direct_assets.cpp` +20 (the block-size fix), `direct_image.{h,cpp}` +17 (`storage` bit, `image_key_describe` for logs) |
+| The fork | `gpu/direct/eden` (243 files, 163 `.cpp`, 48,000 lines, 2.6 MB): Eden, sirit and the compat headers copied from `gpu/vk`; 16 files differ from the frozen copy (about +300 / -45). Its 32 `getenv` calls answer "unset" (`common/no_env.h`), as the frozen back end runs. Built into `dx_eden_*` for `hookshot_direct.so` only (`nx2/build.py` +26: the direct flags swap the frozen include folders for the fork's; the stamp hashes the fork). Full build of the fork: 28 s wall, 4.5 min CPU at 12 jobs. The frozen library's 217 objects are byte-identical (only `vk_menu.o`, which carries the tree's source stamp, differs, as for any edit) |
+| Step B, translator | `texture_pass.cpp` (`HostTranslateInfo::heap_handles`): every texture and image instruction keeps its handle (a bound one's from its constant-buffer word, a bindless one as the program computes it); no handle programs. SPIR-V back end (`Profile::heap_handles`): each texture or image descriptor is a runtime array of its image type, plus two runtime sampler arrays (plain, depth compare), indexed by the handle's id and sampler bits, non-uniform where not constant. Every stage by address (an undeclared address bank is declared; a stage with global memory and no storage buffer goes by address too) |
+| Programs | `direct_shader.cpp` (1,154 → 1,210): constant-offset heap mappings (no indirect indices, no pushed bank addresses: push data 128 B); `Env` answers storage-pointer questions and game-buffer words from the program; variants shared by every slot of the same code (`Family`); counters |
+| Heap | `direct_heap.cpp` (515 → 565): 7 storage-image regions beside the 7 sampled ones (116 MB), written at registration for images made with STORAGE usage |
+| Draw path | `direct_draw.cpp` (918 → 1,080), `direct_state.cpp` (+40): see the profile |
+| Outside my files (small, additive) | `direct_pools.cpp` +8 (window lookup without the mutex once made), `direct_assets.cpp` +17 (block size), `direct_image.{h,cpp}` +17 (`storage` bit, `image_key_describe`) |
 
 ## Done-items
 
 | Item | Runs | Kokiri | Hyrule Field |
 |---|---|---|---|
-| No "handle program", "not by address", "storage image" skips | `m3b_c1_k_cold`, `m3b_c1_h_cold` | 0 of each (was 31.88 handle-program job draws) | 0 (was 17.00) |
-| Translator self-check: step A (native-vk's build, frozen translator) against step B, same pacing, `HOS_DBG=noassets`, dumped at the same present; thumbnail mean abs. difference 0-255 | `m3b_pt_{a,b}` (title, present 2700), `m3b_pk_{a,b}` (2400), `m3b_ph_{a,b}` (2400) | title: UI pass 0.03, composite 0.11 (15 + 1 draws both). Kokiri: UI 0.00, composite 0.01, median of 136 targets 0.00, max 0.24 | UI 0.02, composite 0.04, median 0.00. Intended or unrelated difference: the probe faces (128x128 and their mips, max 25.6): the two frames rendered different faces (A two, B three), so they are not compared |
-| Draw path, ms a frame (pacing off) | before `m2b_ceil_*`, after `m3b_c1_*_cold` | **1.10 → 0.488** | **1.85 → 0.855** |
-| `hsd_emit`, all recording threads | same | 1.88 → 1.28 | 2.92 → 1.90 |
-| Frame time, mean (p99) | same | 10.73 (12.71) → 10.35 (12.32) | 11.57 (13.72) → 10.90 (13.00) |
-| The three title textures drawn | `m3b_b3_title` (drawlog), TBD dump | ids 1544/1545/1558/1559 (683x683 and 341x341 RGTC1) sample their prepared BC4 images; the placeholder only for `DummyTextureForEvent` (no record, A-rt) | |
-| Validation | TBD | | |
-| Cold and warm start | TBD | | |
+| No "handle program", "not by address", "storage image" skips | `m3b_r2_k`, `m3b_r2_h` | 0 (job draws: 877 drawn, 50 mesh; M3a alone had 223 step-A draws) | 0 (M3a: 527 step A) |
+| Translator self-check: step A (native-vk's build, frozen Eden) against step B, `HOS_DBG=noassets`, same present and pacing; thumbnail mean abs. difference 0-255 | `m3b_pt_{a,b}`, `m3b_pk_{a,b}`, `m3b_ph_{a,b}` (before the rebase, jobs not drawn) | title UI 0.03, composite 0.11 (15 + 1 draws both); Kokiri UI 0.00, composite 0.01, median of 136 targets 0.00 | UI 0.02, composite 0.04, median 0.00. Not compared: probe faces (A drew 2 faces, B 3) |
+| Draw path a frame, jobs drawn (M3a's tree → after) | `m3a_fin_*` → `m3b_r2_*` | **4.16 → 1.68 ms** | **7.41 → 3.00 ms** |
+| `hsd_emit`; packet expansion (`hsd_list_call` from jobs) | same | 2.79 → 1.50; 2.34 → 1.14 | 4.87 → 2.76; 4.14 → 1.86 |
+| Frame time, mean (p99) | same | 11.89 (13.86) → 10.78 (12.61); M2b with no job drawn: 10.73 | 12.98 (14.87) → 11.71 (13.77); M2b: 11.57 |
+| Draw path before the rebase (jobs only resolved; the brief's 1.10 / 1.85) | `m2b_ceil_*` → `m3b_c1_*_cold` | 1.10 → 0.488 | 1.85 → 0.855 |
+| The three title textures | `m3b_b3_title` (draw log), `m3b_v1_title` (dump) | the 683x683 / 341x341 RGTC1 textures sample their prepared BC4 images: the logo's glow is drawn. Placeholders left: `DummyTextureForEvent` (no record, A-rt) and two ASTC loads with no data | |
+| Validation (sync on) | `m3b_val3_k`, `m3b_val3_hf` | TBD | TBD |
+| Cold and warm start | `m3b_c3_*` | TBD | TBD |
 
-## Skip table (draws a frame; job lists only resolve until M3a)
+## The draw path's profile (Kokiri, jobs drawn, `r1` = after the rebase, before the last cut)
 
-| Reason | Kokiri before (`m3b_base_k_warm`) | after (`m3b_c1_k_cold`) | HF before (`m2b_ceil_hf`) | after (`m3b_c1_h_cold`) |
-|---|---|---|---|---|
-| job: step A cannot draw (texture handle from a handle program) | 31.88 | **0** (row gone) | 17.00 | **0** |
-| job: resolved, would draw (no command buffer: M3a) | 171.88 | 203.75 | 645.23 | 647.20 |
-| job: mesh (M4); under a render condition (M5) | 41; 114 | 41; 114 | 47; 316 | 47; 316 |
-| layer: drawn; mesh; no targets | 135.3; 2; 0.83 | 132.7; 2; 0.83 | 392.9; 2; 0.84 | 393.9; 2; 0.83 |
-| gate: drawn | 1 | 1 | 1 | 1 |
-| "not by address", "storage image", texel / image buffer, uniform array, push data over the limit | 0 | 0 | 0 | 0 |
+ms a frame, inclusive, under the profiler (2,380 frames). Before M3b the top entries were the inline-update copies of
+whole buffers with a byte coverage vector and a guest read (`ubo_address` 0.61 of `draw_emit`'s 1.07, no jobs drawn), a
+global mutex in every layer-0 lookup (0.15), global atomics bumped by every draw (0.06): removed (thread counters, a
+lock-free window table, spans and uniform addresses cached per binding, a per-list shadow copied for the range the
+program reads), and the state generations now move only when a binding changes (fewer bank copies, tables and picks).
 
-No variant of any program seen (title, Kokiri, HF) has a step-A reason left.
-
-## The draw path's profile
-
-The draw path is `draw_emit` (the counter M2b reported). Before: Superluminal on the fork-only build (`fb304af`, behaviour
-as M2b), Kokiri, 30 s of play (2,320 frames; 1.21 ms a frame by the counter under the profiler). Inclusive ms a frame:
-
-| Before (Kokiri) | ms | What it was |
+| r1, after the rebase | ms | cut in r2 |
 |---|---|---|
-| `draw_emit` | 1.068 | |
-| `bind_data` → `ubo_address` | 0.624 → 0.609 (0.164 own) | inline updates: each new update made a copy of the whole buffer (up to 64 KB), a byte-by-byte coverage vector, and a guest read of the rest (`nvn_gpu_read` 0.23, `memcpy` / `memset` 0.46 of it all) |
-| `layer0_span` + `layer0_address` | 0.081 + 0.072 | a global mutex per vertex, index and uniform buffer of every draw |
-| `count` | 0.061 | global atomics bumped by every draw on every recording thread |
-| `bank_fill`, `shader_pick`, `set_dynamic`, `arena_alloc`, `set_vertex_input` | 0.052, 0.040, 0.031, 0.024, 0.017 | arithmetic |
-| RADV (every call of the process) | 0.085 | |
+| `emit_one` (M3a's per-op path) → `pass_emit` 2.22 → `draw_emit` | 1.52 | |
+| `bind_data` → `ubo_address` | 0.35 → 0.31 (0.21 own) | the past-range log's global counter was bumped on every call: read first |
+| `set_vertex_input` | 0.18 | rebuilt only when attributes, streams or the program's inputs change |
+| `set_dynamic` | 0.11 | rebuilt only when a state op, the topology, the program or the pass changed |
+| `clock_gettime` (vDSO; the draw timer two calls a draw, M3a's emit timers) | 0.27 | the draw timer on the TSC |
+| `shader_pick`, `layer0_span`, `bank_fill`, `span_of` | 0.08, 0.05, 0.03, 0.02 | |
+| RADV, every call of the process | 0.41 | |
 
-TBD after
+What remains: per draw, the bank copies and address tables of changed bindings (925 / 981 a frame, Kokiri), the Vulkan
+calls, and a secondary's first draw, which must set the heap, the shaders and every dynamic state (RADV inherits none:
+M3a's 10.4 µs against 3.0 for later draws); M3a's emit path (`pass_emit` 0.28 own, `hsd_emit` 0.21 own).
+
+## Skip table, draws a frame (`m3b_r2_k` / `m3b_r2_h`)
+
+| | Kokiri | HF |
+|---|---|---|
+| job: drawn (of them under a render condition, not evaluated: M5) | 877 (318) | 2,434 (886) |
+| job: mesh (M4) | 50 | 111 |
+| layer: drawn; mesh; no targets | 165.7; 2; 0.83 | 422.0; 2; 0.83 |
+| step A reasons (handle program, two-word or array handle, not by address, storage image, texel buffer) | 0 | 0 |
+
+## The lit colour pass and the composite (Kokiri, `m3b_dd2_k` against frozen `m2b_fd_kokiri_b`, present 1800)
+
+- The lit target (B10G11R11F 1536x864) has mean 0.010 (frozen 0.075; M3a's trial merge 0.0067). Its light comes from one
+  full-screen draw before any geometry: program `489438d734e2463a` (frozen item 223 alone brings it to 0.075). It is
+  drawn in direct, into the same target (rt 29), and adds nothing. Its only texture is a 256x256 RGBA16F target (id 728,
+  `0x113c2a5000`), whose alpha matches the frozen one (0.504) but whose colour is 0 (frozen 0.60 / 0.69 / 0.44). That
+  target is drawn by `b069ca31d98f98f8` from one texture: a 256x32x16 RGBA16F array (`0x113c19b000`) that nothing has
+  written in the direct back end (no draw, copy, clear or texel write) and that no draw of the frozen frame writes: a
+  compute output (M4). **Missing for the ground and Link: that compute LUT (the ambient/sky chain), then the geometry's
+  own inputs:** the lit key `0x113b648038` draws 318 job draws (14 mesh draws skipped, M4); its fragment stages read 1-4
+  storage buffers and global memory (58 draws a frame with 4) and some computed-handle textures, which the culling and
+  light compute would fill.
+- The composite: after the lit chain (direct 1536x864 `0x10014e00000` mean 0.0089, frozen 0.021), the frozen frame runs
+  only three dispatches (`26fe0c70`, `685adb41` 1x1x1, `6637ac1d` 96x54 writing a 1536x864 E5B9G9R9 storage image) and
+  the next draw into the 2048x1152 target is the UI. **The scene reaches the composite only through compute (M4)**; in
+  direct that target holds the UI (mean 0.0008) and the composite shows the hearts.
 
 ## Settled by evidence
 
-- **The title's placeholder textures were not an ordering bug.** A log at registration (`direct: heap: id N registered with
-  the placeholder ...`, `image_key_describe`) showed them linked to their record (record 1, 2, ...) yet keyed "an asset with
-  no record": `assets_desc` failed because `block_of` handed the record's format field, which holds the BNTX code
-  (`0x1d01`), to the NVN block-size lookup, which knows no such code. Every *copied* record (natively BC or uncompressed
-  textures: kinds `copy_bc` and `copy`) failed so; the converted ASTC ones did not. Fixed at the source: `bntx_block`, the
-  converter's own table (`nx2/prepare_textures.py` FMT). The m2b report's guess (registration before the link) was wrong:
-  the entries were written with the right key, the key was wrong. In the title run 3 placeholder registrations remain
-  (`DummyTextureForEvent`, no record; 2 ASTC loads with no data), against hundreds before.
-- **Second variants: none.** Title, Kokiri and HF: 0 variants past a program's first, for other inputs (vertex attribute
-  or colour types) or other answers. Kokiri sets 12,528 programs of 5,945 distinct codes and draws 152 variants (304
-  shader objects); HF 13,247 / 6,117 / 302. Before the variants were shared by code, the warm Kokiri start made 1,446
-  variants and 2,904 shader objects from the cache for those 149.
-- **RADV's push data (256 B) and the address table.** After step B the push data is 128 B: Eden's block (120) and the
-  table's address; no bank addresses are pushed for textures any more. A variant reads 8.1 uniform buffers on average
-  (Kokiri; HF 8.5), at most 16, and 136 B are left, room for 17 pushed addresses: every variant seen would fit
-  `PUSH_ADDRESS` per buffer, but at the edge (16 of 17), so the table (`INDIRECT_ADDRESS`, one arena copy when a list's
-  bindings change: 134 / 293 a frame) stays the general path. Its cost was not in the profile's top entries.
-- **Uniform buffers past their bound range.** One program reads past it: `f8d01f6626632433`'s vertex stage reads c6 up
-  to 688 bytes with 128 bound (static offsets), 0.9 address tables a frame in both scenes. Through the address it reads
-  the guest memory after the buffer where Maxwell reads zeros. Making that exact needs a copy with a zero tail, which
-  needs the buffer's bytes at record time (a guest read): not done; a game patch (bind the full size) is the clean fix
-  if the picture shows it. Copies made for inline updates are zero-tailed already (static sizes).
-- **All programs before play: what stands between.** (1) The key needs the bound vertex attribute types and the pass's
-  colour types, known at the draw only; a load-time pick could take the attribute types from the load-time lists'
-  packets (M3a) and float colour types (every pass seen). (2) The game sets 5,945 distinct codes in Kokiri and draws 152
-  variants of them: translating every set code at its `SetShaders` would be ~40 times the work, so it needs that
-  prediction or an offline pass over the romfs programs with the vertex layouts. (3) Shader objects are compiled per
-  variant on two workers; their cost on a cold Mesa cache is the larger part (below). Nothing else of the bound state is
-  read, so (1) is the only input missing for a load-time translation.
-- **Translation and the bound state.** What still reads it: the vertex attribute types and the targets' colour types (the
-  key, known at the draw), and the answers of textures whose handle is a driver-bank word (from the list's state, no guest
-  read). Game buffer words asked by the translator: 0 (`game buffer words asked at translation`).
+- **The title's placeholder textures were not an ordering bug.** A log at registration showed them linked to a record
+  yet keyed "an asset with no record": `assets_desc` failed because `block_of` gave the record's format field, which
+  holds the BNTX code (`0x1d01`), to the NVN block-size lookup. Every copied record (natively BC or uncompressed) failed
+  so. Fixed at the source with the converter's own table (`bntx_block`).
+- **Second variants: none** (title, Kokiri, HF): 0 for other inputs, 0 for other answers. Kokiri sets 12,528 programs of
+  5,945 codes and draws 333 variants with jobs (152 before); sharing variants by code turned 1,446 cached variants and
+  2,904 shader objects of a warm start into one per variant.
+- **Push data and the address table.** RADV allows 256 B. After step B the push data is 128 B (Eden's 120 and the table's
+  address). A variant reads 8.1 uniform buffers on average (HF 8.5), at most 16; 17 pushed addresses would fit, so every
+  variant seen could push its addresses (`PUSH_ADDRESS`), but at the edge: the table stays.
+- **Uniform buffers past their bound range:** with jobs drawn, 786 address tables a frame in Kokiri (1,240 in HF) hold a buffer that a
+  program may read past its bound size (one program before jobs: `f8d01f6626632433`, c6 read to 688 B, 128 bound). They
+  read the guest memory after the buffer where Maxwell reads zeros. Exact handling needs the bytes at record time (a
+  guest read) or a game patch binding the full size; not done, and it may matter for the job draws' pictures.
+- **Translation and the bound state:** only the key (vertex attribute and colour types) and driver-bank texture answers
+  are read; 0 game-buffer words asked. **All programs before play** needs (1) the attribute types ahead of the draw (the
+  packets have the vertex state) and float colour types, (2) a choice of what to translate: 5,945 codes set, 333 drawn.
+- **Validation** found one real bug: the sampler arrays were mapped with the combined-sampler fields, so every sample read
+  sampler 0 (fixed, 8a01258).
 
 ## Deviations from the contract
 
-- **Heap-indexed sampling** is done with descriptor arrays the heap mapping places (`HEAP_WITH_CONSTANT_OFFSET`, stride 64 B,
-  one array per texture descriptor at its view type's region; samplers two arrays), not with `SPV_EXT_descriptor_heap`'s
-  untyped heap access: sirit has no untyped-pointer instructions, and the array form needs none. Same effect: the shader
-  indexes the heap with the handle it read, the CPU reads no handle word.
-- **Texture answers.** A handle the shader computes (handle program, dynamic index, two words) or reads from a game buffer
-  has no answer the draw could check without reading guest memory: its texture is translated as its instruction says (2D
-  unless the instruction fixes the type; float). Only driver-bank words (c0/c2) give answers, checked at the draw against
-  the per-id answer byte (arithmetic, no lock). No case of a second variant was seen (below).
-- **Storage pointers** are answered from the program: a word of the driver bank's storage table is a storage buffer, any
-  other is not and its accesses stay global memory, read by address all the same (both through the window table).
-- **Not done (M4, compute and mesh are skipped in M3):** the compute grid from `NumWorkgroups`, the 0x880 pointer tables,
-  the task stage as a compute step. Texel and image buffers get no heap entries (none in any graphics program seen; still
-  a counted skip reason).
-- **The address table stays** (`INDIRECT_ADDRESS`, one pushed address); see "Settled".
-- **Variants are shared by program code**, not kept per NVN serial (a `Family` per pair of stage code keys).
-- **The fork** does not copy suyu's texture decoders: nothing in the translator uses them, and the direct back end has no
-  decoder by plan.
+- Heap-indexed sampling uses descriptor arrays placed by `HEAP_WITH_CONSTANT_OFFSET` mappings, not `SPV_EXT_descriptor_heap`
+  untyped access (sirit lacks untyped pointers). Same effect: the shader indexes the heap with the handle it read.
+- Textures whose handle the shader computes or reads from a game buffer are translated as their instruction says (2D unless
+  fixed; float): no answer can be checked without a guest read. Storage pointers: only driver-bank storage words.
+- Not done (M4: compute and mesh are skipped): grid from `NumWorkgroups`, the 0x880 tables, the task stage as compute.
+  Texel and image buffers get no heap entries (none in a graphics program seen).
+- Variants are kept per code, not per NVN serial. The fork leaves out suyu's texture decoders (the translator uses none).
 
 ## Open problems
 
-- **Job draws are still only resolved** (M3a records them). The draw path numbers are for layer and gate draws recorded
-  plus job draws resolved; with jobs recorded each job draw also binds its data and sets its state, so the path grows by
-  roughly the layer draws' per-draw cost (about 1.6 µs) times the job draws (204 Kokiri, 647 HF). The changes here (no
-  locks, no shared counters, copies of the used range) are what that path runs on.
-- **The pictures of the newly drawable job draws** (handle-program textures) cannot be checked until jobs execute (M3a).
-  The translation is exercised (152 / 302 variants, 0 failed) and the UI passes match.
-- **Texture answers of computed handles** are the instruction's (2D, float): an integer texture behind a handle program
-  would be sampled as float. None is known; nothing counts it (the CPU cannot see the handle).
-- **Uniform buffers past their bound range**: a program that may read past it reads the guest memory after the buffer
-  (Maxwell reads zeros). Counted (below); the pictures cannot tell yet.
-- **All programs before play**: see "Settled".
+- The draw path is 1.7 / 3.0 ms with jobs drawn: bank copies and address tables per binding change and the secondaries'
+  first-draw state are the rest; a per-pass shared bank table and fewer dynamic states a secondary must set are next.
+- Uniform buffers read past their bound range (above). Integer textures behind computed handles would be sampled as float
+  (none known, not counted).
+- The lit pass and the composite wait for compute (M4), above.
