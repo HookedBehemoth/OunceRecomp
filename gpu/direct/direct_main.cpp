@@ -230,7 +230,6 @@ bool create_device() {
 #undef HSD_VK_LOAD
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
     vkGetDeviceQueue(dev.device, sparse_family, 0, &dev.sparse_queue);
-    marks_init();
     return true;
 }
 
@@ -325,6 +324,7 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
     }
     draw_device_created();   // (M2b: the heaps, the draws' functions)
     query_device_created();  // (M5: queries, conditions, the resolve step)
+    marks_init();            // (M6c: HOS_DBG=marks; after the heap's functions are loaded)
     logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2b: targets, passes, present, vertex and fragment draws)", dev.props.deviceName,
          VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion);
     table.version = MKWVK_API_VERSION;

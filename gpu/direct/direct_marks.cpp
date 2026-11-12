@@ -7,8 +7,6 @@
 #include "direct_marks.h"
 
 namespace hsd {
-bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
-                   VkDeviceAddress& address);   // (direct_heap.cpp)
 
 bool marks_enabled = false;
 
@@ -48,10 +46,31 @@ void marks_device_extensions(const std::vector<VkExtensionProperties>& exts, std
 void marks_init() {
     if (!asked) return;
     pMarker = (PFN_vkCmdWriteBufferMarker2AMD)vkGetDeviceProcAddr(dev.device, "vkCmdWriteBufferMarker2AMD");
-    uint8_t* map = nullptr;
-    VkDeviceAddress a = 0;
-    if (!pMarker || !mapped_buffer(8ull * kEntries, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, buffer, memory, map, a)) {
-        logf("direct: marks: no marker function or buffer: no breadcrumbs");
+    // (host memory, not device-local: a reset loses VRAM, and the markers are read after one)
+    void* map = nullptr;
+    const auto pBind = (PFN_vkBindBufferMemory)vkGetDeviceProcAddr(dev.device, "vkBindBufferMemory");
+    const auto pMap = (PFN_vkMapMemory)vkGetDeviceProcAddr(dev.device, "vkMapMemory");
+    bool ok = pMarker && pBind && pMap;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = 8ull * kEntries;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    ok = ok && vkCreateBuffer(dev.device, &bi, nullptr, &buffer) == VK_SUCCESS;
+    uint32_t type = UINT32_MAX;
+    if (ok) {
+        VkMemoryRequirements mr;
+        vkGetBufferMemoryRequirements(dev.device, buffer, &mr);
+        const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        for (uint32_t i = 0; i < dev.memory.memoryTypeCount && type == UINT32_MAX; i++) {
+            const VkMemoryPropertyFlags f = dev.memory.memoryTypes[i].propertyFlags;
+            if ((mr.memoryTypeBits >> i & 1) && (f & want) == want && !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) type = i;
+        }
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = mr.size, ai.memoryTypeIndex = type;
+        ok = type != UINT32_MAX && vkAllocateMemory(dev.device, &ai, nullptr, &memory) == VK_SUCCESS &&
+             pBind(dev.device, buffer, memory, 0) == VK_SUCCESS && pMap(dev.device, memory, 0, VK_WHOLE_SIZE, 0, &map) == VK_SUCCESS;
+    }
+    if (!ok) {
+        logf("direct: marks: no marker function or host-memory buffer: no breadcrumbs");
         return;
     }
     std::memset(map, 0, 8ull * kEntries);
