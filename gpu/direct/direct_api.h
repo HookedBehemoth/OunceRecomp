@@ -58,6 +58,13 @@ enum { HSD_TEXELS_TERRAIN = 1, HSD_TEXELS_GLYPH = 2 };
 void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                 uint64_t row, uint64_t img);
 
+/* (M3a) The format table by pass key (docs/direct/m3-interface.md, M3a). The job recorder's entry asks whether a key's formats
+   are known: 1, the job records one rendering secondary with them; 0, the recorder takes the game's own early return and the
+   layer list draws the pass through the game's inline path, which hsd_pass_inline names (the list's targets set then give the
+   key its formats). A layer list's call of a job notes them too */
+int  hsd_pass_known(uint64_t key);
+void hsd_pass_inline(void *list, uint64_t key);
+
 #ifdef __cplusplus
 }
 #endif

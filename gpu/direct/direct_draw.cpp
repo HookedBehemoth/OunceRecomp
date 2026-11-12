@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "direct_cmd.h"
@@ -84,7 +85,7 @@ const char* const kReasons[R_COUNT] = {
     "step A cannot draw the variant", "a vertex buffer not in layer 0", "the index buffer not in layer 0", "8-bit indices",
     "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
     "resolved in a load-time list (M3)", "resolved in an unclassified list"};
-std::atomic<int64_t> st_by_kind[HSD_LIST_KINDS][R_COUNT];
+std::atomic<int64_t> st_by_kind[HSD_LIST_KINDS][R_COUNT], st_gated[HSD_LIST_KINDS];
 std::atomic<int64_t> st_ub_updates{0}, st_ub_copies{0}, st_ub_reads{0};
 std::atomic<int64_t> st_ns{0}, st_fixups{0}, st_fixup_lists{0}, st_banks{0}, st_tables{0}, st_ssbo_unbound{0};
 // (the variants' step A reasons: static strings, a few)
@@ -124,7 +125,14 @@ void count_site(uint64_t lr, Reason r) {
 struct Fixup {
     uint8_t* dst;
     uint64_t src;
+    uint32_t bound;   // (HOS_DBG=deferredcheck: the word in the game's array when it was bound)
 };
+// (M3a, HOS_DBG=deferredcheck: how many deferred words change between their bind and the submit, and since the last submit
+// that read the same word)
+const bool deferred_check = dbg("deferredcheck");
+std::mutex deferred_mu;
+std::unordered_map<uint64_t, uint32_t> deferred_last;
+std::atomic<int64_t> st_def_bind{0}, st_def_frame{0}, st_def_words{0};
 struct Dyn {
     VkViewport vp;
     VkRect2D sc;
@@ -375,7 +383,7 @@ void set_dynamic(ListDraw& x, VkCommandBuffer cb, const DState& s, const PassRec
     d.restart = s.restart && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
                 topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST &&
                 topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY && topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
-    const VkImageAspectFlags da = p.depth.im ? p.depth.im->aspect : 0;
+    const VkImageAspectFlags da = p.depth.aspect;   // (M3a: a job's secondary has formats, no images)
     d.dt = (da & VK_IMAGE_ASPECT_DEPTH_BIT) && s.ds.dt;
     d.dw = (da & VK_IMAGE_ASPECT_DEPTH_BIT) && s.ds.dw;
     d.dop = compare_op(s.ds.df);
@@ -386,13 +394,11 @@ void set_dynamic(ListDraw& x, VkCommandBuffer cb, const DState& s, const PassRec
     d.discard = s.raster_discard;
     d.poly = s.poly.mode == 0 ? VK_POLYGON_MODE_POINT : s.poly.mode == 1 ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     d.clamp = s.depth_clamp, d.a2c = s.ms.a2c != 0;
-    const Image* any = p.n && p.color[0].im ? p.color[0].im : p.depth.im;
-    for (int i = 0; i < p.n && !any; i++) any = p.color[i].im;
-    d.samples = any ? any->samples : VK_SAMPLE_COUNT_1_BIT;
+    d.samples = p.samples;
     d.n = (uint32_t)p.n;
     for (int i = 0; i < p.n; i++) {
         const nvn_blend_st& b = s.blend[i];
-        const bool has = p.color[i].view != VK_NULL_HANDLE;
+        const bool has = p.color[i].format != VK_FORMAT_UNDEFINED;
         d.en[i] = has && (s.color.blend_en >> i & 1) ? VK_TRUE : VK_FALSE;
         d.eq[i] = {blend_factor(b.src_rgb), blend_factor(b.dst_rgb), blend_op(b.eq_rgb), blend_factor(b.src_a), blend_factor(b.dst_a), blend_op(b.eq_a)};
         // (a target the fragment stage leaves unwritten: no write (Maxwell keeps its texels); and only the components it writes)
@@ -505,7 +511,10 @@ bool bank_copy(List* l, ListDraw& x, int stage, int bank, uint32_t bytes, VkDevi
     bank_fill(x.s, bank, stage, map, bytes);
     if (bank == 2 && x.s.deferred[stage]) {   // (the handles the game's arrays hold at its submit: copied then)
         auto note = [&](uint32_t off, uint64_t src) {
-            if (src && off + 4 <= bytes) x.fixups.push_back({map + off, src});
+            if (!src || off + 4 > bytes) return;
+            uint64_t h = 0;
+            if (deferred_check) host->gpu_read(src, &h, 8);
+            x.fixups.push_back({map + off, src, (uint32_t)h});
         };
         for (uint32_t i = 0; i < 128; i++) {
             if (i < 32) note(0x20 + 8 * i, x.s.tex_src[stage][i]);
@@ -695,17 +704,16 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     else std::memcpy(&di, data, std::min<size_t>(sizeof di, size));
     const int prim = op == NOP_DRAW ? dr.prim : di.prim;
     const PassRec& p = l->pass;
-    const bool records = l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE || l->info.kind == HSD_LIST_COMPUTE ||
-                         l->info.kind == HSD_LIST_HEAD;
+    const bool records = l->rec;   // (M3a: jobs with their pass's formats too)
     if (records && !p.noted) return count(l, R_NO_TARGETS);
-    if (s.conditional) return count(l, R_CONDITION);
+    const bool gated = s.conditional;   // (M3a: a render condition is not evaluated: the draw is drawn, counted; M5)
     if (!s.render_enabled) return count(l, R_DISABLED);
     VkPrimitiveTopology topo;
     if (prim == NVN_DRAW_PRIMITIVE_QUADS) return count(l, R_QUADS);
     if (!topology(prim, topo)) return count(l, R_TOPOLOGY);
     uint8_t ct[8]{};   // (the targets' colour types; a list with none of its own (a job): float, as every logged pass)
     if (records)
-        for (int i = 0; i < p.n; i++) ct[i] = p.color[i].view ? color_type(p.color[i].format) : 0;
+        for (int i = 0; i < p.n; i++) ct[i] = color_type(p.color[i].format);
     ShaderMiss why = SM_NONE;
     const DrawProg* prog;
     uint64_t ctw;
@@ -813,6 +821,11 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     else
         vkCmdDraw(cb, (uint32_t)dr.count, (uint32_t)std::max(1, dr.instances), (uint32_t)dr.first, (uint32_t)dr.base_instance);
     count(l, R_DRAWN);
+    if (gated) st_gated[l->info.kind].fetch_add(1, std::memory_order_relaxed);
+}
+
+void draw_invalidate(List* l) {
+    if (l->dctx) l->dctx->cb = VK_NULL_HANDLE;
 }
 
 void draw_list_submitted(const List* l) {
@@ -828,6 +841,13 @@ void draw_list_submitted(const List* l) {
             host->gpu_read(f.src, &h, 8);
             const uint32_t lo = (uint32_t)h;
             std::memcpy(f.dst, &lo, 4);
+            if (deferred_check) {
+                st_def_words.fetch_add(1, std::memory_order_relaxed);
+                if (lo != f.bound) st_def_bind.fetch_add(1, std::memory_order_relaxed);
+                std::lock_guard lk(deferred_mu);
+                auto [it, made] = deferred_last.try_emplace(f.src, lo);
+                if (!made && it->second != lo) st_def_frame.fetch_add(1, std::memory_order_relaxed), it->second = lo;
+            }
         }
         st_fixups.fetch_add((int64_t)x->dctx->fixups.size(), std::memory_order_relaxed);
         st_fixup_lists.fetch_add(1, std::memory_order_relaxed);
@@ -877,6 +897,9 @@ void draw_log(double frames) {
                           st_ns.exchange(0) / 1e6 / frames, st_banks.exchange(0) / frames, st_tables.exchange(0) / frames,
                           st_fixups.exchange(0) / frames, st_fixup_lists.exchange(0) / frames, (long long)st_chunks.load(),
                           (long long)st_ssbo_unbound.load());
+    if (deferred_check)
+        logf("direct: deferredcheck: %.1f deferred words copied a frame, %.2f changed between bind and submit, %.2f changed since the "
+             "last submit that read the same word", st_def_words.exchange(0) / frames, st_def_bind.exchange(0) / frames, st_def_frame.exchange(0) / frames);
     logf("direct: %s; inline uniform updates %.1f a frame, buffer copies with them %.1f, of them with the rest read %.1f", out,
          st_ub_updates.exchange(0) / frames, st_ub_copies.exchange(0) / frames, st_ub_reads.exchange(0) / frames);
     static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
@@ -889,6 +912,8 @@ void draw_log(double frames) {
             k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", any ? "," : "", kReasons[r], n / frames);
             any = true;
         }
+        if (const int64_t g = st_gated[kind].exchange(0))
+            k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; of the drawn under a render condition (not evaluated) %.2f", g / frames), any = true;
         if (any) logf("direct: %s", out);
     }
     k = std::snprintf(out, cap, "draws a frame that step A cannot draw, by the variant's reason:");

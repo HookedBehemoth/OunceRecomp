@@ -28,8 +28,19 @@ struct ListDraw;   // (direct_draw.cpp: its state and draw caches)
 struct Target {
     Image* im = nullptr;
     VkImageView view = VK_NULL_HANDLE;
-    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkFormat format = VK_FORMAT_UNDEFINED;   // (UNDEFINED: no attachment there)
+    VkImageAspectFlags aspect = 0;
     uint32_t level = 0, layer = 0, w = 0, h = 0;
+};
+/// (M3a) A pass's formats, what a job's rendering secondary inherits (direct_pass.cpp's format table keeps them by pass key)
+struct PassFormats {
+    uint32_t n = 0;
+    VkFormat color[8]{};
+    VkFormat depth = VK_FORMAT_UNDEFINED, stencil = VK_FORMAT_UNDEFINED;
+    VkImageAspectFlags depth_aspect = 0;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    uint32_t w = 0, h = 0;   // (the size the job's draws assume: not part of the match)
+    bool same(const PassFormats& o) const;
 };
 /// A list's recording state (direct_pass.cpp): the targets SetRenderTargets noted, whether the rendering is begun, the
 /// clears waiting to be its load ops, and the NVN state clears and copies read
@@ -38,6 +49,8 @@ struct PassRec {
     int n = 0;
     Target color[8], depth;
     uint32_t w = 0, h = 0;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    bool inherited = false;   // (M3a: a job's secondary: the rendering is its caller's)
     uint32_t load = 0;   // (bits 0-7 colour, 8 depth, 9 stencil: cleared by the load op at the begin)
     VkClearValue clear[10]{};
     int32_t scissor[4]{};
@@ -69,6 +82,16 @@ struct List {
     uint32_t last_op = 0, last_op2 = 0;   // (the ops before the one being handled, for logs)
     std::vector<DumpItem*> dumps;   // (HOS_DBG=dump: its passes' copies, in order)
     ListDraw* dctx = nullptr;   // (M2b: made at its first state op)
+    // (M3a)
+    bool rec = false;         // (it records Vulkan commands: layer, gate, compute, head lists, and jobs with their pass's formats)
+    bool secondary = false;   // (a job: one rendering secondary, cur, executed by its caller inside the caller's rendering)
+    PassFormats fmt;          // (a secondary's: what it was begun with)
+    VkCommandBuffer sec = VK_NULL_HANDLE;   // (a secondary, ended)
+    bool packet = false;      // (load-time and unclassified lists: a packet, expanded into each caller at its call)
+    std::vector<uint8_t> pkt; // (the packet: per op {op, size} then the payload, 8-byte aligned; callees in place)
+    uint32_t pkt_ops = 0;
+    std::vector<const List*> executed;   // (secondaries executed in its renderings: their slots go with its submissions)
+    uint32_t sec_draws = 0;   // (a secondary's draw ops so far: its first is timed apart)
     bool pending_barrier = false;   // (M2b: a barrier waiting for the list's next command: recorded with it)
 };
 

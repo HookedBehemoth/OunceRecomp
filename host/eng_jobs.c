@@ -41,6 +41,7 @@ typedef struct {
     int64_t handed_ns;   /* (the back end's time in this job, inside the game's recorder) */
 } job_tls;
 static _Thread_local job_tls jt;
+static _Thread_local uint64_t jt_cmd;   /* (direct mode: the guest command buffer the job on this thread records into) */
 static volatile uint32_t serials;
 
 static struct {
@@ -49,6 +50,7 @@ static struct {
 
 ENTRY_HOOK(0x80084de0) {   /* (ctx, drawctx, cmdpool, key, job, &range, stats) */
     if (!eng_jobs_on() || jt.active) return 0;   /* (off, or the game's recorder run from here: its body) */
+    if (on == 2 && direct_passes_recorder(c)) return 1;   /* (direct mode, M3a: the pass's formats not known: the early return) */
     static A64Fn orig;
     if (!orig) orig = a64_lookup(0x80084de0);
     if (!orig) return 0;
@@ -75,6 +77,7 @@ uint32_t eng_jobs_begin(Ctx *c) {
     while (!s);
     jt.serial = s;
     jt.info.serial = s;
+    jt_cmd = c->x[0];
     /* (the view record: one of the queue's, ctx +0x30 count, +0x38 array of 0xe0-byte records) */
     const uint64_t v = c->x[25], ctx = jt.info.ctx;
     if (hos_guest_range(ctx + 0x30, 0x10)) {
@@ -88,6 +91,14 @@ uint32_t eng_jobs_begin(Ctx *c) {
     if (!jt.info.view) InterlockedIncrement64(&n.no_view);
     InterlockedIncrement64(&n.tagged);
     return s;
+}
+
+/* (direct mode, M3a: host/direct_job_sync.c) the guest command buffer of the job this thread records now and its view record
+   (0: none) */
+uint64_t eng_jobs_current(uint64_t *view) {
+    if (!jt.active || !jt.serial) return 0;
+    if (view) *view = jt.info.view;
+    return jt_cmd;
 }
 
 int eng_jobs_tag(Ctx *c, uint64_t *key, uint64_t *view) {

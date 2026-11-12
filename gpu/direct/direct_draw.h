@@ -19,6 +19,8 @@ bool draw_log_frame();   // (HOS_DBG=drawlog's frame)
 void draw_state(List* l, uint32_t op, const void* data, uint32_t size);
 /// A draw op (DRAW, DRAW_IDX, DRAW_INDIRECT, DRAW_MESH); recording: the list's pass is begun in l->cur
 void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recording);
+/// (M3a) The command buffer's state is undefined (a secondary was executed in it): the next draw sets all again
+void draw_invalidate(List* l);
 /// The list's draw state goes with it
 void draw_list_free(List* l);
 /// (hsd_submit, the guest's submit) the deferred binds' bank words of l and its callees copied from the game's arrays now

@@ -18,8 +18,8 @@ struct Arena;   // (direct_draw.cpp)
 void arena_reset(Arena* a);
 struct CmdSlot {
     VkCommandPool pool = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> bufs;   // (the recording thread's alone)
-    size_t used = 0;
+    std::vector<VkCommandBuffer> bufs, secs;   // (the recording thread's alone)
+    size_t used = 0, secs_used = 0;
     uint64_t frame = UINT64_MAX;
     std::atomic<uint64_t> value{0};   // (the newest submission that held one of its buffers)
     std::atomic<int32_t> live{0};     // (lists alive holding its buffers)
@@ -31,6 +31,9 @@ struct CmdSlot {
 CmdSlot* cmd_slot_take();
 /// A primary command buffer of the slot, begun (SIMULTANEOUS_USE: a list may be called twice in a submission)
 VkCommandBuffer cmd_buffer(CmdSlot* s);
+/// (M3a) A secondary command buffer of the slot, begun to continue a dynamic rendering of those formats
+struct PassFormats;
+VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags flags);
 /// A list holding the slot's buffers is gone
 void cmd_slot_drop(CmdSlot* s);
 /// A submission holding the slot's buffers was sent with timeline value v

@@ -294,6 +294,8 @@ const hsd_fns *rx_direct(void) {
             DIRECT_FN(asset_rebind, "hsd_asset_rebind")
             DIRECT_FN(asset_pool, "hsd_asset_pool")
             DIRECT_FN(texels, "hsd_texels")
+            DIRECT_FN(pass_known, "hsd_pass_known")
+            DIRECT_FN(pass_inline, "hsd_pass_inline")
 #undef DIRECT_FN
             hos_log("rx: direct mode (RX_BACKEND=direct): %s", path);
             on = 2;

@@ -11,6 +11,10 @@
 // is ended, the caller's buffer too, and the callee's buffers run between (direct_lists.cpp list_buffers).
 #include <pthread.h>
 
+#include <chrono>
+#include <mutex>
+#include <thread>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -27,24 +31,102 @@ namespace {
 enum {
     S_SET_RT, S_EMPTY_RT, S_NO_IMAGE, S_BEGUN, S_LOAD_CLEARS, S_CLEARS_IN, S_MASKED, S_CLEAR_NO_TARGET, S_CLEAR_DISABLED,
     S_DRAWS, S_DISPATCHES, S_BARRIERS, S_COPIES, S_COPY_SKIPPED, S_CLEAR_TEX, S_CLEAR_TEX_SKIPPED, S_BUF_OPS, S_UNRECORDED,
-    S_CUTS, S_OTHER_THREAD, S_COUNT
+    S_CUTS, S_OTHER_THREAD, S_JOB_OUTSIDE, S_COUNT
 };
 const char* const kNames[S_COUNT] = {
     "SetRenderTargets", "with no target", "targets with no image", "renderings begun", "clears as load ops",
     "clears in a rendering", "masked clears skipped", "clears with no target", "clears not rendered", "draws skipped",
     "dispatches skipped", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
     "buffer ops skipped", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
-    "records on another thread"};
+    "records on another thread", "ops a job's rendering cannot hold (skipped)"};
 std::atomic<int64_t> st[S_COUNT];
 std::atomic<int64_t> st_bits[16];   // (barriers by NVN bit)
 void count(int k) { st[k].fetch_add(1, std::memory_order_relaxed); }
 
 uint64_t thread_id() { return (uint64_t)pthread_self(); }
 
-bool records(const List* l) {
-    const uint32_t k = l->info.kind;
-    return k == HSD_LIST_LAYER || k == HSD_LIST_GATE || k == HSD_LIST_COMPUTE || k == HSD_LIST_HEAD;
+// ---- (M3a) jobs: the format table by pass key, the job's secondary, its execution at its call ----
+enum {
+    J_RECORDED, J_NO_FORMATS, J_NO_NESTING, J_EXECUTED, J_MISMATCH, J_UNENDED, J_NOT_SECONDARY, J_NO_PASS, J_SIZE, J_KNOWN,
+    J_MISSED, J_INLINE, J_INLINE_NO_PASS, J_COUNT
+};
+const char* const kJobNames[J_COUNT] = {
+    "recorded as secondaries", "recorded with no formats known (no secondary)", "recorded with no nested rendering",
+    "executed", "not executed: formats differ from the pass at the call (key forgotten)", "not executed: not ended at the call",
+    "called with no secondary", "called with no pass in the caller", "executed in a pass of another size",
+    "recorder asked: key known", "recorder asked: key not known (the game's early return)", "passes drawn inline",
+    "passes drawn inline with no targets set"};
+std::atomic<int64_t> st_jobs[J_COUNT], st_first_ticks{0}, st_first_n{0}, st_other_ticks{0}, st_other_n{0};
+void jcount(int k) { st_jobs[k].fetch_add(1, std::memory_order_relaxed); }
+
+constexpr uint32_t kKeys = 1024, kSets = 256;
+struct KeySlot {
+    std::atomic<uint64_t> key{0};
+    std::atomic<uint32_t> set{0};   // (1 + its formats' index in sets; 0: not known)
+    std::atomic<int64_t> inl{0}, inl_all{0}, executed{0}, forgotten{0};
+};
+KeySlot keys[kKeys];
+PassFormats sets[kSets];
+uint32_t nsets = 0;
+std::mutex sets_mu;   // (the formats seen: a few, written when a key's targets change, never per draw)
+
+KeySlot* key_slot(uint64_t key, bool make) {
+    if (!key) return nullptr;
+    for (uint32_t k = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 54) & (kKeys - 1), tries = 0; tries < kKeys; k = (k + 1) & (kKeys - 1), tries++) {
+        KeySlot& s = keys[k];
+        uint64_t have = s.key.load(std::memory_order_acquire);
+        if (have == key) return &s;
+        if (!have) {
+            if (!make) return nullptr;
+            if (s.key.compare_exchange_strong(have, key, std::memory_order_acq_rel) || have == key) return &s;
+        }
+    }
+    return nullptr;
 }
+bool exact(const PassFormats& a, const PassFormats& b) { return a.same(b) && a.w == b.w && a.h == b.h; }
+uint32_t intern(const PassFormats& f) {
+    std::lock_guard lk(sets_mu);
+    for (uint32_t i = 0; i < nsets; i++)
+        if (exact(sets[i], f)) return i + 1;
+    if (nsets == kSets) return 0;
+    sets[nsets] = f;
+    return ++nsets;
+}
+PassFormats formats_of(const PassRec& p) {
+    PassFormats f;
+    f.n = (uint32_t)p.n;
+    for (int i = 0; i < p.n; i++) f.color[i] = p.color[i].format;
+    f.depth_aspect = p.depth.aspect;
+    if (p.depth.aspect & VK_IMAGE_ASPECT_DEPTH_BIT) f.depth = p.depth.format;
+    if (p.depth.aspect & VK_IMAGE_ASPECT_STENCIL_BIT) f.stencil = p.depth.format;
+    f.samples = p.samples, f.w = p.w, f.h = p.h;
+    return f;
+}
+/// The pass key's formats now: those of the targets the caller set
+void key_put(uint64_t key, const PassFormats& f) {
+    KeySlot* s = key_slot(key, true);
+    if (!s) return;
+    const uint32_t have = s->set.load(std::memory_order_acquire);
+    if (have && exact(sets[have - 1], f)) return;
+    if (const uint32_t i = intern(f)) s->set.store(i, std::memory_order_release);
+}
+void jobs_draw_timed(bool first, uint64_t ticks) {
+    if (first) st_first_ticks.fetch_add((int64_t)ticks, std::memory_order_relaxed), st_first_n.fetch_add(1, std::memory_order_relaxed);
+    else st_other_ticks.fetch_add((int64_t)ticks, std::memory_order_relaxed), st_other_n.fetch_add(1, std::memory_order_relaxed);
+}
+double ticks_per_us() {
+    static const double r = [] {
+        const auto a = std::chrono::steady_clock::now();
+        const uint64_t t = __builtin_ia32_rdtsc();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        const double us = (double)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - a).count() / 1e3;
+        return (double)(__builtin_ia32_rdtsc() - t) / us;
+    }();
+    return r;
+}
+
+
+bool records(const List* l) { return l->rec; }
 
 void record_barrier(VkCommandBuffer cb);
 VkCommandBuffer barrier_buffer();
@@ -82,6 +164,8 @@ void begin(List* l) {
         if (p.color[i].im) p.color[i].im->written.fetch_or(W_ATTACHMENT, std::memory_order_relaxed);
     }
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    // (M3a: every rendering may execute job secondaries among its inline commands: VK_KHR_maintenance7)
+    if (dev.nested_rendering) ri.flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT | VK_RENDERING_CONTENTS_INLINE_BIT_KHR;
     ri.renderArea = {{0, 0}, {p.w, p.h}};
     ri.layerCount = 1;
     ri.colorAttachmentCount = (uint32_t)p.n;
@@ -108,7 +192,7 @@ void begin(List* l) {
 /// The rendering ended, its waiting clears done first; the targets stay noted
 void suspend(List* l) {
     PassRec& p = l->pass;
-    if (!p.noted) return;
+    if (!p.noted || p.inherited) return;
     if (!p.begun && p.load) begin(l);
     if (!p.begun) return;
     vkCmdEndRendering(l->cur);
@@ -139,8 +223,9 @@ void set_rt(List* l, const nvn_p_set_rt& r) {
         Image* im = image_find(t);
         const uint32_t level = v && v->set_levels ? v->base_level : 0, layer = v && v->set_layers ? v->min_layer : 0;
         out.view = im ? image_attachment_view(im, image_view_format(t, v), level, layer, &out.format) : VK_NULL_HANDLE;
-        if (!out.view) return count(S_NO_IMAGE);
-        out.im = im, out.level = level, out.layer = layer;
+        if (!out.view) return out.format = VK_FORMAT_UNDEFINED, count(S_NO_IMAGE);
+        out.im = im, out.level = level, out.layer = layer, out.aspect = im->aspect;
+        if (!any) p.samples = im->samples;
         out.w = std::max(1u, im->width >> level), out.h = std::max(1u, im->height >> level);
         p.w = std::min(p.w, out.w), p.h = std::min(p.h, out.h);
         any = true;
@@ -370,15 +455,28 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
         count(S_DRAWS);
         l->draws = true;
         if (records(l) && p.noted && !p.begun) begin(l);
+        if (l->secondary) {   // (M3a: a job's first draw sets all its state: timed apart)
+            const uint64_t t0 = __builtin_ia32_rdtsc();
+            draw_emit(l, op, data, size, true);
+            jobs_draw_timed(l->sec_draws++ == 0, __builtin_ia32_rdtsc() - t0);
+            return;
+        }
         draw_emit(l, op, data, size, records(l) && p.begun);   // (M2b: drawn, or counted by why not)
         return;
     case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT:
         count(S_DISPATCHES);
+        if (l->secondary) return count(S_JOB_OUTSIDE);
         if (records(l)) suspend(l);
         return;
     case NOP_CLEAR_BUF: case NOP_COPY_B2B: count(S_BUF_OPS); return;
     case NOP_SET_RT: case NOP_CLEAR_COLOR: case NOP_CLEAR_DS: case NOP_BARRIER: case NOP_COPY_B2T: case NOP_COPY_T2B:
     case NOP_COPY_T2T: case NOP_CLEAR_TEX:
+        if (l->secondary && op != NOP_CLEAR_COLOR && op != NOP_CLEAR_DS) {   // (M3a: no pass change, barrier or copy inside a rendering)
+            static std::atomic<int> told{0};
+            if (told++ < 12)
+                logf("direct: op %u in a job's rendering secondary (pass key %#llx): skipped, counted", op, (unsigned long long)l->info.pass_key);
+            return count(S_JOB_OUTSIDE);
+        }
         if (!records(l)) {
             static std::atomic<int> told{0};
             if (present_count() > 1200 && told++ < 12)
@@ -398,7 +496,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_CLEAR_COLOR: {
         nvn_p_clear_color c;
         if (!payload(data, size, c) || !(c.mask & 0xF)) break;
-        if (!p.noted || c.index < 0 || c.index >= p.n || !p.color[c.index].view) return count(S_CLEAR_NO_TARGET);
+        if (!p.noted || c.index < 0 || c.index >= p.n || p.color[c.index].format == VK_FORMAT_UNDEFINED) return count(S_CLEAR_NO_TARGET);
         if ((c.mask & 0xF) != 0xF) return count(S_MASKED);
         VkClearValue v;
         std::memcpy(&v.color, c.rgba, 16);
@@ -408,8 +506,8 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_CLEAR_DS: {
         nvn_p_clear_ds c;
         if (!payload(data, size, c)) break;
-        if (!p.noted || !p.depth.view) return count(S_CLEAR_NO_TARGET);
-        const VkImageAspectFlags a = p.depth.im->aspect;
+        if (!p.noted || !p.depth.aspect) return count(S_CLEAR_NO_TARGET);
+        const VkImageAspectFlags a = p.depth.aspect;
         uint32_t bits = 0;
         VkImageAspectFlags aspect = 0;
         if (c.depth_mask && (a & VK_IMAGE_ASPECT_DEPTH_BIT)) bits |= 1u << 8, aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -451,6 +549,32 @@ void pass_call(List* l, const List* callee) {
              (int)l->pass.noted, (int)l->pass.begun);
     if (callee->draws) l->draws = true;
     if ((callee->info.kind == HSD_LIST_JOB || callee->draws) && records(l) && l->pass.noted && !l->pass.begun) begin(l);
+    if (callee->info.kind == HSD_LIST_JOB) {   // (M3a: executed inside the caller's rendering; the key's formats noted)
+        if (!records(l) || !l->pass.noted || l->secondary) return jcount(J_NO_PASS);
+        const PassFormats now = formats_of(l->pass);
+        if (!callee->secondary) return jcount(J_NOT_SECONDARY), key_put(callee->info.pass_key, now);
+        KeySlot* ks = key_slot(callee->info.pass_key, true);
+        if (!callee->ended || !callee->sec) return jcount(J_UNENDED);
+        if (!callee->fmt.same(now)) {
+            jcount(J_MISMATCH);
+            if (ks) ks->set.store(0, std::memory_order_release), ks->forgotten.fetch_add(1, std::memory_order_relaxed);
+            static std::atomic<int> told{0};
+            if (told++ < 12)
+                logf("direct: job of pass key %#llx not executed: recorded for %u colour targets (%d) and depth %d, the pass has %u (%d) and %d",
+                     (unsigned long long)callee->info.pass_key, callee->fmt.n, (int)callee->fmt.color[0], (int)callee->fmt.depth, now.n,
+                     (int)now.color[0], (int)now.depth);
+            return;
+        }
+        if (!l->pass.begun) begin(l);
+        vkCmdExecuteCommands(cmd(l), 1, &callee->sec);
+        draw_invalidate(l);   // (the caller's dynamic state, shaders, buffers and push data are undefined after it)
+        l->executed.push_back(callee);
+        jcount(J_EXECUTED);
+        if (ks) ks->executed.fetch_add(1, std::memory_order_relaxed);
+        if (callee->fmt.w != now.w || callee->fmt.h != now.h) jcount(J_SIZE);
+        key_put(callee->info.pass_key, now);
+        return;
+    }
     if (!callee->has_cmds) return;
     if (l->pass.begun) count(S_CUTS);
     suspend(l);
@@ -465,6 +589,10 @@ void pass_call(List* l, const List* callee) {
 }
 
 void pass_list_end(List* l) {
+    if (l->secondary) {   // (M3a: its caller executes it)
+        if (l->cur) vkEndCommandBuffer(l->cur), l->sec = l->cur, l->cur = VK_NULL_HANDLE;
+        return;
+    }
     if (records(l)) end_pass(l);
     if (l->pending_barrier) {   // (its last barrier: in its buffer, or the shared one between its segments)
         l->pending_barrier = false;
@@ -472,6 +600,53 @@ void pass_list_end(List* l) {
         else l->segs.push_back({barrier_buffer(), nullptr}), l->has_cmds = true;
     }
     if (l->cur) vkEndCommandBuffer(l->cur), l->cur = VK_NULL_HANDLE;
+}
+
+bool PassFormats::same(const PassFormats& o) const {
+    if (n != o.n || depth != o.depth || stencil != o.stencil || samples != o.samples) return false;
+    for (uint32_t i = 0; i < n; i++)
+        if (color[i] != o.color[i]) return false;
+    return true;
+}
+
+void pass_job_begin(List* l) {
+    const KeySlot* ks = key_slot(l->info.pass_key, false);
+    const uint32_t set = ks ? ks->set.load(std::memory_order_acquire) : 0;
+    if (!set) return jcount(J_NO_FORMATS);
+    if (!dev.nested_rendering) return jcount(J_NO_NESTING);
+    const PassFormats& f = sets[set - 1];
+    l->fmt = f;
+    l->secondary = l->rec = true;
+    l->slot = cmd_slot_take(), l->thread = thread_id();
+    l->cur = cmd_secondary(l->slot, f, 0);
+    PassRec& p = l->pass;
+    p.noted = p.begun = p.inherited = true;
+    p.n = (int)f.n;
+    for (uint32_t i = 0; i < f.n; i++) p.color[i].format = f.color[i];
+    p.depth.format = f.depth ? f.depth : f.stencil, p.depth.aspect = f.depth_aspect;
+    p.w = f.w, p.h = f.h, p.samples = f.samples;
+    jcount(J_RECORDED);
+}
+
+void jobs_stats(char* out, size_t cap, double frames) {
+    int k = std::snprintf(out, cap, "jobs a frame:");
+    for (int i = 0; i < J_COUNT; i++) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", i ? "," : "", kJobNames[i], st_jobs[i].exchange(0) / frames);
+    const int64_t fn = st_first_n.exchange(0), on = st_other_n.exchange(0);
+    const double ft = st_first_ticks.exchange(0) / ticks_per_us(), ot = st_other_ticks.exchange(0) / ticks_per_us();
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; a secondary's first draw %.2f us (%.1f a frame), its others %.2f us (%.1f a frame)",
+                       fn ? ft / fn : 0.0, fn / frames, on ? ot / on : 0.0, on / frames);
+    uint32_t known = 0, seen = 0;
+    for (KeySlot& s : keys) {
+        if (!s.key.load(std::memory_order_acquire)) continue;
+        seen++;
+        if (s.set.load(std::memory_order_acquire)) known++;
+    }
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; format table: %u keys, %u known, %u format sets; keys drawn inline (since the last line):",
+                       seen, known, nsets);
+    for (KeySlot& s : keys)
+        if (const int64_t n = s.inl.exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %#llx %lld", (unsigned long long)s.key.load(), (long long)n);
+    for (KeySlot& s : keys)
+        if (const int64_t n = s.forgotten.exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; forgotten %#llx %lld", (unsigned long long)s.key.load(), (long long)n);
 }
 
 void pass_stats(char* out, size_t cap, double frames) {
@@ -483,3 +658,23 @@ void pass_stats(char* out, size_t cap, double frames) {
 }
 
 }  // namespace hsd
+
+using namespace hsd;
+
+/// (M3a) The job recorder's entry (host/direct_passes.c): 1 the pass key's formats are known (the job records a secondary),
+/// 0 not (the recorder takes the game's own early return; the layer list draws the pass inline)
+extern "C" __attribute__((visibility("default"))) int hsd_pass_known(uint64_t key) {
+    const KeySlot* ks = key_slot(key, false);
+    const bool known = ks && ks->set.load(std::memory_order_acquire);
+    jcount(known ? J_KNOWN : J_MISSED);
+    return known ? 1 : 0;
+}
+/// (M3a) The game's inline path (f_80681320) draws the pass of that key into the list now, after its SetRenderTargets: the
+/// key's formats noted from them
+extern "C" __attribute__((visibility("default"))) void hsd_pass_inline(void* list, uint64_t key) {
+    List* l = (List*)list;
+    jcount(J_INLINE);
+    if (KeySlot* ks = key_slot(key, true)) ks->inl.fetch_add(1, std::memory_order_relaxed), ks->inl_all.fetch_add(1, std::memory_order_relaxed);
+    if (!l || !l->rec || !l->pass.noted || l->secondary) return jcount(J_INLINE_NO_PASS);
+    key_put(key, formats_of(l->pass));
+}

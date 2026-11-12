@@ -24,6 +24,9 @@ typedef struct {
     void (*asset_pool)(uint64_t lo, uint64_t hi);
     void (*texels)(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                    uint64_t row, uint64_t img);
+    /* (M3a) the format table by pass key: the job recorder's question, the game's inline path */
+    int (*pass_known)(uint64_t key);
+    void (*pass_inline)(void *list, uint64_t key);
 } hsd_fns;
 
 /* rx_backend.c: the library's list calls in direct mode (loaded at the first call, from any thread), NULL otherwise */
@@ -52,4 +55,10 @@ int direct_assets_skip_packaged(uint64_t bytes);
 /* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */
 extern volatile long direct_assets_tiles_pending;
 void direct_assets_texture_init(const void *nvn_texture);   /* (an nvn_tex) */
+/* nvn_native.c (M3a): the back end's open list of a guest command buffer (this thread's record handed over first) */
+void *direct_cmd_list(uint64_t cmd);
+/* direct_passes.c (M3a): the job recorder's entry in direct mode (eng_jobs.c): 1 = take the game's early return */
+int direct_passes_recorder(Ctx *c);
+/* direct_patches.c (M3a): the game patches' counters, every 600 presents (nvn_native.c's present, direct mode) */
+void direct_patches_frame(void);
 #endif

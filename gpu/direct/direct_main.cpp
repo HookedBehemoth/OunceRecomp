@@ -184,12 +184,18 @@ bool create_device() {
     if (dev.props.apiVersion >= VK_API_VERSION_1_4) f13.pNext = &f14;
     void** tail = dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14.pNext : &f13.pNext;
     draw_device_extensions(exts, want, tail);   // (M2b: shader objects, the descriptor heap, dynamic state 3)
+    // (M3a: a job is a rendering secondary executed among its caller's inline commands in one rendering)
+    VkPhysicalDeviceMaintenance7FeaturesKHR m7{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR};
+    const bool has_m7 = has_extension(exts, VK_KHR_MAINTENANCE_7_EXTENSION_NAME);
+    if (has_m7) want.push_back(VK_KHR_MAINTENANCE_7_EXTENSION_NAME), *tail = &m7, tail = &m7.pNext;
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     draw_features_resolved(dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14 : nullptr);
     if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore || !f12.bufferDeviceAddress) {
         logf("direct: the GPU lacks dynamic rendering, synchronization2, timeline semaphores or buffer device addresses");
         return false;
     }
+    dev.nested_rendering = has_m7 && m7.maintenance7;
+    if (!dev.nested_rendering) logf("direct: no VK_KHR_maintenance7: jobs are not executed");
     f.features.robustBufferAccess = VK_FALSE;
     f14.pipelineRobustness = VK_FALSE;
     dev.features = f.features;

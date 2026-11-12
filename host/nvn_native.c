@@ -1632,6 +1632,17 @@ static void eng_mark(nvn_cmd *o, uint32_t kind, uint32_t site, uint64_t a, uint6
     o->hw_used -= sz;   /* (no hardware equivalent: the game sizes its heaps by what it is told is used) */
     o->last_rec = 0;
 }
+/* (direct mode, M3a game patches: host/direct_passes.c, direct_job_sync.c) the back end's open list of the guest command
+   buffer at cmd (this thread's waiting record handed over first, so the list has every record before this point); NULL:
+   none, or not direct mode */
+void *direct_cmd_list(uint64_t cmd) {
+    if (!rx_direct() || !cmd) return NULL;
+    nvn_cmd *o = (nvn_cmd *)g2h(cmd);
+    if (!o || o->magic != NVN_MAGIC('C', 'M', 'D', 'B')) return NULL;
+    hsd_flush();
+    cmd_rec *r = cmd_slot(o->slot);
+    return r && r->owner == cmd ? r->dl : NULL;
+}
 /* (direct mode) a command buffer finalized or initialized again: its list begun and not ended dropped (before cmd_release) */
 static void direct_drop(nvn_cmd *o) {
     cmd_rec *r = cmd_slot(o->slot);
@@ -3182,6 +3193,7 @@ NV(nvnQueuePresentTexture) {
     }
     void rt_slots_frame(void);   /* rt_slots.c */
     rt_slots_frame();
+    if (rx_direct()) direct_patches_frame();   /* (M3a: the game patches' lines) */
     extern volatile LONG64 hos_present_count;   /* display.c */
     sync_census_log(InterlockedIncrement64(&hos_present_count));
     hos_vi_native_presented();

@@ -30,7 +30,8 @@
     X(vkCreateBuffer) X(vkGetBufferMemoryRequirements) X(vkGetBufferDeviceAddress) X(vkGetMemoryFdPropertiesKHR)         \
     X(vkDestroyImage) X(vkCreateImageView) X(vkDestroyImageView) X(vkDestroyBuffer) X(vkCmdBeginRendering)               \
     X(vkCmdEndRendering) X(vkCmdClearAttachments) X(vkCmdCopyBufferToImage) X(vkCmdCopyImageToBuffer) X(vkCmdCopyImage) \
-    X(vkCmdBlitImage) X(vkCmdResolveImage) X(vkCmdClearDepthStencilImage) X(vkDestroyCommandPool) X(vkResetCommandBuffer)
+    X(vkCmdBlitImage) X(vkCmdResolveImage) X(vkCmdClearDepthStencilImage) X(vkDestroyCommandPool) X(vkResetCommandBuffer)      \
+    X(vkCmdExecuteCommands)
 
 #define HSD_VK_DECLARE(f) extern PFN_##f f;
 namespace hsd::vkfn {
@@ -63,6 +64,7 @@ struct Device {
     VkQueue sparse_queue = VK_NULL_HANDLE;   // (layer 0's binds: a sparse-binding-only family, under sparse_mu)
     std::mutex sparse_mu;
     bool dma_buf_import = false;
+    bool nested_rendering = false;   // (M3a: VK_KHR_maintenance7: secondaries and inline commands in one dynamic rendering)
     // the window (none: presents clear an image of their own)
     bool offscreen = false;
     VkSurfaceKHR surface = VK_NULL_HANDLE;

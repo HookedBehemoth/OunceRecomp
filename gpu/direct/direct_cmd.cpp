@@ -4,6 +4,7 @@
 #include <cstdio>
 
 #include "direct_cmd.h"
+#include "direct_lists.h"
 
 namespace hsd {
 namespace {
@@ -52,9 +53,9 @@ Thread& me() {
     }
     return *self;
 }
-VkCommandBuffer alloc_buffer(VkCommandPool pool) {
+VkCommandBuffer alloc_buffer(VkCommandPool pool, VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool = pool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = 1;
+    ai.commandPool = pool, ai.level = level, ai.commandBufferCount = 1;
     VkCommandBuffer cb = VK_NULL_HANDLE;
     if (vkAllocateCommandBuffers(dev.device, &ai, &cb) != VK_SUCCESS) {
         logf("direct: vkAllocateCommandBuffers failed");
@@ -90,7 +91,7 @@ CmdSlot* cmd_slot_take() {
             }
             vkResetCommandPool(dev.device, s.pool, 0);
             arena_reset(s.arena);
-            s.used = 0;
+            s.used = 0, s.secs_used = 0;
             st_resets.fetch_add(1, std::memory_order_relaxed);
         }
         s.frame = frame;
@@ -113,6 +114,32 @@ VkCommandBuffer cmd_buffer(CmdSlot* s) {
     VkCommandBuffer cb = s->bufs[s->used++];
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    vkBeginCommandBuffer(cb, &bi);
+    return cb;
+}
+
+VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags flags) {
+    if (s->secs_used == s->secs.size()) {
+        const size_t more = std::max<size_t>(16, s->secs.size());
+        for (size_t i = 0; i < more; i++) s->secs.push_back(alloc_buffer(s->pool, VK_COMMAND_BUFFER_LEVEL_SECONDARY));
+        static std::atomic<int> told{0};
+        if (present_count() > 1200 && told++ < 30)
+            logf("direct: secondary command buffers made at present %llu: thread slot %p now %zu", (unsigned long long)present_count(),
+                 (void*)s, s->secs.size());
+    }
+    VkCommandBuffer cb = s->secs[s->secs_used++];
+    VkCommandBufferInheritanceRenderingInfo ri{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};
+    ri.flags = flags;
+    ri.colorAttachmentCount = f.n;
+    ri.pColorAttachmentFormats = f.color;
+    ri.depthAttachmentFormat = f.depth;
+    ri.stencilAttachmentFormat = f.stencil;
+    ri.rasterizationSamples = f.samples;
+    VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    ii.pNext = &ri;
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    bi.pInheritanceInfo = &ii;
     vkBeginCommandBuffer(cb, &bi);
     return cb;
 }

@@ -59,6 +59,7 @@ double tsc_per_ns() {
     }();
     return r;
 }
+std::atomic<int64_t> st_pkt_bytes{0}, st_pkt_lists{0}, st_pkt_calls{0}, st_pkt_ops{0}, st_pkt_nested{0}, st_pkt_unended{0};
 std::atomic<int64_t> st_ops[NOP_COUNT_], st_kinds[HSD_LIST_KINDS], st_calls{0}, st_live{0}, st_dropped{0}, st_bad_op{0};
 
 // (the return addresses each kind was begun from, and how their lists were used: a table that only grows, read without a
@@ -103,6 +104,7 @@ void list_unref(List* l) {
         for (const FrameOp& o : x->ops)
             if (o.op == NOP_CALL && o.callee->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) work.push_back(o.callee);
         draw_list_free(x);
+        if (x->packet && x->ended) st_pkt_bytes.fetch_sub((int64_t)x->pkt.size(), std::memory_order_relaxed), st_pkt_lists.fetch_sub(1, std::memory_order_relaxed);
         if (x->slot) cmd_slot_drop(x->slot);
         dump_free(x->dumps);
         delete x;
@@ -120,6 +122,8 @@ void list_flatten(const List* l, std::vector<const FrameOp*>& out) {
 }
 
 void list_buffers(const List* l, std::vector<VkCommandBuffer>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps) {
+    for (const List* j : l->executed)   // (M3a: secondaries run inside its buffers: their slots are held by this submission too)
+        if (j->slot) slots.push_back(j->slot);
     if (!l->has_cmds) return;
     if (l->slot) slots.push_back(l->slot);
     for (const Seg& s : l->segs) {
@@ -149,7 +153,10 @@ void lists_stats(char* out, size_t cap, double frames) {
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; in hsd_list_call by the caller's kind:");
     for (int i = 0; i < HSD_LIST_KINDS; i++)
         if (calls[i] > 0) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.3f", kKindNames[i], calls[i]);
-    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ")");
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "); packets: %lld live (%.1f MB), %.1f calls a frame expanding %.1f ops, "
+                       "%.1f called by packets (in place), %lld called before their end", (long long)st_pkt_lists.load(),
+                       st_pkt_bytes.load() / 1048576.0, st_pkt_calls.exchange(0) / frames, st_pkt_ops.exchange(0) / frames,
+                       st_pkt_nested.exchange(0) / frames, (long long)st_pkt_unended.load());
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", calls %.1f; %lld lists live, %lld dropped unended, %lld records "
                        "of no op or outside a list; ops a frame:", st_calls.exchange(0) / frames, (long long)st_live.load(),
                        (long long)st_dropped.load(), (long long)st_bad_op.load());
@@ -188,18 +195,18 @@ extern "C" __attribute__((visibility("default"))) void* hsd_list_begin(const hsd
     l->info = *info;
     if (l->info.kind >= HSD_LIST_KINDS) l->info.kind = HSD_LIST_PACKET;
     l->site = site_note(l->info);
+    const uint32_t k = l->info.kind;
+    l->rec = k == HSD_LIST_LAYER || k == HSD_LIST_GATE || k == HSD_LIST_COMPUTE || k == HSD_LIST_HEAD;
+    l->packet = k == HSD_LIST_LOAD || k == HSD_LIST_PACKET;
+    if (k == HSD_LIST_JOB) pass_job_begin(l);   // (M3a: its pass's formats known: a rendering secondary)
     st_live.fetch_add(1, std::memory_order_relaxed);
     return l;
 }
 
-extern "C" __attribute__((visibility("default"))) void hsd_emit(void* list, uint32_t op, const void* payload, uint32_t size) {
-    List* l = (List*)list;
-    if (!l || op >= NOP_COUNT_) {
-        st_bad_op.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    l->counts[op]++;
-    const uint64_t t0 = __builtin_ia32_rdtsc();
+namespace hsd {
+/// One record into a list that records (its pass, its state, its frame-level ops): the record's own list, or the caller a
+/// packet is expanded into
+void emit_one(List* l, uint32_t op, const void* payload, uint32_t size) {
     pass_emit(l, op, payload, size);
     FrameOp o;
     switch (op) {
@@ -221,6 +228,35 @@ extern "C" __attribute__((visibility("default"))) void hsd_emit(void* list, uint
         break;
     default: break;
     }
+}
+}  // namespace hsd
+
+namespace {
+/// (M3a) a packet's op: {op, size} and the payload, 8-byte aligned. Ops with nothing for a caller are left out
+void pkt_append(List* l, uint32_t op, const void* payload, uint32_t size) {
+    switch (op) {
+    case NOP_END: case NOP_JUMP: case NOP_BEGIN: case NOP_PKT: case NOP_JOB: case NOP_ENG: return;
+    default: break;
+    }
+    const size_t at = l->pkt.size(), padded = (size + 7) & ~(size_t)7;
+    l->pkt.resize(at + 8 + padded);
+    const uint32_t h[2] = {op, size};
+    std::memcpy(l->pkt.data() + at, h, 8);
+    if (size) std::memcpy(l->pkt.data() + at + 8, payload, size);
+    l->pkt_ops++;
+}
+}  // namespace
+
+extern "C" __attribute__((visibility("default"))) void hsd_emit(void* list, uint32_t op, const void* payload, uint32_t size) {
+    List* l = (List*)list;
+    if (!l || op >= NOP_COUNT_) {
+        st_bad_op.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    l->counts[op]++;
+    const uint64_t t0 = __builtin_ia32_rdtsc();
+    if (l->packet) pkt_append(l, op, payload, size);
+    else emit_one(l, op, payload, size);
     emit_ticks(l->info.kind, __builtin_ia32_rdtsc() - t0);
 }
 
@@ -236,6 +272,29 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_call(void* list,
     for (uint32_t i = 0; i < n; i++) {
         List* c = (List*)callees[i];
         if (!c) continue;
+        if (c->packet) {   // (M3a: a packet's ops go into the caller: its state, its command buffer, its frame-level ops)
+            l->counts[NOP_CALL]++;
+            if (c->site >= 0) sites[c->site].called_by[l->info.kind].fetch_add(1, std::memory_order_relaxed);
+            if (!c->ended) {
+                st_pkt_unended.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            if (l->packet) {   // (a packet calling one: the callee's ops in place)
+                l->pkt.insert(l->pkt.end(), c->pkt.begin(), c->pkt.end());
+                l->pkt_ops += c->pkt_ops;
+                st_pkt_nested.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            st_pkt_calls.fetch_add(1, std::memory_order_relaxed);
+            st_pkt_ops.fetch_add(c->pkt_ops, std::memory_order_relaxed);
+            for (size_t at = 0; at + 8 <= c->pkt.size();) {
+                uint32_t h[2];
+                std::memcpy(h, c->pkt.data() + at, 8);
+                emit_one(l, h[0], c->pkt.data() + at + 8, h[1]);
+                at += 8 + ((h[1] + 7) & ~7u);
+            }
+            continue;
+        }
         pass_call(l, c);
         list_ref(c);
         if (c->site >= 0) sites[c->site].called_by[l->info.kind].fetch_add(1, std::memory_order_relaxed);
@@ -250,6 +309,11 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_end(void* list) 
     List* l = (List*)list;
     if (!l) return;
     pass_list_end(l);
+    if (l->packet) {
+        l->pkt.shrink_to_fit();
+        st_pkt_bytes.fetch_add((int64_t)l->pkt.size(), std::memory_order_relaxed);
+        st_pkt_lists.fetch_add(1, std::memory_order_relaxed);
+    }
     l->ended = true;
     if (l->has_cmds && !l->counts[NOP_DRAW] && !l->counts[NOP_DRAW_IDX] && !l->counts[NOP_CLEAR_COLOR] && !l->counts[NOP_CLEAR_DS] &&
         !l->counts[NOP_COPY_T2T] && !l->counts[NOP_COPY_B2T] && !l->counts[NOP_CALL] && present_count() > 1200) {
