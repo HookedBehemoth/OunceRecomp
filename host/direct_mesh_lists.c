@@ -9,6 +9,12 @@
        w1: NVN's count and first) and `str wzr, [x19, layout[+0x10]]` (the appended count). Found by a page watch on
        0x117a4d6000 (HOS_DBG=memwatch, run m4d_mw_k: lr 0x80362038, every frame, the only CPU writer after the buffer's
        clear at creation). The splice after each of its 64-bit zero stores writes w1 = w2 = 1 after it.
+     - (M4e) f_80361a00, called twice from f_80361c80 (0x80361e08, 0x80361e10: the lists at [x27+0x180], [x27+0x1b8], in
+       Kokiri the headers 0x117982a000 and 0x1178b7e000), resets its list's first record the same way (`str xzr, [x22, x8]`
+       at 0x80361b3c, x8 = layout[+4]; `str wzr` the appended count). M4d took the w1 = 0 these two kept for a GPU
+       write; a page watch (HOS_DBG=memwatch, run m4e_mw_k: guest lr 0x80361b2c < 0x80361e14, every frame) found this
+       CPU store, and the culling shader 3de6d86e touches the record only by atomicMax(+0) and atomicAdd(+12) (its IR):
+       no shader needs replacing. The same splice follows it.
      - their other records are reset on the GPU (w0 and w3 only; w1 and w2 are never written by anyone: M4b's sentinel).
        They get w1 = w2 = 1 where an indirect mesh draw names them (nvnCommandBufferDrawMeshTasksIndirect /
        MultiDrawMeshTasksIndirectCount, nvn_native.c, direct mode), once: only a record whose w1 and w2 are both 0 is
@@ -29,6 +35,13 @@ static void put(uint64_t rec) {
 SPLICE_AFTER_EACH(0x80361c80, "64(c,(c->x[19] + c->x[8]),(uint64_t)0);") {
     if (!rx_direct()) return;
     put(c->x[19] + c->x[8]);
+    InterlockedIncrement64(&n.resets);
+}
+
+/* f_80361a00: after its `str xzr, [x22, x8]` (its list's first record, w0 and w1, zeroed) */
+SPLICE_AFTER(0x80361a00, "64(c,(c->x[22] + c->x[8]),(uint64_t)0);") {
+    if (!rx_direct()) return;
+    put(c->x[22] + c->x[8]);
     InterlockedIncrement64(&n.resets);
 }
 
@@ -54,7 +67,7 @@ void direct_mesh_lists_draw(uint64_t lr, uint64_t gpu, int max, int stride) {
 void direct_mesh_lists_log(double frames) {
     static LONG64 last[4];
     const LONG64 now[4] = {n.resets, n.records, n.set, n.outside};
-    hos_log("direct patch mesh lists (f_80361c80's first-record resets and the GPU-reset records -> {x, 1, 1, n}): %.2f resets a "
+    hos_log("direct patch mesh lists (f_80361c80's and f_80361a00's first-record resets and the GPU-reset records -> {x, 1, 1, n}): %.2f resets a "
             "frame; records drawn %.2f a frame; set once %lld since the start; outside guest memory %lld",
             (now[0] - last[0]) / frames, (now[1] - last[1]) / frames, (long long)now[2], (long long)(now[3] - last[3]));
     for (int i = 0; i < 4; i++) last[i] = now[i];
