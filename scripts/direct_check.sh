@@ -2,7 +2,8 @@
 # (M6b) The picture check in one command (docs/direct/m6b-report.md, section 3): the direct back end runs the scene, dumps
 # the reference's present at full resolution (the game stepped 1/60 s a frame, HOS_GAME_STEP_PER_FRAME=1, as the reference
 # was: the game's clock is then the present's number in every run), the dump is packed and compared pass by pass with the frozen back end's golden
-# reference under its noise table (scripts/direct_picture_check.py). Prints the failing passes and a verdict; exit 1 when a pass
+# reference under its noise table (scripts/direct_picture_check.py). Prints the failing passes and a verdict; exit 2 when no pass
+# could be compared (all not comparable at one frame), exit 1 when a pass
 # fails or is missing, 2 when the run or the dump did not happen.
 #
 #   scripts/direct_check.sh <title|kokiri|hf|market> [run name]     check the direct back end (EXE= another build)

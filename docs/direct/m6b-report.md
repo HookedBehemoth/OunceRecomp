@@ -2,8 +2,15 @@
 
 Branch `agent/m6b` (from native-vk 5beed38). Runs `work/runs/m6b_*`, `golden_*`, RX 6950 XT, RADV, `RUN=timing`, one game
 process at a time; Kokiri `chisel_kokiri`, Hyrule Field (HF) `chisel_hf`, title (no overlay), market `chisel_hf_market`.
-**No device was lost** (the kernel log of this boot has no amdgpu reset or ring timeout line). Tests: 295 pass / 5 fail (the
-baseline five; the three new test files pass).
+**No run of ours reported a lost device, but the kernel reset the GPU three times during this stage** (18:59:07 and 19:04:29,
+during and just after the title validation run `m6b_val_t`; 20:22:52, between `m6b_chk_k` ending and `m6b_chk_hf` starting).
+Each time the kernel names a gfx ring timeout in **kwin_wayland**'s submission (the desktop's compositor, not the headless
+game), and each reset succeeded ("GPU reset(4/5/6) succeeded", VRAM lost). Whether the game's load (the validation layer's
+slow frames; a full-resolution dump being packed) starved the compositor is not known. Recovery: the later runs ran normally
+and `vulkaninfo --summary` works; the kernel log is saved as `work/runs/m6b_val_t/kernel_log.txt` and
+`work/runs/m6b_chk_k/kernel_log.txt`. Tests: 295 pass / 5 fail (the
+baseline five; the three new test files pass). **The market scene was not run; the user reports this build crashes there at
+once (open).**
 
 The independent review was right: the earlier verdicts could not fail. With the checks below, the direct back end
 **fails** the picture check in Kokiri (15 pass states) and HF (24), validation is clean in all three scenes with the layer
@@ -205,7 +212,7 @@ the CPU read at the slot's reset.
 
 - `work/golden/<scene>/` (in the m6b worktree's `work/`, not committed): `run1..3` (packed frozen dumps), `noise.json` and
   `noise.json.npz`, `manifest.json` (commit, scene, present, overlay, back end, how to make it again). Kokiri 672 MB, HF
-  811 MB, TITLE_MARKET_SIZES.
+  811 MB, title 33 MB (1.5 GB in all). No market reference: dropped for time (the brief made it optional).
 - `scripts/direct_check.sh <title|kokiri|hf|market> [name]`: runs the direct back end (420 s, the dump at the scene's present),
   packs, compares, prints the failing passes and the verdict. `GOLDEN=3 scripts/direct_check.sh <scene>` makes the reference
   again from three frozen runs. Presents: Kokiri 1800, HF 1500, title 2400, market 1500.
@@ -254,7 +261,15 @@ MERGED, 78 PASS. Failing passes, ranked by the share of tiles over threshold:
 | B10G11R11F 960x540 | 0.1 % | +0.006 | | |
 | depth D32F 1536x864 (11 states) | one tile each | +0.0009 | 0 | marginal: one tile just over twice its noise |
 
-TITLE_MARKET_RESULTS
+**Title** (`m6b_chk_title`): **NOTHING COMPARED**: the title has two pass states at present 2400 (the 2048x1152 scene target
+under the logo and the composite), and both are not comparable at one frame: three-quarters of the scene target's tiles differ
+by more than 0.05 between frozen runs (and 56 % of the composite's), because the background is a movie decoded by wall time,
+not by the game's frame. The tool first printed "PASS" for this (nothing failed); it now says NOTHING COMPARED and exits 2, so a
+scene whose passes are all unstable cannot pass. Checking the title needs a present without the movie, or the movie decoder
+stepped by frames; not done.
+
+**Market:** not run (time). The user reports that this stage's build crashed at once in `chisel_hf_market`; not reproduced or
+looked at here, and no market run of this stage exists. **Open, first thing to check.**
 
 ### d. Draw-level comparison, and the 1078 against 685
 

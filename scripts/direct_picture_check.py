@@ -432,12 +432,13 @@ def compare(golden, run, noise_path, show_all=False, quiet=False):
             print(l)
     total = sum(counts.values())
     bad = counts.get("FAIL", 0) + counts.get("MISSING", 0)
-    print("verdict: %s: %d pass states lined up or not; %s" % ("FAIL" if bad else "PASS", total,
+    none = not bad and not counts.get("PASS")   # (nothing compared: no verdict, not a pass)
+    print("verdict: %s: %d pass states lined up or not; %s" % ("FAIL" if bad else "NOTHING COMPARED" if none else "PASS", total,
           ", ".join("%s %d" % (k, counts[k]) for k in sorted(counts, key=lambda k: order[k]))))
     if counts.get("UNSTABLE") or counts.get("NO-NOISE") or counts.get("EXTRA"):
         print("  (not passed and not failed: UNSTABLE = not comparable at one frame, NO-NOISE = no noise measured, EXTRA = only in "
               "the checked run; listed above)")
-    return 1 if bad else 0
+    return 1 if bad else 2 if none else 0
 
 
 # ---- the self-test (synthetic pictures; tests/test_direct_picture_check.py runs it) ----
