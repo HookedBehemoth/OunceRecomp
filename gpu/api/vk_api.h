@@ -1,10 +1,8 @@
-/* The Vulkan back end (mkw_vk.dll) and the game executable: what each gives the other.
+/* The direct back end (hookshot_direct.so) and the game executable: what each gives the other.
 
-   The executable records the game's NVN command buffers (host/nvn_native.c) and calls a renderer through the rx_*
-   functions (gpu/api/rx_nvn.h). With RX_BACKEND=vulkan host/rx_backend.c loads mkw_vk.dll, hands it the host
-   functions below and routes the rx_* calls to the table it returns; otherwise they go to the WebGPU renderer in
-   the executable. The DLL carries Eden's shader recompiler (gpu/legacy/vk/eden, SPIR-V back end) and sirit: their C++
-   namespaces are the same as those of the WebGPU renderer's suyu copy, so the two live in different binaries. */
+   The executable records the game's NVN command buffers (host/nvn_native.c) and calls the back end through the rx_*
+   functions (gpu/api/rx_nvn.h). host/rx_backend.c loads the library, hands it the host functions below and routes the
+   rx_* calls to the table it returns. MKWVK_API_VERSION changes with this file's two tables. */
 #pragma once
 
 #include <stdint.h>

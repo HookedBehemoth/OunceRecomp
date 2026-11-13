@@ -1,7 +1,7 @@
 /* The native NVN layer: TOTK's graphics API implemented directly (HOS_NVN_NATIVE=1), with no Switch GPU in between.
-   hos/nvn_native.c is the API: objects live in place in the memory the game gives NVN objects, state-only and GPU work
-   is recorded as commands in host memory, and a submit hands the recordings to gpu/legacy/render/rx_nvn.cpp, which replays
-   them with WebGPU. This header is shared by both (C and C++).
+   host/nvn_native.c is the API: objects live in place in the memory the game gives NVN objects, state-only and GPU work
+   is recorded as commands in host memory, and the recordings go to the back end (gpu/direct). This header is shared by
+   both (C and C++).
 
    Design and TOTK specifics follow the MIT-licensed NVN layer of d2r-mobile / MacNativeGames (jhaizhou), which runs
    TOTK v1.0.0 on Metal: object layouts, command records, deferred texture binds, recording copies, the driver constant
@@ -151,7 +151,7 @@ enum {
     NOP_COPY_T2T, NOP_RESET_COUNTER, NOP_CLEAR_TEX, NOP_DEPTH_CLAMP, NOP_RENDER_ENABLE, NOP_RASTER_DISCARD,
     NOP_RENDER_COND, NOP_PRIMITIVE_RESTART, NOP_BIND_BUFS,
     NOP_DRAW_INDIRECT, NOP_DISPATCH_INDIRECT,   /* (mkw-recomp: NVN2's GPU-driven draws) */
-    NOP_DRAW_MESH,                              /* (mkw-recomp: NVN2 mesh shading; the WebGPU replay leaves it out) */
+    NOP_DRAW_MESH,                              /* (mkw-recomp: NVN2 mesh shading) */
     NOP_WAIT_EVENT,                             /* (mkw-recomp: a wait for an event another queue's work signals) */
     NOP_PUSH_CONST,                             /* (hookshot: nvnCommandBufferPushComputeConstants) */
     NOP_CLEAR_BUF,                              /* (hookshot: nvnCommandBufferClearBuffer) */
@@ -225,7 +225,7 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);
 /* NVN_DEPTH_MODE_NEAR_IS_MINUS_W (GL clip z) was selected */
 int nvn_depth_minus_w(void);
 
-/* ---- the replay (gpu/legacy/render/rx_nvn.cpp) ---- */
+/* ---- the back end (host/rx_backend.c forwards these) ---- */
 /* the recordings of a submit, in order (handles: host pointers of NOP_BEGIN records), replayed now */
 void rx_nvn_submit(const uint64_t *handles, int n);
 /* (the same with the queue it came from: the game's queues have their own state and order each other with events) */
@@ -260,9 +260,9 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
                          size_t row, size_t img);
 /* the CPU is about to read memory the GPU may have written: GPU results there go to guest memory now */
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size);
-void rx_nvn_pool_created(uint64_t gpu, uint64_t size);   /* (the Vulkan back end imports it early; WebGPU: nothing) */
+void rx_nvn_pool_created(uint64_t gpu, uint64_t size);   /* (the back end may import it early) */
 /* virtual pages [gpu, gpu + size) mapped now are about to be unmapped or remapped: what the GPU drew into textures
-   there goes into their memory first (the Vulkan back end; WebGPU: nothing) */
+   there goes into their memory first (the back end) */
 void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size);
 /* the CPU set an event's value (nvnEventSignal): in order with the submits, for the GPU's waits on it */
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value);
