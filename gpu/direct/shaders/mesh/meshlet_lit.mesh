@@ -1,0 +1,105 @@
+// The game's lit meshlet stage, rewritten (mesh stage e67ab18860ce163e; its task stage 2c56dc1006942f74 culls meshlets and
+// hands each mesh workgroup one meshlet id). Opaque geometry of the main view: each vertex's clip position, its normal and
+// tangent in view space, its world position, the tangent's handedness and one set of texture coordinates. A transcription
+// of the game's logic (data layout and arithmetic, meshlet.glsl); our own text.
+//
+// Build: glslangValidator -V --target-env vulkan1.3 -DMODEL_SLOT=<n>
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "meshlet.glsl"
+
+layout(local_size_x = 32) in;
+layout(max_vertices = 126, max_primitives = 126, triangles) out;
+
+// (the translator's bindings for this stage: c0 the driver bank (meshlet.glsl), c3 the view, c4 the object, c5 the material)
+layout(set = 0, binding = 1, scalar) uniform View { float f[16384]; } c3;
+layout(set = 0, binding = 2, scalar) uniform Object { float f[16384]; } c4;
+layout(set = 0, binding = 3, scalar) uniform Material { float f[16384]; } c5;
+
+layout(location = 2) out vec4 view_normal[];
+layout(location = 3) out vec4 world_position[];
+layout(location = 4) out vec4 handedness[];
+layout(location = 5) out vec4 view_tangent[];
+layout(location = 6) out vec4 texcoord[];
+
+// (a matrix row applied the game's way: y first, then fused x and z)
+float row(float m0, float m1, float m2, vec3 p) { precise float y = p.y * m1; return fma(p.z, m2, fma(p.x, m0, y)); }
+vec3 object_to_world(vec3 p) {
+    return vec3(row(c4.f[0], c4.f[1], c4.f[2], p) + c4.f[3], row(c4.f[4], c4.f[5], c4.f[6], p) + c4.f[7], row(c4.f[8], c4.f[9], c4.f[10], p) + c4.f[11]);
+}
+vec3 rotate_object(vec3 d) { return vec3(row(c4.f[0], c4.f[1], c4.f[2], d), row(c4.f[4], c4.f[5], c4.f[6], d), row(c4.f[8], c4.f[9], c4.f[10], d)); }
+vec3 rotate_view(vec3 d) { return vec3(row(c3.f[0], c3.f[1], c3.f[2], d), row(c3.f[4], c3.f[5], c3.f[6], d), row(c3.f[8], c3.f[9], c3.f[10], d)); }
+vec4 world_to_clip(vec3 world) {
+    // (to view space: c3's 3x4 rows applied to world + the object's offset c4[16..18], the offset's part computed on its own)
+    const vec3 offset = vec3(c4.f[16], c4.f[17], c4.f[18]);
+    precise vec3 view;
+    for (uint r = 0u; r < 3u; r++)
+        view[r] = (row(c3.f[4u * r], c3.f[4u * r + 1u], c3.f[4u * r + 2u], offset) + c3.f[4u * r + 3u]) +
+                  row(c3.f[4u * r], c3.f[4u * r + 1u], c3.f[4u * r + 2u], world);
+    precise vec4 clip;
+    for (uint r = 0u; r < 4u; r++) clip[r] = row(c3.f[28u + 4u * r], c3.f[29u + 4u * r], c3.f[30u + 4u * r], view) + c3.f[31u + 4u * r];
+    return clip;
+}
+
+void emit_vertex(uint64_t m, Meshlet s, uint v) {
+    const vec3 world = object_to_world(read_position(m, s, v));
+    gl_MeshVerticesEXT[v].gl_Position = vulkan_clip(world_to_clip(world));
+    world_position[v] = vec4(world, 1.0);
+    // (the vertex record after the position: the normal, the tangent with its handedness bit first, the texture coordinates)
+    const uint normal_bit = s.data_bit + v * s.vertex_bits + s.x_bits + s.y_bits + s.z_bits;
+    const uint normal_field = 2u * s.normal_bits, tangent_field = 2u * s.tangent_bits + 1u;
+    const uint tangent_bit = normal_bit + normal_field, uv_bit = tangent_bit + tangent_field;
+    const vec3 n = unit(octahedral(read_bits(m, normal_bit, normal_field & 30u), s.normal_bits));
+    view_normal[v] = vec4(rotate_view(unit(rotate_object(n))), 1.0);
+    const uint tangent = read_bits(m, tangent_bit, tangent_field & 31u);
+    handedness[v] = vec4(float((tangent & 1u) != 0u ? -1 : 1), 0.0, 0.0, 1.0);
+    const vec3 t = unit(octahedral(tangent >> 1, s.tangent_bits));
+    view_tangent[v] = vec4(rotate_view(unit(rotate_object(t))), 1.0);
+    // (texture coordinates: a signed 16-bit origin plus the stream's bits, times 2^(exponent - 16), then the material's 2x3)
+    const uint u_bits = bitfieldExtract(s.w9, 24, 4) + 1u, v_bits = (s.w9 >> 28) + 1u;
+    const int uq = bitfieldExtract(int(s.w8), 0, 16) + int(read_bits(m, uv_bit, u_bits & 31u));
+    const int vq = (int(s.w8) >> 16) + int(read_bits(m, uv_bit + u_bits, v_bits & 31u));
+    precise float tu = exp2(float(int(bitfieldExtract(s.w9, 0, 12)) - 16)) * float(uq);
+    precise float tv = exp2(float(int(bitfieldExtract(s.w9, 12, 12)) - 16)) * float(vq);
+    precise float tuv0 = tv * c5.f[2], tuv1 = tv * c5.f[3];
+    texcoord[v] = vec4(fma(tu, c5.f[0], tuv0) + c5.f[4], fma(tu, c5.f[1], tuv1) + c5.f[5], 0.0, 1.0);
+}
+
+void main() {
+    const TaskInput task = task_input();
+    const uint id = payload_word(task, 4u + task.index, 64u);
+    const uint64_t m = model_base();
+    const Meshlet s = read_meshlet(m, id);
+
+    // (the game writes at most 64 vertices and 128 triangles a meshlet: 2 vertices and 4 triangles a thread)
+    const uint vertices = min(s.vertices, 64u), primitives = min(s.primitives, 126u);
+    SetMeshOutputsEXT(126u, primitives);
+    const uint lane = gl_LocalInvocationIndex;
+    for (uint k = 0u; k < 2u; k++) {
+        const uint v = lane + 32u * k;
+        if (v < vertices) {
+            emit_vertex(m, s, v);
+        } else {   // (never written by the game: the translator's zeros)
+            gl_MeshVerticesEXT[v].gl_Position = vec4(0.0);
+            view_normal[v] = world_position[v] = view_tangent[v] = vec4(0.0, 0.0, 0.0, 1.0);
+            handedness[v] = texcoord[v] = vec4(0.0, 0.0, 0.0, 1.0);
+        }
+    }
+    for (uint v = 64u + lane; v < 126u; v += 32u) {
+        gl_MeshVerticesEXT[v].gl_Position = vec4(0.0);
+        view_normal[v] = world_position[v] = view_tangent[v] = handedness[v] = texcoord[v] = vec4(0.0, 0.0, 0.0, 1.0);
+    }
+    const uint index_start = s.data_bit + s.vertices * s.vertex_bits;
+    const uint mask = (1u << min(s.index_bits, 8u)) - 1u;
+    for (uint k = 0u; k < 4u; k++) {
+        const uint p = lane + 32u * k;
+        if (p >= primitives) continue;
+        const uint bit = index_start + p * 3u * s.index_bits;
+        const uint at = kRecords + (bit >> 5) * 4u;
+        const uint64_t pair = uint64_t(model_word(m, at)) | uint64_t(model_word(m, at + 4u)) << 32;
+        uvec3 corner;
+        for (uint j = 0u; j < 3u; j++) corner[j] = min(uint(pair >> min((bit & 31u) + j * s.index_bits, 63u)) & mask, 125u);
+        gl_PrimitiveTriangleIndicesEXT[p] = corner;
+    }
+}

@@ -2,9 +2,9 @@
 # The replacement mesh stages to SPIR-V, one file a game mesh stage code key: <out>/<code>.spv (what meshlab --repl reads and
 # what the in-game swap would load). <src>/codes.txt lists "<code key> <source> <defines...>"; built as gpu/direct/shaders/*.comp
 # are (glslangValidator, Vulkan 1.3), with the sources' folder on the include path.
-#   tools/meshlab/build_shaders.sh <src dir> <out dir>
+#   tools/meshlab/build_shaders.sh [<src dir> (gpu/direct/shaders/mesh)] <out dir>
 set -euo pipefail
-src=${1:?source dir}; out=${2:?out dir}
+if [ $# -ge 2 ]; then src=$1; out=$2; else src=$(cd "$(dirname "$0")/../.." && pwd)/gpu/direct/shaders/mesh; out=${1:?out dir}; fi
 mkdir -p "$out"
 n=0
 while read -r code file defs; do
