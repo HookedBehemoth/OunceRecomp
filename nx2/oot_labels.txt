@@ -482,6 +482,9 @@
 83b82ea0 movie_ndve_renderer_setup        # docs/direct/movie-player.md: the second place the NDVE object is made; sets the disable byte 0x84eb5f61 when the sizes differ # ?
 83b83360 movie_renderer_draw_ndve         # docs/direct/movie-player.md: renderer vtable +0x18 with NDVE: "NDVE_Output", runs ndve_output_view
 83b82450 movie_renderer_draw_plain        # docs/direct/movie-player.md: renderer vtable +0x18 without NDVE: draws the two plane textures
+821056c0 ndve_create                      # docs/direct/movie-player.md: makes the NDVE network from the resource blob and the movie's size (movie_player_renderer_init)
+821057c0 ndve_output_size                 # docs/direct/movie-player.md: the network's output size, stored at renderer+0x2e0 # ?
+821056f0 ndve_destroy                     # docs/direct/movie-player.md: frees the NDVE object (movie_renderer release, f_83b82dc0)
 83b827e0 movie_media_source_client_open   # docs/direct/boot-to-main-loop.md section 6 (MovieMediaSourceClient), host/nn_video.c: opens the movie file (nn::fs OpenFile, GetFileSize) and asks nn::movie::MediaExtractor for its media-source-mode events
 83b7cec0 movie_player_init                # docs/direct/movie-player.md, docs/direct/boot-to-main-loop.md section 6: the movie player's constructor (zeroes its 0x468 bytes, sets up its heap and events)
 8210a8c0 ndve_programs_init_a             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the compute programs it makes at 0x8210aa40
