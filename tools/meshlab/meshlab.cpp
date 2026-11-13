@@ -689,7 +689,7 @@ void begin_rendering(VkCommandBuffer cb, const Target& t, bool secondary, bool c
     da.loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD, da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     da.clearValue.depthStencil = {1.0f, 0};
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    if (secondary) ri.flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
+    if (secondary) ri.flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT | VK_RENDERING_CONTENTS_INLINE_BIT_KHR;   // (as the back end's layer lists: inline commands and jobs in one rendering)
     ri.renderArea = {{0, 0}, {t.w, t.h}}, ri.layerCount = 1;
     ri.colorAttachmentCount = (uint32_t)ca.size(), ri.pColorAttachments = ca.data();
     if (t.depth_format) ri.pDepthAttachment = &da;
@@ -1315,6 +1315,21 @@ int main(int argc, char** argv) {
             if (cond == "once") g.vkCmdEndConditionalRenderingEXT(secondary ? sec : cbs[k]);
             if (secondary) {
                 VK(vkEndCommandBuffer(sec));
+                if (vs_draws) {   // (an inline vertex draw in the primary before the job, as a layer list's own draws)
+                    Dyn dyn;
+                    std::memcpy(&dyn, run[0]->d->d.dyn, sizeof dyn);
+                    dyn.topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, dyn.restart = VK_FALSE;
+                    set_state(cbs[k], dyn);
+                    g.vkCmdSetVertexInputEXT(cbs[k], 0, nullptr, 0, nullptr);
+                    VkShaderStageFlagBits st[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_MESH_BIT_EXT};
+                    VkShaderEXT sh[2] = {simple_vs(), VK_NULL_HANDLE};
+                    g.vkCmdBindShadersEXT(cbs[k], 2, st, sh);
+                    VkShaderStageFlagBits fst = VK_SHADER_STAGE_FRAGMENT_BIT;
+                    VkShaderEXT fsh = simple_fs(run[0]->d->d);
+                    g.vkCmdBindShadersEXT(cbs[k], 1, &fst, &fsh);
+                    push(cbs[k], run[0]->push, run[0]->push_bytes);
+                    vkCmdDraw(cbs[k], 3 * 64, 1, 0, 0);
+                }
                 vkCmdExecuteCommands(cbs[k], 1, &sec);
             }
             if (query) vkCmdEndQuery(cbs[k], qpool, (uint32_t)k);
