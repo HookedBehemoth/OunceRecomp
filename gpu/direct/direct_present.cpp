@@ -490,7 +490,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
         else if (r != VK_SUCCESS) logf("direct: vkQueuePresentKHR: VkResult %d", (int)r);
     } else if (r != VK_SUCCESS) {
         logf("direct: the present's submit failed (VkResult %d)", (int)r);
-        if (r == VK_ERROR_DEVICE_LOST) marks_report("the present's submit"), meshcap_lost(marks_first_open_present), host->log_flush(), abort();
+        if (r == VK_ERROR_DEVICE_LOST) device_lost("the present's submit");
     }
 }
 

@@ -19,6 +19,7 @@
 #include "direct_marks.h"
 #include "direct_pstats.h"
 #include "direct_meshcap.h"
+#include "shaders/diag_plain_frag_spv.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
 #include "direct_image.h"
@@ -1346,10 +1347,33 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     // (recorded)
     if (!x.heap) heap_bind(cb), x.heap = true;
     const VkShaderEXT want_vs = mesh ? VK_NULL_HANDLE : prog->vs, want_ms = mesh ? prog->ms : VK_NULL_HANDLE;
-    if (!x.shaders || x.vs != want_vs || x.fs != prog->fs || x.ms != want_ms) {
+    // (HOS_DBG=progfs:<key>, a diagnosis (the Hyrule Field hang): that program's draws into one float colour target with a
+    // fragment stage of ours that writes a constant: shaders/diag_plain.frag)
+    VkShaderEXT want_fs = prog->fs;
+    {
+        static const uint64_t prog_fs = [] {
+            const char* v = dbg_value("progfs");
+            return v ? std::strtoull(v, nullptr, 16) : 0ull;
+        }();
+        if (prog_fs && prog->key == prog_fs && p.n == 1 && ct[0] == 0) {
+            static VkShaderEXT plain = [] {
+                VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
+                ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+                ci.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+                ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
+                ci.codeSize = sizeof diag_plain_frag_spv, ci.pCode = diag_plain_frag_spv, ci.pName = "main";
+                VkShaderEXT o = VK_NULL_HANDLE;
+                const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &o);
+                logf("direct: progfs: the plain fragment stage %s (%d)", r == VK_SUCCESS ? "made" : "NOT MADE", (int)r);
+                return o;
+            }();
+            if (plain) want_fs = plain;
+        }
+    }
+    if (!x.shaders || x.vs != want_vs || x.fs != want_fs || x.ms != want_ms) {
         // (every graphics stage the device has: the ones the program has not bound to none; never a task stage)
         VkShaderStageFlagBits st[6] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
-        VkShaderEXT sh[6] = {want_vs, prog->fs};
+        VkShaderEXT sh[6] = {want_vs, want_fs};
         uint32_t n = 2;
         if (dev.features.tessellationShader)
             st[n] = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, sh[n++] = VK_NULL_HANDLE,
@@ -1357,7 +1381,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (dev.features.geometryShader) st[n] = VK_SHADER_STAGE_GEOMETRY_BIT, sh[n++] = VK_NULL_HANDLE;
         if (caps.mesh) st[n] = VK_SHADER_STAGE_MESH_BIT_EXT, sh[n++] = want_ms;
         vkCmdBindShadersEXT(cb, n, st, sh);
-        x.vs = want_vs, x.fs = prog->fs, x.ms = want_ms, x.shaders = true;
+        x.vs = want_vs, x.fs = want_fs, x.ms = want_ms, x.shaders = true;
     }
     {
         const ListDraw::DynKey k{s.dyn_gen, topo, prog, p.set_rt_at, p.w, p.h, p.n};

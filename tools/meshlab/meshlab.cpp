@@ -525,6 +525,7 @@ struct Ready {
 };
 std::string repl_dir, mesh_override, fs_mode = "simple";
 int64_t sel_present = -1;   // (--present N: a roll's frame)
+bool retask = false;        // (geo, dump --tasks: the draw's task stage run again before it, its groups and payload the harness's own)
 uint32_t bench_mult = 1;   // (bench --mult K: each draw's mesh workgroups K times: a task+mesh draw's map repeated K times, a direct draw's count K times)
 std::map<std::string, VkShaderEXT> shader_cache;
 
@@ -581,11 +582,16 @@ Ready prepare(const Frame& f, const Draw& d) {
     // (a task+mesh draw: its header, map and payload as the GPU left them, at our addresses)
     if (d.d.task) {
         // (room for the whole map and payload area the header names, so that the task stage can be run again: --tasks)
-        const uint64_t map_words = std::max<uint64_t>(d.d.header[8], d.map.size()) * bench_mult;
-        const uint64_t pay_words = std::max<uint64_t>((uint64_t)d.d.header[9] * d.d.header[13], d.payload.size());
-        r.header = make_buf(64 + 4 * (map_words + pay_words) + 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
         uint32_t h[16];
         std::memcpy(h, d.d.header, 64);
+        if (retask && !h[9] && d.d.y > 0) {   // (a capture without the GPU's header (a lost device's older frames): as the back end writes it for a direct draw)
+            h[1] = h[2] = h[11] = h[12] = 1;
+            h[9] = h[10] = (uint32_t)d.d.y, h[13] = p.h.task_payload_words, h[14] = p.h.task_threads;
+            h[8] = h[9] * h[14];
+        }
+        const uint64_t map_words = std::max<uint64_t>(h[8], d.map.size()) * bench_mult;
+        const uint64_t pay_words = std::max<uint64_t>((uint64_t)h[9] * h[13], d.payload.size());
+        r.header = make_buf(64 + 4 * (map_words + pay_words) + 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
         const uint64_t ma = r.header.addr + 64, pa = ma + 4 * map_words;
         h[4] = (uint32_t)ma, h[5] = (uint32_t)(ma >> 32), h[6] = (uint32_t)pa, h[7] = (uint32_t)(pa >> 32);
         h[0] = std::min<uint32_t>(h[0], (uint32_t)d.map.size()) * bench_mult;
@@ -886,7 +892,9 @@ std::vector<Geometry> run_dump(const Frame& f, const Draw& d, bool replacement, 
     if (code.empty()) return err = "no replacement " + repl_path(*r.p), std::vector<Geometry>{};
     OutLayout L;
     if (!output_layout(code, L, err)) return {};
-    const uint32_t groups = std::max<uint32_t>(r.groups, 1);
+    uint32_t h8 = 0;
+    if (retask && r.ts && r.tasks) std::memcpy(&h8, r.header.map + 32, 4);
+    const uint32_t groups = std::max<uint32_t>(h8 ? h8 : r.groups, 1);
     Buf dump = make_buf(4ull * L.record_words * groups + 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
     for (uint64_t i = 0; i < dump.size / 4; i++) ((uint32_t*)dump.map)[i] = kFill;
     const auto patched = add_output_dump(code, dump.addr, L, err);
@@ -901,6 +909,19 @@ std::vector<Geometry> run_dump(const Frame& f, const Draw& d, bool replacement, 
     VK(vkBeginCommandBuffer(cb, &bi));
     to_attachment(cb, t);
     heaps_bind(cb);
+    if (h8) {   // (the task step, as the back end records it: the header reset, the task stage, a barrier)
+        static const uint32_t reset[4] = {0, 1, 1, 0};
+        vkCmdUpdateBuffer(cb, r.header.b, 0, sizeof reset, reset);
+        mem_barrier(cb, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        const VkShaderStageFlagBits cs = VK_SHADER_STAGE_COMPUTE_BIT;
+        g.vkCmdBindShadersEXT(cb, 1, &cs, &r.ts);
+        push(cb, r.push, r.push_bytes);
+        vkCmdDispatch(cb, r.tasks, 1, 1);
+        mem_barrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
+                    VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    }
     begin_rendering(cb, t, false, true);
     record_draw(cb, r, ms_dump);
     vkCmdEndRendering(cb);
@@ -909,7 +930,14 @@ std::vector<Geometry> run_dump(const Frame& f, const Draw& d, bool replacement, 
     submit(cb, fence);
     const VkResult w = vkWaitForFences(g.dev, 1, &fence, VK_TRUE, 10ull * 1000 * 1000 * 1000);
     if (w != VK_SUCCESS) die("the dump draw did not finish (%d)", (int)w);
-    auto geo = decode(L, dump.map, r.groups);
+    uint32_t drawn = r.groups;
+    if (h8) {
+        std::memcpy(&drawn, r.header.map, 4);
+        std::fprintf(stderr, "meshlab: draw %u: its task stage run again placed %u mesh groups of %u (the capture's header: %u)\n", d.d.seq, drawn, h8,
+                     d.d.header[0]);
+        drawn = std::min(drawn, h8);
+    }
+    auto geo = decode(L, dump.map, drawn);
     return geo;
 }
 
@@ -1358,6 +1386,7 @@ int main(int argc, char** argv) {
 
     if (mode == "geo") {   // (what a draw's mesh stage emits, in numbers; the draw is made with the rasterizer off)
         bench_discard = true;
+        retask = tasks;
         for (const Draw* d : draws) geo_stats(f, *d, prims_shown);
         return 0;
     }

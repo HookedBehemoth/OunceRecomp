@@ -77,9 +77,12 @@ inline bool load(const char* path, Frame& f, std::string& err) {
     if (!take(&f.h, sizeof f.h) || f.h.magic != mcap::kMagic || f.h.version != mcap::kVersion) return err = "not a meshcap file of this version", false;
     while (at < b.size()) {
         mcap::McRecord r;
-        if (!take(&r, sizeof r)) return err = "truncated record", false;
+        if (!take(&r, sizeof r) || at + r.bytes > b.size()) {   // (a roll cut short by the process's end: what is whole is used)
+            if (f.frames.empty()) return err = "truncated record", false;
+            std::fprintf(stderr, "meshlab: %s ends in a cut record: %zu frames read\n", path, f.frames.size());
+            break;
+        }
         const size_t end = at + r.bytes;
-        if (end > b.size()) return err = "truncated payload", false;
         if (r.type == mcap::MC_PROGRAM) {
             Program p;
             take(&p.h, sizeof p.h);

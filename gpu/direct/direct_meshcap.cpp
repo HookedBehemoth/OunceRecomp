@@ -359,7 +359,7 @@ void roll_frame(std::vector<Cmd>& v, uint64_t present, const char* how) {
 }
 
 /// The kept draws of presents [from, to] taken out, a frame at a time into the roll
-void roll_take(uint64_t from, uint64_t to, const char* how) {
+void roll_take(uint64_t from, uint64_t to, const char* how, uint64_t first = 0) {
     std::vector<Cmd> v;
     {
         std::lock_guard lk(mu);
@@ -367,7 +367,9 @@ void roll_take(uint64_t from, uint64_t to, const char* how) {
             if (cmds[i].draw.d.present >= from && cmds[i].draw.d.present <= to) v.push_back(std::move(cmds[i])), cmds.erase(cmds.begin() + i);
             else i++;
     }
-    std::stable_sort(v.begin(), v.end(), [](const Cmd& x, const Cmd& y) { return x.draw.d.present < y.draw.d.present; });
+    // (in present order; after a loss the frame of the first unfinished command first, then the newer ones, then the older)
+    const auto rank = [first](uint64_t p) { return first ? (p >= first ? p - first : (1ull << 40) + first - p) : p; };
+    std::stable_sort(v.begin(), v.end(), [&](const Cmd& x, const Cmd& y) { return rank(x.draw.d.present) < rank(y.draw.d.present); });
     for (size_t i = 0; i < v.size();) {
         size_t j = i;
         std::vector<Cmd> fr;
@@ -392,7 +394,7 @@ void meshcap_lost(uint64_t first_open_present) {
     const uint64_t from = first_open_present ? (first_open_present > 3 ? first_open_present - 3 : 0) : (newest > 8 ? newest - 8 : 0);
     logf("direct: meshcap: the device is lost: the kept draws of presents %llu.. written (the first unfinished command's present %llu, the newest kept %llu)",
          (unsigned long long)from, (unsigned long long)first_open_present, (unsigned long long)newest);
-    roll_take(from, first_open_present ? first_open_present + 3 : newest, "after the loss");
+    roll_take(from, first_open_present ? first_open_present + 3 : newest, "after the loss", first_open_present);
     host->log_flush();
 }
 
@@ -400,8 +402,16 @@ void meshcap_after() {
     const Opt& o = opt();
     if (o.a < 0) return;
     const int64_t pc = (int64_t)present_count();
+    if (o.lost) {   // (meshcaplosttest:<present>, the loss path tried without a loss: the kept draws written as at a loss)
+        static const int64_t test = [] {
+            const char* v = dbg_value("meshcaplosttest");
+            return v ? atoll(v) : -1;
+        }();
+        if (test >= 0 && pc == test + 1) meshcap_lost((uint64_t)test - 1);
+        return;
+    }
     if (o.roll) {
-        if (o.lost || pc - 1 < o.a || pc - 1 > o.b) return;
+        if (pc - 1 < o.a || pc - 1 > o.b) return;
         vkDeviceWaitIdle(dev.device);
         roll_take(0, (uint64_t)pc - 1, "the frame done");
         if (pc - 1 == o.b) host->log_flush();

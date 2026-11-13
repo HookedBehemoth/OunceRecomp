@@ -1,10 +1,12 @@
 // GPU breadcrumbs for a lost device (direct_marks.h).
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #include "direct_internal.h"
 #include "direct_marks.h"
+#include "direct_meshcap.h"
 
 namespace hsd {
 
@@ -103,6 +105,17 @@ void mark_after(VkCommandBuffer cb, uint32_t i) {
 }
 
 uint64_t marks_first_open_present = 0;
+
+void device_lost(const char* why) {
+    // (one thread reports; a second submit that fails meanwhile waits here for the first one's abort: it must not end the
+    // process under the report and the capture being written)
+    static std::mutex one;
+    one.lock();
+    marks_report(why);
+    meshcap_lost(marks_first_open_present);
+    host->log_flush();
+    abort();
+}
 
 void marks_report(const char* why) {
     if (!marks_enabled) return;
