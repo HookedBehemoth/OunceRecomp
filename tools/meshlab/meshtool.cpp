@@ -4,11 +4,8 @@
 // the decompilation of the game's mesh stages (docs/direct/m6e-report.md); nothing of the game is in this file.
 //
 //   meshtool <mesh stage .bin> <out prefix> [<task stage .bin>]
-//   meshtool --task <task stage .bin> <out prefix> <mesh stage .bin>     the task stage's IR alone (<prefix>.pre.c)
 // A stage .bin: the stage's control section (0xd8 bytes) then its code area, as the romfs seed holds it (M0's seed.py).
-// Writes <prefix>.ir, <prefix>.ir.c, <prefix>.spv and prints the summary (one "key value" line each). Also <prefix>.pre.c: the
-// flat print taken before the SPIR-V is made (emitting consumes the carry and zero pseudo-operations, which the later prints
-// then show as Void()), the print tools/meshlab/irpy.py runs on the CPU.
+// Writes <prefix>.ir, <prefix>.ir.c, <prefix>.flat.c, <prefix>.spv and prints the summary (one "key value" line each).
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -24,26 +21,8 @@ using offline::profile;
 using offline::regs_of;
 
 int main(int argc, char** argv) {
-    if (argc < 3) return std::fprintf(stderr, "meshtool <mesh.bin> <out prefix> [task.bin] | --task <task.bin> <out prefix> <mesh.bin>\n"), 2;
+    if (argc < 3) return std::fprintf(stderr, "meshtool <mesh.bin> <out prefix> [task.bin]\n"), 2;
     try {
-        if (!std::strcmp(argv[1], "--task")) {
-            if (argc < 5) return std::fprintf(stderr, "meshtool --task <task.bin> <out prefix> <mesh.bin>\n"), 2;
-            const Code t = offline::load_file(argv[2]), mc = offline::load_file(argv[4]);
-            Env env(t, Shader::Stage::Task, regs_of(mc, &t));
-            auto tr = offline::translate(env);
-            std::ofstream o(std::string(argv[3]) + ".pre.c");
-            o << pretty::print(tr->program, true);
-            return 0;
-        }
-        {   // (a translation of its own: the print's clean-up passes must not change what is emitted below)
-            const Code m0 = offline::load_file(argv[1]);
-            Code t0;
-            if (argc > 3) t0 = offline::load_file(argv[3]);
-            Env env0(m0, Shader::Stage::Mesh, regs_of(m0, argc > 3 ? &t0 : nullptr));
-            auto tr0 = offline::translate(env0);
-            std::ofstream o(std::string(argv[2]) + ".pre.c");
-            o << pretty::print(tr0->program, true);
-        }
         const Code m = offline::load_file(argv[1]);
         Code t;
         const bool task = argc > 3;
