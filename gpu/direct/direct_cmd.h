@@ -63,7 +63,7 @@ uint64_t upload_end(Upload& u);
 uint64_t upload_value();
 
 void cmd_stats(char* out, size_t cap, double frames);
-/// (memory by owner) What the command pools hold, in counts: the slots, those set aside now, their buffers; the length written
+/// What the command pools hold, in counts (the driver gives no bytes); returns the length written
 size_t cmd_held_stats(char* out, size_t cap);
 /// (M6b) Present n: the command buffers frame n - 2 took counted into the most a frame took (what a slot is grown to at its reset)
 void cmd_frame_presented(uint64_t n);

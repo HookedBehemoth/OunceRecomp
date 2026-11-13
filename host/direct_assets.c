@@ -31,6 +31,7 @@
    A line every 10 s: the asset heap's resident pages and the guest memory's (mincore), the copies skipped. */
 #include "hos.h"
 #include "direct.h"
+#include "hos_ledger.h"
 #include "../gpu/render/rx_nvn.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -415,18 +416,19 @@ static int held_slot(uint64_t dst) {
 }
 /* the bytes copied to dst now kept (the newer ones replace what was kept there) */
 static int tile_keep(uint64_t dst, const uint8_t *src, uint32_t n) {
-    uint8_t *b = (uint8_t *)malloc(n);
+    uint8_t *b = (uint8_t *)hos_ledger_took(HL_TILES, malloc(n));
     if (!b) return 0;
     memcpy(b, src, n);
     AcquireSRWLockExclusive(&held_lock);
     const int i = held_slot(dst);
     if (i < 0) {
         ReleaseSRWLockExclusive(&held_lock);
+        hos_ledger_frees(HL_TILES, b);
         free(b);
         InterlockedIncrement64(&n_tile_dropped);
         return 0;
     }
-    if (held[i].bytes) free(held[i].bytes);
+    if (held[i].bytes) hos_ledger_frees(HL_TILES, held[i].bytes), free(held[i].bytes);
     else {
         const long live = InterlockedIncrement(&direct_assets_tiles_pending);
         if (live > n_tile_held_max) n_tile_held_max = live;

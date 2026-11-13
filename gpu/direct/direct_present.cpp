@@ -198,6 +198,18 @@ void barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayo
     vkCmdPipelineBarrier2(cmd, &d);
 }
 
+void memory_lines() {
+    static char v[2048], m[2048], c[2048];
+    mem_owner_stats(v, m, c, sizeof v);
+    size_t k = std::min(std::strlen(c), sizeof c - 4);
+    c[k++] = ';', c[k++] = ' ', c[k] = 0;
+    k += cmd_held_stats(c + k, sizeof c - k);
+    shader_held_stats(c + k, sizeof c - k);
+    logf("direct: %s", v);
+    logf("direct: %s", m);
+    logf("direct: %s", c);
+}
+
 bool shots_ready() {
     if (shot_image) return true;
     if (shot_failed) return false;
@@ -313,13 +325,6 @@ void log_line() {
     logf("direct: %s", b);
     mem_stats(b, sizeof b);   // (M6f)
     logf("direct: %s", b);
-    {   // (who holds it, and what the driver holds past them: a leak names itself here)
-        char held[768];
-        const size_t k = cmd_held_stats(held, sizeof held);
-        shader_held_stats(held + k, sizeof held - k);
-        mem_owner_stats(b, sizeof b, held);
-        logf("direct: %s", b);
-    }
     sites_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     draw_log(frames);   // (M2b)
@@ -392,6 +397,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     last_present = now;
     presents++;
     if (presents % 600 == 0) log_line();
+    if (presents % kMemoryPeriod == 0) memory_lines();
     const uint64_t n = asked.fetch_add(1, std::memory_order_acq_rel) + 1;
     strict_present(n);   // (M6b: arming)
     cmd_frame_presented(n);

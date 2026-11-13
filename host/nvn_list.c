@@ -2,6 +2,7 @@
    lifetime rules. Used by host/nvn_native.c only; no guest code and no renderer state here, so tests/list_ref_test.c
    builds this file as it is. */
 #include "nvn_list.h"
+#include "hos_ledger.h"
 #include "../gpu/render/rx_nvn.h"
 #include <stdlib.h>
 #include <string.h>
@@ -80,7 +81,7 @@ static uint32_t g_keep(uint32_t c) { const uint32_t k = (uint32_t)((64u << 20) >
 static void *blk_get(size_t total, uint32_t *cls) {
     const uint32_t c = cls_of(total);
     *cls = c;
-    if (c == LCLS_HEAP) return malloc(total);
+    if (c == LCLS_HEAP) return hos_ledger_took(HL_NVN_LISTS, malloc(total));
     lcache *t = &tl_cache[c];
     if (!t->head && __atomic_load_n(&g_cache[c], __ATOMIC_RELAXED)) {   /* (a peek without the lock) */   /* (half of what this thread keeps, from the shared list) */
         spin_lock(&g_cache_lock);
@@ -96,11 +97,14 @@ static void *blk_get(size_t total, uint32_t *cls) {
         t->head = *(void **)b, t->n--;
         return b;
     }
-    return malloc((size_t)1 << c);
+    void *b = malloc((size_t)1 << c);
+    if (b) hos_ledger_add(HL_NVN_LISTS, (int64_t)1 << c);
+    return b;
 }
 static void blk_put(void *b, uint32_t c) {
     if (!b) return;
     if (c == LCLS_HEAP) {
+        hos_ledger_frees(HL_NVN_LISTS, b);
         free(b);
         return;
     }
@@ -125,6 +129,7 @@ static void blk_put(void *b, uint32_t c) {
         void *x = give;
         give = *(void **)x;
         free(x);
+        hos_ledger_add(HL_NVN_LISTS, -((int64_t)1 << c));
     }
 }
 

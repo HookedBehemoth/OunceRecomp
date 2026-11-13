@@ -7,8 +7,12 @@
 #include "direct_internal.h"
 #include <vk_mem_alloc.h>
 
+#include <dlfcn.h>
+
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace hsd {
 
@@ -18,19 +22,18 @@ namespace {
 VmaAllocator vma = VK_NULL_HANDLE;
 
 // ---- memory by owner ----
-// [owner][0: a device-local heap, 1: a host heap]: bytes and allocations alive. Counted at the few places memory is made:
-// mem_image and mem_buffer here (the owner kept in the VMA allocation's user data, so the free finds it), make_mapped
-// (direct_heap.cpp) and the other vkAllocateMemory calls (the transient pool, layer 0's blocks and imports, the marks'
-// buffer, the offscreen image).
-std::atomic<int64_t> acct_bytes[MO_N][2], acct_count[MO_N][2];
+// [owner][0: a device-local heap, 1: a host heap, 2: the process's own memory]. A VMA allocation keeps its owner (+ 1) as
+// its user data, so its free needs no owner argument.
+std::atomic<int64_t> acct_bytes[MO_N][3], acct_count[MO_N][3];
 const char* const kOwnerNames[MO_N] = {"arenas", "task pools", "query reports", "constants", "heaps and tables", "uploads",
                                        "transient pool", "layer 0 vram", "layer 0 imports", "images from the store",
-                                       "the game's other images", "other"};
+                                       "the game's other images", "other", "lists", "store scratch", "shader code"};
+std::atomic<int64_t> mapped_bytes{0};
 int heap_class(uint32_t type) {
     return type < dev.memory.memoryTypeCount &&
            (dev.memory.memoryHeaps[dev.memory.memoryTypes[type].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? 0 : 1;
 }
-void account_vma(VmaAllocation a, int sign) {   // (user data: the owner + 1)
+void account_vma(VmaAllocation a, int sign) {
     VmaAllocationInfo info{};
     vmaGetAllocationInfo(vma, a, &info);
     if (info.pUserData) mem_account((MemOwner)((uintptr_t)info.pUserData - 1), info.memoryType, sign * (int64_t)info.size);
@@ -42,6 +45,8 @@ void mem_account(MemOwner owner, uint32_t type, int64_t bytes) {
     acct_bytes[owner][c].fetch_add(bytes, std::memory_order_relaxed);
     acct_count[owner][c].fetch_add(bytes < 0 ? -1 : 1, std::memory_order_relaxed);
 }
+void mem_account_main(MemOwner owner, int64_t bytes) { acct_bytes[owner][2].fetch_add(bytes, std::memory_order_relaxed); }
+void mem_main_mapped(size_t n) { mapped_bytes.fetch_add((int64_t)n, std::memory_order_relaxed); }
 
 bool vma_init() {
     VmaVulkanFunctions f{};
@@ -181,11 +186,14 @@ void mem_stats(char* out, size_t cap) {
     }
 }
 
-/// The owners' memory against the driver's usage, device-local heaps and host heaps apart. An owner's figure is its
-/// device-local MB, with "+Nh" where it also holds N MB on a host heap. The room VMA's blocks hold past their allocations is
-/// counted too (the driver sees the blocks), so "unaccounted" is what the driver holds that no owner here made: its command
-/// buffers, shader objects and descriptor state, or an owner missing from the list. Growth there is the leak to look for
-void mem_owner_stats(char* out, size_t cap, const char* held) {
+// VRAM: VMA's blocks count whole with the driver, so their free room is added to the owners' sum; what is left as
+// "unaccounted" is the driver's own (command buffers, shader objects, descriptor state, the swapchain) or an owner missing.
+// Main memory: /proc/self/status, whose counters cost nothing to read (smaps_rollup walks the address space). Its three
+// kinds keep the parts apart: the guest is a memfd, so its touched pages are the shared kind; code and the store's maps are
+// the file kind (mincore would answer for the page cache, not for this process); the owners count heap, the anonymous kind.
+// The Vulkan host heaps are system memory the driver maps without it counting as resident, so they are printed apart; the
+// imports there are the guest's pages a second time.
+void mem_owner_stats(char* vram, char* main_mem, char* counts, size_t cap) {
     static PFN_vkGetPhysicalDeviceMemoryProperties2 props2 =
         (PFN_vkGetPhysicalDeviceMemoryProperties2)get_instance_proc(dev.instance, "vkGetPhysicalDeviceMemoryProperties2");
     VkPhysicalDeviceMemoryBudgetPropertiesEXT bp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
@@ -194,33 +202,88 @@ void mem_owner_stats(char* out, size_t cap, const char* held) {
     if (props2) props2(dev.physical, &p);
     VmaBudget vb[VK_MAX_MEMORY_HEAPS] = {};
     if (vma) vmaGetHeapBudgets(vma, vb);
-    int64_t usage[2] = {}, sum[2] = {}, slack[2] = {};
+    int64_t usage[2] = {}, sum[3] = {}, slack[2] = {}, b[MO_N][3];
     for (uint32_t h = 0; h < p.memoryProperties.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++) {
         const int c = p.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? 0 : 1;
         usage[c] += (int64_t)bp.heapUsage[h];
         slack[c] += (int64_t)vb[h].statistics.blockBytes - (int64_t)vb[h].statistics.allocationBytes;
     }
+    for (int o = 0; o < MO_N; o++)
+        for (int c = 0; c < 3; c++) sum[c] += b[o][c] = acct_bytes[o][c].load(std::memory_order_relaxed);
+    ImageSplit im;
+    image_mem_split(im);
+    char* out = vram;
     size_t k = 0;
     const auto put = [&](const char* fmt, auto... a) {
         const int n = std::snprintf(out + k, k < cap ? cap - k : 0, fmt, a...);
         if (n > 0) k += (size_t)n;
     };
-    put("memory by owner (MB of the device-local heaps, +Nh: and N of the host's; allocations):");
-    for (int o = 0; o < MO_N; o++) {
-        const int64_t b[2] = {acct_bytes[o][0].load(std::memory_order_relaxed), acct_bytes[o][1].load(std::memory_order_relaxed)};
-        sum[0] += b[0], sum[1] += b[1];
-        put(" %s %lld", kOwnerNames[o], (long long)(b[0] / (1 << 20)));
-        if (b[1]) put("+%lldh", (long long)(b[1] / (1 << 20)));
-        put(" (%lld)%s", (long long)(acct_count[o][0].load(std::memory_order_relaxed) + acct_count[o][1].load(std::memory_order_relaxed)),
-            o + 1 < MO_N ? "," : "");
+    const auto mb = [](int64_t v) { return (long long)(v / (1 << 20)); };
+    const auto M = [](uint64_t v) { return (long long)(v >> 20); };
+
+    // (the counters are the sum, the walk only splits it: what the walk missed goes with "other")
+    uint64_t walked = im.placeholder;
+    for (uint64_t v : im.kind) walked += v;
+    const int64_t unwalked = b[MO_IMAGE_STORE][0] + b[MO_IMAGE][0] + b[MO_OTHER][0] - (int64_t)walked;
+    put("vram (MB): textures: store %lld, terrain %lld, glyphs %lld, texel writes %lld, copied or cleared %lld, never written %lld, "
+        "placeholder %.2f; targets: transient pool %lld allocated, in use %lld (shadow maps %lld, other depth %lld, colour %lld), "
+        "outside it depth %lld, colour %lld; buffers: arenas %lld, task pools %lld, constants %lld, heaps and tables %lld, layer 0 "
+        "vram %lld, others' on these heaps %lld; shots, dumps, offscreen and images beside the walk %lld; room free in VMA's blocks %lld",
+        M(im.kind[ImageSplit::STORE]), M(im.kind[ImageSplit::TERRAIN]), M(im.kind[ImageSplit::GLYPH]), M(im.kind[ImageSplit::TEXELS]),
+        M(im.kind[ImageSplit::COPIED]), M(im.kind[ImageSplit::NEVER]), im.placeholder / 1048576.0, mb(b[MO_TRANSIENT][0]),
+        M(im.pool_use[0] + im.pool_use[1] + im.pool_use[2]), M(im.pool_use[0]), M(im.pool_use[1]), M(im.pool_use[2]),
+        M(im.kind[ImageSplit::TARGET_DEPTH]), M(im.kind[ImageSplit::TARGET_COLOUR]), mb(b[MO_ARENA][0]), mb(b[MO_TASK][0]),
+        mb(b[MO_CONST][0]), mb(b[MO_HEAP][0]), mb(b[MO_L0_VRAM][0]),
+        mb(b[MO_QUERY][0] + b[MO_UPLOAD][0] + b[MO_L0_IMPORT][0]), mb(unwalked), mb(slack[0]));
+    {   // (the difference taken of the MB printed, so the three figures add up as read)
+        const long long acc = mb(sum[0] + slack[0]), use = mb(usage[0]);
+        put("; accounted %lld of driver usage %lld: unaccounted %lld (the driver's: command buffers, shader objects, the swapchain)",
+            acc, use, use - acc);
     }
-    put(", room free in VMA's blocks %lld", (long long)(slack[0] >> 20));
-    if (slack[1]) put("+%lldh", (long long)(slack[1] >> 20));
-    put("; %s", held);
-    for (int c = 0; c < 2; c++) {   // (the difference taken of the MB printed, so the three figures add up as read)
-        const long long acc = (long long)((sum[c] + slack[c]) / (1 << 20)), use = (long long)(usage[c] >> 20);
-        put("; %s accounted %lld of driver usage %lld: unaccounted %lld", c ? "host" : "device-local", acc, use, use - acc);
+
+    // ---- main memory ----
+    long long rss = 0, anon = 0, file = 0, shmem = 0;   // (kB)
+    if (FILE* f = std::fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (std::fgets(line, sizeof line, f)) {
+            if (!std::strncmp(line, "VmRSS:", 6)) rss = std::atoll(line + 6);
+            else if (!std::strncmp(line, "RssAnon:", 8)) anon = std::atoll(line + 8);
+            else if (!std::strncmp(line, "RssFile:", 8)) file = std::atoll(line + 8);
+            else if (!std::strncmp(line, "RssShmem:", 9)) shmem = std::atoll(line + 9);
+        }
+        std::fclose(f);
     }
+    typedef size_t (*LedgerFn)(char*, size_t, uint64_t*, uint64_t*);
+    static const LedgerFn ledger = (LedgerFn)dlsym(RTLD_DEFAULT, "hos_posix_mem_ledger");
+    char host_part[512] = "not counted (no hos_posix_mem_ledger)";
+    uint64_t host_sum = 0, committed = 0;
+    if (ledger) ledger(host_part, sizeof host_part, &host_sum, &committed);
+    const int64_t ours = sum[2] + (int64_t)im.table + (int64_t)host_sum;
+    const long long rest = (rss >> 10) - mb(ours);
+    out = main_mem, k = 0;
+    put("main memory (MB): process %lld resident (/proc/self/status) = anonymous %lld + file %lld + shared %lld; anonymous: ours "
+        "%lld (back end: lists %lld, store scratch %lld, shader code %lld, image records %lld; host: %s), unaccounted %lld (the "
+        "driver's and the C library's heaps, stacks, tables not counted); file: the program's code and the store's maps (%lld "
+        "mapped); shared: the guest's pages touched (its memory manager has handed out %lld of address space); process - ours "
+        "%lld, the guest %lld: difference %lld",
+        rss >> 10, anon >> 10, file >> 10, shmem >> 10, mb(ours), mb(b[MO_M_LISTS][2]), mb(b[MO_M_SCRATCH][2]), mb(b[MO_M_SHADERS][2]),
+        M(im.table), host_part, (anon >> 10) - mb(ours), mb(mapped_bytes.load(std::memory_order_relaxed)), M(committed), rest,
+        shmem >> 10, rest - (shmem >> 10));
+    {
+        const long long acc = mb(sum[1] + slack[1]), use = mb(usage[1]);
+        put("; the Vulkan host heaps (system memory the driver maps, not in the resident figures): uploads %lld, layer 0 imports "
+            "%lld (the guest's pages again), query reports %lld, other %lld, room free in VMA's blocks %lld: accounted %lld of "
+            "driver usage %lld: unaccounted %lld", mb(b[MO_UPLOAD][1]), mb(b[MO_L0_IMPORT][1]), mb(b[MO_QUERY][1]),
+            mb(sum[1] - b[MO_UPLOAD][1] - b[MO_L0_IMPORT][1] - b[MO_QUERY][1]), mb(slack[1]), acc, use, use - acc);
+    }
+
+    // ---- counts ----
+    out = counts, k = 0;
+    put("memory counts: allocations:");
+    for (int o = 0; o < MO_M_LISTS; o++)
+        put(" %s %lld%s", kOwnerNames[o], (long long)(acct_count[o][0].load(std::memory_order_relaxed) + acct_count[o][1].load(std::memory_order_relaxed)),
+            o + 1 < MO_M_LISTS ? "," : "");
+    put("; images %llu", (unsigned long long)im.images);
 }
 
 uint64_t mem_size(Mem* mem) {

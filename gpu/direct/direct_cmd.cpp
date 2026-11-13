@@ -31,14 +31,13 @@ struct Thread {
     UploadSlot uploads[kUploads];
     int next = 0;
     UploadSlot* open = nullptr;
-    int64_t aside = 0;   // (its slots set aside at its last take: its part of st_aside_now)
+    int64_t aside = 0;   // (its part of st_aside_now)
 };
 thread_local Thread* self = nullptr;
 
 std::atomic<int64_t> st_resets{0}, st_kept{0}, st_reset_waits{0}, st_reset_wait_ns{0}, st_buffers{0}, st_uploads{0},
     st_upload_bytes{0}, st_upload_waits{0}, st_threads{0}, st_slots{0}, st_aside{0};
-// (memory by owner: the driver gives no size for a command pool, so the line has the counts. Slots set aside now, as each
-// thread found them when it last took a slot; the buffers made in the slots' pools by level, and in the upload pools)
+// (a command pool has no byte size to ask the driver for: counts stand in for it. st_aside_now sums each thread's last take)
 std::atomic<int64_t> st_aside_now{0}, st_primaries{0}, st_secondaries{0}, st_upload_bufs{0};
 
 VkCommandPool make_pool(VkCommandPoolCreateFlags flags) {

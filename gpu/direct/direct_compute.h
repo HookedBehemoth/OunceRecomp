@@ -35,6 +35,6 @@ void compute_list_submitted(const List* l);
 void compute_program_set(const nvn_prog* p);
 /// The 600-present lines
 void compute_log(double frames);
-int64_t compute_objects_made();   // (memory by owner: the compute shader objects, none ever destroyed)
+int64_t compute_objects_made();   // (none is ever destroyed)
 
 }  // namespace hsd

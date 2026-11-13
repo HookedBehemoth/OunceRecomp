@@ -12,6 +12,7 @@
    free registered buffer (host memory: the pool's guest memory is not used). The video service itself (nn::gsv) is
    not emulated: nn::codec::video::Initialize does nothing. */
 #include "hos.h"
+#include "hos_ledger.h"
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
@@ -165,9 +166,9 @@ HLE(_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPv
     o->w = p->magic == PREF_MAGIC && p->w ? p->w : 1280, o->h = p->magic == PREF_MAGIC && p->h ? p->h : 720;
     o->format = p->magic == PREF_MAGIC ? (int)p->format : 2;
     o->count = (int)ARG(4) > 0 ? (int)ARG(4) : 1;
-    o->rgba = (uint8_t *)calloc((size_t)o->count, (size_t)o->w * o->h * 4);
+    o->rgba = (uint8_t *)hos_ledger_took(HL_VIDEO, calloc((size_t)o->count, (size_t)o->w * o->h * 4));
     /* (hookshot, issue 342: an allocation that failed went on as a NULL picture, and the movie thread read address 0) */
-    o->nv12 = (uint8_t *)calloc((size_t)o->count, (size_t)o->w * o->h * 3 / 2);
+    o->nv12 = (uint8_t *)hos_ledger_took(HL_VIDEO, calloc((size_t)o->count, (size_t)o->w * o->h * 3 / 2));
     /* (hookshot) video black, not zeros. A buffer the game takes before the decoder's first picture is shown as it is
        (dec_acquire: "nothing decoded, the buffer again", up to ~100 ms into a movie's start), and NV12 zeros are bright
        green (luma 0 with no chroma): one green frame at each scene change that opens a movie. Luma 16, chroma 128 is
@@ -191,7 +192,7 @@ HLE(_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPv
 HLE(_ZN2nn5codec24FinalizeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeE) {
     Pool *o = (Pool *)host_of(ARG(0), POOL_MAGIC);
     if (o && o->sws) sws_freeContext(o->sws);
-    if (o) free(o->rgba), free(o->nv12), free(o);
+    if (o) hos_ledger_frees(HL_VIDEO, o->rgba), hos_ledger_frees(HL_VIDEO, o->nv12), free(o->rgba), free(o->nv12), free(o);
     set_host(ARG(0), POOL_MAGIC, NULL);
 }
 /* (hookshot) the pool's picture as RGBA, from its NV12, if it was not made yet. Each 1080p frame of OoT's movies was
@@ -312,6 +313,7 @@ static void dec_init_sized(Ctx *c, enum AVCodecID id, const char *what, int w, i
     RET(0);
 }
 static void picture_free(Picture *p) {
+    hos_ledger_frees(HL_VIDEO, p->rgba), hos_ledger_frees(HL_VIDEO, p->nv12);
     free(p->rgba), free(p->nv12);
     memset(p, 0, sizeof *p);
 }
@@ -351,10 +353,11 @@ static void queue_frame(Dec *d, const AVFrame *f) {
     const int nv12 = f->format == AV_PIX_FMT_NV12;   /* (hookshot: Media Foundation's pictures, kept as NV12 alone) */
     p.rgba = nv12 ? NULL : (uint8_t *)malloc((size_t)w * h * 4);
     p.nv12 = nv12 ? (uint8_t *)malloc((size_t)w * h * 3 / 2) : (uint8_t *)calloc(1, (size_t)w * h * 3 / 2);
+    hos_ledger_took(HL_VIDEO, p.rgba), hos_ledger_took(HL_VIDEO, p.nv12);
     if (!p.nv12 || (!nv12 && !p.rgba)) {   /* (out of memory: this frame is dropped, not written through NULL; issue 342) */
         static volatile LONG told;
         if (InterlockedIncrement(&told) <= 4) hos_log("video: no memory for a %dx%d frame: dropped", w, h);
-        free(p.rgba), free(p.nv12);
+        picture_free(&p);
         return;
     }
     uint8_t *dst[4] = {p.rgba, NULL, NULL, NULL};

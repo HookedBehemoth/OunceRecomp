@@ -103,7 +103,7 @@ void shader_describe(const DState& s, char* out, size_t cap);
 /// Whether the textures bound now answer what the variant was translated for
 bool shader_answers_hold(const DState& s, const DrawProg& p);
 void shader_stats(char* out, size_t cap, double frames);
-/// (memory by owner) The shader objects and variants alive, in counts (none is ever destroyed), after what is in out
+/// The shader objects and variants alive, in counts (none is ever destroyed)
 void shader_held_stats(char* out, size_t cap);
 
 }  // namespace hsd

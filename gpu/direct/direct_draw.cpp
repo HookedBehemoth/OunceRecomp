@@ -298,7 +298,7 @@ struct ListDraw {
 namespace {
 
 ListDraw& ctx(List* l) {
-    if (!l->dctx) l->dctx = new ListDraw;
+    if (!l->dctx) l->dctx = new ListDraw, mem_account_main(MO_M_LISTS, (int64_t)sizeof(ListDraw));
     return *l->dctx;
 }
 
@@ -1307,6 +1307,7 @@ void draw_probe_slot(CmdSlot* s) {
 }
 
 void draw_list_free(List* l) {
+    if (l->dctx) mem_account_main(MO_M_LISTS, -(int64_t)sizeof(ListDraw));
     delete l->dctx;
     l->dctx = nullptr;
 }

@@ -1,6 +1,7 @@
 /* Guest memory map: the system region (our own objects), the heap, address regions.
    The whole 4 GB window is committed up front (hos_main.c), so "mapping" here is only bookkeeping and zeroing. */
 #include "hos.h"
+#include "hos_ledger.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -339,3 +340,23 @@ HLE(_ZN2nn2os15QueryMemoryInfoEPNS0_10MemoryInfoE) {
 
 /* nn::os::SetDyingMessageRegion(unsigned long, unsigned long) -> Result */
 HLE(_ZN2nn2os21SetDyingMessageRegionEmm) { RET(0); }
+
+/* The ledger's owners in MB into out, their sum in bytes, and the address space handed to the guest (image, system region,
+   heap, regions). Returns the length written. Called by name from the direct back end (hos_posix_: the exported prefix) */
+size_t hos_posix_mem_ledger(char *out, size_t cap, uint64_t *ours, uint64_t *guest_committed) {
+    static const char *const names[HL_N] = {"nvn recordings", "nvn command memory", "packets", "terrain tiles kept", "video pictures"};
+    size_t k = 0;
+    uint64_t sum = 0;
+    for (int i = 0; i < HL_N; i++) {
+        const int64_t b = __atomic_load_n(&hos_ledger[i], __ATOMIC_RELAXED);
+        sum += (uint64_t)b;
+        const int n = snprintf(out + k, k < cap ? cap - k : 0, "%s%s %lld", i ? ", " : "", names[i], (long long)(b / (1 << 20)));
+        if (n > 0) k += (size_t)n;
+    }
+    LOCK();
+    uint64_t g = hos_program_size + (HOS_SYSTEM_END - HOS_SYSTEM_BASE) + hos_heap_size;
+    for (int i = 0; i < nregions; i++) g += regions[i].size;
+    UNLOCK();
+    *ours = sum, *guest_committed = g;
+    return k < cap ? k : (cap ? cap - 1 : 0);
+}

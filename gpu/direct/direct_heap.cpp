@@ -59,7 +59,7 @@ HeapBuf res_heap, smp_heap;
 bool ready = false;
 uint64_t tail_at = 0;
 
-/// The memory type of a make_mapped buffer with those requirements (UINT32_MAX: none)
+/// (UINT32_MAX: none)
 uint32_t mapped_type(const VkMemoryRequirements& mr) {
     const VkMemoryPropertyFlags want[2] = {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -74,8 +74,7 @@ uint32_t mapped_type(const VkMemoryRequirements& mr) {
     return type;
 }
 
-/// A buffer in device-local, host-visible memory (the BAR) where there is one, mapped, with its device address; its
-/// allocation counted to the owner (mem_account)
+/// A buffer in device-local, host-visible memory (the BAR) where there is one, mapped, with its device address
 bool make_mapped(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
                  VkDeviceAddress& address, MemOwner owner) {
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -378,7 +377,7 @@ bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer
     return make_mapped(size, usage, buffer, memory, map, address, owner);
 }
 void mapped_buffer_free(VkBuffer buffer, VkDeviceMemory memory, MemOwner owner) {
-    VkMemoryRequirements mr;   // (asked again: the size and the type make_mapped counted)
+    VkMemoryRequirements mr;   // (what make_mapped counted: the same question gives the same size and type)
     vkGetBufferMemoryRequirements(dev.device, buffer, &mr);
     mem_account(owner, mapped_type(mr), -(int64_t)mr.size);
     vkDestroyBuffer(dev.device, buffer, nullptr), vkFreeMemory(dev.device, memory, nullptr);

@@ -22,6 +22,7 @@
 #include "direct_crit.h"
 #include "../gpu/render/rx_nvn.h"
 #include "nvn_list.h"
+#include "hos_ledger.h"
 #include "eng_lists.h"
 #include "eng_jobs.h"
 #include "direct.h"
@@ -1496,7 +1497,7 @@ static unsigned pool_class(size_t n) {
 static void *pool_get(size_t n, unsigned *cls) {
     const unsigned c = pool_off() ? POOL_MAX + 1 : pool_class(n);
     *cls = c;
-    if (c > POOL_MAX) return malloc(n);
+    if (c > POOL_MAX) return hos_ledger_took(HL_NVN_CMD, malloc(n));
     AcquireSRWLockExclusive(&pool_lock);
     void *b = pool_head[c];
     if (b) {
@@ -1504,11 +1505,12 @@ static void *pool_get(size_t n, unsigned *cls) {
         pool_bytes[c] -= (uint64_t)1 << c;
     }
     ReleaseSRWLockExclusive(&pool_lock);
-    return b ? b : malloc((size_t)1 << c);
+    return b ? b : hos_ledger_took(HL_NVN_CMD, malloc((size_t)1 << c));
 }
 static void pool_put(void *b, unsigned cls) {
     if (!b) return;
     if (cls > POOL_MAX) {
+        hos_ledger_frees(HL_NVN_CMD, b);
         free(b);
         return;
     }
@@ -1520,7 +1522,7 @@ static void pool_put(void *b, unsigned cls) {
         pool_bytes[cls] += (uint64_t)1 << cls;
     }
     ReleaseSRWLockExclusive(&pool_lock);
-    if (!keep) free(b);
+    if (!keep) hos_ledger_frees(HL_NVN_CMD, b), free(b);
 }
 
 /* (hookshot) A command buffer's recording buffer lives in host memory, and its pointers in this table, not in the

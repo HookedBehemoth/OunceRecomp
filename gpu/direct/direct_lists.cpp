@@ -111,6 +111,7 @@ void list_unref(List* l) {
         if (x->packet && x->ended) st_pkt_bytes.fetch_sub((int64_t)x->pkt.size(), std::memory_order_relaxed), st_pkt_lists.fetch_sub(1, std::memory_order_relaxed);
         if (x->slot) cmd_slot_drop(x->slot);
         dump_free(x->dumps);
+        if (x->counted) mem_account_main(MO_M_LISTS, -(int64_t)x->counted);
         delete x;
         st_live.fetch_sub(1, std::memory_order_relaxed);
     }
@@ -336,6 +337,11 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_end(void* list) 
     List* l = (List*)list;
     if (!l) return;
     pass_list_end(l);
+    if (!l->counted) {
+        l->counted = sizeof(List) + l->pkt.capacity() + l->ops.capacity() * sizeof(FrameOp) + l->segs.capacity() * sizeof(Seg) +
+                     l->executed.capacity() * sizeof(const List*);
+        mem_account_main(MO_M_LISTS, (int64_t)l->counted);
+    }
     if (l->packet) {
         l->pkt.shrink_to_fit();
         st_pkt_bytes.fetch_add((int64_t)l->pkt.size(), std::memory_order_relaxed);

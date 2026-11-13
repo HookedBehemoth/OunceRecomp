@@ -1,6 +1,7 @@
 /* (native-vk engine cut E2) HOS_ENG_LISTS: host packets for the game's load-time command lists. See eng_lists.h and
    gpu/render/nvn_pkt.h for the design and the lifetime rules; host/nvn_native.c calls in. */
 #include "eng_lists.h"
+#include "hos_ledger.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,6 +76,7 @@ static nvn_pkt *pkt_get(size_t n, unsigned *cls) {
         k = (nvn_pkt *)calloc(1, (size_t)1 << c);
         if (!k) return NULL;
         ADD(pool_bytes, (uint64_t)1 << c);
+        hos_ledger_add(HL_ENG_PKTS, (int64_t)1 << c);
     }
     return k;
 }

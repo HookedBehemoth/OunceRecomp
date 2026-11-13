@@ -442,6 +442,11 @@ struct Variant {
     std::vector<RawAnswer> answers;
     Variant* next = nullptr;
 };
+void count_code(const Variant& v) {
+    int64_t b = sizeof(Variant);
+    for (const VStage& st : v.stages) b += (int64_t)(sizeof(VStage) + st.spirv.capacity() * 4 + st.c1.capacity());
+    mem_account_main(MO_M_SHADERS, b);
+}
 struct StageScan {
     uint64_t key = 0;
     uint8_t sph[sizeof(Shader::ProgramHeader)]{};
@@ -1630,6 +1635,7 @@ void scan_slot(Slot* s) {
         v->d.task_code = s->task ? s->task_key : 0;
         if (!finish(*v)) continue;
         st_from_disk.fetch_add(1, std::memory_order_relaxed);
+        count_code(*v);
         publish(*s->fam, v.release(), s->serial);
     }
     s->fam->loaded.store(true, std::memory_order_release);
@@ -1796,6 +1802,7 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
         st_translate_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
         if (ok) {
             st_translated.fetch_add(1, std::memory_order_relaxed);
+            count_code(*v);
             publish(*sl.fam, v.release(), sl.serial);
         } else {
             st_failed.fetch_add(1, std::memory_order_relaxed);

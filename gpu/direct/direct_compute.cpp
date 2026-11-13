@@ -790,6 +790,7 @@ void publish(Family& f, Variant* v) {
     do v->next = head;
     while (!f.variants.compare_exchange_weak(head, v, std::memory_order_release, std::memory_order_acquire));
     st_variants.fetch_add(1, std::memory_order_relaxed);
+    mem_account_main(MO_M_SHADERS, (int64_t)(v->spirv.capacity() * 4));
 }
 
 /// One variant of f translated on a worker for these c0 bytes (want: its key in f's pending set, put there by the caller)

@@ -73,7 +73,7 @@ bool dmabuf_open() {   // (once, at layer0_on)
     return true;
 }
 /// The memory of guest [lo, lo + size) as an imported dma-buf; VK_NULL_HANDLE when udmabuf or the import refused it
-std::atomic<uint32_t> import_type{UINT32_MAX};   // (the imports' memory type, for the count of one freed: mem_account)
+std::atomic<uint32_t> import_type{UINT32_MAX};   // (for mem_account at a free)
 VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
     UdmabufCreate c{(uint32_t)dmabuf_memfd, 1 /* UDMABUF_FLAGS_CLOEXEC */, lo, size};
     const int fd = ioctl(dmabuf_dev, kUdmabufCreate, &c);

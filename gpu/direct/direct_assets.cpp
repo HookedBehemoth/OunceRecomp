@@ -106,6 +106,7 @@ const uint8_t* map_file(const std::string& path, size_t& n) {
     close(fd);
     if (p == MAP_FAILED) return nullptr;
     n = (size_t)st.st_size;
+    mem_main_mapped(n);
     return (const uint8_t*)p;
 }
 /// The record's block size: the kept formats' from the NVN format, the converted ones' from what they became
@@ -608,7 +609,11 @@ bool read_range(const Rec& r, uint64_t a, uint64_t b, uint8_t* dst, int64_t& zby
         const uint64_t fa = f.raw_off, fb = f.raw_off + f.raw_size;
         if (fb <= a || fa >= b) continue;
         if (f.pack >= S.packs.size() || !S.packs[f.pack] || f.off + f.csize > S.pack_n[f.pack] || fb > r.raw) return false;
-        if (tl_z.size() < f.csize) tl_z.resize(std::max<size_t>(f.csize, 1u << 20));
+        if (tl_z.size() < f.csize) {
+            const size_t was = tl_z.capacity();
+            tl_z.resize(std::max<size_t>(f.csize, 1u << 20));
+            mem_account_main(MO_M_SCRATCH, (int64_t)tl_z.capacity() - (int64_t)was);
+        }
         size_t got = 0;
         while (got < f.csize) {
             const ssize_t r = pread(S.fds[f.pack], tl_z.data() + got, f.csize - got, (off_t)(f.off + got));
@@ -621,7 +626,11 @@ bool read_range(const Rec& r, uint64_t a, uint64_t b, uint8_t* dst, int64_t& zby
             const size_t n = ZSTD_decompressDCtx(tl_dctx, dst + (fa - a), f.raw_size, z, f.csize);
             if (ZSTD_isError(n) || n != f.raw_size) return false;
         } else {   // (a frame across the upload's edge: through host memory)
-            if (tl_scratch.size() < f.raw_size) tl_scratch.resize(f.raw_size);
+            if (tl_scratch.size() < f.raw_size) {
+                const size_t was = tl_scratch.capacity();
+                tl_scratch.resize(f.raw_size);
+                mem_account_main(MO_M_SCRATCH, (int64_t)tl_scratch.capacity() - (int64_t)was);
+            }
             const size_t n = ZSTD_decompressDCtx(tl_dctx, tl_scratch.data(), f.raw_size, z, f.csize);
             if (ZSTD_isError(n) || n != f.raw_size) return false;
             const uint64_t lo = std::max(a, fa), hi = std::min(b, fb);

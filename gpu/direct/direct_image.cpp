@@ -858,6 +858,30 @@ void image_sweep(uint64_t present) {
     }
 }
 
+void image_mem_split(ImageSplit& s) {
+    std::shared_lock lk(images_mu);
+    for (const auto& [k, im] : images) {
+        s.images++;
+        const bool colour = im->compressed || (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT);
+        if (im->pooled) {   // (no memory of its own: its range of the pool counts while it owns it)
+            if (im->owner.load(std::memory_order_relaxed)) s.pool_use[colour ? 2 : im->width == im->height ? 0 : 1] += im->pool_size;
+            continue;
+        }
+        const uint64_t b = mem_size(im->mem);
+        const uint8_t w = im->written.load(std::memory_order_relaxed);
+        if (im->asset) s.kind[ImageSplit::STORE] += b;   // (image_stats' order of sources)
+        else if (w & W_ATTACHMENT) s.kind[colour ? ImageSplit::TARGET_COLOUR : ImageSplit::TARGET_DEPTH] += b;
+        else if (w & (W_COPY | W_CLEAR)) s.kind[ImageSplit::COPIED] += b;
+        else if (w & W_STORE) s.kind[ImageSplit::STORE] += b;
+        else if (w & W_TERRAIN) s.kind[ImageSplit::TERRAIN] += b;
+        else if (w & W_GLYPH) s.kind[ImageSplit::GLYPH] += b;
+        else if (w & W_TEXELS) s.kind[ImageSplit::TEXELS] += b;
+        else s.kind[ImageSplit::NEVER] += b;
+    }
+    if (placeholder.mem) s.placeholder = mem_size(placeholder.mem);
+    s.table = images.size() * (sizeof(Image) + sizeof(Key) + 32);   // (a record, its key and the map's node, about)
+}
+
 void image_stats(char* out, size_t cap) {
     int64_t live = 0, color = 0, depth = 0, bc = 0, rendered = 0, copied = 0, texels = 0, store = 0, terrain = 0, glyph = 0,
             untouched = 0, assets = 0, unfilled = 0, no_content = 0, nd = 0, nd_bits[8] = {}, nd_never = 0;

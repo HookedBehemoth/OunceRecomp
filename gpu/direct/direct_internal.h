@@ -77,29 +77,43 @@ extern PFN_vkGetInstanceProcAddr get_instance_proc;   // (direct_main.cpp: VMA's
 // ---- direct_vma.cpp: images and buffers in VMA's blocks ----
 struct Mem;   // (a VmaAllocation)
 bool vma_init();
-/// Who holds device memory, for the 600-present line "memory by owner" (mem_owner_stats). Every vkAllocateMemory of the back
-/// end and every image and buffer in VMA's blocks is counted to one of them, in bytes and in allocations, apart for the
-/// device-local heaps and the host's: what the driver reports past their sum is its own (command buffers, shader objects,
-/// descriptor state) or an owner not counted here
+/// Memory by owner. Each allocation of device memory and each of the back end's larger heap allocations is counted to an
+/// owner; the periodic memory lines print them against the driver's and the process's totals
 enum MemOwner : int {
-    MO_ARENA,       // (direct_draw.cpp: the frame arenas' chunks, a command slot's)
-    MO_TASK,        // (direct_task.cpp: a command slot's task pool)
-    MO_QUERY,       // (direct_query.cpp: a command slot's report buffer; its query pools are the driver's)
-    MO_CONST,       // (direct_shader.cpp: the programs' constants, c1)
-    MO_HEAP,        // (direct_heap.cpp, direct_draw.cpp: the descriptor heaps, the window table, the zero buffer)
-    MO_UPLOAD,      // (direct_cmd.cpp: the threads' upload staging)
-    MO_TRANSIENT,   // (the transient pool below)
-    MO_L0_VRAM,     // (direct_pools.cpp: layer 0's VRAM blocks)
-    MO_L0_IMPORT,   // (direct_pools.cpp: guest memory's chunks, imported)
-    MO_IMAGE_STORE, // (direct_image.cpp: the images of textures from the store)
-    MO_IMAGE,       // (direct_image.cpp: the game's other images)
-    MO_OTHER,       // (the rest: the placeholder, shots, dumps and readbacks, the marks' buffer, the offscreen image)
+    MO_ARENA,
+    MO_TASK,
+    MO_QUERY,       // (the report buffers; the query pools are the driver's)
+    MO_CONST,       // (the programs' constants)
+    MO_HEAP,        // (the descriptor heaps, the window table, the zero buffer)
+    MO_UPLOAD,
+    MO_TRANSIENT,
+    MO_L0_VRAM,
+    MO_L0_IMPORT,   // (guest memory imported: the guest's pages, not new memory)
+    MO_IMAGE_STORE,
+    MO_IMAGE,       // (the game's images not from the store)
+    MO_OTHER,       // (the default: the placeholder, shots, dumps and readbacks)
+    // (the process's own memory: mem_account_main)
+    MO_M_LISTS,
+    MO_M_SCRATCH,   // (the store readers' scratch)
+    MO_M_SHADERS,   // (the variants' SPIR-V and constants, kept)
     MO_N
 };
-/// bytes of memory type `type` made (negative: freed) for the owner. Two relaxed atomic adds: callable anywhere
+/// bytes of Vulkan memory type `type` made, or freed when negative. Lock-free
 void mem_account(MemOwner owner, uint32_t type, int64_t bytes);
-/// The line: the owners, `held` (what has no byte figure: direct_cmd.cpp's and the shaders' counts), the sums against the driver's
-void mem_owner_stats(char* out, size_t cap, const char* held);
+void mem_account_main(MemOwner owner, int64_t bytes);
+/// A file mapped for reading: named in the main memory line, not summed (its resident part is not known)
+void mem_main_mapped(size_t n);
+/// What the images hold now, in bytes, by what they are for (a walk of the images under their lock)
+struct ImageSplit {
+    enum { STORE, TERRAIN, GLYPH, TEXELS, COPIED, NEVER, TARGET_DEPTH, TARGET_COLOUR, KINDS };
+    uint64_t kind[KINDS] = {};   // (images with memory of their own, by their first source; rendered ones by aspect)
+    uint64_t pool_use[3] = {};   // (the transient pool's ranges owned now: square depth (shadow maps), other depth, colour)
+    uint64_t placeholder = 0, table = 0, images = 0;   // (table: the images' records, main memory)
+};
+void image_mem_split(ImageSplit& s);
+constexpr uint64_t kMemoryPeriod = 600;   // (presents between two blocks of the memory lines)
+/// The memory lines' text: VRAM by purpose, main memory by owner, the allocation counts
+void mem_owner_stats(char* vram, char* main_mem, char* counts, size_t cap);
 bool mem_image(const VkImageCreateInfo& ci, VkImage& image, Mem*& mem, MemOwner owner = MO_OTHER);
 void mem_image_free(VkImage image, Mem* mem);
 /// The transient pool: one device allocation of size bytes of a device-local type in type_bits, made once (false: none)
