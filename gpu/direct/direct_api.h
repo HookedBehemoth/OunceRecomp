@@ -77,6 +77,8 @@ void hsd_pass_inline(void *list, uint64_t key);
    initialization or finalize of the same object is then not a second release; a registration of it before that holds
    the image again */
 void hsd_texture_freed(const void *tex);
+int64_t hsd_vram_free(void);   /* (M6f) free VRAM in bytes as the driver sees it (budget minus usage of the device-local heap,
+                                  plus images already waiting to be destroyed), sampled once a present; -1 not yet */
 void hsd_texture_cached(const void *tex, int cached);   /* (M6f) agl released tex to its LRU cache (1: still registered,
                                                           its texels kept) or took it back (0); counted, nothing evicted */
 void hsd_texture_held(const void *tex);   /* (M6f) the game took a texture it freed again, as it was (its allocator's entry

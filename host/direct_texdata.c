@@ -112,7 +112,8 @@ static _Thread_local const void *tl_moving;
 static _Thread_local int tl_in_move;
 const void *direct_texdata_moving(void) { return tl_moving; }
 ENTRY_HOOK(0x807981f0) {
-    if (tl_in_move || !rx_direct() || !direct_assets_on()) return 0;
+    if (tl_in_move) return tl_in_move = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
+    if (!rx_direct() || !direct_assets_on()) return 0;
     static A64Fn body;
     if (!body) body = a64_lookup(0x807981f0ull);
     if (!body) return 0;
@@ -132,4 +133,55 @@ void direct_texdata_line(char *out, size_t cap) {
              "destroyed %lld; in the cache now %lld (unknown tds %lld, table full %lld)", (long long)n_created, (long long)n_aliases,
              (long long)n_moves, (long long)n_to_cache, (long long)n_from_cache, (long long)n_destroyed, (long long)n_cached_now,
              (long long)n_unknown, (long long)n_full);
+}
+
+/* (M6f, game patch) The cache eviction driven by free VRAM, not by the texture heap's bytes. agl's per-frame update
+   f_80797240(mgr) destroys cached (count 0) textures, through its own f_8079bbe0, while the heap's free bytes
+   ([mgr+0x40]+0x1ee8) are under mgr+0x340 (TextureCacheRejectionThreshold, 120 MB) and compaction is idle
+   (docs/direct/texture-streaming.md 2.6). The heap's bytes say nothing about VRAM here (the store's BC images are 1-2x the
+   console's bytes, the console's texels are never copied). So for that one call the threshold is raised by what free
+   VRAM lacks of kVramMargin: the game then evicts LRU textures until its heap has that many more bytes free (or nothing
+   is cached), in its own order and through its own destroy; the value is put back after the call, so the game's own
+   heap-pressure path (and its allocation-failure eviction, f_83537760) is unchanged. Free VRAM is the back end's
+   figure (hsd_vram_free: the driver's budget minus usage, so other processes count, plus images already waiting to be
+   destroyed, which are freed within a few presents). The back end has no policy: it reports the number and frees what
+   the game destroys.
+   kVramMargin, 1.5 GB: what a scene change allocates before the game releases the old scene's textures (the scene route,
+   m6f_s5_d: the device-local usage rose by 0.6-1.4 GB across a load, store images 0.6 GB and the new scene's targets),
+   so that a load that starts at the margin does not exhaust VRAM. */
+#define kVramMargin (1536ll << 20)
+static _Thread_local int tl_in_update;
+static volatile LONG64 n_vram_evicted, n_vram_frames, last_free_vram = -1, last_line;
+ENTRY_HOOK(0x80797240) {
+    if (tl_in_update) return tl_in_update = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
+    if (!rx_direct() || !direct_assets_on() || !rx_direct()->vram_free) return 0;
+    static A64Fn body;
+    if (!body) body = a64_lookup(0x80797240ull);
+    if (!body) return 0;
+    const uint64_t mgr = ARG(0);
+    if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1ee8, 8)) return 0;
+    const int64_t vf = rx_direct()->vram_free();
+    last_free_vram = vf;
+    const uint64_t game_thr = G64(mgr + 0x340), heap_free = G64(G64(mgr + 0x40) + 0x1ee8);
+    int raised = 0;
+    if (vf >= 0 && vf < kVramMargin && n_cached_now > 0) {
+        const uint64_t want = heap_free + (uint64_t)(kVramMargin - vf);
+        if (want > game_thr) G64(mgr + 0x340) = want, raised = 1;
+    }
+    const LONG64 d0 = n_destroyed;
+    tl_in_update = 1;
+    body(c);
+    tl_in_update = 0;
+    if (raised) {
+        G64(mgr + 0x340) = game_thr;
+        InterlockedAdd64(&n_vram_evicted, n_destroyed - d0);
+        InterlockedIncrement64(&n_vram_frames);
+    }
+    if (hos_present_count / 600 != last_line / 600) {
+        last_line = hos_present_count;
+        hos_log("assets: VRAM eviction patch: free VRAM %lld MB (margin %lld MB), textures in agl's cache %lld, evicted by the "
+                "patch %lld in %lld frames", (long long)(vf >> 20), (long long)(kVramMargin >> 20), (long long)n_cached_now,
+                (long long)n_vram_evicted, (long long)n_vram_frames);
+    }
+    return 1;
 }

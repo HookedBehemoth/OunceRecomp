@@ -717,9 +717,17 @@ bool image_upload_region(const nvn_tex* t, unsigned level, unsigned layer0, cons
     return true;
 }
 
+std::atomic<int64_t> dying_bytes{0};
+int64_t image_dying_bytes() { return dying_bytes.load(std::memory_order_relaxed); }
 void image_sweep(uint64_t present) {
     std::unique_lock lk(images_mu, std::try_to_lock);   // (a texture being made: the next present)
     if (!lk.owns_lock()) return;
+    {   // (M6f: what the images waiting to die hold: VRAM already given back, for the free VRAM the host reads)
+        int64_t b = 0;
+        for (const Image* im : dying)
+            if (!im->refs && im->dead_present) b += (int64_t)mem_size(im->mem);
+        dying_bytes.store(b, std::memory_order_relaxed);
+    }
     for (size_t i = 0; i < dying.size();) {
         Image* im = dying[i];
         bool gone = false;

@@ -32,7 +32,8 @@ typedef struct {
     void (*shots)(const char *dir, int every);
     void (*texture_freed)(const void *tex);   /* (M6f) the game freed the texture's storage (rt_slots.c) */
     void (*texture_held)(const void *tex);    /* (M6f) ... and took the texture again */
-    void (*texture_cached)(const void *tex, int cached);   /* (M6f) a texture released to agl's LRU cache (1), taken back (0) */
+    void (*texture_cached)(const void *tex, int cached);
+    int64_t (*vram_free)(void);   /* (M6f) free VRAM, the driver's figure */   /* (M6f) a texture released to agl's LRU cache (1), taken back (0) */
 } hsd_fns;
 
 /* rx_backend.c: the library's list calls in direct mode (loaded at the first call, from any thread), NULL otherwise */

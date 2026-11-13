@@ -352,15 +352,16 @@ int direct_assets_skip_packaged(uint64_t bytes) {
 /* (M6f) f_80f6c9d0 (lr 0x80f6cb20) is agl's generic pool wrapper (tera's pools and Replace requests use it too:
    docs/direct/texture-streaming.md 1): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
    (f_80f6c580), whose body runs from here with this thread noted */
-static _Thread_local int tl_heap_init;
+static _Thread_local int tl_heap_init, tl_heap_token;
 ENTRY_HOOK(0x80f6c580) {
-    if (tl_heap_init || !rx_direct() || !direct_assets_on()) return 0;
+    if (tl_heap_token) return tl_heap_token = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
+    if (!rx_direct() || !direct_assets_on()) return 0;
     static A64Fn body;
     if (!body) body = a64_lookup(0x80f6c580ull);
     if (!body) return 0;
-    tl_heap_init = 1;
+    tl_heap_init = tl_heap_token = 1;
     body(c);
-    tl_heap_init = 0;
+    tl_heap_init = tl_heap_token = 0;
     return 1;
 }
 void direct_assets_pool_made(uint64_t lr, uint64_t gpu, uint64_t size) {

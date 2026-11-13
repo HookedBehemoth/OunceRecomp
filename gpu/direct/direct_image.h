@@ -69,7 +69,8 @@ void image_texture_released(const nvn_tex* t);
 /// object's later release (initialized again, finalized) is then not counted twice, and a registration before it holds it again
 void image_texture_freed(const nvn_tex* t);
 void image_texture_held(const nvn_tex* t);
-void image_texture_cached(const nvn_tex* t, bool cached);   // (M6f) agl's LRU cache: counted on the image   // (M6f) taken again after such a free: held again (made again if it went)
+void image_texture_cached(const nvn_tex* t, bool cached);
+int64_t image_dying_bytes();   // (M6f)   // (M6f) agl's LRU cache: counted on the image   // (M6f) taken again after such a free: held again (made again if it went)
 void image_texture_registered(const nvn_tex* t);
 /// The image of an NVN texture (the placeholder when it has none this GPU can hold; null: a buffer texture or none made)
 Image* image_find(const nvn_tex* t);

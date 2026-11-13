@@ -380,6 +380,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     strict_present(n);   // (M6b: arming)
     cmd_frame_presented(n);
     image_sweep(n);
+    mem_budget_sample(image_dying_bytes());   // (M6f)
     assets_present(n);
     dump_present(n);
     pstats_present(n);   // (M6h: HOS_DBG=pstats)

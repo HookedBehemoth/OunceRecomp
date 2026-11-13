@@ -471,7 +471,7 @@ static _Thread_local int in_alloc;
 /* (M6f) In direct mode the alloc's body runs from here, so the entry it gives is seen (alloc_gave); RX_BACKEND unset: as
    before, the body runs after the hook */
 ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
-    if (in_alloc) return 0;   /* (the lifted body, called below) */
+    if (in_alloc) return in_alloc = 0, 0;   /* (the lifted body, called below: the flag is taken by its first entry, so a nested call is hooked as any) */
     const int handled = alloc_pre(c);
     if (off_() || !rx_direct()) return handled;
     if (!handled) {
@@ -808,7 +808,9 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
                 break;
             }
     ReleaseSRWLockExclusive(&mu);
-    if (!park && block && rx_direct()) {   /* (M6f) the game's free runs: the entry's texture is gone to it */
+    static int nofree = -1;   /* (M6f) HOS_DBG=nodtafree: the back end is not told (a diagnosis, A/B) */
+    if (nofree < 0) { const char *d = getenv("HOS_DBG"); nofree = d && strstr(d, "nodtafree") != NULL; }
+    if (!park && block && rx_direct() && !nofree) {   /* (M6f) the game's free runs: the entry's texture is gone to it */
         nvn_tex t;
         if (!entry_tex(e, &t)) InterlockedIncrement64(&n_freed_noobj);
         else if (nvn_texture_storage_freed(&t)) InterlockedIncrement64(&n_freed_told);

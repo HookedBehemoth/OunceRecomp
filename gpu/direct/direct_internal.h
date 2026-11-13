@@ -85,7 +85,9 @@ void mem_buffer_free(VkBuffer buffer, Mem* mem);
 void mem_flush(Mem* mem);
 void mem_invalidate(Mem* mem);
 uint64_t mem_size(Mem* mem);
-void mem_stats(char* out, size_t cap);   // (M6f: the heaps' usage and budget, VMA's blocks)
+void mem_stats(char* out, size_t cap);
+void mem_budget_sample(int64_t pending);   // (M6f: free VRAM once a present, with the bytes of images waiting to die)
+extern std::atomic<int64_t> vram_free_now;   // (M6f: the heaps' usage and budget, VMA's blocks)
 extern std::atomic<int64_t> st_objects;   // (Vulkan objects made since the start: images, views, buffers, pools, command buffers)
 
 // ---- direct_sync.cpp: the queue's timeline, NVN fences, the guest's submits ----

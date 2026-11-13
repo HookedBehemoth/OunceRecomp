@@ -274,6 +274,9 @@ void texture_created(const nvn_tex* t) {
 extern "C" __attribute__((visibility("default"))) void hsd_texture_freed(const void* t) {   // (M6f)
     hsd::image_texture_freed((const nvn_tex*)t);
 }
+extern "C" __attribute__((visibility("default"))) int64_t hsd_vram_free(void) {   // (M6f: -1 not known yet)
+    return hsd::vram_free_now.load(std::memory_order_relaxed);
+}
 extern "C" __attribute__((visibility("default"))) void hsd_texture_cached(const void* t, int cached) {   // (M6f)
     hsd::image_texture_cached((const nvn_tex*)t, cached != 0);
 }
