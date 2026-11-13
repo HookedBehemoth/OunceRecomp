@@ -1,7 +1,7 @@
 // meshlab probe: a mesh stage shaped as the game's (32 threads, 126 vertices and 126 triangles, OUTPUTS vec4 attributes a
 // vertex, each thread writing vertices other threads also index), with SHARED_WORDS words of workgroup memory used as the
-// translator uses its stage buffer. Built in two sizes: with the workgroup memory RADV keeps the outputs in its mesh scratch
-// ring (more than 30 KB of NGG LDS), without it they fit LDS. Reads nothing: the triangles are small and fixed.
+// translator uses its stage buffer. Meant to put RADV's outputs past 30 KB of NGG LDS into its mesh scratch ring; at the default
+// SHARED_WORDS (2688) RADV made 29,290 bytes of LDS and no ring, so a larger SHARED_WORDS is needed for that. Reads nothing.
 #version 460
 #extension GL_EXT_mesh_shader : require
 #ifndef OUTPUTS
