@@ -1626,7 +1626,9 @@ int main(int argc, char** argv) {
         return different ? 1 : 0;
     }
     if (mode == "bench") {   // (M6h: the translator's mesh stage against the replacement, timed on the GPU, alternating)
-        if (repl_dir.empty()) die("bench needs --repl <dir>");
+        if (repl_dir.empty() && !late_mesh) die("bench needs --repl <dir> or --late mesh");
+        const bool with_pass = repl_dir.empty();   // (--late mesh: B is the translator's stage through the register-pressure pass)
+        late_mesh = false;
         bench_discard = discard;
         VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
         qi.queryType = VK_QUERY_TYPE_TIMESTAMP, qi.queryCount = 2;
@@ -1643,9 +1645,9 @@ int main(int argc, char** argv) {
         for (const Draw* d : draws) {
             Ready r = prepare(f, *d);
             v[0].ready.push_back(r), v[0].ms.push_back(r.ms);
-            const auto code = read_spv(repl_path(*r.p));
+            const auto code = with_pass ? late_of(r.p->stage(VK_SHADER_STAGE_MESH_BIT_EXT)->spirv) : read_spv(repl_path(*r.p));
             if (code.empty()) die("no replacement %s", repl_path(*r.p).c_str());
-            v[1].ready.push_back(r), v[1].ms.push_back(mesh_shader_of(*r.p, code, "repl"));
+            v[1].ready.push_back(r), v[1].ms.push_back(mesh_shader_of(*r.p, code, with_pass ? "late" : "repl"));
             groups += r.groups;
         }
         for (int k = 0; k < 2; k++) {   // (each variant: every draw, reps times, in one rendering a draw's target; two timestamps around)
@@ -1693,13 +1695,13 @@ int main(int argc, char** argv) {
         const double units = (double)groups * reps;
         std::printf("bench: %zu draws x %d reps, %llu mesh workgroups a rep, %d rounds%s\n", draws.size(), reps, (unsigned long long)groups, rounds,
                     discard ? ", rasterizer discard" : "");
-        const char* names[2] = {"translator", "replacement"};
+        const char* names[2] = {"translator", with_pass ? "with the pass" : "replacement"};
         for (int k = 0; k < 2; k++)
             std::printf("  %-11s median %.3f ms (p10 %.3f, p90 %.3f): %.1f ns a mesh workgroup, %.1f us a draw\n", names[k], median(v[k].ns) / 1e6,
                         lo(v[k].ns) / 1e6, hi(v[k].ns) / 1e6, median(v[k].ns) / units, median(v[k].ns) / (draws.size() * reps) / 1e3);
         std::vector<double> ratio;
         for (int r = 0; r < rounds; r++) ratio.push_back(v[1].ns[r] / v[0].ns[r]);
-        std::printf("  replacement / translator: median %.3f (p10 %.3f, p90 %.3f) over %d paired rounds\n", median(ratio), lo(ratio), hi(ratio), rounds);
+        std::printf("  %s / translator: median %.3f (p10 %.3f, p90 %.3f) over %d paired rounds\n", names[1], median(ratio), lo(ratio), hi(ratio), rounds);
         return 0;
     }
     if (mode == "state") {   // (each chosen draw's depth state and groups: nothing drawn)

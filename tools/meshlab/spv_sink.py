@@ -1,6 +1,9 @@
-"""A SPIR-V module with every side-effect-free instruction moved down to its first use within its block: a prototype of a
-late scheduling the translator could do, specified in docs/direct/hf-fix-report.md and NOT used by the game (an earlier
-version of it, applied in the game, made two mesh stages that write by address spill and lost the device in the market).
+"""A SPIR-V module with every side-effect-free instruction moved down to its first use within its block: the prototype
+(docs/direct/hf-fix-report.md) of the pass the translator now has, gpu/direct/direct_spv_late.cpp
+(docs/direct/spv-late-report.md). Kept as the record of what hf-fix-report.md measured; NOT what the game runs, and no
+longer the same result: the pass in the back end holds a block to a budget rather than emitting everything at its first
+use, counts the values held over the function's control flow, and keeps a new order block by block. Use
+tools/meshlab/spvlate (the pass as a command) for anything new.
 
     python3 -I tools/meshlab/spv_sink.py <in.spv> <out.spv> [--stats]
 
