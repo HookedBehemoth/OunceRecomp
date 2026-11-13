@@ -79,6 +79,11 @@ struct Mem;   // (a VmaAllocation)
 bool vma_init();
 bool mem_image(const VkImageCreateInfo& ci, VkImage& image, Mem*& mem);
 void mem_image_free(VkImage image, Mem* mem);
+/// The transient pool: one device allocation of size bytes of a device-local type in type_bits, made once (false: none)
+bool mem_pool_make(uint64_t size, uint32_t type_bits);
+uint64_t mem_pool_size();
+/// An image bound in the pool at offset (false: no pool, a memory type or alignment it cannot take, past its end)
+bool mem_pool_bind(VkImage image, uint64_t offset, const VkMemoryRequirements& req);
 /// A buffer; host_visible: mapped (host-cached for reads where the device has it)
 bool mem_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer, Mem*& mem, void** mapped);
 void mem_buffer_free(VkBuffer buffer, Mem* mem);

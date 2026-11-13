@@ -299,8 +299,11 @@ const hsd_fns *rx_direct(void) {
             DIRECT_FN(pass_known, "hsd_pass_known")
             DIRECT_FN(pass_inline, "hsd_pass_inline")
             DIRECT_FN(shots, "hsd_shots")
-            DIRECT_FN(texture_freed, "hsd_texture_freed")
-            DIRECT_FN(texture_held, "hsd_texture_held")
+            DIRECT_FN(transient_pool, "hsd_transient_pool")
+            DIRECT_FN(image_need, "hsd_image_need")
+            DIRECT_FN(transient_slot, "hsd_transient_slot")
+            DIRECT_FN(target_given, "hsd_target_given")
+            DIRECT_FN(host_event, "hsd_host_event")
             DIRECT_FN(texture_cached, "hsd_texture_cached")
             DIRECT_FN(vram_free, "hsd_vram_free")
 #undef DIRECT_FN

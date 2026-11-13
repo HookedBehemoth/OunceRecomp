@@ -30,8 +30,12 @@ typedef struct {
     void (*pass_inline)(void *list, uint64_t key);
     /* (M4d) shots of the presented frame */
     void (*shots)(const char *dir, int every);
-    void (*texture_freed)(const void *tex);   /* (M6f) the game freed the texture's storage (rt_slots.c) */
-    void (*texture_held)(const void *tex);    /* (M6f) ... and took the texture again */
+    /* the transient pool (rt_slots.c; gpu/direct/direct_api.h) */
+    int (*transient_pool)(uint64_t lo, uint64_t hi);
+    uint64_t (*image_need)(const void *desc, uint64_t *align);
+    void (*transient_slot)(uint64_t gpu, uint64_t cap);
+    void (*target_given)(const void *tex);
+    void (*host_event)(const char *reason, const char *what);
     void (*texture_cached)(const void *tex, int cached);
     int64_t (*vram_free)(void);   /* (M6f) free VRAM, the driver's figure */   /* (M6f) a texture released to agl's LRU cache (1), taken back (0) */
 } hsd_fns;

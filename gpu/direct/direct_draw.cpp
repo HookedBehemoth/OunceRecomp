@@ -887,6 +887,14 @@ void phlog(const List* l, const DrawProg* p) {
         const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0, id = h & 0xFFFFF;
         if (!h) continue;
         if (strict_on()) {   // (M6b: every draw that samples one, by a handle in a driver bank; handles in game buffers are not seen here)
+            if (heap_stale(id)) {   // (the transient pool: a target sampled after another took its memory)
+                char e[320], w[512];
+                heap_describe(id, e, sizeof e);
+                pass_where(l, w, sizeof w);
+                image_stale_bound();
+                strict_event("a transient target sampled after another took its memory", "handle %#x (c%u+%#x of stage %u), "
+                             "program %016llx: %s; %s", h, t.bank, t.offset, t.stage, (unsigned long long)p->key, e, w);
+            }
             if (const int ph = heap_placeholder(id)) {
                 char e[320], w[512];
                 heap_describe(id, e, sizeof e);

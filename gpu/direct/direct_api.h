@@ -72,17 +72,29 @@ void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer
 int  hsd_pass_known(uint64_t key);
 void hsd_pass_inline(void *list, uint64_t key);
 
-/* (M6f) The game freed tex's storage without finalizing it (agl::utl::DynamicTextureAllocator's free of the entry it was
-   made for: host/rt_slots.c): its content is gone; the back end lets go of its image as at a finalize. A later
-   initialization or finalize of the same object is then not a second release; a registration of it before that holds
-   the image again */
-void hsd_texture_freed(const void *tex);
+/* The transient pool (docs/direct/shadow-pool-report.md; host/rt_slots.c). The game's transient render targets (agl's
+   DynamicTextureAllocator) live in one range of storage addresses that the host names once, before the first texture is
+   initialized in it: the back end allocates that many bytes of device memory then, and never again for these targets. A
+   texture initialized in the range gets an image bound in that memory at its storage offset; images whose ranges overlap
+   share memory as the targets do on the console, and the one claimed last (initialized, or given out by the allocator)
+   owns the range.
+     hsd_transient_pool   the range [lo, hi) of storage addresses; 1 made
+     hsd_image_need       the bytes (and alignment) an image of a texture of this nvn_texdesc needs in the pool: the host
+                          sizes the game's blocks and its slots by it (0: no image of it)
+     hsd_transient_slot   the slot at storage address gpu has cap bytes, told before the texture is initialized there: an
+                          image that needs more is not bound (a strict event, the placeholder)
+     hsd_target_given     the game's allocator gave the target out (tex: its nvn_tex): its image claims its range if
+                          another has owned memory of it since
+     hsd_host_event       an event of the host's for strict mode (reason: a fixed string) */
+int hsd_transient_pool(uint64_t lo, uint64_t hi);
+uint64_t hsd_image_need(const void *desc, uint64_t *align);
+void hsd_transient_slot(uint64_t gpu, uint64_t cap);
+void hsd_target_given(const void *tex);
+void hsd_host_event(const char *reason, const char *what);
 int64_t hsd_vram_free(void);   /* (M6f) free VRAM in bytes as the driver sees it (budget minus usage of the device-local heap,
                                   plus images already waiting to be destroyed), sampled once a present; -1 not yet */
 void hsd_texture_cached(const void *tex, int cached);   /* (M6f) agl released tex to its LRU cache (1: still registered,
                                                           its texels kept) or took it back (0); counted, nothing evicted */
-void hsd_texture_held(const void *tex);   /* (M6f) the game took a texture it freed again, as it was (its allocator's entry
-                                             given back with the same storage): the image is held again */
 
 /* (M4d) Shots of the presented frame: every `every` presents a 1280x720 PNG of what is shown, <dir>/vk_<present>.png (the
    host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, the frozen back end's names). Called once, before the renderer starts */

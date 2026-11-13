@@ -78,21 +78,20 @@ struct KeyHash {
 std::shared_mutex images_mu;   // (the table, each image's refs and death)
 std::unordered_map<Key, std::unique_ptr<Image>, KeyHash> images;
 std::vector<Image*> dying;   // (refs 0: destroyed by image_sweep)
-// (M6f) Textures whose storage the game freed without finalizing them (hsd_texture_freed). Such a texture keeps its image
-// while its storage keeps its texels (the game samples a freed transient target later in the frame: its memory is only
-// reused once the allocator gives it out again): pending, by serial, with its key and storage range. A texture initialized
-// over storage overlapping a pending one's is that reuse: the pending texture lets go of its image then (freed: its object's
-// later release is not counted twice). Taken again by the game (its allocator, a registration) before or after: held.
-struct Pending {
-    Key k;
-    uint64_t lo, hi;
-};
-std::unordered_map<uint64_t, Pending> pending;   // (images_mu)
-std::unordered_set<uint64_t> freed;              // (images_mu)
-std::atomic<size_t> n_freed{0};   // (pending + freed, read without the lock)
-std::atomic<int64_t> st_freed{0}, st_freed_reused{0}, st_freed_again{0}, st_freed_held{0}, st_freed_used{0};
-bool hold_again(const nvn_tex* t);   // (below)
-void storage_reused(const nvn_tex* t);   // (below)
+// The transient pool (direct_image.h, docs/direct/shadow-pool-report.md): the range of storage addresses the host named
+// (host/rt_slots.c's slots), its images, and the slot sizes the host told (images_mu; on, lo and hi are set once before
+// the first texture in the range is initialized).
+struct Pool {
+    std::atomic<bool> on{false};
+    uint64_t lo = 0, hi = 0;
+    std::vector<Image*> images;
+    std::unordered_map<uint64_t, uint64_t> caps;   // (storage address -> the bytes of its slot)
+} pool;
+constexpr size_t kPoolImages = 1024;   // (image objects kept: those no texture is initialized over go, the longest unclaimed first, past it)
+constexpr uint64_t kPoolInUse = 2;     // (presents: a target claimed this recently may still be drawn or sampled by lists not sent)
+std::atomic<int64_t> st_pool_made{0}, st_pool_claims{0}, st_pool_pruned{0}, st_pool_took_live{0}, st_pool_nofit{0},
+    st_pool_given{0}, st_pool_given_claimed{0}, st_pool_stale_bound{0}, st_pool_made_total{0}, st_pool_claims_total{0};
+void claim(Image* im, const char* how);   // (below)
 Image placeholder;   // (one 1x1 RGBA8 image, for every texture that has none: copies and attachments skip it)
 std::once_flag placeholder_once;
 uint32_t next_id = 1;
@@ -158,11 +157,12 @@ int key_of(const nvn_tex* t, Key& k, FormatInfo& fi, int& bw, int& bh, int& bpb,
     return K_PLAIN;
 }
 
-/// A new image initialized on this thread's upload: GENERAL, and zero where it can be cleared
+/// An image initialized on this thread's upload: GENERAL from UNDEFINED (its content discarded), and zero where it can be cleared
 void init_image(Image& im) {
     Upload u = upload_begin(0);
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    // (an image in the transient pool: its memory was another image's; everything sent before is done with it first)
+    b.srcStageMask = im.pooled ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_NONE;
     b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -204,13 +204,9 @@ void name_placeholder(const nvn_tex* t, const char* why, std::atomic<int64_t>& c
              (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target, why);
 }
 
-/// The image of t, made if there is none (images_mu held exclusively); null: no image (counted)
-Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh, int bpb) {
-    std::call_once(placeholder_once, make_placeholder);
-    if (fi.format == VK_FORMAT_UNDEFINED || bpb <= 0) return name_placeholder(t, "no Vulkan format", st_ph_format), &placeholder;
-    if (fi.astc) return name_placeholder(t, "ASTC, which this GPU does not sample", st_ph_astc), &placeholder;
-    auto x = std::make_unique<Image>();
-    Image& im = *x;
+/// What image a texture of description d is: im's fields and its create info. 0, or why there is none (1 the driver
+/// refuses it)
+int shape(const nvn_texdesc& d, const FormatInfo& fi, Image& im, VkImageCreateInfo& ci) {
     bool wide = false;
     VkFormat vf = widened(fi.format, &wide);
     const bool depth = is_depth_format(vf);
@@ -221,8 +217,6 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
               : has_stencil(vf) ? VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT
                                 : VK_IMAGE_ASPECT_DEPTH_BIT;
     im.compressed = is_bc(vf);
-    im.gpu = t->gpu, im.nvn_format = t->d.format, im.bpb = bpb, im.bw = bw, im.bh = bh;
-    const nvn_texdesc& d = t->d;
     im.width = std::max(1u, d.width), im.height = std::max(1u, d.height);
     switch (d.target) {
     case NVN_TEXTURE_TARGET_1D: im.type = VK_IMAGE_TYPE_1D, im.height = 1; break;
@@ -268,10 +262,10 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     }
     if (r != VK_SUCCESS || im.width > lim.maxExtent.width || im.height > lim.maxExtent.height || im.depth > lim.maxExtent.depth ||
         im.layers > lim.maxArrayLayers || im.levels > lim.maxMipLevels || !(lim.sampleCounts & im.samples))
-        return name_placeholder(t, "the driver refuses the image", st_ph_refused), &placeholder;
+        return 1;
     im.storage = (usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
     im.block_views = im.compressed && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci = VkImageCreateInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.flags = flags;
     ci.imageType = im.type;
     ci.format = im.format;
@@ -281,12 +275,62 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     ci.samples = im.samples;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage;
+    return 0;
+}
+
+/// An image of the transient pool: created and bound at its texture's storage offset (images_mu held exclusively).
+/// false: it does not fit there (its slot's bytes as the host told them, the pool, the alignment): a strict event
+bool pool_image(const VkImageCreateInfo& ci, Image& im, const nvn_tex* t) {
+    if (vkCreateImage(dev.device, &ci, nullptr, &im.image) != VK_SUCCESS) return false;
+    VkMemoryRequirements req{};
+    vkGetImageMemoryRequirements(dev.device, im.image, &req);
+    const uint64_t off = t->gpu - pool.lo;
+    auto cap = pool.caps.find(t->gpu);
+    const uint64_t room = cap != pool.caps.end() ? cap->second : 0;
+    if (req.size > room || !mem_pool_bind(im.image, off, req)) {
+        st_pool_nofit.fetch_add(1, std::memory_order_relaxed);
+        strict_event("a transient target does not fit its slot", "texture %#llx %ux%ux%u, %u levels, NVN format %#x: the image "
+                     "needs %llu bytes aligned to %llu, its slot at +%#llx has %llu (0: the host named none), the pool %llu",
+                     (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format,
+                     (unsigned long long)req.size, (unsigned long long)req.alignment, (unsigned long long)off,
+                     (unsigned long long)room, (unsigned long long)mem_pool_size());
+        logf("direct: transient pool: texture %#llx %ux%u NVN format %#x needs %llu bytes (alignment %llu); its slot at +%#llx has "
+             "%llu: not bound, the placeholder", (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.format,
+             (unsigned long long)req.size, (unsigned long long)req.alignment, (unsigned long long)off, (unsigned long long)room);
+        vkDestroyImage(dev.device, im.image, nullptr);
+        im.image = VK_NULL_HANDLE;
+        return false;
+    }
+    im.pooled = true, im.pool_off = off, im.pool_size = req.size;
+    object_made(1, "an image");
+    return true;
+}
+
+/// The image of t, made if there is none (images_mu held exclusively); null: no image (counted)
+Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh, int bpb) {
+    std::call_once(placeholder_once, make_placeholder);
+    if (fi.format == VK_FORMAT_UNDEFINED || bpb <= 0) return name_placeholder(t, "no Vulkan format", st_ph_format), &placeholder;
+    if (fi.astc) return name_placeholder(t, "ASTC, which this GPU does not sample", st_ph_astc), &placeholder;
+    auto x = std::make_unique<Image>();
+    Image& im = *x;
+    const nvn_texdesc& d = t->d;
+    VkImageCreateInfo ci{};
+    if (shape(d, fi, im, ci)) return name_placeholder(t, "the driver refuses the image", st_ph_refused), &placeholder;
+    im.gpu = t->gpu, im.nvn_format = t->d.format, im.bpb = bpb, im.bw = bw, im.bh = bh;
+    const VkImageUsageFlags usage = ci.usage;
     // (M6b: strict names an image the game's texture needs as made for a texture of the game (in play, a texture the game made in
     // play: a render target of a new size, a movie's frames))
     const ObjectsFor objects_for(usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
                                      ? "an image for a texture the game made (renderable)" : "an image for a texture the game made");
-    if (!mem_image(ci, im.image, im.mem)) return name_placeholder(t, "no memory for it", st_ph_refused), &placeholder;
-    init_image(im);
+    // (a transient target: bound in the pool at its storage offset, no memory of its own; initialized by its claim)
+    const bool pooled = pool.on.load(std::memory_order_acquire) && t->gpu >= pool.lo && t->gpu < pool.hi;
+    if (pooled) {
+        if (!pool_image(ci, im, t)) return name_placeholder(t, "no room at its offset in the transient pool", st_ph_refused), &placeholder;
+        st_pool_made.fetch_add(1, std::memory_order_relaxed), st_pool_made_total.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        if (!mem_image(ci, im.image, im.mem)) return name_placeholder(t, "no memory for it", st_ph_refused), &placeholder;
+        init_image(im);
+    }
     im.id = next_id++;
     st_made.fetch_add(1, std::memory_order_relaxed);
     st_made_total.fetch_add(1, std::memory_order_relaxed);
@@ -298,6 +342,7 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
              im.levels, im.nvn_format, d.target, (unsigned)images.size());
     Image* out = x.get();
     images.emplace(k, std::move(x));
+    if (pooled) pool.images.push_back(out), claim(out, "made");
     return out;
 }
 
@@ -368,7 +413,13 @@ void destroy(Image* im) {
     for (auto& [key, v] : im->views)
         if (v) vkDestroyImageView(dev.device, v, nullptr);
     st_bytes.fetch_sub((int64_t)mem_size(im->mem), std::memory_order_relaxed);
-    mem_image_free(im->image, im->mem);
+    if (im->pooled) {   // (the pool keeps its memory)
+        pool.images.erase(std::remove(pool.images.begin(), pool.images.end(), im), pool.images.end());
+        vkDestroyImage(dev.device, im->image, nullptr);
+        st_pool_pruned.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        mem_image_free(im->image, im->mem);
+    }
     st_destroyed.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -387,7 +438,7 @@ void image_texture_created(const nvn_tex* t) {
     Image* im = get(t);
     if (!im || im->placeholder) return;
     if (im->refs++ == 0 && im->dead_present) im->dead_present = im->dead_value = 0, st_revived.fetch_add(1, std::memory_order_relaxed);
-    if (!im->asset && n_freed.load(std::memory_order_relaxed)) storage_reused(t);   // (M6f: a texture over that storage now)
+    if (im->pooled) claim(im, "initialized");   // (a texture over that storage now: the range is its image's)
     if (!im->asset) return;
     // (A-rt) the first texture of an asset image fills it, here, before the game can register it; another one that comes
     // while it is being filled waits for that (the same content in another file, on another loader thread)
@@ -409,67 +460,137 @@ void image_texture_created(const nvn_tex* t) {
 }
 
 namespace {
-/// t's hold on its image let go (images_mu held)
-void let_go(const nvn_tex* t, const Key& k) {
-    auto it = images.find(k);
-    if (it == images.end()) return;
-    Image* im = it->second.get();
-    if (!t) im->wait_heap = true;   // (M6f: a freed transient target's: it waits for the descriptor ids that name it)
-    if (im->refs > 0 && --im->refs == 0) {
-        im->dead_present = present_count() + 1;
-        dying.push_back(im);
+/// im takes its range of the pool (images_mu held exclusively): nothing if it is the owner; else every owner of memory it
+/// overlaps stops being one (its content is undefined from here), and im is discarded and cleared on this thread's
+/// upload, which is sent at once: after every list sent before, before every list sent later. The host's slots never
+/// give a range to another target while lists that use the last one may be unsent (host/rt_slots.c); an owner claimed
+/// within kPoolInUse presents that loses its range is a strict event
+void claim(Image* im, const char* how) {
+    const uint64_t now = present_count();
+    im->claimed.store(now, std::memory_order_relaxed);
+    if (im->owner.load(std::memory_order_relaxed)) return;
+    for (Image* o : pool.images) {
+        if (o == im || !o->owner.load(std::memory_order_relaxed) || o->pool_off >= im->pool_off + im->pool_size ||
+            im->pool_off >= o->pool_off + o->pool_size)
+            continue;
+        o->owner.store(false, std::memory_order_relaxed);
+        if (o->claimed.load(std::memory_order_relaxed) + kPoolInUse > now) {
+            st_pool_took_live.fetch_add(1, std::memory_order_relaxed);
+            strict_event("a transient target's memory taken while it may be in use", "image #%u %ux%u vk %d at +%#llx (%llu "
+                         "bytes, %s at present %llu) over image #%u %ux%u vk %d at +%#llx (%llu bytes, claimed at present %llu)",
+                         im->id, im->width, im->height, (int)im->format, (unsigned long long)im->pool_off,
+                         (unsigned long long)im->pool_size, how, (unsigned long long)now, o->id, o->width, o->height,
+                         (int)o->format, (unsigned long long)o->pool_off, (unsigned long long)o->pool_size,
+                         (unsigned long long)o->claimed.load(std::memory_order_relaxed));
+        }
     }
+    im->owner.store(true, std::memory_order_relaxed);
+    im->written.store(0, std::memory_order_relaxed);
+    init_image(*im);
+    st_pool_claims.fetch_add(1, std::memory_order_relaxed), st_pool_claims_total.fetch_add(1, std::memory_order_relaxed);
 }
 }  // namespace
 
-void image_texture_freed(const nvn_tex* t) {
-    if (!t || !t->serial || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return;
+bool image_pool_range(uint64_t lo, uint64_t hi) {
+    std::unique_lock lk(images_mu);
+    if (pool.on.load(std::memory_order_relaxed)) return pool.lo == lo && pool.hi == hi;
+    // (the memory types an attachment image takes: a depth image's, as the pool's largest tenants are)
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = VK_FORMAT_D32_SFLOAT;
+    ci.extent = {64, 64, 1};
+    ci.mipLevels = ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    VkImage probe = VK_NULL_HANDLE;
+    VkMemoryRequirements req{};
+    req.memoryTypeBits = ~0u;
+    if (vkCreateImage(dev.device, &ci, nullptr, &probe) == VK_SUCCESS) {
+        vkGetImageMemoryRequirements(dev.device, probe, &req);
+        vkDestroyImage(dev.device, probe, nullptr);
+    }
+    if (hi <= lo || !mem_pool_make(hi - lo, req.memoryTypeBits)) {
+        logf("direct: transient pool: %llu MB of device memory not allocated: the transient targets get images of their own",
+             (unsigned long long)((hi - lo) >> 20));
+        strict_event("the transient pool was not made", "%llu bytes", (unsigned long long)(hi - lo));
+        return false;
+    }
+    pool.lo = lo, pool.hi = hi;
+    pool.on.store(true, std::memory_order_release);
+    logf("direct: transient pool: %llu MB of device memory for the game's transient targets at %#llx..%#llx, allocated once; "
+         "their images are bound in it at their storage offsets", (unsigned long long)((hi - lo) >> 20), (unsigned long long)lo,
+         (unsigned long long)hi);
+    return true;
+}
+
+void image_pool_slot(uint64_t gpu, uint64_t cap) {
+    if (!pool.on.load(std::memory_order_acquire) || gpu < pool.lo || gpu >= pool.hi) return;
+    std::unique_lock lk(images_mu);
+    pool.caps[gpu] = cap;
+}
+
+uint64_t image_need(const nvn_texdesc* d, uint64_t* align) {
+    if (align) *align = 0;
+    if (!d || !dev.device || d->target == NVN_TEXTURE_TARGET_BUFFER) return 0;
+    const FormatInfo fi = vk_format(d->format);
+    if (fi.format == VK_FORMAT_UNDEFINED || fi.astc) return 0;
+    Image im;
+    VkImageCreateInfo ci{};
+    if (shape(*d, fi, im, ci)) return 0;
+    // (by what the driver's answer depends on; a shape asked once is not asked again)
+    uint64_t h = mix((uint64_t)ci.format << 32 | ci.flags, (uint64_t)ci.usage << 32 | (uint32_t)ci.imageType);
+    h = mix(h, (uint64_t)ci.extent.width << 32 | ci.extent.height);
+    h = mix(h, (uint64_t)ci.extent.depth << 32 | ci.mipLevels);
+    h = mix(h, (uint64_t)ci.arrayLayers << 32 | (uint32_t)ci.samples);
+    static std::mutex mu;
+    static std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> known;
+    std::lock_guard lk(mu);
+    auto it = known.find(h);
+    if (it == known.end()) {
+        const DebugObjects not_an_event;   // (a question to the driver: made and destroyed here)
+        VkImage probe = VK_NULL_HANDLE;
+        VkMemoryRequirements req{};
+        if (vkCreateImage(dev.device, &ci, nullptr, &probe) == VK_SUCCESS) {
+            vkGetImageMemoryRequirements(dev.device, probe, &req);
+            vkDestroyImage(dev.device, probe, nullptr);
+        }
+        it = known.emplace(h, std::make_pair((uint64_t)req.size, (uint64_t)req.alignment)).first;
+    }
+    if (align) *align = it->second.second;
+    return it->second.first;
+}
+
+void image_target_given(const nvn_tex* t) {
+    if (!t || !t->serial || !pool.on.load(std::memory_order_acquire) || t->gpu < pool.lo || t->gpu >= pool.hi) return;
     Key k;
     FormatInfo fi;
     int bw, bh, bpb;
-    const int kind = key_of(t, k, fi, bw, bh, bpb);
-    if (kind != K_PLAIN && kind != K_ASSET && kind != K_LINKED_PLAIN) return;
-    std::unique_lock lk(images_mu);
-    if (freed.count(t->serial) || !pending.emplace(t->serial, Pending{k, t->gpu, t->gpu + std::max<uint64_t>(t->L.size, 1)}).second) return;
-    n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
-    st_freed.fetch_add(1, std::memory_order_relaxed);
-}
-
-namespace {
-/// t's image made over storage: pending textures over storage it overlaps let go of theirs (images_mu held)
-void storage_reused(const nvn_tex* t) {
-    const uint64_t lo = t->gpu, hi = t->gpu + std::max<uint64_t>(t->L.size, 1);
-    for (auto it = pending.begin(); it != pending.end();) {
-        if (it->first != t->serial && it->second.lo < hi && lo < it->second.hi) {
-            let_go(nullptr, it->second.k);
-            freed.insert(it->first);
-            st_freed_reused.fetch_add(1, std::memory_order_relaxed);
-            it = pending.erase(it);
-        } else {
-            ++it;
+    if (key_of(t, k, fi, bw, bh, bpb) != K_PLAIN) return;
+    st_pool_given.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::shared_lock lk(images_mu);
+        auto it = images.find(k);
+        if (it != images.end() && it->second->owner.load(std::memory_order_relaxed)) {
+            it->second->claimed.store(present_count(), std::memory_order_relaxed);
+            return;
         }
     }
-    n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
+    std::unique_lock lk(images_mu);
+    Image* im = get(t);
+    if (!im || !im->pooled) return;
+    if (!im->owner.load(std::memory_order_relaxed)) st_pool_given_claimed.fetch_add(1, std::memory_order_relaxed);
+    claim(im, "given out by the allocator");
 }
-}  // namespace
+
+bool image_stale(const Image* im) { return im && im->pooled && !im->owner.load(std::memory_order_relaxed); }
+void image_stale_bound() { st_pool_stale_bound.fetch_add(1, std::memory_order_relaxed); }
 
 void image_texture_released(const nvn_tex* t) {
     Key k;
     FormatInfo fi;
     int bw, bh, bpb;
     const int kind = key_of(t, k, fi, bw, bh, bpb);
-    if (t && t->serial && n_freed.load(std::memory_order_relaxed)) {   // (M6f: let go of already, at the reuse of its storage)
-        std::unique_lock lk(images_mu);
-        pending.erase(t->serial);   // (still held: released below as any texture)
-        n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
-        if (freed.erase(t->serial)) {
-            n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
-            st_freed_again.fetch_add(1, std::memory_order_relaxed);
-            lk.unlock();
-            if (kind == K_ASSET || kind == K_ASSET_MISS || kind == K_LINKED_PLAIN) assets_released(t);
-            return;
-        }
-    }
     if (kind == K_PLAIN || kind == K_ASSET || kind == K_LINKED_PLAIN) {
         std::unique_lock lk(images_mu);
         auto it = images.find(k);
@@ -509,24 +630,6 @@ VkComponentMapping image_swizzle(const Image* im, VkComponentMapping g) {
             one(g.a, VK_COMPONENT_SWIZZLE_A)};
 }
 
-namespace {
-/// (M6f) t held again if the game had freed it (images_mu held): true then
-bool hold_again(const nvn_tex* t) {
-    if (pending.erase(t->serial)) {   // (its image still held: nothing to do)
-        n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
-        st_freed_held.fetch_add(1, std::memory_order_relaxed);
-        return true;
-    }
-    if (!freed.erase(t->serial)) return false;
-    n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
-    st_freed_held.fetch_add(1, std::memory_order_relaxed);
-    Image* im = get(t);
-    if (im && !im->placeholder && im->refs++ == 0 && im->dead_present)
-        im->dead_present = im->dead_value = 0, st_revived.fetch_add(1, std::memory_order_relaxed);
-    return true;
-}
-}  // namespace
-
 void image_texture_cached(const nvn_tex* t, bool cached) {
     if (!t || !t->serial) return;
     Key k;
@@ -540,18 +643,8 @@ void image_texture_cached(const nvn_tex* t, bool cached) {
     im->cached_refs = std::max(0, im->cached_refs + (cached ? 1 : -1));
 }
 
-void image_texture_held(const nvn_tex* t) {
-    if (!t || !t->serial || !n_freed.load(std::memory_order_relaxed)) return;
-    std::unique_lock lk(images_mu);
-    hold_again(t);
-}
-
 void image_texture_registered(const nvn_tex* t) {
     if (!t || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return;
-    if (t->serial && n_freed.load(std::memory_order_relaxed)) {   // (M6f: registered again after the game freed its storage: held again)
-        std::unique_lock lk(images_mu);
-        if (hold_again(t)) return;
-    }
     if (image_find(t)) return;
     std::unique_lock lk(images_mu);   // (registered without its initialization seen: made now)
     if (get(t)) st_registered_new.fetch_add(1, std::memory_order_relaxed);
@@ -581,15 +674,6 @@ Image* image_find(const nvn_tex* t) {
     auto it = images.find(k);
     if (it != images.end()) return it->second.get();
     if (fi.format == VK_FORMAT_UNDEFINED || fi.astc || bpb <= 0) return &placeholder;
-    if (t->serial && n_freed.load(std::memory_order_relaxed)) {   // (M6f: used again after its storage's reuse let its image go)
-        lk.unlock();
-        std::unique_lock ex(images_mu);
-        if (freed.count(t->serial) && hold_again(t)) {
-            st_freed_used.fetch_add(1, std::memory_order_relaxed);
-            auto again = images.find(k);
-            if (again != images.end()) return again->second.get();
-        }
-    }
     return nullptr;
 }
 
@@ -726,19 +810,33 @@ void image_sweep(uint64_t present) {
     {   // (M6f: what the images waiting to die hold: VRAM already given back, for the free VRAM the host reads)
         int64_t b = 0;
         for (const Image* im : dying)
-            if (!im->refs && im->dead_present && !(im->wait_heap && im->heap_refs.load(std::memory_order_relaxed) > 0))
-                b += (int64_t)mem_size(im->mem);   // (not those a descriptor id still pins)
+            if (!im->refs && im->dead_present) b += (int64_t)mem_size(im->mem);
         dying_bytes.store(b, std::memory_order_relaxed);
+    }
+    // (the transient pool's images hold no memory of their own: one no texture is initialized over is kept as an object,
+    // for the next texture of its storage and shape, until the pool has more than kPoolImages; then the longest unclaimed go)
+    if (pool.images.size() > kPoolImages) {
+        size_t over = pool.images.size() - kPoolImages;
+        std::vector<Image*> idle;
+        for (Image* im : dying)
+            if (im->pooled && !im->refs && im->dead_present) {
+                if (im->prune) over = over ? over - 1 : 0;
+                else idle.push_back(im);
+            }
+        std::sort(idle.begin(), idle.end(), [](const Image* a, const Image* b) {
+            return a->claimed.load(std::memory_order_relaxed) < b->claimed.load(std::memory_order_relaxed);
+        });
+        for (size_t i = 0; i < idle.size() && i < over; i++) idle[i]->prune = true;
     }
     for (size_t i = 0; i < dying.size();) {
         Image* im = dying[i];
         bool gone = false;
         if (im->refs > 0 || !im->dead_present) {
             dying[i] = dying.back(), dying.pop_back();   // (revived)
-            im->wait_heap = false;
+            im->prune = false;
             continue;
         }
-        if (im->wait_heap && im->heap_refs.load(std::memory_order_relaxed) > 0) {   // (M6f: a descriptor id still names it)
+        if (im->pooled && !im->prune) {   // (kept)
             i++;
             continue;
         }
@@ -783,7 +881,7 @@ void image_stats(char* out, size_t cap) {
                 if (im->cached_refs >= im->refs) cache_n++, cache_bytes += mem_size(im->mem);
                 else cache_part++;
             }
-            if (!im->asset) {   // (M6f: the images not from the store, by kind, held or waiting to die, and the oldest ones)
+            if (!im->asset && !im->pooled) {   // (M6f: the images not from the store, by kind, held or waiting to die, and the oldest ones)
                 const int c = im->compressed ? 2 : (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ? 0 : 1;
                 const uint64_t b = mem_size(im->mem);
                 (im->refs > 0 ? own_live : own_dying)[c] += b;
@@ -838,13 +936,6 @@ void image_stats(char* out, size_t cap) {
                       "more images held by a cached texture and a live one)", (unsigned long long)cache_n,
                       (unsigned long long)(cache_bytes >> 20), (unsigned long long)cache_part);
     }
-    {
-        const size_t n4 = std::strlen(out);
-        std::snprintf(out + n4, cap > n4 ? cap - n4 : 0, "; storage the game freed (M6f): %lld textures, %lld let go of their "
-                      "image when a new one was made over that storage (%lld of them then initialized again or finalized), %lld taken or "
-                      "registered again (%lld of them used again, made again)", (long long)st_freed.load(), (long long)st_freed_reused.load(),
-                      (long long)st_freed_again.load(), (long long)st_freed_held.load(), (long long)st_freed_used.load());
-    }
     std::vector<std::pair<uint64_t, std::pair<uint64_t, uint32_t>>> top(shapes.begin(), shapes.end());
     std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
     for (size_t i = 0; i < top.size() && i < 8; i++) {
@@ -854,6 +945,27 @@ void image_stats(char* out, size_t cap) {
                       (unsigned long long)(k >> 48), (unsigned long long)(k >> 32 & 0xffff), (unsigned long long)(k >> 24 & 0xff),
                       (unsigned long long)(k & 0xffffff), top[i].second.second, (unsigned long long)(top[i].second.first >> 20));
     }
+}
+
+/// The transient pool's line: its bytes are a constant; what moves is image objects
+void image_pool_stats(char* out, size_t cap) {
+        size_t n_pool = 0, owners = 0, held = 0;
+        {
+            std::shared_lock lk(images_mu);
+            n_pool = pool.images.size();
+            for (const Image* im : pool.images) owners += im->owner.load(std::memory_order_relaxed), held += im->refs > 0;
+        }
+        std::snprintf(out, cap, "transient pool: %llu MB of device memory (constant), %llu image objects "
+                      "kept (%llu own their range, %llu with a texture initialized over them; bound %llu), since the last line %lld "
+                      "made (%lld since the start), %lld destroyed over the bound, %lld claims with a discard and clear (%lld since "
+                      "the start), %lld targets given out by the allocator (%lld of them not their range's owner: claimed); since "
+                      "the start: %lld taken while in use, %lld that did not fit their slot, %lld draws binding an image that is "
+                      "not its range's owner", (unsigned long long)(mem_pool_size() >> 20), (unsigned long long)n_pool,
+                      (unsigned long long)owners, (unsigned long long)held, (unsigned long long)kPoolImages,
+                      (long long)st_pool_made.exchange(0), (long long)st_pool_made_total.load(), (long long)st_pool_pruned.exchange(0),
+                      (long long)st_pool_claims.exchange(0), (long long)st_pool_claims_total.load(), (long long)st_pool_given.exchange(0),
+                      (long long)st_pool_given_claimed.exchange(0), (long long)st_pool_took_live.load(), (long long)st_pool_nofit.load(),
+                      (long long)st_pool_stale_bound.load());
 }
 
 }  // namespace hsd

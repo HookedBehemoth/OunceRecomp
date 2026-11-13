@@ -4,6 +4,8 @@ and list_bad from the source as it is, with guest memory as host memory, and che
 - slots are 64 KB aligned, inside [lo, hi), never overlapping; a freed slot goes back to its family;
 - a full slot range gives no slot by default; natively it takes the smallest parked entry's slot that fits, and that
   entry leaves the parked list for the release queue;
+- (the transient pool) a slot's memory goes to another image (another shape of the family, a slot made over an evicted
+  one) only REUSE_AFTER presents after its last use;
 - list_bad: a sound circular list passes, a wrong count, a broken previous link and a cycle are each found.
 
 python -I -B tests/test_rt_slots_native.py [--cc cc]
@@ -77,6 +79,33 @@ int main(void) {
     Slot *s = alloc(3, 64, 3 << 20, 0x4000);
     CHECK(s && s->block == 0x4000 && nparked == 0 && nsteal_q == 1 && steal_q[0] == 0x900 && n.stolen == 1);
     CHECK(alloc(4, 64, 3 << 20, 0x5000) == NULL);      /* nothing parked left */
+    /* (the transient pool) a slot's memory goes to another image only REUSE_AFTER presents after its last use: a free
+       slot is not taken by another shape of its family before, and is by the same shape at once; a full range evicts
+       a slot idle that long (counted) when none is idle 8 presents, and none idle less */
+    native = 0;
+    reset();
+    a = alloc(1, 64, 3 << 20, 0x1000);
+    CHECK(a != NULL);
+    if (a) {
+        const uint64_t at = a->off;
+        a->block = 0;
+        Slot *other = alloc(1, 32, 1 << 20, 0x2000);    /* another shape, the same present: not a's memory */
+        CHECK(other && other->off != at);
+        if (other) other->block = 0;
+        frame += REUSE_AFTER;
+        other = alloc(1, 48, 1 << 20, 0x3000);          /* REUSE_AFTER presents later: a free slot of the family that holds it */
+        CHECK(other && (other->off == at || other->w == 48) && nslots == 2);
+    }
+    reset();
+    a = alloc(1, 64, 3 << 20, 0x1000), b = alloc(2, 64, 3 << 20, 0x2000);
+    CHECK(a && b);
+    if (a && b) {
+        a->block = 0;                                   /* freed this present */
+        CHECK(alloc(3, 64, 3 << 20, 0x4000) == NULL && n.evicted == 0);
+        frame += REUSE_AFTER;
+        Slot *t = alloc(3, 64, 3 << 20, 0x4000);        /* idle REUSE_AFTER presents, not 8: evicted, the range being full */
+        CHECK(t && n.evicted == 1 && n.evicted_young == 1);
+    }
     /* list_bad over a circular list: sentinel and 3 nodes (+0 previous, +8 next, count at sentinel +0x10) */
     uint64_t m[4][3] = {{0}};
     #define L(i) ((uint64_t)(uintptr_t)m[i])
@@ -106,6 +135,8 @@ def main():
         raise SystemExit("no C compiler")
     src = (ROOT / "host/rt_slots.c").read_text(encoding="utf-8")
     parts = [
+        until(src, "#define LR_LOCAL_SHADOW", "\n"),
+        until(src, "#define REUSE_AFTER", "\n"),
         until(src, "typedef struct {\n    uint64_t lr, name, dta;", "} Cur;"),
         "static Cur cur;",
         until(src, "typedef struct {\n    uint64_t fam, off, cap, block;", "} Slot;"),

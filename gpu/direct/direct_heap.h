@@ -96,6 +96,11 @@ void heap_sampler_describe(uint32_t id, char* out, size_t cap);
 /// (M4d, HOS_DBG=phlog) 1: id is registered with the placeholder image, 2: registered with no image; 0 otherwise (locked)
 int heap_placeholder(uint32_t id);
 
+/// (the transient pool) 1: id names an image in the pool that is not its range's owner (another target took its memory:
+/// its content is that target's); the ids that do, for the 600-present block
+int heap_stale(uint32_t id);
+void heap_stale_census(char* out, size_t cap);
+
 void heap_stats(char* out, size_t cap);
 
 }  // namespace hsd

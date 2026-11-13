@@ -19,6 +19,7 @@
 #include "direct_task.h"
 #include "direct_meshcap.h"
 #include "direct_dump.h"
+#include "direct_heap.h"
 #include "direct_image.h"
 #include "direct_internal.h"
 #include "direct_pass.h"
@@ -296,6 +297,10 @@ void log_line() {
     if (own) *own = 0;
     logf("direct: %s; presents shown %lld, with no image %lld", b, (long long)st_shown.exchange(0), (long long)st_no_image.exchange(0));
     if (own) logf("direct: images' memory: %s", own + 2);
+    image_pool_stats(b, sizeof b);
+    logf("direct: %s", b);
+    heap_stale_census(b, sizeof b);
+    logf("direct: transient pool: %s", b);
     cmd_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     assets_stats(b, sizeof b, frames);

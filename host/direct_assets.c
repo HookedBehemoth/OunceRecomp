@@ -136,9 +136,6 @@ static void *mem_line(void *arg) {
             char b[512];
             direct_texdata_line(b, sizeof b);
             hos_log("assets: %s", b);
-            void rt_slots_freed_line(char *out, size_t cap);
-            rt_slots_freed_line(b, sizeof b);
-            hos_log("rt slots: %s", b);
         }
     }
     return NULL;

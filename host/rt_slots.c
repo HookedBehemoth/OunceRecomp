@@ -26,7 +26,21 @@
    Any mismatch (arenas not fresh, a pool smaller than the slot range, an arena offset inside it, a second pool record)
    turns the slots off for new allocations: those take the game's offsets again, which lie below the slot range.
    HOS_GUEST_RT_ALLOC=1: the game's allocator untouched (A/B). RX_RT_SLOTS_MB: S, default 320 (of 512; the arenas
-   keep 192 MB, the fullest seen used 111). Parking and the shadow rounding: below.
+   keep 192 MB, the fullest seen used 111). Parking and the shadow size classes: below.
+
+   The transient pool (direct mode; docs/direct/shadow-pool-report.md). The slot range is one device allocation in the
+   back end, made when the range is first known (hsd_transient_pool), and every texture initialized in a slot gets an
+   image bound in it at the slot's offset: the targets cost that constant and nothing else, whatever the game's free
+   entries still name. For that
+   - a slot is sized by what the device's image of its target needs (device_need: the back end's answer for the
+     target's NVN format and shape), where that is more than the block the game's arena gave;
+   - each slot's bytes go to the back end before a texture is initialized in it (rt_slots_texture_init);
+   - a slot's memory goes to another image (another shape of its family, or another slot made over it after an
+     eviction) only REUSE_AFTER presents after its last use, so the lists that drew or sampled the last one are sent
+     (place's eviction, take's reuse of a slot by another shape);
+   - each entry the allocator gives out is told to the back end by its own texture object (alloc_gave: the entry's
+     descriptor id -> agl's record -> the object), which claims the range for its image if another has had it since.
+   The game's free tells the back end nothing: the memory is the pool's, and a freed target's image is only an object.
    HOS_RT_SLOTS_LOG=1: every slot made, with its name, and why the allocator's first initializations after 1000
    presents were not skipped. Addresses and offsets are HOS_GAME_VERSION 100's (the only one);
    the splice's anchor stops the build on a lift without it. */
@@ -100,17 +114,20 @@ static uint64_t park_frames(void) {
     return (uint64_t)(v > 0 ? v : 1);
 }
 /* Local-light shadow maps (f_802640a0, the alloc at lr 0x80264130, "local_shadow_depth") are sized by the light's
-   distance: square 384..1920, a new size most frames. HOS_RT_QUANT=<n> (default 128; 0: off) rounds their width and
-   height up to a multiple of n (from 512 on), so a light keeps one of a few sizes: parking hands the entry back and the
-   renderer keeps its image. Safe because the pass takes its viewport and scissor from the texture (f_802640a0 reads
-   entry +0x40 width / +0x42 height, not its own size at +0x4e8) and the projection maps the light's frustum to
-   the whole map; only the shadow's texel density rises (at most 1 + 127/512). */
-static uint32_t quant(void) {
+   distance: square 384..2432, a new size most frames while a light moves. They get one of a few size classes (the
+   next class up, never a smaller map than the game asked for), with hysteresis per light (the shadow object, noted at
+   f_802640a0's entry): a light keeps its class until the size wanted passes it, or falls to 90% of the class below. So
+   a light keeps one shape for long: parking hands its entry back, and the back end keeps one image for it. Safe
+   because the pass takes its viewport and scissor from the texture (f_802640a0 reads entry +0x40 width / +0x42 height,
+   not its own size at +0x4e8) and the projection maps the light's frustum to the whole map; only the shadow's texel
+   density rises (by less than the step between two classes, at most 1.5 a side). HOS_RT_QUANT=0: off (the game's sizes) */
+static int shadow_classes_on(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_RT_QUANT") ? atoi(getenv("HOS_RT_QUANT")) : 128;
-    return (uint32_t)(v > 0 ? v : 0);
+    if (v < 0) v = !(getenv("HOS_RT_QUANT") && atoi(getenv("HOS_RT_QUANT")) == 0);
+    return v;
 }
 #define LR_LOCAL_SHADOW 0x80264130ull
+#define REUSE_AFTER 3   /* presents after a slot's last use before another image may take its memory */
 static int log_slots(void) {
     static int v = -1;
     if (v < 0) v = getenv("HOS_RT_SLOTS_LOG") != NULL;
@@ -142,7 +159,7 @@ static volatile uint64_t frame;
 static SRWLOCK mu = SRWLOCK_INIT;
 static volatile int state = -1;   /* -1 not tried, 0 off (never or backed off), 1 on */
 static uint64_t dta_seen;   /* (the DTA the allocs come for: rt_slots_dump) */
-static volatile uint64_t dta_pool_gpu;   /* (M6f: the DTA pool's GPU address) */
+static volatile uint64_t dta_pool_gpu;   /* the DTA pool's GPU address: a slot's storage is this + its offset */
 static uint32_t nrecs0, narenas;
 static uint64_t arenas0;   /* (the log: the fullest arena) */
 static uint64_t pools[16];   /* the virtual pools the slots were checked against */
@@ -151,7 +168,8 @@ static int npools;
 static struct {   /* counters (under mu, or read racily for the log) */
     uint64_t calls, transient, spliced, unspliced, stale, frees, freed_slot, unseen_free, made, evicted, game_offset,
         same_shape, other_shape, parked, handed_back, released, park_full, quantized, drained, blockless, stolen,
-        topped, aliased, moved;
+        topped, aliased, moved, evicted_young, class_up, class_down, class_kept, given, given_noid, given_other,
+        slot_told, slot_untold, sized, sized_up;
 } n;
 static uint64_t last_n_calls, last_n_spliced, last_n_inits, last_n_dta_inits, last_n_made, last_frame_log;
 extern volatile LONG64 nvn_texture_inits, nvn_texture_inits_dta;   /* (nvn_native.c) */
@@ -466,9 +484,11 @@ static void top_up(Ctx *c, uint64_t dta, uint64_t ctx) {
 }
 
 static int alloc_pre(Ctx *c);
+static _Thread_local uint64_t shadow_obj;   /* (f_802640a0's shadow object, for the alloc it makes) */
+static uint32_t shadow_size(uint64_t obj, uint32_t w);
 static void alloc_gave(uint64_t entry);
 static _Thread_local int in_alloc;
-/* (M6f) In direct mode the alloc's body runs from here, so the entry it gives is seen (alloc_gave); RX_BACKEND unset: as
+/* In direct mode the alloc's body runs from here, so the entry it gives is seen (alloc_gave); RX_BACKEND unset: as
    before, the body runs after the hook */
 ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
     if (in_alloc) return in_alloc = 0, 0;   /* (the lifted body, called below: the flag is taken by its first entry, so a nested call is hooked as any) */
@@ -525,13 +545,14 @@ static int alloc_pre(Ctx *c) {
     __atomic_add_fetch(&n.transient, 1, __ATOMIC_RELAXED);
     const uint64_t d = ARG(2);
     if (state != 1 || !hos_guest_range(d, 0x38)) return 0;
-    if (c->x[30] == LR_LOCAL_SHADOW && quant()) {   /* (the descriptor is the caller's, on its stack, read only here) */
-        const uint32_t q = quant(), w = G32(d + 0x10), h = G32(d + 0x14);
-        if (w >= 512 && h >= 512 && w <= 4096 && h <= 4096) {
-            G32(d + 0x10) = (w + q - 1) / q * q;
-            G32(d + 0x14) = (h + q - 1) / q * q;
-            __atomic_add_fetch(&n.quantized, 1, __ATOMIC_RELAXED);
+    if (c->x[30] == LR_LOCAL_SHADOW && shadow_classes_on()) {   /* (the descriptor is the caller's, on its stack, read only here) */
+        const uint32_t w = G32(d + 0x10), h = G32(d + 0x14);
+        if (w == h && w >= 16 && w <= 4096) {
+            const uint32_t to = shadow_size(shadow_obj, w);
+            G32(d + 0x10) = G32(d + 0x14) = to;
+            if (to != w) __atomic_add_fetch(&n.quantized, 1, __ATOMIC_RELAXED);
         }
+        shadow_obj = 0;
     }
     Cur k = {c->x[30], G64(d), ARG(0), G32(d + 8), G32(d + 0xc), G32(d + 0x10), G32(d + 0x14), G32(d + 0x18),
              G32(d + 0x1c), G32(d + 0x30), (uint32_t)ARG(3), {0}, 1};
@@ -559,14 +580,40 @@ static int alloc_pre(Ctx *c) {
     return 0;
 }
 
+/* What the device's image of a transient target needs, for its slot (the back end binds the image in the slot: RADV
+   rounds sizes to its tiles, a depth image carries its HTILE, the alignment is 64 KB; e.g. 960x540 R11G11B10 is 2.0 MB
+   on the console's layout and 2.6 MB here). The allocator's descriptor has agl's format and type: the NVN format is
+   the game's own table (0x83f4848c, u32 per agl format, 0x5f of them: f_800634b0 finds a TextureData's format in it),
+   the target from the type (agl_target: as seen at the textures' initializations, which check both, below).
+   0: not known (no back end, a format outside the table) */
+#define AGL_FORMATS 0x5f
+#define AGL_FORMAT_TABLE 0x83f4848cull
+static int agl_target[16] = {NVN_TEXTURE_TARGET_1D, NVN_TEXTURE_TARGET_2D, NVN_TEXTURE_TARGET_3D, NVN_TEXTURE_TARGET_CUBEMAP,
+                             NVN_TEXTURE_TARGET_1D_ARRAY, NVN_TEXTURE_TARGET_2D_ARRAY, NVN_TEXTURE_TARGET_2D_MULTISAMPLE,
+                             NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY, NVN_TEXTURE_TARGET_CUBEMAP_ARRAY, -1, -1, -1, -1, -1, -1, -1};
+static uint64_t device_need(const Cur *k, uint64_t *align) {
+    const hsd_fns *f = rx_direct();
+    *align = 0;
+    if (!f || !f->image_need || k->fmt >= AGL_FORMATS || k->type >= 16 || agl_target[k->type] < 0 ||
+        !hos_guest_range(AGL_FORMAT_TABLE, 4 * AGL_FORMATS))
+        return 0;
+    nvn_texdesc d = {0};
+    d.target = agl_target[k->type];
+    d.format = (int)G32(AGL_FORMAT_TABLE + 4ull * k->fmt);
+    d.samples = 1;
+    d.width = k->w, d.height = k->h, d.depth = k->d, d.levels = k->mips;
+    return f->image_need(&d, align);
+}
+
 static int by_off(const void *a, const void *b) {
     const uint64_t x = **(const uint64_t *const *)a, y = **(const uint64_t *const *)b;
     return x < y ? -1 : x > y;
 }
-/* the lowest aligned gap of cap bytes between the slots; idle slots (free 8 presents) go, least recently used first,
-   until one is found. ~0: none */
+/* the lowest aligned gap of cap bytes between the slots; idle slots (free 8 presents; with none of those left, free
+   REUSE_AFTER presents) go, least recently used first, until one is found. ~0: none */
 static uint64_t place(uint64_t cap, uint64_t align) {
     static const uint64_t *order[MAX_SLOTS];
+    uint64_t idle = 8;   /* (then REUSE_AFTER, when no slot that old is left: the range is full) */
     for (;;) {
         for (int i = 0; i < nslots; i++) order[i] = &slots[i].off;
         qsort(order, (size_t)nslots, sizeof *order, by_off);
@@ -582,9 +629,14 @@ static uint64_t place(uint64_t cap, uint64_t align) {
         }
         int lru = -1;
         for (int i = 0; i < nslots; i++)
-            if (!slots[i].block && slots[i].last_frame + 8 <= frame && (lru < 0 || slots[i].last_frame < slots[lru].last_frame))
+            if (!slots[i].block && slots[i].last_frame + idle <= frame && (lru < 0 || slots[i].last_frame < slots[lru].last_frame))
                 lru = i;
+        if (lru < 0 && idle > REUSE_AFTER) {
+            idle = REUSE_AFTER;
+            continue;
+        }
         if (lru < 0) return ~0ull;
+        if (idle < 8) n.evicted_young++;
         used -= slots[lru].cap;
         slots[lru] = slots[--nslots];
         n.evicted++;
@@ -633,6 +685,7 @@ static Slot *take(uint64_t fam, uint64_t need, uint64_t align, uint64_t block) {
         if (s->block) { occ++; continue; }
         if (s->cap < need || (s->off & (align - 1))) continue;
         const int same = s->w == cur.w && s->h == cur.h;
+        if (!same && s->last_frame + REUSE_AFTER > frame) continue;   /* (another shape is another image over this memory) */
         const int rank = same ? 1 : 2;
         if (rank < best_rank || (rank == best_rank && (rank == 2 ? s->cap < best->cap : s->occ < best->occ)))
             best = s, best_rank = rank;
@@ -641,8 +694,9 @@ static Slot *take(uint64_t fam, uint64_t need, uint64_t align, uint64_t block) {
         if (best->w == cur.w && best->h == cur.h) n.same_shape++;
         else n.other_shape++;
     } else {
-        /* a family seen before (its size moves, or more of it live at once) gets a quarter more room */
-        const uint64_t cap = ((family ? need + need / 4 : need) + 0xffff) & ~0xffffULL;
+        /* a family seen before (its size moves, or more of it live at once) gets a quarter more room; not the local
+           shadows, whose sizes are classes */
+        const uint64_t cap = ((family && cur.lr != LR_LOCAL_SHADOW ? need + need / 4 : need) + 0xffff) & ~0xffffULL;
         const uint64_t at = nslots < MAX_SLOTS ? place(cap, align) : ~0ull;
         if (at == ~0ull) return native_on() ? steal(need, align, block) : NULL;
         best = &slots[nslots++];
@@ -674,9 +728,17 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
         return 0;
     }
     pools[npools++] = pool;
-    if (!dta_pool_gpu) dta_pool_gpu = p->gpu;   /* (M6f: the storage of a block, for the frees) */
     hos_log("rt slots: pool %#llx (GPU %#llx, %llu MB, flags %#x)", (unsigned long long)pool, (unsigned long long)p->gpu,
             (unsigned long long)(p->size >> 20), p->flags);
+    if (!dta_pool_gpu) {   /* the slot range's storage addresses: the back end's transient pool, allocated now */
+        dta_pool_gpu = p->gpu;
+        const hsd_fns *d = rx_direct();
+        if (d && d->transient_pool && !d->transient_pool(p->gpu + lo, p->gpu + hi))
+            hos_log("rt slots: the back end made no transient pool for %#llx..%#llx", (unsigned long long)(p->gpu + lo),
+                    (unsigned long long)(p->gpu + hi));
+    } else if (npools > 1) {
+        hos_log("rt slots: a second pool: its targets are not in the transient pool");
+    }
     return 1;
 }
 
@@ -699,14 +761,18 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
     cur.valid = 0;
     const uint64_t block = c->x[23], game = c->x[10];
     const uint64_t align = (uint64_t)(int64_t)(int32_t)G32(c->x[31] + SP_ALIGN);
+    uint64_t dev_align = 0;
+    const uint64_t dev_need = device_need(&k, &dev_align);
     AcquireSRWLockExclusive(&mu);
     n.spliced++;
     Slot *s = NULL;
     if (state == 1) {
-        const uint64_t need = G64(block + BLK_SIZE);
-        if (!native_on() && game + need > lo) back_off("an arena offset in the slot range", game, need);
+        const uint64_t game_need = G64(block + BLK_SIZE);
+        const uint64_t need = dev_need > game_need ? dev_need : game_need;   /* (the slot holds the device's image) */
+        n.sized++, n.sized_up += dev_need > game_need;
+        if (!native_on() && game + game_need > lo) back_off("an arena offset in the slot range", game, game_need);
         else if (*(uint32_t *)GP(k.dta + DTA_NRECS) != nrecs0) back_off("a second pool record", nrecs0, 0);
-        else if (align & (align - 1) || align > 0x1000000) back_off("alignment", align, 0);
+        else if (align & (align - 1) || align > 0x1000000 || dev_align > 0x10000) back_off("alignment", align, dev_align);
         else if (pool_ok(c->x[8])) {
             cur = k;   /* (take reads the shape and name from it) */
             s = take(fam_of(&k), need, align, block);
@@ -734,37 +800,94 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
                 (unsigned long long)k.lr, s ? "+" : "game's +", (unsigned long long)(s ? s->off : game));
     }
     ReleaseSRWLockExclusive(&mu);
-    if (!s) return;
+    if (!s) {   /* (outside the slots: an image with memory of its own, which the transient pool was to end) */
+        const hsd_fns *d = rx_direct();
+        if (d && d->host_event) {
+            char w[160];
+            snprintf(w, sizeof w, "%ux%ux%u agl format %u lr %#llx, %llu KB, at the game's offset %#llx", k.w, k.h, k.d, k.fmt,
+                     (unsigned long long)k.lr, (unsigned long long)(G64(block + BLK_SIZE) >> 10), (unsigned long long)game);
+            d->host_event("a transient target placed outside the slots", w);
+        }
+        return;
+    }
     c->x[10] = s->off;
     G64(block + 0x38) = s->off;
 }
 
-/* (M6f, direct mode) The DTA's free (f_802737a0) gives an entry's block back and moves the entry to its free lists, but
-   never finalizes the texture made over that block, which stays initialized until its object is initialized again or
-   forever. To the game the block is free at that free; the back end is told then which texture is over it (the live
-   texture at the block's storage: the DTA's own allocation, so the storage is the target's identity here), and that
-   texture's image lets go when a texture is initialized over that storage, or is held again when the game's alloc gives
-   the entry back (alloc_gave). Walking in Hyrule Field, without this, 89 images of 2432x2432 D32F (2 GB, local-light
-   shadow maps) stayed held by freed entries (docs/direct/m6f-report.md 4). */
-static volatile LONG64 n_freed_told, n_freed_noobj, n_freed_other;
-int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);   /* nvn_native.c */
-/* the texture initialized over an entry's block now (its storage: the DTA pool + the block's offset +0x38), as a copy */
-static int entry_tex(uint64_t e, nvn_tex *t) {
-    const uint64_t block = hos_guest_range(e + ENT_BLOCK, 8) ? G64(e + ENT_BLOCK) : 0;
-    return block && dta_pool_gpu && hos_guest_range(block + 0x38, 8) && nvn_tex_live_at(dta_pool_gpu + G64(block + 0x38), t);
-}
-int nvn_texture_storage_freed(const nvn_tex *t);   /* nvn_native.c: 1 the back end was told */
-void rt_slots_freed_line(char *out, size_t cap) {   /* (M6f, direct_assets.c's memory line) */
-    snprintf(out, cap, "the game's frees of DTA entries: the back end told %lld, no texture over the entry's block %lld, not told "
-             "%lld", (long long)n_freed_told, (long long)n_freed_noobj, (long long)n_freed_other);
-}
-void nvn_texture_taken_again(const nvn_tex *t);   /* nvn_native.c */
-/* the entry an alloc gave: its texture, if the game freed it before, is the game's again (an entry taken from the DTA's
-   free lists keeps its texture as it was when its storage is the same: no initialization) */
+/* The entry an alloc gave (a new one, one from the allocator's free lists, or a parked one handed back), told to the
+   back end by its own texture object: the entry's descriptor id (+0x68) names a record of agl's descriptor manager
+   (*(*0x84ca2d60): records of 0x28 at +0x9f8, +0x9f0 of them, the first id at u16 +0xa62), whose +0x18 is the holder of
+   the texture object registered under that id (f_800634b0: the object is the manager's, initialized over the entry's
+   storage). Its image claims its memory in the transient pool if another image has had it since. The address lookup
+   this replaces (the live texture at the block's storage) named another object after a reuse: the back end then let
+   go of maps drawn in that very present (docs/direct/shadow-maps.md 5.3). An entry with no id yet is registered by
+   its caller, and that initialization claims. */
 static void alloc_gave(uint64_t entry) {
-    if (!entry || !hos_guest_range(entry, 0x180)) return;
-    nvn_tex t;
-    if (entry_tex(entry, &t)) nvn_texture_taken_again(&t);
+    const hsd_fns *d = rx_direct();
+    if (!entry || !d || !d->target_given || !hos_guest_range(entry, 0x180)) return;
+    const int32_t id = (int32_t)G32(entry + 0x68);
+    const uint64_t mgr = hos_guest_range(0x84ca2d60ull, 8) && hos_guest_range(G64(0x84ca2d60ull), 8) ? G64(G64(0x84ca2d60ull)) : 0;
+    const nvn_tex *t = NULL;
+    if (id >= 0 && hos_guest_range(mgr, 0xa68)) {
+        const uint32_t ri = (uint32_t)id - *(uint16_t *)GP(mgr + 0xa62);
+        const uint64_t rec = G64(mgr + 0x9f8) + (uint64_t)ri * 0x28;
+        if (ri < G32(mgr + 0x9f0) && hos_guest_range(rec, 0x28) && (int32_t)G32(rec) > 0) {
+            const uint64_t holder = G64(rec + 0x18);
+            const uint64_t obj = hos_guest_range(holder, 8) ? G64(holder) : 0;
+            if (hos_guest_range(obj, sizeof(nvn_tex))) t = (const nvn_tex *)GP(obj);
+        }
+    }
+    if (!t || t->magic != NVN_MAGIC('T', 'E', 'X', 0) || !t->serial) {
+        __atomic_add_fetch(&n.given_noid, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    const uint64_t block = G64(entry + ENT_BLOCK);
+    if (!block || !dta_pool_gpu || !hos_guest_range(block + 0x38, 8) || t->gpu != dta_pool_gpu + G64(block + 0x38)) {
+        __atomic_add_fetch(&n.given_other, 1, __ATOMIC_RELAXED);   /* (not registered over this block yet, or another pool) */
+        return;
+    }
+    __atomic_add_fetch(&n.given, 1, __ATOMIC_RELAXED);
+    d->target_given(t);
+}
+
+/* the local-shadow size classes, and each shadow object's class now (the hysteresis) */
+static const uint32_t shadow_class[] = {256, 384, 512, 640, 768, 1024, 1280, 1536, 2048, 2432};
+#define N_CLASS ((int)(sizeof shadow_class / sizeof *shadow_class))
+static uint32_t class_of(uint32_t w) {
+    for (int i = 0; i < N_CLASS; i++)
+        if (w <= shadow_class[i]) return shadow_class[i];
+    return (w + 127) / 128 * 128;
+}
+#define LS_TAB 2048
+static struct { uint64_t obj; uint32_t cls; } ls_tab[LS_TAB];
+static SRWLOCK ls_lock = SRWLOCK_INIT;
+ENTRY_HOOK(0x802640a0) {   /* (shadow object = light + 0x100, ctx, flags): noted; the lifted body runs */
+    shadow_obj = ARG(0);
+    return 0;
+}
+/* the size a light's map gets for the size w it wants */
+static uint32_t shadow_size(uint64_t obj, uint32_t w) {
+    uint32_t want = class_of(w);
+    if (!obj) return want;
+    AcquireSRWLockExclusive(&ls_lock);
+    uint32_t i = (uint32_t)((obj >> 4) * 0x9e3779b1u) & (LS_TAB - 1);
+    int k = 0;
+    for (; k < LS_TAB && ls_tab[i].obj && ls_tab[i].obj != obj; k++) i = (i + 1) & (LS_TAB - 1);
+    if (k < LS_TAB) {
+        const uint32_t now = ls_tab[i].obj ? ls_tab[i].cls : 0;
+        if (now && w <= now && want != now) {
+            uint32_t below = 0;   /* the class under the light's */
+            for (int j = 0; j < N_CLASS; j++)
+                if (shadow_class[j] < now) below = shadow_class[j];
+            if (below && (uint64_t)w * 10 > (uint64_t)below * 9) want = now, n.class_kept++;
+            else n.class_down++;
+        } else if (now && want != now) {
+            n.class_up++;
+        }
+        ls_tab[i].obj = obj, ls_tab[i].cls = want;
+    }
+    ReleaseSRWLockExclusive(&ls_lock);
+    return want;
 }
 
 ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
@@ -808,15 +931,7 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
                 break;
             }
     ReleaseSRWLockExclusive(&mu);
-    static int nofree = -1;   /* (M6f) HOS_DBG=nodtafree: the back end is not told (a diagnosis, A/B) */
-    if (nofree < 0) { const char *d = getenv("HOS_DBG"); nofree = d && strstr(d, "nodtafree") != NULL; }
-    if (!park && block && rx_direct() && !nofree) {   /* (M6f) the game's free runs: the entry's texture is gone to it */
-        nvn_tex t;
-        if (!entry_tex(e, &t)) InterlockedIncrement64(&n_freed_noobj);
-        else if (nvn_texture_storage_freed(&t)) InterlockedIncrement64(&n_freed_told);
-        else InterlockedIncrement64(&n_freed_other);
-    }
-    return park;   /* 1: the game's free does not run */
+    return park;   /* 1: the game's free does not run (the back end is told nothing either way: the memory is the pool's) */
 }
 
 /* (nvn_native.c) the allocator initializes texture object obj: the same address and shape as that object's last
@@ -824,8 +939,33 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
 #define TMAP 4096
 static struct { uint64_t obj, gpu; uint32_t w, h, fmt; } tmap[TMAP];
 static uint64_t init_same, init_moved, init_new;
-void rt_slots_texture_init(uint64_t obj, uint64_t gpu, uint32_t w, uint32_t h, uint32_t fmt) {
-    if (!log_slots()) return;   /* (debugging: a lock per initialization) */
+static volatile LONG64 n_desc_other;   /* (textures in a slot whose NVN format or target is not what device_need took) */
+void rt_slots_texture_init(uint64_t obj, uint64_t gpu, const nvn_texdesc *td, int dta) {
+    const uint32_t w = td->width, h = td->height, fmt = (uint32_t)td->format;
+    const hsd_fns *d = rx_direct();
+    const uint64_t base = dta_pool_gpu;
+    if (d && d->transient_slot && state == 1 && base && gpu >= base + lo && gpu < base + hi) {
+        /* a texture in the slot range: the bytes of the slot that starts there (0: none does), before its image is bound */
+        uint64_t cap = 0;
+        Cur k = {0};
+        AcquireSRWLockShared(&mu);
+        for (int i = 0; i < nslots; i++)
+            if (slots[i].off == gpu - base) { cap = slots[i].cap, k = slots[i].key; break; }
+        ReleaseSRWLockShared(&mu);
+        __atomic_add_fetch(cap ? &n.slot_told : &n.slot_untold, 1, __ATOMIC_RELAXED);
+        if (cap && k.valid && k.w == w && k.h == h && k.fmt < AGL_FORMATS && k.type < 16) {
+            /* the slot was sized for the format and target device_need took: checked against the texture's own */
+            const int tf = (int)G32(AGL_FORMAT_TABLE + 4ull * k.fmt);
+            if (tf != td->format || agl_target[k.type] != td->target) {
+                if (InterlockedIncrement64(&n_desc_other) <= 10)
+                    hos_log("rt slots: a target of agl format %u type %u is NVN format %#x target %d, not %#x / %d as its slot was "
+                            "sized for", k.fmt, k.type, td->format, td->target, tf, agl_target[k.type]);
+                if (agl_target[k.type] != td->target) agl_target[k.type] = td->target;   /* (as seen, from here on) */
+            }
+        }
+        d->transient_slot(gpu, cap);
+    }
+    if (!dta || !log_slots()) return;   /* (debugging: a lock per initialization) */
     AcquireSRWLockExclusive(&mu);
     uint32_t i = (uint32_t)((obj >> 3) * 0x9e3779b1u) & (TMAP - 1);
     for (int k = 0; k < TMAP && tmap[i].obj && tmap[i].obj != obj; k++) i = (i + 1) & (TMAP - 1);
@@ -903,6 +1043,16 @@ void rt_slots_frame(void) {
             (unsigned long long)n.released, (unsigned long long)n.park_full, (unsigned long long)n.drained,
             (unsigned long long)n.quantized, (unsigned long long)n.blockless, (unsigned long long)n.stolen,
             (unsigned long long)n.aliased, (unsigned long long)n.topped);
+    hos_log("rt slots: transient pool: %llu slots evicted before 8 idle presents, %llu targets placed outside the slots; shadow "
+            "classes: %llu sizes changed, %llu up, %llu down, %llu kept by hysteresis; targets given to the back end by their "
+            "entry's object %llu (%llu entries with no registered object yet, %llu with an object over other storage), slots told "
+            "%llu (%llu textures in the range at no slot), slots sized %llu (%llu by the device's need, larger than the "
+            "game's; %lld textures of another format or target than their slot was sized for)",
+            (unsigned long long)n.evicted_young, (unsigned long long)n.game_offset, (unsigned long long)n.quantized,
+            (unsigned long long)n.class_up, (unsigned long long)n.class_down, (unsigned long long)n.class_kept,
+            (unsigned long long)n.given, (unsigned long long)n.given_noid, (unsigned long long)n.given_other,
+            (unsigned long long)n.slot_told, (unsigned long long)n.slot_untold, (unsigned long long)n.sized,
+            (unsigned long long)n.sized_up, (long long)n_desc_other);
     last_n_calls = n.calls, last_n_spliced = n.spliced, last_n_inits = inits, last_n_dta_inits = dta_inits;
     last_n_made = n.made, last_frame_log = f;
     ReleaseSRWLockShared(&mu);

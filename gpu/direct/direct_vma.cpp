@@ -7,6 +7,7 @@
 #include "direct_internal.h"
 #include <vk_mem_alloc.h>
 
+#include <algorithm>
 #include <cstdio>
 
 namespace hsd {
@@ -43,6 +44,43 @@ bool mem_image(const VkImageCreateInfo& ci, VkImage& image, Mem*& mem) {
     return true;
 }
 void mem_image_free(VkImage image, Mem* mem) { vmaDestroyImage(vma, image, (VmaAllocation)mem); }
+
+// ---- the transient pool (docs/direct/shadow-pool-report.md) ----
+// One device allocation for the game's transient render targets (host/rt_slots.c's slot range), made once when the host
+// names the range. A target's image is bound in it at its storage offset, so targets alias as on the console and no
+// device memory is allocated or freed for them in play. Its own vkAllocateMemory, outside VMA's blocks: nothing else
+// may land in it.
+namespace {
+VkDeviceMemory pool_mem = VK_NULL_HANDLE;
+uint64_t pool_bytes = 0;
+uint32_t pool_type = 0;
+}  // namespace
+bool mem_pool_make(uint64_t size, uint32_t type_bits) {
+    if (pool_mem) return size <= pool_bytes;
+    int type = -1;
+    for (int pass = 0; pass < 2 && type < 0; pass++)   // (device-local and not host-visible first: VRAM only)
+        for (uint32_t i = 0; i < dev.memory.memoryTypeCount; i++) {
+            const VkMemoryPropertyFlags f = dev.memory.memoryTypes[i].propertyFlags;
+            if (!(type_bits >> i & 1) || !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;
+            if (pass == 0 && (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) continue;
+            type = (int)i;
+            break;
+        }
+    if (type < 0) return false;
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize = size;
+    ai.memoryTypeIndex = (uint32_t)type;
+    if (vkAllocateMemory(dev.device, &ai, nullptr, &pool_mem) != VK_SUCCESS) return pool_mem = VK_NULL_HANDLE, false;
+    pool_bytes = size, pool_type = (uint32_t)type;
+    return true;
+}
+uint64_t mem_pool_size() { return pool_bytes; }
+bool mem_pool_bind(VkImage image, uint64_t offset, const VkMemoryRequirements& req) {
+    if (!pool_mem || !(req.memoryTypeBits >> pool_type & 1) || offset % std::max<VkDeviceSize>(req.alignment, 1) ||
+        offset + req.size > pool_bytes)
+        return false;
+    return vkBindImageMemory(dev.device, image, pool_mem, offset) == VK_SUCCESS;
+}
 
 bool mem_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer, Mem*& mem, void** mapped) {
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};

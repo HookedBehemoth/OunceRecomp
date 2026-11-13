@@ -772,10 +772,12 @@ NV(nvnTextureInitialize) {
     InterlockedIncrement64(&nvn_texture_inits);
     const nvn_tex_builder *b = CTB(P(1));
     if (c->x[30] >= 0x8005ed00ull && c->x[30] < 0x80062b6cull) {
-        void rt_slots_texture_init(uint64_t obj, uint64_t gpu, uint32_t w, uint32_t h, uint32_t fmt);   /* rt_slots.c */
         InterlockedIncrement64(&nvn_texture_inits_dta);
-        rt_slots_texture_init(c->x[0], b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0, b->d.width, b->d.height,
-                              b->d.format);
+    }
+    {   /* (rt_slots.c: a texture in the transient slots, from any caller: its slot's bytes go to the back end first) */
+        void rt_slots_texture_init(uint64_t obj, uint64_t gpu, const nvn_texdesc *d, int dta);
+        rt_slots_texture_init(c->x[0], b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0, &b->d,
+                              c->x[30] >= 0x8005ed00ull && c->x[30] < 0x80062b6cull);
     }
     nvn_tex *o = TX(P(0));
     if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {   /* initialised again without Finalize */
@@ -818,18 +820,6 @@ NV(nvnTextureInitialize) {
          o->d.depth, o->d.levels, o->d.format, o->d.target, o->d.flags, (unsigned long long)o->gpu,
          (unsigned long long)o->L.size);
     RET(1);
-}
-/* (M6f, direct mode) rt_slots.c: the game freed the storage of texture t (a copy of the live texture over a DTA entry's
-   block), or took the entry back: the back end is told. 1: told */
-int nvn_texture_storage_freed(const nvn_tex *t) {
-    const hsd_fns *d = rx_direct();
-    if (!d || !d->texture_freed || t->magic != NVN_MAGIC('T', 'E', 'X', 0) || !t->serial) return 0;
-    d->texture_freed(t);
-    return 1;
-}
-void nvn_texture_taken_again(const nvn_tex *t) {
-    const hsd_fns *d = rx_direct();
-    if (d && d->texture_held && t->magic == NVN_MAGIC('T', 'E', 'X', 0) && t->serial) d->texture_held(t);
 }
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));

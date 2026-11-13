@@ -539,10 +539,6 @@ void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
         std::memcpy(res_heap.map + heap_storage_offset(r) + (uint64_t)id * kImageDesc, d, kImageDesc);
         if (sok) st_storage.fetch_add(1, std::memory_order_relaxed);
     }
-    if (slot_image[id] != im) {   // (M6f: the heap's holds of an image, for one its texture let go of: image_sweep)
-        if (slot_image[id]) slot_image[id]->heap_refs.fetch_sub(1, std::memory_order_relaxed);
-        if (im) im->heap_refs.fetch_add(1, std::memory_order_relaxed);
-    }
     slot_image[id] = im;
     slot_tex[id] = {t->gpu, t->d.width, t->d.height, t->d.format, t->d.target, t->d.depth, t->d.levels, v ? *v : nvn_view{}, v != nullptr};
 }
@@ -573,7 +569,6 @@ void heap_image_gone(const Image* im) {
             std::memset(res_heap.map + heap_storage_offset(r) + (uint64_t)id * kImageDesc, 0, kImageDesc);
         }
         slot_image[id] = nullptr;
-        im->heap_refs.fetch_sub(1, std::memory_order_relaxed);
         st_gone.fetch_add(1, std::memory_order_relaxed);
     }
 }
@@ -631,6 +626,23 @@ int heap_placeholder(uint32_t id) {
     const Image* im = slot_image[id];
     if (im) return im->placeholder ? 1 : 0;
     return slot_tex[id].gpu && slot_tex[id].target != NVN_TEXTURE_TARGET_BUFFER ? 2 : 0;
+}
+
+int heap_stale(uint32_t id) {
+    if (!ready || id >= kHeapSlots) return 0;
+    std::lock_guard lk(heap_mu);
+    return image_stale(slot_image[id]) ? 1 : 0;
+}
+
+void heap_stale_census(char* out, size_t cap) {
+    uint64_t ids = 0, shadow = 0;
+    if (ready) {
+        std::lock_guard lk(heap_mu);
+        for (uint32_t id = 0; id < kHeapSlots; id++)
+            if (const Image* im = slot_image[id]; image_stale(im)) ids++, shadow += im->width == im->height && is_depth_format(im->format);
+    }
+    std::snprintf(out, cap, "descriptor ids naming a transient target that is not its range's owner: %llu (%llu square depth maps); "
+                  "they hold an image object each and no memory", (unsigned long long)ids, (unsigned long long)shadow);
 }
 
 void heap_stats(char* out, size_t cap) {

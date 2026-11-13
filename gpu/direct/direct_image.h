@@ -1,6 +1,8 @@
 // One image per NVN texture (docs/direct/m2-interface.md, direct_image): made when the texture is initialized (or
 // registered, if it was not seen first), never at a draw; kept by its storage and shape, so a texture the game
 // initializes again every frame over the same storage (the transient targets, host/rt_slots.c) keeps its image.
+// An image lives while a texture is initialized over it, and 8 presents more. The transient targets' images are bound
+// in one device allocation at their storage offsets (the transient pool) and are kept as objects up to a bound.
 // Every image lives in VK_IMAGE_LAYOUT_GENERAL. A texture with no image this GPU can hold (ASTC, a format with no Vulkan
 // twin, a size the driver refuses) gets the placeholder, counted and named; a buffer texture gets nothing.
 #pragma once
@@ -52,12 +54,15 @@ struct Image {
     // (lifetime: the live NVN textures over it; images_mu held)
     int refs = 0;
     int cached_refs = 0;
-    // (M6f) the descriptor-heap entries naming it, and whether it waits for them: an image whose texture the game freed the
-    // storage of (a transient target) lives on while a descriptor id still names it (the game samples it through that id
-    // in lists recorded after the free) and goes once every such id names another texture
-    mutable std::atomic<int> heap_refs{0};
-    bool wait_heap = false;   // (M6f: a freed transient target's image: destroyed only once no descriptor id names it (the
-                              // game samples such targets through ids it registered before the free, without telling))
+    // (the transient pool, docs/direct/shadow-pool-report.md) an image bound in the pool's one allocation at its texture's
+    // storage offset: it shares memory with every other image whose range overlaps its own, and only the range's owner
+    // (the last one claimed: its texture initialized, or given out by the game's allocator) has defined content. A claim
+    // by an image that is not the owner discards and clears it (init_image) and ends the others' ownership.
+    bool pooled = false;
+    uint64_t pool_off = 0, pool_size = 0;
+    std::atomic<bool> owner{false};
+    std::atomic<uint64_t> claimed{0};   // (the present of its last claim)
+    bool prune = false;                 // (image_sweep: over the cache's bound, destroyed when the GPU is done with it)
     uint64_t dead_present = 0, dead_value = 0;
     std::mutex views_mu;
     std::unordered_map<uint64_t, VkImageView> views;
@@ -66,12 +71,20 @@ enum : uint8_t { W_ATTACHMENT = 1, W_COPY = 2, W_TEXELS = 4, W_CLEAR = 8, W_STOR
 
 void image_texture_created(const nvn_tex* t);
 void image_texture_released(const nvn_tex* t);
-/// (M6f) The game freed t's storage without finalizing it (hsd_texture_freed): its hold on its image ends as at a release; the
-/// object's later release (initialized again, finalized) is then not counted twice, and a registration before it holds it again
-void image_texture_freed(const nvn_tex* t);
-void image_texture_held(const nvn_tex* t);
-void image_texture_cached(const nvn_tex* t, bool cached);
-int64_t image_dying_bytes();   // (M6f)   // (M6f) agl's LRU cache: counted on the image   // (M6f) taken again after such a free: held again (made again if it went)
+/// (the transient pool) The host names the pool's range of storage addresses, once (hsd_transient_pool): the device memory
+/// is allocated here. false: not made (logged)
+bool image_pool_range(uint64_t lo, uint64_t hi);
+/// The bytes of the slot at storage address gpu, for the texture initialized there next (hsd_transient_slot)
+void image_pool_slot(uint64_t gpu, uint64_t cap);
+/// What an image of a texture of this description needs in the pool: bytes and alignment (0: no image of it)
+uint64_t image_need(const nvn_texdesc* d, uint64_t* align);
+/// The game's allocator gave the target t out (hsd_target_given): its image claims its range if it is not the owner
+void image_target_given(const nvn_tex* t);
+/// (diagnosis: 1 an image in the pool that is not its range's owner: its content is another target's)
+bool image_stale(const Image* im);
+void image_stale_bound();   // (a draw bound one: counted for the pool's line)
+void image_texture_cached(const nvn_tex* t, bool cached);   // (M6f) agl's LRU cache: counted on the image
+int64_t image_dying_bytes();   // (M6f: the bytes of images waiting to be destroyed)
 void image_texture_registered(const nvn_tex* t);
 /// The image of an NVN texture (the placeholder when it has none this GPU can hold; null: a buffer texture or none made)
 Image* image_find(const nvn_tex* t);
@@ -97,6 +110,7 @@ void image_unhold(Image* im);
 /// Images whose textures are all gone for a while, and done on the GPU, destroyed (the Presentation Thread, at a present)
 void image_sweep(uint64_t present);
 void image_stats(char* out, size_t cap);
+void image_pool_stats(char* out, size_t cap);   // (the transient pool's line of the 600-present block)
 
 // ---- one side of a copy (direct_image.cpp): a level, its layers or slices, and a region in texels ----
 struct Sub {

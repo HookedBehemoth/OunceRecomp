@@ -271,17 +271,23 @@ void texture_created(const nvn_tex* t) {
 }
 }  // namespace
 }  // namespace hsd
-extern "C" __attribute__((visibility("default"))) void hsd_texture_freed(const void* t) {   // (M6f)
-    hsd::image_texture_freed((const nvn_tex*)t);
-}
 extern "C" __attribute__((visibility("default"))) int64_t hsd_vram_free(void) {   // (M6f: -1 not known yet)
     return hsd::vram_free_now.load(std::memory_order_relaxed);
 }
 extern "C" __attribute__((visibility("default"))) void hsd_texture_cached(const void* t, int cached) {   // (M6f)
     hsd::image_texture_cached((const nvn_tex*)t, cached != 0);
 }
-extern "C" __attribute__((visibility("default"))) void hsd_texture_held(const void* t) {   // (M6f)
-    hsd::image_texture_held((const nvn_tex*)t);
+// (the transient pool, docs/direct/shadow-pool-report.md: host/rt_slots.c's calls)
+extern "C" __attribute__((visibility("default"))) int hsd_transient_pool(uint64_t lo, uint64_t hi) {
+    return hsd::image_pool_range(lo, hi) ? 1 : 0;
+}
+extern "C" __attribute__((visibility("default"))) void hsd_transient_slot(uint64_t gpu, uint64_t cap) { hsd::image_pool_slot(gpu, cap); }
+extern "C" __attribute__((visibility("default"))) uint64_t hsd_image_need(const void* desc, uint64_t* align) {
+    return hsd::image_need((const nvn_texdesc*)desc, align);
+}
+extern "C" __attribute__((visibility("default"))) void hsd_target_given(const void* t) { hsd::image_target_given((const nvn_tex*)t); }
+extern "C" __attribute__((visibility("default"))) void hsd_host_event(const char* reason, const char* what) {
+    hsd::strict_event(reason, "%s", what ? what : "");
 }
 namespace hsd {
 namespace {
