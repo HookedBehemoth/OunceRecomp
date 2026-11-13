@@ -104,6 +104,7 @@ void sync_fill_table(MkwVkRenderer& t);
 /// One empty submission that signals the next timeline value (queue_mu taken here); the value, 0 on failure
 uint64_t sync_send(uint64_t wait_value, const VkCommandBuffer* cbs = nullptr, uint32_t n = 0);
 void sync_stats(char* out, size_t cap, double frames);
+void sync_age_stats(char* out, size_t cap);   // (the transient pool: how late lists reach the queue)
 /// The host's present, run in its queue's order (present_run)
 void sync_present(const nvn_tex* t, const int crop[4]);   // (the submits' part of the 600-present line)
 

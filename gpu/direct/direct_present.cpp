@@ -301,6 +301,8 @@ void log_line() {
     logf("direct: %s", b);
     heap_stale_census(b, sizeof b);
     logf("direct: transient pool: %s", b);
+    sync_age_stats(b, sizeof b);
+    logf("direct: transient pool: %s", b);
     cmd_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     assets_stats(b, sizeof b, frames);

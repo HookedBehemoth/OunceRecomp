@@ -80,6 +80,9 @@ double st_hold_max_ms = 0, st_hold_ms = 0;
 int64_t st_freed_cpu = 0, st_freed_queue = 0;   // (M5: holds ended by the CPU's nvnEventSignal / by another queue's signal)
 bool in_cpu_signal = false;   // (progress() runs for nvnEventSignal; mu held)
 std::atomic<int64_t> st_submit_ns{0}, st_submit_max_ns{0}, st_cpu_waits{0}, st_cpu_wait_ns{0}, st_cpu_signals{0};
+// (the transient pool's rule, host/rt_slots.c REUSE_AFTER: how late a list reaches the queue. Presents between a list's
+// first command buffer and its hsd_submit, and between the hsd_submit and its chunks' vkQueueSubmit2: 0, 1, 2, more)
+std::atomic<int64_t> st_age_submit[4], st_age_sent[4];
 
 Queue* queue_of(uint64_t id) {   // (mu held)
     auto it = by_id.find(id);
@@ -307,6 +310,7 @@ void send_chunk(Queue& q, Sub& s, bool last) {
             logf("%s", b);
         }
     }
+    st_age_sent[std::min<uint64_t>(present_count() - std::min(present_count(), s.frame), 3)].fetch_add(1, std::memory_order_relaxed);
     s.last_value = batch_add(wait_value, s.wait_next && !s.pending.empty(), s.pending.data(), (uint32_t)s.pending.size());
     if (s.wait_next && s.pending.empty()) return;   // (nothing after the wait yet: the barrier goes with the next chunk)
     st_cbs += (int64_t)s.pending.size(), st_chunks++;
@@ -549,6 +553,13 @@ uint64_t sync_send(uint64_t wait_value, const VkCommandBuffer* cbs, uint32_t n) 
     return v;
 }
 
+void sync_age_stats(char* out, size_t cap) {
+    std::snprintf(out, cap, "lists handed to the queue 0, 1, 2, 3+ presents after they were begun: %lld %lld %lld %lld; chunks sent to "
+                  "the device 0, 1, 2, 3+ presents after their submit: %lld %lld %lld %lld (since the start; a slot's memory goes to "
+                  "another target only after more presents than these)", (long long)st_age_submit[0].load(), (long long)st_age_submit[1].load(),
+                  (long long)st_age_submit[2].load(), (long long)st_age_submit[3].load(), (long long)st_age_sent[0].load(),
+                  (long long)st_age_sent[1].load(), (long long)st_age_sent[2].load(), (long long)st_age_sent[3].load());
+}
 void sync_stats(char* out, size_t cap, double frames) {
     std::lock_guard lk(mu);
     size_t held_now = 0;
@@ -592,6 +603,8 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
         List* l = (List*)lists[i];
         if (!l) continue;
         list_ref(l);
+        if (l->slot && l->slot->frame != UINT64_MAX)
+            st_age_submit[std::min<uint64_t>(present_count() - std::min(present_count(), l->slot->frame), 3)].fetch_add(1, std::memory_order_relaxed);
         list_submitted(l);
         draw_list_submitted(l);   // (M2b: the deferred binds' handles as the game's arrays hold them now)
         compute_list_submitted(l);   // (M4a: and the dispatches')

@@ -767,6 +767,14 @@ int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out) {
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* (below) */
 /* (rt_slots.c's log: texture initializations, and those made by agl's DynamicTextureAllocator::alloc, f_8005ed00) */
 volatile LONG64 nvn_texture_inits, nvn_texture_inits_dta;
+extern volatile LONG64 hos_present_count;   /* display.c */
+/* RX_NVN_LOG_TEX=<w>x<h> (debugging): each initialization and finalize of a texture that size, with its caller */
+static int log_tex(const nvn_tex *o) {
+    static int on = -1;
+    static unsigned lw, lh;
+    if (on < 0) on = getenv("RX_NVN_LOG_TEX") && sscanf(getenv("RX_NVN_LOG_TEX"), "%ux%u", &lw, &lh) == 2;
+    return on && o->d.width == lw && o->d.height == lh;
+}
 static _Thread_local uint64_t tl_moved_serial;   /* (M6f: the serial a texture moved by compaction keeps) */
 NV(nvnTextureInitialize) {
     InterlockedIncrement64(&nvn_texture_inits);
@@ -816,6 +824,11 @@ NV(nvnTextureInitialize) {
         if (at == 1) at = getenv("RX_NVN_WATCH_TEX_AT") ? strtoull(getenv("RX_NVN_WATCH_TEX_AT"), NULL, 16) : 0;
         if (at && o->gpu == at && o->gpu < VBASE) hos_watch_guest_writes(GP(o->gpu), o->L.size);
     }
+    if (log_tex(o))
+        hos_log("nvn: texture %#llx initialized: %ux%ux%u levels %u format %#x target %d at %#llx (pool %#llx + %#llx), serial %llu, "
+                "lr %#llx, present %lld", (unsigned long long)c->x[0], o->d.width, o->d.height, o->d.depth, o->d.levels, o->d.format,
+                o->d.target, (unsigned long long)o->gpu, (unsigned long long)(b->pool ? POOL(b->pool)->gpu : 0),
+                (unsigned long long)o->off, (unsigned long long)o->serial, (unsigned long long)c->x[30], (long long)hos_present_count);
     OLOG("texture %ux%ux%u levels %u format %#x target %d flags %#x at %#llx size %#llx", o->d.width, o->d.height,
          o->d.depth, o->d.levels, o->d.format, o->d.target, o->d.flags, (unsigned long long)o->gpu,
          (unsigned long long)o->L.size);
@@ -831,6 +844,10 @@ NV(nvnTextureFinalize) {
         o->magic = 0;
         return;
     }
+    if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && log_tex(o))
+        hos_log("nvn: texture %#llx finalized: %ux%u at %#llx, serial %llu, lr %#llx, present %lld", (unsigned long long)c->x[0],
+                o->d.width, o->d.height, (unsigned long long)o->gpu, (unsigned long long)o->serial, (unsigned long long)c->x[30],
+                (long long)hos_present_count);
     if (rx_direct()) direct_texwatch_released(o);
     live_del(o);
     rx_nvn_texture_released(o);
