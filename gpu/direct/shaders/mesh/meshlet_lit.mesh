@@ -3,7 +3,10 @@
 // tangent in view space, its world position, the tangent's handedness and one set of texture coordinates. A transcription
 // of the game's logic (data layout and arithmetic, meshlet.glsl); our own text.
 //
-// Build: glslangValidator -V --target-env vulkan1.3 -DMODEL_SLOT=<n>
+// With PROBE_LIGHT it is mesh stage 40d0c0768e874600: the same vertices plus 12 components of light a vertex from the
+// game's probe grid (probe_light.glsl), on three more output lines.
+//
+// Build: glslangValidator -V --target-env vulkan1.3 -DMODEL_SLOT=<n> [-DPROBE_LIGHT]
 #version 460
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
@@ -22,6 +25,16 @@ layout(location = 3) out vec4 world_position[];
 layout(location = 4) out vec4 handedness[];
 layout(location = 5) out vec4 view_tangent[];
 layout(location = 6) out vec4 texcoord[];
+#ifdef PROBE_LIGHT
+layout(set = 0, binding = 4, scalar) uniform Lighting { float f[16384]; } c6;
+layout(location = 14) out vec4 probe_light0[];
+layout(location = 15) out vec4 probe_light1[];
+layout(location = 16) out vec4 probe_light2[];
+#include "probe_light.glsl"
+void no_probe_light(uint v) { probe_light0[v] = probe_light1[v] = probe_light2[v] = vec4(0.0); }
+#else
+void no_probe_light(uint v) {}
+#endif
 
 // (a matrix row applied the game's way: y first, then fused x and z)
 float row(float m0, float m1, float m2, vec3 p) { precise float y = p.y * m1; return fma(p.z, m2, fma(p.x, m0, y)); }
@@ -46,6 +59,10 @@ void emit_vertex(uint64_t m, Meshlet s, uint v) {
     const vec3 world = object_to_world(read_position(m, s, v));
     gl_MeshVerticesEXT[v].gl_Position = vulkan_clip(world_to_clip(world));
     world_position[v] = vec4(world, 1.0);
+#ifdef PROBE_LIGHT
+    precise vec3 lit_at = world + vec3(c4.f[16], c4.f[17], c4.f[18]);
+    probe_light(lit_at, probe_light0[v], probe_light1[v], probe_light2[v]);
+#endif
     // (the vertex record after the position: the normal, the tangent with its handedness bit first, the texture coordinates)
     const uint normal_bit = s.data_bit + v * s.vertex_bits + s.x_bits + s.y_bits + s.z_bits;
     const uint normal_field = 2u * s.normal_bits, tangent_field = 2u * s.tangent_bits + 1u;
@@ -84,11 +101,13 @@ void main() {
             gl_MeshVerticesEXT[v].gl_Position = vec4(0.0);
             view_normal[v] = world_position[v] = view_tangent[v] = vec4(0.0, 0.0, 0.0, 1.0);
             handedness[v] = texcoord[v] = vec4(0.0, 0.0, 0.0, 1.0);
+            no_probe_light(v);
         }
     }
     for (uint v = 64u + lane; v < 126u; v += 32u) {
         gl_MeshVerticesEXT[v].gl_Position = vec4(0.0);
         view_normal[v] = world_position[v] = view_tangent[v] = handedness[v] = texcoord[v] = vec4(0.0, 0.0, 0.0, 1.0);
+        no_probe_light(v);
     }
     const uint index_start = s.data_bit + s.vertices * s.vertex_bits;
     const uint mask = (1u << min(s.index_bits, 8u)) - 1u;
