@@ -767,16 +767,46 @@ void push(VkCommandBuffer cb, const void* data, uint32_t bytes) {
     g.vkCmdPushDataEXT(cb, &pi);
 }
 bool bench_discard = false;   // (bench --discard: every draw with rasterizer discard: the mesh stage alone)
+// (run --prepass: a draw that tests depth for equality is drawn first with depth written and no colour, as the game's depth
+// prepass leaves it: without it every fragment of such a draw fails against the cleared depth and its fragment stage and
+// colour writes never run. --prepass-barrier: the back end's wait (framebuffer stages, by region) between the two)
+bool prepass = false, prepass_barrier = false;
+uint64_t prepass_draws = 0;
 void record_draw(VkCommandBuffer cb, const Ready& r, VkShaderEXT ms_override = VK_NULL_HANDLE) {
     Dyn dyn;
     std::memcpy(&dyn, r.d->d.dyn, sizeof dyn);
+    const auto draw = [&] {
+        if (r.d->d.task) g.vkCmdDrawMeshTasksIndirectEXT(cb, r.header.b, 0, 1, 16);
+        else if (r.d->d.indirect) g.vkCmdDrawMeshTasksIndirectEXT(cb, r.record.b, 0, 1, 16);
+        else g.vkCmdDrawMeshTasksEXT(cb, r.groups, 1, 1);
+    };
+    if (prepass && !bench_discard && dyn.dt && dyn.dop == VK_COMPARE_OP_EQUAL) {
+        Dyn pre = dyn;
+        pre.dw = VK_TRUE, pre.dop = VK_COMPARE_OP_LESS_OR_EQUAL;
+        for (VkColorComponentFlags& m : pre.wm) m = 0;
+        set_state(cb, pre);
+        bind_stages(cb, ms_override ? ms_override : r.ms, r.fs);
+        push(cb, r.push, r.push_bytes);
+        draw();
+        prepass_draws++;
+        if (prepass_barrier) {
+            const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                             VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+            b.srcStageMask = b.dstStageMask = fb;
+            b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+            di.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+            di.memoryBarrierCount = 1, di.pMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cb, &di);
+        }
+    }
     set_state(cb, dyn);
     if (bench_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
     bind_stages(cb, ms_override ? ms_override : r.ms, r.fs);
     push(cb, r.push, r.push_bytes);
-    if (r.d->d.task) g.vkCmdDrawMeshTasksIndirectEXT(cb, r.header.b, 0, 1, 16);
-    else if (r.d->d.indirect) g.vkCmdDrawMeshTasksIndirectEXT(cb, r.record.b, 0, 1, 16);
-    else g.vkCmdDrawMeshTasksEXT(cb, r.groups, 1, 1);
+    draw();
 }
 void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src, VkAccessFlags2 sa, VkPipelineStageFlags2 dst, VkAccessFlags2 da) {
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -1301,6 +1331,8 @@ int main(int argc, char** argv) {
         else if (a == "--range") { const std::string v = next(); fs_lo = (float)std::atof(v.c_str()); fs_hi = (float)std::atof(v.substr(v.find(',') + 1).c_str()); }
         else if (a == "--discard") discard = true;
         else if (a == "--present") sel_present = std::strtoll(next().c_str(), nullptr, 10);
+        else if (a == "--prepass") prepass = true;
+        else if (a == "--prepass-barrier") prepass = prepass_barrier = true;
         else if (a == "--mult") bench_mult = (uint32_t)std::max(1, std::atoi(next().c_str()));
         else if (a == "--secondary") secondary = true;
         else if (a == "--quiet") quiet = true;
