@@ -1,8 +1,9 @@
 // Command buffers (docs/direct/m2-interface.md, direct_cmd): each recording thread has a command pool per frame slot
-// (three), its buffers kept and handed out again after the slot's reset. A slot is reset as a whole the first time its
-// thread records in a new frame of that slot, once the GPU is past the last submission that held one of its buffers
-// and no list holding one is alive. A list alive past that (one kept for more than three frames) keeps its slot from
-// being reset: counted, and the slot's pool grows. Each thread also has a small ring of upload buffers for the CPU's
+// (three in rotation), its buffers kept and handed out again after the slot's reset. A slot is reset as a whole when its
+// thread first records in a new frame and takes it: one last recorded in three frames ago or more, once the GPU is past
+// the last submission that held one of its buffers and no list holding one is alive. A list alive past that (one kept
+// for more than three frames, as in a pause) sets its slot aside untouched until the list is gone; the thread gets one
+// slot more when it then has none to reset (counted). Each thread also has a small ring of upload buffers for the CPU's
 // texel writes and image initialization, sent at once on the one queue with their own timeline value.
 #pragma once
 

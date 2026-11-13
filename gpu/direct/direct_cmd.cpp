@@ -2,6 +2,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 
 #include "direct_check.h"
 #include "direct_cmd.h"
@@ -22,7 +23,10 @@ struct UploadSlot {
     uint64_t cap = 0, value = 0;
 };
 struct Thread {
-    CmdSlot slots[kSlots];
+    // (its slots, at fixed addresses: kSlots of them in rotation, one more made whenever none can be reset because lists of
+    // more than kSlots frames ago are still alive on all the others)
+    std::vector<std::unique_ptr<CmdSlot>> slots;
+    CmdSlot* cur = nullptr;   // (the slot of the frame it recorded in last)
     VkCommandPool upload_pool = VK_NULL_HANDLE;
     UploadSlot uploads[kUploads];
     int next = 0;
@@ -31,7 +35,7 @@ struct Thread {
 thread_local Thread* self = nullptr;
 
 std::atomic<int64_t> st_resets{0}, st_kept{0}, st_reset_waits{0}, st_reset_wait_ns{0}, st_buffers{0}, st_uploads{0},
-    st_upload_bytes{0}, st_upload_waits{0}, st_threads{0};
+    st_upload_bytes{0}, st_upload_waits{0}, st_threads{0}, st_slots{0}, st_aside{0};
 
 VkCommandPool make_pool(VkCommandPoolCreateFlags flags) {
     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -49,7 +53,6 @@ VkCommandPool make_pool(VkCommandPoolCreateFlags flags) {
 Thread& me() {
     if (!self) {
         self = new Thread;   // (kept for the process: a thread that records again finds its pools)
-        for (CmdSlot& s : self->slots) s.pool = make_pool(0);
         self->upload_pool = make_pool(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
         st_threads.fetch_add(1, std::memory_order_relaxed);
     }
@@ -94,16 +97,37 @@ void cmd_frame_presented(uint64_t n) {
 CmdSlot* cmd_slot_take() {
     Thread& t = me();
     const uint64_t frame = present_count();
-    CmdSlot& s = t.slots[frame % kSlots];
-    if (s.frame != frame) {
-        if (s.live.load(std::memory_order_acquire) > 0) {
-            st_kept.fetch_add(1, std::memory_order_relaxed);   // (a list of three frames ago still alive: not reset)
-            static std::atomic<int> told{0};
-            if (present_count() > 1200 && told++ < 30)
-                logf("direct: slot %p not reset at present %llu: %d lists alive on it (frame %llu, %zu buffers used)", (void*)&s,
-                     (unsigned long long)present_count(), s.live.load(), (unsigned long long)s.frame, s.used);
-        } else {
-            const uint64_t v = s.value.load(std::memory_order_acquire);
+    if (!t.cur || t.cur->frame != frame) {
+        // A slot can be reset once it was last recorded in kSlots frames ago or more (a list can reach the device two
+        // presents after it was begun) and no list holding its buffers is alive. The one used last among those is taken, so
+        // kSlots of them rotate. A slot with a list still alive is left as it is, with its buffers, until the list is gone:
+        // recording on in it without a reset grew its pool by a frame's buffers every frame, for as long as the game kept
+        // one list (a pause: 188,000 command buffers and 20 GB of the driver's memory in 30,000 presents).
+        CmdSlot* s = nullptr;
+        size_t aside = 0;
+        for (auto& c : t.slots) {
+            if (c->frame != UINT64_MAX && c->frame + kSlots > frame) continue;
+            if (c->live.load(std::memory_order_acquire) > 0) {
+                aside++;
+                continue;
+            }
+            if (!s || (c->frame != UINT64_MAX && (s->frame == UINT64_MAX || c->frame > s->frame))) s = c.get();
+        }
+        if (aside) st_kept.fetch_add((int64_t)aside, std::memory_order_relaxed);
+        if (!s) {
+            t.slots.push_back(std::make_unique<CmdSlot>());
+            s = t.slots.back().get();
+            s->pool = make_pool(0);
+            st_slots.fetch_add(1, std::memory_order_relaxed);
+            if (t.slots.size() > kSlots) {
+                st_aside.fetch_add(1, std::memory_order_relaxed);
+                static std::atomic<int> told{0};
+                if (told++ < 30)
+                    logf("direct: a command slot made at present %llu: this thread now has %zu, %zu of them set aside with a list "
+                         "of %d frames ago or more still alive", (unsigned long long)frame, t.slots.size(), aside, kSlots);
+            }
+        } else if (s->frame != UINT64_MAX) {
+            const uint64_t v = s->value.load(std::memory_order_acquire);
             if (v && sync_completed() < v) {
                 const auto t0 = clk::now();
                 sync_wait_value(v, UINT64_MAX);
@@ -111,21 +135,22 @@ CmdSlot* cmd_slot_take() {
                 st_reset_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(),
                                            std::memory_order_relaxed);
             }
-            vkResetCommandPool(dev.device, s.pool, 0);
-            task_check_slot(&s);
-            draw_probe_slot(&s);   // (HOS_DBG=progprobe)
-            arena_reset(s.arena);
-            query_slot_reset(s.q);
-            task_pool_reset(s.task);
-            s.used = 0, s.secs_used = 0;
+            vkResetCommandPool(dev.device, s->pool, 0);
+            task_check_slot(s);
+            draw_probe_slot(s);   // (HOS_DBG=progprobe)
+            arena_reset(s->arena);
+            query_slot_reset(s->q);
+            task_pool_reset(s->task);
+            s->used = 0, s->secs_used = 0;
             st_resets.fetch_add(1, std::memory_order_relaxed);
-            if (!s.bufs.empty()) grow(s, s.bufs, most_bufs.load(std::memory_order_relaxed), VK_COMMAND_BUFFER_LEVEL_PRIMARY);
-            if (!s.secs.empty()) grow(s, s.secs, most_secs.load(std::memory_order_relaxed), VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+            if (!s->bufs.empty()) grow(*s, s->bufs, most_bufs.load(std::memory_order_relaxed), VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+            if (!s->secs.empty()) grow(*s, s->secs, most_secs.load(std::memory_order_relaxed), VK_COMMAND_BUFFER_LEVEL_SECONDARY);
         }
-        s.frame = frame;
+        s->frame = frame;
+        t.cur = s;
     }
-    s.live.fetch_add(1, std::memory_order_acq_rel);
-    return &s;
+    t.cur->live.fetch_add(1, std::memory_order_acq_rel);
+    return t.cur;
 }
 
 VkCommandBuffer cmd_buffer(CmdSlot* s) {
@@ -255,9 +280,11 @@ uint64_t upload_end(Upload& u) {
 }
 
 void cmd_stats(char* out, size_t cap, double frames) {
-    std::snprintf(out, cap, "command buffers: %lld threads, %lld made since the start, slot resets %.1f a frame, kept (a list "
+    std::snprintf(out, cap, "command buffers: %lld threads, %lld slots (%lld made past a thread's %d because "
+                  "the others had a list alive), %lld made since the start, slot resets %.1f a frame, slots passed over (a list "
                   "alive) %lld, reset waits %lld (%.2f ms); uploads %.1f a frame (%.1f KB a frame), upload waits %lld; Vulkan "
-                  "objects made since the start %lld", (long long)st_threads.load(), (long long)st_buffers.load(),
+                  "objects made since the start %lld", (long long)st_threads.load(), (long long)st_slots.load(),
+                  (long long)st_aside.load(), kSlots, (long long)st_buffers.load(),
                   st_resets.exchange(0) / frames, (long long)st_kept.exchange(0), (long long)st_reset_waits.exchange(0),
                   st_reset_wait_ns.exchange(0) / 1e6, st_uploads.exchange(0) / frames, st_upload_bytes.exchange(0) / 1024.0 / frames,
                   (long long)st_upload_waits.exchange(0), (long long)st_objects.load());
