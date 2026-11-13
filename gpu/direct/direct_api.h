@@ -45,12 +45,13 @@ typedef struct hsd_asset_key {
     uint32_t path;                 /* HSD_ASSET_LOAD / _INPLACE (logs) */
     const void *data;              /* data_offset 0: mip 0's bytes in the decompressed file (host pointer): the record whose
                                       data offset back from it is its BNTX's header is the one */
-    const void *same_as;           /* (M4g) HSD_ASSET_SAME: the NVNtexture whose load's content this texture has */
+    const void *same_as;           /* (M4g) HSD_ASSET_SAME: the NVNtexture whose load's content this texture has (M6f: an
+                                      alias's target, docs/direct/texture-streaming.md 2.3) */
 } hsd_asset_key;
 enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2, HSD_ASSET_REBIND = 3, HSD_ASSET_SAME = 4 };
 /* (REBIND: a record found replaces the link; none: the link stays, armed as by hsd_asset_rebind. SAME (M4g): a load with no
    data whose texels are another texture's, same_as: it takes that texture's link (its record or its plain image) when the
-   descriptors agree; the host's game patch names it: docs/direct/m4g-report.md 1) */
+   descriptors agree; the host's game patch names it (M6f: the alias's target, read from the alias's chain: m6f-report.md 1) */
 int  hsd_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */
 int  hsd_asset_load(const hsd_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
 void hsd_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */
@@ -58,7 +59,9 @@ void hsd_asset_pool(uint64_t lo, uint64_t hi);      /* the asset heap's pool (po
 void hsd_texture_data_pool(uint64_t lo, uint64_t hi);   /* (M4f) a texture data pool, named at its creation: layer 0 leaves it unbound */
 /* texels from the CPU that no NVN call carries (game patches): an NVNcopyRegion of tex's level and first layer from
    src (row bytes, layer bytes; 0: packed); src NULL: none to give (the placeholder content, counted) */
-enum { HSD_TEXELS_TERRAIN = 1, HSD_TEXELS_GLYPH = 2, HSD_TEXELS_FILE = 3 };   /* (FILE: a prepared file's linear texels, M4e) */
+enum { HSD_TEXELS_TERRAIN = 1, HSD_TEXELS_GLYPH = 2, HSD_TEXELS_FILE = 3, HSD_TEXELS_TERRAIN_KEPT = 4 };
+/* (FILE: a prepared file's linear texels, M4e. TERRAIN_KEPT (M6f): a tile's bytes the storage still holds, for a texture
+   initialized there again: taken only into an image nothing has written) */
 void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                 uint64_t row, uint64_t img);
 

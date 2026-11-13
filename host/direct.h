@@ -57,14 +57,14 @@ void direct_sky_lut_opened(const char *path);
 /* nvn_native.c nvnTextureInitialize: packaged texture data the back end never reads, its copy into the storage skipped
    (1) in direct mode */
 int direct_assets_skip_packaged(uint64_t bytes);
-/* direct_tex_dedup.c (M4g, game patch): the texture at a heap slot now (a load with data, a texture moved there); a load
-   with no data at a slot: the texture whose texels it has, as an HSD_ASSET_SAME key (1), none noted (0) */
-void direct_tex_dedup_note(uint64_t slot, const void *tex, uint32_t size);
-int direct_tex_dedup_nodata(uint64_t slot, uint32_t size, hsd_asset_key *k);
+/* direct_tex_dedup.c (M4g, M6f, game patch): a load with no data, td its agl::TextureData: when it is a UnifyTex alias, its
+   target's NVN texture as an HSD_ASSET_SAME key (1); otherwise 0 */
+int direct_tex_alias(uint64_t td, hsd_asset_key *k);
 /* (M4f) nvnMemoryPoolInitialize (lr its return address): agl::TextureDataMgr's pool is named to the back end */
 void direct_assets_pool_made(uint64_t lr, uint64_t gpu, uint64_t size);
 /* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */
 extern volatile long direct_assets_tiles_pending;
+extern volatile long direct_assets_tilelog;   /* (M6f: HOS_DBG=tilelog, a diagnosis) */
 void direct_assets_texture_init(const void *nvn_texture);   /* (an nvn_tex) */
 /* nvn_native.c (M3a): the back end's open list of a guest command buffer (this thread's record handed over first) */
 void *direct_cmd_list(uint64_t cmd);

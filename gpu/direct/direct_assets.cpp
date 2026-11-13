@@ -26,6 +26,7 @@
 #include <zstd.h>
 
 #include "direct_api.h"
+#include "direct_check.h"
 #include "direct_assets.h"
 #include "direct_cmd.h"
 #include "direct_dump.h"
@@ -173,6 +174,7 @@ std::atomic<int64_t> st_loads{0}, st_inplace{0}, st_prepared{0}, st_miss_name{0}
     st_unseen{0}, st_fills{0}, st_fill_bytes{0}, st_fill_zbytes{0}, st_fill_ns{0}, st_zstd_ns{0}, st_fill_uploads{0},
     st_read_fail{0}, st_no_tex[S_N]{}, st_skipped[S_N]{}, st_tiles_unconverted{0}, st_jobs{0};
 std::atomic<int64_t> st_staging_max{0};
+std::atomic<int64_t> st_kept_taken{0}, st_kept_had{0};   // (M6f: HSD_TEXELS_TERRAIN_KEPT)
 
 ThreadStat& thread_stat() {
     if (!me_stat) {
@@ -338,38 +340,47 @@ int rebind_load(const hsd_asset_key* k) {
 
 namespace {
 std::atomic<int64_t> st_same{0}, st_same_rec{0}, st_same_plain{0}, st_same_nolink{0}, st_same_desc{0};
-/// (M4g) A load with no data whose texels are another texture's load (the host names it): that texture's link, when the
-/// descriptors agree; else a plain image as before, counted and named
+/// (M4g) A load with no data whose texels are another texture's (M6f: a UnifyTex alias; the host names its target, the head
+/// of its alias chain): that texture's link, when the descriptors agree; else a plain image, counted, named and a strict
+/// event (its content is undefined)
 int same_load(const hsd_asset_key* k) {
     st_same.fetch_add(1, std::memory_order_relaxed);
     Link l;
     l.armed = true;
     std::lock_guard lk(links_mu);
     auto it = links.find(k->same_as);
+    const bool known = it != links.end();
     const char* why = nullptr;
-    if (it == links.end()) {
-        why = "no load of it seen";
+    char whyb[256];
+    if (!known) {
+        why = "no load of its target seen";
     } else if (it->second.rec) {
+        const uint32_t rec = it->second.rec;
         Rec r;
-        rec_at(it->second.rec - 1, r);
+        rec_at(rec - 1, r);
         if (r.nvn_format == k->format && r.w == k->width && r.h == k->height && r.layers == k->layers && r.mips == k->mips &&
             r.isz == k->image_size)
-            l.rec = it->second.rec;
+            l.rec = rec;
         else
-            why = "its record has another descriptor";
+            std::snprintf(whyb, sizeof whyb, "its record has another descriptor ('%.*s', BNTX format %#x %ux%u x%u, %u mips, %u bytes)",
+                          (int)r.name_len, (const char*)S.str + r.name_off, r.nvn_format, r.w, r.h, r.layers, r.mips, r.isz),
+            why = whyb;
     } else if (it->second.plain) {
         l.plain = it->second.plain;
     } else {
-        why = "it has no record either";
+        why = "its target has no record either";
     }
     if (l.rec) st_same_rec.fetch_add(1, std::memory_order_relaxed), st_prepared.fetch_add(1, std::memory_order_relaxed);
     else if (l.plain) st_same_plain.fetch_add(1, std::memory_order_relaxed);
     else {
-        (it == links.end() ? st_same_nolink : st_same_desc).fetch_add(1, std::memory_order_relaxed);
+        (!known ? st_same_nolink : st_same_desc).fetch_add(1, std::memory_order_relaxed);
         l.plain = plain_ids.fetch_add(1, std::memory_order_relaxed) + 1;
         st_plain.fetch_add(1, std::memory_order_relaxed);
-        name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips): loaded with no data over another texture's content, but %s: a plain image",
-                  k->name ? (int)k->name_len : 0, k->name ? k->name : "", k->format, k->width, k->height, k->layers, k->mips, why);
+        name_once("'%.*s' (BNTX format %#x %ux%u x%u, %u mips, %u bytes): loaded with no data over another texture's content, but %s: a plain image",
+                  k->name ? (int)k->name_len : 0, k->name ? k->name : "", k->format, k->width, k->height, k->layers, k->mips,
+                  k->image_size, why);
+        strict_event("a texture loaded with no data over a content not resolved (undefined content)", "'%.*s': %s",
+                     k->name ? (int)k->name_len : 0, k->name ? k->name : "", why);
     }
     links[k->tex] = l;
     return l.rec ? 1 : 0;
@@ -477,8 +488,14 @@ extern "C" __attribute__((visibility("default"))) void hsd_texels(uint32_t sourc
                                                                   const void* region, const void* src, uint64_t row, uint64_t img) {
     const nvn_tex* t = (const nvn_tex*)tex;
     const NVNcopyRegion* r = (const NVNcopyRegion*)region;
-    const int si = source == HSD_TEXELS_TERRAIN ? S_TERRAIN : source == HSD_TEXELS_GLYPH ? S_GLYPH : S_TEXELS;
+    const bool kept = source == HSD_TEXELS_TERRAIN_KEPT;
+    const int si = source == HSD_TEXELS_TERRAIN || kept ? S_TERRAIN : source == HSD_TEXELS_GLYPH ? S_GLYPH : S_TEXELS;
     if (!t || !r) return;
+    if (kept) {   // (M6f: the storage's bytes for a texture made there again: only into an image that holds nothing else)
+        Image* im = image_find(t);
+        if (!im || im->placeholder || im->written.load(std::memory_order_relaxed)) return void(st_kept_had.fetch_add(1, std::memory_order_relaxed));
+        st_kept_taken.fetch_add(1, std::memory_order_relaxed);
+    }
     if (!src) {   // (a tile file that was not converted: its image is drawn as the placeholder)
         if (Image* im = image_find(t); im && !im->placeholder) im->no_content = true;
         st_tiles_unconverted.fetch_add(1, std::memory_order_relaxed);
@@ -1013,13 +1030,14 @@ void assets_stats(char* out, size_t cap, double frames) {
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.2f (%.1f KB)", kSrcNames[i], f_n[i].exchange(0) / frames,
                            f_bytes[i].exchange(0) / 1024.0 / frames);
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; loads with no data over another texture's content %lld: its record %lld, its "
-                       "plain image %lld, no link of it %lld, another descriptor %lld", (long long)st_same.load(), (long long)st_same_rec.load(),
+                       "plain image %lld, no load of its target %lld, another descriptor %lld", (long long)st_same.load(), (long long)st_same_rec.load(),
                        (long long)st_same_plain.load(), (long long)st_same_nolink.load(), (long long)st_same_desc.load());
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; on the Presentation Thread:");
     for (int i = 0; i < S_N; i++) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %lld", kSrcNames[i], (long long)on_present[i].load());
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; terrain tiles not converted %lld, uploads skipped terrain %lld glyph %lld; "
+                       "a tile's bytes kept for a texture made there again: taken %lld, its image had content %lld; "
                        "by thread (uploads, MB, ms):", (long long)st_tiles_unconverted.load(), (long long)st_skipped[S_TERRAIN].load(),
-                       (long long)st_skipped[S_GLYPH].load());
+                       (long long)st_skipped[S_GLYPH].load(), (long long)st_kept_taken.load(), (long long)st_kept_had.load());
     std::lock_guard lk(stats_mu);
     for (ThreadStat* s : all_stats) {
         int64_t n = 0, b = 0, ns = 0;

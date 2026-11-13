@@ -798,7 +798,7 @@ NV(nvnTextureInitialize) {
     o->serial = new_serial();
     live_put(o);
     rx_nvn_texture_created(o);
-    if (direct_assets_tiles_pending) direct_assets_texture_init(o);   /* (A-rt: a terrain tile given before its texture) */
+    if (direct_assets_tiles_pending || direct_assets_tilelog) direct_assets_texture_init(o);   /* (A-rt: a terrain tile given before its texture) */
     if (rx_direct()) direct_texwatch_created(o, c->x[30]);   /* (M4d: HOS_DBG=texwatch, diagnosis) */
     {   /* RX_NVN_WATCH_TEX=<w>x<h> (debugging): who writes the storage of textures that size (a page watch, with call
            stacks: hos_watch_guest_writes), for writes the dirty tracking misses */

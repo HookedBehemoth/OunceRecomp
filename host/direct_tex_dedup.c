@@ -1,61 +1,55 @@
-/* (native-vk M4g) Game patch, direct mode only: textures the game loads with no data over another texture's texels.
+/* (native-vk M4g, M6f) Game patch, direct mode only: textures the game loads with no data, its UnifyTex aliases.
 
    agl::TextureData loadImage_ (f_80798690, hooked in direct_assets.c) copies a texture's bytes into its slot in the texture
-   heap ([td+0x18]+0x10). Some textures are loaded with no data (src 0): their names are in no BNTX of the romfs (Kokiri:
-   141, Link's hair, cap and face maps among them, `Player_Child_Hairs_Alb` and the rest). Each lands on the slot of the load
-   just before it of the same size, with data: `Player_Child_Hairs_Alb` on `Mt_Hairs_Player_Adult_Alb`'s, the child's
-   bake textures on the adult's, `Rock_Pot_A_Rgh` on `Rock_Pot_A_02_Rgh`'s (HOS_DBG=nodata, runs m4g_nd_f / m4g_nd_d: 141
-   of 141 that have a load before them at their slot). The game shares identical texels that way, and on the console, as
-   in the frozen back end, the texture reads them from memory (nonzero there, and no CPU writes them after; m4g_nd_f).
-   The direct back end never reads texture storage, so it is told: the slot's content is noted at each load with data
-   (and where compaction moves a texture: f_807982f0's new base, its texels' place now); a load with no data over a noted
-   slot of the same size is handed over as HSD_ASSET_SAME, the texture whose load it shares. A load with no data over a
-   slot nothing was noted at stays as before (a plain image, named by the back end).
-   A log line for the first few, and every 100th. With RX_BACKEND unset (or HOS_DBG=noassets) nothing here runs. */
+   heap ([td+0x18]+0x10). A texture loaded with no data (src 0; Kokiri: Link's `Player_Child_Hairs_Alb` and 140 more) is an
+   alias of System/Gfx/UnifyTex.Product.100.byml (5,186 names, 333 targets): f_807974f0 gives it a TextureData of its own
+   that shares its target's slot and copies its target's BRTI, appends it to the target's alias chain (td+0x188 prev,
+   td+0x190 next; the head, the target, has prev 0) and initializes its NVN texture over the target's storage
+   (docs/direct/texture-streaming.md 2.3). On the console, as in the frozen back end, it reads its target's texels.
+
+   The direct back end never reads texture storage, so it is told: the alias's target is read from the alias itself, the
+   head of its chain, and handed over as HSD_ASSET_SAME with that texture's NVN object (the target is live and registered
+   while it has aliases). M4g guessed the target as "the last load with data at the same slot"; walking in Hyrule Field
+   that guess named textures the game had finalized and initialized again for other loads (M6f: 19 aliases as plain
+   images, ASTC placeholders among them: docs/direct/m6f-report.md 1). A load with no data that is no alias (no chain) stays
+   as before: a plain image, named by the back end. A log line for the first few, and every 100th. With RX_BACKEND unset
+   (or HOS_DBG=noassets) nothing here runs. */
 #include "hos.h"
 #include "direct.h"
+#include <stdio.h>
 #include <string.h>
 #include <windows.h>
 
-#define NSLOT (1 << 15)   /* (open addressing by slot address; Kokiri holds ~6000 live heap textures) */
-static struct { uint64_t slot; const void *tex; uint32_t size; } map[NSLOT];
-static SRWLOCK lock = SRWLOCK_INIT;
-static volatile LONG64 n_noted, n_same, n_none, n_size, n_full;
+static volatile LONG64 n_alias, n_none, n_bad;
 
-static uint32_t at(uint64_t slot) { return (uint32_t)((slot >> 6) * 2654435761u) & (NSLOT - 1); }
-
-/* the texture at that slot now (a load with data, or a texture moved there) */
-void direct_tex_dedup_note(uint64_t slot, const void *tex, uint32_t size) {
-    if (!slot || !tex) return;
-    AcquireSRWLockExclusive(&lock);
-    uint32_t i = at(slot), n = 0;
-    for (; n < NSLOT && map[i].slot && map[i].slot != slot; n++) i = (i + 1) & (NSLOT - 1);
-    if (n < NSLOT) map[i].slot = slot, map[i].tex = tex, map[i].size = size, InterlockedIncrement64(&n_noted);
-    else InterlockedIncrement64(&n_full);
-    ReleaseSRWLockExclusive(&lock);
-}
-
-/* a load with no data at that slot: the texture whose content it has (k->path HSD_ASSET_SAME), 1; none noted, 0 */
-int direct_tex_dedup_nodata(uint64_t slot, uint32_t size, hsd_asset_key *k) {
-    const void *src = NULL;
-    uint32_t src_size = 0;
-    AcquireSRWLockShared(&lock);
-    for (uint32_t i = at(slot), n = 0; slot && n < NSLOT && map[i].slot; n++, i = (i + 1) & (NSLOT - 1))
-        if (map[i].slot == slot) {
-            src = map[i].tex, src_size = map[i].size;
-            break;
-        }
-    ReleaseSRWLockShared(&lock);
-    if (!src || src == k->tex) return InterlockedIncrement64(&n_none), 0;
-    if (src_size != size) return InterlockedIncrement64(&n_size), 0;
+/* a load with no data, td its TextureData: its target's NVN texture as an HSD_ASSET_SAME key (1); no alias chain (0) */
+int direct_tex_alias(uint64_t td, hsd_asset_key *k) {
+    if (!hos_guest_range(td + 0x188, 0x10)) return InterlockedIncrement64(&n_bad), 0;
+    uint64_t node = td + 0x188, head = 0;
+    for (int n = 0; n < 65536; n++) {   /* (prev links back to the head, whose prev is 0) */
+        const uint64_t prev = G64(node);
+        if (!prev) { head = node; break; }
+        if (!hos_guest_range(prev, 0x10)) return InterlockedIncrement64(&n_bad), 0;
+        node = prev;
+    }
+    if (!head) return InterlockedIncrement64(&n_bad), 0;
+    const uint64_t target = head - 0x188;
+    if (target == td) return InterlockedIncrement64(&n_none), 0;   /* (no chain: not an alias) */
+    const uint64_t gfx = hos_guest_range(target + 0xd8, 8) ? G64(target + 0xd8) : 0;
+    if (!gfx || !hos_guest_range(gfx + 0x10, 0x40)) return InterlockedIncrement64(&n_bad), 0;
     k->path = HSD_ASSET_SAME;
-    k->same_as = src;
-    const LONG64 c = InterlockedIncrement64(&n_same);
-    if (c <= 4 || c % 100 == 0)
-        hos_log("assets: texture dedup patch: '%.*s' (no data, %u bytes) has the texels loaded before it at slot %#llx (%lld so far; "
-                "none noted %lld, another size %lld; slots noted %lld, %lld not kept)", k->name ? (int)k->name_len : 0,
-                k->name ? k->name : "", size, (unsigned long long)slot, (long long)c, (long long)n_none, (long long)n_size,
-                (long long)n_noted, (long long)n_full);
-    /* (the alias holds that content too: a load with no data over it later takes the same) */
+    k->same_as = GP(gfx + 0x10);
+    const LONG64 c = InterlockedIncrement64(&n_alias);
+    if (c <= 4 || c % 100 == 0) {
+        char tn[64] = "";
+        const uint64_t np = target + 0xf8;
+        if (hos_guest_range(np, 2)) {
+            const uint16_t l = *(const uint16_t *)GP(np);
+            if (hos_guest_range(np + 2, l)) snprintf(tn, sizeof tn, "%.*s", (int)l, (const char *)GP(np + 2));
+        }
+        hos_log("assets: alias patch: '%.*s' (no data) is an alias of '%s' (td %#llx): its texels (%lld so far; not aliases %lld, "
+                "chains not readable %lld)", k->name ? (int)k->name_len : 0, k->name ? k->name : "", tn, (unsigned long long)target,
+                (long long)c, (long long)n_none, (long long)n_bad);
+    }
     return 1;
 }
