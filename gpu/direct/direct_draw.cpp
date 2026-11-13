@@ -1456,9 +1456,12 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         // scripted walks lost, 5 play sessions); with a wait after every task+mesh draw the walk and the cutscene ran
         // (work/runs/hang_hf_after). So a task+mesh draw's mesh work is kept apart from the draws on both sides of it.
         // HOS_DBG=tmnoafter: the wait before alone, as M6d had it (the A/B). Still a mitigation: the cause is not known
-        static const bool tm_noafter = dbg("tmnoafter");
-        if (prog->task && !tm_noafter) apart();
-        if (prog->task && tm_after) drain();
+        // The framebuffer-local barrier (a PS partial flush) after it is NOT enough (work/runs/hang_hf_fix1: lost at the
+        // first walk): it takes the full one, which RADV records with a VS partial flush too, so the mesh stage's waves
+        // are done before the next draw. Vulkan does not allow that barrier inside a rendering (the validation layer says
+        // so; known list): the legal form ends the rendering, which a job's secondary cannot. This GPU and driver only.
+        static const bool tm_noafter = dbg("tmnoafter"), tm_localafter = dbg("tmlocalafter");
+        if (prog->task && !tm_noafter) { if (tm_localafter) apart(); else drain(); }
         x.last_tm = prog->task;
         if (pstats_on()) pstat_after(cb, ps);
         if (marks_on()) mark_after(cb, mk);
