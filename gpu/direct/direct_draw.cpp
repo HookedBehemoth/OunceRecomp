@@ -1447,21 +1447,17 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         if (prog->task && (tm_before || (tm_pair && x.last_tm))) drain();
         const uint32_t ps = pstats_on() ? pstat_before(cb, pstat_what(l, *prog, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw",
                                                                       mesh_ind ? nargs : (uint32_t)std::max(dm.y, 0), 1, gated)) : ~0u;   // (M6h)
+        // (HOS_DBG=tmdiscard, a diagnosis: a task+mesh draw's mesh stage runs and nothing of it is rasterized: tells a mesh
+        // stage that does not finish from triangles that take too long to fill. 2026-11-13: a wait after a task+mesh draw,
+        // local or full, did not end the loss at the Kokiri-Hyrule Field change (hang_hf_fix1, fix2, marks2) and is not kept)
+        static const bool tm_discard = dbg("tmdiscard");
+        if (prog->task && tm_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
-        // (2026-11-13) and the same wait AFTER it: at the Kokiri-Hyrule Field change one task+mesh draw (cfebb562ec378f87, 590
-        // mesh groups) stayed unfinished with ordinary indexed draws queued behind it, the wait before it in place (2 of 2
-        // scripted walks lost, 5 play sessions); with a wait after every task+mesh draw the walk and the cutscene ran
-        // (work/runs/hang_hf_after). So a task+mesh draw's mesh work is kept apart from the draws on both sides of it.
-        // HOS_DBG=tmnoafter: the wait before alone, as M6d had it (the A/B). Still a mitigation: the cause is not known
-        // The framebuffer-local barrier (a PS partial flush) after it is NOT enough (work/runs/hang_hf_fix1: lost at the
-        // first walk): it takes the full one, which RADV records with a VS partial flush too, so the mesh stage's waves
-        // are done before the next draw. Vulkan does not allow that barrier inside a rendering (the validation layer says
-        // so; known list): the legal form ends the rendering, which a job's secondary cannot. This GPU and driver only.
-        static const bool tm_noafter = dbg("tmnoafter"), tm_localafter = dbg("tmlocalafter");
-        if (prog->task && !tm_noafter) { if (tm_localafter) apart(); else drain(); }
+        if (prog->task && tm_discard) vkCmdSetRasterizerDiscardEnable(cb, x.dyn.discard);
+        if (prog->task && tm_after) drain();
         x.last_tm = prog->task;
         if (pstats_on()) pstat_after(cb, ps);
         if (marks_on()) mark_after(cb, mk);
