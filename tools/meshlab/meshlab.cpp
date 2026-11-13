@@ -7,6 +7,9 @@
 //                                                         each draw's emitted geometry from the translator's mesh stage and
 //                                                         from the replacement (<dir>/<mesh code key>.spv), compared
 //   meshlab <frame.bin> dump <seq> [--repl <dir>] [--prims N]   one draw's emitted geometry, printed
+//   --late mesh[,task,fragment]                           in place of --repl: the captured stages of these kinds with the back
+//                                                         end's register-pressure pass (gpu/direct/direct_spv_late.h), as the
+//                                                         game applies it (compare, dump, stats, run)
 //   meshlab <frame.bin> run <seq...> | --job <seq> [--task-only] [--seconds T] [--reps R] [--barrier none|local|full|split]
 //                          [--repl <dir>] [--mesh <spv>] [--fs simple|real] [--secondary] [--watchdog S] [--empty]
 //                                                         the draws in one rendering, again and again for T seconds, with
@@ -34,6 +37,7 @@
 
 #include "capture.h"
 #include "spv_dump.h"
+#include "../../gpu/direct/direct_spv_late.cpp"
 
 using namespace meshlab;
 using clk = std::chrono::steady_clock;
@@ -524,11 +528,25 @@ struct Ready {
     OutLayout layout;       // (compare: the dump's layout)
 };
 std::string repl_dir, mesh_override, fs_mode = "simple";
+// (--late <kinds>: the back end's register-pressure pass (gpu/direct/direct_spv_late.h) on the captured stages of these kinds
+// (a comma list of mesh, task, fragment), as the game applies it after the translator: `stats --late mesh` compiles what the
+// game would, `compare --late mesh` holds a draw's geometry with it against the translator's)
+bool late_mesh = false, late_task = false, late_fs = false;
+std::vector<uint32_t> late_of(const std::vector<uint32_t>& spirv) {
+    std::vector<uint32_t> out = spirv;
+    hsd::spv_schedule_late(out);
+    return out;
+}
 int64_t sel_present = -1;   // (--present N: a roll's frame)
 bool retask = false;        // (geo, dump --tasks: the draw's task stage run again before it, its groups and payload the harness's own)
 uint32_t bench_mult = 1;   // (bench --mult K: each draw's mesh workgroups K times: a task+mesh draw's map repeated K times, a direct draw's count K times)
 std::map<std::string, VkShaderEXT> shader_cache;
 
+/// (a line on stderr before a captured program's stage is made: tools/meshlab/spill_scan.py cuts RADV_DEBUG=shaders' print by it)
+void mark_object(const char* kind, const Program& p, uint64_t code) {
+    std::fprintf(stderr, "@@object %s %016llx %016llx\n", kind, (unsigned long long)p.h.key, (unsigned long long)code);
+    std::fflush(stderr);
+}
 VkShaderEXT mesh_shader_of(const Program& p, const std::vector<uint32_t>& spirv, const std::string& tag) {
     const std::string k = std::to_string(p.h.key) + "/" + tag;
     if (const auto it = shader_cache.find(k); it != shader_cache.end()) return it->second;
@@ -537,6 +555,7 @@ VkShaderEXT mesh_shader_of(const Program& p, const std::vector<uint32_t>& spirv,
                  (unsigned long long)p.h.codes[0], (unsigned long long)p.h.task_code);
     std::fflush(stderr);
     std::string err;
+    mark_object("mesh", p, p.h.codes[0]);
     VkShaderEXT o = make_shader(VK_SHADER_STAGE_MESH_BIT_EXT, spirv, s->maps.data(), s->h.maps, &err);
     if (!o) die("program %016llx: mesh stage (%s) not made: %s", (unsigned long long)p.h.key, tag.c_str(), err.c_str());
     return shader_cache[k] = o;
@@ -606,7 +625,8 @@ Ready prepare(const Frame& f, const Draw& d) {
             auto it = shader_cache.find(k);
             if (it == shader_cache.end()) {
                 std::string err;
-                VkShaderEXT o = make_shader(VK_SHADER_STAGE_COMPUTE_BIT, ts->spirv, ts->maps.data(), ts->h.maps, &err);
+                mark_object("task", p, p.h.task_code);
+                VkShaderEXT o = make_shader(VK_SHADER_STAGE_COMPUTE_BIT, late_task ? late_of(ts->spirv) : ts->spirv, ts->maps.data(), ts->h.maps, &err);
                 if (!o) die("program %016llx: task stage not made: %s", (unsigned long long)p.h.key, err.c_str());
                 it = shader_cache.emplace(k, o).first;
             }
@@ -630,6 +650,8 @@ Ready prepare(const Frame& f, const Draw& d) {
         const auto code = read_spv(repl_path(p));
         if (code.empty()) die("no replacement %s", repl_path(p).c_str());
         r.ms = mesh_shader_of(p, code, "repl");
+    } else if (late_mesh) {
+        r.ms = mesh_shader_of(p, late_of(ms->spirv), "late");
     } else {
         r.ms = mesh_shader_of(p, ms->spirv, "translator");
     }
@@ -639,7 +661,8 @@ Ready prepare(const Frame& f, const Draw& d) {
         auto it = shader_cache.find(k);
         if (it == shader_cache.end()) {
             std::string err;
-            VkShaderEXT o = make_shader(VK_SHADER_STAGE_FRAGMENT_BIT, fs->spirv, fs->maps.data(), fs->h.maps, &err);
+            mark_object("fragment", p, p.h.key);
+            VkShaderEXT o = make_shader(VK_SHADER_STAGE_FRAGMENT_BIT, late_fs ? late_of(fs->spirv) : fs->spirv, fs->maps.data(), fs->h.maps, &err);
             if (!o) die("program %016llx: fragment stage not made: %s", (unsigned long long)p.h.key, err.c_str());
             it = shader_cache.emplace(k, o).first;
         }
@@ -912,11 +935,12 @@ std::string words_str(const uint32_t* w, uint32_t n) {
 /// One draw's dump: the draw drawn once with the module rewritten (spv_dump.h)
 std::vector<Geometry> run_dump(const Frame& f, const Draw& d, bool replacement, std::string& err) {
     const std::string keep = repl_dir;
-    if (!replacement) repl_dir.clear();
+    const bool keep_late = late_mesh;
+    if (!replacement) repl_dir.clear(), late_mesh = false;
     Ready r = prepare(f, d);
-    repl_dir = keep;
+    repl_dir = keep, late_mesh = keep_late;
     const Stage* ms = r.p->stage(VK_SHADER_STAGE_MESH_BIT_EXT);
-    std::vector<uint32_t> code = replacement ? read_spv(repl_path(*r.p)) : ms->spirv;
+    std::vector<uint32_t> code = !replacement ? ms->spirv : repl_dir.empty() && late_mesh ? late_of(ms->spirv) : read_spv(repl_path(*r.p));
     if (code.empty()) return err = "no replacement " + repl_path(*r.p), std::vector<Geometry>{};
     OutLayout L;
     if (!output_layout(code, L, err)) return {};
@@ -1431,6 +1455,11 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { if (i + 1 >= argc) die("%s needs a value", a.c_str()); return argv[++i]; };
         if (a == "--repl") repl_dir = next();
+        else if (a == "--late") {
+            const std::string kinds = "," + next() + ",";
+            late_mesh = kinds.find(",mesh,") != std::string::npos, late_task = kinds.find(",task,") != std::string::npos;
+            late_fs = kinds.find(",fragment,") != std::string::npos;
+        }
         else if (a == "--mesh") mesh_override = next();
         else if (a == "--fs") fs_mode = next();
         else if (a == "--seconds") seconds = std::atof(next().c_str());
@@ -1540,7 +1569,7 @@ int main(int argc, char** argv) {
     }
     if (mode == "dump") {
         bench_discard = discard;
-        const auto geo = run_dump(f, *draws[0], !repl_dir.empty(), err);
+        const auto geo = run_dump(f, *draws[0], !repl_dir.empty() || late_mesh, err);
         if (geo.empty() && !err.empty()) die("%s", err.c_str());
         for (size_t w = 0; w < geo.size(); w++) {
             const Geometry& gm = geo[w];
@@ -1565,12 +1594,13 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (mode == "compare") {
-        if (repl_dir.empty()) die("compare needs --repl <dir>");
+        if (repl_dir.empty() && !late_mesh) die("compare needs --repl <dir> or --late mesh");
+        bench_discard = true;   // (the rasterizer off: the dump is the stage's own stores, and a stage that spills is not followed by pixel work)
         int equal = 0, different = 0, missing = 0;
         std::map<uint64_t, std::pair<int, int>> by_code;
         for (const Draw* d : draws) {
             const Program& p = f.programs.at(d->d.key);
-            if (read_spv(repl_path(p)).empty()) {
+            if (!repl_dir.empty() && read_spv(repl_path(p)).empty()) {
                 missing++;
                 continue;
             }

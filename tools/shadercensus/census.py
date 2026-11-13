@@ -1,6 +1,6 @@
 """The shader census: every stage of the game's shader seed through censustool, in shards, resumable.
 
-    work/venv/bin/python -I tools/shadercensus/census.py <seed> --out <dir> [--jobs N] [--shard 250] [--compile]
+    work/venv/bin/python -I tools/shadercensus/census.py <seed> --out <dir> [--jobs N] [--shard 250] [--compile] [--tool-args "..."]
 
 <seed> is nx2/shader_census.py's output (hookshot_shaders.bin, made from the player's romfs). Each shard of stages runs
 censustool once (a stage that crashes it is recorded as an error and the rest of the shard is run again without it) and
@@ -20,20 +20,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
 
-def run_shard(tool, seed, first, count, out, compile_):
+def run_shard(tool, seed, first, count, out, compile_, extra=(), wanted=None):
     path = os.path.join(out, "shards", "%06d.jsonl" % first)
     if os.path.exists(path):
         with open(path) as f:
             if sum(1 for _ in f) == count:
                 return first, count, 0
-    todo = list(range(first, first + count))
-    lines = {}
+    todo = [i for i in range(first, first + count) if wanted is None or i in wanted]
+    lines = {i: json.dumps({"index": i, "skipped": True}) for i in range(first, first + count) if i not in todo}
     crashes = 0
     env = dict(os.environ, MESA_SHADER_CACHE_DISABLE="1")
     while todo:
         cmd = [tool, seed, "0", "0", "--only"] + [str(i) for i in todo]
         if compile_:
             cmd.append("--compile")
+        cmd += list(extra)
         r = subprocess.run(cmd, capture_output=True, text=True, env=env)
         for line in r.stdout.splitlines():
             try:
@@ -65,14 +66,22 @@ def main():
     ap.add_argument("--shard", type=int, default=250)
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--tool", default=os.path.join(ROOT, "work", "shadercensus", "censustool"))
+    ap.add_argument("--tool-args", default="", help="more arguments for censustool, space separated (--late mesh --min-peak 96)")
+    ap.add_argument("--kinds", default="", help="only stages of these NVN kinds (comma list of 0 vertex, 1 fragment, 5 compute, 6 task, 7 mesh): "
+                    "the others get a line with their index alone")
     a = ap.parse_args()
     os.makedirs(os.path.join(a.out, "shards"), exist_ok=True)
     shape = json.loads(subprocess.run([a.tool, a.seed, "-1", "-1"], capture_output=True, text=True, check=True).stdout)
     n = shape["stages"]
+    wanted = None
+    if a.kinds:
+        kinds = set(a.kinds.split(","))
+        listing = subprocess.run([a.tool, a.seed, "0", "0", "--list"], capture_output=True, text=True, check=True).stdout
+        wanted = {int(l.split()[0]) for l in listing.splitlines() if l.split()[1] in kinds}
     started = time.time()
     done = 0
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
-        futs = [ex.submit(run_shard, a.tool, a.seed, f, min(a.shard, n - f), a.out, a.compile) for f in range(0, n, a.shard)]
+        futs = [ex.submit(run_shard, a.tool, a.seed, f, min(a.shard, n - f), a.out, a.compile, a.tool_args.split(), wanted) for f in range(0, n, a.shard)]
         for fu in concurrent.futures.as_completed(futs):
             first, count, crashes = fu.result()
             done += count

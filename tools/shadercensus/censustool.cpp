@@ -8,7 +8,15 @@
 // stage alone. For the shader census (docs/direct/m6h-report.md); nothing of the game is in this file.
 //
 //   censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...]
+//              [--late <kinds>] [--budget N] [--sink-peak N] [--objects] [--list]
 // One JSON line a stage on stdout; "@@stage <index>" on stderr before each (a crash names its stage).
+// --late <kinds>: the back end's register-pressure pass (gpu/direct/direct_spv_late.h) on the stages of these kinds (a comma
+// list of vertex, fragment, mesh, task, compute; "all"), as the game applies it after EmitSPIRV. Every line carries the pass's
+// own count for the stage ("late": the most 32-bit values held before and after, instructions moved, the pass's time), whether
+// or not it is applied. --objects: the stage also made as the shader object the game makes of it (unlinked; RADV reports no
+// statistics of those: with RADV_DEBUG=shaders its compile is printed between "@@object <index> <key> <kind>" and "@@end" on
+// stderr, which tools/meshlab/late_gate.py reads). --list: a line a stage of the seed (index, kind), nothing translated.
+#include <chrono>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -23,6 +31,7 @@
 #include <vulkan/vulkan.h>
 
 #include "../meshlab/offline.h"
+#include "../../gpu/direct/direct_spv_late.cpp"
 #include "../meshlab/ir_pretty.h"
 #include "shader_recompiler/frontend/ir/abstract_syntax_list.h"
 #include "shader_recompiler/frontend/ir/modifiers.h"
@@ -760,6 +769,50 @@ void make_cs(Made& m, int id) {
     m.vk = VK_SHADER_STAGE_COMPUTE_BIT;
 }
 
+uint32_t late_kinds = 0;   // (--late: VkShaderStageFlagBits the pass is applied to; a task stage is the compute bit with task = true)
+bool late_task = false, late_compute = false;
+hsd::LateOptions late_options;
+bool make_objects = false;   // (--objects)
+bool spv_only = false;       // (--spv-only: --spv writes the SPIR-V alone, not the IR's prints)
+/// The pass's count of a stage's SPIR-V, and the pass applied when its kind is asked for
+std::string late(Made& m, bool task) {
+    const bool apply = m.vk == VK_SHADER_STAGE_COMPUTE_BIT ? (task ? late_task : late_compute) : (late_kinds & m.vk) != 0;
+    std::vector<uint32_t> copy = m.spv;
+    hsd::LateResult r;
+    const auto t0 = std::chrono::steady_clock::now();
+    hsd::spv_schedule_late(copy, &r, late_options);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (apply) m.spv.swap(copy);
+    char b[200];
+    std::snprintf(b, sizeof b, ",\"late\":{\"applied\":%d,\"moved\":%u,\"sunk\":%u,\"blocks\":%u,\"changed\":%u,\"before\":%u,\"after\":%u,\"ms\":%.3f}", apply ? 1 : 0,
+                  r.moved, r.sunk, r.blocks, r.blocks_changed, r.peak_before, r.peak_after, ms);
+    return b;
+}
+/// The stage as the shader object the game makes of it (direct_shader.cpp finish; tools/meshlab/meshlab.cpp make_shader)
+int make_object(const Made& m) {
+    const auto maps = mappings(m.t->program.info);
+    VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
+    mi.mappingCount = (uint32_t)maps.size(), mi.pMappings = maps.data();
+    VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sz{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
+    sz.requiredSubgroupSize = 32;
+    VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
+    ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+    if (m.vk == VK_SHADER_STAGE_MESH_BIT_EXT) ci.flags |= VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT;
+    ci.stage = m.vk;
+    ci.nextStage = m.vk == VK_SHADER_STAGE_MESH_BIT_EXT || m.vk == VK_SHADER_STAGE_VERTEX_BIT ? VK_SHADER_STAGE_FRAGMENT_BIT : 0;
+    ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
+    ci.codeSize = m.spv.size() * 4, ci.pCode = m.spv.data(), ci.pName = "main";
+    if (gdev.sg32 & m.vk) sz.pNext = &mi, ci.pNext = &sz;
+    else ci.pNext = &mi;
+    VkShaderEXT o = VK_NULL_HANDLE;
+    static const auto create = (PFN_vkCreateShadersEXT)vkGetDeviceProcAddr(gdev.dev, "vkCreateShadersEXT");
+    static const auto destroy = (PFN_vkDestroyShaderEXT)vkGetDeviceProcAddr(gdev.dev, "vkDestroyShaderEXT");
+    if (!create || !destroy) return -1000;
+    const VkResult r = create(gdev.dev, 1, &ci, nullptr, &o);
+    if (o) destroy(gdev.dev, o, nullptr);
+    return (int)r;
+}
+
 const char* repl_spv = nullptr;   // (--repl <spv>: the stage's SPIR-V replaced by this one before the compile, its interface the translator's)
 
 void one(int id, bool do_compile, const char* spv_dir) {
@@ -833,6 +886,8 @@ void one(int id, bool do_compile, const char* spv_dir) {
             m.spv = std::move(r);
             extra += ",\"replaced\":true";
         }
+        extra += late(m, s.stage == 6);
+        if (has_partner) late(partner, false);
         const std::vector<uint32_t>& spv = m.spv;
         Program& p = m.t->program;
         const Shader::Info& in = p.info;
@@ -881,13 +936,25 @@ void one(int id, bool do_compile, const char* spv_dir) {
         if (spv_dir) {   // (the stage's SPIR-V and its IR printed: structured and flat, for reading it)
             const std::string path = std::string(spv_dir) + "/" + key;
             if (FILE* f = std::fopen((path + ".spv").c_str(), "wb")) std::fwrite(spv.data(), 4, spv.size(), f), std::fclose(f);
-            if (FILE* f = std::fopen((path + ".ir.c").c_str(), "w")) std::fputs(pretty::print(p).c_str(), f), std::fclose(f);
-            if (FILE* f = std::fopen((path + ".flat.c").c_str(), "w")) std::fputs(pretty::print(p, true).c_str(), f), std::fclose(f);
+            if (!spv_only)
+                if (FILE* f = std::fopen((path + ".ir.c").c_str(), "w")) std::fputs(pretty::print(p).c_str(), f), std::fclose(f);
+            if (!spv_only)
+                if (FILE* f = std::fopen((path + ".flat.c").c_str(), "w")) std::fputs(pretty::print(p, true).c_str(), f), std::fclose(f);
         }
         if (do_compile) {
             int res = 0;
             const std::string st = compile(m, has_partner ? &partner : nullptr, res);
             out += ",\"compiled\":" + std::to_string(res) + ",\"radv\":" + st;
+        }
+        if (make_objects) {
+            const char* kind = s.stage == 0 ? "vertex" : s.stage == 1 ? "fragment" : s.stage == 7 ? "mesh" : s.stage == 6 ? "task" : "compute";
+            std::fflush(stdout);
+            std::fprintf(stderr, "@@object %d %s %s\n", id, key, kind);
+            std::fflush(stderr);
+            const int res = make_object(m);
+            std::fprintf(stderr, "@@end\n");
+            std::fflush(stderr);
+            out += ",\"object\":" + std::to_string(res);
         }
         std::printf("%s}\n", out.c_str());
         std::fflush(stdout);
@@ -914,6 +981,22 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--fs-binding-base") && i + 1 < argc) fs_binding_base = (uint32_t)std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--no-ir-guard")) no_ir_guard = true;
         else if (!std::strcmp(argv[i], "--explicit-shared")) offline::explicit_shared = true;
+        else if (!std::strcmp(argv[i], "--objects")) make_objects = true;
+        else if (!std::strcmp(argv[i], "--spv-only")) spv_only = true;
+        else if (!std::strcmp(argv[i], "--budget") && i + 1 < argc) late_options.budget = (uint32_t)std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--sink-peak") && i + 1 < argc) late_options.sink_peak = (uint32_t)std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--list")) {
+            for (size_t k = 0; k < seed.stages.size(); k++) std::printf("%zu %u\n", k, seed.stages[k].stage);
+            return 0;
+        } else if (!std::strcmp(argv[i], "--late") && i + 1 < argc) {
+            const std::string kinds = std::string(",") + argv[++i] + ",";
+            const bool all = kinds.find(",all,") != std::string::npos;
+            if (all || kinds.find(",vertex,") != std::string::npos) late_kinds |= VK_SHADER_STAGE_VERTEX_BIT;
+            if (all || kinds.find(",fragment,") != std::string::npos) late_kinds |= VK_SHADER_STAGE_FRAGMENT_BIT;
+            if (all || kinds.find(",mesh,") != std::string::npos) late_kinds |= VK_SHADER_STAGE_MESH_BIT_EXT;
+            late_task = all || kinds.find(",task,") != std::string::npos;
+            late_compute = all || kinds.find(",compute,") != std::string::npos;
+        }
         else if (!std::strcmp(argv[i], "--only")) {
             while (i + 1 < argc && argv[i + 1][0] != '-') only.push_back(std::atoi(argv[++i]));
         }
@@ -922,7 +1005,7 @@ int main(int argc, char** argv) {
         std::printf("{\"stages\":%zu,\"programs\":%zu}\n", seed.stages.size(), seed.programs.size());
         return 0;
     }
-    if (do_compile && !dev_init()) return std::fprintf(stderr, "no device\n"), 1;
+    if ((do_compile || make_objects) && !dev_init()) return std::fprintf(stderr, "no device\n"), 1;
     if (only.empty())
         for (int i = first; i < first + count && i < (int)seed.stages.size(); i++) only.push_back(i);
     for (int id : only) one(id, do_compile, spv_dir);

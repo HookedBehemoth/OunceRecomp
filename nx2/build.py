@@ -992,7 +992,7 @@ def main():
         # cache (hookshot_direct_programs.bin) is good for them only)
         dtranslator = sorted(os.path.join(d, f) for d, _, fs in os.walk(dx_eden) for f in fs)
         dstamp = hashlib.sha1(usedforsecurity=False)
-        for f in dtranslator + [os.path.join(direct, n) for n in ("direct_shader.cpp", "direct_shader.h", "direct_state.h")]:
+        for f in dtranslator + [os.path.join(direct, n) for n in ("direct_shader.cpp", "direct_shader.h", "direct_state.h", "direct_spv_late.cpp", "direct_spv_late.h")]:
             if os.path.isfile(f):
                 with open(f, "rb") as src:
                     dstamp.update(os.path.relpath(f, GPU).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))

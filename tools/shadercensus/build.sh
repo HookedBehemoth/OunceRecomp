@@ -4,7 +4,7 @@
 # and the system Vulkan headers and loader.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
-out=$root/work/shadercensus
+out=${CENSUS_OUT:-$root/work/shadercensus}
 mkdir -p "$out"
 d=$root/gpu/direct
 ls "$root"/work/sa/build/obj/dx_eden_*.o > /dev/null
