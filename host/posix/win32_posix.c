@@ -1,5 +1,5 @@
 /* (linux) The Win32 calls of host/posix/windows.h, on POSIX. Built into the executable and, on its own, into
-   hookshot_vk.so (each its own copy, -Bsymbolic: the executable exports nothing of it). */
+   hookshot_direct.so (each its own copy, -Bsymbolic: the executable exports nothing of it). */
 #define _GNU_SOURCE
 #include <windows.h>
 #include <mmsystem.h>

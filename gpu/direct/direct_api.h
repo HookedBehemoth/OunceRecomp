@@ -1,4 +1,4 @@
-/* The direct back end's list calls (hookshot_direct.so, RX_BACKEND=direct): what host/nvn_native.c hands it as the game
+/* The direct back end's list calls (hookshot_direct.so): what host/nvn_native.c hands it as the game
    records, besides the object layer, sync and present of gpu/api/vk_api.h's table (version 14), which it answers too.
    Fixed by docs/direct/m1-interface.md. C, included by the host; the host finds these by name in the library.
 

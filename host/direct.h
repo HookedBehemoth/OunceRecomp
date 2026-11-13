@@ -1,6 +1,5 @@
-/* (native-vk) The direct back end's list calls on the host's side (gpu/direct/direct_api.h; docs/direct/m1-interface.md).
-   Direct mode is RX_BACKEND=direct, read once (rx_backend.c): with it off nothing here is called and the host behaves as
-   before. host/nvn_native.c hands every record to the back end through hsd_scratch / hsd_flush, the list's kind from
+/* (native-vk) The direct back end's list calls on the host's side (gpu/direct/direct_api.h).
+   Direct mode is the only mode (rx_backend.c loads hookshot_direct.so). host/nvn_native.c hands every record to the back end through hsd_scratch / hsd_flush, the list's kind from
    hsd_classify. */
 #ifndef HOOKSHOT_HOST_DIRECT_H
 #define HOOKSHOT_HOST_DIRECT_H

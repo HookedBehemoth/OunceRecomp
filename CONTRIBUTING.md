@@ -1,12 +1,14 @@
 # Contributing to Hookshot
 
 Hookshot is a static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake: the game's AArch64
-code is lifted to C, the Horizon OS and NVN2 are implemented natively, and the GPU work is replayed on Vulkan. No
-emulator is involved, and the game is built on your PC from your own copy.
+code is lifted to C, the Horizon OS and NVN2 are implemented natively, and the GPU work is replayed on Vulkan by one
+renderer, the direct back end. No emulator is involved, and the game is built on your PC from your own copy. The tree
+targets Linux with Mesa RADV (developed on an RX 6950 XT).
 
 This page covers what to send, how to build and test it, and the rules that keep the project out of trouble. The
-[development guide](docs/development.md) has the full pipeline and its commands; the [design notes](docs/design.md)
-have the architecture and the lessons the code follows.
+[development guide](docs/development.md) has the full pipeline and its commands; the [design notes](docs/design.md) have
+the architecture and the lessons the code follows; the [direct back end plan](docs/direct-backend-plan.md) has the
+renderer's design and open problems.
 
 ## The rule with no exceptions
 
@@ -15,7 +17,7 @@ never will. That includes:
 
 - the `.nup`, `romfs`, `exefs`, `.nso`, `.nca`, `.nsp`, `.xci` or `.nsz`/`.xcz` files, and any title keys;
 - `work/` and everything in it: the extracted dump, `image.bin`, the lifted C, test builds, runs and screenshots;
-- `hookshot.exe`, `hookshot_direct.so`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
+- `hookshot`, `hookshot_direct.so`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
   `mkw_vk_pipelines.bin` and other build output;
 - saves (`user/`), `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`.
 
@@ -27,112 +29,58 @@ game data, leave it out.
 
 ## Ways to help
 
-Search the open PRs and say in Discord #dev-work what you take before you start: two people fixing the same thing is
-the most common waste.
-
 | | What |
 |---|---|
-| **Test on other hardware** | The README's [status table](readme.md#project-status) says what works where. Reports from other cards, drivers, distributions and SteamOS are useful even when everything works: say the build (first line of `hookshot_log.txt`), the hardware and driver, where in the game, and the fps from the log's `N presents, X fps` line. |
-| **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems the developer has not seen. |
-| **Report what is broken** | Use the [issue forms](https://github.com/NotRexed/Hookshot/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
-| **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review and merge. |
+| **Test on other hardware** | The README says what the renderer is developed on. Reports from other cards and distributions are useful even when everything works: say the build (first line of `hookshot_log.txt`), the hardware and driver, where in the game, and the fps from the log's `N presents, X fps` line. |
+| **Play further** | Reaching new areas, cutscenes, menus and items finds problems the developer has not seen. |
+| **Report what is broken** | Use the [issue forms](https://github.com/NotRexed/Hookshot/issues/new/choose). Include the version, your hardware, where you were and `hookshot_log.txt`. |
+| **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review and merge. Search the open PRs first, and say in Discord what you take: two people fixing the same thing is the most common waste. |
 | **Improve the docs** | The README, the development guide and the design notes are part of the project. Corrections and clearer steps are welcome. |
 
 ## Before you open an issue or a PR
 
-- Try the [newest release](https://github.com/NotRexed/Hookshot/releases/latest) first. It includes every fix before it.
 - Search the open issues. If yours is already there, add your details instead of opening another.
 - English, please.
 - One topic per issue or pull request. Do not mix a fix with a refactor or a batch of unrelated changes.
-- Report the version you actually ran: the release name, or the first line of `hookshot_log.txt`.
-- Test without ReShade, shader-cache tools, overlays and frame-generation injectors when you report a graphics or
-  performance problem. They change what Hookshot does.
+- Report the version you actually ran: the first line of `hookshot_log.txt`.
+- Test without ReShade, shader-cache tools and overlays when you report a graphics or performance problem. They change
+  what Hookshot does.
 
 ## Development setup
 
-You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other versions do
-not work, and the build reads the dump where it lies without changing it. Builds need about 60 GB free and a run uses
-about 10 GB of RAM.
-
-### Windows, from the command line
-
-1. Install Python 3 from [python.org](https://www.python.org/downloads/) (not the Microsoft Store build: `python -I`
-   does not see packages installed there) and the pipeline's packages:
-
-   ```powershell
-   python -m pip install -r requirements.txt
-   ```
-
-   (the second line: the button prompts' packages. Without them the game shows the Switch's icons)
-
-2. Get [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build) and set `HOOKSHOT_MINGW` to its
-   folder. Without it the build falls back to emsdk's clang at `C:\emsdk` with Visual Studio's C++ tools and the
-   Windows SDK (`HOOKSHOT_MSVC=1` forces that route).
-
-3. Copy the pieces a clone does not carry from the `tools` folder Hookshot Builder installs. Run `HookshotBuilder.exe`
-   from the latest release once (releases no longer carry a `HookshotBuilder.zip`): the folder is
-   `%LOCALAPPDATA%\HookshotBuilder\versions\<version>\HookshotBuilder\tools`.
-
-   | From `tools` | To | Variable |
-   |---|---|---|
-   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the standalone build stops) |
-   | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
-   | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |
-
-4. Run everything with `python -I` from the repository root.
-
-### Linux
-
-Either use the `Hookshot-<version>-x86_64.AppImage` from the Releases page, or build the environment and the AppImage
-yourself:
+You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other versions do not
+work, and the build reads the dump where it lies without changing it. Builds need about 60 GB free and a run uses about
+10 GB of RAM.
 
 ```sh
 scripts/linux/deps.sh       # LLVM, Python packages, FFmpeg with dav1d, SDL2, Vulkan headers
-scripts/linux/appimage.sh   # the AppImage, in build-linux/
 ```
 
-The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
-compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
-
-### Hookshot Builder
-
-The builder is a .NET 8 WPF app. Open `builder/HookshotBuilder.sln` in Visual Studio 2022 with the .NET desktop
-workload, or build it from a developer prompt:
-
-```powershell
-dotnet build builder/HookshotBuilder.sln
-```
-
-You only need Visual Studio for the builder itself. The game build uses llvm-mingw.
-
-The Windows app's **Build workers** choice applies to builds started from that window. **Automatic** keeps the existing
-`HOOKSHOT_JOBS` override, or the build tools' free-memory policy when no override is set. A number overrides it for that
-build's child process only; more workers need more memory and are not always faster. This choice is not saved: a new
-window, including one started to update a game, uses Automatic again.
+Run everything with `python -I` from the repository root. The Vulkan, SPIR-V and VMA headers come from `/usr`, from
+`HOOKSHOT_VULKAN_HEADERS` / `HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VMA_HEADERS`, or from a CPM cache (`RX_CPM`).
+`HOOKSHOT_JOBS` sets how many files compile at once.
 
 ## Building
 
 | Command | What it does |
 |---|---|
-| `python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot" --language en-US` | Build a complete game folder from a `.nup`. A build takes about 40 minutes. |
-| `python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Hookshot"` | The same, from extracted folders. |
-| `python -I nx2/make_game.py --check --nup "C:\path\your-game.nup"` | Check the game and its version without building. |
-| `python -I nx2/dump.py --dump <folder with exefs/ and romfs/> --set` | Record the dump in `work/dump.txt`. |
+| `python -I nx2/nup.py <your-game.nup> --extract work/dump` | Extract the dump. |
+| `python -I nx2/dump.py --dump work/dump --set` | Record the dump in `work/dump.txt`. |
 | `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
-| `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot` and `hookshot_direct.so` (Linux). |
-| `scripts/run-vk.sh <name> 120` | Run the standalone build and take screenshots in `work/runs/<name>/shots` (Linux). |
+| `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot` and `hookshot_direct.so`. |
+| `scripts/run-vk.sh <name> 120` | Run the standalone build headless and take screenshots in `work/runs/<name>/shots`. |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 
-Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
-local artifacts; they are never committed.
+Use `OOT_WORK` if you keep more than one dump around. The lifted C and every build are local artifacts; they are never
+committed. The development guide's "Iterating quickly" has the build, run and measure loop.
 
 ## Testing
 
 ### Game-free checks
 
-These need no dump and are what CI runs, on every pull request and every push to `main`. One command runs them all:
+These need no dump and are what CI runs. One command runs them all:
 
-```powershell
+```sh
 python -I -B tests/run_all.py
 ```
 
@@ -158,7 +106,7 @@ These are slow and local, and they need `work/dump.txt` from `nx2/dump.py --set`
 | `python -I nx2/test_leaf.py --calls` | Whole functions and call trees on the relocated image, native against Unicorn. |
 | `python -I nx2/census.py --nx2` | The instruction census per module. |
 | `python -I nx2/lower_test.py work/lowfail` | Shader programs that failed to lower. |
-| `powershell -File scripts/run-vk.ps1 -Window` | An in-game run: screenshots, the flash detector, frame dumps and the profiler. |
+| `scripts/run-vk.sh <name> 120` and `scripts/smoke.sh <name>` | An in-game run with screenshots, and the smoke test against a golden run. |
 
 For a graphics fix, look at the screenshots in `work/runs/<name>/shots` and delete them afterwards; they reach
 gigabytes and are derived from the game. The switches for scripted input, screenshots, frame dumps and profiles are in
@@ -172,8 +120,7 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
   request, so there is no workflow to edit. A test that takes a compiler, headers or `spirv-val` as arguments gets an
   entry in `ARGS` at the top of `tests/run_all.py`; one that cannot run in CI (a GPU, the game, one OS only) gets an
   entry in `SKIP`, with the reason.
-- Keep the test fast: every check shares one CI job with a 20-minute limit. Make it pass on both Ubuntu and Windows
-  where it can.
+- Keep the test fast: every check shares one CI job with a 20-minute limit. 
 - If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in
   which part of the game.
 
@@ -203,7 +150,7 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 
 ## Commits and pull requests
 
-1. Fork the repository and branch from `main`. Name the branch for the change: `fix/...`, `linux/...`, `builder/...`,
+1. Fork the repository and branch from `main`. Name the branch for the change: `fix/...`, `linux/...`,
    `docs/...`.
 2. Keep the pull request to one topic. Bug fixes do not carry refactors, and two unrelated fixes are two PRs.
 3. Write the title as a short imperative sentence, as the history does: "Stop scanning storage-buffer tables after
@@ -218,12 +165,10 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
 7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
-Commit subjects decide the next release (`.github/workflows/release.yml`, `scripts/changelog.py`): write them as
-[Conventional Commits](https://www.conventionalcommits.org/), `type(scope): imperative description`. `feat` makes a
-minor release, `fix`, `perf` and `revert` a patch, `!` after the type or `BREAKING CHANGE:` in the body a major one;
-`docs`, `refactor`, `style`, `test`, `build`, `ci` and `chore` make none. `git revert` writes `Revert "..."`, which
-is not one: use `git revert --edit` and write the subject as `revert: ...`. The git tag is the only version; no file
-carries one to edit.
+Write commit subjects as [Conventional Commits](https://www.conventionalcommits.org/), `type(scope): imperative
+description` (`feat`, `fix`, `perf`, `revert`, `docs`, `refactor`, `style`, `test`, `build`, `ci`, `chore`; `!` after the
+type or `BREAKING CHANGE:` in the body marks a break). `git revert` writes `Revert "..."`, which is not one: use
+`git revert --edit` and write the subject as `revert: ...`.
 
 Maintainer commits record AI assistance with `Assisted-by:` and `Co-Authored-By:` trailers. If you used a tool, add
 the trailers that describe it; if you wrote the change yourself, there is nothing to add.
@@ -243,7 +188,6 @@ fonts, zbic and the a64-kit tools) keep their own notices. Preserve them, and do
 - **Issues:** [use the forms](https://github.com/NotRexed/Hookshot/issues/new/choose).
 - **Discord:** https://discord.gg/EajnD2AJD9. Use the `hookshot-discussion` channel; the server is mainly for
   web ports, and that channel is where Hookshot talk belongs.
-- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest.
 
 Thanks for testing, reporting and sending fixes. Every report from a different GPU and every area played further than
 before moves the port forward.

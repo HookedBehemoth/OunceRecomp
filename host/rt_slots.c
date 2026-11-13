@@ -457,8 +457,7 @@ static _Thread_local uint64_t shadow_obj;   /* (f_802640a0's shadow object, for 
 static uint32_t shadow_size(uint64_t obj, uint32_t w);
 static void alloc_gave(uint64_t entry);
 static _Thread_local int in_alloc;
-/* In direct mode the alloc's body runs from here, so the entry it gives is seen (alloc_gave); RX_BACKEND unset: as
-   before, the body runs after the hook */
+/* The alloc's body runs from here, so the entry it gives is seen (alloc_gave) */
 ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
     if (in_alloc) return in_alloc = 0, 0;   /* (the lifted body, called below: the flag is taken by its first entry, so a nested call is hooked as any) */
     const int handled = alloc_pre(c);

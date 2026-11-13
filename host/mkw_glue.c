@@ -708,7 +708,7 @@ uint64_t a64_cntpct_host(void) {
     return (uint64_t)(((unsigned __int128)(uint64_t)(now.QuadPart - base.QuadPart) * mult) >> 32);
 }
 
-/* ---- what the renderer (gpu/render, TOTKPort's) asks of TOTKPort's hos_prof.c and totk_ultrawide.c ---- */
+/* ---- what the renderer asks of the profiler and ultrawide code ---- */
 int hos_ab(void) { return 0; }                    /* (hos_prof.c: A/B measurement phases) */
 /* (with the renderer's mem: lines) HOS_MEM_MAP=1: how much of the guest window is committed, and its resident part */
 void hos_memory_map_log(void) {

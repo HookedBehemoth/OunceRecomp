@@ -1,10 +1,10 @@
 """The game's Windows manifest, as a .res the exe links in (nx2/build.py): UTF-8 as the process's code page.
 
-host/ and gpu/vk keep paths as UTF-8 char strings and call Windows' A functions (GetModuleFileNameA, CreateFileA, fopen ...)
+host/ and gpu/direct keep paths as UTF-8 char strings and call Windows' A functions (GetModuleFileNameA, CreateFileA, fopen ...)
 with them. Without a manifest those take and give the system's ANSI code page (1252 on a Western Windows), and a game folder
 whose name it cannot spell (Japanese on a Western Windows, an emoji anywhere) came back as "?": the game found neither
 image.bin nor its log's folder and closed with nothing on screen. activeCodePage UTF-8 (Windows 10 1903 and newer) makes
-every A function and the C runtime's narrow file functions UTF-8 for the whole process, its DLLs too (hookshot_vk.dll,
+every A function and the C runtime's narrow file functions UTF-8 for the whole process, its DLLs too (hookshot_direct.dll,
 SDL2, FFmpeg). host/hos_main.c says so in a message box when the Windows is too old for it and the folder's name needs it.
 
     python nx2/win_manifest.py [out.res]

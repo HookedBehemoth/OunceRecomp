@@ -186,7 +186,7 @@ typedef struct MkwVkRenderer {
     void (*nvn_pool_native)(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);
 } MkwVkRenderer;
 
-/* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */
+/* the DLL's one export: null when Vulkan is not usable */
 typedef const MkwVkRenderer *(*mkwvk_init_fn)(const MkwVkHost *host);
 #ifdef MKWVK_BUILDING
 #ifdef _WIN32

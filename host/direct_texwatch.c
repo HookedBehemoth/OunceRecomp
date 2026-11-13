@@ -8,7 +8,7 @@
    page is made writable again; every 2 s the live textures' pages are protected again, so later writers are seen too.
    File reads straight into a texture's storage (the kernel's writes cannot fault) are noted from nn_fs.c. New pairs are
    logged by a thread of their own ("texwatch: ..."), and a summary every 600 presents. The fault costs a page's
-   protection change: a debug run only. With HOS_DBG unset (or RX_BACKEND unset) nothing here runs. */
+   protection change: a debug run only. With HOS_DBG unset nothing here runs. */
 #include "hos.h"
 #include "direct.h"
 #include "../gpu/api/rx_nvn.h"

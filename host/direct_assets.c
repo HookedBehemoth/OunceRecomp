@@ -1,7 +1,6 @@
 /* (native-vk A-rt) The host's side of prepared assets for the direct back end (docs/direct/a-rt-report.md; the hooks are
    the ones traced in work/assets/native/asset-path.md 3.4 and 7.3, on branch agent/assets1). Direct mode only
-   (RX_BACKEND=direct; HOS_DBG=noassets turns every patch here off, for a before/after): with RX_BACKEND unset nothing here
-   runs and the game is as before.
+   (HOS_DBG=noassets turns every patch here off, for a before/after).
 
    The store: HOS_PREPARED=<folder> (default <the executable's folder>/../../prepared, i.e. work/prepared beside a build in
    work/sa/<build>, else <romfs>/../../prepared): <folder>/tex is the texture store the back end maps (hsd_assets_open),

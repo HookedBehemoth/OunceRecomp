@@ -416,7 +416,7 @@
 80f477b0 sead_method_tree_names_b         # work/assets/native/engine-layers.md
 8351c280 sys_abort_budget                 # nx2/oot_patches.py: aborts below zero budget
 81222ce0 sys_nn_main_body                 # nx2/oot_patches.py: nnMain per the patch notes (display size into the framework create arg) # ? the export table puts nnMain at 0x81222cd0
-824c5560 sys_printf_char_out              # nx2/adr_entries.py, docs/design.md: character-output callback of a printf-style formatter
+824c5560 sys_printf_char_out              # nx2/adr_entries.py: character-output callback of a printf-style formatter
 81681670 sys_setjmp_wrapper               # host/hos_setjmp.c: returns setjmp's result
 80b5e9e0 thread_baseproc_executor         # work/assets/native/engine-layers.md: BaseProcExecutor0-5 threads
 80dbcd70 thread_module_workers_create     # work/assets/native/engine-jobs.md: ModuleSystemWorker pool ("ThreadPoolHeap")

@@ -44,8 +44,7 @@ static void host_log(const char *line) { hos_log("%s", line); }
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 int hos_gpu_guest_ranges(uint64_t (*out)[2], int max);
 /* The soft write watch's marks (rt/a64.h A64_MARK, hos_mark_written) over the GPU-visible ranges, read and cleared:
-   the Vulkan back end's own collection (gpu/render's rx_collect_written works only with the WebGPU renderer started).
-   One consumer: with Vulkan the WebGPU renderer never runs. */
+   the back end's own collection. One consumer. */
 static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **pages) {
     size_t n = 0, cap = 4096;
     uint32_t *out = malloc(cap * sizeof *out);
@@ -144,7 +143,7 @@ static const MkwVkRenderer *vk;   /* the back end, once started */
    first): those calls are kept here and given to the renderer rx_start chose, in order. Without that the Vulkan back
    end never knew the first ~0x60 texture slots, and lit geometry sampled them as its black dummy.
    The texels the game writes then (WriteTexels) are kept too, with a copy of their data: without a renderer they went
-   nowhere (Linux has no WebGPU renderer to take them), and a texture filled so at boot kept zeros in its storage. OoT's
+   nowhere, and a texture filled so at boot kept zeros in its storage. OoT's
    4x4 white placeholder is one: bound in place of the ground fog's depth, it read 0 and hid the ground fog at some camera
    angles. That happened when the window's thread started the renderer after the game had begun (windowed, not headless). */
 typedef struct {
@@ -201,7 +200,7 @@ static void flush_early(void) {
 }
 
 /* The direct back end, hookshot_direct.so: the version-14 table for the object layer, sync and present, and the list calls the
-   host finds by name (host/direct.h). Read once, at the first call. RX_BACKEND is not read: this is the only renderer */
+   host finds by name (host/direct.h). Read once, at the first call. */
 static hsd_fns direct_fns;
 static volatile LONG direct_state;   /* 0 not loaded yet, 2 loaded */
 static SRWLOCK direct_lock = SRWLOCK_INIT;

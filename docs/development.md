@@ -1,28 +1,26 @@
 # Hookshot (oot-recomp)
 
-**Hookshot** is the port's name (as Skybound is TOTKPort's and BlueShell is mkw-recomp's); the maintainer's repository
-folder stays `oot-recomp`. The game builds as `hookshot` + `hookshot_direct.so` (Linux).
+**Hookshot** is the port's name (as Skybound is TOTKPort's and BlueShell is mkw-recomp's); the repository folder stays
+`oot-recomp`. The game builds as `hookshot` + `hookshot_direct.so` (Linux, Mesa RADV).
 
-A static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake to native x86-64 Windows and Linux:
-the game's code lifted to C (NotRexed's a64-kit, Rexcomp's AArch64 kit), the Horizon OS and NVN2 implemented
-natively, the GPU work replayed on Vulkan. It is a fork of mkw-recomp (`..\mkw-recomp`, Mario Kart World), whose
-paths it keeps so MKW's fixes apply here.
+A static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake to native x86-64: the game's code
+lifted to C (NotRexed's a64-kit, Rexcomp's AArch64 kit), the Horizon OS and NVN2 implemented natively, the GPU work
+replayed on Vulkan by the direct back end. It is a fork of mkw-recomp (Mario Kart World), whose paths it keeps so MKW's
+fixes apply here.
 
 **No game files are in this repository.** The dump is read where it lies (`work/dump.txt`); everything made from it
 (modules, image, lifted C, builds, runs) goes to `work/`, which git ignores.
 
-Status: the game plays; the README's [status table](../readme.md#project-status) says how far. The design, its stages and
-the lessons carried over from MKW: [design.md](design.md).
+The design and the lessons carried over from MKW: [design.md](design.md). The renderer: [direct-backend-plan.md](direct-backend-plan.md),
+and what we know about the game: [direct/](direct/README.md).
 
 ## Use
 
-Requirements: Python 3 with `pip install -r requirements.txt` (`lz4`, `numpy`, `capstone`, `unicorn` 2.1,
-`zstandard`, and the button-prompt packages); a compiler: on Windows llvm-mingw
-(`HOOKSHOT_MINGW`, or an `llvm-mingw` folder in the clone), else emsdk's clang at `C:\emsdk` (or `EMSDK`) with Visual
-Studio's C++ tools; on Linux clang and lld. For the Vulkan back end: distro Vulkan / SPIR-V / VMA headers under
-`/usr`, or `HOOKSHOT_VULKAN_HEADERS` / `HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VMA_HEADERS`, or a CPM package cache
-(`RX_CPM`, else `cpm` in the clone, else the old caches in mkw-recomp's `work/eg` or `..\Eglantine\.cache\cpm`).
-Without those the standalone build stops. [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) has the rest.
+Requirements: Python 3 with `pip install -r requirements.txt` (`lz4`, `numpy`, `capstone`, `unicorn` 2.1, `zstandard`,
+and the button-prompt packages); clang and lld (`scripts/linux/deps.sh` installs them, FFmpeg with dav1d, SDL2 and the
+Vulkan headers); the Vulkan, SPIR-V and VMA headers under `/usr`, or `HOOKSHOT_VULKAN_HEADERS` /
+`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VMA_HEADERS`, or a CPM cache (`RX_CPM`). Without them the build stops.
+[CONTRIBUTING.md](../CONTRIBUTING.md#development-setup) has the rest.
 
 Run everything with `python -I` from this folder.
 
@@ -30,22 +28,21 @@ Run everything with `python -I` from this folder.
 |---|---|
 | `python -I nx2/nup.py <file.nup> --extract work/dump` | the `.nup` dump package to `work/dump/exefs` + `romfs` (newest title; ZBIC NSOs made plain by `nx2/unpack.py`) |
 | `python -I nx2/dump.py --dump <folder with exefs/ and romfs/> --set` | what the dump is (Switch 1 or 2, ids, modules, SDK, NVN); `--set` records it in `work/dump.txt` |
-| `python -I nx2/lift.py [--write]` | image + discovery + coverage (`work/image/coverage.txt`); `--write` emits the C to `work/gen` |
+| `python -I nx2/lift.py [--write]` | image + discovery + coverage; `--write` emits the C |
 | `python -I nx2/census.py --nx2` | instruction census per module, after the Switch 2 forms |
 | `python -I nx2/test_insn.py [--per 6 --states 12]` | every instruction form the game uses, Unicorn vs lifted C |
 | `python -I nx2/test_leaf.py [--count 3000 --states 4] [--calls]` | random whole functions (or call trees), Unicorn vs recompiled native code on the real image |
-| `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot.exe` + `hookshot_direct.so`, the only renderer |
+| `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot` + `hookshot_direct.so`, the only renderer |
 | `scripts/run-vk.sh <name> [seconds] [-- NAME=VALUE ...]` | a muted, headless test run (Linux), with screenshots in `work/runs/<name>/shots`; see Iterating below |
 | `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_PROFILE=<seconds>` + `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>` (the sampler runs only with `HOS_PROFILE` set), named from the linker maps |
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
 
-The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the README's
-[Running the game from the command line](../readme.md#running-the-game-from-the-command-line).
+The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the
+[README](../readme.md#build-and-run).
 
 Scripted test input (`HOS_INPUT_SCRIPT` and `HOS_INPUT_LIVE`) is applied before the window-focus check. A log saying
-the game window is not in front does not mean those presses were discarded. `HOS_HEADLESS` and
-`HOS_WINDOW_NOACTIVATE` change window creation, not this input routing. The game must still reach a state that reads
+the game window is not in front does not mean those presses were discarded. `HOS_HEADLESS` changes window creation, not this input routing. The game must still reach a state that reads
 and responds to the supplied controller input.
 
 Physical keyboard and mouse input stays with the foreground window. Physical controllers can also play in the
@@ -128,50 +125,63 @@ fast-forwards it; `drop <name>` removes the worktree and the branch once landed.
 
 ## Switches for testing and debugging
 
-The running game reads its switches from the environment or from `hookshot_env.txt` beside `image.bin` (one
-`NAME=VALUE` a line, `#` for notes; `HOS_ENV_FILE=<path>` reads that file instead). The build reads its own from the
-environment. The README has the ones players are asked to try (`RX_VK_ASTC_RGBA8`, `RX_VK_LOW_SPEC`,
-`RX_VK_MOVIE_UPSCALE`, `RX_VK_SKIP_CODE`, `HOS_OOT_CHEATS`). There are several hundred more, most of them one-off
-experiments: `grep -rn 'getenv("' host gpu/vk` lists them, and the comment where each is read says what it does.
-"Set" below means any value, `0` included.
-
-`RX_VK_MESH_NOCULL=<prefix,...>` turns off the culling in the task shaders whose native code key starts with one of
-the prefixes. On a Steam Deck, `RX_VK_MESH_NOCULL=2c56dc1006942f74` avoids the same hang without leaving anything out:
-that task shader walks a coarse depth grid cell by cell for every meshlet and ends with
-`visible = (result & 1) | (c3[2320] & 4)`, bit 4 being the game's own "draw everything". The switch makes that answer
-true, and dead code elimination removes the grid walk, so every meshlet is drawn and the rasterizer clips what is off
-screen. It costs some GPU time on cards that cull quickly, so it is off unless set. The log says
-"culling off, every meshlet drawn" for each task shader it changed.
+The running game reads its switches from the environment or from `hookshot_env.txt` beside `image.bin` (one `NAME=VALUE` a
+line, `#` for notes; `HOS_ENV_FILE=<path>` reads that file instead). A switch that names a file or a folder to write
+(`*_FILE`, `*_DIR` and `HOS_PRESENT_TRACE`) is not taken from that file, and neither
+are the library names SDL loads. The build reads its own switches from the environment. Every name below is read by code in
+`host/` or `gpu/direct` today; "set" means any value, `0` included. Switches whose meaning is not stated in the code
+beside them are listed at the end, under Undocumented, with where they are read.
 
 ### Running a test
 
 | Switch | What it does |
 |---|---|
-| `HOS_HEADLESS` (set) | No window: the renderer draws offscreen, for screenshots and frame dumps |
-| `HOS_WINDOW_SIZE=<w>x<h>` | The window's size in pixels (1280x720 by default, wider for an ultrawide picture) |
-| `HOS_WINDOW_NOACTIVATE` (set) | The window opens behind the others and does not take the focus (Windows) |
-| `HOS_FULLSCREEN=1` | Starts in fullscreen; the Insert menu's Fullscreen row is then left alone |
-| `HOS_AUDIO=0` | No sound device is opened (the mixer still runs); `scripts/run-vk.sh` sets it unless `SOUND=1` |
-| `HOS_LANGUAGE=<code>` | The game's language for this run, a code from `language.txt` |
-| `HOS_OUTPUT_RES=<0..3>`, `HOS_HANDHELD=1`, `HOS_ASPECT=<ratio>` | Over the options file: the output resolution (0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080), the handheld profile, a picture wider than 16:9 (2.3889 for 3440x1440) |
-| `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |
-| `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
-| `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
-| `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
-| `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
-| `RX_BACKEND=<name>` | Not read: the direct back end is the only renderer |
+| `HOS_HEADLESS` | (set) No window: the renderer draws offscreen, for screenshots and frame dumps |
+| `HOS_WINDOW_SIZE` | `<w>x<h>`: the window's size in pixels (1280x720 by default) |
+| `HOS_FULLSCREEN` | `1`: start in fullscreen |
+| `HOS_AUDIO` | `0`: no sound device is opened |
+| `HOS_LANGUAGE` | `<code>`: the game's language for this run |
+| `HOS_OUTPUT_RES` | `<0..4>` over the options file: 0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440 (handheld forces 0) |
+| `HOS_HANDHELD` | `1`: the handheld profile, over the options file |
+| `HOS_ASPECT` | `<ratio>`: a picture wider than 16:9 (the HUD, menus and movies keep the middle 16:9); `2.3889` for 3440x1440 |
+| `HOS_TEXT_SPEED` | Text speed, over the options file |
+| `HOS_GRAPHICS_SCALE` | `<float>`: the scale `GetCurrentGraphicsScale` returns (default 1.0) |
+| `HOS_SCENE_NATIVE` | non-zero: the scene's base scale is 1.0 (the game's is 0.8) |
+| `HOS_RES_SCALE` | set: the menu's resolution scale does not set the fixed scale |
+| `HOS_RT_POOL_MB` | `<MB>`: the render-target pool's size, over the default (at least 512 MB) |
+| `HOS_MODS` | `<dir>`: the mods folder, over the `mods` folder beside the executable (RomFS mods in the layout emulators use, host/mods.c) |
+| `HOS_FS_OVERLAY` | `<folder>`: patched game files read before the romfs (the chiseled boot) |
+| `HOS_PREPARED` | `<folder>`: the prepared texture and terrain store, over the default |
+| `HOS_NO_MOVIES` | set: movie files are reported as not found, so the game goes on without them |
+| `HOOKSHOT_NO_UPDATE_CHECK` | `1`: no look for a newer release at the start |
+| `HOS_DISCORD` | `0`: no Discord rich-presence thread |
+| `HOS_DISCORD_APP_ID` | a Discord application id, over the built-in one |
+| `HOOKSHOT_OCCLUSION_OFF` | `1`: the game makes no occlusion queries |
+| `HOS_ENV_FILE` | `<path>`: the file read for `NAME=VALUE` lines instead of `hookshot_env.txt` |
+| `HOS_TRACE` | `1`: every Horizon call logged, as `--trace` does |
+| `HOS_FIXED_TIME` | `<seconds>`: the wall clock the game sees starts at that Unix time |
+| `HOS_MEMORY_MB` | `<MB>`: the application memory the game is told (3285 on a retail console) |
 
 ### Input for scripted runs
 
 | Switch | What it does |
 |---|---|
-| `HOS_INPUT_SCRIPT=<presses>` | Presses timed from the game's first controller read |
-| `HOS_INPUT_LIVE=<file>` | A file the test appends lines of presses to, read every 30 ms; each line's times count from when it is read. A line `!cheat <n>` sends a Cheats page action, `!synclog` logs the NVN syncs (`!dump`, `!shots`, `!rdoc` and `!flasharm` are the WebGPU renderer's) |
-| `HOS_INPUT_FRAME_CLOCK=1` | The script's time runs at 60 game frames a second instead of the wall clock |
-| `HOS_INPUT_EXCLUSIVE`, `HOS_INPUT_BACKGROUND`, `HOS_INPUT_SCRIPT_BACKGROUND` (set) | As above; the last lets every device count while the window is behind another one |
-| `RX_VK_MENU_SCRIPT=<seconds>:<key>,...` | Timed Insert menu keys: `INS`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, `ENTER`, `TABL`, `TABR` |
-| `RX_VK_UI_PROMPTS=pad` or `keys` | The menu's button prompts for a controller or the keys, whatever was used last (screenshots) |
-| `RX_VK_UI_GAME_FONT=0` | The menu, the counter and the start-up screen in the included Libertinus, not the game's own font |
+| `HOS_INPUT_SCRIPT` | presses timed from the game's first controller read (syntax below) |
+| `HOS_INPUT_LIVE` | `<file>`: lines of presses appended by a test, read every 30 ms; `!cheat <n>` sends a Cheats page action, `!synclog` logs the NVN syncs |
+| `HOS_INPUT_FRAME_CLOCK` | `1`: the script's time runs at 60 game frames a second instead of the wall clock |
+| `HOS_INPUT_EXCLUSIVE` | (set) the script alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses |
+| `HOS_INPUT_BACKGROUND` | controllers count while the window is behind another one (`0` overrides the option) |
+| `HOS_INPUT_SCRIPT_BACKGROUND` | (set) scripted input runs with the game in the background |
+| `HOS_XINPUT` | (set) poll XInput even when SDL has open controllers |
+| `HOS_NO_SDL` | (set) controllers are not read through SDL |
+| `HOS_HD_RUMBLE` | `0`: no HD rumble |
+| `HOS_MOUSE_NATIVE` | `<0|1>` over the menu: native mouse look |
+| `HOS_MOUSE_INVERT_Y` | (set) invert the mouse's vertical axis |
+| `HOS_MOUSE_SENS` | `<factor>`: mouse sensitivity, over the menu and `mouse_sens.txt` |
+| `HOS_MOUSE_DECAY` | `<percent>`: the mouse look's decay rate (default 0.30) |
+| `HOS_MOUSE_MIN_DECAY` | `<percent>`: its minimum decay (default 0.20) |
+| `HOS_MENU_DRAG_GAIN` | `<float>`: menu drag gain (default 6.0) |
+| `HOS_MENU_TRACE` | (set) the host's stick values logged |
 
 The presses are `<seconds>:<button>[+<button>...][/<ms>]`, separated by commas, for example `2:A,5.5:LUP/1500,9:ZL+R`.
 The buttons are `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`, and the sticks pushed to their edge `LUP
@@ -182,29 +192,111 @@ case-sensitive, and an unknown one is ignored.
 
 | Switch | What it does |
 |---|---|
-| `RX_VK_SHOTS=<dir>` | A PNG every `RX_VK_SHOT_EVERY` presents (300) as `vk_<present>.png`, at `RX_VK_SHOT_W` x `RX_VK_SHOT_H` (1280x720) |
-| `RX_VK_FLASH=1` | The flash detector, with `RX_VK_SHOTS` and `RX_VK_SHOT_EVERY=1`: writes the frames around a flash and dumps the next one |
-| `RX_VK_FRAMELOG=<file>` | Every frame shown, at 320x180, while `<file>.go` exists; `python -I scripts/framelog.py <file>` finds the flashes |
-| `RX_VK_DUMP=<present>[+<count>][,...]` | Every step of the frame after that present as PNGs, in `dump_<present>` under `RX_VK_DUMP_DIR` (or `RX_VK_SHOTS`, or the current folder); `RX_VK_DUMP_STEPS=<lo>-<hi>` and `RX_VK_DUMP_PROGS=<key>,...` narrow it |
-| `RX_VK_PASS_TRACE=1` | The passes of the last frames, logged at a flash or a dark frame (`RX_VK_PASS_TRACE_AT=<n>`: every n-th present) |
-| `RX_VK_PROBE=1` or `2` | The centre texel after every pass: `probe_<frame>.txt` at a flash (1), or `probe_all_<n>.txt` at speed (2); `python -I scripts/probe.py` reads them |
-| `RX_VK_DUMP_FAILED=<dir>` | The native code of every program that does not translate, for `nx2/lower_test.py` (game data: keep it local) |
+| `RX_VK_SHOTS` | `<dir>`: a PNG of the presented frame every `RX_VK_SHOT_EVERY` presents (default 300) |
+| `RX_VK_SHOT_EVERY` | `<n>`: the interval for `RX_VK_SHOTS` |
 
-### Time and profiles
+### Time, pacing and profiles
 
 | Switch | What it does |
 |---|---|
-| `HOS_PROFILE=<seconds>` | Every interval, the busiest threads in the log; it also starts the samplers below |
-| `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<file>` | One thread's stacks, sampled every millisecond (needs `HOS_PROFILE`); `python -I scripts/prof.py <file>` reads them |
-| `HOS_SAMPLE_ALL=<file>` | Every game and renderer thread every 2 ms while `<file>.go` exists (needs `HOS_PROFILE`); `scripts/crit.py`, `scripts/vkprof.py` and `scripts/hotlist.py` read it (on Linux with `RX_MAPS=<game folder>`: they name frames from its `hookshot` and `hookshot_vk.so`) |
-| `HOS_THREAD_TIMES=<seconds>` | Every interval, the threads that used over 5% of a core |
-| `HOS_FPS_LOG` (set), `HOS_PRESENT_TRACE=<csv>` | The game's frame limiter, VRR flags and nominal rate every 300 presents; a CSV line per game present |
-| `RX_VK_FRAME_LOG=<csv>` | A CSV line per present: frame, seconds, frame time in ms |
-| `RX_VK_PASS_TIMING=1` or `2` | GPU time per pass (2: per program too), logged every 600 presents |
-| `RX_VK_SLOW_LOG=<ms>` | The replay's times for each frame that took longer than this |
-| `HOS_PGO=<file>` | In a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.dump` writes them to `<file>`. It is read before `hookshot_env.txt`, so set it in the environment |
+| `HOS_PROFILE` | `<seconds>`: every interval, the busiest threads in the log; it also starts the samplers below |
+| `HOS_SAMPLE` | `<thread>`: that thread's stacks sampled every millisecond (needs `HOS_PROFILE`) |
+| `HOS_SAMPLE_FILE` | `<file>`: where `HOS_SAMPLE` writes the stacks; `scripts/prof.py` reads it |
+| `HOS_SAMPLE_ALL` | `<file>`: every game and renderer thread every 2 ms while `<file>.go` exists (needs `HOS_PROFILE`); `scripts/crit.py` and `scripts/hotlist.py` read it |
+| `HOS_THREAD_TIMES` | `<seconds>`: every interval, the threads that used over 5% of a core |
+| `HOS_STATS_AFTER` | `<seconds>`: a statistics report after that time (host/mkw_glue.c:206) |
+| `HOS_PGO` | in a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.dump` writes them to `<file>` |
+| `HOS_FPS_LOG` | (set) the frame limiter's state logged every 300 presents |
+| `HOS_FPS_MAX` | `<fps>`: the frame-rate cap (60 to 240), over the option |
+| `HOS_FPS_STEP` | `0`: the rate goes up to the cap as one step, not timed |
+| `HOS_NO_PACING` | (set) no frame pacing |
+| `HOS_PRESENT_TRACE` | `<csv>`: a CSV line per game present |
+| `HOS_GAME_INTERVAL` | non-zero: paced to the game's own interval |
+| `HOS_GAME_STEP_PER_FRAME` | `1`: game speed per frame instead of the option |
+| `HOS_FRAME_SLEEP_MS` | `<ms>`: every frame sleeps that long (diagnostic: game speed against frame rate) |
+| `HOS_RES_LOG` | (set) the resolution module's state, every 300 presents |
 
-### Log switches
+### Threads and synchronisation
+
+| Switch | What it does |
+|---|---|
+| `HOS_CORES` | `<1..8>`: the cores the game sees (default 6) |
+| `HOS_VCORES` | `0`: no virtual cores |
+| `HOS_RESERVE_CORE` | `0`: no core kept for the renderer |
+| `HOS_SPIN_ALWAYS` | (set) waits spin without the adaptive back-off |
+| `HOS_NO_HANDOFF` | `1`: any thread may take a mutex a signal's waiter is owed |
+| `HOS_NO_OBJ_CACHE` | (set) no per-thread cache of kernel objects |
+| `HOS_NO_RENDERER_WAIT` | non-zero: the game's first GPU work does not wait for the renderer to be up |
+
+### Memory
+
+| Switch | What it does |
+|---|---|
+| `HOS_GUEST_MEMFD` | `1`: the guest window is a memfd even where dma-bufs are usable |
+| `HOS_NO_THP` | (set) transparent huge pages off for the whole process |
+| `HOS_THP` | (set) the guest window keeps transparent huge pages |
+| `HOS_ZERO_ALL_PAGES` | (set) zero the whole range above 4 GB too (that once wiped live data) |
+| `HOS_PREFAULT` | `1`: new heap pages are touched at once, so the game's first touches are not page faults (experiment) |
+| `HOS_GUEST_LIBC` | (set) the SDK's own libc copies run instead of the host's (host/nn_libc.c:7) |
+| `HOS_GUEST_ZSTD` | `1`: the game's own zstd decoder runs instead of the host's (host/nn_zstd.c:40) |
+
+### Render-target slots
+
+| Switch | What it does |
+|---|---|
+| `RX_RT_SLOTS_MB` | `<MB>`: size of the stable render-target slots |
+| `HOS_RT_QUANT` | `0` off, `1` size classes, more: multiples of it (default 1) |
+| `HOS_RT_SLOTS_LOG` | (set) the render-target slot decisions logged |
+
+### Files and video
+
+| Switch | What it does |
+|---|---|
+| `HOS_FS_TRACE` | (set) file opens and reads logged |
+| `HOS_FS_WATCH` | `<lo>:<hi>` (hex): a log line for a file read into that guest range |
+| `HOS_FS_DELAY_MS` | `<ms>[,<after s>]`: slower reads (experiment) |
+| `HOS_VIDEO_LOG` | `1`: movie submissions and acquisitions logged |
+| `HOS_MIC_LOG` | (set) microphone reads logged |
+
+### Audio
+
+| Switch | What it does |
+|---|---|
+| `HOS_AUDIO_NO_REVERB` | (set) no reverb |
+| `HOS_AUDIO_STATS` | `1`: once a second, what plays and where the signal is |
+| `HOS_AUDIO_TRACE` | `1`: the audio graph setup calls logged |
+
+### Tracing the NVN layer and the host
+
+| Switch | What it does |
+|---|---|
+| `HOS_NVN_LOG_OBJECTS` | (set) NVN object creation logged |
+| `HOS_NVN_LOG_POOLS` | (set) who makes each memory pool |
+| `HOS_NVN_LOG_VMAP` | (set) virtual pools logged with their flags and caller |
+| `HOS_NVN_DEVINFO_LOG` | (set) every `nvnDeviceGetInteger` query and its answer |
+| `HOS_NVN_STRICT` | (set) an unimplemented NVN call stops the game |
+| `HOS_NVN_SYNC_LOG` | `<present>`: NVN sync calls logged from that present on |
+| `HOS_NVN_WATCH_DRAW` | `<count>[,<after s>]`: logs the draw with that count |
+| `HOS_NVN_WATCH_DRAW_THREAD` | only draws recorded on threads whose name holds this |
+| `HOS_NVN_WATCH_RT` | `<hex>`: logs a render target at that address |
+| `HOS_NVN_WATCH_TEX` | `<hex>`: logs a texture at that address |
+| `RX_NVN_LOG_TEX` | `<w>x<h>`: logs textures of that size |
+| `RX_NVN_TEXELS_LOG` | (set) CPU texel uploads logged with their callers |
+| `RX_NVN_WATCH_TEX` | `<w>x<h>`: write-watch the storage of textures of that size |
+| `RX_NVN_WATCH_TEX_AT` | `<hex>`: write-watch the texture at that address only |
+| `RX_NVN_WATCH_TEXELS_SRC` | `<w>x<h>`: write-watch sources of uploads into textures of that size |
+| `RX_VK_LOG_B2T` | `1`: who records big buffer-to-texture copies |
+| `HOS_SYNC_TRACE` | `1`: fences and sync point waits |
+| `HOS_MAP_TRACE` | `1`: every GPU mapping change |
+| `HOS_TLS_TRACE` | (set) TLS hook results logged per thread |
+| `HOS_WAIT_LOG` | (set) waits logged |
+| `HOS_LONG_WAITS` | `1`: an untimed wait still blocked after 5 s is logged, then goes on |
+| `HOS_MUTEX_TRACE` | `<ms>`: mutex waits longer than that are logged with the holder |
+| `HOS_MUTEX_WATCH` | `<hex>`: mutex address to watch |
+| `HOS_WAIT_WHO` | `<thread>`: log waits of that thread; `HOS_WAIT_WHO_LR=<hex>` narrows it to one caller |
+| `HOS_HOSTCALL_STATS` | (set) host-call statistics (also `HOS_HOSTCALL_SLOW`) |
+| `HOS_LOG_TIME` | `0`: log lines without the time and present |
+### Log lines
 
 Every log line starts `[hos 12.345 p600 <thread>]`: the seconds since the process started and the present the game is at.
 `HOS_LOG_TIME=0` leaves both out. A line longer than the log's 4 KB buffer ends in `~`. The direct back end's per-block
@@ -226,6 +318,79 @@ the other counters the scripts read stay); `HOS_DBG=<item>,...` turns a part on,
 A line that says the same most blocks (`validation:`, `strict:`, `transient pool: descriptor ids`) is printed at the first
 block and again when its text changes.
 
+### HOS_DBG
+
+`HOS_DBG=<item>,<item>:<value>,...` turns on the direct back end's and the host's debug aids; with it unset each costs a
+load and a branch. `logall` turns every `log*` item on.
+
+| Item | What it does |
+|---|---|
+| `validation` | the Khronos validation layer and its synchronization validation |
+| `strict` | any validation warning or error ends the run; `strictall` instead surveys every reason's first events and does not stop |
+| `noassets` | every patch in `host/direct_assets.c` off, for a before/after |
+| `assetcheck:<n>` | reads back `n` prepared images and the sampled terrain and glyph uploads after the load; `assetdump` dumps them |
+| `nomeshrepl` | task and mesh programs are drawn from the translator, not the hand-written replacements |
+| `tmwait` | keeps the wait before task+mesh draws (off by default) |
+| `nolate`, `latevertex` | the register-pressure pass off (it stamps the program cache); `latevertex` makes it run on vertex stages too |
+| `loopcap:<n>` | the shader loop safety count of the translator |
+| `marks` | GPU breadcrumbs for a lost device: two `VK_AMD_buffer_marker` writes around each draw and dispatch, the unfinished ones logged (`gpu/direct/direct_marks.h`) |
+| `crit[:<first present>[:<presents>]]` | a trace of what every guest thread does over a window of presents, to `crit.bin`; `scripts/crit_path.py` reads it |
+| `pstats:<present>` | pipeline-statistics query around each draw and dispatch of that frame, written to `direct_pstats.csv` |
+| `meshcap:<present>` | one frame's mesh draws captured to `meshcap/frame.bin` for `tools/meshlab` |
+| `dump:<present>[+<frames>]` | every pass's targets of the frame after that present as PNGs in `dump_<present>`, in `dumpdir:<dir>` if given; `dumpraw` writes the unrounded values of HDR targets |
+| `frames` | `direct_frames.csv`: a row per present |
+| `gputime` | the GPU's busy and idle time per frame (rows in `direct_frames.csv`) |
+| `drawlog:<present>` | the recording lists' draws of the frame after that present, each with what it was drawn with |
+| `phlog` | the first draw that samples each heap id holding the placeholder, named once |
+| `rtlog` | 200 `SetRenderTargets` from present 1500 on, named |
+| `peek:<hex>` | 64 KB at that guest address: non-zero bytes and a checksum |
+| `poolof:<hex>+<hex>...` | the pools of those guest addresses, at each log line |
+| `writer:<hex>` | every dispatch whose storage buffers cover that address |
+| `texwatch` | which code writes texels into a texture's storage with the CPU (`host/direct_texwatch.c`) |
+| `nodata[:<name part>]` | textures `agl::TextureData` makes with no data, logged once each; with a name part their slots are page-watched (`host/direct_diag_nodata.c`) |
+| `uboclamp` | uniform-buffer reads past the bound range give zeros, through a copy |
+| `ubopush` | the first 8 addresses pushed are logged |
+| `uborange` | each binding read past its range, once, with what lies there |
+| `qfixed`, `qnocond`, `qcputs` | A/B aids of the query path: samples fixed at 4096; conditions not evaluated and their draws drawn; timestamps of the recording time |
+| `deferredcheck` | counts the deferred words that change between their bind and the submit |
+| `nochanmap` | images use the game's swizzle alone |
+
+### The shader translator (`gpu/direct/eden`)
+
+| Switch | What it does |
+|---|---|
+| `RX_VK_BDA_DUMP` | `<folder>`: the stages whose storage buffers go through addresses, written for `spirv-val` |
+| `RX_VK_BDA_GLOBAL` | `0`: global-memory accesses stay on descriptors |
+| `RX_VK_FOLLOW_STORES` | `1`: writes and atomics go through the address table too |
+| `RX_VK_GP_TEST` | `1`: the addressing model alone, `2`: and the table's load, `3` or unset: all of it |
+| `RX_VK_MISS_LOG` | `1` (compute stages): a buffer at `c0+0xff0` records the addresses no binding held; `RX_VK_MISS_LOG_PROG=<key>` picks the program, `RX_VK_BLOCK_PROBE=1` counts each block's entries |
+| `RX_VK_LOG_BRX` | (set) cbuf-bounded branch tables logged |
+| `RX_VK_MESH_NO_DEFAULTS` | `1`: a generic output no line writes stays undefined at the fragment stage |
+| `RX_VK_MESH_NO_ZERO` | `1`: unwritten mesh primitives are not zeroed |
+| `RX_VK_TASK_CAP` | `<n>`: mesh workgroups a task may start; 0 is one a thread |
+| `RX_VK_MMA_NO_LDSM_BARRIER` | `1`: no barrier after the LDSM lowering |
+| `RX_VK_NO_CBUF_LOAD_RULE` | `1`: the constant-buffer-load rule of the storage-buffer pass off |
+| `RX_VK_NO_EXTREGS` | (set) a program using the lowering's scratch registers is rejected |
+| `RX_VK_MARKERS_V205` | (set) lowering markers avoid only the native high registers |
+| `RX_VK_PTR_SPLIT_FALLBACK` | `0`: pointers are bound as before the split fallback |
+| `RX_VK_PTR_DIAG` | non-zero: pointer diagnostics (`ir_opt/global_memory_to_storage_buffer_pass.cpp:55`) |
+
+### Building
+
+| Switch | What it does |
+|---|---|
+| `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (one per CPU thread by default, each started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns the check off, `HOOKSHOT_MEM_RESERVE_GB` is the memory kept free, 1.5 by default) |
+| `HOOKSHOT_LIFT_JOBS=<n>` | Processes that write the lifted C (default the cores, at most 16) |
+| `HOOKSHOT_KEEP_BUILD_FILES=1` | Keeps the lifted C and the objects after a build, so the next one compiles only what changed |
+| `RX_DIRECT_ONLY=1` | Only the direct back end, with no lift |
+| `HOOKSHOT_VULKAN_HEADERS`, `HOOKSHOT_SPIRV_HEADERS`, `HOOKSHOT_VMA_HEADERS`, `RX_CPM` | Where the headers are (a package root or its `include/`; `RX_CPM` is a CPM cache) |
+| `HOOKSHOT_FFMPEG=<prefix>`, `HOOKSHOT_SDL2` | FFmpeg's static libraries, SDL2's library folder |
+| `RX_RELEASE=1` | A release-style build: the shaders are prepared before the title |
+| `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one |
+| `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `-v2`, else `x86-64`) |
+| `RX_HOT_OPT`, `RX_NO_ORDER`, `RX_SOFT_WRITE_WATCH=0` | Optimisation level of the hot code; no hot-function link order; no software write watch |
+| `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
+
 ### Function labels
 
 The lifted functions are named `f_<guest address>`. `nx2/oot_labels.txt` gives the ones we know a label, and after the
@@ -242,85 +407,95 @@ what a function is (only the symbol table changes; no rebuild of the code).
 - `python -I nx2/label_syms.py check` checks the list; `apply <executable>` reports addresses with no such function;
   `name <address> ...` prints labels for scripts.
 
-### The GPU
+## Undocumented
 
-| Switch | What it does |
-|---|---|
-| `RX_VK_VALIDATION` (set) | The Khronos validation layer |
-| `RX_VK_CHECKPOINTS=0` | No NVIDIA checkpoints (on by default; after a lost device they name the draw it stopped at) |
-| `RX_VK_HANG_DUMP=<file>` | Every thread's stack to the file once no frame was shown for `RX_VK_HANG_SEC` seconds (20) (Windows) |
-| `RX_VK_NOOPT` (set) | Pipelines built without the driver's optimisations |
-| `RX_VK_SKIP_PROG=<prefix>,...` | Leaves out the draws of these programs (default `53509044401d78d2`; `-` leaves out none) |
-| `RX_VK_PIPE_SKIP=0` | A draw whose pipeline is not ready waits for it, instead of being left out when its targets hold an earlier frame |
-| `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
-| `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |
-| `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |
-| `RX_VK_VRAM_MB=<MB>` | The texture cache's budget (default 70% of what the driver allows, at most 6 GB) |
-| `RX_VK_NO_WRITEBACK` (set) | GPU writes to mirrored pools are not copied back to guest memory (an experiment, for A/B) |
-| `RX_VK_WB_DIFF=0` | Write-backs copy every byte again instead of only what changed against a VRAM shadow (the diff is on by default; v2.0.9 and v2.0.10 had it off, issue 1161) |
-| `RX_VK_DLSS=0/1/2`, `RX_VK_DLSS_PRESET=<letter>`, `RX_VK_DLSS_LOG=1`, `RX_VK_REFLEX`, `RX_VK_REFLEX_LOG=1`, `RX_VK_ANTILAG=0/1` | NVIDIA DLSS and Reflex, and AMD Anti-Lag 2, for one run (`=-` on Reflex or Anti-Lag 2: its extensions not even enabled): the readme's NVIDIA DLSS section. `RX_VK_DLSS_TRACE=<frames>` logs one frame's large draws every that many frames, `RX_VK_DLSS_DEBUG=motion` shows the motion vectors, `=alternate` the game's own upscale every other frame |
-| `RX_VK_FSR4=0/1/2`, `RX_VK_FSR_DIR=<folder>` | AMD FSR 4 for one run (0 never, 1 FSR 4, 2 its Native AA), and another folder for AMD's DLLs (not from `hookshot_env.txt`): the readme's AMD FSR 4 section. `RX_VK_FSR4=1/2` and `RX_VK_DLSS=1/2` go over the Upscaler row, a saved FSR 3.1 too where the engine they ask for runs; `RX_VK_FSR=1` goes over them (one upscaler at a time). The DLSS trace and debug switches above apply to FSR 4 too, on the frame chain they share |
-| `RX_VK_ASYNC=1` | The replay on a thread of its own instead of the game's submitting thread |
-| `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
+Read by code, but what they do is not stated beside the read (file:line of the first read):
 
-### Building
+- `HOOKSHOT_BUILDER_HOME` host/hos_update.c:242
+- `HOS_AUDIO_CHANNELS` host/nn_audio.c:672
+- `HOS_AUDIO_DEVICE` host/nn_audio.c:739
+- `HOS_AUDIO_DUMP` host/nn_audio.c:764
+- `HOS_AUDIO_IMMEDIATE` host/nn_audio.c:1007
+- `HOS_AUDIO_WB_DUMP` host/nn_audio.c:1467
+- `HOS_COND_RECORD` host/nvn_native.c:2109
+- `HOS_DUMP_FILE` host/posix/prof.c:523
+- `HOS_FIX_RES` host/hos_main.c:1527
+- `HOS_FPS_TARGET` host/nn_vi.c:276
+- `HOS_FS_KEEP_CORE_KB` host/nn_fs.c:417
+- `HOS_GPU_RANGE_GAP_MB` host/nvdrv.c:201
+- `HOS_HOSTCALL_SLOW` host/hos_hostcall.c:61
+- `HOS_KEEP_DEAD_OBJECTS` host/nn_os_sync.c:94
+- `HOS_KEEP_FREED_PAGES` host/hos_mem.c:131
+- `HOS_MEM_MAP` host/mkw_glue.c:716
+- `HOS_MKW_INTERVAL` host/nn_vi.c:407
+- `HOS_MOTION_DEBUG` host/pad_sdl.c:182
+- `HOS_MW_WAKE` host/nn_os_sync.c:326
+- `HOS_NVN_CHMASK_LOG` host/nvn_native.c:2626
+- `HOS_NVN_HOLD` host/nvn_native.c:1177
+- `HOS_NVN_NO_SWEEP` host/nvn_native.c:1741
+- `HOS_NVN_REC_SHIFT` host/nvn_native.c:1937
+- `HOS_NVN_SYNC_BLOCK` host/nvn_native.c:1223
+- `HOS_OCB_NORMAL` host/hos_thread.c:762
+- `HOS_OOT_PROTECT_HEARTS` host/hos_main.c:1375
+- `HOS_OOT_TELEPORT_EVENT` host/hos_main.c:807
+- `HOS_OOT_TELEPORT_STARTER` host/hos_main.c:809
+- `HOS_PIN` host/hos_thread.c:752
+- `HOS_POLL_SLEEP_NS` host/hos_thread.c:932
+- `HOS_PRESENT_NOWAIT` host/nvn_native.c:1255
+- `HOS_PRESENT_POLL` host/hos_thread.c:976
+- `HOS_PRIO` host/hos_thread.c:753
+- `HOS_PROFILE_GATE` host/nn_os_sync.c:824
+- `HOS_QUEUE_TRACE` host/nn_os_sync.c:929
+- `HOS_REALTIME_WINDOW` host/nn_vi.c:314
+- `HOS_RT_CHECK` host/rt_slots.c:387
+- `HOS_RT_PARK` host/rt_slots.c:101
+- `HOS_RT_PARK_FILL` host/rt_slots.c:280
+- `HOS_RT_PARK_FRAMES` host/rt_slots.c:106
+- `HOS_SCAN_DT` host/nn_vi.c:174
+- `HOS_SDL_VERSION` host/hos_sdl.c:106
+- `HOS_SHADER_DUMP` host/nvn_native.c:1110
+- `HOS_SHORT_SLEEP_TIMER` host/hos_thread.c:831
+- `HOS_SIZE_TRACE` host/nvn_native.c:629
+- `HOS_SLEEP_LOG` host/hos_thread.c:937
+- `HOS_SPIN_US` host/hos_svc.c:118
+- `HOS_SYNC_TABLE_LOCK` host/nn_os_sync.c:224
+- `HOS_TICK_CONVERT_192` host/hos_thread.c:1078
+- `HOS_TICK_LOG` host/hos_thread.c:1064
+- `HOS_VCORE_ESCAPE_EQ_US` host/hos_thread.c:1318
+- `HOS_VCORE_ESCAPE_US` host/hos_thread.c:1319
+- `HOS_VCORE_SLICE_US` host/hos_thread.c:1320
+- `HOS_VIDEO_NO_CATCHUP` host/nn_video.c:624
+- `HOS_VI_DOUBLE` host/nn_vi.c:157
+- `HOS_WAKE_LAT` host/nn_os_sync.c:636
+- `HOS_WATCH` host/posix/prof.c:533
+- `RX_NVN_WATCH_AFTER` host/nvn_native.c:934
+- `RX_NVN_WATCH_ALL` host/nvn_native.c:936
+- `RX_VK_FOLLOW_GRAPHICS` gpu/direct/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp:1306
+- `RX_VK_FOLLOW_MESH` gpu/direct/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp:669
+- `RX_VK_MESH_FIRST` gpu/direct/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp:537
+- `RX_VK_NO_FOLLOW` gpu/direct/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp:669
+- `HOS_DBG` items: `condcheck` gpu/direct/direct_query.cpp:360; `skipcs` gpu/direct/direct_compute.cpp:931; `sublog` gpu/direct/direct_sync.cpp:300; `meshlog` gpu/direct/direct_draw.cpp:1036; `replog` gpu/direct/direct_query.cpp:162; `meshcaplost, meshcapprog` gpu/direct/direct_meshcap.cpp:39; `memwatch, memfind` host/direct_texwatch.c:72; `dumpw` gpu/direct/direct_dump.cpp:22; `tilelog` host/direct_assets.c:151
 
-| Switch | What it does |
-|---|---|
-| `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (default one per CPU thread, each started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns that check off) |
-| `HOOKSHOT_LIFT_JOBS=<n>` | Processes that write the lifted C (default the cores, at most 16) |
-| `HOOKSHOT_KEEP_BUILD_FILES=1` | Keeps the lifted C and the objects after a build, so that the next one compiles only what changed |
-| `HOOKSHOT_MINGW=<dir>`, `HOOKSHOT_MSVC=1` | The llvm-mingw to build with; the Visual Studio route instead |
-| `RX_CPM=<dir>`, `WGPU_NATIVE=<dir>` | The CPM cache (Vulkan and SPIR-V headers, VMA, FFmpeg) and wgpu-native |
-| `RX_TARGET=windows` | On Linux: the Windows game, with llvm-mingw's Linux build in `HOOKSHOT_MINGW` |
-| `RX_RELEASE=1` | A release build (`make_game.py` sets it): no console window, the shaders prepared before the title |
-| `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one (`make_game.py` passes the shipped profile) |
-| `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |
-| `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
-| `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
 ## The options file
 
-`hookshot_options.ini`, in the game folder, holds the Insert menu's rows as `<key>=<number>`: the row's name in lower
-case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution, which is `output_res`.
-`gpu/legacy/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=4`,
-`microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>` and `key_<button>`:
-the README's [Controls](../readme.md#controls)). A value outside a row's range is clamped when it is read. Where the
-number is not the obvious one:
-
-| Key | Values |
-|---|---|
-| `quality_preset` | 0 Custom, 1 Minimum (4GB), 2 Low (6GB), 3 Balanced (8GB), 4 High (12GB), 5 Ultra (16GB+) |
-| `gpu_device` | 0 Auto, n the n-th card with Vulkan 1.3 as the row lists them |
-| `frame_generation` | 0 Off, 2 to 8 the multiplier |
-| `resolution` | 0 Auto, 1 100%, 2 75%, 3 67%, 4 50% |
-| `output_res` | 0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080 |
-| `upscaling` | 0 Off, 1 Catmull-Rom, 2 Lanczos |
-| `sharpness`, `rumble_strength`, `motion_sensitivity_x`, `motion_sensitivity_y` | percent |
-| `mouse_sensitivity` | hundredths: 100 is 1.00 |
-| `robust_buffers` | 0 Auto (on), 1 Off, 2 On |
-| `game_speed` | 0 Per frame, 1 Real time |
-| `text_speed` | 0 Normal, 1 2x, 2 4x, 3 Instant |
-| `microphone` | 0 Off, 1 Default, 2 and up a microphone (the name in `microphone_device` decides which) |
-| `mouse_camera` | 0 As the stick, 1 Native |
-| `layout_preset` | 0 Nintendo, 1 Xbox / PC, 2 Swap Face, 3 Custom |
-
-The other rows are 0 Off and 1 On. Some are read at the start, before the menu exists, by the code that needs them:
-`handheld_profile` and `output_res` (`host/nn_applet.c`), `ultrawide` (`host/hos_main.c`), `robust_buffers`
-(`gpu/legacy/vk/vk_main.cpp`) and the controls (`host/nn_hid.c`).
+`hookshot_options.ini`, in the game folder, is read as `<key>=<number>` lines (`host/nn_applet.c`, `hos_ini_option`). The
+direct back end has no menu that writes it; the host reads these keys: `output_res` (0 2048x1152, 1 2560x1440, 2 3840x2160,
+3 1920x1080, 4 5120x1440), `handheld_profile` (0 or 1) and `frame_rate_cap` (an index into 60, 90, 120, 144, 165, 240), and
+the Discord rich presence reads `discord_app_id`.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `docs/design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
+| `docs/` | `design.md` (architecture, MKW's lessons as rules, testing), `direct-backend-plan.md` (the renderer), `direct/` (what we know about the game and the back end) |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the builders run |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux |
 | `gpu/direct/` | the direct back end (`hookshot_direct.so`), with its fork of Eden's shader recompiler and sirit in `eden/` |
 | `gpu/api/` | what the host and the direct back end share: the versioned table (`vk_api.h`), the NVN objects and command records (`rx_nvn.h`) |
-| `gpu/legacy/` | upstream's Vulkan and WebGPU renderers, reference source only: not built, not tested |
-| `builder/` | Hookshot Builder: the Windows app (.NET 8 WPF), its setup and MSI, and the Linux builder and launcher scripts |
-| `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), release tooling, `scripts/linux` (dependencies, AppImage) |
+| `gpu/legacy/` | upstream's older renderers, reference source only: not built, not tested |
+| `builder/` | the builder app and its launcher scripts |
+| `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), `scripts/linux` (dependencies) |
 | `tests/` | the game-free checks, all run by `tests/run_all.py` |
 | `third_party/` | a64-kit (Hookshot's few changes marked `(hookshot)`), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only), SDL2's licence, Dear ImGui and its Vulkan backend, zstd's decoder, the Libertinus fonts |
 

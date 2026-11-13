@@ -364,7 +364,7 @@ static int env_line_allowed(const char *name, const char *value) {
     for (const char *p = name; *p; p++)
         if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
     /* (hookshot) the switches that name a file to write or a folder take no value here, not even a bare name: one
-       resolves in the game's folder (HOS_SAMPLE_FILE=hookshot_vk.dll emptied the renderer) */
+       resolves in the game's folder (HOS_SAMPLE_FILE=hookshot_direct.so emptied the renderer) */
     const size_t nl = strlen(name);
     int names_file = (nl > 5 && (!strcmp(name + nl - 5, "_FILE") || !strcmp(name + nl - 4, "_DIR"))) ||
                      !strcmp(name, "RX_VK_FRAME_LOG") || !strcmp(name, "HOS_PRESENT_TRACE");

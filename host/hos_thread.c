@@ -653,8 +653,7 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
         if (strcmp(s[i].pat, "*") ? strstr(name, s[i].pat) != NULL : 1) return &s[i];
     return NULL;
 }
-/* The last physical core (its logical processors' mask), kept for the Vulkan back end's replay thread (gpu/vk
-   vk_replay.cpp pins it there): the game's threads run on the others. The replay is on the frame's critical path
+/* The last physical core (its logical processors' mask), kept for the back end's replay thread: the game's threads run on the others. The replay is on the frame's critical path
    (MKW waits for the last frame's GPU work before it submits the next), and on a core shared with game threads
    it ran ~1.7x slower than alone. Only on machines with 8+ logical processors; HOS_RESERVE_CORE=0: none.
    (hookshot) On a CPU with cores of more than one kind, the last core of the fastest kind: the last core of all is an
@@ -807,7 +806,7 @@ static void sleep_ns(int64_t ns) {
     int64_t until = hos_now_ns() + ns;
 #ifdef __EMSCRIPTEN__
     /* The web has no high-resolution timer, and its clock is a call into JavaScript: spinning to the deadline below
-       burned ~0.8 of a core across TOTK's sleeping threads (cores its game, render and WebGPU threads needed). A
+       burned ~0.8 of a core across TOTK's sleeping threads (cores its game and render threads needed). A
        timed wait (a futex: Atomics.wait) to `slack` before the time, then the rest spun; slack follows how late the
        waits wake (HOS_WEB_SPIN_SLEEP=1: spun, as before). */
     static int web_spin = -1;

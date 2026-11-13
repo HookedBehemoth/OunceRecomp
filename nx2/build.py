@@ -145,8 +145,7 @@ def tree_headers(*roots, skip=()):
     h = hashlib.sha1(usedforsecurity=False)
     for root in roots:
         found = []
-        # (the walk pruned as it goes: sorting the whole walk first, as this once did, made skip do nothing, and every
-        # gpu/vk header change rebuilt the WebGPU renderer)
+        # (the walk is pruned as it goes: sorting the whole walk first would make skip do nothing)
         for d, dirs, files in os.walk(root):
             dirs[:] = sorted(x for x in dirs if x not in skip)
             found += [os.path.join(d, f) for f in files if f.endswith((".h", ".hpp", ".inc"))]

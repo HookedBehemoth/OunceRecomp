@@ -14,7 +14,7 @@
    texture of its content) is destroyed, with its views and heap entries, once its last texture is gone and the frames
    that may still read it have completed (direct_image.cpp, image_sweep). Released to the LRU cache is not a free: the
    game may take the texture back without a load, so its image stays. The back end has no eviction policy of its own (the
-   user: no own eviction, no async upload). With RX_BACKEND unset nothing here runs. */
+   user: no own eviction, no async upload). */
 #include "hos.h"
 #include "direct.h"
 #include "../gpu/api/rx_nvn.h"
