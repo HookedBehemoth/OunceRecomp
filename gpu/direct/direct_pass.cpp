@@ -358,6 +358,7 @@ void barrier(List* l, int32_t bits) {
     // (no command buffer yet: the barrier waits for the list's next command, or its end; a list of nothing but barriers then
     // makes none, M2b)
     if (!l->cur) return void(l->pending_barrier = true);
+    l->pending_barrier = false;   // (this one covers what a dispatch left waiting)
     record_barrier(l->cur);
 }
 

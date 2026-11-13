@@ -1253,6 +1253,9 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     }
     if (indirect) pDispatchIndirect(cb, abuf, aoff);
     else pDispatch(cb, grid[0], grid[1], grid[2]);
+    // (the game puts its barriers before its dispatches only: a draw or copy that follows the last dispatch of a chain has none,
+    // because the console's switch from compute to graphics waits by itself. So whatever the list records next waits for these writes)
+    l->pending_barrier = true;
     if (pstats_on()) pstat_after(cb, ps);
     if (marks_on()) mark_after(cb, mk);
     draw_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
