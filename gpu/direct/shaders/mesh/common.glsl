@@ -8,6 +8,11 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
+// (the vertex outputs' built-in block as the translator declares it: the position alone, invariant)
+out gl_MeshPerVertexEXT {
+    invariant vec4 gl_Position;
+} gl_MeshVerticesEXT[];
+
 layout(buffer_reference, scalar, buffer_reference_align = 4) readonly buffer Words { uint w[]; };
 layout(buffer_reference, scalar, buffer_reference_align = 8) readonly buffer Addresses { uint64_t a[]; };
 
