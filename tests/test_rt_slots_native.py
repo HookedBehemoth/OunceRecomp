@@ -2,8 +2,8 @@
 and list_bad from the source as it is, with guest memory as host memory, and checks
 
 - slots are 64 KB aligned, inside [lo, hi), never overlapping; a freed slot goes back to its family;
-- a full slot range gives no slot by default; natively it takes the smallest parked entry's slot that fits, and that
-  entry leaves the parked list for the release queue;
+- a full slot range gives no slot; with a parked entry not asked for in REUSE_AFTER presents it takes the smallest such
+  entry's slot that fits, and that entry leaves the parked list for the release queue;
 - (the transient pool) a slot's memory goes to another image (another shape of the family, a slot made over an evicted
   one) only REUSE_AFTER presents after its last use;
 - list_bad: a sound circular list passes, a wrong count, a broken previous link and a cycle are each found.
@@ -73,9 +73,10 @@ int main(void) {
         Slot *again = alloc(1, 64, 3 << 20, 0x3000);
         CHECK(again && again->off == at);
     }
-    CHECK(alloc(3, 64, 3 << 20, 0x4000) == NULL);      /* full: none by default */
-    native = 1;
-    parked[nparked++] = (Parked){.entry = 0x900, .block = 0x3000, .frame = 99};   /* slot 1's block is parked */
+    CHECK(alloc(3, 64, 3 << 20, 0x4000) == NULL);      /* full, nothing parked: none */
+    parked[nparked++] = (Parked){.entry = 0x900, .block = 0x3000, .frame = frame};   /* slot 1's block is parked, this present */
+    CHECK(alloc(3, 64, 3 << 20, 0x4000) == NULL && nparked == 1);   /* in use too recently: not taken */
+    parked[0].frame = frame - REUSE_AFTER;
     Slot *s = alloc(3, 64, 3 << 20, 0x4000);
     CHECK(s && s->block == 0x4000 && nparked == 0 && nsteal_q == 1 && steal_q[0] == 0x900 && n.stolen == 1);
     CHECK(alloc(4, 64, 3 << 20, 0x5000) == NULL);      /* nothing parked left */

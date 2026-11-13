@@ -588,9 +588,8 @@ static int alloc_pre(Ctx *c) {
    0: not known (no back end, a format outside the table) */
 #define AGL_FORMATS 0x5f
 #define AGL_FORMAT_TABLE 0x83f4848cull
-static int agl_target[16] = {NVN_TEXTURE_TARGET_1D, NVN_TEXTURE_TARGET_2D, NVN_TEXTURE_TARGET_3D, NVN_TEXTURE_TARGET_CUBEMAP,
-                             NVN_TEXTURE_TARGET_1D_ARRAY, NVN_TEXTURE_TARGET_2D_ARRAY, NVN_TEXTURE_TARGET_2D_MULTISAMPLE,
-                             NVN_TEXTURE_TARGET_2D_MULTISAMPLE_ARRAY, NVN_TEXTURE_TARGET_CUBEMAP_ARRAY, -1, -1, -1, -1, -1, -1, -1};
+static int agl_target[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, -1, -1, -1, -1, -1};   /* (agl's type is the NVN target: seen for 2D
+                                                                                      and 2D array) */
 static uint64_t device_need(const Cur *k, uint64_t *align) {
     const hsd_fns *f = rx_direct();
     *align = 0;
@@ -643,13 +642,15 @@ static uint64_t place(uint64_t cap, uint64_t align) {
     }
 }
 
-/* (native) no room: the slot of a parked entry that fits (the smallest), its entry out of the parked list and released
-   at the next sweep (its block's slot is the new block's from now: its later free frees no slot). Under mu. NULL: none */
+/* no room: the slot of a parked entry that fits (the smallest) and was parked REUSE_AFTER presents ago or more (its
+   target was not asked for since: the lists that used it are sent), its entry out of the parked list and released at
+   the next sweep (its block's slot is the new block's from now: its later free frees no slot). Under mu. NULL: none */
 static Slot *steal(uint64_t need, uint64_t align, uint64_t block) {
     int bi = -1, bs = -1;
     for (int i = 0; i < nparked && nsteal_q < 64; i++)
         for (int j = 0; j < nslots; j++)
-            if (slots[j].block == parked[i].block && slots[j].cap >= need && !(slots[j].off & (align - 1)) &&
+            if (parked[i].frame + REUSE_AFTER <= frame && slots[j].block == parked[i].block && slots[j].cap >= need &&
+                !(slots[j].off & (align - 1)) &&
                 (bs < 0 || slots[j].cap < slots[bs].cap))
                 bi = i, bs = j;
     if (bs < 0) return NULL;
@@ -698,7 +699,7 @@ static Slot *take(uint64_t fam, uint64_t need, uint64_t align, uint64_t block) {
            shadows, whose sizes are classes */
         const uint64_t cap = ((family && cur.lr != LR_LOCAL_SHADOW ? need + need / 4 : need) + 0xffff) & ~0xffffULL;
         const uint64_t at = nslots < MAX_SLOTS ? place(cap, align) : ~0ull;
-        if (at == ~0ull) return native_on() ? steal(need, align, block) : NULL;
+        if (at == ~0ull) return steal(need, align, block);
         best = &slots[nslots++];
         *best = (Slot){fam, at, cap, 0, 0, cur.name, cur.lr, occ, cur.w, cur.h, cur.fmt};
         used += cap;
