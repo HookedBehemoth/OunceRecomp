@@ -11,7 +11,7 @@ on most, headless) and two scene cycles (`m6f_c2_d`, `m6f_c3_d`). The resets of 
 (`play.sh hf`; logs in `work/runs/play_hang_0420`, `play_hang_0436`, and `work/runs/m6f/play-log-0420.txt` with its kernel
 lines). At the 04:20 loss the back end's memory line said 6.7 GB device-local in use and 7.9 GB free: **not VRAM
 exhaustion**. That loss is hang work (the coordinator's decision), not investigated here.
-Tests: 295 pass / 5 fail (the baseline five).
+Tests: 296 pass / 5 fail (the baseline five; native-vk added one test).
 
 ## Summary
 
