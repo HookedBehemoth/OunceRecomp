@@ -771,7 +771,6 @@ bool bench_discard = false;   // (bench --discard: every draw with rasterizer di
 // prepass leaves it: without it every fragment of such a draw fails against the cleared depth and its fragment stage and
 // colour writes never run. --prepass-barrier: the back end's wait (framebuffer stages, by region) between the two)
 bool prepass = false, prepass_barrier = false;
-uint64_t prepass_draws = 0;
 void record_draw(VkCommandBuffer cb, const Ready& r, VkShaderEXT ms_override = VK_NULL_HANDLE) {
     Dyn dyn;
     std::memcpy(&dyn, r.d->d.dyn, sizeof dyn);
@@ -788,7 +787,6 @@ void record_draw(VkCommandBuffer cb, const Ready& r, VkShaderEXT ms_override = V
         bind_stages(cb, ms_override ? ms_override : r.ms, r.fs);
         push(cb, r.push, r.push_bytes);
         draw();
-        prepass_draws++;
         if (prepass_barrier) {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1556,6 +1554,16 @@ int main(int argc, char** argv) {
         std::printf("  replacement / translator: median %.3f (p10 %.3f, p90 %.3f) over %d paired rounds\n", median(ratio), lo(ratio), hi(ratio), rounds);
         return 0;
     }
+    if (mode == "state") {   // (each chosen draw's depth state and groups: nothing drawn)
+        for (const Draw* d : draws) {
+            Dyn dy;
+            std::memcpy(&dy, d->d.dyn, sizeof dy);
+            std::printf("#%u %016llx %s header groups %u (tasks %u); %ux%u, %u colour targets; depth test %d write %d op %d, stencil %d, cull %d, gated %u\n", d->d.seq,
+                        (unsigned long long)d->d.key, d->d.task ? "task+mesh" : "mesh", d->d.header[0], d->d.header[9], d->d.w, d->d.h, d->d.n, (int)dy.dt,
+                        (int)dy.dw, (int)dy.dop, (int)dy.st, (int)dy.cull, d->d.gated);
+        }
+        return 0;
+    }
     if (mode == "stats") {   // (the stages made and nothing drawn: RADV_DEBUG=shaderstats prints what the compiler made)
         for (const Draw* d : draws) prepare(f, *d);
         std::printf("stats: %zu shader objects made\n", shader_cache.size());
@@ -1600,8 +1608,13 @@ int main(int argc, char** argv) {
                 between == Between::none ? "none" : between == Between::local ? "local" : between == Between::full ? "full" : "split (rendering ended)",
                 secondary ? "in a secondary" : "inline", fs_mode.c_str(), !mesh_override.empty() ? mesh_override.c_str() : !repl_dir.empty() ? "replacement" : "translator",
                 cond.empty() ? "none" : cond.c_str(), (int)query, (int)tasks, vs_draws, t.w, t.h);
-    for (const Ready* r : run)
-        std::printf("  #%u %016llx %s groups %u\n", r->d->d.seq, (unsigned long long)r->d->d.key, r->d->d.task ? "task+mesh" : "mesh", r->groups);
+    for (const Ready* r : run) {
+        Dyn dy;
+        std::memcpy(&dy, r->d->d.dyn, sizeof dy);
+        std::printf("  #%u %016llx %s groups %u; depth test %d write %d op %d%s, cull %d, colour targets %u\n", r->d->d.seq, (unsigned long long)r->d->d.key,
+                    r->d->d.task ? "task+mesh" : "mesh", r->groups, (int)dy.dt, (int)dy.dw, (int)dy.dop,
+                    prepass && dy.dt && dy.dop == VK_COMPARE_OP_EQUAL ? " (drawn first with depth written: --prepass)" : "", (int)dy.cull, r->d->d.n);
+    }
     const uint32_t per = (uint32_t)run.size() * (uint32_t)reps;
     Buf predicate = make_buf(256, VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT, true);
     ((uint32_t*)predicate.map)[0] = 1;   // (non-zero: the draws draw, as the game's passed condition)
