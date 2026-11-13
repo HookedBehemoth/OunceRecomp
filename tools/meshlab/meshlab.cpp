@@ -94,7 +94,7 @@ struct Gpu {
     FN(vkCmdDrawMeshTasksEXT) FN(vkCmdDrawMeshTasksIndirectEXT) FN(vkCmdWriteBufferMarker2AMD) FN(vkCmdSetPolygonModeEXT)
     FN(vkCmdSetDepthClampEnableEXT) FN(vkCmdSetAlphaToCoverageEnableEXT) FN(vkCmdSetColorBlendEnableEXT) FN(vkCmdSetColorBlendEquationEXT)
     FN(vkCmdSetColorWriteMaskEXT) FN(vkCmdSetRasterizationSamplesEXT) FN(vkCmdSetSampleMaskEXT) FN(vkCmdSetAlphaToOneEnableEXT)
-    FN(vkCmdSetLogicOpEnableEXT) FN(vkCmdSetProvokingVertexModeEXT)
+    FN(vkCmdSetLogicOpEnableEXT) FN(vkCmdSetProvokingVertexModeEXT) FN(vkCmdBeginConditionalRenderingEXT) FN(vkCmdEndConditionalRenderingEXT)
 #undef FN
 };
 Gpu g;
@@ -139,6 +139,7 @@ void gpu_init() {
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
     VkPhysicalDeviceMeshShaderFeaturesEXT ms{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceMaintenance7FeaturesKHR m7{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR};
+    VkPhysicalDeviceConditionalRenderingFeaturesEXT cr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT};
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = &f11, f11.pNext = &f12, f12.pNext = &f13, f13.pNext = &f14;
     void** tail = &f14.pNext;
@@ -149,7 +150,7 @@ void gpu_init() {
         {VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, nullptr}, {VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, &af},
         {VK_KHR_MAINTENANCE_5_EXTENSION_NAME, nullptr}, {VK_EXT_MESH_SHADER_EXTENSION_NAME, &ms},
         {VK_KHR_MAINTENANCE_7_EXTENSION_NAME, &m7}, {VK_AMD_BUFFER_MARKER_EXTENSION_NAME, nullptr},
-        {VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, nullptr}};
+        {VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, &cr}};
     for (const auto& e : list) {
         if (!has_ext(exts, e.name)) {
             if (e.feat == &so || e.feat == &hf || e.feat == &ms) die("the device lacks %s", e.name);
@@ -198,7 +199,7 @@ void gpu_init() {
     LOAD(vkCmdDrawMeshTasksEXT) LOAD(vkCmdDrawMeshTasksIndirectEXT) LOAD(vkCmdWriteBufferMarker2AMD) LOAD(vkCmdSetPolygonModeEXT)
     LOAD(vkCmdSetDepthClampEnableEXT) LOAD(vkCmdSetAlphaToCoverageEnableEXT) LOAD(vkCmdSetColorBlendEnableEXT) LOAD(vkCmdSetColorBlendEquationEXT)
     LOAD(vkCmdSetColorWriteMaskEXT) LOAD(vkCmdSetRasterizationSamplesEXT) LOAD(vkCmdSetSampleMaskEXT) LOAD(vkCmdSetAlphaToOneEnableEXT)
-    LOAD(vkCmdSetLogicOpEnableEXT) LOAD(vkCmdSetProvokingVertexModeEXT)
+    LOAD(vkCmdSetLogicOpEnableEXT) LOAD(vkCmdSetProvokingVertexModeEXT) LOAD(vkCmdBeginConditionalRenderingEXT) LOAD(vkCmdEndConditionalRenderingEXT)
 #undef LOAD
     {
         VkPhysicalDeviceSubgroupSizeControlProperties sc{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
@@ -1031,7 +1032,8 @@ int main(int argc, char** argv) {
     std::vector<std::string> pos;
     double seconds = 10, watchdog = 2;
     int reps = 1, job = -1, prims_shown = 8;
-    bool task_only = false, secondary = false, quiet = false, empty = false;
+    bool task_only = false, secondary = false, quiet = false, empty = false, query = false;
+    std::string cond;   // (--cond once|draw: the draws under conditional rendering on a predicate that lets them draw, begun once or around each)
     Between between = Between::none;
     for (int i = 3; i < argc; i++) {
         const std::string a = argv[i];
@@ -1049,6 +1051,8 @@ int main(int argc, char** argv) {
         else if (a == "--quiet") quiet = true;
         else if (a == "--host") host_only = true;
         else if (a == "--empty") empty = true;
+        else if (a == "--cond") cond = next();
+        else if (a == "--query") query = true;
         else if (a == "--barrier") {
             const std::string b = next();
             between = b == "local" ? Between::local : b == "full" ? Between::full : b == "split" ? Between::split : Between::none;
@@ -1163,13 +1167,26 @@ int main(int argc, char** argv) {
         }
         run.push_back(&r);
     }
-    std::printf("run: %zu draws x %d a submission, barrier %s, %s, fs %s, mesh %s; %u x %u\n", run.size(), reps,
+    std::printf("run: %zu draws x %d a submission, barrier %s, %s, fs %s, mesh %s, condition %s, query %d; %u x %u\n", run.size(), reps,
                 between == Between::none ? "none" : between == Between::local ? "local" : between == Between::full ? "full" : "split (rendering ended)",
                 secondary ? "in a secondary" : "inline", fs_mode.c_str(), !mesh_override.empty() ? mesh_override.c_str() : !repl_dir.empty() ? "replacement" : "translator",
-                t.w, t.h);
+                cond.empty() ? "none" : cond.c_str(), (int)query, t.w, t.h);
     for (const Ready* r : run)
         std::printf("  #%u %016llx %s groups %u\n", r->d->d.seq, (unsigned long long)r->d->d.key, r->d->d.task ? "task+mesh" : "mesh", r->groups);
     const uint32_t per = (uint32_t)run.size() * (uint32_t)reps;
+    Buf predicate = make_buf(256, VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT, true);
+    ((uint32_t*)predicate.map)[0] = 1;   // (non-zero: the draws draw, as the game's passed condition)
+    auto cond_begin = [&](VkCommandBuffer c) {
+        VkConditionalRenderingBeginInfoEXT bi{VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT};
+        bi.buffer = predicate.b, bi.offset = 0;
+        g.vkCmdBeginConditionalRenderingEXT(c, &bi);
+    };
+    VkQueryPool qpool = VK_NULL_HANDLE;
+    if (query) {
+        VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qi.queryType = VK_QUERY_TYPE_OCCLUSION, qi.queryCount = 4;
+        VK(vkCreateQueryPool(g.dev, &qi, nullptr, &qpool));
+    }
     Marks marks[2];
     VkCommandBuffer cbs[2];
     VkFence fences[2];
@@ -1181,28 +1198,37 @@ int main(int argc, char** argv) {
         VK(vkBeginCommandBuffer(cbs[k], &bi));
         to_attachment(cbs[k], t);
         heaps_bind(cbs[k]);
+        if (query) vkCmdResetQueryPool(cbs[k], qpool, (uint32_t)k, 1);
         VkCommandBuffer sec = VK_NULL_HANDLE;
         auto open = [&]() {
             begin_rendering(cbs[k], t, secondary, true);
-            if (!secondary) return cbs[k];
+            if (query) vkCmdBeginQuery(cbs[k], qpool, (uint32_t)k, VK_QUERY_CONTROL_PRECISE_BIT);
+            if (!secondary) {
+                if (cond == "once") cond_begin(cbs[k]);
+                return cbs[k];
+            }
             sec = new_cb(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
             VkCommandBufferInheritanceRenderingInfo ri{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};
             ri.colorAttachmentCount = (uint32_t)t.formats.size(), ri.pColorAttachmentFormats = t.formats.data();
             ri.depthAttachmentFormat = t.depth_format, ri.stencilAttachmentFormat = t.stencil_format, ri.rasterizationSamples = t.samples;
             VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
             ii.pNext = &ri;
+            ii.occlusionQueryEnable = VK_TRUE, ii.queryFlags = VK_QUERY_CONTROL_PRECISE_BIT;   // (as the back end's jobs)
             VkCommandBufferBeginInfo sb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             sb.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
             sb.pInheritanceInfo = &ii;
             VK(vkBeginCommandBuffer(sec, &sb));
             heaps_bind(sec);
+            if (cond == "once") cond_begin(sec);
             return sec;
         };
         auto close = [&]() {
+            if (cond == "once") g.vkCmdEndConditionalRenderingEXT(secondary ? sec : cbs[k]);
             if (secondary) {
                 VK(vkEndCommandBuffer(sec));
                 vkCmdExecuteCommands(cbs[k], 1, &sec);
             }
+            if (query) vkCmdEndQuery(cbs[k], qpool, (uint32_t)k);
             vkCmdEndRendering(cbs[k]);
         };
         VkCommandBuffer cb = open();
@@ -1218,8 +1244,10 @@ int main(int argc, char** argv) {
                     }
                 }
                 marks[k].before(cb, m);
+                if (cond == "draw") cond_begin(cb);
                 if (empty) g.vkCmdDrawMeshTasksEXT(cb, 0, 1, 1);
                 else record_draw(cb, *run[i]);
+                if (cond == "draw") g.vkCmdEndConditionalRenderingEXT(cb);
                 marks[k].after(cb, m);
             }
         close();
