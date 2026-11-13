@@ -16,7 +16,7 @@ enum { HSD_LIST_PACKET, HSD_LIST_LOAD, HSD_LIST_JOB, HSD_LIST_LAYER, HSD_LIST_GA
        HSD_LIST_KINDS };
 typedef struct hsd_list_info {
     uint32_t kind;        /* HSD_LIST_*; PACKET = not classified (counted, its lr logged once) */
-    uint32_t load_kind;   /* HSD_LIST_LOAD: eng_lists_kind's value */
+    uint32_t load_kind;   /* HSD_LIST_LOAD: 1 vertex, 2 draw, 3 shape, 4 material, 5 and 6 the measuring copies of 1 and 2 (host/direct.c) */
     uint64_t lr, fp;      /* the guest return address and frame pointer of BeginRecording */
     uint64_t cmd;         /* the guest NVNcommandBuffer object */
     uint64_t pass_key;    /* HSD_LIST_JOB: the recorder's pass key pointer (x3 of f_80084de0: m0-job-formats.md) */

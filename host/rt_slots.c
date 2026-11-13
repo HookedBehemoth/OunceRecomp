@@ -25,7 +25,7 @@
    Persistent allocations (f_80062c50, from the top of the free block) do not set the note and are left to the game.
    Any mismatch (arenas not fresh, a pool smaller than the slot range, an arena offset inside it, a second pool record)
    turns the slots off for new allocations: those take the game's offsets again, which lie below the slot range.
-   HOS_GUEST_RT_ALLOC=1: the game's allocator untouched (A/B). RX_RT_SLOTS_MB: S, default 320 (of 512; the arenas
+   RX_RT_SLOTS_MB: S, default 320 (of 512; the arenas
    keep 192 MB, the fullest seen used 111). Parking and the shadow size classes: below.
 
    The transient pool (direct mode; docs/direct/shadow-pool-report.md). The slots do not take the pool's top: they lie
@@ -71,25 +71,8 @@ uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t 
 #define SP_ENTRY 40             /* alloc's frame: the entry, from 0x80060308 on (before: the descriptor cache's candidate) */
 #define SP_ALIGN 192            /* alloc's frame: s32 the TextureData's storage alignment */
 
-/* HOS_NATIVE_TEXALLOC=1 (experiment, off): the game's lane arenas stop being a budget. A transient target's memory is a
-   slot of ours; its arena block is bookkeeping only (the range history, the game's counters), so the six lane arenas
-   (0-5) get a free block of 1 TB of bookkeeping offsets, the persistent arena (the last: lane 6, persistent targets
-   take real memory from the top of its free block) keeps its real 192 MB below the slots, and the arenas' spare block
-   descriptors (+0x88, which a split takes: none left writes near null, 0x80061068) are topped up from guest memory
-   of ours. No alloc can then find no block (the 0x8005fd14 path that gave block 0). A target the slots cannot place
-   takes a parked entry's slot (that entry is released later), or keeps the game's offset only when it lies in real
-   memory below the slots. work/assets/native/cores.md ("A native texture allocator") */
-#define HUGE_ARENA (1ull << 40)
-static int native_on(void) {
-    static int v = -1;
-    if (v < 0) v = getenv("HOS_NATIVE_TEXALLOC") && atoi(getenv("HOS_NATIVE_TEXALLOC")) > 0;
-    return v;
-}
-static int off_(void) {
-    static int v = -1;
-    if (v < 0) v = getenv("HOS_GUEST_RT_ALLOC") && atoi(getenv("HOS_GUEST_RT_ALLOC")) != 0;
-    return v;
-}
+/* The slots are the direct back end's: another renderer leaves the game's allocator untouched */
+static int off_(void) { return !rx_direct(); }
 /* Direct mode: the slots lie after the pool's end (offsets past its size: nvn_native.c leaves those GPU addresses
    unused after every virtual pool), the arenas keep the whole pool for their bookkeeping, and the range is the back
    end's transient pool: SLOTS_MB_DIRECT of device memory, the constant the transient targets cost
@@ -180,7 +163,7 @@ static int npools;
 static struct {   /* counters (under mu, or read racily for the log) */
     uint64_t calls, transient, spliced, unspliced, stale, frees, freed_slot, unseen_free, made, evicted, game_offset,
         same_shape, other_shape, parked, handed_back, released, park_full, quantized, drained, blockless, stolen,
-        topped, aliased, moved, evicted_young, class_up, class_down, class_kept, given, given_noid, given_other,
+        evicted_young, class_up, class_down, class_kept, given, given_noid, given_other,
         slot_told, slot_untold, sized, sized_up;
 } n;
 static uint64_t last_n_calls, last_n_spliced, last_n_inits, last_n_dta_inits, last_n_made, last_frame_log;
@@ -245,16 +228,14 @@ static void shrink_arenas(uint64_t dta) {
     for (uint32_t i = 0; i < na; i++) {
         const uint64_t a = ar + (uint64_t)i * 0xe8;
         const uint64_t b = G64(a + AR_FREE_HEAD) - (uint64_t)(int64_t)(int32_t)G32(a + AR_NODE_OFF);
-        const int lane_arena = native_on() && i + 1 < na;   /* (the last arena is the persistent lane's) */
-        G64(b + BLK_SIZE) = lane_arena ? HUGE_ARENA - base : size - slots_bytes();
-        G64(a + AR_END) = lane_arena ? HUGE_ARENA : base + size - slots_bytes();
+        G64(b + BLK_SIZE) = size - slots_bytes();
+        G64(a + AR_END) = base + size - slots_bytes();
     }
     lo = size - slots_bytes();
     hi = size;
     nrecs0 = nr;
     arenas0 = ar, narenas = na;
     state = 1;
-    if (native_on()) hos_log("rt slots: native: arenas 0-%u of 1 TB of bookkeeping, arena %u (persistent) real", na - 2, na - 1);
     hos_log("rt slots: %u arenas of %llu MB (were %llu), slots at +%#llx..+%#llx", na,
             (unsigned long long)((size - slots_bytes()) >> 20), (unsigned long long)(size >> 20), (unsigned long long)lo,
             (unsigned long long)hi);
@@ -263,7 +244,7 @@ static void shrink_arenas(uint64_t dta) {
 static int check_on(void);   /* (HOS_RT_CHECK, below) */
 static void check_arenas(const char *what, Ctx *c, uint64_t dta, uint64_t e);
 typedef struct { Cur key; uint64_t entry, block, frame; } Parked;
-static uint64_t steal_q[64];   /* (native) entries whose slots were taken: released at the next sweep (under mu) */
+static uint64_t steal_q[64];   /* entries whose slots were taken: released at the next sweep (under mu) */
 static int nsteal_q;
 #define MAX_PARKED 512
 static Parked parked[MAX_PARKED];
@@ -471,39 +452,6 @@ static void check_arenas(const char *what, Ctx *c, uint64_t dta, uint64_t e) {
     }
     call_mutex(c, imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE, dta + 0x2a08);
 }
-   /* (native) a context whose lane byte this thread changed, and its own */
-static _Thread_local uint64_t lane_ctx;   /* (native) a context whose lane byte this thread changed, and its own */
-static _Thread_local uint8_t lane_was;
-static void restore_lane(void) {
-    if (lane_ctx) *(uint8_t *)GP(lane_ctx + 0x186) = lane_was, lane_ctx = 0;
-}
-/* (native) the caller's lane arena keeps at least 32 spare block descriptors (+0x88: a stack, node at descriptor +
-   [arena +0x9c], count +0x98, pushed as the game's free does): 128 zeroed 0xb0-byte descriptors of ours at a time, under
-   the arena mutex (+0x2a08), at an alloc's entry (this thread holds neither DTA mutex there; checked) */
-static void top_up(Ctx *c, uint64_t dta, uint64_t ctx) {
-    if (!hos_guest_range(ctx, 0x188) || state != 1) return;
-    const uint64_t lane = dta + 8 + (uint64_t)*(uint8_t *)GP(ctx + 0x186) * 0x288;
-    const uint64_t rec = G64(G64(dta + DTA_RECS));
-    const uint32_t ai = *(uint8_t *)GP(lane + 0x281), na = G32(rec + REC_NARENAS);
-    const uint64_t ar = G64(rec + REC_ARENAS) + (uint64_t)(ai < na ? ai : 0) * 0xe8;
-    if ((int32_t)G32(ar + 0x98) >= 32 || holds(c, dta + 0x29e8) || holds(c, dta + 0x2a08)) return;
-    call_mutex(c, imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE, dta + 0x2a08);
-    if ((int32_t)G32(ar + 0x98) < 32) {
-        const uint64_t mem = hos_sys_alloc(128 * 0xb0, 0x10);
-        const int64_t off = (int32_t)G32(ar + 0x9c);
-        for (int i = 0; mem && i < 128; i++) {
-            const uint64_t node = mem + (uint64_t)i * 0xb0 + (uint64_t)off, head = G64(ar + 0x88);
-            G64(node) = head;
-            G64(node + 8) = ar + 0x88;
-            if (head) G64(head + 8) = node;
-            G64(ar + 0x88) = node;
-            G32(ar + 0x98) = G32(ar + 0x98) + 1;
-        }
-        if (mem) __atomic_add_fetch(&n.topped, 128, __ATOMIC_RELAXED);
-    }
-    call_mutex(c, imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE, dta + 0x2a08);
-}
-
 static int alloc_pre(Ctx *c);
 static _Thread_local uint64_t shadow_obj;   /* (f_802640a0's shadow object, for the alloc it makes) */
 static uint32_t shadow_size(uint64_t obj, uint32_t w);
@@ -514,7 +462,7 @@ static _Thread_local int in_alloc;
 ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
     if (in_alloc) return in_alloc = 0, 0;   /* (the lifted body, called below: the flag is taken by its first entry, so a nested call is hooked as any) */
     const int handled = alloc_pre(c);
-    if (off_() || !rx_direct()) return handled;
+    if (off_()) return handled;
     if (!handled) {
         static A64Fn body;
         if (!body) body = a64_lookup(0x8005ed00ull);
@@ -539,29 +487,6 @@ static int alloc_pre(Ctx *c) {
         ReleaseSRWLockExclusive(&mu);
     }
     if (check_on()) check_arenas("alloc", c, ARG(0), 0);
-    if (native_on()) {
-        restore_lane();
-        top_up(c, ARG(0), ARG(1));
-        if (!(ARG(3) & 1) && hos_guest_range(ARG(1), 0x188) && state == 1) {   /* a persistent target takes real memory
-                                                                                  from the top of its lane's free block */
-            const uint64_t rec = G64(G64(ARG(0) + DTA_RECS));
-            const uint64_t lane = ARG(0) + 8 + (uint64_t)*(uint8_t *)GP(ARG(1) + 0x186) * 0x288;
-            const uint32_t ai = *(uint8_t *)GP(lane + 0x281);
-            static volatile LONG told;
-            if (ai + 1 < G32(rec + REC_NARENAS)) {
-                /* (sead::MainThread's context is lane 0: agl::RenderDisplay's targets, 0x809ed1a4, 0x80792318) the alloc
-                   reads the lane once, at its entry (0x8005ed30): the context says the persistent lane for this call
-                   and gets its own back at the next hook of this thread (the splice, or the next alloc or free) */
-                restore_lane();
-                lane_ctx = ARG(1), lane_was = *(uint8_t *)GP(ARG(1) + 0x186);
-                *(uint8_t *)GP(ARG(1) + 0x186) = (uint8_t)(G32(rec + REC_NARENAS) - 1);
-                if (InterlockedIncrement(&told) <= 10)
-                    hos_log("rt slots: native: a persistent alloc on lane %u (lr %#llx) moved to the persistent lane",
-                            lane_was, (unsigned long long)c->x[30]);
-                n.moved++;
-            }
-        }
-    }
     if (!(ARG(3) & 1)) return 0;   /* persistent: the game's */
     __atomic_add_fetch(&n.transient, 1, __ATOMIC_RELAXED);
     const uint64_t d = ARG(2);
@@ -783,12 +708,6 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
    line adds the TextureData's base to x10; everything after (entry +0, the registration compare, SetStorage, views
    made later from the entry) reads the offset from x10 or block +0x38. */
 SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
-    if (lane_ctx) {   /* (native) a persistent alloc's block: real memory, the lane given back */
-        static volatile LONG told;
-        if (c->x[10] + G64(c->x[23] + BLK_SIZE) > lo && InterlockedIncrement(&told) <= 10)
-            hos_log("rt slots: native: a persistent block at %#llx is not below the slots", (unsigned long long)c->x[10]);
-        restore_lane();
-    }
     alloc_sp = c->x[31], alloc_block = c->x[23];   /* (M6f: persistent allocations too: the entry's texture, below) */
     if (!cur.valid) {
         if (!off_()) __atomic_add_fetch(&n.unspliced, 1, __ATOMIC_RELAXED);
@@ -807,7 +726,7 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
         const uint64_t game_need = G64(block + BLK_SIZE);
         const uint64_t need = dev_need > game_need ? dev_need : game_need;   /* (the slot holds the device's image) */
         n.sized++, n.sized_up += dev_need > game_need;
-        if (!native_on() && game + game_need > lo) back_off("an arena offset in the slot range", game, game_need);
+        if (game + game_need > lo) back_off("an arena offset in the slot range", game, game_need);
         else if (*(uint32_t *)GP(k.dta + DTA_NRECS) != nrecs0) back_off("a second pool record", nrecs0, 0);
         else if (align & (align - 1) || align > 0x1000000 || dev_align > 0x10000) back_off("alignment", align, dev_align);
         else if (pool_ok(c->x[8])) {
@@ -834,18 +753,6 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
                 if (o > 800 || i == nslots - 1) hos_log("rt slots:  %s", b), o = 0;
             }
         }
-    }
-    if (!s && native_on() && state == 1 && c->x[10] + G64(block + BLK_SIZE) > lo) {
-        /* (native) no slot and a bookkeeping offset that is not memory: the slot range's start, aliased (logged; the
-           parked entries and idle slots were already tried) */
-        static volatile LONG told_alias;
-        if (InterlockedIncrement(&told_alias) <= 10)
-            hos_log("rt slots: native: no slot for %u x %u (%llu KB) and no memory at its offset %#llx: aliased at +%#llx",
-                    k.w, k.h, (unsigned long long)(G64(block + BLK_SIZE) >> 10), (unsigned long long)c->x[10],
-                    (unsigned long long)lo);
-        n.aliased++;
-        c->x[10] = lo;
-        G64(block + 0x38) = lo;
     }
     static int told;
     if (log_slots() && frame > 1500 && told < 60) {   /* (what still needs placing in steady state) */
@@ -949,7 +856,6 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
     if (off_()) return 0;
     const uint64_t e = ARG(1);
     if (!hos_guest_range(e, 0x180)) return 0;
-    restore_lane();
     if (check_on()) check_arenas("free of", c, ARG(0), e);
     const uint64_t block = G64(e + ENT_BLOCK);
     if (!block && (*(uint8_t *)GP(e + 0xba) & 3)) {
@@ -1094,7 +1000,7 @@ void rt_slots_frame(void) {
             "note (persistent), %llu notes without a splice; %llu frees (%llu of slots, %llu unseen); allocator inits: %llu "
             "as before, %llu moved, %llu new; parking %s: %d parked, %llu parked in all, %llu handed back, %llu released, "
             "%llu over the limit, %llu released for a tight arena; %llu shadow sizes rounded; %llu frees without a block; "
-            "native: %llu slots taken from parked entries, %llu aliased, %llu spare descriptors added",
+            "%llu slots taken from parked entries",
             state == 1 ? "on" : "off", nslots, busy, (unsigned long long)(used >> 20), (unsigned long long)(peak >> 20),
             (unsigned long long)((hi - lo) >> 20), (unsigned long long)(full >> 20), (n.calls - last_n_calls) / fr, (n.spliced - last_n_spliced) / fr,
             (n.made - last_n_made) / fr, (inits - last_n_inits) / fr, (dta_inits - last_n_dta_inits) / fr,
@@ -1106,8 +1012,7 @@ void rt_slots_frame(void) {
             (unsigned long long)init_same, (unsigned long long)init_moved, (unsigned long long)init_new,
             park_on() ? "on" : "off", nparked, (unsigned long long)n.parked, (unsigned long long)n.handed_back,
             (unsigned long long)n.released, (unsigned long long)n.park_full, (unsigned long long)n.drained,
-            (unsigned long long)n.quantized, (unsigned long long)n.blockless, (unsigned long long)n.stolen,
-            (unsigned long long)n.aliased, (unsigned long long)n.topped);
+            (unsigned long long)n.quantized, (unsigned long long)n.blockless, (unsigned long long)n.stolen);
     hos_log("rt slots: transient pool: %llu MB of %llu held at a present at most since the last line (%llu since the start: slots "
             "in use, parked, or used within %d presents); %llu slots evicted before 8 idle presents, %llu targets placed outside the slots; shadow "
             "classes: %llu sizes changed, %llu up, %llu down, %llu kept by hysteresis; targets given to the back end by their "

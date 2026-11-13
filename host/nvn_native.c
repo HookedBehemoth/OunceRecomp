@@ -23,7 +23,6 @@
 #include "../gpu/render/rx_nvn.h"
 #include "nvn_list.h"
 #include "hos_ledger.h"
-#include "eng_lists.h"
 #include "eng_jobs.h"
 #include "direct.h"
 #include <stdio.h>
@@ -32,7 +31,6 @@
 #include <windows.h>
 uint64_t hos_hostcall(const char *name, void (*fn)(Ctx *, void *), void *user);   /* hos_hostcall.c */
 void hos_gpu_track(uint64_t guest, uint64_t size, int on);                          /* nvdrv.c */
-void hos_census_pool(uint64_t base, uint64_t size, uint32_t flags, int on);          /* hos_pool_census.c */
 void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);   /* rx_backend.c (native-vk layer 0) */
 uint64_t hos_guest_size(void);                                                       /* hos_main.c */
 
@@ -343,7 +341,6 @@ NV(nvnMemoryPoolInitialize) {
     o->mem = b->mem;
     o->gpu = b->mem;
     hos_gpu_track(o->gpu, o->size, 1);   /* (the CPU's writes to it reach the renderer through write watch) */
-    hos_census_pool(o->gpu, o->size, o->flags, 1);
     if (getenv("HOS_NVN_LOG_POOLS")) {   /* (M4f, debugging) who makes each pool */
         char b[400];
         guest_chain(c, b, sizeof b);
@@ -390,7 +387,6 @@ NV(nvnMemoryPoolFinalize) {
     } else if (o->mem) {
         rx_nvn_pool_native(o->gpu, o->size, o->flags, 0, 0);   /* (native-vk layer 0: kept a while for an identical Initialize) */
         hos_gpu_track(o->gpu, o->size, 0);
-        hos_census_pool(o->gpu, o->size, o->flags, 0);
     }
     o->magic = 0;
 }
@@ -421,10 +417,10 @@ NV(nvnMemoryPoolFlushMappedRange) {}   /* CPU writes are seen through write watc
    frame on a job worker on the frame's critical path (the replay is a frame behind the game). No wait for any of its four
    invalidates: lr 0x803665d4 and 0x80366168 (the current slot, before and after the copy), 0x8036635c (the other slot),
    and the tail call's (lr the caller's, 0x80099d84). The exposure meter (f_80357060, read and zeroed) keeps its wait.
-   HOS_NVN_READBACK_WAIT_ALL=1: every invalidate waits, as before (work/assets/native/readback.md) */
+   MKW (hos_game_is_mkw): every invalidate waits */
 static int readback_stamped(const Ctx *c) {
     static int all = -1;
-    if (all < 0) all = getenv("HOS_NVN_READBACK_WAIT_ALL") != NULL || hos_game_is_mkw();
+    if (all < 0) all = hos_game_is_mkw();
     const uint64_t lr = c->x[30];
     return !all && c->x[2] == 0x3980 && ((lr >= 0x80365f00ull && lr < 0x80366600ull) || lr == 0x80099d84ull);
 }
@@ -1141,7 +1137,7 @@ static int set_shaders(nvn_prog *o, int n, const uint8_t *sd, int stride) {
         }
     }
     o->serial = new_serial();
-    rx_nvn_program_set(o);   /* (native-vk: the shader objects' prefetch, RX_VK_SHADER_OBJECTS) */
+    rx_nvn_program_set(o);   /* (the back end prefetches the program's stages) */
     return 1;
 }
 NV(nvnProgramSetShaders) { RET(set_shaders((nvn_prog *)P(0), I(1), (const uint8_t *)P(2), 16)); }
@@ -1171,7 +1167,7 @@ static int sync_log(void) {   /* (the first 30000 calls; HOS_NVN_SYNC_LOG=<n>: f
    flashed as walls for a frame, we thought; measured, holding made them far more frequent (61 vs 0-9 in a 60 s drive):
    MKW writes some of a frame's data in place right after its submit, as the console's GPU has read it by then. Off by
    default; HOS_NVN_HOLD=1: held. */
-typedef struct { int n; uint64_t h[65]; } held_submit;   /* (65: RX_VK_TIMELINES' fence wait and 64 of the game's) */
+typedef struct { int n; uint64_t h[64]; } held_submit;
 static held_submit held[256];
 static volatile LONG nheld;
 static CRITICAL_SECTION held_cs;
@@ -1190,94 +1186,8 @@ static void held_flush(void) {
 }
 static uint64_t held_count(void) { return (uint64_t)nheld; }
 
-/* ---- (native-vk, plan step 6) RX_VK_TIMELINES=1 (gpu/vk/vk_timelines.h): nvnQueueWaitSync becomes a record at the start
-   of the waiting queue's next submission (NOP_WAIT_FENCE), which the replay holds on the host until the fence's work is
-   recorded (one Vulkan queue: a GPU-side wait for a signal submitted later would hold the signal too). And the census:
-   the game's sync calls by kind, every 600 presents (RX_VK_TIMELINES=1 or RX_VK_SYNC_CENSUS=1) ---- */
-static int tl_on(void) {
-    static int v = -1;
-    if (v < 0) { const char *e = getenv("RX_VK_TIMELINES"); v = e && atoi(e) != 0 && !rx_direct(); }
-    return v;
-}
-static int sync_census_on(void) {
-    static int v = -1;
-    if (v < 0) { const char *e = getenv("RX_VK_SYNC_CENSUS"); v = tl_on() || (e && atoi(e) != 0); }
-    return v;
-}
-enum { SC_FENCE, SC_WAIT_FENCED, SC_WAIT_UNFENCED, SC_WAIT_SIGNALED, SC_QWAIT, SC_QWAIT_UNFENCED, SC_QWAIT_SIGNALED,
-       SC_CB_WAITSYNC, SC_EV_CPU, SC_EV_GET, SC_CB_SIGNAL, SC_CB_WAIT, SC_FINISH, SC_COUNT };
-static volatile LONG64 sc_n[SC_COUNT];
-static void sc_add(int k) { InterlockedIncrement64(&sc_n[k]); }
-static void sync_census_log(LONG64 presents) {
-    if (!sync_census_on() || presents % 600) return;
-    static const char *const names[SC_COUNT] = {"QueueFenceSync", "SyncWait (fenced)", "SyncWait (never fenced)",
-        "SyncWait (signalled: window or native)", "QueueWaitSync", "QueueWaitSync (never fenced)",
-        "QueueWaitSync (signalled)", "CommandBufferWaitSync", "EventSignal (CPU)", "EventGetValue",
-        "CommandBufferSignalEvent", "CommandBufferWaitEvent", "QueueFinish"};
-    char line[768];
-    int k = 0;
-    for (int i = 0; i < SC_COUNT && k < (int)sizeof line; i++)
-        k += snprintf(line + k, sizeof line - (size_t)k, "%s%s %lld", i ? ", " : "", names[i], (long long)InterlockedExchange64(&sc_n[i], 0));
-    hos_log("nvn: sync calls in 600 presents: %s", line);
-}
-/* the fence waits not submitted yet, per queue (a queue waits for the newest fence asked) */
-typedef struct { uint64_t queue, fence; } fw_pending_t;
-static fw_pending_t fw_pending[16];
-static SRWLOCK fw_lock = SRWLOCK_INIT;
-static uint64_t fw_take(uint64_t queue) {   /* the queue's pending fence wait (0: none), taken */
-    uint64_t f = 0;
-    AcquireSRWLockExclusive(&fw_lock);
-    for (int i = 0; i < 16; i++)
-        if (fw_pending[i].queue == queue) { f = fw_pending[i].fence; fw_pending[i].queue = 0; fw_pending[i].fence = 0; break; }
-    ReleaseSRWLockExclusive(&fw_lock);
-    return f;
-}
-static void fw_put(uint64_t queue, uint64_t fence) {
-    AcquireSRWLockExclusive(&fw_lock);
-    int at = -1;
-    for (int i = 0; i < 16; i++) {
-        if (fw_pending[i].queue == queue) { at = i; break; }
-        if (at < 0 && !fw_pending[i].queue) at = i;
-    }
-    if (at >= 0) {
-        if (fw_pending[at].queue != queue) fw_pending[at].fence = 0;
-        fw_pending[at].queue = queue;
-        if (fence > fw_pending[at].fence) fw_pending[at].fence = fence;
-    }
-    ReleaseSRWLockExclusive(&fw_lock);
-    if (at < 0) { static int logged; if (logged++ < 4) hos_log("nvn: timelines: more than 16 queues wait for fences: one not held"); }
-}
-/* a recording of its own holding the wait: BEGIN, WAIT_FENCE, END. From a ring: the replay holds it at most while its queue
-   is held (RX_VK_HOLD_MS, then it goes on), long before the ring comes round (1024 waits, ~17 s at one a frame) */
-static uint64_t fw_record(uint64_t fence) {
-    enum { kSlot = 8 + 8 + sizeof(nvn_p_wait_fence) + 8 };
-    static _Alignas(8) uint8_t ring[1024][kSlot];
-    static volatile LONG at;
-    uint8_t *p = ring[(uint32_t)InterlockedIncrement(&at) % 1024];
-    nvn_op_hdr h = {NOP_BEGIN, 8};
-    memcpy(p, &h, 8);
-    h.op = NOP_WAIT_FENCE, h.size = 8 + sizeof(nvn_p_wait_fence);
-    memcpy(p + 8, &h, 8);
-    nvn_p_wait_fence w = {fence};
-    memcpy(p + 16, &w, sizeof w);
-    h.op = NOP_END, h.size = 8;
-    memcpy(p + 16 + sizeof w, &h, 8);
-    return (uint64_t)(uintptr_t)p;
-}
-/* a queue's pending fence wait on its own (before a fence or a present on it with no submit since) */
-static void fw_flush(uint64_t queue) {
-    const uint64_t f = tl_on() ? fw_take(queue) : 0;
-    if (!f) return;
-    const uint64_t h = fw_record(f);
-    const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)6);
-    rx_nvn_submit_q(&h, 1, queue);
-    if (away) hos_vcore_back();
-}
-
 NV(nvnQueueFenceSync) {
     held_init();
-    sc_add(SC_FENCE);
-    fw_flush((uint64_t)(uintptr_t)P(0));   /* (RX_VK_TIMELINES: a wait asked on this queue is part of what the fence covers) */
     nvn_sync *s = (nvn_sync *)P(1); s->fenced = 1;
     /* (hookshot) the queue's own work: with nothing held, its last submission (a wait for it no longer waits for another
        queue's work stopped at an event wait) */
@@ -1306,7 +1216,6 @@ NV(nvnSyncWait) {
     if (sync_log()) hos_log("nvn: SyncWait %p fence %llu timeout %llu (lr %#llx); latest %llu, done %llu", (void *)s,
                             (unsigned long long)s->fence, (unsigned long long)U64(1), (unsigned long long)c->x[30],
                             (unsigned long long)rx_nvn_fence(), (unsigned long long)rx_nvn_replayed());
-    sc_add(!s->fenced ? SC_WAIT_UNFENCED : s->fenced == 1 ? SC_WAIT_FENCED : SC_WAIT_SIGNALED);
     if (!s->fenced) { RET(NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED); return; }
     if (s->fenced == 1 && s->fence > rx_nvn_fence()) held_flush();   /* (a wait flushes what it waits for) */
     if (rx_nvn_wait(s->fence, 0)) { RET(NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED); return; }
@@ -1346,7 +1255,6 @@ NV(nvnEventGetValue) {
         if (nowait < 0) nowait = getenv("HOS_PRESENT_NOWAIT") && atoi(getenv("HOS_PRESENT_NOWAIT")) != 0;
         if (nowait && (c->x[30] == 0x805904a0 || c->x[30] == 0x80590530)) { RET(1); return; }
     }
-    sc_add(SC_EV_GET);
     uint32_t v = 0; nvn_gpu_read(((const nvn_event *)P(0))->gpu, &v, 4); RET(v);
     if (sync_log()) hos_log("nvn: EventGetValue %p = %u (lr %#llx)", P(0), v, (unsigned long long)c->x[30]);
 }
@@ -1358,7 +1266,6 @@ static int lognvn(void) {
 }
 NV(nvnEventSignal) {
     const nvn_event *e = (const nvn_event *)P(0);
-    sc_add(SC_EV_CPU);
     {   /* (the CPU's signals, 40 then every 5000: what the GPU's waits above wait for) */
         static volatile LONG n;
         const LONG k = InterlockedIncrement(&n);
@@ -1396,8 +1303,6 @@ NV(nvnQueueFinalize) { ((nvn_queue *)P(0))->magic = 0; }
 NV(nvnQueueGetError) { if (P(1)) memset(P(1), 0, sizeof(NVNqueueErrorInfo)); RET(NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR); }
 NV(nvnQueueFlush) { held_flush(); }
 NV(nvnQueueFinish) {
-    sc_add(SC_FINISH);
-    fw_flush((uint64_t)(uintptr_t)P(0));
     held_flush();
     const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)2);
     const int64_t t0 = hos_now_ns();
@@ -1412,53 +1317,24 @@ NV(nvnQueueSetDebugLabel) {}
 static void *rec(nvn_cmd *o, uint32_t op, size_t payload);
 #define OP_RESERVE 24
 
-/* (native-vk layer 1, stage S1) HOS_NVN_LIST_REF=1: command lists by reference (host/nvn_list.h has the design and the
-   lifetime rules): a recording is written once into an allocation of its own and its handle names it; CallCommands and
-   CopyCommands record a NOP_CALL into the callee instead of copying it; no copy_lock, no rec_node, no copy at
-   EndRecording. Off (the default): the copies below. HOS_NVN_LIST_REF_CHECK=1 with it: the default path's copy is made
-   as well and compared op by op with what the replay walks at every submit, and every free is checked against the
-   submits not replayed yet (log lines "nvn: list check:") */
+/* Direct mode keeps each recording as a list by reference (host/nvn_list.h has the design and the lifetime rules): a
+   recording is written once into an allocation of its own and its handle names it; CallCommands and CopyCommands hand the
+   callee's list to the back end instead of copying records; no copy_lock, no rec_node, no copy at EndRecording. The back
+   end's list of each one is in its user. The renderers that replay records take the copies below. */
 static void direct_released_hook(nvn_lrec *r) { rx_direct()->list_released(r->user); r->user = NULL; }
 static int list_ref(void) {
     static int on = -1;
     if (on < 0) {
-        if (rx_direct()) {   /* (direct mode: lists by reference with no bytes, the back end's list in each one's user) */
+        on = rx_direct() != NULL;
+        if (on) {
             nvn_list_init(0, hos_log, die);
             nvn_list_set_user_hooks(direct_released_hook, NULL);
             hos_log("nvn: direct mode: command lists by reference, their records handed to the back end as they are made");
-            on = 1;
-            return on;
         }
-        const char *e = getenv("HOS_NVN_LIST_REF"), *k = getenv("HOS_NVN_LIST_REF_CHECK");
-        const int v = e && atoi(e) != 0, check = v && k && atoi(k) != 0;
-        if (v) nvn_list_init(check, hos_log, die);
-        if (v) hos_log("nvn: command lists by reference (HOS_NVN_LIST_REF)%s", check ? ", checked against the copies (HOS_NVN_LIST_REF_CHECK)" : "");
-        on = v;
     }
     return on;
 }
 static void *guest_or_null(uint64_t a, uint64_t n) { return hos_guest_range(a, n); }
-/* (native-vk engine cut E2) HOS_ENG_LISTS=1: the game's load-time lists (vertex, draw, shape, material) told apart by where
-   their recording began, translated into host packets at EndRecording, and named by a NOP_PKT at every CallCommands of them,
-   which the Vulkan replay applies instead of decoding the records (host/eng_lists.h, gpu/render/nvn_pkt.h). 2: built only.
-   With or without HOS_NVN_LIST_REF */
-static void eng_released_hook(nvn_lrec *r) { eng_lists_released((nvn_pkt *)r->user); }
-static void eng_freed_hook(nvn_lrec *r) { eng_lists_freed((nvn_pkt *)r->user); r->user = NULL; }
-static int eng_on(void) {
-    static int on = -1;
-    if (on < 0 && rx_direct()) on = 0;   /* (direct mode: no packets; the lists' user hooks are the back end's) */
-    if (on < 0) {
-        const char *e = getenv("HOS_ENG_LISTS");
-        const int v = e ? atoi(e) : 0;
-        const int m = v == 1 || v == 2 ? v : 0;
-        eng_lists_init(m, getenv("HOS_ENG_LISTS_DUMP"), hos_log, hos_now_ns);
-        nvn_list_set_user_hooks(eng_released_hook, eng_freed_hook);
-        if (m) hos_log("eng: load-time lists as packets (HOS_ENG_LISTS=%d: %s)%s", m, m == 1 ? "built and used" : "built only",
-                       getenv("HOS_ENG_LISTS_CHECK") && atoi(getenv("HOS_ENG_LISTS_CHECK")) ? ", checked by the replay (HOS_ENG_LISTS_CHECK)" : "");
-        on = m;
-    }
-    return on;
-}
 /* (the replay's progress as the last submit read it: AddControlMemory frees by it. rx_nvn_replayed polls the batched queue
    under the present lock, which the replay holds while it submits: the workers' AddControlMemory waited there, up to
    0.9 ms, and a poll could hand the batch to the GPU from a worker) */
@@ -1472,11 +1348,6 @@ static void list_log(const char *why) {
             (unsigned long long)t.released, (unsigned long long)t.freed, (unsigned long long)t.calls,
             (unsigned long long)t.calls_expanded, (unsigned long long)t.resolved_in_place, (unsigned long long)t.clones,
             (unsigned long long)t.conflicts, (unsigned long long)t.grown, (unsigned long long)t.shrunk, t.copied / 1048576.0, (unsigned long long)t.swept);
-    if (nvn_list_check_on())
-        hos_log("nvn: list check: %llu submitted handles compared (%.1f MB), %llu mismatches, %llu frees while a submit not "
-                "replayed walks them, %llu recordings changed after EndRecording", (unsigned long long)t.check_handles,
-                t.check_bytes / 1048576.0, (unsigned long long)t.check_mismatch, (unsigned long long)t.check_early_free,
-                (unsigned long long)t.check_changed);
 }
 
 /* Recording copies and command buffer segments come from power-of-two free lists and go back to them. Through the
@@ -1539,10 +1410,6 @@ static void pool_put(void *b, unsigned cls) {
 typedef struct {
     uint64_t owner;
     union { struct { uint8_t *seg, *cur, *end; }; nvn_lw lw; };
-    int32_t eng_kind;        /* (HOS_ENG_LISTS) the open recording's kind (nvn_pkt.h NVN_PK_*), from where it began */
-    uint64_t eng_meta[4];    /* (and what the kind's builder had then: nvn_pkt.meta) */
-    uint32_t eng_job;        /* (HOS_ENG_JOBS) the open recording's render job (host/eng_jobs.h), 0: not a job's */
-    uint64_t eng_view, eng_slot;   /* (HOS_ENG_PASSES) a render job's view record and cmd slot, from its Initialize (0: not a job) */
     void *volatile dl;             /* (direct mode) the open recording's list in the back end (NULL: none open) */
     volatile int32_t dl_pending;   /* (direct mode) its last record waits on a thread for its flush (host/direct.c) */
 } cmd_rec;
@@ -1653,42 +1520,8 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
     ReleaseSRWLockExclusive(&cmd_lock);
     o->slot = 0;
 }
-/* (native-vk engine cut E4) HOS_ENG_PASSES=1: marks for the replay's pass table and job consumer (gpu/vk/eng_pass.h): a
-   NOP_ENG around each handle the job-call sites call (CALL_BEGIN / CALL_END, the site's return address), and one first in
-   every render job's recording naming its view record (f_80084de0's Initialize, x25 = the view record, x24 = the cmd slot:
-   work/assets/native/engine-jobs.md). The game's command memory accounting leaves them out */
-#define ENG_JOB_INIT_LR 0x800852c0ull
-static int eng_passes(void) {
-    static int on = -1;
-    if (on < 0) {
-        const char *e = getenv("HOS_ENG_PASSES"), *t = getenv("HOS_ENG_PASS_SELFTEST");   /* (the self-test implies it) */
-        on = (e && atoi(e) != 0) || (t && atoi(t) != 0);
-        if (on) hos_log("eng: job-call sites and job views marked for the replay (HOS_ENG_PASSES)");
-    }
-    return on;
-}
-static int eng_prof(void) {   /* (HOS_ENG_PROF=1, E6's measurement: the other calls marked too; gpu/vk/vk_replay.cpp eprof) */
-    static int on = -1;
-    if (on < 0) {
-        const char *e = getenv("HOS_ENG_PROF");
-        on = e && atoi(e) != 0;
-    }
-    return on;
-}
-static int eng_call_site(uint64_t lr) {   /* f_806688c0, f_8028a2a0 (the jobs, six at a time), f_807cd380 (the 9 layer lists) */
-    return lr == 0x80668c84ull || lr == 0x8028a538ull || lr == 0x807cd418ull;
-}
 static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size);
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size);
-static void eng_mark(nvn_cmd *o, uint32_t kind, uint32_t site, uint64_t a, uint64_t b) {
-    const uint32_t sz = (uint32_t)((8 + sizeof(nvn_p_eng) + 7) & ~(size_t)7);
-    uint8_t *p = cmd_alloc(o, sz);
-    put_hdr(p, NOP_ENG, sz);
-    const nvn_p_eng e = {kind, site, a, b};
-    memcpy(p + 8, &e, sizeof e);
-    o->hw_used -= sz;   /* (no hardware equivalent: the game sizes its heaps by what it is told is used) */
-    o->last_rec = 0;
-}
 /* (direct mode, M3a game patches: host/direct_passes.c, direct_job_sync.c) the back end's open list of the guest command
    buffer at cmd (this thread's waiting record handed over first, so the list has every record before this point); NULL:
    none, or not direct mode */
@@ -1717,8 +1550,7 @@ NV(nvnCommandBufferInitialize) {
     o->magic = NVN_MAGIC('C', 'M', 'D', 'B');
     o->inline_cur = ~0ull;
     o->inline_end = 0;
-    cmd_rec *r = cmd_adopt(o);
-    if (eng_passes() && c->x[30] == ENG_JOB_INIT_LR) r->eng_view = c->x[25], r->eng_slot = c->x[24];
+    cmd_adopt(o);
     RET(1);
 }
 NV(nvnCommandBufferFinalize) {
@@ -1738,10 +1570,6 @@ NV(nvnCommandBufferSetDebugLabel) {}
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) { nvn_op_hdr h = {op, size}; memcpy(p, &h, sizeof h); }
 static void cmd_reserve_rec(cmd_rec *o, size_t need) {
     if (rx_direct()) return;   /* (no bytes: the records go to the back end, host/direct.c) */
-    if (list_ref()) {
-        nvn_list_reserve(&o->lw, need);
-        return;
-    }
     if (o->seg && need + OP_RESERVE <= (size_t)(o->end - o->cur)) return;
     const size_t used = o->seg ? (size_t)(o->cur - o->seg) : 0;
     size_t cap = o->seg ? (size_t)(o->end - o->seg) : 0;
@@ -1808,7 +1636,7 @@ static unsigned rec_bucket(uint64_t ctl) { return (unsigned)(((ctl >> rec_shift)
 static SRWLOCK copy_lock = SRWLOCK_INIT;
 static volatile LONG64 copy_bytes;
 #define COPY_MAGIC 0x59504f43444d43ull   /* "CMDCOPY" */
-typedef struct { uint64_t magic, bytes, cls; nvn_pkt *pkt; } copy_prefix;   /* (cls: its pool class; pkt: HOS_ENG_LISTS) */
+typedef struct { uint64_t magic, bytes, cls; } copy_prefix;   /* (cls: its pool class) */
 /* released copies wait until the replay passed every submit made before their release (the replay runs behind) */
 typedef struct { copy_prefix *p; uint64_t after; } dead_copy;
 static dead_copy *dead;
@@ -1861,7 +1689,6 @@ static void free_dead_copies(void) {   /* (copy_lock held) */
     const uint64_t done = rx_nvn_replayed();
     for (size_t i = 0; i < ndead;) {
         if (dead[i].after <= done) {
-            if (dead[i].p->pkt) eng_lists_freed(dead[i].p->pkt);
             InterlockedAdd64(&copy_bytes, -(LONG64)dead[i].p->bytes);
             pool_put(dead[i].p, (unsigned)dead[i].p->cls);
             dead[i] = dead[--ndead];
@@ -1888,7 +1715,6 @@ static void release_copies(uint64_t lo, uint64_t hi) {
             }
             copy_prefix *p = (copy_prefix *)n->copy - 1;
             p->magic = 0;   /* (no submit names it any more) */
-            if (p->pkt) eng_lists_released(p->pkt);
             live_handle_remove((uint64_t)(uintptr_t)n->copy);
             if (ndead == cap_dead) {
                 cap_dead = cap_dead ? cap_dead * 2 : 1024;
@@ -1937,7 +1763,6 @@ static void sweep_overwritten_copies(void) {   /* (copy_lock held) */
             }
             copy_prefix *pre = (copy_prefix *)n->copy - 1;
             pre->magic = 0;
-            if (pre->pkt) eng_lists_released(pre->pkt);
             live_handle_remove((uint64_t)(uintptr_t)n->copy);
             if (ndead == cap_dead) {
                 cap_dead = cap_dead ? cap_dead * 2 : 1024;
@@ -2000,31 +1825,11 @@ NV(nvnCommandBufferBeginRecording) {
         o->hw_start = o->hw_used;
         return;
     }
-    r->eng_kind = eng_on() ? eng_lists_kind(c->x[30]) : 0;
-    if (r->eng_kind) {
-        eng_lists_begun(r->eng_kind);
-        memset(r->eng_meta, 0, sizeof r->eng_meta);
-        if (r->eng_kind == NVN_PK_SHAPE) {   /* (f_806002e0: x28 the material-shape binding, [sp+0x80] its program entry, [sp+0xa8] k, x22 the pass) */
-            const uint64_t sp = c->x[31];
-            void *e = hos_guest_range(sp + 0x80, 8), *k = hos_guest_range(sp + 0xa8, 8);
-            r->eng_meta[0] = c->x[28], r->eng_meta[3] = c->x[22];
-            if (e) memcpy(&r->eng_meta[1], e, 8);
-            if (k) memcpy(&r->eng_meta[2], k, 8);
-        }
-    }
     o->rec_start = o->cmd_used;
     uint8_t *p = cmd_alloc(o, 8);
     put_hdr(p, NOP_BEGIN, 8);
     o->hw_used -= 8;   /* BEGIN / END have no hardware equivalent */
     o->hw_start = o->hw_used;
-    r->eng_job = eng_jobs_on() ? eng_jobs_begin(c) : 0;   /* (HOS_ENG_JOBS: a render job's recording, marked at both ends) */
-    if (r->eng_job) {
-        nvn_p_job *j = (nvn_p_job *)rec(o, NOP_JOB, sizeof(nvn_p_job));
-        j->serial = r->eng_job, j->end = 0;
-        o->hw_used -= 8 + sizeof *j;
-        o->hw_start = o->hw_used;
-    }
-    if (r->eng_view) eng_mark(o, NVN_ENG_JOB, 0, r->eng_view, r->eng_slot);   /* (HOS_ENG_PASSES: the job's view, first) */
 }
 /* the recording, BEGIN to END, is contiguous in the command buffer's segment: one copy of it */
 static uint8_t *flatten(const uint8_t *p, size_t n) {
@@ -2036,7 +1841,6 @@ static uint8_t *flatten(const uint8_t *p, size_t n) {
     pre->cls = cls;
     pre->magic = COPY_MAGIC;
     pre->bytes = sizeof(copy_prefix) + n;
-    pre->pkt = NULL;
     InterlockedAdd64(&copy_bytes, (LONG64)pre->bytes);
     return out + sizeof(copy_prefix);
 }
@@ -2060,7 +1864,7 @@ static void watch_handle_called(Ctx *c, uint64_t h, const char *how) {
         hos_log("nvn: watched recording %llx %s at %.3f s from %s", (unsigned long long)h, how, hos_now_ns() * 1e-9, b);
     }
 }
-/* (HOS_NVN_LIST_REF) the recording as it is is the handle's: filed by its control memory position, no copy, no lock but
+/* (direct mode) the recording as it is is the handle's: filed by its control memory position, no copy, no lock but
    its bucket run's */
 static uint64_t end_recording_ref(nvn_cmd *o) {
     cmd_rec *r = cmd_host(o);
@@ -2068,14 +1872,7 @@ static uint64_t end_recording_ref(nvn_cmd *o) {
     o->ctl_used += 64;
     const int marked = o->ctl && o->ctl_used <= o->ctl_size;
     uint64_t h = 0;
-    nvn_pkt *pkt = NULL;
-    if (r->eng_kind) {   /* (HOS_ENG_LISTS: its packet, given to the recording before its handle is published) */
-        pkt = eng_lists_build(r->eng_kind, r->lw.seg, (size_t)(r->lw.cur - r->lw.seg), r->eng_meta);
-        r->lw.user = pkt;
-        r->eng_kind = 0;
-    }
     nvn_list_end(&r->lw, o->ctl ? at : ~0ull, marked, &h);
-    if (pkt) eng_lists_set_handle(pkt, h);
     if (marked) {   /* (the mark in the descriptor's place: see sweep_overwritten_copies) */
         const uint64_t mark[2] = {COPY_MARK, h};
         memcpy(gw(at, sizeof mark), mark, sizeof mark);
@@ -2117,35 +1914,12 @@ NV(nvnCommandBufferEndRecording) {
         RET(end_recording_direct(o));
         return;
     }
-    const uint32_t job = cmd_host(o)->eng_job;
-    if (job) {   /* (HOS_ENG_JOBS: the job's end mark) */
-        nvn_p_job *j = (nvn_p_job *)rec(o, NOP_JOB, sizeof(nvn_p_job));
-        j->serial = job, j->end = 1;
-        o->hw_used -= 8 + sizeof *j;
-        cmd_host(o)->eng_job = 0;
-    }
     uint8_t *p = cmd_alloc(o, 8);
     put_hdr(p, NOP_END, 8);
     o->hw_used -= 8;
     o->recording = 0;
-    if (list_ref()) {
-        const uint64_t h = end_recording_ref(o);
-        if (watch_draw_cmd && watch_draw_cmd == (void *)o && nwatch_handles < 16) {
-            watch_handles[nwatch_handles++] = h;
-            watch_draw_cmd = NULL;
-            hos_log("nvn: watched draw's recording is %llx", (unsigned long long)h);
-        }
-        RET(h);
-        return;
-    }
     cmd_rec *r = cmd_host(o);
     uint8_t *copy = flatten(r->seg, (size_t)(r->cur - r->seg));
-    if (r->eng_kind) {   /* (HOS_ENG_LISTS: its packet, with the copy; before the handle is published) */
-        nvn_pkt *pkt = eng_lists_build(r->eng_kind, copy, (size_t)(r->cur - r->seg), r->eng_meta);
-        ((copy_prefix *)copy - 1)->pkt = pkt;
-        if (pkt) eng_lists_set_handle(pkt, (uint64_t)(uintptr_t)copy);
-        r->eng_kind = 0;
-    }
     /* the copy is tied to the control memory position the console driver's descriptor would take */
     const uint64_t at = o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     o->ctl_used += 64;
@@ -2176,7 +1950,6 @@ NV(nvnCommandBufferEndRecording) {
                 "(%.1f MB)", (unsigned long long)made, ncopies, copy_bytes / 1048576.0, npins, (long long)seg_count,
                 seg_bytes / 1048576.0);
     ReleaseSRWLockExclusive(&copy_lock);
-    if (job) eng_jobs_end(job, copy, (size_t)(r->cur - r->seg), (uint64_t)(uintptr_t)copy);   /* (on this thread, now: the back end records it) */
     if (watch_draw_cmd && watch_draw_cmd == (void *)o && nwatch_handles < 16) {
         watch_handles[nwatch_handles++] = (uint64_t)(uintptr_t)copy;
         watch_draw_cmd = NULL;
@@ -2194,44 +1967,7 @@ static void check_handle(uint64_t h) {
 }
 /* a called recording is copied into the caller at the call (it is complete now; the game may retire it before the
    caller is submitted) */
-static void inline_recording_raw(nvn_cmd *o, uint64_t h);
-static void *rec(nvn_cmd *o, uint32_t op, size_t payload);
-/* (HOS_ENG_LISTS) the handle's packet, NULL: none */
-static nvn_pkt *packet_of(uint64_t h) {
-    if (list_ref()) {
-        const nvn_lrec *r = nvn_list_lookup(h);
-        return r ? (nvn_pkt *)r->user : NULL;
-    }
-    check_handle(h);
-    return ((const copy_prefix *)(uintptr_t)h - 1)->pkt;
-}
 static void inline_recording(nvn_cmd *o, uint64_t h) {
-    if (eng_on() == 1) {   /* (HOS_ENG_LISTS=1: NOP_PKT naming its packet, then the call as before; skip its size) */
-        const nvn_pkt *k = packet_of(h);
-        if (k && eng_lists_called(k)) {
-            nvn_p_pkt *rp = (nvn_p_pkt *)rec(o, NOP_PKT, sizeof(nvn_p_pkt));
-            o->hw_used -= 8 + sizeof *rp;   /* (no hardware equivalent) */
-            cmd_rec *r = cmd_host(o);
-            rp->pkt = k, rp->serial = k->serial;
-            const size_t at = (size_t)((uint8_t *)(rp + 1) - r->seg);
-            inline_recording_raw(o, h);
-            ((nvn_p_pkt *)(r->seg + at) - 1)->skip = (uint32_t)((size_t)(r->cur - r->seg) - at);
-            return;
-        }
-        if (!k) eng_lists_call_plain();
-    }
-    inline_recording_raw(o, h);
-}
-static void inline_recording_raw(nvn_cmd *o, uint64_t h) {
-    if (list_ref()) {   /* (a NOP_CALL into it, and a reference on it until this recording is freed: nothing copied) */
-        uint64_t flat = 0;
-        if (!nvn_list_call(&cmd_host(o)->lw, h, &flat)) die("command handle %#llx is not a live recording", (unsigned long long)h);
-        if (flat <= 16) return;
-        o->cmd_used += flat - 16;   /* (the accounting of the copy, as the game sees it by default) */
-        o->hw_used += flat - 16;
-        o->last_rec = 0;
-        return;
-    }
     check_handle(h);
     const copy_prefix *pre = (const copy_prefix *)(uintptr_t)h - 1;
     const size_t total = (size_t)pre->bytes - sizeof *pre;   /* BEGIN, the records, END: the records in one copy */
@@ -2272,16 +2008,9 @@ NV(nvnCommandBufferCallCommands) {
         call_direct(CB(P(0)), h, I(1));
         return;
     }
-    const uint64_t lr = c->x[30];
-    int eng = eng_passes() && eng_call_site(lr);   /* (HOS_ENG_PASSES: the job-call site's bounds for the replay) */
-    /* (HOS_ENG_PROF: every other call of a recording that is not a job, for the replay's split of its time by call site) */
-    const int other = !eng && eng_passes() && eng_prof() && !cmd_host(CB(P(0)))->eng_view;
     for (int i = 0; i < I(1); i++) {
         if (nwatch_handles) watch_handle_called(c, h[i], "called");
-        const uint64_t at = (uint64_t)(uint32_t)i | (uint64_t)(uint32_t)I(1) << 32;
-        if (eng || other) eng_mark(CB(P(0)), eng ? NVN_ENG_CALL_BEGIN : NVN_ENG_OTHER_BEGIN, (uint32_t)lr, h[i], at);
         inline_recording(CB(P(0)), h[i]);
-        if (eng || other) eng_mark(CB(P(0)), eng ? NVN_ENG_CALL_END : NVN_ENG_OTHER_END, (uint32_t)lr, h[i], at);
     }
 }
 NV(nvnCommandBufferCopyCommands) {
@@ -2315,7 +2044,6 @@ NV(nvnCommandBufferSignalEvent) {
             hos_log("nvn: CommandBufferSignalEvent #%ld: event %#llx mode %u value %u (lr %#llx)", (long)k,
                     (unsigned long long)((const nvn_event *)P(1))->gpu, U32(2), U32(5), (unsigned long long)c->x[30]);
     }
-    sc_add(SC_CB_SIGNAL);
     nvn_p_signal *s = REC(CB(P(0)), NOP_SIGNAL_EVENT, nvn_p_signal);
     s->gpu = ((const nvn_event *)P(1))->gpu;
     s->mode = U32(2);
@@ -2334,13 +2062,11 @@ NV(nvnCommandBufferWaitEvent) {
         hos_log("nvn: CommandBufferWaitEvent #%ld: event %#llx mode %u value %u (now %u) (lr %#llx)", (long)k,
                 (unsigned long long)(e ? e->gpu : 0), U32(2), U32(3), now, (unsigned long long)c->x[30]);
     }
-    sc_add(SC_CB_WAIT);
     if (!e) return;
     nvn_p_wait_event *w = REC(CB(P(0)), NOP_WAIT_EVENT, nvn_p_wait_event);
     w->gpu = e->gpu, w->mode = U32(2), w->value = U32(3);
 }
 NV(nvnCommandBufferWaitSync) {
-    sc_add(SC_CB_WAITSYNC);
     static volatile LONG n;
     const LONG k = InterlockedIncrement(&n);
     if (lognvn() && (k <= 40 || k % 5000 == 0)) hos_log("nvn: CommandBufferWaitSync #%ld (lr %#llx)", (long)k, (unsigned long long)c->x[30]);
@@ -2365,13 +2091,10 @@ NV(nvnCommandBufferPushComputeConstants) {
    fenced yet (a wait on a fence another queue submits later) cannot be honored that way and is logged. */
 NV(nvnQueueWaitSync) {
     const nvn_sync *s = (const nvn_sync *)P(1);
-    sc_add(!s || !s->fenced ? SC_QWAIT_UNFENCED : s->fenced == 1 ? SC_QWAIT : SC_QWAIT_SIGNALED);
     static volatile LONG n;
     if (s && !s->fenced && InterlockedIncrement(&n) <= 8)
         hos_log("nvn: QueueWaitSync on a sync not fenced yet (%p, lr %#llx): not waited for", (void *)s,
                 (unsigned long long)c->x[30]);
-    /* (RX_VK_TIMELINES) the queue's next submission waits for the fence's work to be recorded (vk_replay.cpp NOP_WAIT_FENCE) */
-    if (tl_on() && s && s->fenced == 1 && s->fence) fw_put((uint64_t)(uintptr_t)P(0), s->fence);
     /* (direct mode) the queue's next submission waits for the fence's (gpu/direct/direct_sync.cpp) */
     if (rx_direct() && s && s->fenced == 1 && s->fence) rx_direct()->queue_wait_fence((uint64_t)(uintptr_t)P(0), s->fence);
 }
@@ -2411,15 +2134,12 @@ NV(nvnCommandBufferCopyBufferToBuffer) {
     nvn_p_copy_bb *r = REC(CB(P(0)), NOP_COPY_B2B, nvn_p_copy_bb);
     r->src = U64(1), r->dst = U64(2), r->size = U64(3);
 }
-static int ubo_census_on(void);
-static uint32_t ubo_site(const Ctx *c, int update, uint64_t bytes);
 /* the data is copied at record time (the caller may change it afterwards); written in GPU order at replay */
 NV(nvnCommandBufferUpdateUniformBuffer) {
     const uint64_t n = U64(4);
     /* (hookshot) NVN's limit is 64 KiB an update; a larger size is not recorded (its record size is 32-bit) */
     if (n > 0x10000) die("UpdateUniformBuffer of %#llx bytes", (unsigned long long)n);
     nvn_cmd *o = CB(P(0));
-    if (ubo_census_on()) ubo_site(c, 1, n);
     const uint32_t sz = (uint32_t)(8 + sizeof(nvn_p_update_ub) + n);
     uint8_t *p = cmd_alloc(o, sz);
     put_hdr(p, NOP_UPDATE_UB, (sz + 7) & ~7u);
@@ -2593,94 +2313,14 @@ static void bind_buf(nvn_cmd *o, uint32_t op, int stage, int index, uint64_t add
     r->stage = stage, r->index = index, r->addr = addr, r->size = size;
     hw_fix(o, 20);
 }
-/* (native-vk, RX_VK_UBO_CENSUS=<file>: work/assets/native/uniform-buffers.md) each uniform buffer bind carries a trailer after
-   its payload (nvn_p_ubo_census: the binding site and a hash of the range as it was when the bind was recorded); the
-   replay's census (gpu/vk/vk_ubo_census.cpp) reads it. The sites (the return address and three more from the guest frame
-   pointers, the recording thread) go to <file>.sites. Off: the record is as before */
-static int ubo_census_on(void) {
-    static int v = -1;
-    if (v < 0) v = getenv("RX_VK_UBO_CENSUS") && *getenv("RX_VK_UBO_CENSUS");
-    return v;
-}
-typedef struct { uint64_t ra[4]; uint64_t binds, updates, update_bytes; char thread[24]; } ubo_site_t;
-static ubo_site_t ubo_sites[4096];
-static volatile LONG ubo_sites_n, ubo_sites_lock, ubo_sites_dirty;
-static void ubo_sites_write(void) {
-    static char path[512];
-    if (!path[0]) snprintf(path, sizeof path, "%s.sites", getenv("RX_VK_UBO_CENSUS"));
-    FILE *f = fopen(path, "w");
-    if (!f) return;
-    for (LONG i = 0; i < ubo_sites_n; i++) {
-        const ubo_site_t *e = &ubo_sites[i];
-        fprintf(f, "%ld %#llx %#llx %#llx %#llx %llu %llu %llu %s\n", (long)i + 1, (unsigned long long)e->ra[0],
-                (unsigned long long)e->ra[1], (unsigned long long)e->ra[2], (unsigned long long)e->ra[3],
-                (unsigned long long)e->binds, (unsigned long long)e->updates, (unsigned long long)e->update_bytes,
-                e->thread[0] ? e->thread : "-");
-    }
-    fclose(f);
-}
-static uint32_t ubo_site(const Ctx *c, int update, uint64_t bytes) {
-    uint64_t ra[4] = {c->x[30], 0, 0, 0};
-    uint64_t fp = c->x[29];
-    const uint64_t top = hos_guest_size();
-    for (int n = 1; n < 4 && fp >= 0x10000ull && fp + 16 <= top && !(fp & 7); n++) {
-        const uint64_t next = *(const uint64_t *)GP(fp), r = *(const uint64_t *)GP(fp + 8);
-        if (r < 0x80000000ull || r >= 0x90000000ull) break;
-        ra[n] = r;
-        if (next <= fp) break;
-        fp = next;
-    }
-    while (InterlockedCompareExchange(&ubo_sites_lock, 1, 0)) {}
-    LONG i = 0;
-    for (; i < ubo_sites_n; i++)
-        if (!memcmp(ubo_sites[i].ra, ra, sizeof ra)) break;
-    if (i == ubo_sites_n && i < (LONG)(sizeof ubo_sites / sizeof ubo_sites[0])) {
-        memcpy(ubo_sites[i].ra, ra, sizeof ra);
-        const HosThread *t = hos_self();
-        const char *nm = t ? hos_thread_name((HosThread *)t) : NULL;
-        if (nm) snprintf(ubo_sites[i].thread, sizeof ubo_sites[i].thread, "%s", nm);
-        ubo_sites_n = i + 1;
-        ubo_sites_dirty = 1;
-    }
-    uint32_t id = 0;
-    if (i < ubo_sites_n) {
-        ubo_site_t *e = &ubo_sites[i];
-        if (update) e->updates++, e->update_bytes += bytes; else e->binds++;
-        id = (uint32_t)i + 1;
-        static uint64_t calls;
-        if (ubo_sites_dirty || !(++calls & 0xfffff)) ubo_sites_write(), ubo_sites_dirty = 0;
-    }
-    ubo_sites_lock = 0;
-    return id;
-}
-static uint64_t ubo_hash(const uint8_t *p, uint64_t n) {   /* (FNV-1a over 8-byte words, the tail bytewise: vk_ubo_census.cpp's) */
-    uint64_t h = 0xcbf29ce484222325ull;
-    uint64_t i = 0;
-    for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, p + i, 8); h = (h ^ w) * 0x100000001b3ull; }
-    for (; i < n; i++) h = (h ^ p[i]) * 0x100000001b3ull;
-    return h ^ n;
-}
-static void bind_ubo_census(Ctx *c, nvn_cmd *o, int stage, int index, uint64_t addr, uint64_t size) {
-    nvn_p_bind_buf *r = (nvn_p_bind_buf *)rec(o, NOP_BIND_UBO, sizeof(nvn_p_bind_buf) + sizeof(nvn_p_ubo_census));
-    r->stage = stage, r->index = index, r->addr = addr, r->size = size;
-    nvn_p_ubo_census *t = (nvn_p_ubo_census *)(r + 1);
-    t->magic = NVN_UBO_CENSUS_MAGIC;
-    t->site = ubo_site(c, 0, 0);
-    const uint64_t n = size > 0x10000 ? 0x10000 : size;
-    const uint8_t *g = n ? (const uint8_t *)hos_guest_range(addr, n) : NULL;
-    t->rec_hash = g ? ubo_hash(g, n) : 0;
-    hw_fix(o, 20);
-}
 NV(nvnCommandBufferBindUniformBuffer) {
-    if (ubo_census_on()) { bind_ubo_census(c, CB(P(0)), I(1), I(2), U64(3), U64(4)); return; }
     bind_buf(CB(P(0)), NOP_BIND_UBO, I(1), I(2), U64(3), U64(4));
 }
 NV(nvnCommandBufferBindStorageBuffer) { bind_buf(CB(P(0)), NOP_BIND_SSBO, I(1), I(2), U64(3), U64(4)); }
 static void bind_bufs(Ctx *c, uint32_t op) {
     const NVNbufferRange *r = (const NVNbufferRange *)PN(4, I(3) > 0 ? sizeof *r * (uint64_t)I(3) : 0);
     for (int i = 0; i < I(3); i++)
-        if (op == NOP_BIND_UBO && ubo_census_on()) bind_ubo_census(c, CB(P(0)), I(1), I(2) + i, r[i].address, r[i].size);
-        else bind_buf(CB(P(0)), op, I(1), I(2) + i, r[i].address, r[i].size);
+        bind_buf(CB(P(0)), op, I(1), I(2) + i, r[i].address, r[i].size);
 }
 NV(nvnCommandBufferBindUniformBuffers) { bind_bufs(c, NOP_BIND_UBO); }
 NV(nvnCommandBufferBindStorageBuffers) { bind_bufs(c, NOP_BIND_SSBO); }
@@ -3048,21 +2688,15 @@ NV(nvnVertexStreamStateSetDivisor) { ST(nvn_vs_st, P(0))->divisor = U32(1); }
 /* ---- submit ---- */
 /* deferred binds read the game's handle arrays now (it fills them for the next frame as soon as the submit returns) */
 static void resolve_deferred(uint8_t *p) {
-    uint32_t job = 0, bind = 0;   /* (HOS_ENG_JOBS: inside a job's records, its deferred binds by number: its banks rewritten) */
     for (;;) {
         nvn_op_hdr h;
         memcpy(&h, p, sizeof h);
         if (h.size < 8 || (h.size & 7) || h.op >= NOP_COUNT_) die("corrupt recording at submit (op %u size %u)", h.op, h.size);
         if (h.op == NOP_END) return;
-        if (h.op == NOP_JOB) {
-            const nvn_p_job *j = (const nvn_p_job *)(p + 8);
-            job = j->end ? 0 : j->serial, bind = 0;
-        }
         if (h.op == NOP_BIND_TEX || h.op == NOP_BIND_IMG || h.op == NOP_BIND_SAMP) {
             nvn_p_bind_handles *b = (nvn_p_bind_handles *)(p + 8);
             if (b->src && b->n > 0 && b->n <= 32) {
                 memcpy(b->h, gw(b->src, 8 * (size_t)b->n), 8 * (size_t)b->n);
-                if (job) rx_eng_job_deferred(job, ++bind, b->h, b->n);
             }
         }
         if (h.op == NOP_BIND_BUFS) {
@@ -3076,7 +2710,7 @@ NV(nvnQueueSubmitCommands) {
     { void hos_renderer_wait(void); static volatile LONG up; if (!up) { hos_renderer_wait(); up = 1; } }   /* (display.c) */
     nvn_queue *q = (nvn_queue *)P(0);
     int n = I(1);
-    uint64_t hs[65], *h = hs + 1;   /* (hs[0]: RX_VK_TIMELINES' fence wait, before the game's handles) */
+    uint64_t h[64];
     if (n < 0 || n > 64) die("submit of %d handles", n);
     memcpy(h, PN(2, 8 * (size_t)n), 8 * (size_t)n);
     q->submits++;
@@ -3113,10 +2747,6 @@ NV(nvnQueueSubmitCommands) {
         }
     }
     held_init();
-    if (tl_on()) {   /* (a fence wait asked on this queue: first in its submission) */
-        const uint64_t f = fw_take((uint64_t)(uintptr_t)q);
-        if (f) hs[0] = fw_record(f), h = hs, n++;
-    }
     if (!hold_on) {
         /* (the replay runs here, on this thread, for ~9 ms a frame (vk_replay.cpp submit_q, RX_VK_ASYNC off): the virtual
            core is given up for it, as Present and AcquireTexture do, so the game's other threads run on it meanwhile.
@@ -3235,7 +2865,6 @@ NV(nvnQueuePresentTexture) {
     nvn_win *o = (nvn_win *)P(1);
     const int i = I(2);
     if (i < 0 || i >= o->ntex) die("present of window texture %d", i);
-    fw_flush((uint64_t)(uintptr_t)P(0));   /* (RX_VK_TIMELINES: a fence wait asked on the presenting queue, before it) */
     held_flush();   /* (a present flushes the queue) */
     {
         const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)4);
@@ -3244,15 +2873,11 @@ NV(nvnQueuePresentTexture) {
         if (away) hos_vcore_back();
     }
     o->presents++;
-    if (eng_on()) {   /* (HOS_ENG_LISTS: the packets' counts every 600 presents) */
-        static int64_t presents;
-        if (++presents % 600 == 0) eng_lists_log("every 600 presents", 600), eng_jobs_log(600);
-    }
     void rt_slots_frame(void);   /* rt_slots.c */
     rt_slots_frame();
     if (rx_direct()) direct_patches_frame();   /* (M3a: the game patches' lines) */
     extern volatile LONG64 hos_present_count;   /* display.c */
-    sync_census_log(InterlockedIncrement64(&hos_present_count));
+    InterlockedIncrement64(&hos_present_count);
     hos_vi_native_presented();
 }
 
@@ -3309,7 +2934,6 @@ NV(nvnNativeImageInitialize) {
     o->size = (uint64_t)NVN_WINDOW_W * NVN_WINDOW_H * 4;
     o->storage = hos_region_alloc(o->size, 0x10000);
     if (o->storage) hos_gpu_track(o->storage, o->size, 1);
-    if (o->storage) hos_census_pool(o->storage, o->size, 0x80000000u, 1);   /* (flag 1<<31: a native image) */
     hos_log("nvn: native image %dx%d format %#x (handle %#llx) at %#llx", o->width, o->height, o->format,
             (unsigned long long)b->handle, (unsigned long long)o->storage);
     RET(o->storage != 0);

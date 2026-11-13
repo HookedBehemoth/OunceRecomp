@@ -2,17 +2,30 @@
    its payload. An NVN command function takes its record from cmd_alloc and fills the payload after it returns, so a record
    goes to the back end at the next cmd_alloc on the same thread, or at the flush points (m0-seam.md 6.4). */
 #include "direct.h"
-#include "eng_lists.h"
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+
+/* The game's load-time lists (vertex, draw, shape, material and the two measuring copies of the first two), by where their
+   recording began: the guest return address after BeginRecording; 0: not one of them. The value is the list's load kind. */
+static int load_kind(uint64_t lr) {
+    switch (lr) {
+    case 0x804582acull: return 1;   /* vertex list: f_804581b0 <- f_80457e60 */
+    case 0x80293b14ull: return 2;   /* draw list: f_80293890 <- f_804566e0 */
+    case 0x806006d8ull: return 3;   /* per-instance shape list: f_806002e0 <- f_8009bb80 */
+    case 0x80445314ull: return 4;   /* material list: f_80445020 <- f_80443000 */
+    case 0x8044ea20ull: return 5;   /* vertex list's measuring copy: f_8044e8e0 <- f_8044e020 */
+    case 0x80293460ull: return 6;   /* draw list's measuring copy: f_80293190 <- f_8044cb30 */
+    default: return 0;
+    }
+}
 
 /* ---- the list kinds, by the return address of BeginRecording (this build of the game; engine-frame.md section 1 as
    checked by a run: docs/direct/m1-report.md). An address not here begins a PACKET list (counted, named in the log) ---- */
 void hsd_classify(Ctx *c, hsd_list_info *info) {
     const uint64_t lr = c->x[30];
     info->lr = lr, info->fp = c->x[29];
-    const int load = eng_lists_kind(lr);
+    const int load = load_kind(lr);
     if (load) {
         info->kind = HSD_LIST_LOAD, info->load_kind = (uint32_t)load;
         return;

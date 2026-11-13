@@ -20,15 +20,14 @@
 namespace hsd {
 namespace {
 
-static_assert(NOP_COUNT_ == 55, "rx_nvn.h's ops changed: the names below too");
+static_assert(NOP_COUNT_ == 51, "rx_nvn.h's ops changed: the names below too");
 const char* const kOpNames[NOP_COUNT_] = {
     "END", "JUMP", "BEGIN", "CALL", "SIGNAL_EVENT", "REPORT_COUNTER", "COPY_B2B", "UPDATE_UB", "SET_RT", "CLEAR_COLOR",
     "CLEAR_DS", "VIEWPORTS", "SCISSOR", "DEPTH_RANGE", "BIND_PROGRAM", "BIND_STATE", "BIND_VATTR", "BIND_VSTREAM", "BIND_VBUF",
     "BIND_UBO", "BIND_SSBO", "BIND_TEX", "BIND_SAMP", "STENCIL", "POLY_OFFSET", "DRAW", "DRAW_IDX", "DISPATCH", "BARRIER",
     "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR", "COPY_T2B", "BIND_IMG", "COPY_T2T",
     "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE", "RASTER_DISCARD", "RENDER_COND", "PRIMITIVE_RESTART",
-    "BIND_BUFS", "DRAW_INDIRECT", "DISPATCH_INDIRECT", "DRAW_MESH", "WAIT_EVENT", "PUSH_CONST", "CLEAR_BUF", "WAIT_FENCE",
-    "PKT", "JOB", "ENG"};
+    "BIND_BUFS", "DRAW_INDIRECT", "DISPATCH_INDIRECT", "DRAW_MESH", "WAIT_EVENT", "PUSH_CONST", "CLEAR_BUF"};
 const char* const kKindNames[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
 
 // (the recording threads' time in hsd_emit and hsd_list_call, in TSC ticks, by the list's kind: summed per thread, added up
@@ -263,7 +262,7 @@ namespace {
 /// (M3a) a packet's op: {op, size} and the payload, 8-byte aligned. Ops with nothing for a caller are left out
 void pkt_append(List* l, uint32_t op, const void* payload, uint32_t size) {
     switch (op) {
-    case NOP_END: case NOP_JUMP: case NOP_BEGIN: case NOP_PKT: case NOP_JOB: case NOP_ENG: return;
+    case NOP_END: case NOP_JUMP: case NOP_BEGIN: return;
     default: break;
     }
     const size_t at = l->pkt.size(), padded = (size + 7) & ~(size_t)7;

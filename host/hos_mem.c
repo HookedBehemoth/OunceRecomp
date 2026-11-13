@@ -344,7 +344,7 @@ HLE(_ZN2nn2os21SetDyingMessageRegionEmm) { RET(0); }
 /* The ledger's owners in MB into out, their sum in bytes, and the address space handed to the guest (image, system region,
    heap, regions). Returns the length written. Called by name from the direct back end (hos_posix_: the exported prefix) */
 size_t hos_posix_mem_ledger(char *out, size_t cap, uint64_t *ours, uint64_t *guest_committed) {
-    static const char *const names[HL_N] = {"nvn recordings", "nvn command memory", "packets", "terrain tiles kept", "video pictures"};
+    static const char *const names[HL_N] = {"nvn recordings", "nvn command memory", "terrain tiles kept", "video pictures"};
     size_t k = 0;
     uint64_t sum = 0;
     for (int i = 0; i < HL_N; i++) {

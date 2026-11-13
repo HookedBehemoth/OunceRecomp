@@ -155,10 +155,6 @@ enum {
     NOP_WAIT_EVENT,                             /* (mkw-recomp: a wait for an event another queue's work signals) */
     NOP_PUSH_CONST,                             /* (hookshot: nvnCommandBufferPushComputeConstants) */
     NOP_CLEAR_BUF,                              /* (hookshot: nvnCommandBufferClearBuffer) */
-    NOP_WAIT_FENCE,                             /* (hookshot, RX_VK_TIMELINES: nvnQueueWaitSync, before the queue's next submit) */
-    NOP_PKT,                                    /* (native-vk E2, HOS_ENG_LISTS: a called list's packet, gpu/render/nvn_pkt.h) */
-    NOP_JOB,                                    /* (native-vk E3, HOS_ENG_JOBS: a render job's recording begins / ends, gpu/vk/eng_job.h) */
-    NOP_ENG,                                    /* (native-vk E4, HOS_ENG_PASSES: a job-call site's bounds, a job's view; nvn_p_eng) */
     NOP_COUNT_
 };
 typedef struct { int32_t n; const nvn_tex *color[8]; nvn_view cview[8]; uint8_t has_cview[8]; const nvn_tex *depth; nvn_view dview; uint8_t has_dview; } nvn_p_set_rt;
@@ -175,10 +171,6 @@ typedef struct { int32_t first, n; uint32_t st[16]; } nvn_p_bind_vattr;
 typedef struct { int32_t first, n; nvn_vs_st st[16]; } nvn_p_bind_vstream;
 typedef struct { int32_t first, n; NVNbufferRange r[16]; } nvn_p_bind_vbuf;
 typedef struct { int32_t stage, index; uint64_t addr, size; } nvn_p_bind_buf;   /* uniform / storage buffer */
-/* (native-vk, RX_VK_UBO_CENSUS) after a uniform buffer bind's payload when the census is on: where it was bound and a hash
-   of the range when it was recorded (host/nvn_native.c, gpu/vk/vk_ubo_census.cpp) */
-#define NVN_UBO_CENSUS_MAGIC 0x55424f43u
-typedef struct { uint32_t magic, site; uint64_t rec_hash; } nvn_p_ubo_census;
 /* src: deferred binds keep the game's handle array (guest address) and read it at submit; 0: immediate */
 typedef struct { int32_t stage, first, n, pad_; uint64_t src; uint64_t h[32]; } nvn_p_bind_handles;
 /* deferred uniform / storage buffer ranges: read from the game's array (src, guest address) at submit */
@@ -196,7 +188,6 @@ typedef struct { int64_t stride; } nvn_p_copy_stride;
 typedef struct { float rgba[4]; } nvn_p_blend_color;
 typedef struct { uint64_t gpu; uint32_t mode, value; } nvn_p_signal;   /* event: its 32-bit value's GPU address */
 typedef struct { uint64_t gpu; uint32_t mode, value; } nvn_p_wait_event;   /* (the same, and the wait's condition) */
-typedef struct { uint64_t fence; } nvn_p_wait_fence;   /* (hookshot) a fence's value (rx_nvn_fence_q's): its queue's work up to it first */
 typedef struct { uint64_t type, addr; } nvn_p_counter;
 #define NVN_COUNTER_WRITTEN (1ull << 32)   /* (type: the report's counter word is in memory already: a clear flag, host/nvn_native.c) */
 typedef struct { uint64_t src, dst, size; } nvn_p_copy_bb;
@@ -206,38 +197,9 @@ typedef struct { uint32_t offset, size; /* data follows */ } nvn_p_push_const;
 /* (hookshot) a buffer range filled with a 32-bit value */
 typedef struct { uint64_t dst, size; uint32_t value, pad; } nvn_p_clear_buf;
 typedef struct { int32_t enable, index; } nvn_p_restart;
-/* (native-vk layer 1, HOS_NVN_LIST_REF=1) a called list by reference (host/nvn_list.c): the replay walks the records from
-   target (the callee's BEGIN) to its END and goes on after this one. next: the caller's next NOP_CALL (offset from its
-   BEGIN, 0: none), bytes: the callee's BEGIN .. END. Without the switch the callee's records are copied in instead */
+/* a called list by reference (host/nvn_list.c, direct mode): target is the callee's BEGIN, the records run to its END and
+   go on after this one. next: the caller's next NOP_CALL (offset from its BEGIN, 0: none), bytes: the callee's BEGIN .. END */
 typedef struct { const uint8_t *target; uint32_t next, bytes; } nvn_p_call;
-/* (native-vk engine cut E2, HOS_ENG_LISTS=1) the packet of the list called next (gpu/render/nvn_pkt.h), while it holds serial;
-   skip: the bytes after this record that record the call the default way (the callee copied in, or a NOP_CALL) */
-struct nvn_pkt;
-typedef struct { const struct nvn_pkt *pkt; uint32_t serial, skip; } nvn_p_pkt;
-/* (native-vk engine cut E3, HOS_ENG_JOBS=1) the first and last record of a render job's recording (f_80084de0): the job's
-   serial (gpu/vk/eng_job.h EngJob), end 0 at its start, 1 at its end. Nothing to replay: the Vulkan replay finds the job's
-   host recording by it (its check, the programs it publishes for the job threads) */
-typedef struct { uint32_t serial, end; } nvn_p_job;
-/* (E3) what the host knows of a job when its recording ends (host/eng_jobs.c, on the job's thread): its serial (NOP_JOB's),
-   the recorder's arguments (f_80084de0: x0 the draw queue, x1 the draw context, x3 the pass key, x4 the job object, x5 the
-   item range) and the view record it found (x25 at its BeginRecording; 0: not one of the queue's), with that record's
-   target rectangle (+0x78: x0, y0, x1, y1, floats) */
-typedef struct rx_eng_job_info {
-    uint32_t serial, range_start, range_count, pad_;
-    uint64_t ctx, drawctx, key, job, view;
-    float rect[4];
-} rx_eng_job_info;
-/* (the Vulkan back end's mkwvk_eng_job_recorded, when it has one: gpu/vk/eng_job.h) */
-void rx_eng_job_recorded(const rx_eng_job_info *j, const uint8_t *rec, uint64_t bytes, uint64_t handle);
-/* (E3, at the submit) a job's deferred handle bind number bind (1 first) as the game's array holds it now */
-void rx_eng_job_deferred(uint32_t serial, uint32_t bind, const uint64_t *h, int n);
-/* (native-vk engine cut E4, HOS_ENG_PASSES=1) marks for the replay, no GPU work: around each handle a job-call site calls
-   (CALL_BEGIN before the callee's records, CALL_END after them: a = the handle, b = index | count << 32, site = the guest
-   return address of the CallCommands), and first in a render job's own recording (JOB: a = its view record, b = its cmd
-   slot; f_80084de0). The game's command memory accounting leaves them out. (E6's measurement, HOS_ENG_PROF=1: OTHER_BEGIN /
-   OTHER_END the same around every other handle a recording that is not a job calls, for the replay's split by call site) */
-enum { NVN_ENG_CALL_BEGIN = 1, NVN_ENG_CALL_END = 2, NVN_ENG_JOB = 3, NVN_ENG_OTHER_BEGIN = 4, NVN_ENG_OTHER_END = 5 };
-typedef struct { uint32_t kind, site; uint64_t a, b; } nvn_p_eng;
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
    first index, base vertex, base instance; arrays: count, instances, first, base instance), as many as the 32-bit
    value at count_addr says when there is one; read at replay, after the GPU's writes there reached guest memory */
@@ -289,8 +251,7 @@ void rx_nvn_set_texture_pool_size(int n);
 void rx_nvn_texture_released(const nvn_tex *t);
 void rx_nvn_texture_created(const nvn_tex *t);
 void rx_nvn_program_released(const nvn_prog *p);
-/* (native-vk) a program's stages set (nvnProgramSetShaders[Ext], InitializeFromBuilder): the Vulkan back end's shader objects
-   prefetch them (gpu/vk/vk_shader_object.cpp); the WebGPU renderer has nothing to do */
+/* a program's stages set (nvnProgramSetShaders[Ext], InitializeFromBuilder): the back end may prefetch them */
 void rx_nvn_program_set(const nvn_prog *p);
 /* CPU reads / writes of a texture (ReadTexels / WriteTexels) */
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
