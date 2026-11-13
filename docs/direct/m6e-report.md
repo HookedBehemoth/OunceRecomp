@@ -175,7 +175,7 @@ took about an hour a stage of `e67a`'s size.
 | The offline translator: a mesh stage (with its task stage) from the seed through the translator fork as `direct_shader.cpp` does it: IR, a structured print, a flat print, SPIR-V, a summary | `tools/meshlab/meshtool.cpp`, `ir_pretty.h` (built by `build.sh` from `work/sa/build/obj/dx_eden_*.o`) | `meshtool <7_code.bin> <prefix> [6_task.bin]` (stage files from M0's `seed.py`) |
 | The inventory and the reading aid | `tools/meshlab/inventory.py` (every mesh stage of a frame through meshtool, families by masked IR and by control shape), `simplify.py` (a flat print with the lowering's noise folded: XMAD multiplies, the uniform-register loads, 64-bit funnel shifts, condition codes) | `inventory.py <frame.bin>... --out <dir>`; `simplify.py <prefix>.flat.c` |
 | The replacements' build | `tools/meshlab/build_shaders.sh` (glslang, Vulkan 1.3, `spirv-val`), the list `gpu/direct/shaders/mesh/codes.txt` | `tools/meshlab/build_shaders.sh <out dir>` |
-| Probes | `tools/meshlab/probes/scratch.mesh` (a mesh stage that needs private scratch), `outputs.mesh` (the game's shape, outputs in LDS or in RADV's mesh scratch ring) | `meshlab probe <spv> [--groups N]`; `run ... --mesh <spv>` |
+| Probes | `tools/meshlab/probes/scratch.mesh` (a mesh stage that needs private scratch), `outputs.mesh` (the game's shape; at its default size RADV keeps its outputs in LDS, 29,290 bytes: a larger SHARED_WORDS is needed to reach the ring) | `meshlab probe <spv> [--groups N]`; `run ... --mesh <spv>` |
 
 How the harness reproduces a draw: the program's mesh (and fragment) stage is made as a shader object from the captured
 SPIR-V with the captured heap mappings, the descriptor heaps of the back end's layout all zero (null descriptors), the
@@ -210,7 +210,7 @@ long submissions) and top- and bottom-of-pipe markers in host memory. Every run 
 | r6 | + each submission runs the draws' task stages first (headers reset, the task compute, a barrier: the job's task step) + 2 vertex draws before each mesh draw in the same secondary | survived: 2,793,340 draws in 30 s |
 | r7 | the whole frame: all 110 mesh draws, each command buffer's in a rendering of its own targets, in a secondary, task steps, real fragment stages | survived: 2,131,250 draws in 30 s |
 | r8 | the job as r5 + vertex draws, 100 times a submission (2,200 mesh draws a submission), and an inline vertex draw in the primary before the secondary, the rendering begun with inline contents allowed (as the back end's layer lists) | survived: 7,689,000 draws in 60 s |
-| r9 | our probe with the game's shape and RADV's mesh scratch ring for every draw of the job, 20 times a submission | survived: 16,746,840 draws in 20 s |
+| r9 | our probe of the game's shape (`probes/outputs.mesh`: 126 vertices of 9 vec4 outputs, 2,688 words of workgroup memory) for every draw of the job, 20 times a submission. RADV compiled it to 29,290 bytes of LDS: just under the ring's threshold, so it did **not** exercise the mesh scratch ring as meant (not rerun) | survived: 16,746,840 draws in 20 s |
 
 **The hang does not reproduce in isolation.** Two (and 22) task+mesh draws of these mesh stages overlapping in one rendering,
 with every game detail the harness replays, ran 30-60 s each without a loss, against 22-111 s to a loss in the game (12 of
