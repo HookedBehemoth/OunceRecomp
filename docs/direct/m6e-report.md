@@ -30,8 +30,9 @@ Verified (each by a check that could have failed):
 - **Scratch** (the coordinator's lead): RADV's compile of every market stage was read (`RADV_DEBUG=shaders`). `a437aea2`, the
   stage the breadcrumbs named most, uses **no scratch** (153 VGPRs, 30,826 bytes of LDS). `bee3d34e` and `30dcbaf5` keep
   their outputs in **RADV's mesh scratch ring** (past the 30 KB of NGG LDS), as do four mesh-only stages; `cfebb562` also
-  spills VGPRs. The private memory comes from the compiler (spills, the ring), not from the game's code or M4c's
-  conversion; and a mesh stage that needs scratch runs correctly in isolation (the scratch probe, 20,000 workgroups). So
+  spills VGPRs. The private memory comes from the compiler (spills, the ring), not from the game's code (no native local memory
+  in these stages) nor from M4c's conversion (its header and payload reads are loads; M6d: no private or function variable
+  in the implicated stages' SPIR-V); and a mesh stage that needs scratch runs correctly in isolation (the scratch probe, 20,000 workgroups). So
   "scratch → hang" does not hold here. What does push the stages over the LDS limit is a translation artefact: the
   translator's stage buffer in workgroup memory on top of the outputs (section 5, 13); the rewritten stages have none.
 
@@ -145,6 +146,10 @@ and every primitive):
 | `meshlet_depth.mesh` (MODEL_SLOT 0) | `ef1f1c50d829bf4e` | 19 | 19 equal |
 | `meshlet_lit.mesh` (MODEL_SLOT 0) | `e67ab18860ce163e` | 5 | 5 equal (all 16 output lines) |
 
+RADV's compile of the replacements (`meshlab stats --repl` under `RADV_DEBUG=shaders`): the lit stage needs **12,490 bytes
+of LDS** (the translator's `e67ab188`: 22,218), the depth-only one 2,410 (5,994); neither uses the mesh scratch ring or
+scratch. The difference is the translator's stage buffer in workgroup memory (section 5, 13).
+
 What is a transcription of the game's logic (for the user's decision what to keep): the meshlet layout (the model buffer's
 header words, the record's fields and their bit positions, the order of the vertex record's fields, the index stream), the
 dequantisation and decoding arithmetic (the octahedral decode with its 32/31 factor, the texture coordinates' exponents),
@@ -239,7 +244,7 @@ translation's (T), and what it does on this GPU.
 | # | What | Whose | Seen in | Effect |
 |---|---|---|---|---|
 | 1 | Threads past the meshlet's vertex or triangle count do not branch away: each takes `min(its index, count - 1)` and writes that vertex or triangle again, the same values | G | every `2c56` meshlet stage | several invocations store the same output; harmless (same values); the rewrite writes each once |
-| 2 | The meshlet stages write at most 64 vertices (2 a thread) and 128 triangles (4 a thread), while they declare 126 and the record's counts are 8 bits (up to 255): vertices 64..125 are never written, triangles past 126 are cut by the output count | G | `26fa`, `6942`, `ef1f`, `e67a` (and the other 2c56 stages, by their shape) | a meshlet of more than 64 vertices would draw to zero vertices; in the captures every meshlet has at most 64 (the compare found no corner past the written vertices) |
+| 2 | The meshlet stages write at most 64 vertices (2 a thread) and 128 triangles (4 a thread), while they declare 126 and the record's counts are 8 bits (up to 255): vertices 64..125 are never written, triangles past 126 are cut by the output count | G | `26fa`, `6942`, `ef1f`, `e67a` (and the other 2c56 stages, by their shape) | a meshlet of more than 64 vertices would draw its triangles past vertex 63 to zero vertices (both the translator and the rewrite give zeros there); whether a captured meshlet has more than 64 was not checked |
 | 3 | A triangle's vertex numbers are `findMSB(vertices - 1) + 1` bits wide: 0 bits for a 1-vertex meshlet, 32 for an empty one (`findMSB(0xffffffff)`), and only the low 8 bits are kept | G | the 2c56 stages | no out-of-range index: the translator clamps indices to 125 too (T, epilogue) |
 | 4 | The normal's field is `(2 * (w5 & 15) + 12) & 30` bits: widths over 15 bits a component would lose bits | G | `e67a` (lit stages) | none in the captures |
 | 5 | No mesh stage has a loop (every per-thread repetition unrolled by the game's compiler); data-dependent branches only in the lit stages with optional streams (a 4-bit stream mask scanned bit by bit, `93f8`, `4bf9`, ...) | G | all 47 | no runaway: unlike the task stages (M0's B family), nothing in a mesh stage loops on data |
