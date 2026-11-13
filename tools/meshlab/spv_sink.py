@@ -1,14 +1,18 @@
-"""A SPIR-V module with every side-effect-free instruction moved down to its first use within its block (a prototype of
-the translator's late scheduling: docs/direct/hf-fix-report.md).
+"""A SPIR-V module with every side-effect-free instruction moved down to its first use within its block: a prototype of a
+late scheduling the translator could do, specified in docs/direct/hf-fix-report.md and NOT used by the game (an earlier
+version of it, applied in the game, made two mesh stages that write by address spill and lost the device in the market).
 
     python3 -I tools/meshlab/spv_sink.py <in.spv> <out.spv> [--stats]
 
 The translator emits a stage in the native code's order, and the game's compiler loaded early: a mesh stage that reads 112
 rows of a probe table holds all of them in registers before the first is used, more than the 256 vector registers RADV
-has, so ACO spills to scratch memory. This pass keeps each block's instructions with effects (stores, barriers, subgroup
-operations, loads of memory the stage writes, calls of functions that write) in their order and emits every other
-instruction just before the first instruction that needs it, operands first. --stats prints the largest number of live
-32-bit values in the entry function before and after (a count over the SPIR-V, not the compiler's).
+has, so ACO spills to scratch memory. This pass keeps each block's instructions with effects (stores, barriers, atomics,
+loads of workgroup and private memory, calls of functions that write) in their order and emits every other instruction
+just before the first instruction that needs it, operands first (the larger operand tree first); once an instruction is
+emitted, every instruction that is ready and frees at least as many values as it makes follows at once (a row is consumed
+as it is loaded). A read by address stays between the writes by address around it. The result is kept only when it holds
+fewer values at once than the input, by the pass's own count (--stats prints both for the large functions); otherwise the
+module is written unchanged.
 """
 import struct
 import sys
@@ -67,12 +71,13 @@ def main():
             inside = False
         elif (inside and has_result(op) or op == 59) and len(w) >= 3:   # (a function's values, and the module's variables)
             type_of[w[2]] = w[1]
-    # (functions: which write memory that is not their own)
+    # (functions: whether they write memory that is not their own, read memory by address, read other memory that can
+    # change (workgroup, private, output), themselves or through a call)
     funcs, cur = {}, None
     for idx, (op, w) in enumerate(insts):
         if op == 54:
             cur = w[2]
-            funcs[cur] = {"first": idx, "writes": False, "calls": set()}
+            funcs[cur] = {"first": idx, "writes": False, "reads_physical": False, "reads_other": False, "calls": set()}
         elif op == 56:
             funcs[cur]["last"] = idx
             cur = None
@@ -81,37 +86,54 @@ def main():
                 funcs[cur]["writes"] = True
             if op in ATOMIC or op in (224, 225, 4428, 4429, 5294, 5295):   # (atomics, barriers, mesh outputs)
                 funcs[cur]["writes"] = True
+            if op == 61:
+                cls = pointer_class.get(type_of.get(w[3]))
+                if cls == PHYSICAL:
+                    funcs[cur]["reads_physical"] = True
+                elif cls not in READ_ONLY_CLASSES and cls != 7:
+                    funcs[cur]["reads_other"] = True
             if op == 57:
                 funcs[cur]["calls"].add(w[3])
     changed = True
     while changed:
         changed = False
         for f in funcs.values():
-            if not f["writes"] and any(funcs.get(c, {"writes": True})["writes"] for c in f["calls"]):
-                f["writes"] = changed = True
-    # (does the stage write memory by address, in code its entry point reaches? then loads by address stay where they are)
-    reach, todo = set(), [w[2] for op, w in insts if op == 15]
-    while todo:
-        f = todo.pop()
-        if f in reach or f not in funcs:
-            continue
-        reach.add(f)
-        todo.extend(funcs[f]["calls"])
-    writes_physical = False
-    for f in reach:
-        for op, w in insts[funcs[f]["first"]:funcs[f]["last"] + 1]:
-            if (op in WRITES and pointer_class.get(type_of.get(w[1])) == PHYSICAL) or op in ATOMIC:
-                writes_physical = True
+            for c in f["calls"]:
+                g = funcs.get(c, {"writes": True, "reads_physical": True, "reads_other": True})
+                for k in ("writes", "reads_physical", "reads_other"):
+                    if g[k] and not f[k]:
+                        f[k] = changed = True
+
+    def physical_writer(op, w):
+        """an instruction after which memory read by address may hold other values: a store or an atomic by address, a
+        barrier (other invocations' writes), a call of a function that writes"""
+        if op in WRITES:
+            return pointer_class.get(type_of.get(w[1])) == PHYSICAL
+        if op in ATOMIC or op in (224, 225):
+            return True
+        if op == 57:
+            f = funcs.get(w[3])
+            return f is None or f["writes"]
+        return False
+
+    def physical_reader(op, w):
+        """a movable instruction that reads memory by address: it stays between the writers around it"""
+        if op == 61:
+            return pointer_class.get(type_of.get(w[3])) == PHYSICAL
+        if op == 57:
+            f = funcs.get(w[3])
+            return f is not None and f["reads_physical"]
+        return False
 
     def movable(op, w):
-        if op in PURE:
+        if op in PURE or 333 <= op <= 366:   # (a subgroup operation's result is the same anywhere in its block)
             return True
-        if op == 61:   # (OpLoad)
+        if op == 61:   # (OpLoad: of memory nothing writes, or by address)
             cls = pointer_class.get(type_of.get(w[3]))
-            return cls in READ_ONLY_CLASSES or (cls == PHYSICAL and not writes_physical)
-        if op == 57:   # (OpFunctionCall)
+            return cls in READ_ONLY_CLASSES or cls == PHYSICAL
+        if op == 57:   # (OpFunctionCall: of a function that only reads, and nothing that can change but by address)
             f = funcs.get(w[3])
-            return f is not None and not f["writes"] and not writes_physical
+            return f is not None and not f["writes"] and not f["reads_other"]
         return False
 
     def live_peak(seq):
@@ -137,6 +159,7 @@ def main():
 
     out = []
     moved = 0
+    worst_before = worst_after = 0
     for f in funcs.values():
         body = insts[f["first"]:f["last"] + 1]
         defined = {w[2] for op, w in body if has_result(op) and len(w) >= 3}
@@ -179,6 +202,17 @@ def main():
                     remaining[n] += 1 << 20   # (used in another block: it does not die here)
             emitted = [False] * n_block
             order = []
+            # (a read by address stays between the writes by address around it: `after` is the writer it follows, and each
+            # writer is preceded by the readers that came before it)
+            after = [-1] * n_block
+            readers = []
+            writer = -1
+            for n, (op, w) in enumerate(block):
+                if physical_writer(op, w):
+                    writer = n
+                elif movable(op, w) and physical_reader(op, w):
+                    after[n] = writer
+                    readers.append(n)
             # (an instruction's tree: how many movable instructions of the block it needs, itself counted; the larger
             # operand is emitted first, so a chain is evaluated before the leaf that joins it: Sethi and Ullman's order)
             size = [1] * n_block
@@ -214,6 +248,8 @@ def main():
                         op, w = block[c]
                         if not movable(op, w) or any(not emitted[d] for d in deps[c]) or any(not emitted[d] for d in operands[c]):
                             continue
+                        if after[c] >= 0 and not emitted[after[c]]:
+                            continue
                         freed = sum(values(d) for d in operands[c] if remaining[d] == 1)
                         if op == 81 or values(c) <= freed:   # (a component taken out of a vector is the vector's own register)
                             work.append(c)
@@ -245,9 +281,14 @@ def main():
                 first += 1
             for n in range(first):
                 place(n, True)
+            next_reader = 0
             for n in range(first, tail):
                 op, w = block[n]
                 if not movable(op, w):
+                    if physical_writer(op, w):
+                        while next_reader < len(readers) and readers[next_reader] < n:
+                            emit(readers[next_reader])
+                            next_reader += 1
                     emit(n)
             for n in range(tail):
                 if not emitted[n]:
@@ -264,14 +305,20 @@ def main():
                 flush()
             block.append((op, w))
         flush()
+        before, after = live_peak(body), live_peak(new_body)
+        worst_before, worst_after = max(worst_before, before), max(worst_after, after)
         if stats and len(body) > 2000:
-            print("function of %d instructions: live 32-bit values at most %d before, %d after" % (len(body), live_peak(body), live_peak(new_body)))
+            print("function of %d instructions: live 32-bit values at most %d before, %d after" % (len(body), before, after))
         insts[f["first"]:f["last"] + 1] = new_body
+    if worst_after >= worst_before:   # (the order is kept only when it holds fewer values at once, by this pass's own count)
+        open(dst, "wb").write(data)
+        print("%s: left as it was (%d values held at most, %d scheduled late)" % (dst, worst_before, worst_after))
+        return 0
     res = words[:5]
     for op, w in insts:
         res += w
     open(dst, "wb").write(struct.pack("<%dI" % len(res), *res))
-    print("%s: %d instructions moved%s" % (dst, moved, " (loads by address stay: the module writes by address)" if writes_physical else ""))
+    print("%s: %d instructions moved" % (dst, moved))
     return 0
 
 

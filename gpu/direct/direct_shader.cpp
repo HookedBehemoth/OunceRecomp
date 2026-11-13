@@ -29,7 +29,6 @@
 
 #include "direct_check.h"
 #include "direct_meshrepl.h"
-#include "direct_spv_late.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -512,7 +511,7 @@ constexpr uint32_t kSlots = 1u << 17;
 std::unique_ptr<std::atomic<Slot*>[]> table;
 std::mutex table_mu;
 std::atomic<double> last_miss_s{0};
-std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_mesh_repl{0}, st_mesh_repl_refused{0}, st_late_stages{0}, st_late_moved{0},
+std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_mesh_repl{0}, st_mesh_repl_refused{0},
     st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0};
 
 uint32_t slot_hash(uint64_t serial) { return (uint32_t)((serial * 0x9E3779B97F4A7C15ull) >> 47) & (kSlots - 1); }
@@ -652,18 +651,6 @@ void get_info(Reader& r, Shader::Info& i) {
         r.bad = true;
 }
 
-/// Mesh stages' SPIR-V scheduled late (direct_spv_late.h): on, unless HOS_DBG=nolate (a diagnosis; the cache is stamped by it)
-bool late_mesh() {
-    static const bool on = !dbg("nolate");
-    return on;
-}
-/// A mesh stage's SPIR-V as the translator emitted it, scheduled late
-void schedule_mesh(std::vector<uint32_t>& spirv) {
-    if (!late_mesh()) return;
-    st_late_stages.fetch_add(1, std::memory_order_relaxed);
-    st_late_moved.fetch_add(spv_schedule_late(spirv), std::memory_order_relaxed);
-}
-
 uint64_t disk_stamp() {
     uint64_t h = 0xCBF29CE484222325ull;
     const auto add = [&h](const void* d, size_t n) { h = hash_bytes(d, n, h); };
@@ -683,7 +670,7 @@ uint64_t disk_stamp() {
     };
     add(abi, sizeof abi);
     using namespace Shader::Backend::SPIRV;
-    const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (late_mesh() ? 4u : 0u);
+    const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u);
     add(&flags, sizeof flags);
     return h;
 }
@@ -1343,7 +1330,6 @@ bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const C
         VStage& mst = v.stages.emplace_back();
         mst.nvn_stage = 7, mst.vk_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
         mst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_MESH_BIT_EXT), mrt, ms->program, bindings);
-        schedule_mesh(mst.spirv);
         mst.info = ms->program.info;
         mst.c1 = mc.c1;
         st_game_words.fetch_add(menv.game_words, std::memory_order_relaxed);
@@ -1466,7 +1452,6 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
         VStage& mst = v.stages.emplace_back();
         mst.nvn_stage = 7, mst.vk_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
         mst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_MESH_BIT_EXT), mrt, ms->program, bindings);
-        schedule_mesh(mst.spirv);
         mst.info = ms->program.info;
         mst.c1 = mc.c1;
         st_game_words.fetch_add(menv.game_words, std::memory_order_relaxed);
@@ -1805,7 +1790,7 @@ void shader_stats(char* out, size_t cap, double frames) {
                   "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed; %lld from binaries, %lld binaries saved, %lld refused), %lld stages unreadable, table full %lld; misses %.1f a frame, "
                   "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
                   "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
-                  "than the push data's room for their addresses; the last miss %.2f s after the device; mesh stages made from hand-written sources %lld, refused %lld; mesh stages scheduled late at translation %lld (%lld instructions moved)", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
+                  "than the push data's room for their addresses; the last miss %.2f s after the device; mesh stages made from hand-written sources %lld, refused %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
                   st_object_ns.load() / 1e9,
                   (long long)st_object_failed.load(), (long long)sobin::st_hits.load(), (long long)sobin::st_saved.load(),
@@ -1813,7 +1798,7 @@ void shader_stats(char* out, size_t cap, double frames) {
                   st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_multi_answers.load(),
                   (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
                   (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load(), (long long)st_mesh_repl.load(),
-                  (long long)st_mesh_repl_refused.load(), (long long)st_late_stages.load(), (long long)st_late_moved.load());
+                  (long long)st_mesh_repl_refused.load());
 }
 
 }  // namespace hsd

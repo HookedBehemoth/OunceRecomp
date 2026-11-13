@@ -1234,12 +1234,14 @@ void list(const Frame& f) {
 /// buffer's address, k = 3}; its first 32 words printed, and checked against the scratch probe's expectation
 #include "fsbench.h"
 
-/// meshlab probe <spv> --run [--groups N] [--seconds T] [--no-prepass] [--prepass-barrier]: the Hyrule Field loss's shape with
+/// meshlab probe <spv> --run [--groups N] [--seconds T] [--no-prepass | --never] [--prepass-barrier]: the Hyrule Field loss's shape with
 /// a mesh stage of our own and no game data (probes/spill.mesh): N workgroups drawn twice in one rendering of 1536 x 864,
 /// first with depth written (less-or-equal, no colour), then with depth tested for equality and colour written, so that the
 /// second draw's fragments pass; again and again for T seconds, two submissions in flight; a submission not finished after
-/// 2 s stops the run (a hang). Push data: {a table of ones, 32 columns, the cell and the patch in clip units}
-int probe_run(const std::vector<uint32_t>& code, uint32_t groups, double seconds, bool with_prepass, bool barrier) {
+/// 2 s stops the run (a hang). --no-prepass: the second draw alone, depth less-or-equal (its fragments pass against the cleared
+/// depth); --never: alone with depth compare never (no fragment passes). Push data: {a table of ones, a word an invocation
+/// the stage sets when a value it held came back changed (counted at the end), 32 columns, the cell and the patch in clip units}
+int probe_run(const std::vector<uint32_t>& code, uint32_t groups, double seconds, bool with_prepass, bool barrier, bool never) {
     gpu_init();
     heaps_init();
     VkShaderEXT ms = make_shader(VK_SHADER_STAGE_MESH_BIT_EXT, code, nullptr, 0);
@@ -1250,7 +1252,10 @@ int probe_run(const std::vector<uint32_t>& code, uint32_t groups, double seconds
     Target t = make_target(d);
     Buf table = make_buf(32 * 512 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
     for (uint32_t i = 0; i < 32 * 512; i++) ((float*)table.map)[i] = 1.0f;
-    struct { uint64_t table; uint32_t columns; float cell, patch; uint32_t pad; } pd{table.addr, 32, 2.0f / 32.0f, 1.6f / 32.0f, 0};
+    // (a word an invocation: set by the stage when a value it held came back changed)
+    Buf wrong = make_buf((uint64_t)groups * 32 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    std::memset(wrong.map, 0, (size_t)groups * 32 * 4);
+    struct { uint64_t table, wrong; uint32_t columns; float cell, patch; uint32_t pad; } pd{table.addr, wrong.addr, 32, 2.0f / 32.0f, 1.6f / 32.0f, 0};
     Dyn dyn{};
     dyn.vp = {0, 0, 1536, 864, 0, 1}, dyn.sc = {{0, 0}, {1536, 864}}, dyn.samples = VK_SAMPLE_COUNT_1_BIT, dyn.n = 1, dyn.wm[0] = 0xF;
     dyn.front = VK_FRONT_FACE_COUNTER_CLOCKWISE, dyn.poly = VK_POLYGON_MODE_FILL;
@@ -1287,7 +1292,7 @@ int probe_run(const std::vector<uint32_t>& code, uint32_t groups, double seconds
             }
         }
         Dyn eq = dyn;
-        eq.dw = VK_FALSE, eq.dop = with_prepass ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
+        eq.dw = VK_FALSE, eq.dop = never ? VK_COMPARE_OP_NEVER : with_prepass ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
         set_state(cbs[k], eq);
         bind_stages(cbs[k], ms, fs);
         push(cbs[k], &pd, sizeof pd);
@@ -1296,7 +1301,7 @@ int probe_run(const std::vector<uint32_t>& code, uint32_t groups, double seconds
         VK(vkEndCommandBuffer(cbs[k]));
     }
     std::printf("probe run: %u workgroups, %s, 1536 x 864, %.0f s\n", groups,
-                !with_prepass ? "one draw (depth less-or-equal, not written)" : barrier ? "depth draw, the wait, then the depth-equal draw"
+                never ? "one draw whose fragments all fail (depth compare never)" : !with_prepass ? "one draw (depth less-or-equal, not written)" : barrier ? "depth draw, the wait, then the depth-equal draw"
                 : "depth draw then the depth-equal draw", seconds);
     std::fflush(stdout);
     const auto t0 = clk::now();
@@ -1321,7 +1326,15 @@ int probe_run(const std::vector<uint32_t>& code, uint32_t groups, double seconds
         submit(cbs[k], fences[k]);
         busy[k] = true;
     }
-    std::printf("SURVIVED: %llu submissions in %.1f s\n", (unsigned long long)done, std::chrono::duration<double>(clk::now() - t0).count());
+    uint64_t bad = 0, bad_groups = 0;
+    for (uint32_t gi = 0; gi < groups; gi++) {
+        uint32_t n = 0;
+        for (uint32_t l = 0; l < 32; l++) n += ((const uint32_t*)wrong.map)[gi * 32 + l] != 0;
+        bad += n, bad_groups += n != 0;
+    }
+    std::printf("SURVIVED: %llu submissions in %.1f s; invocations whose held values came back changed (in any submission): %llu of %u, in %llu of %u workgroups\n",
+                (unsigned long long)done, std::chrono::duration<double>(clk::now() - t0).count(), (unsigned long long)bad, groups * 32,
+                (unsigned long long)bad_groups, groups);
     return 0;
 }
 
@@ -1329,17 +1342,18 @@ int probe(int argc, char** argv) {
     const auto code = read_spv(argv[2]);
     if (code.empty()) die("no %s", argv[2]);
     {
-        bool run = false, with_prepass = true, barrier = false;
+        bool run = false, with_prepass = true, barrier = false, never = false;
         uint32_t n = 544;
         double seconds = 30;
         for (int i = 3; i < argc; i++) {
             if (!std::strcmp(argv[i], "--run")) run = true;
             else if (!std::strcmp(argv[i], "--no-prepass")) with_prepass = false;
             else if (!std::strcmp(argv[i], "--prepass-barrier")) barrier = true;
+            else if (!std::strcmp(argv[i], "--never")) never = true, with_prepass = false;
             else if (!std::strcmp(argv[i], "--groups") && i + 1 < argc) n = (uint32_t)std::atoi(argv[i + 1]);
             else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = std::atof(argv[i + 1]);
         }
-        if (run) return probe_run(code, n, seconds, with_prepass, barrier);
+        if (run) return probe_run(code, n, seconds, with_prepass, barrier, never);
     }
     uint32_t groups = 1;
     for (int i = 3; i + 1 < argc; i++)
