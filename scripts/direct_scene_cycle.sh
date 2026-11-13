@@ -7,10 +7,10 @@
 # by agl's LRU cache, the VRAM eviction patch's free VRAM and evictions, the whole device's VRAM from sysfs) and its
 # last shot in <run>/stops/. Child maps, age-free maps, the age switch ("!cheat 999"), adult maps.
 #
-#   scripts/direct_scene_cycle.sh <name> [NAME=VALUE ...]     (RX_BACKEND=direct HOS_DBG=strict,strictall by default;
+#   scripts/direct_scene_cycle.sh <name> [NAME=VALUE ...]     (HOS_DBG=strict,strictall by default;
 #                                                              the arguments are added to the run's environment)
 #   STOPS=N (N stops spread over the list), LOOPS=k (the selection k times), MAPS=<file> (default
-#   work/scenecycle/maps.txt, made by scripts/scene_cycle_maps.py: game-derived, never committed), EXE=, BACKEND=frozen
+#   work/scenecycle/maps.txt, made by scripts/scene_cycle_maps.py: game-derived, never committed), EXE=
 #   RUN=timing (the GPU lock: a stop may lose the device). Summary: grep . <run>/stops.txt; <run>/cycle.txt the misses.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -30,7 +30,7 @@ run_dir=$root/work/runs/$name
 live=$root/work/scenecycle/$name.live; mkdir -p "$(dirname "$live")"; : > "$live"
 log=$run_dir/log.txt
 args=(HOS_INPUT_LIVE="$live" HOS_INPUT_EXCLUSIVE=1 HOS_INPUT_SCRIPT_BACKGROUND=1 HOS_LOG_TIME=1)
-[ "${BACKEND:-direct}" = direct ] && args+=(RX_BACKEND=direct HOS_DBG=strict,strictall)
+args+=(HOS_DBG=strict,strictall)
 RUN=${RUN:-timing} OVERLAY=${OVERLAY:-work/overlay/chisel_kokiri} EXE=${EXE:-work/sa/build/hookshot} SHOT_EVERY=${SHOT_EVERY:-120} \
   scripts/run-vk.sh "$name" "${SECONDS_MAX:-3600}" -- "${args[@]}" "$@" &
 run=$!

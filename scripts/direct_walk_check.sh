@@ -8,10 +8,9 @@
 #                                                    stick held down: each scene starts with Link facing away from the door
 #                                                    he came through), the memory check
 #
-#   BACKEND=direct (default): RX_BACKEND=direct HOS_DBG=strict (plus DBG=<more HOS_DBG items>); the verdict fails on a strict
+#   HOS_DBG=strict (plus DBG=<more HOS_DBG items>); the verdict fails on a strict
 #             stop, on a texture made with undefined content (a load with no data the asset path could not resolve, an
 #             ASTC texture with no prepared record: the placeholder), and with no complete run
-#   BACKEND=frozen: RX_BACKEND unset (the reference: its shots and VRAM, no verdict but the run's)
 #   EXE=<build>, EXTRA="NAME=VALUE ..." more settings
 #
 # vram.txt in the run: seconds, the GPU's VRAM and GTT in use (amdgpu sysfs, the whole device: the desktop's share too),
@@ -19,7 +18,6 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 route=${1:?route: walk or scenes}
-backend=${BACKEND:-direct}
 py=$root/work/venv/bin/python
 overlay=$root/work/overlay/chisel_hf_market
 case "$route" in
@@ -28,15 +26,11 @@ case "$route" in
   scenes) input="20:LDOWN/5000,45:LDOWN/5000,70:LDOWN/5000,95:LDOWN/5000,120:LDOWN/5000,145:LDOWN/5000"; secs=185 ;;
   *) echo "route: walk or scenes"; exit 2 ;;
 esac
-name=${2:-walk_${route}_${backend}_$(date +%H%M%S)}
+name=${2:-walk_${route}_$(date +%H%M%S)}
 run=$root/work/runs/$name
 exe=${EXE:-$root/work/sa/build/hookshot}
 args=("HOS_INPUT_SCRIPT=$input" HOS_INPUT_EXCLUSIVE=1 HOS_INPUT_SCRIPT_BACKGROUND=1)
-case "$backend" in
-  direct) args+=(RX_BACKEND=direct "HOS_DBG=strict${DBG:+,$DBG}") ;;
-  frozen) [ -n "${DBG:-}" ] && args+=("HOS_DBG=$DBG") ;;
-  *) echo "BACKEND: direct or frozen"; exit 2 ;;
-esac
+args+=("HOS_DBG=strict${DBG:+,$DBG}")
 
 # (the VRAM sampler: waits for this run's game, then a line a second until it is gone)
 card=$(ls -d /sys/class/drm/card*/device 2>/dev/null | while read -r d; do [ -f "$d/mem_info_vram_used" ] && echo "$d" && break; done)
@@ -55,4 +49,4 @@ SHOT_EVERY=${SHOT_EVERY:-120} OVERLAY=$overlay EXE=$exe RUN=timing "$root/script
 sleep 2
 kill $sampler 2>/dev/null || true
 journalctl -k -b --no-pager 2>/dev/null | grep -E 'ring .* timeout|GPU reset\(' | tail -2 || true
-"$py" -I "$root/scripts/direct_walk_check.py" "$run" "$backend" "$route"
+"$py" -I "$root/scripts/direct_walk_check.py" "$run" direct "$route"

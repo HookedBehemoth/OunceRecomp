@@ -30,8 +30,8 @@ def finish_statements(source, filename):
     assert starts
     start = starts[0]
     end = next(i for i, node in enumerate(main.body[start + 1:], start + 1)
-               if isinstance(node, ast.If) and any(isinstance(call, ast.Call)
-               and isinstance(call.func, ast.Name) and call.func.id == "shader_census_cmd" for call in ast.walk(node)))
+               if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "prompts"
+                                                       for target in node.targets))
     # Include real launcher/destination selection, list/append, stage-copy and swap; no rewritten installation algorithm.
     return compile(ast.Module(body=main.body[start:end], type_ignores=[]), filename, "exec")
 

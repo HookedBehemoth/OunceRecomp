@@ -60,10 +60,7 @@ rm -rf "$out"; mkdir -p "$out/shots" "$out/user"
 [ -n "${USER_FROM:-}" ] && cp -r "$USER_FROM"/. "$out/user/"
 if [ "$mode" != check ] && pgrep -x hookshot >/dev/null; then echo "another hookshot runs"; exit 1; fi
 romfs=$(grep -v '^#' "$root/work/dump.txt" | head -1)/romfs
-env_args=(RX_BACKEND=vulkan RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}"
-          RX_VK_FRAME_LOG="$out/frames.csv" HOOKSHOT_NO_UPDATE_CHECK=1
-          RX_VK_MESH_NOCULL=2c56dc1006942f74   # (RDNA2: that task shader's depth-grid walk hangs the GPU: docs/development.md)
-          RX_VK_TASK_MESH_FALLBACK=${TASK_MESH_FALLBACK:-1})   # (RDNA2: native task shaders hang the async ring under faster timing: docs/native-vk.md)
+env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}" HOOKSHOT_NO_UPDATE_CHECK=1)
 [ "${WINDOW:-0}" = 1 ] || env_args+=(HOS_HEADLESS=1)
 [ "${SOUND:-0}" = 1 ] || env_args+=(HOS_AUDIO=0)
 [ -n "${OVERLAY:-}" ] && env_args+=(HOS_FS_OVERLAY="$(cd "$OVERLAY" && pwd)")

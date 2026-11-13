@@ -1,7 +1,7 @@
 # Hookshot (oot-recomp)
 
 **Hookshot** is the port's name (as Skybound is TOTKPort's and BlueShell is mkw-recomp's); the maintainer's repository
-folder stays `oot-recomp`. The game builds as `hookshot.exe` + `hookshot_vk.dll` (`hookshot` + `hookshot_vk.so` on Linux).
+folder stays `oot-recomp`. The game builds as `hookshot` + `hookshot_direct.so` (Linux).
 
 A static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake to native x86-64 Windows and Linux:
 the game's code lifted to C (NotRexed's a64-kit, Rexcomp's AArch64 kit), the Horizon OS and NVN2 implemented
@@ -34,7 +34,7 @@ Run everything with `python -I` from this folder.
 | `python -I nx2/census.py --nx2` | instruction census per module, after the Switch 2 forms |
 | `python -I nx2/test_insn.py [--per 6 --states 12]` | every instruction form the game uses, Unicorn vs lifted C |
 | `python -I nx2/test_leaf.py [--count 3000 --states 4] [--calls]` | random whole functions (or call trees), Unicorn vs recompiled native code on the real image |
-| `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot.exe` + `hookshot_vk.dll` |
+| `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot.exe` + `hookshot_direct.so`, the only renderer |
 | `powershell -File scripts/run-vk.ps1 [-Window] [-Seconds 120] [-Name x]` | a muted test run on Vulkan, with screenshots in `work/runs/<name>/shots` |
 | `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_PROFILE=<seconds>` + `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>` (the sampler runs only with `HOS_PROFILE` set), named from the linker maps |
 
@@ -87,7 +87,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
-| `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value but `eden`: the WebGPU renderer, when the exe was built with one |
+| `RX_BACKEND=<name>` | Not read: the direct back end is the only renderer |
 
 ### Input for scripted runs
 
@@ -244,8 +244,9 @@ The other rows are 0 Off and 1 On. Some are read at the start, before the menu e
 | `docs/design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the builders run |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux |
-| `gpu/legacy/vk/` | the Vulkan back end (`hookshot_vk.dll`, `hookshot_vk.so`), with Eden's shader recompiler and sirit |
-| `gpu/legacy/render/`, `gpu/third_party/` | the WebGPU renderer the Windows exe falls back to when it was built with wgpu-native, its op stream (`rx_nvn.h`), suyu's decoders |
+| `gpu/direct/` | the direct back end (`hookshot_direct.so`), with its fork of Eden's shader recompiler and sirit in `eden/` |
+| `gpu/api/` | what the host and the direct back end share: the versioned table (`vk_api.h`), the NVN objects and command records (`rx_nvn.h`) |
+| `gpu/legacy/` | upstream's Vulkan and WebGPU renderers, reference source only: not built, not tested |
 | `builder/` | Hookshot Builder: the Windows app (.NET 8 WPF), its setup and MSI, and the Linux builder and launcher scripts |
 | `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), release tooling, `scripts/linux` (dependencies, AppImage) |
 | `tests/` | the game-free checks, all run by `tests/run_all.py` |

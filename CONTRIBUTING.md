@@ -15,7 +15,7 @@ never will. That includes:
 
 - the `.nup`, `romfs`, `exefs`, `.nso`, `.nca`, `.nsp`, `.xci` or `.nsz`/`.xcz` files, and any title keys;
 - `work/` and everything in it: the extracted dump, `image.bin`, the lifted C, test builds, runs and screenshots;
-- `hookshot.exe`, `hookshot_vk.dll`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
+- `hookshot.exe`, `hookshot_direct.so`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
   `mkw_vk_pipelines.bin` and other build output;
 - saves (`user/`), `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`.
 
@@ -77,7 +77,6 @@ about 10 GB of RAM.
    | From `tools` | To | Variable |
    |---|---|---|
    | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the standalone build stops) |
-   | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game is built without one) |
    | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
    | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |
 
@@ -95,32 +94,6 @@ scripts/linux/appimage.sh   # the AppImage, in build-linux/
 
 The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
 compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
-
-### NVIDIA DLSS (optional)
-
-DLSS (`gpu/legacy/vk/vk_dlss.cpp`) is built in only with NVIDIA's DLSS SDK, which is NVIDIA's, under NVIDIA's own license, and
-is never committed, bundled or uploaded: not in a PR, not in a release, not in a CI artifact. Fetch it for your own
-builds with `scripts/ngx_sdk.py` (it prints NVIDIA's license notice and needs `--accept-nvidia-license` or a typed yes),
-then build with `HOOKSHOT_NGX_SDK=<sdk folder>`:
-
-```powershell
-python -I scripts/ngx_sdk.py --platform windows C:\path\ngx-sdk     # headers, nvsdk_ngx_s.lib, nvngx_dlss.dll
-$env:HOOKSHOT_NGX_SDK = "C:\path\ngx-sdk"
-python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot-dlss"
-```
-
-On Windows the llvm-mingw build links NVIDIA's static `nvsdk_ngx_s.lib` (built for Microsoft's static runtime) into
-`hookshot_vk.dll`, with `gpu/legacy/vk/vk_ngx_msvc_rt.cpp` and `host/mingw_msvc_shims.c` for what it needs of that runtime.
-`make_game.py` copies `nvngx_dlss.dll` into the game folder's `ngx` folder; never put NGX's core, `_nvngx.dll`, beside
-the game (it is the driver's). On Linux it is `--platform linux` (or `scripts/linux/ngx-sdk.sh`), with `libnvsdk_ngx.a`
-and `libnvidia-ngx-dlss.so`. A Windows game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
-CI's `vulkan-dlss` workflow (`.github/workflows/vulkan-dlss.yml`) checks only that `hookshot_vk.dll` still links with the
-SDK. It runs by hand, and on a push or pull request only when a file DLSS's build depends on changes; it accepts NVIDIA's
-license for that run alone and uploads nothing.
-
-Never share a game folder built with the SDK. A change to the pinned release updates the file table and SHA-256s in
-`scripts/ngx_sdk.py` (and `tests/test_ngx_sdk.py`), and the release named in the builder's license text
-(`builder/HookshotBuilder/MainWindow.xaml.cs`).
 
 ### Hookshot Builder
 
@@ -147,8 +120,8 @@ window, including one started to update a game, uses Automatic again.
 | `python -I nx2/make_game.py --check --nup "C:\path\your-game.nup"` | Check the game and its version without building. |
 | `python -I nx2/dump.py --dump <folder with exefs/ and romfs/> --set` | Record the dump in `work/dump.txt`. |
 | `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
-| `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot.exe` and `hookshot_vk.dll`. |
-| `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
+| `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot` and `hookshot_direct.so` (Linux). |
+| `scripts/run-vk.sh <name> 120` | Run the standalone build and take screenshots in `work/runs/<name>/shots` (Linux). |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
@@ -164,7 +137,7 @@ These need no dump and are what CI runs, on every pull request and every push to
 python -I -B tests/run_all.py
 ```
 
-It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under `gpu/legacy/vk/tests` and a
+It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, and a
 byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
 failure's output. Name a check to run only the ones whose path contains it (`python -I -B tests/run_all.py ub_`). A new
 `test_*.py` file is picked up by itself: no workflow to edit.
@@ -262,8 +235,6 @@ with an incompatible license, and do not paste decompiled game code or anything 
 The third-party parts (Eden, suyu, Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus
 fonts, zbic and the a64-kit tools) keep their own notices. Preserve them, and do not relicense their code.
 
-NVIDIA's DLSS SDK is not one of them: it is never in the repository, and nothing of it may be added (see
-[NVIDIA DLSS](#nvidia-dlss-optional)).
 
 ## Where to talk
 

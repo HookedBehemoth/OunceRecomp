@@ -902,42 +902,6 @@ def drop_stale_objects(work):
         f.write(stamp + chr(10))
 
 
-def seed_pipelines(out):
-    """The pipelines recorded on the development PC (hookshot_pipelines_seed.bin in the tools: program keys and draw states, no game
-    code), as the game folder's list, so its first start builds them before the title, as TotK Recomp's shipped shader list does,
-    instead of compiling each when it is first drawn (the stutter of a first visit). Each release ships the list its own build
-    made: the file's first 8 bytes are that build's stamp, and a list the folder has from the same build is kept (it grows as
-    the player plays)"""
-    seed = os.path.join(ROOT, "hookshot_pipelines_seed.bin")
-    dst = os.path.join(out, "hookshot_pipelines.bin")
-    if not os.path.isfile(seed):
-        return
-    with open(seed, "rb") as f:
-        stamp = f.read(8)
-    try:
-        with open(dst, "rb") as f:
-            if f.read(8) == stamp:
-                return
-    except OSError:
-        pass
-    shutil.copyfile(seed, dst)
-    print("the shipped pipeline list: %d KB, built before the first title" % (os.path.getsize(seed) >> 10), flush=True)
-
-
-def ship_state_list(out):
-    """The pipeline state list made from a play of the game on the development PC (work/pipeline_states.bin: each pipeline's stage
-    code keys, vertex and target formats and draw state; hashes and state only, no game code), as the folder's
-    hookshot_pipeline_states_shipped.bin: the first start's shader preparation builds those pipelines before the title, from the
-    player's own shaders (hookshot_shaders.bin), instead of compiling each when it is first drawn. Good for any build: optional"""
-    src = os.path.join(ROOT, "work", "pipeline_states.bin")
-    dst = os.path.join(out, "hookshot_pipeline_states_shipped.bin")
-    if not os.path.isfile(src):
-        return
-    if not (os.path.isfile(dst) and filecmp.cmp(src, dst, shallow=False)):
-        shutil.copyfile(src, dst)
-    print("the shipped pipeline state list: %d pipelines" % ((os.path.getsize(src) - 12) // 528), flush=True)
-
-
 # (the builders read this line's start: the step was skipped or failed, and the shaders' row says so instead of a check mark)
 NOT_PREPARED = "the shaders were not prepared now"
 # (a run that prints nothing this long is stopped. Not its whole length: that is 25 minutes on some AMD GPUs, and the driver's own
@@ -1087,12 +1051,6 @@ def link_or_copy(src, dst):
             say("progress", "%.3f" % (i / max(1, len(files))))
 
 
-def shader_census_cmd(romfs, out):
-    """The shader list, under the same UTF-8 mode as the other steps. -I alone follows the console's code page, and an
-    archive name that page cannot print stopped this step: the game then compiled its shaders as it played."""
-    return PY + [os.path.join(HERE, "shader_census.py"), long_path(romfs), "--out", out]
-
-
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
 
 
@@ -1176,78 +1134,6 @@ def lifted_before(work, key):
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
 
 
-def ngx_script():
-    """scripts/ngx_sdk.py: NVIDIA's DLSS SDK, its file table and where each file goes"""
-    import importlib.util
-    path = os.path.join(ROOT, "scripts", "ngx_sdk.py")
-    if not os.path.isfile(path):   # (the AppImage carries no scripts/: its Vulkan back end comes built, without DLSS)
-        fail("NVIDIA DLSS (HOOKSHOT_NGX_SDK) needs %s, which this builder does not carry: its renderer is built without DLSS. "
-             "Unset HOOKSHOT_NGX_SDK, or build Hookshot from source for DLSS." % path)
-    spec = importlib.util.spec_from_file_location("ngx_sdk", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def ngx_platform():
-    return "linux" if LINUX else "windows"
-
-
-def fetch_ngx_sdk(a):
-    """--fetch-ngx-sdk (the Hookshot Builder's NVIDIA DLSS tick): NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build, once
-    NVIDIA's license was accepted (--accept-nvidia-license: the builder asked first). Only what is missing or not the file
-    expected is downloaded"""
-    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
-    if not sdk:
-        fail("--fetch-ngx-sdk needs HOOKSHOT_NGX_SDK, the folder NVIDIA's DLSS SDK goes into.")
-    if not a.accept_nvidia_license:
-        fail("NVIDIA DLSS needs NVIDIA's license accepted first (--accept-nvidia-license).")
-    ngx = ngx_script()
-    print(ngx.NOTICE, flush=True)
-    print("NVIDIA's license accepted: getting NVIDIA's DLSS SDK into %s" % sdk, flush=True)
-    try:
-        ngx.fetch(sdk, ngx_platform(), say=lambda line: print(line, flush=True))
-    except (OSError, ValueError) as e:
-        fail("NVIDIA's DLSS SDK could not be downloaded (%s). Check the connection and build again, or untick NVIDIA DLSS." % e)
-
-
-def ngx_built():
-    """This build has NVIDIA DLSS: HOOKSHOT_NGX_SDK holds this platform's library (what nx2/build.py takes)"""
-    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
-    return bool(sdk) and os.path.isfile(ngx_script().library(sdk, ngx_platform()))
-
-
-FSR_MARK = ".hookshot_fsr"   # (in a game folder built with AMD FSR 4: --update builds it with FSR again)
-
-
-def fsr_wanted(a, out):
-    """AMD FSR 4 in this build (--fsr; or --update of a folder built with it, unless --no-fsr): nothing to download, AMD's
-    MIT headers are in third_party/fidelityfx and its DLLs are the player's (the readme)"""
-    if getattr(a, "no_fsr", False):
-        return False
-    return bool(getattr(a, "fsr", False)) or bool(a.update and os.path.isfile(os.path.join(out, FSR_MARK)))
-
-
-def place_ngx_runtime(out):
-    """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
-    folder, where gpu/legacy/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
-    NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns the file placed, or None"""
-    ngx = ngx_script()
-    platform = ngx_platform()
-    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
-    if not sdk or not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
-        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtime too)
-        stale = os.path.join(out, "ngx", ngx.runtime_name(platform))
-        if os.path.isfile(stale):
-            with contextlib.suppress(OSError):
-                os.remove(stale)
-                os.rmdir(os.path.dirname(stale))
-        return None
-    dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
-    print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)
-    return dst
-
-
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -1267,12 +1153,6 @@ def parse_args():
     p.add_argument("--no-prepare-shaders", action="store_true",
                    help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
-    # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
-    p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
-    p.add_argument("--accept-nvidia-license", action="store_true", help="NVIDIA's DLSS SDK license, accepted (with --fetch-ngx-sdk)")
-    # (AMD FSR 4, off unless asked: nothing is downloaded. gpu/legacy/vk/vk_fsr4.cpp)
-    p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: see the readme)")
-    p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
     a = p.parse_args()
     if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
         global PREPARE
@@ -1319,19 +1199,6 @@ def main(a=None):
         check_windows_sdk()
     stop_stray_compilers(work, a.default_work)
     drop_stale_objects(work)
-    if getattr(a, "fetch_ngx_sdk", False):
-        fetch_ngx_sdk(a)
-    # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
-    if fsr_wanted(a, out):
-        os.environ["HOOKSHOT_FSR"] = "1"
-        open(os.path.join(out, FSR_MARK), "w").close()
-        if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4)
-            print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
-                  "Upscaler row will not offer it", flush=True)
-    else:
-        os.environ.pop("HOOKSHOT_FSR", None)
-        if os.path.isfile(os.path.join(out, FSR_MARK)):
-            os.remove(os.path.join(out, FSR_MARK))
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
 
@@ -1585,11 +1452,6 @@ def main(a=None):
                     os.remove(os.path.join(out, n))
             except OSError:
                 pass
-    place_ngx_runtime(out)
-    # every shader of the game, for its first start to translate (gpu/legacy/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
-    # as it meets them: not worth stopping a finished build for
-    if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
-        print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
     # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
     # Without it the game shows its own icons
     prompts = os.path.join(out, "prompts")
@@ -1602,8 +1464,6 @@ def main(a=None):
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)
-    seed_pipelines(out)
-    ship_state_list(out)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
