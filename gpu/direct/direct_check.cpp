@@ -23,10 +23,10 @@ namespace hsd {
 // stopping. An entry stays only while its cause is understood and cannot be fixed in the stage that added it.
 const StrictKnown kStrictKnown[] = {
     {"Vulkan object made in steady play: an image for a texture the game made (renderable)",
-     "the game makes render targets in play: its local-light shadow maps are sized by the light's distance (host/rt_slots.c, "
-     "f_802640a0, HOS_RT_QUANT rounds them to 128: about 12 sizes a light), and a size first seen is a new texture at a new "
-     "address, so a new image (Kokiri: 5 in 120 s, 1152x1152 to 1536x864 D32F). Fix: a game patch that keeps one shape a light "
-     "(docs/direct/m6b-report.md, known list)"},
+     "the game makes render targets in play: a light's shadow map changes its size class, the dynamic resolution takes a level "
+     "not seen before, a slot is made at a new offset (host/rt_slots.c). A transient target's image is an object bound in the "
+     "transient pool at its storage offset: no device memory is allocated for it, and the object is kept for the next texture "
+     "of that storage and shape (docs/direct/shadow-pool-report.md)"},
     {"Vulkan object made in steady play: an attachment view of a game's texture",
      "the attachment view of such an image, made at its first SetRenderTargets (as the entry above)"},
     {"Vulkan object made in steady play: an image of a texture the game loaded (its prepared content)",

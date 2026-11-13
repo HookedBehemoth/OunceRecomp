@@ -608,7 +608,11 @@ static int by_off(const void *a, const void *b) {
     const uint64_t x = **(const uint64_t *const *)a, y = **(const uint64_t *const *)b;
     return x < y ? -1 : x > y;
 }
-/* the lowest aligned gap of cap bytes between the slots; idle slots (free 8 presents; with none of those left, free
+/* Large slots (the shadow maps and cascades, full-resolution targets) are placed from the top of the range down, the
+   rest from the bottom up: the many small targets that come and go with the dynamic resolution then do not cut up the
+   room the 16-24 MB maps need (with one end, the scene route placed 48 maps outside the slots for want of one gap) */
+#define BIG_SLOT (8ull << 20)
+/* an aligned gap of cap bytes between the slots (the lowest; for a large slot the highest); idle slots (free 8 presents; with none of those left, free
    REUSE_AFTER presents) go, least recently used first, until one is found. ~0: none */
 static uint64_t place(uint64_t cap, uint64_t align) {
     static const uint64_t *order[MAX_SLOTS];
@@ -616,16 +620,20 @@ static uint64_t place(uint64_t cap, uint64_t align) {
     for (;;) {
         for (int i = 0; i < nslots; i++) order[i] = &slots[i].off;
         qsort(order, (size_t)nslots, sizeof *order, by_off);
-        uint64_t at = lo;
+        uint64_t at = lo, best = ~0ull;
         for (int i = 0; i <= nslots; i++) {
             at = (at + align - 1) & ~(align - 1);
             const uint64_t end = i < nslots ? *order[i] : hi;
-            if (at + cap <= end) return at;
+            if (at + cap <= end) {
+                if (cap < BIG_SLOT) return at;
+                best = (end - cap) & ~(align - 1);   /* (>= at: at is aligned) */
+            }
             if (i < nslots) {
                 const Slot *s = (const Slot *)((const char *)order[i] - offsetof(Slot, off));
                 if (s->off + s->cap > at) at = s->off + s->cap;
             }
         }
+        if (best != ~0ull) return best;
         int lru = -1;
         for (int i = 0; i < nslots; i++)
             if (!slots[i].block && slots[i].last_frame + idle <= frame && (lru < 0 || slots[i].last_frame < slots[lru].last_frame))

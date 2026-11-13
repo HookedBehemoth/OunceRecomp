@@ -94,13 +94,13 @@
 807978c0 ui2d_textures_init_b             # work/assets/native/asset-path.md: (agl-called ResTextureFile path)
 
 # --- render targets: agl::utl::DynamicTextureAllocator
-8005ed00 dta_alloc                        # host/rt_slots.c, work/assets/native/rt-alloc.md: DTA::alloc (dta, ctx, desc, flags)
+8005ed00 dta_alloc                        # host/rt_slots.c, work/assets/native/rt-alloc.md: DTA::alloc (dta, ctx, desc, flags); docs/direct/shadow-pool-report.md: computes a target's size itself (never asks nvnTextureBuilderGetStorageSize on the transient path); the entry it returns names its texture object through its descriptor id (+0x68 -> agl's record +0x18 -> holder -> object)
 80065b10 dta_alloc_b                      # work/assets/native/block-linear.md: the other DynamicTextureAllocator entry
 80062c50 dta_alloc_persistent             # host/rt_slots.c, work/assets/native/rt-alloc.md: the persistent path's fit, from the top of a free block
 80063090 dta_arena_init                   # work/assets/native/rt-alloc.md: one of the pool record's 7 arenas
 8006ec60 dta_arena_stats                  # work/assets/native/cores.md: sums the arenas' bytes in use for the game's stats
 80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, nx2/oot_patches.py: -> DTA::initialize
-802737a0 dta_free                         # docs/native-vk.md, host/rt_slots.c
+802737a0 dta_free                         # docs/native-vk.md, host/rt_slots.c; docs/direct/shadow-pool-report.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
 80c49070 dta_initialize                   # work/assets/native/rt-alloc.md: DTA::initialize: entries, 7 lanes, pool record
 836ce9d0 dta_pool_config_read             # nx2/oot_patches.py: reads the render-target pool size, makes the pools
 80c49380 dta_pool_record_create           # work/assets/native/rt-alloc.md: physical pool + 7 arenas + virtual pools
@@ -112,7 +112,7 @@
 80557420 desc_deferred_free_drain         # docs/direct/m3-patch-sites.md: returns freed descriptor ids after the flip
 80966440 desc_pools_create                # work/assets/native/engine-materials.md: the texture pool (33,068 ids) and the sampler pool
 80064920 desc_register_texture            # docs/direct/m3-patch-sites.md, docs/direct/texture-streaming.md: agl descriptor manager (mgr, texture, view, owner) -> RegisterTexture
-800634b0 desc_reregister                  # docs/direct/m3-patch-sites.md, docs/direct/shadow-maps.md 2: frees an entry's descriptor id and takes a new one (ENTRY_HOOK); with no pool (+0x10 = 0) it only frees it (+0x68 = -1)
+800634b0 desc_reregister                  # docs/direct/m3-patch-sites.md, docs/direct/shadow-maps.md 2: frees an entry's descriptor id and takes a new one (ENTRY_HOOK); with no pool (+0x10 = 0) it only frees it (+0x68 = -1); docs/direct/shadow-pool-report.md: reads the NVN format table 0x83f4848c (u32 per agl format, 0x5f entries) and initializes the manager's texture object over the entry's pool (+0x10) and offset (+0)
 834bf750 desc_register_view               # docs/direct/shadow-maps.md 2: a texture object of the manager's own over a TextureData copy, initialized and registered: a new id (local shadows, sun cascades)
 834bf9b0 desc_id_release                  # docs/direct/shadow-maps.md 2: an id's count down; at 0 onto the deferred list (+0xa00 by +0xa60) that f_80557420 drains
 800656b0 desc_texture_slot_b              # work/assets/native/rt-alloc.md, work/assets/native/cores.md: texture descriptor slot, with f_80064920 and f_80065880: texture object, builder from TextureData, register
@@ -230,7 +230,7 @@
 802a9520 pass_linear_depth                # work/assets/native/engine-frame.md: linear depth
 8067d7a0 pass_linear_depth_grid           # work/assets/native/engine-frame.md: linear depth, HalfNld, grid dispatches
 80255be0 pass_local_shadow                # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawDepth": each light of its list with +0x5f8 bit 2 draws its map, then bit 3 is set
-802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/shadow-maps.md 2: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's
+802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/shadow-maps.md 2: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/shadow-pool-report.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
 800672e0 pass_mip_chain_compute           # work/assets/native/nvn-callpaths.md, work/assets/native/engine-frame.md: mip chain by compute, 2 barriers per level
 802ad740 pass_occlusion_depth             # work/assets/native/engine-frame.md, work/assets/native/readback.md: agl::utl::DepthBufferEx::OcclusionDepthBuffer, 11 reports
 8067d890 pass_occlusion_grid_gather       # work/assets/native/engine-frame.md: occlusion grid gather dispatch

@@ -97,6 +97,14 @@ int main(void) {
         other = alloc(1, 48, 1 << 20, 0x3000);          /* REUSE_AFTER presents later: a free slot of the family that holds it */
         CHECK(other && (other->off == at || other->w == 48) && nslots == 2);
     }
+    /* a large slot is placed from the top of the range, a small one from the bottom */
+    hi = lo + (64ull << 20);
+    reset();
+    a = alloc(1, 64, 1 << 20, 0x1000), b = alloc(2, 2048, BIG_SLOT, 0x2000);
+    CHECK(a && b && a->off == lo && b->off + b->cap == hi);
+    Slot *b2 = alloc(3, 2048, BIG_SLOT, 0x3000);
+    CHECK(b2 && b && b2->off + b2->cap == b->off);
+    hi = lo + (8ull << 20);
     reset();
     a = alloc(1, 64, 3 << 20, 0x1000), b = alloc(2, 64, 3 << 20, 0x2000);
     CHECK(a && b);
@@ -138,6 +146,7 @@ def main():
     parts = [
         until(src, "#define LR_LOCAL_SHADOW", "\n"),
         until(src, "#define REUSE_AFTER", "\n"),
+        until(src, "#define BIG_SLOT", "\n"),
         until(src, "typedef struct {\n    uint64_t lr, name, dta;", "} Cur;"),
         "static Cur cur;",
         until(src, "typedef struct {\n    uint64_t fam, off, cap, block;", "} Slot;"),
