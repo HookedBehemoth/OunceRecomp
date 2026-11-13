@@ -749,3 +749,53 @@
 8262bb10 sys_nninit_startup               # nx2/image.py exports (main): nninitStartup
 850438b0 util_tiny_mt_generate_random_u32 # nx2/image.py exports (sdk): nn::util::TinyMt::GenerateRandomU32
 85046480 util_vsn_printf                  # nx2/image.py exports (sdk): nn::util::VSNPrintf
+
+# --- boot and the main loop (docs/direct/boot-to-main-loop.md)
+809db6a0 sead_framework_init_systems      # heap mgr, thread mgr, resource mgr, file device mgr (romfs mount)
+809ddf00 sead_heap_mgr_init               # the root heap on nninitStartup's arena, the ThreadMgr
+80df5690 thread_adopt_main                # the nn main thread becomes sead::MainThread, priority 16
+80f70240 config_heapdef_load              # reads System/HeapSize's HeapDef
+809d9a90 config_romconfig_load            # System/GameRomConfig
+83bf9db0 config_address_table_load        # region language, System/AddressTable
+80e57700 sead_framework_construct         # the framework object (vtable 0x84c83f80)
+80f48eb0 sead_task_mgr_create             # the TaskMgr with the root task's factory
+80966800 frame_startup_loop               # 10 ms polls of the TaskMgr until the root task runs
+809667b0 frame_main_loop                  # for (;;) procFrame
+802eaf10 frame_task_mgr_pre               # the TaskMgr's tree and destroy requests
+802eabd0 frame_proc_calc                  # task create, the calc tree
+802eaa40 sead_task_mgr_prepare_next       # a queued task's prepare on the calling thread
+802ead80 sead_task_mgr_create_next        # creates the queue's next task, or starts a prepared one
+8348d430 frame_proc_reset                 # reset requests
+81207a50 frame_wait_present_acquire       # waits for the previous present, nvnWindowAcquireTexture
+8348c920 frame_wait_vsync                 # the vsync event, more vsyncs below the target rate
+83be0230 frame_app_messages               # nn::oe notification messages
+804fbda0 frame_rate_controller            # frame times to the presentation interval (inferred)
+80f47540 module_root_task_create          # the root task's factory: a ModuleSystem
+80f47590 module_system_construct          # ModuleSystem (vtable 0x84c85650)
+83b7b100 module_system_task_calc          # the ModuleSystem's calc node
+83b7bc70 module_system_task_draw          # the ModuleSystem's draw node
+80670d00 gsys_system_task_precalc         # gsys::SystemTask::preCalc_
+8066fb80 gsys_system_task_postcalc        # gsys::SystemTask::postCalc_
+836ce750 gsys_system_task_post_draw       # "PostDraw(TV)"
+8004aae0 thread_baseproc_executor_calc    # BaseProcExecutor's calc_: runs the executor
+83acfb90 actor_baseproc_stage_late        # the second BaseProc step of stage C, with its join (inferred)
+806afc40 actor_baseproc_stage_logic       # a worker's BaseProc step that starts the game logic (inferred)
+80a65370 thread_delegate_calc             # a delegate thread's calc_
+8069dbe0 thread_sead_construct            # a sead thread object
+80441560 frame_end_callback               # the framework's frame callback (+0x188)
+80441630 frame_end_stage_kick             # calls the ModuleSystem's frame-end stage
+80ec0e90 sys_fpcr_flush_to_zero           # FPCR.FZ for the main thread
+80d34500 gfx_device_construct             # the graphics device object at [0x84cacc98]
+812be290 nvn_procs_load                   # fills the NVN proc pointers
+83ad0bf0 thread_baseproc_create_delete_calc  # BaseProcCreateAndDeleteThread's calc_
+801be6e0 thread_resource_calc             # Resource Control/Memory and ARes Loading's calc_
+836dda20 thread_parallel_decomp_calc      # ParallelDecompThread's calc_
+836e9140 thread_general_format_calc       # GeneralFormatAsync_ and SceneLowPriority's calc_
+80e557a0 thread_bootup_background_calc    # BootupBackgroundWorkThread's calc_
+80e6dfd0 thread_textbox_texture_calc      # UpdateTextBoxTextureThread's calc_
+836f51d0 thread_audio_framework_calc      # AudioFrameworkThread's calc_
+836f17a0 thread_audio_user_task_calc      # AudioUserTaskThread's calc_
+836f4410 thread_opus_decoder_calc         # OpusDecoder's calc_
+8370bbc0 thread_aal_worker_calc           # aal::PathFindingThread and aal::LowPrioWorkerThread's calc_
+805378b0 thread_play_reporter_calc        # PlayReporter's calc_
+83489ad0 thread_vibration_calc            # VibrationThread's calc_
