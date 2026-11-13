@@ -8,39 +8,45 @@ lock (`work/run.lock`) and waited for the other agents' game runs. Captures and 
 
 Verified (each by a check that could have failed):
 
-- **A capture of one frame's mesh draws** (`HOS_DBG=meshcap:<present>`) and **a standalone harness** (`tools/meshlab`, built
-  apart from the game) that draws them with the stages the back end made, at the game's own guest addresses (sparse
-  windows as layer 0), and compares two mesh stages by the geometry they emit, word for word. Translator against itself:
-  110 of 110 market draws equal, no fault, no hang.
-- **The decompiled depth-only meshlet stage** (`gpu/direct/shaders/mesh/meshlet_depth.mesh`, game stages `26fa8419`,
-  `6942222e`, `ef1f1c50`) emits **exactly** the translator's geometry: 38 of 38 captured market draws equal (every vertex
-  position and every triangle). RESULT_LIT
-- **Isolated, the market's hanging job does not hang**: the 22 task+mesh draws of the job the breadcrumbs named (`a437aea2`,
-  `bee3d34e`, `cfebb562`, ...) back to back in one rendering, with no barrier between them, with the translator's stages:
-  5.7 million draws in 30 s (inline, simple fragment stage) and 6.0 million (in a secondary, the real fragment stages) without
-  a loss. RESULT_R5 So **the two-overlapping-mesh-draws condition alone is not the cause**: something else of the game's
-  command stream is needed (section 4).
-- **The inventory** (section 1): the market draws 47 distinct mesh stages (31 of task+mesh programs, 29 mesh-only ... see
-  the table), 43 distinct even with every literal masked, in about 10 families by structure. None has a loop, and only two
-  have the game's own private memory (local memory: `55e5c685` 208 bytes, `8d46218c` 16 bytes, neither implicated).
-- **Scratch** (the coordinator's lead): RADV's compiled mesh stages were read (`RADV_DEBUG=shaders`). The implicated
-  `a437aea2` uses **no scratch** (153 VGPRs, 30,826 bytes of LDS). Two others named by the breadcrumbs (`bee3d34e`,
-  `30dcbaf5`) store their outputs in **RADV's mesh scratch ring** (outputs past the 30 KB NGG LDS), as do 4 mesh-only stages
-  that never hung; one (`cfebb562`) also spills VGPRs to scratch. A mesh stage that needs private scratch works in isolation
-  (the scratch probe, 20,000 workgroups, results correct). So "scratch → hang" does not hold as a rule here.
+- **A capture of one frame's mesh draws** (`HOS_DBG=meshcap:<present>`, a debug aid) and **a standalone harness**
+  (`tools/meshlab`, built apart from the game) that draws them with the stages the back end made, at the game's own guest
+  addresses (sparse windows as layer 0), and compares two mesh stages by the geometry they emit, bit for bit. The
+  translator's stage against itself: 110 of 110 market draws equal, no fault.
+- **Decompiled sources that emit exactly the translator's geometry** (`gpu/direct/shaders/mesh/`, committed, not used by the
+  game): the depth-only meshlet stage (game stages `26fa8419`, `6942222e`, `ef1f1c50`) and the lit meshlet stage
+  (`e67ab188`: clip position, view-space normal and tangent, world position, handedness, texture coordinates). **69 of 69
+  captured draws equal** (market 43, Hyrule Field 24, Kokiri 2), every output of every vertex a triangle uses.
+- **Isolated, the market's lost job does not hang.** The job command buffer the breadcrumbs named (22 task+mesh draws of 11
+  programs, `a437aea2`, `bee3d34e`, `cfebb562` among them) back to back in one rendering with **no barrier**, with the
+  translator's stages, survived every configuration tried, adding in turn the real fragment stages, a secondary command
+  buffer, the render condition, an occlusion query, the task steps run again before each submission, vertex draws in the same
+  rendering, 2,200 draws a submission, and the whole frame's 110 mesh draws: between 2.1 and 7.7 million draws in 30-60 s a
+  run, none lost (the game loses the device in 22-111 s). So **two overlapping native mesh draws of these stages are not
+  enough for the loss**; something else of the game's command stream around them is needed (section 4).
+- **The inventory** (section 1): 51 distinct mesh stages in the three scenes (market 47, Hyrule Field 46, Kokiri 34; 22 of
+  task+mesh programs, 29 mesh-only), 47 still distinct with every literal masked (a stage per material), about ten families
+  by what they do. **None has a loop**; only two have private memory of the game's own (native local memory: `55e5c685`
+  208 bytes, `8d46218c` 16 bytes, neither in a job that hung); six write storage (statistics atomics).
+- **Scratch** (the coordinator's lead): RADV's compile of every market stage was read (`RADV_DEBUG=shaders`). `a437aea2`, the
+  stage the breadcrumbs named most, uses **no scratch** (153 VGPRs, 30,826 bytes of LDS). `bee3d34e` and `30dcbaf5` keep
+  their outputs in **RADV's mesh scratch ring** (past the 30 KB of NGG LDS), as do four mesh-only stages; `cfebb562` also
+  spills VGPRs. The private memory comes from the compiler (spills, the ring), not from the game's code or M4c's
+  conversion; and a mesh stage that needs scratch runs correctly in isolation (the scratch probe, 20,000 workgroups). So
+  "scratch → hang" does not hold here. What does push the stages over the LDS limit is a translation artefact: the
+  translator's stage buffer in workgroup memory on top of the outputs (section 5, 13); the rewritten stages have none.
 
 Suspected, not proven:
-- The loss needs what the harness does not yet replay (section 4): the vertex draws between the mesh draws in the same
-  rendering, the job's task steps on the GPU right before, the frame's other command buffers, the render condition, or the
-  real targets' contents. The next reductions are listed there.
+- The loss needs a part of the frame the harness does not replay: the job's own vertex draws (real ones), the frame's other
+  command buffers (the culling compute that writes the job's indirect records, the depth prepass), the render condition's
+  predicate written by the GPU, real targets and textures, or the game's submission shape (section 4 lists the next steps).
 
 ## 1. Inventory
 
 Source: the market capture `m6e_cap2` (present 1200, `HOS_DBG=meshdry,meshcap:1200`: 110 mesh draws, 70 of them task+mesh,
 54 programs), each mesh stage through `meshtool` (the translator fork offline, as the game translates it) and RADV's compile
-of the captured SPIR-V (`meshlab stats` under `RADV_DEBUG=shaders`). KOKIRI_HF
+of the captured SPIR-V (`meshlab stats` under `RADV_DEBUG=shaders`). Hyrule Field (`m6e_cap_hf`, present 1500: 82 mesh draws) and Kokiri (`m6e_cap_k`, present 1500: 47) were captured the same way; four of their mesh stages are not in the market (`4de96741` and `5215d3b1` of Kokiri's and Hyrule Field's `563d` task stage, `98a50f93` and, in Hyrule Field only, `ad491a45`, both `2c56` meshlet stages), and 31 are in all three.
 
-**How many distinct mesh stages:** 47 mesh stage codes in the market (18 of task+mesh programs, 29 of mesh-only ones). With
+**How many distinct mesh stages:** 47 mesh stage codes in the market (18 of task+mesh programs, 29 of mesh-only ones); 51 in the three scenes. With
 every literal masked (buffer offsets, attribute counts, constants), 43 are still distinct: the game's compiler made a
 stage per material, and they differ in which streams and outputs they have, not only in constants. By control shape (the
 nesting of branches) 36. By what they do, about ten families:
@@ -180,7 +186,49 @@ records are compared triangle by triangle, each corner's attributes by value and
 
 ## 4. The hang in isolation
 
-HANG_PLACEHOLDER
+What was replayed: the job command buffer the breadcrumbs named (M6c: list kind 2, the main view's 1536x864 lit pass; in
+the capture the command buffer with `a437aea2`'s two draws: 22 task+mesh draws of 11 programs, `a437aea2` x2, `cfebb562` x3,
+`8b41aa44`, `bee3d34e`, `d551405e`, `d7933378` x2, `26811d11` x4, `691ce175`, `f69141e9` x2, `9d2bef11`, `79ddff6b` x4; every
+one under a render condition in the game), each draw with its captured task header, map and payload, back to back in one
+rendering of the pass's formats and size, again and again (two submissions in flight), with the watchdog (2 s, 4 s for
+long submissions) and top- and bottom-of-pipe markers in host memory. Every run took the GPU lock (`gpu_run.sh`).
+
+| Run | Configuration | Result |
+|---|---|---|
+| r1 | the job, the framebuffer-local barrier between draws; the first harness (storage relocated, uncaptured memory unmapped) | **device lost** (00:32:16, reset 20): a page fault (`TCP`, permission, address 0x800157455000) in draw 3 (`cfebb562`, which reads through pointers the capture had not followed), then `ring gfx_0.0.0 timeout`. A harness fault, not the game's: fixed (pointers followed in the capture, guest memory at its own addresses in sparse windows, unbound pages non-resident) |
+| p1, p2 | the scratch probe (a mesh stage with a 256-word private array: scratch), 1 and 20,000 workgroups | correct (0 of 32 words wrong), no fault |
+| c0 | every market draw once, the translator's stage against itself, with the output dump | 110 of 110 equal, no fault |
+| r2 | the job, the framebuffer-local barrier (M6d's rule) | survived: 958,000 draws in 20 s |
+| r3 | the job, **no barrier**, inline, a fragment stage of ours | survived: 5,734,916 draws in 30 s |
+| r4 | + the real fragment stages (heap all null), in a secondary (as a job) | survived: 5,954,146 draws in 30 s |
+| r5 | + under conditional rendering (a passing predicate), inside an occlusion query | survived: 5,683,986 draws in 30 s |
+| r6 | + each submission runs the draws' task stages first (headers reset, the task compute, a barrier: the job's task step) + 2 vertex draws before each mesh draw in the same secondary | survived: 2,793,340 draws in 30 s |
+| r7 | the whole frame: all 110 mesh draws, each command buffer's in a rendering of its own targets, in a secondary, task steps, real fragment stages | survived: 2,131,250 draws in 30 s |
+| r8 | the job as r5 + vertex draws, 100 times a submission (2,200 mesh draws a submission), and an inline vertex draw in the primary before the secondary, the rendering begun with inline contents allowed (as the back end's layer lists) | survived: 7,689,000 draws in 60 s |
+| r9 | our probe with the game's shape and RADV's mesh scratch ring for every draw of the job, 20 times a submission | survived: 16,746,840 draws in 20 s |
+
+**The hang does not reproduce in isolation.** Two (and 22) task+mesh draws of these mesh stages overlapping in one rendering,
+with every game detail the harness replays, ran 30-60 s each without a loss, against 22-111 s to a loss in the game (12 of
+12 market runs, M6c). So the translator's mesh stages and their overlap are not enough; what the harness does not replay is
+the rest of the game's command stream around the job:
+- the job's own vertex draws (the 28 indexed draws before its mesh draws: real vertex shaders, vertex buffers, the game's
+  pipelines' state) and the layer list's inline draws (the harness draws its own),
+- the other command buffers of the frame (copies, compute, the culling dispatches that write the indirect records, the
+  depth prepass whose depth the job tests against: the harness clears depth to 1),
+- the render condition's predicate written by the GPU in the same frame (the harness's is a constant),
+- the real targets' contents and the real textures (the harness's heap is null descriptors),
+- the game's submission shape (one big submission a frame of about 25 chunks) and its timing.
+
+The minimal pair cannot be named from the harness: no pair, and no single job, hangs in it. The next step is a capture of
+the job's whole command stream (every command of the command buffer, not only the mesh draws: `meshcap` lists them but
+records only the mesh draws) replayed in the harness, then reduced; or, in the game, the opposite reduction (M6d's
+domain): leave out classes of commands around the job (`HOS_DBG=qnocond` for the render condition, the job's vertex draws)
+until the loss goes, with one loss allowed per configuration.
+
+Device losses of this stage: **one** (r1, 00:32:16, reset 20; a harness fault, kernel log `work/meshlab/runs/r1_job_local_kernel.txt`;
+recovery verified by `vulkaninfo` and 3 minutes before the next GPU run). No configuration lost the device twice. The other
+resets of this boot (19 and before) were other agents' game runs.
+
 
 ## 5. Oddities
 
@@ -233,3 +281,21 @@ The user's decision (2026-11-13): the replacements are not swapped in for now; t
   is not packed. In play, `HOS_DBG=meshcap` captures a frame of the swapped build too, and `meshlab compare` of the two
   stages on it is the check after a game update.
 
+
+## 7. Code and tests
+
+Committed on `agent/m6e` (nothing of the game: no SPIR-V translated from it, no captured buffer; the decompiled sources are
+our own text, a transcription of the game's logic as section 2 says):
+
+| What | Where |
+|---|---|
+| `HOS_DBG=meshcap:<present>` (a debug aid; unset: one load and a branch per mesh program made and per draw) | `gpu/direct/direct_meshcap.{h,cpp}`, `direct_meshcap_format.h`; calls in `direct_draw.cpp`, `direct_shader.cpp`, `direct_task.cpp`, `direct_present.cpp`; `DrawProg::task_code` |
+| The harness and its tools | `tools/meshlab/` (`meshlab.cpp`, `capture.h`, `spv_dump.{h,cpp}`, `meshtool.cpp`, `ir_pretty.h`, `inventory.py`, `simplify.py`, `build.sh`, `build_shaders.sh`, `gpu_run.sh`, `probes/`) |
+| The decompiled mesh stages | `gpu/direct/shaders/mesh/` (`common.glsl`, `meshlet.glsl`, `meshlet_depth.mesh`, `meshlet_lit.mesh`, `codes.txt`) |
+
+With `RX_BACKEND` unset nothing changes (the switch is the direct back end's). Tests:
+`HOOKSHOT_VULKAN_HEADERS=/usr/include work/venv/bin/python -I -B tests/run_all.py`: 295 passed, 5 failed (the baseline five),
+19 skipped. Local, not committed: the captures (`work/runs/m6e_cap2`, `m6e_cap_k`, `m6e_cap_hf`, `m6e_cap1` the first),
+the harness's builds and outputs (`work/meshlab/`: `runs/` the GPU runs' outputs and the loss's kernel log, `inv_mk/`,
+`inv_all/` the IR and prints of every mesh stage, `trans_mk2/` the captured stages' SPIR-V, `repl/` the replacements'
+SPIR-V), a local SPIRV-Cross build (`work/deps/SPIRV-Cross`, used only to read stages while working).
