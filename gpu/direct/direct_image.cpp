@@ -90,7 +90,8 @@ struct Pending {
 std::unordered_map<uint64_t, Pending> pending;   // (images_mu)
 std::unordered_set<uint64_t> freed;              // (images_mu)
 std::atomic<size_t> n_freed{0};   // (pending + freed, read without the lock)
-std::atomic<int64_t> st_freed{0}, st_freed_reused{0}, st_freed_again{0}, st_freed_held{0};
+std::atomic<int64_t> st_freed{0}, st_freed_reused{0}, st_freed_again{0}, st_freed_held{0}, st_freed_used{0};
+bool hold_again(const nvn_tex* t);   // (below)
 void storage_reused(const nvn_tex* t);   // (below)
 Image placeholder;   // (one 1x1 RGBA8 image, for every texture that has none: copies and attachments skip it)
 std::once_flag placeholder_once;
@@ -413,6 +414,7 @@ void let_go(const nvn_tex* t, const Key& k) {
     auto it = images.find(k);
     if (it == images.end()) return;
     Image* im = it->second.get();
+    if (!t) im->wait_heap = true;   // (M6f: a freed transient target's: it waits for the heap's ids that name it)
     if (im->refs > 0 && --im->refs == 0) {
         im->dead_present = present_count() + 1;
         dying.push_back(im);
@@ -579,6 +581,15 @@ Image* image_find(const nvn_tex* t) {
     auto it = images.find(k);
     if (it != images.end()) return it->second.get();
     if (fi.format == VK_FORMAT_UNDEFINED || fi.astc || bpb <= 0) return &placeholder;
+    if (t->serial && n_freed.load(std::memory_order_relaxed)) {   // (M6f: used again after its storage's reuse let its image go)
+        lk.unlock();
+        std::unique_lock ex(images_mu);
+        if (freed.count(t->serial) && hold_again(t)) {
+            st_freed_used.fetch_add(1, std::memory_order_relaxed);
+            auto again = images.find(k);
+            if (again != images.end()) return again->second.get();
+        }
+    }
     return nullptr;
 }
 
@@ -715,6 +726,11 @@ void image_sweep(uint64_t present) {
         bool gone = false;
         if (im->refs > 0 || !im->dead_present) {
             dying[i] = dying.back(), dying.pop_back();   // (revived)
+            im->wait_heap = false;
+            continue;
+        }
+        if (im->wait_heap && im->heap_refs.load(std::memory_order_relaxed) > 0) {   // (M6f: still named by a descriptor id)
+            i++;
             continue;
         }
         if (present >= im->dead_present + 8) {   // (8 presents for the lists that name it to be sent, then the GPU done)
@@ -817,8 +833,8 @@ void image_stats(char* out, size_t cap) {
         const size_t n4 = std::strlen(out);
         std::snprintf(out + n4, cap > n4 ? cap - n4 : 0, "; storage the game freed (M6f): %lld textures, %lld let go of their "
                       "image when a new one was made over that storage (%lld of them then initialized again or finalized), %lld taken or "
-                      "registered again", (long long)st_freed.load(), (long long)st_freed_reused.load(), (long long)st_freed_again.load(),
-                      (long long)st_freed_held.load());
+                      "registered again (%lld of them used again, made again)", (long long)st_freed.load(), (long long)st_freed_reused.load(),
+                      (long long)st_freed_again.load(), (long long)st_freed_held.load(), (long long)st_freed_used.load());
     }
     std::vector<std::pair<uint64_t, std::pair<uint64_t, uint32_t>>> top(shapes.begin(), shapes.end());
     std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second.first > b.second.first; });

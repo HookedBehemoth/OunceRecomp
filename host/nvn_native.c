@@ -819,22 +819,17 @@ NV(nvnTextureInitialize) {
          (unsigned long long)o->L.size);
     RET(1);
 }
-/* (M6f, direct mode) rt_slots.c: the game freed the storage of the texture object at guest obj (its DTA entry's block,
-   at offset off of its pool) without finalizing it. The back end is told when the object still holds that
-   initialization (initialized over that storage); the object stays initialized, as the game left it. 1: told */
-int nvn_texture_storage_freed(uint64_t obj, uint64_t off) {
+/* (M6f, direct mode) rt_slots.c: the game freed the storage of texture t (a copy of the live texture over a DTA entry's
+   block), or took the entry back: the back end is told. 1: told */
+int nvn_texture_storage_freed(const nvn_tex *t) {
     const hsd_fns *d = rx_direct();
-    if (!d || !d->texture_freed || !hos_guest_range(obj, sizeof(nvn_tex))) return 0;
-    const nvn_tex *o = (const nvn_tex *)GP(obj);
-    if (o->magic != NVN_MAGIC('T', 'E', 'X', 0) || !o->serial || (uint64_t)o->off != off) return 0;
-    d->texture_freed(o);
+    if (!d || !d->texture_freed || t->magic != NVN_MAGIC('T', 'E', 'X', 0) || !t->serial) return 0;
+    d->texture_freed(t);
     return 1;
 }
-void nvn_texture_taken_again(uint64_t obj) {
+void nvn_texture_taken_again(const nvn_tex *t) {
     const hsd_fns *d = rx_direct();
-    if (!d || !d->texture_held || !hos_guest_range(obj, sizeof(nvn_tex))) return;
-    const nvn_tex *o = (const nvn_tex *)GP(obj);
-    if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) d->texture_held(o);
+    if (d && d->texture_held && t->magic == NVN_MAGIC('T', 'E', 'X', 0) && t->serial) d->texture_held(t);
 }
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));

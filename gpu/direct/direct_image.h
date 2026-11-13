@@ -51,7 +51,12 @@ struct Image {
     bool no_data = false;              // (a texture loaded with no data and in no BNTX: what writes it is counted)           // (a texture whose texels were not given: terrain not converted; drawn as the placeholder)
     // (lifetime: the live NVN textures over it; images_mu held)
     int refs = 0;
-    int cached_refs = 0;   // (M6f: of the textures over it, those agl holds in its LRU cache)
+    int cached_refs = 0;
+    // (M6f) the descriptor-heap entries naming it, and whether it waits for them: an image whose texture the game freed the
+    // storage of (a transient target) lives on while a descriptor id still names it (the game samples it through that id
+    // in lists recorded after the free) and goes once every such id names another texture
+    mutable std::atomic<int> heap_refs{0};
+    bool wait_heap = false;   // (M6f: of the textures over it, those agl holds in its LRU cache)
     uint64_t dead_present = 0, dead_value = 0;
     std::mutex views_mu;
     std::unordered_map<uint64_t, VkImageView> views;

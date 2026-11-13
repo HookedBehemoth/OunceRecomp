@@ -142,6 +142,7 @@ static volatile uint64_t frame;
 static SRWLOCK mu = SRWLOCK_INIT;
 static volatile int state = -1;   /* -1 not tried, 0 off (never or backed off), 1 on */
 static uint64_t dta_seen;   /* (the DTA the allocs come for: rt_slots_dump) */
+static volatile uint64_t dta_pool_gpu;   /* (M6f: the DTA pool's GPU address) */
 static uint32_t nrecs0, narenas;
 static uint64_t arenas0;   /* (the log: the fullest arena) */
 static uint64_t pools[16];   /* the virtual pools the slots were checked against */
@@ -673,6 +674,7 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
         return 0;
     }
     pools[npools++] = pool;
+    if (!dta_pool_gpu) dta_pool_gpu = p->gpu;   /* (M6f: the storage of a block, for the frees) */
     hos_log("rt slots: pool %#llx (GPU %#llx, %llu MB, flags %#x)", (unsigned long long)pool, (unsigned long long)p->gpu,
             (unsigned long long)(p->size >> 20), p->flags);
     return 1;
@@ -737,46 +739,32 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
     G64(block + 0x38) = s->off;
 }
 
-/* (M6f, direct mode) The texture each entry's alloc initialized: the DTA's free (f_802737a0) gives the entry's block back
-   and moves the entry to its free lists, but never finalizes the entry's NVN texture, which stays initialized until
-   the entry is taken again (the next alloc initializes it over other storage) or forever. To the game the texture is
-   gone at that free; the back end is told then (nvn_texture_storage_freed), so its image follows the game's free and not
-   the object's next initialization. Walking in Hyrule Field, without this, 89 images of 2432x2432 D32F (2 GB, local-light
+/* (M6f, direct mode) The DTA's free (f_802737a0) gives an entry's block back and moves the entry to its free lists, but
+   never finalizes the texture made over that block, which stays initialized until its object is initialized again or
+   forever. To the game the block is free at that free; the back end is told then which texture is over it (the live
+   texture at the block's storage: the DTA's own allocation, so the storage is the target's identity here), and that
+   texture's image lets go when a texture is initialized over that storage, or is held again when the game's alloc gives
+   the entry back (alloc_gave). Walking in Hyrule Field, without this, 89 images of 2432x2432 D32F (2 GB, local-light
    shadow maps) stayed held by freed entries (docs/direct/m6f-report.md 4). */
-#define EMAP (1 << 14)
-static struct { uint64_t entry, obj; } emap[EMAP];
-static SRWLOCK emap_lock = SRWLOCK_INIT;
-static volatile LONG64 n_emap_full, n_freed_told, n_freed_noobj, n_freed_other;
-static uint32_t emap_at(uint64_t e) { return (uint32_t)((e >> 3) * 0x9e3779b1u) & (EMAP - 1); }
-static void emap_put(uint64_t e, uint64_t obj) {
-    AcquireSRWLockExclusive(&emap_lock);
-    uint32_t i = emap_at(e), k = 0;
-    for (; k < EMAP && emap[i].entry && emap[i].entry != e; k++) i = (i + 1) & (EMAP - 1);
-    if (k < EMAP) emap[i].entry = e, emap[i].obj = obj;
-    else InterlockedIncrement64(&n_emap_full);
-    ReleaseSRWLockExclusive(&emap_lock);
+static volatile LONG64 n_freed_told, n_freed_noobj, n_freed_other;
+int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);   /* nvn_native.c */
+/* the texture initialized over an entry's block now (its storage: the DTA pool + the block's offset +0x38), as a copy */
+static int entry_tex(uint64_t e, nvn_tex *t) {
+    const uint64_t block = hos_guest_range(e + ENT_BLOCK, 8) ? G64(e + ENT_BLOCK) : 0;
+    return block && dta_pool_gpu && hos_guest_range(block + 0x38, 8) && nvn_tex_live_at(dta_pool_gpu + G64(block + 0x38), t);
 }
-static uint64_t emap_get(uint64_t e) {
-    uint64_t obj = 0;
-    AcquireSRWLockShared(&emap_lock);
-    for (uint32_t i = emap_at(e), k = 0; k < EMAP && emap[i].entry; k++, i = (i + 1) & (EMAP - 1))
-        if (emap[i].entry == e) { obj = emap[i].obj; break; }
-    ReleaseSRWLockShared(&emap_lock);
-    return obj;
-}
-int nvn_texture_storage_freed(uint64_t obj, uint64_t off);   /* nvn_native.c: 1 the back end was told */
+int nvn_texture_storage_freed(const nvn_tex *t);   /* nvn_native.c: 1 the back end was told */
 void rt_slots_freed_line(char *out, size_t cap) {   /* (M6f, direct_assets.c's memory line) */
-    snprintf(out, cap, "the game's frees of DTA entries: the back end told %lld, no texture known for the entry %lld, its texture "
-             "initialized elsewhere since %lld (entries mapped: table full %lld)", (long long)n_freed_told, (long long)n_freed_noobj,
-             (long long)n_freed_other, (long long)n_emap_full);
+    snprintf(out, cap, "the game's frees of DTA entries: the back end told %lld, no texture over the entry's block %lld, not told "
+             "%lld", (long long)n_freed_told, (long long)n_freed_noobj, (long long)n_freed_other);
 }
-void nvn_texture_taken_again(uint64_t obj);   /* nvn_native.c */
+void nvn_texture_taken_again(const nvn_tex *t);   /* nvn_native.c */
 /* the entry an alloc gave: its texture, if the game freed it before, is the game's again (an entry taken from the DTA's
    free lists keeps its texture as it was when its storage is the same: no initialization) */
 static void alloc_gave(uint64_t entry) {
     if (!entry || !hos_guest_range(entry, 0x180)) return;
-    const uint64_t obj = emap_get(entry);
-    if (obj) nvn_texture_taken_again(obj);
+    nvn_tex t;
+    if (entry_tex(entry, &t)) nvn_texture_taken_again(&t);
 }
 
 ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
@@ -821,9 +809,9 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
             }
     ReleaseSRWLockExclusive(&mu);
     if (!park && block && rx_direct()) {   /* (M6f) the game's free runs: the entry's texture is gone to it */
-        const uint64_t obj = emap_get(e);
-        if (!obj) InterlockedIncrement64(&n_freed_noobj);
-        else if (nvn_texture_storage_freed(obj, G64(block + 0x38))) InterlockedIncrement64(&n_freed_told);
+        nvn_tex t;
+        if (!entry_tex(e, &t)) InterlockedIncrement64(&n_freed_noobj);
+        else if (nvn_texture_storage_freed(&t)) InterlockedIncrement64(&n_freed_told);
         else InterlockedIncrement64(&n_freed_other);
     }
     return park;   /* 1: the game's free does not run */
@@ -835,10 +823,6 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
 static struct { uint64_t obj, gpu; uint32_t w, h, fmt; } tmap[TMAP];
 static uint64_t init_same, init_moved, init_new;
 void rt_slots_texture_init(uint64_t obj, uint64_t gpu, uint32_t w, uint32_t h, uint32_t fmt) {
-    if (alloc_sp && rx_direct()) {
-        const uint64_t e = G64(alloc_sp + SP_ENTRY);
-        if (e && hos_guest_range(e, 0x180)) emap_put(e, obj);
-    }
     if (!log_slots()) return;   /* (debugging: a lock per initialization) */
     AcquireSRWLockExclusive(&mu);
     uint32_t i = (uint32_t)((obj >> 3) * 0x9e3779b1u) & (TMAP - 1);

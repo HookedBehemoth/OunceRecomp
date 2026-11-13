@@ -539,6 +539,10 @@ void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
         std::memcpy(res_heap.map + heap_storage_offset(r) + (uint64_t)id * kImageDesc, d, kImageDesc);
         if (sok) st_storage.fetch_add(1, std::memory_order_relaxed);
     }
+    if (slot_image[id] != im) {   // (M6f: the heap's holds of an image, for one its texture let go of: image_sweep)
+        if (slot_image[id]) slot_image[id]->heap_refs.fetch_sub(1, std::memory_order_relaxed);
+        if (im) im->heap_refs.fetch_add(1, std::memory_order_relaxed);
+    }
     slot_image[id] = im;
     slot_tex[id] = {t->gpu, t->d.width, t->d.height, t->d.format, t->d.target, t->d.depth, t->d.levels, v ? *v : nvn_view{}, v != nullptr};
 }
@@ -569,6 +573,7 @@ void heap_image_gone(const Image* im) {
             std::memset(res_heap.map + heap_storage_offset(r) + (uint64_t)id * kImageDesc, 0, kImageDesc);
         }
         slot_image[id] = nullptr;
+        im->heap_refs.fetch_sub(1, std::memory_order_relaxed);
         st_gone.fetch_add(1, std::memory_order_relaxed);
     }
 }

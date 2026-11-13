@@ -9,7 +9,12 @@
      - released to the LRU cache / taken back from it: f_8079aa20(&td->slot, 1 / 0), called from the release f_80517d80 and
        the acquire paths; the back end is told (hsd_texture_cached), which counts the cached textures' images;
      - destroyed: f_8079bbe0(mgr, td) (eviction, or a lost load race): its nvnTextureFinalize follows and releases as before.
-   Nothing here evicts (the user: eviction and async upload are far-future). With RX_BACKEND unset nothing here runs. */
+   What frees VRAM is the game's own destroy: f_8079bbe0 -> f_8079c220 finalizes the texture's NVN object (an alias at its
+   release, f_80517d80, likewise), and that finalize releases the texture's hold on its image; an image (shared by every
+   texture of its content) is destroyed, with its views and heap entries, once its last texture is gone and the frames
+   that may still read it have completed (direct_image.cpp, image_sweep). Released to the LRU cache is not a free: the
+   game may take the texture back without a load, so its image stays. The back end has no eviction policy of its own (the
+   user: no own eviction, no async upload). With RX_BACKEND unset nothing here runs. */
 #include "hos.h"
 #include "direct.h"
 #include "../gpu/render/rx_nvn.h"
