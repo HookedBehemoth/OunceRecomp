@@ -481,7 +481,8 @@ struct Ready {
     uint8_t push[256]{};
     uint32_t push_bytes = 0;
     uint32_t groups = 0;    // (the mesh workgroups the draw starts)
-    VkShaderEXT ms = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+    VkShaderEXT ms = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ts = VK_NULL_HANDLE;
+    uint32_t tasks = 0;     // (a task+mesh draw's task workgroups: --tasks runs its task stage again)
     OutLayout layout;       // (compare: the dump's layout)
 };
 std::string repl_dir, mesh_override, fs_mode = "simple";
@@ -539,16 +540,32 @@ Ready prepare(const Frame& f, const Draw& d) {
             if (p.ubos[i].stage == q.stage && p.ubos[i].index == q.index && q.push_off + 8 <= sizeof r.push) std::memcpy(r.push + q.push_off, &r.ubo[i].addr, 8);
     // (a task+mesh draw: its header, map and payload as the GPU left them, at our addresses)
     if (d.d.task) {
-        r.header = make_buf(64 + 4 * (d.map.size() + d.payload.size()) + 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+        // (room for the whole map and payload area the header names, so that the task stage can be run again: --tasks)
+        const uint64_t map_words = std::max<uint64_t>(d.d.header[8], d.map.size());
+        const uint64_t pay_words = std::max<uint64_t>((uint64_t)d.d.header[9] * d.d.header[13], d.payload.size());
+        r.header = make_buf(64 + 4 * (map_words + pay_words) + 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
         uint32_t h[16];
         std::memcpy(h, d.d.header, 64);
-        const uint64_t ma = r.header.addr + 64, pa = ma + 4 * d.map.size();
+        const uint64_t ma = r.header.addr + 64, pa = ma + 4 * map_words;
         h[4] = (uint32_t)ma, h[5] = (uint32_t)(ma >> 32), h[6] = (uint32_t)pa, h[7] = (uint32_t)(pa >> 32);
         h[0] = std::min<uint32_t>(h[0], (uint32_t)d.map.size());
+        h[8] = (uint32_t)map_words;
         std::memcpy(r.header.map, h, 64);
         std::memcpy(r.header.map + 64, d.map.data(), 4 * d.map.size());
-        std::memcpy(r.header.map + 64 + 4 * d.map.size(), d.payload.data(), 4 * d.payload.size());
+        std::memcpy(r.header.map + 64 + 4 * map_words, d.payload.data(), 4 * d.payload.size());
         std::memcpy(r.push + 64, &r.header.addr, 8), std::memcpy(r.push + 72, &r.header.addr, 8);
+        r.tasks = h[9];
+        if (const Stage* ts = p.stage(VK_SHADER_STAGE_COMPUTE_BIT)) {
+            const std::string k = std::to_string(p.h.key) + "/task";
+            auto it = shader_cache.find(k);
+            if (it == shader_cache.end()) {
+                std::string err;
+                VkShaderEXT o = make_shader(VK_SHADER_STAGE_COMPUTE_BIT, ts->spirv, ts->maps.data(), ts->h.maps, &err);
+                if (!o) die("program %016llx: task stage not made: %s", (unsigned long long)p.h.key, err.c_str());
+                it = shader_cache.emplace(k, o).first;
+            }
+            r.ts = it->second;
+        }
         r.groups = h[0];
     } else if (d.d.indirect) {
         r.record = make_buf(64, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
@@ -712,6 +729,13 @@ void record_draw(VkCommandBuffer cb, const Ready& r, VkShaderEXT ms_override = V
     if (r.d->d.task) g.vkCmdDrawMeshTasksIndirectEXT(cb, r.header.b, 0, 1, 16);
     else if (r.d->d.indirect) g.vkCmdDrawMeshTasksIndirectEXT(cb, r.record.b, 0, 1, 16);
     else g.vkCmdDrawMeshTasksEXT(cb, r.groups, 1, 1);
+}
+void mem_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src, VkAccessFlags2 sa, VkPipelineStageFlags2 dst, VkAccessFlags2 da) {
+    VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    b.srcStageMask = src, b.srcAccessMask = sa, b.dstStageMask = dst, b.dstAccessMask = da;
+    VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cb, &d);
 }
 enum class Between { none, local, full, split };
 void barrier_between(VkCommandBuffer cb, Between how) {
@@ -1032,7 +1056,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> pos;
     double seconds = 10, watchdog = 2;
     int reps = 1, job = -1, prims_shown = 8;
-    bool task_only = false, secondary = false, quiet = false, empty = false, query = false;
+    bool task_only = false, secondary = false, quiet = false, empty = false, query = false, tasks = false;
     std::string cond;   // (--cond once|draw: the draws under conditional rendering on a predicate that lets them draw, begun once or around each)
     Between between = Between::none;
     for (int i = 3; i < argc; i++) {
@@ -1053,6 +1077,7 @@ int main(int argc, char** argv) {
         else if (a == "--empty") empty = true;
         else if (a == "--cond") cond = next();
         else if (a == "--query") query = true;
+        else if (a == "--tasks") tasks = true;   // (each submission runs the draws' task stages first, as the game's job step)
         else if (a == "--barrier") {
             const std::string b = next();
             between = b == "local" ? Between::local : b == "full" ? Between::full : b == "split" ? Between::split : Between::none;
@@ -1167,10 +1192,10 @@ int main(int argc, char** argv) {
         }
         run.push_back(&r);
     }
-    std::printf("run: %zu draws x %d a submission, barrier %s, %s, fs %s, mesh %s, condition %s, query %d; %u x %u\n", run.size(), reps,
+    std::printf("run: %zu draws x %d a submission, barrier %s, %s, fs %s, mesh %s, condition %s, query %d, task steps %d; %u x %u\n", run.size(), reps,
                 between == Between::none ? "none" : between == Between::local ? "local" : between == Between::full ? "full" : "split (rendering ended)",
                 secondary ? "in a secondary" : "inline", fs_mode.c_str(), !mesh_override.empty() ? mesh_override.c_str() : !repl_dir.empty() ? "replacement" : "translator",
-                cond.empty() ? "none" : cond.c_str(), (int)query, t.w, t.h);
+                cond.empty() ? "none" : cond.c_str(), (int)query, (int)tasks, t.w, t.h);
     for (const Ready* r : run)
         std::printf("  #%u %016llx %s groups %u\n", r->d->d.seq, (unsigned long long)r->d->d.key, r->d->d.task ? "task+mesh" : "mesh", r->groups);
     const uint32_t per = (uint32_t)run.size() * (uint32_t)reps;
@@ -1199,6 +1224,23 @@ int main(int argc, char** argv) {
         to_attachment(cbs[k], t);
         heaps_bind(cbs[k]);
         if (query) vkCmdResetQueryPool(cbs[k], qpool, (uint32_t)k, 1);
+        if (tasks) {   // (the job's task step, as the back end records it before the job: headers reset, task stages, a barrier)
+            static const uint32_t reset[4] = {0, 1, 1, 0};
+            for (const Ready* r : run)
+                if (r->ts) vkCmdUpdateBuffer(cbs[k], r->header.b, 0, sizeof reset, reset);
+            mem_barrier(cbs[k], VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+            const VkShaderStageFlagBits cs = VK_SHADER_STAGE_COMPUTE_BIT;
+            for (const Ready* r : run) {
+                if (!r->ts || !r->tasks) continue;
+                g.vkCmdBindShadersEXT(cbs[k], 1, &cs, &r->ts);
+                push(cbs[k], r->push, r->push_bytes);
+                vkCmdDispatch(cbs[k], r->tasks, 1, 1);
+            }
+            mem_barrier(cbs[k], VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                        VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT,
+                        VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        }
         VkCommandBuffer sec = VK_NULL_HANDLE;
         auto open = [&]() {
             begin_rendering(cbs[k], t, secondary, true);
