@@ -1,0 +1,49 @@
+# Labels for the lifted game's functions (nx2/label_syms.py): <guest address> <label> [# where it is documented]
+# Descriptions of ours, not the game's names. Lower case, digits, underscores; every address and label once.
+# An entry is a function's entry address in this lift (HOS_GAME_VERSION 100). Add what an analysis finds, with its note.
+
+# --- asset textures: agl::TextureDataMgr and the resource manager (docs/direct/texture-streaming.md)
+805c5ca0 texres_request                  # TextureResourceMgr: name -> UnifyTex target -> load or count up
+80517d80 texres_release                  # count down; at 0 to the LRU cache, not freed
+80798d00 texdata_create                  # slot in the compactible heap, BRTI copied to td+0x58
+80798690 texdata_copy_texels             # the memcpy of the whole image (hooked: host/direct_assets.c)
+807987d0 texdata_init_nvn_texture        # nvnTextureInitialize, view, pool registration
+807974f0 texdata_make_alias              # a no-data load: shares its target's slot, joins its chain
+807982f0 texdata_rebind                  # a moved texture under the same descriptor id
+80797da0 texdata_frame_update            # per frame: rebinds what compaction moved, and its aliases
+80797240 texdata_cache_reject_per_frame  # evicts while the heap has < TextureCacheRejectionThreshold free
+8079bbe0 texdata_evict
+8079c220 texdata_destroy                 # nvnTextureFinalize, descriptor released, block freed or handed on
+83537760 texheap_alloc_failed_evict
+83537d90 texdata_replace                 # Replace: content swapped for a newly loaded BNTX
+807da480 texheap_compaction_worker
+807da590 texheap_compaction_start
+80798b60 texdata_load_in_place_a         # docs/direct/a-rt-report.md (in-place files)
+80792bd0 texdata_load_in_place_b
+80798920 texdata_load_in_place_c
+80f6c9d0 agl_memory_pool_create          # generic wrapper, five callers
+80f6c580 agl_texture_heap_create         # the one caller that makes the texture heap (pool 127)
+
+# --- render targets: agl::utl::DynamicTextureAllocator (host/rt_slots.c, work/assets/native/rt-alloc.md)
+8005ed00 dta_alloc
+802737a0 dta_free
+80062c50 dta_alloc_persistent
+
+# --- the frame: jobs and passes (docs/direct-backend-plan.md, docs/direct/m3-patch-sites.md)
+80084de0 render_job_record               # a render job's recorder (x3: the pass key)
+80681320 pass_draw_inline                # the layer list drawing a pass itself
+8067c310 job_occlusion_grid_dispatch     # docs/direct/m6d-report.md
+80667d20 system_texture_table_write      # the 30-slot table per view
+
+# --- culling and report readers (docs/direct/m6a-report.md, plan "Reports and conditions")
+812342c0 cull_cpu_occlusion_reader
+808226e0 cull_cpu_objects
+80365f00 report_reader_a
+80362ff0 report_reader_b
+80357060 report_reader_c
+
+# --- terrain, movies, fonts
+80c17040 terrain_tile_load               # its memcpy at +0x544 is spliced (docs/direct/m0-terrain-texels.md)
+83b82250 movie_renderer_copy_frame       # NV12 planes to two targets (work/assets/native/block-linear.md)
+8152f540 font_glyph_cell_write_a         # docs/direct/a-rt-report.md
+81539300 font_glyph_cell_write_b

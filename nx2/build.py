@@ -1096,6 +1096,9 @@ def main():
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
+        import label_syms   # (native-vk: nx2/oot_labels.txt's names for the functions we know, in the symbol table only)
+        named, absent = label_syms.apply(exe)
+        print("labels: %d functions named%s" % (named, "; no function for " + ", ".join("%08x" % x for x in absent) if absent else ""))
         sdl = os.environ.get("HOOKSHOT_SDL2", "")   # (libSDL2-2.0.so.0 beside it, when the AppImage brings one)
         if sdl and os.path.exists(sdl):
             import shutil
