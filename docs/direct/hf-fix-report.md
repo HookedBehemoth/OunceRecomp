@@ -20,8 +20,12 @@ Every statement is **measured** (a run or a file says so) or **inferred**.
   before its first use brings the same translated stage to 103 and it then survives the reproducer (**measured**,
   section 4). That pass is **specified and prototyped, not in the game**: its first version, applied in the game, made
   two other mesh stages spill and the market lost the device with it (a loss of this stage's budget; section 4).
-- **Market:** see section 5.
-- **Device losses used:** see section 7.
+- **Market:** with `40d0` drawn by the hand-written stage the market ran without M6d's wait before task+mesh draws: 240 s
+  twice and 15 minutes, 3 of 3 survived (13 of 13 lost without the wait before). The wait is **off by default now**
+  (`HOS_DBG=tmwait` keeps it); its frame cost was not measurable (section 5).
+- **Open question settled:** the reproducer does not need two overlapping draws: with the wait between the depth draw and
+  the depth-equal draw the translated stage still hung (section 6).
+- **Device losses used:** 2 of 4 (section 7).
 
 ## 1. The hand-written stage
 
@@ -114,7 +118,13 @@ Field `m6e_cap_hf` (51) and `hang_hf_cap` (39), Kokiri `m6e_cap_k` (35), the los
 Fragment stages were **not scanned**: the harness compiles its constant fragment stage unless `--fs real` is given (M6h's
 census has `cfebb562`'s fragment stage at 112 registers, no scratch).
 
-Register demand (SCAN_DEMAND)
+Register demand, a second count (`--demand`: compiled with `ACO_DEBUG=nosched`, each ACO temporary counted from its first
+to its last line after register allocation; exact for straight-line code, too high where branches hold values apart, so
+a stage can show more than 256 and not spill). **Measured** (`scan_translated_demand.txt`): `40d0` 258; eleven more mesh
+stages between 245 and 276 without a spill (`463f4263` 276, `3d33bb73` 272, `e3fc8fcf` 269, `66c494fe` 259, `354dde83`
+257, `b86297c2` 257, `b509ae33` 256, `55e5c685` 253, `072e452f` 248, `6eaef39e` 248, `d38b0d52` 245); the next is at
+143. **Inferred:** those eleven are at the edge: a small change of the driver's compiler, or of their SPIR-V, can make
+them spill (section 4 shows two of them doing so).
 
 So there is no second spilling stage to run through `run --prepass`, and no list of hand rewrites to grow now. The scan
 is the check to run on a capture of any new scene, and after a driver update.
@@ -157,7 +167,10 @@ address, no acceptance rule):
 
 **The second version** (the file as committed: reads by address movable between writes, subgroup operations movable, the
 acceptance rule) by the pass's own count: `40d0` 260 -> 110, `b86297c2` 254 -> 84, `b509ae33` 257 -> 94, `8d46218c`
-139 -> 119; 18 of 53 stages left as they were. (SCAN_LATE2) It has not been drawn with.
+139 -> 119; 18 of 53 stages left as they were. RADV's compile of all 53 with it (`scan_late2.txt`,
+`scan_late2_demand.txt`, **measured**): **no stage spills**; register demand `40d0` 103, `b86297c2` 257 -> 98, and of the
+twelve stages at 245 or more two are left (`66c494fe` 259 and `354dde83` 257, both unchanged by the pass). It has not
+been drawn with, and its output was not compared draw by draw (the first version's was).
 
 **Specification, if it is to go into the translator** (`gpu/direct/eden`, after `EmitSPIRV`, or as an IR pass before it):
 the pass as above; applied to mesh stages only at first; the result kept only when its count is lower; the program cache
@@ -168,15 +181,65 @@ one stage that spills today.
 
 ## 5. The market
 
-(MARKET)
+`HOS_DBG=notmwait` (then a switch, now the default) turned M6d's wait off. Market standing (`chisel_hf_market`,
+`RX_BACKEND=direct HOS_DBG=marks,notmwait`), the hand-written `40d0` in, no late scheduling. **Measured:**
+
+| Run | Result |
+|---|---|
+| `hffix_mk_nw_a` (program cache made anew) | survived 240 s, 9,000 presents |
+| `hffix_mk_nw_b` | survived 240 s, 13,200 presents, 60.1 fps |
+| `hffix_mk_nw_long` | survived 900 s, 51,600 presents, 60.0 fps |
+
+No wait was recorded in any of them (the counter "after a wait for the work before it" absent from their logs; 55
+task+mesh draws a frame drawn). Before: 13 of 13 lost within 22-111 s without a separation (M6c, M6d). **Inferred:** the
+market's loss was the same stage: `f69141e92f08bc7b` draws `40d0` there and was open at M6d's control loss. So the wait
+was a mitigation of this cause, and it is **removed as the default** (`gpu/direct/direct_draw.cpp`; `HOS_DBG=tmwait`
+turns it on). Three runs against thirteen losses is the proof asked for; it is not a proof for other scenes, where the
+scan (section 3) is the check.
+
+**In the harness the market's job does not reproduce the loss** (`run --job 1440 --barrier none --fs simple --prepass`,
+the 22 task+mesh draws of M6e's job, all depth-equal, each drawn first with depth written), **measured:** with the
+translator's stages **survived, 4,161,784 draws in 40 s** (`run_mkjob_prepass_translated.txt`); with every stage scheduled
+late (the first version) survived, 4,140,730 draws (`run_mkjob_prepass_late.txt`). The captured frame's `40d0` draws have
+16-58 groups; the Hyrule Field draw that hangs in 2 s has 525. **Inferred:** the loss needs more of the stage's waves
+at once than that frame's draws give in the harness; not shown what the market's losing frames had.
+
+**The wait's frame cost** (market, pacing off: `HOS_NO_PACING=1 HOS_FPS_TARGET=1000 HOS_FPS_MAX=240`, 100 s, the mean of
+the last six 600-present windows, alternated), **measured:**
+
+| Run | Wait | Frame time mean |
+|---|---|---|
+| `hffix_t_mk_nowait_1` | off | 13.58 ms |
+| `hffix_t_mk_wait_1` | on (61.3 waits a frame) | 13.92 ms |
+| `hffix_t_mk_nowait_2` | off | 13.61 ms |
+| `hffix_t_mk_wait_2` | on (61.4 a frame) | 13.39 ms |
+
+No difference above the runs' own spread (0.5 ms between the two runs with the wait). The machine was this stage's
+alone for game runs under the lock, but a second agent's builds and short runs shared it by then: indicative only.
 
 ## 6. Open questions
 
-(OPEN)
+- **Does the reproducer need two overlapping draws? No (measured, one run).** The losing draw with the translated stage
+  and the back end's wait (framebuffer stages, by region) between the depth draw and the depth-equal draw
+  (`run --present 1897 --fs simple --prepass-barrier`): **hung at submission 24, 2.1 s**
+  (`run_f1897_prepass_barrier_translated.txt`). So the depth-equal draw alone, its own mesh waves against its own pixel
+  work, is enough at 525 groups. **Inferred:** M6d's wait helped the market by lowering how many of the stage's waves ran
+  beside pixel work, not by keeping two draws apart; it did not end the Hyrule Field loss (`hang_hf_fix1`, `fix2`).
+- **Why did `HOS_DBG=tmdiscard` avoid the loss? Inferred, no new run:** with the rasterizer off the stage runs (RADV
+  26.2.4 does not skip a mesh stage's work under rasterizer discard: the coordinator's reading, section 8 (c)) and no
+  pixel work follows; the reproducer without the first draw is the same case (every fragment fails; 235,573 draws
+  survived, `hf-hang-report.md`). The loss needs the spilling stage's waves and passing fragments together.
+- Not known: what the hardware does (section 8); the group count at which it starts; whether fragment stages anywhere
+  spill (not scanned).
 
 ## 7. Device losses
 
-(LOSSES)
+Budget 4, used **2**. No configuration lost twice; each was followed by the kernel log saved, 3 minutes and `vulkaninfo`.
+
+| # | Time | Run | What | Recovery |
+|---|---|---|---|---|
+| 1 | 10:34:54 (reset 36) | game, `hffix_mk_nowait1` | market, the wait off, **with the first late-scheduling pass in the game**: it made `b86297c2` and `354dde83` spill; lost at present 564 (section 4). Caused by this stage's own change | vulkaninfo at 10:37:54; `kernel.txt` in the run |
+| 2 | 14:03:35 (reset 37) | harness, `run_f1897_prepass_barrier_translated` | section 6's one run | vulkaninfo at 14:06:39; `.kernel.txt` beside the output |
 
 ## 8. For a later Mesa report
 
@@ -210,7 +273,8 @@ local, and a synthetic one is written but **not run** (below).
   conditions).
 - **Also seen (measured, this stage):** two other mesh stages, made to spill by a reorder of ours (29 and 33 spills; one
   has an atomic add by address), lost the device in the game in the first second they were drawn (`hffix_mk_nowait1`).
-(MESA_MORE)
+- **One draw is enough (measured):** with a framebuffer-local barrier (RADV: a PS partial flush) between the two draws
+  it still hung, at submission 24.
 - **Leads from reading `~/source/mesa` (27.0-devel, e04357c4642), all UNVERIFIED as causes:**
   - (a) `ac_compute_late_alloc` (`src/amd/common/ac_shader_util.c`) turns late alloc off only for the stage that itself
     uses scratch, with the comment "If scratch is used with late alloc, the GPU could deadlock if PS uses scratch too. A
@@ -236,11 +300,24 @@ local, and a synthetic one is written but **not run** (below).
 |---|---|
 | The lit meshlet stage with probe light, the probe lookup | `gpu/direct/shaders/mesh/meshlet_lit.mesh` (`PROBE_LIGHT`), `probe_light.glsl`, `codes.txt` |
 | Hand-written mesh stages swapped in by code key; `HOS_DBG=nomeshrepl` | `gpu/direct/direct_meshrepl.{h,cpp}`, `shaders/mesh/swap.txt`, `shaders/mesh/40d0c0768e874600_spv.h` (generated), `direct_shader.cpp` (`finish`, the statistics line) |
-| `HOS_DBG=notmwait` (a diagnosis: no wait before task+mesh draws) | `gpu/direct/direct_draw.cpp` |
+| M6d's wait before task+mesh draws off by default; `HOS_DBG=tmwait` | `gpu/direct/direct_draw.cpp` |
 | The headers of swap.txt written by the shaders' build | `tools/meshlab/build_shaders.sh` |
 | The spill scan (`--demand`: register demand with ACO's scheduler off; `--repl`) | `tools/meshlab/spill_scan.py` |
 | The late-scheduling prototype (`--stats`) | `tools/meshlab/spv_sink.py` |
 | The synthetic stage and `probe --run` (not run) | `tools/meshlab/probes/spill.mesh`, `tools/meshlab/meshlab.cpp` |
 | Test | `tests/test_direct_mesh_repl.py` |
 
-Tests: (TESTS)
+`HOS_DBG=tmwait` replaces the default wait in `gpu/direct/direct_draw.cpp`. Tests:
+`HOOKSHOT_VULKAN_HEADERS=/usr/include work/venv/bin/python -I -B tests/run_all.py`: 297 passed, 5 failed (the baseline
+five: `test_texture_init_barrier`, `test_lift_cleanup_error`, `test_make_game_cache`, `test_parallel_init_order`,
+`test_recomplauncher_json`), 19 skipped.
+
+## 10. What remains
+
+- The translator pass (section 4) is a prototype with a specification; whether to build it into the translator is the
+  user's call. Eleven stages sit at the register limit meanwhile.
+- The scan covers three scenes' captures and no fragment stage; a new scene needs a capture and a scan.
+- The last build (the wait off by default) was run in the market only as the timing runs (100 s each, no loss); the
+  walk's two runs and the Kokiri picture runs were made with the wait still on.
+- The four `codes.txt` stages besides `40d0` are still not swapped in.
+- The Mesa report (section 8) is not written or filed; the synthetic stage has not been drawn.

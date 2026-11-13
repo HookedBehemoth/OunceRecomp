@@ -6,6 +6,8 @@ file says so) or **inferred**.
 
 ## Conclusion
 
+(The fix, the spill scan and the market's result: `hf-fix-report.md`.)
+
 The loss is **not garbage data**. It is a fault of the driver or the hardware with one compiled shader: the mesh stage
 `40d0c0768e874600` of program `cfebb562ec378f87` (the ivy of the Kokiri passage) as RADV compiles the translator's SPIR-V
 for it. It is reproduced outside the game in 2 seconds, and it ends when that stage is replaced by a hand-written one that
