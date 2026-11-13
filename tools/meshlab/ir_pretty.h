@@ -16,7 +16,9 @@ struct P {
         if (i->GetOpcode() == Opcode::Phi || i->MayHaveSideEffects()) return false;
         if (flat) {
             const Opcode o = i->GetOpcode();
-            return o == Opcode::GetCbufU32 || o == Opcode::GetCbufF32 || o == Opcode::GetCbufU32x2 || o == Opcode::LaneId;
+            const std::string_view n = NameOf(o);
+            return o == Opcode::GetCbufU32 || o == Opcode::GetCbufF32 || o == Opcode::GetCbufU32x2 || o == Opcode::LaneId || n == "Void" ||
+                   (n.starts_with("Get") && n.ends_with("FromOp"));   // (the condition codes' pseudo-ops: printed with their use)
         }
         return i->UseCount() <= 1;
     }
