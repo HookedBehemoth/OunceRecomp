@@ -130,11 +130,13 @@ static uint64_t park_frames(void) {
    a light keeps one shape for long: parking hands its entry back, and the back end keeps one image for it. Safe
    because the pass takes its viewport and scissor from the texture (f_802640a0 reads entry +0x40 width / +0x42 height,
    not its own size at +0x4e8) and the projection maps the light's frustum to the whole map; only the shadow's texel
-   density rises (by less than the step between two classes, at most 1.5 a side). HOS_RT_QUANT=0: off (the game's sizes) */
+   density rises (by less than the step between two classes, at most 1.5 a side). HOS_RT_QUANT=0: off (the game's sizes);
+   HOS_RT_QUANT=<n>: the rounding before the classes, up to a multiple of n from 512 on with no hysteresis (128 is what
+   the picture checks' references were made with: an A/B) */
 static int shadow_classes_on(void) {
     static int v = -1;
-    if (v < 0) v = !(getenv("HOS_RT_QUANT") && atoi(getenv("HOS_RT_QUANT")) == 0);
-    return v;
+    if (v < 0) v = getenv("HOS_RT_QUANT") ? atoi(getenv("HOS_RT_QUANT")) : 1;
+    return v;   /* 0 off, 1 the classes, more: multiples of it */
 }
 #define LR_LOCAL_SHADOW 0x80264130ull
 #define REUSE_AFTER 3   /* presents after a slot's last use before another image may take its memory */
@@ -566,7 +568,14 @@ static int alloc_pre(Ctx *c) {
     if (state != 1 || !hos_guest_range(d, 0x38)) return 0;
     if (c->x[30] == LR_LOCAL_SHADOW && shadow_classes_on()) {   /* (the descriptor is the caller's, on its stack, read only here) */
         const uint32_t w = G32(d + 0x10), h = G32(d + 0x14);
-        if (w == h && w >= 16 && w <= 4096) {
+        const uint32_t q = (uint32_t)shadow_classes_on();
+        if (q > 1) {
+            if (w >= 512 && h >= 512 && w <= 4096 && h <= 4096) {
+                G32(d + 0x10) = (w + q - 1) / q * q;
+                G32(d + 0x14) = (h + q - 1) / q * q;
+                __atomic_add_fetch(&n.quantized, 1, __ATOMIC_RELAXED);
+            }
+        } else if (w == h && w >= 16 && w <= 4096) {
             const uint32_t to = shadow_size(shadow_obj, w);
             G32(d + 0x10) = G32(d + 0x14) = to;
             if (to != w) __atomic_add_fetch(&n.quantized, 1, __ATOMIC_RELAXED);
