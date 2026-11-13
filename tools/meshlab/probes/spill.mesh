@@ -1,0 +1,70 @@
+// meshlab probe: a mesh stage with more values alive at once than a thread has vector registers, so that the compiler spills
+// registers to scratch memory, and that draws real triangles (docs/direct/hf-fix-report.md, "A reproducer without game
+// data"). No game data: the table it reads is the harness's own (every word 1.0).
+//
+// Each workgroup draws one patch of 8 x 8 vertices (98 triangles) in a cell of a grid over the target. Every invocation
+// first loads VALUES words of the table at its own offset, then folds them pairwise from both ends, so that all of them are
+// held when the first is used (the shape of the game's stage: it loads 112 rows of a probe table before it uses the first).
+// The result (0 for the harness's table) is added to the position, so nothing of it can be dropped.
+// Build: glslangValidator -V --target-env vulkan1.3 [-DVALUES=320 | -DVALUES=64] (64: the same stage without spills, the control)
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_scalar_block_layout : require
+#ifndef VALUES
+#define VALUES 320
+#endif
+layout(local_size_x = 32) in;
+layout(max_vertices = 126, max_primitives = 126, triangles) out;
+layout(buffer_reference, scalar, buffer_reference_align = 4) readonly buffer Floats { float f[]; };
+layout(push_constant, scalar) uniform P {
+    Floats table;      // (32 * VALUES floats at least, every one 1.0)
+    uint columns;      // (cells a row of the grid)
+    float cell;        // (a cell's side in clip units)
+    float patch_size;  // (a patch's side in clip units)
+} p;
+layout(location = 0) out vec4 colour[];
+
+void main() {
+    const uint lane = gl_LocalInvocationIndex;
+    SetMeshOutputsEXT(64u, 98u);
+    // (the values as scalars named by three letters a-h, v_aaa .. v_ehh, the letters octal digits: an array of this size
+    // would be put in memory)
+#define Xa 0u
+#define Xb 1u
+#define Xc 2u
+#define Xd 3u
+#define Xe 4u
+#define Xf 5u
+#define Xg 6u
+#define Xh 7u
+#define LD(P, Q, R) const float v_##P##Q##R = p.table.f[((X##P * 8u + X##Q) * 8u + X##R) * 32u + lane];
+#define LD8(P, Q) LD(P, Q, a) LD(P, Q, b) LD(P, Q, c) LD(P, Q, d) LD(P, Q, e) LD(P, Q, f) LD(P, Q, g) LD(P, Q, h)
+#define LD64(P) LD8(P, a) LD8(P, b) LD8(P, c) LD8(P, d) LD8(P, e) LD8(P, f) LD8(P, g) LD8(P, h)
+#define F1(P, Q, R, S, T, U) acc = fma(v_##P##Q##R, v_##S##T##U, acc);
+#define F8(P, Q, S, T) F1(P, Q, a, S, T, h) F1(P, Q, b, S, T, g) F1(P, Q, c, S, T, f) F1(P, Q, d, S, T, e) F1(P, Q, e, S, T, d) F1(P, Q, f, S, T, c) F1(P, Q, g, S, T, b) F1(P, Q, h, S, T, a)
+#define F32(P) F8(P, a, P, h) F8(P, b, P, g) F8(P, c, P, f) F8(P, d, P, e)
+#define F64(P, S) F8(P, a, S, h) F8(P, b, S, g) F8(P, c, S, f) F8(P, d, S, e) F8(P, e, S, d) F8(P, f, S, c) F8(P, g, S, b) F8(P, h, S, a)
+    float acc = 0.0;
+#if VALUES >= 320
+    LD64(a) LD64(b) LD64(c) LD64(d) LD64(e)
+    F64(a, e) F64(b, d) F32(c)
+#else
+    LD64(a)
+    F32(a)
+#endif
+    const float nothing = acc - float(VALUES / 2);   // (0 with a table of ones)
+    const vec2 corner = vec2(float(gl_WorkGroupID.x % p.columns), float(gl_WorkGroupID.x / p.columns)) * p.cell - 1.0;
+    for (uint k = 0u; k < 2u; k++) {
+        const uint n = lane + 32u * k;
+        const vec2 at = corner + vec2(float(n & 7u), float(n >> 3)) * (p.patch_size / 7.0);
+        gl_MeshVerticesEXT[n].gl_Position = vec4(at.x + nothing, at.y, 0.25 + 0.5 * float(n) / 64.0, 1.0);
+        colour[n] = vec4(float(n & 7u) / 7.0, float(n >> 3) / 7.0, nothing, 1.0);
+    }
+    for (uint k = 0u; k < 4u; k++) {
+        const uint t = lane + 32u * k;
+        if (t >= 98u) continue;
+        const uint q = t >> 1, x = q % 7u, y = q / 7u, o = y * 8u + x;
+        gl_PrimitiveTriangleIndicesEXT[t] = (t & 1u) == 0u ? uvec3(o, o + 1u, o + 8u) : uvec3(o + 1u, o + 9u, o + 8u);
+    }
+}

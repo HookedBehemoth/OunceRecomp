@@ -1234,9 +1234,113 @@ void list(const Frame& f) {
 /// buffer's address, k = 3}; its first 32 words printed, and checked against the scratch probe's expectation
 #include "fsbench.h"
 
+/// meshlab probe <spv> --run [--groups N] [--seconds T] [--no-prepass] [--prepass-barrier]: the Hyrule Field loss's shape with
+/// a mesh stage of our own and no game data (probes/spill.mesh): N workgroups drawn twice in one rendering of 1536 x 864,
+/// first with depth written (less-or-equal, no colour), then with depth tested for equality and colour written, so that the
+/// second draw's fragments pass; again and again for T seconds, two submissions in flight; a submission not finished after
+/// 2 s stops the run (a hang). Push data: {a table of ones, 32 columns, the cell and the patch in clip units}
+int probe_run(const std::vector<uint32_t>& code, uint32_t groups, double seconds, bool with_prepass, bool barrier) {
+    gpu_init();
+    heaps_init();
+    VkShaderEXT ms = make_shader(VK_SHADER_STAGE_MESH_BIT_EXT, code, nullptr, 0);
+    if (!ms) die("the probe's mesh stage not made");
+    mcap::McDraw d{};
+    d.w = 1536, d.h = 864, d.n = 1, d.color[0] = VK_FORMAT_R8G8B8A8_UNORM, d.samples = 1, d.depth = VK_FORMAT_D32_SFLOAT;
+    VkShaderEXT fs = simple_fs(d);
+    Target t = make_target(d);
+    Buf table = make_buf(32 * 512 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+    for (uint32_t i = 0; i < 32 * 512; i++) ((float*)table.map)[i] = 1.0f;
+    struct { uint64_t table; uint32_t columns; float cell, patch; uint32_t pad; } pd{table.addr, 32, 2.0f / 32.0f, 1.6f / 32.0f, 0};
+    Dyn dyn{};
+    dyn.vp = {0, 0, 1536, 864, 0, 1}, dyn.sc = {{0, 0}, {1536, 864}}, dyn.samples = VK_SAMPLE_COUNT_1_BIT, dyn.n = 1, dyn.wm[0] = 0xF;
+    dyn.front = VK_FRONT_FACE_COUNTER_CLOCKWISE, dyn.poly = VK_POLYGON_MODE_FILL;
+    dyn.eq[0] = {VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD};
+    dyn.dt = VK_TRUE;
+    VkCommandBuffer cbs[2];
+    VkFence fences[2];
+    for (int k = 0; k < 2; k++) {
+        cbs[k] = new_cb();
+        fences[k] = new_fence();
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        VK(vkBeginCommandBuffer(cbs[k], &bi));
+        to_attachment(cbs[k], t);
+        heaps_bind(cbs[k]);
+        begin_rendering(cbs[k], t, false, true);
+        if (with_prepass) {
+            Dyn pre = dyn;
+            pre.dw = VK_TRUE, pre.dop = VK_COMPARE_OP_LESS_OR_EQUAL, pre.wm[0] = 0;
+            set_state(cbs[k], pre);
+            bind_stages(cbs[k], ms, fs);
+            push(cbs[k], &pd, sizeof pd);
+            g.vkCmdDrawMeshTasksEXT(cbs[k], groups, 1, 1);
+            if (barrier) {
+                const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                                 VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+                b.srcStageMask = b.dstStageMask = fb;
+                b.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                b.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+                VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                di.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+                di.memoryBarrierCount = 1, di.pMemoryBarriers = &b;
+                vkCmdPipelineBarrier2(cbs[k], &di);
+            }
+        }
+        Dyn eq = dyn;
+        eq.dw = VK_FALSE, eq.dop = with_prepass ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
+        set_state(cbs[k], eq);
+        bind_stages(cbs[k], ms, fs);
+        push(cbs[k], &pd, sizeof pd);
+        g.vkCmdDrawMeshTasksEXT(cbs[k], groups, 1, 1);
+        vkCmdEndRendering(cbs[k]);
+        VK(vkEndCommandBuffer(cbs[k]));
+    }
+    std::printf("probe run: %u workgroups, %s, 1536 x 864, %.0f s\n", groups,
+                !with_prepass ? "one draw (depth less-or-equal, not written)" : barrier ? "depth draw, the wait, then the depth-equal draw"
+                : "depth draw then the depth-equal draw", seconds);
+    std::fflush(stdout);
+    const auto t0 = clk::now();
+    uint64_t done = 0;
+    bool busy[2] = {false, false};
+    for (int k = 0;; k ^= 1) {
+        if (busy[k]) {
+            const VkResult r = vkWaitForFences(g.dev, 1, &fences[k], VK_TRUE, 2ull * 1000 * 1000 * 1000);
+            if (r != VK_SUCCESS) {
+                std::printf("HUNG: submission %llu not finished after 2.0 s (%d), %.1f s into the run\n", (unsigned long long)done, (int)r,
+                            std::chrono::duration<double>(clk::now() - t0).count());
+                std::fflush(stdout);
+                std::_Exit(3);
+            }
+            VK(vkResetFences(g.dev, 1, &fences[k]));
+            done++;
+        }
+        if (std::chrono::duration<double>(clk::now() - t0).count() >= seconds) {
+            if (busy[k ^ 1]) vkWaitForFences(g.dev, 1, &fences[k ^ 1], VK_TRUE, 2ull * 1000 * 1000 * 1000), done++;
+            break;
+        }
+        submit(cbs[k], fences[k]);
+        busy[k] = true;
+    }
+    std::printf("SURVIVED: %llu submissions in %.1f s\n", (unsigned long long)done, std::chrono::duration<double>(clk::now() - t0).count());
+    return 0;
+}
+
 int probe(int argc, char** argv) {
     const auto code = read_spv(argv[2]);
     if (code.empty()) die("no %s", argv[2]);
+    {
+        bool run = false, with_prepass = true, barrier = false;
+        uint32_t n = 544;
+        double seconds = 30;
+        for (int i = 3; i < argc; i++) {
+            if (!std::strcmp(argv[i], "--run")) run = true;
+            else if (!std::strcmp(argv[i], "--no-prepass")) with_prepass = false;
+            else if (!std::strcmp(argv[i], "--prepass-barrier")) barrier = true;
+            else if (!std::strcmp(argv[i], "--groups") && i + 1 < argc) n = (uint32_t)std::atoi(argv[i + 1]);
+            else if (!std::strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = std::atof(argv[i + 1]);
+        }
+        if (run) return probe_run(code, n, seconds, with_prepass, barrier);
+    }
     uint32_t groups = 1;
     for (int i = 3; i + 1 < argc; i++)
         if (!std::strcmp(argv[i], "--groups")) groups = (uint32_t)std::atoi(argv[i + 1]);

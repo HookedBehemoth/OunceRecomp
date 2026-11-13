@@ -8,6 +8,9 @@ mkdir -p "$out"
 src=$root/tools/meshlab
 clang++ -std=c++20 -O2 -g -Wall -Wno-missing-field-initializers -o "$out/meshlab.new" "$src/meshlab.cpp" "$src/spv_dump.cpp" -lvulkan && mv "$out/meshlab.new" "$out/meshlab"
 echo "built $out/meshlab"
+# spvlate (the back end's late scheduling of a stage's SPIR-V as a command: gpu/direct/direct_spv_late.cpp)
+clang++ -std=c++20 -O2 -Wall -o "$out/spvlate" "$src/spvlate.cpp"
+echo "built $out/spvlate"
 # meshtool (offline: the translator fork's objects from the standalone build, work/sa/build/obj/dx_eden_*.o)
 if [ "${1:-}" != "--harness-only" ] && ls "$root"/work/sa/build/obj/dx_eden_*.o > /dev/null 2>&1; then
     d=$root/gpu/direct
