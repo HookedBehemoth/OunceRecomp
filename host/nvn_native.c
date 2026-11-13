@@ -3420,8 +3420,8 @@ static void draw_mesh(Ctx *c, int kind) {
     else if (kind == 1) r->indirect = U64(1), r->max = 1;
     else r->indirect = U64(1), r->count_addr = U64(2), r->max = I(3), r->stride = I(4);
     if (kind && rx_direct()) {   /* (M4d: the GPU lists' records in Vulkan's layout, a game patch: direct_mesh_lists.c) */
-        void direct_mesh_lists_draw(uint64_t lr, uint64_t rec, int max, int stride);
-        direct_mesh_lists_draw(c->x[30], r->indirect, r->max, r->stride);
+        void direct_mesh_lists_draw(uint64_t rec, int max, int stride);
+        direct_mesh_lists_draw(r->indirect, r->max, r->stride);
     }
     static volatile LONG64 n;
     const LONG64 k = InterlockedIncrement64(&n);

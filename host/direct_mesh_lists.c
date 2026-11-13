@@ -47,7 +47,7 @@ SPLICE_AFTER(0x80361a00, "64(c,(c->x[22] + c->x[8]),(uint64_t)0);") {
 
 /* nvn_native.c draw_mesh (direct mode): the records of an indirect mesh draw (max of them, stride apart; 0: 16) */
 uint64_t nvn_gpu_guest(uint64_t gpu);
-void direct_mesh_lists_draw(uint64_t lr, uint64_t gpu, int max, int stride) {
+void direct_mesh_lists_draw(uint64_t gpu, int max, int stride) {
     const uint64_t rec = rx_direct() && gpu ? nvn_gpu_guest(gpu) : 0;
     if (!rec) return;
     if (stride <= 0) stride = 16;
@@ -58,11 +58,7 @@ void direct_mesh_lists_draw(uint64_t lr, uint64_t gpu, int max, int stride) {
         if (!hos_guest_range(r, 16)) { InterlockedIncrement64(&n.outside); continue; }
         if (G32(r + 4) || G32(r + 8)) continue;
         put(r);
-        static int say = -1;
-        if (say < 0) say = hos_log_switch("logpatch");
-        if (InterlockedIncrement64(&n.set) <= 40 && say)
-            hos_log("direct patch mesh lists: record %#llx (drawn from lr %#llx) set to {x, 1, 1, n}", (unsigned long long)r,
-                    (unsigned long long)lr);
+        InterlockedIncrement64(&n.set);
     }
 }
 
