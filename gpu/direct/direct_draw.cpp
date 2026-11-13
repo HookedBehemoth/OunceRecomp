@@ -91,17 +91,17 @@ enum Reason {
     R_ARGS_MEM, R_MESH_STRIDE, R_TASK_STEP, R_TASK_MULTI, R_DRAWN_TASK, R_TASK_APART, R_COUNT
 };
 const char* const kReasons[R_COUNT] = {
-    "drawn", "mesh draws without the device's mesh stage", "task+mesh programs that cannot be drawn ", "no render targets set in the list", "under a render condition ",
+    "drawn", "mesh draws without the device's mesh stage", "task+mesh programs that cannot be drawn", "no render targets set in the list", "under a render condition",
     "rendering disabled", "a topology Vulkan lacks", "quads (indices made on the CPU)", "no program bound in the list",
     "program not read yet", "program not vertex + fragment", "variant being translated", "variant does not translate",
     "step A cannot draw the variant", "a vertex buffer not in layer 0", "the index buffer not in layer 0", "8-bit indices",
     "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
-    "resolved in a load-time list ", "resolved in an unclassified list", "of the drawn: indirect", "of the drawn: mesh, direct",
+    "resolved in a load-time list", "resolved in an unclassified list", "of the drawn: indirect", "of the drawn: mesh, direct",
     "of the drawn: mesh, indirect", "a draw kind its program has no stage for", "indirect arguments or count not in layer 0",
     "mesh argument records closer than 12 bytes",
-    "task+mesh draws whose task step was not recorded ", "task+mesh indirect draws of several records or with a count ",
+    "task+mesh draws whose task step was not recorded", "task+mesh indirect draws of several records or with a count",
     "of the drawn: task+mesh (a task step)",
-    "of the drawn: task+mesh, after a wait for the work before it "};
+    "of the drawn: task+mesh, after a wait for the work before it"};
 // (M3b: the counters a draw bumps are the recording thread's own: a global atomic added to by every draw on every recording
 // thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
 struct TStats {

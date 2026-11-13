@@ -44,7 +44,7 @@ const char* const kNames[S_COUNT] = {
     "dispatches", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
     "buffer ops in lists that record nothing", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
     "records on another thread", "ops a job's rendering cannot hold (skipped)", "command buffers cut at an event op",
-    "jobs' task steps executed ", "of them in a begun rendering (ended and begun again)", "renderings ended for an inline task step",
+    "jobs' task steps executed", "of them in a begun rendering (ended and begun again)", "renderings ended for an inline task step",
     "jobs' task steps run again (a job called again)"};
 std::atomic<int64_t> st[S_COUNT];
 std::atomic<int64_t> st_bits[16];   // (barriers by NVN bit)

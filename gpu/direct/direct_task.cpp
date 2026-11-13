@@ -75,7 +75,7 @@ void init() {
         const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &prep);
         if (r == VK_SUCCESS) object_made(1, "the task prep shader");
         ready = r == VK_SUCCESS && pDispatch && pDispatchIndirect && pUpdateBuffer;
-        logf("direct: task steps : the task stage of task+mesh programs as a compute step, the mesh stage native; prep step %s (%d); "
+        logf("direct: task steps: the task stage of task+mesh programs as a compute step, the mesh stage native; prep step %s (%d); "
              "a dispatch holds %u task workgroups, a mesh draw %u mesh workgroups", ready ? "made" : "NOT MADE: indirect task+mesh draws are skipped",
              (int)r, max_tasks, max_groups);
     });
@@ -249,7 +249,7 @@ void task_list_end(List* l) {
 }
 
 void task_stats(char* out, size_t cap, double frames) {
-    int k = std::snprintf(out, cap, "task steps a frame :");
+    int k = std::snprintf(out, cap, "task steps a frame:");
     for (int i = 0; i < T_COUNT; i++)
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", i ? "," : "", kNames[i],
                            (i == T_POOLS || i == T_GROWN ? st[i].load() : st[i].exchange(0)) / (i == T_POOLS || i == T_GROWN ? 1.0 : frames));

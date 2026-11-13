@@ -129,7 +129,7 @@ ENTRY_HOOK(0x807981f0) {
 }
 
 void direct_texdata_line(char *out, size_t cap) {
-    snprintf(out, cap, "texture events : created %lld, aliases %lld, moved %lld, released to the cache %lld, taken back %lld, "
+    snprintf(out, cap, "texture events: created %lld, aliases %lld, moved %lld, released to the cache %lld, taken back %lld, "
              "destroyed %lld; in the cache now %lld (unknown tds %lld, table full %lld)", (long long)n_created, (long long)n_aliases,
              (long long)n_moves, (long long)n_to_cache, (long long)n_from_cache, (long long)n_destroyed, (long long)n_cached_now,
              (long long)n_unknown, (long long)n_full);

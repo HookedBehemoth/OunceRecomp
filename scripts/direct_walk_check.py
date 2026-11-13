@@ -55,10 +55,10 @@ def main():
         if mem:
             print("  device-local heap, driver usage / VMA blocks (MB) every 600 presents: " +
                   " ".join(f"{u}/{b}" for u, _, b in mem))
-        cache = re.findall(r"held only by textures in agl's LRU cache \(M6f\): (\d+) images, (\d+) MB", log)
+        cache = re.findall(r"held only by textures in agl's LRU cache: (\d+) images, (\d+) MB", log)
         if cache:
             print("  images held only by agl's LRU cache (images/MB) every 600 presents: " + " ".join(f"{a}/{b}" for a, b in cache))
-        ev = re.findall(r"assets: texture events \(M6f\): (.*)", log)
+        ev = re.findall(r"assets: texture events: (.*)", log)
         if ev:
             print("  texture events (last): " + ev[-1][:300])
         imgs = re.findall(r"direct: images: \d+ made .*?(\d+) live .*?\), (\d+) MB \(assets: (\d+) images, (\d+) MB", log)

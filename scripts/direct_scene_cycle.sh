@@ -54,7 +54,7 @@ note() {   # <stop index> <stop>: after the next 600-present block
   local mem img cache ev dev
   mem=$(grep -o 'heap [0-9]* (device-local, [0-9]*): driver usage [0-9]* of budget [0-9]*, VMA blocks [0-9]*' "$log" | tail -1 | sed -E 's/.*driver usage ([0-9]+) of budget ([0-9]+), VMA blocks ([0-9]+)/usage \1 budget \2 vma \3/')
   img=$(grep -oE 'direct: images: .*' "$log" | tail -1 | sed -E 's/.*; ([0-9]+) live .*\), ([0-9]+) MB \(assets: ([0-9]+) images, ([0-9]+) MB.*/live \1 \2MB store \3 \4MB/')
-  cache=$(grep -oE "held only by textures in agl's LRU cache \(M6f\): [0-9]+ images, [0-9]+ MB" "$log" | tail -1 | sed -E 's/.*: ([0-9]+) images, ([0-9]+) MB/cache \1 \2MB/')
+  cache=$(grep -oE "held only by textures in agl's LRU cache: [0-9]+ images, [0-9]+ MB" "$log" | tail -1 | sed -E 's/.*: ([0-9]+) images, ([0-9]+) MB/cache \1 \2MB/')
   ev=$(grep -oE 'VRAM eviction patch: free VRAM -?[0-9]+ MB .*' "$log" | tail -1 | sed -E 's/.*free VRAM (-?[0-9]+) MB.*cache ([0-9]+), evicted by the patch ([0-9]+).*/free \1MB cached \2 evicted \3/')
   dev=$([ -n "$card" ] && echo "device $(( $(cat "$card/mem_info_vram_used") >> 20 ))MB" || echo "")
   echo "stop $1 $2: $mem; $img; $cache; $ev; $dev" >> "$run_dir/stops.txt"

@@ -956,7 +956,7 @@ void image_stats(char* out, size_t cap) {
                   (unsigned long long)refs_hist[3], (unsigned long long)(many_refs_bytes >> 20), (unsigned long long)shared_addr);
     {
         const size_t n5 = std::strlen(out);
-        std::snprintf(out + n5, cap > n5 ? cap - n5 : 0, "; held only by textures in agl's LRU cache : %llu images, %llu MB (%llu "
+        std::snprintf(out + n5, cap > n5 ? cap - n5 : 0, "; held only by textures in agl's LRU cache: %llu images, %llu MB (%llu "
                       "more images held by a cached texture and a live one)", (unsigned long long)cache_n,
                       (unsigned long long)(cache_bytes >> 20), (unsigned long long)cache_part);
     }
