@@ -1548,15 +1548,11 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         const uint32_t mk = marks_on() ? mark_before(cb, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw", prog->key,
                                                      l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: HOS_DBG=marks)
         if (marks_on() && prog->task) mark_header(mk, task_last_header);
-        // (M6d) No two task+mesh draws overlap on the GPU: each waits for all work before it in the queue. The native mesh stages
-        // of two such draws running together lose the device on this GPU (RX 6950 XT, RADV 26.2.4 and main;
-        // docs/direct/m6d-report.md), 13 of 13 market runs without a separation. The wait is before every one, not only after
-        // another in the same command buffer: two can follow each other across job secondaries, renderings and submits with
-        // ordinary draws between them, which do not drain the pipe. The barrier is the one a rendering may hold
-        // (dynamicRenderingLocalRead: framebuffer stages, by region); RADV records it as a PS partial flush (and CB/DB flushes),
-        // an event in the queue's order that ends when every earlier draw's pixel work has, so also their mesh work. The class is
-        // the program's shape (a mesh stage that reads its workgroups from a task step), no program is named. A mitigation: it
-        // keeps two such mesh stages from overlapping; why overlapping loses the device is not known (the report)
+        // (M6d's wait before every task+mesh draw, now a diagnosis: HOS_DBG=tmwait. It kept two task+mesh draws' mesh stages from
+        // overlapping (the framebuffer-local barrier a rendering may hold: RADV records a PS partial flush), which ended the
+        // market's device loss, cause then unknown. The cause was one mesh stage, 40d0c0768e874600, as RADV compiled the
+        // translator's SPIR-V: with register spills to scratch (docs/direct/hf-fix-report.md). That stage is drawn with a
+        // hand-written one now (direct_meshrepl.h) and the market ran 240 s twice and 15 minutes without the wait)
         static const bool mesh_wait = dbg("meshwait");   // (HOS_DBG=meshwait, a diagnosis: the same wait before mesh-only draws too)
         const auto apart = [cb] {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
@@ -1570,10 +1566,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
             vkCmdPipelineBarrier2(cb, &d);
         };
-        // (HOS_DBG=notmwait, a diagnosis: no wait before task+mesh draws, to see whether the market still needs it once the
-        // mesh stages that spill are replaced: docs/direct/hf-fix-report.md)
-        static const bool no_tm_wait = dbg("notmwait");
-        if ((prog->task && !no_tm_wait) || mesh_wait) apart(), sub(l, R_TASK_APART);
+        static const bool tm_wait = dbg("tmwait");
+        if ((prog->task && tm_wait) || mesh_wait) apart(), sub(l, R_TASK_APART);
         // (M6d, the diagnoses that found it, one at a time: a full barrier inside the rendering, which Vulkan does not allow there
         // and RADV records as the wait it is (VS and PS partial flushes): tmsync before each task+mesh draw, tmsyncafter after it,
         // tmsyncpair only before one whose previous draw in this command buffer was a task+mesh draw too)
