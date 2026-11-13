@@ -10,7 +10,7 @@ Every statement is **measured** (a run or a file says so) or **inferred**.
 - **Fixed and proven:** the game draws mesh stage `40d0c0768e874600` (programs `cfebb562ec378f87`, `f69141e92f08bc7b`,
   `4ce46adcc32922a4`, `7bb29ab9ea165bbe`) with a hand-written stage (`meshlet_lit.mesh -DMODEL_SLOT=2 -DPROBE_LIGHT`). It
   emits the translated stage's geometry bit for bit in all 28 output components on 10 of 10 captured draws, RADV compiles
-  it without scratch, and the Kokiri-Hyrule Field walk that lost the device 5 of 5 times survived 2 of 2 runs of 240 s
+  it without scratch, and the Kokiri-Hyrule Field walk that lost the device 5 of 5 times survived 3 of 3 runs of 240 s
   (**measured**, sections 1-2).
 - **Spill scan:** of the 53 mesh stages and 6 task stages the three scenes' captures hold, **one** spills registers to
   scratch as RADV compiles the translator's SPIR-V: `40d0` (**measured**, section 3). Eleven more mesh stages are at the
@@ -82,6 +82,7 @@ HOS_DBG=marks,tmlog:cfebb562ec378f87 HOS_LOG_TIME=1 HOS_INPUT_SCRIPT=<hfh_a_lost
 |---|---|---|
 | `hffix_walk1` (the program cache made anew: the scene complete from 97 s) | survived 240 s, 9,917 presents | 7,912 frames, 427 of them with 500 groups or more, 593 at most |
 | `hffix_walk2` | survived 240 s, 14,061 presents | 10,896 frames, 410 with 500 or more, 593 at most |
+| `hffix_walk3_nowait` (the final build: M6d's wait off, section 5) | survived 240 s, 14,047 presents | 10,898 frames, 416 with 500 or more, 593 at most; no wait recorded |
 
 Before: 5 of 5 lost, within a few frames of 515-567 groups (`hf-hang-report.md`). Both runs logged the four programs made
 with the hand-written stage, none refused.
@@ -317,7 +318,7 @@ five: `test_texture_init_barrier`, `test_lift_cleanup_error`, `test_make_game_ca
 - The translator pass (section 4) is a prototype with a specification; whether to build it into the translator is the
   user's call. Eleven stages sit at the register limit meanwhile.
 - The scan covers three scenes' captures and no fragment stage; a new scene needs a capture and a scan.
-- The last build (the wait off by default) was run in the market only as the timing runs (100 s each, no loss); the
-  walk's two runs and the Kokiri picture runs were made with the wait still on.
+- The final build (the wait off by default) ran the walk once (`hffix_walk3_nowait`, survived) and the market in the
+  timing runs (100 s each, no loss); the first two walks and the Kokiri picture runs were made with the wait still on.
 - The four `codes.txt` stages besides `40d0` are still not swapped in.
 - The Mesa report (section 8) is not written or filed; the synthetic stage has not been drawn.
