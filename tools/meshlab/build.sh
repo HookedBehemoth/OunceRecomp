@@ -3,7 +3,7 @@
 # and loader. And the replacement mesh stages (gpu/direct/shaders/mesh/*.mesh) to SPIR-V when given --shaders <out dir>.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
-out=$root/work/meshlab
+out=${MESHLAB_OUT:-$root/work/meshlab}
 mkdir -p "$out"
 src=$root/tools/meshlab
 clang++ -std=c++20 -O2 -g -Wall -Wno-missing-field-initializers -o "$out/meshlab.new" "$src/meshlab.cpp" "$src/spv_dump.cpp" -lvulkan && mv "$out/meshlab.new" "$out/meshlab"
