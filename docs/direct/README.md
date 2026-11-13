@@ -14,6 +14,7 @@ The game
 - [job-formats.md](job-formats.md): where a job gets its target formats (the pass key).
 - [terrain-texels.md](terrain-texels.md): terrain tiles and the other CPU texel paths.
 - [task-mesh.md](task-mesh.md): the game's task and mesh shaders.
+- [movie-player.md](movie-player.md): the movie player, its frame chooser, the NDVE network and how the movie file reaches it.
 
 The back end
 

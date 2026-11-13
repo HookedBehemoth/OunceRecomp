@@ -32,3 +32,13 @@ byte at 0x84eb5f61 is set to 1 and NDVE is off); with no resource a 0x1c0-byte p
 (vtable +0x18): `f_83b83360` when NDVE is on (allocates "NDVE_Output", runs `f_821057e0`), `f_83b82450` otherwise (draws the two
 plane textures). Both are reached from `f_83b82250` (the plane copy). So "enhancement off" is: the NDVE resource argument of
 `f_83b7c020` is null.
+
+## How the movie file reaches the player
+`MovieMediaSourceClient` (f_83b827e0's thread) reads the file from romfs in 64 KB chunks and appends them to the SDK's media source
+(`nn::movie::MediaExtractor` in the sdk module, which wraps it in `nandroid::NuCachedSource2`, the Android cache with its own
+`nandroid::ALooper` thread, high water 5 MB, low water 2.5 MB). `MediaExtractorWorker` reads samples through `readAt`, the movie input
+thread submits them to `movie::VideoDecoder`. When a read needs bytes the cache does not hold, `onRead` retries every 1 ms and
+the cache is refilled by `onFetch`, which when it is not fetching re-posts itself 100 ms out (the looper's timed wait is that 100 ms;
+nothing is lost). The host decoder (host/nn_video.c) accepts every packet at once, so the reader runs far ahead of the picture and
+empties the cache between two checks; the movie then arrived in bursts of 6-7 frames every 110 ms. `host/direct_movie.c` posts that
+check 1 ms out instead. What a hardware decoder's bounded input queue would do instead is not modelled.
