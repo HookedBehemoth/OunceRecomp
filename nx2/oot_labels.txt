@@ -121,18 +121,18 @@
 # --- the frame: heads, the gate, submits, present
 806650d0 frame_compute_list_begin         # host/direct.c, work/assets/native/engine-frame.md: an async-compute list's begin
 8066fc80 frame_draw_tv                    # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md: "Draw(TV)": frame begin .. end
-802eacc0 frame_draw_tv_caller             # work/assets/native/engine-layers.md: calls "Draw(TV)" (frame begin..end, submits)
-802eb020 frame_gate_caller                # work/assets/native/engine-frame.md: main thread, calls the gate primary
+802eacc0 sead_method_tree_call            # docs/direct/boot-to-main-loop.md: the method tree's recursive call (calc and draw trees)
+802eb020 frame_proc_draw                  # docs/direct/boot-to-main-loop.md: procDraw: gate primary, the draw tree, message to the Presentation Thread
 802eb390 frame_gate_primary               # host/direct.c, work/assets/native/command-lists.md: the CPU gate list: nvnEventSignal + WaitEvent a frame
 83b6ea90 frame_global_step                # nx2/oot_patches.py: the global step the engine reads
 80665980 frame_head_begin                 # host/direct.c, work/assets/native/command-lists.md: a queue's head (frame primary) begin
-8042cd20 frame_limiter_sleep              # host/nn_vi.c: the frame limiter: sleeps to 1 / +0xfc
+8042cd20 frame_end_wait_and_gate          # docs/direct/boot-to-main-loop.md: frame end: frame callback, fence and window/vsync waits, the CPU gate signal (tail call); sleeps only without a present
 806668b0 frame_list_end_submit            # work/assets/native/command-lists.md: End, submit, FenceSync, SyncWait
-8348c680 frame_main_signal_gpu            # work/assets/native/command-lists.md, work/assets/native/cpu-to-gpu.md: main thread signals the GPU after writing the frame's data
+8348c680 frame_body                       # docs/direct/boot-to-main-loop.md: the frame body, tail-called each frame from f_83b6ea90
 805902c0 frame_present_submit             # work/assets/native/engine-frame.md: Presentation thread: QueueWaitSync, submit, FenceSync
 80547f20 frame_queue_present              # work/assets/native/engine-frame.md: QueuePresentTexture
 83b6e300 frame_seconds_from_ratio         # host/nn_vi.c: seconds = ratio / 60
-80706be0 frame_step                       # nx2/oot_patches.py: the frame's step (60.0 base) added to the game clock
+80706be0 module_calc                      # docs/direct/boot-to-main-loop.md: moduleCalc_: the three module-graph stages of a frame (A game logic, B, C jobs and layer lists)
 80527f00 frame_submit_queues              # work/assets/native/command-lists.md, work/assets/native/engine-frame.md: Presentation thread: submits compute + heads
 804fc0f0 frame_variable_refresh           # host/nn_vi.c: variable refresh (+0x231)
 
@@ -394,14 +394,14 @@
 80b72340 heap_graphics_rest               # nx2/oot_patches.py: a heap of what the Graphics heap can still give
 83b7b340 heap_module_heaps_create         # nx2/oot_patches.py: makes the module heaps, checks budgets
 8005eb20 heap_new_in_heap                 # work/assets/native/engine-layers.md: operator new(size, heap, align), 276 callers
-83b797e0 module_draw_names                # work/assets/native/engine-layers.md: names ModuleSystem::draw3DOpa_ .. nodes
-83b7a2c0 module_system_init               # work/assets/native/engine-layers.md, nx2/oot_patches.py: ModuleSystem init (heaps, the worker pool)
+83b797e0 module_system_prepare            # docs/direct/boot-to-main-loop.md: ModuleSystem's prepare: modules, threads, Pack/Bootup (boot's single-threaded window)
+83b7a2c0 module_bootup_pack_load          # docs/direct/boot-to-main-loop.md: the Pack/Bootup loader the prepare uses
 80f69040 sead_device_queue_pools          # work/assets/native/engine-layers.md: device/queue pools
 809df700 sead_exp_heap_create             # work/assets/native/engine-layers.md: sead::ExpHeap::create(size, name, parent, align, dir, lock)
 809df710 sead_exp_heap_create_b           # nx2/oot_patches.py: the module heaps' create (patched for the Graphics heap)
 809e00a0 sead_frame_heap_create           # work/assets/native/engine-layers.md: FrameHeap::create
-8348be50 sead_game_framework              # work/assets/native/engine-layers.md: sead::GameFrameworkOunce: device, queue
-80f48c30 sead_method_tree_mgr             # work/assets/native/engine-layers.md: sead::MethodTreeMgr
+8348be50 sead_framework_graphics_init     # docs/direct/boot-to-main-loop.md: the framework's graphics init: NVN device, vi, the window textures, the Presentation Thread
+80f48c30 sead_framework_run               # docs/direct/boot-to-main-loop.md: the framework's run: MethodTreeMgr, TaskMgr, the startup loop; never returns
 80f47bc0 sead_method_tree_names           # work/assets/native/engine-layers.md: names RootCalc/SysCalc/AppCalc/RootDraw/SysDraw
 80f477b0 sead_method_tree_names_b         # work/assets/native/engine-layers.md
 8351c280 sys_abort_budget                 # nx2/oot_patches.py: aborts below zero budget
