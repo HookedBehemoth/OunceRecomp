@@ -35,7 +35,7 @@ Run everything with `python -I` from this folder.
 | `python -I nx2/test_insn.py [--per 6 --states 12]` | every instruction form the game uses, Unicorn vs lifted C |
 | `python -I nx2/test_leaf.py [--count 3000 --states 4] [--calls]` | random whole functions (or call trees), Unicorn vs recompiled native code on the real image |
 | `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot.exe` + `hookshot_direct.so`, the only renderer |
-| `powershell -File scripts/run-vk.ps1 [-Window] [-Seconds 120] [-Name x]` | a muted test run on Vulkan, with screenshots in `work/runs/<name>/shots` |
+| `scripts/run-vk.sh <name> [seconds] [-- NAME=VALUE ...]` | a muted, headless test run (Linux), with screenshots in `work/runs/<name>/shots`; see Iterating below |
 | `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_PROFILE=<seconds>` + `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>` (the sampler runs only with `HOS_PROFILE` set), named from the linker maps |
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
@@ -53,6 +53,78 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 `HOS_INPUT_BACKGROUND=0` overrides that option. With `HOS_INPUT_EXCLUSIVE` set (to any value, `0` too) the script
 alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses. It
 is not a focus override.
+
+## Iterating quickly (Linux)
+
+Everything made from the game lives in `work/` (git ignores it). Run Python as `work/venv/bin/python -I`.
+
+**Setup once.** `python3 -m venv work/venv && work/venv/bin/pip install -r requirements.txt`; extract the dump
+(`nx2/nup.py <.nup> --extract work/dump`) and record it (`nx2/dump.py --dump work/dump --set`); put the SPIR-V and VMA
+headers where `nx2/build.py` finds them (`/usr`, or `HOOKSHOT_SPIRV_HEADERS` and `HOOKSHOT_VMA_HEADERS`; the Vulkan
+ones likewise with `HOOKSHOT_VULKAN_HEADERS`); `nx2/lift.py --standalone --write` lifts the game into `work/sa/gen`.
+
+**Build.** `work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` writes `work/sa/build/` (`hookshot`,
+`hookshot_direct.so`, the caches beside them). A change to a header every file includes, or to the build flags, rebuilds
+everything; a change in `host/` or `gpu/direct/` recompiles only that file and links.
+- To replace a game function, write `ENTRY_HOOK(0x8xxxxxxx)` or `ENTRY_HOOK_SYM(name)` in a `host/*.c` file (return 1
+  when it handled the call), run `work/venv/bin/python -I nx2/entry_hooks.py work/sa/gen` (the lift runs it too), then
+  build: only the spliced code file and the runtime recompile. Read the lifted body first:
+  `grep -l "^void f_<addr>(Ctx \*__restrict" work/sa/gen/code_*.c`. `ENTRY_HOOK_SYM` names resolve through
+  `work/sa/image/image.json`.
+- A new `host/*.c` file is picked up by the next build only (the file list is taken at its start).
+- `RX_DIRECT_ONLY=1` builds the back end alone, with no lift.
+- To keep builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`, `*.idx`)
+  to `work/sa/<name>/` and run with `EXE=`.
+
+**Run.** `OVERLAY=work/overlay/chisel_kokiri scripts/run-vk.sh <name> <seconds> -- [NAME=VALUE ...]` starts the build
+headless and muted, with a private `--user` folder, and writes `work/runs/<name>/`: `shots/` (a picture every
+`SHOT_EVERY` presents, 300), `timeline.txt` (second, presents, RSS in MB), `log.txt`, `stdout.txt`. `EXE=` picks another
+build, `USER_FROM=<folder>` starts from a save, `WINDOW=1` and `SOUND=1` turn the window and the sound on. A first run of
+a build folder is cold (shaders and pipelines are prepared); copy a warm folder's caches for a comparison.
+- **Chiseled boot:** `tools/dump/make_chisel_overlay.py <dir> --route newgame --banc <map> --start <name>` (or `--route
+  load [--slot N]`) writes patched sequence graphs that skip the title menu and go straight into a map; `OVERLAY=<dir>`
+  hands them to the game as `HOS_FS_OVERLAY`. Maps: `KokiriForest_Child`, `HyruleField_Child` and `_Adult`,
+  `KakarikoVillage_Child`, `InsideTheDekuTree`. The new-game route saves, so run it with the script's own `--user` folder.
+  The opening's events are cut (`--keep-intro` keeps them); `--skip-title` and `--skip-fades` cut the title movie and the
+  loading fades. Details: `tools/dump/README.md`.
+- **Scripted input:** `"HOS_INPUT_SCRIPT=30:LUP/3000,34:RRIGHT/2500" HOS_INPUT_EXCLUSIVE=1` (seconds from the game's
+  first controller read; the syntax is under Input for scripted runs).
+- **Launch time:** `work/venv/bin/python -I scripts/launch_time.py work/runs/<name> ...`.
+- **Smoke test:** `scripts/smoke.sh <name> [kokiri|hf] [-- NAME=VALUE ...]` runs one standing scene for `SECS` (40) seconds
+  with `RUN=timing`, and `scripts/smoke.py` prints a verdict of about ten lines: fatal log lines, a perceptual hash of
+  every shot after the load against the golden run's shot of the same present (a Hamming distance over 12 of 64 fails),
+  rough numbers beside the golden run's (steady fps, replay times, peak RSS, least free and most shared memory), and
+  warning or error groups not in `work/smoke/<scene>/known.txt`. Record the golden run once per build with the switches
+  off (`GOLDEN=1 scripts/smoke.sh <name> kokiri`); an A/B is the same build with a switch on. Read the verdict, not
+  the log; `KEEP_SHOTS=1` keeps the pictures, which are deleted after the check.
+- **One game at a time, unless the runs are checks.** `RUN=timing` takes the GPU lock exclusively (fps, launch time,
+  anything that may hang the GPU: a reset kills every run beside it); `RUN=check` takes it shared, at most `RUN_SLOTS`
+  (default 1) runs at once, each on a private reflink copy of the build folder, and waits for `RUN_MEM_GB` (14) of free
+  memory. Do not wrap either in `flock`. A run waits for the free memory first: a game holds about 10 GB of guest
+  memory in a memfd shared with the GPU, which RSS does not show.
+- After `VK_ERROR_DEVICE_LOST` the GPU is reset: `journalctl -k` names the ring and thread. `HOS_DBG=validation` (the
+  validation layer) and `HOS_DBG=strict` (a warning or error ends the run) are the back end's own aids.
+
+**Agent worktrees.** `scripts/agent-worktree.sh new <name> [base]` makes `work/wt/<name>` on branch `agent/<name>`. Its
+`work/` links to the main one (dump, image, runs, overlays, venv, locks, object cache) except `sa/gen` and `sa/build`,
+which are its own reflink copies, so hooks splice into its own lift and a host-only build is quick. Run with
+`EXE=work/sa/build/hookshot` from it. `land <name>` rebases the branch onto the main checkout's branch and
+fast-forwards it; `drop <name>` removes the worktree and the branch once landed.
+
+**Measure.**
+- The frame rate is the `vk: <n> presents, <x> fps (direct); frame time ...` line in `log.txt`, taken standing at a named
+  place.
+- CPU, one thread: `HOS_PROFILE=<seconds> HOS_SAMPLE=<thread> HOS_SAMPLE_FILE=<f>`, read with `scripts/prof.py <f>`.
+  All threads: `HOS_PROFILE=5 HOS_SAMPLE_ALL=<f>` with `<f>.go` present, then `RX_MAPS=work/sa/build scripts/crit.py <f>`
+  (`scripts/hotlist.py` reads the same file).
+- The first line of `log.txt` names the build as `<version> (source <hash>)` (`nx2/version.py`); the hash is a fingerprint
+  of `host/`, `gpu/` and `nx2/`, so it tells two builds of one commit apart, and a build from a modified checkout has
+  nothing else.
+- Tests: `work/venv/bin/python -I -B tests/run_all.py`.
+
+**Reverse engineering.** Flat modules `work/re/{main,sdk,subsdk0}.bin` (main's base is 0x80020000), the exports in
+`work/sa/image/image.json`, and the scripts in `tools/re/` (`disasm.py`, `xref.py`, `callers.py`; see its README) and
+`tools/dump/` (`bntx.py`, `bfres.py`, `bfsha.py`, `ainb.py`, `byml.py`, `sarc.py`, `zs.py`).
 
 ## Switches for testing and debugging
 
@@ -79,7 +151,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOS_WINDOW_SIZE=<w>x<h>` | The window's size in pixels (1280x720 by default, wider for an ultrawide picture) |
 | `HOS_WINDOW_NOACTIVATE` (set) | The window opens behind the others and does not take the focus (Windows) |
 | `HOS_FULLSCREEN=1` | Starts in fullscreen; the Insert menu's Fullscreen row is then left alone |
-| `HOS_AUDIO=0` | No sound device is opened (the mixer still runs); `scripts/run-vk.ps1` sets it unless `-Sound` |
+| `HOS_AUDIO=0` | No sound device is opened (the mixer still runs); `scripts/run-vk.sh` sets it unless `SOUND=1` |
 | `HOS_LANGUAGE=<code>` | The game's language for this run, a code from `language.txt` |
 | `HOS_OUTPUT_RES=<0..3>`, `HOS_HANDHELD=1`, `HOS_ASPECT=<ratio>` | Over the options file: the output resolution (0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080), the handheld profile, a picture wider than 16:9 (2.3889 for 3440x1440) |
 | `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |

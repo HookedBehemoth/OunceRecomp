@@ -100,7 +100,7 @@
 80063090 dta_arena_init                   # work/assets/native/rt-alloc.md: one of the pool record's 7 arenas
 8006ec60 dta_arena_stats                  # work/assets/native/cores.md: sums the arenas' bytes in use for the game's stats
 80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, nx2/oot_patches.py: -> DTA::initialize
-802737a0 dta_free                         # docs/native-vk.md, host/rt_slots.c; docs/direct/shadow-pool-report.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
+802737a0 dta_free                         # host/rt_slots.c; docs/direct/shadow-pool-report.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
 80c49070 dta_initialize                   # work/assets/native/rt-alloc.md: DTA::initialize: entries, 7 lanes, pool record
 836ce9d0 dta_pool_config_read             # nx2/oot_patches.py: reads the render-target pool size, makes the pools
 80c49380 dta_pool_record_create           # work/assets/native/rt-alloc.md: physical pool + 7 arenas + virtual pools
@@ -360,7 +360,7 @@
 8007c120 dynres_update                    # work/assets/native/engine-layers.md: dynamic resolution (reads GPU timestamps)
 83485280 exposure_compute                 # work/assets/native/readback2.md: the exposure / adaptation
 80354060 report_gpu_timestamps_read       # work/assets/native/engine-layers.md, work/assets/native/readback2.md: 29 x 64-byte readbacks (agl GPU timestamps)
-80365f00 report_reader_a                  # host/nvn_native.c, docs/native-vk.md: (the occlusion grid reader, agl::utl::DepthBufferEx)
+80365f00 report_reader_a                  # host/nvn_native.c: (the occlusion grid reader, agl::utl::DepthBufferEx)
 80362ff0 report_reader_b                  # docs/direct/m0-task-mesh.md: (GPU-culling append counters, read-and-zero)
 80357060 report_reader_c                  # docs/direct/m4f-report.md, work/assets/native/engine-layers.md: (the exposure reader, luminance rings)
 

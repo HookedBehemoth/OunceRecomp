@@ -23,4 +23,4 @@ How the `work/overlay/chisel_*` folders are made, for example the Kokiri start f
     OVERLAY=$PWD/work/overlay/chisel_kokiri scripts/run-vk.sh name 60 -- RX_BACKEND=direct
 
 `--route load` continues the save instead; `--start NAME` picks a StartPos (the market overlay is a start in
-Hyrule Field at the drawbridge, see `docs/native-vk.md`); `--skip-fades` and `--skip-title` cut the loading fades and the title movie.
+Hyrule Field at the drawbridge); `--skip-fades` and `--skip-title` cut the loading fades and the title movie.

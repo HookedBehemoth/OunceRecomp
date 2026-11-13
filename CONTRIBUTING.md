@@ -27,13 +27,12 @@ game data, leave it out.
 
 ## Ways to help
 
-What to work on first, and the steps from claiming a problem to its release, are in the [workflow](docs/workflow.md):
-priorities by severity and by how many players run the affected hardware, and the hardware tiers a change must not
-break. Claim in Discord #dev-work before you start.
+Search the open PRs and say in Discord #dev-work what you take before you start: two people fixing the same thing is
+the most common waste.
 
 | | What |
 |---|---|
-| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](readme.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it (build, hardware, driver, where, fps). Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works: add a row there. |
+| **Test on other hardware** | The README's [status table](readme.md#project-status) says what works where. Reports from other cards, drivers, distributions and SteamOS are useful even when everything works: say the build (first line of `hookshot_log.txt`), the hardware and driver, where in the game, and the fps from the log's `N presents, X fps` line. |
 | **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems the developer has not seen. |
 | **Report what is broken** | Use the [issue forms](https://github.com/NotRexed/Hookshot/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
 | **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review and merge. |
@@ -219,9 +218,12 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
 7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
-Commit subjects decide the next release: write them as Conventional Commits (`feat:`, `fix:`, and `!` or
-`BREAKING CHANGE:` for a break). The version rules, branches and changelog format are in
-[docs/versioning.md](docs/versioning.md).
+Commit subjects decide the next release (`.github/workflows/release.yml`, `scripts/changelog.py`): write them as
+[Conventional Commits](https://www.conventionalcommits.org/), `type(scope): imperative description`. `feat` makes a
+minor release, `fix`, `perf` and `revert` a patch, `!` after the type or `BREAKING CHANGE:` in the body a major one;
+`docs`, `refactor`, `style`, `test`, `build`, `ci` and `chore` make none. `git revert` writes `Revert "..."`, which
+is not one: use `git revert --edit` and write the subject as `revert: ...`. The git tag is the only version; no file
+carries one to edit.
 
 Maintainer commits record AI assistance with `Assisted-by:` and `Co-Authored-By:` trailers. If you used a tool, add
 the trailers that describe it; if you wrote the change yourself, there is nothing to add.

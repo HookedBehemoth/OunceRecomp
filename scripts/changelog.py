@@ -13,7 +13,7 @@ tag.
 
 The file stays in the format Factorio's changelog parser expects: a 99-dash separator before each version, Version:
 and Date: lines, section names indented two spaces, bullets four, no tabs, no trailing spaces, newest entry first. See
-docs/versioning.md.
+CONTRIBUTING.md.
 """
 import argparse
 import datetime

@@ -119,7 +119,7 @@ Prefetch: `so_program_set` (:632) queues on `prefetch_thread` (:524) from `nvn_p
 flags `vflags` :897-908 (`-std=c++20 -O2 -DVK_NO_PROTOTYPES -DMKWVK_BUILDING`, `-I` eden/sirit/compat/gpu/vk/`gen`, `HOOKSHOT_SPIRV_HEADERS`,
 `HOOKSHOT_VMA_HEADERS`, Vulkan headers :856-858), one job per file into `obj/vk_<path>.o` :951-964 with an sha1 stamp (`compile_one` :689), link :1115-1136
 (`clang++ -shared -fuse-ld=lld -static-libstdc++ @vk_objs.rsp`, then `check_vk_symbols` :69). `RX_VK_ONLY=1` skips the lift and the exe (:746,975).
-Headers: `HOOKSHOT_SPIRV_HEADERS=$PWD/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$PWD/work/deps/VulkanMemoryAllocator` (`docs/native-vk.md:103`).
+Headers: `HOOKSHOT_SPIRV_HEADERS=$PWD/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$PWD/work/deps/VulkanMemoryAllocator` (docs/development.md, "Iterating quickly").
 
 Smallest change for a second library (~25 lines, no existing line changed):
 1. `nx2/build.py`, **after** the `if build_vk:` branch: `direct_sources()` globs `gpu/direct/*.cpp`; one loop `for dsrc in ...` (not named `src`/`vk_sources`) appends jobs to a new
@@ -132,7 +132,7 @@ Smallest change for a second library (~25 lines, no existing line changed):
 3. Constraint: `tests/test_shader_stamp_cache.py:24-34` execs the single `vflags` branch and `tests/test_dlss_sdk_cache.py:25-29` needs exactly one `for src in vk_sources()` loop:
    leave both untouched and put (1) outside the branch.
 
-Incremental time (estimate from `work/build*.log`, not measured): one `.cpp` 2-10 s (`vk_draw.cpp` 10 s, the worst), link <1 s (`linked ... (0s)`), plus header hashing; host-only change ~40 s (`docs/native-vk.md:107`).
+Incremental time (estimate from `work/build*.log`, not measured): one `.cpp` 2-10 s (`vk_draw.cpp` 10 s, the worst), link <1 s (`linked ... (0s)`), plus header hashing; host-only change ~40 s.
 
 ## i. Tests
 

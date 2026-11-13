@@ -1,7 +1,7 @@
 # The direct back end: plan (2026-11-12)
 
 This replaces `work/assets/native/engine-cut-plan.md` and the E1-E9 steps. Those notes, the `e*-impl.md` files,
-`fallbacks.md` and `docs/native-vk.md` are frozen: they stay as the record of what was measured and reverse-engineered,
+and `fallbacks.md` are frozen: they stay as the record of what was measured and reverse-engineered,
 and this plan cites them, but nothing here continues their steps.
 
 Status of this document: accepted by the user 2026-11-12; M0's answers (`docs/direct/m0-*.md`) are folded in below.
@@ -191,7 +191,7 @@ and is compiled in the background.
 
 They must work natively (user, 2026-11-12); the compute emulation of both stages is not carried over.
 
-What is recorded (docs/native-vk.md, "The RDNA2 hang with faster timing"): task shaders can be drawn on the graphics
+What is recorded: task shaders can be drawn on the graphics
 queue, but RADV runs the task stage on an async-compute ring, gang-submitted with the graphics ring. The device losses
 named that compute ring (`comp_1.x`), at the map load, only under faster timing. Mesh-only programs (29 of 63 in
 Hyrule Field) ran natively throughout. The cause was never found: a gang-submit ordering fault in the driver, or a task

@@ -12,7 +12,7 @@
 #   scripts/agent-worktree.sh land <name>         rebase agent/<name> onto the main branch and fast-forward it
 #   scripts/agent-worktree.sh drop <name>         remove the worktree and its branch, if the branch has landed
 #
-# Build inside the worktree as in docs/native-vk.md ("Iterating quickly"), run with EXE=work/sa/build/hookshot from it.
+# Build inside the worktree as in docs/development.md ("Iterating quickly"), run with EXE=work/sa/build/hookshot from it.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cmd=${1:?new|land|drop}; name=${2:?name}

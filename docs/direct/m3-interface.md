@@ -47,7 +47,7 @@ reported, the three depth-copy hazards gone; frame time with pacing off, time in
   programs and handles inside uniform buffers draw), no CPU-built pointer tables, translation without a bound state
   where the contract allows. One invalidation of the direct back end's program cache.
 - **Storage images** bound by draws: heap entries as textures have them.
-- **The draw path's cost:** profile `hsd_emit` (the cheap sampler or Superluminal: docs/native-vk.md "Measure"), name
+- **The draw path's cost:** profile `hsd_emit` (the cheap sampler or Superluminal: docs/development.md "Measure"), name
   the top costs, and remove what is not arithmetic: per-draw copies of constant banks, lookups under a lock,
   redundant dynamic state. Target: the draw path under half of today's 1.10 / 1.85 ms a frame.
 - **The heap entry written before a prepared image is linked** (three title textures sample the placeholder:

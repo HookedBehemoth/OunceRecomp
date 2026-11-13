@@ -1,4 +1,4 @@
-// Layer 0 (docs/native-vk.md "Layer 0"; plan, Architecture): guest memory for the GPU in window buffers, one backing for every
+// Layer 0 (plan, Architecture): guest memory for the GPU in window buffers, one backing for every
 // pool byte. Cut down from gpu/legacy/vk/vk_pools.cpp (its comments have the scheme and the measurements; the arithmetic is
 // layer0_windows.h, a verbatim copy) and the dma-buf import of gpu/legacy/vk/vk_memory.cpp. As there, with its defaults as constants:
 // 16 MB host chunks imported once as udmabufs of the memfd's own pages and bound into the two windows that hold them, ahead

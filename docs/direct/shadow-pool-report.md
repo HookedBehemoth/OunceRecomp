@@ -304,7 +304,7 @@ fix belongs to the patch (for example: not destroying a texture released in the 
   margin of the eviction patch was sized for a scene change that allocates 0.6-1.4 GB of store images *and new
   targets*; the targets' part is now 0, so the margin can be measured again and lowered. Not done here.
 - **The eviction at the margin destroys textures still drawn** (section 7).
-- `docs/direct-backend-plan.md`'s status table and `docs/native-vk.md`'s line on `HOS_RT_QUANT` are the coordinator's
+- `docs/direct-backend-plan.md`'s status table is the coordinator's
   to update.
 
 ## Code
