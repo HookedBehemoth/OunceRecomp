@@ -1418,7 +1418,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         // an event in the queue's order that ends when every earlier draw's pixel work has, so also their mesh work. The class is
         // the program's shape (a mesh stage that reads its workgroups from a task step), no program is named. A mitigation: it
         // keeps two such mesh stages from overlapping; why overlapping loses the device is not known (the report)
-        if (prog->task) {
+        static const bool mesh_wait = dbg("meshwait");   // (HOS_DBG=meshwait, a diagnosis: the same wait before mesh-only draws too)
+        if (prog->task || mesh_wait) {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
             VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
