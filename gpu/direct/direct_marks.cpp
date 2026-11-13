@@ -102,6 +102,8 @@ void mark_after(VkCommandBuffer cb, uint32_t i) {
     pMarker(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, buffer, 8ull * i + 4, (uint32_t)entries[i].seq.load(std::memory_order_relaxed));
 }
 
+uint64_t marks_first_open_present = 0;
+
 void marks_report(const char* why) {
     if (!marks_enabled) return;
     struct Row {
@@ -122,6 +124,7 @@ void marks_report(const char* why) {
          "%llu commands recorded)", why, open.size(), (unsigned long long)done_most, (unsigned long long)done,
          (unsigned long long)next.load());
     size_t n = 0;
+    if (!open.empty()) marks_first_open_present = entries[open[0].i].present;
     for (const Row& r : open) {
         const Entry& e = entries[r.i];
         // (the finished command recorded just before it in the same command buffer, if the ring still has it)

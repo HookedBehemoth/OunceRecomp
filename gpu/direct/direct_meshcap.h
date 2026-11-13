@@ -18,8 +18,9 @@ struct DrawProg;
 
 /// HOS_DBG=meshcap:<present> is set (the programs are kept from the start)
 bool meshcap_on();
-/// The frame being recorded is the one to capture
-bool meshcap_now();
+/// The frame being recorded is one to capture, and (the roll: meshcap:<first>-<last>, meshcapprog:<key>, meshcaplost) this
+/// program's draws are wanted
+bool meshcap_now(uint64_t key = 0);
 
 /// (direct_shader.cpp finish) a mesh program's stage, as made
 struct McStageIn {
@@ -51,5 +52,8 @@ void meshcap_draw(MeshCapDraw&& d);   // (M6h: a vertex draw too, d.vertex)
 void meshcap_other(uint64_t cb, uint32_t kind, uint64_t key, uint32_t count);
 /// (present_run) at the present after the captured one: the GPU's words read, the file written
 void meshcap_after();
+/// (HOS_DBG=meshcaplost) a submit reported the device lost: the kept draws around the first unfinished command's present
+/// (0: not known, the newest) written to meshcap/roll.bin, with the task headers as the GPU left them
+void meshcap_lost(uint64_t first_open_present);
 
 }  // namespace hsd

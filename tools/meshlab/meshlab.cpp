@@ -432,11 +432,24 @@ struct Guest {
 };
 Guest guest;
 constexpr uint64_t kStride = 2ull << 30, kWindow = (4ull << 30) - (64ull << 10);
-void guest_init(const Frame& f, const std::vector<const Draw*>&) {
+void guest_init(const Frame& f, const std::vector<const Draw*>& chosen) {
     // (the pages to bind, a 64 KB page each, with their bytes)
     std::map<uint64_t, std::vector<uint8_t>> pages;
-    for (const Blob& b : f.blobs) {
+    // (a roll: the memory of the chosen draws' frame only; the draws must be of one frame)
+    std::vector<bool> in_frame;
+    if (!f.frames.empty() && !chosen.empty()) {
+        const auto it = f.frames.find(chosen[0]->d.present);
+        if (it == f.frames.end()) die("a roll without the frame record of present %llu", (unsigned long long)chosen[0]->d.present);
+        for (const Draw* d : chosen)
+            if (d->d.present != chosen[0]->d.present) die("a roll: the draws chosen are of more than one frame");
+        in_frame.assign(f.blobs.size(), false);
+        for (uint32_t id : it->second)
+            if (id < in_frame.size()) in_frame[id] = true;
+    }
+    for (size_t bi = 0; bi < f.blobs.size(); bi++) {
+        const Blob& b = f.blobs[bi];
         if (!b.guest) continue;
+        if (!in_frame.empty() && !in_frame[bi]) continue;
         for (uint64_t o = 0; o < b.bytes.size();) {
             const uint64_t ga = b.guest + o, page = ga & ~0xFFFFull, in = ga - page;
             const uint64_t n = std::min<uint64_t>(0x10000 - in, b.bytes.size() - o);
@@ -511,6 +524,7 @@ struct Ready {
     OutLayout layout;       // (compare: the dump's layout)
 };
 std::string repl_dir, mesh_override, fs_mode = "simple";
+int64_t sel_present = -1;   // (--present N: a roll's frame)
 uint32_t bench_mult = 1;   // (bench --mult K: each draw's mesh workgroups K times: a task+mesh draw's map repeated K times, a direct draw's count K times)
 std::map<std::string, VkShaderEXT> shader_cache;
 
@@ -972,6 +986,149 @@ CmpResult compare_geo(const std::vector<Geometry>& A, const std::vector<Geometry
     return c;
 }
 
+/// geo: a draw's emitted triangles in numbers: counts, non-finite positions, w's sign, the clip-space extremes, and the pixels
+/// its triangles cover in the draw's viewport (each triangle clipped at w > 0 and to the viewport and scissor; the sum over
+/// triangles is overdraw included, nothing culled by facing or depth), with the largest triangles named
+struct P2 {
+    double x, y;
+};
+double clipped_area(std::vector<P2> poly, double x0, double y0, double x1, double y1) {
+    const auto clip = [&](int axis, double lim, bool keep_less) {
+        std::vector<P2> o;
+        for (size_t i = 0; i < poly.size(); i++) {
+            const P2 a = poly[i], b = poly[(i + 1) % poly.size()];
+            const double va = axis ? a.y : a.x, vb = axis ? b.y : b.x;
+            const bool ia = keep_less ? va <= lim : va >= lim, ib = keep_less ? vb <= lim : vb >= lim;
+            if (ia) o.push_back(a);
+            if (ia != ib) {
+                const double t = (lim - va) / (vb - va);
+                o.push_back({a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)});
+            }
+        }
+        poly.swap(o);
+    };
+    clip(0, x0, false), clip(0, x1, true), clip(1, y0, false), clip(1, y1, true);
+    double a = 0;
+    for (size_t i = 0; i < poly.size(); i++) {
+        const P2 p = poly[i], q = poly[(i + 1) % poly.size()];
+        a += p.x * q.y - q.x * p.y;
+    }
+    return std::fabs(a) / 2;
+}
+void geo_stats(const Frame& f, const Draw& d, int shown) {
+    std::string err;
+    const auto geo = run_dump(f, d, !repl_dir.empty(), err);
+    if (geo.empty() && !err.empty()) die("%s", err.c_str());
+    Dyn dyn;
+    std::memcpy(&dyn, d.d.dyn, sizeof dyn);
+    const VkViewport vp = dyn.vp;
+    const double sx0 = std::max<double>(dyn.sc.offset.x, 0), sy0 = std::max<double>(dyn.sc.offset.y, 0);
+    const double sx1 = std::min<double>(dyn.sc.offset.x + (double)dyn.sc.extent.width, d.d.w), sy1 = std::min<double>(dyn.sc.offset.y + (double)dyn.sc.extent.height, d.d.h);
+    uint64_t prims = 0, verts = 0, nonfinite = 0, wneg = 0, wmixed = 0, degenerate = 0, offscreen = 0, bad_idx = 0, unwritten = 0, groups_empty = 0;
+    uint64_t big[4] = {};   // (triangles covering more than 1%, 10%, 50%, 99% of the scissor)
+    double area = 0, wmin = 1e300, wmax = -1e300, cmax = 0;
+    struct Top {
+        double a;
+        uint32_t w, p;
+    };
+    std::vector<Top> top;
+    const double full = std::max(1.0, (sx1 - sx0) * (sy1 - sy0));
+    for (size_t w = 0; w < geo.size(); w++) {
+        const Geometry& gm = geo[w];
+        if (!gm.pc || gm.pc == kFill) {
+            groups_empty++;
+            if (gm.pc == kFill) unwritten++;
+            continue;
+        }
+        const auto pit = gm.vert.find("pos");
+        const auto iit = gm.prim.find("idx");
+        if (pit == gm.vert.end() || iit == gm.prim.end()) die("draw %u: no position or index output", d.d.seq);
+        const std::vector<uint32_t>& pos = pit->second;
+        const uint32_t corners = gm.pwords.at("idx");
+        verts += gm.vc;
+        for (uint32_t p = 0; p < gm.pc && (size_t)(p + 1) * corners <= iit->second.size(); p++) {
+            prims++;
+            float c[3][4];
+            bool ok = true, fin = true;
+            for (uint32_t j = 0; j < 3 && j < corners; j++) {
+                const uint32_t vi = iit->second[p * corners + j];
+                if (vi >= gm.vc || (size_t)(vi + 1) * 4 > pos.size()) {
+                    ok = false;
+                    break;
+                }
+                std::memcpy(c[j], &pos[(size_t)vi * 4], 16);
+                for (int q = 0; q < 4; q++) {
+                    if (pos[(size_t)vi * 4 + q] == kFill) ok = false;
+                    if (!std::isfinite(c[j][q])) fin = false;
+                    else cmax = std::max<double>(cmax, std::fabs(c[j][q]));
+                }
+            }
+            if (!ok) {
+                bad_idx++;
+                continue;
+            }
+            if (!fin) {
+                nonfinite++;
+                continue;
+            }
+            int neg = 0;
+            for (int j = 0; j < 3; j++) neg += c[j][3] <= 0, wmin = std::min<double>(wmin, c[j][3]), wmax = std::max<double>(wmax, c[j][3]);
+            if (neg == 3) {
+                wneg++;
+                continue;
+            }
+            if (neg) wmixed++;
+            // (clipped at w >= a small positive value, in homogeneous coordinates; then to pixels)
+            std::vector<P2> poly;
+            const double eps = 1e-6;
+            for (int j = 0; j < 3; j++) {
+                const float* a = c[j];
+                const float* b = c[(j + 1) % 3];
+                const bool ia = a[3] >= eps, ib = b[3] >= eps;
+                const auto px = [&](double x, double y, double ww) {
+                    return P2{vp.x + (x / ww * 0.5 + 0.5) * vp.width, vp.y + (y / ww * 0.5 + 0.5) * vp.height};
+                };
+                if (ia) poly.push_back(px(a[0], a[1], a[3]));
+                if (ia != ib) {
+                    const double t = (eps - a[3]) / ((double)b[3] - a[3]);
+                    poly.push_back(px(a[0] + t * ((double)b[0] - a[0]), a[1] + t * ((double)b[1] - a[1]), eps));
+                }
+            }
+            const double a = poly.size() >= 3 ? clipped_area(poly, sx0, sy0, sx1, sy1) : 0;
+            if (a <= 0) {
+                offscreen++;
+                continue;
+            }
+            if (a < 1e-3) degenerate++;
+            area += a;
+            const double fr = a / full;
+            big[0] += fr > 0.01, big[1] += fr > 0.1, big[2] += fr > 0.5, big[3] += fr > 0.99;
+            top.push_back({a, (uint32_t)w, p});
+        }
+    }
+    std::sort(top.begin(), top.end(), [](const Top& x, const Top& y) { return x.a > y.a; });
+    std::printf("draw #%u present %llu program %016llx: %zu workgroups (%llu empty, %llu never written), %llu vertices, %llu triangles; "
+                "non-finite %llu, all w <= 0 %llu, w of both signs %llu, bad index or unwritten corner %llu, off screen %llu, under 0.001 px %llu; "
+                "w %.6g .. %.6g, largest |clip coordinate| %.6g; viewport %gx%g at %g,%g, scissor %gx%g; covered %.0f px in sum = %.3f screens; "
+                "triangles over 1%% of the screen %llu, over 10%% %llu, over 50%% %llu, over 99%% %llu\n",
+                d.d.seq, (unsigned long long)d.d.present, (unsigned long long)d.d.key, geo.size(), (unsigned long long)groups_empty,
+                (unsigned long long)unwritten, (unsigned long long)verts, (unsigned long long)prims, (unsigned long long)nonfinite,
+                (unsigned long long)wneg, (unsigned long long)wmixed, (unsigned long long)bad_idx, (unsigned long long)offscreen,
+                (unsigned long long)degenerate, wmin, wmax, cmax, vp.width, vp.height, vp.x, vp.y, sx1 - sx0, sy1 - sy0, area, area / full,
+                (unsigned long long)big[0], (unsigned long long)big[1], (unsigned long long)big[2], (unsigned long long)big[3]);
+    for (int i = 0; i < shown && i < (int)top.size(); i++) {
+        const Geometry& gm = geo[top[i].w];
+        const auto& idx = gm.prim.at("idx");
+        const uint32_t corners = gm.pwords.at("idx");
+        std::printf("  %.0f px: workgroup %u triangle %u:", top[i].a, top[i].w, top[i].p);
+        for (uint32_t j = 0; j < corners; j++) {
+            const uint32_t vi = idx[top[i].p * corners + j];
+            std::printf(" v%u %s", vi, words_str(&gm.vert.at("pos")[(size_t)vi * 4], 4).c_str());
+        }
+        std::printf("\n");
+    }
+}
+
 std::vector<const Draw*> select(const Frame& f, const std::vector<std::string>& args, bool task_only) {
     std::vector<const Draw*> v;
     for (const std::string& a : args) {
@@ -1115,6 +1272,7 @@ int main(int argc, char** argv) {
         else if (a == "--size") { const std::string v = next(); fs_w = (uint32_t)std::atoi(v.c_str()); fs_h = (uint32_t)std::atoi(v.substr(v.find('x') + 1).c_str()); }
         else if (a == "--range") { const std::string v = next(); fs_lo = (float)std::atof(v.c_str()); fs_hi = (float)std::atof(v.substr(v.find(',') + 1).c_str()); }
         else if (a == "--discard") discard = true;
+        else if (a == "--present") sel_present = std::strtoll(next().c_str(), nullptr, 10);
         else if (a == "--mult") bench_mult = (uint32_t)std::max(1, std::atoi(next().c_str()));
         else if (a == "--secondary") secondary = true;
         else if (a == "--quiet") quiet = true;
@@ -1186,6 +1344,9 @@ int main(int argc, char** argv) {
         for (const Draw& d : f.draws)
             if (d.mesh && d.cb() == j->cb()) draws.push_back(&d);
         if (task_only) draws.erase(std::remove_if(draws.begin(), draws.end(), [](const Draw* d) { return !d->d.task; }), draws.end());
+    } else if (sel_present >= 0 && pos.empty()) {   // (a roll: every mesh draw of that frame)
+        for (const Draw& d : f.draws)
+            if (d.mesh && (int64_t)d.d.present == sel_present) draws.push_back(&d);
     } else {
         draws = select(f, pos, task_only);
     }
@@ -1195,7 +1356,13 @@ int main(int argc, char** argv) {
     guest_init(f, draws);
     std::fprintf(stderr, "meshlab: %s, %zu draws; guest memory %llu MB\n", g.props.deviceName, draws.size(), (unsigned long long)(guest.bytes >> 20));
 
+    if (mode == "geo") {   // (what a draw's mesh stage emits, in numbers; the draw is made with the rasterizer off)
+        bench_discard = true;
+        for (const Draw* d : draws) geo_stats(f, *d, prims_shown);
+        return 0;
+    }
     if (mode == "dump") {
+        bench_discard = discard;
         const auto geo = run_dump(f, *draws[0], !repl_dir.empty(), err);
         if (geo.empty() && !err.empty()) die("%s", err.c_str());
         for (size_t w = 0; w < geo.size(); w++) {

@@ -135,6 +135,42 @@ struct Checked {
 };
 std::mutex check_mu;
 std::vector<Checked> checked;
+
+// (HOS_DBG=tmlog:<program key>, a diagnosis (the Hyrule Field hang): what the task step of every draw of that program placed,
+// read when its slot is reset (the GPU past it): present:mesh groups, 16 draws a line; the map's size and the task workgroups
+// when they change)
+uint64_t tmlog_key() {
+    static const uint64_t k = [] {
+        const char* v = dbg_value("tmlog");
+        return v ? std::strtoull(v, nullptr, 16) : 0ull;
+    }();
+    return k;
+}
+struct TmLogged {
+    CmdSlot* slot;
+    const uint8_t* header;
+    uint64_t present;
+};
+std::mutex tmlog_mu;
+std::vector<TmLogged> tmlogged;
+struct TmRow {
+    uint64_t present;
+    uint32_t groups, cap, tasks;
+};
+std::vector<TmRow> tmrows;
+void tmlog_flush() {   // (tmlog_mu held)
+    if (tmrows.empty()) return;
+    std::sort(tmrows.begin(), tmrows.end(), [](const TmRow& a, const TmRow& b) { return a.present < b.present; });
+    char b[700];
+    int k = 0;
+    static uint32_t cap = 0, tasks = 0;
+    for (const TmRow& r : tmrows) {
+        if (r.cap != cap || r.tasks != tasks) k += std::snprintf(b + k, sizeof b - k, " [map %u, tasks %u]", r.cap, r.tasks), cap = r.cap, tasks = r.tasks;
+        k += std::snprintf(b + k, sizeof b - k, " %llu:%u", (unsigned long long)r.present, r.groups);
+    }
+    logf("direct: tmlog %016llx present:groups%s", (unsigned long long)tmlog_key(), b);
+    tmrows.clear();
+}
 std::atomic<int64_t> st_checked{0}, st_bad{0};
 
 }  // namespace
@@ -157,6 +193,20 @@ void task_log_after() {
 }
 
 void task_check_slot(CmdSlot* s) {
+    if (tmlog_key()) {
+        std::lock_guard lk(tmlog_mu);
+        for (size_t i = 0; i < tmlogged.size();) {
+            if (tmlogged[i].slot != s) {
+                i++;
+                continue;
+            }
+            uint32_t g[16];
+            std::memcpy(g, tmlogged[i].header, sizeof g);
+            tmrows.push_back({tmlogged[i].present, g[0], g[8], g[9]});
+            tmlogged[i] = tmlogged.back(), tmlogged.pop_back();
+        }
+        if (tmrows.size() >= 16) tmlog_flush();
+    }
     if (!taskcheck()) return;
     std::vector<Checked> mine;
     {
@@ -275,6 +325,10 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
         std::memcpy(c.h, h, sizeof h);
         std::lock_guard lk(check_mu);
         checked.push_back(c);
+    }
+    if (tmlog_key() && p.key == tmlog_key()) {
+        std::lock_guard lk(tmlog_mu);
+        tmlogged.push_back({l->slot, map, present_count()});
     }
     if (tasklog_at() >= 0 && (int64_t)present_count() == tasklog_at()) {
         std::lock_guard lk(log_mu);

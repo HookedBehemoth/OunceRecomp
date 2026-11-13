@@ -25,6 +25,7 @@
 #include "direct_internal.h"
 #include "direct_lists.h"
 #include "direct_marks.h"
+#include "direct_meshcap.h"
 #include "direct_pass.h"
 
 namespace hsd {
@@ -269,7 +270,7 @@ void batch_flush() {
     st_send_n.fetch_add(1, std::memory_order_relaxed), st_batch_calls.fetch_add((int64_t)k, std::memory_order_relaxed);
     if (r != VK_SUCCESS) {
         logf("direct: vkQueueSubmit2 of %zu chunks failed (VkResult %d)", k, (int)r);
-        if (r == VK_ERROR_DEVICE_LOST) marks_report("a batch submit"), host->log_flush(), abort();
+        if (r == VK_ERROR_DEVICE_LOST) marks_report("a batch submit"), meshcap_lost(marks_first_open_present), host->log_flush(), abort();
     }
     batch.chunks.clear(), batch.cbs.clear();
     batch.lk.unlock();
@@ -542,6 +543,7 @@ uint64_t sync_send(uint64_t wait_value, const VkCommandBuffer* cbs, uint32_t n) 
         logf("direct: vkQueueSubmit2 failed (VkResult %d)", (int)r);
         if (r == VK_ERROR_DEVICE_LOST) {
             marks_report("a submit");
+            meshcap_lost(marks_first_open_present);
             host->log_flush();
             abort();
         }

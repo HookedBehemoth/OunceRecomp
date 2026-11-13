@@ -2,7 +2,7 @@
 # One GPU run of the harness under the game's GPU lock (scripts/run-vk.sh's work/run.lock, exclusive), with the hang rules:
 # it starts only when the last reset of this boot is 3 minutes old and vulkaninfo works; after a run that lost the device it
 # keeps the lock until the reset is 3 minutes old again (no other run starts during the recovery) and saves the kernel log.
-#   tools/meshlab/gpu_run.sh <output file> <meshlab args...>
+#   tools/meshlab/gpu_run.sh <output file> <meshlab args...>   (MESHLAB=<another build of the harness>, MESHLAB_TIMEOUT=<seconds>)
 set -uo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 lock=$(readlink -f "$root/work/runs")/../run.lock   # (the main checkout's work/: the lock every worktree shares)
@@ -23,7 +23,7 @@ before=$(last_reset)
 # (M6h: a timing series is a result only on a quiet GPU: no game process while the lock is held)
 games=$(pgrep -x hookshot | tr '\n' ' ')
 if [ -n "$games" ]; then echo "GPU NOT QUIET: hookshot running ($games)" >> "$out"; else echo "quiet GPU: no game process" >> "$out"; fi
-timeout 300 "$root/work/meshlab/meshlab" "$@" 2>&1 | grep -v '^/tmp\|making the mesh stage' >> "$out"
+timeout "${MESHLAB_TIMEOUT:-300}" "${MESHLAB:-$root/work/meshlab/meshlab}" "$@" 2>&1 | grep -v '^/tmp\|making the mesh stage' >> "$out"
 rc=${PIPESTATUS[0]}
 sleep 3
 if [ "$(last_reset)" != "$before" ] || [ "$rc" = 3 ]; then

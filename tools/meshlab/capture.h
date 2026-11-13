@@ -50,6 +50,7 @@ struct Frame {
     std::map<uint64_t, Program> programs;
     std::vector<Blob> blobs;
     std::vector<Draw> draws;   // (in recording order)
+    std::map<uint64_t, std::vector<uint32_t>> frames;   // (a roll, MC_FRAME: present -> the blobs that are its memory)
     const Draw* by_seq(uint32_t s) const {
         for (const Draw& d : draws)
             if (d.seq() == s) return &d;
@@ -117,6 +118,12 @@ inline bool load(const char* path, Frame& f, std::string& err) {
             take(d.ubos.data(), d.ubos.size() * sizeof d.ubos[0]);
             take(&d.o, sizeof d.o);
             f.draws.push_back(std::move(d));
+        } else if (r.type == mcap::MC_FRAME) {
+            mcap::McFrame h;
+            take(&h, sizeof h);
+            std::vector<uint32_t> ids(h.nblobs);
+            take(ids.data(), 4ull * ids.size());
+            f.frames[h.present] = std::move(ids);
         } else if (r.type == mcap::MC_OTHER) {
             Draw d;
             take(&d.o, sizeof d.o);

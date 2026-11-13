@@ -1400,7 +1400,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                  (unsigned long long)prog->key, (unsigned long long)prog->codes[0], (unsigned long long)prog->codes[1],
                  (unsigned long long)prog->codes[2], (void*)prog->ms, (void*)prog->fs, mesh_ind ? "indirect" : "direct",
                  l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count());
-        if (meshcap_now()) meshcap_mesh(l, x, *prog, push, mesh_ind, dm, nargs, stride, gated, task_hb, task_ho, cb);   // (M6e)
+        if (meshcap_now(prog->key)) meshcap_mesh(l, x, *prog, push, mesh_ind, dm, nargs, stride, gated, task_hb, task_ho, cb);   // (M6e)
         static const bool dry = dbg("meshdry");   // (HOS_DBG=meshdry, a bring-up aid: everything but the mesh draw itself)
         if (dry) return count(l, R_MESH_DRY);
         drawlog(l, gated ? (prog->task ? mesh_ind ? "drawn gated task+mesh indirect" : "drawn gated task+mesh" : mesh_ind ? "drawn gated mesh indirect" : "drawn gated mesh")
@@ -1451,12 +1451,27 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         // stage that does not finish from triangles that take too long to fill. 2026-11-13: a wait after a task+mesh draw,
         // local or full, did not end the loss at the Kokiri-Hyrule Field change (hang_hf_fix1, fix2, marks2) and is not kept)
         static const bool tm_discard = dbg("tmdiscard");
+        // (the Hyrule Field hang, docs/direct/hf-hang-report.md: diagnoses for one program's mesh draws, by its key:
+        // progdiscard:<key> its draws with the rasterizer off; progscissor:<key> a scissor of one pixel (every triangle set up
+        // and clipped, one pixel filled))
+        static const auto dbg_key = [](const char* n) {
+            const char* v = dbg_value(n);
+            return v ? std::strtoull(v, nullptr, 16) : 0ull;
+        };
+        static const uint64_t prog_discard = dbg_key("progdiscard"), prog_scissor = dbg_key("progscissor");
+        const bool one_discard = prog_discard && prog->key == prog_discard, one_scissor = prog_scissor && prog->key == prog_scissor;
+        if (one_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
+        if (one_scissor) {
+            const VkRect2D px{{0, 0}, {1, 1}};
+            vkCmdSetScissorWithCount(cb, 1, &px);
+        }
         if (prog->task && tm_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
-        if (prog->task && tm_discard) vkCmdSetRasterizerDiscardEnable(cb, x.dyn.discard);
+        if ((prog->task && tm_discard) || one_discard) vkCmdSetRasterizerDiscardEnable(cb, x.dyn.discard);
+        if (one_scissor) vkCmdSetScissorWithCount(cb, 1, &x.dyn.sc);
         if (prog->task && tm_after) drain();
         x.last_tm = prog->task;
         if (pstats_on()) pstat_after(cb, ps);
@@ -1471,7 +1486,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     drawlog(l, gated ? (ind ? "drawn gated indirect" : indexed ? "drawn gated indexed" : "drawn gated") : (ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn"),
             prog, &x.dyn,
             ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
-    if (meshcap_now())   // (M6e; M6h: with its uniform buffers)
+    if (meshcap_now(prog->key))   // (M6e; M6h: with its uniform buffers)
         meshcap_vertex(l, x, *prog, push, ind ? 3 : indexed ? 2 : 1, ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
                        ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances), gated, cb);
     const uint32_t mk = marks_on() ? mark_before(cb, ind ? "draw indirect" : indexed ? "draw indexed" : "draw", prog->key, l->info.kind, l->info.lr,

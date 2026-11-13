@@ -30,5 +30,6 @@ extern thread_local const uint8_t* task_last_header;   // (direct_task.cpp: the 
 void mark_after(VkCommandBuffer cb, uint32_t entry);
 /// At a lost device: the commands started and not finished (logged; the log flushed by the caller)
 void marks_report(const char* why);
+extern uint64_t marks_first_open_present;   // (set by marks_report: the present of the first unfinished command; 0 none)
 
 }  // namespace hsd

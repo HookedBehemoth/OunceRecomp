@@ -18,7 +18,7 @@ struct McFile {
     uint32_t magic, version;
     uint64_t present;
 };
-enum McType : uint32_t { MC_PROGRAM = 1, MC_BLOB = 2, MC_DRAW = 3, MC_OTHER = 4, MC_VDRAW = 5 };
+enum McType : uint32_t { MC_PROGRAM = 1, MC_BLOB = 2, MC_DRAW = 3, MC_OTHER = 4, MC_VDRAW = 5, MC_FRAME = 6 };
 struct McRecord {
     uint32_t type, reserved;
     uint64_t bytes;   // (the payload's)
@@ -94,6 +94,14 @@ struct McDrawSsbo {
 struct McOther {
     uint64_t key, cb;
     uint32_t seq, cb_seq, kind, count;   // (kind: 1 draw, 2 indexed, 3 indirect, 4 task step (compute), 5 barrier)
+};
+
+/// MC_FRAME (the roll, meshcap/roll.bin: many frames in one file, programs and blobs written once, where first used): a
+/// McFrame after the frame's draws (their McDraw::present), then nblobs blob ids: the ranges of the game's memory as they
+/// were for this frame (the same range of another frame, with other bytes, is another blob)
+struct McFrame {
+    uint64_t present;
+    uint32_t nblobs, pad;
 };
 
 }  // namespace mcap
