@@ -4,8 +4,9 @@ This replaces `work/assets/native/engine-cut-plan.md` and the E1-E9 steps. Those
 `fallbacks.md` and `docs/native-vk.md` are frozen: they stay as the record of what was measured and reverse-engineered,
 and this plan cites them, but nothing here continues their steps.
 
-Status of this document: accepted by the user 2026-11-12; M0's answers (`docs/direct/m0-*.md`) are folded in below,
-M1 is being built (`docs/direct/m1-interface.md`). Items marked **(verify)** are assumptions taken from the frozen notes or
+Status of this document: accepted by the user 2026-11-12; M0's answers (`docs/direct/m0-*.md`) are folded in below.
+M0 to M5 have landed; M6 is in progress: see "Status and next steps (2026-11-13)" after the milestones, which is the
+current state where it differs from the sections written before the work. Items marked **(verify)** are assumptions taken from the frozen notes or
 from a first reading of the code, not yet checked.
 
 ## Why a new back end
@@ -334,6 +335,59 @@ Sizes are relative (S, M, L); I have no basis for calendar estimates.
 
 Order: M0 first and alone. M1 and A in parallel (A needs no game slot for most of it). M2 needs A's textures, M3
 needs its terrain tiles. Then in sequence.
+
+## Status and next steps (2026-11-13)
+
+Reports: `docs/direct/m1-report.md` ... `m6e-report.md`; the game's own systems as read from its code:
+`docs/direct/texture-streaming.md`, `docs/direct/boot-to-main-loop.md`; the functions we know by name:
+`nx2/oot_labels.txt` (docs/development.md, "Function labels").
+
+| Milestone | State |
+|---|---|
+| M0 - M5, A | landed |
+| M4's exit ("all passes match") | not met: failing pass states Kokiri 8, Hyrule Field 28, market 15 on M6b's metric (21 / 45 / 21 on M6d's float-aware one), `m6d-report.md` 3 |
+| M6 | in progress, below |
+
+**What changed against the sections above**
+
+- **Task and mesh shaders.** The task stage is a compute step and the mesh stage is native (M4c), as decided. The
+  market then lost the device in 13 of 13 runs; a framebuffer-local barrier before every task+mesh draw ends it (0 of
+  14, one run of 15 minutes; `m6d-report.md`). It is a mitigation: the same draws replayed outside the game without
+  the barrier do not lose the device (`m6e-report.md` 4), so the cause is not "two mesh stages overlap" alone and is
+  not known. The game's mesh stages can be rewritten by hand and proven equal (`gpu/direct/shaders/mesh`, 69 of 69
+  draws bit-equal, less workgroup memory); nothing swaps them in yet.
+- **Jobs.** The occlusion-grid dispatches kept from a job run before the job's commands (`m6d-report.md` 2), not
+  after; the exact place (inside the job) needs the job cut in two and is not built.
+- **Textures.** The game streams whole textures and never mip ranges; a load with no data is a UnifyTex alias; a
+  released texture stays registered in an LRU cache until the game's 2,400 MB heap is nearly full
+  (`texture-streaming.md`). So "residency follows the game's registrations" holds only if the game's eviction is
+  driven by our VRAM: the asset textures' state comes from hooks on the game's own texture events, an image is freed
+  when the game destroys its texture, and a patch makes the game's per-frame eviction look at free VRAM instead of
+  its heap bytes (M6f, in progress). The back end holds no eviction policy.
+- **The frame.** Render jobs and layer lists are recorded in the calc phase (stage C of `moduleCalc_`), not in the
+  draw phase; a frame has four job stages (`boot-to-main-loop.md` 4, 8).
+- **Placeholders.** The dump's three damaged files draw a 1x1 zero image and stop strict mode in the market; until a
+  re-dump, a neutral record written by the prepare tool is the fix (rule 4), not built.
+
+**M6, in order**
+
+1. Land M6f (streaming textures, frees, VRAM-driven eviction, the scene route and walk check, the title movie's
+   regression on that branch) and M6h (the census of all shaders, cost per scene, rewrites measured against the
+   translator's stages, what to change in the translator).
+2. Correctness gate: the picture checks again on the landed head; the failing pass states worked through, earliest
+   first; the spawn-spot blind spot of the Kokiri check closed.
+3. The scene cycle and soak (from M6f's route), under strict: frame-time percentiles, VRAM (ours and the driver's
+   total), objects made in play. This is what the 60 fps goal is measured by.
+4. Old against new on that cycle, once, on an idle machine; with it the cost of the task+mesh barrier and the gain of
+   the grid fix (baselines kept: `agent/m6dbase`, `agent/m6dmid`). Timing taken while other agents ran is not a result.
+5. The frozen renderer deleted: the job hook out of `host/eng_jobs.c`, `host/direct_rt_ids.c` gone, the `RX_VK_*`
+   and `HOS_ENG_*` switches and their tests, the diagnosis flags pruned.
+6. Frame time, from `m6a-report.md`'s ranking: the serial layer list split (a patch in calc stage C), the event-signal
+   submit off the main thread, Hyrule Field's bursts.
+7. Programs translated offline; translator improvements and stage replacements as M6h ranks them.
+
+Beside the path: the hang's cause (the harness replaying the job's whole command stream), render targets told to the
+back end by the allocator's hooks instead of recognised by address, movie frames copied once instead of three times.
 
 ## Parked, to be done eventually
 
