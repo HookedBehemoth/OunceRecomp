@@ -466,6 +466,11 @@
 815392a0 font_plot_caller_c               # docs/direct/patch-sites.md
 81535eb0 font_plot_caller_d               # docs/direct/patch-sites.md: asks the shelf packer for a cell
 83b82250 movie_renderer_copy_frame        # work/assets/native/block-linear.md: NV12 planes to two targets
+83b827e0 movie_media_source_client_open   # docs/direct/boot-to-main-loop.md section 6 (MovieMediaSourceClient), host/nn_video.c: opens the movie file (nn::fs OpenFile, GetFileSize) and asks nn::movie::MediaExtractor for its media-source-mode events
+83b7cec0 movie_player_init                # docs/direct/boot-to-main-loop.md section 6, host/nn_video.c: zeroes and sets up the movie player object (a heap, a thread, the planes' count 1 or 2); the title's movie threads belong to it # ?
+8210a8c0 ndve_programs_init_a             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the compute programs it makes at 0x8210aa40
+82105e20 ndve_programs_init_b             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the programs it makes at 0x821062ac # ?
+821066c0 ndve_programs_init_c             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the programs it makes at 0x8210676c # ?
 80a8f690 ui_item_db_list                  # host/oot_menu.c: (db, which): an item database list
 8002a520 ui_item_entry_key                # host/oot_menu.c item_panes: an item database entry's key (Key Items page)
 80d666a0 ui_item_key_resolve              # host/oot_menu.c: (key, 0): the key's string object
