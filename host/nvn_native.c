@@ -119,6 +119,11 @@ static volatile LONG vmap_gen = 1;           /* bumped when a map is added or re
 static volatile LONG vpage_gen = 1;          /* bumped by every virtual page (re)mapping too (the renderer's caches) */
 uint32_t nvn_vmap_generation(void) { return (uint32_t)vpage_gen + (uint32_t)vmap_gen; }
 static uint64_t next_vbase = VBASE;
+/* (direct mode; rt_slots.c) GPU addresses left unused after each virtual pool: the transient targets' slots lie after
+   the end of the pool of the game's DynamicTextureAllocator, as offsets past its size, so that the game's arenas keep
+   the whole pool for their bookkeeping and the slots can be as large as the targets need. Nothing is mapped there:
+   the direct back end never reads a texture's storage. 0 with another back end (its renderer reads storage) */
+uint64_t nvn_virtual_pool_tail(void) { return rx_direct() ? 2ull << 30 : 0; }
 
 static struct nvn_vmap *vmap_find(uint64_t gpu) {
     static _Thread_local struct nvn_vmap *last;
@@ -319,7 +324,7 @@ NV(nvnMemoryPoolInitialize) {
         AcquireSRWLockExclusive(&vmap_lock);
         m->gpu = next_vbase;
         m->size = o->size;
-        next_vbase += (o->size + VPAGE - 1) & ~(VPAGE - 1);
+        next_vbase += ((o->size + VPAGE - 1) & ~(VPAGE - 1)) + nvn_virtual_pool_tail();
         m->next = vmaps;
         vmaps = m;
         InterlockedIncrement(&vmap_gen);

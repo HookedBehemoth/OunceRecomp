@@ -89,12 +89,21 @@ static int off_(void) {
     if (v < 0) v = getenv("HOS_GUEST_RT_ALLOC") && atoi(getenv("HOS_GUEST_RT_ALLOC")) != 0;
     return v;
 }
+/* Direct mode: the slots lie after the pool's end (offsets past its size: nvn_native.c leaves those GPU addresses
+   unused after every virtual pool), the arenas keep the whole pool for their bookkeeping, and the range is the back
+   end's transient pool: SLOTS_MB_DIRECT of device memory, the constant the transient targets cost
+   (docs/direct/shadow-pool-report.md, "The constant"). Another back end: the top 320 MB of the pool, as before */
+#define SLOTS_MB_DIRECT 512
+uint64_t nvn_virtual_pool_tail(void);   /* nvn_native.c */
+static int after_pool(void) { return rx_direct() && nvn_virtual_pool_tail() != 0; }
 static uint64_t slots_bytes(void) {
     static uint64_t v;
     if (!v) {
         const char *e = getenv("RX_RT_SLOTS_MB");
-        const int mb = e ? atoi(e) : 320;
-        v = (uint64_t)(mb > 0 ? mb : 320) << 20;
+        const int def = after_pool() ? SLOTS_MB_DIRECT : 320;
+        const int mb = e ? atoi(e) : def;
+        v = (uint64_t)(mb > 0 ? mb : def) << 20;
+        if (after_pool() && v > nvn_virtual_pool_tail()) v = nvn_virtual_pool_tail();
     }
     return v;
 }
@@ -216,6 +225,15 @@ static void shrink_arenas(uint64_t dta) {
             return;
         }
         if (G64(a + AR_END) != base + size) { hos_log("rt slots: arena %u end %#llx, off", i, (unsigned long long)G64(a + AR_END)); return; }
+    }
+    if (after_pool() && base == 0) {   /* the slots after the pool's end: the arenas are left as they are */
+        lo = size, hi = size + slots_bytes();
+        nrecs0 = nr;
+        arenas0 = ar, narenas = na;
+        state = 1;
+        hos_log("rt slots: %u arenas of %llu MB (the game's), slots after the pool at +%#llx..+%#llx", na,
+                (unsigned long long)(size >> 20), (unsigned long long)lo, (unsigned long long)hi);
+        return;
     }
     if (base != 0 || size < slots_bytes() + (128ull << 20)) {   /* (the arenas keep at least 128 MB) */
         hos_log("rt slots: arenas at %#llx+%llu MB, off", (unsigned long long)base, (unsigned long long)(size >> 20));
@@ -732,7 +750,7 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
     for (int i = 0; i < npools; i++)
         if (pools[i] == pool) return 1;
     const nvn_pool *p = hos_guest_range(pool, sizeof(nvn_pool));
-    if (!p || p->magic != NVN_MAGIC('P', 'O', 'O', 'L') || p->mem || p->size < hi || npools == 16) {
+    if (!p || p->magic != NVN_MAGIC('P', 'O', 'O', 'L') || p->mem || (after_pool() ? p->size != lo : p->size < hi) || npools == 16) {
         back_off("the block's pool", pool, p ? p->size : 0);
         return 0;
     }
@@ -789,6 +807,24 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
         }
     }
     if (!s) n.game_offset++;
+    if (!s && log_slots() && state == 1) {   /* (HOS_RT_SLOTS_LOG: what held the range when a target found no slot) */
+        static int told;
+        if (told++ < 6) {
+            hos_log("rt slots: no slot for %ux%u (%llu KB, lr %#llx) at present %llu; the slots (offset MB, KB, size, state):", k.w, k.h,
+                    (unsigned long long)(G64(block + BLK_SIZE) >> 10), (unsigned long long)k.lr, (unsigned long long)frame);
+            char b[900];
+            int o = 0;
+            for (int i = 0; i < nslots; i++) {
+                int pk = -1;
+                for (int j = 0; j < nparked; j++)
+                    if (slots[i].block && parked[j].block == slots[i].block) pk = (int)(frame - parked[j].frame);
+                o += snprintf(b + o, sizeof b - (size_t)o, " %.1f:%llu:%ux%u:%s%d", (double)(slots[i].off - lo) / 1048576.0,
+                              (unsigned long long)(slots[i].cap >> 10), slots[i].w, slots[i].h,
+                              !slots[i].block ? "free" : pk >= 0 ? "parked" : "live", !slots[i].block || pk < 0 ? (int)(frame - slots[i].last_frame) : pk);
+                if (o > 800 || i == nslots - 1) hos_log("rt slots:  %s", b), o = 0;
+            }
+        }
+    }
     if (!s && native_on() && state == 1 && c->x[10] + G64(block + BLK_SIZE) > lo) {
         /* (native) no slot and a bookkeeping offset that is not memory: the slot range's start, aliased (logged; the
            parked entries and idle slots were already tried) */
@@ -948,6 +984,7 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
 #define TMAP 4096
 static struct { uint64_t obj, gpu; uint32_t w, h, fmt; } tmap[TMAP];
 static uint64_t init_same, init_moved, init_new;
+static uint64_t held_peak, held_peak_block;   /* (rt_slots_frame: bytes held at a present, the most since the start / the last line) */
 static volatile LONG64 n_desc_other;   /* (textures in a slot whose NVN format or target is not what device_need took) */
 void rt_slots_texture_init(uint64_t obj, uint64_t gpu, const nvn_texdesc *td, int dta) {
     const uint32_t w = td->width, h = td->height, fmt = (uint32_t)td->format;
@@ -1023,6 +1060,15 @@ void rt_slots_dump(void) {
 /* (nvn_native.c, at each present) one line every 600 presents */
 void rt_slots_frame(void) {
     const uint64_t f = __atomic_add_fetch(&frame, 1, __ATOMIC_RELAXED);
+    if (state == 1) {   /* the bytes no other target may take now: slots with a block, or used within REUSE_AFTER presents */
+        uint64_t held = 0;
+        AcquireSRWLockShared(&mu);
+        for (int i = 0; i < nslots; i++)
+            if (slots[i].block || slots[i].last_frame + REUSE_AFTER > f) held += slots[i].cap;
+        ReleaseSRWLockShared(&mu);
+        if (held > held_peak) held_peak = held;
+        if (held > held_peak_block) held_peak_block = held;
+    }
     if (f % 600 || (off_() && !log_slots()) || (state < 0 && !off_())) return;
     AcquireSRWLockShared(&mu);
     int busy = 0;
@@ -1052,17 +1098,20 @@ void rt_slots_frame(void) {
             (unsigned long long)n.released, (unsigned long long)n.park_full, (unsigned long long)n.drained,
             (unsigned long long)n.quantized, (unsigned long long)n.blockless, (unsigned long long)n.stolen,
             (unsigned long long)n.aliased, (unsigned long long)n.topped);
-    hos_log("rt slots: transient pool: %llu slots evicted before 8 idle presents, %llu targets placed outside the slots; shadow "
+    hos_log("rt slots: transient pool: %llu MB of %llu held at a present at most since the last line (%llu since the start: slots "
+            "in use, parked, or used within %d presents); %llu slots evicted before 8 idle presents, %llu targets placed outside the slots; shadow "
             "classes: %llu sizes changed, %llu up, %llu down, %llu kept by hysteresis; targets given to the back end by their "
             "entry's object %llu (%llu entries with no registered object yet, %llu with an object over other storage), slots told "
             "%llu (%llu textures in the range at no slot), slots sized %llu (%llu by the device's need, larger than the "
             "game's; %lld textures of another format or target than their slot was sized for)",
-            (unsigned long long)n.evicted_young, (unsigned long long)n.game_offset, (unsigned long long)n.quantized,
+            (unsigned long long)(held_peak_block >> 20), (unsigned long long)((hi - lo) >> 20), (unsigned long long)(held_peak >> 20),
+            REUSE_AFTER, (unsigned long long)n.evicted_young, (unsigned long long)n.game_offset, (unsigned long long)n.quantized,
             (unsigned long long)n.class_up, (unsigned long long)n.class_down, (unsigned long long)n.class_kept,
             (unsigned long long)n.given, (unsigned long long)n.given_noid, (unsigned long long)n.given_other,
             (unsigned long long)n.slot_told, (unsigned long long)n.slot_untold, (unsigned long long)n.sized,
             (unsigned long long)n.sized_up, (long long)n_desc_other);
     last_n_calls = n.calls, last_n_spliced = n.spliced, last_n_inits = inits, last_n_dta_inits = dta_inits;
     last_n_made = n.made, last_frame_log = f;
+    held_peak_block = 0;
     ReleaseSRWLockShared(&mu);
 }
