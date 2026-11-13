@@ -658,9 +658,15 @@ bool late_mesh() {
     static const bool on = !dbg("nolate");
     return on;
 }
-/// A mesh stage's SPIR-V as the translator emitted it, scheduled late
-void schedule_mesh(std::vector<uint32_t>& spirv) {
-    if (!late_mesh()) return;
+/// The same on vertex stages: off, unless HOS_DBG=latevertex (a trial: 21 vertex stages of the game spill as RADV compiles
+/// them and 769 are at the register limit, none with the pass; but no harness holds a vertex stage's outputs against it yet)
+bool late_vertex() {
+    static const bool on = late_mesh() && dbg("latevertex");
+    return on;
+}
+/// A stage's SPIR-V as the translator emitted it, through the pass
+void schedule_late(std::vector<uint32_t>& spirv, bool on) {
+    if (!on) return;
     const auto t0 = std::chrono::steady_clock::now();
     LateResult r;
     spv_schedule_late(spirv, &r);
@@ -689,7 +695,7 @@ uint64_t disk_stamp() {
     };
     add(abi, sizeof abi);
     using namespace Shader::Backend::SPIRV;
-    const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (late_mesh() ? 4u : 0u);
+    const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (late_mesh() ? 4u : 0u) | (late_vertex() ? 8u : 0u);
     add(&flags, sizeof flags);
     return h;
 }
@@ -1297,6 +1303,7 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
         VStage& vst = v.stages.emplace_back();
         vst.nvn_stage = 0, vst.vk_stage = VK_SHADER_STAGE_VERTEX_BIT;
         vst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_VERTEX_BIT), vrt, vs->program, bindings);
+        schedule_late(vst.spirv, late_vertex());
         vst.info = vs->program.info;
         vst.c1 = vsc.c1;
         if (fsc) {
@@ -1349,7 +1356,7 @@ bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const C
         VStage& mst = v.stages.emplace_back();
         mst.nvn_stage = 7, mst.vk_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
         mst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_MESH_BIT_EXT), mrt, ms->program, bindings);
-        schedule_mesh(mst.spirv);
+        schedule_late(mst.spirv, late_mesh());
         mst.info = ms->program.info;
         mst.c1 = mc.c1;
         st_game_words.fetch_add(menv.game_words, std::memory_order_relaxed);
@@ -1472,7 +1479,7 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
         VStage& mst = v.stages.emplace_back();
         mst.nvn_stage = 7, mst.vk_stage = VK_SHADER_STAGE_MESH_BIT_EXT;
         mst.spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_graphics(VK_SHADER_STAGE_MESH_BIT_EXT), mrt, ms->program, bindings);
-        schedule_mesh(mst.spirv);
+        schedule_late(mst.spirv, late_mesh());
         mst.info = ms->program.info;
         mst.c1 = mc.c1;
         st_game_words.fetch_add(menv.game_words, std::memory_order_relaxed);
@@ -1811,7 +1818,7 @@ void shader_stats(char* out, size_t cap, double frames) {
                   "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed; %lld from binaries, %lld binaries saved, %lld refused), %lld stages unreadable, table full %lld; misses %.1f a frame, "
                   "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
                   "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
-                  "than the push data's room for their addresses; the last miss %.2f s after the device; mesh stages made from hand-written sources %lld, refused %lld; mesh stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all)", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
+                  "than the push data's room for their addresses; the last miss %.2f s after the device; mesh stages made from hand-written sources %lld, refused %lld; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all)", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
                   st_object_ns.load() / 1e9,
                   (long long)st_object_failed.load(), (long long)sobin::st_hits.load(), (long long)sobin::st_saved.load(),
