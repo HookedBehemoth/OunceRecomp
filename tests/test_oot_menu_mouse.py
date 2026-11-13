@@ -51,7 +51,7 @@ enum { HOS_MOUSE_LEFT = 1, HOS_MOUSE_RIGHT = 2, HOS_MOUSE_MIDDLE = 4 };
 
 FIXTURE = r"""
 #include "hos.h"
-#include "../gpu/vk/vk_api.h"
+#include "../gpu/api/vk_api.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -309,10 +309,10 @@ class OotMenuMouseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="hookshot-oot-menu-") as tmp:
             tmp = Path(tmp)
             (tmp / "host").mkdir()
-            (tmp / "gpu" / "vk").mkdir(parents=True)
-            # (beside the stand-in hos.h, and its "../gpu/vk/vk_api.h" the stand-in's)
+            (tmp / "gpu" / "api").mkdir(parents=True)
+            # (beside the stand-in hos.h, and its "../gpu/api/vk_api.h" the stand-in's)
             (tmp / "host" / "hos.h").write_text(HOS_H, encoding="utf-8")
-            (tmp / "gpu" / "vk" / "vk_api.h").write_text(VK_API_H, encoding="utf-8")
+            (tmp / "gpu" / "api" / "vk_api.h").write_text(VK_API_H, encoding="utf-8")
             shutil.copy(ROOT / "host" / "oot_menu.c", tmp / "host" / "oot_menu.c")
             (tmp / "host" / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"

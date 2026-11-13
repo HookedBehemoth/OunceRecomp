@@ -18,7 +18,7 @@
    against the textures' linear sizes; a mismatch leaves the site alone, logged.
    Check that it applies: the 600-present line "direct patch sky lut" (uploads 6 at the boot, 6 more each scene load). */
 #include "direct.h"
-#include "../gpu/render/rx_nvn.h"
+#include "../gpu/api/rx_nvn.h"
 #include <string.h>
 #include <windows.h>
 

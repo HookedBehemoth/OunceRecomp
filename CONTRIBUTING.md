@@ -98,7 +98,7 @@ compile at once. The README's [Linux section](readme.md#on-linux) has the detail
 
 ### NVIDIA DLSS (optional)
 
-DLSS (`gpu/vk/vk_dlss.cpp`) is built in only with NVIDIA's DLSS SDK, which is NVIDIA's, under NVIDIA's own license, and
+DLSS (`gpu/legacy/vk/vk_dlss.cpp`) is built in only with NVIDIA's DLSS SDK, which is NVIDIA's, under NVIDIA's own license, and
 is never committed, bundled or uploaded: not in a PR, not in a release, not in a CI artifact. Fetch it for your own
 builds with `scripts/ngx_sdk.py` (it prints NVIDIA's license notice and needs `--accept-nvidia-license` or a typed yes),
 then build with `HOOKSHOT_NGX_SDK=<sdk folder>`:
@@ -110,7 +110,7 @@ python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hooksho
 ```
 
 On Windows the llvm-mingw build links NVIDIA's static `nvsdk_ngx_s.lib` (built for Microsoft's static runtime) into
-`hookshot_vk.dll`, with `gpu/vk/vk_ngx_msvc_rt.cpp` and `host/mingw_msvc_shims.c` for what it needs of that runtime.
+`hookshot_vk.dll`, with `gpu/legacy/vk/vk_ngx_msvc_rt.cpp` and `host/mingw_msvc_shims.c` for what it needs of that runtime.
 `make_game.py` copies `nvngx_dlss.dll` into the game folder's `ngx` folder; never put NGX's core, `_nvngx.dll`, beside
 the game (it is the driver's). On Linux it is `--platform linux` (or `scripts/linux/ngx-sdk.sh`), with `libnvsdk_ngx.a`
 and `libnvidia-ngx-dlss.so`. A Windows game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
@@ -164,7 +164,7 @@ These need no dump and are what CI runs, on every pull request and every push to
 python -I -B tests/run_all.py
 ```
 
-It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under `gpu/vk/tests` and a
+It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under `gpu/legacy/vk/tests` and a
 byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
 failure's output. Name a check to run only the ones whose path contains it (`python -I -B tests/run_all.py ub_`). A new
 `test_*.py` file is picked up by itself: no workflow to edit.

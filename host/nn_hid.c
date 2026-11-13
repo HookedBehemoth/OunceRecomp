@@ -2,7 +2,7 @@
    once. Buttons map by position (the Xbox bottom face button is the Switch's bottom one, B).
 
    (hookshot) What presses each button, on a gamepad and on the keyboard, is the player's: the Insert menu's Controls
-   page (gpu/vk/vk_menu.cpp) changes it, kept in hookshot_options.ini (binds_load). The defaults:
+   page (gpu/legacy/vk/vk_menu.cpp) changes it, kept in hookshot_options.ini (binds_load). The defaults:
    Keyboard (totk-pc-recomp's layout): WASD left stick, arrows or IJKL right stick (camera), Space X (jump), E A
    (action), Shift B (run/cancel), Q L (abilities), R R, Z ZL, X or F ZR (bow), Ctrl left-stick click (crouch), C
    right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down. Only
@@ -33,7 +33,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <xinput.h>
-#include "../gpu/vk/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
+#include "../gpu/api/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
 #include "hos_motion.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
@@ -348,17 +348,9 @@ static void live_input(void) {
             if (!n || line[n - 1] != '\n') break;   /* a line still being written: read it next time */
             offset += (int64_t)n;
             const int64_t at = script_elapsed_ms(now);
-            if (line[0] == '!') {   /* commands: !dump = a frame dump of the next frame (as RX_DUMP_AT) */
-                void rx_request_frame_dump(void);   /* gpu/render/rx_debug.cpp */
-                if (!strncmp(line, "!dump", 5)) rx_request_frame_dump();
+            if (line[0] == '!') {   /* commands: !synclog, !cheat, !warp */
                 extern volatile int hos_nvn_sync_log_on;   /* nvn_native.c: "!synclog" */
                 if (!strncmp(line, "!synclog", 8)) hos_nvn_sync_log_on = 1;
-                void rx_set_screenshot_ms(int64_t ms);   /* gpu/render/rx_core.cpp: "!shots <ms>" */
-                if (!strncmp(line, "!shots ", 7)) rx_set_screenshot_ms(atoll(line + 7));
-                void rx_request_rdoc_capture(int frames);   /* gpu/render/rx_debug.cpp: "!rdoc [frames]" */
-                if (!strncmp(line, "!rdoc", 5)) rx_request_rdoc_capture(atoi(line + 5));
-                void rx_flash_dark_arm(void);   /* gpu/render/rx_core.cpp: arms RX_FLASH_DARK_DUMP (RX_FLASH_DARK_AFTER=-1) */
-                if (!strncmp(line, "!flasharm", 9)) rx_flash_dark_arm();
                 extern volatile int hos_oot_live_action;   /* host/hos_main.c: "!cheat <action>", as the Cheats page sends */
                 if (!strncmp(line, "!cheat ", 7)) __atomic_store_n(&hos_oot_live_action, atoi(line + 7), __ATOMIC_RELAXED);
                 void hos_oot_warp_request(const char *args);   /* host/hos_main.c: "!warp <banc> [startpos|-] [boot event]" */
@@ -700,7 +692,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
         }
     }
     InterlockedExchange(&pad_raw_now, (LONG)raw);
-    /* Back and Start together open the Insert menu (gpu/vk/vk_menu.cpp, for pads whose Home button the system
+    /* Back and Start together open the Insert menu (gpu/legacy/vk/vk_menu.cpp, for pads whose Home button the system
        keeps): they reach the game only one at a time */
     const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
     if ((raw & chord) == chord) raw &= ~chord;

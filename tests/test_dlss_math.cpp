@@ -1,4 +1,4 @@
-#include "../gpu/vk/dlss_math.h"
+#include "../host/dlss_math.h"
 
 #include <cmath>
 #include <cstdio>

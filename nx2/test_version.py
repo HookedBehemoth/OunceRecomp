@@ -11,7 +11,7 @@ import version  # noqa: E402
 
 
 def tree(root, eol):
-    for rel in ("host/a.c", "gpu/vk/b.cpp", "nx2/c.py"):
+    for rel in ("host/a.c", "gpu/legacy/vk/b.cpp", "nx2/c.py"):
         p = os.path.join(root, rel)
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "wb") as f:

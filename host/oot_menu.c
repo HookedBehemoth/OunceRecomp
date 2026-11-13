@@ -19,7 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../gpu/vk/vk_api.h"   /* (HOS_MOUSE_*) */
+#include "../gpu/api/vk_api.h"   /* (HOS_MOUSE_*) */
 
 /* A guest read, of the pointers the game's objects hold: inside the guest's space (below 1 MB: a null pointer's), it is
    read as the lifted code reads it; a page there not committed yet is committed on the touch (mkw_glue.c

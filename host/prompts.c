@@ -20,7 +20,7 @@
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../gpu/vk/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
+#include "../gpu/api/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
 
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]);   /* pad_sdl.c */

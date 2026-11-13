@@ -13,7 +13,7 @@
 
    Check that it applies: the 600-present line "direct patch rt ids" (calls kept / run, and why run). */
 #include "direct.h"
-#include "../gpu/render/rx_nvn.h"
+#include "../gpu/api/rx_nvn.h"
 #include <stddef.h>
 #include <string.h>
 #include <windows.h>

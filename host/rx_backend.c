@@ -1,50 +1,25 @@
-/* Which renderer the rx_* calls go to (gpu/vk/vk_api.h): the WebGPU one in the executable (gpu/render, its
-   functions renamed wgr_* by rx_wgpu_names.h) or, with RX_BACKEND=vulkan, the Vulkan one in mkw_vk.dll beside the
-   executable. Decided at rx_start, before any other rx_* call; a DLL that is missing or finds no usable Vulkan
-   device leaves the WebGPU renderer in place (logged). */
+/* The direct back end's loader and the rx_* calls the host makes (gpu/api/vk_api.h): hookshot_direct.so beside the executable
+   is loaded at the first call (NVN records before the window's thread starts the renderer), its device made at rx_start.
+   A library that does not load or start ends the game. Calls made before rx_start that the back end needs are kept and given
+   to it at the start, in order. */
 #include "hos.h"
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include "../gpu/vk/vk_api.h"
-#include "../gpu/vk/dlss_math.h"
+#include "../gpu/api/vk_api.h"
+#include "dlss_math.h"
 #include "direct.h"
 #include "direct_crit.h"
 
-/* the WebGPU renderer (gpu/render, renamed) */
-int wgr_start(void *hwnd);
-void wgr_resize(int width, int height);
-const char *wgr_describe(void);
-void wgr_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines);
-void wgr_nvn_submit(const uint64_t *handles, int n);
-uint64_t wgr_nvn_fence(void);
-uint64_t wgr_nvn_pushed(void);
-uint64_t wgr_nvn_replayed(void);
-int wgr_nvn_wait(uint64_t fence, uint64_t timeout_ns);
-void wgr_wait_writebacks_reading(const void *p, uint64_t n);
-void wgr_nvn_finish(void);
-void wgr_nvn_present(const nvn_tex *t, const int crop[4]);
-void wgr_nvn_register_texture(int id, const nvn_tex *t, const nvn_view *v);
-void wgr_nvn_register_sampler(int id, const nvn_samp_par *p);
-void wgr_nvn_set_texture_pool_size(int n);
-void wgr_nvn_texture_released(const nvn_tex *t);
-void wgr_nvn_program_released(const nvn_prog *p);
-void wgr_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
-                         uint64_t row, uint64_t img);
-void wgr_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r,
-                          const uint8_t *src, uint64_t row, uint64_t img);
-void wgr_nvn_invalidate(uint64_t gpu, uint64_t size);
-
-/* what the Vulkan back end is given */
+/* what the back end is given */
 uint8_t *hos_guest_base(void);
 uint64_t hos_guest_size(void);
 uint8_t *hos_gpu_ptr(uint64_t va, uint64_t *avail);
 uint64_t nvn_gpu_guest(uint64_t gpu);
 int nvn_gpu_read(uint64_t gpu, void *dst, uint64_t n);
 int nvn_gpu_write(uint64_t gpu, const void *src, uint64_t n);
-uint32_t *rx_collect_written(int64_t *count);   /* gpu/render/rx_core.cpp: the soft write watch's pages */
 void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o);
 uint64_t nvn_tex_level_offset(const nvn_texdesc *d, unsigned level);
 int nvn_fmt_bpb(int format, int *bw, int *bh);
@@ -113,13 +88,6 @@ static int64_t host_collect(uint32_t **pages) {
 /* (only within the given guest ranges: the submit-time capture of the mirrored pools, a small part of the 20 ms the
    whole collection takes) */
 static int64_t host_collect_in(const uint64_t (*ranges)[2], int n, uint32_t **pages) { return collect_in(ranges, n, pages); }
-#else
-static int64_t host_collect(uint32_t **pages) {
-    int64_t n = -1;
-    *pages = rx_collect_written(&n);
-    return n;
-}
-static int64_t host_collect_in(const uint64_t (*ranges)[2], int n, uint32_t **pages) { (void)ranges, (void)n; *pages = 0; return 0; }
 #endif
 static void host_free_pages(uint32_t *pages) { free(pages); }
 static void host_mark_written(const void *p, uint64_t n) {
@@ -170,8 +138,7 @@ static const MkwVkHost vk_host = {
     host_romfs_dir,
 };
 
-static const MkwVkRenderer *vk;   /* the Vulkan back end, when it was chosen and started */
-static HMODULE vk_module;   /* (the last back end loaded: rx_close_asked) */
+static const MkwVkRenderer *vk;   /* the back end, once started */
 
 /* The game registers its first textures and samplers before the window's thread starts the renderer (NVN is up
    first): those calls are kept here and given to the renderer rx_start chose, in order. Without that the Vulkan back
@@ -233,150 +200,97 @@ static void flush_early(void) {
     ReleaseSRWLockExclusive(&early_lock);
 }
 
-/* dll: mkw_vk.dll (our Vulkan back end) or mkw_eden.dll (Eden's renderer driven natively, gpu/eden): one export */
-static const MkwVkRenderer *load_vulkan(const char *dll) {
-    char path[MAX_PATH];
-    const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
-    char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;   /* (linux: '/') */
-    if (!slash || (size_t)(slash + 1 - path) + strlen(dll) >= sizeof path) return NULL;   /* (a path near MAX_PATH) */
-    memcpy(slash + 1, dll, strlen(dll) + 1);
-    HMODULE m = LoadLibraryA(path);
-    if (!m) {
-        hos_log("rx: RX_BACKEND=vulkan, but %s did not load (%lu): WebGPU", path, GetLastError());
-        return NULL;
-    }
-    vk_module = m;
-    mkwvk_init_fn init = (mkwvk_init_fn)(void *)GetProcAddress(m, "mkwvk_init");
-    const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
-    if (!r || r->version != MKWVK_API_VERSION) {
-        hos_log("rx: the Vulkan back end did not start: WebGPU");
-        return NULL;
-    }
-    return r;
-}
-
-/* (native-vk) RX_BACKEND=direct: the direct back end, hookshot_direct.dll (docs/direct/m1-interface.md): the version-14 table
-   for the object layer, sync and present, and the list calls the host finds by name (host/direct.h). Read once, at the first
-   call: NVN records before the window's thread starts the renderer, so the library is loaded then, its device made at
-   rx_start. No fallback: a library that does not load or start ends the game */
+/* The direct back end, hookshot_direct.so: the version-14 table for the object layer, sync and present, and the list calls the
+   host finds by name (host/direct.h). Read once, at the first call. RX_BACKEND is not read: this is the only renderer */
 static hsd_fns direct_fns;
-static volatile LONG direct_state;   /* 0 not asked yet, 1 off, 2 on */
+static volatile LONG direct_state;   /* 0 not loaded yet, 2 loaded */
 static SRWLOCK direct_lock = SRWLOCK_INIT;
 static HMODULE direct_module;
-static const char kDirectDll[] = "hookshot_direct.dll";
+static const char kDirectDll[] = "hookshot_direct.dll";   /* (the loader maps .dll to .so on Linux) */
 const hsd_fns *rx_direct(void) {
-    const LONG s = direct_state;
-    if (s) return s == 2 ? &direct_fns : NULL;
+    if (direct_state) return &direct_fns;
     AcquireSRWLockExclusive(&direct_lock);
     if (!direct_state) {
-        const char *b = getenv("RX_BACKEND");
-        LONG on = 1;
-        if (b && !_stricmp(b, "direct")) {
-            char path[MAX_PATH];
-            const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
-            char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;
-            if (!slash || (size_t)(slash + 1 - path) + sizeof kDirectDll > sizeof path) hos_fatal(NULL, "rx: no path for %s", kDirectDll);
-            memcpy(slash + 1, kDirectDll, sizeof kDirectDll);
-            direct_module = LoadLibraryA(path);
-            if (!direct_module) hos_fatal(NULL, "rx: RX_BACKEND=direct, but %s did not load (%lu)", path, GetLastError());
-#define DIRECT_FN(field, name)                                                                     \
+        char path[MAX_PATH];
+        const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+        char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;
+        if (!slash || (size_t)(slash + 1 - path) + sizeof kDirectDll > sizeof path) hos_fatal(NULL, "rx: no path for %s", kDirectDll);
+        memcpy(slash + 1, kDirectDll, sizeof kDirectDll);
+        direct_module = LoadLibraryA(path);
+        if (!direct_module) hos_fatal(NULL, "rx: %s did not load (%lu)", path, GetLastError());
+        #define DIRECT_FN(field, name)                                                                     \
     if (!(*(void **)&direct_fns.field = (void *)GetProcAddress(direct_module, name)))               \
         hos_fatal(NULL, "rx: %s has no %s", kDirectDll, name);
-            DIRECT_FN(list_begin, "hsd_list_begin")
-            DIRECT_FN(emit, "hsd_emit")
-            DIRECT_FN(list_call, "hsd_list_call")
-            DIRECT_FN(list_end, "hsd_list_end")
-            DIRECT_FN(list_released, "hsd_list_released")
-            DIRECT_FN(submit, "hsd_submit")
-            DIRECT_FN(queue_wait_fence, "hsd_queue_wait_fence")
-            DIRECT_FN(present_queue, "hsd_present_queue")
-            DIRECT_FN(assets_open, "hsd_assets_open")
-            DIRECT_FN(asset_load, "hsd_asset_load")
-            DIRECT_FN(asset_rebind, "hsd_asset_rebind")
-            DIRECT_FN(asset_pool, "hsd_asset_pool")
-            DIRECT_FN(texture_data_pool, "hsd_texture_data_pool")
-            DIRECT_FN(texels, "hsd_texels")
-            DIRECT_FN(pass_known, "hsd_pass_known")
-            DIRECT_FN(pass_inline, "hsd_pass_inline")
-            DIRECT_FN(shots, "hsd_shots")
-            DIRECT_FN(transient_pool, "hsd_transient_pool")
-            DIRECT_FN(image_need, "hsd_image_need")
-            DIRECT_FN(transient_slot, "hsd_transient_slot")
-            DIRECT_FN(target_given, "hsd_target_given")
-            DIRECT_FN(host_event, "hsd_host_event")
-            DIRECT_FN(texture_cached, "hsd_texture_cached")
-            DIRECT_FN(vram_free, "hsd_vram_free")
+        DIRECT_FN(list_begin, "hsd_list_begin")
+        DIRECT_FN(emit, "hsd_emit")
+        DIRECT_FN(list_call, "hsd_list_call")
+        DIRECT_FN(list_end, "hsd_list_end")
+        DIRECT_FN(list_released, "hsd_list_released")
+        DIRECT_FN(submit, "hsd_submit")
+        DIRECT_FN(queue_wait_fence, "hsd_queue_wait_fence")
+        DIRECT_FN(present_queue, "hsd_present_queue")
+        DIRECT_FN(assets_open, "hsd_assets_open")
+        DIRECT_FN(asset_load, "hsd_asset_load")
+        DIRECT_FN(asset_rebind, "hsd_asset_rebind")
+        DIRECT_FN(asset_pool, "hsd_asset_pool")
+        DIRECT_FN(texture_data_pool, "hsd_texture_data_pool")
+        DIRECT_FN(texels, "hsd_texels")
+        DIRECT_FN(pass_known, "hsd_pass_known")
+        DIRECT_FN(pass_inline, "hsd_pass_inline")
+        DIRECT_FN(shots, "hsd_shots")
+        DIRECT_FN(transient_pool, "hsd_transient_pool")
+        DIRECT_FN(image_need, "hsd_image_need")
+        DIRECT_FN(transient_slot, "hsd_transient_slot")
+        DIRECT_FN(target_given, "hsd_target_given")
+        DIRECT_FN(host_event, "hsd_host_event")
+        DIRECT_FN(texture_cached, "hsd_texture_cached")
+        DIRECT_FN(vram_free, "hsd_vram_free")
 #undef DIRECT_FN
-            hos_log("rx: direct mode (RX_BACKEND=direct): %s", path);
-            {   /* (M6a, HOS_DBG=crit: the calls timed, direct_crit.c) */
-                void crit_wrap(hsd_fns *f);
-                if (crit_wanted()) crit_wrap(&direct_fns);
-            }
-            on = 2;
+        hos_log("rx: the direct back end: %s", path);
+        {   /* (HOS_DBG=crit: the calls timed, direct_crit.c) */
+            void crit_wrap(hsd_fns *f);
+            if (crit_wanted()) crit_wrap(&direct_fns);
         }
-        InterlockedExchange(&direct_state, on);
+        InterlockedExchange(&direct_state, 2);
     }
     ReleaseSRWLockExclusive(&direct_lock);
-    return direct_state == 2 ? &direct_fns : NULL;
+    return &direct_fns;
 }
 
 int rx_start(void *hwnd) {
-    if (rx_direct()) {
-        {   /* (M4d) RX_VK_SHOTS=<dir>, RX_VK_SHOT_EVERY=<n> (default 300): the presented frames as PNGs, as the frozen back end */
-            const char *shots = getenv("RX_VK_SHOTS"), *every = getenv("RX_VK_SHOT_EVERY");
-            if (shots && *shots) direct_fns.shots(shots, every && atoi(every) > 0 ? atoi(every) : 300);
-        }
-        const MkwVkRenderer *r = load_vulkan(kDirectDll);
-        if (!r || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectDll);
-        vk = r;
-        hos_log("rx: renderer: the direct back end (%s)", kDirectDll);
-        flush_early();
-        return 1;
+    {   /* RX_VK_SHOTS=<dir>, RX_VK_SHOT_EVERY=<n> (default 300): the presented frames as PNGs */
+        const char *shots = getenv("RX_VK_SHOTS"), *every = getenv("RX_VK_SHOT_EVERY");
+        if (shots && *shots) rx_direct()->shots(shots, every && atoi(every) > 0 ? atoi(every) : 300);
     }
-    const char *b = getenv("RX_BACKEND");
-    const int eden = b && !_stricmp(b, "eden");
-    if (!b || !_stricmp(b, "vulkan") || eden) {   /* (hookshot: Vulkan unless told otherwise; a started game has no RX_BACKEND) */
-        const char *dll = eden ? "mkw_eden.dll" : "hookshot_vk.dll";
-        const MkwVkRenderer *r = load_vulkan(dll);
-        if (r && r->start(hwnd)) {
-            vk = r;
-            hos_log("rx: renderer: %s (%s)", eden ? "Eden's" : "Vulkan", dll);
-            flush_early();
-            return 1;
-        }
-        if (r) hos_log("rx: the Vulkan back end could not start on the window: WebGPU");
-    }
-    const int ok = wgr_start(hwnd);
+    mkwvk_init_fn init = (mkwvk_init_fn)(void *)GetProcAddress(direct_module, "mkwvk_init");
+    const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
+    if (!r || r->version != MKWVK_API_VERSION || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectDll);
+    vk = r;
     flush_early();
-    return ok;
-}
-/* (hookshot) hookshot --prepare-shaders: the Vulkan back end started with no window and no game, which prepares
-   every shader in its start (gpu/vk/vk_main.cpp started_up) and is then let go. 0 when there is no usable Vulkan */
-int rx_prepare_shaders(void) {
-    const MkwVkRenderer *r = load_vulkan("hookshot_vk.dll");
-    return r && r->start(NULL);
+    return 1;
 }
 /* (hookshot) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
    seconds at most). One without the export (an older one) has nothing to keep */
 void rx_close_asked(void) {
-    if (!vk_module) return;
-    void (*close_asked)(void) = (void (*)(void))(void *)GetProcAddress(vk_module, "mkwvk_close_asked");
+    if (!direct_module) return;
+    void (*close_asked)(void) = (void (*)(void))(void *)GetProcAddress(direct_module, "mkwvk_close_asked");
     if (close_asked) close_asked();
 }
-void rx_resize(int width, int height) { vk ? vk->resize(width, height) : wgr_resize(width, height); }
-const char *rx_describe(void) { return vk ? vk->describe() : wgr_describe(); }
+void rx_resize(int width, int height) { if (vk) vk->resize(width, height); }
+const char *rx_describe(void) { return vk ? vk->describe() : "none"; }
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines) {
-    vk ? vk->stats(draws, skipped, pipelines) : wgr_stats(draws, skipped, pipelines);
+    *draws = *skipped = *pipelines = 0;
+    if (vk) vk->stats(draws, skipped, pipelines);
 }
-void rx_nvn_submit(const uint64_t *handles, int n) { vk ? vk->nvn_submit(handles, n) : wgr_nvn_submit(handles, n); }
+void rx_nvn_submit(const uint64_t *handles, int n) { if (vk) vk->nvn_submit(handles, n); }
 void rx_nvn_submit_q(const uint64_t *handles, int n, uint64_t queue) {
     if (vk && vk->nvn_submit_q) vk->nvn_submit_q(handles, n, queue);
     else rx_nvn_submit(handles, n);
 }
-uint64_t rx_nvn_fence(void) { return vk ? vk->nvn_fence() : wgr_nvn_fence(); }
+uint64_t rx_nvn_fence(void) { return vk ? vk->nvn_fence() : 0; }
 uint64_t rx_nvn_fence_q(uint64_t queue) { return vk && vk->nvn_fence_q ? vk->nvn_fence_q(queue) : rx_nvn_fence(); }
-uint64_t rx_nvn_pushed(void) { return vk ? vk->nvn_pushed() : wgr_nvn_pushed(); }
-uint64_t rx_nvn_replayed(void) { return vk ? vk->nvn_replayed() : wgr_nvn_replayed(); }
+uint64_t rx_nvn_pushed(void) { return vk ? vk->nvn_pushed() : 0; }
+uint64_t rx_nvn_replayed(void) { return vk ? vk->nvn_replayed() : 0; }
 int rx_nvn_wait(uint64_t fence, uint64_t timeout_ns) {
     if (crit_rec && vk) {   /* (M6a, HOS_DBG=crit) */
         const uint64_t t0 = crit_tsc();
@@ -384,12 +298,12 @@ int rx_nvn_wait(uint64_t fence, uint64_t timeout_ns) {
         crit_span(CRIT_BE_WAIT, t0, crit_tsc(), timeout_ns, (uint64_t)r);
         return r;
     }
-    return vk ? vk->nvn_wait(fence, timeout_ns) : wgr_nvn_wait(fence, timeout_ns);
+    return vk ? vk->nvn_wait(fence, timeout_ns) : 1;
 }
 void rx_wait_writebacks_reading(const void *p, uint64_t n) {
-    vk ? vk->wait_writebacks_reading(p, n) : wgr_wait_writebacks_reading(p, n);
+    if (vk) vk->wait_writebacks_reading(p, n);
 }
-void rx_nvn_finish(void) { vk ? vk->nvn_finish() : wgr_nvn_finish(); }
+void rx_nvn_finish(void) { if (vk) vk->nvn_finish(); }
 static volatile LONG presents;   /* (the frames shown, for the camera jitter below) */
 void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
     InterlockedIncrement(&presents);
@@ -403,15 +317,15 @@ void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
             return;
         }
     }
-    vk ? vk->nvn_present(t, crop) : wgr_nvn_present(t, crop);
+    if (vk) vk->nvn_present(t, crop);
 }
-/* (hookshot, nx2/oot_jitter.py) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip
+/* (hookshot, nx2/oot_jitter.py) the temporal upscaler's camera jitter (NVIDIA DLSS, AMD FSR 4: gpu/legacy/vk/vk_temporal.cpp): this frame's sub-pixel offset of the scene's projection, in clip
    space (what P[0][2] and P[1][2] get), into out, for the projection matrix at guest address projection (row major, as the
    game fills its views' uniform buffers from it); 0 when there is none: DLSS and FSR off (or a renderer without them: rx_option
    HOS_OPT_DLSS_JITTER_W and _H, the scene's size in pixels, are 0), or a projection that is not one of the picture's
-   (gpu/vk/dlss_math.h dlss_jitter_clip: a shadow map's, the HUD's). The renderer reads the offset back from
-   the camera's uniform buffer (gpu/vk/vk_temporal.cpp), so this only has to pick sub-pixel offsets that cover a pixel evenly:
-   the Halton (2, 3) sequence, over as many frames as the upscaler's scale wants (HOS_OPT_DLSS_JITTER_PHASES: gpu/vk/dlss_math.h
+   (host/dlss_math.h dlss_jitter_clip: a shadow map's, the HUD's). The renderer reads the offset back from
+   the camera's uniform buffer (gpu/legacy/vk/vk_temporal.cpp), so this only has to pick sub-pixel offsets that cover a pixel evenly:
+   the Halton (2, 3) sequence, over as many frames as the upscaler's scale wants (HOS_OPT_DLSS_JITTER_PHASES: host/dlss_math.h
    dlss_jitter_phases, 8 for DLAA up to 64). */
 int hos_dlss_jitter_clip(uint64_t projection, float out[2]) {
     static LONG at = -1;
@@ -432,16 +346,15 @@ static void forward(const early_call *c) {
     switch (c->kind) {
     case 0: {
         const nvn_view *v = c->has_view ? &c->v : NULL;
-        vk ? vk->nvn_register_texture(c->id, &c->t, v) : wgr_nvn_register_texture(c->id, &c->t, v);
+        if (vk) vk->nvn_register_texture(c->id, &c->t, v);
         break;
     }
-    case 1: vk ? vk->nvn_register_sampler(c->id, &c->p) : wgr_nvn_register_sampler(c->id, &c->p); break;
-    case 2: vk ? vk->nvn_set_texture_pool_size(c->id) : wgr_nvn_set_texture_pool_size(c->id); break;
-    case 3: vk ? vk->nvn_texture_released(&c->t) : wgr_nvn_texture_released(&c->t); break;
+    case 1: if (vk) vk->nvn_register_sampler(c->id, &c->p); break;
+    case 2: if (vk) vk->nvn_set_texture_pool_size(c->id); break;
+    case 3: if (vk) vk->nvn_texture_released(&c->t); break;
     case 4: if (vk && vk->nvn_texture_created) vk->nvn_texture_created(&c->t); break;
     case 5:
-        vk ? vk->nvn_write_texels(&c->t, c->level, c->layer0, &c->r, c->data, c->row, c->img)
-           : wgr_nvn_write_texels(&c->t, c->level, c->layer0, &c->r, c->data, c->row, c->img);
+        if (vk) vk->nvn_write_texels(&c->t, c->level, c->layer0, &c->r, c->data, c->row, c->img);
         break;
     }
 }
@@ -452,7 +365,7 @@ void rx_nvn_register_texture(int id, const nvn_tex *t, const nvn_view *v) {
         if (v) c.v = *v, c.has_view = 1;
         if (keep_early(&c)) return;
     }
-    vk ? vk->nvn_register_texture(id, t, v) : wgr_nvn_register_texture(id, t, v);
+    if (vk) vk->nvn_register_texture(id, t, v);
 }
 void rx_nvn_register_sampler(int id, const nvn_samp_par *p) {
     if (!started && p) {
@@ -460,14 +373,14 @@ void rx_nvn_register_sampler(int id, const nvn_samp_par *p) {
         c.p = *p;
         if (keep_early(&c)) return;
     }
-    vk ? vk->nvn_register_sampler(id, p) : wgr_nvn_register_sampler(id, p);
+    if (vk) vk->nvn_register_sampler(id, p);
 }
 void rx_nvn_set_texture_pool_size(int n) {
     if (!started) {
         early_call c = {2, n};
         if (keep_early(&c)) return;
     }
-    vk ? vk->nvn_set_texture_pool_size(n) : wgr_nvn_set_texture_pool_size(n);
+    if (vk) vk->nvn_set_texture_pool_size(n);
 }
 void rx_nvn_texture_released(const nvn_tex *t) {
     if (!started && t) {
@@ -475,7 +388,7 @@ void rx_nvn_texture_released(const nvn_tex *t) {
         c.t = *t;
         if (keep_early(&c)) return;
     }
-    vk ? vk->nvn_texture_released(t) : wgr_nvn_texture_released(t);
+    if (vk) vk->nvn_texture_released(t);
 }
 void rx_nvn_texture_created(const nvn_tex *t) {
     if (!started && t) {
@@ -485,15 +398,15 @@ void rx_nvn_texture_created(const nvn_tex *t) {
     }
     if (vk && vk->nvn_texture_created) vk->nvn_texture_created(t);
 }
-void rx_nvn_program_released(const nvn_prog *p) { vk ? vk->nvn_program_released(p) : wgr_nvn_program_released(p); }
+void rx_nvn_program_released(const nvn_prog *p) { if (vk) vk->nvn_program_released(p); }
 void rx_nvn_program_set(const nvn_prog *p) { if (vk && vk->nvn_program_set) vk->nvn_program_set(p); }
-/* (native-vk layer 0) a pool made or finalized, with its flags and creation key (gpu/vk/vk_pools.cpp) */
+/* (native-vk layer 0) a pool made or finalized, with its flags and creation key (gpu/legacy/vk/vk_pools.cpp) */
 void rx_nvn_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on) {
     if (vk && vk->nvn_pool_native) vk->nvn_pool_native(gpu, size, flags, key, on);
 }
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img) {
-    vk ? vk->nvn_read_texels(t, level, layer0, r, dst, row, img) : wgr_nvn_read_texels(t, level, layer0, r, dst, row, img);
+    if (vk) vk->nvn_read_texels(t, level, layer0, r, dst, row, img);
 }
 void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, const uint8_t *src,
                          size_t row, size_t img) {
@@ -515,13 +428,12 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
             }
         }
     }
-    vk ? vk->nvn_write_texels(t, level, layer0, r, src, row, img)
-       : wgr_nvn_write_texels(t, level, layer0, r, src, row, img);
+    if (vk) vk->nvn_write_texels(t, level, layer0, r, src, row, img);
 }
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
     /* The callback can wait for replay or GPU write-back: let another guest thread use this core meanwhile. */
     const int away = hos_vcore_away();
-    vk ? vk->nvn_invalidate(gpu, size) : wgr_nvn_invalidate(gpu, size);
+    if (vk) vk->nvn_invalidate(gpu, size);
     if (away) hos_vcore_back();
 }
 int rx_guest_imported(uint64_t lo, uint64_t hi) {

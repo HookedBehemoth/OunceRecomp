@@ -4,7 +4,7 @@
 
 Walks romfs/Shader/*.bfsha.zs (and the shader packages inside other archives), and each BNSH inside them. A BNSH's variations
 are programs: which stages go together, so what comes out are real pairs, not a heap of stages. --out writes them for the back
-end to translate (gpu/vk/vk_shader.cpp); nothing here goes into the repository: the file is made from the player's own game.
+end to translate (gpu/legacy/vk/vk_shader.cpp); nothing here goes into the repository: the file is made from the player's own game.
 
 The game's compute programs, and many of its graphics ones, are not in a BNSH: agl's shader archives (BAHS, in Lib/ and in
 Shader/ApplicationPackage), agl's networks (NDSR, Lib/agl), the movie upscaler's (NDVE, Movie/Ndve) and the particle sets

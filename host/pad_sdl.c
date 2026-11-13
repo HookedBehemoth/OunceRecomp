@@ -22,7 +22,7 @@
 #include "hos_sdl.h"
 #include "hd_rumble.h"
 #include "hos_motion.h"
-#include "../gpu/vk/vk_api.h"   /* (HOS_PAD_*) */
+#include "../gpu/api/vk_api.h"   /* (HOS_PAD_*) */
 
 void hos_host_thread_register_self(const char *name);   /* hos_prof.c */
 

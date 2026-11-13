@@ -36,7 +36,7 @@ changes: TOTKPort's `hos/nvn_native.c` (NVN 55.15) would sit under this reposito
 |---|---|---|
 | **mkw-recomp** `7336f0a` (`..\mkw-recomp`, local) | lift driver and its fixes, Switch 2 forms, DT_RELR, Eden's image layout, 64-bit guest window, loop-header polls, stable chunks, Unicorn tests, build; the standalone runtime; the native NVN2 layer; the Vulkan back end | `nx2/`, `host/`, `gpu/`, `third_party/` (commit `86871a1`, byte-identical) |
 | **a64-kit** (Rexcomp's AArch64 kit, TOTKPort `60de030`, via mkw-recomp) | NSO loader, image builder, lifter, suyu's translator, instruction harness | `third_party/a64-kit` (unmodified) |
-| **Eden's shader recompiler** (Eglantine build 181, via mkw-recomp) | SM86 -> IR -> SPIR-V, task/mesh programs | `gpu/vk/eden` |
+| **Eden's shader recompiler** (Eglantine build 181, via mkw-recomp) | SM86 -> IR -> SPIR-V, task/mesh programs | `gpu/legacy/vk/eden` |
 | **TOTKPort** (`Desktop\Ports\TOTK\TOTKPort`) | the original HLE runtime and NVN layer that mkw-recomp's are forks of | reference only |
 | **Eglantine** (`..\Eglantine`, read and run only) | Switch 2 service protocols, the reference renderer, an A/B oracle | reference only; its CPM cache supplies the Vulkan/SPIR-V headers, VMA, FFmpeg |
 
@@ -79,7 +79,7 @@ message. OoT-specific code goes into new files where it can, so the shared files
 - **Memory.** A 512 GB reservation; the image at Eden's `0x80000000` (the lift's addresses), the heap from 64 GB,
   address regions growing down from 512 GB; committed as handed out or on first touch (`host/hos.h`).
 - **GPU.** `host/nvn_native.c` implements the NVN2 procs over guest memory in place: objects live where the game
-  puts them, command buffers record an op stream (`gpu/render/rx_nvn.h`), queue submits hand it to the back end.
+  puts them, command buffers record an op stream (`gpu/api/rx_nvn.h`), queue submits hand it to the back end.
   `gpu/vk` replays it on Vulkan 1.3: pools imported as host memory, SM86 programs through Eden's recompiler to
   SPIR-V, mesh/task programs with `VK_EXT_mesh_shader`. The WebGPU renderer (`gpu/render`) stays in the Windows exe as the
   fallback when Vulkan is missing, as in mkw-recomp, when the build has wgpu-native (`WGPU_NATIVE`).
@@ -90,15 +90,15 @@ Each of these cost days in mkw-recomp; the fork has the fixes, and these are the
 second game.
 
 1. **Cross-queue `nvnCommandBufferWaitEvent` is honoured.** MKW's queues pass stages back and forth with events;
-   replaying them in arrival order on one Vulkan queue flashed. `gpu/vk/vk_replay.cpp` `submit_job` replays each
+   replaying them in arrival order on one Vulkan queue flashed. `gpu/legacy/vk/vk_replay.cpp` `submit_job` replays each
    submission as far as its waits allow, with per-queue state (`RX_VK_EVENT_WAITS=0` turns it off, for A/B only).
    *Check early:* log OoT's queues and event waits on the first boot (which queues, how many waits per frame).
 2. **Nothing the replay reads comes from live guest memory.** Games write per-frame data ahead of the GPU: every
    read is from submit-time captures, and pools are captured from their creation, not their first GPU use
-   (`gpu/vk/vk_memory.cpp`, `RX_VK_CAPTURE_POOL_MB`). *Check:* the mirror sync log's live-sync count stays ~0.
+   (`gpu/legacy/vk/vk_memory.cpp`, `RX_VK_CAPTURE_POOL_MB`). *Check:* the mirror sync log's live-sync count stays ~0.
 3. **Texture and sampler registrations are queued in order with the submits**, never applied out of band.
 4. **GPU timestamps drive dynamic resolution.** OoT is reported at 1080p-1440p docked, so it has a resolution
-   controller fed by timestamp reports: the fake GPU time (the counter reports the replay writes, `gpu/vk/vk_replay.cpp`
+   controller fed by timestamp reports: the fake GPU time (the counter reports the replay writes, `gpu/legacy/vk/vk_replay.cpp`
    `NOP_REPORT_COUNTER`: the 31.25 MHz tick clock since the frame's present, times `RX_VK_TS_SCALE`, 0.1 by default) must be
    scaled so the controller settles where the PC is, not at its floor. *Check:* the render size it picks over time.
 5. **Clears after draws, and draws that sample a target their pass already wrote (or write one an earlier draw of the
@@ -213,7 +213,7 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
     (host/hos_setjmp.c, assembly, returns_twice: clang's `__builtin_longjmp` restored rbp to the frame address,
     128 bytes off Win64's frame pointer), and longjmp's BR comes back through a64_ijump_hook.
   - HMMA on the host's tensor cores: HMMA_nx2 → IR MatrixMulAddF16 → OpCooperativeMatrixMulAddKHR 16x8x16 f16.
-    gpu/vk/vk_coopmat.cpp measures the device's element order (NVIDIA: A's registers 1 and 2 swapped) and checks
+    gpu/legacy/vk/vk_coopmat.cpp measures the device's element order (NVIDIA: A's registers 1 and 2 swapped) and checks
     a multiply. OoT's networks (the movie upscaler, the gameplay TAAU) run at full speed (the movie at 60 fps).
   - Write-backs of GPU-written textures keep the pages the CPU wrote since (SceneLowPriority read texels as
     pointers). Storage buffer tables: GetCbuf(i, x*16 + base) addresses get a 16-entry descriptor array that the

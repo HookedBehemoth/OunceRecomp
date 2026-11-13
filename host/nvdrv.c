@@ -122,7 +122,7 @@ static uint64_t va_alloc(uint64_t size, uint64_t align) {
 }
 
 /* (mkw-recomp) The memory pools one by one, as {guest start, size} pairs (at most max; the count is returned), and a
-   number that changes with them: the Vulkan back end imports each pool as host memory (gpu/vk/vk_memory.cpp) */
+   number that changes with them: the Vulkan back end imports each pool as host memory (gpu/legacy/vk/vk_memory.cpp) */
 int hos_gpu_pools(uint64_t (*out)[2], int max) {
     LOCK();
     int n = 0;

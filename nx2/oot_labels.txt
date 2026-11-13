@@ -170,7 +170,7 @@
 8007da20 layer_list_end_b                 # work/assets/native/engine-frame.md, work/assets/native/engine-jobs.md: layer list end (0x8007dabc)
 8007ad40 layer_list_record_b              # host/direct.c, docs/direct/m2a-report.md: agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
 8006cd60 layer_list_record_post           # docs/direct/m6a-report.md, host/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
-807cd380 layer_lists_call                 # work/assets/native/engine-frame.md, gpu/vk/eng_pass.h: calls the 9 layer lists
+807cd380 layer_lists_call                 # work/assets/native/engine-frame.md, gpu/legacy/vk/eng_pass.h: calls the 9 layer lists
 807ccda0 layer_lists_call_caller          # work/assets/native/engine-frame.md
 802aba50 layer_lists_caller               # work/assets/native/engine-frame.md: calls the 9 layer lists (via f_807ccda0)
 8027e840 layer_post_effects               # work/assets/native/engine-layers.md, work/assets/native/cpu-to-gpu.md: XluZPrePass, bloom, motion blur; raises hook +0x68
@@ -281,7 +281,7 @@
 800715e0 draw_bind_object_ubo             # work/assets/native/command-lists.md, work/assets/native/uniform-buffers.md: draw-time binder (UBO, CallCommands)
 80435bc0 draw_deformable_model            # docs/direct/m0-jobs-state.md, work/assets/native/uniform-buffers.md: draws without own vertex bind; deformable model blocks
 83670280 draw_instance_loop               # work/assets/native/engine-materials.md: instance loop (with the 0x836a.. family)
-8008fc00 draw_material_bind               # gpu/vk/eng_job.h, work/assets/native/command-lists.md: the draw-time material binder (program, CallCommands, textures)
+8008fc00 draw_material_bind               # gpu/legacy/vk/eng_job.h, work/assets/native/command-lists.md: the draw-time material binder (program, CallCommands, textures)
 8027c9e0 draw_method_dispatch             # work/assets/native/engine-layers.md, docs/direct/m3-patch-sites.md: draw-method dispatcher; builds the system binder block
 8008d640 draw_occlusion_gated             # work/assets/native/nvn-callpaths.md, docs/direct/m3-patch-sites.md: occlusion-gated draws (reports, conditional render, grid dispatch)
 800955a0 draw_occlusion_gated_b           # work/assets/native/nvn-callpaths.md: occlusion-gated draws
@@ -309,8 +309,8 @@
 83607e80 occl_gating_c                    # work/assets/native/engine-jobs.md
 8067c110 occl_grid_item_callback          # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: an item's draw callback; tail-calls the grid dispatch
 80293890 shape_list_build_draw            # host/eng_lists.c, work/assets/native/engine-cut-plan.md: precompiled list: one indexed/mesh draw
-806002e0 shape_list_build_instance        # gpu/render/nvn_pkt.h, host/eng_lists.c: per-instance shape list (model instance x pass x variant)
-80445020 shape_list_build_material        # host/eng_lists.c, gpu/render/nvn_pkt.h: a material list (never called in play)
+806002e0 shape_list_build_instance        # gpu/legacy/render/nvn_pkt.h, host/eng_lists.c: per-instance shape list (model instance x pass x variant)
+80445020 shape_list_build_material        # host/eng_lists.c, gpu/legacy/render/nvn_pkt.h: a material list (never called in play)
 80293190 shape_list_build_scratch         # host/eng_lists.c, work/assets/native/engine-materials.md: precompiled draw (scratch) list at load
 804581b0 shape_list_build_vertex          # host/eng_lists.c, work/assets/native/engine-materials.md: vertex list, final
 8044e8e0 shape_list_build_vertex_scratch  # host/eng_lists.c: vertex scratch list
@@ -548,7 +548,7 @@
 80116490 zstd_decompress_block            # work/assets/zstd.md: ZSTD_decompressBlock_internal, inferred
 80113880 zstd_decompress_continue         # work/assets/zstd.md: inferred
 8010b380 zstd_decompress_multi_frame      # work/assets/zstd.md: ZSTD_decompressMultiFrame (hooked: host/nn_zstd.c)
-801102e0 zstd_decompress_sequences        # work/assets/zstd.md, host/nn_zstd.c: the hot one, inferred # ? gpu/vk/vk_pools.cpp calls it the compute-constant ring's
+801102e0 zstd_decompress_sequences        # work/assets/zstd.md, host/nn_zstd.c: the hot one, inferred # ? gpu/legacy/vk/vk_pools.cpp calls it the compute-constant ring's
 80f700d0 zstd_decompress_wrapper          # work/assets/zstd.md: (src, size, dst, cap, workspace, DDict)
 8349fef0 zstd_dict_file_read              # work/assets/zstd.md: fills a buffer from the dict file
 83bb1520 zstd_dict_free                   # work/assets/zstd.md: frees it (ZSTD_freeDDict)

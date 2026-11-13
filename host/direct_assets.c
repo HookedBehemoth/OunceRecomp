@@ -32,7 +32,7 @@
 #include "hos.h"
 #include "direct.h"
 #include "hos_ledger.h"
-#include "../gpu/render/rx_nvn.h"
+#include "../gpu/api/rx_nvn.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>

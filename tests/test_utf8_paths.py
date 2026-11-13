@@ -2,7 +2,7 @@
 outside the system's ANSI code page (Japanese on a Western Windows, an emoji anywhere) opens; before, the game closed at start.
 
 Everywhere: the manifest resource's bytes, that nx2/build.py links it into hookshot.exe, that host/hos_main.c checks at start,
-and that host/ and gpu/vk convert no text with the ANSI code page (CP_ACP and the like: UTF-8 is the one code page of the game's
+and that host/ and gpu/direct convert no text with the ANSI code page (CP_ACP and the like: UTF-8 is the one code page of the game's
 char strings). With a compiler for Windows: tests/utf8_paths_test.c (host/hos_main.c's narrow_paths_ok pasted in) built with the
 manifest, and once without it. On Windows both run from a folder named "ゲーム Zélda 🎮": with the manifest the A functions,
 fopen, argv, getenv and the log (stderr freopen'd, as hookshot_log.txt) are UTF-8 and the paths round-trip; without it the
@@ -27,8 +27,8 @@ sys.path.insert(0, str(ROOT / "nx2"))
 import win_manifest
 
 # (the game's own sources: not host/posix, the Linux stand-ins, nor the vendored emulator and compiler code)
-SOURCES = [ROOT / "host", ROOT / "gpu" / "vk"]
-VENDORED = ("host/posix/", "gpu/vk/eden/", "gpu/vk/sirit/", "gpu/vk/compat/")
+SOURCES = [ROOT / "host", ROOT / "gpu" / "direct"]
+VENDORED = ("host/posix/", "gpu/direct/eden/")
 ANSI = re.compile(r"\b(CP_ACP|CP_OEMCP|CP_THREAD_ACP|CP_MACCP|SetFileApisToOEM|SetFileApisToANSI)\b")
 
 

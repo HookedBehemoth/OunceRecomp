@@ -12,7 +12,7 @@
 #include "shader_recompiler/shader_info.h"
 
 #include "direct_internal.h"
-#include "../render/rx_nvn.h"
+#include "../api/rx_nvn.h"
 
 namespace hsd::shader_parts {
 

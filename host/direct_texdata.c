@@ -17,7 +17,7 @@
    user: no own eviction, no async upload). With RX_BACKEND unset nothing here runs. */
 #include "hos.h"
 #include "direct.h"
-#include "../gpu/render/rx_nvn.h"
+#include "../gpu/api/rx_nvn.h"
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>

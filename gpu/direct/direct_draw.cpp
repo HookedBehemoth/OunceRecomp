@@ -1,5 +1,5 @@
-// A draw (direct_draw.h). The state's conversion is gpu/vk/vk_draw.cpp's (dynamic_state, so_state, so_bind, push_bytes,
-// topology, vertex_format, target_write_mask) and the calls gpu/vk/eng_job.cpp's (on_draw), without the replay's diff caches
+// A draw (direct_draw.h). The state's conversion is gpu/legacy/vk/vk_draw.cpp's (dynamic_state, so_state, so_bind, push_bytes,
+// topology, vertex_format, target_write_mask) and the calls gpu/legacy/vk/eng_job.cpp's (on_draw), without the replay's diff caches
 // (each command buffer sets everything once: RADV inherits no dynamic state) and without its special cases (the shadow and
 // cascade depth biases, the EQ bias, footprints: plan rule 8).
 #include <string>

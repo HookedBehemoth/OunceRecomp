@@ -46,7 +46,7 @@
    presents were not skipped. Addresses and offsets are HOS_GAME_VERSION 100's (the only one);
    the splice's anchor stops the build on a lift without it. */
 #include "hos.h"
-#include "../gpu/render/rx_nvn.h"
+#include "../gpu/api/rx_nvn.h"
 #include "direct.h"
 #include <stddef.h>
 #include <stdio.h>

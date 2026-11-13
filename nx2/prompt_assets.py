@@ -6,7 +6,7 @@ and Kenney's Input Prompts (CC0, third_party/kenney_input).
 Writes <out>/<face>/External.bfotf for each face (switch, xbox, ps4, ps5, steamdeck). Every text in the game draws its button icons
 from Font2/Scalable/External.*.bfotf (dialogue, the control hints, menus): A B X Y at U+E040..E043, L R ZL ZR at E044..E047, Plus
 and Minus at E04B and E04C, the stick presses at E056 and E057, the d-pad at E060..E063. Each written font has one icon per pad
-input at U+F700 + HOS_PAD_* (gpu/vk/vk_api.h), and each of those Switch buttons' code points in a cmap segment of its own: the
+input at U+F700 + HOS_PAD_* (gpu/api/vk_api.h), and each of those Switch buttons' code points in a cmap segment of its own: the
 game (host/prompts.c) points each one at the icon of the pad input bound to that button when it serves the font, so the icons
 follow the controls, changed ones too.
 
@@ -41,7 +41,7 @@ FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
 MAGIC = 0x18029A7F
 PAD_BASE = 0xF700
 WIDE = 1.6   # (how much wider than the game's icon a wide Kenney icon may be)
-# the HOS_PAD_* inputs (gpu/vk/vk_api.h), in order
+# the HOS_PAD_* inputs (gpu/api/vk_api.h), in order
 PADS = ["south", "east", "west", "north", "back", "guide", "start", "lstick", "rstick", "lshoulder", "rshoulder", "up", "down", "left",
         "right", "ltrigger", "rtrigger"]
 # the Switch buttons' code points, in HOS_SW_* order (A B X Y LS RS L R ZL ZR Plus Minus Left Up Right Down), and hookshot's
@@ -287,7 +287,7 @@ def bntx_textures(b):
 
 def gob_offset(x, y, gobs, pitch):
     """a byte's place in a block-linear texture (x in bytes, y in rows of blocks): the Switch 2's GOB, the Tegra X1's with
-    offset bits 5 and 6 swapped (gpu/render/rx_nvn.cpp bl_offset)"""
+    offset bits 5 and 6 swapped (gpu/legacy/render/rx_nvn.cpp bl_offset)"""
     a = (y // (8 * gobs)) * 512 * gobs * pitch + (x // 64) * 512 * gobs + (y % (8 * gobs) // 8) * 512
     return a + (((x & 63) >> 5) << 8 | ((y & 7) >> 2) << 7 | ((x & 31) >> 4) << 6 | ((y >> 1) & 1) << 5 | (y & 1) << 4 | (x & 15))
 

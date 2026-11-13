@@ -7,7 +7,7 @@
 
 #include "direct_api.h"
 #include "direct_internal.h"
-#include "../render/rx_nvn.h"
+#include "../api/rx_nvn.h"
 
 namespace hsd {
 

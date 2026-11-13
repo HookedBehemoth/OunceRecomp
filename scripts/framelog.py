@@ -1,4 +1,4 @@
-"""The flashes in a frame log (RX_VK_FRAMELOG, gpu/vk/vk_replay.cpp): every frame shown, 320x180.
+"""The flashes in a frame log (RX_VK_FRAMELOG, gpu/legacy/vk/vk_replay.cpp): every frame shown, 320x180.
 
     python -I scripts/framelog.py <file> [out.png]
     python -I scripts/framelog.py <file> --inspect

@@ -16,7 +16,7 @@
 
 namespace hsd {
 
-// ---- formats (direct_formats.cpp, a copy of gpu/vk/vk_formats.cpp) ----
+// ---- formats (direct_formats.cpp, a copy of gpu/legacy/vk/vk_formats.cpp) ----
 struct FormatInfo {
     VkFormat format;
     bool astc;   // (ASTC on a GPU that does not sample it: the placeholder)

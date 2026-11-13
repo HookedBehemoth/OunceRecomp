@@ -1,7 +1,7 @@
 // The window (M2a): each present blits the NVN window texture, with the host's crop, into the swapchain's next image
-// (letterboxed by gpu/vk/vk_present_rect.h); with no window (HOS_HEADLESS) into an image of its own. The host's call is
+// (letterboxed by gpu/api/vk_present_rect.h); with no window (HOS_HEADLESS) into an image of its own. The host's call is
 // noted and its GPU work runs in its queue's order (direct_sync.cpp): after every submission handed to that queue
-// before it. The swapchain as gpu/vk/vk_main.cpp makes it, without HDR, the
+// before it. The swapchain as gpu/legacy/vk/vk_main.cpp makes it, without HDR, the
 // overlays' views or Reflex. Every 600 presents: the frame time and the counts of the other parts, one log line each.
 #include <algorithm>
 #include <chrono>
@@ -28,7 +28,7 @@
 #include "direct_check.h"
 #include "direct_marks.h"
 #include "direct_pstats.h"
-#include "vk_present_rect.h"
+#include "../api/vk_present_rect.h"
 
 namespace hsd {
 // (M6a, direct_sync.cpp: HOS_DBG=gputime / frames, measurement)

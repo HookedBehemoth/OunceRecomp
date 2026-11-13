@@ -1,4 +1,4 @@
-/* The game's window (Windows): the renderer's surface (gpu/render/, WebGPU). The native NVN layer (nvn_native.c)
+/* The game's window (Windows): the renderer's surface (gpu/legacy/render/, WebGPU). The native NVN layer (nvn_native.c)
    presents the game's window textures into it (rx_nvn_present). The title bar carries live numbers.
    TOTKPort's hos/display.c, without its emulated-GPU fallback (the window buffer read from guest memory): MKW has
    no emulated GPU, so the renderer is the only way to a picture.
@@ -16,9 +16,9 @@
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "../gpu/render/rx.h"
+#include "../gpu/api/rx.h"
 void rx_close_asked(void);   /* host/rx_backend.c */
-#include "../gpu/vk/vk_api.h"
+#include "../gpu/api/vk_api.h"
 
 void hos_relaunch_ask(void);        /* (host/hos_relaunch.c) */
 void hos_window_closed_exit(void);
@@ -47,7 +47,7 @@ void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dy, dy);
 }
 
-/* the free mouse, for the Insert menu (gpu/vk/vk_api.h MkwVkPointer): set on the window's thread, read on the renderer's */
+/* the free mouse, for the Insert menu (gpu/api/vk_api.h MkwVkPointer): set on the window's thread, read on the renderer's */
 static volatile LONG ptr_x, ptr_y, ptr_w, ptr_h, ptr_in, ptr_pressed, ptr_wheel;   /* (client pixels; wheel in WHEEL_DELTA units) */
 static int menu_open, captured_before_menu;
 /* the game's own menus: open while one of their screens runs with the mouse (stamped each frame on the
@@ -258,7 +258,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MBUTTONUP:
         if (GetCapture() == w && !(wp & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON))) ReleaseCapture();
         return 0;
-    case WM_APP + 8:   /* (the Insert menu opened or closed: gpu/vk/vk_menu.cpp) */
+    case WM_APP + 8:   /* (the Insert menu opened or closed: gpu/legacy/vk/vk_menu.cpp) */
         menu_mouse(w, (int)wp);
         return 0;
     case WM_APP + 10:   /* (a game menu opened: hos_mouse_game_menu) */

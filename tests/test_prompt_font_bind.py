@@ -1,6 +1,6 @@
 """Game-free: the button prompts' font patch at run time (host/prompts.c cmap4_glyph, cmap4_bind) on a cmap made the way the
 build makes it (nx2/prompt_assets.py cmap4): a bound Switch button's code point gets its pad input's icon, an unbound one keeps
-its own, and the pad icons stay. Also the faces' order: host/prompts.c faces[], gpu/vk/vk_api.h HOS_PROMPT_* and
+its own, and the pad icons stay. Also the faces' order: host/prompts.c faces[], gpu/api/vk_api.h HOS_PROMPT_* and
 nx2/prompt_faces.py FACES (after the Switch).
 
 python -I -B tests/test_prompt_font_bind.py [--cc gcc]
@@ -41,14 +41,14 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
     src = (ROOT / "host" / "prompts.c").read_text(encoding="utf-8")
-    api = (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")
+    api = (ROOT / "gpu" / "api" / "vk_api.h").read_text(encoding="utf-8")
 
     faces = re.search(r"faces\[HOS_PROMPT_N\] = \{([^}]*)\}", src)
     check(faces is not None, "host/prompts.c has no faces[HOS_PROMPT_N]")
     names = re.findall(r'"([a-z0-9]+)"', faces.group(1))
     check(names == ["switch"] + list(prompt_faces.FACES), "faces[] %s is not the Switch then prompt_faces.FACES" % names)
     enum = re.search(r"enum \{ (HOS_PROMPT_SWITCH[^}]*)\}", api)
-    check(enum is not None, "gpu/vk/vk_api.h has no HOS_PROMPT_* enum")
+    check(enum is not None, "gpu/api/vk_api.h has no HOS_PROMPT_* enum")
     ids = [e.strip() for e in enum.group(1).split(",") if e.strip()]
     check(ids == ["HOS_PROMPT_" + n.upper() for n in names] + ["HOS_PROMPT_N"], "HOS_PROMPT_* %s is not faces[]" % ids)
 
@@ -60,7 +60,7 @@ def main():
     codes = list(prompt_assets.SWITCH) + [prompt_assets.PAD_BASE + i for i in range(len(prompt_assets.PADS))]
 
     harness = "\n".join([
-        "#include <stdio.h>", "#include <stdlib.h>", "#include <string.h>", '#include "gpu/vk/vk_api.h"',
+        "#include <stdio.h>", "#include <stdlib.h>", "#include <string.h>", '#include "gpu/api/vk_api.h"',
         "#define PAD_BASE 0xF700",
         "static int hos_binding(int set, int button, int slot) {",
         "    (void)slot;",

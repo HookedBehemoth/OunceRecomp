@@ -2,7 +2,7 @@
 
 Compiles the real functions from host/nvn_native.c and host/hos.h (the guest window range check, the command
 buffers' slot table, the recording handle set) against a small guest window of test memory, with the real object
-layouts of gpu/render/rx_nvn.h. Checks:
+layouts of gpu/api/rx_nvn.h. Checks:
 
 - a guest range is accepted only inside the window, including ranges that wrap around;
 - a command buffer's recording buffer is found through its own slot only: a slot number another object owns, or one
@@ -198,7 +198,7 @@ int main(void) {
         authored = path / "fixture.c"
         executable = path / "fixture.exe"
         authored.write_text(fixture, encoding="utf-8")
-        subprocess.run([cc, "-std=gnu11", "-O1", "-fno-strict-aliasing", "-I", str(ROOT / "gpu/render"), "-I", str(ROOT / "host"), str(authored),
+        subprocess.run([cc, "-std=gnu11", "-O1", "-fno-strict-aliasing", "-I", str(ROOT / "gpu/api"), "-I", str(ROOT / "host"), str(authored),
                         "-o", str(executable)], check=True)
         result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
         print(result.stdout, end="")

@@ -1,4 +1,4 @@
-// Programs to shader objects (direct_shader.h). Lifted from gpu/vk/vk_shader.cpp (the code's reading and lowering, Env, the
+// Programs to shader objects (direct_shader.h). Lifted from gpu/legacy/vk/vk_shader.cpp (the code's reading and lowering, Env, the
 // profile, the graphics translation, the key, the answers, the cache's record format) with its switches as the constants
 // the frozen back end runs with (RX_VK_DESC_HEAP_BDA=2: storage buffers by address, wide), and from vk_desc_heap.cpp
 // make_program (the heap mapping) and vk_shader_object.cpp so_make (the shader objects). What differs (step A,
@@ -283,7 +283,7 @@ Shader::Profile make_profile() {
         Settings::values.shader_loop_safety_count = (u32)std::atoi(v);
         logf("direct: loopcap: loops end after %u trips (a diagnosis)", Settings::values.shader_loop_safety_count);
     }
-    {   // (the translation's per-GPU settings, as gpu/vk/vk_coopmat.cpp coopmat_init sets them on this card: in the stamp)
+    {   // (the translation's per-GPU settings, as gpu/legacy/vk/vk_coopmat.cpp coopmat_init sets them on this card: in the stamp)
         using namespace Shader::Backend::SPIRV;
         frag_nan_guard = true;
         position_invariant = dev.props.vendorID != 0x10DE;

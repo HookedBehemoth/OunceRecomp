@@ -2,10 +2,10 @@
 
 The FidelityFX SDK ships each pass as GLSL that includes the SDK's own GPU headers, so the eleven
 variants below are the same eight passes compiled with different options. They are checked in like
-every other shader in gpu/vk/shaders, so a clone builds without glslang; this script regenerates
+every other shader in gpu/legacy/vk/shaders, so a clone builds without glslang; this script regenerates
 them, and --check proves the checked-in files still match their sources (tests/test_fsr3_shaders.py).
 
-    python -I -B scripts/fsr3_shaders.py            # write gpu/vk/shaders/fsr3_*_comp_spv.h
+    python -I -B scripts/fsr3_shaders.py            # write gpu/legacy/vk/shaders/fsr3_*_comp_spv.h
     python -I -B scripts/fsr3_shaders.py --check    # compare instead of writing
 """
 import argparse
@@ -22,11 +22,11 @@ GPU = SDK / "include/FidelityFX/gpu"
 PASSES = SDK / "shaders/fsr3upscaler"
 FI_PASSES = SDK / "shaders/frameinterpolation"
 OF_PASSES = SDK / "shaders/opticalflow"
-OUT = ROOT / "gpu/vk/shaders"
+OUT = ROOT / "gpu/legacy/vk/shaders"
 
 # The option set the renderer records these passes under. Each one is a promise about the inputs:
 # the colour is HDR, the motion is low-resolution and not jittered, and the depth is reversed. They
-# have to match what gpu/vk/vk_fsr3.cpp hands the passes, which is why they live in one place.
+# have to match what gpu/legacy/vk/vk_fsr3.cpp hands the passes, which is why they live in one place.
 OPTIONS = [
     "-DFFX_GPU=1",
     "-DFFX_GLSL=1",
@@ -59,7 +59,7 @@ VARIANTS = [
 # each pass as GLSL over the SDK's own GPU headers, and the renderer records them as SPIR-V headers
 # beside the upscaler's. The options are the same promises about the same inputs -- the depth is
 # reversed and the motion is at the render extent -- because the inputs are the ones the upscaler is
-# already given (gpu/vk/vk_fsr3fi.cpp).
+# already given (gpu/legacy/vk/vk_fsr3fi.cpp).
 FI_OPTIONS = [
     "-DFFX_GPU=1",
     "-DFFX_GLSL=1",

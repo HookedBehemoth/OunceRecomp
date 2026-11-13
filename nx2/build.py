@@ -41,8 +41,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I le
 import kit
 import lifted_c
 import rtgen
-import logo_rgba
-import ui_fonts
 import toolchain
 import version
 import win_manifest
@@ -55,18 +53,17 @@ OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 PGO = os.environ.get("RX_PGO", "")
 
 
-# (linux) Linux builds: an ELF executable and hookshot_vk.so, the Win32 calls of host/ and gpu/vk on POSIX
+# (linux) Linux builds: an ELF executable and hookshot_direct.so, the Win32 calls of host/ on POSIX
 # (host/posix: its windows.h is found first), the window and sound on SDL2. HOOKSHOT_SYSROOT=<dir>: compile and link
 # against that root (the AppImage's: glibc 2.35, so the game runs on older systems than the one that built it).
-# HOOKSHOT_VK_PREBUILT=<hookshot_vk.so>: the Vulkan back end as built already (the AppImage's), not compiled here.
 LINUX = not toolchain.windows()   # (hookshot: RX_TARGET=windows on Linux builds the Windows game, with llvm-mingw)
 POSIX = os.path.join(kit.HERE, "..", "host", "posix")
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot" if LINUX else "hookshot.exe"
-VK_LIB = "hookshot_vk.so" if LINUX else "hookshot_vk.dll"
+DIRECT_LIB = "hookshot_direct.so"
 
 
-def check_vk_symbols(so):
+def check_backend_symbols(so):
     """The back end is dlopened with RTLD_NOW, so one unresolved symbol stops the whole thing
     loading -- and the only sign of that at run time is "the renderer did not start: the window
     stays black", with no symbol named. The link itself does not fail: a shared object is allowed to
@@ -142,28 +139,6 @@ GPU = os.path.join(kit.HERE, "..", "gpu")
 # FFmpeg (libavcodec's VP8/VP9 decoders, swscale) for nn::codec's video decoders (host/nn_video.c): the static build
 # in the Eglantine clone's package cache
 FFMPEG = None   # (found in the CPM caches below, once cpm_dirs is defined)
-# the renderer's WebGPU: a wgpu-native release (include/, lib/); TOTKPort's build of it by default
-WGPU = os.environ.get("WGPU_NATIVE", os.path.join(os.path.expanduser("~"), "Desktop", "TOTKPort", "third_party",
-                                                  "wgpu-native"))
-
-
-def gpu_sources():
-    """The renderer (gpu/render, TOTKPort's, NVN replayed with WebGPU) and what it builds on, from suyu
-    (gpu/third_party/suyu): the shader recompiler (Maxwell frontend, IR passes, the WGSL backend; the Ampere
-    lowering is header-only), surface formats, texture decoders (block linear, ASTC)."""
-    suyu = os.path.join(GPU, "third_party", "suyu")
-    out = []
-    for d, dirs, files in os.walk(os.path.join(suyu, "shader_recompiler")):
-        dirs[:] = [x for x in dirs if x != "glsl"]   # (the GLSL backend: TOTKPort's shader tests' reference only)
-        out += [os.path.join(d, f) for f in files if f.endswith(".cpp") and f not in ("attribute.cpp", "flow_test.cpp")]
-    vc = os.path.join(suyu, "video_core")
-    out += [os.path.join(vc, *f.split("/")) for f in ("surface.cpp", "texture_cache/format_lookup_table.cpp",
-                                                      "textures/astc.cpp", "textures/decoders.cpp")]
-    render = os.path.join(GPU, "render")
-    out += [os.path.join(render, f) for f in os.listdir(render) if f.endswith(".cpp")]
-    return sorted(out)
-
-
 def tree_headers(*roots, skip=()):
     """Every header under these folders, as one dependency blob (suyu's headers sit in many folders); folders named
     in skip are left out"""
@@ -178,55 +153,6 @@ def tree_headers(*roots, skip=()):
         for path in sorted(found):
             h.update(os.path.basename(path).encode() + open(path, "rb").read())
     return h.hexdigest().encode()
-
-
-def ngx_library(sdk, linux):
-    """NVIDIA's NGX library in a HOOKSHOT_NGX_SDK folder (scripts/ngx_sdk.py's layout), for this build's platform: libnvsdk_ngx.a
-    on Linux, nvsdk_ngx_s.lib on Windows (the static one, built against Microsoft's static runtime: gpu/vk/vk_ngx_msvc_rt.cpp)"""
-    return os.path.join(sdk, "lib", "libnvsdk_ngx.a" if linux else "nvsdk_ngx_s.lib")
-
-
-def ngx_sdk(sdk, linux):
-    """HOOKSHOT_NGX_SDK as the build takes it: the folder when it has this platform's library, else "" (and why, said)"""
-    if sdk and not os.path.isfile(ngx_library(sdk, linux)):
-        print("build: HOOKSHOT_NGX_SDK=%s has no lib/%s (scripts/ngx_sdk.py --platform %s fetches it): built without NVIDIA "
-              "DLSS" % (sdk, os.path.basename(ngx_library(sdk, linux)), "linux" if linux else "windows"), flush=True)
-        return ""
-    return sdk
-
-
-# HOOKSHOT_NGX_SDK=<folder>: the Vulkan back end with NVIDIA DLSS Super Resolution, from NVIDIA's NGX SDK fetched into that
-# folder by scripts/ngx_sdk.py (its include/ and this platform's lib/; never committed, NVIDIA's license). Off without it.
-NGX_SDK = ngx_sdk(os.environ.get("HOOKSHOT_NGX_SDK", ""), LINUX)
-# (llvm-mingw: what NVIDIA's library asks of Microsoft's runtime, linked in with it. Not compiled otherwise)
-NGX_MSVC_RT = "vk_ngx_msvc_rt.cpp"
-# HOOKSHOT_FSR=1: the Vulkan back end with AMD FSR 4 (gpu/vk/vk_fsr4.cpp), from AMD's FSR API headers (third_party/fidelityfx,
-# MIT). AMD's signed DLLs are not part of the build: the user's, loaded at run time. Off without it (make_game.py --fsr sets
-# it; the camera jitter it needs is in every build: nx2/oot_jitter.py)
-FSR = os.environ.get("HOOKSHOT_FSR", "") == "1"
-
-
-def ngx_link(sdk, mingw):
-    """What hookshot_vk.dll's link adds for NVIDIA DLSS on Windows: NVIDIA's library and the registry calls it makes; with
-    llvm-mingw, not Microsoft's C++ runtime it names (libcpmt: vk_ngx_msvc_rt.cpp has what it needs of it, and the other
-    libraries of Microsoft's are toolchain.native_link's /nodefaultlib already). Nothing without the SDK"""
-    if not sdk:
-        return []
-    return [ngx_library(sdk, False), "-ladvapi32"] + (["-Wl,-Xlink=/nodefaultlib:libcpmt"] if mingw else [])
-
-
-def vk_sources():
-    """The Vulkan back end (hookshot_vk.dll, gpu/vk/vk_api.h): Eden's shader recompiler with its SPIR-V back end
-    (gpu/vk/eden), sirit with Eden's mesh shader patch (gpu/vk/sirit) and the back end itself (gpu/vk/*.cpp)"""
-    vk = os.path.join(GPU, "vk")
-    out = []
-    for sub in ("eden", os.path.join("sirit", "src")):
-        for d, _, files in os.walk(os.path.join(vk, sub)):
-            out += [os.path.join(d, f) for f in files if f.endswith(".cpp")]
-    out += [os.path.join(vk, f) for f in os.listdir(vk) if f.endswith(".cpp") and f != NGX_MSVC_RT]
-    vc = os.path.join(GPU, "third_party", "suyu", "video_core")
-    out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (the WebGPU back end's unswizzle)
-    return sorted(out)
 
 
 def cpm_dirs():
@@ -737,9 +663,8 @@ def main():
     gen = os.path.join(sa if a.standalone else kit.WORK, "gen")
     out = os.path.join(sa if a.standalone else kit.WORK, "build")
     obj_dir = os.path.join(out, "obj")
-    gen_dir = os.path.join(out, "gen")   # (the logo and the fonts the Vulkan back end compiles in: made with it, below)
     os.makedirs(obj_dir, exist_ok=True)
-    if os.environ.get("RX_VK_ONLY") or a.dry_run:   # (the Vulkan back end needs no game: built so with no lift, as the AppImage's is)
+    if os.environ.get("RX_DIRECT_ONLY") or a.dry_run:   # (the direct back end needs no game: built so with no lift)
         os.makedirs(gen, exist_ok=True)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
@@ -768,16 +693,13 @@ def main():
                 [os.path.join(rt64, "a64_rt.c")]
         if a.standalone:
             srcs += [os.path.join(gen, f) for f in ("a64_stubs.c", "hos_image.c", "nvn2_exports.c")]
-            # (EvilOOT) host/rx_nowgpu.c stands in for the WebGPU renderer only when there is no wgpu-native to build it with (Linux has
-            # its own stand-ins, host/posix/linux_stubs.c)
-            have_wgpu = os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
             host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c") and (f != "pgo_rt.c" or PGO == "gen")
-                               and not (LINUX and f in ("display.c", "mf_av1.c", "rx_nowgpu.c")) and (f != "rx_nowgpu.c" or not have_wgpu))
-            if LINUX:   # (the window on SDL2, the Win32 calls on POSIX, no Media Foundation and no WebGPU renderer)
+                               and not (LINUX and f in ("display.c", "mf_av1.c")))
+            if LINUX:   # (the window on SDL2, the Win32 calls on POSIX, no Media Foundation)
                 host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
         else:
             srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
-    if os.environ.get("RX_VK_ONLY"):   # (no lift needed: the back end alone)
+    if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]
     if a.dry_run:   # (the lift's files: there is no game here)
         srcs = [s for s in srcs if os.path.dirname(s) != gen]
@@ -816,8 +738,7 @@ def main():
                                 if f.endswith(".h"))
     if LINUX:
         host_deps += b"".join(open(os.path.join(POSIX, f), "rb").read() for f in sorted(os.listdir(POSIX)) if f.endswith(".h"))
-        host_deps += open(os.path.join(GPU, "vk", "vk_api.h"), "rb").read()
-    host_deps += open(os.path.join(GPU, "vk", "dlss_math.h"), "rb").read()   # (host/rx_backend.c's DLSS jitter)
+    host_deps += b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
     host_deps += ffmpeg_version_key()
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
@@ -833,158 +754,37 @@ def main():
         for rel in open(os.path.join(OPUS, "sources.txt")).read().split():
             jobs.append((cc, os.path.join(OPUS, rel), os.path.join(obj_dir, "opus_" + rel.replace("/", "_")[:-2] + ".o"),
                          oflags, b"opus-1.5.2"))
-    # the renderer (C++20, NDEBUG: no asserts in it or suyu), when a wgpu-native release is there
-    wgpu = a.standalone and not a.only and not LINUX and os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
-    if a.standalone and not a.only and not wgpu and not LINUX:
-        print("no wgpu-native at %s (WGPU_NATIVE): building without the renderer" % WGPU)
-    if wgpu:
-        cxx = toolchain.need(toolchain.find("clang++"))
-        gflags = target() + ["-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything",
-                                              "-I" + os.path.join(GPU, "compat"),
-                                              "-I" + os.path.join(GPU, "third_party", "suyu"),
-                                              "-I" + os.path.join(WGPU, "include"), "-I" + HOST, "-I" + rt64] + WRITE_TRACK +                  ["-include", os.path.join(GPU, "render", "rx_wgpu_names.h")]   # (rx_* -> wgr_*: host/rx_backend.c)
-        gdeps = tree_headers(GPU, HOST, skip=("vk",)) + open(os.path.join(WGPU, "include", "webgpu", "webgpu.h"), "rb").read()
-        for src in gpu_sources():
-            name = os.path.relpath(src, GPU).replace(os.sep, "_")[:-4]
-            jobs.append((cxx, src, os.path.join(obj_dir, "gpu_" + name + ".o"), gflags, gdeps))
-    # the Vulkan back end, a DLL of its own (RX_BACKEND=vulkan): CPM cache, HOOKSHOT_*_HEADERS, or system includes
-    vk_jobs = []
+    # the direct back end, hookshot_direct.so beside the exe (gpu/direct/*.cpp and its translator fork gpu/direct/eden), Linux only:
+    # CPM cache, HOOKSHOT_*_HEADERS, or system includes for the Vulkan and SPIR-V headers and VMA
+    direct_jobs = []
     vk_headers = header_package("vulkanheaders", "vulkan/vulkan.h", "HOOKSHOT_VULKAN_HEADERS")
     spirv_headers = header_package("spirv-headers", "spirv/unified1/spirv.h", "HOOKSHOT_SPIRV_HEADERS")
     vma_headers = header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "HOOKSHOT_VMA_HEADERS")
-    # (the AppImage's prebuilt hookshot_vk.so is built without NVIDIA's SDK: a build with HOOKSHOT_NGX_SDK compiles its own)
-    vk_prebuilt = "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
-    build_vk = a.standalone and not a.only and not vk_prebuilt and vk_headers and spirv_headers and vma_headers
-    if a.standalone and not a.only and vk_prebuilt:
-        print("the Vulkan back end: %s, as built" % vk_prebuilt)
-    elif a.standalone and not a.only and not build_vk:
-        # (was silent: the exe linked, RX_BACKEND=vulkan then fell through to WebGPU / a stub, black window)
+    build_direct = a.standalone and not a.only and LINUX
+    if build_direct and not (vk_headers and spirv_headers and vma_headers):
         missing = [n for n, p in (("Vulkan", vk_headers), ("SPIR-V", spirv_headers), ("VMA", vma_headers)) if not p]
         print("no headers for %s (missing %s). Set RX_CPM to a CPM cache, or HOOKSHOT_VULKAN_HEADERS / "
               "HOOKSHOT_SPIRV_HEADERS / HOOKSHOT_VMA_HEADERS (package root or its include/ folder), or install "
-              "distro packages vulkan-headers + spirv-headers + vulkan-memory-allocator, or set HOOKSHOT_VK_PREBUILT."
-              % (VK_LIB, ", ".join(missing)), flush=True)
+              "distro packages vulkan-headers + spirv-headers + vulkan-memory-allocator." % (DIRECT_LIB, ", ".join(missing)),
+              flush=True)
         return 1
-    elif build_vk:
-        print("the Vulkan back end: Vulkan %s, SPIR-V %s, VMA %s" % (vk_headers, spirv_headers, vma_headers), flush=True)
-    if build_vk:
+    if build_direct:
+        print("the direct back end: Vulkan %s, SPIR-V %s, VMA %s" % (vk_headers, spirv_headers, vma_headers), flush=True)
         cxx = toolchain.need(toolchain.find("clang++"))
-        vk = os.path.join(GPU, "vk")
-        # (hookshot) the start-up screen's logo, assets/hookshot.png as RGBA bytes in a header of the build's own (nx2/logo_rgba.py);
-        # its bytes are part of vk_imgui.cpp's dependencies. Only when the back end is compiled here: the AppImage's comes built
-        # (HOOKSHOT_VK_PREBUILT) and carries neither third_party/fonts nor the back end's sources, and a player's build there
-        # stopped at the fonts (FileNotFoundError: LibertinusSans-Regular.ttf, 2026-11-10)
-        logo_text = logo_rgba.write(os.path.join(gen_dir, "hookshot_logo.h")).encode()
-        # (the overlays' bundled fonts, third_party/fonts/libertinus, as a C++ file of the build's own: nx2/ui_fonts.py)
-        fonts_cpp = os.path.join(gen_dir, "ui_fonts.cpp")
-        ui_fonts.write(fonts_cpp)
-        # (what the shader caches are good for: what translates shaders, not the whole DLL, so a build that changes something else
-        # keeps them)
-        stamp = hashlib.sha1(usedforsecurity=False)
-        translator = [os.path.join(d, f) for top in ("eden", "sirit", "compat") for d, _, fs in os.walk(os.path.join(vk, top)) for f in fs]
-        for f in sorted(translator) + [os.path.join(vk, n) for n in ("vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h")]:
-            with open(f, "rb") as src:
-                stamp.update(os.path.relpath(f, vk).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
-        shader_stamp = "-DHOOKSHOT_SHADER_STAMP=0x%sull" % stamp.hexdigest()[:16]
-        vflags = target() + CPU + (["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + [   # (hookshot: the replay is the frame's limit now)
-            # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not: issue 48)
+        direct = os.path.join(GPU, "direct")
+        dx_eden = os.path.join(direct, "eden")   # (Eden's recompiler, sirit and their compat headers: the translator)
+        zstd = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))   # (the prepared assets' frames: direct_assets)
+        dflags = target() + CPU + ["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] + [
+            # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
             "-include", "string", "-include", "vector",
             "-std=c++20", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DVK_NO_PROTOTYPES", "-DMKWVK_BUILDING",
-            *(["-DHOOKSHOT_RELEASE"] if os.environ.get("RX_RELEASE") == "1" else []),   # (the shaders precompiled before the game)
-            # (Eden's recompiler before suyu's root: suyu has its own shader_recompiler/ headers, and a Shader::Info
-            # of the other layout in some objects is what crashed the descriptor walk. MKWVK_INCLUDES changes the
-            # object keys, which leave the include folders out, when this order changes)
-            "-DMKWVK_INCLUDES=2",
-            "-I" + os.path.join(vk, "compat"), "-I" + os.path.join(GPU, "compat"), "-I" + os.path.join(vk, "eden"),
-            "-I" + os.path.join(GPU, "third_party", "suyu"),
-            "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
+            "-I" + os.path.join(dx_eden, "compat"), "-I" + os.path.join(GPU, "compat"), "-I" + dx_eden,
+            "-I" + os.path.join(dx_eden, "sirit", "include"), "-I" + os.path.join(dx_eden, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
-            "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include"),
-            "-I" + vk, "-I" + gen_dir]
-        # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
-        # it is the stubs that say DLSS is not there)
-        ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
-        ngx_deps = tree_headers(os.path.join(NGX_SDK, "include")) if NGX_SDK else b""
-        if NGX_SDK:
-            print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
-        # (AMD FSR 4, a build's option too: only vk_fsr4.cpp sees AMD's headers; without them it is the stubs that say FSR is
-        # not there)
-        fsr_flags = ["-DHOOKSHOT_FSR", "-I" + os.path.join(kit.HERE, "..", "third_party", "fidelityfx")] if FSR else []
-        if FSR:
-            print("the Vulkan back end: with AMD FSR 4 (AMD's FSR API headers, third_party/fidelityfx)", flush=True)
-        # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
-        # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
-        vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
-                                   os.path.join(GPU, "compat"))
-        vdeps = tree_headers(vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
-                             os.path.join(GPU, "third_party", "suyu", "video_core", "textures"))
-        # (hookshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
-        # draws with it). Its objects see only its own headers; its headers are a dependency of the two files that include them
-        imgui = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "imgui"))
-        zstd = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))   # (the game's font files: vk_imgui.cpp)
-        imgui_flags = ["-I" + imgui, "-I" + zstd, "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES", "-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS",
-                       "-DIMGUI_DISABLE_WIN32_FUNCTIONS", "-DIMGUI_DISABLE_DEMO_WINDOWS", "-DIMGUI_DISABLE_DEBUG_TOOLS"]
-        imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zstd)
-                              for f in sorted(os.listdir(d)) if f.endswith(".h"))
-        imgui_users = ("vk_imgui.cpp", "vk_menu.cpp")
-        for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
-            vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
-                            os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), vflags + imgui_flags, imgui_deps))
-        # (zstd's decoder, third_party/zstd, plain C)
-        zflags = target() + CPU + (["-fPIC"] if LINUX else []) + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden",
-                                                                 "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"]
-        zdeps = b"".join(open(os.path.join(d, f), "rb").read() for d in (zstd, os.path.join(zstd, "common"), os.path.join(zstd, "decompress"))
-                         for f in sorted(os.listdir(d)) if f.endswith(".h"))
-        for f in ("common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c", "common/xxhash.c",
-                  "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c", "decompress/zstd_decompress.c",
-                  "decompress/zstd_decompress_block.c"):
-            vk_jobs.append((cc, os.path.join(zstd, *f.split("/")), os.path.join(obj_dir, "vk_zstd_" + os.path.basename(f)[:-2] + ".o"),
-                            zflags, zdeps))
-        # (the bundled fonts, compiled in: nx2/ui_fonts.py's file of the build's own)
-        vk_jobs.append((cxx, fonts_cpp, os.path.join(obj_dir, "vk_ui_fonts.o"), target() + (["-fPIC"] if LINUX else []) + ["-O0", "-g0", "-w"],
-                        b""))
-        for src in vk_sources():
-            name = os.path.relpath(src, vk).replace(os.sep, "_")[:-4]
-            lib = os.path.relpath(src, vk).split(os.sep)[0] in ("eden", "sirit")
-            vk_jobs.append((cxx, src, os.path.join(obj_dir, "vk_" + name + ".o"),
-                            vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
-                            ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
-                            (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
-                            (imgui_flags if os.path.basename(src) in imgui_users else []) +
-                            (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
-                            vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
-                            (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
-                            (imgui_deps if os.path.basename(src) in imgui_users else b"")))
-        if NGX_SDK and not LINUX and toolchain.mingw():
-            # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
-            # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)
-            vk_jobs.append((cxx, os.path.join(vk, NGX_MSVC_RT), os.path.join(obj_dir, "vk_ngx_msvc_rt.o"), vflags + ngx_flags, vdeps))
-            vk_jobs.append((cc, os.path.join(HOST, "mingw_msvc_shims.c"), os.path.join(obj_dir, "vk_ngx_mingw_msvc_shims.o"),
-                            target() + ["-O2", "-g0", "-Wno-everything"], b""))
-        if LINUX:   # (its own copy of the Win32 calls on POSIX)
-            cflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-Wno-everything", "-D_GNU_SOURCE", "-I" + POSIX]
-            pdeps = tree_headers(POSIX)
-            for f in ("win32_posix.c",):
-                vk_jobs.append((cc, os.path.join(POSIX, f), os.path.join(obj_dir, "vk_posix_" + f[:-2] + ".o"), cflags, pdeps))
-        jobs += vk_jobs
-    # (native-vk) the direct back end, hookshot_direct.so beside the exe (RX_BACKEND=direct: docs/direct/m1-interface.md):
-    # gpu/direct/*.cpp with the back end's flags, its own headers first (vk_api.h still from gpu/vk). Linux only (layer 0)
-    direct_jobs = []
-    if build_vk and LINUX:
-        direct = os.path.join(GPU, "direct")
-        ddeps = tree_headers(direct, os.path.join(GPU, "render")) + open(os.path.join(vk, "vk_api.h"), "rb").read()
-        # (M3b: the direct back end's own fork of the translator, gpu/direct/eden: Eden's recompiler, sirit and their compat
-        # headers, built from there into dx_eden_* objects for hookshot_direct.so only. The frozen back end's objects and flags
-        # are not touched: its include folders are swapped for the fork's in the direct back end's flags, and suyu's root is
-        # left out (nothing of the fork includes it))
-        dx_eden = os.path.join(direct, "eden")
-        swap = {os.path.join(vk, "compat"): os.path.join(dx_eden, "compat"), os.path.join(vk, "eden"): dx_eden,
-                os.path.join(vk, "sirit", "include"): os.path.join(dx_eden, "sirit", "include"),
-                os.path.join(vk, "sirit", "src"): os.path.join(dx_eden, "sirit", "src")}
-        dflags = [("-I" + swap[f[2:]]) if f.startswith("-I") and f[2:] in swap else f for f in vflags
-                  if f != "-I" + os.path.join(GPU, "third_party", "suyu")]
-        # (M2b: the direct back end's own shader stamp: the translator it builds and the files that drive it, so its program
+            "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include")]
+        ddeps = tree_headers(direct) + b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
+        # (the direct back end's shader stamp: the translator it builds and the files that drive it, so its program
         # cache (hookshot_direct_programs.bin) is good for them only)
         dtranslator = sorted(os.path.join(d, f) for d, _, fs in os.walk(dx_eden) for f in fs)
         dstamp = hashlib.sha1(usedforsecurity=False)
@@ -1000,15 +800,24 @@ def main():
                                 dflags, dx_eden_deps))
         for dsrc in sorted(os.path.join(direct, f) for f in os.listdir(direct) if f.endswith(".cpp")):
             direct_jobs.append((cxx, dsrc, os.path.join(obj_dir, "dx_" + os.path.basename(dsrc)[:-4] + ".o"),
-                                ["-I" + direct] + dflags + ["-I" + zstd] + ([direct_stamp] if os.path.basename(dsrc) == "direct_shader.cpp" else []),
-                                ddeps))   # (A-rt: the store's frames, direct_assets)
+                                ["-I" + direct, "-I" + os.path.join(GPU, "api")] + dflags + ["-I" + zstd] +
+                                ([direct_stamp] if os.path.basename(dsrc) == "direct_shader.cpp" else []), ddeps))
+        # (zstd's decoder, third_party/zstd, plain C: the prepared assets' frames)
+        zflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden",
+                                   "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"]
+        zdeps = b"".join(open(os.path.join(d, f), "rb").read() for d in (zstd, os.path.join(zstd, "common"), os.path.join(zstd, "decompress"))
+                         for f in sorted(os.listdir(d)) if f.endswith(".h"))
+        for f in ("common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c", "common/xxhash.c",
+                  "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c", "decompress/zstd_decompress.c",
+                  "decompress/zstd_decompress_block.c"):
+            direct_jobs.append((cc, os.path.join(zstd, *f.split("/")), os.path.join(obj_dir, "dx_zstd_" + os.path.basename(f)[:-2] + ".o"),
+                                zflags, zdeps))
         jobs += direct_jobs
-    vk_only = bool(os.environ.get("RX_VK_ONLY"))   # (the renderer alone, the game's objects as they are)
-    if vk_only:
-        jobs = list(vk_jobs) + direct_jobs
+    direct_only = bool(os.environ.get("RX_DIRECT_ONLY"))   # (the back end alone, the game's objects as they are)
+    if direct_only:
+        jobs = list(direct_jobs)
     if a.dry_run:   # (the compile starts here: what it would read, said and checked, and nothing compiled)
-        missing = sorted({j[1] for j in jobs if not os.path.isfile(j[1])} |
-                         ({vk_prebuilt} if vk_prebuilt and not os.path.isfile(vk_prebuilt) else set()))
+        missing = sorted({j[1] for j in jobs if not os.path.isfile(j[1])})
         print("dry run: %d files to compile besides the lift's, %d missing" % (len(jobs), len(missing)), flush=True)
         for f in missing:
             print("    missing: " + f)
@@ -1069,7 +878,7 @@ def main():
     print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
     if still:
         return 1
-    vk_objs = {j[2] for j in vk_jobs + direct_jobs}   # (the back ends' objects: not the exe's)
+    vk_objs = {j[2] for j in direct_jobs}   # (the back end's objects: not the exe's)
     objs = [j[2] for j in jobs if j[2] not in vk_objs]
     rsp = os.path.join(out, "objs.rsp")
     open(rsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in objs))
@@ -1077,7 +886,7 @@ def main():
         lib = os.path.join(out, "hookshot_game.lib")
         subprocess.run([toolchain.lld_link(), "/lib", "/out:" + lib, "@" + rsp], check=True)
         print("wrote %s (%d objects, %d MB)" % (lib, len(objs), os.path.getsize(lib) >> 20))
-    if a.standalone and not a.only and not vk_only and LINUX:
+    if a.standalone and not a.only and not direct_only and LINUX:
         exe = os.path.join(out, EXE)   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()
         # (--export-dynamic-symbol: the window's state, which the Vulkan back end's own Win32 calls read by name)
@@ -1099,7 +908,7 @@ def main():
         if sdl and os.path.exists(sdl):
             import shutil
             shutil.copyfile(sdl, os.path.join(out, "libSDL2-2.0.so.0"))
-    elif a.standalone and not a.only and not vk_only:
+    elif a.standalone and not a.only and not direct_only:
         exe = os.path.join(out, "hookshot.exe")   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
@@ -1108,7 +917,6 @@ def main():
                            ([os.path.join(kit.WORK, "hookshot.res")] if os.path.exists(os.path.join(kit.WORK, "hookshot.res")) else []) +   # (nx2/make_icon.py)
                            [win_manifest.write(os.path.join(out, "hookshot_manifest.res"))] +   # (UTF-8 paths: nx2/win_manifest.py)
                            ([toolchain.link_opt("/subsystem:windows"), toolchain.link_opt("/entry:mainCRTStartup")] if os.environ.get("RX_RELEASE") == "1" else []) +   # (no console window)
-                           ([os.path.join(WGPU, "lib", "wgpu_native.dll.lib")] if wgpu else []) +
                            ([os.path.join(FFMPEG, "lib", l + ".lib") for l in ("avcodec", "swscale", "swresample", "avutil")] +
                             ["-lbcrypt", "-lmfplat", "-lmfuuid", "-lstrmiids", "-lole32"] if FFMPEG else []) +
                            (["-lc++", "-lunwind"] if toolchain.mingw() else []),   # (llvm-mingw: the C++ parts' runtime, linked in; MSVC's comes by itself)
@@ -1119,11 +927,6 @@ def main():
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
-        if wgpu:   # (wgpu_native.dll beside it; in use while the game runs)
-            import shutil
-            dll, dst = os.path.join(WGPU, "lib", "wgpu_native.dll"), os.path.join(out, "wgpu_native.dll")
-            if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(dll):
-                shutil.copyfile(dll, dst)
         # (hookshot) a shared FFmpeg's DLLs beside it (an LGPL shared build, as cross builds find: the static one needs none)
         for l in FFMPEG_LIBS if FFMPEG and os.path.isdir(os.path.join(FFMPEG, "bin")) else ():
             import shutil
@@ -1143,38 +946,10 @@ def main():
         if os.path.exists(sdl3) and (not os.path.exists(sdl3_dst) or os.path.getsize(sdl3_dst) != os.path.getsize(sdl3)):
             import shutil
             shutil.copyfile(sdl3, sdl3_dst)
-    if vk_prebuilt and a.standalone and not a.only:
-        import shutil
-        shutil.copyfile(vk_prebuilt, os.path.join(out, VK_LIB))
-    if vk_jobs:   # (hookshot_vk.dll beside the exe: loaded by host/rx_backend.c with RX_BACKEND=vulkan)
-        vdll = os.path.join(out, VK_LIB)
-        vrsp = os.path.join(out, "vk_objs.rsp")
-        open(vrsp, "w", encoding="utf-8").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in vk_jobs))
-        t = time.time()
-        if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
-            link = [toolchain.need(toolchain.find("clang++"))] + target() + [
-                "-fuse-ld=lld", "-shared", "-o", vdll, "-Wl,-Map=" + vdll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
-                "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
-                ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
-        else:
-            link = [cc] + toolchain.native_target() + toolchain.native_link() + \
-                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw())
-        r = subprocess.run(link, capture_output=True, text=True)
-        if r.returncode:
-            undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
-            print("%s link FAILED, %d undefined symbols" % (VK_LIB, len(undefined)))
-            print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
-            return 1
-        if LINUX and not check_vk_symbols(vdll):
-            return 1
-        print("linked %s: %d MB (%.0fs)" % (vdll, os.path.getsize(vdll) >> 20, time.time() - t))
-    if direct_jobs:   # (hookshot_direct.so: as hookshot_vk.so's link, its own objects only)
-        ddll = os.path.join(out, "hookshot_direct.so")
+    if direct_jobs:   # (hookshot_direct.so beside the exe, loaded by host/rx_backend.c)
+        ddll = os.path.join(out, DIRECT_LIB)
         drsp = os.path.join(out, "direct_objs.rsp")
-        # (M3b: the translator is the fork's own objects, dx_eden_*, among direct_jobs; none of the frozen back end's)
-        translator_objs = []
-        dzstd = [j[2] for j in vk_jobs if os.path.basename(j[2]).startswith("vk_zstd_")]   # (A-rt: zstd's decoder, as the renderer's)
-        open(drsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in [j[2] for j in direct_jobs] + dzstd + translator_objs))
+        open(drsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in [j[2] for j in direct_jobs]))
         t = time.time()
         link = [toolchain.need(toolchain.find("clang++"))] + target() + [
             "-fuse-ld=lld", "-shared", "-o", ddll, "-Wl,-Map=" + ddll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
@@ -1183,7 +958,7 @@ def main():
         if r.returncode:
             print("hookshot_direct.so link FAILED\n" + (r.stdout + r.stderr)[-3000:])
             return 1
-        if not check_vk_symbols(ddll):
+        if not check_backend_symbols(ddll):
             return 1
         print("linked %s: %d MB (%.0fs)" % (ddll, os.path.getsize(ddll) >> 20, time.time() - t))
     if a.dll and not a.only:

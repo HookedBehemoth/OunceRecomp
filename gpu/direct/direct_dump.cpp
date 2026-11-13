@@ -1,4 +1,4 @@
-// The frame dump (direct_dump.h). The copies as gpu/vk/vk_dump.cpp makes them (a nearest blit of colour into a small
+// The frame dump (direct_dump.h). The copies as gpu/legacy/vk/vk_dump.cpp makes them (a nearest blit of colour into a small
 // RGBA32 image of its numeric kind, depth copied as it is), the statistics line and the PNG as it writes them.
 #include <sys/stat.h>
 

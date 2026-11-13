@@ -1,5 +1,5 @@
-// Images of NVN textures (direct_image.h). Lifted from gpu/vk/vk_texture.cpp (texture_key, create's usage and flags,
-// format_class, linear_twin, widened) and gpu/vk/vk_xfer.cpp (resolve), without its cache's uploads, decoders, eviction,
+// Images of NVN textures (direct_image.h). Lifted from gpu/legacy/vk/vk_texture.cpp (texture_key, create's usage and flags,
+// format_class, linear_twin, widened) and gpu/legacy/vk/vk_xfer.cpp (resolve), without its cache's uploads, decoders, eviction,
 // sparse images and pools. An image made is initialized at once on the making thread's upload: moved to GENERAL and,
 // for an uncompressed one, cleared to zero (an asset's content is not this stage's: docs/direct/m2-interface.md, A-rt).
 #include <algorithm>

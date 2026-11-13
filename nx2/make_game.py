@@ -53,7 +53,7 @@ import toolchain as _toolchain
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
 # (SDL2.dll is sdl2-compat: it loads SDL3.dll from beside the exe. Left out of bin\ since v2.0.0, it said "Failed loading SDL3
 # library" three times and no controller worked: Discord #bug-reporting, 11-08)
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
+BESIDE = ["hookshot", "hookshot_direct.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "SDL2.dll", "SDL3.dll"]
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -511,7 +511,7 @@ def check_cpp_library(toolchain):
         src = os.path.join(d, "t.cpp")
         with open(src, "w") as f:
             # Projected find: frontend/maxwell/structured_control_flow.cpp; predicate find and
-            # comparator sort: ir_opt/texture_pass.cpp (under gpu/vk/eden/shader_recompiler).
+            # comparator sort: ir_opt/texture_pass.cpp (under gpu/legacy/vk/eden/shader_recompiler).
             f.write(chr(10).join(("#include <algorithm>", "#include <format>", "#include <string>", "#include <vector>",
                                   "std::string t(int v) { return std::vformat(\"{}\", std::make_format_args(v)); }",
                                   "namespace { struct Entry { int value; }; }",
@@ -964,15 +964,8 @@ def not_prepared(why):
 
 
 def prepare_skipped(a, environ=None):
-    """Why the build leaves the shaders to the first start, or None: it prepares them"""
-    environ = os.environ if environ is None else environ
-    if a.no_prepare_shaders:
-        return '"Prepare shaders now" is unticked'
-    if environ.get("HOOKSHOT_NO_PREPARE", "0") != "0":   # (set and not 0, as the game reads HOOKSHOT_NO_UPDATE_CHECK)
-        return "HOOKSHOT_NO_PREPARE is set"
-    if CROSS:   # (hookshot.exe can't run here, and under Wine it would prepare for this PC's GPU, not the one that plays it)
-        return "a Windows game built on Linux prepares them on the PC it runs on"
-    return None
+    """Why the build leaves the shaders to the first start: the direct back end translates them as the game asks for them"""
+    return "the direct back end translates its shaders at the game's first start"
 
 
 def show_prepared(line):
@@ -983,7 +976,7 @@ def show_prepared(line):
 
 def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     """The shaders prepared now, under the builder's progress bar, not at the game's first start behind a black window (minutes on
-    some GPUs, issue 711): hookshot --prepare-shaders (host/hos_main.c, gpu/vk/vk_main.cpp), the same work as that first start, in
+    some GPUs, issue 711): hookshot --prepare-shaders (host/hos_main.c, gpu/legacy/vk/vk_main.cpp), the same work as that first start, in
     the game's folder and environment, as the builders' Play starts it. A PC whose Vulkan can't (exit 3), a run silent for `silence` seconds (then stopped), or
     any other failure leaves the work to the first start, as before: never a failed build. Returns its exit code (None: stopped)"""
     try:
@@ -1237,7 +1230,7 @@ def fsr_wanted(a, out):
 
 def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
-    folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
+    folder, where gpu/legacy/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
     NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns the file placed, or None"""
     ngx = ngx_script()
     platform = ngx_platform()
@@ -1277,7 +1270,7 @@ def parse_args():
     # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
     p.add_argument("--accept-nvidia-license", action="store_true", help="NVIDIA's DLSS SDK license, accepted (with --fetch-ngx-sdk)")
-    # (AMD FSR 4, off unless asked: nothing is downloaded. gpu/vk/vk_fsr4.cpp)
+    # (AMD FSR 4, off unless asked: nothing is downloaded. gpu/legacy/vk/vk_fsr4.cpp)
     p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: see the readme)")
     p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
     a = p.parse_args()
@@ -1593,7 +1586,7 @@ def main(a=None):
             except OSError:
                 pass
     place_ngx_runtime(out)
-    # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
+    # every shader of the game, for its first start to translate (gpu/legacy/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)

@@ -1,6 +1,6 @@
 /* The native NVN layer's API (HOS_NVN_NATIVE=1): TOTK's NVN calls are answered here instead of by the lifted NVN
-   driver over an emulated Switch GPU (hos/gpu.c). See gpu/render/rx_nvn.h for the design; the replay of what is
-   recorded here is gpu/render/rx_nvn.cpp.
+   driver over an emulated Switch GPU (hos/gpu.c). See gpu/api/rx_nvn.h for the design; the replay of what is
+   recorded here is gpu/legacy/render/rx_nvn.cpp.
 
    - Objects with semantics (device, memory pools, buffers, textures, samplers, descriptor pools, queue, window, sync,
      events, command buffer memory) are implemented as NVN defines them, in place in the game's object memory.
@@ -20,7 +20,7 @@
    same functions as the proc table (nvn2_dispatch, from gen/nvn2_exports.c). */
 #include "hos.h"
 #include "direct_crit.h"
-#include "../gpu/render/rx_nvn.h"
+#include "../gpu/api/rx_nvn.h"
 #include "nvn_list.h"
 #include "hos_ledger.h"
 #include "eng_jobs.h"

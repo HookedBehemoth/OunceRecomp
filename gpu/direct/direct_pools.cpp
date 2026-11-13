@@ -1,6 +1,6 @@
 // Layer 0 (docs/native-vk.md "Layer 0"; plan, Architecture): guest memory for the GPU in window buffers, one backing for every
-// pool byte. Cut down from gpu/vk/vk_pools.cpp (its comments have the scheme and the measurements; the arithmetic is
-// layer0_windows.h, a verbatim copy) and the dma-buf import of gpu/vk/vk_memory.cpp. As there, with its defaults as constants:
+// pool byte. Cut down from gpu/legacy/vk/vk_pools.cpp (its comments have the scheme and the measurements; the arithmetic is
+// layer0_windows.h, a verbatim copy) and the dma-buf import of gpu/legacy/vk/vk_memory.cpp. As there, with its defaults as constants:
 // 16 MB host chunks imported once as udmabufs of the memfd's own pages and bound into the two windows that hold them, ahead
 // of use for pools up to 64 MB (an importer thread); CPU_NO_ACCESS pools in VRAM (the VRAM class, step 7b), kept 10 s after
 // their finalize and handed back on the same pool again, 2048 MB at most. Left for M2 with the bindings: the per-binding

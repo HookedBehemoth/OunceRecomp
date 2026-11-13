@@ -10,8 +10,8 @@
      guess of a size was wrong: grown by doubling, or shrunk once at its end when it used less than a quarter).
    - Its handle is an id in a table that needs no lock to read (chunks never freed), with a generation: a handle the
      game passes back is used only when its slot still holds it, never by what memory at some address holds.
-   - CallCommands and CopyCommands record NOP_CALL (gpu/render/rx_nvn.h nvn_p_call) naming the callee, and take a
-     reference on it. The replay walks into the callee and back (gpu/vk/vk_replay.cpp replay(): a call stack, saved
+   - CallCommands and CopyCommands record NOP_CALL (gpu/api/rx_nvn.h nvn_p_call) naming the callee, and take a
+     reference on it. The replay walks into the callee and back (gpu/legacy/vk/vk_replay.cpp replay(): a call stack, saved
      with every place it stops at or cuts a segment at).
    - Recordings are filed by their control memory position in buckets of 64 KiB blocks, each run of 256 buckets under
      a spinlock of its own; AddControlMemory releases the range's ones and touches only those buckets.

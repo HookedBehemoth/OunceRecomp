@@ -21,7 +21,7 @@ import struct
 import subprocess
 import sys
 
-CACHE_MAGIC = 0x31505348   # (gpu/vk/vk_shader.cpp kDiskMagic)
+CACHE_MAGIC = 0x31505348   # (gpu/legacy/vk/vk_shader.cpp kDiskMagic)
 FALLBACK = 4               # (a record's kind: a task or mesh program run as compute, issue 640)
 SPV_MAGIC = b"\x03\x02\x23\x07"
 STAGES = {0x1: "vertex", 0x2: "tesscontrol", 0x4: "tesseval", 0x8: "geometry", 0x10: "fragment", 0x20: "compute",

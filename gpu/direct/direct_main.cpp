@@ -1,6 +1,6 @@
 // The direct back end's start (docs/direct/m1-interface.md): libvulkan, the instance, the device (one graphics and compute
-// queue, the sparse-binding queue for layer 0), and the version-14 table the host calls (gpu/vk/vk_api.h). Cut down from
-// gpu/vk/vk_main.cpp: no start-up screen, menu, upscalers, vendor hooks or switches.
+// queue, the sparse-binding queue for layer 0), and the version-14 table the host calls (gpu/api/vk_api.h). Cut down from
+// gpu/legacy/vk/vk_main.cpp: no start-up screen, menu, upscalers, vendor hooks or switches.
 #include <dlfcn.h>
 
 #include <cstdarg>

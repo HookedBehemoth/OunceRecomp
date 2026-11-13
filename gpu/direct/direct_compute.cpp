@@ -1,4 +1,4 @@
-// (M4a) Dispatches and the buffer ops (direct_compute.h). The compute half of gpu/vk/vk_shader.cpp translate_into, Env and
+// (M4a) Dispatches and the buffer ops (direct_compute.h). The compute half of gpu/legacy/vk/vk_shader.cpp translate_into, Env and
 // vk_bank.cpp's compute bank (cs_layout, driver_bank_fill's stage 5), on the step-B interface of the graphics programs
 // (direct_shader.cpp): handles read by the shader from c0, storage buffers and global memory by address, uniform buffers
 // through an address table. What differs from the frozen back end: the grid is NumWorkgroups (no CPU read of an indirect
@@ -78,7 +78,7 @@ void load_functions() {
         pFillBuffer = (PFN_vkCmdFillBuffer)vkGetDeviceProcAddr(dev.device, "vkCmdFillBuffer");
         pShaderBinary = (PFN_vkGetShaderBinaryDataEXT)vkGetDeviceProcAddr(dev.device, "vkGetShaderBinaryDataEXT");
         // (no cooperative matrices on this card (RDNA2): the networks' matrix multiplies in a shader function on subgroup
-        // shuffles, as the frozen back end runs them here, gpu/vk/vk_coopmat.cpp software_multiplies)
+        // shuffles, as the frozen back end runs them here, gpu/legacy/vk/vk_coopmat.cpp software_multiplies)
         Shader::Backend::SPIRV::mma_software = true;
     });
 }

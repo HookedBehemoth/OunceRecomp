@@ -1,5 +1,5 @@
 /* The direct back end's list calls (hookshot_direct.so, RX_BACKEND=direct): what host/nvn_native.c hands it as the game
-   records, besides the object layer, sync and present of gpu/vk/vk_api.h's table (version 14), which it answers too.
+   records, besides the object layer, sync and present of gpu/api/vk_api.h's table (version 14), which it answers too.
    Fixed by docs/direct/m1-interface.md. C, included by the host; the host finds these by name in the library.
 
    A list is begun, filled and ended on one recording thread at a time (game workers, concurrently with other lists),
@@ -23,7 +23,7 @@ typedef struct hsd_list_info {
     uint64_t view;        /* HSD_LIST_JOB: the view record (x25 at BeginRecording), for logs only */
 } hsd_list_info;
 
-/* op and payload are gpu/render/rx_nvn.h's records (NOP_*, the payload after the 8-byte header) */
+/* op and payload are gpu/api/rx_nvn.h's records (NOP_*, the payload after the 8-byte header) */
 void *hsd_list_begin(const hsd_list_info *info);                         /* recording thread */
 void  hsd_emit(void *list, uint32_t op, const void *payload, uint32_t size);   /* recording thread; payload valid during the call */
 void  hsd_list_call(void *list, void *const *callees, uint32_t n);       /* CallCommands / CopyCommands, in order */

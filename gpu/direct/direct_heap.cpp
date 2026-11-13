@@ -1,7 +1,7 @@
-// The descriptor heap and M2b's device part (direct_heap.h). The heaps and their encodings from gpu/vk/vk_desc_heap.cpp
+// The descriptor heap and M2b's device part (direct_heap.h). The heaps and their encodings from gpu/legacy/vk/vk_desc_heap.cpp
 // (make_heap, the device half, encode image / sampler), cut to what registration-time entries need: no ring, no lazy
-// resolves, no classic descriptor commands. The sampled view rules from gpu/vk/vk_texture.cpp texture_view and the sampler
-// from gpu/vk/vk_draw.cpp sampler_make, without their switches and without the shadow filter's PCF (a picture change, not
+// resolves, no classic descriptor commands. The sampled view rules from gpu/legacy/vk/vk_texture.cpp texture_view and the sampler
+// from gpu/legacy/vk/vk_draw.cpp sampler_make, without their switches and without the shadow filter's PCF (a picture change, not
 // Vulkan's need: plan rule 8).
 #include <algorithm>
 #include <cmath>
@@ -443,7 +443,7 @@ void draw_device_created() {
     HSD_VK_M2B(HSD_VK_CHECK)
 #undef HSD_VK_CHECK
     if (!all) return fail("a device function is missing");
-    {   // (NVN's programs are written for 32 lanes: the stages the GPU can run at 32 are pinned there, gpu/vk/vk_main.cpp)
+    {   // (NVN's programs are written for 32 lanes: the stages the GPU can run at 32 are pinned there, gpu/legacy/vk/vk_main.cpp)
         VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceSubgroupSizeControlProperties sc{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
         sc.pNext = &drv;

@@ -1,6 +1,6 @@
 /* (linux) The game's window on SDL (host/hos_sdl.c: SDL3, Wayland when there is one, else X11; or SDL2): what
    host/display.c is on Windows. The window lives on the process's main thread, as SDL wants it (hos_main.c runs the
-   game on a thread of its own on Linux); the Vulkan back end makes its surface through SDL (gpu/vk/vk_api.h
+   game on a thread of its own on Linux); the Vulkan back end makes its surface through SDL (gpu/api/vk_api.h
    MkwVkWindow), on a thread of its own so the window keeps answering while the shaders are prepared.
 
    The keyboard's state goes to hos_posix_keys (GetAsyncKeyState, for nn_hid.c and the Insert menu), the window's focus
@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
-#include "../../gpu/vk/vk_api.h"
+#include "../../gpu/api/vk_api.h"
 
 int rx_start(void *hwnd);
 void rx_resize(int width, int height);
@@ -44,7 +44,7 @@ void hos_mouse_give_back(int32_t dx, int32_t dy) {
     InterlockedExchangeAdd(&mouse_dy, dy);
 }
 
-/* ---- the free mouse, for the Insert menu (gpu/vk/vk_api.h MkwVkPointer): set on the main thread, read on the renderer's ---- */
+/* ---- the free mouse, for the Insert menu (gpu/api/vk_api.h MkwVkPointer): set on the main thread, read on the renderer's ---- */
 static volatile LONG ptr_x, ptr_y, ptr_in, ptr_held, ptr_pressed, ptr_wheel;   /* (x, y in window units; wheel in 1/120 notches) */
 static volatile int menu_open;   /* (WM_APP + 8: the menu's state, as the window last heard it) */
 static void *window;

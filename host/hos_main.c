@@ -5,13 +5,13 @@
    guest main thread, run every module's DT_INIT in rtld's order (the SDK crt's _init: TLS registration with musl,
    then the module's constructors), then nninitStartup and nnMain.
 
-   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]
+   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace]
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
 #include "hos_paths.h"
-#include "../gpu/vk/vk_api.h"
-#include "../gpu/vk/oot_cheat_items.h"
+#include "../gpu/api/vk_api.h"
+#include "oot_cheat_items.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -146,7 +146,7 @@ static int reserve_guest(void) {
     void hos_commit_init(void);
     hos_commit_init();   /* (the crash report) */
     /* The window is a memfd's, shared, so the Vulkan back end can hand the GPU the game's own pages as a dma-buf
-       (udmabuf, gpu/vk/vk_memory.cpp import_dma_buf) instead of a host pointer: amdgpu checks every page of a host-pointer
+       (udmabuf, gpu/legacy/vk/vk_memory.cpp import_dma_buf) instead of a host pointer: amdgpu checks every page of a host-pointer
        import again at each command submission, 15-45 ms a submission in Kokiri Forest. Pages of a shared mapping are freed
        with MADV_REMOVE, not MADV_DONTNEED (hos_posix_guest_discard). HOS_GUEST_MEMFD=0: anonymous memory, as before */
     {
@@ -215,7 +215,7 @@ int hos_posix_guest_discard(void *p, size_t n) {
 }
 #endif
 
-/* The guest window, for the renderer (gpu/render/rx_buffer.cpp). */
+/* The guest window, for the renderer (gpu/legacy/render/rx_buffer.cpp). */
 uint8_t *hos_guest_base(void) { return A64_MEM; }
 uint64_t hos_guest_size(void) { return GUEST_SPACE; }
 
@@ -501,7 +501,7 @@ static void oot_edit_pouch(Ctx *c, int action) {
     if (result >= 0) hos_log("cheats: pouch %s %+d (event status %d)", items[item], delta, result);
 }
 
-/* The Inventory page (gpu/vk/oot_cheat_items.h): counts go to the menu twice a second, edits come back as actions. */
+/* The Inventory page (host/oot_cheat_items.h): counts go to the menu twice a second, edits come back as actions. */
 #define OOT_ITEM_NAME(label, name, kind) name,
 #define OOT_ITEM_KIND(label, name, kind) kind,
 #define OOT_NO_SECTION(name)
@@ -603,7 +603,7 @@ static void oot_set_time(Ctx *c, unsigned hour) {
 /* Cross-map teleport (build e0f3ccfa). Map changes in this game only run through an event: an entrance actor
    requests the Dm_SY_BancChangeGo event with NextBanc / NextStartPos / BootEventName arguments, the event calls
    GameSystemActor's ReserveBancChange, and the sequence's ChangeBancOnEvent loads the map when the event ends.
-   This builds the same event request (see work/oot-teleport-research.md). The menu labels in gpu/vk/vk_menu.cpp
+   This builds the same event request (see work/oot-teleport-research.md). The menu labels in gpu/legacy/vk/vk_menu.cpp
    (teleport_names) follow this table's order. */
 typedef struct {
     const char *child_banc, *child_start, *child_boot;
@@ -1338,7 +1338,7 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
    makes the process's code page UTF-8, from Windows 10 1903 on. Before that, or with the manifest missing, those take the system's
    ANSI code page, and a folder name it cannot spell (Japanese on a Western Windows, an emoji) comes back as "?": nothing opens and
    the game closed with no window and no log. The exe's own path through GetModuleFileNameA must name the exe (a name past MAX_PATH
-   bytes fails the same way); when it does not, a message says why (none for the builder's --prepare-shaders run: its log has it). */
+   bytes fails the same way); when it does not, a message says why. */
 static int narrow_paths_ok(int argc, char **argv) {
     char a[MAX_PATH];
     const DWORD n = GetModuleFileNameA(NULL, a, MAX_PATH);
@@ -1348,7 +1348,6 @@ static int narrow_paths_ok(int argc, char **argv) {
     fprintf(stderr, "hookshot: this folder's path cannot be opened (code page %u, %s): move the game to a folder with a plain name\n",
             GetACP(), n >= MAX_PATH ? "too long" : "has characters the code page lacks");
     int quiet = getenv("HOS_HEADLESS") != NULL;
-    for (int i = 1; i < argc; i++) quiet |= !strcmp(argv[i], "--prepare-shaders");
     if (!quiet) {
         wchar_t text[MAX_PATH * 2 + 640];
         _snwprintf(text, sizeof text / sizeof text[0],
@@ -1421,24 +1420,10 @@ static int game_main(int argc, char **argv) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
-        else if (!strcmp(argv[i], "--prepare-shaders")) {   /* (hookshot) a build's last step: no game */
-#ifdef _WIN32
-            _putenv("HOOKSHOT_PREPARE_ONLY=1");
-#else
-            setenv("HOOKSHOT_PREPARE_ONLY", "1", 1);
-#endif
-            int rx_prepare_shaders(void);
-            if (rx_prepare_shaders()) {
-                printf("@@done shaders\n");
-                return 0;
-            }
-            printf("@@error no usable Vulkan here: the game prepares its shaders at its first start\n");
-            return 3;
-        }
         else if (!image) image = argv[i];
     }
 #ifdef _WIN32
-    {   /* (hookshot) the Discord status (discord_rpc.c), a game run only (a --prepare-shaders run returned above). Linux starts
+    {   /* (hookshot) the Discord status (discord_rpc.c), a game run only. Linux starts
            it in its own main, below; on Windows it was never started: no status and no "discord:" line in any log */
         void hos_discord_start(void);
         hos_discord_start();
@@ -1468,7 +1453,7 @@ static int game_main(int argc, char **argv) {
         }
     }
     if (!image) {
-        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]\n",
+        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace]\n",
                 argv[0]);
         return 2;
     }
@@ -1627,18 +1612,12 @@ int main(int argc, char **argv) {
     void hos_display_loop(void);
     load_hookshot_env();
     game_argc = argc, game_argv = argv;
-    int prepare_shaders = 0;
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;
-        else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user")) i++;
-    }
-    /* The builder's preparation worker needs Vulkan, but no SDL display. */
-    const int window = prepare_shaders ? 0 : hos_display_init();
+    const int window = hos_display_init();
     if (window < 0) {
         hos_log_flush();
         return 1;
     }
-    if (!prepare_shaders) {   /* (hookshot) the Discord status (discord_rpc.c): only a game run */
+    {   /* (hookshot) the Discord status (discord_rpc.c) */
         void hos_discord_start(void);
         hos_discord_start();
     }

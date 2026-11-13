@@ -46,10 +46,10 @@ printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
 cp -a builder/linux "$T/builder/"
-cp -a gpu/render/*.h "$T/gpu/render/"
+cp -a gpu/legacy/render/*.h "$T/gpu/legacy/render/"
 # (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
 # tests/test_appimage_headers.py checks that this covers what host/ includes)
-for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_]+[.]h' host | sort -u); do if [ -f "$h" ]; then cp -a "$h" "$T/gpu/vk/"; fi; done
+for h in $(grep -rhoE 'gpu/legacy/vk/[A-Za-z0-9_]+[.]h' host | sort -u); do if [ -f "$h" ]; then cp -a "$h" "$T/gpu/legacy/vk/"; fi; done
 mkdir -p "$T/gpu/direct" && cp -a gpu/direct/direct_api.h "$T/gpu/direct/"   # (host/direct.h's: the direct back end's list calls)
 cp -a third_party/zstd "$T/third_party/"   # (host/nn_zstd.c compiles its decoder into the game)
 cp -a third_party/opus "$T/third_party/"

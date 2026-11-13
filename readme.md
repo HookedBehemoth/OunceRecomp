@@ -674,7 +674,7 @@ same scene to 59-60 fps. `0` or unset copies every written binding, as before.
 
 1. `nx2/lift.py` translates the game's ARM64 code to C.
 2. `nx2/build.py` compiles that C together with `host/`, which plays the part of the console's system.
-3. `host/nvn_native.c` records the game's NVN2 graphics calls, and `gpu/vk/` replays them on Vulkan.
+3. `host/nvn_native.c` records the game's NVN2 graphics calls, and `gpu/legacy/vk/` replays them on Vulkan.
 4. Switch 2 Ampere shaders are lowered to Maxwell (`lower_to_maxwell.h`) and translated to SPIR-V by Eden's shader
    recompiler.
 

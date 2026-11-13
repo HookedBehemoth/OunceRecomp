@@ -1,4 +1,4 @@
-"""NVIDIA's DLSS SDK files for a local build with NVIDIA DLSS Super Resolution (HOOKSHOT_NGX_SDK, gpu/vk/vk_dlss.cpp).
+"""NVIDIA's DLSS SDK files for a local build with NVIDIA DLSS Super Resolution (HOOKSHOT_NGX_SDK, gpu/legacy/vk/vk_dlss.cpp).
 
 NVIDIA's files are not part of Hookshot and are never committed or bundled: they are under NVIDIA's own license (the DLSS
 SDK's LICENSE.txt, fetched beside them; read it before using them). This fetches them from NVIDIA's DLSS repository at one
@@ -67,7 +67,7 @@ PLATFORMS = {
                     "30982c937afed85c96b8d313323de9a650a2eec6de1bb0f714b21750f4ce98f6"),
     },
     "windows": {
-        # (the static NGX loader built against the static C runtime (/MT); llvm-mingw links it with gpu/vk/vk_ngx_msvc_rt.cpp)
+        # (the static NGX loader built against the static C runtime (/MT); llvm-mingw links it with gpu/legacy/vk/vk_ngx_msvc_rt.cpp)
         "library": ("lib/Windows_x86_64/x64/nvsdk_ngx_s.lib", "7b9a5239c1145af5f645ab472aa066f9ea79db36ac819562312aae69d65f3765"),
         "runtime": ("lib/Windows_x86_64/rel/nvngx_dlss.dll", "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e"),
     },

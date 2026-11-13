@@ -3,7 +3,7 @@
    builds this file as it is. */
 #include "nvn_list.h"
 #include "hos_ledger.h"
-#include "../gpu/render/rx_nvn.h"
+#include "../gpu/api/rx_nvn.h"
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32

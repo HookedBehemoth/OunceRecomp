@@ -1,4 +1,4 @@
-// Images and buffers in Vulkan Memory Allocator's blocks (v3.3.0, HOOKSHOT_VMA_HEADERS), cut down from gpu/vk/vk_vma.cpp:
+// Images and buffers in Vulkan Memory Allocator's blocks (v3.3.0, HOOKSHOT_VMA_HEADERS), cut down from gpu/legacy/vk/vk_vma.cpp:
 // device-local images, host-visible buffers (staging, dumps). Its Vulkan functions come from vkGetInstanceProcAddr.
 #define VMA_IMPLEMENTATION
 #define VMA_STATIC_VULKAN_FUNCTIONS 0

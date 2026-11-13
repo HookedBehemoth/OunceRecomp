@@ -1,4 +1,4 @@
-"""The pipeline state lists (gpu/vk/vk_draw.cpp: hookshot_pipeline_states.bin, written as the game is played): show one, or merge
+"""The pipeline state lists (gpu/legacy/vk/vk_draw.cpp: hookshot_pipeline_states.bin, written as the game is played): show one, or merge
 several into the list a release ships (work/pipeline_states.bin, copied by nx2/make_game.py beside the game as
 hookshot_pipeline_states_shipped.bin, whose pipelines the first start's shader preparation builds before the title).
 

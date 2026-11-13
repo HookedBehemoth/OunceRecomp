@@ -10,7 +10,7 @@
 
 #include <vulkan/vulkan.h>
 
-#include "vk_api.h"   // (gpu/vk: the table the host calls, version 14; not changed)
+#include "../api/vk_api.h"   // (gpu/vk: the table the host calls, version 14; not changed)
 
 #define HSD_VK_GLOBAL(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties) X(vkEnumerateInstanceVersion)
 #define HSD_VK_INSTANCE(X)                                                                                             \

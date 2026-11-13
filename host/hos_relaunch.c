@@ -1,4 +1,4 @@
-/* (hookshot) The Insert menu's Restart now (gpu/vk/vk_menu.cpp): it saves its options and asks the window to close for a
+/* (hookshot) The Insert menu's Restart now (gpu/legacy/vk/vk_menu.cpp): it saves its options and asks the window to close for a
    restart (WM_APP + 9: host/display.c, host/posix/display_sdl.c). The window closes as when the player closes it, and at
    the very end of that, instead of only exiting, the game is started again:
      Linux: the process becomes the game again (execve) with the arguments and the environment it started with

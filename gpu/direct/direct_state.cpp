@@ -1,5 +1,5 @@
-// The NVN state of a list (direct_state.h): the ops as the frozen job walk applies them (gpu/vk/eng_job.cpp 956-1086), and
-// the graphics stages' driver banks (gpu/vk/vk_bank.cpp driver_bank_word / driver_bank_fill, graphics stages only: compute's
+// The NVN state of a list (direct_state.h): the ops as the frozen job walk applies them (gpu/legacy/vk/eng_job.cpp 956-1086), and
+// the graphics stages' driver banks (gpu/legacy/vk/vk_bank.cpp driver_bank_word / driver_bank_fill, graphics stages only: compute's
 // packed bank and the task / mesh pointer table are not this stage's).
 #include <algorithm>
 #include <bit>

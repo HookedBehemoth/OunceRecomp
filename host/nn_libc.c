@@ -9,7 +9,7 @@ static int guest_libc(void) {
 }
 
 #if defined(RX_WEB_MT) && RX_WEB_MT
-void rx_wait_writebacks_reading(const void *p, uint64_t n);   /* gpu/render/rx_nvn.h */
+void rx_wait_writebacks_reading(const void *p, uint64_t n);   /* gpu/api/rx_nvn.h */
 #define WAIT_WRITEBACKS(p, n) rx_wait_writebacks_reading(p, n)
 #else
 #define WAIT_WRITEBACKS(p, n) ((void)0)

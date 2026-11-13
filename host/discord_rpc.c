@@ -33,7 +33,7 @@
 #include <unistd.h>
 #endif
 
-#include "../gpu/vk/vk_api.h"
+#include "../gpu/api/vk_api.h"
 
 #define HOOKSHOT_DISCORD_APP_ID_DEFAULT "1569529153349357731"   /* (the Hookshot application's id, digits) */
 #define HOOKSHOT_DISCORD_IMAGE_DEFAULT "hookshot"     /* (its large-image art asset key) */

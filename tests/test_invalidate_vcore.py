@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ("vulkan", "fallback", "immediate", "fallback-immediate", "zero", "already-away",
+CASES = ("vulkan", "immediate", "zero", "already-away",
          "non-guest", "disabled", "producer")
 
 
