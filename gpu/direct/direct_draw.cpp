@@ -1570,7 +1570,10 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
             vkCmdPipelineBarrier2(cb, &d);
         };
-        if (prog->task || mesh_wait) apart(), sub(l, R_TASK_APART);
+        // (HOS_DBG=notmwait, a diagnosis: no wait before task+mesh draws, to see whether the market still needs it once the
+        // mesh stages that spill are replaced: docs/direct/hf-fix-report.md)
+        static const bool no_tm_wait = dbg("notmwait");
+        if ((prog->task && !no_tm_wait) || mesh_wait) apart(), sub(l, R_TASK_APART);
         // (M6d, the diagnoses that found it, one at a time: a full barrier inside the rendering, which Vulkan does not allow there
         // and RADV records as the wait it is (VS and PS partial flushes): tmsync before each task+mesh draw, tmsyncafter after it,
         // tmsyncpair only before one whose previous draw in this command buffer was a task+mesh draw too)

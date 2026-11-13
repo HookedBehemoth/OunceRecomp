@@ -18,3 +18,14 @@ while read -r code file defs; do
     n=$((n + 1))
 done < "$src/codes.txt"
 echo "built $n replacement stages into $out"
+# (the stages the game draws with: <src>/swap.txt; each one's SPIR-V as a header beside its source, as gpu/direct/shaders/*_spv.h)
+if [ -f "$src/swap.txt" ]; then
+    while read -r code shape _; do
+        case "$code" in ""|\#*) continue ;; esac
+        line=$(grep "^$code " "$src/codes.txt") || { echo "swap.txt: $code is not in codes.txt"; exit 1; }
+        read -r _ file defs <<< "$line"
+        # shellcheck disable=SC2086
+        glslangValidator -V --target-env vulkan1.3 -I"$src" $defs --vn "mesh_${code}_spv" -o "$src/${code}_spv.h" "$src/$file" > /dev/null
+        echo "wrote $src/${code}_spv.h ($shape)"
+    done < "$src/swap.txt"
+fi
