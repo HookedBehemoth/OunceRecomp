@@ -257,9 +257,11 @@ const hsd_fns *rx_direct(void) {
 }
 
 int rx_start(void *hwnd) {
+    /* (loaded here too: the window's thread can reach this before the game's first call loads the library) */
+    const hsd_fns *d = rx_direct();
     {   /* RX_VK_SHOTS=<dir>, RX_VK_SHOT_EVERY=<n> (default 300): the presented frames as PNGs */
         const char *shots = getenv("RX_VK_SHOTS"), *every = getenv("RX_VK_SHOT_EVERY");
-        if (shots && *shots) rx_direct()->shots(shots, every && atoi(every) > 0 ? atoi(every) : 300);
+        if (shots && *shots) d->shots(shots, every && atoi(every) > 0 ? atoi(every) : 300);
     }
     mkwvk_init_fn init = (mkwvk_init_fn)(void *)GetProcAddress(direct_module, "mkwvk_init");
     const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
