@@ -1,4 +1,4 @@
-// (M6b) The validation messenger and strict mode (direct_check.h).
+// The validation messenger and strict mode (direct_check.h).
 #include <dlfcn.h>
 #include <link.h>
 #include <unistd.h>
@@ -26,13 +26,13 @@ const StrictKnown kStrictKnown[] = {
      "the game makes render targets in play: a light's shadow map changes its size class, the dynamic resolution takes a level "
      "not seen before, a slot is made at a new offset (host/rt_slots.c). A transient target's image is an object bound in the "
      "transient pool at its storage offset: no device memory is allocated for it, and the object is kept for the next texture "
-     "of that storage and shape (docs/direct/shadow-pool-report.md)"},
+     "of that storage and shape (docs/direct/transient-pool.md)"},
     {"Vulkan object made in steady play: an attachment view of a game's texture",
      "the attachment view of such an image, made at its first SetRenderTargets (as the entry above)"},
     {"Vulkan object made in steady play: an image of a texture the game loaded (its prepared content)",
      "the game streams textures in play (walking: Hyrule Field's areas, NPCs, effects); each new content is one image, made at "
      "the texture's initialization and filled from the store, and destroyed when the game finalizes its last texture "
-     "(docs/direct/m6f-report.md): a load the game does, not a per-frame object"},
+     ": a load the game does, not a per-frame object"},
     {nullptr, nullptr},
 };
 const size_t kStrictKnownCount = sizeof kStrictKnown / sizeof kStrictKnown[0] - 1;

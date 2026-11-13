@@ -1,6 +1,6 @@
 /* Game patch, direct mode only: the GPU-culled mesh drawers bind the task and mesh storage buffers they
-   read, so a job's mesh draws do not depend on what an earlier job of the pass left bound (docs/direct/m3-patch-sites.md 3,
-   part 2; m0-jobs-state.md A3/A4). A job is a rendering secondary that starts from nothing in the direct back end, so a
+   read, so a job's mesh draws do not depend on what an earlier job of the pass left bound (docs/direct/patch-sites.md 3,
+   part 2; jobs-state.md A3/A4). A job is a rendering secondary that starts from nothing in the direct back end, so a
    slot nobody binds in the job reads the null window there.
 
    f_82c02bc0 (the culled-instance drawer) binds names 4 and 5 itself: f_801a2d70(ctx, item, 4, o + 0x1b0, 0) and

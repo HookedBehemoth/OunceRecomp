@@ -1,5 +1,5 @@
-/* (native-vk M3a) Game patch, direct mode only: a barrier before and after the two depth copies of the 3D layer's list
-   (docs/direct/m2a-report.md, "The hazards"; the validation layer's three hazards on them).
+/* Game patch, direct mode only: a barrier before and after the two depth copies of the 3D layer's list
+.
 
    f_80289590 (FogPrePass::HalfDepth, return 0x80289cc4) and f_80666d20 (gsys::RenderBuffer::SoftEdgeDepth, return
    0x806675dc) each copy a D32F depth target with nvnCommandBufferCopyTextureToTexture right after the pass that rendered it,

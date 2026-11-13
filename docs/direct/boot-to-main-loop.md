@@ -1,4 +1,4 @@
-# From the process entry to the main loop (M6j, 2026-11-13)
+# From the process entry to the main loop
 
 The path from the host's `main` to the steady frame loop, written down once so that profiling, patches and frame-time
 work do not re-derive it. Addresses are guest addresses of HOS_GAME_VERSION 100 (build id e0f3ccfa..., image at

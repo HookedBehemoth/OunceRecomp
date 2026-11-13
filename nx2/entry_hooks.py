@@ -1,4 +1,4 @@
-"""(native-vk) Host replacements for lifted guest functions: ENTRY_HOOK(0xADDR) and ENTRY_HOOK_SYM(name) in host/*.c.
+"""Host replacements for lifted guest functions: ENTRY_HOOK(0xADDR) and ENTRY_HOOK_SYM(name) in host/*.c.
 
 host/hos.h has described these since the fork (TOTKPort's model), but nothing spliced them in: the hooks in
 host/nn_libc.c (memcpy, memset, strlen, ...) were never linked, and the game's libc ran lifted. Here, after the lift

@@ -1,14 +1,4 @@
-# M6h report: every shader of the game, what it costs, and whether rewriting pays (2026-11-13)
-
-Branch `agent/m6h` (from native-vk a37e641). RX 6950 XT (80 CUs, 160 SIMD32), RADV Mesa 26.2.4, kernel 7.2.11. Every GPU run
-took the shared GPU lock (`work/run.lock`, game runs also the gate) and waited for the other agents' runs. Everything made
-from the game (the seed, the census table, the IR prints and SPIR-V, the captures, the run logs) is local under `work/` and
-not committed; this report gives keys, counts and our own descriptions. Claims are marked **VERIFIED** (by the check named),
-**ESTIMATED** (a model's number) or **INFERRED** (read from code or structure, not checked). **Timing provenance:** the
-only timing results are the isolated harness's (`meshlab bench` / `meshlab fs --bench`: A/B alternated, the GPU lock held,
-no game process running, checked at each run); every time taken in the game (per-command timestamps, gputime) is marked
-**in-game, indicative**: the game ran alone on the GPU under the lock, but other agents' work loaded the machine, so these
-numbers show where the time goes, not how much a change saves.
+# Every shader of the game, what it costs, and whether rewriting pays
 
 ## Summary
 
@@ -129,7 +119,7 @@ Device losses of this stage: **none** (0 of the budget of 3). Tests: 296 pass, 5
   up to 6.26 ms (Kokiri) and 7.34 ms (HF) against 7.4 / 8.5 ms busy: the rest is copies, clears, resolves, barriers between
   command buffers and the present (INFERRED).
 - **Runs** (`tools/shadercensus/scene_run.sh`: `scripts/run-vk.sh` under the gate and the lock, the hang rules of
-  `tools/meshlab/gpu_run.sh`): `chisel_kokiri` and `chisel_hf`, `RX_BACKEND=direct`, pacing off (`HOS_NO_PACING=1
+  `tools/meshlab/gpu_run.sh`): `chisel_kokiri` and `chisel_hf`, pacing off (`HOS_NO_PACING=1
   HOS_FPS_TARGET=1000 HOS_FPS_MAX=240`), the measured frame present 4500 (the scene has stood since about present 2700:
   the presents of the loading screens run uncapped), 130-160 s. `m6h_ps2_*` with `drawlog` and `meshcap` (no timestamps),
   `m6h_ps3_*` with the timestamps; `gputime` in both. Present 1500, which M6e used with pacing on, is still the loading
@@ -538,7 +528,7 @@ Committed (nothing of the game: our sources and the decompiled stage, a transcri
 | The fragment harness, the mesh bench | `tools/meshlab/fsbench.h`, `meshlab.cpp` (`fs`, `fsfind`, `bench`, `--mult`, `--discard`), `capture.h` |
 | The decompiled fragment stage | `gpu/direct/shaders/frag/` (`common.glsl`, `fog_composite.frag`, `codes.txt`); `tools/meshlab/build_shaders.sh` (any stage kind), `spv_exact_fma.py` |
 
-With `RX_BACKEND` unset nothing changes; with the direct back end and `HOS_DBG` unset, one load and a branch per command.
+With `HOS_DBG` unset, one load and a branch per command.
 Tests: `HOOKSHOT_VULKAN_HEADERS=/usr/include work/venv/bin/python -I -B tests/run_all.py`: 296 passed, 5 failed (the baseline
 five), 19 skipped.
 

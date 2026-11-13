@@ -1,13 +1,4 @@
-# The register-pressure pass in the translator (2026-11-13)
-
-Branch `agent/spvlate` (from native-vk 87c21f8). RX 6950 XT (Navi 21), RADV Mesa 26.2.4, kernel 7.2.11-1-cachyos. Game
-runs in `work/runs/spvl_*`; gate tables, compiler outputs, censuses and harness runs in `work/spvlate/` (all local: they
-hold game data or are made from it). Follows `hf-fix-report.md` (the cause; its section 4 specified this pass). Every
-statement is **measured** (a run or a file says so) or **inferred**.
-
-## Summary
-
-@@SUMMARY@@
+# The register-pressure pass in the translator
 
 ## 1. The pass
 
@@ -15,7 +6,7 @@ statement is **measured** (a run or a file says so) or **inferred**.
 order. It stands alone (no header of the back end), so the harness, the census and the test build the same source. The
 back end calls it on a mesh stage's SPIR-V right after `EmitSPIRV` (`direct_shader.cpp schedule_late`, both mesh
 translations). Commit 79f5ee5's file was the starting point; what its first version lacked is what made it raise two
-stages' demand (`hf-fix-report.md` section 4), and all of it is here:
+stages' demand (`hang-fix.md` section 4), and all of it is here:
 
 - **What may move.** Instructions that only compute (arithmetic, composites, conversions, access chains, `OpExtInst`
   but for Modf and Frexp, which write through a pointer), loads of uniform, input, push-constant and uniform-constant
@@ -116,8 +107,6 @@ The ten stages the pass changes (the other 43 are word for word what the transla
 `b86297c2` is one of the two stages the first version made spill (0 -> 29); the other, `354dde83`, and `66c494fe` are
 the two left at the limit (257 and 259, neither spills, the pass leaves both as they are: section 7).
 
-@@COMPARE@@
-
 ### The whole seed's mesh stages (measured: `work/spvlate/gate2_seed/`)
 
 All 500 mesh stages of the seed (499 distinct codes), translated offline and compiled as the game's shader objects:
@@ -165,7 +154,7 @@ all`, `work/spvlate/cf_all`) against without (`census_before`); "registers" is A
   against the game's own, and whether a spilling vertex stage can lose the device as a spilling mesh stage does is not
   known). It is **not on**: the gate's second half cannot be run, since no harness draws a captured vertex draw with
   its own vertex buffers (M6h's fragment harness draws a grid of its own). `HOS_DBG=latevertex` turns it on for a
-  trial (the cache is stamped by it). @@VERTEXRUN@@
+  trial (the cache is stamped by it).
 
 ## 4. Caches
 
@@ -174,13 +163,9 @@ the build's shader stamp (`HOOKSHOT_DIRECT_SHADER_STAMP`, `nx2/build.py`: a hash
 `direct_spv_late.cpp` and `.h` in it) and the back end's flags (`direct_shader.cpp disk_stamp`: now with "the pass on
 mesh stages" and "on vertex stages"). A cache with another stamp is not read and is written anew, so a build with
 this change translates every program once more on its first start (the scene is complete later on that start:
-`hf-fix-report.md` saw 97 s against 40 s), and `HOS_DBG=nolate` or `latevertex` does the same each time it is switched.
+`hang-fix.md` saw 97 s against 40 s), and `HOS_DBG=nolate` or `latevertex` does the same each time it is switched.
 **A user deletes nothing.** The shader objects' binaries (`hookshot_direct_shader_objects.bin`) are keyed by each
 stage's SPIR-V: the stages the pass leaves alone find theirs, the changed ones are compiled once.
-
-## 5. In the game
-
-@@GAME@@
 
 ## 6. Translation time, compile count, frame time
 
@@ -188,14 +173,12 @@ stage's SPIR-V: the stages the pass leaves alone find theirs, the changed ones a
   stage 2.5 ms (median over all 499), a changed one 5.3 ms (median), 10 ms at most; the two stages of 118,000 ACO
   instructions, which it does not change, 288 ms. All 499 mesh stages together: 2.7 s. A stage of 17,000 blocks needs
   80 MB while it is looked at (the first version of the liveness, as bit sets, needed 1.5 GB for it).
-  @@GAMETIME@@
-- **Shader compiles:** the pass makes no stage and removes none. @@COMPILES@@
+ 
+- **Shader compiles:** the pass makes no stage and removes none.
 - **Frame time: no claim from the game** (the machine was shared with two other agents' builds and runs all day).
   What is **measured** is the changed stages' own GPU time in the harness (`meshlab bench --late mesh`: the captured
   draws of the nine changed stages that do not spill, the translator's against the pass's, alternating, GPU timestamps,
   under the GPU lock with no game process; `work/spvlate/bench/`):
-
-@@BENCH@@
 
   **Inferred:** the price of the margin is a few microseconds a frame. ACO's cost estimate says the same and says why
   the budget is there: over the seed's mesh stages its sum rises 2.6 % with the pass as it is, and rose 8 % with
@@ -222,10 +205,6 @@ stage's SPIR-V: the stages the pass leaves alone find theirs, the changed ones a
 - **The gate's captures must be the translator's own stages:** a capture taken with the pass on holds the pass's
   output, and "before" is then not before. Take them with `HOS_DBG=nolate`.
 - **Vertex stages:** section 3.
-
-## 8. Device losses
-
-@@LOSSES@@
 
 ## 9. Code
 
@@ -260,6 +239,3 @@ python3 -I tools/meshlab/late_gate.py seed --censustool <censustool> --spvlate <
 
 (2 minutes and 5 minutes of compiling; the compare is as long as the GPU lock is busy.)
 
-## 10. What remains
-
-@@REMAINS@@

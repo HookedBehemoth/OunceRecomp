@@ -341,7 +341,7 @@ static DWORD WINAPI sample_all_thread(void *p) {
             Sleep(200);
             continue;
         }
-        /* (native-vk) the threads listed again every 250 rounds (~0.5 s): a .go made before the game's threads exist
+        /* the threads listed again every 250 rounds (~0.5 s): a .go made before the game's threads exist
            sampled the main thread alone, and the loaders that start later were never seen */
         static int rounds;
         if (!out || ++rounds % 250 == 0) {

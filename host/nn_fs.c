@@ -360,7 +360,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
                 rel = NULL;
             }
         }
-        /* (native-vk A-rt) direct mode: a second root after it, the converted terrain tiles (host/direct_assets.c) */
+        /* direct mode: a second root after it, the converted terrain tiles (host/direct_assets.c) */
         const char *direct_assets_overlay(void);
         void direct_assets_overlay_opened(const char *path);
         static const char *ov2;

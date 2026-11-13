@@ -1,6 +1,6 @@
-/* (native-vk) Direct mode's host side (direct.h): where a recording is classified, and the thread's record that waits for
+/* Direct mode's host side (direct.h): where a recording is classified, and the thread's record that waits for
    its payload. An NVN command function takes its record from cmd_alloc and fills the payload after it returns, so a record
-   goes to the back end at the next cmd_alloc on the same thread, or at the flush points (m0-seam.md 6.4). */
+   goes to the back end at the next cmd_alloc on the same thread, or at the flush points. */
 #include "direct.h"
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +21,7 @@ static int load_kind(uint64_t lr) {
 }
 
 /* ---- the list kinds, by the return address of BeginRecording (this build of the game; engine-frame.md section 1 as
-   checked by a run: docs/direct/m1-report.md). An address not here begins a PACKET list (counted, named in the log) ---- */
+   checked by a run). An address not here begins a PACKET list (counted, named in the log) ---- */
 void hsd_classify(Ctx *c, hsd_list_info *info) {
     const uint64_t lr = c->x[30];
     info->lr = lr, info->fp = c->x[29];

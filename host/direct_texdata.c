@@ -1,4 +1,4 @@
-/* (native-vk M6f) agl::TextureDataMgr's own texture events, hooked (direct mode only; docs/direct/texture-streaming.md 7).
+/* agl::TextureDataMgr's own texture events, hooked (direct mode only; docs/direct/texture-streaming.md 7).
    One table keyed by the TextureData (td), written only by these hooks:
      - created with data, or as a UnifyTex alias: f_80798690 loadImage_ (direct_assets.c calls direct_texdata_created; an
        alias's target is the head of its chain, direct_tex_dedup.c);
@@ -129,13 +129,13 @@ ENTRY_HOOK(0x807981f0) {
 }
 
 void direct_texdata_line(char *out, size_t cap) {
-    snprintf(out, cap, "texture events (M6f): created %lld, aliases %lld, moved %lld, released to the cache %lld, taken back %lld, "
+    snprintf(out, cap, "texture events : created %lld, aliases %lld, moved %lld, released to the cache %lld, taken back %lld, "
              "destroyed %lld; in the cache now %lld (unknown tds %lld, table full %lld)", (long long)n_created, (long long)n_aliases,
              (long long)n_moves, (long long)n_to_cache, (long long)n_from_cache, (long long)n_destroyed, (long long)n_cached_now,
              (long long)n_unknown, (long long)n_full);
 }
 
-/* (M6f, game patch) The cache eviction driven by free VRAM, not by the texture heap's bytes. agl's per-frame update
+/* (game patch) The cache eviction driven by free VRAM, not by the texture heap's bytes. agl's per-frame update
    f_80797240(mgr) destroys cached (count 0) textures, through its own f_8079bbe0, while the heap's free bytes
    ([mgr+0x40]+0x1ee8) are under mgr+0x340 (TextureCacheRejectionThreshold, 120 MB) and compaction is idle
    (docs/direct/texture-streaming.md 2.6). The heap's bytes say nothing about VRAM here (the store's BC images are 1-2x the

@@ -341,7 +341,7 @@ NV(nvnMemoryPoolInitialize) {
     o->mem = b->mem;
     o->gpu = b->mem;
     hos_gpu_track(o->gpu, o->size, 1);   /* (the CPU's writes to it reach the renderer through write watch) */
-    if (getenv("HOS_NVN_LOG_POOLS")) {   /* (M4f, debugging) who makes each pool */
+    if (getenv("HOS_NVN_LOG_POOLS")) {   /* (debugging) who makes each pool */
         char b[400];
         guest_chain(c, b, sizeof b);
         hos_log("nvn: pool %#llx size %#llx flags %#x made by %s", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags, b);
@@ -756,7 +756,7 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out) {
     ReleaseSRWLockShared(&live_lock);
     return found;
 }
-/* (native-vk A-rt, host/direct_assets.c) the live texture whose storage holds gpu (a walk of the table: rare calls) */
+/* (host/direct_assets.c) the live texture whose storage holds gpu (a walk of the table: rare calls) */
 int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out) {
     int found = 0;
     AcquireSRWLockShared(&live_lock);
@@ -822,7 +822,7 @@ NV(nvnTextureInitialize) {
         if (on < 0) on = getenv("RX_NVN_WATCH_TEX") && sscanf(getenv("RX_NVN_WATCH_TEX"), "%ux%u", &ww, &wh) == 2;
         if (on && o->d.width == ww && o->d.height == wh && o->gpu && o->gpu < VBASE)
             hos_watch_guest_writes(GP(o->gpu), o->L.size);
-        static uint64_t at = 1;   /* (M4f) RX_NVN_WATCH_TEX_AT=<hex>: the texture at that address only */
+        static uint64_t at = 1;   /* RX_NVN_WATCH_TEX_AT=<hex>: the texture at that address only */
         if (at == 1) at = getenv("RX_NVN_WATCH_TEX_AT") ? strtoull(getenv("RX_NVN_WATCH_TEX_AT"), NULL, 16) : 0;
         if (at && o->gpu == at && o->gpu < VBASE) hos_watch_guest_writes(GP(o->gpu), o->L.size);
     }
@@ -839,7 +839,7 @@ NV(nvnTextureInitialize) {
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));
     if (rx_direct() && o == direct_texdata_moving() && o->magic == NVN_MAGIC('T', 'E', 'X', 0)) {
-        /* (M6f) a compaction move (direct_texdata.c): the back end keeps the texture's image and registration; the
+        /* a compaction move (direct_texdata.c): the back end keeps the texture's image and registration; the
            initialization that follows over the new storage keeps its serial */
         tl_moved_serial = o->serial;
         live_del(o);

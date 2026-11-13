@@ -1,4 +1,4 @@
-/* (native-vk M3a) The direct back end's game patches (host/direct_passes.c, direct_job_sync.c, direct_rt_ids.c,
+/* The direct back end's game patches (host/direct_passes.c, direct_job_sync.c, direct_rt_ids.c,
    direct_depth_copy.c, direct_mesh_args.c, direct_mesh_binds.c, direct_mesh_system.c, direct_mesh_lists.c, direct_sky_lut.c): one log line each every 600 presents with HOS_DBG=logpatch, called from the present in direct mode only. */
 #include "direct.h"
 

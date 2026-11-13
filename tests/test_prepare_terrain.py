@@ -62,7 +62,7 @@ def make_tarb(bpb, bw, layers, rng, a_copy=True, version=1):
 
 
 def check_layouts():
-    # the four layouts the game's files hold (with their sizes in m0-terrain-texels.md) and nothing else matches them
+    # the four layouts the game's files hold (with their sizes in terrain-texels.md) and nothing else matches them
     for name, bpb, bw, layers, bl, lin in KINDS:
         lay = T.tile_layout(bpb, bw, layers)
         assert lay[0] == bl and lay[5] == lin, (name, lay)

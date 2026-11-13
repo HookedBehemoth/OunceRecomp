@@ -1,4 +1,4 @@
-# The game's texture streaming: what the code does (M6g, 2026-11-13)
+# The game's texture streaming: what the code does
 
 Research only: no back-end or host code was changed. Static analysis of this build (Ghidra decompiles made on demand
 with `work/ghidra/decomp.sh`, kept under `work/proto/streaming/g1..g4/`, not committed), the lifted code, the romfs
@@ -323,7 +323,7 @@ chain, or `f_807974f0`'s target key. The descriptor check then holds by construc
   -> `f_80f6c9d0`). These are the "201 MB at 0x11685d0000" and "2 MB at 0x11681b6000" pools the host logs at the scene
   load, on SceneLowPriority, as "texture data pools". 0x11685d0000 is the tile pool of asset-path.md section 5.
 - Tiles are TARB files read by tera::FileResource. Their texels are memcpy'd at `f_80c17040+0x544`
-  (docs/direct/m0-terrain-texels.md).
+  (docs/direct/terrain-texels.md).
 - There is no TextureData, no UnifyTex, no LRU and no compaction. The tile texture objects are initialized again over
   storage the game does not copy into again (M6f, by run).
 - (VERIFIED: the call chain and the pool address; the tile reuse policy was not read.)

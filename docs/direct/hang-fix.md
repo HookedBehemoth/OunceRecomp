@@ -1,9 +1,4 @@
-# The Hyrule Field hang: the fix (2026-11-13)
-
-Branch `agent/hffix` (from native-vk 30e3366). RX 6950 XT (Navi 21), RADV Mesa 26.2.4, kernel 7.2.11-1-cachyos. Game runs
-in `work/runs/hffix_*`, harness runs and compiler outputs in `work/hffix/` (`runs/`, `repl/`, `late2/`, `scan_tr/`); all
-local: they hold game data. Follows `hf-hang-report.md` (the cause) and `hf-mesh-program.md` (the stage read statically).
-Every statement is **measured** (a run or a file says so) or **inferred**.
+# The Hyrule Field hang: the fix
 
 ## Summary
 
@@ -31,7 +26,7 @@ Every statement is **measured** (a run or a file says so) or **inferred**.
 
 `gpu/direct/shaders/mesh/probe_light.glsl` (new) and `meshlet_lit.mesh` with `PROBE_LIGHT`: the lit meshlet stage plus the
 12 light components a vertex of the game's probe grid (output locations 14-16), transcribed from the stage's IR
-(`hf-mesh-program.md` section 1.2): the cell and leaf lookup, the 8 probes' trilinear weights (a probe that is not valid
+(`mesh-program.md` section 1.2): the cell and leaf lookup, the 8 probes' trilinear weights (a probe that is not valid
 counts 1e-5), rows 1-7 of each probe summed in the game's order, mixed with the scene's own coefficients. One address
 translation a probe instead of one a row; nothing else differs from what the translated stage reads.
 
@@ -60,7 +55,7 @@ RADV's compile (`RADV_DEBUG=shaders meshlab ... stats 230 [--repl]`, `stats_230_
 
 The reproducer (`run --present 1897 --fs simple --prepass`, the losing draw of `hfh_f_plainfs1`): with the hand-written
 stage **survived, 542,664 draws in 40 s** (`run_f1897_prepass_repl28.txt`; the translated stage hung at submission 5,
-`hf-hang-report.md`).
+`hang-cause.md`).
 
 ## 2. In the game
 
@@ -75,7 +70,7 @@ translated). `HOS_DBG=nomeshrepl` draws with the translator's stages. Its SPIR-V
 sources (`40d0c0768e874600_spv.h`, written by `tools/meshlab/build_shaders.sh`); `tests/test_direct_mesh_repl.py` holds
 swap.txt, codes.txt, the table and the header together and compiles the source again when glslang is there.
 
-The walk (`OVERLAY=work/overlay/chisel_hf RUN=timing scripts/run-vk.sh <name> 240 -- RX_BACKEND=direct
+The walk (`OVERLAY=work/overlay/chisel_hf RUN=timing scripts/run-vk.sh <name> 240 --
 HOS_DBG=marks,tmlog:cfebb562ec378f87 HOS_LOG_TIME=1 HOS_INPUT_SCRIPT=<hfh_a_lost's> HOS_INPUT_EXCLUSIVE=1`), **measured**:
 
 | Run | Result | The ivy's draw |
@@ -84,7 +79,7 @@ HOS_DBG=marks,tmlog:cfebb562ec378f87 HOS_LOG_TIME=1 HOS_INPUT_SCRIPT=<hfh_a_lost
 | `hffix_walk2` | survived 240 s, 14,061 presents | 10,896 frames, 410 with 500 or more, 593 at most |
 | `hffix_walk3_nowait` (the final build: M6d's wait off, section 5) | survived 240 s, 14,047 presents | 10,898 frames, 416 with 500 or more, 593 at most; no wait recorded |
 
-Before: 5 of 5 lost, within a few frames of 515-567 groups (`hf-hang-report.md`). Both runs logged the four programs made
+Before: 5 of 5 lost, within a few frames of 515-567 groups (`hang-cause.md`). Both runs logged the four programs made
 with the hand-written stage, none refused.
 
 **The picture.** Kokiri standing (`chisel_kokiri`, present 1800 dumped, `HOS_GAME_STEP_PER_FRAME=1`, 150 s; Kokiri draws
@@ -183,7 +178,7 @@ one stage that spills today.
 ## 5. The market
 
 `HOS_DBG=notmwait` (then a switch, now the default) turned M6d's wait off. Market standing (`chisel_hf_market`,
-`RX_BACKEND=direct HOS_DBG=marks,notmwait`), the hand-written `40d0` in, no late scheduling. **Measured:**
+`HOS_DBG=marks,notmwait`), the hand-written `40d0` in, no late scheduling. **Measured:**
 
 | Run | Result |
 |---|---|
@@ -229,7 +224,7 @@ alone for game runs under the lock, but a second agent's builds and short runs s
 - **Why did `HOS_DBG=tmdiscard` avoid the loss? Inferred, no new run:** with the rasterizer off the stage runs (RADV
   26.2.4 does not skip a mesh stage's work under rasterizer discard: the coordinator's reading, section 8 (c)) and no
   pixel work follows; the reproducer without the first draw is the same case (every fragment fails; 235,573 draws
-  survived, `hf-hang-report.md`). The loss needs the spilling stage's waves and passing fragments together.
+  survived, `hang-cause.md`). The loss needs the spilling stage's waves and passing fragments together.
 - Not known: what the hardware does (section 8); the group count at which it starts; whether fragment stages anywhere
   spill (not scanned).
 

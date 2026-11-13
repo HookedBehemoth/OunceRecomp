@@ -1,5 +1,5 @@
-/* (native-vk M3a) Game patch, direct mode only: the waits, barriers and dispatches a render job records move to the layer
-   list that calls the job, so that a job is one rendering secondary (docs/direct/m3-patch-sites.md 4; m0-jobs-state.md B).
+/* Game patch, direct mode only: the waits, barriers and dispatches a render job records move to the layer
+   list that calls the job, so that a job is one rendering secondary (docs/direct/patch-sites.md 4; jobs-state.md B).
 
    Inside jobs, every frame and all in the first colour pass (key 0x113b647338) and one in 0x113b648038:
    - f_82c02f20 / f_82c03170 (the culling pre-draw hooks): WaitEvent (return 0x82c0301c / 0x82c0326c) and Barrier(0x28)
@@ -15,7 +15,7 @@
    At the job-call site, f_806688c0's CallCommands (return 0x80668c84; x21 the view record found, [sp + 0x10] the list's draw
    context, x0 the list's command buffer) is pointed at a host function too: it records the kept waits and one barrier of
    the kept bits on the layer list's command buffer, then the kept dispatches (f_8067c310 with the list's draw context;
-   M6d: before the job's commands, not after), then the CallCommands. The water wait may only go here (m0-jobs-state.md B:
+   M6d: before the job's commands, not after), then the CallCommands. The water wait may only go here (jobs-state.md B:
    earlier positions deadlock); f_8028a2a0's call
    site (0x8028a538) never calls a job that kept one (counted).
 
@@ -132,12 +132,12 @@ static void call_fn(Ctx *c, void *u) {
         return;
     }
     InterlockedIncrement64(&n.calls_kept);
-    /* (M6d) The kept grid dispatches go before the job's commands. Inside the job they sat between its items, before most
+    /* The kept grid dispatches go before the job's commands. Inside the job they sat between its items, before most
        of its draws (the frozen back end runs them there: its corner table holds the depth drawn so far, 0.95-1.0); after
        the job (M3a's place) they sampled the finished depth, the same depth 8df993dd samples later, so every corner was
        marked unchanged (-1) and the grid compute wrote every tile negated: the CPU culler then culled almost nothing
        (Kokiri 1079 draws a frame against the frozen back end's 685). Before the job they see the depth before its draws
-       (1.0, cleared): the grid is the frozen one's and the frame draws 684 (docs/direct/m6d-report.md). Exact would be the
+       (1.0, cleared): the grid is the frozen one's and the frame draws 684. Exact would be the
        job cut at the dispatch; not done */
     for (int i = 0; i < k.nw; i++) hos_call_guest(c, p_wait, cmd, k.w[i].ev, k.w[i].mode, k.w[i].value);
     if (k.bits) hos_call_guest(c, p_barrier, cmd, k.bits, 0, 0);

@@ -1,4 +1,4 @@
-// (M6e) The file HOS_DBG=meshcap:<present> writes (direct_meshcap.cpp) and the mesh harness reads (tools/meshlab): one frame's
+// The file HOS_DBG=meshcap:<present> writes (direct_meshcap.cpp) and the mesh harness reads (tools/meshlab): one frame's
 // mesh draws with everything their mesh stage reads, so that the stage can be run outside the game. A debug aid's file, local
 // only: it holds game data (the stages' SPIR-V translated from the game, the game's buffers) and is never committed.
 //
@@ -87,7 +87,7 @@ struct McDrawSsbo {
     uint32_t blob;         // (~0u: not read)
     uint64_t guest, size;
 };
-/// MC_VDRAW (M6h): a vertex draw, for the fragment harness: a McDraw (its pass, push data, dynamic state; x: the vertices or
+/// MC_VDRAW : a vertex draw, for the fragment harness: a McDraw (its pass, push data, dynamic state; x: the vertices or
 /// indices, y: the instances, task 0) and McDrawUbo[nubo] (the program's uniform buffers, both stages'); then a McOther as for
 /// MC_OTHER (its place in the frame's order)
 /// MC_OTHER: a command of the frame that is not a mesh draw

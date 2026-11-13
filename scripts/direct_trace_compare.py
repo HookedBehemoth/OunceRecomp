@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""(M4f, M6b) Per-program draw and dispatch counts of one frame, frozen against direct, with a verdict.
+"""(M6b) Per-program draw and dispatch counts of one frame, frozen against direct, with a verdict.
 
     scripts/direct_trace_compare.py <frozen draw_stats_N.txt> <direct log.txt> [--gated drawn|skip] [--all]
 

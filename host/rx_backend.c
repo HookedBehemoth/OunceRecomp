@@ -291,7 +291,7 @@ uint64_t rx_nvn_fence_q(uint64_t queue) { return vk && vk->nvn_fence_q ? vk->nvn
 uint64_t rx_nvn_pushed(void) { return vk ? vk->nvn_pushed() : 0; }
 uint64_t rx_nvn_replayed(void) { return vk ? vk->nvn_replayed() : 0; }
 int rx_nvn_wait(uint64_t fence, uint64_t timeout_ns) {
-    if (crit_rec && vk) {   /* (M6a, HOS_DBG=crit) */
+    if (crit_rec && vk) {   /* (HOS_DBG=crit) */
         const uint64_t t0 = crit_tsc();
         const int r = vk->nvn_wait(fence, timeout_ns);
         crit_span(CRIT_BE_WAIT, t0, crit_tsc(), timeout_ns, (uint64_t)r);
@@ -306,7 +306,7 @@ void rx_nvn_finish(void) { if (vk) vk->nvn_finish(); }
 static volatile LONG presents;   /* (the frames shown, for the camera jitter below) */
 void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
     InterlockedIncrement(&presents);
-    if (crit_wanted()) {   /* (M6a, HOS_DBG=crit) */
+    if (crit_wanted()) {   /* (HOS_DBG=crit) */
         crit_present();
         if (crit_rec && vk) {
             crit_emit_flush();
@@ -443,9 +443,9 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
     return r;
 }
 /* (nvn_native.c: the CPU set an event's value) in order with the submits, for the GPU's waits on it */
-/* (M6b) HOS_GAME_STEP_PER_FRAME=1: option 0 ("game time follows the clock") answered 0 whatever the back end's menu says, so each
+/* HOS_GAME_STEP_PER_FRAME=1: option 0 ("game time follows the clock") answered 0 whatever the back end's menu says, so each
    frame steps the game by 1/60 s (nn_vi.c realtime_step) and the game's clock is the frame count: picture checks compare the
-   same animation phase (docs/direct/m6b-report.md, Determinism). Unset: as before */
+   same animation phase. Unset: as before */
 int rx_option(int id, int otherwise) {
     static int per_frame = -1;
     if (per_frame < 0) per_frame = getenv("HOS_GAME_STEP_PER_FRAME") && atoi(getenv("HOS_GAME_STEP_PER_FRAME")) > 0;
@@ -454,7 +454,7 @@ int rx_option(int id, int otherwise) {
 }
 void rx_option_set(int id, int value) { if (vk && vk->option_set) vk->option_set(id, value); }
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value) {
-    if (crit_rec && vk && vk->nvn_event_signal) {   /* (M6a, HOS_DBG=crit) */
+    if (crit_rec && vk && vk->nvn_event_signal) {   /* (HOS_DBG=crit) */
         crit_emit_flush();
         const uint64_t t0 = crit_tsc();
         vk->nvn_event_signal(gpu, value);

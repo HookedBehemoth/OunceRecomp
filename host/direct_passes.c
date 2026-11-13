@@ -1,5 +1,5 @@
-/* (native-vk M3a) Game patch, direct mode only: a render job is recorded only when its pass's target formats are known
-   (docs/direct/m3-interface.md M3a; m0-job-formats.md; m3-patch-sites.md 1-2).
+/* Game patch, direct mode only: a render job is recorded only when its pass's target formats are known
+.
 
    f_80084de0 (the job recorder) is entered through host/eng_jobs.c's ENTRY_HOOK; in direct mode it asks here first. Its
    pass key (x3) is the pass's identity. If the back end's format table does not know the key, the recorder returns at entry,

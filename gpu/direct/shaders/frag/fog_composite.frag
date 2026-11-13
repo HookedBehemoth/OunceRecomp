@@ -1,7 +1,7 @@
 #version 460
 // The full-screen composite of the main view's atmosphere and volumetric fog (game fragment stage 2407c9a14d62a1d6: Kokiri's and
 // Hyrule Field's 1536x864 post pass, one draw of 3 vertices). Decompiled from the translator's reading of the game's code
-// (docs/direct/m6h-report.md, part 3); not used by the game. What it does, as far as the arithmetic tells:
+// (docs/direct/shader-costs.md, part 3); not used by the game. What it does, as far as the arithmetic tells:
 // - reads the scene depth (c2+0x50) and a depth gather (c2+0x58) at the pixel, and a second depth-like value (c2+0x38) whose
 //   reciprocal against c3 gives a view distance; decides "sky or past the fog's far plane" (`far`);
 // - shifts the pixel's texture coordinate by up to one texel along the depth gradient (an edge-aware offset) and reads two

@@ -1,4 +1,4 @@
-// (M4a) What direct_shader.cpp shares with the compute programs (direct_compute.cpp): reading a stage's package,
+// What direct_shader.cpp shares with the compute programs (direct_compute.cpp): reading a stage's package,
 // the translator's profile and host settings, the programs' constants (c1) in device memory, the cache records' Info format
 // and stamp, the bound textures' answers. Thin calls into direct_shader.cpp's own (one copy of each).
 #pragma once

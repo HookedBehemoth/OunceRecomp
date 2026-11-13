@@ -1,4 +1,4 @@
-// (M6c) GPU breadcrumbs for a lost device (HOS_DBG=marks, a debug aid: docs/direct-backend-plan.md, Checks, "Hangs").
+// GPU breadcrumbs for a lost device (HOS_DBG=marks, a debug aid: docs/direct-backend-plan.md, Checks, "Hangs").
 //
 // Every draw and dispatch the back end records is bracketed by two VK_AMD_buffer_marker writes into host memory: one at the
 // top of the pipe (the command processor reached it) and one at the bottom (it and everything before it finished). Each

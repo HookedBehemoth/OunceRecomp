@@ -1,4 +1,4 @@
-// (M4a) Dispatches and the buffer ops (docs/direct/m4-interface.md, M4a; m2-shader-contract.md section 4).
+// Dispatches and the buffer ops.
 //
 // A list's compute state is its own (NVN keeps the compute program and stage 5's bindings beside the graphics ones): the
 // compute program, stage 5's uniform and storage buffers, texture and image handles, and the pushed compute constants. A
@@ -27,7 +27,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
 /// COPY_B2B / CLEAR_BUF in a list that records, its rendering ended
 void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, CmdOf cmd);
 void compute_list_free(List* l);
-/// (M5) Another compute program was bound in the list's command buffer (direct_query.cpp's resolve step)
+/// Another compute program was bound in the list's command buffer (direct_query.cpp's resolve step)
 void compute_invalidate(List* l);
 /// (hsd_submit) the deferred handle words of l's and its callees' banks copied from the game's arrays now
 void compute_list_submitted(const List* l);

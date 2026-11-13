@@ -1,8 +1,4 @@
-# M6e report: the game's mesh stages outside the game (2026-11-13)
-
-Branch `agent/m6e` (from native-vk 82b9cd2). RX 6950 XT, RADV Mesa 26.2.4, kernel 7.2.11. Every GPU run took the shared GPU
-lock (`work/run.lock`) and waited for the other agents' game runs. Captures and harness output are local (`work/runs/m6e_*`,
-`work/meshlab/`): they hold game data and are not committed. Tests: see the end.
+# The game's mesh stages outside the game
 
 ## Summary
 
@@ -298,7 +294,7 @@ our own text, a transcription of the game's logic as section 2 says):
 | The harness and its tools | `tools/meshlab/` (`meshlab.cpp`, `capture.h`, `spv_dump.{h,cpp}`, `meshtool.cpp`, `ir_pretty.h`, `inventory.py`, `simplify.py`, `build.sh`, `build_shaders.sh`, `gpu_run.sh`, `probes/`) |
 | The decompiled mesh stages | `gpu/direct/shaders/mesh/` (`common.glsl`, `meshlet.glsl`, `meshlet_depth.mesh`, `meshlet_lit.mesh`, `codes.txt`) |
 
-With `RX_BACKEND` unset nothing changes (the switch is the direct back end's). Tests:
+With `HOS_DBG` unset nothing changes. Tests:
 `HOOKSHOT_VULKAN_HEADERS=/usr/include work/venv/bin/python -I -B tests/run_all.py`: 295 passed, 5 failed (the baseline five),
 19 skipped. Local, not committed: the captures (`work/runs/m6e_cap2`, `m6e_cap_k`, `m6e_cap_hf`, `m6e_cap1` the first),
 the harness's builds and outputs (`work/meshlab/`: `runs/` the GPU runs' outputs and the loss's kernel log, `inv_mk/`,

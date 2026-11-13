@@ -1,12 +1,8 @@
-# The Hyrule Field hang (2026-11-13)
-
-Branch `agent/hfhang` (from native-vk 1aa8282). RX 6950 XT, RADV Mesa 26.2.4, kernel 7.2.11. Game runs in `work/runs/hfh_*`,
-harness runs in `work/meshlab_hf/runs/` (both local: they hold game data). Every statement is marked **measured** (a run or a
-file says so) or **inferred**.
+# The Hyrule Field hang
 
 ## Conclusion
 
-(The fix, the spill scan and the market's result: `hf-fix-report.md`.)
+(The fix, the spill scan and the market's result: `hang-fix.md`.)
 
 The loss is **not garbage data**. It is a fault of the driver or the hardware with one compiled shader: the mesh stage
 `40d0c0768e874600` of program `cfebb562ec378f87` (the ivy of the Kokiri passage) as RADV compiles the translator's SPIR-V
@@ -54,7 +50,7 @@ without pixel work. `run --prepass` closes that hole.
 
 ## Runs
 
-Walk: `OVERLAY=work/overlay/chisel_hf RUN=timing scripts/run-vk.sh <name> 240 -- RX_BACKEND=direct HOS_DBG=<list>
+Walk: `OVERLAY=work/overlay/chisel_hf RUN=timing scripts/run-vk.sh <name> 240 -- HOS_DBG=<list>
 HOS_LOG_TIME=1 HOS_INPUT_SCRIPT=30:LDOWN/6000,37:LUP/12000,55:LDOWN/6000,62:LUP/12000,...(every 25 s to 205)
 HOS_INPUT_EXCLUSIVE=1`; each run's `command.txt` has its exact line. K = `cfebb562ec378f87`.
 
@@ -99,12 +95,12 @@ Kernel logs are in each run's folder (`kernel.txt`, `*.kernel.txt`). No configur
   reproducer is the game's single draw or needs the two draws' overlap; in the game the draw before `cfebb`'s had finished.
 - Which of spills and ring; a synthetic shader without game data for a Mesa report; the group count at which it starts.
 - No fix in the game. The hand-written stage emits position, normal, tangent, world position and one texture coordinate
-  set (16 of `40d0`'s 28 output components); the rest (the other agent's note `hf-mesh-program.md`: the probe lookup) is
+  set (16 of `40d0`'s 28 output components); the rest (the other agent's note `mesh-program.md`: the probe lookup) is
   not written, so swapping it in now would draw the ivy wrongly lit.
 
 ## About the task stage as a compute step
 
-That design (m0-task-mesh.md) is what the back end already does since M4c: the task stage is a compute dispatch and the mesh
+That design (task-mesh.md) is what the back end already does since M4c: the task stage is a compute dispatch and the mesh
 stage is native. It does not avoid this loss; the fault is in the native mesh stage's compile.
 
 ## Recommendation

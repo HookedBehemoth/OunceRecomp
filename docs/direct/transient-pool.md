@@ -1,9 +1,4 @@
-# The transient pool: one device allocation for the game's transient render targets (2026-11-13)
-
-Branch `agent/shadowpool` (from native-vk 30e3366), not landed. It builds the design the coordinator chose from
-`shadow-maps.md` (options a + e + c). Runs are in `work/runs/sp_*` (local; game pictures never leave the PC). RX 6950 XT,
-RADV Mesa 26.2.4, `RUN=timing`, one game at a time. Another agent's hang tests ran on the machine between these runs, so
-**no timing figure here is a result**; memory figures, counts and pictures are.
+# The transient pool: one device allocation for the game's transient render targets
 
 **MEASURED** means read from a run's log or a tool's output (named). **INFERRED** means concluded and not confirmed.
 
@@ -257,7 +252,7 @@ non-owner sampled) are 0.
 
 ### 6.1 The picture checks
 
-`scripts/direct_check.sh` against the frozen back end's golden pictures, 420 s each, `work/runs/sp_chk*.verdict.txt`. Every
+`scripts/direct_check.sh` against the old renderer's golden pictures, 420 s each, `work/runs/sp_chk*.verdict.txt`. Every
 run's verdict is **FAIL**; none is a pass, so the checks do not show the pool equal to head. Counts, pass states lined up
 or not (FAIL / UNSTABLE or NO-NOISE / MERGED / PASS):
 
@@ -316,7 +311,7 @@ fix belongs to the patch (for example: not destroying a texture released in the 
 - `gpu/direct/direct_heap.cpp`: `heap_stale`, `heap_stale_census`; `heap_refs` out. `direct_draw.cpp`: the strict event
   for a non-owner image sampled. `direct_sync.cpp`: `sync_age_stats`. `direct_check.cpp`: the known list's note.
 - `gpu/direct/direct_api.h`, `direct_main.cpp`, `host/direct.h`, `host/rx_backend.c`: `hsd_transient_pool`,
-  `hsd_image_need`, `hsd_transient_slot`, `hsd_target_given`, `hsd_host_event`. `gpu/vk/vk_api.h` is unchanged, so
+  `hsd_image_need`, `hsd_transient_slot`, `hsd_target_given`, `hsd_host_event`. `gpu/legacy/vk/vk_api.h` is unchanged, so
   `MKWVK_API_VERSION` is too.
 - `host/rt_slots.c`: section 1.2-1.4. `host/nvn_native.c`: the unused addresses after a virtual pool, the slot's bytes
   told before a texture's initialization, `RX_NVN_LOG_TEX`.

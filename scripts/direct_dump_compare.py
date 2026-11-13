@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Line up a frozen back end's frame dump (RX_VK_DUMP=<present>, gpu/legacy/vk/vk_dump.cpp) with a direct back end's
-(HOS_DBG=dump:<present>, gpu/direct/direct_dump.cpp), pass by pass (docs/direct/m2-interface.md, M2a).
+(HOS_DBG=dump:<present>, gpu/direct/direct_dump.cpp), pass by pass.
 
 Both write one log line per dumped target, "vk: dump NNN <what>: tex <gpu> format <VkFormat> <w>x<h>: ...". The
 passes' targets ("pass c<i> ..." and "pass depth ...") are taken from each log in order, each as (kind, format, size),

@@ -1,4 +1,4 @@
-"""The build-time converter of the sky LUT file (docs/direct/m4e-report.md, task 1): the game's environment archive
+"""The build-time converter of the sky LUT file: the game's environment archive
 Env/GameScene.Nin_Ounce_NVN2.genvb.zs (a zstd SARC, with the game's dictionary) holds res/Master_Field.skybin (and a
 second copy named res/master_field.skybin), the precomputed sky / ambient LUTs as the console's texture storage:
 three RGBA16F surfaces, Tegra block-linear, back to back, no header:

@@ -1,10 +1,10 @@
-/* (native-vk M4f) HOS_DBG=envlog (diagnosis only, either back end): what f_80357060 reads and writes, every 300 presents.
+/* HOS_DBG=envlog (diagnosis only, either back end): what f_80357060 reads and writes, every 300 presents.
 
    f_80357060 (x0 = its object O) reads three values the GPU summed into small buffers ([O+0x48] + [[O+0x40]]+4,
    [O+0x1f0] + [[O+0x1e8]]+4 at +0xc, [O+0x280] + [[O+0x278]]+4), folds each into a running average (O+0x32c, +0x34c,
    +0x36c), and writes the sky / ambient pass's 16-float uniform: the sun direction, and words 11-14 from the environment
    block L = [[[[0x84c9e740]]+0x1e8]+0xc98] (+0x9c0..0x9cc) times [[0x84c9e740]+0x1e8]+0xdac. This logs those inputs, the
-   averages and L's words, so the two back ends can be compared (docs/direct/m4f-report.md). With HOS_DBG unset nothing
+   averages and L's words, so the two back ends can be compared. With HOS_DBG unset nothing
    here runs. */
 #include "hos.h"
 #include <stdlib.h>
@@ -55,7 +55,7 @@ ENTRY_HOOK(0x80357060) {
                 gf(a2 + 20), gf(a2 + 24), gf(a2 + 28), gf(a2 + 16 + 136 * 16), gf(a2 + 20 + 136 * 16), gf(a2 + 24 + 136 * 16),
                 gf(a2 + 28 + 136 * 16));
     }
-    {   /* (the 64^3 BC4 noise volume's storage, m4e-report 3: zero in direct mode) */
+    {   /* (the 64^3 BC4 noise volume's storage: zero in direct mode) */
         int nonzero = 0;
         for (uint64_t i = 0; i < 0x20000; i += 8) nonzero += g64(0x1140bcb000 + i) != 0;
         hos_log("envlog: guest 0x1140bcb000+0x20000: %d of 16384 words nonzero", nonzero);

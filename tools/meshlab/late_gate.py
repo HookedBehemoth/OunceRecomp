@@ -1,4 +1,4 @@
-"""The gate of the back end's register-pressure pass (gpu/direct/direct_spv_late.h; docs/direct/spv-late-report.md).
+"""The gate of the back end's register-pressure pass (gpu/direct/direct_spv_late.h; docs/direct/spv-late.md).
 
 The pass keeps a block's new order by its own count of the values held; what decides whether a stage spills is ACO's
 register allocation. So before the pass is on (and after a change to it, to the translator or to the driver) RADV's

@@ -75,7 +75,7 @@ void init() {
         const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &prep);
         if (r == VK_SUCCESS) object_made(1, "the task prep shader");
         ready = r == VK_SUCCESS && pDispatch && pDispatchIndirect && pUpdateBuffer;
-        logf("direct: task steps (M4c): the task stage of task+mesh programs as a compute step, the mesh stage native; prep step %s (%d); "
+        logf("direct: task steps : the task stage of task+mesh programs as a compute step, the mesh stage native; prep step %s (%d); "
              "a dispatch holds %u task workgroups, a mesh draw %u mesh workgroups", ready ? "made" : "NOT MADE: indirect task+mesh draws are skipped",
              (int)r, max_tasks, max_groups);
     });
@@ -109,7 +109,7 @@ void task_pool_reset(TaskPool* p) {
     const int64_t used = (int64_t)w[0] * 4;
     for (int64_t m = st_pool_most.load(std::memory_order_relaxed); used > m && !st_pool_most.compare_exchange_weak(m, used);) {}
     if (w[1]) strict_event(kNames[T_REFUSED], "%u draws refused by a pool of %llu MB (its use %lld bytes)", w[1], (unsigned long long)(p->bytes >> 20),
-                           (long long)used);   // (M6b)
+                           (long long)used);   // 
     if (w[1] && p->bytes < kPoolMost) {
         count(T_REFUSED, w[1]);
         mapped_buffer_free(p->buffer, p->memory, MO_TASK);
@@ -155,7 +155,7 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
         tasks = std::min(count_, max_tasks);
         if (tasks < count_) {
             count(T_CLIPPED);
-            strict_event(kNames[T_CLIPPED], "program %016llx: %u task workgroups, %u dispatched", (unsigned long long)p.key, count_, tasks);   // (M6b)
+            strict_event(kNames[T_CLIPPED], "program %016llx: %u task workgroups, %u dispatched", (unsigned long long)p.key, count_, tasks);   // 
         }
         groups = (uint32_t)std::min<uint64_t>((uint64_t)tasks * threads, max_groups);
     }
@@ -206,7 +206,7 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
              threads, pw};
         vkCmdBindShadersEXT(pre, 1, &cs, &prep);
         heap_push(pre, &pp, sizeof pp);
-        const uint32_t mk = marks_on() ? mark_before(pre, "task prep step", p.key, l->info.kind, l->info.lr, 0, 0) : 0;   // (M6c)
+        const uint32_t mk = marks_on() ? mark_before(pre, "task prep step", p.key, l->info.kind, l->info.lr, 0, 0) : 0;   // 
         pDispatch(pre, 1, 1, 1);
         if (marks_on()) mark_after(pre, mk);
     }
@@ -229,7 +229,7 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
         task_barrier(task, true);
         pass_resume(l);
     }
-    if (meshcap_now()) meshcap_other((uint64_t)task, 4, p.key, tasks);   // (M6e)
+    if (meshcap_now()) meshcap_other((uint64_t)task, 4, p.key, tasks);   // 
     count(indirect ? T_INDIRECT : T_DIRECT);
     count(job ? T_JOB : T_INLINE);
     st_task_groups.fetch_add(tasks, std::memory_order_relaxed);
@@ -249,7 +249,7 @@ void task_list_end(List* l) {
 }
 
 void task_stats(char* out, size_t cap, double frames) {
-    int k = std::snprintf(out, cap, "task steps a frame (M4c):");
+    int k = std::snprintf(out, cap, "task steps a frame :");
     for (int i = 0; i < T_COUNT; i++)
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", i ? "," : "", kNames[i],
                            (i == T_POOLS || i == T_GROWN ? st[i].load() : st[i].exchange(0)) / (i == T_POOLS || i == T_GROWN ? 1.0 : frames));

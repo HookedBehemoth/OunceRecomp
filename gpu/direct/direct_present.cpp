@@ -1,4 +1,4 @@
-// The window (M2a): each present blits the NVN window texture, with the host's crop, into the swapchain's next image
+// The window : each present blits the NVN window texture, with the host's crop, into the swapchain's next image
 // (letterboxed by gpu/api/vk_present_rect.h); with no window (HOS_HEADLESS) into an image of its own. The host's call is
 // noted and its GPU work runs in its queue's order (direct_sync.cpp): after every submission handed to that queue
 // before it. The swapchain as gpu/legacy/vk/vk_main.cpp makes it, without HDR, the
@@ -31,7 +31,7 @@
 #include "../api/vk_present_rect.h"
 
 namespace hsd {
-// (M6a, direct_sync.cpp: HOS_DBG=gputime / frames, measurement)
+// (direct_sync.cpp: HOS_DBG=gputime / frames, measurement)
 bool gputime_on();
 void gputime_present_begin(VkCommandBuffer cb, uint32_t& slot);
 void gputime_present_end(VkCommandBuffer cb, uint32_t slot);
@@ -69,7 +69,7 @@ struct Frame {
     int64_t shot_present = 0;   // (0: none waiting)
 };
 
-// (M4d) Shots of the presented frame (hsd_shots: the host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, as the frozen back end reads
+// Shots of the presented frame (hsd_shots: the host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, as the frozen back end reads
 // them): every Nth present the image presented (the swapchain's or the offscreen one, after the blit with the crop) is
 // scaled into a 1280x720 RGBA8 image and copied into the frame slot's buffer; once that slot's fence has passed (three
 // presents later, where the present waits for it anyway) the pixels go to <dir>/vk_<present>.png on a thread of its own.
@@ -302,7 +302,7 @@ void log_line() {
     logf("direct: %s", b);
     pass_stats(b, sizeof b, frames);
     logf("direct: %s", b);
-    jobs_stats(b, sizeof b, frames);   // (M3a)
+    jobs_stats(b, sizeof b, frames);   // 
     logf("direct: %s", b);
     query_stats(b, sizeof b, frames);
     if (*b) logf("direct: %s", b);
@@ -328,14 +328,14 @@ void log_line() {
     logf("direct: %s", b);
     layer0_stats(b, sizeof b);
     logf("direct: %s", b);
-    mem_stats(b, sizeof b);   // (M6f)
+    mem_stats(b, sizeof b);   // 
     logf("direct: %s", b);
     if (log_lists) {
         sites_stats(b, sizeof b, frames);
         logf("direct: %s", b);
     }
-    draw_log(frames);   // (M2b)
-    compute_log(frames);   // (M4a)
+    draw_log(frames);   // 
+    compute_log(frames);   // 
     validation_stats(b, sizeof b);
     std::snprintf(text, sizeof text, "validation: %s", b);
     logf_changed("validation", text);
@@ -392,7 +392,7 @@ uint64_t present_count() { return asked.load(std::memory_order_acquire); }
 void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation Thread)
     const auto now = clk::now();
     if (presents) intervals_ms.push_back(std::chrono::duration<float, std::milli>(now - last_present).count());
-    {   // (M6a, HOS_DBG=frames: each present's interval in direct_frames.csv; with gputime also the GPU's frame time, busy and idle as the
+    {   // (HOS_DBG=frames: each present's interval in direct_frames.csv; with gputime also the GPU's frame time, busy and idle as the
         // timestamps of an earlier frame came in, a row late; measurement)
         static FILE* frames_file = dbg("frames") ? std::fopen("direct_frames.csv", "w") : nullptr;
         if (frames_file && presents) {
@@ -411,7 +411,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     strict_present(n);   // (M6b: arming)
     cmd_frame_presented(n);
     image_sweep(n);
-    mem_budget_sample(image_dying_bytes());   // (M6f)
+    mem_budget_sample(image_dying_bytes());   // 
     assets_present(n);
     dump_present(n);
     pstats_present(n);   // (M6h: HOS_DBG=pstats)
@@ -430,7 +430,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
         vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
         st_fence_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - w0).count(), std::memory_order_relaxed);
     }
-    if (gputime_on()) gputime_read();   // (M6a)
+    if (gputime_on()) gputime_read();   // 
     shot_write(f);   // (M4d: the shot this slot took three presents ago)
     const int64_t number = ++run_count;
     const bool shot = shot_every && number % shot_every == 0 && (dev.offscreen || swap_src) && shots_ready();
@@ -460,7 +460,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(f.cmd, &bi);
     uint32_t gt_slot = 0;
-    if (gputime_on()) gputime_present_begin(f.cmd, gt_slot);   // (M6a)
+    if (gputime_on()) gputime_present_begin(f.cmd, gt_slot);   // 
     // (after the frame's work on the queue: the window texture's writes, before the blit reads it)
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, mb.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;

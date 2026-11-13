@@ -1,4 +1,4 @@
-/* (native-vk A-rt) The host's side of prepared assets for the direct back end (docs/direct/a-rt-report.md; the hooks are
+/* The host's side of prepared assets for the direct back end (the hooks are
    the ones traced in work/assets/native/asset-path.md 3.4 and 7.3, on branch agent/assets1). Direct mode only
    (HOS_DBG=noassets turns every patch here off, for a before/after).
 
@@ -25,7 +25,7 @@
        unconverted one is the placeholder, counted; the memcpy copies nothing either way.
      - the font glyph cache: f_8152f540 (the shelf packer: cache, &x, &y, w, h) notes the cell for this thread; after
        f_81539300 (nn::font's plot) has written it into the atlas ([cache+0xf0], pitch [cache+0x140]), the cell's rows
-       x..x+w+4, y..y+h+3 go to the atlas image (docs/direct/m3-patch-sites.md 6).
+       x..x+w+4, y..y+h+3 go to the atlas image (docs/direct/patch-sites.md 6).
    Packaged texture data (nvnTextureBuilderSetPackagedTextureData) is not copied into the storage (nvn_native.c).
    A line every 10 s: the asset heap's resident pages and the guest memory's (mincore), the copies skipped. */
 #include "hos.h"
@@ -226,7 +226,7 @@ ENTRY_HOOK(0x80798690) {
     const char *nm = bstr(G64(brti + 0x60), &nl);
     if (nm) k.name = nm, k.name_len = nl;
     k.data = src && hos_guest_range(src, 1) ? GP(src) : NULL;
-    /* (M4g, M6f: a load with no data is an alias of another texture: its target's texels, direct_tex_dedup.c) */
+    /* (M6f: a load with no data is an alias of another texture: its target's texels, direct_tex_dedup.c) */
     const int alias = !src && direct_tex_alias(td, &k);
     rx_direct()->asset_load(&k);
     direct_texdata_created(td, alias);   /* (M6f: the event table) */
@@ -341,12 +341,12 @@ int direct_assets_skip_packaged(uint64_t bytes) {
     return 1;
 }
 
-/* (M4f) The texture data pool (pool 127, 2.4 GB) is made by agl::TextureDataMgr, whose nvnMemoryPoolInitialize returns to
+/* The texture data pool (pool 127, 2.4 GB) is made by agl::TextureDataMgr, whose nvnMemoryPoolInitialize returns to
    0x80f6cb20 (HOS_NVN_LOG_POOLS=1, run m4f_pl_d: the only pool made from there). The direct back end takes every texel of
    it from the store and never reads it, so its layer 0 leaves it unbound: named here, at its creation, before layer 0
    binds pools (direct_pools.cpp layer0_pool_native). The manager makes more than one (Kokiri: 2432 MB at boot, 201 MB and
    2 MB at the scene load): each is named. find_heap still names the asset heap's pool (127) to the asset path, as before. */
-/* (M6f) f_80f6c9d0 (lr 0x80f6cb20) is agl's generic pool wrapper (tera's pools and Replace requests use it too:
+/* f_80f6c9d0 (lr 0x80f6cb20) is agl's generic pool wrapper (tera's pools and Replace requests use it too:
    docs/direct/texture-streaming.md 1): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
    (f_80f6c580), whose body runs from here with this thread noted */
 static _Thread_local int tl_heap_init, tl_heap_token;
@@ -388,7 +388,7 @@ void direct_assets_overlay_opened(const char *path) {
     if (k <= 20 || k % 100000 == 0) hos_log("assets: overlay open #%lld: %s", (long long)k, path);
 }
 
-/* ---- the tiles' bytes, kept by storage address (M6f) ----
+/* ---- the tiles' bytes, kept by storage address ----
    The memcpy below writes nothing (the direct back end never reads texture storage), so the bytes it would have left in
    the storage are kept here, by the storage's address, as the storage would keep them: given to the texture live there
    (if any), and to every texture initialized there later whose linear size they are, until another tile is copied
@@ -396,8 +396,8 @@ void direct_assets_overlay_opened(const char *path) {
    that storage and shape that still holds what was written into it holds the storage's content already). The game does
    initialize tile textures again over storage it does not copy into again (walking in Hyrule Field: the height and
    material tiles at present ~990, whose first textures it had finalized; their new images were empty, the floor at
-   height 0 and the foliage over it lit from garbage: docs/direct/m6f-report.md 2). Before M6f the bytes were held only
-   until the first texture there took them. */
+   height 0 and the foliage over it lit from garbage). The bytes are held only
+   until the first texture there takes them. */
 #define TILES_HELD 4096   /* (distinct tile storage addresses; Hyrule Field uses ~150) */
 volatile long direct_assets_tiles_pending;
 volatile long direct_assets_tilelog;
@@ -447,7 +447,7 @@ static uint64_t tile_linear(const nvn_tex *t) {
 void direct_assets_texture_init(const void *tex) {
     const nvn_tex *t = (const nvn_tex *)tex;
     if (!t->gpu) return;
-    if (direct_assets_tilelog && t->d.width == 260) {   /* (M6f) HOS_DBG=tilelog: tile-sized textures initialized */
+    if (direct_assets_tilelog && t->d.width == 260) {   /* HOS_DBG=tilelog: tile-sized textures initialized */
         extern volatile LONG64 hos_present_count;
         hos_log("tilelog: present %lld init %#llx %ux%ux%u format %#x serial %llu", (long long)hos_present_count,
                 (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)t->serial);
@@ -480,7 +480,7 @@ SPLICE_AFTER(0x80c17040, "(c->z) ? (uint64_t)0 : c->x[8]; c->x[1] = _r;") {
         return;
     }
     nvn_tex t;
-    {   /* (M6f) HOS_DBG=tilelog (diagnosis): every tile memcpy, where it went */
+    {   /* HOS_DBG=tilelog (diagnosis): every tile memcpy, where it went */
         static int tl = -1;
         if (tl < 0) tl = dbg_has("tilelog");
         if (tl) {

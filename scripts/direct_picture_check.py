@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""(M6b) Per-pass picture checks that can fail (docs/direct/m6b-report.md, section 3).
+"""Per-pass picture checks that can fail.
 
 A frame dump of either back end at full resolution (frozen: RX_VK_DUMP=<present> RX_VK_DUMP_W=4096 RX_VK_DUMP_RAW=1; direct:
 HOS_DBG=dump:<present>,dumpw:4096,dumpraw) is packed into a compact lossless store, passes of two runs are lined up by a stable
@@ -32,7 +32,7 @@ are more than the noise had. A mean over the whole picture is printed but decide
 wrong channel, fails the pass however the rest cancels.
 
 The threshold. From the noise table: per pass identity, per tile and channel, the worst error between any two of >= 3 frozen
-runs; a tile's threshold is 2 x that, at least 2/255 (two 8-bit steps). (M6d) For a float target (16- and 32-bit float colour,
+runs; a tile's threshold is 2 x that, at least 2/255 (two 8-bit steps). For a float target (16- and 32-bit float colour,
 float depth) the floor is relative: 2/255 of the channel's own scale in the reference (its 99th percentile of |value|, at
 most 1, at least 1e-6), so a target whose values are all near 0.0005 fails when it is wrong by its own size (M6c: the
 occlusion grid's R16F input, negated, passed under the absolute floor); and HDR values keep their sign through
@@ -197,7 +197,7 @@ SCALE_MIN = 1e-6
 
 
 def channel_floor(it, na):
-    """(M6d) per channel, the smallest threshold a tile gets: FLOOR, or for a float target FLOOR x its own scale (the 99th
+    """per channel, the smallest threshold a tile gets: FLOOR, or for a float target FLOOR x its own scale (the 99th
     percentile of |value| in the reference, clamped to [SCALE_MIN, 1])"""
     N = np()
     c = na.shape[2] if na.ndim == 3 else 1

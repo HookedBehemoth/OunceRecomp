@@ -80,7 +80,7 @@ void mem_image_free(VkImage image, Mem* mem) {
     vmaDestroyImage(vma, image, (VmaAllocation)mem);
 }
 
-// ---- the transient pool (docs/direct/shadow-pool-report.md) ----
+// ---- the transient pool (docs/direct/transient-pool.md) ----
 // One device allocation for the game's transient render targets (host/rt_slots.c's slot range), made once when the host
 // names the range. A target's image is bound in it at its storage offset, so targets alias as on the console and no
 // device memory is allocated or freed for them in play. Its own vkAllocateMemory, outside VMA's blocks: nothing else
@@ -142,7 +142,7 @@ void mem_buffer_free(VkBuffer buffer, Mem* mem) {
 }
 void mem_flush(Mem* mem) { vmaFlushAllocation(vma, (VmaAllocation)mem, 0, VK_WHOLE_SIZE); }
 void mem_invalidate(Mem* mem) { vmaInvalidateAllocation(vma, (VmaAllocation)mem, 0, VK_WHOLE_SIZE); }
-/// (M6f) Free VRAM as the driver sees it (VK_EXT_memory_budget: the largest device-local heap's budget minus its usage,
+/// Free VRAM as the driver sees it (VK_EXT_memory_budget: the largest device-local heap's budget minus its usage,
 /// so the compositor and other processes count), plus the bytes of images already waiting to be destroyed; sampled once a
 /// present (present path), read by the host (hsd_vram_free) for the game's cache eviction patch
 std::atomic<int64_t> vram_free_now{-1};
@@ -163,7 +163,7 @@ void mem_budget_sample(int64_t pending) {
     vram_free_now.store((int64_t)bp.heapBudget[best] - (int64_t)bp.heapUsage[best] + pending, std::memory_order_relaxed);
 }
 
-/// (M6f) The device-local heaps: the driver's usage and budget (VK_EXT_memory_budget), and VMA's blocks and allocations in them
+/// The device-local heaps: the driver's usage and budget (VK_EXT_memory_budget), and VMA's blocks and allocations in them
 void mem_stats(char* out, size_t cap) {
     static PFN_vkGetPhysicalDeviceMemoryProperties2 props2 =
         (PFN_vkGetPhysicalDeviceMemoryProperties2)get_instance_proc(dev.instance, "vkGetPhysicalDeviceMemoryProperties2");

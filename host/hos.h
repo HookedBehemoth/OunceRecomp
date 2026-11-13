@@ -119,7 +119,7 @@ int hos_cores(void);
    held one) and takes one again after it (hos_vcore_back); checkpoints hand it to a better waiter that asked */
 int hos_vcores_on(void);
 int hos_vcore_away(void);
-int hos_vcore_away_why(int why, const void *key);   /* (M6a, HOS_DBG=crit: the same, the block named: direct_crit.h) */
+int hos_vcore_away_why(int why, const void *key);   /* (HOS_DBG=crit: the same, the block named: direct_crit.h) */
 void hos_vcore_back(void);
 void hos_vcore_checkpoint(void);
 void hos_vcore_yield(void);

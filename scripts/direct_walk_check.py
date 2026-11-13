@@ -1,4 +1,4 @@
-"""(M6f) The walk check's verdict (scripts/direct_walk_check.sh): a run's log and vram.txt read into a few lines and a
+"""The walk check's verdict (scripts/direct_walk_check.sh): a run's log and vram.txt read into a few lines and a
 verdict. Direct runs fail on a strict stop, on textures made with undefined content (loads with no data the asset path
 could not resolve, ASTC textures with no prepared record), on a lost device, and on a run that did not reach its end.
 

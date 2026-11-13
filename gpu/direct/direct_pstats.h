@@ -1,5 +1,5 @@
-// (M6h) What each draw and dispatch of one frame made the GPU run (HOS_DBG=pstats:<present>, a debug aid: the shader census,
-// docs/direct/m6h-report.md).
+// What each draw and dispatch of one frame made the GPU run (HOS_DBG=pstats:<present>, a debug aid: the shader census,
+// docs/direct/shader-costs.md).
 //
 // Every draw, mesh draw, task step and dispatch recorded while the present count is <present> is bracketed by a pipeline
 // statistics query (input vertices and primitives, vertex shader invocations, clipping invocations and primitives, fragment

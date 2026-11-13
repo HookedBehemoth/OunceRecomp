@@ -1,4 +1,4 @@
-"""(native-vk) Labels for the lifted game's functions, so a profile or a backtrace names what we already know.
+"""Labels for the lifted game's functions, so a profile or a backtrace names what we already know.
 
 nx2/oot_labels.txt lists guest address -> label (one game build: the addresses are HOS_GAME_VERSION 100's). After the
 link, the executable's symbol f_<address> becomes <label>.f_<address>: the label first (a profiler's column shows it),

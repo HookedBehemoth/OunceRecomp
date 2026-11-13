@@ -1,4 +1,4 @@
-// meshlab (M6h): the fragment harness. A captured vertex draw's fragment stage (HOS_DBG=meshcap's MC_VDRAW: its program's
+// meshlab : the fragment harness. A captured vertex draw's fragment stage (HOS_DBG=meshcap's MC_VDRAW: its program's
 // stages and heap mappings, its uniform buffers' bytes) drawn outside the game against a replacement, into float targets, and
 // compared bit for bit; and both timed on the GPU. Included by meshlab.cpp (its device, buffers, heaps and shader objects).
 //

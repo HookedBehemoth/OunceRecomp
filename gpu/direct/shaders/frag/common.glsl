@@ -1,5 +1,5 @@
 // The back end's interface for a fragment stage, as the translator's fragment stages use it (gpu/direct/eden, direct_shader.cpp
-// finish), for the decompiled fragment stages beside this file (docs/direct/m6h-report.md). Not used by the game.
+// finish), for the decompiled fragment stages beside this file (docs/direct/shader-costs.md). Not used by the game.
 //
 // - Uniform buffers: each bank the stage reads (c1 the program's constants, c2 the driver bank of texture handles, c3.. the game's
 //   buffers) is a block of 16384 words at its binding; the back end maps the binding to its address in the table pushed at 120

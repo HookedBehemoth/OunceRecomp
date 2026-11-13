@@ -25,8 +25,8 @@ struct Image;
 struct CmdSlot;
 struct DumpItem;
 struct ListDraw;   // (direct_draw.cpp: its state and draw caches)
-struct ListComp;   // (M4a, direct_compute.cpp: its compute state)
-struct ListQuery;  // (M5, direct_query.cpp: its counter and condition)
+struct ListComp;   // (direct_compute.cpp: its compute state)
+struct ListQuery;  // (direct_query.cpp: its counter and condition)
 /// A pass's attachment (direct_pass.cpp)
 struct Target {
     Image* im = nullptr;
@@ -35,7 +35,7 @@ struct Target {
     VkImageAspectFlags aspect = 0;
     uint32_t level = 0, layer = 0, w = 0, h = 0;
 };
-/// (M3a) A pass's formats, what a job's rendering secondary inherits (direct_pass.cpp's format table keeps them by pass key)
+/// A pass's formats, what a job's rendering secondary inherits (direct_pass.cpp's format table keeps them by pass key)
 struct PassFormats {
     uint32_t n = 0;
     VkFormat color[8]{};
@@ -89,7 +89,7 @@ struct List {
     uint32_t last_op = 0, last_op2 = 0;   // (the ops before the one being handled, for logs)
     std::vector<DumpItem*> dumps;   // (HOS_DBG=dump: its passes' copies, in order)
     ListDraw* dctx = nullptr;   // (M2b: made at its first state op)
-    // (M3a)
+    // 
     bool rec = false;         // (it records Vulkan commands: layer, gate, compute, head lists, and jobs with their pass's formats)
     bool secondary = false;   // (a job: one rendering secondary, cur, executed by its caller inside the caller's rendering)
     PassFormats fmt;          // (a secondary's: what it was begun with)
@@ -119,7 +119,7 @@ void list_unref(List* l);   // (any thread; the last one frees it and lets go of
 void list_flatten(const List* l, std::vector<const FrameOp*>& out);
 /// The command buffers a submission of l runs, its callees' in place (l ended)
 void list_buffers(const List* l, std::vector<VkCommandBuffer>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps);
-/// (M4a) A submission's work in its order: each item a command buffer or a frame-level op
+/// A submission's work in its order: each item a command buffer or a frame-level op
 struct SubItem {
     const FrameOp* op = nullptr;
     VkCommandBuffer cb = VK_NULL_HANDLE;

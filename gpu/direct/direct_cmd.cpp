@@ -76,7 +76,7 @@ VkCommandBuffer alloc_buffer(VkCommandPool pool, VkCommandBufferLevel level = VK
     return cb;
 }
 
-// (M6b) The command buffers all threads took in a frame, by frame (mod 4), and the most of any frame so far: a thread can be
+// The command buffers all threads took in a frame, by frame (mod 4), and the most of any frame so far: a thread can be
 // handed at most a whole frame's lists, so a slot that records is grown to that at its reset, by its own thread. Its buffers
 // then grow only when a frame needs more than any frame before it (an area loads), never because the job system handed this
 // thread a larger share than it had before (M6b: that grew 80 secondaries over minutes of steady Kokiri)

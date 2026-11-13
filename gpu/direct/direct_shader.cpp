@@ -2,7 +2,7 @@
 // profile, the graphics translation, the key, the answers, the cache's record format) with its switches as the constants
 // the frozen back end runs with (RX_VK_DESC_HEAP_BDA=2: storage buffers by address, wide), and from vk_desc_heap.cpp
 // make_program (the heap mapping) and vk_shader_object.cpp so_make (the shader objects). What differs (step A,
-// m2-shader-contract.md section 6): uniform buffers are read through addresses (an address table in the frame arena, its
+// shader-contract.md section 6): uniform buffers are read through addresses (an address table in the frame arena, its
 // address pushed), not ring descriptors; a texture whose handle is a game buffer's word reads it there through the buffer's
 // pushed address, as a driver bank's; textures and samplers are the registration-time entries. The cache is this back end's
 // own file (hookshot_direct_programs.bin), stamped by what translates (HOOKSHOT_DIRECT_SHADER_STAMP, nx2/build.py) and the
@@ -95,7 +95,7 @@ struct Code {
     bool header_only = false;
     uint8_t sph[sizeof(Shader::ProgramHeader)]{};
     bool ok = false;
-    // (M4b, NVN2's task (6) and mesh (7) stages: control section +0x58 threads 15:0, payload bytes 31:16; +0x60 max primitives
+    // (NVN2's task (6) and mesh (7) stages: control section +0x58 threads 15:0, payload bytes 31:16; +0x60 max primitives
     // 15:0, max vertices 31:16; +0x5f the output topology, 1 points, 3 triangles (vk_shader.cpp parse_code))
     uint32_t mesh_threads = 0, payload_bytes = 0, max_vertices = 0, max_primitives = 0, topology = 0;
 };
@@ -220,7 +220,7 @@ public:
             return v;
         }
         if (index == 0 || index == 2) return bank_word(s, (int)index, nvn.stage, offset);
-        // (M3b, step B: a game buffer's word is not read. Translation answers from the program alone where the draw cannot
+        // (step B: a game buffer's word is not read. Translation answers from the program alone where the draw cannot
         // check the answer: a handle there is the shader's to read, a texture of it answers as its instruction says)
         if (index >= 3) game_words++;
         return 0;
@@ -243,7 +243,7 @@ public:
     bool HasNativeInstructions() const override { return true; }
     bool IsNativeProgram() const override { return true; }
     bool IsCbufStorageBufferPointer(u32 index, u32 offset) override {
-        // (M3b, step B: from the program alone. A word of the driver bank's storage buffer table is a storage buffer's
+        // (step B: from the program alone. A word of the driver bank's storage buffer table is a storage buffer's
         // address whatever is bound there; any other is not taken for one: its accesses stay global memory, which is read by
         // address all the same (every stage by address))
         static constexpr uint32_t kSsboTable[8] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 0x670, 0x770};
@@ -260,7 +260,7 @@ public:
         }
     }
     void Dump(u64, u64) override {}
-    /// (M4b) a mesh program's SET_MESH_SHADER_A / B and SET_MESH_INIT_SHADER, and the header-only stage whose output map lists
+    /// a mesh program's SET_MESH_SHADER_A / B and SET_MESH_INIT_SHADER, and the header-only stage whose output map lists
     /// its per-primitive outputs (vk_shader.cpp Env::set_mesh)
     void set_mesh(const std::array<u32, 3>& registers, const uint8_t* primitive_sph) {
         mesh_registers = registers;
@@ -320,7 +320,7 @@ Shader::Profile make_profile() {
     p.ssbo_bda = true;
     p.ssbo_bda_check = false;
     p.ssbo_bda_wide = true;
-    p.heap_handles = true;   // (M3b, step B: the shader reads every handle and indexes the heap with it)
+    p.heap_handles = true;   // (step B: the shader reads every handle and indexes the heap with it)
     return p;
 }
 const Shader::Profile& profile() {
@@ -397,7 +397,7 @@ uint64_t graphics_key(uint64_t vs_key, const uint8_t* vs_sph, uint64_t fs_key, c
     for (int i = 0; i < 8; i++) written[i] = fs_sph && header_of(fs_sph).ps.HasOutputComponents(i) ? color_types[i] : 0;
     return hash_bytes(written, 8, key);
 }
-/// (M4b) A mesh-only program's key (vk_shader.cpp mesh_key with no task stage): its code, the header-only stage's, the colour
+/// A mesh-only program's key (vk_shader.cpp mesh_key with no task stage): its code, the header-only stage's, the colour
 /// types the fragment stage writes
 uint64_t mesh_key(uint64_t mesh_code, uint64_t fs_key, const uint8_t* fs_sph, const uint8_t* prim_sph, const uint8_t color_types[8]) {
     uint64_t key = hash_bytes("mesh", 4, mesh_code);
@@ -407,7 +407,7 @@ uint64_t mesh_key(uint64_t mesh_code, uint64_t fs_key, const uint8_t* fs_sph, co
     for (int i = 0; i < 8; i++) written[i] = fs_sph && header_of(fs_sph).ps.HasOutputComponents(i) ? color_types[i] : 0;
     return hash_bytes(written, 8, key);
 }
-/// (M4b) SET_MESH_SHADER_A / B and SET_MESH_INIT_SHADER of a mesh program (vk_shader.cpp mesh_registers_of; M4c: with its task
+/// SET_MESH_SHADER_A / B and SET_MESH_INIT_SHADER of a mesh program (vk_shader.cpp mesh_registers_of; M4c: with its task
 /// stage's threads and payload lines when it has one)
 std::array<u32, 3> mesh_registers_of(const Code& mesh, const Code* task = nullptr) {
     const uint32_t topology = mesh.topology == 3 ? 4 : mesh.topology == 1 ? 0 : mesh.topology;
@@ -416,7 +416,7 @@ std::array<u32, 3> mesh_registers_of(const Code& mesh, const Code* task = nullpt
     return {(topology & 0xF) | (std::min(most, 0x100u) << 4) | (std::min(most, 0x100u) << 13), std::min(mesh.mesh_threads, 0x3Fu) << 20,
             (task ? std::min(task->mesh_threads, 0x3Fu) : 0u) | (std::min(lines, 0x1FFu) << 12) | (std::min(lines, 0x1FFu) << 22)};
 }
-/// (M4c) A task+mesh program's key: the mesh-only key salted with its task stage's code
+/// A task+mesh program's key: the mesh-only key salted with its task stage's code
 uint64_t task_mesh_key(uint64_t task_code, uint64_t mesh_code, uint64_t fs_key, const uint8_t* fs_sph, const uint8_t* prim_sph,
                        const uint8_t color_types[8]) {
     return hash_bytes("task", 4, mesh_key(mesh_code, fs_key, fs_sph, prim_sph, color_types) ^ task_code * 0x9E3779B97F4A7C15ull);
@@ -451,7 +451,7 @@ struct StageScan {
     uint64_t key = 0;
     uint8_t sph[sizeof(Shader::ProgramHeader)]{};
 };
-/// (M3b) The variants of one pair of stage codes, shared by every program slot with that code (the game sets the same code in
+/// The variants of one pair of stage codes, shared by every program slot with that code (the game sets the same code in
 /// thousands of program objects: 12,528 set in Kokiri for 149 variants drawn). Made once, never freed
 struct Family {
     std::atomic<Variant*> variants{nullptr};
@@ -464,7 +464,7 @@ std::mutex families_mu;
 std::unordered_map<uint64_t, Family*> families;   // (by pair_key of the stages' code keys)
 std::atomic<int64_t> st_families{0};
 
-/// (M4b) A program with a task stage, its draws counted by its stages' code (M4c: drawn and skipped)
+/// A program with a task stage, its draws counted by its stages' code (M4c: drawn and skipped)
 struct TaskMesh {
     std::atomic<uint64_t> id{0};
     uint64_t task = 0, mesh = 0, fs = 0;
@@ -508,7 +508,7 @@ struct Slot {
     const char* why = "";
     Family* fam = nullptr;   // (set before state 1)
     TaskMesh* tm = nullptr;  // (state 4)
-    uint64_t keys[6]{};      // (M4b, logs: each stage's code key and NVN stage, set before the state)
+    uint64_t keys[6]{};      // (logs: each stage's code key and NVN stage, set before the state)
     int16_t stages[6]{-1, -1, -1, -1, -1, -1};
 };
 
@@ -571,7 +571,7 @@ struct DiskRecord {
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_pair;   // (vertex code key ^ fragment code key * 31)
 
 uint64_t pair_key(uint64_t vs, uint64_t fs) { return vs ^ fs * 31; }
-/// (M4b) a slot's family and cache key: a mesh program's code key salted so it never meets a vertex program's
+/// a slot's family and cache key: a mesh program's code key salted so it never meets a vertex program's
 uint64_t pair_key_of(bool mesh, uint64_t first, uint64_t fs) { return pair_key(mesh ? hash_bytes("mesh", 4, first) : first, fs); }
 
 void put_bytes(std::vector<uint8_t>& o, const void* d, size_t n) { o.insert(o.end(), (const uint8_t*)d, (const uint8_t*)d + n); }
@@ -656,7 +656,7 @@ void get_info(Reader& r, Shader::Info& i) {
         r.bad = true;
 }
 
-/// The register-pressure pass on mesh stages' SPIR-V (direct_spv_late.h; docs/direct/spv-late-report.md): on, unless
+/// The register-pressure pass on mesh stages' SPIR-V (direct_spv_late.h; docs/direct/spv-late.md): on, unless
 /// HOS_DBG=nolate (a diagnosis: the translator's order as it is; the program cache is stamped by it, so the two do not mix)
 bool late_mesh() {
     static const bool on = !dbg("nolate");
@@ -885,8 +885,8 @@ VkDescriptorSetAndBindingMappingEXT null_map(uint32_t b, uint32_t stride) {
     return m;
 }
 
-// ---- (M4e) the graphics shader objects' binaries: hookshot_direct_shader_objects.bin ----
-// What a vkCreateShadersEXT from SPIR-V costs at every start (750 objects, ~14 s of worker time in Kokiri, m4d-report) is
+// ---- the graphics shader objects' binaries: hookshot_direct_shader_objects.bin ----
+// What a vkCreateShadersEXT from SPIR-V costs at every start (750 objects, ~14 s of worker time in Kokiri) is
 // paid once per driver: each object made from SPIR-V has its binary (vkGetShaderBinaryDataEXT) appended, keyed by a hash of
 // everything its create info carries (stage, next stage, flags, the subgroup size, the SPIR-V, the heap mappings); a later
 // make with the same key creates it from the binary. VK_EXT_shader_object ties a binary to shaderBinaryUUID and
@@ -1332,7 +1332,7 @@ uint64_t slot_pair(const Slot& s) {   // (M4c: a task+mesh program's salted with
                   : pair_key_of(s.mesh, s.vs.key, s.has_fs ? s.fs.key : 0);
 }
 
-/// (M4b) A mesh-only program: its mesh stage (no task stage before it: the device has no task stage enabled) and fragment
+/// A mesh-only program: its mesh stage (no task stage before it: the device has no task stage enabled) and fragment
 /// stage, as vk_shader.cpp translate_mesh_into translates them without the fallback
 bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const Code* prim, const Code* fsc, const uint8_t color_types[8]) {
     try {
@@ -1388,7 +1388,7 @@ bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const C
     }
 }
 
-/// (M4c) A task+mesh program: its task stage as a compute shader (Eden's fallback task half, RuntimeInfo::task_buffer: it writes
+/// A task+mesh program: its task stage as a compute shader (Eden's fallback task half, RuntimeInfo::task_buffer: it writes
 /// its mesh workgroups and payload to the draw's task header), its mesh stage native with no task stage before it (it reads
 /// them from there), its fragment stage. Stages in the order mesh, fragment, task (stage 0 is the mesh stage, as a mesh-only
 /// program's)
@@ -1770,7 +1770,7 @@ void shader_stats(char* out, size_t cap, double frames) {
 
 }  // namespace hsd
 
-// ---- (M4a) the pieces compute programs share with these (direct_shader_parts.h; direct_compute.cpp) ----
+// ---- the pieces compute programs share with these (direct_shader_parts.h; direct_compute.cpp) ----
 namespace hsd::shader_parts {
 bool read_stage(const nvn_stage_data& sd, uint8_t ctl[0xd8], std::vector<uint8_t>& area) { return read_package(sd, ctl, area); }
 const Shader::Profile& stage_profile(VkShaderStageFlags stage) { return profile_graphics(stage); }

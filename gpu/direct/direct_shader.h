@@ -1,4 +1,4 @@
-// Programs (docs/direct/m2-interface.md, direct_shader; m2-shader-contract.md step A): NVN programs through Eden's
+// Programs: NVN programs through Eden's
 // translator (linked from the frozen back end's objects, unchanged) to shader objects with descriptor-heap mappings.
 //
 // A program is a slot found by its NVN serial in a table read without a lock. Its stages' code is read and lowered when the
@@ -76,14 +76,14 @@ struct DrawProg {
     struct TexWord {
         uint8_t stage, bank;
         uint16_t offset;
-        // (M4h, logs: a two-word handle's second word and the shifts, the descriptor's type and count; computed: no word)
+        // (logs: a two-word handle's second word and the shifts, the descriptor's type and count; computed: no word)
         uint8_t sbank = 0, shift = 0, sshift = 0, type = 0, count = 1;
         uint16_t soffset = 0;
         bool secondary = false, computed = false;
     };
     std::vector<TexWord> tex_words;   // (the handle words its textures read: logs)
     const char* skip = nullptr;   // (a variant step A cannot draw: the reason)
-    char shape[160]{};   // (M3b, logs: per stage the textures by their handle's source, images, storage buffers, global memory)
+    char shape[160]{};   // (logs: per stage the textures by their handle's source, images, storage buffers, global memory)
 };
 
 constexpr uint32_t kTablePush = 120;
@@ -93,12 +93,12 @@ constexpr uint32_t kMeshFirstPush = 56;   // (M4b: a mesh draw's first workgroup
 void shader_program_set(const nvn_prog* p);
 /// The variant for the bound program and state; null: none ready (why says, the translation queued where it is one)
 const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], ShaderMiss& why);
-/// (M4b) A draw of the bound program, which has a task stage, counted by its stages (M4c: drawn or skipped)
+/// A draw of the bound program, which has a task stage, counted by its stages (M4c: drawn or skipped)
 void shader_task_mesh_draw(const DState& s, bool indirect, bool drawn);
-/// (M4c) Whether the bound program has a task stage (a lookup: for a draw that has no variant to say so)
+/// Whether the bound program has a task stage (a lookup: for a draw that has no variant to say so)
 bool shader_has_task(const DState& s);
 void shader_task_mesh_log(double frames);
-/// (M4b, logs) the bound program's stages: kind and code keys
+/// (logs) the bound program's stages: kind and code keys
 void shader_describe(const DState& s, char* out, size_t cap);
 /// Whether the textures bound now answer what the variant was translated for
 bool shader_answers_hold(const DState& s, const DrawProg& p);

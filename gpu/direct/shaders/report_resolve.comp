@@ -1,4 +1,4 @@
-// (M5, direct_query.cpp) The reports of a pass written into guest memory as NVN lays them out: {counter, timestamp}.
+// (direct_query.cpp) The reports of a pass written into guest memory as NVN lays them out: {counter, timestamp}.
 // One invocation per report: its record (written by the CPU when the report was recorded) names the guest address, the
 // counter type, the occlusion queries whose results sum to the counter (a samples-passed counter runs from its reset
 // across renderings) and, by its own index, its timestamp query. Timestamps go to the guest's counter clock (19.2 MHz)

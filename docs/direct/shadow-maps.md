@@ -1,4 +1,4 @@
-# The game's shadow maps: how they live and die, and what pins them (M6s, 2026-11-13)
+# The game's shadow maps: how they live and die, and what pins them
 
 Analysis for the coordinator's choice of a fix. Nothing here is a fix: the code changed for it is a probe that was not
 committed (section 3). Static analysis of this build (Ghidra decompiles made with `work/ghidra/decomp.sh`, kept under

@@ -40,7 +40,7 @@ struct HostTranslateInfo {
     bool support_conditional_barrier{}; ///< True when the device supports barriers in conditional
                                         ///< control flow
     bool single_lane_geometry_subgroups{};
-    /// (direct back end, M3b: docs/direct/m2-shader-contract.md step B) every texture and image instruction keeps its handle:
+    /// (direct back end, M3b: docs/direct/shader-contract.md step B) every texture and image instruction keeps its handle:
     /// the shader reads it (a bound one from its constant buffer word, a bindless one as the program computes it) and
     /// indexes the descriptor heap with it. No handle programs; a handle no constant buffer word names is not an error
     bool heap_handles{};

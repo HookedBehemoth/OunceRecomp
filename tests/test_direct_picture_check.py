@@ -1,6 +1,6 @@
-"""(M6b) scripts/direct_picture_check.py on synthetic pictures, no game data: the same picture passes; a difference that
+"""scripts/direct_picture_check.py on synthetic pictures, no game data: the same picture passes; a difference that
 cancels in the picture's mean (+d on one half, -d on the other), one flat channel, one wrong 16 x 16 tile, a missing state and a
-NaN each fail; a cleared state is never lined up with a drawn one; (M6d) a float target of tiny values negated fails while
+NaN each fail; a cleared state is never lined up with a drawn one; a float target of tiny values negated fails while
 the same with rounding noise passes. The tool's own selftest, run as a test.
 python -I -B tests/test_direct_picture_check.py
 """

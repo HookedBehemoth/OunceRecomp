@@ -1,10 +1,6 @@
-# M3 prep: the patch sites, confirmed by runs (2026-11-12)
+# The patch sites, confirmed by runs
 
-Instrumentation: branch `agent/m3prep`, `host/m3prep.c` (logging hooks only, `HOS_M3PREP=<list>`), on the frozen back end
-(run-vk.sh defaults, task/mesh fallback on). Runs `work/runs/m3_*` (RUN=timing): `m3_gold_k` / `m3_gold_hf` (Kokiri 50 s /
-Hyrule Field 60 s, all logging, the smoke goldens in `work/smoke_m3/`), `m3_inl_all_k`, `m3_inl_all_hf`, `m3_inl_one_k`
-(forced inline), `m3_font_k`/`m3_font2_k`/`m3_font3_k` (pause menu), `m3_cyc` (map changes). Counts are over presents
-450-2400 (about 1,900 frames) unless stated. Every run kept its device; nothing hung.
+These sites were confirmed by runs of logging hooks that are no longer in the tree (Kokiri and Hyrule Field, the pause menu, map changes). Counts are over presents 450-2400 (about 1,900 frames) unless stated.
 
 ## 1. Pass keys
 
@@ -176,8 +172,49 @@ called from the layer job runner `f_8007fe60` (LR `0x800812c4`), for 4 layers of
 `0x104dd1d230`, `0x104dd1bf78`, `0x104dd1e4e8`, flags +0x88 = 0x84c3) and one of vtable `0x84c2b9f0` (`0x1136f127c0`; the
 vtable sits 0x20 after the scene pipeline's `0x84c2b9d0`). Why: `f_8007b520` begins a list for every layer job before
 it knows whether the layer has items; its per-item step `f_8006e160` returns at once when the item's draw list is empty (`[layer+0xb8] + i*0x820 + 0x818` bit 0
-clear), so these layers record nothing, and the list is never called or submitted (m1-report.md).
+clear), so these layers record nothing, and the list is never called or submitted.
 
 **Patch: none needed.** Skipping `f_8007b520` would also skip the layer's per-frame bookkeeping (ring slot, counters,
 `f_8006e160`'s non-recording work), and there is nothing to gain: the lists cost a Begin/End and are never used. The back
 end should simply not create a list object until the first record arrives (plain behaviour, no special case).
+
+## Causes found for picture bugs
+
+Each was found by comparing passes against the old renderer and is fixed by the code named.
+
+- **Memory read only through stored pointers.** Shaders follow pointers the game stores in memory (the probe tables of a
+  150 MB pool in Kokiri), so a pool the GPU can read is bound in full when it is created; memory reachable only through
+  a pointer left unbound read as zeros, which gave the exposure x3.96, a green cast and a light shaft
+  (`gpu/direct/direct_pools.cpp`; texture data pools are named at creation with `hsd_texture_data_pool`). VRAM-class pools
+  (CPU_NO_ACCESS) can hold pointed-to data too.
+- **The sky / ambient LUT.** `f_80846070` copies a block-linear blob (0x128000 bytes, three RGBA16F surfaces: 256x64 2D,
+  256x32x16 3D, 64x64 2D) out of `Env/GameScene.Nin_Ounce_NVN2.genvb.zs` (`res/Master_Field.skybin`). The converter
+  `nx2/prepare_skybin.py` deswizzles it into the prepared overlay and `host/direct_sky_lut.c` uploads each part with
+  `hsd_texels` instead of the memcpy.
+- **Two GPU culling lists read w1 = 0.** `f_80361a00` (called twice from `f_80361c80`, for the lists at `[x27+0x180]` and
+  `[x27+0x1b8]`) zeroes w0/w1 with its own store every frame; the culling shader only does `atomicMax(+0)` / `atomicAdd(+12)`.
+  The splice after that store is `host/direct_mesh_lists.c`.
+- **CPU writers of texture storage.** Seven writers, the same in the title, Kokiri and Hyrule Field, 0 file reads into
+  textures: the sky LUT blob (above), a 64x64 R16F LUT computed on the CPU in a buffer a texture also names (`f_809e6760`,
+  copied out by `f_809e70a0`: a staging use, inferred, not a texture's content), `memset` 0 of 1x1 textures (nothing to do:
+  the image starts as zero) and the glyph atlas (`f_81539300`, patched).
+- **Link's hair, cap and face: the game's texture dedup.** A load with no data that is an alias of another load takes that
+  texture's record (`HSD_ASSET_SAME`, `host/direct_tex_dedup.c`; `HOS_DBG=nodata` logs the loads with no data). Kokiri: 149
+  such loads, 149 take a record.
+- **Prepared textures need their channel map.** The prepared store keeps a texture's channels in the store's order, so every
+  sampled view of a prepared image takes `image_swizzle(im, game)` (`direct_heap.cpp sampled_view`); without it the static
+  meshes came out under-lit. The environment cube lights the pots, basket and bark walls.
+- **Rendering into a compressed texture.** The game BC4-encodes its noise volumes (the 64^3 volume `531432c3` samples) on the
+  GPU: program `53509044401d78d2` renders into the volume 64 times, one draw a slice, through a view of an uncompressed format of
+  the block's size (`f_809eb720`, for the noise generators of `f_809eb4a0`). A compressed image that is not the prepared
+  store's is therefore made `BLOCK_TEXEL_VIEW_COMPATIBLE | MUTABLE_FORMAT | EXTENDED_USAGE` with colour-attachment use, and
+  such a view is an attachment of the block grid. Open: the remaining offset of the volume's B channel (mean 0.945 against
+  0.853 in the old renderer's picture).
+- **The frame is forward-rendered:** a depth prepass, then colour draws into the lit B10G11R11F 1536x864 target. The RGBA8
+  1536x864 target is a screen-space mask with its own passes, not a normals target.
+- **Render conditions need no predicate compute step or gating patch:** `HOS_DBG=condcheck` found the second counter word
+  non-zero in none of ~270 / 840 conditions a frame and the first word past 32 bits in none, so conditional rendering on the
+  report's own low word is exact. Reports are written by a compute step, not a copy (NVN's word is `{counter, timestamp}`
+  and the timestamp needs the clock conversion).
+- **The game's CPU occlusion culling** takes the GPU's 32x18 depth grid in `f_80365f00` if its stamp is one or two frames
+  old, and `f_80822260` culls against it only when it was taken; the grid accepted 4,379 of 4,380 tested.

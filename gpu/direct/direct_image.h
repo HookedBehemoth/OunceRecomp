@@ -1,4 +1,4 @@
-// One image per NVN texture (docs/direct/m2-interface.md, direct_image): made when the texture is initialized (or
+// One image per NVN texture: made when the texture is initialized (or
 // registered, if it was not seen first), never at a draw; kept by its storage and shape, so a texture the game
 // initializes again every frame over the same storage (the transient targets, host/rt_slots.c) keeps its image.
 // An image lives while a texture is initialized over it, and 8 presents more. The transient targets' images are bound
@@ -43,7 +43,7 @@ struct Image {
     bool storage = false;   // (M3b: made with STORAGE usage: the heap's storage regions hold views of it)
     bool block_views = false;   // (M4g: a compressed image the GPU writes: uncompressed views of its blocks are attachments)
     std::atomic<uint8_t> written{0};   // (W_* bits: what has written it)
-    // (A-rt) an image of a prepared texture (direct_assets): made in the store's format, shared by every texture of the
+    // an image of a prepared texture (direct_assets): made in the store's format, shared by every texture of the
     // same content, filled once by the thread that made it (fill: 0 not an asset, 1 being filled, 2 filled, 3 failed)
     uint32_t asset = 0;                // (its texture record + 1)
     std::atomic<uint8_t> fill{0};
@@ -54,7 +54,7 @@ struct Image {
     // (lifetime: the live NVN textures over it; images_mu held)
     int refs = 0;
     int cached_refs = 0;
-    // (the transient pool, docs/direct/shadow-pool-report.md) an image bound in the pool's one allocation at its texture's
+    // (the transient pool, docs/direct/transient-pool.md) an image bound in the pool's one allocation at its texture's
     // storage offset: it shares memory with every other image whose range overlaps its own, and only the range's owner
     // (the last one claimed: its texture initialized, or given out by the game's allocator) has defined content. A claim
     // by an image that is not the owner discards and clears it (init_image) and ends the others' ownership.
@@ -83,7 +83,7 @@ void image_target_given(const nvn_tex* t);
 /// (diagnosis: 1 an image in the pool that is not its range's owner: its content is another target's)
 bool image_stale(const Image* im);
 void image_stale_bound();   // (a draw bound one: counted for the pool's line)
-void image_texture_cached(const nvn_tex* t, bool cached);   // (M6f) agl's LRU cache: counted on the image
+void image_texture_cached(const nvn_tex* t, bool cached);   // agl's LRU cache: counted on the image
 int64_t image_dying_bytes();   // (M6f: the bytes of images waiting to be destroyed)
 void image_texture_registered(const nvn_tex* t);
 /// The image of an NVN texture (the placeholder when it has none this GPU can hold; null: a buffer texture or none made)
@@ -101,10 +101,10 @@ void image_write_texels(const nvn_tex* t, unsigned level, unsigned layer0, const
 /// The same for texels a game patch gives (W_TERRAIN, W_GLYPH: hsd_texels); false: skipped (no image, outside it)
 bool image_upload_region(const nvn_tex* t, unsigned level, unsigned layer0, const NVNcopyRegion* r, const uint8_t* src,
                          uint64_t row, uint64_t img, uint8_t source);
-/// (A-rt) A view's swizzle on an image: the guest's (R..A, ZERO, ONE as VkComponentSwizzle) composed with an asset
+/// A view's swizzle on an image: the guest's (R..A, ZERO, ONE as VkComponentSwizzle) composed with an asset
 /// image's channel map (final[c] = map[guest[c] - R]); identity map for every other image
 VkComponentMapping image_swizzle(const Image* im, VkComponentMapping guest);
-/// (A-rt) An extra reference on an image (a check reading it back), dropped by image_unhold
+/// An extra reference on an image (a check reading it back), dropped by image_unhold
 void image_hold(Image* im);
 void image_unhold(Image* im);
 /// Images whose textures are all gone for a while, and done on the GPU, destroyed (the Presentation Thread, at a present)

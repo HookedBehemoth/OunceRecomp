@@ -1,7 +1,7 @@
 // Images of NVN textures (direct_image.h). Lifted from gpu/legacy/vk/vk_texture.cpp (texture_key, create's usage and flags,
 // format_class, linear_twin, widened) and gpu/legacy/vk/vk_xfer.cpp (resolve), without its cache's uploads, decoders, eviction,
 // sparse images and pools. An image made is initialized at once on the making thread's upload: moved to GENERAL and,
-// for an uncompressed one, cleared to zero (an asset's content is not this stage's: docs/direct/m2-interface.md, A-rt).
+// for an uncompressed one, cleared to zero (an asset's content is not set here).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -78,7 +78,7 @@ struct KeyHash {
 std::shared_mutex images_mu;   // (the table, each image's refs and death)
 std::unordered_map<Key, std::unique_ptr<Image>, KeyHash> images;
 std::vector<Image*> dying;   // (refs 0: destroyed by image_sweep)
-// The transient pool (direct_image.h, docs/direct/shadow-pool-report.md): the range of storage addresses the host named
+// The transient pool (direct_image.h, docs/direct/transient-pool.md): the range of storage addresses the host named
 // (host/rt_slots.c's slots), its images, and the slot sizes the host told (images_mu; on, lo and hi are set once before
 // the first texture in the range is initialized).
 struct Pool {
@@ -104,7 +104,7 @@ std::atomic<int64_t> st_made{0}, st_destroyed{0}, st_revived{0}, st_ph{0}, st_ph
 
 enum { K_NONE, K_PLAIN, K_ASSET, K_ASSET_MISS, K_LINKED_PLAIN };
 constexpr uint32_t kAssetClass = 0x80000u;
-/// (A-rt) The key of an asset texture's image: its record's content and descriptor, so every texture of that content
+/// The key of an asset texture's image: its record's content and descriptor, so every texture of that content
 /// (moved by compaction, or the same texture in another file) has the one image
 void asset_key(const AssetDesc& d, Key& k) {
     k = Key{};
@@ -346,7 +346,7 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     return out;
 }
 
-/// (A-rt) An asset texture's image, in its record's format (images_mu held exclusively); filled by the first texture
+/// An asset texture's image, in its record's format (images_mu held exclusively); filled by the first texture
 /// that takes it (fill 0 -> 1 there)
 Image* make_asset(const nvn_tex* t, const Key& k, const AssetDesc& d, uint32_t rec) {
     std::call_once(placeholder_once, make_placeholder);
@@ -370,7 +370,7 @@ Image* make_asset(const nvn_tex* t, const Key& k, const AssetDesc& d, uint32_t r
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    const ObjectsFor objects_for("an image of a texture the game loaded (its prepared content)");   // (M6f)
+    const ObjectsFor objects_for("an image of a texture the game loaded (its prepared content)");   // 
     if (!mem_image(ci, im.image, im.mem, MO_IMAGE_STORE)) return name_placeholder(t, "no memory for its prepared image", st_ph_refused), &placeholder;
     im.id = next_id++;
     st_made.fetch_add(1, std::memory_order_relaxed);
@@ -440,7 +440,7 @@ void image_texture_created(const nvn_tex* t) {
     if (im->refs++ == 0 && im->dead_present) im->dead_present = im->dead_value = 0, st_revived.fetch_add(1, std::memory_order_relaxed);
     if (im->pooled) claim(im, "initialized");   // (a texture over that storage now: the range is its image's)
     if (!im->asset) return;
-    // (A-rt) the first texture of an asset image fills it, here, before the game can register it; another one that comes
+    // the first texture of an asset image fills it, here, before the game can register it; another one that comes
     // while it is being filled waits for that (the same content in another file, on another loader thread)
     uint8_t s = 0;
     if (im->fill.compare_exchange_strong(s, 1)) {
@@ -681,7 +681,7 @@ int image_view_format(const nvn_tex* t, const nvn_view* v) { return v && v->set_
 
 VkImageView image_attachment_view(Image* im, int nvn_format, uint32_t level, uint32_t layer, VkFormat* format_out) {
     if (!im || im->placeholder || (im->compressed && !im->block_views) || level >= im->levels) return VK_NULL_HANDLE;
-    const ObjectsFor objects_for("an attachment view of a game's texture");   // (M6b)
+    const ObjectsFor objects_for("an attachment view of a game's texture");   // 
     const bool depth = (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) == 0;
     VkFormat f = im->format;
     if (!depth) {
@@ -956,7 +956,7 @@ void image_stats(char* out, size_t cap) {
                   (unsigned long long)refs_hist[3], (unsigned long long)(many_refs_bytes >> 20), (unsigned long long)shared_addr);
     {
         const size_t n5 = std::strlen(out);
-        std::snprintf(out + n5, cap > n5 ? cap - n5 : 0, "; held only by textures in agl's LRU cache (M6f): %llu images, %llu MB (%llu "
+        std::snprintf(out + n5, cap > n5 ? cap - n5 : 0, "; held only by textures in agl's LRU cache : %llu images, %llu MB (%llu "
                       "more images held by a cached texture and a live one)", (unsigned long long)cache_n,
                       (unsigned long long)(cache_bytes >> 20), (unsigned long long)cache_part);
     }

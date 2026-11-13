@@ -1,4 +1,4 @@
-/* (native-vk) Stable slots for the game's transient render targets (agl::utl::DynamicTextureAllocator).
+/* Stable slots for the game's transient render targets (agl::utl::DynamicTextureAllocator).
    Analysis and evidence: work/assets/native/rt-alloc.md; measurements: work/assets/native/rt-slots-impl.md.
 
    The game's allocator (DTA, the instance at guest 0x84ea1b80) keeps one pool record with 7 arenas (0xe8 bytes each)
@@ -28,7 +28,7 @@
    RX_RT_SLOTS_MB: S, default 320 (of 512; the arenas
    keep 192 MB, the fullest seen used 111). Parking and the shadow size classes: below.
 
-   The transient pool (direct mode; docs/direct/shadow-pool-report.md). The slots do not take the pool's top: they lie
+   The transient pool (direct mode; docs/direct/transient-pool.md). The slots do not take the pool's top: they lie
    after its end (512 MB of offsets past the pool's size; the arenas are not shrunk), and the slot range is one device
    allocation in the back end, made when the range is first known (hsd_transient_pool). Every texture initialized in a slot gets an
    image bound in it at the slot's offset: the targets cost that constant and nothing else, whatever the game's free
@@ -76,7 +76,7 @@ static int off_(void) { return !rx_direct(); }
 /* Direct mode: the slots lie after the pool's end (offsets past its size: nvn_native.c leaves those GPU addresses
    unused after every virtual pool), the arenas keep the whole pool for their bookkeeping, and the range is the back
    end's transient pool: SLOTS_MB_DIRECT of device memory, the constant the transient targets cost
-   (docs/direct/shadow-pool-report.md, "The constant"). Another back end: the top 320 MB of the pool, as before */
+   (docs/direct/transient-pool.md, "The constant"). Another back end: the top 320 MB of the pool, as before */
 #define SLOTS_MB_DIRECT 512
 uint64_t nvn_virtual_pool_tail(void);   /* nvn_native.c */
 static int after_pool(void) { return rx_direct() && nvn_virtual_pool_tail() != 0; }

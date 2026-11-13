@@ -526,8 +526,8 @@ void vram_pool_made(uint64_t base, uint64_t size, uint32_t flags, uint64_t key) 
     st_vpools++;
 }
 
-/// (M4f) A pool made: bound in full now (its host chunks queued for the importer), whatever its size, when the GPU can read it.
-/// Shaders follow pointers the game stores in memory (the probe tables of a 150 MB pool in Kokiri, m4f-report.md), so any
+/// A pool made: bound in full now (its host chunks queued for the importer), whatever its size, when the GPU can read it.
+/// Shaders follow pointers the game stores in memory (the probe tables of a 150 MB pool in Kokiri), so any
 /// GPU-readable pool may be read with no binding naming it; before, only pools up to 64 MB were bound ahead and the rest
 /// at a binding's use, and memory reached only by a stored pointer read the null window: zeros. Not bound: pools the GPU
 /// cannot read, virtual pools (GPU addresses past layer 0's window: their physical pools are what is bound), shader code
@@ -680,7 +680,7 @@ bool layer0_span(uint64_t gpu, uint64_t size, VkBuffer& buffer, VkDeviceSize& of
     return true;
 }
 
-/// (M2b) guest [gpu, gpu + size) as a device address in its window (layer0_span's, bound first if it is not)
+/// guest [gpu, gpu + size) as a device address in its window (layer0_span's, bound first if it is not)
 bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a) {
     VkBuffer b;
     VkDeviceSize off;

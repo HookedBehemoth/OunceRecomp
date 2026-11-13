@@ -1,10 +1,10 @@
-/* (native-vk M4g) HOS_DBG=nodata[:<name part>] (diagnosis only, either back end): the textures agl::TextureData
+/* HOS_DBG=nodata[:<name part>] (diagnosis only, either back end): the textures agl::TextureData
    loadImage_ (f_80798690) makes with no data (src 0: no copy into their slot). Each is logged once with its name, its
    TextureData, its slot in the texture heap ([td+0x18]+0x10, where a load with data copies its bytes) and the guest
    call chain; with a name part, the slots of the textures whose name holds it are page-watched (nvn_native.c's
    hos_watch_guest_writes: the first writes, with their call stacks). Every 300 presents a line per slot (the first 64)
    says how many of its first 64 KB are not zero, so a slot that something fills is seen in either back end
-   (docs/direct/m4g-report.md). With HOS_DBG unset nothing here runs. */
+. With HOS_DBG unset nothing here runs. */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -17,7 +17,7 @@ with spirv-opt the harness's synthetic spilling stage (tools/meshlab/probes/spil
 first is used), which must come out holding about the budget; every output through spirv-val when it is there.
 
 The gate that holds RADV's compile of the game's stages against the pass needs the player's captures and a GPU, and is a
-tool: tools/meshlab/late_gate.py (docs/direct/spv-late-report.md).
+tool: tools/meshlab/late_gate.py (docs/direct/spv-late.md).
 
     python -I -B tests/test_direct_spv_late.py [--cxx clang++]
 """

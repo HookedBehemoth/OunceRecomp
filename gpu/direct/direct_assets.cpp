@@ -110,7 +110,7 @@ const uint8_t* map_file(const std::string& path, size_t& n) {
     return (const uint8_t*)p;
 }
 /// The record's block size: the kept formats' from the NVN format, the converted ones' from what they became
-/// (M3b) A copied record's block from its BNTX format (the record's nvn_format field holds the BNTX code, e.g. 0x1d01: high byte
+/// A copied record's block from its BNTX format (the record's nvn_format field holds the BNTX code, e.g. 0x1d01: high byte
 /// the type, low byte the variant), as nx2/prepare_textures.py's FMT has it; 0: not a type the converter copies
 int bntx_block(uint32_t format, int& w, int& h) {
     struct B { uint8_t type, w, h, bytes; };
@@ -341,7 +341,7 @@ int rebind_load(const hsd_asset_key* k) {
 
 namespace {
 std::atomic<int64_t> st_same{0}, st_same_rec{0}, st_same_plain{0}, st_same_nolink{0}, st_same_desc{0};
-/// (M4g) A load with no data whose texels are another texture's (M6f: a UnifyTex alias; the host names its target, the head
+/// A load with no data whose texels are another texture's (M6f: a UnifyTex alias; the host names its target, the head
 /// of its alias chain): that texture's link, when the descriptors agree; else a plain image, counted, named and a strict
 /// event (its content is undefined)
 int same_load(const hsd_asset_key* k) {

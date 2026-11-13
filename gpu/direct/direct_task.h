@@ -1,4 +1,4 @@
-// (M4c) The task stage of task+mesh programs as a compute step (docs/direct/m4c-report.md; plan, "Task and mesh shaders").
+// The task stage of task+mesh programs as a compute step.
 //
 // The device has no task stage (taskShader off: native task shaders lost the device on this GPU). A task+mesh draw is two
 // pieces of work. Its task stage runs as a compute shader, one workgroup per task workgroup of the draw, and writes into the
@@ -35,7 +35,7 @@ void task_barrier(VkCommandBuffer cb, bool to_draw);
 /// The list's end: its task step's secondaries ended
 void task_list_end(List* l);
 void task_stats(char* out, size_t cap, double frames);
-/// (M6e, HOS_DBG=meshcap) the slot's task pool: its host mapping, device address and size (false: none)
+/// (HOS_DBG=meshcap) the slot's task pool: its host mapping, device address and size (false: none)
 bool task_pool_span(CmdSlot* slot, const uint8_t*& host, uint64_t& dev, uint64_t& bytes);
 
 }  // namespace hsd

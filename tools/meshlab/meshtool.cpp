@@ -1,7 +1,7 @@
 // meshtool: one NVN2 mesh stage (and the task stage before it) through the direct back end's translator fork (gpu/direct/eden),
 // as direct_shader.cpp translates a task+mesh or mesh-only program, offline: the IR (as the translator reads the game's code),
 // a structured print of it, the mesh stage's SPIR-V, and a summary of what the stage reads and writes. For the inventory and
-// the decompilation of the game's mesh stages (docs/direct/m6e-report.md); nothing of the game is in this file.
+// the decompilation of the game's mesh stages (docs/direct/mesh-harness.md); nothing of the game is in this file.
 //
 //   meshtool <mesh stage .bin> <out prefix> [<task stage .bin>]
 // A stage .bin: the stage's control section (0xd8 bytes) then its code area, as the romfs seed holds it (M0's seed.py).

@@ -1,6 +1,6 @@
 // The per-vertex light of the game's probe grid, as its lit meshlet stage with probes reads it (mesh stage
 // 40d0c0768e874600: the lit meshlet stage plus this lookup). A transcription of the game's data layout and arithmetic
-// (docs/direct/hf-mesh-program.md, section 1.2); our own text. Every multiply, add and fused multiply-add is in the game's
+// (docs/direct/mesh-program.md, section 1.2); our own text. Every multiply, add and fused multiply-add is in the game's
 // order, so that the result is the translated stage's bit for bit.
 //
 // Storage slot 1 of the mesh stage (PROBE_SLOT) holds five guest pointers:

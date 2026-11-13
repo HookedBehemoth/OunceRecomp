@@ -1,4 +1,4 @@
-# M0: a render job's target formats, from an exact source (2026-11-12)
+# A render job's target formats, from an exact source
 
 Question: which data gives `f_80084de0` the colour/depth formats and sample count of the pass its secondary will run in
 before that pass's layer list sets its targets? Answer: no data the job holds gives the formats, but the job holds an

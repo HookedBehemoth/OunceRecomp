@@ -1,4 +1,4 @@
-// Command buffers (docs/direct/m2-interface.md, direct_cmd): each recording thread has a command pool per frame slot
+// Command buffers: each recording thread has a command pool per frame slot
 // (three in rotation), its buffers kept and handed out again after the slot's reset. A slot is reset as a whole when its
 // thread first records in a new frame and takes it: one last recorded in three frames ago or more, once the GPU is past
 // the last submission that held one of its buffers and no list holding one is alive. A list alive past that (one kept
@@ -39,10 +39,10 @@ struct CmdSlot {
 CmdSlot* cmd_slot_take();
 /// A primary command buffer of the slot, begun (SIMULTANEOUS_USE: a list may be called twice in a submission)
 VkCommandBuffer cmd_buffer(CmdSlot* s);
-/// (M3a) A secondary command buffer of the slot, begun to continue a dynamic rendering of those formats
+/// A secondary command buffer of the slot, begun to continue a dynamic rendering of those formats
 struct PassFormats;
 VkCommandBuffer cmd_secondary(CmdSlot* s, const PassFormats& f, VkRenderingFlags flags);
-/// (M4c) A secondary command buffer of the slot, begun outside any rendering (a job's task step)
+/// A secondary command buffer of the slot, begun outside any rendering (a job's task step)
 VkCommandBuffer cmd_secondary_plain(CmdSlot* s);
 /// A list holding the slot's buffers is gone
 void cmd_slot_drop(CmdSlot* s);
@@ -58,13 +58,13 @@ struct Upload {
 Upload upload_begin(uint64_t bytes);
 /// Ends it with a barrier that makes its writes visible to all later work on the queue, and sends it: its timeline value
 uint64_t upload_end(Upload& u);
-/// The newest upload's timeline value (any thread's): a submission after it waits for it (A-rt)
+/// The newest upload's timeline value (any thread's): a submission after it waits for it 
 uint64_t upload_value();
 
 void cmd_stats(char* out, size_t cap, double frames);
 /// What the command pools hold, in counts (the driver gives no bytes); returns the length written
 size_t cmd_held_stats(char* out, size_t cap);
-/// (M6b) Present n: the command buffers frame n - 2 took counted into the most a frame took (what a slot is grown to at its reset)
+/// Present n: the command buffers frame n - 2 took counted into the most a frame took (what a slot is grown to at its reset)
 void cmd_frame_presented(uint64_t n);
 
 }  // namespace hsd

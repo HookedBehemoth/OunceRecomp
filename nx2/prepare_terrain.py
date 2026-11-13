@@ -1,4 +1,4 @@
-"""The build-time terrain-tile converter (docs/direct/a-converters.md): every TARB file under romfs/TerrainArc/ with its
+"""The build-time terrain-tile converter (docs/direct/converters.md): every TARB file under romfs/TerrainArc/ with its
 GPU texel blob (record field B) deswizzled from Tegra block-linear to packed linear rows, in the layout of
 vkCmdCopyBufferToImage with bufferRowLength 0 (layer after layer, block rows for BC; the format is unchanged), written
 as a TARB file of the same name and structure under --out, for the host's HOS_FS_OVERLAY to serve in place of the game's.
@@ -11,7 +11,7 @@ Game data: it reads the romfs in place (default: work/dump.txt's path + /romfs) 
 work/prepared/terrain). Nothing it writes may leave the PC (CONTRIBUTING.md). Needs numpy and zstandard; the native
 deswizzle is nx2/texconv.cpp (built without the encoders: no third-party source). Niced (10), 8 workers.
 
-The file (docs/direct/m0-terrain-texels.md): "TARB", u32 version 1, u16 records 1, u16 header size 0x14, u32 decompressed
+The file (docs/direct/terrain-texels.md): "TARB", u32 version 1, u16 records 1, u16 header size 0x14, u32 decompressed
 size, u32 zstd size, one zstd frame. The record: +3 layers, +0x1a/+0x1b layout bytes (4f 7a), three (s32 self-relative
 offset, u32 size) pairs at +0x1c (A, the CPU copy), +0x24 (C), +0x2c (B, the GPU texels, always last). The tile is
 260 x 260 texels; what B holds is told by (layers, size of B): BC5 65x65 blocks, BC6H 6 layers, RGBA8 / R32F, RGBA8 x 2.
@@ -27,7 +27,7 @@ linear size of a layout is never its block-linear size (SIZES below).
 file with the size and mtime of its entry is kept; another mtime: the hash decides; another config (CONV_VERSION, zstd
 level) redoes everything. Output files are written to a temporary name and renamed.
 
-The resource size table (A-rt, docs/direct/a-rt-report.md): the game's loader drops a file larger than its entry in
+The resource size table: the game's loader drops a file larger than its entry in
 System/Resource/ResourceSizeTable.*.rsizetable.zs (an entry is the file's size and an allowance), and a converted file can
 be larger than the game's (linear rows compress worse: 288 of Kokiri's 1,521); the game then opens it again forever. So
 every run (and --size-table alone) writes that table into --out with each converted file's entry raised by what its file

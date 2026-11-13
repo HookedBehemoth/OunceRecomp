@@ -1,4 +1,4 @@
-# M0: task and mesh shaders (2026-11-12)
+# Task and mesh shaders
 
 Analysis only; nothing was run. Tools (all under `work/proto/direct-m0/tm/`, nothing leaves the PC): `seed.py` takes
 every task (NVN stage 6), mesh (7) and compute (5) stage out of the romfs seed (`hookshot_shaders.bin`, code key as
@@ -163,7 +163,7 @@ differs from the compute emulation is the context, not this draw:
   the task side from ever writing the draw-ring entries that the next `DISPATCH_TASKMESH_GFX` of the same command
   buffer waits for.
 
-The earlier dump (m0-hang-dump.md: contexts exhausted, an end-of-pipe wait, SC/DB busy on one SE, MEC idle) and this
+The earlier dump and this
 one (the ACE also pending) both point at **the 3D pipe wedged by state from the native mesh path**, with
 `ffb53ed102dd9908` as the first plain draw caught behind it. They do not point at the program.
 

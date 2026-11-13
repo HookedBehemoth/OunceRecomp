@@ -1,4 +1,4 @@
-/* (native-vk M4g, M6f) Game patch, direct mode only: textures the game loads with no data, its UnifyTex aliases.
+/* (M6f) Game patch, direct mode only: textures the game loads with no data, its UnifyTex aliases.
 
    agl::TextureData loadImage_ (f_80798690, hooked in direct_assets.c) copies a texture's bytes into its slot in the texture
    heap ([td+0x18]+0x10). A texture loaded with no data (src 0; Kokiri: Link's `Player_Child_Hairs_Alb` and 140 more) is an
@@ -11,7 +11,7 @@
    head of its chain, and handed over as HSD_ASSET_SAME with that texture's NVN object (the target is live and registered
    while it has aliases). M4g guessed the target as "the last load with data at the same slot"; walking in Hyrule Field
    that guess named textures the game had finalized and initialized again for other loads (M6f: 19 aliases as plain
-   images, ASTC placeholders among them: docs/direct/m6f-report.md 1). A load with no data that is no alias (no chain) stays
+   images, ASTC placeholders among them). A load with no data that is no alias (no chain) stays
    as before: a plain image, named by the back end. A log line for the first few, and every 100th. With HOS_DBG=noassets nothing here runs. */
 #include "hos.h"
 #include "direct.h"

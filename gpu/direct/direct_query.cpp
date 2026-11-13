@@ -1,4 +1,4 @@
-// (M5) Reports and render conditions on the GPU (direct_query.h has the rules).
+// Reports and render conditions on the GPU (direct_query.h has the rules).
 #include <time.h>
 
 #include <algorithm>

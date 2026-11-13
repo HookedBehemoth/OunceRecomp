@@ -259,7 +259,7 @@ void emit_one(List* l, uint32_t op, const void* payload, uint32_t size) {
 }  // namespace hsd
 
 namespace {
-/// (M3a) a packet's op: {op, size} and the payload, 8-byte aligned. Ops with nothing for a caller are left out
+/// a packet's op: {op, size} and the payload, 8-byte aligned. Ops with nothing for a caller are left out
 void pkt_append(List* l, uint32_t op, const void* payload, uint32_t size) {
     switch (op) {
     case NOP_END: case NOP_JUMP: case NOP_BEGIN: return;

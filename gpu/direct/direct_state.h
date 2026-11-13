@@ -1,6 +1,6 @@
-// The NVN state of a list (docs/direct/m2-interface.md, direct_state; m2-shader-contract.md section 3, "Minimal state"):
+// The NVN state of a list:
 // what the emitted ops set, in the layout the translator's questions and the driver banks are read from. A list starts
-// from NVN's defaults (it inherits nothing from the list before it: m0-jobs-state.md A); the recording thread's alone.
+// from NVN's defaults (it inherits nothing from the list before it: jobs-state.md A); the recording thread's alone.
 // The generation counters say what changed since a draw last read it (direct_draw.cpp keeps its copies by them).
 #pragma once
 
@@ -56,7 +56,7 @@ struct DState {
 
 /// One op on the list's state (the recording thread); false: not a state op
 bool state_emit(DState& s, uint32_t op, const void* data, uint32_t size);
-/// A driver bank word (c0 / c2) as the NVN driver lays it out for the graphics stage (m2-shader-contract.md section 2,
+/// A driver bank word (c0 / c2) as the NVN driver lays it out for the graphics stage (shader-contract.md section 2,
 /// "Banks"; vk_bank.cpp driver_bank_word)
 uint32_t bank_word(const DState& s, int bank, int stage, uint32_t offset);
 /// The first n bytes of a graphics stage's driver bank

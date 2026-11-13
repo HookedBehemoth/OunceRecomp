@@ -1,7 +1,7 @@
-/* (native-vk M4d) HOS_DBG=texwatch (direct mode, diagnosis only): which code writes texels into a texture's storage with
+/* HOS_DBG=texwatch (direct mode, diagnosis only): which code writes texels into a texture's storage with
    the CPU. The direct back end never reads texture storage (docs/direct-backend-plan.md, Textures), so a texture whose
    texels the CPU stores there, with no NVN call, never gets them: each such writer needs a game patch that hands the
-   bytes to the back end (hsd_texels), as the glyph writer has (docs/direct/m3-patch-sites.md 6).
+   bytes to the back end (hsd_texels), as the glyph writer has (docs/direct/patch-sites.md 6).
 
    Every texture initialized (in the guest window) has its storage's pages made read-only; the first write to a page
    faults here, is noted by (texture, writer: the host place in the lifted code, the guest lr and two frames), and the

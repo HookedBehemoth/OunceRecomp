@@ -1,4 +1,4 @@
-/* (native-vk) The game's zstd decoder (zstd 1.4.x, lifted) replaced by the host's (third_party/zstd, 1.5.7, compiled into
+/* The game's zstd decoder (zstd 1.4.x, lifted) replaced by the host's (third_party/zstd, 1.5.7, compiled into
    this file). The loading screen spent ~22% of its CPU in the lifted decoder (f_801102e0 the sequence decode), on the
    loaders' critical path (Superluminal, 2026-11-10); work/assets/zstd.md maps the game's side.
 

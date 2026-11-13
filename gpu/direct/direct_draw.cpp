@@ -91,17 +91,17 @@ enum Reason {
     R_ARGS_MEM, R_MESH_STRIDE, R_TASK_STEP, R_TASK_MULTI, R_DRAWN_TASK, R_TASK_APART, R_COUNT
 };
 const char* const kReasons[R_COUNT] = {
-    "drawn", "mesh draws without the device's mesh stage", "task+mesh programs that cannot be drawn (M4c)", "no render targets set in the list", "under a render condition (M5)",
+    "drawn", "mesh draws without the device's mesh stage", "task+mesh programs that cannot be drawn ", "no render targets set in the list", "under a render condition ",
     "rendering disabled", "a topology Vulkan lacks", "quads (indices made on the CPU)", "no program bound in the list",
     "program not read yet", "program not vertex + fragment", "variant being translated", "variant does not translate",
     "step A cannot draw the variant", "a vertex buffer not in layer 0", "the index buffer not in layer 0", "8-bit indices",
     "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
-    "resolved in a load-time list (M3)", "resolved in an unclassified list", "of the drawn: indirect", "of the drawn: mesh, direct",
+    "resolved in a load-time list ", "resolved in an unclassified list", "of the drawn: indirect", "of the drawn: mesh, direct",
     "of the drawn: mesh, indirect", "a draw kind its program has no stage for", "indirect arguments or count not in layer 0",
     "mesh argument records closer than 12 bytes",
-    "task+mesh draws whose task step was not recorded (M4c)", "task+mesh indirect draws of several records or with a count (M4c)",
+    "task+mesh draws whose task step was not recorded ", "task+mesh indirect draws of several records or with a count ",
     "of the drawn: task+mesh (a task step)",
-    "of the drawn: task+mesh, after a wait for the work before it (M6d)"};
+    "of the drawn: task+mesh, after a wait for the work before it "};
 // (M3b: the counters a draw bumps are the recording thread's own: a global atomic added to by every draw on every recording
 // thread was a shared cache line. draw_log sums them, each block's last sum kept to report the change)
 struct TStats {
@@ -181,7 +181,7 @@ struct Fixup {
     uint64_t src;
     uint32_t bound;   // (HOS_DBG=deferredcheck: the word in the game's array when it was bound)
 };
-// (M3a, HOS_DBG=deferredcheck: how many deferred words change between their bind and the submit, and since the last submit
+// (HOS_DBG=deferredcheck: how many deferred words change between their bind and the submit, and since the last submit
 // that read the same word)
 const bool deferred_check = dbg("deferredcheck");
 std::mutex deferred_mu;
@@ -254,7 +254,7 @@ struct ListDraw {
         VkDeviceAddress copy;
     };
     std::vector<UbCopy> ub_copies;
-    // (M3b) a buffer the list updates: its bytes as the list's updates leave them, read once from guest memory where no update
+    // a buffer the list updates: its bytes as the list's updates leave them, read once from guest memory where no update
     // covers them, the updates applied as they come; a draw's copy is [0, the program's used size) of it
     struct Shadow {
         uint64_t addr = 0, size = 0;
@@ -263,13 +263,13 @@ struct ListDraw {
         size_t applied = 0;     // (the list's updates applied to them)
     };
     std::vector<Shadow> shadows;
-    // (M3b) the game's uniform buffers' device addresses, per stage and index, kept while the binding is the same
+    // the game's uniform buffers' device addresses, per stage and index, kept while the binding is the same
     struct UboAddr {
         uint64_t addr = 0, size = 0;
         VkDeviceAddress dev = 0;
     };
     UboAddr ubo_addr[kBankStages][16];
-    // (M3b) the vertex buffers' window spans, per stream, kept while the binding is the same; the last index buffer's
+    // the vertex buffers' window spans, per stream, kept while the binding is the same; the last index buffer's
     struct Span {
         uint64_t addr = 0, size = 0;
         VkBuffer b = VK_NULL_HANDLE;
@@ -619,7 +619,7 @@ bool bank_copy(List* l, ListDraw& x, int stage, int bank, uint32_t bytes, VkDevi
     return out = a, true;
 }
 
-/// (M3b) guest [addr, addr + size) in its layer-0 window, through a span kept while it is the same
+/// guest [addr, addr + size) in its layer-0 window, through a span kept while it is the same
 bool span_of(ListDraw::Span& c, uint64_t addr, uint64_t size, VkBuffer& b, VkDeviceSize& o) {
     if (c.b && c.addr == addr && c.size >= size) return b = c.b, o = c.o, true;
     if (!layer0_span(addr, size, b, o)) return false;
@@ -627,7 +627,7 @@ bool span_of(ListDraw::Span& c, uint64_t addr, uint64_t size, VkBuffer& b, VkDev
     return true;
 }
 
-/// (M3b) the list's shadow of a buffer its updates write, brought up to n bytes and to every update so far
+/// the list's shadow of a buffer its updates write, brought up to n bytes and to every update so far
 const uint8_t* shadow_of(ListDraw& x, uint64_t addr, uint64_t size, uint64_t n) {
     ListDraw::Shadow* sh = nullptr;
     for (ListDraw::Shadow& c : x.shadows)
@@ -666,10 +666,10 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
     if (!b.addr) return a = zero_address, R_DRAWN;
     const uint64_t size = std::max<uint64_t>(b.size, 16);
     // (a program that may read past the bound range reads the guest memory after it through the address, where Maxwell reads
-    // zeros; counted. M4a settled it by evidence (m4a-report.md): of 316 such bindings in Kokiri 314 are dynamically indexed
+    // zeros; counted. M4a settled it by evidence: of 316 such bindings in Kokiri 314 are dynamically indexed
     // arrays (Eden's 64 KB used size) and 2 a vertex stage's constant offsets to 688 B on 192 bound, and zeros there instead
     // (HOS_DBG=uboclamp) change no pass beyond run noise: the translator's interface stays the address alone, no bound)
-    static const bool clamp = dbg("uboclamp");   // (M4a, a diagnosis: reads past the bound range give zeros, through a copy)
+    static const bool clamp = dbg("uboclamp");   // (a diagnosis: reads past the bound range give zeros, through a copy)
     if (u.bytes > size) {
         bump(me().past_range);
         // (M6b: a dynamically indexed array (Eden's used size, 64 KB) is not a read past the range: the bound is the translator's
@@ -685,7 +685,7 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
         if (told.load(std::memory_order_relaxed) < 12 && told++ < 12)
             logf("direct: program %016llx stage %u reads c%u up to %u bytes, %llu bound (%s)", (unsigned long long)p.key, u.stage,
                  u.index, u.bytes, (unsigned long long)b.size, u.bytes >= 0x10000 ? "indexed dynamically" : "past the bound range");
-        static const bool range_log = dbg("uborange");   // (M4a, a diagnosis: each binding read past its range once, what lies there)
+        static const bool range_log = dbg("uborange");   // (a diagnosis: each binding read past its range once, what lies there)
         if (range_log) {
             static std::mutex mu;
             static std::unordered_set<uint64_t> seen;
@@ -777,7 +777,7 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
     return R_DRAWN;
 }
 
-/// (M6e, M6h) a captured draw's uniform buffers: the CPU's copies as made, game buffers named to be read at the frame's end
+/// (M6h) a captured draw's uniform buffers: the CPU's copies as made, game buffers named to be read at the frame's end
 void meshcap_ubos(List* l, ListDraw& x, const DrawProg& p, MeshCapDraw& m) {
     // (the arena's chunk that holds a device address, and its bytes there)
     const auto in_arena = [&](VkDeviceAddress a, const uint8_t*& host, uint64_t& left) {
@@ -807,7 +807,7 @@ void meshcap_ubos(List* l, ListDraw& x, const DrawProg& p, MeshCapDraw& m) {
         m.ubo_bytes.push_back(std::move(bytes));
     }
 }
-/// (M6h, HOS_DBG=meshcap) a vertex draw of the captured frame: its pass, push data, state and uniform buffers (the fragment harness)
+/// (HOS_DBG=meshcap) a vertex draw of the captured frame: its pass, push data, state and uniform buffers (the fragment harness)
 void meshcap_vertex(List* l, ListDraw& x, const DrawProg& p, const uint8_t* push, uint32_t kind, uint32_t count, uint32_t instances, bool gated,
                     VkCommandBuffer cb) {
     MeshCapDraw m;
@@ -828,7 +828,7 @@ void meshcap_vertex(List* l, ListDraw& x, const DrawProg& p, const uint8_t* push
     meshcap_draw(std::move(m));
 }
 
-/// (M6e, HOS_DBG=meshcap) a mesh draw of the captured frame, with what its mesh stage reads (direct_meshcap.h)
+/// (HOS_DBG=meshcap) a mesh draw of the captured frame, with what its mesh stage reads (direct_meshcap.h)
 void meshcap_mesh(List* l, ListDraw& x, const DrawProg& p, const uint8_t* push, bool mesh_ind, const nvn_p_draw_mesh& dm, uint32_t nargs,
                   uint32_t stride, bool gated, VkBuffer task_hb, VkDeviceSize task_ho, VkCommandBuffer cb) {
     static_assert(sizeof(Dyn) <= sizeof(mcap::McDraw::dyn), "the capture's dynamic state");
@@ -868,7 +868,7 @@ bool drawlog_on() {
     }();
     return at >= 0 && (int64_t)present_count() == at;
 }
-/// (M4d) HOS_DBG=phlog: the first draw that samples each heap id holding the placeholder (or no image), named once: the
+/// HOS_DBG=phlog: the first draw that samples each heap id holding the placeholder (or no image), named once: the
 /// texture, the list's kind and return address, the program
 void phlog(const List* l, const DrawProg* p) {
     static const bool on = dbg("phlog");
@@ -913,7 +913,7 @@ void phlog(const List* l, const DrawProg* p) {
              (unsigned long long)l->info.lr, (unsigned long long)present_count(), (unsigned long long)p->key, e);
     }
 }
-/// (M6h) HOS_DBG=pstats: what a draw is, for its query's line
+/// HOS_DBG=pstats: what a draw is, for its query's line
 PstatWhat pstat_what(const List* l, const DrawProg& p, const char* what, uint32_t count, uint32_t instances, bool gated) {
     PstatWhat w;
     w.what = what, w.key = p.key, w.codes[0] = p.codes[0], w.codes[1] = p.codes[1], w.codes[2] = p.task ? p.task_code : p.codes[2];
@@ -1017,7 +1017,7 @@ void count(List* l, Reason r) {
     bump(me().by_kind[l->info.kind][r]);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
 }
-/// (M6b) A draw not drawn, for strict mode (direct_check.h): what (the reason, the program as the list's state names it) and where
+/// A draw not drawn, for strict mode (direct_check.h): what (the reason, the program as the list's state names it) and where
 void strict_draw(List* l, Reason r) {
     char where[512], prog[400] = "";
     pass_where(l, where, sizeof where);
@@ -1025,10 +1025,10 @@ void strict_draw(List* l, Reason r) {
     if (r == R_TRANSLATING || r == R_NOT_PARSED) strict_program_miss((std::string("draw: ") + kReasons[r] + "; " + prog + "; " + where).c_str());
     else strict_event(kReasons[r], "draw: %s; %s", prog, where);
 }
-/// (M4b) a share of the drawn, counted beside them
+/// a share of the drawn, counted beside them
 void sub(List* l, Reason r) { bump(me().by_kind[l->info.kind][r]); }
 
-/// (M4b) HOS_DBG=meshlog:<present>: the frame after that present's indirect and mesh draws and dispatches, with their program's
+/// HOS_DBG=meshlog:<present>: the frame after that present's indirect and mesh draws and dispatches, with their program's
 /// stages, argument addresses and what the records hold when recorded (a guest read: a diagnosis only), and a dispatch's
 /// storage and uniform buffers: which dispatch writes which argument records
 int64_t meshlog_at() {
@@ -1151,7 +1151,7 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
         state_emit(ctx(l).s, op, data, size);
         return;
     case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: dispatch_log(l, op, data, size); return;
-    case NOP_CLEAR_BUF: case NOP_COPY_B2B:   // (M4b, HOS_DBG=meshlog: who clears or copies argument records)
+    case NOP_CLEAR_BUF: case NOP_COPY_B2B:   // (HOS_DBG=meshlog: who clears or copies argument records)
         if (meshlog_on() && size >= 24) {
             uint64_t w[3]{};
             std::memcpy(w, data, std::min<size_t>(sizeof w, size));
@@ -1307,7 +1307,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                 if (!s.ssbo[st][std::countr_zero(m)].addr) unbound = true, ust = st, uslot = std::countr_zero(m);
         if (unbound) {
             bump(mesh ? me().unbound_mesh : me().unbound_draws);
-            if (strict_on()) {   // (M6b)
+            if (strict_on()) {   // 
                 char w[512];
                 pass_where(l, w, sizeof w);
                 strict_event("a storage buffer slot read that nothing bound (the null window)", "draw: program %016llx stage %d slot %d; %s",
@@ -1404,7 +1404,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                  (unsigned long long)prog->key, (unsigned long long)prog->codes[0], (unsigned long long)prog->codes[1],
                  (unsigned long long)prog->codes[2], (void*)prog->ms, (void*)prog->fs, mesh_ind ? "indirect" : "direct",
                  l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count());
-        if (meshcap_now(prog->key)) meshcap_mesh(l, x, *prog, push, mesh_ind, dm, nargs, stride, gated, task_hb, task_ho, cb);   // (M6e)
+        if (meshcap_now(prog->key)) meshcap_mesh(l, x, *prog, push, mesh_ind, dm, nargs, stride, gated, task_hb, task_ho, cb);   // 
         drawlog(l, gated ? (prog->task ? mesh_ind ? "drawn gated task+mesh indirect" : "drawn gated task+mesh" : mesh_ind ? "drawn gated mesh indirect" : "drawn gated mesh")
                          : (prog->task ? mesh_ind ? "drawn task+mesh indirect" : "drawn task+mesh" : mesh_ind ? "drawn mesh indirect" : "drawn mesh"), prog, &x.dyn,
                 mesh_ind ? nargs : (uint32_t)dm.y);
@@ -1429,7 +1429,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         static const bool tm_wait = dbg("tmwait");
         if (prog->task && tm_wait) apart(), sub(l, R_TASK_APART);
         const uint32_t ps = pstats_on() ? pstat_before(cb, pstat_what(l, *prog, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw",
-                                                                      mesh_ind ? nargs : (uint32_t)std::max(dm.y, 0), 1, gated)) : ~0u;   // (M6h)
+                                                                      mesh_ind ? nargs : (uint32_t)std::max(dm.y, 0), 1, gated)) : ~0u;   // 
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
@@ -1451,7 +1451,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                        ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances), gated, cb);
     const uint32_t mk = marks_on() ? mark_before(cb, ind ? "draw indirect" : indexed ? "draw indexed" : "draw", prog->key, l->info.kind, l->info.lr,
                                                  ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
-                                                 ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances)) : 0;   // (M6c)
+                                                 ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances)) : 0;   // 
     const uint32_t ps = pstats_on() ? pstat_before(cb, pstat_what(l, *prog, ind ? "draw indirect" : indexed ? "draw indexed" : "draw",
                                                                   ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
                                                                   ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances), gated))
@@ -1621,14 +1621,14 @@ void draw_log(double frames) {
     }
 }
 
-// ---- (M4a) what the dispatches share with the draws (direct_compute.cpp) ----
+// ---- what the dispatches share with the draws (direct_compute.cpp) ----
 bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr) { return arena_alloc(slot, bytes, map, addr); }
 bool draw_arena_buffer(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr, VkBuffer& buf, VkDeviceSize& off) {
     return arena_alloc(slot, bytes, map, addr, &buf, &off);
 }
 VkDeviceAddress draw_window_table() { return window_table_address; }
 VkDeviceAddress draw_zero_address() { return zero_address; }
-/// (M4a, HOS_DBG=meshlog) at the present after that frame: the GPU idle, its indirect mesh records as the GPU left them
+/// (HOS_DBG=meshlog) at the present after that frame: the GPU idle, its indirect mesh records as the GPU left them
 void draw_meshlog_after() {
     if (meshlog_at() < 0 || (int64_t)present_count() != meshlog_at() + 1) return;
     std::vector<std::pair<uint64_t, uint64_t>> recs;

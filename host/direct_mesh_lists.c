@@ -1,5 +1,5 @@
-/* (native-vk M4d) Game patch, direct mode only: the GPU culling lists' mesh draw argument records in Vulkan's layout
-   (docs/direct/m4d-report.md, task 3; the sibling of direct_mesh_args.c).
+/* Game patch, direct mode only: the GPU culling lists' mesh draw argument records in Vulkan's layout
+.
 
    vkCmdDrawMeshTasksIndirectEXT reads a record as {groupCountX, Y, Z} = w0, w1, w2; NVN reads {count = w0, first = w1}.
    The culling shaders write only w0 (atomicMax) and w3 (atomicAdd), so {x, 1, 1, n} is Vulkan's record once w1 = w2 = 1.
@@ -9,7 +9,7 @@
        w1: NVN's count and first) and `str wzr, [x19, layout[+0x10]]` (the appended count). Found by a page watch on
        0x117a4d6000 (HOS_DBG=memwatch, run m4d_mw_k: lr 0x80362038, every frame, the only CPU writer after the buffer's
        clear at creation). The splice after each of its 64-bit zero stores writes w1 = w2 = 1 after it.
-     - (M4e) f_80361a00, called twice from f_80361c80 (0x80361e08, 0x80361e10: the lists at [x27+0x180], [x27+0x1b8], in
+     - f_80361a00, called twice from f_80361c80 (0x80361e08, 0x80361e10: the lists at [x27+0x180], [x27+0x1b8], in
        Kokiri the headers 0x117982a000 and 0x1178b7e000), resets its list's first record the same way (`str xzr, [x22, x8]`
        at 0x80361b3c, x8 = layout[+4]; `str wzr` the appended count). M4d took the w1 = 0 these two kept for a GPU
        write; a page watch (HOS_DBG=memwatch, run m4e_mw_k: guest lr 0x80361b2c < 0x80361e14, every frame) found this

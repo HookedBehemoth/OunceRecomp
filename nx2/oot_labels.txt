@@ -20,8 +20,8 @@
 80798690 texdata_copy_texels              # docs/direct/texture-streaming.md, host/direct_assets.c: agl::TextureData::loadImage_, the memcpy of the whole image (hooked)
 80bd22b0 texdata_copy_to_buffer           # work/assets/native/block-linear.md: its own CopyTextureToBuffer + submit (capture)
 8353d560 texdata_cpu_copy_region          # work/assets/native/block-linear.md: ReadTexels from one texture, WriteTexels into another
-809e6760 texdata_cpu_lut                  # docs/direct/m4d-report.md: a LUT computed on the CPU into a buffer a texture names
-809e70a0 texdata_cpu_lut_copy_out         # docs/direct/m4d-report.md: copies it out and hands it on (INFERRED staging)
+809e6760 texdata_cpu_lut                  # a LUT computed on the CPU into a buffer a texture names
+809e70a0 texdata_cpu_lut_copy_out         # copies it out and hands it on (INFERRED staging)
 80798d00 texdata_create                   # docs/direct/texture-streaming.md: slot in the compactible heap, BRTI copied to td+0x58
 8079c220 texdata_destroy                  # docs/direct/texture-streaming.md: nvnTextureFinalize, descriptor released, block freed or handed on
 8079c110 texdata_drop_replace             # docs/direct/texture-streaming.md: drops any Replace request
@@ -34,14 +34,14 @@
 809ee850 texdata_from_texture_info_caller # docs/direct/texture-streaming.md
 80057580 texdata_init_from_desc           # work/assets/native/rt-alloc.md: agl::TextureData from a descriptor (storage size/alignment)
 80057c40 texdata_init_from_desc_b         # work/assets/native/rt-alloc.md: its sibling
-809ea090 texdata_init_jpg                 # docs/direct/m0-terrain-texels.md: TextureDataInitializerJPG: decodes on the CPU
+809ea090 texdata_init_jpg                 # docs/direct/terrain-texels.md: TextureDataInitializerJPG: decodes on the CPU
 807987d0 texdata_init_nvn_texture         # docs/direct/texture-streaming.md: nvnTextureInitialize, view, pool registration
-80798b60 texdata_load_in_place_a          # docs/direct/texture-streaming.md, docs/direct/a-rt-report.md: ui2d in-place files
+80798b60 texdata_load_in_place_a          # docs/direct/texture-streaming.md: ui2d in-place files
 80792bd0 texdata_load_in_place_b          # docs/direct/texture-streaming.md, host/direct_assets.c: BNTX in place (in-place files)
 807974f0 texdata_make_alias               # docs/direct/texture-streaming.md: a no-data load: shares its target's slot, joins its chain
 80ddab00 texdata_model_procedural         # work/assets/native/block-linear.md: ModelProcedural
-809eb4a0 texdata_noise_generators         # docs/direct/m4g-report.md
-809eb720 texdata_noise_textures           # docs/direct/m4g-report.md: makes the noise generators' textures
+809eb4a0 texdata_noise_generators         # docs/direct-backend-plan.md
+809eb720 texdata_noise_textures           # makes the noise generators' textures
 807982f0 texdata_rebind                   # docs/direct/texture-streaming.md: a moved texture under the same descriptor id
 807981f0 texdata_rebind_copy              # docs/direct/texture-streaming.md: td + new block: copies into the second CPU mapping, rebinds
 83537d90 texdata_replace                  # docs/direct/texture-streaming.md: Replace (replaceLoad_): content swapped for a newly loaded BNTX
@@ -63,7 +63,7 @@
 83538470 texdata_slot_delayed_free_run    # docs/direct/texture-streaming.md: delayed slot frees
 8079c360 texdata_unregister               # docs/direct/texture-streaming.md: releases the descriptor, finalizes the texture
 80c5f1e0 texdata_water_volume_dummy       # work/assets/native/block-linear.md: WaterVolumeDataDummy
-809e9d60 texdata_write_texels             # docs/direct/m0-terrain-texels.md: agl::TextureData WriteTexels + FlushTexels
+809e9d60 texdata_write_texels             # docs/direct/terrain-texels.md: agl::TextureData WriteTexels + FlushTexels
 83537760 texheap_alloc_failed_evict       # docs/direct/texture-streaming.md
 80799bd0 texheap_alloc_inner              # docs/direct/texture-streaming.md
 80799630 texheap_alloc_slot               # docs/direct/texture-streaming.md: (td, heap, size, align): slot in the CompactibleHeap
@@ -76,7 +76,7 @@
 807da590 texheap_compaction_start         # docs/direct/texture-streaming.md: the policy for starting a new compaction
 807da3f0 texheap_compaction_thread        # docs/direct/texture-streaming.md: aglTextureDataMgr::Compaction thread handler
 807da480 texheap_compaction_worker        # docs/direct/texture-streaming.md, host/direct_assets.c: the compaction step (states 0-3)
-8079aa20 texheap_mark_evictable           # docs/direct/texture-streaming.md, docs/direct/m6f-report.md 3: (&td->slot = td+0x18, 1) to the LRU cache / (.., 0) taken back (hooked)
+8079aa20 texheap_mark_evictable           # docs/direct/texture-streaming.md: (&td->slot = td+0x18, 1) to the LRU cache / (.., 0) taken back (hooked)
 83538b70 texheap_owner_tag                # docs/direct/texture-streaming.md: a block's owner tag
 8051d560 texres_acquire                   # docs/direct/texture-streaming.md: (mgr, BRTI, key, listener): lookup, refcount, unlinks from the LRU
 8083b770 texres_bake_lod_a                # docs/direct/texture-streaming.md: IsEnableBakeTextureLOD (INFERRED from names)
@@ -94,13 +94,13 @@
 807978c0 ui2d_textures_init_b             # work/assets/native/asset-path.md: (agl-called ResTextureFile path)
 
 # --- render targets: agl::utl::DynamicTextureAllocator
-8005ed00 dta_alloc                        # host/rt_slots.c, work/assets/native/rt-alloc.md: DTA::alloc (dta, ctx, desc, flags); docs/direct/shadow-pool-report.md: computes a target's size itself (never asks nvnTextureBuilderGetStorageSize on the transient path); the entry it returns names its texture object through its descriptor id (+0x68 -> agl's record +0x18 -> holder -> object)
+8005ed00 dta_alloc                        # host/rt_slots.c, work/assets/native/rt-alloc.md: DTA::alloc (dta, ctx, desc, flags); docs/direct/transient-pool.md: computes a target's size itself (never asks nvnTextureBuilderGetStorageSize on the transient path); the entry it returns names its texture object through its descriptor id (+0x68 -> agl's record +0x18 -> holder -> object)
 80065b10 dta_alloc_b                      # work/assets/native/block-linear.md: the other DynamicTextureAllocator entry
 80062c50 dta_alloc_persistent             # host/rt_slots.c, work/assets/native/rt-alloc.md: the persistent path's fit, from the top of a free block
 80063090 dta_arena_init                   # work/assets/native/rt-alloc.md: one of the pool record's 7 arenas
 8006ec60 dta_arena_stats                  # work/assets/native/cores.md: sums the arenas' bytes in use for the game's stats
 80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, nx2/oot_patches.py: -> DTA::initialize
-802737a0 dta_free                         # host/rt_slots.c; docs/direct/shadow-pool-report.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
+802737a0 dta_free                         # host/rt_slots.c; docs/direct/transient-pool.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
 80c49070 dta_initialize                   # work/assets/native/rt-alloc.md: DTA::initialize: entries, 7 lanes, pool record
 836ce9d0 dta_pool_config_read             # nx2/oot_patches.py: reads the render-target pool size, makes the pools
 80c49380 dta_pool_record_create           # work/assets/native/rt-alloc.md: physical pool + 7 arenas + virtual pools
@@ -109,15 +109,15 @@
 811c9ba0 dta_virtual_pool_create          # nx2/oot_patches.py
 
 # --- descriptors and the per-view system textures
-80557420 desc_deferred_free_drain         # docs/direct/m3-patch-sites.md: returns freed descriptor ids after the flip
+80557420 desc_deferred_free_drain         # docs/direct/patch-sites.md: returns freed descriptor ids after the flip
 80966440 desc_pools_create                # work/assets/native/engine-materials.md: the texture pool (33,068 ids) and the sampler pool
-80064920 desc_register_texture            # docs/direct/m3-patch-sites.md, docs/direct/texture-streaming.md: agl descriptor manager (mgr, texture, view, owner) -> RegisterTexture
-800634b0 desc_reregister                  # docs/direct/m3-patch-sites.md, docs/direct/shadow-maps.md 2: frees an entry's descriptor id and takes a new one (ENTRY_HOOK); with no pool (+0x10 = 0) it only frees it (+0x68 = -1); docs/direct/shadow-pool-report.md: reads the NVN format table 0x83f4848c (u32 per agl format, 0x5f entries) and initializes the manager's texture object over the entry's pool (+0x10) and offset (+0)
+80064920 desc_register_texture            # docs/direct/patch-sites.md, docs/direct/texture-streaming.md: agl descriptor manager (mgr, texture, view, owner) -> RegisterTexture
+800634b0 desc_reregister                  # docs/direct/patch-sites.md, docs/direct/shadow-maps.md 2: frees an entry's descriptor id and takes a new one (ENTRY_HOOK); with no pool (+0x10 = 0) it only frees it (+0x68 = -1); docs/direct/transient-pool.md: reads the NVN format table 0x83f4848c (u32 per agl format, 0x5f entries) and initializes the manager's texture object over the entry's pool (+0x10) and offset (+0)
 834bf750 desc_register_view               # docs/direct/shadow-maps.md 2: a texture object of the manager's own over a TextureData copy, initialized and registered: a new id (local shadows, sun cascades)
 834bf9b0 desc_id_release                  # docs/direct/shadow-maps.md 2: an id's count down; at 0 onto the deferred list (+0xa00 by +0xa60) that f_80557420 drains
 800656b0 desc_texture_slot_b              # work/assets/native/rt-alloc.md, work/assets/native/cores.md: texture descriptor slot, with f_80064920 and f_80065880: texture object, builder from TextureData, register
 80065880 desc_texture_slot_c              # work/assets/native/rt-alloc.md, work/assets/native/nvn-callpaths.md: (same group; also re-made transient targets each frame)
-80667d20 system_texture_table_write       # docs/direct/m3-patch-sites.md, docs/direct/m0-gpu-experiments.md: the 30-slot table per view
+80667d20 system_texture_table_write       # docs/direct/patch-sites.md, the 30-slot table per view
 800662e0 texview_mip_chain_register       # work/assets/native/descriptor-heap.md, work/assets/native/nvn-callpaths.md: Hi-Z / mip chain per-level image views
 
 # --- the frame: heads, the gate, submits, present
@@ -139,7 +139,7 @@
 804fc0f0 frame_variable_refresh           # host/nn_vi.c: variable refresh (+0x231)
 
 # --- jobs: the task graph, the scheduler, render jobs and their sync
-800998a0 job_calc_runner                  # docs/direct/m6a-report.md, work/assets/native/engine-jobs.md: calc jobs runner: CPU culler, grid occluder, GPU-result read # ? work/assets/native/engine-layers.md says the model scene job
+800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md: calc jobs runner: CPU culler, grid occluder, GPU-result read # ? work/assets/native/engine-layers.md says the model scene job
 8007de00 job_gpu_sync                     # work/assets/native/command-lists.md: a synchronous GPU job: record, submit, fence, wait
 80070ea0 job_graph_build                  # work/assets/native/engine-jobs.md: (pool, graph, desc): the frame's task graph
 80070d30 job_graph_kick                   # work/assets/native/engine-jobs.md: virtual, vtable 0x84c85738
@@ -150,26 +150,26 @@
 80671d00 job_list_command_pool            # work/assets/native/engine-jobs.md: the list's command pool
 80671890 job_list_reset                   # work/assets/native/engine-jobs.md: resets the render-job list each frame
 80435300 job_mtx_set                      # work/assets/native/cpu-to-gpu.md: property / mtx-set lookups job
-8067c310 job_occlusion_grid_dispatch      # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: the occlusion grid's DispatchCompute (m6d-report.md is not on this branch)
+8067c310 job_occlusion_grid_dispatch      # docs/direct/jobs-state.md, docs/direct/patch-sites.md: the occlusion grid's DispatchCompute
 800766e0 job_phase_per_list               # work/assets/native/engine-jobs.md: scheduler's bit-8 phase, per list
 8007fe60 job_scheduler                    # work/assets/native/engine-jobs.md, host/eng_jobs.c: the job runner (agl::lyr::Renderer begin/end, render-job loop)
 80083580 job_scheduler_sibling            # work/assets/native/engine-layers.md: a sibling of the job body
 80083960 job_scheduler_virtual            # work/assets/native/engine-jobs.md, host/eng_jobs.c: the scheduler's virtual twin
-82c02f20 job_sync_pre_draw_a              # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: pre-draw hook: waits for GPU culling (WaitEvent b00 + Barrier)
-82c03170 job_sync_pre_draw_b              # docs/direct/m0-jobs-state.md: same code, WaitEvent b48
-831fa4a0 job_sync_water_wait              # host/direct_job_sync.c, docs/direct/m3a-report.md: [renderer+0x150]: tail-jumps to WaitEvent
+82c02f20 job_sync_pre_draw_a              # docs/direct/jobs-state.md, docs/direct/patch-sites.md: pre-draw hook: waits for GPU culling (WaitEvent b00 + Barrier)
+82c03170 job_sync_pre_draw_b              # docs/direct/jobs-state.md: same code, WaitEvent b48
+831fa4a0 job_sync_water_wait              # host/direct_job_sync.c, [renderer+0x150]: tail-jumps to WaitEvent
 8007fe10 job_worker_calc                  # work/assets/native/engine-jobs.md: worker thread's calc_(msg): msg 1 runs the scheduler
 800711c0 job_workers_post                 # work/assets/native/engine-jobs.md: INFERRED: posts msg 1 to the workers
-80084de0 render_job_record                # docs/direct-backend-plan.md, docs/direct/m0-job-formats.md: a render job's recorder (x3: the pass key)
+80084de0 render_job_record                # docs/direct-backend-plan.md, docs/direct/job-formats.md: a render job's recorder (x3: the pass key)
 
 # --- layers: agl::lyr lists and the pipeline hook table (slot = offset in vtable 0x84c847f0)
 8006f9c0 layer_decals_static_shadow       # work/assets/native/engine-layers.md 6.1: raises hook +0x50 (decals, static shadow)
 8007d2e0 layer_gpu_cull_graphics          # work/assets/native/engine-frame.md: layer #240: GPU culling's graphics side, sky/env
-8006e160 layer_item_step                  # docs/direct/m3-patch-sites.md: per-item step of the layer pipeline
-8007b520 layer_list_begin_unused          # docs/direct/m3-patch-sites.md, docs/direct/m1-report.md: begins a list for every layer job; never submitted
+8006e160 layer_item_step                  # docs/direct/patch-sites.md: per-item step of the layer pipeline
+8007b520 layer_list_begin_unused          # docs/direct/patch-sites.md, begins a list for every layer job; never submitted
 8007da20 layer_list_end_b                 # work/assets/native/engine-frame.md, work/assets/native/engine-jobs.md: layer list end (0x8007dabc)
-8007ad40 layer_list_record_b              # host/direct.c, docs/direct/m2a-report.md: agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
-8006cd60 layer_list_record_post           # docs/direct/m6a-report.md, host/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
+8007ad40 layer_list_record_b              # host/direct.c, agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
+8006cd60 layer_list_record_post           # host/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
 807cd380 layer_lists_call                 # work/assets/native/engine-frame.md, gpu/legacy/vk/eng_pass.h: calls the 9 layer lists
 807ccda0 layer_lists_call_caller          # work/assets/native/engine-frame.md
 802aba50 layer_lists_caller               # work/assets/native/engine-frame.md: calls the 9 layer lists (via f_807ccda0)
@@ -211,10 +211,10 @@
 8086e790 pass_cubemap_filter_caller       # work/assets/native/engine-frame.md
 8066bec0 pass_deferred_lighting           # work/assets/native/engine-frame.md: deferred lighting / composite
 8065c660 pass_depth_buffer                # work/assets/native/engine-frame.md, work/assets/native/rt-alloc.md: "DepthBuffer", "Reprojection"
-8028a2a0 pass_depth_probe_list            # docs/direct/m0-job-formats.md: depth probes' layer list (owner, drawctx, key)
+8028a2a0 pass_depth_probe_list            # docs/direct/job-formats.md: depth probes' layer list (owner, drawctx, key)
 802867f0 pass_depth_probes                # work/assets/native/engine-frame.md: "inner/outer_depth_probe_tex"
 80280270 pass_dof                         # work/assets/native/engine-frame.md: DOF / bilateral grid group
-80681320 pass_draw_inline                 # docs/direct-backend-plan.md, docs/direct/m0-job-formats.md: the layer list drawing a pass itself
+80681320 pass_draw_inline                 # docs/direct-backend-plan.md, docs/direct/job-formats.md: the layer list drawing a pass itself
 802ab6c0 pass_draw_main_screen            # work/assets/native/engine-frame.md: "Draw(drawMainScreen_)"
 80295060 pass_env_cube_compute            # work/assets/native/engine-frame.md: compute 4x4x6 (#239)
 8025fee0 pass_env_cubemap                 # work/assets/native/engine-frame.md: env cubemap prefilter (x16 f_802631a0)
@@ -226,11 +226,11 @@
 8028b110 pass_fog_water                   # work/assets/native/engine-frame.md: "FogPrePass AfterWater/BeforeWataer"
 802a3700 pass_half_color                  # work/assets/native/engine-frame.md: "gsys::RenderBuffer::Color(half)"
 802a48b0 pass_half_nld_max                # work/assets/native/engine-frame.md: "agl::utl::DepthBufferEx::HalfNld(Max)"
-806688c0 pass_job_caller                  # docs/direct/m0-job-formats.md: (pipeline, drawctx, idx): calls a pass's render jobs (job-call splice at 0x80668a9c)
+806688c0 pass_job_caller                  # docs/direct/job-formats.md: (pipeline, drawctx, idx): calls a pass's render jobs (job-call splice at 0x80668a9c)
 802a9520 pass_linear_depth                # work/assets/native/engine-frame.md: linear depth
 8067d7a0 pass_linear_depth_grid           # work/assets/native/engine-frame.md: linear depth, HalfNld, grid dispatches
 80255be0 pass_local_shadow                # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawDepth": each light of its list with +0x5f8 bit 2 draws its map, then bit 3 is set
-802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/shadow-maps.md 2: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/shadow-pool-report.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
+802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/shadow-maps.md 2: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/transient-pool.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
 800672e0 pass_mip_chain_compute           # work/assets/native/nvn-callpaths.md, work/assets/native/engine-frame.md: mip chain by compute, 2 barriers per level
 802ad740 pass_occlusion_depth             # work/assets/native/engine-frame.md, work/assets/native/readback.md: agl::utl::DepthBufferEx::OcclusionDepthBuffer, 11 reports
 8067d890 pass_occlusion_grid_gather       # work/assets/native/engine-frame.md: occlusion grid gather dispatch
@@ -238,10 +238,10 @@
 80a47660 pass_opaque_xlu                  # work/assets/native/engine-layers.md, work/assets/native/engine-frame.md: gsys pipeline: opaque / XLU (raises hook +0x58)
 8027a310 pass_reduce_prepass              # work/assets/native/engine-frame.md: "ReducePrePass"
 8028f500 pass_rt_setup                    # work/assets/native/nvn-callpaths.md, work/assets/native/engine-jobs.md: render targets (SET_RT, clears)
-806790d0 pass_scene_depth_helper          # docs/direct/m0-job-formats.md: called from the opaque pipeline, scene depth and probes
+806790d0 pass_scene_depth_helper          # docs/direct/job-formats.md: called from the opaque pipeline, scene depth and probes
 8065fa70 pass_scene_dispatch              # work/assets/native/engine-frame.md: the 3D pipeline's own dispatch
 80668370 pass_scene_layers_b              # work/assets/native/engine-frame.md: more scene layers
-80660320 pass_scene_pipeline              # work/assets/native/engine-frame.md, docs/direct/m6a-report.md: the 3D render pipeline (stage driver: 9 SignalEvent / 10 WaitEvent)
+80660320 pass_scene_pipeline              # work/assets/native/engine-frame.md, the 3D render pipeline (stage driver: 9 SignalEvent / 10 WaitEvent)
 806602e0 pass_scene_pipeline_entry        # work/assets/native/engine-layers.md 6.1: hook +0x58 listener: calls the 3D scene pipeline
 8025dae0 pass_set_rt_b                    # work/assets/native/engine-frame.md: SET_RT wrapper
 83572be0 pass_shadow_copy                 # work/assets/native/rt-alloc.md: "copy" target (persistent DTA)
@@ -250,8 +250,8 @@
 802b8790 pass_sky_b                       # work/assets/native/engine-frame.md: sky / atmosphere
 802a1ab0 pass_sky_lut                     # work/assets/native/engine-frame.md: GPU culling graphics side, sky LUT
 80270da0 pass_smaa                        # work/assets/native/engine-frame.md: SMAA
-802722b0 pass_smaa_args                   # docs/direct/m0-terrain-texels.md: the SMAA pass's argument block
-80271be0 pass_smaa_edge                   # work/assets/native/engine-frame.md, docs/direct/m0-terrain-texels.md: "ndsr::smaa_edge/blendweights", edge list as a buffer
+802722b0 pass_smaa_args                   # docs/direct/terrain-texels.md: the SMAA pass's argument block
+80271be0 pass_smaa_edge                   # work/assets/native/engine-frame.md, docs/direct/terrain-texels.md: "ndsr::smaa_edge/blendweights", edge list as a buffer
 802715b0 pass_smaa_output                 # work/assets/native/engine-frame.md: "smaa_output"
 80666d20 pass_soft_edge_depth             # host/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy spliced)
 80668fc0 pass_sun_shadow                  # work/assets/native/engine-frame.md: sun shadow cascades (x3)
@@ -271,43 +271,43 @@
 802800c0 pass_ui_layer_clear              # work/assets/native/engine-frame.md: UI layer clear (#237)
 802910a0 pass_vegetation_compute          # work/assets/native/engine-layers.md, work/assets/native/engine-frame.md: vegetation compute (SsboMeshPlacement), GPU culling
 802740c0 pass_vrs_bilateral               # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md, docs/direct/shadow-maps.md 2: shading-rate image, bilateral grid; a pipeline stage callback that also frees the view's transients, the local-light maps (light +0x420, lr 0x802747b4 / 0x80274b14)
-80279400 pass_water                       # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: water drawer (WaitEvent b90 at 0x8027944c)
-80279b30 pass_water_caller                # docs/direct/m0-jobs-state.md: tail-calls the water drawer
+80279400 pass_water                       # docs/direct/jobs-state.md, docs/direct/patch-sites.md: water drawer (WaitEvent b90 at 0x8027944c)
+80279b30 pass_water_caller                # docs/direct/jobs-state.md: tail-calls the water drawer
 802771e0 pass_water_depth_copy            # work/assets/native/engine-layers.md: "Ext::BeforeWater::FullDepthCopy"
 81199f00 pass_weather_copy                # work/assets/native/block-linear.md: WeatherData target copy
 80669b80 pass_wet_mask                    # work/assets/native/engine-frame.md: "wet_mask"
 
 # --- draw recording: binders, drawers, precompiled lists, occlusion gating
 800715e0 draw_bind_object_ubo             # work/assets/native/command-lists.md, work/assets/native/uniform-buffers.md: draw-time binder (UBO, CallCommands)
-80435bc0 draw_deformable_model            # docs/direct/m0-jobs-state.md, work/assets/native/uniform-buffers.md: draws without own vertex bind; deformable model blocks
+80435bc0 draw_deformable_model            # docs/direct/jobs-state.md, work/assets/native/uniform-buffers.md: draws without own vertex bind; deformable model blocks
 83670280 draw_instance_loop               # work/assets/native/engine-materials.md: instance loop (with the 0x836a.. family)
 8008fc00 draw_material_bind               # gpu/legacy/vk/eng_job.h, work/assets/native/command-lists.md: the draw-time material binder (program, CallCommands, textures)
-8027c9e0 draw_method_dispatch             # work/assets/native/engine-layers.md, docs/direct/m3-patch-sites.md: draw-method dispatcher; builds the system binder block
-8008d640 draw_occlusion_gated             # work/assets/native/nvn-callpaths.md, docs/direct/m3-patch-sites.md: occlusion-gated draws (reports, conditional render, grid dispatch)
+8027c9e0 draw_method_dispatch             # work/assets/native/engine-layers.md, docs/direct/patch-sites.md: draw-method dispatcher; builds the system binder block
+8008d640 draw_occlusion_gated             # work/assets/native/nvn-callpaths.md, docs/direct/patch-sites.md: occlusion-gated draws (reports, conditional render, grid dispatch)
 800955a0 draw_occlusion_gated_b           # work/assets/native/nvn-callpaths.md: occlusion-gated draws
-80078fc0 draw_occlusion_helper            # docs/direct/m0-job-formats.md: the recorder's occlusion helper
+80078fc0 draw_occlusion_helper            # docs/direct/job-formats.md: the recorder's occlusion helper
 80296540 draw_precompiled_c               # work/assets/native/engine-materials.md: a draw function under the recorder
 80265760 draw_set_render_targets          # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: agl driver helper: SetRenderTargets
-8008f8e0 draw_shape                       # docs/direct/m0-jobs-state.md: shape draw under the recorder; calls the pre-draw hook for kind-2 items
+8008f8e0 draw_shape                       # docs/direct/jobs-state.md: shape draw under the recorder; calls the pre-draw hook for kind-2 items
 80077d60 draw_state_bind_d                # work/assets/native/nvn-callpaths.md: state objects built on the stack and bound
 802a2fc0 draw_state_blend                 # work/assets/native/engine-layers.md: agl driver helper: blend/colour/mask state
 8008b3e0 draw_state_polygon               # work/assets/native/engine-layers.md: agl driver helper: polygon state
 80104de0 draw_texture_handle              # work/assets/native/engine-layers.md: agl driver helper: texture handle
 80265350 draw_viewport                    # work/assets/native/engine-layers.md: agl driver helper: viewport
 802a46e0 draw_viewport_scissor            # nx2/oot_wide.py: SetScissor then SetViewport
-801a2d70 mesh_bind_name4                  # docs/direct/m0-jobs-state.md, host/direct_mesh_binds.c: binds resource name 4 of a mesh drawer (ctx, item, 4, ..)
-801a6a40 mesh_bind_name5                  # docs/direct/m0-jobs-state.md, host/direct_mesh_binds.c: binds resource name 5 (ctx, item, 5, ..)
-801a43e0 mesh_drawer_a                    # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: a mesh-task drawer that binds neither task slot
-801a46a0 mesh_drawer_b                    # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: (same)
-801a60f0 mesh_drawer_c                    # docs/direct/m0-jobs-state.md: (same, stage 7 slot 1)
-82c02bc0 mesh_drawer_culled_a             # docs/direct/m0-jobs-state.md: culled-instance drawer (binds names 4 and 5)
-82c024f0 mesh_drawer_culled_b             # docs/direct/m0-jobs-state.md: culled-instance drawer
-801a6410 mesh_drawer_d                    # docs/direct/m0-jobs-state.md, work/assets/native/engine-layers.md: (same; reads the GPU-culling append counters)
-801a6720 mesh_drawer_e                    # docs/direct/m0-jobs-state.md: (same)
+801a2d70 mesh_bind_name4                  # docs/direct/jobs-state.md, host/direct_mesh_binds.c: binds resource name 4 of a mesh drawer (ctx, item, 4, ..)
+801a6a40 mesh_bind_name5                  # docs/direct/jobs-state.md, host/direct_mesh_binds.c: binds resource name 5 (ctx, item, 5, ..)
+801a43e0 mesh_drawer_a                    # docs/direct/jobs-state.md, docs/direct/patch-sites.md: a mesh-task drawer that binds neither task slot
+801a46a0 mesh_drawer_b                    # docs/direct/jobs-state.md, docs/direct/patch-sites.md: (same)
+801a60f0 mesh_drawer_c                    # docs/direct/jobs-state.md: (same, stage 7 slot 1)
+82c02bc0 mesh_drawer_culled_a             # docs/direct/jobs-state.md: culled-instance drawer (binds names 4 and 5)
+82c024f0 mesh_drawer_culled_b             # docs/direct/jobs-state.md: culled-instance drawer
+801a6410 mesh_drawer_d                    # docs/direct/jobs-state.md, work/assets/native/engine-layers.md: (same; reads the GPU-culling append counters)
+801a6720 mesh_drawer_e                    # docs/direct/jobs-state.md: (same)
 83607fc0 occl_gating_a                    # work/assets/native/engine-jobs.md: occlusion gating (ResetCounter, ReportCounter)
 83607730 occl_gating_b                    # work/assets/native/engine-jobs.md
 83607e80 occl_gating_c                    # work/assets/native/engine-jobs.md
-8067c110 occl_grid_item_callback          # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: an item's draw callback; tail-calls the grid dispatch
+8067c110 occl_grid_item_callback          # docs/direct/jobs-state.md, docs/direct/patch-sites.md: an item's draw callback; tail-calls the grid dispatch
 80293890 shape_list_build_draw            # host/eng_lists.c, work/assets/native/engine-cut-plan.md: precompiled list: one indexed/mesh draw
 806002e0 shape_list_build_instance        # gpu/legacy/render/nvn_pkt.h, host/eng_lists.c: per-instance shape list (model instance x pass x variant)
 80445020 shape_list_build_material        # host/eng_lists.c, gpu/legacy/render/nvn_pkt.h: a material list (never called in play)
@@ -320,9 +320,9 @@
 8044e020 shape_list_vertex_scratch_driver # host/eng_lists.c: drives f_8044e8e0
 80443000 shape_material_list_driver       # work/assets/native/engine-materials.md: reads the material's bfsha options, drives f_80445020
 80602520 shape_model_texture_bind         # work/assets/native/engine-materials.md: model-texture side of the material binding
-801060f0 sysbind_slot                     # host/direct_mesh_system.c, docs/direct/m4b-report.md: binds a system slot (slots 0-2)
+801060f0 sysbind_slot                     # host/direct_mesh_system.c, binds a system slot (slots 0-2)
 80100210 sysbind_slot3                    # host/direct_mesh_system.c: system uniform slot 3 binder
-80101ec0 sysbind_system                   # docs/direct/m3-patch-sites.md, docs/direct/m0-jobs-state.md: the system binder (from the layer list, 0x8027caa0)
+80101ec0 sysbind_system                   # docs/direct/patch-sites.md, docs/direct/jobs-state.md: the system binder (from the layer list, 0x8027caa0)
 
 # --- uniform and other GPU data writers, GPU pools
 809de920 gpu_pool_create                  # work/assets/native/alloc-transfer.md: made 4,574 of the game's GPU pools ("gpu")
@@ -342,18 +342,18 @@
 80105e80 vbuf_dynamic_map                 # work/assets/native/alloc-transfer.md: maps 2 MB dynamic CPU vertex / scratch buffers
 
 # --- culling, readbacks and reports, dynamic resolution, exposure
-808226e0 cull_cpu_objects                 # docs/direct/m6a-report.md, docs/direct/m5-report.md: the grid occluder's math (under f_80822260)
-812342c0 cull_cpu_occlusion_reader        # docs/direct/m5-report.md, work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: the CPU culler: per-shape visibility from the occlusion report slots; wraps ring slots as NVNbuffers
-8009bb80 cull_cpu_shapes                  # docs/direct/m6a-report.md: the CPU culler (calls f_812342c0)
+808226e0 cull_cpu_objects                 # the grid occluder's math (under f_80822260)
+812342c0 cull_cpu_occlusion_reader        # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: the CPU culler: per-shape visibility from the occlusion report slots; wraps ring slots as NVNbuffers
+8009bb80 cull_cpu_shapes                  # the CPU culler (calls f_812342c0)
 80364080 cull_gpu_dispatch                # work/assets/native/alloc-transfer.md: dispatches the GPU-culling compute, 112 KB instance list
-80361a00 cull_gpu_list_reset_one          # host/direct_mesh_lists.c, docs/direct/m4e-report.md: resets one list's first record (spliced)
-80361c80 cull_gpu_lists_reset             # host/direct_mesh_lists.c, docs/direct/m4d-report.md: once a frame, resets the first record of each GPU culling list (spliced)
-80822260 cull_grid_occluder               # docs/direct/m6a-report.md, docs/direct/m6c-report.md: the grid's CPU occluder
+80361a00 cull_gpu_list_reset_one          # host/direct_mesh_lists.c, resets one list's first record (spliced)
+80361c80 cull_gpu_lists_reset             # host/direct_mesh_lists.c, once a frame, resets the first record of each GPU culling list (spliced)
+80822260 cull_grid_occluder               # the grid's CPU occluder
 8035d5a0 cull_grid_view_rebuild           # work/assets/native/readback.md: rebuilds the producing frame's camera view
 82bde830 cull_precomputed                 # work/assets/native/engine-layers.md: precomputed culling
 8034dac0 dynres_a                         # work/assets/native/cpu-to-gpu.md: dynamic resolution
 831f41d0 dynres_fixed_flag                # nx2/oot_patches.py
-8074b190 dynres_gpu_timestamps            # docs/direct/m5-report.md: TIMESTAMP_TOP / TIMESTAMP reports for the dynamic resolution's GPU time
+8074b190 dynres_gpu_timestamps            # TIMESTAMP_TOP / TIMESTAMP reports for the dynamic resolution's GPU time
 8034f440 dynres_gpu_timing_read           # work/assets/native/engine-layers.md, work/assets/native/alloc-transfer.md: GPU timing results (8 KB pool) for dynamic resolution
 80076e60 dynres_ratio_listener            # work/assets/native/engine-layers.md 6.1: "p_dynamic_resolution_ratio", 12 callers
 80352340 dynres_state_forward             # work/assets/native/engine-layers.md 6.1: the hook vtable's slots 0, 1, 18 forward here (dynamic-resolution state)
@@ -361,8 +361,8 @@
 83485280 exposure_compute                 # work/assets/native/readback2.md: the exposure / adaptation
 80354060 report_gpu_timestamps_read       # work/assets/native/engine-layers.md, work/assets/native/readback2.md: 29 x 64-byte readbacks (agl GPU timestamps)
 80365f00 report_reader_a                  # host/nvn_native.c: (the occlusion grid reader, agl::utl::DepthBufferEx)
-80362ff0 report_reader_b                  # docs/direct/m0-task-mesh.md: (GPU-culling append counters, read-and-zero)
-80357060 report_reader_c                  # docs/direct/m4f-report.md, work/assets/native/engine-layers.md: (the exposure reader, luminance rings)
+80362ff0 report_reader_b                  # docs/direct/task-mesh.md: (GPU-culling append counters, read-and-zero)
+80357060 report_reader_c                  # work/assets/native/engine-layers.md: (the exposure reader, luminance rings)
 
 # --- shaders and programs
 81279cd0 g3d_material_shader_setup        # work/assets/native/shader-stream.md, work/assets/native/engine-materials.md: g3d's per-material shader setup ("nvn2")
@@ -430,14 +430,14 @@
 # --- terrain, sky, vegetation
 80101060 sky_inscatter_ubo_write          # work/assets/native/uniform-buffers.md: the sky ("SkyInscatter") uniform writes (sites 0x80101174..0x80101294)
 80846070 sky_lut_copy                     # host/direct_sky_lut.c: memcpys the skybin's three LUT parts into textures (patched)
-80eb8460 terrain_decode_cpu_copy          # docs/direct/m0-terrain-texels.md: decodes a terrain layer's CPU copy
+80eb8460 terrain_decode_cpu_copy          # docs/direct/terrain-texels.md: decodes a terrain layer's CPU copy
 83a6d170 terrain_polish_readback          # work/assets/native/block-linear.md
 83a6b210 terrain_polish_readback_caller   # work/assets/native/block-linear.md
-83a6d540 terrain_read_texels              # docs/direct/m0-terrain-texels.md: InvalidateTexels + ReadTexels, or CopyTextureToBuffer
-809e3350 terrain_tera_mgr_init            # docs/direct/m0-terrain-texels.md, docs/direct/texture-streaming.md: the tera manager: device bytes, its own pools
-80d7e090 terrain_tera_polish              # docs/direct/m0-terrain-texels.md: tera polish
-80c17040 terrain_tile_load                # docs/direct/m0-terrain-texels.md: its memcpy at +0x544 is spliced
-83a6d8f0 terrain_write_texels             # docs/direct/m0-terrain-texels.md, work/assets/native/block-linear.md: WriteTexels + Flush (w3 0) or CopyBufferToTexture
+83a6d540 terrain_read_texels              # docs/direct/terrain-texels.md: InvalidateTexels + ReadTexels, or CopyTextureToBuffer
+809e3350 terrain_tera_mgr_init            # docs/direct/terrain-texels.md, docs/direct/texture-streaming.md: the tera manager: device bytes, its own pools
+80d7e090 terrain_tera_polish              # docs/direct/terrain-texels.md: tera polish
+80c17040 terrain_tile_load                # docs/direct/terrain-texels.md: its memcpy at +0x544 is spliced
+83a6d8f0 terrain_write_texels             # docs/direct/terrain-texels.md, work/assets/native/block-linear.md: WriteTexels + Flush (w3 0) or CopyBufferToTexture
 808833e0 vegetation_mesh_placement        # work/assets/native/engine-layers.md: SsboMeshPlacement
 
 # --- effects (Vfx3)
@@ -459,12 +459,12 @@
 806559e0 vfx_star_ctx                     # work/assets/native/engine-layers.md: StarCtx (sky stars)
 
 # --- fonts, UI, movies
-8152f540 font_glyph_cell_write_a          # docs/direct/m3-patch-sites.md: (the glyph cache's shelf packer (cache, &x, &y, w, h))
-81539300 font_glyph_cell_write_b          # docs/direct/m3-patch-sites.md: (nn::font's plot, the glyph writer)
-8156ca60 font_plot_caller_a               # docs/direct/m3-patch-sites.md: reaches the glyph writer
-8156fdc0 font_plot_caller_b               # docs/direct/m3-patch-sites.md
-815392a0 font_plot_caller_c               # docs/direct/m3-patch-sites.md
-81535eb0 font_plot_caller_d               # docs/direct/m3-patch-sites.md: asks the shelf packer for a cell
+8152f540 font_glyph_cell_write_a          # docs/direct/patch-sites.md: (the glyph cache's shelf packer (cache, &x, &y, w, h))
+81539300 font_glyph_cell_write_b          # docs/direct/patch-sites.md: (nn::font's plot, the glyph writer)
+8156ca60 font_plot_caller_a               # docs/direct/patch-sites.md: reaches the glyph writer
+8156fdc0 font_plot_caller_b               # docs/direct/patch-sites.md
+815392a0 font_plot_caller_c               # docs/direct/patch-sites.md
+81535eb0 font_plot_caller_d               # docs/direct/patch-sites.md: asks the shelf packer for a cell
 83b82250 movie_renderer_copy_frame        # work/assets/native/block-linear.md: NV12 planes to two targets
 80a8f690 ui_item_db_list                  # host/oot_menu.c: (db, which): an item database list
 8002a520 ui_item_entry_key                # host/oot_menu.c item_panes: an item database entry's key (Key Items page)
@@ -492,7 +492,7 @@
 80794b00 ui_text_skip                     # nx2/oot_patches.py: the game's own skip on A
 
 # --- game: actors, physics, camera, events, game data, world
-8004ab40 actor_baseproc_executor          # docs/direct/m6a-report.md, work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
+8004ab40 actor_baseproc_executor          # work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
 804bd8c0 actor_life_write                 # nx2/oot_patches.py patch_life: an actor's life write (patched for the hearts cheat)
 82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc
 82c1d750 actor_records_read_a             # work/assets/native/alloc-transfer.md: CPU reads of its own records in GPU pools

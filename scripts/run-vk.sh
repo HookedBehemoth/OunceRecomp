@@ -7,7 +7,7 @@
 #   USER_FROM=<folder>           copied into the run's own user folder first (a save to start from)
 #   EXE=<path>                   another build (default work/sa/build/hookshot; its caches are beside it)
 #   WINDOW=1 SOUND=1 SHOT_EVERY=300
-#   RUN=timing|check             (native-vk) the script takes the GPU lock itself; do not wrap it in flock then:
+#   RUN=timing|check             the script takes the GPU lock itself; do not wrap it in flock then:
 #     timing  exclusive (flock -x work/run.lock): fps, launch time, anything that may hang the GPU (a reset kills
 #             every run beside it)
 #     check   shared (flock -s work/run.lock) plus one of RUN_SLOTS (default 1) slots: counters, screenshots,

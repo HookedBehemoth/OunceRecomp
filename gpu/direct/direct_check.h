@@ -1,4 +1,4 @@
-// (M6b) Checks that can fail (docs/direct/m6b-report.md): the validation layer's messages counted and proven heard, and rule 2's
+// Checks that can fail: the validation layer's messages counted and proven heard, and rule 2's
 // strict mode (docs/direct-backend-plan.md, Rules 2; Checks, "Counters").
 //
 // Validation. When the Khronos validation layer is in the process (the existing way of turning it on for a run: the loader's
@@ -66,7 +66,7 @@ struct DebugObjects {
     DebugObjects();
     ~DebugObjects();
 };
-/// (M6b) What the objects made in its scope are for, in strict's reason ("Vulkan object made in steady play: <what>"): the
+/// What the objects made in its scope are for, in strict's reason ("Vulkan object made in steady play: <what>"): the
 /// known list can name one cause and not all objects
 struct ObjectsFor {
     const char* prev;

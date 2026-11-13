@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# (M6f) Checks in motion (docs/direct/m6f-report.md): every earlier check stood still. Two scripted routes from the market
+# Checks in motion: every earlier check stood still. Two scripted routes from the market
 # overlay (Hyrule Field at the castle town's drawbridge), each a run of scripts/run-vk.sh (RUN=timing: the GPU lock):
 #
 #   scripts/direct_walk_check.sh walk   [run name]   forward from the drawbridge toward Lon Lon Ranch (the stick held up),

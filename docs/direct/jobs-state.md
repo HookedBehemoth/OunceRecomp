@@ -1,4 +1,4 @@
-# M0: what a render job inherits, and the work recorded inside jobs (2026-11-12)
+# What a render job inherits, and the work recorded inside jobs
 
 Questions: (A) which state do a job's draws read that the job's own records do not set, who sets it, and can a game patch
 make the job self-contained; (B) what are the three WaitEvents and the two dispatches recorded inside jobs, and can a patch
@@ -25,7 +25,7 @@ prologue (`SetScissor` `0x8008556c`, `SetViewport`, `SetDepthRange`, then defaul
 - The e6-impl.md §6 finding (vb1 = 0x104290c000 in the replay, 0 in the job) is real but harmless: no attribute of those
   draws names stream 1. In Kokiri the leftover streams 1-6 are a layer list's 7-buffer bind, and every attribute uses
   stream 0 (`s4.py`).
-- The ~98 refusals under `HOS_ENG_JOBS_VTX_CHECK=2` are attributes that the job's own `BindVertexAttribState` disables
+- The ~98 refusals in the old renderer's vertex check are attributes that the job's own `BindVertexAttribState` disables
   (fmt 0, e.g. entries 3-7 of `0x22,0x1c69,0x2069,0,...`), or that lie past its count. INFERRED: the check above sees the
   same value on both sides. To confirm, log nvattr and fmt at each refusal.
 - Mesh draws do inherit the attribute layout, and that is harmless because they read none (CONFIRMED, commit 0d931cf).

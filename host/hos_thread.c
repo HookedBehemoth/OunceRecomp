@@ -68,7 +68,7 @@ int hos_thread_prio(HosThread *t) { return t->priority; }
 int hos_trace;
 extern const uint64_t hos_thread_start_hook, hos_thread_exit_hook;   /* gen/hos_image.c */
 static _Thread_local HosThread *cur;
-/* (M6a, HOS_DBG=crit: direct_crit.h) what the block that gives the core up waits on, set by the blocking call before it */
+/* (HOS_DBG=crit: direct_crit.h) what the block that gives the core up waits on, set by the blocking call before it */
 static _Thread_local int crit_why = CRIT_BLOCK_OTHER;
 static _Thread_local uint64_t crit_key, crit_away_t, crit_away_lr;
 static _Thread_local int crit_vc_how;
@@ -1318,7 +1318,7 @@ static void vc_acquire(HosThread *t) {
         esc_better = vc_env_ns("HOS_VCORE_ESCAPE_US", 250000);
         slice = vc_env_ns("HOS_VCORE_SLICE_US", 2000);
     }
-    const uint64_t crit_t = crit_rec ? crit_tsc() : 0;   /* (M6a, HOS_DBG=crit) */
+    const uint64_t crit_t = crit_rec ? crit_tsc() : 0;   /* (HOS_DBG=crit) */
     if (crit_t && crit_away_t) crit_span(crit_why, crit_away_t, crit_t, crit_key, crit_away_lr);
     crit_why = CRIT_BLOCK_OTHER, crit_away_t = 0;
     AcquireSRWLockExclusive(&vc_lock);
@@ -1436,7 +1436,7 @@ void hos_vcore_back(void) {
     HosThread *t = cur;
     if (hos_vcores_on() && t && !t->vc_held) vc_acquire(t);
 }
-/* (M6a, HOS_DBG=crit: direct_crit.h) a block's start: the core given up (released: an instant keyed by the core, which a
+/* (HOS_DBG=crit: direct_crit.h) a block's start: the core given up (released: an instant keyed by the core, which a
    waiter for it may be woken by), what it waits on and its guest caller; vc_acquire ends it */
 int hos_vcore_away_why(int why, const void *key) {
     HosThread *t = cur;

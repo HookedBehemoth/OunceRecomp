@@ -1,4 +1,4 @@
-/* (native-vk M4e) Game patch, direct mode only: the sky / ambient LUTs (docs/direct/m4e-report.md, task 1).
+/* Game patch, direct mode only: the sky / ambient LUTs.
 
    What the game does: at boot (BootupBackgroundWorkThread) and at each scene load (SceneLowPriority), f_80846070(set,
    src, n0, src + n0, n1, src + n0 + n1, n2) memcpys the three parts of one file into the storage of the set's three
@@ -6,7 +6,7 @@
    mapping). It is called for two sets (0x80845ecc, 0x80845efc), each only when n0 + n1 + n2 is the file's size. The file
    is res/Master_Field.skybin in Env/GameScene.Nin_Ounce_NVN2.genvb.zs (a SARC: the blob is the member's bytes, no header),
    the console's block-linear storage as it is. Found by this file's diagnosis (run m4e_cold_k: src 0x7fe31ba480 sits
-   0x128480 into the decompressed archive, the member's offset) after texwatch named the writer (m4d-report, 1).
+   0x128480 into the decompressed archive, the member's offset) after texwatch named the writer.
 
    Why it is changed: the direct back end has no block-linear code and never reads texture storage, so the LUT pass read
    zeros (black) and the scene's ambient light followed. nx2/prepare_skybin.py writes the archive with the member linear

@@ -1,4 +1,4 @@
-// A list's Vulkan commands at M2a (docs/direct/m2-interface.md, direct_pass): SetRenderTargets notes the targets; the
+// A list's Vulkan commands at M2a: SetRenderTargets notes the targets; the
 // rendering is begun at the first draw, job call or call of a list that draws (the load-time draw lists) after it, so the clears between become its load ops; a clear after
 // that, or one with a scissor short of the whole area, is vkCmdClearAttachments. A barrier, a dispatch, a copy or a
 // texture clear ends the rendering (the targets stay set: the next draw begins it again, loading); the next
@@ -44,7 +44,7 @@ const char* const kNames[S_COUNT] = {
     "dispatches", "barriers", "copies", "copies skipped", "texture clears", "texture clears skipped",
     "buffer ops in lists that record nothing", "ops of lists that record nothing (job, load, packet)", "calls that cut a rendering",
     "records on another thread", "ops a job's rendering cannot hold (skipped)", "command buffers cut at an event op",
-    "jobs' task steps executed (M4c)", "of them in a begun rendering (ended and begun again)", "renderings ended for an inline task step",
+    "jobs' task steps executed ", "of them in a begun rendering (ended and begun again)", "renderings ended for an inline task step",
     "jobs' task steps run again (a job called again)"};
 std::atomic<int64_t> st[S_COUNT];
 std::atomic<int64_t> st_bits[16];   // (barriers by NVN bit)
@@ -71,7 +71,7 @@ void count(int k) {
 
 uint64_t thread_id() { return (uint64_t)pthread_self(); }
 
-// ---- (M3a) jobs: the format table by pass key, the job's secondary, its execution at its call ----
+// ---- jobs: the format table by pass key, the job's secondary, its execution at its call ----
 enum {
     J_RECORDED, J_NO_FORMATS, J_NO_NESTING, J_EXECUTED, J_MISMATCH, J_UNENDED, J_NOT_SECONDARY, J_NO_PASS, J_SIZE, J_KNOWN,
     J_MISSED, J_INLINE, J_INLINE_NO_PASS, J_COUNT
@@ -189,7 +189,7 @@ VkCommandBuffer cmd_raw(List* l) {
     return l->cur;
 }
 
-/// (M6b) A pass with no target: its area, the viewport's (x + w, y + h), as the frozen back end's bare_targets
+/// A pass with no target: its area, the viewport's (x + w, y + h), as the frozen back end's bare_targets
 void bare_area(PassRec& p) {
     const uint32_t most = std::min(dev.props.limits.maxFramebufferWidth, dev.props.limits.maxFramebufferHeight);
     p.w = (uint32_t)std::clamp(p.viewport[0] + p.viewport[2], 1.0f, (float)most);
@@ -425,7 +425,7 @@ void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
     count(S_COPIES);
 }
 
-/// (M4f) a texture copy left out, named (the first 24): which images, why
+/// a texture copy left out, named (the first 24): which images, why
 void copy_skipped(const char* why, const nvn_p_copy_tt& p, const Sub& s, const Sub& d) {
     count(S_COPY_SKIPPED);
     static std::atomic<int> told{0};
@@ -637,7 +637,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     }
 }
 
-/// (M4c) A job's task step (the compute work of its task+mesh draws, direct_task.cpp) executed in its caller before the job,
+/// A job's task step (the compute work of its task+mesh draws, direct_task.cpp) executed in its caller before the job,
 /// outside the caller's rendering: ended first when it is begun (counted); its headers reset and made, a barrier, its task
 /// dispatches, a barrier that makes the headers, maps and payloads visible to the mesh draws (indirect arguments, mesh shader
 /// reads). Each call of the job runs it (a job called again: counted)
@@ -806,7 +806,7 @@ void jobs_stats(char* out, size_t cap, double frames) {
     static const bool log_pass = dbg_log("logpass");
     for (KeySlot& s : keys)   // (one line each: the line's length is bounded)
         if (const int64_t e = log_pass ? s.executed.exchange(0) : 0)
-            logf("direct: pass key %#llx (target %#llx): a frame %.2f jobs executed, their draws: drawn %.1f, mesh (M4) %.1f, step A %.1f",
+            logf("direct: pass key %#llx (target %#llx): a frame %.2f jobs executed, their draws: drawn %.1f, mesh %.1f, step A %.1f",
                  (unsigned long long)s.key.load(), (unsigned long long)s.target.load(), e / frames, s.drawn.exchange(0) / frames,
                  s.mesh.exchange(0) / frames, s.step_a.exchange(0) / frames);
     for (KeySlot& s : keys)
@@ -825,16 +825,16 @@ void pass_stats(char* out, size_t cap, double frames) {
 
 using namespace hsd;
 
-/// (M3a) The job recorder's entry (host/direct_passes.c): 1 the pass key's formats are known (the job records a secondary),
+/// The job recorder's entry (host/direct_passes.c): 1 the pass key's formats are known (the job records a secondary),
 /// 0 not (the recorder takes the game's own early return; the layer list draws the pass inline)
 extern "C" __attribute__((visibility("default"))) int hsd_pass_known(uint64_t key) {
     const KeySlot* ks = key_slot(key, false);
     const bool known = ks && ks->set.load(std::memory_order_acquire);
     jcount(known ? J_KNOWN : J_MISSED);
-    if (!known) strict_event(kJobNames[J_MISSED], "pass key %#llx", (unsigned long long)key);   // (M6b)
+    if (!known) strict_event(kJobNames[J_MISSED], "pass key %#llx", (unsigned long long)key);   // 
     return known ? 1 : 0;
 }
-/// (M3a) The game's inline path (f_80681320) draws the pass of that key into the list now, after its SetRenderTargets: the
+/// The game's inline path (f_80681320) draws the pass of that key into the list now, after its SetRenderTargets: the
 /// key's formats noted from them
 extern "C" __attribute__((visibility("default"))) void hsd_pass_inline(void* list, uint64_t key) {
     List* l = (List*)list;

@@ -1,10 +1,4 @@
-# The program of the Kokiri-Hyrule Field loss, read statically (2026-11-13)
-
-Branch `agent/hfdecomp` (from native-vk 1aa8282). Static analysis only: no game run, no GPU job. Program
-`cfebb562ec378f87` = task stage `2c56dc1006942f74`, mesh stage `40d0c0768e874600`, fragment stage `0801cca176fd6c81`
-(CONFIRMED: the capture's program record). Everything made from the game (IR prints, the capture, the runs' outputs) is
-local under `work/hfdecomp/`; this file gives offsets, counts and our own descriptions. Claims are marked **CONFIRMED**
-(by the check named) or **INFERRED** (read from the IR, not checked against data).
+# The program of the Kokiri-Hyrule Field loss, read statically
 
 ## Summary
 

@@ -27,7 +27,7 @@ ENTRY_HOOK_SYM(memcpy) {
     return 1;
 }
 
-/* (native-vk) the sdk's own copies, which the game calls by name past memcpy: __memcpy_aarch64 (sdk f_8575cdc0) was
+/* the sdk's own copies, which the game calls by name past memcpy: __memcpy_aarch64 (sdk f_8575cdc0) was
    90% of the game's loads and stores of GPU pool memory and 2.8 s of the loading screen's CPU, lifted */
 ENTRY_HOOK_SYM(__memcpy_aarch64) { return entry_sym_memcpy(c); }
 ENTRY_HOOK_SYM(__memcpy_aarch64_simd) { return entry_sym_memcpy(c); }

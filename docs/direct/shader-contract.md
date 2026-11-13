@@ -1,9 +1,6 @@
-# M2b: the shader contract (2026-11-12)
+# The shader contract
 
-What a program translated by Eden (`gpu/vk/eden`, driven by `vk_shader.cpp`) expects at a draw in the configuration the
-engine-cut path used (descriptor heap, `RX_VK_DESC_HEAP_BDA=2`, shader objects), how the frozen job-thread path provides it,
-and what `direct_draw` provides instead. Analysis only; tree at a0dc76c. Paths are `gpu/vk/` unless named. **C** = read in
-code at the line given; **I** = inferred. The frozen notes are cited, not continued.
+What a program translated by Eden (`gpu/direct/eden`, driven by `direct_shader.cpp`) expects at a draw, and what `direct_draw` provides. **C** = read in code at the line given; **I** = inferred. Paths are `gpu/legacy/vk/` (the old renderer, which the contract was first read from) unless named.
 
 ## 1. Program identity and variants
 
@@ -41,7 +38,7 @@ whole file dropped for another driver UUID (`:74-87,114`); a binary's key = SPIR
 **heap mapping signature**, the 32-lane pin, NO_TASK (`:240,256-257`). The heap signature includes the heap's own layout
 (`region_base`, `tail_at`, strides: `vk_desc_heap.cpp:405-418`), so *a mapping change invalidates only shader-object
 binaries, never translations*. ProgNotes `{codes, key, variant}` (`vk_shader_object.cpp:408-422`) let the prefetch thread make
-known variants at `nvnProgramSetShaders` (`:455-484,632-647`). Direct must name its own files (m0-reuse f).
+known variants at `nvnProgramSetShaders` (`:455-484,632-647`). Direct must name its own files.
 
 **Known at load** (e7-design.md 2): code (SetShaders), vertex attribute types (E2 vertex packet), material handles. Known
 later: the pass's colour types (float in every logged pass), the 30 system textures. A load-time path can therefore compute

@@ -1,5 +1,5 @@
-// (M6e) HOS_DBG=meshcap:<present>, a debug aid: one frame's mesh draws captured for the mesh harness (tools/meshlab,
-// docs/direct/m6e-report.md). Every mesh program's stages (SPIR-V, heap mappings, c1) are kept as they are made; in the frame
+// HOS_DBG=meshcap:<present>, a debug aid: one frame's mesh draws captured for the mesh harness (tools/meshlab,
+// docs/direct/mesh-harness.md). Every mesh program's stages (SPIR-V, heap mappings, c1) are kept as they are made; in the frame
 // after that present every mesh draw (task+mesh and mesh-only) is recorded with its push data, its uniform buffers' bytes, its
 // mesh stage's storage buffers and, once the GPU has run the frame, its task header, map and payload; the frame's other draws
 // and task steps are listed in their order. Written to meshcap/frame.bin in the working directory (a run's folder: local, never

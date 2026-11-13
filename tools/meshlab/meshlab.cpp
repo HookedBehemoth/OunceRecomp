@@ -1,4 +1,4 @@
-// meshlab: the game's mesh draws outside the game (docs/direct/m6e-report.md).
+// meshlab: the game's mesh draws outside the game (docs/direct/mesh-harness.md).
 //
 // Reads one frame captured by HOS_DBG=meshcap (gpu/direct/direct_meshcap.h) and draws its mesh draws on their own, with the
 // stages the back end made (the translator's SPIR-V and heap mappings) or with replacement mesh stages:

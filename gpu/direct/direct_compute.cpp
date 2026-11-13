@@ -1,4 +1,4 @@
-// (M4a) Dispatches and the buffer ops (direct_compute.h). The compute half of gpu/legacy/vk/vk_shader.cpp translate_into, Env and
+// Dispatches and the buffer ops (direct_compute.h). The compute half of gpu/legacy/vk/vk_shader.cpp translate_into, Env and
 // vk_bank.cpp's compute bank (cs_layout, driver_bank_fill's stage 5), on the step-B interface of the graphics programs
 // (direct_shader.cpp): handles read by the shader from c0, storage buffers and global memory by address, uniform buffers
 // through an address table. What differs from the frozen back end: the grid is NumWorkgroups (no CPU read of an indirect
@@ -954,7 +954,7 @@ void count(List* l, Reason r) {
     if (strict_on() && r != D_DRAWN && r != D_INDIRECT && r != D_EMPTY) strict_dispatch(l, r);   // (M6b; an empty grid is NVN's no-op too)
 }
 
-/// (M6b) A dispatch not recorded, for strict mode: its program as the list's state names it and its list
+/// A dispatch not recorded, for strict mode: its program as the list's state names it and its list
 void strict_dispatch(List* l, Reason r) {
     const uint64_t serial = l->cctx && l->cctx->has_prog ? l->cctx->prog.serial : 0;
     char w[160];
@@ -994,7 +994,7 @@ void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, cons
     logf("%s", b);
 }
 
-/// (M4f, HOS_DBG=drawlog:<present>, the per-draw trace's dispatch lines) every dispatch of that frame: program, grid or
+/// (HOS_DBG=drawlog:<present>, the per-draw trace's dispatch lines) every dispatch of that frame: program, grid or
 /// arguments, the storage and uniform buffers, each texture and image as its handle names it (heap_describe)
 void trace_dispatch(const Variant& v, const List* l, const uint8_t* bank, uint32_t n, const uint32_t grid[3], uint64_t args) {
     static std::atomic<int> told{0};
@@ -1243,7 +1243,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
         c.bound = v->cs;
     }
     heap_push(cb, push, sizeof push);
-    const uint32_t mk = marks_on() ? mark_before(cb, indirect ? "dispatch indirect" : "dispatch", v->key, l->info.kind, l->info.lr, grid[0], grid[1]) : 0;   // (M6c)
+    const uint32_t mk = marks_on() ? mark_before(cb, indirect ? "dispatch indirect" : "dispatch", v->key, l->info.kind, l->info.lr, grid[0], grid[1]) : 0;   // 
     uint32_t ps = ~0u;
     if (pstats_on()) {   // (M6h: HOS_DBG=pstats)
         PstatWhat w;
@@ -1261,7 +1261,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     draw_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
     tell_first(*v, l, map, v->bank_bytes, grid, indirect);
     if (draw_log_frame()) trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
-    else if (static const uint64_t watch = [] {   // (M4f, HOS_DBG=writer:<hex>: every dispatch whose storage buffers cover it)
+    else if (static const uint64_t watch = [] {   // (HOS_DBG=writer:<hex>: every dispatch whose storage buffers cover it)
                  const char* w = dbg_value("writer");
                  return w ? strtoull(w, nullptr, 16) : 0ull;
              }(); watch) {
@@ -1307,7 +1307,7 @@ void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, Cm
         std::memcpy(&p, data, std::min<size_t>(sizeof p, size));
         VkBuffer sb, db;
         VkDeviceSize so, dof;
-        if (const char* w = dbg_value("writer")) {   // (M4f, HOS_DBG=writer:<hex>: buffer copies over it)
+        if (const char* w = dbg_value("writer")) {   // (HOS_DBG=writer:<hex>: buffer copies over it)
             const uint64_t at = strtoull(w, nullptr, 16);
             if (p.dst <= at && at < p.dst + p.size)
                 logf("direct: writer: present %llu, copy %#llx -> %#llx (%#llx bytes) in a list of kind %u (lr %#llx)",

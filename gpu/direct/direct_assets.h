@@ -1,4 +1,4 @@
-// Prepared assets (docs/direct/m2-interface.md, direct_assets; report docs/direct/a-rt-report.md): the texture store of
+// Prepared assets: the texture store of
 // nx2/prepare_textures.py (index.bin and pack_NNN.bin, mapped; the format is that script's docstring) and the links from
 // the host's loader hooks (hsd_asset_load: a texture object -> its record) to the images direct_image makes. An asset
 // texture's image is made in the record's format when the texture is initialized, keyed by the record's content, and
@@ -42,7 +42,7 @@ bool assets_desc(uint32_t rec, AssetDesc& d);
 /// The record's texels into im (made by the caller in its format, layout undefined): moved to GENERAL and filled by this
 /// thread's uploads; false: the store could not be read (the image stays empty, counted)
 bool assets_fill(Image& im, uint32_t rec);
-/// (M4f) [gpu, gpu + size) is a texture data pool (hsd_texture_data_pool: its texels come from the store, nothing reads it)
+/// [gpu, gpu + size) is a texture data pool (hsd_texture_data_pool: its texels come from the store, nothing reads it)
 bool assets_pool_is(uint64_t gpu, uint64_t size);
 /// The record's name (logs)
 const char* assets_name(uint32_t rec, uint32_t* len);

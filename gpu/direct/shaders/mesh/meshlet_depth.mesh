@@ -1,7 +1,7 @@
 // The game's position-only meshlet stage, rewritten (mesh stages 26fa8419a38c6a41, 6942222ec7d54fe9, ef1f1c50d829bf4e; their
 // task stage 2c56dc1006942f74 culls meshlets and hands each mesh workgroup one meshlet id). Used by the depth-only draws:
 // occlusion proxies in the main view and shadow-map casters. A transcription of the game's logic (its data layout and
-// arithmetic); our own text. docs/direct/m6e-report.md has the inventory this comes from.
+// arithmetic); our own text. docs/direct/mesh-harness.md has the inventory this comes from.
 //
 // One workgroup draws one meshlet of a model. The model's buffer (a storage buffer of the mesh stage, slot MODEL_SLOT of the
 // driver bank's table) holds, at byte 0, the dequantisation origin (3 floats) and scale (a float at 12) and the model's

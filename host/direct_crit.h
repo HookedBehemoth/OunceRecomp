@@ -1,5 +1,5 @@
-/* (native-vk M6a) HOS_DBG=crit[:<first present>[:<presents>]] (measurement only, direct mode): a trace of what every guest
-   thread does over a window of presents, for the frame's critical path (docs/direct/m6a-report.md). Each guest thread's
+/* HOS_DBG=crit[:<first present>[:<presents>]] (measurement only, direct mode): a trace of what every guest
+   thread does over a window of presents, for the frame's critical path. Each guest thread's
    blocks (the virtual core given up: what it waited on, its guest caller), its waits for a virtual core, the wakes of
    the objects it waits on, and every call into the direct back end (the record emits merged into bursts) are spans
    with TSC times. At the window's end they go to crit.bin in the working directory (the run folder), the thread names to

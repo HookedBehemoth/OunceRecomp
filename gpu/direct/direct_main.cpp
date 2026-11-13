@@ -1,4 +1,4 @@
-// The direct back end's start (docs/direct/m1-interface.md): libvulkan, the instance, the device (one graphics and compute
+// The direct back end's start: libvulkan, the instance, the device (one graphics and compute
 // queue, the sparse-binding queue for layer 0), and the version-14 table the host calls (gpu/api/vk_api.h). Cut down from
 // gpu/legacy/vk/vk_main.cpp: no start-up screen, menu, upscalers, vendor hooks or switches.
 #include <dlfcn.h>
@@ -291,10 +291,10 @@ void texture_created(const nvn_tex* t) {
 extern "C" __attribute__((visibility("default"))) int64_t hsd_vram_free(void) {   // (M6f: -1 not known yet)
     return hsd::vram_free_now.load(std::memory_order_relaxed);
 }
-extern "C" __attribute__((visibility("default"))) void hsd_texture_cached(const void* t, int cached) {   // (M6f)
+extern "C" __attribute__((visibility("default"))) void hsd_texture_cached(const void* t, int cached) {   // 
     hsd::image_texture_cached((const nvn_tex*)t, cached != 0);
 }
-// (the transient pool, docs/direct/shadow-pool-report.md: host/rt_slots.c's calls)
+// (the transient pool, docs/direct/transient-pool.md: host/rt_slots.c's calls)
 extern "C" __attribute__((visibility("default"))) int hsd_transient_pool(uint64_t lo, uint64_t hi) {
     return hsd::image_pool_range(lo, hi) ? 1 : 0;
 }
@@ -311,7 +311,7 @@ namespace {
 void program_set(const nvn_prog* p) {
     count(R_PROG_SET);
     shader_program_set(p);
-    compute_program_set(p);   // (M4a)
+    compute_program_set(p);   // 
 }
 void program_released(const nvn_prog*) { count(R_PROG_GONE); }
 void read_texels(const nvn_tex*, unsigned, unsigned, const NVNcopyRegion*, uint8_t*, uint64_t, uint64_t) { count(R_READ_TEXELS); }

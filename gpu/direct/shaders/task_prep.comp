@@ -1,4 +1,4 @@
-// (M4c, direct_task.cpp) An indirect task+mesh draw's task header made on the GPU, before its task step: the task workgroups
+// (direct_task.cpp) An indirect task+mesh draw's task header made on the GPU, before its task step: the task workgroups
 // are the game's record's count (its first record, {x, 1, 1, n} in Vulkan's layout by the game patch, NVN's first 0), held to
 // the device's largest dispatch; its map (a word a mesh workgroup it can start) and payload area (one a task workgroup) are
 // taken from the recording thread's task pool for this frame slot. A draw that does not fit starts no task workgroup and is

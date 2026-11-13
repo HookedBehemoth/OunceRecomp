@@ -5,7 +5,7 @@
 // (VK_KHR_pipeline_executable_properties: ACO's instruction count, code size, registers, LDS, scratch, its latency and throughput
 // estimates). The back end makes unlinked shader objects, which report no statistics; the tool makes a pipeline instead: a
 // graphics stage with the partner stage of the first program that uses it (vertex + fragment, mesh + fragment), a task or compute
-// stage alone. For the shader census (docs/direct/m6h-report.md); nothing of the game is in this file.
+// stage alone. For the shader census (docs/direct/shader-costs.md); nothing of the game is in this file.
 //
 //   censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...]
 //              [--late <kinds>] [--budget N] [--sink-peak N] [--objects] [--list]

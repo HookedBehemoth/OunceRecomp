@@ -1,5 +1,5 @@
-/* (native-vk M3a) Game patch, direct mode only: a system texture keeps its descriptor id while its texture and view are
-   unchanged (docs/direct/m3-patch-sites.md 5).
+/* Game patch, direct mode only: a system texture keeps its descriptor id while its texture and view are
+   unchanged (docs/direct/patch-sites.md 5).
 
    f_80667d20 (the per-view table of 30 system textures) finds one entry's dirty bit set every frame and calls
    f_800634b0(entry, view, 0) at 0x806680d8 (return 0x806680dc) with a texture view built on its stack. Given a view,

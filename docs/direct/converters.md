@@ -1,4 +1,4 @@
-# A: the asset converters (2026-11-12)
+# The asset converters
 
 Both are build-time tools: they read the romfs in place, write only under `work/prepared/` (game-derived, never committed,
 never leaves the PC), are incremental and niced. The new renderer has no block-linear code, no ASTC decoder and no run-time

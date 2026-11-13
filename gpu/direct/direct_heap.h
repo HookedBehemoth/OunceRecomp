@@ -1,4 +1,4 @@
-// The descriptor heap (docs/direct/m2-interface.md, direct_heap; m2-shader-contract.md sections 2 and 6, step A 2):
+// The descriptor heap:
 // VK_EXT_descriptor_heap, the game's texture and sampler ids as heap indices. The resource heap is one region of 65,536
 // image descriptors a VkImageViewType (a texture id is its index there), then a zero tail (null descriptors: RADV reads
 // zeros as none). The sampler heap: two regions of 4,096 (plain, depth compare). Entries are written when the game
@@ -32,7 +32,7 @@ namespace hsd {
     X(vkCmdBindVertexBuffers2) X(vkCmdBindIndexBuffer) X(vkCmdDraw) X(vkCmdDrawIndexed)                                \
     X(vkWriteResourceDescriptorsEXT) X(vkWriteSamplerDescriptorsEXT) X(vkCmdBindResourceHeapEXT)                       \
     X(vkCmdBindSamplerHeapEXT) X(vkCmdPushDataEXT) X(vkBindBufferMemory) X(vkMapMemory)
-/// (M4b) indirect and mesh draws; the mesh ones are null without the mesh stage (caps.mesh)
+/// indirect and mesh draws; the mesh ones are null without the mesh stage (caps.mesh)
 #define HSD_VK_M4B(X)                                                                                                  \
     X(vkCmdDrawIndirect) X(vkCmdDrawIndexedIndirect) X(vkCmdDrawIndirectCount) X(vkCmdDrawIndexedIndirectCount)        \
     X(vkCmdDrawMeshTasksEXT) X(vkCmdDrawMeshTasksIndirectEXT) X(vkCmdDrawMeshTasksIndirectCountEXT)
@@ -73,7 +73,7 @@ constexpr uint32_t kImageDesc = 64, kSamplerDesc = 16;
 bool heap_on();
 /// Byte offsets of a region's first descriptor, of the zero tail, of a sampler region
 uint32_t heap_region_offset(uint32_t region);
-/// (M3b) the storage-image region of a view type (images bound by draws read it, indexed by the handle's image id)
+/// the storage-image region of a view type (images bound by draws read it, indexed by the handle's image id)
 uint32_t heap_storage_offset(uint32_t region);
 uint32_t heap_tail_offset();
 uint32_t heap_sampler_offset(bool compare);
@@ -91,9 +91,9 @@ void heap_image_gone(const Image* im);
 uint8_t heap_answer(uint32_t id);
 /// (logs) what texture id's entries hold
 void heap_describe(uint32_t id, char* out, size_t cap);
-/// (M4h, logs) what sampler id was registered with
+/// (logs) what sampler id was registered with
 void heap_sampler_describe(uint32_t id, char* out, size_t cap);
-/// (M4d, HOS_DBG=phlog) 1: id is registered with the placeholder image, 2: registered with no image; 0 otherwise (locked)
+/// (HOS_DBG=phlog) 1: id is registered with the placeholder image, 2: registered with no image; 0 otherwise (locked)
 int heap_placeholder(uint32_t id);
 
 /// (the transient pool) 1: id names an image in the pool that is not its range's owner (another target took its memory:

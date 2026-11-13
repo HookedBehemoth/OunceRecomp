@@ -121,7 +121,7 @@ struct SlotTex {
     uint64_t gpu;
     uint32_t w, h;
     int format, target;
-    uint32_t depth = 0, levels = 0;   // (M4h, logs: the texture's depth or layers and levels, and its view's)
+    uint32_t depth = 0, levels = 0;   // (logs: the texture's depth or layers and levels, and its view's)
     nvn_view view{};
     bool has_view = false;
 };
@@ -217,7 +217,7 @@ bool sampled_view(const Image* im, const nvn_tex* t, const nvn_view* v, VkImageV
         vi.components = VkComponentMapping{};
     } else {
         const VkComponentMapping game{component(sw[0]), component(sw[1]), component(sw[2]), component(sw[3])};
-        static const bool unmapped = dbg("nochanmap");   // (M4h, a diagnosis: the game's swizzle alone, as before M4h)
+        static const bool unmapped = dbg("nochanmap");   // (a diagnosis: the game's swizzle alone, as before M4h)
         vi.components = unmapped ? game : image_swizzle(im, game);
         if (std::memcmp(&vi.components, &game, sizeof game)) st_remapped.fetch_add(1, std::memory_order_relaxed);
     }
@@ -244,7 +244,7 @@ bool encode_image(const VkImageViewCreateInfo* vi, uint8_t out[kImageDesc], bool
     return vkWriteResourceDescriptorsEXT(dev.device, 1, &ri, &dst) == VK_SUCCESS;
 }
 
-/// (M3b) A storage view of t's image as view type `type` from its sampled view: one level, no swizzle, a format the device
+/// A storage view of t's image as view type `type` from its sampled view: one level, no swizzle, a format the device
 /// stores to (the view's, else the image's own); false: none
 bool storage_view(const Image* im, VkImageViewCreateInfo& vi) {
     if (!im || !im->storage || im->placeholder || (im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT)) return false;
@@ -556,7 +556,7 @@ void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v) {
     slot_tex[id] = {t->gpu, t->d.width, t->d.height, t->d.format, t->d.target, t->d.depth, t->d.levels, v ? *v : nvn_view{}, v != nullptr};
 }
 
-nvn_samp_par slot_samp[kHeapSamplers];   // (M4h, logs: what each sampler id was registered with)
+nvn_samp_par slot_samp[kHeapSamplers];   // (logs: what each sampler id was registered with)
 void heap_sampler_registered(int id, const nvn_samp_par* p) {
     if (!ready || !p) return;
     if (id < 0 || (uint32_t)id >= kHeapSamplers) return void(st_big_id.fetch_add(1, std::memory_order_relaxed));

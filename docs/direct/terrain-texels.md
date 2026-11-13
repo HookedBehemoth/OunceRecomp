@@ -1,4 +1,4 @@
-# M0: terrain tiles and the other CPU texel paths (2026-11-12)
+# Terrain tiles and the other CPU texel paths
 
 Analysis only (tree at 23d0aa6; no game run). Tools and scratch output: `work/proto/direct-m0/` (`tarb.py`, `survey.py` +
 `analyze.py` over every TARB, `deswz.py`, `emu_sw.py` and `emu_conv.py` run game code in unicorn, Ghidra output in
@@ -75,7 +75,7 @@ romfs.
 | packaged ui2d `f_807982f0` | SetPackagedTextureData with a pointer into the loaded BNTX (mip table at `+0x70`, count `+0x16`) (C) | **block linear in the file**: the BNTX path of prepare_textures (it walks SARCs), keyed by `pkg_data` |
 | tera polish `f_80d7e090+0x438` | `f_83a6d8f0(w3 = 0)` WriteTexels from the tile's CPU buffer (`[tile+0x4c0]`) into DTA temp "tera::temp_for_compressed_in_polish" (C) | linear |
 | `f_83a6d540` | InvalidateTexels + ReadTexels (w3 = 0), or CopyTextureToBuffer + map (C) | linear out |
-| font glyph cache (eui, FreeType, `Font2/*.bfttf/.bfotf`) | **direct CPU stores into the texture's storage after a GPU clear**, no WriteTexels (C: none of the 43 WriteTexels calls; `gpu/vk/vk_texture.cpp:2459` `only_cleared`, b306c4d, issues 40/44) | the texture's own layout; I: pitch-linear, since the game has no GOB arithmetic (`scan_gob.py`: none) and the letters show correctly today |
+| font glyph cache (eui, FreeType, `Font2/*.bfttf/.bfotf`) | **direct CPU stores into the texture's storage after a GPU clear**, no WriteTexels (C: none of the 43 WriteTexels calls; `gpu/legacy/vk/vk_texture.cpp:2459` `only_cleared`, b306c4d, issues 40/44) | the texture's own layout; I: pitch-linear, since the game has no GOB arithmetic (`scan_gob.py`: none) and the letters show correctly today |
 
 The font cache is the one texture the back end cannot serve from API calls: its glyphs reach memory with no call to hook.
 It needs either the plan's "no page tracking" relaxed for that one texture (upload its dirty pages each submit), or a

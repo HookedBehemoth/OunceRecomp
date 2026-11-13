@@ -1,5 +1,5 @@
-// The guest's submits, its fences and its events (docs/direct/m1-interface.md; plan, Submission). One Vulkan queue with one
-// timeline semaphore. (M4a) An NVN submission's command buffers and frame-level ops are run in their order (the lists cut
+// The guest's submits, its fences and its events. One Vulkan queue with one
+// timeline semaphore. An NVN submission's command buffers and frame-level ops are run in their order (the lists cut
 // their command buffers at each event signal and wait: direct_pass.cpp pass_cut), and its command buffers are sent in
 // chunks: the ones before an event signal are sent before the signal is written, so another queue's work after its wait for
 // that signal is sent after them, as the console's GPU runs it; a chunk after an event wait waits on the GPU for everything
@@ -114,7 +114,7 @@ bool event_wait_met(uint32_t have, uint32_t mode, uint32_t want) {
     return mode == 0 ? have == want : (int32_t)(have - want) >= 0;   // (NVN: EQUAL, GEQUAL_WRAP)
 }
 
-// (M4a) The chunks a pass of progress() sends, in one vkQueueSubmit2 at its end (one call costs ~0.1 ms on RADV: 34 chunks a
+// The chunks a pass of progress() sends, in one vkQueueSubmit2 at its end (one call costs ~0.1 ms on RADV: 34 chunks a
 // frame sent one by one took 4.2 ms). Each chunk's value is given when it is added, queue_mu held from the first until the
 // call, so no other submission (uploads, presents) comes between their values (mu held)
 struct Batch {
@@ -129,7 +129,7 @@ struct Batch {
 Batch batch;
 std::atomic<int64_t> st_batch_calls{0};
 
-// (M6a, HOS_DBG=gputime: measurement) The GPU's own time: each vkQueueSubmit2 of the batch and each present's command
+// (HOS_DBG=gputime: measurement) The GPU's own time: each vkQueueSubmit2 of the batch and each present's command
 // buffer is bracketed by two timestamps (top of pipe before its first command, all commands after its last). In the
 // queue's order these give the time the queue had work (the union of the brackets) and its idle gaps: the GPU waiting
 // for the CPU. Read once available, at the presents; every 600 presents a line, and with HOS_DBG=frames each present's
@@ -278,7 +278,7 @@ void batch_flush() {
     batch.lk.unlock();
 }
 
-/// (M4a) The command buffers run past and not sent yet, sent as one chunk (mu held). The first chunk of a submission waits
+/// The command buffers run past and not sent yet, sent as one chunk (mu held). The first chunk of a submission waits
 /// for its fences (nvnQueueWaitSync) and the texture uploads; a chunk after an event wait for everything sent before it
 void send_chunk(Queue& q, Sub& s, bool last) {
     if (s.pending.empty() && !last) return;
@@ -295,7 +295,7 @@ void send_chunk(Queue& q, Sub& s, bool last) {
         const uint64_t up = upload_value();
         if (up > waited) wait_value = std::max(wait_value, up), waited = up, st_upload_waits_gpu++;
     }
-    {   // (M4a, HOS_DBG=sublog:<present>: the chunks sent while that present is the newest, in their order)
+    {   // (HOS_DBG=sublog:<present>: the chunks sent while that present is the newest, in their order)
         static const int64_t at = [] {
             const char* v = dbg_value("sublog");
             return v ? atoll(v) : -1;
@@ -460,7 +460,7 @@ void nvn_event_signal(uint64_t, uint32_t) {   // (the host wrote the value: the 
 
 }  // namespace
 
-// (M6a) for direct_present.cpp
+// for direct_present.cpp
 bool gputime_on() { return gt.on; }
 void gputime_present_begin(VkCommandBuffer cb, uint32_t& slot) {
     slot = gputime_slot(1);
@@ -485,7 +485,7 @@ void gputime_stats(char* out, size_t cap) {
     gt.busy_ns = gt.idle_ns = 0, gt.idle_gaps = 0, gt.presents = 0, gt.longest_gap = 0;
 }
 std::atomic<int64_t> st_mu_wait_ns{0}, st_mu_waits{0}, st_fence_wait_ns{0};
-/// (M6a) mu taken, its wait counted when it was held
+/// mu taken, its wait counted when it was held
 std::unique_lock<std::mutex> lock_mu() {
     std::unique_lock lk(mu, std::try_to_lock);
     if (lk.owns_lock()) return lk;

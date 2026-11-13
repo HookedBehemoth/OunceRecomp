@@ -1,6 +1,6 @@
 /* The direct back end's list calls (hookshot_direct.so): what host/nvn_native.c hands it as the game
    records, besides the object layer, sync and present of gpu/api/vk_api.h's table (version 14), which it answers too.
-   Fixed by docs/direct/m1-interface.md. C, included by the host; the host finds these by name in the library.
+   C, included by the host; the host finds these by name in the library.
 
    A list is begun, filled and ended on one recording thread at a time (game workers, concurrently with other lists),
    released from any thread, and submitted from the guest's submitting threads (the Presentation Thread, Main). */
@@ -19,7 +19,7 @@ typedef struct hsd_list_info {
     uint32_t load_kind;   /* HSD_LIST_LOAD: 1 vertex, 2 draw, 3 shape, 4 material, 5 and 6 the measuring copies of 1 and 2 (host/direct.c) */
     uint64_t lr, fp;      /* the guest return address and frame pointer of BeginRecording */
     uint64_t cmd;         /* the guest NVNcommandBuffer object */
-    uint64_t pass_key;    /* HSD_LIST_JOB: the recorder's pass key pointer (x3 of f_80084de0: m0-job-formats.md) */
+    uint64_t pass_key;    /* HSD_LIST_JOB: the recorder's pass key pointer (x3 of f_80084de0: job-formats.md) */
     uint64_t view;        /* HSD_LIST_JOB: the view record (x25 at BeginRecording), for logs only */
 } hsd_list_info;
 
@@ -31,9 +31,9 @@ void  hsd_list_end(void *list);                                           /* com
 void  hsd_list_released(void *list);                                      /* the handle is gone (any thread) */
 void  hsd_submit(uint64_t queue, void *const *lists, uint32_t n);         /* the guest's submit, in handle order */
 void  hsd_queue_wait_fence(uint64_t queue, uint64_t fence);               /* nvnQueueWaitSync, instead of fw_record's side record */
-void  hsd_present_queue(uint64_t queue);   /* (M2a) the queue of the present that follows on this thread (nvnQueuePresentTexture) */
+void  hsd_present_queue(uint64_t queue);   /* the queue of the present that follows on this thread (nvnQueuePresentTexture) */
 
-/* (A-rt) Prepared assets (docs/direct/a-rt-report.md). The host's loader hooks name each texture load's BNTX texture;
+/* Prepared assets. The host's loader hooks name each texture load's BNTX texture;
    the back end makes that texture's image from the prepared store (nx2/prepare_textures.py) when it is initialized,
    filled on the initializing thread. Any thread (the game's loaders). */
 typedef struct hsd_asset_key {
@@ -45,34 +45,34 @@ typedef struct hsd_asset_key {
     uint32_t path;                 /* HSD_ASSET_LOAD / _INPLACE (logs) */
     const void *data;              /* data_offset 0: mip 0's bytes in the decompressed file (host pointer): the record whose
                                       data offset back from it is its BNTX's header is the one */
-    const void *same_as;           /* (M4g) HSD_ASSET_SAME: the NVNtexture whose load's content this texture has (M6f: an
+    const void *same_as;           /* HSD_ASSET_SAME: the NVNtexture whose load's content this texture has (M6f: an
                                       alias's target, docs/direct/texture-streaming.md 2.3) */
 } hsd_asset_key;
 enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2, HSD_ASSET_REBIND = 3, HSD_ASSET_SAME = 4 };
-/* (REBIND: a record found replaces the link; none: the link stays, armed as by hsd_asset_rebind. SAME (M4g): a load with no
+/* (REBIND: a record found replaces the link; none: the link stays, armed as by hsd_asset_rebind. SAME : a load with no
    data whose texels are another texture's, same_as: it takes that texture's link (its record or its plain image) when the
-   descriptors agree; the host's game patch names it (M6f: the alias's target, read from the alias's chain: m6f-report.md 1) */
+   descriptors agree; the host's game patch names it (the alias's target, read from the alias's chain) */
 int  hsd_assets_open(const char *dir);              /* the store's folder (index.bin, pack_NNN.bin): its textures, 0 none */
 int  hsd_asset_load(const hsd_asset_key *k);        /* 1: a prepared record; 0: the texture gets the placeholder (named) */
 void hsd_asset_rebind(const void *tex);             /* tex is initialized again over new storage (the same record) */
 void hsd_asset_pool(uint64_t lo, uint64_t hi);      /* the asset heap's pool (pool 127): its textures need a load */
-void hsd_texture_data_pool(uint64_t lo, uint64_t hi);   /* (M4f) a texture data pool, named at its creation: layer 0 leaves it unbound */
+void hsd_texture_data_pool(uint64_t lo, uint64_t hi);   /* a texture data pool, named at its creation: layer 0 leaves it unbound */
 /* texels from the CPU that no NVN call carries (game patches): an NVNcopyRegion of tex's level and first layer from
    src (row bytes, layer bytes; 0: packed); src NULL: none to give (the placeholder content, counted) */
 enum { HSD_TEXELS_TERRAIN = 1, HSD_TEXELS_GLYPH = 2, HSD_TEXELS_FILE = 3, HSD_TEXELS_TERRAIN_KEPT = 4 };
-/* (FILE: a prepared file's linear texels, M4e. TERRAIN_KEPT (M6f): a tile's bytes the storage still holds, for a texture
+/* (FILE: a prepared file's linear texels, M4e. TERRAIN_KEPT : a tile's bytes the storage still holds, for a texture
    initialized there again: taken only into an image nothing has written) */
 void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer0, const void *region, const void *src,
                 uint64_t row, uint64_t img);
 
-/* (M3a) The format table by pass key (docs/direct/m3-interface.md, M3a). The job recorder's entry asks whether a key's formats
+/* The format table by pass key. The job recorder's entry asks whether a key's formats
    are known: 1, the job records one rendering secondary with them; 0, the recorder takes the game's own early return and the
    layer list draws the pass through the game's inline path, which hsd_pass_inline names (the list's targets set then give the
    key its formats). A layer list's call of a job notes them too */
 int  hsd_pass_known(uint64_t key);
 void hsd_pass_inline(void *list, uint64_t key);
 
-/* The transient pool (docs/direct/shadow-pool-report.md; host/rt_slots.c). The game's transient render targets (agl's
+/* The transient pool (docs/direct/transient-pool.md; host/rt_slots.c). The game's transient render targets (agl's
    DynamicTextureAllocator) live in one range of storage addresses that the host names once, before the first texture is
    initialized in it: the back end allocates that many bytes of device memory then, and never again for these targets. A
    texture initialized in the range gets an image bound in that memory at its storage offset; images whose ranges overlap
@@ -91,12 +91,12 @@ uint64_t hsd_image_need(const void *desc, uint64_t *align);
 void hsd_transient_slot(uint64_t gpu, uint64_t cap);
 void hsd_target_given(const void *tex);
 void hsd_host_event(const char *reason, const char *what);
-int64_t hsd_vram_free(void);   /* (M6f) free VRAM in bytes as the driver sees it (budget minus usage of the device-local heap,
+int64_t hsd_vram_free(void);   /* free VRAM in bytes as the driver sees it (budget minus usage of the device-local heap,
                                   plus images already waiting to be destroyed), sampled once a present; -1 not yet */
-void hsd_texture_cached(const void *tex, int cached);   /* (M6f) agl released tex to its LRU cache (1: still registered,
+void hsd_texture_cached(const void *tex, int cached);   /* agl released tex to its LRU cache (1: still registered,
                                                           its texels kept) or took it back (0); counted, nothing evicted */
 
-/* (M4d) Shots of the presented frame: every `every` presents a 1280x720 PNG of what is shown, <dir>/vk_<present>.png (the
+/* Shots of the presented frame: every `every` presents a 1280x720 PNG of what is shown, <dir>/vk_<present>.png (the
    host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, the frozen back end's names). Called once, before the renderer starts */
 void hsd_shots(const char *dir, int every);
 

@@ -1,5 +1,5 @@
-/* (native-vk M4b) Game patch, direct mode only: the GPU culling's mesh draw argument records are made Vulkan's layout in
-   place (docs/direct/m0-task-mesh.md 3; plan, "Data a draw reads"), so no conversion copy exists.
+/* Game patch, direct mode only: the GPU culling's mesh draw argument records are made Vulkan's layout in
+   place (docs/direct/task-mesh.md 3; plan, "Data a draw reads"), so no conversion copy exists.
 
    f_80362ff0 runs once a frame per culling list: it reads the four 16-byte records of the list slot's header (w0 and w3 of
    record 0, w3 of records 1-3) and zeroes them (four stp xzr, xzr). The culling compute shaders (4247f1b4c3ce6cf3,

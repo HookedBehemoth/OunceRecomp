@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# (native-vk) One git worktree and build folder per agent, so parallel work does not build each other's uncommitted
+# One git worktree and build folder per agent, so parallel work does not build each other's uncommitted
 # changes or splice into the same lifted code.
 #
 #   scripts/agent-worktree.sh new <name> [base]   work/wt/<name> on branch agent/<name> (from base, default the
