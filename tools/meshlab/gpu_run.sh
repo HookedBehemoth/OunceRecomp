@@ -20,6 +20,9 @@ while (( $(reset_age) < 180 )); do sleep 5; done
 vulkaninfo --summary > /dev/null 2>&1 || { echo "vulkaninfo fails: not run" | tee "$out"; exit 4; }
 before=$(last_reset)
 { date; echo "meshlab $*"; } > "$out"
+# (M6h: a timing series is a result only on a quiet GPU: no game process while the lock is held)
+games=$(pgrep -x hookshot | tr '\n' ' ')
+if [ -n "$games" ]; then echo "GPU NOT QUIET: hookshot running ($games)" >> "$out"; else echo "quiet GPU: no game process" >> "$out"; fi
 timeout 300 "$root/work/meshlab/meshlab" "$@" 2>&1 | grep -v '^/tmp\|making the mesh stage' >> "$out"
 rc=${PIPESTATUS[0]}
 sleep 3

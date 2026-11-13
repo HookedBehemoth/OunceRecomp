@@ -4,7 +4,11 @@ Branch `agent/m6h` (from native-vk a37e641). RX 6950 XT (80 CUs, 160 SIMD32), RA
 took the shared GPU lock (`work/run.lock`, game runs also the gate) and waited for the other agents' runs. Everything made
 from the game (the seed, the census table, the IR prints and SPIR-V, the captures, the run logs) is local under `work/` and
 not committed; this report gives keys, counts and our own descriptions. Claims are marked **VERIFIED** (by the check named),
-**ESTIMATED** (a model's number) or **INFERRED** (read from code or structure, not checked).
+**ESTIMATED** (a model's number) or **INFERRED** (read from code or structure, not checked). **Timing provenance:** the
+only timing results are the isolated harness's (`meshlab bench` / `meshlab fs --bench`: A/B alternated, the GPU lock held,
+no game process running, checked at each run); every time taken in the game (per-command timestamps, gputime) is marked
+**in-game, indicative**: the game ran alone on the GPU under the lock, but other agents' work loaded the machine, so these
+numbers show where the time goes, not how much a change saves.
 
 ## Summary
 
@@ -19,14 +23,15 @@ not committed; this report gives keys, counts and our own descriptions. Claims a
   command of one frame): Kokiri draws **1,087 commands with 351 programs** (504 stages), Hyrule Field **2,189 with 463**
   (658 stages); **824 distinct stages** in the two, **338** in both; 42,010 of the game's stages are seen in neither.
   The market (with `HOS_DBG=meshdry`: its mesh draws not drawn) is in section 2.3.
-- **Static cost against the GPU's time:** ACO's estimate of the frame's shader work is **1.90 ms (Kokiri) and 1.98 ms
+- **Static cost against the GPU's time** (in-game, indicative): ACO's estimate of the frame's shader work is **1.90 ms (Kokiri) and 1.98 ms
   (HF)**; the commands' measured share of the queue's timeline is **6.26 / 7.34 ms**, and the GPU is busy **7.4 / 8.5 ms**
   a frame (gputime). The estimate explains **30 % / 27 %** of the measured command time: most of the frame is not ALU work
   ACO can see (memory latency, fixed function, many small draws and dispatches, the barriers' flushes). By command: 249
   of Kokiri's 351 programs (4.2 of 6.3 ms) and 385 of HF's 463 (4.9 of 7.3 ms) take more than ten times their estimate.
-- **Where the measured time goes:** one compute pass, **`fd029a317a9a4b94`** (a tiled post-processing compute: 1,152
+- **Where the time goes** (in-game, indicative): one compute pass, **`fd029a317a9a4b94`** (a tiled post-processing compute: 1,152
   workgroups of 128, 12 gathers and 16 explicit-LOD samples a thread, 5.6 KB of shared memory, 6 barriers) takes **1.03 ms in
-  Kokiri (16.5 %) and 1.02 ms in HF (13.9 %)**, twenty times its estimate (VERIFIED, timestamps; why: not established).
+  Kokiri (16.5 %) and 1.02 ms in HF (13.9 %)**, twenty times its estimate (in-game timestamps, indicative; why: not
+  established; it stores 16-bit values to shared memory through compare-and-swap loops, section 5b).
   Then shadow-map casters (368 vertex draws, 0.28 ms in HF), small compute steps of 256-25k threads at 0.1-0.2 ms each,
   the meshlet lit geometry (`063b4c21712f159c`, 0.19-0.30 ms), grass, and the lit materials (0.1-0.13 ms each). Half the
   measured time is in 21 (Kokiri) / 23 (HF) programs, 80 % in 77 / 86.
@@ -219,9 +224,9 @@ vertex, **18.97 M fragment** (14 a pixel of the 1536 × 864 view, shadow maps an
 5,945 mesh workgroups (capture). GPU busy 7.4 ms a frame (gputime, present 4200-4800 windows), commands 6.26 ms; estimate
 1.90 ms (0.30 of measured).
 
-Top 20 programs by measured time (est.: ACO estimate; the description is ours):
+Top 20 programs by in-game command time (indicative; est.: ACO estimate; the description is ours):
 
-| # | Program | What it draws (ours) | Commands | Counts | Est. ms | Measured ms | Share |
+| # | Program | What it draws (ours) | Commands | Counts | Est. ms | In-game ms | Share |
 |---|---|---|---|---|---|---|---|
 | 1 | `fd029a317a9a4b94` | post compute, tiled (kind 3 list): gathers and explicit-LOD samples, shared memory | 1 | 147,456 inv. | 0.051 | 1.031 | 16.5 % |
 | 2 | `063b4c21712f159c` | meshlet lit geometry (task `2c56` family) | 2 | 1,068 wg, 0.20 Mpx | 0.091 | 0.302 | 4.8 % |
@@ -249,7 +254,7 @@ Top 20 programs by measured time (est.: ACO estimate; the description is ours):
 2,189 commands, 463 programs; 243 fragment, 276 vertex, 71 compute, 47 mesh, 6 task stages. Invocations: 0.68 M vertex,
 **25.86 M fragment**, 6.86 M compute; 10,708 mesh workgroups. GPU busy 8.5 ms, commands 7.34 ms; estimate 1.98 ms (0.27).
 
-| # | Program | What it draws (ours) | Commands | Counts | Est. ms | Measured ms | Share |
+| # | Program | What it draws (ours) | Commands | Counts | Est. ms | In-game ms | Share |
 |---|---|---|---|---|---|---|---|
 | 1 | `fd029a317a9a4b94` | post compute, tiled (as Kokiri) | 1 | 147,456 inv. | 0.051 | 1.019 | 13.9 % |
 | 2 | `9a9b21fe398a0bad` | shadow-map casters, vertex draws (1600 × 1600 and 384 × 216) | 368 | 187,396 vtx | 0.001 | 0.277 | 3.8 % |
@@ -280,7 +285,7 @@ pixels the meshlets would have hidden, INFERRED). 2,954 commands, 412 programs; 
 stages (the mesh stages are not drawn; the capture lists 110 mesh draws of 4,225 workgroups). Invocations 1.08 M vertex,
 18.0 M fragment, 6.33 M compute. GPU busy 8.8 ms, commands 7.43 ms; estimate 1.66 ms (0.22).
 
-| # | Program | What it draws (ours) | Commands | Counts | Est. ms | Measured ms | Share |
+| # | Program | What it draws (ours) | Commands | Counts | Est. ms | In-game ms | Share |
 |---|---|---|---|---|---|---|---|
 | 1 | `fd029a317a9a4b94` | post compute, tiled | 1 | 147,456 inv. | 0.051 | 0.853 | 11.5 % |
 | 2 | `9a9b21fe398a0bad` | shadow-map casters, vertex draws | 438 | 245,323 vtx | 0.001 | 0.375 | 5.0 % |
@@ -303,6 +308,12 @@ stages (the mesh stages are not drawn; the capture lists 110 mesh draws of 4,225
 | 19 | `cb2e06ddfb9d7d27` | indirect compute | 1 | 9,920 inv. | 0.002 | 0.063 | 0.8 % |
 | 20 | `679fe5d409d3583b` | lit material | 14 | 4,849 vtx, 0.25 Mpx | 0.104 | 0.062 | 0.8 % |
 
+A second market run with the mesh draws drawn (`m6h_ps4_mk`, after rebasing onto native-vk e8b19db with agent/m6d's
+wait; no device lost): 3,050 commands, 485 programs, **671 stages** (287 vertex, 265 fragment, 68 compute, 46 mesh, 5 task),
+6,086 mesh workgroups; the meshlet programs enter the top list (`30dcbaf5…` 0.26 ms, `cfebb562…` 0.19 ms, `79ddff6b…`
+0.14 ms: in-game command times, indicative only), `fd029a…` stays first (0.85 ms) and the character programs stay (0.19 ms
+for `4fa5…`).
+
 The character programs (#6, 11, 14, 15, 18: 0.52 ms together) have vertex stages `a1eb212d…`, `47f68493…`, `500b27d6…`,
 `8edb49a3…` of 816-918 native instructions that RADV compiles to 3,575-3,697 (**ACO / native 4.3**, the highest of any stage
 drawn) because each of their 81 by-address loads goes through the window table (64-bit address arithmetic a load).
@@ -311,7 +322,9 @@ drawn) because each of their 81 by-address loads goes through the window table (
 
 - **Stages used:** Kokiri 504 (180 vertex, 210 fragment, 73 compute, 36 mesh, 5 task: `m6h_ps2_k`), Hyrule Field 658 (284,
   250, 71, 47, 6); **824 distinct** in the two, 338 in both; of the game's 42,856 stages, **42,032 are drawn in neither**
-  (98 %). The market without its mesh draws: 527 (242, 212, 68, 0, 5); the three scenes together **905**, 237 in all three.
+  (98 %). The market (with its mesh draws, `m6h_ps4_mk`) 671 (287, 265, 68, 46, 5); the three scenes together **927 distinct
+  stages** (392 vertex, 388 fragment, 89 compute, 52 mesh, 6 task), 304 in all three; **41,929 of the game's 42,856 stages
+  (97.8 %) are drawn in none of them**.
 - **The estimate against the measurement:** per program, measured / estimated ranges from 0.16-0.27 (the froxel compute,
   whose two loops ACO weights by 8) to over 1,000 (one-group computes, test boxes). Summed, the estimate is low by a factor of
   3.3 (Kokiri), 3.7 (HF) and 4.5 (market). For the shader-bound draws (lit materials, full-screen passes) measured /
@@ -374,24 +387,36 @@ stage, not the draw's fixed cost, is what is timed. Market capture `m6e_cap2`, r
 |---|---|---|---|---|---|---|
 | depth meshlet (`26fa8419…`, `6942222e…`, `ef1f1c50…`) | ACO 839 → 745, VGPRs 64 → 32, LDS 6,144 → 3,072, waves 16 → 16, IT 645 → 499, latency 1,379 → 2,045 | 38 | 20 reps | 30.0 ns a workgroup (0.7 µs a draw) | 29.8 | **1.000** (0.993-1.008) |
 | | | 38 | + discard | 28.6 | 28.7 | 1.001 (0.993-1.007) |
-| | | 38 | × 32 workgroups | DEPTH_MULT |
-| | | 38 | × 32, discard | DEPTH_MULT_D |
+| | | 38 | × 32 workgroups (29,248 a rep) | 9.4 ns (7.3 µs a draw) | 9.5 | **1.001** (0.990-1.012) |
+| | | 38 | × 32, discard | 9.0 | 9.1 | 1.001 (0.991-1.011) |
 | lit meshlet (`e67ab188…`) | ACO 1,509 → 1,258, VGPRs 160 → 48, LDS 18,432 → 9,216, waves 6 → 14, IT 1,244 → 962, latency 2,648 → 2,837 | 5 | 100 reps | 111.1 ns a workgroup (0.7 µs a draw) | 110.9 | **1.000** (0.993-1.007) |
-| | | 5 | × 64 workgroups | LIT_MULT |
-| | | 5 | × 64, discard | LIT_MULT_D |
+| | | 5 | × 64 workgroups (1,920 a rep) | 33.0 ns (12.7 µs a draw) | 33.0 | **1.000** (0.991-1.006) |
+| | | 5 | × 64, discard | 32.8 | 32.8 | 0.999 (0.993-1.005) |
 
+All timings in this table: the isolated harness, A/B alternated, the GPU lock held and no game process running (checked
+by `gpu_run.sh` at each run: "quiet GPU"; rerun 2026-11-13 after the session restart, same results as the first series).
 (RADV's numbers here are the pipeline's, linked with a fragment stage: M6e's 22,218 / 12,490 and 5,994 / 2,410 bytes of LDS
 were the shader objects'.)
 
 ## 4. Size and speed
 
-SIZE_SPEED
+**No.** VERIFIED for M6e's two mesh rewrites, by the harness (quiet GPU, alternated A/B, 31 rounds each): halving LDS and
+VGPRs (lit: 160 → 48 VGPRs, waves a SIMD 6 → 14; depth: 64 → 32 VGPRs) and cutting ACO's throughput estimate by 23 % changed
+the time of the captured draws by 0.0 ± 1 % (ratios 0.999-1.001, p10-p90 within ±1.4 %), at the captured sizes (0.7 µs a
+draw, fixed cost), at 32-64 times the workgroups (9.4 and 33 ns a workgroup across the GPU, where the stage's work should
+show) and with rasterization off. So the stage is not what bounds these draws: at about 9 ns a depth workgroup (≈3,300 SIMD
+cycles each across 160 SIMDs, against ACO's 645) the limit is outside the shader's ALU and occupancy, most likely the rate
+at which the geometry engines launch mesh workgroups and take their primitives (INFERRED; RADV's statistics cannot show it).
+The fog composite (fragment, size −2 %) is the same: 1.008 (p10 0.999, p90 1.018). Size and register savings matter for what
+they remove (the mesh scratch ring past 30 KB of LDS, spills, the 2^32 loops' scratch), not for speed at these sizes on
+this GPU. For the one stage where the translator's code is clearly slow per ACO (`fd029a…`, the CAS loops: −39 % IT with
+fix 1 of section 5b), the speed effect is still unmeasured.
 
 ## 5. What is worth rewriting, and what recurs
 
-Ranked by measured time a frame (Kokiri / HF), with what a rewrite could save (ESTIMATED):
+Ranked by in-game command time a frame (Kokiri / HF; indicative), with what a rewrite could save (ESTIMATED):
 
-| # | Stage(s) | Measured a frame | What a rewrite can win | Confidence |
+| # | Stage(s) | In-game a frame | What a rewrite can win | Confidence |
 |---|---|---|---|---|
 | 1 | compute `fd029a317a9a4b94` (post, tiled) | 1.03 / 1.02 ms | most of it if the time is a translation artefact: it stores 16-bit values to shared memory 16 times a thread, each through a **compare-and-swap loop on a 32-bit word** whose other half a neighbouring thread writes at the same time (`WriteSharedU16` → `OpAtomicCompareExchange` loop, VERIFIED in its SPIR-V), between 6 barriers; ACO estimates 0.05 ms. A compute harness and a test with native 16-bit shared stores (or a 32-bit layout) would tell. Up to ~1 ms | open: the cause is INFERRED |
 | 2 | the small compute steps (`435a…`, `ab76…`, `aba5…`, `5920…`, 256-25k threads) | 0.55 / 0.68 ms | nothing in their code (75-505 native instructions); their time is the barriers before them (the flushes RADV emits with the dispatch) and launch latency: a back-end question (fewer, merged barriers), not a rewrite | INFERRED |
@@ -417,6 +442,72 @@ Ranked by measured time a frame (Kokiri / HF), with what a rewrite could save (E
 Fixing the translator once would cover all 500 mesh stages (the stage buffer) and every compute stage with 16-bit shared
 stores; hand rewrites cover one stage each and, for fragment stages, win almost nothing because RADV already removes the
 translation's bulk (ACO / native 1.56).
+
+## 5b. The translator: what recurs, what to change
+
+The user's question: dependent on these results, can the converter be improved in general? For each overhead the census finds
+in the translated stages: how many stages carry it, the time of the drawn stages that carry it per scene (estimate / in-game
+command time, the latter **indicative only**: taken in the game while other agents ran; not a harness result), what to change
+in `gpu/direct/eden`, and the gain (ESTIMATED unless said).
+
+| Overhead | Stages in the game | Kokiri: est. / in-game ms (stages drawn) | HF | market (meshdry) |
+|---|---|---|---|---|
+| mesh stage buffer (ISBE) in workgroup memory | 499 | 0.05 / 0.43 (32) | 0.09 / 0.69 (38) | 0.05 / 0.27 (17) |
+| sub-word shared stores as a CAS loop | 15 (compute) | 0.05 / 1.03 (1) | 0.05 / 1.02 (1) | 0.05 / 0.85 (1) |
+| sub-word shared loads (word load + extract) | 70 (compute) | 0.05 / 1.03 (1) | 0.05 / 1.02 (1) | 0.05 / 0.85 (1) |
+| by-address loads through the window table | 31,952 | 1.44 / 4.04 (204) | 1.45 / 4.76 (281) | 1.27 / 5.07 (292) |
+| of them, 16 or more by-address loads | 9,077 | 0.54 / 1.82 (89) | 0.68 / 2.15 (78) | 0.44 / 2.55 (103) |
+| NaN guard applied twice (fragment) | 22,284 | 0.79 / 2.09 (115) | 0.97 / 2.16 (101) | 0.78 / 2.49 (134) |
+| uniform-register loads as ballot + shuffle | 5,034 | 1.30 / 3.28 (89) | 1.21 / 3.50 (78) | 0.98 / 3.36 (85) |
+| condition codes as SelectU1 | 6,710 | 1.20 / 1.67 (63) | 1.08 / 1.71 (56) | 0.84 / 1.78 (76) |
+| indexed uniform loads (through the address table) | 16,301 | 1.44 / 2.76 (145) | 1.42 / 2.96 (130) | 1.17 / 3.44 (149) |
+
+(A stage counts in every row it has; the columns overlap. Not found, or removed by RADV: integer/float bit-cast chains
+(11.8 M bit-casts in the fragment IR, none left in the ISA: no-ops), per-component stores (merged), dead vertex outputs (the
+fragment partner reads every component the vertex stage writes in 15,835 of 15,851 programs), predication's one-if-an-
+instruction (folded: the fog composite's ISA has 7 branches), XMAD multiplies (folded to one).)
+
+**The changes, ranked by reach × gain:**
+
+1. **Sub-word shared memory through an explicit layout** (`backend/spirv/spirv_emit_context.cpp DefineSharedMemory`; the
+   profile flag `support_explicit_workgroup_layout` and its 8/16-bit access flags, which `direct_shader.cpp make_profile`
+   never sets, with `VK_KHR_workgroup_memory_explicit_layout` enabled on the device). Eden already emits the typed 16-bit
+   and 8-bit views when the flag is set; without it every `WriteSharedU16` is a compare-and-swap loop on the 32-bit word.
+   **Prototyped** (`censustool --explicit-shared`, RADV's statistics; VERIFIED): on the 15 stages with sub-word stores, ACO
+   instructions −22 to −30 %, branches halved, IT −33 to −44 %; `fd029a317a9a4b94` (the frame's heaviest pass) 2,619 → 1,932
+   instructions, IT 4,096 → 2,484, latency 10,752 → 4,624. Of the other 55 stages that only read 16-bit
+   shared values, 15 get faster (IT −5 % or more) and **12 get much worse**: their shared memory RADV otherwise removes (LDS
+   0 without the flag), the explicit (Aliased, Block) layout keeps it alive and makes them up to 13× larger (e.g. `a41c78fa…` 583 → 4,421 instructions). So the change is: the explicit layout only when the program has
+   8- or 16-bit *stores* to shared memory (`info` gains that bit in `collect_shader_info_pass.cpp`, set by
+   `WriteSharedU8/U16`). Gain: up to the ALU share of `fd029a…`'s ~1 ms (in-game, indicative): ALU estimate −39 %; how
+   much of that pass is ALU is not known. Not measured: the harness has no compute mode (left undone).
+2. **The window translation of by-address loads** (`backend/spirv/bda_emit.h Translate`, used by every global load in
+   `spirv_emit_context.cpp define_body`): per load a shift, a compare, a select, a 64-bit address, a **dependent load of the
+   window table entry**, a mask and an add, and the virtual-range compare and select: about 20 instructions and one extra
+   memory round trip a load (ESTIMATED from the SPIR-V; the market's character vertex stages, 81 such loads, are ACO / native
+   4.3 against the vertex median 3.25). 119 of 139 addresses in a pointer-reading mesh stage are 64-bit sums built in 32-bit
+   halves, so the IR cannot split base and offset to share one lookup. The general fix is in the back end's layout, not the
+   emitter: if layer 0 placed its windows **contiguously in device address space** (one sparse buffer, window k at
+   base + k × 4 GB) the translation is `base + g + (g >> 31 << 31)`: three ALU ops, no table load, and the per-draw virtual
+   range only where a draw has one (`Pushed::delta` invalid otherwise, so the select is not emitted). Reach: 31,952 stages;
+   the drawn ones carry 4-5 ms of the frame's command time (indicative), most of it not this overhead. Gain: not estimable
+   without a measurement; the character draws (0.52 ms in the market, indicative) are the place to measure it.
+3. **The NaN guard once** (`direct_shader.cpp translate_*_variant` calls `GuardFragmentOutputs` and the emitter's
+   `frag_nan_guard` clamps again). **Prototyped and measured** (`censustool --no-ir-guard`, the fragment harness): FIXB
+   RADV: 3-4 instructions fewer a stage (656 → 653, 734 → 731, 2,939 → 2,935), IT −0.1 to −1.3 %. Reach: every fragment
+   stage with a float target (22,284); gain under 1 %.
+4. **The mesh stage buffer** (`backend/spirv/emit_spirv_mesh.cpp`, the ISBE in workgroup memory copied to the outputs at the
+   end): M6e's rewrites without it halve LDS and VGPRs; section 3.2 measured **no speed difference** on the captured draws,
+   also with 32-64× the workgroups and with rasterization off (the stage is not the bound: about 9 ns a workgroup either way).
+   Worth doing for the LDS limit (M6e: 11 programs past 30 KB use RADV's mesh scratch ring) and register pressure, not for
+   speed on this GPU.
+5. Uniform-register loads as ballot + shuffle (`frontend/ampere/lower_to_maxwell` lowering of uniform registers; 5,034
+   stages, 0.2-0.9 % of IR): a uniform value loaded once instead of a subgroup shuffle; RADV keeps the shuffles. Small.
+
+**Translator fixes against hand rewrites.** One hand rewrite (the fog composite) gained 2 % of one 0.05 ms pass; M6e's two
+mesh rewrites gained nothing measurable. Fix 1 reaches the single heaviest pass of every scene and 14 more stages with one
+condition; fix 2 reaches 32,000 stages. Both beat rewriting six stages; neither is measured yet (the next step: a compute
+harness that replays a captured dispatch, then fix 1 there, bit-exact on its outputs).
 
 ## 6. Tools, code and tests
 

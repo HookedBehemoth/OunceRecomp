@@ -426,6 +426,8 @@ bool dev_init() {
     VkPhysicalDeviceMeshShaderFeaturesEXT ms{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pe{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+    VkPhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR wl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_FEATURES_KHR};
+    pe.pNext = &wl;
     VkPhysicalDeviceFeatures2 f{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f.pNext = &f11, f11.pNext = &f12, f12.pNext = &f13, f13.pNext = &f14, f14.pNext = &so, so.pNext = &hf, hf.pNext = &ms, ms.pNext = &af;
     af.pNext = &pe;
@@ -435,7 +437,7 @@ bool dev_init() {
     ms.taskShader = VK_FALSE, ms.multiviewMeshShader = ms.primitiveFragmentShadingRateMeshShader = ms.meshShaderQueries = VK_FALSE;
     const char* exts[] = {VK_EXT_SHADER_OBJECT_EXTENSION_NAME, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME, VK_EXT_MESH_SHADER_EXTENSION_NAME,
                           VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, VK_KHR_MAINTENANCE_5_EXTENSION_NAME, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME,
-                          VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME};
+                          VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME};
     vkGetPhysicalDeviceQueueFamilyProperties(gdev.phys, &n, nullptr);
     const float prio = 1;
     VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -712,6 +714,8 @@ void make_mesh(Made& m, int id, int task) {
     m.spv = Shader::Backend::SPIRV::EmitSPIRV(offline::profile(), rt, m.t->program, b);
     m.vk = VK_SHADER_STAGE_MESH_BIT_EXT;
 }
+uint32_t fs_binding_base = 0;   // (--fs-binding-base N: the fragment stage's bindings after N, as the game's program numbers them)
+bool no_ir_guard = false;       // (--no-ir-guard: the translator-fix prototype: GuardFragmentOutputs left out, frag_nan_guard kept)
 void make_fs(Made& m, int id, const Made* prev) {
     m.code = code_of(id);
     offline::Env env(m.code, Shader::Stage::Fragment);
@@ -727,8 +731,9 @@ void make_fs(Made& m, int id, const Made* prev) {
                 if (m.t->program.info.loads.Generic(i) && !prev->t->program.info.stores.Generic(i)) rt.point_coord_generics.set(i);
     }
     for (int i = 0; i < 8; i++) rt.color_output_types[i] = Shader::AttributeType::Float;   // (every logged pass's targets: float)
-    Shader::Optimization::GuardFragmentOutputs(m.t->program, 0xff);
+    if (!no_ir_guard) Shader::Optimization::GuardFragmentOutputs(m.t->program, 0xff);
     Shader::Backend::Bindings b{};
+    b.unified = fs_binding_base;
     m.spv = Shader::Backend::SPIRV::EmitSPIRV(offline::profile(), rt, m.t->program, b);
     m.vk = VK_SHADER_STAGE_FRAGMENT_BIT;
 }
@@ -906,6 +911,9 @@ int main(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--compile")) do_compile = true;
         else if (!std::strcmp(argv[i], "--spv") && i + 1 < argc) spv_dir = argv[++i];
         else if (!std::strcmp(argv[i], "--repl") && i + 1 < argc) repl_spv = argv[++i];
+        else if (!std::strcmp(argv[i], "--fs-binding-base") && i + 1 < argc) fs_binding_base = (uint32_t)std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--no-ir-guard")) no_ir_guard = true;
+        else if (!std::strcmp(argv[i], "--explicit-shared")) offline::explicit_shared = true;
         else if (!std::strcmp(argv[i], "--only")) {
             while (i + 1 < argc && argv[i + 1][0] != '-') only.push_back(std::atoi(argv[++i]));
         }
