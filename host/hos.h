@@ -79,6 +79,9 @@ static inline void *hos_guest_range(uint64_t a, uint64_t n) {
 extern int hos_trace;
 void hos_log(const char *fmt, ...);
 void hos_log_flush(void);
+long long hos_vi_present_number(void);   /* (nn_vi.c) */
+int hos_dbg_item(const char *item);
+int hos_log_switch(const char *item);
 #define HOS_TRACE_CALL(name) do { if (hos_trace) hos_log("%s(%#llx, %#llx, %#llx, %#llx) lr %#llx", name, \
     (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], \
     (unsigned long long)c->x[3], (unsigned long long)c->x[30]); } while (0)

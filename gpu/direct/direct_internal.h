@@ -46,10 +46,14 @@ using namespace vkfn;
 
 extern const MkwVkHost* host;
 void logf(const char* fmt, ...);
-/// (M4f) a line longer than logf's 2 KB, in pieces: the first as it is, the rest each "<prefix>+ ..."
+/// Prints the line at its first call under the key, and again only when its text changes
+void logf_changed(const char* key, const char* text);
+/// A line longer than logf's buffer, in pieces: the first as it is, the rest each "<prefix>+ ..."
 void log_long(const char* line, const char* prefix);
 /// HOS_DBG=<name>,<name>...: a debug aid named there is on (the back end's only switch, read once)
 bool dbg(const char* name);
+/// A log switch (docs/development.md, "Log switches"): <name> or logall is in HOS_DBG. Read it once into a static
+bool dbg_log(const char* name);
 /// HOS_DBG=...,<name>:<value>,...: the value (null: not named)
 const char* dbg_value(const char* name);
 

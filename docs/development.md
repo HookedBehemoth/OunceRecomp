@@ -132,6 +132,28 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_SLOW_LOG=<ms>` | The replay's times for each frame that took longer than this |
 | `HOS_PGO=<file>` | In a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.dump` writes them to `<file>`. It is read before `hookshot_env.txt`, so set it in the environment |
 
+### Log switches
+
+Every log line starts `[hos 12.345 p600 <thread>]`: the seconds since the process started and the present the game is at.
+`HOS_LOG_TIME=0` leaves both out. A line longer than the log's 4 KB buffer ends in `~`. The direct back end's per-block
+detail is off by default (a block of 600 presents is a few KB; `vk:`, `direct: memory`, `direct: images`, `assets:` and
+the other counters the scripts read stay); `HOS_DBG=<item>,...` turns a part on, and `logall` all of them:
+
+| `HOS_DBG` item | The lines it brings back |
+|---|---|
+| `logmesh` | `task+mesh program:` and `task+mesh draws`, `program serial N is task+mesh` / `mesh-only`, `mesh program first use`, `task steps a frame`, `direct mesh draws` |
+| `logpass` | `pass key` (a line each), `conditions a frame`, `transient pool: lists handed to the queue` |
+| `logdraw` | the draw breakdowns: `draws a frame in <kind> lists`, `in the lists begun from`, `that step A cannot draw`, `uniform buffers a program may read past`, `state:` |
+| `loglists` | `lists by return address` |
+| `logcompute` | `compute N first dispatched` |
+| `logpatch` | the `direct patch ...` statistics of the game-code patches, a line each, and the first records the mesh patches name |
+| `lognvn` | the `nvn:` call traces (`CommandBufferWaitEvent`, `SignalEvent`, `EventSignal`, `QueueSubmitCommands`, `DrawMeshTasks`, `WaitSync`) |
+| `logvcores` | `vcores:` every 5 s |
+| `logvi` | `vi: N frames presented` (the fps is on the `vk:` line too) |
+
+A line that says the same most blocks (`validation:`, `strict:`, `transient pool: descriptor ids`) is printed at the first
+block and again when its text changes.
+
 ### Function labels
 
 The lifted functions are named `f_<guest address>`. `nx2/oot_labels.txt` gives the ones we know a label, and after the

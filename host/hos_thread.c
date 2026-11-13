@@ -316,41 +316,59 @@ static void log_flush(void) {}
 
 void hos_log_flush(void) { log_flush(); }
 
-/* HOS_LOG_TIME=1: each line carries the seconds since the process started, "[hos 12.345 <thread>] ...", to time the boot
-   (docs/native-vk.md, launch time). The start is taken when the image loads, before main */
+/* Every line starts "[hos 12.345 p600 <thread>]": seconds since the process started (taken before main) and the present
+   the game is at. HOS_LOG_TIME=0 leaves both out. A line cut at the buffer's end ends in "~" */
 static LARGE_INTEGER log_t0;
 static int log_time = -1;
 __attribute__((constructor)) static void log_time_start(void) { QueryPerformanceCounter(&log_t0); }
 
+static int log_stamp(char *out, size_t cap) {
+    if (log_time < 0) log_time = !getenv("HOS_LOG_TIME") || atoi(getenv("HOS_LOG_TIME")) > 0;
+    const char *name = cur ? cur->name : "host";
+    if (!log_time) return snprintf(out, cap, "[hos %s] ", name);
+    LARGE_INTEGER now, f;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&f);
+    return snprintf(out, cap, "[hos %.3f p%lld %s] ", (double)(now.QuadPart - log_t0.QuadPart) / (double)f.QuadPart,
+                    (long long)hos_vi_present_number(), name);
+}
+
+/* An item of HOS_DBG ("name" or "name:value"), and a log switch (docs/development.md, "Log switches"): its item or logall */
+int hos_dbg_item(const char *item) {
+    const char *d = getenv("HOS_DBG");
+    const size_t n = strlen(item);
+    for (; d && *d; d = strchr(d, ',') ? strchr(d, ',') + 1 : NULL)
+        if (!strncmp(d, item, n) && (d[n] == ',' || d[n] == ':' || !d[n])) return 1;
+    return 0;
+}
+int hos_log_switch(const char *item) { return hos_dbg_item(item) || hos_dbg_item("logall"); }
+
+#define LOG_BUF 4096
 void hos_log(const char *fmt, ...) {
-    char buf[1024], line[1100];
+    char buf[LOG_BUF], line[LOG_BUF + 128];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
+    const int want = vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
-    if (log_time < 0) log_time = getenv("HOS_LOG_TIME") && atoi(getenv("HOS_LOG_TIME")) > 0;
-    if (log_time) {
-        LARGE_INTEGER now, f;
-        QueryPerformanceCounter(&now);
-        QueryPerformanceFrequency(&f);
-        snprintf(line, sizeof line, "[hos %.3f %s] %s\n", (double)(now.QuadPart - log_t0.QuadPart) / (double)f.QuadPart,
-                 cur ? cur->name : "host", buf);
-    } else
-        snprintf(line, sizeof line, "[hos %s] %s\n", cur ? cur->name : "host", buf);
+    if (want >= (int)sizeof buf) buf[sizeof buf - 2] = '~';
+    const int k = log_stamp(line, sizeof line);
+    snprintf(line + k, sizeof line - (size_t)k, "%s\n", buf);
     if (log_queue(line)) return;
     fputs(line, stderr);
     fflush(stderr);
 }
 
 void hos_fatal(Ctx *c, const char *fmt, ...) {
-    char buf[1024];
+    char buf[1024], stamp[160];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     if (!c) c = hos_ctx();
     log_flush();
-    fprintf(stderr, "[hos %s] FATAL: %s", cur ? cur->name : "host", buf);
+    log_stamp(stamp, sizeof stamp);
+    stamp[strlen(stamp) - 2] = 0;
+    fprintf(stderr, "%s] FATAL: %s", stamp, buf);
     if (c) fprintf(stderr, " (lr %#llx sp %#llx)", (unsigned long long)c->x[30], (unsigned long long)c->x[31]);
     fprintf(stderr, "\n");
     fflush(stderr);
@@ -1296,7 +1314,10 @@ static void vc_grant(int c, int slot) {
 static void vc_stats_locked(int64_t now) {
     if (!vc_st.since) vc_st.since = now;
     if (now - vc_st.since < 5000000000LL) return;
-    hos_log("vcores: %lld takes, %lld waits (mean %.0f us, longest %.1f ms), %lld kicks, %lld yields, %lld escapes, %lld lent in %.0f s",
+    static int on = -1;
+    if (on < 0) on = hos_log_switch("logvcores");
+    if (on)
+        hos_log("vcores: %lld takes, %lld waits (mean %.0f us, longest %.1f ms), %lld kicks, %lld yields, %lld escapes, %lld lent in %.0f s",
             (long long)vc_st.takes, (long long)vc_st.waits, vc_st.waits ? vc_st.wait_ns / 1e3 / vc_st.waits : 0.0,
             vc_st.max_ns / 1e6, (long long)vc_st.kicks, (long long)vc_st.yields, (long long)vc_st.escapes,
             (long long)vc_st.lends, (now - vc_st.since) / 1e9);

@@ -538,6 +538,8 @@ void query_stats(char* out, size_t cap, double frames) {
         if (i == Q_CONDS) logf("direct: %s", out), k = std::snprintf(out, cap, "conditions a frame:");
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.1f", i == 0 || i == Q_CONDS ? "" : ",", kNames[i], st[i].exchange(0) / frames);
     }
+    static const bool log_pass = dbg_log("logpass");   // (the caller prints nothing for an empty text)
+    if (!log_pass) out[0] = 0;
 }
 
 }  // namespace hsd

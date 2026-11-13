@@ -1350,13 +1350,19 @@ NV(nvnEventGetValue) {
     uint32_t v = 0; nvn_gpu_read(((const nvn_event *)P(0))->gpu, &v, 4); RET(v);
     if (sync_log()) hos_log("nvn: EventGetValue %p = %u (lr %#llx)", P(0), v, (unsigned long long)c->x[30]);
 }
+/* The call traces below: HOS_DBG=lognvn */
+static int lognvn(void) {
+    static int on = -1;
+    if (on < 0) on = hos_log_switch("lognvn");
+    return on;
+}
 NV(nvnEventSignal) {
     const nvn_event *e = (const nvn_event *)P(0);
     sc_add(SC_EV_CPU);
     {   /* (the CPU's signals, 40 then every 5000: what the GPU's waits above wait for) */
         static volatile LONG n;
         const LONG k = InterlockedIncrement(&n);
-        if (k <= 40 || k % 5000 == 0)
+        if (lognvn() && (k <= 40 || k % 5000 == 0))
             hos_log("nvn: EventSignal (CPU) #%ld: event %#llx mode %u value %u (lr %#llx)", (long)k,
                     (unsigned long long)(e ? e->gpu : 0), U32(1), U32(2), (unsigned long long)c->x[30]);
     }
@@ -2305,7 +2311,7 @@ NV(nvnCommandBufferSignalEvent) {
     {   /* (the GPU's signals as recorded, 40 then every 5000) */
         static volatile LONG n;
         const LONG k = InterlockedIncrement(&n);
-        if (k <= 40 || k % 5000 == 0)
+        if (lognvn() && (k <= 40 || k % 5000 == 0))
             hos_log("nvn: CommandBufferSignalEvent #%ld: event %#llx mode %u value %u (lr %#llx)", (long)k,
                     (unsigned long long)((const nvn_event *)P(1))->gpu, U32(2), U32(5), (unsigned long long)c->x[30]);
     }
@@ -2322,7 +2328,7 @@ NV(nvnCommandBufferWaitEvent) {
     static volatile LONG n;
     const LONG k = InterlockedIncrement(&n);
     const nvn_event *e = (const nvn_event *)P(1);
-    if (k <= 40 || k % 5000 == 0) {
+    if (lognvn() && (k <= 40 || k % 5000 == 0)) {
         uint32_t now = 0;
         if (e) nvn_gpu_read(e->gpu, &now, 4);
         hos_log("nvn: CommandBufferWaitEvent #%ld: event %#llx mode %u value %u (now %u) (lr %#llx)", (long)k,
@@ -2337,7 +2343,7 @@ NV(nvnCommandBufferWaitSync) {
     sc_add(SC_CB_WAITSYNC);
     static volatile LONG n;
     const LONG k = InterlockedIncrement(&n);
-    if (k <= 40 || k % 5000 == 0) hos_log("nvn: CommandBufferWaitSync #%ld (lr %#llx)", (long)k, (unsigned long long)c->x[30]);
+    if (lognvn() && (k <= 40 || k % 5000 == 0)) hos_log("nvn: CommandBufferWaitSync #%ld (lr %#llx)", (long)k, (unsigned long long)c->x[30]);
 }
 /* (hookshot) nvnCommandBufferPushComputeConstants(cmdbuf, int ?, offset, size, const void* data): compute push
    constants, which NVN2 compute programs read from their driver bank (c0) after the workgroup counts. OoT pushes a
@@ -3077,7 +3083,7 @@ NV(nvnQueueSubmitCommands) {
     {   /* (which queues submit, 60 lines then every 20000: the game's queues are replayed on one, in arrival order) */
         static volatile LONG k;
         const LONG i = InterlockedIncrement(&k);
-        if (i <= 60 || i % 20000 == 0)
+        if (lognvn() && (i <= 60 || i % 20000 == 0))
             hos_log("nvn: QueueSubmitCommands #%ld: queue %p (its #%llu), %d handles (lr %#llx)", (long)i, (void *)q,
                     (unsigned long long)q->submits, n, (unsigned long long)c->x[30]);
     }
@@ -3419,7 +3425,7 @@ static void draw_mesh(Ctx *c, int kind) {
     }
     static volatile LONG64 n;
     const LONG64 k = InterlockedIncrement64(&n);
-    if (k <= 3 || k % 20000 == 0)
+    if (lognvn() && (k <= 3 || k % 20000 == 0))
         hos_log("nvn: DrawMeshTasks%s: %lld so far (x1 %#llx x2 %#llx x3 %#llx x4 %#llx)",
                 kind == 0 ? "" : kind == 1 ? "Indirect" : " (multi, indirect count)", (long long)k,
                 (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3],

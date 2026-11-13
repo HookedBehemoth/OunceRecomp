@@ -1540,7 +1540,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         x.push_n = prog->push_bytes, x.push_valid = true;
     }
     if (mesh) {
-        if (!prog->used.load(std::memory_order_relaxed) && !prog->used.exchange(true))   // (M4b: each mesh program's first use)
+        static const bool log_mesh = dbg_log("logmesh");
+        if (!prog->used.load(std::memory_order_relaxed) && !prog->used.exchange(true) && log_mesh)   // (each mesh program's first use)
             logf("direct: mesh program first use: key %016llx, stages mesh %016llx fragment %016llx header %016llx, no task stage "
                  "(the shader objects: mesh %p, fragment %p); a %s draw in a list of kind %u (lr %#llx) at present %llu",
                  (unsigned long long)prog->key, (unsigned long long)prog->codes[0], (unsigned long long)prog->codes[1],
@@ -1756,50 +1757,61 @@ void draw_log(double frames) {
     logf("direct: %s; inline uniform updates %.1f a frame, buffer copies with them %.1f (%.1f KB), guest reads for their rest %.1f",
          out, st_ub_updates.exchange(0) / frames, take(&TStats::ub_copies, T_UB_COPIES) / frames,
          take(&TStats::ub_bytes, T_UB_BYTES) / 1024.0 / frames, take(&TStats::ub_reads, T_UB_READS) / frames);
-    logf("direct: uniform buffers a program may read past their bound range: %.1f a frame (of the address tables made)",
-         take(&TStats::past_range, T_PAST) / frames);
-    logf("direct: direct mesh draws from a first workgroup past 0: %.2f a frame; draws reading a storage buffer slot nothing bound in "
-         "their list: %.2f mesh, %.2f others a frame", take(&TStats::mesh_first, T_MESH_FIRST) / frames,
-         take(&TStats::unbound_mesh, T_UNBOUND_MESH) / frames, take(&TStats::unbound_draws, T_UNBOUND) / frames);
-    static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
-    for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
-        k = std::snprintf(out, cap, "draws a frame in %s lists:", kinds[kind]);
-        bool any = false;
-        for (int r = 0; r < R_COUNT; r++) {
-            const int64_t n = take_kind(kind, r);
-            if (!n) continue;
-            k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", any ? "," : "", kReasons[r], n / frames);
-            any = true;
+    static const bool log_draw = dbg_log("logdraw"), log_mesh = dbg_log("logmesh");
+    if (log_draw) {
+        logf("direct: uniform buffers a program may read past their bound range: %.1f a frame (of the address tables made)",
+             take(&TStats::past_range, T_PAST) / frames);
+    }
+    if (log_mesh) {
+        logf("direct: direct mesh draws from a first workgroup past 0: %.2f a frame; draws reading a storage buffer slot nothing bound in "
+             "their list: %.2f mesh, %.2f others a frame", take(&TStats::mesh_first, T_MESH_FIRST) / frames,
+             take(&TStats::unbound_mesh, T_UNBOUND_MESH) / frames, take(&TStats::unbound_draws, T_UNBOUND) / frames);
+    }
+    if (log_draw) {
+        static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
+        for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
+            k = std::snprintf(out, cap, "draws a frame in %s lists:", kinds[kind]);
+            bool any = false;
+            for (int r = 0; r < R_COUNT; r++) {
+                const int64_t n = take_kind(kind, r);
+                if (!n) continue;
+                k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", any ? "," : "", kReasons[r], n / frames);
+                any = true;
+            }
+            if (const int64_t g = st_gated[kind].exchange(0))
+                k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; of the drawn under a render condition (on the GPU) %.2f", g / frames), any = true;
+            if (any) logf("direct: %s", out);
         }
-        if (const int64_t g = st_gated[kind].exchange(0))
-            k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; of the drawn under a render condition (on the GPU) %.2f", g / frames), any = true;
-        if (any) logf("direct: %s", out);
-    }
-    k = std::snprintf(out, cap, "draws a frame that step A cannot draw, by the variant's reason:");
-    for (StepA& s : step_a) {
-        const char* why = s.why.load();
-        if (!why) break;
-        for (int kind = 0; kind < HSD_LIST_KINDS; kind++)
-            if (const int64_t n = s.n[kind].exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " [%s] %s %.2f;", why, kinds[kind], n / frames);
-    }
-    logf("direct: %s", out);
-    for (Site& s : sites) {
-        const uint64_t lr = s.lr.load();
-        if (!lr) break;
-        k = std::snprintf(out, cap, "draws a frame in the lists begun from %#llx:", (unsigned long long)lr);
-        for (int r = 0; r < R_COUNT; r++)
-            if (const int64_t n = s.n[r].exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.2f,", kReasons[r], n / frames);
+        k = std::snprintf(out, cap, "draws a frame that step A cannot draw, by the variant's reason:");
+        for (StepA& s : step_a) {
+            const char* why = s.why.load();
+            if (!why) break;
+            for (int kind = 0; kind < HSD_LIST_KINDS; kind++)
+                if (const int64_t n = s.n[kind].exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " [%s] %s %.2f;", why, kinds[kind], n / frames);
+        }
         logf("direct: %s", out);
+        for (Site& s : sites) {
+            const uint64_t lr = s.lr.load();
+            if (!lr) break;
+            k = std::snprintf(out, cap, "draws a frame in the lists begun from %#llx:", (unsigned long long)lr);
+            for (int r = 0; r < R_COUNT; r++)
+                if (const int64_t n = s.n[r].exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.2f,", kReasons[r], n / frames);
+            logf("direct: %s", out);
+        }
     }
     shader_stats(out, cap, frames);
     logf("direct: %s", out);
-    shader_task_mesh_log(frames);
-    task_stats(out, cap, frames);
-    logf("direct: %s", out);
+    if (log_mesh) {
+        shader_task_mesh_log(frames);
+        task_stats(out, cap, frames);
+        logf("direct: %s", out);
+    }
     heap_stats(out, cap);
     logf("direct: %s", out);
-    state_stats(out, cap, frames);
-    logf("direct: %s", out);
+    if (log_draw) {
+        state_stats(out, cap, frames);
+        logf("direct: %s", out);
+    }
 }
 
 // ---- (M4a) what the dispatches share with the draws (direct_compute.cpp) ----

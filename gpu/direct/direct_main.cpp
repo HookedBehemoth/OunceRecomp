@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
 
 #include "direct_compute.h"
@@ -34,12 +36,25 @@ const MkwVkHost* host;
 Device dev;
 
 void logf(const char* fmt, ...) {
-    char b[2048];
+    char b[4096];   // (a line cut here ends in "~")
     va_list a;
     va_start(a, fmt);
-    std::vsnprintf(b, sizeof b, fmt, a);
+    const int want = std::vsnprintf(b, sizeof b, fmt, a);
     va_end(a);
+    if (want >= (int)sizeof b) b[sizeof b - 2] = '~';
     if (host) host->log(b);
+}
+
+void logf_changed(const char* key, const char* text) {
+    static std::mutex mu;
+    static std::map<std::string, std::string> last;
+    {
+        std::lock_guard lk(mu);
+        std::string& was = last[key];
+        if (was == text) return;
+        was = text;
+    }
+    logf("%s", text);
 }
 
 void log_long(const char* line, const char* prefix) {
@@ -57,6 +72,8 @@ bool dbg(const char* name) {
     }();
     return list.find("," + std::string(name) + ",") != std::string::npos;
 }
+
+bool dbg_log(const char* name) { return dbg(name) || dbg("logall"); }
 
 PFN_vkGetInstanceProcAddr get_instance_proc;
 

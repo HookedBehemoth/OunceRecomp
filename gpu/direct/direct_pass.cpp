@@ -811,8 +811,9 @@ void jobs_stats(char* out, size_t cap, double frames) {
                        seen, known, nsets);
     for (KeySlot& s : keys)
         if (const int64_t n = s.inl.exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %#llx %lld", (unsigned long long)s.key.load(), (long long)n);
+    static const bool log_pass = dbg_log("logpass");
     for (KeySlot& s : keys)   // (one line each: the line's length is bounded)
-        if (const int64_t e = s.executed.exchange(0))
+        if (const int64_t e = log_pass ? s.executed.exchange(0) : 0)
             logf("direct: pass key %#llx (target %#llx): a frame %.2f jobs executed, their draws: drawn %.1f, mesh (M4) %.1f, step A %.1f",
                  (unsigned long long)s.key.load(), (unsigned long long)s.target.load(), e / frames, s.drawn.exchange(0) / frames,
                  s.mesh.exchange(0) / frames, s.step_a.exchange(0) / frames);

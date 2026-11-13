@@ -49,7 +49,9 @@ static void log_names(uint64_t item, uint32_t w4, uint32_t w5) {
     for (int i = 0; i < nseen; i++) known |= seen[i] == prog;
     if (!known && nseen < 32) seen[nseen++] = prog;
     ReleaseSRWLockExclusive(&lock);
-    if (!known && nseen <= 32)
+    static int say = -1;
+    if (say < 0) say = hos_log_switch("logpatch");
+    if (!known && nseen <= 32 && say)
         hos_log("direct patch mesh binds: f_801a6720 draws program info %#llx: name 4 %08x, name 5 %08x (ffffffff: not read)",
                 (unsigned long long)prog, w4, w5);
 }

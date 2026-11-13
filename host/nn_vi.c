@@ -126,6 +126,7 @@ static int fps_max(void) {
 }
 static int64_t next_frame_at, window_start, frames_in_window;
 static volatile LONG64 presents;
+long long hos_vi_present_number(void) { return __atomic_load_n(&presents, __ATOMIC_RELAXED); }
 int hos_vi_native_interval(Ctx *c, int requested) {
     (void)c;
     /* (hookshot) OoT's frame-rate controller asks for 2, 3 or 4 vsyncs a frame whenever one runs long (480 changes a minute
@@ -417,8 +418,11 @@ void hos_vi_native_presented(void) {
     }
     last_present = now;
     if (now - window_start >= 5000000000LL) {
-        hos_log("vi: %lld frames presented (%.1f fps over the last %.1f s, interval %d)", (long long)n,
-                frames_in_window * 1e9 / (double)(now - window_start), (now - window_start) / 1e9, present_interval);
+        static int on = -1;
+        if (on < 0) on = hos_log_switch("logvi");
+        if (on)
+            hos_log("vi: %lld frames presented (%.1f fps over the last %.1f s, interval %d)", (long long)n,
+                    frames_in_window * 1e9 / (double)(now - window_start), (now - window_start) / 1e9, present_interval);
         hos_log("vi: present intervals: <15.5 ms %d, 15.5-17.8 %d, 17.8-22 %d, 22-30 %d, 30-40 %d, over 40 %d", hist[0],
                 hist[1], hist[2], hist[3], hist[4], hist[5]);
         memset(hist, 0, sizeof hist);

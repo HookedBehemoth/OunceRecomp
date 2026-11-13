@@ -58,7 +58,9 @@ void direct_mesh_lists_draw(uint64_t lr, uint64_t gpu, int max, int stride) {
         if (!hos_guest_range(r, 16)) { InterlockedIncrement64(&n.outside); continue; }
         if (G32(r + 4) || G32(r + 8)) continue;
         put(r);
-        if (InterlockedIncrement64(&n.set) <= 40)
+        static int say = -1;
+        if (say < 0) say = hos_log_switch("logpatch");
+        if (InterlockedIncrement64(&n.set) <= 40 && say)
             hos_log("direct patch mesh lists: record %#llx (drawn from lr %#llx) set to {x, 1, 1, n}", (unsigned long long)r,
                     (unsigned long long)lr);
     }

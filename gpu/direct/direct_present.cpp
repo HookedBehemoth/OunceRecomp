@@ -304,8 +304,8 @@ void log_line() {
     logf("direct: %s", b);
     jobs_stats(b, sizeof b, frames);   // (M3a)
     logf("direct: %s", b);
-    query_stats(b, sizeof b, frames);   // (M5)
-    logf("direct: %s", b);
+    query_stats(b, sizeof b, frames);
+    if (*b) logf("direct: %s", b);
     image_stats(b, sizeof b);
     char* own = std::strstr(b, "; not from the store");   // (M6f: the images' memory on a line of its own)
     if (own) *own = 0;
@@ -313,10 +313,15 @@ void log_line() {
     if (own) logf("direct: images' memory: %s", own + 2);
     image_pool_stats(b, sizeof b);
     logf("direct: %s", b);
+    static const bool log_pass = dbg_log("logpass"), log_lists = dbg_log("loglists");
     heap_stale_census(b, sizeof b);
-    logf("direct: transient pool: %s", b);
-    sync_age_stats(b, sizeof b);
-    logf("direct: transient pool: %s", b);
+    char text[8192 + 32];
+    std::snprintf(text, sizeof text, "direct: transient pool: %s", b);
+    logf_changed("transient pool: descriptor ids", text);
+    if (log_pass) {
+        sync_age_stats(b, sizeof b);
+        logf("direct: transient pool: %s", b);
+    }
     cmd_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     assets_stats(b, sizeof b, frames);
@@ -325,14 +330,18 @@ void log_line() {
     logf("direct: %s", b);
     mem_stats(b, sizeof b);   // (M6f)
     logf("direct: %s", b);
-    sites_stats(b, sizeof b, frames);
-    logf("direct: %s", b);
+    if (log_lists) {
+        sites_stats(b, sizeof b, frames);
+        logf("direct: %s", b);
+    }
     draw_log(frames);   // (M2b)
     compute_log(frames);   // (M4a)
-    validation_stats(b, sizeof b);   // (M6b)
-    logf("validation: %s", b);
+    validation_stats(b, sizeof b);
+    std::snprintf(text, sizeof text, "validation: %s", b);
+    logf_changed("validation", text);
     strict_stats(b, sizeof b);
-    logf("strict: %s", b);
+    std::snprintf(text, sizeof text, "strict: %s", b);
+    logf_changed("strict", text);
 }
 
 }  // namespace

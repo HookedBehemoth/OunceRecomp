@@ -967,6 +967,8 @@ void strict_dispatch(List* l, Reason r) {
 void tell_first(Variant& v, const List* l, const uint8_t* bank, uint32_t n, const uint32_t grid[3], bool indirect) {
     if (v.told) return;
     v.told = true;
+    static const bool log_compute = dbg_log("logcompute");
+    if (!log_compute) return;
     char b[2000];
     int k = std::snprintf(b, sizeof b, "direct: compute %016llx first dispatched in a %s list (lr %#llx): %s %ux%ux%u, workgroup %ux%ux%u, "
                           "shared %u B, %zu ubos, %zu ssbos, %zu textures, %zu images%s%s:",
