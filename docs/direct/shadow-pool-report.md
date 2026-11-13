@@ -257,7 +257,20 @@ non-owner sampled) are 0.
 
 ### 6.1 The picture checks
 
-PICTURE_CHECKS
+`scripts/direct_check.sh` against the frozen back end's golden pictures, 420 s each, `work/runs/sp_chk*.verdict.txt`. Every
+run's verdict is **FAIL**; none is a pass, so the checks do not show the pool equal to head. Counts, pass states lined up
+or not (FAIL / UNSTABLE or NO-NOISE / MERGED / PASS):
+
+| Scene | Head, no pool (`sp_chkhead_*`) | Pool build (`sp_chk_*`) | Pool build, second run (`sp_chkq_*`) |
+|---|---|---|---|
+| Kokiri | 331: 52 / 9 / 228 / 42 | 338: 25 / 9 / 232 / 68 (1 missing, 3 extra) | 408: 24 / 9 / 305 / 70 |
+| Market | 339: 23 / 2 / 243 / 71 | 338: 24 / 2 / 241 / 69 (1 missing, 1 extra) | 339: 38 / 2 / 243 / 56 |
+
+The head runs are the build without the pool (their log has 192 MB arenas and no pool lines); the other two have the
+pool. The lit target 2048x1152 B10G11R11F fails in all of them (Kokiri, worst tile 0.36 on head, 0.13 on the pool
+build). In Kokiri the pool build fails fewer states than head (24-25 against 52); in the market 24 and 38 against 23.
+The verdict files do not say what the second pool run (`sp_chkq_*`) was set to, and I have not looked into the failing
+states one by one. So the checks ran, and the pool is not shown equal to head pass by pass.
 
 ## 7. The 416 "texture with no image sampled" of `m6s_c1` (the 800x760x16 array)
 

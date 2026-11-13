@@ -338,7 +338,8 @@ needs its terrain tiles. Then in sequence.
 
 ## Status and next steps (2026-11-13)
 
-Reports: `docs/direct/m1-report.md` ... `m6e-report.md`; the game's own systems as read from its code:
+Reports: `docs/direct/m1-report.md` ... `m6h-report.md`, and since M6e `hf-hang-report.md`, `hf-fix-report.md`,
+`shadow-maps.md`, `shadow-pool-report.md`; the game's own systems as read from its code:
 `docs/direct/texture-streaming.md`, `docs/direct/boot-to-main-loop.md`; the functions we know by name:
 `nx2/oot_labels.txt` (docs/development.md, "Function labels").
 
@@ -346,60 +347,118 @@ Reports: `docs/direct/m1-report.md` ... `m6e-report.md`; the game's own systems 
 |---|---|
 | M0 - M5, A | landed |
 | M4's exit ("all passes match") | not met: failing pass states Kokiri 8, Hyrule Field 28, market 15 on M6b's metric (21 / 45 / 21 on M6d's float-aware one), `m6d-report.md` 3 |
+| M6a - M6f, M6h | landed, reports committed (M6f: `m6f-report.md`; M6h: `m6h-report.md`) |
 | M6 | in progress, below |
 
 **What changed against the sections above**
 
-- **Task and mesh shaders.** The task stage is a compute step and the mesh stage is native (M4c), as decided. The
-  market then lost the device in 13 of 13 runs; a framebuffer-local barrier before every task+mesh draw ends it (0 of
-  14, one run of 15 minutes; `m6d-report.md`). It is a mitigation: the same draws replayed outside the game without
-  the barrier do not lose the device (`m6e-report.md` 4), so the cause is not "two mesh stages overlap" alone and is
-  not known. The game's mesh stages can be rewritten by hand and proven equal (`gpu/direct/shaders/mesh`, 69 of 69
-  draws bit-equal, less workgroup memory); nothing swaps them in yet.
-- **Jobs.** The occlusion-grid dispatches kept from a job run before the job's commands (`m6d-report.md` 2), not
-  after; the exact place (inside the job) needs the job cut in two and is not built.
+- **Task and mesh shaders.** The task stage is a compute step and the mesh stage is native (M4c), as decided. The market
+  lost the device in 13 of 13 runs; a framebuffer-local barrier before every task+mesh draw ended it (`m6d-report.md`
+  3). The cause is found: the Hyrule Field and market loss is the translated mesh stage `40d0c0768e874600` as RADV
+  compiles it, 8 scratch spills (258 vector registers wanted, 256 available), the one of 53 mesh stages in the three
+  scenes' captures that spills; it hangs once its fragments pass (`hf-hang-report.md`, `hf-fix-report.md` 3). In the
+  game now:
+  - that stage is drawn by a hand-written one (`meshlet_lit.mesh -DPROBE_LIGHT`), swapped in by code key
+    (`gpu/direct/direct_meshrepl.cpp`, `shaders/mesh/swap.txt`; `HOS_DBG=nomeshrepl` draws the translator's). It is
+    bit-equal to the translated stage in all 28 output components on 10 of 10 captured draws and compiles without
+    scratch (`hf-fix-report.md` 1);
+  - the wait before task+mesh draws is off by default (`HOS_DBG=tmwait` keeps it; c6b33a6): the market ran without it
+    240 s twice and 15 minutes, and the Kokiri - Hyrule Field walk that lost the device 5 of 5 times survived 3 of 3
+    runs of 240 s (the first two with the wait still on, the third without: `hf-fix-report.md` 1, 5, 10);
+  - mesh stages go through a register-pressure pass at translation (`gpu/direct/direct_spv_late.cpp`, 6b1600c, 462a972;
+    `HOS_DBG=nolate` turns it off, the program cache is stamped by it): a block past 160 held values is re-emitted with
+    what only computes held back to that budget, kept only when the block and the function then hold fewer, and every
+    new order is checked for soundness. It is the second version of an earlier pass: the first, "schedule everything
+    late", was in the game and was taken out (553dbfd) because it made two other mesh stages spill and the market lost
+    the device with it (`hf-fix-report.md` 4). `hf-fix-report.md` still says the pass is "a prototype, not in the game"
+    (written before 6b1600c); the code has it in, for mesh stages only. The same pass on vertex stages is a trial, off
+    (`HOS_DBG=latevertex`, 1d91d82: 21 vertex stages spill as RADV compiles them).
+  - Open by the reports' own account: the fix rests on 3 walk runs and 3 market runs (all made with the hand-written
+    stage and without the pass in the game; the reports record no game run with the pass), against 5 and 13 losses
+    before; eleven other mesh stages sit at the register limit without spilling (`hf-fix-report.md` 3); the four other
+    stages of `codes.txt` are not swapped in; the scan covers three scenes and no fragment stage; the Mesa report is not
+    written or filed. Why a spilling mesh stage hangs the GPU is inferred, not known (`hf-fix-report.md` 6, 8).
+- **Jobs.** The occlusion-grid dispatches kept from a job run before the job's commands (`m6d-report.md` 2), not after;
+  the exact place (inside the job) needs the job cut in two and is not built.
 - **Textures.** The game streams whole textures and never mip ranges; a load with no data is a UnifyTex alias; a
   released texture stays registered in an LRU cache until the game's 2,400 MB heap is nearly full
-  (`texture-streaming.md`). So "residency follows the game's registrations" holds only if the game's eviction is
-  driven by our VRAM: the asset textures' state comes from hooks on the game's own texture events, an image is freed
-  when the game destroys its texture, and a patch makes the game's per-frame eviction look at free VRAM instead of
-  its heap bytes (M6f, in progress). The back end holds no eviction policy.
-- **The frame.** Render jobs and layer lists are recorded in the calc phase (stage C of `moduleCalc_`), not in the
-  draw phase; a frame has four job stages (`boot-to-main-loop.md` 4, 8).
+  (`texture-streaming.md`). So "residency follows the game's registrations" holds only if the game's eviction is driven
+  by our VRAM: the asset textures' state comes from hooks on the game's own texture events, an image is freed when the
+  game destroys its texture, and a patch makes the game's per-frame eviction look at free VRAM instead of its heap bytes
+  (M6f, landed). The back end holds no eviction policy.
+- **The transient pool.** The game's transient render targets (shadow maps and the rest of the allocator's pool) live in
+  one constant 512 MB device allocation, made once at the boot; target images are bound in it at their storage offsets,
+  and no device memory is made or freed for them in play (`shadow-pool-report.md` 0, 1.1; 9871592, f649cf8). M6f's free,
+  pending and hold machinery is deleted, with the 3.5 - 4.8 GB the descriptor-id hold pinned. The allocator's hooks tell
+  the back end each target by its own texture object (`hsd_target_given`), so targets are no longer recognised by
+  address. Measured: the scene route's device-local usage is flat after the load (7,758 -> 7,806 MB over 6,000 presents,
+  against 6,684 -> 11,745 MB); the cycle ends its second loop at 8,624 MB against 10,647 and 12,473 MB; the eviction
+  patch never fires there; 0 targets placed outside the slots (`shadow-pool-report.md` 0, 3, 4). What the report leaves
+  open (its section 8): the 512 MB is measured on two routes only (the peak held was 465 MB on the route, 406 MB on the
+  cycle); the full 26-stop cycle and a soak were not run; the route at 512 MB was not repeated on a quiet machine;
+  Hyrule Field was not run; the bound on kept image objects was never reached; persistent targets of the same allocator
+  are outside the slots; the 1.5 GB margin of the eviction patch can be measured again and lowered. **Evicting at the
+  margin destroys textures the game still draws that frame** (416 "texture with no image sampled" in `m6s_c1`, section
+  7); it comes back whenever the patch fires. Its picture checks failed on head and on the pool build alike, and do not
+  show the pool equal pass by pass (section 6.1).
+- **Memory in a play session** (2a811be). A play session lost 20 GB of device-local driver memory while the pause menu
+  was open: the menu keeps three command lists alive, each pinned a per-thread command slot that was then recorded into
+  without a reset, 188,000 command buffers. Fixed in `gpu/direct/direct_cmd.cpp` (`cmd_slot_take`: a slot with a list
+  alive is set aside, and the thread gets one more). A 325 s soak on the scene route with three pauses (run `soak_1`)
+  was flat: +97 MB of device-local usage from present 4,200 to 18,600, slots settled after the second pause, 0 targets
+  placed outside the slots, no device loss. Open: memory accounted per owner in the periodic log (in progress, branch
+  `agent/memacct`); the per-slot arenas, task pools and query pools never shrink.
+- **The frame.** Render jobs and layer lists are recorded in the calc phase (stage C of `moduleCalc_`), not in the draw
+  phase; a frame has four job stages (`boot-to-main-loop.md` 4, 8).
 - **Placeholders.** The dump's three damaged files draw a 1x1 zero image and stop strict mode in the market; until a
   re-dump, a neutral record written by the prepare tool is the fix (rule 4), not built.
 
-**M6, in order**
+**M6, in order** (done items marked; open ones in the order to take them)
 
-1. Land M6f (streaming textures, frees, VRAM-driven eviction, the scene route and walk check, the title movie's
-   regression on that branch) and M6h (the census of all shaders, cost per scene, rewrites measured against the
-   translator's stages, what to change in the translator).
-2. Correctness gate: the picture checks again on the landed head; the failing pass states worked through, earliest
-   first; the spawn-spot blind spot of the Kokiri check closed.
-3. The scene cycle and soak (from M6f's route), under strict: frame-time percentiles, VRAM (ours and the driver's
+1. Done: M6f (streaming textures, frees, VRAM-driven eviction, the scene route and walk check) and M6h (the census of
+   all shaders, cost per scene, rewrites measured against the translator's stages); the Hyrule Field hang fixed for the
+   stage that caused it; the transient pool; the command slot leak.
+2. Memory accounting per owner in the periodic log (`agent/memacct`, in progress): what each of the back end's pools,
+   arenas and slot lists holds, so the next growth names its owner without a driver query.
+3. The eviction at the margin destroying textures still drawn: the patch must not destroy a texture released in the same
+   present (`shadow-pool-report.md` 7, 8), or the margin must be lowered until it does not fire; then the margin
+   measured again now that targets cost 0 of it.
+4. A soak with pauses and the full 26-stop scene cycle on the pool build, under strict: does 512 MB hold every stop,
+   does usage stay flat. The soak of 2a811be covers one route and three pauses only.
+5. Correctness gate: the picture checks again on the landed head (all of them FAIL now, `shadow-pool-report.md` 6.1);
+   the failing pass states worked through, earliest first; the spawn-spot blind spot of the Kokiri check closed.
+6. The scene cycle and soak (from M6f's route), under strict: frame-time percentiles, VRAM (ours and the driver's
    total), objects made in play. This is what the 60 fps goal is measured by.
-4. Old against new on that cycle, once, on an idle machine; with it the cost of the task+mesh barrier and the gain of
-   the grid fix (baselines kept: `agent/m6dbase`, `agent/m6dmid`). Timing taken while other agents ran is not a result.
-5. The frozen renderer deleted: the job hook out of `host/eng_jobs.c`, `host/direct_rt_ids.c` gone, the `RX_VK_*`
-   and `HOS_ENG_*` switches and their tests, the diagnosis flags pruned.
-6. Frame time, from `m6a-report.md`'s ranking: the serial layer list split (a patch in calc stage C), the event-signal
+7. Old against new on that cycle, once, on an idle machine; with it the cost of the task+mesh barrier (now off by
+   default) and the gain of the grid fix (baselines kept: `agent/m6dbase`, `agent/m6dmid`). Timing taken while other
+   agents ran is not a result.
+8. The frozen renderer deleted: the job hook out of `host/eng_jobs.c`, the `RX_VK_*` and `HOS_ENG_*` switches and their
+   tests, the diagnosis flags pruned. `host/direct_rt_ids.c` stays: it is a patch of the direct back end (see Parked).
+9. Frame time, from `m6a-report.md`'s ranking: the serial layer list split (a patch in calc stage C), the event-signal
    submit off the main thread, Hyrule Field's bursts.
-7. Programs translated offline; translator improvements and stage replacements as M6h ranks them.
+10. Programs translated offline; translator improvements and stage replacements as M6h ranks them (`m6h-report.md`: not
+    stage-by-stage rewrites; the heavy compute pass `fd029a317a9a4b94` first, then per-command overhead, then the
+    translator-wide costs).
 
-Beside the path: the hang's cause (the harness replaying the job's whole command stream), render targets told to the
-back end by the allocator's hooks instead of recognised by address, movie frames copied once instead of three times.
+Beside the path: movie frames copied once instead of three times. Done: render targets told to the back end by the
+allocator's hooks (the pool, above). The earlier item "the hang's cause (the harness replaying the job's whole command
+stream)" is dropped: the cause is the spilling mesh stage, and `hf-hang-report.md` ruled out stale data.
 
 ## Parked, to be done eventually
 
-- **The native task and mesh hang.** Not solved (see "Task and mesh shaders"). To do at or before M4, on a fresh boot
-  with no agent mid-work: skip the bystander program's draws; drain the pipe after every native mesh draw; the same
-  run on Mesa main; and the task stage as a compute step with the mesh stage native, tried in the direct back end.
-- **A per-draw trace compared offline.** Both back ends write, for each draw of one frame, its program, vertex
-  layout, buffer addresses and sizes, texture and sampler ids and fixed state; a script lines them up per pass. The
-  direct answer to "are a job's bindings right" when a picture comparison cannot say. Not built; the user did not
-  want it yet (2026-11-12).
-- **The render-target id patch.** Its premise was wrong (`m3a-report.md`); the submit-time snapshot of the deferred
-  tables covers it meanwhile.
+- **The native task and mesh hang, remaining checks.** The cause is traced (see "Task and mesh shaders"); what is left
+  is the report to Mesa (`hf-fix-report.md` 8: not written, the synthetic stage `probes/spill.mesh` not drawn), and
+  whether the pass or more hand-written stages should cover the other stages at the register limit.
+- **A per-draw trace compared offline.** Both back ends write, for each draw of one frame, its program, vertex layout,
+  buffer addresses and sizes, texture and sampler ids and fixed state; a script lines them up per pass. The direct
+  answer to "are a job's bindings right" when a picture comparison cannot say. Not built; the user did not want it yet
+  (2026-11-12).
+- **The render-target id patch** (`host/direct_rt_ids.c`, a patch of the direct back end: its line "direct patch rt ids"
+  is logged every 600 presents). Its premise, that the system-texture entry keeps its id while nothing changes, did not
+  hold when it was measured: the entry arrives with a stale id every frame, so the patch keeps 0 calls and passes every
+  call to the game's path (`m3a-report.md`, "The rt-id patch: its premise does not hold"). It is not a part of the
+  frozen renderer. Open: find what resets the id (m3a-report suggests a watch on the table's source entry); until then
+  the submit-time snapshot of the deferred tables covers it.
 
 ## How the work is run
 
