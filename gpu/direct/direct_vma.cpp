@@ -7,6 +7,8 @@
 #include "direct_internal.h"
 #include <vk_mem_alloc.h>
 
+#include <cstdio>
+
 namespace hsd {
 
 std::atomic<int64_t> st_objects{0};
@@ -60,6 +62,29 @@ bool mem_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBu
 void mem_buffer_free(VkBuffer buffer, Mem* mem) { vmaDestroyBuffer(vma, buffer, (VmaAllocation)mem); }
 void mem_flush(Mem* mem) { vmaFlushAllocation(vma, (VmaAllocation)mem, 0, VK_WHOLE_SIZE); }
 void mem_invalidate(Mem* mem) { vmaInvalidateAllocation(vma, (VmaAllocation)mem, 0, VK_WHOLE_SIZE); }
+/// (M6f) The device-local heaps: the driver's usage and budget (VK_EXT_memory_budget), and VMA's blocks and allocations in them
+void mem_stats(char* out, size_t cap) {
+    static PFN_vkGetPhysicalDeviceMemoryProperties2 props2 =
+        (PFN_vkGetPhysicalDeviceMemoryProperties2)get_instance_proc(dev.instance, "vkGetPhysicalDeviceMemoryProperties2");
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    p.pNext = &bp;
+    if (props2) props2(dev.physical, &p);
+    VmaTotalStatistics st{};
+    if (vma) vmaCalculateStatistics(vma, &st);
+    int k = std::snprintf(out, cap, "memory (MB):");
+    for (uint32_t h = 0; h < p.memoryProperties.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++) {
+        const VmaStatistics& s = st.memoryHeap[h].statistics;
+        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " heap %u (%s, %llu): driver usage %llu of budget %llu, VMA blocks %llu "
+                           "(%u), allocations %llu (%u);", h,
+                           p.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? "device-local" : "host",
+                           (unsigned long long)(p.memoryProperties.memoryHeaps[h].size >> 20),
+                           (unsigned long long)(bp.heapUsage[h] >> 20), (unsigned long long)(bp.heapBudget[h] >> 20),
+                           (unsigned long long)(s.blockBytes >> 20), s.blockCount, (unsigned long long)(s.allocationBytes >> 20),
+                           s.allocationCount);
+    }
+}
+
 uint64_t mem_size(Mem* mem) {
     VmaAllocationInfo info{};
     if (mem) vmaGetAllocationInfo(vma, (VmaAllocation)mem, &info);

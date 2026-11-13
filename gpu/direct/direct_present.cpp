@@ -292,12 +292,17 @@ void log_line() {
     query_stats(b, sizeof b, frames);   // (M5)
     logf("direct: %s", b);
     image_stats(b, sizeof b);
+    char* own = std::strstr(b, "; not from the store");   // (M6f: the images' memory on a line of its own)
+    if (own) *own = 0;
     logf("direct: %s; presents shown %lld, with no image %lld", b, (long long)st_shown.exchange(0), (long long)st_no_image.exchange(0));
+    if (own) logf("direct: images' memory: %s", own + 2);
     cmd_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     assets_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     layer0_stats(b, sizeof b);
+    logf("direct: %s", b);
+    mem_stats(b, sizeof b);   // (M6f)
     logf("direct: %s", b);
     sites_stats(b, sizeof b, frames);
     logf("direct: %s", b);
