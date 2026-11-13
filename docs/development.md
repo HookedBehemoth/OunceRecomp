@@ -132,6 +132,22 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_SLOW_LOG=<ms>` | The replay's times for each frame that took longer than this |
 | `HOS_PGO=<file>` | In a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.dump` writes them to `<file>`. It is read before `hookshot_env.txt`, so set it in the environment |
 
+### Function labels
+
+The lifted functions are named `f_<guest address>`. `nx2/oot_labels.txt` gives the ones we know a label, and after the
+link `nx2/label_syms.py` renames their symbols to `<label>.f_<address>`, so profiles, backtraces and debuggers show
+what a function is (only the symbol table changes; no rebuild of the code).
+
+- **Add a label whenever an analysis identifies a function**, in the same commit as the note that says so.
+- A label is a description of ours, not the game's or the SDK's name (never C++ mangling): lower case, digits and
+  underscores, a subsystem prefix first (the file's header lists them), unique. It says what the note says and no
+  more: a role (`report_reader_b`, `_caller`) when that is all we know; `# ?` marks a doubt or notes that disagree.
+- The address must be a function's entry in this lift. A call site, an lr or a splice point names the function that
+  contains it (`work/sa/build/hookshot.map`), with the site in the note.
+- Each entry ends with `# <file>[ section]: what`, the place that documents it.
+- `python -I nx2/label_syms.py check` checks the list; `apply <executable>` reports addresses with no such function;
+  `name <address> ...` prints labels for scripts.
+
 ### The GPU
 
 | Switch | What it does |

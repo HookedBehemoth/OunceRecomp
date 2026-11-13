@@ -1,49 +1,751 @@
-# Labels for the lifted game's functions (nx2/label_syms.py): <guest address> <label> [# where it is documented]
+# Labels for the lifted game's functions (nx2/label_syms.py): <guest address> <label> [# where it is documented: what]
 # Descriptions of ours, not the game's names. Lower case, digits, underscores; every address and label once.
-# An entry is a function's entry address in this lift (HOS_GAME_VERSION 100). Add what an analysis finds, with its note.
+# An entry is a function's entry address in this lift (HOS_GAME_VERSION 100). Add what an analysis finds, with its note
+# (docs/development.md, Function labels). A label says what the note says, no more: a role ("_reader_b", "_caller")
+# when that is all it knows; '# ?' marks a doubt or notes that disagree. Mid-function sites (lr, splice points) name the
+# function that contains them.
+#
+# Prefixes: actor_, agl_, async_, audio_, camera_, config_, cull_, desc_, display_, draw_, dta_, dynres_, event_,
+#   exposure_, font_, frame_, fs_, g3d_, gamedata_, gfx_, gfx_shader_, gfx_texture_, gpu_pool_, heap_, hid_, job_,
+#   layer_, libc_, lyr_hook_, map_, math_, mesh_, model_, module_, movie_, ndsr_, ndve_, net_, occl_, os_, pass_,
+#   phys_, player_, render_, report_, res_, scene_, sead_, seq_, shader_, shape_, sky_, std_, sys_, sysbind_, system_,
+#   terrain_, texdata_, texheap_, texres_, texview_, thread_, ubo_, ui2d_, ui_, util_, vbuf_, vegetation_, vfx_,
+#   world_, zstd_.
 
-# --- asset textures: agl::TextureDataMgr and the resource manager (docs/direct/texture-streaming.md)
-805c5ca0 texres_request                  # TextureResourceMgr: name -> UnifyTex target -> load or count up
-80517d80 texres_release                  # count down; at 0 to the LRU cache, not freed
-80798d00 texdata_create                  # slot in the compactible heap, BRTI copied to td+0x58
-80798690 texdata_copy_texels             # the memcpy of the whole image (hooked: host/direct_assets.c)
-807987d0 texdata_init_nvn_texture        # nvnTextureInitialize, view, pool registration
-807974f0 texdata_make_alias              # a no-data load: shares its target's slot, joins its chain
-807982f0 texdata_rebind                  # a moved texture under the same descriptor id
-80797da0 texdata_frame_update            # per frame: rebinds what compaction moved, and its aliases
-80797240 texdata_cache_reject_per_frame  # evicts while the heap has < TextureCacheRejectionThreshold free
-8079bbe0 texdata_evict
-8079c220 texdata_destroy                 # nvnTextureFinalize, descriptor released, block freed or handed on
-83537760 texheap_alloc_failed_evict
-83537d90 texdata_replace                 # Replace: content swapped for a newly loaded BNTX
-807da480 texheap_compaction_worker
-807da590 texheap_compaction_start
-80798b60 texdata_load_in_place_a         # docs/direct/a-rt-report.md (in-place files)
-80792bd0 texdata_load_in_place_b
-80798920 texdata_load_in_place_c
-80f6c9d0 agl_memory_pool_create          # generic wrapper, five callers
-80f6c580 agl_texture_heap_create         # the one caller that makes the texture heap (pool 127)
+# --- asset textures: agl::TextureDataMgr, its heap and Replace thread, TextureResourceMgr, nn::gfx texture init
+80798920 gfx_texture_initialize           # docs/direct/texture-streaming.md, work/assets/native/asset-path.md: nn::gfx TextureImpl::Initialize (also the in-place paths) # ? was texdata_load_in_place_c
+80798a20 gfx_texture_view_initialize      # docs/direct/texture-streaming.md: TextureView init (SetLevels, SetLayers)
+8051d820 texdata_alloc                    # docs/direct/texture-streaming.md: a td from "aglTextureDataMgr::Unit", evicts the LRU when full
+80797240 texdata_cache_reject_per_frame   # docs/direct/texture-streaming.md: evicts while the heap has < TextureCacheRejectionThreshold free
+80798690 texdata_copy_texels              # docs/direct/texture-streaming.md, host/direct_assets.c: agl::TextureData::loadImage_, the memcpy of the whole image (hooked)
+80bd22b0 texdata_copy_to_buffer           # work/assets/native/block-linear.md: its own CopyTextureToBuffer + submit (capture)
+8353d560 texdata_cpu_copy_region          # work/assets/native/block-linear.md: ReadTexels from one texture, WriteTexels into another
+809e6760 texdata_cpu_lut                  # docs/direct/m4d-report.md: a LUT computed on the CPU into a buffer a texture names
+809e70a0 texdata_cpu_lut_copy_out         # docs/direct/m4d-report.md: copies it out and hands it on (INFERRED staging)
+80798d00 texdata_create                   # docs/direct/texture-streaming.md: slot in the compactible heap, BRTI copied to td+0x58
+8079c220 texdata_destroy                  # docs/direct/texture-streaming.md: nvnTextureFinalize, descriptor released, block freed or handed on
+8079c110 texdata_drop_replace             # docs/direct/texture-streaming.md: drops any Replace request
+8079bbe0 texdata_evict                    # docs/direct/texture-streaming.md: eviction: unlink from the dictionary, unregister, free the td
+8079bb50 texdata_evict_all                # docs/direct/texture-streaming.md: destroy every cached texture
+8079c480 texdata_finalize_texture         # docs/direct/texture-streaming.md: nvnTextureFinalize
+8079c470 texdata_finalize_view            # docs/direct/texture-streaming.md
+80797da0 texdata_frame_update             # docs/direct/texture-streaming.md: per frame: rebinds what compaction moved, and its aliases
+809ee930 texdata_from_texture_info        # docs/direct/texture-streaming.md: a TextureData made from a TextureInfo (DummyTextureForEvent)
+809ee850 texdata_from_texture_info_caller # docs/direct/texture-streaming.md
+80057580 texdata_init_from_desc           # work/assets/native/rt-alloc.md: agl::TextureData from a descriptor (storage size/alignment)
+80057c40 texdata_init_from_desc_b         # work/assets/native/rt-alloc.md: its sibling
+809ea090 texdata_init_jpg                 # docs/direct/m0-terrain-texels.md: TextureDataInitializerJPG: decodes on the CPU
+807987d0 texdata_init_nvn_texture         # docs/direct/texture-streaming.md: nvnTextureInitialize, view, pool registration
+80798b60 texdata_load_in_place_a          # docs/direct/texture-streaming.md, docs/direct/a-rt-report.md: ui2d in-place files
+80792bd0 texdata_load_in_place_b          # docs/direct/texture-streaming.md, host/direct_assets.c: BNTX in place (in-place files)
+807974f0 texdata_make_alias               # docs/direct/texture-streaming.md: a no-data load: shares its target's slot, joins its chain
+80ddab00 texdata_model_procedural         # work/assets/native/block-linear.md: ModelProcedural
+809eb4a0 texdata_noise_generators         # docs/direct/m4g-report.md
+809eb720 texdata_noise_textures           # docs/direct/m4g-report.md: makes the noise generators' textures
+807982f0 texdata_rebind                   # docs/direct/texture-streaming.md: a moved texture under the same descriptor id
+807981f0 texdata_rebind_copy              # docs/direct/texture-streaming.md: td + new block: copies into the second CPU mapping, rebinds
+83537d90 texdata_replace                  # docs/direct/texture-streaming.md: Replace (replaceLoad_): content swapped for a newly loaded BNTX
+83536f30 texdata_replace_brti_copy        # docs/direct/texture-streaming.md: copies the new BRTI head into td+0x58
+835381e0 texdata_replace_copy             # docs/direct/texture-streaming.md: Replace step 2 -> f_83537d90
+835385f0 texdata_replace_loop             # docs/direct/texture-streaming.md: runs Replace requests and delayed slot frees
+83537a70 texdata_replace_make_request     # docs/direct/texture-streaming.md
+83537c50 texdata_replace_pool_finalize    # docs/direct/texture-streaming.md
+83538060 texdata_replace_request          # docs/direct/texture-streaming.md: Replace step 1: new BRTI, request pool
+83537b20 texdata_replace_request_pool     # docs/direct/texture-streaming.md: the request's own pool
+83538390 texdata_replace_retire           # docs/direct/texture-streaming.md: Replace step 3: the request retired
+83537e30 texdata_replace_start            # docs/direct/texture-streaming.md: called by the file registration for a Replace
+83537580 texdata_replace_thread           # docs/direct/texture-streaming.md: aglTextureDataMgr::Replace thread handler
+80bd1d00 texdata_serialize_jpg            # work/assets/native/block-linear.md: agl::utl::TextureDataSerializerJPG
+8353dd60 texdata_serialize_png            # work/assets/native/block-linear.md: TextureDataSerializer PNG
+8353da20 texdata_serialize_tga            # work/assets/native/block-linear.md: TextureDataSerializer TGA
+83537290 texdata_shutdown                 # docs/direct/texture-streaming.md
+83537870 texdata_slot_delayed_free        # docs/direct/texture-streaming.md: a referenced slot to the delayed-free list
+83538470 texdata_slot_delayed_free_run    # docs/direct/texture-streaming.md: delayed slot frees
+8079c360 texdata_unregister               # docs/direct/texture-streaming.md: releases the descriptor, finalizes the texture
+80c5f1e0 texdata_water_volume_dummy       # work/assets/native/block-linear.md: WaterVolumeDataDummy
+809e9d60 texdata_write_texels             # docs/direct/m0-terrain-texels.md: agl::TextureData WriteTexels + FlushTexels
+83537760 texheap_alloc_failed_evict       # docs/direct/texture-streaming.md
+80799bd0 texheap_alloc_inner              # docs/direct/texture-streaming.md
+80799630 texheap_alloc_slot               # docs/direct/texture-streaming.md: (td, heap, size, align): slot in the CompactibleHeap
+807998c0 texheap_block_lock               # docs/direct/texture-streaming.md
+80f6dcf0 texheap_compactible_create       # docs/direct/texture-streaming.md: aglTextureDataMgr::CompactibleHeap
+80a78b80 texheap_compaction_job_num       # docs/direct/texture-streaming.md: getter of TextureCompactionJobNum
+807dbd60 texheap_compaction_move_a        # docs/direct/texture-streaming.md: states 0/3
+807dbf90 texheap_compaction_move_b        # docs/direct/texture-streaming.md: state 1
+807db4a0 texheap_compaction_move_c        # docs/direct/texture-streaming.md: state 2
+807da590 texheap_compaction_start         # docs/direct/texture-streaming.md: the policy for starting a new compaction
+807da3f0 texheap_compaction_thread        # docs/direct/texture-streaming.md: aglTextureDataMgr::Compaction thread handler
+807da480 texheap_compaction_worker        # docs/direct/texture-streaming.md, host/direct_assets.c: the compaction step (states 0-3)
+8079aa20 texheap_mark_evictable           # docs/direct/texture-streaming.md: (slot, 1) evictable / (slot, 0) in use
+83538b70 texheap_owner_tag                # docs/direct/texture-streaming.md: a block's owner tag
+8051d560 texres_acquire                   # docs/direct/texture-streaming.md: (mgr, BRTI, key, listener): lookup, refcount, unlinks from the LRU
+8083b770 texres_bake_lod_a                # docs/direct/texture-streaming.md: IsEnableBakeTextureLOD (INFERRED from names)
+81227610 texres_bake_lod_b                # docs/direct/texture-streaming.md: IsEnableBakeTextureLOD (INFERRED from names)
+80f6c940 texres_dict_init                 # docs/direct/texture-streaming.md: free dictionary nodes
+83ad22d0 texres_fallback_alias            # docs/direct/texture-streaming.md: aliases to the default key when a texture cannot be had
+8080b4c0 texres_handle_release            # docs/direct/texture-streaming.md: the resource handle released after registration
+809ee0f0 texres_init                      # docs/direct/texture-streaming.md: TextureResourceMgr init
+801b4260 texres_load_file                 # docs/direct/texture-streaming.md: loads Tex/<name>.bntx through the resource system
+831ee700 texres_lod_ignore_low_handheld   # docs/direct/texture-streaming.md: lod_ignore_low_resolutions_for_handheld (INFERRED)
+83ad27c0 texres_register_file             # docs/direct/texture-streaming.md: registration from a file (BRTI)
+80517d80 texres_release                   # docs/direct/texture-streaming.md: count down; at 0 to the LRU cache, not freed
+805c5ca0 texres_request                   # docs/direct/texture-streaming.md: TextureResourceMgr: name -> UnifyTex target -> load or count up
+80796e00 ui2d_textures_init               # work/assets/native/asset-loading.md: 921 ui2d textures in GPU-only pools
+807978c0 ui2d_textures_init_b             # work/assets/native/asset-path.md: (agl-called ResTextureFile path)
 
-# --- render targets: agl::utl::DynamicTextureAllocator (host/rt_slots.c, work/assets/native/rt-alloc.md)
-8005ed00 dta_alloc
-802737a0 dta_free
-80062c50 dta_alloc_persistent
+# --- render targets: agl::utl::DynamicTextureAllocator
+8005ed00 dta_alloc                        # host/rt_slots.c, work/assets/native/rt-alloc.md: DTA::alloc (dta, ctx, desc, flags)
+80065b10 dta_alloc_b                      # work/assets/native/block-linear.md: the other DynamicTextureAllocator entry
+80062c50 dta_alloc_persistent             # host/rt_slots.c, work/assets/native/rt-alloc.md: the persistent path's fit, from the top of a free block
+80063090 dta_arena_init                   # work/assets/native/rt-alloc.md: one of the pool record's 7 arenas
+8006ec60 dta_arena_stats                  # work/assets/native/cores.md: sums the arenas' bytes in use for the game's stats
+80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, nx2/oot_patches.py: -> DTA::initialize
+802737a0 dta_free                         # docs/native-vk.md, host/rt_slots.c
+80c49070 dta_initialize                   # work/assets/native/rt-alloc.md: DTA::initialize: entries, 7 lanes, pool record
+836ce9d0 dta_pool_config_read             # nx2/oot_patches.py: reads the render-target pool size, makes the pools
+80c49380 dta_pool_record_create           # work/assets/native/rt-alloc.md: physical pool + 7 arenas + virtual pools
+80064180 dta_resize_a                     # work/assets/native/rt-alloc.md open questions: a "resize" path, not traced
+810c7530 dta_resize_b                     # work/assets/native/rt-alloc.md: the bit-10 path, "resize" (not traced)
+811c9ba0 dta_virtual_pool_create          # nx2/oot_patches.py
 
-# --- the frame: jobs and passes (docs/direct-backend-plan.md, docs/direct/m3-patch-sites.md)
-80084de0 render_job_record               # a render job's recorder (x3: the pass key)
-80681320 pass_draw_inline                # the layer list drawing a pass itself
-8067c310 job_occlusion_grid_dispatch     # docs/direct/m6d-report.md
-80667d20 system_texture_table_write      # the 30-slot table per view
+# --- descriptors and the per-view system textures
+80557420 desc_deferred_free_drain         # docs/direct/m3-patch-sites.md: returns freed descriptor ids after the flip
+80966440 desc_pools_create                # work/assets/native/engine-materials.md: the texture pool (33,068 ids) and the sampler pool
+80064920 desc_register_texture            # docs/direct/m3-patch-sites.md, docs/direct/texture-streaming.md: agl descriptor manager (mgr, texture, view, owner) -> RegisterTexture
+800634b0 desc_reregister                  # docs/direct/m3-patch-sites.md: frees an entry's descriptor id and takes a new one (ENTRY_HOOK)
+800656b0 desc_texture_slot_b              # work/assets/native/rt-alloc.md, work/assets/native/cores.md: texture descriptor slot, with f_80064920 and f_80065880: texture object, builder from TextureData, register
+80065880 desc_texture_slot_c              # work/assets/native/rt-alloc.md, work/assets/native/nvn-callpaths.md: (same group; also re-made transient targets each frame)
+80667d20 system_texture_table_write       # docs/direct/m3-patch-sites.md, docs/direct/m0-gpu-experiments.md: the 30-slot table per view
+800662e0 texview_mip_chain_register       # work/assets/native/descriptor-heap.md, work/assets/native/nvn-callpaths.md: Hi-Z / mip chain per-level image views
 
-# --- culling and report readers (docs/direct/m6a-report.md, plan "Reports and conditions")
-812342c0 cull_cpu_occlusion_reader
-808226e0 cull_cpu_objects
-80365f00 report_reader_a
-80362ff0 report_reader_b
-80357060 report_reader_c
+# --- the frame: heads, the gate, submits, present
+806650d0 frame_compute_list_begin         # host/direct.c, work/assets/native/engine-frame.md: an async-compute list's begin
+8066fc80 frame_draw_tv                    # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md: "Draw(TV)": frame begin .. end
+802eacc0 frame_draw_tv_caller             # work/assets/native/engine-layers.md: calls "Draw(TV)" (frame begin..end, submits)
+802eb020 frame_gate_caller                # work/assets/native/engine-frame.md: main thread, calls the gate primary
+802eb390 frame_gate_primary               # host/direct.c, work/assets/native/command-lists.md: the CPU gate list: nvnEventSignal + WaitEvent a frame
+83b6ea90 frame_global_step                # nx2/oot_patches.py: the global step the engine reads
+80665980 frame_head_begin                 # host/direct.c, work/assets/native/command-lists.md: a queue's head (frame primary) begin
+8042cd20 frame_limiter_sleep              # host/nn_vi.c: the frame limiter: sleeps to 1 / +0xfc
+806668b0 frame_list_end_submit            # work/assets/native/command-lists.md: End, submit, FenceSync, SyncWait
+8348c680 frame_main_signal_gpu            # work/assets/native/command-lists.md, work/assets/native/cpu-to-gpu.md: main thread signals the GPU after writing the frame's data
+805902c0 frame_present_submit             # work/assets/native/engine-frame.md: Presentation thread: QueueWaitSync, submit, FenceSync
+80547f20 frame_queue_present              # work/assets/native/engine-frame.md: QueuePresentTexture
+83b6e300 frame_seconds_from_ratio         # host/nn_vi.c: seconds = ratio / 60
+80706be0 frame_step                       # nx2/oot_patches.py: the frame's step (60.0 base) added to the game clock
+80527f00 frame_submit_queues              # work/assets/native/command-lists.md, work/assets/native/engine-frame.md: Presentation thread: submits compute + heads
+804fc0f0 frame_variable_refresh           # host/nn_vi.c: variable refresh (+0x231)
 
-# --- terrain, movies, fonts
-80c17040 terrain_tile_load               # its memcpy at +0x544 is spliced (docs/direct/m0-terrain-texels.md)
-83b82250 movie_renderer_copy_frame       # NV12 planes to two targets (work/assets/native/block-linear.md)
-8152f540 font_glyph_cell_write_a         # docs/direct/a-rt-report.md
-81539300 font_glyph_cell_write_b
+# --- jobs: the task graph, the scheduler, render jobs and their sync
+800998a0 job_calc_runner                  # docs/direct/m6a-report.md, work/assets/native/engine-jobs.md: calc jobs runner: CPU culler, grid occluder, GPU-result read # ? work/assets/native/engine-layers.md says the model scene job
+8007de00 job_gpu_sync                     # work/assets/native/command-lists.md: a synchronous GPU job: record, submit, fence, wait
+80070ea0 job_graph_build                  # work/assets/native/engine-jobs.md: (pool, graph, desc): the frame's task graph
+80070d30 job_graph_kick                   # work/assets/native/engine-jobs.md: virtual, vtable 0x84c85738
+80070b20 job_graph_run_and_join           # work/assets/native/engine-jobs.md: main thread runs its share, then waits for every worker
+80676ef0 job_list_build                   # work/assets/native/engine-jobs.md: builds the render-job list ("countup")
+80c7bd00 job_list_build_b                 # work/assets/native/engine-jobs.md: builds the render-job list
+810cc770 job_list_capacity                # work/assets/native/engine-jobs.md: capacity 6 + 402*n
+80671d00 job_list_command_pool            # work/assets/native/engine-jobs.md: the list's command pool
+80671890 job_list_reset                   # work/assets/native/engine-jobs.md: resets the render-job list each frame
+80435300 job_mtx_set                      # work/assets/native/cpu-to-gpu.md: property / mtx-set lookups job
+8067c310 job_occlusion_grid_dispatch      # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: the occlusion grid's DispatchCompute (m6d-report.md is not on this branch)
+800766e0 job_phase_per_list               # work/assets/native/engine-jobs.md: scheduler's bit-8 phase, per list
+8007fe60 job_scheduler                    # work/assets/native/engine-jobs.md, host/eng_jobs.c: the job runner (agl::lyr::Renderer begin/end, render-job loop)
+80083580 job_scheduler_sibling            # work/assets/native/engine-layers.md: a sibling of the job body
+80083960 job_scheduler_virtual            # work/assets/native/engine-jobs.md, host/eng_jobs.c: the scheduler's virtual twin
+82c02f20 job_sync_pre_draw_a              # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: pre-draw hook: waits for GPU culling (WaitEvent b00 + Barrier)
+82c03170 job_sync_pre_draw_b              # docs/direct/m0-jobs-state.md: same code, WaitEvent b48
+831fa4a0 job_sync_water_wait              # host/direct_job_sync.c, docs/direct/m3a-report.md: [renderer+0x150]: tail-jumps to WaitEvent
+8007fe10 job_worker_calc                  # work/assets/native/engine-jobs.md: worker thread's calc_(msg): msg 1 runs the scheduler
+800711c0 job_workers_post                 # work/assets/native/engine-jobs.md: INFERRED: posts msg 1 to the workers
+80084de0 render_job_record                # docs/direct-backend-plan.md, docs/direct/m0-job-formats.md: a render job's recorder (x3: the pass key)
+
+# --- layers: agl::lyr lists and the pipeline hook table (slot = offset in vtable 0x84c847f0)
+8006f9c0 layer_decals_static_shadow       # work/assets/native/engine-layers.md 6.1: raises hook +0x50 (decals, static shadow)
+8007d2e0 layer_gpu_cull_graphics          # work/assets/native/engine-frame.md: layer #240: GPU culling's graphics side, sky/env
+8006e160 layer_item_step                  # docs/direct/m3-patch-sites.md: per-item step of the layer pipeline
+8007b520 layer_list_begin_unused          # docs/direct/m3-patch-sites.md, docs/direct/m1-report.md: begins a list for every layer job; never submitted
+8007da20 layer_list_end_b                 # work/assets/native/engine-frame.md, work/assets/native/engine-jobs.md: layer list end (0x8007dabc)
+8007ad40 layer_list_record_b              # host/direct.c, docs/direct/m2a-report.md: agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
+8006cd60 layer_list_record_post           # docs/direct/m6a-report.md, host/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
+807cd380 layer_lists_call                 # work/assets/native/engine-frame.md, gpu/vk/eng_pass.h: calls the 9 layer lists
+807ccda0 layer_lists_call_caller          # work/assets/native/engine-frame.md
+802aba50 layer_lists_caller               # work/assets/native/engine-frame.md: calls the 9 layer lists (via f_807ccda0)
+8027e840 layer_post_effects               # work/assets/native/engine-layers.md, work/assets/native/cpu-to-gpu.md: XluZPrePass, bloom, motion blur; raises hook +0x68
+80070350 layer_scene_layers               # work/assets/native/engine-layers.md 6.1: raises hook +0x60 (scene layers)
+80077c30 lyr_hook_18                      # work/assets/native/engine-layers.md 6.1: pipeline hook slot +0x18 (not run)
+80077cc0 lyr_hook_20                      # work/assets/native/engine-layers.md 6.1: pipeline hook slot +0x20 (not run)
+83b73e50 lyr_hook_28                      # work/assets/native/engine-layers.md 6.1: hook slot +0x28
+80350b40 lyr_hook_30_gpu_timing           # work/assets/native/engine-layers.md 6.1: hook slot +0x30: reads the GPU timing pools
+83b73f10 lyr_hook_38                      # work/assets/native/engine-layers.md 6.1: hook slot +0x38
+800762f0 lyr_hook_40                      # work/assets/native/engine-layers.md 6.1: pipeline hook slot +0x40
+800763b0 lyr_hook_48_scene_env            # work/assets/native/engine-layers.md 6.1: hook +0x48: scene/env state listener
+80076640 lyr_hook_50_vegetation           # work/assets/native/engine-layers.md 6.1: hook +0x50: vegetation compute listener
+80076cd0 lyr_hook_58_scene_pipeline       # work/assets/native/engine-layers.md 6.1: hook +0x58: the 3D scene pipeline listener
+80076c10 lyr_hook_60_depth_copy           # work/assets/native/engine-layers.md 6.1: hook +0x60: BeforeWater full depth copy
+80076580 lyr_hook_68_vrs_bilateral        # work/assets/native/engine-layers.md 6.1: hook +0x68: shading-rate image, bilateral grid
+80077ae0 lyr_hook_70_color_copy           # work/assets/native/engine-layers.md 6.1: hook +0x70: copy_color_buffer
+80076b50 lyr_hook_78                      # work/assets/native/engine-layers.md 6.1: hook +0x78 (not run)
+800764e0 lyr_hook_80                      # work/assets/native/engine-layers.md 6.1: hook +0x80 (not run)
+80076150 lyr_hook_88                      # work/assets/native/engine-layers.md 6.1: hook +0x88 (not run)
+80c51a00 lyr_hook_alloc                   # work/assets/native/engine-layers.md 6.1: the hook vtable's slot 2: allocates
+80c7afb0 lyr_hook_table_ctor_a            # work/assets/native/engine-layers.md 6.1: constructor that takes the hook vtable
+83b73dc0 lyr_hook_table_ctor_b            # work/assets/native/engine-layers.md 6.1: constructor that takes the hook vtable
+
+# --- passes: the frame's pass functions (work/assets/native/engine-frame.md's table names them)
+802707b0 pass_aa_color                    # work/assets/native/engine-frame.md: "gsys::RenderBuffer::color(AA)"
+808bf670 pass_bilateral_grid_compute      # work/assets/native/engine-frame.md: "bilateral_grid_tmp" compute
+80267200 pass_bloom_blur                  # work/assets/native/engine-frame.md: bloom "blur" (x12)
+8026a9e0 pass_bloom_detect                # work/assets/native/engine-frame.md: bloom "detect0/1"
+80263b60 pass_clear_helper                # work/assets/native/engine-frame.md: clear helper
+80299510 pass_closest_surface             # work/assets/native/engine-frame.md, work/assets/native/rt-alloc.md: quarter-res merge / closest-surface
+8067ffb0 pass_compute_12x1                # work/assets/native/engine-frame.md: dispatch 12x1x1 (pass 7)
+80664d00 pass_compute_242                 # work/assets/native/engine-frame.md: async compute #242
+802abe30 pass_copy_aa                     # work/assets/native/engine-frame.md: under SMAA
+80697370 pass_copy_color_buffer           # work/assets/native/engine-frame.md, work/assets/native/rt-alloc.md: copy_color_buffer
+809edb50 pass_copy_target                 # work/assets/native/block-linear.md: CopyTextureToTexture (Snapshot, copy_color_buffer)
+807d3000 pass_cubemap_filter              # work/assets/native/engine-frame.md: "cubemap_filter" (every ~8th frame)
+807d45e0 pass_cubemap_filter_b            # work/assets/native/engine-frame.md
+8086e790 pass_cubemap_filter_caller       # work/assets/native/engine-frame.md
+8066bec0 pass_deferred_lighting           # work/assets/native/engine-frame.md: deferred lighting / composite
+8065c660 pass_depth_buffer                # work/assets/native/engine-frame.md, work/assets/native/rt-alloc.md: "DepthBuffer", "Reprojection"
+8028a2a0 pass_depth_probe_list            # docs/direct/m0-job-formats.md: depth probes' layer list (owner, drawctx, key)
+802867f0 pass_depth_probes                # work/assets/native/engine-frame.md: "inner/outer_depth_probe_tex"
+80280270 pass_dof                         # work/assets/native/engine-frame.md: DOF / bilateral grid group
+80681320 pass_draw_inline                 # docs/direct-backend-plan.md, docs/direct/m0-job-formats.md: the layer list drawing a pass itself
+802ab6c0 pass_draw_main_screen            # work/assets/native/engine-frame.md: "Draw(drawMainScreen_)"
+80295060 pass_env_cube_compute            # work/assets/native/engine-frame.md: compute 4x4x6 (#239)
+8025fee0 pass_env_cubemap                 # work/assets/native/engine-frame.md: env cubemap prefilter (x16 f_802631a0)
+802631a0 pass_env_cubemap_face            # work/assets/native/engine-frame.md: one prefilter draw
+80285b00 pass_final_blit                  # work/assets/native/engine-frame.md: the final draw to the window texture
+802ad020 pass_fluid_depth                 # work/assets/native/engine-frame.md: "Fluid 2dVolume New Depth"
+80289590 pass_fog_half_depth              # host/direct_depth_copy.c: FogPrePass::HalfDepth (its depth copy spliced)
+8028a7f0 pass_fog_prepass_depth           # work/assets/native/engine-frame.md: " Depth For FogPrePass "
+8028b110 pass_fog_water                   # work/assets/native/engine-frame.md: "FogPrePass AfterWater/BeforeWataer"
+802a3700 pass_half_color                  # work/assets/native/engine-frame.md: "gsys::RenderBuffer::Color(half)"
+802a48b0 pass_half_nld_max                # work/assets/native/engine-frame.md: "agl::utl::DepthBufferEx::HalfNld(Max)"
+806688c0 pass_job_caller                  # docs/direct/m0-job-formats.md: (pipeline, drawctx, idx): calls a pass's render jobs (job-call splice at 0x80668a9c)
+802a9520 pass_linear_depth                # work/assets/native/engine-frame.md: linear depth
+8067d7a0 pass_linear_depth_grid           # work/assets/native/engine-frame.md: linear depth, HalfNld, grid dispatches
+80255be0 pass_local_shadow                # work/assets/native/engine-frame.md: "LocalDepthShadow::drawDepth"
+802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c: "local_shadow_depth" (target sized by the light)
+800672e0 pass_mip_chain_compute           # work/assets/native/nvn-callpaths.md, work/assets/native/engine-frame.md: mip chain by compute, 2 barriers per level
+802ad740 pass_occlusion_depth             # work/assets/native/engine-frame.md, work/assets/native/readback.md: agl::utl::DepthBufferEx::OcclusionDepthBuffer, 11 reports
+8067d890 pass_occlusion_grid_gather       # work/assets/native/engine-frame.md: occlusion grid gather dispatch
+806685b0 pass_opaque                      # work/assets/native/engine-frame.md: opaque G-buffer / forward opaque
+80a47660 pass_opaque_xlu                  # work/assets/native/engine-layers.md, work/assets/native/engine-frame.md: gsys pipeline: opaque / XLU (raises hook +0x58)
+8027a310 pass_reduce_prepass              # work/assets/native/engine-frame.md: "ReducePrePass"
+8028f500 pass_rt_setup                    # work/assets/native/nvn-callpaths.md, work/assets/native/engine-jobs.md: render targets (SET_RT, clears)
+806790d0 pass_scene_depth_helper          # docs/direct/m0-job-formats.md: called from the opaque pipeline, scene depth and probes
+8065fa70 pass_scene_dispatch              # work/assets/native/engine-frame.md: the 3D pipeline's own dispatch
+80668370 pass_scene_layers_b              # work/assets/native/engine-frame.md: more scene layers
+80660320 pass_scene_pipeline              # work/assets/native/engine-frame.md, docs/direct/m6a-report.md: the 3D render pipeline (stage driver: 9 SignalEvent / 10 WaitEvent)
+806602e0 pass_scene_pipeline_entry        # work/assets/native/engine-layers.md 6.1: hook +0x58 listener: calls the 3D scene pipeline
+8025dae0 pass_set_rt_b                    # work/assets/native/engine-frame.md: SET_RT wrapper
+83572be0 pass_shadow_copy                 # work/assets/native/rt-alloc.md: "copy" target (persistent DTA)
+8028ca00 pass_skin_shading                # work/assets/native/engine-frame.md: "Blur0", "Blur1", "Reduce", "skin_shading"
+802b8eb0 pass_sky_a                       # work/assets/native/engine-frame.md: sky / atmosphere
+802b8790 pass_sky_b                       # work/assets/native/engine-frame.md: sky / atmosphere
+802a1ab0 pass_sky_lut                     # work/assets/native/engine-frame.md: GPU culling graphics side, sky LUT
+80270da0 pass_smaa                        # work/assets/native/engine-frame.md: SMAA
+802722b0 pass_smaa_args                   # docs/direct/m0-terrain-texels.md: the SMAA pass's argument block
+80271be0 pass_smaa_edge                   # work/assets/native/engine-frame.md, docs/direct/m0-terrain-texels.md: "ndsr::smaa_edge/blendweights", edge list as a buffer
+802715b0 pass_smaa_output                 # work/assets/native/engine-frame.md: "smaa_output"
+80666d20 pass_soft_edge_depth             # host/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy spliced)
+80668fc0 pass_sun_shadow                  # work/assets/native/engine-frame.md: sun shadow cascades (x3)
+80669460 pass_sun_shadow_alloc            # work/assets/native/engine-frame.md: "shadow_map_depth" array
+8028f980 pass_sun_shadow_cascade          # work/assets/native/engine-frame.md: sun shadow cascades
+8028f770 pass_sun_shadow_cascade_caller   # work/assets/native/engine-frame.md: (its caller)
+81503660 pass_texture_clear               # work/assets/native/engine-frame.md: ClearTexture (SMAA edge / blend weights)
+802650f0 pass_ui_layer_b                  # work/assets/native/engine-frame.md: UI layers #103/#107
+802800c0 pass_ui_layer_clear              # work/assets/native/engine-frame.md: UI layer clear (#237)
+802910a0 pass_vegetation_compute          # work/assets/native/engine-layers.md, work/assets/native/engine-frame.md: vegetation compute (SsboMeshPlacement), GPU culling
+802740c0 pass_vrs_bilateral               # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md: shading-rate image, bilateral grid
+80279400 pass_water                       # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: water drawer (WaitEvent b90 at 0x8027944c)
+80279b30 pass_water_caller                # docs/direct/m0-jobs-state.md: tail-calls the water drawer
+802771e0 pass_water_depth_copy            # work/assets/native/engine-layers.md: "Ext::BeforeWater::FullDepthCopy"
+81199f00 pass_weather_copy                # work/assets/native/block-linear.md: WeatherData target copy
+80669b80 pass_wet_mask                    # work/assets/native/engine-frame.md: "wet_mask"
+
+# --- draw recording: binders, drawers, precompiled lists, occlusion gating
+800715e0 draw_bind_object_ubo             # work/assets/native/command-lists.md, work/assets/native/uniform-buffers.md: draw-time binder (UBO, CallCommands)
+80435bc0 draw_deformable_model            # docs/direct/m0-jobs-state.md, work/assets/native/uniform-buffers.md: draws without own vertex bind; deformable model blocks
+83670280 draw_instance_loop               # work/assets/native/engine-materials.md: instance loop (with the 0x836a.. family)
+8008fc00 draw_material_bind               # gpu/vk/eng_job.h, work/assets/native/command-lists.md: the draw-time material binder (program, CallCommands, textures)
+8027c9e0 draw_method_dispatch             # work/assets/native/engine-layers.md, docs/direct/m3-patch-sites.md: draw-method dispatcher; builds the system binder block
+8008d640 draw_occlusion_gated             # work/assets/native/nvn-callpaths.md, docs/direct/m3-patch-sites.md: occlusion-gated draws (reports, conditional render, grid dispatch)
+800955a0 draw_occlusion_gated_b           # work/assets/native/nvn-callpaths.md: occlusion-gated draws
+80078fc0 draw_occlusion_helper            # docs/direct/m0-job-formats.md: the recorder's occlusion helper
+80296540 draw_precompiled_c               # work/assets/native/engine-materials.md: a draw function under the recorder
+80265760 draw_set_render_targets          # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: agl driver helper: SetRenderTargets
+8008f8e0 draw_shape                       # docs/direct/m0-jobs-state.md: shape draw under the recorder; calls the pre-draw hook for kind-2 items
+80077d60 draw_state_bind_d                # work/assets/native/nvn-callpaths.md: state objects built on the stack and bound
+802a2fc0 draw_state_blend                 # work/assets/native/engine-layers.md: agl driver helper: blend/colour/mask state
+8008b3e0 draw_state_polygon               # work/assets/native/engine-layers.md: agl driver helper: polygon state
+80104de0 draw_texture_handle              # work/assets/native/engine-layers.md: agl driver helper: texture handle
+80265350 draw_viewport                    # work/assets/native/engine-layers.md: agl driver helper: viewport
+802a46e0 draw_viewport_scissor            # nx2/oot_wide.py: SetScissor then SetViewport
+801a2d70 mesh_bind_name4                  # docs/direct/m0-jobs-state.md, host/direct_mesh_binds.c: binds resource name 4 of a mesh drawer (ctx, item, 4, ..)
+801a6a40 mesh_bind_name5                  # docs/direct/m0-jobs-state.md, host/direct_mesh_binds.c: binds resource name 5 (ctx, item, 5, ..)
+801a43e0 mesh_drawer_a                    # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: a mesh-task drawer that binds neither task slot
+801a46a0 mesh_drawer_b                    # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: (same)
+801a60f0 mesh_drawer_c                    # docs/direct/m0-jobs-state.md: (same, stage 7 slot 1)
+82c02bc0 mesh_drawer_culled_a             # docs/direct/m0-jobs-state.md: culled-instance drawer (binds names 4 and 5)
+82c024f0 mesh_drawer_culled_b             # docs/direct/m0-jobs-state.md: culled-instance drawer
+801a6410 mesh_drawer_d                    # docs/direct/m0-jobs-state.md, work/assets/native/engine-layers.md: (same; reads the GPU-culling append counters)
+801a6720 mesh_drawer_e                    # docs/direct/m0-jobs-state.md: (same)
+83607fc0 occl_gating_a                    # work/assets/native/engine-jobs.md: occlusion gating (ResetCounter, ReportCounter)
+83607730 occl_gating_b                    # work/assets/native/engine-jobs.md
+83607e80 occl_gating_c                    # work/assets/native/engine-jobs.md
+8067c110 occl_grid_item_callback          # docs/direct/m0-jobs-state.md, docs/direct/m3-patch-sites.md: an item's draw callback; tail-calls the grid dispatch
+80293890 shape_list_build_draw            # host/eng_lists.c, work/assets/native/engine-cut-plan.md: precompiled list: one indexed/mesh draw
+806002e0 shape_list_build_instance        # gpu/render/nvn_pkt.h, host/eng_lists.c: per-instance shape list (model instance x pass x variant)
+80445020 shape_list_build_material        # host/eng_lists.c, gpu/render/nvn_pkt.h: a material list (never called in play)
+80293190 shape_list_build_scratch         # host/eng_lists.c, work/assets/native/engine-materials.md: precompiled draw (scratch) list at load
+804581b0 shape_list_build_vertex          # host/eng_lists.c, work/assets/native/engine-materials.md: vertex list, final
+8044e8e0 shape_list_build_vertex_scratch  # host/eng_lists.c: vertex scratch list
+804566e0 shape_list_draw_driver           # work/assets/native/engine-materials.md: gsys::ModelResource(DisplayList), drives f_80293890
+8044cb30 shape_list_scratch_driver        # host/eng_lists.c: drives f_80293190
+80457e60 shape_list_vertex_driver         # host/eng_lists.c: drives f_804581b0
+8044e020 shape_list_vertex_scratch_driver # host/eng_lists.c: drives f_8044e8e0
+80443000 shape_material_list_driver       # work/assets/native/engine-materials.md: reads the material's bfsha options, drives f_80445020
+80602520 shape_model_texture_bind         # work/assets/native/engine-materials.md: model-texture side of the material binding
+801060f0 sysbind_slot                     # host/direct_mesh_system.c, docs/direct/m4b-report.md: binds a system slot (slots 0-2)
+80100210 sysbind_slot3                    # host/direct_mesh_system.c: system uniform slot 3 binder
+80101ec0 sysbind_system                   # docs/direct/m3-patch-sites.md, docs/direct/m0-jobs-state.md: the system binder (from the layer list, 0x8027caa0)
+
+# --- uniform and other GPU data writers, GPU pools
+809de920 gpu_pool_create                  # work/assets/native/alloc-transfer.md: made 4,574 of the game's GPU pools ("gpu")
+80021ca0 model_prev_transform_write       # work/assets/native/cpu-to-gpu.md, work/assets/native/alloc-transfer.md: prev/last world matrices for motion vectors ("mLastTransform/mPrevTransform")
+8029f590 ubo_compute_dispatch_consts      # work/assets/native/uniform-buffers.md: compute dispatch constants
+808a3050 ubo_env_block_write              # work/assets/native/uniform-buffers.md, work/assets/native/engine-materials.md: environment block, filled by the binder on its first bind each frame
+80364ee0 ubo_model_scene_view_write       # work/assets/native/uniform-buffers.md: the model-scene job's view writer
+80522050 ubo_object_block_alloc           # work/assets/native/uniform-buffers.md
+805215b0 ubo_object_pool_alloc            # work/assets/native/uniform-buffers.md, work/assets/native/second-map.md: per-object uniform pool (28 KB per render view)
+802a8fc0 ubo_ring_16mb                    # work/assets/native/alloc-transfer.md: wraps slots of the 16 MB ring 0x102e645000
+8005e7c0 ubo_ring_alloc_helper            # work/assets/native/uniform-buffers.md, work/assets/native/engine-layers.md: helper of the per-draw ring pool f_809de920
+81500200 ubo_shape_block_write            # work/assets/native/uniform-buffers.md, work/assets/native/cpu-to-gpu.md: shape / material / skeleton pool writer
+83647b20 ubo_transient_buffer_wrap        # work/assets/native/alloc-transfer.md, work/assets/native/nvn-callpaths.md: transient NVNbuffer Init/GetAddress/Finalize
+806dc520 ubo_view_camera_write            # work/assets/native/alloc-transfer.md, work/assets/native/uniform-buffers.md: view (camera) pools: memcpys 8.4 KB a frame
+80354ac0 ubo_view_pool_write              # work/assets/native/alloc-transfer.md, work/assets/native/uniform-buffers.md: small per-view uniform pool writer
+80075d40 ubo_view_small_block_write       # work/assets/native/uniform-buffers.md: a per-view small block
+80105e80 vbuf_dynamic_map                 # work/assets/native/alloc-transfer.md: maps 2 MB dynamic CPU vertex / scratch buffers
+
+# --- culling, readbacks and reports, dynamic resolution, exposure
+808226e0 cull_cpu_objects                 # docs/direct/m6a-report.md, docs/direct/m5-report.md: the grid occluder's math (under f_80822260)
+812342c0 cull_cpu_occlusion_reader        # docs/direct/m5-report.md, work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: the CPU culler: per-shape visibility from the occlusion report slots; wraps ring slots as NVNbuffers
+8009bb80 cull_cpu_shapes                  # docs/direct/m6a-report.md: the CPU culler (calls f_812342c0)
+80364080 cull_gpu_dispatch                # work/assets/native/alloc-transfer.md: dispatches the GPU-culling compute, 112 KB instance list
+80361a00 cull_gpu_list_reset_one          # host/direct_mesh_lists.c, docs/direct/m4e-report.md: resets one list's first record (spliced)
+80361c80 cull_gpu_lists_reset             # host/direct_mesh_lists.c, docs/direct/m4d-report.md: once a frame, resets the first record of each GPU culling list (spliced)
+80822260 cull_grid_occluder               # docs/direct/m6a-report.md, docs/direct/m6c-report.md: the grid's CPU occluder
+8035d5a0 cull_grid_view_rebuild           # work/assets/native/readback.md: rebuilds the producing frame's camera view
+82bde830 cull_precomputed                 # work/assets/native/engine-layers.md: precomputed culling
+8034dac0 dynres_a                         # work/assets/native/cpu-to-gpu.md: dynamic resolution
+831f41d0 dynres_fixed_flag                # nx2/oot_patches.py
+8074b190 dynres_gpu_timestamps            # docs/direct/m5-report.md: TIMESTAMP_TOP / TIMESTAMP reports for the dynamic resolution's GPU time
+8034f440 dynres_gpu_timing_read           # work/assets/native/engine-layers.md, work/assets/native/alloc-transfer.md: GPU timing results (8 KB pool) for dynamic resolution
+80076e60 dynres_ratio_listener            # work/assets/native/engine-layers.md 6.1: "p_dynamic_resolution_ratio", 12 callers
+80352340 dynres_state_forward             # work/assets/native/engine-layers.md 6.1: the hook vtable's slots 0, 1, 18 forward here (dynamic-resolution state)
+8007c120 dynres_update                    # work/assets/native/engine-layers.md: dynamic resolution (reads GPU timestamps)
+83485280 exposure_compute                 # work/assets/native/readback2.md: the exposure / adaptation
+80354060 report_gpu_timestamps_read       # work/assets/native/engine-layers.md, work/assets/native/readback2.md: 29 x 64-byte readbacks (agl GPU timestamps)
+80365f00 report_reader_a                  # host/nvn_native.c, docs/native-vk.md: (the occlusion grid reader, agl::utl::DepthBufferEx)
+80362ff0 report_reader_b                  # docs/direct/m0-task-mesh.md: (GPU-culling append counters, read-and-zero)
+80357060 report_reader_c                  # docs/direct/m4f-report.md, work/assets/native/engine-layers.md: (the exposure reader, luminance rings)
+
+# --- shaders and programs
+81279cd0 g3d_material_shader_setup        # work/assets/native/shader-stream.md, work/assets/native/engine-materials.md: g3d's per-material shader setup ("nvn2")
+812bc820 g3d_shader_init_caller           # work/assets/native/shader-stream.md: calls nn::gfx Shader::Initialize (6 sites)
+812c4f00 gfx_shader_finalize              # work/assets/native/shader-stream.md: nvnProgramFinalize
+812c42c0 gfx_shader_initialize            # work/assets/native/shader-stream.md, work/assets/native/engine-materials.md: nn::gfx Shader::Initialize (NVN2)
+81503ce0 ndsr_networks_init               # work/assets/native/shader-stream.md: NDSR networks (InitializeFromBuilder)
+821057e0 ndve_output_view                 # work/assets/native/block-linear.md: NDVE_Output view format
+806569a0 shader_program_create            # work/assets/native/shader-stream.md: agl sharcb programs: nvnProgramSetShaders
+80b65f00 shader_sharcb_load               # work/assets/native/shader-stream.md: agl's sharcb loader
+
+# --- engine: agl, sead, gfx system, heaps, threads, config
+80c4cad0 agl_driver_mgr_dl                # work/assets/native/engine-layers.md: agl::driver::GraphicsDriverMgr TemporaryDL / CopyDL / Condition
+80c49c80 agl_dynamic_block_alloc_a        # work/assets/native/engine-layers.md: agl::utl::Dynamic{Uniform,ShaderStorage}BlockAllocator / OcclusionQueryAllocator
+80c4ab80 agl_dynamic_block_alloc_b        # work/assets/native/engine-layers.md: (same group)
+80c4da80 agl_dynamic_block_alloc_c        # work/assets/native/engine-layers.md: (same group)
+80c4fd10 agl_gpu_timestamp_array          # work/assets/native/engine-layers.md: agl::perf::GPUTimeStampArray
+80f46f80 agl_init_params                  # work/assets/native/engine-layers.md: "AglWork", "AglFrame", "DynamicTextureAllocatorMem" ..
+80f6c9d0 agl_memory_pool_create           # docs/direct/texture-streaming.md: agl's generic pool wrapper, five callers
+80f6cf50 agl_memory_pool_create_b         # docs/direct/texture-streaming.md: pool wrapper used by the tera manager
+809e9300 agl_primitive_texture            # work/assets/native/block-linear.md: agl::PrimitiveTexture (WriteTexels caller)
+809ed030 agl_render_display               # work/assets/native/rt-alloc.md: agl::RenderDisplay(color/depth)
+80c53800 agl_render_dl_buffer             # work/assets/native/engine-layers.md: agl::lyr::RenderDLBuffer (the jobs' command memory)
+80f6c580 agl_texture_heap_create          # docs/direct/texture-streaming.md: the one caller that makes the texture heap (pool 127)
+831cb8b0 config_gfx_param_c0              # docs/direct/texture-streaming.md: gfx ModuleInitializeParam getter (+0xc0)
+805c2630 config_heapdef_read              # docs/direct/texture-streaming.md: reads HeapDef.byml values
+831cb910 config_texture_reject_threshold  # docs/direct/texture-streaming.md: TextureCacheRejectionThreshold getter
+80ea2f30 display_base_resolution          # nx2/oot_patches.py: ResolutionParam's BaseResolution
+806702e0 display_scale_mode_select        # nx2/oot_native_resolution.py, nx2/oot_patches.py: picks the graphics scale mode (scale table), notifies the resources (patched)
+810a7b70 display_size_setup               # nx2/oot_patches.py: sets up the display-size object from a config
+812bda40 gfx_copy_buffer_to_texture       # work/assets/native/block-linear.md: CopyBufferToTexture (Vfx3 noise)
+836cf4b0 gfx_graphics_init                # nx2/oot_patches.py: the graphics init
+80941b20 gfx_memory_pool_finalize_b       # docs/direct/texture-streaming.md: finalizes a Replace request's pool # ? role from the call only
+80792e30 gfx_memory_pool_init             # work/assets/native/shader-stream.md, work/assets/native/asset-loading.md: nn::gfx MemoryPool init (in-place pools: bfsha, BNSH, BFRES)
+80eeb4b0 gfx_module_init_register         # work/assets/native/engine-layers.md: the game's gfx module init: registers pipeline hook listeners
+80792df0 gfx_res_texture_file             # work/assets/native/asset-path.md: the ResTextureFile of a ui2d file
+831dd780 gfx_system_init                  # docs/direct/texture-streaming.md, work/assets/native/engine-layers.md: gfx system init
+831dfe10 gfx_system_update                # docs/direct/texture-streaming.md: calls the texture per-frame update
+80b72340 heap_graphics_rest               # nx2/oot_patches.py: a heap of what the Graphics heap can still give
+83b7b340 heap_module_heaps_create         # nx2/oot_patches.py: makes the module heaps, checks budgets
+8005eb20 heap_new_in_heap                 # work/assets/native/engine-layers.md: operator new(size, heap, align), 276 callers
+83b797e0 module_draw_names                # work/assets/native/engine-layers.md: names ModuleSystem::draw3DOpa_ .. nodes
+83b7a2c0 module_system_init               # work/assets/native/engine-layers.md, nx2/oot_patches.py: ModuleSystem init (heaps, the worker pool)
+80f69040 sead_device_queue_pools          # work/assets/native/engine-layers.md: device/queue pools
+809df700 sead_exp_heap_create             # work/assets/native/engine-layers.md: sead::ExpHeap::create(size, name, parent, align, dir, lock)
+809df710 sead_exp_heap_create_b           # nx2/oot_patches.py: the module heaps' create (patched for the Graphics heap)
+809e00a0 sead_frame_heap_create           # work/assets/native/engine-layers.md: FrameHeap::create
+8348be50 sead_game_framework              # work/assets/native/engine-layers.md: sead::GameFrameworkOunce: device, queue
+80f48c30 sead_method_tree_mgr             # work/assets/native/engine-layers.md: sead::MethodTreeMgr
+80f47bc0 sead_method_tree_names           # work/assets/native/engine-layers.md: names RootCalc/SysCalc/AppCalc/RootDraw/SysDraw
+80f477b0 sead_method_tree_names_b         # work/assets/native/engine-layers.md
+8351c280 sys_abort_budget                 # nx2/oot_patches.py: aborts below zero budget
+81222ce0 sys_nn_main_body                 # nx2/oot_patches.py: nnMain per the patch notes (display size into the framework create arg) # ? the export table puts nnMain at 0x81222cd0
+824c5560 sys_printf_char_out              # nx2/adr_entries.py, docs/design.md: character-output callback of a printf-style formatter
+81681670 sys_setjmp_wrapper               # host/hos_setjmp.c: returns setjmp's result
+80b5e9e0 thread_baseproc_executor         # work/assets/native/engine-layers.md: BaseProcExecutor0-5 threads
+80dbcd70 thread_module_workers_create     # work/assets/native/engine-jobs.md: ModuleSystemWorker pool ("ThreadPoolHeap")
+80f6ecf0 thread_navmesh_worker_a          # work/assets/native/engine-layers.md: NavMeshCAStepDepWorker / NavMeshDepWorker
+8102f6e0 thread_navmesh_worker_b          # work/assets/native/engine-layers.md
+834a2e50 thread_sead_entry                # work/assets/native/engine-layers.md: sead thread entry
+80df25c0 thread_sead_loop_a               # work/assets/native/engine-layers.md: thread loop (every sead thread)
+80df2680 thread_sead_loop_b               # work/assets/native/engine-layers.md: thread loop (every sead thread; the Presentation thread's)
+80df5760 thread_sead_main                 # work/assets/native/engine-layers.md: sead::MainThread
+
+# --- terrain, sky, vegetation
+80101060 sky_inscatter_ubo_write          # work/assets/native/uniform-buffers.md: the sky ("SkyInscatter") uniform writes (sites 0x80101174..0x80101294)
+80846070 sky_lut_copy                     # host/direct_sky_lut.c: memcpys the skybin's three LUT parts into textures (patched)
+80eb8460 terrain_decode_cpu_copy          # docs/direct/m0-terrain-texels.md: decodes a terrain layer's CPU copy
+83a6d170 terrain_polish_readback          # work/assets/native/block-linear.md
+83a6b210 terrain_polish_readback_caller   # work/assets/native/block-linear.md
+83a6d540 terrain_read_texels              # docs/direct/m0-terrain-texels.md: InvalidateTexels + ReadTexels, or CopyTextureToBuffer
+809e3350 terrain_tera_mgr_init            # docs/direct/m0-terrain-texels.md, docs/direct/texture-streaming.md: the tera manager: device bytes, its own pools
+80d7e090 terrain_tera_polish              # docs/direct/m0-terrain-texels.md: tera polish
+80c17040 terrain_tile_load                # docs/direct/m0-terrain-texels.md: its memcpy at +0x544 is spliced
+83a6d8f0 terrain_write_texels             # docs/direct/m0-terrain-texels.md, work/assets/native/block-linear.md: WriteTexels + Flush (w3 0) or CopyBufferToTexture
+808833e0 vegetation_mesh_placement        # work/assets/native/engine-layers.md: SsboMeshPlacement
+
+# --- effects (Vfx3)
+812eed00 vfx_boot_effect_hot_a            # work/assets/native/boot-speed.md: 934 ms at boot (effect resource setup)
+812ef8c0 vfx_boot_effect_hot_b            # work/assets/native/boot-speed.md: 352 ms at boot (effect resource setup)
+8017ed80 vfx_boot_effect_setup            # work/assets/native/boot-speed.md: 0.6 s of boot (via f_83b71980 > f_8017dd60)
+81270540 vfx_calc_a                       # work/assets/native/cpu-to-gpu.md: Vfx3 calc chain
+812707c0 vfx_calc_b                       # work/assets/native/cpu-to-gpu.md: Vfx3 calc chain
+8007f340 vfx_calc_job                     # work/assets/native/cpu-to-gpu.md, work/assets/native/engine-layers.md: Vfx3 particle calc job
+81260fc0 vfx_compute_2x1                  # work/assets/native/engine-frame.md: Vfx3 compute 2x1x1 (x6 in #239)
+812bc110 vfx_curl_noise_staging           # work/assets/native/block-linear.md: "CopyImageToBuffer", CurlNoiseStaging
+81270d60 vfx_draw                         # work/assets/native/engine-layers.md: Vfx3 draw under the draw-method dispatcher
+8027c880 vfx_draw_method                  # work/assets/native/engine-layers.md: Vfx3 draw method
+8002d010 vfx_emitter_c14_write            # work/assets/native/uniform-buffers.md: vfx3 c14 block (sites 0x8002d138, 0x8002d190)
+8125f0e0 vfx_emitter_calc                 # work/assets/native/cpu-to-gpu.md: per-emitter calc (Vfx3)
+8002d440 vfx_emitter_ubo_write            # work/assets/native/uniform-buffers.md: vfx3 c13 emitter block
+81260600 vfx_particle_stream_write        # work/assets/native/cpu-to-gpu.md, work/assets/native/alloc-transfer.md: particle vertex/instance stream: matrix build, ~37 KB a frame
+81272760 vfx_resource_load                # work/assets/native/second-map.md, work/assets/native/boot-speed.md: effect resources: static meshes, shaders, textures
+806559e0 vfx_star_ctx                     # work/assets/native/engine-layers.md: StarCtx (sky stars)
+
+# --- fonts, UI, movies
+8152f540 font_glyph_cell_write_a          # docs/direct/m3-patch-sites.md: (the glyph cache's shelf packer (cache, &x, &y, w, h))
+81539300 font_glyph_cell_write_b          # docs/direct/m3-patch-sites.md: (nn::font's plot, the glyph writer)
+8156ca60 font_plot_caller_a               # docs/direct/m3-patch-sites.md: reaches the glyph writer
+8156fdc0 font_plot_caller_b               # docs/direct/m3-patch-sites.md
+815392a0 font_plot_caller_c               # docs/direct/m3-patch-sites.md
+81535eb0 font_plot_caller_d               # docs/direct/m3-patch-sites.md: asks the shelf packer for a cell
+83b82250 movie_renderer_copy_frame        # work/assets/native/block-linear.md: NV12 planes to two targets
+80a8f690 ui_item_db_list                  # host/oot_menu.c: (db, which): an item database list
+8002a520 ui_item_entry_key                # host/oot_menu.c item_panes: an item database entry's key (Key Items page)
+80d666a0 ui_item_key_resolve              # host/oot_menu.c: (key, 0): the key's string object
+8002a4c0 ui_item_key_string               # host/oot_menu.c item_panes: the key as a string, its text first
+80a963c0 ui_item_pane_name                # host/oot_menu.c: an entry's pane name
+802ebd20 ui_items_page_pane               # host/oot_menu.c: takes the focused pane on the Items page (the info panel)
+833fdaa0 ui_key_items_cursor              # host/oot_menu.c: places the page's cursor
+833fda00 ui_key_items_refresh             # host/oot_menu.c: (screen, key buffer): the page's refresh
+81557ca0 ui_layer_draw                    # work/assets/native/engine-frame.md: UI layers #103/#107
+8078e2b0 ui_layout_find_pane              # host/oot_menu.c: (layout, name) -> pane
+802f1380 ui_menu_screen_update            # host/oot_menu.c, nx2/oot_patches.py: every menu screen's update, each frame (patched)
+8078fcb0 ui_pane_position                 # host/oot_menu.c: a pane's position
+802ed660 ui_pause_menu_pane_focus         # host/oot_menu.c, nx2/oot_patches.py: pause menu's handler of a pane getting the focus (patched: host/oot_menu.c)
+828d4a70 ui_pouch_add_remove              # host/hos_main.c: OneShotAddOrRemovePouchContent
+805b63e0 ui_pouch_count                   # host/hos_main.c: (pouch manager, &name, 0, 0) counts one content
+82a3c260 ui_pouch_count_query             # host/hos_main.c: QueryGetPouchContentNumByActorName
+807923a0 ui_screen_name                   # host/oot_menu.c: a screen's name (obj+128 -> +248 -> +24)
+80795090 ui_screen_set_focus_caller       # host/oot_menu.c: how the screens call the focus setter
+80bd1820 ui_serialize_capture             # work/assets/native/block-linear.md: ui::SerializeCapture
+833ac950 ui_serialize_capture_b           # work/assets/native/block-linear.md: ui::SerializeCapture
+8088ffc0 ui_set_focus                     # host/oot_menu.c: (screen, button, flag): the focus setter
+81681690 ui_text_box_texture_thread       # host/hos_setjmp.c: UpdateTextBoxTextureThread (setjmp)
+80b1e140 ui_text_letter_anim              # nx2/oot_patches.py: steps a text pane's letter animation (text speed patch)
+80794b00 ui_text_skip                     # nx2/oot_patches.py: the game's own skip on A
+
+# --- game: actors, physics, camera, events, game data, world
+8004ab40 actor_baseproc_executor          # docs/direct/m6a-report.md, work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
+804bd8c0 actor_life_write                 # nx2/oot_patches.py patch_life: an actor's life write (patched for the hearts cheat)
+82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc
+82c1d750 actor_records_read_a             # work/assets/native/alloc-transfer.md: CPU reads of its own records in GPU pools
+82c1d340 actor_records_read_b             # work/assets/native/alloc-transfer.md
+80186a00 actor_update_a                   # work/assets/native/cpu-to-gpu.md: actor update, per actor
+80168320 actor_update_b                   # work/assets/native/cpu-to-gpu.md: actor update, per actor
+80644c80 camera_player_update             # host/mouse_native.c: the player camera's update (patched: mouse look)
+8064b770 camera_stick_pitch               # host/mouse_native.c: turns pitch by the right stick
+80649c10 camera_stick_yaw                 # host/mouse_native.c: turns yaw by the right stick
+804e48c0 camera_view_loop                 # nx2/oot_patches.py, tests/test_free_view_anchor.py: the view's loop (free camera hook)
+829df380 event_banc_change_arg            # host/hos_main.c: QueryBancChangeEventRequestArg: fills an EventRequestArg
+80d99f10 event_make_arg                   # host/hos_main.c oot_request_banc: used by the teleport cheat
+8022b6f0 event_release_link               # host/hos_main.c oot_request_banc: used by the teleport cheat (release_link)
+80d9a820 event_request                    # host/hos_main.c oot_request_banc: used by the teleport cheat
+802dc440 event_set_link                   # host/hos_main.c oot_request_banc: used by the teleport cheat (set_link)
+83b6b870 event_settings                   # work/assets/native/engine-layers.md: event settings
+8022d9c0 gamedata_get_bool                # host/hos_main.c: GameDataMgr bool by MurMur3 name hash
+80cd0ea0 gamedata_get_string              # host/hos_main.c: GameDataMgr String64 by MurMur3 name hash
+8342a460 map_player_pos                   # work/assets/native/engine-layers.md: map player pos
+8243f470 net_env_id_check                 # host/nn_applet.c: checks the nsd environment id for a "t-" prefix (site 0x8243f490)
+8214e9a0 net_npln_worker                  # host/nn_applet.c: OoT's npln worker (site 0x8214eac0 waits on the account AsyncContext)
+820da77c phys_ai_avoidance_a              # work/assets/native/cpu-to-gpu.md, work/assets/native/engine-layers.md: Havok AI collision avoidance (NavMesh step)
+820d94ac phys_ai_avoidance_b              # work/assets/native/engine-layers.md: Havok AI collision avoidance
+806d2530 phys_cct_change_position         # host/hos_main.c, nx2/oot_patches.py: OneShotPhysicsCctChangePosition (vtable 0x84c54f10 +0xe8)
+81b0e600 phys_cloth_display_prepare       # work/assets/native/cpu-to-gpu.md: Display Prepare
+81b0fe60 phys_cloth_display_release       # work/assets/native/cpu-to-gpu.md: Display Release
+81dddcc0 phys_cloth_interpolate           # work/assets/native/cpu-to-gpu.md: interpolate transforms
+81c86720 phys_cloth_link_constraints      # work/assets/native/cpu-to-gpu.md: hclStandardLinkConstraintSet::apply
+81b47080 phys_cloth_simulate_op           # work/assets/native/cpu-to-gpu.md: hclSimulateOperator::_execute
+81b56de0 phys_cloth_solve                 # work/assets/native/cpu-to-gpu.md: Solve / CollideAndSolve
+8016b620 phys_cloth_step                  # work/assets/native/cpu-to-gpu.md: Havok cloth hclWorld::stepSingleThreaded
+81b38800 phys_cloth_update_aabbs          # work/assets/native/cpu-to-gpu.md: updateAabbs
+81f3f634 phys_navmesh_cutting             # work/assets/native/engine-layers.md: nav mesh cutting
+80715ae0 phys_phive_static_compound       # work/assets/native/engine-layers.md
+80718040 phys_phive_volume_stats          # work/assets/native/engine-layers.md: Phive volume stats / static compound
+82c415e0 player_movement                  # nx2/oot_patches.py patch_movement: movement step (patched for flight)
+80494360 scene_env_state                  # work/assets/native/cpu-to-gpu.md: scene state (volume mask, depth probes "depth valid")
+83bca670 scene_params                     # work/assets/native/engine-layers.md: scene params
+831f3200 scene_resolution_update          # nx2/oot_native_resolution.py, nx2/oot_patches.py: the scene's update: cached scale, fixed path (patched)
+832ee450 seq_clear_texture_cache_all      # docs/direct/texture-streaming.md: INFERRED: SeqOneShotClearTextureCacheAll
+834722d0 world_set_time                   # host/hos_main.c: ExecuteWmSetTime: seconds since midnight
+
+# --- zstd and resource loading (work/assets/zstd.md: the decoder's map)
+80108da0 fs_ares_load_zstd                # work/assets/native/asset-loading.md, host/nn_zstd.c: the ARes loader (virtual): reads a file, zstd-decodes it
+80455bc0 res_bfsha_load                   # work/assets/native/second-map.md: "bfsha" resource load
+804563b0 res_inplace_pool                 # work/assets/native/asset-loading.md: makes a pool over a decompressed file's GPU section
+834ab610 zstd_begin_using_ddict           # work/assets/zstd.md: inferred
+8010ffc0 zstd_build_fse_table             # work/assets/zstd.md: ZSTD_buildFSETable, inferred
+834ab740 zstd_create_ddict                # work/assets/zstd.md: ZSTD_createDDict_advanced
+834ac540 zstd_ddict_lookup                # work/assets/zstd.md: (decompressor, dictID) -> DDict, binary tree
+80115c80 zstd_decomp_stream_chunk         # host/nn_zstd.c, work/assets/zstd.md: a ParallelDecompThread's step through a larger file (hooked: host/nn_zstd.c)
+80115bf0 zstd_decomp_thread_step          # work/assets/zstd.md: ParallelDecompThread job step (vtable 0x84c377d0)
+80116490 zstd_decompress_block            # work/assets/zstd.md: ZSTD_decompressBlock_internal, inferred
+80113880 zstd_decompress_continue         # work/assets/zstd.md: inferred
+8010b380 zstd_decompress_multi_frame      # work/assets/zstd.md: ZSTD_decompressMultiFrame (hooked: host/nn_zstd.c)
+801102e0 zstd_decompress_sequences        # work/assets/zstd.md, host/nn_zstd.c: the hot one, inferred # ? gpu/vk/vk_pools.cpp calls it the compute-constant ring's
+80f700d0 zstd_decompress_wrapper          # work/assets/zstd.md: (src, size, dst, cap, workspace, DDict)
+8349fef0 zstd_dict_file_read              # work/assets/zstd.md: fills a buffer from the dict file
+83bb1520 zstd_dict_free                   # work/assets/zstd.md: frees it (ZSTD_freeDDict)
+83bb15b0 zstd_dict_load                   # work/assets/zstd.md: reads a dict file, creates its DDict
+834ab4a0 zstd_exec_sequence_end           # work/assets/zstd.md: ZSTD_execSequenceEnd
+834abd70 zstd_free                        # work/assets/zstd.md: customMem, inferred
+834ab420 zstd_free_ddict                  # work/assets/zstd.md: inferred
+80d5ba00 zstd_get_error_code              # work/assets/zstd.md
+80109790 zstd_get_frame_header            # work/assets/zstd.md: ZSTD_getFrameHeader_advanced
+80110860 zstd_helper_a                    # work/assets/zstd.md: HUF/literals/seq-header helper
+801117a0 zstd_helper_b                    # work/assets/zstd.md: HUF/literals/seq-header helper
+80112880 zstd_helper_c                    # work/assets/zstd.md: HUF/literals/seq-header helper
+801156e0 zstd_helper_d                    # work/assets/zstd.md: HUF/literals/seq-header helper
+801099a0 zstd_helper_e                    # work/assets/zstd.md: HUF/literals/seq-header helper
+8010b160 zstd_helper_f                    # work/assets/zstd.md: HUF/literals/seq-header helper
+8010ad60 zstd_huf_read_dtable             # work/assets/zstd.md: HUF_readDTableX*, inferred
+834ab850 zstd_init_ddict                  # work/assets/zstd.md: ZSTD_initDDict_internal
+834abae0 zstd_load_dentropy               # work/assets/zstd.md: inferred
+834abd50 zstd_malloc                      # work/assets/zstd.md: customMem, inferred
+834ac2a0 zstd_xxh64_digest                # work/assets/zstd.md: inferred
+834ac0b0 zstd_xxh64_reset                 # work/assets/zstd.md: inferred
+834ac110 zstd_xxh64_update                # work/assets/zstd.md: inferred
+
+# --- SDK and main exports by name (nx2/image.py exports; a bounded pass: libc, math, heap, locks, opus, profile-hot)
+8504ae60 async_execution_scheduler_dequeue_and_call # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::DequeueAndCall
+8504a540 async_execution_scheduler_try_dequeue_monitored_work_item # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::TryDequeueMonitoredWorkItem
+8504a9f0 async_execution_scheduler_wait_for_signal # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WaitForSignal
+85049bd0 async_execution_scheduler_work_item_multi_wait_try_wait_any # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WorkItemMultiWait::TryWaitAny
+85049ad0 async_execution_scheduler_work_item_multi_wait_wait_any # nx2/image.py exports (sdk): nn::async::detail::ExecutionScheduler::WorkItemMultiWait::WaitAny
+8504bdc0 async_group_wait_link_group_wait_holder # nx2/image.py exports (sdk): nn::async::detail::GroupWait::LinkGroupWaitHolder
+8504bf00 async_group_wait_wait            # nx2/image.py exports (sdk): nn::async::detail::GroupWait::Wait
+8504e400 async_queuing_executor_loop_execution # nx2/image.py exports (sdk): nn::async::QueuingExecutor::LoopExecution
+85269210 audio_codec_decode_adpcm         # nx2/image.py exports (sdk): nn::codec::DecodeAdpcm
+85313220 audio_codec_fd_ksqrt             # nx2/image.py exports (sdk): nn::codec::FDKsqrt
+8538d230 audio_codec_get_required_mem_ram_sbr_freq_band_table_lo # nx2/image.py exports (sdk): nn::codec::GetRequiredMemRam_Sbr_freqBandTableLO
+852c77a0 audio_codec_opus_decode_opus_interleaved_impl # nx2/image.py exports (sdk): nn::codec::opus::DecodeOpusInterleavedImpl
+852c7f20 audio_codec_opus_decode_opus_multi_stream_interleaved_impl # nx2/image.py exports (sdk): nn::codec::opus::DecodeOpusMultiStreamInterleavedImpl
+852c7700 audio_codec_opus_initialize_opus_decoder_impl # nx2/image.py exports (sdk): nn::codec::opus::InitializeOpusDecoderImpl
+852c7e50 audio_codec_opus_initialize_opus_multi_stream_decoder_impl # nx2/image.py exports (sdk): nn::codec::opus::InitializeOpusMultiStreamDecoderImpl
+852c7900 audio_codec_opus_reset_opus_decoder_impl # nx2/image.py exports (sdk): nn::codec::opus::ResetOpusDecoderImpl
+852c8070 audio_codec_opus_reset_opus_multi_stream_decoder_impl # nx2/image.py exports (sdk): nn::codec::opus::ResetOpusMultiStreamDecoderImpl
+84f27cc0 audio_opus_decode                # nx2/image.py exports (subsdk0): opus_decode
+84f27d00 audio_opus_decode_float          # nx2/image.py exports (subsdk0): opus_decode_float
+84f26a20 audio_opus_decoder_create        # nx2/image.py exports (subsdk0): opus_decoder_create
+84f27f60 audio_opus_decoder_ctl           # nx2/image.py exports (subsdk0): opus_decoder_ctl
+84f28320 audio_opus_decoder_destroy       # nx2/image.py exports (subsdk0): opus_decoder_destroy
+84f26870 audio_opus_decoder_init          # nx2/image.py exports (subsdk0): opus_decoder_init
+84f35b20 audio_opus_multistream_decode    # nx2/image.py exports (subsdk0): opus_multistream_decode
+84f35d40 audio_opus_multistream_decode_float # nx2/image.py exports (subsdk0): opus_multistream_decode_float
+84f35500 audio_opus_multistream_decoder_create # nx2/image.py exports (subsdk0): opus_multistream_decoder_create
+84f35ab0 audio_opus_multistream_decoder_ctl # nx2/image.py exports (subsdk0): opus_multistream_decoder_ctl
+84f363f0 audio_opus_multistream_decoder_destroy # nx2/image.py exports (subsdk0): opus_multistream_decoder_destroy
+84f352e0 audio_opus_multistream_decoder_init # nx2/image.py exports (subsdk0): opus_multistream_decoder_init
+84f267d0 audio_opus_packet_parse          # nx2/image.py exports (subsdk0): opus_packet_parse
+8005eca0 heap_aligned_alloc               # nx2/image.py exports (main): aligned_alloc
+814e6ce0 heap_calloc                      # nx2/image.py exports (main): calloc
+80709580 heap_free                        # nx2/image.py exports (main): free
+814e6c90 heap_malloc                      # nx2/image.py exports (main): malloc
+83488de0 heap_operator_delete             # nx2/image.py exports (main): operator delete
+83488e10 heap_operator_delete_aligned     # nx2/image.py exports (main): operator delete
+83488e30 heap_operator_delete_aligned_nothrow # nx2/image.py exports (main): operator delete
+8021f7c0 heap_operator_delete_array       # nx2/image.py exports (main): operator delete[]
+83488e20 heap_operator_delete_array_aligned # nx2/image.py exports (main): operator delete[]
+83488e40 heap_operator_delete_array_aligned_nothrow # nx2/image.py exports (main): operator delete[]
+83488e00 heap_operator_delete_array_nothrow # nx2/image.py exports (main): operator delete[]
+83488e50 heap_operator_delete_array_size  # nx2/image.py exports (main): operator delete[]
+83488e70 heap_operator_delete_array_size_aligned # nx2/image.py exports (main): operator delete[]
+83488df0 heap_operator_delete_nothrow     # nx2/image.py exports (main): operator delete
+8021dea0 heap_operator_delete_size        # nx2/image.py exports (main): operator delete
+83488e60 heap_operator_delete_size_aligned # nx2/image.py exports (main): operator delete
+80f404a0 heap_operator_new_array_size     # nx2/image.py exports (main): operator new[]
+83488cc0 heap_operator_new_array_size_aligned # nx2/image.py exports (main): operator new[]
+83488d00 heap_operator_new_array_size_aligned_nothrow # nx2/image.py exports (main): operator new[]
+83488c60 heap_operator_new_array_size_nothrow # nx2/image.py exports (main): operator new[]
+80f471c0 heap_operator_new_size           # nx2/image.py exports (main): operator new
+83488c80 heap_operator_new_size_aligned   # nx2/image.py exports (main): operator new
+83488ce0 heap_operator_new_size_aligned_nothrow # nx2/image.py exports (main): operator new
+83488c40 heap_operator_new_size_nothrow   # nx2/image.py exports (main): operator new
+814e6d50 heap_realloc                     # nx2/image.py exports (main): realloc
+856dcbe0 hid_imf_hid_state_set_get_nmouse_state # nx2/image.py exports (sdk): nn::imf::HidStateSet::GetNmouseState
+85674340 hid_nmouse_transfer_memory_accessor_is_initialized # nx2/image.py exports (sdk): nn::hid::detail::NmouseTransferMemoryAccessor::IsInitialized
+8566db00 hid_vibration_mixer_on_next_sample_required # nx2/image.py exports (sdk): nn::hid::VibrationMixer::OnNextSampleRequired
+8566e3c0 hid_vibration_node_connection_get_modulation # nx2/image.py exports (sdk): nn::hid::VibrationNodeConnection::GetModulation
+8566e1c0 hid_vibration_node_connection_get_source # nx2/image.py exports (sdk): nn::hid::VibrationNodeConnection::GetSource
+8566e480 hid_vibration_node_sync_sample_number # nx2/image.py exports (sdk): nn::hid::VibrationNode::SyncSampleNumber
+8566e560 hid_vibration_node_update        # nx2/image.py exports (sdk): nn::hid::VibrationNode::Update
+8566f360 hid_vibration_target_on_next_sample_required # nx2/image.py exports (sdk): nn::hid::VibrationTarget::OnNextSampleRequired
+85745220 libc_atof                        # nx2/image.py exports (sdk): atof
+85745240 libc_atoi                        # nx2/image.py exports (sdk): atoi
+85745300 libc_atol                        # nx2/image.py exports (sdk): atol
+85745480 libc_bsearch                     # nx2/image.py exports (sdk): bsearch
+8504ed50 libc_longjmp                     # nx2/image.py exports (sdk): longjmp
+8572e9a0 libc_memchr                      # nx2/image.py exports (sdk): memchr
+8575d280 libc_memcmp                      # nx2/image.py exports (sdk): memcmp # ? wn/engine-frame.md, wn/engine-jobs.md call it the job poll; its code is memcmp (nx2/disasm.py)
+8572f020 libc_memcpy                      # nx2/image.py exports (sdk): memcpy
+8575cdc0 libc_memcpy_aarch64              # nx2/image.py exports (sdk): __memcpy_aarch64
+8572f040 libc_memmove                     # nx2/image.py exports (sdk): memmove
+8572f300 libc_memset                      # nx2/image.py exports (sdk): memset
+85598740 libc_nvos_memcpy                 # nx2/image.py exports (sdk): NvOsMemcpy
+85745ff0 libc_qsort                       # nx2/image.py exports (sdk): qsort
+8504ec40 libc_setjmp                      # nx2/image.py exports (sdk): setjmp
+857438e0 libc_snprintf                    # nx2/image.py exports (sdk): snprintf
+85743950 libc_sprintf                     # nx2/image.py exports (sdk): sprintf
+857439c0 libc_sscanf                      # nx2/image.py exports (sdk): sscanf
+85747480 libc_strcasecmp                  # nx2/image.py exports (sdk): strcasecmp
+85747640 libc_strcat                      # nx2/image.py exports (sdk): strcat
+85747680 libc_strchr                      # nx2/image.py exports (sdk): strchr
+8575d380 libc_strcmp                      # nx2/image.py exports (sdk): strcmp
+85747860 libc_strcpy                      # nx2/image.py exports (sdk): strcpy
+85747d40 libc_strlen                      # nx2/image.py exports (sdk): strlen
+85747e60 libc_strncasecmp                 # nx2/image.py exports (sdk): strncasecmp
+85747fe0 libc_strncat                     # nx2/image.py exports (sdk): strncat
+8575d480 libc_strncmp                     # nx2/image.py exports (sdk): strncmp
+85748040 libc_strncpy                     # nx2/image.py exports (sdk): strncpy
+85748070 libc_strnlen                     # nx2/image.py exports (sdk): strnlen
+857480f0 libc_strrchr                     # nx2/image.py exports (sdk): strrchr
+85748240 libc_strstr                      # nx2/image.py exports (sdk): strstr
+8572e250 libc_strtod                      # nx2/image.py exports (sdk): strtod
+8572e190 libc_strtof                      # nx2/image.py exports (sdk): strtof
+857461c0 libc_strtol                      # nx2/image.py exports (sdk): strtol
+857460a0 libc_strtoll                     # nx2/image.py exports (sdk): strtoll
+85746130 libc_strtoul                     # nx2/image.py exports (sdk): strtoul
+85746010 libc_strtoull                    # nx2/image.py exports (sdk): strtoull
+85739090 libc_tolower                     # nx2/image.py exports (sdk): tolower
+857390d0 libc_toupper                     # nx2/image.py exports (sdk): toupper
+85744ae0 libc_vsnprintf                   # nx2/image.py exports (sdk): vsnprintf
+85744c80 libc_vsprintf                    # nx2/image.py exports (sdk): vsprintf
+85744cc0 libc_vsscanf                     # nx2/image.py exports (sdk): vsscanf
+85748d40 libc_wcslen                      # nx2/image.py exports (sdk): wcslen
+8574aad0 math_acos                        # nx2/image.py exports (sdk): acos
+8574adb0 math_acosf                       # nx2/image.py exports (sdk): acosf
+8574afd0 math_asin                        # nx2/image.py exports (sdk): asin
+85755180 math_asinf                       # nx2/image.py exports (sdk): asinf
+857557d0 math_atan                        # nx2/image.py exports (sdk): atan
+857559e0 math_atan2                       # nx2/image.py exports (sdk): atan2
+85755bc0 math_atan2f                      # nx2/image.py exports (sdk): atan2f
+85756090 math_atanf                       # nx2/image.py exports (sdk): atanf
+857569c0 math_cbrt                        # nx2/image.py exports (sdk): cbrt
+85756ad0 math_cbrtf                       # nx2/image.py exports (sdk): cbrtf
+85754bc0 math_ceil                        # nx2/image.py exports (sdk): ceil
+85754bd0 math_ceilf                       # nx2/image.py exports (sdk): ceilf
+85756f80 math_cos                         # nx2/image.py exports (sdk): cos
+8574b240 math_cosf                        # nx2/image.py exports (sdk): cosf
+8574bc40 math_exp                         # nx2/image.py exports (sdk): exp
+8574bfa0 math_exp2                        # nx2/image.py exports (sdk): exp2
+85757ca0 math_exp2f                       # nx2/image.py exports (sdk): exp2f
+8574c1b0 math_expf                        # nx2/image.py exports (sdk): expf
+85754be0 math_fabs                        # nx2/image.py exports (sdk): fabs
+85754bf0 math_fabsf                       # nx2/image.py exports (sdk): fabsf
+85754c00 math_floor                       # nx2/image.py exports (sdk): floor
+85754c10 math_floorf                      # nx2/image.py exports (sdk): floorf
+85758b20 math_fmod                        # nx2/image.py exports (sdk): fmod
+85758cc0 math_fmodf                       # nx2/image.py exports (sdk): fmodf
+857590d0 math_frexp                       # nx2/image.py exports (sdk): frexp
+85759150 math_frexpf                      # nx2/image.py exports (sdk): frexpf
+857592a0 math_hypot                       # nx2/image.py exports (sdk): hypot
+857593d0 math_hypotf                      # nx2/image.py exports (sdk): hypotf
+857597e0 math_ldexp                       # nx2/image.py exports (sdk): ldexp
+857597f0 math_ldexpf                      # nx2/image.py exports (sdk): ldexpf
+85750430 math_log                         # nx2/image.py exports (sdk): log
+85759960 math_log10                       # nx2/image.py exports (sdk): log10
+85759b10 math_log10f                      # nx2/image.py exports (sdk): log10f
+85750610 math_log2                        # nx2/image.py exports (sdk): log2
+85750830 math_log2f                       # nx2/image.py exports (sdk): log2f
+85750910 math_logf                        # nx2/image.py exports (sdk): logf
+8575a240 math_modf                        # nx2/image.py exports (sdk): modf
+8575a2c0 math_modff                       # nx2/image.py exports (sdk): modff
+85750ad0 math_pow                         # nx2/image.py exports (sdk): pow
+85751000 math_powf                        # nx2/image.py exports (sdk): powf
+85754d40 math_round                       # nx2/image.py exports (sdk): round
+85754d50 math_roundf                      # nx2/image.py exports (sdk): roundf
+8575bc60 math_sin                         # nx2/image.py exports (sdk): sin
+8575bd70 math_sincos                      # nx2/image.py exports (sdk): sincos
+857513e0 math_sincosf                     # nx2/image.py exports (sdk): sincosf
+85751760 math_sinf                        # nx2/image.py exports (sdk): sinf
+85754d60 math_sqrt                        # nx2/image.py exports (sdk): sqrt
+85754d70 math_sqrtf                       # nx2/image.py exports (sdk): sqrtf
+8575c750 math_tan                         # nx2/image.py exports (sdk): tan
+8575c7f0 math_tanf                        # nx2/image.py exports (sdk): tanf
+85754d80 math_trunc                       # nx2/image.py exports (sdk): trunc
+85754d90 math_truncf                      # nx2/image.py exports (sdk): truncf
+854fa9f0 movie_mkv_audio_track_get_bit_depth # nx2/image.py exports (sdk): mkvparser::AudioTrack::GetBitDepth
+854fa2b0 movie_mkv_video_track_get_width  # nx2/image.py exports (sdk): mkvparser::VideoTrack::GetWidth
+85101180 os_broadcast_condition_variable  # nx2/image.py exports (sdk): nn::os::BroadcastConditionVariable
+851052f0 os_broadcast_slim_condition_variable # nx2/image.py exports (sdk): nn::os::BroadcastSlimConditionVariable
+8510ce10 os_broadcast_to_address          # nx2/image.py exports (sdk): nn::os::BroadcastToAddress
+85101d20 os_clear_timer_event             # nx2/image.py exports (sdk): nn::os::ClearTimerEvent
+85106380 os_get_system_tick_ordered       # nx2/image.py exports (sdk): nn::os::GetSystemTickOrdered
+85100f60 os_lock_busy_mutex               # nx2/image.py exports (sdk): nn::os::LockBusyMutex
+85105470 os_lock_slim_mutex               # nx2/image.py exports (sdk): nn::os::LockSlimMutex
+85104ea0 os_sdk_recursive_mutex_type_lock # nx2/image.py exports (sdk): nn::os::SdkRecursiveMutexType::Lock
+85104f50 os_sdk_recursive_mutex_type_unlock # nx2/image.py exports (sdk): nn::os::SdkRecursiveMutexType::Unlock
+851052e0 os_signal_slim_condition_variable # nx2/image.py exports (sdk): nn::os::SignalSlimConditionVariable
+85101c60 os_signal_timer_event            # nx2/image.py exports (sdk): nn::os::SignalTimerEvent
+8510cdd0 os_signal_to_address             # nx2/image.py exports (sdk): nn::os::SignalToAddress
+85105330 os_timed_wait_slim_condition_variable # nx2/image.py exports (sdk): nn::os::TimedWaitSlimConditionVariable
+85101010 os_try_lock_busy_mutex           # nx2/image.py exports (sdk): nn::os::TryLockBusyMutex
+85105490 os_try_lock_slim_mutex           # nx2/image.py exports (sdk): nn::os::TryLockSlimMutex
+85101080 os_unlock_busy_mutex             # nx2/image.py exports (sdk): nn::os::UnlockBusyMutex
+851054d0 os_unlock_slim_mutex             # nx2/image.py exports (sdk): nn::os::UnlockSlimMutex
+8510cd80 os_wait_for_address              # nx2/image.py exports (sdk): nn::os::WaitForAddress
+85105300 os_wait_slim_condition_variable  # nx2/image.py exports (sdk): nn::os::WaitSlimConditionVariable
+85774310 std_chrono_steady_clock_now      # nx2/image.py exports (sdk): std::__1::chrono::steady_clock::now
+85786920 std_cxx_atomic_notify_all        # nx2/image.py exports (sdk): std::__1::__cxx_atomic_notify_all
+857774a0 std_hash_memory                  # nx2/image.py exports (sdk): std::__1::__hash_memory
+85786980 std_libcpp_atomic_monitor        # nx2/image.py exports (sdk): std::__1::__libcpp_atomic_monitor
+81222cd0 sys_nn_main                      # nx2/image.py exports (main): nnMain
+8262bb10 sys_nninit_startup               # nx2/image.py exports (main): nninitStartup
+850438b0 util_tiny_mt_generate_random_u32 # nx2/image.py exports (sdk): nn::util::TinyMt::GenerateRandomU32
+85046480 util_vsn_printf                  # nx2/image.py exports (sdk): nn::util::VSNPrintf
