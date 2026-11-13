@@ -201,7 +201,8 @@ template <class Add> std::vector<uint8_t> record_of(Cmd& c, Add&& add, Counts& n
             std::memcpy(m.d.header, h, 64);
             const uint32_t* w = m.d.header;
             const uint64_t ma = w[4] | (uint64_t)w[5] << 32, pa = w[6] | (uint64_t)w[7] << 32;
-            const uint32_t groups = std::min(w[0], w[8]), tasks = w[9], pw = w[13];
+            uint32_t groups = std::min(w[0], w[8]), tasks = w[9], pw = w[13];
+            if (groups > (1u << 20) || tasks > 65536 || pw > 4096) groups = tasks = 0;   // (a slot reset since: not this draw's header)
             if (const uint8_t* mp = resolve(m, ma, 4ull * groups)) map.assign((const uint32_t*)mp, (const uint32_t*)mp + groups);
             if (const uint8_t* pp = resolve(m, pa, 4ull * tasks * pw)) payload.assign((const uint32_t*)pp, (const uint32_t*)pp + (uint64_t)tasks * pw);
         }

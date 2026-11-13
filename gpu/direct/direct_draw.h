@@ -44,5 +44,8 @@ VkDeviceAddress draw_zero_address();
 /// (M4a) a job has drawn: the game is past its start (before it, a dispatch whose program is missing waits for it)
 bool draw_scene_up();
 void draw_meshlog_after();
+struct CmdSlot;
+/// (HOS_DBG=progprobe) a slot is reset, the GPU past it: its probed draws' statistics read and logged
+void draw_probe_slot(CmdSlot* s);
 
 }  // namespace hsd

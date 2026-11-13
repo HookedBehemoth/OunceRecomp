@@ -1173,6 +1173,115 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
     }
 }
 
+// (the Hyrule Field hang) HOS_DBG=progprobe:<program key>, a diagnosis: what the GPU rasterizes of that program's mesh draws,
+// measured in the draw itself and made cheap whatever its triangles are. Each such draw goes into a box of 128 x 128 pixels
+// at the pass's centre with the depth and stencil tests off and a plain fragment stage (shaders/diag_plain.frag), inside a
+// pipeline statistics query: the primitives that reached the clipper, the primitives it output, and the fragments in the box
+// (every triangle over the box counts all of it). Read when the draw's slot is reset (the GPU past it), logged as
+// present:clipper in/clipper out/fragments, 8 draws a line. Triangles as the capture shows them (a few pixels each) leave the
+// box nearly empty; a draw whose mesh stage read other memory than the CPU later shows fills it thousands of times.
+namespace probe {
+constexpr uint32_t kQueries = 4096;
+VkQueryPool pool = VK_NULL_HANDLE;
+PFN_vkCreateQueryPool pCreate = nullptr;
+PFN_vkResetQueryPool pReset = nullptr;
+PFN_vkCmdBeginQuery pBegin = nullptr;
+PFN_vkCmdEndQuery pEnd = nullptr;
+PFN_vkGetQueryPoolResults pResults = nullptr;
+std::atomic<uint32_t> next{0};
+struct Pending {
+    CmdSlot* slot;
+    uint32_t i;
+    uint64_t present;
+};
+std::mutex mu;
+std::vector<Pending> pending;
+struct Row {
+    uint64_t present, v[3];
+    bool ok;
+};
+std::vector<Row> rows;
+uint64_t most_fs = 0;
+
+uint64_t key() {
+    static const uint64_t k = [] {
+        const char* v = dbg_value("progprobe");
+        return v ? std::strtoull(v, nullptr, 16) : 0ull;
+    }();
+    return k;
+}
+bool ready() {
+    static const bool ok = [] {
+        pCreate = (PFN_vkCreateQueryPool)vkGetDeviceProcAddr(dev.device, "vkCreateQueryPool");
+        pReset = (PFN_vkResetQueryPool)vkGetDeviceProcAddr(dev.device, "vkResetQueryPool");
+        pBegin = (PFN_vkCmdBeginQuery)vkGetDeviceProcAddr(dev.device, "vkCmdBeginQuery");
+        pEnd = (PFN_vkCmdEndQuery)vkGetDeviceProcAddr(dev.device, "vkCmdEndQuery");
+        pResults = (PFN_vkGetQueryPoolResults)vkGetDeviceProcAddr(dev.device, "vkGetQueryPoolResults");
+        if (!dev.features.pipelineStatisticsQuery || !pCreate || !pReset || !pBegin || !pEnd || !pResults) return logf("direct: progprobe: no pipeline statistics queries"), false;
+        VkQueryPoolCreateInfo ci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        ci.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+        ci.queryCount = kQueries;
+        ci.pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT | VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
+                                VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
+        if (pCreate(dev.device, &ci, nullptr, &pool) != VK_SUCCESS) return logf("direct: progprobe: the query pool was not made"), false;
+        pReset(dev.device, pool, 0, kQueries);
+        logf("direct: progprobe: program %016llx's mesh draws in a 128 x 128 box, no depth or stencil test, a plain fragment stage, a pipeline "
+             "statistics query each (present:clipper in/clipper out/fragments)", (unsigned long long)key());
+        return true;
+    }();
+    return ok;
+}
+uint32_t begin(VkCommandBuffer cb, CmdSlot* slot) {
+    const uint32_t i = next.fetch_add(1, std::memory_order_relaxed) % kQueries;
+    {
+        std::lock_guard lk(mu);
+        for (const Pending& q : pending)
+            if (q.i == i) return ~0u;   // (the ring has come round to a query not read yet)
+        pending.push_back({slot, i, present_count()});
+    }
+    pBegin(cb, pool, i, 0);
+    return i;
+}
+void flush_rows() {   // (mu held)
+    if (rows.empty()) return;
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.present < b.present; });
+    char b[900];
+    int k = 0;
+    for (const Row& r : rows) {
+        if (r.ok) k += std::snprintf(b + k, sizeof b - k, " %llu:%llu/%llu/%llu", (unsigned long long)r.present, (unsigned long long)r.v[0],
+                                     (unsigned long long)r.v[1], (unsigned long long)r.v[2]);
+        else k += std::snprintf(b + k, sizeof b - k, " %llu:-", (unsigned long long)r.present);
+    }
+    logf("direct: progprobe %016llx%s (most fragments so far %llu)", (unsigned long long)key(), b, (unsigned long long)most_fs);
+    rows.clear();
+}
+}  // namespace probe
+
+void draw_probe_slot(CmdSlot* s) {
+    if (!probe::key() || !probe::pool) return;
+    std::lock_guard lk(probe::mu);
+    for (size_t i = 0; i < probe::pending.size();) {
+        const probe::Pending q = probe::pending[i];
+        if (q.slot != s) {
+            i++;
+            continue;
+        }
+        uint64_t v[4]{};
+        probe::pResults(dev.device, probe::pool, q.i, 1, sizeof v, v, sizeof v, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        probe::pReset(dev.device, probe::pool, q.i, 1);
+        probe::rows.push_back({q.present, {v[0], v[1], v[2]}, v[3] != 0});
+        if (v[3] && v[2] > probe::most_fs) {
+            probe::most_fs = v[2];
+            if (v[2] > 200000)
+                logf("direct: progprobe %016llx: present %llu: %llu fragments in the box (%.1f times its 16384 pixels), clipper in %llu out %llu",
+                     (unsigned long long)probe::key(), (unsigned long long)q.present, (unsigned long long)v[2], v[2] / 16384.0,
+                     (unsigned long long)v[0], (unsigned long long)v[1]);
+        }
+        probe::pending[i] = probe::pending.back(), probe::pending.pop_back();
+    }
+    if (probe::rows.size() >= 8) probe::flush_rows();
+}
+
 void draw_list_free(List* l) {
     delete l->dctx;
     l->dctx = nullptr;
@@ -1355,7 +1464,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             const char* v = dbg_value("progfs");
             return v ? std::strtoull(v, nullptr, 16) : 0ull;
         }();
-        if (prog_fs && prog->key == prog_fs && p.n == 1 && ct[0] == 0) {
+        if (((prog_fs && prog->key == prog_fs) || (probe::key() && prog->key == probe::key() && mesh)) && p.n == 1 && ct[0] == 0) {
             static VkShaderEXT plain = [] {
                 VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
                 ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
@@ -1370,6 +1479,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             if (plain) want_fs = plain;
         }
     }
+    const bool probed = mesh && probe::key() && prog->key == probe::key() && want_fs != prog->fs && probe::ready();
     if (!x.shaders || x.vs != want_vs || x.fs != want_fs || x.ms != want_ms) {
         // (every graphics stage the device has: the ones the program has not bound to none; never a task stage)
         VkShaderStageFlagBits st[6] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
@@ -1490,12 +1600,24 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             vkCmdSetScissorWithCount(cb, 1, &px);
         }
         if (prog->task && tm_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
+        uint32_t pq = ~0u;
+        if (probed) {   // (HOS_DBG=progprobe)
+            const VkRect2D box{{std::max(0, (int)p.w / 2 - 64), std::max(0, (int)p.h / 2 - 64)}, {std::min<uint32_t>(128, p.w), std::min<uint32_t>(128, p.h)}};
+            vkCmdSetScissorWithCount(cb, 1, &box);
+            vkCmdSetDepthTestEnable(cb, VK_FALSE), vkCmdSetDepthWriteEnable(cb, VK_FALSE), vkCmdSetStencilTestEnable(cb, VK_FALSE);
+            pq = probe::begin(cb, l->slot);
+        }
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
         if ((prog->task && tm_discard) || one_discard) vkCmdSetRasterizerDiscardEnable(cb, x.dyn.discard);
         if (one_scissor) vkCmdSetScissorWithCount(cb, 1, &x.dyn.sc);
+        if (probed) {
+            if (pq != ~0u) probe::pEnd(cb, probe::pool, pq);
+            vkCmdSetScissorWithCount(cb, 1, &x.dyn.sc);
+            vkCmdSetDepthTestEnable(cb, x.dyn.dt), vkCmdSetDepthWriteEnable(cb, x.dyn.dw), vkCmdSetStencilTestEnable(cb, x.dyn.st);
+        }
         if (prog->task && tm_after) drain();
         x.last_tm = prog->task;
         if (pstats_on()) pstat_after(cb, ps);

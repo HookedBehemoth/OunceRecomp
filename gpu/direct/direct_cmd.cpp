@@ -5,6 +5,7 @@
 
 #include "direct_check.h"
 #include "direct_cmd.h"
+#include "direct_draw.h"
 #include "direct_lists.h"
 
 namespace hsd {
@@ -112,6 +113,7 @@ CmdSlot* cmd_slot_take() {
             }
             vkResetCommandPool(dev.device, s.pool, 0);
             task_check_slot(&s);
+            draw_probe_slot(&s);   // (HOS_DBG=progprobe)
             arena_reset(s.arena);
             query_slot_reset(s.q);
             task_pool_reset(s.task);
