@@ -56,7 +56,8 @@ struct Image {
     // storage of (a transient target) lives on while a descriptor id still names it (the game samples it through that id
     // in lists recorded after the free) and goes once every such id names another texture
     mutable std::atomic<int> heap_refs{0};
-    bool wait_heap = false;   // (M6f: of the textures over it, those agl holds in its LRU cache)
+    bool wait_heap = false;   // (M6f: a freed transient target's image: destroyed only once no descriptor id names it (the
+                              // game samples such targets through ids it registered before the free, without telling))
     uint64_t dead_present = 0, dead_value = 0;
     std::mutex views_mu;
     std::unordered_map<uint64_t, VkImageView> views;

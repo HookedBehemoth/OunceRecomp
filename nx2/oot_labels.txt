@@ -16,7 +16,7 @@
 80798920 gfx_texture_initialize           # docs/direct/texture-streaming.md, work/assets/native/asset-path.md: nn::gfx TextureImpl::Initialize (also the in-place paths) # ? was texdata_load_in_place_c
 80798a20 gfx_texture_view_initialize      # docs/direct/texture-streaming.md: TextureView init (SetLevels, SetLayers)
 8051d820 texdata_alloc                    # docs/direct/texture-streaming.md: a td from "aglTextureDataMgr::Unit", evicts the LRU when full
-80797240 texdata_cache_reject_per_frame   # docs/direct/texture-streaming.md: evicts while the heap has < TextureCacheRejectionThreshold free
+80797240 texdata_cache_reject_per_frame   # docs/direct/texture-streaming.md, host/direct_texdata.c: evicts while the heap has < TextureCacheRejectionThreshold free (M6f: patched by free VRAM)
 80798690 texdata_copy_texels              # docs/direct/texture-streaming.md, host/direct_assets.c: agl::TextureData::loadImage_, the memcpy of the whole image (hooked)
 80bd22b0 texdata_copy_to_buffer           # work/assets/native/block-linear.md: its own CopyTextureToBuffer + submit (capture)
 8353d560 texdata_cpu_copy_region          # work/assets/native/block-linear.md: ReadTexels from one texture, WriteTexels into another
@@ -76,7 +76,7 @@
 807da590 texheap_compaction_start         # docs/direct/texture-streaming.md: the policy for starting a new compaction
 807da3f0 texheap_compaction_thread        # docs/direct/texture-streaming.md: aglTextureDataMgr::Compaction thread handler
 807da480 texheap_compaction_worker        # docs/direct/texture-streaming.md, host/direct_assets.c: the compaction step (states 0-3)
-8079aa20 texheap_mark_evictable           # docs/direct/texture-streaming.md: (slot, 1) evictable / (slot, 0) in use
+8079aa20 texheap_mark_evictable           # docs/direct/texture-streaming.md, docs/direct/m6f-report.md 3: (&td->slot = td+0x18, 1) to the LRU cache / (.., 0) taken back (hooked)
 83538b70 texheap_owner_tag                # docs/direct/texture-streaming.md: a block's owner tag
 8051d560 texres_acquire                   # docs/direct/texture-streaming.md: (mgr, BRTI, key, listener): lookup, refcount, unlinks from the LRU
 8083b770 texres_bake_lod_a                # docs/direct/texture-streaming.md: IsEnableBakeTextureLOD (INFERRED from names)

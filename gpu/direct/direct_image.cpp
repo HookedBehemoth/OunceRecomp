@@ -414,6 +414,7 @@ void let_go(const nvn_tex* t, const Key& k) {
     auto it = images.find(k);
     if (it == images.end()) return;
     Image* im = it->second.get();
+    if (!t) im->wait_heap = true;   // (M6f: a freed transient target's: it waits for the descriptor ids that name it)
     if (im->refs > 0 && --im->refs == 0) {
         im->dead_present = present_count() + 1;
         dying.push_back(im);
@@ -733,6 +734,11 @@ void image_sweep(uint64_t present) {
         bool gone = false;
         if (im->refs > 0 || !im->dead_present) {
             dying[i] = dying.back(), dying.pop_back();   // (revived)
+            im->wait_heap = false;
+            continue;
+        }
+        if (im->wait_heap && im->heap_refs.load(std::memory_order_relaxed) > 0) {   // (M6f: a descriptor id still names it)
+            i++;
             continue;
         }
         if (present >= im->dead_present + 8) {   // (8 presents for the lists that name it to be sent, then the GPU done)
