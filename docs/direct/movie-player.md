@@ -1,0 +1,34 @@
+# The game's movie player (guest code, 0x83b5e5c0 and 0x83b7bff0..0x83b83513)
+
+Read from the lift with `work/ghidra/decomp.sh` (title movie, intro). The movie files are AV1, video only; their sound is a
+separate `Sound/Resource/Stream/Dm_*.bwav` the sound system plays. Labels are in `nx2/oot_labels.txt` (`movie_`, `ndve_`).
+
+## Who calls whom
+- `f_83b5e5c0` (event movie component start): takes the movie's path from the component and an NDVE resource (the component's
+  +0x228 resource, found by `f_801b1520`; null when there is none), then `f_83b7c020`.
+- `f_83b7c020` (`movie_module_play`): makes the player (`f_83b7c940` allocates 0x468 bytes, `f_83b7cec0` constructs it), hands it
+  the NDVE resource with `f_83b7e4c0` (stored at player+0x460) and starts it with `f_83b7cd90` (`f_83b7cbd0` opens the file).
+- A message handler (`f_83b7d200`, the player's thread) takes the commands 8 (open: `nn::movie::Initialize`, decoder and renderer
+  set-up, start), 9 (close) and 10 (restart: `MediaExtractor::SeekTo(0)`, flush, start). Player state is the flag word at
+  player+0x450 (bit 0 playing, 6 open requested, 7 close requested, 8 restart requested, 9-11 a request in progress).
+- Each game update `f_83b7bff0` (`movie_module_update`) reads the game's frame time in seconds (`[0x84eb4b20]+0x18`) times 60 and
+  calls `f_83b7ca60` (`movie_frame_chooser`).
+
+## The frame chooser (measured from the decompile, not yet from a run)
+`f_83b7ca60(delta, module)`: `step = 60 / fps` (fps = player+0x324, 60 for these movies); `acc += delta`; `n = floor(acc / step)`
+(at least 1 before the first frame); `n` is capped by player+0x20; `acc -= step * n`; if `n > 0` it calls `f_83b7e180(player, n)`
+and adds `n` to a played counter. So the clock is the game's own frame time, not the sound and not the wall clock; frames
+that are late are dropped (`f_83b81ea0` pops `n` decoded frames from the queue at +0x198 and shows the last), nothing waits when
+early. A movie with an audio track uses `f_83b7e350` instead: `n` from the audio position minus the frame's time stamp (only
+when the player has an audio object at +0x2a8; these movies have none). At a steady 16.7 ms `delta` is about 1.0 and `n` is 1
+per update (a rounding error in `delta` can make it 0 then 2).
+`f_83b81ea0` also copies the shown frame's NV12 planes (`movie::VideoFrame::GetBuffer`) with `memcpy` into the double-buffered
+plane buffers (index at +0xb8) the renderer reads, and keeps the time stamp at +0xc0.
+
+## The renderer and the NDVE switch
+`f_83b7f500` makes the renderer: when the player's NDVE resource (+0x460) is non-null and has a size (+0x10), a 0x2f0-byte
+renderer (`f_83b82cd0`) and the NDVE object (`f_821056c0`, only if the network's input size equals the movie's; else the global
+byte at 0x84eb5f61 is set to 1 and NDVE is off); with no resource a 0x1c0-byte plain renderer (`f_83b819e0`). Its draw method
+(vtable +0x18): `f_83b83360` when NDVE is on (allocates "NDVE_Output", runs `f_821057e0`), `f_83b82450` otherwise (draws the two
+plane textures). Both are reached from `f_83b82250` (the plane copy). So "enhancement off" is: the NDVE resource argument of
+`f_83b7c020` is null.
