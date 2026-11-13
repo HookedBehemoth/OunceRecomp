@@ -12,7 +12,9 @@ and `spvscan.py` over the SPIR-V dumps in `spv/`, the offline IR of the grid com
 
 Verified (each by a check that could have failed, named):
 
-- **The market no longer loses the device** with the final build: PROOF_LINE
+- **The market no longer loses the device** with the final build: 5 of 5 runs of 240 s and one of 15 minutes survived
+  (`m6d_fin_mk1..5`, `m6d_fin_mklong`), against 13 of 13 runs lost within 22-111 s without a separation (M6c's 12 and this
+  stage's control `m6d_c1_marks`, the same build less the rule).
 - **What keeps it from losing the device** is that no two task+mesh draws' native mesh stages run at the same time. The rule
   now: a wait before every task+mesh draw (the framebuffer-local barrier a rendering may hold). This is a **mitigation, not
   the cause**: it explains that the loss goes away, not why two overlapping mesh stages lose the device.
@@ -27,6 +29,10 @@ Verified (each by a check that could have failed, named):
   `8df993dd` reads later, so all 627 corners were marked "unchanged" (-1.0, read back: 627 of 627), and the grid compute
   `3018813b` writes a tile whose four corners are all -1 negated. Placed before the job, the grid is the frozen back end's
   and Kokiri draws **684 a frame (frozen 685; direct before 1079)**.
+
+- **Validation** in the market with the final build: 0 errors, 0 warnings (`m6d_val_mk`). **Strict** in the market stops at
+  arming on a texture whose dump file is damaged (data, section 3); not clean.
+- **Not measured**: the wait's cost and the grid fix's gain in frame time (the machine was shared; section 1e).
 
 Suspected, not proven:
 - The loss is a fault of the driver or the hardware with two concurrent mesh workgroups of these mesh stages (nothing our side
@@ -47,7 +53,7 @@ Suspected, not proven:
 | m6d_c1_marks | `marks` alone: the control, same build | **lost** at present 487 (102 s, loss 1 below); open: task+mesh `691ce175`, `f69141e9` x2, `9d2bef11` in one job secondary |
 | m6d_fix_mk1..5 | the pair rule as the default (commit 78c56a2) | **survived** 5 of 5, 240 s each |
 | m6d_fin_mk1..5 | final build: the wait before every task+mesh draw + the grid fix (7c77749) | **survived** 5 of 5, 240 s each (60 fps) |
-| m6d_fin_mklong | final build, 15 minutes | LONG_RESULT |
+| m6d_fin_mklong | final build, 15 minutes | **survived** 900 s, 52,800 presents, 60 fps |
 
 So: with no separation the market lost the device in 13 of 13 runs (M6c 12, this stage's control 1); with any separation
 of two task+mesh draws it lost it in 0 of 14 runs (3 single-variant runs, 5 pair-rule runs, 5 + 1 final-rule runs). By variant: `tmsync` 1 of 1 survived, `tmsyncpair` 1 of 1, `tmlocal` (pair) 1 + 5 of 6, the
@@ -115,7 +121,10 @@ proof); the rules that were made default carry the 5 x 240 s and the 15-minute r
 - RADV's hang report of M6c (`m6c_mk_main_hang/radv_dump`): GRBM_STATUS 0xe7f10028 (GE, SPI, PA, SC, DB, CB busy, TA idle),
   the bound compute pipeline an internal query shader; the job secondaries (IB2) are not decoded by RADV and were not decoded
   here. Nothing in it names a wait our side owes.
-- With validation and synchronization validation the market ran clean before the loss (M6c); this stage's final build: VAL_LINE.
+- With validation and synchronization validation the market ran clean before the loss (M6c); this stage's final build
+  (`m6d_val_mk`, 150 s, `VK_LOADER_LAYERS_ENABLE=*validation`, synchronization validation on, no message limit): **0 errors, 0
+  warnings** (143 loader info lines), the layer proven loaded and its status message heard, no device loss; the
+  framebuffer-local barrier drew no message. (A check that could fail: M6b's run found a real warning this way.)
 - Nothing our side orders is missing that we know of: the implicated draws share no written memory (1b, 1c). The evidence
   points at the driver or the hardware: two concurrent mesh draws of these stages wedge the 3D pipe. **Not proven**: no
   reproducer outside the game yet (M6e builds the harness that replays pairs of these draws).
@@ -140,10 +149,28 @@ program is named. Why "before every one" and not "after another in the same comm
 default, 5 of 5 survived): two task+mesh draws can follow each other across job secondaries, across renderings and submits,
 or with an ordinary draw between them that does not drain the pipe; the event is in the queue's order, so a wait before
 each one keeps every pair apart wherever the previous one was recorded. Counted per frame (`of the drawn: task+mesh, after
-a wait for the work before it`): COUNT_LINE.
+a wait for the work before it`): market about 60.2 in job lists and 0.5 in
+  layer lists a frame (65 task+mesh draws a frame; the pair rule had separated about 55); Kokiri 17.9 a frame
+  (`m6d_t_k1_m6dmid_*`).
 
 Frame time, pacing off (`HOS_NO_PACING=1 HOS_FPS_TARGET=1000 HOS_FPS_MAX=240`), 100 s runs, the last six 600-present windows,
-alternated pairs: TIMING_HANG.
+alternated pairs: **NOT MEASURED.** The alternated runs (`m6d_t_k1_*`, `m6d_t_h1_m6dbase_1`, 100 s each, mean / p99 of the last six
+  600-present windows) were taken while four other agents shared the GPU and the CPU (builds, M6e's harness, M6f's runs):
+  the same build gave 12.8 to 29.8 ms. Raw rows, for the record only:
+
+  | run | build | mean / p99 ms |
+  |---|---|---|
+  | m6d_t_k1_m6dbase_1 | daa55ba (no wait, grid after the job) | 14.81 / 27.75 |
+  | m6d_t_k1_m6dmid_1 | ad92e20 (the wait, grid after the job) | 14.62 / 27.11 |
+  | m6d_t_k1_m6dbase_2 | daa55ba | 12.77 / 15.27 |
+  | m6d_t_k1_m6dmid_2 | ad92e20 | 29.76 / 85.18 |
+  | m6d_t_k1_m6dbase_3 | daa55ba | 25.91 / 123.30 |
+  | m6d_t_k1_m6dmid_3 | ad92e20 | 13.10 / 15.97 |
+  | m6d_t_h1_m6dbase_1 | daa55ba (HF) | 15.70 / 22.92 |
+
+  The wait's GPU and frame-time cost (Kokiri, HF, market) is not known; the coordinator measures it on an idle machine
+  after landing. The rest of the chain (HF pairs, the grid pairs, a market run) was stopped. With pacing on, the market ran
+  at 60.0 fps in every proof run (`m6d_fin_*`).
 
 ## 2. The negated occlusion grid
 
@@ -180,7 +207,8 @@ exactly the frozen order, which runs them between the job's items after its firs
 order needs the job cut at the dispatch (a job as two rendering secondaries with the dispatch between), not built. The
 grid and the draw count it gives match the frozen back end's to within the run-to-run difference (above).
 
-Frame time, Kokiri and HF, alternated pairs, pacing off (the barrier build against the final build): TIMING_GRID.
+Frame time, Kokiri and HF, alternated pairs, pacing off (the barrier build against the final build): **NOT MEASURED** (not run: the
+machine was shared, see 1e). The draw count fell from 1079 to 684 a frame in Kokiri, so a CPU saving is expected, not shown.
 
 ### c. The picture check's blind spot
 
@@ -194,7 +222,39 @@ kept as `noise_m6b.json`); the pass identities are unchanged (Kokiri 110 / 10 / 
 
 ## 3. Checks of the final build
 
-CHECKS
+All with the final build (7c77749 and the report), `HOS_GAME_STEP_PER_FRAME=1`, against the frozen goldens; "new" is this
+stage's metric (relative float floor, sign kept), "M6b" the same packed run compared with `--absolute-floor` and M6b's noise.
+
+| Check | Run | new metric | M6b metric | before this stage |
+|---|---|---|---|---|
+| market picture (`work/golden/market`, the first direct check of it) | `m6d_chk_market` | FAIL: 21 FAIL, 2 NO-NOISE, 239 MERGED, 73 PASS | FAIL: 15 | none (the market lost the device) |
+| Kokiri picture, first run | `m6d_chk_kokiri` | FAIL: 53 | FAIL: 38 | M6c 13 (M6b metric) |
+| Kokiri picture, second run | `m6d_chk_kokiri2` | FAIL: 21, 2 EXTRA, 9 UNSTABLE, 73 PASS | **FAIL: 8** | M6c 13 |
+| Kokiri picture, barrier build (grid still negated) | `m6d_chk_kokiri_mid` | FAIL: 26 | FAIL: 13 | |
+| HF picture | `m6d_chk_hf` | FAIL: 45, 2 MISSING, 1 EXTRA, 5 UNSTABLE | FAIL: 28 (+2 MISSING) | M6b 24 |
+| market strict (`HOS_DBG=strict`) | `m6d_st_mk` | **STOP, exit 86, at present 1200 (32 s)**: the placeholder texture sampled (below) | | none (lost first) |
+| market validation | `m6d_val_mk` | 0 errors, 0 warnings | | M6c: lost first |
+| Kokiri and HF survival | the checks above | no device loss (420 s each) | | |
+
+- **Kokiri's first run against its second**: in `m6d_chk_kokiri` Link stands at another spot at present 1500-2400 (shots),
+  which fails the lit chain over a quarter of its tiles. That spot is not caused by the change: the frozen back end itself put
+  Link there in `m6d_grid_f` (same overlay and settings), while the three golden runs all have him at the other spot. The
+  second run has Link where the goldens have him and fails **8** states under M6b's metric, against 13 for M6c's build and 13
+  for this stage's barrier build (`m6d_chk_kokiri_mid`): the grid fix removes 5 failing states, and the wait changes none.
+  So the check has a bimodal start (Link's spot) that the noise table does not cover: open.
+- **Why the new metric fails more states**: its floor for float targets is 2/255 of the target's own scale instead of 2/255, so
+  tiles of dark or small-valued float targets (the 1536x864 depth states, R32F/R16F 768x432 and 384x216, the dim B10G11R11F
+  mip chain 240x135 .. 30x16) that differed by less than 2/255 now count. Many of those fail by +0.0000-0.0002 absolute,
+  under 0.1% of their tiles: real but small differences that M6b's floor hid, not new faults. The two metrics are given
+  side by side so the numbers stay comparable with M6b/M6c.
+- **The strict stop**: `CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm` (heap id 4021, 512x512 BNTX 0x2f01), sampled through a
+  driver-bank handle by programs `46c14f8ee79c5349` and `d6dcafdb6d3e77e6` in the market after arming. Its file in this dump is
+  one of the three zero-headed files replaced by a stand-in (M6b section 2: the store has no record under that name), so the
+  back end draws the placeholder and strict stops, correctly. In Kokiri and HF it is never sampled after arming; in the market
+  it is. A data problem (re-dump the file or name its record), not caused here; strict was therefore not clean in the
+  market, and the survey run that would list any further events (`strict,strictall`) was not run (stopped for the landing).
+- HF fails 28 states under M6b's metric against M6b's 24 and 2 MISSING; whether the grid fix or HF's own run-to-run start
+  explains it was not checked (the barrier-build HF check was stopped before it ran): open.
 
 ## 4. Device losses
 
@@ -215,3 +275,17 @@ One loss of the budget of 12 was used. No configuration was run a second time af
 | The grid's dispatches before the job | `host/direct_job_sync.c` |
 | `gridlog`: the corner table and tile records | `host/direct_diag_grid.c` |
 | The relative floor, sign-kept HDR, `--absolute-floor`, selftest cases | `scripts/direct_picture_check.py`, `tests/test_direct_picture_check.py` |
+
+## 6. Open
+
+- Why two overlapping mesh stages of task+mesh programs lose the device (the wait is a mitigation). M6e's harness replays pairs
+  of these draws outside the game; the leads are in 1c. A Mesa report needs that reproducer with synthetic shaders and data (1d).
+- The wait's cost and the grid fix's gain in frame time: to be measured on an idle machine (Kokiri, HF, market).
+- The grid's dispatches run before the job, not between its items as in the frozen back end; exact would be the job cut at
+  the dispatch (2b).
+- Kokiri's check has a bimodal start (Link's spot) the noise table does not cover; HF's 28 against M6b's 24 not explained.
+- Market strict: the damaged `CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm` (re-dump, or a record under its name); the strict
+  survey of the market not run.
+- `HOS_DBG=tmsyncafter` exists but was never run.
+- Worktrees `work/wt/m6dbase` (daa55ba) and `work/wt/m6dmid` (ad92e20), the timing baselines, are left for the coordinator's
+  measurement (both commits are on `agent/m6d`).
