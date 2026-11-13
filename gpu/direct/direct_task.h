@@ -37,7 +37,5 @@ void task_list_end(List* l);
 void task_stats(char* out, size_t cap, double frames);
 /// (M6e, HOS_DBG=meshcap) the slot's task pool: its host mapping, device address and size (false: none)
 bool task_pool_span(CmdSlot* slot, const uint8_t*& host, uint64_t& dev, uint64_t& bytes);
-/// (HOS_DBG=tasklog:<present>) the present after it: that frame's task headers once the GPU has run it
-void task_log_after();
 
 }  // namespace hsd

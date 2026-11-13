@@ -403,14 +403,7 @@ void meshcap_after() {
     const Opt& o = opt();
     if (o.a < 0) return;
     const int64_t pc = (int64_t)present_count();
-    if (o.lost) {   // (meshcaplosttest:<present>, the loss path tried without a loss: the kept draws written as at a loss)
-        static const int64_t test = [] {
-            const char* v = dbg_value("meshcaplosttest");
-            return v ? atoll(v) : -1;
-        }();
-        if (test >= 0 && pc == test + 1) meshcap_lost((uint64_t)test - 1);
-        return;
-    }
+    if (o.lost) return;   // (nothing is read or written while the device lives)
     if (o.roll) {
         if (pc - 1 < o.a || pc - 1 > o.b) return;
         vkDeviceWaitIdle(dev.device);

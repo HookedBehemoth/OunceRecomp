@@ -19,7 +19,6 @@
 #include "direct_marks.h"
 #include "direct_pstats.h"
 #include "direct_meshcap.h"
-#include "shaders/diag_plain_frag_spv.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
 #include "direct_image.h"
@@ -89,7 +88,7 @@ enum Reason {
     R_DRAWN, R_MESH, R_TASK_MESH, R_NO_TARGETS, R_CONDITION, R_DISABLED, R_TOPOLOGY, R_QUADS, R_NO_PROGRAM, R_NOT_PARSED,
     R_NOT_GRAPHICS, R_TRANSLATING, R_FAILED, R_STEP_A, R_VERTEX_MEM, R_INDEX_MEM, R_INDEX_U8, R_UBO_MEM, R_ARENA,
     R_RESOLVED_JOB, R_RESOLVED_LOAD, R_RESOLVED_OTHER, R_DRAWN_INDIRECT, R_DRAWN_MESH, R_DRAWN_MESH_INDIRECT, R_KIND,
-    R_ARGS_MEM, R_MESH_STRIDE, R_MESH_DRY, R_TASK_STEP, R_TASK_MULTI, R_DRAWN_TASK, R_TASK_APART, R_COUNT
+    R_ARGS_MEM, R_MESH_STRIDE, R_TASK_STEP, R_TASK_MULTI, R_DRAWN_TASK, R_TASK_APART, R_COUNT
 };
 const char* const kReasons[R_COUNT] = {
     "drawn", "mesh draws without the device's mesh stage", "task+mesh programs that cannot be drawn (M4c)", "no render targets set in the list", "under a render condition (M5)",
@@ -99,7 +98,7 @@ const char* const kReasons[R_COUNT] = {
     "a uniform buffer not in layer 0", "the frame arena full", "resolved in a job list (no command buffer: M3)",
     "resolved in a load-time list (M3)", "resolved in an unclassified list", "of the drawn: indirect", "of the drawn: mesh, direct",
     "of the drawn: mesh, indirect", "a draw kind its program has no stage for", "indirect arguments or count not in layer 0",
-    "mesh argument records closer than 12 bytes", "mesh draws left out (HOS_DBG=meshdry)",
+    "mesh argument records closer than 12 bytes",
     "task+mesh draws whose task step was not recorded (M4c)", "task+mesh indirect draws of several records or with a count (M4c)",
     "of the drawn: task+mesh (a task step)",
     "of the drawn: task+mesh, after a wait for the work before it (M6d)"};
@@ -225,7 +224,6 @@ struct ListDraw {
     bool heap = false, dyn_valid = false, vi_valid = false, vb_valid = false, ib_valid = false, push_valid = false;
     VkShaderEXT vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE, ms = VK_NULL_HANDLE;
     bool shaders = false;
-    bool last_tm = false;    // (M6d, HOS_DBG=tmsyncpair: the last draw recorded in this command buffer was a task+mesh draw)
     uint32_t vb_bound = 0;   // (the vertex bindings given a buffer in this command buffer)
     Dyn dyn;
     uint64_t vi_sig = 0;
@@ -441,7 +439,7 @@ uint64_t mix(uint64_t h, uint64_t v) {
 void cb_fresh(ListDraw& d, VkCommandBuffer cb) {
     if (d.cb == cb) return;
     d.cb = cb;
-    d.heap = d.dyn_valid = d.vi_valid = d.vb_valid = d.ib_valid = d.push_valid = d.shaders = d.last_tm = false;
+    d.heap = d.dyn_valid = d.vi_valid = d.vb_valid = d.ib_valid = d.push_valid = d.shaders = false;
     d.vb_bound = 0;
 }
 
@@ -465,8 +463,6 @@ void set_dynamic(ListDraw& x, VkCommandBuffer cb, const DState& s, const PassRec
     d.bias_en = s.poly.offset_en != 0;
     d.cull = s.poly.cull == NVN_FACE_FRONT ? VK_CULL_MODE_FRONT_BIT : s.poly.cull == NVN_FACE_BACK ? VK_CULL_MODE_BACK_BIT
            : s.poly.cull == NVN_FACE_FRONT_AND_BACK ? VK_CULL_MODE_FRONT_AND_BACK : VK_CULL_MODE_NONE;
-    static const bool nocull = dbg("nocull");   // (HOS_DBG=nocull, a diagnosis: no face culled)
-    if (nocull) d.cull = VK_CULL_MODE_NONE;
     d.front = s.poly.front == NVN_FRONT_FACE_CCW ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;   // (the flipped viewport keeps the winding)
     d.topo = topo;
     d.restart = s.restart && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
@@ -1179,133 +1175,6 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
     }
 }
 
-// (the Hyrule Field hang) HOS_DBG=progprobe:<program key>, a diagnosis: what the GPU rasterizes of that program's mesh draws,
-// measured in the draw itself and made cheap whatever its triangles are. Each such draw goes into a box of 128 x 128 pixels
-// at the pass's centre with the depth and stencil tests off and a plain fragment stage (shaders/diag_plain.frag), inside a
-// pipeline statistics query: the primitives that reached the clipper, the primitives it output, and the fragments in the box
-// (every triangle over the box counts all of it). Read when the draw's slot is reset (the GPU past it), logged as
-// present:clipper in/clipper out/fragments, 8 draws a line. Triangles as the capture shows them (a few pixels each) leave the
-// box nearly empty; a draw whose mesh stage read other memory than the CPU later shows fills it thousands of times.
-namespace probe {
-constexpr uint32_t kQueries = 4096;
-VkQueryPool pool = VK_NULL_HANDLE;
-PFN_vkCreateQueryPool pCreate = nullptr;
-PFN_vkResetQueryPool pReset = nullptr;
-PFN_vkCmdBeginQuery pBegin = nullptr;
-PFN_vkCmdEndQuery pEnd = nullptr;
-PFN_vkGetQueryPoolResults pResults = nullptr;
-std::atomic<uint32_t> next{0};
-struct Pending {
-    CmdSlot* slot;
-    uint32_t i;
-    uint64_t present;
-};
-std::mutex mu;
-std::vector<Pending> pending;
-struct Row {
-    uint64_t present, v[3];
-    bool ok;
-};
-std::vector<Row> rows;
-uint64_t most_fs = 0;
-
-uint64_t key() {
-    static const uint64_t k = [] {
-        const char* v = dbg_value("progprobe");
-        return v ? std::strtoull(v, nullptr, 16) : 0ull;
-    }();
-    return k;
-}
-bool ready() {
-    static const bool ok = [] {
-        pCreate = (PFN_vkCreateQueryPool)vkGetDeviceProcAddr(dev.device, "vkCreateQueryPool");
-        pReset = (PFN_vkResetQueryPool)vkGetDeviceProcAddr(dev.device, "vkResetQueryPool");
-        pBegin = (PFN_vkCmdBeginQuery)vkGetDeviceProcAddr(dev.device, "vkCmdBeginQuery");
-        pEnd = (PFN_vkCmdEndQuery)vkGetDeviceProcAddr(dev.device, "vkCmdEndQuery");
-        pResults = (PFN_vkGetQueryPoolResults)vkGetDeviceProcAddr(dev.device, "vkGetQueryPoolResults");
-        if (!dev.features.pipelineStatisticsQuery || !pCreate || !pReset || !pBegin || !pEnd || !pResults) return logf("direct: progprobe: no pipeline statistics queries"), false;
-        VkQueryPoolCreateInfo ci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
-        ci.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
-        ci.queryCount = kQueries;
-        ci.pipelineStatistics = VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT | VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
-                                VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT;
-        if (pCreate(dev.device, &ci, nullptr, &pool) != VK_SUCCESS) return logf("direct: progprobe: the query pool was not made"), false;
-        pReset(dev.device, pool, 0, kQueries);
-        logf("direct: progprobe: program %016llx's mesh draws in a 128 x 128 box, no depth or stencil test, a plain fragment stage, a pipeline "
-             "statistics query each (present:clipper in/clipper out/fragments)", (unsigned long long)key());
-        return true;
-    }();
-    return ok;
-}
-uint32_t begin(VkCommandBuffer cb, CmdSlot* slot) {
-    const uint32_t i = next.fetch_add(1, std::memory_order_relaxed) % kQueries;
-    {
-        std::lock_guard lk(mu);
-        for (const Pending& q : pending)
-            if (q.i == i) return ~0u;   // (the ring has come round to a query not read yet)
-        pending.push_back({slot, i, present_count()});
-    }
-    pBegin(cb, pool, i, 0);
-    return i;
-}
-void flush_rows() {   // (mu held)
-    if (rows.empty()) return;
-    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.present < b.present; });
-    char b[900];
-    int k = 0;
-    for (const Row& r : rows) {
-        if (r.ok) k += std::snprintf(b + k, sizeof b - k, " %llu:%llu/%llu/%llu", (unsigned long long)r.present, (unsigned long long)r.v[0],
-                                     (unsigned long long)r.v[1], (unsigned long long)r.v[2]);
-        else k += std::snprintf(b + k, sizeof b - k, " %llu:-", (unsigned long long)r.present);
-    }
-    logf("direct: progprobe %016llx%s (most fragments so far %llu)", (unsigned long long)key(), b, (unsigned long long)most_fs);
-    rows.clear();
-}
-}  // namespace probe
-
-/// A program key given to a diagnosis (HOS_DBG=<name>:<key in hex>); 0: not set
-uint64_t dbg_key(const char* name) {
-    const char* v = dbg_value(name);
-    return v ? std::strtoull(v, nullptr, 16) : 0ull;
-}
-/// (HOS_DBG=progfs, progprobe) the plain fragment stage: shaders/diag_plain.frag
-VkShaderEXT diag_plain_fs() {
-    VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
-    ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
-    ci.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
-    ci.codeSize = sizeof diag_plain_frag_spv, ci.pCode = diag_plain_frag_spv, ci.pName = "main";
-    VkShaderEXT o = VK_NULL_HANDLE;
-    const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &o);
-    logf("direct: the plain fragment stage (HOS_DBG=progfs, progprobe) %s (%d)", r == VK_SUCCESS ? "made" : "NOT MADE", (int)r);
-    return o;
-}
-
-void draw_probe_slot(CmdSlot* s) {
-    if (!probe::key() || !probe::pool) return;
-    std::lock_guard lk(probe::mu);
-    for (size_t i = 0; i < probe::pending.size();) {
-        const probe::Pending q = probe::pending[i];
-        if (q.slot != s) {
-            i++;
-            continue;
-        }
-        uint64_t v[4]{};
-        probe::pResults(dev.device, probe::pool, q.i, 1, sizeof v, v, sizeof v, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
-        probe::pReset(dev.device, probe::pool, q.i, 1);
-        probe::rows.push_back({q.present, {v[0], v[1], v[2]}, v[3] != 0});
-        if (v[3] && v[2] > probe::most_fs) {
-            probe::most_fs = v[2];
-            if (v[2] > 200000)
-                logf("direct: progprobe %016llx: present %llu: %llu fragments in the box (%.1f times its 16384 pixels), clipper in %llu out %llu",
-                     (unsigned long long)probe::key(), (unsigned long long)q.present, (unsigned long long)v[2], v[2] / 16384.0,
-                     (unsigned long long)v[0], (unsigned long long)v[1]);
-        }
-        probe::pending[i] = probe::pending.back(), probe::pending.pop_back();
-    }
-    if (probe::rows.size() >= 8) probe::flush_rows();
-}
-
 void draw_list_free(List* l) {
     if (l->dctx) mem_account_main(MO_M_LISTS, -(int64_t)sizeof(ListDraw));
     delete l->dctx;
@@ -1467,8 +1336,6 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     VkBuffer task_hb = VK_NULL_HANDLE;
     VkDeviceSize task_ho = 0;
     if (prog->task) {
-        static const bool dry = dbg("taskdry");   // (HOS_DBG=taskdry, a bring-up aid: the task+mesh draws resolved, nothing recorded)
-        if (dry) return count(l, R_MESH_DRY);
         const char* twhy = nullptr;
         if (!task_step(l, *prog, mesh_ind, dm.indirect, mesh_ind ? 0u : (uint32_t)std::max(dm.x, 0), mesh_ind ? 0u : (uint32_t)std::max(dm.y, 0),
                        push, task_hb, task_ho, twhy)) {
@@ -1481,17 +1348,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     // (recorded)
     if (!x.heap) heap_bind(cb), x.heap = true;
     const VkShaderEXT want_vs = mesh ? VK_NULL_HANDLE : prog->vs, want_ms = mesh ? prog->ms : VK_NULL_HANDLE;
-    // (HOS_DBG=progfs:<key>, a diagnosis (the Hyrule Field hang): that program's draws into one float colour target with a
-    // fragment stage of ours that writes a constant: shaders/diag_plain.frag)
-    VkShaderEXT want_fs = prog->fs;
-    {
-        static const uint64_t prog_fs = dbg_key("progfs");
-        if (((prog_fs && prog->key == prog_fs) || (probe::key() && prog->key == probe::key() && mesh)) && p.n == 1 && ct[0] == 0) {
-            static const VkShaderEXT plain = diag_plain_fs();
-            if (plain) want_fs = plain;
-        }
-    }
-    const bool probed = mesh && probe::key() && prog->key == probe::key() && want_fs != prog->fs && probe::ready();
+    const VkShaderEXT want_fs = prog->fs;
     if (!x.shaders || x.vs != want_vs || x.fs != want_fs || x.ms != want_ms) {
         // (every graphics stage the device has: the ones the program has not bound to none; never a task stage)
         VkShaderStageFlagBits st[6] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
@@ -1548,20 +1405,15 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                  (unsigned long long)prog->codes[2], (void*)prog->ms, (void*)prog->fs, mesh_ind ? "indirect" : "direct",
                  l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count());
         if (meshcap_now(prog->key)) meshcap_mesh(l, x, *prog, push, mesh_ind, dm, nargs, stride, gated, task_hb, task_ho, cb);   // (M6e)
-        static const bool dry = dbg("meshdry");   // (HOS_DBG=meshdry, a bring-up aid: everything but the mesh draw itself)
-        if (dry) return count(l, R_MESH_DRY);
         drawlog(l, gated ? (prog->task ? mesh_ind ? "drawn gated task+mesh indirect" : "drawn gated task+mesh" : mesh_ind ? "drawn gated mesh indirect" : "drawn gated mesh")
                          : (prog->task ? mesh_ind ? "drawn task+mesh indirect" : "drawn task+mesh" : mesh_ind ? "drawn mesh indirect" : "drawn mesh"), prog, &x.dyn,
                 mesh_ind ? nargs : (uint32_t)dm.y);
         const uint32_t mk = marks_on() ? mark_before(cb, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw", prog->key,
                                                      l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: HOS_DBG=marks)
         if (marks_on() && prog->task) mark_header(mk, task_last_header);
-        // (M6d's wait before every task+mesh draw, now a diagnosis: HOS_DBG=tmwait. It kept two task+mesh draws' mesh stages from
-        // overlapping (the framebuffer-local barrier a rendering may hold: RADV records a PS partial flush), which ended the
-        // market's device loss, cause then unknown. The cause was one mesh stage, 40d0c0768e874600, as RADV compiled the
-        // translator's SPIR-V: with register spills to scratch (docs/direct/hf-fix-report.md). That stage is drawn with a
-        // hand-written one now (direct_meshrepl.h) and the market ran 240 s twice and 15 minutes without the wait)
-        static const bool mesh_wait = dbg("meshwait");   // (HOS_DBG=meshwait, a diagnosis: the same wait before mesh-only draws too)
+        // (HOS_DBG=tmwait: a framebuffer-local barrier before every task+mesh draw, so that no two task+mesh draws' mesh stages
+        // overlap; a lever for a mesh stage that hangs the device, which the translator's late scheduling and the hand-written
+        // stages (direct_meshrepl.h) are meant to prevent)
         const auto apart = [cb] {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1575,57 +1427,13 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             vkCmdPipelineBarrier2(cb, &d);
         };
         static const bool tm_wait = dbg("tmwait");
-        if ((prog->task && tm_wait) || mesh_wait) apart(), sub(l, R_TASK_APART);
-        // (M6d, the diagnoses that found it, one at a time: a full barrier inside the rendering, which Vulkan does not allow there
-        // and RADV records as the wait it is (VS and PS partial flushes): tmsync before each task+mesh draw, tmsyncafter after it,
-        // tmsyncpair only before one whose previous draw in this command buffer was a task+mesh draw too)
-        static const bool tm_before = dbg("tmsync"), tm_after = dbg("tmsyncafter"), tm_pair = dbg("tmsyncpair");
-        const auto drain = [cb] {
-            VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-            b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
-            b.srcAccessMask = b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-            VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-            d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
-            vkCmdPipelineBarrier2(cb, &d);
-        };
-        if (prog->task && (tm_before || (tm_pair && x.last_tm))) drain();
+        if (prog->task && tm_wait) apart(), sub(l, R_TASK_APART);
         const uint32_t ps = pstats_on() ? pstat_before(cb, pstat_what(l, *prog, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw",
                                                                       mesh_ind ? nargs : (uint32_t)std::max(dm.y, 0), 1, gated)) : ~0u;   // (M6h)
-        // (HOS_DBG=tmdiscard, a diagnosis: a task+mesh draw's mesh stage runs and nothing of it is rasterized: tells a mesh
-        // stage that does not finish from triangles that take too long to fill. 2026-11-13: a wait after a task+mesh draw,
-        // local or full, did not end the loss at the Kokiri-Hyrule Field change (hang_hf_fix1, fix2, marks2) and is not kept)
-        static const bool tm_discard = dbg("tmdiscard");
-        // (the Hyrule Field hang, docs/direct/hf-hang-report.md: diagnoses for one program's mesh draws, by its key:
-        // progdiscard:<key> its draws with the rasterizer off; progscissor:<key> a scissor of one pixel (every triangle set up
-        // and clipped, one pixel filled))
-        static const uint64_t prog_discard = dbg_key("progdiscard"), prog_scissor = dbg_key("progscissor");
-        const bool one_discard = prog_discard && prog->key == prog_discard, one_scissor = prog_scissor && prog->key == prog_scissor;
-        if (one_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
-        if (one_scissor) {
-            const VkRect2D px{{0, 0}, {1, 1}};
-            vkCmdSetScissorWithCount(cb, 1, &px);
-        }
-        if (prog->task && tm_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
-        uint32_t pq = ~0u;
-        if (probed) {   // (HOS_DBG=progprobe)
-            const VkRect2D box{{std::max(0, (int)p.w / 2 - 64), std::max(0, (int)p.h / 2 - 64)}, {std::min<uint32_t>(128, p.w), std::min<uint32_t>(128, p.h)}};
-            vkCmdSetScissorWithCount(cb, 1, &box);
-            vkCmdSetDepthTestEnable(cb, VK_FALSE), vkCmdSetDepthWriteEnable(cb, VK_FALSE), vkCmdSetStencilTestEnable(cb, VK_FALSE);
-            pq = probe::begin(cb, l->slot);
-        }
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
-        if ((prog->task && tm_discard) || one_discard) vkCmdSetRasterizerDiscardEnable(cb, x.dyn.discard);
-        if (one_scissor) vkCmdSetScissorWithCount(cb, 1, &x.dyn.sc);
-        if (probed) {
-            if (pq != ~0u) probe::pEnd(cb, probe::pool, pq);
-            vkCmdSetScissorWithCount(cb, 1, &x.dyn.sc);
-            vkCmdSetDepthTestEnable(cb, x.dyn.dt), vkCmdSetDepthWriteEnable(cb, x.dyn.dw), vkCmdSetStencilTestEnable(cb, x.dyn.st);
-        }
-        if (prog->task && tm_after) drain();
-        x.last_tm = prog->task;
         if (pstats_on()) pstat_after(cb, ps);
         if (marks_on()) mark_after(cb, mk);
         l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
@@ -1661,7 +1469,6 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     } else {
         vkCmdDraw(cb, (uint32_t)dr.count, (uint32_t)std::max(1, dr.instances), (uint32_t)dr.first, (uint32_t)dr.base_instance);
     }
-    x.last_tm = false;
     if (pstats_on()) pstat_after(cb, ps);
     if (marks_on()) mark_after(cb, mk);
     l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
