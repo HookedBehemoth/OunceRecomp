@@ -726,7 +726,8 @@ void image_sweep(uint64_t present) {
     {   // (M6f: what the images waiting to die hold: VRAM already given back, for the free VRAM the host reads)
         int64_t b = 0;
         for (const Image* im : dying)
-            if (!im->refs && im->dead_present) b += (int64_t)mem_size(im->mem);
+            if (!im->refs && im->dead_present && !(im->wait_heap && im->heap_refs.load(std::memory_order_relaxed) > 0))
+                b += (int64_t)mem_size(im->mem);   // (not those a descriptor id still pins)
         dying_bytes.store(b, std::memory_order_relaxed);
     }
     for (size_t i = 0; i < dying.size();) {
