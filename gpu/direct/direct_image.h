@@ -59,6 +59,10 @@ enum : uint8_t { W_ATTACHMENT = 1, W_COPY = 2, W_TEXELS = 4, W_CLEAR = 8, W_STOR
 
 void image_texture_created(const nvn_tex* t);
 void image_texture_released(const nvn_tex* t);
+/// (M6f) The game freed t's storage without finalizing it (hsd_texture_freed): its hold on its image ends as at a release; the
+/// object's later release (initialized again, finalized) is then not counted twice, and a registration before it holds it again
+void image_texture_freed(const nvn_tex* t);
+void image_texture_held(const nvn_tex* t);   // (M6f) taken again after such a free: held again (made again if it went)
 void image_texture_registered(const nvn_tex* t);
 /// The image of an NVN texture (the placeholder when it has none this GPU can hold; null: a buffer texture or none made)
 Image* image_find(const nvn_tex* t);

@@ -269,6 +269,16 @@ void texture_created(const nvn_tex* t) {
     count(R_TEX_MADE);
     image_texture_created(t);
 }
+}  // namespace
+}  // namespace hsd
+extern "C" __attribute__((visibility("default"))) void hsd_texture_freed(const void* t) {   // (M6f)
+    hsd::image_texture_freed((const nvn_tex*)t);
+}
+extern "C" __attribute__((visibility("default"))) void hsd_texture_held(const void* t) {   // (M6f)
+    hsd::image_texture_held((const nvn_tex*)t);
+}
+namespace hsd {
+namespace {
 void program_set(const nvn_prog* p) {
     count(R_PROG_SET);
     shader_program_set(p);

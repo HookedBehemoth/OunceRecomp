@@ -72,6 +72,14 @@ void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer
 int  hsd_pass_known(uint64_t key);
 void hsd_pass_inline(void *list, uint64_t key);
 
+/* (M6f) The game freed tex's storage without finalizing it (agl::utl::DynamicTextureAllocator's free of the entry it was
+   made for: host/rt_slots.c): its content is gone; the back end lets go of its image as at a finalize. A later
+   initialization or finalize of the same object is then not a second release; a registration of it before that holds
+   the image again */
+void hsd_texture_freed(const void *tex);
+void hsd_texture_held(const void *tex);   /* (M6f) the game took a texture it freed again, as it was (its allocator's entry
+                                             given back with the same storage): the image is held again */
+
 /* (M4d) Shots of the presented frame: every `every` presents a 1280x720 PNG of what is shown, <dir>/vk_<present>.png (the
    host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, the frozen back end's names). Called once, before the renderer starts */
 void hsd_shots(const char *dir, int every);

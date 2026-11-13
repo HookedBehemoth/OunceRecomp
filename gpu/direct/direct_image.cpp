@@ -8,6 +8,7 @@
 #include <cstring>
 #include <memory>
 #include <shared_mutex>
+#include <unordered_set>
 #include <vector>
 
 #include "direct_check.h"
@@ -77,6 +78,20 @@ struct KeyHash {
 std::shared_mutex images_mu;   // (the table, each image's refs and death)
 std::unordered_map<Key, std::unique_ptr<Image>, KeyHash> images;
 std::vector<Image*> dying;   // (refs 0: destroyed by image_sweep)
+// (M6f) Textures whose storage the game freed without finalizing them (hsd_texture_freed). Such a texture keeps its image
+// while its storage keeps its texels (the game samples a freed transient target later in the frame: its memory is only
+// reused once the allocator gives it out again): pending, by serial, with its key and storage range. A new image made over
+// storage overlapping a pending one's is that reuse: the pending texture lets go of its image then (freed: its object's
+// later release is not counted twice). Taken again by the game (its allocator, a registration) before or after: held.
+struct Pending {
+    Key k;
+    uint64_t lo, hi;
+};
+std::unordered_map<uint64_t, Pending> pending;   // (images_mu)
+std::unordered_set<uint64_t> freed;              // (images_mu)
+std::atomic<size_t> n_freed{0};   // (pending + freed, read without the lock)
+std::atomic<int64_t> st_freed{0}, st_freed_reused{0}, st_freed_again{0}, st_freed_held{0};
+void storage_reused(const nvn_tex* t);   // (below)
 Image placeholder;   // (one 1x1 RGBA8 image, for every texture that has none: copies and attachments skip it)
 std::once_flag placeholder_once;
 uint32_t next_id = 1;
@@ -309,6 +324,7 @@ Image* make_asset(const nvn_tex* t, const Key& k, const AssetDesc& d, uint32_t r
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    const ObjectsFor objects_for("an image of a texture the game loaded (its prepared content)");   // (M6f)
     if (!mem_image(ci, im.image, im.mem)) return name_placeholder(t, "no memory for its prepared image", st_ph_refused), &placeholder;
     im.id = next_id++;
     st_made.fetch_add(1, std::memory_order_relaxed);
@@ -339,6 +355,7 @@ Image* get(const nvn_tex* t) {
     if (kind == K_ASSET) return make_asset(t, k, d, a.rec);
     Image* im = make(t, k, fi, bw, bh, bpb);
     if (kind == K_LINKED_PLAIN && im && !im->placeholder) im->no_data = true;
+    if (im && !im->placeholder && n_freed.load(std::memory_order_relaxed)) storage_reused(t);   // (M6f)
     return im;
 }
 
@@ -390,11 +407,67 @@ void image_texture_created(const nvn_tex* t) {
     }
 }
 
+namespace {
+/// t's hold on its image let go (images_mu held)
+void let_go(const nvn_tex* t, const Key& k) {
+    auto it = images.find(k);
+    if (it == images.end()) return;
+    Image* im = it->second.get();
+    if (im->refs > 0 && --im->refs == 0) {
+        im->dead_present = present_count() + 1;
+        dying.push_back(im);
+    }
+}
+}  // namespace
+
+void image_texture_freed(const nvn_tex* t) {
+    if (!t || !t->serial || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return;
+    Key k;
+    FormatInfo fi;
+    int bw, bh, bpb;
+    const int kind = key_of(t, k, fi, bw, bh, bpb);
+    if (kind != K_PLAIN && kind != K_ASSET && kind != K_LINKED_PLAIN) return;
+    std::unique_lock lk(images_mu);
+    if (freed.count(t->serial) || !pending.emplace(t->serial, Pending{k, t->gpu, t->gpu + std::max<uint64_t>(t->L.size, 1)}).second) return;
+    n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
+    st_freed.fetch_add(1, std::memory_order_relaxed);
+}
+
+namespace {
+/// t's image made over storage: pending textures over storage it overlaps let go of theirs (images_mu held)
+void storage_reused(const nvn_tex* t) {
+    const uint64_t lo = t->gpu, hi = t->gpu + std::max<uint64_t>(t->L.size, 1);
+    for (auto it = pending.begin(); it != pending.end();) {
+        if (it->first != t->serial && it->second.lo < hi && lo < it->second.hi) {
+            let_go(nullptr, it->second.k);
+            freed.insert(it->first);
+            st_freed_reused.fetch_add(1, std::memory_order_relaxed);
+            it = pending.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
+}
+}  // namespace
+
 void image_texture_released(const nvn_tex* t) {
     Key k;
     FormatInfo fi;
     int bw, bh, bpb;
     const int kind = key_of(t, k, fi, bw, bh, bpb);
+    if (t && t->serial && n_freed.load(std::memory_order_relaxed)) {   // (M6f: let go of already, at the reuse of its storage)
+        std::unique_lock lk(images_mu);
+        pending.erase(t->serial);   // (still held: released below as any texture)
+        n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
+        if (freed.erase(t->serial)) {
+            n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
+            st_freed_again.fetch_add(1, std::memory_order_relaxed);
+            lk.unlock();
+            if (kind == K_ASSET || kind == K_ASSET_MISS || kind == K_LINKED_PLAIN) assets_released(t);
+            return;
+        }
+    }
     if (kind == K_PLAIN || kind == K_ASSET || kind == K_LINKED_PLAIN) {
         std::unique_lock lk(images_mu);
         auto it = images.find(k);
@@ -434,8 +507,36 @@ VkComponentMapping image_swizzle(const Image* im, VkComponentMapping g) {
             one(g.a, VK_COMPONENT_SWIZZLE_A)};
 }
 
+namespace {
+/// (M6f) t held again if the game had freed it (images_mu held): true then
+bool hold_again(const nvn_tex* t) {
+    if (pending.erase(t->serial)) {   // (its image still held: nothing to do)
+        n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
+        st_freed_held.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    if (!freed.erase(t->serial)) return false;
+    n_freed.store(pending.size() + freed.size(), std::memory_order_relaxed);
+    st_freed_held.fetch_add(1, std::memory_order_relaxed);
+    Image* im = get(t);
+    if (im && !im->placeholder && im->refs++ == 0 && im->dead_present)
+        im->dead_present = im->dead_value = 0, st_revived.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+}  // namespace
+
+void image_texture_held(const nvn_tex* t) {
+    if (!t || !t->serial || !n_freed.load(std::memory_order_relaxed)) return;
+    std::unique_lock lk(images_mu);
+    hold_again(t);
+}
+
 void image_texture_registered(const nvn_tex* t) {
     if (!t || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return;
+    if (t->serial && n_freed.load(std::memory_order_relaxed)) {   // (M6f: registered again after the game freed its storage: held again)
+        std::unique_lock lk(images_mu);
+        if (hold_again(t)) return;
+    }
     if (image_find(t)) return;
     std::unique_lock lk(images_mu);   // (registered without its initialization seen: made now)
     if (get(t)) st_registered_new.fetch_add(1, std::memory_order_relaxed);
@@ -624,6 +725,9 @@ void image_sweep(uint64_t present) {
 void image_stats(char* out, size_t cap) {
     int64_t live = 0, color = 0, depth = 0, bc = 0, rendered = 0, copied = 0, texels = 0, store = 0, terrain = 0, glyph = 0,
             untouched = 0, assets = 0, unfilled = 0, no_content = 0, nd = 0, nd_bits[8] = {}, nd_never = 0;
+    uint64_t own_live[3] = {}, own_dying[3] = {}, own_n[3] = {}, refs_hist[4] = {}, many_refs_bytes = 0;
+    std::unordered_map<uint64_t, uint32_t> gpus;
+    std::unordered_map<uint64_t, std::pair<uint64_t, uint32_t>> shapes;   // (w, h, layers, format -> bytes, images)
     {
         std::shared_lock lk(images_mu);
         for (const auto& [k, im] : images) {
@@ -635,6 +739,17 @@ void image_stats(char* out, size_t cap) {
             if (im->no_data) {
                 nd++, nd_never += !w;
                 for (int b = 0; b < 8; b++) nd_bits[b] += w >> b & 1;
+            }
+            if (!im->asset) {   // (M6f: the images not from the store, by kind, held or waiting to die, and the oldest ones)
+                const int c = im->compressed ? 2 : (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ? 0 : 1;
+                const uint64_t b = mem_size(im->mem);
+                (im->refs > 0 ? own_live : own_dying)[c] += b;
+                own_n[c]++;
+                if (im->refs > 0) refs_hist[std::min(im->refs, 4) - 1]++;
+                gpus[im->gpu]++;
+                auto& sh = shapes[(uint64_t)im->width << 48 | (uint64_t)im->height << 32 | (uint64_t)im->layers << 24 | (uint32_t)im->format];
+                sh.first += b, sh.second++;
+                if (im->refs > 1) many_refs_bytes += b;
             }
             if (w & W_ATTACHMENT) rendered++;
             else if (w & (W_COPY | W_CLEAR)) copied++;
@@ -663,6 +778,33 @@ void image_stats(char* out, size_t cap) {
     std::snprintf(out + n, cap > n ? cap - n : 0, "; textures loaded with no data: %lld images, written by rendering %lld, copies %lld, "
                   "texel writes %lld, clears %lld, never %lld", (long long)nd, (long long)nd_bits[0], (long long)nd_bits[1],
                   (long long)nd_bits[2], (long long)nd_bits[3], (long long)nd_never);
+    uint64_t shared_addr = 0;
+    for (const auto& [g, n] : gpus) shared_addr += n > 1 ? n : 0;
+    const size_t n2 = std::strlen(out);
+    std::snprintf(out + n2, cap > n2 ? cap - n2 : 0, "; not from the store (MB held by a texture / waiting to die): colour %llu / %llu "
+                  "(%llu images), depth %llu / %llu (%llu), compressed %llu / %llu (%llu); held by 1, 2, 3, 4+ textures %llu %llu %llu "
+                  "%llu (%llu MB by more than one); images sharing a storage address with another %llu",
+                  (unsigned long long)(own_live[0] >> 20), (unsigned long long)(own_dying[0] >> 20), (unsigned long long)own_n[0],
+                  (unsigned long long)(own_live[1] >> 20), (unsigned long long)(own_dying[1] >> 20), (unsigned long long)own_n[1],
+                  (unsigned long long)(own_live[2] >> 20), (unsigned long long)(own_dying[2] >> 20), (unsigned long long)own_n[2],
+                  (unsigned long long)refs_hist[0], (unsigned long long)refs_hist[1], (unsigned long long)refs_hist[2],
+                  (unsigned long long)refs_hist[3], (unsigned long long)(many_refs_bytes >> 20), (unsigned long long)shared_addr);
+    {
+        const size_t n4 = std::strlen(out);
+        std::snprintf(out + n4, cap > n4 ? cap - n4 : 0, "; storage the game freed (M6f): %lld textures, %lld let go of their "
+                      "image when a new one was made over that storage (%lld of them then initialized again or finalized), %lld taken or "
+                      "registered again", (long long)st_freed.load(), (long long)st_freed_reused.load(), (long long)st_freed_again.load(),
+                      (long long)st_freed_held.load());
+    }
+    std::vector<std::pair<uint64_t, std::pair<uint64_t, uint32_t>>> top(shapes.begin(), shapes.end());
+    std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
+    for (size_t i = 0; i < top.size() && i < 8; i++) {
+        const size_t n3 = std::strlen(out);
+        const uint64_t k = top[i].first;
+        std::snprintf(out + n3, cap > n3 ? cap - n3 : 0, "%s %llux%llu x%llu vk %llu: %u images %llu MB", i ? ";" : "; the largest shapes:",
+                      (unsigned long long)(k >> 48), (unsigned long long)(k >> 32 & 0xffff), (unsigned long long)(k >> 24 & 0xff),
+                      (unsigned long long)(k & 0xffffff), top[i].second.second, (unsigned long long)(top[i].second.first >> 20));
+    }
 }
 
 }  // namespace hsd

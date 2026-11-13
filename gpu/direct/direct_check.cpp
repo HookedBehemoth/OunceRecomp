@@ -29,6 +29,10 @@ const StrictKnown kStrictKnown[] = {
      "(docs/direct/m6b-report.md, known list)"},
     {"Vulkan object made in steady play: an attachment view of a game's texture",
      "the attachment view of such an image, made at its first SetRenderTargets (as the entry above)"},
+    {"Vulkan object made in steady play: an image of a texture the game loaded (its prepared content)",
+     "the game streams textures in play (walking: Hyrule Field's areas, NPCs, effects); each new content is one image, made at "
+     "the texture's initialization and filled from the store, and destroyed when the game finalizes its last texture "
+     "(docs/direct/m6f-report.md): a load the game does, not a per-frame object"},
     {nullptr, nullptr},
 };
 const size_t kStrictKnownCount = sizeof kStrictKnown / sizeof kStrictKnown[0] - 1;

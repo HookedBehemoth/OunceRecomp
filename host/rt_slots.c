@@ -32,6 +32,7 @@
    the splice's anchor stops the build on a lift without it. */
 #include "hos.h"
 #include "../gpu/render/rx_nvn.h"
+#include "direct.h"
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -462,8 +463,29 @@ static void top_up(Ctx *c, uint64_t dta, uint64_t ctx) {
     call_mutex(c, imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE, dta + 0x2a08);
 }
 
+static int alloc_pre(Ctx *c);
+static void alloc_gave(uint64_t entry);
+static _Thread_local int in_alloc;
+/* (M6f) In direct mode the alloc's body runs from here, so the entry it gives is seen (alloc_gave); RX_BACKEND unset: as
+   before, the body runs after the hook */
 ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
+    if (in_alloc) return 0;   /* (the lifted body, called below) */
+    const int handled = alloc_pre(c);
+    if (off_() || !rx_direct()) return handled;
+    if (!handled) {
+        static A64Fn body;
+        if (!body) body = a64_lookup(0x8005ed00ull);
+        if (!body) return 0;
+        in_alloc = 1;
+        body(c);
+        in_alloc = 0;
+    }
+    alloc_gave(c->x[0]);
+    return 1;
+}
+static int alloc_pre(Ctx *c) {
     if (off_()) return 0;
+    alloc_sp = 0;   /* (M6f: the splice of this call sets it) */
     dta_seen = ARG(0);
     __atomic_add_fetch(&n.calls, 1, __ATOMIC_RELAXED);
     if (cur.valid) __atomic_add_fetch(&n.stale, 1, __ATOMIC_RELAXED);   /* the last transient call never reached the splice */
@@ -665,6 +687,7 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
             hos_log("rt slots: native: a persistent block at %#llx is not below the slots", (unsigned long long)c->x[10]);
         restore_lane();
     }
+    alloc_sp = c->x[31], alloc_block = c->x[23];   /* (M6f: persistent allocations too: the entry's texture, below) */
     if (!cur.valid) {
         if (!off_()) __atomic_add_fetch(&n.unspliced, 1, __ATOMIC_RELAXED);
         return;
@@ -672,7 +695,6 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
     const Cur k = cur;
     cur.valid = 0;
     const uint64_t block = c->x[23], game = c->x[10];
-    alloc_sp = c->x[31], alloc_block = block;
     const uint64_t align = (uint64_t)(int64_t)(int32_t)G32(c->x[31] + SP_ALIGN);
     AcquireSRWLockExclusive(&mu);
     n.spliced++;
@@ -712,6 +734,43 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
     if (!s) return;
     c->x[10] = s->off;
     G64(block + 0x38) = s->off;
+}
+
+/* (M6f, direct mode) The texture each entry's alloc initialized: the DTA's free (f_802737a0) gives the entry's block back
+   and moves the entry to its free lists, but never finalizes the entry's NVN texture, which stays initialized until
+   the entry is taken again (the next alloc initializes it over other storage) or forever. To the game the texture is
+   gone at that free; the back end is told then (nvn_texture_storage_freed), so its image follows the game's free and not
+   the object's next initialization. Walking in Hyrule Field, without this, 89 images of 2432x2432 D32F (2 GB, local-light
+   shadow maps) stayed held by freed entries (docs/direct/m6f-report.md 4). */
+#define EMAP (1 << 14)
+static struct { uint64_t entry, obj; } emap[EMAP];
+static SRWLOCK emap_lock = SRWLOCK_INIT;
+static volatile LONG64 n_emap_full, n_freed_told;
+static uint32_t emap_at(uint64_t e) { return (uint32_t)((e >> 3) * 0x9e3779b1u) & (EMAP - 1); }
+static void emap_put(uint64_t e, uint64_t obj) {
+    AcquireSRWLockExclusive(&emap_lock);
+    uint32_t i = emap_at(e), k = 0;
+    for (; k < EMAP && emap[i].entry && emap[i].entry != e; k++) i = (i + 1) & (EMAP - 1);
+    if (k < EMAP) emap[i].entry = e, emap[i].obj = obj;
+    else InterlockedIncrement64(&n_emap_full);
+    ReleaseSRWLockExclusive(&emap_lock);
+}
+static uint64_t emap_get(uint64_t e) {
+    uint64_t obj = 0;
+    AcquireSRWLockShared(&emap_lock);
+    for (uint32_t i = emap_at(e), k = 0; k < EMAP && emap[i].entry; k++, i = (i + 1) & (EMAP - 1))
+        if (emap[i].entry == e) { obj = emap[i].obj; break; }
+    ReleaseSRWLockShared(&emap_lock);
+    return obj;
+}
+int nvn_texture_storage_freed(uint64_t obj, uint64_t off);   /* nvn_native.c: 1 the back end was told */
+void nvn_texture_taken_again(uint64_t obj);   /* nvn_native.c */
+/* the entry an alloc gave: its texture, if the game freed it before, is the game's again (an entry taken from the DTA's
+   free lists keeps its texture as it was when its storage is the same: no initialization) */
+static void alloc_gave(uint64_t entry) {
+    if (!entry || !hos_guest_range(entry, 0x180)) return;
+    const uint64_t obj = emap_get(entry);
+    if (obj) nvn_texture_taken_again(obj);
 }
 
 ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
@@ -755,6 +814,10 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
                 break;
             }
     ReleaseSRWLockExclusive(&mu);
+    if (!park && block && rx_direct()) {   /* (M6f) the game's free runs: the entry's texture is gone to it */
+        const uint64_t obj = emap_get(e);
+        if (obj && nvn_texture_storage_freed(obj, G64(block + 0x38))) InterlockedIncrement64(&n_freed_told);
+    }
     return park;   /* 1: the game's free does not run */
 }
 
@@ -764,6 +827,10 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
 static struct { uint64_t obj, gpu; uint32_t w, h, fmt; } tmap[TMAP];
 static uint64_t init_same, init_moved, init_new;
 void rt_slots_texture_init(uint64_t obj, uint64_t gpu, uint32_t w, uint32_t h, uint32_t fmt) {
+    if (alloc_sp && rx_direct()) {
+        const uint64_t e = G64(alloc_sp + SP_ENTRY);
+        if (e && hos_guest_range(e, 0x180)) emap_put(e, obj);
+    }
     if (!log_slots()) return;   /* (debugging: a lock per initialization) */
     AcquireSRWLockExclusive(&mu);
     uint32_t i = (uint32_t)((obj >> 3) * 0x9e3779b1u) & (TMAP - 1);

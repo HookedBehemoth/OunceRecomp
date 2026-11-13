@@ -30,6 +30,8 @@ typedef struct {
     void (*pass_inline)(void *list, uint64_t key);
     /* (M4d) shots of the presented frame */
     void (*shots)(const char *dir, int every);
+    void (*texture_freed)(const void *tex);   /* (M6f) the game freed the texture's storage (rt_slots.c) */
+    void (*texture_held)(const void *tex);    /* (M6f) ... and took the texture again */
 } hsd_fns;
 
 /* rx_backend.c: the library's list calls in direct mode (loaded at the first call, from any thread), NULL otherwise */
