@@ -94,7 +94,7 @@ struct Gpu {
     FN(vkCmdDrawMeshTasksEXT) FN(vkCmdDrawMeshTasksIndirectEXT) FN(vkCmdWriteBufferMarker2AMD) FN(vkCmdSetPolygonModeEXT)
     FN(vkCmdSetDepthClampEnableEXT) FN(vkCmdSetAlphaToCoverageEnableEXT) FN(vkCmdSetColorBlendEnableEXT) FN(vkCmdSetColorBlendEquationEXT)
     FN(vkCmdSetColorWriteMaskEXT) FN(vkCmdSetRasterizationSamplesEXT) FN(vkCmdSetSampleMaskEXT) FN(vkCmdSetAlphaToOneEnableEXT)
-    FN(vkCmdSetLogicOpEnableEXT) FN(vkCmdSetProvokingVertexModeEXT) FN(vkCmdBeginConditionalRenderingEXT) FN(vkCmdEndConditionalRenderingEXT)
+    FN(vkCmdSetLogicOpEnableEXT) FN(vkCmdSetProvokingVertexModeEXT) FN(vkCmdBeginConditionalRenderingEXT) FN(vkCmdEndConditionalRenderingEXT) FN(vkCmdSetVertexInputEXT)
 #undef FN
 };
 Gpu g;
@@ -199,7 +199,7 @@ void gpu_init() {
     LOAD(vkCmdDrawMeshTasksEXT) LOAD(vkCmdDrawMeshTasksIndirectEXT) LOAD(vkCmdWriteBufferMarker2AMD) LOAD(vkCmdSetPolygonModeEXT)
     LOAD(vkCmdSetDepthClampEnableEXT) LOAD(vkCmdSetAlphaToCoverageEnableEXT) LOAD(vkCmdSetColorBlendEnableEXT) LOAD(vkCmdSetColorBlendEquationEXT)
     LOAD(vkCmdSetColorWriteMaskEXT) LOAD(vkCmdSetRasterizationSamplesEXT) LOAD(vkCmdSetSampleMaskEXT) LOAD(vkCmdSetAlphaToOneEnableEXT)
-    LOAD(vkCmdSetLogicOpEnableEXT) LOAD(vkCmdSetProvokingVertexModeEXT) LOAD(vkCmdBeginConditionalRenderingEXT) LOAD(vkCmdEndConditionalRenderingEXT)
+    LOAD(vkCmdSetLogicOpEnableEXT) LOAD(vkCmdSetProvokingVertexModeEXT) LOAD(vkCmdBeginConditionalRenderingEXT) LOAD(vkCmdEndConditionalRenderingEXT) LOAD(vkCmdSetVertexInputEXT)
 #undef LOAD
     {
         VkPhysicalDeviceSubgroupSizeControlProperties sc{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES};
@@ -395,6 +395,31 @@ VkShaderEXT simple_fs(const mcap::McDraw& d) {
     VkShaderEXT o = make_shader(VK_SHADER_STAGE_FRAGMENT_BIT, code, nullptr, 0);
     if (!o) die("the simple fragment stage was not made");
     return made[sig] = o;
+}
+
+/// A vertex stage of our own (--vs): small triangles from the vertex index, no input (the game's jobs draw vertex draws among
+/// their mesh draws in the same rendering)
+VkShaderEXT simple_vs() {
+    static VkShaderEXT made = VK_NULL_HANDLE;
+    if (made) return made;
+    const char* src = "#version 460\nvoid main() {\n    const uint t = uint(gl_VertexIndex) / 3u, c = uint(gl_VertexIndex) % 3u;\n"
+                      "    const vec2 o = vec2(float(t % 16u) / 8.0 - 1.0, float(t / 16u % 16u) / 8.0 - 1.0);\n"
+                      "    gl_Position = vec4(o + vec2(c == 1u ? 0.05 : 0.0, c == 2u ? 0.05 : 0.0), 0.5, 1.0);\n}\n";
+    const std::string dir = "/tmp/meshlab_vs_" + std::to_string(getpid());
+    if (std::system(("mkdir -p " + dir).c_str())) die("mkdir");
+    FILE* f = std::fopen((dir + "/s.vert").c_str(), "w");
+    std::fputs(src, f);
+    std::fclose(f);
+    if (std::system(("glslangValidator -V --target-env vulkan1.3 -o " + dir + "/s.spv " + dir + "/s.vert > /dev/null").c_str())) die("glslang failed on the vertex stage");
+    const auto code = read_spv(dir + "/s.spv");
+    VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
+    VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
+    ci.pNext = &mi;
+    ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+    ci.stage = VK_SHADER_STAGE_VERTEX_BIT, ci.nextStage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT, ci.codeSize = code.size() * 4, ci.pCode = code.data(), ci.pName = "main";
+    VK(g.vkCreateShadersEXT(g.dev, 1, &ci, nullptr, &made));
+    return made;
 }
 
 // ---- a draw made ready: its memory placed, its push data written ----
@@ -1057,6 +1082,7 @@ int main(int argc, char** argv) {
     double seconds = 10, watchdog = 2;
     int reps = 1, job = -1, prims_shown = 8;
     bool task_only = false, secondary = false, quiet = false, empty = false, query = false, tasks = false, frame = false;
+    int vs_draws = 0;   // (--vs N: N vertex draws of 64 triangles before each mesh draw)
     std::string cond;   // (--cond once|draw: the draws under conditional rendering on a predicate that lets them draw, begun once or around each)
     Between between = Between::none;
     for (int i = 3; i < argc; i++) {
@@ -1078,7 +1104,8 @@ int main(int argc, char** argv) {
         else if (a == "--cond") cond = next();
         else if (a == "--query") query = true;
         else if (a == "--tasks") tasks = true;
-        else if (a == "--frame") frame = true;   // (every mesh draw of the frame, a rendering a command buffer)   // (each submission runs the draws' task stages first, as the game's job step)
+        else if (a == "--frame") frame = true;
+        else if (a == "--vs") vs_draws = std::atoi(next().c_str());   // (every mesh draw of the frame, a rendering a command buffer)   // (each submission runs the draws' task stages first, as the game's job step)
         else if (a == "--barrier") {
             const std::string b = next();
             between = b == "local" ? Between::local : b == "full" ? Between::full : b == "split" ? Between::split : Between::none;
@@ -1210,10 +1237,10 @@ int main(int argc, char** argv) {
         run_target.push_back(tg);
     }
     Target& t = *first_target;
-    std::printf("run: %zu draws x %d a submission, barrier %s, %s, fs %s, mesh %s, condition %s, query %d, task steps %d; %u x %u\n", run.size(), reps,
+    std::printf("run: %zu draws x %d a submission, barrier %s, %s, fs %s, mesh %s, condition %s, query %d, task steps %d, vertex draws %d; %u x %u\n", run.size(), reps,
                 between == Between::none ? "none" : between == Between::local ? "local" : between == Between::full ? "full" : "split (rendering ended)",
                 secondary ? "in a secondary" : "inline", fs_mode.c_str(), !mesh_override.empty() ? mesh_override.c_str() : !repl_dir.empty() ? "replacement" : "translator",
-                cond.empty() ? "none" : cond.c_str(), (int)query, (int)tasks, t.w, t.h);
+                cond.empty() ? "none" : cond.c_str(), (int)query, (int)tasks, vs_draws, t.w, t.h);
     for (const Ready* r : run)
         std::printf("  #%u %016llx %s groups %u\n", r->d->d.seq, (unsigned long long)r->d->d.key, r->d->d.task ? "task+mesh" : "mesh", r->groups);
     const uint32_t per = (uint32_t)run.size() * (uint32_t)reps;
@@ -1311,6 +1338,20 @@ int main(int argc, char** argv) {
                 }
                 marks[k].before(cb, m);
                 if (cond == "draw") cond_begin(cb);
+                for (int q = 0; q < vs_draws; q++) {   // (vertex draws in the same rendering, with the mesh draw's state and fragment stage)
+                    Dyn dyn;
+                    std::memcpy(&dyn, run[i]->d->d.dyn, sizeof dyn);
+                    dyn.topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, dyn.restart = VK_FALSE;
+                    set_state(cb, dyn);
+                    g.vkCmdSetVertexInputEXT(cb, 0, nullptr, 0, nullptr);
+                    VkShaderStageFlagBits st[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_MESH_BIT_EXT};
+                    VkShaderEXT sh[2] = {simple_vs(), VK_NULL_HANDLE};
+                    g.vkCmdBindShadersEXT(cb, 2, st, sh);
+                    VkShaderStageFlagBits fst = VK_SHADER_STAGE_FRAGMENT_BIT;
+                    g.vkCmdBindShadersEXT(cb, 1, &fst, &run[i]->fs);
+                    push(cb, run[i]->push, run[i]->push_bytes);
+                    vkCmdDraw(cb, 3 * 64, 1, 0, 0);
+                }
                 if (empty) g.vkCmdDrawMeshTasksEXT(cb, 0, 1, 1);
                 else record_draw(cb, *run[i]);
                 if (cond == "draw") g.vkCmdEndConditionalRenderingEXT(cb);
