@@ -1056,7 +1056,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> pos;
     double seconds = 10, watchdog = 2;
     int reps = 1, job = -1, prims_shown = 8;
-    bool task_only = false, secondary = false, quiet = false, empty = false, query = false, tasks = false;
+    bool task_only = false, secondary = false, quiet = false, empty = false, query = false, tasks = false, frame = false;
     std::string cond;   // (--cond once|draw: the draws under conditional rendering on a predicate that lets them draw, begun once or around each)
     Between between = Between::none;
     for (int i = 3; i < argc; i++) {
@@ -1077,7 +1077,8 @@ int main(int argc, char** argv) {
         else if (a == "--empty") empty = true;
         else if (a == "--cond") cond = next();
         else if (a == "--query") query = true;
-        else if (a == "--tasks") tasks = true;   // (each submission runs the draws' task stages first, as the game's job step)
+        else if (a == "--tasks") tasks = true;
+        else if (a == "--frame") frame = true;   // (every mesh draw of the frame, a rendering a command buffer)   // (each submission runs the draws' task stages first, as the game's job step)
         else if (a == "--barrier") {
             const std::string b = next();
             between = b == "local" ? Between::local : b == "full" ? Between::full : b == "split" ? Between::split : Between::none;
@@ -1179,19 +1180,36 @@ int main(int argc, char** argv) {
     // ---- the hang run: the draws in one rendering, again and again ----
     std::vector<Ready> ready;
     for (const Draw* d : draws) ready.push_back(prepare(f, *d));
-    // (one target: the first draw's formats and size; draws of other formats are left out)
-    Target t = make_target(draws[0]->d);
+    // (the targets: one, the first draw's formats and size, draws of other formats left out; --frame: each command buffer's
+    // draws in a rendering of their own, of their first draw's targets, in the frame's order)
+    std::map<std::string, Target> targets;
+    auto target_of = [&](const mcap::McDraw& x) -> Target* {
+        std::string k = std::to_string(x.w) + "x" + std::to_string(x.h) + "/" + std::to_string(x.samples) + "/" + std::to_string(x.depth);
+        for (uint32_t i = 0; i < x.n && i < 8; i++) k += "/" + std::to_string(x.color[i]);
+        auto it = targets.find(k);
+        if (it == targets.end()) it = targets.emplace(k, make_target(x)).first;
+        return &it->second;
+    };
     std::vector<const Ready*> run;
+    std::vector<Target*> run_target;
+    std::vector<bool> run_first;   // (a draw that begins its command buffer's rendering)
+    Target* first_target = target_of(draws[0]->d);
     for (const Ready& r : ready) {
         const mcap::McDraw& x = r.d->d;
-        bool same = x.n == draws[0]->d.n && x.depth == draws[0]->d.depth && x.samples == draws[0]->d.samples;
-        for (uint32_t i = 0; i < x.n && same; i++) same = x.color[i] == draws[0]->d.color[i];
-        if (!same) {
-            std::fprintf(stderr, "meshlab: draw #%u left out: other targets\n", x.seq);
-            continue;
+        Target* tg = frame ? target_of(x) : first_target;
+        if (!frame) {
+            bool same = x.n == draws[0]->d.n && x.depth == draws[0]->d.depth && x.samples == draws[0]->d.samples;
+            for (uint32_t i = 0; i < x.n && same; i++) same = x.color[i] == draws[0]->d.color[i];
+            if (!same) {
+                std::fprintf(stderr, "meshlab: draw #%u left out: other targets\n", x.seq);
+                continue;
+            }
         }
+        run_first.push_back(run.empty() || (frame && run.back()->d->d.cb != x.cb));
         run.push_back(&r);
+        run_target.push_back(tg);
     }
+    Target& t = *first_target;
     std::printf("run: %zu draws x %d a submission, barrier %s, %s, fs %s, mesh %s, condition %s, query %d, task steps %d; %u x %u\n", run.size(), reps,
                 between == Between::none ? "none" : between == Between::local ? "local" : between == Between::full ? "full" : "split (rendering ended)",
                 secondary ? "in a secondary" : "inline", fs_mode.c_str(), !mesh_override.empty() ? mesh_override.c_str() : !repl_dir.empty() ? "replacement" : "translator",
@@ -1221,7 +1239,7 @@ int main(int argc, char** argv) {
         fences[k] = new_fence();
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         VK(vkBeginCommandBuffer(cbs[k], &bi));
-        to_attachment(cbs[k], t);
+        for (auto& [key_, tg] : targets) to_attachment(cbs[k], tg);
         heaps_bind(cbs[k]);
         if (query) vkCmdResetQueryPool(cbs[k], qpool, (uint32_t)k, 1);
         if (tasks) {   // (the job's task step, as the back end records it before the job: headers reset, task stages, a barrier)
@@ -1242,7 +1260,9 @@ int main(int argc, char** argv) {
                         VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
         }
         VkCommandBuffer sec = VK_NULL_HANDLE;
+        const Target* tc = run_target[0];
         auto open = [&]() {
+            const Target& t = *tc;
             begin_rendering(cbs[k], t, secondary, true);
             if (query) vkCmdBeginQuery(cbs[k], qpool, (uint32_t)k, VK_QUERY_CONTROL_PRECISE_BIT);
             if (!secondary) {
@@ -1277,7 +1297,11 @@ int main(int argc, char** argv) {
         uint32_t m = 0;
         for (int rep = 0; rep < reps; rep++)
             for (size_t i = 0; i < run.size(); i++, m++) {
-                if (m) {
+                if (m && run_first[i]) {   // (--frame: the next command buffer's rendering)
+                    close();
+                    tc = run_target[i];
+                    cb = open();
+                } else if (m) {
                     if (between == Between::split) {
                         close();
                         cb = open();
