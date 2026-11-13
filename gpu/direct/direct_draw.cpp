@@ -1257,6 +1257,24 @@ void flush_rows() {   // (mu held)
 }
 }  // namespace probe
 
+/// A program key given to a diagnosis (HOS_DBG=<name>:<key in hex>); 0: not set
+uint64_t dbg_key(const char* name) {
+    const char* v = dbg_value(name);
+    return v ? std::strtoull(v, nullptr, 16) : 0ull;
+}
+/// (HOS_DBG=progfs, progprobe) the plain fragment stage: shaders/diag_plain.frag
+VkShaderEXT diag_plain_fs() {
+    VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
+    ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+    ci.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
+    ci.codeSize = sizeof diag_plain_frag_spv, ci.pCode = diag_plain_frag_spv, ci.pName = "main";
+    VkShaderEXT o = VK_NULL_HANDLE;
+    const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &o);
+    logf("direct: the plain fragment stage (HOS_DBG=progfs, progprobe) %s (%d)", r == VK_SUCCESS ? "made" : "NOT MADE", (int)r);
+    return o;
+}
+
 void draw_probe_slot(CmdSlot* s) {
     if (!probe::key() || !probe::pool) return;
     std::lock_guard lk(probe::mu);
@@ -1460,22 +1478,9 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     // fragment stage of ours that writes a constant: shaders/diag_plain.frag)
     VkShaderEXT want_fs = prog->fs;
     {
-        static const uint64_t prog_fs = [] {
-            const char* v = dbg_value("progfs");
-            return v ? std::strtoull(v, nullptr, 16) : 0ull;
-        }();
+        static const uint64_t prog_fs = dbg_key("progfs");
         if (((prog_fs && prog->key == prog_fs) || (probe::key() && prog->key == probe::key() && mesh)) && p.n == 1 && ct[0] == 0) {
-            static VkShaderEXT plain = [] {
-                VkShaderCreateInfoEXT ci{VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT};
-                ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
-                ci.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-                ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
-                ci.codeSize = sizeof diag_plain_frag_spv, ci.pCode = diag_plain_frag_spv, ci.pName = "main";
-                VkShaderEXT o = VK_NULL_HANDLE;
-                const VkResult r = vkCreateShadersEXT(dev.device, 1, &ci, nullptr, &o);
-                logf("direct: progfs: the plain fragment stage %s (%d)", r == VK_SUCCESS ? "made" : "NOT MADE", (int)r);
-                return o;
-            }();
+            static const VkShaderEXT plain = diag_plain_fs();
             if (plain) want_fs = plain;
         }
     }
@@ -1588,10 +1593,6 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         // (the Hyrule Field hang, docs/direct/hf-hang-report.md: diagnoses for one program's mesh draws, by its key:
         // progdiscard:<key> its draws with the rasterizer off; progscissor:<key> a scissor of one pixel (every triangle set up
         // and clipped, one pixel filled))
-        static const auto dbg_key = [](const char* n) {
-            const char* v = dbg_value(n);
-            return v ? std::strtoull(v, nullptr, 16) : 0ull;
-        };
         static const uint64_t prog_discard = dbg_key("progdiscard"), prog_scissor = dbg_key("progscissor");
         const bool one_discard = prog_discard && prog->key == prog_discard, one_scissor = prog_scissor && prog->key == prog_scissor;
         if (one_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
