@@ -1419,7 +1419,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         // the program's shape (a mesh stage that reads its workgroups from a task step), no program is named. A mitigation: it
         // keeps two such mesh stages from overlapping; why overlapping loses the device is not known (the report)
         static const bool mesh_wait = dbg("meshwait");   // (HOS_DBG=meshwait, a diagnosis: the same wait before mesh-only draws too)
-        if (prog->task || mesh_wait) {
+        const auto apart = [cb] {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
             VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -1430,8 +1430,8 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             d.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
             d.memoryBarrierCount = 1, d.pMemoryBarriers = &b;
             vkCmdPipelineBarrier2(cb, &d);
-            sub(l, R_TASK_APART);
-        }
+        };
+        if (prog->task || mesh_wait) apart(), sub(l, R_TASK_APART);
         // (M6d, the diagnoses that found it, one at a time: a full barrier inside the rendering, which Vulkan does not allow there
         // and RADV records as the wait it is (VS and PS partial flushes): tmsync before each task+mesh draw, tmsyncafter after it,
         // tmsyncpair only before one whose previous draw in this command buffer was a task+mesh draw too)
@@ -1451,6 +1451,13 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
+        // (2026-11-13) and the same wait AFTER it: at the Kokiri-Hyrule Field change one task+mesh draw (cfebb562ec378f87, 590
+        // mesh groups) stayed unfinished with ordinary indexed draws queued behind it, the wait before it in place (2 of 2
+        // scripted walks lost, 5 play sessions); with a wait after every task+mesh draw the walk and the cutscene ran
+        // (work/runs/hang_hf_after). So a task+mesh draw's mesh work is kept apart from the draws on both sides of it.
+        // HOS_DBG=tmnoafter: the wait before alone, as M6d had it (the A/B). Still a mitigation: the cause is not known
+        static const bool tm_noafter = dbg("tmnoafter");
+        if (prog->task && !tm_noafter) apart();
         if (prog->task && tm_after) drain();
         x.last_tm = prog->task;
         if (pstats_on()) pstat_after(cb, ps);

@@ -28,6 +28,7 @@ struct ResolutionScalingInfo {
 
 struct Values {
     bool disable_shader_loop_safety_checks{false};
+    u32 shader_loop_safety_count{0x2000};   // (hookshot: HOS_DBG=loopcap:<n>, a diagnosis: the trips a loop may take)
     Constant<bool> fix_bloom_effects{};
     bool renderer_debug{false};
     ResolutionScalingInfo resolution_info{};

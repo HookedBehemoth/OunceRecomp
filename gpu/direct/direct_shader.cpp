@@ -43,6 +43,7 @@
 #include "shader_recompiler/ir_opt/oot_visual_workaround.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/object_pool.h"
+#include "common/settings.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/runtime_info.h"
@@ -275,6 +276,12 @@ private:
 
 // ---- the profile (vk_shader.cpp make_profile with RX_VK_DESC_HEAP_BDA=2 on layer 0) ----
 Shader::Profile make_profile() {
+    // (HOS_DBG=loopcap:<n>, a diagnosis: the trips the translator's loop safety counter allows, 8192 without it. The value is
+    // in the translated code and not in the caches' keys: run it from a build folder without the direct caches)
+    if (const char* v = dbg_value("loopcap"); v && std::atoi(v) > 0) {
+        Settings::values.shader_loop_safety_count = (u32)std::atoi(v);
+        logf("direct: loopcap: loops end after %u trips (a diagnosis)", Settings::values.shader_loop_safety_count);
+    }
     {   // (the translation's per-GPU settings, as gpu/vk/vk_coopmat.cpp coopmat_init sets them on this card: in the stamp)
         using namespace Shader::Backend::SPIRV;
         frag_nan_guard = true;
