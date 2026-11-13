@@ -301,6 +301,7 @@ const hsd_fns *rx_direct(void) {
             DIRECT_FN(shots, "hsd_shots")
             DIRECT_FN(texture_freed, "hsd_texture_freed")
             DIRECT_FN(texture_held, "hsd_texture_held")
+            DIRECT_FN(texture_cached, "hsd_texture_cached")
 #undef DIRECT_FN
             hos_log("rx: direct mode (RX_BACKEND=direct): %s", path);
             {   /* (M6a, HOS_DBG=crit: the calls timed, direct_crit.c) */

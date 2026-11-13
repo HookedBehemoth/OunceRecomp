@@ -55,4 +55,4 @@ SHOT_EVERY=${SHOT_EVERY:-120} OVERLAY=$overlay EXE=$exe RUN=timing "$root/script
 sleep 2
 kill $sampler 2>/dev/null || true
 journalctl -k -b --no-pager 2>/dev/null | grep -E 'ring .* timeout|GPU reset\(' | tail -2 || true
-"$py" -I "$root/scripts/direct_walk_check.py" "$run" "$backend"
+"$py" -I "$root/scripts/direct_walk_check.py" "$run" "$backend" "$route"

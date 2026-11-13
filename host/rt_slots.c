@@ -34,6 +34,7 @@
 #include "../gpu/render/rx_nvn.h"
 #include "direct.h"
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
@@ -745,7 +746,7 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
 #define EMAP (1 << 14)
 static struct { uint64_t entry, obj; } emap[EMAP];
 static SRWLOCK emap_lock = SRWLOCK_INIT;
-static volatile LONG64 n_emap_full, n_freed_told;
+static volatile LONG64 n_emap_full, n_freed_told, n_freed_noobj, n_freed_other;
 static uint32_t emap_at(uint64_t e) { return (uint32_t)((e >> 3) * 0x9e3779b1u) & (EMAP - 1); }
 static void emap_put(uint64_t e, uint64_t obj) {
     AcquireSRWLockExclusive(&emap_lock);
@@ -764,6 +765,11 @@ static uint64_t emap_get(uint64_t e) {
     return obj;
 }
 int nvn_texture_storage_freed(uint64_t obj, uint64_t off);   /* nvn_native.c: 1 the back end was told */
+void rt_slots_freed_line(char *out, size_t cap) {   /* (M6f, direct_assets.c's memory line) */
+    snprintf(out, cap, "the game's frees of DTA entries: the back end told %lld, no texture known for the entry %lld, its texture "
+             "initialized elsewhere since %lld (entries mapped: table full %lld)", (long long)n_freed_told, (long long)n_freed_noobj,
+             (long long)n_freed_other, (long long)n_emap_full);
+}
 void nvn_texture_taken_again(uint64_t obj);   /* nvn_native.c */
 /* the entry an alloc gave: its texture, if the game freed it before, is the game's again (an entry taken from the DTA's
    free lists keeps its texture as it was when its storage is the same: no initialization) */
@@ -816,7 +822,9 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
     ReleaseSRWLockExclusive(&mu);
     if (!park && block && rx_direct()) {   /* (M6f) the game's free runs: the entry's texture is gone to it */
         const uint64_t obj = emap_get(e);
-        if (obj && nvn_texture_storage_freed(obj, G64(block + 0x38))) InterlockedIncrement64(&n_freed_told);
+        if (!obj) InterlockedIncrement64(&n_freed_noobj);
+        else if (nvn_texture_storage_freed(obj, G64(block + 0x38))) InterlockedIncrement64(&n_freed_told);
+        else InterlockedIncrement64(&n_freed_other);
     }
     return park;   /* 1: the game's free does not run */
 }

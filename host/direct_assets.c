@@ -132,6 +132,14 @@ static void *mem_line(void *arg) {
                 (long long)n_tile_notex, (long long)n_tile_badsite, (long long)n_tile_held, (long long)n_tile_held_max,
                 (long long)n_tile_dropped, (long long)n_tile_kept_given, (long long)n_tile_kept_other, (long long)n_overlay, (long long)n_glyphs, (long long)n_glyph_notex,
                 direct_assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)");
+        if (direct_assets_on()) {
+            char b[512];
+            direct_texdata_line(b, sizeof b);
+            hos_log("assets: %s", b);
+            void rt_slots_freed_line(char *out, size_t cap);
+            rt_slots_freed_line(b, sizeof b);
+            hos_log("rt slots: %s", b);
+        }
     }
     return NULL;
 }
@@ -222,8 +230,9 @@ ENTRY_HOOK(0x80798690) {
     if (nm) k.name = nm, k.name_len = nl;
     k.data = src && hos_guest_range(src, 1) ? GP(src) : NULL;
     /* (M4g, M6f: a load with no data is an alias of another texture: its target's texels, direct_tex_dedup.c) */
-    if (!src) direct_tex_alias(td, &k);
+    const int alias = !src && direct_tex_alias(td, &k);
     rx_direct()->asset_load(&k);
+    direct_texdata_created(td, alias);   /* (M6f: the event table) */
     InterlockedIncrement64(&n_loads);
     if (src) {   /* (no copy into the heap: the back end makes the image from the store, or the placeholder) */
         InterlockedIncrement64(&n_load_skipped);
@@ -340,8 +349,22 @@ int direct_assets_skip_packaged(uint64_t bytes) {
    it from the store and never reads it, so its layer 0 leaves it unbound: named here, at its creation, before layer 0
    binds pools (direct_pools.cpp layer0_pool_native). The manager makes more than one (Kokiri: 2432 MB at boot, 201 MB and
    2 MB at the scene load): each is named. find_heap still names the asset heap's pool (127) to the asset path, as before. */
+/* (M6f) f_80f6c9d0 (lr 0x80f6cb20) is agl's generic pool wrapper (tera's pools and Replace requests use it too:
+   docs/direct/texture-streaming.md 1): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
+   (f_80f6c580), whose body runs from here with this thread noted */
+static _Thread_local int tl_heap_init;
+ENTRY_HOOK(0x80f6c580) {
+    if (tl_heap_init || !rx_direct() || !direct_assets_on()) return 0;
+    static A64Fn body;
+    if (!body) body = a64_lookup(0x80f6c580ull);
+    if (!body) return 0;
+    tl_heap_init = 1;
+    body(c);
+    tl_heap_init = 0;
+    return 1;
+}
 void direct_assets_pool_made(uint64_t lr, uint64_t gpu, uint64_t size) {
-    if (lr != 0x80f6cb20ull || !rx_direct() || !direct_assets_on()) return;
+    if (lr != 0x80f6cb20ull || !tl_heap_init || !rx_direct() || !direct_assets_on()) return;
     hos_log("assets: the texture data pool made: %#llx + %llu MB (agl::TextureDataMgr, lr %#llx)", (unsigned long long)gpu,
             (unsigned long long)(size >> 20), (unsigned long long)lr);
     rx_direct()->texture_data_pool(gpu, gpu + size);

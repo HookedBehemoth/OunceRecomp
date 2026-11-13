@@ -80,8 +80,8 @@ std::unordered_map<Key, std::unique_ptr<Image>, KeyHash> images;
 std::vector<Image*> dying;   // (refs 0: destroyed by image_sweep)
 // (M6f) Textures whose storage the game freed without finalizing them (hsd_texture_freed). Such a texture keeps its image
 // while its storage keeps its texels (the game samples a freed transient target later in the frame: its memory is only
-// reused once the allocator gives it out again): pending, by serial, with its key and storage range. A new image made over
-// storage overlapping a pending one's is that reuse: the pending texture lets go of its image then (freed: its object's
+// reused once the allocator gives it out again): pending, by serial, with its key and storage range. A texture initialized
+// over storage overlapping a pending one's is that reuse: the pending texture lets go of its image then (freed: its object's
 // later release is not counted twice). Taken again by the game (its allocator, a registration) before or after: held.
 struct Pending {
     Key k;
@@ -355,7 +355,6 @@ Image* get(const nvn_tex* t) {
     if (kind == K_ASSET) return make_asset(t, k, d, a.rec);
     Image* im = make(t, k, fi, bw, bh, bpb);
     if (kind == K_LINKED_PLAIN && im && !im->placeholder) im->no_data = true;
-    if (im && !im->placeholder && n_freed.load(std::memory_order_relaxed)) storage_reused(t);   // (M6f)
     return im;
 }
 
@@ -387,6 +386,7 @@ void image_texture_created(const nvn_tex* t) {
     Image* im = get(t);
     if (!im || im->placeholder) return;
     if (im->refs++ == 0 && im->dead_present) im->dead_present = im->dead_value = 0, st_revived.fetch_add(1, std::memory_order_relaxed);
+    if (!im->asset && n_freed.load(std::memory_order_relaxed)) storage_reused(t);   // (M6f: a texture over that storage now)
     if (!im->asset) return;
     // (A-rt) the first texture of an asset image fills it, here, before the game can register it; another one that comes
     // while it is being filled waits for that (the same content in another file, on another loader thread)
@@ -524,6 +524,19 @@ bool hold_again(const nvn_tex* t) {
     return true;
 }
 }  // namespace
+
+void image_texture_cached(const nvn_tex* t, bool cached) {
+    if (!t || !t->serial) return;
+    Key k;
+    FormatInfo fi;
+    int bw, bh, bpb;
+    if (key_of(t, k, fi, bw, bh, bpb) == K_NONE) return;
+    std::unique_lock lk(images_mu);
+    auto it = images.find(k);
+    if (it == images.end()) return;
+    Image* im = it->second.get();
+    im->cached_refs = std::max(0, im->cached_refs + (cached ? 1 : -1));
+}
 
 void image_texture_held(const nvn_tex* t) {
     if (!t || !t->serial || !n_freed.load(std::memory_order_relaxed)) return;
@@ -726,6 +739,7 @@ void image_stats(char* out, size_t cap) {
     int64_t live = 0, color = 0, depth = 0, bc = 0, rendered = 0, copied = 0, texels = 0, store = 0, terrain = 0, glyph = 0,
             untouched = 0, assets = 0, unfilled = 0, no_content = 0, nd = 0, nd_bits[8] = {}, nd_never = 0;
     uint64_t own_live[3] = {}, own_dying[3] = {}, own_n[3] = {}, refs_hist[4] = {}, many_refs_bytes = 0;
+    uint64_t cache_n = 0, cache_bytes = 0, cache_part = 0;   // (M6f: images every texture of which is in agl's LRU cache)
     std::unordered_map<uint64_t, uint32_t> gpus;
     std::unordered_map<uint64_t, std::pair<uint64_t, uint32_t>> shapes;   // (w, h, layers, format -> bytes, images)
     {
@@ -739,6 +753,10 @@ void image_stats(char* out, size_t cap) {
             if (im->no_data) {
                 nd++, nd_never += !w;
                 for (int b = 0; b < 8; b++) nd_bits[b] += w >> b & 1;
+            }
+            if (im->cached_refs > 0) {
+                if (im->cached_refs >= im->refs) cache_n++, cache_bytes += mem_size(im->mem);
+                else cache_part++;
             }
             if (!im->asset) {   // (M6f: the images not from the store, by kind, held or waiting to die, and the oldest ones)
                 const int c = im->compressed ? 2 : (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) ? 0 : 1;
@@ -789,6 +807,12 @@ void image_stats(char* out, size_t cap) {
                   (unsigned long long)(own_live[2] >> 20), (unsigned long long)(own_dying[2] >> 20), (unsigned long long)own_n[2],
                   (unsigned long long)refs_hist[0], (unsigned long long)refs_hist[1], (unsigned long long)refs_hist[2],
                   (unsigned long long)refs_hist[3], (unsigned long long)(many_refs_bytes >> 20), (unsigned long long)shared_addr);
+    {
+        const size_t n5 = std::strlen(out);
+        std::snprintf(out + n5, cap > n5 ? cap - n5 : 0, "; held only by textures in agl's LRU cache (M6f): %llu images, %llu MB (%llu "
+                      "more images held by a cached texture and a live one)", (unsigned long long)cache_n,
+                      (unsigned long long)(cache_bytes >> 20), (unsigned long long)cache_part);
+    }
     {
         const size_t n4 = std::strlen(out);
         std::snprintf(out + n4, cap > n4 ? cap - n4 : 0, "; storage the game freed (M6f): %lld textures, %lld let go of their "

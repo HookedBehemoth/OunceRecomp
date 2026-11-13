@@ -51,6 +51,7 @@ struct Image {
     bool no_data = false;              // (a texture loaded with no data and in no BNTX: what writes it is counted)           // (a texture whose texels were not given: terrain not converted; drawn as the placeholder)
     // (lifetime: the live NVN textures over it; images_mu held)
     int refs = 0;
+    int cached_refs = 0;   // (M6f: of the textures over it, those agl holds in its LRU cache)
     uint64_t dead_present = 0, dead_value = 0;
     std::mutex views_mu;
     std::unordered_map<uint64_t, VkImageView> views;
@@ -62,7 +63,8 @@ void image_texture_released(const nvn_tex* t);
 /// (M6f) The game freed t's storage without finalizing it (hsd_texture_freed): its hold on its image ends as at a release; the
 /// object's later release (initialized again, finalized) is then not counted twice, and a registration before it holds it again
 void image_texture_freed(const nvn_tex* t);
-void image_texture_held(const nvn_tex* t);   // (M6f) taken again after such a free: held again (made again if it went)
+void image_texture_held(const nvn_tex* t);
+void image_texture_cached(const nvn_tex* t, bool cached);   // (M6f) agl's LRU cache: counted on the image   // (M6f) taken again after such a free: held again (made again if it went)
 void image_texture_registered(const nvn_tex* t);
 /// The image of an NVN texture (the placeholder when it has none this GPU can hold; null: a buffer texture or none made)
 Image* image_find(const nvn_tex* t);

@@ -2,7 +2,8 @@
 verdict. Direct runs fail on a strict stop, on textures made with undefined content (loads with no data the asset path
 could not resolve, ASTC textures with no prepared record), on a lost device, and on a run that did not reach its end.
 
-    python -I scripts/direct_walk_check.py <run folder> <direct|frozen>
+    python -I scripts/direct_walk_check.py <run folder> <direct|frozen> [walk|scenes]
+(scenes: black shots are the loads between scenes, not failures)
 """
 import re
 import statistics
@@ -17,6 +18,7 @@ def last(pattern, text, cast=int, default=None):
 
 def main():
     run, backend = Path(sys.argv[1]), sys.argv[2]
+    route = sys.argv[3] if len(sys.argv) > 3 else "walk"
     log = (run / "log.txt").read_text(errors="replace") if (run / "log.txt").exists() else ""
     fails = []
     timeline = (run / "timeline.txt").read_text().split("\n") if (run / "timeline.txt").exists() else []
@@ -49,10 +51,16 @@ def main():
             fails.append(f"{unresolved} loads with no data over another texture's content not resolved (undefined content)")
         if astc:
             fails.append(f"{astc} ASTC textures with no prepared record (the placeholder)")
-        mem = re.findall(r"direct: memory \(MB\): heap 0 \(device-local, \d+\): driver usage (\d+) of budget (\d+), VMA blocks (\d+)", log)
+        mem = re.findall(r"heap \d+ \(device-local, \d+\): driver usage (\d+) of budget (\d+), VMA blocks (\d+)", log)
         if mem:
             print("  device-local heap, driver usage / VMA blocks (MB) every 600 presents: " +
                   " ".join(f"{u}/{b}" for u, _, b in mem))
+        cache = re.findall(r"held only by textures in agl's LRU cache \(M6f\): (\d+) images, (\d+) MB", log)
+        if cache:
+            print("  images held only by agl's LRU cache (images/MB) every 600 presents: " + " ".join(f"{a}/{b}" for a, b in cache))
+        ev = re.findall(r"assets: texture events \(M6f\): (.*)", log)
+        if ev:
+            print("  texture events (last): " + ev[-1][:300])
         imgs = re.findall(r"direct: images: \d+ made .*?(\d+) live .*?\), (\d+) MB \(assets: (\d+) images, (\d+) MB", log)
         if imgs:
             print("  images live (MB; of them assets) every 600 presents: " +
@@ -88,7 +96,7 @@ def main():
             if (low.min(axis=2) > 200).mean() > 0.02:
                 flash.append(p)
         print(f"  shots: black {dark[:10]}{'...' if len(dark) > 10 else ''}, white flash {flash[:10]}{'...' if len(flash) > 10 else ''}")
-        if dark:
+        if dark and route == "walk":
             fails.append(f"{len(dark)} black shots in play")
         if flash:
             fails.append(f"{len(flash)} shots with a white flash over the lower two thirds")

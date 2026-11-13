@@ -32,6 +32,7 @@ typedef struct {
     void (*shots)(const char *dir, int every);
     void (*texture_freed)(const void *tex);   /* (M6f) the game freed the texture's storage (rt_slots.c) */
     void (*texture_held)(const void *tex);    /* (M6f) ... and took the texture again */
+    void (*texture_cached)(const void *tex, int cached);   /* (M6f) a texture released to agl's LRU cache (1), taken back (0) */
 } hsd_fns;
 
 /* rx_backend.c: the library's list calls in direct mode (loaded at the first call, from any thread), NULL otherwise */
@@ -62,6 +63,11 @@ int direct_assets_skip_packaged(uint64_t bytes);
 /* direct_tex_dedup.c (M4g, M6f, game patch): a load with no data, td its agl::TextureData: when it is a UnifyTex alias, its
    target's NVN texture as an HSD_ASSET_SAME key (1); otherwise 0 */
 int direct_tex_alias(uint64_t td, hsd_asset_key *k);
+/* direct_texdata.c (M6f): agl::TextureDataMgr's texture events */
+void direct_texdata_created(uint64_t td, int alias);
+const void *direct_texdata_moving(void);   /* (this thread's texture being moved by compaction, else NULL) */
+void direct_texdata_line(char *out, size_t cap);
+int direct_assets_on(void);
 /* (M4f) nvnMemoryPoolInitialize (lr its return address): agl::TextureDataMgr's pool is named to the back end */
 void direct_assets_pool_made(uint64_t lr, uint64_t gpu, uint64_t size);
 /* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */

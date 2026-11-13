@@ -767,6 +767,7 @@ int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out) {
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* (below) */
 /* (rt_slots.c's log: texture initializations, and those made by agl's DynamicTextureAllocator::alloc, f_8005ed00) */
 volatile LONG64 nvn_texture_inits, nvn_texture_inits_dta;
+static _Thread_local uint64_t tl_moved_serial;   /* (M6f: the serial a texture moved by compaction keeps) */
 NV(nvnTextureInitialize) {
     InterlockedIncrement64(&nvn_texture_inits);
     const nvn_tex_builder *b = CTB(P(1));
@@ -795,9 +796,11 @@ NV(nvnTextureInitialize) {
                                                                        dirty tracking sees; direct mode: never read, skipped) */
         if (!o->gpu || !nvn_gpu_write(o->gpu, gw(b->pkg_data, o->L.size), o->L.size)) die("packaged texture data without storage");
     }
-    o->serial = new_serial();
+    const int moved = tl_moved_serial && o == direct_texdata_moving();   /* (M6f: the second half of a move) */
+    o->serial = moved ? tl_moved_serial : new_serial();
+    tl_moved_serial = 0;
     live_put(o);
-    rx_nvn_texture_created(o);
+    if (!moved) rx_nvn_texture_created(o);
     if (direct_assets_tiles_pending || direct_assets_tilelog) direct_assets_texture_init(o);   /* (A-rt: a terrain tile given before its texture) */
     if (rx_direct()) direct_texwatch_created(o, c->x[30]);   /* (M4d: HOS_DBG=texwatch, diagnosis) */
     {   /* RX_NVN_WATCH_TEX=<w>x<h> (debugging): who writes the storage of textures that size (a page watch, with call
@@ -835,6 +838,14 @@ void nvn_texture_taken_again(uint64_t obj) {
 }
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));
+    if (rx_direct() && o == direct_texdata_moving() && o->magic == NVN_MAGIC('T', 'E', 'X', 0)) {
+        /* (M6f) a compaction move (direct_texdata.c): the back end keeps the texture's image and registration; the
+           initialization that follows over the new storage keeps its serial */
+        tl_moved_serial = o->serial;
+        live_del(o);
+        o->magic = 0;
+        return;
+    }
     if (rx_direct()) direct_texwatch_released(o);
     live_del(o);
     rx_nvn_texture_released(o);
