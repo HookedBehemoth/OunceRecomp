@@ -129,7 +129,7 @@ own `work/sa/gen` and `work/sa/build` (reflink copies) and the shared object cac
 straight into Kokiri Forest (no title, no intro), headless, muted, shots every `SHOT_EVERY` presents in
 `work/runs/<name>/shots`, `timeline.txt` (second, presents, RSS MB), `log.txt`. It sets the RDNA2 workarounds
 (`RX_VK_MESH_NOCULL=2c56dc1006942f74`, `RX_VK_TASK_MESH_FALLBACK=1`; `TASK_MESH_FALLBACK=0` for native task/mesh,
-which hangs the GPU under faster timing). Other overlays: `work/tools/make_chisel_overlay.py <dir> --route newgame
+which hangs the GPU under faster timing). Other overlays: `tools/dump/make_chisel_overlay.py <dir> --route newgame
 --banc <map> --start <name>` or `--route load --slot N` (maps in the chisel section below). Scripted input:
 `"HOS_INPUT_SCRIPT=30:LUP/3000,34:RRIGHT/2500" HOS_INPUT_EXCLUSIVE=1` (seconds from the first controller read).
 - **Launch time:** `work/venv/bin/python -I scripts/launch_time.py work/runs/<name> ...` (gameplay and playable seconds).
@@ -151,8 +151,8 @@ which hangs the GPU under faster timing). Other overlays: `work/tools/make_chise
   `test_recomplauncher_json` fail on main too; `test_make_game_cache` only in this checkout).
 
 **RE.** Flat modules `work/re/{main,sdk,subsdk0}.bin` (main base 0x80020000, sdk 0x84fa0000), strings
-`work/re/main_strings.txt`, exports `work/sa/image/image.json`, tools `work/tools/` (`disasm.py`, `xref.py`,
-`callers.py`, `bntx.py`, `bfres.py`, `bfsha.py`, `ainb.py`, `byml.py`, `sarc.py`, `zs.py`), reports
+`work/re/main_strings.txt`, exports `work/sa/image/image.json`, tools `tools/re/` (`disasm.py`, `xref.py`, `callers.py`) and `tools/dump/` (
+`bntx.py`, `bfres.py`, `bfsha.py`, `ainb.py`, `byml.py`, `sarc.py`, `zs.py`), reports
 `work/assets/*.md` (`formats.md`, `boot.md`, `zstd.md`).
 
 ## Tools
@@ -160,7 +160,7 @@ which hangs the GPU under faster timing). Other overlays: `work/tools/make_chise
 - **Pool census** (`RX_POOL_CENSUS=1` build, `HOS_POOL_CENSUS=<file>` at run time, `scripts/pool_census.py`): every
   lifted load and store of a pool page, counted by place (the lifted function), pool kind and direction.
 - **Chiseled boot**: straight into a map with no menus, through patched sequence graphs read with
-  `HOS_FS_OVERLAY=<folder>` (`host/nn_fs.c`). `work/tools/make_chisel_overlay.py <dir> --route newgame --banc <map>
+  `HOS_FS_OVERLAY=<folder>` (`host/nn_fs.c`). `tools/dump/make_chisel_overlay.py <dir> --route newgame --banc <map>
   --start <name>` (or `--route load [--slot N]`) writes them: NormalTitle node #8 skips the button wait, the root's
   `FirstBancParam` (`Work/Banc/GameBancParam/KokiriForest_Child...`) names the map, Opening's intro events are cut
   (`--keep-intro` keeps them). Maps: `KokiriForest_Child`, `HyruleField_Child`/`_Adult`, `KakarikoVillage_Child`,
@@ -179,7 +179,7 @@ found by matching open-ead/sead and by string references. romfs layout as TOTK's
 `Pack/ZsDic.pack.zs`, textures as one `.bntx.zs` per texture in `Tex/`, models `.bfres.zs`, shaders in
 `Shader/*.Nin_Ounce_NVN2.release.sarc.zs`.
 
-## Assets (scanned 2026-11-10; parsers in work/tools, report work/assets/formats.md)
+## Assets (scanned 2026-11-10; parsers in tools/dump, report work/assets/formats.md)
 
 | | Found |
 |---|---|

@@ -174,7 +174,7 @@ Callers:
 | `f_81154da0`, `f_831ded30` | |
 
 The table: `System/Gfx/UnifyTex.Product.100.byml` maps 5,186 names to 333 targets (VERIFIED, read with
-`work/tools/byml.py`). No target is itself an alias. No alias name is a BNTX in the romfs, and every target is one. The
+`tools/dump/byml.py`). No target is itself an alias. No alias name is a BNTX in the romfs, and every target is one. The
 play-log names (Kokiri, the market, Hyrule Field):
 
 | Alias (play log) | Target (UnifyTex) | Target's BNTX descriptor (scan) | Logged descriptor |

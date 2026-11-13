@@ -5,7 +5,7 @@ before that pass's layer list sets its targets? Answer: no data the job holds gi
 exact pass identity, which the view record does not. The game also has its own inline path for a pass whose jobs did not
 record. Together these make the format table exact: a miss sends that pass down the inline path, and no job is ever
 recorded against a guess. Static analysis only. Addresses are guest VAs. Disassembly: `work/proto/engine-jobs/d_*.s`,
-`work/tools/disasm.py`.
+`tools/re/disasm.py`.
 
 ## 1. What the job has when it records
 

@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(root / "work" / "tools"))
-import byml  # noqa: E402  (work/tools: the dump readers)
+sys.path.insert(0, str(root / "tools" / "dump"))
+import byml  # noqa: E402  (tools/dump: the dump readers)
 import zs  # noqa: E402
 
 dump = [l for l in (root / "work" / "dump.txt").read_text().split("\n") if l and not l.startswith("#")][0]
