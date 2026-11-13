@@ -28,8 +28,9 @@
    HOS_GUEST_RT_ALLOC=1: the game's allocator untouched (A/B). RX_RT_SLOTS_MB: S, default 320 (of 512; the arenas
    keep 192 MB, the fullest seen used 111). Parking and the shadow size classes: below.
 
-   The transient pool (direct mode; docs/direct/shadow-pool-report.md). The slot range is one device allocation in the
-   back end, made when the range is first known (hsd_transient_pool), and every texture initialized in a slot gets an
+   The transient pool (direct mode; docs/direct/shadow-pool-report.md). The slots do not take the pool's top: they lie
+   after its end (512 MB of offsets past the pool's size; the arenas are not shrunk), and the slot range is one device
+   allocation in the back end, made when the range is first known (hsd_transient_pool). Every texture initialized in a slot gets an
    image bound in it at the slot's offset: the targets cost that constant and nothing else, whatever the game's free
    entries still name. For that
    - a slot is sized by what the device's image of its target needs (device_need: the back end's answer for the
