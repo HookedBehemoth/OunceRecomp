@@ -415,8 +415,9 @@ struct Pass {
                 }
                 return peak;
             };
-            // (a new order is taken only when it is one: every instruction once, the first and last ones in their places, each
-            // value made before it is used, a read by address between the writes around it)
+            // (a new order is taken only when it is one: every instruction once, the first and last ones in their places, the
+            // instructions with effects in their order, each value made before it is used, a read by address between the
+            // writes around it)
             const auto sound = [&](const std::vector<uint32_t>& seq, uint32_t first, uint32_t tail) {
                 if (seq.size() != nb) return false;
                 std::fill(pos.begin(), pos.end(), kNone);
@@ -428,10 +429,14 @@ struct Pass {
                     if (pos[n] != n - nv) return false;
                 for (uint32_t n = tail; n < N; n++)
                     if (pos[n] != n - nv) return false;
-                uint32_t last_writer = kNone;   // (the last write by address before a place, by the old order and by the new)
+                uint32_t last_writer = kNone, last_fixed = kNone;   // (the last write by address, the last instruction with an effect)
                 for (uint32_t n = nv; n < N; n++) {
                     for (const uint32_t d : operands[n])
                         if (d >= nv && pos[d] >= pos[n]) return false;
+                    if (!is_movable[n]) {
+                        if (last_fixed != kNone && pos[last_fixed] >= pos[n]) return false;
+                        last_fixed = n;
+                    }
                     if (is_writer[n]) {
                         if (last_writer != kNone && pos[last_writer] >= pos[n]) return false;
                         last_writer = n;
