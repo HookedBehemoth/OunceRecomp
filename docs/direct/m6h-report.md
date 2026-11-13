@@ -38,21 +38,31 @@ numbers show where the time goes, not how much a change saves.
 - **The rewrites** (part 3): one new decompiled stage, the full-screen **fog and atmosphere composite** (fragment
   `2407c9a14d62a1d6`, in both scenes), **bit-exact** against the translator's on the captured draws (VERIFIED: 4,194,304
   words of float targets equal, Kokiri capture; Hyrule Field below); RADV compiles it to 643 instructions against 656, and
-  it runs **0.8 % slower to 0 % faster** (ratio 1.008, p10 0.999, p90 1.018, 31 ABBA rounds). The fragment harness that
+  it runs **no faster** (harness, quiet GPU: ratio 1.007, p10 1.000, p90 1.014, 41 ABBA rounds; also equal on the Hyrule
+  Field capture). The fragment harness that
   checks it (`meshlab fs`) is new.
 - **Does the size improvement mean speed? No, not for the stages measured.** M6e's two mesh rewrites compile much smaller
   (lit: VGPRs 160 → 48, LDS 18,432 → 9,216 in the pipeline's count, waves 6 → 14 a SIMD, ACO's throughput estimate 1,244 → 962;
   depth: VGPRs 64 → 32, LDS 6,144 → 3,072, IT 645 → 499), and on the captured draws they run **exactly as fast**: ratio
   1.000 (depth, 38 draws, p10-p90 0.993-1.008) and 1.000 (lit, 5 draws, 0.993-1.007), with rasterization off as well (1.001).
-  The draws are too small to be bound by the mesh stage (0.7 µs a draw whatever the stage; section 4 gives the
-  multiplied-workgroup test that loads the stage itself).
+  Also with 32-64× the workgroups a draw, where the stage's own work dominates (9.4 and 33 ns a workgroup): 1.001 and 1.000
+  (all harness, quiet GPU). The limit is outside the stage's ALU and occupancy (INFERRED: the mesh workgroup launch and
+  primitive rate).
+- **The translator** (section 5b): RADV removes most of what the translation adds; what it cannot remove and recurs:
+  window-table translation of by-address loads (31,952 stages), sub-word shared stores as compare-and-swap loops (15
+  compute stages, among them the heaviest pass `fd029a…`), the mesh stage buffer in LDS (499), uniform-register emulation,
+  the doubled NaN guard. Prototyped: shared memory in explicit layout for stages with 16-bit stores (Eden supports it; the
+  direct profile never enables it): RADV's estimate −33 to −44 % on all 15, `fd029a…` IT 4,096 → 2,484 (static, VERIFIED by
+  RADV's statistics; not timed: no compute harness). Prototyped and timed: the NaN guard once: bit-exact on 3 captured
+  draws, RADV 3-4 instructions fewer a stage, harness timing within ±1 % but taken with a game process running (not a
+  result).
 - **What would pay:** not hand-rewriting stages one by one. The ranked list (section 5) puts the heavy compute pass first
   (up to 1 ms a frame if its cost can be found and removed), then the per-command overheads (about 4 ms a frame of commands
   that do little shader work), then translator-wide fixes that RADV does not clean up: the mesh stage buffer in LDS, the
   16-bit shared stores emulated by compare-and-swap loops (in `fd029a…` itself), the doubled NaN guard, predication lowered
   to one branch an instruction.
 
-Device losses of this stage: **none** (0 of the budget of 3). Tests: 295 pass, 5 fail (the baseline five).
+Device losses of this stage: **none** (0 of the budget of 3). Tests: 296 pass, 5 fail (the baseline five; 296 on native-vk e8b19db).
 
 ## Method
 
@@ -356,8 +366,8 @@ froxel blended into the colour (the froxels the compute `27ee9883…` builds, IN
 | Capture | Draw | Inputs | Result |
 |---|---|---|---|
 | Kokiri `m6h_ps2_k` | #1057 | varyings in [0, 1) | **EQUAL**: 4,194,304 of 4,194,304 words (VERIFIED) |
-| Hyrule Field `m6h_ps2_hf` | #2125 | [0, 1) | HF_FOG1 |
-| Hyrule Field `m6h_ps2_hf` | #2125 | [-4, 4) (more sky and both fog paths) | HF_FOG2 |
+| Hyrule Field `m6h_ps2_hf` | #2125 | [0, 1) | **EQUAL**: 4,194,304 words (VERIFIED) |
+| Hyrule Field `m6h_ps2_hf` | #2125 | [-4, 4) (more sky and both fog paths) | **EQUAL**: 4,194,304 words (VERIFIED) |
 
 Getting there took three findings, each a rule for the next rewrite (VERIFIED by the compare and by RADV's ISA of both):
 1. The translator marks every float operation NoContraction; glslang carries `precise` back from the outputs through the
@@ -372,8 +382,9 @@ Getting there took three findings, each a rule for the next rewrite (VERIFIED by
 **Cost** (RADV, pipeline statistics: translator → rewrite): 656 → 643 instructions, code 3,788 → 3,688 bytes, VGPRs 64 → 64,
 16 waves a SIMD both, IT 463 → 451, latency 2,626 → 2,681, VALU 380 → 368, SALU 116 → 113. **Timed** (`--bench`, 20 grids of
 1024 × 1024 a submission, 31 ABBA rounds): translator 38.05 µs a million pixels, rewrite 38.73; **ratio 1.008** (p10 0.999,
-p90 1.018). FOG_BENCH2 On the frame: 1.33 Mpx × 38 µs/Mpx = 0.051 ms, the measured share 0.065 ms (Kokiri) and 0.052 ms
-(HF, est.) a frame; a 2 % gain would be 1 µs.
+p90 1.018). Rerun after the session restart on a quiet GPU (41 rounds, Kokiri draw): translator 37.07 µs a million pixels, rewrite 37.30,
+**ratio 1.007** (p10 1.000, p90 1.014): the rewrite is not faster (harness). (An HF series gave 1.008 but a game process
+was running during it: not a result.) On the frame: 1.33 Mpx × 38 µs/Mpx = 0.051 ms, in-game 0.065 ms (Kokiri, indicative); a 2 % gain would be about 1 µs a frame.
 
 ### 3.2 M6e's mesh rewrites, timed
 
@@ -493,7 +504,12 @@ instruction (folded: the fog composite's ISA has 7 branches), XMAD multiplies (f
    the drawn ones carry 4-5 ms of the frame's command time (indicative), most of it not this overhead. Gain: not estimable
    without a measurement; the character draws (0.52 ms in the market, indicative) are the place to measure it.
 3. **The NaN guard once** (`direct_shader.cpp translate_*_variant` calls `GuardFragmentOutputs` and the emitter's
-   `frag_nan_guard` clamps again). **Prototyped and measured** (`censustool --no-ir-guard`, the fragment harness): FIXB
+   `frag_nan_guard` clamps again). **Prototyped** (`censustool --no-ir-guard`, the fragment harness): **bit-exact** on the three captured draws tried (fog
+   composite, shadow mask `ce62…`, lit material `a83142e5…`: 4,194,304 words each, VERIFIED; the offline translation with the
+   guard was first checked equal to the captured stage, so the compare is the fix's alone). Timing: two A/B series (41 rounds
+   each) gave 1.000 / 0.999, 0.992 / 0.991 and 0.998 / 1.001 (fix / translator) for the three, but **a game process was
+   running during both** (the quiet check of `gpu_run.sh` said so), so they are not results; they agree with the static
+   count.
    RADV: 3-4 instructions fewer a stage (656 → 653, 734 → 731, 2,939 → 2,935), IT −0.1 to −1.3 %. Reach: every fragment
    stage with a float target (22,284); gain under 1 %.
 4. **The mesh stage buffer** (`backend/spirv/emit_spirv_mesh.cpp`, the ISBE in workgroup memory copied to the outputs at the
@@ -523,14 +539,16 @@ Committed (nothing of the game: our sources and the decompiled stage, a transcri
 | The decompiled fragment stage | `gpu/direct/shaders/frag/` (`common.glsl`, `fog_composite.frag`, `codes.txt`); `tools/meshlab/build_shaders.sh` (any stage kind), `spv_exact_fma.py` |
 
 With `RX_BACKEND` unset nothing changes; with the direct back end and `HOS_DBG` unset, one load and a branch per command.
-Tests: `HOOKSHOT_VULKAN_HEADERS=/usr/include work/venv/bin/python -I -B tests/run_all.py`: 295 passed, 5 failed (the baseline
+Tests: `HOOKSHOT_VULKAN_HEADERS=/usr/include work/venv/bin/python -I -B tests/run_all.py`: 296 passed, 5 failed (the baseline
 five), 19 skipped.
 
 Local, not committed: the seed (`work/m6h/hookshot_shaders.bin`), the census (`work/m6h/census/`: `stages.jsonl`,
 `stages.csv`, `report.md`), IR prints (`work/m6h/ir/`), the runs `work/runs/m6h_ps_k`, `m6h_ps2_{k,hf}` (drawlog, meshcap),
-`m6h_ps3_{k,hf,mk}` (timestamps), the per-scene tables (`work/m6h/scene3_*`), the benches (`work/m6h/bench/`).
+`m6h_ps3_{k,hf,mk}` (timestamps; mk with meshdry), `m6h_ps4_mk` (the market with its mesh drawn), the per-scene tables (`work/m6h/scene3_*`), the benches (`work/m6h/bench/`).
 
 **Left undone:** decompiling the heavy compute `fd029a…` and a lit material (too large for the time; the harness has no
 compute mode and no storage buffers for fragment stages); a second fragment rewrite (the shadow mask `ce62…` was read, not
 written); naming Link, enemies and terrain (their textures' handles are computed and the drawlog cannot name them); the
-title scene; a market frame with its mesh draws drawn (needs agent/m6d's wait, not landed).
+title scene; a compute harness (to time `fd029a…` and fix 1 of section 5b, and to check that fix bit-exact); fix 2 of
+section 5b (a contiguous window layout) needs a back-end change and was only specified. No labels were added to
+`nx2/oot_labels.txt` (no game function was identified).
