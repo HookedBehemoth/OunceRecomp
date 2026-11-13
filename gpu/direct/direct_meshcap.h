@@ -35,6 +35,8 @@ void meshcap_program(const DrawProg& d, uint64_t task_code, const McStageIn* sta
 /// list's updated copies), empty when it is a game buffer read at the frame's end (ubos[i].guest) or c1 (the program's).
 /// header_host / header_dev: a task+mesh draw's header in the arena (the chunk holding it: chunk_*); the task pool (indirect)
 struct MeshCapDraw {
+    bool vertex = false;   // (M6h: a vertex draw: its uniform buffers only)
+    mcap::McOther other{};  // (a vertex draw's place: kind and count as meshcap_other)
     mcap::McDraw d{};
     std::vector<mcap::McDrawUbo> ubos;
     std::vector<std::vector<uint8_t>> ubo_bytes;
@@ -44,7 +46,7 @@ struct MeshCapDraw {
     const uint8_t* pool_host = nullptr;
     uint64_t pool_dev = 0, pool_bytes = 0;
 };
-void meshcap_draw(MeshCapDraw&& d);
+void meshcap_draw(MeshCapDraw&& d);   // (M6h: a vertex draw too, d.vertex)
 /// Another command of the frame (kind: mcap::McOther)
 void meshcap_other(uint64_t cb, uint32_t kind, uint64_t key, uint32_t count);
 /// (present_run) at the present after the captured one: the GPU's words read, the file written

@@ -103,6 +103,7 @@ void meshcap_draw(MeshCapDraw&& d) {
     if (cmds.size() >= 20000) return;
     d.d.seq = seq++, d.d.cb_seq = cb_count[d.d.cb]++;
     d.d.present = present_count();
+    d.other.seq = d.d.seq, d.other.cb_seq = d.d.cb_seq, d.other.cb = d.d.cb, d.other.key = d.d.key;
     Cmd c{true, std::move(d), {}};
     cmds.push_back(std::move(c));
 }
@@ -138,7 +139,7 @@ void meshcap_after() {
             continue;
         }
         MeshCapDraw& m = c.draw;
-        n_mesh++;
+        n_mesh += !m.vertex;
         if (std::find(used.begin(), used.end(), m.d.key) == used.end()) used.push_back(m.d.key);
         // (uniform buffers: the CPU's copies as made; game buffers and c1 read now)
         for (size_t i = 0; i < m.ubos.size(); i++) {
@@ -150,6 +151,15 @@ void meshcap_after() {
                 if (!host->gpu_read(u.guest, b.data(), b.size())) b.clear();
             }
             u.blob = b.empty() ? ~0u : blobs.add(from_guest ? u.guest : 0, std::move(b));
+        }
+        if (m.vertex) {   // (M6h: a vertex draw: its uniform buffers, then its place in the frame)
+            m.d.nubo = (uint32_t)m.ubos.size();
+            put(o, mcap::McRecord{mcap::MC_VDRAW, 0, sizeof m.d + m.ubos.size() * sizeof(mcap::McDrawUbo) + sizeof m.other});
+            put(o, m.d);
+            for (const auto& u : m.ubos) put(o, u);
+            put(o, m.other);
+            draws.push_back(std::move(o));
+            continue;
         }
         // (the mesh stage's storage buffers: the game's, read now, up to 64 MB each)
         for (mcap::McDrawSsbo& s : m.ssbos) {

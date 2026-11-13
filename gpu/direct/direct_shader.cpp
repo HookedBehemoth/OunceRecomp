@@ -1106,7 +1106,7 @@ bool finish(Variant& v) {
         x.want = canonical(a.type, x.dim_fixed, x.desc_type, x.depth_float);
         d.answers.push_back(x);
     }
-    if (d.mesh && meshcap_on()) {   // (M6e: HOS_DBG=meshcap keeps every mesh program's stages, for the frame it captures)
+    if (meshcap_on()) {   // (M6e: HOS_DBG=meshcap keeps every mesh program's stages, for the frame it captures; M6h: every program's)
         std::vector<McStageIn> in;
         for (size_t si = 0; si < v.stages.size(); si++) {
             const VStage& st = v.stages[si];

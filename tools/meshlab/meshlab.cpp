@@ -511,6 +511,7 @@ struct Ready {
     OutLayout layout;       // (compare: the dump's layout)
 };
 std::string repl_dir, mesh_override, fs_mode = "simple";
+uint32_t bench_mult = 1;   // (bench --mult K: each draw's mesh workgroups K times: a task+mesh draw's map repeated K times, a direct draw's count K times)
 std::map<std::string, VkShaderEXT> shader_cache;
 
 VkShaderEXT mesh_shader_of(const Program& p, const std::vector<uint32_t>& spirv, const std::string& tag) {
@@ -566,17 +567,17 @@ Ready prepare(const Frame& f, const Draw& d) {
     // (a task+mesh draw: its header, map and payload as the GPU left them, at our addresses)
     if (d.d.task) {
         // (room for the whole map and payload area the header names, so that the task stage can be run again: --tasks)
-        const uint64_t map_words = std::max<uint64_t>(d.d.header[8], d.map.size());
+        const uint64_t map_words = std::max<uint64_t>(d.d.header[8], d.map.size()) * bench_mult;
         const uint64_t pay_words = std::max<uint64_t>((uint64_t)d.d.header[9] * d.d.header[13], d.payload.size());
         r.header = make_buf(64 + 4 * (map_words + pay_words) + 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
         uint32_t h[16];
         std::memcpy(h, d.d.header, 64);
         const uint64_t ma = r.header.addr + 64, pa = ma + 4 * map_words;
         h[4] = (uint32_t)ma, h[5] = (uint32_t)(ma >> 32), h[6] = (uint32_t)pa, h[7] = (uint32_t)(pa >> 32);
-        h[0] = std::min<uint32_t>(h[0], (uint32_t)d.map.size());
+        h[0] = std::min<uint32_t>(h[0], (uint32_t)d.map.size()) * bench_mult;
         h[8] = (uint32_t)map_words;
         std::memcpy(r.header.map, h, 64);
-        std::memcpy(r.header.map + 64, d.map.data(), 4 * d.map.size());
+        for (uint32_t k = 0; k < bench_mult; k++) std::memcpy(r.header.map + 64 + 4 * d.map.size() * k, d.map.data(), 4 * d.map.size());
         std::memcpy(r.header.map + 64 + 4 * map_words, d.payload.data(), 4 * d.payload.size());
         std::memcpy(r.push + 64, &r.header.addr, 8), std::memcpy(r.push + 72, &r.header.addr, 8);
         r.tasks = h[9];
@@ -594,11 +595,11 @@ Ready prepare(const Frame& f, const Draw& d) {
         r.groups = h[0];
     } else if (d.d.indirect) {
         r.record = make_buf(64, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-        const uint32_t w[4] = {d.d.record_words[0], 1, 1, 0};
+        const uint32_t w[4] = {d.d.record_words[0] * bench_mult, 1, 1, 0};
         std::memcpy(r.record.map, w, 16);
         r.groups = w[0];
     } else {
-        r.groups = (uint32_t)std::max(d.d.y, 0);
+        r.groups = (uint32_t)std::max(d.d.y, 0) * bench_mult;
     }
     // (the stages: the translator's mesh stage, a replacement, or one given for every draw)
     const Stage* ms = p.stage(VK_SHADER_STAGE_MESH_BIT_EXT);
@@ -745,10 +746,12 @@ void push(VkCommandBuffer cb, const void* data, uint32_t bytes) {
     pi.data = {data, bytes};
     g.vkCmdPushDataEXT(cb, &pi);
 }
+bool bench_discard = false;   // (bench --discard: every draw with rasterizer discard: the mesh stage alone)
 void record_draw(VkCommandBuffer cb, const Ready& r, VkShaderEXT ms_override = VK_NULL_HANDLE) {
     Dyn dyn;
     std::memcpy(&dyn, r.d->d.dyn, sizeof dyn);
     set_state(cb, dyn);
+    if (bench_discard) vkCmdSetRasterizerDiscardEnable(cb, VK_TRUE);
     bind_stages(cb, ms_override ? ms_override : r.ms, r.fs);
     push(cb, r.push, r.push_bytes);
     if (r.d->d.task) g.vkCmdDrawMeshTasksIndirectEXT(cb, r.header.b, 0, 1, 16);
@@ -1016,6 +1019,8 @@ void list(const Frame& f) {
 
 /// meshlab probe <spv> [--groups N] [--pipeline]: a mesh stage of our own (tools/meshlab/probes) drawn once: push data {an output
 /// buffer's address, k = 3}; its first 32 words printed, and checked against the scratch probe's expectation
+#include "fsbench.h"
+
 int probe(int argc, char** argv) {
     const auto code = read_spv(argv[2]);
     if (code.empty()) die("no %s", argv[2]);
@@ -1083,6 +1088,12 @@ int main(int argc, char** argv) {
     int reps = 1, job = -1, prims_shown = 8;
     bool task_only = false, secondary = false, quiet = false, empty = false, query = false, tasks = false, frame = false;
     int vs_draws = 0;   // (--vs N: N vertex draws of 64 triangles before each mesh draw)
+    int rounds = 21;    // (bench: A/B rounds)
+    bool fs_compare = false, fs_bench = false;   // (fs: compare the two fragment stages, time them)
+    int fs_max = 8;     // (fs: draws of a fragment code at most)
+    uint32_t fs_w = 1024, fs_h = 1024;
+    float fs_lo = 0.0f, fs_hi = 1.0f;
+    bool discard = false;   // (bench: rasterizer discard, the mesh stage alone)
     std::string cond;   // (--cond once|draw: the draws under conditional rendering on a predicate that lets them draw, begun once or around each)
     Between between = Between::none;
     for (int i = 3; i < argc; i++) {
@@ -1097,6 +1108,14 @@ int main(int argc, char** argv) {
         else if (a == "--job") job = std::atoi(next().c_str());
         else if (a == "--prims") prims_shown = std::atoi(next().c_str());
         else if (a == "--task-only") task_only = true;
+        else if (a == "--rounds") rounds = std::atoi(next().c_str());
+        else if (a == "--compare") fs_compare = true;
+        else if (a == "--bench") fs_bench = true;
+        else if (a == "--max") fs_max = std::atoi(next().c_str());
+        else if (a == "--size") { const std::string v = next(); fs_w = (uint32_t)std::atoi(v.c_str()); fs_h = (uint32_t)std::atoi(v.substr(v.find('x') + 1).c_str()); }
+        else if (a == "--range") { const std::string v = next(); fs_lo = (float)std::atof(v.c_str()); fs_hi = (float)std::atof(v.substr(v.find(',') + 1).c_str()); }
+        else if (a == "--discard") discard = true;
+        else if (a == "--mult") bench_mult = (uint32_t)std::max(1, std::atoi(next().c_str()));
         else if (a == "--secondary") secondary = true;
         else if (a == "--quiet") quiet = true;
         else if (a == "--host") host_only = true;
@@ -1123,6 +1142,41 @@ int main(int argc, char** argv) {
                 if (!o) die("cannot write %s", b);
                 std::fwrite(s.spirv.data(), 4, s.spirv.size(), o), std::fclose(o);
             }
+        return 0;
+    }
+    if (mode == "fs") {   // (M6h: the fragment harness, fsbench.h)
+        std::vector<const Draw*> vd;
+        for (const std::string& a : pos) {
+            if (a.rfind("fs:", 0) == 0) {
+                const uint64_t code = std::strtoull(a.c_str() + 3, nullptr, 16);
+                int n = 0;
+                for (const Draw& d : f.draws) {
+                    if (!d.vertex || n >= fs_max) continue;
+                    const auto it = f.programs.find(d.d.key);
+                    if (it != f.programs.end() && it->second.h.codes[1] == code) vd.push_back(&d), n++;
+                }
+                continue;
+            }
+            const Draw* d = f.by_seq((uint32_t)std::atoi(a.c_str()));
+            if (!d || !d->vertex) die("no captured vertex draw %s", a.c_str());
+            vd.push_back(d);
+        }
+        if (vd.empty()) die("fs: no draws chosen");
+        gpu_init();
+        heaps_init();
+        guest_init(f, vd);
+        return fsb::fs_main(f, vd, repl_dir, fs_compare, fs_bench, (uint32_t)reps, rounds, fs_w, fs_h, fs_lo, fs_hi);
+    }
+    if (mode == "fsfind") {   // (M6h: the captured vertex draws of each fragment code: count, pass size)
+        std::map<uint64_t, std::vector<const Draw*>> by;
+        for (const Draw& d : f.draws)
+            if (d.vertex)
+                if (const auto it = f.programs.find(d.d.key); it != f.programs.end()) by[it->second.h.codes[1]].push_back(&d);
+        for (const auto& [code, v] : by) {
+            std::printf("fragment %016llx: %zu draws:", (unsigned long long)code, v.size());
+            for (size_t i = 0; i < v.size() && i < 12; i++) std::printf(" #%u (%ux%u, %d)", v[i]->d.seq, v[i]->d.w, v[i]->d.h, v[i]->d.x);
+            std::printf("\n");
+        }
         return 0;
     }
     std::vector<const Draw*> draws;
@@ -1196,6 +1250,83 @@ int main(int argc, char** argv) {
         std::printf("compare: %d equal, %d different, %d without a replacement\n", equal, different, missing);
         for (const auto& [code, n] : by_code) std::printf("  mesh %016llx: %d equal, %d different\n", (unsigned long long)code, n.first, n.second);
         return different ? 1 : 0;
+    }
+    if (mode == "bench") {   // (M6h: the translator's mesh stage against the replacement, timed on the GPU, alternating)
+        if (repl_dir.empty()) die("bench needs --repl <dir>");
+        bench_discard = discard;
+        VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qi.queryType = VK_QUERY_TYPE_TIMESTAMP, qi.queryCount = 2;
+        VkQueryPool qp;
+        VK(vkCreateQueryPool(g.dev, &qi, nullptr, &qp));
+        struct Variant {
+            std::vector<Ready> ready;
+            std::vector<VkShaderEXT> ms;
+            VkCommandBuffer cb = VK_NULL_HANDLE;
+            std::vector<double> ns;
+        } v[2];
+        uint64_t groups = 0;
+        std::map<std::string, Target> targets;
+        for (const Draw* d : draws) {
+            Ready r = prepare(f, *d);
+            v[0].ready.push_back(r), v[0].ms.push_back(r.ms);
+            const auto code = read_spv(repl_path(*r.p));
+            if (code.empty()) die("no replacement %s", repl_path(*r.p).c_str());
+            v[1].ready.push_back(r), v[1].ms.push_back(mesh_shader_of(*r.p, code, "repl"));
+            groups += r.groups;
+        }
+        for (int k = 0; k < 2; k++) {   // (each variant: every draw, reps times, in one rendering a draw's target; two timestamps around)
+            VkCommandBuffer cb = v[k].cb = new_cb();
+            VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            VK(vkBeginCommandBuffer(cb, &bi));
+            vkCmdResetQueryPool(cb, qp, 0, 2);
+            std::vector<Target*> ts;
+            for (const Draw* d : draws) {
+                std::string key = std::to_string(d->d.w) + "x" + std::to_string(d->d.h) + "/" + std::to_string(d->d.samples) + "/" + std::to_string(d->d.depth);
+                for (uint32_t i = 0; i < d->d.n && i < 8; i++) key += "/" + std::to_string(d->d.color[i]);
+                auto it = targets.find(key);
+                if (it == targets.end()) it = targets.emplace(key, make_target(d->d)).first;
+                ts.push_back(&it->second);
+            }
+            for (auto& [key, t] : targets) to_attachment(cb, t);
+            heaps_bind(cb);
+            vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, qp, 0);
+            for (size_t i = 0; i < draws.size(); i++) {
+                begin_rendering(cb, *ts[i], false, true);
+                for (int rep = 0; rep < reps; rep++) record_draw(cb, v[k].ready[i], v[k].ms[i]);
+                vkCmdEndRendering(cb);
+            }
+            vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, qp, 1);
+            VK(vkEndCommandBuffer(cb));
+        }
+        VkFence fence = new_fence();
+        auto run = [&](int k) {
+            submit(v[k].cb, fence);
+            if (vkWaitForFences(g.dev, 1, &fence, VK_TRUE, 10ull * 1000 * 1000 * 1000) != VK_SUCCESS) die("bench: a submission did not finish");
+            VK(vkResetFences(g.dev, 1, &fence));
+            uint64_t t[2];
+            VK(vkGetQueryPoolResults(g.dev, qp, 0, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+            return (double)(t[1] - t[0]) * g.props.limits.timestampPeriod;
+        };
+        run(0), run(1);   // (warm)
+        for (int r = 0; r < rounds; r++) {
+            const int first = r & 1;   // (ABBA: each variant first in half the rounds)
+            v[first].ns.push_back(run(first));
+            v[1 - first].ns.push_back(run(1 - first));
+        }
+        auto median = [](std::vector<double> x) { std::sort(x.begin(), x.end()); return x[x.size() / 2]; };
+        auto lo = [](std::vector<double> x) { std::sort(x.begin(), x.end()); return x[x.size() / 10]; };
+        auto hi = [](std::vector<double> x) { std::sort(x.begin(), x.end()); return x[x.size() * 9 / 10]; };
+        const double units = (double)groups * reps;
+        std::printf("bench: %zu draws x %d reps, %llu mesh workgroups a rep, %d rounds%s\n", draws.size(), reps, (unsigned long long)groups, rounds,
+                    discard ? ", rasterizer discard" : "");
+        const char* names[2] = {"translator", "replacement"};
+        for (int k = 0; k < 2; k++)
+            std::printf("  %-11s median %.3f ms (p10 %.3f, p90 %.3f): %.1f ns a mesh workgroup, %.1f us a draw\n", names[k], median(v[k].ns) / 1e6,
+                        lo(v[k].ns) / 1e6, hi(v[k].ns) / 1e6, median(v[k].ns) / units, median(v[k].ns) / (draws.size() * reps) / 1e3);
+        std::vector<double> ratio;
+        for (int r = 0; r < rounds; r++) ratio.push_back(v[1].ns[r] / v[0].ns[r]);
+        std::printf("  replacement / translator: median %.3f (p10 %.3f, p90 %.3f) over %d paired rounds\n", median(ratio), lo(ratio), hi(ratio), rounds);
+        return 0;
     }
     if (mode == "stats") {   // (the stages made and nothing drawn: RADV_DEBUG=shaderstats prints what the compiler made)
         for (const Draw* d : draws) prepare(f, *d);

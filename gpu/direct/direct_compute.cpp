@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "direct_marks.h"
+#include "direct_pstats.h"
 #include "direct_check.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -1240,8 +1241,16 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     }
     heap_push(cb, push, sizeof push);
     const uint32_t mk = marks_on() ? mark_before(cb, indirect ? "dispatch indirect" : "dispatch", v->key, l->info.kind, l->info.lr, grid[0], grid[1]) : 0;   // (M6c)
+    uint32_t ps = ~0u;
+    if (pstats_on()) {   // (M6h: HOS_DBG=pstats)
+        PstatWhat w;
+        w.what = indirect ? "dispatch indirect" : "dispatch", w.key = v->key, w.codes[0] = v->key, w.kind = l->info.kind, w.lr = l->info.lr;
+        w.count = grid[0], w.instances = grid[1], w.extra = grid[2];
+        ps = pstat_before(cb, w);
+    }
     if (indirect) pDispatchIndirect(cb, abuf, aoff);
     else pDispatch(cb, grid[0], grid[1], grid[2]);
+    if (pstats_on()) pstat_after(cb, ps);
     if (marks_on()) mark_after(cb, mk);
     draw_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
     tell_first(*v, l, map, v->bank_bytes, grid, indirect);

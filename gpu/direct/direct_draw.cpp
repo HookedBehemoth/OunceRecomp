@@ -17,6 +17,7 @@
 #include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_marks.h"
+#include "direct_pstats.h"
 #include "direct_meshcap.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
@@ -781,23 +782,8 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
     return R_DRAWN;
 }
 
-/// (M6e, HOS_DBG=meshcap) a mesh draw of the captured frame, with what its mesh stage reads (direct_meshcap.h)
-void meshcap_mesh(List* l, ListDraw& x, const DrawProg& p, const uint8_t* push, bool mesh_ind, const nvn_p_draw_mesh& dm, uint32_t nargs,
-                  uint32_t stride, bool gated, VkBuffer task_hb, VkDeviceSize task_ho, VkCommandBuffer cb) {
-    static_assert(sizeof(Dyn) <= sizeof(mcap::McDraw::dyn), "the capture's dynamic state");
-    MeshCapDraw m;
-    mcap::McDraw& d = m.d;
-    d.key = p.key, d.cb = (uint64_t)cb, d.lr = l->info.lr, d.list_kind = l->info.kind;
-    d.task = p.task, d.indirect = mesh_ind, d.gated = gated;
-    d.x = dm.x, d.y = dm.y, d.z = dm.z, d.nargs = nargs, d.stride = stride, d.record = mesh_ind ? dm.indirect : 0;
-    const PassRec& ps = l->pass;
-    d.w = ps.w, d.h = ps.h, d.n = (uint32_t)ps.n, d.samples = (uint32_t)ps.samples;
-    for (int i = 0; i < 8; i++) d.color[i] = i < ps.n ? (uint32_t)ps.color[i].format : 0;
-    d.depth = (uint32_t)ps.depth.format, d.depth_aspect = ps.depth.aspect;
-    d.push_bytes = p.push_bytes;
-    std::memcpy(d.push, push, std::min<uint32_t>(p.push_bytes, sizeof d.push));
-    d.dyn_bytes = sizeof(Dyn);
-    std::memcpy(d.dyn, &x.dyn, sizeof(Dyn));
+/// (M6e, M6h) a captured draw's uniform buffers: the CPU's copies as made, game buffers named to be read at the frame's end
+void meshcap_ubos(List* l, ListDraw& x, const DrawProg& p, MeshCapDraw& m) {
     // (the arena's chunk that holds a device address, and its bytes there)
     const auto in_arena = [&](VkDeviceAddress a, const uint8_t*& host, uint64_t& left) {
         if (!l->slot || !l->slot->arena) return false;
@@ -825,6 +811,46 @@ void meshcap_mesh(List* l, ListDraw& x, const DrawProg& p, const uint8_t* push, 
         m.ubos.push_back(e);
         m.ubo_bytes.push_back(std::move(bytes));
     }
+}
+/// (M6h, HOS_DBG=meshcap) a vertex draw of the captured frame: its pass, push data, state and uniform buffers (the fragment harness)
+void meshcap_vertex(List* l, ListDraw& x, const DrawProg& p, const uint8_t* push, uint32_t kind, uint32_t count, uint32_t instances, bool gated,
+                    VkCommandBuffer cb) {
+    MeshCapDraw m;
+    m.vertex = true;
+    m.other.kind = kind, m.other.count = count;
+    mcap::McDraw& d = m.d;
+    d.key = p.key, d.cb = (uint64_t)cb, d.lr = l->info.lr, d.list_kind = l->info.kind, d.gated = gated;
+    d.x = (int32_t)count, d.y = (int32_t)instances;
+    const PassRec& ps = l->pass;
+    d.w = ps.w, d.h = ps.h, d.n = (uint32_t)ps.n, d.samples = (uint32_t)ps.samples;
+    for (int i = 0; i < 8; i++) d.color[i] = i < ps.n ? (uint32_t)ps.color[i].format : 0;
+    d.depth = (uint32_t)ps.depth.format, d.depth_aspect = ps.depth.aspect;
+    d.push_bytes = p.push_bytes;
+    std::memcpy(d.push, push, std::min<uint32_t>(p.push_bytes, sizeof d.push));
+    d.dyn_bytes = sizeof(Dyn);
+    std::memcpy(d.dyn, &x.dyn, sizeof(Dyn));
+    meshcap_ubos(l, x, p, m);
+    meshcap_draw(std::move(m));
+}
+
+/// (M6e, HOS_DBG=meshcap) a mesh draw of the captured frame, with what its mesh stage reads (direct_meshcap.h)
+void meshcap_mesh(List* l, ListDraw& x, const DrawProg& p, const uint8_t* push, bool mesh_ind, const nvn_p_draw_mesh& dm, uint32_t nargs,
+                  uint32_t stride, bool gated, VkBuffer task_hb, VkDeviceSize task_ho, VkCommandBuffer cb) {
+    static_assert(sizeof(Dyn) <= sizeof(mcap::McDraw::dyn), "the capture's dynamic state");
+    MeshCapDraw m;
+    mcap::McDraw& d = m.d;
+    d.key = p.key, d.cb = (uint64_t)cb, d.lr = l->info.lr, d.list_kind = l->info.kind;
+    d.task = p.task, d.indirect = mesh_ind, d.gated = gated;
+    d.x = dm.x, d.y = dm.y, d.z = dm.z, d.nargs = nargs, d.stride = stride, d.record = mesh_ind ? dm.indirect : 0;
+    const PassRec& ps = l->pass;
+    d.w = ps.w, d.h = ps.h, d.n = (uint32_t)ps.n, d.samples = (uint32_t)ps.samples;
+    for (int i = 0; i < 8; i++) d.color[i] = i < ps.n ? (uint32_t)ps.color[i].format : 0;
+    d.depth = (uint32_t)ps.depth.format, d.depth_aspect = ps.depth.aspect;
+    d.push_bytes = p.push_bytes;
+    std::memcpy(d.push, push, std::min<uint32_t>(p.push_bytes, sizeof d.push));
+    d.dyn_bytes = sizeof(Dyn);
+    std::memcpy(d.dyn, &x.dyn, sizeof(Dyn));
+    meshcap_ubos(l, x, p, m);
     for (int st = 6; st <= 7; st++)   // (the task and mesh stages' storage buffers, every slot bound)
         for (int i = 0; i < 16; i++) {
             const nvn_p_bind_buf& b = x.s.ssbo[st][i];
@@ -883,6 +909,15 @@ void phlog(const List* l, const DrawProg* p) {
              "program %016llx: %s", ph == 1 ? "the placeholder" : "no image", h, t.bank, t.offset, t.stage, l->info.kind,
              (unsigned long long)l->info.lr, (unsigned long long)present_count(), (unsigned long long)p->key, e);
     }
+}
+/// (M6h) HOS_DBG=pstats: what a draw is, for its query's line
+PstatWhat pstat_what(const List* l, const DrawProg& p, const char* what, uint32_t count, uint32_t instances, bool gated) {
+    PstatWhat w;
+    w.what = what, w.key = p.key, w.codes[0] = p.codes[0], w.codes[1] = p.codes[1], w.codes[2] = p.task ? p.task_code : p.codes[2];
+    w.kind = l->info.kind, w.lr = l->info.lr, w.w = l->pass.w, w.h = l->pass.h;
+    w.format = l->pass.n ? (int32_t)l->pass.color[0].format : -1, w.targets = l->pass.n;
+    w.count = count, w.instances = instances, w.extra = gated;
+    return w;
 }
 void drawlog(const List* l, const char* what, const DrawProg* p, const Dyn* d, uint32_t count) {
     phlog(l, p);
@@ -1409,12 +1444,15 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             vkCmdPipelineBarrier2(cb, &d);
         };
         if (prog->task && (tm_before || (tm_pair && x.last_tm))) drain();
+        const uint32_t ps = pstats_on() ? pstat_before(cb, pstat_what(l, *prog, prog->task ? "task+mesh draw" : mesh_ind ? "mesh draw indirect" : "mesh draw",
+                                                                      mesh_ind ? nargs : (uint32_t)std::max(dm.y, 0), 1, gated)) : ~0u;   // (M6h)
         if (prog->task) vkCmdDrawMeshTasksIndirectEXT(cb, task_hb, task_ho, 1, 16);   // (M4c: the groups the task step placed)
         else if (!mesh_ind) vkCmdDrawMeshTasksEXT(cb, (uint32_t)std::max(dm.y, 0), 1, 1);
         else if (cntb) vkCmdDrawMeshTasksIndirectCountEXT(cb, ab, ao, cntb, cnto, nargs, stride);
         else vkCmdDrawMeshTasksIndirectEXT(cb, ab, ao, nargs, stride);
         if (prog->task && tm_after) drain();
         x.last_tm = prog->task;
+        if (pstats_on()) pstat_after(cb, ps);
         if (marks_on()) mark_after(cb, mk);
         l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
         count(l, R_DRAWN);
@@ -1426,10 +1464,16 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     drawlog(l, gated ? (ind ? "drawn gated indirect" : indexed ? "drawn gated indexed" : "drawn gated") : (ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn"),
             prog, &x.dyn,
             ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
-    if (meshcap_now()) meshcap_other((uint64_t)cb, ind ? 3 : indexed ? 2 : 1, prog->key, ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);   // (M6e)
+    if (meshcap_now())   // (M6e; M6h: with its uniform buffers)
+        meshcap_vertex(l, x, *prog, push, ind ? 3 : indexed ? 2 : 1, ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
+                       ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances), gated, cb);
     const uint32_t mk = marks_on() ? mark_before(cb, ind ? "draw indirect" : indexed ? "draw indexed" : "draw", prog->key, l->info.kind, l->info.lr,
                                                  ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
                                                  ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances)) : 0;   // (M6c)
+    const uint32_t ps = pstats_on() ? pstat_before(cb, pstat_what(l, *prog, ind ? "draw indirect" : indexed ? "draw indexed" : "draw",
+                                                                  ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
+                                                                  ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances), gated))
+                                    : ~0u;   // (M6h: HOS_DBG=pstats)
     if (ind) {   // (the game's records are VkDrawIndirectCommand / VkDrawIndexedIndirectCommand: fallbacks.md 2a)
         if (indexed) {
             if (cntb) vkCmdDrawIndexedIndirectCount(cb, ab, ao, cntb, cnto, nargs, stride);
@@ -1444,6 +1488,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         vkCmdDraw(cb, (uint32_t)dr.count, (uint32_t)std::max(1, dr.instances), (uint32_t)dr.first, (uint32_t)dr.base_instance);
     }
     x.last_tm = false;
+    if (pstats_on()) pstat_after(cb, ps);
     if (marks_on()) mark_after(cb, mk);
     l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
     count(l, R_DRAWN);

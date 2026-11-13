@@ -11,6 +11,7 @@
 #include "direct_draw.h"
 #include "direct_heap.h"
 #include "direct_marks.h"
+#include "direct_pstats.h"
 #include "direct_meshcap.h"
 #include "direct_pass.h"
 #include "direct_shader.h"
@@ -318,8 +319,16 @@ bool task_step(List* l, const DrawProg& p, bool indirect, uint64_t rec, uint32_t
     vkCmdBindShadersEXT(task, 1, &cs, &p.ts);
     heap_push(task, push, p.push_bytes);
     const uint32_t mk = marks_on() ? mark_before(task, indirect ? "task step indirect" : "task step", p.key, l->info.kind, l->info.lr, tasks, threads) : 0;
+    uint32_t ps = ~0u;
+    if (pstats_on()) {   // (M6h: HOS_DBG=pstats)
+        PstatWhat w;
+        w.what = indirect ? "task step indirect" : "task step", w.key = p.key, w.codes[0] = p.codes[0], w.codes[1] = p.codes[1];
+        w.codes[2] = p.task_code, w.kind = l->info.kind, w.lr = l->info.lr, w.count = tasks, w.instances = threads;
+        ps = pstat_before(task, w);
+    }
     if (indirect) pDispatchIndirect(task, hb, ho + 40);
     else pDispatch(task, tasks, 1, 1);
+    if (pstats_on()) pstat_after(task, ps);
     if (marks_on()) mark_after(task, mk);
     if (!job) {
         task_barrier(task, true);

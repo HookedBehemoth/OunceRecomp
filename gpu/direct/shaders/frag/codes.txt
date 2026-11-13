@@ -1,0 +1,2 @@
+# fragment stage code key -> its replacement source and the defines it is built with (BINDING_BASE: the bindings the program's vertex stage takes first)
+2407c9a14d62a1d6 fog_composite.frag -DBINDING_BASE=1

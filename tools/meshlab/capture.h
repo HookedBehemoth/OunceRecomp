@@ -34,6 +34,7 @@ struct Blob {
 };
 struct Draw {
     bool mesh = false;
+    bool vertex = false;   // (M6h: a vertex draw with its uniform buffers (MC_VDRAW): d and ubos set, and o)
     mcap::McDraw d{};
     mcap::McOther o{};
     std::vector<mcap::McDrawUbo> ubos;
@@ -107,6 +108,14 @@ inline bool load(const char* path, Frame& f, std::string& err) {
             take(d.ubos.data(), d.ubos.size() * sizeof d.ubos[0]);
             take(d.ssbos.data(), d.ssbos.size() * sizeof d.ssbos[0]);
             take(d.map.data(), d.map.size() * 4), take(d.payload.data(), d.payload.size() * 4);
+            f.draws.push_back(std::move(d));
+        } else if (r.type == mcap::MC_VDRAW) {
+            Draw d;
+            d.vertex = true;
+            take(&d.d, sizeof d.d);
+            d.ubos.resize(d.d.nubo);
+            take(d.ubos.data(), d.ubos.size() * sizeof d.ubos[0]);
+            take(&d.o, sizeof d.o);
             f.draws.push_back(std::move(d));
         } else if (r.type == mcap::MC_OTHER) {
             Draw d;

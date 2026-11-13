@@ -18,7 +18,7 @@ struct McFile {
     uint32_t magic, version;
     uint64_t present;
 };
-enum McType : uint32_t { MC_PROGRAM = 1, MC_BLOB = 2, MC_DRAW = 3, MC_OTHER = 4 };
+enum McType : uint32_t { MC_PROGRAM = 1, MC_BLOB = 2, MC_DRAW = 3, MC_OTHER = 4, MC_VDRAW = 5 };
 struct McRecord {
     uint32_t type, reserved;
     uint64_t bytes;   // (the payload's)
@@ -87,6 +87,9 @@ struct McDrawSsbo {
     uint32_t blob;         // (~0u: not read)
     uint64_t guest, size;
 };
+/// MC_VDRAW (M6h): a vertex draw, for the fragment harness: a McDraw (its pass, push data, dynamic state; x: the vertices or
+/// indices, y: the instances, task 0) and McDrawUbo[nubo] (the program's uniform buffers, both stages'); then a McOther as for
+/// MC_OTHER (its place in the frame's order)
 /// MC_OTHER: a command of the frame that is not a mesh draw
 struct McOther {
     uint64_t key, cb;

@@ -25,6 +25,7 @@
 #include "direct_query.h"
 #include "direct_check.h"
 #include "direct_marks.h"
+#include "direct_pstats.h"
 #include "vk_present_rect.h"
 
 namespace hsd {
@@ -376,6 +377,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     image_sweep(n);
     assets_present(n);
     dump_present(n);
+    pstats_present(n);   // (M6h: HOS_DBG=pstats)
     sync_present(t, crop);
 }
 

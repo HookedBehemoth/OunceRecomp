@@ -11,6 +11,7 @@
 
 #include "direct_compute.h"
 #include "direct_marks.h"
+#include "direct_pstats.h"
 #include "direct_internal.h"
 #include "direct_api.h"
 #include "direct_image.h"
@@ -325,6 +326,7 @@ extern "C" __attribute__((visibility("default"))) const MkwVkRenderer* mkwvk_ini
     draw_device_created();   // (M2b: the heaps, the draws' functions)
     query_device_created();  // (M5: queries, conditions, the resolve step)
     marks_init();            // (M6c: HOS_DBG=marks; after the heap's functions are loaded)
+    pstats_init(caps.mesh_queries);   // (M6h: HOS_DBG=pstats:<present>)
     logf("direct: %s, Vulkan %u.%u, driver %#x: the direct back end (M2b: targets, passes, present, vertex and fragment draws)", dev.props.deviceName,
          VK_VERSION_MAJOR(dev.props.apiVersion), VK_VERSION_MINOR(dev.props.apiVersion), dev.props.driverVersion);
     table.version = MKWVK_API_VERSION;

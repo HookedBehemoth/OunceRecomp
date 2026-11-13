@@ -11,6 +11,7 @@
 #include <mutex>
 
 #include "direct_marks.h"
+#include "direct_pstats.h"
 #include "direct_check.h"
 #include "shader_recompiler/shader_info.h"
 
@@ -389,7 +390,11 @@ void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std:
 void draw_features_resolved(const VkPhysicalDeviceVulkan14Features* f14) {
     heap_feat.descriptorHeapCaptureReplay = VK_FALSE;
     mesh_feat.taskShader = VK_FALSE;   // (never: see mesh_feat)
+    // (M6h: HOS_DBG=pstats counts mesh invocations too, when the device can)
+    const VkBool32 mesh_queries = mesh_feat.meshShaderQueries && pstats_wants_mesh_queries();
     mesh_feat.multiviewMeshShader = mesh_feat.primitiveFragmentShadingRateMeshShader = mesh_feat.meshShaderQueries = VK_FALSE;
+    mesh_feat.meshShaderQueries = mesh_queries;
+    caps.mesh_queries = mesh_queries;
     caps.mesh = has_ext[E_MESH] && mesh_feat.meshShader;
     if (!caps.mesh) mesh_feat.meshShader = VK_FALSE;
     caps.index_uint8 = f14 && f14->indexTypeUint8;
