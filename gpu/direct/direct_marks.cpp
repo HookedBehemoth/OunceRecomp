@@ -71,6 +71,7 @@ void marks_init() {
         ai.allocationSize = mr.size, ai.memoryTypeIndex = type;
         ok = type != UINT32_MAX && vkAllocateMemory(dev.device, &ai, nullptr, &memory) == VK_SUCCESS &&
              pBind(dev.device, buffer, memory, 0) == VK_SUCCESS && pMap(dev.device, memory, 0, VK_WHOLE_SIZE, 0, &map) == VK_SUCCESS;
+        if (memory) mem_account(MO_OTHER, type, (int64_t)mr.size);
     }
     if (!ok) {
         logf("direct: marks: no marker function or host-memory buffer: no breadcrumbs");

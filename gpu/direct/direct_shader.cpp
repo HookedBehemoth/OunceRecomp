@@ -53,6 +53,7 @@
 #include "direct_heap.h"
 #include "direct_image.h"
 #include "direct_meshcap.h"
+#include "direct_compute.h"
 #include "direct_shader.h"
 #include "direct_state.h"
 #include "direct_shader_parts.h"
@@ -64,8 +65,6 @@
 namespace hsd {
 static_assert(kMeshFirstPush == Shader::Backend::SPIRV::MESH_FIRST_PUSH_OFFSET, "the mesh draw's first: Eden's push offset");
 double seconds_since_device();   // (direct_draw.cpp)
-bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
-                   VkDeviceAddress& address);   // (direct_heap.cpp)
 
 namespace {
 
@@ -833,7 +832,7 @@ VkDeviceAddress c1_put(const std::vector<uint8_t>& bytes, uint32_t used) {
         VkBuffer b;
         VkDeviceMemory m;
         C1Chunk c;
-        if (!mapped_buffer(size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, b, m, c.map, c.address)) return 0;
+        if (!mapped_buffer(size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, b, m, c.map, c.address, MO_CONST)) return 0;
         c.size = size;
         c1_chunk = c;
     }
@@ -1806,6 +1805,12 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
         if (!ok) sl.fam->failed.insert(job->want);
     });
     return why = SM_TRANSLATING, nullptr;
+}
+
+void shader_held_stats(char* out, size_t cap) {
+    std::snprintf(out, cap, "; shaders: %lld objects for %lld draw variants, %lld compute objects (no byte figure either)",
+                  (long long)st_objects_made.load(), (long long)(st_translated.load() + st_from_disk.load()),
+                  (long long)compute_objects_made());
 }
 
 void shader_stats(char* out, size_t cap, double frames) {

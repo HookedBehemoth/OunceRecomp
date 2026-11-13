@@ -117,7 +117,7 @@ QSlot* slot_of(List* l) {
     if (r == VK_SUCCESS) r = pCreateQueryPool(dev.device, &pi, nullptr, &n->ts);
     void* map = nullptr;
     if (r != VK_SUCCESS || !mem_buffer(QSlot::kBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, n->buf, n->mem, &map) || !map) {
+                                                          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, n->buf, n->mem, &map, MO_QUERY) || !map) {
         logf("direct: a command slot's query pools or report buffer not made");
         host->log_flush();
         abort();

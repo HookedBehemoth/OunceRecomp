@@ -31,11 +31,15 @@ struct Thread {
     UploadSlot uploads[kUploads];
     int next = 0;
     UploadSlot* open = nullptr;
+    int64_t aside = 0;   // (its slots set aside at its last take: its part of st_aside_now)
 };
 thread_local Thread* self = nullptr;
 
 std::atomic<int64_t> st_resets{0}, st_kept{0}, st_reset_waits{0}, st_reset_wait_ns{0}, st_buffers{0}, st_uploads{0},
     st_upload_bytes{0}, st_upload_waits{0}, st_threads{0}, st_slots{0}, st_aside{0};
+// (memory by owner: the driver gives no size for a command pool, so the line has the counts. Slots set aside now, as each
+// thread found them when it last took a slot; the buffers made in the slots' pools by level, and in the upload pools)
+std::atomic<int64_t> st_aside_now{0}, st_primaries{0}, st_secondaries{0}, st_upload_bufs{0};
 
 VkCommandPool make_pool(VkCommandPoolCreateFlags flags) {
     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -69,6 +73,7 @@ VkCommandBuffer alloc_buffer(VkCommandPool pool, VkCommandBufferLevel level = VK
     }
     object_made(1, level == VK_COMMAND_BUFFER_LEVEL_PRIMARY ? "a command buffer" : "a secondary command buffer");
     st_buffers.fetch_add(1, std::memory_order_relaxed);
+    (level == VK_COMMAND_BUFFER_LEVEL_PRIMARY ? st_primaries : st_secondaries).fetch_add(1, std::memory_order_relaxed);
     return cb;
 }
 
@@ -114,6 +119,7 @@ CmdSlot* cmd_slot_take() {
             if (!s || (c->frame != UINT64_MAX && (s->frame == UINT64_MAX || c->frame > s->frame))) s = c.get();
         }
         if (aside) st_kept.fetch_add((int64_t)aside, std::memory_order_relaxed);
+        if ((int64_t)aside != t.aside) st_aside_now.fetch_add((int64_t)aside - t.aside, std::memory_order_relaxed), t.aside = (int64_t)aside;
         if (!s) {
             t.slots.push_back(std::make_unique<CmdSlot>());
             s = t.slots.back().get();
@@ -234,12 +240,12 @@ Upload upload_begin(uint64_t bytes) {
         st_upload_waits.fetch_add(1, std::memory_order_relaxed);
         sync_wait_value(u.value, UINT64_MAX);
     }
-    if (!u.cb) u.cb = alloc_buffer(t.upload_pool);
+    if (!u.cb) u.cb = alloc_buffer(t.upload_pool), st_upload_bufs.fetch_add(1, std::memory_order_relaxed);
     if (bytes > u.cap) {
         if (u.staging) mem_buffer_free(u.staging, u.mem), u.staging = VK_NULL_HANDLE, u.map = nullptr, u.cap = 0;
         const uint64_t cap = std::max<uint64_t>(bytes, 1ull << 20);
         void* map = nullptr;
-        if (!mem_buffer(cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, u.staging, u.mem, &map) || !map) {
+        if (!mem_buffer(cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, u.staging, u.mem, &map, MO_UPLOAD) || !map) {
             logf("direct: an upload's staging buffer of %llu bytes not made", (unsigned long long)cap);
             u.staging = VK_NULL_HANDLE;
         } else {
@@ -277,6 +283,15 @@ uint64_t upload_end(Upload& u) {
     st_uploads.fetch_add(1, std::memory_order_relaxed);
     for (uint64_t m = newest_upload.load(std::memory_order_relaxed); s->value > m && !newest_upload.compare_exchange_weak(m, s->value);) {}
     return s->value;
+}
+
+size_t cmd_held_stats(char* out, size_t cap) {
+    const int64_t up = st_upload_bufs.load(std::memory_order_relaxed);
+    const int n = std::snprintf(out, cap, "command slots: %lld slots (%lld set aside now), %lld primaries, %lld secondaries, and %lld upload "
+                                "buffers in %lld upload pools (no byte figure: the driver's)", (long long)st_slots.load(),
+                                (long long)st_aside_now.load(), (long long)(st_primaries.load() - up), (long long)st_secondaries.load(),
+                                (long long)up, (long long)st_threads.load());
+    return n < 0 ? 0 : std::min((size_t)n, cap ? cap - 1 : 0);
 }
 
 void cmd_stats(char* out, size_t cap, double frames) {

@@ -19,8 +19,6 @@
 #include "shaders/task_prep_spv.h"
 
 namespace hsd {
-bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
-                   VkDeviceAddress& address);   // (direct_heap.cpp)
 bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)
 
 /// A recording thread's task pool for one frame slot: the indirect draws' maps and payload areas, taken by the GPU (the prep
@@ -84,7 +82,7 @@ void init() {
 }
 
 bool pool_make(TaskPool& p, uint64_t bytes) {
-    if (!mapped_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, p.buffer, p.memory, p.map, p.address)) return false;
+    if (!mapped_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, p.buffer, p.memory, p.map, p.address, MO_TASK)) return false;
     object_made(2, "a task pool buffer");
     p.bytes = bytes;
     std::memset(p.map, 0, kHeader);
@@ -257,7 +255,7 @@ void task_pool_reset(TaskPool* p) {
                            (long long)used);   // (M6b)
     if (w[1] && p->bytes < kPoolMost) {
         count(T_REFUSED, w[1]);
-        vkDestroyBuffer(dev.device, p->buffer, nullptr), vkFreeMemory(dev.device, p->memory, nullptr);
+        mapped_buffer_free(p->buffer, p->memory, MO_TASK);
         const uint64_t bytes = std::min(p->bytes * 2, kPoolMost);
         *p = TaskPool{};
         if (pool_make(*p, bytes)) count(T_GROWN);

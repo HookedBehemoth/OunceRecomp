@@ -73,6 +73,7 @@ bool dmabuf_open() {   // (once, at layer0_on)
     return true;
 }
 /// The memory of guest [lo, lo + size) as an imported dma-buf; VK_NULL_HANDLE when udmabuf or the import refused it
+std::atomic<uint32_t> import_type{UINT32_MAX};   // (the imports' memory type, for the count of one freed: mem_account)
 VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
     UdmabufCreate c{(uint32_t)dmabuf_memfd, 1 /* UDMABUF_FLAGS_CLOEXEC */, lo, size};
     const int fd = ioctl(dmabuf_dev, kUdmabufCreate, &c);
@@ -118,6 +119,8 @@ VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
             logf("direct: guest %#llx..%#llx: its dma-buf not imported (VkResult %d)", (unsigned long long)lo, (unsigned long long)(lo + size), (int)r);
         return VK_NULL_HANDLE;
     }
+    import_type.store(type, std::memory_order_relaxed);
+    mem_account(MO_L0_IMPORT, type, (int64_t)size);
     return memory;
 }
 
@@ -293,7 +296,10 @@ void bind_claimed(const std::vector<uint64_t>& claimed) {
     const auto t2 = clk::now();
     if (r != VK_SUCCESS) {
         logf("direct: layer 0: %zu chunks not bound (VkResult %d)", got.size(), (int)r);
-        for (const auto& [c, m] : got) vkFreeMemory(dev.device, m, nullptr), chunk_memory[c] = VK_NULL_HANDLE, failed.push_back(c);
+        for (const auto& [c, m] : got) {
+            vkFreeMemory(dev.device, m, nullptr), chunk_memory[c] = VK_NULL_HANDLE, failed.push_back(c);
+            mem_account(MO_L0_IMPORT, import_type.load(std::memory_order_relaxed), -(int64_t)chunk);
+        }
         got.clear();
     }
     for (const auto& [c, m] : got) {
@@ -366,6 +372,7 @@ bool slot_take(uint64_t len, uint32_t& block, uint64_t& off) {   // (mu held; co
     ai.allocationSize = b.size;
     ai.memoryTypeIndex = vram_type;
     if (vkAllocateMemory(dev.device, &ai, nullptr, &b.mem) != VK_SUCCESS) return false;
+    mem_account(MO_L0_VRAM, vram_type, (int64_t)b.size);
     b.slots = l0::SlotRanges(b.size);
     uint32_t at = 0;
     while (at < blocks.size() && blocks[at].mem) at++;
@@ -381,6 +388,7 @@ void slot_give(uint32_t block, uint64_t off, uint64_t len) {   // (mu held; the 
     vram_used -= len;
     if (b.slots.free_bytes() == b.size) {   // (an empty block goes back to the driver)
         vkFreeMemory(dev.device, b.mem, nullptr);
+        mem_account(MO_L0_VRAM, vram_type, -(int64_t)b.size);
         b = Block{};
     }
 }

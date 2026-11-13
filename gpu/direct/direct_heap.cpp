@@ -59,15 +59,8 @@ HeapBuf res_heap, smp_heap;
 bool ready = false;
 uint64_t tail_at = 0;
 
-/// A buffer in device-local, host-visible memory (the BAR) where there is one, mapped, with its device address
-bool make_mapped(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
-                 VkDeviceAddress& address) {
-    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bi.size = size;
-    bi.usage = usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    if (vkCreateBuffer(dev.device, &bi, nullptr, &buffer) != VK_SUCCESS) return false;
-    VkMemoryRequirements mr;
-    vkGetBufferMemoryRequirements(dev.device, buffer, &mr);
+/// The memory type of a make_mapped buffer with those requirements (UINT32_MAX: none)
+uint32_t mapped_type(const VkMemoryRequirements& mr) {
     const VkMemoryPropertyFlags want[2] = {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
@@ -78,6 +71,20 @@ bool make_mapped(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, 
             if ((mr.memoryTypeBits >> i & 1) && (dev.memory.memoryTypes[i].propertyFlags & w) == w) type = i;
         if (type != UINT32_MAX) break;
     }
+    return type;
+}
+
+/// A buffer in device-local, host-visible memory (the BAR) where there is one, mapped, with its device address; its
+/// allocation counted to the owner (mem_account)
+bool make_mapped(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
+                 VkDeviceAddress& address, MemOwner owner) {
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = size;
+    bi.usage = usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    if (vkCreateBuffer(dev.device, &bi, nullptr, &buffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements mr;
+    vkGetBufferMemoryRequirements(dev.device, buffer, &mr);
+    const uint32_t type = mapped_type(mr);
     if (type == UINT32_MAX) return false;
     VkMemoryAllocateFlagsInfo fi{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
     fi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
@@ -86,6 +93,7 @@ bool make_mapped(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, 
     ai.allocationSize = mr.size;
     ai.memoryTypeIndex = type;
     if (vkAllocateMemory(dev.device, &ai, nullptr, &memory) != VK_SUCCESS) return false;
+    mem_account(owner, type, (int64_t)mr.size);
     if (vkBindBufferMemory(dev.device, buffer, memory, 0) != VK_SUCCESS) return false;
     void* p = nullptr;
     if (vkMapMemory(dev.device, memory, 0, VK_WHOLE_SIZE, 0, &p) != VK_SUCCESS) return false;
@@ -102,7 +110,7 @@ bool make_heap(HeapBuf& h, VkDeviceSize used, VkDeviceSize min_reserved) {
     h.reserved_at = (used + align - 1) & ~(align - 1);
     h.reserved = (min_reserved + align - 1) & ~(align - 1);
     h.size = h.reserved_at + h.reserved;
-    if (!make_mapped(h.size, VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT, h.buffer, h.memory, h.map, h.address)) return false;
+    if (!make_mapped(h.size, VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT, h.buffer, h.memory, h.map, h.address, MO_HEAP)) return false;
     std::memset(h.map, 0, h.reserved_at);
     return true;
 }
@@ -366,8 +374,14 @@ bool has(const std::vector<VkExtensionProperties>& exts, const char* n) {
 }  // namespace
 
 bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
-                   VkDeviceAddress& address) {
-    return make_mapped(size, usage, buffer, memory, map, address);
+                   VkDeviceAddress& address, MemOwner owner) {
+    return make_mapped(size, usage, buffer, memory, map, address, owner);
+}
+void mapped_buffer_free(VkBuffer buffer, VkDeviceMemory memory, MemOwner owner) {
+    VkMemoryRequirements mr;   // (asked again: the size and the type make_mapped counted)
+    vkGetBufferMemoryRequirements(dev.device, buffer, &mr);
+    mem_account(owner, mapped_type(mr), -(int64_t)mr.size);
+    vkDestroyBuffer(dev.device, buffer, nullptr), vkFreeMemory(dev.device, memory, nullptr);
 }
 
 // ---- the device ----

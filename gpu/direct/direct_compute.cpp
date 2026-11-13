@@ -1372,6 +1372,8 @@ void compute_program_set(const nvn_prog* p) {
     slot_make(copy);
 }
 
+int64_t compute_objects_made() { return st_cs_objects.load(std::memory_order_relaxed); }
+
 void compute_log(double frames) {
     if (const char* pk = dbg_value("peek")) {   // (HOS_DBG=peek:<guest address>: 64 KB there, nonzero bytes and a checksum)
         const uint64_t at = strtoull(pk, nullptr, 16);

@@ -28,8 +28,6 @@
 #include "direct_task.h"
 
 namespace hsd {
-bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
-                   VkDeviceAddress& address);   // (direct_heap.cpp)
 bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)
 
 // ---- the frame arena ----
@@ -66,7 +64,7 @@ bool arena_alloc(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& 
         VkDeviceMemory m;
         if (!mapped_buffer(kChunk, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                           b, m, c.map, c.address))
+                           b, m, c.map, c.address, MO_ARENA))
             return false;
         c.size = kChunk, c.buffer = b;
         a.chunks.push_back(c);
@@ -1711,7 +1709,7 @@ void draw_window_table_init() {
     VkBuffer b;
     VkDeviceMemory m;
     uint8_t* map;
-    if (!mapped_buffer(kTableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, b, m, map, window_table_address)) return logf("direct: no window table");
+    if (!mapped_buffer(kTableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, b, m, map, window_table_address, MO_HEAP)) return logf("direct: no window table");
     {   // (the null window: a 4 GB sparse buffer with nothing bound, which reads zeros)
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bi.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
@@ -1732,7 +1730,7 @@ void draw_window_table_init() {
     {   // (attributes no stream supplies, uniform buffers not bound: 64 KB of zeros)
         VkDeviceMemory zm;
         uint8_t* zmap;
-        if (mapped_buffer(64 << 10, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, zero_buffer, zm, zmap, zero_address))
+        if (mapped_buffer(64 << 10, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, zero_buffer, zm, zmap, zero_address, MO_HEAP))
             std::memset(zmap, 0, 64 << 10);
     }
 }

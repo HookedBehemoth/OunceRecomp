@@ -77,7 +77,30 @@ extern PFN_vkGetInstanceProcAddr get_instance_proc;   // (direct_main.cpp: VMA's
 // ---- direct_vma.cpp: images and buffers in VMA's blocks ----
 struct Mem;   // (a VmaAllocation)
 bool vma_init();
-bool mem_image(const VkImageCreateInfo& ci, VkImage& image, Mem*& mem);
+/// Who holds device memory, for the 600-present line "memory by owner" (mem_owner_stats). Every vkAllocateMemory of the back
+/// end and every image and buffer in VMA's blocks is counted to one of them, in bytes and in allocations, apart for the
+/// device-local heaps and the host's: what the driver reports past their sum is its own (command buffers, shader objects,
+/// descriptor state) or an owner not counted here
+enum MemOwner : int {
+    MO_ARENA,       // (direct_draw.cpp: the frame arenas' chunks, a command slot's)
+    MO_TASK,        // (direct_task.cpp: a command slot's task pool)
+    MO_QUERY,       // (direct_query.cpp: a command slot's report buffer; its query pools are the driver's)
+    MO_CONST,       // (direct_shader.cpp: the programs' constants, c1)
+    MO_HEAP,        // (direct_heap.cpp, direct_draw.cpp: the descriptor heaps, the window table, the zero buffer)
+    MO_UPLOAD,      // (direct_cmd.cpp: the threads' upload staging)
+    MO_TRANSIENT,   // (the transient pool below)
+    MO_L0_VRAM,     // (direct_pools.cpp: layer 0's VRAM blocks)
+    MO_L0_IMPORT,   // (direct_pools.cpp: guest memory's chunks, imported)
+    MO_IMAGE_STORE, // (direct_image.cpp: the images of textures from the store)
+    MO_IMAGE,       // (direct_image.cpp: the game's other images)
+    MO_OTHER,       // (the rest: the placeholder, shots, dumps and readbacks, the marks' buffer, the offscreen image)
+    MO_N
+};
+/// bytes of memory type `type` made (negative: freed) for the owner. Two relaxed atomic adds: callable anywhere
+void mem_account(MemOwner owner, uint32_t type, int64_t bytes);
+/// The line: the owners, `held` (what has no byte figure: direct_cmd.cpp's and the shaders' counts), the sums against the driver's
+void mem_owner_stats(char* out, size_t cap, const char* held);
+bool mem_image(const VkImageCreateInfo& ci, VkImage& image, Mem*& mem, MemOwner owner = MO_OTHER);
 void mem_image_free(VkImage image, Mem* mem);
 /// The transient pool: one device allocation of size bytes of a device-local type in type_bits, made once (false: none)
 bool mem_pool_make(uint64_t size, uint32_t type_bits);
@@ -85,7 +108,8 @@ uint64_t mem_pool_size();
 /// An image bound in the pool at offset (false: no pool, a memory type or alignment it cannot take, past its end)
 bool mem_pool_bind(VkImage image, uint64_t offset, const VkMemoryRequirements& req);
 /// A buffer; host_visible: mapped (host-cached for reads where the device has it)
-bool mem_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer, Mem*& mem, void** mapped);
+bool mem_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, VkBuffer& buffer, Mem*& mem, void** mapped,
+                MemOwner owner = MO_OTHER);
 void mem_buffer_free(VkBuffer buffer, Mem* mem);
 void mem_flush(Mem* mem);
 void mem_invalidate(Mem* mem);
@@ -94,6 +118,13 @@ void mem_stats(char* out, size_t cap);
 void mem_budget_sample(int64_t pending);   // (M6f: free VRAM once a present, with the bytes of images waiting to die)
 extern std::atomic<int64_t> vram_free_now;   // (M6f: the heaps' usage and budget, VMA's blocks)
 extern std::atomic<int64_t> st_objects;   // (Vulkan objects made since the start: images, views, buffers, pools, command buffers)
+
+// ---- direct_heap.cpp: mapped buffers with an allocation of their own ----
+/// A buffer in device-local, host-visible memory (the BAR) where there is one, mapped, with its device address
+bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
+                   VkDeviceAddress& address, MemOwner owner);
+/// One of them destroyed and its memory freed (the GPU is past it)
+void mapped_buffer_free(VkBuffer buffer, VkDeviceMemory memory, MemOwner owner);
 
 // ---- direct_sync.cpp: the queue's timeline, NVN fences, the guest's submits ----
 bool sync_init();

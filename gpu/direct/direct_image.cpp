@@ -328,7 +328,7 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
         if (!pool_image(ci, im, t)) return name_placeholder(t, "no room at its offset in the transient pool", st_ph_refused), &placeholder;
         st_pool_made.fetch_add(1, std::memory_order_relaxed), st_pool_made_total.fetch_add(1, std::memory_order_relaxed);
     } else {
-        if (!mem_image(ci, im.image, im.mem)) return name_placeholder(t, "no memory for it", st_ph_refused), &placeholder;
+        if (!mem_image(ci, im.image, im.mem, MO_IMAGE)) return name_placeholder(t, "no memory for it", st_ph_refused), &placeholder;
         init_image(im);
     }
     im.id = next_id++;
@@ -371,7 +371,7 @@ Image* make_asset(const nvn_tex* t, const Key& k, const AssetDesc& d, uint32_t r
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     const ObjectsFor objects_for("an image of a texture the game loaded (its prepared content)");   // (M6f)
-    if (!mem_image(ci, im.image, im.mem)) return name_placeholder(t, "no memory for its prepared image", st_ph_refused), &placeholder;
+    if (!mem_image(ci, im.image, im.mem, MO_IMAGE_STORE)) return name_placeholder(t, "no memory for its prepared image", st_ph_refused), &placeholder;
     im.id = next_id++;
     st_made.fetch_add(1, std::memory_order_relaxed);
     st_made_total.fetch_add(1, std::memory_order_relaxed);

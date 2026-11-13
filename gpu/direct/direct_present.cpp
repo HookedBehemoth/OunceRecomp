@@ -20,6 +20,7 @@
 #include "direct_meshcap.h"
 #include "direct_dump.h"
 #include "direct_heap.h"
+#include "direct_shader.h"
 #include "direct_image.h"
 #include "direct_internal.h"
 #include "direct_pass.h"
@@ -178,8 +179,9 @@ bool make_offscreen() {
         if ((req.memoryTypeBits >> i & 1) && (dev.memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
             ai.memoryTypeIndex = i;
     VkDeviceMemory mem;
-    return ai.memoryTypeIndex != UINT32_MAX && vkAllocateMemory(dev.device, &ai, nullptr, &mem) == VK_SUCCESS &&
-           vkBindImageMemory(dev.device, offscreen, mem, 0) == VK_SUCCESS;
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(dev.device, &ai, nullptr, &mem) != VK_SUCCESS) return false;
+    mem_account(MO_OTHER, ai.memoryTypeIndex, (int64_t)req.size);
+    return vkBindImageMemory(dev.device, offscreen, mem, 0) == VK_SUCCESS;
 }
 
 void barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 src,
@@ -311,6 +313,13 @@ void log_line() {
     logf("direct: %s", b);
     mem_stats(b, sizeof b);   // (M6f)
     logf("direct: %s", b);
+    {   // (who holds it, and what the driver holds past them: a leak names itself here)
+        char held[768];
+        const size_t k = cmd_held_stats(held, sizeof held);
+        shader_held_stats(held + k, sizeof held - k);
+        mem_owner_stats(b, sizeof b, held);
+        logf("direct: %s", b);
+    }
     sites_stats(b, sizeof b, frames);
     logf("direct: %s", b);
     draw_log(frames);   // (M2b)
