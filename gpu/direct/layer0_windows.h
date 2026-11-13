@@ -1,7 +1,6 @@
 #pragma once
-// (gpu/direct: a copy of gpu/vk/layer0_windows.h, its windows a granule shorter: kWindow below)
-// (native-vk, layer 0, RX_VK_LAYER0=1) The window scheme's arithmetic, kept apart from Vulkan so that it can be tested alone
-// (tests/layer0_windows_test.cpp). gpu/vk/vk_pools.cpp is the rest.
+// Layer 0's window scheme arithmetic, kept apart from Vulkan so that it can be tested alone
+// (tests/direct_layer0_windows_test.cpp). gpu/direct/direct_pools.cpp is the rest.
 //
 // Guest memory is seen by the GPU through window buffers: 4 GB sparse buffers (maxBufferSize is 4 GB on RADV), one starting
 // every 2 GB of guest address space, so window k covers guest [k * 2 GB, k * 2 GB + 4 GB) and every guest byte lies in two
@@ -9,8 +8,8 @@
 // then whole in window g >> 31, at offset g & (2 GB - 1): a binding is (window[g >> 31], g & 0x7fffffff), with no lookup.
 // Memory is bound in host chunks (a power of two from 2 MB to 64 MB, aligned, so a chunk never crosses a 2 GB line): a udmabuf
 // of the guest memfd's own pages (offset = guest address), imported once and bound into both its windows. Nothing is copied:
-// the bytes the game writes are the bytes the GPU reads (step 7a, the host class: GPU reads cross PCIe). Larger chunks are
-// fewer buffer objects, which RADV lists in every submission (~0.75 us each a submit: work/proto/layer0/l0_poc.out).
+// the bytes the game writes are the bytes the GPU reads (the host class: GPU reads cross PCIe). Larger chunks are
+// fewer buffer objects, which RADV lists in every submission (~0.75 us each a submit).
 #include <atomic>
 #include <cstdint>
 #include <algorithm>
@@ -23,8 +22,8 @@ namespace l0 {
 
 constexpr uint64_t kChunkMin = 2ull << 20, kChunkMax = 64ull << 20;   // (a host chunk: one udmabuf; its size_limit_mb is 64 by default)
 constexpr uint64_t kStride = 2ull << 30;    // (a window starts every 2 GB)
-// (gpu/direct: a granule short of 4 GB, RADV's maxBufferSize being 4 GB - 4 (the validation layer's VUID-VkBufferCreateInfo-
-// size-06409 on gpu/vk's 4 GB windows): the last 64 KB of each 2 GB stretch is in its own window only, and the longest range
+// (a granule short of 4 GB, RADV's maxBufferSize being 4 GB - 4 (the validation layer's VUID-VkBufferCreateInfo-
+// size-06409 on 4 GB windows): the last 64 KB of each 2 GB stretch is in its own window only, and the longest range
 // one window holds whole wherever it starts is a granule short of 2 GB)
 constexpr uint64_t kWindow = (4ull << 30) - (64ull << 10);
 constexpr uint64_t kMaxRange = kStride - (64ull << 10);
@@ -65,7 +64,7 @@ inline int chunk_places(uint64_t c, uint64_t chunk, Place out[2]) {
 }
 
 /// The chunks bound, a bit each, read without a lock (a bit is set only after the chunk is bound and its windows made, with
-/// release; read with acquire). Chunks are never unbound in step 7a: the bit stays.
+/// release; read with acquire). Chunks are never unbound: the bit stays.
 struct ChunkBits {
     uint64_t chunk = 0, chunks = 0;
     std::unique_ptr<std::atomic<uint64_t>[]> words;
@@ -110,7 +109,7 @@ struct ChunkBits {
 };
 
 /// What a first use binds: the chunks of the range, and of the whole pool holding it when the pool is at most `span` bytes
-/// (as the old importer's RX_VK_IMPORT_SPAN_MB: a small pool's later bindings then find it bound); clipped to the guest window
+/// (a small pool's later bindings then find it bound); clipped to the guest window
 inline void bind_span(uint64_t guest, uint64_t size, uint64_t pool_lo, uint64_t pool_hi, uint64_t span, uint64_t guest_bytes,
                       uint64_t& lo, uint64_t& hi) {
     lo = guest, hi = guest + size;
@@ -119,7 +118,7 @@ inline void bind_span(uint64_t guest, uint64_t size, uint64_t pool_lo, uint64_t 
     if (lo > hi) lo = hi;
 }
 
-// ---- step 7b: the VRAM class (RX_VK_LAYER0=2) ----
+// ---- the VRAM class ----
 constexpr uint64_t kGran = 64ull << 10;   // (the sparse page: what a pool's VRAM is bound in)
 
 /// The whole granules of [lo, hi) (edges shared with other data stay host): [g0, g1) in granule indices, empty when none

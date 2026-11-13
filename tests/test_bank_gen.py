@@ -40,14 +40,8 @@ def main():
         at = replay.index(marker)
         if field not in replay[at: at + 1400]:
             raise SystemExit(f"{marker} does not set {field}")
-    if block(replay, "void replay(VkCommandBuffer& cmd, NvnState& s").count("ssbo_gen[b.stage] = s.bind_gen") != 2:
+    if replay.count("ssbo_gen[b.stage] = s.bind_gen") != 2:
         raise SystemExit("a storage buffer bind does not set ssbo_gen (NOP_BIND_BUFS and NOP_BIND_SSBO)")
-    # (HOS_ENG_LISTS: a load-time list's packet sets the bindings its records would, with the same generations)
-    apply = block(replay, "void pkt_apply(")
-    if apply.count("ssbo_gen[b.stage] = s.bind_gen") != 1 or "s.tex_gen[e.stage] = s.bind_gen" not in apply:
-        raise SystemExit("a packet's storage buffers or handles do not move their generation with bind_gen")
-    if replay.count("ssbo_gen[b.stage] = s.bind_gen") != 3:
-        raise SystemExit("a storage buffer generation is set somewhere this check does not know")
     if "s->tex_gen[k] = gen_base, s->ssbo_gen[k] = gen_base" not in block(replay, "void use_queue_state("):
         raise SystemExit("another state's generations are not made afresh with bind_gen")
     for name in ("s.tex[", "s.samp[", "s.img[", "s.ssbo["):

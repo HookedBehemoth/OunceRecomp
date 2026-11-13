@@ -52,7 +52,6 @@ ARGS = {
     "tests/test_flash_sampling.py": ["--cxx", "{cxx}"],
     "tests/test_capture_dimensions.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_dump_readback.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
-    "tests/test_eng_passes.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_ui_texture_upload.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_texture_staging_publication.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_multiwait_wake.py": ["--cxx", "{cxx}"],
@@ -136,7 +135,6 @@ ARGS = {
     "tests/test_parallel_init_order.py": ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"],
     "tests/test_device_lost_exit.py": ["--cxx", "{cxx}"],
     "tests/test_mesh_unreachable_outputs.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
-    "tests/test_bda_emit.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_default_point_size.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_unsigned_image_types.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_depth_sample_types.py": ["--cxx", "{cxx}", "--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
@@ -250,8 +248,8 @@ def python_check(rel, tools, timeout):
 
 def cpp_checks(tools, timeout):
     """gpu/vk/tests: the presentation rectangle (all of it), the lowering harness built and run over no programs
-    (the programs it reads are dumped from the game, so here it only shows the lowering still compiles), the
-    lowering's register-marker regression, and the NVN syncs as timelines (vk_timelines.h)"""
+    (the programs it reads are dumped from the game, so here it only shows the lowering still compiles), and the
+    lowering's register-marker regression"""
     cxx = tools["cxx"]
     out = []
 
@@ -273,8 +271,6 @@ def cpp_checks(tools, timeout):
     out.append((lower, build_and_run(lower, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], ["{tmp}"])))
     regmap = "gpu/vk/tests/regmap_marker_test.cpp"   # (the lowering's renamed-register markers: no number mapped twice)
     out.append((regmap, build_and_run(regmap, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], [])))
-    timelines = "gpu/vk/tests/timelines_test.cpp"   # (RX_VK_TIMELINES: the one-queue wait-before-signal rule, vk_timelines.h)
-    out.append((timelines, build_and_run(timelines, ["-Wall", "-Wextra", "-Werror"], [])))
     return out, ([] if cxx else ["a C++ compiler"])
 
 

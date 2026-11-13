@@ -1,5 +1,3 @@
-#include <condition_variable>
-#include <atomic>
 #define _CRT_SECURE_NO_WARNINGS
 #include <vulkan/vulkan.h>
 #include <algorithm>
@@ -65,16 +63,9 @@ VkPipeline last_pipeline{};
 struct { bool on=false; } vertex_set,last_ib;
 void descriptors_disturbed() {}
 std::unordered_map<int,int>& handle_hits() { static std::unordered_map<int,int> h;return h; }
-bool packets_on(){return false;}   // (RX_VK_PACKETS: vk_packets.h; off here)
-void pk_touch_all(){}
-uint64_t pk_rec=0;
-bool sub_handoff=false;   // (RX_VK_SUBMIT_THREAD: off here)
-void sub_drain(){}
 struct BankCache { uint64_t at=0; };
 std::array<std::array<BankCache,2>,2>& bank_cache() { static std::array<std::array<BankCache,2>,2> b;return b; }
 void make_dummies() {}
-void heap_recording_begun(int, uint64_t) {}   // (RX_VK_DESC_HEAP: off here)
-bool desc_heap_wanted() { return false; }
 /* FLUSH */
 /* BEGIN */
 struct Recording { int slot;VkCommandBuffer cmd,upload,init; VkFence fence;uint64_t value=1,batch=0;bool submitted=false; };
@@ -91,21 +82,10 @@ uint64_t rec_seq=0;
 std::mutex rec_map_mu;
 std::multimap<uint64_t,uint64_t> value_rec;
 std::set<uint64_t> rec_open_values;
-namespace tl { struct QueueSignals { std::vector<std::pair<uint64_t,uint64_t>> v; bool empty() const { return v.empty(); } void merge(const QueueSignals& o) { v.insert(v.end(),o.v.begin(),o.v.end()); } }; }   // (RX_VK_TIMELINES: off here)
-bool timelines_on() { return false; }
-bool wait_log_on() { return false; }   // (RX_VK_WAIT_LOG: off here)
-void wl_made(uint64_t,uint64_t) {}
-void wl_held(uint64_t) {}
-void wl_sent(uint64_t,int) {}
-std::mutex rec_cv_mu;std::condition_variable rec_cv;
-tl::QueueSignals rec_open_q;std::atomic<int> tl_waiters{0};
-void queue_signals_into(const tl::QueueSignals&, std::vector<VkSemaphoreSubmitInfo>&) {}
-struct { std::vector<VkCommandBufferSubmitInfo> cbs;uint64_t signal=0,rec=0;bool any_signal=false;tl::QueueSignals qs; } pend;
+struct { std::vector<VkCommandBufferSubmitInfo> cbs;uint64_t signal=0,rec=0;bool any_signal=false; } pend;
 uint64_t batch_next=0;std::chrono::steady_clock::time_point pend_since;
 bool batch=false;bool batch_on() { return batch; }
-int flush_reason=0;constexpr int FR_CAP=1,FR_WAIT=2,FR_FEED=3;
-bool batch_feed_on() { return false; }   // (RX_VK_TIMELINES: off here)
-bool batch_feed_due() { return false; }
+int flush_reason=0;constexpr int FR_CAP=1;
 void device_lost() { require(false,"unexpected device loss"); }
 #define PROF(x) ((void)0)
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue,uint32_t count,const VkSubmitInfo2* submits,VkFence) {

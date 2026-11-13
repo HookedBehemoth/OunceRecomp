@@ -55,7 +55,6 @@ struct ImageDescriptor { uint32_t handle_program=~0U,cbuf_index=1,cbuf_offset=0,
 uint32_t driver_bank_word(const NvnState&,int bank,int stage,uint32_t offset) {
  return bank==0 || bank==2 ? 0x1000U+uint32_t(bank*256+stage*16)+offset : 0;
 }
-thread_local bool cbuf_live=false;   // (vk_shader.cpp: a job thread's reads of guest memory, program_answers_hold)
 uint8_t recorded[32]{},live_bytes[32]{};
 int recorded_reads=0,live_reads=0,vm_reads=0;
 void ub_read(uint64_t addr,void* out,size_t n) { ++recorded_reads; std::memcpy(out,recorded+addr-4096,n); }

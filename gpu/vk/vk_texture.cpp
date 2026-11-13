@@ -33,11 +33,8 @@
 #include <vector>
 
 #include "vk_texture.h"
-#include "eng_pass.h"
-#include "vk_desc_heap.h"
 #include "vk_menu.h"
 #include "vk_draw.h"
-#include "vk_l1_census.h"   // (RX_VK_L1_CENSUS)
 #include "vk_gprof.h"
 #include "vk_dump.h"
 #include "vk_jobs.h"
@@ -267,7 +264,7 @@ bool pool_take(uint64_t key, VkImage& image, VmaAllocation& allocation, std::uno
 }
 void pool_destroy(Pooled& p) {
     for (auto& kv : p.views)
-        if (kv.second) desc_heap_view_destroyed(kv.second), vkDestroyImageView(dev.device, kv.second, nullptr);
+        if (kv.second) vkDestroyImageView(dev.device, kv.second, nullptr);
     destroy_image(p.image, p.allocation);
     st_pool_destroyed++;
 }
@@ -507,13 +504,12 @@ VkImageView make_view(Texture* tex, VkImageViewType type, VkFormat f, VkImageAsp
     vi.components = cm;
     vi.subresourceRange = {aspect, level0, nlevels, layer0, nlayers};
     VkImageView v = VK_NULL_HANDLE;
-    if (vkCreateImageView(dev.device, &vi, nullptr, &v) == VK_SUCCESS) return desc_heap_view_made(v, vi, uci.usage), v;
+    if (vkCreateImageView(dev.device, &vi, nullptr, &v) == VK_SUCCESS) return v;
     if (!block_view || nlayers == 1) return VK_NULL_HANDLE;
     // (Vulkan 1.1 says a block-texel view is of a single layer; some drivers hold to it)
     vi.subresourceRange.layerCount = 1;
     if (vi.viewType == VK_IMAGE_VIEW_TYPE_2D_ARRAY) vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     if (vkCreateImageView(dev.device, &vi, nullptr, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
-    desc_heap_view_made(v, vi, uci.usage);   // (RX_VK_DESC_HEAP: what a heap descriptor of it is written from)
     return v;
 }
 
@@ -1046,30 +1042,16 @@ bool unswizzle_ready() {
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (r != VK_SUCCESS) return false;
     state = 1;
-    logf("vk: big block-linear textures are unswizzled on the GPU from their pools (RX_VK_GPU_UNSWIZZLE=0: the CPU; "
-         "RX_VK_CPU_UNSWIZZLE=0: BC and smaller ones too)");
+    logf("vk: big block-linear textures are unswizzled on the GPU from their pools (RX_VK_GPU_UNSWIZZLE=0: the CPU)");
     return true;
 }
 
 /// The whole texture (every level and layer dirty overlaps) unswizzled on the GPU; false: not a texture for it
-/// (native-vk step 4d, RX_VK_CPU_UNSWIZZLE=0) every size, and BC textures too, as their blocks (R32G32_UINT / R32G32B32A32_UINT views
-/// of the BC image, one texel a block). Off by default: it costs the replay thread as much as the CPU's unswizzle on this PC (Kokiri's
-/// load: 260 MB in 127-188 ms on the GPU against 210-267 MB in 113-161 ms on the CPU), the time going into the copy of the swizzled
-/// bytes into staging (VRAM behind the BAR) or, read from the pools, into importing them. The fix is assets converted offline
-/// (work/assets/native/transient-targets-impl.md). Unset or 1: the CPU for BC and for textures under 8 MB, as before
-bool cpu_unswizzle_small() {
-    static const bool on = !getenv("RX_VK_CPU_UNSWIZZLE") || atoi(getenv("RX_VK_CPU_UNSWIZZLE")) != 0;
-    return on;
-}
 bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
-    const bool cpu_small = cpu_unswizzle_small();
-    const bool bc = is_bc(tex.format);
     if (tex.type != VK_IMAGE_TYPE_2D || tex.astc || tex.bc || !(tex.usage & VK_IMAGE_USAGE_STORAGE_BIT) ||
-        (bc && cpu_small) || is_astc(tex.format) || is_depth_format(tex.format) || nvn_tex_is_linear(&tex.d))
+        is_bc(tex.format) || is_astc(tex.format) || is_depth_format(tex.format) || nvn_tex_is_linear(&tex.d))
         return false;
-    if (cpu_small && total < (8u << 20)) return false;
-    if (bc ? tex.block_w != 4 || tex.block_h != 4 || (tex.bpb != 8 && tex.bpb != 16) : tex.block_w != 1 || tex.block_h != 1)
-        return false;
+    if (total < (8u << 20) || tex.block_w != 1 || tex.block_h != 1) return false;
     int widen_from = 0;
     widened(tex.d.format ? vk_format(tex.nvn_format).format : tex.format, &widen_from);
     if (widen_from) return false;
@@ -1083,32 +1065,15 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     default: return false;
     }
     if (!unswizzle_ready()) return false;
+    const BufferRef src = gpu_buffer(tex.gpu, total);
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 16);
-    // (the ones step 4d added, BC and under 8 MB, from a staging copy of their storage, not from the pool: a pool's first GPU use
-    // imports it, 5-45 ms a 16 MB chunk, and the resource heap's textures are never read by the GPU otherwise: read from the pools,
-    // an area's 323 textures took 94 ms, as long as the CPU's unswizzle. RX_VK_UNSWIZZLE_STAGED=0: from the pools too)
-    static const bool staged_on = !getenv("RX_VK_UNSWIZZLE_STAGED") || atoi(getenv("RX_VK_UNSWIZZLE_STAGED")) != 0;
-    const bool staged = staged_on && (bc || total < (8u << 20));
-    BufferRef src{};
-    if (!staged) {
-        src = gpu_buffer(tex.gpu, total);
-        if (!src || (src.offset % align)) return false;
-    }
+    if (!src || (src.offset % align)) return false;
     for (uint32_t level = 0; level < tex.levels; level++) {   // (every level must be possible before any is done)
         const LevelGeo g = level_geo(tex, level);
         if (g.td != 1 || g.tile_d || (g.offset % align) || g.offset >= total) return false;
         // (the shader reads whole GOB-block rows: a level whose last one runs past the storage, which the CPU path
         // reads from a zero-padded copy, would read past the pool and fault the device)
         if (g.offset + (uint64_t)(tex.layers - 1) * tex.L.layer_size + g.swizzled > total) return false;
-        if (bc && tex.layers > 1 && (tex.L.layer_size % align)) return false;   // (BC: a dispatch a layer, below)
-    }
-    if (staged) {
-        const Staging st = staging((total + 15) & ~15ull, align);
-        if (!st.buffer) return false;
-        static thread_local std::vector<uint8_t> scratch;
-        const uint8_t* p = guest_bytes(tex.gpu, total, scratch);   // (the storage as at the submit replayed, as the CPU path's)
-        std::memcpy(st.data, p, total);
-        src.buffer = st.buffer, src.offset = st.offset;
     }
     VkCommandBuffer cmd = upload_cmd();
     full_barrier(cmd);
@@ -1120,17 +1085,11 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
             any = overlaps(dirty, g.offset + (uint64_t)layer * tex.L.layer_size,
                            g.offset + (uint64_t)layer * tex.L.layer_size + g.swizzled);
         if (!any) continue;
-        // (a BC image's block-texel views: one layer each, which every driver takes (Vulkan 1.1 allows no more), a dispatch each)
-        const uint32_t per_view = bc ? 1 : tex.layers;
-        for (uint32_t layer0 = 0; layer0 < tex.layers; layer0 += per_view) {
-        if (bc && !overlaps(dirty, g.offset + (uint64_t)layer0 * tex.L.layer_size,
-                            g.offset + (uint64_t)layer0 * tex.L.layer_size + g.swizzled))
-            continue;
-        const uint64_t key = mix(0x5B1Cu, mix(level, (uint64_t)vf)) ^ ((uint64_t)layer0 << 40) ^ (bc ? 0xBC00ull << 48 : 0);
+        const uint64_t key = mix(0x5B1Cu, mix(level, (uint64_t)vf));
         VkImageView view;
         if (auto it = tex.views.find(key); it != tex.views.end()) view = it->second;
-        else view = tex.views[key] = make_view(&tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, vf, VK_IMAGE_ASPECT_COLOR_BIT, level, 1, layer0,
-                                               per_view, {}, VK_IMAGE_USAGE_STORAGE_BIT);
+        else view = tex.views[key] = make_view(&tex, VK_IMAGE_VIEW_TYPE_2D_ARRAY, vf, VK_IMAGE_ASPECT_COLOR_BIT, level, 1, 0,
+                                               tex.layers, {}, VK_IMAGE_USAGE_STORAGE_BIT);
         if (!view) return false;
         UnswizzlePush pc{};
         pc.bytes_per_block_log2 = (uint32_t)std::countr_zero((uint32_t)tex.bpb);
@@ -1141,8 +1100,7 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         pc.block_height = g.tile_h;
         pc.block_height_mask = (1u << g.tile_h) - 1;
         pc.native_tiling = 1;
-        const uint64_t at = g.offset + (uint64_t)layer0 * tex.L.layer_size;
-        VkDescriptorBufferInfo bi{src.buffer, src.offset + at, total - at};
+        VkDescriptorBufferInfo bi{src.buffer, src.offset + g.offset, total - g.offset};
         VkDescriptorImageInfo ii{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
         w[0].dstBinding = 0, w[0].descriptorCount = 1, w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -1152,9 +1110,8 @@ bool upload_unswizzle_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
         vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, unsw_layout, 0, 2, w);
         vkCmdPushConstants(cmd, unsw_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
         checkpoint_mark(cmd, tex.gpu, 'g');
-        vkCmdDispatch(cmd, (g.tw + 31) / 32, (g.th + 31) / 32, per_view);
-        st_bytes += (int64_t)g.swizzled * per_view;
-        }
+        vkCmdDispatch(cmd, (g.tw + 31) / 32, (g.th + 31) / 32, tex.layers);
+        st_bytes += (int64_t)g.swizzled * tex.layers;
     }
     full_barrier(cmd);
     descriptors_disturbed();
@@ -1705,28 +1662,9 @@ bool texture_dirty(Texture& tex, uint32_t gen, Ranges& out) {
 }
 
 uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to them goes stale)
-uint64_t miss_gen = 1;      // (bumped when a frame left new textures for later: what resolved to the placeholder goes stale)
-
-// (native-vk step 4a) Which textures are alive, by id (Texture::id, never reused): a texture's own invalidation. The handle cache and
-// the draws' descriptor reuse check the textures they resolved instead of the global destroy_gen, which every dead transient target
-// moved, so one gone made every draw look all of its textures up again. Chunks of 64K flags, made on first use and never freed:
-// read without a lock by the recording threads while create and destroy_later (under the texture lock) write
-constexpr uint32_t kAliveChunk = 1u << 16;
-std::atomic<uint8_t*> alive_chunks[1u << 16];
-void alive_set(uint32_t id, bool on) {
-    std::atomic<uint8_t*>& c = alive_chunks[id >> 16];
-    uint8_t* p = c.load(std::memory_order_acquire);
-    if (!p) {
-        p = new uint8_t[kAliveChunk]();
-        c.store(p, std::memory_order_release);
-    }
-    __atomic_store_n(&p[id & (kAliveChunk - 1)], (uint8_t)on, __ATOMIC_RELEASE);
-}
 
 void destroy_later(Texture& tex) {
     destroy_gen++;
-    alive_set(tex.id, false);
-    desc_heap_texture_retired(tex.id);   // (RX_VK_DESC_HEAP: the heap entries pointing at it go at the next submission)
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
         d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
@@ -1740,20 +1678,9 @@ void destroy_later(Texture& tex) {
     total_bytes -= std::min(total_bytes, tex.bytes + tex.pad);
 }
 
-// (native-vk step 4b) The live textures whose images were made for a render target (pool_key), by that key: a new target of the
-// same create info takes the image of one it is made over (take_over)
-std::unordered_map<uint64_t, std::vector<Texture*>> by_pool_key;
 void vw_forget(const Texture& t);   // (below: a destroyed texture leaves the list of GPU-written ones)
 void forget_gpu(Texture* tex) {
     vw_forget(*tex);
-    if (tex->pool_key) {
-        auto pk = by_pool_key.find(tex->pool_key);
-        if (pk != by_pool_key.end()) {
-            auto& v = pk->second;
-            v.erase(std::remove(v.begin(), v.end(), tex), v.end());
-            if (v.empty()) by_pool_key.erase(pk);
-        }
-    }
     auto [a, b] = by_gpu.equal_range(tex->gpu);
     for (auto it = a; it != b; ++it)
         if (it->second == tex) {
@@ -1761,54 +1688,6 @@ void forget_gpu(Texture* tex) {
             break;
         }
 }
-
-// (native-vk step 4b) A render target made over the storage of another of the same create info that is not used in this frame or
-// recording (a transient target whose offset moved with the frame's mix: shader-maps.md) takes that one's image, views and all, at
-// once: the old one's texels are gone from that memory on the console too (the dead-target sweep's drawn_over_shifted, which let
-// it go only every 10 presents and 3 presents unused, meanwhile holding its VRAM, while the new one made or pooled an image). The
-// old texture leaves the cache now; its object is freed two presents later (pointers a recording still holds stay valid).
-// RX_VK_TARGET_TAKEOVER=0: as before
-bool takeover_on() {
-    static const bool on = !getenv("RX_VK_TARGET_TAKEOVER") || atoi(getenv("RX_VK_TARGET_TAKEOVER")) != 0;
-    return on;
-}
-std::vector<std::pair<uint64_t, std::unique_ptr<Texture>>> taken_over;   // (the present each was taken at: freed after two)
-uint64_t st_taken_over;
-bool take_over(uint64_t key, uint64_t lo, uint64_t size, Texture& x) {
-    auto pk = by_pool_key.find(key);
-    if (pk == by_pool_key.end()) return false;
-    const uint64_t hi = lo + std::max<uint64_t>(size, 1);
-    Texture* o = nullptr;
-    for (Texture* c : pk->second) {
-        if (c->last_frame >= frame_no || c->last_value == rec_value || !c->gpu_written || !c->first_render_frame ||
-            !c->guest_size || c->levels != 1 || c->layers != 1 || c->depth > 1 || c->sparse || !c->allocation || !c->image)
-            continue;
-        const uint64_t clo = c->gpu, chi = c->gpu + c->guest_size;
-        if (clo == lo ? hi > clo && chi > lo : target_overlap::shifted_over(clo, chi, c->last_frame, lo, hi, frame_no)) {
-            o = c;
-            break;
-        }
-    }
-    if (!o) return false;
-    x.image = o->image, x.allocation = o->allocation, x.views = std::move(o->views);
-    o->image = VK_NULL_HANDLE, o->allocation = nullptr, o->views.clear();
-    destroy_gen++;
-    alive_set(o->id, false);
-    total_bytes -= std::min(total_bytes, o->bytes + o->pad);
-    remade.erase(o);
-    watch_tex(o, "taken over");
-    forget_gpu(o);
-    for (auto it = textures.begin(); it != textures.end(); ++it)
-        if (it->second.get() == o) {
-            taken_over.push_back({frame_no, std::move(it->second)});
-            textures.erase(it);
-            break;
-        }
-    st_taken_over++;
-    return true;
-}
-
-uint64_t st_clears_deferred, st_clears_late;   // (RX_VK_LAZY_CLEAR: creation clears left to a pass, and those made later anyway)
 
 /// (as_target: texture_get's for a render target or a copy's destination, not for sampling: its image goes to the render targets'
 /// blocks, and to the target pool when its texture goes)
@@ -2043,9 +1922,6 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
                                   ? pool_key_of(ci)
                                   : 0;
     x.pool_key = pool_key;
-    // (not in a parallel replay: its dry pass resolves a frame's targets ahead of the draws that may still sample the old one)
-    const bool taken = pool_key && takeover_on() && !par_active.load(std::memory_order_relaxed) &&
-                       take_over(pool_key, t->gpu, t->L.size, x);
     if (x.sparse) {
         ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
         bool ok = vkCreateImage(dev.device, &ci, nullptr, &x.image) == VK_SUCCESS;
@@ -2080,7 +1956,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
              x.sparse_req.formatProperties.imageGranularity.width, x.sparse_req.formatProperties.imageGranularity.height,
              x.sparse_req.imageMipTailFirstLod, (unsigned long long)(x.sparse_req.imageMipTailSize >> 10),
              x.sparse_req.formatProperties.flags & VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT ? ", one for all layers" : " a layer");
-    } else if (!taken && !(pool_key && pool_take(pool_key, x.image, x.allocation, x.views)) && (st_pool_made += pool_key != 0, true) &&
+    } else if (!(pool_key && pool_take(pool_key, x.image, x.allocation, x.views)) && (st_pool_made += pool_key != 0, true) &&
                !create_image(ci, x.image, x.allocation, false, as_target && !is_bc(x.format) && !is_astc(x.format)) &&
                // (a compressed image refused: made again without its raw attachment usage, then without its raw storage
                // usage, as #1332 does; its raw views are then not made, as before)
@@ -2107,19 +1983,12 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     total_bytes += x.bytes + x.pad;
     InitRedirect redirect;   // (a parallel replay's worker: into the earliest open segment's init command buffer)
     // into GENERAL, and cleared (a target the game renders into before writing it all reads zeros, not garbage)
-    // (native-vk step 4c, RX_VK_LAZY_CLEAR=1: a render target of one level and layer is cleared by its first pass's load op when the
-    // pass covers it (free: no command of its own, a fast clear in the pass), or, used any other way first, then: texture_clear_now)
-    static const bool lazy_clear = getenv("RX_VK_LAZY_CLEAR") && atoi(getenv("RX_VK_LAZY_CLEAR")) != 0;
-    x.clear_pending = lazy_clear && as_target && !x.sparse && x.type == VK_IMAGE_TYPE_2D && x.levels == 1 && x.layers == 1 &&
-                      x.samples == VK_SAMPLE_COUNT_1_BIT && !is_bc(x.format) && !is_astc(x.format) &&
-                      (x.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
     VkCommandBuffer cmd = upload_cmd();
     VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
     b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    if (taken) b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;   // (an image taken over: its last writes may still be in flight)
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = x.image;
     b.subresourceRange = {x.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
@@ -2127,16 +1996,14 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     di.imageMemoryBarrierCount = 1;
     di.pImageMemoryBarriers = &b;
     vkCmdPipelineBarrier2(cmd, &di);
-    if (x.clear_pending) {
-        st_clears_deferred++;
-    } else if (depth) {
+    if (depth) {
         const VkClearDepthStencilValue z{0.0f, 0};
         vkCmdClearDepthStencilImage(cmd, x.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &b.subresourceRange);
     } else if (!is_bc(x.format) && !is_astc(x.format)) {
         const VkClearColorValue z{};
         vkCmdClearColorImage(cmd, x.image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &b.subresourceRange);
     }
-    if (!x.clear_pending && !is_bc(x.format) && !is_astc(x.format)) {
+    if (!is_bc(x.format) && !is_astc(x.format)) {
         // (the clear finished before anything after it in this command buffer writes the image: the upload of its contents
         // comes right after, a copy into the same image. Two transfer writes with no barrier between them may run in either
         // order; NVIDIA's ran in order, AMD's (a fast clear) landed last, so a texture uploaded in the recording that made it
@@ -2153,7 +2020,6 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     redirect.done();
     static uint32_t ids;
     p->id = ++ids;
-    alive_set(p->id, true);
     p->first_seen = frame_no;
     st_made++;
     p->key_layout = key.layout, p->key_cls = key.cls;
@@ -2172,7 +2038,6 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     }
     textures.emplace(key, std::move(tex));
     by_gpu.emplace(p->gpu, p);
-    if (p->pool_key) by_pool_key[p->pool_key].push_back(p);
     watch_tex(p, "made");
     if (remade_log_on()) {   // (one evicted not long ago, made again)
         std::lock_guard lk(evicted_mu);
@@ -2215,7 +2080,6 @@ void barrier_stats(int64_t* made, int64_t* left_out) {
 // (vk_work.h counts them), orders nothing the first did not: left out. The game's own barrier (end of a pass), then the next pass's
 // start barrier, then a dispatch's, were two or three in a row. RX_VK_BARRIER_DEDUPE_OFF=1: all recorded, as before.
 void full_barrier(VkCommandBuffer cmd, const char* why) {
-    if (eng_sec_trap_on(cmd, "a barrier")) return;   // (only the secondary's own: an upload buffer's barrier is recorded)   // (HOS_ENG_PASS_SELFTEST: a job's secondary holds none: it is replayed inline)
     static const bool off = getenv("RX_VK_BARRIER_DEDUPE_OFF") != nullptr;
     const bool dedupe = !off && !par_active.load(std::memory_order_relaxed);   // (a parallel replay's threads share command buffers and the count)
     if (dedupe && cmd == last_barrier_cmd && work_epoch.load(std::memory_order_relaxed) == last_barrier_epoch) {
@@ -2223,7 +2087,6 @@ void full_barrier(VkCommandBuffer cmd, const char* why) {
         return;
     }
     st_barriers_made.fetch_add(1, std::memory_order_relaxed);
-    if (l1c::on) l1c::barrier(why, __builtin_return_address(0));   // (the census: by reason, against the hazards around it)
     GprofSpan gp(cmd, why);   // (RX_VK_PASS_TIMING: what a barrier costs the GPU that has nothing left to wait for)
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -2260,7 +2123,6 @@ void pass_start_barrier(VkCommandBuffer cmd) {
     // (the previous pass's writes, all stages, made visible to this pass's fragment-side stages; its vertex, task and mesh stages run
     // as soon as they can, as on the console's GPU)
     st_pass_relaxed.fetch_add(1, std::memory_order_relaxed);
-    if (l1c::on) l1c::barrier("barrier (pass start, fragments)", nullptr);
     GprofSpan gp(cmd, "barrier (pass start, fragments)");
     VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -2308,21 +2170,20 @@ unsigned view_layer(const nvn_view* v) {
     return v && v->set_layers ? v->min_layer : 0;
 }
 
-namespace {
-/// The cache's key of an NVN texture (texture_get, texture_find); false: no image is made for it
-bool texture_key(const nvn_tex* t, Key& k, VkFormatInfo& fi, int& bw, int& bh, int& bpb) {
-    if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return false;
-    fi = vk_format(t->d.format);
+Texture* texture_get(const nvn_tex* t, bool for_sampling) {
+    PROF_HOT(PROF_TEXGET);
+    if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return nullptr;
+    const VkFormatInfo fi = vk_format(t->d.format);
     if (fi.format == VK_FORMAT_UNDEFINED) {
         static int seen[256];
         if (t->d.format >= 0 && t->d.format < 256 && seen[t->d.format]++ < 2)
             logf("vk: NVN format %#x has no Vulkan format: its textures are left out", t->d.format);
-        return false;
+        return nullptr;
     }
-    bw = 1, bh = 1;
-    bpb = nvn_block_size(t->d.format, &bw, &bh);
-    if (bpb <= 0) return false;
-    k = Key{};
+    int bw = 1, bh = 1;
+    const int bpb = nvn_block_size(t->d.format, &bw, &bh);
+    if (bpb <= 0) return nullptr;
+    Key k{};
     k.gpu = t->gpu;
     k.target = (uint32_t)t->d.target;
     // (a cube map and a 2D array of 6 layers over the same storage are one image; MS targets stay apart)
@@ -2337,26 +2198,6 @@ bool texture_key(const nvn_tex* t, Key& k, VkFormatInfo& fi, int& bw, int& bh, i
     k.layout = nvn_tex_is_linear(&t->d) ? 0x80000000u | (t->d.stride ? t->d.stride : host->tex_linear_stride(&t->d))
                                         : t->L.tileH | t->L.tileD << 4;
     k.cls = format_class(fi.format, t->d.format, bpb, fi.astc);
-    return true;
-}
-} // namespace
-
-/// (HOS_ENG_REG) the texture the cache has for t, without making one or touching it: null when none is made yet
-Texture* texture_find(const nvn_tex* t) {
-    Key k;
-    VkFormatInfo fi;
-    int bw, bh, bpb;
-    if (!texture_key(t, k, fi, bw, bh, bpb)) return nullptr;
-    const auto it = textures.find(k);
-    return it == textures.end() ? nullptr : it->second.get();
-}
-
-Texture* texture_get(const nvn_tex* t, bool for_sampling) {
-    PROF_HOT(PROF_TEXGET);
-    Key k;
-    VkFormatInfo fi;
-    int bw, bh, bpb;
-    if (!texture_key(t, k, fi, bw, bh, bpb)) return nullptr;
     Texture* tex;
     auto it = textures.find(k);
     if (it == textures.end()) {
@@ -2380,49 +2221,6 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
 
 uint64_t texture_destroy_generation() {
     return destroy_gen;
-}
-
-void texture_clear_now(Texture* tex) {
-    if (!tex || !tex->clear_pending) return;
-    tex->clear_pending = false;
-    st_clears_late++;
-    InitRedirect redirect;
-    VkCommandBuffer cmd = upload_cmd();
-    const VkImageSubresourceRange r{tex->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-    if (is_depth_format(tex->format)) {
-        const VkClearDepthStencilValue z{0.0f, 0};
-        vkCmdClearDepthStencilImage(cmd, tex->image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r);
-    } else {
-        const VkClearColorValue z{};
-        vkCmdClearColorImage(cmd, tex->image, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r);
-    }
-    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};   // (as create's: the clear before what follows writes it)
-    b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = tex->image;
-    b.subresourceRange = r;
-    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    di.imageMemoryBarrierCount = 1;
-    di.pImageMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &di);
-}
-
-bool texture_serial_on() {
-    static const bool on = !getenv("RX_VK_TEX_SERIAL") || atoi(getenv("RX_VK_TEX_SERIAL")) != 0;
-    return on;
-}
-
-bool texture_alive(uint32_t id) {
-    const uint8_t* p = alive_chunks[id >> 16].load(std::memory_order_acquire);
-    return p && __atomic_load_n(&p[id & (kAliveChunk - 1)], __ATOMIC_ACQUIRE);
-}
-
-uint64_t texture_miss_generation() {
-    return miss_gen;
 }
 
 uint32_t texture_epoch() {
@@ -2450,7 +2248,6 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;
     tex->last_value = rec_value;
     if (!for_sampling) return tex;
-    if (tex->clear_pending) texture_clear_now(tex);   // (RX_VK_LAZY_CLEAR: read before any pass cleared it)
     if (upload_defer(*tex)) return nullptr;
     // contents: from guest memory unless the GPU wrote the image (then it is the content, unless the texture was
     // finalized since and the CPU writes its memory again). What the CPU writes into it after the GPU's write is taken
@@ -2571,8 +2368,7 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         }
         return tex;
     }
-    static const bool log_partial = getenv("RX_VK_LOG_PARTIAL") != nullptr;
-    if (partial && log_partial) {
+    if (partial && getenv("RX_VK_LOG_PARTIAL")) {
         static int logged;
         if (logged++ < 200) {
             char line[512];
@@ -3174,8 +2970,6 @@ int texture_flush_to_guest(uint64_t lo, uint64_t size) {
 
 void texture_written(Texture* tex, const char* why) {
     if (!tex) return;
-    // (the census: a command's image write; a pass's attachments are noted by begin_pass, as attachments)
-    if (l1c::on && !(why && !std::strncmp(why, "a pass's", 8))) l1c::img(tex, true);
     if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) {   // (a parallel replay's order broken: see dry_mark_written)
         static int64_t n;
         if (n++ < 40 || n % 500 == 0)
@@ -3187,7 +2981,6 @@ void texture_written(Texture* tex, const char* why) {
                  tex->released ? " (released)" : "", (unsigned long long)tex->first_seen, (unsigned long long)frame_no);
     }
     vw_note(*tex);
-    if (tex->clear_pending) texture_clear_now(tex);   // (RX_VK_LAZY_CLEAR: written another way than by a pass that covers it)
     tex->only_cleared = false;
     if (tex->sparse && !tex->gpu_written) {
         static int logged;
@@ -3207,7 +3000,6 @@ bool texture_touch_quick(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;   // (the same values whichever thread stores them)
     tex->last_value = rec_value;
     if (!for_sampling) return true;
-    if (tex->clear_pending) return false;   // (texture_touch clears it first)
     if (tex->gpu_written && !tex->released && !tex->only_cleared) return true;
     if (tex->upload_value == rec_value && tex->upload_seg > tl_seg) return false;
     return tex->uploaded && tex->checked_epoch == epoch;
@@ -3529,7 +3321,7 @@ void texture_frame(uint64_t completed) {
     if (const int64_t d = st_deferred_frame.exchange(0, std::memory_order_relaxed)) {
         // (the views and descriptor sets resolved to the placeholder this frame go stale, as when textures go: the next frame
         // looks those textures up again, and uploads them)
-        destroy_gen++, miss_gen++;
+        destroy_gen++;
         static int told;
         if (told++ < 40 || st_deferred.load(std::memory_order_relaxed) % 2000 < d)
             logf("vk: %lld new ASTC textures left for a later frame (this frame's uploads took their budget; %lld so far)", (long long)d,
@@ -3603,7 +3395,6 @@ void texture_frame(uint64_t completed) {
         }
     }
     bc_scratch_idle();
-    while (!taken_over.empty() && taken_over.front().first + 2 <= frame_no) taken_over.erase(taken_over.begin());
     for (auto it = dead.begin(); it != dead.end();) {
         if (it->value > completed) {
             ++it;
@@ -3614,7 +3405,7 @@ void texture_frame(uint64_t completed) {
             it = dead.erase(it);
             continue;
         }
-        for (VkImageView v : it->views) desc_heap_view_destroyed(v), vkDestroyImageView(dev.device, v, nullptr);
+        for (VkImageView v : it->views) vkDestroyImageView(dev.device, v, nullptr);
         destroy_image(it->image, it->allocation);
         if (it->buffer) destroy_buffer(it->buffer, it->buffer_alloc);
         for (VkDeviceMemory m : it->memory) vkFreeMemory(dev.device, m, nullptr);
@@ -3641,8 +3432,7 @@ void texture_frame(uint64_t completed) {
         // was 5.3 GB of textures on a 16 GB laptop with a Radeon 780M, and the PC ran out of memory in Hyrule Field within minutes
         // (Discord, 2026-11-09). At most 2.5 GB there unless RX_VK_VRAM_MB says otherwise
         static bool told;
-        static const bool vram_set = getenv("RX_VK_VRAM_MB") != nullptr;   // (texture_frame runs every 10 presents)
-        if (!vram_set && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && own > (2560ull << 20)) {
+        if (!getenv("RX_VK_VRAM_MB") && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && own > (2560ull << 20)) {
             own = 2560ull << 20;
             if (!told) told = true, logf("vk: an integrated GPU shares the system's RAM: textures at most 2560 MB (RX_VK_VRAM_MB=<MB>: other)");
         }
@@ -3686,12 +3476,9 @@ void texture_frame(uint64_t completed) {
         vma_log_image_blocks();
         {
             std::lock_guard lk(pool_mu);
-            logf("vk: render target images: %llu reused from the pool, %llu made new, %llu destroyed from it, %llu taken over from "
-                 "a target made over (creation clears left to a pass %llu, made later %llu); it holds %llu (%llu MB)%s",
-                 (unsigned long long)st_pool_reused, (unsigned long long)st_pool_made, (unsigned long long)st_pool_destroyed,
-                 (unsigned long long)st_taken_over, (unsigned long long)st_clears_deferred, (unsigned long long)st_clears_late,
-                 (unsigned long long)pool_n,
-                 (unsigned long long)(pool_bytes >> 20),
+            logf("vk: render target images: %llu reused from the pool, %llu made new, %llu destroyed from it; it holds %llu "
+                 "(%llu MB)%s", (unsigned long long)st_pool_reused, (unsigned long long)st_pool_made,
+                 (unsigned long long)st_pool_destroyed, (unsigned long long)pool_n, (unsigned long long)(pool_bytes >> 20),
                  pool_cap() ? (pool_pressed ? ", VRAM short: given back" : "") : " (RX_VK_TARGET_POOL_MB=0)");
         }
         logf("vk: VRAM: %llu MB used of %llu MB allowed (%llu MB of it free in the blocks); textures %llu MB (budget %llu "

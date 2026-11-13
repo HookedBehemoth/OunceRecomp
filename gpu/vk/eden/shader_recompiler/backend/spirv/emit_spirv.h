@@ -45,11 +45,6 @@ constexpr u32 MESH_FALLBACK_PAYLOAD_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET;
 constexpr u32 MESH_FALLBACK_RECORDS_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 8;
 constexpr u32 MESH_FALLBACK_INDIRECT_INPUT_PUSH_OFFSET = MESH_FALLBACK_PUSH_OFFSET + 16;
 constexpr u32 MESH_FALLBACK_PUSH_END = MESH_FALLBACK_PUSH_OFFSET + 24;
-// (hookshot, RX_VK_DESC_HEAP_BDA) the layer-0 window table's device address and the draw's virtual range (bda_emit.h Pushed: four
-// u64), for the stages whose storage buffers are read through device addresses (Info::ssbo_bda). Pushed to every program; the
-// end of the push constants
-constexpr u32 WINDOW_TABLE_PUSH_OFFSET = MESH_FALLBACK_PUSH_END;
-constexpr u32 PUSH_CONSTANTS_END = WINDOW_TABLE_PUSH_OFFSET + 8 * 4;
 // (hookshot) the fallback's mesh workgroups a draw can run: each a slot, a word of the payload buffer saying whether its task
 // started it; then each task workgroup's payload. It was 1024, a record block each, and Ocarina's floor grass (433 tasks of
 // 32 slots) lost 13 of 14 meshlets. At 16384, Hyrule Field's far trees (3cb76827/4f0c0b40: 721 tasks of 32) lost the tasks
@@ -67,9 +62,6 @@ constexpr u32 MESH_FALLBACK_ALLOC_WORD = 4;       // (records taken, past the en
 constexpr u32 MESH_FALLBACK_DISPATCH_WORD = 5;
 constexpr u32 MESH_FALLBACK_HEADER_WORDS = 8;
 constexpr u32 MESH_FALLBACK_RECORD_WORDS = 16u << 20;   // (64 MB: ~47k grass primitives of 31 words are 17 MB)
-
-/// (hookshot, RX_VK_BDA_CHECK) the id the checked storage accesses of the program being translated record, this thread's
-extern thread_local u32 bda_check_id;
 
 [[nodiscard]] std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings);
 [[nodiscard]] inline std::vector<u32> EmitSPIRV(const Profile& profile, IR::Program& program) {

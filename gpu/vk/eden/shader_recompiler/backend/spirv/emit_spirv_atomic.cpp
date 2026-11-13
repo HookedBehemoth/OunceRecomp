@@ -43,19 +43,9 @@ Id StoragePointer(EmitContext& ctx, const StorageTypeDefinition& type_def,
     if (!binding.IsImmediate()) {
         throw NotImplementedException("Dynamic storage buffer indexing");
     }
-    if (ctx.ssbo_bda) {
-        throw LogicError("Storage buffer atomic without its device address path");
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].*member_ptr};
     const Id index{StorageIndex(ctx, offset, element_size)};
     return ctx.OpAccessChain(type_def.element, ssbo, ctx.u32_zero_value, index);
-}
-
-// (hookshot, RX_VK_DESC_HEAP_BDA=2) a CAS-loop atomic of a by-address stage: the loop (Bda::DefineCasLoop) on the word's device
-// address; checked: 0 out of range (the loop ran on the scratch words)
-Id BdaCas(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id fn, Id result_type, Id value) {
-    const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32, sizeof(u32))};
-    return Bda::Result(ctx, a, result_type, ctx.OpFunctionCall(result_type, fn, a.address, value));
 }
 
 std::pair<Id, Id> AtomicArgs(EmitContext& ctx) {
@@ -73,11 +63,6 @@ Id SharedAtomicU32(EmitContext& ctx, Id offset, Id value,
 
 Id StorageAtomicU32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id value,
                     Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA: through the buffer's device address; checked: 0 out of range)
-        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32, sizeof(u32))};
-        const auto [scope, semantics]{AtomicArgs(ctx)};
-        return Bda::Result(ctx, a, ctx.U32[1], (ctx.*atomic_func)(ctx.U32[1], a.pointer, scope, semantics, value));
-    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32, &StorageDefinitions::U32, binding,
                                     offset, sizeof(u32))};
     const auto [scope, semantics]{AtomicArgs(ctx)};
@@ -92,11 +77,6 @@ Id StorageAtomicU64(EmitContext& ctx, const IR::Value& binding, const IR::Value&
         return ctx.ConstantNull(ctx.U64);
     }
 
-    if (ctx.profile.support_int64_atomics && ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
-        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U64, sizeof(u64))};
-        const auto [scope, semantics]{AtomicArgs(ctx)};
-        return Bda::Result(ctx, a, ctx.U64, (ctx.*atomic_func)(ctx.U64, a.pointer, scope, semantics, value));
-    }
     if (ctx.profile.support_int64_atomics) {
         const Id pointer{StoragePointer(ctx, ctx.storage_types.U64, &StorageDefinitions::U64,
                                         binding, offset, sizeof(u64))};
@@ -104,12 +84,6 @@ Id StorageAtomicU64(EmitContext& ctx, const IR::Value& binding, const IR::Value&
         return (ctx.*atomic_func)(ctx.U64, pointer, scope, semantics, value);
     }
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
-        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
-        const Id original_value{ctx.OpBitcast(ctx.U64, Bda::Load(ctx, a, ctx.U32[2]))};
-        Bda::Store(ctx, a, ctx.OpBitcast(ctx.U32[2], (ctx.*non_atomic_func)(ctx.U64, value, original_value)));
-        return original_value;
-    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32x2, &StorageDefinitions::U32x2,
                                     binding, offset, sizeof(u32[2]))};
     const Id original_value{ctx.OpBitcast(ctx.U64, ctx.OpLoad(ctx.U32[2], pointer))};
@@ -126,12 +100,6 @@ Id StorageAtomicU32x2(EmitContext& ctx, const IR::Value& binding, const IR::Valu
     }
 
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
-        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
-        const Id original_value{Bda::Load(ctx, a, ctx.U32[2])};
-        Bda::Store(ctx, a, (ctx.*non_atomic_func)(ctx.U32[2], value, original_value));
-        return original_value;
-    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32x2, &StorageDefinitions::U32x2,
                                     binding, offset, sizeof(u32[2]))};
     const Id original_value{ctx.OpLoad(ctx.U32[2], pointer)};
@@ -248,9 +216,6 @@ Id EmitStorageAtomicUMax32(EmitContext& ctx, const IR::Value& binding, const IR:
 
 Id EmitStorageAtomicInc32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                           Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return BdaCas(ctx, binding, offset, ctx.increment_cas_ssbo, ctx.U32[1], value);
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     return ctx.OpFunctionCall(ctx.U32[1], ctx.increment_cas_ssbo, base_index, value, ssbo);
@@ -258,9 +223,6 @@ Id EmitStorageAtomicInc32(EmitContext& ctx, const IR::Value& binding, const IR::
 
 Id EmitStorageAtomicDec32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                           Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return BdaCas(ctx, binding, offset, ctx.decrement_cas_ssbo, ctx.U32[1], value);
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     return ctx.OpFunctionCall(ctx.U32[1], ctx.decrement_cas_ssbo, base_index, value, ssbo);
@@ -288,12 +250,6 @@ Id EmitStorageAtomicExchange32(EmitContext& ctx, const IR::Value& binding, const
 
 Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                                       Id comparator, Id value) {   // (hookshot: ATOMG.CAS)
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
-        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32, sizeof(u32))};
-        const auto [scope, semantics]{AtomicArgs(ctx)};
-        return Bda::Result(ctx, a, ctx.U32[1],
-                           ctx.OpAtomicCompareExchange(ctx.U32[1], a.pointer, scope, semantics, semantics, value, comparator));
-    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32, &StorageDefinitions::U32, binding,
                                     offset, sizeof(u32))};
     const auto [scope, semantics]{AtomicArgs(ctx)};
@@ -350,11 +306,6 @@ Id EmitStorageAtomicXor64(EmitContext& ctx, const IR::Value& binding, const IR::
 
 Id EmitStorageAtomicExchange64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                                Id value) {
-    if (ctx.profile.support_int64_atomics && ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
-        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U64, sizeof(u64))};
-        const auto [scope, semantics]{AtomicArgs(ctx)};
-        return Bda::Result(ctx, a, ctx.U64, ctx.OpAtomicExchange(ctx.U64, a.pointer, scope, semantics, value));
-    }
     if (ctx.profile.support_int64_atomics) {
         const Id pointer{StoragePointer(ctx, ctx.storage_types.U64, &StorageDefinitions::U64,
                                         binding, offset, sizeof(u64))};
@@ -362,12 +313,6 @@ Id EmitStorageAtomicExchange64(EmitContext& ctx, const IR::Value& binding, const
         return ctx.OpAtomicExchange(ctx.U64, pointer, scope, semantics, value);
     }
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
-        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
-        const Id original{ctx.OpBitcast(ctx.U64, Bda::Load(ctx, a, ctx.U32[2]))};
-        Bda::Store(ctx, a, ctx.OpBitcast(ctx.U32[2], value));
-        return original;
-    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32x2, &StorageDefinitions::U32x2,
                                     binding, offset, sizeof(u32[2]))};
     const Id original{ctx.OpBitcast(ctx.U64, ctx.OpLoad(ctx.U32[2], pointer))};
@@ -418,12 +363,6 @@ Id EmitStorageAtomicXor32x2(EmitContext& ctx, const IR::Value& binding, const IR
 Id EmitStorageAtomicExchange32x2(EmitContext& ctx, const IR::Value& binding,
                                  const IR::Value& offset, Id value) {
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
-        const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
-        const Id original{Bda::Load(ctx, a, ctx.U32[2])};
-        Bda::Store(ctx, a, value);
-        return original;
-    }
     const Id pointer{StoragePointer(ctx, ctx.storage_types.U32x2, &StorageDefinitions::U32x2,
                                     binding, offset, sizeof(u32[2]))};
     const Id original{ctx.OpLoad(ctx.U32[2], pointer)};
@@ -433,9 +372,6 @@ Id EmitStorageAtomicExchange32x2(EmitContext& ctx, const IR::Value& binding,
 
 Id EmitStorageAtomicAddF32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                            Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return BdaCas(ctx, binding, offset, ctx.f32_add_cas, ctx.F32[1], value);
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     return ctx.OpFunctionCall(ctx.F32[1], ctx.f32_add_cas, base_index, value, ssbo);
@@ -443,9 +379,6 @@ Id EmitStorageAtomicAddF32(EmitContext& ctx, const IR::Value& binding, const IR:
 
 Id EmitStorageAtomicAddF16x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return ctx.OpBitcast(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f16x2_add_cas, ctx.F16[2], value));
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     const Id result{ctx.OpFunctionCall(ctx.F16[2], ctx.f16x2_add_cas, base_index, value, ssbo)};
@@ -454,9 +387,6 @@ Id EmitStorageAtomicAddF16x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicAddF32x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return ctx.OpPackHalf2x16(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f32x2_add_cas, ctx.F32[2], value));
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     const Id result{ctx.OpFunctionCall(ctx.F32[2], ctx.f32x2_add_cas, base_index, value, ssbo)};
@@ -465,9 +395,6 @@ Id EmitStorageAtomicAddF32x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicMinF16x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return ctx.OpBitcast(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f16x2_min_cas, ctx.F16[2], value));
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     const Id result{ctx.OpFunctionCall(ctx.F16[2], ctx.f16x2_min_cas, base_index, value, ssbo)};
@@ -476,9 +403,6 @@ Id EmitStorageAtomicMinF16x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicMinF32x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return ctx.OpPackHalf2x16(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f32x2_min_cas, ctx.F32[2], value));
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     const Id result{ctx.OpFunctionCall(ctx.F32[2], ctx.f32x2_min_cas, base_index, value, ssbo)};
@@ -487,9 +411,6 @@ Id EmitStorageAtomicMinF32x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicMaxF16x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return ctx.OpBitcast(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f16x2_max_cas, ctx.F16[2], value));
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     const Id result{ctx.OpFunctionCall(ctx.F16[2], ctx.f16x2_max_cas, base_index, value, ssbo)};
@@ -498,9 +419,6 @@ Id EmitStorageAtomicMaxF16x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicMaxF32x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
-        return ctx.OpPackHalf2x16(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f32x2_max_cas, ctx.F32[2], value));
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
     const Id base_index{StorageIndex(ctx, offset, sizeof(u32))};
     const Id result{ctx.OpFunctionCall(ctx.F32[2], ctx.f32x2_max_cas, base_index, value, ssbo)};

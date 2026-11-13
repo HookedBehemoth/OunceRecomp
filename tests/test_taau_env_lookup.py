@@ -115,21 +115,16 @@ int main(int argc,char** argv){
         handle_value=0;rejected("no handle");handle_value=5;
         resolve_image=false;rejected("no resolved image");resolve_image=true;
         texture.format=0;rejected("wrong output format");texture.format=VK_FORMAT_B10G11R11_UFLOAT_PACK32;
-        // (the keys are read once, at the first eligible invocation, not once a frame: later ones forward that text, an override
-        // set after it is not seen)
-        bool first=true;
         auto accepted=[&](const char* text,bool result){
             key_reads=0;int prior=upscale_calls;upscale_result=result;
             check(taau_stand_in(19,state,program)==result,"eligible helper result forwarded");
-            check(upscale_calls==prior+1 && key_reads==(first?(configured_keys?2:1):0),"keys read at the first eligible invocation only");
+            check(upscale_calls==prior+1 && key_reads==(configured_keys?2:1),"eligible invocation retains per-call lookup count");
             check(forwarded_cmd==19 && forwarded_input==11 && forwarded_output==44 && forwarded_texture==&texture && forwarded_level==7 && forwarded_key==target && forwarded_temporal,"eligible arguments preserved");
-            check(forwarded_text==text,"key text read once forwarded verbatim");
-            first=false;
+            check(forwarded_text==text,"current key text forwarded verbatim");
         };
-        const char* const once=configured_keys?configured_keys:"fd029a317a9a4b94";
-        accepted(once,true);
-        configured_keys="later diagnostic override";accepted(once,false);
-        configured_keys=nullptr;accepted(once,true);
+        accepted(configured_keys?configured_keys:"fd029a317a9a4b94",true);
+        configured_keys="later diagnostic override";accepted(configured_keys,false);
+        configured_keys=nullptr;accepted("fd029a317a9a4b94",true);
     }
     printf("%s failures=%u eligible=%d\n",argv[1],failures,upscale_calls);
     return failures?1:0;
@@ -167,7 +162,7 @@ def main():
             failed |= result.returncode != 0
         if failed:
             raise SystemExit(1)
-    print('PASS: seven key configurations; rejected lookups removed, the keys read once at the first eligible invocation')
+    print('PASS: seven key configurations; rejected lookups removed, eligible per-call forwarding preserved')
 
 
 if __name__ == '__main__':

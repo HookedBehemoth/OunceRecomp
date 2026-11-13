@@ -34,14 +34,12 @@
 #include "status_line.h"
 #include "vk_reflex.h"
 #include "vk_antilag.h"
-#include "vk_ubo_census.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
 #include "vk_paths.h"   // (game_module_path: the frame trace beside the game)
 #include "vk_gprof.h"
 #include "vk_framegen.h"
 #include "vk_menu.h"
-#include "vk_pools.h"   // (native-vk layer 0)
 #include "vk_jobs.h"
 #include "vk_shader.h"
 #include "vk_state.h"
@@ -51,35 +49,9 @@
 #include "vk_present_trace.h"
 
 #include "vk_internal.h"
-#include "vk_shader_object.h"
-#include "eng_pass.h"   // (native-vk E4: the pass table and the job consumer, NOP_ENG)
-#include "vk_desc_heap.h"
-#include "vk_bda.h"
-#include "vk_timelines.h"
-#include "vk_l1_census.h"   // (RX_VK_L1_CENSUS: barriers against hazards, the replay's time by op)
-#include "vk_packets.h"   // (RX_VK_PACKETS: the state groups' stamps, for the draws' kept resolutions)
-#include "eng_job.h"   // (HOS_ENG_JOBS: the render jobs' marks, the check, the programs published for the job threads)
-#include "../render/nvn_pkt.h"   // (HOS_ENG_LISTS: the load-time lists' packets)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
-// (RX_VK_PACKETS, vk_packets.h: the state groups' stamps; written by the serial replay only, under replay_mu)
-uint64_t pk_clock = 1;
-uint64_t pk_gen[PKG_N] = {1, 1, 1, 1, 1};
-bool packets_check() {
-    static const bool on = getenv("RX_VK_PACKETS_CHECK") && atoi(getenv("RX_VK_PACKETS_CHECK")) != 0;
-    return on;
-}
-bool packets_on() {
-    static const bool on = [] {
-        const bool want = (getenv("RX_VK_PACKETS") && atoi(getenv("RX_VK_PACKETS")) != 0) || packets_check();
-        const bool par = getenv("RX_VK_PARALLEL") && std::clamp(atoi(getenv("RX_VK_PARALLEL")), 0, 8) >= 2;   // (par_threads)
-        const bool v = want && !par;
-        if (want) logf("vk: packets (RX_VK_PACKETS): %s%s", v ? "on" : "off (RX_VK_PARALLEL)", v && packets_check() ? ", checked" : "");
-        return v;
-    }();
-    return on;
-}
 extern std::atomic<bool> movie_networks_slow;   // (vk_draw.cpp: the movie networks left out, issue 109)
 int64_t presents_now;   // (the presents so far, for SlowWatch)
 void hang_watch_start();   // (EvilOOT, vk_hangdump.cpp: RX_VK_HANG_DUMP)
@@ -107,110 +79,15 @@ std::map<uint64_t, uint64_t> value_queue;   // a submission's value -> its queue
 std::atomic<uint64_t> pushed{0};
 std::atomic<uint64_t> q_values{0};   // the fence values handed out (a submit or a present takes one each)
 std::mutex replay_mu;   // one replay at a time (the game submits from several threads)
-// ---- (native-vk, plan step 6) RX_VK_TIMELINES=1: a timeline semaphore per NVN queue, signalled at the end of the recording
-// that finishes the queue's submissions with the newest of their values; nvnSyncWait waits on it (vk_timelines.h) ----
-bool timelines_on();
-bool census_on();   // (RX_VK_TIMELINES=1 or RX_VK_SYNC_CENSUS=1: the waits by kind, every 600 presents)
-tl::Census census;
-struct QueueTl {
-    VkSemaphore sem = VK_NULL_HANDLE;
-    tl::Monotone sent;   // (dev.present_mu: the signals in the order they go to the queue)
-};
-std::mutex qtl_mu;                                // (qtl; made in a submit, read by the waiters)
-std::unordered_map<uint64_t, QueueTl> qtl;        // NVN queue -> its timeline
-tl::QueueSignals rec_open_q;                      // (the queues' values finished in the recording being made; replay_mu)
-std::atomic<int> tl_waiters{0};                   // (CPU waits for a signal not sent yet: a batched recording goes at once)
-// ---- (diagnostic) RX_VK_WAIT_LOG=1: each CPU sync wait that finds its fence not reached, with when its work was handed to
-// the replay (the game's submit), recorded, sent to Vulkan and done, against the wait's start (timelines-impl.md section 9) ----
-bool wait_log_on() {
-    static const bool v = getenv("RX_VK_WAIT_LOG") && atoi(getenv("RX_VK_WAIT_LOG")) != 0;
-    return v;
-}
-int64_t wl_now() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-struct WlRec {   // (by recording number)
-    std::atomic<uint64_t> seq{0};
-    std::atomic<int64_t> made{0}, sent{0};
-    std::atomic<int> reason{-1}, ncb{0};   // (-1: its own vkQueueSubmit2; else the batch flush's reason, and its size)
-    std::atomic<uint64_t> done_at_sent{0};  // (the recordings done by then: the GPU's backlog at the send)
-    std::atomic<uint64_t> value{0};         // (its own value: the burst's, the newest submission it may hold)
-};
-constexpr int kWl = 4096;
-WlRec wl_rec[kWl];
-std::atomic<int64_t> wl_value_t[kWl];   // (by submission value: the game's submit)
-std::atomic<int64_t> wl_value_done[kWl];   // (by submission value: replayed whole, past its last wait)
-std::atomic<uint64_t> wl_value_seq[kWl];   // (by submission value: the recording it really was finished in)
-std::atomic<uint64_t> wl_value_via[kWl];   // (by submission value: the queue whose submit let it on; 1 the order thread, 2 a present)
-thread_local uint64_t wl_via = 0;          // (this thread's: what it is replaying for)
-std::vector<uint64_t> wl_pend;          // (the recordings in the batch being held; dev.present_mu)
-void wl_made(uint64_t seq, uint64_t value) {
-    WlRec& w = wl_rec[seq % kWl];
-    w.seq = seq, w.made = wl_now(), w.sent = 0, w.reason = -1, w.value = value;
-}
-void wl_held(uint64_t seq) { wl_pend.push_back(seq); }
-void wl_sent(uint64_t seq, int ncb) {   // (its own vkQueueSubmit2)
-    WlRec& w = wl_rec[seq % kWl];
-    uint64_t d = 0;
-    vkGetSemaphoreCounterValue(dev.device, rec_timeline, &d);
-    w.sent = wl_now(), w.reason = -1, w.ncb = ncb, w.done_at_sent = d;
-}
-std::mutex rec_cv_mu;                             // (value_rec grew: for a readback waiting for its recording to be made)
-std::condition_variable rec_cv;
-/// A queue's timeline, made on first use (VK_NULL_HANDLE: none could be made)
-VkSemaphore queue_timeline(uint64_t queue) {
-    std::lock_guard lk(qtl_mu);
-    QueueTl& t = qtl[queue];
-    if (!t.sem) {
-        VkSemaphoreTypeCreateInfo ti{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
-        ti.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
-        VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        si.pNext = &ti;
-        if (vkCreateSemaphore(dev.device, &si, nullptr, &t.sem) != VK_SUCCESS) t.sem = VK_NULL_HANDLE;
-        logf("vk: timelines: queue %#llx has timeline %d", (unsigned long long)queue, (int)qtl.size());
-    }
-    return t.sem;
-}
-/// The queues' signals into a submit's list (dev.present_mu held: in queue order), each only above the last one sent
-void queue_signals_into(const tl::QueueSignals& qs, std::vector<VkSemaphoreSubmitInfo>& out) {
-    for (const auto& [queue, value] : qs.v) {
-        const VkSemaphore sem = queue_timeline(queue);
-        if (!sem) continue;
-        bool go;
-        {
-            std::lock_guard lk(qtl_mu);
-            go = qtl[queue].sent.take(value);
-        }
-        if (!go) continue;
-        VkSemaphoreSubmitInfo i{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        i.semaphore = sem, i.value = value, i.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        out.push_back(i);
-    }
-}
 // (RX_VK_BATCH: see queue_flush_locked)
 VkSemaphore batch_tl = VK_NULL_HANDLE;
 uint64_t batch_next = 0, batch_flushed = 0;
-struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0; bool any_signal = false; uint64_t rec = 0; tl::QueueSignals qs; } pend;   // (rec: the recordings' timeline value the held ones reach)
+struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0; bool any_signal = false; uint64_t rec = 0; } pend;   // (rec: the recordings' timeline value the held ones reach)
 int64_t st_flushes, st_batched_cbs;
-enum { FR_OTHER, FR_POLL, FR_WAIT, FR_SLOT, FR_PRESENT, FR_CAP, FR_VALUE, FR_FEED, FR_COUNT };
+enum { FR_OTHER, FR_POLL, FR_WAIT, FR_SLOT, FR_PRESENT, FR_CAP, FR_VALUE, FR_COUNT };
 int64_t st_reason[FR_COUNT];
 int flush_reason = FR_OTHER;
 std::chrono::steady_clock::time_point pend_since;
-/// (RX_VK_TIMELINES; RX_VK_BATCH_FEED=0: off) a batched recording goes out at once when the GPU has run out of work or the
-/// oldest held one has waited RX_VK_BATCH_POLL_US. The batch went out only at a flush point (a poll, a wait, a present, 32
-/// command buffers); a thread replaying a held queue's pieces makes none for ~10 ms, and they sat in it with the GPU idle:
-/// nvnSyncWait then found the GPU that far behind (HF with layer 0: 586 of 600 waits, ~10 ms; timelines-impl.md section 9)
-bool batch_feed_on() {
-    static const bool v = timelines_on() && (!getenv("RX_VK_BATCH_FEED") || atoi(getenv("RX_VK_BATCH_FEED")) != 0);
-    return v;
-}
-bool batch_feed_due() {   // (dev.present_mu held, pend not empty)
-    uint64_t done = 0;
-    vkGetSemaphoreCounterValue(dev.device, batch_tl, &done);
-    if (done >= batch_flushed) return true;   // (every batch sent is done: the GPU is idle)
-    static const int64_t us = getenv("RX_VK_BATCH_POLL_US") ? atoll(getenv("RX_VK_BATCH_POLL_US")) : 2000;
-    return std::chrono::steady_clock::now() - pend_since >= std::chrono::microseconds(us);
-}
 
 struct Recording {
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -228,8 +105,6 @@ struct Recording {
     VkFence fence = VK_NULL_HANDLE;
     bool submitted = false;
     uint64_t batch = 0;   // (RX_VK_BATCH: the batch it went out in, waited for on batch_tl; 0: its own fence)
-    std::vector<VkCommandBuffer> secs;   // (HOS_ENG_PASS_SELFTEST: jobs' secondaries, from pool: reset with it)
-    size_t nsec = 0;
 };
 // (24: the event waits cut a frame's command buffers into pieces, each with recordings of its own, and with 16 the
 // replay waited ~1.5 ms a frame for a slot the GPU still had)
@@ -285,80 +160,10 @@ bool batch_on() {
     return on && batch_tl != VK_NULL_HANDLE;
 }
 } // namespace
-uint64_t replay_completed_value() {   // (RX_VK_DESC_HEAP: whether a heap entry's last user is done)
-    return completed();
-}
-// ---- (native-vk) RX_VK_SUBMIT_THREAD=1: the replay's batched submits (a FEED or CAP flush from submit_recording) handed to a thread
-// of their own, so the replaying thread does not wait in vkQueueSubmit2 (2.3-2.4 ms a frame in HF, 1.7 in Kokiri: l1s2-impl.md).
-// Every other use of the queue goes through queue_flush_locked first, which waits for what the thread holds (sub_drain): the
-// queue is then that caller's alone, as before. The thread never takes dev.present_mu; jobs are only handed over under it ----
-struct SubJob {
-    std::vector<VkCommandBufferSubmitInfo> cbs;
-    std::vector<VkSemaphoreSubmitInfo> sig;
-    uint64_t batch = 0;
-};
-struct SubThread {
-    std::mutex mu;
-    std::condition_variable cv, done_cv;
-    std::deque<SubJob> jobs;
-    int inflight = 0;   // (handed over, not yet submitted)
-    bool started = false;
-    std::vector<SubJob> spare;   // (vectors kept for the next hand-over)
-} sub;
-bool sub_thread_on() {
-    static const bool on = [] {
-        const bool v = getenv("RX_VK_SUBMIT_THREAD") && atoi(getenv("RX_VK_SUBMIT_THREAD")) != 0;
-        if (v) logf("vk: the replay's batched submits on a thread of their own (RX_VK_SUBMIT_THREAD)");
-        return v;
-    }();
-    return on;
-}
-std::atomic<int64_t> st_sub_jobs{0}, st_sub_drain_waits{0};
-bool sub_handoff = false;   // (dev.present_mu: set by submit_recording around its FEED and CAP flushes only)
-void sub_main() {
-    for (;;) {
-        SubJob j;
-        {
-            std::unique_lock lk(sub.mu);
-            sub.cv.wait(lk, [] { return !sub.jobs.empty(); });
-            j = std::move(sub.jobs.front());
-            sub.jobs.pop_front();
-        }
-        VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-        si.commandBufferInfoCount = (uint32_t)j.cbs.size();
-        si.pCommandBufferInfos = j.cbs.data();
-        si.signalSemaphoreInfoCount = (uint32_t)j.sig.size();
-        si.pSignalSemaphoreInfos = j.sig.data();
-        const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
-        static int failures;
-        if (res != VK_SUCCESS && failures++ < 8) logf("vk: batched submit %llu failed (%d, the submit thread)", (unsigned long long)j.batch, (int)res);
-        if (res == VK_ERROR_DEVICE_LOST) device_lost();
-        st_sub_jobs.fetch_add(1, std::memory_order_relaxed);
-        {
-            std::lock_guard lk(sub.mu);
-            j.cbs.clear(), j.sig.clear();
-            if (sub.spare.size() < 4) sub.spare.push_back(std::move(j));
-            sub.inflight--;
-        }
-        sub.done_cv.notify_all();
-    }
-}
-/// (dev.present_mu held) what the submit thread holds, submitted: the queue is the caller's after this
-void sub_drain() {
-    if (!sub_thread_on()) return;
-    std::unique_lock lk(sub.mu);
-    if (!sub.inflight) return;
-    st_sub_drain_waits.fetch_add(1, std::memory_order_relaxed);
-    sub.done_cv.wait(lk, [] { return sub.inflight == 0; });
-}
-
 void queue_flush_locked() {   // (dev.present_mu held)
-    // (RX_VK_SUBMIT_THREAD: a FEED or CAP flush of the replay's own recordings is handed over; anything else waits for the thread first)
-    const bool hand_over = sub_thread_on() && sub_handoff;
-    sub_handoff = false;
-    if (!hand_over) sub_drain();
     if (pend.cbs.empty()) return;
-    std::vector<VkSemaphoreSubmitInfo> sig(3, VkSemaphoreSubmitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO});
+    VkSemaphoreSubmitInfo sig[3]{{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO},
+                                 {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO}};
     uint32_t n = 0;
     if (pend.any_signal) {
         sig[n].semaphore = timeline, sig[n].value = pend.signal, sig[n].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -370,41 +175,13 @@ void queue_flush_locked() {   // (dev.present_mu held)
     }
     sig[n].semaphore = batch_tl, sig[n].value = batch_next, sig[n].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     n++;
-    sig.resize(n);
-    queue_signals_into(pend.qs, sig);   // (RX_VK_TIMELINES: the NVN queues' timelines the held recordings reach)
     VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
     si.commandBufferInfoCount = (uint32_t)pend.cbs.size();
     si.pCommandBufferInfos = pend.cbs.data();
-    si.signalSemaphoreInfoCount = (uint32_t)sig.size();
-    si.pSignalSemaphoreInfos = sig.data();
+    si.signalSemaphoreInfoCount = n;
+    si.pSignalSemaphoreInfos = sig;
     PROF(PROF_QSUBMIT);
-    VkResult res = VK_SUCCESS;
-    if (hand_over) {
-        {
-            std::lock_guard lk(sub.mu);
-            if (!sub.started) sub.started = true, std::thread(sub_main).detach();
-            SubJob j;
-            if (!sub.spare.empty()) j = std::move(sub.spare.back()), sub.spare.pop_back();
-            j.cbs.assign(pend.cbs.begin(), pend.cbs.end());
-            j.sig = sig;
-            j.batch = batch_next;
-            sub.jobs.push_back(std::move(j));
-            sub.inflight++;
-        }
-        sub.cv.notify_one();
-    } else {
-        res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
-    }
-    if (wait_log_on()) {
-        uint64_t d = 0;
-        vkGetSemaphoreCounterValue(dev.device, rec_timeline, &d);
-        const int64_t t = wl_now();
-        for (uint64_t q : wl_pend) {
-            WlRec& w = wl_rec[q % kWl];
-            if (w.seq == q) w.sent = t, w.reason = flush_reason, w.ncb = (int)pend.cbs.size(), w.done_at_sent = d;
-        }
-        wl_pend.clear();
-    }
+    const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
     static int failures;
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: batched submit %llu failed (%d)", (unsigned long long)batch_next, (int)res);
     if (res == VK_ERROR_DEVICE_LOST) device_lost();
@@ -412,7 +189,7 @@ void queue_flush_locked() {   // (dev.present_mu held)
     st_flushes++, st_batched_cbs += (int64_t)pend.cbs.size();
     st_reason[flush_reason]++;
     flush_reason = FR_OTHER;
-    pend.cbs.clear(), pend.any_signal = false, pend.signal = 0, pend.rec = 0, pend.qs.clear();
+    pend.cbs.clear(), pend.any_signal = false, pend.signal = 0, pend.rec = 0;
 }
 void queue_flush() {
     std::lock_guard lk(dev.present_mu);
@@ -516,7 +293,6 @@ Recording& begin_recording(uint64_t value) {
         gprof_collect(r.slot);
     }
     vkResetCommandPool(dev.device, r.pool, 0);
-    r.nsec = 0;   // (the jobs' secondaries reset with the pool)
     vkResetCommandPool(dev.device, r.upload_pool, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -526,7 +302,6 @@ Recording& begin_recording(uint64_t value) {
     gprof_begin_recording(r.slot, r.cmd, r.upload);
     r.value = value;
     memory_recording_value(value, completed());
-    if (eng_passes_on()) eng_job_retire_through(completed());   // (E4: host jobs' command buffers the GPU is past)
     texture_begin_recording(r.upload, value);
     draw_begin_recording(r.slot, r.cmd, value);
     return r;
@@ -554,7 +329,6 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     uint64_t seq = 0;
     if (rec_timeline) {   // (and its number on the recordings' timeline; every caller holds replay_mu: in order)
         seq = ++rec_seq;
-        if (wait_log_on()) wl_made(seq, r.value);
         signals[nsig].semaphore = rec_timeline;
         signals[nsig].value = seq;
         signals[nsig].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -565,39 +339,23 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         rec_open_values.clear();
         while (value_rec.size() > 8192) value_rec.erase(value_rec.begin());
     }
-    if (seq && timelines_on()) {   // (a readback waiting for its recording to be made; the lock: no wakeup lost)
-        { std::lock_guard cl(rec_cv_mu); }
-        rec_cv.notify_all();
-    }
-    tl::QueueSignals qs;   // (RX_VK_TIMELINES: the NVN queues whose submissions this recording finished)
-    if (timelines_on()) qs.v.swap(rec_open_q.v);
-    std::vector<VkSemaphoreSubmitInfo> sigv(signals, signals + nsig);
+    si.signalSemaphoreInfoCount = nsig;
+    si.pSignalSemaphoreInfos = nsig ? signals : nullptr;
     std::lock_guard lk(dev.present_mu);   // (one queue: submits and presents take turns)
     if (batch_on()) {
         if (pend.cbs.empty()) batch_next++, pend_since = std::chrono::steady_clock::now();
         for (uint32_t i = 0; i < n; i++) pend.cbs.push_back(cb[i]);
         if (signal_value) pend.signal = std::max(pend.signal, signal.value), pend.any_signal = true;
         if (seq) pend.rec = std::max(pend.rec, seq);
-        pend.qs.merge(qs);
-        if (wait_log_on() && seq) wl_held(seq);
         r.batch = batch_next;
         r.submitted = true;
         // (RX_VK_BATCH_MAX=<command buffers>: held at most this many, default 32)
         static const size_t cap = getenv("RX_VK_BATCH_MAX") ? (size_t)std::max(1, atoi(getenv("RX_VK_BATCH_MAX"))) : 32;
-        if (pend.cbs.size() >= cap) flush_reason = FR_CAP, sub_handoff = true, queue_flush_locked();
-        // (a CPU thread waits for a signal not sent yet: it goes now, not at the next flush point)
-        else if (!qs.empty() && tl_waiters.load(std::memory_order_acquire)) flush_reason = FR_WAIT, queue_flush_locked();
-        // (RX_VK_TIMELINES: the GPU has run out of work, or the oldest held one has waited RX_VK_BATCH_POLL_US: it goes now)
-        else if (batch_feed_on() && batch_feed_due()) flush_reason = FR_FEED, sub_handoff = true, queue_flush_locked();
+        if (pend.cbs.size() >= cap) flush_reason = FR_CAP, queue_flush_locked();
         return;
     }
-    queue_signals_into(qs, sigv);
-    si.signalSemaphoreInfoCount = (uint32_t)sigv.size();
-    si.pSignalSemaphoreInfos = sigv.empty() ? nullptr : sigv.data();
     PROF(PROF_QSUBMIT);
-    sub_drain();   // (RX_VK_SUBMIT_THREAD: nothing handed over without the batch, but the queue is this thread's only after it)
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
-    if (wait_log_on() && seq) wl_sent(seq, (int)n);
     r.submitted = res == VK_SUCCESS;
     static int failures;
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: submit %llu failed (%d)", (unsigned long long)r.value, (int)res);
@@ -627,7 +385,6 @@ void use_queue_state(uint64_t queue) {
     }
     if (s == cur_state) return;
     cur_state = s;
-    if (packets_on()) pk_touch_all();   // (RX_VK_PACKETS: another state object; the draws key on it too)
     static uint64_t gen_base = 0;
     gen_base += 1ull << 32;
     s->bind_gen = gen_base, s->rt_serial = gen_base;
@@ -653,8 +410,6 @@ std::unordered_map<uint64_t, uint32_t> ev_values;
 std::mutex ev_cpu_mu;
 std::vector<std::pair<uint64_t, uint32_t>> ev_cpu_pending;
 std::atomic<bool> ev_cpu_any{false};
-std::mutex ev_wake_mu;                // (RX_VK_TIMELINES: a CPU signal wakes sync_watch)
-std::condition_variable ev_wake_cv;
 std::unordered_set<uint64_t> cpu_events;   // (events the CPU has signalled, nvnEventSignal; ev_cpu_mu)
 void ev_cpu_apply() {
     if (!ev_cpu_any.load(std::memory_order_acquire)) return;
@@ -676,25 +431,7 @@ uint32_t event_value_in(const EvMap& ev, uint64_t gpu) {   // (one the stream ne
     return v;
 }
 thread_local bool suspend_ok = false;               // (a serial replay that stops at a wait not met: submit_job)
-bool fence_wait_met(uint64_t f);                    // (NOP_WAIT_FENCE: the fence's work recorded; sync_order_mu held)
 thread_local const uint8_t* suspend_at = nullptr;   // (the wait it stopped at)
-// (native-vk layer 1, HOS_NVN_LIST_REF=1: host/nvn_list.h) A called list is not copied into its caller: NOP_CALL names it
-// (nvn_p_call), and the walk goes into it and back after it at its END. A place in the stream is then the record and the
-// calls it is inside: every place kept to go on from (a wait it stopped at, a segment's start and end) keeps its calls.
-// The host bounds the depth (NVN_LIST_MAX_DEPTH 7: deeper callees are copied in). Without the switch the stack stays empty
-struct CallStack {
-    static constexpr int kMax = 8;
-    int depth = 0;
-    const uint8_t* ret[kMax];
-    bool same(const CallStack& o) const {
-        if (depth != o.depth) return false;
-        for (int i = 0; i < depth; i++)
-            if (ret[i] != o.ret[i]) return false;
-        return true;
-    }
-};
-thread_local CallStack suspend_calls;               // (the calls the wait it stopped at is inside)
-const CallStack kNoCalls{};
 uint64_t ts_anchor_ns = 0;   // (the last present's time: counter timestamps are scaled from it)
 
 /// A GPU-timeline write of guest memory (the stream's own writes: they reach memory in command order)
@@ -735,7 +472,6 @@ thread_local size_t cond_at = 0;           // (a worker: the next render conditi
 std::vector<uint8_t> par_conds;            // (the render conditions' results, in stream order: the dry pass's)
 struct ParPoint {
     const uint8_t* p;
-    CallStack calls;   // (the calls p is inside)
     NvnState s;
     size_t ub, cond;
     int64_t work;
@@ -767,9 +503,6 @@ void ub_prune(uint64_t done) {
 
 uint64_t ub_generation() {
     return ub_gen;
-}
-uint64_t ub_recording_value() {
-    return rec_value_now;
 }
 void ub_thread_off() {
     ub_limit = 0;
@@ -963,455 +696,18 @@ bool buf_unchanged(int32_t stage, int32_t index, uint64_t addr, uint64_t size, i
     return stage == nstage && index == nindex && addr == naddr && size == nsize;
 }
 
-// ---- (native-vk engine cut E2) HOS_ENG_LISTS=1: a called load-time list's packet (gpu/render/nvn_pkt.h, host/eng_lists.c)
-// applied in place of its records: the state its records would leave bound, set as their ops set it (the same "unchanged"
-// tests, generations and RX_VK_PACKETS stamps), then its draw. HOS_ENG_LISTS_REPLAY=0: NOP_PKT ignored (the records decode).
-// HOS_ENG_LISTS_CHECK=1: the packet is applied (its draw recorded), the state kept, the state before it put back, and the
-// records it stands for decoded (their draws held back): the bound state and the draw compared at their end. Serial replay
-// only (not with RX_VK_PARALLEL, a dry pass, RX_VK_UBO_CENSUS or RX_VK_L1_CENSUS: the records decode there). ----
-DrawArgs draw_args(const nvn_p_draw& d) {
-    DrawArgs da;
-    da.prim = d.prim, da.first = d.first, da.count = d.count;
-    da.base_instance = d.base_instance, da.instances = d.instances;
-    return da;
-}
-DrawArgs draw_args(const nvn_p_draw_idx& d) {
-    DrawArgs da;
-    da.prim = d.prim, da.indexed = true, da.itype = d.itype, da.count = d.count;
-    da.base_vertex = d.base_vertex, da.base_instance = d.base_instance, da.instances = d.instances;
-    da.ibuf = d.ibuf;
-    return da;
-}
-DrawArgs draw_args(const nvn_p_draw_mesh& d) {
-    DrawArgs da;
-    da.mesh = true;
-    // (DrawMeshTasks(first, count): the count of task workgroups, as Eden draws NVN2's mesh draws; a
-    // first task other than 0 has no Vulkan counterpart)
-    da.groups[0] = d.y, da.groups[1] = 1, da.groups[2] = 1;
-    if (d.kind == 0) da.first_task = d.x;   // (hookshot: the task programs add it, vk_draw.cpp's mesh_args)
-    da.indirect = d.indirect, da.count_addr = d.count_addr, da.max = d.max, da.stride = d.stride;
-    return da;
-}
-bool eng_replay_on() {
-    static const bool on = [] {
-        const char* e = getenv("HOS_ENG_LISTS");
-        const char* r = getenv("HOS_ENG_LISTS_REPLAY");
-        const bool par = getenv("RX_VK_PARALLEL") && std::clamp(atoi(getenv("RX_VK_PARALLEL")), 0, 8) >= 2;   // (par_threads)
-        const bool v = e && atoi(e) == 1 && !(r && atoi(r) == 0) && !par;
-        if (e && atoi(e) == 1) logf("vk: load-time lists' packets (HOS_ENG_LISTS): %s", v ? "applied" : par ? "not applied (RX_VK_PARALLEL)" : "not applied (HOS_ENG_LISTS_REPLAY=0)");
-        return v;
-    }();
-    return on;
-}
-bool eng_check_on() {
-    static const bool on = getenv("HOS_ENG_LISTS_CHECK") && atoi(getenv("HOS_ENG_LISTS_CHECK")) != 0;
-    return on;
-}
-enum EngCount { ENC_SEEN, ENC_APPLIED, ENC_STALE, ENC_OTHER_MODE, ENC_CHECKED, ENC_MISMATCH, ENC_DRAWS, ENC_SKIPPED_BYTES, ENC_NS, ENC_N };
-int64_t eng_n[ENC_N];                 // (the serial replay's: replay_mu)
-int64_t eng_kind_n[NVN_PK_KINDS];
-/// A packet's state over s (see above); its draw recorded unless the replay may not draw
-void pkt_apply(VkCommandBuffer& cmd, NvnState& s, const nvn_pkt& k, bool pk) {
-    for (int i = 0; i < k.nbuf; i++) {
-        const nvn_p_bind_buf& b = k.buf[i].b;
-        const bool ssbo = k.buf[i].ssbo != 0;
-        nvn_p_bind_buf& u = (ssbo ? s.ssbo : s.ubo)[b.stage][b.index];
-        if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, b.index, b.addr, b.size)) {
-            s.bind_gen++;
-            if (ssbo) s.ssbo_gen[b.stage] = s.bind_gen;
-        }
-        u = b;
-        if (eng_job_replay_active()) eng_job_replay_bind(ssbo ? 4 : 3, b.stage, b.index, 1, 0);
-    }
-    if (pk && (k.flags & NVN_PKF_TEX)) pk_touch(PKG_TEX);
-    for (int i = 0; i < k.nhandle; i++) {
-        const nvn_pk_handle& e = k.hnd[i];
-        uint64_t* to = e.what == 0 ? s.tex[e.stage] : e.what == 1 ? s.samp[e.stage] : s.img[e.stage];
-        if (to[e.slot] != e.h) {   // (the same handle: the draw keeps its descriptors)
-            s.bind_gen++;
-            s.tex_gen[e.stage] = s.bind_gen;
-        }
-        to[e.slot] = e.h;
-        if (eng_job_replay_active()) eng_job_replay_bind(e.what, e.stage, e.slot, 1, 0);
-    }
-    if (k.vtx) {
-        const nvn_pk_vertex& v = *k.vtx;
-        if (k.flags & NVN_PKF_VATTR) {
-            const bool same = s.nvattr == (int)v.nvattr && std::memcmp(s.vattr, v.vattr, sizeof s.vattr) == 0;
-            std::memcpy(s.vattr, v.vattr, sizeof s.vattr);
-            s.nvattr = (int)v.nvattr;
-            if (pk && !same) pk_touch(PKG_VI);   // (RX_VK_PACKETS: a change only)
-        }
-        for (int i = 0; i < 16; i++) {
-            if (v.vstream_mask >> i & 1) {
-                if (pk && std::memcmp(&s.vstream[i], &v.vstream[i], sizeof v.vstream[i])) pk_touch(PKG_VI);
-                s.vstream[i] = v.vstream[i];
-            }
-            if (v.vbuf_mask >> i & 1) s.vbuf[i] = v.vbuf[i];
-        }
-    }
-    if (k.draw.op) {
-        if (eng_job_replay_active()) eng_job_replay_draw_op(s, k.draw.op, &k.draw.u, sizeof k.draw.u);
-        if (s.render_enabled && !s.raster_discard) {
-            draw(cmd, s, k.draw.op == NOP_DRAW ? draw_args(k.draw.u.d) : k.draw.op == NOP_DRAW_IDX ? draw_args(k.draw.u.di) : draw_args(k.draw.u.dm));
-            eng_n[ENC_DRAWS]++;
-        }
-        s.samples_passed += 16;
-        maybe_split(cmd);
-    }
-}
-/// (check) a draw the records made, held back
-struct EngCap { int32_t op = 0; int n = 0; nvn_pk_draw d{}; };
-void eng_mismatch(const nvn_pkt& k, const char* what) {
-    eng_n[ENC_MISMATCH]++;
-    static int told;
-    if (told++ < 40)
-        logf("vk: eng lists: MISMATCH %s, packet of kind %d handle %#llx (%u records, %u bytes; %lld so far)", what, k.kind,
-             (unsigned long long)k.handle, k.nops, k.raw_bytes, (long long)eng_n[ENC_MISMATCH]);
-}
-/// (check) the state the records left (raw) against the packet's (pk), from the same state before (was)
-void eng_compare(const NvnState& raw, const NvnState& pk, const NvnState& was, const nvn_pkt& k, const EngCap& cap) {
-    eng_n[ENC_CHECKED]++;
-    const int64_t before = eng_n[ENC_MISMATCH];
-#define ENG_SAME(f) if (std::memcmp(&raw.f, &pk.f, sizeof raw.f)) eng_mismatch(k, #f)
-    ENG_SAME(ubo); ENG_SAME(ssbo); ENG_SAME(tex); ENG_SAME(samp); ENG_SAME(img);
-    ENG_SAME(vattr); ENG_SAME(nvattr); ENG_SAME(vstream); ENG_SAME(vbuf); ENG_SAME(samples_passed);
-#undef ENG_SAME
-    // (generations: a packet sets a binding once where the records may set it twice, so it may bump less, never more)
-    for (int st = 0; st < kNvnStages; st++) {
-        if (pk.tex_gen[st] != was.tex_gen[st] && raw.tex_gen[st] == was.tex_gen[st]) eng_mismatch(k, "tex_gen");
-        if (pk.ssbo_gen[st] != was.ssbo_gen[st] && raw.ssbo_gen[st] == was.ssbo_gen[st]) eng_mismatch(k, "ssbo_gen");
-    }
-    if (pk.bind_gen != was.bind_gen && raw.bind_gen == was.bind_gen) eng_mismatch(k, "bind_gen");
-    if (cap.n > 1) eng_mismatch(k, "draws (the records made more than one)");
-    if (cap.op != k.draw.op) eng_mismatch(k, "draw op");
-    else if (cap.op && std::memcmp(&cap.d.u, &k.draw.u, sizeof cap.d.u)) eng_mismatch(k, "draw arguments");
-    if (eng_n[ENC_MISMATCH] != before) {
-        static int told;
-        if (told++ < 8) {
-            char line[1024];
-            int n = snprintf(line, sizeof line, "vk: eng lists: that packet: %u buffers, %u handles, vertex %d, draw %d;", k.nbuf, k.nhandle,
-                             k.vtx != nullptr, k.draw.op);
-            for (int i = 0; i < k.nbuf && n < 900; i++)
-                n += snprintf(line + n, sizeof line - n, " %s%d.%d=%llx+%llx", k.buf[i].ssbo ? "s" : "u", k.buf[i].b.stage, k.buf[i].b.index,
-                              (unsigned long long)k.buf[i].b.addr, (unsigned long long)k.buf[i].b.size);
-            logf("%s", line);
-        }
-    }
-}
-}   // namespace
-/// (the frame log, every 120 presents: what the packets served)
-void eng_lists_report(double frames) {
-    if (!eng_replay_on()) return;
-    static int64_t last[ENC_N], last_k[NVN_PK_KINDS];
-    logf("vk: a frame: eng lists: %.1f calls named a packet, %.1f served by it (%.1f vertex, %.1f draw, %.1f shape), %.1f checked, "
-         "%.1f stale, %.1f in another replay mode; %.1f draws from packets, %.1f KB of records skipped, %.3f ms applying; %lld mismatches so far",
-         (eng_n[ENC_SEEN] - last[ENC_SEEN]) / frames, (eng_n[ENC_APPLIED] - last[ENC_APPLIED]) / frames,
-         (eng_kind_n[NVN_PK_VERTEX] - last_k[NVN_PK_VERTEX]) / frames, (eng_kind_n[NVN_PK_DRAW] - last_k[NVN_PK_DRAW]) / frames,
-         (eng_kind_n[NVN_PK_SHAPE] - last_k[NVN_PK_SHAPE]) / frames, (eng_n[ENC_CHECKED] - last[ENC_CHECKED]) / frames,
-         (eng_n[ENC_STALE] - last[ENC_STALE]) / frames, (eng_n[ENC_OTHER_MODE] - last[ENC_OTHER_MODE]) / frames,
-         (eng_n[ENC_DRAWS] - last[ENC_DRAWS]) / frames, (eng_n[ENC_SKIPPED_BYTES] - last[ENC_SKIPPED_BYTES]) / frames / 1024.0,
-         (eng_n[ENC_NS] - last[ENC_NS]) / frames / 1e6, (long long)eng_n[ENC_MISMATCH]);
-    std::memcpy(last, eng_n, sizeof last);
-    std::memcpy(last_k, eng_kind_n, sizeof last_k);
-}
-namespace {
-// (native-vk E4, HOS_ENG_PASSES) a job-call site's handle (its CALL_BEGIN at p): true when its job was executed from a
-// secondary, the walk to go on at *resume (its CALL_END); false: its NVN records replayed as they are (below replay())
-bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
-                  const uint8_t** resume);
-thread_local bool eng_cond_seen = false;    // (E4 self-test: a render condition met inside the job being recorded)
-thread_local bool eng_state_only = false;   // (E4: an executed E3 job's records walked for their state: no draws)
-// (HOS_ENG_JOBS_SPLIT) an E3 job split around the draws it could not record: its records walked as for eng_state_only, but its
-// runs executed at their first draw op and the draws between them drawn here
-struct EngSplit {
-    const EngJob* job = nullptr;
-    uint32_t i = 0, k = 0;
-    int run_state = 0;   // (the run k: 0 not begun, 1 executed, 2 drawn inline)
-    bool mixed = true;
-};
-thread_local EngSplit eng_split;
-thread_local bool eng_split_active = false;
-extern thread_local bool eng_call_suspend;
-/// At a draw op of the split job: true when a run covers it (executed at its first draw op), false when the replay draws it
-bool eng_split_at(VkCommandBuffer& cmd, NvnState& s, uint32_t op, const uint8_t* a, uint32_t avail);
-/// (E6) an executed job's targets marked written in the pass (draw_pass_written_all); HOS_ENG_PASS_WRITTEN=0: not (as E4 had it)
-bool pass_written_fix() {
-    static const bool v = !getenv("HOS_ENG_PASS_WRITTEN") || atoi(getenv("HOS_ENG_PASS_WRITTEN")) != 0;
-    return v;
-}
-
-// ---- (native-vk E6's measurement, HOS_ENG_PROF=1) the serial replay's time split by where it is spent: outside the layer lists,
-// each layer list's own records, the job calls (scan, checks, execute), executed jobs' state walks, fallen-back jobs by why (E4's
-// reason, and for "no host job" E3's verdict), each by op class; and the layer lists' own records by the call site of the handle
-// they came from (host/nvn_native.c marks every other call of a non-job recording, NVN_ENG_OTHER_*). Exclusive: the time from one
-// op's start to the next op's start (or the replay's return) is the op's. Read once; off: one test of a constant per op ----
-namespace eprof {
-bool on() {
-    static const bool v = getenv("HOS_ENG_PROF") && atoi(getenv("HOS_ENG_PROF")) != 0;
-    return v;
-}
-enum Cls { K_DRAW, K_PKT, K_DISPATCH, K_CLEAR, K_BARRIER, K_TARGETS, K_SYNC, K_COPY, K_REPORT, K_UBO, K_STATE, K_MARK, K_N };
-const char* const kCls[K_N] = {"draw", "packet", "dispatch", "clear", "barrier", "targets", "sync", "copy", "report/cond", "ub update",
-                               "state", "marks"};
-constexpr int kLayers = 10, kWhys = 16;
-enum Ctx { X_OUT, X_LAYER0, X_CALL = X_LAYER0 + kLayers, X_WALK, X_SPLIT, X_FB_RES, X_FB_HAZ, X_FB_FMT, X_FB_OTHER, X_FB_E3, X_N = X_FB_E3 + kWhys + 1 };
-int64_t ns[X_N][K_N], cnt[X_N][K_N], jobs[X_N];
-struct Site { int64_t ns = 0, draws = 0, dispatches = 0, calls = 0; int layer = -1; };
-std::unordered_map<uint32_t, Site> sites;
-struct PState { int layer = -1, fb = -1; uint32_t site[8]; int nsite = 0; };
-std::unordered_map<const NvnState*, PState> states;   // (per queue state: a replay suspended at a wait goes on later)
-PState* ps = nullptr;
-int depth = 0;
-int cur_x = -1, cur_k = 0;
-uint32_t cur_site = 0;
-int64_t t_last = 0;
-inline void tick(int x, int k, uint32_t site) {
-    const int64_t now = prof_now();
-    if (cur_x >= 0) {
-        ns[cur_x][cur_k] += now - t_last;
-        if (cur_site) sites[cur_site].ns += now - t_last;
-    }
-    cur_x = x, cur_k = k, cur_site = site, t_last = now;
-}
-struct Guard {   // (a replay() call: the op it runs inside resumes at its return)
-    int x, k;
-    uint32_t site;
-    PState* was;
-    bool live;
-    Guard(const NvnState& s, bool serial) : x(cur_x), k(cur_k), site(cur_site), was(ps), live(on() && serial) {
-        if (!live) return;
-        if (!depth++) ps = &states[&s];
-    }
-    ~Guard() {
-        if (!live) return;
-        tick(x, k, site);
-        if (!--depth) ps = nullptr;
-        else ps = was;
-    }
-};
-int cls_of(uint32_t op) {   // (by comparisons, not a switch: tests/ find the replay's own case labels by their text)
-    const auto in = [op](std::initializer_list<uint32_t> l) { return std::find(l.begin(), l.end(), op) != l.end(); };
-    if (in({NOP_DRAW, NOP_DRAW_IDX, NOP_DRAW_INDIRECT, NOP_DRAW_MESH})) return K_DRAW;
-    if (op == NOP_PKT) return K_PKT;
-    if (in({NOP_DISPATCH, NOP_DISPATCH_INDIRECT})) return K_DISPATCH;
-    if (in({NOP_CLEAR_COLOR, NOP_CLEAR_DS, NOP_CLEAR_TEX, NOP_CLEAR_BUF})) return K_CLEAR;
-    if (op == NOP_BARRIER) return K_BARRIER;
-    if (op == NOP_SET_RT) return K_TARGETS;
-    if (in({NOP_SIGNAL_EVENT, NOP_WAIT_EVENT, NOP_WAIT_FENCE})) return K_SYNC;
-    if (in({NOP_COPY_B2B, NOP_COPY_B2T, NOP_COPY_T2B, NOP_COPY_T2T})) return K_COPY;
-    if (in({NOP_REPORT_COUNTER, NOP_RESET_COUNTER, NOP_RENDER_COND})) return K_REPORT;
-    if (op == NOP_UPDATE_UB) return K_UBO;
-    if (in({NOP_ENG, NOP_JOB, NOP_BEGIN, NOP_END, NOP_CALL, NOP_JUMP})) return K_MARK;
-    return K_STATE;
-}
-/// At an op's start (serial replay only)
-inline void op(uint32_t op, const uint8_t* a, uint32_t avail) {
-    int x;
-    const int k = cls_of(op);
-    if (op == NOP_ENG && ps) {
-        const auto e = payload<nvn_p_eng>(a, avail);
-        if (e.kind == NVN_ENG_CALL_BEGIN && e.site == 0x807cd418u) ps->layer = (int)(uint32_t)e.b, ps->nsite = 0;
-        else if (e.kind == NVN_ENG_CALL_END && e.site == 0x807cd418u) ps->layer = -1, ps->nsite = 0;
-        else if (e.kind == NVN_ENG_CALL_END) ps->fb = -1;   // (a job's end: its fallback, if it was one, is over)
-        else if (e.kind == NVN_ENG_OTHER_BEGIN && ps->fb < 0 && !eng_state_only) {
-            if (ps->nsite < 8) ps->site[ps->nsite] = e.site;
-            ps->nsite++;
-            Site& st = sites[e.site];
-            st.calls++;
-            st.layer = ps->layer;
-        } else if (e.kind == NVN_ENG_OTHER_END && ps->fb < 0 && !eng_state_only && ps->nsite > 0) ps->nsite--;
-        if (e.kind == NVN_ENG_CALL_BEGIN && e.site != 0x807cd418u) return tick(X_CALL, K_MARK, 0);
-    }
-    uint32_t site = 0;
-    if (eng_state_only) x = X_WALK;
-    else if (eng_split_active) x = X_SPLIT;
-    else if (ps && ps->fb >= 0) x = ps->fb;
-    else {
-        x = ps && ps->layer >= 0 ? X_LAYER0 + std::min(ps->layer, kLayers - 1) : X_OUT;
-        if (ps && ps->nsite > 0) site = ps->site[std::min(ps->nsite, 8) - 1];
-    }
-    cnt[x][k]++;
-    if (site && k == K_DRAW) sites[site].draws++;
-    if (site && k == K_DISPATCH) sites[site].dispatches++;
-    tick(x, k, site);
-}
-/// A job call fell back: its records that follow are the fallback's (reason: E4's count that moved; E3's verdict for no host job)
-void fell_back(int x) {
-    if (ps) ps->fb = x;
-    jobs[x]++;
-}
-void report(double frames) {
-    if (!on()) return;
-    static int64_t lns[X_N][K_N], lcnt[X_N][K_N], ljobs[X_N];
-    static std::unordered_map<uint32_t, Site> lsites;
-    const auto name = [](int x, char* b, size_t n) -> const char* {
-        if (x == X_OUT) return "outside the layer lists";
-        if (x >= X_LAYER0 && x < X_CALL) return snprintf(b, n, "layer list %d own", x - X_LAYER0), b;
-        if (x == X_CALL) return "job calls (scan, checks, execute)";
-        if (x == X_WALK) return "executed jobs' state walks";
-        if (x == X_SPLIT) return "split jobs' walks (their runs executed, the draws between drawn)";
-        if (x == X_FB_RES) return "fallback: not resident";
-        if (x == X_FB_HAZ) return "fallback: binds an attachment";
-        if (x == X_FB_FMT) return "fallback: formats";
-        if (x == X_FB_OTHER) return "fallback: other";
-        return snprintf(b, n, "fallback: no host job: %s", eng_job_why_name(x - X_FB_E3 - 1)), b;
-    };
-    double total = 0;
-    for (int x = 0; x < X_N; x++)
-        for (int k = 0; k < K_N; k++) total += (double)(ns[x][k] - lns[x][k]);
-    logf("eng prof: a frame: %.2f ms in the serial replay's ops", total / frames * 1e-6);
-    for (int x = 0; x < X_N; x++) {
-        double t = 0;
-        for (int k = 0; k < K_N; k++) t += (double)(ns[x][k] - lns[x][k]);
-        if (t / frames < 1e3) continue;   // (under 1 us a frame)
-        char nb[96], line[1200];
-        int n = snprintf(line, sizeof line, "eng prof: %s: %.3f ms", name(x, nb, sizeof nb), t / frames * 1e-6);
-        if (jobs[x] - ljobs[x]) n += snprintf(line + n, sizeof line - n, ", %.1f jobs", (jobs[x] - ljobs[x]) / frames);
-        for (int k = 0; k < K_N && n < (int)sizeof line - 80; k++) {
-            const int64_t c = cnt[x][k] - lcnt[x][k];
-            if (!c) continue;
-            n += snprintf(line + n, sizeof line - n, "; %s %.3f (%.1f)", kCls[k], (ns[x][k] - lns[x][k]) / frames * 1e-6, c / frames);
-        }
-        logf("%s", line);
-    }
-    std::vector<std::pair<double, uint32_t>> top;
-    for (const auto& [site, st] : sites) {
-        const Site& l = lsites[site];
-        if (st.ns - l.ns > 0) top.push_back({(double)(st.ns - l.ns), site});
-    }
-    std::sort(top.rbegin(), top.rend());
-    char line[1600];
-    int n = snprintf(line, sizeof line, "eng prof: the layer lists' own records by call site (ms, draws, dispatches, calls a frame):");
-    for (size_t i = 0; i < top.size() && i < 16 && n < (int)sizeof line - 100; i++) {
-        const Site& st = sites[top[i].second];
-        const Site& l = lsites[top[i].second];
-        n += snprintf(line + n, sizeof line - n, " %#x (L%d) %.3f %.1f %.1f %.1f;", top[i].second, st.layer, top[i].first / frames * 1e-6,
-                      (st.draws - l.draws) / frames, (st.dispatches - l.dispatches) / frames, (st.calls - l.calls) / frames);
-    }
-    logf("%s", line);
-    std::memcpy(lns, ns, sizeof ns), std::memcpy(lcnt, cnt, sizeof cnt), std::memcpy(ljobs, jobs, sizeof jobs);
-    lsites = sites;
-}
-} // namespace eprof
-
-/// The records from p (inside the calls from_calls names) up to end (inside end_calls) or the END they are in
-void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr,
-            const CallStack* from_calls = nullptr, const CallStack* end_calls = nullptr) {
+void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
-    static const bool pk = packets_on();   // (RX_VK_PACKETS: the state ops stamp their group)
-    static const bool eng = eng_replay_on(), eng_chk = eng && eng_check_on();   // (HOS_ENG_LISTS: packets of called lists)
-    // (HOS_ENG_LISTS_CHECK: the records a packet stands for, decoded up to eng_end at the call depth eng_depth; the packet's
-    // state and the state before it kept)
-    const uint8_t* eng_end = nullptr;
-    int eng_depth = -1;
-    const nvn_pkt* eng_pkt = nullptr;
-    EngCap eng_cap;
-    static thread_local NvnState* eng_was = nullptr;
-    static thread_local NvnState* eng_got = nullptr;
-    CallStack calls = from_calls ? *from_calls : kNoCalls;
-    const bool ep = eprof::on() && mode == Mode::Serial;   // (HOS_ENG_PROF: the split of this time)
-    eprof::Guard ep_guard(s, ep);
     for (;;) {
-        if (eng_end && p == eng_end && calls.depth == eng_depth) {   // (HOS_ENG_LISTS_CHECK: the records' end)
-            eng_compare(s, *eng_got, *eng_was, *eng_pkt, eng_cap);
-            eng_end = nullptr;
-        }
-        if (p == end && calls.same(end_calls ? *end_calls : kNoCalls)) return;
-        if (eng_sec_broken()) return;   // (E4 self-test: the job's secondary left its pass; the job is replayed inline)
+        if (p == end) return;
         nvn_op_hdr h;
         std::memcpy(&h, p, sizeof h);
         const uint8_t* a = p + 8;
         const uint32_t avail = h.size - 8;
-        const bool l1c_op = l1c::on && !dry && !worker;   // (RX_VK_L1_CENSUS: this op's time and what its command touches)
-        if (eng_job_replay_active()) eng_job_replay_op((int)h.op);
-        if (ep) eprof::op(h.op, a, avail);
-        const bool eng_cover = eng_split_active && (h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT ||
-                                                    h.op == NOP_DRAW_MESH) && eng_split_at(cmd, s, h.op, a, avail);
-        const int64_t l1c_t0 = l1c_op ? (l1c::op_begin(h.op), prof_now()) : 0;
         switch (h.op) {
-        case NOP_END:   // (the end of a called list: on after its call; of the command buffer: done)
-            if (calls.depth) {
-                if (l1c_op) l1c::op_done(h.op, prof_now() - l1c_t0);
-                p = calls.ret[--calls.depth];
-                continue;
-            }
-            return;
-        case NOP_CALL: {   // (HOS_NVN_LIST_REF: into the called list, back at its END)
-            const auto k = payload<nvn_p_call>(a, avail);
-            if (!k.target || avail < sizeof(nvn_p_call)) break;
-            if (calls.depth == CallStack::kMax) {
-                static int told;
-                if (told++ < 4) logf("vk: a called list %d deep: left out", calls.depth + 1);
-                break;
-            }
-            if (l1c_op) l1c::op_done(h.op, prof_now() - l1c_t0);
-            calls.ret[calls.depth++] = p + h.size;
-            p = k.target;
-            continue;
-        }
-        case NOP_BEGIN: case NOP_JUMP: break;
-        case NOP_JOB:   // (HOS_ENG_JOBS: a render job's records begin or end here; the serial replay's check and programs)
-            if (mode == Mode::Serial) {
-                const auto j = payload<nvn_p_job>(a, avail);
-                eng_job_replay_mark(j.serial, j.end);
-            }
-            break;
-        case NOP_PKT: {   // (HOS_ENG_LISTS: the called list's packet in place of the records after this one)
-            if (!eng || eng_end || eng_state_only || eng_split_active) break;   // (off, or inside the records a checked packet stands for: they decode; E4: no draws)
-            const auto r = payload<nvn_p_pkt>(a, avail);
-            eng_n[ENC_SEEN]++;
-            if (mode != Mode::Serial || ubo_census_on() || l1c::on) {
-                eng_n[ENC_OTHER_MODE]++;
-                break;
-            }
-            const nvn_pkt* k = nvn_pkt_live(&r);
-            if (!k) {
-                eng_n[ENC_STALE]++;
-                break;
-            }
-            eng_kind_n[k->kind]++;
-            const int64_t t0 = prof_now();
-            if (eng_chk) {
-                if (!eng_was) eng_was = new NvnState, eng_got = new NvnState;
-                *eng_was = s;
-                pkt_apply(cmd, s, *k, pk);
-                *eng_got = s;
-                s = *eng_was;
-                eng_end = p + h.size + r.skip, eng_depth = calls.depth, eng_pkt = k, eng_cap = EngCap{};
-                eng_n[ENC_NS] += prof_now() - t0;
-                break;
-            }
-            pkt_apply(cmd, s, *k, pk);
-            eng_n[ENC_APPLIED]++;
-            eng_n[ENC_SKIPPED_BYTES] += r.skip;
-            eng_n[ENC_NS] += prof_now() - t0;
-            p += h.size + r.skip;
-            continue;
-        }
-        case NOP_ENG: {   // (native-vk E4, HOS_ENG_PASSES: a job-call site's handle: the pass table, the job consumer)
-            static const bool eng4 = eng_passes_on();
-            if (!eng4 || dry || worker || eng_sec_active() || eng_state_only || eng_split_active) break;
-            const auto e = payload<nvn_p_eng>(a, avail);
-            if (e.kind != NVN_ENG_CALL_BEGIN) break;
-            const uint8_t* resume = nullptr;
-            eng_call_suspend = false;
-            const bool ran = eng_job_call(cmd, s, p, h.size, e, calls, &resume);
-            if (!ran && eng_call_suspend) {   // (stopped at the job call; replay_handle calls it again from here)
-                eng_call_suspend = false;
-                eng_count(EC_WAIT_STOPS);
-                suspend_at = p;
-                suspend_calls = calls;
-                return;
-            }
-            if (ran) {
-                if (l1c_op) l1c::op_done(h.op, prof_now() - l1c_t0);
-                p = resume;   // (its CALL_END)
-                continue;
-            }
-            break;
-        }
+        case NOP_END: return;
+        case NOP_BEGIN: case NOP_JUMP: case NOP_CALL: break;
         // ---- memory the stream writes: on the GPU timeline ----
         case NOP_SIGNAL_EVENT: {
             if (!worker) {   // (in stream order: the replay thread's pass)
@@ -1443,11 +739,8 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             const uint32_t have = event_value_in(ev_values, w.gpu);
             if (event_wait_met(have, w.mode, w.value)) {
                 st_waits_met++;
-                census.add(tl::EV_MET);
             } else if (suspend_ok) {   // (on once that work is replayed; a dry pass: its part up to here)
-                if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_suspend(p);   // (HOS_ENG_JOBS: the job's walk paused)
                 suspend_at = p;
-                suspend_calls = calls;
                 return;
             } else {
                 st_waits_unmet++;
@@ -1456,23 +749,6 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                     logf("vk: a wait not met in replay order: event %#llx wants %s %u, has %u (submit %llu; %lld met, %lld "
                          "not)", (unsigned long long)w.gpu, w.mode == 0 ? "==" : ">=", w.value, have,
                          (unsigned long long)st_submits, (long long)st_waits_met, (long long)st_waits_unmet);
-            }
-            break;
-        }
-        case NOP_WAIT_FENCE: {   // (RX_VK_TIMELINES: nvnQueueWaitSync. One Vulkan queue: the fence's work recorded before
-                                 // this orders it; not recorded yet (its queue held at a wait), this queue is held too)
-            if (worker) break;
-            const auto w = payload<nvn_p_wait_fence>(a, avail);
-            if (fence_wait_met(w.fence)) {
-                census.add(tl::FW_MET);
-            } else if (suspend_ok) {
-                suspend_at = p;
-                suspend_calls = calls;
-                return;
-            } else {
-                census.add(tl::FW_FORCED);
-                static int logged;
-                if (logged++ < 20) logf("vk: timelines: a queue's wait for fence %llu went past it (not recorded yet)", (unsigned long long)w.fence);
             }
             break;
         }
@@ -1634,32 +910,23 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         // ---- state ----
-        case NOP_SET_RT:
-            s.rt = payload<nvn_p_set_rt>(a, avail), s.rt_serial++;
-            if (pk) pk_touch(PKG_RT);
-            break;
+        case NOP_SET_RT: s.rt = payload<nvn_p_set_rt>(a, avail), s.rt_serial++; break;
         case NOP_VIEWPORTS: {
             const auto v = payload<nvn_p_viewports>(a, avail);
-            for (int i = 0; i < v.n && v.first + i < 16; i++) {
-                if (pk && std::memcmp(s.viewport[v.first + i], v.v[i], 16)) pk_touch(PKG_DYN);   // (RX_VK_PACKETS: a change only)
-                std::memcpy(s.viewport[v.first + i], v.v[i], 16);
-            }
+            for (int i = 0; i < v.n && v.first + i < 16; i++) std::memcpy(s.viewport[v.first + i], v.v[i], 16);
             break;
         }
         case NOP_SCISSOR: {
             const auto c = payload<nvn_p_scissor>(a, avail);
-            if (pk && (s.scissor[0] != c.x || s.scissor[1] != c.y || s.scissor[2] != c.w || s.scissor[3] != c.h)) pk_touch(PKG_DYN);
             s.scissor[0] = c.x, s.scissor[1] = c.y, s.scissor[2] = c.w, s.scissor[3] = c.h;
             break;
         }
         case NOP_DEPTH_RANGE: {
-            if (pk) pk_touch(PKG_DYN);
             const auto d = payload<nvn_p_depth_range>(a, avail);
             s.depth_near = d.n, s.depth_far = d.f;
             break;
         }
         case NOP_BIND_PROGRAM: {
-            if (pk) pk_touch(PKG_PROG);
             const auto b = payload<nvn_p_bind_program>(a, avail);
             // (the same program bound again: its descriptors already stand)
             const bool same = b.prog && s.has_prog ? std::memcmp(&s.prog, b.prog, sizeof s.prog) == 0 : !b.prog && !s.has_prog;
@@ -1670,44 +937,32 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_BIND_STATE: {
             const auto b = payload<nvn_p_bind_state>(a, avail);
-            // (RX_VK_PACKETS: the group stamped only when the object's bytes change: the job lists set the same ones again and again)
-            const auto put = [&](void* dst, size_t n) {
-                if (pk && std::memcmp(dst, b.bytes, n)) pk_touch(PKG_DYN);
-                std::memcpy(dst, b.bytes, n);
-            };
             switch (b.kind) {
             case 0: {
                 nvn_blend_st st;
                 std::memcpy(&st, b.bytes, sizeof st);
-                put(&s.blend[st.target & 7], sizeof st);
+                s.blend[st.target & 7] = st;
                 break;
             }
-            case 1: put(&s.color, sizeof s.color); break;
-            case 2: put(&s.chmask, sizeof s.chmask); break;
-            case 3: put(&s.ms, sizeof s.ms); break;
-            case 4: put(&s.poly, sizeof s.poly); break;
-            case 5: put(&s.ds, sizeof s.ds); break;
+            case 1: std::memcpy(&s.color, b.bytes, sizeof s.color); break;
+            case 2: std::memcpy(&s.chmask, b.bytes, sizeof s.chmask); break;
+            case 3: std::memcpy(&s.ms, b.bytes, sizeof s.ms); break;
+            case 4: std::memcpy(&s.poly, b.bytes, sizeof s.poly); break;
+            case 5: std::memcpy(&s.ds, b.bytes, sizeof s.ds); break;
             default: break;
             }
             break;
         }
         case NOP_BIND_VATTR: {
             const auto v = payload<nvn_p_bind_vattr>(a, avail);
-            uint32_t was[16];
-            if (pk) std::memcpy(was, s.vattr, sizeof was);
-            const int nwas = s.nvattr;
             std::memset(s.vattr, 0, sizeof s.vattr);
             for (int i = 0; i < v.n && i < 16; i++) s.vattr[i] = v.st[i];
             s.nvattr = std::min(v.n, 16);
-            if (pk && (nwas != s.nvattr || std::memcmp(was, s.vattr, sizeof was))) pk_touch(PKG_VI);   // (RX_VK_PACKETS: a change only)
             break;
         }
         case NOP_BIND_VSTREAM: {
             const auto v = payload<nvn_p_bind_vstream>(a, avail);
-            for (int i = 0; i < v.n && i < 16; i++) {
-                if (pk && std::memcmp(&s.vstream[i], &v.st[i], sizeof v.st[i])) pk_touch(PKG_VI);   // (RX_VK_PACKETS: a change only)
-                s.vstream[i] = v.st[i];
-            }
+            for (int i = 0; i < v.n && i < 16; i++) s.vstream[i] = v.st[i];
             break;
         }
         case NOP_BIND_VBUF: {
@@ -1751,7 +1006,6 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                         logf("vk: bind (many) %s stage %d index %d addr %#llx size %#llx", b.ssbo ? "ssbo" : "ubo", b.stage, index,
                              (unsigned long long)b.r[i].address, (unsigned long long)b.r[i].size);
                 }
-                if (!b.ssbo && ubo_census_on()) ubo_census_bind(&s, b.stage, index, nullptr, 0);   // (deferred: no site)
                 nvn_p_bind_buf& u = (b.ssbo ? s.ssbo : s.ubo)[b.stage][index];
                 if (!buf_unchanged(u.stage, u.index, u.addr, u.size, b.stage, index, b.r[i].address, b.r[i].size)) {
                     s.bind_gen++;
@@ -1759,7 +1013,6 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 }
                 u.stage = b.stage, u.index = index, u.addr = b.r[i].address, u.size = b.r[i].size;
             }
-            if (eng_job_replay_active()) eng_job_replay_bind(b.ssbo ? 4 : 3, b.stage, b.first, std::min(b.n, 16), b.src);
             break;
         }
         case NOP_BIND_UBO: case NOP_BIND_SSBO: {
@@ -1779,13 +1032,10 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                     if (h.op == NOP_BIND_SSBO) s.ssbo_gen[b.stage] = s.bind_gen;
                 }
                 u = b;
-                if (h.op == NOP_BIND_UBO && ubo_census_on()) ubo_census_bind(&s, b.stage, b.index, a, avail);
-                if (eng_job_replay_active()) eng_job_replay_bind(h.op == NOP_BIND_UBO ? 3 : 4, b.stage, b.index, 1, 0);
             }
             break;
         }
         case NOP_BIND_TEX: case NOP_BIND_SAMP: case NOP_BIND_IMG: {
-            if (pk) pk_touch(PKG_TEX);
             nvn_p_bind_handles b;
             std::memset(&b, 0, sizeof b);
             std::memcpy(&b, a, std::min<size_t>(sizeof b, h.size - 8));
@@ -1805,11 +1055,9 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
                 s.tex_gen[b.stage] = s.bind_gen;
             }
             for (int k = 0; k < n; k++) to[b.first + k] = b.h[k];
-            if (eng_job_replay_active()) eng_job_replay_bind(h.op == NOP_BIND_TEX ? 0 : h.op == NOP_BIND_SAMP ? 1 : 2, b.stage, b.first, n, b.src);
             break;
         }
         case NOP_STENCIL: {
-            if (pk) pk_touch(PKG_DYN);
             const auto st = payload<nvn_p_stencil>(a, avail);
             for (int f = 0; f < 2; f++) {
                 if (!(st.face & (1 << f))) continue;
@@ -1820,35 +1068,23 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_POLY_OFFSET: {
-            if (pk) pk_touch(PKG_DYN);
             const auto o = payload<nvn_p_poly_offset>(a, avail);
             s.poly_offset[0] = o.factor, s.poly_offset[1] = o.units, s.poly_offset[2] = o.clamp;
             break;
         }
-        case NOP_BLEND_COLOR:
-            if (pk) pk_touch(PKG_DYN);
-            std::memcpy(s.blend_color, payload<nvn_p_blend_color>(a, avail).rgba, 16);
-            break;
+        case NOP_BLEND_COLOR: std::memcpy(s.blend_color, payload<nvn_p_blend_color>(a, avail).rgba, 16); break;
         case NOP_PRIMITIVE_RESTART: {
-            if (pk) pk_touch(PKG_DYN);
             const auto r = payload<nvn_p_restart>(a, avail);
             s.restart = r.enable != 0, s.restart_index = (uint32_t)r.index;
             break;
         }
-        case NOP_DEPTH_CLAMP:
-            if (pk) pk_touch(PKG_DYN);
-            s.depth_clamp = payload<nvn_p_flag>(a, avail).value != 0;
-            break;
-        case NOP_RASTER_DISCARD:
-            if (pk) pk_touch(PKG_DYN);
-            s.raster_discard = payload<nvn_p_flag>(a, avail).value != 0;
-            break;
+        case NOP_DEPTH_CLAMP: s.depth_clamp = payload<nvn_p_flag>(a, avail).value != 0; break;
+        case NOP_RASTER_DISCARD: s.raster_discard = payload<nvn_p_flag>(a, avail).value != 0; break;
         case NOP_RENDER_ENABLE:
             s.render_enabled = payload<nvn_p_flag>(a, avail).value != 0;
             if (dump_on()) logf("vk: dump-op %03d RENDER_ENABLE %d", dump_seq(), (int)s.render_enabled);
             break;
         case NOP_RENDER_COND: {   // (read on the CPU for now; VK_EXT_conditional_rendering later)
-            if (eng_sec_active()) eng_cond_seen = true;   // (E4 self-test: the job's draws from here are gated)
             if (worker) {   // (as the dry pass found it, with the reports before it written and none after)
                 s.render_enabled = cond_at < par_conds.size() ? par_conds[cond_at] != 0 : true;
                 cond_at++;
@@ -1875,7 +1111,6 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL:
-            if (pk) pk_touch(PKG_TEX);
             s.bind_gen++;
             for (int k = 0; k < kNvnStages; k++) s.tex_gen[k] = s.bind_gen;
             break;
@@ -1892,7 +1127,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_BARRIER:
-            if (dry || eng_state_only) break;   // (an executed job's barrier: its pre-work's, HOS_ENG_JOBS_PREWORK)
+            if (dry) break;
             {
                 const int32_t bits = payload<int32_t>(a, avail);
                 std::lock_guard lk(st_barrier_flags_mu);
@@ -1926,30 +1161,30 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         case NOP_DRAW: {
             const auto d = payload<nvn_p_draw>(a, avail);
-            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
-            if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
-                eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.d = d;
-            } else if (s.render_enabled && !s.raster_discard && !dry && !eng_state_only && !eng_cover) {
-                draw(cmd, s, draw_args(d));
+            if (s.render_enabled && !s.raster_discard && !dry) {
+                DrawArgs da;
+                da.prim = d.prim, da.first = d.first, da.count = d.count;
+                da.base_instance = d.base_instance, da.instances = d.instances;
+                draw(cmd, s, da);
             }
             s.samples_passed += 16;
             break;
         }
         case NOP_DRAW_IDX: {
             const auto d = payload<nvn_p_draw_idx>(a, avail);
-            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
-            if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
-                eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.di = d;
-            } else if (s.render_enabled && !s.raster_discard && !dry && !eng_state_only && !eng_cover) {
-                draw(cmd, s, draw_args(d));
+            if (s.render_enabled && !s.raster_discard && !dry) {
+                DrawArgs da;
+                da.prim = d.prim, da.indexed = true, da.itype = d.itype, da.count = d.count;
+                da.base_vertex = d.base_vertex, da.base_instance = d.base_instance, da.instances = d.instances;
+                da.ibuf = d.ibuf;
+                draw(cmd, s, da);
             }
             s.samples_passed += 16;
             break;
         }
         case NOP_DRAW_INDIRECT: {
             const auto d = payload<nvn_p_draw_indirect>(a, avail);
-            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
-            if (s.render_enabled && !s.raster_discard && !dry && !eng_state_only && !eng_cover) {
+            if (s.render_enabled && !s.raster_discard && !dry) {
                 DrawArgs da;
                 da.prim = d.prim, da.indexed = d.indexed != 0, da.itype = d.itype;
                 da.indirect = d.indirect, da.count_addr = d.count_addr, da.max = d.max, da.stride = d.stride;
@@ -1961,47 +1196,45 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_DRAW_MESH: {
             const auto d = payload<nvn_p_draw_mesh>(a, avail);
-            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             static int logged_mesh;
             if (logged_mesh++ < 8)
                 logf("vk: mesh draw kind %d: %d %d %d, indirect %#llx count %#llx max %d stride %d", d.kind, d.x, d.y,
                      d.z, (unsigned long long)d.indirect, (unsigned long long)d.count_addr, d.max, d.stride);
-            if (eng_end) {   // (HOS_ENG_LISTS_CHECK: the packet drew it)
-                eng_cap.op = h.op, eng_cap.n++, eng_cap.d.u.dm = d;
-            } else if (s.render_enabled && !s.raster_discard && !dry && !eng_state_only && !eng_cover) {
-                draw(cmd, s, draw_args(d));
+            if (s.render_enabled && !s.raster_discard && !dry) {
+                DrawArgs da;
+                da.mesh = true;
+                // (DrawMeshTasks(first, count): the count of task workgroups, as Eden draws NVN2's mesh draws; a
+                // first task other than 0 has no Vulkan counterpart)
+                da.groups[0] = d.y, da.groups[1] = 1, da.groups[2] = 1;
+                if (d.kind == 0) da.first_task = d.x;   // (hookshot: the task programs add it, vk_draw.cpp's mesh_args)
+                da.indirect = d.indirect, da.count_addr = d.count_addr, da.max = d.max, da.stride = d.stride;
+                draw(cmd, s, da);
             }
             s.samples_passed += 16;
             break;
         }
         case NOP_DISPATCH: {
             const auto d = payload<nvn_p_dispatch>(a, avail);
-            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (s.render_enabled && !dry) dispatch(cmd, s, (uint32_t)d.x, (uint32_t)d.y, (uint32_t)d.z, 0);
             break;
         }
         case NOP_DISPATCH_INDIRECT: {
             const auto d = payload<nvn_p_dispatch_indirect>(a, avail);
-            if (mode == Mode::Serial && eng_job_replay_active()) eng_job_replay_draw_op(s, h.op, &d, sizeof d);
             if (s.render_enabled && !dry) dispatch(cmd, s, 1, 1, 1, d.addr);
             break;
         }
         default: break;
         }
-        if ((h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT || h.op == NOP_DRAW_MESH) && eng_sec_active() &&
-            (eng_cond_seen || !s.render_enabled))   // (E4 self-test: a job's draws a render condition decides, which E3 records before it is known)
-            eng_count(s.render_enabled ? EC_GATED_ON : EC_GATED_OFF);
         if (h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT || h.op == NOP_DRAW_MESH ||
             h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT) {
             if (dry) {
                 const bool compute = h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT;
                 if (s.render_enabled && (compute || !s.raster_discard)) dry_mark_written(s, compute, dry_work == 0);
-                if (++dry_work % 64 == 0) par_points.push_back({p + h.size, calls, s, ub_updates.size(), par_conds.size(), dry_work});
-            } else if (!worker && !eng_end && !eng_sec_active() && !eng_state_only && !eng_split_active) {   // (HOS_ENG_LISTS_CHECK: the packet's draw split already; E4: not inside a job's secondary)
+                if (++dry_work % 64 == 0) par_points.push_back({p + h.size, s, ub_updates.size(), par_conds.size(), dry_work});
+            } else if (!worker) {
                 maybe_split(cmd);
             }
         }
-        if (l1c_op) l1c::op_done(h.op, prof_now() - l1c_t0);
         p += h.size;
     }
 }
@@ -2036,418 +1269,6 @@ void maybe_split(VkCommandBuffer& cmd) {
     cmd = r.cmd;
     part_work = 0;
     rec_parts++;
-}
-
-// ---- (native-vk engine cut E4, HOS_ENG_PASSES=1) the job-call sites (eng_pass.h). A layer list calls a pass's six jobs at
-// f_806688c0 / f_8028a2a0; host/nvn_native.c brackets each handle with NOP_ENG CALL_BEGIN / CALL_END and puts the job's view
-// record first in its recording. Here: the pass table's note, then the job's host secondary (E3's, or with
-// HOS_ENG_PASS_SELFTEST=1 one recorded now from its NVN records by the draw path) executed in the pass when its formats
-// are the rendering's, it binds no attachment of the pass and its textures are resident; otherwise its NVN records as
-// they are ----
-struct EngScan {
-    const uint8_t* end = nullptr;   // (its CALL_END, in the list the CALL_BEGIN is in)
-    uint64_t view = 0, slot = 0;
-    uint32_t ndraws = 0, bad_op = 0;
-    bool bad = false, bad_other = false;   // (bad_other: an op beside a barrier or a dispatch: a split job takes only those)
-    bool bad_nonpre = false;   // (an op beside a barrier and a wait: a job with pre-work takes those, HOS_ENG_JOBS_PREWORK)
-    std::vector<uint32_t> tex;      // (the handle words its BIND_TEX / BIND_IMG name)
-};
-/// The records of a job call from p (after its CALL_BEGIN) to its CALL_END: into called lists (HOS_NVN_LIST_REF) and back
-void eng_scan(const uint8_t* p, EngScan& sc) {
-    const uint8_t* ret[CallStack::kMax];
-    int depth = 0;
-    for (int guard = 0; guard < (1 << 20); guard++) {
-        nvn_op_hdr h;
-        std::memcpy(&h, p, sizeof h);
-        if (h.size < 8 || (h.size & 7)) return;
-        const uint8_t* a = p + 8;
-        const uint32_t avail = h.size - 8;
-        switch (h.op) {
-        case NOP_END:
-            if (!depth) return;   // (the caller's END before the CALL_END: malformed)
-            p = ret[--depth];
-            continue;
-        case NOP_CALL: {
-            const auto k = payload<nvn_p_call>(a, avail);
-            if (!k.target || depth == CallStack::kMax) break;
-            ret[depth++] = p + h.size;
-            p = k.target;
-            continue;
-        }
-        case NOP_ENG: {
-            const auto e = payload<nvn_p_eng>(a, avail);
-            if (e.kind == NVN_ENG_CALL_END && !depth) return void(sc.end = p);
-            if (e.kind == NVN_ENG_JOB && !sc.view) sc.view = e.a, sc.slot = e.b;
-            if (e.kind == NVN_ENG_CALL_BEGIN) sc.bad = sc.bad_other = sc.bad_nonpre = true, sc.bad_op = h.op;   // (a job call inside a job: not seen)
-            break;
-        }
-        case NOP_DRAW: case NOP_DRAW_IDX: case NOP_DRAW_INDIRECT: case NOP_DRAW_MESH: sc.ndraws++; break;
-        case NOP_BIND_TEX: case NOP_BIND_IMG: {
-            nvn_p_bind_handles b;
-            std::memset(&b, 0, sizeof b);
-            std::memcpy(&b, a, std::min<size_t>(sizeof b, avail));
-            for (int i = 0; i < b.n && i < 32; i++)
-                if (b.h[i]) sc.tex.push_back((uint32_t)b.h[i]);
-            break;
-        }
-        // (state and CPU-side work: a secondary holds them, or the replay does them as it walks)
-        case NOP_BEGIN: case NOP_JUMP: case NOP_REPORT_COUNTER: case NOP_RESET_COUNTER: case NOP_UPDATE_UB:
-        case NOP_VIEWPORTS: case NOP_SCISSOR: case NOP_DEPTH_RANGE: case NOP_BIND_PROGRAM: case NOP_BIND_STATE:
-        case NOP_BIND_VATTR: case NOP_BIND_VSTREAM: case NOP_BIND_VBUF: case NOP_BIND_UBO: case NOP_BIND_SSBO: case NOP_BIND_SAMP:
-        case NOP_BIND_BUFS: case NOP_STENCIL: case NOP_POLY_OFFSET: case NOP_BLEND_COLOR: case NOP_DEPTH_CLAMP:
-        case NOP_RENDER_ENABLE: case NOP_RASTER_DISCARD: case NOP_RENDER_COND: case NOP_PRIMITIVE_RESTART: case NOP_PUSH_CONST:
-        case NOP_SET_TEX_POOL: case NOP_SET_SAMP_POOL: case NOP_COPY_STRIDE: case NOP_PKT: case NOP_JOB:   // (E2's packet: state and its draw; E3's job bounds)
-            break;
-        default:   // (barriers, dispatches, copies, clears, events, waits, targets: not inside one rendering's secondary)
-            if (!sc.bad) sc.bad = true, sc.bad_op = h.op;
-            if (h.op != NOP_BARRIER && h.op != NOP_DISPATCH && h.op != NOP_DISPATCH_INDIRECT) sc.bad_other = true;
-            if (h.op != NOP_BARRIER && h.op != NOP_WAIT_EVENT) sc.bad_nonpre = true;
-            break;
-        }
-        p += h.size;
-    }
-}
-const char* eng_op_name(uint32_t op) {
-    switch (op) {
-    case NOP_BARRIER: return "op barrier";
-    case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: return "op dispatch";
-    case NOP_WAIT_EVENT: return "op wait event";
-    case NOP_SIGNAL_EVENT: return "op signal event";
-    case NOP_SET_RT: return "op set targets";
-    case NOP_CLEAR_COLOR: case NOP_CLEAR_DS: case NOP_CLEAR_TEX: case NOP_CLEAR_BUF: return "op clear";
-    case NOP_COPY_B2B: case NOP_COPY_B2T: case NOP_COPY_T2B: case NOP_COPY_T2T: return "op copy";
-    case NOP_ENG: return "op nested job call";
-    default: return "op other";
-    }
-}
-thread_local NvnState eng_snap;
-VkCommandBuffer eng_secondary(Recording& r) {
-    if (r.nsec == r.secs.size()) {
-        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        ai.commandPool = r.pool, ai.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY, ai.commandBufferCount = 1;
-        VkCommandBuffer cb = VK_NULL_HANDLE;
-        if (vkAllocateCommandBuffers(dev.device, &ai, &cb) != VK_SUCCESS) return VK_NULL_HANDLE;
-        r.secs.push_back(cb);
-    }
-    return r.secs[r.nsec++];
-}
-bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
-                   const uint8_t** resume, uint64_t* view);
-thread_local bool eng_call_suspend = false;   // (HOS_ENG_JOBS_PREWORK: a job's wait not met yet: the replay stops at its call)
-/// (HOS_ENG_JOBS_PREWORK, fallbacks.md 4-5) the pre-work of the jobs this call site calls from this one on (the six of a pass, once,
-/// at the first that has any): outside the rendering, one barrier, every job's copies, one barrier; the next job calls find theirs done
-thread_local std::vector<uint32_t> eng_pre_done;   // (serials whose pre-work is recorded)
-void eng_prework(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const nvn_p_eng& e0) {
-    std::vector<const EngJob*> jobs;
-    const uint8_t* q = p;
-    for (int k = 0; k < 8; k++) {   // (this call and the ones that follow it at the same site)
-        nvn_op_hdr h;
-        std::memcpy(&h, q, sizeof h);
-        if (h.op != NOP_ENG || h.size < 8) break;
-        const auto e = payload<nvn_p_eng>(q + 8, h.size - 8);
-        if (e.kind != NVN_ENG_CALL_BEGIN || e.site != e0.site) break;
-        EngScan sc;
-        eng_scan(q + h.size, sc);
-        if (!sc.end) break;
-        const EngJob* j = eng_job_lookup(e.a);
-        if (j && j->cb && (j->npre || j->pre_barrier) &&
-            std::find(eng_pre_done.begin(), eng_pre_done.end(), j->serial) == eng_pre_done.end())
-            jobs.push_back(j);
-        nvn_op_hdr eh;
-        std::memcpy(&eh, sc.end, sizeof eh);
-        q = sc.end + eh.size;
-    }
-    if (jobs.empty()) return;
-    if (eng_pre_done.size() > 64) eng_pre_done.erase(eng_pre_done.begin(), eng_pre_done.begin() + 32);
-    end_pass(cmd);
-    full_barrier(cmd, "barrier (E6 pre-work: the job's producers before its copies and draws)");
-    for (const EngJob* j : jobs) {
-        eng_pre_done.push_back(j->serial);
-        for (uint32_t i = 0; i < j->npre; i++) {
-            const EngPreCopy& c = j->pre[i];
-            const VkBufferCopy r{c.src_off, c.dst_off, c.bytes};
-            vkCmdCopyBuffer(cmd, c.src, c.dst, 1, &r);
-            eng_count(EC_PRE_COPIES);
-        }
-        eng_count(EC_PRE_JOBS);
-    }
-    full_barrier(cmd, "barrier (E6 pre-work: the converted arguments before the draws)");
-    eng_count(EC_PRE_BATCHES);
-    (void)s;
-}
-bool eng_job_call(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
-                  const uint8_t** resume) {
-    uint64_t view = 0;
-    static const bool ep = eprof::on();
-    int64_t before[EC_N];
-    if (ep) for (int i = 0; i < EC_N; i++) before[i] = eng_count_get(i);
-    const bool ran = eng_job_call_(cmd, s, p, size, e, calls, resume, &view);
-    if (view) eng_pass_result(view, ran);
-    {   // (HOS_ENG_STRICT=1, fallbacks.md 8: a job that goes back to the replay is an error, counted, the first ones named)
-        static const bool strict = getenv("HOS_ENG_STRICT") && atoi(getenv("HOS_ENG_STRICT")) != 0;
-        if (strict && !ran && e.site != 0x807cd418u && !eng_call_suspend) {
-            static int64_t n = 0;
-            const int why = eng_job_why(e.a);
-            if (n++ < 40 || n % 6000 == 0)
-                logf("eng strict: error: a job fell back (view %#llx, site %#x, E3 verdict %s; %lld so far)", (unsigned long long)view, e.site,
-                     eng_job_why_name(why), (long long)n);
-        }
-    }
-    if (ep && !ran && e.site != 0x807cd418u) {   // (HOS_ENG_PROF: the fallback's records follow, by why)
-        const auto moved = [&](int c) { return eng_count_get(c) != before[c]; };
-        int x = eprof::X_FB_OTHER;
-        if (moved(EC_FB_RESIDENT) || moved(EC_FB_DEFERRED)) x = eprof::X_FB_RES;
-        else if (moved(EC_FB_UBUPD)) x = eprof::X_FB_OTHER;
-        else if (moved(EC_FB_HAZARD)) x = eprof::X_FB_HAZ;
-        else if (moved(EC_FB_FORMATS)) x = eprof::X_FB_FMT;
-        else if (moved(EC_FB_NO_JOB)) x = eprof::X_FB_E3 + 1 + std::clamp(eng_job_why(e.a), -1, eprof::kWhys - 2);
-        eprof::fell_back(x);
-    }
-    return ran;
-}
-bool eng_job_call_(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, uint32_t size, const nvn_p_eng& e, const CallStack& calls,
-                   const uint8_t** resume, uint64_t* view) {
-    eng_count(EC_CALLS);
-    if (e.site == 0x807cd418u) return eng_count(EC_LAYER_CALLS), false;   // (the gate primary's call of the 9 layer lists)
-    EngScan sc;
-    eng_scan(p + size, sc);
-    if (!sc.end) return eng_count(EC_FB_MALFORMED), false;
-    if (!sc.view) return eng_count(EC_NO_VIEW), false;
-    eng_count(EC_JOBS);
-    *view = sc.view;
-    {   // (the pass table: the job's pass and the targets in force at its call)
-        EngPassFormats f{};
-        uint32_t w = 0, h = 0;
-        uint64_t c0 = 0, d0 = 0;
-        draw_pass_info(s, &f, &w, &h, &c0, &d0);
-        eng_pass_note_ex(sc.view, f, e.site, w, h, c0, d0);
-    }
-    const EngJob* job = eng_job_lookup(e.a);
-    if (job && !job->cb) job = nullptr;   // (E3 could not record it: its NVN records)
-    const bool self = !job;
-    {   // (bisection switches, read once: HOS_ENG_PASS_SITE=<site hex> only that call site's jobs; HOS_ENG_PASS_DEPTH_ONLY=1 / =2 only
-        // depth-only passes / only passes with colour)
-        static const uint32_t only_site = getenv("HOS_ENG_PASS_SITE") ? (uint32_t)strtoul(getenv("HOS_ENG_PASS_SITE"), nullptr, 16) : 0;
-        static const int depth_only = getenv("HOS_ENG_PASS_DEPTH_ONLY") ? atoi(getenv("HOS_ENG_PASS_DEPTH_ONLY")) : 0;
-        if (only_site && e.site != only_site) return eng_count(EC_FB_MODE), false;
-        if (depth_only) {
-            EngPassFormats f{};
-            uint32_t w = 0, h = 0;
-            uint64_t c0 = 0, d0 = 0;
-            draw_pass_info(s, &f, &w, &h, &c0, &d0);
-            if ((depth_only == 1) != (f.ncolor == 0)) return eng_count(EC_FB_MODE), false;
-        }
-    }
-    if (self && !eng_pass_selftest()) return eng_count(EC_FB_NO_JOB), false;
-    const bool pre_ok = job && (job->nwaits || job->pre_barrier) && !sc.bad_nonpre;   // (its waits and leading barrier: the pre-work's)
-    if (sc.bad && !pre_ok && (sc.bad_other || !job || !job->nsegs)) {   // (a split job: its barriers and dispatches are the replay's, between its runs)
-        eng_count(EC_FB_OP);
-        eng_abort_reason(eng_op_name(sc.bad_op));
-        return false;
-    }
-    if (self && !sc.ndraws) return eng_count(EC_FB_EMPTY), false;
-    // (the self-test not with the descriptor heap: heap entries rewritten mid-recording are copied in the stream before the pass,
-    // heap_flush_instream; E3's secondaries carry their own heap descriptors)
-    if (rmode != Mode::Serial || !rec_cur || cmd != rec_cur->cmd || dump_on() || (self && desc_heap_on()))
-        return eng_count(EC_FB_MODE), false;
-    if (job && job->nwaits) {   // (HOS_ENG_JOBS_PREWORK: its waits, in replay order; one not met: its records, where the replay waits)
-        ev_cpu_apply();
-        for (uint32_t k = 0; k < job->nwaits; k++)
-            if (!event_wait_met(event_value_in(ev_values, job->waits[k].gpu), job->waits[k].mode, job->waits[k].value)) {
-                // (a serial replay that may stop: it stops at the job call, as it would at the wait inside the job, and calls the job
-                // again from here once the signalling work is replayed (eng_call_suspend); else the job's records, as before)
-                if (suspend_ok) return eng_call_suspend = true, false;
-                return eng_count(EC_FB_WAIT), false;
-            }
-    }
-    if (job && (job->npre || job->pre_barrier)) eng_prework(cmd, s, p, e);
-    const bool mixed = eng_pass_mixed();
-    EngPassFormats pf{};
-    // (without mixing the rendering opened here takes secondaries only: a job replayed inline after all needs it ended)
-    const auto fall = [&](int why) {
-        if (!mixed) end_pass(cmd);
-        eng_count(why);
-        return false;
-    };
-    if (!draw_open_pass(cmd, s, !mixed, &pf)) return fall(EC_FB_NOPASS);
-    if (job && !eng_formats_equal(job->fmt, pf)) return fall(EC_FB_FORMATS);
-    {
-        // (a texture the job binds that is not resident: its NVN records. Made resident here (HOS_ENG_PASS_RESIDE=1, a test), the
-        // bound-but-unsampled ones went too: this frame's transient targets in the system-texture table, not written yet, took the
-        // CPU's stale bytes, and the pillars at Hyrule Field's bridge showed blocks of another frame's shadow; e4-impl.md)
-        static const bool reside = getenv("HOS_ENG_PASS_RESIDE") && atoi(getenv("HOS_ENG_PASS_RESIDE")) != 0;
-        const int t = job ? draw_tex_check(job->tex, job->ntex, reside) : draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size(), reside);
-        static const bool strict = getenv("HOS_ENG_PASS_STRICT") && atoi(getenv("HOS_ENG_PASS_STRICT")) != 0;   // (E3's rule in the self-test too)
-        if (t == 1 && (!self || strict)) return fall(EC_FB_HAZARD);
-        if (t == 1) eng_count(EC_BOUND_ATTACHMENT);   // (the self-test: what the job's draws sample decides, at their recording)
-        if (t == 2) return fall(EC_FB_RESIDENT);
-        // (E6: an E3 job's deferred words too (the system textures: this frame's targets among them), as the records hold them now,
-        // resolved at the submit: a secondary reads their heap entries as they are, and only a draw of the replay writes a missing
-        // one. HOS_ENG_PASS_DEFERRED_CHECK=1: checked; off by default: 0.0 jobs a frame failed it in Hyrule Field, e6-impl.md)
-        static const bool dcheck = getenv("HOS_ENG_PASS_DEFERRED_CHECK") && atoi(getenv("HOS_ENG_PASS_DEFERRED_CHECK")) != 0;
-        // (E6: a uniform update of this recording, not in guest memory until its end, over a range the job reads by address: the
-        // job would read the value from before it. HOS_ENG_PASS_UB_CHECK=0: not checked, as E4 had it)
-        static const bool ubcheck = !getenv("HOS_ENG_PASS_UB_CHECK") || atoi(getenv("HOS_ENG_PASS_UB_CHECK")) != 0;
-        if (job && ubcheck && job->nubo && ub_first_of_recording < ub_updates.size()) {
-            for (size_t u = ub_first_of_recording; u < ub_updates.size(); u++) {
-                const uint64_t a = ub_updates[u].dst, b = a + ub_updates[u].bytes.size();
-                for (uint32_t k = 0; k < job->nubo; k++)
-                    if (a < job->ubo[2 * k] + job->ubo[2 * k + 1] && job->ubo[2 * k] < b) return fall(EC_FB_UBUPD);
-            }
-        }
-        static const bool hz_all = getenv("HOS_ENG_PASS_HAZARD_ALL") && atoi(getenv("HOS_ENG_PASS_HAZARD_ALL")) != 0;   // (test: every bound word)
-        if (job && hz_all && draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size(), false, true) == 1) return fall(EC_FB_HAZARD);
-        if (job && dcheck && job->ndeferred && draw_tex_check(sc.tex.data(), (uint32_t)sc.tex.size(), false, false) == 2)
-            return fall(EC_FB_DEFERRED);
-    }
-    VkCommandBuffer cb = job ? job->cb : VK_NULL_HANDLE;
-    uint32_t ndraws = job ? job->ndraws : sc.ndraws;
-    if (self) {   // (HOS_ENG_PASS_SELFTEST: the job's records into a secondary of this recording, by today's draw path)
-        cb = eng_secondary(*rec_cur);
-        if (!cb) return fall(EC_FB_MODE);
-        VkCommandBufferInheritanceRenderingInfo ir{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};
-        ir.colorAttachmentCount = pf.ncolor, ir.pColorAttachmentFormats = pf.color;
-        ir.depthAttachmentFormat = pf.depth, ir.stencilAttachmentFormat = pf.stencil;
-        ir.rasterizationSamples = pf.samples ? pf.samples : VK_SAMPLE_COUNT_1_BIT;
-        VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
-        ii.pNext = &ir;
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-        bi.pInheritanceInfo = &ii;
-        vkBeginCommandBuffer(cb, &bi);
-        eng_snap = s;
-        const size_t ubn = ub_updates.size();
-        draw_sec_enter(cb);
-        eng_cond_seen = !s.render_enabled;   // (a job called with rendering off: all its draws gated)
-        VkCommandBuffer sec = cb;
-        replay(sec, s, p + size, sc.end, &calls, &calls);
-        const char* why = draw_sec_leave(false);
-        eng_cond_seen = false;
-        vkEndCommandBuffer(cb);
-        if (why) {   // (it left the pass: the state as before it, the job replayed inline from its CALL_BEGIN)
-            s = eng_snap;
-            if (ub_updates.size() > ubn) {
-                ub_updates.resize(ubn);
-                ub_list_epoch.fetch_add(1, std::memory_order_relaxed);
-            }
-            ub_gen++;
-            eng_abort_reason(why);
-            return fall(EC_FB_ABORT);
-        }
-    }
-    if (!self) draw_job_uses(job->tex, job->ntex);   // (E3's job: its textures kept alive and its heap entries stamped, as draws do)
-    for (uint32_t k = 0; job && k < job->nwrites; k++)   // (HOS_ENG_JOBS_WRITES: its storage writes the GPU's, as the replay's binding notes them)
-        gpu_buffer_bind(job->writes[2 * k], job->writes[2 * k + 1], true);
-    // (E6: and its deferred words as the records hold them now: the system textures' entries the secondary reads, stamped too, so a
-    // later rewrite of one in this recording goes by copy in the stream, after the job, not in place under it. HOS_ENG_PASS_STAMP_ALL=1:
-    // on; off by default: it fixed nothing seen and costs a lookup per word on the Presentation Thread, e6-impl.md)
-    static const bool stamp_all = getenv("HOS_ENG_PASS_STAMP_ALL") && atoi(getenv("HOS_ENG_PASS_STAMP_ALL")) != 0;
-    if (!self && stamp_all) draw_job_uses(sc.tex.data(), (uint32_t)sc.tex.size());
-    if (job && job->nsegs) {   // (HOS_ENG_JOBS_SPLIT: its runs executed in its records' walk, the other draws drawn there)
-        if (sc.ndraws != job->ndrawops) return fall(EC_FB_SPLIT_COUNT);
-        {
-            static int told = 0;
-            if (told < 12 && presents_now > 1200) {
-                told++;
-                char b[300];
-                int n = 0;
-                b[0] = 0;
-                for (uint32_t k = 0; k < job->nsegs && n < 260; k++)
-                    n += snprintf(b + n, sizeof b - n, " [%u+%u: %u draws]", job->segs[k].first, job->segs[k].n, job->segs[k].ndraws);
-                logf("eng passes: split job view %#llx site %#x: %u draw ops, runs%s; pass %u colour (%d) depth %d", (unsigned long long)job->view_key,
-                     e.site, job->ndrawops, b, pf.ncolor, (int)pf.color[0], (int)pf.depth);
-            }
-        }
-        if (!mixed) end_pass(cmd);   // (each run in a rendering of its own: eng_split_at)
-        eng_split = EngSplit{job, 0, 0, 0, mixed};
-        eng_split_active = true;
-        replay(cmd, s, p + size, sc.end, &calls, &calls);
-        eng_split_active = false;
-        eng_count(EC_EXECUTED);
-        eng_count(EC_EXEC_DRAWS, ndraws);
-        eng_count(EC_SPLIT_JOBS);
-        *resume = sc.end;
-        return true;
-    }
-    vkCmdExecuteCommands(cmd, 1, &cb);
-    draw_cmd_state_lost();
-    if (pass_written_fix()) draw_pass_written_all();
-    if (!mixed) end_pass(cmd), eng_count(EC_RESTARTS);   // (its rendering: the next inline draw begins another)
-    eng_count(EC_EXECUTED);
-    eng_count(EC_EXEC_DRAWS, ndraws);
-    if (!self) {   // (E3's job: its NVN records for their state and CPU-side work only)
-        eng_state_only = true;
-        replay(cmd, s, p + size, sc.end, &calls, &calls);
-        eng_state_only = false;
-        eng_count(EC_STATE_WALKS);
-    }
-    *resume = sc.end;
-    return true;
-}
-
-bool eng_split_at(VkCommandBuffer& cmd, NvnState& s, uint32_t op, const uint8_t* a, uint32_t avail) {
-    EngSplit& e = eng_split;
-    const EngJob& j = *e.job;
-    const uint32_t i = e.i++;
-    if (j.dsig && i < j.ndrawops && j.dsig[i] != eng_draw_sig((int)op, a, avail)) {   // (E3 met another draw at this index)
-        static std::atomic<int> told{0};
-        static int64_t n = 0;
-        n++;
-        if (told++ < 20) logf("eng passes: split job view %#llx: draw op %u is not E3's (op %u; %lld so far)", (unsigned long long)j.view_key, i, op,
-                              (long long)n);
-    }
-    while (e.k < j.nsegs && i >= j.segs[e.k].first + j.segs[e.k].n) e.k++, e.run_state = 0;
-    static const bool skip_inline = getenv("HOS_ENG_SPLIT_SKIP_INLINE") && atoi(getenv("HOS_ENG_SPLIT_SKIP_INLINE")) != 0;   // (bisection)
-    if (e.k >= j.nsegs || i < j.segs[e.k].first) return eng_count(EC_SPLIT_INLINE), skip_inline;   // (a draw E3 left to the replay)
-    static const int all_inline = getenv("HOS_ENG_SPLIT_INLINE") ? atoi(getenv("HOS_ENG_SPLIT_INLINE")) : 0;   // (bisection: no run executed)
-    if (all_inline) {   // (=2: the caches reset at each run's first draw as an execute resets them)
-        if (all_inline == 2 && e.run_state == 0) draw_cmd_state_lost(), e.run_state = 2;
-        return eng_count(EC_SPLIT_INLINE), false;
-    }
-    {
-        static const uint64_t lv = getenv("HOS_ENG_SPLIT_LOGVIEW") ? strtoull(getenv("HOS_ENG_SPLIT_LOGVIEW"), nullptr, 0) : 0;
-        static int told = 0;
-        if (lv && j.view_key == lv && i == 0 && presents_now > 1500 && told++ < 12) {
-            uint32_t cntv = 0, inst = 0;
-            if (op == NOP_DRAW_IDX) { nvn_p_draw_idx di = payload<nvn_p_draw_idx>(a, avail); cntv = di.count, inst = di.instances; }
-            else if (op == NOP_DRAW) { nvn_p_draw dr = payload<nvn_p_draw>(a, avail); cntv = dr.count, inst = dr.instances; }
-            const BufferRef vr = gpu_buffer_bind(s.vbuf[0].address, 1, false);
-            logf("vk: e6 replay job %u draw 0: op %u count %u inst %u vb0 %#llx+%llu vb1 %#llx vp %.0f %.0f %.0f %.0f sc %d %d %d %d dr %.2f %.2f re %d rd %d buf %p+%llu",
-                 j.serial, op, cntv, inst, (unsigned long long)s.vbuf[0].address, (unsigned long long)s.vbuf[0].size, (unsigned long long)s.vbuf[1].address,
-                 s.viewport[0][0], s.viewport[0][1], s.viewport[0][2], s.viewport[0][3], s.scissor[0], s.scissor[1], s.scissor[2], s.scissor[3],
-                 s.depth_near, s.depth_far, (int)s.render_enabled, (int)s.raster_discard, (void*)vr.buffer, (unsigned long long)vr.offset);
-        }
-    }
-    if (e.run_state == 0) {   // (the run's first draw op: executed here, in a rendering of the state's targets of the job's formats)
-        EngPassFormats pf{};
-        static const bool noexec = getenv("HOS_ENG_SPLIT_NOEXEC") && atoi(getenv("HOS_ENG_SPLIT_NOEXEC")) != 0;   // (bisection: covered draws dropped)
-        if (j.segs[e.k].pre && !noexec) {   // (HOS_ENG_JOBS_FALLBACK: the run's first draw's fallback dispatches, outside the rendering)
-            end_pass(cmd);
-            vkCmdExecuteCommands(cmd, 1, &j.segs[e.k].pre);
-            draw_cmd_state_lost();
-            desc_heap_forget_bound();
-            eng_count(EC_SPLIT_PRE);
-        }
-        if (noexec) {
-            e.run_state = 1;
-        } else if (draw_open_pass(cmd, s, !e.mixed, &pf) && eng_formats_equal(j.fmt, pf)) {
-            const VkCommandBuffer cb = j.segs[e.k].cb;
-            vkCmdExecuteCommands(cmd, 1, &cb);
-            draw_cmd_state_lost();
-            if (pass_written_fix()) draw_pass_written_all();
-            static const bool bar = getenv("HOS_ENG_SPLIT_BARRIER") && atoi(getenv("HOS_ENG_SPLIT_BARRIER")) != 0;   // (bisection)
-            if (bar) end_pass(cmd), full_barrier(cmd, "barrier (E6 bisection: after a run)");
-            if (!e.mixed) end_pass(cmd), eng_count(EC_RESTARTS);
-            eng_count(EC_SPLIT_RUNS);
-            e.run_state = 1;
-        } else {
-            if (!e.mixed) end_pass(cmd);
-            eng_count(EC_SPLIT_RUN_INLINE);
-            e.run_state = 2;
-        }
-    }
-    if (e.run_state == 2) return eng_count(EC_SPLIT_INLINE), false;
-    return true;
 }
 
 // ---- parallel replay: the threads and a command buffer's segments ----
@@ -2508,7 +1329,6 @@ struct Segment {
     const uint8_t *p, *end;
     const NvnState* s;
     size_t ub, cond;
-    CallStack calls, end_calls;   // (the calls p and end are inside)
 };
 /// One segment recorded into cmd from the state at its start (any thread: the replay thread's own included)
 void record_segment(VkCommandBuffer& cmd, const Segment& g) {
@@ -2517,7 +1337,7 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
     ub_limit = g.ub, cond_at = g.cond;
     ub_gen++;
     full_barrier(cmd);   // (after what the command buffers before it did)
-    replay(cmd, s, g.p, g.end, &g.calls, &g.end_calls);
+    replay(cmd, s, g.p, g.end);
     end_pass(cmd);
     full_barrier(cmd);
     rmode = Mode::Serial;
@@ -2539,18 +1359,14 @@ std::recursive_mutex par_mu;
 
 /// A command buffer of the submission from h (its start, or where it stopped at a wait): on the replay thread alone
 /// (RX_VK_PARALLEL off, a small one, dumps and profiles), or its dry pass there and its segments on the threads.
-/// may_stop: up to a wait not met, which it returns (null: the command buffer done), the calls it is inside in
-/// suspend_calls. calls: the calls h is inside (going on from a wait inside a called list)
-const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop = false, const CallStack* calls = nullptr) {
-    if (eng_job_on()) eng_job_replay_resume(h);   // (HOS_ENG_JOBS: a job's walk paused at this wait goes on)
+/// may_stop: up to a wait not met, which it returns (null: the command buffer done)
+const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop = false) {
     const int threads = par_threads();
     NvnState& state = *cur_state;
-    const CallStack from = calls ? *calls : kNoCalls;
     suspend_at = nullptr;
-    suspend_calls = kNoCalls;
     if (threads < 2 || !rec_cur || dump_on() || gprof_on() || probe_serial()) {
         suspend_ok = may_stop;
-        replay(cmd, state, h, nullptr, &from);
+        replay(cmd, state, h);
         suspend_ok = false;
         return suspend_at;
     }
@@ -2563,11 +1379,10 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     rmode = Mode::Dry;
     VkCommandBuffer none = cmd;
     suspend_ok = may_stop;
-    replay(none, state, h, nullptr, &from);
+    replay(none, state, h);
     suspend_ok = false;
     rmode = Mode::Serial;
     const uint8_t* const stop = suspend_at;   // (the segments end there)
-    const CallStack stop_calls = suspend_calls;
     const int64_t total = dry_work;
     static double dry_ms, seg_ms, segs_n;
     static int64_t timed;
@@ -2577,20 +1392,19 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     static const int64_t per = getenv("RX_VK_PARALLEL_SEG") ? std::max(32, atoi(getenv("RX_VK_PARALLEL_SEG"))) : 160;
     const int nseg = (int)std::clamp<int64_t>(total / per, 1, kMaxBatch);
     std::vector<Segment> seg;
-    seg.push_back({h, nullptr, &start, ub0, 0, from, kNoCalls});
+    seg.push_back({h, nullptr, &start, ub0, 0});
     for (int k = 1; k < nseg; k++) {
         const int64_t want = total * k / nseg;
         const ParPoint* at = nullptr;
         for (const ParPoint& q : par_points)
             if (q.work >= want) { at = &q; break; }
-        if (!at || (at->p == seg.back().p && at->calls.same(seg.back().calls))) continue;
-        seg.back().end = at->p, seg.back().end_calls = at->calls;
-        seg.push_back({at->p, nullptr, &at->s, at->ub, at->cond, at->calls, kNoCalls});
+        if (!at || at->p == seg.back().p) continue;
+        seg.back().end = at->p;
+        seg.push_back({at->p, nullptr, &at->s, at->ub, at->cond});
     }
-    seg.back().end = stop, seg.back().end_calls = stop_calls;
+    seg.back().end = stop;
     if (seg.size() == 1) {   // (one segment: here, as the dry pass left the reports and conditions)
         record_segment(cmd, seg[0]);
-        suspend_calls = stop_calls;
         return stop;
     }
     if (!par_pool.started) {
@@ -2656,9 +1470,8 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         cmd = rest.cmd;
         rec_parts++;
         Segment whole = seg[0];
-        whole.end = stop, whole.end_calls = stop_calls;
+        whole.end = stop;
         record_segment(cmd, whole);
-        suspend_calls = stop_calls;
         return stop;
     }
     texture_segments_begin(inits.data(), inits.size());
@@ -2744,7 +1557,6 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     rec_cur = &nr;
     cmd = nr.cmd;
     rec_parts += (int)seg.size() + 1;
-    suspend_calls = stop_calls;
     return stop;
 }
 
@@ -2901,9 +1713,7 @@ struct QueueRun {   // (a queue stopped at a wait)
     std::vector<uint64_t> handles;   // (the submission it stopped in)
     int cb = 0;                      // (its command buffer, and the wait there)
     const uint8_t* p = nullptr;
-    CallStack calls;                 // (the called lists the wait is inside: HOS_NVN_LIST_REF)
     uint64_t value = 0;
-    std::chrono::steady_clock::time_point held_at{};   // (when it stopped: the census's longest hold)
     std::deque<LaterSubmit> later;   // (its queue's submits since)
     bool blocked() const { return waiting || !later.empty(); }
     uint64_t oldest() const { return waiting ? value : later.front().value; }
@@ -2929,41 +1739,15 @@ const uint8_t* op_next(const uint8_t* p) {
     std::memcpy(&h, p, sizeof h);
     return p + h.size;
 }
-nvn_p_wait_event wait_at(const uint8_t* p) {   // (p: a wait op, or a job call stopped for its job's wait: HOS_ENG_JOBS_PREWORK)
+nvn_p_wait_event wait_at(const uint8_t* p) {   // (p: a wait op)
     nvn_op_hdr h;
     std::memcpy(&h, p, sizeof h);
-    if (h.op == NOP_ENG) {   // (the job's first wait not met; none: one that is met, so the queue goes on)
-        const auto e = payload<nvn_p_eng>(p + 8, h.size - 8);
-        const EngJob* j = eng_job_lookup(e.a);
-        ev_cpu_apply();
-        for (uint32_t k = 0; j && k < j->nwaits; k++)
-            if (!event_wait_met(event_value_in(ev_values, j->waits[k].gpu), j->waits[k].mode, j->waits[k].value))
-                return nvn_p_wait_event{j->waits[k].gpu, j->waits[k].mode, j->waits[k].value};
-        return nvn_p_wait_event{0, 1, 0};
-    }
     return payload<nvn_p_wait_event>(p + 8, h.size - 8);
 }
-bool is_fence_wait(const uint8_t* p) {   // (p: a wait op: NOP_WAIT_FENCE, or NOP_WAIT_EVENT)
-    nvn_op_hdr h;
-    std::memcpy(&h, p, sizeof h);
-    return h.op == NOP_WAIT_FENCE;
-}
 bool wait_met_at(const uint8_t* p) {
-    if (is_fence_wait(p)) {
-        nvn_op_hdr h;
-        std::memcpy(&h, p, sizeof h);
-        return fence_wait_met(payload<nvn_p_wait_fence>(p + 8, h.size - 8).fence);
-    }
     const nvn_p_wait_event w = wait_at(p);
     ev_cpu_apply();
     return event_wait_met(event_value_in(ev_values, w.gpu), w.mode, w.value);
-}
-bool fence_wait_met(uint64_t f) {
-    auto it = value_queue.find(f);
-    if (it == value_queue.end()) return true;   // (a fence of no queue's or long done)
-    auto q = qruns.find(it->second);
-    const bool blocked = q != qruns.end() && q->second.blocked();
-    return tl::fence_recorded(true, blocked, blocked ? q->second.oldest() : 0, f);
 }
 uint64_t oldest_unfinished() {
     uint64_t m = UINT64_MAX;
@@ -3097,7 +1881,7 @@ struct ReplayPin {
 /// submitted: true when it finished; false when it stopped at a wait not met (may_stop), its place kept in qruns.
 /// memory_work: its memory work first (else done as it came)
 bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, bool memory_work, int cb = 0,
-                const uint8_t* p = nullptr, bool may_stop = false, const CallStack* calls = nullptr) {
+                const uint8_t* p = nullptr, bool may_stop = false) {
     std::lock_guard lk(replay_mu);
     ReplayPin pin;
     SlowWatch slow("submit");
@@ -3124,9 +1908,9 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
     }
     VkCommandBuffer cmd = rec_cur->cmd;
     const uint8_t* stop = nullptr;
-    for (; cb < n; cb++, p = nullptr, calls = nullptr) {
+    for (; cb < n; cb++, p = nullptr) {
         if (!handles[cb]) continue;
-        stop = replay_handle(cmd, p ? p : reinterpret_cast<const uint8_t*>(handles[cb]), may_stop, p ? calls : nullptr);
+        stop = replay_handle(cmd, p ? p : reinterpret_cast<const uint8_t*>(handles[cb]), may_stop);
         if (stop) break;
     }
     if (stop) {
@@ -3134,28 +1918,16 @@ bool run_submit(const uint64_t* handles, int n, uint64_t value, uint64_t queue, 
         q.waiting = true;
         q.handles.assign(handles, handles + n);
         q.cb = cb, q.p = stop, q.value = value;
-        q.calls = suspend_calls;
-        q.held_at = std::chrono::steady_clock::now();
-        const bool fw = is_fence_wait(stop);
-        census.add(fw ? tl::FW_HELD : tl::EV_HELD);
-        if (fw) {
-            static int logged;
-            if (logged++ < 12)
-                logf("vk: timelines: submission %llu (queue %#llx) held at command buffer %d's wait for fence %llu",
-                     (unsigned long long)value, (unsigned long long)queue, cb,
-                     (unsigned long long)payload<nvn_p_wait_fence>(stop + 8, sizeof(nvn_p_wait_fence)).fence);
-        } else if (st_stops++ < 12) {
+        if (st_stops++ < 12) {
             const nvn_p_wait_event w = wait_at(stop);
             logf("vk: submission %llu (queue %#llx) stopped at command buffer %d's wait for event %#llx %s %u (has %u)",
                  (unsigned long long)value, (unsigned long long)queue, cb, (unsigned long long)w.gpu,
                  w.mode == 0 ? "==" : ">=", w.value, event_value_in(ev_values, w.gpu));
         }
-        if (!fw && st_stops % 6000 == 0) log_order_stats();
+        if (st_stops % 6000 == 0) log_order_stats();
     } else {
         done_max = std::max(done_max, value);
         rec_open_values.push_back(value);
-        if (wait_log_on()) wl_value_done[value % kWl] = wl_now(), wl_value_seq[value % kWl] = rec_seq + 1, wl_value_via[value % kWl] = wl_via;
-        if (timelines_on()) rec_open_q.add(queue, value);   // (its queue's timeline reaches it with this recording)
     }
     if (!burst_open) finish_recording(value);   // (a burst's: at its end)
     if (stop) return false;
@@ -3179,10 +1951,7 @@ void resume_queue(uint64_t queue, bool forced) {
             // exposure of the frame before, for a frame. A capture now, for what follows the wait. RX_VK_RESUME_CAPTURE=0: none
             static const bool resume_capture = !getenv("RX_VK_RESUME_CAPTURE") || atoi(getenv("RX_VK_RESUME_CAPTURE")) != 0;
             bool cpu_event = false;
-            const bool fw = is_fence_wait(q.p);
-            census.hold(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - q.held_at).count());
-            if (forced) census.add(fw ? tl::FW_FORCED : tl::EV_FORCED);
-            if (resume_capture && !forced && !fw) {
+            if (resume_capture && !forced) {
                 std::lock_guard ek(ev_cpu_mu);
                 cpu_event = cpu_events.count(wait_at(q.p).gpu) != 0;
             }
@@ -3196,9 +1965,8 @@ void resume_queue(uint64_t queue, bool forced) {
             std::vector<uint64_t> handles = std::move(q.handles);
             q.handles.clear();
             const uint8_t* from = forced ? op_next(q.p) : q.p;
-            const CallStack calls = q.calls;   // (q is written again when it stops once more)
             (forced ? st_forced_waits : st_resumed)++;
-            if (!run_submit(handles.data(), (int)handles.size(), q.value, queue, false, q.cb, from, true, &calls)) return;
+            if (!run_submit(handles.data(), (int)handles.size(), q.value, queue, false, q.cb, from, true)) return;
             continue;
         }
         if (q.later.empty()) return;
@@ -3223,7 +1991,6 @@ void schedule() {
 void drain(int why) {
     if (oldest_unfinished() == UINT64_MAX) return;
     st_forced[why]++;
-    census.add((tl::Kind)(tl::DR_PRESENT + why));
     st_stopped_max_ms = std::max(st_stopped_max_ms,
                                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - blocked_since).count());
     burst_begin(0);
@@ -3256,24 +2023,6 @@ bool sync_waits_on() {
     static const bool v = !getenv("RX_VK_SYNC_WAITS") || atoi(getenv("RX_VK_SYNC_WAITS")) != 0;
     return v && event_waits_on() && !async_on() && !dump_on();
 }
-/// (native-vk, plan step 6) RX_VK_TIMELINES (on by default; =0 the old waits, whose fence can name the recording a submission
-/// started in and so report it done early): the NVN queues' timelines (vk_timelines.h). Needs the submitting thread's
-/// replay with its event waits and per-queue fences (the default)
-bool timelines_on() {
-    static const bool v = [] {
-        const char* e = getenv("RX_VK_TIMELINES");
-        if (e && *e && atoi(e) == 0) return false;
-        const bool ok = sync_waits_on() && !per_queue_fences_off() && rec_timeline != VK_NULL_HANDLE;
-        logf("vk: timelines: %s (RX_VK_TIMELINES): a timeline per NVN queue, CPU waits on it, nvnQueueWaitSync held on the host",
-             ok ? "on" : "off: needs RX_VK_ASYNC, RX_VK_SYNC_WAITS, RX_VK_EVENT_WAITS and RX_VK_PER_QUEUE_FENCES as by default");
-        return ok;
-    }();
-    return v;
-}
-bool census_on() {
-    static const bool v = timelines_on() || (getenv("RX_VK_SYNC_CENSUS") && atoi(getenv("RX_VK_SYNC_CENSUS")) != 0);
-    return v;
-}
 void sync_drain(int why) {
     if (!blocked_n.load()) return;
     std::lock_guard lk(sync_order_mu);
@@ -3292,17 +2041,11 @@ void sync_settle() {
 void sync_watch() {
     SetThreadDescription(GetCurrentThread(), L"mkw_vk order");
     for (;;) {
-        if (timelines_on()) {   // (woken by a CPU signal too: the work held at its wait goes on at once, not within 1 ms)
-            std::unique_lock wl(ev_wake_mu);
-            ev_wake_cv.wait_for(wl, std::chrono::milliseconds(1));
-        } else {
-            Sleep(1);
-        }
+        Sleep(1);
         if (!blocked_n.load()) continue;
         std::unique_lock lk(sync_order_mu, std::try_to_lock);
         if (!lk) continue;
         burst_begin(0);   // (a signal from the CPU the thread that made it could not act on)
-        wl_via = 1;
         schedule();
         burst_end();
         update_blocked();
@@ -3317,7 +2060,6 @@ void sync_watch() {
 /// A submit on the replay thread: replayed as far as its waits allow, or (its queue stopped) after its queue's
 void submit_job(std::vector<uint64_t>& handles, uint64_t value, uint64_t queue) {
     const bool may_stop = event_waits_on() && !dump_on();
-    wl_via = queue;
     if (!may_stop) drain(2);
     auto it = qruns.find(queue);
     if (it != qruns.end() && it->second.blocked()) {   // (its memory work now, in the order of the submits)
@@ -3367,171 +2109,8 @@ uint64_t fence_q(uint64_t queue) {
     auto it = q_last.find(queue);
     return it != q_last.end() ? it->second : fence();
 }
-/// (RX_VK_TIMELINES) A CPU wait for fence f on its queue's timeline (vk_timelines.h): false when f has none (the old path).
-/// A fence whose work is not recorded yet (its queue held at a wait) is waited for before its signal is sent, which a
-/// timeline allows on the host: the thread whose work lets that queue on sends it. After RX_VK_HOLD_MS the held work is
-/// made to go on as before (the guard: counted)
-bool wait_timelines(uint64_t f, uint64_t timeout_ns, int* out) {
-    uint64_t queue = 0;
-    bool recorded = false;
-    {
-        std::lock_guard lk(sync_order_mu);
-        auto it = value_queue.find(f);
-        if (it != value_queue.end()) queue = it->second, recorded = fence_wait_met(f);
-    }
-    const VkSemaphore sem = queue ? queue_timeline(queue) : VK_NULL_HANDLE;
-    if (!sem) {
-        census.add(tl::CPU_OTHER);
-        return false;
-    }
-    uint64_t have = 0;
-    vkGetSemaphoreCounterValue(dev.device, sem, &have);
-    if (have >= f) {
-        census.add(tl::CPU_DONE);
-        *out = 1;
-        return true;
-    }
-    const bool before = !recorded;
-    tl::WaitPlan plan;
-    plan.timeout_ns = timeout_ns;
-    plan.guard_ns = (uint64_t)hold_ms() * 1000000ull;
-    tl_waiters.fetch_add(1, std::memory_order_acq_rel);
-    queue_flush_for(FR_WAIT);   // (after the count: a recording batched from now on goes at once)
-    const auto t0 = std::chrono::steady_clock::now();
-    VkResult res = VK_TIMEOUT;
-    for (;;) {
-        const uint64_t el = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
-        const tl::Step st = plan.next(res == VK_SUCCESS, recorded, el);
-        if (st == tl::Step::Done || st == tl::Step::TimedOut) break;
-        if (st == tl::Step::Force) {
-            census.add(tl::CPU_GUARD);
-            sync_drain(2);
-            std::lock_guard lk(sync_order_mu);
-            recorded = fence_wait_met(f);
-            continue;
-        }
-        VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-        wi.semaphoreCount = 1;
-        wi.pSemaphores = &sem;
-        wi.pValues = &f;
-        res = vkWaitSemaphores(dev.device, &wi, plan.slice(recorded, el));
-        if (res == VK_ERROR_DEVICE_LOST) device_lost();
-        if (res != VK_SUCCESS) {
-            queue_flush_for(FR_WAIT);
-            if (!recorded) {
-                std::lock_guard lk(sync_order_mu);
-                recorded = fence_wait_met(f);
-            }
-        }
-    }
-    tl_waiters.fetch_sub(1, std::memory_order_acq_rel);
-    if (res == VK_SUCCESS) census.add(before ? tl::CPU_BEFORE_SIGNAL : tl::CPU_WAITED);
-    else if (timeout_ns) census.add(tl::CPU_TIMED_OUT);   // (nvnSyncWait's first look, timeout 0, is not a wait)
-    *out = res == VK_SUCCESS;
-    return true;
-}
-/// (RX_VK_TIMELINES) A readback's write-back value v whose recording is not made yet (another thread is recording it):
-/// wait for it to be made, at most RX_VK_HOLD_MS. True when it is (wait_recorded knows it then)
-bool wait_recording_made(uint64_t v) {
-    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(hold_ms());
-    std::unique_lock lk(rec_cv_mu);
-    for (;;) {
-        {
-            std::lock_guard mk(rec_map_mu);
-            if (value_rec.count(v)) return true;
-        }
-        if (std::chrono::steady_clock::now() >= until) return false;
-        rec_cv.wait_for(lk, std::chrono::milliseconds(1));
-    }
-}
-int wait_inner(uint64_t f, uint64_t timeout_ns);
-uint64_t wl_seq_of(uint64_t f) {
-    std::lock_guard mk(rec_map_mu);
-    auto it = value_rec.find(f);
-    return it == value_rec.end() ? 0 : it->second;
-}
 int wait(uint64_t f, uint64_t timeout_ns) {
-    if (!wait_log_on() || !timeout_ns) return wait_inner(f, timeout_ns);
-    if (completed() >= f) {   // (reached: when its work was replayed, and by whose submit)
-        static std::atomic<int> early{0};
-        if (early++ < 4000) {
-            const int64_t t0 = wl_now();
-            logf("vk: wait-log reached f %llu | submit %+.2f replayed %+.2f via %#llx",
-                 (unsigned long long)f, (wl_value_t[f % kWl] - t0) / 1e6, (wl_value_done[f % kWl] - t0) / 1e6,
-                 (unsigned long long)wl_value_via[f % kWl].load());
-        }
-        return 1;
-    }
-    const int64_t t0 = wl_now();
-    uint64_t queue = 0, qhave = 0, rdone0 = 0;
-    {
-        std::lock_guard lk(sync_order_mu);
-        auto it = value_queue.find(f);
-        if (it != value_queue.end()) queue = it->second;
-    }
-    if (VkSemaphore sem = queue && timelines_on() ? queue_timeline(queue) : VK_NULL_HANDLE) vkGetSemaphoreCounterValue(dev.device, sem, &qhave);
-    if (rec_timeline) vkGetSemaphoreCounterValue(dev.device, rec_timeline, &rdone0);
-    const uint64_t seq0 = wl_seq_of(f), c0 = completed(), last0 = rec_seq;
-    size_t pend0;
-    {
-        std::lock_guard lk(dev.present_mu);
-        pend0 = pend.cbs.size();
-    }
-    const int blocked0 = blocked_n.load();
-    // (the submissions around f at the start: value:queue-tag:its recording (0: not replayed yet), ahead of f's on the GPU)
-    char around[640];
-    {
-        int o = 0;
-        std::lock_guard lk(sync_order_mu);
-        for (uint64_t v = f > 7 ? f - 7 : 1; v <= f + 7 && o < 600; v++) {
-            auto it = value_queue.find(v);
-            const uint64_t q = it == value_queue.end() ? 0 : it->second;
-            const bool rp = wl_value_done[v % kWl].load() >= wl_value_t[v % kWl].load() && wl_value_t[v % kWl].load();
-            o += snprintf(around + o, sizeof around - o, " %+d:%llx:%llu", (int)(v - f), (unsigned long long)(q & 0xfffff),
-                          rp ? (unsigned long long)wl_value_seq[v % kWl].load() : 0ull);
-        }
-    }
-    const int ok = wait_inner(f, timeout_ns);
-    const int64_t t1 = wl_now();
-    const uint64_t seq = seq0 ? seq0 : wl_seq_of(f);
-    int64_t made = 0, sent = 0, dsent = 0;
-    int reason = -2, ncb = 0;
-    if (seq) {
-        const WlRec& w = wl_rec[seq % kWl];
-        if (w.seq == seq) made = w.made, sent = w.sent, reason = w.reason, ncb = w.ncb, dsent = (int64_t)w.done_at_sent.load();
-    }
-    const uint64_t rseq = wl_value_seq[f % kWl].load();
-    // (the recordings between the GPU's progress at the start and f's: each one's value against f)
-    char ahead[1024];
-    {
-        int o = 0;
-        for (uint64_t q = rdone0 + 1; q <= rseq && q <= rdone0 + 40 && o < 1000; q++) {
-            const WlRec& w = wl_rec[q % kWl];
-            // (made/sent against the wait's start, ms; s-: not sent yet)
-            if (w.seq != q) o += snprintf(ahead + o, sizeof ahead - o, " ?");
-            else o += snprintf(ahead + o, sizeof ahead - o, " %.1f/%.1f", (w.made - t0) / 1e6, w.sent ? (w.sent - t0) / 1e6 : 0.0);
-        }
-        ahead[o] = 0;
-    }
-    const int64_t tv = wl_value_t[f % kWl].load(), tdone = wl_value_done[f % kWl].load();
-    static std::atomic<int> logged{0};
-    if (logged++ < 4000) {
-        auto ms = [&](int64_t t) { return t ? (t - t0) / 1e6 : -999.0; };
-        logf("vk: wait-log f %llu q %#llx ok %d wait %.2f ms | submit %+.2f replayed %+.2f (rec %llu) via %#llx made %+.2f sent %+.2f (reason %d, %d cbs, gpu %lld behind) done %+.2f |"
-             " at start: main %llu queue %llu, rec %llu (%s, done %llu, last %llu), pend %zu cbs, blocked %d | around%s | ahead%s",
-             (unsigned long long)f, (unsigned long long)queue, ok, (t1 - t0) / 1e6, ms(tv), ms(tdone), (unsigned long long)rseq, (unsigned long long)wl_value_via[f % kWl].load(), ms(made), ms(sent), reason, ncb,
-             seq && dsent ? (long long)(seq - 1 - (uint64_t)dsent) : -1LL, (t1 - t0) / 1e6,
-             (unsigned long long)c0, (unsigned long long)qhave, (unsigned long long)seq, seq0 ? "made" : "not made",
-             (unsigned long long)rdone0, (unsigned long long)last0, pend0, blocked0, around, ahead);
-    }
-    return ok;
-}
-int wait_inner(uint64_t f, uint64_t timeout_ns) {
     if (completed() >= f) return 1;
-    if (timelines_on()) {
-        int ok = 0;
-        if (wait_timelines(f, timeout_ns, &ok)) return ok;
-    }
     queue_flush_for(FR_WAIT);
     // (hookshot) a fence of one queue whose work up to it is recorded whole (none of it stopped): that work, not the other
     // queues' stopped work the timeline above waits for (which a wait for it forced past its waits after RX_VK_WAIT_HOLD_US)
@@ -3686,21 +2265,10 @@ void invalidate(uint64_t gpu, uint64_t size) {
             if (v > completed()) {
                 int ok = 0;
                 if (!(unforced && wait_recorded(v, UINT64_MAX, &ok))) {
-                    // (RX_VK_TIMELINES: its recording is being made on another thread: that one, not the main timeline,
-                    // which held work holds back)
-                    if (timelines_on() && wait_recording_made(v) && wait_recorded(v, UINT64_MAX, &ok)) {
-                        census.add(tl::RB_BEFORE_RECORD);
-                    } else {
-                        census.add(tl::RB_OTHER);
-                        if (unforced && replay_behind()) wait_queue_empty();   // (not recorded whole: as before)
-                        wait_value(v);
-                    }
-                } else {
-                    census.add(tl::RB_WAITED);
+                    if (unforced && replay_behind()) wait_queue_empty();   // (not recorded whole: as before)
+                    wait_value(v);
                 }
                 w = true;
-            } else {
-                census.add(tl::RB_NONE);
             }
             if (w) {
                 waited++;
@@ -4164,14 +2732,6 @@ void log_frame_stats() {
              "translation %.0f ms in all, %d jobs queued%s",
              (pskip - l_pskip) / 120.0, (pwaits - l_pwaits) / 120.0, (pwait_ms - l_pwait_ms) / 120.0,
              shader_translate_ms(), jobs_pending(), libs);
-        {   // (native-vk) the waits since the start, and the shader objects' (RX_VK_SHADER_OBJECTS): what docs/native-vk.md measures
-            int64_t so_bin = 0, so_comp = 0, so_pf = 0;
-            double so_ms = 0, so_pf_ms = 0;
-            so_stats(&so_bin, &so_comp, &so_ms, &so_pf, &so_pf_ms);
-            logf("vk: in all: %lld waits for shaders or pipelines (%.0f ms), %lld draws left out not ready; shader objects %lld from "
-                 "binaries, %lld compiled (%.0f ms), %lld programs prefetched (%.0f ms)", (long long)pwaits, pwait_ms, (long long)pskip,
-                 (long long)so_bin, (long long)so_comp, so_ms, (long long)so_pf, so_pf_ms);
-        }
         l_pskip = pskip, l_pwaits = pwaits, l_pwait_ms = pwait_ms, l_links = links, l_link_ms = link_ms;
         {
             static const char* names[PROF_COUNT] = {"submit", "present", "draw", "descriptors", "texture lookups",
@@ -4187,10 +2747,6 @@ void log_frame_stats() {
             }
             logf("%s", line);
         }
-        eng_lists_report(120.0);
-        eng_job_report(120.0);
-        static int eprof_n = 0;
-        if (++eprof_n % 5 == 0) eprof::report(600.0);   // (HOS_ENG_PROF: every 600 presents)
         int64_t mirrors = 0, sync_b = 0, sync_c = 0, wb_b = 0;
         uint64_t mirror_mb = 0;
         memory_stats(&mirrors, &mirror_mb, &sync_b, &sync_c, &wb_b);
@@ -4219,7 +2775,6 @@ void log_frame_stats() {
                  "ordered in their fragment stages only (RX_VK_PASS_BARRIER=game)", (made - l_made) / 120.0, (left - l_left) / 120.0,
                  (relaxed - l_relaxed) / 120.0);
             l_made = made, l_left = left, l_relaxed = relaxed;
-            l1c::report(120.0);   // (RX_VK_L1_CENSUS)
             std::string fl;   // (NVN's barrier bits: ORDER_PRIMITIVES 1, ORDER_FRAGMENTS 2, ORDER_FRAGMENTS_TILED 4, ORDER_INDIRECT_DATA 8, INVALIDATE_TEXTURE 0x10, _SHADER 0x20, _TEXTURE_DESCRIPTOR 0x40, _ZCULL 0x80)
             std::lock_guard lk(st_barrier_flags_mu);
             for (const auto& [bits, n] : st_barrier_flags) {
@@ -4402,16 +2957,9 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                        framegen_record(r.cmd, texture_view(tex, t, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample), sw,
                                        sh, crop);
         texture_frame(completed());
-        desc_heap_frame();
-        bda_frame();   // (RX_VK_DESC_HEAP_BDA: RX_VK_BDA_CHECK's misses, the counters)
         full_barrier(r.cmd);
         presents++;
         presents_now = presents;
-        if (census_on() && presents % 600 == 0) {   // (native-vk, plan step 6: the waits by kind)
-            char line[1024];
-            census.take(line, sizeof line);
-            logf("vk: syncs in 600 presents%s: %s", timelines_on() ? " (RX_VK_TIMELINES)" : "", line);
-        }
         if (presents == 1) hang_watch_start();
         {   // (EvilBoyce, diagnostics) RX_VK_WATCH_CPU=<present>:<gpu address>[,...] (hex addresses): from that present on, the
             // CPU's writes to those 4 KB pages logged with the writer's stack (host page watch: 12 reports)
@@ -5069,12 +3617,12 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     static int64_t presents_counted, st_flushes0, st_cbs0, r0[FR_COUNT];
     if (st_flushes && ++presents_counted % 120 == 0) {
         logf("vk: batched submits: %lld flushes, %.1f command buffers each, over 120 presents; by reason: poll %lld, wait %lld, "
-             "slot %lld, present %lld, cap %lld, value %lld, feed %lld, other %lld", (long long)(st_flushes - st_flushes0),
+             "slot %lld, present %lld, cap %lld, value %lld, other %lld", (long long)(st_flushes - st_flushes0),
              (double)(st_batched_cbs - st_cbs0) / std::max<int64_t>(1, st_flushes - st_flushes0),
              (long long)(st_reason[FR_POLL] - r0[FR_POLL]), (long long)(st_reason[FR_WAIT] - r0[FR_WAIT]),
              (long long)(st_reason[FR_SLOT] - r0[FR_SLOT]), (long long)(st_reason[FR_PRESENT] - r0[FR_PRESENT]),
              (long long)(st_reason[FR_CAP] - r0[FR_CAP]), (long long)(st_reason[FR_VALUE] - r0[FR_VALUE]),
-             (long long)(st_reason[FR_FEED] - r0[FR_FEED]), (long long)(st_reason[FR_OTHER] - r0[FR_OTHER]));
+             (long long)(st_reason[FR_OTHER] - r0[FR_OTHER]));
         st_flushes0 = st_flushes, st_cbs0 = st_batched_cbs;
         std::memcpy(r0, st_reason, sizeof r0);
     }
@@ -5188,13 +3736,7 @@ void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) {
     if (skipped) *skipped = v[1];
     if (pipelines) *pipelines = v[3];
 }
-void register_texture_locked(int id, const nvn_tex* t, const nvn_view* v) {
-    // (RX_VK_DESC_HEAP_LOG: the game thread's time in it, the renderer's part of a registration: the slot table and the heap's list)
-    if (!desc_heap_log()) return register_texture(id, t, v), desc_heap_registered(id);
-    const auto t0 = std::chrono::steady_clock::now();
-    register_texture(id, t, v), desc_heap_registered(id);
-    desc_heap_registration_time(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
-}
+void register_texture_locked(int id, const nvn_tex* t, const nvn_view* v) { register_texture(id, t, v); }
 void do_program_released(const nvn_prog* p) {
     std::lock_guard lk(replay_mu);   // (the replay may be translating it)
     program_released(p);
@@ -5302,8 +3844,8 @@ void replay_thread_main() {
             drain(1);
             do_program_released(&j.prog);
             break;
-        case JOB_REGISTER_TEXTURE: register_texture_copy(j.id, j.tex, j.has_view ? &j.view : nullptr), desc_heap_registered(j.id); break;
-        case JOB_REGISTER_SAMPLER: register_sampler_copy(j.id, j.samp), desc_heap_sampler_registered(j.id); break;
+        case JOB_REGISTER_TEXTURE: register_texture_copy(j.id, j.tex, j.has_view ? &j.view : nullptr); break;
+        case JOB_REGISTER_SAMPLER: register_sampler_copy(j.id, j.samp); break;
         case JOB_EVENT_SIGNAL:   // (the CPU set an event: the stopped ones may go on)
             ev_values[j.ev_gpu] = j.ev_value;
             burst_begin(0);
@@ -5426,7 +3968,6 @@ void submit_q(const uint64_t* handles, int n, uint64_t queue) {
             std::call_once(watch, [] { std::thread(sync_watch).detach(); });
             std::vector<uint64_t> h(handles, handles + std::max(n, 0));
             const uint64_t value = ++q_values;
-            if (wait_log_on()) wl_value_t[value % kWl] = wl_now();
             if (queue) {
                 q_last[queue] = value;
                 value_queue[value] = queue;
@@ -5453,7 +3994,6 @@ void present(const nvn_tex* t, const int crop[4]) {
         std::lock_guard order(sync_order_mu);
         ReplayPin pin;   // (the frame's last replays and the present on the replay's core)
         if (sync_waits_on()) {
-            wl_via = 2;
             drain(0);   // (the frame's work whole before it is shown)
             update_blocked();
             present_value = ++q_values;
@@ -5534,7 +4074,6 @@ void event_signal_queued(uint64_t gpu, uint32_t value) {
         std::lock_guard lk(ev_cpu_mu);
         ev_cpu_pending.emplace_back(gpu, value);
         ev_cpu_any.store(true, std::memory_order_release);
-        if (timelines_on()) ev_wake_cv.notify_one();
         return;   // (sync_watch or the next submit lets the stopped ones on: not this thread, ~1.7 ms a frame of the critical path)
     }
     Job j{JOB_EVENT_SIGNAL};
@@ -5542,7 +4081,7 @@ void event_signal_queued(uint64_t gpu, uint32_t value) {
     enqueue(std::move(j));
 }
 void register_sampler_queued(int id, const nvn_samp_par* p) {
-    if (!async_on() || register_at_once()) return register_sampler(id, p), desc_heap_sampler_registered(id);
+    if (!async_on() || register_at_once()) return register_sampler(id, p);
     if (id < 0 || id >= (1 << 12) || !p) return;
     p = (const nvn_samp_par*)descriptor_ok(p, sizeof(nvn_samp_par));
     if (!p) return;
@@ -5584,9 +4123,6 @@ bool init_pools_make(const VkCommandPoolCreateInfo& pi) {
 }
 
 } // namespace
-
-/// (native-vk layer 0) the newest submission value handed out: work up to it may still reach memory being rebound (vk_pools.cpp)
-uint64_t vk_timeline_pushed() { return fence(); }
 
 bool replay_start() {
     menu_init();
@@ -5676,8 +4212,6 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_set_texture_pool_size = set_texture_pool_size;
     t.nvn_texture_released = texture_released_of;
     t.nvn_program_released = program_released_locked;
-    t.nvn_program_set = so_program_set;
-    t.nvn_pool_native = layer0_pool_native;   // (native-vk layer 0: vk_pools.cpp)
     t.nvn_read_texels = read_texels;
     t.nvn_write_texels = write_texels;
     t.nvn_invalidate = invalidate;

@@ -12,7 +12,6 @@
 #include "common/container/unordered_set.h"
 
 #include "shader_recompiler/backend/bindings.h"
-#include "shader_recompiler/backend/spirv/bda_emit.h"
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/runtime_info.h"
@@ -23,10 +22,6 @@ namespace Shader::Backend::SPIRV {
 static std::bitset<8> clip_distance_written;
 
 using Sirit::Id;
-
-/// (hookshot, RX_VK_BDA_CHECK) the id the checked accesses of the program being translated record (vk_shader.cpp: the low word
-/// of its key), this thread's
-extern thread_local u32 bda_check_id;
 
 class VectorTypes {
 public:
@@ -121,7 +116,6 @@ struct UniformDefinitions {
 struct StorageTypeDefinition {
     Id array{};
     Id element{};
-    Id value{};   // (hookshot, Info::ssbo_bda: the element's own type; array and element are then PhysicalStorageBuffer pointers)
 };
 
 struct StorageTypeDefinitions {
@@ -319,26 +313,6 @@ public:
     Id mesh_first_member_pointer{};
     u32 texture_rescaling_index{};
     u32 image_rescaling_index{};
-
-    // (hookshot, RX_VK_DESC_HEAP_BDA: Info::ssbo_bda) the storage buffers through device addresses (bda_emit.h)
-    bool ssbo_bda{};
-    bool ssbo_bda_check{};
-    bool bda_render_area{};           // (RX_VK_DESC_HEAP_BDA=2: a render-area stage, its area in ResolutionInfo at offset 0)
-    u32 window_table_member_index{};  // (WINDOW_TABLE_PUSH_OFFSET's member, then the virtual range's three: Bda::Pushed)
-    Bda::Pushed bda_pushed;           // (main's, loaded in the entry block)
-    Id bda_table{};                   // (the window table's address, loaded in the entry block)
-    std::vector<Id> bda_base;         // (each storage buffer's device address, in the entry block)
-    std::vector<Id> bda_bound;        // (RX_VK_BDA_CHECK: and its bound in bytes)
-    Id bda_flag{};                    // (RX_VK_BDA_CHECK: bda_flag)
-    Bda::PtrCache bda_ptrs;
-    std::vector<StorageBufferDescriptor> bda_descs;
-    /// The entry block's part: the table's address, each storage buffer's base (and bound). Traverse calls it first
-    void EmitBdaPrologue();
-    /// The pushed table and virtual range, loaded here (in the function being emitted)
-    Bda::Pushed BdaPushed();
-    /// A storage access of `type_def`'s element (`size` bytes) at `offset` of `binding`, as Eden indexes it
-    Bda::Access BdaAccess(const IR::Value& binding, const IR::Value& offset, const StorageTypeDefinition& type_def, u32 size,
-                          u32 index_offset = 0);
 
     Id render_area_push_constant{};
     u32 render_are_member_index{};

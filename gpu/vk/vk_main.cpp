@@ -16,11 +16,8 @@
 
 #include "vk_api.h"
 #include "vk_draw.h"
-#include "vk_desc_heap.h"
-#include "eng_pass.h"
 #include "vk_framegen.h"
 #include "vk_internal.h"
-#include "vk_pools.h"   // (native-vk layer 0: its sparse queue)
 #include "gpu_choice.h"
 #include "vk_menu.h"
 #include "vk_dlss.h"
@@ -247,10 +244,6 @@ bool create_device() {
     optional(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, dev.stencil_export);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev.memory_budget);
     optional(VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME, dev.view_2d_of_3d);
-    // (native-vk) graphics and compute programs as shader objects (vk_shader_object.cpp): on by default, since pipelines
-    // stutter at every new state combination met in play; RX_VK_SHADER_OBJECTS=0: pipelines
-    if (!getenv("RX_VK_SHADER_OBJECTS") || atoi(getenv("RX_VK_SHADER_OBJECTS")) != 0)
-        optional(VK_EXT_SHADER_OBJECT_EXTENSION_NAME, dev.shader_object);
     // (hookshot) on by default: with a marker before each draw and dispatch the device has not been lost (five
     // runs); without them it was, every run, shortly after OoT's first gameplay frames (nvlddmkm event 153; the
     // extension alone, RX_VK_CHECKPOINTS=ext, did not keep it). The race they hide is not found yet.
@@ -309,24 +302,10 @@ bool create_device() {
             if ((families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
                 compute_family = i;
     }
-    VkDeviceQueueCreateInfo qs[3] = {q, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
+    VkDeviceQueueCreateInfo qs[2] = {q, {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}};
     qs[1].queueFamilyIndex = compute_family;
     qs[1].queueCount = 1;
     qs[1].pQueuePriorities = &priority;
-    // (native-vk layer 0, RX_VK_LAYER0) a queue of a sparse-binding-only family (RADV has one) for the window buffers' binds: on the
-    // replay's queue a bind waited for the work queued before it, 36-222 ms in Kokiri (RX_VK_LAYER0_BIND_QUEUE=0: that queue)
-    uint32_t sparse_family = UINT32_MAX;
-    {
-        const char* bq = getenv("RX_VK_LAYER0_BIND_QUEUE");
-        if (layer0_wanted() > 0 && !(bq && atoi(bq) == 0))
-            for (uint32_t i = 0; i < n && sparse_family == UINT32_MAX; i++)
-                if (i != dev.queue_family && i != compute_family && (families[i].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) &&
-                    !(families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)))
-                    sparse_family = i;
-    }
-    qs[2].queueFamilyIndex = sparse_family;
-    qs[2].queueCount = 1;
-    qs[2].pQueuePriorities = &priority;
 
     // features: what the hardware has of what the replay uses (all of them on the GPUs MKW-class hardware maps to)
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
@@ -355,8 +334,6 @@ bool create_device() {
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vdiv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     if (dev.vertex_divisor) *tail = &vdiv, tail = &vdiv.pNext;
     if (dev.graphics_pipeline_library) *tail = &gpl, tail = &gpl.pNext;
-    VkPhysicalDeviceShaderObjectFeaturesEXT shobj{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
-    if (dev.shader_object) *tail = &shobj, tail = &shobj.pNext;
     VkPhysicalDeviceFaultFeaturesEXT fault{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
     if (dev.device_fault) *tail = &fault, tail = &fault.pNext;
     VkPhysicalDeviceImage2DViewOf3DFeaturesEXT v2d3d{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
@@ -365,8 +342,6 @@ bool create_device() {
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
-    desc_heap_device_extensions(exts, want, tail);   // (native-vk, RX_VK_DESC_HEAP=1: VK_EXT_descriptor_heap, vk_desc_heap.cpp)
-    eng_pass_device_extensions(exts, want, tail);   // (native-vk E4, HOS_ENG_PASSES=1: inline draws and secondaries in one rendering, eng_pass.cpp)
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     antilag_device_features(tail);   // (AMD Anti-Lag 2's, when its extension is there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
@@ -420,20 +395,6 @@ bool create_device() {
     dev.eds3_blend = dev.dynamic_state3 && eds3.extendedDynamicState3ColorBlendEnable &&
                      eds3.extendedDynamicState3ColorBlendEquation && eds3.extendedDynamicState3ColorWriteMask;
     dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;
-    // (shader objects need the blend, polygon, clamp and alpha-to-coverage state dynamic too: what the pipelines take from EDS3)
-    dev.shader_object = dev.shader_object && shobj.shaderObject && dev.eds3_blend && dev.eds3_polygon && dev.eds3_clamp && dev.eds3_a2c;
-    if (!dev.shader_object) shobj.shaderObject = VK_FALSE;
-    if (dev.shader_object) {
-        VkPhysicalDeviceShaderObjectPropertiesEXT sp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT};
-        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-        p2.pNext = &sp;
-        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
-        std::memcpy(dev.shader_binary_uuid, sp.shaderBinaryUUID, VK_UUID_SIZE);
-        dev.shader_binary_version = sp.shaderBinaryVersion;
-        logf("vk: shader objects on (RX_VK_SHADER_OBJECTS): graphics programs bind VkShaderEXT stages, binary version %u",
-             sp.shaderBinaryVersion);
-    }
-    desc_heap_features_resolved(dev.shader_object, f12.bufferDeviceAddress);
     dev.vk12 = f12;
     dev.vk13 = f13;
     {   // (hookshot, after TotK Recomp's vk_caps.c) NVN's programs are written for 32 lanes: the translator is told 32, and the lane
@@ -485,10 +446,6 @@ bool create_device() {
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.pNext = &f;
     ci.queueCreateInfoCount = compute_family != UINT32_MAX ? 2 : 1;
-    if (sparse_family != UINT32_MAX) {   // (after the compute one, or in its place)
-        if (compute_family == UINT32_MAX) qs[1] = qs[2];
-        ci.queueCreateInfoCount++;
-    }
     ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
@@ -503,12 +460,7 @@ bool create_device() {
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;
     if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
-    if (sparse_family != UINT32_MAX) {
-        vkGetDeviceQueue(dev.device, sparse_family, 0, &dev.sparse_queue);
-        logf("vk: layer 0's sparse binds on queue family %u (sparse binding only)", sparse_family);
-    }
     if (dev.buffer_marker) buffer_markers_init();
-    desc_heap_device_created();
     coopmat_init();
     reflex_device_created();
     antilag_device_created();

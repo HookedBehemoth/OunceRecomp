@@ -363,13 +363,6 @@ struct Info {
     bool uses_rescaling_uniform{};
     bool uses_cbuf_indirect{};
     bool uses_render_area{};
-    /// (hookshot, RX_VK_DESC_HEAP_BDA) the stage reads and writes its storage buffers through device addresses: each one's
-    /// guest address from its constant buffer, translated by the layer-0 window table (backend/spirv/bda_emit.h). Set by
-    /// the SPIR-V back end; the stage's storage buffer bindings are reserved but declare no variable, and need no descriptor
-    bool ssbo_bda{};
-    /// (hookshot, RX_VK_DESC_HEAP_BDA) why the stage's storage buffers stayed on descriptors: bda_emit.h's Why bits, every
-    /// condition the stage meets (0 when ssbo_bda, or when the back end was not asked)
-    u32 bda_why{};
 
     IR::Type used_constant_buffer_types{};
     IR::Type used_storage_buffer_types{};

@@ -82,7 +82,6 @@ struct Texture {
     uint32_t key_layout = 0, key_cls = 0;   // (the key's storage layout and format class)
     bool vw_listed = false;   // (in the list of GPU-written textures of virtual pools: texture_flush_to_guest)
     uint64_t pool_key = 0;    // (a render target's image: its create info's key in the pool it goes to when the texture does)
-    bool clear_pending = false;   // (RX_VK_LAZY_CLEAR: its creation clear not recorded yet: a pass's load op or texture_clear_now does it)
     std::unordered_map<uint64_t, VkImageView> views;
 };
 
@@ -132,18 +131,9 @@ int texture_segment_end(int index);
 uint32_t texture_epoch();
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
 uint64_t texture_destroy_generation();
-/// (native-vk step 4a) Whether what was resolved to a texture is checked by the texture's own life (texture_alive of its id)
-/// instead of texture_destroy_generation. RX_VK_TEX_SERIAL=0: the global generation, as before
-bool texture_serial_on();
-/// Whether the texture with this id (Texture::id) is still the cache's (false once destroy_later took it); any thread
-bool texture_alive(uint32_t id);
-/// Changes when a frame left textures for a later frame (upload_defer): what resolved to the placeholder is looked up again
-uint64_t texture_miss_generation();
 /// The texture an NVN texture's storage is (made and uploaded at first use, uploaded again when the CPU wrote its
 /// storage since). null for formats and targets that have no image (buffers, unknown formats).
 Texture* texture_get(const nvn_tex* t, bool for_sampling);
-/// (HOS_ENG_REG) the texture the cache already has for t (none made, nothing touched); null: not made yet
-Texture* texture_find(const nvn_tex* t);
 /// A view of it: the view's levels and layers (all when v is null), as view_type, in the view's format
 /// (attachment: one level, one layer; storage: one level, every layer, in a storage-capable format)
 enum class ViewUse { Sample, Attachment, Storage };
@@ -157,9 +147,6 @@ unsigned view_level(const nvn_view* v);
 unsigned image_level(const Texture* tex, unsigned level);
 unsigned view_layer(const nvn_view* v);
 /// The GPU wrote it (in the submission being recorded)
-/// (RX_VK_LAZY_CLEAR) a new render target's creation clear, recorded now into the recording's upload command buffer if it is still
-/// pending (a pass that covers it all clears it with its load op instead: begin_pass). Under the texture lock
-void texture_clear_now(Texture* tex);
 void texture_written(Texture* tex, const char* why = "?");   // (why: who wrote it, for the parallel replay's order warning)
 /// The GPU writes [gpu, gpu + size) in the submission being recorded (a storage buffer, a buffer copy): textures over
 /// it are uploaded again from guest memory once that submission is done

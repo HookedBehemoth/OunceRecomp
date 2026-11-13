@@ -55,7 +55,6 @@
     X(vkCreateCommandPool)                                                                                            \
     X(vkDestroyCommandPool)                                                                                           \
     X(vkResetCommandPool)                                                                                             \
-    X(vkResetCommandBuffer)                                                                                           \
     X(vkAllocateCommandBuffers)                                                                                       \
     X(vkBeginCommandBuffer)                                                                                           \
     X(vkEndCommandBuffer)                                                                                             \
@@ -108,7 +107,6 @@
     X(vkCreateSampler)                                                                                                \
     X(vkCmdBeginRendering)                                                                                            \
     X(vkCmdEndRendering)                                                                                              \
-    X(vkCmdExecuteCommands)                                                                                           \
     X(vkCmdBindPipeline)                                                                                              \
     X(vkCmdBindDescriptorSets)                                                                                        \
     X(vkCmdBindVertexBuffers)                                                                                         \
@@ -158,10 +156,7 @@
     X(vkCmdResetQueryPool) X(vkCmdBeginQuery) X(vkCmdEndQuery) X(vkCmdCopyQueryPoolResults) X(vkGetQueryPoolResults) \
     X(vkResetQueryPool) \
     X(vkCmdSetDepthClipEnableEXT) X(vkCmdSetLogicOpEXT) X(vkCmdClearAttachments) X(vkCmdSetDepthBoundsTestEnable) \
-    X(vkCmdSetCheckpointNV) X(vkGetQueueCheckpointDataNV) X(vkGetDeviceFaultInfoEXT) X(vkCmdWriteBufferMarkerAMD) \
-    X(vkCreateShadersEXT) X(vkDestroyShaderEXT) X(vkGetShaderBinaryDataEXT) X(vkCmdBindShadersEXT) X(vkCmdSetVertexInputEXT) \
-    X(vkCmdSetRasterizationSamplesEXT) X(vkCmdSetSampleMaskEXT) X(vkCmdSetAlphaToOneEnableEXT) X(vkCmdSetProvokingVertexModeEXT) \
-    X(vkCmdSetDepthClipNegativeOneToOneEXT)
+    X(vkCmdSetCheckpointNV) X(vkGetQueueCheckpointDataNV) X(vkGetDeviceFaultInfoEXT) X(vkCmdWriteBufferMarkerAMD)
 
 namespace vkx {
 #define VKX_DECLARE(f) extern PFN_##f f;

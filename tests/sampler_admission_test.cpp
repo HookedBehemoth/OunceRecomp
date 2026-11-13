@@ -60,7 +60,6 @@ struct Saved {
 std::unordered_map<VkSampler, Saved> live;
 uint64_t mix(uint64_t a, uint64_t b) { return (a ^ b) * 0x9e3779b97f4a7c15ull; }
 uint64_t texture_frame_no() { return frame_no; }
-void desc_heap_sampler_made(VkSampler, const VkSamplerCreateInfo&) {}   // (RX_VK_DESC_HEAP: off here)
 bool sampler_cache_on() { return !cache_off; }
 uint64_t sampler_registrations_generation() { return generation; }
 uint32_t sampler_slot_version(int) { return (uint32_t)generation; }

@@ -57,11 +57,6 @@ struct Device {
          coop_matrix = false,   // (VK_KHR_cooperative_matrix with its feature)
          native_mma = false;    // (HMMA on it: the cooperative matrix test passed, vk_coopmat.cpp)
     bool eds3_polygon = false, eds3_clamp = false, eds3_blend = false, eds3_a2c = false;
-    // (native-vk, RX_VK_SHADER_OBJECTS=1) VK_EXT_shader_object: graphics draws bind VkShaderEXT stages with all their state dynamic
-    // (vk_shader_object.cpp), no pipeline per state. Its binaries' identity: shaderBinaryUUID and version
-    bool shader_object = false;
-    uint8_t shader_binary_uuid[VK_UUID_SIZE]{};
-    uint32_t shader_binary_version = 0;
     bool swapchain_colorspace = false;   // (hookshot) VK_EXT_swapchain_colorspace: HDR10 surfaces are listed
     bool hdr = false;                    // (hookshot) the swapchain is HDR10 (ST 2084, Rec. 2020): framegen_hdr writes it
     bool mesh_fallback = false;   // (hookshot) no VK_EXT_mesh_shader: task and mesh programs as compute shaders (vk_shader.cpp)
@@ -94,9 +89,6 @@ struct Device {
     VkQueue present_queue = VK_NULL_HANDLE;
     std::mutex present_queue_mu;
     uint32_t present_family = 0;   // (present_queue's family, the swapchain's images shared with it)
-    // (native-vk layer 0) a sparse-binding-only queue for the window buffers' binds (vk_pools.cpp), under its own lock
-    VkQueue sparse_queue = VK_NULL_HANDLE;
-    std::mutex sparse_queue_mu;
 };
 extern Device dev;
 

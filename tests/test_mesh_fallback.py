@@ -131,7 +131,7 @@ def main():
         raise SystemExit("the fallback no longer covers the indirect task lists in Hyrule Field")
 
     draw = DRAW.read_text(encoding="utf-8")
-    if "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d, const NvnState& s, const HeapProgram* hp)" not in draw:
+    if "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d)" not in draw:
         raise SystemExit("vk_draw.cpp has no fallback dispatch")
     if "vkCmdDispatchIndirect(cmd, mesh_conv_buf, mesh_conv_off);" not in draw:
         raise SystemExit("an indirect mesh draw does not dispatch from its converted arguments")
@@ -139,7 +139,7 @@ def main():
             "push_constants(cmd, p, nullptr, d.first_task);" not in draw or \
             "LoadWord(ctx, BufferWordAt(ctx, base, ctx.Const(1U)))" not in isbe:
         raise SystemExit("a task draw loses its direct or GPU-provided starting workgroup")
-    if "if (p.fallback && d.mesh && !fallback_record(cmd, p, d, s, hp)) SKIP_HERE();" not in draw:
+    if "if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();" not in draw:
         raise SystemExit("the fallback dispatches do not run before the pass")
     if "vkCmdDrawIndirect(cmd, fallback_draw_records, 0, 1, sizeof(VkDrawIndirectCommand));" not in draw:
         raise SystemExit("the fallback is not drawn from the records' header as an indirect draw")
@@ -148,7 +148,7 @@ def main():
     # (a task's mesh workgroups are dispatched from the count its started threads take in the records' header, each writing
     # its slot to the map: DrawMeshTasksIndirect records no task count, and groups * threads was 0, so no mesh workgroup ran
     # and the floor grass was not drawn. A mesh workgroup reads its slot from the map in the entry block)
-    record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d, const NvnState& s, const HeapProgram* hp) {")
+    record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
     if "MESH_FALLBACK_DISPATCH_WORD" not in task:
         raise SystemExit("a task's started threads do not count the mesh dispatch")
     if "vkCmdDispatchIndirect(cmd, f->records, (VkDeviceSize)Shader::Backend::SPIRV::MESH_FALLBACK_DISPATCH_WORD * 4)" not in record:
@@ -206,7 +206,7 @@ def main():
     if "compare_exchange_strong(none, 1)" not in ready or "jobs_push(std::move(build), true)" not in ready or \
             "fallback_compute_pipelines(*job);" not in ready:
         raise SystemExit("the fallback's compute pipelines are compiled in the draw, not on a worker (AMD: seconds each)")
-    record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d, const NvnState& s, const HeapProgram* hp) {")
+    record = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
     if "fallback_pipelines_ready(p)" not in record or "fallback_compute_pipelines(p)" in record:
         raise SystemExit("a fallback draw compiles its compute pipelines itself")
     build = block(draw, "bool fallback_compute_pipelines(Program& p) {")

@@ -35,7 +35,6 @@
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
-#include "vk_shader_object.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -94,7 +93,6 @@ void ptr_diag_log(uint64_t key, const char* kind) {
 }
 } // namespace
 #include "vk_shader.h"
-#include "vk_bda.h"
 
 namespace mkwvk {
 namespace {
@@ -544,13 +542,6 @@ Shader::Profile make_profile() {
     // driver; in the cache's stamp)
     if (const char* e = getenv("RX_VK_FRAG_SHUFFLE_FALLBACK")) p.has_broken_spirv_fragment_shuffle = e[0] == '1';
     p.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
-    // (native-vk, RX_VK_DESC_HEAP_BDA=1 with layer 0: storage buffers through device addresses where a stage allows it,
-    // Info::ssbo_bda; vk_bda.cpp. In the cache's stamp, as bda_on() decided it)
-    p.ssbo_bda = bda_on();
-    p.ssbo_bda_check = p.ssbo_bda && bda_check_on();
-    // (RX_VK_DESC_HEAP_BDA=2: and the tables, render-area, CAS-loop, native-bounds and no-u32-view stages, bda_emit.h kWideAllowed.
-    // The switch's value is in the stamp: disk_stamp's RX_VK_DESC_HEAP_BDA)
-    p.ssbo_bda_wide = p.ssbo_bda && bda_wide();
     return p;
 }
 
@@ -594,14 +585,12 @@ VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
     ci.pCode = spirv.data();
     VkShaderModule m = VK_NULL_HANDLE;
     vkCreateShaderModule(dev.device, &ci, nullptr, &m);
-    so_module_made(m, spirv.data(), spirv.size());   // (native-vk: what its shader objects compile from, RX_VK_SHADER_OBJECTS)
     return m;
 }
 
 } // namespace
 
 /// A word of a stage's constant bank: c0 / c2 the driver's banks, c1 its own constants, c3.. its uniform buffers
-thread_local bool cbuf_live = false;   // (program_answers_hold on a job thread: user buffers read from guest memory, not the replay's stream)
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset) {
     if (index == 1) {
         uint32_t v = 0;
@@ -618,7 +607,7 @@ uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uin
         static const bool live = getenv("RX_VK_HANDLES_LIVE") != nullptr;
         // (EvilOOT: and a binding of no recorded size read as far as asked, as the storage buffer descriptors had it before)
         if (u.addr && (!u.size || (uint64_t)offset + 4 <= (uint64_t)u.size)) {
-            if (live || cbuf_live) host->gpu_read(u.addr + offset, &v, 4);
+            if (live) host->gpu_read(u.addr + offset, &v, 4);
             else ub_read(u.addr + offset, &v, 4);
         }
         return v;
@@ -639,7 +628,7 @@ uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program) {
                    uint32_t v = 0;
                    static const bool live = getenv("RX_VK_HANDLES_LIVE") != nullptr;
                    if (base) {
-                       if (live || cbuf_live) host->gpu_read(base + offset, &v, 4);
+                       if (live) host->gpu_read(base + offset, &v, 4);
                        else ub_read(base + offset, &v, 4);
                    }
                    return v;
@@ -826,17 +815,6 @@ const std::vector<Code>& codes_of(const NvnState& s) {
 std::atomic<int64_t> st_translated, st_failed, st_translate_ns;
 
 } // namespace
-
-/// (native-vk E3, on a job thread) whether the textures a job draw binds answer what the program the replay published for its
-/// inputs was translated for (still_valid; a handle in a user uniform buffer or read by a handle program from guest memory, as
-/// the job's own descriptors read it). False: another variant of the program, which the replay picks: the job falls back
-bool program_answers_hold(const NvnState& s, const Program& p) {
-    if (p.answers.empty()) return true;
-    cbuf_live = true;
-    const bool ok = still_valid(s, p);
-    cbuf_live = false;
-    return ok;
-}
 
 Shader::AttributeType attribute_type_of(uint32_t vattr) {
     // (NVN vertex formats: the integer ones read as integers, everything else as float)
@@ -1088,9 +1066,6 @@ uint64_t disk_stamp() {
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)dev.sg32_stages};
     add(lanes, sizeof lanes);
-    const uint32_t bda = (profile().ssbo_bda ? 1u : 0u) | (profile().ssbo_bda_check ? 2u : 0u) |
-                         (profile().ssbo_bda_wide ? 4u : 0u);   // (RX_VK_DESC_HEAP_BDA as decided)
-    add(&bda, sizeof bda);
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)
     const uint32_t abi[] = {(uint32_t)sizeof(Shader::Info), (uint32_t)sizeof(Program), (uint32_t)sizeof(std::vector<uint32_t>),
@@ -1116,7 +1091,7 @@ uint64_t disk_stamp() {
     // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
     // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
     for (char** e = _environ; e && *e; e++)
-        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "RX_VK_DESC_HEAP_BDA", "RX_VK_BDA_", "EDEN_"})
+        for (const char* pre : {"RX_VK_OOT", "RX_VK_MMA", "RX_VK_NATIVE", "RX_VK_NAN", "RX_VK_TASK_CAP", "RX_VK_NETWORK", "RX_VK_GP_", "RX_VK_FOLLOW", "RX_VK_NO_FOLLOW", "RX_VK_NO_F16", "RX_VK_SHARED", "RX_VK_MESH", "RX_VK_NO_INVARIANT", "RX_VK_NO_NAN_GUARD", "RX_VK_MARKERS", "EDEN_"})
             if (!strncmp(*e, pre, strlen(pre))) add(*e, strlen(*e));
     return h;
 }
@@ -1510,7 +1485,6 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
     const auto t0 = std::chrono::steady_clock::now();
     QuestionsNoted noted{p};
     ptr_diag_reset();
-    Shader::Backend::SPIRV::bda_check_id = (uint32_t)p.key;   // (RX_VK_BDA_CHECK: what this program's checked accesses record)
     try {
         Shader::Backend::Bindings bindings{};
         int questions = 0;
@@ -2748,44 +2722,6 @@ const Program* seed_variant_of(const uint64_t code[3], bool mesh, const uint32_t
         }
     variants.push_back(std::move(p));
     return variants.back().get();
-}
-
-// (native-vk, vk_shader_object.cpp's prefetch) the stage keys of a program the game set, as program_pick (graphics: vertex, fragment)
-// and mesh_program_locked (mesh, fragment, task, the header-only stage) put them in Program::codes. Read from guest memory here, on
-// the prefetch thread: the codes_of cache by serial is the draws'
-bool program_stage_keys(const nvn_prog& prog, uint64_t codes[4], bool* mesh) {
-    const Code *vs = nullptr, *fs = nullptr, *task = nullptr, *ms = nullptr, *prim = nullptr;
-    std::vector<Code> cs;
-    cs.reserve(prog.nstage);
-    for (uint32_t i = 0; i < prog.nstage && i < 6; i++) {
-        Code c = read_code(prog.sd[i]);
-        if (c.ok) cs.push_back(std::move(c));
-    }
-    for (const Code& c : cs) {
-        if (c.header_only) prim = &c;
-        else if (c.stage == 0) vs = &c;
-        else if (c.stage == 1) fs = &c;
-        else if (c.stage == 6) task = &c;
-        else if (c.stage == 7) ms = &c;
-    }
-    *mesh = ms != nullptr;
-    if (ms) {
-        codes[0] = ms->key, codes[1] = fs ? fs->key : 0, codes[2] = task ? task->key : 0, codes[3] = prim ? prim->key : 0;
-        return true;
-    }
-    if (!vs) return false;
-    codes[0] = vs->key, codes[1] = fs ? fs->key : 0, codes[2] = 0, codes[3] = 0;
-    return true;
-}
-const Program* program_load(uint64_t key, uint64_t variant, const uint64_t codes[4]) {
-    std::lock_guard lk(shader_mu);
-    auto& variants = programs[key];
-    program_cache_load(key, variants);
-    for (auto& p : variants)
-        if (!p->codes[0]) std::memcpy(p->codes, codes, sizeof p->codes);
-    for (auto& p : variants)
-        if (p->variant == variant && p->ready.load(std::memory_order_acquire) && !p->failed) return p.get();
-    return nullptr;
 }
 
 const Program* program_find(uint64_t key, uint64_t variant) {

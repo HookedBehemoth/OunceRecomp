@@ -36,9 +36,6 @@ Id StoragePointer(EmitContext& ctx, const IR::Value& binding, const IR::Value& o
     if (!binding.IsImmediate()) {
         throw NotImplementedException("Dynamic storage buffer indexing");
     }
-    if (ctx.ssbo_bda) {
-        throw LogicError("Storage buffer access without its device address path");
-    }
     const Id ssbo{ctx.ssbos[binding.U32()].*member_ptr};
     const Id index{StorageIndex(ctx, offset, element_size, index_offset)};
     return ctx.OpAccessChain(type_def.element, ssbo, ctx.u32_zero_value, index);
@@ -47,9 +44,6 @@ Id StoragePointer(EmitContext& ctx, const IR::Value& binding, const IR::Value& o
 Id LoadStorage(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id result_type,
                const StorageTypeDefinition& type_def, size_t element_size,
                Id StorageDefinitions::*member_ptr, u32 index_offset = 0) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA: through the buffer's device address)
-        return Bda::Load(ctx, ctx.BdaAccess(binding, offset, type_def, static_cast<u32>(element_size), index_offset), result_type);
-    }
     const Id pointer{
         StoragePointer(ctx, binding, offset, type_def, element_size, member_ptr, index_offset)};
     return ctx.OpLoad(result_type, pointer);
@@ -64,10 +58,6 @@ Id LoadStorage32(EmitContext& ctx, const IR::Value& binding, const IR::Value& of
 void WriteStorage(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id value,
                   const StorageTypeDefinition& type_def, size_t element_size,
                   Id StorageDefinitions::*member_ptr, u32 index_offset = 0) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
-        Bda::Store(ctx, ctx.BdaAccess(binding, offset, type_def, static_cast<u32>(element_size), index_offset), value);
-        return;
-    }
     const Id pointer{
         StoragePointer(ctx, binding, offset, type_def, element_size, member_ptr, index_offset)};
     ctx.OpStore(pointer, value);

@@ -4,10 +4,6 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <atomic>
-#include <cstdio>
-#include <cstdlib>
-#include <string>
 #include <algorithm>
 #include <span>
 #include <tuple>
@@ -152,12 +148,8 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
             if (current_block) {
                 ctx.OpBranch(label);
             }
-            const bool entry{current_block == nullptr && !Sirit::ValidId(ctx.bda_table)};
             current_block = node.data.block;
             ctx.AddLabel(label);
-            if (entry) {
-                ctx.EmitBdaPrologue();   // (hookshot, Info::ssbo_bda: the storage buffers' bases, in the entry block)
-            }
             bool probed{!probe};
             for (IR::Inst& inst : node.data.block->Instructions()) {
                 if (!probed && inst.GetOpcode() != IR::Opcode::Phi) {   // (after the phis: they must lead the block)
@@ -706,17 +698,6 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
     std::vector<u32> code{ctx.Assemble()};
     RewriteOpcodes(code, ctx.opcode_rewrites);
     PatchMeshInstructions(code, ctx);
-    // (hookshot, RX_VK_BDA_DUMP=<folder>: the stages whose storage buffers go through addresses, for spirv-val; the switch is in the
-    // program cache's stamp, so a run with it translates every program)
-    static const char* const bda_dump{std::getenv("RX_VK_BDA_DUMP")};
-    if (bda_dump && program.info.ssbo_bda) {
-        static std::atomic<u32> seq{0};
-        const std::string path{fmt::format("{}/{:08x}_{}_{}.spv", bda_dump, bda_check_id, static_cast<int>(program.stage), seq++)};
-        if (FILE* f{std::fopen(path.c_str(), "wb")}) {
-            std::fwrite(code.data(), 4, code.size(), f);
-            std::fclose(f);
-        }
-    }
     return code;
 }
 
