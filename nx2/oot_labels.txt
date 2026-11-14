@@ -543,7 +543,7 @@
 # --- game: actors, physics, camera, events, game data, world
 8004ab40 actor_baseproc_executor          # work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
 804bd8c0 actor_life_write                 # nx2/oot_patches.py patch_life: an actor's life write (patched for the hearts cheat)
-82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc
+82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc # ? docs/direct/boot-to-main-loop.md 4.3: called for every actor (~50 a frame) from actor_calc_one
 82c1d750 actor_records_read_a             # work/assets/native/alloc-transfer.md: CPU reads of its own records in GPU pools
 82c1d340 actor_records_read_b             # work/assets/native/alloc-transfer.md
 80186a00 actor_update_a                   # work/assets/native/cpu-to-gpu.md: actor update, per actor
@@ -574,6 +574,14 @@
 81b56de0 phys_cloth_solve                 # work/assets/native/cpu-to-gpu.md: Solve / CollideAndSolve
 8016b620 phys_cloth_step                  # work/assets/native/cpu-to-gpu.md: Havok cloth hclWorld::stepSingleThreaded
 81b38800 phys_cloth_update_aabbs          # work/assets/native/cpu-to-gpu.md: updateAabbs
+817f1d68 phys_hknp_step_collide         # docs/direct/boot-to-main-loop.md 4.3: hknpWorld::stepCollide (string); not called in play
+817f6f80 phys_hknp_step_solve           # docs/direct/boot-to-main-loop.md 4.3: hknpWorld::stepSolve (string); not called in play
+817f3ce0 phys_hknp_generate_solve_tasks  # docs/direct/boot-to-main-loop.md 4.3: hknpWorldEx::generateSolveTasks (string)
+80372ad4 phys_hknp_generate_collide_tasks  # docs/direct/boot-to-main-loop.md 4.3: hknpWorld::generateCollideTasks (string)
+803719e0 phys_solve_tasks_job           # docs/direct/boot-to-main-loop.md 4.3: the executor job that calls phys_hknp_generate_solve_tasks
+8073a4a0 phys_step_phase_job            # docs/direct/boot-to-main-loop.md 4.3: one job a frame at the head of the physics phase, hknp-heavy (role)
+820cc4f4 phys_ai_avoidance_step         # docs/direct/boot-to-main-loop.md 4.3: hkaiCollisionAvoidance::System::step (string)
+81884800 phys_hknp_particles_collider_step  # docs/direct/boot-to-main-loop.md 4.3: hknpParticlesCollider::step (string)
 81f3f634 phys_navmesh_cutting             # work/assets/native/engine-layers.md: nav mesh cutting
 80715ae0 phys_phive_static_compound       # work/assets/native/engine-layers.md
 80718040 phys_phive_volume_stats          # work/assets/native/engine-layers.md: Phive volume stats / static compound
@@ -844,6 +852,15 @@
 8004aae0 thread_baseproc_executor_calc    # BaseProcExecutor's calc_: runs the executor
 83acfb90 actor_baseproc_stage_late        # the second BaseProc step of stage C, with its join (inferred)
 806afc40 actor_baseproc_stage_logic       # a worker's BaseProc step that starts the game logic (inferred)
+83aff1f0 actor_baseproc_stage_node        # stage A's BaseProc job node: two actor_baseproc_stage_logic steps, then its own tail
+800b3ce0 actor_calc_one                   # one actor's calc on a BaseProc executor (calls actor_player_calc for every actor)
+8004fa40 actor_baseproc_job_ready         # the executor job graph: a node whose predecessors are done is queued (inferred)
+83af6150 actor_baseproc_step2_tail_job    # the job that ends the second BaseProc step, mostly alone (role)
+82c43780 actor_baseproc_post_phys_job     # a job run ~90 times a frame after the physics phase of the second step (role)
+804352d0 module_stage_a_last_job_a        # one of the two jobs that end stage A (role)
+83b525b0 module_stage_a_last_job_b        # the other job that ends stage A; reads the system tick, light events (role)
+8007f6c0 job_queue_drain                  # runs queued jobs of the module job system; the executors run cloth jobs through it
+8012f790 std_atomic_wait_backoff          # an atomic wait: steady_clock polls, then sleeps (inferred)
 80a65370 thread_delegate_calc             # a delegate thread's calc_
 8069dbe0 thread_sead_construct            # a sead thread object
 80441560 frame_end_callback               # the framework's frame callback (+0x188)
