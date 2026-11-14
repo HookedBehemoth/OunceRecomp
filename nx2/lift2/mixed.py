@@ -246,6 +246,7 @@ def input_base(plan_path, chosen):
         for block in iter(lambda: f.read(1 << 24), b""):
             h.update(block)
     h.update(",".join("%x" % e for e in sorted(chosen)).encode())
+    h.update(b"verify" if os.environ.get("HOOKSHOT_LIFT2_VERIFY") else b"")   # (lift_part reads it)
     here = os.path.dirname(os.path.abspath(__file__))
     for name in sorted(os.listdir(here)):
         if name.endswith(".py"):
