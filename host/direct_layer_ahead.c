@@ -35,7 +35,7 @@ static int enabled(void) {
     return on;
 }
 
-static struct { volatile LONG64 runs, not_layer, skip_thread, frames; } n;
+static struct { volatile LONG64 runs, not_layer, skip_thread, other_caller; } n;
 
 static volatile LONG64 gen;   /* (moduleCalc_ calls: the frame) */
 static _Thread_local int ahead_thread;
@@ -56,8 +56,9 @@ static uint64_t job_lists(uint32_t *nl) {
 }
 
 /* (host/eng_jobs.c) the recorder took the entry whose range is at x5 (entry + 0x18), recorded or not */
-void direct_layer_ahead_job_done(uint64_t range) {
+void direct_layer_ahead_job_done(uint64_t range, uint64_t lr) {
     if (!enabled()) return;
+    if (lr != 0x8008154cull) InterlockedIncrement64(&n.other_caller);   /* (not f_8007fe60's job loop: f_80083960's twin) */
     uint32_t nl;
     const uint64_t arr = job_lists(&nl);
     for (uint32_t li = 0; li < nl; li++) {
@@ -102,6 +103,8 @@ static int pending(uint64_t key) {
    entries are put in the order the layer ran ahead called their keys the frame before (the others after them, in their
    order). The order of recording changes nothing else: a pass calls its jobs sorted by their item ranges (+0x68). */
 enum { SEQ = 64 };
+/* (seq_next is written by the thread running the layer ahead and read by the next frame's first job-loop entrant: the
+   layer has ended by then, since stage C's join waits for it and the next frame's job phase opens after that join) */
 static uint64_t seq_use[SEQ], seq_next[SEQ];
 static int n_use, n_next;
 static SRWLOCK order_lk = SRWLOCK_INIT;
@@ -191,10 +194,9 @@ ENTRY_HOOK(0x8028a2a0) {   /* (owner, drawctx, key) */
     if (ahead_thread) wait_for(c->x[2]);
     return 0;
 }
-int direct_tail_prof_calc(Ctx *c) __attribute__((weak));
 ENTRY_HOOK(0x80706be0) {   /* moduleCalc_ */
     InterlockedIncrement64(&gen);
-    return direct_tail_prof_calc ? direct_tail_prof_calc(c) : 0;
+    return 0;
 }
 
 /* the worker index the scheduler compares with W + 0x4d8: its TLS slot's value - 1, else the core number */
@@ -235,13 +237,15 @@ SPLICE_AFTER(0x8007fe60, "if (!((c->x[23] >> 10) & 1)) { goto L_800809d4; }") {
 }
 
 void direct_layer_ahead_log(double frames) {
-    static LONG64 last[10];
-    const LONG64 now[10] = {n.runs, n.not_layer, n.skip_thread, w.checks, w.waits, w.wait_ns, w.timeouts, o.ordered, o.moved, o.claimed_before};
+    static LONG64 last[11];
+    const LONG64 now[11] = {n.runs, n.not_layer, n.skip_thread, w.checks, w.waits, w.wait_ns, w.timeouts, o.ordered, o.moved, o.claimed_before,
+                            n.other_caller};
     hos_log("direct patch layer ahead (f_8007fe60 at the job loop; f_806688c0, f_8028a2a0 wait): a frame: run ahead %.2f; queue 1's "
             "first item not a layer %.2f; the queue-1 skipping thread first %.2f; job calls checked %.2f, waited %.2f for %.3f ms; "
-            "waits given up after 50 ms %lld; job lists ordered %.2f, entries moved %.1f, claimed before the order %lld",
+            "waits given up after 50 ms %lld; job lists ordered %.2f, entries moved %.1f, claimed before the order %lld; jobs recorded from another caller %lld",
             (now[0] - last[0]) / frames, (now[1] - last[1]) / frames, (now[2] - last[2]) / frames, (now[3] - last[3]) / frames,
             (now[4] - last[4]) / frames, (now[5] - last[5]) / 1e6 / frames, (long long)(now[6] - last[6]),
-            (now[7] - last[7]) / frames, (now[8] - last[8]) / frames, (long long)(now[9] - last[9]));
+            (now[7] - last[7]) / frames, (now[8] - last[8]) / frames, (long long)(now[9] - last[9]),
+            (long long)(now[10] - last[10]));
     memcpy(last, now, sizeof last);
 }
