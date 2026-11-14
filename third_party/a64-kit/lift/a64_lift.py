@@ -2135,7 +2135,11 @@ class Lifter:
         os.makedirs(out_dir, exist_ok=True)
         # translate every distinct instruction once (per pc only where the result depends on it)
         keys = {}
-        for body, _ in self.funcs.values():
+        # (hookshot) self.only: the functions to translate and write (nx2/lift2/owned.py: the mixed build's present-lifter
+        # share); None: all of them. The function table lists every function either way.
+        only = sorted(self.funcs) if getattr(self, "only", None) is None else sorted(set(self.only) & set(self.funcs))
+        for e in only:
+            body = self.funcs[e][0]
             for pc, (k, w) in body.items():
                 if k[0] == "op":
                     keys.setdefault((w, pc) if pc_relative(w) else w, (pc, w))
@@ -2173,7 +2177,7 @@ class Lifter:
         hot_chunk = [] if hot and os.environ.get("A64_HOT_CHUNK") else None
         hot_decls = set()
         nhot = 0
-        for e in sorted(self.funcs):
+        for e in only:
             text, refs = self.emit_function(e, texts)
             if hot and self.fname(e) in hot:
                 text = hot_text(text)

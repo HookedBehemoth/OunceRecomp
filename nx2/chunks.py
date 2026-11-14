@@ -208,10 +208,12 @@ def parallel_emit(emit, order, texts, counters, jobs, run=2000):
 def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
     """L.write(gen_dir) with stable boundaries; returns its files. counters: dicts the emit adds to besides the
     lifter's own (poll.stats); jobs: emit processes (emit_jobs())"""
-    starts = [] if rechunk else load(img_dir)
-    if not starts and not rechunk:
+    only = getattr(L, "only", None)   # (the mixed build: the present lifter's own functions, nx2/lift2/owned.py)
+    funcs = L.funcs if only is None else sorted(set(only) & set(L.funcs))
+    starts = [] if rechunk or only is not None else load(img_dir)   # (a part of the game: chunked by size, not saved)
+    if not starts and not rechunk and only is None:
         starts = seed_from_gen(gen_dir)
-    b = Boundaries(a64_lift.CHUNK_BYTES, starts, L.funcs)
+    b = Boundaries(a64_lift.CHUNK_BYTES, starts, funcs)
     base_emit = L.emit_function
     jobs = emit_jobs() if jobs is None else jobs
     made = None
@@ -220,7 +222,7 @@ def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
         nonlocal made
         b.current = e
         if made is None:   # (the first call: write() has its texts now, and asks for the functions in sorted order)
-            made = parallel_emit(base_emit, sorted(L.funcs), texts,
+            made = parallel_emit(base_emit, sorted(funcs), texts,
                                        [L.stats, L.unhandled, L.ijump] + list(counters), jobs)
         got = next(made, None)
         if got is None or got[0] != e:
@@ -247,8 +249,10 @@ def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
         if f == "code_hot.c.whole" or HOT_PIECE.fullmatch(f):
             os.remove(os.path.join(gen_dir, f))
     files += split_big(gen_dir, files)
-    save(img_dir, starts or b.recorded)
-    print("chunks: %d, boundaries %s" % (len(files), "kept" if starts else "from sizes (saved)"))
+    if only is None:
+        save(img_dir, starts or b.recorded)
+    print("chunks: %d, boundaries %s" % (len(files), "kept" if starts else "from sizes (saved)" if only is None
+                                          else "from sizes (the present lifter's share of the mixed build)"))
     return files
 
 

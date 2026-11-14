@@ -111,7 +111,7 @@ def summaries(L, img, path, prog, hooks):
 
 
 def write_plan(L, img, path):
-    """the discovery's facts and the instructions of every function lift 2 can take"""
+    """the discovery's facts and the instructions of every function lift 2 can take; returns those bodies"""
     t0 = time.time()
     no_call = set(getattr(L, "setjmp_owner", {}) or ())
     classes = os.environ.get("HOOKSHOT_LIFT2_CLASSES", "int,fp,neon,crypto").split(",")
@@ -158,6 +158,7 @@ def write_plan(L, img, path):
     print("lift2 plan: %d of %d functions (%d instructions) liftable by lift 2 (%.0fs); passed over: %s" % (
         len(bodies), len(L.funcs), n, time.time() - t0,
         ", ".join("%s %d" % kv for kv in sorted(why.items(), key=lambda kv: -kv[1])[:10])), flush=True)
+    return bodies
 
 
 def edited_functions(gen):
@@ -340,6 +341,11 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
         raise SystemExit("lift2: HOOKSHOT_LIFT2_VERIFY needs summaries in the plan: lift again with it set")
     edited, hot, hooks = edited_functions(gen)
     chosen = set(plan["bodies"]) - edited
+    from . import owned
+    own = owned.load(os.path.dirname(gen))
+    if own is not None:   # (the present lifter wrote only its own functions: lift 2 takes every other one)
+        chosen = set(plan["bodies"]) - own[0]
+        hot = own[2]
     if spec != "all-safe":
         want = {int(l.split()[0], 16) for l in open(spec) if l.strip() and not l.startswith("#")}
         chosen &= want

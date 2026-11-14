@@ -182,7 +182,22 @@ def main():
         json.dump({"%x" % e: [len(b), module_of(img, e)] for e, (b, _) in L.funcs.items()}, f)
     from lift2 import mixed
     if mixed.spec():   # (the mixed build, the default: what lift 2 needs, nx2/lift2/mixed.py; HOOKSHOT_LIFT2=0: none)
-        mixed.write_plan(L, img, os.path.join(out_dir, "lift2_plan.pickle"))
+        bodies = mixed.write_plan(L, img, os.path.join(out_dir, "lift2_plan.pickle"))
+        if a.write and not os.environ.get("HOOKSHOT_LIFT1_ALL"):   # (the present lifter writes only what it owns)
+            from lift2 import owned
+            sp = mixed.spec()
+            listed = None if sp == "all-safe" else {int(l.split()[0], 16) for l in open(sp)
+                                                    if l.strip() and not l.startswith("#")}
+            L.only, predicted = owned.compute({e: b for e, (b, _) in L.funcs.items()}, bodies,
+                                              os.path.join(out_dir, "gen"), listed)
+            owned.save(out_dir, L.only, predicted, a64_lift.hot_functions())
+            print("present lifter: %d of %d functions are its own (%d with host edits); lift 2 has the rest" % (
+                len(L.only), len(L.funcs), len(predicted)), flush=True)
+        elif a.write:
+            from lift2 import owned
+            if os.path.exists(os.path.join(out_dir, owned.FILE)):
+                os.remove(os.path.join(out_dir, owned.FILE))
+        del bodies
     if a.write:
         if not a.no_polls:
             poll.install()
