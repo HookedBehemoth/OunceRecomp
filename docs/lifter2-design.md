@@ -996,7 +996,7 @@ detection, except where noted:
   - The demotion stays conservative until liveness is path-sensitive (milestone 15 or later: on the SSA, conditions
     as values).
 
-**Milestone 14: the verification build.** `HOOKSHOT_LIFT2_VERIFY=1` at build time wraps every lift 2 function with a
+**Milestone 14: the verification build.** `HOOKSHOT_LIFT2_VERIFY=1` at lift time (the summaries are computed only then, or with `HOOKSHOT_LIFT2_SUMMARIES=1`: about 9 GB) and at build time wraps every lift 2 function with a
 full summary. `host/lift2_verify.c`:
 - at entry, poisons the registers the summary says are not read (`0xDEAD`, register, function);
 - at exit, reports a function claimed noreturn that returned, a preserved register changed, and a register written

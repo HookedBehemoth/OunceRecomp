@@ -2,8 +2,9 @@
 
 HOOKSHOT_LIFT2=all-safe (the default) | <file of guest addresses, one per line (hex)> | 0 (the present lifter's build
 alone).
-HOOKSHOT_LIFT2_VERIFY=1 (at build time, milestone 14): every function with a full summary is checked at run time
-(host/lift2_verify.c): its generic entry wraps its body in checks of the summary.
+HOOKSHOT_LIFT2_VERIFY=1 (at lift and build time, milestone 14): every function with a full summary is checked at run
+time (host/lift2_verify.c): its generic entry wraps its body in checks of the summary. The lift computes the summaries
+(milestone 13) only with it or with HOOKSHOT_LIFT2_SUMMARIES=1: the plan's "summaries" is empty otherwise.
 HOOKSHOT_LIFT2_CLASSES=int,fp,neon (the default; at lift time): the instruction classes (sem.CLASS) a function may use to
 be taken.
 
@@ -56,6 +57,33 @@ def callee_fn(plt):
     return callee
 
 
+def summaries(L, img, path, prog, hooks):
+    """milestone 13's summaries of every function (every class: callees of lift 2's functions too), packed for the
+    plan"""
+    import resource
+    from . import summary
+    t1 = time.time()
+    names = getattr(img, "names", {}) or {}
+    sums, F, stats = summary.summarise({e: sorted(b) for e, (b, _) in L.funcs.items()}, prog, hooks, img.word,
+                                       names)
+    hot_path = os.environ.get("A64_HOT_FUNCS") or os.path.join(os.path.dirname(os.path.dirname(path)), "..",
+                                                               "hot_funcs_play.txt")
+    hot = []
+    if os.path.exists(hot_path):
+        hot = [int(l.strip()[2:], 16) for l in open(hot_path) if l.strip().startswith("f_")]
+    summary.report(sums, F, hot)
+    for a in os.environ.get("LIFT2_SUMMARY_DEBUG", "").split(","):   # (a function's call sites and their callees)
+        if a:
+            summary.explain(int(a, 16), sums, F, hooks)
+    print("summaries: %(functions)d functions, %(sccs)d components (largest %(largest scc)d), %(iterations)d "
+          "analyses; decode and graph %(build s).0fs, fixed point %(fixed point s).0fs, results %(results s).0fs" % stats)
+    print("summaries: %.0fs in all, peak memory %d MB (one process)" % (
+        time.time() - t1, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10), flush=True)
+    packed = {e: (s.inputs, s.clobbers, s.mustdef, s.preserved, s.results, s.returns, tuple(s.demote), s.unknown,
+                  s.frame, s.pairs, s.boundary, s.fp, s.writes_fpcr) for e, s in sums.items()}
+    return packed
+
+
 def write_plan(L, img, path):
     """the discovery's facts and the instructions of every function lift 2 can take"""
     t0 = time.time()
@@ -80,28 +108,13 @@ def write_plan(L, img, path):
             why[k] = why.get(k, 0) + 1
             continue
         bodies[e] = (array("Q", pcs), array("I", (img.word(pc) for pc in pcs)))
-    # milestone 13: the whole program's summaries (every function, every class: callees of lift 2's functions too)
-    import resource
-    from . import summary
-    t1 = time.time()
-    names = getattr(img, "names", {}) or {}
-    sums, F, stats = summary.summarise({e: sorted(b) for e, (b, _) in L.funcs.items()}, prog, hooks, img.word,
-                                       names)
-    hot_path = os.environ.get("A64_HOT_FUNCS") or os.path.join(os.path.dirname(os.path.dirname(path)), "..",
-                                                               "hot_funcs_play.txt")
-    hot = []
-    if os.path.exists(hot_path):
-        hot = [int(l.strip()[2:], 16) for l in open(hot_path) if l.strip().startswith("f_")]
-    summary.report(sums, F, hot)
-    for a in os.environ.get("LIFT2_SUMMARY_DEBUG", "").split(","):   # (a function's call sites and their callees)
-        if a:
-            summary.explain(int(a, 16), sums, F, hooks)
-    print("summaries: %(functions)d functions, %(sccs)d components (largest %(largest scc)d), %(iterations)d "
-          "analyses; decode and graph %(build s).0fs, fixed point %(fixed point s).0fs, results %(results s).0fs" % stats)
-    print("summaries: %.0fs in all, peak memory %d MB (one process)" % (
-        time.time() - t1, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10), flush=True)
-    packed = {e: (s.inputs, s.clobbers, s.mustdef, s.preserved, s.results, s.returns, tuple(s.demote), s.unknown,
-                  s.frame, s.pairs, s.boundary, s.fp, s.writes_fpcr) for e, s in sums.items()}
+    # milestone 13: the whole program's summaries, only when something uses them (the verification build, or
+    # HOOKSHOT_LIFT2_SUMMARIES=1): they peak at about 9 GB in this process, on top of the present lifter's state
+    packed = {}
+    if os.environ.get("HOOKSHOT_LIFT2_VERIFY") or os.environ.get("HOOKSHOT_LIFT2_SUMMARIES"):
+        packed = summaries(L, img, path, prog, hooks)
+        import gc
+        gc.collect()   # (the analysis' graph is garbage now; the C is written next, in this process)
     plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": sorted(no_call),
             "hooks": sorted(hooks), "bodies": bodies, "why": why,
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
@@ -264,6 +277,8 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
         raise SystemExit("lift2: no plan %s: the lift predates the mixed build's default; lift again "
                          "(scripts/relift.sh), or build the present lifter's game alone with HOOKSHOT_LIFT2=0" % plan_path)
     plan = _plan(plan_path)
+    if os.environ.get("HOOKSHOT_LIFT2_VERIFY") and not plan.get("summaries"):
+        raise SystemExit("lift2: HOOKSHOT_LIFT2_VERIFY needs summaries in the plan: lift again with it set")
     edited, hot = edited_functions(gen)
     chosen = set(plan["bodies"]) - edited
     if spec != "all-safe":
