@@ -820,7 +820,9 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 
 - **Non-AAPCS functions** (SDK assembly, outlined helpers, veneers reading x16/x17): their number decides how much
   code keeps the generic convention. The contract checks (section 6) list them; until milestone 13 runs, the number is
-  unknown.
+  unknown. A static census (`nx2/lift2/abi_census.py`, [lifter2-abi-census.md](lifter2-abi-census.md)) lists what
+  breaks the model besides setjmp and the fibers: libunwind's context pair, C++ exceptions (thrown in main and the
+  SDK), about 3,500 noreturn call sites, 25 split frames, ST1/LD1 saves of d8-d15; and the rule that finds them.
 - **Host FP mode divergence** in the game: NaN sign and propagation, the FZ tininess boundary, the 8 FPSR read sites.
   The shadow run (milestone 12) measures it; replays and goldens must be re-baselined.
 - **Lift time** with whole-program summaries: the per-function part is measured (section 14); the summary fixed

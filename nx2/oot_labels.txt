@@ -956,3 +956,19 @@
 81a4a540 phys_hknp_raycast_leaf_kernel    # docs/direct/havok.md: under phys_hknp_raycast_leaf (role)
 81a465e0 phys_hknp_shapecast_traverse     # docs/direct/havok.md: under phys_hknp_world_cast_shape (role)
 817575ec phys_hknp_shape_query_cast_shape  # docs/direct/havok.md: hknpShapeQueryInterface::castShape (string)
+
+# --- runtime code a lifter cannot treat as an ordinary AAPCS64 function (docs/lifter2-abi-census.md)
+8510d214 os_fiber_dispatch_context        # docs/lifter2-abi-census.md: nn::os::detail::DispatchFiberContext: saves x19-x30, SP, d8-d15 to one context, loads another's
+8510d430 os_fiber_call_function           # docs/lifter2-abi-census.md: nn::os::detail::CallFiberFunction: a fiber's first frame
+851092f0 os_fiber_switch_impl             # docs/lifter2-abi-census.md: the one caller of os_fiber_dispatch_context (role)
+85109240 os_fiber_start_impl              # docs/lifter2-abi-census.md: the one caller of os_fiber_call_function (role)
+857f49c0 libc_unw_getcontext              # docs/lifter2-abi-census.md: libunwind's unw_getcontext: every register to the argument
+857f1880 libc_unwind_jumpto_owner         # docs/lifter2-abi-census.md: libunwind code ending in the register-restoring jump (SP and x30 loaded from the context) # ?
+851109b8 os_user_exception_handler        # docs/lifter2-abi-census.md: nn::os::detail::UserExceptionHandler: d8-d15 to a context, FPCR/FPSR
+85110e58 os_user_exception_context_save   # docs/lifter2-abi-census.md: d8-d15, FPCR and FPSR to a context (beside os_user_exception_handler) # ?
+80001bd0 module_rtld_lazy_bind_trampoline # docs/lifter2-abi-census.md: rtld's PLT resolver: reads x16, x30 as data, leaves SP+16 (unused: the image binds every import)
+851187fc module_ro_bind_entry             # docs/lifter2-abi-census.md: nn::ro::BindEntry: the same for nn::ro modules
+8284c6f0 libcxx_bad_variant_access_abort  # docs/lifter2-abi-census.md: "bad_variant_access was thrown in -fno-exceptions mode": noreturn, 603 call sites
+82becaf0 libcxx_bad_optional_access_abort # docs/lifter2-abi-census.md: "bad_optional_access was thrown in -fno-exceptions mode": noreturn, 139 call sites
+83c61df0 libcxx_verbose_abort             # docs/lifter2-abi-census.md: called with the message by both aborts above (role)
+82118640 cxx_call_terminate               # docs/lifter2-abi-census.md: __clang_call_terminate: __cxa_begin_catch then std::terminate, noreturn
