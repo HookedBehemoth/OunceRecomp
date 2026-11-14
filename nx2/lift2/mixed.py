@@ -38,7 +38,8 @@ from . import build_ir, emit_llvm, enc, llvm, probes
 
 # (an entry hook's line, nx2/entry_hooks.py: lift 2 makes the same call at its generic entry, emit_llvm entry_hook)
 HOOK_LINE = re.compile(r"    if \((entry_\w+)\(c\)\) return;   /\* \(nx2/entry_hooks\.py\) \*/\n")
-EDITED = re.compile(r"\b(entry_[0-9a-fx]+|splice_[0-9a-fx]+|hos_\w+|recomp_sj_\w+)\s*\(|\bhos_\w+\b")
+# (recomp_sj_*: the present lifter's block around a call of a setjmp owner, which lift 2 makes as hos_sj_call)
+EDITED = re.compile(r"\b(entry_[0-9a-fx]+|splice_[0-9a-fx]+|hos_\w+)\s*\(|\bhos_\w+\b")
 DEF = re.compile(r"^void (f_[0-9a-f]{8})\(Ctx \*__restrict A64_NOESC c\) \{", re.M)
 PART_INSNS = 120000
 
