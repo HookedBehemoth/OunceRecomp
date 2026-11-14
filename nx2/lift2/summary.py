@@ -433,7 +433,7 @@ TRACE = None   # (debugging: a list here collects where frame_pass loses SP, its
 def frame_pass(fn, sums, hooks):
     """(preserved, demotion reasons, frame size, frame address taken, deletable save/restore pairs, LR read as data)"""
     n = len(fn.pcs)
-    start = (0, None, frozenset(TRACKED + ["sp"]), ())
+    start = (0, (), frozenset(TRACKED + ["sp"]), ())
     state = [None] * n
     state[0] = start
     work = [0]
@@ -445,7 +445,8 @@ def frame_pass(fn, sums, hooks):
     saves, restores, other_reads = {}, {}, set()
     while work:
         k = work.pop()
-        sp, fp, holds, slots = state[k]
+        sp, fr_t, holds, slots = state[k]
+        fregs = dict(fr_t)   # (registers holding entry SP plus a constant: x29, and copies such as mov x9, sp)
         slots = dict(slots)
         holds = set(holds)
         i = fn.insn[k]
@@ -458,21 +459,20 @@ def frame_pass(fn, sums, hooks):
                 imm = f["imm12"] << (12 if f["sh"] else 0)
                 imm = -imm if f["op"] else imm
                 rd, rn = f["Rd"], f["Rn"]
-                if rd == 31 and rn == 31:
-                    sp = sp + imm if sp is not None else None
+                src = sp if rn == 31 else fregs.get(rn)
+                if rn == 31 or rn in fregs:
+                    if rd == 31:
+                        sp = src + imm if src is not None else None
+                    else:
+                        holds.discard("x%d" % rd)
+                        if src is not None:
+                            fregs[rd] = src + imm
+                        else:
+                            fregs.pop(rd, None)
                     handled = True
-                elif rd == 31 and rn == 29:
-                    sp = fp + imm if fp is not None else None
-                    handled = True
-                elif rd == 29 and rn == 31:
-                    fp = sp + imm if sp is not None else None
-                    holds.discard("x29")
-                    handled = True
-                elif rn in (29, 31) and rd != 31:
-                    taken = True   # (an address in the frame is formed: it may escape)
-            if acc is not None and acc[0] in (31, 29):
+            if acc is not None and (acc[0] == 31 or acc[0] in fregs):
                 base, rw, regs, off, wb = acc
-                cur = sp if base == 31 else fp
+                cur = sp if base == 31 else fregs.get(base)
                 if cur is None:
                     if rw == "st" and any(r in ("x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27",
                                                "x28", "x29", "x30") and r in holds for r, _, _ in regs):
@@ -502,14 +502,16 @@ def frame_pass(fn, sums, hooks):
                 if wb is not None:
                     if base == 31:
                         sp = sp + off if sp is not None else None
-                    else:
-                        fp = None
-                        holds.discard("x29")
+                    elif fregs.get(base) is not None:
+                        fregs[base] += off
+                if rw == "ld":
+                    for r, _, _ in regs:
+                        if r[0] == "x":
+                            fregs.pop(int(r[1:]), None)
                 handled = True
             elif acc is not None and acc[1] == "st":
                 # a store through another pointer: of an entry value of X19-X30 (setjmp, context captures)
-                if any(r in holds and r in ("x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28",
-                                            "x29", "x30") for r, _, _ in acc[2]):
+                if any(r in holds and r in TRACKED_BITS for r, _, _ in acc[2]):
                     reasons.add("save_ptr")
             if not handled:
                 d = fn.dfn[k]
@@ -524,8 +526,8 @@ def frame_pass(fn, sums, hooks):
                         holds.discard(r)
                 if d & SP:
                     sp = None
-                if d & X[29]:
-                    fp = None
+                for rr in [x for x in fregs if d & X[x]]:
+                    del fregs[rr]
             if sp is None and state[k][0] is not None and TRACE is not None and len(TRACE) < 50:
                 TRACE.append(("%08x" % fn.pcs[k], i.entry.name if i else None))
             if sp is not None:
@@ -541,6 +543,10 @@ def frame_pass(fn, sums, hooks):
                 sp = None
             if kind == "call":
                 holds.discard("x30")
+                if any(r < 8 for r in fregs):   # (a frame address passed to the callee: the frame escapes)
+                    taken = True
+            for rr in [x for x in fregs if s.clobbers & X[x]]:
+                del fregs[rr]
             if k in fn.ctail:   # (a return that falls into the next function: dangling_bl, not an exit)
                 continue
         if kind == "ret":
@@ -563,7 +569,7 @@ def frame_pass(fn, sums, hooks):
                 s = callee_summary(sums, tc, hooks)
                 if s.returns:
                     exits.append((sp, {r for r in holds if s.preserved & BIT[r]}))
-        new = (sp, fp, frozenset(holds), tuple(sorted(slots.items())))
+        new = (sp, tuple(sorted(fregs.items())), frozenset(holds), tuple(sorted(slots.items())))
         for j in fn.succ[k]:
             old = state[j]
             if old is None:
@@ -572,7 +578,7 @@ def frame_pass(fn, sums, hooks):
                 continue
             if old[0] != new[0] and TRACE is not None and len(TRACE) < 50:
                 TRACE.append(("meet %08x" % fn.pcs[j], old[0], new[0], "from %08x" % fn.pcs[k]))
-            m = (old[0] if old[0] == new[0] else None, old[1] if old[1] == new[1] else None, old[2] & new[2],
+            m = (old[0] if old[0] == new[0] else None, tuple(sorted(set(old[1]) & set(new[1]))), old[2] & new[2],
                  tuple(sorted(set(old[3]) & set(new[3]))))
             if m != old:
                 state[j] = m
