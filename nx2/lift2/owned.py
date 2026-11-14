@@ -7,8 +7,11 @@ and its code), so translating it was work thrown away. Owned:
   nx2/oot_patches.py (function heads f_<addr>, labels L_<addr>, return addresses and constants 0x<addr>: the
   function holding the address, and for a return address the call before it) but the functions whose patch lift 2
   makes as a probe (nx2/lift2/probes.py), and the SPLICE_AFTER addresses of host/*.c (nx2/entry_hooks.py) but the
-  ones lift 2 calls at their instructions (probes.SPLICE_AT). C after an instruction is not an edit either. An
-  ENTRY_HOOK is not an edit: lift 2 makes it (mixed.lift_part, from entry_hooks.wanted). Over-approximate on purpose: an owned function lift 2 could take
+  ones lift 2 calls at their instructions (probes.SPLICE_AT); and the functions with C after an instruction
+  (oot_wide, oot_jitter, oot_occlusion: Lifter.after), which mixed.edited_functions still counts as edited (their
+  C calls hos_*), so the build keeps them on the present lifter although probes.after_c could take them. An
+  ENTRY_HOOK is not an edit: lift 2 makes it (mixed.lift_part, from entry_hooks.wanted). Comments count: the
+  patches anchored by text alone (the output-size edits) name their functions only there. Over-approximate on purpose: an owned function lift 2 could take
   costs a little C, a missed one would lose its edit (the build's edited set is checked against this one:
   check()).
 - with HOOKSHOT_LIFT2=<file>, everything not listed.
@@ -34,10 +37,10 @@ def edit_addresses(gen):
     return out
 
 
-def compute(funcs, bodies, gen, listed=None):
+def compute(funcs, bodies, gen, listed=None, after=()):
     """the owned entries: funcs, every function (entry -> its pcs); bodies, the ones lift 2 can take; listed, the
-    HOOKSHOT_LIFT2 file's functions or None (all-safe)"""
-    addrs = edit_addresses(gen)
+    HOOKSHOT_LIFT2 file's functions or None (all-safe); after, the addresses with C after them (Lifter.after)"""
+    addrs = edit_addresses(gen) | set(after)
     near = addrs | {a - 4 for a in addrs}
     edited = set()
     for e, pcs in funcs.items():
