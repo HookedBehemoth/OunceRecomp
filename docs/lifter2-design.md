@@ -905,6 +905,160 @@ Worktree build, native-vk 0ee8fc1, `HOOKSHOT_LIFT2=all-safe HOOKSHOT_LIFT2_CLASS
   a run, `llvm-profdata merge`, and `-fprofile-use` with the same IR (function names and CFG checksums stable across
   lifts, so the lift must be deterministic) (milestone 17).
 
+## 14e. Milestones 13-14: whole-program summaries and their verification (done)
+
+**Milestone 13** (`nx2/lift2/summary.py`, run by `nx2/lift.py` into the plan when `HOOKSHOT_LIFT2` is set).
+- **Per-instruction register use and definition** come from the semantic templates themselves: a template run on an
+  empty block reads its block parameters and writes its written variables. They are memoised per word, so int, FP
+  and NEON follow without a second model.
+- **Per function, given its callees' summaries:**
+  - inputs: backward liveness; a call reads its callee's inputs and kills its must-defs;
+  - clobbers and must-defs: forward;
+  - a frame pass: SP and every register holding entry SP plus a constant (x29, `mov x9, sp` copies); frame slots
+    holding entry values of x19-x30 and d8-d15 (STR/STP/ST1 saves, LDR/LDP/LD1 restores); returns, noreturn,
+    boundaries, FP use.
+- **Whole program:** strongly connected components (Tarjan), callees first, iterated to a fixed point inside each.
+  Then results: what callers read after a call, plus X0, X1, V0-V3 for callers it cannot see, minus preserved
+  registers.
+- **Noreturn** is seeded by the fatal functions' names and by the callers' evidence: a BL with nothing after it in its
+  function is the compiler saying the callee does not return.
+
+**Demotion rules** (detection, not lists; a function can have several reasons):
+
+| reason | functions | what |
+|---|---|---|
+| tmp_in | 6,659 | x9-x18 live at entry |
+| tmp_after_call | 5,118 | x9-x18 or flags read after a call that may change them |
+| cs_clobber | 2,086 | a callee-saved register not proven preserved at a return |
+| unknown callee | 1,729 | calls a function whose facts are unknown (below) |
+| sp | 1,682 | SP not entry SP plus a constant, or not entry SP at a return |
+| lr_ret | 1,575 | a return not through the entry x30 |
+| flags_in | 595 | NZCV live at entry |
+| split_frame | 214 | a tail call with the frame still allocated |
+| save_ptr | 26 | entry x19-x30, SP or d8-d15 stored through a pointer outside the frame |
+| inconsistent | 24 | a preserved register written but never read (the facts disagree; demoted for safety) |
+| lr_data | 7 | entry x30 used as data |
+| fallthrough_entry | 1 | entered by falling through from another function |
+| dangling_bl | 1 | a BL with nothing after it to a callee that returns |
+
+- sp, save_ptr, lr_data, lr_ret and split_frame make a function's facts unknown: its callers treat it as reading and
+  writing everything and preserving nothing.
+- The other reasons keep the facts and only mean an interface outside the AAPCS64 (generic entry only).
+
+**Distribution** (the whole game, 294,523 functions; 17.65 M instructions):
+- Full summaries: 287,463 functions, 88.4 % of the instructions. Hot set: 688 of 852 functions, 64.2 % of its
+  instructions.
+- Noreturn: 708 functions. A generic-only boundary is reachable from 206,966 (anything that reaches a BLR, an
+  unresolved BR, an SVC or a host function).
+- FP: 6,996 functions write FPCR (or call something that does); 31,854 contain FP/NEON.
+- Callee-saved save/restore pairs that a fast entry could delete: 612,455, in 174,749 functions.
+- Call edges (1,073,423 BL, B and branch exits):
+
+| target | edges | share |
+|---|---|---|
+| direct to a full summary (BL 725,080, tail 68,544) | 793,624 | 73.9 % |
+| indirect (BLR 182,791, BR 23,561) | 206,352 | 19.2 % |
+| host function or hook (41,704 + 2,221) | 43,925 | 4.1 % |
+| direct to a demoted function (13,544 + 1,405) | 14,949 | 1.4 % |
+| a noreturn seed | 14,573 | 1.4 % |
+
+- **Cost.** 394 s in one process (decode and graph 67 s, the fixed point 288 s, results 35 s); peak memory 8.4 GB.
+  It parallelises:
+  - the decode and the per-function graphs are per function;
+  - the fixed point's components form a DAG (294,025 components, the largest 85 functions), so each level of it can
+    run side by side;
+  - the results pass is per function.
+  On 16 processes it should fit in about a minute; the memory (the per-instruction lists of every function at once)
+  is the part to cut first.
+
+**Against the ABI census** (`docs/lifter2-abi-census.md`). Every function on its non-benign list is demoted by
+detection, except where noted:
+- setjmp: save_ptr, lr_data, lr_ret. longjmp: sp, cs_clobber. DispatchFiberContext: sp, lr_data, lr_ret,
+  split_frame. libunwind's jump: sp, lr_ret.
+- unw_getcontext: save_ptr. UserExceptionHandler 0x85110e58: save_ptr (its d8-d15 saves).
+- VAbortImpl: lr_data. BindEntry, rtld's trampolines: lr_data, sp.
+- The merged bodies 0x8507fcd0, 0x81dc6f78, 0x81dcff78, 0x824e2ea8, 0x857da520: sp (and split_frame). The split-frame
+  pairs in main: 158 functions demoted in 0x824c43bc-0x824f8adc; the census counted 24, and the rest are callers of
+  them (unknown callee).
+- The hand-written NEON functions that save d8-d15 with ST1/LD1 through a copy of SP (`mov x9, sp`): full summaries.
+  One audio tap filter is demoted for tmp_in.
+- **Where we differ:**
+  - CallFiberFunction 0x8510d430 gets a full summary. It is AAPCS-shaped as far as its code shows; the census lists
+    it as never-lift because it is reached only from the SDK's fiber assembly, which is HLE'd. That is a list fact,
+    not an ABI fact; lift 2 never takes it while the fiber functions are hooked.
+  - Fatal callees: the census found 68 by BL-at-end-of-body. That evidence seeds noreturn here, and the fixed point
+    adds what reaches them: 708 noreturn functions.
+- **x9-x18 (`tmp_in` 6,659; `tmp_after_call` 5,118).** These are larger than the census' 877 and 1,382 because the
+  liveness here is path-insensitive too, and counts reads through callees transitively.
+  - The examples looked at (main 0x809d78c0, 0x80051080) read x18 or x12 on paths that correlated branches make
+    infeasible.
+  - Cross-function use of x9-x18 is not real: the verification build below never saw a non-input read.
+  - The demotion stays conservative until liveness is path-sensitive (milestone 15 or later: on the SSA, conditions
+    as values).
+
+**Milestone 14: the verification build.** `HOOKSHOT_LIFT2_VERIFY=1` at build time wraps every lift 2 function with a
+full summary. `host/lift2_verify.c`:
+- at entry, poisons the registers the summary says are not read (`0xDEAD`, register, function);
+- at exit, reports a function claimed noreturn that returned, a preserved register changed, and a register written
+  that the summary says is not written;
+- then restores what is preserved or not written and poisons the written registers no caller reads (`0xDEAE`);
+- logs violations once per function, kind and register, to the game log and `lift2_violations.txt`.
+
+Tail calls go past the callee's checks (to its body), so tail loops do not grow the host stack. An input holding
+poison is not reported: inputs are an over-approximation (a BLR or host call counts as reading x0-x8), and a real
+read of poison shows as a wrong picture or a crash naming the function.
+
+**Verification results:**
+- 262,527 functions on lift 2, of which those with full summaries are checked; the executable is 526 MB.
+- **Zero violations and no crash** in the kokiri smoke scene (PASS, worst picture distance 6), the market and
+  zoo_static benchmarks (600 frames each), and a 100 s title boot with the movie.
+- What the first runs found, all fixed:
+  - the runtime did not give back the preserved registers it had poisoned;
+  - jump-table defaults counted as exits;
+  - SVC dropped x30's entry value;
+  - a noreturn call's fall-through into the next function counted toward clobbers.
+
+**Plan for milestone 15: fast entries, given the measured summaries.**
+- **Call edges.** 73.9 % of call edges reach a full summary directly and become fast calls. Another 19.2 % are
+  indirect: see BLR below.
+- **Expected gain.** From milestone 1's compile experiment (registers as values, x0-x3 + SP as arguments: 0.82 of the
+  present lifter's instructions on call-heavy cold code; with the callee-saved saves deleted 0.80), and lift 2's
+  generic entry at 0.91-0.93 of the present lifter on functions with calls today:
+  - fast entries should bring functions with calls to about 0.80-0.83, about 10-12 % fewer instructions than now;
+  - the 612,455 deletable save/restore pairs remove about 1.2 M guest instructions' worth of stores and loads.
+- **Pass-through and forwarding** (counted over the 262,632 functions lift 2 takes):
+  - 12,216 pure forwarders (call or tail-call with argument registers they never use themselves); 21,670 tail-call
+    thunks of up to four instructions; 1,262 this-adjusting thunks (`add x0, x0, #k; b`).
+  - Inputs are transitive. A wrapper needs x2 only if what it forwards to reads x2: an input the wrapper does not
+    read itself and that no callee reads is not an input, and the poison would show it.
+  - In the fast convention an input forwarded in x0-x3 stays in its host argument register: the wrapper passes its
+    parameter to the callee's, with no context traffic; a this-adjusting thunk becomes `add rdi-equivalent; jmp`.
+  - x4-x7, x8 and v4-v7 travel through the context. A forwarder that does not touch them does nothing: the writer
+    stored them once (write-through), the final reader loads them. Stack arguments stay in guest memory, untouched
+    by forwarders.
+- **Problem to solve first: inputs are inflated by indirect and host calls.** 182,470 of the 262,632 functions have
+  one of x4-x7 among their inputs without using it themselves. Almost all of it comes from the AAPCS assumption at
+  BLR and host calls (x0-x8 read).
+  - With fast entries this means the callers store x4-x7 before every call for nothing.
+  - Remedy: at a BLR or host call, count as read only the argument registers the caller defines on some path since
+    its entry or its last call, and those it received itself.
+  - This is unsound only for a function that forwards an argument it never writes into an indirect call. The
+    verification build checks that case (the poison of a missing input).
+- **BLR through fast entries.** Indirect edges are 19.2 % of the static call edges. No call-count profile is at hand;
+  the hot set's virtual calls (game objects, actors) suggest a larger dynamic share.
+  - Proposal: the site cache and `a64_lookup` return fast-entry pointers. A function demoted to generic-only gets a
+    shim with the fast prototype: it stores x0-x3 and v0-v3 to the context, calls `g_`, and returns x0, x1, v0, v1
+    from the context.
+  - The caller passes x0-x3 and v0-v3 as values. It stores x4-x7 only if it wrote them (the narrowing above), and
+    takes x0, x1, v0, v1 from the result struct, treating every caller-saved register as clobbered.
+  - It saves the four stores and two loads of the generic path per indirect call (more with vectors).
+  - Cost: one shim per demoted function (about 7,000) and a second address per function in the lookup table. A
+    callee reached both ways keeps one body behind its fast entry.
+  - **Recommendation:** fast entries at BLR sites too, after the narrowing.
+- **Milestone 15's own check:** the verification build above, with the fast convention compiled in, plus the
+  differential harness and the smoke and benchmark runs. The fast convention changes only how values travel; the
+  summaries it trusts are the ones verified here.
+
 ## 15. Risks not retired
 
 - **Non-AAPCS functions** (SDK assembly, outlined helpers, veneers reading x16/x17): their number decides how much
