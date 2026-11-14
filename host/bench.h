@@ -35,3 +35,20 @@ static inline BenchSummary bench_summary(const double *v, int n, double *scratch
     s.max = scratch[n - 1];
     return s;
 }
+
+/* The frames whose game step was not 1/60 s. The game clock is read at the present, which races the game thread: a
+   frame stepped a little before its present shows as 2 steps and the next as 0. So a frame counts when its step is
+   not a whole number of 1/60 s, or when the clock's running total has differed from the frame count for two frames
+   in a row (a step really missed or doubled, not a sampling race that the next frame makes good). */
+static inline int64_t bench_steps_off(const double *step, int n) {
+    int64_t off = 0, run = 0;
+    double total = 0;
+    for (int i = 0; i < n; i++) {
+        total += step[i];
+        const double d = total - (i + 1);
+        if (step[i] != (double)(int64_t)step[i]) off++;
+        else if (d != 0 && ++run >= 2) off++;
+        if (d == 0) run = 0;
+    }
+    return off;
+}

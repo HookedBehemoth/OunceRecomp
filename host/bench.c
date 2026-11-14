@@ -177,11 +177,10 @@ static void bench_finish(const BenchRow *rows, int n, double ready_at, const Cpu
     }
     double *ms = malloc(sizeof(double) * 2 * (size_t)n);
     if (!ms) return;
-    int64_t draws = 0, steps_off = 0;
-    for (int i = 0; i < n; i++) {
-        ms[i] = rows[i].wall_ms, draws += rows[i].draws;
-        if (rows[i].game_step != 1.0) steps_off++;
-    }
+    int64_t draws = 0;
+    for (int i = 0; i < n; i++)
+        ms[i] = rows[i].wall_ms, ms[n + i] = rows[i].game_step, draws += rows[i].draws;
+    const int64_t steps_off = bench_steps_off(ms + n, n);   /* (before ms + n becomes bench_summary's scratch) */
     const BenchSummary s = bench_summary(ms, n, ms + n);
     free(ms);
     hos_log("bench: %d frames in %.3f s (ready at %.2f s): frame mean %.3f ms, median %.3f, p99 %.3f, max %.3f; %.1f draws a "

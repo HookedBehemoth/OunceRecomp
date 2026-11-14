@@ -41,6 +41,18 @@ int main(void) {
     const BenchSummary o = bench_summary(&one, 1, scratch);
     CHECK(o.median == 7 && o.p99 == 7 && o.mean == 7);
     CHECK(bench_summary(v, 0, scratch).total == 0);
+    /* game steps: a 2-then-0 pair is the clock read racing the game thread, not a violation; a fraction, a lasting
+       miss or a lasting double step is */
+    double st[8] = {1, 1, 2, 0, 1, 1, 1, 1};
+    CHECK(bench_steps_off(st, 8) == 0);
+    double fr[4] = {1, 1.5, 0.5, 1};
+    CHECK(bench_steps_off(fr, 4) == 2);
+    double miss[5] = {1, 0, 1, 1, 1};
+    CHECK(bench_steps_off(miss, 5) == 3);
+    double dbl[4] = {1, 2, 1, 1};
+    CHECK(bench_steps_off(dbl, 4) == 2);
+    double ok[3] = {1, 1, 1};
+    CHECK(bench_steps_off(ok, 3) == 0);
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
