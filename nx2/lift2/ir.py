@@ -1,10 +1,12 @@
 """The IR: typed SSA values in blocks, and the builder that keeps guest registers as SSA values.
 
-Values are integers of a fixed width ("i1" ... "i128"). A block reads a guest register with get(); the first read of a
+Values are integers of a fixed width ("i1" ... "i128"), FP scalars ("f16" "f32" "f64") and vectors: "v128" (a guest V
+register, LLVM <2 x i64>) and lane-typed views of it ("v4f32", "v16i8", "v2f32" for a 64-bit arrangement ...) reached
+by bitcast. A block reads a guest register with get(); the first read of a
 register the block has not written becomes a block parameter, and finish() gives every predecessor the value it must
 pass (its own last write, or a parameter of its own, recursively): Braun et al.'s construction without the trivial-phi
-removal, which LLVM does anyway. Guest registers are the variables "x0".."x30", "sp" and the flags "n", "z", "c", "v"
-(i1). The IR has no notion of the guest context: the emitter loads the entry block's parameters and stores the written
+removal, which LLVM does anyway. Guest registers are the variables "x0".."x30", "sp", the flags "n", "z", "c", "v"
+(i1) and "v0".."v31" (v128). The IR has no notion of the guest context: the emitter loads the entry block's parameters and stores the written
 registers at a return (the generic entry of milestone 1).
 
 Operations (Value.op):
@@ -16,6 +18,14 @@ Operations (Value.op):
   zext sext trunc        (a,), to the value's type
   ovf                    attrs kind (uadd sadd usub ssub): the overflow bit of a two-operand op, i1
   intr                   attrs name (ctlz bitreverse bswap fshr): an LLVM intrinsic on the value's type
+  fadd fsub fmul fdiv     two operands of an FP or FP vector type; fneg (a,)
+  fcmp                   attrs pred (LLVM's: oeq olt uno ...), result i1 or a vector of i1
+  bitcast sitofp uitofp fptosi fptoui fpext fptrunc   (a,), to the value's type
+  vconst                 args: the lane bits
+  extract insert         (vec,) / (vec, value), attrs i: one lane
+  shuffle                (a, b), attrs mask: shufflevector
+  call                   args, attrs fn (an LLVM intrinsic or a runtime function), ctx (the context pointer first),
+                         effects (not removable: FPCR/FPSR helpers)
   load                   (addr i64,), the value's type is the access width; attrs order (plain)
   store                  (addr i64, value), attrs mark (bool); a value of type "void"
   mark                   (base,), attrs lo, hi: the page marks of [base + lo, base + hi) (build_ir.group_marks)
@@ -37,16 +47,39 @@ Terminators also: ("switch", index i64, [(case, block)], default block) for jump
                          the registers read before written; LLVM drops the stores a later one overwrites)
 Terminators (Block.term): ("br", block), ("condbr", i1, block, block), ("ret",), ("trap", pc, word).
 """
+import re
+
 
 class _Width(dict):
-    """bit width of an integer type name ("i33" included: carry computations widen by one bit)"""
+    """bit width of a type name: integers ("i33" included: carry computations widen by one bit), FP scalars
+    ("f16" "f32" "f64") and vectors ("v128", lane-typed "v4f32" "v8i16" "v2f32" ...)"""
     def __missing__(self, t):
-        return int(t[1:])
+        if t == "v128":
+            w = 128
+        elif t[0] == "v":
+            n, _, e = re.fullmatch(r"v(\d+)(([if])\d+)", t).groups()
+            w = int(n) * int(_[1:])
+        else:
+            w = int(t[1:])
+        self[t] = w
+        return w
 
 
 WIDTH = _Width()
-VARS = ["x%d" % i for i in range(31)] + ["sp", "n", "z", "c", "v"]
-VAR_TYPE = {v: ("i1" if v in ("n", "z", "c", "v") else "i64") for v in VARS}
+VARS = ["x%d" % i for i in range(31)] + ["sp", "n", "z", "c", "v"] + ["v%d" % i for i in range(32)]
+VAR_TYPE = {v: ("i1" if v in ("n", "z", "c", "v") else "v128" if v[0] == "v" else "i64") for v in VARS}
+
+
+def lanes(t):
+    """(lane count, lane type) of a vector type: "v4f32" -> (4, "f32"); "v128" is (2, "i64")"""
+    if t == "v128":
+        return 2, "i64"
+    m = re.fullmatch(r"v(\d+)([if]\d+)", t)
+    return int(m.group(1)), m.group(2)
+
+
+def vtype(n, lane):
+    return "v%d%s" % (n, lane)
 
 
 class Value:
@@ -217,6 +250,51 @@ class Builder:
 
     def not_(self, a):
         return self.bin("xor", a, self.const(-1, a.ty))
+
+    # ---- vectors and FP. Constants of FP types are kept as their bits; a vector constant is a tuple of lane bits.
+    def vconst(self, bits, ty):
+        """a vector constant: bits is one value per lane (or one int, splat to every lane)"""
+        n, lane = lanes(ty)
+        if isinstance(bits, int):
+            bits = (bits,) * n
+        m = (1 << WIDTH[lane]) - 1
+        key = (tuple(x & m for x in bits), ty)
+        c = self.fn.consts.get(key)
+        if c is None:
+            c = self.fn.consts[key] = self.fn.new_value(ty, "vconst", key[0])
+        return c
+
+    def zero(self, ty):
+        return self.vconst(0, ty) if ty[0] == "v" else self.const(0, ty)
+
+    def bitcast(self, a, ty):
+        if a.ty == ty:
+            return a
+        if a.op == "bitcast":
+            return self.bitcast(a.args[0], ty)
+        if a.op == "const" and ty[0] != "v":
+            return self.const(a.args[0], ty)
+        return self.op("bitcast", ty, a)
+
+    def cast(self, op, a, ty):
+        """sitofp uitofp fptosi fptoui fpext fptrunc (and the integer casts on vectors)"""
+        return self.op(op, ty, a)
+
+    def call(self, fn, ty, *args, **attrs):
+        """a call of an LLVM intrinsic or a runtime function returning ty ("void" for none); attrs: ctx (the context
+        pointer passed first), effects (the call reads or writes state: never removed or moved)"""
+        return self.op("call", ty, *args, fn=fn, **attrs)
+
+    def extract(self, vec, i):
+        return self.op("extract", lanes(vec.ty)[1], vec, i=i)
+
+    def insert(self, vec, val, i):
+        assert lanes(vec.ty)[1] == val.ty, (vec.ty, val.ty)
+        return self.op("insert", vec.ty, vec, val, i=i)
+
+    def shuffle(self, a, b, mask):
+        """shufflevector: lanes of a then b by index (-1: poison), the result has len(mask) lanes"""
+        return self.op("shuffle", vtype(len(mask), lanes(a.ty)[1]), a, b, mask=tuple(mask))
 
 
 def fold(op, a, b, w):

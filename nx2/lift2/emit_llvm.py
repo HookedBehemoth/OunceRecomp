@@ -2,16 +2,47 @@
 
 Milestone 1 emits the generic entry only: `void @g_<addr>(ptr %ctx)` loads the entry block's parameters from the
 guest context, and every register write is also stored to it where it happens (the IR's writeback operations). Context layout (rt/a64.h
-GuestContext): x0-x30 and SP (x[31]) at 8 * n, N, Z, C, V as bytes at 0x108-0x10B.
+GuestContext): x0-x30 and SP (x[31]) at 8 * n, N, Z, C, V as bytes at 0x108-0x10B, V0-V31 at 0x110 + 16 * n.
+Vector and FP values are LLVM vectors and FP scalars (lltype); V registers are <2 x i64> in the context.
 
 Guest memory: `getelementptr i8, ptr inttoptr (i64 A64_HOST_BASE to ptr), i64 <guest address>`. A store that marks
 its pages writes 1 (a release store, as A64_MARK) into a64_dirty at the 4 KB pages of its first and last byte.
 """
-from .ir import WIDTH
+from .ir import WIDTH, lanes
 
 HOST_BASE = 0x100000000000
 DIRTY_PAGES = 1 << 27
-CTX_OFF = {**{"x%d" % i: 8 * i for i in range(31)}, "sp": 248, "n": 0x108, "z": 0x109, "c": 0x10A, "v": 0x10B}
+CTX_OFF = {**{"x%d" % i: 8 * i for i in range(31)}, "sp": 248, "n": 0x108, "z": 0x109, "c": 0x10A, "v": 0x10B,
+           **{"v%d" % i: 0x110 + 16 * i for i in range(32)}}
+FP_TYPES = {"f16": "half", "f32": "float", "f64": "double"}
+
+
+def lltype(t):
+    """the LLVM spelling of an IR type: v128 is <2 x i64>, "v4f32" <4 x float>, "f64" double"""
+    if t[0] == "v":
+        n, lane = lanes(t)
+        return "<%d x %s>" % (n, FP_TYPES.get(lane, lane))
+    return FP_TYPES.get(t, t)
+
+
+def const_text(ty, x):
+    """a constant of any IR type; FP and FP vector constants as the bit pattern, bitcast (exact, NaNs included)"""
+    if ty[0] == "v":
+        n, lane = lanes(ty)
+        it = "i%d" % WIDTH[lane]
+        if not any(x):
+            return "zeroinitializer"
+        iv = "<%d x %s> <%s>" % (n, it, ", ".join("%s %s" % (it, int_text(v, WIDTH[lane])) for v in x))
+        return "bitcast (%s to %s)" % (iv, lltype(ty)) if lane[0] == "f" else iv[len("<%d x %s> " % (n, it)):]
+    if ty in FP_TYPES:
+        return "bitcast (i%d %s to %s)" % (WIDTH[ty], int_text(x[0], WIDTH[ty]), FP_TYPES[ty])
+    if ty == "i1":
+        return "true" if x[0] else "false"
+    return int_text(x[0], WIDTH[ty])
+
+
+def int_text(x, w):
+    return str(x - (1 << w) if x >> (w - 1) & 1 else x)
 TRIPLE = "x86_64-pc-linux-gnu"
 INTRINSIC = {"ctlz": "llvm.ctlz.%s(%s, i1 false)", "bitreverse": "llvm.bitreverse.%s(%s)", "bswap": "llvm.bswap.%s(%s)",
              "fshr": "llvm.fshr.%s(%s)"}
@@ -47,16 +78,12 @@ def emit_function(fn, decls, flags_out=False):
     names = {}
 
     def ref(v):
-        if v.op == "const":
-            x = v.args[0]
-            if v.ty == "i1":
-                return "true" if x else "false"
-            w = WIDTH[v.ty]
-            return str(x - (1 << w) if x >> (w - 1) & 1 else x)
+        if v.op in ("const", "vconst"):
+            return const_text(v.ty, v.args)
         return names.setdefault(v.id, "%%v%d" % v.id)
 
     def typed(v):
-        return "%s %s" % (v.ty, ref(v))
+        return "%s %s" % (lltype(v.ty), ref(v))
 
     out.append("define void @%s(ptr noalias nocapture %%ctx) {" % fn.name)
     out.append("entry:")
@@ -79,7 +106,7 @@ def emit_function(fn, decls, flags_out=False):
             out.append("  %%in.%s.b = load i8, ptr %%cx.%s, align 1" % (var, var))
             out.append("  %%in.%s = trunc i8 %%in.%s.b to i1" % (var, var))
         else:
-            out.append("  %%in.%s = load i64, ptr %%cx.%s, align 8" % (var, var))
+            out.append("  %%in.%s = load %s, ptr %%cx.%s, align 8" % (var, lltype(p.ty), var))
         ins[var] = "%%in.%s" % var
     out.append("  br label %%%s" % eb.name)
     for blk in fn.blocks.values():
@@ -90,7 +117,7 @@ def emit_function(fn, decls, flags_out=False):
                 inc.append("[ %s, %%entry ]" % ins[var])
             for pr in blk.preds:
                 inc.append("[ %s, %%%s ]" % (ref(pr.defs[var]), pr.name))
-            out.append("  %s = phi %s %s" % (ref(p), p.ty, ", ".join(inc)))
+            out.append("  %s = phi %s %s" % (ref(p), lltype(p.ty), ", ".join(inc)))
         for v in blk.ops:
             if v.op == "writeback":
                 var = v.attrs["var"]
@@ -100,7 +127,7 @@ def emit_function(fn, decls, flags_out=False):
                     out.append("  %%wb%d = zext i1 %s to i8" % (v.id, ref(v.args[0])))
                     out.append("  store i8 %%wb%d, ptr %%cx.%s, align 1" % (v.id, var))
                 else:
-                    out.append("  store i64 %s, ptr %%cx.%s, align 8" % (ref(v.args[0]), var))
+                    out.append("  store %s, ptr %%cx.%s, align 8" % (typed(v.args[0]), var))
                 continue
             emit_op(v, ref, typed, out, decls)
         t = blk.term
@@ -195,16 +222,30 @@ def emit_mark(p, base, lo, hi, out):
     out.append("  call void @mark(i64 %s.a, i64 %s.b)" % (p, p))
 
 
+CASTS = ("zext", "sext", "trunc", "bitcast", "sitofp", "uitofp", "fptosi", "fptoui", "fpext", "fptrunc")
+
+
 def emit_op(v, ref, typed, out, decls, flags_out=False):
     op, a, r = v.op, v.args, ref(v)
-    if op in ("add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "udiv", "sdiv"):
+    if op in ("add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "udiv", "sdiv", "fadd", "fsub", "fmul",
+              "fdiv"):
         out.append("  %s = %s %s, %s" % (r, op, typed(a[0]), ref(a[1])))
-    elif op == "icmp":
-        out.append("  %s = icmp %s %s, %s" % (r, v.attrs["pred"], typed(a[0]), ref(a[1])))
+    elif op == "icmp" or op == "fcmp":
+        out.append("  %s = %s %s %s, %s" % (r, op, v.attrs["pred"], typed(a[0]), ref(a[1])))
     elif op == "select":
-        out.append("  %s = select i1 %s, %s, %s" % (r, ref(a[0]), typed(a[1]), typed(a[2])))
-    elif op in ("zext", "sext", "trunc"):
-        out.append("  %s = %s %s to %s" % (r, op, typed(a[0]), v.ty))
+        out.append("  %s = select %s, %s, %s" % (r, typed(a[0]), typed(a[1]), typed(a[2])))
+    elif op in CASTS:
+        out.append("  %s = %s %s to %s" % (r, op, typed(a[0]), lltype(v.ty)))
+    elif op == "fneg":
+        out.append("  %s = fneg %s" % (r, typed(a[0])))
+    elif op == "extract":
+        out.append("  %s = extractelement %s, i32 %d" % (r, typed(a[0]), v.attrs["i"]))
+    elif op == "insert":
+        out.append("  %s = insertelement %s, %s, i32 %d" % (r, typed(a[0]), typed(a[1]), v.attrs["i"]))
+    elif op == "shuffle":
+        mask = ", ".join("i32 %d" % k if k >= 0 else "i32 poison" for k in v.attrs["mask"])
+        out.append("  %s = shufflevector %s, %s, <%d x i32> <%s>" % (r, typed(a[0]), typed(a[1]), len(v.attrs["mask"]),
+                                                                    mask))
     elif op == "ovf":
         k = v.attrs["kind"]
         t = a[0].ty
@@ -223,7 +264,7 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
             out.append("  %s = call %s @llvm.%s.%s(%s)" % (r, t, name, t, ", ".join(typed(x) for x in a)))
     elif op == "load":
         out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (r, HOST_BASE, typed(a[0])))
-        out.append("  %s = load %s, ptr %s.p, align 1" % (r, v.ty, r))
+        out.append("  %s = load %s, ptr %s.p, align 1" % (r, lltype(v.ty), r))
     elif op == "store":
         p = "%%st%d" % v.id
         out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (p, HOST_BASE, typed(a[0])))
@@ -245,14 +286,19 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
             out.append("  %s.b = load i8, ptr %%cx.%s, align 1" % (r, var))
             out.append("  %s = trunc i8 %s.b to i1" % (r, r))
         else:
-            out.append("  %s = load i64, ptr %%cx.%s, align 8" % (r, var))
+            out.append("  %s = load %s, ptr %%cx.%s, align 8" % (r, lltype(v.ty), var))
     elif op == "call":
+        # an LLVM intrinsic, a runtime function or an internal helper (HELPERS); a64_* runtime routines without
+        # effects (rt_fp.c's estimates) are declared memory(none)
         fn, at = v.attrs["fn"], v.attrs
         args = (["ptr %ctx"] if at.get("ctx") else []) + [typed(x) for x in a]
-        tys = (["ptr"] if at.get("ctx") else []) + [x.ty for x in a]
-        decls.add(("helper:%s" % fn) if at.get("helper") else "declare %s @%s(%s)" % (v.ty, fn, ", ".join(tys)))
+        rt = lltype(v.ty) if v.ty != "void" else "void"
+        tys = (["ptr"] if at.get("ctx") else []) + [lltype(x.ty) for x in a]
+        pure = fn.startswith("a64_") and not at.get("effects") and not at.get("ctx")
+        decls.add(("helper:%s" % fn) if at.get("helper") else "declare %s @%s(%s)%s" % (
+            rt, fn, ", ".join(tys), " memory(none) nounwind willreturn" if pure else ""))
         lhs = "" if v.ty == "void" else "%s = " % r
-        out.append("  %scall %s @%s(%s)" % (lhs, v.ty, fn, ", ".join(args)))
+        out.append("  %scall %s @%s(%s)" % (lhs, rt, fn, ", ".join(args)))
     elif op == "gcall":
         decls.add("declare void @%s(ptr)" % v.attrs["sym"])
         out.append("  call void @%s(ptr %%ctx)" % v.attrs["sym"])
