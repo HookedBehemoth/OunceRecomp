@@ -5,7 +5,7 @@ alone).
 HOOKSHOT_LIFT2_VERIFY=1 (at lift and build time, milestone 14): every function with a full summary is checked at run
 time (host/lift2_verify.c): its generic entry wraps its body in checks of the summary. The lift computes the summaries
 (milestone 13) only with it or with HOOKSHOT_LIFT2_SUMMARIES=1: the plan's "summaries" is empty otherwise.
-HOOKSHOT_LIFT2_CLASSES=int,fp,neon (the default; at lift time): the instruction classes (sem.CLASS) a function may use to
+HOOKSHOT_LIFT2_CLASSES=int,fp,neon,crypto (the default; at lift time): the instruction classes (sem.CLASS) a function may use to
 be taken.
 
 At lift time (nx2/lift.py, the variable set) write_plan() keeps what lift 2 needs from the discovery: the entries,
@@ -34,7 +34,7 @@ import subprocess
 import time
 from array import array
 
-from . import build_ir, emit_llvm, llvm
+from . import build_ir, emit_llvm, enc, llvm
 
 EDITED = re.compile(r"\b(entry_[0-9a-fx]+|splice_[0-9a-fx]+|hos_\w+|recomp_sj_\w+)\s*\(|\bhos_\w+\b")
 DEF = re.compile(r"^void (f_[0-9a-f]{8})\(Ctx \*__restrict A64_NOESC c\) \{", re.M)
@@ -55,6 +55,29 @@ def callee_fn(plt):
             seen += 1
         return t
     return callee
+
+
+def reachable(entry, pcs, word, jt):
+    """the instructions of a body reachable from its entry by branches, jump tables and fall-through: the module
+    heads' words after their first (udf #1, then the MOD0 header's offsets) are in the discovery's body but are data"""
+    body, seen, todo = set(pcs), set(), [entry]
+    while todo:
+        pc = todo.pop()
+        if pc in seen or pc not in body:
+            continue
+        seen.add(pc)
+        i = enc.decode(word(pc))
+        if i is None:
+            continue
+        t = i.entry.template
+        tg = build_ir.target(i, pc)
+        if tg is not None:
+            todo.append(tg)
+        todo.extend(jt.get(pc, ()))
+        if t not in build_ir.TERMINATORS or t in ("bcond", "cbz", "tbz", "blr") or (t == "exc" and i.f["opc"] == 0) \
+                or (t == "b" and i.f["op"]):
+            todo.append(pc + 4)
+    return [pc for pc in pcs if pc in seen]
 
 
 def summaries(L, img, path, prog, hooks):
@@ -88,7 +111,7 @@ def write_plan(L, img, path):
     """the discovery's facts and the instructions of every function lift 2 can take"""
     t0 = time.time()
     no_call = set(getattr(L, "setjmp_owner", {}) or ())
-    classes = os.environ.get("HOOKSHOT_LIFT2_CLASSES", "int,fp,neon").split(",")
+    classes = os.environ.get("HOOKSHOT_LIFT2_CLASSES", "int,fp,neon,crypto").split(",")
     prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, no_call=no_call, classes=classes)
     after = set(getattr(L, "after", {}) or ())
     hooks = set(L.hooks)
@@ -103,6 +126,10 @@ def write_plan(L, img, path):
                 "C added after an instruction (oot_wide, oot_jitter, oot_occlusion)", 0) + 1
             continue
         r = build_ir.scope(e, pcs, img.word, prog)
+        if r is not None and "not decoded" in r:   # (data the discovery took for code: unreachable from the entry)
+            live = reachable(e, pcs, img.word, prog.jt)
+            if len(live) < len(pcs) and build_ir.scope(e, live, img.word, prog) is None:
+                pcs, r = live, None
         if r is not None:
             k = re.sub(r" \(.*| at .*| [0-9a-f]{8}.*|0x[0-9a-f]+", "", r)
             why[k] = why.get(k, 0) + 1

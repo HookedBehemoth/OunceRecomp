@@ -10,7 +10,7 @@ import shutil
 import subprocess
 
 PINNED_MAJOR = 23
-MC_ATTRS = "+v8.5a,+lse,+rcpc,+pauth,+dotprod,+fullfp16,+fp16fml,+i8mm,+bf16,+crc,+mte"
+MC_ATTRS = "+v8.5a,+lse,+rcpc,+pauth,+dotprod,+fullfp16,+fp16fml,+i8mm,+bf16,+crc,+mte,+aes,+sha2"
 
 _checked = {}
 

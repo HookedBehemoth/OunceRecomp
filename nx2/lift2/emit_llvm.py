@@ -88,7 +88,9 @@ def emit_function(fn, decls, flags_out=False):
         return "%s %s" % (lltype(v.ty), ref(v))
 
     strict = getattr(fn, "strict_fp", False)
-    out.append("define void @%s(ptr noalias nocapture %%ctx)%s {" % (fn.name, " strictfp" if strict else ""))
+    tf = getattr(fn, "target_features", None)   # (AES-NI, PCLMUL: sem_crypto, sem_neon's PMULL 1Q)
+    out.append("define void @%s(ptr noalias nocapture %%ctx)%s%s {" % (fn.name, " strictfp" if strict else "",
+               ' "target-features"="%s"' % ",".join(sorted(tf)) if tf else ""))
     out.append("entry:")
     eb = fn.entry_block()
     ins = {}
