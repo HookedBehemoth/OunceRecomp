@@ -37,6 +37,7 @@ exec 9>"$bd/.build.lock"; flock 9
 [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "the main checkout has uncommitted changes"
 head=$(git rev-parse --short HEAD)
 if [ "$(head -1 "$bd/BUILD.txt" 2>/dev/null)" = "$head" ]; then echo "play-refresh: work/sa/build already names $head"; exit 0; fi
+[ ! -e "$root/work/sa/LIFT_INCOMPLETE" ] || fail "the lift in work/sa is incomplete (stopped before its end): run scripts/relift.sh"
 rm -f "$bd/BUILD.txt"
 start=$(date +%s)
 {

@@ -666,6 +666,11 @@ def main():
     os.makedirs(obj_dir, exist_ok=True)
     if os.environ.get("RX_DIRECT_ONLY") or a.dry_run:   # (the direct back end needs no game: built so with no lift)
         os.makedirs(gen, exist_ok=True)
+    else:
+        import lift_mark   # (a lift that was stopped before its end is not built from)
+        why = lift_mark.check(os.path.dirname(gen))
+        if why:
+            raise SystemExit("build: " + why)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
     fl = flags(gen, rt64, a.opt, not a.no_polls) + (["-DA64_POLL_CTX"] if a.dll else [])   # (the shim's poll takes the context: rtgen.py)

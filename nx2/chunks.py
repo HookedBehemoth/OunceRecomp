@@ -112,11 +112,44 @@ def _available_gb():
     return None
 
 
+# What one forked emit worker adds, measured (TOTK's standalone lift, 2026-11, Linux, a memory-capped scope): the lift
+# process holds about 5.9 GB when the emit starts (counted in the available memory already), and each worker grew the
+# scope by about 3.7 GB (13.2 GB peak with 2 workers) as the copy-on-write pages of the lift it touches become its own.
+# EMIT_SPARE_GB stays free for the parent's own growth and the rest of the machine.
+EMIT_WORKER_GB, EMIT_SPARE_GB = 3.7, 2.0
+
+
+def _cgroup_free_gb():
+    """what this process's memory cgroup (a capped scope, systemd-run -p MemoryMax=) still allows, or None"""
+    try:
+        with open("/proc/self/cgroup", encoding="ascii") as f:
+            path = f.read().strip().split("::", 1)[1]
+    except (OSError, IndexError):
+        return None
+    free = None
+    while True:
+        d = "/sys/fs/cgroup" + path
+        try:
+            with open(os.path.join(d, "memory.max"), encoding="ascii") as f:
+                mx = f.read().strip()
+            if mx != "max":
+                with open(os.path.join(d, "memory.current"), encoding="ascii") as f:
+                    cur = int(f.read())
+                left = (int(mx) - cur) / (1 << 30)
+                free = left if free is None else min(free, left)
+        except (OSError, ValueError):
+            pass
+        if path in ("/", ""):
+            return free
+        path = os.path.dirname(path)
+
+
 def emit_jobs():
-    """Processes for the emit: HOOKSHOT_LIFT_JOBS, else the cores this process may use (at most 16; each holds its run's
-    texts and the pages of the lift it touches), and at most one per 2 GB of available memory: a Steam Deck (16 GB) ran
-    out with 8, and the system's out-of-memory handling stopped the lift ("lift.py stopped (signal 15): BrokenPipeError")
-    or one worker (the update then sat at "jump tables" for good). 1 where there is no fork"""
+    """Processes for the emit: HOOKSHOT_LIFT_JOBS, else the cores this process may use (at most 16), as many as the
+    memory left allows: the available memory (MemAvailable, and the cgroup's limit when the lift runs in a capped
+    scope) less what the emit needs besides, divided by one worker's growth (EMIT_WORKER_GB). Too many workers ran out:
+    a Steam Deck (16 GB) with 8 ("lift.py stopped (signal 15): BrokenPipeError"), the relift in a 12 GB scope with 16.
+    1 where there is no fork"""
     if "fork" not in multiprocessing.get_all_start_methods():
         return 1
     if os.environ.get("HOOKSHOT_LIFT_JOBS"):
@@ -127,8 +160,11 @@ def emit_jobs():
         n = os.cpu_count() or 1
     n = max(1, min(16, n))
     gb = _available_gb()
+    cg = _cgroup_free_gb()
+    if cg is not None:
+        gb = cg if gb is None else min(gb, cg)
     if gb is not None:
-        n = max(1, min(n, int(gb // 2)))
+        n = max(1, min(n, int((gb - EMIT_SPARE_GB) // EMIT_WORKER_GB)))   # (the lift's own memory is held already)
     return n
 
 

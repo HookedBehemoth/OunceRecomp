@@ -138,6 +138,9 @@ def main():
         hle = hle | stubbed
     img = eden_image.EdenImage(a.exefs, a.aslr, hle=hle) if a.layout == "eden" else nx_image.NxImage(a.exefs)
     out_dir = os.path.join(a.work, "sa") if a.standalone else a.work
+    if a.write:   # (incomplete until the last step: a killed lift is never built from, nx2/lift_mark.py)
+        import lift_mark
+        lift_mark.begin(out_dir)
     img_dir = os.path.join(out_dir, "image")
     meta = img.write(img_dir)
     print("image: %s; %d entries, %d trampolines (%d unresolved non-weak imports) (%.0fs)" % (
@@ -200,6 +203,7 @@ def main():
         L.report()
         print("interrupt polls: %d loop headers in %d functions" % (poll.stats["polls"], poll.stats["functions"]))
         print("wrote %d code files to %s (%.0fs)" % (len(files), gen, time.time() - t0))
+        lift_mark.done(out_dir)
     print("done (%.0fs)" % (time.time() - t0))
 
 
