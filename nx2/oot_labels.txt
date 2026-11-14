@@ -142,7 +142,8 @@
 804fc0f0 frame_variable_refresh           # host/nn_vi.c: variable refresh (+0x231)
 
 # --- jobs: the task graph, the scheduler, render jobs and their sync
-800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md: calc jobs runner: CPU culler, grid occluder, GPU-result read # ? work/assets/native/engine-layers.md says the model scene job
+800ad2b0 job_calc_once_a                  # docs/direct/boot-to-main-loop.md 4.3: once a frame in the calc runner (one thread, ~0.3 ms): f_836c06d0 over 14 object lists of [0x84ca2bc8]
+800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md, docs/direct/boot-to-main-loop.md 4.3: calc jobs runner on main and ModuleSystemWorker1-5: sub-stages claimed by bit masks, polled with SleepThread(20 us) (host/hos_thread.c calc_poll_nap): the grid occluder, then the shape culler f_8009bb80 over ~290 items # ? work/assets/native/engine-layers.md says the model scene job
 8007de00 job_gpu_sync                     # work/assets/native/command-lists.md: a synchronous GPU job: record, submit, fence, wait
 80070ea0 job_graph_build                  # work/assets/native/engine-jobs.md: (pool, graph, desc): the frame's task graph
 80070d30 job_graph_kick                   # work/assets/native/engine-jobs.md: virtual, vtable 0x84c85738
@@ -357,14 +358,16 @@
 80105e80 vbuf_dynamic_map                 # work/assets/native/alloc-transfer.md: maps 2 MB dynamic CPU vertex / scratch buffers
 
 # --- culling, readbacks and reports, dynamic resolution, exposure
-808226e0 cull_cpu_objects                 # the grid occluder's math (under f_80822260)
+808226e0 cull_cpu_objects                 # docs/direct/boot-to-main-loop.md 4.3: the grid occluder's math (under f_80822260): one call a frame, ~0.5 ms on one thread
+80029240 cull_frustum_aabb                # docs/direct/boot-to-main-loop.md 4.3: frustum vs AABB: the frustum's bounds box, then the p-vertex against each plane (count +0xe0); called by f_8009bb80
 812342c0 cull_cpu_occlusion_reader        # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: the CPU culler: per-shape visibility from the occlusion report slots; wraps ring slots as NVNbuffers
 8009bb80 cull_cpu_shapes                  # the CPU culler (calls f_812342c0)
 80364080 cull_gpu_dispatch                # work/assets/native/alloc-transfer.md: dispatches the GPU-culling compute, 112 KB instance list
 80361a00 cull_gpu_list_reset_one          # host/direct_mesh_lists.c, resets one list's first record (spliced)
 80361c80 cull_gpu_lists_reset             # host/direct_mesh_lists.c, once a frame, resets the first record of each GPU culling list (spliced)
-80822260 cull_grid_occluder               # the grid's CPU occluder
+80822260 cull_grid_occluder               # docs/direct/boot-to-main-loop.md 4.3: the grid's CPU occluder: one view's grid from the GPU depth grid (f_80365f00) and its camera
 8035d5a0 cull_grid_view_rebuild           # work/assets/native/readback.md: rebuilds the producing frame's camera view
+800a8120 cull_submesh_next_visible        # docs/direct/boot-to-main-loop.md 4.3: next sub-mesh bounds (0x20-byte AABBs) of a shape's LOD that passes the frustum test of f_80029240
 82bde830 cull_precomputed                 # work/assets/native/engine-layers.md: precomputed culling
 8034dac0 dynres_a                         # work/assets/native/cpu-to-gpu.md: dynamic resolution
 831f41d0 dynres_fixed_flag                # nx2/oot_patches.py

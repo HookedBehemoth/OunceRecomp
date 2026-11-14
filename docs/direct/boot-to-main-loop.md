@@ -408,6 +408,43 @@ market the layer then waits 0.12 ms a frame at 1.3 of its 26 job calls, and the 
 frame with almost no waiting (0.01 ms) and the frame does not change (10.4-10.5 ms both ways); why (presumably the layer is not
 what ends stage C there) is not measured.
 
+**The calc jobs** (VERIFIED: ENTRY_HOOK timers per thread, runs `cull_t1`-`cull_t3`, 600 frames each; a perf profile
+of the six threads, run `cull_perf`; decompiles; market overlay, uncapped). `f_800998a0` (label `job_calc_runner`) is
+one function that all six threads run (main and ModuleSystemWorker1-5). Each sub-stage is claimed through bit masks and
+atomic counters in the job object, and the threads with nothing to claim poll with `SleepThread(20 µs)` (sites
+`0x8009a478`, `0x8009aff0`, `0x8009b234`) and `YieldThread`. The market has one list with one view, so the stages up
+to the shape items are single items on one thread (ms from the first thread's entry):
+
+| ms | what | threads |
+|---|---|---|
+| 0-0.06 | `f_8034dac0` (dynres) for the list | all six, each its own |
+| 0.07-0.15 | the view's set-up: `f_8035c940`, `f_803637c0`, `f_8035a240`, the GPU depth grid's read `f_80365f00` | one |
+| 0.15-0.67 | **the occlusion grid**: `f_80822260` (label `cull_grid_occluder`) → `f_808226e0` (`cull_cpu_objects`), 0.52 ms | one |
+| 0.67-0.91 | the rest of the view's item (`f_807cd670`, `f_800ac7a0`) and the per-list second stage (`f_800adc20` through the view's sub-list vtables) | one |
+| 0.92-1.23 | `f_800ad2b0` (`job_calc_once_a`) | one, beside the shapes |
+| 0.93-0.95 | the first item loop (inline), `f_800991c0` | all |
+| 0.93-1.75 | **the shapes**: `f_8009bb80` (`cull_cpu_shapes`), ~290 items a frame, ~15 µs each, the longest 0.28 ms | all six |
+
+The five other threads wait for 0.9 ms of the 1.75, while one thread builds the grid. All six then leave together at
+1.75 ms because each polls until the last item has ended. CPU time a frame (10.1 ms): the shapes 4.4 ms (in them,
+`f_80029240` `cull_frustum_aabb` and `f_800a8120` `cull_submesh_next_visible` 0.5 ms, the scalar FP helpers
+`a64_fpx_*` of its file ~0.4 ms), the grid 0.5, `f_800ad2b0` 0.3, the dynres 0.15, other 0.2. The rest is waiting:
+**4.0 ms of the 20 µs sleeps** (~31 a thread, 22 µs each), which the host yield-spun to their time, and 0.6 ms of
+yields (~100 a thread). The lifted code runs at -O1: `f_8009bb80` is 12.5k guest instructions and 409 KB of x86, and
+`f_808226e0` 1.5k and 85 KB, with every scalar FP op an out-of-line `a64_fpx_*` call.
+
+`host/hos_thread.c` `calc_poll_nap` turns the three poll sleeps into timed sleeps with a 1 µs timer slack (Linux;
+`HOS_CALC_NAP=0` spins them again). The phase keeps its 1.75 ms (1.765 with the timers'
+timed sleeps) and the six threads use about 3.9 ms less CPU a frame (their CPU time 57.4 to 49.6 s in 25 s, three
+alternating 60 s runs `cull_abA*`/`cull_abB*`). The frame median was 12.2-13.2 ms with the change and 12.3-15.4 ms
+without it: within the runs' spread, so no change in frame time is claimed. The wall time
+is set by the game's order of work: the 0.9 ms one-thread chain before the shapes, then the shapes spread over six
+threads. Making it shorter means a faster grid build (`f_808226e0` is a self-contained kernel: the 0x3980-byte depth
+grid slot and the camera in, the view's grid out) or faster lifted code in the shapes.
+
+After the calc jobs, until the first render job (0.3 ms: 1.75-2.06): the phases 0x30/0x20 and 0xc0/0x40 (1.75-1.97,
+content not identified) and phase 0x100, `f_800766e0` per list (1.97-2.06).
+
 What the main thread waits on inside the stages (`m6a_crit2_k`, ms a frame): the scheduler's condition variable
 at `0x80080188` (6.75, 11.9 times), its 20 µs poll sleeps at `0x8009a478` in `f_800998a0` (0.81, 39 times), the
 second BaseProc step's join at `0x83acfcf4` in `f_83acfb90` (0.63, once). The main thread runs 4.5 ms of 12.9 and is

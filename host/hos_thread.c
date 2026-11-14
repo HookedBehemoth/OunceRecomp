@@ -19,6 +19,10 @@
 #include <stdatomic.h>
 #include <unistd.h>
 #endif
+#ifdef __linux__
+#include <sys/prctl.h>
+#include <time.h>
+#endif
 
 struct HosThread {
     Ctx ctx;
@@ -997,8 +1001,39 @@ static int present_poll(Ctx *c, int64_t ns) {
     if (away) hos_vcore_back();
     return 1;
 }
+/* (hookshot, OoT) The calc jobs' runner f_800998a0 (label job_calc_runner: main and ModuleSystemWorker1-5 in calc stage C,
+   docs/direct/boot-to-main-loop.md 4.3) waits for its sub-stages by SleepThread(20 us) and looking again, at three
+   sites, ~30 times a frame on each of its six threads: the five others wait while one thread builds the occlusion grid
+   (~0.5 ms) and while the last shape items finish. A sleep under a millisecond is yield-spun to its time (sleep_ns), so
+   the six threads stayed on the CPU for the whole phase: 4 of its 10 ms of CPU a frame (market, uncapped). Here it is
+   a timed sleep with a 1 us timer slack (the thread's slack is set once; Linux's default 50 us would stretch each
+   look), its virtual core given up: the phase keeps its wall time and uses ~3.9 ms less CPU a frame. Linux only
+   (Windows' timers are ~0.5 ms coarse). HOS_CALC_NAP=0: spun as before */
+static int calc_poll_nap(Ctx *c, int64_t ns) {
+#if defined(__linux__) && HOS_GAME_VERSION == 100
+    static int on = -1;
+    if (on < 0) on = !hos_game_is_mkw() && !(getenv("HOS_CALC_NAP") && atoi(getenv("HOS_CALC_NAP")) == 0);
+    const uint64_t lr = c->x[30];
+    if (!on || ns <= 0 || ns >= 1000000 || (lr != 0x8009a478 && lr != 0x8009aff0 && lr != 0x8009b234)) return 0;
+    static _Thread_local int slack_set;
+    if (!slack_set) {
+        slack_set = 1;
+        prctl(PR_SET_TIMERSLACK, 1000UL, 0, 0, 0);
+    }
+    const int away = hos_vcore_away_why(CRIT_BLOCK_SLEEP, (const void *)(uintptr_t)ns);
+    struct timespec t = {0, (long)ns};
+    clock_nanosleep(CLOCK_MONOTONIC, 0, &t, NULL);
+    if (away) hos_vcore_back();
+    return 1;
+#else
+    (void)c, (void)ns;
+    return 0;
+#endif
+}
+
 HLE(_ZN2nn2os11SleepThreadENS_8TimeSpanE) {
     if (present_poll(c, (int64_t)ARG(0))) return;
+    if (calc_poll_nap(c, (int64_t)ARG(0))) return;
     static int sleep_log = -1;
     if (sleep_log < 0) sleep_log = getenv("HOS_SLEEP_LOG") != NULL;
     if (c->x[30] == 0x80590520 && sleep_log) {   /* (hookshot, diagnostic: OoT's present poll) */
