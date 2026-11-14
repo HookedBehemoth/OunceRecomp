@@ -39,6 +39,7 @@ class Program:
         self.callee = callee or (lambda t: t)
         self.symbol = symbol or (lambda e: "g_%08x" % e)
         self.no_call = set(no_call)
+        self.probes = {}   # pc -> fn(builder, insn, pc): the instruction replaced by a probe (probes.py, section 9)
 
 
 LEAF = Program()
@@ -157,7 +158,11 @@ def build(entry, pcs, word, prog=LEAF):
         t = i.entry.template
         f = i.f
         if t not in TERMINATORS:
-            sem.TEMPLATES[t](b, f, pc, i.entry.params)
+            probe = prog.probes.get(pc)
+            if probe is not None:
+                probe(b, i, pc)
+            else:
+                sem.TEMPLATES[t](b, f, pc, i.entry.params)
             if pc + 4 not in body:   # (falls through into another function: a tail call)
                 cur.term = ("br", goto(pc + 4, pc))
                 cur = None
