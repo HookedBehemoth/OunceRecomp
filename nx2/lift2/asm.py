@@ -2,7 +2,7 @@
 LLVM's disassembler word by word (selfcheck.py, tests/test_lift2.py). llvm-mc keeps a few preferred aliases even with
 no-aliases (MOVZ/MOVN/ORR immediate as `mov`, the sign/zero extensions of SBFM/UBFM, ...); the printer follows them,
 so a difference is always a decoder question, never a spelling one."""
-from .enc import bitmask, RENDER
+from .enc import bitmask, RENDER, SYSREGS, SYS_OPS
 
 COND = ["eq", "ne", "hs", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al", "nv"]
 SHIFT = ["lsl", "lsr", "asr", "ror"]
@@ -318,3 +318,124 @@ def _HINT(f, pc):
 
 def _UDF(f, pc):
     return "udf #%d" % f["imm16"]
+
+
+def _CRC32(f, pc):
+    m = "crc32" + ("c" if f["C"] else "") + "bhwx"[f["sz"]]
+    return "%s %s, %s, %s" % (m, r(f["Rd"], 0), r(f["Rn"], 0), r(f["Rm"], 1 if f["sz"] == 3 else 0))
+
+
+PAC_NAMES = ["pacia", "pacib", "pacda", "pacdb", "autia", "autib", "autda", "autdb"]
+
+
+def _PAC(f, pc):
+    o = f["opcode"]
+    if o < 8:
+        return "%s %s, %s" % (PAC_NAMES[o], r(f["Rd"], 1), r(f["Rn"], 1, True))
+    if o < 16:
+        return "%s %s" % (PAC_NAMES[o - 8][:4] + "z" + PAC_NAMES[o - 8][4:], r(f["Rd"], 1))
+    return "%s %s" % ("xpaci" if o == 16 else "xpacd", r(f["Rd"], 1))
+
+
+def _PACGA(f, pc):
+    return "pacga %s, %s, %s" % (r(f["Rd"], 1), r(f["Rn"], 1), r(f["Rm"], 1, True))
+
+
+def _STG(f, pc):
+    m = "stg" if f["opc"] == 0 else "st2g"
+    off = sx(f["imm9"], 9) << 4
+    base = r(f["Rn"], 1, True)
+    rt = r(f["Rt"], 1, True)
+    if f["op2"] == 1:
+        return "%s %s, [%s], #%d" % (m, rt, base, off)
+    if f["op2"] == 3:
+        return "%s %s, [%s, #%d]!" % (m, rt, base, off)
+    return "%s %s, [%s, #%d]" % (m, rt, base, off)
+
+
+LSE_OPS = ["add", "clr", "eor", "set", "smax", "smin", "umax", "umin"]
+
+
+def _sfx(size):
+    return {0: "b", 1: "h"}.get(size, "")
+
+
+def _LSE(f, pc):
+    size, A, R = f["size"], f["A"], f["R"]
+    w = 1 if size == 3 else 0
+    if f["o3"] and f["opc"] == 4:
+        return "ldapr%s %s, [%s]" % (_sfx(size), r(f["Rt"], w), r(f["Rn"], 1, True))
+    base = "swp" if f["o3"] else "ld" + LSE_OPS[f["opc"]]
+    m = base + ("a" if A else "") + ("l" if R else "") + _sfx(size)
+    return "%s %s, %s, [%s]" % (m, r(f["Rs"], w), r(f["Rt"], w), r(f["Rn"], 1, True))
+
+
+def _CAS(f, pc):
+    size = f["size"]
+    w = 1 if size == 3 else 0
+    m = "cas" + ("a" if f["L"] else "") + ("l" if f["o0"] else "") + _sfx(size)
+    return "%s %s, %s, [%s]" % (m, r(f["Rs"], w), r(f["Rt"], w), r(f["Rn"], 1, True))
+
+
+def _CASP(f, pc):
+    w = f["sz"]
+    m = "casp" + ("a" if f["L"] else "") + ("l" if f["o0"] else "")
+    return "%s %s, %s, %s, %s, [%s]" % (m, r(f["Rs"], w), r(f["Rs"] + 1, w), r(f["Rt"], w), r(f["Rt"] + 1, w),
+                                         r(f["Rn"], 1, True))
+
+
+def _LDSTORD(f, pc):
+    size = f["size"]
+    m = ("ldar" if f["L"] else "stlr") + _sfx(size)
+    return "%s %s, [%s]" % (m, r(f["Rt"], 1 if size == 3 else 0), r(f["Rn"], 1, True))
+
+
+def _LDSTEX(f, pc):
+    size = f["size"]
+    w = 1 if size == 3 else 0
+    a = "a" if f["o0"] else ""
+    if f["L"]:
+        return "ld%sxr%s %s, [%s]" % (a, _sfx(size), r(f["Rt"], w), r(f["Rn"], 1, True))
+    return "st%sxr%s %s, %s, [%s]" % ("l" if f["o0"] else "", _sfx(size), r(f["Rs"], 0), r(f["Rt"], w),
+                                      r(f["Rn"], 1, True))
+
+
+def _LDSTEXP(f, pc):
+    w = f["sz"]
+    if f["L"]:
+        return "ld%sxp %s, %s, [%s]" % ("a" if f["o0"] else "", r(f["Rt"], w), r(f["Rt2"], w), r(f["Rn"], 1, True))
+    return "st%sxp %s, %s, %s, [%s]" % ("l" if f["o0"] else "", r(f["Rs"], 0), r(f["Rt"], w), r(f["Rt2"], w),
+                                        r(f["Rn"], 1, True))
+
+
+BARRIER_OPT = {15: "sy", 14: "st", 13: "ld", 11: "ish", 10: "ishst", 9: "ishld", 7: "nsh", 6: "nshst", 5: "nshld",
+               3: "osh", 2: "oshst", 1: "oshld"}
+
+
+def _BARRIER(f, pc):
+    o, crm = f["op2"], f["CRm"]
+    if o == 2:
+        return "clrex #%d" % crm
+    if o == 6:
+        return "isb" + (" sy" if crm == 15 else " #%d" % crm)
+    return "%s %s" % ("dsb" if o == 4 else "dmb", BARRIER_OPT.get(crm, "#%d" % crm))
+
+
+def _SYSREG(f, pc):
+    name = SYSREGS[(f["o0"], f["op1"], f["CRn"], f["CRm"], f["op2"])][0]
+    if f["L"]:
+        return "mrs %s, %s" % (r(f["Rt"], 1), name)
+    return "msr %s, %s" % (name, r(f["Rt"], 1))
+
+
+def _SYS(f, pc):
+    return "%s, %s" % (SYS_OPS[(f["CRm"], f["op2"])], r(f["Rt"], 1))
+
+
+def _EXC(f, pc):
+    m = {(0, 1): "svc", (1, 0): "brk", (2, 0): "hlt"}[(f["opc"], f["LL"])]
+    return "%s #%s" % (m, "0x%x" % f["imm16"] if f["imm16"] else "0")
+
+
+def _ISB(f, pc):
+    return "isb" + (" sy" if f["CRm"] == 15 else " #%d" % f["CRm"])

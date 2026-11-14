@@ -460,5 +460,88 @@ def t_hint(b, f, pc, p):
     host's, so signing it has no effect)"""
 
 
+# ---- CRC32, pointer authentication, MTE, system registers and operations
+def t_crc32(b, f, pc, p):
+    """CRC32/CRC32C over 8 << sz bits of Rm (bit-reflected, as the Arm ARM's CRC32 pseudocode): the internal helper
+    lift2_crc32 (emit_llvm.HELPERS), polynomial 0xEDB88320 or, for CRC32C, 0x82F63B78"""
+    sz = f["sz"]
+    data = b.zext(getx(b, f["Rm"], 1 if sz == 3 else 0), "i64")
+    acc = getx(b, f["Rn"], 0)
+    poly = b.const(0x82F63B78 if f["C"] else 0xEDB88320, "i32")
+    r = b.op("call", "i32", acc, data, b.const(8 << sz, "i32"), poly, fn="lift2_crc32", ctx=False, helper=True)
+    setx(b, f["Rd"], r)
+
+
+def t_pac(b, f, pc, p):
+    """PAC*/AUT*/XPAC*: the identity (no pointer is ever signed here; nx2/insn.py's model)"""
+
+
+def t_pacga(b, f, pc, p):
+    """PACGA: 0 (nx2/insn.py's model)"""
+    setx(b, f["Rd"], b.const(0))
+
+
+def t_stg(b, f, pc, p):
+    """STG/ST2G: memory tags are not modelled; only the writeback of the base register"""
+    if f["op2"] in (1, 3):
+        setx(b, f["Rn"], b.bin("add", getx(b, f["Rn"], 1, sp=True), b.const(sx(f["imm9"], 9) << 4)), sp=True)
+
+
+CTX_TPIDR, CTX_TPIDRRO, CTX_FPCR, CTX_FPSR = 0x310, 0x318, 0x320, 0x328
+FPCR_INHIBIT = 1 << 32   # (the host's kill switch for the FP fast paths, kept across guest writes; a64_suyu.h)
+
+
+def t_sysreg(b, f, pc, p):
+    from .enc import SYSREGS
+    name = SYSREGS[(f["o0"], f["op1"], f["CRn"], f["CRm"], f["op2"])][0]
+    rt = f["Rt"]
+    if f["L"]:
+        if name == "NZCV":
+            v = b.const(0)
+            for k, flag in enumerate("nzcv"):
+                v = b.bin("or", v, b.bin("shl", b.zext(b.get(flag), "i64"), b.const(31 - k)))
+        elif name == "FPCR":
+            v = b.bin("and", b.op("ctxload", "i64", off=CTX_FPCR), b.const(0xFFFFFFFF))
+        elif name in ("FPSR", "TPIDR_EL0", "TPIDRRO_EL0"):
+            v = b.op("ctxload", "i64", off={"FPSR": CTX_FPSR, "TPIDR_EL0": CTX_TPIDR, "TPIDRRO_EL0": CTX_TPIDRRO}[name])
+        elif name in ("CNTPCT_EL0", "CNTVCT_EL0"):
+            v = b.op("call", "i64", fn="recomp_cntpct", ctx=True)
+        elif name == "CNTFRQ_EL0":
+            v = b.const(31250000)   # (the Switch 2's counter, host/mkw_glue.c a64_cntpct_host)
+        elif name == "CTR_EL0":
+            v = b.const(0x8444C004)   # (suyu's dynarmic configuration, as the present lifter)
+        else:   # DCZID_EL0: DC ZVA clears 64 bytes
+            v = b.const(4)
+        setx(b, rt, v)
+        return
+    x = getx(b, rt, 1)
+    if name == "NZCV":
+        for k, flag in enumerate("nzcv"):
+            b.set(flag, b.trunc(b.bin("lshr", x, b.const(31 - k)), "i1"))
+    elif name == "FPCR":
+        old = b.op("ctxload", "i64", off=CTX_FPCR)
+        b.op("ctxstore", "void", b.bin("or", b.bin("and", x, b.const(0xFFFFFFFF)),
+                                       b.bin("and", old, b.const(FPCR_INHIBIT))), off=CTX_FPCR)
+    elif name == "FPSR":
+        b.op("ctxstore", "void", x, off=CTX_FPSR)
+    elif name == "TPIDR_EL0":
+        b.op("ctxstore", "void", x, off=CTX_TPIDR)
+
+
+def t_sys(b, f, pc, p):
+    """DC ZVA / DC GZVA clear the 64-byte block holding the address; the cache and tag maintenance operations and IC
+    IVAU are nothing here (no self-modifying code, tags not modelled)"""
+    if (f["CRm"], f["op2"]) in ((4, 1), (4, 4)):
+        base = b.bin("and", getx(b, f["Rt"], 1), b.const(~63))
+        for k in range(8):
+            store(b, b.bin("add", base, b.const(8 * k)), b.const(0), f["Rt"] if f["Rt"] != 31 else 0)
+
+
+def t_barrier(b, f, pc, p):
+    """ISB: nothing (no self-modifying code)"""
+
+
 TEMPLATES = {k[2:]: v for k, v in globals().items() if k.startswith("t_")}
+# decoded, lifted from milestone 6 (atomics, acquire/release, exclusives, DMB/DSB/CLREX) and 7 (SVC)
+TEMPLATES.update({"fence": None, "lse": None, "cas": None, "casp": None, "ldstord": None, "ldstex": None, "ldstexp": None})
 BRANCH_TEMPLATES = {"b", "bcond", "cbz", "tbz", "br", "blr", "ret", "udf"}

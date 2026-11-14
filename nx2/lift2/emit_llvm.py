@@ -29,11 +29,17 @@ class Module:
 
     def add(self, fn):
         self.funcs.append(emit_function(fn, self.decls, self.flags_out))
+        self.defined = getattr(self, "defined", set()) | {fn.name}
 
     def text(self):
         head = ['target triple = "%s"' % TRIPLE,
                 "@a64_dirty = external global [%d x i8]" % DIRTY_PAGES, MARK_FN]
-        return "\n".join(head + sorted(self.decls) + self.funcs) + "\n"
+        defined = getattr(self, "defined", set())
+        decls = [d for d in sorted(self.decls)
+                 if not (d.startswith("declare void @") and d.split("@")[1].split("(")[0] in defined)]
+        helpers = [HELPERS[d[7:]] for d in decls if d.startswith("helper:")]
+        decls = [d for d in decls if not d.startswith("helper:")]
+        return "\n".join(head + decls + helpers + self.funcs) + "\n"
 
 
 def emit_function(fn, decls, flags_out=False):
@@ -57,8 +63,15 @@ def emit_function(fn, decls, flags_out=False):
     eb = fn.entry_block()
     ins = {}
     # one address per context field the function touches (entry loads and write-through stores share it)
-    used = set(eb.params) | {v.attrs["var"] for blk in fn.blocks.values() for v in blk.ops if v.op == "writeback"
-                             and (flags_out or v.attrs["var"] not in ("n", "z", "c", "v"))}
+    used = set(eb.params)
+    for blk in fn.blocks.values():
+        for v in blk.ops:
+            if v.op == "writeback" and (flags_out or v.attrs["var"] not in ("n", "z", "c", "v")):
+                used.add(v.attrs["var"])
+            elif v.op == "regload":
+                used.add(v.attrs["var"])
+            elif v.op == "flagsout":
+                used.update("nzcv")
     for var in sorted(used, key=lambda x: CTX_OFF[x]):
         out.append("  %%cx.%s = getelementptr i8, ptr %%ctx, i64 %d" % (var, CTX_OFF[var]))
     for var, p in eb.params.items():
@@ -100,6 +113,17 @@ def emit_function(fn, decls, flags_out=False):
                 out.append("  br i1 %s, label %%%s, label %%%s" % (ref(t[1]), t[2].name, t[3].name))
         elif t[0] == "ret":
             out.append("  ret void")
+        elif t[0] == "switch":
+            cases = " ".join("i64 %d, label %%%s" % (k, blk2.name) for k, blk2 in t[2])
+            out.append("  switch i64 %s, label %%%s [ %s ]" % (ref(t[1]), t[3].name, cases))
+        elif t[0] == "tail":
+            decls.add("declare void @%s(ptr)" % t[1])
+            out.append("  musttail call void @%s(ptr %%ctx)" % t[1])
+            out.append("  ret void")
+        elif t[0] == "ijump":
+            decls.add("declare void @a64_ijump(ptr, i64)")
+            out.append("  call void @a64_ijump(ptr %%ctx, %s)" % typed(t[1]))
+            out.append("  ret void")
         elif t[0] == "trap":
             decls.add("declare void @a64_trap(ptr, i64, i32)")
             out.append("  call void @a64_trap(ptr %%ctx, i64 %d, i32 %d)" % (t[1], t[2]))
@@ -121,6 +145,49 @@ MARK_FN = """define internal void @mark(i64 %a, i64 %b) alwaysinline {
 }""".replace("DIRTY_MASK", str(DIRTY_PAGES - 1))
 
 
+# internal functions the IR's call/poll operations use, defined in each module that needs them
+HELPERS = {
+    # CRC32 over the low nbits of data, bit-reflected (the Arm ARM's CRC32 with the polynomial already reflected)
+    "lift2_crc32": """define internal i32 @lift2_crc32(i32 %crc, i64 %data, i32 %nbits, i32 %poly) alwaysinline {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %i1, %loop ]
+  %c = phi i32 [ %crc, %entry ], [ %c1, %loop ]
+  %d = phi i64 [ %data, %entry ], [ %d1, %loop ]
+  %dl = trunc i64 %d to i32
+  %x = xor i32 %c, %dl
+  %bit = and i32 %x, 1
+  %m = sub i32 0, %bit
+  %p = and i32 %m, %poly
+  %cs = lshr i32 %c, 1
+  %c1 = xor i32 %cs, %p
+  %d1 = lshr i64 %d, 1
+  %i1 = add i32 %i, 1
+  %more = icmp ult i32 %i1, %nbits
+  br i1 %more, label %loop, label %done
+done:
+  ret i32 %c1
+}""",
+    # the loop back edge's interrupt poll (nx2/poll.py): a64_poll_cur is called with nothing, so it cannot touch the
+    # context (noalias) and the loop's registers stay in host registers; it may read and write guest memory
+    "lift2_poll": """declare void @a64_poll_cur()
+define internal void @lift2_poll(ptr %ctx) alwaysinline {
+entry:
+  %p = getelementptr i8, ptr %ctx, i64 856
+  %v = load atomic i32, ptr %p monotonic, align 4
+  %set = icmp ne i32 %v, 0
+  br i1 %set, label %slow, label %done
+slow:
+  store atomic i32 0, ptr %p monotonic, align 4
+  call void @a64_poll_cur()
+  br label %done
+done:
+  ret void
+}""",
+}
+
+
 def emit_mark(p, base, lo, hi, out):
     """A64_MARK: 1 into a64_dirty at the pages of base + lo and base + hi - 1, as release stores (@mark, inlined)"""
     out.append("  %s.a = add i64 %s, %d" % (p, base, lo))
@@ -128,7 +195,7 @@ def emit_mark(p, base, lo, hi, out):
     out.append("  call void @mark(i64 %s.a, i64 %s.b)" % (p, p))
 
 
-def emit_op(v, ref, typed, out, decls):
+def emit_op(v, ref, typed, out, decls, flags_out=False):
     op, a, r = v.op, v.args, ref(v)
     if op in ("add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "udiv", "sdiv"):
         out.append("  %s = %s %s, %s" % (r, op, typed(a[0]), ref(a[1])))
@@ -165,5 +232,40 @@ def emit_op(v, ref, typed, out, decls):
             emit_mark(p, ref(a[0]), 0, WIDTH[a[1].ty] // 8, out)
     elif op == "mark":
         emit_mark("%%mk%d" % v.id, ref(a[0]), v.attrs["lo"], v.attrs["hi"], out)
+    elif op == "ctxload":
+        out.append("  %s.p = getelementptr i8, ptr %%ctx, i64 %d" % (r, v.attrs["off"]))
+        out.append("  %s = load i64, ptr %s.p, align 8" % (r, r))
+    elif op == "ctxstore":
+        p = "%%cs%d" % v.id
+        out.append("  %s = getelementptr i8, ptr %%ctx, i64 %d" % (p, v.attrs["off"]))
+        out.append("  store %s, ptr %s, align 8" % (typed(a[0]), p))
+    elif op == "regload":
+        var = v.attrs["var"]
+        if v.ty == "i1":
+            out.append("  %s.b = load i8, ptr %%cx.%s, align 1" % (r, var))
+            out.append("  %s = trunc i8 %s.b to i1" % (r, r))
+        else:
+            out.append("  %s = load i64, ptr %%cx.%s, align 8" % (r, var))
+    elif op == "call":
+        fn, at = v.attrs["fn"], v.attrs
+        args = (["ptr %ctx"] if at.get("ctx") else []) + [typed(x) for x in a]
+        tys = (["ptr"] if at.get("ctx") else []) + [x.ty for x in a]
+        decls.add(("helper:%s" % fn) if at.get("helper") else "declare %s @%s(%s)" % (v.ty, fn, ", ".join(tys)))
+        lhs = "" if v.ty == "void" else "%s = " % r
+        out.append("  %scall %s @%s(%s)" % (lhs, v.ty, fn, ", ".join(args)))
+    elif op == "gcall":
+        decls.add("declare void @%s(ptr)" % v.attrs["sym"])
+        out.append("  call void @%s(ptr %%ctx)" % v.attrs["sym"])
+    elif op == "icall":
+        decls.add("declare void @a64_icall(ptr, i64)")
+        out.append("  call void @a64_icall(ptr %%ctx, %s)" % typed(a[0]))
+    elif op == "poll":
+        decls.add("helper:lift2_poll")
+        out.append("  call void @lift2_poll(ptr %ctx)")
+    elif op == "flagsout":
+        if not flags_out:   # (with flags_out every flag write is stored already)
+            for k, var in enumerate("nzcv"):
+                out.append("  %%fo%d.%s = zext i1 %s to i8" % (v.id, var, ref(a[k])))
+                out.append("  store i8 %%fo%d.%s, ptr %%cx.%s, align 1" % (v.id, var, var))
     else:
         raise ValueError("emit: op %s" % op)

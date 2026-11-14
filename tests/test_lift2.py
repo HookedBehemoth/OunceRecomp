@@ -153,13 +153,50 @@ PROGRAMS = {
                {0: 0xB6, 4: 77}, {0: 5, 1: 5, 2: BASE + 24, 3: (BASE + 28) & ~0xFFF, 4: 77}, None),
 }
 
+def crc_ref(acc, data, nbits, castagnoli):
+    """CRC32 (via zlib, which inverts before and after) or CRC32C (bit by bit), the Arm ARM's CRC32 instructions"""
+    if not castagnoli:
+        import zlib
+        return ~zlib.crc32((data & ((1 << nbits) - 1)).to_bytes(nbits // 8, "little"), ~acc & M32) & M32
+    for _ in range(nbits):
+        bit = (acc ^ data) & 1
+        acc = (acc >> 1) ^ (0x82F63B78 if bit else 0)
+        data >>= 1
+    return acc
+
+
+def nzcv_bits(f):
+    return f[0] << 31 | f[1] << 30 | f[2] << 29 | f[3] << 28
+
+
+PROGRAMS.update({
+    # CRC32, MRS/MSR (TPIDR_EL0, TPIDRRO_EL0, NZCV, CTR_EL0), PAC as the identity, PACGA as 0
+    "sys": ([0x1ac14002, 0x9ac15c03, 0x1ac14404, 0xd53bd045, 0xd51bd040, 0xd53bd046, 0xeb01001f, 0xd53b4207,
+             0xd2ac0008, 0xd51b4208, 0x9a9f17e9, 0xd53b002a, 0xdac10020, 0xdac143e0, 0x9ac1300b, 0xd53bd06c,
+             0xd65f03c0],
+            {0: A, 1: B, "ctx": {0x310: 0x5555, 0x318: 0x7777}},
+            {0: A, 2: crc_ref(A & M32, B, 8, False), 3: crc_ref(A & M32, B, 64, True), 4: crc_ref(A & M32, B, 16, False),
+             5: 0x5555, 6: A, 7: nzcv_bits(nzcv(add_carry(A, ~B, 1))), 8: 0x60000000, 9: 1, 10: 0x8444C004, 11: 0,
+             12: 0x7777}, (0, 1, 1, 0)),
+    # BL through the callee's generic entry, then a tail call (B to another function)
+    "calls": ([0xaa0003f3, 0x94000003, 0x8b130000, 0x14000003, 0x8b000400, 0xd65f03c0, 0x91019000, 0xd65f03c0],
+              {0: A}, {0: (A * 4 + 100) & M64, 19: A, 30: None}, None, {"entries": [0, 4, 6]}),
+    # a jump table: BR through the discovery's targets
+    "jt": ([0x92400409, 0xd37ef529, 0x1000008a, 0x8b090149, 0xd61f0120, 0xd4200000, 0x14000004, 0x14000005,
+            0x14000006, 0x14000007, 0xd2800140, 0xd65f03c0, 0xd2800160, 0xd65f03c0, 0xd2800180, 0xd65f03c0,
+            0xd28001a0, 0xd65f03c0], {0: 6}, {0: 12}, None, {"jt": {4: [6, 7, 8, 9]}}),
+})
+
 HARNESS = r"""
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
-typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; } Ctx;
+typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; uint8_t rest[0x300]; } Ctx;   /* (rt/a64.h) */
 unsigned char a64_dirty[1u << 27];
+void a64_poll_cur(void) {}
+void a64_icall(Ctx *c, uint64_t t) { fprintf(stderr, "icall %%llx\n", (unsigned long long)t); }
+void a64_ijump(Ctx *c, uint64_t t) { fprintf(stderr, "ijump %%llx\n", (unsigned long long)t); }
 void a64_trap(Ctx *c, uint64_t pc, uint32_t w) { fprintf(stderr, "trap %%llx %%08x\n", (unsigned long long)pc, w); }
 %(decls)s
 int main(void) {
@@ -194,7 +231,7 @@ class Table(unittest.TestCase):
         for w, text in ((0x91060260, "add x0, x19, #384"), (0xaa0003f3, "orr x19, xzr, x0"),
                         (0xf946b108, "ldr x8, [x8, #3424]"), (0xa90257f6, "stp x22, x21, [sp, #32]"),
                         (0x7100069f, "subs wzr, w20, #1"), (0x93407c00, "sxtw x0, w0"),
-                        (0xd65f0fff, "retab"), (0xd503237f, "hint #27"), (0xb8bfc008, None),   # (LDAPR: milestone 2)
+                        (0xd65f0fff, "retab"), (0xd503237f, "hint #27"), (0xb8bfc008, "ldapr w8, [x0]"),
                         (0x1e202008, None)):   # (FCMP: floating point)
             i = enc.decode(w)
             self.assertEqual(asm.render(i) if i else None, text, "%08x" % w)
@@ -216,29 +253,42 @@ class EndToEnd(unittest.TestCase):
     def test_programs(self):
         m = emit_llvm.Module(flags_out=True)
         runs, decls = [], []
-        for name, (words, inputs, expect, flags) in PROGRAMS.items():
-            def word(pc, words=words):
-                return words[(pc - BASE) // 4]
-            pcs = [BASE + 4 * i for i in range(len(words))]
-            self.assertIsNone(build_ir.scope(BASE, pcs, word), name)
-            fn = build_ir.build(BASE, pcs, word)
-            fn.name = "g_%08x" % (BASE + len(decls))   # (one symbol per program)
-            m.add(fn)
-            decls.append("void %s(Ctx *);" % fn.name)
-            init = " ".join("c.x[%d] = %#xULL;" % (r, v) for r, v in inputs.items())
-            runs.append(RUN % {"init": init, "fn": fn.name, "name": name})
+        for k, (name, spec) in enumerate(PROGRAMS.items()):
+            words, inputs, expect, flags = spec[:4]
+            extra = spec[4] if len(spec) > 4 else {}
+            base = BASE if name == "branch" else BASE + 0x10000 * (k + 1)
+            starts = [base + 4 * i for i in extra.get("entries", [0])]
+            jt = {base + 4 * i: [base + 4 * t for t in ts] for i, ts in extra.get("jt", {}).items()}
+            prog = build_ir.Program(entries=starts, jt=jt)
+
+            def word(pc, words=words, base=base):
+                return words[(pc - base) // 4]
+            for n, e in enumerate(starts):
+                end = starts[n + 1] if n + 1 < len(starts) else base + 4 * len(words)
+                pcs = list(range(e, end, 4))
+                self.assertIsNone(build_ir.scope(e, pcs, word, prog), name)
+                fn = build_ir.build(e, pcs, word, prog)
+                m.add(fn)
+                decls.append("void %s(Ctx *);" % fn.name)
+            init = " ".join("c.x[%d] = %#xULL;" % (r, v) for r, v in inputs.items() if r != "ctx")
+            init += " ".join(" *(uint64_t *)((char *)&c + %d) = %#xULL;" % kv for kv in inputs.get("ctx", {}).items())
+            runs.append(RUN % {"init": init, "fn": "g_%08x" % starts[0], "name": name})
         with tempfile.TemporaryDirectory() as d:
             ll, c, exe = (os.path.join(d, n) for n in ("f.ll", "h.c", "h"))
             with open(ll, "w") as fo:
                 fo.write(m.text())
             with open(c, "w") as fo:
-                fo.write(HARNESS % {"decls": "\n".join(decls), "runs": "".join(runs)})
+                fo.write(HARNESS % {"decls": "\n".join(sorted(set(decls))), "runs": "".join(runs)})
             subprocess.run([llvm.check("clang"), "-O1", "-w", c, ll, "-o", exe], check=True)
             out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split("\n")
         got = {l.split()[0]: l.split()[1:] for l in out if l}
-        for name, (words, inputs, expect, flags) in PROGRAMS.items():
+        for k, (name, spec) in enumerate(PROGRAMS.items()):
+            expect, flags = spec[2], spec[3]
+            base = BASE if name == "branch" else BASE + 0x10000 * (k + 1)
             regs = [int(v, 16) for v in got[name][:32]]
             for r, v in expect.items():
+                if v is None and r == 30:
+                    v = base + 8   # (the calls program: BL's return address)
                 self.assertEqual(regs[r], v, "%s: x%d = %#x, expected %#x" % (name, r, regs[r], v))
             if flags is not None:
                 self.assertEqual(tuple(int(v) for v in got[name][32:]), tuple(flags), "%s: NZCV" % name)

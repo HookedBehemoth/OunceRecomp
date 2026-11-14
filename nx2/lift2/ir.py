@@ -19,6 +19,19 @@ Operations (Value.op):
   load                   (addr i64,), the value's type is the access width; attrs order (plain)
   store                  (addr i64, value), attrs mark (bool); a value of type "void"
   mark                   (base,), attrs lo, hi: the page marks of [base + lo, base + hi) (build_ir.group_marks)
+  ctxload                attrs off: the context's 64-bit field at off (TPIDR_EL0, FPCR, ...)
+  ctxstore               (value i64,), attrs off
+  call                   (args...), attrs fn, ctx (bool: the context pointer first): a runtime function returning
+                         the value's type ("void" for none); helper (an internal function emit_llvm.HELPERS defines)
+  gcall                  attrs sym: a guest function through its generic entry `void sym(ptr ctx)` (BL); the
+                         builder's after_call() follows
+  icall                  (target i64,): BLR through the runtime's a64_icall(ctx, target); after_call() follows
+  regload                attrs var: a guest register read from the context (after a call)
+  poll                   the interrupt poll of a loop's back edge (emit_llvm's lift2_poll)
+  flagsout               the flags written back to the context before control leaves for another function (a tail
+                         call or indirect jump may enter code that reads them: a split function, a shared tail)
+Terminators also: ("switch", index i64, [(case, block)], default block) for jump tables,
+  ("tail", sym) a tail call of another function's generic entry, ("ijump", target) a BR the lift could not resolve.
   writeback              (value,), attrs var: the guest register var now holds value. The generic entry stores it
                          to the context there (write-through, so a return stores nothing and the entry loads only
                          the registers read before written; LLVM drops the stores a later one overwrites)
@@ -49,11 +62,19 @@ class Value:
 
 
 class Block:
-    __slots__ = ("pc", "ops", "params", "defs", "term", "preds", "name")
+    """A block at a guest address, or a block the lifter adds (key (kind, pc): a tail call's or an indirect jump's
+    exit). called: a call in the block made every guest register the context's again (reads after it load)."""
+    __slots__ = ("pc", "ops", "params", "defs", "term", "preds", "name", "called")
 
-    def __init__(self, pc):
+    def __init__(self, key):
+        if isinstance(key, tuple):
+            kind, pc = key
+            self.name = "%s%08x" % (kind, pc)
+        else:
+            pc = key
+            self.name = "b%08x" % pc
         self.pc, self.ops, self.params, self.defs, self.term, self.preds = pc, [], {}, {}, None, []
-        self.name = "b%08x" % pc
+        self.called = False
 
     def succs(self):
         t = self.term
@@ -61,6 +82,12 @@ class Block:
             return [t[1]]
         if t[0] == "condbr":
             return [t[2], t[3]] if t[2] is not t[3] else [t[2]]
+        if t[0] == "switch":
+            out = []
+            for blk in [t[3]] + [b for _, b in t[2]]:
+                if blk not in out:
+                    out.append(blk)
+            return out
         return []
 
 
@@ -117,11 +144,20 @@ class Builder:
         b = self.blk
         v = b.defs.get(var)
         if v is None:
-            v = b.params.get(var)
-            if v is None:
-                v = b.params[var] = self.fn.new_value(VAR_TYPE[var], "param", (var,))
+            if b.called:   # (after a call the context holds every register)
+                v = self.op("regload", VAR_TYPE[var], var=var)
+            else:
+                v = b.params.get(var)
+                if v is None:
+                    v = b.params[var] = self.fn.new_value(VAR_TYPE[var], "param", (var,))
             b.defs[var] = v
         return v
+
+    def after_call(self):
+        """the callee may have changed any guest register: the block's later reads load them from the context"""
+        self.blk.defs.clear()
+        self.blk.called = True
+        self.cmp = None
 
     def set(self, var, value):
         assert value.ty == VAR_TYPE[var], (var, value.ty)
@@ -216,5 +252,9 @@ def finish(fn):
         b, var = work.pop()
         for p in b.preds:
             if var not in p.defs:
-                p.params[var] = p.defs[var] = fn.new_value(VAR_TYPE[var], "param", (var,))
-                work.append((p, var))
+                if p.called:
+                    v = p.defs[var] = fn.new_value(VAR_TYPE[var], "regload", (), {"var": var})
+                    p.ops.append(v)
+                else:
+                    p.params[var] = p.defs[var] = fn.new_value(VAR_TYPE[var], "param", (var,))
+                    work.append((p, var))

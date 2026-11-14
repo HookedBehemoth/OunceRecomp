@@ -57,6 +57,29 @@ ENCODINGS = [
     ("LDST_PAIR", "opc:2 101 0 0 mode:2 L imm7:7 Rt2:5 Rn:5 Rt:5", "ldst_pair", {},
      "(opc == 0 or opc == 2 or (opc == 1 and L == 1 and mode != 0))"),
     ("LDR_LIT", "opc:2 011 0 00 imm19:19 Rt:5", "ldr_lit", {}, "True"),
+    # ---- data processing: CRC32, pointer authentication (the identity here: no pointer is signed), PACGA
+    ("CRC32", "sf 0 0 11010110 Rm:5 010 C sz:2 Rn:5 Rd:5", "crc32", {}, "(sz == 3) == bool(sf)"),
+    ("PAC", "1 1 0 11010110 00001 opcode:6 Rn:5 Rd:5", "pac", {},
+     "opcode < 8 or (opcode < 16 and Rn == 31) or (opcode in (16, 17) and Rn == 31)"),
+    ("PACGA", "1 0 0 11010110 Rm:5 001100 Rn:5 Rd:5", "pacga", {}, "True"),
+    # ---- MTE STG/ST2G: tags are not modelled, only the base register's writeback
+    ("STG", "11011001 opc:2 1 imm9:9 op2:2 Rn:5 Rt:5", "stg", {}, "opc in (0, 2) and op2 != 0"),
+    # ---- atomics, acquire/release, exclusives: decoded here, lifted from milestone 6
+    ("LSE", "size:2 111 0 00 A R 1 Rs:5 o3 opc:3 00 Rn:5 Rt:5", "lse", {},
+     "o3 == 0 or (opc == 0) or (opc == 4 and A == 1 and R == 0)"),
+    ("CAS", "size:2 001000 1 L 1 Rs:5 o0 11111 Rn:5 Rt:5", "cas", {}, "True"),
+    ("CASP", "0 sz 001000 0 L 1 Rs:5 o0 11111 Rn:5 Rt:5", "casp", {}, "Rs % 2 == 0 and Rt % 2 == 0"),
+    # (the Rs and Rt2 fields these forms do not use are "should be one"; LLVM, and the hardware, ignore them)
+    ("LDSTORD", "size:2 001000 1 L 0 Rs:5 o0 Rt2:5 Rn:5 Rt:5", "ldstord", {}, "o0 == 1"),
+    ("LDSTEX", "size:2 001000 0 L 0 Rs:5 o0 Rt2:5 Rn:5 Rt:5", "ldstex", {}, "True"),
+    ("LDSTEXP", "1 sz 001000 0 L 1 Rs:5 o0 Rt2:5 Rn:5 Rt:5", "ldstexp", {}, "True"),
+    # ---- system: barriers (DMB/DSB from milestone 6; ISB is nothing here), MRS/MSR, DC/IC, exceptions
+    ("BARRIER", "11010101000000110011 CRm:4 op2:3 11111", "fence", {}, "op2 in (2, 4, 5)"),
+    ("ISB", "11010101000000110011 CRm:4 110 11111", "barrier", {}, "True"),
+    ("SYSREG", "1101010100 L 1 o0 op1:3 CRn:4 CRm:4 op2:3 Rt:5", "sysreg", {},
+     "(o0, op1, CRn, CRm, op2) in SYSREGS and (L == 1 or SYSREGS[(o0, op1, CRn, CRm, op2)][1])"),
+    ("SYS", "1101010100 0 01 011 0111 CRm:4 op2:3 Rt:5", "sys", {}, "(CRm, op2) in SYS_OPS"),
+    ("EXC", "11010100 opc:3 imm16:16 000 LL:2", "exc", {}, "(opc, LL) in ((0, 1), (1, 0), (2, 0))"),
     # ---- branches
     ("B", "op 00101 imm26:26", "b", {}, "True"),
     ("BCOND", "0101010 0 imm19:19 0 cond:4", "bcond", {}, "True"),
@@ -70,6 +93,20 @@ ENCODINGS = [
     ("HINT", "11010101000000110010 CRm:4 op2:3 11111", "hint", {}, "True"),
     ("UDF", "0000000000000000 imm16:16", "udf", {}, "True"),
 ]
+
+
+# system registers MRS/MSR reach: (op0 - 2, op1, CRn, CRm, op2) -> (name, writable at EL0)
+SYSREGS = {(1, 3, 4, 2, 0): ("NZCV", True), (1, 3, 4, 4, 0): ("FPCR", True), (1, 3, 4, 4, 1): ("FPSR", True),
+           (1, 3, 13, 0, 2): ("TPIDR_EL0", True), (1, 3, 13, 0, 3): ("TPIDRRO_EL0", False),
+           (1, 3, 14, 0, 1): ("CNTPCT_EL0", False), (1, 3, 14, 0, 2): ("CNTVCT_EL0", False),
+           (1, 3, 14, 0, 0): ("CNTFRQ_EL0", False),
+           (1, 3, 0, 0, 1): ("CTR_EL0", False), (1, 3, 0, 0, 7): ("DCZID_EL0", False)}
+# SYS operations at EL0 (op1 3, CRn 7): (CRm, op2) -> name; DC ZVA writes memory, the others are no-ops here
+SYS_OPS = {(4, 1): "dc zva", (4, 3): "dc gva", (4, 4): "dc gzva", (5, 1): "ic ivau", (10, 1): "dc cvac", (11, 1): "dc cvau", (12, 1): "dc cvap",
+           (13, 1): "dc cvadp", (14, 1): "dc civac",
+           # (MTE tag maintenance: no-ops, tags are not modelled)
+           (10, 3): "dc cgvac", (10, 5): "dc cgdvac", (12, 3): "dc cgvap", (12, 5): "dc cgdvap",
+           (13, 3): "dc cgvadp", (13, 5): "dc cgdvadp", (14, 3): "dc cigvac", (14, 5): "dc cigdvac"}
 
 
 def ldst_ok(size, opc):
@@ -125,7 +162,7 @@ class Entry:
         self.name, self.mask, self.value, self.fields = name, mask, value, tuple(fields)
         self.template, self.params, self.pattern = template, params, pattern
         args = ", ".join(f for f, _, _ in fields)
-        self.valid = eval("lambda %s: %s" % (args, valid), env or {"bitmask": bitmask, "ldst_ok": ldst_ok})
+        self.valid = eval("lambda %s: %s" % (args, valid), env or _ENV)
 
     def extract(self, w):
         return {f: (w >> s) & m for f, s, m in self.fields}
@@ -135,7 +172,7 @@ ENTRIES = []
 _cache = {}
 RENDER = {}   # entry name -> printer (asm.py's own printers are found by name; other tables bring theirs)
 _BY_OP0 = [[] for _ in range(16)]
-_ENV = {"bitmask": bitmask, "ldst_ok": ldst_ok}
+_ENV = {"bitmask": bitmask, "ldst_ok": ldst_ok, "SYSREGS": SYSREGS, "SYS_OPS": SYS_OPS}
 
 
 def register(encodings, env=None, render=None):
