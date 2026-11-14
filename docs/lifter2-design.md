@@ -743,6 +743,21 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
   game is covered (100 % of words). Left out, with no word in the game: PMULL 1Q (crypto), FP16 arithmetic other than
   FNEG/FABS, the by-element dot products, complex and BF16 forms.
 - `tests/test_lift2_fp.py`: 394 instructions × 96 states, 0 differences outside 7.1.
+- Whole population (every function of the game with an FP/NEON or vector load/store instruction that lift 2 can lift
+  now; lifted with the leaf Program, compiled in modules of 1,500 functions at the build's IR flags, -O2 for the hot
+  set `work/hot_funcs_play.txt`, -O1 for the rest; the present lifter's counts disassembled from the current build's
+  symbols, read-only):
+
+| | FP functions | lifted | guest instructions (FP/NEON) | present lifter x86 | lift 2 x86 | ratio |
+|---|---|---|---|---|---|---|
+| hot set | 588 | 322 | 241,299 (123,026) | 5,378,211 | 686,988 | 0.128 |
+| rest | 31,335 | 26,687 | 3,693,830 (1,021,868) | 31,479,525 | 10,755,194 | 0.342 |
+| all | 31,923 | 27,009 | 3,935,129 (1,144,894) | 36,857,736 | 11,442,182 | 0.310 |
+
+  The 4,914 not lifted are passed over for milestone 6's forms (LSE 4,433, LDAPR/STLR 221, CAS 133, barriers 99) and
+  28 words outside every table. The hot set is 852 functions, 836,310 guest instructions, 24.7 % of them FP/NEON
+  (the whole game: 9.0 %). Caveat: the present lifter's hot functions are built with PGO and may have callees inlined,
+  lift 2's counts are of the generic entry with callees not inlined across modules.
 
 ## 14c. Milestones 5-8: atomics, SVC, the mixed build in the game
 
