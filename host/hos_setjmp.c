@@ -155,6 +155,18 @@ void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3
     return s->buf;
 }
 
+/* lift 2's call of a setjmp owner (nx2/lift2/mixed.py sjcall_<owner>): the present lifter's block around the call, in this
+   frame, which is alive while the owner runs; a longjmp to the owner's setjmp comes back here and runs the owner's code from
+   the return address */
+void hos_sj_call(Ctx *c, void (*f)(Ctx *), uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3) {
+    void **sj = recomp_sj_push(c, r0, r1, r2, r3);
+    if (recomp_sj_setjmp(sj) == 0)
+        f(c);
+    else
+        a64_icall(c, recomp_sj_target(sj));
+    recomp_sj_pop(sj);
+}
+
 uint64_t recomp_sj_target(void **buf) { return ((SjSlot *)((char *)buf - offsetof(SjSlot, buf)))->target; }
 
 void recomp_sj_pop(void **buf) {

@@ -130,6 +130,7 @@ void a64_icall(Ctx *A64_NOESC c, uint64_t target);            /* BLR: indirect c
 void **recomp_sj_push(Ctx *A64_NOESC c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3);
 uint64_t recomp_sj_target(void **slot);
 void recomp_sj_pop(void **slot);
+void hos_sj_call(Ctx *A64_NOESC c, void (*f)(Ctx *), uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3);   /* (hookshot: lift 2's form) */
 void a64_ijump(Ctx *A64_NOESC c, uint64_t target);            /* BR that is not a jump table: indirect tail call */
 /* The lifted BLR / BR: a cache per call site, filled by its first target (the guest address in the top 32 bits, the
    function as an offset from a64_lookup in the low 32). A site calling that target again reads no shared table and

@@ -115,6 +115,9 @@ def write_plan(L, img, path):
     no_call = set(getattr(L, "setjmp_owner", {}) or ())
     classes = os.environ.get("HOOKSHOT_LIFT2_CLASSES", "int,fp,neon,crypto").split(",")
     prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, no_call=no_call, classes=classes)
+    # (a BL to a setjmp owner is lifted as a call of hos_sj_call, host/hos_setjmp.c: scope need not refuse it)
+    scope_prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, classes=classes)
+    sj_rets = {e: tuple((list(r) + [0, 0, 0, 0])[:4]) for e, r in (getattr(L, "setjmp_owner", {}) or {}).items()}
     after = set(getattr(L, "after", {}) or ())
     hooks = set(L.hooks)
     bodies, why = {}, {}
@@ -127,10 +130,10 @@ def write_plan(L, img, path):
             why["C added after an instruction (oot_wide, oot_jitter, oot_occlusion)"] = why.get(
                 "C added after an instruction (oot_wide, oot_jitter, oot_occlusion)", 0) + 1
             continue
-        r = build_ir.scope(e, pcs, img.word, prog)
+        r = build_ir.scope(e, pcs, img.word, scope_prog)
         if r is not None and "not decoded" in r:   # (data the discovery took for code: unreachable from the entry)
             live = reachable(e, pcs, img.word, prog.jt)
-            if len(live) < len(pcs) and build_ir.scope(e, live, img.word, prog) is None:
+            if len(live) < len(pcs) and build_ir.scope(e, live, img.word, scope_prog) is None:
                 pcs, r = live, None
         if r is not None:
             k = re.sub(r" \(.*| at .*| [0-9a-f]{8}.*|0x[0-9a-f]+", "", r)
@@ -144,7 +147,7 @@ def write_plan(L, img, path):
         packed = summaries(L, img, path, prog, hooks)
         import gc
         gc.collect()   # (the analysis' graph is garbage now; the C is written next, in this process)
-    plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": sorted(no_call),
+    plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets,
             "hooks": sorted(hooks), "bodies": bodies, "why": why,
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
     with open(path + ".tmp", "wb") as f:
@@ -252,13 +255,16 @@ def lift_part(args):
     plan = _plan(plan_path)
     plt = plan["plt"]
     verify = bool(os.environ.get("HOOKSHOT_LIFT2_VERIFY"))
-    symbol = lambda e: ("g_%08x" if e in chosen else "f_%08x") % e
+    base_symbol = lambda e: ("g_%08x" if e in chosen else "f_%08x") % e
+    sj = plan.get("sj_rets", {})
+    # (a call of a setjmp owner: hos_sj_call through a per-owner stub, as the present lifter's recomp_sj_* block)
+    symbol = lambda e: "sjcall_%08x" % e if e in sj else base_symbol(e)
     # (verification: a tail call goes to the callee's body, past its checks, so that a loop of tail calls does not
     # grow the host stack; the caller's own checks cover the callee's effects)
     def tail_symbol(e):
-        return "body_%08x" % e if verify and e in chosen and verified(plan, e) else symbol(e)
+        return "body_%08x" % e if verify and e in chosen and verified(plan, e) else base_symbol(e)
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
-                            no_call=plan["no_call"], symbol=symbol, tail_symbol=tail_symbol)
+                            symbol=symbol, tail_symbol=tail_symbol)
     m = emit_llvm.Module()
     extra = []
     for e in names:
@@ -277,6 +283,16 @@ def lift_part(args):
         extra.append("define void @f_%08x(ptr %%ctx) {\n  musttail call void @g_%08x(ptr %%ctx)\n  ret void\n}" % (e, e))
     if verify:
         extra.append("declare void @lift2_check_enter(ptr, ptr, ptr)\ndeclare void @lift2_check_exit(ptr, ptr, ptr)")
+    stubs = sorted(int(d.split("@sjcall_")[1][:8], 16) for d in m.decls if d.startswith("declare void @sjcall_"))
+    if stubs:
+        m.defined = m.defined | {"sjcall_%08x" % e for e in stubs}
+        extra.append("declare void @hos_sj_call(ptr, ptr, i64, i64, i64, i64)")
+        for e in stubs:
+            t = base_symbol(e)
+            if t not in m.defined:
+                m.decls.add("declare void @%s(ptr)" % t)
+            extra.append("define internal void @sjcall_%08x(ptr %%ctx) {\n  call void @hos_sj_call(ptr %%ctx, ptr @%s, "
+                         "i64 %d, i64 %d, i64 %d, i64 %d)\n  ret void\n}" % ((e, t) + sj[e]))
     return m.text() + "\n".join(extra) + "\n"
 
 
