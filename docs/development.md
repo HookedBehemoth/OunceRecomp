@@ -73,6 +73,11 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
 - To keep builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`, `*.idx`)
   to `work/sa/<name>/` and run with `EXE=`.
 
+**Play build.** Play with `scripts/play.sh [record <name>] [title|kokiri|hf|market] [-- NAME=VALUE]` (`record` writes the input to `work/rec/<name>`): it runs the main checkout's `work/sa/build`
+(saves and log in `work/play`), which `scripts/play-refresh.sh` keeps at native-vk's head (build log `work/play/refresh.log`, stamp
+`work/sa/build/BUILD.txt`; it refuses on a dirty tree or another branch). `scripts/play-refresh.sh --install-hook` writes a local
+`.git/hooks/post-merge` that starts it in the background after every merge onto native-vk (hooks are not tracked: once per clone).
+
 **Run.** `OVERLAY=work/overlay/chisel_kokiri scripts/run-vk.sh <name> <seconds> -- [NAME=VALUE ...]` starts the build
 headless and muted, with a private `--user` folder, and writes `work/runs/<name>/`: `shots/` (a picture every
 `SHOT_EVERY` presents, 300), `timeline.txt` (second, presents, RSS in MB), `log.txt`, `stdout.txt`. `EXE=` picks another
