@@ -714,6 +714,108 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 - `LIFT2_DEFAULT_NAN` is implemented for scalar and vector arithmetic but not measured.
 - The shadow build (milestone 12) and the MXCSR runtime (above).
 
+## 14c. Milestones 5-8: atomics, SVC, the mixed build in the game
+
+**Milestone 6: atomics and ordering** (section 8's mapping).
+- LD<op>/SWP are `atomicrmw` (LDCLR as `and` with the complement); CAS is `cmpxchg`, CASP a 128-bit `cmpxchg`
+  (`cmpxchg16b`, x86-64-v3's cx16).
+- LDAR/LDAPR are acquire loads (plain moves); STLR is a `seq_cst` store (`xchg`).
+- The exclusives go through the runtime's monitor (`recomp_ldxr`/`recomp_stxr`/`recomp_ldxp`/`recomp_stxp`) as the
+  present lifter does.
+- DMB/DSB whose option orders stores before loads (`CRm & 3 == 3`: ISH, SY, OSH, NSH) are `fence seq_cst`
+  (`lock or`); the load-only and store-only kinds are `fence acq_rel` (no instruction, a compiler barrier).
+- CLREX clears the monitor; ISB is nothing.
+- Tests in `tests/test_lift2.py`:
+  - every family in one synthetic program;
+  - the store-buffering litmus test on two threads (STLR then LDAR of the other location; ARM forbids both loads
+    seeing 0). The lifted code shows the forbidden outcome 0 times in 1 M rounds. The same code with STLR as a
+    release store (a plain mov) shows it about 25 times in 200 k rounds; when a machine shows none, the test skips
+    and says it has no teeth there.
+
+**Milestone 7, the part milestone 8 needs.**
+- SVC: the flags are stored, then `a64_svc(ctx, imm)`; every register is the context's again after it (the OS layer
+  may switch fibers).
+- Kept on the present lifter in the mixed build, with the reasons the lift prints:
+  - functions that call a setjmp owner (31);
+  - hooked addresses (`a64_hooks.c`: the host's functions);
+  - functions with C added after an instruction (`oot_wide`, `oot_jitter`, `oot_occlusion`: 12);
+  - every function whose lifted C carries a host edit (`ENTRY_HOOK`, `SPLICE_AFTER`, the patches of
+    `nx2/oot_patches.py` and `oot_native_resolution.py`: their C names an `entry_`, `splice_` or `hos_` symbol;
+    105 of the functions lift 2 could take).
+- Porting those edits to guest-address probes (section 9) is still open.
+
+**Milestone 5: the mixed build.** `HOOKSHOT_LIFT2=all-safe` (or a file of addresses) at lift and build time;
+`nx2/lift2/mixed.py`.
+- **Lift time.** `nx2/lift.py` writes the plan: the discovery's entries, jump tables, PLT stubs, setjmp owners and
+  hooks, and the instructions of every function `scope()` allows for the classes `HOOKSHOT_LIFT2_CLASSES` names
+  (`int` by default).
+- **Build time.** `nx2/build.py`:
+  - checks the LLVM major;
+  - lifts the chosen functions in 16 processes;
+  - streams each partition's text (about 120 k instructions each, hot functions apart at `RX_HOT_OPT`) into
+    `clang -x ir -`, with objects cached by the text's hash;
+  - compiles copies of the present lifter's code files in which the chosen functions are static and unused, so that
+    lift 2's `f_<addr>` thunks stand in.
+- Unset, nothing new runs: the default build is unchanged.
+- **Bisection.**
+  - `nx2/lift2/bisect.py start <build>/lift2_functions.txt`, then `good`/`bad` after each build with
+    `HOOKSHOT_LIFT2=<the .try file>`.
+  - `nx2/test_lift2_leaf.py --calls --funcs <file>` runs the differential on a list first, which rules a half out in
+    minutes.
+- **Instruction classes.** `scope()` takes `Program.classes` (`sem.CLASS`: a template's class is its module's name),
+  so the FP/NEON functions join with `HOOKSHOT_LIFT2_CLASSES=int,fp,neon` once the runtime's FP mode is in.
+
+**Milestone 8: the game on the mixed build** (worktree build, native-vk fd4f312 plus this branch).
+- **Lift 2's share.**
+  - Plan: 262,632 of 294,523 functions are liftable with the `int` class.
+  - Passed over: class fp 29,454; class neon 2,390; calls of a setjmp owner 31; C added after an instruction 12;
+    undecoded 4.
+  - The build took 262,527 of them (105 more stay for host edits): 10.69 M of 17.65 M guest instructions (60.6 %).
+  - Of the hot set (`work/hot_funcs_play.txt`): 253 of 852 functions, but only 10.8 % of its instructions (the
+    hot set is mostly FP/NEON code).
+- **Build.**
+  - Lift 2's lift of 262 k functions: 87 s on 16 processes.
+  - Its 90 partitions compile in 124 s.
+  - Recompiling the present lifter's files with the taken functions made static: 664 s, cold. Most of a file's
+    functions are gone, so a 24 MB file takes 17-40 s instead of 100-200 s.
+  - Whole build 884 s.
+  - Executable 479 MB against 474 MB. The taken functions are 164.8 MB (generic entries plus their `f_` thunks, into
+    which clang inlines small bodies) against 162.0 MB from the present lifter (1.017x). In bytes, lift 2's code is
+    not smaller yet: every call goes through the context, and every register write is stored.
+- **Smoke (kokiri).**
+  - Mixed: PASS, worst picture distance 4 of 64, 0 new error-like log groups.
+  - The same worktree's present-lifter build: PASS, worst distance 10.
+  - No bisection was needed: no function was found broken.
+- **Benchmarks** (`scripts/bench.sh <scene> 600`, three alternating rounds). The machine carried other agents'
+  builds (load 10-16), so the rounds vary by more than the difference.
+
+| scene | build | total s (3 runs) | median frame ms | p99 ms | CPU s | draws/frame |
+|---|---|---|---|---|---|---|
+| market | present lifter | 8.50 / 10.14 / 10.01 | 13.89 / 16.51 / 16.07 | 18.41 / 24.59 / 26.15 | 31.6 / 37.5 / 36.8 | 2865 |
+| market | mixed | 11.52 / 10.14 / 16.18 | 18.18 / 16.40 / 25.99 | 30.22 / 24.92 / 43.44 | 39.4 / 35.7 / 51.6 | 2868 |
+| zoo_static | present lifter | 5.07 / 4.57 / 16.83 | 8.01 / 7.35 / 26.28 | 13.87 / 11.63 / 55.66 | 15.2 / 13.9 / 28.1 | 1298 |
+| zoo_static | mixed | 4.69 / 4.56 / 12.14 | 7.64 / 7.29 / 19.41 | 10.69 / 11.93 / 34.70 | 14.4 / 13.7 / 26.3 | 1298 |
+
+  - The one round with both builds on a quiet machine (round 2) is equal within 1 %: market 16.90 against 16.90 ms,
+    zoo_static 7.61 against 7.62 ms.
+  - That is expected while lift 2 holds only 10.8 % of the hot instructions and calls cost what they do.
+
+**What milestones 13-15 should know.**
+- **Where the time goes in lift 2's code.** Calls and the write-through stores are what keep its code at the
+  present lifter's size in bytes. The functions with calls measured 0.92-0.93x instructions; leaves 0.87x; the bytes
+  of all taken functions 1.017x.
+- **Facts the summaries need.** `Program` already carries everything per function. The summaries replace
+  `Builder.after_call`'s "every register again" with the callee's clobber set, and the write-through stores with
+  stores of what the callee reads.
+- **Thunks.** Every taken function has an `f_` thunk for the present lifter's callers and the function table. With
+  fast entries, `f_`/`g_` stay the generic convention, and lift 2's direct calls go to the fast entry.
+- **Mixed builds already link** both lifters through the generic entry. Milestones 13-15 can be switched on per
+  partition and bisected the same way (`bisect.py`, `--funcs`).
+- **The hot set.** Its lift 2 functions are compiled at -O2 without a profile (the present profile is front-end
+  instrumentation). An IR-level profile (`-fprofile-generate` on the `.ll` modules) is milestone 17's.
+- **Taking the rest of the game.** It is mostly FP/NEON: `HOOKSHOT_LIFT2_CLASSES=int,fp,neon` once the runtime's FP
+  mode (MXCSR following FPCR, fibers) is in.
+
 ## 15. Risks not retired
 
 - **Non-AAPCS functions** (SDK assembly, outlined helpers, veneers reading x16/x17): their number decides how much
