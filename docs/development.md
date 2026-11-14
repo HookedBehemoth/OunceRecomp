@@ -86,6 +86,12 @@ a build folder is cold (shaders and pipelines are prepared); copy a warm folder'
   loading fades. Details: `tools/dump/README.md`.
 - **Scripted input:** `"HOS_INPUT_SCRIPT=30:LUP/3000,34:RRIGHT/2500" HOS_INPUT_EXCLUSIVE=1` (seconds from the game's
   first controller read; the syntax is under Input for scripted runs).
+- **Record and replay a session:** the game started with `HOS_INPUT_RECORD=$PWD/work/rec/<name>` (an absolute path)
+  copies the save folder to `work/rec/<name>/user` and writes every pad state the game reads, keys and mouse after their
+  mapping included, to `work/rec/<name>/input.rec` (a line a change, one a second; flushed, so a crash keeps it).
+  `scripts/replay.sh <name> <seconds> [-- NAME=VALUE ...]` replays it headless and muted from that save, with the
+  header's settings, into `work/runs/replay-<name>`. Lines are matched by the game's pad read count: a load that takes
+  longer in the replay still shifts it, so let go of the controls during loads and wait a second after one.
 - **Launch time:** `work/venv/bin/python -I scripts/launch_time.py work/runs/<name> ...`.
 - **Smoke test:** `scripts/smoke.sh <name> [kokiri|hf] [-- NAME=VALUE ...]` runs one standing scene for `SECS` (40) seconds
   with `RUN=timing`, and `scripts/smoke.py` prints a verdict of about ten lines: fatal log lines, a perceptual hash of
@@ -172,6 +178,9 @@ beside them are listed at the end, under Undocumented, with where they are read.
 | `HOS_INPUT_EXCLUSIVE` | (set) the script alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses |
 | `HOS_INPUT_BACKGROUND` | controllers count while the window is behind another one (`0` overrides the option) |
 | `HOS_INPUT_SCRIPT_BACKGROUND` | (set) scripted input runs with the game in the background |
+| `HOS_INPUT_RECORD` | `<dir>`: the save folder copied to `<dir>/user` at the start, and every pad state the game reads written to `<dir>/input.rec` (on each change and once a second) |
+| `HOS_INPUT_REPLAY` | `<dir>/input.rec`: its states instead of the devices' until its last line |
+| `HOS_INPUT_REPLAY_KEY` | what a replayed line is matched by: `read` (the default: the game's pad reads), `present`, or `ms` (wall time) |
 | `HOS_XINPUT` | (set) poll XInput even when SDL has open controllers |
 | `HOS_NO_SDL` | (set) controllers are not read through SDL |
 | `HOS_HD_RUMBLE` | `0`: no HD rumble |

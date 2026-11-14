@@ -863,6 +863,99 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     if (keys[0] || keys[1] || keys[2] || keys[3]) player_used();
 }
 
+/* HOS_INPUT_RECORD=<dir>: the pad state each read of pad No.1 gives the game (read_input's: pads, keys and mouse after
+   their mapping, and any script) goes to <dir>/input.rec when it changes and once a second, a line each, flushed (a
+   kill loses nothing). hos_main.c copies the save folder to <dir>/user before the game starts. Line: <read> <present>
+   <ms> <buttons hex> <lx> <ly> <rx> <ry>: the read's number (1 the first), native presents so far, ms since the
+   first read. '#' lines are notes; the first names the build and the settings a replay should share.
+   HOS_INPUT_REPLAY=<file>: the file's states instead of the devices' (a line holds until the next), by the read's
+   number, or HOS_INPUT_REPLAY_KEY=present or ms; after the last line the devices count again. */
+typedef struct { int64_t key[3]; uint64_t buttons; int32_t stick[4]; } RecLine;
+
+static void input_record(const int64_t key[3], uint64_t buttons, const int32_t stick[4]) {
+    static FILE *f;
+    static int opened;
+    static uint64_t last_buttons;
+    static int32_t last_stick[4];
+    static int64_t last_ms = -1000000;   /* (the first read is written) */
+    if (!opened) {
+        opened = 1;
+        const char *dir = getenv("HOS_INPUT_RECORD");
+        if (!dir || !*dir) return;
+        char path[1024];
+        snprintf(path, sizeof path, "%s/input.rec", dir);
+        if (!(f = fopen(path, "w"))) { hos_log("hid: cannot write %s", path); return; }
+        const char *hos_version(void);
+        int hos_output_res(void), hos_fps_max(void);   /* nn_applet.c, nn_vi.c */
+        const char *hos_language(void);                /* nn_applet.c */
+        fprintf(f, "# hookshot input record 1 build=%s HOS_OUTPUT_RES=%d HOS_FPS_MAX=%d HOS_LANGUAGE=%s\n"
+                   "# read present ms buttons lx ly rx ry\n",
+                hos_version(), hos_output_res(), hos_fps_max(), hos_language());
+        fflush(f);
+        hos_log("hid: recording input to %s", path);
+    }
+    if (!f || (buttons == last_buttons && !memcmp(stick, last_stick, sizeof last_stick) && key[2] - last_ms < 1000)) return;
+    fprintf(f, "%lld %lld %lld %llx %d %d %d %d\n", (long long)key[0], (long long)key[1], (long long)key[2],
+            (unsigned long long)buttons, (int)stick[0], (int)stick[1], (int)stick[2], (int)stick[3]);
+    fflush(f);
+    last_buttons = buttons, memcpy(last_stick, stick, sizeof last_stick), last_ms = key[2];
+}
+
+/* 1 while the replay gives the state */
+static int input_replay(const int64_t key[3], uint64_t *buttons, int32_t stick[4]) {
+    static RecLine *rec;
+    static int n, at = -1, k, state;   /* state: 0 not read, 1 replaying, 2 over or none */
+    if (!state) {
+        state = 2;
+        const char *path = getenv("HOS_INPUT_REPLAY");
+        if (!path || !*path) return 0;
+        const char *e = getenv("HOS_INPUT_REPLAY_KEY");
+        k = e && !strcmp(e, "present") ? 1 : e && !strcmp(e, "ms") ? 2 : 0;
+        FILE *f = fopen(path, "r");
+        if (!f) { hos_log("hid: replay: cannot read %s", path); return 0; }
+        char line[256];
+        int cap = 0;
+        while (fgets(line, sizeof line, f)) {
+            RecLine r;
+            long long a, b, c;
+            unsigned long long bt;
+            if (line[0] == '#' || sscanf(line, "%lld %lld %lld %llx %d %d %d %d", &a, &b, &c, &bt, &r.stick[0], &r.stick[1],
+                                         &r.stick[2], &r.stick[3]) != 8) continue;
+            r.key[0] = a, r.key[1] = b, r.key[2] = c, r.buttons = bt;
+            if (n == cap) {
+                RecLine *grown = realloc(rec, (size_t)(cap = cap ? cap * 2 : 1024) * sizeof *rec);
+                if (!grown) break;
+                rec = grown;
+            }
+            rec[n++] = r;
+        }
+        fclose(f);
+        static const char *const names[] = {"read", "present", "ms"};
+        hos_log("hid: replaying %d states from %s by %s number", n, path, names[k]);
+        state = n ? 1 : 2;
+    }
+    if (state != 1) return 0;
+    while (at + 1 < n && rec[at + 1].key[k] <= key[k]) at++;
+    if (at == n - 1 && key[k] > rec[at].key[k]) {
+        hos_log("hid: replay over at read %lld, present %lld, %.1f s (%d states; the file's last at read %lld, present %lld)",
+                (long long)key[0], (long long)key[1], key[2] / 1000.0, n, (long long)rec[at].key[0], (long long)rec[at].key[1]);
+        state = 2;
+        return 0;
+    }
+    *buttons = at < 0 ? 0 : rec[at].buttons;
+    for (int i = 0; i < 4; i++) stick[i] = at < 0 ? 0 : rec[at].stick[i];
+    return 1;
+}
+
+static void input_record_replay(uint64_t *buttons, int32_t stick[4]) {
+    static int64_t reads, t0;
+    const int64_t now = hos_now_ns();
+    if (!reads) t0 = now;
+    const int64_t key[3] = {++reads, InterlockedCompareExchange64(&hos_present_count, 0, 0), (now - t0) / 1000000};
+    input_replay(key, buttons, stick);
+    input_record(key, *buttons, stick);
+}
+
 static void vibration_send(uint64_t handle, uint64_t value);
 volatile int64_t hos_hid_last_read;
 
@@ -893,6 +986,7 @@ static void npad_states(Ctx *c) {
     }
     if (connected) {
         read_input(&buttons, stick);
+        input_record_replay(&buttons, stick);
         uint64_t axes = 0;
         uint64_t flight = 0;
         int height = 0;

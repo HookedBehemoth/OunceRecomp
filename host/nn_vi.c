@@ -124,6 +124,7 @@ static int fps_max(void) {
     }
     return v;
 }
+int hos_fps_max(void) { return fps_max(); }   /* (nn_hid.c: the input record's header) */
 static int64_t next_frame_at, window_start, frames_in_window;
 static volatile LONG64 presents;
 long long hos_vi_present_number(void) { return __atomic_load_n(&presents, __ATOMIC_RELAXED); }

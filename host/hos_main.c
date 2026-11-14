@@ -237,10 +237,7 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 }
 
 void hos_update_check(void);   /* (host/hos_update.c) */
-#ifndef _WIN32
-/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
-   A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
-   cannot be moved keeps the old place. --user still wins. */
+/* A folder tree copied and deleted: the saves' move (below) and the input record's copy of them (main) */
 static int is_dir(const char *p) {
     const DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
@@ -294,6 +291,10 @@ static void delete_tree(const char *p) {
     }
     RemoveDirectoryA(p);
 }
+#ifndef _WIN32
+/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
+   A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
+   cannot be moved keeps the old place. --user still wins. */
 static const char *saves_dir(const char *beside) {
     static char dir[MAX_PATH];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
@@ -373,7 +374,8 @@ static int env_line_allowed(const char *name, const char *value) {
        the file select) */
     static const char *const by_name[] = {
         "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
-        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_WATCH", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
+        "HOS_INPUT_SCRIPT", "HOS_INPUT_RECORD",
+        "HOS_INPUT_REPLAY", "HOS_SAMPLE_ALL", "HOS_WATCH", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
         "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
         "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
         "RX_WGSL_OVERRIDE"};
@@ -1460,6 +1462,21 @@ static int game_main(int argc, char **argv) {
     if (getenv("HOS_TRACE")) hos_trace = 1;
     if (!hos_user_dir) hos_user_dir = "user";
     CreateDirectoryA(hos_user_dir, NULL);
+    {   /* HOS_INPUT_RECORD=<dir>: the save folder as the game starts with it, to <dir>/user (a replay starts from it;
+           nn_hid.c writes <dir>/input.rec) */
+        const char *rec = getenv("HOS_INPUT_RECORD");
+        if (rec && *rec) {
+            char dir[MAX_PATH], user[MAX_PATH];
+            snprintf(dir, sizeof dir, "%s", rec);
+            for (char *p = dir + 1; *p; p++)   /* (each folder of the path) */
+                if (*p == '/' || *p == 92) { const char sep = *p; *p = 0; CreateDirectoryA(dir, NULL); *p = sep; }
+            CreateDirectoryA(dir, NULL);
+            snprintf(user, sizeof user, "%s" SEP_S "user", dir);
+            delete_tree(user);
+            hos_log("hid: input record: save folder %s %s %s", hos_user_dir,
+                    copy_tree(hos_user_dir, user) ? "copied to" : "NOT fully copied to", user);
+        }
+    }
     if (!reserve_guest()) {
         fprintf(stderr, "cannot reserve the guest window\n");
         return 1;

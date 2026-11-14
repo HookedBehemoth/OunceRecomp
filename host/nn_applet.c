@@ -79,6 +79,7 @@ static const char *desired_language(void) {
     else hos_log("oe: language %s (%s)", lang, from);
     return lang;
 }
+const char *hos_language(void) { return desired_language(); }   /* (nn_hid.c: the input record's header) */
 HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
     uint64_t v = 0;
     memcpy(&v, desired_language(), strlen(desired_language()));
@@ -122,6 +123,7 @@ static int output_mode(void) {
     }
     return v;
 }
+int hos_output_res(void) { return output_mode(); }   /* (nn_hid.c: the input record's header) */
 uint32_t hos_output_size(int height) {
     switch (output_mode()) {
     case 2: return height ? 2160 : 3840;
