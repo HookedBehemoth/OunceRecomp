@@ -39,6 +39,15 @@ plane textures). Both are reached from `f_83b82250` (the plane copy). So "enhanc
 `nandroid::ALooper` thread, high water 5 MB, low water 2.5 MB). `MediaExtractorWorker` reads samples through `readAt`, the movie input
 thread submits them to `movie::VideoDecoder`. When a read needs bytes the cache does not hold, `onRead` retries every 1 ms and
 the cache is refilled by `onFetch`, which when it is not fetching re-posts itself 100 ms out (the looper's timed wait is that 100 ms;
-nothing is lost). The host decoder (host/nn_video.c) accepts every packet at once, so the reader runs far ahead of the picture and
-empties the cache between two checks; the movie then arrived in bursts of 6-7 frames every 110 ms. `host/direct_movie.c` posts that
-check 1 ms out instead. What a hardware decoder's bounded input queue would do instead is not modelled.
+nothing is lost).
+
+The pace of that reading is the decoder's. The movie input thread (`f_83b7e600`, its event handler: 1 a sample can be read into
+one of its two input buffers, 2 the decoder takes input, 3 decoded frames can be acquired) submits with
+`movie::VideoDecoder::DecodeAsync`, which clears the decoder's submission-ready event (`GetInputReadyEvent` hands out the
+nn::codec one) and calls `SubmitXDecoderInputBuffer`. A full decoder answers 0x1c266f; `movie::detail::SubmitDecoderInputBuffer`
+(0x84ecfd20) turns that into 0x7a, the handler keeps the sample and waits for the event; any other failure aborts. So a decoder
+that takes everything at once lets the reader run through the whole file in the movie's first seconds, emptying the cache
+between two of its 100 ms checks: the frames then come in bursts of six or seven until the file is read, and the movie's first
+seconds jump. host/nn_video.c takes everything at once; once the whole file is submitted (within the movie's first seconds)
+every picture is there and the movie plays a frame a present. The old renderer read the movie the same way: its first seconds,
+a fade from black, hid the jumps.
