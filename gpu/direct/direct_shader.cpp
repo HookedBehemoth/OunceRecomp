@@ -57,6 +57,7 @@
 #include "direct_shader.h"
 #include "direct_state.h"
 #include "direct_shader_parts.h"
+#include "direct_work.h"
 
 #ifndef HOOKSHOT_DIRECT_SHADER_STAMP
 #define HOOKSHOT_DIRECT_SHADER_STAMP 0ull
@@ -456,9 +457,10 @@ struct StageScan {
 struct Family {
     std::atomic<Variant*> variants{nullptr};
     std::atomic<bool> loaded{false};   // (its variants kept in the cache file are made)
-    std::mutex mu;   // (pending)
+    std::mutex mu;   // (pending, waiting, and loaded's change)
     std::unordered_set<uint64_t> pending;   // (translations queued, by key and answers)
     std::unordered_set<uint64_t> failed;    // (translations that failed)
+    std::vector<std::atomic<int>*> waiting;  // (other slots of the code, made drawable when its kept variants are)
 };
 std::mutex families_mu;
 std::unordered_map<uint64_t, Family*> families;   // (by pair_key of the stages' code keys)
@@ -508,6 +510,7 @@ struct Slot {
     const char* why = "";
     Family* fam = nullptr;   // (set before state 1)
     TaskMesh* tm = nullptr;  // (state 4)
+    work::TicketRef scan;    // (its reading, queued at P1 when the game set it: bumped when a draw needs it first)
     uint64_t keys[6]{};      // (logs: each stage's code key and NVN stage, set before the state)
     int16_t stages[6]{-1, -1, -1, -1, -1, -1};
 };
@@ -517,7 +520,7 @@ std::unique_ptr<std::atomic<Slot*>[]> table;
 std::mutex table_mu;
 std::atomic<double> last_miss_s{0};
 std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_mesh_repl{0}, st_mesh_repl_refused{0}, st_late_stages{0}, st_late_changed{0}, st_late_moved{0}, st_late_ns{0},
-    st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0};
+    st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0}, st_bumped{0};
 
 uint32_t slot_hash(uint64_t serial) { return (uint32_t)((serial * 0x9E3779B97F4A7C15ull) >> 47) & (kSlots - 1); }
 Slot* slot_find(uint64_t serial) {
@@ -528,34 +531,6 @@ Slot* slot_find(uint64_t serial) {
         if (s->serial == serial) return s;
     }
     return nullptr;
-}
-
-// ---- the workers ----
-std::mutex work_mu;
-std::condition_variable work_cv;
-std::deque<std::function<void()>> work;
-std::once_flag workers_once;
-void push_work(std::function<void()> f) {
-    std::call_once(workers_once, [] {
-        for (int i = 0; i < 2; i++)
-            std::thread([] {
-                for (;;) {
-                    std::function<void()> f;
-                    {
-                        std::unique_lock lk(work_mu);
-                        work_cv.wait(lk, [] { return !work.empty(); });
-                        f = std::move(work.front());
-                        work.pop_front();
-                    }
-                    f();
-                }
-            }).detach();
-    });
-    {
-        std::lock_guard lk(work_mu);
-        work.push_back(std::move(f));
-    }
-    work_cv.notify_one();
 }
 
 // ---- the program cache file (its record: vk_shader.cpp's put_info / get_info, the rest this back end's) ----
@@ -1536,8 +1511,9 @@ void scan_slot(Slot* s) {
         logf("direct: program serial %llu is %s: %s%s%smesh %016llx fragment %016llx (header-only stage %016llx)", (unsigned long long)s->serial,
              s->task ? "task+mesh" : "mesh-only", s->task ? "task " : "", s->task ? hex16(s->task_key).c_str() : "", s->task ? " (a compute step) " : "",
              (unsigned long long)s->vs.key, (unsigned long long)(s->has_fs ? s->fs.key : 0), (unsigned long long)(s->has_prim ? s->prim.key : 0));
-    if (!fresh) {   // (the code's variants are made by the slot that saw it first; this one waits for them, on its worker)
-        while (!s->fam->loaded.load(std::memory_order_acquire)) std::this_thread::yield();
+    if (!fresh) {   // (the code's variants are made by the slot that saw it first: this one is drawable when they are)
+        std::lock_guard lk(s->fam->mu);
+        if (!s->fam->loaded.load(std::memory_order_acquire)) return s->fam->waiting.push_back(&s->state);
         return s->state.store(1, std::memory_order_release);
     }
     disk_init();
@@ -1564,7 +1540,12 @@ void scan_slot(Slot* s) {
         count_code(*v);
         publish(*s->fam, v.release(), s->serial);
     }
-    s->fam->loaded.store(true, std::memory_order_release);
+    {
+        std::lock_guard lk(s->fam->mu);
+        s->fam->loaded.store(true, std::memory_order_release);
+        for (std::atomic<int>* w : s->fam->waiting) w->store(1, std::memory_order_release);
+        s->fam->waiting.clear();
+    }
     s->state.store(1, std::memory_order_release);
 }
 
@@ -1578,13 +1559,14 @@ Slot* slot_make(const nvn_prog& p) {
     if (st_slots.load(std::memory_order_relaxed) >= (int64_t)(kSlots * 3 / 4)) return st_full.fetch_add(1, std::memory_order_relaxed), nullptr;
     Slot* s = new Slot;
     s->serial = p.serial, s->prog = p;
+    s->scan = work::make([s] { scan_slot(s); });
     for (uint32_t k = slot_hash(p.serial);; k = (k + 1) & (kSlots - 1))
         if (!table[k].load(std::memory_order_relaxed)) {
             table[k].store(s, std::memory_order_release);
             break;
         }
     st_slots.fetch_add(1, std::memory_order_relaxed);
-    push_work([s] { scan_slot(s); });
+    work::push(s->scan, work::P1);
     return s;
 }
 
@@ -1663,7 +1645,10 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     if (!slot) slot = heap_on() ? slot_make(s.prog) : nullptr;
     if (!slot) return why = SM_NOT_PARSED, nullptr;
     const int state = slot->state.load(std::memory_order_acquire);
-    if (state == 0) return why = SM_NOT_PARSED, nullptr;
+    if (state == 0) {   // (still queued with the load's programs: this draw needs it now)
+        if (work::bump(slot->scan)) st_bumped.fetch_add(1, std::memory_order_relaxed);
+        return why = SM_NOT_PARSED, nullptr;
+    }
     if (state == 4) return why = SM_TASK_MESH, nullptr;
     if (state != 1) return why = SM_NOT_GRAPHICS, nullptr;
     const uint64_t key = slot->task ? task_mesh_key(slot->task_key, slot->vs.key, slot->fs.key, slot->has_fs ? slot->fs.sph : nullptr,
@@ -1695,7 +1680,7 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     job->slot = slot, job->key = key, job->want = want, job->s = s;
     std::memcpy(job->ct, color_types, 8);
     st_queued.fetch_add(1, std::memory_order_relaxed);
-    push_work([job] {
+    work::run(work::P0, [job] {
         const auto t0 = clk::now();
         Slot& sl = *job->slot;
         Code vsc, fsc;
@@ -1747,16 +1732,14 @@ void shader_held_stats(char* out, size_t cap) {
 }
 
 void shader_stats(char* out, size_t cap, double frames) {
-    size_t queued = 0;
-    {
-        std::lock_guard lk(work_mu);
-        queued = work.size();
-    }
+    const size_t queued = work::queued();
+    char pool[160];
+    work::stats(pool, sizeof pool);
     std::snprintf(out, cap, "programs (since the start): %lld set (%lld distinct codes), %lld variants translated (%.1f s on the workers), %lld failed, %lld "
                   "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed; %lld from binaries, %lld binaries saved, %lld refused), %lld stages unreadable, table full %lld; misses %.1f a frame, "
                   "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
                   "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
-                  "than the push data's room for their addresses; the last miss %.2f s after the device; mesh stages made from hand-written sources %lld, refused %lld; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all)", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
+                  "than the push data's room for their addresses; the last miss %.2f s after the device; mesh stages made from hand-written sources %lld, refused %lld; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all); shader workers: %s; programs a draw moved ahead of the load's %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
                   st_object_ns.load() / 1e9,
                   (long long)st_object_failed.load(), (long long)sobin::st_hits.load(), (long long)sobin::st_saved.load(),
@@ -1765,7 +1748,7 @@ void shader_stats(char* out, size_t cap, double frames) {
                   (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
                   (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load(), (long long)st_mesh_repl.load(),
                   (long long)st_mesh_repl_refused.load(), (long long)st_late_stages.load(), (long long)st_late_changed.load(),
-                  (long long)st_late_moved.load(), st_late_ns.load() / 1e6);
+                  (long long)st_late_moved.load(), st_late_ns.load() / 1e6, pool, (long long)st_bumped.load());
 }
 
 }  // namespace hsd

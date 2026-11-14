@@ -47,6 +47,7 @@
 #include "direct_heap.h"
 #include "direct_shader.h"
 #include "direct_shader_parts.h"
+#include "direct_work.h"
 
 namespace Shader::Optimization {   // (collect_shader_info_pass.cpp: NVN2 compute's storage buffer table, this thread's program)
 extern thread_local u32 g_nvn2_compute_ssbo_base;
@@ -196,7 +197,7 @@ int64_t take_buf(int i) {
 std::atomic<int64_t> st_codes{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_cs_objects{0}, st_object_failed{0}, st_translate_ns{0},
     st_object_ns{0}, st_slots{0}, st_fixups{0}, st_misses{0}, st_variants{0}, st_samp_binds{0};
 std::atomic<double> last_miss_s{0};
-std::atomic<int64_t> st_waited{0}, st_prefetched{0};
+std::atomic<int64_t> st_waited{0}, st_prefetched{0}, st_bumped{0};
 
 // ---- programs: variants per code key, slots per NVN serial ----
 struct Answer {
@@ -232,8 +233,10 @@ struct Family {   // (one compute code: every program slot with it shares its va
     nvn_stage_data sd{};
     std::atomic<Variant*> variants{nullptr};
     std::atomic<bool> loaded{false};
-    std::mutex mu;
+    std::mutex mu;   // (pending, failed, queued, waiting, and loaded's change)
     std::unordered_set<uint64_t> pending, failed;
+    std::unordered_map<uint64_t, work::TicketRef> queued;   // (pending translations' jobs, to bump one a dispatch needs)
+    std::vector<std::atomic<int>*> waiting;   // (other slots of the code, made ready when its kept variants are)
 };
 std::mutex families_mu;
 std::unordered_map<uint64_t, Family*> families;
@@ -242,6 +245,7 @@ struct Slot {
     nvn_prog prog{};
     std::atomic<int> state{0};   // (0 being read, 1 a compute program, 2 none, 3 its code not readable)
     Family* fam = nullptr;
+    work::TicketRef scan;   // (its reading, queued at P1 when the game set it)
 };
 constexpr uint32_t kSlots = 1u << 17;
 std::unique_ptr<std::atomic<Slot*>[]> table;
@@ -255,36 +259,6 @@ Slot* slot_find(uint64_t serial) {
         if (s->serial == serial) return s;
     }
     return nullptr;
-}
-
-// ---- the workers (two of their own: a network's shader object can take long, and graphics translations do not wait) ----
-std::mutex work_mu;
-std::condition_variable work_cv;
-std::deque<std::function<void()>> work;
-std::once_flag workers_once;
-void push_work(std::function<void()> f, bool first = false) {   // (first: ahead of the queue, M4d: a dispatch waits for it)
-    std::call_once(workers_once, [] {
-        // (M4d: four: a cold start's network programs are made side by side, each a core of the driver's compiler)
-        for (int i = 0; i < 4; i++)
-            std::thread([] {
-                for (;;) {
-                    std::function<void()> f;
-                    {
-                        std::unique_lock lk(work_mu);
-                        work_cv.wait(lk, [] { return !work.empty(); });
-                        f = std::move(work.front());
-                        work.pop_front();
-                    }
-                    f();
-                }
-            }).detach();
-    });
-    {
-        std::lock_guard lk(work_mu);
-        if (first) work.push_front(std::move(f));
-        else work.push_back(std::move(f));
-    }
-    work_cv.notify_one();
 }
 
 // ---- the cache file (hookshot_direct_compute.bin: records by code key) ----
@@ -794,8 +768,8 @@ void publish(Family& f, Variant* v) {
 }
 
 /// One variant of f translated on a worker for these c0 bytes (want: its key in f's pending set, put there by the caller)
-void start_variant(Family* f, std::shared_ptr<std::vector<uint8_t>> copy, uint64_t want, bool first) {
-    push_work([f, copy, want] {
+void start_variant(Family* f, std::shared_ptr<std::vector<uint8_t>> copy, uint64_t want, work::Class cls) {
+    work::TicketRef t = work::make([f, copy, want] {
         const auto t1 = clk::now();
         Code code;
         auto nv = std::make_unique<Variant>();
@@ -806,9 +780,14 @@ void start_variant(Family* f, std::shared_ptr<std::vector<uint8_t>> copy, uint64
         (ok ? st_translated : st_failed).fetch_add(1, std::memory_order_relaxed);
         if (ok) publish(*f, nv.release());
         std::lock_guard lk(f->mu);
-        f->pending.erase(want);
+        f->pending.erase(want), f->queued.erase(want);
         if (!ok) f->failed.insert(want);
-    }, first);
+    });
+    {
+        std::lock_guard lk(f->mu);
+        f->queued[want] = t;
+    }
+    work::push(t, cls);
 }
 
 /// (a worker) a program's stages read: its compute stage's code key, its family (whose kept variants the first slot makes)
@@ -839,8 +818,9 @@ void scan_slot(Slot* s) {
         }
         s->fam = it->second, fresh = made;
     }
-    if (!fresh) {
-        while (!s->fam->loaded.load(std::memory_order_acquire)) std::this_thread::yield();
+    if (!fresh) {   // (the code's kept variants are made by the slot that saw it first: this one is ready when they are)
+        std::lock_guard lk(s->fam->mu);
+        if (!s->fam->loaded.load(std::memory_order_acquire)) return s->fam->waiting.push_back(&s->state);
         return s->state.store(1, std::memory_order_release);
     }
     disk_init();
@@ -856,11 +836,16 @@ void scan_slot(Slot* s) {
         st_from_disk.fetch_add(1, std::memory_order_relaxed);
         publish(*s->fam, v.release());
     }
-    s->fam->loaded.store(true, std::memory_order_release);
+    {
+        std::lock_guard lk(s->fam->mu);
+        s->fam->loaded.store(true, std::memory_order_release);
+        for (std::atomic<int>* w : s->fam->waiting) w->store(1, std::memory_order_release);
+        s->fam->waiting.clear();
+    }
     s->state.store(1, std::memory_order_release);
-    // (M4d: a cold start) a program with no texture or image handles has one variant, whatever its c0 holds: it is translated
-    // now, when the game sets it (at the load), not at its first dispatch, so the load's programs are made side by side on the
-    // workers instead of one after another as their dispatches come (the networks' shader objects take 3-78 s each)
+    // A program with no texture or image handles has one variant, whatever its c0 holds: with none kept it is translated
+    // now, when the game sets it at the load, so the load's programs are made side by side instead of one after another
+    // as their dispatches come
     if (recs.empty() && !s->fam->lay.tex && !s->fam->lay.img) {
         Family* f = s->fam;
         {
@@ -869,7 +854,7 @@ void scan_slot(Slot* s) {
         }
         st_prefetched.fetch_add(1, std::memory_order_relaxed);
         const uint32_t n = std::clamp<uint32_t>((f->lay.end() + 15) & ~15u, 16, kBankMax);
-        start_variant(f, std::make_shared<std::vector<uint8_t>>(n, 0), f->key, false);
+        start_variant(f, std::make_shared<std::vector<uint8_t>>(n, 0), f->key, work::P1);
     }
 }
 Slot* slot_make(const nvn_prog& p) {
@@ -882,13 +867,14 @@ Slot* slot_make(const nvn_prog& p) {
     if (st_slots.load(std::memory_order_relaxed) >= (int64_t)(kSlots * 3 / 4)) return nullptr;
     Slot* s = new Slot;
     s->serial = p.serial, s->prog = p;
+    s->scan = work::make([s] { scan_slot(s); });
     for (uint32_t k = slot_hash(p.serial);; k = (k + 1) & (kSlots - 1))
         if (!table[k].load(std::memory_order_relaxed)) {
             table[k].store(s, std::memory_order_release);
             break;
         }
     st_slots.fetch_add(1, std::memory_order_relaxed);
-    push_work([s] { scan_slot(s); });
+    work::push(s->scan, work::P1);
     return s;
 }
 
@@ -1139,6 +1125,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     // skipped and counted)
     const bool wait = !draw_scene_up();
     const auto wait_until = clk::now() + std::chrono::seconds(120);
+    if (slot->state.load(std::memory_order_acquire) == 0 && work::bump(slot->scan)) st_bumped.fetch_add(1, std::memory_order_relaxed);
     while (wait && slot->state.load(std::memory_order_acquire) == 0 && clk::now() < wait_until) std::this_thread::yield();
     const int state = slot->state.load(std::memory_order_acquire);
     if (state == 0) return count(l, D_NOT_READ);
@@ -1171,9 +1158,11 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
             std::lock_guard lk(fam.mu);
             if (fam.failed.count(want)) return count(l, D_FAILED);
             mine = fam.pending.insert(want).second;
+            // (one still queued with the load's work, a set-time translation among them: needed now)
+            if (const auto it = fam.queued.find(want); it != fam.queued.end() && work::bump(it->second)) st_bumped.fetch_add(1, std::memory_order_relaxed);
         }
-        if (!mine && !wait) return count(l, D_TRANSLATING);   // (M4d: at the start, one already being translated (a prefetch) is waited for)
-        if (mine) start_variant(&fam, std::make_shared<std::vector<uint8_t>>(bank, bank + lay_n), want, true);
+        if (!mine && !wait) return count(l, D_TRANSLATING);   // (at the start, one already being translated is waited for)
+        if (mine) start_variant(&fam, std::make_shared<std::vector<uint8_t>>(bank, bank + lay_n), want, work::P0);
         while (wait && !(v = pick()) && clk::now() < wait_until) {
             {
                 std::lock_guard lk(fam.mu);
@@ -1408,18 +1397,15 @@ void compute_log(double frames) {
         }
     }
     logf("direct: %s", out);
-    size_t queued = 0;
-    {
-        std::lock_guard lk(work_mu);
-        queued = work.size();
-    }
+    const size_t queued = work::queued();
     logf("direct: compute programs (since the start): %lld slots, %lld codes, %lld variants (%lld translated in %.1f s, %lld from the cache, "
          "%lld failed), shader objects %lld (%.1f s, %lld failed; %lld from their binaries, %lld binaries refused), %lld with matrix multiplies, %lld reading the grid otherwise; misses %.1f "
-         "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld; dispatches that waited for their variant at the start %lld; translated when set %lld",
+         "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld; dispatches that waited for their variant at the start %lld; translated when set %lld; moved ahead of the load's work %lld",
          (long long)st_slots.load(), (long long)st_codes.load(), (long long)st_variants.load(), (long long)st_translated.load(),
          st_translate_ns.load() / 1e9, (long long)st_from_disk.load(), (long long)st_failed.load(), (long long)st_cs_objects.load(),
          st_object_ns.load() / 1e9, (long long)st_object_failed.load(), (long long)st_from_binary.load(), (long long)st_binary_failed.load(), (long long)st_coopmat.load(), (long long)st_grid_left.load(),
-         st_misses.exchange(0) / frames, queued, last_miss_s.load(), st_fixups.exchange(0) / frames, (long long)st_samp_binds.load(), (long long)st_waited.load(), (long long)st_prefetched.load());
+         st_misses.exchange(0) / frames, queued, last_miss_s.load(), st_fixups.exchange(0) / frames, (long long)st_samp_binds.load(), (long long)st_waited.load(), (long long)st_prefetched.load(),
+         (long long)st_bumped.load());
 }
 
 }  // namespace hsd
