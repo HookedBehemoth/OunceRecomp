@@ -156,7 +156,7 @@
 8067c310 job_occlusion_grid_dispatch      # docs/direct/jobs-state.md, docs/direct/patch-sites.md: the occlusion grid's DispatchCompute
 800766e0 job_phase_per_list               # work/assets/native/engine-jobs.md: scheduler's bit-8 phase, per list
 8007fe60 job_scheduler                    # work/assets/native/engine-jobs.md, host/eng_jobs.c: the job runner (agl::lyr::Renderer begin/end, render-job loop)
-80083580 job_scheduler_sibling            # work/assets/native/engine-layers.md: a sibling of the job body
+80083580 job_scheduler_sibling            # work/assets/native/engine-layers.md, docs/direct/patch-sites.md 8: a sibling of the job body; [[item] + 0x10] of the layer phase's queue items (vtable 0x84c227d0), run by f_8007fe60
 80083960 job_scheduler_virtual            # work/assets/native/engine-jobs.md, host/eng_jobs.c: the scheduler's virtual twin
 82c02f20 job_sync_pre_draw_a              # docs/direct/jobs-state.md, docs/direct/patch-sites.md: pre-draw hook: waits for GPU culling (WaitEvent b00 + Barrier)
 82c03170 job_sync_pre_draw_b              # docs/direct/jobs-state.md: same code, WaitEvent b48

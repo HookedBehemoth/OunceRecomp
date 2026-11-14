@@ -397,11 +397,14 @@ The back end's emit is 1.4 ms of the layer's 3.6 (39%). The step after the stage
 0.1 ms and calls the lists; the next frame's stage A (the BaseProc executors' game logic, 5.2 ms) writes the actors and
 camera that the layer reads at record time, so it cannot run beside the layer.
 
-What would shorten it (not built): open the layer phase beside the render-job phase for one layer node (a graph edit:
-one of the six layer nodes depends on the join before the job phase instead of the one after it, so one thread takes
-the long layer while five record jobs, and no thread can be left without a job loop), and make the job-call sites
-(`f_806688c0`, `f_8028a2a0`) wait for their own pass's jobs (count the list's entries by pass key at the stage's start,
-count recorded jobs in the recorder hook), since the game does not wait there. Estimate 1-1.5 ms of the 7.4.
+The patch `HOS_LAYER_AHEAD` (`host/direct_layer_ahead.c`, patch-sites.md 8) starts the long layer with the render-job
+phase. The layer phase's nodes take their work from two queues of the scheduler's work object; the long layer is always
+queue 1's item 0, which one thread then runs at the entry of its job loop, before the five other threads have recorded
+the jobs. The job list is reordered first, into the order the layer calls its passes (the frame before), because the
+list holds the passes the layer needs first near its end (the depth probes: entries 78-101 of 102); and the layer's
+job-call sites wait for their pass's jobs, which the game's sites do not (they would draw the pass inline). In the
+market the layer then waits 0.12 ms a frame at 1.3 of its 26 job calls, and the frame's median drops by 0.2-0.5 ms
+(12.6-12.9 to 12.2-12.5 ms, three alternating runs; p99 unchanged).
 
 What the main thread waits on inside the stages (`m6a_crit2_k`, ms a frame): the scheduler's condition variable
 at `0x80080188` (6.75, 11.9 times), its 20 µs poll sleeps at `0x8009a478` in `f_800998a0` (0.81, 39 times), the

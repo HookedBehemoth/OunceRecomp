@@ -178,6 +178,34 @@ clear), so these layers record nothing, and the list is never called or submitte
 `f_8006e160`'s non-recording work), and there is nothing to gain: the lists cost a Begin/End and are never used. The back
 end should simply not create a list object until the first record arrives (plain behaviour, no special case).
 
+## 8. The long layer of calc stage C, started with the render jobs
+
+**Why.** Stage C's task graph opens the layer-list phase only after every render-job loop has ended, and one layer (the
+3D layer `0x1136f127c0` in the market: the scene pipeline and post effects, 3.6 ms) then records alone for about 2 ms of
+the stage (boot-to-main-loop.md 4.3). The game's job-call sites do not wait for their jobs: the graph's order did.
+
+**Sites** (`host/direct_layer_ahead.c`; on unless `HOS_LAYER_AHEAD=0`):
+- `SPLICE_AFTER(0x8007fe60, ...)` after the scheduler's render-job-loop test (bit 10 of the node's kind): every thread
+  entering a job loop passes it. The first of a frame (a lock; the others wait for it) puts the job list (singleton
+  `[0x84ea2780]`, lists at +0x38; entries 0x28 bytes at +0x3c18, count +0x3c28, claim counter +0x3c84, key pointer at
+  entry +0x10) in the order the layer run ahead called its pass keys the frame before, only while the claim counter is 0.
+  Then the first thread that may take the layer phase's queue 1 (work object `W = [[sp + 0x48] + 0xd0]`: claim counter
+  `W + 0x4dc`, count `+0x4e8`, items `+0x4f0`; the thread whose worker index, TLS slot `[0x84e9f7ac]` - 1, is `W + 0x4d8`
+  skips queue 1) claims queue 1's item 0 (kind `item + 0x10` = 0, a layer) with the same counter, 0 to 1, and runs it
+  as the scheduler does, `[[item] + 0x10](item)`, before its job loop.
+- `ENTRY_HOOK(0x806688c0)` (key bytes at `x0 + 0x3830 + x2 * 0xd0`) and `ENTRY_HOOK(0x8028a2a0)` (key bytes at `x2`),
+  on that thread only: wait until every list entry with the key's first 0x70 bytes went through the recorder this frame.
+  The recorder's hook (`host/eng_jobs.c`) stamps each entry, recorded or taken by the early return; a condition variable
+  (the virtual core given up) is woken by each, and the wait gives up after 50 ms.
+- `ENTRY_HOOK(0x80706be0)` counts frames for the stamps.
+
+**What it leaves to the game:** the rest of both queues, the phase's per-list work (bit 11) and every node of the graph.
+Recording order changes nothing in the picture: a pass calls its jobs sorted by their item ranges (+0x68).
+
+**Check that it applies:** the 600-present line "direct patch layer ahead" (`HOS_DBG=logpatch`): run ahead 1.00 a frame,
+job lists ordered 1.00, claimed before the order 0, waits given up 0; and "direct patch passes": inline passes of
+recorder keys 0 at both sites (without the wait the depth-probe passes are drawn inline, 4 a frame in the market).
+
 ## Causes found for picture bugs
 
 Each was found by comparing passes against the old renderer and is fixed by the code named.

@@ -1,4 +1,4 @@
-/* Game patch (HOS_LAYER_AHEAD=1): the long layer of calc stage C starts with the render-job phase instead of after it
+/* Game patch (on unless HOS_LAYER_AHEAD=0): the long layer of calc stage C starts with the render-job phase instead of after it
    (docs/direct/boot-to-main-loop.md 4.3, docs/direct/patch-sites.md).
 
    Stage C's task graph opens the layer-list phase (six nodes of kind 0x8800) only after every render-job loop (kind
@@ -30,7 +30,7 @@ static int on = -1;
 static int enabled(void) {
     if (on < 0) {
         const char *e = getenv("HOS_LAYER_AHEAD");
-        on = e && atoi(e) > 0;
+        on = !e || atoi(e) != 0;
     }
     return on;
 }

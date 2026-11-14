@@ -243,6 +243,7 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_MUTEX_OBJ` | (set) mutex owners kept in the host's objects, not in the guest's MutexType word |
 | `HOS_NO_OBJ_CACHE` | (set) no per-thread cache of kernel objects |
 | `HOS_NO_RENDERER_WAIT` | non-zero: the game's first GPU work does not wait for the renderer to be up |
+| `HOS_LAYER_AHEAD` | `0`: calc stage C's long layer waits for the render jobs, as the game orders it (on by default: it starts with them; docs/direct/patch-sites.md 8) |
 
 ### Memory
 
