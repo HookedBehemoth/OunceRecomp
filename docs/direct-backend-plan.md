@@ -187,8 +187,9 @@ before their job's draws: run after them, the corner sampler reads the finished 
 
 The guest submits on its Presentation Thread. By then every list is recorded Vulkan in chunks cut at SignalEvent and
 WaitEvent. The submit orders the roughly 25 chunks of the guest's two queues so each wait follows its signal and sends them
-in one `vkQueueSubmit2` on one Vulkan queue. Waits whose signal comes from the CPU are held on the host. An NVN sync is the
-timeline value of the submission's last chunk. Each recording thread has a command pool and a bump arena per frame slot,
+in one `vkQueueSubmit2` on one Vulkan queue, made by a sender thread: the timeline values are given in order on the
+submitting thread and the work is handed over, so the game's thread does not wait in the kernel's submit. Waits whose
+signal comes from the CPU are held on the host. An NVN sync is the timeline value of the submission's last chunk. Each recording thread has a command pool and a bump arena per frame slot,
 reset as a whole when its frame's timeline value has passed (`cmd_slot_take` sets aside a slot with a list alive).
 
 ## Engine replacements above NVN
@@ -261,9 +262,8 @@ check that shows it still applies (`HOS_DBG=logpatch`).
   that the system-texture entry keeps its id while nothing changes, does not hold. The entry arrives with a stale id every
   frame, so the patch keeps 0 calls and passes every call to the game's path; the submit-time snapshot of the deferred
   tables covers it. Open: find what resets the id (a watch on the table's source entry).
-- **Frame time.** The serial layer list is split by nothing yet (a patch in calc stage C of `moduleCalc_`); the event-signal
-  submit is on the main thread; Hyrule Field has bursts. Render jobs and layer lists are recorded in the calc phase, not the
-  draw phase; a frame has four job stages ([boot-to-main-loop.md](direct/boot-to-main-loop.md)).
+- **Frame time.** The serial layer list is split by nothing yet (a patch in calc stage C of `moduleCalc_`); Hyrule Field
+  has bursts. Render jobs and layer lists are recorded in the calc phase, not the draw phase; a frame has four job stages ([boot-to-main-loop.md](direct/boot-to-main-loop.md)).
 - **Programs translated offline;** translator improvements and stage replacements as the shader cost census ranks them
   ([shader-costs.md](direct/shader-costs.md)): the heavy compute pass `fd029a317a9a4b94` first, then per-command overhead,
   then translator-wide costs; not stage-by-stage rewrites.

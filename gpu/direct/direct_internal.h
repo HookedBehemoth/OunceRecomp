@@ -150,8 +150,10 @@ uint64_t sync_pushed();      // (timeline values sent)
 uint64_t sync_completed();   // (reached on the GPU)
 bool sync_wait_value(uint64_t value, uint64_t timeout_ns);
 void sync_fill_table(MkwVkRenderer& t);
-/// One empty submission that signals the next timeline value (queue_mu taken here); the value, 0 on failure
+/// A submission that signals the next timeline value, handed to the sender thread (submitted in value order); the value
 uint64_t sync_send(uint64_t wait_value, const VkCommandBuffer* cbs = nullptr, uint32_t n = 0);
+/// The work handed to the sender and not submitted yet, submitted now (queue_mu held): before any other use of the queue
+void sync_send_handed();
 void sync_stats(char* out, size_t cap, double frames);
 void sync_age_stats(char* out, size_t cap);   // (the transient pool: how late lists reach the queue)
 /// The host's present, run in its queue's order (present_run)

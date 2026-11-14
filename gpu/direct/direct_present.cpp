@@ -137,6 +137,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     if (swapchain) {   // (retired even when the new one failed; its images' presents done first)
         {
             std::lock_guard qk(dev.queue_mu);
+            sync_send_handed();
             vkDeviceWaitIdle(dev.device);
         }
         for (VkSemaphore s : rendered) vkDestroySemaphore(dev.device, s, nullptr);
@@ -507,6 +508,7 @@ void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's 
     si.pCommandBufferInfos = &cb;
     if (!dev.offscreen) si.waitSemaphoreInfoCount = si.signalSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &wait, si.pSignalSemaphoreInfos = &signal;
     std::lock_guard qk(dev.queue_mu);
+    sync_send_handed();   // (the frame's work handed over before it: on the queue first)
     VkResult r = vkQueueSubmit2(dev.queue, 1, &si, f.done);
     if (r == VK_SUCCESS && !dev.offscreen) {
         VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
