@@ -27,9 +27,11 @@ class Program:
     jump table targets; callee(t): the function a call or tail branch to t reaches (PLT stubs resolved);
     symbol(e): the generic entry's symbol of function e; no_lift: functions to pass over (setjmp owners: milestone 7)"""
 
-    def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=()):
-        self.entries = set(entries)
-        self.jt = jt or {}
+    def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None):
+        # (entries, jt and plt are shared, not copied: the discovery fills them as it walks)
+        self.entries = entries if isinstance(entries, set) else set(entries)
+        self.plt = plt if plt is not None else {}   # PLT stub entry -> (final target, GOT slot)
+        self.jt = jt if jt is not None else {}
         self.callee = callee or (lambda t: t)
         self.symbol = symbol or (lambda e: "g_%08x" % e)
         self.no_call = set(no_call)
@@ -60,6 +62,8 @@ def inside(prog, entry, body, t):
 
 def scope(entry, pcs, word, prog=LEAF):
     """None if the function can be lifted, else the reason it cannot"""
+    if entry in prog.plt:
+        return None
     body = set(pcs)
     for pc in pcs:
         i = enc.decode(word(pc))
@@ -100,6 +104,14 @@ def build(entry, pcs, word, prog=LEAF):
     body = set(pcs)
     fn = ir.Function(entry)
     b = ir.Builder(fn)
+    if entry in prog.plt:   # (a PLT stub reached indirectly: x16 = the GOT slot, x17 = the target, then the target)
+        t, slot = prog.plt[entry]
+        b.at(fn.block(entry))
+        b.set("x16", b.const(slot))
+        b.set("x17", b.const(t))
+        fn.blocks[entry].term = ("tail", prog.symbol(prog.callee(t)))
+        ir.finish(fn)
+        return fn
 
     def goto(t, frm):
         """the block a branch from frm to t goes to: one of the function's, or a tail-call exit"""

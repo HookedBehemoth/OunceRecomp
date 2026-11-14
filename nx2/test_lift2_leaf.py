@@ -150,7 +150,7 @@ def program(P, lifted):
     """what lift2 knows about the other functions: the discovery's entries and tables; a call reaches lift2's generic
     entry when lift2 lifts the callee, else the present lifter's function"""
     L = P.L
-    return build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee,
+    return build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt,
                             symbol=lambda e: ("g_%08x" if e in lifted else "f_%08x") % e)
 
 
