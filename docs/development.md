@@ -102,8 +102,9 @@ a build folder is cold (shaders and pipelines are prepared); copy a warm folder'
   entries raised). `ZOO=zoo_static scripts/run-vk.sh <name> <seconds>` and `scripts/play.sh zoo_static` make
   `work/overlay/<scene>` when it is missing or older than its description (`scripts/zoo-overlay.sh`). Scenes:
   `zoo_static` (288 static props, Sage Room), `zoo_anim` (actors that animate without AI), `zoo_physics` (pots and
-  boxes dropped onto the floor, two cloth carriers), `zoo_shadows` (props under the open-field light set). The map's
-  collision, navigation mesh and baked lighting stay the base map's: a scene can only use a map that exists.
+  rocks dropped onto the floor, two cloth carriers), `zoo_shadows` (props in Hyrule Field under the sun). The map's
+  collision, navigation mesh and baked lighting stay the base map's: a scene can only use a map that exists. Leaving a
+  room's model actors out (`keep`) hides the room but not its floor: the collision is the map's static compound body.
 - **Scripted input:** `"HOS_INPUT_SCRIPT=30:LUP/3000,34:RRIGHT/2500" HOS_INPUT_EXCLUSIVE=1` (seconds from the game's
   first controller read; the syntax is under Input for scripted runs).
 - **Record and replay a session:** the game started with `HOS_INPUT_RECORD=$PWD/work/rec/<name>` (an absolute path)
