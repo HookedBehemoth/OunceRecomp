@@ -159,11 +159,14 @@ def reads_clock(img, body):
     return any((img.word(pc) & 0xFFFFFFC0) == 0xD53BE000 for pc in body)
 
 
-def select(P, img, counts, rng, calls, max_tree):
-    """roots (module, entry, instructions of the tree), every function of their trees, and the ones lift2 lifts"""
+def select(P, img, counts, rng, calls, max_tree, only=None):
+    """roots (module, entry, instructions of the tree), every function of their trees, and the ones lift2 lifts;
+    only: these functions (a bisection's list), all of them that qualify"""
     by_mod = collections.defaultdict(list)
-    for e in sorted(img.entries):
+    for e in sorted(only if only is not None else img.entries):
         by_mod[next(n for lo, hi, n in img.code if lo <= e < hi)].append(e)
+    if only is not None:
+        counts = {m: len(v) for m, v in by_mod.items()}
     roots, funcs, lifted, why = [], set(), set(), collections.Counter()
     prog = program(P, lifted) if calls else build_ir.LEAF
     for mod, want in counts.items():
@@ -238,6 +241,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--count", type=int, default=500)
     p.add_argument("--calls", action="store_true")
+    p.add_argument("--funcs", help="a file of guest addresses (hex, one per line): test these functions, not a draw")
     p.add_argument("--max-tree", type=int, default=4000)
     p.add_argument("--states", type=int, default=4)
     p.add_argument("--seed", type=int, default=1)
@@ -251,8 +255,11 @@ def main():
     meta = img.write(os.path.join(kit.WORK, "image_test"))
     P = TL.Picker(img)
     share = TL.module_shares(img)
+    only = None
+    if a.funcs:
+        only = {int(l.split()[0], 16) for l in open(a.funcs) if l.strip() and not l.startswith("#")}
     roots, funcs, lifted, why, prog = select(P, img, {m: max(1, int(a.count * s)) for m, s in share.items()}, rng,
-                                             a.calls, a.max_tree)
+                                             a.calls, a.max_tree, only)
     ninsn = sum(len(P.L.funcs[e][0]) for e in lifted)
     callers = sum(1 for _, e, _ in roots if any(k[0] == "bl" or (k[0] == "b" and k[1] not in P.L.funcs[e][0])
                                                 for k, _ in P.L.funcs[e][0].values()))
