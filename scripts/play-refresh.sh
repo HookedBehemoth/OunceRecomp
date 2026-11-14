@@ -39,6 +39,9 @@ rm -f "$bd/BUILD.txt"
 start=$(date +%s)
 {
   echo "== $(date '+%F %T') refresh to $head"
+  # (the game's patches are made at the lift: a patch added since is made here, in the lifted C as it stands; the ones in
+  # it already are left alone, and the supported build's optional ones are not added)
+  work/venv/bin/python -I -c "import sys; sys.path.insert(0, 'nx2'); import oot_patches; oot_patches.apply('work/sa/gen')" &&
   work/venv/bin/python -I nx2/entry_hooks.py work/sa/gen &&
   HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
     work/venv/bin/python -I -u nx2/build.py --standalone --jobs 8
