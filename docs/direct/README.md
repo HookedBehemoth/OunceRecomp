@@ -12,6 +12,7 @@ The game
 - [shadow-maps.md](shadow-maps.md): how the shadow maps live and die, and what pins them.
 - [jobs-state.md](jobs-state.md): what a render job inherits, and the work recorded inside jobs.
 - [job-formats.md](job-formats.md): where a job gets its target formats (the pass key).
+- [render-targets.md](render-targets.md): every render target's size and format, where they come from, and where to take control.
 - [terrain-texels.md](terrain-texels.md): terrain tiles and the other CPU texel paths.
 - [task-mesh.md](task-mesh.md): the game's task and mesh shaders.
 - [movie-player.md](movie-player.md): the movie player, its frame chooser, the NDVE network and how the movie file reaches it.

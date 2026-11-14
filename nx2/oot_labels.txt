@@ -277,6 +277,15 @@
 81199f00 pass_weather_copy                # work/assets/native/block-linear.md: WeatherData target copy
 80669b80 pass_wet_mask                    # work/assets/native/engine-frame.md: "wet_mask"
 
+8025eb40 pass_cubemap_depth_alloc         # docs/direct/render-targets.md: "render_cubemap_depth" (128 x 128 DEPTH32F)
+802754d0 pass_bilateral_grid              # docs/direct/render-targets.md: "BilateralGrid" (24 x 16 x 64 RG16F)
+8065afe0 pass_snapshot                    # docs/direct/render-targets.md: "SnapshotColor", "SnapshotDepth", "SnapshotStrokeTexture" (512 / 1024 squares)
+8065f190 pass_shading_rate_image          # docs/direct/render-targets.md: "shading_rate_image" (R8UI, scene / 16)
+80660010 pass_ssao_work                   # docs/direct/render-targets.md: "ssao_work" (R8, scene / 2)
+80663c20 pass_ssao                        # docs/direct/render-targets.md: "ssao" (R8, scene / 2)
+80679b70 pass_nld_chain                   # docs/direct/render-targets.md: "Nld(Full)", "Nld(Half)", "Nld(Quat)" (R32F)
+8067aa20 pass_raw_depth_chain             # docs/direct/render-targets.md: "RawDepth(Full)", "RawDepth(Half)", "RawDepth(Quat)" (DEPTH32F)
+80792270 ui_pane_capture_alloc            # docs/direct/render-targets.md: "SaveLoadIcon_00" (a UI pane captured to a small R8 target) # ?
 # --- draw recording: binders, drawers, precompiled lists, occlusion gating
 800715e0 draw_bind_object_ubo             # work/assets/native/command-lists.md, work/assets/native/uniform-buffers.md: draw-time binder (UBO, CallCommands)
 80435bc0 draw_deformable_model            # docs/direct/jobs-state.md, work/assets/native/uniform-buffers.md: draws without own vertex bind; deformable model blocks
