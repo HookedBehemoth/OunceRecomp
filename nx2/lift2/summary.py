@@ -168,8 +168,8 @@ class Func:
                 self._edge(k, [nxt], keep_kind=True)
             elif t == "br":
                 tgs = prog.jt.get(pc)
-                if tgs:
-                    self._edge(k, [to(x) for x in sorted(set(tgs))] + [("tail", None)])
+                if tgs:   # (the table's default, a64_ijump for an index out of range, is not a real path)
+                    self._edge(k, [to(x) for x in sorted(set(tgs))])
                 else:
                     self.kind[k], self.callee[k] = "tail", None
             elif t == "ret":
@@ -427,6 +427,9 @@ def mem_access(i):
     return None
 
 
+TRACE = None   # (debugging: a list here collects where frame_pass loses SP, its meets and exits)
+
+
 def frame_pass(fn, sums, hooks):
     """(preserved, demotion reasons, frame size, frame address taken, deletable save/restore pairs, LR read as data)"""
     n = len(fn.pcs)
@@ -523,6 +526,8 @@ def frame_pass(fn, sums, hooks):
                     sp = None
                 if d & X[29]:
                     fp = None
+            if sp is None and state[k][0] is not None and TRACE is not None and len(TRACE) < 50:
+                TRACE.append(("%08x" % fn.pcs[k], i.entry.name if i else None))
             if sp is not None:
                 lowest = min(lowest, sp)
         if kind == "call" or kind == "svc":
@@ -530,18 +535,19 @@ def frame_pass(fn, sums, hooks):
             if kind == "call" and not s.returns:
                 continue
             for r in list(holds):
-                if r != "sp" and not (s.preserved & BIT[r]):
+                if r not in ("sp", "x30") and not (s.preserved & BIT[r]):
                     holds.discard(r)
             if not (s.preserved & SP):
                 sp = None
-            holds.discard("x30")
-            if k in fn.ctail:
-                s2 = callee_summary(sums, fn.ctail[k], hooks)
-                if s2.returns:
-                    exits.append((sp, {r for r in holds if s2.preserved & BIT[r]}))
+            if kind == "call":
+                holds.discard("x30")
+            if k in fn.ctail:   # (a return that falls into the next function: dangling_bl, not an exit)
+                continue
         if kind == "ret":
             if "x30" not in holds or (i is not None and i.entry.name == "RET" and i.f["Rn"] != 30):
                 reasons.add("lr_ret")
+            if sp != 0 and TRACE is not None and len(TRACE) < 50:
+                TRACE.append(("ret %08x" % fn.pcs[k], sp))
             exits.append((sp, holds))
             continue
         if kind == "tail":
@@ -564,11 +570,15 @@ def frame_pass(fn, sums, hooks):
                 state[j] = new
                 work.append(j)
                 continue
+            if old[0] != new[0] and TRACE is not None and len(TRACE) < 50:
+                TRACE.append(("meet %08x" % fn.pcs[j], old[0], new[0], "from %08x" % fn.pcs[k]))
             m = (old[0] if old[0] == new[0] else None, old[1] if old[1] == new[1] else None, old[2] & new[2],
                  tuple(sorted(set(old[3]) & set(new[3]))))
             if m != old:
                 state[j] = m
                 work.append(j)
+    if TRACE is not None and len(TRACE) < 50:
+        TRACE.append(("exits", [(e_sp, sorted(h)) for e_sp, h in exits][:4]))
     preserved = CALLEE_SAVED
     for sp, holds in exits:
         p = sum(BIT[r] for r in holds if r in TRACKED_BITS)
@@ -683,6 +693,14 @@ def summarise(funcs, prog, hooks, word, names=None, log=print):
     F = {}
     for e, pcs in funcs.items():
         F[e] = Func(e, pcs, word, prog, hooks)
+    # noreturn by the callers' evidence: a BL with nothing after it in its function (the compiler knew the callee
+    # does not return); these seed the fixed point beside the fatal functions' names
+    by_callers = set()
+    for fn in F.values():
+        for k in fn.ctail:
+            if fn.kind[k] == "call" and fn.callee[k] is not None:
+                by_callers.add(fn.callee[k])
+    NORETURN.update(by_callers)
     # an entry another function falls into without a branch (after an instruction or a call that returns)
     for fn in F.values():
         for e in fn.falls_into:
@@ -747,7 +765,9 @@ def summarise(funcs, prog, hooks, word, names=None, log=print):
             if c in sums and callee_summary(sums, fn.callee[k], hooks).returns and "fallthrough_entry" not in sums[c].demote:
                 sums[c].demote = sorted(sums[c].demote + ["fallthrough_entry"])
     t3 = time.time()
-    stats = {"functions": len(F), "sccs": len(comps), "largest scc": max(len(c) for c in comps) if comps else 0,
+    disagree = sorted(c for c in by_callers if c in sums and sums[c].returns)
+    stats = {"noreturn by callers": len(by_callers), "of them returning by their own code": len(disagree),
+             "disagree sample": ["%08x" % c for c in disagree[:12]], "functions": len(F), "sccs": len(comps), "largest scc": max(len(c) for c in comps) if comps else 0,
              "iterations": iters, "build s": t1 - t0, "fixed point s": t2 - t1, "results s": t3 - t2}
     return sums, F, stats
 
