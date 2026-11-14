@@ -37,11 +37,11 @@ int n_workers = 2, bg_cap = 1;
 
 /// The next job a worker may take: P0 first, then P1 and P2 for a background worker (under mu)
 TicketRef take(bool background, int& cls) {
-    for (int c = 0; c < (background ? kClasses : 1); c++) {
+    for (int c = 0; c < (background ? kClasses : P0 + 1); c++) {
         while (!q[c].empty()) {
             TicketRef t = std::move(q[c].front());
             q[c].pop_front();
-            if (t->cls != c) continue;   // (bumped to P0 since)
+            if (t->cls != c) continue;   // (bumped since)
             t->cls = -2, live[c]--, cls = c;
             return t;
         }
@@ -50,7 +50,7 @@ TicketRef take(bool background, int& cls) {
 }
 
 /// A worker. A background one runs its P1 and P2 jobs at a lower scheduling priority (nice 10), so the game's own threads
-/// go first when the machine is busy with a load, and its P0 jobs at the game's; the others take only P0 jobs
+/// go first when the machine is busy with a load, and its PW and P0 jobs at the game's; the others take only those
 void worker(bool background) {
     pthread_setname_np(pthread_self(), background ? "shader bg" : "shader worker");
     const pid_t me = gettid();
@@ -63,7 +63,7 @@ void worker(bool background) {
             (background ? cv_bg : cv_now).wait(lk, [&] { return (t = take(background, cls)) != nullptr; });
             running++;
             if (background) {
-                const int want = cls == P0 ? 0 : 10;
+                const int want = cls <= P0 ? 0 : 10;
                 if (want != nice && setpriority(PRIO_PROCESS, (id_t)me, want) == 0) nice = want;
                 t->tid = nice ? me : 0;
             }
@@ -106,11 +106,11 @@ void push(const TicketRef& t, Class c) {
         t->cls = c, live[c]++;
         q[c].push_front(t);
     }
-    if (c == P0) cv_now.notify_one();   // (a background worker takes it too when no other is free)
+    if (c <= P0) cv_now.notify_one();   // (a background worker takes it too when no other is free)
     cv_bg.notify_one();
 }
 
-bool bump(const TicketRef& t) {
+bool bump(const TicketRef& t, Class to) {
     if (!t) return false;
     {
         std::lock_guard lk(mu);
@@ -119,10 +119,10 @@ bool bump(const TicketRef& t) {
             t->tid = 0, bumped += raised;
             return raised;
         }
-        if (t->cls != P1 && t->cls != P2) return false;
-        live[t->cls]--, live[P0]++, bumped++;
-        t->cls = P0;
-        q[P0].push_front(t);
+        if (t->cls < 0 || t->cls <= to) return false;
+        live[t->cls]--, live[to]++, bumped++;
+        t->cls = to;
+        q[to].push_front(t);
     }
     cv_now.notify_one(), cv_bg.notify_one();
     return true;
@@ -135,12 +135,12 @@ int workers() {
 
 size_t queued() {
     std::lock_guard lk(mu);
-    return live[P0] + live[P1] + live[P2];
+    return live[PW] + live[P0] + live[P1] + live[P2];
 }
 
 void stats(char* out, size_t cap) {
     std::lock_guard lk(mu);
-    std::snprintf(out, cap, "P0 %zu, P1 %zu, P2 %zu queued, %d running (of %d workers, %d of them background), %lld bumped", live[P0], live[P1],
+    std::snprintf(out, cap, "PW %zu, P0 %zu, P1 %zu, P2 %zu queued, %d running (of %d workers, %d of them background), %lld bumped", live[PW], live[P0], live[P1],
                   live[P2], running, n_workers, bg_cap, (long long)bumped);
 }
 

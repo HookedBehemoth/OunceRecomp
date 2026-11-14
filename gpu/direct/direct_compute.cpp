@@ -1125,7 +1125,8 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     // skipped and counted)
     const bool wait = !draw_scene_up();
     const auto wait_until = clk::now() + std::chrono::seconds(120);
-    if (slot->state.load(std::memory_order_acquire) == 0 && work::bump(slot->scan)) st_bumped.fetch_add(1, std::memory_order_relaxed);
+    const work::Class now = wait ? work::PW : work::P0;   // (before the scene, the game's load waits for it)
+    if (slot->state.load(std::memory_order_acquire) == 0 && work::bump(slot->scan, now)) st_bumped.fetch_add(1, std::memory_order_relaxed);
     while (wait && slot->state.load(std::memory_order_acquire) == 0 && clk::now() < wait_until) std::this_thread::yield();
     const int state = slot->state.load(std::memory_order_acquire);
     if (state == 0) return count(l, D_NOT_READ);
@@ -1159,10 +1160,10 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
             if (fam.failed.count(want)) return count(l, D_FAILED);
             mine = fam.pending.insert(want).second;
             // (one still queued with the load's work, a set-time translation among them: needed now)
-            if (const auto it = fam.queued.find(want); it != fam.queued.end() && work::bump(it->second)) st_bumped.fetch_add(1, std::memory_order_relaxed);
+            if (const auto it = fam.queued.find(want); it != fam.queued.end() && work::bump(it->second, now)) st_bumped.fetch_add(1, std::memory_order_relaxed);
         }
         if (!mine && !wait) return count(l, D_TRANSLATING);   // (at the start, one already being translated is waited for)
-        if (mine) start_variant(&fam, std::make_shared<std::vector<uint8_t>>(bank, bank + lay_n), want, work::P0);
+        if (mine) start_variant(&fam, std::make_shared<std::vector<uint8_t>>(bank, bank + lay_n), want, now);
         while (wait && !(v = pick()) && clk::now() < wait_until) {
             {
                 std::lock_guard lk(fam.mu);

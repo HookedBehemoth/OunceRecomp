@@ -1,7 +1,7 @@
 // The shader workers: one pool that graphics and compute programs share for reading, translating and making shader
-// objects. Jobs come in three classes: P0, a variant a draw or dispatch is missing now; P1, work for programs the game
-// set at its load; P2, speculative variants. Each class runs newest first, P0 before P1 before P2. A queued job can be
-// bumped to P0 when a draw or dispatch turns out to need it. P1 and P2 jobs run only on the background workers (half
+// objects. Jobs come in four classes: PW, what a dispatch holding up the game's load waits for; P0, a variant a draw or
+// dispatch is missing now; P1, work for programs the game set at its load; P2, speculative variants. Each class runs
+// newest first, in that order. A queued job can be bumped to PW or P0 when a draw or dispatch turns out to need it. P1 and P2 jobs run only on the background workers (half
 // the pool), at a lower scheduling priority, so a load keeps its cores while that work goes on; a bump raises a running one.
 #pragma once
 
@@ -11,7 +11,7 @@
 
 namespace hsd::work {
 
-enum Class { P0 = 0, P1 = 1, P2 = 2, kClasses = 3 };
+enum Class { PW = 0, P0 = 1, P1 = 2, P2 = 3, kClasses = 4 };
 
 struct Ticket;
 using TicketRef = std::shared_ptr<Ticket>;
@@ -24,12 +24,12 @@ inline TicketRef run(Class c, std::function<void()> f) {
     push(t, c);
     return t;
 }
-/// Moves a job still queued in P1 or P2 to the front of P0, or raises a running background job to the game's priority;
-/// false when there was nothing to do
-bool bump(const TicketRef& t);
+/// Moves a job still queued in a later class to the front of `to` (PW or P0), or raises a running background job to the
+/// game's priority; false when there was nothing to do
+bool bump(const TicketRef& t, Class to = P0);
 
 int workers();
-/// "P0 a, P1 b, P2 c queued, n running (of w workers, k of them background), b bumped"
+/// "PW w, P0 a, P1 b, P2 c queued, n running (of w workers, k of them background), b bumped"
 void stats(char* out, size_t cap);
 size_t queued();
 
