@@ -1,0 +1,543 @@
+# Lifter 2: design
+
+A new code generator for the game's AArch64 code. It replaces `third_party/a64-kit/lift` (suyu's per-instruction C
+text plus regex passes) and the parts of `nx2/` that edit the lifted C. This document holds the decisions, the
+measurements behind them, the IR, the calling convention, the host interface, the validation scheme and the
+milestones. The present lifter stays the oracle until the last milestone and is then deleted: there is no
+permanent fallback.
+
+Measurements: clang/LLVM 23.1.3 on this PC (Zen, x86-64-v3). The experiment sources are not in the repository
+(they are cut from the lifted game); each figure below says how it was made so that it can be repeated.
+
+## 1. Why a new generator
+
+The present lifter keeps every guest register, flag and vector in `GuestContext` and makes every BL an opaque
+`f_X(c)` call. It lowers each FP op to a native op plus a proof that the result and the FPSR cumulative flags equal
+ARM's, and builds NEON permutes as byte loops. Every optimisation is a regex over C text. Measured on the current
+build:
+
+| | value |
+|---|---|
+| guest code / lifted x86 code | 72.6 MB / 446 MB (6.1x) |
+| x86 instructions per guest instruction, cold chunks (-O1) | 4.49 |
+| context register loads+stores per guest instruction (cold) | 0.89 (20 % of all x86 instructions) |
+| hot region: integer-SIMD check ops vs real FP arithmetic ops | 3.13 M vs 126 k (25 : 1, 17 % of hot instructions) |
+| guest MRS FPSR sites that read those flags, whole game | 8 |
+| vector kernel f_817472e0, x86 instructions: as lifted / plain SSE | 4,888 / 2,416 |
+
+## 2. Output format: LLVM IR, with a uniform calling convention
+
+The question was whether to emit C (as now) or LLVM IR. Each claim for IR was tested.
+
+### 2.1 Measurements
+
+The corpus is 120 random cold functions (8,450 guest instructions) from six chunks. Each variant was compiled with
+the build's flags at -O1. The counts are x86 instructions in the object.
+
+| variant | instructions |
+|---|---|
+| as lifted (registers in the context) | 29,442 |
+| all registers C locals; x0-x3, SP, ctx as arguments; x0/x1 returned; `ccc` | **24,189** |
+| the same, emitted as IR by clang and compiled from `.ll` | 24,189 (identical) |
+| same signature, `tailcc` | 24,699 (+2.1 %) |
+| same signature, `regcall` (C attribute) | 25,753 (+6.5 %) |
+| x0-x8 + SP as arguments, `preserve_none` | 26,848 |
+| x0-x8 + SP as arguments, `ccc` (4 on the stack) | 30,135 |
+| locals + prologue/epilogue saves of x19-x30 deleted | 23,565 (-2.6 %) |
+| the same without page marks | 21,092 (-28 % against as lifted) |
+
+Metadata, applied to the `ccc` variant's IR:
+
+| metadata | instructions |
+|---|---|
+| `memory(read)` on the 27 callees that the whole lift proves store-free (53,530 of 295,270 functions are, transitively; 9 % of direct call edges reach one) | 24,204 (0 %) |
+| page-mark stores made plain and put in their own `!alias.scope`, all other accesses `!noalias` to it | 24,099 (-0.4 %) |
+| every callee `memory(read)`: an upper bound, not correct | 22,727 (-6 %) |
+
+The context already does not alias guest memory: `restrict` plus `noescape` on the pointer gives LLVM that fact.
+A guest store makes LLVM reload only other guest loads, and those really may alias. TBAA cannot separate guest
+accesses, because guest code type-puns.
+
+Return registers (`llc`, a callee returning N values, checked for sret demotion):
+
+| convention | i64 results in registers | `<4 x float>` results |
+|---|---|---|
+| ccc, fastcc, tailcc, preserve_none, ghccc, preserve_most | 3 | 4 |
+| swiftcc | 4 | 4 |
+| x86_regcallcc | 11 | 16 |
+| C struct return (SysV) | 2 | 1-2 (a struct of 16 bytes or less) |
+| C `__attribute__((regcall))` | 6+ | 6+ |
+
+A mixed `{i64, i64, <2 x i64>, <2 x i64>}` with `ccc` returns in rax, rdx, xmm0, xmm1. The same C struct is 48 bytes
+and goes to memory.
+
+Tail calls: guest functions end in a branch to another function's entry about once per 4.5 functions (690 in 3,138
+functions of one chunk). With per-function signatures these become tail calls between different prototypes:
+- C `musttail` refuses them, including with `swiftasynccall`.
+- IR `tailcc` with `tail call` works on Linux.
+- On Win64, LLVM 23 aborts on every guaranteed tail call under `tailcc` or `swifttailcc` ("Can't handle guaranteed
+  tail call under win64 yet").
+- `ccc` with `musttail` and identical prototypes works on both targets.
+
+Front end: a 3 MB piece of one chunk at -O1 takes 15.9 s from C, 16.1 s from bitcode and 16.0 s from textual IR. The
+textual IR is 42 MB against 3 MB of C. The optimiser and code generator are the cost; parsing is not.
+
+NEON permutes: C vector extensions (`__builtin_shufflevector`) give the same code as IR `shufflevector`: EXT #8 is one
+`vpalignr`, DUP one `vshufps`, FADDP one `vhaddps`.
+
+### 2.2 Verdict
+
+**Emit LLVM IR.** The reasons are narrower than "LLVM allows a lot of metadata":
+
+1. **Mixed integer and vector results in registers.** A guest function's results are x0/x1 and v0/v1 (HFA and
+   floating-point returns). `ccc` returns them in rax, rdx, xmm0, xmm1. In C that needs a struct over 16 bytes,
+   which goes to memory, or `regcall`, which costs 6.5 % because it leaves fewer callee-saved registers.
+2. **`poison` for the arguments and results a callee does not use**, under one uniform prototype (section 5). An
+   argument the callee's summary says it does not read costs nothing. In C the same effect needs an uninitialised
+   variable, which is undefined behaviour.
+3. **Exact intrinsics** with ARM's value semantics: `llvm.fptosi.sat` (FCVTZS: NaN to 0, saturating; one
+   `vcvttss2si` plus two `cmov`), `llvm.minimum`/`llvm.maximum` (FMIN/FMAX), `llvm.minimumnum`/`llvm.maximumnum`
+   (FMINNM/FMAXNM), `llvm.fma`, `llvm.roundeven`/`round`/`floor`/`ceil`/`trunc` (FRINTN/A/M/P/Z), overflow intrinsics.
+   No C undefined behaviour to dodge (shift amounts, signed overflow).
+4. **The IR is SSA with block arguments**, which maps one to one onto LLVM `phi`. C would need an out-of-SSA step.
+   This step is small, so it is a convenience, not a reason.
+
+Claims that did **not** hold, and are not reasons:
+- Alias metadata, `memory()` effects and clobber facts on declarations measured 0 to 0.4 %. The upper bound,
+  declaring everything read-only, is 6 % and incorrect. The register traffic they were meant to remove is removed by
+  passing registers as values (section 5), and that works in C as well.
+- Front-end time: no difference.
+- Guaranteed tail calls between different signatures: not portable to Win64, so the design does not use them.
+
+For integer code, C with a uniform prototype gets the same code: 24,189 instructions either way. The IR advantage
+is in floating-point results, `poison` and the intrinsics.
+
+**Version pin.** The emitter writes textual IR for one LLVM major. `nx2/lift2/build` refuses a clang whose major
+differs: the Linux clang and the pinned llvm-mingw must be the same major. Textual IR (`.ll`) is used, not bitcode:
+it is readable and diffable, and it costs nothing measurable at parse time.
+
+## 3. Instruction coverage
+
+Census of every word of the modules' `.text`: 18.16 M words, 2.03 M distinct. Forms are the capstone mnemonic plus
+the operand shape (register class, vector arrangement, addressing mode); data in `.text` is included and is little.
+
+| class | forms | forms seen 10+ times | words | share | mnemonics |
+|---|---|---|---|---|---|
+| integer data processing | 331 | 278 | 6.81 M | 37.5 % | 83 |
+| integer load/store (incl. atomics) | 269 | 228 | 5.58 M | 30.7 % | 75 |
+| branches | 22 | 19 | 3.36 M | 18.5 % | 13 |
+| vector/FP load/store | 367 | 240 | 0.57 M | 3.1 % | 16 |
+| udf/nop (padding, data) | 2 | 2 | 0.55 M | 3.1 % | 2 |
+| FP scalar | 121 | 89 | 0.53 M | 2.9 % | 46 |
+| NEON | 534 | 347 | 0.50 M | 2.7 % | 182 |
+| system (MRS/MSR, barriers, PAC, hints, SVC) | 53 | 23 | 0.27 M | 1.5 % | 24 |
+| **total** | **1,699** | **1,226** | | | **396** |
+
+398 forms cover 99 % of words and 1,217 cover 99.99 %. All 1,699 must decode, because every reachable word must
+lift; there is no fallback. They reduce to about 160 semantic templates, parametrised by width, signedness,
+addressing mode and arrangement:
+
+| templates | count |
+|---|---|
+| integer | ~40 |
+| integer load/store and atomics | ~25 (address modes are shared) |
+| branches | ~8 |
+| FP scalar | ~25 |
+| NEON | ~55 (lane-generic over arrangements) |
+| system | ~10 |
+
+`nx2/lift2/census.py` regenerates the list into `work/lift2/forms.txt` and marks the forms each milestone covers.
+
+## 4. The IR
+
+One `Function` per guest function entry, as the present discovery finds it (`Lifter.walk`, jump tables,
+`lift_fixes`, `split_large`). The IR is plain Python data, so a port of the passes to a compiled language stays
+possible if the lift exceeds about 10 minutes.
+
+**Types.** `i1 i8 i16 i32 i64 i128`, `v128` (canonical `<2 x i64>`; operations bitcast to lane types
+`<16 x i8>` ... `<4 x float>` `<2 x double>`), `f32 f64 f16` (scalar FP values are kept in their bit patterns where
+only moved), `ptr` (the context only).
+
+**Values.** SSA values. Blocks take parameters instead of phis. Guest registers do not exist inside the IR: the
+front end keeps a register-to-value map per block, and block parameters carry what is live in. X registers are
+`i64`. W writes zero-extend explicitly. N, Z, C, V are four `i1` values. V registers are `v128`.
+
+**Operations.**
+
+| group | operations (ARM semantics stated where they differ from LLVM's defaults) |
+|---|---|
+| integer | add sub mul umulh smulh udiv sdiv (divisor 0: result 0, explicit select), and or xor not, shl lshr ashr ror (amount masked to the width), clz cls rbit rev rev16 rev32, extract(bitfield) insert(bitfield), sext zext trunc, select, icmp |
+| flags | `addflags(a,b,carry_in,width)` -> (result, n, z, c, v) via `llvm.uadd/sadd.with.overflow`; `subflags` likewise; logical flags (n, z, c=0, v=0); `cond(code, n,z,c,v)` folded to one `icmp` when all four come from one compare (CMP + B.LT becomes `icmp slt`) |
+| memory | `gaddr(i64) -> ptr` = `getelementptr i8, ptr inttoptr (i64 0x100000000000 to ptr), i64 a`; `load(ptr, w, sext, order)` with order plain, acquire; `store(ptr, v, w, order, mark)` with order plain, seqcst; `rmw(op, ptr, v, w)` for the LSE ops; `cas(ptr, exp, new, w)`, `cas2` (CASP, `cmpxchg16b`); `excl_load`/`excl_store`; `fence(full)`, `fence(compiler)` |
+| vector | lane ops on `v128` via LLVM vector ops, `shufflevector`, `insertelement`/`extractelement`, x86 intrinsics where nothing generic exists (`pshufb` for TBL/TBX, `pmaddubsw` for UDOT), saturating ops via `llvm.[us]add.sat` |
+| FP | fadd fsub fmul fdiv `llvm.sqrt` `llvm.fma` fneg fabs, min/max as above, `fcmp` -> NZCV (unordered = 0011), conversions (`fptosi.sat`, `sitofp`, `fptrunc`/`fpext`, F16 via F16C), FRINT*, `frecpe/frsqrte` (calls into a table routine), `mrs_fpsr`/`msr_fpsr`/`msr_fpcr` (section 7) |
+| control | br, condbr, `switch(index)` for jump tables (`(x - base) >> k`, an indexed table, not a compare tree), ret(results), `call_fast(f, args) -> results`, `tail_fast`, `call_generic(target)`, `tail_generic(target)`, `svc(imm)`, `trap(pc, word)`, `poll` |
+| host interface | `probe(id, reads, writes)` (section 9) |
+
+**Emission.** One textual LLVM module per partition (section 11). Each IR value is one LLVM value, each block one
+basic block, and block parameters become `phi`s. No `alloca` is emitted except for host-stack temporaries.
+
+## 5. The calling convention
+
+### 5.1 Two entries per function
+
+- **Fast entry** `f_<addr>`, for direct lifted-to-lifted BL and B-to-entry. One uniform prototype for every
+  function in the program:
+
+  ```
+  %R = type { i64, i64, <2 x i64>, <2 x i64> }          ; x0, x1, v0, v1 out
+  define %R @f_<addr>(ptr noalias nocapture %ctx, i64 %sp,
+                      i64 %x0, i64 %x1, i64 %x2, i64 %x3,
+                      <2 x i64> %v0, <2 x i64> %v1, <2 x i64> %v2, <2 x i64> %v3)
+  ```
+
+  - Convention `ccc`. On SysV, ctx, sp and x0-x3 are rdi, rsi, rdx, rcx, r8, r9; v0-v3 are xmm0-3; results come
+    back in rax, rdx, xmm0, xmm1.
+  - Callee-saved host registers (rbx, rbp, r12-r15) keep the caller's values across calls. That matters: going
+    from 31 guest to 16 host registers, `preserve_none` and `regcall` lost 6-11 %.
+  - The prototype is uniform because tail calls must be guaranteed (`musttail` with identical prototypes is the one
+    form that works on Linux and Win64), and because a BLR site cannot know its callee's signature.
+  - What one function needs goes into poison, not the prototype. A caller passes `poison` for every argument the
+    callee's summary does not read. A callee returns `poison` in every result slot no caller reads.
+  - x4-x8 and v4-v7, when a callee reads them (about 2 % and 4 % of functions, estimated from 11,307 functions), go
+    through the context: the caller stores what the callee's summary reads and the callee loads it.
+  - Results beyond x0, x1, v0, v1 that some caller reads go back through the context the same way.
+- **Generic entry** `g_<addr>`: `void (ptr %ctx)`, today's protocol. All guest state is in the context: it loads
+  the callee's live-ins, calls `f_<addr>`, and stores the results and every register the function may change
+  (its clobber set) back. It serves:
+  - BLR, and BR to a register that is not a jump table;
+  - the host: thread first frames, `a64_icall`, HLE callbacks;
+  - `ENTRY_HOOK`, setjmp return points;
+  - old-lift code during bring-up (section 12).
+
+### 5.2 What crosses a call
+
+| guest state | treatment at a call |
+|---|---|
+| SP | an argument; never returned (preserved; the summary checks it) |
+| x19-x29, d8-d15 | never passed, never returned: they live in the caller's SSA values. The callee's prologue saves and epilogue restores of them are deleted when the summary proves the slot is only read by the matching restore. Functions that are not proven preserving return them through the context (rare; listed by the lift). |
+| x30 | not materialised. A function that reads x30 as data (`__builtin_return_address`, PAC signing with a modifier, a backtrace) gets it stored in the context by its callers, a summary fact. PACIBSP/AUTIBSP/RETAB are no-ops (the host return stack gives the return). |
+| NZCV | never across calls (AAPCS64; the summary checks it); a function that reads flags at entry is lifted with the generic convention only |
+| x9-x18 | dead at calls and returns unless the summary says a callee reads or a caller expects them (outlined helpers, veneers: x16/x17) |
+| x8 | the indirect-result pointer: passed through the context when the callee reads it |
+
+Indirect calls (BLR, 182,791 sites) call `g_<target>`. The per-site cache stays (`A64_SITE_CALL` semantics). Before
+the call the caller stores what the AAPCS64 lets a callee read (x0-x8, SP, v0-v7, only those it has written since
+the last sync); after it, it reloads x0, x1, v0-v3. A site whose usual target is known (`A64_DEVIRT` profile) calls
+`f_<target>` directly after the compare.
+
+## 6. The whole-program stage
+
+Inputs: the image, the function entries and bodies (present discovery and `lift_fixes`), jump tables, PLT stubs
+and imports, the hook and probe tables.
+
+1. **Call graph**: BL edges, tail edges (B and fall-through to an entry), PLT resolution, BLR and register BR as
+   edges to "unknown, AAPCS64". Functions whose address is taken (ADRP+ADD of an entry; relocations and pointers in
+   `.data`, vtables) form the "may be called indirectly" set.
+2. **Per-function local facts**, from the function's own IR with callees' summaries:
+   - live-in GPR/V/NZCV;
+   - may-write set;
+   - SP balance;
+   - callee-saved preservation (a save pattern: entry value stored to a frame slot, the slot read only by the
+     restore into the same register on every exit);
+   - x30 read as data;
+   - FP mode use (MSR FPCR, MRS FPSR);
+   - frame size and slots whose address never escapes (frame-slot promotion to SSA, and marks elided);
+   - stores that may reach memory other than the own frame (for `memory(read)` declarations, kept because they are
+     free).
+3. **Summaries** over SCCs (Tarjan), iterated to a fixed point inside each SCC:
+   - inputs(f) = live-in(f) ∪ inputs of callees not covered;
+   - clobbers(f);
+   - preserved(f), proven not assumed;
+   - results(f) = registers written by f that some caller reads before redefining, plus x0, x1, v0-v3 when f is
+     in the indirect set.
+4. **Contract checks**:
+   - a function in the indirect set must preserve x19-x29, SP and d8-d15 and read only x0-x8, SP and v0-v7 at
+     entry; one that does not is listed and gets the generic convention for its indirect callers;
+   - a function reading NZCV at entry, or x9-x18 outside a known veneer pattern, is listed.
+   The list is printed by the lift and is expected to be short. The SDK's hand-written assembly is the likely
+   member.
+5. **Runtime verification build** (`LIFT2_VERIFY=1`): every fast entry checks at return that SP and x19-x29 are
+   unchanged and records a violation. One game run must report none before the convention is trusted.
+
+## 7. Floating point: host FP mode
+
+- FADD, FSUB, FMUL, FDIV, FSQRT, FMADD/FMSUB/FNMADD/FNMSUB and vector FMLA/FMLS are the native SSE/AVX/FMA3
+  operations (`fadd` ... `llvm.fma`). IEEE operations and fused multiply-add are correctly rounded, so in
+  round-to-nearest the values equal ARM's. `-ffp-contract=off` semantics: the emitter never fuses what the guest
+  kept separate.
+- **FPCR to MXCSR.** FPCR.FZ sets MXCSR.DAZ and MXCSR.FTZ; RMode sets MXCSR.RC; DN is honoured by the NaN fix-up
+  when set.
+  - MSR FPCR (7 sites in the game's cold chunks; 9 MRS FPCR) writes the context's `fpcr` and MXCSR.
+  - Thread creation starts from FPCR 0, so MXCSR has its default bits and all exceptions masked.
+  - `fiber_switch` (`host/hos_thread.c`) saves and loads MXCSR with the guest context, because a host thread runs
+    several guest fibers.
+  - `host/hos_setjmp.c` already saves and loads MXCSR.
+  - Host code called from guest threads (HLE) runs under the guest's MXCSR. Host code that depends on IEEE denormals
+    on such a thread sets MXCSR itself; none is known.
+- **FPSR from MXCSR.**
+  - MRS FPSR (8 sites) reads the context's `fpsr` and ORs in MXCSR's sticky bits: IE to IOC, ZE to DZC, OE to OFC,
+    UE to UFC, PE to IXC, DE to IDC (DE only when FZ is set).
+  - MSR FPSR writes the context and clears MXCSR's sticky bits.
+- **Fix-ups, where x86 values differ from ARM's:**
+
+| operation | x86 behaviour | fix-up |
+|---|---|---|
+| FMIN, FMAX | `minps` returns the second operand for NaN and either zero for ±0 | `llvm.minimum`/`llvm.maximum` (LLVM's lowering: a few ops) |
+| FMINNM, FMAXNM | as above | `llvm.minimumnum`/`llvm.maximumnum` |
+| FCVTZS/FCVTZU, all widths | out of range gives 0x80000000 | `llvm.fpto[su]i.sat` |
+| FCVTNS/NU/AS/AU/MS/MU/PS/PU | as above | rounding intrinsic, then `.sat` |
+| generated NaN (invalid op) | 0xFFC00000 / 0xFFF8... | `default_nan` select on the result; can be switched off at lift time (`LIFT2_NAN_SIGN=0`) once a shadow run shows no reader cares |
+| NaN propagation with two NaN operands or a signalling NaN | x86 propagates src1 | not fixed: ARM differs only when the second operand is signalling; the shadow run counts it |
+| FZ: tininess | ARM flushes results tiny before rounding, x86 FTZ after | not fixed: differs only for results that round up to exactly the smallest normal; the shadow run counts it |
+| FRECPE, FRSQRTE | `rcpps` is a different estimate | ARM's table (exact), as an out-of-line vector routine |
+| FRECPS, FRSQRTS | | `fma` plus the 0·∞ special case (2.0 / 1.5) |
+| FCVT to and from half | | F16C `vcvtps2ph`/`vcvtph2ps` (RN); FZ16/AHP not supported (FPCR writes with them trap in debug builds) |
+| FABD, FACGE etc. | | compositions of the above |
+
+- A **shadow build** (`LIFT2_FP_SHADOW=1`) runs the present exact FPX1 helper next to each host-mode op and counts
+  mismatches by class (NaN sign, NaN propagation, FZ boundary, FPSR at read sites). One game run, then goldens are
+  re-baselined.
+
+## 8. Memory
+
+- **Window.** The guest address plus the constant `0x100000000000` stays (one `movabs` per function, folded into
+  addressing). There are no bounds checks; the 512 GB reservation and the host's first-touch commit stay as they
+  are.
+- **Plain loads and stores** are LLVM plain accesses with `align 1`. ARM's single-copy atomicity of aligned
+  accesses holds on x86 for plain moves. A spin loop on a plain load stays a loop only because the back-edge poll
+  (section 10) is a call that may write guest memory. That is an invariant of the poll's declaration, documented
+  there.
+- **Ordering under x86-TSO**, per construct:
+
+| guest | emitted | x86 | why |
+|---|---|---|---|
+| LDR/STR | plain | mov | TSO orders them as ARM's dependency rules need |
+| LDAR, LDAPR, LDAXR | `load atomic acquire` | mov | loads are not reordered with later accesses on x86; the IR order stops the compiler |
+| STLR, STLXR | `store atomic seq_cst` | `xchg` | ARM's STLR then LDAR is the sequentially consistent idiom (RCsc); a release mov could pass the later LDAR in the store buffer. STLR cannot be told apart from a plain release store, so all are seq_cst (about 3,200 LDAR/STLR sites in the game) |
+| DMB ISH, DMB SY, DSB | `fence seq_cst` | `lock or [rsp-64],0` | orders the store buffer |
+| DMB ISHLD, DMB ISHST (~920 sites) | `fence acq_rel` | nothing | TSO gives load-load, load-store, store-store; a compiler barrier only |
+| ISB | nothing | | no self-modifying code |
+| LSE: LDADD/LDCLR/LDEOR/LDSET/SWP/CAS (all orderings) | `atomicrmw`/`cmpxchg` seq_cst | lock-prefixed | x86 locked ops are full barriers anyway |
+| CASP | `cmpxchg` i128 | `lock cmpxchg16b` | |
+| LDXR/STXR loops | recognised as `cmpxchg` loops when the pattern is LDXR, ALU, STXR, CBNZ back | `lock cmpxchg` | otherwise the value-compare monitor in the context, as today |
+
+- **Page marks.**
+  - *What they are for:* the direct back end reads them to find guest pages the CPU wrote since its last scan
+    (vertex, index, uniform, texture uploads) without an OS write watch.
+  - *Where they stay:* every store whose address is not provably in the own frame. Provably in the own frame means
+    derived from SP, or from x29 set from SP, with the address not escaping.
+  - *What is fixed:* the second half of an `STP Q, Q, [SP]` is no longer marked (6,050 sites today).
+  - *Cost:* about 8 % of cold instructions (measured).
+  - *A cheaper mechanism* exists on Linux 6.7+: `PAGEMAP_SCAN` over userfaultfd `UFFD_FEATURE_WP_ASYNC` ranges, which
+    exists to emulate GetWriteWatch. Its cost is a minor fault on the first write to a tracked page after each reset,
+    which can exceed the marks for pages written every frame. It is a separate experiment on the GPU pools only, not
+    part of this design.
+
+## 9. The host interface, at guest-address level
+
+Today several tools find places in the lifted C by text and edit it. All of them move to a declarative table keyed by
+guest addresses, read by the lifter, and to host C functions with fixed signatures. The lifted code is never edited
+after the lift.
+
+| consumer of the lifted C text today | what it does | replacement |
+|---|---|---|
+| `nx2/entry_hooks.py` `ENTRY_HOOK(0xADDR)`, `ENTRY_HOOK_SYM` (137 in `host/*.c`) | `if (entry_<addr>(c)) return;` at the function's top | Unchanged in `host/`. The lifter puts the call at the fast entry: store the live-ins and x30 to the context, call, on 1 load x0, x1, v0, v1 and return. A hook may also be declared `REPLACE`: a host function with the fast prototype, called directly. |
+| `nx2/entry_hooks.py` `SPLICE_AFTER(0xADDR, "anchor")`, `_EACH` (15, `host/direct_*.c`) | inserts `splice_<addr>(c);` after a text anchor | `SPLICE_AT(0xFUNC, 0xPC)` naming the guest instruction. The lifter stores every live register to the context before the call and reloads after it (a sync point). The anchors are re-expressed as instruction addresses once with the old lift's `/* pc */` comments. |
+| `nx2/oot_patches.py`: dynres, life, movement, flight rotation, view, mouse camera, menu focus, menu tick, text speed, frame seconds (`STEP_SITES`), movie frames (`MOVIE`), whole frames (`WHOLE_SITES`), output size, RT pool size (`OUT_EDITS`) | replace or insert C at text anchors in about 20 functions | Probes in `nx2/lift2/probes.py`: `After(pc, fn, reads, writes)` (a host function of the named registers returning the written ones), `Before(pc, ...)`, `CondOr(pc, fn)` (a conditional branch also taken when `fn()` is true), `Value(pc, reg, fn)` (the instruction's result replaced), `CallSite(pc, fn)` (a BL at pc calls a host function instead). Each patch's C moves into a host file as a function; the table names it. |
+| `nx2/oot_native_resolution.py` (f_806702e0, f_831f3200) | text edits | probes, as above |
+| `nx2/oot_wide.py` (11 sites), `nx2/oot_jitter.py` (3), `nx2/oot_occlusion.py` (6) | C after an instruction (`Lifter.after`) | `After` probes; the snippets become host functions |
+| `nx2/step_readers.py` | reads the lifted C to classify readers of the frame step | reads the IR dump (`work/lift2/ir/<addr>.txt`) |
+| `nx2/chunks.py` (stable boundaries, `edit_c`), `nx2/whole_write.py` | chunk files of C | partitions by guest address (kept: `work/image/chunks.txt`); written whole once |
+| `nx2/split_hot.py`, `nx2/pgo_pieces.py` | splits `code_hot.c`, maps profiles | the hot partition is emitted as N modules directly; IR-level PGO (`-fprofile-generate`/`-fprofile-use`: clang's front-end instrumentation does not apply to IR input) |
+| `nx2/lifted_c.py` | finds definitions in C text | not needed |
+| `nx2/poll.py` | inserts `A64_POLL` before backward gotos | the `poll` IR op on back edges (section 10) |
+| `nx2/rtgen.py`, `a64_rtgen.py`, `a64_suyu.*`, `a64_fpx.h` | generated runtime headers | `nx2/lift2/rt.c` (host-side runtime: generic call, traps, SVC, FP tables) |
+| `nx2/build.py` | compiles `code_*.c`, hot flags, memory gate | compiles `*.ll` per partition (section 11) |
+| `nx2/label_syms.py` | renames `f_<addr>` symbols | renames `f_<addr>` and `g_<addr>` |
+| `nx2/test_leaf.py`, `nx2/test_insn.py` | lift with the old lifter | parametrised by lifter (section 12) |
+| tests: `test_entry_hooks`, `test_mark_groups`, `test_fpx_*`, `test_vfpx_elem`, `test_vfminmax`, `test_frame_whole`, `test_movie_frame_count`, `test_menu_hooks`, `test_oot_jitter`, `test_free_view_anchor`, `test_frame_rate_cap_step`, `test_stale_hot_pieces`, `test_chunk_split` | cut the old lifter's or patches' source | rewritten against the probe table and the new modules in the milestone that replaces each piece; the old ones are deleted with the old lifter |
+
+The game's text patches are about 20 functions. Each becomes one probe-table entry plus a host function, with its
+test checking the table, not C text.
+
+## 10. Polls, SVC, traps, setjmp
+
+- **Polls.**
+  - *Why they exist:* the virtual cores (`HOS_VCORES`, `host/hos_thread.c`) multiplex guest threads so that a
+    waiting higher-priority thread can take a core from a running one. A guest loop with no SVC or nn::os call
+    would never give it up.
+  - *Where they stay:* every back edge.
+  - *Emitted form:* `load atomic i32 monotonic` of `ctx.poll` and a cold branch to `a64_poll_cur()`.
+  - *Declaration invariant:* `a64_poll_cur` is declared as possibly reading and writing guest memory, which keeps
+    spin loops on plain loads correct (section 8). It is not declared as touching the context, so values stay in
+    registers across the loop.
+  - *Cost:* 0.05 loads per guest instruction.
+- **SVC**: the generic sync point (all live registers to the context, `a64_svc(c, imm)`, reload).
+- **Traps** (UDF, BRK, undecodable): the context synced, `a64_trap`, no return.
+- **setjmp owners**: the present scheme (`recomp_sj_push`/`recomp_sj_setjmp` around calls of a function that calls
+  `__setjmp`, return points as generic entries). Such calls use the generic convention.
+- **PLT stubs**: resolved to the final target at lift time; a stub reached indirectly is a generic entry that sets
+  x16/x17.
+
+## 11. Build
+
+- **Partitions.** By guest address, on the stable boundaries of `work/image/chunks.txt`. About 45 cold modules of
+  about 400 k guest instructions, plus the hot set (`work/hot_funcs_play.txt`) as 8 modules grouped by call
+  affinity (as `split_hot.py` does now).
+  - Each module declares every callee it calls with the uniform prototype, plus `memory(read)` where the summary
+    proves a function store-free (free, if small).
+  - Cold modules build at -O1, hot modules at -O2 with IR-level PGO.
+  - The lift writes the `.ll` files, the summaries and the probe and hook tables in one pass; `build.py` compiles
+    them with the present job scheduler and memory gate.
+- **Lift time.** Decoding and IR construction are per function and parallel (16 processes); the summary fixed
+  point is cheap (one pass over SCCs; summaries are bitmasks). The estimate is 5-10 min in Python against 3 min now.
+  If it is slower, the decoder and emitter move to a compiled language with the IR unchanged.
+- **Build time.** About as now (11-15 min): the optimiser dominates (section 2.1), and there are about 25 % fewer
+  instructions to optimise.
+- **Executable size.**
+  - Cold code: from 23.8 x86 bytes per guest instruction to about 16-17. That is -28 % instructions measured with
+    registers as values, saves deleted and marks off. With the marks kept, about -20 %.
+  - Hot vector code: about half (section 1).
+  - Lifted code from 446 MB to about 310-340 MB.
+- **Layout.**
+  - The symbol-ordering file stays (`work/hot_order.txt`, names `f_`/`g_`).
+  - Cold paths are split out with `-fsplit-machine-functions` and the profile.
+  - The ordered hot region (about 90 MB today) is put on 2 MB pages at start-up: `MADV_COLLAPSE` on the text range,
+    or a copy into an anonymous `MADV_HUGEPAGE` mapping and `mremap` over it.
+  - `-fno-stack-protector` for lifted modules.
+- **Windows.** Same IR, `x86_64-w64-windows-gnu` triple, the pinned llvm-mingw of the same LLVM major. The uniform
+  prototype with `musttail` works there (tested); Win64 passes the vector arguments by reference, which is accepted
+  for a build whose purpose is portability (there is no Windows renderer).
+
+## 12. Validation and bring-up
+
+- **Per instruction:** `nx2/test_insn.py` gains `--lifter 2`. Every form of the census, random states, Unicorn's
+  ARMv8.x "max" CPU against the new lift's code for that one instruction: X0-X30, SP, NZCV, V0-V31 and memory
+  compared. FPSR is compared only at the MRS sites' semantics (section 7).
+- **Per function against Unicorn:** `nx2/test_leaf.py --lifter 2` (leaves, then `--calls` trees), unchanged
+  otherwise.
+- **Differential, old lift against new lift:** `nx2/test_lift2_diff.py`. Both lifts of the same functions are
+  linked into one harness under different names (`old_f_<addr>`, the new `g_<addr>`). Each is run from the same
+  random state and memory snapshot; registers, NZCV where the summary says it is live, and changed pages are
+  compared. Unicorn is not needed, so SVC-free functions with calls and indirect calls can be compared too (both
+  call the same old-lift callees).
+- **Mixed builds.** A list `work/lift2/use.txt` names the functions taken from the new lift.
+  - For those, the old `f_<addr>` is replaced by `void f_<addr>(Ctx *c) { g_<addr>(c); }`.
+  - New code calling a function not in the list calls the old `f_<addr>(c)` through the generic protocol.
+  - Old and new code meet only at generic entries, whose protocol is the old one, so any mix links and runs. A
+    divergence is bisected by halving the list.
+  - The list grows module by module until it holds every function; then the old lifter, `a64emit`, suyu's
+    translator and the text-patch tools are deleted.
+- **In the game:** a smoke run against the phashed golden and a timing run at each milestone that changes code in
+  the game. Run by the owner or one agent at a time.
+
+## 13. Milestones
+
+Each is one agent task of a few hours with its own pass/fail check. Estimates are agent-hours.
+
+| # | milestone | pass/fail | est. |
+|---|---|---|---|
+| 1 | Decoder + IR + LLVM emission for integer leaf functions (specified below) | Unicorn 0 mismatches on 500 leaves; old-lift differential 0 mismatches | 4 |
+| 2 | All integer data-processing and integer load/store forms of the census (`census.py` coverage report) | `test_insn --lifter 2` 0 mismatches on every integer form; coverage 100 % of integer forms | 4 |
+| 3 | Jump tables as indexed switches, polls, traps, PAC no-ops; leaves with loops and switches | `test_leaf --lifter 2` 0 mismatches on 2,000 leaves incl. switches | 3 |
+| 4 | Calls through the generic entry only (BL, tail B, PLT), call trees | `test_leaf --calls --lifter 2` 0 mismatches on 500 trees | 3 |
+| 5 | Differential harness old vs new, and the mixed-build list in `build.py` | 1,000 random functions with calls, 0 mismatches; a mixed build with one cold module from lift 2 links | 4 |
+| 6 | Barriers, LDAR/STLR, LSE, CASP, exclusives (LDXR/STXR loop recognition and monitor) | `test_insn` on all atomic forms; a two-thread litmus test (STLR then LDAR, message passing) on host threads | 3 |
+| 7 | SVC, setjmp owners, hooks (`ENTRY_HOOK`, `REPLACE`), `SPLICE_AT`, probe table with the 20 patch functions ported | `tests/` rewritten for the table; the differential harness passes on every hooked or probed function with hooks stubbed | 4 |
+| 8 | Mixed build of all integer-only functions (no FP/NEON) from lift 2 | smoke run vs golden (owner/agent run) | 3 |
+| 9 | FP scalar in host FP mode, FPCR/MXCSR handling incl. fibers, FPSR sites, fix-ups | `test_insn` 0 mismatches outside the documented classes; shadow build counts | 4 |
+| 10 | Vector/FP loads and stores, NEON integer and permutes | `test_insn` 0 mismatches on those forms | 4 |
+| 11 | NEON FP | as 10; f_817472e0's x86 instruction count ≤ 2,600 | 4 |
+| 12 | Shadow FP run in the game; goldens re-baselined | mismatch report per class; smoke | 2 |
+| 13 | Whole-program stage: call graph, local facts, SCC summaries, contract checks, the violation list | lift report; summaries stable over two lifts; unit tests on synthetic functions | 4 |
+| 14 | Runtime verification build (`LIFT2_VERIFY=1`) | one game run with 0 violations | 2 |
+| 15 | Fast entries and the uniform prototype for direct calls, poison args/results, callee-saved save deletion | `test_leaf --calls` and the differential 0 mismatches; cold corpus instruction count ≤ 0.85x the old lift | 4 |
+| 16 | Frame-slot promotion and mark elision for own-frame stores | differential 0 mismatches; marks per guest store reported | 3 |
+| 17 | Build: partitions, hot modules, IR PGO, `-fsplit-machine-functions`, 2 MB text pages, Windows triple | full build time and size reported; Windows build links | 4 |
+| 18 | Whole game from lift 2 (`use.txt` = all) | smoke vs golden, timing run vs the old build | 3 |
+| 19 | Delete the old lifter, `a64emit`, suyu's translator, `poll.py`, `lifted_c.py`, `split_hot.py`, `pgo_pieces.py`, text patches; docs updated | `tests/run_all.py` green; nothing references `code_*.c` | 3 |
+
+Total about 65 agent-hours. Milestones 1-8 bring the integer game up through mixed builds; the performance work is
+9-11 and 15-17.
+
+## 14. Milestone 1, completely
+
+**Scope.** Functions whose every instruction is in the integer subset and that make no calls:
+- data processing (immediate and register), moves, bitfield ops, extends, conditional select/compare, MUL/MADD/MSUB,
+  UMULH/SMULH, UDIV/SDIV, CLZ/CLS/RBIT/REV;
+- integer loads and stores of every addressing mode (unsigned offset, unscaled, pre/post-index, register offset
+  with extend/shift, literal, pairs);
+- ADR/ADRP;
+- B, B.cond, CBZ/CBNZ, TBZ/TBNZ, RET;
+- NOP/hints, PACIBSP/AUTIBSP/RETAB as no-ops.
+
+Out of scope, where the function is skipped: BL/BLR/BR, B to another entry, SVC, FP/NEON, atomics,
+acquire/release, MRS/MSR, UDF.
+
+**Files** (new, under `nx2/lift2/`):
+- `decode.py`: table-driven decoder. A list of `(mask, value, name, field extractor)` entries checked in order; it
+  returns a `Insn(name, fields)` or `None`. Field names follow the Arm ARM.
+- `ir.py`: `Function`, `Block(params, ops, term)`, `Value(type, op, args)`, the types and op names of section 4 used
+  by milestone 1, and a printer for the IR dump.
+- `sem_int.py`: one function per template, `sem(insn, b)`, using a block builder `b` with
+  `b.get_x(n, w)`, `b.set_x(n, value, w)`, `b.flags`, `b.load`, `b.store`. XZR/WZR, SP versus XZR by encoding, and
+  W-write zero-extension are handled in the builder.
+- `build_ir.py`: takes a function body from the present discovery (`a64_lift.Lifter.funcs[entry]`, the walk
+  stays), splits blocks at labels and branch targets, runs `sem` per instruction, and closes blocks. Live-in
+  registers become block parameters by a standard SSA construction (Braun et al., "Simple and Efficient
+  Construction of SSA Form"). Flags are four `i1` registers in the same map.
+- `emit_llvm.py`: IR to one textual module. In milestone 1 there is only the generic entry:
+  `define void @g_<addr>(ptr noalias nocapture %ctx)`.
+  - Every register in the function's live-in set is loaded from the context at entry (offsets from
+    `rt64/a64.h`'s `GuestContext`: x at 0, nzcv bytes at 0x108).
+  - At RET, every register written is stored back, NZCV included (as four bytes), so that the differential compares
+    NZCV too.
+  - Guest accesses as section 4's `gaddr`.
+  - Stores mark pages exactly as `A64_MARK` does: two `store atomic i8 1 ... release` into `@a64_dirty`, index
+    `(addr >> 12) & (2^27 - 1)` and the same for `addr + size - 1`. SP-derived stores do not mark, as today.
+  - The module has the target triple and data layout of `x86_64-pc-linux-gnu` and is checked with `opt -passes=verify`
+    in the test.
+- `census.py`: the forms census of section 3 into `work/lift2/forms.txt`, with a column saying whether `decode.py`
+  covers each form.
+
+**Tests.**
+- `tests/test_lift2_decode.py` (game-free): a hand-written list of encodings, at least two per template, with the
+  expected `Insn`. It covers every addressing mode, both widths, the XZR/SP cases and shifted/extended registers. It
+  also builds IR for three synthetic functions (assembled words in the test), emits them, and checks `opt -verify`
+  passes and that the module compiles with clang when clang is present.
+- `nx2/test_lift2_leaf.py` (needs the dump; follows `test_leaf.py` and reuses its image, state and Unicorn setup by
+  importing it):
+  - picks random in-scope functions from rtld, main, sdk and subsdk0 by `test_leaf`'s module shares, 3-600
+    instructions;
+  - emits them with `emit_llvm` into one `.ll`, lifts the same functions with the old lifter into C, and builds
+    `test_leaf`'s harness with both, the `.ll` compiled by the same clang (`-O1`, `-march=x86-64-v3`);
+  - runs each function from 4 random states, natively through `g_<addr>`, natively through the old `f_<addr>`, and
+    in Unicorn;
+  - compares X0-X30, SP and changed pages against Unicorn, and NZCV against the old lift where the old lift keeps it;
+  - prints mismatches with the function, state and first differing register, plus the x86 instruction count of old
+    against new per function and in total.
+
+**Pass/fail.**
+1. `python -I -B tests/run_all.py` passes, including `test_lift2_decode.py`.
+2. `work/venv/bin/python -I nx2/test_lift2_leaf.py --count 500 --states 4 --seed 1`: 0 mismatches against Unicorn
+   and 0 against the old lift. Cases Unicorn cannot compare are skipped and counted, as `test_leaf` does.
+3. `nx2/lift2/census.py` reports the share of integer-class words its decoder covers; at least 95 % (milestone 2
+   completes the class).
+4. The instruction-count ratio new/old over the 500 is reported, not gated: it is expected below 1 because flags
+   become values.
+
+Not in milestone 1: changes to `build.py`, the game build or `host/`.
+
+## 15. Risks not retired
+
+- **Non-AAPCS functions** (SDK assembly, outlined helpers, veneers reading x16/x17): their number decides how much
+  code keeps the generic convention. The contract checks (section 6) list them; until milestone 13 runs, the number is
+  unknown.
+- **Host FP mode divergence** in the game: NaN sign and propagation, the FZ tininess boundary, the 8 FPSR read sites.
+  The shadow run (milestone 12) measures it; replays and goldens must be re-baselined.
+- **Lift time** in Python with whole-program summaries: estimated, not measured.
+- **Win64** passes vectors by reference and has 4 register arguments, so the Windows build is slower. It is a
+  portability build.
+- **Page marks** stay. The UFFD write-protect alternative is unmeasured.
+- **One LLVM major** for Linux clang and llvm-mingw, kept in step by a version check.
