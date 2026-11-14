@@ -1066,18 +1066,23 @@ made 98.8 % of it static and dropped it. Now (`nx2/lift2/owned.py`, `nx2/lift.py
 writes only its own functions (`Lifter.only`):
 - the ones lift 2 cannot take (the plan's bodies lack them: 76, from scope, hooks and C added after an instruction);
 - the ones a host edit of the C reaches, predicted from the edits' sources rather than from the C: the guest
-  addresses `nx2/oot_patches.py` names (heads `f_`, labels `L_`, constants and return addresses `0x`: the function
-  holding the address, and for a return address the call before it) and the `ENTRY_HOOK` / `SPLICE_AFTER` addresses
-  of `host/*.c`. Checked against a full write of the C: of the 157 functions in lift 2's bodies that the edits
-  changed, 0 missed; 93 over-predicted (owned all the same: a little C, no lost edit). A missed one would show as a
-  required patch finding no anchor (the lift stops) or, for the others, as `edited_functions` finding an edit in a
-  function the plan gave to lift 2.
+  addresses `nx2/oot_patches.py` names, comments included (heads `f_`, labels `L_`, constants and return addresses
+  `0x`: the function holding the address, and for a return address the call before it; the output-size patches are
+  anchored by text alone and name their functions only in comments), the `SPLICE_AFTER` addresses of `host/*.c`
+  that lift 2 does not call itself (`probes.SPLICE_AT`), and the functions with C after an instruction (`Lifter.after`:
+  `mixed.edited_functions` still counts them edited, as their C calls `hos_*`). Not edits: `ENTRY_HOOK`s (lift 2
+  makes them, the build takes them from `host/*.c` for functions without present-lifter C) and the patches lift 2
+  makes as probes. Checked against a full write of the C at 80f185c: 32 functions of lift 2's bodies edited, 0
+  missed, 24 over-predicted (functions the patches' comments mention, a few constants: they stay on the present
+  lifter; all 56 predicted hold 86,196 instructions, 0.5 % of the game; no other cost). A missed one would show as a required
+  patch finding no anchor (the lift stops) or, for the others, as the edit missing in the game.
 - with `HOOKSHOT_LIFT2=<file>`, everything not listed.
 
 The lift writes `lift2_owned.txt` beside the plan (owned, predicted edits, the hot list); `mixed.prepare` takes
 lift 2's set from it (every function not owned) and the hot partitions from the hot list (most hot functions have
 no present-lifter C now). `chunks.write` chunks the share by size and keeps the saved boundaries of a full write.
-`HOOKSHOT_LIFT1_ALL=1` writes every function as before. 326 of 294,523 functions are the present lifter's.
+`HOOKSHOT_LIFT1_ALL=1` writes every function as before. 57 of 294,523 functions are the present lifter's at
+80f185c (56 predicted edits, 1 lift 2 cannot take; 326 at 451d4ac, before the entry hooks, probes and splices moved).
 
 Measured (worktree relift, 14 GB scope, HOOKSHOT_JOBS=6, emit workers sized by memory):
 
@@ -1085,6 +1090,7 @@ Measured (worktree relift, 14 GB scope, HOOKSHOT_JOBS=6, emit workers sized by m
 |---|---|---|---|---|---|
 | before (451d4ac) | 312 s | ~230 s (69 code files) | ~150 s (lift 2 objects cached) | 462 s | 10.5 GB |
 | after | 105 s | ~26 s (2 code files) | 449 s (lift 2's 145 partitions cold: the chosen set changed their keys) | 554 s | 10.4 GB |
+| after, on 80f185c | 102 s | ~25 s (2 code files) | ~300 s (lift 2's 146 partitions cold) | 401 s | 10.35 GB |
 
 The build's cold lift 2 compile is once per change of the chosen set; a warm rebuild compiles 2 small C files instead
 of 69. The peak is the build's (lift 2's partition workers), not the lift's. Smoke kokiri PASS (worst distance 4),
