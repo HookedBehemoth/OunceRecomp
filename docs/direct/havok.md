@@ -89,3 +89,17 @@ were per-lane exact code with two FPCR reads a lane. Market, three alternating p
 hknp tasks 3.14 -> 2.60 ms CPU a frame, cloth 2.41 -> 2.17, queries 1.34 -> 1.13, the step-phase job 0.47 -> 0.40;
 all Havok 9.8 -> 8.7. Frames 82.3 -> 84.6 fps (median 11.79 -> 11.61 ms, p99 15.7 -> 15.0), inside the runs' spread
 (79.9-84.1 and 81.0-86.6) but every pair the same way. Text +0.44 MB (the exact block stays behind the test).
+
+Tried and not kept (market, same measurements):
+
+- Raising `-capture-tracking-max-uses-to-explore` (5000 to 200000) for the hot pieces: three of the kernels above
+  (`phys_cloth_collide_particles`, `phys_hknp_np_convex_kernel`, `phys_cloth_object_space_skin`, 6.4k-30k uses of `c`)
+  compile to the same code at either limit.
+- Adding the 18 Havok functions the profile finds outside the hot set (`phys_vertices_aabb_b`,
+  `phys_cloth_local_range_kernel`, ..., 4% of the executors' samples) to it: Havok CPU 8.54 -> 8.62 ms a frame over three
+  alternating pairs, inside the noise.
+
+Open: scalar FCVT between single and double precision is still the exact integer conversion (normalisation loop,
+rounding by FPCR mode, flags): 9377 sites in the lift, 1551 in the hot set; Havok's double-precision paths (the queries'
+precise transforms) use it. A native FP mode for the lifted code (SSE with the host's flush modes, no per-op proof of
+the FPSR flags) would cover it with the rest.
