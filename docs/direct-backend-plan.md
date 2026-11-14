@@ -243,6 +243,15 @@ check that shows it still applies (`HOS_DBG=logpatch`).
 - **The transient pool's size** (twice the game's pool) is measured on the HF market walk: peak held 534-565 MB at 2560x1440
   and 1,004 MB at 3840x2160, no target outside the slots; the full 26-stop scene cycle and a long soak under strict are not
   run; persistent targets of the same allocator are outside the slots.
+- **A frame at each step up of the dynamic resolution** (`HOS_DYNRES=1`, off by default). The first frame presented at a
+  larger 3D scale shows the previous frame's picture, at the old scale, in the top-left part of the screen; the rest is
+  fog-white or dark blue. The next frame is right. Steps down show no such frame. It happens at every step up from 0.333 to
+  0.75 at 2560x1440, with either slot range (1024 or 512 MB) and with no target outside the slots, so the slot range does not
+  cause it. Open: which image the final upscale reads on that frame. Either the game's own one-frame lag (the new scale
+  reaches the final pass a frame before the 3D is drawn at it), or our identity of a target made again at the larger size
+  over the old one's storage, with the pass still reading the old image. To force the steps, make the GPU timestamps run
+  fast and then slow (direct_query.cpp's resolve push: host0 and scale), and take shots from the present at which +0xe5c
+  changes.
 - **Memory accounting per owner** in the periodic log; the per-slot arenas, task pools and query pools never shrink.
 - **The mesh-stage fix rests on few runs** (3 walks, 3 market runs against 5 and 13 losses before); eleven other mesh stages
   sit at the register limit without spilling; the four other stages in the capture list are not swapped in; the scan covers
