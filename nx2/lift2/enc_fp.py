@@ -1,4 +1,4 @@
-"""FP scalar encodings, vector/FP register loads and stores, and MRS/MSR of FPCR/FPSR: the table (enc.py's format),
+"""FP scalar encodings and vector/FP register loads and stores: the table (enc.py's format),
 its validity names and its printers (llvm-mc's text with `-M no-aliases`).
 
 ftype: 0 single (S), 1 double (D), 3 half (H). Half-precision arithmetic (FEAT_FP16) is not in the game; only the
@@ -40,9 +40,6 @@ ENCODINGS = [
      "ldst_one_ok(L, opcode, S, size)"),
     ("LDST_ONE_POST", "0 Q 0011011 L R Rm:5 opcode:3 S size:2 Rn:5 Rt:5", "ldst_one", {"post": True},
      "ldst_one_ok(L, opcode, S, size)"),
-    # ---- the FP status and control registers
-    ("MRS_FP", "1101010100 1 1 1 011 0100 0100 00 op2 Rt:5", "mrs_fp", {}, "True"),
-    ("MSR_FP", "1101010100 0 1 1 011 0100 0100 00 op2 Rt:5", "msr_fp", {}, "True"),
 ]
 
 
@@ -269,14 +266,6 @@ def _LDST_ONE(f, pc, post=False):
     return s
 
 
-def _MRS_FP(f, pc):
-    return "mrs %s, %s" % (xr(f["Rt"], 1), "FPSR" if f["op2"] else "FPCR")
-
-
-def _MSR_FP(f, pc):
-    return "msr %s, %s" % ("FPSR" if f["op2"] else "FPCR", xr(f["Rt"], 1))
-
-
 RENDER = {
     "FP_DP1": _FP_DP1, "FP_DP2": _FP_DP2, "FP_DP3": _FP_DP3, "FP_CMP": _FP_CMP, "FP_CCMP": _FP_CCMP,
     "FP_CSEL": _FP_CSEL, "FP_IMM": _FP_IMM, "FP_INT": _FP_INT, "FP_FIXED": _FP_FIXED,
@@ -285,5 +274,4 @@ RENDER = {
     "LDSTV_REG": lambda f, pc: _ldstv(f, "reg"), "LDSTV_PAIR": _LDSTV_PAIR, "LDRV_LIT": _LDRV_LIT,
     "LDST_MULT": _LDST_MULT, "LDST_MULT_POST": lambda f, pc: _LDST_MULT(f, pc, True),
     "LDST_ONE": _LDST_ONE, "LDST_ONE_POST": lambda f, pc: _LDST_ONE(f, pc, True),
-    "MRS_FP": _MRS_FP, "MSR_FP": _MSR_FP,
 }

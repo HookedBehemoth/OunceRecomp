@@ -361,13 +361,14 @@ def t_ldst_one(b, f, pc, p):
         post_index(b, f, base, selem << sc)
 
 
-# ---- FPCR / FPSR (runtime helpers: the runtime keeps MXCSR equal to FPCR, and folds MXCSR's sticky bits into FPSR)
-def t_mrs_fp(b, f, pc, p):
-    setx(b, f["Rt"], b.call("a64_fpsr_read" if f["op2"] else "a64_fpcr_read", "i64", ctx=True, effects=True))
+# ---- FPCR / FPSR in host FP mode: runtime helpers (the runtime keeps MXCSR equal to FPCR and folds MXCSR's sticky
+# bits into FPSR). sem_int.t_sysreg (MRS/MSR, the integer side's table) is to call these for FPCR and FPSR.
+def fp_sysreg_read(b, name):
+    return b.call("a64_fpsr_read" if name == "FPSR" else "a64_fpcr_read", "i64", ctx=True, effects=True)
 
 
-def t_msr_fp(b, f, pc, p):
-    b.call("a64_fpsr_write" if f["op2"] else "a64_fpcr_write", "void", getx(b, f["Rt"], 1), ctx=True, effects=True)
+def fp_sysreg_write(b, name, x):
+    b.call("a64_fpsr_write" if name == "FPSR" else "a64_fpcr_write", "void", x, ctx=True, effects=True)
 
 
 TEMPLATES = {k[2:]: v for k, v in globals().items() if k.startswith("t_")}
