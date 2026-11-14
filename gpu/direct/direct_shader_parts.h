@@ -1,6 +1,6 @@
 // What direct_shader.cpp shares with the compute programs (direct_compute.cpp): reading a stage's package,
-// the translator's profile and host settings, the programs' constants (c1) in device memory, the cache records' Info format
-// and stamp, the bound textures' answers. Thin calls into direct_shader.cpp's own (one copy of each).
+// the translator's profile and host settings, the programs' constants (c1) in device memory, the cache records' Info format,
+// the device's part of the caches' stamps, the driver binaries' file, the bound textures' answers. Thin calls into direct_shader.cpp's own (one copy of each).
 #pragma once
 
 #include <cstdint>
@@ -24,7 +24,14 @@ Shader::HostTranslateInfo translate_info();
 VkDeviceAddress put_c1(const std::vector<uint8_t>& bytes, uint32_t used);
 void info_put(std::vector<uint8_t>& o, const Shader::Info& i);
 bool info_get(const uint8_t*& p, const uint8_t* end, Shader::Info& i);
-uint64_t cache_stamp();
+/// What translated code depends on besides the translator's own code: the device's subgroup answers, the record layout
+uint64_t device_stamp();
+/// The driver binaries of shader objects (hookshot_direct_shader_objects.bin), by a hash of the create info
+uint64_t object_key(const VkShaderCreateInfoEXT& ci, const VkShaderDescriptorSetAndBindingMappingInfoEXT& mi, bool size32);
+/// The binary kept for key, or empty
+std::vector<uint8_t> object_binary(uint64_t key);
+/// Keeps a shader object made from SPIR-V
+void object_keep(uint64_t key, VkShaderEXT obj);
 std::string program_dir();
 /// A texture handle's answer (heap_answer; not registered: Color2D)
 uint8_t answer_of(uint32_t handle);

@@ -4,9 +4,13 @@
 // make_program (the heap mapping) and vk_shader_object.cpp so_make (the shader objects). What differs (step A,
 // shader-contract.md section 6): uniform buffers are read through addresses (an address table in the frame arena, its
 // address pushed), not ring descriptors; a texture whose handle is a game buffer's word reads it there through the buffer's
-// pushed address, as a driver bank's; textures and samplers are the registration-time entries. The cache is this back end's
-// own file (hookshot_direct_programs.bin), stamped by what translates (HOOKSHOT_DIRECT_SHADER_STAMP, nx2/build.py) and the
-// device's answers: a file of another stamp is truncated.
+// pushed address, as a driver bank's; textures and samplers are the registration-time entries.
+// The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
+// - hookshot_direct_programs.bin: translated variants by code pair. Stamped by the translation's code only
+//   (HOOKSHOT_DIRECT_SHADER_STAMP, nx2/build.py: the translator and the regions marked "stamp graphics" and "stamp shared"
+//   here, direct_spv_late.*, direct_state.h), the record format (kDiskFormat), the device's answers and the switches that
+//   change the translation; a file of another stamp is made again. Edits outside the marked regions keep it.
+// - hookshot_direct_shader_objects.bin: driver binaries by create info, under the driver's binary UUID and version (sobin).
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -86,6 +90,7 @@ std::string hex16(uint64_t v) {
     return b;
 }
 
+// <stamp graphics>
 // ---- a stage's code (vk_shader.cpp Code, read_code, parse_code; graphics stages) ----
 struct Code {
     int stage = -1;   // (NVN stage)
@@ -186,6 +191,8 @@ bool parse_code(const nvn_stage_data& sd, Code& c) {
 }
 const Shader::ProgramHeader& header_of(const uint8_t* sph) { return *reinterpret_cast<const Shader::ProgramHeader*>(sph); }
 
+// </stamp graphics>
+// <stamp shared>
 // ---- the bound textures' answers (vk_shader.cpp texture_answer, canonical_answer) ----
 uint8_t live_answer(uint32_t handle) {
     const uint8_t a = heap_answer(handle & 0xFFFFF);
@@ -199,6 +206,8 @@ uint8_t canonical(uint8_t type, bool dim_fixed, uint8_t desc_type, bool depth_fl
     return type;
 }
 
+// </stamp shared>
+// <stamp graphics>
 // ---- the translator's questions (vk_shader.cpp Env, over a list's state) ----
 class Env final : public Shader::Environment {
 public:
@@ -276,6 +285,8 @@ private:
     uint32_t local_memory = 0;
 };
 
+// </stamp graphics>
+// <stamp shared>
 // ---- the profile (vk_shader.cpp make_profile with RX_VK_DESC_HEAP_BDA=2 on layer 0) ----
 Shader::Profile make_profile() {
     // (HOS_DBG=loopcap:<n>, a diagnosis: the trips the translator's loop safety counter allows, 8192 without it. The value is
@@ -351,6 +362,8 @@ Shader::HostTranslateInfo host_info() {
     return h;
 }
 
+// </stamp shared>
+// <stamp graphics>
 struct Translation {
     Shader::ObjectPool<Shader::IR::Inst> insts;
     Shader::ObjectPool<Shader::IR::Block> blocks;
@@ -443,6 +456,7 @@ struct Variant {
     std::vector<RawAnswer> answers;
     Variant* next = nullptr;
 };
+// </stamp graphics>
 void count_code(const Variant& v) {
     int64_t b = sizeof(Variant);
     for (const VStage& st : v.stages) b += (int64_t)(sizeof(VStage) + st.spirv.capacity() * 4 + st.c1.capacity());
@@ -535,6 +549,7 @@ Slot* slot_find(uint64_t serial) {
 
 // ---- the program cache file (its record: vk_shader.cpp's put_info / get_info, the rest this back end's) ----
 constexpr uint32_t kDiskMagic = 0x50445348;   // ('HSDP')
+constexpr uint64_t kDiskFormat = 2;            // (the record's layout below: a change to it changes this)
 std::mutex disk_mu;
 FILE* disk_out = nullptr;
 FILE* disk_in = nullptr;
@@ -631,6 +646,7 @@ void get_info(Reader& r, Shader::Info& i) {
         r.bad = true;
 }
 
+// <stamp graphics>
 /// The register-pressure pass on mesh stages' SPIR-V (direct_spv_late.h; docs/direct/spv-late.md): on, unless
 /// HOS_DBG=nolate (a diagnosis: the translator's order as it is; the program cache is stamped by it, so the two do not mix)
 bool late_mesh() {
@@ -655,13 +671,12 @@ void schedule_late(std::vector<uint32_t>& spirv, bool on) {
     st_late_moved.fetch_add(r.moved, std::memory_order_relaxed);
 }
 
-uint64_t disk_stamp() {
+// </stamp graphics>
+
+/// What translated code depends on besides the translator: the device's subgroup answers, the record's in-memory layout
+uint64_t device_stamp() {
     uint64_t h = 0xCBF29CE484222325ull;
     const auto add = [&h](const void* d, size_t n) { h = hash_bytes(d, n, h); };
-    const uint64_t translator = HOOKSHOT_DIRECT_SHADER_STAMP;
-    add(&translator, sizeof translator);
-    const uint32_t depth = host->depth_minus_w() != 0;
-    add(&depth, sizeof depth);
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)caps.sg32_stages};
     add(lanes, sizeof lanes);
@@ -673,6 +688,18 @@ uint64_t disk_stamp() {
 #endif
     };
     add(abi, sizeof abi);
+    return h;
+}
+
+/// The program cache's stamp: the translation's code (HOOKSHOT_DIRECT_SHADER_STAMP), the record format (kDiskFormat), the
+/// device, and the switches that change the graphics translation
+uint64_t disk_stamp() {
+    uint64_t h = device_stamp();
+    const auto add = [&h](const void* d, size_t n) { h = hash_bytes(d, n, h); };
+    const uint64_t translator[2] = {HOOKSHOT_DIRECT_SHADER_STAMP, kDiskFormat};
+    add(translator, sizeof translator);
+    const uint32_t depth = host->depth_minus_w() != 0;
+    add(&depth, sizeof depth);
     using namespace Shader::Backend::SPIRV;
     const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (late_mesh() ? 4u : 0u) | (late_vertex() ? 8u : 0u);
     add(&flags, sizeof flags);
@@ -860,11 +887,11 @@ VkDescriptorSetAndBindingMappingEXT null_map(uint32_t b, uint32_t stride) {
     return m;
 }
 
-// ---- the graphics shader objects' binaries: hookshot_direct_shader_objects.bin ----
-// What a vkCreateShadersEXT from SPIR-V costs at every start (750 objects, ~14 s of worker time in Kokiri) is
-// paid once per driver: each object made from SPIR-V has its binary (vkGetShaderBinaryDataEXT) appended, keyed by a hash of
-// everything its create info carries (stage, next stage, flags, the subgroup size, the SPIR-V, the heap mappings); a later
-// make with the same key creates it from the binary. VK_EXT_shader_object ties a binary to shaderBinaryUUID and
+// ---- the shader objects' binaries, graphics and compute: hookshot_direct_shader_objects.bin ----
+// A vkCreateShadersEXT from SPIR-V is paid once per driver: each object made from SPIR-V has its binary
+// (vkGetShaderBinaryDataEXT) appended, keyed by a hash of everything its create info carries (stage, next stage, flags, the
+// subgroup size, the SPIR-V, the heap mappings); a later make with the same key creates it from the binary. No build stamp
+// is in it: a translation that changed comes out as other SPIR-V, another key. VK_EXT_shader_object ties a binary to shaderBinaryUUID and
 // shaderBinaryVersion: the file's header holds them, and a file of another driver is made again. A binary the driver still
 // refuses (VK_INCOMPATIBLE_SHADER_BINARY_EXT) is a cache miss: the SPIR-V is compiled, counted. The file is locked as the
 // program cache is (another Hookshot: none). Records: {key, size} then the bytes.
@@ -1230,6 +1257,7 @@ void publish(Family& s, Variant* v, uint64_t serial) {
     while (!s.variants.compare_exchange_weak(head, v, std::memory_order_release, std::memory_order_acquire));
 }
 
+// <stamp graphics>
 // ---- translation (vk_shader.cpp translate_into's graphics half, record_answers) ----
 uint32_t cbuf_word(const DState& s, int stage, uint32_t index, uint32_t offset, const std::vector<uint8_t>& c1) {
     if (index == 1) {
@@ -1302,11 +1330,14 @@ bool translate_variant(Variant& v, const DState& s, const Code& vsc, const Code*
     }
 }
 
+// </stamp graphics>
+
 uint64_t slot_pair(const Slot& s) {   // (M4c: a task+mesh program's salted with its task code: never a mesh-only program's family)
     return s.task ? pair_key(hash_bytes("task", 4, s.task_key) ^ hash_bytes("mesh", 4, s.vs.key), s.has_fs ? s.fs.key : 0)
                   : pair_key_of(s.mesh, s.vs.key, s.has_fs ? s.fs.key : 0);
 }
 
+// <stamp graphics>
 /// A mesh-only program: its mesh stage (no task stage before it: the device has no task stage enabled) and fragment
 /// stage, as vk_shader.cpp translate_mesh_into translates them without the fallback
 bool translate_mesh_variant(Variant& v, const DState& s, const Code& mc, const Code* prim, const Code* fsc, const uint8_t color_types[8]) {
@@ -1450,6 +1481,8 @@ bool translate_task_mesh_variant(Variant& v, const DState& s, const Code& tc, co
         return false;
     }
 }
+
+// </stamp graphics>
 
 /// (a worker) the program's stages read, and its kept variants made
 void scan_slot(Slot* s) {
@@ -1766,7 +1799,13 @@ bool info_get(const uint8_t*& p, const uint8_t* end, Shader::Info& i) {
     p = r.p;
     return !r.bad;
 }
-uint64_t cache_stamp() { return disk_stamp(); }
+uint64_t device_stamp() { return hsd::device_stamp(); }
+uint64_t object_key(const VkShaderCreateInfoEXT& ci, const VkShaderDescriptorSetAndBindingMappingInfoEXT& mi, bool size32) {
+    sobin::init();
+    return sobin::key_of(ci, mi, size32);
+}
+std::vector<uint8_t> object_binary(uint64_t key) { return sobin::find(key); }
+void object_keep(uint64_t key, VkShaderEXT obj) { sobin::save(key, obj); }
 std::string program_dir() { return exe_dir(); }
 uint8_t answer_of(uint32_t handle) { return live_answer(handle); }
 uint8_t answer_canonical(uint8_t type, bool dim_fixed, uint8_t desc_type, bool depth_float) {

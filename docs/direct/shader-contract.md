@@ -224,3 +224,17 @@ paths (`:5446,5483`; `vk_desc_heap.cpp:291`) and `_environ` in the stamp (`vk_sh
 stamp must match BDA=2 explicitly or translations differ. `depth_minus_w` can flip at run time (`host/nvn_native.c:278`) and
 is in the stamp. Indexed quads read guest indices on the CPU (`vk_draw.cpp:8085-8100`). The page table at push 48 is read by
 non-BDA pointer-following stages (`spirv_emit_context.cpp:1257-1307`): direct has none, so such stages are skipped.
+
+## 8. The caches
+
+Beside the executable. A file of another stamp, format or driver is made again from its start, never read.
+
+| File | Records keyed by | Made again when |
+|---|---|---|
+| `hookshot_direct_programs.bin` (graphics variants: SPIR-V, Info, answers) | code pair, then the variant's key | `HOOKSHOT_DIRECT_SHADER_STAMP` changes (the Eden translator tree; the `// <stamp graphics>` and `// <stamp shared>` regions of `direct_shader.cpp`; `direct_state.h`; `direct_spv_late.*`), `kDiskFormat`, the device's subgroup answers, the depth mode, the translation switches (`nolate`, `latevertex`) |
+| `hookshot_direct_compute.bin` (compute variants) | compute code key | `HOOKSHOT_DIRECT_COMPUTE_STAMP` changes (the translator tree; the `// <stamp compute>` regions of `direct_compute.cpp`; the shared regions), `kDiskVersion`, the device's subgroup answers |
+| `hookshot_direct_shader_objects.bin` (driver binaries, graphics and compute) | hash of the create info: stage, next stage, flags, subgroup size, SPIR-V, heap mappings | the driver's `shaderBinaryUUID` or `shaderBinaryVersion` changes; a binary the driver refuses is compiled again from SPIR-V |
+
+Code that decides a translation's output belongs inside a stamp region (`nx2/build.py` hashes the regions; markers that do
+not pair stop the build). The workers, stats, cache file I/O and the draw side are outside: editing them keeps the caches.
+A change to a record's layout raises `kDiskFormat` / `kDiskVersion`.

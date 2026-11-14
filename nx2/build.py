@@ -30,6 +30,7 @@ import concurrent.futures
 import ctypes
 import hashlib
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -783,15 +784,40 @@ def main():
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include")]
         ddeps = tree_headers(direct) + b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
-        # (the direct back end's shader stamp: the translator it builds and the files that drive it, so its program
-        # cache (hookshot_direct_programs.bin) is good for them only)
+        # (the direct back end's shader stamps: the translator it builds and the code that decides the translation's output,
+        # so its program caches are made again for a change to them only. In direct_shader.cpp and direct_compute.cpp that
+        # code is between "// <stamp NAME>" and "// </stamp NAME>" lines: graphics and shared for the graphics programs,
+        # compute and shared for the compute programs)
         dtranslator = sorted(os.path.join(d, f) for d, _, fs in os.walk(dx_eden) for f in fs)
-        dstamp = hashlib.sha1(usedforsecurity=False)
-        for f in dtranslator + [os.path.join(direct, n) for n in ("direct_shader.cpp", "direct_shader.h", "direct_state.h", "direct_spv_late.cpp", "direct_spv_late.h")]:
-            if os.path.isfile(f):
-                with open(f, "rb") as src:
-                    dstamp.update(os.path.relpath(f, GPU).replace("\\", "/").encode() + src.read().replace(bytes((13, 10)), bytes((10,))))
-        direct_stamp = "-DHOOKSHOT_DIRECT_SHADER_STAMP=0x%sull" % dstamp.hexdigest()[:16]
+
+        def stamp_regions(path, names):
+            text = open(path, "rb").read().replace(bytes((13, 10)), bytes((10,))).decode()
+            out, inside = [], None
+            for line in text.split("\n"):
+                m = re.match(r"^// <(/?)stamp (\w+)>$", line)
+                if m:
+                    if (inside is None) == (m.group(1) == "/") or (m.group(1) and m.group(2) != inside):
+                        raise SystemExit("%s: the stamp markers do not pair at %r" % (path, line))
+                    inside = None if m.group(1) else m.group(2)
+                elif inside in names:
+                    out.append(line)
+            if inside is not None:
+                raise SystemExit("%s: the stamp region %s is not closed" % (path, inside))
+            return "\n".join(out).encode()
+
+        def shader_stamp(files, regions):
+            h = hashlib.sha1(usedforsecurity=False)
+            for f in dtranslator + [os.path.join(direct, n) for n in files]:
+                if os.path.isfile(f):
+                    h.update(os.path.relpath(f, GPU).replace("\\", "/").encode() + open(f, "rb").read().replace(bytes((13, 10)), bytes((10,))))
+            for name, which in regions:
+                h.update(name.encode() + stamp_regions(os.path.join(direct, name), which))
+            return h.hexdigest()[:16]
+        shader_cpp = ("direct_shader.cpp", {"graphics", "shared"})
+        direct_stamp = "-DHOOKSHOT_DIRECT_SHADER_STAMP=0x%sull" % shader_stamp(
+            ("direct_state.h", "direct_spv_late.cpp", "direct_spv_late.h"), (shader_cpp,))
+        compute_stamp = "-DHOOKSHOT_DIRECT_COMPUTE_STAMP=0x%sull" % shader_stamp(
+            (), (("direct_shader.cpp", {"shared"}), ("direct_compute.cpp", {"compute"})))
         dx_eden_deps = tree_headers(dx_eden, os.path.join(GPU, "compat"))
         for esrc in sorted(os.path.join(d, f) for sub in ("shader_recompiler", os.path.join("sirit", "src"))
                            for d, _, fs in os.walk(os.path.join(dx_eden, sub)) for f in fs if f.endswith(".cpp")):
@@ -800,7 +826,7 @@ def main():
         for dsrc in sorted(os.path.join(direct, f) for f in os.listdir(direct) if f.endswith(".cpp")):
             direct_jobs.append((cxx, dsrc, os.path.join(obj_dir, "dx_" + os.path.basename(dsrc)[:-4] + ".o"),
                                 ["-I" + direct, "-I" + os.path.join(GPU, "api")] + dflags + ["-I" + zstd] +
-                                ([direct_stamp] if os.path.basename(dsrc) == "direct_shader.cpp" else []), ddeps))
+                                ({"direct_shader.cpp": [direct_stamp], "direct_compute.cpp": [compute_stamp]}.get(os.path.basename(dsrc), [])), ddeps))
         # (zstd's decoder, third_party/zstd, plain C: the prepared assets' frames)
         zflags = target() + CPU + ["-fPIC", "-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden",
                                    "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"]

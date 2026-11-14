@@ -55,6 +55,10 @@ extern thread_local u32 g_nvn2_compute_ssbo_count;
 extern thread_local u32 g_nvn2_compute_layout_end;
 }  // namespace Shader::Optimization
 
+#ifndef HOOKSHOT_DIRECT_COMPUTE_STAMP
+#define HOOKSHOT_DIRECT_COMPUTE_STAMP 0ull
+#endif
+
 namespace hsd {
 bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)
 bool layer0_bound(uint64_t lo, uint64_t hi);   // (direct_pools.cpp)
@@ -69,7 +73,6 @@ PFN_vkCmdDispatch pDispatch = nullptr;
 PFN_vkCmdDispatchIndirect pDispatchIndirect = nullptr;
 PFN_vkCmdCopyBuffer pCopyBuffer = nullptr;
 PFN_vkCmdFillBuffer pFillBuffer = nullptr;
-PFN_vkGetShaderBinaryDataEXT pShaderBinary = nullptr;
 void load_functions() {
     static std::once_flag once;
     std::call_once(once, [] {
@@ -77,7 +80,6 @@ void load_functions() {
         pDispatchIndirect = (PFN_vkCmdDispatchIndirect)vkGetDeviceProcAddr(dev.device, "vkCmdDispatchIndirect");
         pCopyBuffer = (PFN_vkCmdCopyBuffer)vkGetDeviceProcAddr(dev.device, "vkCmdCopyBuffer");
         pFillBuffer = (PFN_vkCmdFillBuffer)vkGetDeviceProcAddr(dev.device, "vkCmdFillBuffer");
-        pShaderBinary = (PFN_vkGetShaderBinaryDataEXT)vkGetDeviceProcAddr(dev.device, "vkGetShaderBinaryDataEXT");
         // (no cooperative matrices on this card (RDNA2): the networks' matrix multiplies in a shader function on subgroup
         // shuffles, as the frozen back end runs them here, gpu/legacy/vk/vk_coopmat.cpp software_multiplies)
         Shader::Backend::SPIRV::mma_software = true;
@@ -90,6 +92,7 @@ uint64_t hash_bytes(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull)
     return h;
 }
 
+// <stamp compute>
 // ---- NVN2 compute's c0 (vk_bank.cpp CsLayout: control section +0xa9 push words, +0xb1 / b2 / b3 / b6 slot counts) ----
 constexpr uint32_t kControlSize = 0xd8, kBankMax = 0x1000;
 struct Layout {
@@ -106,7 +109,7 @@ Layout layout_of(const uint8_t* ctl) {
     l.push = ((uint32_t)ctl[0xa9] * 4 + 15) & ~15u;
     return l;
 }
-
+// </stamp compute>
 }  // namespace
 
 // ---- a list's compute state ----
@@ -198,6 +201,7 @@ std::atomic<int64_t> st_codes{0}, st_translated{0}, st_failed{0}, st_from_disk{0
     st_object_ns{0}, st_slots{0}, st_fixups{0}, st_misses{0}, st_variants{0}, st_samp_binds{0};
 std::atomic<double> last_miss_s{0};
 std::atomic<int64_t> st_waited{0}, st_prefetched{0}, st_bumped{0};
+std::atomic<int64_t> st_from_binary{0}, st_binary_failed{0};
 
 // ---- programs: variants per code key, slots per NVN serial ----
 struct Answer {
@@ -263,7 +267,7 @@ Slot* slot_find(uint64_t serial) {
 
 // ---- the cache file (hookshot_direct_compute.bin: records by code key) ----
 constexpr uint32_t kDiskMagic = 0x43445348;   // ('HSDC')
-constexpr uint64_t kDiskVersion = 1;
+constexpr uint64_t kDiskVersion = 2;   // (the record's layout, disk_save: a change to it changes this)
 std::mutex disk_mu;
 FILE* disk_out = nullptr;
 FILE* disk_in = nullptr;
@@ -273,9 +277,11 @@ struct DiskRecord {
     size_t size;
 };
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_key;
-void bin_init(uint64_t stamp);
+/// The cache's stamp: the compute translation's code (HOOKSHOT_DIRECT_COMPUTE_STAMP: the regions marked "stamp compute"
+/// here and "stamp shared" in direct_shader.cpp, and the translator, nx2/build.py), the record format (kDiskVersion), the
+/// device, and the matrix multiplies' form
 uint64_t disk_stamp() {
-    const uint64_t s[3] = {parts::cache_stamp(), kDiskVersion, Shader::Backend::SPIRV::mma_software ? 1ull : 0ull};
+    const uint64_t s[4] = {HOOKSHOT_DIRECT_COMPUTE_STAMP, parts::device_stamp(), kDiskVersion, Shader::Backend::SPIRV::mma_software ? 1ull : 0ull};
     return hash_bytes(s, sizeof s);
 }
 void disk_init() {
@@ -319,61 +325,10 @@ void disk_init() {
         disk_in = disk_out ? fopen(path.c_str(), "rb") : nullptr;
         disk_on = disk_out && disk_in;
         logf("direct: compute cache %s: %zu variants kept%s", path.c_str(), records, whole && !good ? "; another stamp's file was truncated" : "");
-        bin_init(stamp);
+        // (the compute objects' binaries are kept with the graphics ones, by create info: an earlier separate file is removed)
+        unlink((parts::program_dir() + "hookshot_direct_compute_objects.bin").c_str());
     });
 }
-// ---- (the shader objects' binaries: hookshot_direct_compute_objects.bin, good for this driver and these translations) ----
-std::mutex bin_mu;
-FILE* bin_out = nullptr;
-std::unordered_map<uint64_t, std::vector<uint8_t>> binaries;   // (by variant_id)
-std::atomic<int64_t> st_from_binary{0}, st_binary_failed{0};
-void bin_init(uint64_t stamp) {
-    static std::once_flag once;
-    std::call_once(once, [stamp] {
-        const std::string path = parts::program_dir() + "hookshot_direct_compute_objects.bin";
-        uint64_t want[3] = {stamp, 0, 0};
-        std::memcpy(&want[1], dev.props.pipelineCacheUUID, 16);
-        std::vector<uint8_t> all;
-        if (FILE* f = fopen(path.c_str(), "rb")) {
-            fseeko(f, 0, SEEK_END);
-            all.resize((size_t)ftello(f));
-            fseeko(f, 0, SEEK_SET);
-            if (fread(all.data(), 1, all.size(), f) != all.size()) all.clear();
-            fclose(f);
-        }
-        size_t good = 0;
-        if (all.size() >= 24 && !std::memcmp(all.data(), want, 24)) {
-            good = 24;
-            while (good + 16 <= all.size()) {
-                uint64_t h[2];
-                std::memcpy(h, all.data() + good, 16);
-                if (h[1] > all.size() - good - 16) break;
-                binaries[h[0]].assign(all.begin() + good + 16, all.begin() + good + 16 + h[1]);
-                good += 16 + h[1];
-            }
-        }
-        if (good) {
-            if (good != all.size() && truncate(path.c_str(), (off_t)good) != 0) binaries.clear(), good = 0;
-        }
-        if (good) {
-            bin_out = fopen(path.c_str(), "ab");
-        } else if ((bin_out = fopen(path.c_str(), "wb"))) {
-            fwrite(want, 8, 3, bin_out), fflush(bin_out);
-        }
-        logf("direct: compute shader binaries %s: %zu kept", path.c_str(), binaries.size());
-    });
-}
-void bin_save(uint64_t id, VkShaderEXT cs) {
-    if (!pShaderBinary || !bin_out) return;
-    size_t n = 0;
-    if (pShaderBinary(dev.device, cs, &n, nullptr) != VK_SUCCESS || !n) return;
-    std::vector<uint8_t> data(n);
-    if (pShaderBinary(dev.device, cs, &n, data.data()) != VK_SUCCESS) return;
-    const uint64_t h[2] = {id, n};
-    std::lock_guard lk(bin_mu);
-    fwrite(h, 8, 2, bin_out), fwrite(data.data(), 1, n, bin_out), fflush(bin_out);
-}
-
 template <class T> void put(std::vector<uint8_t>& o, const T& v) { o.insert(o.end(), (const uint8_t*)&v, (const uint8_t*)&v + sizeof v); }
 template <class T> bool get(const uint8_t*& p, const uint8_t* e, T& v) {
     if ((size_t)(e - p) < sizeof v) return false;
@@ -419,6 +374,7 @@ bool disk_read(const DiskRecord& d, Variant& v) {
     return parts::info_get(p, e, v.info);
 }
 
+// <stamp compute>
 // ---- the translator's questions (vk_shader.cpp Env, compute: handles in c0, the grid folded into NumWorkgroups) ----
 struct Code {
     uint64_t key = 0;
@@ -609,6 +565,8 @@ bool translate_variant(Variant& v, const Code& c, const uint8_t* bank, uint32_t 
     }
 }
 
+// </stamp compute>
+
 // ---- the heap mapping and the shader object (direct_shader.cpp finish's, one compute stage) ----
 VkImageViewType view_type(Shader::TextureType t) {
     switch (t) {
@@ -642,13 +600,6 @@ VkDescriptorSetAndBindingMappingEXT null_map(uint32_t b, uint32_t stride) {
     m.sourceData.constantOffset.samplerHeapOffset = 0;
     m.sourceData.constantOffset.samplerHeapArrayStride = kSamplerDesc;
     return m;
-}
-
-/// A variant's identity across runs: its code and the answers it was translated for
-uint64_t variant_id(const Variant& v) {
-    uint64_t h = 0;
-    for (const Answer& a : v.answers) h = (h ^ ((uint64_t)a.offset << 16 | a.want)) * 1099511628211ull;
-    return v.key ^ h * 0x9E3779B97F4A7C15ull;
 }
 
 bool finish(Variant& v, const Layout& lay) {
@@ -721,15 +672,11 @@ bool finish(Variant& v, const Layout& lay) {
     if (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) sz.pNext = &mi, ci.pNext = &sz;
     else ci.pNext = &mi;
     const auto t0 = clk::now();
-    const uint64_t id = variant_id(v);
+    const uint64_t id = parts::object_key(ci, mi, (caps.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) != 0);
     VkResult r = VK_ERROR_UNKNOWN;
     bool from_binary = false;
-    {   // (its binary, when this driver made it before: no compile)
-        std::vector<uint8_t> bin;
-        {
-            std::lock_guard lk(bin_mu);
-            if (const auto it = binaries.find(id); it != binaries.end()) bin = it->second;
-        }
+    {   // (its binary, when this driver made it before from the same create info: no compile)
+        const std::vector<uint8_t> bin = parts::object_binary(id);
         if (!bin.empty()) {
             VkShaderCreateInfoEXT bi = ci;
             bi.codeType = VK_SHADER_CODE_TYPE_BINARY_EXT, bi.codeSize = bin.size(), bi.pCode = bin.data();
@@ -752,7 +699,7 @@ bool finish(Variant& v, const Layout& lay) {
     st_cs_objects.fetch_add(1, std::memory_order_relaxed);
     object_made(1, "a compute shader object");
     if (from_binary) st_from_binary.fetch_add(1, std::memory_order_relaxed);
-    else bin_save(id, v.cs);
+    else parts::object_keep(id, v.cs);
     if (v.skip) logf("direct: compute program %016llx cannot be dispatched: %s (skipped, counted)", (unsigned long long)v.key, v.skip);
     return true;
 }
