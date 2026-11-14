@@ -112,7 +112,7 @@ Claims that did **not** hold, and are not reasons:
 For integer code, C with a uniform prototype gets the same code: 24,189 instructions either way. The IR advantage
 is in floating-point results, `poison` and the intrinsics.
 
-**Version pin.** The emitter writes textual IR for one LLVM major. `nx2/lift2/build` refuses a clang whose major
+**Version pin.** The emitter writes textual IR for one LLVM major. `nx2/lift2/llvm.py` refuses a clang whose major
 differs: the Linux clang and the pinned llvm-mingw must be the same major. Textual IR (`.ll`) is used, not bitcode:
 it is readable and diffable, and it costs nothing measurable at parse time.
 
@@ -461,73 +461,95 @@ Each is one agent task of a few hours with its own pass/fail check. Estimates ar
 Total about 65 agent-hours. Milestones 1-8 bring the integer game up through mixed builds; the performance work is
 9-11 and 15-17.
 
-## 14. Milestone 1, completely
+## 14. Milestone 1: integer leaves (done)
 
-**Scope.** Functions whose every instruction is in the integer subset and that make no calls:
+**Scope.** Functions whose every instruction is in the integer subset and that stay inside themselves:
 - data processing (immediate and register), moves, bitfield ops, extends, conditional select/compare, MUL/MADD/MSUB,
-  UMULH/SMULH, UDIV/SDIV, CLZ/CLS/RBIT/REV;
-- integer loads and stores of every addressing mode (unsigned offset, unscaled, pre/post-index, register offset
-  with extend/shift, literal, pairs);
-- ADR/ADRP;
-- B, B.cond, CBZ/CBNZ, TBZ/TBNZ, RET;
-- NOP/hints, PACIBSP/AUTIBSP/RETAB as no-ops.
+  the long multiplies, UMULH/SMULH, UDIV/SDIV, shifts by register, CLZ/CLS/RBIT/REV*, EXTR;
+- integer loads and stores of every addressing mode (unsigned offset, unscaled, unprivileged, pre/post-index,
+  register offset with extend/shift, literal, pairs, LDPSW), PRFM as a no-op;
+- ADR/ADRP; B, B.cond, CBZ/CBNZ, TBZ/TBNZ, RET/RETAA/RETAB; hints (NOP, the PAC hints) as no-ops; UDF as a trap.
 
-Out of scope, where the function is skipped: BL/BLR/BR, B to another entry, SVC, FP/NEON, atomics,
-acquire/release, MRS/MSR, UDF.
+Out of scope (the function is passed over): BL/BLR/BR, B or fall-through to another entry, SVC, FP/NEON, LSE atomics,
+acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 
-**Files** (new, under `nx2/lift2/`):
-- `decode.py`: table-driven decoder. A list of `(mask, value, name, field extractor)` entries checked in order; it
-  returns a `Insn(name, fields)` or `None`. Field names follow the Arm ARM.
-- `ir.py`: `Function`, `Block(params, ops, term)`, `Value(type, op, args)`, the types and op names of section 4 used
-  by milestone 1, and a printer for the IR dump.
-- `sem_int.py`: one function per template, `sem(insn, b)`, using a block builder `b` with
-  `b.get_x(n, w)`, `b.set_x(n, value, w)`, `b.flags`, `b.load`, `b.store`. XZR/WZR, SP versus XZR by encoding, and
-  W-write zero-extension are handled in the builder.
-- `build_ir.py`: takes a function body from the present discovery (`a64_lift.Lifter.funcs[entry]`, the walk
-  stays), splits blocks at labels and branch targets, runs `sem` per instruction, and closes blocks. Live-in
-  registers become block parameters by a standard SSA construction (Braun et al., "Simple and Efficient
-  Construction of SSA Form"). Flags are four `i1` registers in the same map.
-- `emit_llvm.py`: IR to one textual module. In milestone 1 there is only the generic entry:
-  `define void @g_<addr>(ptr noalias nocapture %ctx)`.
-  - Every register in the function's live-in set is loaded from the context at entry (offsets from
-    `rt64/a64.h`'s `GuestContext`: x at 0, nzcv bytes at 0x108).
-  - At RET, every register written is stored back, NZCV included (as four bytes), so that the differential compares
-    NZCV too.
-  - Guest accesses as section 4's `gaddr`.
-  - Stores mark pages exactly as `A64_MARK` does: two `store atomic i8 1 ... release` into `@a64_dirty`, index
-    `(addr >> 12) & (2^27 - 1)` and the same for `addr + size - 1`. SP-derived stores do not mark, as today.
-  - The module has the target triple and data layout of `x86_64-pc-linux-gnu` and is checked with `opt -passes=verify`
-    in the test.
-- `census.py`: the forms census of section 3 into `work/lift2/forms.txt`, with a column saying whether `decode.py`
-  covers each form.
+**Files** (`nx2/lift2/`):
+- `enc.py`: the encodings as data. Each entry has a 32-bit pattern of literal bits and named fields, a semantic
+  template with fixed parameters, and a validity expression for the encodings the Arm ARM leaves unallocated inside
+  the pattern. The decoder dispatches on bits 28:25 and caches by word. 36 entries cover the 432 integer forms of
+  the census.
+- `asm.py`: a decoded instruction printed as `llvm-mc -M no-aliases` prints it. llvm-mc keeps some spellings even
+  without aliases (the bitfield aliases, `lsl`/`lsr`/`asr`/`ror` for the shift-by-register forms, `mov` for
+  MOVZ/MOVN/ORR immediate, `ret x30`, `[xN, xM, lsl #k]` whatever S is); the printer follows them.
+- `selfcheck.py`: the decoder against llvm-mc, word by word (text equal; no word decoded that llvm-mc calls invalid;
+  no word missed whose mnemonic the decoder can print). `--game` takes every distinct word of the game, `--synthetic N`
+  random words per entry plus random words.
+- `census.py`: the forms census into `work/lift2/forms.txt` with the decoder's coverage per form and per class.
+- `ir.py`: values, blocks with parameters, the builder (`get`/`set` of guest registers, SSA by first-read block
+  parameters resolved in `finish()`), constant folding including constant address chains.
+- `sem_int.py`: 19 templates, one per family (addsub_imm, logic_shift, bitfield, ldst, ldst_pair, ...).
+  - The Arm ARM's definitions where LLVM's operations differ: division by zero and INT_MIN / -1, shift amounts
+    modulo the width, ADC/SBC flags through a one-bit-wider sum.
+  - `cond()` folds a condition into one `icmp` of the last compare's operands while its flags are current.
+- `build_ir.py`: blocks at branch targets and after branches; `scope()` says why a function is out;
+  `group_marks()` merges the page marks of the stores of a block through one base within a 4 KB span into one
+  mark after the last of them (the present lifter's `mark_groups`).
+- `emit_llvm.py`: textual LLVM IR, generic entry only (`define void @g_<addr>(ptr noalias nocapture %ctx)`).
+  - Each register read before written is loaded at entry.
+  - **Each register write is stored to the context where it happens (write-through)**, and LLVM removes the
+    stores a later one overwrites. Storing every written register at the returns, as first planned, kept every
+    register live from entry to return: 1.16x the present lifter's instructions, against 0.74x write-through.
+  - N, Z, C, V are stored only for tests (`flags_out`), since the AAPCS64 leaves them undefined at a return.
+  - Page marks go through one `alwaysinline` helper per module, which also keeps the text smaller.
+- `llvm.py`: the pinned major (`PINNED_MAJOR = 23`); `check()` refuses another major with a message naming the found
+  version and `HOOKSHOT_LLVM_BIN`; llvm-mc's disassembly for the self-check.
 
 **Tests.**
-- `tests/test_lift2_decode.py` (game-free): a hand-written list of encodings, at least two per template, with the
-  expected `Insn`. It covers every addressing mode, both widths, the XZR/SP cases and shifted/extended registers. It
-  also builds IR for three synthetic functions (assembled words in the test), emits them, and checks `opt -verify`
-  passes and that the module compiles with clang when clang is present.
-- `nx2/test_lift2_leaf.py` (needs the dump; follows `test_leaf.py` and reuses its image, state and Unicorn setup by
-  importing it):
-  - picks random in-scope functions from rtld, main, sdk and subsdk0 by `test_leaf`'s module shares, 3-600
-    instructions;
-  - emits them with `emit_llvm` into one `.ll`, lifts the same functions with the old lifter into C, and builds
-    `test_leaf`'s harness with both, the `.ll` compiled by the same clang (`-O1`, `-march=x86-64-v3`);
-  - runs each function from 4 random states, natively through `g_<addr>`, natively through the old `f_<addr>`, and
-    in Unicorn;
-  - compares X0-X30, SP and changed pages against Unicorn, and NZCV against the old lift where the old lift keeps it;
-  - prints mismatches with the function, state and first differing register, plus the x86 instruction count of old
-    against new per function and in total.
+- `tests/test_lift2.py` (game-free, in `tests/run_all.py`):
+  - the entries do not overlap (random words per pattern);
+  - every entry's template exists;
+  - known words print as llvm-mc prints them;
+  - the synthetic self-check against llvm-mc (about 19 k words);
+  - six synthetic functions (loop and flags, bit operations, memory with every addressing mode, multiply and
+    divide edge cases, ADC/SBC/CCMP/CSEL flags, branches and ADR/ADRP), from words to IR to LLVM IR, compiled,
+    run, and compared on X0-X30 and NZCV with values computed in the test from the Arm ARM's definitions;
+  - the version check's refusal.
+  - The llvm-mc and compile cases are skipped without LLVM 23 or off Linux.
+- `nx2/test_lift2_leaf.py` (local: dump, Unicorn, Linux).
+  - It draws the game's functions by `test_leaf.py`'s module shares and lifts them with both lifters.
+  - Its harness is Linux-native (mmap, signals): `test_leaf.py`'s harness is Windows-only.
+  - Each case runs the old and the new lift from the same state, compared with Unicorn and with each other.
+  - It reports both lifts' x86 instruction counts and lift2's speed.
 
-**Pass/fail.**
-1. `python -I -B tests/run_all.py` passes, including `test_lift2_decode.py`.
-2. `work/venv/bin/python -I nx2/test_lift2_leaf.py --count 500 --states 4 --seed 1`: 0 mismatches against Unicorn
-   and 0 against the old lift. Cases Unicorn cannot compare are skipped and counted, as `test_leaf` does.
-3. `nx2/lift2/census.py` reports the share of integer-class words its decoder covers; at least 95 % (milestone 2
-   completes the class).
-4. The instruction-count ratio new/old over the 500 is reported, not gated: it is expected below 1 because flags
-   become values.
+**Results** (seed 1, 8 states per function):
 
-Not in milestone 1: changes to `build.py`, the game build or `host/`.
+| check | result |
+|---|---|
+| decoder vs llvm-mc, every distinct game word | 2,032,675 words, 1,790,347 decoded, 0 differences |
+| decoder vs llvm-mc, synthetic | 189 k words, 0 differences |
+| census, integer classes | 432 of 542 forms fully covered; by words: integer 99.94 %, integer load/store 97.97 %, branches 100 % |
+| 500 game leaves (427 with at least one case Unicorn can run, 2,390 cases) | 0 differences against Unicorn (X0-X30, SP, NZCV, changed pages), 0 against the present lifter (X0-X30, SP, pages) |
+| x86 instructions at -O1, same 500 functions | present lifter 35,824, lift2 26,298 (0.73x); 3.32 vs 2.44 per guest instruction |
+| compile time, the same functions, -O1 / -O2 | lift2 IR 1.0 s / 1.4 s, the present lifter's C 1.6 s / 2.0 s |
+| lift speed, one core (decode, IR, LLVM IR) | 55.6 k guest instructions/s; decode alone 2.25 M words/s over the game's 18.2 M words, cached |
+| LLVM IR text | 212 bytes per guest instruction (the present C: 86) |
+
+- 73 of the 500 never ran in Unicorn: all their states fault there, on pointers into unmapped memory.
+- The passed-over reasons in the draw, in order: calls or traps in the present lifter's view, size, BR,
+  branches out of the body, undecoded words (the atomics and the like).
+
+**What milestone 2 needs to know.**
+- The integer forms still missing are listed in `work/lift2/forms.txt` (class `int`/`ldst-int`/`system`, column
+  `no`). By words, in order: LDAPR/LDAPRB, CAS*, LDADD*/LDSET*/LDCLR*/SWP*, CRC32*, DMB, MRS TPIDR_EL0/TPIDRRO_EL0,
+  LDAR/STLR*, SVC, MRS/MSR NZCV, MRS CNTPCT_EL0, PACGA, LDAXR/STLXR. Section 8 says how each orders.
+- Add each family as a table entry plus a template. `selfcheck.py --game` must stay at 0 differences.
+- Where the printer has to mimic an llvm-mc quirk, `asm.py` says so.
+- **Lift time.** At 55.6 k instructions/s per core, the whole program (17.6 M instructions) takes about 5.3 min on
+  one core and about 25-40 s on 16 processes. The 5-10 min goal holds in Python; a compiled port is not needed for
+  this stage.
+- **IR size.** The whole game would be about 3.7 GB of IR text. Milestone 17 keeps partitions small (one compile
+  job per text file) or pipes the text to clang without keeping it.
+- `test_lift2_leaf.py` passes NZCV through `flags_out`; the counting build leaves it out, as the game build will.
 
 ## 15. Risks not retired
 
@@ -536,7 +558,8 @@ Not in milestone 1: changes to `build.py`, the game build or `host/`.
   unknown.
 - **Host FP mode divergence** in the game: NaN sign and propagation, the FZ tininess boundary, the 8 FPSR read sites.
   The shadow run (milestone 12) measures it; replays and goldens must be re-baselined.
-- **Lift time** in Python with whole-program summaries: estimated, not measured.
+- **Lift time** with whole-program summaries: the per-function part is measured (section 14); the summary fixed
+  point is not.
 - **Win64** passes vectors by reference and has 4 register arguments, so the Windows build is slower. It is a
   portability build.
 - **Page marks** stay. The UFFD write-protect alternative is unmeasured.
