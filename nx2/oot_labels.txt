@@ -582,7 +582,7 @@
 8073a4a0 phys_step_phase_job            # docs/direct/boot-to-main-loop.md 4.3: one job a frame at the head of the physics phase, hknp-heavy (role)
 820cc4f4 phys_ai_avoidance_step         # docs/direct/boot-to-main-loop.md 4.3: hkaiCollisionAvoidance::System::step (string)
 81884800 phys_hknp_particles_collider_step  # docs/direct/boot-to-main-loop.md 4.3: hknpParticlesCollider::step (string)
-81f3f634 phys_navmesh_cutting             # work/assets/native/engine-layers.md: nav mesh cutting
+81f3f634 hkai_reset_clearance_mediator_task  # work/assets/native/engine-layers.md; the name comes from the function's string (ResetClearanceMediatorTask)
 80715ae0 phys_phive_static_compound       # work/assets/native/engine-layers.md
 80718040 phys_phive_volume_stats          # work/assets/native/engine-layers.md: Phive volume stats / static compound
 82c415e0 player_movement                  # nx2/oot_patches.py patch_movement: movement step (patched for flight)
