@@ -708,11 +708,12 @@ def main():
         srcs = [s for s in srcs if os.path.exists(s)]
     if a.dry_run:   # (the lift's files: there is no game here)
         srcs = [s for s in srcs if os.path.dirname(s) != gen]
-    # (HOOKSHOT_LIFT2: the functions lift 2 can take come from it, nx2/lift2/mixed.py; unset, nothing here runs)
+    # (the mixed build, the default: the functions lift 2 can take come from it, nx2/lift2/mixed.py; HOOKSHOT_LIFT2=0:
+    # the present lifter's alone)
     lift2_objs = []
-    if os.environ.get("HOOKSHOT_LIFT2") and not a.only and not a.dry_run and not os.environ.get("RX_DIRECT_ONLY"):
-        from lift2 import mixed
-        srcs, lift2_objs, line = mixed.prepare(os.environ["HOOKSHOT_LIFT2"], gen, out, srcs, a.jobs, a.opt,
+    from lift2 import mixed
+    if mixed.spec() and not a.only and not a.dry_run and not os.environ.get("RX_DIRECT_ONLY"):
+        srcs, lift2_objs, line = mixed.prepare(mixed.spec(), gen, out, srcs, a.jobs, a.opt,
                                                os.environ.get("RX_HOT_OPT", "O2"), target() + CPU, OBJ_CACHE)
         print(line, flush=True)
     # the longest first, so the long ones do not end up alone at the end (compile_cost)

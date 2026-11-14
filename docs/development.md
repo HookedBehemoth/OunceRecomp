@@ -74,7 +74,12 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
   lift-time patch the lifted C as it stands cannot take: `scripts/relift.sh` lifts (with the hot set `work/hot_funcs_play.txt`,
   else `work/hot_funcs.txt`: `A64_HOT_FUNCS`, `A64_HOT_CHUNK=1`) and builds, for the checkout it is run from; in the main
   checkout on native-vk through `scripts/play-refresh.sh`, so `BUILD.txt` names the head. It stops while a game runs from that
-  build. About 3 minutes of lift and 11-15 of build; log `work/play/relift.log` (a worktree: `work/sa/relift.log`).
+  build. About 5 minutes of lift and 9 of build (8 jobs); log `work/play/relift.log` (a worktree: `work/sa/relift.log`).
+- **The game is the mixed build** by default: every function lift 2 can take (`docs/lifter2-design.md` 14c, 14d; int,
+  FP and NEON: 98.8 % of the guest instructions) comes from `nx2/lift2`, the rest (host edits, setjmp owners' callers)
+  from the present lifter. `HOOKSHOT_LIFT2=0` at lift and build time gives the present lifter's build alone. A host-only
+  rebuild takes lift 2's objects from `work/objcache` by their inputs (plan, chosen functions, `nx2/lift2` sources,
+  flags) without lifting or compiling them again.
   `nx2/build.py` splits a whole `code_hot.c` into pieces itself (`nx2/split_hot.py`: one file took 79 minutes on one core).
 - To keep builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`, `*.idx`)
   to `work/sa/<name>/` and run with `EXE=`.
@@ -437,6 +442,7 @@ load and a branch. `logall` turns every `log*` item on.
 |---|---|
 | `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (one per CPU thread by default, each started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns the check off, `HOOKSHOT_MEM_RESERVE_GB` is the memory kept free, 1.5 by default) |
 | `HOOKSHOT_LIFT_JOBS=<n>` | Processes that write the lifted C (default the cores, at most 16) |
+| `HOOKSHOT_LIFT2=0`, `HOOKSHOT_LIFT2=<file>`, `HOOKSHOT_LIFT2_CLASSES=int[,fp,neon]` | (lift and build time) The present lifter's build alone; only the listed functions from lift 2 (`nx2/lift2/bisect.py`); the instruction classes lift 2 takes (default all three) |
 | `HOOKSHOT_KEEP_BUILD_FILES=1` | Keeps the lifted C and the objects after a build, so the next one compiles only what changed |
 | `RX_DIRECT_ONLY=1` | Only the direct back end, with no lift |
 | `HOOKSHOT_VULKAN_HEADERS`, `HOOKSHOT_SPIRV_HEADERS`, `HOOKSHOT_VMA_HEADERS`, `RX_CPM` | Where the headers are (a package root or its `include/`; `RX_CPM` is a CPM cache) |

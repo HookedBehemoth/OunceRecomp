@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Keeps the build scripts/play.sh runs (the main checkout's work/sa/build) at its native-vk head: builds there and writes
 # work/sa/build/BUILD.txt (short hash, date, subject) last. Exit 0 only when BUILD.txt names HEAD. Needs a clean native-vk
-# checkout; one build at a time (flock on work/sa/build/.build.lock). Log: work/play/refresh.log.
+# checkout; one build at a time (flock on work/sa/build/.build.lock). Log: work/play/refresh.log. The build is the mixed one
+# (nx2/lift2 for every function it can take) unless HOOKSHOT_LIFT2=0; a host-only refresh takes lift 2's objects from the
+# object cache.
 #   scripts/play-refresh.sh [--install-hook]   --install-hook writes .git/hooks/post-merge (a refresh in the background after a merge onto native-vk)
 set -uo pipefail
 # (the main checkout, also when this copy of the script is run from an agent's worktree)

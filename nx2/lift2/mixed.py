@@ -1,10 +1,11 @@
 """The mixed build: functions lift 2 can take come from it, the rest from the present lifter (milestone 5).
 
-HOOKSHOT_LIFT2=all-safe | <file of guest addresses, one per line (hex)>; unset: the build is the present lifter's alone.
+HOOKSHOT_LIFT2=all-safe (the default) | <file of guest addresses, one per line (hex)> | 0 (the present lifter's build
+alone).
 HOOKSHOT_LIFT2_VERIFY=1 (at build time, milestone 14): every function with a full summary is checked at run time
 (host/lift2_verify.c): its generic entry wraps its body in checks of the summary.
-HOOKSHOT_LIFT2_CLASSES=int[,fp,neon] (at lift time): the instruction classes (sem.CLASS) a function may use to be
-taken; int alone by default (FP/NEON functions need the runtime's FP mode first).
+HOOKSHOT_LIFT2_CLASSES=int,fp,neon (the default; at lift time): the instruction classes (sem.CLASS) a function may use to
+be taken.
 
 At lift time (nx2/lift.py, the variable set) write_plan() keeps what lift 2 needs from the discovery: the entries,
 jump tables, PLT stubs, setjmp owners, hooked addresses, and the instructions of every function lift 2 can take
@@ -39,6 +40,12 @@ DEF = re.compile(r"^void (f_[0-9a-f]{8})\(Ctx \*__restrict A64_NOESC c\) \{", re
 PART_INSNS = 120000
 
 
+def spec():
+    """HOOKSHOT_LIFT2: "all-safe" when unset, None for 0 (the present lifter alone)"""
+    v = os.environ.get("HOOKSHOT_LIFT2", "all-safe")
+    return None if v in ("", "0") else v
+
+
 def callee_fn(plt):
     def callee(t):
         seen = 0
@@ -53,7 +60,7 @@ def write_plan(L, img, path):
     """the discovery's facts and the instructions of every function lift 2 can take"""
     t0 = time.time()
     no_call = set(getattr(L, "setjmp_owner", {}) or ())
-    classes = os.environ.get("HOOKSHOT_LIFT2_CLASSES", "int").split(",")
+    classes = os.environ.get("HOOKSHOT_LIFT2_CLASSES", "int,fp,neon").split(",")
     prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, no_call=no_call, classes=classes)
     after = set(getattr(L, "after", {}) or ())
     hooks = set(L.hooks)
@@ -232,11 +239,29 @@ def _plan(path):
     return _PLAN[path]
 
 
+def input_base(plan_path, chosen):
+    """what every partition's input key starts from: the plan's bytes, the chosen set and lift 2's source files"""
+    h = hashlib.sha1(usedforsecurity=False)
+    with open(plan_path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 24), b""):
+            h.update(block)
+    h.update(",".join("%x" % e for e in sorted(chosen)).encode())
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in sorted(os.listdir(here)):
+        if name.endswith(".py"):
+            with open(os.path.join(here, name), "rb") as f:
+                h.update(name.encode() + f.read())
+    return h.hexdigest().encode()
+
+
 def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
     """(the code files to compile, the lift 2 objects to link, a report line); see the module's description"""
     t0 = time.time()
     clang = llvm.check("clang")
     plan_path = os.path.join(os.path.dirname(gen), "lift2_plan.pickle")
+    if not os.path.exists(plan_path):
+        raise SystemExit("lift2: no plan %s: the lift predates the mixed build's default; lift again "
+                         "(scripts/relift.sh), or build the present lifter's game alone with HOOKSHOT_LIFT2=0" % plan_path)
     plan = _plan(plan_path)
     edited, hot = edited_functions(gen)
     chosen = set(plan["bodies"]) - edited
@@ -262,27 +287,51 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
         if cur:
             parts.append((tag, cur))
     obj_dir = os.path.join(out, "obj")
-    with concurrent.futures.ProcessPoolExecutor(min(jobs, 16)) as ex:
-        texts = list(ex.map(lift_part, [(plan_path, names, chosen, hot) for _, names in parts]))
-    t_lift = time.time() - t0
-    cjobs = []
-    for k, ((tag, names), text) in enumerate(zip(parts, texts)):
+    # (a partition whose inputs are unchanged, the plan, the chosen set, its functions, lift 2's own source and the
+    # flags, is neither lifted nor compiled again: its object comes from the cache by an input key. A host-only
+    # rebuild then costs the hashing, not the 2-3 minutes of lifting)
+    base = input_base(plan_path, chosen)
+    flags, keys, objs_k = [], [], []
+    for k, (tag, names) in enumerate(parts):
         fl = march_flags + ["-" + (hot_opt if tag == "h" else opt), "-g0", "-Wno-everything", "-ffunction-sections",
                             "-mllvm", "-rotation-max-header-size=0"]
-        cjobs.append((clang, text, os.path.join(obj_dir, "lift2_%s%03d.o" % (tag, k)), fl, cache))
-    objs, failed, t1 = [], [], time.time()
+        flags.append(fl)
+        keys.append(hashlib.sha1(base + (" ".join(fl) + "\n" + ",".join("%x" % e for e in names)).encode(),
+                                 usedforsecurity=False).hexdigest())
+        objs_k.append(os.path.join(obj_dir, "lift2_%s%03d.o" % (tag, k)))
+    todo = []
+    for k in range(len(parts)):
+        hit = os.path.join(cache, "lift2in_%s.o" % keys[k])
+        if os.path.exists(hit):
+            if os.path.exists(objs_k[k]):
+                os.remove(objs_k[k])
+            os.link(hit, objs_k[k])
+        else:
+            todo.append(k)
+    with concurrent.futures.ProcessPoolExecutor(min(jobs, 16)) as ex:
+        texts = list(ex.map(lift_part, [(plan_path, parts[k][1], chosen, hot) for k in todo])) if todo else []
+    t_lift = time.time() - t0
+    cjobs = [(clang, text, objs_k[k], flags[k], cache) for k, text in zip(todo, texts)]
+    objs, failed, t1 = [o for k, o in enumerate(objs_k) if k not in set(todo)], [], time.time()
     with concurrent.futures.ThreadPoolExecutor(jobs) as ex:
-        for obj, secs, err in ex.map(compile_part, cjobs):
+        for (obj, secs, err), k in zip(ex.map(compile_part, cjobs), todo):
             objs.append(obj)
             if err:
                 failed.append((obj, err))
+                continue
+            try:
+                hit = os.path.join(cache, "lift2in_%s.o" % keys[k])
+                os.link(obj, hit + ".tmp")
+                os.replace(hit + ".tmp", hit)
+            except OSError:
+                pass
     n_insn = sum(len(plan["bodies"][e][0]) for e in chosen)
     total = sum(plan["insns"].values())
     n_hot = len(chosen & hot)
-    line = ("lift2: %d functions (%d instructions, %.1f %% of %d; %d of %d hot functions) in %d partitions; "
-            "lifted in %.0fs, compiled in %.0fs; %d kept on the present lifter for host edits" % (
-                len(chosen), n_insn, 100.0 * n_insn / max(total, 1), total, n_hot, len(hot), len(parts), t_lift,
-                time.time() - t1, len(set(plan["bodies"]) & edited)))
+    line = ("lift2: %d functions (%d instructions, %.1f %% of %d; %d of %d hot functions) in %d partitions (%d from "
+            "the cache by their inputs); lifted in %.0fs, compiled in %.0fs; %d kept on the present lifter for host "
+            "edits" % (len(chosen), n_insn, 100.0 * n_insn / max(total, 1), total, n_hot, len(hot), len(parts),
+                       len(parts) - len(todo), t_lift, time.time() - t1, len(set(plan["bodies"]) & edited)))
     if failed:
         raise SystemExit("lift2: %d partitions failed to compile:\n%s" % (len(failed), failed[0][1]))
     return new_srcs, objs, line

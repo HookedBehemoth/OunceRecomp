@@ -2,7 +2,8 @@
 # A new lift of the game and the build on it, for the checkout this copy of the script is in (the main checkout or an agent's
 # worktree). Needed after a change to the lifter (third_party/a64-kit/lift, nx2/lift.py, chunks.py) or to a lift-time patch
 # that the lifted C as it stands cannot take (scripts/play-refresh.sh makes the game's patches and entry hooks in it without a
-# lift). About 3 minutes of lift and 11-15 minutes of build here (16 threads).
+# lift). The mixed build by default (lift 2 for every function it can take, docs/lifter2-design.md 14d; HOOKSHOT_LIFT2=0:
+# the present lifter's alone). About 5 minutes of lift and 9 minutes of build here (8 jobs).
 #
 #   scripts/relift.sh
 #
