@@ -1500,3 +1500,6 @@ int hos_cv_sleep(void *cv, void *lk, unsigned ms) {
     return SleepConditionVariableSRW((PCONDITION_VARIABLE)cv, (PSRWLOCK)lk, ms, 0);
 }
 #endif
+
+/* the running guest thread's value in a TLS slot (what nn::os::GetTlsValue answers it) */
+uint64_t hos_tls_value(uint32_t slot) { return cur && slot < HOS_TLS_SLOTS ? cur->tls_slots[slot] : 0; }

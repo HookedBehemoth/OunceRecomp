@@ -1,5 +1,5 @@
 /* The direct back end's game patches (host/direct_passes.c, direct_job_sync.c, direct_rt_ids.c,
-   direct_depth_copy.c, direct_mesh_args.c, direct_mesh_binds.c, direct_mesh_system.c, direct_mesh_lists.c, direct_sky_lut.c): one log line each every 600 presents with HOS_DBG=logpatch, called from the present in direct mode only. */
+   direct_depth_copy.c, direct_mesh_args.c, direct_mesh_binds.c, direct_mesh_system.c, direct_mesh_lists.c, direct_sky_lut.c, direct_layer_ahead.c): one log line each every 600 presents with HOS_DBG=logpatch, called from the present in direct mode only. */
 #include "direct.h"
 
 void direct_passes_log(double frames);
@@ -11,6 +11,7 @@ void direct_mesh_binds_log(double frames);
 void direct_mesh_system_log(double frames);
 void direct_mesh_lists_log(double frames);
 void direct_sky_lut_log(double frames);
+void direct_layer_ahead_log(double frames);
 
 void direct_patches_frame(void) {
     static long long presents;
@@ -28,4 +29,5 @@ void direct_patches_frame(void) {
     direct_mesh_system_log(600);
     direct_mesh_lists_log(600);
     direct_sky_lut_log(600);
+    direct_layer_ahead_log(600);
 }
