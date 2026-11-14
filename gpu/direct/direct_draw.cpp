@@ -16,6 +16,7 @@
 #include "direct_pass.h"
 #include "direct_check.h"
 #include "direct_cmd.h"
+#include "direct_counters.h"
 #include "direct_marks.h"
 #include "direct_pstats.h"
 #include "direct_meshcap.h"
@@ -141,7 +142,10 @@ int64_t take_kind(int k, int r) {
     }
     return n;
 }
-std::atomic<int64_t> st_ub_updates{0}, st_gated[HSD_LIST_KINDS];   // (M3a: gated draws drawn)
+struct UbUpdates;
+struct GatedDraws;
+ThreadCounters<UbUpdates, 1> st_ub_updates;
+ThreadCounters<GatedDraws, HSD_LIST_KINDS> st_gated;   // (gated draws drawn, by list kind)
 std::atomic<int64_t> st_fixups{0}, st_fixup_lists{0}, st_ssbo_unbound{0};// (the variants' step A reasons: static strings, a few)
 struct StepA {
     std::atomic<const char*> why{nullptr};
@@ -1168,7 +1172,7 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
         x.updates.push_back({u.dst, (uint32_t)n, (uint32_t)x.update_bytes.size()});
         x.update_bytes.insert(x.update_bytes.end(), (const uint8_t*)data + sizeof u, (const uint8_t*)data + sizeof u + n);
         x.s.ubo_gen++;
-        st_ub_updates.fetch_add(1, std::memory_order_relaxed);
+        st_ub_updates.add(0);
         return;
     }
     default: return;
@@ -1440,7 +1444,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
         count(l, R_DRAWN);
         sub(l, mesh_ind ? R_DRAWN_MESH_INDIRECT : R_DRAWN_MESH);
         if (prog->task) sub(l, R_DRAWN_TASK), task_count.drawn = true;
-        if (gated) st_gated[l->info.kind].fetch_add(1, std::memory_order_relaxed);
+        if (gated) st_gated.add(l->info.kind);
         return;
     }
     drawlog(l, gated ? (ind ? "drawn gated indirect" : indexed ? "drawn gated indexed" : "drawn gated") : (ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn"),
@@ -1474,7 +1478,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     l->pass.last_prog = l->last_prog = prog->key;   // (M6b: the dump's pass identity)
     count(l, R_DRAWN);
     if (ind) sub(l, R_DRAWN_INDIRECT);
-    if (gated) st_gated[l->info.kind].fetch_add(1, std::memory_order_relaxed);
+    if (gated) st_gated.add(l->info.kind);
 }
 
 void draw_invalidate(List* l) {
@@ -1562,7 +1566,7 @@ void draw_log(double frames) {
         logf("direct: deferredcheck: %.1f deferred words copied a frame, %.2f changed between bind and submit, %.2f changed since the "
              "last submit that read the same word", st_def_words.exchange(0) / frames, st_def_bind.exchange(0) / frames, st_def_frame.exchange(0) / frames);
     logf("direct: %s; inline uniform updates %.1f a frame, buffer copies with them %.1f (%.1f KB), guest reads for their rest %.1f",
-         out, st_ub_updates.exchange(0) / frames, take(&TStats::ub_copies, T_UB_COPIES) / frames,
+         out, st_ub_updates.take(0) / frames, take(&TStats::ub_copies, T_UB_COPIES) / frames,
          take(&TStats::ub_bytes, T_UB_BYTES) / 1024.0 / frames, take(&TStats::ub_reads, T_UB_READS) / frames);
     static const bool log_draw = dbg_log("logdraw"), log_mesh = dbg_log("logmesh");
     if (log_draw) {
@@ -1585,7 +1589,7 @@ void draw_log(double frames) {
                 k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", any ? "," : "", kReasons[r], n / frames);
                 any = true;
             }
-            if (const int64_t g = st_gated[kind].exchange(0))
+            if (const int64_t g = st_gated.take(kind))
                 k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; of the drawn under a render condition (on the GPU) %.2f", g / frames), any = true;
             if (any) logf("direct: %s", out);
         }

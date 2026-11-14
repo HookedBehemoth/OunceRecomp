@@ -12,6 +12,7 @@
 #include "direct_compute.h"
 #include "direct_draw.h"
 #include "direct_dump.h"
+#include "direct_counters.h"
 #include "direct_internal.h"
 #include "direct_lists.h"
 #include "direct_pass.h"
@@ -60,7 +61,10 @@ double tsc_per_ns() {
     }();
     return r;
 }
-std::atomic<int64_t> st_pkt_bytes{0}, st_pkt_lists{0}, st_pkt_calls{0}, st_pkt_ops{0}, st_pkt_nested{0}, st_pkt_unended{0};
+std::atomic<int64_t> st_pkt_bytes{0}, st_pkt_lists{0};
+enum { PK_CALLS, PK_OPS, PK_NESTED, PK_UNENDED, PK_COUNT };
+struct PacketStats;
+ThreadCounters<PacketStats, PK_COUNT> st_pkt;   // (packets expanded at their calls)
 std::atomic<int64_t> st_ops[NOP_COUNT_], st_kinds[HSD_LIST_KINDS], st_calls{0}, st_live{0}, st_dropped{0}, st_bad_op{0};
 
 // (the return addresses each kind was begun from, and how their lists were used: a table that only grows, read without a
@@ -69,10 +73,12 @@ constexpr int kSites = 1024;
 struct Site {
     std::atomic<uint64_t> key{0};
     std::atomic<uint32_t> kind{0}, load_kind{0};
-    std::atomic<int64_t> n{0}, submitted{0}, called_by[HSD_LIST_KINDS]{};
+    std::atomic<int64_t> n{0}, submitted{0};
     int64_t last_n = 0;   // (the 600-present line's: its thread's alone)
 };
 Site sites[kSites];
+struct SiteCalls;
+ThreadCounters<SiteCalls, kSites * HSD_LIST_KINDS> site_calls;   // (a site's lists called, by the caller's kind: site * kinds + kind)
 int32_t site_note(const hsd_list_info& i) {
     const uint64_t key = i.lr ^ ((uint64_t)i.kind << 56);
     for (uint32_t k = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 54), tries = 0; tries < kSites; k = (k + 1) & (kSites - 1), tries++) {
@@ -187,8 +193,8 @@ void lists_stats(char* out, size_t cap, double frames) {
         if (calls[i] > 0) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.3f", kKindNames[i], calls[i]);
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "); packets: %lld live (%.1f MB), %.1f calls a frame expanding %.1f ops, "
                        "%.1f called by packets (in place), %lld called before their end", (long long)st_pkt_lists.load(),
-                       st_pkt_bytes.load() / 1048576.0, st_pkt_calls.exchange(0) / frames, st_pkt_ops.exchange(0) / frames,
-                       st_pkt_nested.exchange(0) / frames, (long long)st_pkt_unended.load());
+                       st_pkt_bytes.load() / 1048576.0, st_pkt.take(PK_CALLS) / frames, st_pkt.take(PK_OPS) / frames,
+                       st_pkt.take(PK_NESTED) / frames, (long long)st_pkt.total(PK_UNENDED));
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", calls %.1f; %lld lists live, %lld dropped unended, %lld records "
                        "of no op or outside a list; ops a frame:", st_calls.exchange(0) / frames, (long long)st_live.load(),
                        (long long)st_dropped.load(), (long long)st_bad_op.load());
@@ -212,7 +218,7 @@ void sites_stats(char* out, size_t cap, double frames) {
                                (n - s.last_n) / frames, (long long)n);
             s.last_n = n;
             for (int c = 0; c < HSD_LIST_KINDS; c++)
-                if (const int64_t b = s.called_by[c].load(std::memory_order_relaxed))
+                if (const int64_t b = site_calls.total((int)(&s - sites) * HSD_LIST_KINDS + c))
                     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " by %s %lld", kKindNames[c], (long long)b);
             k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " submitted %lld);", (long long)s.submitted.load());
         }
@@ -301,19 +307,19 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_call(void* list,
         if (!c) continue;
         if (c->packet) {   // (M3a: a packet's ops go into the caller: its state, its command buffer, its frame-level ops)
             l->counts[NOP_CALL]++;
-            if (c->site >= 0) sites[c->site].called_by[l->info.kind].fetch_add(1, std::memory_order_relaxed);
+            if (c->site >= 0) site_calls.add(c->site * HSD_LIST_KINDS + (int)l->info.kind);
             if (!c->ended) {
-                st_pkt_unended.fetch_add(1, std::memory_order_relaxed);
+                st_pkt.add(PK_UNENDED);
                 continue;
             }
             if (l->packet) {   // (a packet calling one: the callee's ops in place)
                 l->pkt.insert(l->pkt.end(), c->pkt.begin(), c->pkt.end());
                 l->pkt_ops += c->pkt_ops;
-                st_pkt_nested.fetch_add(1, std::memory_order_relaxed);
+                st_pkt.add(PK_NESTED);
                 continue;
             }
-            st_pkt_calls.fetch_add(1, std::memory_order_relaxed);
-            st_pkt_ops.fetch_add(c->pkt_ops, std::memory_order_relaxed);
+            st_pkt.add(PK_CALLS);
+            st_pkt.add(PK_OPS, c->pkt_ops);
             for (size_t at = 0; at + 8 <= c->pkt.size();) {
                 uint32_t h[2];
                 std::memcpy(h, c->pkt.data() + at, 8);
@@ -324,7 +330,7 @@ extern "C" __attribute__((visibility("default"))) void hsd_list_call(void* list,
         }
         pass_call(l, c);
         list_ref(c);
-        if (c->site >= 0) sites[c->site].called_by[l->info.kind].fetch_add(1, std::memory_order_relaxed);
+        if (c->site >= 0) site_calls.add(c->site * HSD_LIST_KINDS + (int)l->info.kind);
         FrameOp o;
         o.op = NOP_CALL, o.callee = c, o.seg = (uint32_t)l->segs.size();
         l->ops.push_back(o);

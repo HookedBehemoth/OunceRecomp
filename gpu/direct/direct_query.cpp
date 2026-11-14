@@ -11,6 +11,7 @@
 #include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_compute.h"
+#include "direct_counters.h"
 #include "direct_draw.h"
 #include "direct_heap.h"
 #include "direct_query.h"
@@ -91,9 +92,10 @@ const char* const kNames[Q_COUNT] = {
     "conditions whose second word is not 0 (condcheck)", "conditions whose first word is past 32 bits (condcheck)",
     "conditions not in layer 0 (drawn)", "jobs executed under their caller's condition", "jobs executed in a counting rendering",
     "jobs with counters of their own executed in a counting rendering", "job reports never executed", "reports after a job with counters of its own since their reset (not NVN's value)"};
-std::atomic<int64_t> st[Q_COUNT];
+struct QueryStats;
+ThreadCounters<QueryStats, Q_COUNT> st;
 void count(int k, int64_t n = 1) {
-    st[k].fetch_add(n, std::memory_order_relaxed);
+    st.add(k, n);
     // (M6b: a report not written, summed in part, or not NVN's value, and a condition not evaluated: strict's events)
     if (strict_on() && (k == Q_TOO_MANY || k == Q_NO_ROOM || k == Q_NOT_MEMORY || k == Q_UNRECORDED || k == Q_COND_NOT_MEMORY ||
                         k == Q_JOB_PENDING_LEFT || k == Q_CLOBBERED || k == Q_COND_PENDING))
@@ -536,7 +538,7 @@ void query_stats(char* out, size_t cap, double frames) {
     int k = std::snprintf(out, cap, "reports a frame:");
     for (int i = 0; i < Q_COUNT; i++) {
         if (i == Q_CONDS) logf("direct: %s", out), k = std::snprintf(out, cap, "conditions a frame:");
-        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.1f", i == 0 || i == Q_CONDS ? "" : ",", kNames[i], st[i].exchange(0) / frames);
+        k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.1f", i == 0 || i == Q_CONDS ? "" : ",", kNames[i], st.take(i) / frames);
     }
     static const bool log_pass = dbg_log("logpass");   // (the caller prints nothing for an empty text)
     if (!log_pass) out[0] = 0;

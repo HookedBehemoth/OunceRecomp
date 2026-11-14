@@ -6,12 +6,15 @@
 #include <cstdio>
 #include <cstring>
 
+#include "direct_counters.h"
 #include "direct_state.h"
 
 namespace hsd {
 namespace {
 
-std::atomic<int64_t> st_deferred{0}, st_deferred_bufs{0}, st_conds{0};
+enum { ST_DEFERRED, ST_DEFERRED_BUFS, ST_CONDS, ST_COUNT };
+struct StateStats;
+ThreadCounters<StateStats, ST_COUNT> st;
 
 template <class T>
 T payload(const void* p, uint32_t size) {
@@ -110,7 +113,7 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
             changed |= u.addr != b.r[i].address || u.size != b.r[i].size;
             u.stage = b.stage, u.index = index, u.addr = b.r[i].address, u.size = b.r[i].size;
         }
-        if (b.src) st_deferred_bufs.fetch_add(1, std::memory_order_relaxed);
+        if (b.src) st.add(ST_DEFERRED_BUFS);
         if (changed && b.ssbo && b.stage < kBankStages) s.bank_gen[b.stage]++;
         if (changed && !b.ssbo) s.ubo_gen++;
         return true;
@@ -144,7 +147,7 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
             }
             if (changed) s.bank_gen[b.stage]++;
         }
-        if (b.src) st_deferred.fetch_add(n, std::memory_order_relaxed);
+        if (b.src) st.add(ST_DEFERRED, n);
         return true;
     }
     case NOP_STENCIL: {
@@ -172,7 +175,7 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
         return true;
     case NOP_RENDER_COND:   // (M5's: the GPU's counters decide. Until then the draws under one are skipped, counted)
         s.conditional = true;
-        st_conds.fetch_add(1, std::memory_order_relaxed);
+        st.add(ST_CONDS);
         return true;
     default: return false;
     }
@@ -228,7 +231,7 @@ void bank_fill(const DState& s, int bank, int stage, uint8_t* d, uint32_t n) {
 
 void state_stats(char* out, size_t cap, double frames) {
     std::snprintf(out, cap, "state: deferred handle binds %.1f a frame, deferred buffer binds %.1f, render conditions %.1f",
-                  st_deferred.exchange(0) / frames, st_deferred_bufs.exchange(0) / frames, st_conds.exchange(0) / frames);
+                  st.take(ST_DEFERRED) / frames, st.take(ST_DEFERRED_BUFS) / frames, st.take(ST_CONDS) / frames);
 }
 
 }  // namespace hsd

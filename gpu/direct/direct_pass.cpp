@@ -19,6 +19,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "direct_counters.h"
+
 #include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_compute.h"
@@ -46,8 +48,10 @@ const char* const kNames[S_COUNT] = {
     "records on another thread", "ops a job's rendering cannot hold (skipped)", "command buffers cut at an event op",
     "jobs' task steps executed", "of them in a begun rendering (ended and begun again)", "renderings ended for an inline task step",
     "jobs' task steps run again (a job called again)"};
-std::atomic<int64_t> st[S_COUNT];
-std::atomic<int64_t> st_bits[16];   // (barriers by NVN bit)
+struct PassStats;
+struct BarrierBits;
+ThreadCounters<PassStats, S_COUNT> st;
+ThreadCounters<BarrierBits, 16> st_bits;   // (barriers by NVN bit)
 thread_local const List* tl_list = nullptr;   // (M6b: the list pass_emit, pass_call or a job's begin is handling: strict's where)
 thread_local uint32_t tl_op = 0;
 struct Handling {   // (M6b: tl_list and tl_op for the scope of one call)
@@ -62,7 +66,7 @@ void strict_pass(int k) {
     strict_event(kNames[k], "op %u (after %u); %s", tl_op, tl_list ? tl_list->last_op : 0u, w);
 }
 void count(int k) {
-    st[k].fetch_add(1, std::memory_order_relaxed);
+    st.add(k);
     // (M6b: the counters of a skipped or dropped clear, copy or op are strict's events)
     if (strict_on() && (k == S_NO_IMAGE || k == S_MASKED || k == S_CLEAR_NO_TARGET || k == S_CLEAR_DISABLED ||
                         k == S_COPY_SKIPPED || k == S_CLEAR_TEX_SKIPPED || k == S_BUF_OPS || k == S_UNRECORDED || k == S_JOB_OUTSIDE))
@@ -82,7 +86,11 @@ const char* const kJobNames[J_COUNT] = {
     "called with no secondary", "called with no pass in the caller", "executed in a pass of another size",
     "recorder asked: key known", "recorder asked: key not known (the game's early return)", "passes drawn inline",
     "passes drawn inline with no targets set"};
-std::atomic<int64_t> st_jobs[J_COUNT], st_first_ticks{0}, st_first_n{0}, st_other_ticks{0}, st_other_n{0};
+struct JobStats;
+struct JobTicks;
+ThreadCounters<JobStats, J_COUNT> st_jobs;
+enum { JT_FIRST_TICKS, JT_FIRST_N, JT_OTHER_TICKS, JT_OTHER_N, JT_COUNT };
+ThreadCounters<JobTicks, JT_COUNT> st_job_ticks;   // (a secondary's first draw and its others)
 void strict_job(int k) {
     char w[512] = "no list";
     if (tl_list) pass_where(tl_list, w, sizeof w);
@@ -90,7 +98,7 @@ void strict_job(int k) {
 }
 
 void jcount(int k) {
-    st_jobs[k].fetch_add(1, std::memory_order_relaxed);
+    st_jobs.add(k);
     // (M6b: a job not recorded, not executed or drawn inline is strict's event)
     if (strict_on() && (k == J_NO_FORMATS || k == J_NO_NESTING || k == J_MISMATCH || k == J_UNENDED || k == J_NOT_SECONDARY || k == J_NO_PASS ||
                         k == J_SIZE || k == J_INLINE_NO_PASS))
@@ -150,8 +158,8 @@ void key_put(uint64_t key, const PassFormats& f) {
     if (const uint32_t i = intern(f)) s->set.store(i, std::memory_order_release);
 }
 void jobs_draw_timed(bool first, uint64_t ticks) {
-    if (first) st_first_ticks.fetch_add((int64_t)ticks, std::memory_order_relaxed), st_first_n.fetch_add(1, std::memory_order_relaxed);
-    else st_other_ticks.fetch_add((int64_t)ticks, std::memory_order_relaxed), st_other_n.fetch_add(1, std::memory_order_relaxed);
+    st_job_ticks.add(first ? JT_FIRST_TICKS : JT_OTHER_TICKS, (int64_t)ticks);
+    st_job_ticks.add(first ? JT_FIRST_N : JT_OTHER_N);
 }
 double ticks_per_us() {
     static const double r = [] {
@@ -353,7 +361,7 @@ void clear(List* l, uint32_t bit_mask, VkImageAspectFlags aspect, uint32_t colou
 void barrier(List* l, int32_t bits) {
     suspend(l);
     for (int b = 0; b < 16; b++)
-        if (bits >> b & 1) st_bits[b].fetch_add(1, std::memory_order_relaxed);
+        if (bits >> b & 1) st_bits.add(b);
     count(S_BARRIERS);
     // (no command buffer yet: the barrier waits for the list's next command, or its end; a list of nothing but barriers then
     // makes none, M2b)
@@ -788,9 +796,9 @@ void pass_job_begin(List* l) {
 
 void jobs_stats(char* out, size_t cap, double frames) {
     int k = std::snprintf(out, cap, "jobs a frame:");
-    for (int i = 0; i < J_COUNT; i++) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", i ? "," : "", kJobNames[i], st_jobs[i].exchange(0) / frames);
-    const int64_t fn = st_first_n.exchange(0), on = st_other_n.exchange(0);
-    const double ft = st_first_ticks.exchange(0) / ticks_per_us(), ot = st_other_ticks.exchange(0) / ticks_per_us();
+    for (int i = 0; i < J_COUNT; i++) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.2f", i ? "," : "", kJobNames[i], st_jobs.take(i) / frames);
+    const int64_t fn = st_job_ticks.take(JT_FIRST_N), on = st_job_ticks.take(JT_OTHER_N);
+    const double ft = st_job_ticks.take(JT_FIRST_TICKS) / ticks_per_us(), ot = st_job_ticks.take(JT_OTHER_TICKS) / ticks_per_us();
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; a secondary's first draw %.2f us (%.1f a frame), its others %.2f us (%.1f a frame)",
                        fn ? ft / fn : 0.0, fn / frames, on ? ot / on : 0.0, on / frames);
     uint32_t known = 0, seen = 0;
@@ -815,10 +823,10 @@ void jobs_stats(char* out, size_t cap, double frames) {
 
 void pass_stats(char* out, size_t cap, double frames) {
     int k = std::snprintf(out, cap, "passes a frame:");
-    for (int i = 0; i < S_COUNT; i++) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.1f", i ? "," : "", kNames[i], st[i].exchange(0) / frames);
+    for (int i = 0; i < S_COUNT; i++) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "%s %s %.1f", i ? "," : "", kNames[i], st.take(i) / frames);
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; barrier bits a frame:");
     for (int b = 0; b < 16; b++)
-        if (const int64_t n = st_bits[b].exchange(0)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %#x %.1f", 1 << b, n / frames);
+        if (const int64_t n = st_bits.take(b)) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %#x %.1f", 1 << b, n / frames);
 }
 
 }  // namespace hsd
