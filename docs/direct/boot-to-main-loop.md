@@ -445,42 +445,44 @@ grid slot and the camera in, the view's grid out) or faster lifted code in the s
 After the calc jobs, until the first render job (0.3 ms: 1.75-2.06): the phases 0x30/0x20 and 0xc0/0x40 (1.75-1.97,
 content not identified) and phase 0x100, `f_800766e0` per list (1.97-2.06).
 
-**Stage A** (VERIFIED: `HOS_DBG=crit` traces with spans of the executors' indirect calls, the scheduler's job calls and
-named functions; perf samples joined to them; market overlay, uncapped, 75-80 fps. Times are ms from the frame-end
-stage's join start, the median frame of 120; the trace adds about 5%). The main thread enters the join at 0.15 and
-leaves at 6.7-6.9 (lighter timers, no trace, 1200 frames from present 1200; 7.7 later in the same run; the trace's median 7.2). The stage's job graph is one long node, then
-about 30 short ones:
+**Stage A** (VERIFIED: light entry-hook timers, 1200 frames per figure, and `HOS_DBG=crit` traces with spans of the
+executors' indirect calls, the scheduler's job calls and named functions, perf samples joined to them; the build with
+the FP lift switches and the -O2 hot set; market overlay, uncapped, about 88 fps. Times are medians in ms; the trace
+stretches step 2 by about 10%, the timers by under 1%). The join is 4.94 ms (p10 4.80, p90 5.31); in the replay
+`work/rec/market_town` 4.81 (4.63-5.27). Its job graph is one long node, then about 30 short ones:
 
-| ms | where | what |
+| ms from the frame-end stage's join start | where | what |
 |---|---|---|
-| 0.13-6.04 | ModuleSystemWorker1 (any worker) | job node `f_83aff1f0` (`actor_baseproc_stage_node`): two BaseProc steps, then 0.28 ms of its own |
-| 0.16-0.95 | BaseProcExecutor0-5 | **step 1** (`f_806afc40`, the executors' `f_8004ab40`): small per-actor jobs (`f_802ca820`, ~55 a frame), physics collide-task generation (`f_803749b0` → `phys_hknp_generate_collide_tasks`), the first Havok tasks |
-| 0.97-5.75 | BaseProcExecutor0-5 | **step 2**, 4.8 ms (p10 4.4, p90 5.2): the phases below |
-| 6.04-6.8 | ModuleSystemWorker1-5, main | short jobs in dependent waves: `f_800b5400` (~160 calls), `f_82bde830`, `f_83b74d30`, `f_8011a450`, `f_80161850`, `phys_phive_volume_stats`, `phys_phive_static_compound`, `scene_params`, `map_player_pos`, `f_801c8ce0` (~210 calls), `f_805591e0` |
-| 6.8-7.25 | one worker or main | the last job: `f_804352d0` (72% of frames, 0.4 ms) or `f_83b525b0` (27%, 0.65 ms); its scheduler wake (`0x80080188`) ends the join |
+| 0.13 | ModuleSystemWorker1 (any worker) | job node `f_83aff1f0` (`actor_baseproc_stage_node`) starts: two BaseProc steps, then 0.08 ms of its own |
+| +0.58 (0.55-0.66; town 0.73) | BaseProcExecutor0-5 | **step 1** (`f_806afc40`, the executors' `f_8004ab40`): small per-actor jobs (`f_802ca820`, ~55 a frame), physics collide-task generation (`f_803749b0` → `phys_hknp_generate_collide_tasks`), the first Havok tasks |
+| +3.31 (3.21-3.58; town 3.14) | BaseProcExecutor0-5 | **step 2**: the phases below |
+| the rest, about 0.85 | ModuleSystemWorker1-5, main | short jobs in dependent waves: `f_800b5400` (~160 calls), `f_82bde830`, `f_83b74d30`, `f_8011a450`, `f_80161850`, `phys_phive_volume_stats`, `phys_phive_static_compound`, `scene_params`, `map_player_pos`, `f_801c8ce0` (~210 calls), `f_805591e0`; the last job is `f_804352d0` or `f_83b525b0`, whose scheduler wake (`0x80080188`) ends the join |
 
 A BaseProc step: the node's `f_806afc40` sends the executors their message (each runs `f_8004aae0` →
 `f_8004ab40`, then signals its light event +0x1e8) and waits on the six light events (`0x806afd14`; it does not take
 work itself). `f_8004ab40` runs a work-stealing job graph: a node's pending-predecessor count at +0x3c, ring queues at
 executor +0x40 + i·0x50, a ready node queued by `f_8004fa40`; an executor with nothing ready waits in a libc++ atomic
 wait (steady_clock polls, then the host's 20 µs spin `spin_until_set` and a sleep at `0x8004af4c`), woken by the
-executor that finishes a predecessor. The six executors block there about 100 times a frame (10.8 ms of the six
-threads' time).
+executor that finishes a predecessor.
 
-Step 2's phases (ms from the step's start; mean executors running out of six):
+Step 2 (ms from the step's start, market; the town in brackets):
 
-| ms | running | what |
-|---|---|---|
-| 0-0.8 | 5.6-5.8 | actor calcs: `f_800b3ce0` (`actor_calc_one`, ~50 a frame, each calling `actor_player_calc`), `f_8042b0a0` (4 a frame, mostly hknp code), `f_800c0920` |
-| 0.8-1.5 | 4.5-5.3 | Havok cloth jobs through `job_queue_drain` (`f_8007f6c0` → `phys_cloth_step`), the actor calcs' ends |
-| 1.5-2.4 | 1.7-2.8 | **a stall**: the longest actor calc (one `actor_calc_one` of about 2.2 ms with its own cloth, presumably the player) and the last cloth jobs; the physics phase waits for them |
-| 2.1-3.4 | 3.0-5.0 | **the physics phase**: `phys_step_phase_job` (`f_8073a4a0`, once a frame, 0.7 ms), `f_803749b0`, `phys_solve_tasks_job` (→ `phys_hknp_generate_solve_tasks`), and Havok tasks the executor runs outside these calls (most of the hknp samples of the stage fall here) |
-| 3.4-4.5 | 2.4-3.2 | post-physics: `actor_baseproc_post_phys_job` (`f_82c43780`, ~90 a frame), `f_82bcfae0`, `f_83af59c0` |
-| 4.2-5.1 | 2.4 → 0.2 | `actor_baseproc_step2_tail_job` (`f_83af6150`), mostly alone, ends the step |
+| ms | what |
+|---|---|
+| 0-1.60 (0-1.56) | **the player's calc**: one `actor_calc_one` (`f_800b3ce0`) that starts with the step and runs alone on one executor for 1.60 ms (p10 1.54, p90 1.83); the longest call in every frame. Before `actor_update_a` about 0.9 ms (skeletal animation: `f_801d99a0`, `f_80341840`, `f_80337ae0`, `f_80312220`, and hknp queries), then `actor_update_a` 0.90 (with `actor_update_b` 0.89 inside it), which holds the player's four inline cloth steps (hair x2, tunic, hat: `phys_cloth_step` 0.32 ms, p90 0.72). `player_movement` runs inside it |
+| 0-0.7 | everything else, beside it: the other ~50 actor calcs, `f_8042b0a0` (hknp), `f_800c0920`; the other actors' cloth as jobs through `job_queue_drain` (`f_8007f6c0` → `phys_cloth_step`), done at 1.45 (1.84) |
+| 0.7-1.60 | **the stall**: the other five executors have nothing ready and wait |
+| 1.60-1.69 | about 20 short actor calcs that start within 0.01 ms of the player's end, on all executors (INFERRED: actors ordered after the player) |
+| 1.69-1.74 | four short jobs, each on five executors, one after another: `f_8074bfc0`, `f_82bcf340`, `f_805b8be0`, `f_80140700` |
+| 1.74-2.18 | **the physics phase**: `phys_step_phase_job` (`f_8073a4a0`) starts 0.13 ms (0.125-0.15) after the player's calc ends in every frame, after every actor calc; it does not wait for the cloth jobs (in the town they end after it starts); `f_803749b0`, `phys_solve_tasks_job` (→ `phys_hknp_generate_solve_tasks`) and the Havok tasks follow |
+| 2.2-3.1 | post-physics, about three executors: `actor_baseproc_post_phys_job` (`f_82c43780`, ~90 a frame, one actor each), `f_82bcfae0`, `f_83af59c0` |
+| 3.12-3.26 | `actor_calc_late_one` (`f_83af6150`, a per-actor late calc, 5 a frame; 18 in the town): the player's call is the longest (0.14 ms) and the last; the step ends 0.04 ms after it |
 
-Over the step one executor runs alone for 1.4 ms and all six for 1.6 ms. **The critical path**: the scheduler's start
-(0.13) → step 1 (0.8) → step 2 (4.8, of which the 1.5-2.4 stall and the tail are about 1.4 ms of one thread) → the
-node's tail (0.3) → the short jobs (0.8) → `f_804352d0` or `f_83b525b0` (0.4-0.65).
+**The critical path** of the stage: the scheduler's start (0.13) → step 1 (0.58) → the player's calc (1.60) → the
+actors after it and the four short jobs (0.14) → the physics phase (0.44) → post-physics (0.9) → the player's late calc
+(0.14) → the node's tail (0.08) → the short jobs and the last job (about 0.85). The step-2 stall is this critical path,
+not a wait on a lock: while the player's calc runs no other job is ready, because everything after it in the graph
+(the actors ordered after the player, the physics phase, post-physics) depends on it.
 
 CPU (perf samples, the executors' share in stage A): game code 29%, hknp physics 20%, the lifter's FP helpers 15%
 (`a64_fpx_*`; a vector FP op is four calls of the scalar helper), host and kernel 12%, the host's spin 8%, Havok
@@ -489,13 +491,14 @@ times a frame for 2.7-3.1 ms of CPU a frame. It runs once a frame per instance w
 second grows with the frame rate. `hknpWorld::stepCollide` and `stepSolve` are not called in play: the world steps
 through tasks (`phys_hknp_generate_collide_tasks` in step 1, `phys_hknp_generate_solve_tasks` in step 2) run on the
 executors. NavMeshCAStepDepWorker1 (priority 22) waits 1.4 ms a frame for a virtual core while the six executors run.
-Its own node usually ends before the join. The game's cloth parameters (`game__physics__GameClothParam`: EnableClothSkip,
-ClothSkipNearestPriority, EnableClothFreeze, CalcClothInModelOnlyLOD, ClothFreezeInModelOnlyLOD, EnableClothParallel)
-and Havok's (`hclSimClothStepConfig` substep types, `numSimulateConfigSubSteps`, hknp min/maxSolverIterations) are names
-in the executable; the values are in the game's data (`Phive/Cloth/*.bphcl`, 171 files), not read here.
+Its own node usually ends before the join. `game__physics__GameClothParam` is in the five Player packs only (`GameParameter/GameClothParam/Player`), which
+set only IterationIfEventMember (25); its other fields keep the code's defaults (the loader `f_8041e170`: EnableClothFreeze
++0x183, EnableClothParallel +0x184, EnableClothParallelEventOnly +0x185; where they are read is not found). The other
+actors' cloth runs as jobs, the player's inline in its calc. Havok's cloth and solver settings (`hclSimClothStepConfig`
+substep types, `numSimulateConfigSubSteps`, hknp min/maxSolverIterations) are in `Phive/Cloth/*.bphcl` (171 files), not
+read here.
 
-In the replay `work/rec/market_town` (the town, uncapped), the join is 6.4-6.8 ms: step 1 1.2-1.3 ms, step 2 4.0-4.2,
-and the last job is mostly `f_83b525b0`.
+The CPU split above was measured without the FP lift switches and the hot set.
 
 What the main thread waits on inside the stages (`m6a_crit2_k`, ms a frame): the scheduler's condition variable
 at `0x80080188` (6.75, 11.9 times), its 20 µs poll sleeps at `0x8009a478` in `f_800998a0` (0.81, 39 times), the
@@ -760,7 +763,9 @@ function's entry, `host/hos.h:26`; a mark at the end of a phase is the entry of 
 | `83aff1f0` | `actor_baseproc_stage_node` | stage A's BaseProc job node (4.3) |
 | `800b3ce0` | `actor_calc_one` | one actor's calc on an executor |
 | `8004fa40` | `actor_baseproc_job_ready` | the executor job graph's ready-node step (INFERRED) |
-| `83af6150` | `actor_baseproc_step2_tail_job` | the job that ends step 2 |
+| `83af6150` | `actor_calc_late_one` | one actor's late (post-physics) calc; the player's ends step 2 |
+| `8074bfc0`, `82bcf340`, `805b8be0`, `80140700` | `actor_after_calcs_job_a`-`_d` | the four short jobs between the actor calcs and the physics phase |
+| `801d99a0` | `model_anim_eval_large` | the largest function of the player's calc (INFERRED animation) |
 | `82c43780` | `actor_baseproc_post_phys_job` | the post-physics job, ~90 a frame |
 | `804352d0` | `module_stage_a_last_job_a` | one of the jobs that end stage A |
 | `83b525b0` | `module_stage_a_last_job_b` | the other one |

@@ -855,8 +855,13 @@
 83aff1f0 actor_baseproc_stage_node        # stage A's BaseProc job node: two actor_baseproc_stage_logic steps, then its own tail
 800b3ce0 actor_calc_one                   # one actor's calc on a BaseProc executor (calls actor_player_calc for every actor)
 8004fa40 actor_baseproc_job_ready         # the executor job graph: a node whose predecessors are done is queued (inferred)
-83af6150 actor_baseproc_step2_tail_job    # the job that ends the second BaseProc step, mostly alone (role)
-82c43780 actor_baseproc_post_phys_job     # a job run ~90 times a frame after the physics phase of the second step (role)
+8074bfc0 actor_after_calcs_job_a         # the first of four short jobs between the actor calcs and the physics phase (role)
+82bcf340 actor_after_calcs_job_b         # the second (role)
+805b8be0 actor_after_calcs_job_c         # the third (role)
+80140700 actor_after_calcs_job_d         # the fourth; the physics phase follows (role)
+801d99a0 model_anim_eval_large           # the largest function of the player's calc before actor_update_a (string UseRotatedTranslate) # ? animation, inferred
+83af6150 actor_calc_late_one              # one actor's late (post-physics) calc in the second BaseProc step; the player's ends the step
+82c43780 actor_baseproc_post_phys_job     # one actor's post-physics step, ~90 a frame after the physics phase of the second step
 804352d0 module_stage_a_last_job_a        # one of the two jobs that end stage A (role)
 83b525b0 module_stage_a_last_job_b        # the other job that ends stage A; reads the system tick, light events (role)
 8007f6c0 job_queue_drain                  # runs queued jobs of the module job system; the executors run cloth jobs through it
