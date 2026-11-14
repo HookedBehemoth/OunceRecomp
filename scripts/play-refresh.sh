@@ -3,7 +3,9 @@
 # work/sa/build/BUILD.txt (short hash, date, subject) last. Exit 0 only when BUILD.txt names HEAD. Needs a clean native-vk
 # checkout; one build at a time (flock on work/sa/build/.build.lock). Log: work/play/refresh.log. The build is the mixed one
 # (nx2/lift2 for every function it can take) unless HOOKSHOT_LIFT2=0; a host-only refresh takes lift 2's objects from the
-# object cache.
+# object cache. When the lift's inputs changed since work/sa was lifted (nx2/lift_mark.py stale: the lifter, the lift-time
+# patches, the hot list, the dump), it lifts again first instead of building the old lift. Heavy work takes
+# work/heavy.lock (one heavy job on the machine at a time) and runs in a memory-capped scope (HOOKSHOT_REFRESH_MEM, 18G).
 #   scripts/play-refresh.sh [--install-hook]   --install-hook writes .git/hooks/post-merge (a refresh in the background after a merge onto native-vk)
 set -uo pipefail
 # (the main checkout, also when this copy of the script is run from an agent's worktree)
@@ -30,24 +32,42 @@ fi
 
 fail() { echo "play-refresh: $1; BUILD.txt untouched (see $log)"; exit 1; }
 cd "$root" || exit 1
+if [ -z "${HOOKSHOT_HEAVY_HELD:-}" ]; then   # (one heavy job at a time: the agents' and this one's; relift.sh holds it already)
+  mkdir -p "$root/work"
+  exec env HOOKSHOT_HEAVY_HELD=1 flock "$root/work/heavy.lock" "$0" "$@"
+fi
+capped() {   # (a memory-capped scope where systemd can make one, else plain)
+  if systemd-run --user --scope -q true 2>/dev/null; then
+    systemd-run --user --scope -q -p MemoryMax="${HOOKSHOT_REFRESH_MEM:-18G}" -p MemorySwapMax=0 "$@"
+  else "$@"; fi
+}
 mkdir -p "$play"
 bd=$root/work/sa/build; mkdir -p "$bd"
 exec 9>"$bd/.build.lock"; flock 9
 [ "$(git rev-parse --abbrev-ref HEAD)" = native-vk ] || fail "the main checkout is not on native-vk"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "the main checkout has uncommitted changes"
 head=$(git rev-parse --short HEAD)
-if [ "$(head -1 "$bd/BUILD.txt" 2>/dev/null)" = "$head" ]; then echo "play-refresh: work/sa/build already names $head"; exit 0; fi
-[ ! -e "$root/work/sa/LIFT_INCOMPLETE" ] || fail "the lift in work/sa is incomplete (stopped before its end): run scripts/relift.sh"
+stale=$(work/venv/bin/python -I nx2/lift_mark.py stale work/sa)   # (empty: work/sa was lifted from today's inputs)
+if [ -z "$stale" ] && [ "$(head -1 "$bd/BUILD.txt" 2>/dev/null)" = "$head" ]; then echo "play-refresh: work/sa/build already names $head"; exit 0; fi
+[ ! -e "$root/work/sa/LIFT_INCOMPLETE" ] || [ -n "$stale" ] || fail "the lift in work/sa is incomplete (stopped before its end): run scripts/relift.sh"
 rm -f "$bd/BUILD.txt"
 start=$(date +%s)
+lift_if_stale() {   # (a lifter change: lift again, as scripts/relift.sh does, before the build)
+  [ -n "$stale" ] || return 0
+  echo "play-refresh: $stale: lifting again"
+  local hot=; for f in "$root/work/hot_funcs_play.txt" "$root/work/hot_funcs.txt"; do [ -f "$f" ] && { hot=$f; break; }; done
+  if [ -n "$hot" ]; then capped env A64_HOT_FUNCS="$hot" A64_HOT_CHUNK=1 work/venv/bin/python -I -u nx2/lift.py --standalone --write
+  else capped work/venv/bin/python -I -u nx2/lift.py --standalone --write; fi
+}
 {
   echo "== $(date '+%F %T') refresh to $head"
+  lift_if_stale &&
   # (the game's patches are made at the lift: a patch added since is made here, in the lifted C as it stands; the ones in
   # it already are left alone, and the supported build's optional ones are not added)
   work/venv/bin/python -I -c "import sys; sys.path.insert(0, 'nx2'); import oot_patches; oot_patches.apply('work/sa/gen')" &&
   work/venv/bin/python -I nx2/entry_hooks.py work/sa/gen &&
   HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
-    work/venv/bin/python -I -u nx2/build.py --standalone --jobs 8
+    capped work/venv/bin/python -I -u nx2/build.py --standalone --jobs 8
 } > "$log" 2>&1 || fail "the build failed"
 printf '%s\n%s %s\n' "$head" "$(date +%F)" "$(git log -1 --format=%s)" > "$bd/BUILD.txt.new" && mv -f "$bd/BUILD.txt.new" "$bd/BUILD.txt"
 echo "play-refresh: work/sa/build is $head ($(( $(date +%s) - start )) s)" | tee -a "$log"

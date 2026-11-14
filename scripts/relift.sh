@@ -20,6 +20,10 @@ bd=$root/work/sa/build
 if [ "$root" = "$main" ]; then log=$root/work/play/relift.log; else log=$root/work/sa/relift.log; fi
 mkdir -p "$(dirname "$log")" "$bd"
 cd "$root" || exit 1
+if [ -z "${HOOKSHOT_HEAVY_HELD:-}" ]; then   # (one heavy job on the machine at a time: work/heavy.lock; play-refresh.sh inherits it)
+  mkdir -p "$root/work"
+  exec env HOOKSHOT_HEAVY_HELD=1 flock "$root/work/heavy.lock" "$0" "$@"
+fi
 
 # (a game started from this build: play.sh and run-vk.sh name its path; run-vk.sh's check runs use a copy elsewhere)
 if pgrep -af "$bd/hookshot( |$)" > /dev/null; then
