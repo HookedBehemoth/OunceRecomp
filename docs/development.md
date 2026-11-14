@@ -79,7 +79,7 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
   FP and NEON: 98.8 % of the guest instructions) comes from `nx2/lift2`, the rest (host edits, setjmp owners' callers)
   from the present lifter. `HOOKSHOT_LIFT2=0` at lift and build time gives the present lifter's build alone. A host-only
   rebuild takes lift 2's objects from `work/objcache` by their inputs (plan, chosen functions, `nx2/lift2` sources,
-  flags) without lifting or compiling them again.
+  flags) without lifting or compiling them again (a host-only rebuild: about a minute).
   `nx2/build.py` splits a whole `code_hot.c` into pieces itself (`nx2/split_hot.py`: one file took 79 minutes on one core).
 - To keep builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`, `*.idx`)
   to `work/sa/<name>/` and run with `EXE=`.
