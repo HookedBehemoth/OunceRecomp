@@ -21,6 +21,9 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size);
 void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recording);
 /// The command buffer's state is undefined (a secondary was executed in it): the next draw sets all again
 void draw_invalidate(List* l);
+/// A compute step was recorded in the list's command buffer: its push data replaced the draws' (push data is shared by all
+/// stages); the graphics shaders, dynamic state, vertex input, buffers and the heaps (bound again at the same addresses) hold
+void draw_push_invalidate(List* l);
 /// The list's draw state goes with it
 void draw_list_free(List* l);
 /// (hsd_submit, the guest's submit) the deferred binds' bank words of l and its callees copied from the game's arrays now

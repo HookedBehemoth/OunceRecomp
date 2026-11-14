@@ -1195,7 +1195,7 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     l->pending_barrier = true;
     if (pstats_on()) pstat_after(cb, ps);
     if (marks_on()) mark_after(cb, mk);
-    draw_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
+    draw_push_invalidate(l);   // (the push data is the command buffer's: the next draw pushes its own again)
     tell_first(*v, l, map, v->bank_bytes, grid, indirect);
     if (draw_log_frame()) trace_dispatch(*v, l, map, v->bank_bytes, grid, indirect ? args : 0);
     else if (static const uint64_t watch = [] {   // (HOS_DBG=writer:<hex>: every dispatch whose storage buffers cover it)

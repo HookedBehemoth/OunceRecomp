@@ -1485,6 +1485,10 @@ void draw_invalidate(List* l) {
     if (l->dctx) l->dctx->cb = VK_NULL_HANDLE;
 }
 
+void draw_push_invalidate(List* l) {
+    if (l->dctx) l->dctx->push_valid = false;
+}
+
 void draw_list_submitted(const List* l) {
     std::vector<const List*> work{l};
     while (!work.empty()) {
