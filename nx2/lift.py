@@ -205,7 +205,7 @@ def main():
             listed = None if sp == "all-safe" else {int(l.split()[0], 16) for l in open(sp)
                                                     if l.strip() and not l.startswith("#")}
             L.only, predicted = owned.compute({e: b for e, (b, _) in L.funcs.items()}, bodies,
-                                              os.path.join(out_dir, "gen"), listed, L.after)
+                                              os.path.join(out_dir, "gen"), listed)
             owned.save(out_dir, L.only, predicted, a64_lift.hot_functions())
             print("present lifter: %d of %d functions are its own (%d with host edits); lift 2 has the rest" % (
                 len(L.only), len(L.funcs), len(predicted)), flush=True)
