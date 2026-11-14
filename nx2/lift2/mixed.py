@@ -136,6 +136,11 @@ def write_plan(L, img, path):
             live = reachable(e, pcs, img.word, prog.jt)
             if len(live) < len(pcs) and build_ir.scope(e, live, img.word, scope_prog) is None:
                 pcs, r = live, None
+        if r is not None and enc.decode(img.word(e)) is None:
+            # (an "entry" whose first word is not an instruction: data the discovery took for code, f_80020008 on main's
+            # MOD0 header. It traps as the hardware would: lifted as UDF #0 at the entry)
+            bodies[e] = (array("Q", [e]), array("I", [0]))
+            continue
         if r is not None:
             k = re.sub(r" \(.*| at .*| [0-9a-f]{8}.*|0x[0-9a-f]+", "", r)
             why[k] = why.get(k, 0) + 1
@@ -175,7 +180,7 @@ def edited_functions(gen):
             e = int(m.group(1)[2:], 16)
             if e in probes.BY_FUNC:   # (the present lifter's patch, which lift 2 makes as a probe: probes.py)
                 body = "".join(l for l in body.splitlines(True) if not any(mk in l for mk in probes.MARKS))
-            if e in probes.SPLICE_AT:   # (its SPLICE_AFTER, which lift 2 calls at the instructions' addresses)
+            if e in probes.SPLICE_AT or e in probes.SPLICE_BEFORE:   # (its SPLICE_AFTER, which lift 2 calls by address)
                 body = body.replace("    splice_0x%08x(c);   /* (nx2/entry_hooks.py) */\n" % e, "")
             hook = HOOK_LINE.search(body)
             if hook:
@@ -277,6 +282,7 @@ def lift_part(args):
         prog.probes = probes.find(e, pcs, w.__getitem__)
         prog.probes.update(probes.after_c(plan.get("after_c", {}), pcs, w.__getitem__))
         prog.probes.update(probes.after_c(probes.splice_texts(e, w.__getitem__), pcs, w.__getitem__))
+        prog.probes.update(probes.splice_before(e, pcs, w.__getitem__))
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
         fn.entry_hook = hooks.get(e)
         if verify and verified(plan, e):

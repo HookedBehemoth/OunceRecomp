@@ -112,8 +112,9 @@ def write_after_c(texts, folder):
 
 # ---- SPLICE_AT: host/*.c's SPLICE_AFTER(0xFUNC, "anchor") bodies, called after these guest instructions. The anchors
 # (text of the present lifter's C) were turned into instruction addresses once (the present lifter's C with pc comments:
-# the instruction whose C holds the anchor); each is checked against its word at lift time. Not here yet: f_8007fe60
-# (anchored after a TBZ: the call belongs on the fall-through edge only) and f_80084de0 (after a BLR's return).
+# the instruction whose C holds the anchor); each is checked against its word at lift time. f_8007fe60
+# (anchored after a TBZ) and f_80084de0 (after a BLR) run on the fall-through: SPLICE_BEFORE calls them before the next
+# instruction, which must not be a branch target (checked at lift time), so the call is on that edge alone.
 SPLICE_AT = {
     0x8005ed00: ((0x8005fb74, 0xf9001eea), (0x80061814, 0xf9001eea)),
     0x80289590: ((0x80289cbc, 0xf9400108), (0x80289fe0, 0xf9400108)),
@@ -130,6 +131,38 @@ SPLICE_AT = {
                  (0x82c0330c, 0xf9400108)),
     0x831fa4a0: ((0x831fa57c, 0xf9400104),),
 }
+
+
+# (func: (the instruction the anchor follows, its word), called before the next instruction)
+SPLICE_BEFORE = {
+    0x8007fe60: (0x800809cc, 0x36500057),   # tbz w23, #10: its fall-through
+    0x80084de0: (0x800855a8, 0xd63f0100),   # blr x8: its return
+}
+
+
+def splice_before(func, pcs, word):
+    """{pc: lowering} of a function's SPLICE_BEFORE site; SystemExit when its word differs or the next instruction is
+    a branch target (the call would run on another path too)"""
+    if func not in SPLICE_BEFORE:
+        return {}
+    at, w = SPLICE_BEFORE[func]
+    if word(at) != w:
+        raise SystemExit("lift2 probes: SPLICE_BEFORE f_%08x at %#x holds %08x, not %08x" % (func, at, word(at), w))
+    from .build_ir import target, TERMINATORS
+    nxt = enc.decode(word(at + 4))
+    if nxt is None or nxt.entry.template in TERMINATORS:
+        raise SystemExit("lift2 probes: SPLICE_BEFORE f_%08x: %#x is not an instruction a probe can precede" % (func, at + 4))
+    for pc in pcs:
+        i = enc.decode(word(pc))
+        if i is not None and target(i, pc) == at + 4:
+            raise SystemExit("lift2 probes: SPLICE_BEFORE f_%08x: %#x is a branch target (from %#x)" % (func, at + 4, pc))
+    name = "splice_0x%08x" % func
+
+    def lower(b, insn, pc):
+        b.call(name, "void", ctx=True, effects=True)
+        b.after_call()
+        sem.TEMPLATES[insn.entry.template](b, insn.f, pc, insn.entry.params)
+    return {at + 4: lower}
 
 
 def splice_texts(func, word):
