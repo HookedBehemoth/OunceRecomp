@@ -31,26 +31,20 @@ const char* const kOpNames[NOP_COUNT_] = {
     "BIND_BUFS", "DRAW_INDIRECT", "DISPATCH_INDIRECT", "DRAW_MESH", "WAIT_EVENT", "PUSH_CONST", "CLEAR_BUF"};
 const char* const kKindNames[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
 
-// (the recording threads' time in hsd_emit and hsd_list_call, in TSC ticks, by the list's kind: summed per thread, added up
-// every 256 records)
-std::atomic<int64_t> st_emit_ticks[HSD_LIST_KINDS], st_call_ticks[HSD_LIST_KINDS];
-thread_local uint64_t my_ticks[HSD_LIST_KINDS], my_call_ticks[HSD_LIST_KINDS];
-thread_local uint32_t my_n = 0;
-void flush_ticks() {
-    for (int k = 0; k < HSD_LIST_KINDS; k++) {
-        if (my_ticks[k]) st_emit_ticks[k].fetch_add((int64_t)my_ticks[k], std::memory_order_relaxed), my_ticks[k] = 0;
-        if (my_call_ticks[k]) st_call_ticks[k].fetch_add((int64_t)my_call_ticks[k], std::memory_order_relaxed), my_call_ticks[k] = 0;
-    }
-    my_n = 0;
+// (the recording threads' time in hsd_emit and hsd_list_call, in TSC ticks, by the list's kind. hsd_emit times one op in
+// kEmitEvery, picked at random per thread, and counts it kEmitEvery times: two time-stamp reads an op cost more than most ops)
+constexpr uint32_t kEmitEvery = 16;
+struct EmitTicks;
+ThreadCounters<EmitTicks, 2 * HSD_LIST_KINDS> st_ticks;   // (hsd_emit's by kind, then hsd_list_call's)
+thread_local uint32_t my_pick = 0x9E3779B9u;
+bool emit_timed() {   // (xorshift32: one op in kEmitEvery)
+    uint32_t x = my_pick;
+    x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+    my_pick = x;
+    return x % kEmitEvery == 0;
 }
-void emit_ticks(uint32_t kind, uint64_t t) {
-    my_ticks[kind] += t;
-    if (++my_n == 256) flush_ticks();
-}
-void call_ticks(uint32_t kind, uint64_t t) {
-    my_call_ticks[kind] += t;
-    if (++my_n == 256) flush_ticks();
-}
+void emit_ticks(uint32_t kind, uint64_t t) { st_ticks.add((int)kind, (int64_t)t * kEmitEvery); }
+void call_ticks(uint32_t kind, uint64_t t) { st_ticks.add(HSD_LIST_KINDS + (int)kind, (int64_t)t); }
 double tsc_per_ns() {
     static const double r = [] {
         const auto a = std::chrono::steady_clock::now();
@@ -182,10 +176,10 @@ void lists_stats(char* out, size_t cap, double frames) {
         k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.1f", kKindNames[i], st_kinds[i].exchange(0) / frames);
     double all = 0, by[HSD_LIST_KINDS], calls[HSD_LIST_KINDS];
     for (int i = 0; i < HSD_LIST_KINDS; i++) {
-        by[i] = st_emit_ticks[i].exchange(0) / tsc_per_ns() / 1e6 / frames, calls[i] = st_call_ticks[i].exchange(0) / tsc_per_ns() / 1e6 / frames;
+        by[i] = st_ticks.take(i) / tsc_per_ns() / 1e6 / frames, calls[i] = st_ticks.take(HSD_LIST_KINDS + i) / tsc_per_ns() / 1e6 / frames;
         all += by[i];
     }
-    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", %.3f ms a frame in hsd_emit (all recording threads; by kind:", all);
+    k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", %.3f ms a frame in hsd_emit (all recording threads, one op in %u timed; by kind:", all, kEmitEvery);
     for (int i = 0; i < HSD_LIST_KINDS; i++)
         if (by[i] > 0) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.3f", kKindNames[i], by[i]);
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, "; in hsd_list_call by the caller's kind:");
@@ -287,6 +281,11 @@ extern "C" __attribute__((visibility("default"))) void hsd_emit(void* list, uint
         return;
     }
     l->counts[op]++;
+    if (!emit_timed()) {
+        if (l->packet) pkt_append(l, op, payload, size);
+        else emit_one(l, op, payload, size);
+        return;
+    }
     const uint64_t t0 = __builtin_ia32_rdtsc();
     if (l->packet) pkt_append(l, op, payload, size);
     else emit_one(l, op, payload, size);

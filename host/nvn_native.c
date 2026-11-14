@@ -2114,7 +2114,8 @@ NV(nvnCommandBufferReportCounter) {
     r->type = U32(1);
     {   /* (which counters the game reads: the first report of each type, with its caller) */
         static volatile LONG seen[64];
-        if (U32(1) < 64 && !InterlockedExchange(&seen[U32(1)], 1))
+        /* (read first: an exchange at every report is a locked write to a line every recording thread shares) */
+        if (U32(1) < 64 && !seen[U32(1)] && !InterlockedExchange(&seen[U32(1)], 1))
             hos_log("nvn: the game reports counter type %u (lr %#llx)", U32(1), (unsigned long long)c->x[30]);
     }
     r->addr = U64(2);
