@@ -85,6 +85,8 @@ def carry_flags(b, x, y, cin):
     return r
 
 
+FFOLD = {0: "oeq", 1: "une", 2: "uge", 3: "olt", 4: "olt", 5: "uge", 6: "uno", 7: "ord", 8: "ugt", 9: "ole", 10: "oge",
+         11: "ult", 12: "ogt", 13: "ule"}
 FOLD = {0: "eq", 1: "ne", 2: "uge", 3: "ult", 8: "ugt", 9: "ule", 10: "sge", 11: "slt", 12: "sgt", 13: "sle"}
 
 
@@ -97,6 +99,8 @@ def cond(b, code):
     if k is not None and (n, z, c, v) == k[:4]:
         if k[6] == "sub" and code in FOLD:
             return b.icmp(FOLD[code], k[4], k[5])
+        if k[6] == "fcmp":   # (FCMP's flags, sem_fp.flags_cmp: every condition is one ordered or unordered fcmp)
+            return b.op("fcmp", "i1", k[4], k[5], pred=FFOLD[code])
     base = code >> 1
     if base == 0:
         r = z
