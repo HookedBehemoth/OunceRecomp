@@ -368,6 +368,8 @@ def fp_sysreg_read(b, name):
 
 
 def fp_sysreg_write(b, name, x):
+    if name == "FPCR":   # (the function is emitted strictfp: no FP operation moves across this write)
+        b.fn.strict_fp = True
     b.call("a64_fpsr_write" if name == "FPSR" else "a64_fpcr_write", "void", x, ctx=True, effects=True)
 
 

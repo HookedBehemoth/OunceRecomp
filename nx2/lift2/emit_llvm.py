@@ -8,6 +8,8 @@ Vector and FP values are LLVM vectors and FP scalars (lltype); V registers are <
 Guest memory: `getelementptr i8, ptr inttoptr (i64 A64_HOST_BASE to ptr), i64 <guest address>`. A store that marks
 its pages writes 1 (a release store, as A64_MARK) into a64_dirty at the 4 KB pages of its first and last byte.
 """
+import re
+
 from .ir import WIDTH, lanes
 
 HOST_BASE = 0x100000000000
@@ -85,7 +87,8 @@ def emit_function(fn, decls, flags_out=False):
     def typed(v):
         return "%s %s" % (lltype(v.ty), ref(v))
 
-    out.append("define void @%s(ptr noalias nocapture %%ctx) {" % fn.name)
+    strict = getattr(fn, "strict_fp", False)
+    out.append("define void @%s(ptr noalias nocapture %%ctx)%s {" % (fn.name, " strictfp" if strict else ""))
     out.append("entry:")
     eb = fn.entry_block()
     ins = {}
@@ -129,6 +132,8 @@ def emit_function(fn, decls, flags_out=False):
                 else:
                     out.append("  store %s, ptr %%cx.%s, align 8" % (typed(v.args[0]), var))
                 continue
+            if strict and emit_strict(v, ref, typed, out, decls):
+                continue
             emit_op(v, ref, typed, out, decls)
         t = blk.term
         if t[0] == "br":
@@ -156,6 +161,9 @@ def emit_function(fn, decls, flags_out=False):
             out.append("  call void @a64_trap(ptr %%ctx, i64 %d, i32 %d)" % (t[1], t[2]))
             out.append("  ret void")
     out.append("}")
+    if strict:   # (every call of a strictfp function is strictfp: it may change the FP environment)
+        out = [l + " strictfp" if re.match(r"\s+(%\S+ = )?call ", l) and not l.endswith("strictfp") else l
+               for l in out]
     return "\n".join(out)
 
 
@@ -229,6 +237,45 @@ def emit_mark(p, base, lo, hi, out):
     out.append("  %s.a = add i64 %s, %d" % (p, base, lo))
     out.append("  %s.b = add i64 %s, %d" % (p, base, hi - 1))
     out.append("  call void @mark(i64 %s.a, i64 %s.b)" % (p, p))
+
+
+# A function that writes FPCR (MSR FPCR: Function.strict_fp, sem_fp.fp_sysreg_write) is strictfp: its FP operations
+# are LLVM's constrained intrinsics with a dynamic rounding mode, which LLVM does not move across the FPCR write (a
+# call) or evaluate in another FP environment. FP operations that do not depend on the mode (fneg, fabs, bit moves)
+# stay plain.
+STRICT_BIN = {"fadd", "fsub", "fmul", "fdiv"}
+STRICT_ROUNDED = {"fma", "sqrt", "rint", "nearbyint"}                 # (take the rounding mode)
+STRICT_EXACT = {"floor", "ceil", "trunc", "round", "roundeven", "maximum", "minimum"}
+EXC = 'metadata !"fpexcept.ignore"'
+RND = 'metadata !"round.dynamic"'
+
+
+def emit_strict(v, ref, typed, out, decls):
+    """v as a constrained FP intrinsic, if it is one of the operations that depend on the FP environment"""
+    op, a, r = v.op, v.args, ref(v)
+    if op in STRICT_BIN:
+        name = "llvm.experimental.constrained.%s.%s" % (op, v.ty)
+        args = [typed(x) for x in a] + [RND, EXC]
+        tys = [lltype(x.ty) for x in a] + ["metadata", "metadata"]
+    elif op == "fcmp":
+        name = "llvm.experimental.constrained.fcmp.%s" % a[0].ty
+        args = [typed(x) for x in a] + ['metadata !"%s"' % v.attrs["pred"], EXC]
+        tys = [lltype(x.ty) for x in a] + ["metadata", "metadata"]
+    elif op in ("sitofp", "uitofp", "fptrunc", "fpext"):
+        name = "llvm.experimental.constrained.%s.%s.%s" % (op, v.ty, a[0].ty)
+        args = [typed(a[0])] + ([RND] if op != "fpext" else []) + [EXC]
+        tys = [lltype(a[0].ty)] + ["metadata"] * (len(args) - 1)
+    elif op == "call" and v.attrs["fn"].startswith("llvm.") and v.attrs["fn"].split(".")[1] in \
+            STRICT_ROUNDED | STRICT_EXACT:
+        base, _, sfx = v.attrs["fn"][5:].partition(".")
+        name = "llvm.experimental.constrained.%s.%s" % (base, sfx)
+        args = [typed(x) for x in a] + ([RND] if base in STRICT_ROUNDED else []) + [EXC]
+        tys = [lltype(x.ty) for x in a] + ["metadata"] * (len(args) - len(a))
+    else:
+        return False
+    decls.add("declare %s @%s(%s)" % (lltype(v.ty), name, ", ".join(tys)))
+    out.append("  %s = call %s @%s(%s) strictfp" % (r, lltype(v.ty), name, ", ".join(args)))
+    return True
 
 
 CASTS = ("zext", "sext", "trunc", "bitcast", "sitofp", "uitofp", "fptosi", "fptoui", "fpext", "fptrunc")

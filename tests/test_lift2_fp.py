@@ -745,7 +745,19 @@ def cases():
     C.append(("fcvtzs s0, s1", lambda st: {"v0": f_to_int(L(st, 1, 32)[0], 32, 32, True, "rz", st["fz"])}))
     C.append(("fabd s0, s1, s2", scalar_fp(lambda a, b, c, w, fz: (lambda r: r if is_nan(r, w) else r & ~(1 << 31))(
         f_add(a, b, w, fz, True)), 32)))
+    # MSR FPCR inside a function: the function is strictfp, the second multiply runs in round-toward-zero
+    C.append(("fmul s0, s1, s2; mov x0, #12582912; msr fpcr, x0; fmul s3, s1, s2; mrs x1, fpcr",
+              lambda st: {"v0": f_mul(L(st, 1, 32)[0], L(st, 2, 32)[0], 32, st["fz"]),
+                          "v3": mul_rz(L(st, 1, 32)[0], L(st, 2, 32)[0], 32), "x1": 3 << 22}))
     return C
+
+
+def mul_rz(x, y, n):
+    """FMUL with FPCR RMode RZ, FZ clear"""
+    (kx, sx_, vx), (ky, sy, vy) = unpack(x, n, 0), unpack(y, n, 0)
+    if kx == "num" and ky == "num":
+        return fround(vx * vy, n, 0, "rz")
+    return f_mul(x, y, n, 0)
 
 
 def cond_ref(f):
