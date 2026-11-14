@@ -57,9 +57,14 @@ void lift2_check_enter(uint64_t *x, const uint64_t *sum, uint64_t *frame) {
 void lift2_check_exit(uint64_t *x, const uint64_t *sum, const uint64_t *frame) {
     const uint64_t in = sum[0], may = sum[1], res = sum[2], pres = sum[3], flags = sum[4], fn = sum[5];
     if (!(flags & RETURNS)) violation("returned (summary: noreturn)", fn, 0, 0);
-    for (int r = 0; r < 32; r++)
-        if (pres >> r & 1 && x[r] != frame[r]) violation("not preserved", fn, r, x[r]);
+    for (int r = 0; r < 32; r++) {   /* (a preserved register not read was poisoned at entry: it must still be) */
+        if (!(pres >> r & 1)) continue;
+        const uint64_t expect = r >= 29 || in >> r & 1 ? frame[r] : poison(POISON_IN, r, fn);
+        if (x[r] != expect) violation("not preserved", fn, r, x[r]);
+        x[r] = frame[r];
+    }
     for (int r = 0; r < 29; r++) {
+        if (pres >> r & 1) continue;
         if (may >> r & 1) {
             if (!(res >> r & 1) && !(pres >> r & 1)) x[r] = poison(POISON_OUT, r, fn);
             continue;

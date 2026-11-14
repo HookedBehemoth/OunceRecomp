@@ -360,8 +360,8 @@ def must_and_may(fn, sums, hooks):
                     changed = True
     for k in range(n):
         may |= fn.dfn[k]
-        if k in fn.ctail:
-            may |= callee_summary(sums, fn.ctail[k], hooks).clobbers
+        if k in fn.ctail and (fn.kind[k] == "svc" or callee_summary(sums, fn.callee[k], hooks).returns):
+            may |= callee_summary(sums, fn.ctail[k], hooks).clobbers   # (only if the call comes back)
         kind = fn.kind[k]
         if kind in ("call", "tail"):
             may |= callee_summary(sums, fn.callee[k], hooks).clobbers | (X[30] if kind == "call" else 0)
@@ -611,6 +611,9 @@ def analyse(fn, sums, hooks):
         reasons.add("lr_data")
     if s.returns and (CALLEE_SAVED & ~SP) & ~s.preserved:
         reasons.add("cs_clobber")
+    if s.clobbers & s.preserved & ~s.inputs & sum(X[19:30]):
+        # (a register it writes and claims preserved without reading it: no save is possible, the facts disagree)
+        reasons.add("inconsistent")
     if s.inputs & NZCV:
         reasons.add("flags_in")
     if s.inputs & TMPS:
@@ -855,3 +858,29 @@ def report(sums, F, hot=(), log=print):
         sum(s.pairs for s in sums.values() if not s.demote), sum(1 for s in sums.values() if s.pairs and not s.demote)))
     log("call edges: %s" % ", ".join("%s %d" % kv for kv in sorted(edges.items(), key=lambda kv: -kv[1])))
     return {"full": len(full), "reasons": dict(reasons), "edges": dict(edges)}
+
+
+def explain(e, sums, F, hooks, depth=2, log=print, _seen=None):
+    """print a function's summary and, for each call and tail call, the callee's (debugging)"""
+    _seen = _seen if _seen is not None else set()
+    if e in _seen or e not in sums:
+        return
+    _seen.add(e)
+    s, fn = sums[e], F[e]
+    g = lambda m: ",".join(mask_names(m & 0xFFFFFFFF))
+    log("%s f_%08x in %s | may %s | pres %s | %s | returns %s" % ("  " * (2 - depth), e, g(s.inputs), g(s.clobbers),
+                                                                g(s.preserved), s.demote, s.returns))
+    for k, kind in enumerate(fn.kind):
+        c = fn.callee[k]
+        if kind in ("call", "tail") or k in fn.ctail or isinstance(c, tuple):
+            cs = [c] if not isinstance(c, tuple) else list(c[1])
+            if k in fn.ctail:
+                cs.append(("ctail", fn.ctail[k]))
+            for cc in cs:
+                t = cc[1] if isinstance(cc, tuple) else cc
+                tag = "unknown" if t is None else "host" if t in hooks else "noreturn seed" if t in NORETURN else \
+                    "not summarised" if t not in sums else ""
+                log("%s   %08x %s -> %s %s" % ("  " * (2 - depth), fn.pcs[k], kind if not isinstance(cc, tuple) else cc[0],
+                                            "%08x" % t if t is not None else "?", tag))
+                if depth > 0 and t in sums:
+                    explain(t, sums, F, hooks, depth - 1, log, _seen)

@@ -86,6 +86,9 @@ def write_plan(L, img, path):
     if os.path.exists(hot_path):
         hot = [int(l.strip()[2:], 16) for l in open(hot_path) if l.strip().startswith("f_")]
     summary.report(sums, F, hot)
+    for a in os.environ.get("LIFT2_SUMMARY_DEBUG", "").split(","):   # (a function's call sites and their callees)
+        if a:
+            summary.explain(int(a, 16), sums, F, hooks)
     print("summaries: %(functions)d functions, %(sccs)d components (largest %(largest scc)d), %(iterations)d "
           "analyses; decode and graph %(build s).0fs, fixed point %(fixed point s).0fs, results %(results s).0fs" % stats)
     print("summaries: %.0fs in all, peak memory %d MB (one process)" % (
