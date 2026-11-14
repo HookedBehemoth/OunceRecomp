@@ -29,7 +29,7 @@
    keep 192 MB, the fullest seen used 111). Parking and the shadow size classes: below.
 
    The transient pool (direct mode; docs/direct/transient-pool.md). The slots do not take the pool's top: they lie
-   after its end (512 MB of offsets past the pool's size; the arenas are not shrunk), and the slot range is one device
+   after its end (the slot range's size of offsets past the pool's size; the arenas are not shrunk), and the slot range is one device
    allocation in the back end, made when the range is first known (hsd_transient_pool). Every texture initialized in a slot gets an
    image bound in it at the slot's offset: the targets cost that constant and nothing else, whatever the game's free
    entries still name. For that
@@ -75,16 +75,23 @@ uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t 
 static int off_(void) { return !rx_direct(); }
 /* Direct mode: the slots lie after the pool's end (offsets past its size: nvn_native.c leaves those GPU addresses
    unused after every virtual pool), the arenas keep the whole pool for their bookkeeping, and the range is the back
-   end's transient pool: SLOTS_MB_DIRECT of device memory, the constant the transient targets cost
-   (docs/direct/transient-pool.md, "The constant"). Another back end: the top 320 MB of the pool, as before */
+   end's transient pool: device memory of a constant size, twice the game's pool (whose size follows the output
+   resolution, hos_rt_pool_size) and at least SLOTS_MB_DIRECT (docs/direct/transient-pool.md, "The constant"). Twice,
+   since a slot never shares its memory where the game's lanes alias each other's: a range of the pool's size leaves a
+   target of a new size no gap, and it is placed outside the slots. Another back end: the top 320 MB of the pool */
 #define SLOTS_MB_DIRECT 512
 uint64_t nvn_virtual_pool_tail(void);   /* nvn_native.c */
 static int after_pool(void) { return rx_direct() && nvn_virtual_pool_tail() != 0; }
+static uint64_t game_pool_bytes;   /* (the arenas' size, set before the first slots_bytes call) */
 static uint64_t slots_bytes(void) {
     static uint64_t v;
     if (!v) {
         const char *e = getenv("RX_RT_SLOTS_MB");
-        const int def = after_pool() ? SLOTS_MB_DIRECT : 320;
+        int def = 320;
+        if (after_pool()) {
+            const uint64_t twice = game_pool_bytes * 2 >> 20;
+            def = twice > SLOTS_MB_DIRECT ? (int)twice : SLOTS_MB_DIRECT;
+        }
         const int mb = e ? atoi(e) : def;
         v = (uint64_t)(mb > 0 ? mb : def) << 20;
         if (after_pool() && v > nvn_virtual_pool_tail()) v = nvn_virtual_pool_tail();
@@ -213,6 +220,7 @@ static void shrink_arenas(uint64_t dta) {
         if (G64(a + AR_END) != base + size) { hos_log("rt slots: arena %u end %#llx, off", i, (unsigned long long)G64(a + AR_END)); return; }
     }
     if (after_pool() && base == 0) {   /* the slots after the pool's end: the arenas are left as they are */
+        game_pool_bytes = size;
         lo = size, hi = size + slots_bytes();
         nrecs0 = nr;
         arenas0 = ar, narenas = na;

@@ -165,6 +165,11 @@ pool is 512 MB). It is not proven for every scene: the full cycle of 26 stops an
 load that needs more raises the strict event and the count in the log, and `RX_RT_SLOTS_MB` changes the constant (up
 to 2,048).
 
+The game's pool grows with the output resolution (host/nn_applet.c hos_rt_pool_size: 687 MB at 3840x2160), and the range
+did not: at 3840x2160, 512 MB placed 6,471 targets outside the slots in 120 s of the HF market walk (p99 frame time 43 ms
+against 27-32 ms), and 12 at 2560x1440, where the peak held reached 468 MB but no gap was left for a new size. The range is
+now twice the game's pool, at least 512 MB: 0 outside at both sizes, peak held 534-565 MB and 1,004 MB.
+
 One thing tried and rejected: handing back the parked entry of a key that was parked last, instead of the oldest, so
 that spare entries of a key age out. It made the route worse (163 targets outside, `sp_s4`) and was reverted. I did not
 find out why.

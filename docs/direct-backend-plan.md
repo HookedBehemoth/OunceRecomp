@@ -133,7 +133,8 @@ counted and is compiled in the background. What a translated program expects at 
   on the game's own texture events, an image is freed when the game destroys its texture, and a patch makes the game's
   per-frame eviction look at free VRAM instead of its heap bytes. The back end holds no eviction policy.
 - **Render targets:** an image per stable target slot (`host/rt_slots.c`), never uploaded. The game's transient targets
-  (shadow maps and the rest of the allocator's pool) live in one constant 512 MB device allocation made at boot; images are
+  (shadow maps and the rest of the allocator's pool) live in one constant device allocation made at boot, twice the game's pool
+  (1 GB at the 2048x1152 and 2560x1440 outputs, 1.34 GB at 3840x2160); images are
   bound in it at their storage offsets, so no device memory is made or freed for them in play
   ([transient-pool.md](direct/transient-pool.md)). The allocator's hooks tell the back end each target by its own texture
   object (`hsd_target_given`).
@@ -239,9 +240,9 @@ check that shows it still applies (`HOS_DBG=logpatch`).
 - **Eviction destroys textures still drawn.** The eviction patch at the VRAM margin destroys a texture released in the same
   present (416 "texture with no image sampled" in one run); the patch must not, or the margin must be lowered until it does
   not fire (the margin, 1.5 GB, was sized before targets cost 0 of it).
-- **The transient pool's 512 MB** is measured on two routes (peak held 465 MB on the route, 406 MB on the cycle); the full
-  26-stop scene cycle and a long soak under strict are not run; persistent targets of the same allocator are outside the
-  slots.
+- **The transient pool's size** (twice the game's pool) is measured on the HF market walk: peak held 534-565 MB at 2560x1440
+  and 1,004 MB at 3840x2160, no target outside the slots; the full 26-stop scene cycle and a long soak under strict are not
+  run; persistent targets of the same allocator are outside the slots.
 - **Memory accounting per owner** in the periodic log; the per-slot arenas, task pools and query pools never shrink.
 - **The mesh-stage fix rests on few runs** (3 walks, 3 market runs against 5 and 13 losses before); eleven other mesh stages
   sit at the register limit without spilling; the four other stages in the capture list are not swapped in; the scan covers
