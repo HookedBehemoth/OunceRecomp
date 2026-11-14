@@ -168,7 +168,23 @@ def main():
         oot_jitter.install(L, img)
         import oot_occlusion   # (no occlusion queries when HOOKSHOT_OCCLUSION_OFF=1: Fritchii's Occlusion Off)
         oot_occlusion.install(L, img)
-    L.discover(max_insns=a.max_func)
+    # the functions: lift 2's discovery (nx2/lift2/discover.py, the default), the present lifter's (HOOKSHOT_DISCOVERY=
+    # lift1), or both compared (=check: lift 2's report of every difference; the present lifter's result is used)
+    how = os.environ.get("HOOKSHOT_DISCOVERY", "lift1")
+    if how in ("lift1", "check"):
+        L.discover(max_insns=a.max_func)
+    if how in ("lift2", "check"):
+        from lift2 import discover
+        td = time.time()
+        D = discover.Discovery(img)
+        D.discover(max_insns=a.max_func)
+        print("discovery (lift 2): %d functions (%.0fs)" % (len(D.funcs), time.time() - td))
+        if how == "check":
+            ok = discover.compare(L, D)
+            print("discovery check: %s" % ("the same" if ok else "DIFFERENT (above)"), flush=True)
+        else:
+            discover.adopt(L, D)
+        del D
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
     total = coverage(L, img, img_dir)
     jt = L.stats
