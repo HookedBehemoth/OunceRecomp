@@ -1,6 +1,8 @@
 """The mixed build: functions lift 2 can take come from it, the rest from the present lifter (milestone 5).
 
 HOOKSHOT_LIFT2=all-safe | <file of guest addresses, one per line (hex)>; unset: the build is the present lifter's alone.
+HOOKSHOT_LIFT2_VERIFY=1 (at build time, milestone 14): every function with a full summary is checked at run time
+(host/lift2_verify.c): its generic entry wraps its body in checks of the summary.
 HOOKSHOT_LIFT2_CLASSES=int[,fp,neon] (at lift time): the instruction classes (sem.CLASS) a function may use to be
 taken; int alone by default (FP/NEON functions need the runtime's FP mode first).
 
@@ -71,7 +73,26 @@ def write_plan(L, img, path):
             why[k] = why.get(k, 0) + 1
             continue
         bodies[e] = (array("Q", pcs), array("I", (img.word(pc) for pc in pcs)))
-    plan = {"entries": sorted(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": sorted(no_call),
+    # milestone 13: the whole program's summaries (every function, every class: callees of lift 2's functions too)
+    import resource
+    from . import summary
+    t1 = time.time()
+    names = getattr(img, "names", {}) or {}
+    sums, F, stats = summary.summarise({e: sorted(b) for e, (b, _) in L.funcs.items()}, prog, hooks, img.word,
+                                       names)
+    hot_path = os.environ.get("A64_HOT_FUNCS") or os.path.join(os.path.dirname(os.path.dirname(path)), "..",
+                                                               "hot_funcs_play.txt")
+    hot = []
+    if os.path.exists(hot_path):
+        hot = [int(l.strip()[2:], 16) for l in open(hot_path) if l.strip().startswith("f_")]
+    summary.report(sums, F, hot)
+    print("summaries: %(functions)d functions, %(sccs)d components (largest %(largest scc)d), %(iterations)d "
+          "analyses; decode and graph %(build s).0fs, fixed point %(fixed point s).0fs, results %(results s).0fs" % stats)
+    print("summaries: %.0fs in all, peak memory %d MB (one process)" % (
+        time.time() - t1, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10), flush=True)
+    packed = {e: (s.inputs, s.clobbers, s.mustdef, s.preserved, s.results, s.returns, tuple(s.demote), s.unknown,
+                  s.frame, s.pairs, s.boundary, s.fp, s.writes_fpcr) for e, s in sums.items()}
+    plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": sorted(no_call),
             "hooks": sorted(hooks), "bodies": bodies, "why": why,
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
     with open(path + ".tmp", "wb") as f:
@@ -149,22 +170,52 @@ def compile_part(job):
     return obj, time.time() - t, None
 
 
+VERIFY_WRAPPER = """@sum_%(a)08x = private constant [6 x i64] [i64 %(inputs)d, i64 %(may)d, i64 %(res)d, i64 %(pres)d, i64 %(flags)d, i64 %(a)d]
+define void @g_%(a)08x(ptr %%ctx) {
+  %%fr = alloca [32 x i64], align 8
+  call void @lift2_check_enter(ptr %%ctx, ptr @sum_%(a)08x, ptr %%fr)
+  call void @body_%(a)08x(ptr %%ctx)
+  call void @lift2_check_exit(ptr %%ctx, ptr @sum_%(a)08x, ptr %%fr)
+  ret void
+}"""
+GPR = (1 << 32) - 1
+
+
+def verified(plan, e):
+    """a function the verification build checks: a full summary (no demotion)"""
+    s = plan.get("summaries", {}).get(e)
+    return s is not None and not s[6] and not s[7]
+
+
 def lift_part(args):
     """(lifted in a worker process) the IR text of one partition"""
     plan_path, names, chosen, hot = args
     plan = _plan(plan_path)
     plt = plan["plt"]
+    verify = bool(os.environ.get("HOOKSHOT_LIFT2_VERIFY"))
+    symbol = lambda e: ("g_%08x" if e in chosen else "f_%08x") % e
+    # (verification: a tail call goes to the callee's body, past its checks, so that a loop of tail calls does not
+    # grow the host stack; the caller's own checks cover the callee's effects)
+    def tail_symbol(e):
+        return "body_%08x" % e if verify and e in chosen and verified(plan, e) else symbol(e)
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
-                            no_call=plan["no_call"],
-                            symbol=lambda e: ("g_%08x" if e in chosen else "f_%08x") % e)
+                            no_call=plan["no_call"], symbol=symbol, tail_symbol=tail_symbol)
     m = emit_llvm.Module()
-    thunks = []
+    extra = []
     for e in names:
         pcs, words = plan["bodies"][e]
         w = dict(zip(pcs, words))
-        m.add(build_ir.build(e, list(pcs), w.__getitem__, prog))
-        thunks.append("define void @f_%08x(ptr %%ctx) {\n  musttail call void @g_%08x(ptr %%ctx)\n  ret void\n}" % (e, e))
-    return m.text() + "\n".join(thunks) + "\n"
+        fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
+        if verify and verified(plan, e):
+            fn.name = "body_%08x" % e
+            s = plan["summaries"][e]
+            extra.append(VERIFY_WRAPPER % {"a": e, "inputs": s[0] & GPR, "may": s[1] & GPR, "res": s[4] & GPR,
+                                           "pres": s[3] & GPR, "flags": 1 if s[5] else 0})
+        m.add(fn)
+        extra.append("define void @f_%08x(ptr %%ctx) {\n  musttail call void @g_%08x(ptr %%ctx)\n  ret void\n}" % (e, e))
+    if verify:
+        extra.append("declare void @lift2_check_enter(ptr, ptr, ptr)\ndeclare void @lift2_check_exit(ptr, ptr, ptr)")
+    return m.text() + "\n".join(extra) + "\n"
 
 
 _PLAN = {}

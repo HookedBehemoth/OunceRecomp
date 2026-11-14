@@ -786,3 +786,46 @@ def walk(entries, word, jt=None):
                 pc += 4
         out[e] = sorted(body)
     return out
+
+
+def report(sums, F, hot=(), log=print):
+    """the distribution of the summaries over the program (milestone 13's numbers)"""
+    import collections
+    n_ins = {e: len(fn.pcs) for e, fn in F.items()}
+    total = sum(n_ins.values())
+    full = [e for e, s in sums.items() if not s.demote]
+    reasons = collections.Counter(r for s in sums.values() for r in s.demote)
+    hot = [e for e in hot if e in sums]
+    hot_full = [e for e in hot if not sums[e].demote]
+    edges = collections.Counter()
+    for e, fn in F.items():
+        for k, kind in enumerate(fn.kind):
+            if kind not in ("call", "tail"):
+                continue
+            c = fn.callee[k]
+            if isinstance(c, tuple):
+                continue
+            tag = "tail " if kind == "tail" else ""
+            if c is None:
+                edges[tag + "indirect"] += 1
+            elif c in NORETURN:
+                edges[tag + "to a noreturn seed"] += 1
+            elif c not in sums:
+                edges[tag + "to host / hook"] += 1
+            elif sums[c].demote:
+                edges[tag + "direct to demoted"] += 1
+            else:
+                edges[tag + "direct to summarised"] += 1
+    noret = sum(1 for s in sums.values() if not s.returns)
+    log("summaries: %d functions; full %d (%.1f %% of %d instructions); hot set %d of %d full (%.1f %% of its "
+        "instructions)" % (len(sums), len(full), 100.0 * sum(n_ins[e] for e in full) / max(total, 1), total,
+                           len(hot_full), len(hot), 100.0 * sum(n_ins[e] for e in hot_full) /
+                           max(1, sum(n_ins[e] for e in hot))))
+    log("demoted by reason (a function can have several): %s" % ", ".join("%s %d" % kv for kv in reasons.most_common()))
+    log("noreturn %d; boundary reachable %d; writes FPCR %d; uses FP/NEON %d" % (
+        noret, sum(1 for s in sums.values() if s.boundary), sum(1 for s in sums.values() if s.writes_fpcr),
+        sum(1 for s in sums.values() if s.fp)))
+    log("callee-saved save/restore pairs deletable: %d (in %d functions)" % (
+        sum(s.pairs for s in sums.values() if not s.demote), sum(1 for s in sums.values() if s.pairs and not s.demote)))
+    log("call edges: %s" % ", ".join("%s %d" % kv for kv in sorted(edges.items(), key=lambda kv: -kv[1])))
+    return {"full": len(full), "reasons": dict(reasons), "edges": dict(edges)}

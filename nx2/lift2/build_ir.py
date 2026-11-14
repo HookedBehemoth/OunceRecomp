@@ -28,7 +28,9 @@ class Program:
     jump table targets; callee(t): the function a call or tail branch to t reaches (PLT stubs resolved);
     symbol(e): the generic entry's symbol of function e; no_lift: functions to pass over (setjmp owners: milestone 7)"""
 
-    def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None, classes=None):
+    def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None, classes=None,
+                 tail_symbol=None):
+        self.tail_symbol = tail_symbol or symbol or (lambda e: "g_%08x" % e)   # (a tail call's target symbol)
         self.classes = set(classes) if classes is not None else None   # (None: every class of sem.CLASS)
         # (entries, jt and plt are shared, not copied: the discovery fills them as it walks)
         self.entries = entries if isinstance(entries, set) else set(entries)
@@ -111,7 +113,7 @@ def build(entry, pcs, word, prog=LEAF):
         b.at(fn.block(entry))
         b.set("x16", b.const(slot))
         b.set("x17", b.const(t))
-        fn.blocks[entry].term = ("tail", prog.symbol(prog.callee(t)))
+        fn.blocks[entry].term = ("tail", prog.tail_symbol(prog.callee(t)))
         ir.finish(fn)
         return fn
 
@@ -119,7 +121,7 @@ def build(entry, pcs, word, prog=LEAF):
         """the block a branch from frm to t goes to: one of the function's, or a tail-call exit"""
         if inside(prog, entry, body, t):
             return fn.block(t)
-        return exit_block("t", t, ("tail", prog.symbol(prog.callee(t))))
+        return exit_block("t", t, ("tail", prog.tail_symbol(prog.callee(t))))
 
     def exit_block(kind, t, term):
         key = (kind, t)
