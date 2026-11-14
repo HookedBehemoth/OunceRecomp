@@ -96,9 +96,79 @@ static int pending(uint64_t key) {
     return k;
 }
 
+/* ---- the job list in the order the layer calls its passes ----
+   The list holds the passes' jobs in an order of its own (in the market the four depth-probe passes the 3D layer calls
+   first are entries 78-101 of 102), and the job loops claim it from the front. Before the first claim of a frame, the
+   entries are put in the order the layer ran ahead called their keys the frame before (the others after them, in their
+   order). The order of recording changes nothing else: a pass calls its jobs sorted by their item ranges (+0x68). */
+enum { SEQ = 64 };
+static uint64_t seq_use[SEQ], seq_next[SEQ];
+static int n_use, n_next;
+static SRWLOCK order_lk = SRWLOCK_INIT;
+static volatile LONG64 ordered_gen;
+static struct { volatile LONG64 ordered, moved, claimed_before; } o;
+
+static uint64_t key_hash(uint64_t a) {
+    const uint8_t *p = (const uint8_t *)GP(a);
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (int i = 0; i < 0x70; i++) h = (h ^ p[i]) * 0x100000001b3ull;
+    return h;
+}
+static void order_jobs(void) {
+    if (__atomic_load_n(&ordered_gen, __ATOMIC_ACQUIRE) == gen) return;
+    AcquireSRWLockExclusive(&order_lk);
+    if (ordered_gen != gen) {
+        if (n_next) memcpy(seq_use, seq_next, sizeof seq_use), n_use = n_next, n_next = 0;
+        uint32_t nl;
+        const uint64_t arr = job_lists(&nl);
+        for (uint32_t li = 0; li < nl && n_use; li++) {
+            const uint64_t l = G64(arr + 8ull * li);
+            if (!l || !hos_guest_range(l + 0x3c10, 0x80)) continue;
+            const uint64_t base = G64(l + 0x3c18);
+            const uint32_t cnt = G32(l + 0x3c28);
+            if (!cnt || cnt > G32(l + 0x3c10) || cnt > ENTRIES || !hos_guest_range(base, 0x28ull * cnt)) continue;
+            if (G32(l + 0x3c84) != 0) { InterlockedIncrement64(&o.claimed_before); continue; }
+            static uint8_t tmp[ENTRIES * 0x28];
+            static uint32_t rank[ENTRIES], idx[ENTRIES];
+            for (uint32_t i = 0; i < cnt; i++) {
+                const uint64_t ek = G64(base + 0x28ull * i + 0x10);
+                uint32_t r = SEQ + i;
+                if (ek && hos_guest_range(ek, 0x70)) {
+                    const uint64_t h = key_hash(ek);
+                    for (int k = 0; k < n_use; k++) if (seq_use[k] == h) { r = (uint32_t)k; break; }
+                }
+                rank[i] = r, idx[i] = i;
+            }
+            for (uint32_t i = 1; i < cnt; i++) {   /* (stable: ties keep the list's order) */
+                const uint32_t v = idx[i];
+                uint32_t j = i;
+                while (j && rank[idx[j - 1]] > rank[v]) idx[j] = idx[j - 1], j--;
+                idx[j] = v;
+            }
+            uint32_t moved = 0;
+            for (uint32_t i = 0; i < cnt; i++) moved += idx[i] != i;
+            if (!moved) continue;
+            memcpy(tmp, GP(base), 0x28ull * cnt);
+            for (uint32_t i = 0; i < cnt; i++) memcpy(GP(base + 0x28ull * i), tmp + 0x28ull * idx[i], 0x28);
+            InterlockedExchangeAdd64(&o.moved, moved);
+        }
+        InterlockedIncrement64(&o.ordered);
+        __atomic_store_n(&ordered_gen, gen, __ATOMIC_RELEASE);
+    }
+    ReleaseSRWLockExclusive(&order_lk);
+}
+
 static void wait_for(uint64_t key) {
     if (!ahead_thread || !hos_guest_range(key, 0x70)) return;
     InterlockedIncrement64(&w.checks);
+    {
+        const uint64_t h = key_hash(key);
+        if (n_next < SEQ && (!n_next || seq_next[n_next - 1] != h)) {
+            int seen = 0;
+            for (int k = 0; k < n_next; k++) seen |= seq_next[k] == h;
+            if (!seen) seq_next[n_next++] = h;
+        }
+    }
     if (!pending(key)) return;
     const int64_t t0 = hos_now_ns();
     InterlockedIncrement64(&w.waits);
@@ -135,6 +205,7 @@ static uint32_t worker_index(void) {
 
 SPLICE_AFTER(0x8007fe60, "if (!((c->x[23] >> 10) & 1)) { goto L_800809d4; }") {
     if (!enabled()) return;
+    order_jobs();
     const uint64_t sp = c->x[31];
     if (!hos_guest_range(sp + 0x48, 8)) return;
     const uint64_t s = G64(sp + 0x48);
@@ -164,12 +235,13 @@ SPLICE_AFTER(0x8007fe60, "if (!((c->x[23] >> 10) & 1)) { goto L_800809d4; }") {
 }
 
 void direct_layer_ahead_log(double frames) {
-    static LONG64 last[7];
-    const LONG64 now[7] = {n.runs, n.not_layer, n.skip_thread, w.checks, w.waits, w.wait_ns, w.timeouts};
+    static LONG64 last[10];
+    const LONG64 now[10] = {n.runs, n.not_layer, n.skip_thread, w.checks, w.waits, w.wait_ns, w.timeouts, o.ordered, o.moved, o.claimed_before};
     hos_log("direct patch layer ahead (f_8007fe60 at the job loop; f_806688c0, f_8028a2a0 wait): a frame: run ahead %.2f; queue 1's "
             "first item not a layer %.2f; the queue-1 skipping thread first %.2f; job calls checked %.2f, waited %.2f for %.3f ms; "
-            "waits given up after 50 ms %lld",
+            "waits given up after 50 ms %lld; job lists ordered %.2f, entries moved %.1f, claimed before the order %lld",
             (now[0] - last[0]) / frames, (now[1] - last[1]) / frames, (now[2] - last[2]) / frames, (now[3] - last[3]) / frames,
-            (now[4] - last[4]) / frames, (now[5] - last[5]) / 1e6 / frames, (long long)(now[6] - last[6]));
+            (now[4] - last[4]) / frames, (now[5] - last[5]) / 1e6 / frames, (long long)(now[6] - last[6]),
+            (now[7] - last[7]) / frames, (now[8] - last[8]) / frames, (long long)(now[9] - last[9]));
     memcpy(last, now, sizeof last);
 }
