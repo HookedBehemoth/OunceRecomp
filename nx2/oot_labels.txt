@@ -231,7 +231,7 @@
 8067d7a0 pass_linear_depth_grid           # work/assets/native/engine-frame.md: linear depth, HalfNld, grid dispatches
 80255be0 pass_local_shadow                # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawDepth": each light of its list with +0x5f8 bit 2 draws its map, then bit 3 is set
 802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/shadow-maps.md 2: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/transient-pool.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
-800672e0 pass_mip_chain_compute           # work/assets/native/nvn-callpaths.md, work/assets/native/engine-frame.md: mip chain by compute, 2 barriers per level
+800672e0 pass_mip_chain_compute           # work/assets/native/engine-frame.md, nx2/oot_patches.py WHOLE_SITES: the async-compute interaction wave sim (water ripples; called in the Deku Tree web room too), (int)step x substeps (+76) dispatches a frame, its mip chain by compute, 2 barriers per level
 802ad740 pass_occlusion_depth             # work/assets/native/engine-frame.md, work/assets/native/readback.md: agl::utl::DepthBufferEx::OcclusionDepthBuffer, 11 reports
 8067d890 pass_occlusion_grid_gather       # work/assets/native/engine-frame.md: occlusion grid gather dispatch
 806685b0 pass_opaque                      # work/assets/native/engine-frame.md: opaque G-buffer / forward opaque
