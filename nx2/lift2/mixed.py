@@ -34,7 +34,7 @@ import subprocess
 import time
 from array import array
 
-from . import build_ir, emit_llvm, enc, llvm
+from . import build_ir, emit_llvm, enc, llvm, probes
 
 # (an entry hook's line, nx2/entry_hooks.py: lift 2 makes the same call at its generic entry, emit_llvm entry_hook)
 HOOK_LINE = re.compile(r"    if \((entry_\w+)\(c\)\) return;   /\* \(nx2/entry_hooks\.py\) \*/\n")
@@ -168,6 +168,8 @@ def edited_functions(gen):
         for k, m in enumerate(defs):
             body = text[m.end():defs[k + 1].start() if k + 1 < len(defs) else len(text)]
             e = int(m.group(1)[2:], 16)
+            if e in probes.BY_FUNC:   # (the present lifter's patch, which lift 2 makes as a probe: probes.py)
+                body = "".join(l for l in body.splitlines(True) if not any(mk in l for mk in probes.MARKS))
             hook = HOOK_LINE.search(body)
             if hook:
                 hooks[e] = hook.group(1)
@@ -262,6 +264,7 @@ def lift_part(args):
     for e in names:
         pcs, words = plan["bodies"][e]
         w = dict(zip(pcs, words))
+        prog.probes = probes.find(e, pcs, w.__getitem__)
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
         fn.entry_hook = hooks.get(e)
         if verify and verified(plan, e):

@@ -1198,5 +1198,58 @@ class EntryHook(unittest.TestCase):
         self.assertEqual(out, ["99", "9", "2"])
 
 
+PROBE_HARNESS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
+                 uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
+unsigned char a64_dirty[1u << 27];
+void a64_poll_cur(void) {}
+static uint64_t seen_at; static uint32_t seen_bits;
+uint32_t hos_frame_whole(uint64_t at, uint32_t bits) { seen_at = at; seen_bits = bits; return 1234; }
+void g_80002000(Ctx *);
+int main(void) {
+    Ctx c; memset(&c, 0, sizeof c); c.x[19] = 0x1000; c.vreg[0][0] = 0x40400000; c.x[12] = 77;
+    g_80002000(&c);
+    printf("%llu %llx %x %llu\n", (unsigned long long)c.x[12], (unsigned long long)seen_at, seen_bits,
+           (unsigned long long)c.x[13]);
+    return 0;
+}
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and have("clang"), "Linux and clang of the pinned LLVM major")
+class Probe(unittest.TestCase):
+    def test_value_probe(self):
+        """a Value probe (nx2/lift2/probes.py): the FCVTZS's result register gets the host function of x19+864 and
+        the bits of s0; the other instructions are lifted as usual"""
+        from lift2 import probes
+        words = [0x1e38000c, 0xd280054d, 0xd65f03c0]   # fcvtzs w12, s0; mov x13, #42; ret
+        base = 0x80002000
+        word = lambda pc: words[(pc - base) // 4]
+        pcs = [base + 4 * k for k in range(len(words))]
+        p = probes.Value(base, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x19+864", "s0bits"))
+        probes.BY_FUNC[base] = [p]
+        try:
+            prog = build_ir.Program()
+            prog.probes = probes.find(base, pcs, word)
+        finally:
+            del probes.BY_FUNC[base]
+        self.assertEqual(list(prog.probes), [base])
+        fn = build_ir.build(base, pcs, word, prog)
+        m = emit_llvm.Module()
+        m.add(fn)
+        with tempfile.TemporaryDirectory() as d:
+            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
+            with open(ll, "w") as fo:
+                fo.write(m.text())
+            with open(c, "w") as fo:
+                fo.write(PROBE_HARNESS)
+            subprocess.run([llvm.check("clang"), "-O1", "-w", c, ll, "-o", exe], check=True)
+            out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out, ["1234", "1360", "40400000", "42"])
+
+
 if __name__ == "__main__":
     unittest.main()
