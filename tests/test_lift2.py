@@ -186,9 +186,9 @@ class Table(unittest.TestCase):
                 self.assertLessEqual(len(got), 1, "%08x matches %s" % (w, got))
 
     def test_templates_exist(self):
-        from lift2 import sem_int
+        from lift2 import sem
         for e in enc.ENTRIES:
-            self.assertTrue(e.template in sem_int.TEMPLATES or e.template in build_ir.TERMINATORS, e.name)
+            self.assertTrue(e.template in sem.TEMPLATES or e.template in build_ir.TERMINATORS, e.name)
 
     def test_known_words(self):
         for w, text in ((0x91060260, "add x0, x19, #384"), (0xaa0003f3, "orr x19, xzr, x0"),

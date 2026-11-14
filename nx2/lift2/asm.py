@@ -2,7 +2,7 @@
 LLVM's disassembler word by word (selfcheck.py, tests/test_lift2.py). llvm-mc keeps a few preferred aliases even with
 no-aliases (MOVZ/MOVN/ORR immediate as `mov`, the sign/zero extensions of SBFM/UBFM, ...); the printer follows them,
 so a difference is always a decoder question, never a spelling one."""
-from .enc import bitmask
+from .enc import bitmask, RENDER
 
 COND = ["eq", "ne", "hs", "lo", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "al", "nv"]
 SHIFT = ["lsl", "lsr", "asr", "ror"]
@@ -32,7 +32,8 @@ def imm(v):
 def render(insn, pc=0):
     """llvm-mc's text for a decoded instruction (mnemonic and operands, one space after the mnemonic)"""
     f, n = insn.f, insn.entry.name
-    return globals()["_" + n](f, pc)
+    fn = globals().get("_" + n) or RENDER[n]
+    return fn(f, pc)
 
 
 def _ADR(f, pc):

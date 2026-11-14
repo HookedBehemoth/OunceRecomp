@@ -15,6 +15,7 @@ dispatches on bits 28:25 (the Arm ARM's top-level split) and caches by word: the
 Coverage is the integer subset of milestone 1: integer data processing, integer loads and stores (no atomics, no
 acquire/release, no exclusives), branches, hints and PAC hints.
 """
+import os
 import re
 
 # (name, pattern, template, params, valid)
@@ -104,7 +105,7 @@ def bitmask(n, imms, immr, width):
 class Entry:
     __slots__ = ("name", "mask", "value", "fields", "template", "params", "valid", "pattern")
 
-    def __init__(self, name, pattern, template, params, valid):
+    def __init__(self, name, pattern, template, params, valid, env=None):
         mask = value = 0
         fields = []
         bit = 32
@@ -124,18 +125,32 @@ class Entry:
         self.name, self.mask, self.value, self.fields = name, mask, value, tuple(fields)
         self.template, self.params, self.pattern = template, params, pattern
         args = ", ".join(f for f, _, _ in fields)
-        self.valid = eval("lambda %s: %s" % (args, valid), {"bitmask": bitmask, "ldst_ok": ldst_ok})
+        self.valid = eval("lambda %s: %s" % (args, valid), env or {"bitmask": bitmask, "ldst_ok": ldst_ok})
 
     def extract(self, w):
         return {f: (w >> s) & m for f, s, m in self.fields}
 
 
-ENTRIES = [Entry(*e) for e in ENCODINGS]
+ENTRIES = []
+_cache = {}
+RENDER = {}   # entry name -> printer (asm.py's own printers are found by name; other tables bring theirs)
 _BY_OP0 = [[] for _ in range(16)]
-for _e in ENTRIES:
-    for _op0 in range(16):   # (bits 28:25: an entry goes in every bucket its literal bits allow)
-        if (_op0 << 25) & _e.mask == _e.value & (0xF << 25) & _e.mask:
-            _BY_OP0[_op0].append(_e)
+_ENV = {"bitmask": bitmask, "ldst_ok": ldst_ok}
+
+
+def register(encodings, env=None, render=None):
+    """Add a table of encodings (the format of ENCODINGS) to the decoder: this file's integer table, and every
+    module enc_*.py of this package (ENCODINGS, and optionally ENV: names its validity expressions use, RENDER:
+    printers by entry name). Entries of all tables must not overlap (tests/test_lift2.py)."""
+    full_env = dict(_ENV, **(env or {}))
+    for e in encodings:
+        entry = Entry(*e, env=full_env)
+        ENTRIES.append(entry)
+        for op0 in range(16):   # (bits 28:25: an entry goes in every bucket its literal bits allow)
+            if (op0 << 25) & entry.mask == entry.value & (0xF << 25) & entry.mask:
+                _BY_OP0[op0].append(entry)
+    RENDER.update(render or {})
+    _cache.clear()
 
 
 class Insn:
@@ -151,9 +166,6 @@ class Insn:
 
     def __repr__(self):
         return "Insn(%s, %s)" % (self.entry.name, self.f)
-
-
-_cache = {}
 
 
 def decode(w):
@@ -181,3 +193,16 @@ def matches(w):
             if e.valid(**f):
                 out.append(e.name)
     return out
+
+
+def _load_tables():
+    import importlib
+    import pkgutil
+    register(ENCODINGS)
+    for m in sorted(pkgutil.iter_modules([os.path.dirname(__file__)])):
+        if m.name.startswith("enc_"):
+            mod = importlib.import_module("." + m.name, __package__)
+            register(mod.ENCODINGS, getattr(mod, "ENV", None), getattr(mod, "RENDER", None))
+
+
+_load_tables()

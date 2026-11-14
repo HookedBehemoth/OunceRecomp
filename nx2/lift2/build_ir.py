@@ -5,10 +5,10 @@ and a word reader. Blocks start at the entry, at every branch target inside the 
 Milestone 1 lifts functions that stay inside themselves: no calls, no branch to another entry, no indirect branch;
 scope() says why a function is out.
 """
-from . import enc, ir, sem_int
+from . import enc, ir, sem, sem_int
 
 TERMINATORS = {"b", "bcond", "cbz", "tbz", "ret", "udf", "br", "blr"}
-M1_TEMPLATES = set(sem_int.TEMPLATES) | {"b", "bcond", "cbz", "tbz", "ret", "udf"}
+LIFTED_TERMINATORS = {"b", "bcond", "cbz", "tbz", "ret", "udf"}
 
 
 def sx(v, bits):
@@ -34,7 +34,7 @@ def scope(entry, pcs, word):
         if i is None:
             return "word %08x at %#x not decoded" % (word(pc), pc)
         t = i.entry.template
-        if t not in M1_TEMPLATES:
+        if t not in LIFTED_TERMINATORS and sem.TEMPLATES.get(t) is None:
             return "%s at %#x" % (i.entry.name, pc)
         if t == "b" and i.f["op"]:
             return "BL at %#x" % pc
@@ -75,7 +75,7 @@ def build(entry, pcs, word):
         t = i.entry.template
         f = i.f
         if t not in TERMINATORS:
-            sem_int.TEMPLATES[t](b, f, pc, i.entry.params)
+            sem.TEMPLATES[t](b, f, pc, i.entry.params)
             continue
         if t == "b":
             cur.term = ("br", fn.block(target(i, pc)))
