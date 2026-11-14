@@ -10,6 +10,7 @@
 #include "direct.h"
 #include <string.h>
 #include <windows.h>
+void direct_layer_ahead_job_done(uint64_t range);   /* direct_layer_ahead.c */
 
 #define JOB_BEGIN_LR 0x8008533cull   /* f_80084de0's BeginRecording */
 
@@ -22,7 +23,8 @@ static _Thread_local uint64_t jt_cmd;   /* the guest command buffer the job on t
 
 ENTRY_HOOK(0x80084de0) {   /* (ctx, drawctx, cmdpool, key, job, &range, stats) */
     if (!rx_direct() || jt.active) return 0;   /* (not direct mode, or the game's recorder run from here: its body) */
-    if (direct_passes_recorder(c)) return 1;   /* (the pass's formats not known: the early return) */
+    const uint64_t range = ARG(5);
+    if (direct_passes_recorder(c)) { direct_layer_ahead_job_done(range); return 1; }   /* (the pass's formats not known: the early return) */
     static A64Fn orig;
     if (!orig) orig = a64_lookup(0x80084de0);
     if (!orig) return 0;
@@ -31,6 +33,7 @@ ENTRY_HOOK(0x80084de0) {   /* (ctx, drawctx, cmdpool, key, job, &range, stats) *
     jt.ctx = ARG(0), jt.drawctx = ARG(1), jt.key = ARG(3);
     orig(c);
     jt.active = 0;
+    direct_layer_ahead_job_done(range);
     return 1;
 }
 
