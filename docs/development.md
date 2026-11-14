@@ -101,8 +101,10 @@ a build folder is cold (shaders and pipelines are prepared); copy a warm folder'
   an overlay from the user's dump (the chiseled boot, the map's two bancs rewritten, the resource size table with their
   entries raised). `ZOO=zoo_static scripts/run-vk.sh <name> <seconds>` and `scripts/play.sh zoo_static` make
   `work/overlay/<scene>` when it is missing or older than its description (`scripts/zoo-overlay.sh`). Scenes:
-  `zoo_static` (288 static props, Sage Room), `zoo_anim` (actors that animate without AI), `zoo_physics` (pots and
-  rocks dropped onto the floor, two cloth carriers), `zoo_shadows` (props in Hyrule Field under the sun). The map's
+  `zoo_static` (288 static props, Sage Room), `zoo_anim` (flags, torches, fairies, fireflies, butterflies, cows),
+  `zoo_physics` (pots that fall and break, waving flags), `zoo_shadows` (rocks on the market's drawbridge in Hyrule
+  Field at noon, under the sun's cascades). A scene's `hour` sets the time of day after the load through the host's world
+  clock (the overlay's `live.txt`, sent as `HOS_INPUT_LIVE`): a new game's field is at night. The map's
   collision, navigation mesh and baked lighting stay the base map's: a scene can only use a map that exists. Leaving a
   room's model actors out (`keep`) hides the room but not its floor: the collision is the map's static compound body.
 - **Scripted input:** `"HOS_INPUT_SCRIPT=30:LUP/3000,34:RRIGHT/2500" HOS_INPUT_EXCLUSIVE=1` (seconds from the game's

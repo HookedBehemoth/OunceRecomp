@@ -36,6 +36,7 @@ done
 romfs=$(grep -v '^#' "$root/work/dump.txt" | head -1)/romfs
 args=(RX_BACKEND=direct HOOKSHOT_NO_UPDATE_CHECK=1 ${args_rec[@]+"${args_rec[@]}"})
 [ -n "$overlay" ] && args+=(HOS_FS_OVERLAY="$overlay")
+[ -n "$overlay" ] && [ -f "$overlay/live.txt" ] && args+=(HOS_INPUT_LIVE="$overlay/live.txt")   # (an actor-zoo scene's host commands)
 # (a build in progress holds this lock; the refresh script writes BUILD.txt last)
 bin=$root/work/sa/build; mkdir -p "$bin"
 exec 6>"$bin/.build.lock"

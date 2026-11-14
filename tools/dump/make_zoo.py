@@ -7,6 +7,9 @@ The scene description (zoo/*.toml) holds actor names and numbers only:
     base = "SageRoom"            an existing map (its GameBancParam name); its two bancs are rewritten in the overlay
     start = ""                   the StartPos (its Name) the player starts at; "" the map's unnamed one
     keep = ["StartPos", ...]     the base map's actors kept, by Gyaml name ("*" every one); the rest are left out
+    hour = 12                    the time of day the run sets (0-23): the overlay's live.txt holds the host command
+                                 ("!cheat 1<hour>", the Cheats page's Set time) for HOS_INPUT_LIVE; scripts/run-vk.sh
+                                 and scripts/play.sh pass it (optional; a new game's field is at night)
     [[actor]]                    one entry per actor, or per grid of copies
     name = "Obj_Pot_A_01"        the actor (Pack/Actor/<name>.pack.zs)
     translate = [x, y, z]        metres; rotate = [x, y, z] degrees; scale = [x, y, z] (both optional)
@@ -124,6 +127,8 @@ def main():
         sizes[rel] = (len(zs.decompress(raw)), len(data))
         print(f'{rel}: {len(kept)} actors ({len(added) if part == "Dynamic" else 0} added), {len(data)} bytes')
     size_table(romfs, a.out, sizes)
+    if 'hour' in desc:
+        open(os.path.join(a.out, 'live.txt'), 'w').write('!cheat %d\n' % (100 + int(desc['hour']) % 24))
     open(os.path.join(a.out, MARK), 'w').write(os.path.abspath(a.scene) + '\n')
 
 

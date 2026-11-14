@@ -66,6 +66,8 @@ env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}" HOOKSHO
 [ "${SOUND:-0}" = 1 ] || env_args+=(HOS_AUDIO=0)
 [ -n "${ZOO:-}" ] && OVERLAY=$("$root/scripts/zoo-overlay.sh" "$ZOO")
 [ -n "${OVERLAY:-}" ] && env_args+=(HOS_FS_OVERLAY="$(cd "$OVERLAY" && pwd)")
+# (an actor-zoo overlay's live.txt: host commands the scene needs, e.g. its time of day)
+[ -n "${OVERLAY:-}" ] && [ -f "$OVERLAY/live.txt" ] && env_args+=(HOS_INPUT_LIVE="$(cd "$OVERLAY" && pwd)/live.txt")
 exe=$(realpath "${EXE:-$root/work/sa/build/hookshot}")
 if [ "$mode" = check ]; then   # (a private copy of the build's files: the executable, the renderer, the caches)
   mkdir -p "$out/bin"
