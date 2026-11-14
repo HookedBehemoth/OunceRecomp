@@ -96,10 +96,10 @@ DIFF3 = {0: ("saddl", "uaddl", "l"), 1: ("saddw", "uaddw", "w"), 2: ("ssubl", "u
 
 
 def diff3_info(U, size, opcode):
-    if opcode not in DIFF3 or size == 3:
+    if opcode not in DIFF3 or (size == 3 and not (opcode == 14 and U == 0)):   # (size 3: PMULL of 64-bit lanes)
         return None
     mn = DIFF3[opcode][U]
-    if mn is None or (mn.startswith("sqd") and size == 0) or mn in UNLIFTED["3diff"] or (mn == "pmull" and size):
+    if mn is None or (mn.startswith("sqd") and size == 0) or mn in UNLIFTED["3diff"] or (mn == "pmull" and size not in (0, 3)):
         return None
     return mn, DIFF3[opcode][2], size
 
@@ -395,7 +395,7 @@ def _SIMD_2MISC16(f, pc):
 
 def _SIMD_3DIFF(f, pc):
     mn, kind, size = diff3_info(f["U"], f["size"], f["opcode"])
-    ta, tb = arr(size + 1, 1), arr(size, f["Q"])
+    ta, tb = ("1q", arr(3, f["Q"])) if size == 3 else (arr(size + 1, 1), arr(size, f["Q"]))
     mn += "2" if f["Q"] else ""
     if kind == "l":
         return "%s %s, %s, %s" % (mn, v(f["Rd"], ta), v(f["Rn"], tb), v(f["Rm"], tb))

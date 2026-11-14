@@ -773,6 +773,24 @@ def cases():
                     for a, c in zip(L(st, 1, 8)[4 * k:4 * k + 4], L(st, 2, 8)[4 * k:4 * k + 4])))}))
     C.append(("fneg v0.8h, v1.8h", two_reg(lambda a, w, st: a ^ 0x8000, 1, 16)))
     C.append(("fabs v0.4h, v1.4h", two_reg(lambda a, w, st: a & 0x7FFF, 0, 16)))
+    # the cryptographic extension (AES-NI and PCLMUL underneath, SHA1/SHA256 from the pseudocode)
+    C.append(("aese v0.16b, v1.16b", lambda st: {"v0": aes_ref(st["v"][0] ^ st["v"][1], "e")}))
+    C.append(("aesd v0.16b, v1.16b", lambda st: {"v0": aes_ref(st["v"][0] ^ st["v"][1], "d")}))
+    C.append(("aesmc v0.16b, v1.16b", lambda st: {"v0": aes_ref(st["v"][1], "mc")}))
+    C.append(("aesimc v0.16b, v1.16b", lambda st: {"v0": aes_ref(st["v"][1], "imc")}))
+    C.append(("pmull v0.1q, v1.1d, v2.1d", lambda st: {"v0": clmul64(L(st, 1, 64)[0], L(st, 2, 64)[0])}))
+    C.append(("pmull2 v0.1q, v1.2d, v2.2d", lambda st: {"v0": clmul64(L(st, 1, 64)[1], L(st, 2, 64)[1])}))
+    for k, mn in enumerate(("sha1c", "sha1p", "sha1m")):
+        C.append(("%s q0, s1, v2.4s" % mn, lambda st, k=k: {"v0": sha1_ref(L(st, 0, 32), L(st, 1, 32)[0], L(st, 2, 32), k)}))
+    C.append(("sha1h s0, s1", lambda st: {"v0": rol32(L(st, 1, 32)[0], 30)}))
+    C.append(("sha1su0 v0.4s, v1.4s, v2.4s", lambda st: {"v0": ((L(st, 1, 64)[0] << 64 | L(st, 0, 64)[1]) ^ st["v"][0] ^
+                                                               st["v"][2])}))
+    C.append(("sha1su1 v0.4s, v1.4s", lambda st: {"v0": sha1su1_ref(st["v"][0], st["v"][1])}))
+    C.append(("sha256h q0, q1, v2.4s", lambda st: {"v0": pack(sha256_ref(L(st, 0, 32), L(st, 1, 32), L(st, 2, 32))[0], 32)}))
+    C.append(("sha256h2 q0, q1, v2.4s", lambda st: {"v0": pack(sha256_ref(L(st, 1, 32), L(st, 0, 32), L(st, 2, 32))[1], 32)}))
+    C.append(("sha256su0 v0.4s, v1.4s", lambda st: {"v0": pack([(ror32(t, 7) ^ ror32(t, 18) ^ (t >> 3)) + d for t, d in zip(
+        L(st, 0, 32)[1:] + L(st, 1, 32)[:1], L(st, 0, 32))], 32)}))
+    C.append(("sha256su1 v0.4s, v1.4s, v2.4s", lambda st: {"v0": sha256su1_ref(L(st, 0, 32), L(st, 1, 32), L(st, 2, 32))}))
     # MSR FPCR inside a function: the function is strictfp, the second multiply runs in round-toward-zero
     C.append(("fmul s0, s1, s2; mov x0, #12582912; msr fpcr, x0; fmul s3, s1, s2; mrs x1, fpcr",
               lambda st: {"v0": f_mul(L(st, 1, 32)[0], L(st, 2, 32)[0], 32, st["fz"]),
@@ -826,6 +844,112 @@ def frecpx_ref(x, n):
     ex = (x >> f) & ((1 << e) - 1)
     ne = ((1 << e) - 2) if ex == 0 else (~ex & ((1 << e) - 1))
     return s << (n - 1) | ne << f
+
+
+def _aes_tables():
+    def gm(a, b):
+        r = 0
+        for _ in range(8):
+            if b & 1:
+                r ^= a
+            a = ((a << 1) ^ (0x11B if a & 0x80 else 0)) & 0xFF
+            b >>= 1
+        return r
+    inv = [0] * 256
+    for a in range(1, 256):
+        for b in range(1, 256):
+            if gm(a, b) == 1:
+                inv[a] = b
+                break
+    sbox = []
+    for a in range(256):
+        x = inv[a]
+        y = x
+        for k in range(1, 5):
+            y ^= ((x << k) | (x >> (8 - k))) & 0xFF
+        sbox.append(y ^ 0x63)
+    isbox = [0] * 256
+    for a, v in enumerate(sbox):
+        isbox[v] = a
+    return gm, sbox, isbox
+
+
+GM, SBOX, ISBOX = _aes_tables()
+
+
+def aes_ref(x, kind):
+    """ARM's AESE (after the key xor), AESD, AESMC, AESIMC on the 16 state bytes (byte 4c+r: column c, row r)"""
+    s = list(x.to_bytes(16, "little"))
+    if kind == "e":   # ShiftRows, SubBytes
+        s = [SBOX[s[(4 * (c + r) + r) % 16]] for c in range(4) for r in range(4)]
+    elif kind == "d":   # InvShiftRows, InvSubBytes
+        s = [ISBOX[s[(4 * (c - r) + r) % 16]] for c in range(4) for r in range(4)]
+    else:
+        m = [2, 3, 1, 1] if kind == "mc" else [14, 11, 13, 9]
+        s = [GM(s[4 * c], m[(0 - r) % 4]) ^ GM(s[4 * c + 1], m[(1 - r) % 4]) ^ GM(s[4 * c + 2], m[(2 - r) % 4]) ^
+             GM(s[4 * c + 3], m[(3 - r) % 4]) for c in range(4) for r in range(4)]
+    return int.from_bytes(bytes(s), "little")
+
+
+def clmul64(a, b):
+    r = 0
+    for i in range(64):
+        if b >> i & 1:
+            r ^= a << i
+    return r
+
+
+def rol32(x, n):
+    return ((x << n) | (x >> (32 - n))) & M[32]
+
+
+def ror32(x, n):
+    return ((x >> n) | (x << (32 - n))) & M[32]
+
+
+def sha1_ref(X, y, W, kind):
+    X = list(X)
+    for e in range(4):
+        a, b_, c = X[1], X[2], X[3]
+        t = [((b_ ^ c) & a) ^ c, a ^ b_ ^ c, (a & b_) | ((a | b_) & c)][kind]
+        y = (y + rol32(X[0], 5) + t + W[e]) & M[32]
+        X[1] = rol32(X[1], 30)
+        X, y = [y] + X[:3], X[3]
+    return pack(X, 32)
+
+
+def sha1su1_ref(d, n):
+    t = d ^ (n >> 32)
+    tl = lanes_of(t, 32)
+    r = [rol32(v, 1) for v in tl]
+    r[3] ^= rol32(tl[0], 2)
+    return pack(r, 32)
+
+
+def sha256_ref(X, Y, W):
+    """(X, Y) after the four rounds of SHA256hash (part 1 returns X, part 2 Y)"""
+    X, Y = list(X), list(Y)
+    for e in range(4):
+        chs = ((Y[1] ^ Y[2]) & Y[0]) ^ Y[2]
+        maj = (X[0] & X[1]) | ((X[0] | X[1]) & X[2])
+        s1 = ror32(Y[0], 6) ^ ror32(Y[0], 11) ^ ror32(Y[0], 25)
+        s0 = ror32(X[0], 2) ^ ror32(X[0], 13) ^ ror32(X[0], 22)
+        t = (Y[3] + s1 + chs + W[e]) & M[32]
+        X[3] = (t + X[3]) & M[32]
+        Y[3] = (t + s0 + maj) & M[32]
+        X, Y = [Y[3]] + X[:3], [X[3]] + Y[:3]
+    return X, Y
+
+
+def sha256su1_ref(d, n, m):
+    T0 = n[1:] + m[:1]
+    T1 = m[2:]
+    r = []
+    for e in range(4):
+        elt = T1[e] if e < 2 else r[e - 2]
+        elt = ror32(elt, 17) ^ ror32(elt, 19) ^ (elt >> 10)
+        r.append((elt + d[e] + T0[e]) & M[32])
+    return pack(r, 32)
 
 
 def mul_rz(x, y, n):

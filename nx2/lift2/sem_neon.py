@@ -466,6 +466,13 @@ def t_simd_3diff(b, f, pc, p):
             s = b.bin("add", s, K(b, 1 << (w - 1), wt))
         put_half(b, f["Rd"], trunc(b, b.bin("lshr", s, K(b, w, wt)), VT(size, 0)), Q)
         return
+    if size == 3:   # PMULL{2} of 64-bit lanes: one carry-less multiply (pclmulqdq: lanes 0 or 1 of each)
+        tf = getattr(b.fn, "target_features", None) or set()
+        b.fn.target_features = tf | {"+pclmul"}
+        r = b.call("llvm.x86.pclmulqdq", "v2i64", vread(b, f["Rn"], "v2i64"), vread(b, f["Rm"], "v2i64"),
+                   b.const(0x11 if Q else 0, "i8"))
+        vwrite(b, f["Rd"], r)
+        return
     y = ext(b, half(b, f["Rm"], size, Q), wt, signed)
     if kind == "w":
         x = vread(b, f["Rn"], wt)
