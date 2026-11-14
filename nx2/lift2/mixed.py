@@ -212,6 +212,7 @@ def lift_part(args):
             extra.append(VERIFY_WRAPPER % {"a": e, "inputs": s[0] & GPR, "may": s[1] & GPR, "res": s[4] & GPR,
                                            "pres": s[3] & GPR, "flags": 1 if s[5] else 0})
         m.add(fn)
+        m.defined = m.defined | {"g_%08x" % e}   # (the wrapper defines g_; drop declarations of it)
         extra.append("define void @f_%08x(ptr %%ctx) {\n  musttail call void @g_%08x(ptr %%ctx)\n  ret void\n}" % (e, e))
     if verify:
         extra.append("declare void @lift2_check_enter(ptr, ptr, ptr)\ndeclare void @lift2_check_exit(ptr, ptr, ptr)")
