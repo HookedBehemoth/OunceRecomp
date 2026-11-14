@@ -203,7 +203,8 @@ the stage (boot-to-main-loop.md 4.3). The game's job-call sites do not wait for 
 Recording order changes nothing in the picture: a pass calls its jobs sorted by their item ranges (+0x68).
 
 **Check that it applies:** the 600-present line "direct patch layer ahead" (`HOS_DBG=logpatch`): run ahead 1.00 a frame,
-job lists ordered 1.00, claimed before the order 0, waits given up 0; and "direct patch passes": inline passes of
+job lists ordered 1.00, claimed before the order 0, waits given up 0, jobs recorded from another caller 0 (the
+scheduler's twin `f_80083960` claims none in the market, Hyrule Field and Kokiri); and "direct patch passes": inline passes of
 recorder keys 0 at both sites (without the wait the depth-probe passes are drawn inline, 4 a frame in the market).
 
 ## Causes found for picture bugs

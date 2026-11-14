@@ -404,7 +404,9 @@ the jobs. The job list is reordered first, into the order the layer calls its pa
 list holds the passes the layer needs first near its end (the depth probes: entries 78-101 of 102); and the layer's
 job-call sites wait for their pass's jobs, which the game's sites do not (they would draw the pass inline). In the
 market the layer then waits 0.12 ms a frame at 1.3 of its 26 job calls, and the frame's median drops by 0.2-0.5 ms
-(12.6-12.9 to 12.2-12.5 ms, three alternating runs; p99 unchanged).
+(12.6-12.9 to 12.2-12.5 ms, three alternating runs; p99 unchanged). In Hyrule Field (`chisel_hf`) it runs ahead every
+frame with almost no waiting (0.01 ms) and the frame does not change (10.4-10.5 ms both ways); why (presumably the layer is not
+what ends stage C there) is not measured.
 
 What the main thread waits on inside the stages (`m6a_crit2_k`, ms a frame): the scheduler's condition variable
 at `0x80080188` (6.75, 11.9 times), its 20 µs poll sleeps at `0x8009a478` in `f_800998a0` (0.81, 39 times), the
