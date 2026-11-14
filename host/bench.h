@@ -6,7 +6,7 @@
 #include <string.h>
 
 /* What is settled in a frame, one bit a part; ready when all are */
-enum { BENCH_PLAY = 1, BENCH_TEXTURES = 2, BENCH_SHADERS = 4, BENCH_STREAMING = 8, BENCH_ALL = 15 };
+enum { BENCH_PLAY = 1, BENCH_TEXTURES = 2, BENCH_SHADERS = 4, BENCH_STREAMING = 8, BENCH_RESOURCES = 16, BENCH_PARTS = 5, BENCH_ALL = 31 };
 
 typedef struct { int run; } BenchReady;
 /* A frame's settled parts: 1 once every part has been settled `need` frames in a row */

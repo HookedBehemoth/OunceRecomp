@@ -140,12 +140,14 @@ fast-forwards it; `drop <name>` removes the worktree and the branch once landed.
 **Measure.**
 - The frame rate is the `vk: <n> presents, <x> fps (direct); frame time ...` line in `log.txt`, taken standing at a named
   place.
-- **Benchmark:** `scripts/bench.sh <scene> [frames] [-- NAME=VALUE ...]` (`kokiri`, `hf`, `market` or an overlay folder's
-  name; 600 frames) runs the scene headless and muted with `HOS_BENCH` and prints its summary. The game steps exactly 1/60 s a
+- **Benchmark:** `scripts/bench.sh <scene> [frames] [-- NAME=VALUE ...]` (`kokiri`, `hf`, `market`, an actor-zoo scene
+  or an overlay folder's name; 600 frames) runs the scene headless and muted with `HOS_BENCH` and prints its summary. The game steps exactly 1/60 s a
   frame and presents as fast as it can, so two runs simulate the same game time whatever their speed. Measuring starts when
   the scene is ready, all of these for 60 frames in a row: Link updated, no map load and no event playing (in play); the
   texture manager's Replace work not pending; no shader job queued or running and no draw skipped for a shader not ready;
-  no file read by the game. The log says when (`bench: ready at <s> since the start`, and how many frames each part held
+  no file read by the game; the resource system quiet (no message taken by ARes Loading, GeneralFormatAsync,
+  ParallelDecompThread or BaseProcCreateAndDelete, none past the one a frame of Resource Control and Resource Memory:
+  a map goes on loading what it asks for from archives in memory for seconds after Link is in play). The log says when (`bench: ready at <s> since the start`, and how many frames each part held
   the wait), then the frames' mean, median, p99 and max, the draws a frame, the steps that were not 1/60 s (0) and the
   CPU seconds by thread group (Linux). `work/runs/<name>/bench.csv` has a row a frame: its wall time, its game step (in
   1/60 s), the draws recorded and those that waited for a shader, the shader jobs, the file reads, the command lists made

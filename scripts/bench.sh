@@ -32,6 +32,6 @@ ZOO=$zoo OVERLAY=$overlay SHOT_EVERY=${SHOT_EVERY:-1000000} RUN=timing "$root/sc
   HOS_BENCH="$frames,${READY:-60}" "$@"
 out=$root/work/runs/$name
 rm -rf "$out/user" "$out/shots"   # (saves and caches the run made; no pictures are taken)
-grep -h 'bench: ' "$out/log.txt" | grep -v 'not ready' | sed 's/^\[hos [0-9.]* p[0-9]* [^]]*\] //'
+grep -ah 'bench: ' "$out/log.txt" | grep -v 'not ready\|bench: messages' | sed 's/^\[hos [0-9.]* p[0-9]* [^]]*\] //'
 [ -f "$out/bench.csv" ] || { echo "bench: no bench.csv: the run did not finish (see $out/log.txt)"; exit 1; }
 }

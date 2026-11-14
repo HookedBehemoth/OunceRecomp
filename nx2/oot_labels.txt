@@ -441,6 +441,7 @@
 80f6ecf0 thread_navmesh_worker_a          # work/assets/native/engine-layers.md: NavMeshCAStepDepWorker / NavMeshDepWorker
 8102f6e0 thread_navmesh_worker_b          # work/assets/native/engine-layers.md
 834a2e50 thread_sead_entry                # work/assets/native/engine-layers.md: sead thread entry
+834a3060 sead_message_queue_receive       # docs/direct/boot-to-main-loop.md, host/bench.c: sead's message-queue receive (queue, w1 0: blocking, else a try); where every idle worker thread waits (lr 0x834a3084)
 80df25c0 thread_sead_loop_a               # work/assets/native/engine-layers.md: thread loop (every sead thread)
 80df2680 thread_sead_loop_b               # work/assets/native/engine-layers.md: thread loop (every sead thread; the Presentation thread's)
 80df5760 thread_sead_main                 # work/assets/native/engine-layers.md: sead::MainThread

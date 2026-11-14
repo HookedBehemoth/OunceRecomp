@@ -5,7 +5,7 @@
    and exits with code 0. The parts: in play (Link updated in the last presents, no map load, no event playing: hos_main.c),
    no texture work (agl::TextureDataMgr's "work pending", docs/direct/texture-streaming.md), no shader work (the back end's
    shader jobs queued or running, and no draw skipped for a shader not ready), no streaming (no file read by the game since
-   the last present). Unset: off, and nothing here runs but the checks of hos_bench_on. */
+   the last present), the resource system quiet (resource_work). Unset: off, and nothing here runs but the checks of hos_bench_on. */
 #include "hos.h"
 #include "bench.h"
 #include "nvn_list.h"
@@ -40,6 +40,72 @@ static int64_t play_present = -1000;   /* (the present of the last player update
 void hos_bench_player(int loading, int event_playing) {
     if (!loading && !event_playing) __atomic_store_n(&play_present, hos_vi_present_number(), __ATOMIC_RELAXED);
     else __atomic_store_n(&play_present, -1000, __ATOMIC_RELAXED);
+}
+
+/* The engine's worker threads wait for work in sead's message-queue receive (f_834a3060; w1 0: a blocking receive), one
+   receive a message taken: counted by thread group (the name without its trailing digits) while on */
+#define MSG_GROUPS 64
+static char msg_name[MSG_GROUPS][24];
+static int64_t msg_count[MSG_GROUPS];
+static int msg_groups;
+static SRWLOCK msg_lock = SRWLOCK_INIT;
+static _Thread_local int msg_group = -1;
+static int msg_group_of(const char *name) {
+    char g[24];
+    size_t m = strlen(name);
+    if (m >= sizeof g) m = sizeof g - 1;
+    memcpy(g, name, m);
+    while (m && ((g[m - 1] >= '0' && g[m - 1] <= '9') || g[m - 1] == ' ' || g[m - 1] == '_')) m--;
+    g[m] = 0;
+    AcquireSRWLockExclusive(&msg_lock);
+    int i = 0;
+    while (i < msg_groups && strcmp(msg_name[i], g)) i++;
+    if (i == msg_groups && i < MSG_GROUPS) snprintf(msg_name[i], sizeof msg_name[i], "%s", g), msg_groups++;
+    ReleaseSRWLockExclusive(&msg_lock);
+    return i;
+}
+ENTRY_HOOK(0x834a3060) {
+    if (!hos_bench_on() || (uint32_t)c->x[1]) return 0;
+    if (msg_group < 0) {
+        HosThread *t = hos_self();
+        msg_group = msg_group_of(t ? hos_thread_name(t) : "host");
+    }
+    if (msg_group < MSG_GROUPS) __atomic_add_fetch(&msg_count[msg_group], 1, __ATOMIC_RELAXED);
+    return 0;
+}
+/* The resource system's work in a frame: messages its loading threads took since the last call, past the one a frame that
+   Resource Control and Resource Memory take in play. In play these are quiet but for BaseProcCreateAndDelete's few every 4 s
+   (zoo_shadows); a map's load and what it requests after the player is in play (actors, models, effects: ARes Loading,
+   GeneralFormatAsync, ParallelDecompThread, read from the archives in memory, so no file read shows it) take hundreds */
+static int64_t resource_work(void) {
+    static const char *const names[] = {"Resource Control", "Resource Memory", "ARes Loading", "GeneralFormatAsync", "ParallelDecompThread",
+                                        "BaseProcCreateAndDelete"};
+    enum { N = sizeof names / sizeof names[0] };
+    static int64_t seen[N];
+    int64_t work = 0;
+    const int n = __atomic_load_n(&msg_groups, __ATOMIC_ACQUIRE);
+    for (int k = 0; k < N; k++) {
+        int64_t v = 0;
+        for (int i = 0; i < n; i++)
+            if (!strcmp(msg_name[i], names[k])) v = __atomic_load_n(&msg_count[i], __ATOMIC_RELAXED);
+        const int64_t d = v - seen[k];
+        seen[k] = v;
+        work += k < 2 ? (d > 1 ? d - 1 : 0) : d;
+    }
+    return work;
+}
+/* (diagnostic) the messages each group took since the last call, the groups that took any */
+static void msg_log(const char *when) {
+    static int64_t seen[MSG_GROUPS];
+    char line[1500];
+    int len = 0;
+    const int n = __atomic_load_n(&msg_groups, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n && len < (int)sizeof line - 64; i++) {
+        const int64_t v = __atomic_load_n(&msg_count[i], __ATOMIC_RELAXED);
+        if (v != seen[i]) len += snprintf(line + len, sizeof line - (size_t)len, " %s %lld,", msg_name[i], (long long)(v - seen[i]));
+        seen[i] = v;
+    }
+    hos_log("bench: messages %s:%s", when, len ? line : " none");
 }
 
 typedef struct {
@@ -155,7 +221,7 @@ void hos_bench_present(int64_t now) {
     static double last_clock, ready_at;
     static BenchRow *rows;
     static int nrows, ncpu0;
-    static int64_t blocked[4];
+    static int64_t blocked[BENCH_PARTS];
     static long long play_since = -1;   /* (the present the current stretch in play began at) */   /* (the frames each part was not settled while waiting: what the wait was for) */
     static CpuGroup cpu0[CPU_GROUPS];
     if (state == DONE) return;
@@ -166,6 +232,11 @@ void hos_bench_present(int64_t now) {
     const int64_t reads = __atomic_load_n(&fs_reads, __ATOMIC_RELAXED);
     const double clock = game_clock();
     frames_seen++;
+    if (state == WAIT && frames_seen % 60 == 0) {
+        char when[64];
+        snprintf(when, sizeof when, "%s, 60 frames to present %lld", state == WAIT ? "waiting" : "measuring", hos_vi_present_number());
+        msg_log(when);
+    }
     if (state == WAIT) {
         const long long present = hos_vi_present_number();
         const uint64_t mgr = G64(0x84ca9bf0);   /* (agl::TextureDataMgr; +0x338 its Replace thread's "work pending") */
@@ -174,23 +245,25 @@ void hos_bench_present(int64_t now) {
         if (mgr && !*(const uint8_t *)GP(mgr + 0x338)) settled |= BENCH_TEXTURES;
         if (!jobs && waiting == last_waiting) settled |= BENCH_SHADERS;
         if (reads == last_reads) settled |= BENCH_STREAMING;
-        for (int i = 0; i < 4; i++) blocked[i] += !(settled & (1u << i));
+        const int64_t resources = resource_work();
+        if (!resources) settled |= BENCH_RESOURCES;
+        for (int i = 0; i < BENCH_PARTS; i++) blocked[i] += !(settled & (1u << i));
         if (!(settled & BENCH_PLAY)) play_since = -1;
         else if (play_since < 0) play_since = present;
         if (bench_ready_frame(&ready, settled, ready_need)) {
             ready_at = hos_log_seconds();
             hos_log("bench: ready at %.2f s since the start (present %lld, in play since present %lld; %d frames settled in a row), "
-                    "%d frames to run; frames not settled before: in play %lld, textures %lld, shaders %lld, streaming %lld", ready_at,
-                    present, play_since, ready_need, frames_wanted, (long long)blocked[0], (long long)blocked[1], (long long)blocked[2],
-                    (long long)blocked[3]);
+                    "%d frames to run; frames not settled before: in play %lld, textures %lld, shaders %lld, streaming %lld, resources %lld",
+                    ready_at, present, play_since, ready_need, frames_wanted, (long long)blocked[0], (long long)blocked[1], (long long)blocked[2],
+                    (long long)blocked[3], (long long)blocked[4]);
             rows = calloc((size_t)frames_wanted, sizeof *rows);
             if (!rows) { hos_log("bench: no memory for the rows"); state = DONE; return; }
             ncpu0 = cpu_sample(cpu0);
             state = RUN;
         } else if (frames_seen % 600 == 0) {
             hos_log("bench: not ready at present %lld: in play %d, texture work %s, shader jobs %lld, draws waiting for a shader %lld, "
-                    "file reads %lld", present, !!(settled & BENCH_PLAY), mgr ? (settled & BENCH_TEXTURES ? "none" : "pending") : "(no manager)",
-                    (long long)jobs, (long long)(waiting - last_waiting), (long long)(reads - last_reads));
+                    "file reads %lld, resource messages %lld", present, !!(settled & BENCH_PLAY), mgr ? (settled & BENCH_TEXTURES ? "none" : "pending") : "(no manager)",
+                    (long long)jobs, (long long)(waiting - last_waiting), (long long)(reads - last_reads), (long long)resources);
         }
     } else {
         BenchRow *r = &rows[nrows++];
