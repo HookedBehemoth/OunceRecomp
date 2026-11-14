@@ -1,15 +1,20 @@
 """Lifter 2 on the game's own functions (milestone 1): random integer leaves lifted by nx2/lift2 and by the present
 lifter, run natively from the same random states, and compared with Unicorn and with each other.
 
-    python -I nx2/test_lift2_leaf.py [--count 500] [--states 4] [--seed 1] [--list] [--keep]
+    python -I nx2/test_lift2_leaf.py [--count 500] [--calls] [--states 4] [--seed 1] [--list] [--keep]
 
-A function qualifies when lift2 can take it (nx2/lift2/build_ir.scope: integer instructions only, no call, no branch
-out of its body) and the present lifter emits it without calls, 3-600 instructions; the draw follows test_leaf.py's
-module shares. Per case:
-- lift2 against Unicorn: X0-X30, SP, NZCV and the changed 4 KB pages (contents);
+Without --calls a function qualifies when lift2 can take it as a leaf (nx2/lift2/build_ir.scope: no call, no branch
+out of its body) and the present lifter emits it without calls, 3-600 instructions. With --calls the root may call:
+its call tree (BL, tail branches, PLT stubs; no BLR, SVC or unresolved BR, at most --max-tree instructions) must be
+liftable by the present lifter, the root by lift2; every function of the tree lift2 can take is lifted by it, the rest
+come from the present lifter, and the two meet at the generic entries (`void f(Ctx *)`). The draw follows
+test_leaf.py's module shares. Per case:
+- lift2 against Unicorn: X0-X30, SP, NZCV (leaves only: a callee from the present lifter drops dead flags) and the
+  changed 4 KB pages (contents); X16/X17 not with calls (test_leaf.py's PLT rule);
 - lift2 against the present lifter: X0-X30, SP and the changed pages (NZCV is not compared: the present lifter drops
   flag stores no later instruction of the function reads).
-Cases where Unicorn faults or does not return are skipped and counted, as in test_leaf.py.
+Cases where Unicorn faults or does not return are skipped and counted, as in test_leaf.py; a function none of whose
+random states runs gets up to 16 more with X0-X7 all pointing into the scratch area.
 
 It also reports the x86 instruction counts of both lifts of the same functions (each compiled alone with the game
 build's flags for lifted code at -O1) and lift2's speed (decode, IR and LLVM IR per guest instruction).
@@ -57,6 +62,11 @@ void a64_ret_mismatch(Ctx *c, uint64_t pc) { (void)pc; c->halted = 10; }
 void recomp_unhandled(GuestContext *c, uint32_t i, uint64_t pc) { (void)i; (void)pc; c->halted = 7; }
 void recomp_barrier(void) {}
 uint64_t recomp_cntpct(GuestContext *c) { (void)c; return 0; }
+A64Fn a64_lookup(uint64_t a) { (void)a; return 0; }
+void a64_icall(Ctx *c, uint64_t t) { (void)t; c->halted = 11; }
+void a64_ijump(Ctx *c, uint64_t t) { (void)t; c->halted = 12; }
+void a64_icall_site(Ctx *c, uint64_t t, uint64_t *s) { (void)t; (void)s; c->halted = 11; }
+void a64_ijump_site(Ctx *c, uint64_t t, uint64_t *s) { (void)t; (void)s; c->halted = 12; }
 static uint64_t polls;
 static Ctx *poll_ctx;
 void a64_poll_cur(void) { polls++; poll_ctx->poll = (polls %% 3) != 0; }
@@ -136,12 +146,26 @@ int main(int argc, char **argv) {
 """
 
 
-def select(P, img, counts, rng):
-    """(module, entry, instructions) of qualifying functions, by module share"""
+def program(P, lifted):
+    """what lift2 knows about the other functions: the discovery's entries and tables; a call reaches lift2's generic
+    entry when lift2 lifts the callee, else the present lifter's function"""
+    L = P.L
+    return build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee,
+                            symbol=lambda e: ("g_%08x" if e in lifted else "f_%08x") % e)
+
+
+def reads_clock(img, body):
+    """MRS CNTPCT/CNTVCT: the counters differ between Unicorn and the harness"""
+    return any((img.word(pc) & 0xFFFFFFC0) == 0xD53BE000 for pc in body)
+
+
+def select(P, img, counts, rng, calls, max_tree):
+    """roots (module, entry, instructions of the tree), every function of their trees, and the ones lift2 lifts"""
     by_mod = collections.defaultdict(list)
     for e in sorted(img.entries):
         by_mod[next(n for lo, hi, n in img.code if lo <= e < hi)].append(e)
-    roots, why = [], collections.Counter()
+    roots, funcs, lifted, why = [], set(), set(), collections.Counter()
+    prog = program(P, lifted) if calls else build_ir.LEAF
     for mod, want in counts.items():
         cands = by_mod[mod]
         rng.shuffle(cands)
@@ -149,39 +173,49 @@ def select(P, img, counts, rng):
         for e in cands:
             if got >= want:
                 break
-            if e in img.hooks or not P.liftable_body(e, False):
-                why["old lifter: calls, svc or traps"] += 1
+            if e in img.hooks:
+                why["hooked"] += 1
+                continue
+            if not calls:
+                if not P.liftable_body(e, False):
+                    why["old lifter: calls, svc or traps"] += 1
+                    continue
+                if not 3 <= len(P.L.funcs[e][0]) <= 600:
+                    why["size"] += 1
+                    continue
+            tree = P.tree(e, calls, max_tree if calls else 600)
+            if tree is None:
+                why["old lifter: not liftable here (BLR, SVC, traps, size)"] += 1
                 continue
             body = P.L.funcs[e][0]
-            if not 3 <= len(body) <= 600:
-                why["size"] += 1
-                continue
-            r = build_ir.scope(e, sorted(body), img.word)
+            r = build_ir.scope(e, sorted(body), img.word, prog)
             if r is not None:
                 why[re.sub(r" at .*| [0-9a-f]{8}.*", "", r)] += 1
                 continue
-            P.emit([e])
-            got_old = P.emitted.get(e)
-            if got_old is None or got_old[1]:
-                why["old lifter: emits a call"] += 1
+            if any(reads_clock(img, P.L.funcs[f][0]) for f in tree):
+                why["reads the counter"] += 1
                 continue
-            roots.append((mod, e, len(body)))
+            for f in tree:
+                if f not in lifted and build_ir.scope(f, sorted(P.L.funcs[f][0]), img.word, prog) is None:
+                    lifted.add(f)
+            roots.append((mod, e, sum(len(P.L.funcs[f][0]) for f in tree)))
+            funcs |= tree
             got += 1
-    return roots, why
+    return roots, funcs, lifted, why, prog
 
 
-def lift_new(P, roots, img, flags_out):
+def lift_new(P, lifted, img, flags_out, prog):
     """lift2's module text and its time (decode, IR, emission)"""
     t0 = time.perf_counter()
     m = emit_llvm.Module(flags_out)
-    for _, e, _ in roots:
-        m.add(build_ir.build(e, sorted(P.L.funcs[e][0]), img.word))
+    for e in sorted(lifted):
+        m.add(build_ir.build(e, sorted(P.L.funcs[e][0]), img.word, prog))
     text = m.text()
     return text, time.perf_counter() - t0
 
 
-def old_source(P, roots):
-    names = sorted(e for _, e, _ in roots)
+def old_source(P, funcs):
+    names = sorted(funcs)
     body = "\n".join(P.emitted[e][0] for e in names)
     return ['#include "a64.h"'] + ["void f_%08x(Ctx *A64_NOESC);" % e for e in names] + [a64_lift.mark_groups(body)]
 
@@ -203,6 +237,8 @@ def main():
     kit.wait_for_quiet("the lift2 function test")
     p = argparse.ArgumentParser()
     p.add_argument("--count", type=int, default=500)
+    p.add_argument("--calls", action="store_true")
+    p.add_argument("--max-tree", type=int, default=4000)
     p.add_argument("--states", type=int, default=4)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--list", action="store_true")
@@ -215,12 +251,16 @@ def main():
     meta = img.write(os.path.join(kit.WORK, "image_test"))
     P = TL.Picker(img)
     share = TL.module_shares(img)
-    roots, why = select(P, img, {m: max(1, int(a.count * s)) for m, s in share.items()}, rng)
-    ninsn = sum(n for _, _, n in roots)
-    print("%d functions, %d instructions (%.0fs); passed over: %s" % (
-        len(roots), ninsn, time.time() - t0, ", ".join("%s %d" % kv for kv in why.most_common(8))), flush=True)
-    new_text, t_new = lift_new(P, roots, img, True)   # (NZCV stored: compared with Unicorn)
-    count_text = lift_new(P, roots, img, False)[0]      # (as the build will lift: flags dead at a return)
+    roots, funcs, lifted, why, prog = select(P, img, {m: max(1, int(a.count * s)) for m, s in share.items()}, rng,
+                                             a.calls, a.max_tree)
+    ninsn = sum(len(P.L.funcs[e][0]) for e in lifted)
+    callers = sum(1 for _, e, _ in roots if any(k[0] == "bl" or (k[0] == "b" and k[1] not in P.L.funcs[e][0])
+                                                for k, _ in P.L.funcs[e][0].values()))
+    print("%d roots (%d with calls), %d functions in their trees, %d lifted by lift2 (%d instructions) (%.0fs); "
+          "passed over: %s" % (len(roots), callers, len(funcs), len(lifted), ninsn, time.time() - t0,
+                               ", ".join("%s %d" % kv for kv in why.most_common(10))), flush=True)
+    new_text, t_new = lift_new(P, lifted, img, True, prog)   # (NZCV stored: compared with Unicorn)
+    count_text = lift_new(P, lifted, img, False, prog)[0]      # (as the build will lift: flags dead at a return)
     print("lift2: %.3f s for %d instructions: %.0f instructions/s (decode, IR, LLVM IR)" % (t_new, ninsn, ninsn / t_new))
     tmp = tempfile.mkdtemp(prefix="oot_lift2_")
     a64_rtgen.write(tmp)
@@ -229,7 +269,7 @@ def main():
     rt = rtgen.write(os.path.join(tmp, "rt64"))
     old_c, new_ll = os.path.join(tmp, "old.c"), os.path.join(tmp, "new.ll")
     with open(old_c, "w") as f:
-        f.write("\n".join(old_source(P, roots)) + "\n")
+        f.write("\n".join(old_source(P, funcs)) + "\n")
     with open(new_ll, "w") as f:
         f.write(new_text)
     with open(new_ll + ".count.ll", "w") as f:
@@ -241,7 +281,8 @@ def main():
     n_old, n_new = count_insns(old_c + ".o"), count_insns(new_ll + ".o")
     # the harness: both lifts, one table each, same order
     order = [e for _, e, _ in roots]
-    src = old_source(P, roots) + ["void g_%08x(Ctx *A64_NOESC);" % e for e in order]
+    roots_tree = [P.tree(e, a.calls, a.max_tree if a.calls else 600) for e in order]
+    src = old_source(P, funcs) + ["void g_%08x(Ctx *A64_NOESC);" % e for e in order]
     src.append(HARNESS % {
         "old": ",".join("f_%08x" % e for e in order), "new": ",".join("g_%08x" % e for e in order),
         "regions": ",".join("{%#xULL,%#xULL}" % r for r in TL.writable_regions(meta)),
@@ -255,19 +296,28 @@ def main():
     print("harness built (%.0fs)" % (time.time() - t0), flush=True)
     emu = TL.Emu(img.mem, meta, TL.writable_regions(meta))
     cases, expect, skipped = [], [], 0
+    retried = uncompared = 0
     for i, (mod, e, _) in enumerate(roots):
-        for _ in range(a.states):
+        ran = 0
+        for k in range(a.states + 16):
+            if k >= a.states and ran:
+                break
             st = TL.rand_state(rng)
+            if k >= a.states:   # (no state ran: X0-X7 all into the scratch area, whose qwords are a quarter pointers)
+                st[0][:8] = [TL.SCRATCH + 0x1000 + 8 * rng.randrange((TL.SCRATCH_SIZE - 0x22000) // 8) for _ in range(8)]
+                retried += k == a.states
             seed = rng.getrandbits(64)
             res = emu.run(e, st, TL.scratch_words(seed).tobytes())
             if res is None:
                 skipped += 1
                 continue
+            ran += 1
             nz = emu.uc.reg_read(A.UC_ARM64_REG_NZCV) >> 28
             cases.append((i, seed, st))
             expect.append(res + ([nz >> 3 & 1, nz >> 2 & 1, nz >> 1 & 1, nz & 1],))
-    print("%d comparable cases, %d skipped (Unicorn fault or no return) (%.0fs)" % (len(cases), skipped,
-                                                                                   time.time() - t0), flush=True)
+        uncompared += not ran
+    print("%d comparable cases, %d skipped (Unicorn fault or no return); %d roots retried with pointer arguments, "
+          "%d never ran in Unicorn (%.0fs)" % (len(cases), skipped, retried, uncompared, time.time() - t0), flush=True)
     inp, outp = os.path.join(tmp, "in.bin"), os.path.join(tmp, "out.bin")
     with open(inp, "wb") as f:
         for i, seed, st in cases:
@@ -296,8 +346,10 @@ def main():
             else:
                 vals = new[2]
                 d += ["%s %#x != %#x" % ("sp" if r == 31 else "x%d" % r, vals[r], ex_x[r]) for r in range(32)
-                      if vals[r] != ex_x[r]]
-                d += ["%s %d != %d" % (n, vals[32 + k], ex_nz[k]) for k, n in enumerate("nzcv") if vals[32 + k] != ex_nz[k]]
+                      if vals[r] != ex_x[r] and not (a.calls and r in (16, 17))]
+                if len(roots_tree[i]) == 1:   # (a callee of the present lifter's drops dead flag stores)
+                    d += ["%s %d != %d" % (n, vals[32 + k], ex_nz[k]) for k, n in enumerate("nzcv")
+                          if vals[32 + k] != ex_nz[k]]
                 if new[3] != ex_pages:
                     d.append("memory: pages %s" % sorted("%x" % pg for pg in set(new[3]) ^ set(ex_pages)
                                                          or [pg for pg in new[3] if new[3][pg] != ex_pages.get(pg)])[:4])
@@ -309,16 +361,23 @@ def main():
                     d.append("halted/fault old %s new %s" % (old[:2], new[:2]))
             else:
                 d += ["%s old %#x new %#x" % ("sp" if r == 31 else "x%d" % r, old[2][r], new[2][r]) for r in range(32)
-                      if old[2][r] != new[2][r]]
+                      if old[2][r] != new[2][r] and not (a.calls and r in (16, 17))]
                 if old[3] != new[3]:
                     d.append("memory differs")
             if d:
                 fail_old[i].append(d[:4])
-    tot_old = sum(n_old["f_%08x" % e] for e in order)
-    tot_new = sum(n_new["g_%08x" % e] for e in order)
-    print("x86 instructions at -O1: present lifter %d, lift2 %d (%.3f); per guest instruction %.2f / %.2f" % (
-        tot_old, tot_new, tot_new / max(tot_old, 1), tot_old / ninsn, tot_new / ninsn))
-    worse = sorted(((n_new["g_%08x" % e] / max(n_old["f_%08x" % e], 1), e) for e in order), reverse=True)[:5]
+    both = sorted(lifted)   # (every function lift2 lifts; the present lifter lifts them too)
+    tot_old = sum(n_old["f_%08x" % e] for e in both)
+    tot_new = sum(n_new["g_%08x" % e] for e in both)
+    nonleaf = [e for e in both if any(k[0] in ("bl", "blr") for k, _ in P.L.funcs[e][0].values())]
+    if nonleaf:
+        print("functions with calls (%d): present lifter %d, lift2 %d x86 instructions (%.3f)" % (
+            len(nonleaf), sum(n_old["f_%08x" % e] for e in nonleaf), sum(n_new["g_%08x" % e] for e in nonleaf),
+            sum(n_new["g_%08x" % e] for e in nonleaf) / max(1, sum(n_old["f_%08x" % e] for e in nonleaf))))
+    print("x86 instructions at -O1, the %d functions lift2 lifts: present lifter %d, lift2 %d (%.3f); per guest "
+          "instruction %.2f / %.2f" % (len(both), tot_old, tot_new, tot_new / max(tot_old, 1), tot_old / ninsn,
+                                       tot_new / ninsn))
+    worse = sorted(((n_new["g_%08x" % e] / max(n_old["f_%08x" % e], 1), e) for e in both), reverse=True)[:5]
     print("largest new/old ratios: %s" % ", ".join("f_%08x %.2f" % (e, q) for q, e in worse))
     tested = len({i for i, _, _ in cases})
     print("%d functions, %d run in at least one comparable case, %d cases: against Unicorn %d functions differ; "
