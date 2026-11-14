@@ -21,6 +21,8 @@
 #include "direct_shader.h"
 #include "direct_query.h"
 #include "direct_check.h"
+#include "direct_draw.h"
+#include "direct_work.h"
 
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
@@ -267,7 +269,12 @@ const char* describe() {
     d = std::string(dev.props.deviceName) + " (Vulkan, direct)";
     return d.c_str();
 }
-void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) { *draws = *skipped = *pipelines = 0; }
+// (the host's HOS_BENCH: draws recorded since the start, draws skipped since the start for a program not ready, shader jobs
+// queued or running now)
+void stats(int64_t* draws, int64_t* skipped, int64_t* pipelines) {
+    draw_totals(draws, skipped);
+    *pipelines = (int64_t)work::pending();
+}
 void register_texture(int id, const nvn_tex* t, const nvn_view* v) {
     count(R_TEX);
     image_texture_registered(t);

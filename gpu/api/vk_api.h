@@ -137,7 +137,7 @@ typedef struct MkwVkRenderer {
     int (*start)(void *hwnd);
     void (*resize)(int width, int height);
     const char *(*describe)(void);
-    void (*stats)(int64_t *draws, int64_t *skipped, int64_t *pipelines);
+    void (*stats)(int64_t *draws, int64_t *skipped, int64_t *pipelines);   /* draws recorded and draws skipped for a shader not ready, since the start; shader jobs queued or running now */
     void (*nvn_submit)(const uint64_t *handles, int n);
     uint64_t (*nvn_fence)(void);
     uint64_t (*nvn_pushed)(void);

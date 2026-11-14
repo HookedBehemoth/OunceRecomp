@@ -37,6 +37,9 @@ void arena_reset(Arena* a);
 
 /// The 600-present lines: draws by reason and list kind, programs, heap, state
 void draw_log(double frames);
+/// Since the start, all threads: draws recorded, and draws skipped because their program or variant was not ready yet (read or
+/// translated by the shader workers). Any thread; the counts of a thread drawing meanwhile may be a draw behind
+void draw_totals(int64_t* drawn, int64_t* waiting);
 /// (direct_compute.cpp) bytes of the slot's frame arena; the BDA window table's address; 64 KB of zeros
 struct CmdSlot;
 bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr);

@@ -138,6 +138,11 @@ size_t queued() {
     return live[PW] + live[P0] + live[P1] + live[P2];
 }
 
+size_t pending() {
+    std::lock_guard lk(mu);
+    return live[PW] + live[P0] + live[P1] + live[P2] + (size_t)running;
+}
+
 void stats(char* out, size_t cap) {
     std::lock_guard lk(mu);
     std::snprintf(out, cap, "PW %zu, P0 %zu, P1 %zu, P2 %zu queued, %d running (of %d workers, %d of them background), %lld bumped", live[PW], live[P0], live[P1],

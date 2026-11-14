@@ -32,5 +32,7 @@ int workers();
 /// "PW w, P0 a, P1 b, P2 c queued, n running (of w workers, k of them background), b bumped"
 void stats(char* out, size_t cap);
 size_t queued();
+/// Jobs queued and running: 0 when the workers have nothing left to do
+size_t pending();
 
 }  // namespace hsd::work

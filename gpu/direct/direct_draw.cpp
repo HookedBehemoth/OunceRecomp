@@ -1558,6 +1558,14 @@ double ns_per_tick() {
     const int64_t dn = host->now_ns() - t_device;
     return dt && dn > 0 ? (double)dn / (double)dt : 0.0;
 }
+void draw_totals(int64_t* drawn, int64_t* waiting) {
+    int64_t d = 0, w = 0;
+    for (const TStats* t = tstats_all.load(std::memory_order_acquire); t; t = t->next)
+        for (int k = 0; k < HSD_LIST_KINDS; k++)
+            d += t->by_kind[k][R_DRAWN].load(std::memory_order_relaxed),
+                w += t->by_kind[k][R_NOT_PARSED].load(std::memory_order_relaxed) + t->by_kind[k][R_TRANSLATING].load(std::memory_order_relaxed);
+    *drawn = d, *waiting = w;
+}
 void draw_log(double frames) {
     static char out[8192];
     const size_t cap = sizeof out;
