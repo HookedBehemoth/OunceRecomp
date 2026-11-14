@@ -477,6 +477,11 @@ void hos_vi_native_presented(void) {
     const int64_t period = 1000000000LL / fps_max() * present_interval, now = hos_now_ns();
     realtime_step(now);
     if (hos_bench_on()) hos_bench_present(now);
+    {   /* HOS_FP_LOG=1 (diagnostic): the guest FPCR and the host MXCSR at presents 1, 60 and 600 */
+        static int on = -1;
+        if (on < 0) on = getenv("HOS_FP_LOG") != NULL;
+        if (on && (scan_n == 1 || scan_n == 60 || scan_n == 600)) hos_thread_fp_log(scan_n);
+    }
     /* (behind by more than a frame: the next one is paced from now, with no burst to catch up) */
     next_frame_at = next_frame_at && now - next_frame_at < period ? next_frame_at + period : now + period;
     {   /* (the display queue: this frame is shown one interval after the last, or now when the display waits) */

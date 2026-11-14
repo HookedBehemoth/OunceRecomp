@@ -5,6 +5,7 @@
    there. TPIDRRO_EL0 (thread-local region): 0x200 bytes; the SDK's nn::os keeps the current ThreadType* at
    +0x1F8, so lifted SDK code that reads it inline finds the same thread the HLE knows. */
 #include "hos.h"
+#include <xmmintrin.h>
 #include "direct_crit.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -471,6 +472,15 @@ void hos_thread_dump(void) {
         }
     }
     ReleaseSRWLockShared(&threads_lock);
+}
+
+/* HOS_FP_LOG=1 (debugging, nn_vi.c at presents 1, 60 and 600): the presenting thread's guest FPCR and the host's MXCSR,
+   which host/hos_fp.c keeps equal to it (FZ: 0x9FC0 plus sticky bits) */
+void hos_thread_fp_log(long long present) {
+    HosThread *t = cur;
+    const Ctx *c = t ? (t->run_ctx ? t->run_ctx : &t->ctx) : NULL;
+    hos_log("fp: present %lld thread %s fpcr %#llx mxcsr %#x (expected %#x)", present, t ? t->name : "(host)",
+            c ? (unsigned long long)c->fpcr : 0ULL, _mm_getcsr(), c ? hos_fp_mxcsr(c->fpcr) | (_mm_getcsr() & 0x3Fu) : 0u);
 }
 
 /* HOS_FP_REPORT=1 (debugging): the FPCR / FPSR of the busiest game threads, with the thread stats */

@@ -129,6 +129,7 @@ void hos_vcore_back(void);
 void hos_vcore_checkpoint(void);
 void hos_vcore_yield(void);
 void hos_vcore_dump(void);   /* (HOS_DUMP_FILE) the owners of the virtual cores and their waiters, to the log */
+void hos_thread_fp_log(long long present);   /* (hos_thread.c) HOS_FP_LOG=1: FPCR and MXCSR of the presenting thread */
 int hos_current_core(uint64_t lr);   /* (hos_thread.c) GetCurrentCoreNumber for the running thread */
 int hos_cv_sleep(void *cv, void *srw_lock, unsigned ms);   /* SleepConditionVariableSRW (exclusive) for guest threads */
 void hos_thread_boost(int level);
