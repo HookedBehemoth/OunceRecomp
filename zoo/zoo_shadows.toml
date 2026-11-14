@@ -1,6 +1,7 @@
 # Sun shadows: Hyrule Field (child), the open field under the sun's cascades, every actor of the map kept. Tall props
 # stand in front of the start by the market's drawbridge. The time of day comes from the save (night on a new game):
 # the run sets noon through the host's world clock (the overlay's live.txt, "!cheat 112", sent as HOS_INPUT_LIVE).
+# The flags' cloth waves in the field's wind (a vertex animation of their material, not Havok cloth).
 base = "HyruleField_Child"
 start = "HyruleField_FrontOfMarket"
 keep = ["*"]
@@ -11,3 +12,8 @@ name = "Obj_LiftRock_B_01"
 translate = [-6.0, 149.2, 44.0]
 rotate = [0, 30, 0]
 grid = { count = [3, 1, 2], step = [6.0, 0.0, 6.0] }
+
+[[actor]]
+name = "Obj_Flag_A_01"
+translate = [-3.0, 149.2, 38.0]
+grid = { count = [3, 1, 1], step = [3.0, 0.0, 0.0] }

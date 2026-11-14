@@ -1,7 +1,9 @@
 # Rigid bodies and cloth in the Sage Room. Pots placed without IsPhysicsStable fall at once and break on landing;
 # their shards and rupees fall and bounce. Columns of pots dropped from 1 to 9 m keep the bodies moving for the first
-# 0.7 s of the scene (measured). Flags wave their cloth all the time (the room's wind). Placed rupees, hearts, rocks,
-# boxes and items stay where they are put (with or without IsPhysicsStable): nothing found yet falls and settles whole.
+# 0.7 s of the scene (measured). Placed rupees, hearts, rocks, boxes and items stay where they are put (with or without
+# IsPhysicsStable): nothing found yet falls and settles whole. The three cloth carriers are stepped by Havok Cloth every
+# frame (measured in Hyrule Field with HOS_DBG=havok: 3 more cloth steps a frame, +0.65 ms), but their cloth does not
+# move on screen there or here.
 base = "SageRoom"
 start = ""
 keep = ["StartPos", "Land_SageRoom_Base_A_01", "Land_SageRoom_Base_A_02"]
@@ -12,11 +14,13 @@ translate = [-3.0, 101.0, 4.0]
 grid = { count = [4, 5, 3], step = [2.0, 2.0, 2.0] }
 
 [[actor]]
-name = "Obj_Flag_A_01"
-translate = [-6.0, 100.0, 5.0]
-grid = { count = [1, 1, 3], step = [0.0, 0.0, 4.0] }
+name = "Land_ShadowTemple_Cloth_A_03"
+translate = [6.0, 106.0, 8.0]
 
 [[actor]]
-name = "Obj_Flag_A_01"
-translate = [7.0, 100.0, 5.0]
-grid = { count = [1, 1, 3], step = [0.0, 0.0, 4.0] }
+name = "Land_Gerudo_FortressPotRoom_Cloth_A_01"
+translate = [-7.0, 100.0, 8.0]
+
+[[actor]]
+name = "Land_DampeGrave_Cloth_A_01"
+translate = [0.0, 100.0, 16.0]

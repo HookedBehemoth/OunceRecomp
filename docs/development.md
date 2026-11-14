@@ -101,12 +101,14 @@ a build folder is cold (shaders and pipelines are prepared); copy a warm folder'
   an overlay from the user's dump (the chiseled boot, the map's two bancs rewritten, the resource size table with their
   entries raised). `ZOO=zoo_static scripts/run-vk.sh <name> <seconds>` and `scripts/play.sh zoo_static` make
   `work/overlay/<scene>` when it is missing or older than its description (`scripts/zoo-overlay.sh`). Scenes:
-  `zoo_static` (288 static props, Sage Room), `zoo_anim` (flags, torches, fairies, fireflies, butterflies, cows),
-  `zoo_physics` (pots that fall and break, waving flags), `zoo_shadows` (rocks on the market's drawbridge in Hyrule
-  Field at noon, under the sun's cascades). A scene's `hour` sets the time of day after the load through the host's world
-  clock (the overlay's `live.txt`, sent as `HOS_INPUT_LIVE`): a new game's field is at night. The map's
-  collision, navigation mesh and baked lighting stay the base map's: a scene can only use a map that exists. Leaving a
-  room's model actors out (`keep`) hides the room but not its floor: the collision is the map's static compound body.
+  `zoo_static` (288 static props, Sage Room), `zoo_anim` (torches, fairies, fireflies, butterflies, cows),
+  `zoo_physics` (pots that fall and break, three Havok cloth carriers that are stepped but look still),
+  `zoo_shadows` (rocks and waving flags on the market's drawbridge in Hyrule Field at noon, under the sun's cascades;
+  flags wave only in a map's wind, and the Sage Room has almost none). A scene's `hour` sets the time of day after the
+  load through the host's world clock (the overlay's `live.txt`, sent as `HOS_INPUT_LIVE`): a new game's field is at
+  night. The map's collision, navigation mesh and baked lighting stay the base map's: a scene can only use a map that
+  exists. Leaving a room's model actors out (`keep`) hides the room but not its floor: the collision is the map's static
+  compound body.
 - **Scripted input:** `"HOS_INPUT_SCRIPT=30:LUP/3000,34:RRIGHT/2500" HOS_INPUT_EXCLUSIVE=1` (seconds from the game's
   first controller read; the syntax is under Input for scripted runs).
 - **Record and replay a session:** the game started with `HOS_INPUT_RECORD=$PWD/work/rec/<name>` (an absolute path)

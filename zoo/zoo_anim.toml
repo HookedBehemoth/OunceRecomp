@@ -1,14 +1,10 @@
-# Actors that animate by themselves in the Sage Room, each checked in the game by two pictures 0.4 s apart: a flag whose
-# cloth waves, three kinds of torch (fire effects), fairies, fireflies (an effect), butterflies and cows (idle).
+# Actors that animate by themselves in the Sage Room, each checked in the game by two pictures 0.4 s apart: three
+# kinds of torch (fire effects), fairies, fireflies (an effect), butterflies and cows (idle). Flags wave only in a
+# map's wind: the room has almost none, so they are in zoo_shadows.
 # The camera looks along +z; +x is on the screen's left.
 base = "SageRoom"
 start = ""
 keep = ["StartPos", "Land_SageRoom_Base_A_01", "Land_SageRoom_Base_A_02"]
-
-[[actor]]
-name = "Obj_Flag_A_01"
-translate = [-6.0, 100.0, 5.0]
-grid = { count = [1, 1, 2], step = [0.0, 0.0, 6.0] }
 
 [[actor]]
 name = "Land_GerudoTraining_Torch_A_01"
