@@ -28,7 +28,8 @@ class Program:
     jump table targets; callee(t): the function a call or tail branch to t reaches (PLT stubs resolved);
     symbol(e): the generic entry's symbol of function e; no_lift: functions to pass over (setjmp owners: milestone 7)"""
 
-    def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None):
+    def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None, classes=None):
+        self.classes = set(classes) if classes is not None else None   # (None: every class of sem.CLASS)
         # (entries, jt and plt are shared, not copied: the discovery fills them as it walks)
         self.entries = entries if isinstance(entries, set) else set(entries)
         self.plt = plt if plt is not None else {}   # PLT stub entry -> (final target, GOT slot)
@@ -73,6 +74,8 @@ def scope(entry, pcs, word, prog=LEAF):
         t = i.entry.template
         if t not in TERMINATORS and sem.TEMPLATES.get(t) is None:
             return "%s at %#x" % (i.entry.name, pc)
+        if prog.classes is not None and t not in TERMINATORS and sem.CLASS.get(t) not in prog.classes:
+            return "class %s (%s) at %#x" % (sem.CLASS.get(t), i.entry.name, pc)
         tg = target(i, pc)
         if t == "b" and i.f["op"]:
             if prog is LEAF:

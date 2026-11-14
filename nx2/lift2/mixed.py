@@ -1,6 +1,8 @@
 """The mixed build: functions lift 2 can take come from it, the rest from the present lifter (milestone 5).
 
 HOOKSHOT_LIFT2=all-safe | <file of guest addresses, one per line (hex)>; unset: the build is the present lifter's alone.
+HOOKSHOT_LIFT2_CLASSES=int[,fp,neon] (at lift time): the instruction classes (sem.CLASS) a function may use to be
+taken; int alone by default (FP/NEON functions need the runtime's FP mode first).
 
 At lift time (nx2/lift.py, the variable set) write_plan() keeps what lift 2 needs from the discovery: the entries,
 jump tables, PLT stubs, setjmp owners, hooked addresses, and the instructions of every function lift 2 can take
@@ -49,7 +51,8 @@ def write_plan(L, img, path):
     """the discovery's facts and the instructions of every function lift 2 can take"""
     t0 = time.time()
     no_call = set(getattr(L, "setjmp_owner", {}) or ())
-    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, no_call=no_call)
+    classes = os.environ.get("HOOKSHOT_LIFT2_CLASSES", "int").split(",")
+    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, no_call=no_call, classes=classes)
     after = set(getattr(L, "after", {}) or ())
     hooks = set(L.hooks)
     bodies, why = {}, {}
@@ -64,7 +67,7 @@ def write_plan(L, img, path):
             continue
         r = build_ir.scope(e, pcs, img.word, prog)
         if r is not None:
-            k = re.sub(r" at .*| [0-9a-f]{8}.*|0x[0-9a-f]+", "", r)
+            k = re.sub(r" \(.*| at .*| [0-9a-f]{8}.*|0x[0-9a-f]+", "", r)
             why[k] = why.get(k, 0) + 1
             continue
         bodies[e] = (array("Q", pcs), array("I", (img.word(pc) for pc in pcs)))
