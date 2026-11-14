@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Plays the main checkout's build (work/sa/build, kept at native-vk's head by scripts/play-refresh.sh): direct back end, window and sound on.
-#   scripts/play.sh [record <name>] [title|kokiri|hf|market|<overlay folder name under work/overlay>] [-- NAME=VALUE ...]
+#   scripts/play.sh [record <name>] [title|kokiri|hf|market|zoo_<scene>|<overlay folder name under work/overlay>] [-- NAME=VALUE ...]
 # Takes the GPU lock scripts/run-vk.sh uses and waits for a running build; saves in Hookshot's own folder
 # (~/.local/share/hookshot/save, docs/saves.md), log in work/play/log.txt.
 set -euo pipefail
@@ -20,6 +20,7 @@ case "$scene" in
   kokiri) overlay=$root/work/overlay/chisel_kokiri ;;
   hf) overlay=$root/work/overlay/chisel_hf ;;
   market) overlay=$root/work/overlay/chisel_hf_market ;;
+  zoo_*) overlay=$("$here/zoo-overlay.sh" "$scene") ;;   # (an actor-zoo scene, zoo/<scene>.toml, made on demand)
   *) overlay=$root/work/overlay/$scene; [ -d "$overlay" ] || { echo "no overlay $overlay"; exit 2; } ;;
 esac
 exec 7>"$root/work/run.gate"; flock -x 7

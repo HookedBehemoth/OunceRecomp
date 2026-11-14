@@ -4,6 +4,7 @@
 #
 #   scripts/run-vk.sh <name> [seconds] [-- extra NAME=VALUE ...]
 #   OVERLAY=work/overlay/<dir>   patched game files read first (HOS_FS_OVERLAY: the chiseled boot)
+#   ZOO=<scene>                  the actor-zoo scene zoo/<scene>.toml as the overlay (made on demand: scripts/zoo-overlay.sh)
 #   USER_FROM=<folder>           copied into the run's own user folder first (a save to start from)
 #   EXE=<path>                   another build (default work/sa/build/hookshot; its caches are beside it)
 #   WINDOW=1 SOUND=1 SHOT_EVERY=300
@@ -63,6 +64,7 @@ romfs=$(grep -v '^#' "$root/work/dump.txt" | head -1)/romfs
 env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}" HOOKSHOT_NO_UPDATE_CHECK=1)
 [ "${WINDOW:-0}" = 1 ] || env_args+=(HOS_HEADLESS=1)
 [ "${SOUND:-0}" = 1 ] || env_args+=(HOS_AUDIO=0)
+[ -n "${ZOO:-}" ] && OVERLAY=$("$root/scripts/zoo-overlay.sh" "$ZOO")
 [ -n "${OVERLAY:-}" ] && env_args+=(HOS_FS_OVERLAY="$(cd "$OVERLAY" && pwd)")
 exe=$(realpath "${EXE:-$root/work/sa/build/hookshot}")
 if [ "$mode" = check ]; then   # (a private copy of the build's files: the executable, the renderer, the caches)

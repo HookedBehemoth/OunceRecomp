@@ -1,0 +1,23 @@
+# Actors that animate on their own (an animation graph or a looping model animation, no AI), in the Sage Room.
+base = "SageRoom"
+start = ""
+keep = ["StartPos", "Land_SageRoom_Base_A_01", "Land_SageRoom_Base_A_02"]
+
+[[actor]]
+name = "Land_Gerudo_FortressWindmill_A_01"
+translate = [0.0, 100.0, 18.0]
+
+[[actor]]
+name = "Land_InsideJabu_Jabu_TentacleFuse_Blue_A_01"
+translate = [-6.0, 100.0, 6.0]
+grid = { count = [3, 1, 1], step = [6.0, 0.0, 0.0] }
+
+[[actor]]
+name = "Land_ShadowTemple_Rat_A_02"
+translate = [-3.0, 100.0, 3.0]
+grid = { count = [3, 1, 1], step = [3.0, 0.0, 0.0] }
+
+[[actor]]
+name = "Obj_GossipStone_A_01"
+translate = [-8.0, 100.0, 10.0]
+grid = { count = [3, 1, 1], step = [8.0, 0.0, 0.0] }

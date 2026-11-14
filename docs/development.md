@@ -95,6 +95,15 @@ a build folder is cold (shaders and pipelines are prepared); copy a warm folder'
   `KakarikoVillage_Child`, `InsideTheDekuTree`. The new-game route saves, so run it with the script's own `--user` folder.
   The opening's events are cut (`--keep-intro` keeps them); `--skip-title` and `--skip-fades` cut the title movie and the
   loading fades. Details: `tools/dump/README.md`.
+- **Actor zoo:** scenes we describe ourselves for benchmarks and picture tests, independent of a save and of the game's
+  own maps. `zoo/<scene>.toml` names an existing map (`base`), the start, which of its actors stay, and the actors to add
+  (name, position, rotation in degrees, scale, a grid of copies, their parameters); `tools/dump/make_zoo.py` turns it into
+  an overlay from the user's dump (the chiseled boot, the map's two bancs rewritten, the resource size table with their
+  entries raised). `ZOO=zoo_static scripts/run-vk.sh <name> <seconds>` and `scripts/play.sh zoo_static` make
+  `work/overlay/<scene>` when it is missing or older than its description (`scripts/zoo-overlay.sh`). Scenes:
+  `zoo_static` (288 static props, Sage Room), `zoo_anim` (actors that animate without AI), `zoo_physics` (pots and
+  boxes dropped onto the floor, two cloth carriers), `zoo_shadows` (props under the open-field light set). The map's
+  collision, navigation mesh and baked lighting stay the base map's: a scene can only use a map that exists.
 - **Scripted input:** `"HOS_INPUT_SCRIPT=30:LUP/3000,34:RRIGHT/2500" HOS_INPUT_EXCLUSIVE=1` (seconds from the game's
   first controller read; the syntax is under Input for scripted runs).
 - **Record and replay a session:** the game started with `HOS_INPUT_RECORD=$PWD/work/rec/<name>` (an absolute path)

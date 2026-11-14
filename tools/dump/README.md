@@ -8,9 +8,11 @@ game's dictionaries in `work/zsdic` (`ZSDIC=<folder>` for another).
 | script | what it is |
 |---|---|
 | `make_chisel_overlay.py` | builds a `HOS_FS_OVERLAY` folder whose patched sequence graphs boot straight into a map |
+| `make_zoo.py` | builds an actor-zoo overlay from a scene description (`zoo/*.toml`): the chiseled boot into an existing map whose bancs hold the scene's actors |
 | `ainb.py` | AINB (AI node graph) reader: `ainb.load(bytes)`, `ainb.to_text(graph)`; `python tools/dump/ainb.py <file>` prints it |
 | `ainb_patch.py` | patches an AINB's parameters and plugs (`in:`, `prop:`, `plug:`, `unlink:` operations) and writes a copy |
 | `byml.py`, `byml_be.py` | BYML readers (little endian; both endiannesses with hash dicts) to Python objects or JSON |
+| `byml_write.py` | BYML v7 writer, with a typed reader whose documents it writes back with the same nodes (the game's bancs at their own size) |
 | `sarc.py` | SARC archive unpacker |
 | `zs.py` | the game's zstd dictionaries: `zs.decompress(bytes)` |
 | `bntx.py` | BNTX texture container reader and block-linear deswizzle (`--check` verifies the layout) |

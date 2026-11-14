@@ -1,0 +1,21 @@
+# Static props on a grid in the Sage Room: a pure rendering load (no AI, nothing moves).
+# 3 kinds x 16 columns x 6 rows = 288 props in front of the start (the camera looks along +z).
+base = "SageRoom"
+start = ""
+keep = ["StartPos", "Land_SageRoom_Base_A_01", "Land_SageRoom_Base_A_02"]
+
+[[actor]]
+name = "Obj_TBoxPedestal_A_01"
+translate = [-16.5, 100.0, 3.0]
+grid = { count = [16, 1, 6], step = [2.2, 0.0, 2.2] }
+
+[[actor]]
+name = "Obj_BrokenRock_A_01"
+translate = [-16.5, 100.0, 16.2]
+grid = { count = [16, 1, 6], step = [2.2, 0.0, 2.2] }
+
+[[actor]]
+name = "Obj_LiftRock_B_01"
+translate = [-16.5, 100.0, 29.4]
+rotate = [0, 45, 0]
+grid = { count = [16, 1, 6], step = [2.2, 0.0, 2.2] }

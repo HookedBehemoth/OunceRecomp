@@ -1,0 +1,24 @@
+# Rigid bodies dropped from above the floor (they fall, collide and settle in the first seconds), and cloth carriers,
+# in the Sage Room.
+base = "SageRoom"
+start = ""
+keep = ["StartPos", "Land_SageRoom_Base_A_01", "Land_SageRoom_Base_A_02"]
+
+[[actor]]
+name = "Obj_Pot_A_01"
+translate = [-3.0, 102.0, 4.0]
+grid = { count = [4, 4, 3], step = [1.5, 1.2, 1.5] }
+
+[[actor]]
+name = "Obj_BrokenBox_A_02"
+translate = [-3.4, 104.0, 9.0]
+rotate = [20, 30, 10]
+grid = { count = [4, 3, 2], step = [1.8, 1.8, 1.8] }
+
+[[actor]]
+name = "Land_ShadowTemple_Cloth_A_03"
+translate = [6.0, 100.0, 8.0]
+
+[[actor]]
+name = "Land_Gerudo_FortressPotRoom_Cloth_A_01"
+translate = [-7.0, 100.0, 8.0]
