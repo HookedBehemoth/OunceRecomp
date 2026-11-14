@@ -37,6 +37,8 @@ struct Image {
     uint32_t width = 1, height = 1, depth = 1, levels = 1, layers = 1;
     int nvn_format = 0, bpb = 0, bw = 1, bh = 1;
     uint64_t gpu = 0;
+    uint64_t span = 0;   // (an image of its own memory: its texture's storage bytes from gpu)
+    bool held = false;   // (dead, kept for its storage's content: direct_image.cpp kHeldBytes)
     uint32_t id = 0;
     bool placeholder = false;
     bool compressed = false;

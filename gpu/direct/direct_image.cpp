@@ -78,6 +78,12 @@ struct KeyHash {
 std::shared_mutex images_mu;   // (the table, each image's refs and death)
 std::unordered_map<Key, std::unique_ptr<Image>, KeyHash> images;
 std::vector<Image*> dying;   // (refs 0: destroyed by image_sweep)
+// A dead image of its own memory whose content only the GPU wrote (rendered or copied) is held in `dying` instead of
+// destroyed: the game initializes textures again over storage it does not write again (a terrain tile's normal map,
+// drawn once, its textures made anew after a save loads), and the storage still holds that content. It goes when a new
+// image overlaps its storage or is over kHeldBytes (images_mu).
+constexpr int64_t kHeldBytes = 256ll << 20;
+int64_t held_bytes = 0;
 // The transient pool (direct_image.h, docs/direct/transient-pool.md): the range of storage addresses the host named
 // (host/rt_slots.c's slots), its images, and the slot sizes the host told (images_mu; on, lo and hi are set once before
 // the first texture in the range is initialized).
@@ -306,6 +312,27 @@ bool pool_image(const VkImageCreateInfo& ci, Image& im, const nvn_tex* t) {
     return true;
 }
 
+void destroy(Image* im);
+/// a dead image's end (images_mu held exclusively; the GPU done with it): out of `dying` and the table, destroyed
+void drop_dead(Image* im) {
+    dying.erase(std::remove(dying.begin(), dying.end(), im), dying.end());
+    if (im->held) held_bytes -= (int64_t)mem_size(im->mem), im->held = false;
+    for (auto it = images.begin(); it != images.end(); ++it)
+        if (it->second.get() == im) {
+            destroy(im);
+            images.erase(it);
+            return;
+        }
+}
+/// the held images whose storage overlaps lo..hi go
+void drop_held_over(uint64_t lo, uint64_t hi) {
+    for (size_t i = 0; i < dying.size();) {
+        Image* o = dying[i];
+        if (o->held && o->gpu < hi && lo < o->gpu + std::max<uint64_t>(o->span, 1)) drop_dead(o);
+        else i++;
+    }
+}
+
 /// The image of t, made if there is none (images_mu held exclusively); null: no image (counted)
 Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh, int bpb) {
     std::call_once(placeholder_once, make_placeholder);
@@ -330,6 +357,8 @@ Image* make(const nvn_tex* t, const Key& k, const FormatInfo& fi, int bw, int bh
     } else {
         if (!mem_image(ci, im.image, im.mem, MO_IMAGE)) return name_placeholder(t, "no memory for it", st_ph_refused), &placeholder;
         init_image(im);
+        im.span = t->L.size;
+        drop_held_over(im.gpu, im.gpu + std::max<uint64_t>(im.span, 1));   // (that storage is this texture's now)
     }
     im.id = next_id++;
     st_made.fetch_add(1, std::memory_order_relaxed);
@@ -810,7 +839,7 @@ void image_sweep(uint64_t present) {
     {   // (M6f: what the images waiting to die hold: VRAM already given back, for the free VRAM the host reads)
         int64_t b = 0;
         for (const Image* im : dying)
-            if (!im->refs && im->dead_present) b += (int64_t)mem_size(im->mem);
+            if (!im->refs && im->dead_present && !im->held) b += (int64_t)mem_size(im->mem);
         dying_bytes.store(b, std::memory_order_relaxed);
     }
     // (the transient pool's images hold no memory of their own: one no texture is initialized over is kept as an object,
@@ -834,9 +863,10 @@ void image_sweep(uint64_t present) {
         if (im->refs > 0 || !im->dead_present) {
             dying[i] = dying.back(), dying.pop_back();   // (revived)
             im->prune = false;
+            if (im->held) held_bytes -= (int64_t)mem_size(im->mem), im->held = false;
             continue;
         }
-        if (im->pooled && !im->prune) {   // (kept)
+        if ((im->pooled && !im->prune) || im->held) {   // (kept)
             i++;
             continue;
         }
@@ -845,6 +875,13 @@ void image_sweep(uint64_t present) {
             else if (sync_completed() >= im->dead_value) gone = true;
         }
         if (!gone) {
+            i++;
+            continue;
+        }
+        const int64_t size = (int64_t)mem_size(im->mem);
+        if (!im->pooled && !im->asset && !im->no_data && im->span &&
+            (im->written.load(std::memory_order_relaxed) & (W_ATTACHMENT | W_COPY)) && held_bytes + size <= kHeldBytes) {
+            im->held = true, held_bytes += size;
             i++;
             continue;
         }
