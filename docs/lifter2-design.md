@@ -865,6 +865,46 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 - **Taking the rest of the game.** It is mostly FP/NEON: `HOOKSHOT_LIFT2_CLASSES=int,fp,neon` once the runtime's FP
   mode (MXCSR following FPCR, fibers) is in.
 
+## 14d. The mixed build with FP/NEON (`HOOKSHOT_LIFT2_CLASSES=int,fp,neon`, joining run)
+
+Worktree build, native-vk 0ee8fc1, `HOOKSHOT_LIFT2=all-safe HOOKSHOT_LIFT2_CLASSES=int,fp,neon scripts/relift.sh`.
+
+- **Lift 2's share.** Plan: 294,447 of 294,523 functions liftable (passed over: 32 with a word outside every table,
+  32 calls of a setjmp owner, 12 with C added after an instruction). The build took 294,290 (157 kept for host
+  edits): 17.44 M of 17.65 M guest instructions (98.8 %; int only: 60.6 %). Hot set: 826 of 852 functions, 94.9 % of
+  its instructions (int only: 10.8 %); the 26 left are hooked or patched functions.
+- **Build.** Lift 280 s (old lift and plan), lift 2's lift 152 s and its 145 partitions 265 s; whole relift 805 s
+  (build 525 s) at 8 jobs. Executable 315 MB against 474 MB for the present lifter's (0.66x).
+- **Correctness.** Smoke kokiri three times: worst picture distance 14 (one shot, Navi's position at present 1320),
+  4, 8; the present lifter's build gives 2 and 12 on the same day. Title boot with the movie: 60.0 fps, title
+  picture right. FPCR/MXCSR in the game as in 14c. No crash, hang or bisection needed.
+- **Benchmarks** (`scripts/bench.sh <scene> 600`, each pair mixed then present lifter, load average 1 min beside):
+
+| scene | load | build | total s | mean ms | median ms | p99 ms | CPU s | draws/frame | steps not 1/60 |
+|---|---|---|---|---|---|---|---|---|---|
+| market | 3.3 | mixed | 5.99 | 9.98 | 9.93 | 11.29 | 20.46 | 2869.8 | 0 |
+| market | 3.4 | present | 7.20 | 12.00 | 11.89 | 14.80 | 27.53 | 2866.2 | 0 |
+| market | 5.3 | mixed | 5.85 | 9.74 | 9.70 | 11.02 | 19.65 | 2869.3 | 4 |
+| market | 5.6 | present | 7.47 | 12.45 | 12.17 | 17.20 | 28.70 | 2870.3 | 0 |
+| zoo_static | 4.1 | mixed | 3.11 | 5.19 | 5.04 | 7.25 | 10.66 | 1298.1 | 0 |
+| zoo_static | 3.6 | present | 4.13 | 6.88 | 6.76 | 8.54 | 12.95 | 1298.8 | 0 |
+| zoo_anim | 3.6 | mixed | 3.61 | 6.02 | 5.93 | 7.65 | 11.46 | 382.3 | 0 |
+| zoo_anim | 5.2 | present | 4.27 | 7.11 | 6.98 | 9.16 | 12.85 | 381.8 | 0 |
+| zoo_shadows | 5.4 | mixed | 5.91 | 9.85 | 9.80 | 11.42 | 20.76 | 2927.6 | 2 |
+| zoo_shadows | 6.0 | present | 7.64 | 12.73 | 12.51 | 16.89 | 29.35 | 2925.3 | 0 |
+
+  - CPU by thread group, market (mixed / present): ModuleSystemWorker 9.35 / 11.15 s, BaseProcExecutor 6.12 / 10.17,
+    sead::MainThread 2.87 / 3.46, NavMeshCAStepDe 0.89 / 1.34.
+  - "Steps not 1/60" on the mixed build are pairs of a 2-step and a 0-step frame (bench.csv: 2.0000 then 0.0000):
+    the game clock is sampled at the present while the faster game thread has already stepped the next frame. A
+    sampling race, not a clock error; the same scene gives 0 on reruns (3 zoo_shadows reruns: 0, 2, 0).
+- **Havok** (`HOS_DBG=havok`, market, two pairs, CPU ms a frame mixed / present): hknp tasks 1.04 / 2.92, cloth 1.78
+  / 2.28, queries 0.32 / 1.25, step phase 0.16 / 0.44, all Havok 4.92 / 9.50; Havok wall per frame 7.06 / 13.6 ms.
+- **PGO.** The present lifter's hot set is built with its front-end profile; lift 2's hot partitions are -O2 without
+  a profile and still win. An IR-level profile needs `-fprofile-generate` on the `.ll` modules at a profiling build,
+  a run, `llvm-profdata merge`, and `-fprofile-use` with the same IR (function names and CFG checksums stable across
+  lifts, so the lift must be deterministic) (milestone 17).
+
 ## 15. Risks not retired
 
 - **Non-AAPCS functions** (SDK assembly, outlined helpers, veneers reading x16/x17): their number decides how much
