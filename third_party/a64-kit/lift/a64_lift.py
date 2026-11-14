@@ -26,11 +26,11 @@ from collections import Counter
 import a64emit
 
 
-# Lift-time FP switches (A64_VFPX_ELEM, A64_FPX_SLOWPATH, A64_FPX_FMA3; ported from HeyListen): on unless <name>=0. With
-# all three =0 the lift and its headers are byte for byte the lowering without them. Each is bit-exact with that lowering
-# (tests/test_vfpx_elem.py, tests/test_fpx_slowpath.py); together +5 fps on the market (uncapped, 81.0 -> 86.3). A switch
-# that changes the lifted text (A64_VFPX_ELEM, and A64_FPX_FMA3 through the inlined fast path) makes a PGO profile
-# recorded without it stale.
+# Lift-time FP switches (A64_VFPX_ELEM, A64_FPX_SLOWPATH, A64_FPX_FMA3, ported from HeyListen; A64_VFMINMAX): on unless
+# <name>=0. With all of them =0 the lift and its headers are byte for byte the lowering without them. Each is bit-exact
+# with that lowering (tests/test_vfpx_elem.py, tests/test_fpx_slowpath.py, tests/test_vfminmax.py); the first three
+# together +5 fps on the market (uncapped, 81.0 -> 86.3). A switch that changes the lifted text (A64_VFPX_ELEM,
+# A64_VFMINMAX, and A64_FPX_FMA3 through the inlined fast path) makes a PGO profile recorded without it stale.
 def lift_switch(name):
     return os.environ.get(name, "1") != "0"
 
@@ -690,8 +690,83 @@ static inline __attribute__((always_inline)) int a64_vfcmp(Ctx *c, uint64_t *d, 
 """
 
 
+# A64_VFMINMAX: vector FMIN / FMAX / FMINNM / FMAXNM (.2S / .4S) were the exact integer code per lane (NaN, signed-zero
+# and FZ tests, FPCR read twice a lane: ~90 x86 instructions an op). One SSE MINPS / MAXPS with the signed zeros fixed
+# when no lane is a NaN (and, under FZ, none is subnormal): then no FPSR flag is raised and FMINNM is FMIN. Any other
+# lane: the exact block, which stays behind the test as before (a64_vfminmax32 in a64_fpx.h). The block is recognised
+# by rebuilding the emitter's text for its registers (suyu/arm64_to_c.h EmitFPMinMax) and comparing it whole.
+def fpminmax_lane(minimum, numeric, a, b, store):
+    """EmitFPMinMax's text for a single-precision lane (whitespace aside)"""
+    s = ("{ uint64_t _a=%s,_b=%s,_v; const uint64_t _sign=0x80000000ULL,_exp=0x7f800000ULL,_frac=0x7fffffULL,"
+         "_quiet=0x400000ULL; " % (a, b))
+    s += ("if(c->fpcr & (1ULL<<24)) { if(!(_a&_exp)&&(_a&_frac)) { _a&=_sign; c->fpsr|=128; }"
+          " if(!(_b&_exp)&&(_b&_frac)) { _b&=_sign; c->fpsr|=128; } } ")
+    s += ("{ int _an=(_a&_exp)==_exp&&(_a&_frac), _bn=(_b&_exp)==_exp&&(_b&_frac);"
+          " int _as=_an&&!(_a&_quiet),_bs=_bn&&!(_b&_quiet); if(_as||_bs) { c->fpsr|=1; _v=(_as?_a:_b)|_quiet; } ")
+    if numeric:
+        s += "else if(_an&&!_bn) _v=_b; else if(_bn&&!_an) _v=_a; "
+    s += ("else if(_an||_bn) _v=(_an?_a:_b)|_quiet; else if(!((_a|_b)&~_sign)) _v=%s;"
+          " else { int _less=((_a^_b)&_sign)?!!(_a&_sign): ((_a&_sign)?_a>_b:_a<_b); _v=%s; } "
+          % ("(_a|_b)" if minimum else "(_a&_b)", "(_less?_a:_b)" if minimum else "(_less?_b:_a)"))
+    s += "if((c->fpcr&(1ULL<<25))&&((_v&_exp)==_exp)&&(_v&_frac)) { _v=_exp|_quiet; } %s } }" % store
+    return s
+
+
+VFMINMAX = re.compile(r"\{ uint32_t _n\[4\],_m\[4\],_r\[4\]=\{0\}; memcpy\(_n,c->vreg\[(\d+)\],16\); memcpy\(_m,c->vreg\[(\d+)\],16\);"
+                      r"(\s*\{ uint64_t _a=_n\[0\],_b=_m\[0\],_v; const uint64_t _sign=0x80000000ULL,(?:(?!memcpy\(c->vreg)[^\n]|\n)*?)"
+                      r"\s*memcpy\(c->vreg\[(\d+)\],_r,16\); \}")
+
+
+def vectorize_fminmax(text):
+    if "int _less=" not in text or not lift_switch("A64_VFMINMAX"):
+        return text
+
+    def sub(m):
+        rn, rm, body, rd = m.groups()
+        flat = " ".join(body.split())
+        for k in (4, 2):
+            for minimum in (1, 0):
+                for numeric in (0, 1):
+                    want = " ".join(fpminmax_lane(minimum, numeric, "_n[%d]" % e, "_m[%d]" % e, "_r[%d]=(uint32_t)_v;" % e)
+                                    for e in range(k))
+                    if flat == " ".join(want.split()):
+                        return "if (!a64_vfminmax32(c,c->vreg[%s],c->vreg[%s],c->vreg[%s],%d,%d)) %s" % (
+                            rd, rn, rm, k, 1 - minimum, m.group(0))
+        return m.group(0)
+    return VFMINMAX.sub(sub, text)
+
+
+VFMINMAX_HEADER = r"""
+/* ---- vector FMIN / FMAX / FMINNM / FMAXNM (.2S / .4S) on SSE (vectorize_fminmax in a64_lift.py): 1 when done (no NaN
+   lane; under FZ no subnormal lane: then no flag is raised, the NM forms are the plain ones, and the result is one of
+   the operands), 0 for the exact block. op: 0 FMIN, 1 FMAX. MINPS / MAXPS give their second operand on equal values:
+   the same bits, except for two zeros, where FMIN is a | b and FMAX a & b. ---- */
+static inline __attribute__((always_inline)) int a64_vfminmax32(Ctx *c, uint64_t *d, const uint64_t *n, const uint64_t *m, int k, int op) {
+#if RECOMP_FPX_HOST == 2
+    const __m128i a = _mm_loadu_si128((const __m128i *)n), b = _mm_loadu_si128((const __m128i *)m);
+    const __m128i abs_mask = _mm_set1_epi32(0x7fffffff), inf = _mm_set1_epi32(0x7f800000), z = _mm_setzero_si128();
+    const __m128i abs_a = _mm_and_si128(a, abs_mask), abs_b = _mm_and_si128(b, abs_mask);
+    __m128i bad = _mm_or_si128(_mm_cmpgt_epi32(abs_a, inf), _mm_cmpgt_epi32(abs_b, inf));   /* NaN */
+    if (c->fpcr & (1ULL << 24))   /* FZ: a subnormal is flushed (and flagged) by the exact block */
+        bad = _mm_or_si128(bad, _mm_or_si128(_mm_and_si128(_mm_cmpgt_epi32(abs_a, z), _mm_cmplt_epi32(abs_a, _mm_set1_epi32(0x00800000))),
+                                             _mm_and_si128(_mm_cmpgt_epi32(abs_b, z), _mm_cmplt_epi32(abs_b, _mm_set1_epi32(0x00800000)))));
+    if (_mm_movemask_epi8(bad) & (k == 4 ? 0xFFFF : 0x00FF)) return 0;
+    const __m128i zeros = _mm_and_si128(_mm_cmpeq_epi32(abs_a, z), _mm_cmpeq_epi32(abs_b, z));
+    const __m128 fa = _mm_castsi128_ps(a), fb = _mm_castsi128_ps(b);
+    const __m128i r = op ? _mm_and_si128(_mm_castps_si128(_mm_max_ps(fa, fb)), _mm_or_si128(a, _mm_xor_si128(zeros, _mm_set1_epi32(-1))))
+                         : _mm_or_si128(_mm_castps_si128(_mm_min_ps(fa, fb)), _mm_and_si128(zeros, a));
+    if (k == 4) _mm_storeu_si128((__m128i *)d, r); else a64_vst_lo64(d, r);
+    return 1;
+#else
+    (void)c; (void)d; (void)n; (void)m; (void)k; (void)op;
+    return 0;
+#endif
+}
+"""
+
+
 def vectorize_fpx(text):
-    text = vectorize_fcmp(text)
+    text = vectorize_fminmax(vectorize_fcmp(text))
     if "a64_fpx_" not in text or os.environ.get("A64_NO_VFPX"):
         return text
 
@@ -1241,6 +1316,8 @@ def fpx_header(used):
                                                        fast, exact, ", ".join("a%d" % i for i in range(ne))))
     out.append(VSET_HEADER)
     out.append(VFCMP_HEADER)
+    if lift_switch("A64_VFMINMAX"):
+        out.append(VFMINMAX_HEADER)
     elem = lift_switch("A64_VFPX_ELEM")
     if any(e[:2] in (("add32", "add32"), ("sub32", "sub32"), ("mul32", "fma32")) or (elem and e[:2] == ("fma32", "fma32"))
            for e in used):

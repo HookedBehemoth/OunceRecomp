@@ -413,7 +413,7 @@ load and a branch. `logall` turns every `log*` item on.
 | `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `-v2`, else `x86-64`) |
 | `RX_HOT_OPT`, `RX_NO_ORDER`, `RX_SOFT_WRITE_WATCH=0` | Optimisation level of the hot code; no hot-function link order; no software write watch |
-| `A64_VFPX_ELEM=0`, `A64_FPX_SLOWPATH=0`, `A64_FPX_FMA3=0` | (lift time) Turn off one of the FP lowerings that are on by default: NEON FMUL / FMLA / FMLS by element and vector FMLA as one SSE / AVX2 op; the exact slow paths' quiet-NaN, FDIV and estimate shortcuts; the binary32 FMA fast path by FMA3. Each is bit-exact (`tests/test_vfpx_elem.py`, `tests/test_fpx_slowpath.py`); with all three `=0` the lift is byte for byte the one without them |
+| `A64_VFPX_ELEM=0`, `A64_FPX_SLOWPATH=0`, `A64_FPX_FMA3=0`, `A64_VFMINMAX=0` | (lift time) Turn off one of the FP lowerings that are on by default: NEON FMUL / FMLA / FMLS by element and vector FMLA as one SSE / AVX2 op; the exact slow paths' quiet-NaN, FDIV and estimate shortcuts; the binary32 FMA fast path by FMA3; vector FMIN / FMAX / FMINNM / FMAXNM (.2S / .4S) as one MINPS / MAXPS. Each is bit-exact (`tests/test_vfpx_elem.py`, `tests/test_fpx_slowpath.py`, `tests/test_vfminmax.py`); with all four `=0` the lift is byte for byte the one without them |
 | `A64_HOT_FUNCS=<file>`, `A64_HOT_CHUNK=1` | (lift time) The listed functions call the FP helpers' inline fast paths and are lifted together into `code_hot.c`, built at `RX_HOT_OPT` (`scripts/relift.sh` sets both) |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
