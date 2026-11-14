@@ -161,6 +161,8 @@ class Builder:
 
     # ---- values
     def const(self, v, ty="i64"):
+        if ty[0] == "v":   # (a vector type: v in every lane)
+            return self.vconst(v, ty)
         v &= (1 << WIDTH[ty]) - 1
         key = (v, ty)
         c = self.fn.consts.get(key)
