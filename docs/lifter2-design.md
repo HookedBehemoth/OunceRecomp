@@ -287,13 +287,33 @@ and imports, the hook and probe tables.
 | FMINNM, FMAXNM | as above | `llvm.minimumnum`/`llvm.maximumnum` |
 | FCVTZS/FCVTZU, all widths | out of range gives 0x80000000 | `llvm.fpto[su]i.sat` |
 | FCVTNS/NU/AS/AU/MS/MU/PS/PU | as above | rounding intrinsic, then `.sat` |
-| generated NaN (invalid op) | 0xFFC00000 / 0xFFF8... | `default_nan` select on the result; can be switched off at lift time (`LIFT2_NAN_SIGN=0`) once a shadow run shows no reader cares |
+| generated NaN (invalid op) | 0xFFC00000 / 0xFFF8... | not fixed by default (an allowed deviation, 7.1); `LIFT2_DEFAULT_NAN=1` at lift time adds a select to ARM's default NaN after each arithmetic op (2-4 instructions per op) if the shadow run shows a reader cares |
 | NaN propagation with two NaN operands or a signalling NaN | x86 propagates src1 | not fixed: ARM differs only when the second operand is signalling; the shadow run counts it |
 | FZ: tininess | ARM flushes results tiny before rounding, x86 FTZ after | not fixed: differs only for results that round up to exactly the smallest normal; the shadow run counts it |
-| FRECPE, FRSQRTE | `rcpps` is a different estimate | ARM's table (exact), as an out-of-line vector routine |
+| FRECPE, FRSQRTE | `rcpps` is a different estimate | ARM's algorithm (exact), out of line per lane: `a64_frecpe_f32/f64`, `a64_frsqrte_f32/f64` in `nx2/lift2/rt_fp.c`, FZ and RMode read from MXCSR |
 | FRECPS, FRSQRTS | | `fma` plus the 0·∞ special case (2.0 / 1.5) |
-| FCVT to and from half | | F16C `vcvtps2ph`/`vcvtph2ps` (RN); FZ16/AHP not supported (FPCR writes with them trap in debug builds) |
+| FCVT to and from half | | `fptrunc`/`fpext` (F16C `vcvtps2ph`/`vcvtph2ps`); FZ16/AHP not supported |
+| FCMP, FCCMP | | four `fcmp`s give NZCV (unordered 0011); a following condition folds into one `fcmp` with the matching ordered/unordered predicate (`sem_int.cond`, kind `fcmp`) |
+| TBL, TBX | `pshufb` uses the low 4 bits of an index | `pshufb` per table register with the index made relative to it and `uadd.sat(idx, 0x70)`, which sets bit 7 for every index past 15 |
 | FABD, FACGE etc. | | compositions of the above |
+
+### 7.1 Allowed deviations from ARM (host FP mode)
+
+The checks (`tests/test_lift2_fp.py`, `nx2/test_lift2_fpleaf.py`) accept exactly these differences, count them by
+class, and fail on anything else:
+
+| class | what differs | where |
+|---|---|---|
+| `nan` | a NaN result where ARM's is a NaN too, with another sign or payload: x86's default NaN is negative (0xFFC00000), x86 propagates the first NaN operand where ARM prefers a signalling one, LLVM may commute operands; FPCR.DN is not modelled | every FP operation producing a NaN |
+| `fz-boundary` | under FZ, a result of the smallest normal magnitude where ARM flushes to zero, or the reverse: ARM detects tininess before rounding, x86 after | FP arithmetic under FZ |
+| `fz-minmax` | under FZ, a subnormal operand returned unflushed where ARM returns the signed zero (LLVM's minimum/maximum(num) lowering blends the original operand bits; DAZ only affects arithmetic) | FMIN/FMAX/FMINNM/FMAXNM, their pairwise and across-lane forms |
+| `snan-minmax` | a signalling NaN operand of FMINNM/FMAXNM is treated as quiet (the number is returned, ARM returns the quieted NaN) | FMINNM/FMAXNM and their pairwise/across forms |
+| FPSR | the cumulative flags are not computed per instruction: MRS FPSR sees the context's value ORed with MXCSR's sticky bits, which also record exceptions of lanes and operations the guest never had (64-bit arrangements are computed on 128-bit registers) | MRS FPSR (8 sites) |
+| FRSQRTS | the halving is a separate exact multiply by 0.5 after the fused (3 - a*b): differs only when the result is below 2^-125 (single) | FRSQRTS |
+| FP environment within a function | LLVM treats FP operations as free of side effects, so it may move them across an MSR FPCR inside the same function; rounding mode and FZ changes take effect for operations after the write in program order only at call boundaries | the 7 MSR FPCR sites |
+
+Not deviations (exact): FMIN/FMAX/FMINNM/FMAXNM signed zeros and quiet NaNs, all saturating conversions and
+rounding modes of FCVT*/FRINT*, FRECPE/FRSQRTE, FRECPS (0·∞ → 2), FCMP/FCCMP flags, every integer NEON operation.
 
 - A **shadow build** (`LIFT2_FP_SHADOW=1`) runs the present exact FPX1 helper next to each host-mode op and counts
   mismatches by class (NaN sign, NaN propagation, FZ boundary, FPSR at read sites). One game run, then goldens are
@@ -640,6 +660,59 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
   compiling `.ll`.
 - **Lift speed** for the whole program at 42-51 k instructions/s per core: about 6-7 min on one core, under a minute
   on 16 processes.
+
+## 14b. Milestones 9-11: FP scalar, vector/FP loads and stores, NEON (done, host FP mode)
+
+**Files** (`nx2/lift2/`):
+- `enc_fp.py`: FP data processing (1-3 sources), FCMP/FCCMP/FCSEL, FMOV immediate, conversions to and from integers
+  and fixed point, FMOV between register files (including `V.D[1]`), B/H/S/D/Q loads and stores of every addressing
+  mode, pairs, literals, LD1-LD4/ST1-ST4 multiple and single structure, LD1R-LD4R. 16 entries.
+- `enc_neon.py`: one entry per Arm ARM group (copy, three same/different, two-register misc, across lanes, scalar
+  pairwise, permutes, EXT, TBL/TBX, modified immediate, shift by immediate, by element), each with its scalar twin:
+  17 entries. A group's info function names the operation; printers and templates use it. Forms decoded but not
+  lifted are left undecoded (`UNLIFTED`), so `scope()` passes their functions over.
+- `sem_fp.py`, `sem_neon.py`: about 40 templates, lane-generic: each operation is written once for "a type" (`i32` or
+  `v4i32`, `f32` or `v4f32`). 64-bit arrangements are 64-bit LLVM vectors (LLVM widens them); a write zeroes the upper
+  half; scalar FP writes zero the register beyond lane 0 (LLVM drops the zeroing where only lane 0 is read again).
+- `rt_fp.c`: FRECPE/FRSQRTE (Arm's estimate algorithm); compiled into the runtime and into the tests.
+- IR (`ir.py`, `emit_llvm.py`): V0-V31 are SSA variables of type `v128`; lane views are bitcasts; new operations:
+  fadd/fsub/fmul/fdiv/fneg, fcmp, the FP casts, vector constants (FP ones as bit patterns), extract/insert/shuffle,
+  `call` of intrinsics and of `a64_*` runtime routines (`memory(none)` unless they take the context).
+- FPCR/FPSR: MRS/MSR are the integer side's (`t_sysreg`, context fields today). For host FP mode they must call
+  `sem_fp.fp_sysreg_read/write` (runtime helpers `a64_fpcr_read`, `a64_fpcr_write`, `a64_fpsr_read`,
+  `a64_fpsr_write`, each taking the context).
+
+**What the lifted code assumes of the runtime** (the runtime milestone provides it):
+- MXCSR = f(FPCR) on every guest thread whenever lifted code runs: FZ → DAZ|FTZ (0x8040), RMode RN/RP/RM/RZ → RC
+  0/2/1/3, all exceptions masked. Thread creation: FPCR 0 → 0x1F80. `fiber_switch` saves and restores MXCSR with the
+  guest context; HLE host code on guest threads runs under it.
+- `a64_fpcr_write(ctx, x)`: `ctx->fpcr = x`, MXCSR from it. `a64_fpcr_read(ctx)`: `ctx->fpcr`.
+- `a64_fpsr_read(ctx)`: `ctx->fpsr` | MXCSR sticky bits (IE→IOC, ZE→DZC, OE→OFC, UE→UFC, PE→IXC, DE→IDC only under
+  FZ). `a64_fpsr_write(ctx, x)`: `ctx->fpsr = x`, MXCSR sticky bits cleared. (`nx2/test_lift2_fpleaf.py` has the
+  reference implementation the harness uses.)
+- `a64_frecpe_f32/f64`, `a64_frsqrte_f32/f64` from `rt_fp.c`.
+
+**Results.**
+
+| check | result |
+|---|---|
+| decoder vs llvm-mc, every distinct game word | 2,032,675 words, 2,032,409 decoded, 0 differences |
+| census (words covered) | vector/FP load/store 100 % (333/333 forms), FP scalar 100 % (120/120), NEON 99.99 % (497/500); FP/NEON together 99.997 % of 1.59 M words |
+| not covered | SQRSHL V.4s (34 words), UDOT (4), FNEG V.8h (4) |
+| `tests/test_lift2_fp.py` (no game) | 356 instructions × 96 edge-value states (FPCR 0 and FZ), 0 differences outside 7.1; counted: `nan` 439 lanes, `fz-minmax` 11, `snan-minmax` 10 |
+| 770 FP/NEON leaves (seed 2, 8 states; 512 ran in Unicorn, 1,748 cases) | 0 differences against Unicorn (X, SP, NZCV, V0-V31, changed pages lane-wise) and against the present lifter; `nan` 96 chunks in 15 functions, no other class |
+| 148 FP/NEON call-tree roots (`--calls`, 306 functions lifted, 320 cases) | 0 differences; `nan` 92 chunks in 14 functions |
+| x86 instructions at -O1, the 770 leaves | present lifter 703,386, lift2 152,009 (0.216); 12.47 vs 2.69 per guest instruction |
+| x86 instructions, the call-tree functions | 228,378 vs 74,871 (0.328) |
+| f_8170a4e0 (phys_vertices_aabb_b, 119 instructions) | present lifter 6,666, lift2 306 at -O1 (228 at -O2); 0 differences in 5 cases |
+| f_817472e0 (186 instructions, a jump table) | lift2 440 at -O1 (target ≤ 2,600; section 1: 4,888 as lifted); the present lifter's harness cannot take it (its BR), so it is not compared |
+| lift speed, FP/NEON-heavy code | 33-37 k guest instructions/s per core (integer leaves: 42-56 k) |
+
+**What is left.**
+- SQRSHL/UQRSHL/SQSHL/UQSHL by register, PMUL/PMULL, SUQADD/USQADD, FCVTXN, FRECPX, UDOT/SDOT and FP16 arithmetic
+  are decoded as unallocated (`UNLIFTED` or not in the table): 42 words in the game.
+- `LIFT2_DEFAULT_NAN` is implemented for scalar and vector arithmetic but not measured.
+- The shadow build (milestone 12) and the MXCSR runtime (above).
 
 ## 15. Risks not retired
 
