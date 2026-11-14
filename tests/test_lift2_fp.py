@@ -745,11 +745,87 @@ def cases():
     C.append(("fcvtzs s0, s1", lambda st: {"v0": f_to_int(L(st, 1, 32)[0], 32, 32, True, "rz", st["fz"])}))
     C.append(("fabd s0, s1, s2", scalar_fp(lambda a, b, c, w, fz: (lambda r: r if is_nan(r, w) else r & ~(1 << 31))(
         f_add(a, b, w, fz, True)), 32)))
+    # the forms lifted last (SQRSHL family by register, PMUL/PMULL, SUQADD/USQADD, FCVTXN, FRECPX, SDOT/UDOT, FP16
+    # FNEG/FABS)
+    for Q, w, t in ((1, 8, "16b"), (0, 16, "4h"), (1, 32, "4s"), (1, 64, "2d")):
+        v3 = "v0.%s, v1.%s, v2.%s" % (t, t, t)
+        for mn, signed, rnd in (("sqshl", True, False), ("uqshl", False, False), ("sqrshl", True, True),
+                                ("uqrshl", False, True)):
+            C.append(("%s %s" % (mn, v3), int_vec(qshl_ref(signed, rnd), Q, w)))
+        C.append(("suqadd v0.%s, v1.%s" % (t, t), lambda st, Q=Q, w=w: {"v0": vec(Q, w, lambda k: sat(
+            sx(L(st, 0, w)[k], w) + L(st, 1, w)[k], w, True))}))
+        C.append(("usqadd v0.%s, v1.%s" % (t, t), lambda st, Q=Q, w=w: {"v0": vec(Q, w, lambda k: sat(
+            L(st, 0, w)[k] + sx(L(st, 1, w)[k], w), w, False))}))
+    C.append(("sqrshl s0, s1, s2", lambda st: {"v0": qshl_ref(True, True)(0, L(st, 1, 32)[0], L(st, 2, 32)[0], 32)}))
+    C.append(("pmul v0.16b, v1.16b, v2.16b", int_vec(lambda d, a, b, w: clmul(a, b) & 0xFF, 1, 8)))
+    C.append(("pmull v0.8h, v1.8b, v2.8b", lambda st: {"v0": pack([clmul(a, b) for a, b in zip(
+        L(st, 1, 8)[:8], L(st, 2, 8)[:8])], 16)}))
+    C.append(("fcvtxn s0, d1", lambda st: {"v0": cvt_odd(L(st, 1, 64)[0], st["fz"])}))
+    C.append(("fcvtxn2 v0.4s, v1.2d", lambda st: {"v0": L(st, 0, 64)[0] | pack(
+        [cvt_odd(x, st["fz"]) for x in L(st, 1, 64)], 32) << 64}))
+    C.append(("frecpx s0, s1", lambda st: {"v0": frecpx_ref(L(st, 1, 32)[0], 32)}))
+    C.append(("frecpx d0, d1", lambda st: {"v0": frecpx_ref(L(st, 1, 64)[0], 64)}))
+    for mn, signed in (("udot", False), ("sdot", True)):
+        for Q, t, bt in ((1, "4s", "16b"), (0, "2s", "8b")):
+            C.append(("%s v0.%s, v1.%s, v2.%s" % (mn, t, bt, bt), lambda st, Q=Q, signed=signed: {"v0": vec(
+                Q, 32, lambda k: L(st, 0, 32)[k] + sum(
+                    (sx(a, 8) if signed else a) * (sx(c, 8) if signed else c)
+                    for a, c in zip(L(st, 1, 8)[4 * k:4 * k + 4], L(st, 2, 8)[4 * k:4 * k + 4])))}))
+    C.append(("fneg v0.8h, v1.8h", two_reg(lambda a, w, st: a ^ 0x8000, 1, 16)))
+    C.append(("fabs v0.4h, v1.4h", two_reg(lambda a, w, st: a & 0x7FFF, 0, 16)))
     # MSR FPCR inside a function: the function is strictfp, the second multiply runs in round-toward-zero
     C.append(("fmul s0, s1, s2; mov x0, #12582912; msr fpcr, x0; fmul s3, s1, s2; mrs x1, fpcr",
               lambda st: {"v0": f_mul(L(st, 1, 32)[0], L(st, 2, 32)[0], 32, st["fz"]),
                           "v3": mul_rz(L(st, 1, 32)[0], L(st, 2, 32)[0], 32), "x1": 3 << 22}))
     return C
+
+
+def qshl_ref(signed, rnd):
+    def fn(d, a, b, w):
+        s = sx(b & 0xFF, 8)
+        x = sx(a, w) if signed else a
+        if s >= 0:
+            r = x << s
+        else:
+            r = (x + ((1 << (-s - 1)) if rnd else 0)) >> -s
+        return sat(r, w, signed)
+    return fn
+
+
+def clmul(a, b):
+    r = 0
+    for i in range(8):
+        if b >> i & 1:
+            r ^= a << i
+    return r
+
+
+def cvt_odd(x, fz):
+    """FCVTXN: FPRound to single with round-to-odd (truncate, then set the last bit if inexact)"""
+    if is_nan(x, 64):
+        return f_cvt(x, 64, 32, fz)
+    k, s, v = unpack(x, 64, fz)
+    if k == "inf":
+        return inf(s, 32)
+    if k == "zero":
+        return zero(s, 32)
+    t = fround(v, 32, fz, "rz")
+    _, _, tv = unpack(t, 32, 0)
+    if (t & 0x7F800000) == 0x7F800000:
+        tv = None
+    if tv != v:
+        t |= 1
+    return t
+
+
+def frecpx_ref(x, n):
+    e, f = FMT[n]
+    if is_nan(x, n):
+        return quiet(x, n)
+    s = x >> (n - 1)
+    ex = (x >> f) & ((1 << e) - 1)
+    ne = ((1 << e) - 2) if ex == 0 else (~ex & ((1 << e) - 1))
+    return s << (n - 1) | ne << f
 
 
 def mul_rz(x, y, n):

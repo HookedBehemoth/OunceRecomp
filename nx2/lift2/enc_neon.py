@@ -9,10 +9,7 @@ info functions.
 from .asm import r as xr
 from .enc_fp import ARR, fp_imm_value
 
-# Allocated forms the templates do not lift yet (left undecoded, so a function using one is passed over; none is
-# frequent in the game: the census lists them)
-UNLIFTED = {"3same": {"pmul", "sqshl", "uqshl", "sqrshl", "uqrshl"}, "3diff": {"pmull"},
-            "2misc": {"suqadd", "usqadd", "fcvtxn", "frecpx"}}
+UNLIFTED = {"3same": set(), "3diff": set(), "2misc": set()}   # (allocated forms not lifted: none left)
 
 
 def arr(size, Q):
@@ -102,7 +99,7 @@ def diff3_info(U, size, opcode):
     if opcode not in DIFF3 or size == 3:
         return None
     mn = DIFF3[opcode][U]
-    if mn is None or (mn.startswith("sqd") and size == 0) or mn in UNLIFTED["3diff"]:
+    if mn is None or (mn.startswith("sqd") and size == 0) or mn in UNLIFTED["3diff"] or (mn == "pmull" and size):
         return None
     return mn, DIFF3[opcode][2], size
 
@@ -299,6 +296,10 @@ ENCODINGS = [
      "same3_info(Q, U, size, opcode) is not None"),
     ("SIMD_S3SAME", "01 U 11110 size:2 1 Rm:5 opcode:5 1 Rn:5 Rd:5", "simd_3same", {"scalar": True},
      "same3_info(1, U, size, opcode, True) is not None"),
+    ("SIMD_DOT", "0 Q U 01110 size:2 0 Rm:5 1 opcode:4 1 Rn:5 Rd:5", "simd_dot", {},
+     "dot_info(Q, U, size, opcode) is not None"),
+    ("SIMD_2MISC16", "0 Q U 01110 a 1111 00 opcode:5 10 Rn:5 Rd:5", "simd_2misc16", {},
+     "fp16_misc_info(U, a, opcode) is not None"),
     ("SIMD_3DIFF", "0 Q U 01110 size:2 1 Rm:5 opcode:4 00 Rn:5 Rd:5", "simd_3diff", {},
      "diff3_info(U, size, opcode) is not None"),
     ("SIMD_2MISC", "0 Q U 01110 size:2 10000 opcode:5 10 Rn:5 Rd:5", "simd_2misc", {"scalar": False},
@@ -325,7 +326,17 @@ ENCODINGS = [
      "elem_info(1, U, size, L, opcode, True) is not None"),
 ]
 
-ENV = {"copy_info": copy_info, "same3_info": same3_info, "diff3_info": diff3_info, "misc2_info": misc2_info,
+def dot_info(Q, U, size, opcode):
+    """three same (extra): SDOT/UDOT (FEAT_DotProd)"""
+    return ("udot" if U else "sdot", "d", 2) if opcode == 2 and size == 2 else None
+
+
+def fp16_misc_info(U, a, opcode):
+    """two-register misc (FP16): FNEG and FABS, the only ones in the game (sign-bit operations)"""
+    return {(1, 1, 15): "fneg", (0, 1, 15): "fabs"}.get((U, a, opcode))
+
+
+ENV = {"dot_info": dot_info, "fp16_misc_info": fp16_misc_info, "copy_info": copy_info, "same3_info": same3_info, "diff3_info": diff3_info, "misc2_info": misc2_info,
        "across_info": across_info, "pair_info": pair_info, "modimm_info": modimm_info, "shift_info": shift_info,
        "elem_info": elem_info}
 
@@ -370,6 +381,16 @@ def _SIMD_3SAME(f, pc):
 def _SIMD_S3SAME(f, pc):
     mn, kind, size = same3_info(1, f["U"], f["size"], f["opcode"], True)
     return "%s %s, %s, %s" % (mn, sreg(f["Rd"], size), sreg(f["Rn"], size), sreg(f["Rm"], size))
+
+
+def _SIMD_DOT(f, pc):
+    mn = dot_info(f["Q"], f["U"], f["size"], f["opcode"])[0]
+    return "%s %s, %s, %s" % (mn, v(f["Rd"], arr(2, f["Q"])), v(f["Rn"], arr(0, f["Q"])), v(f["Rm"], arr(0, f["Q"])))
+
+
+def _SIMD_2MISC16(f, pc):
+    t = arr(1, f["Q"])
+    return "%s %s, %s" % (fp16_misc_info(f["U"], f["a"], f["opcode"]), v(f["Rd"], t), v(f["Rn"], t))
 
 
 def _SIMD_3DIFF(f, pc):

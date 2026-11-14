@@ -219,7 +219,59 @@ def int3(b, mn, x, y, d):
         return shl_reg(b, x, y, signed, "r" in mn[1:3])
     if mn in ("sqdmulh", "sqrdmulh"):
         return sqdmulh(b, x, y, mn == "sqrdmulh")
+    if mn in ("sqshl", "uqshl", "sqrshl", "uqrshl"):
+        return lanewise(b, lambda u, w: qshl_lane(b, u, w, signed, "r" in mn[2:]), x, y)
+    if mn == "pmul":
+        return pmul(b, x, y)
     return None
+
+
+def lanewise(b, fn, x, y):
+    """fn(lane of x, lane of y) for every lane (for the rare forms whose lanes need 128-bit arithmetic)"""
+    if x.ty[0] != "v":
+        return fn(x, y)
+    r = x
+    for k in range(lanes(x.ty)[0]):
+        r = b.insert(r, fn(b.extract(x, k), b.extract(y, k)), k)
+    return r
+
+
+def qshl_lane(b, x, m, signed, rnd):
+    """[SU]Q[R]SHL by register, one lane: x shifted by the signed low byte of m (right if negative, rounded when
+    rnd), saturated to the lane: computed in i128, where nothing overflows for shifts below 64"""
+    t = x.ty
+    w = WIDTH[t]
+    W = "i128"
+    sh = b.op("sext", W, trunc(b, m, "i8") if w > 8 else m)
+    X = ext(b, x, W, signed)
+    pos = b.icmp("sge", sh, b.const(0, W))
+    # left: shifts of w or more saturate any nonzero value (min(sh, 64) keeps the i128 shift defined)
+    l = b.bin("shl", X, b.call("llvm.umin.i128", W, sh, b.const(64, W)))
+    # right by n = -sh (1..128): rounded: (X + 2^(n-1)) >> n; both 0 or the sign past the width
+    n = b.call("llvm.umin.i128", W, b.bin("sub", b.const(0, W), sh), b.const(127, W))
+    rr = X
+    if rnd:
+        rr = b.bin("add", X, b.bin("shl", b.const(1, W), b.bin("sub", n, b.const(1, W))))
+    r = b.bin("ashr" if signed else "lshr", rr, n)
+    v = b.select(pos, l, r)
+    if signed:
+        lo, hi = -(1 << (w - 1)), smax_of(w)
+        v = b.call("llvm.smax.i128", W, v, b.const(lo, W))
+        v = b.call("llvm.smin.i128", W, v, b.const(hi, W))
+    else:
+        v = b.call("llvm.umin.i128", W, v, b.const((1 << w) - 1, W))
+    return trunc(b, v, t)
+
+
+def pmul(b, x, y):
+    """PMUL/PMULL: carry-less products, per lane (x and y already of the result's lane width)"""
+    t = x.ty
+    nb = 8
+    r = K(b, 0, t)
+    for i in range(nb):
+        bit = b.bin("and", b.bin("lshr", y, K(b, i, t)), K(b, 1, t))
+        r = b.bin("xor", r, b.bin("and", b.bin("shl", x, K(b, i, t)), b.bin("sub", K(b, 0, t), bit)))
+    return r
 
 
 def pairwise(b, x, y, fn):
@@ -326,6 +378,8 @@ def fp2(b, mn, x):
         return fsqrt(b, x)
     if mn in ("frecpe", "frsqrte"):
         return estimate(b, x, mn)
+    if mn == "frecpx":
+        return frecpx(b, x)
     if mn in ("fcmgt", "fcmeq", "fcmlt", "fcmge", "fcmle"):
         return mask(b, {"fcmgt": "ogt", "fcmeq": "oeq", "fcmlt": "olt", "fcmge": "oge", "fcmle": "ole"}[mn], x,
                     fK(b, 0.0, t), True)
@@ -434,6 +488,8 @@ def t_simd_3diff(b, f, pc, p):
         r = b.bin("add", d, b.bin("mul", x, y))
     elif mn in ("smlsl", "umlsl"):
         r = b.bin("sub", d, b.bin("mul", x, y))
+    elif mn == "pmull":
+        r = pmul(b, b.op("zext", wt, xn), b.op("zext", wt, yn))
     elif mn in ("sqdmull", "sqdmlal", "sqdmlsl"):
         pr = b.bin("mul", x, y)
         r = b.call("llvm.sadd.sat.%s" % sfx(wt), wt, pr, pr)
@@ -472,8 +528,12 @@ def t_simd_2misc(b, f, pc, p):
         x = b.bitcast(half(b, f["Rn"], 0, Q), "v2f32" if size == 3 else "v4f16")
         vwrite(b, f["Rd"], b.cast("fpext", x, "v2f64" if size == 3 else "v4f32"))
         return
-    if kind == "fx":
-        raise NotImplementedError(mn)
+    if kind == "fx":   # FCVTXN{2}: double to single, rounded to odd
+        if sc:
+            vwrite(b, f["Rd"], round_odd(b, vread(b, f["Rn"], "f64")))
+        else:
+            put_half(b, f["Rd"], round_odd(b, vread(b, f["Rn"], "v2f64")), Q)
+        return
     if kind == "n":
         if sc:
             x = vread(b, f["Rn"], lane_t(size + 1))
@@ -529,6 +589,10 @@ def t_simd_2misc(b, f, pc, p):
         r = b.call("llvm.abs.%s" % sfx(t), t, x, b.const(0, "i1"))
     elif mn == "neg":
         r = b.bin("sub", K(b, 0, t), x)
+    elif mn in ("suqadd", "usqadd"):   # Vd (signed / unsigned) + Vn (the other), saturated as Vd
+        d = vread(b, f["Rd"], t)
+        signed_d = mn == "suqadd"
+        r = lanewise(b, lambda u, v_: sat_lane(b, d_add(b, u, v_, signed_d), WIDTH[lane_of(t)], signed_d), d, x)
     elif mn in ("sqabs", "sqneg"):
         mn_ = K(b, 1 << (w - 1), t)
         a = b.call("llvm.abs.%s" % sfx(t), t, x, b.const(0, "i1")) if mn == "sqabs" else b.bin("sub", K(b, 0, t), x)
@@ -538,6 +602,56 @@ def t_simd_2misc(b, f, pc, p):
     else:
         raise NotImplementedError(mn)
     vwrite(b, f["Rd"], r)
+
+
+def d_add(b, d, n, signed_d):
+    """SUQADD/USQADD's sum, exact in i128: d of its signedness plus n of the other"""
+    return b.bin("add", ext(b, d, "i128", signed_d), ext(b, n, "i128", not signed_d))
+
+
+def sat_lane(b, v, w, signed):
+    if signed:
+        v = b.call("llvm.smax.i128", "i128", v, b.const(-(1 << (w - 1)), "i128"))
+        v = b.call("llvm.smin.i128", "i128", v, b.const(smax_of(w), "i128"))
+    else:
+        v = b.call("llvm.smax.i128", "i128", v, b.const(0, "i128"))
+        v = b.call("llvm.smin.i128", "i128", v, b.const((1 << w) - 1, "i128"))
+    return trunc(b, v, "i%d" % w)
+
+
+def round_odd(b, x):
+    """FCVTXN: double to single with round-to-odd: the nearest conversion stepped back toward zero when it went past
+    the exact value, then the last bit set when inexact (NaNs as FCVT's)"""
+    t = shape(x.ty, "f32")
+    it = ity(t)
+    mt = shape(x.ty, "i1")
+    r = b.cast("fptrunc", x, t)
+    back = b.cast("fpext", r, x.ty)
+    inexact = b.op("fcmp", mt, back, x, pred="one")
+    past = b.op("fcmp", mt, fabs(b, back), fabs(b, x), pred="ogt")
+    bits = b.bitcast(r, it)
+    bits = b.select(b.bin("and", inexact, past), b.bin("sub", bits, K(b, 1, it)), bits)
+    bits = b.select(inexact, b.bin("or", bits, K(b, 1, it)), bits)
+    return b.bitcast(bits, t)
+
+
+def frecpx(b, x):
+    """FRECPX: the exponent inverted, the fraction cleared; zero and subnormal give the largest exponent below
+    infinity's; a NaN is quieted"""
+    t = x.ty
+    it = ity(t)
+    w = WIDTH[lane_of(t)]
+    F = 23 if w == 32 else 52
+    em = (1 << (w - 1 - F)) - 1
+    mt = shape(t, "i1")
+    u = b.bitcast(x, it)
+    e = b.bin("and", b.bin("lshr", u, K(b, F, it)), K(b, em, it))
+    sign = b.bin("and", u, K(b, 1 << (w - 1), it))
+    ne = b.bin("shl", b.bin("xor", e, K(b, em, it)), K(b, F, it))
+    r = b.select(b.op("icmp", mt, e, K(b, 0, it), pred="eq"), K(b, (em - 1) << F, it), ne)
+    nan = b.op("fcmp", mt, x, x, pred="uno")
+    r = b.select(nan, b.bin("or", u, K(b, 1 << (F - 1), it)), b.bin("or", sign, r))
+    return b.bitcast(r, t)
 
 
 def tree(b, xs, fn):
@@ -763,6 +877,30 @@ def t_simd_elem(b, f, pc, p):
     y = e if sc else splat(b, e, t)
     d = vread(b, f["Rd"], t) if mn in ("mla", "mls", "fmla", "fmls") else None
     vwrite(b, f["Rd"], fp3(b, mn, x, y, d) if fp else int3(b, mn, x, y, d))
+
+
+def t_simd_dot(b, f, pc, p):
+    """SDOT/UDOT: each 32-bit lane of Vd plus the four products of the matching bytes"""
+    Q = f["Q"]
+    signed = not f["U"]
+    n = 16 if Q else 8
+    bt, wt = VT(0, Q), vtype(n, "i32")
+    x = ext(b, vread(b, f["Rn"], bt), wt, signed)
+    y = ext(b, vread(b, f["Rm"], bt), wt, signed)
+    pr = b.bin("mul", x, y)
+    s = None
+    for k in range(4):
+        part = b.shuffle(pr, pr, list(range(k, n, 4)))
+        s = part if s is None else b.bin("add", s, part)
+    vwrite(b, f["Rd"], b.bin("add", vread(b, f["Rd"], VT(2, Q)), s))
+
+
+def t_simd_2misc16(b, f, pc, p):
+    """FNEG/FABS of half-precision lanes: the sign bit"""
+    t = VT(1, f["Q"])
+    x = vread(b, f["Rn"], t)
+    mn = E.fp16_misc_info(f["U"], f["a"], f["opcode"])
+    vwrite(b, f["Rd"], b.bin("xor", x, K(b, 0x8000, t)) if mn == "fneg" else b.bin("and", x, K(b, 0x7FFF, t)))
 
 
 TEMPLATES = {k[2:]: v for k, v in globals().items() if k.startswith("t_")}
