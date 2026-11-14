@@ -177,6 +177,9 @@ def main():
         print("  BR without a table: %#x (x%d)" % (pc, reg))
     with open(os.path.join(img_dir, "functions.json"), "w") as f:
         json.dump({"%x" % e: [len(b), module_of(img, e)] for e, (b, _) in L.funcs.items()}, f)
+    if os.environ.get("HOOKSHOT_LIFT2"):   # (the mixed build: what lift 2 needs, nx2/lift2/mixed.py)
+        from lift2 import mixed
+        mixed.write_plan(L, img, os.path.join(out_dir, "lift2_plan.pickle"))
     if a.write:
         if not a.no_polls:
             poll.install()

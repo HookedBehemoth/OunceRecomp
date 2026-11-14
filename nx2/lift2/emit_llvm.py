@@ -338,11 +338,14 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
     elif op == "icall":
         decls.add("declare void @a64_icall(ptr, i64)")
         out.append("  call void @a64_icall(ptr %%ctx, %s)" % typed(a[0]))
+    elif op == "svc":
+        decls.add("declare void @a64_svc(ptr, i32)")
+        out.append("  call void @a64_svc(ptr %%ctx, i32 %d)" % v.attrs["imm"])
     elif op == "poll":
         decls.add("helper:lift2_poll")
         out.append("  call void @lift2_poll(ptr %ctx)")
     elif op == "flagsout":
-        if not flags_out:   # (with flags_out every flag write is stored already)
+        if not flags_out or v.attrs and v.attrs.get("always"):   # (with flags_out every flag write is stored already)
             for k, var in enumerate("nzcv"):
                 out.append("  %%fo%d.%s = zext i1 %s to i8" % (v.id, var, ref(a[k])))
                 out.append("  store i8 %%fo%d.%s, ptr %%cx.%s, align 1" % (v.id, var, var))

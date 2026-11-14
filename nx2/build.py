@@ -708,6 +708,13 @@ def main():
         srcs = [s for s in srcs if os.path.exists(s)]
     if a.dry_run:   # (the lift's files: there is no game here)
         srcs = [s for s in srcs if os.path.dirname(s) != gen]
+    # (HOOKSHOT_LIFT2: the functions lift 2 can take come from it, nx2/lift2/mixed.py; unset, nothing here runs)
+    lift2_objs = []
+    if os.environ.get("HOOKSHOT_LIFT2") and not a.only and not a.dry_run and not os.environ.get("RX_DIRECT_ONLY"):
+        from lift2 import mixed
+        srcs, lift2_objs, line = mixed.prepare(os.environ["HOOKSHOT_LIFT2"], gen, out, srcs, a.jobs, a.opt,
+                                               os.environ.get("RX_HOT_OPT", "O2"), target() + CPU, OBJ_CACHE)
+        print(line, flush=True)
     # the longest first, so the long ones do not end up alone at the end (compile_cost)
     costs = chunk_costs(gen)
     srcs.sort(key=lambda s: -compile_cost(s, costs))
@@ -910,6 +917,7 @@ def main():
         return 1
     vk_objs = {j[2] for j in direct_jobs}   # (the back end's objects: not the exe's)
     objs = [j[2] for j in jobs if j[2] not in vk_objs]
+    objs += lift2_objs
     rsp = os.path.join(out, "objs.rsp")
     open(rsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in objs))
     if a.lib:

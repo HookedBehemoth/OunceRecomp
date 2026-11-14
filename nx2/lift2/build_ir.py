@@ -13,7 +13,8 @@ Control leaving the function:
   share one prototype);
 - BR: a jump table's switch when the discovery resolved one (the cases inside the function are branches, the others
   tail calls), else the runtime's a64_ijump(ctx, target);
-- RET: return; BRK, HLT, UDF: the runtime's a64_trap.
+- RET: return; BRK, HLT, UDF: the runtime's a64_trap;
+- SVC: the runtime's a64_svc(ctx, imm) with the flags stored first; every register the context's again after it.
 A branch back to an earlier address polls (nx2/poll.py's rule: the loops' back edges).
 scope() says why a function cannot be lifted yet.
 """
@@ -70,8 +71,6 @@ def scope(entry, pcs, word, prog=LEAF):
         if i is None:
             return "word %08x at %#x not decoded" % (word(pc), pc)
         t = i.entry.template
-        if t == "exc" and i.f["opc"] == 0:
-            return "SVC at %#x" % pc
         if t not in TERMINATORS and sem.TEMPLATES.get(t) is None:
             return "%s at %#x" % (i.entry.name, pc)
         tg = target(i, pc)
@@ -175,8 +174,14 @@ def build(entry, pcs, word, prog=LEAF):
                 cur.term = ("br", goto(pc + 4, pc))
                 cur = None
             continue
-        if t == "exc" and f["opc"] == 0:
-            raise ValueError("SVC at %#x: milestone 7" % pc)
+        if t == "exc" and f["opc"] == 0:   # SVC: the OS layer may switch threads (fibers), so the flags go too
+            b.op("flagsout", "void", *[b.get(fl) for fl in "nzcv"])
+            b.op("svc", "void", imm=f["imm16"])
+            b.after_call()
+            if pc + 4 not in body:
+                cur.term = ("br", goto(pc + 4, pc))
+                cur = None
+            continue
         if t == "b":
             cur.term = ("br", goto(target(i, pc), pc))
         elif t == "bcond":
