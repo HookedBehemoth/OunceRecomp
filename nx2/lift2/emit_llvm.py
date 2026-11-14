@@ -32,7 +32,7 @@ class Module:
 
     def text(self):
         head = ['target triple = "%s"' % TRIPLE,
-                "@a64_dirty = external global [%d x i8]" % DIRTY_PAGES]
+                "@a64_dirty = external global [%d x i8]" % DIRTY_PAGES, MARK_FN]
         return "\n".join(head + sorted(self.decls) + self.funcs) + "\n"
 
 
@@ -56,13 +56,17 @@ def emit_function(fn, decls, flags_out=False):
     out.append("entry:")
     eb = fn.entry_block()
     ins = {}
+    # one address per context field the function touches (entry loads and write-through stores share it)
+    used = set(eb.params) | {v.attrs["var"] for blk in fn.blocks.values() for v in blk.ops if v.op == "writeback"
+                             and (flags_out or v.attrs["var"] not in ("n", "z", "c", "v"))}
+    for var in sorted(used, key=lambda x: CTX_OFF[x]):
+        out.append("  %%cx.%s = getelementptr i8, ptr %%ctx, i64 %d" % (var, CTX_OFF[var]))
     for var, p in eb.params.items():
-        out.append("  %%in.%s.p = getelementptr i8, ptr %%ctx, i64 %d" % (var, CTX_OFF[var]))
         if p.ty == "i1":
-            out.append("  %%in.%s.b = load i8, ptr %%in.%s.p, align 1" % (var, var))
+            out.append("  %%in.%s.b = load i8, ptr %%cx.%s, align 1" % (var, var))
             out.append("  %%in.%s = trunc i8 %%in.%s.b to i1" % (var, var))
         else:
-            out.append("  %%in.%s = load i64, ptr %%in.%s.p, align 8" % (var, var))
+            out.append("  %%in.%s = load i64, ptr %%cx.%s, align 8" % (var, var))
         ins[var] = "%%in.%s" % var
     out.append("  br label %%%s" % eb.name)
     for blk in fn.blocks.values():
@@ -79,13 +83,11 @@ def emit_function(fn, decls, flags_out=False):
                 var = v.attrs["var"]
                 if var in ("n", "z", "c", "v") and not flags_out:
                     continue
-                p = "%%wb%d" % v.id
-                out.append("  %s = getelementptr i8, ptr %%ctx, i64 %d" % (p, CTX_OFF[var]))
-                if v.ty == "void" and v.args[0].ty == "i1":
-                    out.append("  %s.b = zext i1 %s to i8" % (p, ref(v.args[0])))
-                    out.append("  store i8 %s.b, ptr %s, align 1" % (p, p))
+                if v.args[0].ty == "i1":
+                    out.append("  %%wb%d = zext i1 %s to i8" % (v.id, ref(v.args[0])))
+                    out.append("  store i8 %%wb%d, ptr %%cx.%s, align 1" % (v.id, var))
                 else:
-                    out.append("  store i64 %s, ptr %s, align 8" % (ref(v.args[0]), p))
+                    out.append("  store i64 %s, ptr %%cx.%s, align 8" % (ref(v.args[0]), var))
                 continue
             emit_op(v, ref, typed, out, decls)
         t = blk.term
@@ -106,14 +108,24 @@ def emit_function(fn, decls, flags_out=False):
     return "\n".join(out)
 
 
+MARK_FN = """define internal void @mark(i64 %a, i64 %b) alwaysinline {
+  %m0 = lshr i64 %a, 12
+  %i0 = and i64 %m0, DIRTY_MASK
+  %d0 = getelementptr i8, ptr @a64_dirty, i64 %i0
+  store atomic i8 1, ptr %d0 release, align 1
+  %m1 = lshr i64 %b, 12
+  %i1 = and i64 %m1, DIRTY_MASK
+  %d1 = getelementptr i8, ptr @a64_dirty, i64 %i1
+  store atomic i8 1, ptr %d1 release, align 1
+  ret void
+}""".replace("DIRTY_MASK", str(DIRTY_PAGES - 1))
+
+
 def emit_mark(p, base, lo, hi, out):
-    """A64_MARK: 1 into a64_dirty at the pages of base + lo and base + hi - 1, as release stores"""
-    for k, off in enumerate((lo, hi - 1)):
-        out.append("  %s.a%d = add i64 %s, %d" % (p, k, base, off))
-        out.append("  %s.m%d = lshr i64 %s.a%d, 12" % (p, k, p, k))
-        out.append("  %s.i%d = and i64 %s.m%d, %d" % (p, k, p, k, DIRTY_PAGES - 1))
-        out.append("  %s.d%d = getelementptr i8, ptr @a64_dirty, i64 %s.i%d" % (p, k, p, k))
-        out.append("  store atomic i8 1, ptr %s.d%d release, align 1" % (p, k))
+    """A64_MARK: 1 into a64_dirty at the pages of base + lo and base + hi - 1, as release stores (@mark, inlined)"""
+    out.append("  %s.a = add i64 %s, %d" % (p, base, lo))
+    out.append("  %s.b = add i64 %s, %d" % (p, base, hi - 1))
+    out.append("  call void @mark(i64 %s.a, i64 %s.b)" % (p, p))
 
 
 def emit_op(v, ref, typed, out, decls):
