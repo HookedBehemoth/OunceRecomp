@@ -286,7 +286,7 @@ def lift_part(args):
         prog.probes = probes.find(e, pcs, w.__getitem__)
         prog.probes.update(probes.after_c(plan.get("after_c", {}), pcs, w.__getitem__))
         prog.probes.update(probes.after_c(probes.splice_texts(e, w.__getitem__), pcs, w.__getitem__))
-        prog.probes.update(probes.splice_before(e, pcs, w.__getitem__))
+        prog.before = probes.splice_before(e, pcs, w.__getitem__)
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
         fn.entry_hook = hooks.get(e)
         if verify and verified(plan, e):

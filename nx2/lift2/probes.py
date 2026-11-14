@@ -141,27 +141,25 @@ SPLICE_BEFORE = {
 
 
 def splice_before(func, pcs, word):
-    """{pc: lowering} of a function's SPLICE_BEFORE site; SystemExit when its word differs or the next instruction is
+    """{pc: fn(builder)} of a function's SPLICE_BEFORE site, for Program.before; SystemExit when its word differs or the next instruction is
     a branch target (the call would run on another path too)"""
     if func not in SPLICE_BEFORE:
         return {}
     at, w = SPLICE_BEFORE[func]
     if word(at) != w:
         raise SystemExit("lift2 probes: SPLICE_BEFORE f_%08x at %#x holds %08x, not %08x" % (func, at, word(at), w))
-    from .build_ir import target, TERMINATORS
-    nxt = enc.decode(word(at + 4))
-    if nxt is None or nxt.entry.template in TERMINATORS:
-        raise SystemExit("lift2 probes: SPLICE_BEFORE f_%08x: %#x is not an instruction a probe can precede" % (func, at + 4))
+    from .build_ir import target
+    if enc.decode(word(at + 4)) is None:
+        raise SystemExit("lift2 probes: SPLICE_BEFORE f_%08x: %#x is not an instruction" % (func, at + 4))
     for pc in pcs:
         i = enc.decode(word(pc))
         if i is not None and target(i, pc) == at + 4:
             raise SystemExit("lift2 probes: SPLICE_BEFORE f_%08x: %#x is a branch target (from %#x)" % (func, at + 4, pc))
     name = "splice_0x%08x" % func
 
-    def lower(b, insn, pc):
+    def lower(b):   # (Program.before: the next instruction may be a branch, as f_8007fe60's CBNZ)
         b.call(name, "void", ctx=True, effects=True)
         b.after_call()
-        sem.TEMPLATES[insn.entry.template](b, insn.f, pc, insn.entry.params)
     return {at + 4: lower}
 
 

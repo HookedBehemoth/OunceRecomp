@@ -40,6 +40,7 @@ class Program:
         self.symbol = symbol or (lambda e: "g_%08x" % e)
         self.no_call = set(no_call)
         self.probes = {}   # pc -> fn(builder, insn, pc): the instruction replaced by a probe (probes.py, section 9)
+        self.before = {}   # pc -> fn(builder): run before the instruction at pc, whatever it is (probes.splice_before)
 
 
 LEAF = Program()
@@ -154,6 +155,8 @@ def build(entry, pcs, word, prog=LEAF):
                 cur.term = ("br", nxt)
             cur = nxt
             b.at(cur)
+        if pc in prog.before:
+            prog.before[pc](b)
         i = enc.decode(word(pc))
         t = i.entry.template
         f = i.f

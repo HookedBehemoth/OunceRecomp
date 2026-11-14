@@ -1299,6 +1299,57 @@ class AfterC(unittest.TestCase):
             out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
         self.assertEqual(out, ["40", "41"])
 
+    def test_splice_before_a_branch(self):
+        """SPLICE_BEFORE (f_8007fe60's form): the splice runs on a TBZ's fall-through, before the CBNZ there, and the
+        CBNZ reads the register the splice wrote (x1 = 0: falls through to the add)"""
+        from lift2 import probes
+        # tbz w0, #0, #12; cbnz x1, #8; add x8, x8, #100; ret
+        words = [0x36000060, 0xb5000041, 0x91019108, 0xd65f03c0]
+        base = 0x80003000
+        word = lambda pc: words[(pc - base) // 4]
+        pcs = [base + 4 * k for k in range(len(words))]
+        prog = build_ir.Program()
+        saved = dict(probes.SPLICE_BEFORE)
+        probes.SPLICE_BEFORE[base] = (base, words[0])
+        try:
+            prog.before = probes.splice_before(base, pcs, word)
+        finally:
+            probes.SPLICE_BEFORE.clear()
+            probes.SPLICE_BEFORE.update(saved)
+        self.assertEqual(list(prog.before), [base + 4])
+        fn = build_ir.build(base, pcs, word, prog)
+        m = emit_llvm.Module()
+        m.add(fn)
+        harness = r"""
+#include "a64.h"
+#include <stdio.h>
+unsigned char a64_dirty[1u << 27];
+void a64_poll_cur(void) {}
+void g_80003000(Ctx *);
+static int calls;
+void splice_0x80003000(Ctx *c) { calls++; c->x[8] += 1; c->x[1] = 0; }
+int main(void) {
+    for (int k = 0; k < 3; k++) {
+        Ctx c; memset(&c, 0, sizeof c); c.x[0] = k != 0; c.x[1] = k == 2 ? 5 : 0; calls = 0;
+        g_80003000(&c);
+        printf("%llu/%d ", (unsigned long long)c.x[8], calls);
+    }
+    printf("\n");
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a64.h"), "w") as fo:
+                fo.write(CTX_H)
+            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
+            with open(ll, "w") as fo:
+                fo.write(m.text())
+            with open(c, "w") as fo:
+                fo.write(harness)
+            subprocess.run([llvm.check("clang"), "-O1", "-w", "-I" + d, c, ll, "-o", exe], check=True)
+            out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out, ["0/0", "101/1", "101/1"])
+
 
 if __name__ == "__main__":
     unittest.main()
