@@ -51,6 +51,12 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses. It
 is not a focus override.
 
+**Parked while the present lifter is retired** (`nx2/oot_parked.py`; the table in
+[lifter2-design.md](lifter2-design.md#14i-parked-patches)): the game's menus no longer follow the mouse (pointing,
+clicking and scrolling in the title, pause and option menus) until those hooks are re-implemented on lift 2. The
+native mouse camera, the free camera, text speed, heart protection and flight are parked too: their switches do
+nothing meanwhile.
+
 ## Iterating quickly (Linux)
 
 Everything made from the game lives in `work/` (git ignores it). Run Python as `work/venv/bin/python -I`.
@@ -232,12 +238,12 @@ beside them are listed at the end, under Undocumented, with where they are read.
 | `HOS_XINPUT` | (set) poll XInput even when SDL has open controllers |
 | `HOS_NO_SDL` | (set) controllers are not read through SDL |
 | `HOS_HD_RUMBLE` | `0`: no HD rumble |
-| `HOS_MOUSE_NATIVE` | `<0|1>` over the menu: native mouse look |
+| `HOS_MOUSE_NATIVE` | `<0|1>` over the menu: native mouse look (parked: no effect for now) |
 | `HOS_MOUSE_INVERT_Y` | (set) invert the mouse's vertical axis |
 | `HOS_MOUSE_SENS` | `<factor>`: mouse sensitivity, over the menu and `mouse_sens.txt` |
 | `HOS_MOUSE_DECAY` | `<percent>`: the mouse look's decay rate (default 0.30) |
 | `HOS_MOUSE_MIN_DECAY` | `<percent>`: its minimum decay (default 0.20) |
-| `HOS_MENU_DRAG_GAIN` | `<float>`: menu drag gain (default 6.0) |
+| `HOS_MENU_DRAG_GAIN` | `<float>`: menu drag gain (default 6.0; the menus' mouse is parked: no effect for now) |
 | `HOS_MENU_TRACE` | (set) the host's stick values logged |
 
 The presses are `<seconds>:<button>[+<button>...][/<ms>]`, separated by commas, for example `2:A,5.5:LUP/1500,9:ZL+R`.

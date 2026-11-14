@@ -3,7 +3,7 @@
    smoothing and no top speed, in place of the mouse as the right stick (nn_hid.c's mouse_stick).
 
    Where the angles are: the player camera's update, f_80644c80 (a virtual method, the camera in x0), calls
-   hos_mouse_camera first (nx2/oot_patches.py, patch_mouse_camera), on the game's thread, once a frame while that camera
+   hos_mouse_camera first (nx2/oot_parked.py, patch_mouse_camera: parked, not called while the present lifter is retired), on the game's thread, once a frame while that camera
    runs. The camera holds its pitch limits at +0x178 ({-85, 89} in the field), its pitch at +0x18c and its yaw at +0x1a4.
    The game turns them by the right stick in f_80649c10 (yaw, wrapped at 180) and f_8064b770 (pitch, within the limits),
    which f_80644c80 calls only while the stick is out of its dead zone (found with hardware write watchpoints on the two
@@ -66,7 +66,7 @@ static int looks_like_camera(uint64_t cam) {
            fabsf(y) <= 360.0f;
 }
 
-/* f_80644c80's first line (nx2/oot_patches.py): cam is the player camera, the game's thread */
+/* f_80644c80's first line (nx2/oot_parked.py: parked): cam is the player camera, the game's thread */
 void hos_mouse_camera(uint64_t cam) {
     if (!cam || !native_on() || !looks_like_camera(cam)) return;
     /* Only while it is the view: following Link (3) or turned by the player (4). Aiming the slingshot in first person

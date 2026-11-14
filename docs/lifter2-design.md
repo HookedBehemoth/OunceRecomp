@@ -1069,8 +1069,8 @@ writes only its own functions (`Lifter.only`):
   addresses `nx2/oot_patches.py` names, comments included (heads `f_`, labels `L_`, constants and return addresses
   `0x`: the function holding the address, and for a return address the call before it; the output-size patches are
   anchored by text alone and name their functions only in comments), the `SPLICE_AFTER` addresses of `host/*.c`
-  that lift 2 does not call itself (`probes.SPLICE_AT`), and the functions with C after an instruction (`Lifter.after`:
-  `mixed.edited_functions` still counts them edited, as their C calls `hos_*`). Not edits: `ENTRY_HOOK`s (lift 2
+  that lift 2 does not call itself (`probes.SPLICE_AT`, `SPLICE_BEFORE`). Not edits: the C after an instruction
+  (`Lifter.after`, which lift 2 makes with `probes.after_c`; see the correction below), `ENTRY_HOOK`s (lift 2
   makes them, the build takes them from `host/*.c` for functions without present-lifter C) and the patches lift 2
   makes as probes. Checked against a full write of the C at 80f185c: 32 functions of lift 2's bodies edited, 0
   missed, 24 over-predicted (functions the patches' comments mention, a few constants: they stay on the present
@@ -1145,6 +1145,34 @@ What the build still needs once the present lifter owns nothing, and why:
   `nx2/split_hot.py`, `nx2/pgo_pieces.py`, `nx2/census.py`, `nx2/test_insn.py`, `nx2/test_leaf.py` and the parts of
   `nx2/test_lift2_leaf.py` that compare with the present lifter; `nx2/build.py`'s present-lifter paths (code_*.c,
   a64_suyu.c, the thunked sources). Step 4's deletion list gives each with what replaces it.
+
+**Correction to step 1 (C after an instruction).** `probes.after_c` (80f185c) made the C of `oot_wide`, `oot_jitter` and
+`oot_occlusion` callable after its instruction in lift 2, but the build never used it: `mixed.edited_functions` took
+the `hos_*` calls in that C for a host edit and kept the 12 functions on the present lifter, and `owned.compute` then
+added them to the owned set on purpose. The rise from 294,479 to 294,490 lift 2 functions at 80f185c was the 11
+`SPLICE_AT` functions alone, and that round's in-game check of widescreen and occlusion ran the present lifter's
+code on both builds. Now `edited_functions` strips the plan's after-C text before looking for edits and
+`owned.compute` no longer adds `Lifter.after`; the 12 functions are lift 2's unless another edit keeps them (see the
+check in game below).
+
+## 14i. Parked patches
+
+Patches of the present lifter's C that are not ported to lift 2 yet and are not applied meanwhile, so that the
+present lifter can be retired. Their code is kept, unchanged, in `nx2/oot_parked.py`, which nothing calls; the host
+functions they called stay. Each comes back as a probe (`nx2/lift2/probes.py`) or is dropped.
+
+| patch | function | what it did | switch | default | lost while parked |
+|---|---|---|---|---|---|
+| heart protection (`patch_life`) | `f_804bd8c0` | a hit on the player does not lower its life | Insert menu cheat, `HOS_OOT_PROTECT_HEARTS` | off | the cheat |
+| flight (`patch_movement`) | `f_82c415e0` | lifts the player and poses it in flight (`hos_oot_lift_player`, `hos_oot_flight_pose`) | Insert menu cheat (`HOS_OPT_CHEAT_FLIGHT`) | off | the cheat |
+| flight rotation (`patch_flight_rotation`) | `f_806d2530` | the flight's turn (`hos_oot_flight_rotation`) | as flight | off | as flight |
+| free camera (`patch_view`) | `f_804e48c0` (the view loop's head) | `hos_oot_free_view`: the view follows the free camera | Insert menu cheat (`HOS_OPT_CHEAT_CAMERA`) | off | the free camera; `f_804e48c0` keeps its widescreen C after an instruction, on lift 2 |
+| native mouse camera (`patch_mouse_camera`) | `f_80644c80` | `hos_mouse_camera` first in the player camera's update: the mouse turns the camera | Insert menu "Mouse camera", `HOS_MOUSE_NATIVE` | off | mouse look |
+| text speed (`patch_text_speed`) | `f_80b1e140` | the text pane's letter clock times `hos_text_scale` | Insert menu "Text speed", `HOS_TEXT_SPEED` | 1.0 | faster text |
+| the menus' mouse (`patch_menu_focus`, `patch_menu_tick`) | `f_802ed660`, `f_802f1380` | `hos_oot_menu_focus` / `hos_oot_menu_tick` first: the game's menus follow, click and scroll with the mouse (`host/oot_menu.c`) | none | **on** | the game's menus no longer follow the mouse until it is re-implemented |
+
+The resolution and frame-rate patches (dynamic resolution and the fixed scale, frame seconds, movie frames, output
+size, the render-target pool, native scene, `HOS_FIX_RES`) are not parked: they are being ported.
 
 ## 15. Risks not retired
 

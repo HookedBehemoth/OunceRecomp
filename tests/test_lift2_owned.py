@@ -17,9 +17,11 @@ class Owned(unittest.TestCase):
     def test_edit_addresses_found(self):
         with tempfile.TemporaryDirectory() as d:
             got = owned.edit_addresses(os.path.join(d, "gen"))
-        # (oot_patches.py's text speed patch names f_80b1e140; its dynamic resolution patch the label L_8082640c)
-        self.assertIn(0x80b1e140, got)
+        # (oot_patches.py's movie frames patch names f_83b7c710; its dynamic resolution patch the label L_8082640c)
+        self.assertIn(0x83b7c710, got)
         self.assertIn(0x8082640c, got)
+        # (the parked text speed patch, nx2/oot_parked.py, is not applied: f_80b1e140 is lift 2's)
+        self.assertNotIn(0x80b1e140, got)
 
     def test_compute(self):
         funcs = {0x80000000: [0x80000000, 0x80000004], 0x80000100: [0x80000100, 0x80000104],

@@ -1,9 +1,10 @@
 """The game's menus' mouse (host/oot_menu.c) hooks two functions of the lifted game at their heads: a menu screen's handler of
 a pane getting the focus (f_802ed660: hos_oot_menu_focus) and a menu screen's update (f_802f1380: hos_oot_menu_tick).
 
-nx2/oot_patches.py's patch_menu_focus and patch_menu_tick put each call first in its function, once, and declare it; a
-file without the function is left alone, and a file patched before is given back as it is (a lift patched again). apply
-makes them only in the supported build's lift (protect_hearts): those addresses are its functions.
+Parked (nx2/oot_parked.py) while the present lifter is retired: oot_patches.apply makes neither, so the menus do not
+follow the mouse until the hooks are ported. The parked patch_menu_focus and patch_menu_tick still put each call first in
+its function, once, and declare it; a file without the function is left alone, and a file patched before is given back
+as it is.
 
 python -I -B tests/test_menu_hooks.py
 """
@@ -14,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+import oot_parked  # noqa: E402
 import oot_patches  # noqa: E402
 
 FOCUS = "    hos_oot_menu_focus(c, c->x[0], c->x[1], c->x[30]);"
@@ -41,15 +43,15 @@ def hooked(patch, head, call, decl):
     return out
 
 
-def applied(protect_hearts):
+def applied():
     with tempfile.TemporaryDirectory() as gen:
         path = os.path.join(gen, "code_000.c")
         with open(path, "w", encoding="utf-8", newline="") as f:
-            f.write(lifted(oot_patches.MENU_FOCUS_HEAD, oot_patches.MENU_TICK_HEAD))
+            f.write(lifted(oot_parked.MENU_FOCUS_HEAD, oot_parked.MENU_TICK_HEAD))
         stdout = sys.stdout
         sys.stdout = open(os.devnull, "w")
         try:
-            oot_patches.apply(gen, protect_hearts=protect_hearts)
+            oot_patches.apply(gen)
         finally:
             sys.stdout.close()
             sys.stdout = stdout
@@ -58,15 +60,13 @@ def applied(protect_hearts):
 
 
 def main():
-    hooked(oot_patches.patch_menu_focus, oot_patches.MENU_FOCUS_HEAD, FOCUS,
+    hooked(oot_parked.patch_menu_focus, oot_parked.MENU_FOCUS_HEAD, FOCUS,
            "extern void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr);")
-    hooked(oot_patches.patch_menu_tick, oot_patches.MENU_TICK_HEAD, TICK,
+    hooked(oot_parked.patch_menu_tick, oot_parked.MENU_TICK_HEAD, TICK,
            "extern void hos_oot_menu_tick(Ctx *c, uint64_t screen);")
-    both = applied(True)
-    check(both.count(FOCUS) == 1 and both.count(TICK) == 1, "the supported build's lift did not get both hooks once")
-    plain = applied(False)
-    check(FOCUS not in plain and TICK not in plain, "another build's lift got the menus' hooks")
-    print("PASS: the menus' hooks go first in their functions, once, only in the supported build's lift")
+    out = applied()
+    check(FOCUS not in out and TICK not in out, "oot_patches.apply made a parked hook")
+    print("PASS: the parked menus' hooks go first in their functions, once; the lift applies neither")
 
 
 if __name__ == "__main__":

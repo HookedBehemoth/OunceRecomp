@@ -426,6 +426,8 @@ static void load_hookshot_env(void) {
 int hos_oot_protect_hearts;
 volatile int hos_oot_live_action;   /* (test runs) the live input file's "!cheat <action>": host/nn_hid.c */
 
+/* (hos_oot_hearts_enabled, hos_oot_lift_player, hos_oot_flight_pose, hos_oot_flight_rotation, hos_oot_free_view: called
+   from nx2/oot_parked.py's patches, parked while the present lifter is retired: the switches do nothing meanwhile) */
 int hos_oot_hearts_enabled(void) {
     int rx_option(int id, int otherwise);
     const int menu = rx_option(HOS_OPT_CHEAT_HEARTS, -1);
