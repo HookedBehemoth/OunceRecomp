@@ -482,6 +482,13 @@
 83b82ea0 movie_ndve_renderer_setup        # docs/direct/movie-player.md: the second place the NDVE object is made; sets the disable byte 0x84eb5f61 when the sizes differ # ?
 83b83360 movie_renderer_draw_ndve         # docs/direct/movie-player.md: renderer vtable +0x18 with NDVE: "NDVE_Output", runs ndve_output_view
 83b82450 movie_renderer_draw_plain        # docs/direct/movie-player.md: renderer vtable +0x18 without NDVE: draws the two plane textures
+83559360 movie_planes_draw                # docs/direct/movie-player.md: the plain draw: program 0 or 2 of a shader archive, colour constants, the UV and Y plane textures, the full-screen draw
+835592b0 movie_color_constants            # docs/direct/movie-player.md: the colour constants for a colour space (1..4) # ?
+802a1760 shader_program_bind              # docs/direct/movie-player.md: binds a shader program object once its ready bit (+0x20 bit 0) is set # ?
+809f11e0 shader_uniform_block_bind        # docs/direct/movie-player.md: a program's uniform block by index (0x17, 0x18 for the movie) # ?
+809f0850 draw_fullscreen_quad             # docs/direct/movie-player.md: binds a texture, then draws the full-screen quad (vertex buffer and count from [0x84ca9c30]) # ?
+83b7e600 movie_input_event_handler        # docs/direct/movie-player.md: the movie input thread's events: 1 read a sample, 2 submit (DecodeAsync until refused), 3 acquire frames
+83b81df0 movie_frame_queue_fill           # docs/direct/movie-player.md: acquires decoded frames (AcquireVideoFrame) into the queue until it is full or none is left
 821056c0 ndve_create                      # docs/direct/movie-player.md: makes the NDVE network from the resource blob and the movie's size (movie_player_renderer_init)
 821057c0 ndve_output_size                 # docs/direct/movie-player.md: the network's output size, stored at renderer+0x2e0 # ?
 821056f0 ndve_destroy                     # docs/direct/movie-player.md: frees the NDVE object (movie_renderer release, f_83b82dc0)

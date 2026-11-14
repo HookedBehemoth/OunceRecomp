@@ -32,6 +32,11 @@ byte at 0x84eb5f61 is set to 1 and NDVE is off); with no resource a 0x1c0-byte p
 (vtable +0x18): `f_83b83360` when NDVE is on (allocates "NDVE_Output", runs `f_821057e0`), `f_83b82450` otherwise (draws the two
 plane textures). Both are reached from `f_83b82250` (the plane copy). So "enhancement off" is: the NDVE resource argument of
 `f_83b7c020` is null.
+The plain draw, `f_83559360`: program 0 or 2 of a shader archive the game holds (the draw's last argument, bit 0, picks 2),
+bound by `f_802a1760` once its ready bit (+0x20 bit 0) is set; colour constants by colour space (`f_835592b0`, 1..4) in
+uniform blocks 0x17 and 0x18 (`f_809f11e0`); the UV plane texture, then the Y plane with the full-screen draw (`f_809f0850`).
+It draws the picture as decoded: the shown frame is the source's, its colours the source's converted from BT.709 video range, in the
+movie layer. `HOS_NDVE=1` (host/direct_movie.c) leaves the network to the game, for a comparison.
 
 ## How the movie file reaches the player
 `MovieMediaSourceClient` (f_83b827e0's thread) reads the file from romfs in 64 KB chunks and appends them to the SDK's media source
