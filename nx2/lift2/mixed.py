@@ -119,7 +119,7 @@ def write_plan(L, img, path):
     # (a BL to a setjmp owner is lifted as a call of hos_sj_call, host/hos_setjmp.c: scope need not refuse it)
     scope_prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, classes=classes)
     sj_rets = {e: tuple((list(r) + [0, 0, 0, 0])[:4]) for e, r in (getattr(L, "setjmp_owner", {}) or {}).items()}
-    after = set(getattr(L, "after", {}) or ())
+    after_c = dict(getattr(L, "after", {}) or {})   # (C after an instruction: oot_wide, oot_jitter, oot_occlusion)
     hooks = set(L.hooks)
     bodies, why = {}, {}
     for e, (body, _) in L.funcs.items():
@@ -127,9 +127,9 @@ def write_plan(L, img, path):
             why["hooked"] = why.get("hooked", 0) + 1
             continue
         pcs = sorted(body)
-        if after.intersection(pcs):
-            why["C added after an instruction (oot_wide, oot_jitter, oot_occlusion)"] = why.get(
-                "C added after an instruction (oot_wide, oot_jitter, oot_occlusion)", 0) + 1
+        if any(after_c.get(pc) and enc.decode(img.word(pc)) is not None and
+               enc.decode(img.word(pc)).entry.template in build_ir.TERMINATORS for pc in pcs):
+            why["C added after a branch"] = why.get("C added after a branch", 0) + 1   # (probes.after_c: none in TOTK)
             continue
         r = build_ir.scope(e, pcs, img.word, scope_prog)
         if r is not None and "not decoded" in r:   # (data the discovery took for code: unreachable from the entry)
@@ -148,7 +148,7 @@ def write_plan(L, img, path):
         packed = summaries(L, img, path, prog, hooks)
         import gc
         gc.collect()   # (the analysis' graph is garbage now; the C is written next, in this process)
-    plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets,
+    plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets, "after_c": after_c,
             "hooks": sorted(hooks), "bodies": bodies, "why": why,
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
     with open(path + ".tmp", "wb") as f:
@@ -174,6 +174,8 @@ def edited_functions(gen):
             e = int(m.group(1)[2:], 16)
             if e in probes.BY_FUNC:   # (the present lifter's patch, which lift 2 makes as a probe: probes.py)
                 body = "".join(l for l in body.splitlines(True) if not any(mk in l for mk in probes.MARKS))
+            if e in probes.SPLICE_AT:   # (its SPLICE_AFTER, which lift 2 calls at the instructions' addresses)
+                body = body.replace("    splice_0x%08x(c);   /* (nx2/entry_hooks.py) */\n" % e, "")
             hook = HOOK_LINE.search(body)
             if hook:
                 hooks[e] = hook.group(1)
@@ -272,6 +274,8 @@ def lift_part(args):
         pcs, words = plan["bodies"][e]
         w = dict(zip(pcs, words))
         prog.probes = probes.find(e, pcs, w.__getitem__)
+        prog.probes.update(probes.after_c(plan.get("after_c", {}), pcs, w.__getitem__))
+        prog.probes.update(probes.after_c(probes.splice_texts(e, w.__getitem__), pcs, w.__getitem__))
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
         fn.entry_hook = hooks.get(e)
         if verify and verified(plan, e):
@@ -345,6 +349,10 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
     src_dir = os.path.join(out, "lift2_src")
     os.makedirs(src_dir, exist_ok=True)
     new_srcs = [thunked_source(s, chosen, src_dir) if os.path.basename(s).startswith("code_") else s for s in srcs]
+    # (the C the present lifter put after an instruction, and the SPLICE_AT calls, as host functions lift 2 calls)
+    after = dict(plan.get("after_c", {}))
+    after.update(probes.all_splice_texts())
+    new_srcs.append(probes.write_after_c(after, src_dir))
     # partitions: by address, the hot functions apart, about PART_INSNS instructions each
     parts = []
     for group, tag in ((sorted(chosen - hot), "c"), (sorted(chosen & hot), "h")):

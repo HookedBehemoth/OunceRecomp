@@ -1251,5 +1251,54 @@ class Probe(unittest.TestCase):
         self.assertEqual(out, ["1234", "1360", "40400000", "42"])
 
 
+AFTER_HARNESS = r"""
+#include "a64.h"
+#include <stdio.h>
+unsigned char a64_dirty[1u << 27];
+void a64_poll_cur(void) {}
+void g_80003000(Ctx *);
+int main(void) {
+    Ctx c; memset(&c, 0, sizeof c); c.x[0] = 5;
+    g_80003000(&c);
+    printf("%llu %llu\n", (unsigned long long)c.x[8], (unsigned long long)c.x[9]);
+    return 0;
+}
+"""
+CTX_H = """#include <stdint.h>
+#include <string.h>
+typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
+                 uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and have("clang"), "Linux and clang of the pinned LLVM major")
+class AfterC(unittest.TestCase):
+    def test_after_c(self):
+        """C after an instruction (oot_occlusion's form): the instruction, then the host function on the context, and
+        the registers are read back from it (x9 = x8 + 1 sees the C's x8)"""
+        from lift2 import probes
+        words = [0x91000408, 0x91000509, 0xd65f03c0]   # add x8, x0, #1; add x9, x8, #1; ret
+        base = 0x80003000
+        word = lambda pc: words[(pc - base) // 4]
+        pcs = [base + 4 * k for k in range(len(words))]
+        prog = build_ir.Program()
+        prog.probes = probes.after_c({base: "c->x[8] = 40;"}, pcs, word)
+        fn = build_ir.build(base, pcs, word, prog)
+        m = emit_llvm.Module()
+        m.add(fn)
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a64.h"), "w") as fo:
+                fo.write(CTX_H)
+            after = probes.write_after_c({base: "c->x[8] = 40;"}, d)
+            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
+            with open(ll, "w") as fo:
+                fo.write(m.text())
+            with open(c, "w") as fo:
+                fo.write(AFTER_HARNESS)
+            subprocess.run([llvm.check("clang"), "-O1", "-w", "-I" + d, c, after, ll, "-o", exe], check=True)
+            out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out, ["40", "41"])
+
+
 if __name__ == "__main__":
     unittest.main()
