@@ -346,6 +346,8 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
     if own is not None:   # (the present lifter wrote only its own functions: lift 2 takes every other one)
         chosen = set(plan["bodies"]) - own[0]
         hot = own[2]
+        import entry_hooks   # (the entry hooks of functions without present-lifter C: from host/*.c itself)
+        hooks = {e: n for e, n in entry_hooks.wanted(gen)[0].items() if e in chosen or e in hooks}
     if spec != "all-safe":
         want = {int(l.split()[0], 16) for l in open(spec) if l.strip() and not l.startswith("#")}
         chosen &= want

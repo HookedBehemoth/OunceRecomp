@@ -5,8 +5,9 @@ and its code), so translating it was work thrown away. Owned:
 - functions lift 2 cannot take (the plan's bodies lack them: scope, hooks, C added after an instruction);
 - functions a host edit of the C reaches, found from the edits' own sources, not from the C: the guest addresses in
   nx2/oot_patches.py (function heads f_<addr>, labels L_<addr>, return addresses and constants 0x<addr>: the
-  function holding the address, and for a return address the call before it), and the ENTRY_HOOK / SPLICE_AFTER
-  addresses of host/*.c (nx2/entry_hooks.py). Over-approximate on purpose: an owned function lift 2 could take
+  function holding the address, and for a return address the call before it) but the functions whose patch lift 2
+  makes as a probe (nx2/lift2/probes.py), and the SPLICE_AFTER addresses of host/*.c (nx2/entry_hooks.py). An
+  ENTRY_HOOK is not an edit: lift 2 makes it (mixed.lift_part, from entry_hooks.wanted). Over-approximate on purpose: an owned function lift 2 could take
   costs a little C, a missed one would lose its edit (the build's edited set is checked against this one:
   check()).
 - with HOOKSHOT_LIFT2=<file>, everything not listed.
@@ -26,8 +27,8 @@ def edit_addresses(gen):
     out = set()
     for name in PATCH_SOURCES:
         out.update(int(m.group(1), 16) for m in ADDR.finditer(open(os.path.join(nx2, name)).read()))
-    hooks, _ = entry_hooks.wanted(gen)
-    out.update(hooks)
+    from . import probes
+    out -= set(probes.BY_FUNC)
     out.update(entry_hooks.wanted_splices())
     return out
 
