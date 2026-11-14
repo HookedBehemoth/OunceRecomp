@@ -166,9 +166,10 @@ def write_plan(L, img, path):
     return bodies
 
 
-def edited_functions(gen):
+def edited_functions(gen, after_texts=()):
     """functions whose lifted C carries a host edit other than an entry hook, the hot set (the functions of
-    code_hot*.c), and the entry hooks (function -> the hook's C name)"""
+    code_hot*.c), and the entry hooks (function -> the hook's C name). after_texts: the C put after instructions
+    (Lifter.after, the plan's after_c), which lift 2 makes with probes.after_c: not an edit"""
     edited, hot, hooks = set(), set(), {}
     for name in sorted(os.listdir(gen)):
         if not (name.startswith("code_") and name.endswith(".c")):
@@ -182,6 +183,9 @@ def edited_functions(gen):
                 body = "".join(l for l in body.splitlines(True) if not any(mk in l for mk in probes.MARKS))
             if e in probes.SPLICE_AT or e in probes.SPLICE_BEFORE:   # (its SPLICE_AFTER, which lift 2 calls by address)
                 body = body.replace("    splice_0x%08x(c);   /* (nx2/entry_hooks.py) */\n" % e, "")
+            for t in after_texts:   # (C after an instruction: probes.after_c)
+                if t in body:
+                    body = body.replace(t, "")
             hook = HOOK_LINE.search(body)
             if hook:
                 hooks[e] = hook.group(1)
@@ -345,7 +349,7 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
     plan = _plan(plan_path)
     if os.environ.get("HOOKSHOT_LIFT2_VERIFY") and not plan.get("summaries"):
         raise SystemExit("lift2: HOOKSHOT_LIFT2_VERIFY needs summaries in the plan: lift again with it set")
-    edited, hot, hooks = edited_functions(gen)
+    edited, hot, hooks = edited_functions(gen, tuple(set(plan.get("after_c", {}).values())))
     chosen = set(plan["bodies"]) - edited
     from . import owned
     own = owned.load(os.path.dirname(gen))
