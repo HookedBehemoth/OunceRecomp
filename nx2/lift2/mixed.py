@@ -36,6 +36,8 @@ from array import array
 
 from . import build_ir, emit_llvm, enc, llvm
 
+# (an entry hook's line, nx2/entry_hooks.py: lift 2 makes the same call at its generic entry, emit_llvm entry_hook)
+HOOK_LINE = re.compile(r"    if \((entry_\w+)\(c\)\) return;   /\* \(nx2/entry_hooks\.py\) \*/\n")
 EDITED = re.compile(r"\b(entry_[0-9a-fx]+|splice_[0-9a-fx]+|hos_\w+|recomp_sj_\w+)\s*\(|\bhos_\w+\b")
 DEF = re.compile(r"^void (f_[0-9a-f]{8})\(Ctx \*__restrict A64_NOESC c\) \{", re.M)
 PART_INSNS = 120000
@@ -155,8 +157,9 @@ def write_plan(L, img, path):
 
 
 def edited_functions(gen):
-    """functions whose lifted C carries a host edit, and the hot set (the functions of code_hot*.c)"""
-    edited, hot = set(), set()
+    """functions whose lifted C carries a host edit other than an entry hook, the hot set (the functions of
+    code_hot*.c), and the entry hooks (function -> the hook's C name)"""
+    edited, hot, hooks = set(), set(), {}
     for name in sorted(os.listdir(gen)):
         if not (name.startswith("code_") and name.endswith(".c")):
             continue
@@ -165,11 +168,15 @@ def edited_functions(gen):
         for k, m in enumerate(defs):
             body = text[m.end():defs[k + 1].start() if k + 1 < len(defs) else len(text)]
             e = int(m.group(1)[2:], 16)
+            hook = HOOK_LINE.search(body)
+            if hook:
+                hooks[e] = hook.group(1)
+                body = HOOK_LINE.sub("", body)
             if EDITED.search(body):
                 edited.add(e)
             if name.startswith("code_hot"):
                 hot.add(e)
-    return edited, hot
+    return edited, hot, hooks
 
 
 def thunked_source(src, chosen, out_dir):
@@ -239,7 +246,7 @@ def verified(plan, e):
 
 def lift_part(args):
     """(lifted in a worker process) the IR text of one partition"""
-    plan_path, names, chosen, hot = args
+    plan_path, names, chosen, hot, hooks = args
     plan = _plan(plan_path)
     plt = plan["plt"]
     verify = bool(os.environ.get("HOOKSHOT_LIFT2_VERIFY"))
@@ -256,6 +263,7 @@ def lift_part(args):
         pcs, words = plan["bodies"][e]
         w = dict(zip(pcs, words))
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
+        fn.entry_hook = hooks.get(e)
         if verify and verified(plan, e):
             fn.name = "body_%08x" % e
             s = plan["summaries"][e]
@@ -306,7 +314,7 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
     plan = _plan(plan_path)
     if os.environ.get("HOOKSHOT_LIFT2_VERIFY") and not plan.get("summaries"):
         raise SystemExit("lift2: HOOKSHOT_LIFT2_VERIFY needs summaries in the plan: lift again with it set")
-    edited, hot = edited_functions(gen)
+    edited, hot, hooks = edited_functions(gen)
     chosen = set(plan["bodies"]) - edited
     if spec != "all-safe":
         want = {int(l.split()[0], 16) for l in open(spec) if l.strip() and not l.startswith("#")}
@@ -333,7 +341,7 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
     # (a partition whose inputs are unchanged, the plan, the chosen set, its functions, lift 2's own source and the
     # flags, is neither lifted nor compiled again: its object comes from the cache by an input key. A host-only
     # rebuild then costs the hashing, not the 2-3 minutes of lifting)
-    base = input_base(plan_path, chosen)
+    base = input_base(plan_path, chosen) + repr(sorted(hooks.items())).encode()
     flags, keys, objs_k = [], [], []
     for k, (tag, names) in enumerate(parts):
         fl = march_flags + ["-" + (hot_opt if tag == "h" else opt), "-g0", "-Wno-everything", "-ffunction-sections",
@@ -352,7 +360,7 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
         else:
             todo.append(k)
     with concurrent.futures.ProcessPoolExecutor(min(jobs, 16)) as ex:
-        texts = list(ex.map(lift_part, [(plan_path, parts[k][1], chosen, hot) for k in todo])) if todo else []
+        texts = list(ex.map(lift_part, [(plan_path, parts[k][1], chosen, hot, hooks) for k in todo])) if todo else []
     t_lift = time.time() - t0
     cjobs = [(clang, text, objs_k[k], flags[k], cache) for k, text in zip(todo, texts)]
     objs, failed, t1 = [o for k, o in enumerate(objs_k) if k not in set(todo)], [], time.time()
