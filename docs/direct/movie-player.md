@@ -53,6 +53,8 @@ nn::codec one) and calls `SubmitXDecoderInputBuffer`. A full decoder answers 0x1
 (0x84ecfd20) turns that into 0x7a, the handler keeps the sample and waits for the event; any other failure aborts. So a decoder
 that takes everything at once lets the reader run through the whole file in the movie's first seconds, emptying the cache
 between two of its 100 ms checks: the frames then come in bursts of six or seven until the file is read, and the movie's first
-seconds jump. host/nn_video.c takes everything at once; once the whole file is submitted (within the movie's first seconds)
-every picture is there and the movie plays a frame a present. The old renderer read the movie the same way: its first seconds,
-a fade from black, hid the jumps.
+seconds jump. host/nn_video.c refuses input while it holds `MAX_IN_FLIGHT` submissions and pictures, as the hardware's queue
+does, and signals the event when it has room again (an acquire, a flush); the reader then keeps the movie's pace and the cache
+stays filled. A buffer acquired before its picture is decoded (the library acquires two before its first submission) gets a
+fence that the next picture decoded into it reaches, as the hardware's does. The movie's clock is the game's frame time
+alone: the host drops no picture to a wall clock.

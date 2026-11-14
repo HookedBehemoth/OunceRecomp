@@ -464,7 +464,6 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_VCORE_ESCAPE_EQ_US` host/hos_thread.c:1318
 - `HOS_VCORE_ESCAPE_US` host/hos_thread.c:1319
 - `HOS_VCORE_SLICE_US` host/hos_thread.c:1320
-- `HOS_VIDEO_NO_CATCHUP` host/nn_video.c:624
 - `HOS_VI_DOUBLE` host/nn_vi.c:157
 - `HOS_WAKE_LAT` host/nn_os_sync.c:636
 - `HOS_WATCH` host/posix/prof.c:533

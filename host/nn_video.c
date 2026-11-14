@@ -8,9 +8,10 @@
    pictures by buffer index (AcquireXDecoderOutputBuffer, GetXDecoderOutputBufferProperties), reads them back to
    its own memory as RGBA or NV12 (ReadDecoderOutputImageRgba / Nv12) and gives the buffer back (Release).
 
-   Here a submission is decoded at once; a finished picture waits in a queue until an Acquire puts it in the first
-   free registered buffer (host memory: the pool's guest memory is not used). The video service itself (nn::gsv) is
-   not emulated: nn::codec::video::Initialize does nothing. */
+   Here a submission is kept and decoded when a picture is wanted; a decoded picture waits in a queue until an Acquire
+   puts it in the first free registered buffer (host memory: the pool's guest memory is not used), or fills a buffer
+   handed out before it (its fence). The decoder takes as much input as a hardware one has room for (MAX_IN_FLIGHT).
+   The video service itself (nn::gsv) is not emulated: nn::codec::video::Initialize does nothing. */
 #include "hos.h"
 #include "hos_ledger.h"
 #include <limits.h>
@@ -30,6 +31,12 @@
 #define PREF_MAGIC 0x46455250u     /* 'PREF' */
 #define MAX_SLOTS 16
 #define MAX_QUEUE 8
+/* SubmitXDecoderInputBuffer's "input queue full" (the movie library turns it into a retry: the frame stays with the game
+   until the submission-ready event is signalled) */
+#define RESULT_INPUT_FULL 0x1c266f
+/* What the decoder holds: submissions not decoded plus pictures not acquired. A hardware decoder takes no more input
+   than it has room for; MAX_QUEUE, so the queue never drops a picture */
+#define MAX_IN_FLIGHT MAX_QUEUE
 
 static int video_log(void) {   /* HOS_VIDEO_LOG=1: submissions and acquisitions */
     static int on = -1;
@@ -90,9 +97,12 @@ typedef struct {
     int qhead, qn;
     int eos;                         /* the last submission is in and decoded: an empty queue is the end */
     Pending *phead, *ptail;          /* submissions not decoded yet, oldest first */
+    int npending;                    /* (of them, with data: the stream's end takes no room) */
+    uint64_t ready;                  /* the submission-ready event: signalled while the decoder has room */
     int64_t submits, acquires;
-    int clock_set;                   /* (hookshot) the movie's clock: the picture at clock_pts was due at clock_ns */
-    int64_t clock_ns, clock_pts;
+    int waiting[MAX_SLOTS];          /* buffers handed out before their pictures, oldest first, and their fences */
+    uint64_t waiting_fence[MAX_SLOTS];
+    int nwaiting;
     int64_t last_pts;                /* the pts of the last picture handed out */
     int64_t log_submits;             /* (HOS_VIDEO_LOG) submissions still to log, after a flush or the end */
     SRWLOCK lock;
@@ -312,6 +322,10 @@ static void dec_init_sized(Ctx *c, enum AVCodecID id, const char *what, int w, i
                 "not available in this FFmpeg", w, h);
     RET(0);
 }
+/* the decoders' submission-ready events (manual-clear system events in guest memory, which is never freed: a finalized
+   decoder's goes to the next one) */
+static uint64_t spare_events[8];
+static int nspare_events;
 static void picture_free(Picture *p) {
     hos_ledger_frees(HL_VIDEO, p->rgba), hos_ledger_frees(HL_VIDEO, p->nv12);
     free(p->rgba), free(p->nv12);
@@ -325,10 +339,13 @@ static void pending_free(Dec *d) {
         free(n);
     }
     d->ptail = NULL;
+    d->npending = 0;
 }
+static void dec_unwait(Dec *d, int slot);
 static void dec_finalize(Ctx *c) {
     Dec *d = (Dec *)host_of(ARG(0), DEC_MAGIC);
     if (!d) return;
+    while (d->nwaiting) dec_unwait(d, d->waiting[0]);
     pending_free(d);
     for (int i = 0; i < d->qn; i++) picture_free(&d->queue[(d->qhead + i) % MAX_QUEUE]);
     if (d->sws) sws_freeContext(d->sws);
@@ -336,6 +353,11 @@ static void dec_finalize(Ctx *c) {
     mf_av1_close(d->mf);
     av_packet_free(&d->pkt);
     av_frame_free(&d->frame);
+    if (d->ready) {
+        AcquireSRWLockExclusive(&host_objs_lock);
+        if (nspare_events < (int)(sizeof spare_events / sizeof spare_events[0])) spare_events[nspare_events++] = d->ready;
+        ReleaseSRWLockExclusive(&host_objs_lock);
+    }
     free(d);
     set_host(ARG(0), DEC_MAGIC, NULL);
 }
@@ -411,6 +433,7 @@ static void decode_next(Dec *d) {
         Pending *n = d->phead;
         d->phead = n->next;
         if (!d->phead) d->ptail = NULL;
+        if (n->pkt) d->npending--;
         if (d->mf) {   /* (hookshot) */
             if (n->pkt) {
                 d->eos = 0;
@@ -444,42 +467,68 @@ static void decode_next(Dec *d) {
 static void pending_push(Dec *d, AVPacket *pkt) {
     Pending *n = (Pending *)calloc(1, sizeof *n);
     n->pkt = pkt;
+    if (pkt) d->npending++;
     if (d->ptail) d->ptail->next = n;
     else d->phead = n;
     d->ptail = n;
 }
-/* SubmitXDecoderInputBuffer(u64* id, decoder, data, size, TimeSpan pts, bool last): kept, decoded when a picture is
-   acquired (the library submits a whole movie at once: its pictures decoded then would not fit any queue) */
-static volatile LONG64 submissions;
-
-/* (hookshot) A buffer handed out with nothing decoded into it, by a decoder with nothing left to decode, gets a sync
-   handle that is not reached until something is submitted again (anywhere: the count is global). Every other buffer's
-   is 0, reached. The hardware's is a fence the decoder signals once the picture is in the buffer, so an idle decoder's
-   never is; the movie library's VideoDecoder::Flush recycles buffers until it finds one not reached, and with all of
-   them reached it never returned: the movie never stopped, and the game sat on a black screen after its intro.
-   The library also waits for the handle as a sync point event (VideoDecoderEventManager::SetFence), and the callback
-   that event runs aborts unless TryWaitNativeSync says reached: an event for a handle not reached is signalled at the
-   next submission, not when it is requested (hos_video_sync_defer, from nn_syncpt.c). */
-#define SYNC_IDLE_TAG 0x5ec0000000000000ull
-#define SYNC_IDLE_MASK 0x0000ffffffffffffull
-int hos_video_sync_reached(uint64_t handle) {   /* (nn_gs.c: TryWaitNativeSync, TimedWaitNativeSync) */
-    if ((handle & ~SYNC_IDLE_MASK) != SYNC_IDLE_TAG) return 1;
-    return (handle & SYNC_IDLE_MASK) != ((uint64_t)InterlockedCompareExchange64(&submissions, 0, 0) & SYNC_IDLE_MASK);
+/* the submission-ready event follows the room the decoder has (d->lock held). The movie library clears it before each
+   submission and, refused one, waits for it */
+static int dec_room(const Dec *d) { return d->npending + d->qn < MAX_IN_FLIGHT; }
+static void ready_update(Dec *d) {
+    if (d->ready && dec_room(d)) hos_system_event_signal(d->ready);
 }
-
+/* (hookshot) Sync handles. An input handle (SubmitXDecoderInputBuffer's id) is reached at once: the packet is copied.
+   An output handle is the hardware's fence for a buffer handed out before its picture is decoded: AcquireXDecoderOutputBuffer
+   returns at once (the library aborts on any failure there), and the buffer is filled with the next picture decoded
+   (dec_fill), which reaches its fence. A buffer handed out with its picture in it gets 0, reached. The movie library waits for
+   an output fence as a sync point event (VideoDecoderEventManager::SetFence: hos_video_sync_defer, from nn_syncpt.c) and
+   with TryWaitNativeSync (nn_gs.c); VideoDecoder::Flush takes buffers until one is not reached, the decoder's sign that it
+   holds nothing more. Fences are reached in the order they are given out. */
+#define SYNC_FENCE_TAG 0x5ec0000000000000ull
+#define SYNC_FENCE_MASK 0x0000ffffffffffffull
 static SRWLOCK waiter_lock = SRWLOCK_INIT;
-static uint64_t waiters[32];   /* sync point events (their guest addresses) waiting for the next submission */
+static uint64_t fence_given, fence_reached;   /* (waiter_lock) the last fence handed out, the last one reached */
+static struct { uint64_t event, fence; } waiters[32];   /* sync point events waiting for a fence */
 static int nwaiters;
 
-/* RequestSyncPointEvent(event, handle): 1 when the event waits for the next submission, 0 when it is due now */
+int hos_video_sync_reached(uint64_t handle) {   /* (nn_gs.c: TryWaitNativeSync, TimedWaitNativeSync) */
+    if ((handle & ~SYNC_FENCE_MASK) != SYNC_FENCE_TAG) return 1;
+    AcquireSRWLockShared(&waiter_lock);
+    const int reached = (handle & SYNC_FENCE_MASK) <= fence_reached;
+    ReleaseSRWLockShared(&waiter_lock);
+    return reached;
+}
+static uint64_t fence_give(void) {
+    AcquireSRWLockExclusive(&waiter_lock);
+    const uint64_t f = ++fence_given;
+    ReleaseSRWLockExclusive(&waiter_lock);
+    return f;
+}
+static void fence_reach(uint64_t f) {   /* f and every fence before it; their waiting events signalled */
+    uint64_t due[32];
+    int n = 0;
+    AcquireSRWLockExclusive(&waiter_lock);
+    if (f > fence_reached) fence_reached = f;
+    for (int i = 0; i < nwaiters;)
+        if (waiters[i].fence <= fence_reached) due[n++] = waiters[i].event, waiters[i] = waiters[--nwaiters];
+        else i++;
+    ReleaseSRWLockExclusive(&waiter_lock);
+    for (int i = 0; i < n; i++) hos_system_event_signal(due[i]);
+}
+
+/* RequestSyncPointEvent(event, handle): 1 when the event waits for the handle's fence, 0 when it is due now */
 int hos_video_sync_defer(uint64_t event, uint64_t handle) {
-    AcquireSRWLockExclusive(&waiter_lock);   /* (checked under the lock submitted() takes: no submission slips between) */
-    int deferred = !hos_video_sync_reached(handle);
+    if ((handle & ~SYNC_FENCE_MASK) != SYNC_FENCE_TAG) return 0;
+    AcquireSRWLockExclusive(&waiter_lock);
+    const uint64_t f = handle & SYNC_FENCE_MASK;
+    int deferred = f > fence_reached;
     if (deferred) {
         int i = 0;
-        while (i < nwaiters && waiters[i] != event) i++;
-        if (i == nwaiters && nwaiters < (int)(sizeof waiters / sizeof waiters[0])) waiters[nwaiters++] = event;
-        else if (i == nwaiters) deferred = 0;   /* (full: signalled now, as before) */
+        while (i < nwaiters && waiters[i].event != event) i++;
+        if (i < nwaiters) waiters[i].fence = f;
+        else if (nwaiters < (int)(sizeof waiters / sizeof waiters[0])) waiters[nwaiters].event = event, waiters[nwaiters++].fence = f;
+        else deferred = 0;   /* (full: signalled now) */
     }
     ReleaseSRWLockExclusive(&waiter_lock);
     return deferred;
@@ -489,34 +538,110 @@ int hos_video_sync_defer(uint64_t event, uint64_t handle) {
 void hos_video_sync_cancel(uint64_t event) {
     AcquireSRWLockExclusive(&waiter_lock);
     for (int i = 0; i < nwaiters; i++)
-        if (waiters[i] == event) { waiters[i] = waiters[--nwaiters]; break; }
+        if (waiters[i].event == event) { waiters[i] = waiters[--nwaiters]; break; }
     ReleaseSRWLockExclusive(&waiter_lock);
 }
 
-int hos_video_sync_waiting(uint64_t event) {   /* TryWaitSyncPointEvent(event): 1 while it waits for a submission */
+int hos_video_sync_waiting(uint64_t event) {   /* TryWaitSyncPointEvent(event): 1 while it waits for a fence */
     AcquireSRWLockExclusive(&waiter_lock);
     int i = 0;
-    while (i < nwaiters && waiters[i] != event) i++;
+    while (i < nwaiters && waiters[i].event != event) i++;
     const int waiting = i < nwaiters;
     ReleaseSRWLockExclusive(&waiter_lock);
     return waiting;
 }
 
-void hos_system_event_signal(uint64_t key);
-static uint64_t submitted(void) {   /* a submission: every handle given out before it is reached */
-    uint64_t due[32];
-    AcquireSRWLockExclusive(&waiter_lock);
-    const uint64_t id = (uint64_t)InterlockedIncrement64(&submissions);
-    const int n = nwaiters;
-    memcpy(due, waiters, sizeof due);
-    nwaiters = 0;
-    ReleaseSRWLockExclusive(&waiter_lock);
-    for (int i = 0; i < n; i++) hos_system_event_signal(due[i]);
-    return id;
+static volatile LONG64 submissions;
+static uint64_t submitted(void) { return (uint64_t)InterlockedIncrement64(&submissions); }   /* an input handle */
+
+/* the picture at the queue's head into buffer slot (d->lock held) */
+static void deliver(Dec *d, int slot) {
+    Picture *p = &d->queue[d->qhead];
+    Pool *o = (Pool *)host_of(d->slots[slot], POOL_MAGIC);
+    if (o) {
+        /* (the picture at the pool's size: rows and columns past either are left out) */
+        const int ok = o->nv12 != NULL && p->nv12 != NULL;   /* (an allocation that failed: nothing copied; issue 342) */
+        const int w = !ok ? 0 : p->w < o->w ? p->w : o->w, h = !ok ? 0 : p->h < o->h ? p->h : o->h;
+        for (int y = 0; y < h; y++) {
+            if (p->rgba && o->rgba) memcpy(o->rgba + (size_t)y * o->w * 4, p->rgba + (size_t)y * p->w * 4, (size_t)w * 4);
+            memcpy(o->nv12 + (size_t)y * o->w, p->nv12 + (size_t)y * p->w, (size_t)w);
+        }
+        for (int y = 0; y < h / 2; y++)
+            memcpy(o->nv12 + (size_t)o->w * o->h + (size_t)y * o->w, p->nv12 + (size_t)p->w * p->h + (size_t)y * p->w,
+                   (size_t)w);
+        o->rgba_stale = !p->rgba;
+        /* (hookshot) and into the pool's guest memory, as the hardware decoder leaves it (NV12, pitch = width, chroma right
+           after the luma rows; RGBA when the memory has room for it and the pool's format is not NV12's). Not once the
+           game reads the pool through ReadDecoderOutputImageNv12 / Rgba, as OoT's movie library does: its pools are
+           format 3, so each 1080p picture was made RGBA and copied there for nothing (the movie is the same without it) */
+        if (o->mem && o->mem_size && !o->read_by_api) {
+            const size_t nv12_size = (size_t)o->w * o->h * 3 / 2, rgba_size = (size_t)o->w * o->h * 4;
+            const int rgba = o->format != 0 && o->mem_size >= rgba_size;   /* (VideoDecoderOutputFormat 0: NV12) */
+            const size_t need = rgba ? rgba_size : nv12_size;
+            void *to = hos_guest_range(o->mem, need);   /* (hookshot: only into guest memory) */
+            if (o->mem_size >= need && ok && to && (rgba ? o->rgba != NULL : 1)) {
+                if (rgba && o->rgba_stale) pool_rgba(o);
+                memcpy(to, rgba ? o->rgba : o->nv12, need);
+                HOS_WRITTEN(to, need);
+            }
+        }
+    }
+    d->slot_pts[slot] = d->last_pts = p->pts;
+    d->slot_last[slot] = p->last;
+    if (video_log() && (d->acquires <= 8 || p->last || d->acquires % 300 == 0)) {
+        uint64_t sum = 0, n = 0;   /* (the picture's mean luma and RGB, sampled: a black or garbage decode shows) */
+        uint64_t rgb[3] = {0, 0, 0};
+        for (int y = 0; y < p->h; y += 37)
+            for (int x = 0; x < p->w; x += 41, n++) {
+                sum += p->nv12[(size_t)y * p->w + x];
+                for (int k = 0; k < 3 && p->rgba; k++) rgb[k] += p->rgba[((size_t)y * p->w + x) * 4 + k];
+            }
+        hos_log("video: acquire %lld: %dx%d pts %lld%s into buffer %d (mean Y %llu, RGB %llu %llu %llu)",
+                (long long)d->acquires, p->w, p->h, (long long)p->pts, p->last ? " (last)" : "", slot,
+                (unsigned long long)(n ? sum / n : 0), (unsigned long long)(n ? rgb[0] / n : 0),
+                (unsigned long long)(n ? rgb[1] / n : 0), (unsigned long long)(n ? rgb[2] / n : 0));
+    }
+    picture_free(p);
+    d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
+}
+/* the buffers handed out before their pictures, filled in order as pictures are decoded; at the stream's end, with nothing
+   left, the rest are the end (the last picture's time, marked last). Their fences reached (d->lock held) */
+static void dec_fill(Dec *d) {
+    while (d->nwaiting) {
+        decode_pending(d);
+        const int slot = d->waiting[0];
+        if (d->qn) deliver(d, slot);
+        else if (d->eos) d->slot_last[slot] = 1, d->slot_pts[slot] = d->last_pts;
+        else break;
+        fence_reach(d->waiting_fence[0]);
+        d->nwaiting--;
+        memmove(d->waiting, d->waiting + 1, d->nwaiting * sizeof d->waiting[0]);
+        memmove(d->waiting_fence, d->waiting_fence + 1, d->nwaiting * sizeof d->waiting_fence[0]);
+    }
+}
+/* buffer slot no longer waits for a picture: given back, or the decoder finalized (d->lock held) */
+static void dec_unwait(Dec *d, int slot) {
+    for (int i = 0; i < d->nwaiting; i++)
+        if (d->waiting[i] == slot) {
+            fence_reach(d->waiting_fence[i]);
+            d->nwaiting--;
+            memmove(d->waiting + i, d->waiting + i + 1, (d->nwaiting - i) * sizeof d->waiting[0]);
+            memmove(d->waiting_fence + i, d->waiting_fence + i + 1, (d->nwaiting - i) * sizeof d->waiting_fence[0]);
+            return;
+        }
 }
 
+/* SubmitXDecoderInputBuffer(u64* id, decoder, data, size, TimeSpan pts, bool last): kept, decoded when a buffer waits for
+   its picture or one is acquired; refused while the decoder holds MAX_IN_FLIGHT, so the reader keeps the movie's pace
+   instead of reading the whole file ahead of it */
 static void dec_submit(Ctx *c) {
     Dec *d = (Dec *)host_of(ARG(1), DEC_MAGIC);
+    if (d && (d->ctx || d->mf)) {
+        AcquireSRWLockExclusive(&d->lock);
+        const int full = ARG(3) && !dec_room(d);
+        ReleaseSRWLockExclusive(&d->lock);
+        if (full) { RET(RESULT_INPUT_FULL); return; }
+    }
     const uint64_t id = submitted();
     if (ARG(0)) G64(ARG(0)) = id;
     if (!d || (!d->ctx && !d->mf)) { RET(0); return; }
@@ -543,6 +668,8 @@ static void dec_submit(Ctx *c) {
     if (video_log() && (d->submits <= 8 || (ARG(5) & 1) || logged_one))
         hos_log("video: submit %lld (%llu bytes, pts %lld%s)", (long long)d->submits, (unsigned long long)ARG(3),
                 (long long)ARG(4), (ARG(5) & 1) ? ", last" : "");
+    dec_fill(d);
+    ready_update(d);
     ReleaseSRWLockExclusive(&d->lock);
     RET(0);
 }
@@ -561,8 +688,8 @@ static void dec_flush(Ctx *c, const char *what) {
         for (int i = 0; i < d->qn; i++) picture_free(&d->queue[(d->qhead + i) % MAX_QUEUE]);
         d->qhead = d->qn = 0;
         d->eos = 0;
-        d->clock_set = 0;
         for (int i = 0; i < MAX_SLOTS; i++) d->slot_last[i] = 0;
+        ready_update(d);
         ReleaseSRWLockExclusive(&d->lock);
     }
     RET(0);
@@ -578,122 +705,38 @@ static void dec_unregister(Ctx *c) {
     if (d && (uint32_t)ARG(1) < MAX_SLOTS) d->slots[(uint32_t)ARG(1)] = 0;
     RET(0);
 }
-/* AcquireXDecoderOutputBuffer(u32* index, NativeSyncHandle*, decoder): the oldest picture into a free buffer */
+/* AcquireXDecoderOutputBuffer(u32* index, NativeSyncHandle*, decoder): a free buffer, with the oldest picture in it, or
+   with a fence it waits on for the next picture (dec_fill); after the stream's end, the end */
 static void dec_acquire(Ctx *c) {
     Dec *d = (Dec *)host_of(ARG(2), DEC_MAGIC);
     if (ARG(1)) G64(ARG(1)) = 0;
     if (!d) { RET(RESULT_NO_OUTPUT); return; }
-    /* (the library aborts on any failure here: the hardware call waits for a picture. Up to ~100 ms for one decoded
-       by another thread's submission; then a free buffer as it was, so the caller is never refused) */
     AcquireSRWLockExclusive(&d->lock);
-    decode_pending(d);
-    for (int tries = 0; !d->qn && !d->eos && tries < 50; tries++) {
-        ReleaseSRWLockExclusive(&d->lock);
-        hos_sleep_ns(2000000);
-        AcquireSRWLockExclusive(&d->lock);
-        decode_pending(d);
-    }
+    dec_fill(d);
     int slot = -1;
     for (int i = 0; i < MAX_SLOTS && slot < 0; i++)
         if (d->slots[i] && !d->busy[i] && host_of(d->slots[i], POOL_MAGIC)) slot = i;
     if (slot < 0) {
+        ready_update(d);
         ReleaseSRWLockExclusive(&d->lock);
         RET(RESULT_NO_OUTPUT);
         return;
     }
     d->acquires++;
-    if (!d->qn) {   /* (nothing decoded: the buffer's last picture again; after the last submission, as the last) */
-        d->busy[slot] = 1;
-        if (d->eos) d->slot_last[slot] = 1, d->slot_pts[slot] = d->last_pts;   /* (the end at the last picture's time) */
-        const int idle = !d->eos && !d->phead;   /* (nothing will come into this buffer: its sync is not reached) */
-        if (idle && ARG(1))
-            G64(ARG(1)) = SYNC_IDLE_TAG | ((uint64_t)InterlockedCompareExchange64(&submissions, 0, 0) & SYNC_IDLE_MASK);
-        if (video_log()) hos_log("video: acquire %lld: nothing decoded%s, buffer %d again", (long long)d->acquires,
-                                 d->eos ? " (the end)" : idle ? " (idle: its sync not reached)" : "", slot);
-        else if (d->acquires == 1 && !d->eos)   /* (the start: the frame shows the buffer as it was, black since the pool's fill) */
-            hos_log("video: the first buffer went out before the first picture was decoded (shown black)");
-        ReleaseSRWLockExclusive(&d->lock);
-        if (ARG(0)) G32(ARG(0)) = (uint32_t)slot;
-        RET(0);
-        return;
-    }
-    {   /* (hookshot) The game takes one picture a frame, and the sound plays on: under 60 fps the movie fell behind its
-           sound (the intro "slow motion, audio ahead", issues 146 and 179). Pictures behind the movie's clock are skipped:
-           the next ones decoded, as the whole movie is submitted at once. HOS_VIDEO_NO_CATCHUP=1: as before */
-        static int off = -1;
-        if (off < 0) off = getenv("HOS_VIDEO_NO_CATCHUP") != NULL;
-        const int64_t now = hos_now_ns(), late = 25000000;   /* (a frame and a half at 60 fps) */
-        Picture *h = &d->queue[d->qhead];
-        if (!d->clock_set || h->pts < d->clock_pts) d->clock_set = 1, d->clock_ns = now, d->clock_pts = h->pts;   /* (a start, a loop) */
-        int skipped = 0;
-        for (int guard = 0; !off && guard < 600 && !d->queue[d->qhead].last; guard++) {
-            const int64_t due = d->clock_pts + (now - d->clock_ns);
-            if (d->queue[d->qhead].pts + late >= due) break;
-            if (d->qn < 2) {
-                if (!d->phead) break;
-                decode_next(d);
-                continue;
-            }
-            picture_free(&d->queue[d->qhead]);
-            d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
-            skipped++;
-        }
-        if (skipped && video_log()) hos_log("video: %d pictures skipped to catch up with the movie's clock", skipped);
-    }
-    Picture *p = &d->queue[d->qhead];
-    Pool *o = (Pool *)host_of(d->slots[slot], POOL_MAGIC);
-    /* (the picture at the pool's size: rows and columns past either are left out) */
-    const int ok = o->nv12 != NULL && p->nv12 != NULL;   /* (an allocation that failed: nothing copied; issue 342) */
-    const int w = !ok ? 0 : p->w < o->w ? p->w : o->w, h = !ok ? 0 : p->h < o->h ? p->h : o->h;
-    for (int y = 0; y < h; y++) {
-        if (p->rgba && o->rgba) memcpy(o->rgba + (size_t)y * o->w * 4, p->rgba + (size_t)y * p->w * 4, (size_t)w * 4);
-        memcpy(o->nv12 + (size_t)y * o->w, p->nv12 + (size_t)y * p->w, (size_t)w);
-    }
-    for (int y = 0; y < h / 2; y++)
-        memcpy(o->nv12 + (size_t)o->w * o->h + (size_t)y * o->w, p->nv12 + (size_t)p->w * p->h + (size_t)y * p->w,
-               (size_t)w);
-    o->rgba_stale = !p->rgba;
-    /* (hookshot) and into the pool's guest memory, as the hardware decoder leaves it (NV12, pitch = width, chroma right
-       after the luma rows; RGBA when the memory has room for it and the pool's format is not NV12's). Not once the
-       game reads the pool through ReadDecoderOutputImageNv12 / Rgba, as OoT's movie library does: its pools are
-       format 3, so each 1080p picture was made RGBA and copied there for nothing (the movie is the same without it) */
-    if (o->mem && o->mem_size && !o->read_by_api) {
-        const size_t nv12_size = (size_t)o->w * o->h * 3 / 2, rgba_size = (size_t)o->w * o->h * 4;
-        const int rgba = o->format != 0 && o->mem_size >= rgba_size;   /* (VideoDecoderOutputFormat 0: NV12) */
-        const size_t need = rgba ? rgba_size : nv12_size;
-        void *to = hos_guest_range(o->mem, need);   /* (hookshot: only into guest memory) */
-        if (o->mem_size >= need && ok && to && (rgba ? o->rgba != NULL : 1)) {
-            if (rgba && o->rgba_stale) pool_rgba(o);
-            memcpy(to, rgba ? o->rgba : o->nv12, need);
-            HOS_WRITTEN(to, need);
-        }
-    }
-    d->slot_pts[slot] = d->last_pts = p->pts;
-    d->slot_last[slot] = p->last;
     d->busy[slot] = 1;
-    {   /* (hookshot) HOS_VIDEO_LOG: the picture's time against this decoder's movie clock, to see it fall behind the sound */
-        if (video_log() && d->acquires % 60 == 0) {
-            const int64_t now = hos_now_ns();
-            hos_log("video: acquire %lld: picture at %.2f s, wall clock %.2f s (behind by %.2f s), %d decoded ahead", (long long)d->acquires,
-                    (double)(p->pts - d->clock_pts) / 1e9, (double)(now - d->clock_ns) / 1e9,
-                    (double)(now - d->clock_ns - (p->pts - d->clock_pts)) / 1e9, d->qn);
-        }
+    if (!d->nwaiting) decode_pending(d);
+    if (!d->nwaiting && d->qn) {
+        deliver(d, slot);
+    } else if (!d->nwaiting && d->eos) {   /* (the end at the last picture's time) */
+        d->slot_last[slot] = 1, d->slot_pts[slot] = d->last_pts;
+        if (video_log()) hos_log("video: acquire %lld: the end, buffer %d", (long long)d->acquires, slot);
+    } else {
+        const uint64_t f = fence_give();
+        d->waiting[d->nwaiting] = slot, d->waiting_fence[d->nwaiting++] = f;
+        if (ARG(1)) G64(ARG(1)) = SYNC_FENCE_TAG | (f & SYNC_FENCE_MASK);
+        if (video_log()) hos_log("video: acquire %lld: buffer %d waits for the next picture", (long long)d->acquires, slot);
     }
-    if (video_log() && (d->acquires <= 8 || p->last || d->acquires % 300 == 0)) {
-        uint64_t sum = 0, n = 0;   /* (the picture's mean luma and RGB, sampled: a black or garbage decode shows) */
-        uint64_t rgb[3] = {0, 0, 0};
-        for (int y = 0; y < p->h; y += 37)
-            for (int x = 0; x < p->w; x += 41, n++) {
-                sum += p->nv12[(size_t)y * p->w + x];
-                for (int k = 0; k < 3 && p->rgba; k++) rgb[k] += p->rgba[((size_t)y * p->w + x) * 4 + k];
-            }
-        hos_log("video: acquire %lld: %dx%d pts %lld%s into buffer %d (mean Y %llu, RGB %llu %llu %llu)",
-                (long long)d->acquires, p->w, p->h, (long long)p->pts, p->last ? " (last)" : "", slot,
-                (unsigned long long)(n ? sum / n : 0), (unsigned long long)(n ? rgb[0] / n : 0),
-                (unsigned long long)(n ? rgb[1] / n : 0), (unsigned long long)(n ? rgb[2] / n : 0));
-    }
-    picture_free(p);
-    d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
+    ready_update(d);
     ReleaseSRWLockExclusive(&d->lock);
     if (ARG(0)) G32(ARG(0)) = (uint32_t)slot;
     RET(0);
@@ -701,7 +744,12 @@ static void dec_acquire(Ctx *c) {
 /* ReleaseXDecoderOutputBuffer(decoder, u32 index, NativeSyncHandle) */
 static void dec_release(Ctx *c) {
     Dec *d = (Dec *)host_of(ARG(0), DEC_MAGIC);
-    if (d && (uint32_t)ARG(1) < MAX_SLOTS) d->busy[(uint32_t)ARG(1)] = 0;
+    if (d && (uint32_t)ARG(1) < MAX_SLOTS) {
+        AcquireSRWLockExclusive(&d->lock);
+        dec_unwait(d, (int)(uint32_t)ARG(1));
+        d->busy[(uint32_t)ARG(1)] = 0;
+        ReleaseSRWLockExclusive(&d->lock);
+    }
     RET(0);
 }
 /* GetXDecoderOutputBufferProperties(u16* w, u16* h, u16* display w, u16* display h, TimeSpan* pts, bool* last,
@@ -725,13 +773,21 @@ static void dec_properties(Ctx *c) {
     }
     RET(0);
 }
-static uint64_t ready_event(void) {
-    static uint64_t event;
-    if (!event) {
-        event = hos_sys_alloc(0x40, 16);
-        hos_system_event_init(event, 0);
-        hos_system_event_signal(event);
+/* GetXDecoderSubmissionReadyEvent(decoder): the decoder's own (dec_room) */
+static uint64_t ready_event(Ctx *c) {
+    Dec *d = (Dec *)host_of(ARG(0), DEC_MAGIC);
+    if (!d) return 0;
+    AcquireSRWLockExclusive(&d->lock);
+    if (!d->ready) {
+        AcquireSRWLockExclusive(&host_objs_lock);
+        d->ready = nspare_events ? spare_events[--nspare_events] : 0;
+        ReleaseSRWLockExclusive(&host_objs_lock);
+        if (!d->ready) d->ready = hos_sys_alloc(0x40, 16);
+        hos_system_event_init(d->ready, 0);
+        ready_update(d);
     }
+    const uint64_t event = d->ready;
+    ReleaseSRWLockExclusive(&d->lock);
     return event;
 }
 
@@ -744,7 +800,7 @@ HLE(_ZN2nn5codec26UnregisterVp9DecoderBufferEPNS0_14Vp9DecoderTypeEj) { dec_unre
 HLE(_ZN2nn5codec15StartVp9DecoderEPNS0_14Vp9DecoderTypeE) { RET(0); }
 HLE(_ZN2nn5codec14StopVp9DecoderEPNS0_14Vp9DecoderTypeE) { dec_flush(c, "Stop"); }
 HLE(_ZN2nn5codec15FlushVp9DecoderEPNS0_14Vp9DecoderTypeE) { dec_flush(c, "Flush"); }
-HLE(_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPNS0_14Vp9DecoderTypeE) { RET(ready_event()); }
+HLE(_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPNS0_14Vp9DecoderTypeE) { RET(ready_event(c)); }
 HLE(_ZN2nn5codec27SubmitVp9DecoderInputBufferEPmPNS0_14Vp9DecoderTypeEPKvmNS_8TimeSpanEb) { dec_submit(c); }
 HLE(_ZN2nn5codec36SubmitEncryptedVp9DecoderInputBufferEPmPNS0_14Vp9DecoderTypeEPKNS0_18EncryptionPropertyEPKvmNS_8TimeSpanEb) {
     const uint64_t id = submitted();
@@ -769,7 +825,7 @@ HLE(_ZN2nn5codec24RegisterAv1DecoderBufferEPNS0_14Av1DecoderTypeEjPNS0_25VideoDe
 HLE(_ZN2nn5codec15StartAv1DecoderEPNS0_14Av1DecoderTypeE) { RET(0); }
 HLE(_ZN2nn5codec14StopAv1DecoderEPNS0_14Av1DecoderTypeE) { dec_flush(c, "Stop"); }
 HLE(_ZN2nn5codec15FlushAv1DecoderEPNS0_14Av1DecoderTypeE) { dec_flush(c, "Flush"); }
-HLE(_ZN2nn5codec33GetAv1DecoderSubmissionReadyEventEPNS0_14Av1DecoderTypeE) { RET(ready_event()); }
+HLE(_ZN2nn5codec33GetAv1DecoderSubmissionReadyEventEPNS0_14Av1DecoderTypeE) { RET(ready_event(c)); }
 HLE(_ZN2nn5codec27SubmitAv1DecoderInputBufferEPmPNS0_14Av1DecoderTypeEPKvmNS_8TimeSpanEb) { dec_submit(c); }
 HLE(_ZN2nn5codec29AcquireAv1DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_14Av1DecoderTypeE) { dec_acquire(c); }
 HLE(_ZN2nn5codec29ReleaseAv1DecoderOutputBufferEPNS0_14Av1DecoderTypeEjNS_2gs16NativeSyncHandleE) { dec_release(c); }
@@ -784,7 +840,7 @@ HLE(_ZN2nn5codec26UnregisterVp8DecoderBufferEPNS0_14Vp8DecoderTypeEj) { dec_unre
 HLE(_ZN2nn5codec15StartVp8DecoderEPNS0_14Vp8DecoderTypeE) { RET(0); }
 HLE(_ZN2nn5codec14StopVp8DecoderEPNS0_14Vp8DecoderTypeE) { dec_flush(c, "Stop"); }
 HLE(_ZN2nn5codec15FlushVp8DecoderEPNS0_14Vp8DecoderTypeE) { dec_flush(c, "Flush"); }
-HLE(_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPNS0_14Vp8DecoderTypeE) { RET(ready_event()); }
+HLE(_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPNS0_14Vp8DecoderTypeE) { RET(ready_event(c)); }
 HLE(_ZN2nn5codec27SubmitVp8DecoderInputBufferEPmPNS0_14Vp8DecoderTypeEPKvmNS_8TimeSpanEb) { dec_submit(c); }
 HLE(_ZN2nn5codec29AcquireVp8DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_14Vp8DecoderTypeE) { dec_acquire(c); }
 HLE(_ZN2nn5codec29ReleaseVp8DecoderOutputBufferEPNS0_14Vp8DecoderTypeEjNS_2gs16NativeSyncHandleE) { dec_release(c); }
