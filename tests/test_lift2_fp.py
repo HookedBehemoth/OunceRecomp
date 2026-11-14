@@ -802,6 +802,9 @@ HARNESS = r"""
 #include <immintrin.h>
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
                  uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
+#define HOS_FP_TEST
+#define A64_NOESC
+#include "hos_fp.c"
 unsigned char a64_dirty[1u << 27];
 void a64_trap(Ctx *c, uint64_t pc, uint32_t w) { (void)c; (void)pc; (void)w; }
 typedef void (*Fn)(Ctx *);
@@ -900,7 +903,6 @@ class FPNeon(unittest.TestCase):
                 vv += [q & M[64], q >> 64]
             nz = st["nzcv"][0] << 3 | st["nzcv"][1] << 2 | st["nzcv"][2] << 1 | st["nzcv"][3]
             srows.append("{%s}" % ",".join("%#xULL" % x for x in vv + st["x"] + [st["fz"], nz]))
-        rt_fp = os.path.join(ROOT, "nx2", "lift2", "rt_fp.c")
         with tempfile.TemporaryDirectory() as d:
             ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
             with open(ll, "w") as fo:
@@ -908,7 +910,7 @@ class FPNeon(unittest.TestCase):
             with open(c, "w") as fo:
                 fo.write(HARNESS % {"decls": "\n".join("void %s(Ctx *);" % n for n in names),
                                     "fns": ",".join(names), "states": ",".join(srows)})
-            subprocess.run([llvm.check("clang"), "-O1", "-march=x86-64-v3", "-w", c, ll, rt_fp, "-o", exe], check=True)
+            subprocess.run([llvm.check("clang"), "-O1", "-march=x86-64-v3", "-w", "-I" + os.path.join(ROOT, "host"), c, ll, "-o", exe], check=True)
             out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split("\n")
         bugs, devs = [], {}
         for line in out:

@@ -155,6 +155,14 @@ void a64_ijump_site(Ctx *A64_NOESC c, uint64_t target, uint64_t *site);
 void a64_svc(Ctx *A64_NOESC c, uint32_t imm);                 /* SVC #imm (sdk only) */
 void a64_trap(Ctx *A64_NOESC c, uint64_t pc, uint32_t insn);  /* BRK, HLT, UDF and words that are not code */
 void a64_ret_mismatch(Ctx *A64_NOESC c, uint64_t pc);         /* RET to something other than the caller (debug builds) */
+/* (hookshot) the guest's FP mode on the host (host/hos_fp.c): MXCSR follows FPCR; lift 2's MRS/MSR FPCR/FPSR */
+unsigned hos_fp_mxcsr(uint64_t fpcr);
+void a64_fpcr_sync(Ctx *A64_NOESC c);                          /* MXCSR = c->fpcr (after the present lifter's MSR FPCR) */
+void a64_fpsr_sync(Ctx *A64_NOESC c);                          /* MXCSR's flags cleared (after its MSR FPSR) */
+uint64_t a64_fpcr_read(Ctx *A64_NOESC c);
+void a64_fpcr_write(Ctx *A64_NOESC c, uint64_t v);
+uint64_t a64_fpsr_read(Ctx *A64_NOESC c);
+void a64_fpsr_write(Ctx *A64_NOESC c, uint64_t v);
 
 #include "a64_suyu.h"
 #include "a64_fpx.h"

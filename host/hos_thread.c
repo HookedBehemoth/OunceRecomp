@@ -546,6 +546,7 @@ static DWORD WINAPI thread_main(void *p) {
     A64Fn f = a64_lookup(t->entry);
     if (!f) hos_fatal(c, "thread %s: entry %#llx is not a function", t->name, (unsigned long long)t->entry);
     hos_vcore_back();   /* (virtual cores: before any guest code) */
+    a64_fpcr_sync(c);   /* (MXCSR from the guest FPCR: a new host thread may inherit its creator's) */
     if (hos_trace) hos_log("thread start: entry %#llx arg %#llx", (unsigned long long)t->entry, (unsigned long long)t->arg);
     /* What the SDK's own thread entry does before the thread function (see build.py thread_hooks): nnmusl's start
        hook gives the thread its TLS (thread pointer with the DTV at TP+8, every module's TLS block) and leaves the
@@ -1167,6 +1168,7 @@ static void WINAPI fiber_main(void *p) {
     c->x[0] = f->arg;
     c->x[30] = 0;
     c->x[31] = (f->stack + f->size) & ~15ULL;
+    a64_fpcr_sync(c);   /* (the FPCR it inherited at its first switch; the host fiber starts from another MXCSR) */
     a64_icall(c, f->fn);   /* FiberType* (*)(void*) */
     const uint64_t next = c->x[0];
     f->done = 1;
@@ -1202,6 +1204,8 @@ static void fiber_switch(Ctx *from, HosFiber *to) {
     t->run_ctx = to ? &to->ctx : NULL;
     SwitchToFiber(to ? to->host : t->host_fiber);
     /* back in `from`, maybe on another thread: take that one's identity (fiber_switch's caller set it already) */
+    a64_fpcr_sync(from);   /* (and its FP mode: the other context may have changed MXCSR; not every platform's fiber
+                              switch keeps it) */
 }
 
 /* InitializeFiber(FiberType*, FiberType* (*)(void*), void* arg, void* stack, unsigned long size, int flags) */

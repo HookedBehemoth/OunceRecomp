@@ -1339,10 +1339,23 @@ def fpx_header(used):
     return "\n".join(out) + "\n"
 
 
+# (hookshot) MSR FPCR / MSR FPSR: MXCSR follows the guest FPCR (host/hos_fp.c), because lift 2's code computes FP
+# natively under it; the present lifter's own FP does not depend on MXCSR beyond what hos_fp.c says.
+FPCR_WRITE = re.compile(r"(c->fpcr = [^;]*\| \(c->fpcr & RECOMP_FPX_INHIBIT\);)")
+FPSR_WRITE = re.compile(r"(c->fpsr = (?:c->x\[\d+\]|0|0ULL);)")
+
+
+def fp_mode_sync(text):
+    if "c->fp" not in text:
+        return text
+    text = FPCR_WRITE.sub(r"\1 a64_fpcr_sync(c);", text)
+    return FPSR_WRITE.sub(r"\1 a64_fpsr_sync(c);", text)
+
+
 def op_text(text, fpx):
     """one instruction's emitted C as lifted code has it: FPX guards outlined (their shapes added to fpx, which
-    fpx_header turns into a64_fpx.h), NEON FP vectorized, stores widened, flags packed"""
-    return stack_stores(pack_flags(widen_vstores(vectorize_fpx(outline_fpx(text, fpx)))))
+    fpx_header turns into a64_fpx.h), NEON FP vectorized, stores widened, flags packed, MXCSR kept with FPCR"""
+    return fp_mode_sync(stack_stores(pack_flags(widen_vstores(vectorize_fpx(outline_fpx(text, fpx))))))
 
 
 class Lifter:

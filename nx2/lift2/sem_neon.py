@@ -6,7 +6,7 @@ each operation below is written once for "a type": i32 or v4i32, f32 or v4f32. P
 are pshufb with the out-of-range indices forced to bit 7 by a saturating add; saturating arithmetic is LLVM's .sat
 intrinsics; widening/narrowing operations extend to the double-width lane, compute exactly, and truncate. FP lanes
 take sem_fp's operations (host FP mode, same fix-ups). FRECPE/FRSQRTE call the out-of-line table routines of
-rt_fp.c (Arm's estimate algorithm, exact) per lane.
+host/hos_fp.c (Arm's estimate algorithm, exact) per lane.
 """
 from .ir import WIDTH, lanes, vtype
 from .sem_int import getx, setx
@@ -293,7 +293,7 @@ def int_pair(b, mn, x, y):
 
 
 def estimate(b, x, fn):
-    """FRECPE/FRSQRTE: rt_fp.c's routine for each lane (a64_frecpe_f32 ...)"""
+    """FRECPE/FRSQRTE: host/hos_fp.c's routine for each lane (a64_frecpe_f32 ...)"""
     lt = lane_of(x.ty)
     name = "a64_%s_%s" % (fn, lt)
     if x.ty[0] != "v":

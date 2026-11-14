@@ -52,28 +52,14 @@ def fp_entries():
 
 HELPERS = r"""
 #include <immintrin.h>
-static unsigned mxcsr_of(uint64_t fpcr) {
-    unsigned m = 0x1F80, rm = fpcr >> 22 & 3;
-    if (fpcr >> 24 & 1) m |= 0x8040;
-    return m | (rm == 1 ? 2u : rm == 2 ? 1u : rm) << 13;
-}
-uint64_t a64_fpcr_read(Ctx *c) { return c->fpcr; }
-void a64_fpcr_write(Ctx *c, uint64_t v) { c->fpcr = v; _mm_setcsr(mxcsr_of(v)); }
-uint64_t a64_fpsr_read(Ctx *c) {
-    unsigned m = _mm_getcsr(); uint64_t f = c->fpsr;
-    f |= (m & 1 ? 1 : 0) | (m & 4 ? 2 : 0) | (m & 8 ? 4 : 0) | (m & 16 ? 8 : 0) | (m & 32 ? 16 : 0);
-    if ((m & 2) && (c->fpcr >> 24 & 1)) f |= 128;
-    return f;
-}
-void a64_fpsr_write(Ctx *c, uint64_t v) { c->fpsr = v; _mm_setcsr(_mm_getcsr() & ~0x3Fu); }
-"""
+"""   # (the FPCR/FPSR helpers and the estimates: host/hos_fp.c, linked)
 
 
 def harness():
     h = L2.HARNESS
     h = h.replace("static const A64Fn T_OLD[]", HELPERS + "static const A64Fn T_OLD[]")
     h = h.replace("int fault = run(which ? T_NEW[idx] : T_OLD[idx], &c);",
-                  "if (which) _mm_setcsr(mxcsr_of(c.fpcr));\n"
+                  "if (which) _mm_setcsr(hos_fp_mxcsr(c.fpcr));\n"
                   "            int fault = run(which ? T_NEW[idx] : T_OLD[idx], &c);\n"
                   "            _mm_setcsr(0x1F80);")
     # the changed pages' contents (up to 64), for lane-wise classification
@@ -85,7 +71,7 @@ def harness():
     h = h.replace("fwrite(&ndiff, 4, 1, out); fwrite(diff, 16, ndiff < 8192 ? ndiff : 8192, out);",
                   "fwrite(&ndiff, 4, 1, out); fwrite(diff, 16, ndiff < 8192 ? ndiff : 8192, out);\n"
                   "            fwrite(pg, 4096, ndiff < 64 ? ndiff : 64, out);")
-    assert h.count("mxcsr_of(c.fpcr)") == 1 and "pg[ndiff]" in h and "fwrite(pg" in h
+    assert h.count("hos_fp_mxcsr(c.fpcr)") == 1 and "pg[ndiff]" in h and "fwrite(pg" in h
     return h
 
 
@@ -322,7 +308,7 @@ def main():
     with open(hc, "w") as f:
         f.write("\n".join(src))
     exe = os.path.join(tmp, "harness")
-    rt_fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lift2", "rt_fp.c")
+    rt_fp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "host", "hos_fp.c")
     subprocess.run([clang, "-O1"] + L2.FLAGS + inc + [hc, new_ll, rt_fp, os.path.join(tmp, "a64_suyu.c"), "-o", exe],
                    check=True)
     print("harness built (%.0fs)" % (time.time() - t0), flush=True)

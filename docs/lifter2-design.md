@@ -290,7 +290,7 @@ and imports, the hook and probe tables.
 | generated NaN (invalid op) | 0xFFC00000 / 0xFFF8... | not fixed by default (an allowed deviation, 7.1); `LIFT2_DEFAULT_NAN=1` at lift time adds a select to ARM's default NaN after each arithmetic op (2-4 instructions per op) if the shadow run shows a reader cares |
 | NaN propagation with two NaN operands or a signalling NaN | x86 propagates src1 | not fixed: ARM differs only when the second operand is signalling; the shadow run counts it |
 | FZ: tininess | ARM flushes results tiny before rounding, x86 FTZ after | not fixed: differs only for results that round up to exactly the smallest normal; the shadow run counts it |
-| FRECPE, FRSQRTE | `rcpps` is a different estimate | ARM's algorithm (exact), out of line per lane: `a64_frecpe_f32/f64`, `a64_frsqrte_f32/f64` in `nx2/lift2/rt_fp.c`, FZ and RMode read from MXCSR |
+| FRECPE, FRSQRTE | `rcpps` is a different estimate | ARM's algorithm (exact), out of line per lane: `a64_frecpe_f32/f64`, `a64_frsqrte_f32/f64` in `host/hos_fp.c`, FZ and RMode read from MXCSR |
 | FRECPS, FRSQRTS | | `fma` plus the 0·∞ special case (2.0 / 1.5) |
 | FCVT to and from half | | `fptrunc`/`fpext` (F16C `vcvtps2ph`/`vcvtph2ps`); FZ16/AHP not supported |
 | FCMP, FCCMP | | four `fcmp`s give NZCV (unordered 0011); a following condition folds into one `fcmp` with the matching ordered/unordered predicate (`sem_int.cond`, kind `fcmp`) |
@@ -674,7 +674,7 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 - `sem_fp.py`, `sem_neon.py`: about 40 templates, lane-generic: each operation is written once for "a type" (`i32` or
   `v4i32`, `f32` or `v4f32`). 64-bit arrangements are 64-bit LLVM vectors (LLVM widens them); a write zeroes the upper
   half; scalar FP writes zero the register beyond lane 0 (LLVM drops the zeroing where only lane 0 is read again).
-- `rt_fp.c`: FRECPE/FRSQRTE (Arm's estimate algorithm); compiled into the runtime and into the tests.
+- `host/hos_fp.c` (runtime): FRECPE/FRSQRTE (Arm's estimate algorithm), the FPCR/FPSR helpers, MXCSR = f(FPCR).
 - IR (`ir.py`, `emit_llvm.py`): V0-V31 are SSA variables of type `v128`; lane views are bitcasts; new operations:
   fadd/fsub/fmul/fdiv/fneg, fcmp, the FP casts, vector constants (FP ones as bit patterns), extract/insert/shuffle,
   `call` of intrinsics and of `a64_*` runtime routines (`memory(none)` unless they take the context).
@@ -690,7 +690,7 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 - `a64_fpsr_read(ctx)`: `ctx->fpsr` | MXCSR sticky bits (IE→IOC, ZE→DZC, OE→OFC, UE→UFC, PE→IXC, DE→IDC only under
   FZ). `a64_fpsr_write(ctx, x)`: `ctx->fpsr = x`, MXCSR sticky bits cleared. (`nx2/test_lift2_fpleaf.py` has the
   reference implementation the harness uses.)
-- `a64_frecpe_f32/f64`, `a64_frsqrte_f32/f64` from `rt_fp.c`.
+- `a64_frecpe_f32/f64`, `a64_frsqrte_f32/f64` from `host/hos_fp.c`.
 
 **Results.**
 

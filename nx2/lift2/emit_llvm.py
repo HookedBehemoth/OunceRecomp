@@ -322,7 +322,7 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
             out.append("  %s = load %s, ptr %%cx.%s, align 8" % (r, lltype(v.ty), var))
     elif op == "call":
         # an LLVM intrinsic, a runtime function or an internal helper (HELPERS); a64_* runtime routines without
-        # effects (rt_fp.c's estimates) are declared memory(none)
+        # effects (host/hos_fp.c's estimates) are declared memory(none)
         fn, at = v.attrs["fn"], v.attrs
         args = (["ptr %ctx"] if at.get("ctx") else []) + [typed(x) for x in a]
         rt = lltype(v.ty) if v.ty != "void" else "void"
