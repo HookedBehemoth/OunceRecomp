@@ -229,9 +229,14 @@ volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a flo
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
 static void realtime_step(int64_t now) {
     int rx_option(int id, int otherwise);
-    /* (Resolution 100% from the start: the fixed path skipped the dynamic block from the first frame, its fields stayed
-       unset and the 3D came out black. The dynamic path runs a few frames first, as when the menu turns it on in game) */
-    hos_fixed_resolution = !rx_option(2, 1) && hos_dynres_runs >= 30;
+    /* The game's dynamic resolution steps the 3D's scale with the GPU time, and each new scale makes a new set of render
+       targets: it is off unless HOS_DYNRES=1, and the 3D stays at the fixed path's scale (hos_fixed_scale_bits). The fixed
+       path skips the dynamic block, whose fields the 3D reads, so it takes over after the dynamic path has run 30 frames */
+    {
+        static int dyn = -1;
+        if (dyn < 0) dyn = getenv("HOS_DYNRES") && atoi(getenv("HOS_DYNRES")) > 0;
+        hos_fixed_resolution = !dyn && hos_dynres_runs >= 30;
+    }
     {
         static const char *env;
         static int looked;
@@ -251,6 +256,19 @@ static void realtime_step(int64_t now) {
         if (!read_scale) {
             read_scale = 1;
             if (getenv("HOS_RES_SCALE")) { float v = (float)atof(getenv("HOS_RES_SCALE")); memcpy((void *)&hos_fixed_scale_bits, &v, 4); }
+        }
+    }
+    {   /* every change of the 3D's scale (+0xe5c), with the sizes it is taken against */
+        static uint32_t last;
+        static long long presents;
+        const uint64_t m = hos_res_module;
+        ++presents;
+        if (m && *(uint32_t *)GP(m + 0xe5c) != last) {
+            float f[4];
+            memcpy(f, GP(m + 0xe50), sizeof f);
+            hos_log("vi: 3D scale %.3f (+0xe50 %.0f %.0f %.0f) at present %lld, fixed %d", f[3], f[0], f[1], f[2], presents,
+                    hos_fixed_resolution);
+            last = *(uint32_t *)GP(m + 0xe5c);
         }
     }
     {   /* HOS_RES_LOG=1: the 3D's scale every 300 presents. +0xe20: flags (bit 3: 0.75, bit 4: 0.5 in place of the scale),

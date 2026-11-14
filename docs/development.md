@@ -158,7 +158,8 @@ beside them are listed at the end, under Undocumented, with where they are read.
 | `HOS_TEXT_SPEED` | Text speed, over the options file |
 | `HOS_GRAPHICS_SCALE` | `<float>`: the scale `GetCurrentGraphicsScale` returns (default 1.0) |
 | `HOS_SCENE_NATIVE` | non-zero: the scene's base scale is 1.0 (the game's is 0.8) |
-| `HOS_RES_SCALE` | set: the menu's resolution scale does not set the fixed scale |
+| `HOS_DYNRES` | `1`: the game's dynamic resolution steps the 3D's scale with the GPU time; off by default, the 3D at the fixed scale |
+| `HOS_RES_SCALE` | `<float>`: the fixed scale of the 3D (1.0, the game's own, by default) |
 | `HOS_RT_POOL_MB` | `<MB>`: the render-target pool's size, over the default (at least 512 MB) |
 | `HOS_MODS` | `<dir>`: the mods folder, over the `mods` folder beside the executable (RomFS mods in the layout emulators use, host/mods.c) |
 | `HOS_FS_OVERLAY` | `<folder>`: patched game files read before the romfs (the chiseled boot) |
