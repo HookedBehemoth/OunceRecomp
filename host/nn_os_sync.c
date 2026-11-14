@@ -2,7 +2,8 @@
    message queues, reader/writer locks, multi-wait.
 
    Every guest object is a host monitor (SRW lock + condition variable + state) found by the guest address of its
-   nn::os struct; the guest struct itself is left alone. An object the game never initialized (nn::os has static
+   nn::os struct; the guest struct itself is left alone, except a mutex's lock word (the uncontended path never looks
+   the monitor up: "mutex state in the guest's MutexType"). An object the game never initialized (nn::os has static
    initializers) is created on first use. Mutexes are always recursive: relocking a non-recursive nn::os mutex
    would be a game bug on hardware anyway. */
 #include "hos.h"
@@ -405,6 +406,8 @@ static void spin_until_free(Obj *o) { (void)o; }
    movie player's thread signalled its decoder to stop, unlocked, locked again before the decoder had the mutex, and
    joined it holding the mutex: a freeze after Load about one start in four. A signal now reserves the mutex for the
    thread it wakes (reserved): others cannot take it until that thread has. */
+static int mx_on(void);
+static void mx_reserve(Obj *m);
 static int mutex_take(Obj *m, HosThread *self) {
     if (__atomic_load_n(&m->reserved, __ATOMIC_SEQ_CST) > 0) return 0;   /* (owed to a woken waiter) */
     HosThread *none = NULL;
@@ -465,7 +468,8 @@ static int cv_leave(Obj *cv, Obj *m) {
 static void cv_reserve(Obj *cv) {
     if (!handoff_on() || cv->cv_mixed || !cv->cv_mutex || cv->cv_waiting <= cv->cv_owed || cv->cv_owed >= 8) return;
     cv->cv_owed_mutex[cv->cv_owed++] = cv->cv_mutex;
-    __atomic_add_fetch(&cv->cv_mutex->reserved, 1, __ATOMIC_SEQ_CST);
+    if (mx_on()) mx_reserve(cv->cv_mutex);
+    else __atomic_add_fetch(&cv->cv_mutex->reserved, 1, __ATOMIC_SEQ_CST);
 }
 static void mutex_lock(Obj *m, uint64_t guest, Ctx *c) {
     HosThread *self = hos_self();
@@ -530,9 +534,10 @@ static uint64_t watch_mutex(void) {
 static volatile uint64_t watch_cvs[8];
 static void watch_log(const char *what, uint64_t m, uint64_t cv, Ctx *c, Obj *o) {
     HosThread *self = hos_self(), *own = o ? __atomic_load_n(&o->owner, __ATOMIC_RELAXED) : NULL;
-    hos_log("watch %s: mutex %#llx cv %#llx by %s (lr %#llx); owner %s count %d", what, (unsigned long long)m,
+    const uint32_t w = mx_on() && m ? __atomic_load_n((uint32_t *)GP(m + 0x18), __ATOMIC_RELAXED) : 0;
+    hos_log("watch %s: mutex %#llx cv %#llx by %s (lr %#llx); owner %s count %d word %#x", what, (unsigned long long)m,
             (unsigned long long)cv, self ? hos_thread_name(self) : "?", (unsigned long long)(c ? c->x[30] : 0),
-            own ? hos_thread_name(own) : "none", o ? o->count : -1);
+            own ? hos_thread_name(own) : "none", o ? o->count : -1, w);
 }
 static int watched(uint64_t m) { return m && m == watch_mutex(); }
 static int watched_cv(uint64_t cv) {
@@ -541,8 +546,194 @@ static int watched_cv(uint64_t cv) {
     return 0;
 }
 
+/* ---- mutex state in the guest's MutexType ---------------------------------------------------------------- */
+/* The game locks thousands of distinct mutexes a frame (the GPU-culling dispatch f_80364080 one per instance slot,
+   ~5,000), and finding each one's Obj missed the cache three times (the per-thread cache, the table's slot and key,
+   the Obj). So the lock lives in the guest's own MutexType, in the u32 at +0x18 where Horizon keeps its critical
+   section's word (the SDK functions that read it are all HLE): the owner's id (bits 0-19, a number per host thread,
+   never reused), the recursion count (bits 20-30) and MX_SLOW (bit 31). An uncontended lock is one compare-and-swap
+   from 0 on a line the game touches anyway, an unlock one back to 0; the Obj (found by address as before) is only for
+   the slow path: its lk, cv, mwait and reserved keep their meaning, and MX_SLOW says it must be looked at: set under
+   m->lk by a thread about to sleep and by a condition variable's signal reserving the mutex, cleared under m->lk by
+   the unlock that finds neither left. So a fast lock never takes a mutex owed to a woken waiter, and an unlock whose
+   compare-and-swap fails on MX_SLOW wakes under m->lk, where the sleeper checks and sleeps: no wake-up is lost. Counts
+   past the field's 2047 go to the Obj's count. A word naming an id never handed out is not a lock (memory never
+   initialized as a mutex) and is taken as free. HOS_MUTEX_OBJ=1: the owner in the Obj, as before. */
+#define MX_SLOW 0x80000000u
+#define MX_ONE  (1u << 20)
+#define MX_ID   (MX_ONE - 1)
+#define MX_CNT  (0x7ffu << 20)
+static int mx_on(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("HOS_MUTEX_OBJ") == NULL;
+    return v;
+}
+static uint32_t mx_ids;               /* ids handed out */
+static HosThread *mx_thread[4096];    /* (the thread of an id, for logs) */
+static _Thread_local uint32_t mx_self;
+static uint32_t mx_id_slow(void) {
+    const uint32_t id = __atomic_add_fetch(&mx_ids, 1, __ATOMIC_RELAXED);
+    if (id > MX_ID) hos_fatal(NULL, "nn::os mutex: more than %u host threads", (unsigned)MX_ID);
+    if (id < 4096) mx_thread[id] = hos_self();
+    return mx_self = id;
+}
+static inline uint32_t mx_id(void) { return mx_self ? mx_self : mx_id_slow(); }
+static const char *mx_owner_name(uint32_t w) {
+    const uint32_t id = w & MX_ID;
+    HosThread *t = id && id < 4096 ? mx_thread[id] : NULL;
+    return t ? hos_thread_name(t) : id ? "a host thread" : "nobody";
+}
+static inline uint32_t *mx_word(uint64_t key) { return (uint32_t *)GP(key + 0x18); }
+static inline int mx_count(uint32_t w) { return (int)((w & MX_CNT) >> 20); }
+/* free (no owner, or an owner id never handed out) */
+static int mx_free(uint32_t w) {
+    const uint32_t id = w & MX_ID;
+    return !id || id > __atomic_load_n(&mx_ids, __ATOMIC_RELAXED) || !(w & MX_CNT);
+}
+static void mx_note_garbage(uint64_t key, uint32_t w) {
+    static volatile LONG told;
+    if (w & ~MX_SLOW && InterlockedIncrement(&told) <= 10)
+        hos_log("nn::os mutex %#llx: word %#x names no thread: taken as free", (unsigned long long)key, w);
+}
+/* take a free mutex (slow path: m looked up); owed: the woken waiter it is reserved for */
+static int mx_take(Obj *m, uint32_t *w, uint32_t id, int owed) {
+    uint32_t v = __atomic_load_n(w, __ATOMIC_RELAXED);
+    for (;;) {
+        if (!mx_free(v)) return 0;
+        if (!owed && __atomic_load_n(&m->reserved, __ATOMIC_SEQ_CST) > 0) return 0;
+        if (__atomic_compare_exchange_n(w, &v, (v & MX_SLOW) | id | MX_ONE, 0, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) break;
+    }
+    if (v & ~MX_SLOW) mx_note_garbage(m->key, v);
+    if (owed) __atomic_sub_fetch(&m->reserved, 1, __ATOMIC_SEQ_CST);
+    m->count = 0;
+    return 1;
+}
+static void mx_spin_until_free(Obj *m, uint32_t *w) {
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
+    int misses;
+    if (mx_free(__atomic_load_n(w, __ATOMIC_RELAXED)) || !spin_begin(m, &misses)) return;
+    const int64_t end = hos_now_ns() + spin_ns();
+    for (;;) {
+        for (int i = 0; i < 16; i++) {
+            if (mx_free(__atomic_load_n(w, __ATOMIC_RELAXED))) {
+                spin_end(m, misses, 1);
+                return;
+            }
+            _mm_pause();
+        }
+        if (hos_now_ns() >= end) {
+            spin_end(m, misses, 0);
+            return;
+        }
+    }
+#else
+    (void)m, (void)w;
+#endif
+}
+static void mx_lock_slow(uint64_t key, uint32_t id, int owed, Ctx *c) {
+    uint32_t *w = mx_word(key);
+    Obj *m = obj_nockpt(key, K_MUTEX);
+    if (mx_take(m, w, id, owed)) return;
+    if (!owed) {
+        mx_spin_until_free(m, w);
+        if (mx_take(m, w, id, 0)) return;
+    }
+    static int trace_ms = -1;
+    if (trace_ms < 0) { const char *e = getenv("HOS_MUTEX_TRACE"); trace_ms = e ? atoi(e) : 0; }
+    const uint32_t held = __atomic_load_n(w, __ATOMIC_RELAXED);
+    const int64_t t0 = trace_ms ? hos_now_ns() : 0;
+    AcquireSRWLockExclusive(&m->lk);
+    __atomic_add_fetch(&m->mwait, 1, __ATOMIC_SEQ_CST);
+    int64_t told_at = hos_now_ns() + 10000000000ll;
+    for (;;) {
+        __atomic_or_fetch(w, MX_SLOW, __ATOMIC_SEQ_CST);
+        if (mx_take(m, w, id, owed)) break;
+        hos_cv_sleep(&m->cv, &m->lk, 2000);
+        if (told_at && hos_now_ns() > told_at) {
+            const uint32_t v = __atomic_load_n(w, __ATOMIC_RELAXED);
+            hos_log("mutex %#llx (obj %p): %s waiting 10 s; held by %s (count %d, %d waiting)", (unsigned long long)key,
+                    (void *)m, hos_thread_name(hos_self()), mx_owner_name(v), mx_count(v), (int)m->mwait);
+            told_at = 0;
+        }
+    }
+    __atomic_sub_fetch(&m->mwait, 1, __ATOMIC_SEQ_CST);
+    ReleaseSRWLockExclusive(&m->lk);
+    if (t0) {
+        const int64_t waited = hos_now_ns() - t0;
+        static volatile LONG logged;
+        if (waited > (int64_t)trace_ms * 1000000 && InterlockedIncrement(&logged) <= 60)
+            hos_log("mutex %#llx: waited %.1f ms (lr %#llx); held by %s", (unsigned long long)key, waited / 1e6,
+                    (unsigned long long)(c ? c->x[30] : 0), mx_owner_name(held));
+    }
+}
+static inline void mx_lock(uint64_t key, Ctx *c) {
+    uint32_t *w = mx_word(key);
+    const uint32_t id = mx_id();
+    uint32_t v = 0;
+    if (__atomic_compare_exchange_n(w, &v, id | MX_ONE, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
+    if ((v & MX_ID) == id && (v & MX_CNT)) {   /* (again by its owner) */
+        if ((v & MX_CNT) != MX_CNT) __atomic_add_fetch(w, MX_ONE, __ATOMIC_RELAXED);
+        else obj_nockpt(key, K_MUTEX)->count++;
+        return;
+    }
+    mx_lock_slow(key, id, 0, c);
+}
+/* give it back (the owner's count down to 0) */
+static void mx_give(uint64_t key, uint32_t *w) {
+    uint32_t v = __atomic_load_n(w, __ATOMIC_RELAXED);
+    if (!(v & MX_SLOW) && __atomic_compare_exchange_n(w, &v, 0, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) return;
+    Obj *m = obj_nockpt(key, K_MUTEX);
+    AcquireSRWLockExclusive(&m->lk);
+    const int sleepers = __atomic_load_n(&m->mwait, __ATOMIC_SEQ_CST), owed = __atomic_load_n(&m->reserved, __ATOMIC_SEQ_CST);
+    __atomic_store_n(w, sleepers || owed > 0 ? MX_SLOW : 0, __ATOMIC_SEQ_CST);
+    ReleaseSRWLockExclusive(&m->lk);
+    /* (all of them while one is owed it: woken alone, another sleeper would fail its take and sleep again) */
+    if (sleepers) {
+        if (owed > 0) crit_wake(&m->cv), WakeAllConditionVariable(&m->cv);
+        else crit_wake(&m->cv), WakeConditionVariable(&m->cv);
+    }
+}
+static inline void mx_unlock(uint64_t key) {
+    uint32_t *w = mx_word(key);
+    const uint32_t v = __atomic_load_n(w, __ATOMIC_RELAXED);
+    if ((v & MX_ID) != mx_id() || !(v & MX_CNT)) return;   /* (not its owner: ignored) */
+    if ((v & MX_CNT) == MX_CNT) {
+        Obj *m = obj_nockpt(key, K_MUTEX);
+        if (m->count > 0) { m->count--; return; }
+    }
+    if ((v & MX_CNT) != MX_ONE) { __atomic_sub_fetch(w, MX_ONE, __ATOMIC_RELEASE); return; }
+    mx_give(key, w);
+}
+/* a condition variable's wait: given back whatever its count; the count it had */
+static int mx_release_all(Obj *m) {
+    uint32_t *w = mx_word(m->key);
+    const int count = mx_count(__atomic_load_n(w, __ATOMIC_RELAXED)) + m->count;
+    m->count = 0;
+    mx_give(m->key, w);
+    return count;
+}
+/* ...and taken again with that count (owed: a signal reserved it for this waiter) */
+static void mx_relock(Obj *m, int owed, int count) {
+    uint32_t *w = mx_word(m->key);
+    const uint32_t id = mx_id();
+    uint32_t v = 0;
+    if (owed || !__atomic_compare_exchange_n(w, &v, id | MX_ONE, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+        mx_lock_slow(m->key, id, owed, NULL);
+    const int field = count < 1 ? 1 : count > 2047 ? 2047 : count;
+    if (field > 1) __atomic_add_fetch(w, (uint32_t)(field - 1) * MX_ONE, __ATOMIC_RELAXED);
+    m->count = count - field;
+}
+/* a signal reserving m for the waiter it wakes (cv->lk held; m->lk after it, as in a wait) */
+static void mx_reserve(Obj *m) {
+    AcquireSRWLockExclusive(&m->lk);
+    __atomic_add_fetch(&m->reserved, 1, __ATOMIC_SEQ_CST);
+    __atomic_or_fetch(mx_word(m->key), MX_SLOW, __ATOMIC_SEQ_CST);
+    ReleaseSRWLockExclusive(&m->lk);
+}
+
 HLE(_ZN2nn2os15InitializeMutexEPNS0_9MutexTypeEbi) {
     fresh(ARG(0), K_MUTEX);
+    if (mx_on()) __atomic_store_n(mx_word(ARG(0)), 0, __ATOMIC_RELEASE);
     if (watched(ARG(0))) watch_log("init", ARG(0), 0, c, NULL);
 }
 HLE(_ZN2nn2os13FinalizeMutexEPNS0_9MutexTypeE) {
@@ -550,17 +741,37 @@ HLE(_ZN2nn2os13FinalizeMutexEPNS0_9MutexTypeE) {
     drop(ARG(0));
 }
 HLE(_ZN2nn2os9LockMutexEPNS0_9MutexTypeE) {
+    if (mx_on() && !watch_mutex()) { hos_vcore_checkpoint(); mx_lock(ARG(0), c); return; }
     Obj *m = obj(ARG(0), K_MUTEX);
     if (watched(ARG(0))) watch_log("lock", ARG(0), 0, c, m);
-    mutex_lock(m, ARG(0), c);
+    if (mx_on()) mx_lock(ARG(0), c);
+    else mutex_lock(m, ARG(0), c);
     if (watched(ARG(0))) watch_log("locked", ARG(0), 0, c, m);
 }
 HLE(_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE) {
+    if (mx_on() && !watch_mutex()) { hos_vcore_checkpoint(); mx_unlock(ARG(0)); return; }
     Obj *m = obj(ARG(0), K_MUTEX);
     if (watched(ARG(0))) watch_log("unlock", ARG(0), 0, c, m);
-    mutex_unlock(m);
+    if (mx_on()) mx_unlock(ARG(0));
+    else mutex_unlock(m);
 }
 HLE(_ZN2nn2os12TryLockMutexEPNS0_9MutexTypeE) {
+    if (mx_on()) {
+        hos_vcore_checkpoint();
+        uint32_t *w = mx_word(ARG(0));
+        const uint32_t id = mx_id();
+        uint32_t v = 0;
+        int ok = __atomic_compare_exchange_n(w, &v, id | MX_ONE, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+        if (!ok && (v & MX_ID) == id && (v & MX_CNT)) {
+            mx_lock(ARG(0), c);   /* (again by its owner) */
+            ok = 1;
+        } else if (!ok && mx_free(v)) {
+            ok = mx_take(obj_nockpt(ARG(0), K_MUTEX), w, id, 0);
+        }
+        if (watched(ARG(0))) watch_log(ok ? "trylock ok" : "trylock failed", ARG(0), 0, c, NULL);
+        RET(ok);
+        return;
+    }
     Obj *m = obj(ARG(0), K_MUTEX);
     HosThread *self = hos_self();
     if (__atomic_load_n(&m->owner, __ATOMIC_RELAXED) == self) { m->count++; RET(1); return; }
@@ -570,6 +781,11 @@ HLE(_ZN2nn2os12TryLockMutexEPNS0_9MutexTypeE) {
     RET(ok);
 }
 HLE(_ZN2nn2os28IsMutexLockedByCurrentThreadEPKNS0_9MutexTypeE) {
+    if (mx_on()) {
+        const uint32_t v = __atomic_load_n(mx_word(ARG(0)), __ATOMIC_RELAXED);
+        RET((v & MX_ID) == mx_id() && (v & MX_CNT));
+        return;
+    }
     RET(__atomic_load_n(&obj(ARG(0), K_MUTEX)->owner, __ATOMIC_RELAXED) == hos_self());
 }
 
@@ -598,13 +814,13 @@ HLE(_ZN2nn2os21WaitConditionVariableEPNS0_21ConditionVariableTypeEPNS0_9MutexTyp
     uint64_t gen = cv->gen;
     cv_enter(cv, m);
     /* release the guest mutex fully while holding the condvar's lock: a signal cannot slip in between */
-    const int count = mutex_release_all(m);
+    const int count = mx_on() ? mx_release_all(m) : mutex_release_all(m);
     while (cv->gen == gen) hos_cv_sleep(&cv->cv, &cv->lk, INFINITE);
     const int owed = cv_leave(cv, m);
     ReleaseSRWLockExclusive(&cv->lk);
     if (w) watch_log(owed ? "cv woken, owed the mutex" : "cv woken", ARG(1), ARG(0), c, m);
-    mutex_lock_owed(m, ARG(1), owed);
-    m->count = count;
+    if (mx_on()) mx_relock(m, owed, count);
+    else mutex_lock_owed(m, ARG(1), owed), m->count = count;
     if (w) watch_log("cv relocked", ARG(1), ARG(0), c, m);
 }
 
@@ -1229,15 +1445,15 @@ HLE(_ZN2nn2os26TimedWaitConditionVariableEPNS0_21ConditionVariableTypeEPNS0_9Mut
     AcquireSRWLockExclusive(&cv->lk);
     uint64_t gen = cv->gen;
     cv_enter(cv, m);
-    const int count = mutex_release_all(m);
+    const int count = mx_on() ? mx_release_all(m) : mutex_release_all(m);
     int signaled = 1;
     while (cv->gen == gen) {
         if (!wait_until(cv, deadline) || hos_now_ns() >= deadline) { signaled = cv->gen != gen; break; }
     }
     const int owed = cv_leave(cv, m);
     ReleaseSRWLockExclusive(&cv->lk);
-    mutex_lock_owed(m, ARG(1), owed);
-    m->count = count;
+    if (mx_on()) mx_relock(m, owed, count);
+    else mutex_lock_owed(m, ARG(1), owed), m->count = count;
     RET(signaled);
 }
 

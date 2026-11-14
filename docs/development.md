@@ -240,6 +240,7 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_RESERVE_CORE` | `0`: no core kept for the renderer |
 | `HOS_SPIN_ALWAYS` | (set) waits spin without the adaptive back-off |
 | `HOS_NO_HANDOFF` | `1`: any thread may take a mutex a signal's waiter is owed |
+| `HOS_MUTEX_OBJ` | (set) mutex owners kept in the host's objects, not in the guest's MutexType word |
 | `HOS_NO_OBJ_CACHE` | (set) no per-thread cache of kernel objects |
 | `HOS_NO_RENDERER_WAIT` | non-zero: the game's first GPU work does not wait for the renderer to be up |
 
