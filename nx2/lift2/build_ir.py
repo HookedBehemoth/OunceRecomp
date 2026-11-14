@@ -62,7 +62,6 @@ def build(entry, pcs, word):
                 leaders.add(tg)
             leaders.add(pc + 4)
     b = ir.Builder(fn)
-    rets = []
     fn.block(entry)
     cur = None
     for pc in pcs:
@@ -92,17 +91,54 @@ def build(entry, pcs, word):
             c = b.icmp("ne" if f["op"] else "eq", v, b.const(0))
             cur.term = ("condbr", c, fn.block(target(i, pc)), fn.block(pc + 4))
         elif t == "ret":
-            cur.term = ("ret", None)
-            rets.append(cur)
+            cur.term = ("ret",)
         elif t == "udf":
             cur.term = ("trap", pc, i.word)
         cur = None
-    # a return stores every register the function writes: read them at each return block's end
-    for blk in rets:
-        b.at(blk)
-        blk.term = ("ret", {var: b.get(var) for var in sorted(fn.written, key=ir.VARS.index)})
     for blk in fn.blocks.values():
         if blk.term is None:
             raise ValueError("block %#x has no terminator" % blk.pc)
     ir.finish(fn)
+    group_marks(fn)
     return fn
+
+
+def base_offset(addr):
+    """(base value, constant offset) of an address value"""
+    if addr.op == "add" and addr.args[1].op == "const":
+        return addr.args[0], addr.args[1].args[0] - ((1 << 64) if addr.args[1].args[0] >> 63 else 0)
+    return addr, 0
+
+
+def group_marks(fn):
+    """The page marks of the marked stores of a block that share a base value, within one 4 KB span: one mark (of
+    the span's first and last byte) after the group's last store, instead of two per store. Marks only need to
+    follow their stores (the renderer reads data a mark announces), so moving them later in the block is safe."""
+    for blk in fn.blocks.values():
+        groups = {}   # base value id -> [stores]
+        order = []
+        for v in blk.ops:
+            if v.op == "store" and v.attrs["mark"]:
+                base, off = base_offset(v.args[0])
+                g = groups.get(base.id)
+                n = ir.WIDTH[v.args[1].ty] // 8
+                if g is not None and max(g[2], off + n) - min(g[1], off) <= 4096:
+                    g[0].append(v)
+                    g[1], g[2] = min(g[1], off), max(g[2], off + n)
+                    continue
+                g = groups[base.id] = [[v], off, off + n, base]
+                order.append(g)
+        if not order:
+            continue
+        last = {}
+        for stores, lo, hi, base in order:
+            for v in stores:
+                v.attrs["mark"] = False
+            last[stores[-1].id] = (base, lo, hi)
+        ops = []
+        for v in blk.ops:
+            ops.append(v)
+            if v.id in last:
+                base, lo, hi = last[v.id]
+                ops.append(fn.new_value("void", "mark", (base,), {"lo": lo, "hi": hi}))
+        blk.ops = ops

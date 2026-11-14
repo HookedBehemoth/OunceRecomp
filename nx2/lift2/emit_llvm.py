@@ -1,7 +1,7 @@
 """IR -> textual LLVM IR (one module of functions).
 
 Milestone 1 emits the generic entry only: `void @g_<addr>(ptr %ctx)` loads the entry block's parameters from the
-guest context, and every return stores the registers the function writes back to it. Context layout (rt/a64.h
+guest context, and every register write is also stored to it where it happens (the IR's writeback operations). Context layout (rt/a64.h
 GuestContext): x0-x30 and SP (x[31]) at 8 * n, N, Z, C, V as bytes at 0x108-0x10B.
 
 Guest memory: `getelementptr i8, ptr inttoptr (i64 A64_HOST_BASE to ptr), i64 <guest address>`. A store that marks
@@ -19,12 +19,16 @@ OVF = {"uadd": "uadd", "sadd": "sadd", "usub": "usub", "ssub": "ssub"}
 
 
 class Module:
-    def __init__(self):
+    """flags_out: the generic entry also stores N, Z, C, V to the context (for tests against Unicorn; the AAPCS64
+    leaves the flags undefined at a return, so the build leaves them out)"""
+
+    def __init__(self, flags_out=False):
         self.funcs = []
         self.decls = set()
+        self.flags_out = flags_out
 
     def add(self, fn):
-        self.funcs.append(emit_function(fn, self.decls))
+        self.funcs.append(emit_function(fn, self.decls, self.flags_out))
 
     def text(self):
         head = ['target triple = "%s"' % TRIPLE,
@@ -32,7 +36,7 @@ class Module:
         return "\n".join(head + sorted(self.decls) + self.funcs) + "\n"
 
 
-def emit_function(fn, decls):
+def emit_function(fn, decls, flags_out=False):
     out = []
     names = {}
 
@@ -71,6 +75,18 @@ def emit_function(fn, decls):
                 inc.append("[ %s, %%%s ]" % (ref(pr.defs[var]), pr.name))
             out.append("  %s = phi %s %s" % (ref(p), p.ty, ", ".join(inc)))
         for v in blk.ops:
+            if v.op == "writeback":
+                var = v.attrs["var"]
+                if var in ("n", "z", "c", "v") and not flags_out:
+                    continue
+                p = "%%wb%d" % v.id
+                out.append("  %s = getelementptr i8, ptr %%ctx, i64 %d" % (p, CTX_OFF[var]))
+                if v.ty == "void" and v.args[0].ty == "i1":
+                    out.append("  %s.b = zext i1 %s to i8" % (p, ref(v.args[0])))
+                    out.append("  store i8 %s.b, ptr %s, align 1" % (p, p))
+                else:
+                    out.append("  store i64 %s, ptr %s, align 8" % (ref(v.args[0]), p))
+                continue
             emit_op(v, ref, typed, out, decls)
         t = blk.term
         if t[0] == "br":
@@ -81,14 +97,6 @@ def emit_function(fn, decls):
             else:
                 out.append("  br i1 %s, label %%%s, label %%%s" % (ref(t[1]), t[2].name, t[3].name))
         elif t[0] == "ret":
-            for k, (var, v) in enumerate(t[1].items()):
-                p = "%%out.%s.%s" % (blk.name, var)
-                out.append("  %s = getelementptr i8, ptr %%ctx, i64 %d" % (p, CTX_OFF[var]))
-                if v.ty == "i1":
-                    out.append("  %s.b = zext i1 %s to i8" % (p, ref(v)))
-                    out.append("  store i8 %s.b, ptr %s, align 1" % (p, p))
-                else:
-                    out.append("  store i64 %s, ptr %s, align 8" % (ref(v), p))
             out.append("  ret void")
         elif t[0] == "trap":
             decls.add("declare void @a64_trap(ptr, i64, i32)")
@@ -96,6 +104,16 @@ def emit_function(fn, decls):
             out.append("  ret void")
     out.append("}")
     return "\n".join(out)
+
+
+def emit_mark(p, base, lo, hi, out):
+    """A64_MARK: 1 into a64_dirty at the pages of base + lo and base + hi - 1, as release stores"""
+    for k, off in enumerate((lo, hi - 1)):
+        out.append("  %s.a%d = add i64 %s, %d" % (p, k, base, off))
+        out.append("  %s.m%d = lshr i64 %s.a%d, 12" % (p, k, p, k))
+        out.append("  %s.i%d = and i64 %s.m%d, %d" % (p, k, p, k, DIRTY_PAGES - 1))
+        out.append("  %s.d%d = getelementptr i8, ptr @a64_dirty, i64 %s.i%d" % (p, k, p, k))
+        out.append("  store atomic i8 1, ptr %s.d%d release, align 1" % (p, k))
 
 
 def emit_op(v, ref, typed, out, decls):
@@ -132,14 +150,8 @@ def emit_op(v, ref, typed, out, decls):
         out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (p, HOST_BASE, typed(a[0])))
         out.append("  store %s, ptr %s.p, align 1" % (typed(a[1]), p))
         if v.attrs["mark"]:
-            last = WIDTH[a[1].ty] // 8 - 1
-            for k, addr in enumerate((ref(a[0]), None)):
-                if addr is None:
-                    out.append("  %s.e = add i64 %s, %d" % (p, ref(a[0]), last))
-                    addr = "%s.e" % p
-                out.append("  %s.m%d = lshr i64 %s, 12" % (p, k, addr))
-                out.append("  %s.i%d = and i64 %s.m%d, %d" % (p, k, p, k, DIRTY_PAGES - 1))
-                out.append("  %s.d%d = getelementptr i8, ptr @a64_dirty, i64 %s.i%d" % (p, k, p, k))
-                out.append("  store atomic i8 1, ptr %s.d%d release, align 1" % (p, k))
+            emit_mark(p, ref(a[0]), 0, WIDTH[a[1].ty] // 8, out)
+    elif op == "mark":
+        emit_mark("%%mk%d" % v.id, ref(a[0]), v.attrs["lo"], v.attrs["hi"], out)
     else:
         raise ValueError("emit: op %s" % op)

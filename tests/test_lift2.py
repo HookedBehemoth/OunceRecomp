@@ -214,7 +214,7 @@ class AgainstLLVM(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux") and have("clang"), "Linux and clang of the pinned LLVM major")
 class EndToEnd(unittest.TestCase):
     def test_programs(self):
-        m = emit_llvm.Module()
+        m = emit_llvm.Module(flags_out=True)
         runs, decls = [], []
         for name, (words, inputs, expect, flags) in PROGRAMS.items():
             def word(pc, words=words):

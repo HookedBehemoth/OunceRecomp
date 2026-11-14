@@ -18,7 +18,11 @@ Operations (Value.op):
   intr                   attrs name (ctlz bitreverse bswap fshr): an LLVM intrinsic on the value's type
   load                   (addr i64,), the value's type is the access width; attrs order (plain)
   store                  (addr i64, value), attrs mark (bool); a value of type "void"
-Terminators (Block.term): ("br", block), ("condbr", i1, block, block), ("ret", {var: value}), ("trap", pc, word).
+  mark                   (base,), attrs lo, hi: the page marks of [base + lo, base + hi) (build_ir.group_marks)
+  writeback              (value,), attrs var: the guest register var now holds value. The generic entry stores it
+                         to the context there (write-through, so a return stores nothing and the entry loads only
+                         the registers read before written; LLVM drops the stores a later one overwrites)
+Terminators (Block.term): ("br", block), ("condbr", i1, block, block), ("ret",), ("trap", pc, word).
 """
 
 class _Width(dict):
@@ -123,6 +127,7 @@ class Builder:
         assert value.ty == VAR_TYPE[var], (var, value.ty)
         self.blk.defs[var] = value
         self.fn.written.add(var)
+        self.op("writeback", "void", value, var=var)
 
     # ---- integer helpers (ty is the operation width: "i32" or "i64")
     def bin(self, op, a, b):
