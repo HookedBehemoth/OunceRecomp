@@ -73,6 +73,7 @@ SKIP = {
     # (the game: these run the lifted code of a real dump against Unicorn)
     "nx2/test_insn.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
     "nx2/test_leaf.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
+    "nx2/test_lift2_leaf.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
     "nx2/test_dll.py": ({"linux", "windows"}, "needs a full game build (work/build/hookshot_game.dll) and Unicorn"),
     # (a GPU)
     # (Linux only)
