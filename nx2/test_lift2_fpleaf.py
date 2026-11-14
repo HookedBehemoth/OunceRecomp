@@ -37,6 +37,7 @@ import rtgen   # noqa: E402
 from unicorn import arm64_const as A   # noqa: E402
 
 FP_TABLES = ("enc_fp", "enc_neon")
+PAGE_HASH = TL.page_hash   # (Unicorn's pages are kept whole below; this hashes them where the harness kept a hash)
 
 
 def fp_entries():
@@ -169,6 +170,10 @@ def classify64(a, b, fz):
             continue
         if fz and a & (1 << 63) == b & (1 << 63) and {a & ~(1 << 63), b & ~(1 << 63)} == {0, 0x0010000000000000}:
             return {"fz-boundary"}
+        if fz and x >> 31 == y >> 31 and {x & 0x7F800000, y & 0x7F800000} == {0} and 0 in (x & 0x7FFFFFFF,
+                                                                                      y & 0x7FFFFFFF):
+            out.add("fz-minmax")   # (a subnormal passed through unflushed where ARM gives the signed zero)
+            continue
         return None
     return out
 
@@ -212,8 +217,10 @@ def compare(got, ref, fz, nzcv_ref=None, old=False):
     else:
         for p in gp:
             if gp[p] != rp[p]:
-                if gp[p] is None or rp[p] is None:
-                    fails.append("page %x differs (not kept)" % p)
+                if isinstance(gp[p], int) or isinstance(rp[p], int):   # (past the 64 pages kept: hashes)
+                    h = [x if isinstance(x, int) else PAGE_HASH(x) for x in (gp[p], rp[p])]
+                    if h[0] != h[1]:
+                        fails.append("page %x differs (hash; contents not kept)" % p)
                     continue
                 c = classify_bytes(gp[p], rp[p], fz)
                 if c is None:
@@ -361,10 +368,10 @@ def main():
         vals = TL.STATE.unpack(f.read(TL.STATE.size))
         ndiff = struct.unpack("<I", f.read(4))[0]
         raw = f.read(16 * min(ndiff, 8192))
-        addrs = [struct.unpack_from("<Q", raw, 16 * k)[0] for k in range(min(ndiff, 8192))]
+        addrs = [struct.unpack_from("<QQ", raw, 16 * k) for k in range(min(ndiff, 8192))]
         pages = {}
-        for k, pg in enumerate(addrs):
-            pages[pg] = f.read(4096) if k < 64 else None
+        for k, (pg, h) in enumerate(addrs):
+            pages[pg] = f.read(4096) if k < 64 else h
         return halted, fault, vals, pages
 
     fail_uc, fail_old = collections.defaultdict(list), collections.defaultdict(list)

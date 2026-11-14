@@ -232,7 +232,8 @@ class Table(unittest.TestCase):
                         (0xf946b108, "ldr x8, [x8, #3424]"), (0xa90257f6, "stp x22, x21, [sp, #32]"),
                         (0x7100069f, "subs wzr, w20, #1"), (0x93407c00, "sxtw x0, w0"),
                         (0xd65f0fff, "retab"), (0xd503237f, "hint #27"), (0xb8bfc008, "ldapr w8, [x0]"),
-                        (0x1e202008, None)):   # (FCMP: floating point)
+                        (0x1e202008, "fcmp s0, #0.0"), (0x4e083e00, "umov x0, v16.d[0]"),
+                        (0x2f00e400, "movi d0, #0000000000000000"), (0x0d40c800, "ld1r { v0.2s }, [x0]")):
             i = enc.decode(w)
             self.assertEqual(asm.render(i) if i else None, text, "%08x" % w)
 
