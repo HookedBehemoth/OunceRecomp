@@ -196,6 +196,15 @@ loop:
 done:
   ret i32 %c1
 }""",
+    # LDXP's low register through the runtime's pair monitor (its high one is the context's excl_hi afterwards)
+    "lift2_ldxp_lo": """declare void @recomp_ldxp(ptr, i64, i32, ptr, ptr)
+define internal i64 @lift2_ldxp_lo(ptr %ctx, i64 %a, i32 %n) alwaysinline {
+  %lo = alloca i64
+  %hi = alloca i64
+  call void @recomp_ldxp(ptr %ctx, i64 %a, i32 %n, ptr %lo, ptr %hi)
+  %v = load i64, ptr %lo
+  ret i64 %v
+}""",
     # the loop back edge's interrupt poll (nx2/poll.py): a64_poll_cur is called with nothing, so it cannot touch the
     # context (noalias) and the loop's registers stay in host registers; it may read and write guest memory
     "lift2_poll": """declare void @a64_poll_cur()
@@ -273,6 +282,30 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
             emit_mark(p, ref(a[0]), 0, WIDTH[a[1].ty] // 8, out)
     elif op == "mark":
         emit_mark("%%mk%d" % v.id, ref(a[0]), v.attrs["lo"], v.attrs["hi"], out)
+    elif op == "aload":   # LDAR/LDAPR
+        al = WIDTH[v.ty] // 8
+        out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (r, HOST_BASE, typed(a[0])))
+        out.append("  %s = load atomic %s, ptr %s.p %s, align %d" % (r, v.ty, r, v.attrs["order"], al))
+    elif op == "astore":   # STLR
+        p = "%%as%d" % v.id
+        al = WIDTH[a[1].ty] // 8
+        out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (p, HOST_BASE, typed(a[0])))
+        out.append("  store atomic %s, ptr %s.p %s, align %d" % (typed(a[1]), p, v.attrs["order"], al))
+    elif op == "rmw":   # LD<op>, SWP
+        al = WIDTH[v.ty] // 8
+        out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (r, HOST_BASE, typed(a[0])))
+        out.append("  %s = atomicrmw %s ptr %s.p, %s seq_cst, align %d" % (r, v.attrs["kind"], r, typed(a[1]), al))
+    elif op == "cas":   # CAS, CASP: the old value
+        al = WIDTH[v.ty] // 8
+        out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (r, HOST_BASE, typed(a[0])))
+        out.append("  %s.s = cmpxchg ptr %s.p, %s, %s seq_cst seq_cst, align %d" % (r, r, typed(a[1]), typed(a[2]), al))
+        out.append("  %s = extractvalue {%s, i1} %s.s, 0" % (r, v.ty, r))
+    elif op == "fence":
+        out.append("  fence %s" % v.attrs["kind"])
+    elif op == "ctxstore32":
+        p = "%%cs%d" % v.id
+        out.append("  %s = getelementptr i8, ptr %%ctx, i64 %d" % (p, v.attrs["off"]))
+        out.append("  store %s, ptr %s, align 4" % (typed(a[0]), p))
     elif op == "ctxload":
         out.append("  %s.p = getelementptr i8, ptr %%ctx, i64 %d" % (r, v.attrs["off"]))
         out.append("  %s = load i64, ptr %s.p, align 8" % (r, r))

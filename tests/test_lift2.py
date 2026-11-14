@@ -187,6 +187,17 @@ PROGRAMS.update({
             0xd28001a0, 0xd65f03c0], {0: 6}, {0: 12}, None, {"jt": {4: [6, 7, 8, 9]}}),
 })
 
+PROGRAMS.update({
+    # every atomic family: LD<op>, SWP, CAS, LDAR/STLR/LDAPR, CASP, the exclusives (single and pair), barriers
+    "atomics": ([0xd2800c81, 0xf9000001, 0xd28000a1, 0xf8210002, 0xb8e11003, 0xf8218004, 0xd28000a5, 0xd28009a6,
+                 0xc8a57c06, 0xc8dffc07, 0xc89ffc01, 0xf8bfc008, 0x91004009, 0x482a7d2c, 0xa9403d2e, 0xc85f7c14,
+                 0x91000695, 0xc8167c15, 0xf9400017, 0xc87f6538, 0xc83a6139, 0xa940713b, 0x38213013, 0xd5033bbf,
+                 0xd50339bf, 0xd5033f9f, 0xd5033f5f, 0xd5033fdf, 0xd65f03c0],
+                {0: 0x10000, 10: 0, 11: 0, 12: 0x1111, 13: 0x2222},
+                {1: 5, 2: 100, 3: 105, 4: 104, 5: 5, 7: 77, 8: 5, 10: 0, 11: 0, 14: 0x1111, 15: 0x2222, 19: 6, 20: 5,
+                 21: 6, 22: 0, 23: 6, 24: 0x1111, 25: 0x2222, 26: 0, 27: 0x2222, 28: 0x1111}, None),
+})
+
 HARNESS = r"""
 #include <stdint.h>
 #include <stdio.h>
@@ -195,6 +206,17 @@ HARNESS = r"""
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; uint8_t rest[0x300]; } Ctx;   /* (rt/a64.h) */
 unsigned char a64_dirty[1u << 27];
 void a64_poll_cur(void) {}
+static uint64_t excl[4];
+/* the runtime's exclusive monitor (rt/a64_rt.c), single-threaded here */
+#define GP(a) ((uint8_t *)0x100000000000ULL + (a))
+uint64_t recomp_ldxr(Ctx *c, uint64_t a, uint32_t n) { uint64_t v = 0; memcpy(&v, GP(a), n); excl[0] = a; excl[1] = v; excl[3] = n; return v; }
+uint32_t recomp_stxr(Ctx *c, uint64_t a, uint32_t n, uint64_t v) {
+    int ok = excl[3] == n && excl[0] == a && !memcmp(GP(a), &excl[1], n); excl[3] = 0; if (ok) memcpy(GP(a), &v, n); return !ok; }
+void recomp_ldxp(Ctx *c, uint64_t a, uint32_t n, uint64_t *lo, uint64_t *hi) {
+    *lo = *hi = 0; memcpy(lo, GP(a), n); memcpy(hi, GP(a + n), n); excl[0] = a; excl[1] = *lo; excl[2] = *hi; excl[3] = 2 * n;
+    *(uint64_t *)((char *)c + 0x340) = *hi; }
+uint32_t recomp_stxp(Ctx *c, uint64_t a, uint32_t n, uint64_t lo, uint64_t hi) {
+    int ok = excl[3] == 2 * n && excl[0] == a; excl[3] = 0; if (ok) { memcpy(GP(a), &lo, n); memcpy(GP(a + n), &hi, n); } return !ok; }
 void a64_icall(Ctx *c, uint64_t t) { fprintf(stderr, "icall %%llx\n", (unsigned long long)t); }
 void a64_ijump(Ctx *c, uint64_t t) { fprintf(stderr, "ijump %%llx\n", (unsigned long long)t); }
 void a64_trap(Ctx *c, uint64_t pc, uint32_t w) { fprintf(stderr, "trap %%llx %%08x\n", (unsigned long long)pc, w); }
@@ -280,7 +302,7 @@ class EndToEnd(unittest.TestCase):
                 fo.write(m.text())
             with open(c, "w") as fo:
                 fo.write(HARNESS % {"decls": "\n".join(sorted(set(decls))), "runs": "".join(runs)})
-            subprocess.run([llvm.check("clang"), "-O1", "-w", c, ll, "-o", exe], check=True)
+            subprocess.run([llvm.check("clang"), "-O1", "-w", "-march=x86-64-v3", c, ll, "-o", exe], check=True)
             out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split("\n")
         got = {l.split()[0]: l.split()[1:] for l in out if l}
         for k, (name, spec) in enumerate(PROGRAMS.items()):
@@ -293,6 +315,90 @@ class EndToEnd(unittest.TestCase):
                 self.assertEqual(regs[r], v, "%s: x%d = %#x, expected %#x" % (name, r, regs[r], v))
             if flags is not None:
                 self.assertEqual(tuple(int(v) for v in got[name][32:]), tuple(flags), "%s: NZCV" % name)
+
+
+SB = [0xc89ffc01, 0xc8dffc62, 0xd65f03c0]   # stlr x1, [x0]; ldar x2, [x3]; ret
+SB_HARNESS = r"""
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; uint8_t rest[0x300]; } Ctx;
+unsigned char a64_dirty[1u << 27];
+void g_sb(Ctx *);
+#define N %(n)d
+static atomic_int phase, done;
+static uint64_t r[2][N];
+static volatile uint64_t *X, *Y;
+static void *run(void *arg) {
+    int me = (int)(intptr_t)arg;
+    Ctx c; memset(&c, 0, sizeof c);
+    for (int i = 0; i < N; i++) {
+        while (atomic_load_explicit(&phase, memory_order_acquire) != 2 * i + 1) {}
+        c.x[0] = me ? 0x10040 : 0x10000; c.x[3] = me ? 0x10000 : 0x10040; c.x[1] = 1;
+        g_sb(&c);
+        r[me][i] = c.x[2];
+        atomic_fetch_add(&done, 1);
+    }
+    return 0;
+}
+int main(void) {
+    char *mem = mmap((void *)(0x100000000000ULL + 0x10000), 0x1000, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (mem == MAP_FAILED) return 2;
+    X = (volatile uint64_t *)mem; Y = (volatile uint64_t *)(mem + 0x40);
+    pthread_t t[2];
+    for (int k = 0; k < 2; k++) pthread_create(&t[k], 0, run, (void *)(intptr_t)k);
+    for (int i = 0; i < N; i++) {
+        *X = 0; *Y = 0;
+        atomic_store(&done, 0);
+        atomic_store_explicit(&phase, 2 * i + 1, memory_order_release);
+        while (atomic_load(&done) != 2) {}
+    }
+    for (int k = 0; k < 2; k++) pthread_join(t[k], 0);
+    int both0 = 0;
+    for (int i = 0; i < N; i++) both0 += r[0][i] == 0 && r[1][i] == 0;
+    printf("%%d\n", both0);
+    return 0;
+}
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and have("clang") and (os.cpu_count() or 1) >= 2,
+                     "Linux, clang of the pinned LLVM major and two CPUs")
+class StoreLoadOrder(unittest.TestCase):
+    """STLR then LDAR of another location, on two threads at once (the store-buffering litmus test): ARM forbids both
+    loads seeing 0. The lifted code must keep that (STLR as a seq_cst store, an xchg on x86). The same code with STLR
+    as a release store (a plain mov) must show the forbidden outcome, or the test could not catch the mistake."""
+
+    def run_sb(self, text, n):
+        with tempfile.TemporaryDirectory() as d:
+            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
+            with open(ll, "w") as fo:
+                fo.write(text)
+            with open(c, "w") as fo:
+                fo.write(SB_HARNESS % {"n": n})
+            subprocess.run([llvm.check("clang"), "-O1", "-w", "-march=x86-64-v3", "-pthread", c, ll, "-o", exe],
+                           check=True)
+            return int(subprocess.run([exe], capture_output=True, text=True, check=True, timeout=120).stdout)
+
+    def test_stlr_ldar(self):
+        prog = build_ir.Program(entries=[0x1000])
+        fn = build_ir.build(0x1000, [0x1000, 0x1004, 0x1008], lambda pc: SB[(pc - 0x1000) // 4], prog)
+        fn.name = "g_sb"
+        m = emit_llvm.Module()
+        m.add(fn)
+        text = m.text()
+        self.assertIn("seq_cst", text)
+        weak = text.replace("store atomic i64 %v", "store atomic i64 %v").replace(" seq_cst, align 8", " release, align 8")
+        self.assertNotEqual(weak, text)
+        n = 1000000
+        bad_weak = self.run_sb(weak, n)
+        if bad_weak == 0:
+            self.skipTest("this machine showed no store-buffer reordering in %d rounds: the test has no teeth here" % n)
+        self.assertEqual(self.run_sb(text, n), 0, "STLR then LDAR reordered (the weak control: %d of %d)" % (bad_weak, n))
 
 
 class VersionCheck(unittest.TestCase):

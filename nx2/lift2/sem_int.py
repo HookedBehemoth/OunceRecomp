@@ -545,7 +545,115 @@ def t_barrier(b, f, pc, p):
     """ISB: nothing (no self-modifying code)"""
 
 
+# ---- atomics and ordering (docs/lifter2-design.md section 8: x86-TSO mapping)
+RMW = {0: "add", 1: "clr", 2: "xor", 3: "or", 4: "max", 5: "min", 6: "umax", 7: "umin"}
+
+
+def mark_atomic(b, addr, n, base_reg):
+    if base_reg != 31:
+        b.op("mark", "void", addr, lo=0, hi=n)
+
+
+def t_lse(b, f, pc, p):
+    """LD<op>/SWP (every ordering: x86 locked operations are full barriers) and LDAPR (an acquire load)"""
+    size, rt, rn = f["size"], f["Rt"], f["Rn"]
+    t = SIZES[size]
+    addr = getx(b, rn, 1, sp=True)
+    if f["o3"] and f["opc"] == 4:   # LDAPR
+        setx(b, rt, b.zext(b.op("aload", t, addr, order="acquire"), "i64"))
+        return
+    v = b.trunc(getx(b, f["Rs"], 1), t)
+    if f["o3"]:
+        op = "xchg"
+    else:
+        op = RMW[f["opc"]]
+        if op == "clr":   # (LDCLR: memory AND NOT Rs)
+            op, v = "and", b.not_(v)
+    old = b.op("rmw", t, addr, v, kind=op)
+    mark_atomic(b, addr, 1 << size, rn)
+    setx(b, rt, b.zext(old, "i64"))
+
+
+def t_cas(b, f, pc, p):
+    """CAS{A}{L}{B,H}: compare Rs with memory, store Rt if equal; Rs = the old value (seq_cst: a locked cmpxchg)"""
+    size, rs, rn = f["size"], f["Rs"], f["Rn"]
+    t = SIZES[size]
+    addr = getx(b, rn, 1, sp=True)
+    old = b.op("cas", t, addr, b.trunc(getx(b, rs, 1), t), b.trunc(getx(b, f["Rt"], 1), t))
+    mark_atomic(b, addr, 1 << size, rn)
+    setx(b, rs, b.zext(old, "i64"))
+
+
+def t_casp(b, f, pc, p):
+    """CASP{A}{L}: the pair (Rs, Rs+1) against memory (Rs at the lower address), (Rt, Rt+1) stored if equal"""
+    sz, rs, rt, rn = f["sz"], f["Rs"], f["Rt"], f["Rn"]
+    w = 64 if sz else 32
+    t, half = ("i128", "i64") if sz else ("i64", "i32")
+    addr = getx(b, rn, 1, sp=True)
+
+    def pair(r):
+        lo = b.zext(b.trunc(getx(b, r, 1), half), t)
+        hi = b.zext(b.trunc(getx(b, r + 1, 1), half), t)
+        return b.bin("or", lo, b.bin("shl", hi, b.const(w, t)))
+    old = b.op("cas", t, addr, pair(rs), pair(rt))
+    mark_atomic(b, addr, 2 * w // 8, rn)
+    setx(b, rs, b.zext(b.trunc(old, half), "i64"))
+    setx(b, rs + 1, b.zext(b.trunc(b.bin("lshr", old, b.const(w, t)), half), "i64"))
+
+
+def t_ldstord(b, f, pc, p):
+    """LDAR: an acquire load; STLR: a sequentially consistent store (xchg): an STLR followed by an LDAR must not be
+    reordered (ARM's RCsc), which a plain x86 store in the store buffer would allow"""
+    size, rt, rn = f["size"], f["Rt"], f["Rn"]
+    t = SIZES[size]
+    addr = getx(b, rn, 1, sp=True)
+    if f["L"]:
+        setx(b, rt, b.zext(b.op("aload", t, addr, order="acquire"), "i64"))
+    else:
+        b.op("astore", "void", addr, b.trunc(getx(b, rt, 1), t), order="seq_cst")
+        mark_atomic(b, addr, 1 << size, rn)
+
+
+def t_ldstex(b, f, pc, p):
+    """LDXR/LDAXR, STXR/STLXR: the runtime's monitor (rt/a64_rt.c recomp_ldxr/recomp_stxr: the address, size and
+    value LDXR saw; STXR compare-and-swaps against that value), as the present lifter models them"""
+    size, rt, rn = f["size"], f["Rt"], f["Rn"]
+    addr = getx(b, rn, 1, sp=True)
+    n = b.const(1 << size, "i32")
+    if f["L"]:   # (LDAXR: x86 loads are acquire loads, and the call keeps the compiler from moving accesses)
+        setx(b, rt, b.op("call", "i64", addr, n, fn="recomp_ldxr", ctx=True))
+    else:
+        st = b.op("call", "i32", addr, n, getx(b, rt, 1), fn="recomp_stxr", ctx=True)
+        mark_atomic(b, addr, 1 << size, rn)
+        setx(b, f["Rs"], st)
+
+
+def t_ldstexp(b, f, pc, p):
+    """LDXP/LDAXP, STXP/STLXP: the runtime's pair monitor (recomp_ldxp/recomp_stxp)"""
+    sz, rt, rn = f["sz"], f["Rt"], f["Rn"]
+    addr = getx(b, rn, 1, sp=True)
+    n = b.const(8 if sz else 4, "i32")
+    if f["L"]:
+        lo = b.op("call", "i64", addr, n, fn="lift2_ldxp_lo", ctx=True, helper=True)
+        hi = b.op("ctxload", "i64", off=0x340)   # (excl_hi, which lift2_ldxp_lo's recomp_ldxp left)
+        setx(b, rt, lo)
+        setx(b, f["Rt2"], hi)
+    else:
+        st = b.op("call", "i32", addr, n, getx(b, rt, 1), getx(b, f["Rt2"], 1), fn="recomp_stxp", ctx=True)
+        mark_atomic(b, addr, 16 if sz else 8, rn)
+        setx(b, f["Rs"], st)
+
+
+def t_fence(b, f, pc, p):
+    """DMB/DSB: a full barrier (a locked no-op) when it orders stores before loads (ISH, SY, OSH, NSH); the load or
+    store only kinds (ISHLD, ISHST, ...) order nothing x86-TSO does not, so they only stop the compiler. CLREX drops
+    the exclusive monitor."""
+    if f["op2"] == 2:
+        b.op("ctxstore32", "void", b.const(0, "i32"), off=0x34C)
+        return
+    full = (f["CRm"] & 3) == 3
+    b.op("fence", "void", kind="seq_cst" if full else "acq_rel")
+
+
 TEMPLATES = {k[2:]: v for k, v in globals().items() if k.startswith("t_")}
-# decoded, lifted from milestone 6 (atomics, acquire/release, exclusives, DMB/DSB/CLREX) and 7 (SVC)
-TEMPLATES.update({"fence": None, "lse": None, "cas": None, "casp": None, "ldstord": None, "ldstex": None, "ldstexp": None})
 BRANCH_TEMPLATES = {"b", "bcond", "cbz", "tbz", "br", "blr", "ret", "udf"}

@@ -29,6 +29,12 @@ Operations (Value.op):
   load                   (addr i64,), the value's type is the access width; attrs order (plain)
   store                  (addr i64, value), attrs mark (bool); a value of type "void"
   mark                   (base,), attrs lo, hi: the page marks of [base + lo, base + hi) (build_ir.group_marks)
+  aload                  (addr,), attrs order (acquire): LDAR/LDAPR
+  astore                 (addr, value), attrs order (seq_cst): STLR
+  rmw                    (addr, value), attrs kind (LLVM atomicrmw operation): LD<op>/SWP; the old value
+  cas                    (addr, expected, new): CAS/CASP; the old value
+  fence                  attrs kind (seq_cst: DMB/DSB that order stores before loads; acq_rel: compiler only)
+  ctxstore32             (value i32,), attrs off
   ctxload                attrs off: the context's 64-bit field at off (TPIDR_EL0, FPCR, ...)
   ctxstore               (value i64,), attrs off
   call                   (args...), attrs fn, ctx (bool: the context pointer first): a runtime function returning
