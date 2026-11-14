@@ -155,7 +155,8 @@ void hos_bench_present(int64_t now) {
     static double last_clock, ready_at;
     static BenchRow *rows;
     static int nrows, ncpu0;
-    static int64_t blocked[4];   /* (the frames each part was not settled while waiting: what the wait was for) */
+    static int64_t blocked[4];
+    static long long play_since = -1;   /* (the present the current stretch in play began at) */   /* (the frames each part was not settled while waiting: what the wait was for) */
     static CpuGroup cpu0[CPU_GROUPS];
     if (state == DONE) return;
     int64_t draws, waiting, jobs;
@@ -174,11 +175,14 @@ void hos_bench_present(int64_t now) {
         if (!jobs && waiting == last_waiting) settled |= BENCH_SHADERS;
         if (reads == last_reads) settled |= BENCH_STREAMING;
         for (int i = 0; i < 4; i++) blocked[i] += !(settled & (1u << i));
+        if (!(settled & BENCH_PLAY)) play_since = -1;
+        else if (play_since < 0) play_since = present;
         if (bench_ready_frame(&ready, settled, ready_need)) {
             ready_at = hos_log_seconds();
-            hos_log("bench: ready at %.2f s since the start (present %lld; %d frames settled in a row), %d frames to run; frames "
-                    "not settled before: in play %lld, textures %lld, shaders %lld, streaming %lld", ready_at, present, ready_need,
-                    frames_wanted, (long long)blocked[0], (long long)blocked[1], (long long)blocked[2], (long long)blocked[3]);
+            hos_log("bench: ready at %.2f s since the start (present %lld, in play since present %lld; %d frames settled in a row), "
+                    "%d frames to run; frames not settled before: in play %lld, textures %lld, shaders %lld, streaming %lld", ready_at,
+                    present, play_since, ready_need, frames_wanted, (long long)blocked[0], (long long)blocked[1], (long long)blocked[2],
+                    (long long)blocked[3]);
             rows = calloc((size_t)frames_wanted, sizeof *rows);
             if (!rows) { hos_log("bench: no memory for the rows"); state = DONE; return; }
             ncpu0 = cpu_sample(cpu0);
