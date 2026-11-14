@@ -3,7 +3,7 @@ the default ones.
 
 Guest words (hand-encoded: vector FADD / FSUB / FMUL .4S and .2S, aliased registers too; scalar FADD / FSUB / FMUL /
 FNMUL / FDIV / FMADD S; FMUL by element; FRECPE / FRSQRTE S and .4S) go through a64emit.translate and a64_lift.op_text
-(and hot_text) once; the lifted C is compiled twice, against the default a64_fpx.h and against the one the switch writes
+(and hot_text) once; the lifted C is compiled twice, against the a64_fpx.h of A64_FPX_SLOWPATH=0 and against the one the switch writes
 (the cold `_lanes` helpers' per-lane fallback with the quiet-NaN lanes; the scalar wrappers' quiet-NaN and FDIV rescues).
 tests/fpx_slowpath_test.c runs both on random registers (zeros, subnormals, infinities, quiet and signalling NaNs, a
 quiet NaN in lane 3 of normal values, the extreme normals, binary32 midpoints) under random FPCR (FZ, DN, the rounding

@@ -15,8 +15,8 @@ import re
 import a64emit
 
 
-def lift_switch(name):   # (off unless <name>=1: as a64_lift.lift_switch)
-    return os.environ.get(name, "0") == "1"
+def lift_switch(name):   # (on unless <name>=0: as a64_lift.lift_switch)
+    return os.environ.get(name, "1") != "0"
 
 
 def _cut(text, start_marker, end_marker):
@@ -42,7 +42,7 @@ def runtime_h():
     # (every context parameter A64_NOESC, rt/a64.h: these functions keep no pointer to it)
     h = re.sub(r"([(,]\s*)GuestContext\s*\*\s*(?=(?:\w+\s*)?[,)])", r"\1GuestContext *A64_NOESC ", h)
     if lift_switch("A64_FPX_FMA3"):
-        # (A64_FPX_FMA3=1 at lift time: the scalar binary32 FMA fast path by FMA3's fmaf, one rounding as AArch64,
+        # (A64_FPX_FMA3, on unless =0 at lift time: the scalar binary32 FMA fast path by FMA3's fmaf, one rounding as AArch64,
         # instead of the binary64 route with its midpoint fallback. Same results where either keeps one
         # (tests/test_fpx_slowpath.py). It is inlined into the lifted functions, so a PGO profile recorded without it
         # no longer matches them)
@@ -61,7 +61,7 @@ def _function(src, signature):
     return src[a:b + 3]
 
 
-# A64_FPX_SLOWPATH=1 (see a64_lift.py): FRECPE / FRSQRTE S of a normal input answered from the
+# A64_FPX_SLOWPATH (on unless =0; see a64_lift.py): FRECPE / FRSQRTE S of a normal input answered from the
 # estimate tables at the top of recomp_fp_estimate (~1.8 M calls a second in HeyListen's Market, from per-lane loops in the
 # lifted code). The same arithmetic as the general body for those inputs, which raise no flag: FRSQRTE of a positive
 # normal; FRECPE of a normal whose reciprocal is normal and not flushed (biased exponent <= 252). A table entry not yet

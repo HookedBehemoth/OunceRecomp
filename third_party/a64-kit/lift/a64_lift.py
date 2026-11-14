@@ -26,12 +26,13 @@ from collections import Counter
 import a64emit
 
 
-# Lift-time FP switches (A64_VFPX_ELEM, A64_FPX_SLOWPATH, A64_FPX_FMA3; ported from HeyListen): off unless <name>=1, and
-# off the lift and its headers are byte for byte as without them. Each is bit-exact with the default lowering
-# (tests/test_vfpx_elem.py, tests/test_fpx_slowpath.py). A switch that changes the lifted text (A64_VFPX_ELEM, and
-# A64_FPX_FMA3 through the inlined fast path) makes a PGO profile recorded without it stale.
+# Lift-time FP switches (A64_VFPX_ELEM, A64_FPX_SLOWPATH, A64_FPX_FMA3; ported from HeyListen): on unless <name>=0. With
+# all three =0 the lift and its headers are byte for byte the lowering without them. Each is bit-exact with that lowering
+# (tests/test_vfpx_elem.py, tests/test_fpx_slowpath.py); together +5 fps on the market (uncapped, 81.0 -> 86.3). A switch
+# that changes the lifted text (A64_VFPX_ELEM, and A64_FPX_FMA3 through the inlined fast path) makes a PGO profile
+# recorded without it stale.
 def lift_switch(name):
-    return os.environ.get(name, "0") == "1"
+    return os.environ.get(name, "1") != "0"
 
 COND = ["(c->z)", "(!c->z)", "(c->c)", "(!c->c)", "(c->n)", "(!c->n)", "(c->v)", "(!c->v)",
         "(c->c && !c->z)", "(!(c->c && !c->z))", "(c->n == c->v)", "(c->n != c->v)",
@@ -937,7 +938,7 @@ static inline __attribute__((always_inline)) void a64_vfpx_fma32e(Ctx *c, uint64
 }
 """
 
-# A64_FPX_SLOWPATH=1 at lift time (off: a64_fpx.h and a64_suyu.c byte for byte as without it). In HeyListen's Market the
+# A64_FPX_SLOWPATH at lift time (on unless =0; =0: a64_fpx.h and a64_suyu.c byte for byte as without it). In HeyListen's Market the
 # model/physics code (f_80168320's subtree, on the job chain) ran ~3 M exact bodies a second, 60% of them vector
 # FADD / FSUB / FMUL .4S with a quiet NaN lane (Vec3 math in 4-lane registers), the rest FDIV S by zero with DZC already
 # raised, and FRSQRTE / FRECPE (always out of line). Only the out-of-line pieces change, so the lifted

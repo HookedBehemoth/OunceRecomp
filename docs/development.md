@@ -70,6 +70,12 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
   `work/sa/image/image.json`.
 - A new `host/*.c` file is picked up by the next build only (the file list is taken at its start).
 - `RX_DIRECT_ONLY=1` builds the back end alone, with no lift.
+- **A new lift** is needed after a change to the lifter (`third_party/a64-kit/lift`, `nx2/lift.py`, `nx2/chunks.py`) or to a
+  lift-time patch the lifted C as it stands cannot take: `scripts/relift.sh` lifts (with the hot set `work/hot_funcs_play.txt`,
+  else `work/hot_funcs.txt`: `A64_HOT_FUNCS`, `A64_HOT_CHUNK=1`) and builds, for the checkout it is run from; in the main
+  checkout on native-vk through `scripts/play-refresh.sh`, so `BUILD.txt` names the head. It stops while a game runs from that
+  build. About 3 minutes of lift and 11-15 of build; log `work/play/relift.log` (a worktree: `work/sa/relift.log`).
+  `nx2/build.py` splits a whole `code_hot.c` into pieces itself (`nx2/split_hot.py`: one file took 79 minutes on one core).
 - To keep builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`, `*.idx`)
   to `work/sa/<name>/` and run with `EXE=`.
 
@@ -406,6 +412,8 @@ load and a branch. `logall` turns every `log*` item on.
 | `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `-v2`, else `x86-64`) |
 | `RX_HOT_OPT`, `RX_NO_ORDER`, `RX_SOFT_WRITE_WATCH=0` | Optimisation level of the hot code; no hot-function link order; no software write watch |
+| `A64_VFPX_ELEM=0`, `A64_FPX_SLOWPATH=0`, `A64_FPX_FMA3=0` | (lift time) Turn off one of the FP lowerings that are on by default: NEON FMUL / FMLA / FMLS by element and vector FMLA as one SSE / AVX2 op; the exact slow paths' quiet-NaN, FDIV and estimate shortcuts; the binary32 FMA fast path by FMA3. Each is bit-exact (`tests/test_vfpx_elem.py`, `tests/test_fpx_slowpath.py`); with all three `=0` the lift is byte for byte the one without them |
+| `A64_HOT_FUNCS=<file>`, `A64_HOT_CHUNK=1` | (lift time) The listed functions call the FP helpers' inline fast paths and are lifted together into `code_hot.c`, built at `RX_HOT_OPT` (`scripts/relift.sh` sets both) |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
 ### Function labels

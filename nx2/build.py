@@ -682,6 +682,11 @@ def main():
                    flags(eden_gen, os.path.join(eden_out, "rt64"), a.opt, not a.no_polls) +
                    (["-DA64_POLL_CTX"] if a.dll else []), deps)   # (as fl below: the flags its objects were built with)
     migrate_stamps(gen, obj_dir, fl, deps)
+    # (a lift with a hot set leaves code_hot.c whole; compiled as one file it takes ~79 minutes on one core. split_hot.py makes
+    # the eight pieces the build compiles side by side, and renames the whole file code_hot.c.whole, so this runs once a lift)
+    if os.path.exists(os.path.join(gen, "code_hot.c")) and not a.only:
+        import split_hot
+        split_hot.split(gen, 8)
     chunks = sorted(f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c"))
     if a.only:
         want = {"code_%03d.c" % int(n) for n in a.only.split(",")}
