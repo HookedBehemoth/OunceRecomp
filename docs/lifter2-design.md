@@ -266,15 +266,35 @@ and imports, the hook and probe tables.
   operations (`fadd` ... `llvm.fma`). IEEE operations and fused multiply-add are correctly rounded, so in
   round-to-nearest the values equal ARM's. `-ffp-contract=off` semantics: the emitter never fuses what the guest
   kept separate.
-- **FPCR to MXCSR.** FPCR.FZ sets MXCSR.DAZ and MXCSR.FTZ; RMode sets MXCSR.RC; DN is honoured by the NaN fix-up
-  when set.
-  - MSR FPCR (7 sites in the game's cold chunks; 9 MRS FPCR) writes the context's `fpcr` and MXCSR.
-  - Thread creation starts from FPCR 0, so MXCSR has its default bits and all exceptions masked.
-  - `fiber_switch` (`host/hos_thread.c`) saves and loads MXCSR with the guest context, because a host thread runs
-    several guest fibers.
+- **FPCR to MXCSR** (`host/hos_fp.c`). FPCR.FZ sets MXCSR.DAZ and MXCSR.FTZ; RMode sets MXCSR.RC (RN/RP/RM/RZ to
+  RC 0/2/1/3); every exception stays masked. DN is not modelled (7.1).
+  - Lift 2's MSR FPCR calls `a64_fpcr_write`, which stores the context's `fpcr` (keeping the host's bit 32,
+    RECOMP_FPX_INHIBIT) and sets MXCSR. The present lifter's MSR FPCR text is followed by `a64_fpcr_sync(c)`
+    (`a64_lift.py` `fp_mode_sync`; its MSR FPSR by `a64_fpsr_sync(c)`).
+  - A function with MSR FPCR is emitted `strictfp`: its FP operations are LLVM's constrained intrinsics with a dynamic
+    rounding mode, which LLVM keeps in order with the FPCR write (a call). In TOTK no function with an MSR FPCR, and
+    no direct caller (two levels up) of one, contains FP arithmetic, so the other functions stay plain; the whole-program
+    stage (milestone 13) is to mark a function with FP arithmetic that calls an FPCR writer strictfp too.
+  - `thread_main` (`host/hos_thread.c`) sets MXCSR from the context before the guest's first instruction: a host
+    thread may inherit its creator's MXCSR. `fiber_main` sets it from the FPCR the fiber inherited, and `fiber_switch`
+    sets it again for `from` when `from` runs again, because not every platform's fiber switch keeps MXCSR.
   - `host/hos_setjmp.c` already saves and loads MXCSR.
-  - Host code called from guest threads (HLE) runs under the guest's MXCSR. Host code that depends on IEEE denormals
-    on such a thread sets MXCSR itself; none is known.
+  - Host code called from guest threads (HLE) runs under the guest's MXCSR (DAZ|FTZ on threads with FZ). Host code
+    that depends on IEEE denormals on such a thread sets MXCSR itself; none is known.
+- **What TOTK sets** (static census of every MSR/MRS FPCR/FPSR word, 31 sites in 11 functions):
+  - FZ: `sys_fpcr_flush_to_zero` (f_80ec0e90 → f_80ec0ea0, main) ORs FPCR.FZ in for the main thread; f_8169d350
+    (main) sets or clears FZ by its argument (3 direct callers: f_80ceb360, f_8169cd90, f_816e1944). FZ is in use.
+  - RMode: only through the SDK's libc `fegetround`/`fesetround` (f_8575d1b0/f_8575d1bc) and `fegetenv`/`fesetenv`
+    (f_8575d214/f_8575d228), reached by function pointer only (no direct BL in any module). Not provably unused.
+  - f_851109b8 (sdk) saves FPCR/FPSR around a call and restores them.
+  - Thread creation starts at FPCR 0 (`hos_thread.c` `setup_guest`); fibers inherit their first switcher's FPCR.
+- **The present lifter under this MXCSR** (the mixed build): its FP stays value-exact. Its native fast paths
+  (FPX1 helpers in `a64_suyu.h`, `a64_fpx.h` wrappers, the A64_VFPX vector paths, `a64_fcmp*`, `a64_vfcmp`) run only
+  inside RECOMP_FPX_OPEN (RMode RN, no DN), and under FZ they keep a result only when no operand is subnormal and the
+  result is normal, zero, or flushed by its own code, which equals what FTZ gives; with RN and FZ clear MXCSR is the
+  default it was written for. Its exact bodies and its conversions (`recomp_fp_to_int`, `recomp_fixed_to_fp`, the
+  estimate tables) are integer code. What differs is FPSR only: under FTZ a tiny sum the old fast path keeps is
+  flushed by the hardware without its UFC, and each side's MRS FPSR misses the other side's flags.
 - **FPSR from MXCSR.**
   - MRS FPSR (8 sites) reads the context's `fpsr` and ORs in MXCSR's sticky bits: IE to IOC, ZE to DZC, OE to OFC,
     UE to UFC, PE to IXC, DE to IDC (DE only when FZ is set).
@@ -310,7 +330,6 @@ class, and fail on anything else:
 | `snan-minmax` | a signalling NaN operand of FMINNM/FMAXNM is treated as quiet (the number is returned, ARM returns the quieted NaN) | FMINNM/FMAXNM and their pairwise/across forms |
 | FPSR | the cumulative flags are not computed per instruction: MRS FPSR sees the context's value ORed with MXCSR's sticky bits, which also record exceptions of lanes and operations the guest never had (64-bit arrangements are computed on 128-bit registers) | MRS FPSR (8 sites) |
 | FRSQRTS | the halving is a separate exact multiply by 0.5 after the fused (3 - a*b): differs only when the result is below 2^-125 (single) | FRSQRTS |
-| FP environment within a function | LLVM treats FP operations as free of side effects, so it may move them across an MSR FPCR inside the same function; rounding mode and FZ changes take effect for operations after the write in program order only at call boundaries | the 7 MSR FPCR sites |
 
 Not deviations (exact): FMIN/FMAX/FMINNM/FMAXNM signed zeros and quiet NaNs, all saturating conversions and
 rounding modes of FCVT*/FRINT*, FRECPE/FRSQRTE, FRECPS (0·∞ → 2), FCMP/FCCMP flags, every integer NEON operation.
@@ -698,7 +717,7 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 |---|---|
 | decoder vs llvm-mc, every distinct game word | 2,032,675 words, 2,032,409 decoded, 0 differences |
 | census (words covered) | vector/FP load/store 100 % (333/333 forms), FP scalar 100 % (120/120), NEON 99.99 % (497/500); FP/NEON together 99.997 % of 1.59 M words |
-| not covered | SQRSHL V.4s (34 words), UDOT (4), FNEG V.8h (4) |
+| not covered (then) | SQRSHL V.4s (34 words), UDOT (4), FNEG V.8h (4): all lifted since (14c) |
 | `tests/test_lift2_fp.py` (no game) | 356 instructions × 96 edge-value states (FPCR 0 and FZ), 0 differences outside 7.1; counted: `nan` 439 lanes, `fz-minmax` 11, `snan-minmax` 10 |
 | 770 FP/NEON leaves (seed 2, 8 states; 512 ran in Unicorn, 1,748 cases) | 0 differences against Unicorn (X, SP, NZCV, V0-V31, changed pages lane-wise) and against the present lifter; `nan` 96 chunks in 15 functions, no other class |
 | 148 FP/NEON call-tree roots (`--calls`, 306 functions lifted, 320 cases) | 0 differences; `nan` 92 chunks in 14 functions |
@@ -708,11 +727,22 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 | f_817472e0 (186 instructions, a jump table) | lift2 440 at -O1 (target ≤ 2,600; section 1: 4,888 as lifted); the present lifter's harness cannot take it (its BR), so it is not compared |
 | lift speed, FP/NEON-heavy code | 33-37 k guest instructions/s per core (integer leaves: 42-56 k) |
 
-**What is left.**
-- SQRSHL/UQRSHL/SQSHL/UQSHL by register, PMUL/PMULL, SUQADD/USQADD, FCVTXN, FRECPX, UDOT/SDOT and FP16 arithmetic
-  are decoded as unallocated (`UNLIFTED` or not in the table): 42 words in the game.
-- `LIFT2_DEFAULT_NAN` is implemented for scalar and vector arithmetic but not measured.
-- The shadow build (milestone 12) and the MXCSR runtime (above).
+**What is left.** The shadow build (milestone 12). `LIFT2_DEFAULT_NAN` is implemented but not measured.
+
+## 14c. FP runtime and the last forms (done)
+
+- Runtime: `host/hos_fp.c` (`hos_fp_mxcsr`, `a64_fpcr_sync`, `a64_fpsr_sync`, `a64_fpcr_read/write`,
+  `a64_fpsr_read/write`, `a64_frecpe_f32/f64`, `a64_frsqrte_f32/f64`); declarations in a64-kit `rt/a64.h`; MXCSR at
+  thread start, fiber start and after a fiber switch (`host/hos_thread.c`); the present lifter's MSR FPCR/FPSR
+  followed by the sync calls (`a64_lift.py` `fp_mode_sync`, takes effect at the next relift). `tests/test_hos_fp.py`
+  checks the mapping, the helpers, DAZ/FTZ in effect, the estimates and MXCSR across fiber switches (with
+  `win32_posix.c`'s fibers).
+- `sem_int.t_sysreg` sends MRS/MSR FPCR and FPSR to `sem_fp.fp_sysreg_read/write`.
+- The last forms: SQSHL/UQSHL/SQRSHL/UQRSHL by register (lanes in i128, saturated), PMUL/PMULL (8-bit), SUQADD/USQADD,
+  FCVTXN (round to odd), FRECPX, SDOT/UDOT, FP16 FNEG/FABS. Census: every FP/NEON and vector load/store form of the
+  game is covered (100 % of words). Left out, with no word in the game: PMULL 1Q (crypto), FP16 arithmetic other than
+  FNEG/FABS, the by-element dot products, complex and BF16 forms.
+- `tests/test_lift2_fp.py`: 394 instructions × 96 states, 0 differences outside 7.1.
 
 ## 14c. Milestones 5-8: atomics, SVC, the mixed build in the game
 
