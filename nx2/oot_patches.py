@@ -355,6 +355,16 @@ def patch_text_speed(s):
     return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXT_DECL, 1)
 
 
+def whole_probed(gen):
+    """the WHOLE_SITES lift 2 makes as probes (nx2/lift2/probes.py): their functions are not the present lifter's
+    (lift2_owned.txt beside gen), so their C is not here; lift 2 stops when a probe's instruction is missing"""
+    from lift2 import owned, probes
+    got = owned.load(os.path.dirname(os.path.abspath(gen)))
+    if got is None:
+        return 0
+    return sum(1 for p in probes.PROBES if p.fn == "hos_frame_whole" and p.func not in got[0])
+
+
 def apply(gen, *, protect_hearts=False, required=False):
     """required: the lift of the supported build (LIFE_BUILD_ID), whole: a missing output-size edit stops it (apply_output_size).
     The other patches only warn when their place is not found once."""
@@ -455,7 +465,7 @@ def apply(gen, *, protect_hearts=False, required=False):
             whole_write.write_whole(path, unpatch_frame_seconds(s), newline="")
         print("oot_patches: WARNING: the frame's time was found at %d of %d step divides, none patched (a Frame rate cap above 60 "
               "keeps the game's own step)" % (step_sites, len(STEP_SITES)))
-    elif whole_sites != len(WHOLE_SITES):   # (the frames' own time without them: the pick-up indicator stays above 60 fps)
+    elif whole_sites + whole_probed(gen) != len(WHOLE_SITES):   # (the frames' own time without them: the pick-up indicator stays above 60 fps)
         print("oot_patches: WARNING: %d of %d frame counters found for the step's whole frames (above 60 fps a counter can stop: "
               "the pick-up indicator)" % (whole_sites, len(WHOLE_SITES)))
     apply_output_size(gen, required=required)
