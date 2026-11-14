@@ -1155,5 +1155,48 @@ class FPNeon(unittest.TestCase):
             len(bugs), devs, "\n".join(bugs[:25])))
 
 
+HOOK_HARNESS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
+                 uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
+unsigned char a64_dirty[1u << 27];
+static int calls;
+void a64_poll_cur(void) {}
+/* the host's hook: does the call's work when x1 is 7 (x0 = 99), else lets the lifted body run */
+int entry_0x80001000(Ctx *c) { calls++; if (c->x[1] == 7) { c->x[0] = 99; return 1; } return 0; }
+void g_80001000(Ctx *);
+int main(void) {
+    Ctx c; memset(&c, 0, sizeof c); c.x[1] = 7; g_80001000(&c);
+    Ctx d; memset(&d, 0, sizeof d); d.x[1] = 3; g_80001000(&d);
+    printf("%llu %llu %d\n", (unsigned long long)c.x[0], (unsigned long long)d.x[0], calls);
+    return 0;
+}
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and have("clang"), "Linux and clang of the pinned LLVM major")
+class EntryHook(unittest.TestCase):
+    def test_entry_hook(self):
+        """ENTRY_HOOK at lift 2's generic entry: the hook first; 1 returns at once, 0 runs the body (whose loop does not
+        call it again: 2 calls for 2 runs)"""
+        words = [0xd2800000, 0x91000400, 0xf100241f, 0x54ffffc3, 0xd65f03c0]   # mov x0,#0; add x0,x0,#1; cmp x0,#9; b.lo; ret
+        base = 0x80001000
+        fn = build_ir.build(base, [base + 4 * k for k in range(len(words))], lambda pc: words[(pc - base) // 4])
+        fn.entry_hook = "entry_0x80001000"
+        m = emit_llvm.Module()
+        m.add(fn)
+        with tempfile.TemporaryDirectory() as d:
+            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
+            with open(ll, "w") as fo:
+                fo.write(m.text())
+            with open(c, "w") as fo:
+                fo.write(HOOK_HARNESS)
+            subprocess.run([llvm.check("clang"), "-O1", "-w", c, ll, "-o", exe], check=True)
+            out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out, ["99", "9", "2"])
+
+
 if __name__ == "__main__":
     unittest.main()
