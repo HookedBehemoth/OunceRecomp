@@ -2,8 +2,7 @@
    function's generic entry calls lift2_check_enter before its body and lift2_check_exit after it, with its summary
    (sum: inputs, may-write, results, preserved masks over x0-x30 and SP, flags, guest address).
 
-   At entry: an input holding a poison value is a violation (another function's summary said the register was not
-   read, or not a result); the entry registers are saved; the registers the summary says are not read are poisoned
+   At entry: the entry registers are saved; the registers the summary says are not read are poisoned
    (0xDEAD, the register and the function in the value). At exit: a function claimed not to return returned; a
    preserved register changed; a register claimed not written was written; then the registers claimed not written go
    back to their entry values and the written ones no caller reads are poisoned (0xDEAE). Each violation is logged
@@ -22,16 +21,18 @@ static uint64_t poison(uint64_t tag, int r, uint64_t fn) { return tag << 48 | (u
 static int poisoned(uint64_t v) { return (v >> 48) == POISON_IN || (v >> 48) == POISON_OUT; }
 
 static SRWLOCK lock = SRWLOCK_INIT;
-static uint64_t seen[1 << 16];
+static uint64_t seen[1 << 20];
 static unsigned count;
 
 static void violation(const char *kind, uint64_t fn, int r, uint64_t v) {
     const uint64_t key = (fn << 16) ^ ((uint64_t)(uintptr_t)kind << 6) ^ (uint64_t)r ^ 1;
     AcquireSRWLockExclusive(&lock);
-    for (unsigned h = (unsigned)(key * 0x9E3779B97F4A7C15ull >> 48), n = 0; n < (1u << 16); h = (h + 1) & 0xFFFF, n++) {
+    unsigned n = 0;
+    for (unsigned h = (unsigned)(key * 0x9E3779B97F4A7C15ull >> 44); n < 64; h = (h + 1) & 0xFFFFF, n++) {
         if (seen[h] == key) { ReleaseSRWLockExclusive(&lock); return; }
         if (!seen[h]) { seen[h] = key; break; }
     }
+    if (n == 64 || count >= 100000) { ReleaseSRWLockExclusive(&lock); return; }   /* (full: the run reports no more) */
     count++;
     FILE *f = fopen("lift2_violations.txt", "a");
     if (f) {
@@ -47,8 +48,9 @@ static void violation(const char *kind, uint64_t fn, int r, uint64_t v) {
 
 void lift2_check_enter(uint64_t *x, const uint64_t *sum, uint64_t *frame) {
     const uint64_t in = sum[0], fn = sum[5];
-    for (int r = 0; r < 31; r++)
-        if (in >> r & 1 && poisoned(x[r])) violation("input poisoned", fn, r, x[r]);
+    /* (an input holding poison is not reported: inputs are an over-approximation (a BLR or host call reads x0-x8 by
+       the AAPCS64), so a poisoned input may never be read; a real read of poison shows as a wrong value or a crash
+       at an address 0xdead.../0xdeae... that names the function) */
     memcpy(frame, x, 32 * sizeof *x);
     for (int r = 0; r < 29; r++)   /* (not x29, x30: frame and link) */
         if (!(in >> r & 1)) x[r] = poison(POISON_IN, r, fn);
