@@ -25,6 +25,7 @@
 #include <windows.h>
 
 uint64_t hos_tls_value(uint32_t slot);   /* hos_thread.c */
+void havok_stats_frame(void);            /* eng_havok.c (HOS_DBG=havok: a row a frame) */
 
 static int on = -1;
 static int enabled(void) {
@@ -196,6 +197,7 @@ ENTRY_HOOK(0x8028a2a0) {   /* (owner, drawctx, key) */
 }
 ENTRY_HOOK(0x80706be0) {   /* moduleCalc_ */
     InterlockedIncrement64(&gen);
+    havok_stats_frame();
     return 0;
 }
 

@@ -362,6 +362,7 @@ load and a branch. `logall` turns every `log*` item on.
 | `meshcap:<present>` | one frame's mesh draws captured to `meshcap/frame.bin` for `tools/meshlab` |
 | `dump:<present>[+<frames>]` | every pass's targets of the frame after that present as PNGs in `dump_<present>`, in `dumpdir:<dir>` if given; `dumpraw` writes the unrounded values of HDR targets |
 | `frames` | `direct_frames.csv`: a row per present |
+| `havok` | the game's Havok work per frame (hknp tasks, cloth steps, world queries, AI) in `havok.csv`, per hooked function in `havok_funcs.csv` (`host/eng_havok.c`, docs/direct/havok.md) |
 | `gputime` | the GPU's busy and idle time per frame (rows in `direct_frames.csv`) |
 | `drawlog:<present>` | the recording lists' draws of the frame after that present, each with what it was drawn with |
 | `phlog` | the first draw that samples each heap id holding the placeholder, named once |
