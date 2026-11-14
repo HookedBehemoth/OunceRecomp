@@ -327,7 +327,8 @@ def main():
     with open(hc, "w") as f:
         f.write("\n".join(src))
     exe = os.path.join(tmp, "harness")
-    subprocess.run([clang, "-O1"] + L2.FLAGS + inc + [hc, new_ll, os.path.join(tmp, "a64_suyu.c"), "-o", exe],
+    rt_fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lift2", "rt_fp.c")
+    subprocess.run([clang, "-O1"] + L2.FLAGS + inc + [hc, new_ll, rt_fp, os.path.join(tmp, "a64_suyu.c"), "-o", exe],
                    check=True)
     print("harness built (%.0fs)" % (time.time() - t0), flush=True)
     TL.page_hash = bytes   # (Unicorn's changed pages kept whole, for lane-wise classification)

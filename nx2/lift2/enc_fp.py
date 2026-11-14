@@ -157,7 +157,7 @@ def _FP_INT(f, pc):
     sf, ft, rm, o = f["sf"], f["ftype"], f["rmode"], f["opcode"]
     x = xr(f["Rd"] if o in (0, 1, 4, 5, 6) else f["Rn"], sf)
     if ft == 2:
-        return "fmov x%d, v%d.d[1]" % (f["Rd"], f["Rn"]) if o == 6 else "fmov v%d.d[1], %s" % (f["Rd"], xr(f["Rn"], 1))
+        return "fmov %s, v%d.d[1]" % (xr(f["Rd"], 1), f["Rn"]) if o == 6 else "fmov v%d.d[1], %s" % (f["Rd"], xr(f["Rn"], 1))
     v = vr(f["Rn"] if o in (0, 1, 4, 5, 6) else f["Rd"], FT[ft])
     if o in (2, 3):
         return "%s %s, %s" % ("scvtf" if o == 2 else "ucvtf", v, x)
