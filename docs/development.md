@@ -163,6 +163,10 @@ fast-forwards it; `drop <name>` removes the worktree and the branch once landed.
   nothing else.
 - Tests: `work/venv/bin/python -I -B tests/run_all.py`.
 
+**Lift 2's output for a function.** `work/venv/bin/python -I nx2/lift2/dump.py <address or label>... [--tree] [--opt O1|O2]
+[--asm] [--old]` writes the guest code, lift 2's IR, its LLVM IR and optionally the optimised IR, the x86 and the present
+lifter's C and x86 to `work/lift2/dump/<address>/`, and prints the function's summary when `work/sa/lift2_plan.pickle` has one.
+
 **Reverse engineering.** Flat modules `work/re/{main,sdk,subsdk0}.bin` (main's base is 0x80020000), the exports in
 `work/sa/image/image.json`, and the scripts in `tools/re/` (`disasm.py`, `xref.py`, `callers.py`; see its README) and
 `tools/dump/` (`bntx.py`, `bfres.py`, `bfsha.py`, `ainb.py`, `byml.py`, `sarc.py`, `zs.py`).

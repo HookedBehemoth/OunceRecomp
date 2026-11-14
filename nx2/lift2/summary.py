@@ -757,6 +757,7 @@ def summarise(funcs, prog, hooks, word, names=None, log=print):
                 g.results |= out & g.clobbers
     for s in sums.values():
         s.results |= ABI_RESULTS & s.clobbers
+        s.results &= ~s.preserved   # (a preserved register read after the call is the caller's own value)
     changed = True
     while changed:
         changed = False
