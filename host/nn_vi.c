@@ -154,7 +154,7 @@ static int64_t shown_at[16];
 static volatile LONG64 shown_count;
 void hos_vi_native_acquire(int active) {
     static int no_pacing = -1, double_buffered = -1;
-    if (no_pacing < 0) no_pacing = getenv("HOS_NO_PACING") != NULL;
+    if (no_pacing < 0) no_pacing = getenv("HOS_NO_PACING") != NULL || hos_bench_on();   /* (HOS_BENCH: unpaced) */
     if (double_buffered < 0) double_buffered = getenv("HOS_VI_DOUBLE") != NULL;
     if (no_pacing || !next_frame_at) return;
     int64_t until = next_frame_at;
@@ -383,7 +383,8 @@ static void realtime_step(int64_t now) {
     }
     /* (the Insert menu's Game speed "per frame": a frame is a 60th of a second of game time. Not past 60 fps: the game would run
        faster than real time, so a cap above 60 keeps the real-time step whatever that row says) */
-    if (!rx_option(0, 1) && fps_max() <= 60) {
+    if ((!rx_option(0, 1) && fps_max() <= 60) || hos_bench_on()) {   /* (HOS_BENCH: per frame at any cap) */
+        __atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);
         int *slot = (int *)GP(mod + 0x2c8);
         if (*slot >= 15 && *slot <= 60) *slot = 60;
         return;
@@ -475,6 +476,7 @@ void hos_vi_native_presented(void) {
     }
     const int64_t period = 1000000000LL / fps_max() * present_interval, now = hos_now_ns();
     realtime_step(now);
+    if (hos_bench_on()) hos_bench_present(now);
     /* (behind by more than a frame: the next one is paced from now, with no burst to catch up) */
     next_frame_at = next_frame_at && now - next_frame_at < period ? next_frame_at + period : now + period;
     {   /* (the display queue: this frame is shown one interval after the last, or now when the display waits) */

@@ -399,6 +399,7 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
     Handle *fh = get_handle(c, id);
     uint64_t done = 0;
     if (!hos_guest_range(buf, size)) return 0;   /* (hookshot: the file's bytes go into guest memory only) */
+    if (hos_bench_on()) hos_bench_fs_read();   /* (HOS_BENCH's "no streaming") */
     static int64_t delay_ns = -1, delay_after_ns;   /* HOS_FS_DELAY_MS=<ms>[,<after s>] (experiment): slower reads */
     if (delay_ns < 0) {
         const char *e = getenv("HOS_FS_DELAY_MS");

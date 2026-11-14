@@ -450,7 +450,7 @@ int rx_guest_imported(uint64_t lo, uint64_t hi) {
    same animation phase. Unset: as before */
 int rx_option(int id, int otherwise) {
     static int per_frame = -1;
-    if (per_frame < 0) per_frame = getenv("HOS_GAME_STEP_PER_FRAME") && atoi(getenv("HOS_GAME_STEP_PER_FRAME")) > 0;
+    if (per_frame < 0) per_frame = (getenv("HOS_GAME_STEP_PER_FRAME") && atoi(getenv("HOS_GAME_STEP_PER_FRAME")) > 0) || hos_bench_on();
     if (id == 0 && per_frame) return 0;
     return vk && vk->option ? vk->option(id) : otherwise;
 }

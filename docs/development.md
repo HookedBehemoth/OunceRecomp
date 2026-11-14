@@ -140,6 +140,17 @@ fast-forwards it; `drop <name>` removes the worktree and the branch once landed.
 **Measure.**
 - The frame rate is the `vk: <n> presents, <x> fps (direct); frame time ...` line in `log.txt`, taken standing at a named
   place.
+- **Benchmark:** `scripts/bench.sh <scene> [frames] [-- NAME=VALUE ...]` (`kokiri`, `hf`, `market` or an overlay folder's
+  name; 600 frames) runs the scene headless and muted with `HOS_BENCH` and prints its summary. The game steps exactly 1/60 s a
+  frame and presents as fast as it can, so two runs simulate the same game time whatever their speed. Measuring starts when
+  the scene is ready, all of these for 60 frames in a row: Link updated, no map load and no event playing (in play); the
+  texture manager's Replace work not pending; no shader job queued or running and no draw skipped for a shader not ready;
+  no file read by the game. The log says when (`bench: ready at <s> since the start`, and how many frames each part held
+  the wait), then the frames' mean, median, p99 and max, the draws a frame, the steps that were not 1/60 s (0) and the
+  CPU seconds by thread group (Linux). `work/runs/<name>/bench.csv` has a row a frame: its wall time, its game step (in
+  1/60 s), the draws recorded and those that waited for a shader, the shader jobs, the file reads, the command lists made
+  and called. Left on real time: the system tick and the steady clock (the game's own frame timing and its waits read
+  them), the audio thread's clock and thread scheduling.
 - CPU, one thread: `HOS_PROFILE=<seconds> HOS_SAMPLE=<thread> HOS_SAMPLE_FILE=<f>`, read with `scripts/prof.py <f>`.
   All threads: `HOS_PROFILE=5 HOS_SAMPLE_ALL=<f>` with `<f>.go` present, then `RX_MAPS=work/sa/build scripts/crit.py <f>`
   (`scripts/hotlist.py` reads the same file).
@@ -246,6 +257,7 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_PRESENT_TRACE` | `<csv>`: a CSV line per game present |
 | `HOS_GAME_INTERVAL` | non-zero: paced to the game's own interval |
 | `HOS_GAME_STEP_PER_FRAME` | `1`: game speed per frame instead of the option |
+| `HOS_BENCH` | `<frames>[,<ready frames>]`: a benchmark run (`host/bench.c`, `scripts/bench.sh`): a 1/60 s game step a frame, unpaced; once the scene has been ready for `<ready frames>` presents in a row (60) it measures `<frames>`, writes `bench.csv` in the working folder and exits with 0 |
 | `HOS_FRAME_SLEEP_MS` | `<ms>`: every frame sleeps that long (diagnostic: game speed against frame rate) |
 | `HOS_RES_LOG` | (set) the resolution module's state, every 300 presents |
 

@@ -325,6 +325,13 @@ static LARGE_INTEGER log_t0;
 static int log_time = -1;
 __attribute__((constructor)) static void log_time_start(void) { QueryPerformanceCounter(&log_t0); }
 
+double hos_log_seconds(void) {
+    LARGE_INTEGER now, f;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&f);
+    return (double)(now.QuadPart - log_t0.QuadPart) / (double)f.QuadPart;
+}
+
 static int log_stamp(char *out, size_t cap) {
     if (log_time < 0) log_time = !getenv("HOS_LOG_TIME") || atoi(getenv("HOS_LOG_TIME")) > 0;
     const char *name = cur ? cur->name : "host";

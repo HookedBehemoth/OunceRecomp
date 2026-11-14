@@ -1015,6 +1015,12 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     int action = rx_option(HOS_OPT_CHEAT_ACTION, 0);
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
     oot_teleport_followup(c);
+    if (hos_bench_on()) {   /* (HOS_BENCH's "in play": no map load, no event playing) */
+        int loading = 0;
+        oot_gamedata_bool(c, 0xef2b60c2u, &loading);   /* Sequence_IsLoadingBanc */
+        const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+        hos_bench_player(loading, events && recomp_load64(c, events + 104));
+    }
     oot_scene_ready_check(c, actor);
     oot_warp_take(c, actor);
     oot_inventory_refresh(c, now);

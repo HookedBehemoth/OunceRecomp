@@ -44,6 +44,8 @@ static int64_t hos_now_ns(void) { ++reads; return clock_now; }
 static void hos_sleep_ns(int64_t ns) { (void)ns; ++sleeps; }
 static void scan_dt(long long frame) { (void)frame; ++scans; }
 static void realtime_step(int64_t now) { (void)now; ++steps; }
+static int hos_bench_on(void) { return 0; }   /* (HOS_BENCH off) */
+static void hos_bench_present(int64_t now) { (void)now; }
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static int hos_log_switch(const char *item) { (void)item; return 0; }
 static uint64_t hos_ticks(void) { return 0; }

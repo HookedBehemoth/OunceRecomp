@@ -82,6 +82,11 @@ void hos_log_flush(void);
 long long hos_vi_present_number(void);   /* (nn_vi.c) */
 int hos_dbg_item(const char *item);
 int hos_log_switch(const char *item);
+/* HOS_BENCH (host/bench.c): the frames to measure, 0 when off; the game's file reads, its player updates, the presents */
+int hos_bench_on(void);
+void hos_bench_fs_read(void);
+void hos_bench_player(int loading, int event_playing);
+void hos_bench_present(int64_t now);
 #define HOS_TRACE_CALL(name) do { if (hos_trace) hos_log("%s(%#llx, %#llx, %#llx, %#llx) lr %#llx", name, \
     (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], \
     (unsigned long long)c->x[3], (unsigned long long)c->x[30]); } while (0)
