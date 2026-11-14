@@ -299,7 +299,9 @@ def main():
     with open(hc, "w") as f:
         f.write("\n".join(src))
     exe = os.path.join(tmp, "harness")
-    subprocess.run([clang, "-O1"] + FLAGS + inc + [hc, new_ll, os.path.join(tmp, "a64_suyu.c"), "-o", exe], check=True)
+    hos_fp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "host", "hos_fp.c")   # (MRS/MSR FPCR, FPSR)
+    subprocess.run([clang, "-O1"] + FLAGS + inc + [hc, new_ll, hos_fp, os.path.join(tmp, "a64_suyu.c"), "-o", exe],
+                   check=True)
     print("harness built (%.0fs)" % (time.time() - t0), flush=True)
     emu = TL.Emu(img.mem, meta, TL.writable_regions(meta))
     cases, expect, skipped = [], [], 0

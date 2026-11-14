@@ -491,8 +491,7 @@ def t_stg(b, f, pc, p):
         setx(b, f["Rn"], b.bin("add", getx(b, f["Rn"], 1, sp=True), b.const(sx(f["imm9"], 9) << 4)), sp=True)
 
 
-CTX_TPIDR, CTX_TPIDRRO, CTX_FPCR, CTX_FPSR = 0x310, 0x318, 0x320, 0x328
-FPCR_INHIBIT = 1 << 32   # (the host's kill switch for the FP fast paths, kept across guest writes; a64_suyu.h)
+CTX_TPIDR, CTX_TPIDRRO = 0x310, 0x318   # (FPCR and FPSR: host/hos_fp.c's helpers, which keep the host's bits)
 
 
 def t_sysreg(b, f, pc, p):
@@ -504,10 +503,11 @@ def t_sysreg(b, f, pc, p):
             v = b.const(0)
             for k, flag in enumerate("nzcv"):
                 v = b.bin("or", v, b.bin("shl", b.zext(b.get(flag), "i64"), b.const(31 - k)))
-        elif name == "FPCR":
-            v = b.bin("and", b.op("ctxload", "i64", off=CTX_FPCR), b.const(0xFFFFFFFF))
-        elif name in ("FPSR", "TPIDR_EL0", "TPIDRRO_EL0"):
-            v = b.op("ctxload", "i64", off={"FPSR": CTX_FPSR, "TPIDR_EL0": CTX_TPIDR, "TPIDRRO_EL0": CTX_TPIDRRO}[name])
+        elif name in ("FPCR", "FPSR"):   # (host FP mode: the runtime keeps them with MXCSR, sem_fp)
+            from .sem_fp import fp_sysreg_read
+            v = fp_sysreg_read(b, name)
+        elif name in ("TPIDR_EL0", "TPIDRRO_EL0"):
+            v = b.op("ctxload", "i64", off={"TPIDR_EL0": CTX_TPIDR, "TPIDRRO_EL0": CTX_TPIDRRO}[name])
         elif name in ("CNTPCT_EL0", "CNTVCT_EL0"):
             v = b.op("call", "i64", fn="recomp_cntpct", ctx=True)
         elif name == "CNTFRQ_EL0":
@@ -522,12 +522,9 @@ def t_sysreg(b, f, pc, p):
     if name == "NZCV":
         for k, flag in enumerate("nzcv"):
             b.set(flag, b.trunc(b.bin("lshr", x, b.const(31 - k)), "i1"))
-    elif name == "FPCR":
-        old = b.op("ctxload", "i64", off=CTX_FPCR)
-        b.op("ctxstore", "void", b.bin("or", b.bin("and", x, b.const(0xFFFFFFFF)),
-                                       b.bin("and", old, b.const(FPCR_INHIBIT))), off=CTX_FPCR)
-    elif name == "FPSR":
-        b.op("ctxstore", "void", x, off=CTX_FPSR)
+    elif name in ("FPCR", "FPSR"):
+        from .sem_fp import fp_sysreg_write
+        fp_sysreg_write(b, name, x)
     elif name == "TPIDR_EL0":
         b.op("ctxstore", "void", x, off=CTX_TPIDR)
 
