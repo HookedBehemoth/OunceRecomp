@@ -377,6 +377,21 @@ def check_fallback(nat, tmp, bc7enc, ispc):
     assert st["files"] == 0, st
 
 
+def check_bc7_clear_alpha(nat):
+    """BC7 (the converter's level 4) keeps alpha 0 at 0 under colour that varies: with the alpha weighted as the colour,
+    the encoder gave 94 and 288 of these 4096 texels an alpha above 0 (the title logo's clear rectangle showed lines)"""
+    import numpy as np
+    rng = np.random.default_rng(7)
+    yy, xx = np.mgrid[0:64, 0:64]
+    for name, rgb in (("noise", rng.integers(0, 256, (64, 64, 3))),
+                      ("stripes", np.stack([(xx % 3) * 120, (xx % 5) * 60, (yy % 2) * 200], -1))):
+        rgba = np.zeros((64, 64, 4), np.uint8)
+        rgba[..., :3] = rgb
+        dec = nat.decode("bc7", nat.encode("bc7", rgba, 0, 1, 4, 5), 64, 64)
+        left = int((dec[..., 3] != 0).sum())
+        assert left == 0, "BC7, %s under alpha 0: %d texels decode with an alpha above 0" % (name, left)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cxx")
@@ -398,6 +413,7 @@ def main():
         check_run(nat, tmp, encoders, a.bc7enc, a.ispc)
         if encoders:
             check_fallback(nat, tmp, a.bc7enc, a.ispc)
+            check_bc7_clear_alpha(nat)
     print("prepare_textures: ok")
 
 

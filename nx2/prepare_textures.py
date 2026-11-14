@@ -93,7 +93,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.dirname(os.path.abspath(__file__))
-CONV_VERSION = 1      # bump when the output of a texture changes
+CONV_VERSION = 2      # bump when the output of a texture changes
 FORMAT_VERSION = 1    # bump when the index or pack layout changes
 SKIP_DIRS = ("Sound", "Voice", "TerrainArc")   # audio, and TARB terrain tiles (not BNTX: asset-path.md A6)
 

@@ -183,6 +183,43 @@ static void init_once() {
 }
 #endif
 
+#ifdef HK_BC7ENC
+/* BC7 keeps the texels of alpha 0 at 0: a block that holds any and decodes one of them above 0 is encoded again with the
+   alpha's weight raised (x16, then x256), and the new block is kept when it leaves fewer such texels. With equal weights
+   the encoder trades an alpha of 1..100 there for colour error, and a texture drawn with its alpha as coverage shows
+   those texels as thin lines over its clear area. The colour given is not changed */
+static int clear_leaks(const uint8_t* px, const uint8_t* blk) {
+    bc7decomp::color_rgba d[16];
+    bc7decomp::unpack_bc7(blk, d);
+    int n = 0;
+    for (int t = 0; t < 16; t++) n += px[t * 4 + 3] == 0 && d[t].a != 0;
+    return n;
+}
+static void bc7_keep_clear(const uint8_t* rgba, uint32_t w, uint32_t h, uint8_t* out, const ispc::bc7e_compress_block_params& base) {
+    const uint32_t bw = (w + 3) / 4, bh = (h + 3) / 4;
+    std::vector<uint64_t> redo;
+    uint8_t px[64];
+    for (uint64_t i = 0, n = (uint64_t)bw * bh; i < n; i++) {
+        gather(rgba, w, h, (uint32_t)(i % bw), (uint32_t)(i / bw), px);
+        if (clear_leaks(px, out + i * 16)) redo.push_back(i);
+    }
+    for (const uint32_t boost : {16u, 256u}) {
+        if (redo.empty()) return;
+        ispc::bc7e_compress_block_params p = base;
+        p.m_weights[3] = std::max(1u, base.m_weights[3]) * boost;
+        std::vector<uint64_t> left;
+        uint8_t blk[16];
+        for (const uint64_t i : redo) {
+            gather(rgba, w, h, (uint32_t)(i % bw), (uint32_t)(i / bw), px);
+            ispc::bc7e_compress_blocks(1, reinterpret_cast<uint64_t*>(blk), reinterpret_cast<const uint32_t*>(px), &p);
+            const int now = clear_leaks(px, blk), was = clear_leaks(px, out + i * 16);
+            if (now < was) std::memcpy(out + i * 16, blk, 16);
+            if (std::min(now, was)) left.push_back(i);
+        }
+        redo.swap(left);
+    }
+}
+#endif
 HK_API int hk_encode(int kind, uint32_t w, uint32_t h, const uint8_t* rgba, uint8_t* out, int c0, int c1, int level,
                      int radius) {
 #ifdef HK_BC7ENC
@@ -206,6 +243,7 @@ HK_API int hk_encode(int kind, uint32_t w, uint32_t h, const uint8_t* rgba, uint
             ispc::bc7e_compress_blocks(k, reinterpret_cast<uint64_t*>(out + i * 16), reinterpret_cast<const uint32_t*>(px.data()), &p);
             i += k;
         }
+        bc7_keep_clear(rgba, w, h, out, p);
         return 0;
     }
     uint8_t px[64];
