@@ -288,6 +288,10 @@ and imports, the hook and probe tables.
     (f_8575d214/f_8575d228), reached by function pointer only (no direct BL in any module). Not provably unused.
   - f_851109b8 (sdk) saves FPCR/FPSR around a call and restores them.
   - Thread creation starts at FPCR 0 (`hos_thread.c` `setup_guest`); fibers inherit their first switcher's FPCR.
+  - Seen in the game (HOS_FP_LOG=1, title boot): MainThread sets FPCR 0x1000000 at 0.17 s, MXCSR 0x1fa2 -> 0x9fc0;
+    each guest thread then starts with FPCR 0, and its host thread, created from an FZ thread with DAZ|FTZ inherited
+    (0x9fe2), is set back to 0x1f80 by `thread_main`. Without that sync every thread created after the main thread's
+    FZ would have run lift 2's FP code flushing.
 - **The present lifter under this MXCSR** (the mixed build): its FP stays value-exact. Its native fast paths
   (FPX1 helpers in `a64_suyu.h`, `a64_fpx.h` wrappers, the A64_VFPX vector paths, `a64_fcmp*`, `a64_vfcmp`) run only
   inside RECOMP_FPX_OPEN (RMode RN, no DN), and under FZ they keep a result only when no operand is subnormal and the

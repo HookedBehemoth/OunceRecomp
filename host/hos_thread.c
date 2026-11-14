@@ -476,6 +476,12 @@ void hos_thread_dump(void) {
 
 /* HOS_FP_LOG=1 (debugging, nn_vi.c at presents 1, 60 and 600): the presenting thread's guest FPCR and the host's MXCSR,
    which host/hos_fp.c keeps equal to it (FZ: 0x9FC0 plus sticky bits) */
+extern void (*hos_fp_log_hook)(unsigned long long fpcr, unsigned from, unsigned to);
+static void fp_mode_log(unsigned long long fpcr, unsigned from, unsigned to) {
+    static volatile LONG n;
+    if (InterlockedIncrement(&n) <= 64) hos_log("fp: fpcr %#llx: mxcsr %#x -> %#x", fpcr, from, to);
+}
+
 void hos_thread_fp_log(long long present) {
     HosThread *t = cur;
     const Ctx *c = t ? (t->run_ctx ? t->run_ctx : &t->ctx) : NULL;
@@ -525,6 +531,7 @@ HosThread *hos_thread_of(uint64_t guest_tt) {
 }
 
 Ctx *hos_boot_main_thread(uint64_t stack_size) {
+    if (getenv("HOS_FP_LOG")) hos_fp_log_hook = fp_mode_log;
     HosThread *t = (HosThread *)calloc(1, sizeof *t);
     t->guest_tt = hos_sys_alloc(0x400, 0x10);      /* a ThreadType for the main thread; the SDK never made one */
     t->stack_size = stack_size;

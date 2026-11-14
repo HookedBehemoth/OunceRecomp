@@ -31,7 +31,14 @@ unsigned hos_fp_mxcsr(uint64_t fpcr) {
 }
 
 /* MXCSR = the context's FPCR, keeping the sticky exception bits */
-void a64_fpcr_sync(Ctx *A64_NOESC c) { _mm_setcsr(hos_fp_mxcsr(c->fpcr) | (_mm_getcsr() & 0x3Fu)); }
+/* HOS_FP_LOG=1 (diagnostic): hos_thread.c sets this to log changes of a thread's FP mode */
+void (*hos_fp_log_hook)(unsigned long long fpcr, unsigned from, unsigned to);
+
+void a64_fpcr_sync(Ctx *A64_NOESC c) {
+    const unsigned m = hos_fp_mxcsr(c->fpcr);
+    if (hos_fp_log_hook && (_mm_getcsr() & ~0x3Fu) != m) hos_fp_log_hook(c->fpcr, _mm_getcsr(), m);
+    _mm_setcsr(m | (_mm_getcsr() & 0x3Fu));
+}
 
 uint64_t a64_fpcr_read(Ctx *A64_NOESC c) { return c->fpcr & 0xFFFFFFFFu; }
 
