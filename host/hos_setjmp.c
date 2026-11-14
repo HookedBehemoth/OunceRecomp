@@ -159,6 +159,12 @@ void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3
    frame, which is alive while the owner runs; a longjmp to the owner's setjmp comes back here and runs the owner's code from
    the return address */
 void hos_sj_call(Ctx *c, void (*f)(Ctx *), uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3) {
+    {   /* HOS_DBG=sj (diagnostic): the first calls */
+        static int on = -1;
+        static volatile LONG n;
+        if (on < 0) on = hos_dbg_item("sj");
+        if (on && InterlockedIncrement(&n) <= 8) hos_log("sj: call of a setjmp owner (setjmp returns to %#llx)", (unsigned long long)r0);
+    }
     void **sj = recomp_sj_push(c, r0, r1, r2, r3);
     if (recomp_sj_setjmp(sj) == 0)
         f(c);

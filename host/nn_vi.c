@@ -277,6 +277,16 @@ uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {
     AcquireSRWLockExclusive(&frame_whole_lock);
     const uint32_t whole = frame_whole(&frame_whole_state, at, amount_bits, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
     ReleaseSRWLockExclusive(&frame_whole_lock);
+    {   /* HOS_DBG=whole (diagnostic): the first calls, and a count every 600 (which counters, what they took) */
+        static int on = -1;
+        static volatile long calls;
+        if (on < 0) on = hos_dbg_item("whole");
+        if (on) {
+            const long n = __atomic_add_fetch(&calls, 1, __ATOMIC_RELAXED);
+            if (n <= 8 || n % 600 == 0)
+                hos_log("whole: call %ld counter %#llx amount %#x took %u", n, (unsigned long long)at, amount_bits, whole);
+        }
+    }
     return whole;
 }
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
