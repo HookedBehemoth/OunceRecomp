@@ -168,11 +168,14 @@
 # --- layers: agl::lyr lists and the pipeline hook table (slot = offset in vtable 0x84c847f0)
 8006f9c0 layer_decals_static_shadow       # work/assets/native/engine-layers.md 6.1: raises hook +0x50 (decals, static shadow)
 8007d2e0 layer_gpu_cull_graphics          # work/assets/native/engine-frame.md: layer #240: GPU culling's graphics side, sky/env
-8006e160 layer_item_step                  # docs/direct/patch-sites.md: per-item step of the layer pipeline
+8006e160 layer_item_step                  # docs/direct/patch-sites.md, docs/direct/boot-to-main-loop.md 4.3: one step of a layer by kind (0, 1, 2 decals, 4 opaque/xlu, 5 scene layers, 7 post, 9)
 8007b520 layer_list_begin_unused          # docs/direct/patch-sites.md, begins a list for every layer job; never submitted
 8007da20 layer_list_end_b                 # work/assets/native/engine-frame.md, work/assets/native/engine-jobs.md: layer list end (0x8007dabc)
 8007ad40 layer_list_record_b              # host/direct.c, agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
 8006cd60 layer_list_record_post           # host/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
+8006fe10 layer_step_kind0                 # docs/direct/boot-to-main-loop.md 4.3: layer_item_step's handler for step kind 0
+806dc280 layer_step_kind1                 # docs/direct/boot-to-main-loop.md 4.3: layer_item_step's handler for step kind 1
+802702e0 layer_step_kind9                 # docs/direct/boot-to-main-loop.md 4.3: layer_item_step's handler for step kind 9
 807cd380 layer_lists_call                 # work/assets/native/engine-frame.md, gpu/legacy/vk/eng_pass.h: calls the 9 layer lists
 807ccda0 layer_lists_call_caller          # work/assets/native/engine-frame.md
 802aba50 layer_lists_caller               # work/assets/native/engine-frame.md: calls the 9 layer lists (via f_807ccda0)

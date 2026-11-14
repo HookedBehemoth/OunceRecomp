@@ -357,6 +357,52 @@ on the BaseProcExecutors 0-4.45 ms (stage A, kicked by the end stage), calc jobs
 7.5-11.9 ms (job lists, then the long layer list `0x8007b0c8` on one worker: stage C), the main thread's submits
 and the gate signal 11.96-12.73 ms (steps 7 and 9).
 
+**Stage C's task graph** (VERIFIED: the graph walked at the stage's join, run `tail_p9`, market overlay; the decompile
+of `f_80070ea0`). A node is 0x40 bytes: object +0x00, priority (u16) +0x0c, type +0x10, successor list +0x20 (records
+0x18 bytes, link at +0x34 into the record, target node at the record's +0), participants +0x38, pending predecessors
++0x3c; ready nodes go to a heap ordered by priority (graph +0x48). Its 84 nodes are a chain of six-wide phases, each
+phase six nodes of the phase object vtable `0x84c36c88` (the phase's kind in object +0x10), one per thread, joined by
+one node before the next phase opens:
+
+```
+calc jobs (kind 0x8, f_800998a0 x6) -> phases 0x30/0x20, 0xc0/0x40, 0x100 -> join (also waits for the BaseProc
+nodes 64, 76-83) -> render-job loop (kind 0x400, x6; beside it node 65 -> 67-72, the BaseProc late step)
+-> join -> layer lists (kind 0x8800, x6: each claims layers, f_8006cd60) -> join (also nodes 56-63) -> end
+```
+
+So the layer phase opens only when every render-job loop has ended: the console's order, not a data wait. The
+job-call site `f_806688c0` does not wait for a pass's jobs (decompile): it looks the view record up by its CRC and,
+with no slot in (record +0xc8 < 1), leaves through `0x80668c94` without a `CallCommands`; the graph's join is what
+makes the jobs complete.
+
+Times in stage C (VERIFIED, ENTRY_HOOK timers, runs `tail_p2`-`tail_p7`, market overlay, uncapped, 13.5 ms frames;
+ms from the stage's join start, the stage 7.4 ms): calc jobs 0.02-1.73 on main and five workers (10.1 ms of CPU a
+frame); the render jobs 2.07-4.03; the BaseProc late step (`f_83acfb90` on every worker, the executors) 3.59-4.35; the
+small layers 3.80-4.37; the decal/static-shadow step as its own node (`f_8006e160`) 4.10-5.48; **the long layer**
+(layer `0x1136f127c0`, on whichever thread claims it) 3.88-7.47. From ~5.5 ms it runs alone: about **2.0 ms a frame
+with one thread busy**. It is 3.6 ms of CPU (no virtual-core waits):
+
+| step of the long layer | ms a frame | draws | records | back end emit ms |
+|---|---|---|---|---|
+| 4 opaque/xlu, `f_80a47660` (whole) | 2.87 | 233 | 5,800 | 1.06 |
+| of it: the 3D pipeline `f_80660320` | 2.47 | 230 | 5,600 | 0.96 |
+| of it: fog/water `f_8028b110` | 0.73 | 200 | 3,700 | 0.46 |
+| of it: GPU-culling dispatch `f_80364080` (a lock and unlock per instance slot, then one dispatch) | 0.36 | 0 | 13 | 0 |
+| of it: job-call sites `f_806688c0` | 0.2 | 0 | 19 | 0 |
+| 7 post effects `f_8027e840` | 0.33 | 27 | 700 | 0.18 |
+| 5 scene layers `f_80070350` | 0.18 | 4 | 360 | 0.07 |
+| 9 `f_802702e0` | 0.06 | 1 | 57 | 0.03 |
+
+The back end's emit is 1.4 ms of the layer's 3.6 (39%). The step after the stage-C join, the main thread's draw, takes
+0.1 ms and calls the lists; the next frame's stage A (the BaseProc executors' game logic, 5.2 ms) writes the actors and
+camera that the layer reads at record time, so it cannot run beside the layer.
+
+What would shorten it (not built): open the layer phase beside the render-job phase for one layer node (a graph edit:
+one of the six layer nodes depends on the join before the job phase instead of the one after it, so one thread takes
+the long layer while five record jobs, and no thread can be left without a job loop), and make the job-call sites
+(`f_806688c0`, `f_8028a2a0`) wait for their own pass's jobs (count the list's entries by pass key at the stage's start,
+count recorded jobs in the recorder hook), since the game does not wait there. Estimate 1-1.5 ms of the 7.4.
+
 What the main thread waits on inside the stages (`m6a_crit2_k`, ms a frame): the scheduler's condition variable
 at `0x80080188` (6.75, 11.9 times), its 20 µs poll sleeps at `0x8009a478` in `f_800998a0` (0.81, 39 times), the
 second BaseProc step's join at `0x83acfcf4` in `f_83acfb90` (0.63, once). The main thread runs 4.5 ms of 12.9 and is

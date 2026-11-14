@@ -262,7 +262,10 @@ check that shows it still applies (`HOS_DBG=logpatch`).
   that the system-texture entry keeps its id while nothing changes, does not hold. The entry arrives with a stale id every
   frame, so the patch keeps 0 calls and passes every call to the game's path; the submit-time snapshot of the deferred
   tables covers it. Open: find what resets the id (a watch on the table's source entry).
-- **Frame time.** The serial layer list is split by nothing yet (a patch in calc stage C of `moduleCalc_`); Hyrule Field
+- **Frame time.** In calc stage C the long layer (the 3D pipeline, post effects) records alone for about 2 ms of the
+  stage's 7.4 (market): the game's task graph opens the layer phase only after every render-job loop, and its job-call
+  sites do not wait for their jobs. Opening one layer node beside the job phase, with a wait per pass key at the job-call
+  sites, is the measured design, not built ([boot-to-main-loop.md](direct/boot-to-main-loop.md) 4.3). Hyrule Field
   has bursts. Render jobs and layer lists are recorded in the calc phase, not the draw phase; a frame has four job stages ([boot-to-main-loop.md](direct/boot-to-main-loop.md)).
 - **Programs translated offline;** translator improvements and stage replacements as the shader cost census ranks them
   ([shader-costs.md](direct/shader-costs.md)): the heavy compute pass `fd029a317a9a4b94` first, then per-command overhead,
