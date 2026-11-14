@@ -538,18 +538,108 @@ acquire/release, exclusives, CRC32, MRS/MSR, barriers.
 - The passed-over reasons in the draw, in order: calls or traps in the present lifter's view, size, BR,
   branches out of the body, undecoded words (the atomics and the like).
 
-**What milestone 2 needs to know.**
-- The integer forms still missing are listed in `work/lift2/forms.txt` (class `int`/`ldst-int`/`system`, column
-  `no`). By words, in order: LDAPR/LDAPRB, CAS*, LDADD*/LDSET*/LDCLR*/SWP*, CRC32*, DMB, MRS TPIDR_EL0/TPIDRRO_EL0,
-  LDAR/STLR*, SVC, MRS/MSR NZCV, MRS CNTPCT_EL0, PACGA, LDAXR/STLXR. Section 8 says how each orders.
-- Add each family as a table entry plus a template. `selfcheck.py --game` must stay at 0 differences.
-- Where the printer has to mimic an llvm-mc quirk, `asm.py` says so.
-- **Lift time.** At 55.6 k instructions/s per core, the whole program (17.6 M instructions) takes about 5.3 min on
-  one core and about 25-40 s on 16 processes. The 5-10 min goal holds in Python; a compiled port is not needed for
-  this stage.
-- **IR size.** The whole game would be about 3.7 GB of IR text. Milestone 17 keeps partitions small (one compile
-  job per text file) or pipes the text to clang without keeping it.
-- `test_lift2_leaf.py` passes NZCV through `flags_out`; the counting build leaves it out, as the game build will.
+**Tables and templates per module.**
+- `enc.register()` takes a table in `ENCODINGS`' format.
+- `enc_*.py` modules of the package are loaded with their `ENCODINGS`, optional `ENV` (names for the validity
+  expressions) and `RENDER` (printers).
+- `sem.TEMPLATES` gathers `sem_int.py` and every `sem_*.py` (`TEMPLATES`; `None` means decoded, not lifted yet).
+- Families can be added in parallel without touching the integer table.
+
+## 14a. Milestones 2-4: all integer forms, control flow, calls (done)
+
+**Milestone 2.**
+- Every integer form of the census decodes: 542 of 542 forms in the integer, integer load/store, branch and system
+  classes. `selfcheck.py --game`: 2,032,675 words, 0 differences from llvm-mc. Synthetic: 269 k words, 0 differences.
+- Lifted:
+  - CRC32/CRC32C: a bit-serial internal helper `lift2_crc32`, checked against zlib.
+  - MRS/MSR of NZCV, TPIDR_EL0 (read and write), TPIDRRO_EL0, FPCR and FPSR (as the context fields, like the
+    present lifter: milestone 9 maps them to MXCSR), CNTPCT/CNTVCT (`recomp_cntpct`).
+  - CNTFRQ_EL0: 31,250,000, the Switch 2's counter; the present lifter returns the Switch 1's 19,200,000, and the
+    game never reads it.
+  - CTR_EL0 (0x8444C004) and DCZID_EL0 (4).
+  - PAC*/AUT*/XPAC* as the identity and PACGA as 0 (`nx2/insn.py`'s model); STG/ST2G as their base writeback.
+  - DC ZVA/GZVA as a 64-byte clear; the other DC operations and IC IVAU as nothing; ISB as nothing.
+- Decoded, lifted later: LSE atomics, CAS/CASP, LDAR/STLR/LDAPR, the exclusives, DMB/DSB/CLREX (milestone 6), SVC
+  (milestone 7).
+
+**Milestone 3.**
+- Jump tables are a `switch` on `rotr(x - lowest target, 2)`: dense cases that LLVM turns into a table, and a
+  misaligned value falls to the default. The cases inside the function are branches; the others are tail calls; the
+  default is `a64_ijump(ctx, x)`.
+- A BR the discovery did not resolve is `a64_ijump`.
+- BRK/HLT/UDF are `a64_trap`.
+- The poll (`lift2_poll`, an inlined helper: a relaxed load of `ctx->poll`, a cold call of `a64_poll_cur()`) goes at
+  the end of every block with a successor at a lower or equal address. It runs before both edges of a conditional
+  branch, where `nx2/poll.py` polls on the backward edge only.
+
+**Milestone 4.**
+- BL sets X30 and calls the callee's generic entry; BLR calls `a64_icall(ctx, target)`. After either, the block's
+  later register reads load from the context (`Builder.after_call`, the `regload` operation).
+- Write-through means nothing needs storing before a call.
+- B, or falling through, to another function's entry is `musttail call void @sym(ptr %ctx)`; PLT stubs are lifted
+  as the present lifter does (x16 = the GOT slot, x17 = the target, then the target).
+- Before control leaves for another function (a tail call, an unresolved BR), a function that writes flags stores
+  them (`flagsout`): the code there may read them (a function split by the discovery, a shared tail).
+- `build_ir.Program` carries what the lift of one function needs from the whole program: the entries, the jump
+  tables, the PLT stubs, the callee resolution and the symbol of each callee's generic entry. `g_` is the symbol when
+  lift2 lifts the callee, else `f_` (the present lifter's); that is how mixed builds link.
+
+**Tests.**
+- `tests/test_lift2.py` adds three synthetic programs, run end to end:
+  - CRC32/CRC32C, the system registers, PAC;
+  - BL then a tail call across three functions;
+  - a jump table.
+- `nx2/test_lift2_leaf.py --calls` draws roots whose call trees the present lifter can lift (no BLR, SVC or
+  unresolved BR).
+  - Each function of a tree that lift2 can take is lifted by it; the rest come from the present lifter.
+  - The two meet at the generic entries.
+  - X16/X17 are not compared with calls, and NZCV only for leaves (a callee from the present lifter drops dead flag
+    stores).
+- A root none of whose random states runs in Unicorn gets up to 16 more with X0-X7 all pointing into the scratch area.
+
+**Results.**
+
+| check | result |
+|---|---|
+| 500 leaves, seed 1, 8 states | 463 compared (37 never run in Unicorn, was 73 before the retries), 2,391 cases, 0 differences against Unicorn and against the present lifter |
+| call trees, seed 2, 6 states | 1,975 roots (431 with calls), 2,939 functions in their trees, 2,850 lifted by lift2; 1,746 roots compared in 7,158 cases; 0 differences |
+| call trees, seed 3, 6 states | 2,073 roots, 2,865 functions lifted by lift2; 1,836 roots compared in 7,663 cases; 0 differences; 237 roots never run in Unicorn |
+| x86 instructions at -O1, functions with calls (seed 2 / 3) | present lifter 172,734 / 167,975, lift2 158,992 / 156,442 (0.92 / 0.93) |
+| x86 instructions at -O1, all functions lift2 lifts (seed 2 / 3) | 296,074 / 315,526 against 268,144 / 290,078 (0.91 / 0.92) |
+| leaves only (seed 1, with switches and polls now) | 36,954 against 31,992 (0.87) |
+| lift speed, one core | 42-51 k guest instructions/s on call trees (decode, IR, LLVM IR) |
+
+- The largest per-function ratios (up to 49x) are functions whose present-lifter body clang reduced to one jump into
+  an identical function of the same file (function merging): an artefact of the count, not of the code.
+- The gain on functions with calls is smaller than on leaves: every call stores and reloads through the context
+  (the generic convention). That cost is milestone 15's.
+
+**IR size and build time.**
+- Text: 230 bytes per guest instruction (about 4 GB for the whole game). Bitcode (`llvm-as`): 57 bytes per guest
+  instruction.
+- A 95 k-instruction module at -O1 compiles in 9.4 s from text, 8.9 s from bitcode and 9.7 s from text piped on
+  stdin. `llvm-as` alone parses it in 1.1 s.
+- Parsing the text is about a tenth of a compile, so the build streams each partition's text into its clang
+  (`-x ir -`) and keeps no IR on disk.
+- A bitcode writer of our own, or llvmlite (which pins its own LLVM, not ours), is not worth it.
+- An object cache keyed by the IR text's hash (computed while streaming) keeps incremental builds.
+
+**What milestone 5 needs to know.**
+- **Mixed game build.** For the functions in `use.txt`, `build.py` replaces the present lifter's `f_<addr>` with a
+  thunk `void f_<addr>(Ctx *c) { g_<addr>(c); }`. lift2 functions name every other callee `f_<addr>` through
+  `Program.symbol`.
+- **Function table.** The table behind `a64_lookup` (`a64_table.c`) keeps `f_` (the thunks).
+- **Hooks.** Hooked addresses (`a64_hooks.c`) and functions with an `ENTRY_HOOK` or `SPLICE_AFTER` stay with the
+  present lifter until milestone 7. So do SVC users, setjmp owners and the milestone 6 forms (`scope()` reports them).
+- **Runtime symbols lift2 code needs from the host.** All exist today: `a64_icall`, `a64_ijump`, `a64_trap`,
+  `a64_poll_cur`, `recomp_cntpct`, `a64_dirty`. lift2 calls `a64_icall`/`a64_ijump` without the per-site cache;
+  milestone 15 brings it back.
+- **Flags at returns.** lift2 stores no flags at a return (AAPCS64). A present-lifter caller that reads flags after a
+  BL without setting them would differ; the differential never saw one.
+- **LLVM version.** `nx2/lift2/llvm.py` refuses another major. `build.py` must call `llvm.check("clang")` before
+  compiling `.ll`.
+- **Lift speed** for the whole program at 42-51 k instructions/s per core: about 6-7 min on one core, under a minute
+  on 16 processes.
 
 ## 15. Risks not retired
 
