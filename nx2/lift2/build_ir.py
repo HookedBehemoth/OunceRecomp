@@ -104,10 +104,13 @@ def build(entry, pcs, word):
 
 
 def base_offset(addr):
-    """(base value, constant offset) of an address value"""
-    if addr.op == "add" and addr.args[1].op == "const":
-        return addr.args[0], addr.args[1].args[0] - ((1 << 64) if addr.args[1].args[0] >> 63 else 0)
-    return addr, 0
+    """(base value, constant offset) of an address value: a chain of constant additions walked back"""
+    off = 0
+    while addr.op == "add" and addr.args[1].op == "const":
+        c = addr.args[1].args[0]
+        off += c - (1 << 64) if c >> 63 else c
+        addr = addr.args[0]
+    return addr, off
 
 
 def group_marks(fn):

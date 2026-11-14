@@ -320,8 +320,9 @@ def main():
         tot_old, tot_new, tot_new / max(tot_old, 1), tot_old / ninsn, tot_new / ninsn))
     worse = sorted(((n_new["g_%08x" % e] / max(n_old["f_%08x" % e], 1), e) for e in order), reverse=True)[:5]
     print("largest new/old ratios: %s" % ", ".join("f_%08x %.2f" % (e, q) for q, e in worse))
-    print("%d functions, %d cases: against Unicorn %d functions differ; against the present lifter %d differ" % (
-        len(roots), len(cases), len(fail_uc), len(fail_old)))
+    tested = len({i for i, _, _ in cases})
+    print("%d functions, %d run in at least one comparable case, %d cases: against Unicorn %d functions differ; "
+          "against the present lifter %d differ" % (len(roots), tested, len(cases), len(fail_uc), len(fail_old)))
     for title, fails in (("Unicorn", fail_uc), ("present lifter", fail_old)):
         for i in sorted(fails)[:None if a.list else 20]:
             mod, e, n = roots[i]

@@ -136,6 +136,11 @@ class Builder:
             r = fold(op, a.args[0], b.args[0], WIDTH[a.ty])
             if r is not None:
                 return self.const(r, a.ty)
+        if op == "add" and b.op == "const" and a.op == "add" and a.args[1].op == "const":
+            # (x + c1) + c2 -> x + (c1 + c2): an address chain (STP's second address, pre-index then offset)
+            return self.bin("add", a.args[0], self.const(a.args[1].args[0] + b.args[0], a.ty))
+        if op == "add" and b.op == "const" and b.args[0] == 0:
+            return a
         return self.op(op, a.ty, a, b)
 
     def icmp(self, pred, a, b):
