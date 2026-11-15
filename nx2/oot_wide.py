@@ -27,8 +27,8 @@ def _ratio(vreg, base=None):
     store = ("recomp_store32(c, c->x[%d] + 0xb0, _u); " % base) if base is not None else ""
     return ("{ extern volatile float hos_wide_ratio; const float _w = hos_wide_ratio; if (_w > 0.0f) { float _r; "
             "memcpy(&_r, c->vreg[%d], 4); const float _d = _r - (16.0f / 9.0f); if (_d <= 0.01f && _d >= -0.01f) { "
-            "uint32_t _u; memcpy(&_u, &_w, 4); a64_vset64(c->vreg[%d], _u); %s} } }   /* (nx2/oot_wide.py: camera ratio) */"
-            % (vreg, vreg, store))
+            "uint32_t _u; memcpy(&_u, &_w, 4); c->vreg[%d][0] = _u; c->vreg[%d][1] = 0; %s} } }   /* (nx2/oot_wide.py: camera ratio) */"
+            % (vreg, vreg, vreg, store))
 
 
 def _size(name):
