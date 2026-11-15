@@ -395,7 +395,7 @@ Patch sites:
   = max(NVN need, the Vulkan requirement of the shape, from a new back-end query or a fixed margin), keeping the
   family's +25%). `place()` / the splice: no `game_offset` placement (evict or grow until there is room, or count it as
   a strict event). `alloc_pre()` (classes and hysteresis in place of `HOS_RT_QUANT` at lr `0x80264130`). The
-  `rt_slots_texture_init()` / `alloc_gave()` / `PATCH_HOOK(0x802737a0)` trio (entry -> object, e).
+  `rt_slots_texture_init()` / `alloc_gave()` / `PATCH_FUNC(0x802737a0)` trio (entry -> object, e).
 - `gpu/direct/direct_api.h`: `hsd_transient_range(lo, hi)` and an image-size query, `hsd_texture_freed/held` by
   object (exists; the host passes the right object).
 - `gpu/direct/direct_vma.cpp` (the one allocation, counted in `hsd_vram_free`'s figure), `gpu/direct/direct_image.cpp`
@@ -403,8 +403,8 @@ Patch sites:
   at `image_texture_created` and emitted on the upload command buffer before the next submit, as `init_image` does).
 
 **Second: b + e + c.** The game patch at the DTA's real free releases the entry's id
-(`PATCH_HOOK(0x802737a0)` in `host/rt_slots.c`, after the lifted body when the free is not parked: `f_834bf9b0(mgr,
-entry + 0x68)`, `+0x68 = -1`, clear `+0x70..+0xb4`). A host hook on `f_80557420` (a PATCH_HOOK that runs the body,
+(`PATCH_FUNC(0x802737a0)` in `host/rt_slots.c`, after the lifted body when the free is not parked: `f_834bf9b0(mgr,
+entry + 0x68)`, `+0x68 = -1`, clear `+0x70..+0xb4`). A host hook on `f_80557420` (a PATCH_FUNC that runs the body, orig,
 as rt_slots' alloc hook does, then reads which records of the drained list are -1) calls a new `hsd_texture_ids_freed`,
 and `direct_heap.cpp` drops those slots' `slot_image`. Then (e) and (c) as above. This is smaller and keeps the back
 end plain (rule 8), but VRAM for targets is a moving figure and images are made and destroyed in play.

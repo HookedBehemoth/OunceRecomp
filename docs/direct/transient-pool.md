@@ -110,7 +110,7 @@ nothing: the memory is the pool's either way.
 
 `shadow_size()` in `host/rt_slots.c`, in place of `HOS_RT_QUANT`'s rounding to 128. A local-light shadow map gets the
 next class up of 256, 384, 512, 640, 768, 1024, 1280, 1536, 2048, 2432 (above that, the next multiple of 128). A map is
-never smaller than the game asked for. Each light (its shadow object, noted by a new entry hook on `f_802640a0`)
+never smaller than the game asked for. Each light (its shadow object, noted by a new `PATCH_AT` before `f_802640a0`)
 keeps its class until the size it wants passes the class, or falls to 90% of the class below. `HOS_RT_QUANT=0` turns
 the classes off.
 

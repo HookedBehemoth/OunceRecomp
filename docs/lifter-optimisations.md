@@ -24,9 +24,9 @@ What every item is checked against:
 
 - **setjmp owners**: a longjmp re-enters the owner mid-function through `hos_sj_call` (`host/hos_setjmp.c`); 14 call
   sites of `__setjmp` in 13 owners, 11 of `longjmp`. Calls of owners stay "reload everything".
-- **hooks**: entry hooks (`entry_<addr>(ctx)` reads x0-x7, x30 and its declared extras at the entry; its "return 1"
-  path may write x0-x7) and HLE'd functions, both counted by the summaries by their declarations
-  (`host_effects.py`); At rows take SSA values and count as their instruction's.
+- **host functions**: replaced functions (`PATCH_FUNC`: their declared operands and result, with `orig` their body's
+  facts) and HLE'd functions, both counted by the summaries by their declarations (`bounds.func_bound`,
+  `host_effects.py`); At rows take SSA values and count as their instruction's.
 - **frame readers**: the host sites that read a lifted function's frame (lifter.md, pessimization 2).
 - **indirect entry**: any function may be entered through `a64_lookup`'s table.
 
@@ -52,20 +52,11 @@ Each is kept until its experiment runs.
 - **Write-through before calls beyond the sites that need it** (pessimization 1): the dead stores are gone
   (`build_ir.omit_stores`); the callee-saved registers a callee only saves remain (C1).
 - **Saves and frames beyond the five frame readers** (pessimization 2): decided by C's pair deletion and F.
-- **memmove semantics for `memcpy`** in `host/nn_libc.c`'s hooks: from the initial import, costs nothing; G keeps
+- **memmove semantics for `memcpy`** in `host/nn_libc.c`'s replacements: from the initial import, costs nothing; G keeps
   `llvm.memmove`. No experiment needed.
 
 ## C. Summary-driven call boundaries: what remains
 
-- **Entry hooks read x0-x7 whether they use them or not** (`host/hos.h` `HookArgs`, `host_effects.HOOK_ARGS`): the
-  libc hooks (memset, strlen, strcmp, memcpy, memcmp, memmove: 3-5 arguments or fewer) widen the inputs of about
-  2,800 functions that reach them (x1-x7 beyond their arguments), and their stores stay before every such call. A per-hook argument count in the
-  declaration (checked by `tests/test_host_context_reads.py`) removes them.
-- **A BL to an entry-hooked function keeps only what the guest functions its hook's `guest(...)` names preserve too**
-  (`bounds.call_bounds`), though `hook_call_guest` runs them through `call_restoring` (`host/hos_hostcall.c`), which
-  puts every register back. Unproven only in that nothing tests it; dropping the check gives the three mesh drawer
-  hooks' callers their registers back. Experiment: drop it, verification smoke (`lift2_host_exit`-style check of the
-  hooked call).
 - **The fiber HLEs and the unaudited NVN exports read every register** (their declarations' `clobbers(...)`,
   `summary.host_summary`): their callers' inputs include x9-x18 and the flags, which widens the inputs of about
   430 functions and demotes part of them (tmp_in, flags_in). A declaration of what `fiber_switch` really reads (its argument; the context it
@@ -149,12 +140,12 @@ a C-after or SPLICE site. At rows take register values, not slots.
 
 ## G. Short entries
 
-- **libc calls as intrinsics.** A BL to the hooked `memcpy`/`memset`/`memmove` (`host/nn_libc.c`, also
+- **libc calls as intrinsics.** A BL to the replaced `memcpy`/`memset`/`memmove` (`host/nn_libc.c`, also
   `__memcpy_aarch64` and `__memcpy_aarch64_simd`) becomes `llvm.memmove`/`llvm.memset` on `gaddr` plus x0 := x0, x9-x18
   poison, x30 not stored. Source: FEX lists memcpy/memset with a compile-time direction among its optimisations
-  (https://fex-emu.com/FEX-2312/; code not read). Soundness: the site keeps the hooks' `hos_guest_range` check on both
-  ranges as an inline compare with the hook call as the fallback (commit 6f8f2432, `tests/test_guest_copies.py`: host
-  memory safety), and memmove semantics. First step: the three hooks' BLs, on/off.
+  (https://fex-emu.com/FEX-2312/; code not read). Soundness: the site keeps the replacements' `hos_guest_range` check on both
+  ranges as an inline compare with the replacement's call as the fallback (commit 6f8f2432, `tests/test_guest_copies.py`: host
+  memory safety), and memmove semantics. First step: the three functions' BLs, on/off.
 - **CRC32C as `crc32`.** `sem_int.t_crc32` with `emit_llvm.HELPERS["lift2_crc32"]` is a bit loop; the C variants equal
   SSE4.2's `crc32`. The ISO variant needs a table or PCLMUL. Exact. First step: count the sites, then the C variants
   on/off.

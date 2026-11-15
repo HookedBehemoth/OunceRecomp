@@ -167,26 +167,6 @@ int hos_dbg_item(const char *item) {
 }
 int hos_log_switch(const char *item) { return hos_dbg_item(item) || hos_dbg_item("logall"); }
 
-/* HOS_DBG=hooks (diagnostic, host/hos.h ENTRY_HOOK_COUNTED): each entry hook's first call, with how many have run */
-int hos_hooks_dbg;
-void hos_hook_seen(const char *name) {
-    enum { MAX = 512 };
-    static const char *seen[MAX];
-    static int n;
-    static SRWLOCK lock = SRWLOCK_INIT;
-    for (int i = 0; i < __atomic_load_n(&n, __ATOMIC_ACQUIRE); i++)
-        if (seen[i] == name) return;
-    AcquireSRWLockExclusive(&lock);
-    int i = 0;
-    while (i < n && seen[i] != name) i++;
-    if (i == n && n < MAX) {
-        seen[n] = name;
-        __atomic_store_n(&n, n + 1, __ATOMIC_RELEASE);
-        hos_log("hooks: first call of %s (%d hooks have run)", name, n);
-    }
-    ReleaseSRWLockExclusive(&lock);
-}
-
 #define LOG_BUF 4096
 void hos_log(const char *fmt, ...) {
     char buf[LOG_BUF], line[LOG_BUF + 128];

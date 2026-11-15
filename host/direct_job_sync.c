@@ -10,7 +10,7 @@
    probes.py DIRECT) points the call
    at a host function instead, which, when the command buffer is the job's own (host/eng_jobs.c: the job this thread
    records), keeps (event, mode, value) or the barrier bits for the job's view record, and else calls the proc. f_8067c310 is
-   hooked at its entry: inside a job its call (entry, flags) is kept the same way. The CPU side of the hooks (the event slot
+   replaced (PATCH_FUNC, its body the orig): inside a job its call (entry, flags) is kept the same way. The CPU side of the hooks (the event slot
    and value taken under the game's mutex) runs as before.
 
    At the job-call site, f_806688c0's CallCommands (return 0x80668c84; x0 the list's command buffer) is pointed at a host
@@ -195,20 +195,23 @@ PATCH_AT(0x80668c7c, word(0xf9400108), after, x8, direct_job_sync_call, as(x8, p
 PATCH_AT_SITE(0x80668dd8, word(0xf9400108), after, x8, direct_job_sync_call, x8, x21, ld(sp, 0x10));
 PATCH_AT_SITE(0x80668fb0, word(0xf9400108), after, x8, direct_job_sync_call, x8, x21, ld(sp, 0x10));
 
-PATCH_HOOK(0x8067c310, word(0xb9400808)) {   /* (grid entry, drawctx, flag, flag): the occlusion grid's dispatch */
-    if (!ready()) return 0;
-    const uint64_t view = hos_guest_range(a->x[1] + 216, 8) ? job_view(G64(a->x[1] + 216)) : 0;
-    if (!view) return 0;
+/* the occlusion grid's dispatch (grid entry, drawctx, flag, flag): kept for the view's job (its x0 left as it came), or
+   the game's (orig) */
+PATCH_FUNC(0x8067c310, word(0xb9400808), body(0xf7211f1c433e65c6), aapcs, x0, direct_job_sync_grid_dispatch,
+           orig, as(x0, entry), as(x1, drawctx), x2, x3, x4, x5, x6, x7) {
+    if (!ready()) return guest_orig(orig, entry, drawctx, x2, x3, x4, x5, x6, x7);
+    const uint64_t view = hos_guest_range(drawctx + 216, 8) ? job_view(G64(drawctx + 216)) : 0;
+    if (!view) return guest_orig(orig, entry, drawctx, x2, x3, x4, x5, x6, x7);
     AcquireSRWLockExclusive(&kept_lock);
     Kept *k = kept_of(view);
     if (k && k->nd < 8) {
-        k->d[k->nd].entry = a->x[0], k->d[k->nd].x2 = a->x[2], k->d[k->nd].x3 = a->x[3], k->nd++;
+        k->d[k->nd].entry = entry, k->d[k->nd].x2 = x2, k->d[k->nd].x3 = x3, k->nd++;
         ReleaseSRWLockExclusive(&kept_lock);
         InterlockedIncrement64(&n.dispatches);
-        return 1;
+        return entry;
     }
     ReleaseSRWLockExclusive(&kept_lock);
-    return 0;
+    return guest_orig(orig, entry, drawctx, x2, x3, x4, x5, x6, x7);
 }
 
 void direct_job_sync_log(double frames) {

@@ -663,8 +663,8 @@ unnamed movie input thread; joined at the new-game transition (boot-speed.md).
 
 ## 7. Where to hook
 
-The cleanest function boundary for a timing mark or a patch, per phase (an `PATCH_HOOK(0x...)` runs at a lifted
-function's entry, `host/hos.h:26`; a mark at the end of a phase is the entry of the next one).
+The cleanest function boundary for a timing mark or a patch, per phase (a `PATCH_AT(0x..., before)` at a lifted
+function's entry, `host/patch.h`; a mark at the end of a phase is the entry of the next one).
 
 | Phase | Boundary | Notes |
 |---|---|---|

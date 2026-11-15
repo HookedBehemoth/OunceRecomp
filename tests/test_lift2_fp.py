@@ -1156,19 +1156,20 @@ class FPNeon(unittest.TestCase):
             len(bugs), devs, "\n".join(bugs[:25])))
 
 
-HOOK_HARNESS = r"""
+FUNC_HARNESS = r"""
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
                  uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
 static int calls;
-/* the host's hook: does the call's work when x1 is 7 (x0 = 99), else lets the lifted body run */
-int entry_0x80001000(Ctx *c) { calls++; if (c->x[1] == 7) { c->x[0] = 99; return 1; } return 0; }
-void g_80001000(Ctx *);
+void hos_orig_0x80001000(Ctx *);
+/* the host's replacement (as host/patch.h's adapter calls it): x0 = 99 when x1 is 7, else the lifted body (orig) */
+void hos_func_0x80001000(Ctx *c) { calls++; if (c->x[1] == 7) c->x[0] = 99; else hos_orig_0x80001000(c); }
+void f_80001000(Ctx *);
 int main(void) {
-    Ctx c; memset(&c, 0, sizeof c); c.x[1] = 7; g_80001000(&c);
-    Ctx d; memset(&d, 0, sizeof d); d.x[1] = 3; g_80001000(&d);
+    Ctx c; memset(&c, 0, sizeof c); c.x[1] = 7; f_80001000(&c);
+    Ctx d; memset(&d, 0, sizeof d); d.x[1] = 3; f_80001000(&d);
     printf("%llu %llu %d\n", (unsigned long long)c.x[0], (unsigned long long)d.x[0], calls);
     return 0;
 }
@@ -1176,22 +1177,23 @@ int main(void) {
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and have("clang"), "Linux and clang of the pinned LLVM major")
-class EntryHook(unittest.TestCase):
-    def test_entry_hook(self):
-        """A PATCH_HOOK at the function's entry: the hook first; 1 returns at once, 0 runs the body (whose loop does not
-        call it again: 2 calls for 2 runs)"""
+class ReplacedFunction(unittest.TestCase):
+    def test_func_stub(self):
+        """A PATCH_FUNC (nx2/lift2/game.py FUNC_STUB): f_<addr> is a tail call of the host's adapter, the lifted body is
+        hos_orig_<addr> (whose loop does not call the adapter again: 2 calls for 2 runs)"""
+        from lift2 import game
         words = [0xd2800000, 0x91000400, 0xf100241f, 0x54ffffc3, 0xd65f03c0]   # mov x0,#0; add x0,x0,#1; cmp x0,#9; b.lo; ret
         base = 0x80001000
         fn = build_ir.build(base, [base + 4 * k for k in range(len(words))], lambda pc: words[(pc - base) // 4])
-        fn.entry_hook = "entry_0x80001000"
+        fn.name = "hos_orig_0x80001000"
         m = emit_llvm.Module()
         m.add(fn)
         with tempfile.TemporaryDirectory() as d:
             ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
             with open(ll, "w") as fo:
-                fo.write(m.text())
+                fo.write(m.text() + emit_llvm.no_capture(game.FUNC_STUB % {"a": base, "fn": "hos_func_0x80001000"}))
             with open(c, "w") as fo:
-                fo.write(HOOK_HARNESS)
+                fo.write(FUNC_HARNESS)
             subprocess.run([llvm.check("clang"), "-O1", "-w", c, ll, "-o", exe], check=True)
             out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
         self.assertEqual(out, ["99", "9", "2"])

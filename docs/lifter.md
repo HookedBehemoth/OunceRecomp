@@ -93,8 +93,8 @@ writes for.
   lift keeps registers by. Readers: a load of the register after a call; a BL's callee, which reads the record's
   reads and passes on what it does not write on every path (the record's must-writes; the summaries and the lift
   resolve a BL through a PLT stub to the same target, `Program.callee`) to the caller's later loads:
-  a lifted callee its summary's inputs and must-writes, an entry-hooked one its summary's too (the hook's reads and
-  its "return 1" path are in it: must-writes none), an HLE'd one its declared reads (`host_effects.hle_reads`, checked
+  a lifted callee its summary's inputs and must-writes, a replaced one (`PATCH_FUNC`) its declared operands and the
+  inputs of its guest callees (with `orig` its body's too; must-writes its result), an HLE'd one its declared reads (`host_effects.hle_reads`, checked
   against the host's IR by `tests/test_host_context_reads.py`; must-writes none); a return, which reads the record's
   results (the summary's: what its callers read after it), x19-x29, SP and v8-v15; a call taking the context, which
   reads every register unless the template that made it says which (`regs=0` on the runtime's monitor, counter and
@@ -181,30 +181,32 @@ exclusives' runtime calls cost nothing measurable.
   callee without a declaration or a full summary (no summary, demoted, setjmp owner, an HLE'd function declared
   clobbering) gets `bounds.unknown`: it reads and writes every register, keeps nothing and returns, so a callee no rule
   classifies costs speed, never correctness. Only a lifted callee whose summary proves it (demoted or not) is
-  noreturn; HLE'd, entry-hooked and setjmp-owner callees never are. A function with Value probes or At rows is lifted as any other: each row
+  noreturn; HLE'd, replaced (`PATCH_FUNC`) and setjmp-owner callees never are. A function with Value probes or At rows is lifted as any other: each row
   declares what it reads and writes, and the summaries count it beside its instruction, where it runs
   (`probes.row_effects`, `summary.rows`, below). What a call of a host callee keeps is its declared effect (the declarations' `reads(...)`,
   `guest(...)`, `clobbers(...)`, Hooks and probes; the rules in `nx2/lift2/host_effects.py`):
   - an HLE'd function keeps x19-x29 and SP unless its declaration says `clobbers("why")` (the three fiber
     functions: a context switch or a host fiber deleted; nine sdk NVN exports with no host proc, `HLE_EFFECTS` in
     `host/nvn_native.c`: not audited);
-  - an entry-hooked function keeps what its lifted body's full summary preserves (the hook declines and the body runs,
-    or the hook handled the call, writing no callee-saved register, or ran the body itself through `a64_lookup`), and
-    for a hook that calls other guest code what every callee in its `guest(...)` keeps too (the three mesh drawer
-    hooks, `host/direct_mesh_binds.c`; the render-target alloc and free, `host/rt_slots.c`, which call the free); a
-    body without a full summary keeps nothing;
+  - a function replaced by a typed host function (`PATCH_FUNC`, `bounds.func_bound`) has one record, from its
+    declaration: it reads its operands and the inputs of the guest functions its `guest(...)` names (`guest_call` puts
+    every register back, so they cost no kept register), writes the caller-saved registers and its result (on every
+    return), and keeps x19-x29 and SP (the verification build checks it through its `hchk_` stub, as an HLE'd callee);
+    with `orig` its lifted body may run in it, so the body's inputs and clobbers join the record and the body's kept
+    registers bound it; a body without a full summary makes the record unknown;
   - setjmp owners keep nothing.
   An `HLE_EFFECTS` of a function the image does not replace stops the build (`host_effects.check`). Every guest
-  function a hook or a row's host function enters, on any path through the host's own calls, is declared:
-  `tests/test_host_context_reads.py` follows the host's LLVM IR from each hook and row function to every
-  `hook_call_guest`, `guest_call`, `hos_call_guest`, `a64_icall`, `a64_ijump`, `f_<addr>` call and `hook_run` (constant
-  targets followed through arguments) and fails on a target missing from the hook's or the row's `guest(...)`. The default
+  function a replaced function's or a row's host function enters, on any path through the host's own calls, is
+  declared: `tests/test_host_context_reads.py` follows the host's LLVM IR from each adapter and row function to every
+  `guest_call`, `hos_call_guest`, `a64_icall`, `a64_ijump` and `f_<addr>` call (constant targets followed through
+  arguments) and fails on a target missing from its `guest(...)`; `orig` is not such an entry (its body's facts are in
+  the record). The default
   rests on an audit of the host's C (2026-11-15, its LLVM IR: stores into a context's x19-x31 and v8-v15, calls of
   guest code, fiber switches, through direct calls and signature-matched indirect ones): stores to x19-x31 are only in
-  thread and fiber setup, `hos_call_guest` (x30) and the guest calls of hooks and rows, which put every register back
-  (`host/hos_hostcall.c` `call_restoring`); no HLE'd function reaches one, a guest call or a switch except those
-  declared. What the host reads is declared too (`host_effects.HLE_ARGS` and `HOOK_ARGS`, plus each declaration's
-  `reads(...)`) and
+  thread and fiber setup, `hos_call_guest` (x30) and the guest calls of rows and replaced functions, which put every
+  register back (`host/hos_hostcall.c` `call_restoring`); no HLE'd function reaches one, a guest call or a switch except
+  those declared. What the host reads is declared too (`host_effects.HLE_ARGS` plus each declaration's `reads(...)`; a
+  replaced function's adapter reads its operands only) and
   checked against the host's IR by `tests/test_host_context_reads.py`, and the summaries count every declaration
   (Whole-program summaries, "The host's patches").
 - **B to another entry, or falling into one**: `musttail call void @f_<callee>(ptr %ctx)`; every function has the same
@@ -365,25 +367,34 @@ names its instruction word, so another game version stops the lift or the build.
   ```c
   PATCH_AT(0x8009a474, word(0x94ef225b), instead, none, hos_oot_calc_sleep, as(x0, ns), as(k(0x8009a478), lr)) { ... }
   PATCH_AT_SITE(0x8009afec, word(0x94ef1f7d), instead, none, hos_oot_calc_sleep, as(x0, ns), as(k(0x8009aff0), lr));
-  PATCH_HOOK(0x8005ed00, word(0xd503237f), reads(sp, "hook_call_guest on the call's stack"), guest(0x802737a0)) { ... }
-  PATCH_HOOK_SYM(memcpy) { ... }
+  PATCH_AT(0x802640a0, word(0xd503237f), before, none, rt_slots_shadow, as(x0, obj)) { shadow_obj = obj; }
+  PATCH_FUNC(0x8005ed00, word(0xd503237f), body(0xa0d86942ab307816), aapcs, x0, rt_slots_alloc,
+             orig, guest(0x802737a0), as(x0, dta), as(x1, ctx), as(x2, desc), as(x3, flags), as(x30, lr), sp) { ... }
+  PATCH_FUNC_SYM(strlen, aapcs, x0, hos_strlen, as(x0, s)) { return strlen((const char *)GP(s)); }
   HLE(_ZN2nn2os13SwitchToFiberEPNS0_9FiberTypeE, clobbers("context switch: ...")) { ... }
   NV(nvnMemoryPoolInitialize, reads(x29, "the frame-pointer chain's return addresses hashed into ...")) { ... }
   HLE_EFFECTS(nvnDevtoolsBootstrap, clobbers("no proc here: unimplemented, not audited"));
   ```
 
   - `PATCH_AT` / `PATCH_AT_SITE`: host code at an instruction (Value probes and At rows, below).
-  - `PATCH_HOOK(addr, word(W), effect...)` / `PATCH_HOOK_SYM(symbol, effect...)`: an entry hook. The function starts
-    with `entry_<addr>(ctx)` / `entry_sym_<symbol>(ctx)`; 1 returns at once (the hook did the call's work), 0 runs the
-    body. The hook's C never sees the context: `host/hos.h` (`ENTRY_HOOK_COUNTED`) hands it x0-x7 and x30 as plain
-    values (`HookArgs *a`) and an opaque `HookCall *h` through which alone it acts on the call: `hook_return` (x0),
-    `hook_set_arg` (x0-x7 before the body), `hook_run` (the lifted body now), `hook_call_guest` (guest code on the
-    call's stack, every register put back). It reads x0-x7 and x30 (`host_effects.HOOK_ARGS`) plus its `reads(...)`
-    (SP for the five that call guest code), and calls the guest functions its `guest(...)` names; a hook that runs the
-    body reads what the body reads. A BL to an entry-hooked function keeps what its body's summary (and its `guest`
-    callees') keeps. The build stops with the declaration's file:line on a hook of no lifted function, a symbol the
-    image does not export, or a function whose first word is not `W` (`patch_scan.check_hooks`). `HOS_DBG=hooks` logs
-    each hook's first call.
+  - `PATCH_AT` at a function's entry, mode `before`: host code that watches a call (reads its arguments, changes
+    no register): the counters, waits and notes at 16 entries.
+  - `PATCH_FUNC(addr, word(W), body(H), aapcs, result, fn, [orig,] [guest(A, ...),] operand...)` /
+    `PATCH_FUNC_SYM(symbol, aapcs, result, fn, ...)`: the function is replaced by `fn`, a C function of exactly the
+    operands it declares (x0-x8, w0-w8, s0-s7, q0-q7, x30 for the return address, sp) returning its result (none, x0,
+    w0, s0, q0). `f_<addr>` is a tail call of the adapter the macro makes, `hos_func_<key>(ctx)`, which reads the
+    operands from the context, calls `fn` and writes its result there (`game.FUNC_STUB`); the lifted body stays,
+    under `hos_orig_<key>`. With `orig` first, `fn` gets it as `GuestFn *orig` and may run it as `guest_orig(orig,
+    a0, ...)`: a0.. go to x0.. and the body runs on the call's context and stack, every other register as the call
+    had it (the caller stored all the body reads: the record has its inputs). The build stops when an `orig` body reads
+    an argument register (x0-x8) the declaration does not take, naming it; then the declaration lists it.
+    `guest(A, ...)`: `fn` calls those guest functions through `guest_call` (`GuestCall *g`, after `orig`), on the
+    call's stack, so `sp` is then an operand. A call of it has one record (Calls and returns), never the "may decline"
+    pair of the entry hooks this replaced. `W` is the first word and `H` `patch_scan.body_hash` (the first 64 bits of
+    the SHA-1 of the body's words): the build stops on another function there, no lifted function, or a symbol the
+    image does not export (`patch_scan.check_funcs`). No save or restore is left around `orig` (the body writes what
+    its summary says, which the callers reload); `guest_call` keeps `call_restoring`, which puts every register back,
+    as for rows, since guest code called from inside a host function must not change what the caller keeps.
   - `HLE(symbol, effect...)`: the function is replaced by `void imp_<symbol>(Ctx *c)`, hooked where the game imports
     it and at the SDK's definition (`nx2/standalone.py`, `a64_hooks.c`: `f_<addr>` is the host function; the guest body
     is not lifted). `PATCH_ANSWER(symbol, value, "why")`: the same, replaced by a constant answer in x0 (nothing else
@@ -396,18 +407,20 @@ names its instruction word, so another game version stops the lift or the build.
     effect...)`: the effects of a replaced function whose body is not declared here (a dispatch). A call reads the AAPCS
     arguments, x8, v0-v7, SP and x30 (`host_effects.HLE_ARGS`) plus its `reads(...)`, and keeps x19-x29 and SP unless
     it declares `clobbers("why")` (Calls and returns).
-  - effects: `reads(reg..., "why")` (xN, vN or sp, the reason a string), `guest(A, ...)` (hooks only), `clobbers("why")`
-    (HLE, NV, HLE_EFFECTS only), each at most once.
+  - effects: `reads(reg..., "why")` (xN, vN or sp, the reason a string), `clobbers("why")` (HLE, NV, HLE_EFFECTS
+    only), each at most once.
 
   The scan stops with file:line on: a declaration inside `#if`, inside a function or made by another macro (a
   `#define` whose body names a kind); a bare number where `word(...)` belongs; an unknown mode, result, register or
   effect; a reason that is not a string; a second `PATCH_AT` of one function, a `PATCH_AT_SITE` before or without its
-  `PATCH_AT` or of other types, a duplicate site; a second hook of one function; a symbol declared twice, or an
+  `PATCH_AT` or of other types, a duplicate site; a second `PATCH_FUNC` of one function or of one C function, an
+  operand or result outside its set, `orig` or `guest(...)` out of place, `guest(...)` without `sp`; a symbol declared
+  twice, or an
   `HLE_EFFECTS` or `PATCH_ANSWER` of a function `HLE` declares. The build compares the compiled host's records with the scan
   (`patch_scan.check_records`, `nx2/build.py`: count and text as tokens), so a declaration one of them sees and the
   other does not stops it. What the lift reads of the host's C is the set of `HLE` symbols (the functions it hooks:
   `standalone.implemented`, `nx2/lift_mark.py`); everything else is read by the build, so adding, changing or removing
-  a row, hook or effect needs no lift (the game boundary: Pipeline and files).
+  a row, replaced function or effect needs no lift (the game boundary: Pipeline and files).
 
   Value probes and At rows: `PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }` and, for each further site
   of the same function, `PATCH_AT_SITE(...)` (a further site whose operand types differ is a compile error). The
@@ -467,7 +480,7 @@ The patches a caller makes of its own call (no host function is told who called 
 | `f_802640a0` pass_local_shadow_depth | after `str w8, [sp, #0x38]` at 0x80264128 | its alloc of the local shadow map, whose size is a class (`host/rt_slots.c`) |
 | `f_806688c0`, `f_8028a2a0` | before their calls of `f_80681320` | the layer list drawing a recorded pass inline; the pass's key and draw context handed over (`host/direct_passes.c`) |
 
-`f_80365f00` (report_reader_a) marks its own run with an entry hook that runs its body, so the occlusion grid slots' invalidates
+`f_80365f00` (report_reader_a) marks its own run with a `PATCH_FUNC` that runs its body (orig), so the occlusion grid slots' invalidates
 inside it do not wait (`host/nvn_native.c` `readback_stamped`).
 
 - **The per-core rings** are an assertion, not a patch. The singleton at `**0x84c9e890` holds seven rings (ring k at
@@ -501,7 +514,8 @@ Every build has them: the lift writes the job's input beside the plan (`game.pla
 a SHA-1 of the image, the discovery's facts, the HLE'd functions' symbols, the code of
 `enc*`/`sem*`/`ir`/`bounds`/`build_ir`/`summary`/`probes`/`host_effects.py` (`game.source_key`: the syntax tree without
 comments and docstrings) and the patches' declared effects (`game.summary_effects`: every row's reads,
-writes, guest callees and replace; every entry hook's reads, writes and guest callees; every HLE'd function's summary).
+writes, guest callees and replace; every HLE'd function's summary; every `PATCH_FUNC`'s operands, result, `orig` and
+guest callees).
 A build whose patches declare other effects than the summaries in the plan count computes them again from the input,
 without a lift; a row whose effects are the same (its host function renamed, say) reruns nothing. The build's first
 step computes them before the lift workers and the
@@ -533,13 +547,13 @@ that runs inside it or in its callees:
     reads those functions' inputs there (a call-graph edge to each), and every register for `"computed"`.
   - A row in place of a BL or BLR (`replace`) makes that instruction no call: its reads are the rows', and it writes
     x30 and the rows' results.
-- An entry hook (`summary.ENTRY`, `entry_hooks`; the hooks as `patch_scan.entry_hooks` finds them at the build, not
-  from the lift): at the entry it reads `host_effects.hook_reads` (x0-x7 and x30, SP for the five hooks that call guest
-  code) and the inputs of the guest functions its `guest(...)` names; its
-  "return 1" path is a return that may write x0-x7 (`hook_return`, `hook_set_arg`), so the function returns (never
-  noreturn), writes nothing on every path (must-writes 0) and may write x0-x7. `hook_run` runs the function's own
-  body, whose facts the summary has. These reads are not the entry instruction's: x30 read by the hook is a label, not
-  the function's LR as data.
+- A replaced function (`summary.FUNCS`, `func_facts`, `func_summary`; the declarations as `patch_scan.funcs` finds them
+  at the build, not from the lift): its body keeps its own summary, unchanged by the replacement; a call of it has the
+  declaration's record: its operands and its guest callees' inputs read (a call-graph edge from the body to each, so
+  they come first), its result and x30 written on every return and nothing else, the callee-saved registers kept, and
+  it returns; with `orig`, the body's inputs, clobbers and preserved registers joined, x0-x8 written (`guest_orig`'s
+  arguments), and unknown if the body's facts are. What its callers read after it does not become its body's results
+  (`call_reads`): the body's only caller is `guest_orig`, which reads x0.
 - An HLE'd callee (`summary.host_summary`): AAPCS64 facts with the declared reads (`host_effects.hle_reads`:
   x0-x8, v0-v7, SP, x30 and its `reads(...)`); one declared `clobbers(...)` or without a known symbol reads every
   register. The lift's record of an HLE'd callee takes the same facts (`bounds.call_bounds`).
@@ -613,7 +627,7 @@ checks, the omitted stores and the patches in the summaries): zero violations in
 - **Caching**: a partition's object is kept in `work/objcache` by an input key: the lifter's code (`game.code_key`:
   every `nx2/lift2` source as `game.source_key` takes it, so comments are not in it; the patch declarations are in
   the host's C), the discovery's facts (`game.facts_key`: the plan as the lift wrote it, the summaries left out), the flags,
-  `HOOKSHOT_LIFT_VERIFY`, its functions, and for each its rows, its entry hook, its summary and the call-boundary record
+  `HOOKSHOT_LIFT_VERIFY`, its functions, and for each its rows, its `PATCH_FUNC`, its summary and the call-boundary record
   of every function it may branch, call or fall to (`game.part_key`, `game.branch_targets`). The code pointer translation
   (`code_ptrs.targets`, `code_ptrs.sites`) reads only the plan (`code_excluded`, the bodies, the jump tables) and its
   own code, both in the key; the count of sites a partition translated is kept beside its object under the same key
@@ -666,7 +680,7 @@ tree shows the constraint is needed; the experiment named decides it.
 
 1. **Context traffic.** Write-through of every register before calls and exits, and a reload after every BLR and
    SVC, and after a BL of every register but the callee's preserved x19-x29 and SP (all of them after a callee
-   without a full summary, an HLE'd function declared clobbering, an entry-hooked function whose body has no full
+   without a full summary, an HLE'd function declared clobbering, a `PATCH_FUNC` with `orig` whose body has no full
    summary, a setjmp owner). About 31-33 % of code bytes on the sample were context accesses
    (`disp(%reg)`) at 860eb332, before the preserved registers stayed in SSA; not measured again. Since `captures(none)`
    on the declarations and `game.DSE_FLAGS`, a store overwritten before anything reads the context is dropped. What
@@ -677,8 +691,8 @@ tree shows the constraint is needed; the experiment named decides it.
    dead at a BL whose callee does not read them, not a result at a return); the stores kept only for a BLR, SVC,
    unknown callee or exit, and the callee-saved registers a callee only saves, remain
    ([lifter-optimisations.md](lifter-optimisations.md), C).
-   *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs, entry
-   hooks (`emit_llvm.emit_function`: x0-x7, x30 and the hook's `reads(...)`), `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
+   *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs (a
+   replaced function's declared operands: its adapter reads them from the context), `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
    `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts, HLE'd functions (they read their arguments
    from the context); the reloads after callees the summaries do not cover and the host callees listed above.
    Elsewhere unproven.
@@ -690,7 +704,7 @@ tree shows the constraint is needed; the experiment named decides it.
    (`[sp+0x48]` in `f_8007fe60`, `[sp+0x10]` in `f_806688c0`, `[sp+192]` in `f_8005ed00`), so a promotion sees them as
    guest loads. The host still reads frames through x29: `pool_creation_key` (`host/nvn_native.c`, the return
    addresses of a pool's creation hashed into its placement key; `NV(nvnMemoryPoolInitialize, reads(x29, ...))`), the NVN logs' chain walks
-   and the stall dump (diagnostics); and the guest calls of rows and hooks (`guest_call`, `hook_call_guest`) run below
+   and the stall dump (diagnostics); and the guest calls of rows and replaced functions (`guest_call`) run below
    the SP they are given (`host/direct_mesh_system.c` builds a 0x100-byte block there). Those must keep x29 chains. For every other function unproven: unwinding is not a reason (throws are
    fatal). The experiment is the pair deletion for full-summary functions with a verification run.
 3. **Host-stack spills.** 5.8 % of code bytes on the sample (size-weighted) are spills to the host stack. Cause not

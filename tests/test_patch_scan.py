@@ -2,10 +2,12 @@
 
 - The scan: comments, strings, line continuations and nested parentheses; the errors (inside #if, inside a function,
   made by another macro, a bare word, an unknown mode / result / operand, a second PATCH_AT, a further site of another
-  type, a duplicate site), each with file:line. The hooks (PATCH_HOOK, PATCH_HOOK_SYM) and the replaced functions (HLE,
-  NV, HLE_EFFECTS, PATCH_ANSWER) with their effects (reads, guest, clobbers), their errors, and a hook's checks against a plan.
+  type, a duplicate site), each with file:line. The replaced functions: PATCH_FUNC / PATCH_FUNC_SYM (orig, guest,
+  operands, result, their errors, their checks against a plan: word, body hash, export, an orig body's argument
+  registers) and HLE, NV, HLE_EFFECTS, PATCH_ANSWER with their effects (reads, clobbers).
 - The macros: a declaration compiles to its function's prototype (a body written against it compiles; a further site
-  whose operands are other types does not) and to a record; the build's cross-check passes for the same text and stops
+  whose operands are other types does not) and to a record; a PATCH_FUNC's adapter reads its operands from the context,
+  writes its result there, and its orig runs the lifted body with the arguments given; the build's cross-check passes for the same text and stops
   for a record the scan did not see.
 - The host's own declarations: scanned without an error; the rows they make.
 No game is used.
@@ -36,16 +38,41 @@ PATCH_AT(0x4004, word(0xd503201f), after, none, t_io, io(w1, x2, q3)) { io->w1 =
 '''
 
 
-HOOKS = r'''PATCH_HOOK(0x80001000, word(0xd503237f), reads(sp, "hook_call_guest"), guest(0x80003000, 0x80004000)) {
-    return 0;
+FUNCS = r'''PATCH_FUNC(0x80001000, word(0xd503237f), body(0x1234), aapcs, x0, t_alloc,
+           orig, guest(0x80003000, 0x80004000), as(x0, dta), as(w3, flags), as(x30, lr), sp) {
+    (void)g; (void)lr; (void)sp;
+    return flags ? dta : guest_orig(orig, dta, 0, 0, flags);
 }
-PATCH_HOOK(0x80002000, word(0xd503237f)) { return hook_return(h, a->x[0]); }
-PATCH_HOOK_SYM(memcpy) { (void)a; (void)h; return 0; }
+PATCH_FUNC(0x80002000, word(0xd503237f), body(0x5678), aapcs, none, t_watch, x1) { (void)x1; }
+PATCH_FUNC_SYM(strlen, aapcs, x0, t_strlen, as(x0, s)) { return s + 1; }
 HLE(nn_a) { c->x[0] = 1; }
 HLE(nn_b, clobbers("a context switch")) {}
 NV(nvnFoo, reads(x29, x19, "a log label")) { (void)c; (void)u_; }
 HLE_EFFECTS(nvnBar, clobbers("not audited"));
 PATCH_ANSWER(nn_c, 0x2a, "the answer the game needs");
+'''
+
+# (a program running FUNCS' adapters on a context of its own, with stand-ins for the lifted bodies)
+ADAPTER_MAIN = r'''
+static uint64_t seen[3];
+void hos_orig_0x80001000(Ctx *c) { seen[0] = c->x[0], seen[1] = c->x[3], seen[2] = c->x[5]; c->x[0] = 77; }
+void hos_orig_0x80002000(Ctx *c) { (void)c; }
+void hos_orig_sym_strlen(Ctx *c) { (void)c; }
+int main(void) {
+    static Ctx c;
+    c.x[0] = 5, c.x[3] = 1ull << 32, c.x[5] = 9, c.x[31] = 0x1000;
+    hos_func_0x80001000(&c);   /* (flags, w3, is 0: orig runs with x0 = 5, x3 = 0, x5 the call's) */
+    if (c.x[0] != 77 || seen[0] != 5 || seen[1] != 0 || seen[2] != 9) return 1;
+    c.x[0] = 5, c.x[3] = 1;
+    hos_func_0x80001000(&c);   /* (flags 1: x0 = dta, no orig) */
+    if (c.x[0] != 5) return 2;
+    c.x[0] = 41;
+    hos_func_sym_strlen(&c);
+    if (c.x[0] != 42) return 3;
+    c.x[0] = 3;
+    hos_func_0x80002000(&c);   /* (result none: x0 as it was) */
+    return c.x[0] == 3 ? 0 : 4;
+}
 '''
 
 
@@ -105,18 +132,21 @@ class Scan(unittest.TestCase):
                     patch_scan.scan(files(*texts))
                 self.assertIn(what, str(e.exception))
 
-    def test_hooks_and_replaced(self):
-        ps = patch_scan.scan_text(HOOKS)
-        h = {x.name: x for x in ps.hooks}
-        self.assertEqual(sorted(h), ["entry_0x80001000", "entry_0x80002000", "entry_sym_memcpy"])
-        self.assertEqual((h["entry_0x80001000"].addr, h["entry_0x80001000"].word, h["entry_0x80001000"].reads,
-                          h["entry_0x80001000"].guest), (0x80001000, 0xd503237f, ("sp",), (0x80003000, 0x80004000)))
-        self.assertEqual((h["entry_0x80002000"].reads, h["entry_0x80002000"].guest), ((), ()))
-        self.assertEqual((h["entry_sym_memcpy"].symbol, h["entry_sym_memcpy"].addr), ("memcpy", None))
-        self.assertEqual(h["entry_0x80001000"].where, ("t.c", 1))
+    def test_funcs_and_replaced(self):
+        ps = patch_scan.scan_text(FUNCS)
+        f = {x.fn: x for x in ps.funcs}
+        self.assertEqual(sorted(f), ["t_alloc", "t_strlen", "t_watch"])
+        a = f["t_alloc"]
+        self.assertEqual((a.addr, a.word, a.body, a.orig, a.guest, a.args, a.result, a.name, a.orig_name, a.where),
+                         (0x80001000, 0xd503237f, 0x1234, True, (0x80003000, 0x80004000), ["x0", "w3", "x30", "sp"], "x0",
+                          "hos_func_0x80001000", "hos_orig_0x80001000", ("t.c", 1)))
+        self.assertEqual(a.reads(), {"x0", "x3", "x30", "sp"})
+        self.assertEqual((f["t_watch"].orig, f["t_watch"].result), (False, None))
+        self.assertEqual((f["t_strlen"].symbol, f["t_strlen"].addr, f["t_strlen"].name),
+                         ("strlen", None, "hos_func_sym_strlen"))
         self.assertEqual(sorted(ps.hle_symbols()), ["nn_a", "nn_b", "nn_c"])
         self.assertEqual((ps.answers["nn_c"].value, ps.answers["nn_c"].why, ps.answers["nn_c"].where),
-                         (0x2a, '"the answer the game needs"', ("t.c", 10)))
+                         (0x2a, '"the answer the game needs"', ("t.c", 12)))
         self.assertIsNone(ps.effects("nn_c"))
         self.assertEqual((ps.effects("nn_a").reads, ps.effects("nn_a").clobbers), ((), None))
         self.assertEqual(ps.effects("nn_b").clobbers, '"a context switch"')
@@ -124,16 +154,24 @@ class Scan(unittest.TestCase):
         self.assertEqual(ps.effects("nvnBar").clobbers, '"not audited"')
         self.assertIsNone(ps.effects("nn_none"))
 
-    def test_hook_errors(self):
+    def test_func_errors(self):
+        F = "PATCH_FUNC(0x10, word(1), body(2), aapcs, %s) {}"
         for text, what in (
-                ("PATCH_HOOK(0x10, 0xd503237f) { return 0; }", "first word is written word(0x...)"),
-                ("PATCH_HOOK(0x10, word(1), reads(sp)) { return 0; }", 'reads(reg..., "why")'),
-                ("PATCH_HOOK(0x10, word(1), reads(y1, \"w\")) { return 0; }", "reads: xN, vN or sp, not y1"),
-                ("PATCH_HOOK(0x10, word(1), clobbers(\"w\")) { return 0; }", "an effect: reads(...) or guest(...)"),
-                ("PATCH_HOOK(0x10, word(1), guest(computed)) { return 0; }", "names the guest functions"),
-                ("PATCH_HOOK(0x10, word(1), guest(1), guest(2)) { return 0; }", "guest(...) twice"),
-                ("PATCH_HOOK(0x10, word(1)) { return 0; }\nPATCH_HOOK_SYM(f) { return 0; }\n"
-                 "PATCH_HOOK(0x10, word(1)) { return 0; }", "t.c:3: a second hook of entry_0x10 (the first at t.c:1)"),
+                ("PATCH_FUNC(0x10, 0xd503237f, body(1), aapcs, x0, f) {}", "first word is written word(0x...)"),
+                ("PATCH_FUNC(0x10, word(1), 0x55, aapcs, x0, f) {}", "body hash is written body(0x...)"),
+                ("PATCH_FUNC(0x10, word(1), body(2), ctx, x0, f) {}", "abi: aapcs, not ctx"),
+                (F % "x1, f", "a function's result: none, x0, w0, s0, q0, not x1"),
+                (F % "x0, f, x9", "a function's operand: x0-x8, w0-w8, s0-s7, q0-q7, x30 or sp, not x9"),
+                (F % "x0, f, ld(sp, 8)", "not [sp+8]"),
+                (F % "x0, f, x0, orig", "t.c:1: orig comes first"),
+                (F % "x0, f, x0, guest(0x20), sp", "guest(...) comes first"),
+                (F % "x0, f, guest(0x20), x0", "sp is an operand"),
+                (F % "x0, f, guest(computed), sp", "names the guest functions it calls"),
+                (F % "x0, f, io(x1)", "io(...) is a PATCH_AT's"),
+                ("PATCH_FUNC_SYM(memcpy) {}", "PATCH_FUNC_SYM(symbol, aapcs, result, fn, operand...)"),
+                ((F % "x0, f") + "\n" + (F % "x0, g"), "t.c:2: a second declaration of hos_func_0x10 (the first at t.c:1)"),
+                ((F % "x0, f") + "\nPATCH_FUNC(0x20, word(1), body(2), aapcs, x0, f) {}",
+                 "t.c:2: f replaces a second function (the first at t.c:1)"),
                 ("HLE(f, guest(1)) {}", "an effect: reads(...) or clobbers(...)"),
                 ("HLE(f, clobbers(why)) {}", 'clobbers("why")'),
                 ("HLE(f) {}\nHLE(f) {}", "t.c:2: f declared again (the first at t.c:1)"),
@@ -152,34 +190,49 @@ class Scan(unittest.TestCase):
                 patch_scan.scan_text(text)
             self.assertIn(what, str(e.exception), text)
 
-    def test_hooks_in_a_plan(self):
+    def test_funcs_in_a_plan(self):
         import json
         from array import array
-        ps = patch_scan.scan_text(HOOKS)
+        from lift2 import summary
+        words = [0xd503237f, 0xd65f03c0]
+        h = "body(%#x)" % patch_scan.body_hash(words)
+        ps = patch_scan.scan_text(FUNCS.replace("body(0x1234)", h).replace("body(0x5678)", h))
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "image"))
             with open(os.path.join(d, "image", "image.json"), "w") as f:
-                json.dump({"exports": {"memcpy": 0x80005000}}, f)
+                json.dump({"exports": {"strlen": 0x80005000}}, f)
             gen = os.path.join(d, "gen")
-            plan = {"bodies": {a: (array("Q", [a, a + 4]), array("I", [0xd503237f, 0])) for a in
+            plan = {"bodies": {a: (array("Q", [a, a + 4]), array("I", words)) for a in
                                (0x80001000, 0x80002000, 0x80005000)}}
-            self.assertEqual(patch_scan.check_hooks(plan, gen, ps), {0x80001000: "entry_0x80001000",
-                                                                     0x80002000: "entry_0x80002000",
-                                                                     0x80005000: "entry_sym_memcpy"})
+            got = patch_scan.check_funcs(plan, gen, ps)
+            self.assertEqual({a: f.fn for a, f in got.items()}, {0x80001000: "t_alloc", 0x80002000: "t_watch",
+                                                                 0x80005000: "t_strlen"})
+            # (orig's body reading argument registers the declaration does not take: x1, x2, x8)
+            ins = sum(summary.BIT[r] for r in ("x0", "x1", "x2", "x3", "x8", "x19", "sp"))
+            plan["summaries"] = {0x80001000: (ins,)}
+            with self.assertRaises(SystemExit) as e:
+                patch_scan.check_funcs(plan, gen, ps)
+            self.assertIn("t.c:1: PATCH_FUNC at 0x80001000: its body reads x1, x2, x8, which the declaration does not "
+                          "take", str(e.exception))
+            del plan["summaries"]
+            plan["bodies"][0x80002000][1][1] = 0xd503201f
+            with self.assertRaises(SystemExit) as e:
+                patch_scan.check_funcs(plan, gen, ps)
+            self.assertIn("t.c:6: PATCH_FUNC at 0x80002000: the function's body is body(", str(e.exception))
             plan["bodies"][0x80002000][1][0] = 0xd503201f
             with self.assertRaises(SystemExit) as e:
-                patch_scan.check_hooks(plan, gen, ps)
-            self.assertIn("t.c:4: PATCH_HOOK at 0x80002000: the function's first word is 0xd503201f, not 0xd503237f",
+                patch_scan.check_funcs(plan, gen, ps)
+            self.assertIn("t.c:6: PATCH_FUNC at 0x80002000: the function's first word is 0xd503201f, not 0xd503237f",
                           str(e.exception))
             del plan["bodies"][0x80002000]
             with self.assertRaises(SystemExit) as e:
-                patch_scan.check_hooks(plan, gen, ps)
-            self.assertIn("t.c:4: PATCH_HOOK at 0x80002000: no lifted function there", str(e.exception))
+                patch_scan.check_funcs(plan, gen, ps)
+            self.assertIn("t.c:6: PATCH_FUNC at 0x80002000: no lifted function there", str(e.exception))
             with open(os.path.join(d, "image", "image.json"), "w") as f:
                 json.dump({"exports": {}}, f)
             with self.assertRaises(SystemExit) as e:
-                patch_scan.check_hooks(plan, gen, ps)
-            self.assertIn("t.c:5: PATCH_HOOK_SYM: the image exports no memcpy", str(e.exception))
+                patch_scan.check_funcs(plan, gen, ps)
+            self.assertIn("t.c:7: PATCH_FUNC_SYM: the image exports no strlen", str(e.exception))
 
     def test_containing(self):
         from array import array
@@ -190,15 +243,9 @@ class Scan(unittest.TestCase):
                                                                              0x400: []})
 
 
-# (host/hos.h's hook form, as the macros of host/patch.h use it)
-HOOK_FORM = r'''typedef struct { uint64_t x[32]; } Ctx;
-typedef struct { uint64_t x[8]; uint64_t lr; } HookArgs;
-typedef struct HookCall HookCall;
-int hook_return(HookCall *h, uint64_t x0);
-#define ENTRY_HOOK_COUNTED(name, body) \
-    static int body(const HookArgs *a, HookCall *h); \
-    int name(Ctx *c) { const HookArgs a_ = {{c->x[0]}, c->x[30]}; return body(&a_, (HookCall *)c); } \
-    static int body(const HookArgs *a, HookCall *h)
+# (what host/patch.h takes from host/hos.h and rt/a64.h)
+CTX_FORM = r'''typedef struct GuestContext { uint64_t x[32]; uint64_t vreg[32][2]; } Ctx;
+#define A64_NOESC
 '''
 
 
@@ -208,7 +255,7 @@ class Macros(unittest.TestCase):
         src = os.path.join(d, name)
         with open(src, "w") as f:
             f.write('#include <stdint.h>\ntypedef struct GuestCall GuestCall;\n'
-                    'typedef uint64_t hos_q __attribute__((vector_size(16)));\n' + HOOK_FORM +
+                    'typedef uint64_t hos_q __attribute__((vector_size(16)));\n' + CTX_FORM +
                     '#include "patch.h"\n' + text)
         obj = src[:-2] + ".o"
         r = subprocess.run(["clang", "-c", "-O1", "-Wall", "-Werror", "-Wno-unused-variable", "-I",
@@ -231,27 +278,40 @@ class Macros(unittest.TestCase):
                 patch_scan.check_records([obj, obj2], [src])
             self.assertIn("compiled only", str(e.exception))
 
-    def test_hooks_and_replaced(self):
+    def test_funcs_and_replaced(self):
         with tempfile.TemporaryDirectory() as d:
-            r, obj, src = self.compile(d, HOOKS + "void use(Ctx *c) { n_nvnFoo(c, 0); }\n")
+            r, obj, src = self.compile(d, FUNCS + "void use(Ctx *c) { n_nvnFoo(c, 0); }\n")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("declarations: 8,", patch_scan.check_records([obj], [src]))
             nm = subprocess.run(["nm", obj], capture_output=True, text=True).stdout.split()
-            for name in ("entry_0x80001000", "entry_0x80002000", "entry_sym_memcpy", "imp_nn_a", "imp_nn_b", "imp_nn_c"):
+            for name in ("hos_func_0x80001000", "hos_func_0x80002000", "hos_func_sym_strlen", "imp_nn_a", "imp_nn_b"):
                 self.assertIn(name, nm)
+
+    def test_adapter(self):
+        """the adapter reads the operands from the context and writes the result; orig runs the body with the
+        arguments given in x0.. and the call's other registers"""
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "a.c")
+            with open(src, "w") as f:
+                f.write('#include <stdint.h>\ntypedef struct GuestCall GuestCall;\n'
+                        'typedef uint64_t hos_q __attribute__((vector_size(16)));\n' + CTX_FORM +
+                        '#include "patch.h"\n' + FUNCS.split("HLE(")[0] + ADAPTER_MAIN)
+            exe = os.path.join(d, "a")
+            r = subprocess.run(["clang", "-O1", "-Wall", "-Werror", "-I", os.path.join(ROOT, "host"), src, "-o", exe],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(subprocess.run([exe]).returncode, 0)
 
 
 class Host(unittest.TestCase):
-    def test_hooks_and_replaced(self):
+    def test_funcs_and_replaced(self):
         ps = patch_scan.patches()
-        self.assertGreater(len(ps.hooks), 30)
+        self.assertGreater(len(ps.funcs), 20)
         self.assertGreater(len(ps.hle), 400)
         self.assertGreater(len(ps.nv), 400)
-        self.assertGreater(len(ps.answers), 60)
-        for a in ps.answers.values():
-            self.assertTrue(a.where[0].startswith("host/"), a.where)
-        for h in ps.hooks:
-            self.assertEqual(h.addr is None, h.word is None, h.where)
+        for f in ps.funcs:
+            self.assertEqual(f.addr is None, f.word is None, f.where)
+            self.assertEqual(f.addr is None, f.body is None, f.where)
 
     def test_declarations(self):
         values, ats = probes.tables()

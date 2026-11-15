@@ -51,7 +51,7 @@ class Table(unittest.TestCase):
             self.assertTrue(p.where[0].startswith("host/") and p.where[1] > 0, p.where)
 
     def test_word_checked(self):
-        first = probes.AT[0]
+        first = next(q for q in probes.AT if not q.before and not q.replace)
         rows = [probes.At(0x80000000, q.pc, q.word, q.fn, q.args, q.result, q.before, q.io, q.guest, q.replace)
                 for q in probes.AT if q.fn == first.fn and not q.before and not q.replace]
         words = {q.pc: q.word for q in rows}

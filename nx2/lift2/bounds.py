@@ -48,17 +48,18 @@ def verified(plan, e):
     return e in plan.get("bodies", {}) and s is not None and not s[6] and not s[7]
 
 
-def call_bounds(plan, hooks, hle, verify=False):
+def call_bounds(plan, hle, verify=False, funcs=None):
     """bound(callee) -> Bound, memoised. plan: the build's plan (summaries, HLE'd functions as "hooks", setjmp owners
-    as "sj_rets"); hooks: {address: entry hook C name}; hle: {address: HLE symbol} (host_effects.hle_names); verify:
+    as "sj_rets"); hle: {address: HLE symbol} (host_effects.hle_names); verify:
     HOOKSHOT_LIFT_VERIFY (a BL to a clean HLE'd function goes through its hchk_ stub, a tail call of a checked
-    function to its body)."""
+    function to its body); funcs: {address: patch_scan.Func} (PATCH_FUNCs)."""
     summ = plan.get("summaries", {})
+    funcs = funcs or {}
     sj = plan.get("sj_rets", {})
     hle_set = set(plan.get("hooks", ()))
     memo = {}
 
-    def make(c):
+    def make(c, body=False):
         sym = "f_%08x" % c
         tail = "body_%08x" % c if verify and verified(plan, c) else sym
         if c in sj:   # (hos_sj_call through a per-owner stub, host/hos_setjmp.c)
@@ -73,17 +74,8 @@ def call_bounds(plan, hooks, hle, verify=False):
             h = summary.host_summary(name)
             return Bound("HLE", h.inputs, h.clobbers, KEEP_ALL, 0, summary.ABI_RESULTS, False,
                          "hchk_%08x" % c if verify else sym, tail)
-        if c in hooks:
-            # (the function's summary counts its hook: summary.ENTRY. A BL keeps what the body and the guest code the
-            # hook calls (its guest(...)) all preserve)
-            s = summ.get(c)
-            keeps = KEEP_ALL
-            for g in (c,) + host_effects.hook_calls(hooks[c]):
-                sg = summ.get(g)
-                keeps = keeps & sg[3] if full(sg) else 0
-            if not full(s) or not keeps:
-                return unknown("entry hook, body not proven", sym, tail)
-            return Bound("entry hook", s[0], s[1], keeps, s[2], s[4], False, sym, tail)
+        if c in funcs and not body:
+            return func_bound(funcs, summ, c, "hchk_%08x" % c if verify else sym, sym)
         s = summ.get(c)
         if s is None:
             return unknown("no summary", sym, tail)
@@ -98,7 +90,43 @@ def call_bounds(plan, hooks, hle, verify=False):
         if b is None:
             b = memo[c] = make(c)
         return b
+
+    def own(c):
+        """the record of c's lifted body itself (a PATCH_FUNC's body: what its orig call reads and keeps)"""
+        return make(c, True) if c in funcs else bound(c)
+    bound.own = own
     return bound
+
+
+def func_bound(funcs, summ, c, sym, tail, _seen=()):
+    """the record of a function replaced by a PATCH_FUNC (host/patch.h), from its declaration: it reads its operands and
+    what the guest functions it calls read (guest_call puts every register back), writes its result and nothing else
+    of the context (its adapter writes the result; the host function takes values), keeps x19-x29 and SP (the
+    verification build checks it as an HLE'd callee); with orig, its lifted body may run: the body's record joins it
+    with x0-x8 (guest_orig's arguments), and a body without a full summary makes it unknown (summary.func_summary is
+    the same rule)"""
+    f = funcs[c]
+    reads = mask(f.reads())
+    for g in f.guest:
+        if g in funcs:   # (a replaced function: what its record reads; a cycle of them once)
+            if g not in _seen and g != c:
+                reads |= func_bound(funcs, summ, g, sym, tail, _seen + (c,)).reads
+            continue
+        sg = summ.get(g)
+        reads |= sg[0] if sg is not None and not sg[7] else ALL
+    result = summary.BIT[probes_var(f.result)] if f.result else 0
+    clobbers, keeps = summary.X[30] | result, KEEP_ALL
+    if f.orig:
+        s = summ.get(c)
+        if not full(s):
+            return unknown("PATCH_FUNC with orig, body not proven", sym, tail)
+        reads, clobbers, keeps = reads | s[0], clobbers | s[1] | summary.ORIG_ARGS, keeps & s[3]
+    return Bound("PATCH_FUNC", reads, clobbers, keeps, summary.X[30] | result, result, False, sym, tail)
+
+
+def probes_var(r):
+    from . import probes
+    return probes._var(r)
 
 
 # the reasons call_report gives a site that keeps nothing, by its record's kind
@@ -121,7 +149,7 @@ def call_report(plan, bound, chosen):
             if b.keeps:
                 why["kept"] += 1
                 kept += bin(b.keeps).count("1")
-                host += b.kind in ("HLE", "entry hook")
+                host += b.kind in ("HLE", "PATCH_FUNC")
             else:
                 why[REPORT.get(b.kind, b.kind)] += 1
     return ("calls: %d direct sites, %d keep registers across the call (%.1f a site of x19-x29, SP; %d of them to host "

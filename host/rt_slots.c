@@ -16,12 +16,12 @@
    own registration compare at alloc never hits on its own: the entry it picks has no registration. Parking, below,
    keeps the entry with its target, so the ~42 initializations a frame drop to ~2.)
 
-     PATCH_HOOK(0x8005ed00)       DTA::alloc(dta, ctx, desc, flags): note lr/name/shape for this thread (flags bit 0:
-                                  transient); the first call shrinks the arenas. Returns 0 (the lifted body runs).
+     PATCH_FUNC(0x8005ed00)       DTA::alloc(dta, ctx, desc, flags): note lr/name/shape for this thread (flags bit 0:
+                                  transient); the first call shrinks the arenas; the game's alloc (orig) runs.
      At rows in f_8005ed00 (a PATCH_AT declaration, host/patch.h) after the two lines (0x8005fb74, 0x80061814) that store block
                                   +0x38 = the aligned offset: x23 block, x10 offset, x8 the block's pool, the alignment
                                   in the frame at [sp + 192]. Both (x10 and block +0x38) are rewritten to the slot.
-     PATCH_HOOK(0x802737a0)       DTA::free(dta, entry): the slot of entry +0xc0's block is free again.
+     PATCH_FUNC(0x802737a0)       DTA::free(dta, entry): the slot of entry +0xc0's block is free again.
 
    Persistent allocations (f_80062c50, from the top of the free block) do not set the note and are left to the game.
    Any mismatch (arenas not fresh, a pool smaller than the slot range, an arena offset inside it, a second pool record)
@@ -334,13 +334,13 @@ static uint64_t call_mutex(void (*f)(Ctx *), uint64_t m, uint64_t lr) {
 static int holds(uint64_t m, uint64_t lr) {
     return call_mutex(imp__ZN2nn2os28IsMutexLockedByCurrentThreadEPKNS0_9MutexTypeE, m, lr) != 0;
 }
-static void release_now(HookCall *h, uint64_t lr, uint64_t dta, uint64_t entry) {
+static void release_now(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64_t entry) {
     releasing = 1;
-    hook_call_guest(h, CODE_PTR(f_802737a0), dta, entry, 0, 0, 0);
+    guest_call(g, sp, CODE_PTR(f_802737a0), dta, entry, 0, 0, 0);
     releasing = 0;
     if (check_on()) check_arenas("after the release of", lr, dta, entry);
 }
-static void sweep(HookCall *h, uint64_t lr, uint64_t dta) {
+static void sweep(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta) {
     const uint64_t f = frame;
     if (__atomic_load_n(&last_sweep, __ATOMIC_RELAXED) == f) return;
     if (holds(dta + 0x29e8, lr) || holds(dta + 0x2a08, lr)) return;
@@ -362,7 +362,7 @@ static void sweep(HookCall *h, uint64_t lr, uint64_t dta) {
         nparked = k;
     }
     ReleaseSRWLockExclusive(&mu);
-    for (int i = 0; i < ngo; i++) release_now(h, lr, go[i][0], go[i][1]);
+    for (int i = 0; i < ngo; i++) release_now(g, sp, lr, go[i][0], go[i][1]);
     if (ngo) __atomic_add_fetch(&n.released, (uint64_t)ngo, __ATOMIC_RELAXED);
 }
 
@@ -457,47 +457,38 @@ static void check_arenas(const char *what, uint64_t lr, uint64_t dta, uint64_t e
     }
     call_mutex(imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE, dta + 0x2a08, lr);
 }
-static int alloc_pre(const HookArgs *a, HookCall *h);
+static int alloc_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64_t desc, uint64_t flags, uint64_t *entry);
 static _Thread_local uint64_t shadow_obj;   /* (f_802640a0's shadow object, for the alloc it makes) */
 static uint32_t shadow_size(uint64_t obj, uint32_t w);
 static void alloc_gave(uint64_t entry);
-static _Thread_local int in_alloc;
-/* The alloc's body runs from here, so the entry it gives is seen (alloc_gave) */
-PATCH_HOOK(0x8005ed00, word(0xd503237f),
-           reads(sp, "hook_call_guest on the call's stack"),
-           guest(0x802737a0)) {   /* (dta, ctx, desc, flags) */
-    if (in_alloc) return in_alloc = 0, 0;   /* (the lifted body, called below: the flag is taken by its first entry, so a nested call is hooked as any) */
-    const int handled = alloc_pre(a, h);
-    if (off_()) return handled;
-    if (!handled) {
-        static A64Fn body;
-        if (!body) body = f_8005ed00;
-        if (!body) return 0;
-        in_alloc = 1;
-        hook_run(h, body);
-        in_alloc = 0;
-    }
-    alloc_gave(hook_result(h));
-    return 1;
+/* DTA::alloc(dta, ctx, desc, flags): the alloc's body (orig) runs from here, so the entry it gives is seen (alloc_gave) */
+PATCH_FUNC(0x8005ed00, word(0xd503237f), body(0xa0d86942ab307816), aapcs, x0, rt_slots_alloc,
+           orig, guest(0x802737a0), as(x0, dta), as(x1, ctx), as(x2, desc), as(x3, flags), x4, x5, x6, x7, as(x30, lr), sp) {
+    uint64_t e = 0;
+    const int handled = alloc_pre(g, sp, lr, dta, desc, flags, &e);
+    const int off = off_();
+    if (!handled) e = guest_orig(orig, dta, ctx, desc, flags, x4, x5, x6, x7);
+    if (!off) alloc_gave(e);
+    return e;
 }
-static int alloc_pre(const HookArgs *a, HookCall *h) {
+static int alloc_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64_t desc, uint64_t flags, uint64_t *entry) {
     const int local_shadow = tl_local_shadow;
     tl_local_shadow = 0;
     if (off_()) return 0;
     alloc_sp = 0;   /* (M6f: the splice of this call sets it) */
-    dta_seen = a->x[0];
+    dta_seen = dta;
     __atomic_add_fetch(&n.calls, 1, __ATOMIC_RELAXED);
     if (cur.valid) __atomic_add_fetch(&n.stale, 1, __ATOMIC_RELAXED);   /* the last transient call never reached the splice */
     cur.valid = 0;
     if (state < 0) {
         AcquireSRWLockExclusive(&mu);
-        if (state < 0) shrink_arenas(a->x[0]);
+        if (state < 0) shrink_arenas(dta);
         ReleaseSRWLockExclusive(&mu);
     }
-    if (check_on()) check_arenas("alloc", a->lr, a->x[0], 0);
-    if (!(a->x[3] & 1)) return 0;   /* persistent: the game's */
+    if (check_on()) check_arenas("alloc", lr, dta, 0);
+    if (!(flags & 1)) return 0;   /* persistent: the game's */
     __atomic_add_fetch(&n.transient, 1, __ATOMIC_RELAXED);
-    const uint64_t d = a->x[2];
+    const uint64_t d = desc;
     if (state != 1 || !hos_guest_range(d, 0x38)) return 0;
     if (local_shadow && shadow_classes_on()) {   /* (the descriptor is the caller's, on its stack, read only here) */
         const uint32_t w = G32(d + 0x10), h = G32(d + 0x14);
@@ -515,16 +506,16 @@ static int alloc_pre(const HookArgs *a, HookCall *h) {
         }
         shadow_obj = 0;
     }
-    Cur k = {a->lr, G64(d), a->x[0], G32(d + 8), G32(d + 0xc), G32(d + 0x10), G32(d + 0x14), G32(d + 0x18),
-             G32(d + 0x1c), G32(d + 0x30), (uint32_t)a->x[3], {0}, 1, local_shadow};
+    Cur k = {lr, G64(d), dta, G32(d + 8), G32(d + 0xc), G32(d + 0x10), G32(d + 0x14), G32(d + 0x18),
+             G32(d + 0x1c), G32(d + 0x30), (uint32_t)flags, {0}, 1, local_shadow};
     memcpy(k.desc, GP(d), sizeof k.desc);
     if (park_on()) {
         uint64_t drain = 0;
         const uint64_t e = unpark(&k, &drain);
         if (drain) {   /* its arena is tight: back to the game now (this thread holds neither DTA mutex at an alloc's
                           entry, as sweep checks), the caller's own lane allocates below */
-            if (!holds(a->x[0] + 0x29e8, a->lr) && !holds(a->x[0] + 0x2a08, a->lr)) {
-                release_now(h, a->lr, a->x[0], drain);
+            if (!holds(dta + 0x29e8, lr) && !holds(dta + 0x2a08, lr)) {
+                release_now(g, sp, lr, dta, drain);
                 __atomic_add_fetch(&n.released, 1, __ATOMIC_RELAXED);
             } else {   /* (not expected) parked again: the sweep releases it */
                 AcquireSRWLockExclusive(&mu);
@@ -533,7 +524,7 @@ static int alloc_pre(const HookArgs *a, HookCall *h) {
             }
         }
         if (e) {   /* the same target as last frame: its entry, whole */
-            return hook_return(h, e);
+            return *entry = e, 1;
         }
     }
     cur = k;
@@ -831,11 +822,8 @@ static uint32_t class_of(uint32_t w) {
 #define LS_TAB 2048
 static struct { uint64_t obj; uint32_t cls; } ls_tab[LS_TAB];
 static SRWLOCK ls_lock = SRWLOCK_INIT;
-/* (shadow object = light + 0x100, ctx, flags): noted; the lifted body runs */
-PATCH_HOOK(0x802640a0, word(0xd503237f)) {
-    shadow_obj = a->x[0];
-    return 0;
-}
+/* (shadow object = light + 0x100, ctx, flags): noted */
+PATCH_AT(0x802640a0, word(0xd503237f), before, none, rt_slots_shadow, as(x0, obj)) { shadow_obj = obj; }
 /* the size a light's map gets for the size w it wants */
 static uint32_t shadow_size(uint64_t obj, uint32_t w) {
     uint32_t want = class_of(w);
@@ -861,13 +849,16 @@ static uint32_t shadow_size(uint64_t obj, uint32_t w) {
     return want;
 }
 
-PATCH_HOOK(0x802737a0, word(0xd503237f),
-           reads(sp, "hook_call_guest on the call's stack"),
-           guest(0x802737a0)) {   /* (dta, entry) */
+static int free_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64_t e);
+/* DTA::free(dta, entry): the game's free (orig) unless the entry is parked or has no block */
+PATCH_FUNC(0x802737a0, word(0xd503237f), body(0x2ec356fee2c2fb11), aapcs, none, rt_slots_free,
+           orig, guest(0x802737a0), as(x0, dta), as(x1, e), x2, x3, x4, x5, x6, x7, x8, as(x30, lr), sp) {
+    if (!free_pre(g, sp, lr, dta, e)) guest_orig(orig, dta, e, x2, x3, x4, x5, x6, x7, x8);
+}
+static int free_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64_t e) {
     if (off_()) return 0;
-    const uint64_t e = a->x[1];
     if (!hos_guest_range(e, 0x180)) return 0;
-    if (check_on()) check_arenas("free of", a->lr, a->x[0], e);
+    if (check_on()) check_arenas("free of", lr, dta, e);
     const uint64_t block = G64(e + ENT_BLOCK);
     if (!block && (*(uint8_t *)GP(e + 0xba) & 3)) {
         /* an entry the game's alloc gave no block (its arena was full): its free would read block 0 and link a node at
@@ -875,18 +866,18 @@ PATCH_HOOK(0x802737a0, word(0xd503237f),
         static volatile LONG told;
         if (InterlockedIncrement(&told) <= 10)
             hos_log("rt slots: free of entry %#llx without a block (an arena ran out), skipped; lr %#llx",
-                    (unsigned long long)e, (unsigned long long)a->lr);
+                    (unsigned long long)e, (unsigned long long)lr);
         __atomic_add_fetch(&n.blockless, 1, __ATOMIC_RELAXED);
         return 1;
     }
-    if (park_on() && !releasing) sweep(h, a->lr, a->x[0]);
+    if (park_on() && !releasing) sweep(g, sp, lr, dta);
     int park = 0;
     AcquireSRWLockExclusive(&mu);
     n.frees++;
     if (block)
         for (int i = 0; i < nslots; i++)
             if (slots[i].block == block) {
-                if (park_on() && !releasing && state == 1 && slots[i].key.valid && slots[i].key.dta == a->x[0] &&
+                if (park_on() && !releasing && state == 1 && slots[i].key.valid && slots[i].key.dta == dta &&
                     !G64(block + 0x88)) {   /* (not a block with an on-free delegate, +0x78..+0x90) */
                     if (nparked < MAX_PARKED) {   /* kept whole: the slot stays with the block */
                         parked[nparked++] = (Parked){slots[i].key, e, block, frame};

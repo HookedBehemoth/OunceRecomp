@@ -69,7 +69,7 @@ key forced down this path would confirm it by its pictures. The recorder also ha
 
 ## 4. Recommended mechanism
 
-1. **Recorder entry** (`PATCH_HOOK(0x80084de0)`, which `host/eng_jobs.c` already has). Look up `formats[x3]`:
+1. **Recorder entry** (`PATCH_FUNC(0x80084de0)`, which `host/eng_jobs.c` already has). Look up `formats[x3]`:
    - on a hit, record the secondary with those formats (`VkCommandBufferInheritanceRenderingInfo`, samples 1);
    - on a miss, take the native early return (`0x8008693c`): no view record and no slot for that key this frame.
 2. **Job-call splice**, before the handles are called: `f_806688c0` at `0x80668a9c` (record found; key = `[sp+0x18]-0xc0`)
@@ -96,7 +96,7 @@ skipped and no job runs against the wrong formats.
 Replace "pass table keyed by (view record, key word 0), filled by earlier frames; skip on a miss" with a table keyed by the
 **key pointer**. Fill it at the two job-call sites from the layer list's own targets. Use the game's inline path
 (`f_80681320`) for a miss, so a key not yet seen and a format change are recorded inline on the layer-list thread rather
-than skipped. The game patch is two splices plus the existing recorder entry hook. Moving target allocation before the kick
+than skipped. The game patch is two splices plus the existing recorder `PATCH_FUNC`. Moving target allocation before the kick
 is not needed. M0 still owes:
 
 - (a) one run forcing every key inline, to confirm by pictures that `f_80681320` is complete;

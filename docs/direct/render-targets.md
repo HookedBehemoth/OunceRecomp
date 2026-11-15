@@ -32,7 +32,7 @@ levels, `+0x30` flags. Flag bit 0 of the fourth argument marks a transient targe
 `dta_free`); without it the target is persistent. The agl format indexes the game's table at `0x83f4848c` (u32 NVN format
 per agl format, 0x5f entries; `host/rt_slots.c:538-553`).
 
-The host already hooks the allocator: `host/rt_slots.c:461` (`PATCH_HOOK(0x8005ed00)`) and `alloc_pre`
+The host already hooks the allocator: `host/rt_slots.c:461` (`PATCH_FUNC(0x8005ed00)`) and `alloc_pre`
 (`host/rt_slots.c:476`) read the descriptor, and for local shadow maps rewrite its width and height before the lifted body
 runs (`host/rt_slots.c:493-500`, the shadow size classes). The pool's slots and the back end's transient pool are in
 [transient-pool.md](transient-pool.md).
@@ -339,7 +339,7 @@ inputs pass), the host and patch side a few hundred.
 
 - **Sun cascades.** Data first: a romfs overlay of `gsys/ModelSceneConfigParam/Main.gsys__ModelSceneConfigParam.bgyml`
   with `DepthShadowTexWidth`/`Height` (and the cascade count and splits). If the overlay is not general enough, an
-  `PATCH_HOOK(0x80669460)` (`pass_sun_shadow_alloc`) that writes `+0x70` / `+0x90` of its object once. Check that the
+  `PATCH_FUNC(0x80669460)` (`pass_sun_shadow_alloc`) that writes `+0x70` / `+0x90` of its object once. Check that the
   cascades' viewport and the shaders' texel size come from the target, and scale `DepthShadowPcfOffset` with the side.
 - **Local lights.** `alloc_pre` already rewrites the descriptor for `LR_LOCAL_SHADOW` (`host/rt_slots.c:493`); multiply the
   side there by `local_shadow_scale` and clamp (4096). The pass reads the target's width for its viewport, so nothing

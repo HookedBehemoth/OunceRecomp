@@ -64,14 +64,16 @@ static _Thread_local ZSTD_DCtx *tl_dctx;
 static int64_t st_files, st_bytes, st_streams;
 
 /* ZSTD_decompressMultiFrame: a whole file at once */
-PATCH_HOOK(0x8010b380, word(0xd503237f)) {
-    const uint64_t dst = a->x[1], cap = a->x[2], src = a->x[3], n = a->x[4], dict = a->x[5], dict_size = a->x[6], ddict = a->x[7];
-    if (!hos_guest_range(dst, cap) || !hos_guest_range(src, n) || (dict && !hos_guest_range(dict, dict_size))) return 0;
-    if (!tl_dctx && !(tl_dctx = ZSTD_createDCtx())) return 0;
+/* (the game's own decoder, orig, for a range outside the guest window, a dictionary the host cannot make or no context) */
+PATCH_FUNC(0x8010b380, word(0xd503237f), body(0xdc941c9180e8aa10), aapcs, x0, zstd_multi_frame,
+           orig, as(x0, dctx), as(x1, dst), as(x2, cap), as(x3, src), as(x4, n), as(x5, dict), as(x6, dict_size), as(x7, ddict)) {
+    if (!hos_guest_range(dst, cap) || !hos_guest_range(src, n) || (dict && !hos_guest_range(dict, dict_size)))
+        return guest_orig(orig, dctx, dst, cap, src, n, dict, dict_size, ddict);
+    if (!tl_dctx && !(tl_dctx = ZSTD_createDCtx())) return guest_orig(orig, dctx, dst, cap, src, n, dict, dict_size, ddict);
     size_t r;
     if (ddict) {
         ZSTD_DDict *d = host_ddict(ddict);
-        if (!d) return 0;
+        if (!d) return guest_orig(orig, dctx, dst, cap, src, n, dict, dict_size, ddict);
         r = ZSTD_decompress_usingDDict(tl_dctx, GP(dst), (size_t)cap, GP(src), (size_t)n, d);
     } else {
         r = ZSTD_decompress_usingDict(tl_dctx, GP(dst), (size_t)cap, GP(src), (size_t)n, dict ? GP(dict) : NULL, (size_t)dict_size);
@@ -86,7 +88,7 @@ PATCH_HOOK(0x8010b380, word(0xd503237f)) {
         if (told++ < 8) hos_log("zstd: a file failed: %s (src %#llx+%llu, dst %llu)", ZSTD_getErrorName(r),
                                 (unsigned long long)src, (unsigned long long)n, (unsigned long long)cap);
     }
-    return hook_return(h, r);
+    return r;
 }
 
 /* ---- ParallelDecompThread's streaming jobs ---- */
@@ -109,20 +111,21 @@ static ZSTD_DCtx *job_dctx(uint64_t job) {
 #define J32(o) (*(uint32_t *)GP(job + (o)))
 #define J64(o) (*(uint64_t *)GP(job + (o)))
 
-PATCH_HOOK(0x80115c80, word(0xd503237f)) {
-    const uint64_t job = a->x[0], chunk = a->x[1], ddict = a->x[3];
-    const uint32_t n = (uint32_t)a->x[2];
-    if (!hos_guest_range(job, 64) || !hos_guest_range(chunk, n)) return 0;
+/* (the game's own, orig, for a range outside the guest window or no context) */
+PATCH_FUNC(0x80115c80, word(0xd503237f), body(0x299adba873d14d12), aapcs, x0, zstd_stream_chunk,
+           orig, as(x0, job), as(x1, chunk), x2, as(x3, ddict), x4, x5, x6, x7) {
+    const uint32_t n = (uint32_t)x2;
+    if (!hos_guest_range(job, 64) || !hos_guest_range(chunk, n)) return guest_orig(orig, job, chunk, x2, ddict, x4, x5, x6, x7);
     const uint8_t state = J8(0);
-    if (state == 3) return hook_return(h, 0xffffffffu);
-    if (state == 4) return hook_return(h, 0xfffffffdu);
+    if (state == 3) return 0xffffffffu;
+    if (state == 4) return 0xfffffffdu;
     ZSTD_DCtx *d = job_dctx(job);
-    if (!d) return 0;
+    if (!d) return guest_orig(orig, job, chunk, x2, ddict, x4, x5, x6, x7);
     if (state == 1) {   /* (the frame's header is in the first chunk) */
         const unsigned long long size = ZSTD_getFrameContentSize(GP(chunk), n);
         if (size == ZSTD_CONTENTSIZE_ERROR || size == ZSTD_CONTENTSIZE_UNKNOWN) {
             J8(0) = 3;
-            return hook_return(h, 0xffffffffu);
+            return 0xffffffffu;
         }
         ZSTD_DCtx_reset(d, ZSTD_reset_session_only);
         ZSTD_DCtx_refDDict(d, host_ddict(ddict));
@@ -132,7 +135,7 @@ PATCH_HOOK(0x80115c80, word(0xd503237f)) {
     }
     const uint64_t out = J64(8);
     const int32_t room = (int32_t)J32(16);
-    if (room < 0 || !hos_guest_range(out, (uint64_t)room)) return 0;
+    if (room < 0 || !hos_guest_range(out, (uint64_t)room)) return guest_orig(orig, job, chunk, x2, ddict, x4, x5, x6, x7);
     ZSTD_inBuffer in = {GP(chunk), n, 0};
     ZSTD_outBuffer o = {GP(out), (size_t)room, 0};
     size_t r = 1;
@@ -151,9 +154,9 @@ PATCH_HOOK(0x80115c80, word(0xd503237f)) {
         J8(0) = 3;
         static int told;
         if (told++ < 8) hos_log("zstd: a stream failed: %s", ZSTD_getErrorName(r));
-        return hook_return(h, ZSTD_getErrorCode(r) == ZSTD_error_dstSize_tooSmall ? 0xfffffffeu : 0xffffffffu);
+        return ZSTD_getErrorCode(r) == ZSTD_error_dstSize_tooSmall ? 0xfffffffeu : 0xffffffffu;
     }
     if (r == 0) J8(0) = 4;   /* (the frame is whole) */
-    return hook_return(h, J32(20));
+    return J32(20);
 }
 

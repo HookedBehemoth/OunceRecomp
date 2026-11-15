@@ -15,7 +15,8 @@ summary job's memory (several GB).
 report: every declaration with its local cost: the registers it reads and writes beyond its instruction's own, whether
 its function's record changes without it, and how many call sites keep other registers because of it.
 
---plan: the plan (default <work>/sa/plan.pickle); its gen/ beside it gives the HLE'd functions and the hooks' symbols.
+--plan: the plan (default <work>/sa/plan.pickle); its gen/ beside it gives the HLE'd functions and the replaced
+functions' symbols.
 Nothing is written beside the plan.
 """
 import argparse
@@ -63,7 +64,7 @@ class Lazy(dict):
 
 class Plan:
     """the plan and what the tools derive from it: the program (entries, jump tables, PLT), the HLE'd functions'
-    summaries, the entry hooks of the declarations, the call-boundary records"""
+    summaries, the replaced functions of the declarations (PATCH_FUNC), the call-boundary records"""
     def __init__(self, plan, gen, labels=None, ps=None):
         self.plan, self.gen, self.labels = plan, gen, labels or {}
         self.ps = ps or patch_scan.patches()
@@ -72,10 +73,10 @@ class Plan:
         self.prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=self.callee, plt=plt)
         self.hle = dict(plan.get("hle") or {})
         self.hle_c = host_effects.hle_names(gen) or self.hle
-        self.hooks = patch_scan.entry_hooks(gen, self.ps)[0]
-        self.host = summary.patched(summary.host_summaries(self.hle), self.hooks)
+        self.funcs = patch_scan.funcs(gen, self.ps)[0]
+        self.host = summary.patched(summary.host_summaries(self.hle), summary.func_facts(self.funcs))
         self.sums = Lazy(plan.get("summaries") or {})
-        self.bound = bounds.call_bounds(plan, self.hooks, self.hle_c)
+        self.bound = bounds.call_bounds(plan, self.hle_c, False, self.funcs)
         self._funcs, self._callers = {}, None
         summary._ROWS = None
 
@@ -92,7 +93,7 @@ class Plan:
         return words[list(pcs).index(pc)]
 
     def func(self, e):
-        """summary.Func of the function at e, with the declarations' rows and entry hook"""
+        """summary.Func of the function at e, with the declarations' rows"""
         fn = self._funcs.get(e)
         if fn is None:
             pcs, words = self.plan["bodies"][e]
@@ -270,9 +271,9 @@ def site(P, pc, out=print):
         out("record of %s (%s summary, %d BL sites): %s" % (P.name(e), "full" if bounds.full(P.plan["summaries"].get(e))
                                                               else "no full", n, record(b)))
     body = set(fn.pcs)
-    near = [d for d in P.ps.sites if d.pc in body] + [h for h in P.ps.hooks if h.name == P.hooks.get(e)]
+    near = [d for d in P.ps.sites if d.pc in body] + [f for f in P.ps.funcs if P.funcs.get(e) is f]
     for d in near:
-        if isinstance(d, patch_scan.Hook):
+        if isinstance(d, patch_scan.Func):
             out("declared: %s:%d %s of %s" % (d.where[0], d.where[1], d.kind, P.name(e)))
         else:
             out("declared: %s:%d %s %#x %s %s%s" % (d.where[0], d.where[1], d.kind, d.pc, d.mode, d.fn,
@@ -290,12 +291,15 @@ def site(P, pc, out=print):
     out("/* generates: %s */" % proto)
     out("/* the build's checks: %s */" % ("; ".join(errs) if errs else "it passes"))
     if pc == e:
-        out("/* or, at the function's entry: */")
-        out("PATCH_HOOK(%#x, word(%#010x)) {" % (pc, w))
-        out("    return 0;   /* 1: handled (hook_return(h, v)); 0: the function runs */")
+        pcs, words = P.plan["bodies"][e]
+        args = [r for r in patch_scan.ORIG_ARGS if s is not None and s.inputs & summary.BIT[r]]
+        out("/* or, the function replaced (orig: its body, callable; operands: the argument registers it reads) */")
+        out("PATCH_FUNC(%#x, word(%#010x), body(%#018x), aapcs, x0, my_fn, orig%s) {" % (
+            pc, w, patch_scan.body_hash(list(words)), "".join(", " + r for r in args)))
+        out("    return guest_orig(orig%s);" % "".join(", " + r for r in args))
         out("}")
-        out("/* generates: int entry_%#x(Ctx *c), its body static int entry_body_%#x(const HookArgs *a, HookCall *h) */"
-            % (pc, pc))
+        out("/* generates: static uint64_t my_fn(GuestFn *orig%s), called by hos_func_%#x(Ctx *) */" % (
+            "".join(", uint64_t " + r for r in args), pc))
 
 
 # ---- check
@@ -320,7 +324,7 @@ def errors(P, only=None):
         w = dict(zip(pcs, words))
         for m in probes.errors(p, w, w.__getitem__, plan["jt"], P.prog.entries):
             out.append((p.where, m))
-    for where, m in patch_scan.hook_errors(plan, P.gen, P.ps):
+    for where, m in patch_scan.func_errors(plan, P.gen, P.ps):
         if only is None or where == only:
             out.append((where, m))
     for where, m in host_effects.errors(P.hle_c):
@@ -330,7 +334,7 @@ def errors(P, only=None):
 
 
 def find_decl(ps, where):
-    for d in list(ps.sites) + list(ps.hooks) + list(ps.hle.values()) + list(ps.nv.values()) + list(ps.declared.values()):
+    for d in list(ps.sites) + list(ps.funcs) + list(ps.hle.values()) + list(ps.nv.values()) + list(ps.declared.values()):
         if d.where == where:
             return d
     return None
@@ -339,9 +343,9 @@ def find_decl(ps, where):
 def without(ps, where):
     """the PatchSet without the declaration at where"""
     keep = lambda d: d.where != where
-    return patch_scan.PatchSet([s for s in ps.sites if keep(s)], [h for h in ps.hooks if keep(h)],
+    return patch_scan.PatchSet([s for s in ps.sites if keep(s)],
                                [r for r in list(ps.hle.values()) + list(ps.nv.values()) + list(ps.declared.values())
-                                if keep(r)])
+                                if keep(r)], [f for f in ps.funcs if keep(f)], [a for a in ps.answers.values() if keep(a)])
 
 
 def with_text(text, name="<stdin>"):
@@ -358,8 +362,7 @@ def job(arg):
     patch_scan.use(a["ps"])
     probes._SET = None
     summary._ROWS = None
-    entry = patch_scan.entry_hooks(a["gen"], a["ps"])[0]
-    summary.job(a["inp"], a["out"], a["jobs"], entry)
+    summary.job(a["inp"], a["out"], a["jobs"], summary.func_facts(patch_scan.funcs(a["gen"], a["ps"])[0]))
 
 
 def summaries(plan, gen, ps, tmp, jobs):
@@ -378,7 +381,7 @@ def summaries(plan, gen, ps, tmp, jobs):
     return {e: summary.pack(s) for e, s in sums.items()}, edges
 
 
-def diff(P, before, after, hooks_before, hooks_after, edges, ps_after, out=print, top=20):
+def diff(P, before, after, funcs_before, funcs_after, edges, ps_after, out=print, top=20):
     """the difference of two summary sets: functions whose record fields change, demotions, call sites whose kept
     registers change"""
     fields = (("inputs", 0), ("clobbers", 1), ("must", 2), ("results", 4))
@@ -407,12 +410,12 @@ def diff(P, before, after, hooks_before, hooks_after, edges, ps_after, out=print
     calls = collections.Counter(c for ed in edges.values() for kind, c in ed if kind == "call" and c is not None)
     pa = dict(P.plan, summaries=before)
     pb = dict(P.plan, summaries=after)
-    ba = bounds.call_bounds(pa, hooks_before, P.hle_c)
+    ba = bounds.call_bounds(pa, P.hle_c, False, funcs_before)
     old = patch_scan.use(ps_after)
     try:
-        bb = bounds.call_bounds(pb, hooks_after, P.hle_c)
+        bb = bounds.call_bounds(pb, P.hle_c, False, funcs_after)
         sites = funcs = 0
-        for c in set(e for e, _ in rows) | set(hooks_before) ^ set(hooks_after):
+        for c in set(e for e, _ in rows) | set(funcs_before) ^ set(funcs_after):
             if ba(c).keeps != bb(c).keeps or ba(c).reads != bb(c).reads:
                 sites += calls[c]
                 funcs += 1
@@ -436,7 +439,7 @@ def cost(P, plan_path, ps_before, ps_after, jobs, out=print):
         try:
             probes._SET = None
             summary._ROWS = None
-            eff = game.summary_effects(patch_scan.entry_hooks(P.gen, ps)[0], P.plan["hle"])
+            eff = game.summary_effects(P.plan["hle"], summary.func_facts(patch_scan.funcs(P.gen, ps)[0]))
         finally:
             patch_scan.use(old)
             probes._SET = None
@@ -453,8 +456,8 @@ def cost(P, plan_path, ps_before, ps_after, jobs, out=print):
     edges = sides[1][1] or sides[0][1]
     if edges is None:
         raise SystemExit("patch: both sides are the plan's summaries: the declaration changes no summary input")
-    return diff(P, sides[0][0], sides[1][0], patch_scan.entry_hooks(P.gen, ps_before)[0],
-                patch_scan.entry_hooks(P.gen, ps_after)[0], edges, ps_after, out)
+    return diff(P, sides[0][0], sides[1][0], patch_scan.funcs(P.gen, ps_before)[0],
+                patch_scan.funcs(P.gen, ps_after)[0], edges, ps_after, out)
 
 
 # ---- report
@@ -464,8 +467,7 @@ def local(P, e, ps):
     try:
         probes._SET = None
         summary._ROWS = None
-        hooks = patch_scan.entry_hooks(P.gen, ps)[0]
-        host = summary.patched(summary.host_summaries(P.hle), hooks)
+        host = summary.patched(summary.host_summaries(P.hle), summary.func_facts(patch_scan.funcs(P.gen, ps)[0]))
         pcs, words = P.plan["bodies"][e]
         fn = summary.Func(e, list(pcs), list(words), P.prog, host)
         s = summary.analyse(fn, P.sums, host)
@@ -474,7 +476,7 @@ def local(P, e, ps):
         patch_scan.use(old)
         probes._SET = None
         summary._ROWS = None
-        summary.patched(summary.host_summaries(P.hle), P.hooks)
+        summary.patched(summary.host_summaries(P.hle), summary.func_facts(P.funcs))
 
 
 def kept(key):
@@ -518,20 +520,16 @@ def report(P, out=print):
                       P.name(e), "reads %s, writes %s beyond the instruction; record: %s" % (
                           regs(extra_r) if extra_r else "-", regs(extra_w) if extra_w else "-",
                           "; ".join(what) or "the same without it")))
-    for hk in ps.hooks:
-        e = next((a for a, n in P.hooks.items() if n == hk.name), None)
+    for f in ps.funcs:   # (a replaced function: its record against its lifted body's own)
+        e = next((a for a, g in P.funcs.items() if g is f), None)
         if e is None or e not in P.plan["bodies"]:
-            lines.append((0, 0, 0, hk.where, hk.kind, hk.symbol or "%#x" % hk.addr, "?", "no lifted function: check"))
+            lines.append((0, 0, 0, f.where, f.kind, f.symbol or "%#x" % f.addr, "?", "no lifted function: check"))
             continue
-        with_h = local(P, e, ps)
-        alone = local(P, e, without(ps, hk.where))
-        what = ["%s %s" % (n, regs(with_h[k] ^ alone[k])) for n, k in (("inputs", 0), ("clobbers", 1), ("must", 2))
-                if with_h[k] != alone[k]]
-        b = P.bound(e)
-        n = calls[e] if (b.keeps, b.reads) != kept(alone) else 0
-        lines.append((n, len(what), 0, hk.where, hk.kind, "%#x" % e, P.name(e),
-                      "record %s, keeps %s at %d BL sites; summary without the hook: %s" % (
-                          b.kind, regs(b.keeps), calls[e], "; ".join(what) or "the same")))
+        b, own = P.bound(e), P.bound.own(e)
+        n = calls[e] if (b.keeps, b.reads) != (own.keeps, own.reads) else 0
+        lines.append((n, 0, len(f.args), f.where, f.kind, "%#x" % e, P.name(e),
+                      "record %s reads %s, keeps %s at %d BL sites; the body's own: %s reads %s, keeps %s" % (
+                          b.kind, regs(b.reads), regs(b.keeps), calls[e], own.kind, regs(own.reads), regs(own.keeps))))
     by_sym = collections.defaultdict(list)
     for a, s in P.hle_c.items():
         by_sym[s].append(a)
@@ -593,7 +591,7 @@ def main(argv=None):
         txt = sys.stdin.read()
         after = with_text(txt)
         P = Plan(plan, gen, labels, after)
-        new = [d for d in list(after.sites) + list(after.hooks) + list(after.hle.values()) + list(after.nv.values())
+        new = [d for d in list(after.sites) + list(after.funcs) + list(after.hle.values()) + list(after.nv.values())
                + list(after.declared.values()) if d.where[0] == "<stdin>"]
         errs = [x for d in new for x in errors(P, d.where)]
         for where, m in errs:
@@ -613,7 +611,7 @@ def main(argv=None):
     errs = errors(P, only)
     for where, m in errs:
         print("%s:%d: %s" % (where[0], where[1], m))
-    n = len(ps.sites) + len(ps.hooks) + len(ps.hle) + len(ps.nv) + len(ps.declared) if only is None else 1
+    n = len(ps.sites) + len(ps.funcs) + len(ps.hle) + len(ps.nv) + len(ps.declared) if only is None else 1
     print("%d declarations checked against the plan, %d errors%s" % (
         n, len(errs), "" if only else "; a guest function a host function calls without declaring it is not "
         "checkable here (tests/test_host_context_reads.py compiles the host for that)"))

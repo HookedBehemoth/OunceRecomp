@@ -6,7 +6,7 @@
    f_82c02bc0 (the culled-instance drawer) binds names 4 and 5 itself: f_801a2d70(ctx, item, 4, o + 0x1b0, 0) and
    f_801a6a40(ctx, item, 5, o + 0xd70, 0), o = [[param_1 + 0x18] + 0x338], ctx = [[item] + 0x28], when [o + 0xd40] == 1.
    f_801a43e0, f_801a46a0 and f_801a6720 draw the same culled lists and bind neither (on the console they read the
-   values f_82c02bc0 left from an earlier job of the pass). Each is hooked at its entry: the two binds are made first, as
+   values f_82c02bc0 left from an earlier job of the pass). Each has a row at its entry (PATCH_AT before): the two binds are made first, as
    f_82c02bc0 makes them, then the drawer's body runs. A binder binds nothing when the item's program has no slot for the
    name (its name table's four bytes 0xff), so a program that does not read the names is not changed.
 
@@ -22,32 +22,31 @@ enum { D_43E0, D_46A0, D_6720, D_N };
 static const char *const names[D_N] = {"f_801a43e0", "f_801a46a0", "f_801a6720"};
 static struct { volatile LONG64 calls, bound, inactive; } n[D_N];
 
-static int drawer(const HookArgs *a, HookCall *h, int which) {
-    if (!rx_direct()) return 0;
-    const uint64_t p1 = a->x[0], item = a->x[1];
+static void drawer(GuestCall *g, uint64_t sp, uint64_t p1, uint64_t item, int which) {
+    if (!rx_direct()) return;
     InterlockedIncrement64(&n[which].calls);
-    if (!hos_guest_range(p1 + 0x18, 8) || !hos_guest_range(G64(p1 + 0x18) + 0x338, 8) || !hos_guest_range(item, 8)) return 0;
+    if (!hos_guest_range(p1 + 0x18, 8) || !hos_guest_range(G64(p1 + 0x18) + 0x338, 8) || !hos_guest_range(item, 8)) return;
     const uint64_t o = G64(G64(p1 + 0x18) + 0x338);
     if (!o || !hos_guest_range(o + 0xd40, 1) || *(const uint8_t *)GP(o + 0xd40) != 1) {
         InterlockedIncrement64(&n[which].inactive);
-        return 0;
+        return;
     }
     const uint64_t ctx = hos_guest_range(G64(item) + 0x28, 8) ? G64(G64(item) + 0x28) : 0;
-    if (!ctx) return 0;
-    hook_call_guest(h, CODE_PTR(f_801a2d70), ctx, item, 4, o + 0x1b0, 0);   /* (the drawer's registers as they were after each) */
-    hook_call_guest(h, CODE_PTR(f_801a6a40), ctx, item, 5, o + 0xd70, 0);
+    if (!ctx) return;
+    guest_call(g, sp, CODE_PTR(f_801a2d70), ctx, item, 4, o + 0x1b0, 0);   /* (the drawer's registers as they were after each) */
+    guest_call(g, sp, CODE_PTR(f_801a6a40), ctx, item, 5, o + 0xd70, 0);
     InterlockedIncrement64(&n[which].bound);
-    return 0;
 }
-PATCH_HOOK(0x801a43e0, word(0xd503237f),
-           reads(sp, "hook_call_guest on the call's stack"),
-           guest(0x801a2d70, 0x801a6a40)) { return drawer(a, h, D_43E0); }
-PATCH_HOOK(0x801a46a0, word(0xd503237f),
-           reads(sp, "hook_call_guest on the call's stack"),
-           guest(0x801a2d70, 0x801a6a40)) { return drawer(a, h, D_46A0); }
-PATCH_HOOK(0x801a6720, word(0xd503237f),
-           reads(sp, "hook_call_guest on the call's stack"),
-           guest(0x801a2d70, 0x801a6a40)) { return drawer(a, h, D_6720); }
+/* (at each drawer's entry, on the call's stack: the binds, then its body) */
+PATCH_AT(0x801a43e0, word(0xd503237f), before, none, direct_mesh_binds_43e0, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
+    drawer(g, sp, x0, x1, D_43E0);
+}
+PATCH_AT(0x801a46a0, word(0xd503237f), before, none, direct_mesh_binds_46a0, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
+    drawer(g, sp, x0, x1, D_46A0);
+}
+PATCH_AT(0x801a6720, word(0xd503237f), before, none, direct_mesh_binds_6720, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
+    drawer(g, sp, x0, x1, D_6720);
+}
 
 void direct_mesh_binds_log(double frames) {
     static LONG64 last[D_N][3];

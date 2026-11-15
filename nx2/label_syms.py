@@ -4,7 +4,7 @@ The game description's label file (games/<game>/labels.txt, nx2/gamedesc.py) lis
 build: the description's identity). After the
 link, the executable's symbol f_<address> becomes <label>.f_<address>: the label first (a profiler's column shows it),
 the address kept (unique, and every tool that looks for f_<address> still finds it). Only the symbol table changes:
-the generated C, the hooks (PATCH_HOOK(0x...)), the linker map and the loaded bytes are as before, so a label costs
+the generated C, the patches (PATCH_FUNC(0x...)), the linker map and the loaded bytes are as before, so a label costs
 no rebuild beyond the 1 s rewrite of the executable.
 
 The list holds descriptions, not the game's names: lower case, digits and underscores, each used once.

@@ -62,14 +62,13 @@ static int msg_group_of(const char *name) {
     ReleaseSRWLockExclusive(&msg_lock);
     return i;
 }
-PATCH_HOOK(0x834a3060, word(0xd503237f)) {
-    if (!hos_bench_on() || (uint32_t)a->x[1]) return 0;
+PATCH_AT(0x834a3060, word(0xd503237f), before, none, bench_msg_taken, w1) {
+    if (!hos_bench_on() || w1) return;
     if (msg_group < 0) {
         HosThread *t = hos_self();
         msg_group = msg_group_of(t ? hos_thread_name(t) : "host");
     }
     if (msg_group < MSG_GROUPS) __atomic_add_fetch(&msg_count[msg_group], 1, __ATOMIC_RELAXED);
-    return 0;
 }
 /* The resource system's work in a frame: messages its loading threads took since the last call, past the one a frame that
    Resource Control and Resource Memory take in play. In play these are quiet but for BaseProcCreateAndDelete's few every 4 s

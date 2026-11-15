@@ -13,7 +13,7 @@ inside a component until nothing changes):
   X1, V0-V3, for callers the program cannot see);
 - returns (not noreturn), frame size, whether the frame's address is taken, the callee-saved save/restore pairs
   that a fast entry could delete, whether a generic-only boundary is reachable (BLR, unresolved BR, SVC, a host
-  function or hook), FP use (writes FPCR; uses FP/NEON instructions).
+  function or a replaced one), FP use (writes FPCR; uses FP/NEON instructions).
 
 Demotion, by detection, to the generic entry only (`DEMOTE` reasons):
 - sp: SP not tracked to a constant offset, or not back at its entry value at a return;
@@ -145,17 +145,52 @@ def rows():
     return _ROWS
 
 
-# ---- the host's code at a function's entry (PATCH_HOOK) and HLE'd functions (nx2/lift2/host_effects.py)
-ENTRY = {}   # entry -> (what the hook reads, what it may write, the guest functions it calls): summarise() sets it
+# ---- functions replaced by host functions: PATCH_FUNC (host/patch.h) and HLE'd functions (nx2/lift2/host_effects.py)
+FUNCS = {}   # entry -> (what the function reads, its result, orig, the guest functions it calls): PATCH_FUNCs
 
 
-def entry_hooks(hooks):
-    """{entry: (reads, may-writes, guest calls)} of the entry hooks ({entry: hook C name}): the hook reads its declared
-    registers (host_effects.hook_reads) at the entry, may write x0-x7 (hook_return, hook_set_arg) and calls the guest
-    functions its guest(...) names (hook_call_guest: their inputs are read, every register is put back); hook_run
-    runs the function's own body, whose effects the summary has already"""
-    return {e: (sum(BIT[v] for v in host_effects.hook_reads(n)), sum(X[0:8]), host_effects.hook_calls(n))
-            for e, n in hooks.items()}
+def func_facts(funcs):
+    """{entry: (reads, result, orig, guest calls)} of the replaced functions ({entry: patch_scan.Func}): what the
+    summaries take of a PATCH_FUNC"""
+    from . import probes
+    return {e: (sum(BIT[v] for v in f.reads()), BIT[probes._var(f.result)] if f.result else 0, f.orig, tuple(f.guest))
+            for e, f in funcs.items()}
+
+
+def func_summary(sums, c, hooks, _seen=()):
+    """the summary a call of the replaced function c has (PATCH_FUNC, host/patch.h): its operands read and the guest
+    functions it calls (guest_call puts every register back; one that is itself replaced reads what its record reads,
+    a cycle of them once); its result written on every return and nothing else of the context (the adapter writes the
+    result, the host function sees values only); with orig, the lifted body's own summary (sums[c]) as well, which may
+    run in it, and x0-x8 (guest_orig's arguments)"""
+    reads, result, orig, guest = FUNCS[c]
+    s = Summary()
+    s.inputs = reads
+    for g in guest:
+        if g in FUNCS:
+            if g not in _seen and g != c:
+                s.inputs |= func_summary(sums, g, hooks, _seen + (c,)).inputs
+        else:
+            s.inputs |= callee_summary(sums, g, hooks).inputs
+    s.clobbers, s.mustdef, s.preserved = X[30] | result, X[30] | result, CALLEE_SAVED
+    s.returns = s.boundary = True
+    if orig:
+        b = sums.get(c)
+        if b is None or b.unknown:
+            return UNKNOWN
+        s.inputs |= b.inputs
+        s.clobbers |= b.clobbers | ORIG_ARGS
+        s.preserved &= b.preserved
+        s.writes_fpcr = b.writes_fpcr
+    return s
+
+
+ORIG_ARGS = sum(X[0:9])   # (what guest_orig may write before the body runs)
+
+
+def is_host(c, hooks):
+    """a callee that is host code: an HLE'd function or a PATCH_FUNC"""
+    return c in hooks or c in FUNCS
 
 
 def host_summary(symbol):
@@ -179,7 +214,7 @@ class Func:
     """kinds per instruction: 'op', 'goto' (succs), 'call' (callee or None: unknown; then the next instruction),
     'svc', 'tail' (callee or None), 'ret', 'trap'"""
     __slots__ = ("entry", "pcs", "words", "kind", "succ", "callee", "use", "dfn", "insn", "fallthrough_entry",
-                 "fp", "writes_fpcr", "host_calls", "ctail", "falls_into", "hook", "guest", "after")
+                 "fp", "writes_fpcr", "host_calls", "ctail", "falls_into", "guest", "after")
 
     def __init__(self, entry, pcs, word, prog, hooks):
         self.entry = entry
@@ -195,7 +230,6 @@ class Func:
         self.falls_into = set() # entries this function falls into without a branch
         body = set(pcs)
         extra = rows()
-        self.hook = ENTRY.get(entry)   # (a PATCH_HOOK: (reads, may-writes, guest calls), or None)
         self.guest = {}         # instruction index -> the guest functions a row there calls, or "computed"
         self.after = {}         # call index -> (reads, writes) of the after rows there: after the call returns
         for k, pc in enumerate(pcs):
@@ -240,7 +274,7 @@ class Func:
             elif t == "b" and f["op"]:
                 c = prog.callee(pc + (sx(f["imm26"], 26) << 2))
                 self.kind[k], self.callee[k] = "call", c
-                if c in hooks:
+                if is_host(c, hooks):
                     self.host_calls += 1
                 self._edge(k, [nxt], keep_kind=True)
             elif t == "b":
@@ -342,6 +376,8 @@ def callee_summary(sums, c, hooks):
     h = hooks.get(c)
     if h is not None:   # (an HLE'd function: host_summary)
         return h
+    if c in FUNCS:   # (a PATCH_FUNC: its declaration, and with orig its body's summary)
+        return func_summary(sums, c, hooks)
     if c not in sums:
         return AAPCS
     s = sums[c]
@@ -443,7 +479,8 @@ def unpack(t):
 
 
 def guest_reads(sums, calls, hooks):
-    """what guest functions host code calls (a row's or a hook's) read: their inputs; "computed" every register"""
+    """what guest functions host code calls (a row's or a replaced function's) read: their inputs; "computed" every
+    register"""
     if calls == "computed":
         return ALL
     m = 0
@@ -503,9 +540,6 @@ def must_and_may(fn, sums, hooks):
                 if nm != must[j]:
                     must[j] = nm
                     changed = True
-    if fn.hook is not None:   # (the hook handled the call: a return at the entry, having written at most x0-x7)
-        exit_must, returns = 0, True
-        may |= fn.hook[1]
     for k in range(n):
         may |= fn.dfn[k]
         if k in fn.ctail and (fn.kind[k] == "svc" or callee_summary(sums, fn.callee[k], hooks).returns):
@@ -752,8 +786,6 @@ def analyse(fn, sums, hooks):
     s = Summary()
     live = liveness(fn, sums, hooks)
     s.inputs = live[0] if fn.pcs else 0
-    if fn.hook is not None:   # (the hook reads its declared registers and what the guest code it calls reads)
-        s.inputs |= fn.hook[0] | guest_reads(sums, fn.hook[2], hooks)
     s.mustdef, s.clobbers, s.returns = must_and_may(fn, sums, hooks)
     pres, reasons, s.frame, s.frame_taken, s.pairs, s.lr_data = frame_pass(fn, sums, hooks)
     s.preserved = pres if s.returns else CALLEE_SAVED
@@ -784,10 +816,10 @@ def analyse(fn, sums, hooks):
                 out = a[0] | (out & ~a[1])
             if out & ~cs.mustdef & cs.clobbers & (TMPS | NZCV):
                 reasons.add("tmp_after_call")
-    boundary = fn.hook is not None or any(g == "computed" for g in fn.guest.values())
+    boundary = any(g == "computed" for g in fn.guest.values())
     for k, kind in enumerate(fn.kind):
         c = fn.callee[k]
-        if kind == "svc" or (kind in ("call", "tail") and (c is None or c in hooks)):
+        if kind == "svc" or (kind in ("call", "tail") and (c is None or is_host(c, hooks))):
             boundary = True
         elif kind in ("call", "tail"):
             cs = sums.get(c)
@@ -846,25 +878,39 @@ def sccs(nodes, succ):
     return out
 
 
-def patched(hooks, entry):
-    """hooks as {entry: Summary} (a set: AAPCS facts for each); ENTRY set from entry ({entry: hook C name})"""
-    ENTRY.clear()
-    ENTRY.update(entry_hooks(entry or {}))
+def patched(hooks, funcs=None):
+    """hooks as {entry: Summary} (a set: AAPCS facts for each); FUNCS set from funcs (func_facts)"""
+    FUNCS.clear()
+    FUNCS.update(funcs or {})
     return hooks if isinstance(hooks, dict) else {c: AAPCS for c in hooks}
 
 
 def guest_callees(fn):
-    """the guest functions host code in fn calls (its rows', its entry hook's)"""
+    """the guest functions host code in fn calls (its rows'), and those its replacement calls (a PATCH_FUNC's: its
+    callers' summaries read theirs through fn's)"""
     out = [c for g in fn.guest.values() if g != "computed" for c in g]
-    return out + list(fn.hook[2]) if fn.hook is not None else out
+    return out + list(FUNCS[fn.entry][3]) if fn.entry in FUNCS else out
 
 
-def summarise(funcs, prog, hooks, word, names=None, log=print, entry=None):
+def deps(c):
+    """what a call of c reads of the summaries: c's, and for a PATCH_FUNC those of the guest functions it calls (and
+    theirs, for one that is replaced too)"""
+    out, todo = {c}, [c]
+    while todo:
+        e = todo.pop()
+        for g in FUNCS[e][3] if e in FUNCS else ():
+            if g not in out:
+                out.add(g)
+                todo.append(g)
+    return out
+
+
+def summarise(funcs, prog, hooks, word, names=None, log=print, replaced=None):
     """funcs: entry -> sorted pcs; hooks: the HLE'd functions ({entry: Summary}, host_summaries; or a set: AAPCS);
-    names: entry -> symbol name (the noreturn seeds); entry: {entry: hook C name} (PATCH_HOOKs). Returns (summaries,
-    Funcs, statistics)"""
+    names: entry -> symbol name (the noreturn seeds); replaced: the PATCH_FUNCs (func_facts). Returns (summaries, Funcs,
+    statistics)"""
     t0 = time.time()
-    hooks = patched(hooks, entry)
+    hooks = patched(hooks, replaced)
     NORETURN.clear()
     NORETURN.update(e for e, n in (names or {}).items() if noreturn_seed(n))
     F = {}
@@ -920,7 +966,7 @@ def summarise(funcs, prog, hooks, word, names=None, log=print, entry=None):
             sums[c].results |= m
             passes.append((e, c, pt))
         for k, kind in enumerate(fn.kind):
-            if kind == "tail" and fn.callee[k] in sums:
+            if kind == "tail" and fn.callee[k] in sums and fn.callee[k] not in FUNCS:
                 passes.append((e, fn.callee[k], ALL))
     propagate_results(sums, passes)
     # a call whose return falls into another function's entry: that entry is entered by falling through
@@ -1002,7 +1048,7 @@ def report(sums, edges_by_fn, n_ins, hot=(), log=print):
             elif c in NORETURN:
                 edges[tag + "to a noreturn seed"] += 1
             elif c not in sums:
-                edges[tag + "to host / hook"] += 1
+                edges[tag + "to host"] += 1
             elif sums[c].demote:
                 edges[tag + "direct to demoted"] += 1
             else:
@@ -1066,7 +1112,8 @@ def _graph_part(entries):
             elif kind in ("call", "tail") and c is not None:
                 callees.append(c)
         dangling = [fn.callee[k] for k in fn.ctail if fn.kind[k] == "call" and fn.callee[k] is not None]
-        tails = [fn.callee[k] for k, kind in enumerate(fn.kind) if kind == "tail" and isinstance(fn.callee[k], int)]
+        tails = [fn.callee[k] for k, kind in enumerate(fn.kind) if kind == "tail" and isinstance(fn.callee[k], int)
+                 and fn.callee[k] not in FUNCS]
         ctails = [(fn.callee[k], c, fn.kind[k]) for k, c in fn.ctail.items()]
         edges = [(kind, fn.callee[k]) for k, kind in enumerate(fn.kind)
                  if kind in ("call", "tail") and not isinstance(fn.callee[k], tuple)]
@@ -1107,7 +1154,7 @@ def call_reads(fn, sums, hooks):
     out = []
     live = pt = None
     for k, kind in enumerate(fn.kind):
-        if kind == "call" and fn.callee[k] in sums:
+        if kind == "call" and fn.callee[k] in sums and fn.callee[k] not in FUNCS:   # (a PATCH_FUNC's result is declared)
             if live is None:
                 live = liveness(fn, sums, hooks)
                 pt = liveness(fn, sums, hooks, ALL)
@@ -1153,7 +1200,7 @@ def _results_part(batch):
     return out
 
 
-def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print, entry=None):
+def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print, replaced=None):
     """summarise() over processes: the same summaries; funcs: entry -> sorted pcs (any sequence), or with word None
     entry -> (pcs, their words). The workers are forked with the functions as flat arrays (pages they only read,
     shared)."""
@@ -1166,7 +1213,7 @@ def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print,
         fs = {e: (array("Q", p), array("I", w)) for e, (p, w) in funcs.items()}
     else:
         fs = {e: (array("Q", pcs), array("I", (word(pc) for pc in pcs))) for e, pcs in funcs.items()}
-    _G.update(funcs=fs, prog=prog, hooks=patched(hooks, entry), fallthrough=set())
+    _G.update(funcs=fs, prog=prog, hooks=patched(hooks, replaced), fallthrough=set())
     hooks = _G["hooks"]
     NORETURN.clear()
     NORETURN.update(e for e, n in (names or {}).items() if noreturn_seed(n))
@@ -1209,7 +1256,7 @@ def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print,
             batches = []
             for b in range(nb):
                 part = cs[b::nb]
-                need = {g for c in part for e in c for g in callees[e]}
+                need = {d for c in part for e in c for g in callees[e] for d in deps(g)}
                 batches.append((part, {g: sums[g] for g in need if g in sums}))
             for got in pool.map(_analyse_part, batches):
                 sums.update(got)
@@ -1218,8 +1265,8 @@ def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print,
         batches = []
         for b in range(nb):
             part = order[b::nb]
-            need = {g for e in part for g in callees[e]}
-            batches.append((part, {g: sums[g] for g in need}))
+            need = {d for e in part for g in callees[e] for d in deps(g)}
+            batches.append((part, {g: sums[g] for g in need if g in sums}))
         passes = []
         for got in pool.map(_results_part, batches):
             for e, g, m, pt in got:
@@ -1239,7 +1286,7 @@ def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print,
     return sums, stats, edges
 
 
-def job(inp, out, jobs, entry):
+def job(inp, out, jobs, replaced=None):
     """the summaries in a process of their own (game.finish_summaries): inp, a pickle of the functions (entry -> (pcs,
     words)) and the discovery's facts; out, a pickle of (summaries, stats, edges). Its workers fork from a process
     that holds only this, not the lifter."""
@@ -1261,7 +1308,7 @@ def job(inp, out, jobs, entry):
     funcs, names = d["funcs"], d["names"]
     hooks = host_summaries(d["hle"])
     del d
-    sums, stats, edges = summarise_parallel(funcs, prog, hooks, None, names, jobs=jobs, entry=entry)
+    sums, stats, edges = summarise_parallel(funcs, prog, hooks, None, names, jobs=jobs, replaced=replaced)
     stats["main peak MB"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
     stats["worker peak MB"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss >> 10
     with open(out + ".tmp", "wb") as f:

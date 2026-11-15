@@ -107,7 +107,7 @@ def main():
     if plan and plan.get("summaries"):   # (the call boundaries as the build makes them)
         from lift2 import bounds, host_effects, patch_scan
         gen = os.path.join(kit.WORK, "sa", "gen")
-        bound = bounds.call_bounds(plan, patch_scan.entry_hooks(gen)[0], host_effects.hle_names(gen))
+        bound = bounds.call_bounds(plan, host_effects.hle_names(gen), False, patch_scan.funcs(gen)[0])
     prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, jt_index=L.jt_index, bound=bound,
                             omit=bound is not None)
     names = {v: k for k, v in lab.items()}

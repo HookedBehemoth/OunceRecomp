@@ -392,7 +392,6 @@ static void memory_notice(void) {
 #endif
 static int game_main(int argc, char **argv) {
     occlusion_switch();
-    hos_hooks_dbg = hos_dbg_item("hooks");
     {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
         if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {

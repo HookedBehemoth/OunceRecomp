@@ -378,7 +378,7 @@ def omit_stores(fn, prog):
     BL is preceded by `sitepoison` of the fields no reader reads there (host/lift2_verify.c names the site)."""
     if not prog.omit:
         return
-    own = prog.bound(fn.entry)
+    own = getattr(prog.bound, "own", prog.bound)(fn.entry)   # (a PATCH_FUNC's body: its own, not the function's)
     at_ret = (own.results | _CALLEE_SAVED) & _REGS
     own_may = own.clobbers   # (the poison writes only what the function may write itself)
     blocks = list(fn.blocks.values())

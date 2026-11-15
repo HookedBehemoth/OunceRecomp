@@ -77,9 +77,13 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
   and probes", has one example per kind) and build; no lift is needed:
   - host code at an instruction: `PATCH_AT(pc, word(W), mode, result, fn, operand...) { ... }`, further sites
     `PATCH_AT_SITE(...)`;
-  - host code at a function's entry: `PATCH_HOOK(0x8xxxxxxx, word(W)) { ... }` or `PATCH_HOOK_SYM(name) { ... }` (return
-    1 when it handled the call), with `reads(sp, "why")` and `guest(A, ...)` when it calls guest code. `W` is the
-    instruction's or the function's first word; names of `PATCH_HOOK_SYM` resolve through `work/sa/image/image.json`;
+  - host code that only watches a call: `PATCH_AT(<the function's address>, word(W), before, none, fn, operand...)`;
+  - a function replaced: `PATCH_FUNC(0x8xxxxxxx, word(W), body(H), aapcs, result, fn, [orig,] [guest(A, ...),]
+    operand...) { ... }` or `PATCH_FUNC_SYM(name, aapcs, result, fn, ...) { ... }`: `fn` takes the operands it
+    declares and returns the result; with `orig` it may run the game's body, `guest_orig(orig, x0, ...)` (the build
+    names an argument register the body reads that the declaration lacks), with `guest(A, ...)` and `sp` it calls
+    guest code through `guest_call`. `W` is the instruction's or the function's first word, `H` its body's hash (the
+    build's error names the right one); names of `PATCH_FUNC_SYM` resolve through `work/sa/image/image.json`;
   - an SDK function replaced: `HLE(symbol) { ... }` (this one does need a lift: the lift hooks it), an NVN proc
     `NV(name) { ... }`, with `reads(reg, "why")` or `clobbers("why")` when a call of it reads more than its arguments
     or keeps no register.
@@ -91,14 +95,14 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
 - `RX_DIRECT_ONLY=1` builds the back end alone, with no lift.
 - **A new lift** is needed after a change to the lift (`nx2/lift.py`, `nx2/lift2/discover.py`) or to the dump (a
   change to the patch declarations in `host/*.c` other than an `HLE` added or removed needs only a build; the summaries
-  count the rows and hooks, so the build recomputes them when their declared effects change): `scripts/relift.sh` lifts and builds, for the
+  count the rows and replaced functions, so the build recomputes them when their declared effects change): `scripts/relift.sh` lifts and builds, for the
   checkout it is run from; in the main checkout on native-vk through `scripts/play-refresh.sh`, so `BUILD.txt` names the
   head. It stops while a game runs from that build. About 100 s of lift (6 GB at its peak); a cold build about 5
   minutes at 6 jobs; log `work/play/relift.log` (a worktree: `work/sa/relift.log`). `scripts/play-refresh.sh` lifts
   again by itself when the lift's inputs changed (`nx2/lift_mark.py`).
 - **The lifter** (`nx2/lift2`, [lifter.md](lifter.md)) lifts every function at build time: a change to it needs only a
   build. Its partitions' objects stay in `work/objcache` by their inputs (the plan, the lifter's sources, the flags, the
-  functions, the hooks): a host-only rebuild neither lifts nor compiles them again (about a minute). The hot list
+  functions, the replaced functions): a host-only rebuild neither lifts nor compiles them again (about a minute). The hot list
   (the description's, `work/hot_funcs_play.txt`, made by `scripts/hotlist.py` from a profile; or `HOOKSHOT_HOT_FUNCS`;
   a missing one stops the lift) puts its functions in partitions built at -O2.
 - To keep builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`, `*.idx`)
@@ -496,11 +500,12 @@ declarations. It compiles nothing and lifts nothing.
   - the declarations already in that function;
   - a `PATCH_AT` to paste, its `word(...)` filled in, its operands suggested from what is read and live there (at a BL,
     from the callee's record). It also prints the prototype the macro generates and the build's verdict on it. At a
-    function's entry it also prints the `PATCH_HOOK` form.
+    function's entry it also prints the `PATCH_FUNC` form: its `word(...)` and `body(...)`, `orig` and the argument
+    registers the body reads.
 - `... check --all` runs the checks the build makes on every declaration and prints each error with its file:line.
   The checks: the word, a site in exactly one function, `before` not on a branch, jump-table or other entry target,
-  `instead` on a call, a Value's result being its instruction's destination, result and io registers, hooks' first
-  words and exports, `HLE_EFFECTS` symbols. A guest function that a host function calls without declaring it is not
+  `instead` on a call, a Value's result being its instruction's destination, result and io registers, `PATCH_FUNC`s'
+  first words, body hashes, exports and the argument registers an `orig` body reads, `HLE_EFFECTS` symbols. A guest function that a host function calls without declaring it is not
   checked here: `tests/test_host_context_reads.py` compiles the host to find those.
 - `... check <file:line>` also prints what that declaration costs. `... check -` does the same for a proposed
   declaration read from stdin. The tool recomputes the whole program's summaries without the declaration (or with
@@ -580,7 +585,7 @@ the Discord rich presence reads `discord_app_id`.
 | Path | What |
 |---|---|
 | `docs/` | `design.md` (architecture, MKW's lessons as rules, testing), `lifter.md` (the lifter), `direct-backend-plan.md` (the renderer), `direct/` (what we know about the game and the back end) |
-| `nx2/` | the image, the lift and the build (`lift.py`, `build.py`; the lifter in `nx2/lift2`), the game's patches as probes and host hooks (`kit.py` has the paths); no player builder for now: [builder-notes.md](builder-notes.md) |
+| `nx2/` | the image, the lift and the build (`lift.py`, `build.py`; the lifter in `nx2/lift2`), the patch scan and its lowering (`kit.py` has the paths); no player builder for now: [builder-notes.md](builder-notes.md) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has its Win32-named calls on Linux (the host is Linux-only; a narrow host API over SDL replaces them later) |
 | `gpu/direct/` | the direct back end (`hookshot_direct.so`), with its fork of Eden's shader recompiler and sirit in `eden/` |
 | `gpu/api/` | what the host and the direct back end share: the versioned table (`vk_api.h`), the NVN objects and command records (`rx_nvn.h`) |

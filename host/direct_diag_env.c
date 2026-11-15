@@ -31,13 +31,12 @@ static float gf(uint64_t a) {
 static uint64_t g64(uint64_t a) { return a && hos_guest_range(a, 8) ? G64(a) : 0; }
 static uint32_t g32(uint64_t a) { return a && hos_guest_range(a, 4) ? G32(a) : 0; }
 
-PATCH_HOOK(0x80357060, word(0xd503237f)) {
-    if (!envlog_on() || !(a->x[1] & 1)) return 0;
+PATCH_AT(0x80357060, word(0xd503237f), before, none, direct_diag_env, as(x0, o), as(x1, flags)) {
+    if (!envlog_on() || !(flags & 1)) return;
     static LONG64 last = -1;
     const LONG64 p = hos_present_count;
-    if (p / 300 == last / 300) return 0;
+    if (p / 300 == last / 300) return;
     last = p;
-    const uint64_t o = a->x[0];
     const uint64_t a1 = g64(o + 0x48) + g32(g64(g64(o + 0x40)) + 4);
     const uint64_t a2 = g64(o + 0x1f0) + g32(g64(g64(o + 0x1e8)) + 4);
     const uint64_t a3 = g64(o + 0x280) + g32(g64(g64(o + 0x278)) + 4);
@@ -63,5 +62,4 @@ PATCH_HOOK(0x80357060, word(0xd503237f)) {
     hos_log("envlog: G %#llx L %#llx: G+0xdac %g; L+0x9c0 %g %g %g %g; L+0x960 %g 0x980 %g 0x9a0 %g 0xaf0 %g; L+0x6c0 %g %g %g",
             (unsigned long long)g, (unsigned long long)l, gf(g + 0xdac), gf(l + 0x9c0), gf(l + 0x9c4), gf(l + 0x9c8), gf(l + 0x9cc),
             gf(l + 0x960), gf(l + 0x980), gf(l + 0x9a0), gf(l + 0xaf0), gf(l + 0x6c0), gf(l + 0x6c4), gf(l + 0x6c8));
-    return 0;
 }

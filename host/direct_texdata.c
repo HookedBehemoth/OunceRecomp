@@ -61,11 +61,11 @@ void direct_texdata_created(uint64_t td, int alias) {
 }
 
 /* f_8079aa20(&td->slot, evictable): released to the LRU cache (1), taken back from it (0) */
-PATCH_HOOK(0x8079aa20, word(0xd503237f)) {
-    if (!rx_direct() || !direct_assets_on()) return 0;
-    const uint64_t td = a->x[0] - 0x18;
-    const int to_cache = (a->x[1] & 1) != 0;
-    if (!hos_guest_range(td, 0x1d0)) return 0;
+PATCH_AT(0x8079aa20, word(0xd503237f), before, none, direct_texdata_evictable, as(x0, slot), as(x1, evictable)) {
+    if (!rx_direct() || !direct_assets_on()) return;
+    const uint64_t td = slot - 0x18;
+    const int to_cache = (evictable & 1) != 0;
+    if (!hos_guest_range(td, 0x1d0)) return;
     int known = 0, changed = 0;
     AcquireSRWLockExclusive(&lock);
     const int i = td_slot(td, 0);
@@ -80,17 +80,18 @@ PATCH_HOOK(0x8079aa20, word(0xd503237f)) {
         }
     }
     ReleaseSRWLockExclusive(&lock);
-    if (!known) return InterlockedIncrement64(&n_unknown), 0;
+    if (!known) {
+        InterlockedIncrement64(&n_unknown);
+        return;
+    }
     InterlockedIncrement64(to_cache ? &n_to_cache : &n_from_cache);
     const nvn_tex *t = tex_of(td);
     if (changed && t && rx_direct()->texture_cached) rx_direct()->texture_cached(t, to_cache);
-    return 0;
 }
 
 /* f_8079bbe0(mgr, td): destroyed (its NVN texture is finalized inside, and released as any finalize) */
-PATCH_HOOK(0x8079bbe0, word(0xd503237f)) {
-    if (!rx_direct() || !direct_assets_on()) return 0;
-    const uint64_t td = a->x[1];
+PATCH_AT(0x8079bbe0, word(0xd503237f), before, none, direct_texdata_destroyed, as(x1, td)) {
+    if (!rx_direct() || !direct_assets_on()) return;
     int was_cached = 0;
     AcquireSRWLockExclusive(&lock);
     const int i = td_slot(td, 0);
@@ -103,30 +104,22 @@ PATCH_HOOK(0x8079bbe0, word(0xd503237f)) {
     InterlockedIncrement64(&n_destroyed);
     const nvn_tex *t = tex_of(td);
     if (was_cached && t && rx_direct()->texture_cached) rx_direct()->texture_cached(t, 0);
-    return 0;
 }
 
 /* f_807981f0(td, ctx): a move (compaction apply, each alias after its head). Its body runs from here, with the td's NVN
    object noted for this thread: nvn_native.c then keeps the object's serial through the rebind's Finalize + Initialize
    and tells the back end nothing (its image and registration follow the object). */
 static _Thread_local const void *tl_moving;
-static _Thread_local int tl_in_move;
 const void *direct_texdata_moving(void) { return tl_moving; }
-PATCH_HOOK(0x807981f0, word(0xd503237f)) {
-    if (tl_in_move) return tl_in_move = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
-    if (!rx_direct() || !direct_assets_on()) return 0;
-    static A64Fn body;
-    if (!body) body = f_807981f0;
-    if (!body) return 0;
-    const uint64_t td = a->x[0];
+PATCH_FUNC(0x807981f0, word(0xd503237f), body(0xd8e8d96c2812b6c3), aapcs, x0, direct_texdata_move,
+           orig, as(x0, td), as(x1, ctx), x2, x3, x4, x5, x6, x7) {
+    if (!rx_direct() || !direct_assets_on()) return guest_orig(orig, td, ctx, x2, x3, x4, x5, x6, x7);
     const nvn_tex *t = hos_guest_range(td, 0x1d0) ? tex_of(td) : NULL;
     tl_moving = t && t->magic == NVN_MAGIC('T', 'E', 'X', 0) && t->serial ? (const void *)t : NULL;
-    tl_in_move = 1;
-    hook_run(h, body);
-    tl_in_move = 0;
+    const uint64_t r = guest_orig(orig, td, ctx, x2, x3, x4, x5, x6, x7);
     tl_moving = NULL;
     InterlockedIncrement64(&n_moves);
-    return 1;
+    return r;
 }
 
 void direct_texdata_line(char *out, size_t cap) {
@@ -151,16 +144,11 @@ void direct_texdata_line(char *out, size_t cap) {
    m6f_s5_d: the device-local usage rose by 0.6-1.4 GB across a load, store images 0.6 GB and the new scene's targets),
    so that a load that starts at the margin does not exhaust VRAM. */
 #define kVramMargin (1536ll << 20)
-static _Thread_local int tl_in_update;
 static volatile LONG64 n_vram_evicted, n_vram_frames, last_free_vram = -1, last_line;
-PATCH_HOOK(0x80797240, word(0xd503237f)) {
-    if (tl_in_update) return tl_in_update = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
-    if (!rx_direct() || !direct_assets_on() || !rx_direct()->vram_free) return 0;
-    static A64Fn body;
-    if (!body) body = f_80797240;
-    if (!body) return 0;
-    const uint64_t mgr = a->x[0];
-    if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1ee8, 8)) return 0;
+PATCH_FUNC(0x80797240, word(0xd503237f), body(0x99d8ac1665d1c349), aapcs, x0, direct_texdata_update,
+           orig, as(x0, mgr), x1, x2, x3, x4, x5, x6, x7) {
+    if (!rx_direct() || !direct_assets_on() || !rx_direct()->vram_free) return guest_orig(orig, mgr, x1, x2, x3, x4, x5, x6, x7);
+    if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1ee8, 8)) return guest_orig(orig, mgr, x1, x2, x3, x4, x5, x6, x7);
     const int64_t vf = rx_direct()->vram_free();
     last_free_vram = vf;
     const uint64_t game_thr = G64(mgr + 0x340), heap_free = G64(G64(mgr + 0x40) + 0x1ee8);
@@ -170,9 +158,7 @@ PATCH_HOOK(0x80797240, word(0xd503237f)) {
         if (want > game_thr) G64(mgr + 0x340) = want, raised = 1;
     }
     const LONG64 d0 = n_destroyed;
-    tl_in_update = 1;
-    hook_run(h, body);
-    tl_in_update = 0;
+    const uint64_t r = guest_orig(orig, mgr, x1, x2, x3, x4, x5, x6, x7);
     if (raised) {
         G64(mgr + 0x340) = game_thr;
         InterlockedAdd64(&n_vram_evicted, n_destroyed - d0);
@@ -184,5 +170,5 @@ PATCH_HOOK(0x80797240, word(0xd503237f)) {
                 "patch %lld in %lld frames", (long long)(vf >> 20), (long long)(kVramMargin >> 20), (long long)n_cached_now,
                 (long long)n_vram_evicted, (long long)n_vram_frames);
     }
-    return 1;
+    return r;
 }

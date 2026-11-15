@@ -416,19 +416,18 @@ NV(nvnMemoryPoolFlushMappedRange) {}
    console the invalidate is a cache op. Here the invalidate waits for the submission writing the slot back, ~8 ms every
    frame on a job worker on the frame's critical path (the replay is a frame behind the game). No wait for any of its four
    invalidates: lr 0x803665d4 and 0x80366168 (the current slot, before and after the copy), 0x8036635c (the other slot),
-   and the tail call's (lr the caller's, 0x80099d84): the reader marks its own run (its PATCH_HOOK below runs its body
+   and the tail call's (lr the caller's, 0x80099d84): the reader marks its own run (its PATCH_FUNC below runs its body
    with this thread noted), so the invalidate is told by who asks, not by its return address. The exposure meter
    (f_80357060, read and zeroed) keeps its wait. */
 static _Thread_local int tl_grid_reader;
-PATCH_HOOK(0x80365f00, word(0xd503237f)) {   /* report_reader_a: the grid reader's body, this thread noted */
-    if (tl_grid_reader) return 0;   /* (the body, run below) */
-    static A64Fn body;
-    if (!body) body = f_80365f00;
-    if (!body) return 0;
+/* report_reader_a: the grid reader's body (orig), this thread noted */
+PATCH_FUNC(0x80365f00, word(0xd503237f), body(0x7f2d99cdf2bfd4bf), aapcs, x0, nvn_grid_reader,
+           orig, x0, x1, x2, x3, x4, x5, x6, x7) {
+    if (tl_grid_reader) return guest_orig(orig, x0, x1, x2, x3, x4, x5, x6, x7);
     tl_grid_reader = 1;
-    hook_run(h, body);
+    const uint64_t r = guest_orig(orig, x0, x1, x2, x3, x4, x5, x6, x7);
     tl_grid_reader = 0;
-    return 1;
+    return r;
 }
 static int readback_stamped(const Ctx *c) { return tl_grid_reader && c->x[2] == 0x3980; }
 NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the GPU wrote */

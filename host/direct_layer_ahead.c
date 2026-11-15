@@ -186,17 +186,15 @@ static void wait_for(uint64_t key) {
     InterlockedExchangeAdd64(&w.wait_ns, hos_now_ns() - t0);
 }
 
-PATCH_HOOK(0x806688c0, word(0xd503237f)) {   /* (owner, drawctx, i): the pass's key at owner + 0x3830 + i * 0xd0 */
-    if (ahead_thread) wait_for(a->x[0] + 0x3830 + (uint64_t)(uint32_t)a->x[2] * 0xd0);
-    return 0;
+/* (owner, drawctx, i): the pass's key at owner + 0x3830 + i * 0xd0 */
+PATCH_AT(0x806688c0, word(0xd503237f), before, none, direct_layer_ahead_pass, as(x0, owner), as(w2, i)) {
+    if (ahead_thread) wait_for(owner + 0x3830 + (uint64_t)i * 0xd0);
 }
-PATCH_HOOK(0x8028a2a0, word(0xd503237f)) {   /* (owner, drawctx, key) */
-    if (ahead_thread) wait_for(a->x[2]);
-    return 0;
+PATCH_AT(0x8028a2a0, word(0xd503237f), before, none, direct_layer_ahead_key, as(x2, key)) {   /* (owner, drawctx, key) */
+    if (ahead_thread) wait_for(key);
 }
-PATCH_HOOK(0x80706be0, word(0xd503237f)) {   /* moduleCalc_ */
+PATCH_AT(0x80706be0, word(0xd503237f), before, none, direct_layer_ahead_calc) {   /* moduleCalc_ */
     InterlockedIncrement64(&gen);
-    return 0;
 }
 
 /* the worker index the scheduler compares with W + 0x4d8: its TLS slot's value - 1, else the core number */

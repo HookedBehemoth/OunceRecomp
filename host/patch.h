@@ -20,12 +20,15 @@
        slots, q as 16) in a struct the function gets as io (tagged hos_io_<line>) and leaves their new values in.
      PATCH_AT_SITE(pc, word(W), mode, result, fn, operand...);
        another site of fn (after its PATCH_AT): the operands' types must be fn's parameters' (a compile error else).
-     PATCH_HOOK(addr, word(W), effect...) { body }     PATCH_HOOK_SYM(symbol, effect...) { body }
-       host code at the entry of the lifted function at addr (its first word W, checked at the build), or of the one
-       the image exports as symbol: int entry_<addr>(Ctx *) / entry_sym_<symbol>(Ctx *), the body seeing the call's
-       HookArgs *a and HookCall *h and returning 1 (handled) or 0 (the function runs) (host/hos.h ENTRY_HOOK_COUNTED).
-       effects: reads(reg..., "why") the registers it reads beyond x0-x7 and x30 (sp for hook_call_guest); guest(A, ...)
-       the guest functions it calls besides its own body.
+     PATCH_FUNC(addr, word(W), body(H), aapcs, result, fn, [orig,] [guest(A, ...),] operand...) { body }
+     PATCH_FUNC_SYM(symbol, aapcs, result, fn, [orig,] [guest(A, ...),] operand...) { body }
+       the lifted function at addr (its first word W and its body's hash H, nx2/lift2/patch_scan.py body_hash, checked
+       at the build), or the one the image exports as symbol, replaced by fn: every call of it is a call of fn with the
+       declared operands (x0-x8, w0-w8, s0-s7, q0-q7, x30 for the return address, sp; as(...) names them), its result
+       (none, x0, w0, s0, q0) the call's. orig, first: fn may run the function's own lifted body, GuestFn *orig, as
+       guest_orig(orig, a0, ...) (a0.. in x0..; the body's other registers are the call's); the build stops when the
+       body reads an argument register the declaration does not take. guest(A, ...): fn calls those guest functions
+       through guest_call (GuestCall *g, after orig), on the call's stack: sp is then an operand.
      HLE(symbol, effect...) { body }     NV(name, effect...) { body }     HLE_EFFECTS(symbol, effect...);
        a function the image replaces: void imp_<symbol>(Ctx *c) (hooked where the game imports it and at the SDK's
        definition); an NVN proc, static void n_<name>(Ctx *c, void *u_) (host/nvn_native.c's table); the effects of a
@@ -40,6 +43,27 @@
 #ifndef HOS_PATCH_H
 #define HOS_PATCH_H
 #include <stdint.h>
+
+/* A PATCH_FUNC's orig: the replaced function's lifted body, called as guest_orig(orig, a0, ...): a0.. go to x0.. (the
+   registers after them keep the call's values), the body runs on the call's context and stack, and its x0 comes back.
+   The body writes what its summary says it may; the function's callers get that in its record (nx2/lift2/bounds.py) */
+typedef struct GuestFn { struct GuestContext *c; void (*body)(struct GuestContext *); } GuestFn;
+#define HOS_NARGS_(_1, _2, _3, _4, _5, _6, _7, _8, _9, n, ...) n
+#define HOS_NARGS(...) HOS_NARGS_(__VA_ARGS__, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+#define guest_orig(orig, ...) hos_guest_orig(orig, HOS_NARGS(__VA_ARGS__), ((const uint64_t[]){__VA_ARGS__}))
+#define hos_guest_orig(o, n, a) ({                                                                                    \
+    GuestFn *o_ = (o);                                                                                                \
+    const uint64_t *a_ = (a);                                                                                         \
+    for (int i_ = 0; i_ < (n); i_++) o_->c->x[i_] = a_[i_];                                                           \
+    o_->body(o_->c);                                                                                                  \
+    o_->c->x[0];                                                                                                      \
+})
+/* (a PATCH_FUNC's adapter: Sn / Vn of the context, and the result's write) */
+#define hos_ctx_s(c, n) ({ float f_; __builtin_memcpy(&f_, (c)->vreg[n], 4); f_; })
+#define hos_ctx_q(c, n) ({ hos_q q_; __builtin_memcpy(&q_, (c)->vreg[n], 16); q_; })
+#define hos_ctx_set_s(c, n, v)                                                                                        \
+    do { float f_ = (v); (c)->vreg[n][0] = (c)->vreg[n][1] = 0; __builtin_memcpy((c)->vreg[n], &f_, 4); } while (0)
+#define hos_ctx_set_q(c, n, v) do { hos_q q_ = (v); __builtin_memcpy((c)->vreg[n], &q_, 16); } while (0)
 
 #define HOS_CAT_(a, b) a##b
 #define HOS_CAT(a, b) HOS_CAT_(a, b)
@@ -670,7 +694,7 @@
 #define HOS_IO_q29 hos_q q29;
 #define HOS_IO_q30 hos_q q30;
 #define HOS_IO_q31 hos_q q31;
-/* (a list's elements through a macro, up to 12) */
+/* (a list's elements through a macro, up to 16) */
 #define HOS_COMMA() ,
 #define HOS_NOSEP()
 #define HOS_FE_1(m, s, a) m##a
@@ -685,9 +709,13 @@
 #define HOS_FE_10(m, s, a, ...) m##a s() HOS_FE_9(m, s, __VA_ARGS__)
 #define HOS_FE_11(m, s, a, ...) m##a s() HOS_FE_10(m, s, __VA_ARGS__)
 #define HOS_FE_12(m, s, a, ...) m##a s() HOS_FE_11(m, s, __VA_ARGS__)
-#define HOS_FE_N(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, n, ...) HOS_FE_##n
+#define HOS_FE_13(m, s, a, ...) m##a s() HOS_FE_12(m, s, __VA_ARGS__)
+#define HOS_FE_14(m, s, a, ...) m##a s() HOS_FE_13(m, s, __VA_ARGS__)
+#define HOS_FE_15(m, s, a, ...) m##a s() HOS_FE_14(m, s, __VA_ARGS__)
+#define HOS_FE_16(m, s, a, ...) m##a s() HOS_FE_15(m, s, __VA_ARGS__)
+#define HOS_FE_N(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, n, ...) HOS_FE_##n
 #define HOS_FOR_EACH(m, s, ...) \
-    HOS_FE_N(__VA_ARGS__, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)(m, s, __VA_ARGS__)
+    HOS_FE_N(__VA_ARGS__, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)(m, s, __VA_ARGS__)
 /* (io's slots: a list of its own, as a macro's expansion does not expand that macro again) */
 #define HOS_IE_1(a) HOS_IO_##a
 #define HOS_IE_2(a, ...) HOS_IO_##a HOS_IE_1(__VA_ARGS__)
@@ -706,17 +734,80 @@
 #define HOS_PARAMS(...) __VA_OPT__(HOS_FOR_EACH(HOS_P_, HOS_COMMA, __VA_ARGS__))
 #define HOS_TYPES(...) __VA_OPT__(HOS_FOR_EACH(HOS_T_, HOS_COMMA, __VA_ARGS__))
 
+/* (PATCH_FUNC: each operand's value at the call, read from the context by the function's adapter (HOS_A_), and the
+   result's write (HOS_SET_); the registers a function may take: x0-x8, w0-w8, s0-s7, q0-q7, x30, sp) */
+#define HOS_A_x0 (c->x[0])
+#define HOS_A_w0 ((uint32_t)c->x[0])
+#define HOS_A_x1 (c->x[1])
+#define HOS_A_w1 ((uint32_t)c->x[1])
+#define HOS_A_x2 (c->x[2])
+#define HOS_A_w2 ((uint32_t)c->x[2])
+#define HOS_A_x3 (c->x[3])
+#define HOS_A_w3 ((uint32_t)c->x[3])
+#define HOS_A_x4 (c->x[4])
+#define HOS_A_w4 ((uint32_t)c->x[4])
+#define HOS_A_x5 (c->x[5])
+#define HOS_A_w5 ((uint32_t)c->x[5])
+#define HOS_A_x6 (c->x[6])
+#define HOS_A_w6 ((uint32_t)c->x[6])
+#define HOS_A_x7 (c->x[7])
+#define HOS_A_w7 ((uint32_t)c->x[7])
+#define HOS_A_x8 (c->x[8])
+#define HOS_A_w8 ((uint32_t)c->x[8])
+#define HOS_A_x30 (c->x[30])
+#define HOS_A_w30 ((uint32_t)c->x[30])
+#define HOS_A_s0 hos_ctx_s(c, 0)
+#define HOS_A_q0 hos_ctx_q(c, 0)
+#define HOS_A_s1 hos_ctx_s(c, 1)
+#define HOS_A_q1 hos_ctx_q(c, 1)
+#define HOS_A_s2 hos_ctx_s(c, 2)
+#define HOS_A_q2 hos_ctx_q(c, 2)
+#define HOS_A_s3 hos_ctx_s(c, 3)
+#define HOS_A_q3 hos_ctx_q(c, 3)
+#define HOS_A_s4 hos_ctx_s(c, 4)
+#define HOS_A_q4 hos_ctx_q(c, 4)
+#define HOS_A_s5 hos_ctx_s(c, 5)
+#define HOS_A_q5 hos_ctx_q(c, 5)
+#define HOS_A_s6 hos_ctx_s(c, 6)
+#define HOS_A_q6 hos_ctx_q(c, 6)
+#define HOS_A_s7 hos_ctx_s(c, 7)
+#define HOS_A_q7 hos_ctx_q(c, 7)
+#define HOS_A_sp (c->x[31])
+#define HOS_A_as(op, name) HOS_A_##op
+#define HOS_A_guest(...) ((GuestCall *)c)
+#define HOS_A_orig (&hos_orig_)
+#define HOS_T_orig GuestFn *
+#define HOS_P_orig GuestFn *orig
+#define HOS_SET_none(c, v) (void)(v)
+#define HOS_SET_x0(c, v) ((c)->x[0] = (v))
+#define HOS_SET_w0(c, v) ((c)->x[0] = (uint32_t)(v))
+#define HOS_SET_s0(c, v) hos_ctx_set_s(c, 0, v)
+#define HOS_SET_q0(c, v) hos_ctx_set_q(c, 0, v)
+#define HOS_ARGS(...) __VA_OPT__(HOS_FOR_EACH(HOS_A_, HOS_COMMA, __VA_ARGS__))
 /* the declarations (word(W) is checked by the lifter, not the compiler: it expands to nothing here) */
 #define PATCH_AT(pc, word, mode, result, fn, ...)                                                                     \
     HOS_PATCH_RECORD("PATCH_AT", #pc "," #word "," #mode "," #result "," #fn "," #__VA_ARGS__)                     \
     __VA_OPT__(HOS_FOR_EACH(HOS_D_, HOS_NOSEP, __VA_ARGS__))                                                         \
     HOS_R_##result fn(HOS_PARAMS(__VA_ARGS__))
-#define PATCH_HOOK(addr, word, ...)                                                                                   \
-    HOS_PATCH_RECORD("PATCH_HOOK", #addr "," #word "," #__VA_ARGS__)                                                 \
-    ENTRY_HOOK_COUNTED(entry_##addr, entry_body_##addr)
-#define PATCH_HOOK_SYM(sym, ...)                                                                                      \
-    HOS_PATCH_RECORD("PATCH_HOOK_SYM", #sym "," #__VA_ARGS__)                                                        \
-    ENTRY_HOOK_COUNTED(entry_sym_##sym, entry_body_sym_##sym)
+/* (a PATCH_FUNC: the record, the C function's prototype, and the adapter the lifted f_<addr> tail-calls,
+   hos_func_<key>(Ctx *): it reads the declared operands from the call's context, calls fn and writes its result. The
+   function's own lifted body is hos_orig_<key> (nx2/lift2/game.py), handed to fn as orig) */
+#define HOS_FUNC_(fname, oname, result, fn, ...)                                                                      \
+    static HOS_R_##result fn(HOS_PARAMS(__VA_ARGS__));                                                               \
+    void oname(Ctx *A64_NOESC c);                                                                                     \
+    void fname(Ctx *A64_NOESC c);                                                                                     \
+    void fname(Ctx *A64_NOESC c) {                                                                                    \
+        GuestFn hos_orig_ = {c, oname};                                                                               \
+        (void)hos_orig_;                                                                                              \
+        HOS_SET_##result(c, fn(HOS_ARGS(__VA_ARGS__)));                                                               \
+    }                                                                                                                 \
+    static HOS_R_##result fn(HOS_PARAMS(__VA_ARGS__))
+#define PATCH_FUNC(addr, word, body, abi, result, fn, ...)                                                            \
+    HOS_PATCH_RECORD("PATCH_FUNC", #addr "," #word "," #body "," #abi "," #result "," #fn "," #__VA_ARGS__)          \
+    HOS_FUNC_(HOS_CAT(hos_func_, addr), HOS_CAT(hos_orig_, addr), result, fn, __VA_ARGS__)
+#define PATCH_FUNC_SYM(sym, abi, result, fn, ...)                                                                     \
+    HOS_PATCH_RECORD("PATCH_FUNC_SYM", #sym "," #abi "," #result "," #fn "," #__VA_ARGS__)                           \
+    HOS_FUNC_(HOS_CAT(hos_func_sym_, sym), HOS_CAT(hos_orig_sym_, sym), result, fn, __VA_ARGS__)
 #define HLE(sym, ...) HOS_PATCH_RECORD("HLE", #sym "," #__VA_ARGS__) void imp_##sym(Ctx *c)
 #define NV(name, ...) HOS_PATCH_RECORD("NV", #name "," #__VA_ARGS__) static void n_##name(Ctx *c, void *u_)
 #define PATCH_ANSWER(sym, value, why)                                                                                 \

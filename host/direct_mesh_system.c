@@ -10,7 +10,7 @@
      slot 3: f_80100210([L + 0xc00], [info + 0xb0], 0xfb030303), L = [[[0x84c9e740]] + 0x1e8]
    with V = [[info + 0xe0] + 8], the scene's view object (each buffer object picks its own frame's copy). f_801060f0 reads
    only info + 0xb0 (the draw context, whose + 0xd8 is the command buffer) and info + 0xbc (the kind: 0x20 binds otherwise).
-   So the patch needs only V, which the binder is hooked at its entry to note (every V it is called with is counted: one
+   So the patch needs only V, which a row at the binder's entry notes (every V it is called with is counted: one
    is expected), and the job's draw context (host/eng_jobs.c). The splice sits after the job prologue's SetDepthRange
    (the call returning to 0x800855ac in f_80084de0: an At row, a PATCH_AT declaration, host/patch.h, that calls guest code), as the
    M3 survey placed it; the four binds go to the job's own command buffer through a 0x100-byte block on the guest stack
@@ -27,11 +27,10 @@ uint64_t eng_jobs_drawctx(void);   /* eng_jobs.c */
 static volatile uint64_t view_obj;   /* (V, the last the binder was called with) */
 static struct { volatile LONG64 binder, views, jobs, no_view, no_ctx; } n;
 
-PATCH_HOOK(0x80101ec0, word(0xd503237f)) {   /* (info): V noted, the body runs */
-    if (!rx_direct()) return 0;
+PATCH_AT(0x80101ec0, word(0xd503237f), before, none, direct_mesh_system_binder, as(x0, info)) {   /* (info): V noted */
+    if (!rx_direct()) return;
     InterlockedIncrement64(&n.binder);
-    const uint64_t info = a->x[0];
-    if (!hos_guest_range(info + 0xe0, 8) || !hos_guest_range(G64(info + 0xe0) + 8, 8)) return 0;
+    if (!hos_guest_range(info + 0xe0, 8) || !hos_guest_range(G64(info + 0xe0) + 8, 8)) return;
     const uint64_t v = G64(G64(info + 0xe0) + 8);
     if (v && v != view_obj) {
         if (InterlockedIncrement64(&n.views) <= 8)
@@ -39,7 +38,6 @@ PATCH_HOOK(0x80101ec0, word(0xd503237f)) {   /* (info): V noted, the body runs *
                     (unsigned long long)view_obj);
         view_obj = v;
     }
-    return 0;
 }
 
 /* (f_80084de0 after its blr x8 to SetDepthRange: sp the job's) */

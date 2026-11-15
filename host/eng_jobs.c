@@ -1,9 +1,9 @@
-/* The render-job recorder f_80084de0(ctx, drawctx, cmdpool, key, job, &range, stats) hooked for the direct back end.
+/* The render-job recorder f_80084de0(ctx, drawctx, cmdpool, key, job, &range, stats) replaced for the direct back end.
 
    The job runners (f_8007fe60 at 0x80081548, f_80083960 at 0x8008410c) call it as a function on ModuleSystemWorker1-5 and
-   the thread that kicks the pool. The hook lets the direct back end refuse a pass whose formats it does not know yet
-   (direct_passes_recorder), otherwise notes the arguments for this thread, runs the game's recorder (the lifted function,
-   found by a64_lookup: the hook sees it again and lets it run) and clears them. Inside it the recorder's BeginRecording
+   the thread that kicks the pool. The replacement lets the direct back end refuse a pass whose formats it does not know
+   yet (direct_passes_recorder), otherwise notes the arguments for this thread, runs the game's recorder (its lifted
+   body, orig) and clears them. Inside it the recorder's BeginRecording
    (lr 0x8008533c) names the job's view record in x25, which an At row before that call hands to eng_jobs_view for
    eng_jobs_tag, for the back end. Nothing here runs without
    the direct back end. */
@@ -22,20 +22,20 @@ typedef struct {
 static _Thread_local job_tls jt;
 static _Thread_local uint64_t jt_cmd;   /* the guest command buffer the job on this thread records into */
 
-PATCH_HOOK(0x80084de0, word(0xd503237f)) {   /* (ctx, drawctx, cmdpool, key, job, &range, stats) */
-    if (!rx_direct() || jt.active) return 0;   /* (not direct mode, or the game's recorder run from here: its body) */
-    const uint64_t range = a->x[5], lr = a->lr;
-    if (direct_passes_recorder(a->x[3])) { direct_layer_ahead_job_done(range, lr); return 1; }   /* (the pass's formats not known: the early return) */
-    static A64Fn orig;
-    if (!orig) orig = f_80084de0;
-    if (!orig) return 0;
+/* the job recorder (ctx, drawctx, cmdpool, key, job, &range, stats): the game's (orig) with this thread's job noted; a
+   pass whose formats are not known returns at once (its x0 as it came) */
+PATCH_FUNC(0x80084de0, word(0xd503237f), body(0x961fa51430550d71), aapcs, x0, eng_jobs_record,
+           orig, as(x0, ctx), as(x1, drawctx), x2, as(x3, key), x4, as(x5, range), x6, x7, as(x30, lr)) {
+    if (!rx_direct() || jt.active) return guest_orig(orig, ctx, drawctx, x2, key, x4, range, x6, x7);   /* (not direct mode,
+                                                                                    or a recorder run inside one: the game's) */
+    if (direct_passes_recorder(key)) { direct_layer_ahead_job_done(range, lr); return ctx; }
     memset(&jt, 0, sizeof jt);
     jt.active = 1;
-    jt.ctx = a->x[0], jt.drawctx = a->x[1], jt.key = a->x[3];
-    hook_run(h, orig);
+    jt.ctx = ctx, jt.drawctx = drawctx, jt.key = key;
+    const uint64_t r = guest_orig(orig, ctx, drawctx, x2, key, x4, range, x6, x7);
     jt.active = 0;
     direct_layer_ahead_job_done(range, lr);
-    return 1;
+    return r;
 }
 
 /* (an At row in f_80084de0 before BeginRecording's blr, a PATCH_AT declaration, host/patch.h) the view record in x25 */

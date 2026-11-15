@@ -9,59 +9,51 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n);   /* gpu/api/rx_nvn.
 #define WAIT_WRITEBACKS(p, n) ((void)0)
 #endif
 
-PATCH_HOOK_SYM(memcpy) {
-    const uint64_t n = a->x[2];
-    if (!hos_guest_range(a->x[0], n) || !hos_guest_range(a->x[1], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
+/* (hookshot) a range past the guest window is the game's own copy (orig): the host's would read or write host memory */
+PATCH_FUNC_SYM(memcpy, aapcs, x0, hos_memcpy, orig, as(x0, dst), as(x1, src), as(x2, n), x3, x4, x5, x6, x7, x8) {
+    if (!hos_guest_range(dst, n) || !hos_guest_range(src, n)) return guest_orig(orig, dst, src, n, x3, x4, x5, x6, x7, x8);
     if (n) {
-        WAIT_WRITEBACKS(GP(a->x[1]), n);   /* (TOTK copies some rendered maps with the CPU) */
-        memmove(GP(a->x[0]), GP(a->x[1]), (size_t)n);
+        WAIT_WRITEBACKS(GP(src), n);   /* (TOTK copies some rendered maps with the CPU) */
+        memmove(GP(dst), GP(src), (size_t)n);
     }
-    return 1;
+    return dst;
 }
 
-
-PATCH_HOOK_SYM(memmove) {
-    const uint64_t n = a->x[2];
-    if (!hos_guest_range(a->x[0], n) || !hos_guest_range(a->x[1], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
+PATCH_FUNC_SYM(memmove, aapcs, x0, hos_memmove, orig, as(x0, dst), as(x1, src), as(x2, n), x3, x4, x5, x6, x7) {
+    if (!hos_guest_range(dst, n) || !hos_guest_range(src, n)) return guest_orig(orig, dst, src, n, x3, x4, x5, x6, x7);
     if (n) {
-        WAIT_WRITEBACKS(GP(a->x[1]), n);
-        memmove(GP(a->x[0]), GP(a->x[1]), (size_t)n);
+        WAIT_WRITEBACKS(GP(src), n);
+        memmove(GP(dst), GP(src), (size_t)n);
     }
-    return 1;
+    return dst;
 }
 
-PATCH_HOOK_SYM(memset) {
-    const uint64_t n = a->x[2];
-    if (!hos_guest_range(a->x[0], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
-    if (n) {
-        memset(GP(a->x[0]), (int)(uint8_t)a->x[1], (size_t)n);
-    }
-    return 1;
+PATCH_FUNC_SYM(memset, aapcs, x0, hos_memset, orig, as(x0, dst), as(x1, c), as(x2, n)) {
+    if (!hos_guest_range(dst, n)) return guest_orig(orig, dst, c, n);
+    if (n) memset(GP(dst), (int)(uint8_t)c, (size_t)n);
+    return dst;
 }
 
-PATCH_HOOK_SYM(memcmp) {
-    const uint8_t *p = (const uint8_t *)GP(a->x[0]), *q = (const uint8_t *)GP(a->x[1]);
-    const size_t n = (size_t)a->x[2];
+PATCH_FUNC_SYM(memcmp, aapcs, x0, hos_memcmp, as(x0, a), as(x1, b), as(x2, n)) {
+    const uint8_t *p = (const uint8_t *)GP(a), *q = (const uint8_t *)GP(b);
     int r = 0;
-    if (n && memcmp(p, q, n)) {
+    if (n && memcmp(p, q, (size_t)n)) {
         size_t i = 0;
         while (p[i] == q[i]) i++;
         r = (int)p[i] - (int)q[i];
     }
-    return hook_return(h, (uint64_t)(int64_t)r);
+    return (uint64_t)(int64_t)r;
 }
 
-PATCH_HOOK_SYM(strlen) {
-    return hook_return(h, strlen((const char *)GP(a->x[0])));
-}
+PATCH_FUNC_SYM(strlen, aapcs, x0, hos_strlen, as(x0, s)) { return strlen((const char *)GP(s)); }
 
-PATCH_HOOK_SYM(strcmp) {
-    const uint8_t *p = (const uint8_t *)GP(a->x[0]), *q = (const uint8_t *)GP(a->x[1]);
+PATCH_FUNC_SYM(strcmp, aapcs, x0, hos_strcmp, as(x0, a), as(x1, b)) {
+    const uint8_t *p = (const uint8_t *)GP(a), *q = (const uint8_t *)GP(b);
     int r = 0;
     if (strcmp((const char *)p, (const char *)q)) {
         size_t i = 0;
         while (p[i] && p[i] == q[i]) i++;
         r = (int)p[i] - (int)q[i];
     }
-    return hook_return(h, (uint64_t)(int64_t)r);
+    return (uint64_t)(int64_t)r;
 }

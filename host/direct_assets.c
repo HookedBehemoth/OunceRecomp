@@ -202,13 +202,19 @@ static int index_in(uint64_t bntx, uint64_t brti, const char *nm, uint32_t nl, u
     return -1;
 }
 
-/* TextureData::loadImage_(td, ctx, src) */
-PATCH_HOOK(0x80798690, word(0xd503237f)) {
-    void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: HOS_DBG=nodata, either back end) */
-    direct_diag_nodata_load(a->x[0], a->x[2], a->lr);
+/* TextureData::loadImage_(td, ctx, src): the game's load (orig), without src when the back end takes the texels from
+   the store */
+void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: HOS_DBG=nodata, either back end) */
+static int load_image(uint64_t td, uint64_t src);
+PATCH_FUNC(0x80798690, word(0xd503237f), body(0xd3402c5c84ac23f3), aapcs, x0, direct_assets_load_image,
+           orig, as(x0, td), as(x1, ctx), as(x2, src), x3, x4, x5, x6, x7, as(x30, lr)) {
+    direct_diag_nodata_load(td, src, lr);
+    return guest_orig(orig, td, ctx, load_image(td, src) ? 0 : src, x3, x4, x5, x6, x7);
+}
+/* 1: the back end has the texture's texels; its src is not copied into the heap */
+static int load_image(uint64_t td, uint64_t src) {
     if (!rx_direct()) return 0;
     const int on = ready();
-    const uint64_t td = a->x[0], src = a->x[2];
     if (!hos_guest_range(td, 0x100)) return 0;
     const uint64_t brti = td + 0x58, gfx = G64(td + 0xd8);
     const uint64_t slot = hos_guest_range(G64(td + 0x18), 8) ? G64(td + 0x18) + 0x10 : 0;
@@ -234,19 +240,18 @@ PATCH_HOOK(0x80798690, word(0xd503237f)) {
     if (src) {   /* (no copy into the heap: the back end makes the image from the store, or the placeholder) */
         InterlockedIncrement64(&n_load_skipped);
         InterlockedAdd64(&n_load_bytes, G32(td + 0xa8));
-        hook_set_arg(h, 2, 0);
+        return 1;
     }
     return 0;
 }
 
 /* TextureData::rebind_(td, newBase, res, ctx) */
-PATCH_HOOK(0x807982f0, word(0xd503237f)) {
-    if (!ready()) return 0;
-    const uint64_t td = a->x[0];
-    if (!hos_guest_range(td, 0x100)) return 0;
-    const uint64_t gfx = G64(td + 0xd8), res = a->x[2];
+PATCH_AT(0x807982f0, word(0xd503237f), before, none, direct_assets_rebind, as(x0, td), as(x1, base), as(x2, res)) {
+    if (!ready()) return;
+    if (!hos_guest_range(td, 0x100)) return;
+    const uint64_t gfx = G64(td + 0xd8);
     InterlockedIncrement64(&n_rebind);
-    if (!gfx) return 0;
+    if (!gfx) return;
     /* (res: the BRTI the texture is made from now; in a file (a streamed texture's data), its mip 0 is in that file) */
     hsd_asset_key k;
     memset(&k, 0, sizeof k);
@@ -262,39 +267,43 @@ PATCH_HOOK(0x807982f0, word(0xd503237f)) {
         if (mip0 && hos_guest_range(mip0, 1)) k.data = GP(mip0);
         if (InterlockedIncrement64(&n_rebind_logged) <= 12)
             hos_log("assets: rebind td %#llx new base %#llx res %#llx '%.*s' mip 0 %#llx (in the heap: %d)", (unsigned long long)td,
-                    (unsigned long long)a->x[1], (unsigned long long)res, nm ? (int)nl : 0, nm ? nm : "", (unsigned long long)mip0,
+                    (unsigned long long)base, (unsigned long long)res, nm ? (int)nl : 0, nm ? nm : "", (unsigned long long)mip0,
                     mip0 >= heap_lo && mip0 < heap_hi);
     }
     rx_direct()->asset_load(&k);
-    return 0;
 }
 
-/* in-place files: the file, for this thread while its textures are initialized */
+/* in-place files: the file, for this thread while its textures are initialized (the game's body, orig, runs) */
 static _Thread_local uint64_t tl_inplace;
-static _Thread_local int tl_in_body;
-static int run_inplace(HookCall *h, A64Fn f, uint64_t file) {
-    if (tl_in_body || !ready()) return 0;
-    if (!f) return 0;
+static _Thread_local int tl_in_body;   /* (a call inside another's body keeps the outer file) */
+static uint64_t run_inplace(GuestFn *orig, const uint64_t x[8], uint64_t file) {
+    if (tl_in_body || !ready()) return guest_orig(orig, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
     const uint64_t was = tl_inplace;
     tl_inplace = file;
     tl_in_body = 1;
-    hook_run(h, f);   /* (the lifted body: the hook sees it again and lets it run) */
+    const uint64_t r = guest_orig(orig, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
     tl_in_body = 0;
     tl_inplace = was;
-    return 1;
+    return r;
 }
 /* ResTextureFile in place (ui2d) */
-PATCH_HOOK(0x80798b60, word(0xd503237f)) { return run_inplace(h, f_80798b60, a->x[0]); }
-PATCH_HOOK(0x80792bd0, word(0xd503237f)) { return run_inplace(h, f_80792bd0, a->x[1]); }   /* in-place BNTX */
+PATCH_FUNC(0x80798b60, word(0xd503237f), body(0xbc01f749f0fff475), aapcs, x0, direct_assets_inplace_res,
+           orig, x0, x1, x2, x3, x4, x5, x6, x7) {
+    return run_inplace(orig, (const uint64_t[8]){x0, x1, x2, x3, x4, x5, x6, x7}, x0);
+}
+PATCH_FUNC(0x80792bd0, word(0xd503237f), body(0x388a5e46c19d2d62), aapcs, x0, direct_assets_inplace_bntx,
+           orig, x0, x1, x2, x3, x4, x5, x6, x7) {
+    return run_inplace(orig, (const uint64_t[8]){x0, x1, x2, x3, x4, x5, x6, x7}, x1);   /* in-place BNTX */
+}
 
 /* nn::gfx TextureImpl<NVN>::Initialize(obj, device, info, pool, offset, size): an in-place file's texture */
-PATCH_HOOK(0x80798920, word(0xd503237f)) {
+PATCH_AT(0x80798920, word(0xd503237f), before, none, direct_assets_inplace_init, as(x0, obj), as(x2, info)) {
     const uint64_t bntx = tl_inplace;
-    if (!bntx || !direct_assets_on()) return 0;
-    const uint64_t brti = a->x[2] - 0x10, obj = a->x[0];
+    if (!bntx || !direct_assets_on()) return;
+    const uint64_t brti = info - 0x10;
     if (!obj || !hos_guest_range(brti, 0xa0) || G32(brti) != 0x49545242u || !hos_guest_range(bntx, 0x40) ||
         G32(bntx) != 0x58544e42u)
-        return 0;
+        return;
     hsd_asset_key k;
     memset(&k, 0, sizeof k);
     k.tex = GP(obj + 0x10);
@@ -309,29 +318,25 @@ PATCH_HOOK(0x80798920, word(0xd503237f)) {
     if (index >= 0 && nm && mip0 > bntx) k.name = nm, k.name_len = nl, k.index = (uint32_t)index, k.data_offset = (uint32_t)(mip0 - bntx);
     rx_direct()->asset_load(&k);
     InterlockedIncrement64(&n_inplace);
-    return 0;
 }
 
 /* the compaction step (worker): its movers copy only with [worker+0x1f21] == 1 */
-PATCH_HOOK(0x807da480, word(0xd503237f)) {
-    if (!ready()) return 0;
-    const uint64_t w = a->x[0];
+PATCH_AT(0x807da480, word(0xd503237f), before, none, direct_assets_compaction, as(x0, w)) {
+    if (!ready()) return;
     InterlockedIncrement64(&n_compaction);
     if (hos_guest_range(w + 0x1f21, 1) && *(uint8_t *)GP(w + 0x1f21) == 1) {
         *(uint8_t *)GP(w + 0x1f21) = 0;
         if (InterlockedIncrement64(&n_compaction_cleared) == 1)
             hos_log("assets: compaction (worker %#llx): its texel copies are off (byte +0x1f21 was 1)", (unsigned long long)w);
     }
-    return 0;
 }
 
 /* TextureDataMgr replaceLoad_(replacer, td, src, size, align): counted */
-PATCH_HOOK(0x83537d90, word(0xd503237f)) {
-    if (!ready()) return 0;
+PATCH_AT(0x83537d90, word(0xd503237f), before, none, direct_assets_replace_load, as(x1, td), as(x3, size)) {
+    if (!ready()) return;
     if (InterlockedIncrement64(&n_replace) <= 10)
-        hos_log("assets: a Replace load (td %#llx, %llu bytes): its copy into the heap is not skipped", (unsigned long long)a->x[1],
-                (unsigned long long)a->x[3]);
-    return 0;
+        hos_log("assets: a Replace load (td %#llx, %llu bytes): its copy into the heap is not skipped", (unsigned long long)td,
+                (unsigned long long)size);
 }
 
 int direct_assets_skip_packaged(uint64_t bytes) {
@@ -349,17 +354,14 @@ int direct_assets_skip_packaged(uint64_t bytes) {
 /* f_80f6c9d0 (lr 0x80f6cb20) is agl's generic pool wrapper (tera's pools and Replace requests use it too:
    docs/direct/texture-streaming.md 1): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
    (f_80f6c580), whose body runs from here with this thread noted */
-static _Thread_local int tl_heap_init, tl_heap_token;
-PATCH_HOOK(0x80f6c580, word(0xd503237f)) {
-    if (tl_heap_token) return tl_heap_token = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
-    if (!rx_direct() || !direct_assets_on()) return 0;
-    static A64Fn body;
-    if (!body) body = f_80f6c580;
-    if (!body) return 0;
-    tl_heap_init = tl_heap_token = 1;
-    hook_run(h, body);
-    tl_heap_init = tl_heap_token = 0;
-    return 1;
+static _Thread_local int tl_heap_init;
+PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, direct_assets_heap_init,
+           orig, x0, x1, x2, x3, x4, x5, x6, x7, x8) {
+    if (!rx_direct() || !direct_assets_on()) return guest_orig(orig, x0, x1, x2, x3, x4, x5, x6, x7, x8);
+    tl_heap_init = 1;
+    const uint64_t r = guest_orig(orig, x0, x1, x2, x3, x4, x5, x6, x7, x8);
+    tl_heap_init = 0;
+    return r;
 }
 /* (an At row in f_80f6c9d0 agl_memory_pool_create, after ldr x8, [x8] before its blr to nvnMemoryPoolInitialize at
    0x80f6cb1c) the next pool this thread makes is agl's wrapper's */
@@ -540,45 +542,44 @@ static void tile_upload_as(uint32_t source, const nvn_tex *tp, const uint8_t *sr
 
 /* ---- the font glyph cache ---- */
 static _Thread_local struct { int in_pack, in_plot, have; uint32_t x, y, w, h; } gl;
-PATCH_HOOK(0x8152f540, word(0xb941400c)) {   /* the shelf packer (cache, &x, &y, w, h) */
-    if (gl.in_pack || !gl.in_plot || !direct_assets_on()) return 0;
-    static A64Fn f;
-    if (!f) f = f_8152f540;
-    if (!f) return 0;
-    const uint64_t px = a->x[1], py = a->x[2];
-    const uint32_t cw = (uint32_t)a->x[3], ch = (uint32_t)a->x[4];
+PATCH_FUNC(0x8152f540, word(0xb941400c), body(0xab2b6fd8adce95a6), aapcs, x0, direct_assets_glyph_pack,
+           orig, as(x0, cache), as(x1, px), as(x2, py), as(x3, w), as(x4, h)) {   /* the shelf packer (cache, &x, &y, w, h) */
+    if (gl.in_pack || !gl.in_plot || !direct_assets_on()) return guest_orig(orig, cache, px, py, w, h);
     gl.in_pack = 1;
-    hook_run(h, f);
+    const uint64_t r = guest_orig(orig, cache, px, py, w, h);
     gl.in_pack = 0;
-    if (hos_guest_range(px, 4) && hos_guest_range(py, 4)) gl.x = G32(px), gl.y = G32(py), gl.w = cw, gl.h = ch, gl.have = 1;
-    return 1;
+    if (hos_guest_range(px, 4) && hos_guest_range(py, 4))
+        gl.x = G32(px), gl.y = G32(py), gl.w = (uint32_t)w, gl.h = (uint32_t)h, gl.have = 1;
+    return r;
 }
-PATCH_HOOK(0x81539300, word(0xd503237f)) {   /* nn::font's plot (cache, glyph, ...) */
-    if (gl.in_plot || !ready()) return 0;
-    static A64Fn f;
-    if (!f) f = f_81539300;
-    if (!f) return 0;
-    const uint64_t cache = a->x[0];
+static void glyph_plotted(uint64_t cache);
+PATCH_FUNC(0x81539300, word(0xd503237f), body(0xee537395c207a3f6), aapcs, x0, direct_assets_glyph_plot,
+           orig, as(x0, cache), x1, x2, x3, x4, x5, x6, x7) {   /* nn::font's plot (cache, glyph, ...) */
+    if (gl.in_plot || !ready()) return guest_orig(orig, cache, x1, x2, x3, x4, x5, x6, x7);
     gl.have = 0;
     gl.in_plot = 1;
-    hook_run(h, f);
+    const uint64_t r = guest_orig(orig, cache, x1, x2, x3, x4, x5, x6, x7);
     gl.in_plot = 0;
-    if (!gl.have || !hos_guest_range(cache + 0xf0, 0x58)) return 1;
+    glyph_plotted(cache);
+    return r;
+}
+/* the glyph the plot packed (gl), its texels to the back end */
+static void glyph_plotted(uint64_t cache) {
+    if (!gl.have || !hos_guest_range(cache + 0xf0, 0x58)) return;
     const uint64_t storage = G64(cache + 0xf0);
     const uint32_t stride = G32(cache + 0x140);
     nvn_tex t;
     if (!storage || !stride || !nvn_tex_live_at(storage, &t)) {
         if (InterlockedIncrement64(&n_glyph_notex) <= 5)
             hos_log("assets: glyph: no texture at %#llx (stride %u)", (unsigned long long)storage, stride);
-        return 1;
+        return;
     }
     const uint32_t x = gl.x, y = gl.y;
-    if (x >= t.d.width || y >= t.d.height) return 1;
+    if (x >= t.d.width || y >= t.d.height) return;
     uint32_t cw = gl.w + 5, ch = gl.h + 4;   /* (the cell's memsets: columns x..x+w+4, rows y..y+h+3) */
     if (x + cw > t.d.width) cw = t.d.width - x;
     if (y + ch > t.d.height) ch = t.d.height - y;
     NVNcopyRegion r = {(int)x, (int)y, 0, (int)cw, (int)ch, 1};
     rx_direct()->texels(HSD_TEXELS_GLYPH, &t, 0, 0, &r, GP(storage + (uint64_t)y * stride + x), stride, 0);
     InterlockedIncrement64(&n_glyphs);
-    return 1;
 }

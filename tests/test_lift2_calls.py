@@ -3,10 +3,12 @@
 Small functions: c1 keeps x19 and x29 in a frame and calls `keep` (which writes no callee-saved register); c2 the same
 calling `clob` (writes x19: its summary is demoted); c3 calls `keep` through BLR; c4 calls `die` (BRK: noreturn) when
 x0 is not 0. Checks on the IR: after c1's call no load of x19, x29 or SP from the context; after c2's and c3's the
-reload of x19; with `keep` a setjmp owner, or `clob` entry-hooked, the reload too; with `keep` and `clob` HLE'd
-(nx2/lift2/host_effects.py: clean unless declared) or `keep` entry-hooked, no reload; with `keep` declared clobbering,
-or its hook declared to call `clob`, the reload; an HLE_EFFECTS of a function not replaced stops the build. The
-declarations are C text, scanned (nx2/lift2/patch_scan.py), as the host's are. After c4's call
+reload of x19; with `keep` a setjmp owner, or `clob` replaced with orig (its body writes x19), the reload too; with
+`keep` and `clob` HLE'd (nx2/lift2/host_effects.py: clean unless declared) or replaced (PATCH_FUNC, with or without
+orig on `keep`, calling `clob` as guest code: guest_call puts every register back), no reload; with `keep` declared
+clobbering, the reload; an HLE_EFFECTS of a function not replaced stops the build. The summaries count a replaced
+function's operands, result and guest callees, and its body's facts with orig. The declarations are C text, scanned
+(nx2/lift2/patch_scan.py), as the host's are. After c4's call
 of `die` a trap and `unreachable`. The program, lifted, compiled and run, returns what the guest code returns.
 
 python -I -B tests/test_lift2_calls.py
@@ -81,10 +83,18 @@ class declared:
         patch_scan.use(self.before)
 
 
-def lift(hooks=(), sj=(), hle=None, calls=None, text=""):
-    """{name: IR function}, the Program and the bodies, with the summaries as a game build has them; hooks: entry-hooked
-    functions, hle: {address: symbol} of HLE'd ones, calls: {hooked function: guest functions its hook calls}; text:
-    further declarations"""
+def func_decl(e, orig=False, guest=(), ops="x0"):
+    """a PATCH_FUNC of the test's function at e (its word and body hash as the plan has them)"""
+    words = [word(p) for p in sorted(summary.walk(set(A.values()), word)[e])]
+    return "PATCH_FUNC(0x%08x, word(0x%08x), body(%#x), aapcs, x0, t_%08x%s%s, %s) { return 0; }\n" % (
+        e, word(e), patch_scan.body_hash(words), e, ", orig" if orig else "",
+        ", guest(%s)" % ", ".join("0x%08x" % c for c in guest) if guest else "", ops + (", sp" if guest else ""))
+
+
+def lift(replaced=(), sj=(), hle=None, orig=(), calls=None, text=""):
+    """{name: IR function}, the Program and the bodies, with the summaries as a game build has them; replaced: functions
+    replaced (PATCH_FUNC; those in orig with orig), hle: {address: symbol} of HLE'd ones, calls: {replaced function:
+    guest functions it calls}; text: further declarations"""
     entries = set(A.values())
     funcs = summary.walk(entries, word)
     prog = build_ir.Program(entries=entries)
@@ -93,13 +103,10 @@ def lift(hooks=(), sj=(), hle=None, calls=None, text=""):
     plan = {"summaries": {e: summary.pack(s) for e, s in sums.items()}, "plt": {}, "hooks": sorted(hle),
             "sj_rets": {e: (0, 0, 0, 0) for e in sj},
             "bodies": {e: (sorted(pcs), [word(p) for p in sorted(pcs)]) for e, pcs in funcs.items()}}
-    entry = {e: "entry_0x%08x" % e for e in hooks}
-    for e in hooks:
-        g = (calls or {}).get(e)
-        text += "PATCH_HOOK(0x%08x, word(0x%08x)%s) { return 0; }\n" % (
-            e, word(e), ', reads(sp, "t"), guest(%s)' % ", ".join("0x%08x" % c for c in g) if g else "")
-    with declared(text):
-        bound = bounds.call_bounds(plan, entry, hle)
+    for e in replaced:
+        text += func_decl(e, e in orig, (calls or {}).get(e, ()))
+    with declared(text) as ps:
+        bound = bounds.call_bounds(plan, hle, False, {f.addr: f for f in ps.funcs})
         bound(A["keep"])   # (memoised: computed while the test's declarations hold)
     prog = build_ir.Program(entries=entries, bound=lambda e: bound(e)._replace(symbol="g_%08x" % e))
     fns = {n: build_ir.build(a, sorted(funcs[a]), word, prog) for n, a in A.items()}
@@ -180,8 +187,8 @@ class Calls(unittest.TestCase):
     def test_host_edited(self):
         fns, _ = lift(sj=[A["keep"]])
         self.assertIn("x19", loads_after_call(fns["c1"]))      # (a setjmp owner)
-        fns, _ = lift(hooks=[A["clob"]])
-        self.assertIn("x19", loads_after_call(fns["c2"]))      # (an entry hook on a body that writes x19)
+        fns, _ = lift(replaced=[A["clob"]], orig=[A["clob"]])
+        self.assertIn("x19", loads_after_call(fns["c2"]))      # (orig: a body that writes x19 may run)
 
     def test_host_clean(self):
         # (an HLE'd callee, declared clean by default: x19, x29 and SP stay; even in place of clob, whose guest body
@@ -189,12 +196,12 @@ class Calls(unittest.TestCase):
         fns, _ = lift(hle={A["keep"]: "nn_keep", A["clob"]: "nn_clob"})
         for f in ("c1", "c2"):
             self.assertFalse(loads_after_call(fns[f]) & {"x19", "x29", "sp"}, (f, loads_after_call(fns[f])))
-        # (an entry hook on a body whose summary preserves them)
-        fns, _ = lift(hooks=[A["keep"]])
-        self.assertFalse(loads_after_call(fns["c1"]) & {"x19", "x29", "sp"}, loads_after_call(fns["c1"]))
-        # (an entry hook that calls guest code writing x19: its guest(...))
-        fns, _ = lift(hooks=[A["keep"]], calls={A["keep"]: (A["clob"],)})
-        self.assertIn("x19", loads_after_call(fns["c1"]))
+        # (a replaced function, by its declaration: clob's body is not run; keep's with orig preserves them; guest
+        # code it calls through guest_call has every register put back)
+        for f, kw in (("c2", {"replaced": [A["clob"]]}), ("c1", {"replaced": [A["keep"]], "orig": [A["keep"]]}),
+                      ("c1", {"replaced": [A["keep"]], "calls": {A["keep"]: (A["clob"],)}})):
+            fns, _ = lift(**kw)
+            self.assertFalse(loads_after_call(fns[f]) & {"x19", "x29", "sp"}, (kw, f, loads_after_call(fns[f])))
 
     def test_row_callee(self):
         """a callee with an At row is not host-edited: a call of it keeps what its summary preserves, and the summary
@@ -215,8 +222,8 @@ class Calls(unittest.TestCase):
             probes.use(*real)
 
     def test_patches_in_summaries(self):
-        """the host's patches enter the summaries: an entry hook's reads at the entry and its "return 1" path (no
-        must-write, x0-x7 may), an HLE'd callee's declared reads (all for one declared clobbering), a row's guest
+        """the host's patches enter the summaries: a replaced callee's operands and result (and with orig its body's
+        facts), an HLE'd callee's declared reads (all for one declared clobbering), a row's guest
         calls (their inputs; "computed": every register), a row in place of a BL (no call there)"""
         funcs = summary.walk(set(A.values()), word)
         prog = build_ir.Program(entries=set(A.values()))
@@ -225,14 +232,25 @@ class Calls(unittest.TestCase):
         sums, _, _ = summary.summarise(funcs, prog, set(), word)
         self.assertFalse(sums[A["c1"]].inputs & x1_7)
         self.assertTrue(sums[A["keep"]].mustdef & bit["x0"])
-        sums, _, _ = summary.summarise(funcs, prog, set(), word, entry={A["keep"]: "entry_0x%08x" % A["keep"]})
-        self.assertEqual(sums[A["keep"]].inputs & x1_7, x1_7)          # (HookArgs: x0-x7)
-        self.assertEqual(sums[A["c1"]].inputs & x1_7, x1_7)            # (through the call)
-        self.assertEqual(sums[A["keep"]].mustdef & ~summary.X[30], 0)  # (the hook may return having written none)
-        self.assertEqual(sums[A["keep"]].clobbers & x1_7, x1_7)        # (hook_set_arg)
-        self.assertTrue(sums[A["keep"]].returns)
-        sums, _, _ = summary.summarise(funcs, prog, set(), word, entry={A["die"]: "entry_0x%08x" % A["die"]})
-        self.assertTrue(sums[A["die"]].returns)                        # (the hook may handle the call)
+        for o, g in ((False, ()), (True, ()), (False, (A["c4"],))):
+            with declared(func_decl(A["keep"], o, g, "x0, x5")) as ps:
+                rep = summary.func_facts({f.addr: f for f in ps.funcs})
+                sums, _, _ = summary.summarise(funcs, prog, set(), word, replaced=rep)
+                fk = summary.func_summary(sums, A["keep"], {})
+            self.assertEqual(sums[A["c1"]].inputs & x1_7, bit["x5"], (o, g))   # (the operands, through the call)
+            self.assertEqual(sums[A["keep"]].inputs & x1_7, 0)                 # (its body's own summary as it is)
+            self.assertTrue(sums[A["c1"]].inputs & bit["x29"])                  # (c1's own frame)
+            # (c1 adds x19 to keep's x0 after the call: keep's result, written on every return)
+            self.assertTrue(fk.mustdef & bit["x0"])
+            self.assertFalse(fk.clobbers & bit["x19"])
+        with declared(func_decl(A["clob"], True)) as ps:
+            rep = summary.func_facts({f.addr: f for f in ps.funcs})
+            sums, _, _ = summary.summarise(funcs, prog, set(), word, replaced=rep)
+            self.assertTrue(summary.func_summary(sums, A["clob"], {}).clobbers & bit["x19"])   # (orig: the body's)
+        with declared(func_decl(A["die"])) as ps:
+            rep = summary.func_facts({f.addr: f for f in ps.funcs})
+            sums, _, _ = summary.summarise(funcs, prog, set(), word, replaced=rep)
+            self.assertTrue(summary.func_summary(sums, A["die"], {}).returns)   # (the host function returns)
         with declared('HLE(nn_keep, reads(x25, "test")) {}'):
             hle = summary.host_summaries({A["keep"]: "nn_keep"})
             sums, _, _ = summary.summarise(funcs, prog, hle, word)

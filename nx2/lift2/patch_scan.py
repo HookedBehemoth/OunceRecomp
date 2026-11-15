@@ -11,17 +11,18 @@ duplicate site, and on an unknown register or kind.
 Kinds:
   PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }    mode: after | before | instead
   PATCH_AT_SITE(pc, word(W), mode, result, fn, operand...);        another site of fn, checked against its prototype
-  PATCH_HOOK(addr, word(W), effect...) { body }                    host code at the entry of the function at addr
-  PATCH_HOOK_SYM(symbol, effect...) { body }                       the same, the function an export of the image
+  PATCH_FUNC(addr, word(W), body(H), aapcs, result, fn, [orig,] [guest(A, ...),] operand...) { body }
+                                                                   the function at addr replaced by fn
+  PATCH_FUNC_SYM(symbol, aapcs, result, fn, [orig,] [guest(A, ...),] operand...) { body }
+                                                                   the same, the function an export of the image
   HLE(symbol, effect...) { body }                                  the function symbol replaced (imp_<symbol>)
   NV(name, effect...) { body }                                     an NVN proc (n_<name>), the function name too
   HLE_EFFECTS(symbol, effect...);                                  the effects of a replaced function written elsewhere
   PATCH_ANSWER(symbol, value, "why");                              the function symbol replaced by a constant answer in x0
 operands: xN wN sN qN sp ld(xN|sp, K) add(xN, K) k(K) as(<operand>, name) guest(A, ...) | guest(computed) io(r, ...)
 results: none xN wN sN qN
-effects: reads(reg..., "why") (registers beyond the kind's own: a hook's x0-x7 and x30, an HLE'd function's AAPCS
-  arguments); guest(A, ...) (a hook: the guest functions it calls); clobbers("why") (an HLE'd function: a call of it
-  keeps no register)
+effects (HLE, NV, HLE_EFFECTS): reads(reg..., "why") (registers beyond an HLE'd function's AAPCS arguments);
+  clobbers("why") (a call of it keeps no register)
 
 An `instead` site on a BL or BLR replaces the call (an At row, replace); on another instruction it replaces the
 instruction's result (a Value probe: its result is the instruction's destination). The containing function is not
@@ -29,9 +30,9 @@ written: resolve() finds it from the plan, and a site in no function or in more 
 """
 import os
 
-KINDS = ("PATCH_AT", "PATCH_AT_SITE", "PATCH_HOOK", "PATCH_HOOK_SYM", "HLE", "NV", "HLE_EFFECTS", "PATCH_ANSWER")
+KINDS = ("PATCH_AT", "PATCH_AT_SITE", "PATCH_FUNC", "PATCH_FUNC_SYM", "HLE", "NV", "HLE_EFFECTS", "PATCH_ANSWER")
+FUNCS = ("PATCH_FUNC", "PATCH_FUNC_SYM")
 SITES = ("PATCH_AT", "PATCH_AT_SITE")
-HOOKS = ("PATCH_HOOK", "PATCH_HOOK_SYM")
 REPLACED = ("HLE", "NV", "HLE_EFFECTS")
 MODES = ("after", "before", "instead")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -419,33 +420,86 @@ def _effects(args, where, allowed):
     return out.get("reads", ((), None)), out.get("guest", ()), out.get("clobbers")
 
 
-class Hook:
-    """a PATCH_HOOK / PATCH_HOOK_SYM declaration: addr and word (by address) or symbol, its C name (entry_<addr>,
-    entry_sym_<symbol>, as host/hos.h makes it), the registers it reads beyond x0-x7 and x30, the guest functions it
-    calls, where"""
+# a PATCH_FUNC's operands (host/patch.h HOS_A_): the AAPCS argument registers, x8, the return address, SP
+FUNC_OPERANDS = _regs("x", 9) | _regs("w", 9) | _regs("s", 8) | _regs("q", 8) | {"x30", "sp"}
+FUNC_RESULTS = ("none", "x0", "w0", "s0", "q0")
+
+
+def body_hash(words):
+    """a function's body as PATCH_FUNC's body(H) names it: the first 64 bits of the SHA-1 of its instruction words (in
+    address order, 32-bit little-endian)"""
+    import hashlib
+    import struct
+    return int(hashlib.sha1(struct.pack("<%dI" % len(words), *words), usedforsecurity=False).hexdigest()[:16], 16)
+
+
+class Func:
+    """a PATCH_FUNC / PATCH_FUNC_SYM declaration: addr, word and body hash (by address) or symbol; result (None); fn;
+    orig (the host function may call the lifted body); guest (the guest functions it calls); args (operand registers,
+    in order); the C names of its adapter (hos_func_<key>) and of its lifted body (hos_orig_<key>); where"""
     def __init__(self, d):
         a, where = d.args, d.where
         self.kind, self.where, self.decl = d.kind, where, d
-        self.addr = self.word = self.symbol = None
-        if d.kind == "PATCH_HOOK":
-            if len(a) < 2:
-                fail(where, "PATCH_HOOK(addr, word(W), effect...)")
+        self.addr = self.word = self.body = self.symbol = None
+        if d.kind == "PATCH_FUNC":
+            if len(a) < 6:
+                fail(where, "PATCH_FUNC(addr, word(W), body(H), aapcs, result, fn, operand...)")
             self.addr = _num(a[0], where, "the function's address")
             w = _call(a[1], "word")
             if w is None or len(w) != 1:
                 fail(where, "the function's first word is written word(0x...), not %r" % " ".join(t[1] for t in a[1]))
             self.word = _num(w[0], where, "word")
-            self.name = "entry_" + a[0][0][1]
-            rest = a[2:]
+            b = _call(a[2], "body")
+            if b is None or len(b) != 1:
+                fail(where, "the function's body hash is written body(0x...), not %r" % " ".join(t[1] for t in a[2]))
+            self.body = _num(b[0], where, "body")
+            key = a[0][0][1]
+            rest = a[3:]
         else:
-            if not a or not a[0]:
-                fail(where, "PATCH_HOOK_SYM(symbol, effect...)")
+            if len(a) < 4 or not a[0]:
+                fail(where, "PATCH_FUNC_SYM(symbol, aapcs, result, fn, operand...)")
             self.symbol = _ident(a[0], where, "the symbol")
-            self.name = "entry_sym_" + self.symbol
+            key = "sym_" + self.symbol
             rest = a[1:]
-        (self.reads, self.why), self.guest, _ = _effects([x for x in rest if x], where, ("reads", "guest"))
-        if self.guest == "computed":
-            fail(where, "a hook names the guest functions it calls")
+        self.name, self.orig_name = "hos_func_" + key, "hos_orig_" + key
+        abi = _ident(rest[0], where, "abi")
+        if abi != "aapcs":
+            fail(where, "abi: aapcs, not %s (a function of the context is an HLE(...))" % abi)
+        res = _ident(rest[1], where, "result")
+        if res not in FUNC_RESULTS:
+            fail(where, "a function's result: %s, not %s" % (", ".join(FUNC_RESULTS), res))
+        self.result = None if res == "none" else res
+        self.fn = _ident(rest[2], where, "the host function")
+        self.orig, self.guest, self.args = False, (), []
+        ops = [x for x in rest[3:] if x]
+        if len(ops) > 16:
+            fail(where, "%d operands: host/patch.h takes at most 16" % len(ops))
+        for k, x in enumerate(ops):
+            if len(x) == 1 and x[0][1] == "orig":
+                if k != 0:
+                    fail(where, "orig comes first")
+                self.orig = True
+                continue
+            what, v = operand(x, where)
+            if what == "guest":
+                if k != int(self.orig):
+                    fail(where, "guest(...) comes first (after orig)")
+                if v == "computed":
+                    fail(where, "a function names the guest functions it calls")
+                self.guest = v
+            elif what == "io":
+                fail(where, "io(...) is a PATCH_AT's: a function returns its result")
+            elif v not in FUNC_OPERANDS:
+                fail(where, "a function's operand: x0-x8, w0-w8, s0-s7, q0-q7, x30 or sp, not %s" % v)
+            else:
+                self.args.append(v)
+        if self.guest and "sp" not in self.args:
+            fail(where, "guest(...) runs on the call's stack: sp is an operand (guest_call's sp)")
+
+    def reads(self):
+        """the guest variables the function reads (its operands)"""
+        from . import probes
+        return {probes._var(r) for r in self.args}
 
 
 class Replaced:
@@ -477,15 +531,14 @@ class Answer:
 
 
 class PatchSet:
-    """the scan's result: sites ([Site], declaration order), hooks ([Hook]), replaced ({symbol: Replaced}: HLE and
+    """the scan's result: sites ([Site], declaration order), funcs ([Func]), replaced ({symbol: Replaced}: HLE and
     HLE_EFFECTS by symbol, NV by proc name), answers ({symbol: Answer})"""
-    def __init__(self, sites=(), hooks=(), replaced=(), answers=()):
-        self.sites, self.hooks = list(sites), list(hooks)
+    def __init__(self, sites=(), replaced=(), funcs=(), answers=()):
+        self.sites, self.funcs = list(sites), list(funcs)
         self.answers = {a.symbol: a for a in answers}
         self.hle = {r.symbol: r for r in replaced if r.kind == "HLE"}
         self.nv = {r.symbol: r for r in replaced if r.kind == "NV"}
         self.declared = {r.symbol: r for r in replaced if r.kind == "HLE_EFFECTS"}
-        self.hook_named = {h.name: h for h in self.hooks}
 
     def effects(self, symbol):
         """the declaration of the replaced function symbol (its HLE, HLE_EFFECTS or NV), or None"""
@@ -516,15 +569,15 @@ def scan_text(text, path="t.c"):
 
 def scan_texts(texts):
     """the PatchSet of [(file name, its text)]"""
-    out, hooks, replaced, answers = [], [], [], []
+    out, replaced, funcs, answers = [], [], [], []
     for rel, text in texts:
         if not any(k in text for k in KINDS):   # (a file without a declaration's name has none)
             continue
         for d in declarations(text, rel):
             if d.kind in SITES:
                 out.append(Site(d))
-            elif d.kind in HOOKS:
-                hooks.append(Hook(d))
+            elif d.kind in FUNCS:
+                funcs.append(Func(d))
             elif d.kind == "PATCH_ANSWER":
                 answers.append(Answer(d))
             else:
@@ -551,11 +604,16 @@ def scan_texts(texts):
             fail(s.where, "the same site as %s:%d" % seen[k])
         seen[k] = s.where
     seen = {}
-    for h in hooks:
+    for h in funcs:
         k = h.addr if h.addr is not None else h.symbol
         if k in seen:
-            fail(h.where, "a second hook of %s (the first at %s:%d)" % ((h.name,) + seen[k]))
+            fail(h.where, "a second declaration of %s (the first at %s:%d)" % ((h.name,) + seen[k]))
         seen[k] = h.where
+    fns = {}
+    for f in funcs:
+        if f.fn in fns:
+            fail(f.where, "%s replaces a second function (the first at %s:%d)" % ((f.fn,) + fns[f.fn]))
+        fns[f.fn] = f.where
     seen = {}
     for r in replaced:
         k = (r.kind, r.symbol)
@@ -575,7 +633,7 @@ def scan_texts(texts):
         other = hle.get(a.symbol) or next((r for r in replaced if r.kind == "HLE_EFFECTS" and r.symbol == a.symbol), None)
         if other is not None:
             fail(a.where, "PATCH_ANSWER of %s, which %s declares at %s:%d" % ((a.symbol, other.kind) + other.where))
-    return PatchSet(out, hooks, replaced, answers)
+    return PatchSet(out, replaced, funcs, answers)
 
 
 _PATCHES = None
@@ -595,55 +653,75 @@ def use(ps):
     before = patches()
     _PATCHES = ps
     from . import summary
-    summary.ENTRY.clear()
+    summary.FUNCS.clear()
     return before
 
 
-def entry_hooks(gen, ps=None):
-    """({address: the hook's C name}, [Hook by a symbol the image does not export]): the PATCH_HOOK addresses, and the
-    PATCH_HOOK_SYM symbols through the image's exports (<gen>/../image/image.json)"""
+def _exports(gen):
     import json
-    ps = ps or patches()
-    exports = {}
     meta = os.path.join(os.path.dirname(gen), "image", "image.json")
-    if any(h.symbol for h in ps.hooks) and os.path.exists(meta):
-        with open(meta) as f:
-            exports = json.load(f).get("exports", {})
+    if not os.path.exists(meta):
+        return {}
+    with open(meta) as f:
+        return json.load(f).get("exports", {})
+
+
+def funcs(gen, ps=None):
+    """({address: Func}, [Func by a symbol the image does not export]): the PATCH_FUNC addresses, and the PATCH_FUNC_SYM
+    symbols through the image's exports (<gen>/../image/image.json)"""
+    ps = ps or patches()
+    exports = _exports(gen) if any(f.symbol for f in ps.funcs) else {}
     out, missing = {}, []
-    for h in ps.hooks:
-        a = h.addr if h.symbol is None else exports.get(h.symbol)
+    for f in ps.funcs:
+        a = f.addr if f.symbol is None else exports.get(f.symbol)
         if a is None:
-            missing.append(h)
+            missing.append(f)
         else:
-            out[a] = h.name
+            out[a] = f
     return out, missing
 
 
-def hook_errors(plan, gen, ps=None):
-    """[(where, what is wrong)] of the hooks against the plan: a symbol the image does not export, no lifted function at
-    the address, a first word other than the declared one"""
+# the registers a replaced body may read only as a declared operand of its PATCH_FUNC (with orig): the integer argument
+# registers and x8 (guest_orig passes x0.. in order; the declaration says which the body takes)
+ORIG_ARGS = tuple("x%d" % i for i in range(9))
+
+
+def func_errors(plan, gen, ps=None):
+    """[(where, what is wrong)] of the PATCH_FUNCs against the plan: a symbol the image does not export, no lifted
+    function at the address, a first word or body hash other than the declared one, an orig body reading an argument
+    register the declaration does not take (with the plan's summaries)"""
+    from . import summary
     ps = ps or patches()
-    hooks, missing = entry_hooks(gen, ps)
-    out = [(h.where, "%s: the image exports no %s" % (h.kind, h.symbol)) for h in missing]
-    by_name = ps.hook_named
-    for a, n in sorted(hooks.items()):
-        h = by_name[n]
+    found, missing = funcs(gen, ps)
+    out = [(f.where, "%s: the image exports no %s" % (f.kind, f.symbol)) for f in missing]
+    summ = plan.get("summaries", {})
+    for a, f in sorted(found.items()):
         body = plan["bodies"].get(a)
-        if body is None:
-            out.append((h.where, "%s at %#x: no lifted function there" % (h.kind, a)))
-        elif h.word is not None and (body[0][0] != a or body[1][0] != h.word):
-            out.append((h.where, "PATCH_HOOK at %#x: the function's first word is %#010x, not %#010x"
-                        % (a, body[1][0] if body[0][0] == a else 0, h.word)))
+        if body is None or body[0][0] != a:
+            out.append((f.where, "%s at %#x: no lifted function there" % (f.kind, a)))
+            continue
+        if f.word is not None and body[1][0] != f.word:
+            out.append((f.where, "PATCH_FUNC at %#x: the function's first word is %#010x, not %#010x"
+                        % (a, body[1][0], f.word)))
+        elif f.body is not None and body_hash(body[1]) != f.body:
+            out.append((f.where, "PATCH_FUNC at %#x: the function's body is body(%#018x), not body(%#018x) (%d "
+                        "instructions)" % (a, body_hash(body[1]), f.body, len(body[1]))))
+        s = summ.get(a)
+        if f.orig and s is not None:
+            took = f.reads()
+            more = [r for r in ORIG_ARGS if s[0] & summary.BIT[r] and r not in took]
+            if more:
+                out.append((f.where, "%s at %#x: its body reads %s, which the declaration does not take: list %s as "
+                            "operand%s" % (f.kind, a, ", ".join(more), " and ".join(more), "s" if len(more) > 1 else "")))
     return out
 
 
-def check_hooks(plan, gen, ps=None):
-    """SystemExit with file:line for a hook whose function the plan does not lift, whose symbol the image does not
-    export, or whose function's first word is not the declared one (hook_errors); else {address: hook C name}"""
+def check_funcs(plan, gen, ps=None):
+    """SystemExit with file:line on the first of func_errors; else {address: Func}"""
     ps = ps or patches()
-    for where, msg in hook_errors(plan, gen, ps)[:1]:
+    for where, msg in func_errors(plan, gen, ps)[:1]:
         fail(where, msg)
-    return entry_hooks(gen, ps)[0]
+    return funcs(gen, ps)[0]
 
 
 def param(arg, where):

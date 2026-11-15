@@ -2,20 +2,19 @@
 nx2/lift2/patch_scan.py reads them; the rules in nx2/lift2/host_effects.py): host/*.c compiled to LLVM IR (-O1, no
 inlining), and every load from a context pointer traced through the functions it is passed to.
 
-- An entry hook (PATCH_HOOK: entry_0x*, entry_sym_*) reads x0-x7 and x30 (host/hos.h HookArgs) and passes the call
-  only to the hook_* functions; one that calls hook_call_guest declares reads(sp, ...).
+- A replaced function's adapter (PATCH_FUNC: hos_func_0x*, hos_func_sym_*) reads only its declared operands of the
+  call's context (the host function takes them as values; its GuestCall goes only to guest_call).
 - An HLE'd function (HLE: imp_*, and the NVN procs NV: n_nvn*) reads x19-x29 or v8-v15 of its caller only where its
   declaration's reads(...) says so.
 - No host function compares the return address with a guest address any more except as a label: checked by the source
   (host/*.c) having no `x[30] ==` / `x[30] !=` / `lr ==` / `lr !=` against a literal outside the listed diagnostics.
-- Every guest function an entry hook or an At row's host function enters, on any path through the host's calls, is
-  declared (the summaries read its inputs there): a constant target in the hook's guest(...) or the row's
-  guest(...), a computed one as guest(computed). A hook's hook_run of its own body needs none (its summary is the
-  body's). Guest code is entered through hook_call_guest, guest_call, hos_call_guest, a64_icall, a64_ijump, a call of
-  an f_<addr> / body_<addr>, or hook_run; a guest function's host pointer (CODE_PTR(f_<addr>), f_<addr> kept in a
-  static) is a constant target. A guest function reaches host code by its name or from a64_lookup / a64_fn_of, which
-  only the boot and the thread start call, and a static holding one goes only to hook_run (checked), so any other
-  indirect call is of host code.
+- Every guest function a replaced function's or an At row's host function enters, on any path through the host's
+  calls, is declared (the summaries read its inputs there): a constant target in its guest(...), a computed one as
+  guest(computed) (rows). A replaced function's own body, orig, needs none (its record joins the function's). Guest
+  code is entered through guest_call, hos_call_guest, a64_icall, a64_ijump or a call of an f_<addr> / body_<addr>; a
+  guest function's host pointer (CODE_PTR(f_<addr>)) is a constant target. A guest function reaches host code by its
+  name or from a64_lookup / a64_fn_of, which only the boot and the thread start call, and no static holds one
+  (checked), so any other indirect call is of host code (orig's, through its GuestFn, is the body's).
 No game is used.
 
 python -I -B tests/test_host_context_reads.py
@@ -38,7 +37,6 @@ import rtgen  # noqa: E402
 from lift2 import host_effects, patch_scan, probes  # noqa: E402
 
 DEF = re.compile(r"^define [^@]*@([\w.$]+)\((.*)\)[^{]*\{")
-HOOK_API = {"hook_return", "hook_set_arg", "hook_run", "hook_result", "hook_call_guest"}
 GUEST = re.compile(r"^(a64_icall|a64_ijump|hos_call_guest|hos_sj_call)$")
 # (lr comparisons that only label or count: allowed)
 LR_LABELS = {
@@ -103,7 +101,7 @@ def trace(folder):
 
 
 def reads(funcs, name, k=0, seen=None, api=None):
-    """the context fields function name reads through parameter k, the hook API functions it reaches"""
+    """the context fields function name reads through parameter k, the guest-call functions it reaches"""
     seen = set() if seen is None else seen
     api = set() if api is None else api
     f = funcs.get(name)
@@ -114,7 +112,7 @@ def reads(funcs, name, k=0, seen=None, api=None):
     for i, o, callee, arg in f["calls"]:
         if i != k:
             continue
-        if callee in HOOK_API or callee == "guest_call":
+        if callee == "guest_call":
             api.add(callee)
             continue
         if GUEST.match(callee) or callee == "<indirect>":
@@ -129,7 +127,7 @@ def reads(funcs, name, k=0, seen=None, api=None):
 CALL = re.compile(r"call [^@%(]*?(?:@([\w.$]+)|(%[\w.]+))\((.*)\)")
 DEF_ALL = re.compile(r"^define ([^@]*)@([\w.$]+)\((.*)\)[^{]*\{")
 # (the call that enters guest code: the index of its target argument)
-ENTER = {"hook_call_guest": 1, "guest_call": 2, "hos_call_guest": 1, "a64_icall": 1, "a64_ijump": 1}
+ENTER = {"guest_call": 2, "hos_call_guest": 1, "a64_icall": 1, "a64_ijump": 1}
 INT = re.compile(r"-?\d+$")
 GUEST_FN = re.compile(r"@(?:f|body)_([0-9a-f]{8})\b")
 STORED_FN = re.compile(r"store ptr @(?:f|body)_([0-9a-f]{8}), ptr @")
@@ -186,7 +184,6 @@ def guest_entries(funcs, root):
         seen.add(sig)
         f = funcs[key]
         path = path + [key if isinstance(key, str) else key[1]]
-        kept = [int(a, 16) for line in f["lines"] for a in STORED_FN.findall(line)]   # (f_<addr> kept in a static)
         for callee, args in f["calls"]:
             if callee.startswith("%"):   # (an indirect call: of a host function whose address is known, or host code)
                 callee = val(callee, env)
@@ -199,10 +196,6 @@ def guest_entries(funcs, root):
                 k = ENTER[callee]
                 t = val(args[k], env) if len(args) > k else None
                 out.append((callee, t if isinstance(t, int) else None, path))
-            elif callee == "hook_run":
-                t = val(args[1], env) if len(args) > 1 else None
-                for t in [t] if isinstance(t, int) else kept or [None]:
-                    out.append(("hook_run", t if isinstance(t, int) else None, path))
             elif re.match(r"(f|body)_[0-9a-f]{8}$", callee):
                 out.append((callee, int(callee[-8:], 16), path))
             else:
@@ -243,22 +236,23 @@ class HostReads(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def test_hooks(self):
-        hooks = [n for n in self.funcs if re.match(r"entry_(0x[0-9a-f]{8}|sym_\w+)$", n)]
-        self.assertGreater(len(hooks), 30)
-        self.assertEqual(sorted(hooks), sorted(h.name for h in patch_scan.patches().hooks))   # (each one declared)
-        for name in hooks:
-            got, api = reads(self.funcs, name)
-            allowed = set(host_effects.hook_reads(name))
-            self.assertFalse(got - allowed, "%s reads %s" % (name, sorted(got - allowed)))
-            if "hook_call_guest" in api:
-                self.assertIn("sp", allowed, "%s calls guest code: declare reads(sp, ...)" % name)
+    def test_funcs(self):
+        funcs = [n for n in self.funcs if re.match(r"hos_func_(0x[0-9a-f]{8}|sym_\w+)$", n)]
+        decl = {f.name: f for f in patch_scan.patches().funcs}
+        self.assertGreater(len(funcs), 20)
+        self.assertEqual(sorted(funcs), sorted(decl))   # (each one declared)
+        for name in funcs:
+            got, _ = reads(self.funcs, name)
+            allowed = decl[name].reads()
+            self.assertFalse(got - allowed, "%s reads %s, beyond its operands (%s:%d)" % ((name, sorted(got - allowed)) +
+                                                                                           decl[name].where))
 
     def test_guest_calls_declared(self):
-        """every guest function a hook or a row's host function enters is declared where the summaries read it"""
+        """every guest function a replaced function or a row's host function enters is declared where the summaries
+        read it"""
         roots = {}
-        for h in patch_scan.patches().hooks:
-            roots[h.name] = ("the guest(...) of %s at %s:%d" % ((h.name,) + h.where), set(h.guest), h.addr)
+        for f in patch_scan.patches().funcs:   # (its adapter, which calls it)
+            roots[f.name] = ("the guest(...) of the PATCH_FUNC of %s at %s:%d" % ((f.fn,) + f.where), set(f.guest), None)
         for p in probes.AT:   # (a row's host function: what its rows declare, all of them)
             what, decl, _ = roots.get(p.fn, ("the guest(...) of the PATCH_AT of %s" % p.fn, set(), None))
             decl = "computed" if "computed" in (decl, p.guest) else decl | set(p.guest or ())
@@ -270,8 +264,6 @@ class HostReads(unittest.TestCase):
         for name, (what, decl, own) in sorted(roots.items()):
             self.assertIn(name, self.graph, "%s is not defined in host/*.c" % name)
             for how, t, path in guest_entries(self.graph, name):
-                if how == "hook_run" and t is not None and t == own:
-                    continue   # (the hooked function's own body)
                 if decl == "computed" or (t is not None and t in decl):
                     continue
                 bad.append("%s enters guest %s through %s (%s): declare %s in %s" % (
@@ -279,35 +271,18 @@ class HostReads(unittest.TestCase):
                     "it" if t is not None else '"computed"', what))
         self.assertFalse(bad, "\n".join(bad))
 
-    def test_guest_pointers_only_for_hook_run(self):
-        """a guest function's host pointer kept in a static (f_<addr>, or a64_lookup's / a64_fn_of's result) goes only
-        to hook_run, and a64_lookup / a64_fn_of are called only by the boot and the thread start: so an indirect call
-        elsewhere is of host code, and test_guest_calls_declared sees every way into guest code"""
+    def test_guest_pointers_not_kept(self):
+        """no host function keeps a guest function's host pointer (f_<addr>) in a static, and a64_lookup / a64_fn_of
+        are called only by the boot and the thread start: so an indirect call elsewhere is of host code (or of a
+        replaced function's orig, the body its record counts), and test_guest_calls_declared sees every way into guest
+        code"""
         allowed = {"hos_main.ll", "hos_thread.ll"}
-        n = 0
         for key, f in self.graph.items():
             name = key if isinstance(key, str) else "%s %s" % key
             looks = any(c in ("a64_lookup", "a64_fn_of") for c, _ in f["calls"])
             self.assertTrue(not looks or f["file"] in allowed, "%s resolves a guest code address" % name)
-            kept = {g for line in f["lines"] for g in re.findall(r"store ptr @(?:f|body)_[0-9a-f]{8}, ptr (@[\w.$]+)",
-                                                                    line)}
-            if not kept:
-                continue
-            n += 1
-            vals = set()
-            for line in f["lines"]:
-                m = re.match(r"\s*(%[\w.]+) = (?:load ptr, ptr (@[\w.$]+)|phi ptr (.*)|select .*)", line)
-                if m and (m.group(2) in kept or set(re.findall(r"%[\w.]+", line[line.index("="):])) & vals):
-                    vals.add(m.group(1))
-            for line in f["lines"]:
-                c = CALL.search(line)
-                if not c:
-                    continue
-                used = set(re.findall(r"%[\w.]+", c.group(3))) & vals
-                self.assertFalse(c.group(2) in vals, "%s calls a kept guest function: %s" % (name, line.strip()))
-                self.assertFalse(used and c.group(1) != "hook_run", "%s passes a kept guest function to %s"
-                                 % (name, c.group(1) or c.group(2)))
-        self.assertGreater(n, 5)
+            kept = [line.strip() for line in f["lines"] if STORED_FN.search(line)]
+            self.assertFalse(kept, "%s keeps a guest function in a static: %s" % (name, kept[:1]))
 
     def test_hle(self):
         cs = {"x%d" % i for i in range(19, 30)} | {"v%d" % i for i in range(8, 16)}

@@ -1,7 +1,8 @@
 """Host copies the game asks for stay in guest memory (host/nn_libc.c, host/nn_fs.c, host/nn_video.c).
 
-- The memcpy, memmove and memset hooks: a range past the guest window is left to the game's own (lifted) copy, never
-  done by the host. Built from host/nn_libc.c as it is, over a small window with a guard page after it.
+- The memcpy, memmove and memset replacements (PATCH_FUNC_SYM): a range past the guest window is left to the game's
+  own (lifted) copy, orig, never done by the host. Built from host/nn_libc.c and host/patch.h as they are, over a small
+  window with a guard page after it.
 - nn::fs reads and writes take guest buffers only, and GetFileSize answers 0 for a handle with no size.
 - ReadDecoderOutputImageNv12 reads nothing when the pool's NV12 allocation failed (its NULL plus an offset was any host
   address, copied to the game).
@@ -37,7 +38,8 @@ HOS_H = r'''
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
-typedef struct { uint64_t x[32]; } Ctx;
+typedef struct GuestContext { uint64_t x[32]; uint64_t vreg[32][2]; } Ctx;
+#define A64_NOESC
 /* (a 64 KB guest window, then a page the test watches) */
 extern uint8_t *window;
 #define WINDOW 0x10000ull
@@ -45,16 +47,9 @@ extern uint8_t *window;
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define GP(a) ((void *)(window + (a)))
 #define HOS_WRITTEN(p, n) ((void)0)
-typedef struct { uint64_t x[8]; uint64_t lr; } HookArgs;   /* (host/hos.h's and patch.h's hook form) */
-typedef struct HookCall HookCall;
-static int hook_return(HookCall *h, uint64_t x0) { ((Ctx *)h)->x[0] = x0; return 1; }
-#define PATCH_HOOK_SYM(sym, ...) \
-    static int body_##sym(const HookArgs *a, HookCall *h); \
-    int entry_sym_##sym(Ctx *c) { \
-        const HookArgs a_ = {{c->x[0], c->x[1], c->x[2], c->x[3], c->x[4], c->x[5], c->x[6], c->x[7]}, c->x[30]}; \
-        return body_##sym(&a_, (HookCall *)c); \
-    } \
-    static int body_##sym(const HookArgs *a, HookCall *h)
+typedef struct GuestCall GuestCall;
+typedef uint64_t hos_q __attribute__((vector_size(16)));
+#include "patch.h"
 static inline void *hos_guest_range(uint64_t a, uint64_t n) { return a < WINDOW && n <= WINDOW - a ? GP(a) : (void *)0; }
 '''
 
@@ -65,6 +60,14 @@ FIXTURE = r'''
 #include <sys/mman.h>
 #include "hos.h"
 uint8_t *window;
+/* (the game's own copies, orig: counted) */
+static int origs, last;
+void hos_orig_sym_memcpy(Ctx *c) { (void)c; origs++, last = 1; }
+void hos_orig_sym_memmove(Ctx *c) { (void)c; origs++, last = 2; }
+void hos_orig_sym_memset(Ctx *c) { (void)c; origs++, last = 3; }
+void hos_orig_sym_memcmp(Ctx *c) { (void)c; }
+void hos_orig_sym_strlen(Ctx *c) { (void)c; }
+void hos_orig_sym_strcmp(Ctx *c) { (void)c; }
 #include "nn_libc.c"
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
 int main(void) {
@@ -73,26 +76,33 @@ int main(void) {
     uint8_t *after = window + WINDOW;
     memset(after, 0xAB, 0x1000);
     Ctx c = {{0}};
-    /* inside the window: the host copies */
+    /* inside the window: the host copies, x0 the destination */
     memcpy(window + 0x100, "guest", 6);
     c.x[0] = 0x200, c.x[1] = 0x100, c.x[2] = 6;
-    CHECK(entry_sym_memcpy(&c) == 1 && !memcmp(window + 0x200, "guest", 6));
+    hos_func_sym_memcpy(&c);
+    CHECK(origs == 0 && c.x[0] == 0x200 && !memcmp(window + 0x200, "guest", 6));
     c.x[0] = 0x300, c.x[1] = 0x41, c.x[2] = 16;
-    CHECK(entry_sym_memset(&c) == 1 && window[0x30f] == 0x41);
-    /* running past the window's end: the game's own copy, the page after untouched */
+    hos_func_sym_memset(&c);
+    CHECK(origs == 0 && c.x[0] == 0x300 && window[0x30f] == 0x41);
+    /* running past the window's end: the game's own copy (orig), the page after untouched */
     c.x[0] = WINDOW - 8, c.x[1] = 0, c.x[2] = 64;
-    CHECK(entry_sym_memset(&c) == 0);
+    hos_func_sym_memset(&c);
+    CHECK(origs == 1 && last == 3);
     c.x[0] = WINDOW - 8, c.x[1] = 0x100, c.x[2] = 64;
-    CHECK(entry_sym_memcpy(&c) == 0);
+    hos_func_sym_memcpy(&c);
+    CHECK(origs == 2 && last == 1);
     c.x[0] = WINDOW - 8, c.x[1] = 0x100, c.x[2] = 64;
-    CHECK(entry_sym_memmove(&c) == 0);
+    hos_func_sym_memmove(&c);
+    CHECK(origs == 3 && last == 2);
     /* a source past the window, or an address that wraps */
     c.x[0] = 0x100, c.x[1] = WINDOW + 0x10, c.x[2] = 8;
-    CHECK(entry_sym_memcpy(&c) == 0);
+    hos_func_sym_memcpy(&c);
+    CHECK(origs == 4);
     c.x[0] = ~0ull - 4, c.x[1] = 0, c.x[2] = 16;
-    CHECK(entry_sym_memset(&c) == 0);
+    hos_func_sym_memset(&c);
+    CHECK(origs == 5);
     for (int i = 0; i < 0x1000; i++) CHECK(after[i] == 0xAB);
-    printf("PASS: the libc hooks copy inside the guest window and leave the rest to the game's own code\n");
+    printf("PASS: the libc replacements copy inside the guest window and leave the rest to the game's own code\n");
     return 0;
 }
 '''
@@ -116,7 +126,7 @@ def main():
     print("PASS: nn::fs and the NV12 reader check their buffers")
 
     if os.name == "nt" or sys.platform == "darwin":
-        print("SKIP: the hooks' fixture uses mmap (Linux)")
+        print("SKIP: the fixture uses mmap (Linux)")
         return
     with tempfile.TemporaryDirectory(prefix="guest-copies-") as tmp:
         tmp = Path(tmp)
@@ -125,7 +135,8 @@ def main():
         # (beside the stand-in hos.h: an include in quotes looks in the including file's folder first)
         (tmp / "nn_libc.c").write_text((ROOT / "host" / "nn_libc.c").read_text(encoding="utf-8"), encoding="utf-8")
         exe = tmp / "fixture"
-        subprocess.run([a.cc, "-std=gnu11", "-Wall", "-Wextra", "-I", str(tmp), str(tmp / "fixture.c"), "-o", str(exe)],
+        subprocess.run([a.cc, "-std=gnu11", "-Wall", "-Wextra", "-I", str(tmp), "-I", str(ROOT / "host"),
+                        str(tmp / "fixture.c"), "-o", str(exe)],
                        check=True)
         subprocess.run([str(exe)], check=True)
 
