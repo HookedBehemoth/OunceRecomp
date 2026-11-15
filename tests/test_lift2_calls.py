@@ -3,8 +3,10 @@
 Small functions: c1 keeps x19 and x29 in a frame and calls `keep` (which writes no callee-saved register); c2 the same
 calling `clob` (writes x19: its summary is demoted); c3 calls `keep` through BLR; c4 calls `die` (BRK: noreturn) when
 x0 is not 0. Checks on the IR: after c1's call no load of x19, x29 or SP from the context; after c2's and c3's the
-reload of x19; with `keep` hooked (an entry hook) or a setjmp owner, the reload in c1 too; after c4's call of `die` a
-trap and `unreachable`. The program, lifted, compiled and run, returns what the guest code returns.
+reload of x19; with `keep` a setjmp owner, or `clob` entry-hooked, the reload too; with `keep` and `clob` HLE'd
+(nx2/lift2/host_effects.py: clean unless declared) or `keep` entry-hooked, no reload; with `keep` declared clobbering,
+or its hook declared to call `clob`, the reload; a declared name that does not exist stops the build. After c4's call
+of `die` a trap and `unreachable`. The program, lifted, compiled and run, returns what the guest code returns.
 
 python -I -B tests/test_lift2_calls.py
 """
@@ -17,7 +19,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
-from lift2 import build_ir, emit_llvm, game, llvm, summary, tables  # noqa: E402
+from lift2 import build_ir, emit_llvm, game, host_effects, llvm, summary, tables  # noqa: E402
 import rtgen  # noqa: E402
 
 BASE = 0x80000000
@@ -43,16 +45,27 @@ def word(pc):
     return CODE[(pc - BASE) // 4]
 
 
-def lift(hooks=(), sj=()):
-    """{name: IR function}, the Program and the bodies, with the summaries as a game build has them"""
+def lift(hooks=(), sj=(), hle=None, calls=None):
+    """{name: IR function}, the Program and the bodies, with the summaries as a game build has them; hooks: entry-hooked
+    functions, hle: {address: symbol} of HLE'd ones, calls: {entry hook name: guest functions it calls}"""
     entries = set(A.values())
     funcs = summary.walk(entries, word)
     prog = build_ir.Program(entries=entries)
     sums, _, _ = summary.summarise(funcs, prog, set(), word)
-    plan = {"summaries": {e: summary.pack(s) for e, s in sums.items()}, "plt": {}, "hooks": [],
+    hle = hle or {}
+    plan = {"summaries": {e: summary.pack(s) for e, s in sums.items()}, "plt": {}, "hooks": sorted(hle),
             "sj_rets": {e: (0, 0, 0, 0) for e in sj}, "after_c": {},
             "bodies": {e: (sorted(pcs), [word(p) for p in sorted(pcs)]) for e, pcs in funcs.items()}}
-    keeps, noreturn = game.call_bounds(plan, game.host_edited(plan, {e: "hook" for e in hooks}))
+    entry = {e: "entry_0x%08x" % e for e in hooks}
+    saved = dict(host_effects.CALLS)
+    host_effects.CALLS.clear()
+    host_effects.CALLS.update(calls or {})
+    try:
+        clean = game.host_clean(plan, entry, hle)
+    finally:
+        host_effects.CALLS.clear()
+        host_effects.CALLS.update(saved)
+    keeps, noreturn = game.call_bounds(plan, game.host_edited(plan, entry), clean)
     prog = build_ir.Program(entries=entries, symbol=lambda e: "g_%08x" % e, keeps=keeps, noreturn=noreturn)
     fns = {n: build_ir.build(a, sorted(funcs[a]), word, prog) for n, a in A.items()}
     return fns, funcs
@@ -80,9 +93,53 @@ class Calls(unittest.TestCase):
         self.assertIn("x19", loads_after_call(fns["c3"]))       # (BLR)
 
     def test_host_edited(self):
-        for kw in ({"hooks": [A["keep"]]}, {"sj": [A["keep"]]}):
-            fns, _ = lift(**kw)
-            self.assertIn("x19", loads_after_call(fns["c1"]), kw)
+        fns, _ = lift(sj=[A["keep"]])
+        self.assertIn("x19", loads_after_call(fns["c1"]))      # (a setjmp owner)
+        fns, _ = lift(hooks=[A["clob"]])
+        self.assertIn("x19", loads_after_call(fns["c2"]))      # (an entry hook on a body that writes x19)
+
+    def test_host_clean(self):
+        # (an HLE'd callee, declared clean by default: x19, x29 and SP stay; even in place of clob, whose guest body
+        # the host replaces)
+        fns, _ = lift(hle={A["keep"]: "nn_keep", A["clob"]: "nn_clob"})
+        for f in ("c1", "c2"):
+            self.assertFalse(loads_after_call(fns[f]) & {"x19", "x29", "sp"}, (f, loads_after_call(fns[f])))
+        # (an entry hook on a body whose summary preserves them)
+        fns, _ = lift(hooks=[A["keep"]])
+        self.assertFalse(loads_after_call(fns["c1"]) & {"x19", "x29", "sp"}, loads_after_call(fns["c1"]))
+        # (an entry hook that calls guest code writing x19: host_effects.CALLS)
+        fns, _ = lift(hooks=[A["keep"]], calls={"entry_0x%08x" % A["keep"]: (A["clob"],)})
+        self.assertIn("x19", loads_after_call(fns["c1"]))
+
+    def test_declared_clobbering(self):
+        host_effects.CLOBBERS["nn_keep"] = "test"
+        try:
+            fns, _ = lift(hle={A["keep"]: "nn_keep"})
+        finally:
+            del host_effects.CLOBBERS["nn_keep"]
+        self.assertIn("x19", loads_after_call(fns["c1"]))
+
+    def test_undeclared_name(self):
+        names = {e: "nn_" + n for n, e in A.items()}
+        hooks = {A["keep"]: "entry_0x%08x" % A["keep"]}
+        saved = (dict(host_effects.CLOBBERS), dict(host_effects.CALLS))
+        try:
+            host_effects.CLOBBERS.clear()
+            host_effects.CALLS.clear()
+            host_effects.CLOBBERS["nn_clob"] = "test"
+            host_effects.CALLS["entry_0x%08x" % A["keep"]] = (A["clob"],)
+            host_effects.check(names, hooks)   # (both exist)
+            host_effects.CLOBBERS["nn_none"] = "test"
+            with self.assertRaises(SystemExit):
+                host_effects.check(names, hooks)
+            del host_effects.CLOBBERS["nn_none"]
+            host_effects.CALLS["entry_0x00000000"] = ()
+            with self.assertRaises(SystemExit):
+                host_effects.check(names, hooks)
+        finally:
+            for d, v in zip((host_effects.CLOBBERS, host_effects.CALLS), saved):
+                d.clear()
+                d.update(v)
 
     def test_noreturn(self):
         fns, _ = lift()

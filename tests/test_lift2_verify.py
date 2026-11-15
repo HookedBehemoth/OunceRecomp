@@ -1,7 +1,8 @@
 """host/lift2_verify.c, the summary verification runtime (lift 2's milestone 14), on its own: each kind of violation
 is reported when a summary is wrong (noreturn that returns, a preserved register changed, a register written that
 the summary says is not), nothing is reported when it is right, and the registers come back as the summary
-promises (preserved and unwritten ones restored, unread results poisoned).
+promises (preserved and unwritten ones restored, unread results poisoned). A host callee declared clean that changes
+x19 is reported; one that changes only x0-x18 and x30 is not.
 
 python -I -B tests/test_lift2_verify.py     (needs a C compiler; skipped without one)
 """
@@ -21,6 +22,8 @@ HARNESS = r"""
 #include <string.h>
 void lift2_check_enter(uint64_t *x, const uint64_t *sum, uint64_t *frame);
 void lift2_check_exit(uint64_t *x, const uint64_t *sum, const uint64_t *frame);
+void lift2_host_enter(const uint64_t *x, uint64_t *frame);
+void lift2_host_exit(const uint64_t *x, const uint64_t *frame, uint64_t fn);
 #define B(r) (1ull << (r))
 static uint64_t x[32], fr[32];
 static void start(void) { for (int r = 0; r < 32; r++) x[r] = 0x1000 + r; }
@@ -41,6 +44,10 @@ int main(void) {
     /* wrong: claims it does not return */
     const uint64_t bad_ret[6] = {B(0), B(0), B(0), B(31), 0, 0x80004000};
     start(); lift2_check_enter(x, bad_ret, fr); lift2_check_exit(x, bad_ret, fr);
+    /* host callees: one writes its result and scratch registers and LR, one changes x19, one SP */
+    start(); lift2_host_enter(x, fr); x[0] = 1; x[9] = 2; x[18] = 3; x[30] = 4; lift2_host_exit(x, fr, 0x85001000);
+    start(); lift2_host_enter(x, fr); x[19] = 5; lift2_host_exit(x, fr, 0x85002000);
+    start(); lift2_host_enter(x, fr); x[31] -= 16; lift2_host_exit(x, fr, 0x85003000);
     return 0;
 }
 """
@@ -70,6 +77,9 @@ class Verify(unittest.TestCase):
         self.assertIn("f_80002000 not preserved x19", log)
         self.assertIn("f_80003000 written (summary: not) x5", log)
         self.assertIn("f_80004000 returned (summary: noreturn)", log)
+        self.assertNotIn("f_85001000", log)                       # (a clean host callee)
+        self.assertIn("f_85002000 changed by the host x19", log)
+        self.assertIn("f_85003000 changed by the host sp0", log)
 
 
 if __name__ == "__main__":

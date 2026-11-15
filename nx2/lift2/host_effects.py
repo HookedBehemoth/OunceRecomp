@@ -1,0 +1,71 @@
+"""What a direct call of a host function keeps: the declared effects of host callees (nx2/lift2/game.py call_bounds).
+
+A BL to an HLE'd function (a guest function replaced by `imp_<symbol>` in host/, gen/a64_hooks.c) or to a function with
+an ENTRY_HOOK keeps x19-x29 and SP in SSA across the call, as a BL to a lifted callee with a full summary does:
+
+- an HLE'd function is AAPCS-clean unless CLOBBERS names it: it reads its arguments (x0-x7, guest memory, the stack
+  through SP) and writes its results (x0, v0) and guest memory; it leaves x19-x29 and SP as it got them. The
+  whole-program summaries already give every HLE'd callee these facts (summary.callee_summary: AAPCS).
+- an entry-hooked function keeps what its lifted body's summary proves preserved (the hook declines: the body runs; or
+  the hook handled the call, which writes no callee-saved register, or ran the body itself through a64_lookup), and,
+  for a hook that calls other guest code, what every callee CALLS lists keeps too. A body without a full summary keeps
+  nothing.
+
+The audit behind the default (2026-11-15): the host's C, compiled to LLVM IR, has stores to x19-x31 or v8-v15 of a
+context only in thread and fiber setup (host/hos_thread.c thread_main, fiber_main; hos_main.c), in hos_call_guest and
+the splices (x30), in splice 0x80084de0 (SP, restored) and in restores of saved values (direct_mesh_binds.c,
+rt_slots.c, direct_depth_copy.c, direct_layer_ahead.c); no HLE'd function reaches one, a call of guest code, or a
+context switch, except those CLOBBERS names. The verification build (HOOKSHOT_LIFT_VERIFY=1) checks every BL to a clean
+HLE'd function: x19-x29 and SP on its return equal their values at the call (host/lift2_verify.c lift2_host_exit).
+
+A name in CLOBBERS that is no HLE'd function, or a key of CALLS that is no entry hook, stops the build.
+"""
+import os
+import re
+
+# HLE'd functions (their symbol, as in `imp_<symbol>`) a direct call reloads every register after, and why
+CLOBBERS = {
+    "_ZN2nn2os13SwitchToFiberEPNS0_9FiberTypeE":
+        "context switch: the call returns when another context switches back (host/hos_thread.c fiber_switch)",
+    "_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi":
+        "deletes a host fiber (DeleteFiber), which may be the running one",
+    "_ZN2nn2os13FinalizeFiberEPNS0_9FiberTypeE":
+        "deletes a host fiber (DeleteFiber), which may be the running one",
+    # (sdk NVN exports with no host proc: nvn2_dispatch calls what the host call table gives for the name; not audited)
+    "nvnInstallGlobalDebugCallback": "no host NVN proc of this name: not audited",
+    "nvnBootstrapLoaderInternal": "no host NVN proc of this name: not audited",
+    "nvnDevtoolsBootstrap": "no host NVN proc of this name: not audited",
+    "_Z22nvndetailUseMiddleWarev": "no host NVN proc of this name: not audited",
+    "nvnExternalMemoryPoolBuilderSetDefaults": "no host NVN proc of this name: not audited",
+    "nvnExternalMemoryPoolBuilderSetDevice": "no host NVN proc of this name: not audited",
+    "nvnExternalMemoryPoolBuilderSetNativeMemoryHandle": "no host NVN proc of this name: not audited",
+    "nvnExternalMemoryPoolBuilderGetDevice": "no host NVN proc of this name: not audited",
+    "nvnExternalMemoryPoolBuilderGetNativeMemoryHandle": "no host NVN proc of this name: not audited",
+}
+
+# entry hooks (their C name) that call guest code other than their own body: the guest functions they call
+CALLS = {
+    "entry_0x801a43e0": (0x801a2d70, 0x801a6a40),   # (host/direct_mesh_binds.c drawer: hos_call_guest of both)
+    "entry_0x801a46a0": (0x801a2d70, 0x801a6a40),
+    "entry_0x801a6720": (0x801a2d70, 0x801a6a40),
+}
+
+HOOK_LINE = re.compile(r"^void f_([0-9a-f]{8})\(Ctx \*A64_NOESC c\) \{ TAILCALL\(imp_(\w+)\); \}", re.M)
+
+
+def hle_names(gen):
+    """{guest address: symbol} of the HLE'd functions, from gen/a64_hooks.c (the lift writes it)"""
+    path = os.path.join(gen, "a64_hooks.c")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return {int(a, 16): s for a, s in HOOK_LINE.findall(f.read())}
+
+
+def check(names, hooks):
+    """stops on a declared name that does not exist (names: hle_names; hooks: {address: entry hook C name})"""
+    bad = sorted(set(CLOBBERS) - set(names.values()))
+    bad += sorted(set(CALLS) - set(hooks.values()))
+    if bad:
+        raise SystemExit("build: nx2/lift2/host_effects.py declares host callees that do not exist: %s"
+                         % ", ".join(bad))

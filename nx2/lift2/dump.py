@@ -105,9 +105,13 @@ def main():
             plan = pickle.load(f)
     L.index_tables()   # (over the tables of the functions walked so far)
     keeps = noreturn = None
-    if plan and plan.get("summaries"):   # (the call boundaries as the build makes them; the entry hooks not known here)
-        from lift2 import game
-        keeps, noreturn = game.call_bounds(plan, game.host_edited(plan, {}))
+    if plan and plan.get("summaries"):   # (the call boundaries as the build makes them)
+        from lift2 import game, host_effects
+        import entry_hooks
+        gen = os.path.join(kit.WORK, "sa", "gen")
+        hooks = entry_hooks.wanted(gen)[0]
+        keeps, noreturn = game.call_bounds(plan, game.host_edited(plan, hooks),
+                                           game.host_clean(plan, hooks, host_effects.hle_names(gen)))
     prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, jt_index=L.jt_index, keeps=keeps,
                             noreturn=noreturn)
     names = {v: k for k, v in lab.items()}

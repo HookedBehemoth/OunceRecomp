@@ -6,7 +6,10 @@
    (0xDEAD, the register and the function in the value). At exit: a function claimed not to return returned; a
    preserved register changed; a register claimed not written was written; then the registers claimed not written go
    back to their entry values and the written ones no caller reads are poisoned (0xDEAE). Each violation is logged
-   once per function, kind and register, to the game log and to lift2_violations.txt in the working folder. */
+   once per function, kind and register, to the game log and to lift2_violations.txt in the working folder.
+
+   A direct call of an HLE'd function declared clean (nx2/lift2/host_effects.py) goes through lift2_host_enter and
+   lift2_host_exit: x19-x29 and SP on its return must equal their values at the call (kind "changed by the host"). */
 #ifdef LIFT2_VERIFY_STANDALONE   /* (tests/test_lift2_verify.py: the checks alone, without the host) */
 #include <pthread.h>
 typedef pthread_mutex_t SRWLOCK;
@@ -84,4 +87,11 @@ void lift2_check_exit(uint64_t *x, const uint64_t *sum, const uint64_t *frame) {
         if (x[r] != expect) violation("written (summary: not)", fn, r, x[r]);
         x[r] = frame[r];
     }
+}
+
+void lift2_host_enter(const uint64_t *x, uint64_t *frame) { memcpy(frame, x, 32 * sizeof *x); }
+
+void lift2_host_exit(const uint64_t *x, const uint64_t *frame, uint64_t fn) {
+    for (int r = 19; r < 32; r++)
+        if (r != 30 && x[r] != frame[r]) violation("changed by the host", fn, r, x[r]);
 }

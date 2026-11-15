@@ -68,9 +68,10 @@ writes for.
   `writeback`). LLVM drops a store that a later one overwrites before any call or return; the last one stays.
 - **Reload after calls**: after a BL, BLR, SVC or a call into host code with the context, every register read loads
   the context again (`ir.Builder.after_call` clears the block's definitions), except after a BL to a callee with a
-  full summary that the host does not edit: the values of x19-x29 and SP its summary proves preserved stay SSA values
-  across the call (`build_ir.build`, `Program.keeps`; `game.call_bounds`, `game.host_edited`). The registers are still
-  written to the context before the call. The low halves of v8-v15 are reloaded: their upper halves are not
+  full summary that the host does not edit, or to a host callee with a declared effect: the values of x19-x29 and SP
+  the callee keeps stay SSA values across the call (`build_ir.build`, `Program.keeps`; `game.call_bounds`,
+  `game.host_edited`, `game.host_clean`, `nx2/lift2/host_effects.py`). The registers are still written to the context
+  before the call. The low halves of v8-v15 are reloaded: their upper halves are not
   preserved, so the register needs its load anyway.
 - No `alloca` is emitted except for host-stack temporaries of runtime helpers (`lift2_ldxp_lo`).
 
@@ -132,7 +133,21 @@ exclusives' runtime calls cost nothing measurable.
   the callee's preserved x19-x29 and SP (see above). A callee the summaries prove noreturn is followed by
   `a64_trap(ctx, <BL address>, <BL word>)` and `unreachable`, so a wrong summary stops the game; the code only its
   return reached is dropped. Host-edited callees (`game.host_edited`: HLE'd functions, entry hooks, setjmp owners,
-  Value/At probes, splices, C after an instruction) reload everything and are not treated as noreturn.
+  Value/At probes, splices, C after an instruction) are not treated as noreturn. What a call of one keeps is its
+  declared effect (`game.host_clean`, `nx2/lift2/host_effects.py`):
+  - an HLE'd function keeps x19-x29 and SP unless `host_effects.CLOBBERS` names it with the reason (the three fiber
+    functions: a context switch or a host fiber deleted; nine sdk NVN exports with no host proc: not audited);
+  - an entry-hooked function keeps what its lifted body's full summary preserves (the hook declines and the body runs,
+    or the hook handled the call, writing no callee-saved register, or ran the body itself through `a64_lookup`), and
+    for a hook that calls other guest code what every callee in `host_effects.CALLS` keeps too (the three mesh drawer
+    hooks, `host/direct_mesh_binds.c`); a body without a full summary keeps nothing;
+  - setjmp owners, probes, splices and C after an instruction keep nothing.
+  A name in `CLOBBERS` that is no HLE'd function, or a `CALLS` key that is no entry hook, stops the build. The default
+  rests on an audit of the host's C (2026-11-15, its LLVM IR: stores into a context's x19-x31 and v8-v15, calls of
+  guest code, fiber switches, through direct calls and signature-matched indirect ones): stores to x19-x31 are only in
+  thread and fiber setup, `hos_call_guest` and splices (x30), splice 0x80084de0 (SP, restored) and restores of saved
+  values; no HLE'd function reaches one, a guest call or a switch except those declared. The summaries already give
+  every HLE'd callee and BLR target AAPCS facts (`summary.callee_summary`).
 - **B to another entry, or falling into one**: `musttail call void @f_<callee>(ptr %ctx)`; every function has the same
   prototype, so every tail branch is a guaranteed tail call.
 - **RET**: `ret void`.
@@ -235,10 +250,12 @@ The lifted code is never edited after the lift: everything the host adds is name
 names its instruction word, so another game version stops the lift or the build.
 
 - **Image hooks** (`nx2/standalone.py`, `a64_hooks.c`): HLE functions in `host/` and generated stubs for the OS-facing
-  imports. `f_<addr>` is the host function; the guest body is not lifted.
+  imports. `f_<addr>` is the host function; the guest body is not lifted. A BL to one keeps x19-x29 and SP unless
+  `host_effects.CLOBBERS` names it (Calls and returns).
 - **Entry hooks**: `ENTRY_HOOK(0xADDR)` and `ENTRY_HOOK_SYM(name)` in `host/*.c` (read by `nx2/entry_hooks.py`). The
   function starts with `entry_<addr>(ctx)`; 1 returns at once (the hook did the call's work), 0 runs the body. A hook
   whose address is not a lifted function, or whose symbol the dump does not export, stops the build (`game.prepare`).
+  A BL to an entry-hooked function keeps what its body's summary (and `host_effects.CALLS`) keeps.
   `HOS_DBG=hooks` logs each hook's first call.
 - **Value probes** (`probes.PROBES`): replace an instruction's result. The frame-step cuts of the pick-up indicator and
   the water's ripples (`fcvtzs w12, s0` at 0x80a88300, `fcvtzs w9, s0` at 0x800675f8) take `hos_frame_whole`
@@ -301,10 +318,11 @@ Every build has them: the lift writes the job's input beside the plan unless the
 compilers start, in a process of its own (`game.finish_summaries`, `summary.job`: 8 workers over the components' DAG,
 `HOOKSHOT_LIFT_SUMMARY_JOBS`), then packs them into the plan. Cold: 108 s (graph 17 s, fixed point 59 s, results
 26 s), 1.4 GB in the summary process and 1.3 GB in its largest worker; from the cache: 5 s. The build uses them at
-direct calls (above) and prints the sites (`game.call_report`): of 794,900 BL sites, 695,413 keep registers across
-the call (12.0 of x19-x29 and SP a site on average); the others reload everything: to an HLE'd function 44,288, an
-entry hook 27,616, a noreturn callee (trap after) 14,170, a demoted one 13,049, a probe, splice or C-after function
-325, a setjmp owner 39. The 182,791 BLR sites reload everything.
+direct calls (above) and prints the sites (`game.call_report`): of 794,900 BL sites, 766,920 keep registers across
+the call (12.0 of x19-x29 and SP a site on average), 71,507 of them to host callees (44,265 to HLE'd functions,
+27,242 to entry-hooked ones); the others reload everything: a noreturn callee (trap after) 14,170, a demoted one
+13,049, a probe, splice or C-after function 551, an entry-hooked function whose body has no full summary 148, a
+setjmp owner 39, an HLE'd function declared clobbering 23. The 182,791 BLR sites reload everything.
 
 A function is demoted (its interface is outside the AAPCS64) by detection, not by list:
 
@@ -347,6 +365,9 @@ that the summary says is not; then it restores what is preserved and poisons the
 (`0xDEAE`). Violations are logged once per function, kind and register to the game log and `lift2_violations.txt`.
 Result (2026-11-14, 262,527 functions): zero violations and no crash in the kokiri smoke scene, the market and
 zoo_static benches (600 frames each) and a 100 s title boot.
+It also routes every BL to an HLE'd function declared clean through a stub (`hchk_<addr>`, `game.HOST_CHECK`) that
+reports x19-x29 or SP changed by the host (`lift2_host_enter`/`lift2_host_exit`). Result (2026-11-15, with the host
+checks): zero violations in the kokiri smoke scene.
 
 ## The build
 
@@ -402,14 +423,16 @@ tree shows the constraint is needed; the experiment named decides it.
 
 1. **Context traffic.** Write-through of every register before calls and exits, and a reload after every BLR and
    SVC, and after a BL of every register but the callee's preserved x19-x29 and SP (all of them after a callee
-   without a full summary or one the host edits). About 31-33 % of code bytes on the sample were context accesses
+   without a full summary, an HLE'd function declared clobbering, an entry-hooked function whose body has no full
+   summary, a setjmp owner, a probe, splice or C-after function). About 31-33 % of code bytes on the sample were context accesses
    (`disp(%reg)`) at 860eb332, before the preserved registers stayed in SSA; not measured again. `nocapture` on
    callees saves 0.0 % (-O1) / 0.7 % (-O2), so the cost is the convention, not missing alias facts. Reduced further by
    dropping dead temporaries' stores ([lifter-optimisations.md](lifter-optimisations.md), C).
    *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs, entry
    hooks (`emit_llvm.emit_function`), C-after and SPLICE sites, `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
-   `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts; the reloads after callees the summaries do not
-   cover or the host edits. Elsewhere unproven.
+   `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts, HLE'd functions (they read their arguments
+   from the context); the reloads after callees the summaries do not cover and the host callees listed above.
+   Elsewhere unproven.
 2. **Callee-saved saves and restores, and guest frames in guest memory.** Every function keeps its x19-x30 and d8-d15
    saves and restores (612,455 pairs in 174,749 functions) and its frame in guest memory. Not measured alone.
    Removed by deleting the pairs and promoting frame slots ([lifter-optimisations.md](lifter-optimisations.md), C and
