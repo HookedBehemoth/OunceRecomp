@@ -28,7 +28,7 @@ LIFT_SOURCES = ("third_party/a64-kit/rt/a64.h", "third_party/a64-kit/hos/*.py", 
                 "nx2/*.py", "nx2/lift2/*.py")
 HOST_LINES = ("host/*.c",)
 HOST_LINE = re.compile(r"^(?:ENTRY_HOOK|ENTRY_HOOK_SYM|SPLICE_AFTER|SPLICE_AFTER_EACH)\(.*$", re.M)
-NOT_LIFT = re.compile(r"(^|/)(test_|build\.py$|make_game\.py$|prompt_|prepare_|nup|win_manifest|make_icon|"
+NOT_LIFT = re.compile(r"(^|/)(test_|build\.py$|prompt_|prepare_|nup|win_manifest|make_icon|"
                       r"dump\.py$|disasm\.py$|xref\.py$|samap|sasym|census\.py$|fault\.py$|label_syms|zbic|"
                       r"version\.py$|unpack\.py$)")
 
