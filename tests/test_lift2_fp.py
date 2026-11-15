@@ -1161,7 +1161,6 @@ HOOK_HARNESS = r"""
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
                  uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
 static int calls;
-void a64_poll_cur(void) {}
 /* the host's hook: does the call's work when x1 is 7 (x0 = 99), else lets the lifted body run */
 int entry_0x80001000(Ctx *c) { calls++; if (c->x[1] == 7) { c->x[0] = 99; return 1; } return 0; }
 void g_80001000(Ctx *);
@@ -1202,7 +1201,6 @@ PROBE_HARNESS = r"""
 #include <string.h>
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
                  uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
-void a64_poll_cur(void) {}
 static uint64_t seen_at; static uint32_t seen_bits;
 uint32_t hos_frame_whole(uint64_t at, float amount) { seen_at = at; memcpy(&seen_bits, &amount, 4); return 1234; }
 void g_80002000(Ctx *);
@@ -1251,7 +1249,6 @@ class Probe(unittest.TestCase):
 AFTER_HARNESS = r"""
 #include "a64.h"
 #include <stdio.h>
-void a64_poll_cur(void) {}
 void g_80003000(Ctx *);
 int main(void) {
     Ctx c; memset(&c, 0, sizeof c); c.x[0] = 5;
@@ -1349,7 +1346,6 @@ class AfterC(unittest.TestCase):
         harness = r"""
 #include "a64.h"
 #include <stdio.h>
-void a64_poll_cur(void) {}
 void g_80003000(Ctx *);
 static int calls;
 void splice_0x80003000(Ctx *c) { calls++; c->x[8] += 1; c->x[1] = 0; }

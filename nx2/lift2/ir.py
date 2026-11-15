@@ -43,7 +43,8 @@ Operations (Value.op):
   icall                  (target i64,): BLR through the runtime's a64_icall(ctx, target); after_call() follows
   regload                attrs var: a guest register read from the context (after a call)
   svc                    attrs imm: SVC through the runtime's a64_svc(ctx, imm); after_call() follows
-  poll                   the interrupt poll of a loop's back edge (emit_llvm's lift2_poll)
+  barrier                a compiler barrier on an edge that closes a cycle (build_ir.cycle_edges): LLVM takes it
+                         as reading and writing any memory; it emits no instruction
   flagsout               the flags written back to the context before control leaves for another function (a tail
                          call or indirect jump may enter code that reads them: a split function, a shared tail)
 Terminators also: ("switch", index i64, [(case, block)], default block) for jump tables,

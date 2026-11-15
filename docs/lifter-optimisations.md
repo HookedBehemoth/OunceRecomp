@@ -49,7 +49,7 @@ This host came from emulator-style code. A constraint stays only if this tree sh
 | # | constraint | verdict |
 |---|---|---|
 | 1 | virtual cores | NOT NEEDED: removed; the per-core rings are asserted single-writer (`hos_oot_ring_write`) |
-| 2 | the poll (`ctx.poll`, `a64_poll_cur`) | NOT NEEDED: nothing writes `ctx.poll` |
+| 2 | the poll (`ctx.poll`, `a64_poll_cur`) | NOT NEEDED: deleted (A) |
 | 3 | a memory barrier on every loop cycle | NEEDED (cheap) |
 | 4 | C++ unwinding through lifted frames | NOT NEEDED: a throw is a fatal stop (`host/cxx_throw.c`) |
 | 5 | setjmp owners and fibers kept generic | NEEDED (cheap) |
@@ -127,11 +127,8 @@ This host came from emulator-style code. A constraint stays only if this tree sh
 
 - **Nothing writes `ctx.poll`.** The writer in the scheduler's `vc_acquire` and the fiber switch's copy are gone with
   the scheduler. A grep of `host/`, `gpu/` and the runtime for `->poll`, `.poll =` and `&...poll` finds no writer.
-- **What remains.** `a64_poll_cur` (`host/mkw_glue.c`) calls `hos_vcore_checkpoint`, which is empty. It stays only
-  until the lifter stops emitting the polls (`nx2/lift2/build_ir.py` near line 247).
-- **What stays when the poll goes.** The cycle barrier stays (entry 3).
-- **Plan items that change.** A becomes deleting the polls: 13.3 % of code bytes (measured share). Step 4 (signals) is
-  not needed.
+- **Done.** The polls, `ctx.poll`, `a64_poll_cur` and `hos_vcore_checkpoint` are deleted (A). The cycle barrier stays
+  (entry 3).
 
 ### 3. A memory barrier on every loop cycle — NEEDED (zero bytes)
 
@@ -270,123 +267,7 @@ Static counts (`count.py`):
 - **Plan items that change.** F must exclude the functions of these splice sites. A frame slot those splices read
   must stay in guest memory.
 
-## A. Poll placement
-
-### Our side (read)
-
-- **Where the polls are.** `nx2/lift2/build_ir.py` `build`, the loop over blocks after the exits: any block with a
-  successor at an address at or below its own gets a `poll`, so every backward branch polls whether or not it is on a
-  cycle. The emitted form is `emit_llvm.HELPERS["lift2_poll"]`: a `load atomic i32 monotonic` of `ctx+856`, then a
-  cold path that stores 0 and calls `a64_poll_cur()`.
-- **What the poll calls.** `a64_poll_cur` (`host/mkw_glue.c`) calls `hos_vcore_checkpoint` (`host/hos_thread.c`).
-  That yields the virtual core when `t->vc_kick` is set. The comment there requires that it, and everything it calls,
-  never reads or writes the guest context or runs guest code.
-- **Who sets the flag.** The kicker is `vc_acquire`. A waiter picks the worst holder on an allowed core and sets
-  `vc_kick` and `ctx.poll` (or `run_ctx->poll` for a fiber), then sleeps on its condition variable for 1 ms per round.
-- **Timing it needs.** After `HOS_VCORE_SLICE_US` (2 ms) an equal-priority holder is also asked. A waiter "escapes"
-  without a core after 250 ms (`HOS_VCORE_ESCAPE_US`). The latency the poll needs is therefore well under a
-  millisecond, not per instruction.
-- **Other places the request is seen.** Every nn::os call and every SVC also checkpoints. `HOS_VCORES` is on by
-  default; `docs/development.md` names `0` as the switch off.
-- **A second job the poll does.** docs/lifter.md section 9: a spin loop on a plain guest load stays a loop only
-  because the poll is a call that may write guest memory. Any change must keep a compiler barrier on every cycle.
-
-### How others decide where to check
-
-- **QEMU TCG** (`accel/tcg/translator.c`, `gen_tb_start`/`gen_tb_end`, v9.0.0,
-  https://github.com/qemu/qemu/blob/v9.0.0/accel/tcg/translator.c; GPL-2.0+).
-  - Every translation block starts with `tcg_gen_ld_i32(count, env, offsetof(ArchCPU, parent_obj.neg.icount_decr.u32))`
-    and `brcondi_i32(LT, count, 0, exitreq_label)`. `gen_tb_end` places `exit_tb(TB_EXIT_REQUESTED)` at that label.
-  - The check is left out only for TBs built with `CF_NOIRQ`. Under `CF_USE_ICOUNT` the same word doubles as the
-    instruction budget: the `sub` immediate is patched in at the end of the block.
-  - So: one check per block entry, on a word in the CPU state, merged with the cycle budget.
-  - Lesson: they put the request flag and the budget in one signed word, so one compare serves both.
-- **Dynarmic** (`src/dynarmic/backend/x64/a64_emit_x64.cpp`, `EmitTerminalImpl` overloads, master,
-  https://github.com/lioncash/dynarmic; 0BSD).
-  - The check lives in the block-linking terminals. `LinkBlock` emits `cmp [r15+cycles_remaining],0; jg` when cycle
-    counting is on, else `cmp [r15+halt_reason],0; jz`, before the patched jump to the next block. A taken halt
-    writes `pc` and returns to the dispatcher.
-  - `LinkBlockFast`, `PopRSBHint` and `FastDispatchHint` have no halt check. `CheckHalt` is an explicit terminal.
-  - Lesson: they check per block link, not per loop, and leave the check out on the fast link. Their dispatcher bounds
-    the latency instead.
-- **Go** (proposal 24543, https://go.googlesource.com/proposal/+/master/design/24543-non-cooperative-preemption.md;
-  `src/runtime/preempt.go`, `src/runtime/signal_amd64.go` `pushCall`, go1.22.0; BSD-3).
-  - Loop back-edge polls were rejected. The proposal quotes a fault-based variant at a 7.8 % geomean slowdown
-    (their number), and says explicit polls cost more in tight loops.
-  - Go instead sends a signal (SIGURG) to the thread. The handler checks `isAsyncSafePoint` (compiler-marked unsafe
-    points, runtime code, enough stack) and rewrites the signal context with `pushCall`: `sp -= 8; *sp = resumePC;
-    rip = asyncPreempt`. `asyncPreempt` saves every user register and calls `asyncPreempt2`.
-  - At an unsafe point it gives up and retries later.
-  - Lesson: `pushCall` writes below SP with no red-zone gap, which is correct for Go's ABI, which has no red zone.
-    Our lifted code is built with the SysV red zone: `nx2/build.py` has no `-mno-red-zone`. A copy would have to step
-    over 128 bytes first.
-- **HotSpot C2** (JDK-8186027 "C2: loop strip mining", review thread
-  https://mail.openjdk.org/pipermail/hotspot-compiler-dev/2017-October/027223.html; GPL-2.0 with CPE; bug page not
-  opened, 403).
-  - C2 used to leave the safepoint poll out of counted loops. Time-to-safepoint grew with the trip count, so the fix
-    nests the loop and polls every `LoopStripMiningIter` (1000) iterations.
-  - Later reports (JDK-8220374, JDK-8241492, from the search results; not read) still found polls hoisted out of hot
-    loops and seconds-long time-to-safepoint.
-  - Lesson: exempting "short" loops was a recurring source of latency bugs. Do not exempt loops by guessed trip count.
-- **Box64/FEX**: no source for loop polls or signal preemption found. Both run guest threads 1:1 on host threads, so
-  the kernel preempts and they have no reason to poll (not read; from memory).
-
-### What transfers
-
-1. **Poll only on CFG cycles.** In `build_ir.build`, replace "successor at a lower address" with "edge into a block
-   that dominates its source" (a natural loop back edge), or, for irreducible CFGs, retreating edges of a DFS from
-   the entry. The other 58 % of backward branches (shared epilogues, cold blocks laid out above) stop polling.
-   - Measured here: -6.6 %.
-   - Latency: none lost. A path with no cycle runs a bounded number of instructions before it reaches a call, an exit
-     or a cycle.
-2. **Cheap slow path.** Declare `a64_poll_cur` `preserve_allcc` in `emit_llvm` and define it with
-   `__attribute__((preserve_all))` in `host/mkw_glue.c`. The fast path then has no caller-saved spills around the cold
-   call.
-   - Measured here: -6.3 %.
-   - Condition: `hos_vcore_checkpoint` and what it calls (SRW lock, condition variable) are ordinary C, and the
-     `preserve_all` wrapper saves around them.
-   - Check: whether clang 23's `preserve_all` on x86-64 keeps the YMM upper halves. We keep `<2 x i64>` only, so XMM
-     is enough. Not verified.
-3. **QEMU's merged word.** Our flag is already one `i32` load and compare. Nothing to gain unless a cycle budget joins
-   it.
-4. **Signal-based preemption, Go's design (no polls at all).**
-   - How it would work: the kicker in `vc_acquire` sends a signal to the holder's host thread as well as setting
-     `vc_kick`. The handler leaves at once unless the interrupted RIP is inside lifted text. Lifted code holds no host
-     locks, and `hos_vcore_checkpoint` reads no guest state, so every instruction boundary of lifted code is a safe
-     point.
-   - The handler rewrites the context: `rsp -= 128` (red zone), then 8-aligned push of the resume RIP, then `rip =`
-     a trampoline that saves every GPR, XMM and RFLAGS, calls `hos_vcore_checkpoint`, restores them, undoes the
-     128-byte gap and returns.
-   - When the RIP is in host code (HLE, the runtime), the handler does nothing. The next nn::os/SVC checkpoint, or
-     the kicker's next 1 ms round (which would re-signal), covers it.
-   - What remains in the code: a zero-byte compiler barrier on each cycle (`call void asm sideeffect "",
-     "~{memory}"()`) for the spin-loop rule.
-   - Expected: removes the remaining polls; that is the 13.3 % minus the 6.6 % and 6.3 % above, if those two land
-     first. None measured.
-   - Risks: signals interrupting host syscalls (EINTR in HLE code; needs `SA_RESTART`); the Superluminal eBPF profiler
-     and debuggers seeing an extra signal; Windows-era host code (`host/posix`) if it waits in non-restartable calls.
-5. **Counted-loop exemption.** Not transferred (HotSpot's lesson above, and our IR does not know trip counts).
-
-### Soundness checklist
-
-- **Whether the poll is needed at all** is UNPROVEN ("What the plan preserves", entries 1-3). Its only consumer is the
-  virtual-core kick. The cycle barrier stays either way.
-
-- **unwind**: polls touch no guest state; unaffected.
-- **setjmp/fibers**: the flag is the running context's (`run_ctx`); unchanged.
-- **hooks**: none read the poll.
-- **indirect entry**: unaffected.
-- **layer-ahead**: unaffected.
-- **Spin loops**: every cycle must keep a memory barrier. In step 1 it keeps the poll; in step 4 it keeps an empty
-  asm barrier.
-- **Step 4 only**: signal safety of the trampoline (it must not run inside the handler); the red zone; `SA_RESTART`
-  for host calls.
-
-### First step to bench
-
-Step 1 (cycle-only polls) alone, on/off: `scripts/bench.sh market 600`. Then step 2 on top. Step 4 is a separate
-experiment after both, with `HOS_VCORES` statistics (`vc_st.kicks`, the wait times) compared to show the latency is
-kept.
+## A. Poll placement — DONE: no polls; a zero-byte memory barrier on every cycle-closing edge (`build_ir.cycle_edges`)
 
 ## C. Summary-driven call boundaries, with no new prototype
 

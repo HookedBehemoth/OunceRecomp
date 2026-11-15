@@ -175,7 +175,7 @@ def emit_function(fn, decls, flags_out=False):
     return "\n".join(out)
 
 
-# internal functions the IR's call/poll operations use, defined in each module that needs them
+# internal functions the IR's call operations use, defined in each module that needs them
 HELPERS = {
     # CRC32 over the low nbits of data, bit-reflected (the Arm ARM's CRC32 with the polynomial already reflected)
     "lift2_crc32": """define internal i32 @lift2_crc32(i32 %crc, i64 %data, i32 %nbits, i32 %poly) alwaysinline {
@@ -207,22 +207,6 @@ define internal i64 @lift2_ldxp_lo(ptr %ctx, i64 %a, i32 %n) alwaysinline {
   call void @recomp_ldxp(ptr %ctx, i64 %a, i32 %n, ptr %lo, ptr %hi)
   %v = load i64, ptr %lo
   ret i64 %v
-}""",
-    # the loop back edge's interrupt poll (nx2/poll.py): a64_poll_cur is called with nothing, so it cannot touch the
-    # context (noalias) and the loop's registers stay in host registers; it may read and write guest memory
-    "lift2_poll": """declare void @a64_poll_cur()
-define internal void @lift2_poll(ptr %ctx) alwaysinline {
-entry:
-  %p = getelementptr i8, ptr %ctx, i64 856
-  %v = load atomic i32, ptr %p monotonic, align 4
-  %set = icmp ne i32 %v, 0
-  br i1 %set, label %slow, label %done
-slow:
-  store atomic i32 0, ptr %p monotonic, align 4
-  call void @a64_poll_cur()
-  br label %done
-done:
-  ret void
 }""",
 }
 
@@ -372,9 +356,8 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
     elif op == "svc":
         decls.add("declare void @a64_svc(ptr, i32)")
         out.append("  call void @a64_svc(ptr %%ctx, i32 %d)" % v.attrs["imm"])
-    elif op == "poll":
-        decls.add("helper:lift2_poll")
-        out.append("  call void @lift2_poll(ptr %ctx)")
+    elif op == "barrier":   # (no instruction; guest loads are not moved across it or merged over it)
+        out.append('  call void asm sideeffect "", "~{memory}"()')
     elif op == "flagsout":
         if not flags_out or v.attrs and v.attrs.get("always"):   # (with flags_out every flag write is stored already)
             for k, var in enumerate("nzcv"):

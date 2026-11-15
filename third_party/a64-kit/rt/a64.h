@@ -1,6 +1,6 @@
 /* a64-kit guest model: what lifted AArch64 code and the host runtime see of a guest thread: the context
    (`GuestContext`), guest memory (`A64_PTR`, `recomp_load*` / `recomp_store*`) and the runtime's
-   entry points (a64_rt.c). Hookshot's copy is generated from this by nx2/rtgen.py (the 64-bit guest window, polls). */
+   entry points (a64_rt.c). Hookshot's copy is generated from this by nx2/rtgen.py (the 64-bit guest window). */
 #ifndef A64_H
 #define A64_H
 #include <stdint.h>

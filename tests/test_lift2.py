@@ -204,7 +204,6 @@ HARNESS = r"""
 #include <string.h>
 #include <sys/mman.h>
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; uint8_t rest[0x300]; } Ctx;   /* (rt/a64.h) */
-void a64_poll_cur(void) {}
 static uint64_t excl[4];
 /* the runtime's exclusive monitor (rt/a64_rt.c), single-threaded here */
 #define GP(a) ((uint8_t *)0x100000000000ULL + (a))

@@ -401,9 +401,8 @@ rounding modes of FCVT*/FRINT*, FRECPE/FRSQRTE, FRECPS (0·∞ → 2), FCMP/FCCM
   addressing). There are no bounds checks; the 512 GB reservation and the host's first-touch commit stay as they
   are.
 - **Plain loads and stores** are LLVM plain accesses with `align 1`. ARM's single-copy atomicity of aligned
-  accesses holds on x86 for plain moves. A spin loop on a plain load stays a loop only because the back-edge poll
-  (section 11) is a call that may write guest memory. That is an invariant of the poll's declaration, documented
-  there.
+  accesses holds on x86 for plain moves. A spin loop on a plain load stays a loop because every cycle carries a
+  compiler barrier (section 11).
 - **Ordering under x86-TSO**, per construct:
 
 | guest | emitted | x86 | why |
@@ -517,17 +516,10 @@ page's actions, the live `!cheat`/`!warp` commands), their record in [parked-pat
 did, the guest functions and fields, the guest calls, the logic as pseudo-code, what a probe would need. The native
 mouse camera and text speed came back as At rows (section 10.2).
 
-## 11. Polls, SVC, traps, setjmp
+## 11. Cycle barriers, SVC, traps, setjmp
 
-- **Polls.**
-  - *Why they existed:* the virtual cores multiplexed guest threads, and a waiting thread asked a running one to give
-    its core up through `ctx.poll`. The virtual cores are gone (`host/hos_thread.c`, "no scheduler"): nothing writes
-    `ctx.poll`, `a64_poll_cur` is empty, and the polls are to be removed from the lifter.
-  - *Where:* every back edge (a branch to an earlier address).
-  - *Emitted form:* `load atomic i32 monotonic` of `ctx.poll` and a cold call of `a64_poll_cur()`.
-  - *Declaration invariant:* `a64_poll_cur` takes no argument: it may read and write guest memory, which keeps spin
-    loops on plain loads correct (section 9), but cannot touch the context, so values stay in registers across the
-    loop.
+- **Cycle barriers.** Every cycle-closing edge carries a zero-byte memory barrier (`build_ir.cycle_edges`), so a guest
+  load in a loop is loaded each time round.
 - **SVC**: the flags stored, `a64_svc(ctx, imm)`; every register the context's again after it.
 - **Traps** (UDF, BRK, HLT, words that are not code): `a64_trap(ctx, pc, word)`. A function the lifter cannot take
   (a word it does not decode) is a trap at its entry, listed by the lift (none in OoT 1.1.1).

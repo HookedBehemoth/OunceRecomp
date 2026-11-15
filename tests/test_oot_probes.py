@@ -99,7 +99,6 @@ LOWER_HARNESS = r"""
 #include <string.h>
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
                  uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
-void a64_poll_cur(void) {}
 void g_80003000(Ctx *);
 void g_80004000(Ctx *c) { c->x[0] = 10; }
 static uint64_t seen;

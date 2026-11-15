@@ -1062,7 +1062,7 @@ void hos_thread_log_handles(void) {
    rotates a priority's queue only at its preemption priorities, 59 and 63, and none of the game's threads sits there)
    and a better thread preempts at any instruction. The one structure found that relies on one thread per core number is
    the actor job system's per-core rings (pushed and popped without a lock); host/oot_probes.c asserts that each ring has
-   one writer (hos_oot_ring_write). Nothing writes Ctx.poll any more. */
+   one writer (hos_oot_ring_write). */
 
 /* A block (HOS_DBG=crit: direct_crit.h): its start, what it waits on and its guest caller; 1 if recorded, and then
    hos_block_end records the span */
@@ -1078,9 +1078,6 @@ void hos_block_end(void) {
     if (crit_away_t) crit_span(crit_why, crit_away_t, crit_tsc(), crit_key, crit_away_lr);
     crit_why = CRIT_BLOCK_OTHER, crit_away_t = 0;
 }
-/* Called by the lifted code's loop polls when Ctx.poll is set (a64_poll_cur); nothing sets it any more, so this is
-   never reached. It stays until the lifter stops emitting the polls. It must never read or write the thread's Ctx */
-void hos_vcore_checkpoint(void) {}
 /* SleepConditionVariableSRW for guest threads (the block recorded for HOS_DBG=crit) */
 int hos_cv_sleep(void *cv, void *lk, unsigned ms) {
     const int rec = hos_block_begin(CRIT_BLOCK_CV, cv);

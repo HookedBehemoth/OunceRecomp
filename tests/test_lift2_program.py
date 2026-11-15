@@ -22,7 +22,6 @@ HARNESS = r"""
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
-void a64_poll_cur(void) {}
 int main(void) {
     static const unsigned char mem[] = { %(mem)s };
     if (mmap(A64_PTR(%(base)#x), 0x4000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,

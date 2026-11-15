@@ -459,8 +459,10 @@ def t_ldr_lit(b, f, pc, p):
 
 
 def t_hint(b, f, pc, p):
-    """NOP, YIELD, WFE, SEV and the PAC hints (PACIBSP, AUTIBSP, ...): nothing here (the return address is the
-    host's, so signing it has no effect)"""
+    """YIELD and WFE: x86's PAUSE (a spin-wait's hint to the core). NOP, SEV and the PAC hints (PACIBSP, AUTIBSP,
+    ...): nothing (the return address is the host's, so signing it has no effect)"""
+    if f["CRm"] == 0 and f["op2"] in (1, 2):
+        b.call("llvm.x86.sse2.pause", "void", effects=True)
 
 
 # ---- CRC32, pointer authentication, MTE, system registers and operations

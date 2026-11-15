@@ -33,7 +33,7 @@ from unicorn import arm64_const as A   # noqa: E402
 
 FLAGS = ["-march=x86-64-v3", "-ffp-contract=off", "-fno-strict-aliasing", "-mcx16", "-g0", "-Wno-everything",
          "-mllvm", "-rotation-max-header-size=0", "-ffunction-sections", "-mllvm",
-         "-capture-tracking-max-uses-to-explore=5000", "-DA64_POLLING"]
+         "-capture-tracking-max-uses-to-explore=5000"]
 
 IR_FLAGS = ["-march=x86-64-v3", "-g0", "-Wno-everything", "-mllvm", "-rotation-max-header-size=0", "-ffunction-sections"]
 
@@ -55,9 +55,6 @@ void a64_icall(Ctx *c, uint64_t t) { (void)t; c->halted = 11; }
 void a64_ijump(Ctx *c, uint64_t t) { (void)t; c->halted = 12; }
 void a64_icall_site(Ctx *c, uint64_t t, uint64_t *s) { (void)t; (void)s; c->halted = 11; }
 void a64_ijump_site(Ctx *c, uint64_t t, uint64_t *s) { (void)t; (void)s; c->halted = 12; }
-static uint64_t polls;
-static Ctx *poll_ctx;
-void a64_poll_cur(void) { polls++; poll_ctx->poll = (polls %% 3) != 0; }
 
 #define IMG_BASE %(img_base)dULL
 #define IMG_SIZE %(img_size)dULL
@@ -82,7 +79,6 @@ static void make_scratch(uint64_t seed, uint64_t *out) {
 static sigjmp_buf jb;
 static void on_fault(int sig) { siglongjmp(jb, sig); }
 static int run(A64Fn f, Ctx *c) {
-    poll_ctx = c;
     int sig = sigsetjmp(jb, 1);
     if (sig) return sig;
     f(c);
@@ -111,7 +107,6 @@ int main(int argc, char **argv) {
             memcpy(c.x, state, 256); memcpy(&c.n, state + 256, 4);
             memcpy(&c.fpcr, state + 264, 8); memcpy(&c.fpsr, state + 272, 8); memcpy(c.vreg, state + 280, 512);
             memcpy(&c.tpidr_el0, state + 792, 8); memcpy(&c.tpidrro_el0, state + 800, 8);
-            c.poll = 1;
             int fault = run(T_NEW[idx], &c);
             memcpy(state, c.x, 256); memcpy(state + 256, &c.n, 4);
             memcpy(state + 264, &c.fpcr, 8); memcpy(state + 272, &c.fpsr, 8); memcpy(state + 280, c.vreg, 512);

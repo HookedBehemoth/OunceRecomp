@@ -100,7 +100,7 @@ by address coincidence.
   states, small programs end to end; `nx2/lift2/selfcheck.py` checks the decoder against llvm-mc on every word of the
   game.
 - **Whole functions** (`nx2/test_lift2_leaf.py`, `--calls` for call trees): random functions of every module on the
-  real relocated image, lifted and run natively and in Unicorn, on the 64-bit window with polls firing; registers, V
+  real relocated image, lifted and run natively and in Unicorn, on the 64-bit window; registers, V
   registers and every changed page compared.
 - **Game-free source checks:** `python -I -B tests/run_all.py`.
 - **In the game:** `scripts/run-vk.sh` and `scripts/smoke.sh` (see the development guide), the sampled profiler

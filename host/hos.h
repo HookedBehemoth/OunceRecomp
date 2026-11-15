@@ -125,7 +125,6 @@ int hos_cores(void);
    hos_block_end after it records the span. No scheduler: guest threads run freely on their host threads (hos_thread.c) */
 int hos_block_begin(int why, const void *key);
 void hos_block_end(void);
-void hos_vcore_checkpoint(void);   /* (the lifted code's loop polls, a64_poll_cur: empty; nothing sets Ctx.poll) */
 void hos_thread_fp_log(long long present);   /* (hos_thread.c) HOS_FP_LOG=1: FPCR and MXCSR of the presenting thread */
 int hos_current_core(uint64_t lr);   /* (hos_thread.c) GetCurrentCoreNumber for the running thread */
 int hos_cv_sleep(void *cv, void *srw_lock, unsigned ms);   /* SleepConditionVariableSRW (exclusive) for guest threads */

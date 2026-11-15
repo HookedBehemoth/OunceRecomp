@@ -6,21 +6,12 @@ regions. With A64_ADDR64 (defined by the generated header) an access is `A64_MEM
 whole 39-bit space (Eden's fastmem arena, or our own), and lookups of code addresses refuse anything above 4 GB
 instead of truncating it (code always lies below: Eden loads it at 0x80000000).
 
-It also adds the interrupt flag the lifted loops' polls read, and a64_poll_cur.
-
 The changes are text substitutions on the vendored files, each required to match exactly once, so a refreshed
 a64-kit that moved these lines fails here loudly instead of silently keeping the 32-bit window.
 """
 import os
 
 import kit
-
-POLL_DECL = r"""
-/* (nx2/rtgen.py) the loop back edges' interrupt polls (the lifter's lift2_poll): the context's poll is cleared and
-   a64_poll_cur, the host's, called when it is set. It is handed nothing on purpose: the context parameter is noescape
-   (A64_NOESC) and never captured, so a call with no pointer argument cannot touch *c, and the compiler keeps guest
-   registers in host registers across the loop. a64_poll_cur finds the thread's context itself (host/mkw_glue.c). */
-void a64_poll_cur(void);"""
 
 ADDR64 = r"""#ifndef A64_ADDR64
 #define A64_ADDR64 1   /* (nx2/rtgen.py: 64-bit guest window) */
@@ -31,15 +22,9 @@ ADDR64 = r"""#ifndef A64_ADDR64
 #define A64_PTR(a) (A64_MEM + (uint32_t)(a))
 #endif"""
 
-RET_MISMATCH = ("void a64_ret_mismatch(Ctx *A64_NOESC c, uint64_t pc);         "
-                "/* RET to something other than the caller (debug builds) */")
-THREAD = "    void *thread;               /* the OS layer's thread object */\n} GuestContext;"
 LOOKUP = "    uint32_t a = (uint32_t)addr, lo = 0, hi = a64_fn_count;"
 SUBST = {
     "a64.h": [
-        (THREAD, THREAD.replace("\n} GuestContext;", "\n    uint32_t poll;              "
-                                "/* (nx2/rtgen.py) interrupt request: A64_POLL clears it and calls a64_poll_cur when set */\n} GuestContext;")),
-        (RET_MISMATCH, RET_MISMATCH + POLL_DECL),
         ("#define A64_PTR(a) (A64_MEM + (uint32_t)(a))", ADDR64),
     ],
     "a64_rt.c": [

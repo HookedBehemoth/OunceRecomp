@@ -205,13 +205,6 @@ void hos_gpu_queue_submit(int channel_fd, const uint64_t *entries, uint32_t n, i
     hos_gpu_submit(channel_fd, entries, n);
 }
 
-/* (nx2/rtgen.py) the lifted code's loop poll calls this when Ctx.poll is set; nothing sets it any more (the virtual
-   cores that did are gone), so it is never reached. It stays until the lifter stops emitting the polls */
-void a64_poll_cur(void) {
-    void hos_vcore_checkpoint(void);
-    hos_vcore_checkpoint();
-}
-
 /* CNTPCT_EL0 at the Switch 2's 31.25 MHz (rt/a64_rt.c's default counts the Switch 1's 19.2 MHz). The SDK checks
    nn::os::GetSystemTickFrequency against 31250000 at init and aborts otherwise. */
 uint64_t a64_cntpct_host(void) {

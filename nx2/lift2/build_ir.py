@@ -15,7 +15,7 @@ Control leaving the function:
   tail calls), else the runtime's a64_ijump(ctx, target);
 - RET: return; BRK, HLT, UDF: the runtime's a64_trap;
 - SVC: the runtime's a64_svc(ctx, imm) with the flags stored first; every register the context's again after it.
-A branch back to an earlier address polls (nx2/poll.py's rule: the loops' back edges).
+Every edge that closes a cycle carries a compiler barrier (cycle_edges).
 scope() says why a function cannot be lifted yet.
 """
 from . import enc, ir, sem, sem_int
@@ -244,13 +244,54 @@ def build(entry, pcs, word, prog=LEAF):
         if fn.written & {"n", "z", "c", "v"}:
             b.at(blk)
             b.op("flagsout", "void", *[b.get(fl) for fl in "nzcv"])
-    # a branch back to an earlier address (a loop's back edge) polls first
-    for blk in list(fn.blocks.values()):
+    for blk in fn.blocks.values():
         if blk.term is None:
             raise ValueError("block %s has no terminator" % blk.name)
-        if blk.name.startswith("b") and any(s.name.startswith("b") and s.pc <= blk.pc for s in blk.succs()):
-            blk.ops.append(fn.new_value("void", "poll", ()))
+    # every cycle a compiler barrier: a guest spin loop on a plain load stays a loop that loads each time round
+    for blk in cycle_edges(fn):
+        blk.ops.append(fn.new_value("void", "barrier", ()))
     ir.finish(fn)
     return fn
+
+
+def cycle_edges(fn):
+    """The blocks whose terminator has an edge closing a cycle of the function's CFG: the back edges of a depth-first
+    search (to a block still on the search's stack), from the entry and then from any block it did not reach.
+
+    Invariant: every cycle of the CFG contains one of these edges. In any depth-first search the cycle's first
+    visited block is an ancestor of every other block of the cycle, so the cycle's edge into it is a back edge. This
+    holds for natural loops, irreducible regions (several entries), self-loops, cycles through a jump table's switch
+    and a branch back to the function's own entry alike. An edge to an earlier address that closes no cycle gets no
+    barrier."""
+    blocks = list(fn.blocks.values())
+    entry = fn.entry_block()
+    order = [entry] + [b for b in blocks if b is not entry]
+    state = {}   # id -> 1 on the stack, 2 done
+    out = []
+    for root in order:
+        if id(root) in state:
+            continue
+        state[id(root)] = 1
+        stack = [(root, iter(root.succs()))]
+        while stack:
+            blk, it = stack[-1]
+            nxt = next(it, None)
+            if nxt is None:
+                state[id(blk)] = 2
+                stack.pop()
+                continue
+            s = state.get(id(nxt))
+            if s == 1:
+                if not out or out[-1] is not blk:
+                    out.append(blk)
+            elif s is None:
+                state[id(nxt)] = 1
+                stack.append((nxt, iter(nxt.succs())))
+    seen, uniq = set(), []
+    for b in out:
+        if id(b) not in seen:
+            seen.add(id(b))
+            uniq.append(b)
+    return uniq
 
 

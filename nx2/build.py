@@ -7,7 +7,7 @@ Linking it is also the check that the whole game closes over itself: any unresol
 Objects are cached by their key in work/objcache; a lifted partition whose inputs are unchanged comes from the cache
 by an input key without being lifted again.
 
-Usage:  python -I nx2/build.py [--jobs 1] [--opt O1] [--no-polls] [--standalone]
+Usage:  python -I nx2/build.py [--jobs 1] [--opt O1] [--standalone]
   --standalone: accepted for the scripts that pass it (the build is always the standalone game)
   --dry-run: the start-up with no lift, up to the compile; fails if a file the compile reads (the lift's aside) is missing
 
@@ -403,12 +403,11 @@ if MARCH != "x86-64-v3":
 CPU = ["-march=" + MARCH, "-ffp-contract=off"]
 
 
-def flags(gen, rt64, opt, polls):
+def flags(gen, rt64, opt):
     return target() + CPU + [
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-Wno-everything",
         "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
-        "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
-        (["-DA64_POLLING"] if polls else [])
+        "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"]
 
 
 def flag_text(fl):
@@ -534,7 +533,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--jobs", type=int, default=1)
     p.add_argument("--opt", default="O1")
-    p.add_argument("--no-polls", action="store_true")
     p.add_argument("--standalone", action="store_true")   # (always: kept for the scripts that pass it)
     # (a check with no game: everything up to the compile, without the lift's files; every other file the compile would
     # read must be there, and nothing is compiled)
@@ -556,7 +554,7 @@ def main():
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
     drop_stale_objects(cc, [obj_dir])
-    fl = flags(gen, rt64, a.opt, not a.no_polls)
+    fl = flags(gen, rt64, a.opt)
     # (which Hookshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
     # release name rebuilds them and nothing else)
     stamp_def = version.define()
@@ -584,7 +582,7 @@ def main():
     jobs = [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"), fl, deps) for s in srcs]
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + ["-I" + POSIX, "-D_GNU_SOURCE"] + \
-        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + \
+        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16"] + \
         ["-Werror=implicit-function-declaration"]   # (a call without a declaration returns an int: a 64-bit value cut)
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
