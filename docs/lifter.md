@@ -28,6 +28,21 @@ sample of 120 functions of the play binary at 860eb332, recompiled from edited I
 `nx2/lift.py` runs the steps up to the plan and the tables (`scripts/relift.sh`); `nx2/build.py` runs the rest. The
 plan holds instructions, not lifted code, so a change to the lifter needs only a build.
 
+**The game boundary.** The lifter (`nx2/lift2`) holds no fact of one game; `tests/test_lifter_game_free.py` checks its
+code for game addresses (literals of the image's range other than encodings and constants of the architecture), game
+labels and game symbols. What one game adds comes in three places:
+- its description, `games/<game>/game.py` (`nx2/gamedesc.py`; data and constructor calls only), which `nx2/lift.py`,
+  `nx2/build.py` and the tools (`nx2/lift2/dump.py`, `abi_census.py`, `nx2/label_syms.py`, `nx2/lift_mark.py`) take as
+  `--game`, exactly one, and hand their worker processes in `HOOKSHOT_GAME`: the identity (main's build id and the
+  SHA-256 of `exefs/main`; `check_exefs` stops the lift before anything else of the dump is read, the lift records
+  it in `work/sa/game.json`, and `check_lift` stops a build of another game's lift, each with both values), the
+  label file, the hot list (one file, `HOOKSHOT_HOT_FUNCS` the override; a missing one stops the lift), the host's C
+  files the build compiles and the patch scan reads (`patch_scan.host_sources`), and `local_continuations` (the code
+  pointer audit's `adr` ... `br` pairs inside one function);
+- its patch declarations in those host files (Hooks and probes);
+- nothing else: the platform's facts (Horizon, the SDK, its runtime and libraries: `SETJMP_NAMES`, the noreturn seeds
+  `NORETURN_NAMES` / `NORETURN_PARTS`, `OS_NAMESPACES`) are in `nx2/horizon`, for any title on this SDK.
+
 Coverage: the modules' `.text` has 18.16 M words, 2.03 M distinct, in 1,699 forms (mnemonic plus operand shape). Every
 form decodes; there is no fallback. `nx2/lift2/selfcheck.py` compares the decoder with llvm-mc on every distinct word
 (2,032,675 words, 0 differences); `nx2/lift2/census.py` writes the form list to `work/lift2/forms.txt`. A function
@@ -387,8 +402,7 @@ names its instruction word, so another game version stops the lift or the build.
   (`patch_scan.check_records`, `nx2/build.py`: count and text as tokens), so a declaration one of them sees and the
   other does not stops it. What the lift reads of the host's C is the set of `HLE` symbols (the functions it hooks:
   `standalone.implemented`, `nx2/lift_mark.py`); everything else is read by the build, so adding, changing or removing
-  a row, hook or effect needs no lift. `tests/test_lifter_game_free.py` holds `nx2/lift2` free of game addresses,
-  labels and symbols (an allow-list of encoding constants and code_ptrs' two zstd continuations).
+  a row, hook or effect needs no lift (the game boundary: Pipeline and files).
 
   Value probes and At rows: `PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }` and, for each further site
   of the same function, `PATCH_AT_SITE(...)` (a further site whose operand types differ is a compile error). The
@@ -566,7 +580,8 @@ checks, the omitted stores and the patches in the summaries): zero violations in
 ## The build
 
 - **Partitions** by guest address, about 120,000 guest instructions each (`game.PART_INSNS`); the hot list's functions
-  (`HOOKSHOT_HOT_FUNCS`, default `work/hot_funcs_play.txt`, made by `scripts/hotlist.py`) in partitions of their own.
+  (`HOOKSHOT_HOT_FUNCS`, default the game description's, `work/hot_funcs_play.txt`, made by `scripts/hotlist.py`) in
+  partitions of their own.
 - **Optimisation levels**: hot partitions at `-O2` (`RX_HOT_OPT`), the rest at `-O1` (`nx2/build.py --opt`). clang's
   -O1 pipeline has no DSE, so a level without it runs as `opt` with clang's own pipeline for that level and `dse` after
   `memcpyopt`, where -O2 has it, then `clang -Xclang -disable-llvm-passes` for the code generation at that level
@@ -592,7 +607,8 @@ checks, the omitted stores and the patches in the summaries): zero violations in
 | `nx2/build.py --jobs N` (`HOOKSHOT_JOBS`), `--opt O1` | build | parallel jobs (default: by the memory, `build.default_jobs`); the cold partitions' level |
 | `RX_HOT_OPT` | build | the hot partitions' level (default `O2`) |
 | `RX_MARCH` | build | the target CPU (default: the host's) |
-| `HOOKSHOT_HOT_FUNCS` | lift | the hot list |
+| `--game games/<game>` | lift, build, tools | the game description (`nx2/gamedesc.py`), required |
+| `HOOKSHOT_HOT_FUNCS` | lift | the hot list (over the description's) |
 | `HOOKSHOT_LIFT_VERIFY=1` | build | the verification build |
 | `HOOKSHOT_LIFT_SUMMARY_JOBS` | build | the summaries' workers (8) |
 | `LIFT2_DEFAULT_NAN=1` | lift | ARM's default NaN for generated NaNs |

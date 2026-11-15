@@ -25,6 +25,7 @@ import adr_entries  # noqa: E402
 import nso
 import nx_image
 import image as eden_image
+import gamedesc
 
 
 def module_of(img, pc):
@@ -37,6 +38,7 @@ def module_of(img, pc):
 def main():
     kit.wait_for_quiet('the lift')
     p = argparse.ArgumentParser()
+    gamedesc.add_argument(p)
     p.add_argument("--exefs", default=kit.EXEFS)
     p.add_argument("--work", default=kit.WORK)
     p.add_argument("--write", action="store_true")
@@ -49,6 +51,8 @@ def main():
                    help="no extra entries at the code addresses ADR / ADRP+ADD take (nx2/adr_entries.py)")
     a = p.parse_args()
     a.exefs = a.exefs or kit.need_exefs()
+    desc = gamedesc.use(a.game)
+    desc.check_exefs(a.exefs)   # (another dump stops here, before anything else of it is read)
     t0 = time.time()
     hle = ()
     if a.standalone:
@@ -106,6 +110,7 @@ def main():
                 p = os.path.join(gen, f)
                 if os.path.isfile(p):
                     os.remove(p)
+        desc.record(out_dir)   # (the game lifted, for the build's check: gamedesc.check_lift)
         tables.write(gen, L.funcs, L.hooks)
         print("code pointers: %d relocated slots hold a function of the table (gen/a64_code_slots.c)"
               % tables.write_code_slots(gen, img, L.funcs, L.hooks))

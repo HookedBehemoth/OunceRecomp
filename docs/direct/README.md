@@ -1,7 +1,7 @@
 # What we know about the game and the direct back end
 
 Reference notes, each cited from the code that depends on it. Addresses are guest addresses of the supported build
-(`f_<address>` is the lifted function; `nx2/oot_labels.txt` names the ones we know). Everything made from the game stays in
+(`f_<address>` is the lifted function; `games/oot/labels.txt` names the ones we know). Everything made from the game stays in
 `work/`; these files hold analysis, not data. The back end's design and open problems are in
 [../direct-backend-plan.md](../direct-backend-plan.md).
 

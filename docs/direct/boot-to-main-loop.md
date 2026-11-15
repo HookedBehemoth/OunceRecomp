@@ -3,7 +3,7 @@
 The path from the host's `main` to the steady frame loop, written down once so that profiling, patches and frame-time
 work do not re-derive it. Addresses are guest addresses of HOS_GAME_VERSION 100 (build id e0f3ccfa..., image at
 `0x80000000`, `main` module at `0x80020000`); `f_<address>` is the lifted function, and the labels of
-`nx2/oot_labels.txt` are given where one exists.
+`games/oot/labels.txt` are given where one exists.
 
 How each claim is known:
 
@@ -701,7 +701,7 @@ function's entry, `host/hos.h:26`; a mark at the end of a phase is the entry of 
   `f_80df2680` → `f_80a65370` → `0x800ae150` → the framework's +0xf8 thunk `f_805902b0`. And the layer lists and
   render jobs are recorded in the **calc** phase (stage C under `f_802eabd0`), not in the draw phase: the draw phase
   only records the gate primary and calls them.
-- **Labels of M6i** (nx2/oot_labels.txt, not changed here) that the code reads otherwise:
+- **Labels of M6i** (games/oot/labels.txt, not changed here) that the code reads otherwise:
 
   | Address | Label | What the code says |
   |---|---|---|
@@ -729,7 +729,7 @@ function's entry, `host/hos.h:26`; a mark at the end of a phase is the entry of 
 - The init window's per-subsystem order inside the prepare (graphics module, audio, save data, texture heap) is known
   only by the log's times, not by the calls.
 
-## 10. Labels added (nx2/oot_labels.txt, "boot and the main loop")
+## 10. Labels added (games/oot/labels.txt, "boot and the main loop")
 
 | Address | Label | What |
 |---|---|---|

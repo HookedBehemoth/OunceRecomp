@@ -104,7 +104,7 @@ class Discovery:
         self.find_setjmp_owners()   # (after the PLT stubs: their callees are resolved through them)
         self.index_tables()
 
-    SETJMP_NAMES = ("__setjmp", "setjmp", "_setjmp")
+    from horizon import SETJMP_NAMES   # (the platform's, nx2/horizon)
 
     def find_setjmp_owners(self):
         """(hookshot) the functions that call __setjmp, with the call's return addresses: entries (walked here), so

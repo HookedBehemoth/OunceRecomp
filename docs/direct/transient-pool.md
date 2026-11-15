@@ -321,4 +321,4 @@ fix belongs to the patch (for example: not destroying a texture released in the 
 - `host/rt_slots.c`: section 1.2-1.4. `host/nvn_native.c`: the unused addresses after a virtual pool, the slot's bytes
   told before a texture's initialization, `RX_NVN_LOG_TEX`.
 - `tests/test_rt_slots_native.py`: the reuse rule, the young eviction, the aged parked slot, large slots from the top.
-- `nx2/oot_labels.txt`: notes on `f_8005ed00`, `f_802737a0`, `f_800634b0`, `f_802640a0`.
+- `games/oot/labels.txt`: notes on `f_8005ed00`, `f_802737a0`, `f_800634b0`, `f_802640a0`.

@@ -1,4 +1,4 @@
-"""nx2/oot_labels.txt is well formed (every address and label once, the label's alphabet) and
+"""The game's label file (games/oot/labels.txt) is well formed (every address and label once, the label's alphabet) and
 nx2/label_syms.py renames a real symbol table: a tiny C program's f_<address> functions get <label>.f_<address>,
 an unlisted one keeps its name, a listed address with no function is reported, and a second run changes nothing.
 No game data. Skipped parts without a C compiler or objcopy.
@@ -12,6 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+import gamedesc  # noqa: E402
+gamedesc.use(str(ROOT / "games" / "oot"))   # (the game whose labels these read)
 import label_syms  # noqa: E402
 
 

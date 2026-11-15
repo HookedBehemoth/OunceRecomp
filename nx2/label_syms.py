@@ -1,6 +1,7 @@
 """Labels for the lifted game's functions, so a profile or a backtrace names what we already know.
 
-nx2/oot_labels.txt lists guest address -> label (one game build: the addresses are HOS_GAME_VERSION 100's). After the
+The game description's label file (games/<game>/labels.txt, nx2/gamedesc.py) lists guest address -> label (one game
+build: the description's identity). After the
 link, the executable's symbol f_<address> becomes <label>.f_<address>: the label first (a profiler's column shows it),
 the address kept (unique, and every tool that looks for f_<address> still finds it). Only the symbol table changes:
 the generated C, the hooks (PATCH_HOOK(0x...)), the linker map and the loaded bytes are as before, so a label costs
@@ -8,9 +9,9 @@ no rebuild beyond the 1 s rewrite of the executable.
 
 The list holds descriptions, not the game's names: lower case, digits and underscores, each used once.
 
-  python -I nx2/label_syms.py check                 the list alone (no build needed)
-  python -I nx2/label_syms.py apply <executable>    rename in place (build.py does this after the link)
-  python -I nx2/label_syms.py name <address> ...    the labels of addresses (for scripts)
+  python -I nx2/label_syms.py --game games/oot check                 the list alone (no build needed)
+  python -I nx2/label_syms.py --game games/oot apply <executable>    rename in place (build.py does this after the link)
+  python -I nx2/label_syms.py --game games/oot name <address> ...    the labels of addresses (for scripts)
 """
 import os
 import re
@@ -19,12 +20,15 @@ import subprocess
 import sys
 import tempfile
 
-LIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oot_labels.txt")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
+import gamedesc  # noqa: E402
 LINE = re.compile(r"^([0-9a-f]{8})\s+([a-z][a-z0-9_]*)\s*(?:#.*)?$")
 
 
-def read(path=LIST):
-    """{address: label}; exits on a malformed line, an address or a label listed twice"""
+def read(path=None):
+    """{address: label} of the label file (path, else the game description's); exits on a malformed line, an address
+    or a label listed twice"""
+    path = path or gamedesc.current().labels
     labels, seen, errors = {}, {}, []
     with open(path, encoding="utf-8") as f:
         for n, line in enumerate(f, 1):
@@ -50,9 +54,10 @@ def symbol(a, name):
     return "%s.f_%08x" % (name, a)
 
 
-def apply(exe, labels=None):
-    """Rename the executable's f_<address> symbols; returns (renamed, the addresses with no such function)"""
-    labels = read() if labels is None else labels
+def apply(exe, labels):
+    """Rename the executable's f_<address> symbols (labels: {address: label}, or a label file's path); returns
+    (renamed, the addresses with no such function)"""
+    labels = read(labels) if isinstance(labels, str) else labels
     objcopy = shutil.which("llvm-objcopy") or shutil.which("objcopy")
     nm = shutil.which("llvm-nm") or shutil.which("nm")
     if not objcopy or not nm:
@@ -77,6 +82,10 @@ def apply(exe, labels=None):
 
 
 def main(argv):
+    if argv[:1] != ["--game"] or len(argv) < 2:
+        sys.exit(__doc__)
+    gamedesc.use(argv[1])
+    argv = argv[2:]
     if len(argv) >= 1 and argv[0] == "check":
         print("labels: %d, each address and each label once" % len(read()))
         return 0

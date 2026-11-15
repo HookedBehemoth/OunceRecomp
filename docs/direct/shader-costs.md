@@ -541,4 +541,4 @@ compute mode and no storage buffers for fragment stages); a second fragment rewr
 written); naming Link, enemies and terrain (their textures' handles are computed and the drawlog cannot name them); the
 title scene; a compute harness (to time `fd029a…` and fix 1 of section 5b, and to check that fix bit-exact); fix 2 of
 section 5b (a contiguous window layout) needs a back-end change and was only specified. No labels were added to
-`nx2/oot_labels.txt` (no game function was identified).
+`games/oot/labels.txt` (no game function was identified).

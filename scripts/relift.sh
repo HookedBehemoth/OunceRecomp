@@ -7,9 +7,9 @@
 #
 #   scripts/relift.sh
 #
-# Stops when a game runs from this checkout's work/sa/build. The hot set: work/hot_funcs_play.txt, else work/hot_funcs.txt
-# (one f_<address> a line, from game profiles; it stays in work/): its functions' partitions are built at -O2
-# (nx2/lift2/game.py). In the main checkout on native-vk the build is
+# Stops when a game runs from this checkout's work/sa/build. The game: games/oot (nx2/gamedesc.py). The hot set: its
+# description's, work/hot_funcs_play.txt (one f_<address> a line, from a game profile, scripts/hotlist.py; it stays in
+# work/): its functions' partitions are built at -O2 (nx2/lift2/game.py). In the main checkout on native-vk the build is
 # scripts/play-refresh.sh's (it writes work/sa/build/BUILD.txt last), else nx2/build.py here. Log: work/play/relift.log in the
 # main checkout, work/sa/relift.log in a worktree (its work/play is the main checkout's).
 set -uo pipefail
@@ -29,8 +29,7 @@ fi
 if pgrep -af "$bd/hookshot( |$)" > /dev/null; then
     echo "relift: a game runs from $bd: not started"; pgrep -af "$bd/hookshot( |$)"; exit 1
 fi
-hot=
-for f in "$root/work/hot_funcs_play.txt" "$root/work/hot_funcs.txt"; do [ -f "$f" ] && { hot=$f; break; }; done
+game=games/oot
 play=
 if [ "$root" = "$main" ] && [ "$(git rev-parse --abbrev-ref HEAD)" = native-vk ]; then
     [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "relift: the main checkout has uncommitted changes"; exit 1; }
@@ -39,12 +38,12 @@ fi
 
 start=$(date +%s)
 {
-    echo "== $(date '+%F %T') relift of $root at $(git rev-parse --short HEAD)${hot:+, hot set $hot ($(wc -l < "$hot") functions)}"
+    echo "== $(date '+%F %T') relift of $root at $(git rev-parse --short HEAD), game $game"
     # (the lift under the build's lock: play.sh waits on it, and a build cannot start on a half-written lift)
     (
         exec 9>"$bd/.build.lock"; flock 9
         rm -f "$bd/BUILD.txt"
-        work/venv/bin/python -I -u nx2/lift.py --standalone --write
+        work/venv/bin/python -I -u nx2/lift.py --game "$game" --standalone --write
     ) || { echo "relift: the lift failed"; exit 1; }
     echo "lift: $(( $(date +%s) - start )) s"
 } >> "$log" 2>&1 || { echo "relift: the lift failed (see $log)"; exit 1; }
@@ -56,7 +55,7 @@ if [ -n "$play" ]; then
 else
     { exec 9>"$bd/.build.lock"; flock 9
       HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
-          work/venv/bin/python -I -u nx2/build.py --standalone; } >> "$log" 2>&1 ||
+          work/venv/bin/python -I -u nx2/build.py --game "$game" --standalone; } >> "$log" 2>&1 ||
         { echo "relift: the build failed (see $log)"; exit 1; }
 fi
 echo "relift: lift and build of $(git rev-parse --short HEAD) in $(( $(date +%s) - start )) s (build $(( $(date +%s) - b0 )) s); log $log" | tee -a "$log"

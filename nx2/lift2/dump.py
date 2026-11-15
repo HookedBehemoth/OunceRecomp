@@ -9,7 +9,7 @@ For each function, in <dir>/<address>/ (default work/lift2/dump/: game-derived, 
   lift2.ll      the LLVM IR as emitted (the generic entry, g_<address>)
   lift2.opt.ll  with --opt: after clang's optimiser at that level
   lift2.s       with --asm: the x86
---tree adds every function the given ones call or tail-call directly. Labels come from nx2/oot_labels.txt. The
+--tree adds every function the given ones call or tail-call directly. Labels come from the game description (--game). The
 function's summary (inputs, clobbers, preserved, demotion) is printed when <work>/sa/plan.pickle
 holds one.
 """
@@ -22,18 +22,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lift2 import enc  # noqa: E402  (first: its tables import asm)
 from lift2 import asm, build_ir, emit_llvm, game, llvm, summary  # noqa: E402
+import gamedesc  # noqa: E402
 
 IR_FLAGS = ["-march=x86-64-v3", "-g0", "-Wno-everything", "-mllvm", "-rotation-max-header-size=0"]   # (+ game.DSE_FLAGS)
 
 
 def labels():
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "oot_labels.txt")
-    out = {}
-    for line in open(path):
-        p = line.split("#")[0].split()
-        if len(p) >= 2:
-            out[p[1]] = int(p[0], 16)
-    return out
+    """{label: address} of the game description's labels"""
+    import label_syms
+    return {n: a for a, n in label_syms.read().items()}
 
 
 def ir_text(fn):
@@ -68,12 +65,14 @@ def ir_text(fn):
 
 def main():
     p = argparse.ArgumentParser()
+    gamedesc.add_argument(p)
     p.add_argument("functions", nargs="+")
     p.add_argument("--tree", action="store_true")
     p.add_argument("--opt", choices=("O1", "O2"))
     p.add_argument("--asm", action="store_true")
     p.add_argument("-o", dest="out", default=None)
     a = p.parse_args()
+    gamedesc.use(a.game)
     import kit
     import image as eden_image
     from lift2 import reference as TL

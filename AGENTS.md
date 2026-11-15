@@ -23,6 +23,10 @@ What CONTRIBUTING.md does not spell out, and agents trip on:
   built for Linux only. Its Win32-named calls go through `host/posix` (kept as it is for now); portability comes back
   later through a narrow host API over SDL, not through more Windows APIs. Paths stay UTF-8 (no `CP_ACP`;
   `tests/test_utf8_paths.py`). No player builder for now: [docs/builder-notes.md](docs/builder-notes.md).
+- **The game is a parameter.** `nx2/lift.py`, `nx2/build.py` and the lifter's tools take `--game games/oot`
+  (`nx2/gamedesc.py`). A fact of the game goes into `games/oot/` (`game.py`, `labels.txt`: add a label for every
+  function an analysis identifies) or into a patch declaration in the host's C, never into `nx2/lift2`
+  (`tests/test_lifter_game_free.py`).
 - **No game in CI.** Checks must run without a dump. A run in the game is for you to do locally and report.
 
 Pull requests: **open the description with why the PR is needed**, in one or two plain sentences, and **include

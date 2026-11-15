@@ -32,6 +32,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
+import gamedesc  # noqa: E402
+gamedesc.use(os.path.join(ROOT, "games", "oot"))   # (the game whose host files and patches these read)
 import rtgen  # noqa: E402
 from lift2 import host_effects, patch_scan, probes  # noqa: E402
 

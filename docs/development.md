@@ -28,15 +28,21 @@ Run everything with `python -I` from this folder.
 |---|---|
 | `python -I nx2/nup.py <file.nup> --extract work/dump` | the `.nup` dump package to `work/dump/exefs` + `romfs` (newest title; ZBIC NSOs made plain by `nx2/unpack.py`) |
 | `python -I nx2/dump.py --dump <folder with exefs/ and romfs/> --set` | what the dump is (Switch 1 or 2, ids, modules, SDK, NVN); `--set` records it in `work/dump.txt` |
-| `python -I nx2/lift.py --standalone [--write]` | image + discovery + the plan (`work/sa/plan.pickle`); `--write` also the runtime's tables and the image's C |
+| `python -I nx2/lift.py --game games/oot --standalone [--write]` | image + discovery + the plan (`work/sa/plan.pickle`); `--write` also the runtime's tables and the image's C |
 | `python -I nx2/lift2/census.py` | instruction census of the game's code: the forms and what the lifter covers |
 | `python -I nx2/lift2/selfcheck.py` | the lifter's decoder against llvm-mc on every distinct word of the game |
 | `python -I nx2/test_lift2_leaf.py [--count 500 --states 4] [--calls]` | random whole functions (or call trees) of the game, lifted and compared with Unicorn |
-| `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone` | the standalone game: `work/sa/build/hookshot` + `hookshot_direct.so`, the only renderer |
+| `python -I nx2/lift.py --game games/oot --standalone --write` then `python -I nx2/build.py --game games/oot --standalone` | the standalone game: `work/sa/build/hookshot` + `hookshot_direct.so`, the only renderer |
 | `scripts/run-vk.sh <name> [seconds] [-- NAME=VALUE ...]` | a muted, headless test run (Linux), with screenshots in `work/runs/<name>/shots`; see Iterating below |
 | `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_PROFILE=<seconds>` + `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>` (the sampler runs only with `HOS_PROFILE` set), named from the linker maps |
 
 The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` moves the work folder.
+
+**The game.** The lift, the build and the lifter's tools take exactly one game description, `--game games/oot`
+(`nx2/gamedesc.py`; the scripts pass it): the dump's identity (main's build id and the SHA-256 of `exefs/main`: another
+dump stops the lift before anything else is read, and a lift of another game stops the build: `work/sa/game.json`),
+the label file (`games/oot/labels.txt`), the hot list (`work/hot_funcs_play.txt`), the host's C files the build compiles
+and the patch scan reads, and the game's facts the lifter's checks need. A missing description is an error.
 
 The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the
 [README](../readme.md#build-and-run).
@@ -64,7 +70,7 @@ headers where `nx2/build.py` finds them (`/usr`, or `HOOKSHOT_SPIRV_HEADERS` and
 ones likewise with `HOOKSHOT_VULKAN_HEADERS`); `scripts/relift.sh` lifts the game (the plan in `work/sa/plan.pickle`, the
 tables and the image's C in `work/sa/gen`) and builds it.
 
-**Build.** `work/venv/bin/python -I -u nx2/build.py --standalone` writes `work/sa/build/` (`hookshot`,
+**Build.** `work/venv/bin/python -I -u nx2/build.py --game games/oot --standalone` writes `work/sa/build/` (`hookshot`,
 `hookshot_direct.so`, the caches beside them). A change to a header every file includes, or to the build flags, rebuilds
 everything; a change in `host/` or `gpu/direct/` recompiles only that file and links.
 - To patch the game, declare the patch next to its body in a `host/*.c` file (`host/patch.h`; docs/lifter.md, "Hooks
@@ -79,7 +85,8 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
     or keeps no register.
   The scan stops on a malformed declaration with its file:line, and the build on a word that differs from the game's
   or on a declaration the compiler saw and the scan did not. Only the partitions whose functions a changed declaration
-  touches are lifted and compiled again. Read the function first: `nx2/lift2/dump.py <address>`.
+  touches are lifted and compiled again. Read the function first: `nx2/lift2/dump.py --game games/oot <address>`.
+  A new host C file goes into the game description's `host` list.
 - A new `host/*.c` file is picked up by the next build only (the file list is taken at its start).
 - `RX_DIRECT_ONLY=1` builds the back end alone, with no lift.
 - **A new lift** is needed after a change to the lift (`nx2/lift.py`, `nx2/lift2/discover.py`) or to the dump (a
@@ -92,8 +99,8 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
 - **The lifter** (`nx2/lift2`, [lifter.md](lifter.md)) lifts every function at build time: a change to it needs only a
   build. Its partitions' objects stay in `work/objcache` by their inputs (the plan, the lifter's sources, the flags, the
   functions, the hooks): a host-only rebuild neither lifts nor compiles them again (about a minute). The hot list
-  (`work/hot_funcs_play.txt`, else `work/hot_funcs.txt`, or `HOOKSHOT_HOT_FUNCS`) puts its functions in partitions built
-  at -O2.
+  (the description's, `work/hot_funcs_play.txt`, made by `scripts/hotlist.py` from a profile; or `HOOKSHOT_HOT_FUNCS`;
+  a missing one stops the lift) puts its functions in partitions built at -O2.
 - To keep builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`, `*.idx`)
   to `work/sa/<name>/` and run with `EXE=`.
 
@@ -181,8 +188,8 @@ fast-forwards it; `drop <name>` removes the worktree and the branch once landed.
   nothing else.
 - Tests: `work/venv/bin/python -I -B tests/run_all.py`.
 
-**The lifter's output for a function.** `work/venv/bin/python -I nx2/lift2/dump.py <address or label>... [--tree]
-[--opt O1|O2] [--asm]` writes the guest code, the IR, the LLVM IR and optionally the optimised IR and the x86 to
+**The lifter's output for a function.** `work/venv/bin/python -I nx2/lift2/dump.py --game games/oot <address or
+label>... [--tree] [--opt O1|O2] [--asm]` writes the guest code, the IR, the LLVM IR and optionally the optimised IR and the x86 to
 `work/lift2/dump/<address>/`, and prints the function's summary when `work/sa/plan.pickle` has one.
 
 **Reverse engineering.** Flat modules `work/re/{main,sdk,subsdk0}.bin` (main's base is 0x80020000), the exports in
@@ -455,13 +462,13 @@ load and a branch. `logall` turns every `log*` item on.
 | `RX_RELEASE=1` | A release-style build: the shaders are prepared before the title |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `-v2`, else `x86-64`) |
 | `RX_HOT_OPT`, `RX_NO_ORDER` | Optimisation level of the hot code; no hot-function link order |
-| `HOOKSHOT_HOT_FUNCS=<file>` | (lift time) The hot list, one `f_<address>` a line (default `work/hot_funcs_play.txt`, else `work/hot_funcs.txt`): their partitions are built at `RX_HOT_OPT` |
+| `HOOKSHOT_HOT_FUNCS=<file>` | (lift time) The hot list, one `f_<address>` a line (default the game description's, `work/hot_funcs_play.txt`): their partitions are built at `RX_HOT_OPT` |
 | `HOOKSHOT_LIFT_VERIFY=1` | (build time) The verification build: every function with a full summary checked at run time (`host/lift2_verify.c`, [lifter.md](lifter.md), "Whole-program summaries and the verification build") |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
 ### Function labels
 
-The lifted functions are named `f_<guest address>`. `nx2/oot_labels.txt` gives the ones we know a label, and after the
+The lifted functions are named `f_<guest address>`. `games/oot/labels.txt` gives the ones we know a label, and after the
 link `nx2/label_syms.py` renames their symbols to `<label>.f_<address>`, so profiles, backtraces and debuggers show
 what a function is (only the symbol table changes; no rebuild of the code).
 
@@ -472,7 +479,8 @@ what a function is (only the symbol table changes; no rebuild of the code).
 - The address must be a function's entry in this lift. A call site, an lr or a splice point names the function that
   contains it (`work/sa/build/hookshot.map`), with the site in the note.
 - Each entry ends with `# <file>[ section]: what`, the place that documents it.
-- `python -I nx2/label_syms.py check` checks the list; `apply <executable>` reports addresses with no such function;
+- `python -I nx2/label_syms.py --game games/oot check` checks the list; `apply <executable>` reports addresses with no
+  such function;
   `name <address> ...` prints labels for scripts.
 
 ## Undocumented

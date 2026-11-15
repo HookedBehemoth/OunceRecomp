@@ -100,17 +100,16 @@ def _leaders(pcs, words, jt):
     return lead
 
 
-# zstd_decompress_sequences' local continuation: `adr x7, <label>` ... `br x7` inside the function (pc: word)
-LOCAL_CONTINUATIONS = {0x8011060c: 0x10fffca7, 0x80110694: 0x10000047}
-
-
 def audit(pcs, words, tg, excluded, texts, jt=None):
     """The code addresses the body forms that are not sites, each of a known kind, and those of no known kind
     (pc, why): an ADR of a text address that is not an entry must be a jump-table base (its register's next reader an
-    ADD of a register), one of LOCAL_CONTINUATIONS or a module's base (or base + 1); an ADRP of a page of text must be
+    ADD of a register), one of the game's local continuations (its description's local_continuations: `adr xN,
+    <label>` ... `br xN` inside one function) or a module's base (or base + 1); an ADRP of a page of text must be
     read, in its block, by ADDs or loads with that register as base before it is written again (so no entry's address
     can be formed from it elsewhere). Returns ({kind: count}, [(pc, why)])."""
     from .summary import X, def_use
+    import gamedesc
+    continuations = gamedesc.current().local_continuations
     in_text = lambda a: any(lo <= a < hi for lo, hi in texts)
     kinds, odd = {}, []
     pos = None
@@ -122,7 +121,7 @@ def audit(pcs, words, tg, excluded, texts, jt=None):
             n = w & 31
             if t in excluded or t - 1 in excluded:
                 kind = "module base"
-            elif LOCAL_CONTINUATIONS.get(pc) == w:
+            elif continuations.get(pc) == w:
                 kind = "local continuation"
             else:
                 kind = None

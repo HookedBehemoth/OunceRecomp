@@ -32,9 +32,9 @@ NOT_LIFT = re.compile(r"(^|/)(test_|build\.py$|prompt_|prepare_|nup|win_manifest
                       r"version\.py$|unpack\.py$)")
 
 
-def inputs_hash(root, env=None, hot=None, exefs=None):
-    """a hash of what a lift of the repository at root reads: see LIFT_SOURCES; the host's HLE'd symbols; the hot list
-    file
+def inputs_hash(root, env=None, hot=None, exefs=None, game=None):
+    """a hash of what a lift of the repository at root reads: see LIFT_SOURCES; the game description (game: a
+    gamedesc.Game; its file, and the symbols the HLE declarations of its host files replace); the hot list file
     (HOOKSHOT_HOT_FUNCS as the lift takes it); the dump's exefs files (name, size, modification time); the switches"""
     env = os.environ if env is None else env
     h = hashlib.sha1(usedforsecurity=False)
@@ -48,9 +48,11 @@ def inputs_hash(root, env=None, hot=None, exefs=None):
                 h.update(f.read())
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from lift2 import patch_scan
-    host = os.path.join(root, "host")
-    if os.path.isdir(host):
-        h.update(b"hle\0" + "\n".join(sorted(patch_scan.scan(patch_scan.host_sources(host)).hle_symbols())).encode())
+    if game is not None:
+        with open(game.path, "rb") as f:
+            h.update(b"game\0" + f.read())
+        hle = patch_scan.scan([os.path.join(root, "host", f) for f in game.host]).hle_symbols()
+        h.update(b"hle\0" + "\n".join(sorted(hle)).encode())
     if hot and os.path.exists(hot):
         with open(hot, "rb") as f:
             h.update(b"hot\0" + f.read())
@@ -74,29 +76,29 @@ def recorded(folder):
     return None
 
 
-def stale(folder, root, env=None, hot=None, exefs=None):
+def stale(folder, root, env=None, hot=None, exefs=None, game=None):
     """None when the folder's lift was made from the current inputs, else why it is stale"""
     have = recorded(folder)
     if have is None:
         return "the lift in %s records no inputs (made before the record, or not whole)" % folder
-    now = inputs_hash(root, env, hot, exefs)
+    now = inputs_hash(root, env, hot, exefs, game)
     if have != now:
         return "the lift's inputs changed since the lift in %s (%s -> %s)" % (folder, have[:12], now[:12])
     return None
 
 
 def default_inputs(root):
-    """(the hot list, the exefs) as nx2/lift.py and scripts/relift.sh take them"""
-    hot = next((f for f in (os.path.join(root, "work", "hot_funcs_play.txt"), os.path.join(root, "work", "hot_funcs.txt"))
-                if os.path.exists(f)), None)
-    hot = os.environ.get("HOOKSHOT_HOT_FUNCS") or hot
+    """(the hot list, the exefs, the game) as nx2/lift.py takes them (the process's game description)"""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import gamedesc
+    game = gamedesc.current()
+    hot = game.hot_path(os.path.join(root, "work"))
     try:
         import kit
         exefs = kit.EXEFS
     except Exception:
         exefs = None
-    return hot, exefs
+    return hot, exefs, game
 
 
 def begin(folder):
@@ -136,9 +138,14 @@ def check(folder):
     return None
 
 
-if __name__ == "__main__":   # (scripts/play-refresh.sh: python nx2/lift_mark.py stale work/sa; exit 1 when stale)
-    if sys.argv[1:2] == ["stale"]:
+if __name__ == "__main__":   # (scripts/play-refresh.sh: nx2/lift_mark.py stale work/sa --game games/oot; 1 when stale)
+    if sys.argv[1:2] != ["stale"] or sys.argv[3:4] != ["--game"] or len(sys.argv) != 5:
+        sys.exit("python -I nx2/lift_mark.py stale <folder> --game games/<game>")
+    if True:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import gamedesc
+        gamedesc.use(sys.argv[4])
         why = stale(sys.argv[2], root, None, *default_inputs(root))
         if why:
             print(why)

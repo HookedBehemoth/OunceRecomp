@@ -5,7 +5,7 @@ reaches them, and where the host or the back end can decide them instead. The la
 at the window's size times a bias with an upscaler of ours, configurable shadow resolution, and a host-side policy for
 any target.
 
-Guest addresses are those of the supported build (HOS_GAME_VERSION 100); their labels are in `nx2/oot_labels.txt`.
+Guest addresses are those of the supported build (HOS_GAME_VERSION 100); their labels are in `games/oot/labels.txt`.
 **Measured** means read from a run's log; **read** means read in the code at the given location; **inferred** means
 concluded from shapes, names or numbers and not confirmed.
 

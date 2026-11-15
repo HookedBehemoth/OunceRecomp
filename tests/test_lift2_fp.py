@@ -23,6 +23,8 @@ from fractions import Fraction
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
+import gamedesc  # noqa: E402
+gamedesc.use(os.path.join(ROOT, "games", "oot"))   # (the game whose host files and patches these read)
 from lift2 import build_ir, emit_llvm, enc, llvm  # noqa: E402
 
 

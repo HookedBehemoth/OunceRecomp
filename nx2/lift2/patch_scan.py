@@ -383,9 +383,10 @@ def signature(s):
     return (ctype(s.result), s.guest is not None, tuple(ctype(a) for a in s.args), s.io)
 
 
-def host_sources(host=HOST):
-    """the host's C files the build compiles (nx2/build.py) and the scan reads"""
-    return sorted(os.path.join(host, f) for f in os.listdir(host) if f.endswith(".c"))
+def host_sources():
+    """the host's C files the build compiles (nx2/build.py) and the scan reads: the game description's"""
+    import gamedesc
+    return gamedesc.current().host_sources()
 
 
 def _effects(args, where, allowed):

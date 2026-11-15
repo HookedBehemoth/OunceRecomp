@@ -18,6 +18,8 @@ from array import array
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
+import gamedesc  # noqa: E402
+gamedesc.use(os.path.join(ROOT, "games", "oot"))   # (the game whose host files and patches these read)
 from lift2 import game, patch_scan, probes, summary  # noqa: E402
 
 HERE = os.path.join(ROOT, "nx2", "lift2")

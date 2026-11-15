@@ -46,7 +46,8 @@ exec 9>"$bd/.build.lock"; flock 9
 [ "$(git rev-parse --abbrev-ref HEAD)" = native-vk ] || fail "the main checkout is not on native-vk"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "the main checkout has uncommitted changes"
 head=$(git rev-parse --short HEAD)
-stale=$(work/venv/bin/python -I nx2/lift_mark.py stale work/sa)   # (empty: work/sa was lifted from today's inputs)
+game=games/oot   # (the game description the lift and the build take, nx2/gamedesc.py)
+stale=$(work/venv/bin/python -I nx2/lift_mark.py stale work/sa --game "$game")   # (empty: work/sa was lifted from today's inputs)
 if [ -z "$stale" ] && [ "$(head -1 "$bd/BUILD.txt" 2>/dev/null)" = "$head" ]; then echo "play-refresh: work/sa/build already names $head"; exit 0; fi
 [ ! -e "$root/work/sa/LIFT_INCOMPLETE" ] || [ -n "$stale" ] || fail "the lift in work/sa is incomplete (stopped before its end): run scripts/relift.sh"
 rm -f "$bd/BUILD.txt"
@@ -54,13 +55,13 @@ start=$(date +%s)
 lift_if_stale() {   # (a lifter change: lift again, as scripts/relift.sh does, before the build)
   [ -n "$stale" ] || return 0
   echo "play-refresh: $stale: lifting again"
-  capped work/venv/bin/python -I -u nx2/lift.py --standalone --write
+  capped work/venv/bin/python -I -u nx2/lift.py --game "$game" --standalone --write
 }
 {
   echo "== $(date '+%F %T') refresh to $head"
   lift_if_stale &&
   HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
-    capped work/venv/bin/python -I -u nx2/build.py --standalone
+    capped work/venv/bin/python -I -u nx2/build.py --game "$game" --standalone
 } > "$log" 2>&1 || fail "the build failed"
 printf '%s\n%s %s\n' "$head" "$(date +%F)" "$(git log -1 --format=%s)" > "$bd/BUILD.txt.new" && mv -f "$bd/BUILD.txt.new" "$bd/BUILD.txt"
 echo "play-refresh: work/sa/build is $head ($(( $(date +%s) - start )) s)" | tee -a "$log"

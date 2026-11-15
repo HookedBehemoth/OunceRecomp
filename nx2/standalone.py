@@ -19,21 +19,14 @@ import sys
 import kit
 import toolchain
 
-HOST = os.path.join(kit.HERE, "..", "host")
 
-# a64-kit's list (TOTK), plus the Switch 2 SDK's service namespaces MKW imports (imports.py)
-OS_NAMESPACES = {"audio", "hid", "oe", "prepo", "nfp", "time", "account", "vi", "swkbd", "pl", "err", "codec", "diag",
-                 "detail", "settings", "ns", "applet", "album", "friends", "nifm", "ssl", "socket", "ec", "bcat",
-                 "web", "ldn", "irsensor", "aoc", "olsc", "pctl", "apm", "ro",
-                 "chat", "camera", "gs", "movie", "npns", "news", "fatal", "lbl", "capture", "syncpt"}
+from horizon import OS_NAMESPACES  # noqa: E402,F401  (the platform's: nx2/horizon)
 
 
-def implemented(host=HOST):
+def implemented():
     """C names (imp_<symbol>) of the functions the host's HLE(symbol) declarations replace (nx2/lift2/patch_scan.py)"""
     from lift2 import patch_scan
-    ps = patch_scan.patches() if os.path.abspath(host) == patch_scan.HOST else \
-        patch_scan.scan(patch_scan.host_sources(host))
-    return {"imp_" + s for s in ps.hle_symbols()}
+    return {"imp_" + s for s in patch_scan.patches().hle_symbols()}
 
 
 def nested_name(sym):

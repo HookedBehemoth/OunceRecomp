@@ -786,25 +786,21 @@ def module_of(img, a):
 
 
 def labels():
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "oot_labels.txt")
-    lab = {}
-    for line in open(path, encoding="utf-8"):
-        p = line.split()
-        if p and not line.startswith("#") and len(p) >= 2:
-            try:
-                lab[int(p[0], 16)] = p[1]
-            except ValueError:
-                pass
-    return lab
+    """{address: label} of the game description's labels"""
+    import label_syms
+    return label_syms.read()
 
 
 def main():
     p = argparse.ArgumentParser()
+    import gamedesc
+    gamedesc.add_argument(p)
     p.add_argument("--out", default=None)
     p.add_argument("--jobs", type=int, default=4)
     p.add_argument("--only", default=None)
     p.add_argument("--trace", action="store_true")
     a = p.parse_args()
+    gamedesc.use(a.game)
     global TRACE
     TRACE = a.trace
     import kit

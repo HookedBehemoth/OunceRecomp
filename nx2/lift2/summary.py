@@ -48,12 +48,9 @@ CALLER_SAVED = sum(X[0:19]) | X[30] | NZCV | sum(V[0:8]) | sum(V[16:32])
 TMPS = sum(X[9:19])
 ABI_RESULTS = X[0] | X[1] | sum(V[0:4])
 UNKNOWN_FACTS = ("sp", "save_ptr", "lr_data", "lr_ret", "split_frame")
-# functions that do not return whatever their code says (they unwind, exit or abort through the host): seeds of the
-# noreturn fixed point, by symbol name (the image's dynamic symbols)
-NORETURN_NAMES = ("abort", "__assert_fail", "_Exit", "exit", "__cxa_throw", "__cxa_rethrow", "_Unwind_RaiseException",
-                  "_Unwind_ForcedUnwind", "_Unwind_Resume", "png_error", "png_chunk_error", "png_fixed_error")
-NORETURN_PARTS = ("AbortImpl", "UnexpectedDefaultImpl", "ExitProcess", "QuickExit", "terminateEv", "__throw_",
-                  "CriticalSectionAbort")
+# functions that do not return whatever their code says: seeds of the noreturn fixed point, by symbol name (the
+# platform's, nx2/horizon)
+from horizon import NORETURN_NAMES, NORETURN_PARTS  # noqa: E402
 
 
 def noreturn_seed(name):

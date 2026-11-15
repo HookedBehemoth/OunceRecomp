@@ -1,7 +1,7 @@
 # The game's movie player (guest code, 0x83b5e5c0 and 0x83b7bff0..0x83b83513)
 
 Read from the lift with `work/ghidra/decomp.sh` (title movie, intro). The movie files are AV1, video only; their sound is a
-separate `Sound/Resource/Stream/Dm_*.bwav` the sound system plays. Labels are in `nx2/oot_labels.txt` (`movie_`, `ndve_`).
+separate `Sound/Resource/Stream/Dm_*.bwav` the sound system plays. Labels are in `games/oot/labels.txt` (`movie_`, `ndve_`).
 
 ## Who calls whom
 - `f_83b5e5c0` (event movie component start): takes the movie's path from the component and an NDVE resource (the component's

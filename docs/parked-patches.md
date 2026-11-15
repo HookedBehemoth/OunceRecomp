@@ -20,7 +20,7 @@ The flight hook drove more than flight. Every frame the player was updated, `pla
 
 The others stopped working when the patches were parked, and the direct back end has no Insert menu.
 
-Game build: OoT 1.1.1, main build id e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348. The labels are in `nx2/oot_labels.txt`.
+Game build: OoT 1.1.1, main build id e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348. The labels are in `games/oot/labels.txt`.
 
 ## The patches
 

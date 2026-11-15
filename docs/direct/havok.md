@@ -4,7 +4,7 @@ The game links Havok 2025.2 (`hk2025_2_10_PhysicsClothNavigation`): hknp rigid-b
 AI (hkai), under Nintendo's Phive layer. Its code lies in four regions of the lift, by the source paths in its asserts:
 Common/Base `0x8169xxxx-0x8173xxxx`, hknp physics `0x8174xxxx-0x81a5xxxx`, cloth `0x81b0xxxx-0x81dexxxx`, navigation
 `0x81e0xxxx-0x8210xxxx`. Havok's own monitor timers are compiled in (`hkMonitorStream`, with `__PRETTY_FUNCTION__`
-strings), which names most of the functions below; the labels are in `nx2/oot_labels.txt` (section "Havok").
+strings), which names most of the functions below; the labels are in `games/oot/labels.txt` (section "Havok").
 
 ## How the work reaches Havok
 

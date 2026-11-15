@@ -27,6 +27,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
+import gamedesc
 import kit
 import rtgen
 import toolchain
@@ -579,11 +580,13 @@ def main():
     p.add_argument("--jobs", type=int, default=None)   # (default: default_jobs)
     p.add_argument("--opt", default="O1")
     p.add_argument("--standalone", action="store_true")   # (always: kept for the scripts that pass it)
+    gamedesc.add_argument(p)
     # (a check with no game: everything up to the compile, without the lift's files; every other file the compile would
     # read must be there, and nothing is compiled)
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
     a.standalone = True
+    desc = gamedesc.use(a.game)
     if a.jobs is None:
         a.jobs, why = default_jobs()
         print("build: %d jobs (%s)" % (a.jobs, why), flush=True)
@@ -599,6 +602,7 @@ def main():
         why = lift_mark.check(os.path.dirname(gen))
         if why:
             raise SystemExit("build: " + why)
+        desc.check_lift(sa)   # (the lift is of this game: its identity, gamedesc)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
     drop_stale_objects(cc, [obj_dir])
@@ -614,7 +618,7 @@ def main():
                                            "nvn2_exports.c")] + \
         [os.path.join(rt64, "a64_rt.c")]
     from lift2 import patch_scan
-    host_srcs = patch_scan.host_sources(HOST)   # (the files the patch declarations are scanned in, too)
+    host_srcs = desc.host_sources()   # (the game description's; the patch declarations are scanned in them, too)
     host_srcs += [  # (the window on SDL2, the Win32-named calls on POSIX)
         os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
     if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)
@@ -823,8 +827,8 @@ def main():
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
-        import label_syms   # (native-vk: nx2/oot_labels.txt's names for the functions we know, in the symbol table only)
-        named, absent = label_syms.apply(exe)
+        import label_syms   # (the game's labels for the functions we know, in the symbol table only)
+        named, absent = label_syms.apply(exe, desc.labels)
         print("labels: %d functions named%s" % (named, "; no function for " + ", ".join("%08x" % x for x in absent) if absent else ""))
         sdl = os.environ.get("HOOKSHOT_SDL2", "")   # (libSDL2-2.0.so.0 beside it, when the AppImage brings one)
         if sdl and os.path.exists(sdl):

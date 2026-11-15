@@ -18,6 +18,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
+import gamedesc  # noqa: E402
+gamedesc.use(os.path.join(ROOT, "games", "oot"))   # (the game whose host files and patches these read)
 from lift2 import probes  # noqa: E402
 
 def block(source, marker):

@@ -1,11 +1,12 @@
 """The lifter (nx2/lift2) holds no fact of one game: its code names no game address, no game function's label and no
-game symbol. A game's patches are declared in the host's C (host/patch.h, read by nx2/lift2/patch_scan.py).
+game symbol. A game's facts are in its description (games/<game>/game.py, nx2/gamedesc.py) and its patches are
+declared in the host's C (host/patch.h, read by nx2/lift2/patch_scan.py).
 
 Checked on the code's tokens (comments and docstrings are documentation and left out):
 - a hexadecimal literal of 8 digits from 0x80000000 to 0x8fffffff (the game image's addresses) is one of ALLOWED, each
-  an encoding constant or a fact listed with its reason;
+  an encoding or a constant of the architecture, with its reason;
 - no string holds a lifted function's name (f_8xxxxxxx, entry_0x8xxxxxxx) or a guest address of that range;
-- no name or string is a label of nx2/oot_labels.txt (the game's functions, as this project names them);
+- no name or string is a label of a game's labels.txt (the game's functions, as this project names them);
 - a mangled C++ symbol in a string is the SDK's or the C++ runtime's (nn::, std::), never the game's.
 No game is used.
 
@@ -29,10 +30,6 @@ ALLOWED = {
     0x8B200000: "the encoding of ADD (extended register)",
     0x82F63B78: "the CRC32C polynomial (reversed)",
     0x8444C004: "the FPCR value dynarmic's configuration reports",
-    # (one game's fact, kept until the game description (step 2b-2) holds it: zstd's two `adr x7, <label>` ... `br x7`
-    # continuations, which the code pointer audit accepts; they change no IR)
-    0x8011060C: "code_ptrs.LOCAL_CONTINUATIONS: a game's zstd local continuation (moves to the game description)",
-    0x80110694: "code_ptrs.LOCAL_CONTINUATIONS: a game's zstd local continuation (moves to the game description)",
 }
 ADDR = re.compile(r"\b(?:f_|body_|entry_0x|0x)8[0-9a-fA-F]{7}\b")
 SDK = re.compile(r"^_Z(?:N|NK)?(?:2nn|St|NSt)")
@@ -40,11 +37,12 @@ SDK = re.compile(r"^_Z(?:N|NK)?(?:2nn|St|NSt)")
 
 def labels():
     out = set()
-    with open(os.path.join(ROOT, "nx2", "oot_labels.txt"), encoding="utf-8") as f:
-        for line in f:
-            w = line.split("#", 1)[0].split()
-            if len(w) >= 2:
-                out.add(w[1])
+    for path in glob.glob(os.path.join(ROOT, "games", "*", "labels.txt")):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                w = line.split("#", 1)[0].split()
+                if len(w) >= 2:
+                    out.add(w[1])
     return out
 
 
