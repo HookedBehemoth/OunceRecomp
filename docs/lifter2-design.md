@@ -387,8 +387,8 @@ after the lift.
 |---|---|---|
 | `nx2/entry_hooks.py` `ENTRY_HOOK(0xADDR)`, `ENTRY_HOOK_SYM` (137 in `host/*.c`) | `if (entry_<addr>(c)) return;` at the function's top | Unchanged in `host/`. The lifter puts the call at the fast entry: store the live-ins and x30 to the context, call, on 1 load x0, x1, v0, v1 and return. A hook may also be declared `REPLACE`: a host function with the fast prototype, called directly. |
 | `nx2/entry_hooks.py` `SPLICE_AFTER(0xADDR, "anchor")`, `_EACH` (15, `host/direct_*.c`) | inserts `splice_<addr>(c);` after a text anchor | `SPLICE_AT(0xFUNC, 0xPC)` naming the guest instruction. The lifter stores every live register to the context before the call and reloads after it (a sync point). The anchors are re-expressed as instruction addresses once with the old lift's `/* pc */` comments. |
-| `nx2/oot_patches.py`: dynres, life, movement, flight rotation, view, mouse camera, menu focus, menu tick, text speed, frame seconds (`STEP_SITES`), movie frames (`MOVIE`), whole frames (`WHOLE_SITES`), output size, RT pool size (`OUT_EDITS`) | replace or insert C at text anchors in about 20 functions | Probes in `nx2/lift2/probes.py`: `After(pc, fn, reads, writes)` (a host function of the named registers returning the written ones), `Before(pc, ...)`, `CondOr(pc, fn)` (a conditional branch also taken when `fn()` is true), `Value(pc, reg, fn)` (the instruction's result replaced), `CallSite(pc, fn)` (a BL at pc calls a host function instead). Each patch's C moves into a host file as a function; the table names it. |
-| `nx2/oot_native_resolution.py` (f_806702e0, f_831f3200) | text edits | probes, as above |
+| `nx2/oot_patches.py`: dynres, life, movement, flight rotation, view, mouse camera, menu focus, menu tick, text speed, frame seconds (`STEP_SITES`), movie frames (`MOVIE`), whole frames (`WHOLE_SITES`), output size, RT pool size (`OUT_EDITS`) (done: whole frames are `Value` probes, the frame-rate and resolution ones `At` probes, section 14h; the rest parked, 14g) | replace or insert C at text anchors in about 20 functions | Probes in `nx2/lift2/probes.py`: `After(pc, fn, reads, writes)` (a host function of the named registers returning the written ones), `Before(pc, ...)`, `CondOr(pc, fn)` (a conditional branch also taken when `fn()` is true), `Value(pc, reg, fn)` (the instruction's result replaced), `CallSite(pc, fn)` (a BL at pc calls a host function instead). Each patch's C moves into a host file as a function; the table names it. |
+| `nx2/oot_native_resolution.py` (f_806702e0, f_831f3200) (done: `At` probes, section 14h) | text edits | probes, as above |
 | `nx2/oot_wide.py` (11 sites), `nx2/oot_jitter.py` (3), `nx2/oot_occlusion.py` (6) | C after an instruction (`Lifter.after`) | `After` probes; the snippets become host functions |
 | `nx2/step_readers.py` | reads the lifted C to classify readers of the frame step | reads the IR dump (`work/lift2/ir/<addr>.txt`) |
 | `nx2/chunks.py` (stable boundaries, `edit_c`), `nx2/whole_write.py` | chunk files of C | partitions by guest address (kept: `work/image/chunks.txt`); written whole once |
@@ -1171,8 +1171,48 @@ functions they called stay. Each comes back as a probe (`nx2/lift2/probes.py`) o
 | text speed (`patch_text_speed`) | `f_80b1e140` | the text pane's letter clock times `hos_text_scale` | Insert menu "Text speed", `HOS_TEXT_SPEED` | 1.0 | faster text |
 | the menus' mouse (`patch_menu_focus`, `patch_menu_tick`) | `f_802ed660`, `f_802f1380` | `hos_oot_menu_focus` / `hos_oot_menu_tick` first: the game's menus follow, click and scroll with the mouse (`host/oot_menu.c`) | none | **on** | the game's menus no longer follow the mouse until it is re-implemented |
 
-The resolution and frame-rate patches (dynamic resolution and the fixed scale, frame seconds, movie frames, output
-size, the render-target pool, native scene, `HOS_FIX_RES`) are not parked: they are being ported.
+The resolution and frame-rate patches are not parked: they are lift 2's At probes (section 14h).
+
+## 14h. At probes: the frame-rate and resolution patches
+
+A patch that needs a few registers is a row of `probes.AT`: `At(func, pc, word, fn, args, result)`, "after the
+instruction at `pc`: `result := fn(args...)`". Arguments are `xN`, `wN`, `sN` (the bits of Sn) or an `#K` constant; the
+result is `xN`, `wN` (zero-extended), `sN` (the rest of Vn zero) or none. `Program.after` runs it after the
+instruction's own semantics, or when a BL / BLR returns; the values stay SSA values (no store and reload of the
+context around the call), and the call is never moved or removed, since the host function may read and write guest
+memory. The host functions (`host/oot_probes.c`) take plain values and guest addresses, never the context: an S
+register comes as a float, and a guest object as a typed pointer (`A64_PTR` cast to a struct of the fields used at
+their guest offsets, each checked with `_Static_assert`, `may_alias` since the host's C is built with strict aliasing).
+Float bits stay only where the game moves a float through a W register (`mov w9, #1.0`, `mov w8, #1920.0`). The word
+is checked at lift time (another game version stops the lift), and `mixed.prepare` stops when a probed function is
+not lift 2's: the present lifter does not make these patches any more.
+
+| family | rows | functions |
+|---|---|---|
+| dynamic resolution, the fixed scale | `hos_oot_dynres_flags`, `hos_oot_fixed_scale`, `hos_oot_scale_recompute`, `hos_oot_scale_flags` | `f_80825aa0`, `f_831f3200` |
+| native scene (`HOS_SCENE_NATIVE`), `HOS_FIX_RES` | `hos_oot_scene_mode`, `hos_oot_scene_check` | `f_806702e0`, `f_831f3200` |
+| frame seconds | `hos_oot_frame_step_probe`, `hos_oot_frame_step` | `f_80706be0`, `f_83b6ea90` |
+| movie frames | `hos_oot_movie_count` | `f_83b7c710` |
+| output size | `hos_oot_output_size`, `hos_oot_output_config`, `hos_oot_base_size` (x2), `hos_oot_base_size_bits` (x2) | `f_81222ce0`, `f_810a7b70`, `f_80ea2f30` |
+| render-target pool | `hos_oot_rt_pool_config`, `hos_oot_rt_heap_size`, `hos_oot_rt_heap_use` (after a BLR), `hos_oot_rt_rest` | `f_836ce9d0`, `f_83b7b340`, `f_80b72340` |
+
+Before and after, the output size in nnMain (`f_81222ce0`). The present lifter's text edit replaced two lines of its C:
+
+```
+old: "    c->x[8] = 0xa00ULL;\n    c->x[8] = (c->x[8] & ~(0xFFFFULL<<32)) | (0x5a0ULL<<32);\n" ...
+new: "    c->x[8] = hos_output_size(0) | ((uint64_t)hos_output_size(1) << 32);\n" ...
+```
+
+The probe names the instruction instead (`mov x8, #2560; movk x8, #1440, lsl #32`, then the store at +20):
+
+```
+At(0x81222ce0, 0x81222ee4, 0xf2c0b408, "hos_oot_output_size", (), "x8"),   # movk x8, #1440, lsl #32
+uint64_t hos_oot_output_size(void) { return hos_output_size(0) | (uint64_t)hos_output_size(1) << 32; }
+```
+
+The Ctx-based C after an instruction (`probes.after_c`, `lift2_after_<pc>(ctx)`) stays where a patch reads or writes
+many registers or was written against the whole context: `oot_wide` (11 sites), `oot_jitter` (3), `oot_occlusion` (6),
+and the `SPLICE_AT` splices of `host/direct_*.c`. They are candidates for At rows later.
 
 ## 15. Risks not retired
 
