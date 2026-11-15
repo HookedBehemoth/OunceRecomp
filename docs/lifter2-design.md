@@ -1217,6 +1217,43 @@ uint64_t hos_oot_output_size(void) { return hos_output_size(0) | (uint64_t)hos_o
 The Ctx-based C after an instruction (`probes.after_c`, `lift2_after_<pc>(ctx)`) stays where a patch reads or writes
 many registers or was written against the whole context: `oot_wide` (11 sites), `oot_jitter` (3), `oot_occlusion` (6),
 and the `SPLICE_AT` splices of `host/direct_*.c`. They are candidates for At rows later.
+## 14k. Milestone 19, step 4: a build without the present lifter, and what deleting it takes
+
+`HOOKSHOT_LIFT1=0` (`nx2/lift.py`): the present lifter is not imported at all (`a64_lift`, `a64emit`, `a64_rtgen`,
+`insn`, `lift_fixes`, `chunks`, `poll`, `lifted_c`: the lift stops if one was loaded). Lift 2's discovery is the
+program's facts; the lift writes the plan, the runtime's tables, the image's C, `functions.txt`, and no
+present-lifter C or runtime (`a64_suyu.*`, `a64_fpx.h`, `code_*.c` of an earlier lift are removed). While
+`lift2_owned.txt` would list functions it stops and names them; `HOOKSHOT_LIFT1_TRAP=1` makes each a trap instead
+(`gen/lift1_traps.c`: the thread stops with "a function the present lifter owns"). `nx2/build.py` compiles
+`a64_suyu.c` and the traps only where they exist.
+
+Proof:
+- `tests/test_lift2_nolift1.py` (no dump): a synthetic program discovered, lifted, tabled and run through `a64_icall`
+  and `a64_lookup` with the generated runtime; none of the present lifter is loaded.
+- The whole game (worktree, 14 GB scope): without the trap switch the lift stops ("owns 57 functions"); with it the
+  lift takes 85 s of work, the build links (313 MB, 0 kept on the present lifter), and the game stops at its first
+  owned function, nnMain (0x81222ce0, owned for the output-size patch). It boots once the owned count is zero.
+
+What remains before the present lifter can go: the 57 owned functions (the patches of `nx2/oot_patches.py` that are
+not probes yet, the two SPLICE_AFTERs after a TBZ and a BLR, the C after an instruction once
+`mixed.edited_functions` stops counting it, the one function lift 2 cannot take: a word it does not decode). Then
+the deletion list, each with what replaces it:
+
+| delete | replaced by |
+|---|---|
+| `third_party/a64-kit/lift/` (a64_lift.py, a64emit.py, a64emit.cpp, build_emit.py, liba64emit.so(.sha1), a64_rtgen.py, suyu/arm64_to_c.h and its licences) | `nx2/lift2/` (discovery, IR, LLVM emission, tables) |
+| `third_party/a64-kit/tests/insn_test.py`, `nx2/test_insn.py` | `tests/test_lift2.py`, `nx2/lift2/selfcheck.py` (llvm-mc against every encoding) |
+| `nx2/insn.py`, `nx2/lift_fixes.py` | built into `nx2/lift2/discover.py` |
+| `nx2/chunks.py` (the C's chunks, the forked emit), `nx2/poll.py`, `nx2/lifted_c.py`, `nx2/split_hot.py`, `nx2/pgo_pieces.py` | lift 2's partitions (`mixed.prepare`), its polls (`build_ir`), `-O2` hot partitions; `build.py`'s compile-size estimate for code files goes with them |
+| `nx2/census.py` (the present lifter's census) | `nx2/lift2/census.py` |
+| `nx2/test_leaf.py`; the present-lifter comparison in `nx2/test_lift2_leaf.py`, `nx2/test_lift2_fpleaf.py` | the Unicorn comparison those keep |
+| `nx2/oot_patches.py` (text patches of the C), the C-text half of `nx2/entry_hooks.py` (`apply`) | `nx2/lift2/probes.py`, entry hooks at lift 2's generic entries |
+| `nx2/lift2/owned.py`, `HOOKSHOT_LIFT1*`, `HOOKSHOT_DISCOVERY`, `discover.compare`/`adopt`, `mixed.thunked_source`, `mixed.edited_functions` | nothing: lift 2 is the only lifter |
+| `nx2/lift.py`'s present-lifter half (Lifter, coverage, chunks, patches, a64_rtgen) | `write_without_lift1` becomes the lift |
+| `nx2/rtgen.py`'s `__has_include` of a64_suyu.h/a64_fpx.h | nothing |
+| tests that cut text out of the present lifter or its C: `test_chunk_split`, `test_parallel_emit`, `test_mark_groups`, `test_stale_hot_pieces`, `test_fpx_slowpath`, `test_fpx_sticky`, `test_vfminmax`, `test_vfpx_elem`, the a64_lift.py check in `test_hos_fp`, `test_free_view_anchor` (a label of the C), `test_lift_mark`'s emit-jobs class, the present-lifter halves of `test_lift2_discover`, `test_lift2_tables` | lift 2's own tests (`test_lift2*`); the FP ones by `tests/test_lift2_fp.py` |
+
+Kept: `third_party/a64-kit/rt` (the runtime), `hos/nx_image.py`, `tools/nso.py`, `tools/toolchain.py` (see 14h).
 
 ## 15. Risks not retired
 
