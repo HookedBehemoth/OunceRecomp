@@ -10,8 +10,6 @@ port.
 - Player heart protection (patch_life, f_804bd8c0), player flight (patch_movement, f_82c415e0) and its rotation
   (patch_flight_rotation, f_806d2530): host/oot_cheats.c's switches.
 - Free camera (patch_view, f_804e48c0's view loop): hos_oot_free_view.
-- The menus' mouse (patch_menu_focus, f_802ed660; patch_menu_tick, f_802f1380): host/oot_menu.c. It was always on:
-  while parked the game's menus do not follow the mouse.
 """
 
 LIFE_HEAD = "void f_804bd8c0(Ctx *__restrict A64_NOESC c) {\n"
@@ -94,36 +92,3 @@ def patch_view(source):
     body = body.replace(anchor, anchor + "    hos_oot_free_view(c, c->x[20]);\n")
     return (source[:start] + body + source[end:]).replace(
         '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_free_view(Ctx *c, uint64_t view);\n', 1)
-
-MENU_FOCUS_HEAD = "void f_802ed660(Ctx *__restrict A64_NOESC c) {\n"
-
-
-def patch_menu_focus(source):
-    """f_802ed660, a menu screen's handler of a pane getting the focus (host/oot_menu.c), calls
-    hos_oot_menu_focus first, with the screen, the pane and its caller's return address"""
-    start = source.find(MENU_FOCUS_HEAD)
-    if start < 0:
-        return None
-    if "hos_oot_menu_focus(c," in source:   # (made before: a lift patched again)
-        return source
-    at = start + len(MENU_FOCUS_HEAD)
-    hook = "    hos_oot_menu_focus(c, c->x[0], c->x[1], c->x[30]);   /* (nx2/oot_patches.py: the menus' focus) */\n"
-    return (source[:at] + hook + source[at:]).replace(
-        '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr);\n', 1)
-
-
-MENU_TICK_HEAD = "void f_802f1380(Ctx *__restrict A64_NOESC c) {\n"
-
-
-def patch_menu_tick(source):
-    """f_802f1380, a menu screen's update (each frame, before the screen's UI controller: +56, its vtable's
-    +16), calls hos_oot_menu_tick first with the screen: the game's menus' mouse (host/oot_menu.c)"""
-    start = source.find(MENU_TICK_HEAD)
-    if start < 0:
-        return None
-    if "hos_oot_menu_tick(c," in source:   # (made before: a lift patched again)
-        return source
-    at = start + len(MENU_TICK_HEAD)
-    hook = "    hos_oot_menu_tick(c, c->x[0]);   /* (nx2/oot_patches.py: the menus' mouse) */\n"
-    return (source[:at] + hook + source[at:]).replace(
-        '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_menu_tick(Ctx *c, uint64_t screen);\n', 1)

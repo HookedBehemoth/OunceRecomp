@@ -518,27 +518,27 @@
 8210a8c0 ndve_programs_init_a             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the compute programs it makes at 0x8210aa40
 82105e20 ndve_programs_init_b             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the programs it makes at 0x821062ac # ?
 821066c0 ndve_programs_init_c             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the programs it makes at 0x8210676c # ?
-80a8f690 ui_item_db_list                  # host/oot_menu.c: (db, which): an item database list
-8002a520 ui_item_entry_key                # host/oot_menu.c item_panes: an item database entry's key (Key Items page)
-80d666a0 ui_item_key_resolve              # host/oot_menu.c: (key, 0): the key's string object
-8002a4c0 ui_item_key_string               # host/oot_menu.c item_panes: the key as a string, its text first
-80a963c0 ui_item_pane_name                # host/oot_menu.c: an entry's pane name
-802ebd20 ui_items_page_pane               # host/oot_menu.c: takes the focused pane on the Items page (the info panel)
-833fdaa0 ui_key_items_cursor              # host/oot_menu.c: places the page's cursor
-833fda00 ui_key_items_refresh             # host/oot_menu.c: (screen, key buffer): the page's refresh
+80a8f690 ui_item_db_list                  # (found for the menus' mouse, since removed): (db, which): an item database list
+8002a520 ui_item_entry_key                # (found for the menus' mouse, since removed): an item database entry's key (Key Items page)
+80d666a0 ui_item_key_resolve              # (found for the menus' mouse, since removed): (key, 0): the key's string object
+8002a4c0 ui_item_key_string               # (found for the menus' mouse, since removed): the key as a string, its text first
+80a963c0 ui_item_pane_name                # (found for the menus' mouse, since removed): an entry's pane name
+802ebd20 ui_items_page_pane               # (found for the menus' mouse, since removed): takes the focused pane on the Items page (the info panel)
+833fdaa0 ui_key_items_cursor              # (found for the menus' mouse, since removed): places the page's cursor
+833fda00 ui_key_items_refresh             # (found for the menus' mouse, since removed): (screen, key buffer): the page's refresh
 81557ca0 ui_layer_draw                    # work/assets/native/engine-frame.md: UI layers #103/#107
-8078e2b0 ui_layout_find_pane              # host/oot_menu.c: (layout, name) -> pane
-802f1380 ui_menu_screen_update            # host/oot_menu.c, nx2/oot_parked.py: every menu screen's update, each frame (patched)
-8078fcb0 ui_pane_position                 # host/oot_menu.c: a pane's position
-802ed660 ui_pause_menu_pane_focus         # host/oot_menu.c, nx2/oot_parked.py: pause menu's handler of a pane getting the focus (patched: host/oot_menu.c)
+8078e2b0 ui_layout_find_pane              # (found for the menus' mouse, since removed): (layout, name) -> pane
+802f1380 ui_menu_screen_update            # (found for the menus' mouse, since removed): every menu screen's update, each frame
+8078fcb0 ui_pane_position                 # (found for the menus' mouse, since removed): a pane's position
+802ed660 ui_pause_menu_pane_focus         # (found for the menus' mouse, since removed): pause menu's handler of a pane getting the focus
 828d4a70 ui_pouch_add_remove              # host/hos_main.c: OneShotAddOrRemovePouchContent
 805b63e0 ui_pouch_count                   # host/hos_main.c: (pouch manager, &name, 0, 0) counts one content
 82a3c260 ui_pouch_count_query             # host/hos_main.c: QueryGetPouchContentNumByActorName
-807923a0 ui_screen_name                   # host/oot_menu.c: a screen's name (obj+128 -> +248 -> +24)
-80795090 ui_screen_set_focus_caller       # host/oot_menu.c: how the screens call the focus setter
+807923a0 ui_screen_name                   # (found for the menus' mouse, since removed): a screen's name (obj+128 -> +248 -> +24)
+80795090 ui_screen_set_focus_caller       # (found for the menus' mouse, since removed): how the screens call the focus setter
 80bd1820 ui_serialize_capture             # work/assets/native/block-linear.md: ui::SerializeCapture
 833ac950 ui_serialize_capture_b           # work/assets/native/block-linear.md: ui::SerializeCapture
-8088ffc0 ui_set_focus                     # host/oot_menu.c: (screen, button, flag): the focus setter
+8088ffc0 ui_set_focus                     # (found for the menus' mouse, since removed): (screen, button, flag): the focus setter
 81681690 ui_text_box_texture_thread       # host/hos_setjmp.c: UpdateTextBoxTextureThread (setjmp)
 80b1e140 ui_text_letter_anim              # host/oot_probes.c: steps a text pane's letter animation (text speed patch)
 80794b00 ui_text_skip                     # nx2/oot_parked.py: the game's own skip on A

@@ -52,9 +52,8 @@ alone drives the game until 5 s after its last press; without it the player's de
 is not a focus override.
 
 **Parked** (`nx2/oot_parked.py`; the table in [lifter.md](lifter.md#103-parked-patches)): text patches of the old
-lifter's C not ported yet. The game's menus no longer follow the mouse (pointing, clicking and scrolling in the title,
-pause and option menus) until those hooks are re-implemented. The free camera, heart protection and flight are parked
-too: their switches do nothing meanwhile.
+lifter's C not ported yet. The free camera, heart protection and flight are parked: their switches do nothing
+meanwhile.
 
 ## Iterating quickly (Linux)
 
@@ -240,8 +239,6 @@ beside them are listed at the end, under Undocumented, with where they are read.
 | `HOS_MOUSE_SENS` | `<factor>`: mouse sensitivity, over the menu and `mouse_sens.txt` |
 | `HOS_MOUSE_DECAY` | `<percent>`: the mouse look's decay rate (default 0.30) |
 | `HOS_MOUSE_MIN_DECAY` | `<percent>`: its minimum decay (default 0.20) |
-| `HOS_MENU_DRAG_GAIN` | `<float>`: menu drag gain (default 6.0; the menus' mouse is parked: no effect for now) |
-| `HOS_MENU_TRACE` | (set) the host's stick values logged |
 
 The presses are `<seconds>:<button>[+<button>...][/<ms>]`, separated by commas, for example `2:A,5.5:LUP/1500,9:ZL+R`.
 The buttons are `A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN`, and the sticks pushed to their edge `LUP
