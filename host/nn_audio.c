@@ -586,10 +586,6 @@ static void au_device_name(unsigned device, char *out, size_t size) {
     snprintf(out, size, "device %u", device);
 }
 static uint64_t au_ms(void) { return (uint64_t)GetTickCount64(); }
-/* (the device just opened: nothing to set on it here) */
-static void au_opened(HWAVEOUT w) {
-    (void)w;
-}
 /* The default output's channels (SDL's default device); 2 when unknown. */
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
 /* (hookshot) The Insert menu's Audio output (gpu/legacy/vk/vk_menu.cpp): audio_output= in hookshot_options.ini beside the game,
@@ -685,7 +681,6 @@ static int output_try(int candidate, const WAVEFORMATEX *f) {
         wout = NULL;
         return 0;
     }
-    au_opened(wout);
     char name[64];
     if (device == WAVE_MAPPER) snprintf(name, sizeof name, "the default device");
     else au_device_name(device, name, sizeof name);
@@ -975,7 +970,6 @@ static HANDLE renderer_thread;
 
 static DWORD WINAPI renderer_main(void *p) {
     (void)p;
-    hos_thread_boost(2);
     output_open();
     int64_t period = 5000000, next = hos_now_ns() + period;   /* one audio frame: 240 samples at 48 kHz */
     static int16_t pcm[FRAME * OUT_MAX_CH];

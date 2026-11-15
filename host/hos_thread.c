@@ -20,10 +20,8 @@
 #include <stdatomic.h>
 #include <unistd.h>
 #endif
-#ifdef __linux__
 #include <sys/prctl.h>
 #include <time.h>
-#endif
 
 struct HosThread {
     Ctx ctx;
@@ -91,19 +89,11 @@ uint64_t *hos_tls_slots(HosThread *t) { return t->tls_slots; }
 /* The core a thread runs on. Most of TOTK's threads have no ideal core (-2, "use default") and a one-core affinity
    mask, so the mask decides; the engine keys per-core resources (its command memory arenas, for one) on
    GetCurrentCoreNumber, so threads pinned to different cores must report different ones. */
-/* (no pinning by core: the threads run where the host's scheduler puts them) */
-static void pin_by_core(HosThread *t) {
-    (void)t;
-}
 void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask) {
     if (ideal >= 0) t->ideal_core = ideal;
     if (mask) t->core_mask = mask;
-    pin_by_core(t);
 }
 uint64_t hos_thread_mask(HosThread *t) { return t->core_mask; }
-void hos_thread_boost(int level) {
-    (void)level;
-}
 
 int hos_cores(void) {
     static int n;
@@ -449,7 +439,6 @@ void hos_thread_start(HosThread *t) {
         SetThreadDescription(t->handle, w);
     }
     hos_thread_pin(t->handle, t->name);
-    pin_by_core(t);
 #ifdef __EMSCRIPTEN__
     { void web_thread_named(HANDLE t, const char *name); web_thread_named(t->handle, t->name); }
 #endif
@@ -825,7 +814,7 @@ static int present_poll(Ctx *c, int64_t ns) {
    look), its virtual core given up: the phase keeps its wall time and uses ~3.9 ms less CPU a frame. Linux only
    (Windows' timers are ~0.5 ms coarse). HOS_CALC_NAP=0: spun as before */
 static int calc_poll_nap(Ctx *c, int64_t ns) {
-#if defined(__linux__) && HOS_GAME_VERSION == 100
+#if HOS_GAME_VERSION == 100
     static int on = -1;
     if (on < 0) on = !hos_game_is_mkw() && !(getenv("HOS_CALC_NAP") && atoi(getenv("HOS_CALC_NAP")) == 0);
     const uint64_t lr = c->x[30];

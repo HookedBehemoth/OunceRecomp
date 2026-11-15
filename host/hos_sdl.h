@@ -1,7 +1,7 @@
 /* SDL3 or SDL2 behind one set of calls (host/hos_sdl.c): the window (host/posix/display_sdl.c), the sound
    (host/posix/win32_posix.c's waveOut) and the controllers (host/pad_sdl.c) call these, whichever SDL loaded. One
    library for the whole process, loaded at run time: SDL3 beside the executable, else the system's, else SDL2 the same
-   way (SDL3.dll and SDL2.dll; on Linux libSDL3.so.0 and libSDL2-2.0.so.0). HOS_SDL_VERSION=2 takes SDL2 even with an
+   way (libSDL3.so.0, libSDL2-2.0.so.0; the host/posix loader maps the .dll names the code asks for). HOS_SDL_VERSION=2 takes SDL2 even with an
    SDL3 there. */
 #pragma once
 #include <stdint.h>

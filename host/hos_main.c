@@ -5,7 +5,7 @@
    guest main thread, run every module's DT_INIT in rtld's order (the SDK crt's _init: TLS registration with musl,
    then the module's constructors), then nninitStartup and nnMain.
 
-   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace]
+   Usage: hookshot [image.bin] [--romfs <dir>] [--user <dir>] [--trace]
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
@@ -27,10 +27,8 @@ const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's
 #else
 #include <windows.h>   /* (linux: host/posix's) */
 #include <sys/mman.h>
-#ifdef __linux__
 #include <sys/prctl.h>
 #include <sys/sysinfo.h>
-#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -132,11 +130,9 @@ static int reserve_guest(void) {
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
     if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
-#ifdef __linux__
     /* (HOS_NO_THP=1, experiment: none outside the window either. With THP "always" 400-450 MB of the host heap's and the binary's bss are huge
        pages, each resident whole when any of its 2 MB is touched) */
     if (getenv("HOS_NO_THP")) prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
-#endif
     return 1;
 #endif
 }
@@ -371,7 +367,6 @@ int hos_oot_is_player(Ctx *c, uint64_t actor) {
            recomp_load8(c, resource + 94) == 0;
 }
 
-#if defined(__linux__)
 /* OneShotAddOrRemovePouchContent (f_828d4a70) for one pouch content by actor name: delta > 0 adds, < 0 removes.
    Returns the event status (top bits of the result word), or -1 when the pouch is not ready. */
 static int oot_pouch_change(Ctx *c, const char *name, int delta) {
@@ -1062,18 +1057,12 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     *c = saved;
     if (returning) hos_log("cheats: returned to %.2f %.2f %.2f", mark[0], mark[1], mark[2]);
 }
-#endif
 
 int hos_oot_flight_shortcut_ready(void) {
-#if defined(__linux__)
     const int64_t seen = __atomic_load_n(&flight_player_seen, __ATOMIC_RELAXED);
     return seen && hos_now_ns() - seen < 250000000;
-#else
-    return 0;
-#endif
 }
 
-#if defined(__linux__)
 static void oot_write_flight_rotation(Ctx *c, uint64_t matrix) {
     const float s = sinf(flight_transform_yaw), co = cosf(flight_transform_yaw);
     const float rotation[3][3] = {{co, 0, s}, {0, 1, 0}, {-s, 0, co}};
@@ -1085,33 +1074,19 @@ static void oot_write_flight_rotation(Ctx *c, uint64_t matrix) {
         }
     }
 }
-#endif
 
 void hos_oot_flight_rotation(Ctx *c, uint64_t controller, uint64_t matrix) {
-#if defined(__linux__)
     if (flight_transform_controller == controller) oot_write_flight_rotation(c, matrix);
-#else
-    (void)c;
-    (void)controller;
-    (void)matrix;
-#endif
 }
 
 void hos_oot_flight_pose(Ctx *c, uint64_t actor, uint64_t matrix) {
-#if defined(__linux__)
     if (flight_pose_actor == actor) {
         flight_pose_actor = 0;
         oot_write_flight_rotation(c, matrix);
     }
-#else
-    (void)c;
-    (void)actor;
-    (void)matrix;
-#endif
 }
 
 void hos_oot_lift_player(Ctx *c, uint64_t actor) {
-#if defined(__linux__)
     flight_pose_actor = 0;
     if (recomp_load64(c, actor) != 0x84b45e18ULL) return;
     const uint64_t components = recomp_load64(c, actor + 624);
@@ -1124,13 +1099,8 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
     if (!TryAcquireSRWLockExclusive(&cheats_lock)) return;
     oot_update_player_cheats(c, actor, components);
     ReleaseSRWLockExclusive(&cheats_lock);
-#else
-    (void)c;
-    (void)actor;
-#endif
 }
 
-#if defined(__linux__)
 static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
     int rx_option(int id, int otherwise);
     static uint64_t active_view;
@@ -1188,10 +1158,8 @@ static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
         }
     }
 }
-#endif
 
 void hos_oot_free_view(Ctx *c, uint64_t view) {
-#if defined(__linux__)
     int rx_option(int id, int otherwise);
     if (!view || recomp_load64(c, view) != 0x84c18a88ULL) return;
 
@@ -1203,10 +1171,6 @@ void hos_oot_free_view(Ctx *c, uint64_t view) {
     const int enabled = rx_option(HOS_OPT_CHEAT_CAMERA, 0);
     oot_build_free_view(c, enabled ? view : 0, view + 8);
     ReleaseSRWLockExclusive(&lock);
-#else
-    (void)c;
-    (void)view;
-#endif
 }
 
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
@@ -1240,13 +1204,9 @@ static int memory_notice_text(unsigned long long ram_mb, unsigned long long swap
 #ifndef A64_MEM_ZERO
 static void memory_notice(void) {
     unsigned long long ram = 0, swap = 0;   /* (MB) */
-#if defined(__linux__)
     struct sysinfo si;
     if (sysinfo(&si)) return;
     ram = ((unsigned long long)si.totalram * si.mem_unit) >> 20, swap = ((unsigned long long)si.totalswap * si.mem_unit) >> 20;
-#else
-    return;
-#endif
     char text[512];
     if (!memory_notice_text(ram, swap, text, sizeof text)) {
         hos_log("boot: %llu MB of memory, %llu MB of swap", ram, swap);

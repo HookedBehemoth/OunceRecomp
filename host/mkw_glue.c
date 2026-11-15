@@ -62,7 +62,7 @@ static LONG CALLBACK commit_on_touch(EXCEPTION_POINTERS *info) {
                                                                                       : EXCEPTION_CONTINUE_SEARCH;
 }
 
-/* A crash nothing handles: what, where (mkw.exe+offset: nx2/dllmap.py reads mkw.map the same way), and the guest
+/* A crash nothing handles: what, where (hookshot+offset: nx2/samap.py names the lifted function), and the guest
    state of the thread, as of its last call out of lifted code, with its frame chain from x29. */
 static uint64_t peek_guest(uint64_t a) {
     MEMORY_BASIC_INFORMATION mbi;
@@ -191,7 +191,7 @@ int hos_blank_cached_icon(const char *guest, const char *host) { (void)guest, (v
 int hos_ultrawide_redirect(const char *guest, char *out, size_t cap) { (void)guest, (void)out, (void)cap; return 0; }
 uint64_t hos_title_input(uint64_t buttons) { return buttons; }   /* (totk_title.c) */
 uint64_t hos_frame_step_buttons(uint64_t buttons) { return buttons; }   /* (nn_vi.c) */
-/* (hookshot) hos_sdl_pads, hos_sdl_rumble: host/pad_sdl.c (from TOTKPort; SDL2.dll beside the exe) */
+/* (hookshot) hos_sdl_pads, hos_sdl_rumble: host/pad_sdl.c (from TOTKPort) */
 
 /* TOTK's emulated GPU (gpu.c, its Maxwell command processor), which nvdrv.c and the debug commands call into: MKW
    has none (its NVN2 calls go to nvn_native.c), so a submission is only counted. */

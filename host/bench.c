@@ -14,10 +14,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef __linux__
 #include <dirent.h>
 #include <unistd.h>
-#endif
 
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines);   /* (rx_backend.c: the back end's) */
 double hos_log_seconds(void);   /* (hos_thread.c: the log's seconds since the process started) */
@@ -118,7 +116,6 @@ typedef struct {
 typedef struct { char name[20]; double secs; } CpuGroup;
 static int cpu_sample(CpuGroup *g) {
     int n = 0;
-#ifdef __linux__
     DIR *d = opendir("/proc/self/task");
     if (!d) return 0;
     const double tick = (double)sysconf(_SC_CLK_TCK);
@@ -150,9 +147,6 @@ static int cpu_sample(CpuGroup *g) {
         g[i].secs += (double)(ut + st) / tick;
     }
     closedir(d);
-#else
-    (void)g;
-#endif
     return n;
 }
 

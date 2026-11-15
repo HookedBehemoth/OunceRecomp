@@ -571,7 +571,7 @@ def main():
                     if f.endswith(".h"))
     srcs = [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_stubs.c", "hos_image.c", "nvn2_exports.c")] + \
         [os.path.join(rt64, "a64_rt.c")]
-    host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c") and f != "pgo_rt.c")
+    host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c"))
     host_srcs += [  # (the window on SDL2, the Win32-named calls on POSIX)
         os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
     if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)

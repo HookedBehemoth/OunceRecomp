@@ -132,7 +132,6 @@ void hos_vcore_dump(void);   /* (HOS_DUMP_FILE) the owners of the virtual cores 
 void hos_thread_fp_log(long long present);   /* (hos_thread.c) HOS_FP_LOG=1: FPCR and MXCSR of the presenting thread */
 int hos_current_core(uint64_t lr);   /* (hos_thread.c) GetCurrentCoreNumber for the running thread */
 int hos_cv_sleep(void *cv, void *srw_lock, unsigned ms);   /* SleepConditionVariableSRW (exclusive) for guest threads */
-void hos_thread_boost(int level);
 void hos_thread_stack(HosThread *t, uint64_t *addr, uint64_t *size);
 uint64_t *hos_tls_slots(HosThread *t);                     /* nn::os TLS slot values */
 #define HOS_TLS_SLOTS 32

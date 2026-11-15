@@ -41,7 +41,7 @@ const char *hos_version(void);   /* hos_main.c */
 enum { OP_HANDSHAKE = 0, OP_FRAME = 1, OP_CLOSE = 2, OP_PING = 3, OP_PONG = 4 };
 #define ANSWER_CAP 8192
 
-/* ---- the local connection: a named pipe on Windows, a Unix socket elsewhere ---- */
+/* ---- the local connection: Discord's Unix socket ---- */
 typedef int Ipc;
 #define IPC_NONE (-1)
 static uint64_t now_ms(void) {

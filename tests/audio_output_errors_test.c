@@ -98,7 +98,6 @@ static MMRESULT test_close(HWAVEOUT out) { (void)out; close_calls++; return 0; }
 static unsigned au_device_count(void) { return 2; }
 static void au_device_name(unsigned device, char *out, size_t size) { snprintf(out, size, "test device %u", device); }
 static uint64_t au_ms(void) { return now_ms; }
-static void au_opened(HWAVEOUT w) { (void)w; }
 static int speakers = 2;   /* (the game's speakers: 6 in the "surround" and "fallback" cases) */
 static int au_speakers(void) { return speakers; }
 static const WAVEFORMATEX *au_format(const WAVEFORMATEX *f) { return f; }

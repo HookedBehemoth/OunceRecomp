@@ -5,9 +5,7 @@
      (/proc/self/cmdline and /proc/self/environ: hookshot_env.txt's lines are read again, not kept), so whatever waits
      for it (the launcher, a stream, a test) still has it. The game is bin/hookshot on disk, never run from inside the
      AppImage (hookshot-launch starts it with the AppImage's variables taken away), so /proc/self/exe is the game;
-     argv[0] on the PATH if that is gone (the folder built again meanwhile).
-     Windows: a new process of this executable (GetModuleFileNameW) with this one's command line (GetCommandLineW), in
-     the same folder and environment; then this one exits. */
+     argv[0] on the PATH if that is gone (the folder built again meanwhile). */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
