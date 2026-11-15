@@ -387,8 +387,8 @@ after the lift.
 |---|---|---|
 | `nx2/entry_hooks.py` `ENTRY_HOOK(0xADDR)`, `ENTRY_HOOK_SYM` (137 in `host/*.c`) | `if (entry_<addr>(c)) return;` at the function's top | Unchanged in `host/`. The lifter puts the call at the fast entry: store the live-ins and x30 to the context, call, on 1 load x0, x1, v0, v1 and return. A hook may also be declared `REPLACE`: a host function with the fast prototype, called directly. |
 | `nx2/entry_hooks.py` `SPLICE_AFTER(0xADDR, "anchor")`, `_EACH` (15, `host/direct_*.c`) | inserts `splice_<addr>(c);` after a text anchor | `SPLICE_AT(0xFUNC, 0xPC)` naming the guest instruction. The lifter stores every live register to the context before the call and reloads after it (a sync point). The anchors are re-expressed as instruction addresses once with the old lift's `/* pc */` comments. |
-| `nx2/oot_patches.py`: dynres, life, movement, flight rotation, view, mouse camera, menu focus, menu tick, text speed, frame seconds (`STEP_SITES`), movie frames (`MOVIE`), whole frames (`WHOLE_SITES`), output size, RT pool size (`OUT_EDITS`) (done: whole frames are `Value` probes, the frame-rate and resolution ones `At` probes, section 14i; the rest parked, 14h) | replace or insert C at text anchors in about 20 functions | Probes in `nx2/lift2/probes.py`: `After(pc, fn, reads, writes)` (a host function of the named registers returning the written ones), `Before(pc, ...)`, `CondOr(pc, fn)` (a conditional branch also taken when `fn()` is true), `Value(pc, reg, fn)` (the instruction's result replaced), `CallSite(pc, fn)` (a BL at pc calls a host function instead). Each patch's C moves into a host file as a function; the table names it. |
-| `nx2/oot_native_resolution.py` (f_806702e0, f_831f3200) (done: `At` probes, section 14i) | text edits | probes, as above |
+| `nx2/oot_patches.py`: dynres, life, movement, flight rotation, view, mouse camera, menu focus, menu tick, text speed, frame seconds (`STEP_SITES`), movie frames (`MOVIE`), whole frames (`WHOLE_SITES`), output size, RT pool size (`OUT_EDITS`) (done: whole frames are `Value` probes, the frame-rate and resolution ones `At` probes, section 14j; the rest parked, 14i) | replace or insert C at text anchors in about 20 functions | Probes in `nx2/lift2/probes.py`: `After(pc, fn, reads, writes)` (a host function of the named registers returning the written ones), `Before(pc, ...)`, `CondOr(pc, fn)` (a conditional branch also taken when `fn()` is true), `Value(pc, reg, fn)` (the instruction's result replaced), `CallSite(pc, fn)` (a BL at pc calls a host function instead). Each patch's C moves into a host file as a function; the table names it. |
+| `nx2/oot_native_resolution.py` (f_806702e0, f_831f3200) (done: `At` probes, section 14j) | text edits | probes, as above |
 | `nx2/oot_wide.py` (11 sites), `nx2/oot_jitter.py` (3), `nx2/oot_occlusion.py` (6) | C after an instruction (`Lifter.after`) | `After` probes; the snippets become host functions |
 | `nx2/step_readers.py` | reads the lifted C to classify readers of the frame step | reads the IR dump (`work/lift2/ir/<addr>.txt`) |
 | `nx2/chunks.py` (stable boundaries, `edit_c`), `nx2/whole_write.py` | chunk files of C | partitions by guest address (kept: `work/image/chunks.txt`); written whole once |
@@ -1171,11 +1171,11 @@ functions they called stay. Each comes back as a probe (`nx2/lift2/probes.py`) o
 
 Ported since: the native mouse camera (`f_80644c80`, `hos_mouse_camera(x0)` after its first instruction, the camera an
 `OotPlayerCamera` struct) and text speed (`f_80b1e140`, `s0 := hos_oot_text_time(s0)` before its `tbnz w8, #4` at
-`0x80b1e1bc`, the fall-through edge past the block's checks), both At probes (section 14i).
+`0x80b1e1bc`, the fall-through edge past the block's checks), both At probes (section 14j).
 
-The resolution and frame-rate patches are not parked: they are lift 2's At probes (section 14i).
+The resolution and frame-rate patches are not parked: they are lift 2's At probes (section 14j).
 
-## 14i. At probes: the frame-rate and resolution patches
+## 14j. At probes: the frame-rate and resolution patches
 
 A patch that needs a few registers is a row of `probes.AT`: `At(func, pc, word, fn, args, result)`, "after the
 instruction at `pc`: `result := fn(args...)`". Arguments are `xN`, `wN`, `sN` (the bits of Sn) or an `#K` constant; the
