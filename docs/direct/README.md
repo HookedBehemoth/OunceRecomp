@@ -1,35 +1,36 @@
-# What we know about the game and the direct back end
+# Renderer pages
 
-Reference notes, each cited from the code that depends on it. Addresses are guest addresses of the supported build
-(`f_<address>` is the lifted function; `games/oot/labels.txt` names the ones we know). Everything made from the game stays in
-`work/`; these files hold analysis, not data. The back end's design and open problems are in
-[../direct-backend-plan.md](../direct-backend-plan.md).
+These pages explain the direct back end, the Vulkan renderer in `gpu/direct`, and the parts of the game it depends on.
+Start with [the direct back end plan](../direct-backend-plan.md) for the rules the back end keeps and the open work,
+then read [the architecture](architecture.md).
 
-The game
+Function names in these pages are labels from `games/oot/labels.txt`, which holds each function's guest address. Nothing
+made from the game belongs in these pages or in the repository; it stays under `work/`.
 
-- [boot-to-main-loop.md](boot-to-main-loop.md): the path from the host's `main` to the steady frame loop.
-- [texture-streaming.md](texture-streaming.md): how the game loads, registers, evicts and frees textures.
-- [shadow-maps.md](shadow-maps.md): how the shadow maps live and die, and what pins them.
-- [jobs-state.md](jobs-state.md): what a render job inherits, and the work recorded inside jobs.
-- [job-formats.md](job-formats.md): where a job gets its target formats (the pass key).
-- [render-targets.md](render-targets.md): every render target's size and format, where they come from, and where to take control.
-- [terrain-texels.md](terrain-texels.md): terrain tiles and the other CPU texel paths.
-- [task-mesh.md](task-mesh.md): the game's task and mesh shaders.
-- [movie-player.md](movie-player.md): the movie player, its frame chooser, the NDVE network and how the movie file reaches it.
-- [havok.md](havok.md): how the physics, cloth and AI work reaches Havok, its kernels.
+## The back end
 
-The back end
+- [Architecture](architecture.md): how NVN commands become Vulkan work, from the seam to the submit.
+- [Render jobs](jobs.md): pass keys, formats, the inline path and the job patches.
+- [The shader contract](shader-contract.md): what a translated program expects at a draw, and the shader caches.
+- [Task and mesh shaders](task-mesh.md): the task stage as compute, the replaced mesh stages and the Hyrule Field hang.
+- [The register-pressure pass](spv-late.md): reordering translated mesh stages, and its gate.
+- [Render targets](render-targets.md): sizes, switches, the allocator hook, shadows and upscaling.
+- [The transient pool](transient-pool.md): one allocation for the transient render targets.
 
-- [shader-contract.md](shader-contract.md): what a translated program expects at a draw.
-- [patch-sites.md](patch-sites.md): the game-patch sites, and the causes found for picture bugs.
-- [converters.md](converters.md): the build-time texture and terrain converters.
-- [transient-pool.md](transient-pool.md): the one allocation for transient render targets.
-- [spv-late.md](spv-late.md): the register-pressure pass in the translator.
+## Textures and assets
 
-Mesh-stage hang and tools
+- [Texture streaming](texture-streaming.md): how the game loads, caches and frees textures, and how the back end follows.
+- [Terrain tiles and CPU texels](terrain-texels.md): texels that do not come from the texture store.
+- [The asset converters](converters.md): the build-time tools that prepare textures, terrain tiles and sky tables.
 
-- [hang-cause.md](hang-cause.md): the Hyrule Field device loss and what was ruled out.
-- [hang-fix.md](hang-fix.md): the hand-written stage, the spill scan, the market's result.
-- [mesh-program.md](mesh-program.md): the hanging program, read statically.
-- [mesh-harness.md](mesh-harness.md): running the game's mesh stages outside the game (`tools/meshlab`).
-- [shader-costs.md](shader-costs.md): the census of every shader and what rewriting would pay.
+## The game
+
+- [From process start to the main loop](boot-to-main-loop.md): the host's set-up and the game's initialization.
+- [The frame loop](frame-loop.md): the threads, one frame's phases, and where the render work is recorded.
+- [The movie player](movie-player.md): how movies are read, paced and drawn.
+- [Havok](havok.md): how physics, cloth and AI reach Havok.
+
+## Tools
+
+- [The mesh harness](mesh-harness.md): capture mesh draws and run them outside the game.
+- [The shader census](shader-costs.md): what the game's shaders cost, offline and in the game.
