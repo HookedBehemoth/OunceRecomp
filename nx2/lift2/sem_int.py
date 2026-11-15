@@ -512,7 +512,7 @@ def t_sysreg(b, f, pc, p):
         elif name in ("CNTPCT_EL0", "CNTVCT_EL0"):
             v = b.op("call", "i64", fn="recomp_cntpct", ctx=True, regs=0)
         elif name == "CNTFRQ_EL0":
-            v = b.const(31250000)   # (the Switch 2's counter, host/mkw_glue.c a64_cntpct_host)
+            v = b.const(31250000)   # (the Switch 2's counter, host/hos_process.c a64_cntpct_host)
         elif name == "CTR_EL0":
             v = b.const(0x8444C004)   # (dynarmic's configuration, as suyu reports it)
         else:   # DCZID_EL0: DC ZVA clears 64 bytes

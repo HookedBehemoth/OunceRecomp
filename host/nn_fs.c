@@ -230,7 +230,6 @@ HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
 
 /* ---- files ---------------------------------------------------------------------------------------------------- */
-int hos_blank_cached_icon(const char *guest, const char *host);   /* (totk_icon_cache.c: TOTK's fused weapon icons) */
 /* HOS_FS_TRACE=1: every file opened (or not found) is logged */
 static int fs_trace(void) {
     static int on = -1;
@@ -258,10 +257,6 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
             return;
         }
     }
-    { int hos_ultrawide_redirect(const char *guest, char *out, size_t cap);   /* (totk_ultrawide_ui.c: the HUD) */
-      char alt[HOS_FS_PATH];
-      if (!want_write && hos_ultrawide_redirect(g, alt, sizeof alt)) snprintf(path, sizeof path, "%s", alt); }
-    if (!want_write && hos_blank_cached_icon(g, path)) { RET(R_PATH_NOT_FOUND); return; }
     {   /* HOS_FS_OVERLAY=<folder> (a test): a file of the game's data found there is read in place of the game's own */
         static const char *ov_env;
         static int ov_read;
@@ -502,7 +497,6 @@ static int is_mod_dir(const char *guest) {
 HLE(_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc) {
     char path[HOS_FS_PATH];
     if (!host_path(gstr(ARG(1)), path, sizeof path, NULL)) { RET(R_PATH_NOT_FOUND); return; }
-    hos_blank_cached_icon(gstr(ARG(1)), path);
     DWORD at = GetFileAttributesA(path);
     if (at == INVALID_FILE_ATTRIBUTES && is_mod_dir(gstr(ARG(1)))) at = FILE_ATTRIBUTE_DIRECTORY;   /* (only in mods) */
     if (fs_trace())

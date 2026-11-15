@@ -17,7 +17,7 @@ IR; savings the same at -O1 and -O2):
 | callee-saved save/restore pairs | 612,455 in 174,749 functions |
 | summaries | 394 s and 8.4 GB in the lift's process (this tree); 117 s and 1.7 GB as a job of its own, cached (`agent/lift-fast`) |
 
-Static counts come from `work/sa/plan.pickle` (HOS_GAME_VERSION 100: 294,523 bodies, PLT stubs resolved through its
+Static counts come from `work/sa/plan.pickle` (the build games/oot/game.py names: 294,523 bodies, PLT stubs resolved through its
 `plt` map), read under a 3 GB memory cap; sdk symbols from the NSO symbol table (sdk base 0x84fa0000).
 
 What every item is checked against:

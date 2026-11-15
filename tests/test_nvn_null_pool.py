@@ -77,7 +77,6 @@ static uint64_t h2g(void *p) { return (uint64_t)(uintptr_t)p; }
 #define U64(i) (c->x[i])
 static int invalidated;
 static void rx_nvn_invalidate(uint64_t a, uint64_t b) { (void)a; (void)b; invalidated++; }
-static int hos_game_is_mkw(void) { return 0; }
 static int tl_grid_reader;   /* (the grid reader's PATCH_HOOK marks its run) */
 ''' + stamped + "\n" + guard + "\n" + flags + "\n" + size + "\n" + map_ + "\n" + address + "\n" + invalidate + r'''
 int main(void) {

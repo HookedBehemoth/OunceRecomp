@@ -44,7 +44,7 @@
      descriptor id -> agl's record -> the object), which claims the range for its image if another has had it since.
    The game's free tells the back end nothing: the memory is the pool's, and a freed target's image is only an object.
    HOS_RT_SLOTS_LOG=1: every slot made, with its name, and why the allocator's first initializations after 1000
-   presents were not skipped. Addresses and offsets are HOS_GAME_VERSION 100's (the only one);
+   presents were not skipped. Addresses and offsets are the build's games/oot/game.py names;
    the rows' instruction words stop the lift on another build. */
 #include "hos.h"
 #include "../gpu/api/rx_nvn.h"

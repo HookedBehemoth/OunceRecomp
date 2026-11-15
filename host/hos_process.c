@@ -1,6 +1,7 @@
-/* mkw-recomp's pieces of the standalone runtime that TOTKPort's hos/ keeps elsewhere: the 64-bit guest window's
-   commit (TOTK commits its whole 4 GB window up front; MKW's 512 GB window is only reserved), and stand-ins for the
-   hooks of files not taken into host/ (the renderer and display, the profiler, mods, TOTK's own patches). */
+/* The process around the guest (was mkw_glue.c): the 64-bit guest window's commit (reserved whole, committed as used),
+   crash and fatal-error reports with the guest's state, the guest backtrace, HOS_STATS_AFTER, the Switch 2's counter
+   (CNTPCT_EL0), and stand-ins for the hooks of TOTKPort files not taken into host/ (its profiler's memory checkpoints,
+   its emulated GPU's submissions, a frame-step input filter). */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -189,9 +190,6 @@ void hos_commit_init(void) {
    share of a core (guest threads by their guest names, host threads by their descriptions): which one a frame rate
    waits for */
 void hos_mem_checkpoint(const char *what) { (void)what; }        /* (hos_prof.c: HOS_MEM_TIMELINE) */
-int hos_blank_cached_icon(const char *guest, const char *host) { (void)guest, (void)host; return 0; }   /* (TOTK) */
-int hos_ultrawide_redirect(const char *guest, char *out, size_t cap) { (void)guest, (void)out, (void)cap; return 0; }
-uint64_t hos_title_input(uint64_t buttons) { return buttons; }   /* (totk_title.c) */
 uint64_t hos_frame_step_buttons(uint64_t buttons) { return buttons; }   /* (nn_vi.c) */
 /* (hookshot) hos_sdl_pads, hos_sdl_rumble: host/pad_sdl.c (from TOTKPort) */
 
@@ -225,69 +223,7 @@ uint64_t a64_cntpct_host(void) {
     return (uint64_t)(((unsigned __int128)(uint64_t)(now.QuadPart - base.QuadPart) * mult) >> 32);
 }
 
-/* ---- what the renderer asks of the profiler and ultrawide code ---- */
-int hos_ab(void) { return 0; }                    /* (hos_prof.c: A/B measurement phases) */
-/* (with the renderer's mem: lines) HOS_MEM_MAP=1: how much of the guest window is committed, and its resident part */
-void hos_memory_map_log(void) {
-    static int on = -1;
-    if (on < 0) on = getenv("HOS_MEM_MAP") != NULL;
-    if (!on) return;
-    uint64_t committed = 0, regions = 0;
-    for (uint64_t a = 0; a < HOS_GUEST_SPACE;) {
-        MEMORY_BASIC_INFORMATION m;
-        if (!VirtualQuery(GP(a), &m, sizeof m)) break;
-        const uint64_t end = (uint64_t)((uint8_t *)m.BaseAddress + m.RegionSize - (uint8_t *)GP(0));
-        if (m.State == MEM_COMMIT) committed += m.RegionSize, regions++;
-        a = end > a ? end : a + 0x1000;
-    }
-    hos_log("mem: guest window %llu MB committed in %llu regions", (unsigned long long)(committed >> 20),
-            (unsigned long long)regions);
-    /* the rest of the address space: private memory by allocation, the largest */
-    struct { uint64_t base, bytes; } top[8] = {{0}};
-    uint64_t other = 0, cur_base = 0, cur = 0;
-    const uint64_t g0 = (uint64_t)(uintptr_t)GP(0), g1 = g0 + HOS_GUEST_SPACE;
-    for (uint64_t a = 0x10000; a < 0x7FFFFFFF0000ull;) {
-        MEMORY_BASIC_INFORMATION m;
-        if (!VirtualQuery((void *)(uintptr_t)a, &m, sizeof m)) break;
-        const uint64_t base = (uint64_t)(uintptr_t)m.AllocationBase, end = (uint64_t)(uintptr_t)m.BaseAddress + m.RegionSize;
-        if (base != cur_base) {
-            for (int k = 0; k < 8 && cur; k++)
-                if (cur > top[k].bytes) {
-                    memmove(&top[k + 1], &top[k], (size_t)(7 - k) * sizeof top[0]);
-                    top[k].base = cur_base, top[k].bytes = cur;
-                    break;
-                }
-            cur_base = base, cur = 0;
-        }
-        if (m.State == MEM_COMMIT && m.Type == MEM_PRIVATE && (a < g0 || a >= g1)) other += m.RegionSize, cur += m.RegionSize;
-        a = end > a ? end : a + 0x1000;
-    }
-    hos_log("mem: private outside the guest window %llu MB; largest: %llx %llu MB, %llx %llu MB, %llx %llu MB, %llx %llu "
-            "MB, %llx %llu MB, %llx %llu MB", (unsigned long long)(other >> 20), (unsigned long long)top[0].base,
-            (unsigned long long)(top[0].bytes >> 20), (unsigned long long)top[1].base, (unsigned long long)(top[1].bytes >> 20),
-            (unsigned long long)top[2].base, (unsigned long long)(top[2].bytes >> 20), (unsigned long long)top[3].base,
-            (unsigned long long)(top[3].bytes >> 20), (unsigned long long)top[4].base, (unsigned long long)(top[4].bytes >> 20),
-            (unsigned long long)top[5].base, (unsigned long long)(top[5].bytes >> 20));
-}
-void hos_ultrawide_apply(void) {}                 /* (totk_ultrawide.c) */
-float hos_view_aspect;                            /* (totk_ultrawide.c: 0, the game's own 16:9) */
 void hos_host_thread_register_self(const char *name) {   /* (hos_prof.c: names for its stats; here the thread's description) */
     wchar_t w[64];
     if (MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64)) SetThreadDescription(GetCurrentThread(), w);
-}
-void hos_process_memory(uint64_t *private_bytes, uint64_t *working_set) {
-    typedef struct {
-        DWORD cb, PageFaultCount;
-        SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
-            QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage;
-    } Counters;
-    typedef BOOL(WINAPI * Fn)(HANDLE, Counters *, DWORD);
-    static Fn fn;
-    if (!fn) fn = (Fn)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "K32GetProcessMemoryInfo");
-    Counters m;
-    memset(&m, 0, sizeof m);
-    m.cb = sizeof m;
-    if (!fn || !fn(GetCurrentProcess(), &m, sizeof m)) memset(&m, 0, sizeof m);
-    *private_bytes = m.PrivateUsage;
-    *working_set = m.WorkingSetSize;
 }

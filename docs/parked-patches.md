@@ -163,3 +163,48 @@ at each site, with x the row register of P[0] (or none) and y that of P[1] (or n
 
 As a row it would be `At(0x806dc520, pc, word, "jitter", ("x28", "q19", "q20"), io=("q19", "q20"))` (and one io
 register for the other two sites).
+
+# Parked: Mario Kart World's code, TOTK's stand-ins and run-time title checks (removed)
+
+The host came from mkw-recomp (Mario Kart World, Switch 2) and from TOTKPort (Tears of the Kingdom). Three pieces of MKW's
+own patching stayed behind a run-time title check, `hos_game_is_mkw()` (the main module's build id compared with MKW's,
+`d00e4f399e411d0613aa8d26b1c02fef`), and one `#if HOS_GAME_VERSION == 100`. The host is the game's only by its game
+description now (`games/oot/game.py`: build id and main's SHA-256, checked by the lift and the build), so they were
+deleted on 2026-11-15. A games/mkw description would declare them as patches (`host/patch.h`), with MKW's words.
+
+| what | where it hooked | what it did | why it existed |
+|---|---|---|---|
+| MKW's frame pacer object | `nvnWindowSetPresentInterval` (an NVN proc, `host/nvn_native.c`), when its return address was `0x806bce28` (the call at `0x806bce24` in the pacer, `0x806bcbb0`) | kept the caller's x19, the pacer object, in `hos_mkw_pacer` (`host/nn_vi.c`); the proc declared `reads(x19)` for it | the two rows below needed the object |
+| `HOS_MKW_INTERVAL=<0\|1\|2>` (default 1) | every present (`nn_vi.c`'s present step) | wrote the value into the pacer's override, `pacer + 0x210` (any non-zero value is used as the interval) | 1: a steady 60 fps; 2: 30; 0: the game's choice, which with frames between 16.7 and 33 ms swung between the two (25-27 fps, stutters). MKW's timing counts vsyncs, so an interval the renderer cannot keep slows the game down rather than dropping frames |
+| pacer log | `nn_vi.c`'s 5-second line | logged the pacer's measured frame work `+0x128` and running excess `+0x218` (ticks, divided by the tick frequency read at `0x837de940`), its interval `+0x214`, and raw `+0xf0`, `+0xe8`, `+0x50`, `+0x210`, the byte at `+0x22c` | diagnosis of the swings above |
+| MKW's idle thread loop | `hos_thread_dump` (`HOS_STATS_AFTER`, `host/hos_thread.c`) | skipped the register dump of a thread whose last return address was `0x825c6844` | MKW's idle threads all wait there: their registers were noise |
+| the occlusion grid reader's hook | `PATCH_HOOK(0x80365f00)` (`host/nvn_native.c`, OoT's `agl::utl::DepthBufferEx` reader) | for MKW it declined at once, so every invalidate waited | other code at that address in MKW |
+| `HOS_GAME_VERSION` | `host/hos.h` (100, set by nothing), `host/hos_thread.c` `calc_poll_nap` (`#if HOS_GAME_VERSION == 100`) | compiled OoT's calc-job nap only for update 100 | an older way to tie addresses to one update; the rows' instruction words and the game description's identity do it now |
+
+TOTKPort's stand-ins (`host/mkw_glue.c`, now `host/hos_process.c`) for files not taken into the host, each a no-op or
+an identity here: `hos_blank_cached_icon` (TOTK's fused-weapon icon cache: a cached icon file answered "not found",
+called from `nn_fs.c`'s open and entry-type queries), `hos_ultrawide_redirect` (TOTK's ultrawide HUD files: an open
+redirected to another path), `hos_title_input` (TOTK's title menu: the credits entries, a filter of the pad's buttons in
+`nn_hid.c`), `hos_ultrawide_apply` and `hos_view_aspect`, `hos_ab` (the profiler's A/B phases), and two unused memory
+reports (`hos_process_memory`; `hos_memory_map_log`, `HOS_MEM_MAP=1`: the guest window's committed megabytes and the
+largest private allocations outside it). The emulated GPU's submission stand-ins (`hos_gpu_async`, `hos_gpu_submit`,
+`hos_gpu_queue_submit`, called by `nvdrv.c`) and `hos_mem_checkpoint`, `hos_frame_step_buttons` stay: the OoT build
+calls them.
+
+Three HLEs of SDK functions no module of OoT's image has were deleted with them (the lift now stops on such a
+declaration): `nn::os::SystemEvent::SystemEvent(EventClearMode, bool)` (`event_init(x0, 0, x1)`) and `~SystemEvent()`
+(`drop(x0)`) (`host/nn_os_sync.c`: the C++ wrapper holds a SystemEventType at offset 0), and
+`nn::audio::SetVoiceBiquadFilterParameter(VoiceType*, int, BiquadFilterParameter const&)` (`host/nn_audio.c`, the older
+SDK's Q14 packet: bool enable at 0, int16 numerator[3] at 2, int16 denominator[2] at 8, each / 16384; queued as the
+float variant's OP_VOICE_BIQUAD).
+
+# Parked experiments keyed on the caller (removed)
+
+Two experiments that changed host behaviour for some callers only, both off by default, were deleted on 2026-11-15
+(rows are always present; behaviour keyed on a return address is not kept). To bring one back, write it as a row at its
+call site (`PATCH_AT ... instead`, `host/patch.h`).
+
+| switch | where | what it did | measured |
+|---|---|---|---|
+| `HOS_PRESENT_NOWAIT=1` | `nvnEventGetValue` (`host/nvn_native.c`), when the return address was `0x805904a0` or `0x80590530` (OoT's present poll in `f_805902c0`, label `frame_present_submit`: `while (nvnEventGetValue(e) != 1) SleepThread(...)` at `0x80590500`) | answered 1 (signalled) at once, without reading the event: the replay reads memory as submitted, so the game could go on to the next frame while this one was replayed, as far as the window's textures and the replay's queue let it | no measurement recorded in the repository |
+| `HOS_POLL_SLEEP_NS=<ns>` | `hos_sleep_logged` (`host/hos_thread.c`: every guest `SleepThread`, the present poll's and the calc runner's sleeps) | a guest sleep of more than `<ns>` and at most 100 us lasted `<ns>`: TOTK's job system waited for its workers by sleeping 20 us and looking again (~90 times a frame at the castle, on MainThread and the workers); a shorter step would notice the job's end sooner | 2026-10-21, TOTK's castle, 2000 ns, 3 rounds: no change |

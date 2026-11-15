@@ -32,12 +32,8 @@ typedef long long LONG64;
 static volatile int present_interval = 1;
 static int64_t next_frame_at, window_start, frames_in_window, shown_at[16];
 static volatile LONG64 presents, shown_count;
-static volatile uint64_t hos_mkw_pacer;
-static uint32_t guest32;
 static int scans, steps, sleeps, reads;
 static int64_t clock_now;
-#define G32(a) guest32
-#define G64(a) ((uint64_t)0)
 #define GP(a) ((void *)(uintptr_t)(a))
 static int64_t InterlockedIncrement64(volatile LONG64 *p) { return ++*p; }
 static int64_t hos_now_ns(void) { ++reads; return clock_now; }
@@ -50,7 +46,6 @@ static void hos_thread_fp_log(long long present) { (void)present; }   /* (HOS_FP
 void hos_code_ptr_report(void) {}   /* (host/code_ptrs.c) */
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static int hos_log_switch(const char *item) { (void)item; return 0; }
-static uint64_t hos_ticks(void) { return 0; }
 static int fps_max(void) { return 60; }   /* (nn_vi.c's Frame rate cap: the console's 60 here) */
 '''
 

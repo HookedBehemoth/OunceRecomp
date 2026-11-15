@@ -15,13 +15,6 @@
 #include "a64.h"
 #include <stdarg.h>
 
-/* HOS_GAME_VERSION: the game update the host's guest addresses are for: 100, the only one (nothing sets it; host/
-   hos_thread.c's calc_poll_nap is the one place that tests it). What holds the addresses to the dump is the lift: an
-   At row or Value probe (PATCH_AT, host/patch.h) names its instruction's word and a PATCH_HOOK its function's first
-   word, or the build stops. */
-#ifndef HOS_GAME_VERSION
-#define HOS_GAME_VERSION 100
-#endif
 /* An entry hook (PATCH_HOOK / PATCH_HOOK_SYM, host/patch.h, made by ENTRY_HOOK_COUNTED): runs at the entry of the
    lifted guest function; returns 1 when it handled the call (the function then returns at once), 0 to run the function
    as usual. Lift 2 calls it at the function's generic entry (nx2/lift2/emit_llvm.py). A hook sees the call's arguments
@@ -79,11 +72,8 @@ uint64_t guest_call(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64_
 extern const uint64_t hos_image_base, hos_image_end;   /* (gen/hos_image.c) */
 extern const uint64_t hos_program_id;                  /* (gen/hos_image.c: main.npdm's) */
 extern const char hos_main_build_id[];                 /* (gen/hos_image.c: main's NSO build id, hex) */
-/* (oot-recomp) MKW's own hooks at fixed guest addresses (its frame pacer in nvn_native.c / nn_vi.c, its idle loop in
-   hos_thread.c) run only when the lifted main is Mario Kart World's: any other game has other code there */
-int hos_game_is_mkw(void);
 #define HOS_GAME_TITLE "Hookshot"
-void hos_commit(uint64_t addr, uint64_t size);         /* (mkw_glue.c) guest pages made usable by host APIs */
+void hos_commit(uint64_t addr, uint64_t size);         /* (hos_process.c) guest pages made usable by host APIs */
 #ifdef A64_MEM_ZERO
 extern uint64_t hos_space_end;   /* web: the guest window ends where the host's own data starts (hos_main.c) */
 #define HOS_SPACE_END hos_space_end

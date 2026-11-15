@@ -48,8 +48,6 @@ uint64_t hos_space_end;
 #define IMAGE_BASE hos_image_base   /* (the lift's: Eden's layout) */
 
 
-int hos_game_is_mkw(void) { return !strcmp(hos_main_build_id, "d00e4f399e411d0613aa8d26b1c02fef"); }
-
 /* gen/hos_image.c (build.py lift) */
 extern const uint64_t hos_main_stack_size;
 extern const int hos_main_priority, hos_main_core, hos_module_count;

@@ -1,4 +1,4 @@
-/* (linux) host/mkw_glue.c's profilers, with the same variables and the same lines in the log and files:
+/* (linux) host/hos_process.c's profilers, with the same variables and the same lines in the log and files:
    HOS_PROFILE=<seconds> (the busiest threads), HOS_THREAD_TIMES=<seconds> (threads over 5% of a core), HOS_SAMPLE=<thread
    name> + HOS_SAMPLE_FILE (one thread's stacks every millisecond), HOS_SAMPLE_ALL=<path> (every guest thread and the
    renderer's at once, every 2 ms, while <path>.go exists) and HOS_WATCH=<file> (data breakpoints on guest addresses).

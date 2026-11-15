@@ -1,4 +1,4 @@
-"""The frame's critical path from an all-thread sample (host/mkw_glue.c HOS_SAMPLE_ALL): every 2 ms each guest thread
+"""The frame's critical path from an all-thread sample (host/hos_process.c HOS_SAMPLE_ALL): every 2 ms each guest thread
 and renderer thread, "<ms> <name>|<frames>" (module+offset, leaf first).
 
     python -I scripts/crit.py work/runs/<run>_all.txt [top]

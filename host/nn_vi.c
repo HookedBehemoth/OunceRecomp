@@ -164,9 +164,6 @@ void hos_vi_native_acquire(int active) {
     const int64_t now = hos_now_ns();
     if (until > now) hos_sleep_ns(until - now);
 }
-/* (mkw-recomp) MKW's frame pacer (0x806bcbb0, x19 when it sets the interval: nvn_native.c): its measured frame time
-   (+0x128, ticks), its running excess (+0x218) and interval (+0x214), logged with the frame rate */
-volatile uint64_t hos_mkw_pacer;
 /* HOS_SCAN_DT=<file prefix> (diagnostic): writes every float in guest memory between ~0.015 and ~0.04, with its
    address, four times 300 presents apart: the game's frame step is either one exact 1/60 or follows the frames */
 static void scan_dt(long long presents) {
@@ -524,14 +521,6 @@ void hos_vi_native_presented(void) {
         hos_code_ptr_report();   /* code_ptrs.c */
     }
     present_trace(n, now);
-    {   /* HOS_MKW_INTERVAL=<0|1|2>: the interval MKW's pacer is held at, through its own override (+0x210, any
-           non-zero value is used as the interval): 1 (the default): a steady 60 fps; 2: 30; 0: the game's choice,
-           which with frames between 16.7 and 33 ms swings between the two (25-27 fps, stutters). Its timing counts
-           vsyncs, so an interval the renderer cannot keep slows the game down rather than dropping frames */
-        static int forced = -1;
-        if (forced < 0) forced = getenv("HOS_MKW_INTERVAL") ? atoi(getenv("HOS_MKW_INTERVAL")) : 1;
-        if (hos_mkw_pacer && forced >= 0 && forced <= 2) G32(hos_mkw_pacer + 0x210) = (uint32_t)forced;
-    }
     if (!window_start) window_start = now;
     frames_in_window++;
     /* (present-to-present intervals of the window, in buckets: which frames miss their vsync) */
@@ -552,14 +541,5 @@ void hos_vi_native_presented(void) {
                 hist[1], hist[2], hist[3], hist[4], hist[5]);
         memset(hist, 0, sizeof hist);
         window_start = now, frames_in_window = 0;
-        const uint64_t pacer = hos_mkw_pacer, freq = pacer ? G64(0x837de940) : 0;   /* (MKW only: nvn_native.c) */
-        if (pacer && freq)
-            hos_log("vi: the game's pacer: frame work %.1f ms, excess %.1f ms, interval %d",
-                    (double)(int64_t)G64(pacer + 0x128) * 1e3 / (double)freq,
-                    (double)(int64_t)G64(pacer + 0x218) * 1e3 / (double)freq, (int)G32(pacer + 0x214)),
-            hos_log("vi: pacer raw: now %llx f0 %llx 128 %llx e8 %llx 50 %x 210 %x 22c %x freq %llu", (unsigned long long)hos_ticks(),
-                    (unsigned long long)G64(pacer + 0xf0), (unsigned long long)G64(pacer + 0x128),
-                    (unsigned long long)G64(pacer + 0xe8), G32(pacer + 0x50), G32(pacer + 0x210), *(const uint8_t *)GP(pacer + 0x22c),
-                    (unsigned long long)freq);
     }
 }

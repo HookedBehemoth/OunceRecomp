@@ -79,8 +79,8 @@ These cost days in mkw-recomp; the checks keep them true for a second game.
    `HOS_SAMPLE` profiler with `scripts/prof.py`).
 5. **2D views of 3D textures need `VK_EXT_image_2d_view_of_3d`.**
 
-MKW's frame-pacer hooks at fixed guest addresses are gated on MKW's build id (`hos_game_is_mkw`); OoT gets its own, never
-by address coincidence.
+The host serves one game, the one its description names (`games/oot/game.py`: the lift and the build check its build
+id); MKW's own hooks were deleted (docs/parked-patches.md).
 
 ## 5. What OoT needs that MKW did not
 

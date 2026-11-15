@@ -418,13 +418,13 @@ NV(nvnMemoryPoolFlushMappedRange) {}
    invalidates: lr 0x803665d4 and 0x80366168 (the current slot, before and after the copy), 0x8036635c (the other slot),
    and the tail call's (lr the caller's, 0x80099d84): the reader marks its own run (its PATCH_HOOK below runs its body
    with this thread noted), so the invalidate is told by who asks, not by its return address. The exposure meter
-   (f_80357060, read and zeroed) keeps its wait. MKW (hos_game_is_mkw): every invalidate waits */
+   (f_80357060, read and zeroed) keeps its wait. */
 static _Thread_local int tl_grid_reader;
 PATCH_HOOK(0x80365f00, word(0xd503237f)) {   /* report_reader_a: the grid reader's body, this thread noted */
     if (tl_grid_reader) return 0;   /* (the body, run below) */
     static A64Fn body;
     if (!body) body = f_80365f00;
-    if (!body || hos_game_is_mkw()) return 0;
+    if (!body) return 0;
     tl_grid_reader = 1;
     hook_run(h, body);
     tl_grid_reader = 0;
@@ -1259,13 +1259,6 @@ int hos_nvn_event_value(uint64_t guest_event, uint32_t *v) {
     return 1;
 }
 NV(nvnEventGetValue) {
-    {   /* (hookshot, experiment) HOS_PRESENT_NOWAIT=1: OoT's present poll (hos_thread.c present_poll) sees its frame's
-           event signalled at once: the replay reads memory as submitted, so the game may go on to the next frame
-           while this one is replayed, as far as the window's textures and the replay's queue let it */
-        static int nowait = -1;
-        if (nowait < 0) nowait = getenv("HOS_PRESENT_NOWAIT") && atoi(getenv("HOS_PRESENT_NOWAIT")) != 0;
-        if (nowait && (c->x[30] == 0x805904a0 || c->x[30] == 0x80590530)) { RET(1); return; }
-    }
     uint32_t v = 0; nvn_gpu_read(((const nvn_event *)P(0))->gpu, &v, 4); RET(v);
     if (sync_log()) hos_log("nvn: EventGetValue %p = %u (lr %#llx)", P(0), v, (unsigned long long)c->x[30]);
 }
@@ -2856,14 +2849,12 @@ NV(nvnWindowSetNumActiveTextures) { nvn_win *o = (nvn_win *)P(0); if (I(1) < 2 |
 NV(nvnWindowGetNumActiveTextures) { const nvn_win *o = (const nvn_win *)P(0); RET((uint32_t)(o->active ? o->active : o->ntex)); }
 NV(nvnWindowGetPresentInterval) { RET((uint32_t)((const nvn_win *)P(0))->interval); }
 /* the game picks its interval from its frame time; in real-time mode (nn_vi.c) frames are paced by our limiter */
-NV(nvnWindowSetPresentInterval, reads(x19, "MKW's frame pacer object (hos_game_is_mkw only)")) {
+NV(nvnWindowSetPresentInterval) {
     nvn_win *o = (nvn_win *)P(0);
     {   /* (OoT changes it several times a second: logged with a backtrace only the first times, it was a syscall-heavy cost) */
         static int told;
         if (o->interval != I(1) && told++ < 6) hos_log("nvn: the game sets present interval %d -> %d", o->interval, I(1)), hos_backtrace();
     }
-    extern volatile uint64_t hos_mkw_pacer;   /* (nn_vi.c: its frame pacer, which calls this from 0x806bce24) */
-    if (hos_game_is_mkw() && c->x[30] == 0x806bce28) hos_mkw_pacer = c->x[19];
     int hos_vi_native_interval(Ctx *c, int requested);
     o->interval = hos_vi_native_interval(c, I(1));
 }

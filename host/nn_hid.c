@@ -760,8 +760,6 @@ static void npad_states(Ctx *c) {
         read_input(&buttons, stick);
         input_record_replay(&buttons, stick);
     }
-    uint64_t hos_title_input(uint64_t buttons);   /* totk_title.c: the title menu's credits entries */
-    if (connected) buttons = hos_title_input(buttons);
     uint64_t hos_frame_step_buttons(uint64_t buttons);   /* nn_vi.c: the frame step of the wheel and quick menus */
     if (connected) buttons = hos_frame_step_buttons(buttons);
     int64_t s = ++sampling;

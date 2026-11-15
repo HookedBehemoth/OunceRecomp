@@ -262,7 +262,7 @@ int hos_thread_handles(HANDLE *out, const char **names, int max) {
 }
 
 /* (mkw-recomp) Every guest thread's name and guest registers as of its last call out of lifted code, with its
-   frame chain from x29: what each thread of a stalled game waits in (mkw_glue.c, HOS_STATS_AFTER). */
+   frame chain from x29: what each thread of a stalled game waits in (hos_process.c, HOS_STATS_AFTER). */
 void hos_thread_dump(void) {
     AcquireSRWLockShared(&threads_lock);
     for (int i = 0; i < nthreads; i++)   /* (placement: masks and the core number it is told) */
@@ -286,7 +286,6 @@ void hos_thread_dump(void) {
         bt[n] = 0;
         hos_log("thread %-24s lr %#llx sp %#llx x0 %#llx; frames%s", threads[i]->name, (unsigned long long)c->x[30],
                 (unsigned long long)c->x[31], (unsigned long long)a64_guest_of(c->x[0]), bt);
-        if (hos_game_is_mkw() && c->x[30] == 0x825c6844ULL) continue;   /* (MKW's idle thread loop) */
         /* registers (current at the call out), with the text a register (or the word it points to) leads to */
         for (int r = 0; r < 29; r++) {
             uint64_t v = c->x[r], s = 0;
@@ -736,16 +735,6 @@ HLE(_ZN2nn2os19GetCurrentStackInfoEPmS1_) {
 HLE(_ZN2nn2os11YieldThreadEv) { SwitchToThread(); }
 /* HOS_SLEEP_LOG=1 (diagnostic): guest sleeps by caller (LR) every 5 s: count, asked, slept */
 void hos_sleep_logged(int64_t ns, uint64_t lr) {
-    /* HOS_POLL_SLEEP_NS=<ns> (experiment): a guest sleep of up to 100 us lasts at most that long. TOTK's job system
-       waits for its workers by sleeping 20 us and looking again (~90 times a frame at the castle, on MainThread and
-       the workers): a shorter step notices the job's end sooner (the loop looks again; nothing else changes).
-       Measured 2026-10-21 (castle, 2000 ns, 3 rounds): no change. */
-    static int64_t poll_cap = -1;
-    if (poll_cap < 0) {
-        const char *e = getenv("HOS_POLL_SLEEP_NS");
-        poll_cap = e ? atoll(e) : 0;
-    }
-    if (poll_cap && ns > poll_cap && ns <= 100000) ns = poll_cap;
     static int on = -1;
     if (on < 0) on = getenv("HOS_SLEEP_LOG") != NULL;
     if (!on) { hos_sleep_ns(ns); return; }
@@ -840,7 +829,6 @@ PATCH_AT(0x8059051c, word(0x94db4a31), instead, none, hos_oot_present_sleep, as(
    0x8009afec, 0x8009b230) are replaced by At rows (PATCH_AT ... instead, below) calling hos_oot_calc_sleep: SleepThread
    itself is the same for every caller */
 static int calc_poll_nap(int64_t ns) {
-#if HOS_GAME_VERSION == 100
     static int on = -1;
     if (on < 0) on = !(getenv("HOS_CALC_NAP") && atoi(getenv("HOS_CALC_NAP")) == 0);
     if (!on || ns <= 0 || ns >= 1000000) return 0;
@@ -854,10 +842,6 @@ static int calc_poll_nap(int64_t ns) {
     clock_nanosleep(CLOCK_MONOTONIC, 0, &t, NULL);
     if (away) hos_block_end();
     return 1;
-#else
-    (void)ns;
-    return 0;
-#endif
 }
 
 /* (At rows in place of f_800998a0 job_calc_runner's three SleepThread calls: x0 the time; lr the call's return address,

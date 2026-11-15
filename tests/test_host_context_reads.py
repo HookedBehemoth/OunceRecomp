@@ -43,8 +43,6 @@ GUEST = re.compile(r"^(a64_icall|a64_ijump|hos_call_guest|hos_sj_call)$")
 # (lr comparisons that only label or count: allowed)
 LR_LABELS = {
     "host/direct_layer_ahead.c": "jobs recorded from another caller (a count for the log)",
-    "host/hos_thread.c": "MKW's idle thread loop skipped in the stall dump (hos_game_is_mkw)",
-    "host/nvn_native.c": "MKW's frame pacer (hos_game_is_mkw); HOS_PRESENT_NOWAIT (an experiment, off)",
 }
 
 

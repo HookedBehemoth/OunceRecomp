@@ -1,4 +1,4 @@
-"""Offline profile of a thread sampled with HOS_SAMPLE + HOS_SAMPLE_FILE (host/mkw_glue.c, mkw-recomp work/prof.py): each line is a stack of
+"""Offline profile of a thread sampled with HOS_SAMPLE + HOS_SAMPLE_FILE (host/hos_process.c, mkw-recomp work/prof.py): each line is a stack of
 module+offset frames, leaf first. Frames in hookshot_direct.dll / hookshot.exe are named from the linker maps beside them;
 on Linux, frames in hookshot_direct.so / hookshot from the binaries' own symbols (nm). RX_MAPS=<folder>: another build's
 maps or binaries (on Linux, the game folder).

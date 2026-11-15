@@ -4,7 +4,7 @@ Analysis for the coordinator's choice of a fix. Nothing here is a fix: the code 
 committed (section 3). Static analysis of this build (Ghidra decompiles made with `work/ghidra/decomp.sh`, kept under
 `work/proto/shadow/d1..d6/`, and the lifted code in `work/sa/gen`), the romfs parameter files, and runs of the direct
 back end on this PC (RX 6950 XT, RADV, `RUN=timing`, one game at a time). Runs: `work/runs/m6s_*` (local only).
-Addresses are main's VA (the lifter's `f_<addr>`); offsets are this build's (HOS_GAME_VERSION 100).
+Addresses are main's VA (the lifter's `f_<addr>`); offsets are this build's (the one games/oot/game.py names).
 
 **VERIFIED** means read in the decompile or the lifted code at the given address, read from a romfs file, or seen in a
 run (named). **INFERRED** means concluded from the code's shape, from names or from numbers, and not confirmed.

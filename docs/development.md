@@ -277,7 +277,7 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_SAMPLE_FILE` | `<file>`: where `HOS_SAMPLE` writes the stacks; `scripts/prof.py` reads it |
 | `HOS_SAMPLE_ALL` | `<file>`: every game and renderer thread every 2 ms while `<file>.go` exists (needs `HOS_PROFILE`); `scripts/crit.py` and `scripts/hotlist.py` read it |
 | `HOS_THREAD_TIMES` | `<seconds>`: every interval, the threads that used over 5% of a core |
-| `HOS_STATS_AFTER` | `<seconds>`: a statistics report after that time (host/mkw_glue.c:206) |
+| `HOS_STATS_AFTER` | `<seconds>`: a statistics report after that time (host/hos_process.c:206) |
 | `HOS_FPS_LOG` | (set) the frame limiter's state logged every 300 presents |
 | `HOS_FPS_MAX` | `<fps>`: the frame-rate cap (60 to 240), over the option |
 | `HOS_FPS_STEP` | `0`: the rate goes up to the cap as one step, not timed |
@@ -534,8 +534,6 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_FS_KEEP_CORE_KB` host/nn_fs.c:417
 - `HOS_HOSTCALL_SLOW` host/hos_hostcall.c:61
 - `HOS_KEEP_FREED_PAGES` host/hos_mem.c:131
-- `HOS_MEM_MAP` host/mkw_glue.c:716
-- `HOS_MKW_INTERVAL` host/nn_vi.c:407
 - `HOS_MOTION_DEBUG` host/pad_sdl.c:182
 - `HOS_NVN_CHMASK_LOG` host/nvn_native.c:2626
 - `HOS_NVN_HOLD` host/nvn_native.c:1177
@@ -544,8 +542,6 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_NVN_SYNC_BLOCK` host/nvn_native.c:1223
 - `HOS_OCB_NORMAL` host/hos_thread.c:762
 - `HOS_PIN` host/hos_thread.c:752
-- `HOS_POLL_SLEEP_NS` host/hos_thread.c:932
-- `HOS_PRESENT_NOWAIT` host/nvn_native.c:1255
 - `HOS_PRESENT_POLL` host/hos_thread.c:976
 - `HOS_PRIO` host/hos_thread.c:753
 - `HOS_PROFILE_GATE` host/nn_os_sync.c:824

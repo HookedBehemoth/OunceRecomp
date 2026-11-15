@@ -1,7 +1,7 @@
 # From the process entry to the main loop
 
 The path from the host's `main` to the steady frame loop, written down once so that profiling, patches and frame-time
-work do not re-derive it. Addresses are guest addresses of HOS_GAME_VERSION 100 (build id e0f3ccfa..., image at
+work do not re-derive it. Addresses are guest addresses of the supported build (games/oot/game.py, build id e0f3ccfa..., image at
 `0x80000000`, `main` module at `0x80020000`); `f_<address>` is the lifted function, and the labels of
 `games/oot/labels.txt` are given where one exists.
 

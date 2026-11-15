@@ -349,7 +349,7 @@ lowest target, cases `(target - lo) >> 2`, as sparse as its targets are spread.
 - **SVC**: the flags stored, `a64_svc(ctx, imm)`, then the reload of every register.
 - **UDF, BRK, HLT** and words that are not code: `a64_trap(ctx, pc, word)`.
 - MRS/MSR TPIDR_EL0 and MRS TPIDRRO_EL0 read and write the context; MRS CNTPCT_EL0/CNTVCT_EL0 call `recomp_cntpct`
-  (the host's `a64_cntpct_host`, `host/mkw_glue.c`: 31.25 MHz), CNTFRQ_EL0 is the constant 31,250,000.
+  (the host's `a64_cntpct_host`, `host/hos_process.c`: 31.25 MHz), CNTFRQ_EL0 is the constant 31,250,000.
 
 ### Hooks and probes
 
