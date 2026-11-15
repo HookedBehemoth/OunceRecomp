@@ -1,6 +1,7 @@
 # tools/dump
 
-Readers and patchers for the game's own file formats. They read the user's dump in place (the folder named in
+Readers and patchers for the game's own file formats, for when you need to look inside a game file or make a test
+overlay. They read the user's dump in place (the folder named in
 `work/dump.txt`, `exefs/` + `romfs/`) and write only where you point them; what they write is made from game files and
 stays on this PC. Run them with `work/venv/bin/python` (needs `zstandard`, `numpy`); `.zs` files are decompressed with the
 game's dictionaries in `work/zsdic` (`ZSDIC=<folder>` for another).
@@ -19,10 +20,11 @@ game's dictionaries in `work/zsdic` (`ZSDIC=<folder>` for another).
 | `bfres.py` | BFRES model reader: shapes, materials, shader assigns (`-v`: options and samplers) |
 | `bfsha.py` | BFSHA shader archive and embedded BNSH reader (`--program MODEL IDX` decodes one program's key) |
 
-How the `work/overlay/chisel_*` folders are made, for example the Kokiri start from a new game:
+To make a chiseled boot into Kokiri Forest from a new game and run it:
 
-    work/venv/bin/python tools/dump/make_chisel_overlay.py work/overlay/chisel_kokiri --route newgame --banc KokiriForest_Child
-    OVERLAY=$PWD/work/overlay/chisel_kokiri scripts/run-vk.sh name 60 -- RX_BACKEND=direct
+    work/venv/bin/python -I tools/dump/make_chisel_overlay.py work/overlay/chisel_kokiri --route newgame --banc KokiriForest_Child
+    OVERLAY=$PWD/work/overlay/chisel_kokiri scripts/run-vk.sh name 60
 
-`--route load` continues the save instead; `--start NAME` picks a StartPos (the market overlay is a start in
+`--route load` continues the save instead; `--start NAME` picks a start position (the market overlay is a start in
 Hyrule Field at the drawbridge); `--skip-fades` and `--skip-title` cut the loading fades and the title movie.
+[Test in the game](../../docs/testing.md#start-in-a-scene) shows how the test scripts use the overlays.

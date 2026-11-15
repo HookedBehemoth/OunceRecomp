@@ -1,33 +1,30 @@
-# host/: the standalone runtime
+# host/: provenance
 
-A fork of the Horizon OS layer of NotRexed's a64-kit (`hos/`, TOTKPort commit `e88744a`, 2026-10-31), the runtime
-that runs Tears of the Kingdom natively. It replaces the Nintendo SDK at the `nn::` boundary: an
-`HLE(<mangled name>)` function here stands in for that SDK function wherever the game calls it
-(`nx2/standalone.py` picks them up at lift time). The rest of the SDK runs as lifted code.
+This page records where the standalone runtime in `host/` came from and what changed on the way, for anyone comparing
+it with its upstreams or applying a fix from them.
 
-Taken unmodified except as noted:
-`hos.h`, `hos_main.c`, `hos_mem.c`, `hos_thread.c`, `hos_svc.c`, `hos_hostcall.c`, `nn_os_sync.c`, `nn_fs.c`,
-`nn_hid.c`, `nn_libc.c`, `nn_diag.c`, `nn_applet.c`, `nn_audio.c`, `nvdrv.c`.
+The runtime is a fork of the Horizon OS layer of NotRexed's a64-kit (`hos/`, from TOTKPort commit `e88744a`), the
+runtime that runs Tears of the Kingdom natively, as adapted by mkw-recomp for Mario Kart World. It replaces the
+Nintendo SDK at the `nn::` boundary: an `HLE(<mangled name>)` function stands in for that SDK function wherever the game
+calls it. The rest of the SDK runs as lifted code.
 
-mkw-recomp's changes:
-- **The guest window.** It is 64-bit, 512 GB, reserved whole. The image sits at Eden's `0x80000000`, the address the
-  code was lifted for. The heap starts at 64 GB, and address regions grow down from 512 GB (`hos.h`). The runtime
-  commits what it hands out (`hos_commit`), and `hos_process.c` (mkw_glue.c until 2026-11-15) commits anything else on first touch. TOTK's whole
-  4 GB window was committed up front.
-- `hos_main.c`: the image base comes from `gen/hos_image.c`.
-- `hos_mem.c`: the default memory size is a Switch 2 application's 9809 MB.
-- `hos_svc.c`: MKW's program id, and the code region at the image base.
-- **Graphics.** `nvn_native.c` is TOTKPort's native NVN layer for NVN2: the Switch 2 driver's device limits (read by
-  running its nvnDeviceGetInteger under Unicorn), GPU addresses over the 64-bit window (identity below 1 TB, virtual
-  pools above), program builders, native images, sparse tile layouts; procs it lacks log their first call and answer
-  0 (`HOS_NVN_STRICT=1`: stop, as in TOTKPort). `display.c` is TOTKPort's window without its emulated-GPU fallback.
-  The replay was `gpu/render` (see `gpu/PROVENANCE.md`); it is the Vulkan back end in `gpu/vk` now, with `gpu/render`
-  as the fallback (`host/rx_backend.c`). `nn_vi.c` is MKW's own, with the window's frame pacing.
-- **Virtual cores** (`hos_thread.c`): on by default with six cores; a waiter's request reaches a holder at its next
-  loop header too (`hos_process.c` `a64_poll`), and equal-priority holders yield after a 2 ms slice.
-- **Left out:** files bound to TOTK or its Maxwell GPU: `gpu.c`, `nvn_trace.c`, `hos_prof.c`, `mods.c`, `movie*.c`,
-  `nn_image_debug.c`, `totk_*.c`. `hos_process.c` stands in for the hooks the taken files call into them. `mods.c`
-  came back later as Hookshot's `host/mods.c`: the RomFS part of Skybound's loader (`NotRexed/SkyboundTotk`, MIT).
+Taken from a64-kit, changed since: `hos.h`, `hos_main.c`, `hos_mem.c`, `hos_thread.c`, `hos_svc.c`, `hos_hostcall.c`,
+`nn_os_sync.c`, `nn_fs.c`, `nn_hid.c`, `nn_libc.c`, `nn_diag.c`, `nn_applet.c`, `nn_audio.c`, `nvdrv.c`.
 
-Licensing: GPL-3.0-or-later, as the rest of Hookshot (see `third_party/a64-kit/NOTICE.TOTKPort.md` for the kit's
-history).
+mkw-recomp's changes, kept here:
+
+- **The guest window** is 64-bit, 512 GB, reserved whole, with the image at Eden's `0x80000000`, the heap from 64 GB,
+  and address regions from 512 GB down (`hos.h`). Memory is committed as it is handed out, and anything else on first
+  touch (`hos_process.c`). TOTK committed its whole 4 GB window up front.
+- `hos_main.c` takes the image base from the lift's generated `gen/hos_image.c`; `hos_svc.c` reports the program ID
+  from it.
+- `hos_mem.c` gives the game a Switch 2 application's 9809 MB by default.
+- `nvn_native.c` is TOTKPort's native NVN layer extended to NVN2: the Switch 2 driver's device limits, GPU addresses
+  over the 64-bit window, program builders, native images and sparse tile layouts. `nn_vi.c` is mkw-recomp's own.
+
+Hookshot's changes since: the direct back end is the only renderer (`rx_backend.c` loads it); every guest thread runs
+on its own host thread with no scheduler; patches are declarations (`patch.h`); a call of an import or NVN proc the
+host lacks stops the game. Files bound to TOTK or its Maxwell GPU were left out. `mods.c` is the RomFS part of
+Skybound's mod loader (`NotRexed/SkyboundTotk`, MIT).
+
+Licensing: GPL-3.0-or-later, as the rest of Hookshot. `third_party/a64-kit/NOTICE.TOTKPort.md` has the kit's history.

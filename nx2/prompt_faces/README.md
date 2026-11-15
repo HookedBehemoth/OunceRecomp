@@ -1,5 +1,8 @@
 # Button-prompt faces: reworking their images
 
+This page shows you how to change a button-prompt image the game shows for another controller (a *face*), either by
+changing what it is made from or by drawing it by hand.
+
 Every image a face shows in the game is made at the build, from the user's RomFS and Kenney's Input Prompts
 (`third_party/kenney_input`), by `nx2/prompt_assets.py`. Nothing from the game is kept in git. To change an image, either change
 what it is made from, or draw it by hand and put it here.

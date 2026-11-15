@@ -1,116 +1,80 @@
-# Hookshot (oot-recomp): design
+# Architecture
 
-A native x86-64 Linux build of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake: the game's AArch64 code
-translated to C ahead of time from the user's own decrypted dump and compiled with clang, the Horizon OS and NVN2
-implemented natively, and the GPU work replayed on Vulkan by one renderer, the direct back end. No CPU or GPU emulation
-at any point. The project forks mkw-recomp (Mario Kart World) and keeps its paths.
+This page explains how Hookshot's parts fit together, from your dump to a running game, and the rules that hold
+across them. Read it to orient yourself before you work on any part; each part's own pages go deeper.
 
-## 1. Short answer
+Hookshot is a native x86-64 Linux build of the Switch 2 *The Legend of Zelda: Ocarina of Time*. The game's AArch64 code
+is translated ahead of time, the console's operating system and graphics API are implemented natively, and the GPU
+work runs on Vulkan. No CPU or GPU is emulated at any point.
 
-The game is a Switch 2 title, so the base is mkw-recomp, not TOTKPort:
+## From dump to executable
 
-| | Switch 2 (this game) | Switch 1 (TOTK, TOTKPort's base) |
-|---|---|---|
-| CPU code | ARMv8.2+ (Cortex-A78C): PAC returns, LSE atomics, CAS, LDAPR | ARMv8.0 (Cortex-A57) |
-| Relocations | DT_RELR packed + RELA | RELA |
-| GPU API | NVN2 (API 231.x): native images, mesh/task programs | NVN 55.x |
-| Shaders | Ampere SASS (SM86) in `Nin_Ounce_NVN2` packages | Maxwell SASS in `Nin_NX_NVN` packages |
-| Services | nx2 gs/gpu/vi2 sessions, no nvdrv in the npdm | nvdrv, vi:u |
+```
+exefs/{rtld,main,subsdk0,sdk} + romfs/       your dump, read where it lies (work/dump.txt)
+      |  nx2/nup.py, nx2/unpack.py: extract the package, make compressed modules plain
+      v
+image: modules loaded at 0x80000000 and relocated, imports bound, replaced SDK functions hooked   (nx2/image.py)
+      |  nx2/lift.py: find the functions and write the plan                                     (work/sa)
+      v
+lifter: AArch64 -> typed SSA IR -> LLVM IR, one module per partition                          (nx2/lift2)
+      |  nx2/build.py: clang, then link with the runtime and host/
+      v
+hookshot            the lifted game + host/ (Horizon: threads, memory, files, input, audio, display, NVN2)
+hookshot_direct.so  the direct back end (gpu/direct), loaded by the host at start
+```
 
-`nx2/dump.py` checks this on the real dump with independent signals (program id prefix, ACID layout, nvdrv in the
-services, DT_RELR, ARMv8.1+ instructions, NVN2 proc names); all must say Switch 2.
+The [lifter](lifter.md) pages cover the translation. The game description, `games/oot/game.py`, ties a lift and a build
+to one dump: another dump or another game stops them.
 
-## 2. What is reused
+## The runtime
+
+- **The SDK is replaced at the `nn::` boundary.** Host functions declared with `HLE(<symbol>)` stand in for the SDK's
+  operating-system functions. The rest of the SDK (libc, utility code, the graphics driver's front end) runs as
+  lifted code. An OS-facing import the host neither implements nor answers stops the game when called, naming it.
+- **Memory.** The guest window is a 512 GB reservation: the image at `0x80000000`, the heap from 64 GB up, and address
+  regions from 512 GB down (`host/hos.h`). Pages are committed as they are handed out or first touched.
+- **Threads.** Every guest thread runs on its own host thread, with no scheduler between them.
+- **Game patches** are declarations in `host/` that run host code at guest instructions or replace guest functions
+  ([Write a patch](patches.md)).
+
+## The renderer
+
+`host/nvn_native.c` implements the NVN2 procs over guest memory: objects live where the game puts them, and command
+buffers record an op stream (`gpu/api/rx_nvn.h`). Queue submits hand the lists to the direct back end through the
+versioned interface in `gpu/api/vk_api.h`. The back end replays them on Vulkan 1.3: guest memory pools become Vulkan
+memory at the guest address, the game's SM86 shader programs go through a fork of Eden's shader recompiler to SPIR-V,
+and task and mesh programs use `VK_EXT_mesh_shader`.
+
+The renderer's design, rules and open problems are in the [direct back end plan](direct-backend-plan.md) and the
+[renderer docs](direct/README.md).
+
+## Rules that hold everywhere
+
+- **No game files in the repository.** Decompressed modules, the image, the plan, builds, RomFS copies, screenshots,
+  dumps and keys stay in `work/` or in the dump's own folder.
+- **Fix the game's behavior where it happens.** An awkward behavior of the game is fixed with a patch, a shader or a
+  data file, not with special cases in the back end.
+- **Assert, do not tolerate.** A patch site checks the game's instruction words, and a missing piece stops the game with
+  what was missing, instead of a silent fallback.
+- **The CPU saturates first.** The game's threads, the replay and pipeline compiles share the CPU, and extra helper
+  threads have lowered the frame rate before. Measure thread counts (`HOS_THREAD_TIMES`, the samplers) rather than
+  raising them by default.
+- **One game run at a time** on a development PC: a run takes about 10 GB.
+
+## Where the code came from
 
 | From | What | Where here |
 |---|---|---|
-| mkw-recomp | the lift driver, DT_RELR, Eden's image layout, 64-bit guest window, Unicorn tests, build; the standalone runtime; the native NVN2 layer | `nx2/`, `host/`, `third_party/` |
-| a64-kit (Rexcomp's AArch64 kit) | NSO loader, image builder, the guest model and runtime (its lifter and suyu's translator served until Hookshot's own lifter replaced them) | `third_party/a64-kit` |
-| Eden's shader recompiler | SM86 -> IR -> SPIR-V, task/mesh programs | `gpu/direct/eden` (a fork) |
-| TOTKPort, Eglantine | the original HLE runtime, Switch 2 service protocols | reference only, read and never edited |
+| mkw-recomp (Mario Kart World) | The lift driver, the image layout, the standalone runtime, the native NVN2 layer | `nx2/`, `host/` |
+| a64-kit | The NSO loader, the image builder, the guest runtime | `third_party/a64-kit` |
+| Eden's shader recompiler | SM86 to SPIR-V, task and mesh programs | `gpu/direct/eden` (a fork) |
+| TOTKPort, Eglantine | The original Horizon runtime; Switch 2 service protocols | Reference only |
 
-Keeping the fork's paths identical to mkw-recomp's is deliberate: a later mkw-recomp commit comes over as a patch
-(`git diff <base> <new> -- nx2 host third_party`, applied with `git apply -3`). OoT-specific code goes into new files where
-it can, so the shared files stay easy to patch.
+`host/PROVENANCE.md` records what the runtime took and changed.
 
-## 3. Architecture
+## Testing
 
-```
- exefs/{rtld,main,subsdk*,sdk} + main.npdm      (the user's dump, read in place: work/dump.txt)
-        |  a64-kit tools/nso.py + nx2/nso2.py (DT_RELR)
-        v
- modules: LZ4 segments, MOD0, dynamic section, symbols, RELA + RELR, .eh_frame_hdr starts
-        |  nx2/image.py (Eden's layout from 0x80000000: rtld, main, subsdk*, sdk; we are rtld)
-        v
- image: relocated, imports bound across modules; the HLE set hooked (nx2/standalone.py)
-        |  nx2/lift.py: discovery (nx2/lift2/discover.py) -> the plan (work/sa/plan.pickle, local)
-        v
- the lifter (nx2/lift2, docs/lifter.md): AArch64 -> typed SSA IR -> LLVM IR, one module per partition
-        |  clang -O1, the hot functions' partitions -O2, the runtime (nx2/rtgen.py: 64-bit guest window), lld
-        v      (nx2/build.py --standalone)
-        v
- hookshot            = lifted game + host/ (Horizon: threads, SVCs, memory, fs, hid, audio, vi, gs, NVN2)
- hookshot_direct.so  = the direct back end (gpu/direct), loaded by host/rx_backend.c
-```
-
-- **The SDK is replaced at the nn:: boundary** (TOTKPort's model): `HLE(<mangled name>)` functions in `host/` stand in for
-  the SDK's OS-facing functions; the rest of the SDK (libc, nn::util, nn::mem, the NVN2 driver's front end) runs as lifted
-  code. Unimplemented OS-facing imports get generated stubs that log their first call.
-- **Memory.** A 512 GB reservation; the image at `0x80000000`, the heap from 64 GB, address regions growing down from
-  512 GB; committed as handed out or on first touch (`host/hos.h`).
-- **GPU.** `host/nvn_native.c` implements the NVN2 procs over guest memory in place: objects live where the game puts
-  them, command buffers record an op stream (`gpu/api/rx_nvn.h`), queue submits hand lists to the back end through the
-  versioned table in `gpu/api/vk_api.h` and `gpu/direct/direct_api.h`. The direct back end replays them on Vulkan 1.3:
-  guest memory as window buffers shared with the GPU, SM86 programs through the forked recompiler to SPIR-V, task and mesh
-  programs with `VK_EXT_mesh_shader`. Its design, rules and open problems are in
-  [direct-backend-plan.md](direct-backend-plan.md); what we know about the game is in [direct/](direct/README.md).
-
-## 4. The lessons from MKW, as rules here
-
-These cost days in mkw-recomp; the checks keep them true for a second game.
-
-1. **Cross-queue `nvnCommandBufferWaitEvent` is honoured.** The game's queues pass stages back and forth with events;
-   replaying submissions in arrival order on one Vulkan queue flashed. Each submission replays as far as its waits allow.
-2. **Nothing the replay reads comes from live guest memory.** Games write per-frame data ahead of the GPU: every read is
-   from submit-time data.
-3. **Texture and sampler registrations are queued in order with the submits**, never applied out of band.
-4. **The CPU saturates first.** The game's threads, the replay and pipeline compiles share it, and extra helper threads
-   have lowered fps before. Thread counts are measured, never raised by default (`HOS_THREAD_TIMES=<seconds>`, the
-   `HOS_SAMPLE` profiler with `scripts/prof.py`).
-5. **2D views of 3D textures need `VK_EXT_image_2d_view_of_3d`.**
-
-The host serves one game, the one its description names (`games/oot/game.py`: the lift and the build check its build
-id); MKW's own hooks were deleted (docs/parked-patches.md).
-
-## 5. What OoT needs that MKW did not
-
-| | Found | Plan |
-|---|---|---|
-| Dump format | one `.nup` package (base v65536 + update v131072, each an exefs/ and romfs/ tree, data stored as is) | `nx2/nup.py` extracts the newest title to `work/dump` |
-| NSO compression | `main` is ZBIC (NSO flags bit 7, firmware 22.0.0+: zstd with its own magic and BIC-coded tables); rtld, sdk, subsdk0 are LZ4 | `nx2/unpack.py` rewrites ZBIC NSOs as plain ones (hashes checked), decoder `third_party/zbic` |
-| SDK / NVN2 version | 22.2.8 (MKW: 21.4.0); same 46 services and 49 SVCs as MKW | 26 NVN proc names MKW never asked for, 14 not in `host/nvn_native.c` yet (stubs that stop the game only when called; DLSS parameter procs, window acquire timeout, HDR metadata, `nvnProgramBuilderGetShaders`, ...); the device limits in `nvn_native.c` are MKW sdk's (`devinfo[]`) and may need OoT's |
-| Instructions | ARMv8.1-8.5 forms (LSE, LDAPR, PAC, UDOT, AES/SHA/PMULL) | the lifter covers every form the game reaches (`nx2/lift2/selfcheck.py`) |
-| Engine | romfs laid out like TOTK's (agl, gsys, Phive, Banc, Bake), Havok 2025.2, NintendoWare G3d2/Vfx3/Ui, SMAA, `.zs` (zstd) files | romfs read from `work/dump/romfs` |
-| Microphone (the ocarina by humming) | to check at runtime (nn::audio input; `audsmx:u`, `auddmg:u` are in the services, as in MKW) | a stub that hears silence |
-| Cutscene video / voice | `Movie/` in the romfs | played by the host (FFmpeg) |
-
-## 6. Testing
-
-- **The lifter** (`tests/test_lift2*.py`, no game): the decoder, every semantic template on synthetic and edge-value
-  states, small programs end to end; `nx2/lift2/selfcheck.py` checks the decoder against llvm-mc on every word of the
-  game.
-- **Whole functions** (`nx2/test_lift2_leaf.py`, `--calls` for call trees): random functions of every module on the
-  real relocated image, lifted and run natively and in Unicorn, on the 64-bit window; registers, V
-  registers and every changed page compared.
-- **Game-free source checks:** `python -I -B tests/run_all.py`.
-- **In the game:** `scripts/run-vk.sh` and `scripts/smoke.sh` (see the development guide), the sampled profiler
-  (`HOS_SAMPLE` + `scripts/prof.py`).
-
-## 7. Rules
-
-- No game files in the repository: decompressed modules, the image, the lift's plan, builds, romfs copies, dumps and keys stay in
-  `work/` (ignored) or in the dump's own folder.
-- Treat the mkw-recomp and Eglantine checkouts as read-only references.
-- One game run at a time on this PC (a run takes ~10 GB); runs are muted (`HOS_AUDIO=0`) and screenshot folders are
-  deleted once looked at.
-- The lifted code and every build are GPL (Eden's code is GPL-3.0).
+- **Game-free checks:** `python -I -B tests/run_all.py` ([CONTRIBUTING.md](../CONTRIBUTING.md#testing)).
+- **The lifter against the game:** the decoder against `llvm-mc`, and whole functions against Unicorn
+  ([Build and iterate on the lifter](lifter-build.md#check-the-lifter)).
+- **In the game:** the smoke test and the benchmarks ([Test in the game](testing.md)).

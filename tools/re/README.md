@@ -1,6 +1,6 @@
 # tools/re
 
-Searches in the main executable's flat image (`work/re/main.bin`, made from the dump's exefs; `MAIN_BIN=<file>` for
+Searches for reverse engineering in the main executable's flat image (`work/re/main.bin`, made from the dump's exefs; `MAIN_BIN=<file>` for
 another). Offsets are file offsets (virtual address minus the 0x80020000 base). Run with `work/venv/bin/python`.
 
 | script | what it is |
