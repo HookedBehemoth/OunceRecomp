@@ -235,9 +235,10 @@ def main():
             poll.install()
         gen = os.path.join(out_dir, "gen")
         L.write_tables = False   # (lift 2's side writes the runtime's tables: nx2/lift2/tables.py)
-        from lift2 import tables
+        from lift2 import owned, tables
         os.makedirs(gen, exist_ok=True)
         tables.write(gen, L.funcs, L.hooks)
+        owned.write_traps(gen, set())   # (a HOOKSHOT_LIFT1=0 lift's traps go: the present lifter defines its functions)
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
                              counters=[] if a.no_polls else [poll.stats])
         chunks.edit_c(gen, L.stats)
