@@ -5,6 +5,7 @@ pub mod build;
 pub mod emit;
 pub mod export;
 pub mod fp_estimate;
+pub mod game;
 pub mod ir;
 pub mod part;
 pub mod sem;
