@@ -2,7 +2,6 @@
 //! from one game. The lifter holds no fact of one game; it is here or in the game's patch declarations.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::Deserialize;
 
@@ -109,14 +108,20 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-// No sha2 in the offline registry, and no hand-rolled hash: coreutils' sha256sum (the host is Linux only).
 fn sha256_file(path: &Path) -> Result<String, String> {
-    let out = Command::new("sha256sum").arg(path).output().map_err(|e| format!("sha256sum: {e}"))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    match text.split_whitespace().next() {
-        Some(h) if out.status.success() && h.len() == 64 => Ok(h.to_lowercase()),
-        _ => Err(format!("sha256sum {} failed", path.display())),
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
     }
+    Ok(hex(&h.finalize()))
 }
 
 #[cfg(test)]
@@ -166,12 +171,10 @@ mod tests {
         g.identity.build_id = "000102030405060708090a0b0c0d0e0f10111213".into();
         let err = g.check_exefs(&dir).unwrap_err();
         assert!(err.contains("main's main_sha256 is"), "{err}");
-        let seen = {
-            let e = err.split("main_sha256 is ").nth(1).unwrap();
-            e.split(',').next().unwrap().to_string()
-        };
-        g.identity.main_sha256 = seen.clone();
-        assert_eq!(g.check_exefs(&dir).unwrap().main_sha256, seen);
+        let known = "8d1d1055e92013279d2ac1648d3d85f55aa9b522e36e07c021454112f9857e88";
+        assert!(err.contains(&format!("main's main_sha256 is {known},")), "{err}");
+        g.identity.main_sha256 = known.into();
+        assert_eq!(g.check_exefs(&dir).unwrap().main_sha256, known);
         std::fs::write(dir.join("main"), b"XXXX").unwrap();
         assert!(g.check_exefs(&dir).unwrap_err().contains("is not an NSO"));
         std::fs::remove_dir_all(&dir).unwrap();
