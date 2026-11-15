@@ -222,7 +222,7 @@ static float text_scale(const char *env, int menu) {
     const int v = env && *env ? atoi(env) : menu;
     return v == 1 ? 2.0f : v == 2 ? 4.0f : v >= 3 ? 1e6f : 1.0f;
 }
-volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lifted code when the frame-time hook is in this build; its
+volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lifted code's frame-time hook; its
                                             +0xd58 is the game clock in 1/60 s: host/oot_probes.c) */
 volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step) */
 /* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
@@ -437,10 +437,11 @@ static void realtime_step(int64_t now) {
        higher +0x2c8 before the step is made from it, so every frame still stepped 1/60 s and the game ran fps / 60 times too fast.
        The step is then the frames' own time at the two places the engine makes it (host/oot_probes.c, hos_frame_seconds_bits):
        this same average, at most 1/15 s as below and at least 1/240 s, and the rate under it stays the engine's, 60 at most.
-       HOS_FPS_STEP=0, or a lift without the hook (hos_step_probe unset): the rate up to the cap, as before */
+       HOS_FPS_STEP=0 (for comparisons): the rate up to the cap. The lift stops when the hook's divides are not there
+       (nx2/lift2/probes.py), so every build has it */
     static int timed_step = -1;
     if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
-    const int timed = fps_max() > 60 && timed_step && hos_step_probe;
+    const int timed = fps_max() > 60 && timed_step;
     if (timed) {
         const double secs = sum / count;
         const float f = (float)(secs > 4.0 / 60.0 ? 4.0 / 60.0 : secs < 1.0 / 240.0 ? 1.0 / 240.0 : secs);

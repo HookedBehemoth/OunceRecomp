@@ -13,15 +13,14 @@ import os
 import re
 
 from . import enc  # (first: its tables import asm)
-from . import asm
 from . import sem
 from .sem_int import getx, setx
 from .sem_fp import vread, vwrite
 
 
 class Value:
-    def __init__(self, func, match, fn, args):
-        self.func, self.match, self.fn, self.args = func, re.compile(match), fn, args
+    def __init__(self, func, pc, word, fn, args):
+        self.func, self.pc, self.word, self.fn, self.args = func, pc, word, fn, args
 
     def lower(self, b, insn, pc):
         vals = []
@@ -42,8 +41,8 @@ class Value:
 # nx2/oot_patches.py WHOLE_SITES: the counters of these two functions advance by the host's whole frames (the frame
 # step's FCVTZS of the frame count replaced by hos_frame_whole of the counter's address and the count, a float)
 PROBES = [
-    Value(0x80a87e50, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x19+864", "s0")),
-    Value(0x800672e0, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x21", "s0")),
+    Value(0x80a87e50, 0x80a88300, 0x1e38000c, "hos_frame_whole", ("x19+864", "s0")),   # fcvtzs w12, s0
+    Value(0x800672e0, 0x800675f8, 0x1e380009, "hos_frame_whole", ("x21", "s0")),       # fcvtzs w9, s0
 ]
 MARKS = {"/* (the step's whole frames: nx2/oot_patches.py) */"}
 BY_FUNC = {}
@@ -52,18 +51,15 @@ for _p in PROBES:
 
 
 def find(func, pcs, word):
-    """{pc: lowering} of the probes of one function; SystemExit when a probe's instruction is not there once"""
+    """{pc: lowering} of the Value probes of one function; SystemExit when a probe's instruction is not the word it
+    names (another game version)"""
     out = {}
+    have = set(pcs)
     for p in BY_FUNC.get(func, ()):
-        hits = []
-        for pc in pcs:
-            i = enc.decode(word(pc))
-            if i is not None and p.match.fullmatch(asm.render(i, pc)):
-                hits.append((pc, i))
-        if len(hits) != 1:
-            raise SystemExit("lift2 probes: f_%08x: %d instructions match %r (expected one: another game version?)"
-                             % (func, len(hits), p.match.pattern))
-        out[hits[0][0]] = p.lower
+        if p.pc not in have or word(p.pc) != p.word:
+            raise SystemExit("lift2 probes: Value f_%08x at %#x holds %s, not %08x (another game version?)"
+                             % (func, p.pc, "%08x" % word(p.pc) if p.pc in have else "nothing", p.word))
+        out[p.pc] = p.lower
     return out
 
 
@@ -133,7 +129,20 @@ AT = [
     At(0x80644c80, 0x80644c80, 0xd503237f, "hos_mouse_camera", ("x0",)),                   # hint #27 (PACIBSP)
     # the player's update, for HOS_BENCH's "in play" (x19 the player actor)
     At(0x82c415e0, 0x82c41728, 0xf9000bea, "hos_oot_player_update", ("x19",)),            # str x10, [sp, #16]
-]
+    # widescreen (nx2/oot_wide.py: where they come from; after the output size at 0x81222ee4)
+    At(0x81222ce0, 0x81222ee4, 0xf2c0b408, "hos_oot_wide_out", ("x8",), "x8"),     # movk x8, #1440, lsl #32: {2560, 1440}
+    At(0x83213890, 0x832139f8, 0xf2c0b408, "hos_oot_wide_out", ("x8",), "x8"),     # likewise, the display settings
+    At(0x83213890, 0x83213a04, 0xf2c08708, "hos_oot_wide_scene", ("x8",), "x8"),   # movk x8, #1080, lsl #32: {1920, 1080}
+    At(0x804e48c0, 0x804e5334, 0xbd414260, "hos_oot_wide_ratio", ("s0",), "s0"),   # ldr s0, [x19, #0x140]: the camera's ratio
+    At(0x834a5cc0, 0x834a5cc0, 0x2d558400, "hos_oot_wide_projection_ratio", ("s1", "x0"), "s1"),   # ldp s0, s1, [x0, #0xac]
+    At(0x8006ec60, 0x8006f1e8, 0x2d558ea0, "hos_oot_wide_projection_ratio", ("s3", "x21"), "s3"),  # (its inlined copies)
+    At(0x8025b910, 0x8025b9a8, 0x2d558c00, "hos_oot_wide_projection_ratio", ("s3", "x0"), "s3"),
+    At(0x8035a8c0, 0x8035b82c, 0x2d558440, "hos_oot_wide_projection_ratio", ("s1", "x2"), "s1"),
+    At(0x83b7c710, 0x83b7c758, 0xa941a269, "hos_oot_wide_movie", ("x29",)),         # ldp x9, x8, [x19, #0x18]
+    # occlusion off (cLohan's community patch, as Fritchii ships it): the byte that decides the queries (ldrb w8, [x0])
+] + [At(f, pc, 0x39400008, "hos_oot_occlusion_flag", ("w8",), "w8")
+     for f, pc in ((0x811cc790, 0x811cce68), (0x811cc790, 0x811d828c), (0x811cc790, 0x811d82a4),
+                   (0x811cc790, 0x811ccec8), (0x811cc790, 0x811d82dc), (0x811cc790, 0x811d82f4))]
 AT_FUNCS = {p.func for p in AT}
 
 
@@ -158,13 +167,13 @@ def at(func, pcs, word, before=False):
     return out
 
 
-# ---- C after an instruction (a64_lift.py Lifter.after: oot_wide, oot_jitter, oot_occlusion; SPLICE_AT's splices). The
+# ---- C after an instruction (a64_lift.py Lifter.after: oot_wide's HUD and save picture, oot_jitter; SPLICE_AT's splices). The
 # C works on the whole guest context; lift 2's generic entry keeps every written register stored there (write-through),
 # so after the instruction lift2_after_<pc>(ctx) is called (that C, unchanged, as a host function: write_after_c), and
 # the registers are the context's again after it. NZCV is not stored: none of the C reads it. A patch that needs only a
 # few registers is an At probe instead (below): its values stay SSA values.
 AFTER_HEAD = """/* Generated by nx2/lift2/probes.py from the C the present lifter puts after these instructions
-   (nx2/oot_wide.py, oot_jitter.py, oot_occlusion.py): called by lift 2's code after each. Do not edit. */
+   (nx2/oot_wide.py, oot_jitter.py): called by lift 2's code after each. Do not edit. */
 #include "a64.h"
 #include <stdint.h>
 #include <string.h>

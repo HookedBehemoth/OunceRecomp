@@ -313,3 +313,63 @@ void hos_oot_player_update(uint64_t actor) {
     hos_bench_player(gamedata_bool(OOT_SEQUENCE_IS_LOADING_BANC) == 1, event);
 }
 
+/* ---- widescreen (nx2/oot_wide.py says where each comes from; host/hos_main.c sets the globals from the window's
+   shape, all 0 for a 16:9 window: the game as shipped) */
+
+extern volatile uint64_t hos_wide_out, hos_wide_scene;
+extern volatile float hos_wide_ratio, hos_wide_margin;
+
+/* the picture's {2560, 1440} (width | height << 32 in x8, just built by mov + movk): the window's shape at the game's height */
+uint64_t hos_oot_wide_out(uint64_t size) { const uint64_t s = hos_wide_out; return s ? s : size; }
+/* the scene the upscaler takes in, {1920, 1080}, likewise */
+uint64_t hos_oot_wide_scene(uint64_t size) { const uint64_t s = hos_wide_scene; return s ? s : size; }
+
+/* a camera ratio just loaded: when it is 16:9 (within 0.01), the picture's */
+float hos_oot_wide_ratio(float ratio) {
+    const float w = hos_wide_ratio, d = ratio - 16.0f / 9.0f;
+    return w > 0.0f && d <= 0.01f && d >= -0.01f ? w : ratio;
+}
+
+/* sead's perspective projection, the field its matrix update and culling read */
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[0xb0];
+    float aspect;   /* +0xb0 */
+} OotSeadPerspectiveProjection;
+_Static_assert(offsetof(OotSeadPerspectiveProjection, aspect) == 0xb0, "aspect");
+
+/* the projection's matrix update (and its inlined copies): its ratio just loaded, the picture's when it is 16:9, and kept
+   in the projection too */
+float hos_oot_wide_projection_ratio(float ratio, uint64_t projection) {
+    const float r = hos_oot_wide_ratio(ratio);
+    if (r != ratio) GUEST(OotSeadPerspectiveProjection, projection)->aspect = r;
+    return r;
+}
+
+/* the movie layer's draw: its viewport in its frame (x29 - 40), min x at +8 and max x at +16 */
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[8];
+    float min_x;   /* +8 (x29 - 32) */
+    uint8_t _1[4];
+    float max_x;   /* +16 (x29 - 24) */
+} OotMovieViewport;
+_Static_assert(offsetof(OotMovieViewport, min_x) == 8 && offsetof(OotMovieViewport, max_x) == 16, "viewport");
+
+/* movies in the middle 16:9 of a wider picture: the viewport narrowed by the margin on each side */
+void hos_oot_wide_movie(uint64_t frame) {
+    const float m = hos_wide_margin;
+    if (!(m > 0.0f)) return;
+    OotMovieViewport *v = GUEST(OotMovieViewport, frame - 40);
+    const float in = (v->max_x - v->min_x) * m;
+    v->min_x += in, v->max_x -= in;
+}
+
+/* ---- occlusion off: cLohan's community patch (zortos293/Lichii#641), as Fritchii ships it (Frizti/Fritchii 1a46ba972,
+   "Occlusion Off", ldrb w8, [x0] -> mov w8, wzr). The game decides at six places in f_811cc790 whether to make its
+   z-prepass occlusion queries and its samples-passed queries, each by a byte it loads; that byte reads 0, so the game
+   makes no occlusion queries and draws every candidate object */
+
+/* the byte that decides whether the game makes its occlusion queries, just loaded: 0 with HOOKSHOT_OCCLUSION_OFF=1 */
+uint32_t hos_oot_occlusion_flag(uint32_t flag) {
+    extern volatile int hos_occlusion_off;
+    return hos_occlusion_off ? 0 : flag;
+}

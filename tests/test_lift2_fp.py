@@ -1229,7 +1229,7 @@ class Probe(unittest.TestCase):
         base = 0x80002000
         word = lambda pc: words[(pc - base) // 4]
         pcs = [base + 4 * k for k in range(len(words))]
-        p = probes.Value(base, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x19+864", "s0"))
+        p = probes.Value(base, base, words[0], "hos_frame_whole", ("x19+864", "s0"))
         probes.BY_FUNC[base] = [p]
         try:
             prog = build_ir.Program()

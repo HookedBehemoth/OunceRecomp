@@ -63,6 +63,17 @@ class Table(unittest.TestCase):
         self.assertEqual(probes.at(0x80000000, sorted(words), words.__getitem__), {})
 
 
+class ValueRows(unittest.TestCase):
+    def test_word_checked(self):
+        """a Value probe names its instruction and word: a differing word, or the instruction missing, stops the lift"""
+        for p in probes.PROBES:
+            self.assertEqual(list(probes.find(p.func, [p.pc], lambda pc: p.word)), [p.pc])
+            with self.assertRaises(SystemExit):
+                probes.find(p.func, [p.pc], lambda pc: p.word ^ 1)
+            with self.assertRaises(SystemExit):
+                probes.find(p.func, [p.pc + 4], lambda pc: p.word)
+
+
 class Before(unittest.TestCase):
     def test_branch_target_refused(self):
         """an At probe before an instruction runs on the edge into it alone: a branch target there is refused"""
@@ -169,6 +180,9 @@ volatile uint64_t hos_res_module, hos_step_probe;
 volatile float hos_text_scale = 1.0f;
 static int seen_loading = -1, seen_event = -1;
 void hos_bench_player(int loading, int event_playing) { seen_loading = loading, seen_event = event_playing; }
+volatile uint64_t hos_wide_out, hos_wide_scene;
+volatile float hos_wide_ratio, hos_wide_margin;
+volatile int hos_occlusion_off;
 static uint32_t out_w = 3840, out_h = 2160;
 uint32_t hos_output_size(int height) { return height ? out_h : out_w; }
 uint64_t hos_rt_pool_size(uint64_t game) { return game * out_w / 2560 * out_h / 1440; }
@@ -232,6 +246,19 @@ int main(void) {
         mem[0xb200 + 2 * 24 + 22] = 0; G64(0xb500 + 104) = 1; hos_oot_player_update(actor); CHECK(seen_loading == 0 && seen_event == 1);
         seen_loading = -1; memcpy(mem + res + 88, "Navi\0\0", 7); hos_oot_player_update(actor); CHECK(seen_loading == -1);
     }
+    /* widescreen: the game's values while the window is 16:9 (the globals 0), the picture's otherwise */
+    CHECK(hos_oot_wide_out(0x5a000000a00ULL) == 0x5a000000a00ULL && hos_oot_wide_ratio(16.0f / 9) == 16.0f / 9);
+    hos_wide_out = 0x5a000000d70ULL; hos_wide_ratio = 2.3889f; hos_wide_scene = 0x43800000a18ULL;
+    CHECK(hos_oot_wide_out(0x5a000000a00ULL) == 0x5a000000d70ULL && hos_oot_wide_scene(1) == 0x43800000a18ULL);
+    CHECK(hos_oot_wide_ratio(16.0f / 9) == 2.3889f && hos_oot_wide_ratio(1.0f) == 1.0f);
+    CHECK(hos_oot_wide_projection_ratio(16.0f / 9, 0x6000) == 2.3889f && G32(0x6000 + 0xb0) == bits(2.3889f));
+    G32(0x6000 + 0xb0) = 0; CHECK(hos_oot_wide_projection_ratio(1.0f, 0x6000) == 1.0f && G32(0x6000 + 0xb0) == 0);
+    G32(0x7000 - 40 + 8) = bits(0.0f), G32(0x7000 - 40 + 16) = bits(100.0f);
+    hos_oot_wide_movie(0x7000); CHECK(G32(0x7000 - 40 + 8) == bits(0.0f));   /* (no margin: as it was) */
+    hos_wide_margin = 0.125f; hos_oot_wide_movie(0x7000);
+    CHECK(G32(0x7000 - 40 + 8) == bits(12.5f) && G32(0x7000 - 40 + 16) == bits(87.5f));
+    /* occlusion off: the byte reads 0 */
+    CHECK(hos_oot_occlusion_flag(1) == 1); hos_occlusion_off = 1; CHECK(hos_oot_occlusion_flag(1) == 0);
     if (!bad) printf("ok\n");
     return bad;
 }

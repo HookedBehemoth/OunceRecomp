@@ -176,7 +176,7 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    rows = [p for p in probes.AT if p.func == 0x83b7c710]
+    rows = [p for p in probes.AT if p.func == 0x83b7c710 and p.fn == "hos_oot_movie_count"]
     check(len(rows) == 1, "one probe")
     p0 = rows[0]
     check((p0.pc, p0.word, p0.fn, p0.args, p0.result) == (0x83b7c7c8, 0x11000508, "hos_oot_movie_count", ("w8", "x20"), "w8"),

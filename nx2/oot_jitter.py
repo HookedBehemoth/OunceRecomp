@@ -49,18 +49,10 @@ def _text(xreg, yreg):
 
 
 def install(lifter, img):
-    """The sites into lifter.after, after what is there; a site whose word differs (another game version) is left out"""
-    n = 0
+    """The sites into lifter.after, after what is there; SystemExit when a site's word differs"""
+    oot_wide.check(img, "dlss jitter", [(off, word) for off, word, _, _ in SITES])
     for off, word, xreg, yreg in SITES:
         pc = oot_wide.MAIN + off
-        try:
-            have = img.word(pc)
-        except Exception:
-            have = None
-        if have != word:
-            print("dlss jitter: main+%#x holds %s, not %08x: left out" % (off, "?" if have is None else "%08x" % have, word))
-            continue
         lifter.after[pc] = (lifter.after[pc] + "\n" if pc in lifter.after else "") + _text(xreg, yreg)
-        n += 1
-    print("dlss jitter: %d of %d sites" % (n, len(SITES)))
-    return n
+    print("dlss jitter: %d sites" % len(SITES))
+    return len(SITES)

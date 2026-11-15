@@ -77,7 +77,7 @@ int main(int argc, char **argv) {
     int *limit = (int *)GP(MOD + 0xfc), *rate = (int *)GP(MOD + 0x2c8);
     const char *mode = argc > 1 ? argv[1] : "";
     *limit = 60, *rate = 60;
-    hos_step_probe = strcmp(mode, "no hook") ? 0x2000 : 0;   /* (the lifted code sets it when the hook is in the build) */
+    hos_step_probe = 0x2000;   /* (the lifted code's frame step sets it) */
     realtime_step(now);
     if (!strcmp(mode, "cap 120")) {
         CHECK(near(frames(72000, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 120);   /* (the rate stays the engine's) */
@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
             if (*rate == 40) { recovered = 1; break; }
         }
         CHECK(recovered && lifted_step(60.0f, (float)*rate) == 1.5f);
-    } else {   /* (HOS_FPS_STEP=0, or a lift without the hook: the rate up to the cap, as before) */
+    } else {   /* (HOS_FPS_STEP=0: the rate up to the cap) */
         CHECK(frames(10, 1.0 / 120) == 0.0f && *rate == 120 && *limit == 120);
         CHECK(lifted_step(60.0f, 60.0f) == 1.0f);
     }
@@ -128,7 +128,7 @@ def main():
         exe = Path(tmp) / "fixture.exe"
         c.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
-        for mode, cap, step in (("cap 120", "120", None), ("cap 60", None, None), ("step off", "120", "0"), ("no hook", "120", None)):
+        for mode, cap, step in (("cap 120", "120", None), ("cap 60", None, None), ("step off", "120", "0")):
             env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
             if cap:
                 env["HOS_FPS_MAX"] = cap

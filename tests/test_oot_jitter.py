@@ -50,13 +50,11 @@ class SiteTests(unittest.TestCase):
             self.assertIn("hos_dlss_jitter_clip(c->x[28] + 0x1a8", text)
             self.assertNotIn("recomp_store", text)   # (the game's memory is left alone)
 
-    def test_another_version_left_out(self):
+    def test_another_version_stops_the_lift(self):
         words = {oot_wide.MAIN + off: word for off, word, _, _ in oot_jitter.SITES}
-        first = oot_wide.MAIN + oot_jitter.SITES[0][0]
-        words[first] ^= 1
-        L, n = lift(words)
-        self.assertEqual(n, 2)
-        self.assertNotIn(first, L.after)
+        words[oot_wide.MAIN + oot_jitter.SITES[0][0]] ^= 1
+        with self.assertRaises(SystemExit):
+            lift(words)
 
     def test_after_what_is_there(self):
         words = {oot_wide.MAIN + off: word for off, word, _, _ in oot_jitter.SITES}

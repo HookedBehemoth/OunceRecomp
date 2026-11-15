@@ -98,7 +98,7 @@
 80065b10 dta_alloc_b                      # work/assets/native/block-linear.md: the other DynamicTextureAllocator entry
 80062c50 dta_alloc_persistent             # host/rt_slots.c, work/assets/native/rt-alloc.md: the persistent path's fit, from the top of a free block
 80063090 dta_arena_init                   # work/assets/native/rt-alloc.md: one of the pool record's 7 arenas
-8006ec60 dta_arena_stats                  # work/assets/native/cores.md: sums the arenas' bytes in use for the game's stats
+8006ec60 dta_arena_stats                  # work/assets/native/cores.md: sums the arenas' bytes in use for the game's stats # ? host/oot_probes.c finds a projection update's inlined copy in it too (0x8006f1e8)
 80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, host/oot_probes.c: -> DTA::initialize
 802737a0 dta_free                         # host/rt_slots.c; docs/direct/transient-pool.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
 80c49070 dta_initialize                   # work/assets/native/rt-alloc.md: DTA::initialize: entries, 7 lanes, pool record
@@ -974,3 +974,10 @@
 82becaf0 libcxx_bad_optional_access_abort # docs/lifter2-abi-census.md: "bad_optional_access was thrown in -fno-exceptions mode": noreturn, 139 call sites
 83c61df0 libcxx_verbose_abort             # docs/lifter2-abi-census.md: called with the message by both aborts above (role)
 82118640 cxx_call_terminate               # docs/lifter2-abi-census.md: __clang_call_terminate: __cxa_begin_catch then std::terminate, noreturn
+# --- widescreen and occlusion off (lift 2 At probes and C after instructions)
+83213890 display_settings_build           # host/oot_probes.c (widescreen): builds {2560, 1440} (0x832139f8) and {1920, 1080} (0x83213a04) in x8
+834a5cc0 sead_persp_proj_update           # host/oot_probes.c (widescreen): sead's perspective projection's matrix update, ldp s0, s1, [x0, #0xac] first
+8025b910 sead_persp_proj_inline_a         # host/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8025b9a8)
+8035a8c0 sead_persp_proj_inline_b         # host/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8035b82c)
+811cc790 occl_query_decide                # host/oot_probes.c (occlusion off): loads the byte that decides the occlusion queries, at six places
+80794330 ui2d_canvas_setup                # nx2/oot_wide.py: the 2D canvas setup, the layout's projection rows (HUD site 0x80794368)
