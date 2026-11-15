@@ -447,6 +447,8 @@
 80df25c0 thread_sead_loop_a               # work/assets/native/engine-layers.md: thread loop (every sead thread)
 80df2680 thread_sead_loop_b               # work/assets/native/engine-layers.md: thread loop (every sead thread; the Presentation thread's)
 80df5760 thread_sead_main                 # work/assets/native/engine-layers.md: sead::MainThread
+835867c0 config_render_visit_params       # the heavy-functions analysis (agent/heavy-funcs): the render pipeline's settings visited field by field through an archive's vtable (CreateLightMap ... CreateDlss, CreateNdsr, DepthShadow*, ViewFrustumCluster*: 337 fields, each with a guarded static) (role)
+80689bf0 util_hash_murmur64a_cstr         # the heavy-functions analysis (agent/heavy-funcs): MurmurHash64A over a NUL-terminated string (multiplier 0xc6a4a7935bd1e995)
 
 # --- terrain, sky, vegetation
 80101060 sky_inscatter_ubo_write          # work/assets/native/uniform-buffers.md: the sky ("SkyInscatter") uniform writes (sites 0x80101174..0x80101294)
@@ -820,6 +822,8 @@
 85786920 std_cxx_atomic_notify_all        # nx2/image.py exports (sdk): std::__1::__cxx_atomic_notify_all
 857774a0 std_hash_memory                  # nx2/image.py exports (sdk): std::__1::__hash_memory
 85786980 std_libcpp_atomic_monitor        # nx2/image.py exports (sdk): std::__1::__libcpp_atomic_monitor
+857ec268 std_cxa_guard_acquire            # the heavy-functions analysis (agent/heavy-funcs): the PLT f_83c61ca0's target, called after an LDAPRB of a guard byte; its non-zero result runs the static's init (role)
+857ec2f0 std_cxa_guard_release            # the heavy-functions analysis (agent/heavy-funcs): the PLT f_83c61cb0's target, called after that init (role)
 81222cd0 sys_nn_main                      # nx2/image.py exports (main): nnMain
 8262bb10 sys_nninit_startup               # nx2/image.py exports (main): nninitStartup
 850438b0 util_tiny_mt_generate_random_u32 # nx2/image.py exports (sdk): nn::util::TinyMt::GenerateRandomU32
@@ -958,6 +962,39 @@
 81a4a540 phys_hknp_raycast_leaf_kernel    # docs/direct/havok.md: under phys_hknp_raycast_leaf (role)
 81a465e0 phys_hknp_shapecast_traverse     # docs/direct/havok.md: under phys_hknp_world_cast_shape (role)
 817575ec phys_hknp_shape_query_cast_shape  # docs/direct/havok.md: hknpShapeQueryInterface::castShape (string)
+81d57eec phys_cloth_object_space_skin_pntb_execute # the heavy-functions analysis (agent/heavy-funcs): hclObjectSpaceSkinPNTBOperator's vtable slot (0x848f9520+0x38, the class by hk reflection's vtable/type pairs at 0x84ccb2a0): loads the buffers, tail-calls the body
+81d57f20 phys_cloth_object_space_skin_pntb # the heavy-functions analysis (agent/heavy-funcs): its body: positions, normals, tangents, bitangents ("Prepare Matrices", "Object Space Deform", hclObjectSpaceSkinOperatorCpu.hxx); 58k instructions, the game's largest function
+81d90b84 phys_cloth_object_space_skin_pnt_execute # the heavy-functions analysis (agent/heavy-funcs): hclObjectSpaceSkinPNTOperator's vtable slot (0x848f95a0+0x38): tail-calls the body
+81d90bc0 phys_cloth_object_space_skin_pnt # the heavy-functions analysis (agent/heavy-funcs): its body (same strings as phys_cloth_object_space_skin_pntb)
+81d3d4b0 phys_cloth_object_space_skin_pn_execute # the heavy-functions analysis (agent/heavy-funcs): hclObjectSpaceSkinPNOperator's vtable slot (0x848f94a0+0x38): tail-calls the body
+81d3d4e0 phys_cloth_object_space_skin_pn  # the heavy-functions analysis (agent/heavy-funcs): its body
+81cf6eac phys_cloth_object_space_mesh_deform_pntb_execute # the heavy-functions analysis (agent/heavy-funcs): hclObjectSpaceMeshMeshDeformPNTBOperator's vtable slot (0x848f9220+0x38): tail-calls the body
+81cf6ee0 phys_cloth_object_space_mesh_deform_pntb # the heavy-functions analysis (agent/heavy-funcs): its body ("Object Space Deform", MeshDeformUtility.inl, hclObjectSpaceDeformerCpu.cxx)
+81d16310 phys_cloth_object_space_mesh_deform_pnt_execute # the heavy-functions analysis (agent/heavy-funcs): hclObjectSpaceMeshMeshDeformPNTOperator's vtable slot (0x848f92a0+0x38): tail-calls the body
+81d16340 phys_cloth_object_space_mesh_deform_pnt # the heavy-functions analysis (agent/heavy-funcs): its body
+81ce7d9c phys_cloth_object_space_mesh_deform_pn_execute # the heavy-functions analysis (agent/heavy-funcs): hclObjectSpaceMeshMeshDeformPNOperator's vtable slot (0x848f91a0+0x38): tail-calls the body
+81ce7de0 phys_cloth_object_space_mesh_deform_pn # the heavy-functions analysis (agent/heavy-funcs): its body
+81cb8e70 phys_cloth_bone_space_skin_pntb_execute # the heavy-functions analysis (agent/heavy-funcs): hclBoneSpaceSkinPNTBOperator's vtable slot (0x848f8e20+0x38): tail-calls the body
+81cb8ea0 phys_cloth_bone_space_skin_pntb  # the heavy-functions analysis (agent/heavy-funcs): its body ("Prepare Matrices", "Bone Space Deformer", hclBoneSpaceSkinOperatorCpu.hxx)
+81ccb04c phys_cloth_bone_space_skin_pnt_execute # the heavy-functions analysis (agent/heavy-funcs): hclBoneSpaceSkinPNTOperator's vtable slot (0x848f8ea0+0x38): tail-calls the body
+81ccb080 phys_cloth_bone_space_skin_pnt   # the heavy-functions analysis (agent/heavy-funcs): its body
+81c95fe0 phys_cloth_bone_space_mesh_deform_pntb_execute # the heavy-functions analysis (agent/heavy-funcs): hclBoneSpaceMeshMeshDeformPNTBOperator's vtable slot (0x848f8b20+0x38): tail-calls the body
+81c96020 phys_cloth_bone_space_mesh_deform_pntb # the heavy-functions analysis (agent/heavy-funcs): its body ("Bone Space Deformer", hclBoneSpaceDeformerCpu.cxx)
+81b706a0 phys_cloth_collide_sphere        # the heavy-functions analysis (agent/heavy-funcs): phys_cloth_iterate_collidables' case HCL_SHAPE_TYPE_SPHERE (0; its jump table on hclShape+0x18, the enum from hk reflection) (role)
+81b6c960 phys_cloth_collide_plane         # the heavy-functions analysis (agent/heavy-funcs): phys_cloth_iterate_collidables' case HCL_SHAPE_TYPE_PLANE (1) (role); phys_cloth_collide_particles is case 2, CAPSULE
+81b5f080 phys_cloth_collide_tapered_capsule # the heavy-functions analysis (agent/heavy-funcs): phys_cloth_iterate_collidables' case HCL_SHAPE_TYPE_TAPERED_CAPSULE (3) (role)
+81b63940 phys_cloth_collide_convex_heightfield # the heavy-functions analysis (agent/heavy-funcs): phys_cloth_iterate_collidables' case HCL_SHAPE_TYPE_CONVEX_HEIGHTFIELD (5) (role)
+81b68200 phys_cloth_collide_convex_geometry # the heavy-functions analysis (agent/heavy-funcs): phys_cloth_iterate_collidables' case HCL_SHAPE_TYPE_CONVEX_GEOMETRY (9) (role)
+81b74c60 phys_cloth_collide_point_contact_planes # the heavy-functions analysis (agent/heavy-funcs): phys_cloth_iterate_collidables' case HCL_SHAPE_TYPE_POINT_CONTACT_PLANES (10) (role)
+81b78ae0 phys_cloth_collide_convex_planes # the heavy-functions analysis (agent/heavy-funcs): phys_cloth_iterate_collidables' case HCL_SHAPE_TYPE_CONVEX_PLANES (11) (role)
+81b7d240 phys_cloth_collide_capsule_kernel # the heavy-functions analysis (agent/heavy-funcs): 15k-instruction vector kernel called by phys_cloth_collide_particles (the capsule case) beside phys_cloth_collide_kernel (role)
+81c1a240 phys_cloth_collide_sphere_kernel # the heavy-functions analysis (agent/heavy-funcs): 17k-instruction vector kernel called twice by phys_cloth_collide_sphere (role)
+81c0dd20 phys_cloth_collide_sphere_kernel_b # the heavy-functions analysis (agent/heavy-funcs): 13k-instruction vector kernel called once by phys_cloth_collide_sphere, the shape of phys_cloth_collide_capsule_kernel (role)
+81ba82c0 phys_cloth_collide_tapered_capsule_kernel # the heavy-functions analysis (agent/heavy-funcs): 17k-instruction vector kernel called by phys_cloth_collide_tapered_capsule (role)
+81bc4440 phys_cloth_collide_convex_heightfield_kernel # the heavy-functions analysis (agent/heavy-funcs): 17k-instruction vector kernel called by phys_cloth_collide_convex_heightfield; the code of phys_cloth_collide_tapered_capsule_kernel with other callees (role)
+81be03e0 phys_cloth_collide_convex_geometry_kernel # the heavy-functions analysis (agent/heavy-funcs): 18k-instruction vector kernel called by phys_cloth_collide_convex_geometry (role)
+81c36e80 phys_cloth_collide_point_contact_planes_kernel # the heavy-functions analysis (agent/heavy-funcs): 17k-instruction vector kernel called by phys_cloth_collide_point_contact_planes (role)
+81c52d40 phys_cloth_collide_convex_planes_kernel # the heavy-functions analysis (agent/heavy-funcs): 18k-instruction vector kernel called by phys_cloth_collide_convex_planes; the code of phys_cloth_collide_convex_geometry_kernel with other callees (role)
 
 # --- runtime code a lifter cannot treat as an ordinary AAPCS64 function (docs/lifter2-abi-census.md)
 8510d214 os_fiber_dispatch_context        # docs/lifter2-abi-census.md: nn::os::detail::DispatchFiberContext: saves x19-x30, SP, d8-d15 to one context, loads another's
