@@ -121,6 +121,12 @@ def export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_t
             n = pc + 4
             if n not in body or (n != e and n in body_entries):
                 targets.add(n)
+        # (a BR's jump-table cases leaving the function are tail calls too: build_ir.build's goto of each case, from
+        # the plan's targets or the index table's)
+        for br in body & (set(jt) | set(jt_index)):
+            for t in list(jt.get(br, ())) + list(jt_index[br][3] if br in jt_index else ()):
+                if t not in body or (t != e and t in body_entries):
+                    targets.add(t)
         p = None
         if e in plt:
             t, slot = plt[e]

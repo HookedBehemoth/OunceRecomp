@@ -112,7 +112,8 @@ What `lift_part` / `build_ir.build` do with these, as `Program`:
 `redirect` pair for `t`, else `t` itself. `prog.bound(c)` is the partition's `bounds` entry with `addr == c`. The
 partition carries the record of `callee(t)` for every `t` whose record its functions' lift reads: every BL target;
 every B/B.cond/CB(N)Z/TB(N)Z target and every `pc + 4` that is not `inside()` (not in the body, or another
-function's entry in it); a PLT stub's `target`; plus every function's own entry. A lookup that finds no record is a bug of the export: stop.
+function's entry in it); every jump-table case of a BR in the body (`jt` and `jt_index` targets) that is not
+`inside()`; a PLT stub's `target`; plus every function's own entry. A lookup that finds no record is a bug of the export: stop.
 
 ### Bound
 

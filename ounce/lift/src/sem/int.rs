@@ -185,7 +185,7 @@ fn shift(b: &mut Builder, v: ValueId, kind: u32, amt: u32) -> ValueId {
 const SIZES: [Ty; 4] = [I8, I16, I32, I64];
 
 /// ExtendReg: the low 8/16/32/64 bits of a register, zero- or sign-extended to t, shifted left by amt
-fn extend(b: &mut Builder, v64: ValueId, option: u32, amt: u32, t: Ty) -> ValueId {
+pub fn extend(b: &mut Builder, v64: ValueId, option: u32, amt: u32, t: Ty) -> ValueId {
     let src = SIZES[(option & 3) as usize];
     let mut x = b.trunc(v64, src);
     if src.width() > t.width() {

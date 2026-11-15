@@ -2,7 +2,7 @@
 //! and the FP operations sem/neon.rs shares. Values are created in the Python's order (value numbers match).
 
 use crate::ir::{vreg, BinOp, Builder, Call, CastOp, Cmp, Op, ValueId};
-use crate::sem::int::{cond, getx, set_nzcv, setx, store, sx};
+use crate::sem::int::{cond, extend, getx, set_nzcv, setx, store, sx};
 use crate::ty::{Ty, I1, I16, I32, I64, I8};
 use ounce_decode::{info, Insn, Param};
 use std::sync::OnceLock;
@@ -380,22 +380,6 @@ fn load(b: &mut Builder, addr: ValueId, t: Ty) -> ValueId {
 }
 
 /// sem_int.extend (ExtendReg), as the Python shares it
-fn extend(b: &mut Builder, v64: ValueId, option: u32, amt: u32, t: Ty) -> ValueId {
-    let src = [I8, I16, I32, I64][(option & 3) as usize];
-    let mut x = b.trunc(v64, src);
-    if src.width() > t.width() {
-        x = b.trunc(x, t);
-    } else {
-        x = if option & 4 != 0 { b.sext(x, t) } else { b.zext(x, t) };
-    }
-    if amt != 0 {
-        let a = b.c(amt as i128, t);
-        b.bin(BinOp::Shl, x, a)
-    } else {
-        x
-    }
-}
-
 fn ldst_reg(b: &mut Builder, addr: ValueId, l: u32, t: u32, sc: u32) {
     if l != 0 {
         let v = load(b, addr, VTY[sc as usize]);
