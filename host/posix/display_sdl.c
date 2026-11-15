@@ -12,7 +12,7 @@
 #include "../hos.h"
 #include "../hos_sdl.h"
 
-/* (the window's app id: the applications menu's entry names it as its StartupWMClass, builder/linux/hookshot_builder.py) */
+/* (the window's app id: a desktop entry names it as its StartupWMClass) */
 #define HOS_APP_ID "io.github.NotRexed.Hookshot"
 #include <stdio.h>
 #include <stdlib.h>
@@ -242,7 +242,7 @@ void hos_display_loop(void) {
     }
     vk_window.window = window;
     hos_posix_window[0] = 1;
-    {   /* the window's icon: hookshot.png beside the game (make_game.py puts it there), for X11 and the compositors that
+    {   /* the window's icon: hookshot.png beside the game, when there is one, for X11 and the compositors that
            take one from the window; the others find it through the menu entry */
         char png[MAX_PATH];
         DWORD n = GetModuleFileNameA(NULL, png, MAX_PATH);

@@ -61,7 +61,7 @@ rm -rf "$out"; mkdir -p "$out/shots" "$out/user"
 [ -n "${USER_FROM:-}" ] && cp -r "$USER_FROM"/. "$out/user/"
 if [ "$mode" != check ] && pgrep -x hookshot >/dev/null; then echo "another hookshot runs"; exit 1; fi
 romfs=$(grep -v '^#' "$root/work/dump.txt" | head -1)/romfs
-env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}" HOOKSHOT_NO_UPDATE_CHECK=1)
+env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}")
 [ "${WINDOW:-0}" = 1 ] || env_args+=(HOS_HEADLESS=1)
 [ "${SOUND:-0}" = 1 ] || env_args+=(HOS_AUDIO=0)
 [ -n "${ZOO:-}" ] && OVERLAY=$("$root/scripts/zoo-overlay.sh" "$ZOO")

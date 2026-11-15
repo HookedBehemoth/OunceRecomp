@@ -243,22 +243,6 @@ class MarkGroupsTests(unittest.TestCase):
             self.assertEqual((st["stores"], st["groups"], st["grouped_stores"]), (2, 1, 2))
             self.assertIn(mark(19, 0, 16), read(path))
 
-    def test_the_lift_key_has_the_switch(self):
-        spec = importlib.util.spec_from_file_location("make_game_mg", os.path.join(ROOT, "nx2", "make_game.py"))
-        make_game = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(make_game)
-        with tempfile.TemporaryDirectory() as d:
-            exefs, work = os.path.join(d, "exefs"), os.path.join(d, "work")
-            os.makedirs(exefs)
-            os.makedirs(work)
-            with open(os.path.join(exefs, "main"), "wb") as f:
-                f.write(b"NSO0")
-            env = {k: v for k, v in os.environ.items() if not k.startswith(("A64_", "OOT_", "RX_"))}
-            with mock.patch.dict(os.environ, env, clear=True):
-                key = make_game.lift_key(exefs, work, {})
-                with mock.patch.dict(os.environ, {"A64_MARK_EACH": "1"}):
-                    self.assertNotEqual(make_game.lift_key(exefs, work, {}), key)
-
     def test_the_lift_groups_once_with_its_stats(self):
         """emit_function leaves the marks as they are; nx2/lift.py calls chunks.edit_c, which groups the written files once, with
         the lift's stats, before its report"""

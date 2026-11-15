@@ -1,4 +1,5 @@
-"""The build's timer and countdown: make_game.py's build_times.json, and the estimates build.py makes from it.
+"""nx2/build.py's compile estimates (HOOKSHOT_TIMES=<build_times.json>: seconds per module from earlier builds), its plan of
+what a cache already holds.
 
 Nothing here runs a compiler or needs the game.
 
@@ -22,60 +23,7 @@ def load(name, path):
     return module
 
 
-make_game = load("make_game_times", ROOT / "nx2" / "make_game.py")
 build = load("build_times", ROOT / "nx2" / "build.py")
-
-
-class TimesRecordTests(unittest.TestCase):
-    def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="hookshot-times-")
-        self.addCleanup(self.temporary.cleanup)
-        self.work = Path(self.temporary.name)
-
-    def record(self, files, compile_seconds=10.0, total_seconds=20.0, modules=3, kind="build"):
-        return make_game.record_times(str(self.work), files, compile_seconds, total_seconds, modules=modules, kind=kind)
-
-    def test_a_first_build_is_written_and_has_nothing_before_it(self):
-        self.assertIsNone(self.record({"code_001.c": 120.4}))
-        data = json.loads((self.work / "build_times.json").read_text(encoding="utf-8"))
-        self.assertEqual(data["format"], 1)
-        self.assertEqual(data["seconds"], {"code_001.c": 120.4})
-        self.assertEqual(len(data["builds"]), 1)
-        self.assertEqual(data["builds"][0]["compile_seconds"], 10.0)
-        self.assertEqual(data["builds"][0]["total_seconds"], 20.0)
-        self.assertEqual(data["builds"][0]["compiled"], 1)
-        self.assertEqual(data["builds"][0]["modules"], 3)
-        self.assertEqual(data["builds"][0]["kind"], "build")
-
-    def test_the_next_build_sees_the_last_one_and_keeps_the_old_modules(self):
-        self.record({"code_001.c": 120.4})
-        self.assertEqual(self.record({"code_002.c": 6.0}, 30.0, 40.0), 20.0)
-        data = make_game.load_times(str(self.work))
-        self.assertEqual(data["seconds"], {"code_001.c": 120.4, "code_002.c": 6.0})
-        self.assertEqual([b["total_seconds"] for b in data["builds"]], [20.0, 40.0])
-
-    def test_a_module_a_cache_held_keeps_its_time(self):
-        self.record({"code_001.c": 120.4})
-        self.record({})   # (nothing compiled: an update that only had to link)
-        self.assertEqual(make_game.load_times(str(self.work))["seconds"], {"code_001.c": 120.4})
-
-    def test_a_zero_is_not_a_measurement(self):
-        self.record({"code_001.c": 0.0, "code_002.c": 5.5})
-        self.assertEqual(make_game.load_times(str(self.work))["seconds"], {"code_002.c": 5.5})
-
-    def test_a_broken_or_foreign_file_is_started_again(self):
-        (self.work / "build_times.json").write_text("{not json", encoding="utf-8")
-        self.assertEqual(make_game.load_times(str(self.work))["builds"], [])
-        (self.work / "build_times.json").write_text('{"format": 99, "seconds": {"a": 1}}', encoding="utf-8")
-        self.assertEqual(make_game.load_times(str(self.work))["seconds"], {})
-        self.assertIsNone(self.record({"code_001.c": 3.0}))
-
-    def test_only_the_newest_builds_are_kept(self):
-        for i in range(make_game.KEEP_BUILDS + 5):
-            self.record({}, 1.0, float(i))
-        builds = make_game.load_times(str(self.work))["builds"]
-        self.assertEqual(len(builds), make_game.KEEP_BUILDS)
-        self.assertEqual(builds[-1]["total_seconds"], float(make_game.KEEP_BUILDS + 4))
 
 
 class EstimateTests(unittest.TestCase):

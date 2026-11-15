@@ -60,31 +60,6 @@ with tempfile.TemporaryDirectory() as romfs:
     check("zstd starts", [nup.zstd_start(h) for h in (ZSTD, b"\x50\x2a\x4d\x18", b"\x5f\x2a\x4d\x18", b"\x60\x2a\x4d\x18",
                                                        bytes(4), ZSTD[:3])], [True, True, True, False, False, False])
 
-# make_game's step: only in a romfs the builder unpacked (its stamp), once per unpack
-sys.path[:0] = [HERE, os.path.join(os.path.dirname(HERE), "third_party", "a64-kit", "tools")]
-mg_spec = importlib.util.spec_from_file_location("tested_make_game", os.path.join(HERE, "make_game.py"))
-make_game = importlib.util.module_from_spec(mg_spec)
-mg_spec.loader.exec_module(make_game)
-calls = []
-reported = []   # (whether each call was given a progress(done, total): the check says how far it is, #1764)
-sys.modules["nup"] = type(sys)("nup")
-sys.modules["nup"].stand_in_damaged = lambda romfs, progress=None: calls.append(romfs) or reported.append(callable(progress)) or []
-with tempfile.TemporaryDirectory() as out:
-    romfs = os.path.join(out, "romfs")
-    os.makedirs(romfs)
-    make_game.stand_in_damaged_files(out, romfs)
-    check("no stamp: not the builder's romfs", calls, [])
-    with open(os.path.join(out, ".hookshot_romfs"), "w") as f:
-        f.write("unpacked by this builder: game.nup 1\n")
-    make_game.stand_in_damaged_files(out, romfs)
-    make_game.stand_in_damaged_files(out, romfs)
-    check("checked once", calls, [romfs])
-    with open(os.path.join(out, ".hookshot_romfs"), "w") as f:
-        f.write("unpacked by this builder: other.nup 2\n")
-    make_game.stand_in_damaged_files(out, romfs)
-    check("checked again for another unpack", calls, [romfs, romfs])
-    check("each check reports its progress", reported, [True, True])
-
 if failures:
     print("\n".join(failures))
     sys.exit(1)

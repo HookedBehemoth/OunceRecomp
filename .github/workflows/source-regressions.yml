@@ -85,20 +85,6 @@ jobs:
           if errorlevel 1 exit /b 1
           python -I -B tests/test_invalidate_vcore.py --cxx cl
           if errorlevel 1 exit /b 1
-      - name: Set up .NET for Windows Builder checks
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
-        with:
-          dotnet-version: '8.0.x'
-      - name: Check Windows Builder worker delivery
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          dotnet restore tests/builder_workers/BuilderWorkersTests.csproj --configfile tests/builder_workers/NuGet.Config
-          dotnet run --project tests/builder_workers/BuilderWorkersTests.csproj --configuration Release --no-restore -- (Get-Command python).Source
-      - name: Compile Windows Builder
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        run: dotnet build builder/HookshotBuilder/HookshotBuilder.csproj --configuration Debug -p:NuGetAudit=false
       # (--strict: a check whose compiler, headers or package is missing here fails instead of being skipped)
       - name: Every test
         if: ${{ !cancelled() }}

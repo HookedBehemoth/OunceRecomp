@@ -212,7 +212,6 @@ beside them are listed at the end, under Undocumented, with where they are read.
 | `HOS_FS_OVERLAY` | `<folder>`: patched game files read before the romfs (the chiseled boot) |
 | `HOS_PREPARED` | `<folder>`: the prepared texture and terrain store, over the default |
 | `HOS_NO_MOVIES` | set: movie files are reported as not found, so the game goes on without them |
-| `HOOKSHOT_NO_UPDATE_CHECK` | `1`: no look for a newer release at the start |
 | `HOS_DISCORD` | `0`: no Discord rich-presence thread |
 | `HOS_DISCORD_APP_ID` | a Discord application id, over the built-in one |
 | `HOOKSHOT_OCCLUSION_OFF` | `1`: the game makes no occlusion queries |
@@ -474,7 +473,6 @@ what a function is (only the symbol table changes; no rebuild of the code).
 
 Read by code, but what they do is not stated beside the read (file:line of the first read):
 
-- `HOOKSHOT_BUILDER_HOME` host/hos_update.c:242
 - `HOS_AUDIO_CHANNELS` host/nn_audio.c:672
 - `HOS_AUDIO_DEVICE` host/nn_audio.c:739
 - `HOS_AUDIO_DUMP` host/nn_audio.c:764
@@ -545,12 +543,11 @@ the Discord rich presence reads `discord_app_id`.
 | Path | What |
 |---|---|
 | `docs/` | `design.md` (architecture, MKW's lessons as rules, testing), `direct-backend-plan.md` (the renderer), `direct/` (what we know about the game and the back end) |
-| `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the builders run |
+| `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths); no player builder for now: [builder-notes.md](builder-notes.md) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux |
 | `gpu/direct/` | the direct back end (`hookshot_direct.so`), with its fork of Eden's shader recompiler and sirit in `eden/` |
 | `gpu/api/` | what the host and the direct back end share: the versioned table (`vk_api.h`), the NVN objects and command records (`rx_nvn.h`) |
 | `gpu/legacy/` | upstream's older renderers, reference source only: not built, not tested |
-| `builder/` | the builder app and its launcher scripts |
 | `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), `scripts/linux` (dependencies) |
 | `tests/` | the game-free checks, all run by `tests/run_all.py` |
 | `third_party/` | a64-kit (Hookshot's few changes marked `(hookshot)`), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only), SDL2's licence, Dear ImGui and its Vulkan backend, zstd's decoder, the Libertinus fonts |

@@ -26,15 +26,11 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_direct_spv_late.py": ["--cxx", "{cxx}"],
-    "tests/test_builder_dlss_update.py": ["--dotnet", "{dotnet}"],
     "tests/test_fs_path_utf8.py": ["--cc", "gcc"],
-    "tests/test_setup_tar_diagnostics.py": ["--cc", "gcc"],
-    "tests/test_display_startup_failure.py": ["--cxx", "{cxx}"],
     "tests/test_multiwait_wake.py": ["--cxx", "{cxx}"],
     "tests/test_screensaver.py": ["--cc", "gcc"],
     "tests/test_windows_display_startup.py": ["--cc", "gcc"],
-    "tests/test_system_header_cache.py": ["--cc", "clang"],
-    "tests/test_log_batch.py": ["--cc", "gcc"],
+        "tests/test_log_batch.py": ["--cc", "gcc"],
     "tests/test_oot_wide_save_picture.py": ["--cc", "gcc"],
     "tests/test_frame_rate_cap_step.py": ["--cc", "gcc"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],
@@ -46,7 +42,6 @@ ARGS = {
     "tests/test_audio_voice_biquad.py": ["--cc", "gcc"],
     "tests/test_motion.py": ["--cc", "gcc"],
     "tests/test_low_memory_notice.py": ["--cc", "gcc"],
-    "tests/test_cpp_preflight.py": ["--cxx", "g++"],
     "tests/test_invalidate_vcore.py": ["--cxx", "g++"],
     "nx2/test_draw_parameters.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
@@ -67,7 +62,6 @@ MODULES = {
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
-    "tests/test_builder_dlss_update.py": ({"linux"}, "Windows Builder update policy; .NET 8 fixture exercised on Windows"),
     "tests/test_fs_path_utf8.py": ({"linux"}, "native Windows filesystem conversion APIs"),
     "tests/test_log_batch.py": ({"linux"}, "the Windows log writer: SRW locks and threads"),
     # (the game: these run the lifted code of a real dump against Unicorn)
@@ -78,8 +72,6 @@ SKIP = {
     "nx2/test_dll.py": ({"linux", "windows"}, "needs a full game build (work/build/hookshot_game.dll) and Unicorn"),
     # (a GPU)
     # (Linux only)
-    "tests/test_appimage_package_retry.py": ({"windows"}, "the AppImage package bootstrap is POSIX shell; exercised on Linux"),
-    "tests/test_hookshot_launch.py": ({"windows"}, "the Linux launcher, a POSIX shell script"),
     "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows Hookshot's saves are in the game folder: --hookshot)"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
@@ -114,7 +106,6 @@ def find_tools():
         "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
         "glslang": which("glslangValidator", "glslang"),
-        "dotnet": which("dotnet"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
     }
 

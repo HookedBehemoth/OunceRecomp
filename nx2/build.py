@@ -22,8 +22,8 @@ Usage:  python -I nx2/build.py [--jobs 1] [--only 0,7] [--opt O1] [--no-polls] [
   --only: just these code_NNN.c chunks (to measure); --dll: link hookshot_game.dll; --lib: archive hookshot_game.lib
   --dry-run: the start-up with no lift, up to the compile; fails if a file the compile reads (the lift's aside) is missing
 
-  HOOKSHOT_TIMES=<build_times.json>: make_game.py's record of the earlier builds. With it, this run says which files it
-  really rebuilds and how long each took before (@@plan, @@file, @@eta), which the builder windows show as a countdown.
+  HOOKSHOT_TIMES=<build_times.json>: a front end's record of the earlier builds (docs/builder-notes.md). With it, this run says which files it
+  really rebuilds and how long each took before (@@plan, @@file, @@eta), which a front end shows as a countdown.
 """
 import argparse
 import concurrent.futures
@@ -215,6 +215,74 @@ def cache_put(obj, key):
         shutil.copyfile(obj, dst)
 
 
+def drop_stale_objects(cc, obj_dirs):
+    """Objects compiled against other system headers are not reused (a cached object made with an older libc's headers
+    links to symbols the new one lacks). The stamp is the compiler's version line and stdio.h's bytes (HOOKSHOT_SYSROOT's
+    when set), kept in the cache folder itself so every worktree sharing work/objcache compares the same note. When it
+    changes, the cache and this build's objects go; a cache with no note yet is kept and the note written."""
+    stdio = os.path.join(SYSROOT, "usr", "include", "stdio.h") if SYSROOT else "/usr/include/stdio.h"
+    try:
+        body = open(stdio, "rb").read()
+        ver = subprocess.run([cc, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return
+    first = ver.stdout.splitlines()[:1]
+    if ver.returncode or not first:
+        return
+    stamp = hashlib.sha1(body + first[0].encode(), usedforsecurity=False).hexdigest()
+    os.makedirs(OBJ_CACHE, exist_ok=True)
+    note = os.path.join(OBJ_CACHE, "system_headers.txt")
+    try:
+        with open(note) as f:
+            had = f.read().strip()
+    except OSError:
+        had = ""
+    if had and had != stamp:
+        print("the system headers or the compiler changed: the cached objects are not reused", flush=True)
+        for f in os.listdir(OBJ_CACHE):
+            if f.endswith(".o"):
+                os.remove(os.path.join(OBJ_CACHE, f))
+        for d in obj_dirs:
+            for f in os.listdir(d) if os.path.isdir(d) else []:
+                if f.endswith((".o", ".sha1")):
+                    os.remove(os.path.join(d, f))
+    if had != stamp:
+        with open(note, "w") as f:
+            f.write(stamp + chr(10))
+
+
+OBJ_CACHE_KEEP_DAYS = float(os.environ.get("HOOKSHOT_OBJCACHE_DAYS", "3"))
+
+
+def prune_object_cache(now=None):
+    """After a build: cached objects that no build folder links any more (st_nlink 1: compile_one and cache_put hard-link
+    each object between its build's obj folder and the cache, and work/objcache is shared by the main checkout and every
+    agent worktree) and that were put there more than HOOKSHOT_OBJCACHE_DAYS (3) days ago go. Every live build keeps its
+    objects whatever their age; a dropped worktree's or a previous lift's are kept long enough to switch back. Returns
+    (removed, bytes removed, bytes kept)."""
+    if not os.path.isdir(OBJ_CACHE):
+        return 0, 0, 0
+    limit = (now if now is not None else time.time()) - OBJ_CACHE_KEEP_DAYS * 86400
+    removed = freed = kept = 0
+    for f in os.listdir(OBJ_CACHE):
+        if not f.endswith(".o"):
+            continue
+        p = os.path.join(OBJ_CACHE, f)
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        if st.st_nlink <= 1 and st.st_mtime < limit:
+            try:
+                os.remove(p)
+                removed, freed = removed + 1, freed + st.st_size
+                continue
+            except OSError:
+                pass
+        kept += st.st_size
+    return removed, freed, kept
+
+
 class MemoryStatus(ctypes.Structure):   # (Windows' MEMORYSTATUSEX, for GlobalMemoryStatusEx)
     _fields_ = [("len", ctypes.c_uint32), ("load", ctypes.c_uint32)] + \
                [(f, ctypes.c_uint64) for f in ("total", "avail", "pt", "pa", "vt", "va", "ve")]
@@ -348,7 +416,7 @@ class MemoryGate:
     """(issue 418) Compilers started by the memory there is, not only by --jobs: one per CPU thread ran PCs out of memory (the kernel
     stopped a compiler, or the whole build), and a count low enough for the biggest files and the PC's other programs left most of
     the threads idle. A compile starts when the memory free, less what the compilers running may still take on top of what they
-    hold now (mem_need), keeps its own need and HOOKSHOT_MEM_RESERVE_GB (default 1.5) free. The floor is make_game's before this:
+    hold now (mem_need), keeps its own need and HOOKSHOT_MEM_RESERVE_GB (default 1.5) free. The floor:
     on Windows up to 4 (half the threads on smaller CPUs) always run, as Windows pages rather than fails (issues 502, 503, 511: 1-2
     compilers on 16 GB PCs took hours); on Linux one (issue 531: Linux stops a compiler that does not fit, and it is compiled again
     alone). The free memory is read again as compiles start and end, so a game or browser opened during the build makes later
@@ -455,7 +523,7 @@ WRITE_TRACK = [] if os.environ.get("RX_SOFT_WRITE_WATCH") == "0" else ["-DA64_WR
 # expression is rounded as written (the exact bodies and FPX1's proofs assume it). RX_MARCH=x86-64: the old baseline
 # (issue 363: a Xeon E5-2667 v2 (Ivy Bridge, no AVX2) built the game and then stopped at its first AVX2 instruction,
 # 0xc000001d. The game is built on the PC it runs on: a CPU without x86-64-v3's features gets x86-64-v2, or x86-64)
-from host_cpu import host_march   # (make_game.py asks it too: the AppImage's renderer)
+from host_cpu import host_march
 
 MARCH = os.environ.get("RX_MARCH") or host_march()
 if MARCH != "x86-64-v3":
@@ -505,7 +573,7 @@ def object_key(src, fl, deps):
 
 
 def times_from(path):
-    """The seconds each module took on this PC, from make_game.py's build_times.json, or {} when there is no record to
+    """The seconds each module took on this PC, from a front end's build_times.json (HOOKSHOT_TIMES), or {} when there is no record to
     use (a first build, one half written, or one another version of the tools wrote): the countdown then falls back to
     the rate this PC's other measurements ran at."""
     try:
@@ -655,8 +723,8 @@ def main():
     p.add_argument("--dll", action="store_true")
     p.add_argument("--lib", action="store_true")
     p.add_argument("--standalone", action="store_true")
-    # (CI: a player's build started from the tree the AppImage carries, with no game. Everything up to the compile, without the
-    # lift's files; every other file the compile would read must be there, and nothing is compiled. scripts/linux/check_player_build.sh)
+    # (a check with no game: everything up to the compile, without the lift's files; every other file the compile would
+    # read must be there, and nothing is compiled)
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
     sa = os.path.join(kit.WORK, "sa")
@@ -673,6 +741,7 @@ def main():
             raise SystemExit("build: " + why)
     rt64 = rtgen.write(os.path.join(out, "rt64"))
     cc = toolchain.need(toolchain.find("clang"))
+    drop_stale_objects(cc, [obj_dir])
     fl = flags(gen, rt64, a.opt, not a.no_polls) + (["-DA64_POLL_CTX"] if a.dll else [])   # (the shim's poll takes the context: rtgen.py)
     # (which Hookshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
     # release name rebuilds them and nothing else)
@@ -868,8 +937,8 @@ def main():
         for f in missing:
             print("    missing: " + f)
         return 1 if missing else 0
-    # (the builder's compile timer: HOOKSHOT_TIMES is make_game.py's record of the earlier builds on this PC. With it,
-    # this run says which files it really rebuilds and how long each took before, and the builder shows the rest of the
+    # (a front end's compile timer: HOOKSHOT_TIMES is its record of the earlier builds on this PC. With it,
+    # this run says which files it really rebuilds and how long each took before, and the front end shows the rest of the
     # compile as a countdown that follows this PC's own measurements. Run by hand, it prints none of these lines.)
     global GATE
     GATE = None if os.environ.get("HOOKSHOT_MEM_GATE") == "0" else MemoryGate()
@@ -888,7 +957,7 @@ def main():
           flush=True)
     t0, failed = time.time(), []
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
-        # (as each ends, not in order: the builder app shows progress from these lines, and the biggest file comes first)
+        # (as each ends, not in order: a front end shows progress from these lines, and the biggest file comes first)
         submitted = {ex.submit(compile_one, job): job for job in jobs}
         for future in concurrent.futures.as_completed(submitted):
             src, secs, err = future.result()
@@ -1020,6 +1089,10 @@ def main():
             print("\n".join(undefined[:40]) if undefined else (r.stdout + r.stderr)[-3000:])
             return 1
         print("linked %s: %d MB, no undefined symbols (%.0fs)" % (dll, os.path.getsize(dll) >> 20, time.time() - t))
+    if not a.only and not a.dry_run:
+        removed, freed, kept = prune_object_cache()
+        print("objcache: %d objects no build links, older than %g days, removed (%.1f GB); %.1f GB kept"
+              % (removed, OBJ_CACHE_KEEP_DAYS, freed / 2**30, kept / 2**30), flush=True)
     return 0
 
 
