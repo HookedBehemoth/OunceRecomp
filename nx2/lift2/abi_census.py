@@ -2,7 +2,7 @@
 
     python -I nx2/lift2/abi_census.py [--out work/lift2/abi_census.txt] [--jobs 4] [--only 0xADDR,...]
 
-The functions are the present lift's (the standalone image, its HLE set, nx2/lift.py's discovery with the ADR
+The functions are the lift's (the standalone image, its HLE set, nx2/lift.py's discovery with the ADR
 entries); HLE'd functions are host code and not analysed. Each body is decoded with lift2's decoder and run through a
 small abstract interpretation over its CFG. A register's value is one of
   ('E', r)   the value register r had at entry (r: 0-30 GPR, 'v8'..'v15' for d8-d15),
@@ -738,11 +738,7 @@ def setup():
     import image as eden_image
     import standalone
     import adr_entries
-    import a64_lift
-    import insn
-    import lift_fixes
-    insn.install()   # (RETAA/RETAB, BRAA*/BLRAA* as returns and register branches: nx2/lift.py's discovery)
-    lift_fixes.install()
+    from lift2 import discover
     exefs = kit.need_exefs()
     hle, stubbed = standalone.hle_set(nso.load_exefs(exefs))
     img = eden_image.EdenImage(exefs, 0, hle=hle | stubbed)
@@ -754,7 +750,7 @@ def setup():
     img.entries |= {e for e in refs if img.in_code(e)} - img.entries
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
-    Lf = a64_lift.Lifter(img)
+    Lf = discover.Discovery(img)
     Lf.discover()
     return img, Lf, spans
 

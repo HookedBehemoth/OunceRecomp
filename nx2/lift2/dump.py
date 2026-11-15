@@ -1,17 +1,16 @@
-"""Lift 2's output for given functions, to read: the guest code, lift 2's IR, the LLVM IR, and optionally the optimised IR,
-the x86 and the present lifter's C and x86 beside it.
+"""The lifter's output for given functions, to read: the guest code, the IR, the LLVM IR, and optionally the optimised
+IR and the x86.
 
-    python -I nx2/lift2/dump.py <guest address or label>... [--tree] [--opt O1|O2] [--asm] [--old] [-o <dir>]
+    python -I nx2/lift2/dump.py <guest address or label>... [--tree] [--opt O1|O2] [--asm] [-o <dir>]
 
 For each function, in <dir>/<address>/ (default work/lift2/dump/: game-derived, never committed):
   guest.s       the guest instructions as llvm-mc prints them (asm.py)
-  ir.txt        lift 2's IR (blocks, parameters, operations)
+  ir.txt        the IR (blocks, parameters, operations)
   lift2.ll      the LLVM IR as emitted (the generic entry, g_<address>)
   lift2.opt.ll  with --opt: after clang's optimiser at that level
   lift2.s       with --asm: the x86
-  old.c, old.s  with --old: the present lifter's C and its x86 (-O1, the lifted code's flags)
 --tree adds every function the given ones call or tail-call directly. Labels come from nx2/oot_labels.txt. The
-function's summary (milestone 13: inputs, clobbers, preserved, demotion) is printed when <work>/sa/lift2_plan.pickle
+function's summary (inputs, clobbers, preserved, demotion) is printed when <work>/sa/plan.pickle
 holds one.
 """
 import argparse
@@ -25,8 +24,6 @@ from lift2 import enc  # noqa: E402  (first: its tables import asm)
 from lift2 import asm, build_ir, emit_llvm, llvm, summary  # noqa: E402
 
 IR_FLAGS = ["-march=x86-64-v3", "-g0", "-Wno-everything", "-mllvm", "-rotation-max-header-size=0"]
-OLD_FLAGS = ["-march=x86-64-v3", "-ffp-contract=off", "-fno-strict-aliasing", "-mcx16", "-g0", "-Wno-everything",
-             "-mllvm", "-rotation-max-header-size=0", "-DA64_POLLING", "-DA64_WRITE_TRACK", "-O1"]
 
 
 def labels():
@@ -40,7 +37,7 @@ def labels():
 
 
 def ir_text(fn):
-    """lift 2's IR as text: a block per guest address, its parameters, operations and terminator"""
+    """the lifter's IR as text: a block per guest address, its parameters, operations and terminator"""
     def r(v):
         if v is None:
             return "?"
@@ -75,12 +72,11 @@ def main():
     p.add_argument("--tree", action="store_true")
     p.add_argument("--opt", choices=("O1", "O2"))
     p.add_argument("--asm", action="store_true")
-    p.add_argument("--old", action="store_true")
     p.add_argument("-o", dest="out", default=None)
     a = p.parse_args()
     import kit
     import image as eden_image
-    import test_leaf as TL
+    from lift2 import reference as TL
     lab = labels()
     want = []
     for f in a.functions:
@@ -103,7 +99,7 @@ def main():
                 if k[0] in ("bl", "b") and L.callee(k[1]) in L.entries and L.callee(k[1]) not in L.funcs[e][0]:
                     todo.append(L.callee(k[1]))
     plan = None
-    plan_path = os.path.join(kit.WORK, "sa", "lift2_plan.pickle")
+    plan_path = os.path.join(kit.WORK, "sa", "plan.pickle")
     if os.path.exists(plan_path):
         with open(plan_path, "rb") as f:
             plan = pickle.load(f)
@@ -126,7 +122,7 @@ def main():
                 g(s[0]), g(s[1]), g(s[3]), g(s[4]), "returns" if s[5] else "noreturn",
                 (" | demoted: " + ", ".join(s[6])) if s[6] else " | full")
         if why is not None:
-            print(head + "\n  lift 2 cannot take it yet: %s (guest.s written)" % why)
+            print(head + "\n  the lifter cannot take it: %s (guest.s written)" % why)
             continue
         fn = build_ir.build(e, pcs, img.word, prog)
         with open(os.path.join(d, "ir.txt"), "w") as f:
@@ -146,26 +142,6 @@ def main():
                 f.write(subprocess.run(["objdump", "-d", "--no-show-raw-insn", "-M", "intel", obj],
                                        capture_output=True, text=True).stdout)
             os.remove(obj)
-        if a.old:
-            import a64_lift
-            import a64_rtgen
-            import rtgen
-            P.emit([e])
-            got = P.emitted.get(e)
-            if got is not None:
-                a64_rtgen.write(d)
-                with open(os.path.join(d, "a64_fpx.h"), "w") as f:
-                    f.write(a64_lift.fpx_header(P.fpx))
-                rt = rtgen.write(os.path.join(d, "rt64"))
-                src = os.path.join(d, "old.c")
-                with open(src, "w") as f:
-                    f.write('#include "a64.h"\n' + "".join("void f_%08x(Ctx *A64_NOESC);\n" % r for r in got[1]) + got[0])
-                obj = os.path.join(d, "old.o")
-                subprocess.run([clang, "-c"] + OLD_FLAGS + ["-I" + rt, "-I" + d, src, "-o", obj], check=True)
-                with open(os.path.join(d, "old.s"), "w") as f:
-                    f.write(subprocess.run(["objdump", "-d", "--no-show-raw-insn", "-M", "intel", obj],
-                                           capture_output=True, text=True).stdout)
-                os.remove(obj)
         print(head + "\n  written to %s" % d)
 
 
