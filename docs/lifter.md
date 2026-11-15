@@ -146,10 +146,16 @@ exclusives' runtime calls cost nothing measurable.
 
 ### Jump tables
 
-A BR with a table the discovery resolved is a `switch` on `fshr(t - lo, t - lo, 2)`, `lo` the lowest target, with the
-cases `(target - lo) >> 2` (`build_ir.build`, the `br` branch). Targets inside the function are branches, the others
-tail calls; the default, which a misaligned or unknown target reaches, is `a64_ijump`. The cases are code offsets, as
-sparse as the targets are spread.
+A BR with a table the discovery resolved is a `switch` on the index the guest loaded the entry with, cases `0..n-1`
+(dense: LLVM lowers a table), when the discovery proves the table's facts (`Discovery.index_tables`): one table, its
+address at the load and the ADD's base each one ADRP/ADR(+ADD) constant on every path of the function's CFG
+(`exact_constant`), the table in `.text`/`.rodata`, the LDR's index scaled by the entry size, the ADD's extend computed
+exactly, and the load to the BR one straight-line block (with a probe in it, the offset switch). `build_ir.build`
+reads the index, extended as the LDR extends it, as an SSA value at the load (the register may be reused before the
+BR). Targets inside the function are branches,
+the others tail calls; the default, which an index out of range reaches, is `a64_ijump` of the BR's register. Any other
+table (`Discovery.jt_offset` holds why; the lift prints the count) is a `switch` on `fshr(t - lo, t - lo, 2)`, `lo` the
+lowest target, cases `(target - lo) >> 2`, as sparse as its targets are spread.
 
 ### FP and NEON
 
@@ -401,9 +407,10 @@ tree shows the constraint is needed; the experiment named decides it.
 3. **Host-stack spills.** 5.8 % of code bytes on the sample (size-weighted) are spills to the host stack. Cause not
    analysed. *Justification:* none; unproven what removes it (read the spills of the largest sample functions with
    `nx2/lift2/dump.py`).
-4. **Sparse jump-table switches.** The switch's cases are code offsets (`(target - lo) >> 2`), so 1,041 of 1,468
-   tables are under 10 % dense and LLVM lowers them to compare chains. Size not affected, speed not measured. Removed
-   by switching on the table index ([lifter-optimisations.md](lifter-optimisations.md), E). *Justification:* none.
+4. **Sparse jump-table switches.** The tables the discovery cannot prove (278 of 1,475: the table's address not one
+   constant on every path 223, no table load (a BR to ADR candidates 39, to a constant 1), a join between the load
+   and the BR 15) switch on the target's offset, which LLVM lowers to compare chains when sparse. *Justification:*
+   their index switch would rest on an unproven fact.
 5. **STLR as `xchg`.** Every STLR is a `seq_cst` store (1,546 sites, 52 in hot functions; LDAR 1,478), so an STLR
    followed by an LDAR of another address keeps ARM's RCsc order. A plain x86 store is already a release store.
    *Justification:* unproven: no store-then-load-acquire pattern was looked for. Experiment: STLR as
@@ -445,7 +452,6 @@ One line each; the queue with sources, soundness conditions and first steps is
 
 - C: no reload of preserved registers after calls to full-summary callees; then dead temporaries, pair deletion.
 - D: per-site indirect call cache; profile-guided promotion.
-- E: jump tables as index switches.
 - F: frame-slot promotion, leaves first.
 - G: libc calls as intrinsics, CRC32C as `crc32`, noreturn as `unreachable`, CCMP chains, NEON gaps.
 - STLR as release stores; the asserted address-taken set (pessimizations 5 and 6).

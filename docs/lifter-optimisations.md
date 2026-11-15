@@ -122,23 +122,6 @@ hooked goes the way a BL to it goes (`prog.symbol(prog.callee(K))`). The fallbac
 **First step.** 1 on every BLR, `market 600` on/off. Then 2 on the hot partitions' sites with one profile from the same
 bench.
 
-## E. Jump tables as index switches
-
-**What.** Switch on the table index, cases `0..n-1`: dense by construction, one table load. The discovery knows the
-table's load instruction and its index register; `build_ir` takes the index's SSA value at the load pc (the register may
-be reused before the BR) and carries it to the BR. An index outside `0..n-1` goes to `a64_ijump(t)` as today.
-
-**Source.** Ghidra (`Decompiler/src/decompile/cpp/jumptable.hh`, Ghidra_11.1_build; Apache-2.0; class comments read):
-`JumpBasic::recoverModel` finds the normalised switch variable ("the Varnode with the most restricted set of values")
-and its guards under a `maxtablesize` cap; addresses outside the function are dropped. Our `build_ir.inside` does the
-last.
-
-**Needs.** The load pc and index register from the discovery.
-
-**Soundness.** Exact. A probe or At row on the load sees the same value: the switch reads the index after any probe.
-
-**First step.** Bounded tables only (1,385 of 1,475), `market 600` on/off. Speed only; code size does not change.
-
 ## F. Frame-slot promotion
 
 **What.** Guest frame slots as `alloca`s, in two subsets:
@@ -195,6 +178,7 @@ into the wrappers. C takes the pair deletion and the kept SSA values without the
 - Page marks: none emitted; a guest store is one plain store.
 - Virtual cores: removed; every guest thread runs freely, the per-core rings asserted single-writer.
 - C++ throws: a fatal stop (`host/cxx_throw.c`).
+- E, jump tables as index switches: 1,197 of 1,475 tables switch on the index, cases `0..n-1` (lifter.md, "Jump tables").
 
 ## Ruled out, with the count
 

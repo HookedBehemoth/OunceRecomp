@@ -127,7 +127,10 @@ def emit_function(fn, decls, flags_out=False):
             if blk is eb:
                 inc.append("[ %s, %%entry ]" % ins[var])
             for pr in blk.preds:
-                inc.append("[ %s, %%%s ]" % (ref(pr.defs[var]), pr.name))
+                # (one entry per edge: a switch's cases may share a block)
+                t = pr.term
+                n = sum(b is blk for _, b in t[2]) + (t[3] is blk) if t[0] == "switch" else 1
+                inc += ["[ %s, %%%s ]" % (ref(pr.defs[var]), pr.name)] * n
             out.append("  %s = phi %s %s" % (ref(p), lltype(p.ty), ", ".join(inc)))
         for v in blk.ops:
             if v.op == "writeback":

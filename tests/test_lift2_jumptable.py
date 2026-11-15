@@ -28,7 +28,8 @@ BASE = 0x80000000
 #  f2 0x04c: the same with cmp x0, #3 and ldrh w10, [x8, x0, lsl #1]; cases 20..23, two nops before 22
 #  f3 0x09c: cmp w0, #2; b.hi def; adrp x8, tb3; add x8, ...; ldrsw x9, [x8, w0, uxtw #2]; add x8, x8, x9; br x8;
 #            cases 30..32 (entries: negative offsets from tb3)
-#  f4 0x0d8: a byte table of five entries over three cases 40..42
+#  f4 0x0d8: a byte table of five entries over three cases, add x0, x1, #40..#42 (x1 0: a phi in each case block,
+#            one entry per switch edge)
 #  f5 0x118: a byte table with `mov w0, #1` between the ldrb and the add; cases 50..53
 #  f6 0x164: lsl x11, x0, #1; ldrh w10, [x8, x11]: the index a byte offset; cases 60..63
 CODE = [
@@ -39,8 +40,8 @@ CODE = [
     0xd503201f, 0xd28002c0, 0xd65f03c0, 0xd28002e0, 0xd65f03c0, 0xd2800c60, 0xd65f03c0, 0x7100081f,
     0x54000188, 0xb0000008, 0x91003108, 0xb8a05909, 0x8b090108, 0xd61f0100, 0xd28003c0, 0xd65f03c0,
     0xd28003e0, 0xd65f03c0, 0xd2800400, 0xd65f03c0, 0xd2800c60, 0xd65f03c0, 0x7100101f, 0x540001a8,
-    0x100000c9, 0xb0000008, 0x91006108, 0x3860490a, 0x8b0a0929, 0xd61f0120, 0xd2800500, 0xd65f03c0,
-    0xd2800520, 0xd65f03c0, 0xd2800540, 0xd65f03c0, 0xd2800c60, 0xd65f03c0, 0x71000c1f, 0x54000208,
+    0x100000c9, 0xb0000008, 0x91006108, 0x3860490a, 0x8b0a0929, 0xd61f0120, 0x9100a020, 0xd65f03c0,
+    0x9100a420, 0xd65f03c0, 0x9100a820, 0xd65f03c0, 0xd2800c60, 0xd65f03c0, 0x71000c1f, 0x54000208,
     0x100000e9, 0xb0000008, 0x91007508, 0x3860490a, 0x52800020, 0x8b0a0929, 0xd61f0120, 0xd2800640,
     0xd65f03c0, 0xd2800660, 0xd65f03c0, 0xd2800680, 0xd65f03c0, 0xd28006a0, 0xd65f03c0, 0xd2800c60,
     0xd65f03c0, 0x71000c1f, 0x54000208, 0x100000e9, 0xb0000008, 0x91008908, 0xd37ff80b, 0x786b690a,
