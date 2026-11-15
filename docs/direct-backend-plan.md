@@ -55,6 +55,9 @@ Each item is open at the time of writing. Remove an item when you close it.
 - **The render-target id patch** (`host/direct_rt_ids.c`, log line "direct patch rt ids") keeps no calls: the
   system-texture entry it watches arrives with a changed id every frame, so every call takes the game's path. The
   submit-time snapshot of the deferred tables covers it. Find what resets the id, or delete the patch.
+- **The SMAA edge list.** The SMAA pass uses a transient render target's storage address as a buffer
+  (`ndsr::smaa_edge_list`). No patch gives it a buffer of its own; check what the pass reads and writes there, and give
+  it a host-owned buffer.
 - **The dump's three damaged terrain files** draw a placeholder and stop strict mode in the market. Have
   `nx2/prepare_terrain.py` write a neutral record for them.
 
