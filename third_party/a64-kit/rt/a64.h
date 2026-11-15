@@ -1,5 +1,5 @@
 /* a64-kit guest model: what lifted AArch64 code and the host runtime see of a guest thread: the context
-   (`GuestContext`), guest memory (`A64_PTR`, `recomp_load*` / `recomp_store*`), the page marks, and the runtime's
+   (`GuestContext`), guest memory (`A64_PTR`, `recomp_load*` / `recomp_store*`) and the runtime's
    entry points (a64_rt.c). Hookshot's copy is generated from this by nx2/rtgen.py (the 64-bit guest window, polls). */
 #ifndef A64_H
 #define A64_H
@@ -60,50 +60,18 @@ typedef GuestContext Ctx;
 #endif
 #define A64_PTR(a) (A64_MEM + (uint32_t)(a))
 
-/* Browser builds (A64_WRITE_TRACK): wasm has no page write watch, so every guest store marks its 4 KB page (first
-   and last byte's: an unaligned store may cross a page); hos/web/win32.c's GetWriteWatch reads and clears the marks
-   for the renderer's buffer cache. */
-#if defined(A64_NO_MARKS)   /* (measurement only: build.py RX_NO_GUEST_MARKS) */
-#define A64_MARK(a, n) ((void)0)
-#elif defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
-/* Native builds track the same way instead of with Windows' write watch (build.py: RX_SOFT_WRITE_WATCH=0), whose
-   GetWriteWatch over the ~2 GB the GPU sees took 20-50 ms while the game streamed (hitches at its fences). The mark is a
-   release store (a plain store on x86): the compiler may not move it above the data store, so a scan that clears a
-   mark has seen the data it marks. (The marks are ~1 ms of the castle's game-thread CPU a frame. Marking the last
-   byte's page only when a store crosses into it saved ~0.3 ms but made the code 20 MB bigger: not kept.) */
-extern uint8_t a64_dirty[1u << 20];
-/* (Tried 2026-10-21: reading a mark first and writing it only when clear, against cache lines moving between cores:
-   game threads +1.1 ms a frame, the code 18 MB bigger. Not kept.) */
-#define A64_MARK(a, n) (__atomic_store_n(&a64_dirty[(uint32_t)(a) >> 12], 1, __ATOMIC_RELEASE), \
-                        __atomic_store_n(&a64_dirty[(uint32_t)((a) + (n) - 1) >> 12], 1, __ATOMIC_RELEASE))
-#elif defined(A64_WRITE_TRACK)
-extern uint8_t a64_dirty[1u << 20];
-#define A64_MARK(a, n) (a64_dirty[(uint32_t)(a) >> 12] = 1, a64_dirty[(uint32_t)((a) + (n) - 1) >> 12] = 1)
-#else
-#define A64_MARK(a, n) ((void)0)
-#endif
-
 A64_INLINE uint64_t recomp_load8(GuestContext *c, uint64_t a) { (void)c; return *(const uint8_t *)A64_PTR(a); }
 A64_INLINE uint64_t recomp_load16(GuestContext *c, uint64_t a) { uint16_t v; (void)c; memcpy(&v, A64_PTR(a), 2); return v; }
 A64_INLINE uint64_t recomp_load32(GuestContext *c, uint64_t a) { uint32_t v; (void)c; memcpy(&v, A64_PTR(a), 4); return v; }
 A64_INLINE uint64_t recomp_load64(GuestContext *c, uint64_t a) { uint64_t v; (void)c; memcpy(&v, A64_PTR(a), 8); return v; }
-A64_INLINE void recomp_store8(GuestContext *c, uint64_t a, uint64_t v) { (void)c; *(uint8_t *)A64_PTR(a) = (uint8_t)v; A64_MARK(a, 1); }
-A64_INLINE void recomp_store16(GuestContext *c, uint64_t a, uint64_t v) { uint16_t t = (uint16_t)v; (void)c; memcpy(A64_PTR(a), &t, 2); A64_MARK(a, 2); }
-A64_INLINE void recomp_store32(GuestContext *c, uint64_t a, uint64_t v) { uint32_t t = (uint32_t)v; (void)c; memcpy(A64_PTR(a), &t, 4); A64_MARK(a, 4); }
-A64_INLINE void recomp_store64(GuestContext *c, uint64_t a, uint64_t v) { (void)c; memcpy(A64_PTR(a), &v, 8); A64_MARK(a, 8); }
-/* Stores through SP: the guest stack is never memory the GPU reads, so they mark no
-   page. They are a quarter of TOTK's store sites (prologue saves, nearly every STP). */
-A64_INLINE void recomp_store8_sp(GuestContext *c, uint64_t a, uint64_t v) { (void)c; *(uint8_t *)A64_PTR(a) = (uint8_t)v; }
-A64_INLINE void recomp_store16_sp(GuestContext *c, uint64_t a, uint64_t v) { uint16_t t = (uint16_t)v; (void)c; memcpy(A64_PTR(a), &t, 2); }
-A64_INLINE void recomp_store32_sp(GuestContext *c, uint64_t a, uint64_t v) { uint32_t t = (uint32_t)v; (void)c; memcpy(A64_PTR(a), &t, 4); }
-A64_INLINE void recomp_store64_sp(GuestContext *c, uint64_t a, uint64_t v) { (void)c; memcpy(A64_PTR(a), &v, 8); }
-A64_INLINE void recomp_stp32_sp(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store32_sp(c, a, v0); recomp_store32_sp(c, a + 4, v1); }
-A64_INLINE void recomp_stp64_sp(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store64_sp(c, a, v0); recomp_store64_sp(c, a + 8, v1); }
+A64_INLINE void recomp_store8(GuestContext *c, uint64_t a, uint64_t v) { (void)c; *(uint8_t *)A64_PTR(a) = (uint8_t)v; }
+A64_INLINE void recomp_store16(GuestContext *c, uint64_t a, uint64_t v) { uint16_t t = (uint16_t)v; (void)c; memcpy(A64_PTR(a), &t, 2); }
+A64_INLINE void recomp_store32(GuestContext *c, uint64_t a, uint64_t v) { uint32_t t = (uint32_t)v; (void)c; memcpy(A64_PTR(a), &t, 4); }
+A64_INLINE void recomp_store64(GuestContext *c, uint64_t a, uint64_t v) { (void)c; memcpy(A64_PTR(a), &v, 8); }
 A64_INLINE void recomp_ldp32(GuestContext *c, uint64_t a, uint64_t *lo, uint64_t *hi) { *lo = recomp_load32(c, a); *hi = recomp_load32(c, a + 4); }
 A64_INLINE void recomp_ldp64(GuestContext *c, uint64_t a, uint64_t *lo, uint64_t *hi) { *lo = recomp_load64(c, a); *hi = recomp_load64(c, a + 8); }
-/* (a pair marks once, for its whole span) */
-A64_INLINE void recomp_stp32(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store32_sp(c, a, v0); recomp_store32_sp(c, a + 4, v1); A64_MARK(a, 8); }
-A64_INLINE void recomp_stp64(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store64_sp(c, a, v0); recomp_store64_sp(c, a + 8, v1); A64_MARK(a, 16); }
+A64_INLINE void recomp_stp32(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store32(c, a, v0); recomp_store32(c, a + 4, v1); }
+A64_INLINE void recomp_stp64(GuestContext *c, uint64_t a, uint64_t v0, uint64_t v1) { recomp_store64(c, a, v0); recomp_store64(c, a + 8, v1); }
 
 /* Everything is lifted at its final guest address, so the translator's module base is a constant 0. */
 #define g_module_base ((uint64_t)0)

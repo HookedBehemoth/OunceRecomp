@@ -27,8 +27,7 @@ Operations (Value.op):
   call                   args, attrs fn (an LLVM intrinsic or a runtime function), ctx (the context pointer first),
                          effects (not removable: FPCR/FPSR helpers)
   load                   (addr i64,), the value's type is the access width; attrs order (plain)
-  store                  (addr i64, value), attrs mark (bool); a value of type "void"
-  mark                   (base,), attrs lo, hi: the page marks of [base + lo, base + hi) (build_ir.group_marks)
+  store                  (addr i64, value); a value of type "void"
   aload                  (addr,), attrs order (acquire): LDAR/LDAPR
   astore                 (addr, value), attrs order (seq_cst): STLR
   rmw                    (addr, value), attrs kind (LLVM atomicrmw operation): LD<op>/SWP; the old value

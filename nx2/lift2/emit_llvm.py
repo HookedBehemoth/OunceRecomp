@@ -5,15 +5,13 @@ guest context, and every register write is also stored to it where it happens (t
 GuestContext): x0-x30 and SP (x[31]) at 8 * n, N, Z, C, V as bytes at 0x108-0x10B, V0-V31 at 0x110 + 16 * n.
 Vector and FP values are LLVM vectors and FP scalars (lltype); V registers are <2 x i64> in the context.
 
-Guest memory: `getelementptr i8, ptr inttoptr (i64 A64_HOST_BASE to ptr), i64 <guest address>`. A store that marks
-its pages writes 1 (a release store, as A64_MARK) into a64_dirty at the 4 KB pages of its first and last byte.
+Guest memory: `getelementptr i8, ptr inttoptr (i64 A64_HOST_BASE to ptr), i64 <guest address>`.
 """
 import re
 
 from .ir import WIDTH, lanes
 
 HOST_BASE = 0x100000000000
-DIRTY_PAGES = 1 << 27
 CTX_OFF = {**{"x%d" % i: 8 * i for i in range(31)}, "sp": 248, "n": 0x108, "z": 0x109, "c": 0x10A, "v": 0x10B,
            **{"v%d" % i: 0x110 + 16 * i for i in range(32)}}
 FP_TYPES = {"f16": "half", "f32": "float", "f64": "double"}
@@ -65,8 +63,7 @@ class Module:
         self.defined = getattr(self, "defined", set()) | {fn.name}
 
     def text(self):
-        head = ['target triple = "%s"' % TRIPLE,
-                "@a64_dirty = external global [%d x i8]" % DIRTY_PAGES, MARK_FN]
+        head = ['target triple = "%s"' % TRIPLE]
         defined = getattr(self, "defined", set())
         decls = [d for d in sorted(self.decls)
                  if not (d.startswith("declare void @") and d.split("@")[1].split("(")[0] in defined)]
@@ -178,19 +175,6 @@ def emit_function(fn, decls, flags_out=False):
     return "\n".join(out)
 
 
-MARK_FN = """define internal void @mark(i64 %a, i64 %b) alwaysinline {
-  %m0 = lshr i64 %a, 12
-  %i0 = and i64 %m0, DIRTY_MASK
-  %d0 = getelementptr i8, ptr @a64_dirty, i64 %i0
-  store atomic i8 1, ptr %d0 release, align 1
-  %m1 = lshr i64 %b, 12
-  %i1 = and i64 %m1, DIRTY_MASK
-  %d1 = getelementptr i8, ptr @a64_dirty, i64 %i1
-  store atomic i8 1, ptr %d1 release, align 1
-  ret void
-}""".replace("DIRTY_MASK", str(DIRTY_PAGES - 1))
-
-
 # internal functions the IR's call/poll operations use, defined in each module that needs them
 HELPERS = {
     # CRC32 over the low nbits of data, bit-reflected (the Arm ARM's CRC32 with the polynomial already reflected)
@@ -241,13 +225,6 @@ done:
   ret void
 }""",
 }
-
-
-def emit_mark(p, base, lo, hi, out):
-    """A64_MARK: 1 into a64_dirty at the pages of base + lo and base + hi - 1, as release stores (@mark, inlined)"""
-    out.append("  %s.a = add i64 %s, %d" % (p, base, lo))
-    out.append("  %s.b = add i64 %s, %d" % (p, base, hi - 1))
-    out.append("  call void @mark(i64 %s.a, i64 %s.b)" % (p, p))
 
 
 # A function that writes FPCR (MSR FPCR: Function.strict_fp, sem_fp.fp_sysreg_write) is strictfp: its FP operations
@@ -336,10 +313,6 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
         p = "%%st%d" % v.id
         out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (p, HOST_BASE, typed(a[0])))
         out.append("  store %s, ptr %s.p, align 1" % (typed(a[1]), p))
-        if v.attrs["mark"]:
-            emit_mark(p, ref(a[0]), 0, WIDTH[a[1].ty] // 8, out)
-    elif op == "mark":
-        emit_mark("%%mk%d" % v.id, ref(a[0]), v.attrs["lo"], v.attrs["hi"], out)
     elif op == "aload":   # LDAR/LDAPR
         al = WIDTH[v.ty] // 8
         out.append("  %s.p = getelementptr i8, ptr inttoptr (i64 %d to ptr), %s" % (r, HOST_BASE, typed(a[0])))

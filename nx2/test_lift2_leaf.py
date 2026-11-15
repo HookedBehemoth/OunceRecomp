@@ -33,7 +33,7 @@ from unicorn import arm64_const as A   # noqa: E402
 
 FLAGS = ["-march=x86-64-v3", "-ffp-contract=off", "-fno-strict-aliasing", "-mcx16", "-g0", "-Wno-everything",
          "-mllvm", "-rotation-max-header-size=0", "-ffunction-sections", "-mllvm",
-         "-capture-tracking-max-uses-to-explore=5000", "-DA64_POLLING", "-DA64_WRITE_TRACK"]
+         "-capture-tracking-max-uses-to-explore=5000", "-DA64_POLLING"]
 
 IR_FLAGS = ["-march=x86-64-v3", "-g0", "-Wno-everything", "-mllvm", "-rotation-max-header-size=0", "-ffunction-sections"]
 
@@ -45,7 +45,6 @@ HARNESS = r"""
 #include <stdlib.h>
 #include <sys/mman.h>
 static const A64Fn T_NEW[] = {%(new)s};
-uint8_t a64_dirty[A64_DIRTY_PAGES];
 void a64_trap(Ctx *c, uint64_t pc, uint32_t insn) { (void)pc; (void)insn; c->halted = 9; }
 void a64_ret_mismatch(Ctx *c, uint64_t pc) { (void)pc; c->halted = 10; }
 void recomp_unhandled(GuestContext *c, uint32_t i, uint64_t pc) { (void)i; (void)pc; c->halted = 7; }

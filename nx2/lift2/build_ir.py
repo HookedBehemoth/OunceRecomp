@@ -251,57 +251,6 @@ def build(entry, pcs, word, prog=LEAF):
         if blk.name.startswith("b") and any(s.name.startswith("b") and s.pc <= blk.pc for s in blk.succs()):
             blk.ops.append(fn.new_value("void", "poll", ()))
     ir.finish(fn)
-    group_marks(fn)
     return fn
 
 
-def base_offset(addr):
-    """(base value, constant offset) of an address value: a chain of constant additions walked back"""
-    off = 0
-    while addr.op == "add" and addr.args[1].op == "const":
-        c = addr.args[1].args[0]
-        off += c - (1 << 64) if c >> 63 else c
-        addr = addr.args[0]
-    return addr, off
-
-
-def group_marks(fn):
-    """The page marks of the marked stores of a block that share a base value, within one 4 KB span: one mark (of
-    the span's first and last byte) after the group's last store, instead of two per store. Marks only need to
-    follow their stores (the renderer reads data a mark announces), so moving them later in the block is safe. A call
-    ends the groups (the callee may read the marks)."""
-    for blk in fn.blocks.values():
-        groups = {}   # base value id -> [stores, lo, hi, base]
-        order = []
-        for v in blk.ops:
-            if v.op in ("gcall", "icall"):
-                groups = {}
-                order.append(v)
-                continue
-            if v.op == "store" and v.attrs["mark"]:
-                base, off = base_offset(v.args[0])
-                g = groups.get(base.id)
-                n = ir.WIDTH[v.args[1].ty] // 8
-                if g is not None and max(g[2], off + n) - min(g[1], off) <= 4096:
-                    g[0].append(v)
-                    g[1], g[2] = min(g[1], off), max(g[2], off + n)
-                    continue
-                g = groups[base.id] = [[v], off, off + n, base]
-                order.append(g)
-        if not order:
-            continue
-        last = {}
-        for g in order:
-            if not isinstance(g, list):
-                continue
-            stores, lo, hi, base = g
-            for v in stores:
-                v.attrs["mark"] = False
-            last[stores[-1].id] = (base, lo, hi)
-        ops = []
-        for v in blk.ops:
-            ops.append(v)
-            if v.id in last:
-                base, lo, hi = last[v.id]
-                ops.append(fn.new_value("void", "mark", (base,), {"lo": lo, "hi": hi}))
-        blk.ops = ops

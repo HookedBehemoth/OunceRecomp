@@ -20,7 +20,7 @@ Measurements: clang/LLVM 23.1.3 on the development PC (Zen, x86-64-v3), unless a
 | IR | `nx2/lift2/enc*.py`, `sem*.py`, `build_ir.py`, `ir.py` | the decoder (tables of the encodings), the semantics of each form as IR, the IR of a function |
 | LLVM IR | `nx2/lift2/emit_llvm.py` | one textual module per partition |
 | build | `nx2/lift2/game.py` `prepare`, `nx2/build.py` | partitions lifted in worker processes and compiled by clang (`-x ir -`, no IR on disk), cached by their inputs; the runtime and host compiled and linked |
-| runtime | `nx2/rtgen.py` from `third_party/a64-kit/rt` | the context header (`a64.h`: `GuestContext`, guest memory, page marks) and `a64_rt.c` (`a64_lookup`, `a64_icall`, `a64_ijump`, `a64_trap`, the exclusive monitor, the counter) with the 64-bit guest window |
+| runtime | `nx2/rtgen.py` from `third_party/a64-kit/rt` | the context header (`a64.h`: `GuestContext`, guest memory) and `a64_rt.c` (`a64_lookup`, `a64_icall`, `a64_ijump`, `a64_trap`, the exclusive monitor, the counter) with the 64-bit guest window |
 
 `nx2/lift.py` runs the steps up to the plan and the tables (`scripts/relift.sh`); `nx2/build.py` the rest. The plan
 holds instructions, not lifted code: a change to the lifter needs only a build (its partitions' input keys change).
@@ -185,7 +185,7 @@ front end keeps a register-to-value map per block, and block parameters carry wh
 |---|---|
 | integer | add sub mul umulh smulh udiv sdiv (divisor 0: result 0, explicit select), and or xor not, shl lshr ashr ror (amount masked to the width), clz cls rbit rev rev16 rev32, extract(bitfield) insert(bitfield), sext zext trunc, select, icmp |
 | flags | `addflags(a,b,carry_in,width)` -> (result, n, z, c, v) via `llvm.uadd/sadd.with.overflow`; `subflags` likewise; logical flags (n, z, c=0, v=0); `cond(code, n,z,c,v)` folded to one `icmp` when all four come from one compare (CMP + B.LT becomes `icmp slt`) |
-| memory | `gaddr(i64) -> ptr` = `getelementptr i8, ptr inttoptr (i64 0x100000000000 to ptr), i64 a`; `load(ptr, w, sext, order)` with order plain, acquire; `store(ptr, v, w, order, mark)` with order plain, seqcst; `rmw(op, ptr, v, w)` for the LSE ops; `cas(ptr, exp, new, w)`, `cas2` (CASP, `cmpxchg16b`); `excl_load`/`excl_store`; `fence(full)`, `fence(compiler)` |
+| memory | `gaddr(i64) -> ptr` = `getelementptr i8, ptr inttoptr (i64 0x100000000000 to ptr), i64 a`; `load(ptr, w, sext, order)` with order plain, acquire; `store(ptr, v, w, order)` with order plain, seqcst; `rmw(op, ptr, v, w)` for the LSE ops; `cas(ptr, exp, new, w)`, `cas2` (CASP, `cmpxchg16b`); `excl_load`/`excl_store`; `fence(full)`, `fence(compiler)` |
 | vector | lane ops on `v128` via LLVM vector ops, `shufflevector`, `insertelement`/`extractelement`, x86 intrinsics where nothing generic exists (`pshufb` for TBL/TBX, `pmaddubsw` for UDOT), saturating ops via `llvm.[us]add.sat` |
 | FP | fadd fsub fmul fdiv `llvm.sqrt` `llvm.fma` fneg fabs, min/max as above, `fcmp` -> NZCV (unordered = 0011), conversions (`fptosi.sat`, `sitofp`, `fptrunc`/`fpext`, F16 via F16C), FRINT*, `frecpe/frsqrte` (calls into a table routine), `mrs_fpsr`/`msr_fpsr`/`msr_fpcr` (section 7) |
 | control | br, condbr, `switch(index)` for jump tables (`(x - base) >> k`, an indexed table, not a compare tree), ret, `gcall(sym)` (BL), `icall(target)` (BLR), tail(sym) (B to an entry), ijump(target) (BR without a table), `svc(imm)`, `trap(pc, word)`, `poll` |
@@ -418,17 +418,9 @@ rounding modes of FCVT*/FRINT*, FRECPE/FRSQRTE, FRECPS (0·∞ → 2), FCMP/FCCM
 | CASP | `cmpxchg` i128 | `lock cmpxchg16b` | |
 | LDXR/STXR loops | recognised as `cmpxchg` loops when the pattern is LDXR, ALU, STXR, CBNZ back | `lock cmpxchg` | otherwise the value-compare monitor in the context, as today |
 
-- **Page marks.**
-  - *What they are for:* the direct back end reads them to find guest pages the CPU wrote since its last scan
-    (vertex, index, uniform, texture uploads) without an OS write watch.
-  - *Where they stay:* every store not based on SP (a store through SP writes the guest stack, which the renderer
-    never reads). Stores through a frame register (x29 = SP + c) are still marked (open work, section 15). Marks of a
-    block's stores to one base within 4 KB are grouped into one (`build_ir.group_marks`).
-  - *Cost:* about 8 % of cold instructions (measured).
-  - *A cheaper mechanism* exists on Linux 6.7+: `PAGEMAP_SCAN` over userfaultfd `UFFD_FEATURE_WP_ASYNC` ranges, which
-    exists to emulate GetWriteWatch. Its cost is a minor fault on the first write to a tracked page after each reset,
-    which can exceed the marks for pages written every frame. It is a separate experiment on the GPU pools only, not
-    part of this design.
+- **No write tracking.** A guest store is one plain store. Nothing records which guest pages the CPU wrote: the
+  direct back end does not ask for them. Host code that writes guest memory (file reads, decompression, video
+  frames) writes it plainly too.
 
 ## 10. The host interface
 
@@ -588,7 +580,7 @@ alone is not benched yet: the benches stall before they are ready on the current
   through the context, by the summaries; callee-saved save/restore pairs deleted (612,455 of them); BLR through a map
   of the fast entries; `f_<addr>` a wrapper. Expected 10-12 % fewer instructions on code with calls. Needs the
   summaries on every build (130 s and 6.4 GB with the parallel pass there).
-- **Frame-slot promotion and the marks of frame-register stores** (stores through x29 = SP + c still mark).
+- **Frame-slot promotion.**
 - **Build**: IR-level PGO, `-fsplit-machine-functions`, 2 MB text pages.
 - **Path-sensitive liveness** for the summaries (x9-x18 demotions).
 
@@ -602,5 +594,4 @@ alone is not benched yet: the benches stall before they are ready on the current
   Replays and goldens were re-baselined for it.
 - **Summary time**: the whole game's summaries take a minute or more and up to 9 GB; they are computed only for
   the verification build.
-- **Page marks** stay. The UFFD write-protect alternative is unmeasured.
 - **One LLVM major**: the textual IR follows LLVM's syntax, so a new major needs the emitter checked (`nx2/lift2/llvm.py`).

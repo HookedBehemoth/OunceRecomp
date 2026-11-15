@@ -237,7 +237,7 @@ def ldst_reg(b, addr, L, t, sc, base_reg):
     if L:
         vwrite(b, t, b.op("load", VTY[sc], addr, order="plain"))
     else:
-        store(b, addr, vread(b, t, VTY[sc]), base_reg)
+        store(b, addr, vread(b, t, VTY[sc]))
 
 
 def t_ldst_v(b, f, pc, p):
@@ -281,8 +281,8 @@ def t_ldst_v_pair(b, f, pc, p):
         vwrite(b, f["Rt2"], hi)
     else:
         v1, v2 = vread(b, f["Rt"], VTY[sc]), vread(b, f["Rt2"], VTY[sc])
-        store(b, addr, v1, f["Rn"])
-        store(b, addr2, v2, f["Rn"])
+        store(b, addr, v1)
+        store(b, addr2, v2)
     if wb is not None:
         setx(b, f["Rn"], wb, sp=True)
 
@@ -318,7 +318,7 @@ def t_ldst_mult(b, f, pc, p):
             if f["L"]:
                 vwrite(b, rn, b.op("load", rty, addr, order="plain"))
             else:
-                store(b, addr, vread(b, rn, rty), f["Rn"])
+                store(b, addr, vread(b, rn, rty))
     else:
         allty = vtype(per * selem, lane)
         if f["L"]:
@@ -333,7 +333,7 @@ def t_ldst_mult(b, f, pc, p):
                 n = lanes(cat.ty)[0]
                 wide = b.shuffle(v, v, list(range(per)) + [-1] * (n - per)) if n != per else v
                 cat = b.shuffle(cat, wide, list(range(n)) + [n + i for i in range(per)])
-            store(b, base, b.shuffle(cat, cat, [k * per + e for e in range(per) for k in range(selem)]), f["Rn"])
+            store(b, base, b.shuffle(cat, cat, [k * per + e for e in range(per) for k in range(selem)]))
     if p["post"]:
         post_index(b, f, base, nreg * rbytes)
 
@@ -356,7 +356,7 @@ def t_ldst_one(b, f, pc, p):
             vt = vtype(16 >> sc, lane)
             vwrite(b, rn, b.insert(vread(b, rn, vt), b.op("load", lane, addr, order="plain"), idx))
         else:
-            store(b, addr, b.extract(vread(b, rn, vtype(16 >> sc, lane)), idx), f["Rn"])
+            store(b, addr, b.extract(vread(b, rn, vtype(16 >> sc, lane)), idx))
     if p["post"]:
         post_index(b, f, base, selem << sc)
 

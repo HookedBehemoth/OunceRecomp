@@ -238,12 +238,8 @@ static uint64_t load_n(uint64_t a, uint32_t size) {
     }
 }
 
-#if defined(A64_WRITE_TRACK)
-uint8_t a64_dirty[1u << 20];   /* (rt/a64.h A64_MARK) */
-#endif
 
 static int cas_n(uint64_t a, uint32_t size, uint64_t expect, uint64_t value) {
-    A64_MARK(a, size);   /* (marked whether or not it stores: harmless) */
     switch (size) {
     case 1: { uint8_t e = (uint8_t)expect; return __atomic_compare_exchange_n((uint8_t *)A64_PTR(a), &e, (uint8_t)value, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
     case 2: { uint16_t e = (uint16_t)expect; return __atomic_compare_exchange_n((uint16_t *)A64_PTR(a), &e, (uint16_t)value, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }

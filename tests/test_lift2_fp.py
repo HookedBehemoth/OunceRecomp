@@ -1017,7 +1017,6 @@ typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; ui
 #define HOS_FP_TEST
 #define A64_NOESC
 #include "hos_fp.c"
-unsigned char a64_dirty[1u << 27];
 void a64_trap(Ctx *c, uint64_t pc, uint32_t w) { (void)c; (void)pc; (void)w; }
 typedef void (*Fn)(Ctx *);
 %(decls)s
@@ -1161,7 +1160,6 @@ HOOK_HARNESS = r"""
 #include <string.h>
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
                  uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
-unsigned char a64_dirty[1u << 27];
 static int calls;
 void a64_poll_cur(void) {}
 /* the host's hook: does the call's work when x1 is 7 (x0 = 99), else lets the lifted body run */
@@ -1204,7 +1202,6 @@ PROBE_HARNESS = r"""
 #include <string.h>
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
                  uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
-unsigned char a64_dirty[1u << 27];
 void a64_poll_cur(void) {}
 static uint64_t seen_at; static uint32_t seen_bits;
 uint32_t hos_frame_whole(uint64_t at, float amount) { seen_at = at; memcpy(&seen_bits, &amount, 4); return 1234; }
@@ -1254,7 +1251,6 @@ class Probe(unittest.TestCase):
 AFTER_HARNESS = r"""
 #include "a64.h"
 #include <stdio.h>
-unsigned char a64_dirty[1u << 27];
 void a64_poll_cur(void) {}
 void g_80003000(Ctx *);
 int main(void) {
@@ -1353,7 +1349,6 @@ class AfterC(unittest.TestCase):
         harness = r"""
 #include "a64.h"
 #include <stdio.h>
-unsigned char a64_dirty[1u << 27];
 void a64_poll_cur(void) {}
 void g_80003000(Ctx *);
 static int calls;

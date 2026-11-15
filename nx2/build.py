@@ -389,11 +389,6 @@ def ffmpeg_version_key():
     return b""
 
 
-# the soft write watch (rt/a64.h A64_MARK): lifted stores mark their 4 KB page, and the renderer reads the marks
-# instead of Windows' write watch (GetWriteWatch over the 6 GB MKW's GPU sees took ~20 ms a scan, in one thread or
-# four: the race's replay waited ~12 ms a frame for it). RX_SOFT_WRITE_WATCH=0: Windows' write watch (a full rebuild)
-WRITE_TRACK = [] if os.environ.get("RX_SOFT_WRITE_WATCH") == "0" else ["-DA64_WRITE_TRACK"]
-
 # (hookshot) the host CPU the lifted game and the runtime are built for: x86-64-v3 (AVX2, FMA, BMI1/2, LZCNT,
 # MOVBE; Haswell and Zen 1 on). With FMA the FPX1 fast paths cover double-precision FMA (RECOMP_FPX_FMA64; it took
 # the exact software body on baseline x86-64) and the bit counts are single instructions. No contraction, so a C
@@ -413,7 +408,7 @@ def flags(gen, rt64, opt, polls):
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-Wno-everything",
         "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
         "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
-        (["-DA64_POLLING"] if polls else []) + WRITE_TRACK
+        (["-DA64_POLLING"] if polls else [])
 
 
 def flag_text(fl):
@@ -589,7 +584,7 @@ def main():
     jobs = [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"), fl, deps) for s in srcs]
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + ["-I" + POSIX, "-D_GNU_SOURCE"] + \
-        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK + \
+        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + \
         ["-Werror=implicit-function-declaration"]   # (a call without a declaration returns an int: a 64-bit value cut)
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))

@@ -27,9 +27,7 @@ ADDR64 = r"""#ifndef A64_ADDR64
 #endif
 #if A64_ADDR64
 #define A64_PTR(a) (A64_MEM + (uint64_t)(a))
-#define A64_DIRTY_PAGES (1ull << 27)   /* (nx2/rtgen.py) A64_WRITE_TRACK: a mark per 4 KB page of the 512 GB window */
 #else
-#define A64_DIRTY_PAGES (1ull << 20)
 #define A64_PTR(a) (A64_MEM + (uint32_t)(a))
 #endif"""
 
@@ -37,32 +35,16 @@ RET_MISMATCH = ("void a64_ret_mismatch(Ctx *A64_NOESC c, uint64_t pc);         "
                 "/* RET to something other than the caller (debug builds) */")
 THREAD = "    void *thread;               /* the OS layer's thread object */\n} GuestContext;"
 LOOKUP = "    uint32_t a = (uint32_t)addr, lo = 0, hi = a64_fn_count;"
-# (the soft write watch's table at the window's size, the address masked into it: a stray pointer marks a wrong
-# page, never memory past the table)
-MARK_NATIVE = r"""extern uint8_t a64_dirty[1u << 20];
-/* (Tried 2026-10-21: reading a mark first and writing it only when clear, against cache lines moving between cores:
-   game threads +1.1 ms a frame, the code 18 MB bigger. Not kept.) */
-#define A64_MARK(a, n) (__atomic_store_n(&a64_dirty[(uint32_t)(a) >> 12], 1, __ATOMIC_RELEASE), \
-                        __atomic_store_n(&a64_dirty[(uint32_t)((a) + (n) - 1) >> 12], 1, __ATOMIC_RELEASE))"""
-MARK_NATIVE_64 = r"""extern uint8_t a64_dirty[A64_DIRTY_PAGES];
-/* (Tried 2026-10-21: reading a mark first and writing it only when clear, against cache lines moving between cores:
-   game threads +1.1 ms a frame, the code 18 MB bigger. Not kept.) */
-#define A64_DIRTY_AT(a) (((uint64_t)(a) >> 12) & (A64_DIRTY_PAGES - 1))
-#define A64_MARK(a, n) (__atomic_store_n(&a64_dirty[A64_DIRTY_AT(a)], 1, __ATOMIC_RELEASE), \
-                        __atomic_store_n(&a64_dirty[A64_DIRTY_AT((a) + (n) - 1)], 1, __ATOMIC_RELEASE))"""
-
 SUBST = {
     "a64.h": [
         (THREAD, THREAD.replace("\n} GuestContext;", "\n    uint32_t poll;              "
                                 "/* (nx2/rtgen.py) interrupt request: A64_POLL clears it and calls a64_poll_cur when set */\n} GuestContext;")),
         (RET_MISMATCH, RET_MISMATCH + POLL_DECL),
         ("#define A64_PTR(a) (A64_MEM + (uint32_t)(a))", ADDR64),
-        (MARK_NATIVE, MARK_NATIVE_64),
     ],
     "a64_rt.c": [
         (LOOKUP, "#if A64_ADDR64\n    if (addr >> 32) return NULL;   /* (code lies below 4 GB: never a truncated match) */\n"
                  "#endif\n" + LOOKUP),
-        ("uint8_t a64_dirty[1u << 20];", "uint8_t a64_dirty[A64_DIRTY_PAGES];"),
     ],
 }
 

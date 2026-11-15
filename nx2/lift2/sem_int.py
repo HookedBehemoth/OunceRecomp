@@ -377,15 +377,14 @@ def load(b, addr, t):
     return b.op("load", t, addr, order="plain")
 
 
-def store(b, addr, v, base_reg):
-    """a guest store; it marks its pages (A64_MARK) unless its base register is SP (the guest stack, never read by
-    the GPU)"""
-    b.op("store", "void", addr, v, mark=base_reg != 31)
+def store(b, addr, v):
+    """a guest store"""
+    b.op("store", "void", addr, v)
 
 
 def ldst_value(b, f, addr, size, opc, rt, base_reg):
     if opc == 0:
-        store(b, addr, b.trunc(getx(b, rt, 1), SIZES[size]), base_reg)
+        store(b, addr, b.trunc(getx(b, rt, 1), SIZES[size]))
         return
     v = load(b, addr, SIZES[size])
     if opc == 1:
@@ -444,8 +443,8 @@ def t_ldst_pair(b, f, pc, p):
     else:
         v1 = b.trunc(getx(b, f["Rt"], 1), SIZES[size])
         v2 = b.trunc(getx(b, f["Rt2"], 1), SIZES[size])
-        store(b, addr, v1, f["Rn"])
-        store(b, addr2, v2, f["Rn"])
+        store(b, addr, v1)
+        store(b, addr2, v2)
     if wb is not None:
         setx(b, f["Rn"], wb, sp=True)
 
@@ -535,7 +534,7 @@ def t_sys(b, f, pc, p):
     if (f["CRm"], f["op2"]) in ((4, 1), (4, 4)):
         base = b.bin("and", getx(b, f["Rt"], 1), b.const(~63))
         for k in range(8):
-            store(b, b.bin("add", base, b.const(8 * k)), b.const(0), f["Rt"] if f["Rt"] != 31 else 0)
+            store(b, b.bin("add", base, b.const(8 * k)), b.const(0))
 
 
 def t_barrier(b, f, pc, p):
@@ -544,11 +543,6 @@ def t_barrier(b, f, pc, p):
 
 # ---- atomics and ordering (docs/lifter.md section 9: x86-TSO mapping)
 RMW = {0: "add", 1: "clr", 2: "xor", 3: "or", 4: "max", 5: "min", 6: "umax", 7: "umin"}
-
-
-def mark_atomic(b, addr, n, base_reg):
-    if base_reg != 31:
-        b.op("mark", "void", addr, lo=0, hi=n)
 
 
 def t_lse(b, f, pc, p):
@@ -567,7 +561,6 @@ def t_lse(b, f, pc, p):
         if op == "clr":   # (LDCLR: memory AND NOT Rs)
             op, v = "and", b.not_(v)
     old = b.op("rmw", t, addr, v, kind=op)
-    mark_atomic(b, addr, 1 << size, rn)
     setx(b, rt, b.zext(old, "i64"))
 
 
@@ -577,7 +570,6 @@ def t_cas(b, f, pc, p):
     t = SIZES[size]
     addr = getx(b, rn, 1, sp=True)
     old = b.op("cas", t, addr, b.trunc(getx(b, rs, 1), t), b.trunc(getx(b, f["Rt"], 1), t))
-    mark_atomic(b, addr, 1 << size, rn)
     setx(b, rs, b.zext(old, "i64"))
 
 
@@ -593,7 +585,6 @@ def t_casp(b, f, pc, p):
         hi = b.zext(b.trunc(getx(b, r + 1, 1), half), t)
         return b.bin("or", lo, b.bin("shl", hi, b.const(w, t)))
     old = b.op("cas", t, addr, pair(rs), pair(rt))
-    mark_atomic(b, addr, 2 * w // 8, rn)
     setx(b, rs, b.zext(b.trunc(old, half), "i64"))
     setx(b, rs + 1, b.zext(b.trunc(b.bin("lshr", old, b.const(w, t)), half), "i64"))
 
@@ -608,7 +599,6 @@ def t_ldstord(b, f, pc, p):
         setx(b, rt, b.zext(b.op("aload", t, addr, order="acquire"), "i64"))
     else:
         b.op("astore", "void", addr, b.trunc(getx(b, rt, 1), t), order="seq_cst")
-        mark_atomic(b, addr, 1 << size, rn)
 
 
 def t_ldstex(b, f, pc, p):
@@ -621,7 +611,6 @@ def t_ldstex(b, f, pc, p):
         setx(b, rt, b.op("call", "i64", addr, n, fn="recomp_ldxr", ctx=True))
     else:
         st = b.op("call", "i32", addr, n, getx(b, rt, 1), fn="recomp_stxr", ctx=True)
-        mark_atomic(b, addr, 1 << size, rn)
         setx(b, f["Rs"], st)
 
 
@@ -637,7 +626,6 @@ def t_ldstexp(b, f, pc, p):
         setx(b, f["Rt2"], hi)
     else:
         st = b.op("call", "i32", addr, n, getx(b, rt, 1), getx(b, f["Rt2"], 1), fn="recomp_stxp", ctx=True)
-        mark_atomic(b, addr, 16 if sz else 8, rn)
         setx(b, f["Rs"], st)
 
 
