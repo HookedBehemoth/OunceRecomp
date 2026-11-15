@@ -213,7 +213,7 @@ static void scan_dt(long long presents) {
    1/15 s, as TotK Recomp's frame_rate.c (slower frames slow the game down, as on the console), at least 1/60 s (the game's
    own limit holds it at 60). HOS_REALTIME_STEP=0: the shipping whole steps. */
 extern volatile uint64_t hos_gfx_module;
-volatile int hos_fixed_resolution = 0;   /* (the lifted code reads these: nx2/oot_patches.py) */
+volatile int hos_fixed_resolution = 0;   /* (the lifted code reads these: host/oot_probes.c) */
 volatile uint32_t hos_fixed_scale_bits = 0x3f800000;   /* (HOS_RES_SCALE: the fixed path's scale) */
 volatile int hos_dynres_runs = 0;   /* (the dynamic path's frames: it fills fields the 3D reads, +8 +16 +168) */
 volatile float hos_text_scale = 1.0f;   /* (the letters' clock of a text pane, f_80b1e140: nx2/oot_parked.py, parked: no effect) */
@@ -224,16 +224,34 @@ static float text_scale(const char *env, int menu) {
     return v == 1 ? 2.0f : v == 2 ? 4.0f : v >= 3 ? 1e6f : 1.0f;
 }
 volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lifted code when the frame-time hook is in this build; its
-                                            +0xd58 is the game clock in 1/60 s: nx2/oot_patches.py) */
+                                            +0xd58 is the game clock in 1/60 s: host/oot_probes.c) */
 volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step) */
 /* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
    that movie player is worth, the rest carried to its next one, so the count the cutscene's cues are placed by keeps the clock
    as the movie's picture does (issue 1742: the narration ran ahead above 60 fps). 1, the game's own step, otherwise, and with
-   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (nx2/oot_patches.py). */
+   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (host/oot_probes.c). */
+/* HOS_DBG=movie (diagnostic): every 5 s of wall time while a movie counts, its updates and the frames they counted, per
+   second */
+static uint32_t movie_log(uint32_t n) {
+    static int on = -1;
+    static int64_t since;
+    static uint64_t calls, frames;
+    if (on < 0) on = hos_dbg_item("movie");
+    if (!on) return n;
+    const int64_t now = hos_now_ns();
+    if (!since) since = now;
+    calls++, frames += n;
+    if (now - since >= 5000000000LL) {
+        const double s = (double)(now - since) / 1e9;
+        hos_log("movie: %.1f updates and %.1f frames counted a second", (double)calls / s, (double)frames / s);
+        since = now, calls = frames = 0;
+    }
+    return n;
+}
 uint32_t hos_movie_frames(uint64_t player) {
     enum { PLACES = 16 };
     const uint32_t bits = __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED);   /* (realtime_step writes it at each present) */
-    if (!bits) return 1;
+    if (!bits) return movie_log(1);
     static SRWLOCK lock = SRWLOCK_INIT;
     static int timed = -1;   /* (these four under the lock) */
     static struct { uint64_t player, used; double part; } carry[PLACES];
@@ -266,7 +284,7 @@ uint32_t hos_movie_frames(uint64_t player) {
         carry[i].part -= n;
     }
     ReleaseSRWLockExclusive(&lock);
-    return n;
+    return movie_log(n);
 }
 /* (nx2/oot_patches.py patch_whole_frames) the whole frames a game counter at `at` takes for an amount of the frame step (its
    float's bits): with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
@@ -289,7 +307,7 @@ uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {
     }
     return whole;
 }
-volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: nx2/oot_patches.py) */
+volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: host/oot_probes.c) */
 /* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
    step is 1/60: discarding it made alternating short/long frames advance more game time than elapsed wall time.
    Keep at most four nominal frames of debt so unpaced fast presents cannot leave a long recovery. Steps beyond
@@ -418,7 +436,7 @@ static void realtime_step(int64_t now) {
     for (unsigned i = 0; i < count; i++) sum += samples[i];
     /* (hookshot) A cap above 60: the engine's own rate is 60 / <whole display intervals>, and its controller puts 60 back over a
        higher +0x2c8 before the step is made from it, so every frame still stepped 1/60 s and the game ran fps / 60 times too fast.
-       The step is then the frames' own time at the two places the engine makes it (nx2/oot_patches.py, hos_frame_seconds_bits):
+       The step is then the frames' own time at the two places the engine makes it (host/oot_probes.c, hos_frame_seconds_bits):
        this same average, at most 1/15 s as below and at least 1/240 s, and the rate under it stays the engine's, 60 at most.
        HOS_FPS_STEP=0, or a lift without the hook (hos_step_probe unset): the rate up to the cap, as before */
     static int timed_step = -1;

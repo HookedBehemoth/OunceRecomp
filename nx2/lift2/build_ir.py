@@ -41,6 +41,7 @@ class Program:
         self.no_call = set(no_call)
         self.probes = {}   # pc -> fn(builder, insn, pc): the instruction replaced by a probe (probes.py, section 9)
         self.before = {}   # pc -> fn(builder): run before the instruction at pc, whatever it is (probes.splice_before)
+        self.after = {}   # pc -> [fn(builder)]: run after the instruction at pc, after a BL / BLR when it returns (probes.post)
 
 
 LEAF = Program()
@@ -166,6 +167,8 @@ def build(entry, pcs, word, prog=LEAF):
                 probe(b, i, pc)
             else:
                 sem.TEMPLATES[t](b, f, pc, i.entry.params)
+            for post in prog.after.get(pc, ()):
+                post(b)
             if pc + 4 not in body:   # (falls through into another function: a tail call)
                 cur.term = ("br", goto(pc + 4, pc))
                 cur = None
@@ -174,6 +177,8 @@ def build(entry, pcs, word, prog=LEAF):
             b.set("x30", b.const(pc + 4))
             b.op("gcall", "void", sym=prog.symbol(prog.callee(target(i, pc))))
             b.after_call()
+            for post in prog.after.get(pc, ()):
+                post(b)
             if pc + 4 not in body:
                 cur.term = ("br", goto(pc + 4, pc))
                 cur = None
@@ -183,6 +188,8 @@ def build(entry, pcs, word, prog=LEAF):
             b.set("x30", b.const(pc + 4))
             b.op("icall", "void", tv)
             b.after_call()
+            for post in prog.after.get(pc, ()):
+                post(b)
             if pc + 4 not in body:
                 cur.term = ("br", goto(pc + 4, pc))
                 cur = None
@@ -195,6 +202,8 @@ def build(entry, pcs, word, prog=LEAF):
                 cur.term = ("br", goto(pc + 4, pc))
                 cur = None
             continue
+        if pc in prog.after:   # (a branch: nothing runs after it on every path)
+            raise ValueError("code after the branch at %#x" % pc)
         if t == "b":
             cur.term = ("br", goto(target(i, pc), pc))
         elif t == "bcond":

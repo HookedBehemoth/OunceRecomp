@@ -1282,7 +1282,7 @@ class AfterC(unittest.TestCase):
         word = lambda pc: words[(pc - base) // 4]
         pcs = [base + 4 * k for k in range(len(words))]
         prog = build_ir.Program()
-        prog.probes = probes.after_c({base: "c->x[8] = 40;"}, pcs, word)
+        prog.after = probes.merge(probes.after_c({base: "c->x[8] = 40;"}, pcs, word))
         fn = build_ir.build(base, pcs, word, prog)
         m = emit_llvm.Module()
         m.add(fn)
@@ -1298,6 +1298,36 @@ class AfterC(unittest.TestCase):
             subprocess.run([llvm.check("clang"), "-O1", "-w", "-I" + d, c, after, ll, "-o", exe], check=True)
             out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
         self.assertEqual(out, ["40", "41"])
+
+    def test_after_c_on_a_call(self):
+        """C after a BL (the RT pool's f_83b7b340 has one after a BLR): it runs when the call returns, and the code
+        after it reads what the C wrote (x9 = x0 + 1 sees the callee's 10 plus the C's 5)"""
+        from lift2 import probes
+        base = 0x80003000
+        words = [0x94000400, 0x91000409, 0xd65f03c0]   # bl 0x80004000; add x9, x0, #1; ret
+        word = lambda pc: words[(pc - base) // 4]
+        pcs = [base + 4 * k for k in range(len(words))]
+        texts = {base: "c->x[0] += 5;"}
+        prog = build_ir.Program()
+        prog.after = probes.merge(probes.after_c(texts, pcs, word))
+        fn = build_ir.build(base, pcs, word, prog)
+        m = emit_llvm.Module()
+        m.add(fn)
+        harness = AFTER_HARNESS.replace("void g_80003000(Ctx *);",
+                                        "void g_80003000(Ctx *);\nvoid g_80004000(Ctx *c) { c->x[0] = 10; }")
+        harness = harness.replace("c.x[8], (unsigned long long)c.x[9]", "c.x[0], (unsigned long long)c.x[9]")
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a64.h"), "w") as fo:
+                fo.write(CTX_H)
+            after = probes.write_after_c(texts, d)
+            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
+            with open(ll, "w") as fo:
+                fo.write(m.text())
+            with open(c, "w") as fo:
+                fo.write(harness)
+            subprocess.run([llvm.check("clang"), "-O1", "-w", "-I" + d, c, after, ll, "-o", exe], check=True)
+            out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(out, ["15", "16"])
 
     def test_splice_before_a_branch(self):
         """SPLICE_BEFORE (f_8007fe60's form): the splice runs on a TBZ's fall-through, before the CBNZ there, and the

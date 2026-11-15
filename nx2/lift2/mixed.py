@@ -127,9 +127,9 @@ def write_plan(L, img, path):
             why["hooked"] = why.get("hooked", 0) + 1
             continue
         pcs = sorted(body)
-        if any(after_c.get(pc) and enc.decode(img.word(pc)) is not None and
+        if any(after_c.get(pc) and enc.decode(img.word(pc)) is not None and not probes.is_call(img.word(pc)) and
                enc.decode(img.word(pc)).entry.template in build_ir.TERMINATORS for pc in pcs):
-            why["C added after a branch"] = why.get("C added after a branch", 0) + 1   # (probes.after_c: none in TOTK)
+            why["C added after a branch"] = why.get("C added after a branch", 0) + 1   # (after a call: Program.after)
             continue
         r = build_ir.scope(e, pcs, img.word, scope_prog)
         if r is not None and "not decoded" in r:   # (data the discovery took for code: unreachable from the entry)
@@ -284,9 +284,11 @@ def lift_part(args):
         pcs, words = plan["bodies"][e]
         w = dict(zip(pcs, words))
         prog.probes = probes.find(e, pcs, w.__getitem__)
-        prog.probes.update(probes.after_c(plan.get("after_c", {}), pcs, w.__getitem__))
-        prog.probes.update(probes.after_c(probes.splice_texts(e, w.__getitem__), pcs, w.__getitem__))
         prog.before = probes.splice_before(e, pcs, w.__getitem__)
+        # (after an instruction, in this order: the At probes, the C after it, the SPLICE_AT splices)
+        prog.after = probes.merge(probes.at(e, pcs, w.__getitem__),
+                                  probes.after_c(plan.get("after_c", {}), pcs, w.__getitem__),
+                                  probes.after_c(probes.splice_texts(e, w.__getitem__), pcs, w.__getitem__))
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
         fn.entry_hook = hooks.get(e)
         if verify and verified(plan, e):
@@ -361,6 +363,9 @@ def prepare(spec, gen, out, srcs, jobs, opt, hot_opt, march_flags, cache):
     if spec != "all-safe":
         want = {int(l.split()[0], 16) for l in open(spec) if l.strip() and not l.startswith("#")}
         chosen &= want
+    lost = sorted(probes.AT_FUNCS - chosen)
+    if lost and own is not None:   # (the present lifter does not make the At probes: such a function would lose its patch)
+        raise SystemExit("lift2: the At probes' functions %s are not lift 2's" % ", ".join("f_%08x" % e for e in lost))
     with open(os.path.join(out, "lift2_functions.txt"), "w") as f:
         f.write("".join("%08x\n" % e for e in sorted(chosen)))
     # the present lifter's files, with the chosen definitions out of the way

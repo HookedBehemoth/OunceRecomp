@@ -2,16 +2,15 @@
 
 The game's movie player counts its updates while a movie plays, and a cutscene that shows a movie places its narration, its
 rumble and its end by that count. The movie's picture and sound follow the clock, so at 120 fps the cues came twice too early:
-narration lines started over each other. nx2/oot_patches.py makes the count's step hos_movie_frames(player), and host/nn_vi.c
+narration lines started over each other. lift 2's At probe (nx2/lift2/probes.py AT) makes the count's step hos_movie_frames(player)
+(host/oot_probes.c hos_oot_movie_count after the update's add w8, w8, #1, which takes the one back), and host/nn_vi.c
 answers 1 while the host gives no frame time (a cap of 60: as shipped) and the frames' time in 60ths, the rest carried to the
 player's next update, while it does (HOS_FPS_MOVIE=0: 1 then too, for comparisons). A game version whose code differs keeps
-its own code and the build goes on with a warning.
+its own code and the build goes on with a message.
 
 python -I -B tests/test_movie_frame_count.py [--cc gcc]
 """
 import argparse
-import contextlib
-import io
 import os
 import re
 import subprocess
@@ -23,14 +22,12 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
+from lift2 import probes  # noqa: E402
 
-# (the shape of the lifted update: the count loaded, one added, stored; the same lines in another function stay as they are)
+# (the lifted update: the count loaded, one added (the instruction the probe follows), stored)
+LOAD_ADD = ("    c->x[8]=recomp_load32(c,c->x[20] + 760);\n"
+            "    { uint64_t _a=c->x[8], _b=1ULL; uint64_t _r=_a+_b; _r&=0xFFFFFFFFULL; c->x[8]=_r; }\n")
 STORE = "    recomp_store32(c,c->x[20] + 760,c->x[8]);\n"
-LIFTED = ('#include "a64.h"\n'
-          "void f_83b7c710(Ctx *__restrict A64_NOESC c) {\n"
-          "    c->x[8] = 0x1ULL;\n" + oot_patches.MOVIE_OLD + STORE + "}\n"
-          "void f_83b7c870(Ctx *__restrict A64_NOESC c) {\n" + oot_patches.MOVIE_OLD + STORE + "}\n")
 HOST_ANCHOR = "uint32_t hos_movie_frames(uint64_t player) {"
 
 
@@ -58,6 +55,9 @@ typedef int SRWLOCK;
 static void AcquireSRWLockExclusive(SRWLOCK *l) { CHECK(!*l); *l = 1; }
 static void ReleaseSRWLockExclusive(SRWLOCK *l) { CHECK(*l); *l = 0; }
 volatile uint32_t hos_frame_seconds_bits;
+static int hos_dbg_item(const char *item) { (void)item; return 0; }
+static void hos_log(const char *fmt, ...) { (void)fmt; }
+static int64_t hos_now_ns(void) { return 0; }
 @HOST@
 /* (the lifted update with the patch, on a small guest: the count at +760 of the player) */
 typedef struct { uint64_t x[31]; } Ctx;
@@ -176,42 +176,18 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    out = oot_patches.patch_movie_frames(LIFTED)
-    check(out is not None and out.count("_b=hos_movie_frames(c->x[20])") == 1, "the count's step is not the host's, once")
-    update = out[out.index("void f_83b7c710"):out.index("void f_83b7c870")]
-    check("hos_movie_frames" in update and "hos_movie_frames" not in out[out.index("void f_83b7c870"):],
-          "the same lines in another function were patched")
-    check(out.startswith('#include "a64.h"\n' + oot_patches.MOVIE_DECL), "the lifted file does not declare the host's function")
-    back = out.replace(oot_patches.MOVIE_DECL, "", 1).replace(oot_patches.MOVIE_NEW, oot_patches.MOVIE_OLD)
-    check(back == LIFTED, "more than the count's step changed")
-    check(oot_patches.patch_movie_frames(out) == out, "a second run changed a patched file")
-    check(oot_patches.patch_movie_frames(LIFTED.replace("f_83b7c710", "f_83b7c714")) is None,
-          "a file without the function was not left to the caller")
-    for what, other in (("another step", LIFTED.replace("_b=1ULL", "_b=2ULL")),
-                        ("another field", LIFTED.replace("+ 760", "+ 764")),
-                        ("the lines twice", LIFTED.replace(STORE + "}\nvoid f_83b7c870", STORE + oot_patches.MOVIE_OLD + STORE + "}\nvoid f_83b7c870"))):
-        check(oot_patches.patch_movie_frames(other) == other, "a function with %s was patched (another game version)" % what)
-
-    with tempfile.TemporaryDirectory(prefix="movie-count-") as tmp:
-        f = Path(tmp) / "code_000.c"
-        f.write_text(LIFTED, encoding="utf-8", newline="")
-        for run in ("first", "second"):   # (the second over the patched file: counted as made, nothing written)
-            log = io.StringIO()
-            with contextlib.redirect_stdout(log):
-                oot_patches.apply(tmp)
-            check("WARNING: the movie's frame count" not in log.getvalue(), "the %s run warns though the count is patched" % run)
-            check(f.read_text(encoding="utf-8") == out, "the %s run did not leave the patched file" % run)
-        other = LIFTED.replace("_b=1ULL", "_b=2ULL")
-        f.write_text(other, encoding="utf-8", newline="")
-        log = io.StringIO()
-        with contextlib.redirect_stdout(log):
-            oot_patches.apply(tmp)
-        check("WARNING: the movie's frame count was found 0 times" in log.getvalue(), "no warning for a count that was not found")
-        check(f.read_text(encoding="utf-8") == other, "another version's function was changed")
+    rows = [p for p in probes.AT if p.func == 0x83b7c710]
+    check(len(rows) == 1, "one probe")
+    p0 = rows[0]
+    check((p0.pc, p0.word, p0.fn, p0.args, p0.result) == (0x83b7c7c8, 0x11000508, "hos_oot_movie_count", ("w8", "x20"), "w8"),
+          "the probe is w8 := hos_oot_movie_count(w8, x20) after the update's add w8, w8, #1")
+    oot = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
+    count = oot[oot.index("uint32_t hos_oot_movie_count("):]
+    count = count[:count.index("\n")]
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
-    lifted = oot_patches.MOVIE_NEW + STORE
-    fixture = FIXTURE.replace("@HOST@", block(vi, HOST_ANCHOR)).replace("@LIFTED@", lifted)
+    lifted = LOAD_ADD + "    c->x[8] = hos_oot_movie_count((uint32_t)c->x[8], c->x[20]);\n" + STORE
+    fixture = FIXTURE.replace("@HOST@", block(vi, "static uint32_t movie_log(") + "\n" + block(vi, HOST_ANCHOR) + "\n" + count).replace("@LIFTED@", lifted)
     with tempfile.TemporaryDirectory(prefix="movie-count-") as tmp:
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
@@ -225,7 +201,7 @@ def main():
         check(r.returncode != 0 and "FAIL:" in r.stderr, "the count is the game's own without HOS_FPS_MOVIE=0")
         # (the negative control: the game's own step of one an update fails the same checks at 120 fps)
         plain = Path(tmp) / "plain.c"
-        plain.write_text(FIXTURE.replace("@HOST@", block(vi, HOST_ANCHOR)).replace("@LIFTED@", oot_patches.MOVIE_OLD + STORE),
+        plain.write_text(FIXTURE.replace("@HOST@", block(vi, "static uint32_t movie_log(") + "\n" + block(vi, HOST_ANCHOR)).replace("@LIFTED@", LOAD_ADD + STORE),
                          encoding="utf-8")
         subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(plain), "-o", str(exe)], check=True)
         r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)

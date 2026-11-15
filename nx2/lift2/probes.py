@@ -19,7 +19,7 @@ from . import enc  # (first: its tables import asm)
 from . import asm
 from . import sem
 from .sem_int import getx, setx
-from .sem_fp import vread
+from .sem_fp import vread, vwrite
 
 
 class Value:
@@ -70,10 +70,88 @@ def find(func, pcs, word):
     return out
 
 
-# ---- C after an instruction (a64_lift.py Lifter.after: oot_wide, oot_jitter, oot_occlusion). The C works on the guest
-# context; lift 2's generic entry keeps every written register stored there (write-through), so the instruction is
-# lifted, then lift2_after_<pc>(ctx) is called (that C, unchanged, as a host function: write_after_c), and the
-# registers are the context's again after it. NZCV is not stored: none of the C reads it.
+# ---- At: a host function of a few registers after an instruction (after a BL / BLR when it returns), its result in a
+# register: "at pc: reg := fn(regs...)". The arguments: "xN" (i64), "wN" (i32, the low half), "sN" (the bits of Sn, i32),
+# "#K" (an i32 constant); the result: "xN", "wN" (zero-extended, as every W write) or "sN" (the bits, the rest of Vn
+# zero, as every scalar FP write), or None. The host function (host/oot_probes.c) takes plain values and guest
+# addresses, never the context; it may read and write guest memory (the call is never moved or removed). Each row names
+# the instruction's word, checked at lift time: a word that differs stops the lift (another game version). The function
+# must be lift 2's (mixed.prepare stops otherwise): the present lifter does not make these.
+class At:
+    def __init__(self, func, pc, word, fn, args=(), result=None):
+        self.func, self.pc, self.word, self.fn, self.args, self.result = func, pc, word, fn, tuple(args), result
+
+    def post(self, b):
+        vals = []
+        for a in self.args:
+            kind, n = a[0], a[1:]
+            if kind == "#":
+                vals.append(b.const(int(n, 0), "i32"))
+            elif kind in "xw":
+                vals.append(getx(b, int(n), kind == "x"))
+            else:
+                vals.append(vread(b, int(n), "i32"))
+        ty = {None: "void", "x": "i64", "w": "i32", "s": "i32"}[self.result and self.result[0]]
+        r = b.call(self.fn, ty, *vals, effects=True)
+        if self.result is None:
+            return
+        n = int(self.result[1:])
+        if self.result[0] == "s":
+            vwrite(b, n, r)
+        else:
+            setx(b, n, r)
+
+
+# (host/oot_probes.c says what each does and why)
+AT = [
+    # dynamic resolution and the fixed scale
+    At(0x80825aa0, 0x80825bcc, 0xb9409508, "hos_oot_dynres_flags", ("w8",), "w8"),   # ldr w8, [x8, #148]
+    At(0x80825aa0, 0x80826420, 0x52a7f009, "hos_oot_fixed_scale", (), "w9"),        # mov w9, #1.0
+    At(0x831f3200, 0x831f3efc, 0xb94e2e89, "hos_oot_scale_recompute", ("x20", "w8"), "w8"),   # ldr w9, [x20, #3628]
+    At(0x831f3200, 0x831f3f08, 0xf9471288, "hos_oot_scale_flags", ("x20", "x8"), "x8"),       # ldr x8, [x20, #3616]
+    # native scene (HOS_SCENE_NATIVE) and the cached scale's refresh (HOS_FIX_RES)
+    At(0x806702e0, 0x80670308, 0x3955280e, "hos_oot_scene_mode", ("x0", "w14"), "w14"),     # ldrb w14, [x0, #1354]
+    At(0x831f3200, 0x831f3200, 0x39788008, "hos_oot_scene_check", ("x0",)),                # ldrb w8, [x0, #3616]
+    # frame seconds: both step divides
+    At(0x80706be0, 0x80706cc4, 0x1e201828, "hos_oot_frame_step_probe", ("s1", "s8", "x19"), "s8"),   # fdiv s8, s1, s0
+    At(0x83b6ea90, 0x83b6eaf8, 0x1e201820, "hos_oot_frame_step", ("s1", "s0"), "s0"),                 # fdiv s0, s1, s0
+    # movie frames
+    At(0x83b7c710, 0x83b7c7c8, 0x11000508, "hos_oot_movie_count", ("w8", "x20"), "w8"),     # add w8, w8, #1
+    # output size
+    At(0x81222ce0, 0x81222ee4, 0xf2c0b408, "hos_oot_output_size", (), "x8"),               # movk x8, #1440, lsl #32
+    At(0x810a7b70, 0x810a7b8c, 0xaa0103f4, "hos_oot_output_config", ("x20",)),             # mov x20, x1
+    At(0x80ea2f30, 0x80ea2ffc, 0x29406418, "hos_oot_base_size", ("w24", "#0"), "w24"),     # ldp w24, w25, [x0]
+    At(0x80ea2f30, 0x80ea2ffc, 0x29406418, "hos_oot_base_size", ("w25", "#1"), "w25"),
+    At(0x80ea2f30, 0x80ea303c, 0x52a89e08, "hos_oot_base_size_bits", ("#0",), "w8"),       # mov w8, #1920.0
+    At(0x80ea2f30, 0x80ea3044, 0x52a890e8, "hos_oot_base_size_bits", ("#1",), "w8"),       # mov w8, #1080.0
+    # the render targets' pool
+    At(0x836ce9d0, 0x836cea54, 0x39587668, "hos_oot_rt_pool_config", ("x19",)),            # ldrb w8, [x19, #1565]
+    At(0x83b7b340, 0x83b7b438, 0xaa1703e2, "hos_oot_rt_heap_size", ("x0",), "x0"),         # mov x2, x23 (x0: the heap's size)
+    At(0x83b7b340, 0x83b7b4dc, 0xd63f0100, "hos_oot_rt_heap_use", ("x0", "x21", "x22"), "x0"),   # blr x8 (returns the use)
+    At(0x80b72340, 0x80b723a4, 0x52800024, "hos_oot_rt_rest", ("x0",), "x0"),              # mov w4, #1 (x0: the size)
+]
+AT_FUNCS = {p.func for p in AT}
+
+
+def at(func, pcs, word):
+    """{pc: [fn(builder)]} of a function's At probes, for Program.after; SystemExit when a word differs"""
+    out = {}
+    have = set(pcs)
+    for p in AT:
+        if p.func != func:
+            continue
+        if p.pc not in have or word(p.pc) != p.word:
+            raise SystemExit("lift2 probes: At f_%08x at %#x holds %s, not %08x (another game version?)"
+                             % (func, p.pc, "%08x" % word(p.pc) if p.pc in have else "nothing", p.word))
+        out.setdefault(p.pc, []).append(p.post)
+    return out
+
+
+# ---- C after an instruction (a64_lift.py Lifter.after: oot_wide, oot_jitter, oot_occlusion; SPLICE_AT's splices). The
+# C works on the whole guest context; lift 2's generic entry keeps every written register stored there (write-through),
+# so after the instruction lift2_after_<pc>(ctx) is called (that C, unchanged, as a host function: write_after_c), and
+# the registers are the context's again after it. NZCV is not stored: none of the C reads it. A patch that needs only a
+# few registers is an At probe instead (below): its values stay SSA values.
 AFTER_HEAD = """/* Generated by nx2/lift2/probes.py from the C the present lifter puts after these instructions
    (nx2/oot_wide.py, oot_jitter.py, oot_occlusion.py): called by lift 2's code after each. Do not edit. */
 #include "a64.h"
@@ -82,21 +160,31 @@ AFTER_HEAD = """/* Generated by nx2/lift2/probes.py from the C the present lifte
 """
 
 
+def is_call(w):
+    """a BL or BLR: what comes after it runs when the call returns"""
+    i = enc.decode(w)
+    return i is not None and (i.entry.template == "blr" or i.entry.template == "b" and i.f["op"] == 1)
+
+
 def after_c(texts, pcs, word):
-    """{pc: lowering} for the instructions of one function that have C after them"""
+    """{pc: fn(builder)} for Program.after: the instructions of one function that have C after them"""
     out = {}
     for pc in pcs:
         if pc in texts:
-            out[pc] = _after(pc)
+            def post(b, pc=pc):
+                b.call("lift2_after_%08x" % pc, "void", ctx=True, effects=True)
+                b.after_call()
+            out[pc] = post
     return out
 
 
-def _after(pc):
-    def lower(b, insn, at):
-        sem.TEMPLATES[insn.entry.template](b, insn.f, at, insn.entry.params)
-        b.call("lift2_after_%08x" % pc, "void", ctx=True, effects=True)
-        b.after_call()
-    return lower
+def merge(*posts):
+    """Program.after from several {pc: fn(builder)} (or {pc: [fn]}), in the order given"""
+    out = {}
+    for d in posts:
+        for pc, fn in d.items():
+            out.setdefault(pc, []).extend(fn if isinstance(fn, list) else [fn])
+    return out
 
 
 def write_after_c(texts, folder):

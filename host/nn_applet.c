@@ -111,7 +111,7 @@ static int handheld(void) {
 }
 /* (hookshot) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: 0 the game's 2048 x 1152,
    1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440. The game's frame is its display size (2560 x 1440 as shipped;
-   nx2/oot_patches.py apply_output_size asks hos_output_size) times its graphics scale (GetCurrentGraphicsScale: 0 x1, 1 x0.8,
+   host/oot_probes.c asks hos_output_size) times its graphics scale (GetCurrentGraphicsScale: 0 x1, 1 x0.8,
    2 x0.667). Here it saw scale 1 (x0 left at the call before's answer), so 2048 x 1152; each explicit size uses x1. */
 static int output_mode(void) {
     static int v = -1;
@@ -132,7 +132,7 @@ uint32_t hos_output_size(int height) {
     default: return height ? 1440 : 2560;
     }
 }
-/* (hookshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
+/* (hookshot) The render targets' GPU pool (host/oot_probes.c), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
    the 4K output ran out of it. Scaled with the output's pixels, or the widescreen picture's when it has more (host/hos_main.c:
    hos_wide_out, the output's height at the screen's shape: 7680 x 2160 for a 32:9 screen at the 4K output, twice the pixels the pool
    was scaled for, and the game crashed as Kokiri Forest loaded, a null pointer or "texture handle ids -1", issue 1031);

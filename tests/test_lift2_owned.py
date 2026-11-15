@@ -13,15 +13,31 @@ sys.path.insert(0, os.path.join(ROOT, "nx2"))
 from lift2 import owned  # noqa: E402
 
 
+def owned_splices():
+    import entry_hooks
+    return entry_hooks.wanted_splices()
+
+
 class Owned(unittest.TestCase):
     def test_edit_addresses_found(self):
+        """the addresses a patch source names (heads, labels, constants) but those lift 2 makes as probes"""
+        real = owned.PATCH_SOURCES
         with tempfile.TemporaryDirectory() as d:
-            got = owned.edit_addresses(os.path.join(d, "gen"))
-        # (oot_patches.py's movie frames patch names f_83b7c710; its dynamic resolution patch the label L_8082640c)
-        self.assertIn(0x83b7c710, got)
-        self.assertIn(0x8082640c, got)
-        # (the parked text speed patch, nx2/oot_parked.py, is not applied: f_80b1e140 is lift 2's)
-        self.assertNotIn(0x80b1e140, got)
+            src = os.path.join(d, "patches.py")
+            with open(src, "w") as f:
+                f.write('HEAD = "void f_80b1e140(Ctx *c) {"\nLABEL = "L_8082640c:;"\nRET = 0x83b7b440\n'
+                        '# f_80a87e50 (a WHOLE_SITES probe: lift 2 makes it)\n')
+            try:
+                owned.PATCH_SOURCES = (src,)   # (absolute: joined to nx2/ it stays itself)
+                got = owned.edit_addresses(os.path.join(d, "gen"))
+            finally:
+                owned.PATCH_SOURCES = real
+        self.assertTrue({0x80b1e140, 0x8082640c, 0x83b7b440} <= got)
+        self.assertNotIn(0x80a87e50, got)
+        # (the game's own sources now: the frame-rate and resolution patches are lift 2's At probes,
+        # and the parked ones, nx2/oot_parked.py, are applied by nothing: no present-lifter edit is left in them)
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(owned.edit_addresses(os.path.join(d, "gen")) - set(owned_splices()), set())
 
     def test_compute(self):
         funcs = {0x80000000: [0x80000000, 0x80000004], 0x80000100: [0x80000100, 0x80000104],

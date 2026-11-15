@@ -335,7 +335,7 @@ The ModuleSystem's agl draw delegates (draw3DOpa_ etc.) are not tree nodes: they
 ### 4.3 Inside moduleCalc_: the job stages
 
 `f_80706be0` (VERIFIED decompile): the frame's step from the mode (60.0, 30.0 in the half-rate mode) and the
-nominal rate (the double at ModuleSystem +0xd58 is the game clock, `nx2/oot_patches.py`), the module timing
+nominal rate (the double at ModuleSystem +0xd58 is the game clock, `host/oot_probes.c`), the module timing
 (`f_83b6e300`, `f_83b89870`, `f_83b899c0`, `f_80877eb0` on ModuleSystem +0x480), the registry's +0x30 under a mutex,
 then the module job graph (ModuleSystem +0x4b8) in **stages**: each stage is `f_80070ea0(graph, pool, stage list)`
 (label `job_graph_build`) and `f_80070b20(pool)` (label `job_graph_run_and_join`): the calling thread runs the
@@ -666,7 +666,7 @@ function's entry, `host/hos.h:26`; a mark at the end of a phase is the entry of 
 
 | Phase | Boundary | Notes |
 |---|---|---|
-| a frame | `f_83b6ea90` entry (procFrame) | once a frame on sead::MainThread, before anything else of the frame; `nx2/oot_patches.py` already splices the real-time step here and in `f_80706be0` |
+| a frame | `f_83b6ea90` entry (procFrame) | once a frame on sead::MainThread, before anything else of the frame; `host/oot_probes.c` (lift 2 At probes) already puts the real-time step here and in `f_80706be0` |
 | the frame's CPU work ends | the tail `nvnEventSignal(value 1)` of `f_8042cd20` | already timed by the back end (the CPU event signal, `host/rx_backend.c`); M6a's frame boundary |
 | task create/destroy | `f_802eaf10`, `f_802eaa40`, `f_802ead80` | rare work; a scene change's task churn shows here |
 | calc | `f_802eabd0` entry / `f_8348d430` entry | everything of 4.3 |

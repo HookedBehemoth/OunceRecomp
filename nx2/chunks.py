@@ -244,7 +244,7 @@ def write(L, gen_dir, img_dir, rechunk=False, counters=(), jobs=None):
     # code_*.c: split_hot.py makes this lift's after it. A lift with no code_hot.c (no hot list, A64_HOT_CHUNK unset, or none of the
     # listed functions in it): split_hot.py had renamed the old one code_hot.c.whole and left code_hot_*.c, which build.py compiled
     # again, the earlier lift's hot functions, each defined in a chunk too, linked twice. A lift with one: the old pieces, patched
-    # already, and the new whole file each held the output-size places, and nx2/oot_patches.py's count of them failed the lift)
+    # already, and the new whole file each held the output-size places, and nx2/oot_patches.py's count of them, then text edits, failed the lift)
     for f in os.listdir(gen_dir):
         if f == "code_hot.c.whole" or HOT_PIECE.fullmatch(f):
             os.remove(os.path.join(gen_dir, f))
@@ -335,12 +335,11 @@ def split_big(gen_dir, files, budget=None):
     return made
 
 
-def edit_c(gen, stats, supported, whole=True):
-    """(nx2/lift.py, after the lift writes its C; here, beside the writing, so it imports without the lift's tools) The edits of the written C, in this order: the game's patches (nx2/oot_patches.py, which find the lift's exact text; the
-    supported build's whole standalone lift fails when an output-size edit finds no place), then, last, the page marks of each
+def edit_c(gen, stats):
+    """(nx2/lift.py, after the lift writes its C; here, beside the writing, so it imports without the lift's tools) The edits of the written C, in this order: the game's patches (nx2/oot_patches.py, which find the lift's exact text), then, last, the page marks of each
     group of stores shared (a64_lift.group_marks), which changes that text. stats: the lift's, for its report"""
     import oot_patches
-    oot_patches.apply(gen, required=supported and whole)
+    oot_patches.apply(gen)
     import entry_hooks   # (native-vk: host replacements of lifted functions, ENTRY_HOOK in host/*.c)
     entry_hooks.apply(gen)
     a64_lift.group_marks(sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))), stats)

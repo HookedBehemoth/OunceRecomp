@@ -16,7 +16,7 @@ concluded from shapes, names or numbers and not confirmed.
 | Output size `O` | The size the host tells the game its display is: `hos_output_size` | `host/nn_applet.c:127` |
 | Frame size `F` | The size of the picture the game composes (3D upscaled, then UI). `O` times the graphics scale factor (mode 1: 0.8 when the output mode is 0, otherwise 1.0) | `f_806702e0` `display_scale_mode_select` |
 | Scene size `S` | The size the 3D renders at. `BaseResolution` (3/4 of `O`, scaled with it) times the graphics scale factor times the 3D scale | `f_80ea2f30` `display_base_resolution`, `f_831f3200` `scene_resolution_update` |
-| 3D scale `s` | The module field `+0xe5c` (`= requested * (+0xe58) / (+0xe50)`); 1.0 on the fixed path | `host/nn_vi.c:230-275`, `nx2/oot_patches.py:25-36` |
+| 3D scale `s` | The module field `+0xe5c` (`= requested * (+0xe58) / (+0xe50)`); 1.0 on the fixed path | `host/nn_vi.c:230-275`, `host/oot_probes.c` (`hos_oot_scale_recompute`) |
 | Window | The SDL window and its swapchain; any size | `gpu/direct/direct_present.cpp:385` |
 
 With the defaults (`output_res=0`, fixed path, `s = 1.0`): `O` = 2560 x 1440, `F` = 2048 x 1152, `S` = 1536 x 864
@@ -110,7 +110,7 @@ Persistent allocations take the allocator's top-down path (`f_80062c50`) and are
 
 | Target | Format | Size | Derives from |
 |---|---|---|---|
-| Window textures (3) | RGBA8 | `O` (2560 x 1440 by default) | `nnMain` (`f_81222ce0`) puts the display size in the framework's create argument; first edit of `OUT_EDITS` (`nx2/oot_patches.py:370`) |
+| Window textures (3) | RGBA8 | `O` (2560 x 1440 by default) | `nnMain` (`f_81222ce0`) puts the display size in the framework's create argument; `hos_oot_output_size` (`host/oot_probes.c`) |
 | `agl::RenderDisplay` colour and depth | - | `F` (inferred) | `f_809ed030` `agl_render_display` |
 | UI layer texture | R11G11B10F | `F` (2048 x 1152 by default) | the display-size object |
 | Upscale network output (the frame) | R11G11B10F | `F` | the network's output (`gpu/legacy/vk/vk_draw.cpp:6400-6445`: input RGB9E5F at `S`, output R11G11B10F at `F`) |
@@ -136,14 +136,14 @@ pool` lines of `work/runs/sa_w8`, `sb_base`, `warmsh2`), and 884 MB of 1374 MB a
 4. **Graphics scale.** `f_806702e0` `display_scale_mode_select` picks a scale mode from a table (1.0, 0.8, 2/3) per
    profile; the game runs mode 1. `F` = base times the factor. With output mode 0 the game's answer stays
    (`F` = 2048 x 1152); explicit sizes use 1.0 (`host/nn_applet.c:112-115`). `HOS_SCENE_NATIVE=1` turns mode 1's 0.8 into 1.0
-   (`nx2/oot_native_resolution.py`).
+   (`host/oot_probes.c` `hos_oot_scene_mode`).
 5. **Scene base.** `f_80ea2f30` `display_base_resolution` reads ResolutionParam's `BaseResolution` (1920 x 1080 as
    constants, 3/4 of 2560 x 1440); edit 2 scales it with `O`, edit 3 writes `O * 3/4` as floats into the module's `+0xe54` and `+0xe58`
    (the sizes the 3D scale is taken against). `nx2/oot_wide.py:72` (`hos_wide_scene`) replaces it for a non-16:9 screen.
 6. **3D scale.** `f_831f3200` `scene_resolution_update` computes `+0xe5c = requested * (+0xe58) / (+0xe50)` when `+0xe2c`
-   bit 3 is set. The dynamic path (the engine's flag `+0x94`, branch patched by `NEW`, `nx2/oot_patches.py:27`) follows
-   the GPU time; the fixed path takes `hos_fixed_scale_bits` (`SCALE_NEW`, `nx2/oot_patches.py:30`), and `APPLY_NEW`
-   (`:33`) asks for the recompute only while `+0xe5c` differs. `hos_fixed_resolution` (`host/nn_vi.c:238`) selects the fixed
+   bit 3 is set. The dynamic path (the engine's flag `+0x94`, bit cleared by `hos_oot_dynres_flags`, `host/oot_probes.c`) follows
+   the GPU time; the fixed path takes `hos_fixed_scale_bits` (`hos_oot_fixed_scale`), and `hos_oot_scale_recompute`
+   asks for the recompute only while `+0xe5c` differs. `hos_fixed_resolution` (`host/nn_vi.c:238`) selects the fixed
    path unless `HOS_DYNRES=1`; `HOS_RES_SCALE` sets the scale (`host/nn_vi.c:258`). The patch accepts scales up to 2.0.
 7. **Scene targets.** Each pass function allocates its targets while it records, sized from the view rectangle
    (`S`, `S`/2, `S`/4, `S`/16; table above). A change of `s` makes the next frame's descriptors differ, so the allocator
@@ -314,7 +314,7 @@ end. The proposal adds:
    with today's base (or set edit 3's base to `O` instead of `O * 3/4` and `s` = bias x window / `O`). The fixed path
    recomputes and the game makes new targets the next frame (step 7), so a window resize can follow at run time
    without a scene reload: `realtime_step` (`host/nn_vi.c:230`) already writes the scale every present. Lift the 2.0 cap
-   in `APPLY_NEW` / `oot_native_resolution.py` if a bias above it is wanted.
+   in `hos_oot_scale_recompute` / `hos_oot_scene_mode` (`host/oot_probes.c`) if a bias above it is wanted.
 3. **Bypass the network.** Patch the game where it records the network's dispatch (not yet identified: find it from
    `f_81503ce0` `ndsr_networks_init`'s object and the dispatch with program `fd029a317a9a4b94`) so that it calls a host
    function instead, which asks the back end for an upscale: a new `MkwVkRenderer` entry such as

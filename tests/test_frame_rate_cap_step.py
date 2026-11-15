@@ -1,16 +1,14 @@
 """A Frame rate cap above 60 steps the game by the frames' own time, so the game is not sped up.
 
 The engine's rate is a whole number of display intervals, 60 at most, and it puts 60 back over a higher one: with only the
-rate raised, every frame above 60 fps still stepped 1/60 s. nx2/oot_patches.py puts the host's measured frame time
-(hos_frame_seconds_bits) at the engine's two step divides, and host/nn_vi.c realtime_step publishes it while the cap is above
+rate raised, every frame above 60 fps still stepped 1/60 s. lift 2's At probes (nx2/lift2/probes.py AT) give the
+engine's two step divides the host's measured frame time (host/oot_probes.c hos_oot_frame_step, after each FDIV), and host/nn_vi.c realtime_step publishes it while the cap is above
 60 and the hook is in the build. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
-code differs keeps its own code and the build goes on with a warning.
+code differs keeps its own code (both divides or neither) and the build goes on with a message.
 
 python -I -B tests/test_frame_rate_cap_step.py [--cc gcc]
 """
 import argparse
-import contextlib
-import io
 import os
 import re
 import subprocess
@@ -20,21 +18,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
-
-# (the shape of the two lifted functions: a float divide whose result goes to v8 in the frame's step and to v0 in the global one)
-DIVIDE = ("    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[1],4);memcpy(&_b,c->vreg[0],4);_z=(_a^_b)&0x80000000ULL;\n"
-          "    (void)_z;\n" + oot_patches.STEP_OLD + "\n")
-LIFTED = ('#include "a64.h"\n'
-          "void f_80706be0(Ctx *__restrict A64_NOESC c) {\n" + DIVIDE % 8 + "}\n"
-          "void f_80706f00(Ctx *__restrict A64_NOESC c) {\n" + DIVIDE % 3 + "}\n"
-          "void f_83b6ea90(Ctx *__restrict A64_NOESC c) {\n" + DIVIDE % 0 + "}\n"
-          "void f_83b6eb30(Ctx *__restrict A64_NOESC c) {\n}\n")
-
+from lift2 import probes  # noqa: E402
 
 def block(source, marker):
     start = source.index(marker)
     return source[start:start + re.search(r"^}", source[start:], re.M).end()]
+
+
+def definition(source, marker):
+    """a function of host C from its first line: that line when the function is on one line, else up to its closing brace"""
+    start = source.index(marker)
+    line = source[start:source.index("\n", start)]
+    return line if line.rstrip().endswith("}") else block(source, marker)
 
 
 def check(cond, what):
@@ -62,18 +57,11 @@ volatile float hos_text_scale;
 volatile uint64_t hos_step_probe, hos_res_module;
 volatile uint32_t hos_frame_seconds_bits;
 @HOST@
-static uint64_t a64_fpx_div32_div32(void *c, uint64_t a, uint64_t b) {
-    float x, y; uint32_t w;
-    (void)c; memcpy(&x, &a, 4); memcpy(&y, &b, 4); x /= y; memcpy(&w, &x, 4);
-    return w;
-}
-/* (the lifted divide with the hook: base / nominal, or base * the frame's seconds) */
+@PROBES@
+/* (the lifted divide, fdiv s8, s1, s0, then the At probe: s8 := hos_oot_frame_step_probe(s1, s8, x19)) */
 static float lifted_step(float base, float nominal) {
-    void *c = 0; uint64_t _a = 0, _b = 0, _v; float r;
-    memcpy(&_a, &base, 4); memcpy(&_b, &nominal, 4);
-@HOOK@
-    memcpy(&r, &_v, 4);
-    return r;
+    float q = base / nominal;
+    return as_float(hos_oot_frame_step_probe(float_bits(base), float_bits(q), hos_step_probe));
 }
 static int64_t now = 1000000000LL;
 static float frames(int n, double seconds) {   /* (n presents that far apart: the seconds the hook is given, 0 when off) */
@@ -121,52 +109,21 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    out, n = oot_patches.patch_frame_seconds(LIFTED)
-    check(n == 2 and out.count("hos_frame_seconds_bits; if (_hs)") == 2, "the hook is not at both step divides once")
-    check(out.count("hos_step_probe = c->x[19];") == 1, "the frame's step does not tell the host the hook is there")
-    check(out.startswith('#include "a64.h"\n' + oot_patches.STEP_DECL), "the lifted file does not declare the host's values")
-    other = out[out.index("void f_80706f00"):out.index("void f_83b6ea90")]
-    check("hos_" not in other, "a function between the two was patched")
-    hook = oot_patches.STEP_HOOK.split("\n")[1] + "\n"
-    back = out.replace(oot_patches.STEP_DECL, "", 1).replace("\n    hos_step_probe = c->x[19];", "").replace(hook, "")
-    check(back == LIFTED, "more than the hook changed")
-    check(oot_patches.unpatch_frame_seconds(out) == LIFTED, "taking the hook out does not give the lift's text back")
-    altered = out.replace("a64_vset64(c->vreg[8],_v);}", "a64_vset64(c->vreg[9],_v);}")   # (a hook this version does not know)
-    kept = oot_patches.unpatch_frame_seconds(altered)
-    check(kept.count(oot_patches.STEP_MARK) == 1 and oot_patches.STEP_DECL in kept, "a hook left in the file lost its declarations")
-    check(oot_patches.patch_frame_seconds(out) == (out, 0), "a second run changed a patched file")
-    one, n1 = oot_patches.patch_frame_seconds(LIFTED[:LIFTED.index("void f_83b6ea90")])   # (the other site in another chunk)
-    check(n1 == 1 and one.count("hos_frame_seconds_bits; if (_hs)") == 1, "one site in a file is not patched")
-    twice = LIFTED.replace("}\nvoid f_83b6eb30", DIVIDE % 0 + "}\nvoid f_83b6eb30")   # (another game version: two divides)
-    check(oot_patches.patch_frame_seconds(twice)[1] == 1 and "void f_83b6ea90" in twice, "a different function was patched")
-    with tempfile.TemporaryDirectory(prefix="cap-step-") as tmp:
-        missing = LIFTED.replace("f_80706be0", "f_80706be4")
-        (Path(tmp) / "code_000.c").write_text(missing, encoding="utf-8", newline="")
-        log = io.StringIO()
-        with contextlib.redirect_stdout(log):
-            oot_patches.apply(tmp)
-        check("WARNING: the frame's time was found at 1 of 2 step divides, none patched" in log.getvalue(),
-              "no warning for a missing divide")
-        check((Path(tmp) / "code_000.c").read_text(encoding="utf-8") == missing, "one divide alone was left patched")
-        # (the two divides in two files, as in the game: both made. Then one file lifted again with other code and a second run,
-        # which must not leave the first file's hook on its own)
-        two = LIFTED.index("void f_83b6ea90")
-        files = [Path(tmp) / "code_000.c", Path(tmp) / "code_001.c"]
-        files[0].write_text(LIFTED[:two], encoding="utf-8", newline="")
-        files[1].write_text('#include "a64.h"\n' + LIFTED[two:], encoding="utf-8", newline="")
-        with contextlib.redirect_stdout(io.StringIO()):
-            oot_patches.apply(tmp)
-        check([f.read_text(encoding="utf-8").count(oot_patches.STEP_MARK) for f in files] == [1, 1], "apply did not patch both divides")
-        files[1].write_text('#include "a64.h"\n' + LIFTED[two:].replace("vreg[0],_v);}", "vreg[2],_v);}"), encoding="utf-8", newline="")
-        log = io.StringIO()
-        with contextlib.redirect_stdout(log):
-            oot_patches.apply(tmp)
-        check("none patched" in log.getvalue() and files[0].read_text(encoding="utf-8") == LIFTED[:two],
-              "a second run left one divide's hook from the first")
+    sites = {p.func: p for p in probes.AT if p.fn.startswith("hos_oot_frame_step")}
+    check(sorted(sites) == [0x80706be0, 0x83b6ea90], "the two step divides, one probe each")
+    check((sites[0x80706be0].pc, sites[0x80706be0].word, sites[0x80706be0].fn, sites[0x80706be0].args, sites[0x80706be0].result)
+          == (0x80706cc4, 0x1e201828, "hos_oot_frame_step_probe", ("s1", "s8", "x19"), "s8"),
+          "the frame's step: s8 := hos_oot_frame_step_probe(s1, s8, x19) after fdiv s8, s1, s0")
+    check((sites[0x83b6ea90].pc, sites[0x83b6ea90].word, sites[0x83b6ea90].fn, sites[0x83b6ea90].args, sites[0x83b6ea90].result)
+          == (0x83b6eaf8, 0x1e201820, "hos_oot_frame_step", ("s1", "s0"), "s0"),
+          "the global step: s0 := hos_oot_frame_step(s1, s0) after fdiv s0, s1, s0")
+    oot = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
+    hooks = "\n".join(definition(oot, m) for m in ("static float as_float(", "static uint32_t float_bits(",
+                                                "uint32_t hos_oot_frame_step(", "uint32_t hos_oot_frame_step_probe("))
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("))
-    fixture = FIXTURE.replace("@HOST@", host).replace("@HOOK@", "\n".join(oot_patches.STEP_HOOK.split("\n")[:2]))
+    fixture = FIXTURE.replace("@HOST@", host).replace("@PROBES@", hooks)
     with tempfile.TemporaryDirectory(prefix="cap-step-") as tmp:
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"

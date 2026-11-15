@@ -224,9 +224,7 @@ def main():
         tables.write(gen, L.funcs, L.hooks)
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
                              counters=[] if a.no_polls else [poll.stats])
-        import oot_patches
-        main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
-        chunks.edit_c(gen, L.stats, a.standalone and main_build == oot_patches.LIFE_BUILD_ID, whole=not a.max_func)
+        chunks.edit_c(gen, L.stats)
         a64_rtgen.write(gen)
         if a.standalone:
             start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
