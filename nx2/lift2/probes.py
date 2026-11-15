@@ -1,13 +1,14 @@
 """Probes: host code at guest addresses, where the game's code needs the host (docs/lifter.md section 10).
 
-A probe names a function and one of its instructions, found by llvm-mc's text of the instruction (a pattern the
-function has exactly once, as the text patches' anchors were), and says what the host does there:
-- Value(func, match, fn, args): the instruction's result register gets fn(args) instead (a host function of the
-  named guest values: "xN", "xN+K" for an address, "sN" for Sn as a float);
-- the other kinds of section 9 (Before, After, CondOr, CallSite) are the same lookup with the call placed before or
-  after the instruction's own semantics, or as the condition / the call target; they come with the patches that need
-  them.
-The lifter must find each probe's instruction: a missing one stops the build (another game version's code).
+Every probe names a function, one of its instructions and that instruction's word; a word that differs, or an
+instruction missing, stops the build (another game version's code). The host side takes plain values (host/oot_probes.c):
+- Value(func, pc, word, fn, args): the instruction's result register gets fn(args) instead ("xN", "xN+K" for an
+  address, "sN" for Sn as a float);
+- At(func, pc, word, fn, args, result, before=False): fn(args) after the instruction (after a BL / BLR when it
+  returns), or before it, its result in a register;
+- SPLICE_AT / SPLICE_BEFORE: host/*.c's SPLICE_AFTER bodies called at named instructions;
+- C after an instruction on the whole context (after_c) for the few patches that need it (nx2/oot_wide.py's HUD and
+  save picture, nx2/oot_jitter.py).
 """
 import os
 import re
@@ -38,13 +39,14 @@ class Value:
         setx(b, insn.f["Rd"], r)
 
 
-# nx2/oot_patches.py WHOLE_SITES: the counters of these two functions advance by the host's whole frames (the frame
-# step's FCVTZS of the frame count replaced by hos_frame_whole of the counter's address and the count, a float)
+# The step's whole frames (host/frame_whole.h): the counters of these two functions advance by the host's whole frames
+# (the frame step's FCVTZS of the frame count replaced by hos_frame_whole of the counter's address and the count, a float):
+# f_80a87e50, the pick-up indicator above Link's head (issue 1832); f_800672e0, the water renderer's ripples (atk3001's
+# fix for Lichii, zortos293/Lichii#1152, as ported to Fritchii)
 PROBES = [
     Value(0x80a87e50, 0x80a88300, 0x1e38000c, "hos_frame_whole", ("x19+864", "s0")),   # fcvtzs w12, s0
     Value(0x800672e0, 0x800675f8, 0x1e380009, "hos_frame_whole", ("x21", "s0")),       # fcvtzs w9, s0
 ]
-MARKS = {"/* (the step's whole frames: nx2/oot_patches.py) */"}
 BY_FUNC = {}
 for _p in PROBES:
     BY_FUNC.setdefault(_p.func, []).append(_p)
