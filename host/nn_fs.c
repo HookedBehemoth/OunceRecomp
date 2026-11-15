@@ -348,7 +348,6 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
         done += got;
     }
     if (away) hos_vcore_back();
-    HOS_WRITTEN(GP(buf), (size_t)done);   /* (into guest memory: the GPU may read it) */
     {   /* HOS_FS_WATCH=<lo hex>:<hi hex> (debugging): reads into that guest range, with the file */
         static int on = -1;
         static unsigned long long wlo, whi;

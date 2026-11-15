@@ -87,10 +87,8 @@ static int map_floor(uint64_t va) {
     return hi;
 }
 /* a new mapping replaces whatever started inside its range (a remap of the same VA, sparse rebinding) */
-static volatile LONG maps_changed = 1;   /* the mappings changed since hos_gpu_guest_ranges last merged them */
 volatile LONG maps_generation = 1;   /* bumped by every change (hos_gpu_ptr's per-thread cache, the renderer's gpu_read) */
 static void map_add(uint64_t va, uint64_t size, uint64_t guest) {
-    maps_changed = 1;
     InterlockedIncrement(&maps_generation);
     MAP_LOG("nvdrv: map GPU %#llx..%#llx -> %#llx", (unsigned long long)va, (unsigned long long)(va + size),
             (unsigned long long)guest);
@@ -108,7 +106,6 @@ static void map_add(uint64_t va, uint64_t size, uint64_t guest) {
     nmaps++;
 }
 static void map_remove(uint64_t va) {
-    maps_changed = 1;
     InterlockedIncrement(&maps_generation);
     MAP_LOG("nvdrv: unmap GPU %#llx", (unsigned long long)va);
     int i = map_floor(va);
@@ -133,96 +130,12 @@ int hos_gpu_pools(uint64_t (*out)[2], int max) {
 }
 uint32_t hos_gpu_maps_generation(void) { return (uint32_t)maps_generation; }
 
-/* The native NVN layer's memory pools (GPU address = guest address): mapped here only for the renderer's change
-   tracking (hos_gpu_ptr resolves native addresses itself) */
-/* (and, for the change tracking, a list of their own counted by range: in the GPU mappings, keyed by start, a pool made
-   over another's memory replaced its entry or dropped the ones inside it, and the old pool's finalize then removed the
-   new one's. The CPU's writes to such a pool were never collected again: MK World's font cache kept the glyphs it had
-   first, the menus lost letters. The mappings stay as they were for the pools' imports, hos_gpu_pools) */
-typedef struct { uint64_t lo, hi; int n; } Tracked;
-static Tracked *tracked;
-static int ntracked, captracked;
+/* The native NVN layer's memory pools (GPU address = guest address), mapped for the pools' imports (hos_gpu_pools) */
 void hos_gpu_track(uint64_t guest, uint64_t size, int on) {
-    const uint64_t lo = guest & ~0xFFFULL, hi = (guest + size + 0xFFF) & ~0xFFFULL;
     LOCK();
     if (on) map_add(guest, size, guest);
     else map_remove(guest);
-    int i = 0;
-    while (i < ntracked && (tracked[i].lo != lo || tracked[i].hi != hi)) i++;
-    if (on) {
-        if (i < ntracked) tracked[i].n++;
-        else {
-            if (ntracked == captracked) {
-                captracked = captracked ? captracked * 2 : 256;
-                tracked = (Tracked *)realloc(tracked, (size_t)captracked * sizeof *tracked);
-            }
-            tracked[ntracked++] = (Tracked){lo, hi, 1};
-        }
-    } else if (i < ntracked && --tracked[i].n <= 0) {
-        tracked[i] = tracked[--ntracked];
-    }
-    maps_changed = 1;
-    InterlockedIncrement(&maps_generation);
     UNLOCK();
-}
-
-/* The guest memory the GPU can reach (every mapping's guest range, merged, page aligned), for the renderer's change
-   tracking: GetWriteWatch over the whole guest arena cost ~2.5 ms a call, and the GPU only reads these. Returns
-   the number of ranges (at most max) written to out as {start, end} pairs. */
-static int cmp_range(const void *a, const void *b) {
-    const uint64_t x = ((const uint64_t *)a)[0], y = ((const uint64_t *)b)[0];
-    return x < y ? -1 : x > y;
-}
-int hos_gpu_guest_ranges(uint64_t (*out)[2], int max) {
-    static uint64_t (*merged)[2];
-    static int nmerged, capmerged;
-    LOCK();
-    if (maps_changed) {
-        maps_changed = 0;
-        const int nall = nmaps + ntracked;   /* (the GPU mappings and the native NVN pools) */
-        if (capmerged < nall) {
-            capmerged = nall + 64;
-            merged = (uint64_t (*)[2])realloc(merged, (size_t)capmerged * sizeof *merged);
-        }
-        for (int i = 0; i < nmaps; i++) {
-            merged[i][0] = maps[i].guest & ~0xFFFULL;
-            merged[i][1] = (maps[i].guest + maps[i].size + 0xFFF) & ~0xFFFULL;
-        }
-        for (int i = 0; i < ntracked; i++) merged[nmaps + i][0] = tracked[i].lo, merged[nmaps + i][1] = tracked[i].hi;
-        qsort(merged, (size_t)nall, sizeof *merged, cmp_range);
-        /* ranges less than 16 MB apart are one: a GetWriteWatch call costs about what 16 MB of range does, and
-           TOTK maps ~4000 pieces. Not with the soft write watch, whose scan costs by page, not by call: there the gaps
-           are the game's heap, and its writes were collected with the GPU's memory (OoT's Kokiri: ~2,500 heap pages a
-           frame, 69% of the pages the captures took). Its ranges are merged only where they touch, the gap growing
-           while more than 2048 are left (the callers take 4096). HOS_GPU_RANGE_GAP_MB=16: as before */
-        static int64_t gap0 = -1;
-        if (gap0 < 0) {
-#if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
-            const char *e = getenv("HOS_GPU_RANGE_GAP_MB");
-            gap0 = (int64_t)(e ? atoll(e) : 0) << 20;
-#else
-            gap0 = 16ll << 20;
-#endif
-        }
-        int count = nall;   /* (a retry merges the last pass's ranges again: sorted still, the same result) */
-        for (uint64_t gap = (uint64_t)gap0;; gap = gap ? gap * 2 : 1ull << 20, count = nmerged) {
-            nmerged = 0;
-            for (int i = 0; i < count; i++) {
-                if (nmerged && merged[i][0] <= merged[nmerged - 1][1] + gap) {
-                    if (merged[i][1] > merged[nmerged - 1][1]) merged[nmerged - 1][1] = merged[i][1];
-                } else {
-                    merged[nmerged][0] = merged[i][0];
-                    merged[nmerged][1] = merged[i][1];
-                    nmerged++;
-                }
-            }
-            if (nmerged <= 2048 || gap >= (1ull << 40)) break;
-        }
-    }
-    int n = nmerged < max ? nmerged : max;
-    memcpy(out, merged, (size_t)n * sizeof *merged);
-    UNLOCK();
-    return n;
 }
 
 /* GPU VA -> guest address. Returns 0 if unmapped. */

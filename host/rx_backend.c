@@ -37,66 +37,9 @@ const char *hos_mic_name(int index);
 void hos_mic_select(int mode, const char *name, int index);
 void hos_bind(int set, int button, int slot, int code);
 int hos_prompts_face(void);         /* prompts.c */
-#if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
-void hos_mark_written(const void *p, size_t n);
-#endif
 
 static void host_log(const char *line) { hos_log("%s", line); }
-#if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
-int hos_gpu_guest_ranges(uint64_t (*out)[2], int max);
-/* The soft write watch's marks (rt/a64.h A64_MARK, hos_mark_written) over the GPU-visible ranges, read and cleared:
-   the back end's own collection. One consumer. */
-static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **pages) {
-    size_t n = 0, cap = 4096;
-    uint32_t *out = malloc(cap * sizeof *out);
-    for (int r = 0; r < nranges; r++) {
-        const uint64_t lo = ranges[r][0], hi = ranges[r][1] < hos_guest_size() ? ranges[r][1] : hos_guest_size();
-        uint64_t p1 = (hi + 4095) >> 12;
-        if (p1 > A64_DIRTY_PAGES) p1 = A64_DIRTY_PAGES;
-        for (uint64_t p = lo >> 12; p < p1;) {
-            if (!(p & 31) && p + 32 <= p1) {   /* (32 pages at a time while none is marked) */
-                uint64_t w[4];
-                memcpy(w, &a64_dirty[p], 32);
-                if (!(w[0] | w[1] | w[2] | w[3])) {
-                    p += 32;
-                    continue;
-                }
-            }
-            if (!(p & 7) && p + 8 <= p1) {   /* (eight pages a load while none is marked) */
-                uint64_t w;
-                memcpy(&w, &a64_dirty[p], 8);
-                if (!w) {
-                    p += 8;
-                    continue;
-                }
-            }
-            if (__atomic_load_n(&a64_dirty[p], __ATOMIC_RELAXED) && __atomic_exchange_n(&a64_dirty[p], 0, __ATOMIC_ACQUIRE)) {
-                if (n == cap) out = realloc(out, (cap *= 2) * sizeof *out);
-                out[n++] = (uint32_t)p;
-            }
-            p++;
-        }
-    }
-    *pages = out;
-    return (int64_t)n;
-}
-static int64_t host_collect(uint32_t **pages) {
-    static uint64_t (*ranges)[2];
-    if (!ranges) ranges = malloc(sizeof *ranges * 4096);
-    return collect_in(ranges, hos_gpu_guest_ranges(ranges, 4096), pages);
-}
-/* (only within the given guest ranges: the submit-time capture of the mirrored pools, a small part of the 20 ms the
-   whole collection takes) */
-static int64_t host_collect_in(const uint64_t (*ranges)[2], int n, uint32_t **pages) { return collect_in(ranges, n, pages); }
-#endif
 static void host_free_pages(uint32_t *pages) { free(pages); }
-static void host_mark_written(const void *p, uint64_t n) {
-#if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
-    hos_mark_written(p, (size_t)n);
-#else
-    (void)p, (void)n;
-#endif
-}
 
 /* (the renderer's own guest memory: the address space above the heap, as the game's own regions, committed and
    zeroed; the region allocator never hands it to the game) */
@@ -118,9 +61,9 @@ static const char *host_romfs_dir(void) { return hos_romfs_dir; }
 
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,
-    nvn_gpu_write, host_collect, host_free_pages, host_mark_written, hos_ticks, hos_now_ns, nvn_tex_layout,
+    nvn_gpu_write, host_free_pages, hos_ticks, hos_now_ns, nvn_tex_layout,
     nvn_tex_level_offset, nvn_fmt_bpb, nvn_tex_level_tiles, nvn_tex_linear_stride, nvn_depth_minus_w, hos_gpu_pools,
-    hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_collect_in, host_guest_alloc,
+    hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
     hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
     host_romfs_dir,

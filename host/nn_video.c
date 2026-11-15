@@ -234,7 +234,6 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEj
         void *row = hos_guest_range(dst + r * stride, (size_t)cw * 4);   /* (hookshot: only into guest memory) */
         if (row) memcpy(row, src + ((size_t)(y + r) * o->w + x) * 4, (size_t)cw * 4);
     }
-    HOS_WRITTEN(GP(dst), (size_t)(h ? h - 1 : 0) * stride + (size_t)cw * 4);   /* (the game may give it to the GPU) */
     RET(0);
 }
 /* ReadDecoderOutputImageNv12(pool, u32 index, u16 x, u16 y, u16 w, u16 h, void* y_dst, size_t y_stride, [stack:]
@@ -270,8 +269,6 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoolTypeEj
         void *row = hos_guest_range(uvdst + r * uvstride, cw);
         if (row) memcpy(row, uvp + (size_t)(y / 2 + r) * o->w + (x & ~1u), cw);
     }
-    if (ydst) HOS_WRITTEN(GP(ydst), (size_t)(h ? h - 1 : 0) * ystride + cw);
-    if (uvdst) HOS_WRITTEN(GP(uvdst), (size_t)(h / 2 ? h / 2 - 1 : 0) * uvstride + cw);
     RET(0);
 }
 
@@ -592,7 +589,6 @@ static void deliver(Dec *d, int slot) {
             if (o->mem_size >= need && ok && to && (rgba ? o->rgba != NULL : 1)) {
                 if (rgba && o->rgba_stale) pool_rgba(o);
                 memcpy(to, rgba ? o->rgba : o->nv12, need);
-                HOS_WRITTEN(to, need);
             }
         }
     }

@@ -15,7 +15,6 @@ ENTRY_HOOK_SYM(memcpy) {
     if (n) {
         WAIT_WRITEBACKS(GP(ARG(1)), n);   /* (TOTK copies some rendered maps with the CPU) */
         memmove(GP(ARG(0)), GP(ARG(1)), (size_t)n);
-        HOS_WRITTEN(GP(ARG(0)), (size_t)n);
     }
     return 1;
 }
@@ -31,7 +30,6 @@ ENTRY_HOOK_SYM(memmove) {
     if (n) {
         WAIT_WRITEBACKS(GP(ARG(1)), n);
         memmove(GP(ARG(0)), GP(ARG(1)), (size_t)n);
-        HOS_WRITTEN(GP(ARG(0)), (size_t)n);
     }
     return 1;
 }
@@ -41,7 +39,6 @@ ENTRY_HOOK_SYM(memset) {
     if (!hos_guest_range(ARG(0), n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
     if (n) {
         memset(GP(ARG(0)), (int)(uint8_t)ARG(1), (size_t)n);
-        HOS_WRITTEN(GP(ARG(0)), (size_t)n);
     }
     return 1;
 }

@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 14
+#define MKWVK_API_VERSION 15
 /* (hookshot) the Motion page's rows (host/pad_sdl.c reads them, vk_replay.cpp's option answers them): Motion controls on
    or off, the horizontal's and the vertical's sensitivity in percent, each turned around, and the deadzone (0 to 2) */
 enum { HOS_OPT_GYRO = 18, HOS_OPT_GYRO_SENS_X, HOS_OPT_GYRO_INV_X, HOS_OPT_GYRO_INV_Y, HOS_OPT_GYRO_SENS_Y, HOS_OPT_GYRO_DEADZONE };
@@ -63,11 +63,7 @@ typedef struct MkwVkHost {
     uint64_t (*gpu_guest)(uint64_t gpu);
     int (*gpu_read)(uint64_t gpu, void *dst, uint64_t n);
     int (*gpu_write)(uint64_t gpu, const void *src, uint64_t n);
-    /* guest pages written since the last call (the soft write watch): count, page numbers in *pages (freed with
-       free_pages) */
-    int64_t (*collect_written)(uint32_t **pages);
     void (*free_pages)(uint32_t *pages);
-    void (*mark_written)(const void *p, uint64_t n);
     /* clocks: the guest tick (31.25 MHz from the start), host ns */
     uint64_t (*ticks)(void);
     int64_t (*now_ns)(void);
@@ -86,8 +82,6 @@ typedef struct MkwVkHost {
     uint32_t (*vmap_generation)(void);
     /* the logical processors kept from the game's threads, for the replay thread (0: none) */
     uint64_t (*reserved_cpus)(void);
-    /// The soft write watch's marks within [ranges[i][0], ranges[i][1]) only, read and cleared (free with free_pages)
-    int64_t (*collect_written_in)(const uint64_t (*ranges)[2], int n, uint32_t **pages);
     /// Zeroed guest memory of the renderer's own (address space above the heap, never freed; 0 when none is left):
     /// what the NVN driver keeps in GPU memory of its own, such as its constant banks (mkw_eden.dll)
     uint64_t (*guest_alloc)(uint64_t size);

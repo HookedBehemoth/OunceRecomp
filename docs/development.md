@@ -444,7 +444,7 @@ load and a branch. `logall` turns every `log*` item on.
 | `HOOKSHOT_FFMPEG=<prefix>`, `HOOKSHOT_SDL2` | FFmpeg's static libraries, SDL2's library folder |
 | `RX_RELEASE=1` | A release-style build: the shaders are prepared before the title |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `-v2`, else `x86-64`) |
-| `RX_HOT_OPT`, `RX_NO_ORDER`, `RX_SOFT_WRITE_WATCH=0` | Optimisation level of the hot code; no hot-function link order; no software write watch |
+| `RX_HOT_OPT`, `RX_NO_ORDER` | Optimisation level of the hot code; no hot-function link order |
 | `HOOKSHOT_HOT_FUNCS=<file>` | (lift time) The hot list, one `f_<address>` a line (default `work/hot_funcs_play.txt`, else `work/hot_funcs.txt`): their partitions are built at `RX_HOT_OPT` |
 | `HOOKSHOT_LIFT_VERIFY=1`, `HOOKSHOT_LIFT_SUMMARIES=1` | (lift and build time) The verification build: every function with a full summary checked at run time (`host/lift2_verify.c`, [lifter.md](lifter.md) section 7); the summaries alone (about 9 GB) |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
@@ -479,7 +479,6 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_FIX_RES` host/hos_main.c:1527
 - `HOS_FPS_TARGET` host/nn_vi.c:276
 - `HOS_FS_KEEP_CORE_KB` host/nn_fs.c:417
-- `HOS_GPU_RANGE_GAP_MB` host/nvdrv.c:201
 - `HOS_HOSTCALL_SLOW` host/hos_hostcall.c:61
 - `HOS_KEEP_FREED_PAGES` host/hos_mem.c:131
 - `HOS_MEM_MAP` host/mkw_glue.c:716

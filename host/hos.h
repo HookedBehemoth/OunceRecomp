@@ -64,15 +64,6 @@ extern const char hos_main_build_id[];                 /* (gen/hos_image.c: main
 int hos_game_is_mkw(void);
 #define HOS_GAME_TITLE "Hookshot"
 void hos_commit(uint64_t addr, uint64_t size);         /* (mkw_glue.c) guest pages made usable by host APIs */
-#if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
-void hos_mark_written(const void *p, size_t n);   /* (hos_mem.c: guest memory written by host code, native soft watch) */
-#define HOS_WRITTEN(p, n) hos_mark_written((p), (n))
-#elif defined(A64_WRITE_TRACK)
-void web_mark_written(const void *p, size_t n);   /* (hos/web/win32.c: guest memory written by host code) */
-#define HOS_WRITTEN(p, n) web_mark_written((p), (n))
-#else
-#define HOS_WRITTEN(p, n) ((void)0)
-#endif
 #ifdef A64_MEM_ZERO
 extern uint64_t hos_space_end;   /* web: the guest window ends where the host's own data starts (hos_main.c) */
 #define HOS_SPACE_END hos_space_end

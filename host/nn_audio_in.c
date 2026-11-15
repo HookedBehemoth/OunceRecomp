@@ -485,7 +485,6 @@ HLE(_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi) {
             memcpy(dst, s->ring + s->ring_start, (size_t)first);
             memcpy(dst + first, s->ring, (size_t)(n - first));
             s->ring_start = (s->ring_start + n) % cap, s->ring_len -= n;
-            HOS_WRITTEN(dst, (size_t)n);
             note_read(s, dst, frames);
         }
     }

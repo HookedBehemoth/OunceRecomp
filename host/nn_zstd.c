@@ -77,7 +77,6 @@ ENTRY_HOOK(0x8010b380) {
         r = ZSTD_decompress_usingDict(tl_dctx, GP(dst), (size_t)cap, GP(src), (size_t)n, dict ? GP(dict) : NULL, (size_t)dict_size);
     }
     if (!ZSTD_isError(r)) {
-        HOS_WRITTEN(GP(dst), r);
         __atomic_fetch_add(&st_bytes, (int64_t)r, __ATOMIC_RELAXED);
         if (__atomic_add_fetch(&st_files, 1, __ATOMIC_RELAXED) % 2000 == 0)
             hos_log("zstd: native: %lld files, %lld streams, %.1f MB out", (long long)st_files, (long long)st_streams,
@@ -125,7 +124,6 @@ ENTRY_HOOK(0x80115c80) {
         const unsigned long long size = ZSTD_getFrameContentSize(GP(chunk), n);
         if (size == ZSTD_CONTENTSIZE_ERROR || size == ZSTD_CONTENTSIZE_UNKNOWN) {
             J8(0) = 3;
-            HOS_WRITTEN(GP(job), 1);
             job_ret(c, 0xffffffffu);
             return 1;
         }
@@ -133,7 +131,6 @@ ENTRY_HOOK(0x80115c80) {
         ZSTD_DCtx_refDDict(d, host_ddict(ddict));
         J32(20) = (uint32_t)size;
         J8(0) = 2;
-        HOS_WRITTEN(GP(job), 24);
         __atomic_fetch_add(&st_streams, 1, __ATOMIC_RELAXED);
     }
     const uint64_t out = J64(8);
@@ -148,7 +145,6 @@ ENTRY_HOOK(0x80115c80) {
         if (o.pos == o.size && in.pos < in.size && r != 0) { r = ERROR(dstSize_tooSmall); break; }
     }
     if (o.pos) {
-        HOS_WRITTEN(GP(out), o.pos);
         __atomic_fetch_add(&st_bytes, (int64_t)o.pos, __ATOMIC_RELAXED);
     }
     J64(8) = out + o.pos;
@@ -156,14 +152,12 @@ ENTRY_HOOK(0x80115c80) {
     J32(20) = J32(20) - (uint32_t)o.pos;
     if (ZSTD_isError(r)) {
         J8(0) = 3;
-        HOS_WRITTEN(GP(job), 24);
         static int told;
         if (told++ < 8) hos_log("zstd: a stream failed: %s", ZSTD_getErrorName(r));
         job_ret(c, ZSTD_getErrorCode(r) == ZSTD_error_dstSize_tooSmall ? 0xfffffffeu : 0xffffffffu);
         return 1;
     }
     if (r == 0) J8(0) = 4;   /* (the frame is whole) */
-    HOS_WRITTEN(GP(job), 24);
     job_ret(c, J32(20));
     return 1;
 }

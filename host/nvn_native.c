@@ -193,7 +193,6 @@ int nvn_gpu_write(uint64_t gpu, const void *src, uint64_t n) {
         uint8_t *d = k ? nvn_gpu_host(gpu) : NULL;
         if (!d) return 0;
         memcpy(d, s, k);
-        HOS_WRITTEN(d, (size_t)k);
         s += k, gpu += k, n -= k;
     }
     return 1;
@@ -340,7 +339,7 @@ NV(nvnMemoryPoolInitialize) {
     gw(b->mem, o->size);   /* (hookshot: the storage lies in guest memory) */
     o->mem = b->mem;
     o->gpu = b->mem;
-    hos_gpu_track(o->gpu, o->size, 1);   /* (the CPU's writes to it reach the renderer through write watch) */
+    hos_gpu_track(o->gpu, o->size, 1);
     if (getenv("HOS_NVN_LOG_POOLS")) {   /* (debugging) who makes each pool */
         char b[400];
         guest_chain(c, b, sizeof b);
@@ -409,7 +408,7 @@ NV(nvnMemoryPoolGetBufferAddress) {
     if (no_pool(c, "buffer address")) { RET(0); return; }
     RET(((const nvn_pool *)P(0))->gpu);
 }
-NV(nvnMemoryPoolFlushMappedRange) {}   /* CPU writes are seen through write watch */
+NV(nvnMemoryPoolFlushMappedRange) {}
 /* (hookshot, OoT) agl::utl::DepthBufferEx's coarse occlusion grid (f_800998a0 -> f_80365f00): two 0x3980-byte slots the GPU
    writes a frame each, with the frame's camera and a GPU-written frame stamp at +0x1540. The game takes the slot stamped
    frame-1, else the other one stamped frame-2, else culls without it that frame: it never needs the GPU done, and on the

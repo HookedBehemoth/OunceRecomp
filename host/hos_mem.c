@@ -57,7 +57,6 @@ uint64_t hos_sys_alloc(uint64_t size, uint64_t align) {
     sys_next = a + size;
     UNLOCK();
     memset(GP(a), 0, size);
-    HOS_WRITTEN(GP(a), size);
     return a;
 }
 
@@ -151,16 +150,6 @@ void hos_region_free(uint64_t addr) {
 
 /* ---- nn::os memory -------------------------------------------------------------------------------------- */
 
-#if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
-/* HOS_WRITTEN natively (the soft write watch, rt/a64.h A64_MARK): host code wrote [p, p + n) of guest memory */
-void hos_mark_written(const void *p, size_t n) {
-    const uintptr_t a = (uintptr_t)p - (uintptr_t)A64_MEM;
-    if (!n || (uintptr_t)p < (uintptr_t)A64_MEM || a >= HOS_GUEST_SPACE) return;
-    for (uintptr_t q = a >> 12; q <= (a + n - 1) >> 12 && q < A64_DIRTY_PAGES; q++)
-        __atomic_store_n(&a64_dirty[q], 1, __ATOMIC_RELEASE);
-}
-#endif
-
 /* (hookshot) a heap of size bytes ends below the address regions and the guest window's end (no wrap-around: the size
    comes from the game). Also svc SetHeapSize's check (hos_svc.c) */
 int hos_heap_size_fits(uint64_t size) {
@@ -179,7 +168,6 @@ HLE(_ZN2nn2os17SetMemoryHeapSizeEm) {
     }
     if (size < hos_heap_size) {
         memset(GP(HOS_HEAP_BASE + size), 0, hos_heap_size - size);
-        HOS_WRITTEN(GP(HOS_HEAP_BASE + size), hos_heap_size - size);
     }
     /* HOS_PREFAULT=1 (experiment): the new heap pages touched now (a zero written to fresh, zero memory), so that the
        game's first touches while streaming are not page faults (which may hold up the renderer's write-watch scans) */
@@ -268,7 +256,6 @@ HLE(_ZN2nn2os19AllocateMemoryPagesEmm) {
         else
             for (int i = 0; i < nruns; i++) memset(GP(runs[i][0]), 0, runs[i][1] - runs[i][0]);
     }
-    HOS_WRITTEN(GP(a), n);
     RET(0);
 }
 
