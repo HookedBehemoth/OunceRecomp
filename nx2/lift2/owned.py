@@ -103,4 +103,7 @@ def write_traps(gen, own):
     with open(path, "w", newline="\n") as f:
         f.write("/* The present lifter's functions in a build without it (HOOKSHOT_LIFT1_TRAP=1): each stops the thread. */\n")
         f.write('#include "a64.h"\n')
-        f.write("".join("void f_%08x(Ctx *A64_NOESC c) { a64_trap(c, %#x, 0); }\n" % (e, e) for e in sorted(own)))
+        f.write("void a64_on_trap(Ctx *c, uint64_t pc, uint32_t insn, const char *why);\n")
+        f.write("".join('void f_%08x(Ctx *A64_NOESC c) { c->pc = %#x; c->halted = 1; a64_on_trap(c, %#x, 0, '
+                        '"a function the present lifter owns, trapped (HOOKSHOT_LIFT1_TRAP)"); }\n' % (e, e, e)
+                        for e in sorted(own)))

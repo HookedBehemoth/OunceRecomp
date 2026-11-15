@@ -62,5 +62,21 @@ class Owned(unittest.TestCase):
         self.assertEqual(owned.check({1, 2}, {2}), [1])
 
 
+class Traps(unittest.TestCase):
+    def test_traps_compile(self):
+        # (HOOKSHOT_LIFT1=0 with HOOKSHOT_LIFT1_TRAP=1: each owned function a trap, against the generated a64.h)
+        import subprocess
+        import rtgen
+        from lift2 import llvm
+        with tempfile.TemporaryDirectory() as d:
+            rt = rtgen.write(os.path.join(d, "rt64"))
+            owned.write_traps(d, {0x80001000, 0x80002000})
+            r = subprocess.run([llvm.check("clang"), "-fsyntax-only", "-w", "-I" + rt,
+                                os.path.join(d, owned.TRAPS)], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr[-1500:])
+            owned.write_traps(d, set())   # (none owned: no file)
+            self.assertFalse(os.path.exists(os.path.join(d, owned.TRAPS)))
+
+
 if __name__ == "__main__":
     unittest.main()
