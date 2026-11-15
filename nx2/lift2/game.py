@@ -561,6 +561,25 @@ def part_key(plan, names, funcs, bound, rows):
     return h.hexdigest()
 
 
+def partitions(plan):
+    """[(tag, [entries])]: the partitions by address, the hot functions apart ("h"; the others "c"), each cut after the
+    function that brings it to PART_INSNS instructions or more"""
+    chosen = set(plan["bodies"])
+    hot = set(plan.get("hot", ()))
+    parts = []
+    for group, tag in ((sorted(chosen - hot), "c"), (sorted(chosen & hot), "h")):
+        cur, n = [], 0
+        for e in group:
+            cur.append(e)
+            n += len(plan["bodies"][e][0])
+            if n >= PART_INSNS:
+                parts.append((tag, cur))
+                cur, n = [], 0
+        if cur:
+            parts.append((tag, cur))
+    return parts
+
+
 def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     """(the C files to compile, the objects to link, a report line); see the module's description"""
     t0 = time.time()
@@ -579,18 +598,7 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     # took the same: finish_summaries)
     funcs = patch_scan.check_funcs(plan, gen)
     srcs = []
-    # partitions: by address, the hot functions apart, about PART_INSNS instructions each
-    parts = []
-    for group, tag in ((sorted(chosen - hot), "c"), (sorted(chosen & hot), "h")):
-        cur, n = [], 0
-        for e in group:
-            cur.append(e)
-            n += len(plan["bodies"][e][0])
-            if n >= PART_INSNS:
-                parts.append((tag, cur))
-                cur, n = [], 0
-        if cur:
-            parts.append((tag, cur))
+    parts = partitions(plan)
     obj_dir = os.path.join(out, "obj")
     # (a partition whose inputs are unchanged, the plan, its functions, the lifter's own source and the
     # flags, is neither lifted nor compiled again: its object comes from the cache by an input key. A host-only
