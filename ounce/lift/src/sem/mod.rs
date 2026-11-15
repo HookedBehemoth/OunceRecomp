@@ -1,7 +1,10 @@
 //! The semantic templates by name (nx2/lift2/sem.py): each class's module registers its templates with their class
 //! (int, fp, neon, crypto). A template lowers one decoded instruction at a pc into IR through the builder.
 
+pub mod crypto;
+pub mod fp;
 pub mod int;
+pub mod neon;
 
 use crate::ir::Builder;
 use ounce_decode::Insn;
@@ -23,7 +26,11 @@ pub fn templates() -> &'static HashMap<&'static str, Entry> {
         for &(name, f) in int::TEMPLATES {
             t.insert(name, Entry { f, class: "int" });
         }
-        // (sem_fp, sem_neon, sem_crypto register here: for &(name, f) in fp::TEMPLATES { ... class: "fp" })
+        for (class, ts) in [("fp", fp::TEMPLATES), ("neon", neon::TEMPLATES), ("crypto", crypto::TEMPLATES)] {
+            for &(name, f) in ts {
+                t.insert(name, Entry { f, class });
+            }
+        }
         t
     })
 }
