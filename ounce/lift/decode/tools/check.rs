@@ -1,7 +1,5 @@
 //! ounce-decode-check: decodes words for tools/compare.py (the comparison with Python's enc.decode) and times it.
 //!
-//!   ounce-decode-check ids WORDS OUT        WORDS: little-endian u32s; OUT: a little-endian u16 per word, the entry's
-//!                                           index in all_encodings() or 0xffff for None
 //!   ounce-decode-check text WORDS OUT       OUT: a line per word, "NAME f=v f=v ..." or "None"
 //!   ounce-decode-check bench WORDS          decodes every word (in file order) ten times and prints words/s
 use std::io::Write;
@@ -15,14 +13,6 @@ fn read_words(path: &str) -> Vec<u32> {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     match a.get(1).map(|s| s.as_str()) {
-        Some("ids") => {
-            let w = read_words(&a[2]);
-            let mut out = Vec::with_capacity(w.len() * 2);
-            for &x in &w {
-                out.extend_from_slice(&ounce_decode::decode_id(x).unwrap_or(0xffff).to_le_bytes());
-            }
-            std::fs::write(&a[3], out).unwrap();
-        }
         Some("text") => {
             let w = read_words(&a[2]);
             let mut f = std::io::BufWriter::new(std::fs::File::create(&a[3]).unwrap());
@@ -52,7 +42,7 @@ fn main() {
             println!("{} words x10 in {:.3} s: {:.1} M words/s (acc {acc})", w.len(), dt, w.len() as f64 * 10.0 / dt / 1e6);
         }
         _ => {
-            eprintln!("usage: ounce-decode-check ids|text|bench ...");
+            eprintln!("usage: ounce-decode-check text|bench ...");
             std::process::exit(2);
         }
     }
