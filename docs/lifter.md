@@ -410,10 +410,13 @@ names its instruction word, so another game version stops the lift or the build.
   function or in more than one stops it with the declaration's file:line. Rows at one instruction run in the order of
   their declarations (the host's files in the build's order, each file's in its order).
   - mode `after`: after the instruction (after a BL or BLR when the call returns); `before`: on the edge into it, which
-    must not be a branch target; `instead`: in place of the BL or BLR (the call is not made, x30 set as the call
-    would; an At row with `replace`), or in place of any other instruction's result (a Value probe: the result is the
-    instruction's destination, an i32, as the frame-step cuts of the pick-up indicator and the water's ripples,
-    `fcvtzs w12, s0` at 0x80a88300 and `fcvtzs w9, s0` at 0x800675f8, take `hos_frame_whole`).
+    must not be a branch target of its function, a jump-table target or another function's entry (its own entry is
+    allowed: the row runs on every call); `instead`: in place of the BL or BLR (the call is not made, x30 set as the call
+    would; an At row with `replace`), or in place of any other instruction's result (a Value probe: the declared
+    result must be the instruction's one destination register Rd at its width, `wN` for a 32-bit destination and `xN`
+    for a 64-bit one, and the operands `xN`, `add(xN, K)` or `sN`; as the frame-step cuts of the pick-up indicator and
+    the water's ripples, `fcvtzs w12, s0` at 0x80a88300 and `fcvtzs w9, s0` at 0x800675f8, take `hos_frame_whole`).
+    `probes.errors` holds these checks; the build and `nx2/patch.py check` both run it.
   - result: `none`, `xN` (`uint64_t`), `wN` (`uint32_t`, zero-extended), `sN` (`float`, the rest of Vn zero), `qN`
     (`hos_q`). Operands, one parameter each: `xN`, `wN`, `sN`, `qN`, `sp`, `ld(xN or sp, K)` (the 64-bit guest word
     there, loaded by the lifted code: a frame slot the host needs is handed over as a value, the host does not read

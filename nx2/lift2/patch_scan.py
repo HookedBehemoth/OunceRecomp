@@ -621,8 +621,9 @@ def rows(sites):
         if s.mode == "instead" and not call:
             if s.guest is not None or s.io:
                 fail(s.where, "an instruction's result replaced (instead, not a call) takes no guest or io")
-            p = probes.Value(None, s.pc, s.word, s.fn, tuple(s.args))
-            p.result = s.result
+            if s.result is None:
+                fail(s.where, "an instruction's result replaced (instead, not a call) names its destination as result")
+            p = probes.Value(None, s.pc, s.word, s.fn, tuple(s.args), s.result)
             values.append(p)
         else:
             p = probes.At(None, s.pc, s.word, s.fn, s.args, s.result, before=s.mode == "before", io=s.io,

@@ -23,8 +23,9 @@ from .sem_fp import vread, vwrite
 
 
 class Value:
-    def __init__(self, func, pc, word, fn, args):
+    def __init__(self, func, pc, word, fn, args, result):
         self.func, self.pc, self.word, self.fn, self.args = func, pc, word, fn, args
+        self.result = result   # (the instruction's destination as declared: wN or xN of its Rd, its width: dest())
 
     def lower(self, b, insn, pc):
         vals = []
@@ -38,11 +39,33 @@ class Value:
                 continue
             m = re.fullmatch(r"s(\d+)", a)
             vals.append(vread(b, int(m.group(1)), "f32"))
-        r = b.call(self.fn, "i32", *vals)
-        setx(b, insn.f["Rd"], r)
+        r = b.call(self.fn, "i32" if self.result[0] == "w" else "i64", *vals)
+        setx(b, int(self.result[1:]), r)
 
     def effects(self):
         return {_var(a.split("+")[0]) for a in self.args}, set()
+
+
+def dest(w):
+    """(register number, bits) of the one general register the instruction word writes as its Rd, else None"""
+    i = enc.decode(w)
+    if i is None or "Rd" not in i.f or i.entry.template in TERMINATORS:
+        return None
+    t = i.entry.template
+    fn = ir.Function(0)
+    b = ir.Builder(fn)
+    b.at(fn.block(0))
+    sem.TEMPLATES[t](b, i.f, 0x1000, i.entry.params)
+    rd = i.f["Rd"]
+    if fn.written != {"x%d" % rd}:
+        return None
+    if "sf" in i.f:
+        return rd, 64 if i.f["sf"] else 32
+    v = fn.block(0).defs["x%d" % rd]
+    return rd, 32 if v.op == "zext" and v.args[0].ty == "i32" else 64
+
+
+TERMINATORS = ("b", "bcond", "cbz", "tbz", "ret", "br", "blr", "udf", "exc")
 
 
 # The patch set: the declarations in the host's C (host/patch.h, nx2/lift2/patch_scan.py), read on first use. A site's
@@ -112,15 +135,71 @@ def resolve(plan, key=None):
 
 
 def find(func, pcs, word):
-    """{pc: lowering} of the Value probes of one function; SystemExit when a probe's instruction is not the word it
-    names (another game version)"""
+    """{pc: lowering} of the Value probes of one function; SystemExit with the declaration's file:line when a probe's
+    instruction is not the word it names (another game version) or its result is not the instruction's destination
+    (errors)"""
     out = {}
-    have = set(pcs)
     for p in _BY_FUNC.get(func, ()):
-        if p.pc not in have or word(p.pc) != p.word:
-            raise SystemExit("lift2 probes: Value f_%08x at %#x holds %s, not %08x (another game version?)"
-                             % (func, p.pc, "%08x" % word(p.pc) if p.pc in have else "nothing", p.word))
+        _stop(p, errors(p, pcs, word))
         out[p.pc] = p.lower
+    return out
+
+
+def _stop(p, errs):
+    if errs:
+        where = getattr(p, "where", None)
+        if where is not None:
+            from . import patch_scan
+            patch_scan.fail(where, errs[0])
+        raise SystemExit("lift2 probes: %s" % errs[0])
+
+
+def errors(p, pcs, word, jt=None, entries=()):
+    """[what is wrong] with one Value probe or At row against its function (p.func) with the instructions pcs (word(pc)
+    their words; jt: BR address -> jump-table targets; entries: every function's entry), the checks the lift makes:
+    - the instruction is there and holds the declared word (else another game version);
+    - Value: the instruction writes one general register, its Rd, and the declared result is that register at the
+      instruction's width (wN for a 32-bit destination, xN for 64);
+    - At instead: the instruction is a BL or BLR;
+    - At before: no branch of the function, no jump table and no other function's entry goes to the instruction (the
+      row runs on the edge into it alone);
+    - At: a result or io register is caller-saved or written by the instruction (a row never changes what its function
+      preserves)"""
+    have = pcs if isinstance(pcs, (set, frozenset, dict)) else set(pcs)
+    kind = "Value" if isinstance(p, Value) else "At"
+    if p.pc not in have or word(p.pc) != p.word:
+        return ["%s f_%08x at %#x holds %s, not %08x (another game version?)"
+                % (kind, p.func or 0, p.pc, "%08x" % word(p.pc) if p.pc in have else "nothing", p.word)]
+    out = []
+    if kind == "Value":
+        bad = [a for a in p.args if not re.fullmatch(r"x(\d+)(\+\d+)?|s(\d+)", a)]
+        if bad:
+            out.append("Value at %#x: operands xN, add(xN, K) or sN, not %s" % (p.pc, ", ".join(bad)))
+        d = dest(p.word)
+        if d is None:
+            out.append("Value at %#x: the instruction writes no single general register Rd to replace" % p.pc)
+        elif p.result != ("w" if d[1] == 32 else "x") + str(d[0]):
+            out.append("Value at %#x: the result is %s, the instruction's destination is %s%d"
+                       % (p.pc, p.result, "w" if d[1] == 32 else "x", d[0]))
+        return out
+    if p.replace and not is_call(p.word):
+        out.append("At f_%08x replacing %#x: not a BL or BLR" % (p.func or 0, p.pc))
+    if p.before:
+        from .build_ir import target
+        for pc in sorted(have):
+            i = enc.decode(word(pc))
+            if i is not None and target(i, pc) == p.pc:
+                out.append("At f_%08x before %#x: a branch target (from %#x)" % (p.func or 0, p.pc, pc))
+                break
+            if jt and p.pc in jt.get(pc, ()):
+                out.append("At f_%08x before %#x: a jump-table target (the BR at %#x)" % (p.func or 0, p.pc, pc))
+                break
+        if p.pc != p.func and p.pc in entries:
+            out.append("At f_%08x before %#x: another function's entry" % (p.func or 0, p.pc))
+    bad = p.effects()[1] - CALLER_SAVED - (set() if p.before else _written(p.word))
+    if bad:
+        out.append("At f_%08x at %#x writes %s: callee-saved, not written by the instruction"
+                   % (p.func or 0, p.pc, ", ".join(sorted(bad))))
     return out
 
 
@@ -263,31 +342,16 @@ def row_effects():
     return out
 
 
-def at(func, pcs, word, before=False, replace=False):
+def at(func, pcs, word, before=False, replace=False, jt=None, entries=()):
     """{pc: [fn(builder)]} of a function's At probes, for Program.after (before: the ones for Program.before; replace:
-    those for Program.replace); SystemExit when a word differs, when a before probe's instruction is a branch target,
-    when a replacing row's instruction is not a BL or BLR, or when a row writes a callee-saved register its instruction
-    does not"""
+    those for Program.replace); SystemExit with the declaration's file:line on a row errors() finds wrong (jt, entries:
+    the program's, for a before row)"""
     out = {}
     have = set(pcs)
     for p in tables()[1]:
         if p.func != func or p.before != before or p.replace != replace:
             continue
-        if replace and p.pc in have and not is_call(word(p.pc)):
-            raise SystemExit("lift2 probes: At f_%08x replacing %#x: not a BL or BLR" % (func, p.pc))
-        if before:
-            from .build_ir import target
-            for pc in pcs:
-                i = enc.decode(word(pc))
-                if i is not None and target(i, pc) == p.pc:
-                    raise SystemExit("lift2 probes: At f_%08x before %#x: a branch target (from %#x)" % (func, p.pc, pc))
-        if p.pc not in have or word(p.pc) != p.word:
-            raise SystemExit("lift2 probes: At f_%08x at %#x holds %s, not %08x (another game version?)"
-                             % (func, p.pc, "%08x" % word(p.pc) if p.pc in have else "nothing", p.word))
-        bad = p.effects()[1] - CALLER_SAVED - (set() if before else _written(p.word))
-        if bad:
-            raise SystemExit("lift2 probes: At f_%08x at %#x writes %s: callee-saved, not written by the instruction"
-                             % (func, p.pc, ", ".join(sorted(bad))))
+        _stop(p, errors(p, have, word, jt, entries))
         out.setdefault(p.pc, []).append(p.post)
     return out
 

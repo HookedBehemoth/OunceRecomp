@@ -72,7 +72,7 @@ class ValueRows(unittest.TestCase):
         """a Value probe names its instruction and word: a differing word, or the instruction missing, stops the lift"""
         self.assertTrue(probes.PROBES)
         for q in probes.PROBES:
-            p = probes.Value(q.pc, q.pc, q.word, q.fn, q.args)   # (its function: one of the test's own)
+            p = probes.Value(q.pc, q.pc, q.word, q.fn, q.args, q.result)   # (its function: one of the test's own)
             real = probes.use([p], [])
             try:
                 self.assertEqual(list(probes.find(p.func, [p.pc], lambda pc: p.word)), [p.pc])
@@ -101,6 +101,53 @@ class Before(unittest.TestCase):
                 probes.at(base, pcs, word, before=True)
         finally:
             probes.use(*real)
+
+    def test_jump_table_and_entry_refused(self):
+        """a jump table's target and another function's entry are edges into the instruction too: refused, with the
+        declaration's file:line; the function's own entry is not"""
+        base = 0x80004000
+        words = [0xd61f0200, 0xd503201f, 0xd65f03c0]   # br x16; nop; ret
+        word = lambda pc: words[(pc - base) // 4]
+        pcs = [base, base + 4, base + 8]
+        real = probes.tables()
+        try:
+            row = probes.At(base, base + 4, words[1], "t_none", ("x0",), before=True)
+            row.where = ("host/t.c", 7)
+            probes.use([], [row])
+            self.assertEqual(list(probes.at(base, pcs, word, before=True, jt={}, entries={base})), [base + 4])
+            with self.assertRaises(SystemExit) as e:
+                probes.at(base, pcs, word, before=True, jt={base: [base + 4, base + 8]}, entries={base})
+            self.assertIn("host/t.c:7: ", str(e.exception))
+            self.assertIn("jump-table target", str(e.exception))
+            with self.assertRaises(SystemExit) as e:
+                probes.at(base, pcs, word, before=True, jt={}, entries={base, base + 4})
+            self.assertIn("another function's entry", str(e.exception))
+            probes.use([], [probes.At(base, base, words[0], "t_none", ("x0",), before=True)])
+            self.assertEqual(list(probes.at(base, pcs, word, before=True, jt={}, entries={base})), [base])
+        finally:
+            probes.use(*real)
+
+
+class ValueResult(unittest.TestCase):
+    def test_destination_asserted(self):
+        """a Value probe's result is its instruction's Rd at the instruction's width; an instruction without one is
+        refused (dest)"""
+        self.assertEqual(probes.dest(0x1e38000c), (12, 32))   # fcvtzs w12, s0
+        self.assertEqual(probes.dest(0x9e38000c), (12, 64))   # fcvtzs x12, s0
+        self.assertEqual(probes.dest(0xd280054d), (13, 64))   # mov x13, #42
+        self.assertEqual(probes.dest(0x5280054d), (13, 32))   # mov w13, #42
+        self.assertEqual(probes.dest(0x8b020020), (0, 64))    # add x0, x1, x2
+        self.assertIsNone(probes.dest(0xf9000020))            # str x0, [x1]: no destination register
+        self.assertIsNone(probes.dest(0xd65f03c0))            # ret
+        self.assertIsNone(probes.dest(0xab020020))            # adds x0, x1, x2: the flags too
+        word = lambda pc: 0x1e38000c
+        for result, ok in (("w12", True), ("x12", False), ("w13", False)):
+            p = probes.Value(0x1000, 0x1000, 0x1e38000c, "t_v", ("s0",), result)
+            self.assertEqual(probes.errors(p, [0x1000], word) == [], ok, (result, probes.errors(p, [0x1000], word)))
+        p = probes.Value(0x1000, 0x1000, 0x1e38000c, "t_v", ("w1",), "w12")
+        self.assertIn("operands", probes.errors(p, [0x1000], word)[0])
+        p = probes.Value(0x1000, 0x1000, 0xf9000020, "t_v", ("x1",), "w0")
+        self.assertIn("no single general register", probes.errors(p, [0x1000], lambda pc: 0xf9000020)[0])
 
 
 LOWER_HARNESS = r"""

@@ -264,6 +264,14 @@ def hot_list(work):
     return {int(w[2:], 16) for line in open(path) for w in line.split()[:1] if w.startswith("f_")}
 
 
+def check_complete(entries, bodies, hooks):
+    """SystemExit unless every entry the discovery found has a body in the plan (lifted, or a trap at its entry) or is
+    an HLE'd function (hooks): a function the plan left out would be a call into nothing"""
+    lost = sorted(set(entries) - set(bodies) - set(hooks))
+    if lost:
+        raise SystemExit("plan: %d entries have no body and no HLE, first f_%08x" % (len(lost), lost[0]))
+
+
 def write_plan(L, img, path, hot=()):
     """the discovery's facts and the instructions of every function; hot: the hot list's functions"""
     t0 = time.time()
@@ -298,6 +306,7 @@ def write_plan(L, img, path, hot=()):
             bodies[e] = (array("Q", [e]), array("I", [0]))
             continue
         bodies[e] = (array("Q", pcs), array("I", (img.word(pc) for pc in pcs)))
+    check_complete(L.entries, bodies, hooks)
     # the whole program's summaries: computed (or taken from their cache) by the build, finish_summaries
     base, inp, hle = plan_summaries(L, img, path, hooks, no_call, classes)
     plan = {"summaries": {}, "summary_base": base, "summary_input": inp, "hle": hle, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets,
@@ -385,7 +394,7 @@ def lift_part(args):
         w = dict(zip(pcs, words))
         prog.code_sites = code_ptrs.sites(list(pcs), list(words), prog.code_targets, plan["jt"])
         prog.probes = probes.find(e, pcs, w.__getitem__)
-        prog.before = probes.at(e, pcs, w.__getitem__, before=True)
+        prog.before = probes.at(e, pcs, w.__getitem__, before=True, jt=prog.jt, entries=prog.entries)
         prog.after = probes.at(e, pcs, w.__getitem__)
         prog.replace = probes.at(e, pcs, w.__getitem__, replace=True)
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)

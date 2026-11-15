@@ -121,5 +121,14 @@ class SummaryEffects(unittest.TestCase):
         self.assertEqual(self.declared("/* moved */\n" + hook % "" + "HLE(nn_f) { int body; }", named), k)
 
 
+class PlanComplete(unittest.TestCase):
+    def test_no_entry_dropped(self):
+        """write_plan: every entry has a body or is an HLE'd function; one without either stops the lift"""
+        game.check_complete({1, 2, 3}, {1: None, 2: None}, {3})
+        with self.assertRaises(SystemExit) as e:
+            game.check_complete({1, 2, 3, 0x80001000}, {1: None, 2: None}, {3})
+        self.assertIn("f_80001000", str(e.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
