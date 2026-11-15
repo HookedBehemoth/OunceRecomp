@@ -58,7 +58,7 @@ It writes the guest code, the lifter's IR, the LLVM IR and, with the options, th
 | `python -I nx2/lift2/abi_census.py --game games/oot` | Functions that do not follow the AAPCS64 (see [constraints](lifter-costs.md#functions-outside-the-aapcs64)) | Yes |
 | The verification build | The summaries against a real run ([The lifter](lifter.md#the-verification-build)) | Yes |
 
-In the game, the smoke test and a benchmark are the landing checks ([Test in the game](testing.md)).
+In the game, the smoke test and a benchmark are the landing checks ([Test Hookshot](testing.md)).
 
 ## Lifter switches
 

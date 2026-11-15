@@ -50,7 +50,7 @@ work/sa/build/hookshot work/sa/image/image.bin --romfs work/dump/romfs --user wo
 | `--trace` | Logs every Horizon OS call (the same as `HOS_TRACE=1`) |
 
 The [development guide](docs/development.md) has the build and run loop and the test tools, and the
-[documentation index](docs/README.md) lists every page. [CONTRIBUTING.md](CONTRIBUTING.md) has the rules for changes.
+[documentation index](docs/README.md) lists every page. The [design page](docs/design.md) has the rules every change keeps.
 
 ## How it works
 
@@ -60,7 +60,7 @@ The [development guide](docs/development.md) has the build and run loop and the 
 3. `host/nvn_native.c` records the game's NVN2 graphics calls, and `gpu/direct` replays them on Vulkan.
 4. A fork of Eden's shader recompiler (`gpu/direct/eden`) translates the Switch 2 shaders to SPIR-V.
 
-The [architecture page](docs/design.md) shows how the parts fit. Upstream's older renderers are kept as unbuilt reference
+The [design page](docs/design.md) shows how the parts fit. Upstream's older renderers are kept as unbuilt reference
 source in `gpu/legacy`.
 
 ## Credits

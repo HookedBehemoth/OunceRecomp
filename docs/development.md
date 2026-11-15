@@ -71,7 +71,7 @@ After a change, rebuild only what the change needs:
 The details, including what the object cache keeps, are in [Build and iterate on the lifter](lifter-build.md). A new
 file in `host/` belongs in the `host` list of `games/oot/game.py`.
 
-Then test the change in the game. [Test in the game](testing.md) covers the headless test run, the smoke test, the
+Then test the change in the game. [Test Hookshot](testing.md) covers the headless test run, the smoke test, the
 benchmark and profiling.
 
 To keep two builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`) to
@@ -109,7 +109,7 @@ the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It ref
 
 ## More pages
 
-- [Test in the game](testing.md): test runs, smoke test, benchmarks, recordings, profiles.
+- [Test Hookshot](testing.md): test runs, smoke test, benchmarks, recordings, profiles.
 - [Switches](switches.md): the environment switches for tests and debugging, and the log format.
 - [Reverse engineering](reverse-engineering.md): function labels and the tools for reading the game's code and files.
-- [Architecture](design.md): how the parts fit, and the rules the GPU replay keeps.
+- [Design](design.md): how the parts fit, and the rules every change keeps.

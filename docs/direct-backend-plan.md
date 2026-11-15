@@ -95,7 +95,7 @@ Each item is open at the time of writing. Remove an item when you close it.
 | What | How |
 |---|---|
 | Quick run | `scripts/smoke.sh` |
-| Scene routes | `scripts/direct_walk_check.sh`, `scripts/direct_scene_cycle.sh`, `scripts/direct_check.sh` |
+| Scene routes | `scripts/direct_walk_check.sh`, `scripts/direct_check.sh`; `scripts/direct_scene_cycle.sh` needs the removed `!warp` and `!cheat` commands ([parked patches](parked-patches.md)) |
 | Pictures per pass | `HOS_DBG=dump:<present>` dumps the targets; `scripts/direct_dump_compare.py` and `scripts/direct_picture_check.py` compare them with stored references |
 | Validation | `HOS_DBG=validation` runs the Vulkan validation layers with synchronization validation; any message is a failure |
 | Counters | the `direct:` log lines every 600 presents: skipped draws and jobs, unclassified lists, objects created a frame, cross-list uniform overlaps; all 0 in steady play |

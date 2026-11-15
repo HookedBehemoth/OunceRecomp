@@ -6,12 +6,11 @@ new to the code.
 ## Get started
 
 - [Development guide](development.md): set up, build, run, and the change-and-rebuild loop.
-- [Architecture](design.md): how the parts fit, and the rules that hold across them.
-- [Contributing](../CONTRIBUTING.md): the rules for changes, and the game-free checks.
+- [Design](design.md): how the parts fit, and the rules every change keeps.
 
 ## Test and debug
 
-- [Test in the game](testing.md): test runs, the smoke test, benchmarks, recordings and profiles.
+- [Test Hookshot](testing.md): the game-free checks, test runs, the smoke test, benchmarks, recordings and profiles.
 - [Switches](switches.md): environment switches, `HOS_DBG` debug aids, and the log format.
 - [Reverse engineering](reverse-engineering.md): reading the game's code and files, and labeling functions.
 
