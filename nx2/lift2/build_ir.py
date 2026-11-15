@@ -29,7 +29,7 @@ class Program:
     symbol(e): the generic entry's symbol of function e; no_lift: functions to pass over (setjmp owners: milestone 7)"""
 
     def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None, classes=None,
-                 tail_symbol=None, jt_index=None, keeps=None):
+                 tail_symbol=None, jt_index=None, keeps=None, noreturn=None):
         self.tail_symbol = tail_symbol or symbol or (lambda e: "g_%08x" % e)   # (a tail call's target symbol)
         self.classes = set(classes) if classes is not None else None   # (None: every class of sem.CLASS)
         # (entries, jt and plt are shared, not copied: the discovery fills them as it walks)
@@ -39,8 +39,9 @@ class Program:
         # BR address -> (load address, index register, LDR extend, [target per index]): the switch on the index
         self.jt_index = jt_index if jt_index is not None else {}
         # keeps(callee): the registers a BL's callee is proven to return unchanged (their SSA values stay live across
-        # the call, no reload)
+        # the call, no reload); noreturn(callee): proven never to return (the BL is followed by a trap)
         self.keeps = keeps or (lambda e: ())
+        self.noreturn = noreturn or (lambda e: False)
         self.callee = callee or (lambda t: t)
         self.symbol = symbol or (lambda e: "g_%08x" % e)
         self.no_call = set(no_call)
@@ -205,6 +206,10 @@ def build(entry, pcs, word, prog=LEAF):
             cur.defs.update(held)
             for post in prog.after.get(pc, ()):
                 post(b)
+            if pc not in prog.after and prog.noreturn(callee):
+                cur.term = ("noreturn", pc, i.word)   # (a64_trap, then unreachable: a wrong summary stops loudly)
+                cur = None
+                continue
             if pc + 4 not in body:
                 cur.term = ("br", goto(pc + 4, pc))
                 cur = None
@@ -270,6 +275,17 @@ def build(entry, pcs, word, prog=LEAF):
         else:   # UDF, BRK, HLT
             cur.term = ("trap", pc, i.word)
         cur = None
+    if any(blk.term and blk.term[0] == "noreturn" for blk in fn.blocks.values()):
+        # blocks only a noreturn call's return reached: gone
+        seen, todo = {fn.blocks[entry]}, [fn.blocks[entry]]
+        while todo:
+            for s in todo.pop().succs():
+                if s not in seen:
+                    seen.add(s)
+                    todo.append(s)
+        for k in [k for k, blk in fn.blocks.items() if blk not in seen]:
+            del fn.blocks[k]
+        exits = [blk for blk in exits if blk in seen]
     # leaving for another function: the flags too, if this function writes them (the code there may read them)
     for blk in exits:
         if fn.written & {"n", "z", "c", "v"}:

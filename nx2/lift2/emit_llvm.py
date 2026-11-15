@@ -167,6 +167,10 @@ def emit_function(fn, decls, flags_out=False):
             decls.add("declare void @a64_ijump(ptr, i64)")
             out.append("  call void @a64_ijump(ptr %%ctx, %s)" % typed(t[1]))
             out.append("  ret void")
+        elif t[0] == "noreturn":   # (a call of a callee the summaries prove never returns came back)
+            decls.add("declare void @a64_trap(ptr, i64, i32)")
+            out.append("  call void @a64_trap(ptr %%ctx, i64 %d, i32 %d)" % (t[1], t[2]))
+            out.append("  unreachable")
         elif t[0] == "trap":
             decls.add("declare void @a64_trap(ptr, i64, i32)")
             out.append("  call void @a64_trap(ptr %%ctx, i64 %d, i32 %d)" % (t[1], t[2]))

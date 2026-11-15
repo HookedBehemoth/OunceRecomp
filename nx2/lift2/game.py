@@ -328,7 +328,7 @@ def call_report(plan, edited, hooks, chosen):
             elif s is None:
                 why["no summary"] += 1
             elif s[5] is False:
-                why["noreturn"] += 1
+                why["noreturn (trap after)"] += 1
             elif s[6] or s[7]:
                 why["demoted"] += 1
             else:
@@ -362,9 +362,10 @@ def lift_part(args):
     if key not in _EDITED:   # (once a worker process: it scans every body for the C after instructions)
         _EDITED.clear()
         _EDITED[key] = host_edited(plan, hooks)
-    keeps, _ = call_bounds(plan, _EDITED[key])
+    keeps, noreturn = call_bounds(plan, _EDITED[key])
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
-                            symbol=symbol, tail_symbol=tail_symbol, jt_index=plan.get("jt_index"), keeps=keeps)
+                            symbol=symbol, tail_symbol=tail_symbol, jt_index=plan.get("jt_index"), keeps=keeps,
+                            noreturn=noreturn)
     m = emit_llvm.Module()
     extra = []
     for e in names:

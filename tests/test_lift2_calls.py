@@ -53,7 +53,7 @@ def lift(hooks=(), sj=()):
             "sj_rets": {e: (0, 0, 0, 0) for e in sj}, "after_c": {},
             "bodies": {e: (sorted(pcs), [word(p) for p in sorted(pcs)]) for e, pcs in funcs.items()}}
     keeps, noreturn = game.call_bounds(plan, game.host_edited(plan, {e: "hook" for e in hooks}))
-    prog = build_ir.Program(entries=entries, symbol=lambda e: "g_%08x" % e, keeps=keeps)
+    prog = build_ir.Program(entries=entries, symbol=lambda e: "g_%08x" % e, keeps=keeps, noreturn=noreturn)
     fns = {n: build_ir.build(a, sorted(funcs[a]), word, prog) for n, a in A.items()}
     return fns, funcs
 
@@ -83,6 +83,15 @@ class Calls(unittest.TestCase):
         for kw in ({"hooks": [A["keep"]]}, {"sj": [A["keep"]]}):
             fns, _ = lift(**kw)
             self.assertIn("x19", loads_after_call(fns["c1"]), kw)
+
+    def test_noreturn(self):
+        fns, _ = lift()
+        self.assertTrue(any(b.term[0] == "noreturn" for b in fns["c4"].blocks.values()))
+        m = emit_llvm.Module()
+        m.add(fns["c4"])
+        text = m.text()
+        self.assertRegex(text, r"call void @a64_trap\(ptr %%ctx, i64 %d, i32 %d\)\n  unreachable" % (A["c4"] + 0xc,
+                                                                                                   CODE[0x88 // 4]))
 
     def test_runs(self):
         fns, funcs = lift()
