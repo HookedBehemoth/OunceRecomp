@@ -251,8 +251,8 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 Some(p) => value_lower(&mut b, p),
                 None => (sem::get(t).expect(t).f)(&mut b, i, pc),
             }
-            if site.is_some() && probe.is_none() {
-                let ca = b.codeaddr(site.unwrap().0);
+            if let (Some((e, _)), None) = (site, probe) {
+                let ca = b.codeaddr(e);
                 setx(&mut b, i.f("Rd"), ca, false);
                 b.f.code_sites += 1;
             } else if CODE_FORMS.contains(&t)
@@ -426,11 +426,11 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 targets.sort();
                 targets.dedup();
                 let at = index_at.get(&pc).copied();
-                let term = if at.is_some() && at.unwrap().0 == c {
+                let term = if let Some((_, at)) = at.filter(|a| a.0 == c) {
                     let tab = &prog.jt_index.iter().find(|r| r.0 == pc).unwrap().4;
                     let cases: Vec<(u64, BlockId)> =
                         tab.iter().enumerate().map(|(n, &t2)| (n as u64, goto(&mut b, prog, &mut exits, t2))).collect();
-                    Term::Switch(at.unwrap().1, cases, ij)
+                    Term::Switch(at, cases, ij)
                 } else if !targets.is_empty() {
                     let lo = targets[0];
                     let l = b.c64(lo as i128);

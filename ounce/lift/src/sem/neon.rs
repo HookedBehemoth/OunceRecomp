@@ -1131,7 +1131,7 @@ fn t_simd_tbl(b: &mut Builder, i: &Insn, _pc: u64) {
     } else {
         let a = vread(b, i.f("Rm"), vty(8, I8));
         let c = vread(b, i.f("Rm"), vty(8, I8));
-        let m: Vec<i32> = (0..8).chain(std::iter::repeat(-1).take(8)).collect();
+        let m: Vec<i32> = (0..8).chain(std::iter::repeat_n(-1, 8)).collect();
         b.shuffle(a, c, &m)
     };
     let mut r: Option<ValueId> = None;

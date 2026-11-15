@@ -711,20 +711,8 @@ pub fn fold(op: BinOp, a: u128, b: u128, w: u32) -> Option<u128> {
         BinOp::Or => a | b,
         BinOp::Xor => a ^ b,
         BinOp::Mul => a.wrapping_mul(b) & m,
-        BinOp::Shl => {
-            if b < w as u128 {
-                (a << b) & m
-            } else {
-                return None;
-            }
-        }
-        BinOp::Lshr => {
-            if b < w as u128 {
-                a >> b
-            } else {
-                return None;
-            }
-        }
+        BinOp::Shl if b < w as u128 => (a << b) & m,
+        BinOp::Lshr if b < w as u128 => a >> b,
         _ => return None,
     })
 }

@@ -281,7 +281,7 @@ impl RawFunc<'_> {
         }
         let w = self.words.as_bytes();
         assert_eq!(w.len(), 8 * pcs.len(), "export: f_{:08x}'s words", self.entry);
-        let words = w.chunks_exact(8).map(hex_word).collect();
+        let words = w.as_chunks::<8>().0.iter().map(|h| hex_word(h)).collect();
         Func {
             entry: self.entry,
             pcs,

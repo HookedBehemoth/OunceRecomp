@@ -10,7 +10,7 @@ const FPCR_OFF: u32 = 0x320;
 fn recip_estimate(a: u64) -> u64 {
     let a = a * 2 + 1;
     let b = (1u64 << 19) / a;
-    (b + 1) / 2
+    b.div_ceil(2)
 }
 
 /// RecipSqrtEstimate: a in 128..511 -> 256..511
@@ -20,7 +20,7 @@ fn rsqrt_estimate(a: u64) -> u64 {
     while a * (b + 1) * (b + 1) < (1 << 28) {
         b += 1;
     }
-    (b + 1) / 2
+    b.div_ceil(2)
 }
 
 fn recip() -> Vec<u64> {

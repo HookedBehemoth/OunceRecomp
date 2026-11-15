@@ -80,9 +80,9 @@ fn main() {
         .partitions
         .iter()
         .map(|p| p.name.clone())
-        .filter(|n| only.as_ref().map_or(true, |o| o.contains(n)))
+        .filter(|n| only.as_ref().is_none_or(|o| o.contains(n)))
         .collect();
-    if only.as_ref().map_or(true, |o| o.iter().any(|n| n == ANSWERS)) {
+    if only.as_ref().is_none_or(|o| o.iter().any(|n| n == ANSWERS)) {
         std::fs::write(out.join(format!("{ANSWERS}.ll")), answers_ir(&meta)).unwrap();
     }
     let t0 = Instant::now();
@@ -140,7 +140,7 @@ fn main() {
         count::BYTES.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6
     );
     let mut by: Vec<_> = g.1.into_iter().collect();
-    by.sort_by(|a, b| b.1.cmp(&a.1));
+    by.sort_by_key(|b| std::cmp::Reverse(b.1));
     for (why, n) in by.iter().take(40) {
         println!("  skipped: {why}: {n}");
     }

@@ -120,7 +120,7 @@ impl Ty {
             "v128" => Ty::V128,
             _ if s.starts_with('i') => Ty::I(s[1..].parse().expect(s)),
             _ if s.starts_with('v') => {
-                let k = s.find(|c| c == 'i' || c == 'f').expect(s);
+                let k = s.find(['i', 'f']).expect(s);
                 let n: u8 = s[1..k].parse().expect(s);
                 Ty::Vec(n, Lane::of(Ty::parse(&s[k..])))
             }

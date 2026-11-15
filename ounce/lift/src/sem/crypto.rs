@@ -95,10 +95,10 @@ fn sha1_rounds(b: &mut Builder, i: &Insn, f: F3) {
     let mut xs = lanes32(b, i.f("Rd"));
     let mut y = vread(b, i.f("Rn"), I32);
     let w = lanes32(b, i.f("Rm"));
-    for e in 0..4 {
+    for &we in &w[..4] {
         let t = f(b, xs[1], xs[2], xs[3]);
         let r5 = rol(b, xs[0], 5);
-        y = add(b, &[y, r5, t, w[e]]);
+        y = add(b, &[y, r5, t, we]);
         xs[1] = rol(b, xs[1], 30);
         // <Y, X> = ROL(Y : X, 32)
         let top = xs[3];
@@ -125,11 +125,11 @@ fn sigma1(b: &mut Builder, x: ValueId) -> ValueId {
 
 fn sha256_hash(b: &mut Builder, x: &[ValueId], y: &[ValueId], w: &[ValueId], part1: bool) -> Vec<ValueId> {
     let (mut x, mut y) = (x.to_vec(), y.to_vec());
-    for e in 0..4 {
+    for &we in &w[..4] {
         let chs = choose(b, y[0], y[1], y[2]);
         let maj = majority(b, x[0], x[1], x[2]);
         let s1 = sigma1(b, y[0]);
-        let t = add(b, &[y[3], s1, chs, w[e]]);
+        let t = add(b, &[y[3], s1, chs, we]);
         x[3] = add(b, &[t, x[3]]);
         let s0 = sigma0(b, x[0]);
         y[3] = add(b, &[t, s0, maj]);

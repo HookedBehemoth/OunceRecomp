@@ -23,7 +23,7 @@ pub fn ity_of(t: Ty) -> Ty {
 
 fn default_nan() -> bool {
     static D: OnceLock<bool> = OnceLock::new();
-    *D.get_or_init(|| std::env::var("LIFT2_DEFAULT_NAN").map_or(false, |v| v == "1"))
+    *D.get_or_init(|| std::env::var("LIFT2_DEFAULT_NAN").is_ok_and(|v| v == "1"))
 }
 
 // ---- V register access
@@ -517,7 +517,7 @@ fn t_ldst_mult(b: &mut Builder, i: &Insn, _pc: u64) {
             for &v in &vals[1..] {
                 let n = b.ty(cat).lanes().0;
                 let wide = if n != per {
-                    let m: Vec<i32> = (0..per as i32).chain(std::iter::repeat(-1).take((n - per) as usize)).collect();
+                    let m: Vec<i32> = (0..per as i32).chain(std::iter::repeat_n(-1, (n - per) as usize)).collect();
                     b.shuffle(v, v, &m)
                 } else {
                     v
