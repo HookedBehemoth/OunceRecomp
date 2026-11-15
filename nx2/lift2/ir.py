@@ -180,6 +180,15 @@ class Builder:
             c = self.fn.consts[key] = self.fn.new_value(ty, "const", (v,))
         return c
 
+    def codeaddr(self, e):
+        """the address of the function at guest address e as the game sees it: its host function pointer (f_<e>), a
+        constant of the link (lift2/code_ptrs.py)"""
+        key = ("code", e)
+        c = self.fn.consts.get(key)
+        if c is None:
+            c = self.fn.consts[key] = self.fn.new_value("i64", "codeaddr", (e,))
+        return c
+
     def op(self, op, ty, *args, **attrs):
         v = self.fn.new_value(ty, op, args, attrs or None)
         self.blk.ops.append(v)

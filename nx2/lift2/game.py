@@ -21,6 +21,7 @@ HOOKSHOT_HOT_FUNCS: the hot list (one f_<addr> a line; default work/hot_funcs_pl
 """
 import concurrent.futures
 import hashlib
+import json
 import os
 import pickle
 import re
@@ -29,7 +30,7 @@ import sys
 import time
 from array import array
 
-from . import bounds, build_ir, emit_llvm, enc, host_effects, llvm, probes
+from . import bounds, build_ir, code_ptrs, emit_llvm, enc, host_effects, llvm, probes
 
 PART_INSNS = 120000
 # (dead context stores: LLVM drops a store a later one overwrites only if it can see that nothing reads the context
@@ -251,7 +252,8 @@ def write_plan(L, img, path, hot=()):
     job = plan_summaries(L, img, path, hooks, no_call, classes, entry)
     plan = {"summaries": {}, "summary_job": job, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets,
             "hooks": sorted(hooks), "entry_hooks": entry, "bodies": bodies, "why": why, "hot": sorted(set(hot) & set(bodies)),
-            "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
+            "insns": {e: len(b) for e, (b, _) in L.funcs.items()},
+            "code_excluded": sorted(m.base for m in img.modules)}   # (code_ptrs.targets: the modules' bases stay guest)
     with open(path + ".tmp", "wb") as f:
         pickle.dump(plan, f, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(path + ".tmp", path)
@@ -322,16 +324,20 @@ def lift_part(args):
     bound = _BOUNDS[key]
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
                             jt_index=plan.get("jt_index"), bound=bound, omit=True, verify=verify)
+    prog.code_targets = code_ptrs.targets(plan)
     m = emit_llvm.Module()
     extra = []
+    n_code = 0
     for e in names:
         pcs, words = plan["bodies"][e]
         w = dict(zip(pcs, words))
+        prog.code_sites = code_ptrs.sites(list(pcs), list(words), prog.code_targets, plan["jt"])
         prog.probes = probes.find(e, pcs, w.__getitem__)
         prog.before = probes.at(e, pcs, w.__getitem__, before=True)
         prog.after = probes.at(e, pcs, w.__getitem__)
         prog.replace = probes.at(e, pcs, w.__getitem__, replace=True)
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
+        n_code += fn.code_sites
         fn.name = "f_%08x" % e
         fn.entry_hook = hooks.get(e)
         if verify and bounds.verified(plan, e):
@@ -361,7 +367,17 @@ def lift_part(args):
                 m.decls.add("declare void @%s(ptr)" % t)
             extra.append("define internal void @sjcall_%08x(ptr %%ctx) {\n  call void @hos_sj_call(ptr %%ctx, ptr @%s, "
                          "i64 %d, i64 %d, i64 %d, i64 %d)\n  ret void\n}" % ((e, t) + sj[e]))
-    return m.text() + emit_llvm.no_capture("\n".join(extra)) + "\n"
+    return m.text() + emit_llvm.no_capture("\n".join(extra)) + "\n; code pointer sites: %d\n" % n_code
+
+
+def census_part(args):
+    """(in a worker process) code_ptrs' census of one partition: (sites, {other kind: count}, [(pc, why)] unknown)"""
+    plan_path, names, texts = args
+    a, p, kinds, odd = code_ptrs.count(_plan(plan_path), names, texts)
+    return a + p, kinds, odd
+
+
+CODE_SITES = re.compile(r"^; code pointer sites: (\d+)$", re.M)
 
 
 _PLAN = {}
@@ -444,9 +460,11 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
                                  usedforsecurity=False).hexdigest())
         objs_k.append(os.path.join(obj_dir, "lift_%s%03d.o" % (tag, k)))
     todo = []
+    lifted_sites = {}   # (partition -> the code pointer sites its lift translated: from its text, or beside its cached object)
     for k in range(len(parts)):
         hit = os.path.join(cache, "liftin_%s.o" % keys[k])
-        if os.path.exists(hit):
+        if os.path.exists(hit) and os.path.exists(hit + ".cp"):
+            lifted_sites[k] = int(open(hit + ".cp").read())
             if os.path.exists(objs_k[k]):
                 os.remove(objs_k[k])
             os.link(hit, objs_k[k])
@@ -454,6 +472,26 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
             todo.append(k)
     with concurrent.futures.ProcessPoolExecutor(min(jobs, 16)) as ex:
         texts = list(ex.map(lift_part, [(plan_path, parts[k][1], hooks) for k in todo])) if todo else []
+        texts_ = [(seg["addr"], seg["addr"] + seg["size"]) for mod in json.load(open(os.path.join(
+            os.path.dirname(plan_path), "image", "image.json")))["modules"] for seg in mod["segments"] if seg["name"] == ".text"]
+        audits = list(ex.map(census_part, [(plan_path, names, texts_) for _, names in parts]))
+    census = [c for c, _, _ in audits]
+    odd = sorted(o for _, _, os_ in audits for o in os_)
+    if odd:
+        raise SystemExit("build: %d code addresses formed in a way lift2/code_ptrs.py does not know, first %#x: %s"
+                         % (len(odd), odd[0][0], odd[0][1]))
+    other = {}
+    for _, kinds, _ in audits:
+        for kk, v in kinds.items():
+            other[kk] = other.get(kk, 0) + v
+    for k, text in zip(todo, texts):
+        lifted_sites[k] = int(CODE_SITES.search(text).group(1))
+    # (every code pointer site of the census translated, and no other: an equality guard `cmp xF, known` must see both
+    # sides translated or neither; lift2/code_ptrs.py)
+    bad = [(parts[k][1][0], census[k], lifted_sites[k]) for k in range(len(parts)) if census[k] != lifted_sites[k]]
+    if bad:
+        raise SystemExit("build: code pointer sites translated differ from the census (code_ptrs.sites) in %d partitions, "
+                         "first from f_%08x: census %d, translated %d" % ((len(bad),) + bad[0]))
     t_lift = time.time() - t0
     cjobs = [(clang, text, objs_k[k], flags[k], pres[k], cache) for k, text in zip(todo, texts)]
     objs, failed, t1 = [o for k, o in enumerate(objs_k) if k not in set(todo)], [], time.time()
@@ -465,14 +503,18 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
                 continue
             try:
                 hit = os.path.join(cache, "liftin_%s.o" % keys[k])
+                with open(hit + ".cp.tmp", "w") as f:
+                    f.write("%d\n" % lifted_sites[k])
+                os.replace(hit + ".cp.tmp", hit + ".cp")
                 os.link(obj, hit + ".tmp")
                 os.replace(hit + ".tmp", hit)
             except OSError:
                 pass
     n_insn = sum(len(plan["bodies"][e][0]) for e in chosen)
     line = ("lift: %d functions (%d instructions; %d of them hot) in %d partitions (%d from the cache by their inputs); "
-            "lifted in %.0fs, compiled in %.0fs" % (len(chosen), n_insn, len(chosen & hot), len(parts),
-                                                    len(parts) - len(todo), t_lift, time.time() - t1))
+            "lifted in %.0fs, compiled in %.0fs; %d code pointer sites translated (the census's); code addresses left "
+            "guest: %s" % (len(chosen), n_insn, len(chosen & hot), len(parts), len(parts) - len(todo), t_lift,
+                            time.time() - t1, sum(census), ", ".join("%s %d" % kv for kv in sorted(other.items()))))
     if failed:
         raise SystemExit("lift: %d partitions failed to compile:\n%s" % (len(failed), failed[0][1]))
     print(bounds.call_report(plan, bounds.call_bounds(plan, hooks, hle), chosen), flush=True)

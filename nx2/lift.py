@@ -101,11 +101,14 @@ def main():
         gen = os.path.join(out_dir, "gen")
         os.makedirs(gen, exist_ok=True)
         for f in os.listdir(gen):   # (C an earlier lift wrote that this one does not)
-            if f not in ("a64_table.c", "a64_hooks.c", "a64_stubs.c", "hos_image.c", "nvn2_exports.c", "functions.txt"):
+            if f not in ("a64_table.c", "a64_hooks.c", "a64_code_slots.c", "a64_stubs.c", "hos_image.c", "nvn2_exports.c",
+                         "functions.txt"):
                 p = os.path.join(gen, f)
                 if os.path.isfile(p):
                     os.remove(p)
         tables.write(gen, L.funcs, L.hooks)
+        print("code pointers: %d relocated slots hold a function of the table (gen/a64_code_slots.c)"
+              % tables.write_code_slots(gen, img, L.funcs, L.hooks))
         with open(os.path.join(gen, "functions.txt"), "w") as f:
             f.write("".join("%08x %d\n" % (e, len(L.funcs[e][0])) for e in sorted(L.funcs)))
         if a.standalone:

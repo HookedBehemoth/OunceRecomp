@@ -239,6 +239,10 @@ DIRECT = [
 
 # (host/oot_probes.c says what each does and why; hos_mouse_camera: host/mouse_native.c)
 AT = [
+    # code pointers are host function pointers (lift2/code_ptrs.py): __nnmusl_init_dso (module_nnmusl_init_dso), run
+    # by every module's DT_INIT at boot, tests whether nnMain, loaded from its relocated slot, lies inside the module's
+    # range (cmp x28, x12; ccmp x8, x12; b.hi); it sees nnMain's guest address (host/code_ptrs.c)
+    At(0x85056160, 0x850565b0, 0xf947158c, "hos_code_guest_value", ("x12",), "x12"),   # ldr x12, [x12, #0xe28]
     # dynamic resolution and the fixed scale
     At(0x80825aa0, 0x80825bcc, 0xb9409508, "hos_oot_dynres_flags", ("w8",), "w8"),   # ldr w8, [x8, #148]
     At(0x80825aa0, 0x80826420, 0x52a7f009, "hos_oot_fixed_scale", (), "w9"),        # mov w9, #1.0

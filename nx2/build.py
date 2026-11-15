@@ -610,7 +610,8 @@ def main():
     # (the C files the lift writes include only the guest model)
     deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (gen, rt64) for f in sorted(os.listdir(d))
                     if f.endswith(".h"))
-    srcs = [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_stubs.c", "hos_image.c", "nvn2_exports.c")] + \
+    srcs = [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_code_slots.c", "a64_stubs.c", "hos_image.c",
+                                           "nvn2_exports.c")] + \
         [os.path.join(rt64, "a64_rt.c")]
     host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c"))
     host_srcs += [  # (the window on SDL2, the Win32-named calls on POSIX)

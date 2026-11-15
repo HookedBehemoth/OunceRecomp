@@ -18,7 +18,7 @@ sample of 120 functions of the play binary at 860eb332, recompiled from edited I
 | entries | `nx2/adr_entries.py` | code addresses the code builds with ADR / ADRP+ADD (callbacks reached only through a pointer) |
 | discovery | `nx2/lift2/discover.py` | function bodies (an entry plus what it reaches without crossing another entry), jump tables, PLT stubs, setjmp owners, the split of very large functions (`--max-func`) |
 | plan | `nx2/lift2/game.py` `write_plan` | every function's instructions and the program's facts in `work/sa/plan.pickle`; the summaries when asked |
-| runtime tables | `nx2/lift2/tables.py`, `nx2/standalone.py` | `a64_table.c` (the function table), `a64_hooks.c`, `hos_image.c`, `a64_stubs.c`, `nvn2_exports.c` in `work/sa/gen` |
+| runtime tables | `nx2/lift2/tables.py`, `nx2/standalone.py` | `a64_table.c` (the function table), `a64_hooks.c`, `a64_code_slots.c` (the relocated slots holding a function), `hos_image.c`, `a64_stubs.c`, `nvn2_exports.c` in `work/sa/gen` |
 | IR | `nx2/lift2/enc*.py`, `sem*.py`, `build_ir.py`, `ir.py` | the decoder's encoding tables, each form's semantics as IR, a function's IR |
 | LLVM IR | `nx2/lift2/emit_llvm.py` | one textual module per partition |
 | build | `nx2/lift2/game.py` `prepare`, `nx2/build.py` | partitions lifted in worker processes, piped into `clang -x ir -` (cold ones through `opt` first; no IR on disk), cached by input key; runtime and host compiled and linked |
@@ -195,11 +195,58 @@ exclusives' runtime calls cost nothing measurable.
 
 ### Indirect calls and jumps
 
-- **BLR**: `call void @a64_icall(ptr %ctx, i64 %target)`, then the reload of every register.
-- **BR without a table**: `a64_ijump(ctx, target)` and return.
-- `a64_icall` and `a64_ijump` call `a64_lookup` (`third_party/a64-kit/rt/a64_rt.c:31`): one global direct-mapped
-  cache of 2^18 64-bit slots keyed `(a >> 2 ^ a >> 20)`, each `address << 32 | offset`, in front of a binary search of
-  the function table (every lifted entry), then the host's functions (`a64_lookup_host`); a miss is remembered too.
+Code pointers are host function pointers, translated where they originate (`nx2/lift2/code_ptrs.py`):
+
+- **Relocated slots.** Every relocated slot of the image whose value is a function of the table (453,943 slots:
+  RELATIVE/RELR 437,540, JUMP_SLOT 11,697, ABS64 4,542, GLOB_DAT 164; vtables and pointer tables in `.data`, the GOT,
+  `init_array`) is listed in `gen/a64_code_slots.c` (slot, function index; `nx2/lift.py`, `tables.write_code_slots`).
+  The host writes the function's host pointer there right after `image.bin` is loaded (`host/code_ptrs.c`
+  `hos_code_ptrs_init`, which stops when a slot does not hold the lift's value). `image.bin` keeps guest values.
+- **Addresses the code forms.** At `ADR Xd, <entry>` and at the `ADD Xd, Xn, #imm12` of an `ADRP Xn` + `ADD` pair
+  (within 4 instructions, one block, Xn not written between) that forms an entry, the lifter emits
+  `ptrtoint (ptr @f_<entry> to i64)` (IR value `codeaddr`). An entry is a function of the table except the modules'
+  bases: every module's DT_INIT passes its own base to `__nnmusl_init_dso` as a range bound (main's at 0x81237808), and
+  `f_80020000` (main's MOD0 header, taken for code) is a table entry. The census (`code_ptrs.sites`) finds 8,180 ADR
+  and 11,067 ADD sites; the lift translates exactly those (`build_ir.build` stops when a site's ADD does not see the
+  page as a constant, or when an ADR or a 64-bit ADD/SUB immediate forms an entry's address anywhere else; MOVZ/MOVK
+  and ORR make integers in this position-independent code, and some equal an entry: 0x80000100 at 0x81701194), and
+  the build stops when a partition's translated count differs from the census (`game.prepare`; the count of a cached
+  partition is kept beside its object, `.cp`). `code_ptrs.audit` accounts for every other code address the code forms
+  and the build stops on one of no known kind: 1,419 jump-table bases, 20 module bases (14 at the base, 6 at base + 1),
+  zstd_decompress_sequences' 2 local continuations (`adr x7` ... `br x7`), and 11,075 ADRPs of a text page each
+  consumed in its block by the entry-forming ADD (11,067) or a module base's (8). An indirectly reached PLT stub's
+  x17 (its GOT value) is the target's `codeaddr` too.
+- **The host's hand-outs.** A host call without user data is handed out as the handler itself (`hos_hostcall`: every
+  NVN proc, the substituted job-sync and depth-copy procs); the 16 guest functions the host calls by address are named
+  by their `f_` symbols (`CODE_PTR`).
+
+What is emitted:
+
+- **BLR**: `call void @lift2_icall(ptr %ctx, i64 %target, i64 <pc>)`, an always-inlined helper: a target with any of
+  its high 32 bits set (host code; guest code addresses are below 4 GB) is called directly, else
+  `a64_icall_guest(ctx, target, pc)`; then the reload of every register. A site's code is `mov; shr $32; je; call *%r`
+  (it was `call a64_icall`, then the global cache's hash, load and compare, then the call); LLVM turns a BLR of a
+  known `codeaddr` into a direct call.
+- **BR without a table**: the same test, then a `musttail` call of the host pointer, else `a64_ijump_guest(ctx, target,
+  pc)` and return.
+- **The guest-address path** (`third_party/a64-kit/rt/a64_rt.c`): `a64_icall_guest` / `a64_ijump_guest` count every
+  call, log each site once (`host/code_ptrs.c`), then `a64_icall` / `a64_ijump` look the address up: one global
+  direct-mapped cache of 2^18 64-bit slots keyed `(a >> 2 ^ a >> 20)`, each `address << 32 | offset`, in front of a
+  binary search of the function table, then the host's functions (`a64_lookup_host`). It takes setjmp return
+  addresses (a longjmp's BR, `host/hos_setjmp.c`), host calls with user data (the unimplemented NVN procs) and any
+  origin the translation missed. `hos_code_ptr_report` logs `code pointers: N sites and M calls took the
+  guest-address path; K guest-valued code addresses reached the host` every 1800 presents and at a bench's exit.
+- **The host's receiving paths**: thread entries, fiber functions and the TLS hooks take either kind (`a64_fn_of`,
+  `a64_call_received`: a guest-valued one is looked up and counted). `a64_guest_of` maps a host pointer back to its
+  guest address (the crash report, the thread dump, the thread and fiber logs).
+- **The game's own checks**: `__nnmusl_init_dso` (0x85056160) tests whether nnMain, loaded from its relocated slot,
+  lies inside the module's range; an At row after the load (0x850565b0) gives it nnMain's guest address
+  (`hos_code_guest_value`). `f_823a6140` (`net_grpc_authority_table_arg_cmp`), the compare of a gRPC pointer channel argument
+  ("grpc.target_authority_table", vtable 0x84978ed8 set at 0x823a608c): three-way, by the function pointer at +0x10,
+  then +0x18. It orders channel arguments (gRPC sorts and compares them to tell channels apart); with host pointers
+  that order differs from the guest's and between runs (ASLR), which nothing observes; left as it is.
+- A guest load of a host-valued code pointer as data faults: the guest window is 2^39 bytes at 0x1000_0000_0000 and a
+  host pointer is above 2^39.
 - `a64_rt.c` also holds a per-site two-slot cache (`A64_SITE_CALL`, `site_call`) and a site profiler
   (`A64_SITE_PROFILE`); the lifter emits neither.
 
@@ -555,16 +602,21 @@ tree shows the constraint is needed; the experiment named decides it.
    followed by an LDAR of another address keeps ARM's RCsc order. A plain x86 store is already a release store.
    *Justification:* unproven: no store-then-load-acquire pattern was looked for. Experiment: STLR as
    `store atomic release` (a `mov`) behind a lift-time switch, then the smoke and the market bench.
-6. **Every function has a generic entry reachable through the table.** `a64_lookup` serves all 295,270 lifted entries;
-   the address-taken set (relocation targets, ADR/ADRP+ADD materialisations, vtables, thread and fiber entries, exports,
-   hooks) is not computed, so nothing can drop its entry or shrink an indirect site's target domain.
-   *Justification:* unproven. Experiment: emit the set into `a64_table.c`, trap in `a64_lookup`'s miss path on a
-   target outside it, run the smoke and the market bench.
-7. **Indirect calls through one global lookup.** 182,791 BLR sites (19.2 % of call edges with BR's 23,561), 166,256 of
+6. **Every function has a generic entry reachable through the table, and a guest-address path behind every BLR.**
+   `a64_lookup` still serves all 295,270 table entries, though 102,243 of them are in no origin (no relocation, no
+   code-formed address, no export, no init/fini entry); the BLR keeps its `a64_icall_guest` branch.
+   *Justification:* evidence, not yet proof. The origins of code pointers are closed in this census: every relocated
+   value that is code lands on a function entry (453,943 slots, 0 elsewhere), every code address formed in code is an
+   entry or one of the kinds `code_ptrs.audit` accounts for, and in a kokiri smoke and a market bench (agent/addr-taken,
+   HOS_DBG=addrtaken) no called target came from outside that set, apart from host calls and the host's own constants.
+   Not proven: uses of vtable-loaded pointers other than calls (a static scan sees only the build-time origins), and
+   coverage beyond two scenes. A non-call use found: one ordered compare (`net_grpc_authority_table_arg_cmp`), whose
+   order now follows host addresses. Experiment that closes it: the summary line over a long play session
+   (`code pointers: 0 sites ... 0 guest-valued`); then the guest path, the lookup's cache and the unreached entries go.
+7. **Indirect calls through a pointer, opaque.** 182,791 BLR sites (19.2 % of call edges with BR's 23,561), 166,256 of
    them loading the target from a computed address (vtables), 1,335 from writable globals, 0 from read-only memory.
-   Each goes through `a64_icall`, the global cache's hash and a slot shared by every site; no per-site cache, no
-   promotion. Not measured. Removed by a per-site cache or profile-guided promotion
-   ([lifter-optimisations.md](lifter-optimisations.md), D). *Justification:* none.
+   Each calls a host pointer through a register: no per-site cache, no promotion, the callee unknown to LLVM.
+   Removed by profile-guided promotion ([lifter-optimisations.md](lifter-optimisations.md), D). *Justification:* none.
 8. **The cycle barrier.** A guest load in a loop is not hoisted out of it or merged across iterations (142,299 barrier
    blocks in 43,613 functions). Zero bytes; speed not measured. *Justification:* evidence: 8 count-bounded YIELD spin-waits on a plain byte load in the sdk
    (0x850f5640-0x850fac30, `subs w20, w20, #1; b.eq out; yield; ldrb w8, [x19, #0x40]; tbnz w8, #0, loop`) would wait

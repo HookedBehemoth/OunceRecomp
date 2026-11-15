@@ -18,8 +18,33 @@ void hos_code_ptr_report(void) {
             "reached the host", (unsigned long long)sites, (unsigned long long)calls, (unsigned long long)received);
 }
 
-/* After the image is in the guest window: the reverse map a64_guest_of uses is made now, not first in a crash
-   handler */
+extern const uint32_t a64_code_slot_count, a64_code_slot[], a64_code_slot_fn[];   /* gen/a64_code_slots.c */
+extern const uint32_t a64_fn_count, a64_fn_addr[];
+extern const A64Fn a64_fn_ptr[];
+
+/* After the image is in the guest window: every relocated slot holding a function (gen/a64_code_slots.c, from the
+   lift's relocations) gets that function's host pointer; the reverse map a64_guest_of uses is made now, not first in a
+   crash handler */
 void hos_code_ptrs_init(void) {
+    for (uint32_t i = 0; i < a64_code_slot_count; i++) {
+        uint64_t *slot = (uint64_t *)(A64_MEM + a64_code_slot[i]);
+        const uint32_t k = a64_code_slot_fn[i];
+        if (k >= a64_fn_count || *slot != a64_fn_addr[k])
+            hos_fatal(NULL, "code pointers: the slot at %#x holds %#llx, the lift's relocation %#x: image and lift differ",
+                      a64_code_slot[i], (unsigned long long)*slot, k < a64_fn_count ? a64_fn_addr[k] : 0);
+        *slot = (uint64_t)(uintptr_t)a64_fn_ptr[k];
+    }
+    hos_log("boot: code pointers: %u relocated slots hold host function pointers", a64_code_slot_count);
     (void)a64_guest_of(1ull << 40);
+}
+
+/* (an At row, nx2/lift2/probes.py) a code pointer the game's own code compares with guest addresses: its guest
+   address. __nnmusl_init_dso's range check of nnMain (0x850565b0); counted, so a run shows the row ran */
+static volatile uint64_t guest_values;
+uint64_t hos_code_guest_value(uint64_t v) {
+    const uint64_t n = __atomic_add_fetch(&guest_values, 1, __ATOMIC_RELAXED);
+    const uint64_t g = a64_guest_of(v);
+    if (n <= 4) hos_log("code pointers: a guest check reads %#llx as %#llx (row %llu)", (unsigned long long)v,
+                        (unsigned long long)g, (unsigned long long)n);
+    return g;
 }

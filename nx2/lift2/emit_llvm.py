@@ -94,6 +94,9 @@ def emit_function(fn, decls, flags_out=False):
     def ref(v):
         if v.op in ("const", "vconst"):
             return const_text(v.ty, v.args)
+        if v.op == "codeaddr":   # (a function's host pointer as the game's code pointer: lift2/code_ptrs.py)
+            decls.add("declare void @f_%08x(ptr)" % v.args[0])
+            return "ptrtoint (ptr @f_%08x to i64)" % v.args[0]
         return names.setdefault(v.id, "%%v%d" % v.id)
 
     def typed(v):
@@ -185,8 +188,21 @@ def emit_function(fn, decls, flags_out=False):
             out.append("  musttail call void @%s(ptr %%ctx)" % t[1])
             out.append("  ret void")
         elif t[0] == "ijump":
-            decls.add("declare void @a64_ijump(ptr, i64)")
-            out.append("  call void @a64_ijump(ptr %%ctx, %s)" % typed(t[1]))
+            # (a host function pointer, as code pointers are: a tail call of it; a guest address: the runtime's path,
+            # which counts it, lift2/code_ptrs.py)
+            n = blk.name
+            decls.add("declare void @a64_ijump_guest(ptr, i64, i64)")
+            decls.add("declare i1 @llvm.expect.i1(i1, i1)")
+            out.append("  %%%s.hi = lshr i64 %s, 32" % (n, ref(t[1])))
+            out.append("  %%%s.h = icmp ne i64 %%%s.hi, 0" % (n, n))
+            out.append("  %%%s.e = call i1 @llvm.expect.i1(i1 %%%s.h, i1 true)" % (n, n))
+            out.append("  br i1 %%%s.e, label %%%s.host, label %%%s.guest" % (n, n, n))
+            out.append("%s.host:" % n)
+            out.append("  %%%s.f = inttoptr i64 %s to ptr" % (n, ref(t[1])))
+            out.append("  musttail call void %%%s.f(ptr %%ctx)" % n)
+            out.append("  ret void")
+            out.append("%s.guest:" % n)
+            out.append("  call void @a64_ijump_guest(ptr %%ctx, %s, i64 %d)" % (typed(t[1]), t[2]))
             out.append("  ret void")
         elif t[0] == "noreturn":   # (a call of a callee the summaries prove never returns came back)
             decls.add("declare void @a64_trap(ptr, i64, i32)")
@@ -238,8 +254,24 @@ define internal i64 @lift2_ldxp_lo(ptr %ctx, i64 %a, i32 %n) alwaysinline {
 }""",
 }
 
+# BLR: code pointers are host function pointers (lift2/code_ptrs.py; guest code addresses are below 4 GB, host code
+# above), called directly; a guest address goes to the runtime, which counts it per site (rt/a64_rt.c)
+HELPERS["lift2_icall"] = """define internal void @lift2_icall(ptr %ctx, i64 %t, i64 %site) alwaysinline {
+  %hi = lshr i64 %t, 32
+  %h = icmp ne i64 %hi, 0
+  %e = call i1 @llvm.expect.i1(i1 %h, i1 true)
+  br i1 %e, label %host, label %guest
+host:
+  %f = inttoptr i64 %t to ptr
+  call void %f(ptr %ctx)
+  ret void
+guest:
+  call void @a64_icall_guest(ptr %ctx, i64 %t, i64 %site)
+  ret void
+}"""
+
 # FRECPE and FRSQRTE, inline and bit-exact (nx2/lift2/fp_estimate.py), and the declarations they need
-HELPER_DECLS = {}
+HELPER_DECLS = {"lift2_icall": ("declare void @a64_icall_guest(ptr, i64, i64)", "declare i1 @llvm.expect.i1(i1, i1)")}
 for _name, (_text, _decls) in fp_estimate.helpers().items():
     HELPERS[_name] = _text
     HELPER_DECLS[_name] = _decls
@@ -417,9 +449,10 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
     elif op == "gcall":
         decls.add("declare void @%s(ptr)" % v.attrs["sym"])
         out.append("  call void @%s(ptr %%ctx)" % v.attrs["sym"])
-    elif op == "icall":
-        decls.add("declare void @a64_icall(ptr, i64)")
-        out.append("  call void @a64_icall(ptr %%ctx, %s)" % typed(a[0]))
+    elif op == "icall":   # (lift2_icall: a host function pointer called directly, a guest address counted)
+        decls.add("helper:lift2_icall")
+        decls.update(HELPER_DECLS["lift2_icall"])
+        out.append("  call void @lift2_icall(ptr %%ctx, %s, i64 %d)" % (typed(a[0]), v.attrs["pc"]))
     elif op == "svc":
         decls.add("declare void @a64_svc(ptr, i32)")
         out.append("  call void @a64_svc(ptr %%ctx, i32 %d)" % v.attrs["imm"])

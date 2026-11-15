@@ -8,11 +8,13 @@ branch.
 Control leaving the function:
 - BL: the callee's generic entry with the context (x30 set to the return address first); every register is the
   context's again after it;
-- BLR: the runtime's a64_icall(ctx, target); the same after it;
+- BLR: a call of the target when it is a host function pointer (code pointers are, lift2/code_ptrs.py), else the
+  runtime's a64_icall_guest(ctx, target, pc); the same after it;
 - B, or falling through, to another function's entry: a tail call of its generic entry (musttail: all generic entries
   share one prototype);
 - BR: a jump table's switch when the discovery resolved one (the cases inside the function are branches, the others
-  tail calls), else the runtime's a64_ijump(ctx, target);
+  tail calls), else a tail call of the target when it is a host function pointer, else the runtime's
+  a64_ijump_guest(ctx, target, pc);
 - RET: return; BRK, HLT, UDF: the runtime's a64_trap;
 - SVC: the runtime's a64_svc(ctx, imm) with the flags stored first; every register the context's again after it.
 Every edge that closes a cycle carries a compiler barrier (cycle_edges).
@@ -21,6 +23,10 @@ scope() says why a function cannot be lifted yet.
 from . import bounds, enc, ir, sem, sem_int
 
 TERMINATORS = {"b", "bcond", "cbz", "tbz", "ret", "udf", "br", "blr", "exc"}
+# (an entry's address formed by address arithmetic other than a census site stops the lift: an ADR, a 64-bit ADD/SUB
+# immediate. Not MOVZ/MOVK or ORR: the game's code is position-independent, so those make integers, and integers equal
+# to an entry occur, 0x80000100 at 0x81701194)
+CODE_FORMS = {"adr", "addsub_imm"}
 
 
 class Program:
@@ -49,6 +55,10 @@ class Program:
         self.before = {}   # pc -> [fn(builder)]: run before the instruction at pc, whatever it is (probes.splice_before, At)
         self.after = {}   # pc -> [fn(builder)]: run after the instruction at pc, after a BL / BLR when it returns (probes.post)
         self.replace = {}   # pc -> [fn(builder)]: run in place of the BL / BLR at pc (probes.At replace)
+        # (code pointers, lift2/code_ptrs.py) the function addresses translated to host function pointers, and this
+        # function's sites: pc -> (entry, ADRP page or None for an ADR)
+        self.code_targets = set()
+        self.code_sites = {}
 
 
 LEAF = Program()
@@ -117,12 +127,13 @@ def build(entry, pcs, word, prog=LEAF):
     pcs = sorted(pcs)
     body = set(pcs)
     fn = ir.Function(entry)
+    fn.code_sites = 0
     b = ir.Builder(fn)
     if entry in prog.plt:   # (a PLT stub reached indirectly: x16 = the GOT slot, x17 = the target, then the target)
         t, slot = prog.plt[entry]
         b.at(fn.block(entry))
         b.set("x16", b.const(slot))
-        b.set("x17", b.const(t))
+        b.set("x17", b.codeaddr(t) if t in prog.code_targets else b.const(t))   # (the GOT slot holds the host pointer)
         fn.blocks[entry].term = ("tail", prog.bound(prog.callee(t)).tail)
         ir.finish(fn)
         return fn
@@ -181,11 +192,26 @@ def build(entry, pcs, word, prog=LEAF):
         t = i.entry.template
         f = i.f
         if t not in TERMINATORS:
+            site = prog.code_sites.get(pc)
+            if site is not None and site[1] is not None and pc not in prog.probes:
+                v = b.get("x%d" % f["Rn"])
+                if v.op != "const" or v.args[0] != site[1]:
+                    raise ValueError("code pointer at %#x: x%d does not hold the page %#x here (code_ptrs.sites)"
+                                     % (pc, f["Rn"], site[1]))
             probe = prog.probes.get(pc)
             if probe is not None:
                 probe(b, i, pc)
             else:
                 sem.TEMPLATES[t](b, f, pc, i.entry.params)
+            if site is not None and probe is None:   # (the function's address: its host function pointer)
+                sem_int.setx(b, f["Rd"], b.codeaddr(site[0]))
+                fn.code_sites += 1
+            elif (t in CODE_FORMS and prog.code_targets and f.get("Rd", 31) != 31 and not (t == "adr" and f["op"])
+                  and f.get("sf", 1)):
+                # (an ADRP's page may be a page-aligned function's address: it is a page, the ADD after it decides)
+                v = cur.defs.get("x%d" % f["Rd"])
+                if v is not None and v.op == "const" and v.args[0] in prog.code_targets:
+                    raise ValueError("f_%08x's address formed at %#x, not a code_ptrs.sites shape" % (v.args[0], pc))
             for post in prog.after.get(pc, ()):
                 post(b)
             if pc + 4 not in body:   # (falls through into another function: a tail call)
@@ -229,7 +255,7 @@ def build(entry, pcs, word, prog=LEAF):
         if t == "blr":
             tv = b.get("x%d" % f["Rn"]) if f["Rn"] != 31 else b.const(0)
             b.set("x30", b.const(pc + 4))
-            b.op("icall", "void", tv)
+            b.op("icall", "void", tv, pc=pc)
             b.after_call()
             for post in prog.after.get(pc, ()):
                 post(b)
@@ -282,7 +308,7 @@ def build(entry, pcs, word, prog=LEAF):
                 cur.term = ("br", ij)
             ij_b = b.blk
             b.at(ij)
-            ij.term = ("ijump", b.get("x%d" % f["Rn"]) if f["Rn"] != 31 else b.const(0))
+            ij.term = ("ijump", b.get("x%d" % f["Rn"]) if f["Rn"] != 31 else b.const(0), pc)
             b.blk = ij_b
         else:   # UDF, BRK, HLT
             cur.term = ("trap", pc, i.word)

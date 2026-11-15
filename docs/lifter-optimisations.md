@@ -38,11 +38,17 @@ Each is kept until its experiment runs.
   address where the game relies on store-load order (a Dekker-style flag pair). None was looked for. Experiment: a
   lift-time switch emitting STLR as `store atomic release`, then the smoke and the market bench. Gain small: 52 hot
   sites.
-- **Entry through the function table** (pessimization 6). Unsound if guest code computes a code address
-  arithmetically. Experiment: emit the address-taken set (relocation targets, `nx2/adr_entries.py`'s
-  materialisations, vtables and pointer tables in data, thread and fiber entries, exports, hooks) into `a64_table.c`
-  and trap in `a64_lookup`'s miss path (`third_party/a64-kit/rt/a64_rt.c:31`) on a target outside it; smoke and market
-  bench. Shrinks D's target domain.
+- **Entry through the function table** (pessimization 6). Code pointers are now translated at their origin
+  (lifter.md, "Indirect calls and jumps"); what stays is the guest-address path behind every BLR and the 102,243
+  table entries no origin names. Evidence: the census (453,943 relocated code slots, all on entries; 19,247 code-formed
+  entry addresses; every other code address the code forms of a known kind) and two runs (kokiri smoke, market bench)
+  with no called target outside it. Unproven: non-call uses of vtable-loaded pointers (one ordered compare found,
+  `net_grpc_authority_table_arg_cmp`), coverage beyond two scenes; a data load of a code pointer faults (outside the guest
+  window) rather than reading wrong data. Experiment: the exit summary line over a long play session; at 0 sites and
+  0 guest-valued addresses the guest path, `a64_lookup`'s cache and the unreached entries go.
+- **`nx2/adr_entries.py` pairs any ADRP of the register within 4 instructions**, even when the register is written
+  in between: 77 false targets (agent/addr-taken's census). It only adds entries outside FDE spans, so harmless so far;
+  `code_ptrs.sites` pairs correctly. Open.
 - **Write-through before calls beyond the sites that need it** (pessimization 1): the dead stores are gone
   (`build_ir.omit_stores`); the callee-saved registers a callee only saves remain (C1).
 - **Saves and frames beyond the five frame readers** (pessimization 2): decided by C's pair deletion and F.
@@ -95,10 +101,8 @@ and "returned (summary: noreturn)" at every exit of a full-summary function.
 ## D. Indirect calls
 
 **What.**
-1. A per-site cache: a private `[2 x i64]` per BLR site, slot 0's high half compared inline with the target, a hit
-   called through the stored offset, else `a64_icall_site(ctx, t, site)`. The runtime already has it
-   (`A64_SITE_CALL`, `site_call` in `a64_rt.c`); `emit_llvm` does not emit it. Removes the hash, the call into
-   `a64_icall` and the shared cache lines; the call stays opaque.
+1. Done another way: code pointers are host function pointers (lifter.md, "Indirect calls and jumps"), so a BLR calls
+   its target directly, with no lookup and no per-site cache.
 2. Profile-guided promotion at lift time: `A64_SITE_PROFILE` (in the runtime) writes site, target and count; a script
    writes `site → dominant target`; `build_ir` emits `t == K ? gcall f_K : icall t` at a BLR with target K. The direct
    path then gets C and inlining.
@@ -175,6 +179,9 @@ into the wrappers. C takes the pair deletion and the kept SSA values without the
 
 ## Done
 
+- Code pointers translated at their origin: relocated slots written with host pointers at load, code-formed entry
+  addresses emitted as `f_` symbols, the host's hand-outs host pointers; a BLR calls a host pointer directly
+  (lifter.md, "Indirect calls and jumps").
 - Polls: none emitted (338ce2c0); every cycle carries a zero-byte compiler barrier (lifter.md, "Loops").
 - Page marks: none emitted; a guest store is one plain store.
 - Virtual cores: removed; every guest thread runs freely, the per-core rings asserted single-writer.
