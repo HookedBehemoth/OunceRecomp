@@ -82,7 +82,7 @@ class Tools(unittest.TestCase):
         self.assertIn("host/t.c:2 PATCH_AT 0x80001008 before t_before  <- this instruction", t)
         t = self.run_site(0x80001004)
         self.assertIn("paths into it other than from the instruction before: none", t)
-        self.assertIn("live in:  x0-x2", t)   # (the add reads x1, x2; the row t_after x0)
+        self.assertIn("live in:  x1-x2", t)   # (the add reads x1, x2; the row t_after its x0)
         self.assertIn("live out: x0-x1", t)
         self.assertIn("PATCH_AT(0x80001004, word(0x8b020020), after, x0, my_fn, x0, x1, x2) {", t)
         self.assertIn("generates: uint64_t my_fn(uint64_t x0, uint64_t x1, uint64_t x2)", t)
@@ -103,7 +103,7 @@ class Tools(unittest.TestCase):
         out = []
         lines = patch.report(self.P, out.append)
         first = [l for l in lines if l[3] == ("host/t.c", 1)][0]
-        self.assertIn("reads x0, writes - beyond the instruction", first[7])   # (the add reads x1, x2; the row x0 too)
+        self.assertIn("reads -, writes - beyond the instruction", first[7])   # (the row reads the add's x0 and x1)
 
     def test_diff(self):
         before = dict(self.P.plan["summaries"])

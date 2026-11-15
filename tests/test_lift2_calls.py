@@ -120,6 +120,56 @@ def loads_after_call(fn):
     return out
 
 
+# (rows beside their instruction in the summaries: f 0x1000: bl g; add x0, x0, #1; ret  g 0x100c: mov x5, #1; ret)
+ROWS_CODE = {0x1000: 0x94000003, 0x1004: 0x91000400, 0x1008: 0xd65f03c0, 0x100c: 0xd2800025, 0x1010: 0xd65f03c0}
+
+
+class RowsInSummaries(unittest.TestCase):
+    """a row's reads and writes enter the summaries when they happen: an after row's reads after its instruction's
+    writes (after a BL, after the callee's must-writes), a before row's writes before the instruction reads, an
+    instead row in place of the call"""
+    def sums(self, *rows):
+        real = probes.use([], list(rows))
+        try:
+            funcs = {0x1000: [0x1000, 0x1004, 0x1008], 0x100c: [0x100c, 0x1010]}
+            s, _, _ = summary.summarise(funcs, build_ir.Program(entries=set(funcs)), set(), ROWS_CODE.__getitem__)
+            return s
+        finally:
+            probes.use(*real)
+            summary._ROWS = None
+
+    def row(self, pc, args, result=None, **kw):
+        return probes.At(0x1000 if pc < 0x100c else 0x100c, pc, ROWS_CODE[pc], "t_row", args, result, **kw)
+
+    def test_after_reads_the_destination(self):
+        x1, x5 = summary.BIT["x1"], summary.BIT["x5"]
+        s = self.sums(self.row(0x100c, ("w5",)))   # (after mov x5, #1: x5 is the instruction's)
+        self.assertFalse(s[0x100c].inputs & x5)
+        s = self.sums(self.row(0x100c, ("x5",), before=True))   # (before it: the caller's x5)
+        self.assertTrue(s[0x100c].inputs & x5)
+        s = self.sums(self.row(0x1004, ("x0", "x1")))   # (after add x0, x0, #1: x1 the caller's)
+        self.assertTrue(s[0x1000].inputs & x1)
+
+    def test_after_a_call(self):
+        x5 = summary.BIT["x5"]
+        s = self.sums(self.row(0x1000, ("x5",)))   # (after bl g: g must-writes x5)
+        self.assertFalse(s[0x1000].inputs & x5)
+        self.assertTrue(s[0x100c].results & x5)   # (the row reads g's x5: one of g's results)
+
+    def test_before_writes(self):
+        x0, x2 = summary.BIT["x0"], summary.BIT["x2"]
+        s = self.sums(self.row(0x1004, ("x2",), "x0", before=True))   # (x0 := row(x2), then add x0, x0, #1)
+        self.assertEqual(s[0x1000].inputs & (x0 | x2), x2)
+        s = self.sums(self.row(0x1004, ("x2",), "x1"))   # (an after row's result: written there)
+        self.assertTrue(s[0x1000].mustdef & summary.BIT["x1"])
+
+    def test_instead(self):
+        x1, x5 = summary.BIT["x1"], summary.BIT["x5"]
+        s = self.sums(self.row(0x1000, ("x1",), "x0", replace=True))   # (no call: g's x5 is not written)
+        self.assertTrue(s[0x1000].inputs & x1)
+        self.assertFalse(s[0x1000].clobbers & x5)
+
+
 class Calls(unittest.TestCase):
     def test_kept(self):
         fns, _ = lift()

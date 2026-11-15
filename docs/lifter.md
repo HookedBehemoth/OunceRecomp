@@ -182,8 +182,8 @@ exclusives' runtime calls cost nothing measurable.
   clobbering) gets `bounds.unknown`: it reads and writes every register, keeps nothing and returns, so a callee no rule
   classifies costs speed, never correctness. Only a lifted callee whose summary proves it (demoted or not) is
   noreturn; HLE'd, entry-hooked and setjmp-owner callees never are. A function with Value probes or At rows is lifted as any other: each row
-  declares what it reads and writes, and the summaries count it as its instruction's (`probes.row_effects`,
-  `summary.rows`). What a call of a host callee keeps is its declared effect (the declarations' `reads(...)`,
+  declares what it reads and writes, and the summaries count it beside its instruction, where it runs
+  (`probes.row_effects`, `summary.rows`, below). What a call of a host callee keeps is its declared effect (the declarations' `reads(...)`,
   `guest(...)`, `clobbers(...)`, Hooks and probes; the rules in `nx2/lift2/host_effects.py`):
   - an HLE'd function keeps x19-x29 and SP unless its declaration says `clobbers("why")` (the three fiber
     functions: a context switch or a host fiber deleted; nine sdk NVN exports with no host proc, `HLE_EFFECTS` in
@@ -512,10 +512,22 @@ with a probe, splice or C after an instruction reloaded everything: 551 sites.)
 
 **The host's patches** are part of the facts, each by its declaration, so a function's summary covers the host code
 that runs inside it or in its callees:
-- Value probes and At rows (`probes.row_effects`, `summary.rows`): their declared reads and writes are their
-  instruction's; a row whose host function calls guest code (`guest`, through `guest_call`, which puts every register
-  back) also reads those functions' inputs there (a call-graph edge to each), and every register for `"computed"`; a
-  row in place of a BL or BLR (`replace`) makes that instruction no call: it writes x30 and the row's result.
+- Value probes and At rows (`probes.row_effects`, `summary.rows`, `summary.Func`): their declared reads and writes
+  are placed where they happen.
+  - A before row's reads are before the instruction, and its writes are before the instruction reads, so what the row
+    writes is not an input there.
+  - A Value probe's reads are the instruction's own.
+  - An after row reads once the instruction has written its destination. Every write of an instruction's template
+    happens, and a W destination is its whole X. So the row's reads of what the instruction writes are no inputs.
+    After a BL or BLR the after rows run when the call returns (`Func.after`). Their reads are taken past the callee's
+    must-writes (`liveness`), and they count among what the caller reads after the call (`call_reads`, the callee's
+    results; `tmp_after_call`). A row's guest callees' inputs are still counted at the instruction (an
+    over-approximation).
+  - An after row's writes are after the instruction.
+  - A row whose host function calls guest code (`guest`, through `guest_call`, which puts every register back) also
+    reads those functions' inputs there (a call-graph edge to each), and every register for `"computed"`.
+  - A row in place of a BL or BLR (`replace`) makes that instruction no call: its reads are the rows', and it writes
+    x30 and the rows' results.
 - An entry hook (`summary.ENTRY`, `entry_hooks`; the hooks as `patch_scan.entry_hooks` finds them at the build, not
   from the lift): at the entry it reads `host_effects.hook_reads` (x0-x7 and x30, SP for the five hooks that call guest
   code) and the inputs of the guest functions its `guest(...)` names; its

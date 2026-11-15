@@ -115,27 +115,33 @@ _ROWS = None
 
 
 def rows():
-    """{pc: (use mask, def mask, guest calls, replace)}: the Value probes' and At rows' declared reads and writes
-    (nx2/lift2/probes.py), counted as their instruction's: a row reads its arguments there and writes its result (a
-    before row's writes are over-approximated as the instruction's, which only adds definitions the code after it may
-    also make). guest calls: the guest functions the row's host function calls (guest_call: their inputs are read
-    there, every register is put back), "computed" (any), or (); replace: the row stands in place of its BL / BLR"""
+    """{pc: (before reads, after reads, before writes, after writes, guest calls, replace)}: the Value probes' and At
+    rows' declared reads and writes (nx2/lift2/probes.py) by when they happen beside their instruction. Before: a before
+    row's, a Value probe's reads (the instruction's own, in effect), and every row of an instruction a row replaces (the
+    instruction's reads and writes are gone then). After: an after row's, which runs once the instruction has written
+    its destination (or the call has returned). Func places them. guest calls: the guest functions the row's host
+    function calls (guest_call: their inputs are read there, every register is put back), "computed" (any), or ();
+    replace: the row stands in place of its BL / BLR"""
     global _ROWS
     if _ROWS is None:
         from . import probes
         _ROWS = {}
         for pc, effs in probes.row_effects().items():
-            u = d = 0
+            bu = au = bd = ad = 0
             calls, repl = (), False
-            for r, w, _, guest, replace in effs:
-                u |= sum(BIT[v] for v in r)
-                d |= sum(BIT[v] for v in w)
+            for r, w, when, guest, replace in effs:
+                if when == "after":
+                    au |= sum(BIT[v] for v in r)
+                    ad |= sum(BIT[v] for v in w)
+                else:
+                    bu |= sum(BIT[v] for v in r)
+                    bd |= sum(BIT[v] for v in w)
                 if guest == "computed" or calls == "computed":
                     calls = "computed" if guest is not None else calls
                 elif guest:
                     calls = calls + tuple(guest)
                 repl = repl or replace
-            _ROWS[pc] = (u, d, calls, repl)
+            _ROWS[pc] = (bu, au, bd, ad, calls, repl)
     return _ROWS
 
 
@@ -173,7 +179,7 @@ class Func:
     """kinds per instruction: 'op', 'goto' (succs), 'call' (callee or None: unknown; then the next instruction),
     'svc', 'tail' (callee or None), 'ret', 'trap'"""
     __slots__ = ("entry", "pcs", "words", "kind", "succ", "callee", "use", "dfn", "insn", "fallthrough_entry",
-                 "fp", "writes_fpcr", "host_calls", "ctail", "falls_into", "hook", "guest")
+                 "fp", "writes_fpcr", "host_calls", "ctail", "falls_into", "hook", "guest", "after")
 
     def __init__(self, entry, pcs, word, prog, hooks):
         self.entry = entry
@@ -191,15 +197,24 @@ class Func:
         extra = rows()
         self.hook = ENTRY.get(entry)   # (a PATCH_HOOK: (reads, may-writes, guest calls), or None)
         self.guest = {}         # instruction index -> the guest functions a row there calls, or "computed"
+        self.after = {}         # call index -> (reads, writes) of the after rows there: after the call returns
         for k, pc in enumerate(pcs):
             i, u, d = def_use(self.words[k])
             row = extra.get(pc)
-            if row is not None:   # (a probe or At row there: its declared reads and writes)
-                u, d = u | row[0], d | row[1]
-                if row[2]:
-                    self.guest[k] = row[2]
-                if row[3]:   # (in place of the call: the BL / BLR writes x30, the row what it declares)
-                    u, d = row[0], row[1] | X[30]
+            if row is not None:   # (a probe or At row there: its declared reads and writes, in their order)
+                bu, au, bd, ad, calls, repl = row
+                if calls:
+                    self.guest[k] = calls
+                if repl:   # (in place of the call: the BL / BLR writes x30, the rows what they declare)
+                    u, d = bu | au, bd | ad | X[30]
+                elif i is not None and (i.entry.template == "blr" or i.entry.template == "b" and i.f["op"]):
+                    # (after the call returns: liveness and call_reads take the after reads past the callee's
+                    # must-writes, Func.after)
+                    u, d = bu | (u & ~bd), d | bd | ad
+                    if au or ad:
+                        self.after[k] = (au, ad)
+                else:   # (the instruction's writes all happen, a W destination its whole X: no read after them is one before)
+                    u, d = bu | (u & ~bd) | (au & ~(d | bd)), d | bd | ad
             self.insn[k], self.use[k], self.dfn[k] = i, u, d
             if i is None:
                 self.kind[k] = "trap"
@@ -220,7 +235,7 @@ class Func:
                 self._edge(k, [nxt])
                 if self.kind[k] == "tail":
                     self.falls_into.add(self.callee[k])
-            elif row is not None and row[3]:   # (a row replaced the BL / BLR: no call)
+            elif row is not None and row[5]:   # (a row replaced the BL / BLR: no call)
                 self._edge(k, [nxt])
             elif t == "b" and f["op"]:
                 c = prog.callee(pc + (sx(f["imm26"], 26) << 2))
@@ -376,6 +391,9 @@ def liveness(fn, sums, hooks, ret_live=0):
                     else:
                         if s.returns is False:
                             out = 0
+                        a = fn.after.get(k)
+                        if a is not None and s.returns is not False:   # (the after rows run once the call returns)
+                            out = a[0] | (out & ~a[1])
                         v = use[k] | s.inputs | (out & ~(s.mustdef | X[30]))
                 else:
                     v = use[k] | (out & ~fn.dfn[k])
@@ -761,6 +779,9 @@ def analyse(fn, sums, hooks):
             out = 0
             for j in fn.succ[k]:
                 out |= live[j]
+            a = fn.after.get(k)
+            if a is not None:
+                out = a[0] | (out & ~a[1])
             if out & ~cs.mustdef & cs.clobbers & (TMPS | NZCV):
                 reasons.add("tmp_after_call")
     boundary = fn.hook is not None or any(g == "computed" for g in fn.guest.values())
@@ -1094,6 +1115,9 @@ def call_reads(fn, sums, hooks):
             for j in fn.succ[k]:
                 o |= live[j]
                 p |= pt[j]
+            a = fn.after.get(k)
+            if a is not None:   # (an after row reads what the call returned)
+                o, p = a[0] | (o & ~a[1]), a[0] | (p & ~a[1])
             g = sums[fn.callee[k]]
             out.append((fn.callee[k], o & g.clobbers, p & g.clobbers))
     return out

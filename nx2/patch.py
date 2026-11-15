@@ -501,6 +501,8 @@ def report(P, out=print):
         r, wr = p.effects()
         m = lambda names: sum(summary.BIT[v] for v in names)
         extra_r, extra_w = m(r) & ~use, m(wr) & ~dfn
+        if isinstance(p, probes.At) and not p.before and not p.replace and not probes.is_call(p.word):
+            extra_r &= ~dfn   # (an after row's reads of what its instruction wrote: summary.Func)
         if e not in base:
             base[e] = local(P, e, ps)
         alone = local(P, e, without(ps, p.where))
