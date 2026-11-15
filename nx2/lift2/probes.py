@@ -329,15 +329,16 @@ def _written(w):
 
 
 def row_effects():
-    """{pc: (reads, writes, before)} of every Value probe and At row: the summaries count them as the instruction's
-    (nx2/lift2/summary.py Func)"""
+    """{pc: [(reads, writes, before, guest, replace)]} of every Value probe and At row: the summaries count them as the
+    instruction's (nx2/lift2/summary.py Func); guest: the guest functions the row's host function calls (their inputs
+    are read there), "computed", or None"""
     out = {}
     for p in PROBES:
         r, w = p.effects()
-        out.setdefault(p.pc, []).append((r, w, False))
+        out.setdefault(p.pc, []).append((r, w, False, None, False))
     for p in AT:
         r, w = p.effects()
-        out.setdefault(p.pc, []).append((r, w, p.before))
+        out.setdefault(p.pc, []).append((r, w, p.before, p.guest, p.replace))
     return out
 
 

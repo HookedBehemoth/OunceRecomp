@@ -5,7 +5,7 @@ an ENTRY_HOOK keeps x19-x29 and SP in SSA across the call, as a BL to a lifted c
 
 - an HLE'd function is AAPCS-clean unless CLOBBERS names it: it reads its arguments (x0-x7, guest memory, the stack
   through SP) and writes its results (x0, v0) and guest memory; it leaves x19-x29 and SP as it got them. The
-  whole-program summaries already give every HLE'd callee these facts (summary.callee_summary: AAPCS).
+  whole-program summaries give every HLE'd callee these facts with its declared reads (summary.host_summary).
 - an entry-hooked function keeps what its lifted body's summary proves preserved (the hook declines: the body runs; or
   the hook handled the call, which writes no callee-saved register, or ran the body itself through a64_lookup), and,
   for a hook that calls other guest code, what every callee CALLS lists keeps too. A body without a full summary keeps
@@ -99,6 +99,11 @@ def hook_reads(name):
 
 
 HOOK_LINE = re.compile(r"^void f_([0-9a-f]{8})\(Ctx \*A64_NOESC c\) \{ TAILCALL\(imp_(\w+)\); \}", re.M)
+
+
+def hle_symbols(hooks):
+    """{guest address: symbol} of the HLE'd functions from the image's hooks ({address: host C name, imp_<symbol>})"""
+    return {a: n[4:] for a, n in hooks.items() if n.startswith("imp_")}
 
 
 def hle_names(gen):

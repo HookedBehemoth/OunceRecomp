@@ -162,8 +162,8 @@ exclusives' runtime calls cost nothing measurable.
   thread and fiber setup, `hos_call_guest` (x30) and the guest calls of hooks and rows, which put every register back
   (`host/hos_hostcall.c` `call_restoring`); no HLE'd function reaches one, a guest call or a switch except those
   declared. What the host reads is declared too (`host_effects.HLE_ARGS`, `HLE_READS`, `HOOK_ARGS`, `HOOK_READS`) and
-  checked against the host's IR by `tests/test_host_context_reads.py`. The summaries already give
-  every HLE'd callee and BLR target AAPCS facts (`summary.callee_summary`).
+  checked against the host's IR by `tests/test_host_context_reads.py`, and the summaries count every declaration
+  (Whole-program summaries, "The host's patches").
 - **B to another entry, or falling into one**: `musttail call void @f_<callee>(ptr %ctx)`; every function has the same
   prototype, so every tail branch is a guaranteed tail call.
 - **RET**: `ret void`.
@@ -355,32 +355,50 @@ fixed point inside each): inputs (backward liveness), clobbers and must-defs, th
 frame pass tracking SP, x29 and copies as entry SP plus a constant, and which frame slots hold entry values of
 x19-x30 and d8-d15), results, noreturn (seeded by the fatal functions' names and BLs with nothing after them), FP use.
 Every build has them: the lift writes the job's input beside the plan unless the cache has them
-(`game.plan_summaries`; `work/sa/summaries_<key>.pickle`, the key a SHA-1 of the image, the discovery's facts and
-`enc*`/`sem*`/`ir`/`build_ir`/`summary.py`/`probes.py`), and the build's first step computes them before the lift workers and the
+(`game.plan_summaries`; `work/sa/summaries_<key>.pickle`, the key a SHA-1 of the image, the discovery's facts, the
+HLE'd functions' symbols, the entry hooks and `enc*`/`sem*`/`ir`/`bounds`/`build_ir`/`summary.py`/`probes.py`/
+`host_effects.py`; the input stays beside the cache until the next lift), and the build's first step computes them before the lift workers and the
 compilers start, in a process of its own (`game.finish_summaries`, `summary.job`: 8 workers over the components' DAG,
 `HOOKSHOT_LIFT_SUMMARY_JOBS`), then packs them into the plan. Cold: 108 s (graph 17 s, fixed point 59 s, results
 26 s), 1.4 GB in the summary process and 1.3 GB in its largest worker; from the cache: 5 s. The build uses them at
-direct calls (above) and prints the sites (`bounds.call_report`): of 794,900 BL sites, 767,213 keep registers across
+direct calls (above) and prints the sites (`bounds.call_report`): of 794,900 BL sites, 766,648 keep registers across
 the call (12.0 of x19-x29 and SP a site on average), 71,491 of them to host callees; the others reload everything: a
-noreturn callee (trap after) 14,170, a demoted one 13,128, an entry-hooked function whose body has no full summary 327
+noreturn callee (trap after) 14,170, a demoted one 13,693, an entry-hooked function whose body has no full summary 327
 (192 of them to `f_8005ed00`, the render-target allocator), a setjmp owner 39, an HLE'd function declared clobbering 23.
 The 182,791 BLR sites reload everything. (Before the probes declared their effects, 2026-11-15, a call of a function
 with a probe, splice or C after an instruction reloaded everything: 551 sites.)
+
+**The host's patches** are part of the facts, each by its declaration, so a function's summary covers the host code
+that runs inside it or in its callees:
+- Value probes and At rows (`probes.row_effects`, `summary.rows`): their declared reads and writes are their
+  instruction's; a row whose host function calls guest code (`guest`, through `guest_call`, which puts every register
+  back) also reads those functions' inputs there (a call-graph edge to each), and every register for `"computed"`; a
+  row in place of a BL or BLR (`replace`) makes that instruction no call: it writes x30 and the row's result.
+- An ENTRY_HOOK (`summary.ENTRY`, `entry_hooks`): at the entry it reads `host_effects.hook_reads` (x0-x7 and x30, SP
+  for the five hooks that call guest code) and the inputs of the guest functions `host_effects.CALLS` lists; its
+  "return 1" path is a return that may write x0-x7 (`hook_return`, `hook_set_arg`), so the function returns (never
+  noreturn), writes nothing on every path (must-writes 0) and may write x0-x7. `hook_run` runs the function's own
+  body, whose facts the summary has. These reads are not the entry instruction's: x30 read by the hook is a label, not
+  the function's LR as data.
+- An HLE'd callee (`summary.host_summary`): AAPCS64 facts with the declared reads (`host_effects.hle_reads`:
+  x0-x8, v0-v7, SP, x30 and `HLE_READS`); one declared clobbering (`CLOBBERS`) or without a known symbol reads every
+  register. The lift's record of an HLE'd callee takes the same facts (`bounds.call_bounds`).
+The build stops when the ENTRY_HOOKs it finds differ from those the plan's summaries count (lift again).
 
 A function is demoted (its interface is outside the AAPCS64) by detection, not by list:
 
 | reason | functions | what |
 |---|---|---|
-| tmp_in | 6,659 | x9-x18 live at entry |
-| tmp_after_call | 5,118 | x9-x18 or flags read after a call that may change them |
+| tmp_in | 7,110 | x9-x18 live at entry |
+| tmp_after_call | 5,391 | x9-x18 or flags read after a call that may change them |
 | cs_clobber | 2,086 | a callee-saved register not proven preserved at a return |
 | unknown callee | 1,729 | calls a function with unknown facts |
 | sp | 1,682 | SP not entry SP plus a constant, or not entry SP at a return |
 | lr_ret | 1,575 | a return not through the entry x30 |
-| flags_in | 595 | NZCV live at entry |
+| flags_in | 692 | NZCV live at entry |
 | split_frame | 214 | a tail call with the frame still allocated |
 | save_ptr | 26 | entry x19-x30, SP or d8-d15 stored through a pointer outside the frame |
-| inconsistent | 24 | a preserved register written but never read |
+| inconsistent | 20 | a preserved register written but never read |
 | lr_data | 7 | entry x30 used as data |
 | fallthrough_entry | 1 | entered by falling through from another function |
 | dangling_bl | 1 | a BL with nothing after it to a callee that returns |
@@ -389,17 +407,16 @@ sp, save_ptr, lr_data, lr_ret and split_frame make a function's facts unknown (i
 everything and preserves nothing). The x9-x18 counts are upper bounds: the liveness is path-insensitive, and the
 examples read (main 0x809d78c0, 0x80051080) read x18 or x12 on paths correlated branches make infeasible.
 
-Over the whole game (294,523 functions, 17.65 M instructions): 287,463 functions (88.4 % of the instructions) have
-full summaries; 708 are noreturn; 6,996 write FPCR or call something that does; 31,854 contain FP or NEON; 612,455
-callee-saved save/restore pairs in 174,749 functions. Call edges (1,073,423):
+Over the whole game (294,523 functions, 17.65 M instructions): 287,064 functions (88.1 % of the instructions) have
+full summaries; 669 are noreturn; 6,996 write FPCR or call something that does; 31,854 contain FP or NEON; 610,321
+callee-saved save/restore pairs in 174,408 functions. Call edges (1,073,417; a noreturn seed counted as its target):
 
 | target | edges | share |
 |---|---|---|
-| direct to a full summary (BL 725,080, tail 68,544) | 793,624 | 73.9 % |
+| direct to a full summary (BL 735,355, tail 68,519) | 803,874 | 74.9 % |
 | indirect (BLR 182,791, BR 23,561) | 206,352 | 19.2 % |
-| host function or hook (41,704 + 2,221) | 43,925 | 4.1 % |
-| direct to a demoted function (13,544 + 1,405) | 14,949 | 1.4 % |
-| a noreturn seed | 14,573 | 1.4 % |
+| an HLE'd function (44,283 + 2,221) | 46,504 | 4.3 % |
+| direct to a demoted function (15,256 + 1,431) | 16,687 | 1.6 % |
 
 **The verification build** (`HOOKSHOT_LIFT_VERIFY=1` at build time) wraps every function with a full summary
 in `host/lift2_verify.c`: at entry it poisons the registers the summary says are not read (`0xDEAD`, register,

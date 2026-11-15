@@ -34,7 +34,7 @@ Registers are bit masks over ir.VARS (X0-X30 bits 0-30, SP 31, N Z C V 32-35, V0
 import os
 import time
 
-from . import enc, ir, sem, sem_int
+from . import enc, host_effects, ir, sem, sem_int
 
 BIT = {v: 1 << i for i, v in enumerate(ir.VARS)}
 X = [BIT["x%d" % i] for i in range(31)]
@@ -118,20 +118,58 @@ _ROWS = None
 
 
 def rows():
-    """{pc: (use mask, def mask)}: the Value probes' and At rows' declared reads and writes (nx2/lift2/probes.py), counted
-    as their instruction's: a row reads its arguments there and writes its result (a before row's writes are
-    over-approximated as the instruction's, which only adds definitions the code after it may also make)"""
+    """{pc: (use mask, def mask, guest calls, replace)}: the Value probes' and At rows' declared reads and writes
+    (nx2/lift2/probes.py), counted as their instruction's: a row reads its arguments there and writes its result (a
+    before row's writes are over-approximated as the instruction's, which only adds definitions the code after it may
+    also make). guest calls: the guest functions the row's host function calls (guest_call: their inputs are read
+    there, every register is put back), "computed" (any), or (); replace: the row stands in place of its BL / BLR"""
     global _ROWS
     if _ROWS is None:
         from . import probes
         _ROWS = {}
         for pc, effs in probes.row_effects().items():
             u = d = 0
-            for r, w, _ in effs:
+            calls, repl = (), False
+            for r, w, _, guest, replace in effs:
                 u |= sum(BIT[v] for v in r)
                 d |= sum(BIT[v] for v in w)
-            _ROWS[pc] = (u, d)
+                if guest == "computed" or calls == "computed":
+                    calls = "computed" if guest is not None else calls
+                elif guest:
+                    calls = calls + tuple(guest)
+                repl = repl or replace
+            _ROWS[pc] = (u, d, calls, repl)
     return _ROWS
+
+
+# ---- the host's code at a function's entry (ENTRY_HOOK) and HLE'd functions (nx2/lift2/host_effects.py)
+ENTRY = {}   # entry -> (what the hook reads, what it may write, the guest functions it calls): summarise() sets it
+
+
+def entry_hooks(hooks):
+    """{entry: (reads, may-writes, guest calls)} of the entry hooks ({entry: hook C name}): the hook reads its declared
+    registers (host_effects.hook_reads) at the entry, may write x0-x7 (hook_return, hook_set_arg) and calls the guest
+    functions host_effects.CALLS lists (hook_call_guest: their inputs are read, every register is put back); hook_run
+    runs the function's own body, whose effects the summary has already"""
+    return {e: (sum(BIT[v] for v in host_effects.hook_reads(n)), sum(X[0:8]), tuple(host_effects.CALLS.get(n, ())))
+            for e, n in hooks.items()}
+
+
+def host_summary(symbol):
+    """the summary of an HLE'd function (symbol: its name, as in imp_<symbol>; None: not known): AAPCS64 facts with
+    what host_effects declares it reads; one declared clobbering (host_effects.CLOBBERS) or unknown reads every
+    register"""
+    s = Summary()
+    clean = symbol is not None and symbol not in host_effects.CLOBBERS
+    s.inputs = sum(BIT[v] for v in host_effects.hle_reads(symbol)) if clean else ALL
+    s.clobbers, s.mustdef, s.preserved = CALLER_SAVED, X[30], CALLEE_SAVED
+    s.returns = s.boundary = True
+    return s
+
+
+def host_summaries(hle):
+    """{entry: Summary} of the HLE'd functions ({entry: symbol}), for summarise()'s hooks"""
+    return {e: host_summary(n) for e, n in hle.items()}
 
 
 # ---- the function's instructions, with control flow and calls
@@ -139,7 +177,7 @@ class Func:
     """kinds per instruction: 'op', 'goto' (succs), 'call' (callee or None: unknown; then the next instruction),
     'svc', 'tail' (callee or None), 'ret', 'trap'"""
     __slots__ = ("entry", "pcs", "words", "kind", "succ", "callee", "use", "dfn", "insn", "fallthrough_entry",
-                 "fp", "writes_fpcr", "host_calls", "ctail", "falls_into")
+                 "fp", "writes_fpcr", "host_calls", "ctail", "falls_into", "hook", "guest")
 
     def __init__(self, entry, pcs, word, prog, hooks):
         self.entry = entry
@@ -155,10 +193,17 @@ class Func:
         self.falls_into = set() # entries this function falls into without a branch
         body = set(pcs)
         extra = rows()
+        self.hook = ENTRY.get(entry)   # (an ENTRY_HOOK: (reads, may-writes, guest calls), or None)
+        self.guest = {}         # instruction index -> the guest functions a row there calls, or "computed"
         for k, pc in enumerate(pcs):
             i, u, d = def_use(self.words[k])
-            if pc in extra:   # (a probe or At row there: its declared reads and writes)
-                u, d = u | extra[pc][0], d | extra[pc][1]
+            row = extra.get(pc)
+            if row is not None:   # (a probe or At row there: its declared reads and writes)
+                u, d = u | row[0], d | row[1]
+                if row[2]:
+                    self.guest[k] = row[2]
+                if row[3]:   # (in place of the call: the BL / BLR writes x30, the row what it declares)
+                    u, d = row[0], row[1] | X[30]
             self.insn[k], self.use[k], self.dfn[k] = i, u, d
             if i is None:
                 self.kind[k] = "trap"
@@ -179,6 +224,8 @@ class Func:
                 self._edge(k, [nxt])
                 if self.kind[k] == "tail":
                     self.falls_into.add(self.callee[k])
+            elif row is not None and row[3]:   # (a row replaced the BL / BLR: no call)
+                self._edge(k, [nxt])
             elif t == "b" and f["op"]:
                 c = prog.callee(pc + (sx(f["imm26"], 26) << 2))
                 self.kind[k], self.callee[k] = "call", c
@@ -279,7 +326,12 @@ NORETURN = set()
 def callee_summary(sums, c, hooks):
     if c in NORETURN:
         return NORETURN_HOST
-    if c is None or c in hooks or c not in sums:
+    if c is None:
+        return AAPCS
+    h = hooks.get(c)
+    if h is not None:   # (an HLE'd function: host_summary)
+        return h
+    if c not in sums:
         return AAPCS
     s = sums[c]
     return UNKNOWN if s.unknown else s
@@ -331,10 +383,23 @@ def liveness(fn, sums, hooks, ret_live=0):
                         v = use[k] | s.inputs | (out & ~(s.mustdef | X[30]))
                 else:
                     v = use[k] | (out & ~fn.dfn[k])
+            g = fn.guest.get(k)
+            if g:   # (a row's guest calls read their inputs there)
+                v |= guest_reads(sums, g, hooks)
             if v != live[k]:
                 live[k] = v
                 changed = True
     return live
+
+
+def guest_reads(sums, calls, hooks):
+    """what guest functions host code calls (a row's or a hook's) read: their inputs; "computed" every register"""
+    if calls == "computed":
+        return ALL
+    m = 0
+    for c in calls:
+        m |= callee_summary(sums, c, hooks).inputs
+    return m
 
 
 def must_and_may(fn, sums, hooks):
@@ -388,6 +453,9 @@ def must_and_may(fn, sums, hooks):
                 if nm != must[j]:
                     must[j] = nm
                     changed = True
+    if fn.hook is not None:   # (the hook handled the call: a return at the entry, having written at most x0-x7)
+        exit_must, returns = 0, True
+        may |= fn.hook[1]
     for k in range(n):
         may |= fn.dfn[k]
         if k in fn.ctail and (fn.kind[k] == "svc" or callee_summary(sums, fn.callee[k], hooks).returns):
@@ -634,6 +702,8 @@ def analyse(fn, sums, hooks):
     s = Summary()
     live = liveness(fn, sums, hooks)
     s.inputs = live[0] if fn.pcs else 0
+    if fn.hook is not None:   # (the hook reads its declared registers and what the guest code it calls reads)
+        s.inputs |= fn.hook[0] | guest_reads(sums, fn.hook[2], hooks)
     s.mustdef, s.clobbers, s.returns = must_and_may(fn, sums, hooks)
     pres, reasons, s.frame, s.frame_taken, s.pairs, s.lr_data = frame_pass(fn, sums, hooks)
     s.preserved = pres if s.returns else CALLEE_SAVED
@@ -661,7 +731,7 @@ def analyse(fn, sums, hooks):
                 out |= live[j]
             if out & ~cs.mustdef & cs.clobbers & (TMPS | NZCV):
                 reasons.add("tmp_after_call")
-    boundary = False
+    boundary = fn.hook is not None or any(g == "computed" for g in fn.guest.values())
     for k, kind in enumerate(fn.kind):
         c = fn.callee[k]
         if kind == "svc" or (kind in ("call", "tail") and (c is None or c in hooks)):
@@ -723,10 +793,25 @@ def sccs(nodes, succ):
     return out
 
 
-def summarise(funcs, prog, hooks, word, names=None, log=print):
-    """funcs: entry -> sorted pcs; names: entry -> symbol name (the noreturn seeds). Returns (summaries, Funcs,
-    statistics)"""
+def patched(hooks, entry):
+    """hooks as {entry: Summary} (a set: AAPCS facts for each); ENTRY set from entry ({entry: hook C name})"""
+    ENTRY.clear()
+    ENTRY.update(entry_hooks(entry or {}))
+    return hooks if isinstance(hooks, dict) else {c: AAPCS for c in hooks}
+
+
+def guest_callees(fn):
+    """the guest functions host code in fn calls (its rows', its entry hook's)"""
+    out = [c for g in fn.guest.values() if g != "computed" for c in g]
+    return out + list(fn.hook[2]) if fn.hook is not None else out
+
+
+def summarise(funcs, prog, hooks, word, names=None, log=print, entry=None):
+    """funcs: entry -> sorted pcs; hooks: the HLE'd functions ({entry: Summary}, host_summaries; or a set: AAPCS);
+    names: entry -> symbol name (the noreturn seeds); entry: {entry: hook C name} (ENTRY_HOOKs). Returns (summaries,
+    Funcs, statistics)"""
     t0 = time.time()
+    hooks = patched(hooks, entry)
     NORETURN.clear()
     NORETURN.update(e for e, n in (names or {}).items() if noreturn_seed(n))
     F = {}
@@ -757,7 +842,7 @@ def summarise(funcs, prog, hooks, word, names=None, log=print):
             elif kind in ("call", "tail") and c in F:
                 out.append(c)
         out += [t for t in fn.ctail.values() if t in F]
-        return out
+        return out + [t for t in guest_callees(fn) if t in F]
     comps = sccs(sorted(F), callees)
     sums = {}
     iters = 0
@@ -932,7 +1017,8 @@ def _graph_part(entries):
         ctails = [(fn.callee[k], c, fn.kind[k]) for k, c in fn.ctail.items()]
         edges = [(kind, fn.callee[k]) for k, kind in enumerate(fn.kind)
                  if kind in ("call", "tail") and not isinstance(fn.callee[k], tuple)]
-        out.append((e, callees + list(fn.ctail.values()), list(fn.falls_into), dangling, tails, ctails, edges))
+        out.append((e, callees + list(fn.ctail.values()) + guest_callees(fn), list(fn.falls_into), dangling, tails,
+                    ctails, edges))
     return out
 
 
@@ -1011,7 +1097,7 @@ def _results_part(batch):
     return out
 
 
-def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print):
+def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print, entry=None):
     """summarise() over processes: the same summaries; funcs: entry -> sorted pcs (any sequence), or with word None
     entry -> (pcs, their words). The workers are forked with the functions as flat arrays (pages they only read,
     shared)."""
@@ -1024,7 +1110,8 @@ def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print)
         fs = {e: (array("Q", p), array("I", w)) for e, (p, w) in funcs.items()}
     else:
         fs = {e: (array("Q", pcs), array("I", (word(pc) for pc in pcs))) for e, pcs in funcs.items()}
-    _G.update(funcs=fs, prog=prog, hooks=set(hooks), fallthrough=set())
+    _G.update(funcs=fs, prog=prog, hooks=patched(hooks, entry), fallthrough=set())
+    hooks = _G["hooks"]
     NORETURN.clear()
     NORETURN.update(e for e, n in (names or {}).items() if noreturn_seed(n))
     order = sorted(_G["funcs"])
@@ -1115,9 +1202,10 @@ def job(inp, out, jobs):
         return t
     prog = build_ir.Program(entries=d["entries"], jt=d["jt"], callee=callee, plt=plt, no_call=d["no_call"],
                             classes=d["classes"])
-    funcs, hooks, names = d["funcs"], d["hooks"], d["names"]
+    funcs, names = d["funcs"], d["names"]
+    hooks, entry = host_summaries(d["hle"]), d["entry_hooks"]
     del d
-    sums, stats, edges = summarise_parallel(funcs, prog, hooks, None, names, jobs=jobs)
+    sums, stats, edges = summarise_parallel(funcs, prog, hooks, None, names, jobs=jobs, entry=entry)
     stats["main peak MB"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
     stats["worker peak MB"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss >> 10
     with open(out + ".tmp", "wb") as f:

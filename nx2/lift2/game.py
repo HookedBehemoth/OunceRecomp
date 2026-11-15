@@ -107,13 +107,16 @@ def reachable(entry, pcs, word, jt):
 
 
 # the lifter's files the summaries depend on (the summary cache's key)
-SUMMARY_SOURCES = re.compile(r"^(enc.*|sem.*|ir|build_ir|summary|probes)\.py$")
+SUMMARY_SOURCES = re.compile(r"^(enc.*|sem.*|ir|bounds|build_ir|summary|probes|host_effects)\.py$")
 
 
-def plan_summaries(L, img, path, hooks, no_call, classes):
+def plan_summaries(L, img, path, hooks, no_call, classes, entry):
     """the summaries' job (summary.job) for the plan: (cache, input). The cache is keyed by the image, the discovery's
-    facts and the sources the summaries read; when it has them, input is None. Else the job's input is written beside
-    the plan and the build computes them (finish_summaries) in a process of its own, after the lift's memory is gone"""
+    facts, the host's patches (the HLE'd functions' symbols, the entry hooks: entry, {address: hook C name}; the rows
+    are in probes.py) and the sources the summaries read; when it has them, input is None. Else the job's input is
+    written beside the plan and the build computes them (finish_summaries) in a process of its own, after the lift's
+    memory is gone"""
+    hle = host_effects.hle_symbols(L.hooks)
     names = getattr(img, "names", {}) or {}
     h = hashlib.sha1(bytes(img.mem), usedforsecurity=False)
     here = os.path.dirname(os.path.abspath(__file__))
@@ -122,7 +125,7 @@ def plan_summaries(L, img, path, hooks, no_call, classes):
             with open(os.path.join(here, name), "rb") as f:
                 h.update(name.encode() + f.read())
     h.update(repr((sorted(L.entries), sorted(hooks), sorted(L.jt.items()), sorted(L.plt.items()), sorted(no_call),
-                   sorted(names.items()))).encode())
+                   sorted(names.items()), sorted(hle.items()), sorted(entry.items()))).encode())
     d = os.path.dirname(path)
     cache = os.path.join(d, "summaries_%s.pickle" % h.hexdigest()[:16])
     if os.path.exists(cache):
@@ -137,7 +140,8 @@ def plan_summaries(L, img, path, hooks, no_call, classes):
             pcs = array("Q", sorted(b))
             fs[e] = (pcs, array("I", map(img.word, pcs)))
         pickle.dump({"funcs": fs, "entries": set(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": no_call,
-                     "classes": classes, "hooks": hooks, "names": dict(names)}, f, protocol=pickle.HIGHEST_PROTOCOL)
+                     "classes": classes, "hle": hle, "entry_hooks": dict(entry),
+                     "names": dict(names)}, f, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(inp + ".tmp", inp)
     print("summaries: to be computed by the build (%s)" % os.path.basename(inp))
     return cache, inp
@@ -182,8 +186,7 @@ def summary_step(plan_path):
             os.remove(os.path.join(d, old))
         with open(cache + ".tmp", "wb") as f:
             pickle.dump((sums, edges, stats), f, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(cache + ".tmp", cache)
-        os.remove(inp)
+        os.replace(cache + ".tmp", cache)   # (the input stays until the next lift: tools recompute from it)
         summary.report(sums, edges, plan["insns"], plan.get("hot", ()))
         print("summaries: %(functions)d functions, %(sccs)d components (largest %(largest scc)d) in %(levels)d "
               "levels; graph %(graph s).0fs, fixed point %(fixed point s).0fs, results %(results s).0fs" % stats)
@@ -243,9 +246,11 @@ def write_plan(L, img, path, hot=()):
             continue
         bodies[e] = (array("Q", pcs), array("I", (img.word(pc) for pc in pcs)))
     # the whole program's summaries: computed (or taken from their cache) by the build, finish_summaries
-    job = plan_summaries(L, img, path, hooks, no_call, classes)
+    import entry_hooks   # (host/*.c's ENTRY_HOOKs: the summaries count what each reads and writes)
+    entry, missing = entry_hooks.wanted(os.path.join(os.path.dirname(path), "gen"))
+    job = plan_summaries(L, img, path, hooks, no_call, classes, entry)
     plan = {"summaries": {}, "summary_job": job, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets,
-            "hooks": sorted(hooks), "bodies": bodies, "why": why, "hot": sorted(set(hot) & set(bodies)),
+            "hooks": sorted(hooks), "entry_hooks": entry, "bodies": bodies, "why": why, "hot": sorted(set(hot) & set(bodies)),
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
     with open(path + ".tmp", "wb") as f:
         pickle.dump(plan, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -403,6 +408,9 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     if missing or absent:   # (a hook the build would leave out: its host code dead and nothing saying so)
         raise SystemExit("build: ENTRY_HOOKs with no lifted function: %s" % ", ".join(
             ["%s (not exported)" % m for m in missing] + ["%s at %#x" % (wanted[e], e) for e in absent]))
+    if plan.get("entry_hooks") != wanted:   # (the summaries count each hook's reads and writes: they must be these)
+        raise SystemExit("build: the ENTRY_HOOKs differ from those the lift's summaries count: lift again "
+                         "(scripts/relift.sh)")
     hooks = wanted
     srcs = []
     # partitions: by address, the hot functions apart, about PART_INSNS instructions each

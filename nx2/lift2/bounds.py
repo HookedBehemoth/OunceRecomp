@@ -67,17 +67,23 @@ def call_bounds(plan, hooks, hle, verify=False):
             name = hle.get(c)
             if name is None or name in host_effects.CLOBBERS:
                 return unknown("HLE declared clobbering", sym, tail)
-            # (AAPCS-clean by declaration: its arguments and the declared extra reads, the caller-saved registers
-            # written; the verification build checks x19-x29 and SP on its return through the hchk_ stub)
-            return Bound("HLE", mask(host_effects.hle_reads(name)), summary.CALLER_SAVED, KEEP_ALL, 0,
-                         summary.ABI_RESULTS, False, "hchk_%08x" % c if verify else sym, tail)
-        if c in hooks:   # (the hook may handle the call: what its body and the guest code it calls all preserve)
+            # (AAPCS-clean by declaration, as the summaries take it (summary.host_summary): its arguments and the
+            # declared extra reads, the caller-saved registers written; the verification build checks x19-x29 and SP
+            # on its return through the hchk_ stub)
+            h = summary.host_summary(name)
+            return Bound("HLE", h.inputs, h.clobbers, KEEP_ALL, 0, summary.ABI_RESULTS, False,
+                         "hchk_%08x" % c if verify else sym, tail)
+        if c in hooks:
+            # (the function's summary counts its hook: summary.ENTRY. A BL keeps what the body and the guest code the
+            # hook calls (host_effects.CALLS) all preserve)
+            s = summ.get(c)
             keeps = KEEP_ALL
             for g in (c,) + tuple(host_effects.CALLS.get(hooks[c], ())):
-                s = summ.get(g)
-                keeps = keeps & s[3] if full(s) else 0
-            return Bound("entry hook" if keeps else "entry hook, body not proven", ALL, ALL, keeps, 0, ALL, False,
-                         sym, tail)
+                sg = summ.get(g)
+                keeps = keeps & sg[3] if full(sg) else 0
+            if not full(s) or not keeps:
+                return unknown("entry hook, body not proven", sym, tail)
+            return Bound("entry hook", s[0], s[1], keeps, s[2], s[4], False, sym, tail)
         s = summ.get(c)
         if s is None:
             return unknown("no summary", sym, tail)

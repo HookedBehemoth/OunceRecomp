@@ -150,6 +150,56 @@ class Calls(unittest.TestCase):
             probes.AT = real
             summary._ROWS = None
 
+    def test_patches_in_summaries(self):
+        """the host's patches enter the summaries: an entry hook's reads at the entry and its "return 1" path (no
+        must-write, x0-x7 may), an HLE'd callee's declared reads (all for one declared clobbering), a row's guest
+        calls (their inputs; "computed": every register), a row in place of a BL (no call there)"""
+        funcs = summary.walk(set(A.values()), word)
+        prog = build_ir.Program(entries=set(A.values()))
+        bit = summary.BIT
+        x1_7 = sum(bit["x%d" % r] for r in range(1, 8))
+        sums, _, _ = summary.summarise(funcs, prog, set(), word)
+        self.assertFalse(sums[A["c1"]].inputs & x1_7)
+        self.assertTrue(sums[A["keep"]].mustdef & bit["x0"])
+        sums, _, _ = summary.summarise(funcs, prog, set(), word, entry={A["keep"]: "entry_0x%08x" % A["keep"]})
+        self.assertEqual(sums[A["keep"]].inputs & x1_7, x1_7)          # (HookArgs: x0-x7)
+        self.assertEqual(sums[A["c1"]].inputs & x1_7, x1_7)            # (through the call)
+        self.assertEqual(sums[A["keep"]].mustdef & ~summary.X[30], 0)  # (the hook may return having written none)
+        self.assertEqual(sums[A["keep"]].clobbers & x1_7, x1_7)        # (hook_set_arg)
+        self.assertTrue(sums[A["keep"]].returns)
+        sums, _, _ = summary.summarise(funcs, prog, set(), word, entry={A["die"]: "entry_0x%08x" % A["die"]})
+        self.assertTrue(sums[A["die"]].returns)                        # (the hook may handle the call)
+        host_effects.HLE_READS["nn_keep"] = (("x25",), "test")
+        try:
+            hle = summary.host_summaries({A["keep"]: "nn_keep"})
+            sums, _, _ = summary.summarise(funcs, prog, hle, word)
+            self.assertTrue(sums[A["c1"]].inputs & bit["x25"])         # (the HLE'd callee's declared read)
+            hle = summary.host_summaries({A["keep"]: None})            # (not known: every register)
+            sums, _, _ = summary.summarise(funcs, prog, hle, word)
+            self.assertTrue(sums[A["c1"]].inputs & bit["x9"])
+        finally:
+            del host_effects.HLE_READS["nn_keep"]
+        real = probes.AT
+        try:
+            for guest, reg in (((A["c4"],), None), ("computed", "x12")):
+                probes.AT = [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0",), "x0", guest=guest)]
+                summary._ROWS = None
+                sums, _, _ = summary.summarise(funcs, prog, set(), word)
+                if reg:
+                    self.assertTrue(sums[A["keep"]].inputs & bit[reg], guest)
+                else:   # (c4 reads x0 and saves x29, x30: its inputs)
+                    self.assertTrue(sums[A["keep"]].inputs & bit["x29"], guest)
+            bl = A["c1"] + 0x10
+            probes.AT = [probes.At(A["c1"], bl, word(bl), "t_row", ("x0",), "x0", replace=True)]
+            summary._ROWS = None
+            fn = summary.Func(A["c1"], sorted(funcs[A["c1"]]), word, prog, {})
+            k = sorted(funcs[A["c1"]]).index(bl)
+            self.assertEqual(fn.kind[k], "goto")
+            self.assertEqual(fn.dfn[k], bit["x0"] | bit["x30"])
+        finally:
+            probes.AT = real
+            summary._ROWS = None
+
     def test_declared_clobbering(self):
         host_effects.CLOBBERS["nn_keep"] = "test"
         try:
