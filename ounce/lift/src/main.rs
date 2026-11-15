@@ -73,6 +73,11 @@ fn main() {
         g.2,
         g.3
     );
+    let hwm = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("VmHWM:")).map(|l| l[6..].trim().to_string()))
+        .unwrap_or_default();
+    println!("peak memory (VmHWM): {hwm}");
     let mut by: Vec<_> = g.1.into_iter().collect();
     by.sort_by(|a, b| b.1.cmp(&a.1));
     for (why, n) in by.iter().take(40) {

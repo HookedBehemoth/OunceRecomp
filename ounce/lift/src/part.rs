@@ -32,7 +32,18 @@ pub fn lift_part(meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bo
             }
         }
         let prog = Prog::new(f, &pcs, code_targets, &calls, meta.omit);
-        let mut fun = build(f, &pcs, &words, &prog);
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(f, &pcs, &words, &prog)));
+        let mut fun = match built {
+            Ok(fun) => fun,
+            Err(e) if skip => {
+                let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()));
+                eprintln!("f_{:08x}: {}", f.entry, msg.as_deref().unwrap_or("panic"));
+                *skipped.entry(format!("failed: {}", msg.unwrap_or_default().split(" of ").next().unwrap_or(""))).or_insert(0) += 1;
+                m.defined.insert(fname);
+                continue;
+            }
+            Err(e) => std::panic::resume_unwind(e),
+        };
         n_code += fun.code_sites;
         fun.name = fname.clone();
         if let Some(pf) = &f.func {
