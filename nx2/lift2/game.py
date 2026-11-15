@@ -112,12 +112,11 @@ def reachable(entry, pcs, word, jt):
     return [pc for pc in pcs if pc in seen]
 
 
-# the lifter's files the summaries depend on (the summary cache's key; probes.py and host_effects.py by their code alone:
-# the patch tables in them enter by their effects, summary_effects)
+# the lifter's files the summaries depend on (the summary cache's key; host_effects.py by its code alone: its tables, and
+# the host's patch declarations (patch_scan), enter by their effects, summary_effects)
 SUMMARY_SOURCES = re.compile(r"^(enc.*|sem.*|ir|bounds|build_ir|summary|probes|host_effects)\.py$")
 # the patch tables (module-level names, and the loops that index them) the keys take by what they declare, not as code
-PATCH_TABLES = {"probes.py": {"PROBES", "BY_FUNC", "DIRECT", "AT", "AT_FUNCS", "_p"},
-                "host_effects.py": {"CLOBBERS", "CALLS", "HLE_ARGS", "HLE_READS", "_X29_LOG", "HOOK_ARGS", "HOOK_READS"}}
+PATCH_TABLES = {"host_effects.py": {"CLOBBERS", "CALLS", "HLE_ARGS", "HLE_READS", "_X29_LOG", "HOOK_ARGS", "HOOK_READS"}}
 
 
 def source_key(name, text):
@@ -391,6 +390,7 @@ def lift_part(args):
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
                             jt_index=plan.get("jt_index"), bound=bound, omit=True, verify=verify)
     prog.code_targets = code_ptrs.targets(plan)
+    probes.resolve(plan, plan_path)   # (each site's function, once a worker)
     m = emit_llvm.Module()
     extra = []
     n_code = 0
@@ -495,10 +495,13 @@ def branch_targets(pcs, words):
 
 
 def patch_rows():
-    """{function: [the declaration of each Value probe and At row in it, as a string]}"""
+    """{function: [each Value probe and At row in it, its fields as a string]}: the sites resolved (probes.resolve); the
+    declaration's place in its file is not in it (editing a body above it changes no IR)"""
     out = {}
-    for p in list(probes.PROBES) + list(probes.AT):
-        out.setdefault(p.func, []).append(type(p).__name__ + repr(sorted(vars(p).items())))
+    values, ats = probes.tables()
+    for p in values + ats:
+        out.setdefault(p.func, []).append(type(p).__name__ + repr(sorted(
+            (k, v) for k, v in vars(p).items() if k != "where")))
     return out
 
 
@@ -561,6 +564,7 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     t_key = time.time()
     verify = bool(os.environ.get("HOOKSHOT_LIFT_VERIFY"))   # (lift_part reads it)
     base = ("%s %s %s\n" % (code_key(), facts_key(plan), "verify" if verify else "")).encode()
+    probes.resolve(plan, plan_path)
     bound, rows = bounds.call_bounds(plan, hooks, hle, verify), patch_rows()
     flags, pres, keys, objs_k = [], [], [], []
     for k, (tag, names) in enumerate(parts):

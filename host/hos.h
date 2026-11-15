@@ -18,7 +18,7 @@
 #define HLE(sym) void imp_##sym(Ctx *c)
 /* HOS_GAME_VERSION: the game update the host's guest addresses are for: 100, the only one (nothing sets it; host/
    hos_thread.c's calc_poll_nap is the one place that tests it). What holds the addresses to the dump is the lift: an
-   At row or Value probe (nx2/lift2/probes.py) names its instruction's word and an ENTRY_HOOK's address must be a
+   At row or Value probe (PATCH_AT, host/patch.h) names its instruction's word and an ENTRY_HOOK's address must be a
    lifted function, or the build stops. */
 #ifndef HOS_GAME_VERSION
 #define HOS_GAME_VERSION 100
@@ -63,7 +63,7 @@ uint64_t a64_guest_of(uint64_t v);
 #define CODE_PTR(f) ((uint64_t)(uintptr_t)(f))   /* (a lifted function, f_<address>, as the game sees it) */
 uint64_t hook_result(HookCall *h);
 uint64_t hook_call_guest(HookCall *h, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
-/* At rows (nx2/lift2/probes.py): host functions of plain values; a 16-byte vector register ("qN") is a hos_q. A row
+/* At rows (PATCH_AT, host/patch.h): host functions of plain values; a 16-byte vector register ("qN") is a hos_q. A row
    declared to call guest code gets a GuestCall first: guest_call runs guest code at fn with the arguments, SP sp and
    LR 0, and puts every register back as it was (the row writes none); its x0 */
 typedef uint64_t hos_q __attribute__((vector_size(16)));
@@ -183,4 +183,5 @@ uint64_t hos_ticks(void);
 void hos_sleep_ns(int64_t ns);
 int64_t hos_now_ns(void);
 int64_t hos_spin_ns(void);   /* how long a sync wait spins before it sleeps: HOS_SPIN_US, default 5 us (nn_os_sync.c) */
+#include "patch.h"   /* (the patch declarations: PATCH_AT, PATCH_AT_SITE) */
 #endif

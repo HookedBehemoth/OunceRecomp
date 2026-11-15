@@ -133,22 +133,20 @@ class Calls(unittest.TestCase):
     def test_row_callee(self):
         """a callee with an At row is not host-edited: a call of it keeps what its summary preserves, and the summary
         counts the row's declared reads; a row writing a callee-saved register its instruction does not stops the lift"""
-        real = probes.AT
+        real = probes.tables()
         try:
-            probes.AT = [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0", "x5"), "x0")]
-            summary._ROWS = None
+            probes.use([], [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0", "x5"), "x0")])
             fns, funcs = lift()
             self.assertFalse(loads_after_call(fns["c1"]) & {"x19", "x29", "sp"}, loads_after_call(fns["c1"]))
             sums, _, _ = summary.summarise(funcs, build_ir.Program(entries=set(A.values())), set(), word)
             self.assertTrue(sums[A["keep"]].inputs & summary.BIT["x5"])   # (the row's argument)
             pcs = sorted(funcs[A["keep"]])
             self.assertEqual(list(probes.at(A["keep"], pcs, word)), [A["keep"]])
-            probes.AT = [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0",), "x19")]
+            probes.use([], [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0",), "x19")])
             with self.assertRaises(SystemExit):
                 probes.at(A["keep"], pcs, word)
         finally:
-            probes.AT = real
-            summary._ROWS = None
+            probes.use(*real)
 
     def test_patches_in_summaries(self):
         """the host's patches enter the summaries: an entry hook's reads at the entry and its "return 1" path (no
@@ -179,26 +177,23 @@ class Calls(unittest.TestCase):
             self.assertTrue(sums[A["c1"]].inputs & bit["x9"])
         finally:
             del host_effects.HLE_READS["nn_keep"]
-        real = probes.AT
+        real = probes.tables()
         try:
             for guest, reg in (((A["c4"],), None), ("computed", "x12")):
-                probes.AT = [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0",), "x0", guest=guest)]
-                summary._ROWS = None
+                probes.use([], [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0",), "x0", guest=guest)])
                 sums, _, _ = summary.summarise(funcs, prog, set(), word)
                 if reg:
                     self.assertTrue(sums[A["keep"]].inputs & bit[reg], guest)
                 else:   # (c4 reads x0 and saves x29, x30: its inputs)
                     self.assertTrue(sums[A["keep"]].inputs & bit["x29"], guest)
             bl = A["c1"] + 0x10
-            probes.AT = [probes.At(A["c1"], bl, word(bl), "t_row", ("x0",), "x0", replace=True)]
-            summary._ROWS = None
+            probes.use([], [probes.At(A["c1"], bl, word(bl), "t_row", ("x0",), "x0", replace=True)])
             fn = summary.Func(A["c1"], sorted(funcs[A["c1"]]), word, prog, {})
             k = sorted(funcs[A["c1"]]).index(bl)
             self.assertEqual(fn.kind[k], "goto")
             self.assertEqual(fn.dfn[k], bit["x0"] | bit["x30"])
         finally:
-            probes.AT = real
-            summary._ROWS = None
+            probes.use(*real)
 
     def test_declared_clobbering(self):
         host_effects.CLOBBERS["nn_keep"] = "test"

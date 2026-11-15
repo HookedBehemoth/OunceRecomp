@@ -5,7 +5,7 @@
    f_800634b0(entry, view, 0) at 0x806680d8 (return 0x806680dc) with a texture view built on its stack. Given a view,
    f_800634b0 frees the entry's id (+0x68) and registers the texture again under a new one (agl's descriptor ring), even when
    nothing changed: table word 4 gets a fresh id every frame, a heap entry is written and the deferred table copied at the
-   submit changes. Here, at that call only (an At row in place of the BL, nx2/lift2/probes.py DIRECT; it makes the call
+   submit changes. Here, at that call only (an At row in place of the BL, a PATCH_AT declaration, host/patch.h; it makes the call
    itself through guest_call when the call is to run): when the entry has an id, and the entry's first 0xc0 bytes (the texture
    pointer and settings at +0x00..+0x64, the id at +0x68, the copies f_800634b0 keeps of them from +0x70), the view's 16
    bytes and the texture object (descriptor, layout, storage address) are all what they were right after this row last let
@@ -44,7 +44,7 @@ static int snap(uint64_t entry, uint64_t view, Snap *s) {
 #define REREGISTER CODE_PTR(f_800634b0)  /* f_800634b0 desc_reregister (entry, view, flag) */
 
 /* f_80667d20 at 0x806680d8 in place of its bl f_800634b0: sp the caller's, x0-x2 the call's arguments */
-void direct_rt_ids_reregister(GuestCall *g, uint64_t sp, uint64_t entry, uint64_t view, uint64_t flag) {
+PATCH_AT(0x806680d8, word(0x97e7ecf6), instead, none, direct_rt_ids_reregister, guest(0x800634b0), sp, as(x0, entry), as(x1, view), as(x2, flag)) {
     if (!rx_direct() || !view) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }
     InterlockedIncrement64(&n.calls);
     Snap now;

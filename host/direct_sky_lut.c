@@ -11,7 +11,7 @@
    Why it is changed: the direct back end has no block-linear code and never reads texture storage, so the LUT pass read
    zeros (black) and the scene's ambient light followed. nx2/prepare_skybin.py writes the archive with the member linear
    (same sizes) into the prepared overlay (direct_assets_overlay(): work/prepared/terrain), which nn_fs.c serves in direct
-   mode. Here (an At row, nx2/lift2/probes.py DIRECT), before each of the three memcpys (x0 the storage, x1 the part, x2 its size), the part goes to its
+   mode. Here (an At row, a PATCH_AT declaration, host/patch.h), before each of the three memcpys (x0 the storage, x1 the part, x2 its size), the part goes to its
    texture's image (hsd_texels, a region of the whole level) and the memcpy copies nothing. Converted is told from not by
    where the archive was read: the patch uploads only when the overlay served it (direct_sky_lut_opened, from
    direct_assets_overlay_opened); otherwise the textures get the placeholder, counted. The part sizes are checked
@@ -39,7 +39,7 @@ void direct_sky_lut_opened(const char *path) {
 
 /* f_80846070: after each `x0 = the storage's CPU address` (the line before each of its three memcpys): x0 the storage,
    x1 the part, x2 its size. Returns the size the memcpy copies: 0 when the part went to the texture */
-uint64_t direct_sky_lut_part(uint64_t dst, uint64_t src, uint64_t size) {
+PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, direct_sky_lut_part, as(x0, dst), as(x1, src), as(x2, size)) {
     if (!direct_assets_on()) return size;
     nvn_tex t;
     if (!dst || !nvn_tex_live_at(dst, &t)) {
@@ -73,6 +73,8 @@ uint64_t direct_sky_lut_part(uint64_t dst, uint64_t src, uint64_t size) {
     }
     return 0;   /* (the memcpy copies nothing: the storage stays unwritten) */
 }
+PATCH_AT_SITE(0x80846114, word(0x9a8803e0), after, x2, direct_sky_lut_part, x0, x1, x2);
+PATCH_AT_SITE(0x80846144, word(0x9a8803e0), after, x2, direct_sky_lut_part, x0, x1, x2);
 
 void direct_sky_lut_log(double frames) {
     (void)frames;

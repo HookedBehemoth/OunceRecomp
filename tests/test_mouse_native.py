@@ -24,6 +24,7 @@ HOS_H = r"""
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include "patch.h"
 extern uint8_t *fake_heap;
 #define HOS_HEAP_BASE 0x1000000000ULL
 #define A64_PTR(a) (fake_heap + ((uint64_t)(a) - HOS_HEAP_BASE))
@@ -137,6 +138,7 @@ class MouseNativeTests(unittest.TestCase):
             (tmp / "hos.h").write_text(HOS_H, encoding="utf-8")
             # (beside the stand-in hos.h, so its #include "hos.h" finds that one)
             shutil.copy(ROOT / "host" / "mouse_native.c", tmp / "mouse_native.c")
+            shutil.copy(ROOT / "host" / "patch.h", tmp / "patch.h")   # (its declaration: PATCH_AT)
             (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t"
             build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-g", "-I", str(tmp), "-I", str(ROOT / "host" / "posix"),

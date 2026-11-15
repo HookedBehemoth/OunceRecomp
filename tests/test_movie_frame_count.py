@@ -45,6 +45,7 @@ def check(cond, what):
 
 FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 #include <stdint.h>
+#include "patch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -176,13 +177,13 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    rows = [p for p in probes.AT if p.func == 0x83b7c710 and p.fn == "hos_oot_movie_count"]
+    rows = [p for p in probes.AT if p.fn == "hos_oot_movie_count"]
     check(len(rows) == 1, "one probe")
     p0 = rows[0]
     check((p0.pc, p0.word, p0.fn, p0.args, p0.result) == (0x83b7c7c8, 0x11000508, "hos_oot_movie_count", ("w8", "x20"), "w8"),
           "the probe is w8 := hos_oot_movie_count(w8, x20) after the update's add w8, w8, #1")
     oot = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
-    count = oot[oot.index("uint32_t hos_oot_movie_count("):]
+    count = oot[oot.index("PATCH_AT(0x83b7c7c8, word(0x11000508), after, w8, hos_oot_movie_count,"):]
     count = count[:count.index("\n")]
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
@@ -192,7 +193,7 @@ def main():
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
         c.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"), str(c), "-o", str(exe)], check=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
         subprocess.run([str(exe)], env=env, check=True)
         subprocess.run([str(exe)], env=dict(env, HOS_FPS_MOVIE="1"), check=True)   # (read by its value: 1 is on)
@@ -203,7 +204,7 @@ def main():
         plain = Path(tmp) / "plain.c"
         plain.write_text(FIXTURE.replace("@HOST@", block(vi, "static uint32_t movie_log(") + "\n" + block(vi, HOST_ANCHOR)).replace("@LIFTED@", LOAD_ADD + STORE),
                          encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(plain), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "host"), str(plain), "-o", str(exe)], check=True)
         r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
         check(r.returncode != 0 and "FAIL:" in r.stderr, "the unpatched count passes the checks: they prove nothing")
 

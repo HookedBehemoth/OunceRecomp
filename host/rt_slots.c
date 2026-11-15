@@ -18,7 +18,7 @@
 
      ENTRY_HOOK(0x8005ed00)       DTA::alloc(dta, ctx, desc, flags): note lr/name/shape for this thread (flags bit 0:
                                   transient); the first call shrinks the arenas. Returns 0 (the lifted body runs).
-     At rows in f_8005ed00 (nx2/lift2/probes.py DIRECT) after the two lines (0x8005fb74, 0x80061814) that store block
+     At rows in f_8005ed00 (a PATCH_AT declaration, host/patch.h) after the two lines (0x8005fb74, 0x80061814) that store block
                                   +0x38 = the aligned offset: x23 block, x10 offset, x8 the block's pool, the alignment
                                   in the frame at [sp + 192]. Both (x10 and block +0x38) are rewritten to the slot.
      ENTRY_HOOK(0x802737a0)       DTA::free(dta, entry): the slot of entry +0xc0's block is free again.
@@ -132,7 +132,7 @@ static int shadow_classes_on(void) {
 /* (an At row in f_802640a0 pass_local_shadow_depth just before its bl f_8005ed00 at 0x8026412c) the next alloc on this
    thread is the local shadow map's: its size is a class (shadow_size) */
 static _Thread_local int tl_local_shadow;
-void rt_slots_local_shadow(void) { tl_local_shadow = 1; }
+PATCH_AT(0x80264128, word(0xb9003be8), after, none, rt_slots_local_shadow) { tl_local_shadow = 1; }
 #define REUSE_AFTER 3   /* presents after a slot's last use before another image may take its memory */
 static int log_slots(void) {
     static int v = -1;
@@ -713,7 +713,7 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
    alignment at [sp + SP_ALIGN] (sp kept for the HOS_RT_SLOTS_LOG lines). Returns x10: the slot's offset. The next lifted
    line adds the TextureData's base to x10; everything after (entry +0, the registration compare, SetStorage, views
    made later from the entry) reads the offset from x10 or block +0x38. */
-uint64_t rt_slots_offset(uint64_t pool, uint64_t game, uint64_t block, uint64_t sp, uint64_t align_slot) {
+PATCH_AT(0x8005fb74, word(0xf9001eea), after, x10, rt_slots_offset, as(x8, pool), as(x10, game), as(x23, block), sp, as(ld(sp, 192), align_slot)) {
     alloc_sp = sp, alloc_block = block;   /* (M6f: persistent allocations too: the entry's texture, below) */
     if (!cur.valid) {
         if (!off_()) __atomic_add_fetch(&n.unspliced, 1, __ATOMIC_RELAXED);
@@ -780,6 +780,7 @@ uint64_t rt_slots_offset(uint64_t pool, uint64_t game, uint64_t block, uint64_t 
     G64(block + 0x38) = s->off;
     return s->off;
 }
+PATCH_AT_SITE(0x80061814, word(0xf9001eea), after, x10, rt_slots_offset, x8, x10, x23, sp, ld(sp, 192));
 
 /* The entry an alloc gave (a new one, one from the allocator's free lists, or a parked one handed back), told to the
    back end by its own texture object: the entry's descriptor id (+0x68) names a record of agl's descriptor manager

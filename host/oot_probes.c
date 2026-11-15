@@ -1,5 +1,5 @@
-/* Frame-rate and resolution patches of Ocarina of Time 1.1.1: the host side of the lifter's At probes (nx2/lift2/probes.py
-   AT, one row each: a guest instruction, the registers passed here, the register given the result). Plain values and
+/* Frame-rate and resolution patches of Ocarina of Time 1.1.1: the lifter's At probes, each declared
+   here by its PATCH_AT (host/patch.h, one row each: a guest instruction, the registers passed here, the register given the result). Plain values and
    guest addresses in, a value out; no guest context. Each is a runtime switch where it can be, so the game's own path
    stays reachable.
 
@@ -106,18 +106,18 @@ static float fixed_scale(void) { float f; const uint32_t u = hos_fixed_scale_bit
 /* ---- dynamic resolution and the fixed scale */
 
 /* f_80825aa0, after the config's flags load (bit 0: the dynamic path): bit 0 clear while the resolution is fixed */
-uint32_t hos_oot_dynres_flags(uint32_t flags) {
+PATCH_AT(0x80825bcc, word(0xb9409508), after, w8, hos_oot_dynres_flags, as(w8, flags)) {   /* ldr w8, [x8, #148] */
     if (hos_fixed_resolution) return flags & ~1u;
     if (flags & 1) hos_dynres_runs++;   /* (the dynamic path's frames: host/nn_vi.c waits for 30 before fixing it) */
     return flags;
 }
 
 /* f_80825aa0's fixed path: its scale (mov w9, #1.0: the float's bits in a W register), 1.0 as shipped */
-uint32_t hos_oot_fixed_scale(void) { return hos_fixed_scale_bits; }
+PATCH_AT(0x80826420, word(0x52a7f009), after, w9, hos_oot_fixed_scale) { return hos_fixed_scale_bits; }
 
 /* f_831f3200 (module: x20), w8 the bits about to be or-ed into +0xe2c: bit 3 (recompute) too while +0xe5c is not the
    chosen scale (only then: a recompute every frame remade the targets) */
-uint32_t hos_oot_scale_recompute(uint64_t module, uint32_t bits) {
+PATCH_AT(0x831f3efc, word(0xb94e2e89), after, w8, hos_oot_scale_recompute, as(x20, module), as(w8, bits)) {   /* ldr w9, [x20, #3628] */
     if (!hos_fixed_resolution) return bits;
     const OotSceneResolution *m = GUEST(OotSceneResolution, module);
     const float want = fixed_scale();
@@ -126,7 +126,7 @@ uint32_t hos_oot_scale_recompute(uint64_t module, uint32_t bits) {
 }
 
 /* f_831f3200, its flags +0xe20 just loaded: bits 3/4 (0.75 / 0.5 in place of the scale) not looked at while fixed */
-uint64_t hos_oot_scale_flags(uint64_t module, uint64_t flags) {
+PATCH_AT(0x831f3f08, word(0xf9471288), after, x8, hos_oot_scale_flags, as(x20, module), as(x8, flags)) {   /* ldr x8, [x20, #3616] */
     hos_res_module = module;   /* (host/nn_vi.c logs the 3D's scale from it) */
     return hos_fixed_resolution ? flags & ~0x18ULL : flags;
 }
@@ -135,7 +135,7 @@ uint64_t hos_oot_scale_flags(uint64_t module, uint64_t flags) {
 
 /* f_806702e0 (config: x0), w14 the current mode: mode 1's base scale 0.8 -> 1.0 in a stock table, and the mode made to
    compare unequal once (0xff), so the game's own refresh runs */
-uint32_t hos_oot_scene_mode(uint64_t config, uint32_t mode) {
+PATCH_AT(0x80670308, word(0x3955280e), after, w14, hos_oot_scene_mode, as(x0, config), as(w14, mode)) {   /* ldrb w14, [x0, #1354] */
     if (!hos_native_scene) return mode;
     OotScaleConfig *c = GUEST(OotScaleConfig, config);
     OotScaleTable *const tables[2] = {&c->profile0, &c->profile1};
@@ -152,7 +152,7 @@ uint32_t hos_oot_scene_mode(uint64_t config, uint32_t mode) {
 }
 
 /* f_831f3200's head (module: x0): the fixed scale marked dirty when the cached one differs (HOS_FIX_RES) */
-void hos_oot_scene_check(uint64_t module) {
+PATCH_AT(0x831f3200, word(0x39788008), after, none, hos_oot_scene_check, as(x0, module)) {   /* ldrb w8, [x0, #3616] */
     if (!hos_fixed_resolution || !hos_fix_res) return;
     OotSceneResolution *m = GUEST(OotSceneResolution, module);
     const float req = fixed_scale();
@@ -163,7 +163,7 @@ void hos_oot_scene_check(uint64_t module) {
 /* ---- frame seconds, movie frames */
 
 /* after fdiv: the quotient, or base * the frame's seconds while the host gives them */
-float hos_oot_frame_step(float base, float quotient) {
+PATCH_AT(0x83b6eaf8, word(0x1e201820), after, s0, hos_oot_frame_step, as(s1, base), as(s0, quotient)) {   /* fdiv s0, s1, s0 */
     const uint32_t s = hos_frame_seconds_bits;
     float secs;
     memcpy(&secs, &s, 4);
@@ -171,18 +171,18 @@ float hos_oot_frame_step(float base, float quotient) {
 }
 
 /* f_80706be0's divide, which also tells the host its x19 (the module with the game clock) */
-float hos_oot_frame_step_probe(float base, float quotient, uint64_t module) {
+PATCH_AT(0x80706cc4, word(0x1e201828), after, s8, hos_oot_frame_step_probe, as(s1, base), as(s8, quotient), as(x19, module)) {   /* fdiv s8, s1, s0 */
     hos_step_probe = module;
     return hos_oot_frame_step(base, quotient);
 }
 
 /* f_83b7c710: the movie player's count after its add of one: that one is the frames' time instead */
-uint32_t hos_oot_movie_count(uint32_t count, uint64_t player) { return count - 1 + hos_movie_frames(player); }
+PATCH_AT(0x83b7c7c8, word(0x11000508), after, w8, hos_oot_movie_count, as(w8, count), as(x20, player)) { return count - 1 + hos_movie_frames(player); }
 
 /* f_80b1e140, a text pane's letter animation, on the edge past its hidden / no-text checks: the time (s0) that moves
    the letters' clock and the pauses' timer, times the Insert menu's Text speed (hos_text_scale, 1.0 as shipped; the
    auto-advance timer before keeps the game's time) */
-float hos_oot_text_time(float time) {
+PATCH_AT(0x80b1e1bc, word(0x37201528), before, s0, hos_oot_text_time, as(s0, time)) {   /* tbnz w8, #4 */
     extern volatile float hos_text_scale;
     const float k = hos_text_scale;
     return k != 1.0f ? time * k : time;
@@ -191,52 +191,54 @@ float hos_oot_text_time(float time) {
 /* ---- output size */
 
 /* nnMain's display size for the framework's create arg (width | height << 32, the pair the game stores at +20) */
-uint64_t hos_oot_output_size(void) { return hos_output_size(0) | (uint64_t)hos_output_size(1) << 32; }
+PATCH_AT(0x81222ee4, word(0xf2c0b408), after, x8, hos_oot_output_size) { return hos_output_size(0) | (uint64_t)hos_output_size(1) << 32; }
 
 /* f_810a7b70 (config: x20): the docked size list's first entry, 2560 x 1440, is the output size */
-void hos_oot_output_config(uint64_t config) {
+PATCH_AT(0x810a7b8c, word(0xaa0103f4), after, none, hos_oot_output_config, as(x20, config)) {   /* mov x20, x1 */
     OotDisplaySizeConfig *c = GUEST(OotDisplaySizeConfig, config);
     if (hos_output_size(0) != 2560 && c->docked_width == 2560) c->docked_width = hos_output_size(0), c->docked_height = hos_output_size(1);
 }
 
 /* f_80ea2f30: BaseResolution's width (height 0) or height (1) scaled with the output */
-uint32_t hos_oot_base_size(uint32_t v, uint32_t height) {
+PATCH_AT(0x80ea2ffc, word(0x29406418), after, w24, hos_oot_base_size, as(w24, v), as(k(0), height)) {   /* ldp w24, w25, [x0] */
     if (hos_output_size(0) == 2560) return v;
     return height ? v * hos_output_size(1) / 1440 : v * hos_output_size(0) / 2560;
 }
+PATCH_AT_SITE(0x80ea2ffc, word(0x29406418), after, w25, hos_oot_base_size, w25, k(1));   /* ldp w24, w25, [x0] */
 
 /* f_80ea2f30: the constants 1920.0 / 1080.0, 3/4 of the output (mov w8, #<float>: the float's bits in a W register) */
-uint32_t hos_oot_base_size_bits(uint32_t height) {
+PATCH_AT(0x80ea303c, word(0x52a89e08), after, w8, hos_oot_base_size_bits, as(k(0), height)) {   /* mov w8, #1920.0 */
     const float f = (float)(hos_output_size((int)height) * 3 / 4);
     uint32_t u;
     memcpy(&u, &f, 4);
     return u;
 }
+PATCH_AT_SITE(0x80ea3044, word(0x52a890e8), after, w8, hos_oot_base_size_bits, k(1));   /* mov w8, #1080.0 */
 
 /* ---- the render targets' pool */
 
 static uint64_t pool_growth(void) { return hos_rt_pool_size(0x13100000ULL) - 0x13100000ULL; }
 
 /* f_836ce9d0 (config: x19): the pool's size as shipped, scaled */
-void hos_oot_rt_pool_config(uint64_t config) {
+PATCH_AT(0x836cea54, word(0x39587668), after, none, hos_oot_rt_pool_config, as(x19, config)) {   /* ldrb w8, [x19, #1565] */
     OotGraphicsConfig *c = GUEST(OotGraphicsConfig, config);
     if (c->rt_pool_size == 0x13100000ULL) c->rt_pool_size = hos_rt_pool_size(0x13100000ULL);
 }
 
 /* f_83b7b340: the Graphics heap's size (x0 before its BL) grown by the pool's growth */
-uint64_t hos_oot_rt_heap_size(uint64_t size) {
+PATCH_AT(0x83b7b438, word(0xaa1703e2), after, x0, hos_oot_rt_heap_size, as(x0, size)) {   /* mov x2, x23 (x0: the heap's size) */
     return size == 0x34900000ULL || size == 0x348ffe20ULL ? size + pool_growth() : size;
 }
 
 /* f_83b7b340: a module heap's use (x0 after its vtable +120) against its budget, budgets[index] (x21, x22): the Graphics
    heap's counts as the shipped one */
-uint64_t hos_oot_rt_heap_use(uint64_t use, uint64_t budgets, uint64_t index) {
+PATCH_AT(0x83b7b4dc, word(0xd63f0100), after, x0, hos_oot_rt_heap_use, as(x0, use), as(x21, budgets), as(x22, index)) {   /* blr x8 (returns the use) */
     const uint64_t budget = GUEST(GuestU64, budgets)[index], g = pool_growth();
     return (budget == 0x34900000ULL || budget == 0x348ffe20ULL) && use > g ? use - g : use;
 }
 
 /* f_80b72340: the heap of what the Graphics heap can still give (x0 before its BL) keeps its shipped size */
-uint64_t hos_oot_rt_rest(uint64_t size) {
+PATCH_AT(0x80b723a4, word(0x52800024), after, x0, hos_oot_rt_rest, as(x0, size)) {   /* mov w4, #1 (x0: the size) */
     const uint64_t g = pool_growth();
     return size > g ? size - g : size;
 }
@@ -297,7 +299,7 @@ static int gamedata_bool(uint32_t hash) {
 }
 
 /* f_82c415e0, the player actor's movement step (x19 the actor): once a frame Link is updated */
-void hos_oot_player_update(uint64_t actor) {
+PATCH_AT(0x82c41728, word(0xf9000bea), after, none, hos_oot_player_update, as(x19, actor)) {   /* str x10, [sp, #16] */
     if (!hos_bench_on()) return;
     void hos_bench_player(int loading, int event_playing);
     if (!hos_guest_range(actor, sizeof(OotPlayerActor)) || GUEST(OotPlayerActor, actor)->vtable != 0x84b45e18ULL) return;
@@ -315,7 +317,7 @@ void hos_oot_player_update(uint64_t actor) {
 }
 
 /* ---- widescreen and ultrawide. The game draws a 2560x1440 picture whatever the screen and renders its scene at
-   1920x1080; its cameras use a 16:9 ratio. With these rows (nx2/lift2/probes.py AT) the picture takes the window's shape
+   1920x1080; its cameras use a 16:9 ratio. With these rows (PATCH_AT declarations, host/patch.h) the picture takes the window's shape
    (the height stays the game's, the width grows on an ultrawide screen and shrinks on a 16:10 or 4:3 one), the 16:9
    cameras take the picture's ratio, the HUD and menus keep their 16:9 shape in the middle of a wider picture (a narrower
    one: its whole width), pre-rendered movies play in that middle 16:9, and the picture a save keeps shows that middle
@@ -329,12 +331,13 @@ extern volatile uint64_t hos_wide_out, hos_wide_scene;
 extern volatile float hos_wide_ratio, hos_wide_margin, hos_wide_squeeze;
 
 /* the picture's {2560, 1440} (width | height << 32 in x8, just built by mov + movk): the window's shape at the game's height */
-uint64_t hos_oot_wide_out(uint64_t size) { const uint64_t s = hos_wide_out; return s ? s : size; }
+PATCH_AT(0x81222ee4, word(0xf2c0b408), after, x8, hos_oot_wide_out, as(x8, size)) { const uint64_t s = hos_wide_out; return s ? s : size; }
+PATCH_AT_SITE(0x832139f8, word(0xf2c0b408), after, x8, hos_oot_wide_out, x8);   /* likewise, the display settings */
 /* the scene the upscaler takes in, {1920, 1080}, likewise */
-uint64_t hos_oot_wide_scene(uint64_t size) { const uint64_t s = hos_wide_scene; return s ? s : size; }
+PATCH_AT(0x83213a04, word(0xf2c08708), after, x8, hos_oot_wide_scene, as(x8, size)) { const uint64_t s = hos_wide_scene; return s ? s : size; }
 
 /* a camera ratio just loaded: when it is 16:9 (within 0.01), the picture's */
-float hos_oot_wide_ratio(float ratio) {
+PATCH_AT(0x804e5334, word(0xbd414260), after, s0, hos_oot_wide_ratio, as(s0, ratio)) {   /* ldr s0, [x19, #0x140]: the camera's ratio */
     const float w = hos_wide_ratio, d = ratio - 16.0f / 9.0f;
     return w > 0.0f && d <= 0.01f && d >= -0.01f ? w : ratio;
 }
@@ -348,11 +351,14 @@ _Static_assert(offsetof(OotSeadPerspectiveProjection, aspect) == 0xb0, "aspect")
 
 /* the projection's matrix update (and its inlined copies): its ratio just loaded, the picture's when it is 16:9, and kept
    in the projection too */
-float hos_oot_wide_projection_ratio(float ratio, uint64_t projection) {
+PATCH_AT(0x834a5cc0, word(0x2d558400), after, s1, hos_oot_wide_projection_ratio, as(s1, ratio), as(x0, projection)) {   /* ldp s0, s1, [x0, #0xac] */
     const float r = hos_oot_wide_ratio(ratio);
     if (r != ratio) GUEST(OotSeadPerspectiveProjection, projection)->aspect = r;
     return r;
 }
+PATCH_AT_SITE(0x8006f1e8, word(0x2d558ea0), after, s3, hos_oot_wide_projection_ratio, s3, x21);   /* (its inlined copies) */
+PATCH_AT_SITE(0x8025b9a8, word(0x2d558c00), after, s3, hos_oot_wide_projection_ratio, s3, x0);
+PATCH_AT_SITE(0x8035b82c, word(0x2d558440), after, s1, hos_oot_wide_projection_ratio, s1, x2);
 
 /* the movie layer's draw: its viewport in its frame (x29 - 40), min x at +8 and max x at +16 */
 typedef struct __attribute__((may_alias)) {
@@ -364,7 +370,7 @@ typedef struct __attribute__((may_alias)) {
 _Static_assert(offsetof(OotMovieViewport, min_x) == 8 && offsetof(OotMovieViewport, max_x) == 16, "viewport");
 
 /* movies in the middle 16:9 of a wider picture: the viewport narrowed by the margin on each side */
-void hos_oot_wide_movie(uint64_t frame) {
+PATCH_AT(0x83b7c758, word(0xa941a269), after, none, hos_oot_wide_movie, as(x29, frame)) {   /* ldp x9, x8, [x19, #0x18] */
     const float m = hos_wide_margin;
     if (!(m > 0.0f)) return;
     OotMovieViewport *v = GUEST(OotMovieViewport, frame - 40);
@@ -380,7 +386,7 @@ void hos_oot_wide_movie(uint64_t frame) {
 #define OOT_MAIN 0x80020000ull
 static const uint64_t oot_keep_vtables[] = {OOT_MAIN + 0x4bed098, OOT_MAIN + 0x4be4fb0, OOT_MAIN + 0x4be61c8,
                                             OOT_MAIN + 0x4be7b30};
-hos_q hos_oot_wide_hud(uint64_t canvas, hos_q q1, hos_q q4) {
+PATCH_AT(0x80794368, word(0xad401041), after, q1, hos_oot_wide_hud, as(x0, canvas), q1, q4) {
     const float s = hos_wide_squeeze;
     if (!(s > 0.0f)) return q1;
     float m00, m11, row[4];
@@ -402,16 +408,16 @@ hos_q hos_oot_wide_hud(uint64_t canvas, hos_q q1, hos_q q4) {
    than the texture by the picture's ratio over 16:9, centred, so the middle 16:9 fills the texture (the scissor keeps
    the texture's), as a 16:9 window would show. Narrower than 16:9 (4:3, 16:10) it is made taller instead, by 16:9 over
    the picture's ratio: the picture's middle band fills the texture at its own shape, neither squeezed nor with bars. */
-typedef struct { uint64_t x, y, w, h; } OotViewportRegs;   /* (w1-w4, the row's io slots) */
-void hos_oot_wide_save_picture(OotViewportRegs *v) {
+/* (io: w1-w4, SetViewport's x, y, width, height) */
+PATCH_AT(0x802a4824, word(0xf9400108), after, none, hos_oot_wide_save_picture, io(w1, w2, w3, w4)) {
     const float r = hos_wide_ratio;
-    if (!(r > 0.0f) || (uint32_t)v->x != 0 || (uint32_t)v->y != 0 || (uint32_t)v->w != 543 || (uint32_t)v->h != 306) return;
+    if (!(r > 0.0f) || (uint32_t)io->w1 != 0 || (uint32_t)io->w2 != 0 || (uint32_t)io->w3 != 543 || (uint32_t)io->w4 != 306) return;
     if (r > 16.0f / 9.0f) {
         const int w = (int)(543.0f * r / (16.0f / 9.0f) + 0.5f);
-        v->x = (uint32_t)((543 - w) / 2), v->w = (uint32_t)w;
+        io->w1 = (uint32_t)((543 - w) / 2), io->w3 = (uint32_t)w;
     } else {
         const int h = (int)(306.0f * (16.0f / 9.0f) / r + 0.5f);
-        v->y = (uint32_t)((306 - h) / 2), v->h = (uint32_t)h;
+        io->w2 = (uint32_t)((306 - h) / 2), io->w4 = (uint32_t)h;
     }
 }
 
@@ -421,15 +427,20 @@ void hos_oot_wide_save_picture(OotViewportRegs *v) {
    makes no occlusion queries and draws every candidate object */
 
 /* the byte that decides whether the game makes its occlusion queries, just loaded: 0 with HOOKSHOT_OCCLUSION_OFF=1 */
-uint32_t hos_oot_occlusion_flag(uint32_t flag) {
+PATCH_AT(0x811cce68, word(0x39400008), after, w8, hos_oot_occlusion_flag, as(w8, flag)) {
     extern volatile int hos_occlusion_off;
     return hos_occlusion_off ? 0 : flag;
 }
+PATCH_AT_SITE(0x811d828c, word(0x39400008), after, w8, hos_oot_occlusion_flag, w8);
+PATCH_AT_SITE(0x811d82a4, word(0x39400008), after, w8, hos_oot_occlusion_flag, w8);
+PATCH_AT_SITE(0x811ccec8, word(0x39400008), after, w8, hos_oot_occlusion_flag, w8);
+PATCH_AT_SITE(0x811d82dc, word(0x39400008), after, w8, hos_oot_occlusion_flag, w8);
+PATCH_AT_SITE(0x811d82f4, word(0x39400008), after, w8, hos_oot_occlusion_flag, w8);
 
 /* ---- the actor singleton's per-core rings (singleton at 0x84c9e890; ring k at +0x20 + k * 0x30: buffer +0x10,
    capacity +0x18, head +0x1c, count +0x20). The game pushes and pops them without a lock or atomics, indexed by
    GetCurrentCoreNumber, so they are safe only while one thread per core number ever writes each ring. Every push and
-   pop site (nx2/lift2/probes.py, "per-core rings") calls hos_oot_ring_write with the ring's address. The first
+   pop site (its PATCH_AT_SITE declarations) calls hos_oot_ring_write with the ring's address. The first
    writer of a ring is its owner (logged: "ring owner: ring N is A's"); a different thread writing it is logged once
    per (ring, thread): "ring owner: ring N pushed by A and B (pc P)". Always on: on the owner's writes, a guest load
    of the singleton, a relaxed add and a compare. */
@@ -442,7 +453,7 @@ static struct {
 } rings[OOT_RINGS];
 static volatile int64_t ring_conflicts;
 
-void hos_oot_ring_write(uint64_t elem, uint32_t pop, uint32_t pc) {
+PATCH_AT(0x8004c820, word(0xb9002128), after, none, hos_oot_ring_write, as(x9, elem), as(k(0), pop), as(k(0x8004c820), pc)) {
     const uint64_t obj = singleton(OOT_RING_SLOT);
     const uint64_t k = (elem - obj - 0x20) / 0x30;
     if (!obj || elem < obj + 0x20 || k >= OOT_RINGS) return;
@@ -466,6 +477,19 @@ void hos_oot_ring_write(uint64_t elem, uint32_t pop, uint32_t pc) {
     hos_log("ring owner: ring %d %s by %s and %s (pc %#x)", (int)k, pop ? "popped" : "pushed",
             hos_thread_name(owner), hos_thread_name(self), (unsigned)pc);
 }
+PATCH_AT_SITE(0x800b0b1c, word(0xb9002128), after, none, hos_oot_ring_write, x9, k(0), k(0x800b0b1c));
+PATCH_AT_SITE(0x800b4228, word(0xb900212b), after, none, hos_oot_ring_write, x9, k(0), k(0x800b4228));
+PATCH_AT_SITE(0x800b7630, word(0xb9002128), after, none, hos_oot_ring_write, x9, k(0), k(0x800b7630));
+PATCH_AT_SITE(0x8073a17c, word(0xb900212b), after, none, hos_oot_ring_write, x9, k(0), k(0x8073a17c));
+PATCH_AT_SITE(0x83af6328, word(0xb9002128), after, none, hos_oot_ring_write, x9, k(0), k(0x83af6328));
+PATCH_AT_SITE(0x83af5bb4, word(0xb9002128), after, none, hos_oot_ring_write, x9, k(0), k(0x83af5bb4));
+PATCH_AT_SITE(0x8004c988, word(0xb9002109), after, none, hos_oot_ring_write, x8, k(1), k(0x8004c988));
+PATCH_AT_SITE(0x800b0ca0, word(0xb9002109), after, none, hos_oot_ring_write, x8, k(1), k(0x800b0ca0));
+PATCH_AT_SITE(0x800b4468, word(0xb900210a), after, none, hos_oot_ring_write, x8, k(1), k(0x800b4468));
+PATCH_AT_SITE(0x800b787c, word(0xb900210a), after, none, hos_oot_ring_write, x8, k(1), k(0x800b787c));
+PATCH_AT_SITE(0x8073c9d0, word(0xb900210a), after, none, hos_oot_ring_write, x8, k(1), k(0x8073c9d0));
+PATCH_AT_SITE(0x83af6724, word(0xb900210a), after, none, hos_oot_ring_write, x8, k(1), k(0x83af6724));
+PATCH_AT_SITE(0x83af5d9c, word(0xb900210a), after, none, hos_oot_ring_write, x8, k(1), k(0x83af5d9c));
 
 /* (a bench run's end: who owns each ring, and its pushes and pops per present so far) */
 void hos_oot_ring_report(void) {

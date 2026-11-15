@@ -8,7 +8,7 @@
    layer recorded by f_8006cd60, layer at item + 0x18) and the scheduler runs it as [[item] + 0x10](item). Queue 1's first
    item is the 3D layer (the pipeline, post effects: 3.6 ms in the market); the counters are reset at stage C's start.
 
-   An At row (nx2/lift2/probes.py DIRECT, a guest call) sits where a thread enters a render-job loop node (the bit-10 branch of f_8007fe60): the first thread of
+   An At row (a PATCH_AT declaration, host/patch.h, a guest call) sits where a thread enters a render-job loop node (the bit-10 branch of f_8007fe60): the first thread of
    the frame that may take queue 1 claims its item 0 there (the same counter, 0 -> 1) and runs it before its job loop,
    so the five other threads record the jobs meanwhile. The rest of both queues stays with the layer phase.
 
@@ -207,7 +207,7 @@ static uint32_t worker_index(void) {
 
 /* (an At row in f_8007fe60, the job loop, on the TBZ's fall-through: sp the loop's, s its scheduler record from
    [sp + 0x48]) */
-void direct_layer_ahead_run(GuestCall *g, uint64_t sp, uint64_t s) {
+PATCH_AT(0x800809d0, word(0xb5004ee8), before, none, direct_layer_ahead_run, guest(computed), sp, as(ld(sp, 0x48), s)) {
     if (!enabled()) return;
     order_jobs();
     if (!s || !hos_guest_range(s + 0xd0, 8)) return;

@@ -613,7 +613,8 @@ def main():
     srcs = [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_code_slots.c", "a64_stubs.c", "hos_image.c",
                                            "nvn2_exports.c")] + \
         [os.path.join(rt64, "a64_rt.c")]
-    host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c"))
+    from lift2 import patch_scan
+    host_srcs = patch_scan.host_sources(HOST)   # (the files the patch declarations are scanned in, too)
     host_srcs += [  # (the window on SDL2, the Win32-named calls on POSIX)
         os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
     if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)
@@ -800,6 +801,9 @@ def main():
     print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
     if still:
         return 1
+    if host_srcs:   # (the patch declarations the lifter scanned, against what the compiler made of them)
+        from lift2 import patch_scan
+        print(patch_scan.check_records([j[2] for j in jobs if j[1] in set(host_srcs)], host_srcs), flush=True)
     vk_objs = {j[2] for j in direct_jobs}   # (the back end's objects: not the exe's)
     objs = [j[2] for j in jobs if j[2] not in vk_objs]
     objs += lift_objs

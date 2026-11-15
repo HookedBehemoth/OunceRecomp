@@ -129,7 +129,7 @@ pool` lines of `work/runs/sa_w8`, `sb_base`, `warmsh2`), and 884 MB of 1374 MB a
    answers docked (`host/nn_applet.c:154`).
 2. **Window textures.** `nnMain` (`f_81222ce0`) writes `O` into the framework's create argument (`+20`, `+24`); the
    framework makes 3 window textures of that size (`f_8348be50` `sead_framework_graphics_init`). Edit 0 of `OUT_EDITS`.
-   With a screen wider or narrower than 16:9, `hos_wide_out` replaces it (`nx2/lift2/probes.py` `hos_oot_wide_out`, `host/hos_main.c:1555-1566`:
+   With a screen wider or narrower than 16:9, `hos_wide_out` replaces it (a `PATCH_AT` row in `host/oot_probes.c` `hos_oot_wide_out`, `host/hos_main.c:1555-1566`:
    the height stays `O`'s, the width follows the screen's shape, capped at 3840 x 2160's pixels).
 3. **Display-size object.** `f_810a7b70` `display_size_setup` takes a config's docked size list; its first entry
    (2560 x 1440) is replaced by `O` (edit 1). It becomes the frame's base (`B+244`).
@@ -139,7 +139,7 @@ pool` lines of `work/runs/sa_w8`, `sb_base`, `warmsh2`), and 884 MB of 1374 MB a
    (`host/oot_probes.c` `hos_oot_scene_mode`).
 5. **Scene base.** `f_80ea2f30` `display_base_resolution` reads ResolutionParam's `BaseResolution` (1920 x 1080 as
    constants, 3/4 of 2560 x 1440); edit 2 scales it with `O`, edit 3 writes `O * 3/4` as floats into the module's `+0xe54` and `+0xe58`
-   (the sizes the 3D scale is taken against). `hos_oot_wide_scene` (`hos_wide_scene`, `nx2/lift2/probes.py`) replaces it for a non-16:9 screen.
+   (the sizes the 3D scale is taken against). `hos_oot_wide_scene` (`hos_wide_scene`, a `PATCH_AT` row in `host/oot_probes.c`) replaces it for a non-16:9 screen.
 6. **3D scale.** `f_831f3200` `scene_resolution_update` computes `+0xe5c = requested * (+0xe58) / (+0xe50)` when `+0xe2c`
    bit 3 is set. The dynamic path (the engine's flag `+0x94`, bit cleared by `hos_oot_dynres_flags`, `host/oot_probes.c`) follows
    the GPU time; the fixed path takes `hos_fixed_scale_bits` (`hos_oot_fixed_scale`), and `hos_oot_scale_recompute`
@@ -188,7 +188,7 @@ also comes from the target was not checked.
 | UI and composite | layers `#103`, `#107`; `f_80285b00` | frame + UI layer | window texture `O` |
 
 The network has fixed shares: one program per ratio of `S` to `F` (3/4 for `fd029a317a9a4b94`; "a smaller network, 1/3"
-when `S` would exceed `BaseResolution`: the output-size note of the old `nx2/oot_patches.py`, now the At probes in `nx2/lift2/probes.py`; `gpu/legacy/vk/vk_draw.cpp:6380`). It is not a
+when `S` would exceed `BaseResolution`: the output-size note of the old `nx2/oot_patches.py`, now the At probes in a `PATCH_AT` row in `host/oot_probes.c`; `gpu/legacy/vk/vk_draw.cpp:6380`). It is not a
 temporal upscaler: no target carries colour across frames (rt-alloc.md 2: "no TAA history"). On the direct back end it
 runs as the game has it, with the matrix multiplies in software (`gpu/direct/direct_compute.cpp:6`, `:80`); it is the
 frame's heaviest pass, about 1 ms ([shader-costs.md](shader-costs.md)).

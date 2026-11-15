@@ -38,9 +38,9 @@ ENTRY_HOOK(0x80084de0) {   /* (ctx, drawctx, cmdpool, key, job, &range, stats) *
     return 1;
 }
 
-/* (an At row in f_80084de0 before BeginRecording's blr, nx2/lift2/probes.py DIRECT) the view record in x25 */
+/* (an At row in f_80084de0 before BeginRecording's blr, a PATCH_AT declaration, host/patch.h) the view record in x25 */
 static _Thread_local uint64_t jt_view_arg;
-void eng_jobs_view(uint64_t view) { jt_view_arg = view; }
+PATCH_AT(0x80085334, word(0xf9400108), after, none, eng_jobs_view, as(x25, view)) { jt_view_arg = view; }
 
 static int eng_jobs_begin(uint64_t cmd) {   /* (a JOB list's BeginRecording: f_80084de0's, by its row) */
     if (!jt.active || jt.tagged) return 0;

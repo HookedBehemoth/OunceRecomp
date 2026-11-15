@@ -285,12 +285,12 @@ uint32_t hos_movie_frames(uint64_t player) {
     ReleaseSRWLockExclusive(&lock);
     return movie_log(n);
 }
-/* (the lifter's Value probes, nx2/lift2/probes.py) the whole frames a game counter at `at` takes for an amount of the frame
+/* (the lifter's Value probes: PATCH_AT ... instead, host/patch.h) the whole frames a game counter at `at` takes for an amount of the frame
    step: with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
 #include "frame_whole.h"
 static FrameWhole frame_whole_state;
 static SRWLOCK frame_whole_lock = SRWLOCK_INIT;   /* (the game's update threads) */
-uint32_t hos_frame_whole(uint64_t at, float amount) {
+PATCH_AT(0x80a88300, word(0x1e38000c), instead, w12, hos_frame_whole, as(add(x19, 864), at), as(s0, amount)) {   /* fcvtzs w12, s0 */
     AcquireSRWLockExclusive(&frame_whole_lock);
     const uint32_t whole = frame_whole(&frame_whole_state, at, amount, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
     ReleaseSRWLockExclusive(&frame_whole_lock);
@@ -306,6 +306,7 @@ uint32_t hos_frame_whole(uint64_t at, float amount) {
     }
     return whole;
 }
+PATCH_AT_SITE(0x800675f8, word(0x1e380009), instead, w9, hos_frame_whole, x21, s0);   /* fcvtzs w9, s0 */
 volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: host/oot_probes.c) */
 /* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
    step is 1/60: discarding it made alternating short/long frames advance more game time than elapsed wall time.
@@ -438,7 +439,7 @@ static void realtime_step(int64_t now) {
        The step is then the frames' own time at the two places the engine makes it (host/oot_probes.c, hos_frame_seconds_bits):
        this same average, at most 1/15 s as below and at least 1/240 s, and the rate under it stays the engine's, 60 at most.
        HOS_FPS_STEP=0 (for comparisons): the rate up to the cap. The lift stops when the hook's divides are not there
-       (nx2/lift2/probes.py), so every build has it */
+       (their PATCH_AT declarations, host/oot_probes.c), so every build has it */
     static int timed_step = -1;
     if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
     const int timed = fps_max() > 60 && timed_step;

@@ -10,7 +10,7 @@
    groups from 0, the stride 16. Nothing on the GPU writes w1 or w2, so NVN's first is 0 there, as the back end takes it
    for every indirect mesh draw.
 
-   The site: an At row (nx2/lift2/probes.py DIRECT) after the last of the four stores (`stp xzr, xzr, [x8, #32]`, records 1-3 at x8 + 0 / 16 / 32);
+   The site: an At row (a PATCH_AT declaration, host/patch.h) after the last of the four stores (`stp xzr, xzr, [x8, #32]`, records 1-3 at x8 + 0 / 16 / 32);
    record 0 is at [x19 + 32] + u32([[x19 + 24]] + 4), records 1-3 at [x19 + 32] + u32([[x19 + 24]] + 16), the addresses the
    function itself computes. The row checks that x8 is that second address (else it writes nothing and counts it).
 
@@ -26,7 +26,7 @@ static void put(uint64_t rec) {   /* {0, 1, 1, 0}: the counts' words stay as the
 }
 
 /* (x19 the list slot's object, x8 the address of records 1-3) */
-void direct_mesh_args_header(uint64_t obj, uint64_t x8) {
+PATCH_AT(0x80363294, word(0xa9027d1f), after, none, direct_mesh_args_header, as(x19, obj), x8) {
     if (!rx_direct()) return;
     if (!hos_guest_range(obj + 24, 16)) { InterlockedIncrement64(&n.outside); return; }
     const uint64_t base = G64(obj + 32), lay = G64(obj + 24);

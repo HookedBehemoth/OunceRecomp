@@ -22,6 +22,7 @@ FIXTURE = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "patch.h"
 typedef struct { uint64_t x[32]; } Ctx;
 volatile float hos_wide_ratio;
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
@@ -29,9 +30,9 @@ SITE_C
 static Ctx viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     Ctx c;
     memset(&c, 0, sizeof c);
-    OotViewportRegs v = {x, y, w, h};
-    hos_oot_wide_save_picture(&v);   /* (the row: w1-w4 in and out through the struct) */
-    c.x[1] = (uint32_t)v.x, c.x[2] = (uint32_t)v.y, c.x[3] = (uint32_t)v.w, c.x[4] = (uint32_t)v.h;
+    uint64_t v[4] = {x, y, w, h};   /* (the io struct's slots: w1-w4, 8 bytes each) */
+    hos_oot_wide_save_picture((void *)v);   /* (the row: w1-w4 in and out through the struct) */
+    c.x[1] = (uint32_t)v[0], c.x[2] = (uint32_t)v[1], c.x[3] = (uint32_t)v[2], c.x[4] = (uint32_t)v[3];
     return c;
 }
 static void same(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
@@ -102,8 +103,8 @@ def main():
     assert len(rows) == 1 and rows[0].pc == 0x802a4824 and rows[0].word == 0xf9400108, rows
     assert rows[0].io == ("w1", "w2", "w3", "w4"), rows[0].io
     src = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
-    start = src.index("typedef struct { uint64_t x, y, w, h; } OotViewportRegs;")
-    end = src.index("\n}\n", src.index("void hos_oot_wide_save_picture(")) + 3
+    start = src.index("PATCH_AT(0x802a4824, word(0xf9400108), after, none, hos_oot_wide_save_picture, io(w1, w2, w3, w4))")
+    end = src.index("\n}\n", start) + 3
     site_c = src[start:end]
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     with tempfile.TemporaryDirectory(prefix="oot-wide-save-picture-") as temporary:
@@ -111,7 +112,7 @@ def main():
         source = folder / "fixture.c"
         source.write_text(FIXTURE.replace("SITE_C", site_c), encoding="utf-8")
         executable = folder / "fixture.exe"
-        for command in ([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(executable)],
+        for command in ([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"), str(source), "-o", str(executable)],
                         [str(executable)]):
             result = subprocess.run(command, creationflags=flags, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=30)

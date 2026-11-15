@@ -364,7 +364,7 @@ ENTRY_HOOK(0x80f6c580) {
 /* (an At row in f_80f6c9d0 agl_memory_pool_create, after ldr x8, [x8] before its blr to nvnMemoryPoolInitialize at
    0x80f6cb1c) the next pool this thread makes is agl's wrapper's */
 static _Thread_local int tl_agl_pool;
-void direct_assets_agl_pool(void) { tl_agl_pool = 1; }
+PATCH_AT(0x80f6cb18, word(0xf9400108), after, none, direct_assets_agl_pool) { tl_agl_pool = 1; }
 void direct_assets_pool_made(uint64_t gpu, uint64_t size) {
     const int agl = tl_agl_pool;
     tl_agl_pool = 0;
@@ -474,9 +474,9 @@ void direct_assets_texture_init(const void *tex) {
     if (other) InterlockedIncrement64(&n_tile_kept_other);
 }
 
-/* (an At row, nx2/lift2/probes.py DIRECT) f_80c17040+0x544: memcpy(x0 the tile texture's storage, x1 the record's
+/* (an At row, a PATCH_AT declaration, host/patch.h) f_80c17040+0x544: memcpy(x0 the tile texture's storage, x1 the record's
    blob B, x2 its size), x11 the record. Returns the size the memcpy copies: 0 when the tile went to its texture */
-uint64_t direct_assets_tile(uint64_t dst, uint64_t src, uint64_t size, uint64_t rec) {
+PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst), as(x1, src), as(x2, size), as(x11, rec)) {
     if (!direct_assets_on()) return size;
     const uint32_t n = (uint32_t)size;
     if (!hos_guest_range(rec + 0x2c, 8) || src != rec + 0x2c + (uint64_t)(int64_t)(int32_t)G32(rec + 0x2c) || n != G32(rec + 0x30)) {

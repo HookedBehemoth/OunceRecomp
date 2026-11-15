@@ -7,7 +7,7 @@
 #include <windows.h>
 
 /* ---- the list kinds: the function that begins a recording names it, by an At row just before its BeginRecording call
-   (nx2/lift2/probes.py DIRECT: direct_list_kind); a recording no row named is a PACKET list (counted, named in the log).
+   (a PATCH_AT declaration, host/patch.h: direct_list_kind); a recording no row named is a PACKET list (counted, named in the log).
    1-6: the game's load-time lists (the list's load kind): 1 vertex list (f_804581b0 <- f_80457e60), 2 draw list
    (f_80293890 <- f_804566e0), 3 per-instance shape list (f_806002e0 <- f_8009bb80), 4 material list (f_80445020 <-
    f_80443000), 5 the vertex list's measuring copy (f_8044e8e0 <- f_8044e020), 6 the draw list's measuring copy
@@ -16,7 +16,19 @@
    primary), 19 COMPUTE (f_806650d0, an async-compute list), 20 HEAD (f_80665980, a queue's head, command-lists.md).
    The return address and frame pointer are kept in the info as labels for the logs. ---- */
 static _Thread_local uint32_t tl_kind;
-void direct_list_kind(uint32_t kind) { tl_kind = kind; }
+PATCH_AT(0x804582a4, word(0xf9400108), after, none, direct_list_kind, as(k(1), kind)) { tl_kind = kind; }
+PATCH_AT_SITE(0x80293b0c, word(0xf9400108), after, none, direct_list_kind, k(2));
+PATCH_AT_SITE(0x806006d0, word(0xf9400108), after, none, direct_list_kind, k(3));
+PATCH_AT_SITE(0x8044530c, word(0xf9400108), after, none, direct_list_kind, k(4));
+PATCH_AT_SITE(0x8044ea18, word(0xf9400108), after, none, direct_list_kind, k(5));
+PATCH_AT_SITE(0x80293458, word(0xf9400108), after, none, direct_list_kind, k(6));
+PATCH_AT_SITE(0x80085334, word(0xf9400108), after, none, direct_list_kind, k(16));
+PATCH_AT_SITE(0x8006d250, word(0xf9400108), after, none, direct_list_kind, k(17));
+PATCH_AT_SITE(0x8007b0c0, word(0xf9400108), after, none, direct_list_kind, k(17));
+PATCH_AT_SITE(0x8007b9f8, word(0xf9400108), after, none, direct_list_kind, k(17));
+PATCH_AT_SITE(0x802eb3f4, word(0xf94002e8), after, none, direct_list_kind, k(18));
+PATCH_AT_SITE(0x80665578, word(0xf9400108), after, none, direct_list_kind, k(19));
+PATCH_AT_SITE(0x80665ff4, word(0xf9400108), after, none, direct_list_kind, k(20));
 void hsd_classify(Ctx *c, hsd_list_info *info) {
     info->lr = c->x[30], info->fp = c->x[29];
     const uint32_t k = tl_kind;

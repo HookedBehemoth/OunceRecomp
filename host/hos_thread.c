@@ -813,7 +813,7 @@ static int present_poll(int64_t ns, uint64_t x22, uint64_t x23, uint64_t x24) {
 }
 /* (an At row in place of f_805902c0's SleepThread call at 0x8059051c, the present's event poll: x0 the time, x22-x24
    the poll loop's registers: x24 the address of the poll function, x23 + 64 * u32 [x22 + 0x164] its event) */
-void hos_oot_present_sleep(int64_t ns, uint64_t x22, uint64_t x23, uint64_t x24) {
+PATCH_AT(0x8059051c, word(0x94db4a31), instead, none, hos_oot_present_sleep, as(x0, ns), x22, x23, x24) {
     if (present_poll(ns, x22, x23, x24)) return;
     static int sleep_log = -1;
     if (sleep_log < 0) sleep_log = getenv("HOS_SLEEP_LOG") != NULL;
@@ -837,7 +837,7 @@ void hos_oot_present_sleep(int64_t ns, uint64_t x22, uint64_t x23, uint64_t x24)
    a timed sleep with a 1 us timer slack (the thread's slack is set once; Linux's default 50 us would stretch each
    look): the phase keeps its wall time and uses ~3.9 ms less CPU a frame. Linux only
    (Windows' timers are ~0.5 ms coarse). HOS_CALC_NAP=0: spun as before. The three SleepThread calls (bl at 0x8009a474,
-   0x8009afec, 0x8009b230) are replaced by At rows (nx2/lift2/probes.py) calling hos_oot_calc_sleep: SleepThread
+   0x8009afec, 0x8009b230) are replaced by At rows (PATCH_AT ... instead, below) calling hos_oot_calc_sleep: SleepThread
    itself is the same for every caller */
 static int calc_poll_nap(int64_t ns) {
 #if HOS_GAME_VERSION == 100
@@ -862,9 +862,11 @@ static int calc_poll_nap(int64_t ns) {
 
 /* (At rows in place of f_800998a0 job_calc_runner's three SleepThread calls: x0 the time; lr the call's return address,
    for HOS_SLEEP_LOG) */
-void hos_oot_calc_sleep(int64_t ns, uint32_t lr) {
+PATCH_AT(0x8009a474, word(0x94ef225b), instead, none, hos_oot_calc_sleep, as(x0, ns), as(k(0x8009a478), lr)) {
     if (!calc_poll_nap(ns)) hos_sleep_logged(ns, lr);
 }
+PATCH_AT_SITE(0x8009afec, word(0x94ef1f7d), instead, none, hos_oot_calc_sleep, x0, k(0x8009aff0));
+PATCH_AT_SITE(0x8009b230, word(0x94ef1eec), instead, none, hos_oot_calc_sleep, x0, k(0x8009b234));
 
 HLE(_ZN2nn2os11SleepThreadENS_8TimeSpanE) { hos_sleep_logged((int64_t)ARG(0), c->x[30]); }
 
@@ -914,7 +916,7 @@ static void tick_log(uint64_t lr) {
 }
 /* (an At row in place of f_8348c680 frame_body's GetSystemTick call at 0x8348c76c, its frame-end clock read: x19 the
    graphics module, for nn_vi.c's real-time step) the tick, as GetSystemTick */
-uint64_t hos_oot_frame_end_tick(uint64_t module) {
+PATCH_AT(0x8348c76c, word(0x941f5619), instead, x0, hos_oot_frame_end_tick, as(x19, module)) {
     static int on = -1;
     if (on < 0) on = getenv("HOS_TICK_LOG") != NULL;
     if (on) tick_log(0x8348c770);

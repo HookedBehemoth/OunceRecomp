@@ -6,7 +6,7 @@
    in the list begun from 0x8007b0c8 (f_8007ad40), with an event signal and wait but no barrier: on the console the copy
    engine follows the 3D engine in order; Vulkan needs the copy to wait for the rendering's depth store (read after write),
    for the last pass that used the destination (write after write), and the next pass for the copy's read (write after
-   read). An At row after the line that loads the proc into x8 (nx2/lift2/probes.py DIRECT) points those two calls at a host function, which records
+   read). An At row after the line that loads the proc into x8 (a PATCH_AT declaration, host/patch.h) points those two calls at a host function, which records
    Barrier(ORDER_FRAGMENTS | INVALIDATE_TEXTURE), the copy, and the same barrier again, on the list's command buffer.
 
    Check that it applies: the 600-present line "direct patch depth copy" (copies a frame with their barriers, per site). */
@@ -52,11 +52,17 @@ static int ready(void) {
 }
 /* (f_80289590, f_80666d20: after each ldr x8, [x8]) the proc just loaded, the host's copy in place of the copy proc;
    site: 0 at f_80289590's copy (its blr returns to 0x80289cc4), 1 at f_80666d20's (0x806675dc), 2 the others */
-uint64_t direct_depth_copy_retarget(uint64_t proc, uint32_t site) {
+PATCH_AT(0x80289cbc, word(0xf9400108), after, x8, direct_depth_copy_retarget, as(x8, proc), as(k(0), site)) {
     if (!ready() || proc != p_copy) return proc;
     tl_site = site < 2 ? (int)site : -1;
     return s_copy;
 }
+PATCH_AT_SITE(0x80289fe0, word(0xf9400108), after, x8, direct_depth_copy_retarget, x8, k(2));
+PATCH_AT_SITE(0x80667108, word(0xf9400108), after, x8, direct_depth_copy_retarget, x8, k(2));
+PATCH_AT_SITE(0x806674a8, word(0xf9400108), after, x8, direct_depth_copy_retarget, x8, k(2));
+PATCH_AT_SITE(0x806675d4, word(0xf9400108), after, x8, direct_depth_copy_retarget, x8, k(1));
+PATCH_AT_SITE(0x80667a14, word(0xf9400108), after, x8, direct_depth_copy_retarget, x8, k(2));
+PATCH_AT_SITE(0x80667a8c, word(0xf9400108), after, x8, direct_depth_copy_retarget, x8, k(2));
 
 void direct_depth_copy_log(double frames) {
     static LONG64 last[3];

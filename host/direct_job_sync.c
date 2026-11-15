@@ -172,17 +172,27 @@ static int ready(void) {
 /* the call target just loaded (f_82c02f20, f_82c03170: x8 after each ldr x8, [x8]; f_831fa4a0: x4, the same wait code
    as f_82c02f20's, which tail-jumps to WaitEvent through x4 (f_80279400, water, calls it at 0x80279448: WaitEvent's
    return is 0x8027944c)): the wait and barrier procs pointed at the host's */
-uint64_t direct_job_sync_retarget(uint64_t proc) {
+PATCH_AT(0x82c02f94, word(0xf9400108), after, x8, direct_job_sync_retarget, as(x8, proc)) {
     if (!ready()) return proc;
     return proc == p_wait ? s_wait : proc == p_barrier ? s_barrier : proc;
 }
+PATCH_AT_SITE(0x82c03014, word(0xf9400108), after, x8, direct_job_sync_retarget, x8);
+PATCH_AT_SITE(0x82c03024, word(0xf9400108), after, x8, direct_job_sync_retarget, x8);
+PATCH_AT_SITE(0x82c030bc, word(0xf9400108), after, x8, direct_job_sync_retarget, x8);
+PATCH_AT_SITE(0x82c031e4, word(0xf9400108), after, x8, direct_job_sync_retarget, x8);
+PATCH_AT_SITE(0x82c03264, word(0xf9400108), after, x8, direct_job_sync_retarget, x8);
+PATCH_AT_SITE(0x82c03274, word(0xf9400108), after, x8, direct_job_sync_retarget, x8);
+PATCH_AT_SITE(0x82c0330c, word(0xf9400108), after, x8, direct_job_sync_retarget, x8);
+PATCH_AT_SITE(0x831fa57c, word(0xf9400104), after, x4, direct_job_sync_retarget, x4);   /* ldr x4, [x8] */
 /* the job-call site, f_806688c0 after each ldr x8, [x8]: its CallCommands (the only call of that proc there through
    x8) pointed at call_fn, with the view record (x21) and the list's draw context ([sp + 0x10]) for it */
-uint64_t direct_job_sync_call(uint64_t proc, uint64_t view, uint64_t drawctx) {
+PATCH_AT(0x80668c7c, word(0xf9400108), after, x8, direct_job_sync_call, as(x8, proc), as(x21, view), as(ld(sp, 0x10), drawctx)) {
     if (!ready() || proc != p_call) return proc;
     call_view = view, call_drawctx = drawctx;
     return s_call;
 }
+PATCH_AT_SITE(0x80668dd8, word(0xf9400108), after, x8, direct_job_sync_call, x8, x21, ld(sp, 0x10));
+PATCH_AT_SITE(0x80668fb0, word(0xf9400108), after, x8, direct_job_sync_call, x8, x21, ld(sp, 0x10));
 
 ENTRY_HOOK(0x8067c310) {   /* (grid entry, drawctx, flag, flag): the occlusion grid's dispatch */
     if (!ready()) return 0;

@@ -31,13 +31,25 @@ static void put(uint64_t rec) {
     G32(rec + 4) = 1, G32(rec + 8) = 1;
 }
 
-/* (At rows, nx2/lift2/probes.py DIRECT) f_80361c80: after each `str xzr, [x19, x8]`; f_80361a00: after its
+/* (At rows, a PATCH_AT declaration, host/patch.h) f_80361c80: after each `str xzr, [x19, x8]`; f_80361a00: after its
    `str xzr, [x22, x8]` (a list's first record, w0 and w1, zeroed): the list and the record's offset */
-void direct_mesh_lists_reset(uint64_t list, uint64_t off) {
+PATCH_AT(0x80361d5c, word(0xf8286a7f), after, none, direct_mesh_lists_reset, as(x19, list), as(x8, off)) {
     if (!rx_direct()) return;
     put(list + off);
     InterlockedIncrement64(&n.resets);
 }
+PATCH_AT_SITE(0x80362048, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x803620b0, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x80362118, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x80362180, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x803621e8, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x80362848, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x803628b0, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x80362918, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x80362b80, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x80362be8, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x80362c50, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
+PATCH_AT_SITE(0x80361b3c, word(0xf8286adf), after, none, direct_mesh_lists_reset, x22, x8);
 
 /* nvn_native.c draw_mesh (direct mode): the records of an indirect mesh draw (max of them, stride apart; 0: 16) */
 uint64_t nvn_gpu_guest(uint64_t gpu);

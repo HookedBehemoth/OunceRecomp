@@ -1225,12 +1225,12 @@ class Probe(unittest.TestCase):
         word = lambda pc: words[(pc - base) // 4]
         pcs = [base + 4 * k for k in range(len(words))]
         p = probes.Value(base, base, words[0], "hos_frame_whole", ("x19+864", "s0"))
-        probes.BY_FUNC[base] = [p]
+        real = probes.use([p], [])
         try:
             prog = build_ir.Program()
             prog.probes = probes.find(base, pcs, word)
         finally:
-            del probes.BY_FUNC[base]
+            probes.use(*real)
         self.assertEqual(list(prog.probes), [base])
         fn = build_ir.build(base, pcs, word, prog)
         m = emit_llvm.Module()
@@ -1265,12 +1265,12 @@ class BeforeRow(unittest.TestCase):
         word = lambda pc: words[(pc - base) // 4]
         pcs = [base + 4 * k for k in range(len(words))]
         prog = build_ir.Program()
-        real = probes.AT
-        probes.AT = [probes.At(base, base + 4, words[1], "t_before", (), before=True, io=("x8", "x1"))]
+        real = probes.tables()
+        probes.use([], [probes.At(base, base + 4, words[1], "t_before", (), before=True, io=("x8", "x1"))])
         try:
             prog.before = probes.at(base, pcs, word, before=True)
         finally:
-            probes.AT = real
+            probes.use(*real)
         self.assertEqual(list(prog.before), [base + 4])
         fn = build_ir.build(base, pcs, word, prog)
         m = emit_llvm.Module()

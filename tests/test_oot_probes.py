@@ -36,47 +36,50 @@ def have(tool):
 
 class Table(unittest.TestCase):
     def test_rows(self):
-        host = ""
-        for name in sorted(os.listdir(os.path.join(ROOT, "host"))):
-            if name.endswith(".c"):
-                with open(os.path.join(ROOT, "host", name), encoding="utf-8", errors="replace") as f:
-                    host += f.read()
+        """the rows the host declares (host/patch.h, nx2/lift2/patch_scan.py): each a site the lifter can take"""
+        self.assertGreater(len(probes.AT), 100)
         for p in probes.AT:
             i = enc.decode(p.word)
             self.assertIsNotNone(i, hex(p.pc))
             self.assertTrue(p.before or i.entry.template not in TERMINATORS or probes.is_call(p.word), "%#x is a branch" % p.pc)
             self.assertTrue(not p.replace or probes.is_call(p.word), "%#x replaces no call" % p.pc)
-            self.assertLessEqual(p.func, p.pc)
             for a in p.args:
                 self.assertRegex(a, probes.ARG)
             self.assertTrue(p.result is None or probes.RESULT.fullmatch(p.result), p.result)
-            # (the host function takes plain values: a GuestCall first when it calls guest code, never the context)
-            m = re.search(r"\b\w+ \**%s\(([^)]*)\)\s*\{" % p.fn, host)
-            self.assertIsNotNone(m, "%s is not defined in host/*.c" % p.fn)
-            self.assertNotIn("Ctx", m.group(1), p.fn)
-            self.assertEqual(m.group(1).startswith("GuestCall *"), p.guest is not None, p.fn)
-        self.assertEqual({p.func for p in probes.AT}, probes.AT_FUNCS)
+            self.assertTrue(p.where[0].startswith("host/") and p.where[1] > 0, p.where)
 
     def test_word_checked(self):
-        p = probes.AT[0]
-        words = {q.pc: q.word for q in probes.AT if q.func == p.func}
-        self.assertEqual(sorted(probes.at(p.func, sorted(words), words.__getitem__)), sorted(words))
-        with self.assertRaises(SystemExit):   # (a word that differs: another game version)
-            probes.at(p.func, sorted(words), lambda pc: words[pc] ^ (pc == p.pc))
-        with self.assertRaises(SystemExit):   # (the instruction is not in the function)
-            probes.at(p.func, sorted(words)[1:], words.__getitem__)
-        self.assertEqual(probes.at(0x80000000, sorted(words), words.__getitem__), {})
+        first = probes.AT[0]
+        rows = [probes.At(0x80000000, q.pc, q.word, q.fn, q.args, q.result, q.before, q.io, q.guest, q.replace)
+                for q in probes.AT if q.fn == first.fn and not q.before and not q.replace]
+        words = {q.pc: q.word for q in rows}
+        real = probes.use([], rows)   # (their function: one of the test's own)
+        try:
+            self.assertEqual(sorted(probes.at(0x80000000, sorted(words), words.__getitem__)), sorted(words))
+            with self.assertRaises(SystemExit):   # (a word that differs: another game version)
+                probes.at(0x80000000, sorted(words), lambda pc: words[pc] ^ (pc == rows[0].pc))
+            with self.assertRaises(SystemExit):   # (the instruction is not in the function)
+                probes.at(0x80000000, sorted(words)[1:], words.__getitem__)
+            self.assertEqual(probes.at(0x80001000, sorted(words), words.__getitem__), {})
+        finally:
+            probes.use(*real)
 
 
 class ValueRows(unittest.TestCase):
     def test_word_checked(self):
         """a Value probe names its instruction and word: a differing word, or the instruction missing, stops the lift"""
-        for p in probes.PROBES:
-            self.assertEqual(list(probes.find(p.func, [p.pc], lambda pc: p.word)), [p.pc])
-            with self.assertRaises(SystemExit):
-                probes.find(p.func, [p.pc], lambda pc: p.word ^ 1)
-            with self.assertRaises(SystemExit):
-                probes.find(p.func, [p.pc + 4], lambda pc: p.word)
+        self.assertTrue(probes.PROBES)
+        for q in probes.PROBES:
+            p = probes.Value(q.pc, q.pc, q.word, q.fn, q.args)   # (its function: one of the test's own)
+            real = probes.use([p], [])
+            try:
+                self.assertEqual(list(probes.find(p.func, [p.pc], lambda pc: p.word)), [p.pc])
+                with self.assertRaises(SystemExit):
+                    probes.find(p.func, [p.pc], lambda pc: p.word ^ 1)
+                with self.assertRaises(SystemExit):
+                    probes.find(p.func, [p.pc + 4], lambda pc: p.word)
+            finally:
+                probes.use(*real)
 
 
 class Before(unittest.TestCase):
@@ -86,16 +89,16 @@ class Before(unittest.TestCase):
         words = [0x34000040, 0xd503201f, 0xd65f03c0]   # cbz w0, +8; nop; ret
         word = lambda pc: words[(pc - base) // 4]
         pcs = [base, base + 4, base + 8]
-        real = probes.AT
+        real = probes.tables()
         try:
-            probes.AT = [probes.At(base, base + 4, words[1], "t_none", ("x0",), before=True)]
+            probes.use([], [probes.At(base, base + 4, words[1], "t_none", ("x0",), before=True)])
             self.assertEqual(list(probes.at(base, pcs, word, before=True)), [base + 4])
             self.assertEqual(probes.at(base, pcs, word), {})
-            probes.AT = [probes.At(base, base + 8, words[2], "t_none", ("x0",), before=True)]
+            probes.use([], [probes.At(base, base + 8, words[2], "t_none", ("x0",), before=True)])
             with self.assertRaises(SystemExit):
                 probes.at(base, pcs, word, before=True)
         finally:
-            probes.AT = real
+            probes.use(*real)
 
 
 LOWER_HARNESS = r"""
@@ -140,13 +143,13 @@ class Lowering(unittest.TestCase):
                 probes.At(base, base + 4, words[1], "t_s", ("s3",), "s3"),
                 probes.At(base, base + 4, words[1], "t_none", ("x2",)),
                 probes.At(base, base + 8, words[2], "t_call", ("x0",), "x0")]
-        real = probes.AT
+        real = probes.tables()
         try:
-            probes.AT = rows
+            probes.use([], rows)
             prog = build_ir.Program()
             prog.after = probes.merge(probes.at(base, pcs, word))
         finally:
-            probes.AT = real
+            probes.use(*real)
         fn = build_ir.build(base, pcs, word, prog)
         m = emit_llvm.Module()
         m.add(fn)
@@ -175,9 +178,9 @@ class Lowering(unittest.TestCase):
                 probes.At(base, base, words[0], "t_io", ("x2",), io=("x1", "x4")),
                 probes.At(base, base + 4, words[1], "t_load", ("[sp+8]", "sp"), "x6"),
                 probes.At(base, base + 8, words[2], "t_replace", ("x0",), "x0", replace=True, guest="computed")]
-        real = probes.AT
+        real = probes.tables()
         try:
-            probes.AT = rows
+            probes.use([], rows)
             prog = build_ir.Program()
             prog.after = probes.merge(probes.at(base, pcs, word))
             prog.replace = probes.at(base, pcs, word, replace=True)
@@ -185,7 +188,7 @@ class Lowering(unittest.TestCase):
             self.assertEqual(rows[1].effects(), ({"x2", "x1", "x4"}, {"x1", "x4"}))
             self.assertEqual(rows[2].effects(), ({"sp"}, {"x6"}))
         finally:
-            probes.AT = real
+            probes.use(*real)
         fn = build_ir.build(base, pcs, word, prog)
         self.assertIn("load", {v.op for blk in fn.blocks.values() for v in blk.ops})
         m = emit_llvm.Module()
@@ -383,6 +386,7 @@ static HosThread *cur_thread;
 static HosThread *hos_self(void) { return cur_thread; }
 static const char *hos_thread_name(HosThread *t) { return (const char *)t; }
 volatile int64_t hos_present_count;
+#include "patch.h"
 """
 
 
@@ -397,6 +401,7 @@ class Host(unittest.TestCase):
             with open(os.path.join(d, "hos.h"), "w") as f:
                 f.write(STUB_HOS)
             shutil.copy(HOST, d)   # (beside the stub hos.h: its #include "hos.h" looks in its own directory first)
+            shutil.copy(os.path.join(ROOT, "host", "patch.h"), d)   # (the declarations: PATCH_AT)
             h = os.path.join(d, "h.c")
             with open(h, "w") as f:
                 f.write(HOST_HARNESS)

@@ -12,7 +12,7 @@
    only info + 0xb0 (the draw context, whose + 0xd8 is the command buffer) and info + 0xbc (the kind: 0x20 binds otherwise).
    So the patch needs only V, which the binder is hooked at its entry to note (every V it is called with is counted: one
    is expected), and the job's draw context (host/eng_jobs.c). The splice sits after the job prologue's SetDepthRange
-   (the call returning to 0x800855ac in f_80084de0: an At row, nx2/lift2/probes.py DIRECT, that calls guest code), as the
+   (the call returning to 0x800855ac in f_80084de0: an At row, a PATCH_AT declaration, host/patch.h, that calls guest code), as the
    M3 survey placed it; the four binds go to the job's own command buffer through a 0x100-byte block on the guest stack
    below the job's SP (info + 0xb0 = the job's draw context, + 0xbc = 0).
 
@@ -43,7 +43,7 @@ ENTRY_HOOK(0x80101ec0) {   /* (info): V noted, the body runs */
 }
 
 /* (f_80084de0 after its blr x8 to SetDepthRange: sp the job's) */
-void direct_mesh_system_bind(GuestCall *g, uint64_t job_sp) {
+PATCH_AT(0x800855a8, word(0xd63f0100), after, none, direct_mesh_system_bind, guest(0x801060f0, 0x80100210), as(sp, job_sp)) {
     if (!rx_direct()) return;
     const uint64_t v = view_obj, dc = eng_jobs_drawctx();
     if (!v || !hos_guest_range(v + 0x538, 16)) { InterlockedIncrement64(&n.no_view); return; }

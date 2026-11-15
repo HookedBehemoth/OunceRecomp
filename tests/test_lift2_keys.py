@@ -1,7 +1,8 @@
 """The build's content keys (nx2/lift2/game.py): what makes a partition compile again and the summaries be computed again.
 
-- source_key: a lifter source without comments and docstrings, and probes.py / host_effects.py without their patch
-  tables: editing a row or a comment leaves the lifter's code key as it was; editing code changes it.
+- source_key: a lifter source without comments and docstrings, and host_effects.py without its tables: editing a
+  comment or a table leaves the lifter's code key as it was; editing code changes it (the host's patch declarations are
+  in no lifter source: host/patch.h).
 - part_key: a partition's key changes with its own functions' rows, entry hooks and summaries and with the
   call-boundary records of the functions they branch or call to, and with nothing of another partition.
 - summary_effects: changes with a row's declared reads or writes, not with its host function's name.
@@ -27,13 +28,9 @@ def text(name):
 
 
 class SourceKey(unittest.TestCase):
-    def test_tables_and_comments_left_out(self):
+    def test_comments_left_out(self):
         src = text("probes.py")
         key = game.source_key("probes.py", src)
-        row = 'At(0x80b72340, 0x80b723a4, 0x52800024, "hos_oot_rt_rest", ("x0",), "x0"),'
-        self.assertIn(row, src)
-        self.assertEqual(game.source_key("probes.py", src.replace(row, row.replace("rt_rest", "rt_rest2"))), key)
-        self.assertEqual(game.source_key("probes.py", src.replace(row, row + "\n    " + row)), key)
         self.assertEqual(game.source_key("probes.py", src.replace("# the registers a row may write", "# (edited)")),
                          key)
         code = "        self.before = before   #"
@@ -96,13 +93,11 @@ class SummaryEffects(unittest.TestCase):
         summary._ROWS = None
 
     def effects(self, rows):
-        saved = probes.AT[:]
+        saved = probes.use([], rows)
         try:
-            probes.AT[:] = rows
-            summary._ROWS = None
             return game.summary_effects({}, {})
         finally:
-            probes.AT[:] = saved
+            probes.use(*saved)
 
     def test_effects_not_names(self):
         row = probes.At(0x1000, 0x1004, 0xd503201f, "fn", ("x0",), "x1")

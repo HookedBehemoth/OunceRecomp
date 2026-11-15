@@ -39,6 +39,7 @@ def check(cond, what):
 
 FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 #include <stdint.h>
+#include "patch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,16 +110,16 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    sites = {p.func: p for p in probes.AT if p.fn.startswith("hos_oot_frame_step")}
-    check(sorted(sites) == [0x80706be0, 0x83b6ea90], "the two step divides, one probe each")
-    check((sites[0x80706be0].pc, sites[0x80706be0].word, sites[0x80706be0].fn, sites[0x80706be0].args, sites[0x80706be0].result)
+    sites = {p.pc: p for p in probes.AT if p.fn.startswith("hos_oot_frame_step")}
+    check(sorted(sites) == [0x80706cc4, 0x83b6eaf8], "the two step divides, one probe each")
+    check((sites[0x80706cc4].pc, sites[0x80706cc4].word, sites[0x80706cc4].fn, sites[0x80706cc4].args, sites[0x80706cc4].result)
           == (0x80706cc4, 0x1e201828, "hos_oot_frame_step_probe", ("s1", "s8", "x19"), "s8"),
           "the frame's step: s8 := hos_oot_frame_step_probe(s1, s8, x19) after fdiv s8, s1, s0")
-    check((sites[0x83b6ea90].pc, sites[0x83b6ea90].word, sites[0x83b6ea90].fn, sites[0x83b6ea90].args, sites[0x83b6ea90].result)
+    check((sites[0x83b6eaf8].pc, sites[0x83b6eaf8].word, sites[0x83b6eaf8].fn, sites[0x83b6eaf8].args, sites[0x83b6eaf8].result)
           == (0x83b6eaf8, 0x1e201820, "hos_oot_frame_step", ("s1", "s0"), "s0"),
           "the global step: s0 := hos_oot_frame_step(s1, s0) after fdiv s0, s1, s0")
     oot = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
-    hooks = "\n".join(definition(oot, m) for m in ("float hos_oot_frame_step(", "float hos_oot_frame_step_probe("))
+    hooks = "\n".join(definition(oot, m) for m in ("PATCH_AT(0x83b6eaf8, word(0x1e201820), after, s0, hos_oot_frame_step,", "PATCH_AT(0x80706cc4, word(0x1e201828), after, s8, hos_oot_frame_step_probe,"))
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("))
@@ -127,7 +128,7 @@ def main():
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
         c.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"), str(c), "-o", str(exe)], check=True)
         for mode, cap, step in (("cap 120", "120", None), ("cap 60", None, None), ("step off", "120", "0")):
             env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
             if cap:

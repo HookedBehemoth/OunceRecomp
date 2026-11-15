@@ -350,22 +350,37 @@ names its instruction word, so another game version stops the lift or the build.
   Its declared reads are x0-x7 and x30 (`host_effects.HOOK_ARGS`), plus SP for the five that call guest code
   (`HOOK_READS`); a hook that runs the body reads what the body reads. A BL to an entry-hooked function keeps what its
   body's summary (and `host_effects.CALLS`) keeps. `HOS_DBG=hooks` logs each hook's first call.
-- **Value probes** (`probes.PROBES`): replace an instruction's result. The frame-step cuts of the pick-up indicator and
-  the water's ripples (`fcvtzs w12, s0` at 0x80a88300, `fcvtzs w9, s0` at 0x800675f8) take `hos_frame_whole`
-  (`host/frame_whole.h`).
-- **At rows** (`probes.AT`): `At(func, pc, word, fn, args, result)` is "after the instruction at `pc` (or before it,
-  `before=True`, on the edge into it, which must not be a branch target; or in place of the BL or BLR at `pc`,
-  `replace=True`, x30 set as the call would): `result := fn(args...)`". Arguments are `xN`, `wN`, `sN` (a float), `qN`
-  (the whole vector register, `hos_q` in C), `sp`, `#K`, or `[xN+K]` / `[sp+K]` (the 64-bit guest word there, loaded by
-  the lifted code: a frame slot the host needs is handed over as a value, the host does not read the frame); the result
-  is `xN`, `wN`, `sN`, `qN` or none. `io=(...)` passes registers (`xN`, `wN`, `qN`) the host function rewrites through a
-  struct (its last argument; the lifter allocates it in the entry block). `guest=(callees...)` or `guest="computed"`:
-  the host function calls guest code, its first argument a `GuestCall` whose `guest_call` runs it on a given SP and
-  puts every register back, so the row writes nothing else. After a BL or BLR the row runs when the call returns. The
-  values stay SSA values; the call is never moved or removed unless the row replaces it. A row's result or io register
-  must be caller-saved or written by the instruction itself, so a row never changes what its function preserves
-  (checked at lift time). The host functions take plain values and guest addresses, never the context; a guest object
-  is a typed pointer to a struct of the fields used at their guest offsets, each `_Static_assert`ed, `may_alias`.
+- **Patch declarations** (`host/patch.h`): Value probes and At rows are declared in the host's C, next to their bodies:
+  `PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }` and, for each further site of the same function,
+  `PATCH_AT_SITE(...)`. The lifter reads them with a token scanner of a fixed grammar (`nx2/lift2/patch_scan.py`:
+  comments, strings, continuations and nested parentheses handled; no C parser, no regular expression over the
+  source); the compiler expands the same text into the function's prototype (a further site whose operand types differ
+  is a compile error) and into a record in the object section `hos_patch`, which the build compares with the scan
+  (`patch_scan.check_records`: a declaration one of them sees and the other does not stops the build). A declaration
+  stands at file scope, outside `#if`, and is never made by another macro; a malformed one, a bare word where
+  `word(...)` belongs, an unknown register, mode or result, a second `PATCH_AT` of one function or a duplicate site
+  stops the scan with file:line. The containing function is not written: the build finds it from the plan
+  (`probes.resolve`), and a site in no lifted function or in more than one stops it with the declaration's file:line.
+  Rows at one instruction run in the order of their declarations (the host's files in the build's order, each file's
+  in its order).
+  - mode `after`: after the instruction (after a BL or BLR when the call returns); `before`: on the edge into it, which
+    must not be a branch target; `instead`: in place of the BL or BLR (the call is not made, x30 set as the call
+    would; an At row with `replace`), or in place of any other instruction's result (a Value probe: the result is the
+    instruction's destination, an i32, as the frame-step cuts of the pick-up indicator and the water's ripples,
+    `fcvtzs w12, s0` at 0x80a88300 and `fcvtzs w9, s0` at 0x800675f8, take `hos_frame_whole`).
+  - result: `none`, `xN` (`uint64_t`), `wN` (`uint32_t`, zero-extended), `sN` (`float`, the rest of Vn zero), `qN`
+    (`hos_q`). Operands, one parameter each: `xN`, `wN`, `sN`, `qN`, `sp`, `ld(xN or sp, K)` (the 64-bit guest word
+    there, loaded by the lifted code: a frame slot the host needs is handed over as a value, the host does not read
+    the frame), `add(xN, K)`, `k(K)` (a constant); `as(operand, name)` names the parameter. `guest(callees...)` or
+    `guest(computed)` first: the host function calls guest code, its first parameter a `GuestCall` whose `guest_call`
+    runs it on a given SP and puts every register back, so the row writes nothing else. `io(regs...)` last: registers
+    (`xN`, `wN`, `qN`) the host function rewrites through a struct (its last parameter; the lifter allocates it in the
+    entry block).
+  The values stay SSA values; the call is never moved or removed unless the row replaces it. A row's result or io
+  register must be caller-saved or written by the instruction itself, so a row never changes what its function
+  preserves (checked at the build). The host functions take plain values and guest addresses, never the context; a
+  guest object is a typed pointer to a struct of the fields used at their guest offsets, each `_Static_assert`ed,
+  `may_alias`.
 
 | family | host functions | guest functions |
 |---|---|---|
@@ -381,7 +396,7 @@ names its instruction word, so another game version stops the lift or the build.
 | occlusion off (`HOOKSHOT_OCCLUSION_OFF=1`) | `hos_oot_occlusion_flag` (x6) | `f_811cc790` |
 | `HOS_BENCH`'s "in play" | `hos_oot_player_update` | `f_82c415e0` |
 | per-core ring owners | `hos_oot_ring_write` (x14: 7 pushes, 7 pops) | `f_8004ab40`, `f_800aff80`, `f_800b3ce0`, `f_800b73d0`, `f_8073a090`, `f_8073c900`, `f_83af6150`, `f_83af59c0` |
-| renderer patches (`probes.DIRECT`, `host/direct_*.c`, `host/rt_slots.c`) | depth copy and job sync retargets (x8 / x4), job call (x8, x21, `[sp+0x10]`), mesh list resets, mesh args, sky LUT and terrain tiles (x2: the memcpy's size), render-target slot (x10, `[sp+192]`), mesh system binds (guest call), layer ahead (guest call, `[sp+0x48]`), inline passes (two calls of `f_80681320`), the job view (x25), list kinds (13 recorders) | see the table below |
+| renderer patches (`host/direct_*.c`, `host/rt_slots.c`) | depth copy and job sync retargets (x8 / x4), job call (x8, x21, `[sp+0x10]`), mesh list resets, mesh args, sky LUT and terrain tiles (x2: the memcpy's size), render-target slot (x10, `[sp+192]`), mesh system binds (guest call), layer ahead (guest call, `[sp+0x48]`), inline passes (two calls of `f_80681320`), the job view (x25), list kinds (13 recorders) | see the table below |
 
 The patches a caller makes of its own call (no host function is told who called it; a row at the call site says it):
 

@@ -38,10 +38,10 @@ void hos_code_ptrs_init(void) {
     (void)a64_guest_of(1ull << 40);
 }
 
-/* (an At row, nx2/lift2/probes.py) a code pointer the game's own code compares with guest addresses: its guest
+/* (an At row: the PATCH_AT below) a code pointer the game's own code compares with guest addresses: its guest
    address. __nnmusl_init_dso's range check of nnMain (0x850565b0); counted, so a run shows the row ran */
 static volatile uint64_t guest_values;
-uint64_t hos_code_guest_value(uint64_t v) {
+PATCH_AT(0x850565b0, word(0xf947158c), after, x12, hos_code_guest_value, as(x12, v)) {   /* ldr x12, [x12, #0xe28] */
     const uint64_t n = __atomic_add_fetch(&guest_values, 1, __ATOMIC_RELAXED);
     const uint64_t g = a64_guest_of(v);
     if (n <= 4) hos_log("code pointers: a guest check reads %#llx as %#llx (row %llu)", (unsigned long long)v,
