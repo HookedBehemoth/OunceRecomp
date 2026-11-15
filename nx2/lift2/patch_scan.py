@@ -593,23 +593,55 @@ def entry_hooks(gen, ps=None):
     return out, missing
 
 
-def check_hooks(plan, gen, ps=None):
-    """SystemExit with file:line for a hook whose function the plan does not lift, whose symbol the image does not
-    export, or whose function's first word is not the declared one; else {address: hook C name}"""
+def hook_errors(plan, gen, ps=None):
+    """[(where, what is wrong)] of the hooks against the plan: a symbol the image does not export, no lifted function at
+    the address, a first word other than the declared one"""
     ps = ps or patches()
     hooks, missing = entry_hooks(gen, ps)
-    for h in missing:
-        fail(h.where, "%s: the image exports no %s" % (h.kind, h.symbol))
+    out = [(h.where, "%s: the image exports no %s" % (h.kind, h.symbol)) for h in missing]
     by_name = ps.hook_named
     for a, n in sorted(hooks.items()):
         h = by_name[n]
         body = plan["bodies"].get(a)
         if body is None:
-            fail(h.where, "%s at %#x: no lifted function there" % (h.kind, a))
-        if h.word is not None and (body[0][0] != a or body[1][0] != h.word):
-            fail(h.where, "PATCH_HOOK at %#x: the function's first word is %#010x, not %#010x"
-                 % (a, body[1][0] if body[0][0] == a else 0, h.word))
-    return hooks
+            out.append((h.where, "%s at %#x: no lifted function there" % (h.kind, a)))
+        elif h.word is not None and (body[0][0] != a or body[1][0] != h.word):
+            out.append((h.where, "PATCH_HOOK at %#x: the function's first word is %#010x, not %#010x"
+                        % (a, body[1][0] if body[0][0] == a else 0, h.word)))
+    return out
+
+
+def check_hooks(plan, gen, ps=None):
+    """SystemExit with file:line for a hook whose function the plan does not lift, whose symbol the image does not
+    export, or whose function's first word is not the declared one (hook_errors); else {address: hook C name}"""
+    ps = ps or patches()
+    for where, msg in hook_errors(plan, gen, ps)[:1]:
+        fail(where, msg)
+    return entry_hooks(gen, ps)[0]
+
+
+def param(arg, where):
+    """(C type, parameter name) of one operand as host/patch.h makes it"""
+    inner = _call(arg, "as")
+    if inner is not None:
+        return param(inner[0], where)[0], _ident(inner[1], where, "as's name")
+    if _call(arg, "guest") is not None:
+        return "GuestCall *", "g"
+    if _call(arg, "io") is not None:
+        return "struct hos_io_%d *" % where[1], "io"
+    for name, ty in (("ld", "uint64_t"), ("add", "uint64_t"), ("k", "uint32_t")):
+        inner = _call(arg, name)
+        if inner is not None:
+            return ty, "_".join([name] + [t[1] for a in inner for t in a])
+    r = _ident(arg, where, "an operand")
+    return ctype(r), r
+
+
+def prototype(s):
+    """the C prototype a PATCH_AT's macro generates for its function"""
+    ps = [param(a, s.where) for a in s.decl.args[5:] if a]
+    return "%s %s(%s)" % (ctype(s.result), s.fn, ", ".join(
+        ty + ("" if ty.endswith("*") else " ") + name for ty, name in ps) or "void")
 
 
 def rows(sites):

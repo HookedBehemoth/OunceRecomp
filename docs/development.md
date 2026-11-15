@@ -483,6 +483,42 @@ what a function is (only the symbol table changes; no rebuild of the code).
   such function;
   `name <address> ...` prints labels for scripts.
 
+### Writing a patch
+
+`nx2/patch.py` reads the plan (`work/sa/plan.pickle`, or `--plan`), its summaries and the scan of the host's
+declarations. It compiles nothing and lifts nothing.
+
+- `work/venv/bin/python -I nx2/patch.py --game games/oot site <address or label>` (a few seconds) prints:
+  - the instruction and its word, with the instructions around it and its function's label;
+  - the paths into the instruction: branches, jump tables, a function entry, code shared by several functions. A
+    `before` row runs on every one of these paths;
+  - the registers live into and out of the instruction, and those it reads and writes;
+  - the function's call-boundary record and how many BL sites call it;
+  - the declarations already in that function;
+  - a `PATCH_AT` to paste, its `word(...)` filled in, its operands suggested from what is read and live there (at a BL,
+    from the callee's record). It also prints the prototype the macro generates and the build's verdict on it. At a
+    function's entry it also prints the `PATCH_HOOK` form.
+- `... check --all` runs the checks the build makes on every declaration and prints each error with its file:line.
+  The checks: the word, a site in exactly one function, `before` not on a branch, jump-table or other entry target,
+  `instead` on a call, a Value's result being its instruction's destination, result and io registers, hooks' first
+  words and exports, `HLE_EFFECTS` symbols. A guest function that a host function calls without declaring it is not
+  checked here: `tests/test_host_context_reads.py` compiles the host to find those.
+- `... check <file:line>` also prints what that declaration costs. `... check -` does the same for a proposed
+  declaration read from stdin. The tool recomputes the whole program's summaries without the declaration (or with
+  the proposed one), with the build's summary job and from the summary input the lift left. It then prints the
+  functions whose inputs, clobbers, must-writes or results change, the summaries demoted, and the call sites whose
+  kept registers change. This takes about two minutes and several GB, so run it like any other heavy job.
+- `... report` prints one line per declaration, costliest first, in about half a minute:
+  - the registers the declaration reads and writes beyond its instruction's own;
+  - how its function's summary differs without it (the callees' summaries are the plan's);
+  - the BL sites whose call record changes because of it.
+
+Example. Run `site 0x8009a474` before replacing the sleep call of `job_calc_runner`. It prints the BL to
+`os_sleep_thread`; no other path into it; `live in: x0-x7,...`; that `job_calc_runner` is demoted (`tmp_after_call,
+tmp_in`), so its callers reload everything and a row cannot make it worse; and the existing
+`host/hos_thread.c:865 PATCH_AT 0x8009a474 instead hos_oot_calc_sleep`. It offers
+`PATCH_AT(0x8009a474, word(0x94ef225b), instead, ...)` with the build's verdict.
+
 ## Undocumented
 
 Read by code, but what they do is not stated beside the read (file:line of the first read):

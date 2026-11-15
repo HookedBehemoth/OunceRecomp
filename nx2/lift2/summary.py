@@ -388,6 +388,42 @@ def liveness(fn, sums, hooks, ret_live=0):
     return live
 
 
+def live_out(fn, sums, hooks, live, ret_live=0):
+    """live-out per instruction from liveness()'s live-in (the same rules): what the instructions after it may read; at
+    a call, what is read after it returns; at a return or a tail call, ret_live (and a tail callee's inputs)"""
+    out = [0] * len(fn.pcs)
+    for k, kind in enumerate(fn.kind):
+        if kind == "ret":
+            out[k] = ret_live
+            continue
+        if kind == "trap":
+            continue
+        if kind == "tail":
+            s = callee_summary(sums, fn.callee[k], hooks)
+            out[k] = s.inputs | (ret_live & ~s.mustdef)
+            continue
+        o = 0
+        for j in fn.succ[k]:
+            o |= live[j]
+        if k in fn.ctail:
+            o |= callee_summary(sums, fn.ctail[k], hooks).inputs | ret_live
+        c = fn.callee[k]
+        if isinstance(c, tuple):
+            for t in c[1]:
+                o |= callee_summary(sums, t, hooks).inputs | ret_live
+        out[k] = o
+    return out
+
+
+def unpack(t):
+    """a Summary from the plan's packed tuple (pack)"""
+    s = Summary()
+    (s.inputs, s.clobbers, s.mustdef, s.preserved, s.results, s.returns, demote, s.unknown, s.frame, s.pairs,
+     s.boundary, s.fp, s.writes_fpcr) = t
+    s.demote = list(demote)
+    return s
+
+
 def guest_reads(sums, calls, hooks):
     """what guest functions host code calls (a row's or a hook's) read: their inputs; "computed" every register"""
     if calls == "computed":

@@ -87,10 +87,16 @@ def hle_names(gen):
         return {int(a, 16): s for a, s in HOOK_LINE.findall(f.read())}
 
 
-def check(names):
-    """stops with file:line on an HLE_EFFECTS declaration of a function the image does not replace (names: hle_names)"""
-    from . import patch_scan
+def errors(names):
+    """[(where, what is wrong)]: an HLE_EFFECTS declaration of a function the image does not replace (names:
+    hle_names)"""
     have = set(names.values())
-    for r in sorted(_patches().declared.values(), key=lambda r: r.where):
-        if r.symbol not in have:
-            patch_scan.fail(r.where, "HLE_EFFECTS of %s: no HLE'd function of that symbol" % r.symbol)
+    return [(r.where, "HLE_EFFECTS of %s: no HLE'd function of that symbol" % r.symbol)
+            for r in sorted(_patches().declared.values(), key=lambda r: r.where) if r.symbol not in have]
+
+
+def check(names):
+    """stops with file:line on an HLE_EFFECTS declaration of a function the image does not replace (errors)"""
+    from . import patch_scan
+    for where, msg in errors(names)[:1]:
+        patch_scan.fail(where, msg)
