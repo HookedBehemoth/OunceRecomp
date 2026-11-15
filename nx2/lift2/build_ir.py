@@ -29,13 +29,15 @@ class Program:
     symbol(e): the generic entry's symbol of function e; no_lift: functions to pass over (setjmp owners: milestone 7)"""
 
     def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None, classes=None,
-                 tail_symbol=None):
+                 tail_symbol=None, jt_index=None):
         self.tail_symbol = tail_symbol or symbol or (lambda e: "g_%08x" % e)   # (a tail call's target symbol)
         self.classes = set(classes) if classes is not None else None   # (None: every class of sem.CLASS)
         # (entries, jt and plt are shared, not copied: the discovery fills them as it walks)
         self.entries = entries if isinstance(entries, set) else set(entries)
         self.plt = plt if plt is not None else {}   # PLT stub entry -> (final target, GOT slot)
         self.jt = jt if jt is not None else {}
+        # BR address -> (load address, index register, LDR extend, [target per index]): the switch on the index
+        self.jt_index = jt_index if jt_index is not None else {}
         self.callee = callee or (lambda t: t)
         self.symbol = symbol or (lambda e: "g_%08x" % e)
         self.no_call = set(no_call)
@@ -136,6 +138,12 @@ def build(entry, pcs, word, prog=LEAF):
         return blk
 
     exits = []
+    # a table BR's index, read at its load (the register may be reused before the BR): BR -> (block, value)
+    index_at, index_load = {}, {}
+    for br, (load, reg, opt, _) in prog.jt_index.items():
+        if br in body and load in body and not any(
+                q in prog.probes or q in prog.before or q in prog.after for q in range(load, br + 4, 4)):
+            index_load[load] = (br, reg, opt)
     leaders = {entry}
     for pc in pcs:
         i = enc.decode(word(pc))
@@ -158,6 +166,12 @@ def build(entry, pcs, word, prog=LEAF):
             b.at(cur)
         for pre in prog.before.get(pc, ()):
             pre(b)
+        if pc in index_load:
+            br, reg, opt = index_load[pc]
+            v = b.get("x%d" % reg)
+            if opt in (2, 6):   # UXTW, SXTW
+                v = (b.zext if opt == 2 else b.sext)(b.trunc(v, "i32"), "i64")
+            index_at[br] = (cur, v)
         i = enc.decode(word(pc))
         t = i.entry.template
         f = i.f
@@ -223,9 +237,14 @@ def build(entry, pcs, word, prog=LEAF):
             x = b.get("x%d" % f["Rn"]) if f["Rn"] != 31 else b.const(0)
             ij = exit_block("j", pc, ("ijump", None))
             targets = sorted(set(prog.jt.get(pc, ())))
-            if targets:
-                # the switch's index: (x - lowest) rotated right by 2, so a misaligned target is a large index and
-                # takes the default; the cases are dense, which LLVM turns into a table
+            at = index_at.get(pc)
+            if at is not None and at[0] is cur:
+                # on the index the guest loaded the entry with: cases 0..n-1, dense (LLVM lowers a table); an index
+                # out of range takes the default
+                cur.term = ("switch", at[1], [(n, goto(t2, pc)) for n, t2 in enumerate(prog.jt_index[pc][3])], ij)
+            elif targets:
+                # on the target's offset: (x - lowest) rotated right by 2, so a misaligned target is a large index and
+                # takes the default; with sparse offsets LLVM lowers a tree of compares
                 lo = targets[0]
                 d = b.bin("sub", x, b.const(lo))
                 idx = b.intr("fshr", "i64", d, d, b.const(2))

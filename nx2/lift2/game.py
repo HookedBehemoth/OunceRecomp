@@ -105,7 +105,8 @@ def write_plan(L, img, path, hot=()):
     t0 = time.time()
     no_call = set(getattr(L, "setjmp_owner", {}) or ())
     classes = CLASSES
-    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, no_call=no_call, classes=classes)
+    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, no_call=no_call, classes=classes,
+                            jt_index=L.jt_index)
     # (a BL to a setjmp owner is lifted as a call of hos_sj_call, host/hos_setjmp.c: scope need not refuse it)
     scope_prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, classes=classes)
     sj_rets = {e: tuple((list(r) + [0, 0, 0, 0])[:4]) for e, r in (getattr(L, "setjmp_owner", {}) or {}).items()}
@@ -145,7 +146,7 @@ def write_plan(L, img, path, hot=()):
         packed = summaries(L, img, path, prog, hooks)
         import gc
         gc.collect()   # (the analysis' graph is garbage now)
-    plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets, "after_c": after_c,
+    plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets, "after_c": after_c,
             "hooks": sorted(hooks), "bodies": bodies, "why": why, "hot": sorted(set(hot) & set(bodies)),
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
     with open(path + ".tmp", "wb") as f:
@@ -217,7 +218,7 @@ def lift_part(args):
     def tail_symbol(e):
         return "body_%08x" % e if verify and verified(plan, e) else base_symbol(e)
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
-                            symbol=symbol, tail_symbol=tail_symbol)
+                            symbol=symbol, tail_symbol=tail_symbol, jt_index=plan.get("jt_index"))
     m = emit_llvm.Module()
     extra = []
     for e in names:

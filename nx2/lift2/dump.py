@@ -103,7 +103,8 @@ def main():
     if os.path.exists(plan_path):
         with open(plan_path, "rb") as f:
             plan = pickle.load(f)
-    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt)
+    L.index_tables()   # (over the tables of the functions walked so far)
+    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, jt_index=L.jt_index)
     names = {v: k for k, v in lab.items()}
     for e in funcs:
         d = os.path.join(out, "%08x" % e)

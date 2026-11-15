@@ -66,6 +66,9 @@ class Discovery:
         self.names = getattr(img, "names", {}) or {}
         self.funcs = {}       # entry -> (body {pc: (kind, word)}, labels set)
         self.jt = {}          # br pc -> [targets]
+        self.jt_index = {}    # br pc -> (load pc, index register, LDR extend option, [target of entry 0, 1, ...])
+        self.jt_offset = {}   # br pc -> why its switch stays on the target's offset (index_tables)
+        self._jt_cand = {}    # br pc -> the table's shape as _jump_table read it, or why it has none
         self.jt_missing = {}  # br pc -> its register, for BRs whose table address was not found
         self.plt = {}         # stub entry -> (final target, GOT slot)
         self.stats = Counter()
@@ -100,6 +103,7 @@ class Discovery:
             if t is not None:
                 self.plt[e] = t
         self.find_setjmp_owners()   # (after the PLT stubs: their callees are resolved through them)
+        self.index_tables()
 
     SETJMP_NAMES = ("__setjmp", "setjmp", "_setjmp")
 
@@ -256,6 +260,7 @@ class Discovery:
             the br through the CFG is a candidate (reaching_constants).
         Targets must lie in the containing function ([start, next .eh_frame function start))."""
         img = self.img
+        self._jt_cand[br_pc] = "unusual shape"
         R = {}
         bound = None
         bounds = {}   # register -> number of table entries its value can index (cmp + b.hi/b.hs, and-mask, copies)
@@ -313,11 +318,13 @@ class Discovery:
             elif (w & 0x3B200C00) == 0x38200800 and not (w >> 26) & 1:           # LDR* (register offset)
                 size, opc, S = w >> 30, (w >> 22) & 3, (w >> 12) & 1
                 v = R.get(n, ("reg", n))                                          # an undefined base: hoisted
-                R[d] = ("ld", v, m, 1 << size, opc >= 2, size if S else 0) if opc != 0 and v else None
+                # (+ what index_tables needs: the load's pc, opc, extend option, base register and S)
+                R[d] = ("ld", v, m, 1 << size, opc >= 2, size if S else 0, pc, opc, (w >> 13) & 7, n, S) \
+                    if opc != 0 and v else None
             elif (w & 0xFF200000) == 0x8B000000 and (w >> 22) & 3 == 0:          # ADD Xd, Xn, Xm, LSL #k
-                R[d] = ("add", R.get(n), R.get(m), (w >> 10) & 63)
+                R[d] = ("add", R.get(n), R.get(m), (w >> 10) & 63, None, pc, n)
             elif (w & 0xFFE00000) == 0x8B200000:                                 # ADD Xd, Xn, Wm, <ext> #k
-                R[d] = ("add", R.get(n), R.get(m), (w >> 10) & 7)
+                R[d] = ("add", R.get(n), R.get(m), (w >> 10) & 7, (w >> 13) & 7, pc, n)
             elif (w & 0x7F80001F) == 0x7100001F:                                 # CMP Wn/Xn, #imm
                 bound = {"imm": (w >> 10) & 0xFFF}
             elif (w & 0x7FE00C10) == 0x7A400800:                                 # CCMP Wn/Xn, #imm5, #nzcv, cond
@@ -336,18 +343,22 @@ class Discovery:
             lo, hi = self.function_extent(br_pc)
             if lo <= v[1] < hi and img.in_code(v[1]):
                 self.stats["br_constant"] += 1
+                self._jt_cand[br_pc] = "no table (a constant)"
                 return [v[1]]
             return None
         if not v or v[0] != "add":
+            self._jt_cand[br_pc] = "no table (ADR candidates)"
             return self.adr_targets(br_pc, reg)
         a, b, k = v[1], v[2], v[3]
+        ld_shifted = True       # (the loaded entry is the ADD's shifted or extended operand, Xm)
         if a and a[0] == "ld":
             a, b = b, a
+            ld_shifted = False
         if not (a and a[0] == "c" and b and b[0] == "ld"):
             self.stats["jt_unrecognized"] += 1
             self.jt_missing[br_pc] = reg
             return None
-        base, (_, table, idx, size, signed, _shift) = a[1], b
+        base, (table, idx, size, signed, _shift) = a[1], b[1:6]
         if isinstance(bounds.get(idx), int):        # a bound on the very register that indexes the table wins
             bound = {"count": bounds[idx]}
         if table[0] == "reg":
@@ -369,6 +380,7 @@ class Discovery:
                 return None
             if len(tables) > 1:
                 self.stats["jt_multi_table"] += 1
+                self._jt_cand[br_pc] = "several tables"
         else:
             tables = {table[1]}
         lo, hi = self.function_extent(br_pc)
@@ -406,7 +418,146 @@ class Discovery:
         if not targets:
             return None
         self.stats["jt_bounded" if bounded and count else "jt_unbounded"] += 1
+        if len(tables) == 1 and self._jt_cand[br_pc] == "unusual shape":
+            if not ld_shifted:
+                self._jt_cand[br_pc] = "entry not the ADD's shifted operand"
+            else:
+                ld_pc, opc, opt, treg, S = b[6:11]
+                self._jt_cand[br_pc] = {"load": ld_pc, "idx": idx, "opt": opt, "S": S, "size": size, "opc": opc,
+                                        "treg": treg, "table": next(iter(tables)), "add": v[5], "areg": v[6] if
+                                        v[1] is a else None, "k": k, "ext": v[4], "count": count}
         return targets
+
+    # ---- jump tables on their index ---------------------------------------------------------------------
+    # The switch of a table BR is on the index the guest loaded the entry with, cases 0..n-1 (a dense switch LLVM
+    # lowers to a table), when every fact it rests on is proven; else on the target's offset (build_ir).
+    LDR_INDEX = {2: "uxtw", 3: "lsl", 6: "sxtw", 7: "sxtx"}
+
+    def index_tables(self):
+        """jt_index and jt_offset, with every table resolved"""
+        self.jt_index, self.jt_offset = {}, {}
+        for br in self.jt:
+            c = self._jt_cand.get(br, "unusual shape")
+            why = c if isinstance(c, str) else self._index_table(br, c)
+            if isinstance(why, str):
+                self.jt_offset[br] = why
+            else:
+                self.jt_index[br] = why
+
+    def _index_table(self, br, c):
+        """(load pc, index register, LDR extend option, [targets]) of a table read by `ldr wE, [xT, xI{, ext}]`;
+        `add xD, xB, xE{, ext} {#k}`; `br xD`, or why not"""
+        img = self.img
+        load, size, opt = c["load"], c["size"], c["opt"]
+        if opt not in self.LDR_INDEX or c["idx"] == 31:
+            return "unusual shape"
+        if size == 8 and c["opc"] != 1:                           # (PRFM shares the encoding)
+            return "unusual shape"
+        if size > 1 and not c["S"]:
+            return "index not scaled"
+        # one straight-line block from the load to the br: the index the switch reads at the load is the guest's
+        lo, hi = self.function_extent(br)
+        preds = self.preds(lo, hi)
+        for q in range(load, br, 4):
+            if classify(img.word(q), q)[0] not in ("op", "isb", "ic"):
+                return "branch between the load and the br"
+            if q + 4 in self.entries or preds.get(q + 4, []) != [q]:
+                return "join between the load and the br"
+        # the table's address at the load and the ADD's base at the ADD: every path gives one constant
+        t = self.exact_constant(load, c["treg"])
+        if t is None or t != c["table"]:
+            return "table address not proven"
+        if c["areg"] is None:
+            return "unusual shape"
+        base = self.exact_constant(c["add"], c["areg"])
+        if base is None:
+            return "base not proven"
+        if c["k"] > 4 and c["ext"] is not None:
+            return "unusual shape"
+        known = set(self.jt[br])
+        fmt = {1: "B", 2: "H", 4: "I", 8: "Q"}[size]
+        out = []
+        for i in range(c["count"] or (256 if size == 1 else 1024)):
+            a = t + i * size
+            if not self.read_only(a, size):
+                break
+            e = struct.unpack("<" + fmt, img.read(a, size))[0]
+            bits = 8 * size
+            if c["opc"] >= 2 and e >> (bits - 1):                 # LDRS*: sign-extended to 64 (opc 2) or 32 bits
+                e -= 1 << bits
+            e &= (1 << (32 if c["opc"] == 3 else 64)) - 1
+            x = c["ext"]
+            if x is not None:                                     # the ADD's extend of xE: UXTB ... SXTX
+                w = (8, 16, 32, 64)[x & 3]
+                e &= (1 << w) - 1
+                if x & 4 and e >> (w - 1):
+                    e -= 1 << w
+            tg = (base + (e << c["k"])) & 0xFFFFFFFFFFFFFFFF
+            if tg not in known:
+                break                                             # (this and later indices: the default, as today)
+            out.append(tg)
+        if not out:
+            return "no entry proven"
+        return (load, c["idx"], opt, out)
+
+    def read_only(self, a, n):
+        """[a, a + n) lies in a module's .text or .rodata (an image without modules: its read_only, else no)"""
+        f = getattr(self.img, "read_only", None)
+        if f is not None:
+            return f(a, n)
+        for m in getattr(self.img, "modules", ()):
+            segs = getattr(m, "segments", ())
+            if len(segs) >= 2 and m.base + segs[0][0] <= a and a + n <= m.base + segs[1][0] + segs[1][1]:
+                return True
+        return False
+
+    def exact_constant(self, at, reg, depth=0):
+        """The one constant X`reg` holds before `at` executes on every path of the function's CFG (ADRP, ADR,
+        ADD #imm and MOV followed), or None: a path from the function's start or another entry, a call or SVC that
+        may clobber it, any other write, several constants"""
+        img = self.img
+        lo, hi = self.function_extent(at)
+        if hi - lo > 0x40000 or depth > 6 or reg == 31:
+            return None
+        preds = self.preds(lo, hi)
+        found, seen, todo = set(), {at}, [at]
+        while todo:
+            q = todo.pop()
+            ps = preds.get(q, ())
+            if q in self.entries or not ps or len(seen) > 50000:
+                return None
+            for p in ps:
+                if p in seen:
+                    continue
+                seen.add(p)
+                w = img.word(p)
+                kind = classify(w, p)[0]
+                if kind in ("bl", "blr", "svc") and (reg <= 18 or reg == 30):
+                    return None
+                if not self.writes(w, reg):
+                    todo.append(p)
+                    continue
+                if (w & 0x9F000000) == 0x90000000:                                   # ADRP
+                    imm = ((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3)
+                    found.add((p & ~0xFFF) + (sx(imm, 21) << 12))
+                elif (w & 0x9F000000) == 0x10000000:                                 # ADR
+                    imm = ((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3)
+                    found.add(p + sx(imm, 21))
+                elif (w & 0xFF800000) == 0x91000000:                                 # ADD Xreg, Xn, #imm
+                    v = self.exact_constant(p, (w >> 5) & 31, depth + 1)
+                    if v is None:
+                        return None
+                    found.add(v + (((w >> 10) & 0xFFF) << (12 if w & (1 << 22) else 0)))
+                elif (w & 0xFFE0FFE0) == 0xAA0003E0:                                 # MOV Xreg, Xm
+                    v = self.exact_constant(p, (w >> 16) & 31, depth + 1)
+                    if v is None:
+                        return None
+                    found.add(v)
+                else:
+                    return None
+                if len(found) > 1:
+                    return None
+        return found.pop() if len(found) == 1 else None
 
     def preds(self, lo, hi):
         """Predecessor map of the code in [lo, hi): fall-through, direct branches, and jump tables resolved so far.

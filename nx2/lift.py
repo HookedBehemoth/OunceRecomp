@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
 import kit
@@ -92,6 +93,10 @@ def main():
         len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
     if jt["jt_table_reg_reused"]:
         print("jump tables whose table register is reused before the br: %d" % jt["jt_table_reg_reused"])
+    why = Counter(L.jt_offset.values())
+    print("jump table switches: %d tables, %d on the index, %d on the target's offset%s" % (
+        len(L.jt), len(L.jt_index), len(L.jt_offset),
+        " (" + ", ".join("%s %d" % kv for kv in why.most_common()) + ")" if why else ""))
     for pc, reg in sorted(L.jt_missing.items()):
         print("  BR without a table: %#x (x%d)" % (pc, reg))
     with open(os.path.join(img_dir, "functions.json"), "w") as f:
