@@ -4,6 +4,11 @@ stays under work/.
 
     work/venv/bin/python -I ounce/lift/tools/golden.py --game games/oot [--jobs N] [--only lift_c000,...] work/ounce/golden
 
+Beside the IR: every other generated compile input (gen/, rt64/, compile.json), gated by its sha256 in meta.json's
+`files`, with image.bin's (the run-time image). reference/ holds intermediate data that is no compile input and that
+nothing reads at run time, kept to check the Rust image stage against: reference/image/image.json and functions.json
+(meta.json `reference`).
+
 Workers are forked from a process that holds the plan (copy on write: one plan's memory, not one a worker).
 """
 import concurrent.futures
@@ -44,7 +49,12 @@ def _lift(k):
 
 # the lift's generated C and lists (nx2/lift.py --standalone --write: tables.write, write_code_slots, standalone.*)
 GEN = ("a64_table.c", "a64_hooks.c", "a64_code_slots.c", "a64_stubs.c", "hos_image.c", "nvn2_exports.c", "functions.txt")
-IMAGE = ("image.json", "functions.json")   # (the image's description and the discovery's list; image.bin by its hash)
+# (the image's description and the discovery's list: no compile input, nothing reads them at run time; reference/)
+REFERENCE = ("image.json", "functions.json")
+FILES_NOTE = ("the compile inputs' sha256 (uncompressed), each file under its path with .zst; image/image.bin, the "
+              "run-time image hookshot loads, by its sha256 alone")
+REFERENCE_NOTE = ("not compile inputs: intermediate data of the image stage, read by nothing at run time (the Rust "
+                  "pipeline keeps it in memory), kept to check that stage against")
 
 
 def sha256(path):
@@ -63,7 +73,8 @@ def lift_mark(sa):
 def compile_inputs(out, sa, parts, names):
     """everything else the build compiles that the lift and build generate: the lift's C (gen/), the guest model's
     header and runtime (nx2/rtgen.py, rt64/), the image's description, and the compile flags of each partition, the
-    answers module and the generated C ({files: {path: sha256}, ...} for meta.json)"""
+    answers module and the generated C; and, under reference/, the image's intermediate data, no compile input
+    (({path: sha256} of the compile inputs, {path: sha256} of the reference files) for meta.json)"""
     from compression import zstd
     import build
     import rtgen
@@ -77,8 +88,10 @@ def compile_inputs(out, sa, parts, names):
         files[rel] = hashlib.sha256(data).hexdigest()
     for f in GEN:
         put("gen/" + f, open(os.path.join(sa, "gen", f), "rb").read())
-    for f in IMAGE:
-        put("image/" + f, open(os.path.join(sa, "image", f), "rb").read())
+    ref = {}
+    for f in REFERENCE:
+        put("reference/image/" + f, open(os.path.join(sa, "image", f), "rb").read())
+        ref["reference/image/" + f] = files.pop("reference/image/" + f)
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         rtgen.write(d)
@@ -100,7 +113,7 @@ def compile_inputs(out, sa, parts, names):
                    "note": "clang flags without the input and output; opt: the `opt` command the IR goes through first "
                            "(then clang with -Xclang -disable-llvm-passes), null if none; <gen>, <rt64>: the folders"},
                   f, indent=1)
-    return files
+    return files, ref
 
 
 def main():
@@ -164,15 +177,16 @@ def main():
             with open(base + ".idx.json", "w") as f:
                 json.dump(index(text), f, separators=(",", ":"))
         want_names = [names[k] for k in want] + [ANSWERS]
-        files = compile_inputs(a.out, sa, parts, names)
-        files["image/image.bin (not included: runtime data, hookshot loads it)"] = sha256(os.path.join(sa, "image", "image.bin"))
+        files, ref = compile_inputs(a.out, sa, parts, names)
+        files["image/image.bin"] = sha256(os.path.join(sa, "image", "image.bin"))
     else:
-        files = {}
+        files, ref = {}, {}
         want_names = [names[k] for k in want]
     if lift_mark(sa) != mark:
         raise SystemExit("golden: the lift in %s changed during the run: made again" % sa)
     meta = {"commit": lift_export.commit(), "input_key": key, "lift": mark,
-            "dump": json.load(open(os.path.join(sa, "game.json"))), "files": files, "code_key": game.code_key(), "facts_key": game.facts_key(plan),
+            "dump": json.load(open(os.path.join(sa, "game.json"))), "files": files, "files note": FILES_NOTE,
+            "reference": ref, "reference note": REFERENCE_NOTE, "code_key": game.code_key(), "facts_key": game.facts_key(plan),
             "partitions": want_names, "seconds": secs, "jobs": a.jobs, "worker peak RSS MB": max(rss.values(), default=0),
             "wall seconds": round(time.time() - t1)}
     with open(os.path.join(a.out, "meta.json"), "w") as f:
