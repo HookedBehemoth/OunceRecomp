@@ -1,0 +1,21 @@
+[package]
+name = "ounce-lift"
+version = "0.1.0"
+edition = "2021"
+description = "The lifter (nx2/lift2) in Rust: AArch64 -> typed SSA IR -> LLVM IR"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ounce-lift"
+path = "src/main.rs"
+
+[dependencies]
+ounce-decode = { path = "decode" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+debug = 1

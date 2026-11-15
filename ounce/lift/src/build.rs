@@ -1,0 +1,708 @@
+//! A guest function -> IR (nx2/lift2/build_ir.py: scope, build, omit_stores, cycle_edges), and the patch rows'
+//! lowering (nx2/lift2/probes.py Value.lower, At.post).
+
+use crate::export::{AtRow, Bound, Calls, Func, ValueRow};
+use crate::ir::*;
+use crate::sem;
+use crate::sem::int::{cond, getx, setx, sx};
+use crate::ty::{Ty, I32, I64};
+use ounce_decode::{decode, Insn};
+use std::collections::{HashMap, HashSet};
+
+const TERMINATORS: [&str; 8] = ["b", "bcond", "cbz", "tbz", "ret", "udf", "br", "blr"];
+fn is_term(t: &str) -> bool {
+    TERMINATORS.contains(&t) || t == "exc"
+}
+
+/// what lifting one function needs to know (build_ir.Program, for one function: the export's facts)
+pub struct Prog<'a> {
+    pub entry: u64,
+    pub body: HashSet<u64>,
+    pub entries: HashSet<u64>,
+    pub jt: HashMap<u64, Vec<u64>>,
+    pub jt_index: Vec<(u64, u64, u32, u32, Vec<u64>)>,
+    pub code_targets: &'a HashSet<u64>,
+    pub code_sites: HashMap<u64, (u64, Option<u64>)>,
+    pub probes: HashMap<u64, &'a ValueRow>,
+    pub before: HashMap<u64, Vec<&'a AtRow>>,
+    pub after: HashMap<u64, Vec<&'a AtRow>>,
+    pub replace: HashMap<u64, Vec<&'a AtRow>>,
+    pub calls: &'a Calls,
+    pub own: &'a Bound,
+    pub omit: bool,
+}
+
+impl<'a> Prog<'a> {
+    pub fn new(f: &'a Func, pcs: &[u64], code_targets: &'a HashSet<u64>, calls: &'a Calls, omit: bool) -> Prog<'a> {
+        let mut p = Prog {
+            entry: f.entry,
+            body: pcs.iter().copied().collect(),
+            entries: f.body_entries.iter().copied().collect(),
+            jt: f.jt.iter().cloned().collect(),
+            jt_index: f.jt_index.clone(),
+            code_targets,
+            code_sites: f.code_sites.iter().map(|&(pc, e, page)| (pc, (e, page))).collect(),
+            probes: f.values.iter().map(|v| (v.pc, v)).collect(),
+            before: HashMap::new(),
+            after: HashMap::new(),
+            replace: HashMap::new(),
+            calls,
+            own: &f.own,
+            omit,
+        };
+        for r in &f.rows {
+            let m = match r.mode.as_str() {
+                "before" => &mut p.before,
+                "after" => &mut p.after,
+                "instead" => &mut p.replace,
+                m => panic!("row mode {m}"),
+            };
+            m.entry(r.pc).or_default().push(r);
+        }
+        p
+    }
+    fn callee(&self, t: u64) -> u64 {
+        self.calls.callee(t)
+    }
+    fn bound(&self, c: u64) -> &'a Bound {
+        self.calls.bound(c)
+    }
+    /// a branch to t stays in the function (a goto), or leaves it (a tail call)
+    fn inside(&self, t: u64) -> bool {
+        self.body.contains(&t) && (t == self.entry || !self.entries.contains(&t))
+    }
+}
+
+pub fn target(i: &Insn, pc: u64) -> Option<u64> {
+    let t = i.enc.template;
+    let off = match t {
+        "b" => sx(i.f("imm26"), 26),
+        "bcond" | "cbz" => sx(i.f("imm19"), 19),
+        "tbz" => sx(i.f("imm14"), 14),
+        _ => return None,
+    };
+    Some((pc as i128 + (off << 2)) as u64)
+}
+
+/// None if every instruction decodes and has a template (the bin's "skipped: template X" otherwise)
+pub fn scope(pcs: &[u64], words: &[u32]) -> Option<String> {
+    for (&pc, &w) in pcs.iter().zip(words) {
+        let i = match decode(w) {
+            Some(i) => i,
+            None => return Some(format!("word {w:08x} at {pc:#x} not decoded")),
+        };
+        let t = i.enc.template;
+        if !is_term(t) && sem::get(t).is_none() {
+            return Some(format!("template {t}"));
+        }
+    }
+    None
+}
+
+const CODE_FORMS: [&str; 2] = ["adr", "addsub_imm"];
+/// (summary bits: x19-x29, SP) a BL keeps in SSA
+const KEEP: [Var; 12] = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, SP];
+
+pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
+    let entry = f.entry;
+    let word: HashMap<u64, u32> = pcs.iter().copied().zip(words.iter().copied()).collect();
+    let mut fun = Function::new(entry);
+    if let Some(plt) = &f.plt {
+        let e = fun.block(BKey::Pc(entry));
+        let mut b = Builder::new(&mut fun);
+        b.at(e);
+        let s = b.c64(plt.slot as i128);
+        b.set(x(16), s);
+        let t = if plt.target_is_code { b.codeaddr(plt.target) } else { b.c64(plt.target as i128) };
+        b.set(x(17), t);
+        let tail = prog.bound(prog.callee(plt.target)).tail.clone();
+        fun.bm(e).term = Some(Term::Tail(tail.into()));
+        finish(&mut fun);
+        return fun;
+    }
+    let body = &prog.body;
+    let mut exits: Vec<BlockId> = Vec::new();
+
+    // the BR's table index read at its load: BR -> (block, value)
+    let mut index_load: HashMap<u64, (u64, u32, u32)> = HashMap::new();
+    for (br, load, reg, opt, _) in &prog.jt_index {
+        let (br, load) = (*br, *load);
+        if body.contains(&br)
+            && body.contains(&load)
+            && !(load..br + 4).step_by(4).any(|q| {
+                prog.probes.contains_key(&q) || prog.before.contains_key(&q) || prog.after.contains_key(&q)
+            })
+        {
+            index_load.insert(load, (br, *reg, *opt));
+        }
+    }
+    let mut index_at: HashMap<u64, (BlockId, ValueId)> = HashMap::new();
+    let insns: Vec<Insn> = pcs.iter().map(|pc| decode(word[pc]).expect("decode")).collect();
+    let mut leaders: HashSet<u64> = HashSet::from([entry]);
+    for (k, &pc) in pcs.iter().enumerate() {
+        let i = &insns[k];
+        let t = i.enc.template;
+        if is_term(t) {
+            if let Some(tg) = target(i, pc) {
+                if body.contains(&tg) {
+                    leaders.insert(tg);
+                }
+            }
+            if t == "br" {
+                if let Some(ts) = prog.jt.get(&pc) {
+                    leaders.extend(ts.iter().filter(|x| body.contains(x)));
+                }
+            }
+            leaders.insert(pc + 4);
+        }
+    }
+    fun.block(BKey::Pc(entry));
+
+    // the block a branch to t goes to: one of the function's, or a tail-call exit
+    fn goto(fun: &mut Function, prog: &Prog, exits: &mut Vec<BlockId>, t: u64) -> BlockId {
+        if prog.inside(t) {
+            return fun.block(BKey::Pc(t));
+        }
+        let key = BKey::Exit(b't', t);
+        if let Some(b) = fun.find(key) {
+            return b;
+        }
+        let b = fun.block(key);
+        fun.bm(b).term = Some(Term::Tail(prog.bound(prog.callee(t)).tail.clone().into()));
+        exits.push(b);
+        b
+    }
+
+    let mut cur: Option<BlockId> = None;
+    let mut b = Builder::new(&mut fun);
+    for (k, &pc) in pcs.iter().enumerate() {
+        if leaders.contains(&pc) || cur.is_none() {
+            let nxt = b.f.block(BKey::Pc(pc));
+            if let Some(c) = cur {
+                if b.f.b(c).term.is_none() {
+                    b.f.bm(c).term = Some(Term::Br(nxt));
+                }
+            }
+            cur = Some(nxt);
+            b.at(nxt);
+        }
+        let c = cur.unwrap();
+        for row in prog.before.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
+            at_post(&mut b, row);
+        }
+        if let Some(&(br, reg, opt)) = index_load.get(&pc) {
+            let mut v = b.get(x(reg));
+            if opt == 2 || opt == 6 {
+                let t = b.trunc(v, I32);
+                v = if opt == 2 { b.zext(t, I64) } else { b.sext(t, I64) };
+            }
+            index_at.insert(br, (c, v));
+        }
+        let i = &insns[k];
+        let t = i.enc.template;
+        let falls_out = |b: &mut Builder, exits: &mut Vec<BlockId>| {
+            let g = goto(b.f, prog, exits, pc + 4);
+            b.f.bm(c).term = Some(Term::Br(g));
+        };
+        if !is_term(t) {
+            let site = prog.code_sites.get(&pc).copied();
+            let probe = prog.probes.get(&pc).copied();
+            if let Some((_, Some(page))) = site {
+                if probe.is_none() {
+                    let v = b.get(x(i.f("Rn")));
+                    if b.konst(v) != Some(page as u128) {
+                        panic!("code pointer at {pc:#x}: x{} does not hold the page {page:#x} here", i.f("Rn"));
+                    }
+                }
+            }
+            match probe {
+                Some(p) => value_lower(&mut b, p),
+                None => (sem::get(t).expect(t).f)(&mut b, i, pc),
+            }
+            if site.is_some() && probe.is_none() {
+                let ca = b.codeaddr(site.unwrap().0);
+                setx(&mut b, i.f("Rd"), ca, false);
+                b.f.code_sites += 1;
+            } else if CODE_FORMS.contains(&t)
+                && !prog.code_targets.is_empty()
+                && (if i.has("Rd") { i.f("Rd") } else { 31 }) != 31
+                && !(t == "adr" && i.f("op") != 0)
+                && (!i.has("sf") || i.f("sf") != 0)
+            {
+                if let Some(v) = b.f.b(c).defs[x(i.f("Rd")) as usize] {
+                    if let Some(k) = b.konst(v) {
+                        if prog.code_targets.contains(&(k as u64)) {
+                            panic!("f_{k:08x}'s address formed at {pc:#x}, not a code_ptrs.sites shape");
+                        }
+                    }
+                }
+            }
+            for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
+                at_post(&mut b, row);
+            }
+            if !body.contains(&(pc + 4)) {
+                falls_out(&mut b, &mut exits);
+                cur = None;
+            }
+            continue;
+        }
+        let is_bl = t == "b" && i.f("op") != 0;
+        if prog.replace.contains_key(&pc) && (t == "blr" || is_bl) {
+            let ra = b.c64(pc as i128 + 4);
+            b.set(x(30), ra);
+            for row in &prog.replace[&pc] {
+                at_post(&mut b, row);
+            }
+            for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
+                at_post(&mut b, row);
+            }
+            if !body.contains(&(pc + 4)) {
+                falls_out(&mut b, &mut exits);
+                cur = None;
+            }
+            continue;
+        }
+        if is_bl {
+            let callee = prog.callee(target(i, pc).unwrap());
+            let bd = prog.bound(callee);
+            let mut held: Vec<(Var, ValueId)> = Vec::new();
+            for &var in KEEP.iter().filter(|&&v| bd.keeps >> v & 1 != 0) {
+                let mut v = b.f.b(c).defs[var as usize];
+                if v.is_none() && !b.f.b(c).called {
+                    v = Some(b.get(var));
+                }
+                if let Some(v) = v {
+                    held.push((var, v));
+                }
+            }
+            let ra = b.c64(pc as i128 + 4);
+            b.set(x(30), ra);
+            b.op(Op::Gcall { sym: bd.symbol.as_str().into(), callee, pc }, Ty::Void, &[]);
+            b.after_call();
+            for (var, v) in held {
+                b.f.bm(c).defs[var as usize] = Some(v);
+            }
+            for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
+                at_post(&mut b, row);
+            }
+            if !prog.after.contains_key(&pc) && bd.noreturn {
+                b.f.bm(c).term = Some(Term::NoReturn(pc, i.word));
+                cur = None;
+                continue;
+            }
+            if !body.contains(&(pc + 4)) {
+                falls_out(&mut b, &mut exits);
+                cur = None;
+            }
+            continue;
+        }
+        if t == "blr" {
+            let rn = i.f("Rn");
+            let tv = if rn != 31 { b.get(x(rn)) } else { b.c64(0) };
+            let ra = b.c64(pc as i128 + 4);
+            b.set(x(30), ra);
+            b.op(Op::Icall(pc), Ty::Void, &[tv]);
+            b.after_call();
+            for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
+                at_post(&mut b, row);
+            }
+            if !body.contains(&(pc + 4)) {
+                falls_out(&mut b, &mut exits);
+                cur = None;
+            }
+            continue;
+        }
+        if t == "exc" && i.f("opc") == 0 {
+            let fl: Vec<ValueId> = FLAGS.iter().map(|&v| b.get(v)).collect();
+            b.op(Op::FlagsOut { always: false }, Ty::Void, &fl);
+            b.op(Op::Svc(i.f("imm16")), Ty::Void, &[]);
+            b.after_call();
+            if !body.contains(&(pc + 4)) {
+                falls_out(&mut b, &mut exits);
+                cur = None;
+            }
+            continue;
+        }
+        if prog.after.contains_key(&pc) {
+            panic!("code after the branch at {pc:#x}");
+        }
+        let term = match t {
+            "b" => Term::Br(goto(b.f, prog, &mut exits, target(i, pc).unwrap())),
+            "bcond" => {
+                let cv = cond(&mut b, i.f("cond"));
+                let tb = goto(b.f, prog, &mut exits, target(i, pc).unwrap());
+                let fb = goto(b.f, prog, &mut exits, pc + 4);
+                Term::CondBr(cv, tb, fb)
+            }
+            "cbz" => {
+                let v = getx(&mut b, i.f("Rt"), i.f("sf"), false);
+                let t0 = b.ty(v);
+                let z = b.c(0, t0);
+                let cv = b.icmp(if i.f("op") != 0 { "ne" } else { "eq" }, v, z);
+                let tb = goto(b.f, prog, &mut exits, target(i, pc).unwrap());
+                let fb = goto(b.f, prog, &mut exits, pc + 4);
+                Term::CondBr(cv, tb, fb)
+            }
+            "tbz" => {
+                let bit = i.f("b5") << 5 | i.f("b40");
+                let rt = i.f("Rt");
+                let r = if rt != 31 { b.get(x(rt)) } else { b.c64(0) };
+                let m = b.c64(1i128 << bit);
+                let v = b.bin(BinOp::And, r, m);
+                let z = b.c64(0);
+                let cv = b.icmp(if i.f("op") != 0 { "ne" } else { "eq" }, v, z);
+                let tb = goto(b.f, prog, &mut exits, target(i, pc).unwrap());
+                let fb = goto(b.f, prog, &mut exits, pc + 4);
+                Term::CondBr(cv, tb, fb)
+            }
+            "ret" => Term::Ret,
+            "br" => {
+                let rn = i.f("Rn");
+                let xv = if rn != 31 { b.get(x(rn)) } else { b.c64(0) };
+                let ij = {
+                    let key = BKey::Exit(b'j', pc);
+                    let blk = b.f.block(key);
+                    b.f.bm(blk).term = Some(Term::IJump(None, pc));
+                    exits.push(blk);
+                    blk
+                };
+                let mut targets: Vec<u64> = prog.jt.get(&pc).cloned().unwrap_or_default();
+                targets.sort();
+                targets.dedup();
+                let at = index_at.get(&pc).copied();
+                let term = if at.is_some() && at.unwrap().0 == c {
+                    let tab = &prog.jt_index.iter().find(|r| r.0 == pc).unwrap().4;
+                    let cases: Vec<(u64, BlockId)> =
+                        tab.iter().enumerate().map(|(n, &t2)| (n as u64, goto(b.f, prog, &mut exits, t2))).collect();
+                    Term::Switch(at.unwrap().1, cases, ij)
+                } else if !targets.is_empty() {
+                    let lo = targets[0];
+                    let l = b.c64(lo as i128);
+                    let d = b.bin(BinOp::Sub, xv, l);
+                    let two = b.c64(2);
+                    let idx = b.intr("fshr", I64, &[d, d, two]);
+                    let cases: Vec<(u64, BlockId)> =
+                        targets.iter().map(|&t2| ((t2 - lo) >> 2, goto(b.f, prog, &mut exits, t2))).collect();
+                    Term::Switch(idx, cases, ij)
+                } else {
+                    Term::Br(ij)
+                };
+                let save = b.blk;
+                b.at(ij);
+                let tv = if rn != 31 { b.get(x(rn)) } else { b.c64(0) };
+                b.f.bm(ij).term = Some(Term::IJump(Some(tv), pc));
+                b.blk = save;
+                term
+            }
+            _ => Term::Trap(pc, i.word),
+        };
+        b.f.bm(c).term = Some(term);
+        cur = None;
+    }
+    drop(b);
+    if fun.order.iter().any(|&bl| matches!(fun.b(bl).term, Some(Term::NoReturn(..)))) {
+        // blocks only a noreturn call's return reached: gone
+        let e = fun.entry_block();
+        let mut seen: HashSet<BlockId> = HashSet::from([e]);
+        let mut todo = vec![e];
+        while let Some(bl) = todo.pop() {
+            for s in fun.b(bl).succs() {
+                if seen.insert(s) {
+                    todo.push(s);
+                }
+            }
+        }
+        fun.retain_blocks(|bl| seen.contains(&bl));
+        exits.retain(|bl| seen.contains(bl));
+    }
+    if fun.written & (0xFu128 << FN) != 0 {
+        let mut b = Builder::new(&mut fun);
+        for &bl in &exits {
+            b.at(bl);
+            let fl: Vec<ValueId> = FLAGS.iter().map(|&v| b.get(v)).collect();
+            b.op(Op::FlagsOut { always: false }, Ty::Void, &fl);
+        }
+    }
+    for &bl in &fun.order {
+        if fun.b(bl).term.is_none() {
+            panic!("block {} has no terminator", fun.b(bl).name());
+        }
+    }
+    for bl in cycle_edges(&fun) {
+        let v = fun.new_value(Ty::Void, Op::Barrier, &[]);
+        fun.bm(bl).ops.push(v);
+    }
+    finish(&mut fun);
+    if prog.omit {
+        omit_stores(&mut fun, prog);
+    }
+    fun
+}
+
+/// summary bits of the callee-saved registers and SP (build_ir._CALLEE_SAVED)
+const CALLEE_SAVED: u128 = (0x7FFu128 << 19) | (1u128 << SP) | (0xFFu128 << (V0 + 8));
+
+/// (read, killed) by an operation as register masks (build_ir._reads)
+fn reads(f: &Function, v: ValueId, prog: &Prog) -> (u128, u128) {
+    match &f.v(v).op {
+        Op::RegLoad(var) => (bit(*var), 0),
+        Op::Gcall { callee, .. } => {
+            let bd = prog.bound(*callee);
+            (bd.reads & REGS, bd.must & REGS)
+        }
+        Op::Icall(_) | Op::Svc(_) => (REGS, 0),
+        Op::Call(c) if c.ctx => (c.regs.unwrap_or(REGS) & REGS, 0),
+        Op::RowIo(r) if r.ctx => (r.regs.unwrap_or(REGS) & REGS, 0),
+        _ => (0, 0),
+    }
+}
+
+/// deletes each register's write-through store no reader can read before the register's next store (build_ir.omit_stores;
+/// the verification build's poison is not ported: the export is of the build without it)
+fn omit_stores(f: &mut Function, prog: &Prog) {
+    let at_ret = (prog.own.results | CALLEE_SAVED) & REGS;
+    let blocks = f.order.clone();
+    let mut info: HashMap<BlockId, (u128, u128)> = HashMap::new();
+    for &bl in &blocks {
+        let (mut gen, mut kill) = (0u128, 0u128);
+        for &v in f.b(bl).ops.iter().rev() {
+            if let Op::Writeback(var) = f.v(v).op {
+                let m = bit(var) & REGS;
+                gen &= !m;
+                kill |= m;
+                continue;
+            }
+            let (rd, k) = reads(f, v, prog);
+            if rd == REGS {
+                gen = REGS;
+                kill = 0;
+            } else if rd != 0 || k != 0 {
+                gen = rd | (gen & !k);
+                kill = (kill | k) & !rd;
+            }
+        }
+        info.insert(bl, (gen, kill));
+    }
+    let mut live_in: HashMap<BlockId, u128> = blocks.iter().map(|&b| (b, 0)).collect();
+    let live_out = |f: &Function, live_in: &HashMap<BlockId, u128>, bl: BlockId| -> u128 {
+        match f.b(bl).term.as_ref().unwrap() {
+            Term::Ret => at_ret,
+            Term::Tail(_) | Term::IJump(..) | Term::NoReturn(..) | Term::Trap(..) => REGS,
+            _ => f.b(bl).succs().iter().fold(0, |o, s| o | live_in[s]),
+        }
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &bl in blocks.iter().rev() {
+            let (gen, kill) = info[&bl];
+            let li = gen | (live_out(f, &live_in, bl) & !kill);
+            if li != live_in[&bl] {
+                live_in.insert(bl, li);
+                changed = true;
+            }
+        }
+    }
+    for &bl in &blocks {
+        let mut live = live_out(f, &live_in, bl);
+        let mut keep = Vec::with_capacity(f.b(bl).ops.len());
+        for &v in f.b(bl).ops.iter().rev() {
+            if let Op::Writeback(var) = f.v(v).op {
+                let m = bit(var);
+                if m & REGS != 0 && live & m == 0 {
+                    continue;
+                }
+                live &= !m;
+                keep.push(v);
+                continue;
+            }
+            let (rd, k) = reads(f, v, prog);
+            if rd == REGS {
+                live = REGS;
+            } else if rd != 0 || k != 0 {
+                live = rd | (live & !k);
+            }
+            keep.push(v);
+        }
+        keep.reverse();
+        f.bm(bl).ops = keep;
+    }
+}
+
+/// the blocks whose terminator has an edge closing a cycle (back edges of a depth-first search from the entry, then
+/// from any block it did not reach)
+pub fn cycle_edges(f: &Function) -> Vec<BlockId> {
+    let entry = f.entry_block();
+    let mut order = vec![entry];
+    order.extend(f.order.iter().copied().filter(|&b| b != entry));
+    let mut state: HashMap<BlockId, u8> = HashMap::new();
+    let mut out: Vec<BlockId> = Vec::new();
+    for root in order {
+        if state.contains_key(&root) {
+            continue;
+        }
+        state.insert(root, 1);
+        let mut stack: Vec<(BlockId, Vec<BlockId>, usize)> = vec![(root, f.b(root).succs(), 0)];
+        while let Some(top) = stack.last_mut() {
+            let blk = top.0;
+            if top.2 >= top.1.len() {
+                state.insert(blk, 2);
+                stack.pop();
+                continue;
+            }
+            let nxt = top.1[top.2];
+            top.2 += 1;
+            match state.get(&nxt) {
+                Some(1) => {
+                    if out.last() != Some(&blk) {
+                        out.push(blk);
+                    }
+                }
+                None => {
+                    state.insert(nxt, 1);
+                    let s = f.b(nxt).succs();
+                    stack.push((nxt, s, 0));
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    out.retain(|b| seen.insert(*b));
+    out
+}
+
+// ---- patch rows (nx2/lift2/probes.py)
+
+/// sem_fp.vread: V register n as ty
+pub fn vread(b: &mut Builder, n: u32, ty: Ty) -> ValueId {
+    let v = b.get(vreg(n));
+    let w = ty.width();
+    if w == 128 {
+        return b.bitcast(v, ty);
+    }
+    if ty.is_vec() {
+        let c = b.bitcast(v, Ty::parse("v2i64"));
+        let e = b.extract(c, 0);
+        return b.bitcast(e, ty);
+    }
+    let c = b.bitcast(v, Ty::vec(128 / w, ty));
+    b.extract(c, 0)
+}
+
+/// sem_fp.vwrite: V register n = val zero-extended to 128 bits
+pub fn vwrite(b: &mut Builder, n: u32, val: ValueId) {
+    let t = b.ty(val);
+    let w = t.width();
+    if w == 128 {
+        let c = b.bitcast(val, Ty::V128);
+        b.set(vreg(n), c);
+        return;
+    }
+    let xv = if !matches!(t, Ty::I(_)) { b.bitcast(val, Ty::I(w as u16)) } else { val };
+    let xv = b.zext(xv, I64);
+    let z = b.zero(Ty::V128);
+    let ins = b.insert(z, xv, 0);
+    b.set(vreg(n), ins);
+}
+
+/// probes.Value.lower: the instruction's result register gets fn(args)
+fn value_lower(b: &mut Builder, p: &ValueRow) {
+    let mut vals = Vec::new();
+    for a in &p.args {
+        if let Some(r) = a.strip_prefix('x') {
+            let (n, off) = match r.split_once('+') {
+                Some((n, o)) => (n, Some(o)),
+                None => (r, None),
+            };
+            let mut v = getx(b, n.parse().unwrap(), 1, false);
+            if let Some(o) = off {
+                let k = b.c64(o.parse::<i128>().unwrap());
+                v = b.bin(BinOp::Add, v, k);
+            }
+            vals.push(v);
+        } else {
+            let n = a[1..].parse().unwrap();
+            vals.push(vread(b, n, Ty::F32));
+        }
+    }
+    let ty = if p.result.starts_with('w') { I32 } else { I64 };
+    let r = b.call(Call { func: p.func.clone(), ..Default::default() }, ty, &vals);
+    setx(b, p.result[1..].parse().unwrap(), r, false);
+}
+
+fn int0(s: &str) -> i128 {
+    match s.strip_prefix("0x") {
+        Some(h) => i128::from_str_radix(h, 16).unwrap(),
+        None => s.parse().unwrap(),
+    }
+}
+
+/// probes.At.post: fn(args) at its place, its result in a register, io registers through a struct
+fn at_post(b: &mut Builder, row: &AtRow) {
+    let mut vals = Vec::new();
+    for a in &row.args {
+        let (kind, n) = (a.as_bytes()[0], &a[1..]);
+        let v = if kind == b'#' {
+            b.c(int0(n), I32)
+        } else if a == "sp" {
+            b.get(SP)
+        } else if kind == b'[' {
+            let (base, off) = n.trim_end_matches(']').split_once('+').unwrap();
+            let v = if base == "sp" { b.get(SP) } else { getx(b, base[1..].parse().unwrap(), 1, false) };
+            let k = b.c64(int0(off));
+            let ad = b.bin(BinOp::Add, v, k);
+            b.op(Op::Load, I64, &[ad])
+        } else if kind == b'x' || kind == b'w' {
+            getx(b, n.parse().unwrap(), (kind == b'x') as u32, false)
+        } else if kind == b'q' {
+            vread(b, n.parse().unwrap(), Ty::parse("v2i64"))
+        } else {
+            vread(b, n.parse().unwrap(), Ty::F32)
+        };
+        vals.push(v);
+    }
+    let ty = match row.result.as_deref().map(|r| r.as_bytes()[0]) {
+        None => Ty::Void,
+        Some(b'x') => I64,
+        Some(b'w') => I32,
+        Some(b's') => Ty::F32,
+        _ => Ty::parse("v2i64"),
+    };
+    let guest = !row.guest.is_null();
+    let r = if !row.io.is_empty() {
+        let nargs = vals.len() as u32;
+        for r in &row.io {
+            let n = r[1..].parse().unwrap();
+            let v = if r.starts_with('q') { vread(b, n, Ty::parse("v2i64")) } else { getx(b, n, 1, false) };
+            vals.push(v);
+        }
+        let call = b.op(
+            Op::RowIo(Box::new(RowIo { func: row.func.clone(), nargs, ctx: guest, regs: None })),
+            ty,
+            &vals,
+        );
+        for (k, r) in row.io.iter().enumerate() {
+            let q = r.starts_with('q');
+            let v = b.op(Op::RowOut(k as u32), if q { Ty::parse("v2i64") } else { I64 }, &[call]);
+            let n = r[1..].parse().unwrap();
+            if q {
+                vwrite(b, n, v);
+            } else {
+                let v = if r.starts_with('w') { b.trunc(v, I32) } else { v };
+                setx(b, n, v, false);
+            }
+        }
+        call
+    } else {
+        b.call(Call { func: row.func.clone(), effects: true, ctx: guest, ..Default::default() }, ty, &vals)
+    };
+    let Some(res) = &row.result else { return };
+    let n = res[1..].parse().unwrap();
+    if res.starts_with('s') || res.starts_with('q') {
+        vwrite(b, n, r);
+    } else {
+        setx(b, n, r, false);
+    }
+}
+
