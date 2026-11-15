@@ -43,8 +43,10 @@ class Table(unittest.TestCase):
         for p in probes.AT:
             i = enc.decode(p.word)
             self.assertIsNotNone(i, hex(p.pc))
-            self.assertTrue(p.before or i.entry.template not in TERMINATORS or probes.is_call(p.word), "%#x is a branch" % p.pc)
-            self.assertTrue(not p.replace or probes.is_call(p.word), "%#x replaces no call" % p.pc)
+            self.assertTrue(p.before or i.entry.template not in TERMINATORS or probes.is_call(p.word)
+                            or p.replace and probes.is_tail(p.word), "%#x is a branch" % p.pc)
+            self.assertTrue(not p.replace or probes.is_call(p.word) or probes.is_tail(p.word),
+                            "%#x replaces no call or tail call" % p.pc)
             for a in p.args:
                 self.assertRegex(a, probes.ARG)
             self.assertTrue(p.result is None or probes.RESULT.fullmatch(p.result), p.result)
