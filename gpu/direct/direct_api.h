@@ -19,7 +19,7 @@ typedef struct hsd_list_info {
     uint32_t load_kind;   /* HSD_LIST_LOAD: 1 vertex, 2 draw, 3 shape, 4 material, 5 and 6 the measuring copies of 1 and 2 (host/direct.c) */
     uint64_t lr, fp;      /* the guest return address and frame pointer of BeginRecording */
     uint64_t cmd;         /* the guest NVNcommandBuffer object */
-    uint64_t pass_key;    /* HSD_LIST_JOB: the recorder's pass key pointer (x3 of f_80084de0: job-formats.md) */
+    uint64_t pass_key;    /* HSD_LIST_JOB: the recorder's pass key pointer (x3 of f_80084de0: docs/direct/jobs.md) */
     uint64_t view;        /* HSD_LIST_JOB: the view record (x25 at BeginRecording), for logs only */
 } hsd_list_info;
 

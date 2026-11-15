@@ -1,5 +1,5 @@
 /* Game patch (on unless HOS_LAYER_AHEAD=0): the long layer of calc stage C starts with the render-job phase instead of after it
-   (docs/direct/boot-to-main-loop.md 4.3, docs/direct/patch-sites.md).
+   (docs/direct/jobs.md, docs/direct/frame-loop.md).
 
    Stage C's task graph opens the layer-list phase (six nodes of kind 0x8800) only after every render-job loop (kind
    0x400) has ended. The layer phase's nodes take their work from two queues of the work object W = [[sp + 0x48] + 0xd0]

@@ -25,7 +25,7 @@
        unconverted one is the placeholder, counted; the memcpy copies nothing either way.
      - the font glyph cache: f_8152f540 (the shelf packer: cache, &x, &y, w, h) notes the cell for this thread; after
        f_81539300 (nn::font's plot) has written it into the atlas ([cache+0xf0], pitch [cache+0x140]), the cell's rows
-       x..x+w+4, y..y+h+3 go to the atlas image (docs/direct/patch-sites.md 6).
+       x..x+w+4, y..y+h+3 go to the atlas image (docs/direct/terrain-texels.md).
    Packaged texture data (nvnTextureBuilderSetPackagedTextureData) is not copied into the storage (nvn_native.c).
    A line every 10 s: the asset heap's resident pages and the guest memory's (mincore), the copies skipped. */
 #include "hos.h"

@@ -1,6 +1,5 @@
 /* Game patch, direct mode only: every render job starts with the system binder's storage buffers bound,
-   so its draws do not read what the layer list bound passes earlier (docs/direct/patch-sites.md 3, part 1;
-   jobs-state.md A3/A4). A job is a rendering secondary that starts from nothing in the direct back end; on the console
+   so its draws do not read what the layer list bound passes earlier (docs/direct/jobs.md). A job is a rendering secondary that starts from nothing in the direct back end; on the console
    a job inherits the layer list's binds, and its task and mesh draws read slots 0-3 of stages 6 and 7 from there.
 
    The system binder f_80101ec0(info) binds those four slots (to every stage) with:

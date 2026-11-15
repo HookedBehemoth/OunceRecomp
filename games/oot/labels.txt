@@ -110,15 +110,15 @@
 811c9ba0 dta_virtual_pool_create          # host/oot_probes.c
 
 # --- descriptors and the per-view system textures
-80557420 desc_deferred_free_drain         # docs/direct/patch-sites.md: returns freed descriptor ids after the flip
+80557420 desc_deferred_free_drain         # docs/direct/texture-streaming.md: returns freed descriptor ids after the flip
 80966440 desc_pools_create                # work/assets/native/engine-materials.md: the texture pool (33,068 ids) and the sampler pool
-80064920 desc_register_texture            # docs/direct/patch-sites.md, docs/direct/texture-streaming.md: agl descriptor manager (mgr, texture, view, owner) -> RegisterTexture
-800634b0 desc_reregister                  # docs/direct/patch-sites.md, docs/direct/shadow-maps.md 2: frees an entry's descriptor id and takes a new one (ENTRY_HOOK); with no pool (+0x10 = 0) it only frees it (+0x68 = -1); docs/direct/transient-pool.md: reads the NVN format table 0x83f4848c (u32 per agl format, 0x5f entries) and initializes the manager's texture object over the entry's pool (+0x10) and offset (+0)
+80064920 desc_register_texture            # docs/direct/texture-streaming.md: agl descriptor manager (mgr, texture, view, owner) -> RegisterTexture
+800634b0 desc_reregister                  # docs/direct/texture-streaming.md, docs/direct/shadow-maps.md 2: frees an entry's descriptor id and takes a new one (ENTRY_HOOK); with no pool (+0x10 = 0) it only frees it (+0x68 = -1); docs/direct/transient-pool.md: reads the NVN format table 0x83f4848c (u32 per agl format, 0x5f entries) and initializes the manager's texture object over the entry's pool (+0x10) and offset (+0)
 834bf750 desc_register_view               # docs/direct/shadow-maps.md 2: a texture object of the manager's own over a TextureData copy, initialized and registered: a new id (local shadows, sun cascades)
 834bf9b0 desc_id_release                  # docs/direct/shadow-maps.md 2: an id's count down; at 0 onto the deferred list (+0xa00 by +0xa60) that f_80557420 drains
 800656b0 desc_texture_slot_b              # work/assets/native/rt-alloc.md, work/assets/native/cores.md: texture descriptor slot, with f_80064920 and f_80065880: texture object, builder from TextureData, register
 80065880 desc_texture_slot_c              # work/assets/native/rt-alloc.md, work/assets/native/nvn-callpaths.md: (same group; also re-made transient targets each frame)
-80667d20 system_texture_table_write       # docs/direct/patch-sites.md, the 30-slot table per view; its bl f_800634b0 at 0x806680d8 replaced by an At row with a guest call (host/direct_rt_ids.c)
+80667d20 system_texture_table_write       # docs/direct/texture-streaming.md, the 30-slot table per view; its bl f_800634b0 at 0x806680d8 replaced by an At row with a guest call (host/direct_rt_ids.c)
 800662e0 texview_mip_chain_register       # work/assets/native/descriptor-heap.md, work/assets/native/nvn-callpaths.md: Hi-Z / mip chain per-level image views
 
 # --- the frame: heads, the gate, submits, present
@@ -156,23 +156,23 @@
 80671d00 job_list_command_pool            # work/assets/native/engine-jobs.md: the list's command pool
 80671890 job_list_reset                   # work/assets/native/engine-jobs.md: resets the render-job list each frame
 80435300 job_mtx_set                      # work/assets/native/cpu-to-gpu.md: property / mtx-set lookups job
-8067c310 job_occlusion_grid_dispatch      # docs/direct/jobs-state.md, docs/direct/patch-sites.md: the occlusion grid's DispatchCompute
+8067c310 job_occlusion_grid_dispatch      # docs/direct/jobs.md: the occlusion grid's DispatchCompute
 800766e0 job_phase_per_list               # work/assets/native/engine-jobs.md: scheduler's bit-8 phase, per list
 8007fe60 job_scheduler                    # work/assets/native/engine-jobs.md, host/eng_jobs.c: the job runner (agl::lyr::Renderer begin/end, render-job loop)
-80083580 job_scheduler_sibling            # work/assets/native/engine-layers.md, docs/direct/patch-sites.md 8: a sibling of the job body; [[item] + 0x10] of the layer phase's queue items (vtable 0x84c227d0), run by f_8007fe60
+80083580 job_scheduler_sibling            # work/assets/native/engine-layers.md, docs/direct/jobs.md: a sibling of the job body; [[item] + 0x10] of the layer phase's queue items (vtable 0x84c227d0), run by f_8007fe60
 80083960 job_scheduler_virtual            # work/assets/native/engine-jobs.md, host/eng_jobs.c: the scheduler's virtual twin
-82c02f20 job_sync_pre_draw_a              # docs/direct/jobs-state.md, docs/direct/patch-sites.md: pre-draw hook: waits for GPU culling (WaitEvent b00 + Barrier)
-82c03170 job_sync_pre_draw_b              # docs/direct/jobs-state.md: same code, WaitEvent b48
+82c02f20 job_sync_pre_draw_a              # docs/direct/jobs.md: pre-draw hook: waits for GPU culling (WaitEvent b00 + Barrier)
+82c03170 job_sync_pre_draw_b              # docs/direct/jobs.md: same code, WaitEvent b48
 831fa4a0 job_sync_water_wait              # host/direct_job_sync.c, [renderer+0x150]: tail-jumps to WaitEvent (br x4 at 0x831fa588, replaced by an instead row)
 8007fe10 job_worker_calc                  # work/assets/native/engine-jobs.md: worker thread's calc_(msg): msg 1 runs the scheduler
 800711c0 job_workers_post                 # work/assets/native/engine-jobs.md: INFERRED: posts msg 1 to the workers
-80084de0 render_job_record                # docs/direct-backend-plan.md, docs/direct/job-formats.md: a render job's recorder (x3: the pass key)
+80084de0 render_job_record                # docs/direct-backend-plan.md, docs/direct/jobs.md: a render job's recorder (x3: the pass key)
 
 # --- layers: agl::lyr lists and the pipeline hook table (slot = offset in vtable 0x84c847f0)
 8006f9c0 layer_decals_static_shadow       # work/assets/native/engine-layers.md 6.1: raises hook +0x50 (decals, static shadow)
 8007d2e0 layer_gpu_cull_graphics          # work/assets/native/engine-frame.md: layer #240: GPU culling's graphics side, sky/env
-8006e160 layer_item_step                  # docs/direct/patch-sites.md, docs/direct/boot-to-main-loop.md 4.3: one step of a layer by kind (0, 1, 2 decals, 4 opaque/xlu, 5 scene layers, 7 post, 9)
-8007b520 layer_list_begin_unused          # docs/direct/patch-sites.md, begins a list for every layer job; never submitted
+8006e160 layer_item_step                  # docs/direct/jobs.md, docs/direct/boot-to-main-loop.md 4.3: one step of a layer by kind (0, 1, 2 decals, 4 opaque/xlu, 5 scene layers, 7 post, 9)
+8007b520 layer_list_begin_unused          # docs/direct/jobs.md, begins a list for every layer job; never submitted
 8007da20 layer_list_end_b                 # work/assets/native/engine-frame.md, work/assets/native/engine-jobs.md: layer list end (0x8007dabc)
 8007ad40 layer_list_record_b              # host/direct.c, agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
 8006cd60 layer_list_record_post           # host/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
@@ -220,10 +220,10 @@
 8086e790 pass_cubemap_filter_caller       # work/assets/native/engine-frame.md
 8066bec0 pass_deferred_lighting           # work/assets/native/engine-frame.md: deferred lighting / composite
 8065c660 pass_depth_buffer                # work/assets/native/engine-frame.md, work/assets/native/rt-alloc.md: "DepthBuffer", "Reprojection"
-8028a2a0 pass_depth_probe_list            # docs/direct/job-formats.md: depth probes' layer list (owner, drawctx, key)
+8028a2a0 pass_depth_probe_list            # docs/direct/jobs.md: depth probes' layer list (owner, drawctx, key)
 802867f0 pass_depth_probes                # work/assets/native/engine-frame.md: "inner/outer_depth_probe_tex"
 80280270 pass_dof                         # work/assets/native/engine-frame.md: DOF / bilateral grid group
-80681320 pass_draw_inline                 # docs/direct-backend-plan.md, docs/direct/job-formats.md: the layer list drawing a pass itself
+80681320 pass_draw_inline                 # docs/direct-backend-plan.md, docs/direct/jobs.md: the layer list drawing a pass itself
 802ab6c0 pass_draw_main_screen            # work/assets/native/engine-frame.md: "Draw(drawMainScreen_)"
 80295060 pass_env_cube_compute            # work/assets/native/engine-frame.md: compute 4x4x6 (#239)
 8025fee0 pass_env_cubemap                 # work/assets/native/engine-frame.md: env cubemap prefilter (x16 f_802631a0)
@@ -235,7 +235,7 @@
 8028b110 pass_fog_water                   # work/assets/native/engine-frame.md: "FogPrePass AfterWater/BeforeWataer"
 802a3700 pass_half_color                  # work/assets/native/engine-frame.md: "gsys::RenderBuffer::Color(half)"
 802a48b0 pass_half_nld_max                # work/assets/native/engine-frame.md: "agl::utl::DepthBufferEx::HalfNld(Max)"
-806688c0 pass_job_caller                  # docs/direct/job-formats.md: (pipeline, drawctx, idx): calls a pass's render jobs (job-call splice at 0x80668a9c)
+806688c0 pass_job_caller                  # docs/direct/jobs.md: (pipeline, drawctx, idx): calls a pass's render jobs (job-call splice at 0x80668a9c)
 802a9520 pass_linear_depth                # work/assets/native/engine-frame.md: linear depth
 8067d7a0 pass_linear_depth_grid           # work/assets/native/engine-frame.md: linear depth, HalfNld, grid dispatches
 80255be0 pass_local_shadow                # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawDepth": each light of its list with +0x5f8 bit 2 draws its map, then bit 3 is set
@@ -247,7 +247,7 @@
 80a47660 pass_opaque_xlu                  # work/assets/native/engine-layers.md, work/assets/native/engine-frame.md: gsys pipeline: opaque / XLU (raises hook +0x58)
 8027a310 pass_reduce_prepass              # work/assets/native/engine-frame.md: "ReducePrePass"
 8028f500 pass_rt_setup                    # work/assets/native/nvn-callpaths.md, work/assets/native/engine-jobs.md: render targets (SET_RT, clears)
-806790d0 pass_scene_depth_helper          # docs/direct/job-formats.md: called from the opaque pipeline, scene depth and probes
+806790d0 pass_scene_depth_helper          # docs/direct/jobs.md: called from the opaque pipeline, scene depth and probes
 8065fa70 pass_scene_dispatch              # work/assets/native/engine-frame.md: the 3D pipeline's own dispatch
 80668370 pass_scene_layers_b              # work/assets/native/engine-frame.md: more scene layers
 80660320 pass_scene_pipeline              # work/assets/native/engine-frame.md, the 3D render pipeline (stage driver: 9 SignalEvent / 10 WaitEvent)
@@ -280,8 +280,8 @@
 802800c0 pass_ui_layer_clear              # work/assets/native/engine-frame.md: UI layer clear (#237)
 802910a0 pass_vegetation_compute          # work/assets/native/engine-layers.md, work/assets/native/engine-frame.md: vegetation compute (SsboMeshPlacement), GPU culling
 802740c0 pass_vrs_bilateral               # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md, docs/direct/shadow-maps.md 2: shading-rate image, bilateral grid; a pipeline stage callback that also frees the view's transients, the local-light maps (light +0x420, lr 0x802747b4 / 0x80274b14)
-80279400 pass_water                       # docs/direct/jobs-state.md, docs/direct/patch-sites.md: water drawer (WaitEvent b90 at 0x8027944c)
-80279b30 pass_water_caller                # docs/direct/jobs-state.md: tail-calls the water drawer
+80279400 pass_water                       # docs/direct/jobs.md: water drawer (WaitEvent b90 at 0x8027944c)
+80279b30 pass_water_caller                # docs/direct/jobs.md: tail-calls the water drawer
 802771e0 pass_water_depth_copy            # work/assets/native/engine-layers.md: "Ext::BeforeWater::FullDepthCopy"
 81199f00 pass_weather_copy                # work/assets/native/block-linear.md: WeatherData target copy
 80669b80 pass_wet_mask                    # work/assets/native/engine-frame.md: "wet_mask"
@@ -297,35 +297,35 @@
 80792270 ui_pane_capture_alloc            # docs/direct/render-targets.md: "SaveLoadIcon_00" (a UI pane captured to a small R8 target) # ?
 # --- draw recording: binders, drawers, precompiled lists, occlusion gating
 800715e0 draw_bind_object_ubo             # work/assets/native/command-lists.md, work/assets/native/uniform-buffers.md: draw-time binder (UBO, CallCommands)
-80435bc0 draw_deformable_model            # docs/direct/jobs-state.md, work/assets/native/uniform-buffers.md: draws without own vertex bind; deformable model blocks
+80435bc0 draw_deformable_model            # docs/direct/jobs.md, work/assets/native/uniform-buffers.md: draws without own vertex bind; deformable model blocks
 83670280 draw_instance_loop               # work/assets/native/engine-materials.md: instance loop (with the 0x836a.. family)
 8008fc00 draw_material_bind               # gpu/legacy/vk/eng_job.h, work/assets/native/command-lists.md: the draw-time material binder (program, CallCommands, textures)
-8027c9e0 draw_method_dispatch             # work/assets/native/engine-layers.md, docs/direct/patch-sites.md: draw-method dispatcher; builds the system binder block
-8008d640 draw_occlusion_gated             # work/assets/native/nvn-callpaths.md, docs/direct/patch-sites.md: occlusion-gated draws (reports, conditional render, grid dispatch)
+8027c9e0 draw_method_dispatch             # work/assets/native/engine-layers.md, docs/direct/jobs.md: draw-method dispatcher; builds the system binder block
+8008d640 draw_occlusion_gated             # work/assets/native/nvn-callpaths.md, docs/direct/jobs.md: occlusion-gated draws (reports, conditional render, grid dispatch)
 800955a0 draw_occlusion_gated_b           # work/assets/native/nvn-callpaths.md: occlusion-gated draws
-80078fc0 draw_occlusion_helper            # docs/direct/job-formats.md: the recorder's occlusion helper
+80078fc0 draw_occlusion_helper            # docs/direct/jobs.md: the recorder's occlusion helper
 80296540 draw_precompiled_c               # work/assets/native/engine-materials.md: a draw function under the recorder
 80265760 draw_set_render_targets          # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: agl driver helper: SetRenderTargets
-8008f8e0 draw_shape                       # docs/direct/jobs-state.md: shape draw under the recorder; calls the pre-draw hook for kind-2 items
+8008f8e0 draw_shape                       # docs/direct/jobs.md: shape draw under the recorder; calls the pre-draw hook for kind-2 items
 80077d60 draw_state_bind_d                # work/assets/native/nvn-callpaths.md: state objects built on the stack and bound
 802a2fc0 draw_state_blend                 # work/assets/native/engine-layers.md: agl driver helper: blend/colour/mask state
 8008b3e0 draw_state_polygon               # work/assets/native/engine-layers.md: agl driver helper: polygon state
 80104de0 draw_texture_handle              # work/assets/native/engine-layers.md: agl driver helper: texture handle
 80265350 draw_viewport                    # work/assets/native/engine-layers.md: agl driver helper: viewport
 802a46e0 draw_viewport_scissor            # host/oot_probes.c hos_oot_wide_save_picture: SetScissor then SetViewport (At row at 0x802a4824, io w1-w4)
-801a2d70 mesh_bind_name4                  # docs/direct/jobs-state.md, host/direct_mesh_binds.c: binds resource name 4 of a mesh drawer (ctx, item, 4, ..)
-801a6a40 mesh_bind_name5                  # docs/direct/jobs-state.md, host/direct_mesh_binds.c: binds resource name 5 (ctx, item, 5, ..)
-801a43e0 mesh_drawer_a                    # docs/direct/jobs-state.md, docs/direct/patch-sites.md: a mesh-task drawer that binds neither task slot
-801a46a0 mesh_drawer_b                    # docs/direct/jobs-state.md, docs/direct/patch-sites.md: (same)
-801a60f0 mesh_drawer_c                    # docs/direct/jobs-state.md: (same, stage 7 slot 1)
-82c02bc0 mesh_drawer_culled_a             # docs/direct/jobs-state.md: culled-instance drawer (binds names 4 and 5)
-82c024f0 mesh_drawer_culled_b             # docs/direct/jobs-state.md: culled-instance drawer
-801a6410 mesh_drawer_d                    # docs/direct/jobs-state.md, work/assets/native/engine-layers.md: (same; reads the GPU-culling append counters)
-801a6720 mesh_drawer_e                    # docs/direct/jobs-state.md: (same)
+801a2d70 mesh_bind_name4                  # docs/direct/jobs.md, host/direct_mesh_binds.c: binds resource name 4 of a mesh drawer (ctx, item, 4, ..)
+801a6a40 mesh_bind_name5                  # docs/direct/jobs.md, host/direct_mesh_binds.c: binds resource name 5 (ctx, item, 5, ..)
+801a43e0 mesh_drawer_a                    # docs/direct/jobs.md: a mesh-task drawer that binds neither task slot
+801a46a0 mesh_drawer_b                    # docs/direct/jobs.md: (same)
+801a60f0 mesh_drawer_c                    # docs/direct/jobs.md: (same, stage 7 slot 1)
+82c02bc0 mesh_drawer_culled_a             # docs/direct/jobs.md: culled-instance drawer (binds names 4 and 5)
+82c024f0 mesh_drawer_culled_b             # docs/direct/jobs.md: culled-instance drawer
+801a6410 mesh_drawer_d                    # docs/direct/jobs.md, work/assets/native/engine-layers.md: (same; reads the GPU-culling append counters)
+801a6720 mesh_drawer_e                    # docs/direct/jobs.md: (same)
 83607fc0 occl_gating_a                    # work/assets/native/engine-jobs.md: occlusion gating (ResetCounter, ReportCounter)
 83607730 occl_gating_b                    # work/assets/native/engine-jobs.md
 83607e80 occl_gating_c                    # work/assets/native/engine-jobs.md
-8067c110 occl_grid_item_callback          # docs/direct/jobs-state.md, docs/direct/patch-sites.md: an item's draw callback; tail-calls the grid dispatch
+8067c110 occl_grid_item_callback          # docs/direct/jobs.md: an item's draw callback; tail-calls the grid dispatch
 80293890 shape_list_build_draw            # host/eng_lists.c, work/assets/native/engine-cut-plan.md: precompiled list: one indexed/mesh draw
 806002e0 shape_list_build_instance        # gpu/legacy/render/nvn_pkt.h, host/eng_lists.c: per-instance shape list (model instance x pass x variant)
 80445020 shape_list_build_material        # host/eng_lists.c, gpu/legacy/render/nvn_pkt.h: a material list (never called in play)
@@ -340,7 +340,7 @@
 80602520 shape_model_texture_bind         # work/assets/native/engine-materials.md: model-texture side of the material binding
 801060f0 sysbind_slot                     # host/direct_mesh_system.c, binds a system slot (slots 0-2)
 80100210 sysbind_slot3                    # host/direct_mesh_system.c: system uniform slot 3 binder
-80101ec0 sysbind_system                   # docs/direct/patch-sites.md, docs/direct/jobs-state.md: the system binder (from the layer list, 0x8027caa0)
+80101ec0 sysbind_system                   # docs/direct/jobs.md: the system binder (from the layer list, 0x8027caa0)
 
 # --- uniform and other GPU data writers, GPU pools
 809de920 gpu_pool_create                  # work/assets/native/alloc-transfer.md: made 4,574 of the game's GPU pools ("gpu")
@@ -487,12 +487,12 @@
 806559e0 vfx_star_ctx                     # work/assets/native/engine-layers.md: StarCtx (sky stars)
 
 # --- fonts, UI, movies
-8152f540 font_glyph_cell_write_a          # docs/direct/patch-sites.md: (the glyph cache's shelf packer (cache, &x, &y, w, h))
-81539300 font_glyph_cell_write_b          # docs/direct/patch-sites.md: (nn::font's plot, the glyph writer)
-8156ca60 font_plot_caller_a               # docs/direct/patch-sites.md: reaches the glyph writer
-8156fdc0 font_plot_caller_b               # docs/direct/patch-sites.md
-815392a0 font_plot_caller_c               # docs/direct/patch-sites.md
-81535eb0 font_plot_caller_d               # docs/direct/patch-sites.md: asks the shelf packer for a cell
+8152f540 font_glyph_cell_write_a          # docs/direct/terrain-texels.md: (the glyph cache's shelf packer (cache, &x, &y, w, h))
+81539300 font_glyph_cell_write_b          # docs/direct/terrain-texels.md: (nn::font's plot, the glyph writer)
+8156ca60 font_plot_caller_a               # docs/direct/terrain-texels.md: reaches the glyph writer
+8156fdc0 font_plot_caller_b               # docs/direct/terrain-texels.md
+815392a0 font_plot_caller_c               # docs/direct/terrain-texels.md
+81535eb0 font_plot_caller_d               # docs/direct/terrain-texels.md: asks the shelf packer for a cell
 83b82250 movie_renderer_copy_frame        # work/assets/native/block-linear.md: NV12 planes to two targets
 83b5e5c0 event_movie_component_start    # docs/direct/movie-player.md: takes the movie's path and its NDVE resource (component +0x228) and calls movie_module_play
 83b7c020 movie_module_play                # docs/direct/movie-player.md: makes the player, hands it the NDVE resource (param 3; null = no enhancement), starts it

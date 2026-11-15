@@ -1,6 +1,6 @@
 // The NVN state of a list:
 // what the emitted ops set, in the layout the translator's questions and the driver banks are read from. A list starts
-// from NVN's defaults (it inherits nothing from the list before it: jobs-state.md A); the recording thread's alone.
+// from NVN's defaults (it inherits nothing from the list before it: docs/direct/jobs.md); the recording thread's alone.
 // The generation counters say what changed since a draw last read it (direct_draw.cpp keeps its copies by them).
 #pragma once
 

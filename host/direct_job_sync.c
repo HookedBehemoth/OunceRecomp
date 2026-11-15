@@ -1,5 +1,5 @@
 /* Game patch, direct mode only: the waits, barriers and dispatches a render job records move to the layer
-   list that calls the job, so that a job is one rendering secondary (docs/direct/patch-sites.md 4; jobs-state.md B).
+   list that calls the job, so that a job is one rendering secondary (docs/direct/jobs.md).
 
    Inside jobs, every frame and all in the first colour pass (key 0x113b647338) and one in 0x113b648038:
    - f_82c02f20 / f_82c03170 (the culling pre-draw hooks): WaitEvent (return 0x82c0301c / 0x82c0326c) and Barrier(0x28)
@@ -18,7 +18,7 @@
    view record found (x21) and the list's draw context ([sp + 0x10]) as operands: it records the kept waits and one
    barrier of the kept bits on the layer list's command buffer, then the kept dispatches (f_8067c310 with the list's draw
    context; M6d: before the job's commands, not after), then the CallCommands. The water wait may only go here
-   (jobs-state.md B: earlier positions deadlock); f_8028a2a0's call site (0x8028a538) never calls a job that kept one
+   (docs/direct/jobs.md: earlier positions deadlock); f_8028a2a0's call site (0x8028a538) never calls a job that kept one
    (counted).
 
    Check that it applies: the 600-present line "direct patch job sync" (kept and placed a frame, by kind; dropped; calls of
