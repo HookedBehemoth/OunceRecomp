@@ -1,5 +1,5 @@
 // Late scheduling of a translated stage's SPIR-V: the translator's register-pressure pass (docs/direct/spv-late.md;
-// the cause in docs/direct/task-mesh.md).
+// the cause in docs/direct/hang-fix.md, "The translator").
 //
 // The translator emits a stage in the native code's order, and the game's compiler loads early: a mesh stage that reads 112
 // rows of a probe table has all of them in registers before the first is used. RADV has 256 vector registers a thread; past
