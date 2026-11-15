@@ -60,7 +60,7 @@ lift_if_stale() {   # (a lifter change: lift again, as scripts/relift.sh does, b
   echo "== $(date '+%F %T') refresh to $head"
   lift_if_stale &&
   HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
-    capped work/venv/bin/python -I -u nx2/build.py --standalone --jobs 8
+    capped work/venv/bin/python -I -u nx2/build.py --standalone
 } > "$log" 2>&1 || fail "the build failed"
 printf '%s\n%s %s\n' "$head" "$(date +%F)" "$(git log -1 --format=%s)" > "$bd/BUILD.txt.new" && mv -f "$bd/BUILD.txt.new" "$bd/BUILD.txt"
 echo "play-refresh: work/sa/build is $head ($(( $(date +%s) - start )) s)" | tee -a "$log"

@@ -7,7 +7,7 @@ Linking it is also the check that the whole game closes over itself: any unresol
 Objects are cached by their key in work/objcache; a lifted partition whose inputs are unchanged comes from the cache
 by an input key without being lifted again.
 
-Usage:  python -I nx2/build.py [--jobs 1] [--opt O1] [--standalone]
+Usage:  python -I nx2/build.py [--jobs N] [--opt O1] [--standalone]   (--jobs default: HOOKSHOT_JOBS, else by memory)
   --standalone: accepted for the scripts that pass it (the build is always the standalone game)
   --dry-run: the start-up with no lift, up to the compile; fails if a file the compile reads (the lift's aside) is missing
 
@@ -248,6 +248,51 @@ def prune_object_cache(now=None):
 # (what one compiler is counted at where its own need is not worked out: a hot piece (0.8-1.7 GB measured at -O2),
 # and the compile countdown's guess of how many the free memory holds. About the median partition's peak)
 COMPILER_MB = 1500
+# (the default job count: what one job of the lifted game's build takes at its peak, a lift worker holding the plan or a
+# compiler of a partition, and what the build's own process holds beside them (the plan with its summaries and every
+# partition's IR text between the lift and the compile) plus a margin. Measured on TOTK, cold, in a capped scope (the
+# whole scope's memory.peak): 6 jobs 10.8 GB without summaries in the plan, 8 jobs 14.2 GB with them; the summary step
+# runs before the lift workers and the compilers (game.finish_summaries), its own peak 1.4 GB plus its workers')
+JOB_MB = 1700
+BASE_MB = 3000
+
+
+def memory_limit_mb():
+    """(MB, what it is) the memory the build may use: the smallest memory.max of this process's cgroup and its parents
+    (a capped scope: systemd-run -p MemoryMax=...), and MemAvailable"""
+    out = []
+    try:
+        with open("/proc/self/cgroup") as f:
+            path = [l.split(":", 2)[2].strip() for l in f if l.startswith("0::")][0]
+        while True:
+            try:
+                with open("/sys/fs/cgroup%s/memory.max" % path.rstrip("/")) as f:
+                    v = f.read().strip()
+                if v != "max":
+                    out.append((int(v) >> 20, "the cgroup's memory.max"))
+            except (OSError, ValueError):
+                pass
+            if path in ("/", ""):
+                break
+            path = os.path.dirname(path)
+    except (OSError, IndexError):
+        pass
+    free = free_mb()
+    if free is not None:
+        out.append((free, "MemAvailable"))
+    return min(out) if out else (None, "unknown")
+
+
+def default_jobs():
+    """(jobs, why): HOOKSHOT_JOBS, else what the memory holds ((limit - BASE_MB) / JOB_MB), between 1 and the CPUs"""
+    if os.environ.get("HOOKSHOT_JOBS"):
+        return int(os.environ["HOOKSHOT_JOBS"]), "HOOKSHOT_JOBS"
+    cpus = os.cpu_count() or 1
+    limit, what = memory_limit_mb()
+    if limit is None:
+        return cpus, "%d CPUs (the memory not known)" % cpus
+    n = max(1, min(cpus, (limit - BASE_MB) // JOB_MB))
+    return n, "%s %d MB: (%d - %d) / %d MB a job, at most %d CPUs" % (what, limit, limit, BASE_MB, JOB_MB, cpus)
 
 
 def free_mb():
@@ -531,7 +576,7 @@ def compile_one(job):
 def main():
     kit.wait_for_quiet('the compile')
     p = argparse.ArgumentParser()
-    p.add_argument("--jobs", type=int, default=1)
+    p.add_argument("--jobs", type=int, default=None)   # (default: default_jobs)
     p.add_argument("--opt", default="O1")
     p.add_argument("--standalone", action="store_true")   # (always: kept for the scripts that pass it)
     # (a check with no game: everything up to the compile, without the lift's files; every other file the compile would
@@ -539,6 +584,9 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args()
     a.standalone = True
+    if a.jobs is None:
+        a.jobs, why = default_jobs()
+        print("build: %d jobs (%s)" % (a.jobs, why), flush=True)
     sa = os.path.join(kit.WORK, "sa")
     gen = os.path.join(sa, "gen")
     out = os.path.join(sa, "build")

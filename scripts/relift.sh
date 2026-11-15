@@ -2,7 +2,7 @@
 # A new lift of the game and the build on it, for the checkout this copy of the script is in (the main checkout or an agent's
 # worktree). Needed after a change to the lift (nx2/lift.py, nx2/lift2/discover.py, the lift-time patch sources); a change
 # to the lifter itself needs only a build (the plan holds instructions, not lifted code; scripts/play-refresh.sh lifts again
-# by itself when the lift's inputs changed). About 1.5 minutes of lift and 2-5 minutes of build here (6 jobs; the lifted
+# by itself when the lift's inputs changed). About 1.5 minutes of lift and 2-5 minutes of build here (jobs by the memory, build.default_jobs; the lifted
 # partitions come from the object cache when their inputs are unchanged).
 #
 #   scripts/relift.sh
@@ -56,7 +56,7 @@ if [ -n "$play" ]; then
 else
     { exec 9>"$bd/.build.lock"; flock 9
       HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
-          work/venv/bin/python -I -u nx2/build.py --standalone --jobs "${HOOKSHOT_JOBS:-12}"; } >> "$log" 2>&1 ||
+          work/venv/bin/python -I -u nx2/build.py --standalone; } >> "$log" 2>&1 ||
         { echo "relift: the build failed (see $log)"; exit 1; }
 fi
 echo "relift: lift and build of $(git rev-parse --short HEAD) in $(( $(date +%s) - start )) s (build $(( $(date +%s) - b0 )) s); log $log" | tee -a "$log"

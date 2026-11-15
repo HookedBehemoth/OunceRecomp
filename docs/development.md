@@ -32,7 +32,7 @@ Run everything with `python -I` from this folder.
 | `python -I nx2/lift2/census.py` | instruction census of the game's code: the forms and what the lifter covers |
 | `python -I nx2/lift2/selfcheck.py` | the lifter's decoder against llvm-mc on every distinct word of the game |
 | `python -I nx2/test_lift2_leaf.py [--count 500 --states 4] [--calls]` | random whole functions (or call trees) of the game, lifted and compared with Unicorn |
-| `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot` + `hookshot_direct.so`, the only renderer |
+| `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone` | the standalone game: `work/sa/build/hookshot` + `hookshot_direct.so`, the only renderer |
 | `scripts/run-vk.sh <name> [seconds] [-- NAME=VALUE ...]` | a muted, headless test run (Linux), with screenshots in `work/runs/<name>/shots`; see Iterating below |
 | `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_PROFILE=<seconds>` + `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>` (the sampler runs only with `HOS_PROFILE` set), named from the linker maps |
 
@@ -64,7 +64,7 @@ headers where `nx2/build.py` finds them (`/usr`, or `HOOKSHOT_SPIRV_HEADERS` and
 ones likewise with `HOOKSHOT_VULKAN_HEADERS`); `scripts/relift.sh` lifts the game (the plan in `work/sa/plan.pickle`, the
 tables and the image's C in `work/sa/gen`) and builds it.
 
-**Build.** `work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` writes `work/sa/build/` (`hookshot`,
+**Build.** `work/venv/bin/python -I -u nx2/build.py --standalone` writes `work/sa/build/` (`hookshot`,
 `hookshot_direct.so`, the caches beside them). A change to a header every file includes, or to the build flags, rebuilds
 everything; a change in `host/` or `gpu/direct/` recompiles only that file and links.
 - To replace a game function, write `ENTRY_HOOK(0x8xxxxxxx)` or `ENTRY_HOOK_SYM(name)` in a `host/*.c` file (return 1
@@ -438,7 +438,7 @@ load and a branch. `logall` turns every `log*` item on.
 
 | Switch | What it does |
 |---|---|
-| `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (one per CPU thread by default, each started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns the check off, `HOOKSHOT_MEM_RESERVE_GB` is the memory kept free, 1.5 by default) |
+| `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Jobs at once (default: what the memory holds, the smallest of the scope's `memory.max` and MemAvailable less 3 GB, 1.7 GB a job, at most one per CPU thread; the build prints the number and why; each compiler started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns the check off, `HOOKSHOT_MEM_RESERVE_GB` is the memory kept free, 1.5 by default) |
 | `RX_DIRECT_ONLY=1` | Only the direct back end, with no lift |
 | `HOOKSHOT_VULKAN_HEADERS`, `HOOKSHOT_SPIRV_HEADERS`, `HOOKSHOT_VMA_HEADERS`, `RX_CPM` | Where the headers are (a package root or its `include/`; `RX_CPM` is a CPM cache) |
 | `HOOKSHOT_FFMPEG=<prefix>`, `HOOKSHOT_SDL2` | FFmpeg's static libraries, SDL2's library folder |

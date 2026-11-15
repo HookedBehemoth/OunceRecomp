@@ -345,7 +345,7 @@ zoo_static benches (600 frames each) and a 100 s title boot.
 
 | switch | when | what |
 |---|---|---|
-| `nx2/build.py --jobs N`, `--opt O1` | build | parallel jobs; the cold partitions' level |
+| `nx2/build.py --jobs N` (`HOOKSHOT_JOBS`), `--opt O1` | build | parallel jobs (default: by the memory, `build.default_jobs`); the cold partitions' level |
 | `RX_HOT_OPT` | build | the hot partitions' level (default `O2`) |
 | `RX_MARCH` | build | the target CPU (default: the host's) |
 | `HOOKSHOT_HOT_FUNCS` | lift | the hot list |
