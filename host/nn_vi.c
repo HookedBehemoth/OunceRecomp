@@ -286,14 +286,14 @@ uint32_t hos_movie_frames(uint64_t player) {
     ReleaseSRWLockExclusive(&lock);
     return movie_log(n);
 }
-/* (nx2/oot_patches.py patch_whole_frames) the whole frames a game counter at `at` takes for an amount of the frame step (its
-   float's bits): with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
+/* (lift 2's Value probes, nx2/lift2/probes.py) the whole frames a game counter at `at` takes for an amount of the frame
+   step: with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
 #include "frame_whole.h"
 static FrameWhole frame_whole_state;
 static SRWLOCK frame_whole_lock = SRWLOCK_INIT;   /* (the game's update threads) */
-uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {
+uint32_t hos_frame_whole(uint64_t at, float amount) {
     AcquireSRWLockExclusive(&frame_whole_lock);
-    const uint32_t whole = frame_whole(&frame_whole_state, at, amount_bits, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
+    const uint32_t whole = frame_whole(&frame_whole_state, at, amount, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
     ReleaseSRWLockExclusive(&frame_whole_lock);
     {   /* HOS_DBG=whole (diagnostic): the first calls, and a count every 600 (which counters, what they took) */
         static int on = -1;
@@ -302,7 +302,7 @@ uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits) {
         if (on) {
             const long n = __atomic_add_fetch(&calls, 1, __ATOMIC_RELAXED);
             if (n <= 8 || n % 600 == 0)
-                hos_log("whole: call %ld counter %#llx amount %#x took %u", n, (unsigned long long)at, amount_bits, whole);
+                hos_log("whole: call %ld counter %#llx amount %.4f took %u", n, (unsigned long long)at, (double)amount, whole);
         }
     }
     return whole;

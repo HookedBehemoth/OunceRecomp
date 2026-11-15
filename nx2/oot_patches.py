@@ -38,7 +38,9 @@ WHOLE_SITES = (
 )
 WHOLE_SITES = tuple((h.replace("@", "\n"), o.replace("@", "\n"), k) for h, o, k in WHOLE_SITES)
 WHOLE_MARK = "/* (the step's whole frames: nx2/oot_patches.py) */"
-WHOLE_DECL = "extern uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits);\n"
+WHOLE_DECL = "extern uint32_t hos_frame_whole(uint64_t at, float amount);\n"
+# (the present lifter keeps S0 as bits in the context: the float made of them)
+WHOLE_AMOUNT = "({ float _f; const uint32_t _u = (uint32_t)c->vreg[0][0]; memcpy(&_f, &_u, 4); _f; })"
 
 
 def whole_new(old, key):
@@ -47,7 +49,7 @@ def whole_new(old, key):
     for i, line in enumerate(lines):
         if "recomp_fp_to_int(c->vreg[0][0]" in line:
             reg = line.split("=", 1)[0]
-            lines[i] = "%s=hos_frame_whole(%s, (uint32_t)c->vreg[0][0]);   %s" % (reg, key, WHOLE_MARK)
+            lines[i] = "%s=hos_frame_whole(%s, %s);   %s" % (reg, key, WHOLE_AMOUNT, WHOLE_MARK)
     return "\n".join(lines)
 
 

@@ -1207,7 +1207,7 @@ typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; ui
 unsigned char a64_dirty[1u << 27];
 void a64_poll_cur(void) {}
 static uint64_t seen_at; static uint32_t seen_bits;
-uint32_t hos_frame_whole(uint64_t at, uint32_t bits) { seen_at = at; seen_bits = bits; return 1234; }
+uint32_t hos_frame_whole(uint64_t at, float amount) { seen_at = at; memcpy(&seen_bits, &amount, 4); return 1234; }
 void g_80002000(Ctx *);
 int main(void) {
     Ctx c; memset(&c, 0, sizeof c); c.x[19] = 0x1000; c.vreg[0][0] = 0x40400000; c.x[12] = 77;
@@ -1223,13 +1223,13 @@ int main(void) {
 class Probe(unittest.TestCase):
     def test_value_probe(self):
         """a Value probe (nx2/lift2/probes.py): the FCVTZS's result register gets the host function of x19+864 and
-        the bits of s0; the other instructions are lifted as usual"""
+        s0 (a float); the other instructions are lifted as usual"""
         from lift2 import probes
         words = [0x1e38000c, 0xd280054d, 0xd65f03c0]   # fcvtzs w12, s0; mov x13, #42; ret
         base = 0x80002000
         word = lambda pc: words[(pc - base) // 4]
         pcs = [base + 4 * k for k in range(len(words))]
-        p = probes.Value(base, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x19+864", "s0bits"))
+        p = probes.Value(base, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x19+864", "s0"))
         probes.BY_FUNC[base] = [p]
         try:
             prog = build_ir.Program()

@@ -40,6 +40,7 @@
      the module's budget (f_83b7b340 aborts below zero), and f_80b72340's heap of what the Graphics heap can still give
      keeps its shipped size. */
 #include "hos.h"
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -50,8 +51,56 @@ uint32_t hos_output_size(int height);
 uint64_t hos_rt_pool_size(uint64_t game);
 uint32_t hos_movie_frames(uint64_t player);
 
-static float as_float(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
-static uint32_t float_bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+/* The guest objects these patches touch, the fields they use at their guest offsets (both sides little-endian LP64 with
+   the same alignments). The lifted code reaches the same memory through other types and the host's C is built with
+   strict aliasing (nx2/build.py host_fl, unlike the lifted code's -fno-strict-aliasing): the structs are may_alias. */
+#define GUEST(type, addr) ((type *)A64_PTR(addr))
+
+/* scene_resolution_update's object (f_831f3200: the scene's update; host/nn_vi.c logs its scale) */
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[0xe20];
+    uint64_t flags;        /* +0xe20: bits 3/4, a hardcoded 0.75 / 0.5 in place of the scale */
+    uint8_t _1[0xe2c - 0xe28];
+    uint32_t apply;        /* +0xe2c: bit 3, recompute the scale */
+    uint8_t _2[0xe50 - 0xe30];
+    float against;         /* +0xe50: the size the scale is taken against */
+    float _e54;
+    float reference;       /* +0xe58 */
+    float scale;           /* +0xe5c: the 3D's scale, = requested * +0xe58 / +0xe50 */
+} OotSceneResolution;
+_Static_assert(offsetof(OotSceneResolution, flags) == 0xe20, "flags");
+_Static_assert(offsetof(OotSceneResolution, apply) == 0xe2c, "apply");
+_Static_assert(offsetof(OotSceneResolution, against) == 0xe50, "against");
+_Static_assert(offsetof(OotSceneResolution, reference) == 0xe58, "reference");
+_Static_assert(offsetof(OotSceneResolution, scale) == 0xe5c, "scale");
+
+/* display_scale_mode_select's configuration (f_806702e0): a scale table per profile, (x, y) for modes 0..2 */
+typedef struct __attribute__((may_alias)) { float mode[3][2]; } OotScaleTable;
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[724];
+    OotScaleTable profile0;   /* +724 */
+    uint8_t _1[1244 - 748];
+    OotScaleTable profile1;   /* +1244 */
+} OotScaleConfig;
+_Static_assert(offsetof(OotScaleConfig, profile0) == 724 && offsetof(OotScaleConfig, profile1) == 724 + 520, "profiles");
+
+/* display_size_setup's config (f_810a7b70, x1): the docked size list's first entry */
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[8];
+    uint32_t docked_width, docked_height;   /* +8, +12: 2560 x 1440 as shipped */
+} OotDisplaySizeConfig;
+_Static_assert(offsetof(OotDisplaySizeConfig, docked_width) == 8 && offsetof(OotDisplaySizeConfig, docked_height) == 12, "size");
+
+/* the graphics configuration dta_pool_config_read reads (f_836ce9d0, x19) */
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[1464];
+    uint64_t rt_pool_size;   /* +1464: 0x13100000 as shipped */
+} OotGraphicsConfig;
+_Static_assert(offsetof(OotGraphicsConfig, rt_pool_size) == 1464, "rt_pool_size");
+
+typedef uint64_t __attribute__((may_alias)) GuestU64;
+
+static float fixed_scale(void) { float f; const uint32_t u = hos_fixed_scale_bits; memcpy(&f, &u, 4); return f; }
 
 /* ---- dynamic resolution and the fixed scale */
 
@@ -62,16 +111,16 @@ uint32_t hos_oot_dynres_flags(uint32_t flags) {
     return flags;
 }
 
-/* f_80825aa0's fixed path: its scale, 1.0 as shipped */
+/* f_80825aa0's fixed path: its scale (mov w9, #1.0: the float's bits in a W register), 1.0 as shipped */
 uint32_t hos_oot_fixed_scale(void) { return hos_fixed_scale_bits; }
 
 /* f_831f3200 (module: x20), w8 the bits about to be or-ed into +0xe2c: bit 3 (recompute) too while +0xe5c is not the
    chosen scale (only then: a recompute every frame remade the targets) */
 uint32_t hos_oot_scale_recompute(uint64_t module, uint32_t bits) {
     if (!hos_fixed_resolution) return bits;
-    const float now = as_float(G32(module + 0xe5c)), want = as_float(hos_fixed_scale_bits);
-    const float e50 = as_float(G32(module + 0xe50)), e58 = as_float(G32(module + 0xe58));
-    const float d = now - (e50 != 0 ? want * e58 / e50 : want);
+    const OotSceneResolution *m = GUEST(OotSceneResolution, module);
+    const float want = fixed_scale();
+    const float d = m->scale - (m->against != 0 ? want * m->reference / m->against : want);
     return d > 1e-4f || d < -1e-4f ? bits | 8 : bits;
 }
 
@@ -87,11 +136,13 @@ uint64_t hos_oot_scale_flags(uint64_t module, uint64_t flags) {
    compare unequal once (0xff), so the game's own refresh runs */
 uint32_t hos_oot_scene_mode(uint64_t config, uint32_t mode) {
     if (!hos_native_scene) return mode;
+    OotScaleConfig *c = GUEST(OotScaleConfig, config);
+    OotScaleTable *const tables[2] = {&c->profile0, &c->profile1};
     for (unsigned profile = 0; profile < 2; ++profile) {
-        const uint64_t table = config + 724 + profile * 520;
-        if (G64(table) == 0x3f8000003f800000ULL && G64(table + 8) == 0x3f4ccccd3f4ccccdULL &&
-            G64(table + 16) == 0x3f2aaaab3f2aaaabULL) {
-            G64(table + 8) = 0x3f8000003f800000ULL;
+        OotScaleTable *t = tables[profile];
+        if (t->mode[0][0] == 1.0f && t->mode[0][1] == 1.0f && t->mode[1][0] == 0.8f && t->mode[1][1] == 0.8f &&
+            t->mode[2][0] == 2.0f / 3 && t->mode[2][1] == 2.0f / 3) {
+            t->mode[1][0] = t->mode[1][1] = 1.0f;
             mode = 0xff;
             hos_log("native-scene: profile %u mode 1 base scale 0.8 -> 1.0", profile);
         }
@@ -102,23 +153,26 @@ uint32_t hos_oot_scene_mode(uint64_t config, uint32_t mode) {
 /* f_831f3200's head (module: x0): the fixed scale marked dirty when the cached one differs (HOS_FIX_RES) */
 void hos_oot_scene_check(uint64_t module) {
     if (!hos_fixed_resolution || !hos_fix_res) return;
-    const float req = as_float(hos_fixed_scale_bits), base = as_float(G32(module + 0xe50));
-    const float ref = as_float(G32(module + 0xe58)), prev = as_float(G32(module + 0xe5c));
-    if (base > 0.0f && ref > 0.0f && req > 0.0f && req <= 2.0f && prev != req * ref / base) G32(module + 0xe2c) |= 8u;
+    OotSceneResolution *m = GUEST(OotSceneResolution, module);
+    const float req = fixed_scale();
+    if (m->against > 0.0f && m->reference > 0.0f && req > 0.0f && req <= 2.0f && m->scale != req * m->reference / m->against)
+        m->apply |= 8u;
 }
 
 /* ---- frame seconds, movie frames */
 
-/* after fdiv: the quotient's bits, or base * the frame's seconds while the host gives them */
-uint32_t hos_oot_frame_step(uint32_t base_bits, uint32_t quotient_bits) {
+/* after fdiv: the quotient, or base * the frame's seconds while the host gives them */
+float hos_oot_frame_step(float base, float quotient) {
     const uint32_t s = hos_frame_seconds_bits;
-    return s ? float_bits(as_float(base_bits) * as_float(s)) : quotient_bits;
+    float secs;
+    memcpy(&secs, &s, 4);
+    return s ? base * secs : quotient;
 }
 
 /* f_80706be0's divide, which also tells the host its x19 (the module with the game clock) */
-uint32_t hos_oot_frame_step_probe(uint32_t base_bits, uint32_t quotient_bits, uint64_t module) {
+float hos_oot_frame_step_probe(float base, float quotient, uint64_t module) {
     hos_step_probe = module;
-    return hos_oot_frame_step(base_bits, quotient_bits);
+    return hos_oot_frame_step(base, quotient);
 }
 
 /* f_83b7c710: the movie player's count after its add of one: that one is the frames' time instead */
@@ -126,12 +180,13 @@ uint32_t hos_oot_movie_count(uint32_t count, uint64_t player) { return count - 1
 
 /* ---- output size */
 
-/* nnMain's display size for the framework's create arg (width | height << 32) */
+/* nnMain's display size for the framework's create arg (width | height << 32, the pair the game stores at +20) */
 uint64_t hos_oot_output_size(void) { return hos_output_size(0) | (uint64_t)hos_output_size(1) << 32; }
 
 /* f_810a7b70 (config: x20): the docked size list's first entry, 2560 x 1440, is the output size */
 void hos_oot_output_config(uint64_t config) {
-    if (hos_output_size(0) != 2560 && G32(config + 8) == 2560) G32(config + 8) = hos_output_size(0), G32(config + 12) = hos_output_size(1);
+    OotDisplaySizeConfig *c = GUEST(OotDisplaySizeConfig, config);
+    if (hos_output_size(0) != 2560 && c->docked_width == 2560) c->docked_width = hos_output_size(0), c->docked_height = hos_output_size(1);
 }
 
 /* f_80ea2f30: BaseResolution's width (height 0) or height (1) scaled with the output */
@@ -140,16 +195,22 @@ uint32_t hos_oot_base_size(uint32_t v, uint32_t height) {
     return height ? v * hos_output_size(1) / 1440 : v * hos_output_size(0) / 2560;
 }
 
-/* f_80ea2f30: the constants 1920.0 / 1080.0, 3/4 of the output, as a float's bits */
-uint32_t hos_oot_base_size_bits(uint32_t height) { return float_bits((float)(hos_output_size((int)height) * 3 / 4)); }
+/* f_80ea2f30: the constants 1920.0 / 1080.0, 3/4 of the output (mov w8, #<float>: the float's bits in a W register) */
+uint32_t hos_oot_base_size_bits(uint32_t height) {
+    const float f = (float)(hos_output_size((int)height) * 3 / 4);
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    return u;
+}
 
 /* ---- the render targets' pool */
 
 static uint64_t pool_growth(void) { return hos_rt_pool_size(0x13100000ULL) - 0x13100000ULL; }
 
-/* f_836ce9d0 (config: x19): its +1464, the pool's size as shipped, scaled */
+/* f_836ce9d0 (config: x19): the pool's size as shipped, scaled */
 void hos_oot_rt_pool_config(uint64_t config) {
-    if (G64(config + 1464) == 0x13100000ULL) G64(config + 1464) = hos_rt_pool_size(0x13100000ULL);
+    OotGraphicsConfig *c = GUEST(OotGraphicsConfig, config);
+    if (c->rt_pool_size == 0x13100000ULL) c->rt_pool_size = hos_rt_pool_size(0x13100000ULL);
 }
 
 /* f_83b7b340: the Graphics heap's size (x0 before its BL) grown by the pool's growth */
@@ -157,10 +218,10 @@ uint64_t hos_oot_rt_heap_size(uint64_t size) {
     return size == 0x34900000ULL || size == 0x348ffe20ULL ? size + pool_growth() : size;
 }
 
-/* f_83b7b340: a module heap's use (x0 after its vtable +120) against the budget slot [table + (index << 3)]: the Graphics
+/* f_83b7b340: a module heap's use (x0 after its vtable +120) against its budget, budgets[index] (x21, x22): the Graphics
    heap's counts as the shipped one */
-uint64_t hos_oot_rt_heap_use(uint64_t use, uint64_t table, uint64_t index) {
-    const uint64_t budget = G64(table + (index << 3)), g = pool_growth();
+uint64_t hos_oot_rt_heap_use(uint64_t use, uint64_t budgets, uint64_t index) {
+    const uint64_t budget = GUEST(GuestU64, budgets)[index], g = pool_growth();
     return (budget == 0x34900000ULL || budget == 0x348ffe20ULL) && use > g ? use - g : use;
 }
 

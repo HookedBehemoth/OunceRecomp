@@ -4,7 +4,7 @@ section 9).
 A probe names a function and one of its instructions, found by llvm-mc's text of the instruction (a pattern the
 function has exactly once, as the text patches' anchors were), and says what the host does there:
 - Value(func, match, fn, args): the instruction's result register gets fn(args) instead (a host function of the
-  named guest values: "xN", "xN+K" for an address, "sNbits" for the bits of Sn);
+  named guest values: "xN", "xN+K" for an address, "sN" for Sn as a float);
 - the other kinds of section 9 (Before, After, CondOr, CallSite) are the same lookup with the call placed before or
   after the instruction's own semantics, or as the condition / the call target; they come with the patches that need
   them.
@@ -36,17 +36,17 @@ class Value:
                     v = b.bin("add", v, b.const(int(m.group(2))))
                 vals.append(v)
                 continue
-            m = re.fullmatch(r"s(\d+)bits", a)
-            vals.append(vread(b, int(m.group(1)), "i32"))
+            m = re.fullmatch(r"s(\d+)", a)
+            vals.append(vread(b, int(m.group(1)), "f32"))
         r = b.call(self.fn, "i32", *vals)
         setx(b, insn.f["Rd"], r)
 
 
 # nx2/oot_patches.py WHOLE_SITES: the counters of these two functions advance by the host's whole frames (the frame
-# step's FCVTZS of the frame count replaced by hos_frame_whole of the counter's address and the count's bits)
+# step's FCVTZS of the frame count replaced by hos_frame_whole of the counter's address and the count, a float)
 PROBES = [
-    Value(0x80a87e50, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x19+864", "s0bits")),
-    Value(0x800672e0, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x21", "s0bits")),
+    Value(0x80a87e50, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x19+864", "s0")),
+    Value(0x800672e0, r"fcvtzs w\d+, s0", "hos_frame_whole", ("x21", "s0")),
 ]
 MARKS = {"/* (the step's whole frames: nx2/oot_patches.py) */"}
 BY_FUNC = {}
@@ -71,8 +71,8 @@ def find(func, pcs, word):
 
 
 # ---- At: a host function of a few registers after an instruction (after a BL / BLR when it returns), its result in a
-# register: "at pc: reg := fn(regs...)". The arguments: "xN" (i64), "wN" (i32, the low half), "sN" (the bits of Sn, i32),
-# "#K" (an i32 constant); the result: "xN", "wN" (zero-extended, as every W write) or "sN" (the bits, the rest of Vn
+# register: "at pc: reg := fn(regs...)". The arguments: "xN" (i64), "wN" (i32, the low half), "sN" (Sn, a float),
+# "#K" (an i32 constant); the result: "xN", "wN" (zero-extended, as every W write) or "sN" (a float, the rest of Vn
 # zero, as every scalar FP write), or None. The host function (host/oot_probes.c) takes plain values and guest
 # addresses, never the context; it may read and write guest memory (the call is never moved or removed). Each row names
 # the instruction's word, checked at lift time: a word that differs stops the lift (another game version). The function
@@ -90,8 +90,8 @@ class At:
             elif kind in "xw":
                 vals.append(getx(b, int(n), kind == "x"))
             else:
-                vals.append(vread(b, int(n), "i32"))
-        ty = {None: "void", "x": "i64", "w": "i32", "s": "i32"}[self.result and self.result[0]]
+                vals.append(vread(b, int(n), "f32"))
+        ty = {None: "void", "x": "i64", "w": "i32", "s": "f32"}[self.result and self.result[0]]
         r = b.call(self.fn, ty, *vals, effects=True)
         if self.result is None:
             return

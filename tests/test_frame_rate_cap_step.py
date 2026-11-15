@@ -61,7 +61,7 @@ volatile uint32_t hos_frame_seconds_bits;
 /* (the lifted divide, fdiv s8, s1, s0, then the At probe: s8 := hos_oot_frame_step_probe(s1, s8, x19)) */
 static float lifted_step(float base, float nominal) {
     float q = base / nominal;
-    return as_float(hos_oot_frame_step_probe(float_bits(base), float_bits(q), hos_step_probe));
+    return hos_oot_frame_step_probe(base, q, hos_step_probe);
 }
 static int64_t now = 1000000000LL;
 static float frames(int n, double seconds) {   /* (n presents that far apart: the seconds the hook is given, 0 when off) */
@@ -118,8 +118,7 @@ def main():
           == (0x83b6eaf8, 0x1e201820, "hos_oot_frame_step", ("s1", "s0"), "s0"),
           "the global step: s0 := hos_oot_frame_step(s1, s0) after fdiv s0, s1, s0")
     oot = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
-    hooks = "\n".join(definition(oot, m) for m in ("static float as_float(", "static uint32_t float_bits(",
-                                                "uint32_t hos_oot_frame_step(", "uint32_t hos_oot_frame_step_probe("))
+    hooks = "\n".join(definition(oot, m) for m in ("float hos_oot_frame_step(", "float hos_oot_frame_step_probe("))
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
     host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("))

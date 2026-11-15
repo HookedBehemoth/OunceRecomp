@@ -37,7 +37,8 @@ def have(tool):
 
 class Table(unittest.TestCase):
     def test_rows(self):
-        host = open(HOST).read()
+        with open(HOST) as f:
+            host = f.read()
         for p in probes.AT:
             i = enc.decode(p.word)
             self.assertIsNotNone(i, hex(p.pc))
@@ -73,7 +74,7 @@ void g_80004000(Ctx *c) { c->x[0] = 10; }
 static uint64_t seen;
 uint32_t t_w(uint32_t a, uint32_t k) { return a * 3 + k; }
 uint64_t t_x(uint64_t a, uint64_t b) { return a + b; }
-uint32_t t_s(uint32_t bits) { float f; memcpy(&f, &bits, 4); f *= 2; memcpy(&bits, &f, 4); return bits; }
+float t_s(float f) { return f * 2; }
 void t_none(uint64_t a) { seen = a; }
 uint64_t t_call(uint64_t r) { return r + 5; }
 int main(void) {
@@ -169,8 +170,20 @@ int main(void) {
     CHECK(hos_oot_base_size_bits(0) == bits(2880.0f) && hos_oot_base_size_bits(1) == bits(1620.0f));
     G32(0x2000 + 8) = 2560; hos_oot_output_config(0x2000); CHECK(G32(0x2000 + 8) == 3840 && G32(0x2000 + 12) == 2160);
     /* frame seconds: base * the frame's seconds while the host gives them, the game's quotient otherwise */
-    CHECK(hos_oot_frame_step_probe(bits(60.0f), 123, 0x5000) == 123 && hos_step_probe == 0x5000);
-    hos_frame_seconds_bits = bits(1.0f / 120); CHECK(hos_oot_frame_step(bits(60.0f), 123) == bits(0.5f));
+    CHECK(hos_oot_frame_step_probe(60.0f, 1.0f, 0x5000) == 1.0f && hos_step_probe == 0x5000);
+    hos_frame_seconds_bits = bits(1.0f / 120); CHECK(hos_oot_frame_step(60.0f, 1.0f) == 0.5f);
+    /* native scene: the stock table's mode 1 made 1.0 and the mode compared unequal once; another table left alone */
+    hos_native_scene = 1;
+    { const float stock[6] = {1.0f, 1.0f, 0.8f, 0.8f, 2.0f / 3, 2.0f / 3};
+      memcpy(mem + 0x5000 + 724, stock, sizeof stock); memcpy(mem + 0x5000 + 1244, stock, sizeof stock);
+      ((float *)(mem + 0x5000 + 1244))[4] = 0.5f;
+      CHECK(hos_oot_scene_mode(0x5000, 1) == 0xff);
+      CHECK(G32(0x5000 + 724 + 8) == bits(1.0f) && G32(0x5000 + 724 + 12) == bits(1.0f) && G32(0x5000 + 1244 + 8) == bits(0.8f));
+      CHECK(hos_oot_scene_mode(0x5000, 1) == 1); }
+    /* HOS_FIX_RES: the dirty bit while the cached scale differs */
+    hos_fixed_resolution = 1; hos_fix_res = 1; G32(0x1000 + 0xe2c) = 0; G32(0x1000 + 0xe5c) = bits(1.0f);
+    hos_oot_scene_check(0x1000); CHECK(G32(0x1000 + 0xe2c) == 8);
+    G32(0x1000 + 0xe2c) = 0; G32(0x1000 + 0xe5c) = bits(0.75f); hos_oot_scene_check(0x1000); CHECK(G32(0x1000 + 0xe2c) == 0);
     CHECK(hos_oot_movie_count(10, 7) == 11 && hos_oot_movie_count(10, 1) == 10);
     /* the render-target pool */
     G64(0x3000 + 1464) = 0x13100000; hos_oot_rt_pool_config(0x3000);
@@ -186,7 +199,8 @@ int main(void) {
 STUB_HOS = """#pragma once
 #include <stdint.h>
 extern uint8_t mem[1 << 16];
-#define GP(a) ((void *)(mem + (a)))
+#define A64_PTR(a) (mem + (a))
+#define GP(a) ((void *)A64_PTR(a))
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))
 static void hos_log(const char *f, ...) { (void)f; }
