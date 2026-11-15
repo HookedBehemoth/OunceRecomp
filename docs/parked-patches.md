@@ -15,9 +15,9 @@ The flight hook drove more than flight. Every frame the player was updated, `pla
 - the test runs' live commands `!cheat <n>` and `!warp <banc> [startpos] [boot event]` (`HOS_INPUT_LIVE`, used by
   `scripts/direct_scene_cycle.sh` and the zoo's `live.txt`);
 - the `scene: ready <banc>` log line;
-- `HOS_BENCH`'s "in play" signal (`hos_bench_player`).
+- `HOS_BENCH`'s "in play" signal (`hos_bench_player`): an At probe of its own now (`hos_oot_player_update`).
 
-All of these stopped working when the patches were parked, and the direct back end has no Insert menu.
+The others stopped working when the patches were parked, and the direct back end has no Insert menu.
 
 Game build: OoT 1.1.1, main build id e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348. The labels are in `nx2/oot_labels.txt`.
 
@@ -131,5 +131,3 @@ teleport and age (Cheats page, live "!warp"):
     to call guest code from a host function without the caller's context, and none exists.
 - **The Cheats page's actions** (pouch, time, teleport, age) need the same kind of guest calls.
 - **The live commands and `scene: ready`** were test tooling built on those actions.
-- **`HOS_BENCH`'s "in play"** needs a player-update probe of its own: no event playing and no map loading, read
-  through GameDataMgr and the EventMgr.

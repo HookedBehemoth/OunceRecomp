@@ -2,7 +2,7 @@
    game time a frame whatever the wall time (nn_vi.c realtime_step, rx_option 0 answered "per frame") and presents unpaced
    (hos_vi_native_acquire waits for nothing). Once the scene is ready, every part of it settled for <ready frames> presents in a
    row (60 by default), it runs <frames> more presents, writes bench.csv in the working folder (the run's), logs a summary
-   and exits with code 0. The parts: in play (Link updated in the last presents, no map load, no event playing: hos_main.c),
+   and exits with code 0. The parts: in play (Link updated in the last presents, no map load, no event playing: host/oot_probes.c hos_oot_player_update),
    no texture work (agl::TextureDataMgr's "work pending", docs/direct/texture-streaming.md), no shader work (the back end's
    shader jobs queued or running, and no draw skipped for a shader not ready), no streaming (no file read by the game since
    the last present), the resource system quiet (resource_work). Unset: off, and nothing here runs but the checks of hos_bench_on. */
