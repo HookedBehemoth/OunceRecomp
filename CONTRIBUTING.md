@@ -1,15 +1,15 @@
 # Contributing to Hookshot
 
-Hookshot is a static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake: the game's AArch64
-code is lifted to C, the Horizon OS and NVN2 are implemented natively, and the GPU work is replayed on Vulkan by one
-renderer, the direct back end. No emulator is involved, and the game is built on your PC from your own copy. The tree
-targets Linux only, with Mesa RADV (developed on an RX 6950 XT); other platforms come back later through a narrow host
-API over SDL. Paths are UTF-8.
+This page covers what to send, how to build and test it, and the rules that keep the project out of trouble. Read it
+before you open an issue or a pull request.
 
-This page covers what to send, how to build and test it, and the rules that keep the project out of trouble. The
-[development guide](docs/development.md) has the full pipeline and its commands; the [design notes](docs/design.md) have
-the architecture and the lessons the code follows; the [direct back end plan](docs/direct-backend-plan.md) has the
-renderer's design and open problems.
+Hookshot is a static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time*: the game's AArch64 code is
+translated to native code, Horizon OS and NVN2 are implemented natively, and the GPU work runs on Vulkan through one
+renderer, the direct back end. No emulator is involved, and the game is built on your PC from your own copy. The tree
+targets Linux only, with Mesa RADV; other platforms come back later through a narrow host API over SDL. Paths are UTF-8.
+
+The [development guide](docs/development.md) has the pipeline and its commands, and the
+[documentation index](docs/README.md) lists every page.
 
 ## The rule with no exceptions
 
@@ -18,9 +18,8 @@ never will. That includes:
 
 - the `.nup`, `romfs`, `exefs`, `.nso`, `.nca`, `.nsp`, `.xci` or `.nsz`/`.xcz` files, and any title keys;
 - `work/` and everything in it: the extracted dump, `image.bin`, the lift's plan, test builds, runs and screenshots;
-- `hookshot`, `hookshot_direct.so`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
-  `mkw_vk_pipelines.bin` and other build output;
-- saves (`user/`), `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`.
+- `hookshot`, `hookshot_direct.so`, the shader caches beside them (`*.bin`) and other build output;
+- saves, `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`.
 
 Do not open an issue or a PR asking where to get the game, how to decrypt it, or for someone else's files. A
 screenshot, a video and `hookshot_log.txt` are fine and often necessary; the log holds no game data.
@@ -32,147 +31,111 @@ game data, leave it out.
 
 | | What |
 |---|---|
-| **Test on other hardware** | The README says what the renderer is developed on. Reports from other cards and distributions are useful even when everything works: say the build (first line of `hookshot_log.txt`), the hardware and driver, where in the game, and the fps from the log's `N presents, X fps` line. |
-| **Play further** | Reaching new areas, cutscenes, menus and items finds problems the developer has not seen. |
+| **Test on other hardware** | Reports from other cards and distributions are useful even when everything works: give the build (first line of `hookshot_log.txt`), the hardware and driver, where in the game, and the frame rate from the log's `vk: <n> presents, <x> fps` line. |
+| **Play further** | New areas, cutscenes, menus and items find problems the developer has not seen. |
 | **Report what is broken** | Use the [issue forms](https://github.com/NotRexed/Hookshot/issues/new/choose). Include the version, your hardware, where you were and `hookshot_log.txt`. |
-| **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review and merge. Search the open PRs first, and say in Discord what you take: two people fixing the same thing is the most common waste. |
-| **Improve the docs** | The README, the development guide and the design notes are part of the project. Corrections and clearer steps are welcome. |
+| **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review. Search the open PRs first, and say in Discord what you take. |
+| **Improve the docs** | Corrections and clearer steps are welcome. |
 
 ## Before you open an issue or a PR
 
 - Search the open issues. If yours is already there, add your details instead of opening another.
-- English, please.
-- One topic per issue or pull request. Do not mix a fix with a refactor or a batch of unrelated changes.
+- Write in English.
+- Keep to one topic per issue or pull request. Do not mix a fix with a refactor or with unrelated changes.
 - Report the version you actually ran: the first line of `hookshot_log.txt`.
 - Test without ReShade, shader-cache tools and overlays when you report a graphics or performance problem. They change
   what Hookshot does.
 
-## Development setup
+## Set up and build
 
-You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other versions do not
-work, and the build reads the dump where it lies without changing it. Builds need about 60 GB free and a run uses about
-10 GB of RAM.
-
-```sh
-scripts/linux/deps.sh       # LLVM, Python packages, FFmpeg with dav1d, SDL2, Vulkan headers
-```
-
-Run everything with `python -I` from the repository root. The Vulkan, SPIR-V and VMA headers come from `/usr`, from
-`HOOKSHOT_VULKAN_HEADERS` / `HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VMA_HEADERS`, or from a CPM cache (`RX_CPM`).
-`HOOKSHOT_JOBS` sets how many files compile at once.
-
-## Building
-
-| Command | What it does |
-|---|---|
-| `python -I nx2/nup.py <your-game.nup> --extract work/dump` | Extract the dump. |
-| `python -I nx2/dump.py --dump work/dump --set` | Record the dump in `work/dump.txt`. |
-| `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
-| `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot` and `hookshot_direct.so`. |
-| `scripts/run-vk.sh <name> 120` | Run the standalone build headless and take screenshots in `work/runs/<name>/shots`. |
-| `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
-
-Use `OOT_WORK` if you keep more than one dump around. The lifted code and every build are local artifacts; they are never
-committed. The development guide's "Iterating quickly" has the build, run and measure loop.
+You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Builds need about 60 GB
+free, and a run uses about 10 GB of RAM. The [development guide](docs/development.md#set-up) has the setup, the build
+commands and the loop for iterating. Every command takes `--game games/oot`, and Python runs with `-I` from the
+repository root. The lifted code and every build are local artifacts; they are never committed.
 
 ## Testing
 
-### Game-free checks
+### Run the game-free checks
 
-These need no dump and are what CI runs. One command runs them all:
+These need no dump, and CI runs them. To run them all:
 
 ```sh
 python -I -B tests/run_all.py
 ```
 
-It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, and a
-byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
-failure's output. Name a check to run only the ones whose path contains it (`python -I -B tests/run_all.py ub_`). A new
-`test_*.py` file is picked up by itself: no workflow to edit.
+It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, byte-compiles every tracked Python file, goes
+on after a failure, and ends with a table (slowest first) and each failure's output. To run only some checks, name part
+of their path: `python -I -B tests/run_all.py lift2`.
 
-Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
-validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
-cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
-says so; CI passes `--strict`, which fails it instead. The skip list at the top of `tests/run_all.py` names the checks
-that cannot run in CI (a GPU, the game); `--no-skip` runs
-them anyway.
+Some checks compile a small C or C++ fixture and need a compiler, `spirv-val`, the SPIR-V or Vulkan headers
+(`HOOKSHOT_SPIRV_HEADERS`, `HOOKSHOT_VULKAN_HEADERS`, or a CPM cache in `RX_CPM`), or the `zstandard` package. A check
+whose tool is missing is skipped and says so; CI passes `--strict`, which fails it instead. The skip list at the top of
+`tests/run_all.py` names the checks that cannot run in CI; `--no-skip` runs them anyway.
 
-### Checks that need your dump or a run
+### Run the checks that need your dump
 
 These are slow and local, and they need `work/dump.txt` from `nx2/dump.py --set`:
 
 | Command | What it checks |
 |---|---|
-| `python -I nx2/lift2/selfcheck.py` | The lifter's decoder against llvm-mc on every distinct word of the game. |
-| `python -I nx2/test_lift2_leaf.py --calls` | Whole functions and call trees on the relocated image, lifted and run natively against Unicorn. |
-| `python -I nx2/census.py --nx2` | The instruction census per module. |
-| `python -I nx2/lower_test.py work/lowfail` | Shader programs that failed to lower. |
-| `scripts/run-vk.sh <name> 120` and `scripts/smoke.sh <name>` | An in-game run with screenshots, and the smoke test against a golden run. |
+| `python -I nx2/lift2/selfcheck.py --game` | The lifter's decoder against `llvm-mc` on every distinct word of the game |
+| `python -I nx2/test_lift2_leaf.py --calls` | Whole functions and call trees of the game, lifted and run against Unicorn |
+| `scripts/smoke.sh <name>` | An in-game run against a golden run ([Test in the game](docs/testing.md#run-the-smoke-test)) |
 
 For a graphics fix, look at the screenshots in `work/runs/<name>/shots` and delete them afterwards; they reach
-gigabytes and are derived from the game. The switches for scripted input, screenshots, frame dumps and profiles are in
-the development guide's [reference](docs/development.md#switches-for-testing-and-debugging).
+gigabytes and are derived from the game.
 
-### When you add a fix or a check
+### Add a check with your fix
 
-- Add a game-free test where the behavior can be tested without the dump. The existing tests are small Python files
-  under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture.
-- Name it `tests/test_*.py` or `nx2/test_*.py`: `tests/run_all.py` picks it up by itself and CI runs it on every pull
-  request, so there is no workflow to edit. A test that takes a compiler, headers or `spirv-val` as arguments gets an
-  entry in `ARGS` at the top of `tests/run_all.py`; one that cannot run in CI (a GPU, the game, one OS only) gets an
-  entry in `SKIP`, with the reason.
-- Keep the test fast: every check shares one CI job with a 20-minute limit. 
-- If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in
-  which part of the game.
+- Add a game-free test where the behavior can be tested without the dump: a small Python file that reads source files
+  and runs them, or compiles a tiny C or C++ fixture.
+- Name it `tests/test_*.py` or `nx2/test_*.py`; `tests/run_all.py` picks it up. A test that takes a compiler, headers
+  or `spirv-val` as arguments gets an entry in `ARGS` at the top of `tests/run_all.py`; one that cannot run in CI gets
+  an entry in `SKIP`, with the reason.
+- Keep the test fast: every check shares one CI job with a 20-minute limit.
+- For a fix in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and where in
+  the game.
 
 ## Code and data conventions
 
-- Match the file you are editing: there is no formatter configuration, so use the indentation, comment style and
-  naming around you. Do not reformat unrelated code in the same change.
-- Keep OoT-specific code in new files where possible. `nx2/`, `host/` and `gpu/` are kept close to mkw-recomp so
-  upstream fixes can be applied as a patch; keeping the paths and the shared files recognizable is what makes that
-  work. Each sync names its new mkw-recomp base commit in the commit message.
-- Do not modify `third_party/`. Its parts are unmodified upstream copies with their notices in `PROVENANCE.md`; add a
-  new folder and a provenance note rather than editing one.
-- Treat the local mkw-recomp and Eglantine checkouts as read-only references: read from them, run them, never edit
-  them.
-- New switches use the `RX_` prefix in the renderer and `HOS_` in the runtime. They are off, or neutral, unless
-  asked for, and they do not cost anything while off. Document them where the surrounding switches are documented.
-- The GPU replay rules in [design notes, section 4](docs/design.md#4-the-lessons-from-mkw-as-rules-here) are not
-  suggestions: nothing the replay reads may come from live guest memory, waits are honoured per queue, and texture
-  and sampler registrations stay in submission order. A change that reads guest memory at replay time is a
-  regression, even if it looks right on one frame.
-- Python runs with `-I`. Tests stay on the standard library so CI needs no install step; the pipeline's existing
-  dependencies (lz4, numpy, capstone, unicorn, zstandard) are the exception, not a reason to add more. So are the
-  button prompts' (fontTools, Pillow, astc-encoder-py, texture2ddecoder: `nx2/prompt_requirements.txt`), accepted for
-  `nx2/prompt_assets.py` and `nx2/prompt_draw.py` alone, at build time. Maintainers' agents reviewing a change: check
-  that these four are still used only there, and flag any other use. Keep line endings LF (`.gitattributes`).
-- New code has to be GPL-compatible. See below.
+- Match the file you are editing: there is no formatter configuration. Do not reformat unrelated code.
+- Keep OoT-specific code in new files where possible. `nx2/`, `host/` and `gpu/` keep mkw-recomp's paths so upstream
+  fixes can be applied as a patch.
+- Do not modify `third_party/`. Its parts are upstream copies with their notices; add a new folder and a provenance
+  note rather than editing one.
+- Treat the local mkw-recomp and Eglantine checkouts as read-only references.
+- New switches use the `RX_` prefix in the renderer and `HOS_` in the runtime. They are off, or neutral, unless set,
+  and cost nothing while off. Say what a switch does in a comment beside the code that reads it.
+- The renderer's rules are in the [direct back end plan](docs/direct-backend-plan.md). A change that breaks one is a
+  regression, even if one frame looks right.
+- Tests stay on the standard library so CI needs no install step. The pipeline's dependencies (lz4, numpy, capstone,
+  unicorn, zstandard) are the exception, not a reason to add more. So are the button prompts' packages
+  (`nx2/prompt_requirements.txt`), accepted for `nx2/prompt_assets.py` and `nx2/prompt_draw.py` alone, at build time.
+  Maintainers' agents reviewing a change: check that these are still used only there, and flag any other use.
+- Keep line endings LF (`.gitattributes`).
+- New code has to be GPL-compatible (see [Licensing](#licensing)).
 
 ## Commits and pull requests
 
-1. Fork the repository and branch from `main`. Name the branch for the change: `fix/...`, `linux/...`,
-   `docs/...`.
+1. Fork the repository and branch from `main`. Name the branch for the change: `fix/...`, `linux/...`, `docs/...`.
 2. Keep the pull request to one topic. Bug fixes do not carry refactors, and two unrelated fixes are two PRs.
-3. Write the title as a short imperative sentence, as the history does: "Stop scanning storage-buffer tables after
-   one pass", "Linux: a crash report gives the whole host stack". Start the body with why the PR is needed, in one or
-   two plain sentences a player could follow: the bug, the missing feature or the cost it removes ("The menu's text
-   is cut off at 4K", "First starts spend 20 s waiting on a few shaders"). Then say what changed, how it was tested
-   (GPU, driver, game area, fps before and after), and link the issue it fixes.
-4. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
-   message. Before and after for a fix, the new screen for a feature, and the sizes or settings it was checked at. A
-   screenshot of the game is fine; the rule above is about game files, not pictures of the game.
-5. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+3. Write the title as a short imperative sentence. Start the body with why the PR is needed, in one or two plain
+   sentences a player could follow: the bug, the missing feature or the cost it removes ("The menu's text is cut off
+   at 4K"). Then say what changed, how it was tested (GPU, driver, game area, frame rate before and after), and link
+   the issue it fixes.
+4. Include screenshots when the change shows on screen: before and after for a fix, the new screen for a feature, and
+   the sizes or settings it was checked at. A screenshot of the game is fine; the rule above is about game files.
+5. Run the relevant checks. CI must pass.
+6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch.
+7. Do not include build output, dumps, generated files or a `.gitignore` bypass.
 
-Write commit subjects as [Conventional Commits](https://www.conventionalcommits.org/), `type(scope): imperative
-description` (`feat`, `fix`, `perf`, `revert`, `docs`, `refactor`, `style`, `test`, `build`, `ci`, `chore`; `!` after the
-type or `BREAKING CHANGE:` in the body marks a break). `git revert` writes `Revert "..."`, which is not one: use
-`git revert --edit` and write the subject as `revert: ...`.
+Write commit subjects as [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): imperative
+description` (`feat`, `fix`, `perf`, `revert`, `docs`, `refactor`, `style`, `test`, `build`, `ci`, `chore`; `!` after
+the type or `BREAKING CHANGE:` in the body marks a break). For a revert, use `git revert --edit` and write the subject
+as `revert: ...`.
 
 Maintainer commits record AI assistance with `Assisted-by:` and `Co-Authored-By:` trailers. If you used a tool, add
-the trailers that describe it; if you wrote the change yourself, there is nothing to add.
+the trailers that describe it.
 
 ## Licensing
 
@@ -183,12 +146,7 @@ with an incompatible license, and do not paste decompiled game code or anything 
 The third-party parts (Eden, suyu, Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus
 fonts, zbic and the a64-kit tools) keep their own notices. Preserve them, and do not relicense their code.
 
-
 ## Where to talk
 
 - **Issues:** [use the forms](https://github.com/NotRexed/Hookshot/issues/new/choose).
-- **Discord:** https://discord.gg/EajnD2AJD9. Use the `hookshot-discussion` channel; the server is mainly for
-  web ports, and that channel is where Hookshot talk belongs.
-
-Thanks for testing, reporting and sending fixes. Every report from a different GPU and every area played further than
-before moves the port forward.
+- **Discord:** <https://discord.gg/EajnD2AJD9>, in the `hookshot-discussion` channel.

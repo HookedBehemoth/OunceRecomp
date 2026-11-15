@@ -12,10 +12,10 @@
 <h4 align="center">The Legend of Zelda: Ocarina of Time (Nintendo Switch 2) running natively on Linux, with no emulator.
 </h4>
 
-Hookshot is a static recompilation. The game's code is translated to C and compiled into a Linux program, the console's
-system software is reimplemented, and the Switch 2 graphics calls are replayed on Vulkan by one renderer, the direct back
-end (`gpu/direct`, `hookshot_direct.so`). The renderer is developed and tested on one machine: Linux with Mesa RADV on an
-AMD RX 6950 XT. All of this happens **on your PC, from your own copy of the game**.
+Hookshot is a static recompilation. The game's code is translated ahead of time and compiled into a Linux program,
+the console's system software is reimplemented, and the Switch 2 graphics calls run on Vulkan through one renderer, the
+direct back end. It is developed and tested on Linux with Mesa RADV on an AMD RX 6950 XT. All of this happens **on your
+PC, from your own copy of the game**.
 
 > [!IMPORTANT]
 > This repository **does not contain the game, keys or an executable**, and it does not explain how to get them. You
@@ -28,11 +28,11 @@ You need a dump of the game's program `0400486024DEC000`, update v131072, build 
 A build takes tens of minutes and about 60 GB of disk; a run uses about 10 GB of RAM.
 
 ```sh
-scripts/linux/deps.sh                      # LLVM, Python packages, FFmpeg, SDL2, Vulkan headers
+scripts/linux/deps.sh                      # LLVM, Python, FFmpeg, SDL2, Vulkan headers
 python -I nx2/nup.py <your-game.nup> --extract work/dump
 python -I nx2/dump.py --dump work/dump --set
-python -I nx2/lift.py --standalone --write
-python -I nx2/build.py --standalone --jobs 4
+python -I nx2/lift.py --game games/oot --standalone --write
+python -I nx2/build.py --game games/oot --standalone
 ```
 
 The build writes `work/sa/build/hookshot` and `hookshot_direct.so`. Run it with the image, the RomFS and a folder for
@@ -46,22 +46,22 @@ work/sa/build/hookshot work/sa/image/image.bin --romfs work/dump/romfs --user wo
 |---|---|
 | `image.bin` | The game image to run |
 | `--romfs <folder>` | The extracted RomFS folder |
-| `--user <folder>` | Where the game keeps saves, caches and temp files |
-| `--trace` | Log every Horizon OS call (the same as `HOS_TRACE=1`) |
-| `--prepare-shaders` | Prepare the shaders as a first start does, then exit |
+| `--user <folder>` | Where the game keeps saves, caches and temporary files |
+| `--trace` | Logs every Horizon OS call (the same as `HOS_TRACE=1`) |
 
-`scripts/run-vk.sh <name> <seconds>` is a headless test run with screenshots. The [development guide](docs/development.md)
-has the pipeline, the build and run loop, and the switches; [CONTRIBUTING.md](CONTRIBUTING.md) has the rules for changes.
+The [development guide](docs/development.md) has the build and run loop and the test tools, and the
+[documentation index](docs/README.md) lists every page. [CONTRIBUTING.md](CONTRIBUTING.md) has the rules for changes.
 
 ## How it works
 
-1. `nx2/lift.py` translates the game's ARM64 code to C.
-2. `nx2/build.py` compiles that C together with `host/`, which plays the part of the console's system software.
+1. `nx2/lift.py` and `nx2/build.py` translate the game's AArch64 code to LLVM IR and compile it to native code
+   ([the lifter](docs/lifter.md)).
+2. `host/` plays the part of the console's system software and is linked with the lifted code.
 3. `host/nvn_native.c` records the game's NVN2 graphics calls, and `gpu/direct` replays them on Vulkan.
-4. Switch 2 shaders are translated to SPIR-V by a fork of Eden's shader recompiler (`gpu/direct/eden`).
+4. A fork of Eden's shader recompiler (`gpu/direct/eden`) translates the Switch 2 shaders to SPIR-V.
 
-The [design notes](docs/design.md) have the architecture, and the [direct back end plan](docs/direct-backend-plan.md) the
-renderer's design and open problems. Upstream's older renderers are kept as unbuilt reference source in `gpu/legacy`.
+The [architecture page](docs/design.md) shows how the parts fit. Upstream's older renderers are kept as unbuilt reference
+source in `gpu/legacy`.
 
 ## Credits
 
