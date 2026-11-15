@@ -170,7 +170,7 @@ def main():
         oot_occlusion.install(L, img)
     # the functions: lift 2's discovery (nx2/lift2/discover.py, the default), the present lifter's (HOOKSHOT_DISCOVERY=
     # lift1), or both compared (=check: lift 2's report of every difference; the present lifter's result is used)
-    how = os.environ.get("HOOKSHOT_DISCOVERY", "lift1")
+    how = os.environ.get("HOOKSHOT_DISCOVERY", "lift2")
     if how in ("lift1", "check"):
         L.discover(max_insns=a.max_func)
     if how in ("lift2", "check"):

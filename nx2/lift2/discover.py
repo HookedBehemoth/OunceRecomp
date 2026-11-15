@@ -1,7 +1,8 @@
 """Lift 2's function discovery (milestone 19): function bodies from the entries, jump tables, PLT stubs, setjmp
 owners and the split of very large functions, without the present lifter.
 
-Ported from the present lifter's discovery (third_party/a64-kit/lift/a64_lift.py, Lifter.discover and what it calls),
+Ported from the present lifter's discovery (third_party/a64-kit/lift/a64_lift.py, Lifter.discover and what it calls,
+with nx2/insn.py's pointer-authenticated branches and nx2/lift_fixes.py's jump-table fixes built in),
 the same rules on the same raw words, so that it can replace it: nx2/lift2/discover_check.py compares the two over the
 whole game (entries, bodies, jump tables, PLT stubs, setjmp owners). The model: a function is an entry plus everything
 reachable from it without crossing another entry; branches into another entry are tail calls.
@@ -21,7 +22,15 @@ def sx(v, bits):
 
 
 def classify(w, pc):
-    """(kind, ...) for control flow and specials; ("op",) for everything the emitter translates."""
+    """(kind, ...) for control flow and specials; ("op",) for everything the emitter translates. The pointer-
+    authenticated forms (nx2/insn.py's classify_ext): RETAA/RETAB are returns; BRAA*/BRAB* and BLRAA*/BLRAB* are BR and
+    BLR through Xn."""
+    if w in (0xD65F0BFF, 0xD65F0FFF):                 # RETAA / RETAB
+        return ("ret", 30)
+    if (w & 0xFEFFF800) == 0xD61F0800:                # BRAA, BRAB, BRAAZ, BRABZ
+        return ("br", (w >> 5) & 31)
+    if (w & 0xFEFFF800) == 0xD63F0800:                # BLRAA, BLRAB, BLRAAZ, BLRABZ
+        return ("blr", (w >> 5) & 31)
     if (w & 0x7C000000) == 0x14000000:
         return ("bl" if w & 0x80000000 else "b", pc + 4 * sx(w & 0x3FFFFFF, 26))
     if (w & 0xFF000010) == 0x54000000:
@@ -45,6 +54,11 @@ def classify(w, pc):
     if (w & 0xFFFFFFE0) == 0xD50B7520:
         return ("ic",)
     return ("op",)
+
+
+def _auth_end(w):
+    """RETAA, RETAB, BRAAZ/BRABZ, BRAA/BRAB: the end of a block, as ret and br are"""
+    return w in (0xD65F0BFF, 0xD65F0FFF) or (w & 0xFFFFF81F) == 0xD61F081F or (w & 0xFFFFF800) == 0xD71F0800
 
 
 class Discovery:
@@ -186,6 +200,55 @@ class Discovery:
 
     # ---- jump tables ---------------------------------------------------------------------------------
     def jump_table(self, br_pc, reg, window=32):
+        """the jump table of a BR (nx2/lift_fixes.py's fixes 2 and 3 around the scan): the window starts after the
+        last pointer-authenticated return or branch; when the window writes the table load's base register again
+        after the load, that register is resolved at the load"""
+        img = self.img
+        for k in range(1, window + 1):
+            pc = br_pc - 4 * k
+            if img.in_code(pc) and _auth_end(img.word(pc)):
+                window = k - 1
+                self.stats["jt_window_cut_at_auth_ret"] += 1
+                break
+        hit = self._table_load(br_pc, window)
+        if not hit:
+            return self._jump_table(br_pc, reg, window)
+        load_pc, treg = hit
+        redirected = {}
+        for name in ("reaching_constants", "hoisted_constant", "function_constant"):
+            bound = getattr(self, name)
+
+            def at_load(at, r, *rest, _f=bound):
+                return _f(load_pc if (at, r) == (br_pc, treg) else at, r, *rest)
+            redirected[name] = at_load
+        self.__dict__.update(redirected)
+        try:
+            out = self._jump_table(br_pc, reg, window)
+        finally:
+            for name in redirected:
+                del self.__dict__[name]
+        if out:
+            self.stats["jt_table_reg_reused"] += 1
+        return out
+
+    def _table_load(self, br_pc, window):
+        """(pc, base register) of the last register-offset integer load in the BR's window, if the window writes
+        its base register again after it"""
+        img = self.img
+        for pc in range(br_pc - 4, br_pc - 4 * window, -4):
+            if not img.in_code(pc):
+                return None
+            w = img.word(pc)
+            if (w & 0xFC000000) == 0x14000000 or (w & 0xFFFFFC1F) in (0xD65F0000, 0xD61F0000):
+                return None
+            if (w & 0x3B200C00) == 0x38200800 and not (w >> 26) & 1 and (w >> 22) & 3:   # LDR* (register offset)
+                n = (w >> 5) & 31
+                if any(self.writes(img.word(q), n) for q in range(pc + 4, br_pc, 4)):
+                    return pc, n
+                return None
+        return None
+
+    def _jump_table(self, br_pc, reg, window=32):
         """Symbolically run the straight-line code before a BR. Recognises LLVM's AArch64 tables: the target is
         base + (entry << k), entry loaded from a constant table. Seen in TOTK:
           - the table address hoisted out of the window (loop-invariant): found by scanning further back;
@@ -457,6 +520,35 @@ class Discovery:
         return ((w >> 27) & 7) == 5 and (w >> 22) & 1 and not (w >> 26) & 1 and ((w >> 10) & 31) == reg
 
     def function_constant(self, br_pc, reg):
+        """the one constant the function assigns to reg (ADRP+ADD; else, nx2/lift_fixes.py's fix 1, also ADR)"""
+        v = self._function_constant(br_pc, reg)
+        if v is not None:
+            return v
+        img = self.img
+        lo, hi = self.function_extent(br_pc)
+        if hi - lo > 0x40000:
+            return None
+        page, found = {}, set()
+        for pc in range(lo, hi, 4):
+            if not img.in_code(pc):
+                continue
+            w = img.word(pc)
+            d = w & 31
+            if (w & 0x9F000000) == 0x90000000:                                   # ADRP
+                imm = ((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3)
+                page[d] = (pc & ~0xFFF) + (sx(imm, 21) << 12)
+            elif (w & 0xFF800000) == 0x91000000 and ((w >> 5) & 31) in page:    # ADD Xd, Xn, #imm
+                if d == reg:
+                    found.add(page[(w >> 5) & 31] + (((w >> 10) & 0xFFF) << (12 if w & (1 << 22) else 0)))
+            elif (w & 0x9F000000) == 0x10000000 and d == reg:                    # ADR
+                imm = ((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3)
+                found.add(pc + sx(imm, 21))
+        if len(found) == 1:
+            self.stats["jt_adr_table"] += 1
+            return found.pop()
+        return None
+
+    def _function_constant(self, br_pc, reg):
         """The one ADRP(+ADD) constant the function ever assigns to `reg`, or None if it assigns none or several.
         Catches table addresses hoisted far from their use, where a backward scan in address order runs into an
         unrelated path's write first (an epilogue's `ldp x26, ...` after a `ret`)."""
@@ -581,6 +673,13 @@ def compare(L, D, show=12):
     report("functions", L.funcs, D.funcs)
     diff_body = [e for e in L.funcs if e in D.funcs and L.funcs[e][0] != D.funcs[e][0]]
     diff_labels = [e for e in L.funcs if e in D.funcs and L.funcs[e][1] != D.funcs[e][1]]
+    for e in diff_body[:3]:   # (the first differences of a few, to classify them)
+        a, b = L.funcs[e][0], D.funcs[e][0]
+        pa, pb = sorted(set(a) - set(b)), sorted(set(b) - set(a))
+        dv = [pc for pc in a if pc in b and a[pc] != b[pc]][:2]
+        print("discovery check: f_%08x: %d pcs only the present lifter's (%s), %d only lift 2's (%s), values %s" % (
+            e, len(pa), " ".join("%x" % x for x in pa[:4]), len(pb), " ".join("%x" % x for x in pb[:4]),
+            "; ".join("%x %r / %r" % (pc, a[pc], b[pc]) for pc in dv)))
     for what, d in (("bodies", diff_body), ("labels", diff_labels)):
         if d:
             same = False
