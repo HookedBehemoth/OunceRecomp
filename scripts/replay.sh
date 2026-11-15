@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Replays an input recording (HOS_INPUT_RECORD, docs/development.md "Iterating quickly") through scripts/run-vk.sh:
+# Replays an input recording (HOS_INPUT_RECORD, docs/testing.md "Record and replay a session") through scripts/run-vk.sh:
 # headless and muted, from the recording's copy of the save folder, with the settings its header names. The run is
 # work/runs/replay-<name>; run-vk.sh's variables (EXE, RUN, SHOT_EVERY, ...) pass through.
 #

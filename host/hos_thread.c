@@ -157,7 +157,7 @@ static int log_stamp(char *out, size_t cap) {
                     (long long)hos_vi_present_number(), name);
 }
 
-/* An item of HOS_DBG ("name" or "name:value"), and a log switch (docs/development.md, "Log switches"): its item or logall */
+/* An item of HOS_DBG ("name" or "name:value"), and a log switch (docs/switches.md, "Turn on debug aids with HOS_DBG"): its item or logall */
 int hos_dbg_item(const char *item) {
     const char *d = getenv("HOS_DBG");
     const size_t n = strlen(item);

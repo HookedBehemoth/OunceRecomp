@@ -52,7 +52,7 @@ void logf_changed(const char* key, const char* text);
 void log_long(const char* line, const char* prefix);
 /// HOS_DBG=<name>,<name>...: a debug aid named there is on (the back end's only switch, read once)
 bool dbg(const char* name);
-/// A log switch (docs/development.md, "Log switches"): <name> or logall is in HOS_DBG. Read it once into a static
+/// A log switch (docs/switches.md, "Turn on debug aids with HOS_DBG"): <name> or logall is in HOS_DBG. Read it once into a static
 bool dbg_log(const char* name);
 /// HOS_DBG=...,<name>:<value>,...: the value (null: not named)
 const char* dbg_value(const char* name);

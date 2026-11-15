@@ -2,7 +2,7 @@
 # Descriptions of ours, not the game's names. Lower case, digits, underscores; every address and label once.
 # An entry is a function's entry address in this lift (of the build games/oot/game.py names). Add what an analysis
 # finds, with its note
-# (docs/development.md, Function labels). A label says what the note says, no more: a role ("_reader_b", "_caller")
+# (docs/reverse-engineering.md, "Label a function"). A label says what the note says, no more: a role ("_reader_b", "_caller")
 # when that is all it knows; '# ?' marks a doubt or notes that disagree. Mid-function sites (lr, splice points) name the
 # function that contains them.
 #
