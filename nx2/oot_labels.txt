@@ -99,14 +99,14 @@
 80062c50 dta_alloc_persistent             # host/rt_slots.c, work/assets/native/rt-alloc.md: the persistent path's fit, from the top of a free block
 80063090 dta_arena_init                   # work/assets/native/rt-alloc.md: one of the pool record's 7 arenas
 8006ec60 dta_arena_stats                  # work/assets/native/cores.md: sums the arenas' bytes in use for the game's stats
-80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, nx2/oot_patches.py: -> DTA::initialize
+80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, host/oot_probes.c: -> DTA::initialize
 802737a0 dta_free                         # host/rt_slots.c; docs/direct/transient-pool.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
 80c49070 dta_initialize                   # work/assets/native/rt-alloc.md: DTA::initialize: entries, 7 lanes, pool record
-836ce9d0 dta_pool_config_read             # nx2/oot_patches.py: reads the render-target pool size, makes the pools
+836ce9d0 dta_pool_config_read             # host/oot_probes.c: reads the render-target pool size, makes the pools
 80c49380 dta_pool_record_create           # work/assets/native/rt-alloc.md: physical pool + 7 arenas + virtual pools
 80064180 dta_resize_a                     # work/assets/native/rt-alloc.md open questions: a "resize" path, not traced
 810c7530 dta_resize_b                     # work/assets/native/rt-alloc.md: the bit-10 path, "resize" (not traced)
-811c9ba0 dta_virtual_pool_create          # nx2/oot_patches.py
+811c9ba0 dta_virtual_pool_create          # host/oot_probes.c
 
 # --- descriptors and the per-view system textures
 80557420 desc_deferred_free_drain         # docs/direct/patch-sites.md: returns freed descriptor ids after the flip
@@ -126,7 +126,8 @@
 802eacc0 sead_method_tree_call            # docs/direct/boot-to-main-loop.md: the method tree's recursive call (calc and draw trees)
 802eb020 frame_proc_draw                  # docs/direct/boot-to-main-loop.md: procDraw: gate primary, the draw tree, message to the Presentation Thread
 802eb390 frame_gate_primary               # host/direct.c, work/assets/native/command-lists.md: the CPU gate list: nvnEventSignal + WaitEvent a frame
-83b6ea90 frame_global_step                # nx2/oot_patches.py: the global step the engine reads
+83b6ea90 frame_global_step                # host/oot_probes.c: the global step the engine reads
+83b7c710 movie_player_update              # host/oot_probes.c: a movie player's update, counts its frames at +760 (movie frames patch)
 80665980 frame_head_begin                 # host/direct.c, work/assets/native/command-lists.md: a queue's head (frame primary) begin
 8042cd20 frame_end_wait_and_gate          # docs/direct/boot-to-main-loop.md: frame end: frame callback, fence and window/vsync waits, the CPU gate signal (tail call); sleeps only without a present
 806668b0 frame_list_end_submit            # work/assets/native/command-lists.md: End, submit, FenceSync, SyncWait
@@ -238,7 +239,7 @@
 8067d7a0 pass_linear_depth_grid           # work/assets/native/engine-frame.md: linear depth, HalfNld, grid dispatches
 80255be0 pass_local_shadow                # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawDepth": each light of its list with +0x5f8 bit 2 draws its map, then bit 3 is set
 802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/shadow-maps.md 2: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/transient-pool.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
-800672e0 pass_mip_chain_compute           # work/assets/native/engine-frame.md, nx2/oot_patches.py WHOLE_SITES: the async-compute interaction wave sim (water ripples; called in the Deku Tree web room too), (int)step x substeps (+76) dispatches a frame, its mip chain by compute, 2 barriers per level
+800672e0 pass_mip_chain_compute           # work/assets/native/engine-frame.md, nx2/lift2/probes.py (WHOLE_SITES): the async-compute interaction wave sim (water ripples; called in the Deku Tree web room too), (int)step x substeps (+76) dispatches a frame, its mip chain by compute, 2 barriers per level
 802ad740 pass_occlusion_depth             # work/assets/native/engine-frame.md, work/assets/native/readback.md: agl::utl::DepthBufferEx::OcclusionDepthBuffer, 11 reports
 8067d890 pass_occlusion_grid_gather       # work/assets/native/engine-frame.md: occlusion grid gather dispatch
 806685b0 pass_opaque                      # work/assets/native/engine-frame.md: opaque G-buffer / forward opaque
@@ -370,7 +371,8 @@
 800a8120 cull_submesh_next_visible        # docs/direct/boot-to-main-loop.md 4.3: next sub-mesh bounds (0x20-byte AABBs) of a shape's LOD that passes the frustum test of f_80029240
 82bde830 cull_precomputed                 # work/assets/native/engine-layers.md: precomputed culling
 8034dac0 dynres_a                         # work/assets/native/cpu-to-gpu.md: dynamic resolution
-831f41d0 dynres_fixed_flag                # nx2/oot_patches.py
+831f41d0 dynres_fixed_flag                # host/oot_probes.c
+80825aa0 dynres_config_update             # host/oot_probes.c: reads the config flag +0x94 (bit 0: the dynamic path), the fixed path's scale (dynamic resolution patch)
 8074b190 dynres_gpu_timestamps            # TIMESTAMP_TOP / TIMESTAMP reports for the dynamic resolution's GPU time
 8034f440 dynres_gpu_timing_read           # work/assets/native/engine-layers.md, work/assets/native/alloc-transfer.md: GPU timing results (8 KB pool) for dynamic resolution
 80076e60 dynres_ratio_listener            # work/assets/native/engine-layers.md 6.1: "p_dynamic_resolution_ratio", 12 callers
@@ -408,32 +410,32 @@
 831cb8b0 config_gfx_param_c0              # docs/direct/texture-streaming.md: gfx ModuleInitializeParam getter (+0xc0)
 805c2630 config_heapdef_read              # docs/direct/texture-streaming.md: reads HeapDef.byml values
 831cb910 config_texture_reject_threshold  # docs/direct/texture-streaming.md: TextureCacheRejectionThreshold getter
-80ea2f30 display_base_resolution          # nx2/oot_patches.py: ResolutionParam's BaseResolution
-806702e0 display_scale_mode_select        # nx2/oot_native_resolution.py, nx2/oot_patches.py: picks the graphics scale mode (scale table), notifies the resources (patched)
-810a7b70 display_size_setup               # nx2/oot_patches.py: sets up the display-size object from a config
+80ea2f30 display_base_resolution          # host/oot_probes.c: ResolutionParam's BaseResolution
+806702e0 display_scale_mode_select        # host/oot_probes.c: picks the graphics scale mode (scale table), notifies the resources (patched)
+810a7b70 display_size_setup               # host/oot_probes.c: sets up the display-size object from a config
 812bda40 gfx_copy_buffer_to_texture       # work/assets/native/block-linear.md: CopyBufferToTexture (Vfx3 noise)
-836cf4b0 gfx_graphics_init                # nx2/oot_patches.py: the graphics init
+836cf4b0 gfx_graphics_init                # host/oot_probes.c: the graphics init
 80941b20 gfx_memory_pool_finalize_b       # docs/direct/texture-streaming.md: finalizes a Replace request's pool # ? role from the call only
 80792e30 gfx_memory_pool_init             # work/assets/native/shader-stream.md, work/assets/native/asset-loading.md: nn::gfx MemoryPool init (in-place pools: bfsha, BNSH, BFRES)
 80eeb4b0 gfx_module_init_register         # work/assets/native/engine-layers.md: the game's gfx module init: registers pipeline hook listeners
 80792df0 gfx_res_texture_file             # work/assets/native/asset-path.md: the ResTextureFile of a ui2d file
 831dd780 gfx_system_init                  # docs/direct/texture-streaming.md, work/assets/native/engine-layers.md: gfx system init
 831dfe10 gfx_system_update                # docs/direct/texture-streaming.md: calls the texture per-frame update
-80b72340 heap_graphics_rest               # nx2/oot_patches.py: a heap of what the Graphics heap can still give
-83b7b340 heap_module_heaps_create         # nx2/oot_patches.py: makes the module heaps, checks budgets
+80b72340 heap_graphics_rest               # host/oot_probes.c: a heap of what the Graphics heap can still give
+83b7b340 heap_module_heaps_create         # host/oot_probes.c: makes the module heaps, checks budgets
 8005eb20 heap_new_in_heap                 # work/assets/native/engine-layers.md: operator new(size, heap, align), 276 callers
 83b797e0 module_system_prepare            # docs/direct/boot-to-main-loop.md: ModuleSystem's prepare: modules, threads, Pack/Bootup (boot's single-threaded window)
 83b7a2c0 module_bootup_pack_load          # docs/direct/boot-to-main-loop.md: the Pack/Bootup loader the prepare uses
 80f69040 sead_device_queue_pools          # work/assets/native/engine-layers.md: device/queue pools
 809df700 sead_exp_heap_create             # work/assets/native/engine-layers.md: sead::ExpHeap::create(size, name, parent, align, dir, lock)
-809df710 sead_exp_heap_create_b           # nx2/oot_patches.py: the module heaps' create (patched for the Graphics heap)
+809df710 sead_exp_heap_create_b           # host/oot_probes.c: the module heaps' create (patched for the Graphics heap)
 809e00a0 sead_frame_heap_create           # work/assets/native/engine-layers.md: FrameHeap::create
 8348be50 sead_framework_graphics_init     # docs/direct/boot-to-main-loop.md: the framework's graphics init: NVN device, vi, the window textures, the Presentation Thread
 80f48c30 sead_framework_run               # docs/direct/boot-to-main-loop.md: the framework's run: MethodTreeMgr, TaskMgr, the startup loop; never returns
 80f47bc0 sead_method_tree_names           # work/assets/native/engine-layers.md: names RootCalc/SysCalc/AppCalc/RootDraw/SysDraw
 80f477b0 sead_method_tree_names_b         # work/assets/native/engine-layers.md
-8351c280 sys_abort_budget                 # nx2/oot_patches.py: aborts below zero budget
-81222ce0 sys_nn_main_body                 # nx2/oot_patches.py: nnMain per the patch notes (display size into the framework create arg) # ? the export table puts nnMain at 0x81222cd0
+8351c280 sys_abort_budget                 # host/oot_probes.c: aborts below zero budget
+81222ce0 sys_nn_main_body                 # host/oot_probes.c: nnMain per the patch notes (display size into the framework create arg) # ? the export table puts nnMain at 0x81222cd0
 824c5560 sys_printf_char_out              # nx2/adr_entries.py: character-output callback of a printf-style formatter
 81681670 sys_setjmp_wrapper               # host/hos_setjmp.c: returns setjmp's result
 80b5e9e0 thread_baseproc_executor         # work/assets/native/engine-layers.md: BaseProcExecutor0-5 threads
@@ -526,9 +528,9 @@
 833fda00 ui_key_items_refresh             # host/oot_menu.c: (screen, key buffer): the page's refresh
 81557ca0 ui_layer_draw                    # work/assets/native/engine-frame.md: UI layers #103/#107
 8078e2b0 ui_layout_find_pane              # host/oot_menu.c: (layout, name) -> pane
-802f1380 ui_menu_screen_update            # host/oot_menu.c, nx2/oot_patches.py: every menu screen's update, each frame (patched)
+802f1380 ui_menu_screen_update            # host/oot_menu.c, nx2/oot_parked.py: every menu screen's update, each frame (patched)
 8078fcb0 ui_pane_position                 # host/oot_menu.c: a pane's position
-802ed660 ui_pause_menu_pane_focus         # host/oot_menu.c, nx2/oot_patches.py: pause menu's handler of a pane getting the focus (patched: host/oot_menu.c)
+802ed660 ui_pause_menu_pane_focus         # host/oot_menu.c, nx2/oot_parked.py: pause menu's handler of a pane getting the focus (patched: host/oot_menu.c)
 828d4a70 ui_pouch_add_remove              # host/hos_main.c: OneShotAddOrRemovePouchContent
 805b63e0 ui_pouch_count                   # host/hos_main.c: (pouch manager, &name, 0, 0) counts one content
 82a3c260 ui_pouch_count_query             # host/hos_main.c: QueryGetPouchContentNumByActorName
@@ -538,12 +540,12 @@
 833ac950 ui_serialize_capture_b           # work/assets/native/block-linear.md: ui::SerializeCapture
 8088ffc0 ui_set_focus                     # host/oot_menu.c: (screen, button, flag): the focus setter
 81681690 ui_text_box_texture_thread       # host/hos_setjmp.c: UpdateTextBoxTextureThread (setjmp)
-80b1e140 ui_text_letter_anim              # nx2/oot_patches.py: steps a text pane's letter animation (text speed patch)
-80794b00 ui_text_skip                     # nx2/oot_patches.py: the game's own skip on A
+80b1e140 ui_text_letter_anim              # nx2/oot_parked.py: steps a text pane's letter animation (text speed patch)
+80794b00 ui_text_skip                     # nx2/oot_parked.py: the game's own skip on A
 
 # --- game: actors, physics, camera, events, game data, world
 8004ab40 actor_baseproc_executor          # work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
-804bd8c0 actor_life_write                 # nx2/oot_patches.py patch_life: an actor's life write (patched for the hearts cheat)
+804bd8c0 actor_life_write                 # nx2/oot_parked.py patch_life: an actor's life write (patched for the hearts cheat)
 82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc # ? docs/direct/boot-to-main-loop.md 4.3: called for every actor (~50 a frame) from actor_calc_one
 82c1d750 actor_records_read_a             # work/assets/native/alloc-transfer.md: CPU reads of its own records in GPU pools
 82c1d340 actor_records_read_b             # work/assets/native/alloc-transfer.md
@@ -552,7 +554,7 @@
 80644c80 camera_player_update             # host/mouse_native.c: the player camera's update (patched: mouse look)
 8064b770 camera_stick_pitch               # host/mouse_native.c: turns pitch by the right stick
 80649c10 camera_stick_yaw                 # host/mouse_native.c: turns yaw by the right stick
-804e48c0 camera_view_loop                 # nx2/oot_patches.py, tests/test_free_view_anchor.py: the view's loop (free camera hook)
+804e48c0 camera_view_loop                 # nx2/oot_parked.py, tests/test_free_view_anchor.py: the view's loop (free camera hook)
 829df380 event_banc_change_arg            # host/hos_main.c: QueryBancChangeEventRequestArg: fills an EventRequestArg
 80d99f10 event_make_arg                   # host/hos_main.c oot_request_banc: used by the teleport cheat
 8022b6f0 event_release_link               # host/hos_main.c oot_request_banc: used by the teleport cheat (release_link)
@@ -566,7 +568,7 @@
 8214e9a0 net_npln_worker                  # host/nn_applet.c: OoT's npln worker (site 0x8214eac0 waits on the account AsyncContext)
 820da77c phys_ai_avoidance_a              # work/assets/native/cpu-to-gpu.md, work/assets/native/engine-layers.md: Havok AI collision avoidance (NavMesh step)
 820d94ac phys_ai_avoidance_b              # work/assets/native/engine-layers.md: Havok AI collision avoidance
-806d2530 phys_cct_change_position         # host/hos_main.c, nx2/oot_patches.py: OneShotPhysicsCctChangePosition (vtable 0x84c54f10 +0xe8)
+806d2530 phys_cct_change_position         # host/hos_main.c, nx2/oot_parked.py: OneShotPhysicsCctChangePosition (vtable 0x84c54f10 +0xe8)
 81b0e600 phys_cloth_display_prepare       # work/assets/native/cpu-to-gpu.md: Display Prepare
 81b0fe60 phys_cloth_display_release       # work/assets/native/cpu-to-gpu.md: Display Release
 81dddcc0 phys_cloth_interpolate           # work/assets/native/cpu-to-gpu.md: interpolate transforms
@@ -586,10 +588,10 @@
 81f3f634 hkai_reset_clearance_mediator_task  # work/assets/native/engine-layers.md; the name comes from the function's string (ResetClearanceMediatorTask)
 80715ae0 phys_phive_static_compound       # work/assets/native/engine-layers.md
 80718040 phys_phive_volume_stats          # work/assets/native/engine-layers.md: Phive volume stats / static compound
-82c415e0 player_movement                  # nx2/oot_patches.py patch_movement: movement step (patched for flight)
+82c415e0 player_movement                  # nx2/oot_parked.py patch_movement: movement step (patched for flight)
 80494360 scene_env_state                  # work/assets/native/cpu-to-gpu.md: scene state (volume mask, depth probes "depth valid")
 83bca670 scene_params                     # work/assets/native/engine-layers.md: scene params
-831f3200 scene_resolution_update          # nx2/oot_native_resolution.py, nx2/oot_patches.py: the scene's update: cached scale, fixed path (patched)
+831f3200 scene_resolution_update          # host/oot_probes.c: the scene's update: cached scale, fixed path (patched)
 832ee450 seq_clear_texture_cache_all      # docs/direct/texture-streaming.md: INFERRED: SeqOneShotClearTextureCacheAll
 834722d0 world_set_time                   # host/hos_main.c: ExecuteWmSetTime: seconds since midnight
 
