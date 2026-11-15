@@ -43,13 +43,13 @@ This host came from emulator-style code. A constraint stays only if this tree sh
   through its `plt` map), by `xlat_survey/why/count.py` and `spin.py` in the session scratchpad. Each was a light read
   under a 3 GB memory cap; no lift and no build.
 - **sdk symbols**: from the NSO symbol table. sdk base 0x84fa0000, e.g. `__cxa_throw` 0x857ef650.
-- **Run results**: quoted from `work/assets/native/cores.md` (2026-11-11) and the scratchpad's `spin_status.txt`. Not
-  rerun here.
+- **Run results**: entry 1's run of this tree, described there. Older notes under `work/assets` and `work/proto` are not
+  used as evidence.
 
 | # | constraint | verdict |
 |---|---|---|
-| 1 | virtual cores | NEEDED: same-(core, priority) exclusion and core masks. UNPROVEN: the 2 ms equal-priority slice, kicks, escapes |
-| 2 | the poll (`ctx.poll`, `a64_poll_cur`) | UNPROVEN (serves only 1's kicks) |
+| 1 | virtual cores | NEEDED: exclusion per (core, priority), true masks. NOT NEEDED: the 2 ms slice, cross-priority kicks, escapes |
+| 2 | the poll (`ctx.poll`, `a64_poll_cur`) | NOT NEEDED under the minimal scheduler; UNPROVEN until it lands |
 | 3 | a memory barrier on every loop cycle | NEEDED (cheap) |
 | 4 | C++ unwinding through lifted frames | NOT NEEDED, once a throw is a fatal stop |
 | 5 | setjmp owners and fibers kept generic | NEEDED (cheap) |
@@ -60,44 +60,134 @@ This host came from emulator-style code. A constraint stays only if this tree sh
 | 10 | STLR as `xchg` | UNPROVEN |
 | 11 | host code that reads a lifted function's frame | NEEDED: four sites, all named |
 
-### 1. Virtual cores — NEEDED in part
+### 1. Virtual cores — NEEDED: per-(core, priority) exclusion. NOT NEEDED as console imitation: the slice, the kicks, the escapes
 
-- **What the game relies on.**
-  - sead's thread entry 0x834a2e50 stores `GetCurrentCoreNumber() + 1` in a TLS slot when the thread's mask has one bit.
-  - 324 call sites in main read that slot. 166 of them index a six-entry per-core array without a lock (`cmp w0, #6`;
-    `host/hos_thread.c:107-112`; cores.md "How the game uses the core number", counted by
-    `work/proto/cores/coreuse.py`).
-  - 68 of 72 threads ask once, at their start.
-- **What broke without exclusion** (cores.md table):
-  - `HOS_VCORE_ANY` crashed ModuleSystemWorker1-4 (a read of 0x24900000004), at 24 GB and 27 fps.
-  - Showing a thread a core outside its mask aborted the movie library at 7 s (`HOS_VCORE_LEND_TLS` prototype).
-  - `HOS_VCORES=0` survived its runs and was the fastest (Hyrule Field +2.5 fps walking), but it runs the ~20 core-1
-    threads at once with the same number. A market A/B in the scratchpad's `spin_status.txt` found no difference
-    (13.3-13.6 ms either way, 4.1 k kicks/s at the default).
-- **The needed guarantee.** No two threads with the same cached core number and the same priority run guest code at
-  once, and no thread is shown a core outside its mask.
-  - Horizon preempts across priorities at any instruction, so per-core data shared across priorities must already be
-    locked by the game.
-  - `HOS_VCORE_BY_PRIO` (commit 67a7e492, on no branch) keeps exactly this guarantee. Measured: waits ~27,000 → ~2,100
-    per 5 s, kicks ~13,000 → ~1, zero escapes, gameplay 2-3 s sooner, fps unchanged; 6 soak runs and ~20 Hyrule Field
-    checks without a hang.
-- **Inherited and UNPROVEN.**
-  - The equal-priority time slice (`HOS_VCORE_SLICE_US`, 2 ms). cores.md: "Horizon does not time-slice these".
-  - Kicks across priorities. They are only needed for latency; no recorded bug.
-  - The escapes. They break the guarantee themselves (6-10 per run). The comment at `host/hos_thread.c:1083` gives
-    defaults of 1000/20000 µs; the code reads 250000.
-  - The vcores arrived with the initial import (04407384), citing other recompilers (MacNativeGames, totk-pc-recomp),
-    not this game.
-- **Residual risk** (cores.md): data the game shares one-way between a better and a worse thread. Nothing found
+Evidence is the code at c987e637 and one run of it: a headless `scripts/bench.sh market 600` of the play build with
+`HOS_TRACE=1 HOS_TLS_TRACE=1 HOS_DBG=logvcores HOS_THREAD_TIMES=5`. That run: 27 s, frame median 9.62 ms.
+
+**What the host does now**
+
+- **On by default.** `hos_vcores_on`, `host/hos_thread.c:1093`; `HOS_VCORES=0` turns it off.
+- **Six cores presented.** `hos_cores()` (`:98`) defaults to 6; `HOS_CORES` sets 1-8; `hos_game_cores()` is a stub
+  returning 0 (`host/mkw_glue.c`). Git shows the number unchanged since the import (04407384). The host's 16 logical
+  CPUs do not change what the game is shown.
+- **What the queries answer.**
+  - `GetThreadAvailableCoreMask` answers `(1 << 6) - 1` (`:740`).
+  - `GetCurrentCoreNumber` and svc `GetCurrentProcessorNumber` answer the vcore held, else the ideal core, else the
+    mask's lowest core (`hos_thread_core`, `:119`).
+  - `ChangeThreadPriority` and `SetThreadCoreMask` (`:729`, `:734`; svc 0x0F) store the new value and log nothing.
+- **Sleeps and yields.** svc `SleepThread` (`host/hos_svc.c:435`) and `nn::os::SleepThread` go to `hos_sleep_ns`:
+  - `ns <= 0` (every yield variant alike) offers the core to an equal or better waiter, then `sched_yield`;
+  - `ns > 0` gives the core up for the sleep (`:620-628`).
+- **When a thread holds a vcore.** While it runs guest code. It gives the core up around every blocking host call
+  (condition variables, joins, sleeps, NVN waits). It also yields to a kick, which a better waiter sends at once and an
+  equal waiter after `HOS_VCORE_SLICE_US` (2 ms). A waiter left 250 ms without a core runs without one, an "escape"
+  (`HOS_VCORE_ESCAPE_US` / `_EQ_US`, both 250000 in the code, `:1170-1171`).
+- **Sleep rewrites recognised by return address** (the "scheduling tolerances"):
+  - `present_poll` (lr 0x80590520, off unless `HOS_PRESENT_POLL=1`);
+  - `calc_poll_nap` (job_calc_runner's 20 µs sleeps become timed naps with the core given up, on unless
+    `HOS_CALC_NAP=0`);
+  - `HOS_POLL_SLEEP_NS` (an experiment, off).
+- **Which host threads run guest code.** Every guest thread is its own host thread (`CreateThread`, `:454`). The direct
+  back end's threads (sender, layers) and the profiler are host-only.
+
+**What the game configures** (96 threads: 95 created plus sead::MainThread)
+
+- **Where they come from.** 82 are created from one call site (lr 0x8069ddf8) and enter through sead's thread entry
+  0x834a2e50. The rest come from the npln/grpc library (0x821494bc, 0x8220a290) and the media library (0x85465e68,
+  0x851064c0). Masks and priorities below are read at thread start (`HOS_TLS_TRACE` line, `:415`).
+- **Priorities run from 3 (AudioUserTaskThread) to 30 (BootupBackgroundWorkThread).** No thread is at a preemption
+  priority (next section).
+- **One-core masks for almost every engine thread.**
+
+| core and priority | threads |
+|---|---|
+| core 0, prio 16 | sead::MainThread, BaseProcExecutor0 |
+| core N = 1..5, prio 16 | ModuleSystemWorkerN with BaseProcExecutorN |
+| one per core 0-5 | BaseProcCreateAndDeleteThread (23), GeneralFormatAsync_ (24), PreActorModelCompose (26) |
+| core 1 | 21 threads besides the per-core ones; same-priority groups at 15 (two vibration threads), 25 (four) and 28 (four) |
+| core 2 | 12 threads besides the per-core ones; three at 28 |
+| cores 4-5 | ARes Loading (18, 19), ParallelDecompThread (19), the movie threads (17) |
+
+- **Multi-core masks, which the console kernel may migrate.**
+  - 0x3f: aal::PathFindingThread, Presentation Thread, SceneLowPriority, UpdateTextBoxTextureThread, VideoDecoderThread,
+    MediaExtractorWorker, NuCachedSource2.
+  - Others: MovieMediaSourceClient 0x3e, OptimizeChangeBanc 0x38, BootupBackgroundWorkThread 0x6, eight npln/grpc
+    threads 0x6 with ideal core 1.
+  - Mask 0: UpdateEnableExtraDataThread, EventMgr::ResidentEventLoad.
+- **Not logged.** Priority or mask changes after creation (the HLEs log nothing), so later changes are not ruled out.
+
+**The console's rule** (Atmosphère's Mesosphère, tag 1.7.1; GPL-2.0).
+
+- `libraries/libmesosphere/include/mesosphere/kern_k_dpc_manager.hpp`: `DpcManagerNormalThreadPriority = 59`,
+  `DpcManagerPreemptionThreadPriority = 63` (the last core).
+- `source/kern_k_dpc_manager.cpp`, `DpcManagerPreemptionThreadFunction`: every 10 ms (`DpcManagerTimeout`) it calls
+  `KScheduler::RotateScheduledQueue(core, priority)` for those priorities only.
+- `source/kern_k_scheduler.cpp`:
+  - `RotateScheduledQueue` moves the front thread of that priority to the back;
+  - a thread that becomes runnable (`OnThreadStateChanged`) or changes priority sets `SetSchedulerUpdateNeeded`, and
+    `UpdateHighestPriorityThreadsImpl` picks each core's best thread. A better thread therefore preempts at once;
+  - idle cores pull "suggested" threads whose masks allow it.
+- `source/svc/kern_svc_thread.cpp` `SleepThread`: the three yield types map to `YieldWithoutCoreMigration`,
+  `YieldWithCoreMigration` and `YieldToAnyThread`.
+- These are Mesosphère's values for Switch 1 hardware (`cpu::NumCores`; 4 cores, 3 for applications, from memory, the board config not read). The newer console's
+  values are not in this source.
+- **So**: threads of equal priority on a core run cooperatively and are never time-sliced unless at 59 (or 63). A
+  better-priority thread on the same core preempts a worse one immediately. No thread of this game is at 59 or 63.
+
+**Why the game needs exclusion, and only per (core, priority)**
+
+- **The workers share core numbers.** The job system puts two workers on each core at the same priority:
+  ModuleSystemWorkerN with BaseProcExecutorN at 16, and sead::MainThread with BaseProcExecutor0.
+- **On the console they never interleave mid-job**: equals are not rotated, and a yield or block is the only switch.
+- **What depends on that.** The engine reads a core number cached at thread start; the comment at
+  `host/hos_thread.c:107-112` names 324 sites and 166 six-entry per-core arrays (not recounted here). An array indexed
+  by that number is then touched by two workers that the console runs exclusively. Whether both workers of a pair
+  really index the same arrays is not checked.
+- **Across priorities** a better thread preempts at any instruction on the console, so data shared across priorities
+  must already be locked by the game. Exclusion across priorities imitates nothing the game can rely on for
+  consistency.
+- **Residual risk.** A one-way assumption, "the worse thread does not run while the better one does". Nothing found
   relies on it.
-- **One host thread per guest thread, no vcores**: correct only if the 166 per-core array sites get a per-thread or
-  locked replacement. That is a patch of the game (TLS slot per thread, arrays sized per thread), in the spirit of
-  patching the game rather than imitating the console. Not attempted.
-- **Experiment.** Land BY_PRIO with the slice, the kicks and the escapes off; run the cores soak
-  (`work/proto/cores/soak.sh`) and the market bench.
-- **Plan items that change.** A: the poll's only consumer shrinks to near zero kicks (entry 2).
 
-### 2. The poll — UNPROVEN
+**Concurrency today, and the profiler's many threads** (same run)
+
+- **What the profiler showed.** In play 14 guest threads were busy: sead::MainThread 38 %, ModuleSystemWorker1-5
+  28-33 % each, BaseProcExecutor0-5 12-15 % each, OptimizeChangeBanc 16 %, NavMeshCAStepDepWorker1 12 %. That is
+  about 2.95 cores of guest work across 14 host threads, which take turns on 6 core numbers. They are not more than 6
+  at once.
+- **Waiters are blocked, not spinning.** Waiters in `vc_acquire` block on a condition variable in 1 ms steps; mean
+  waits are 136-255 µs.
+- **Vcore traffic in play.** 154 k takes, 38 k waits, 17.6 k kicks and 17.9 k yields per 5 s, 0 escapes.
+- **Escapes broke the one-per-number rule three times, all at load** (2.6-7.8 s: PreActorModelCompose, priority 26,
+  beside holders at 16 and 21). All three were across priorities, which the per-(core, priority) rule allows.
+- **Not measured: the peak number of guest threads running at once.** It needs a counter of held `vc_owner` slots plus
+  escaped threads, with its maximum, on the `vcores:` line.
+
+**The minimal scheduler**
+
+- One host thread per guest thread, with the true core number and mask for each.
+- Exclusion only among threads with the same (core, priority): no time slice, no kicks (a better thread never needs a
+  worse thread's slot), no escapes.
+- Yield variants hand the slot to an equal waiter of the same core.
+- Today's scheduler adds the slice, the cross-priority kicks and the escapes. None is a console behaviour this game can
+  depend on.
+- "No scheduler at all" (`HOS_VCORES=0`) drops the one guarantee the worker pairs rely on.
+
+**The experiment that decides between the top two** (switches that exist today)
+
+- Run `HOS_VCORES=0` against the default, with `HOS_DBG=logvcores`, on the market bench and a long play route.
+- Look for crashes or corruption in the job workers. This run's priority table shows that ModuleSystemWorkerN and
+  BaseProcExecutorN, at the same core and priority, then run at once.
+- No crash proves nothing either way, because the race needs both workers in the same array at once. A positive
+  result decides it.
+- The per-(core, priority) policy itself needs code. It is not in the tree.
+
+**Plan items that change**
+
+- A: with no kicks between equals and none needed across priorities, the poll serves nothing (entry 2).
+
+### 2. The poll — NOT NEEDED under the minimal scheduler; UNPROVEN until it lands
 
 - **Its only consumer is the virtual-core kick.**
   - The only writer of `ctx.poll` is `vc_acquire` (`host/hos_thread.c:1209`). A fiber switch carries a pending request
@@ -105,13 +195,13 @@ This host came from emulator-style code. A constraint stays only if this tree sh
   - `a64_poll_cur` (`host/mkw_glue.c:216`) calls only `hos_vcore_checkpoint` (`:1311`).
   - Nothing else reads the flag: no suspension, shutdown, profiler, bench step or stop-the-world (grep of `host`,
     `gpu/direct`, the runtime).
-- **Every nn::os call and SVC checkpoints anyway.** The poll serves only a lifted loop that makes no OS call while a
-  better thread of its core waits. Under BY_PRIO that is about 1 kick per 5 s. For equal priorities the console would
-  not preempt at all.
+- **Why the minimal scheduler needs no kick.**
+  - Kicks come from the 2 ms equal-priority slice, which the console does not do below priority 59.
+  - Or they come from a better waiter on the same core, which the per-(core, priority) rule never makes wait.
+  - In this run the default scheduler sent 17.6 k kicks per 5 s in play.
 - **The switch.** `nx2/build.py --no-polls` only drops `-DA64_POLLING` for C. Lift 2 polls unconditionally
-  (`nx2/lift2/build_ir.py` near line 247), so the experiment needs a lift-time switch.
-- **Experiment.** Lift without polls (an empty memory barrier on cycles instead, entry 3), under BY_PRIO. Watch the
-  `vcores:` log lines (waits, max wait, escapes) in the soak.
+  (`nx2/lift2/build_ir.py` near line 247), so removing the poll needs a lift-time switch. The cycle barrier stays
+  (entry 3).
 - **Plan items that change.** A: if the poll goes, A is the whole 13.3 % of bytes (measured share) instead of
   6.6 % + 6.3 %, and step 4 (signals) is not needed.
 
@@ -731,7 +821,7 @@ measurements: A (bytes measured), C (the 31-33 % context traffic is the conventi
 
 | item | value | depends on | first step | risk |
 |---|---|---|---|---|
-| A poll placement | HIGH: -6.6 % and -6.3 % measured; the whole 13.3 % if the poll goes (preserves 2) | nothing; BY_PRIO for removal (preserves 1) | polls on natural-loop back edges only | spin loops need a barrier on every cycle |
+| A poll placement | HIGH: -6.6 % and -6.3 % measured; the whole 13.3 % if the poll goes (preserves 2) | nothing; the per-(core, priority) scheduler for removal (preserves 1) | polls on natural-loop back edges only | spin loops need a barrier on every cycle |
 | C call boundaries | HIGH; larger with pair deletion if a throw is fatal (preserves 4) | summaries every build (117 s, 1.7 GB cached) | no reload of preserved registers after full-summary, unhooked BLs | wrong summary (verify build), hooks returning 1, splices writing ctx |
 | D indirect calls | MEDIUM-HIGH | nothing (1); a profile (2) | per-site 2-slot cache (existing runtime code) | none (exact compare) |
 | E index switches | MEDIUM (speed) | discovery's load pc and index register | bounded tables only | none |
