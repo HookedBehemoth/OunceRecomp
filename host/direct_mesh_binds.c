@@ -15,6 +15,7 @@
 #include "direct.h"
 #include <string.h>
 #include <windows.h>
+void f_801a2d70(Ctx *), f_801a6a40(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 
 enum { D_43E0, D_46A0, D_6720, D_N };
@@ -33,8 +34,8 @@ static int drawer(const HookArgs *a, HookCall *h, int which) {
     }
     const uint64_t ctx = hos_guest_range(G64(item) + 0x28, 8) ? G64(G64(item) + 0x28) : 0;
     if (!ctx) return 0;
-    hook_call_guest(h, 0x801a2d70ull, ctx, item, 4, o + 0x1b0, 0);   /* (the drawer's registers as they were after each) */
-    hook_call_guest(h, 0x801a6a40ull, ctx, item, 5, o + 0xd70, 0);
+    hook_call_guest(h, CODE_PTR(f_801a2d70), ctx, item, 4, o + 0x1b0, 0);   /* (the drawer's registers as they were after each) */
+    hook_call_guest(h, CODE_PTR(f_801a6a40), ctx, item, 5, o + 0xd70, 0);
     InterlockedIncrement64(&n[which].bound);
     return 0;
 }

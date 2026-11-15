@@ -11,6 +11,7 @@
 #include "direct.h"
 #include <string.h>
 #include <windows.h>
+void f_80084de0(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 void direct_layer_ahead_job_done(uint64_t range, uint64_t lr);   /* direct_layer_ahead.c */
 
 
@@ -26,7 +27,7 @@ ENTRY_HOOK(0x80084de0) {   /* (ctx, drawctx, cmdpool, key, job, &range, stats) *
     const uint64_t range = a->x[5], lr = a->lr;
     if (direct_passes_recorder(a->x[3])) { direct_layer_ahead_job_done(range, lr); return 1; }   /* (the pass's formats not known: the early return) */
     static A64Fn orig;
-    if (!orig) orig = a64_lookup(0x80084de0);
+    if (!orig) orig = f_80084de0;
     if (!orig) return 0;
     memset(&jt, 0, sizeof jt);
     jt.active = 1;

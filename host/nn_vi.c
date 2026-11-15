@@ -518,6 +518,10 @@ void hos_vi_native_presented(void) {
         shown_count = n + 1;
     }
     const int64_t n = InterlockedIncrement64(&presents);
+    if (n % 1800 == 0) {
+        void hos_code_ptr_report(void);
+        hos_code_ptr_report();   /* code_ptrs.c */
+    }
     present_trace(n, now);
     {   /* HOS_MKW_INTERVAL=<0|1|2>: the interval MKW's pacer is held at, through its own override (+0x210, any
            non-zero value is used as the interval): 1 (the default): a steady 60 fps; 2: 30; 0: the game's choice,

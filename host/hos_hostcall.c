@@ -19,31 +19,64 @@ static HostCall calls[HOS_HOSTCALL_MAX];
 static volatile LONG ncalls;
 static SRWLOCK lock = SRWLOCK_INIT;
 
-/* The guest address of a host call named `name` (made on first request, the same address after). */
+/* HOS_HOSTCALL_STATS, tracing or HOS_HOSTCALL_SLOW=1: every host call through a64_call_miss (it counts there) */
+static int slow_calls(void) {
+    static int slow = -1;
+    if (slow < 0) slow = getenv("HOS_HOSTCALL_STATS") != NULL || hos_trace || getenv("HOS_HOSTCALL_SLOW") != NULL;
+    return slow;
+}
+
+/* What the game is handed for a host call named `name` (made on first request, the same after): the host function
+   itself when it takes no user data (a code pointer is a host function pointer, docs/lifter.md "Indirect calls and
+   jumps"; such handlers do not read their user argument), else its guest address in HOS_HOSTCALL_BASE.., which the
+   lifted code's guest-address path takes to a64_call_miss. */
 uint64_t hos_hostcall(const char *name, HostFn fn, void *user) {
     AcquireSRWLockExclusive(&lock);
-    for (LONG i = 0; i < ncalls; i++)
-        if (!strcmp(calls[i].name, name)) { ReleaseSRWLockExclusive(&lock); return HOS_HOSTCALL_BASE + 16ULL * i; }
-    if (ncalls == HOS_HOSTCALL_MAX) hos_fatal(NULL, "out of host calls");
-    LONG i = ncalls++;
-    calls[i].fn = fn;
-    calls[i].user = user;
-    snprintf(calls[i].name, sizeof calls[i].name, "%s", name);
+    LONG i;
+    for (i = 0; i < ncalls && strcmp(calls[i].name, name); i++) {}
+    if (i == ncalls) {
+        if (ncalls == HOS_HOSTCALL_MAX) hos_fatal(NULL, "out of host calls");
+        ncalls++;
+        calls[i].fn = fn;
+        calls[i].user = user;
+        snprintf(calls[i].name, sizeof calls[i].name, "%s", name);
+    }
+    const HostCall *h = &calls[i];
     ReleaseSRWLockExclusive(&lock);
+#ifndef __EMSCRIPTEN__   /* (wasm checks an indirect call's type: a HostFn has two parameters) */
+    if (!h->user && !slow_calls()) return (uint64_t)(uintptr_t)h->fn;
+#endif
     return HOS_HOSTCALL_BASE + 16ULL * i;
+}
+
+/* the host call an address names, by its guest address or its host function (no user data): its index, or -1 */
+static LONG call_of(uint64_t addr) {
+    if (addr >> 32) {
+        for (LONG i = 0; i < ncalls; i++)
+            if ((uint64_t)(uintptr_t)calls[i].fn == addr && !calls[i].user) return i;
+        return -1;
+    }
+    const uint64_t i = (addr - HOS_HOSTCALL_BASE) / 16;
+    return addr >= HOS_HOSTCALL_BASE && i < (uint64_t)ncalls ? (LONG)i : -1;
 }
 
 /* (mkw-recomp) the host function and user data behind a host call's address: 0 when it is not one */
 uint64_t hos_hostcall_target(uint64_t addr, HostFn *fn, void **user) {
-    const uint64_t i = (addr - HOS_HOSTCALL_BASE) / 16;
-    if (addr < HOS_HOSTCALL_BASE || i >= (uint64_t)ncalls) return 0;
+    const LONG i = call_of(addr);
+    if (i < 0) return 0;
     *fn = calls[i].fn, *user = calls[i].user;
     return addr;
 }
 
 const char *hos_hostcall_name(uint64_t addr) {
-    uint64_t i = (addr - HOS_HOSTCALL_BASE) / 16;
-    return addr >= HOS_HOSTCALL_BASE && i < (uint64_t)ncalls ? calls[i].name : NULL;
+    const LONG i = call_of(addr);
+    return i < 0 ? NULL : calls[i].name;
+}
+
+/* (rt/a64_rt.c a64_guest_of) a host call's guest address, for logs */
+uint64_t a64_guest_of_host(uint64_t v) {
+    const LONG i = call_of(v);
+    return i < 0 ? 0 : HOS_HOSTCALL_BASE + 16ULL * (uint64_t)i;
 }
 
 /* rt/a64_rt.c a64_lookup: a host call without user data as a plain function, called as fn(c) (its user argument, which
@@ -58,9 +91,7 @@ A64Fn a64_lookup_host(uint64_t addr) {
     if (addr < HOS_HOSTCALL_BASE || (addr - HOS_HOSTCALL_BASE) % 16) return NULL;
     const uint64_t i = (addr - HOS_HOSTCALL_BASE) / 16;
     if (i >= (uint64_t)ncalls || calls[i].user) return NULL;
-    static int slow = -1;
-    if (slow < 0) slow = getenv("HOS_HOSTCALL_STATS") != NULL || hos_trace || getenv("HOS_HOSTCALL_SLOW") != NULL;
-    return slow ? NULL : (A64Fn)(void *)calls[i].fn;
+    return slow_calls() ? NULL : (A64Fn)(void *)calls[i].fn;
 }
 
 /* The last host calls, for HOS_HOSTCALL_STATS: what a stalled thread was doing. */

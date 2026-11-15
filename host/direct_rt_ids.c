@@ -18,6 +18,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <windows.h>
+void f_800634b0(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 #define ENTRY_BYTES 0xc0
 typedef struct {
@@ -40,7 +41,7 @@ static int snap(uint64_t entry, uint64_t view, Snap *s) {
     return 1;
 }
 
-#define REREGISTER 0x800634b0ull   /* f_800634b0 desc_reregister (entry, view, flag) */
+#define REREGISTER CODE_PTR(f_800634b0)  /* f_800634b0 desc_reregister (entry, view, flag) */
 
 /* f_80667d20 at 0x806680d8 in place of its bl f_800634b0: sp the caller's, x0-x2 the call's arguments */
 void direct_rt_ids_reregister(GuestCall *g, uint64_t sp, uint64_t entry, uint64_t view, uint64_t flag) {

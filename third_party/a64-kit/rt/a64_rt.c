@@ -79,7 +79,17 @@ A64_WEAK int a64_call_miss(Ctx *c, uint64_t target) { (void)c; (void)target; ret
    call that entry (it does not return when it is one). Targets it takes are never cached at the site. */
 A64_WEAK void a64_ijump_hook(Ctx *c, uint64_t target) { (void)c; (void)target; }
 
+/* (hookshot) Code pointers are host function pointers: translated where they originate (docs/lifter.md, "Indirect
+   calls and jumps": the relocated slots, written at load from gen/a64_code_slots.c; the lifted code's ADR / ADRP+ADD of
+   a function entry; what the host hands out). Guest code addresses are below 4 GB and host code is far above, so a
+   target with high bits set is called as it is. A guest address still takes the lookup below. */
+#define A64_HOST_FN(t) ((t) >> 32 != 0)
+
 void a64_icall(Ctx *c, uint64_t target) {
+    if (A64_HOST_FN(target)) {
+        ((A64Fn)(uintptr_t)target)(c);
+        return;
+    }
     A64Fn f = a64_lookup(target);
     if (!f) {
         if (a64_call_miss(c, target)) return;
@@ -92,6 +102,10 @@ void a64_icall(Ctx *c, uint64_t target) {
 }
 
 void a64_ijump(Ctx *c, uint64_t target) {
+    if (A64_HOST_FN(target)) {
+        ((A64Fn)(uintptr_t)target)(c);
+        return;
+    }
     a64_ijump_hook(c, target);
     A64Fn f = a64_lookup(target);
     if (!f) {
@@ -102,6 +116,90 @@ void a64_ijump(Ctx *c, uint64_t target) {
         return;
     }
     f(c);
+}
+
+/* (hookshot) The lifted BLR and BR call a host pointer directly and come here only with a guest address
+   (a64_icall_guest / a64_ijump_guest, the site's pc passed): a code pointer whose origin was not translated, a
+   setjmp return address (longjmp), a host call with user data, 0. Every call is counted and every site is reported
+   once (a64_old_path_site, the host's log); host/code_ptrs.c prints the counts. When they stay zero over long play,
+   this path and the lookup's cache can go. */
+#define OLD_SITES (1u << 16)
+static uint32_t old_site[OLD_SITES];
+static volatile uint64_t old_calls, old_sites, guest_received;
+A64_WEAK void a64_old_path_site(uint64_t site, uint64_t target, int jump) { (void)site; (void)target; (void)jump; }
+
+static void old_path(uint64_t site, uint64_t target, int jump) {
+    __atomic_add_fetch(&old_calls, 1, __ATOMIC_RELAXED);
+    const uint32_t s = (uint32_t)site;
+    uint32_t i = (s >> 2) * 0x9E3779B1u >> 16;
+    for (uint32_t probe = 0; probe < 256; probe++, i = (i + 1) & (OLD_SITES - 1)) {
+        uint32_t k = __atomic_load_n(&old_site[i], __ATOMIC_RELAXED);
+        if (k == s) return;
+        if (!k && __atomic_compare_exchange_n(&old_site[i], &k, s, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            __atomic_add_fetch(&old_sites, 1, __ATOMIC_RELAXED);
+            a64_old_path_site(site, target, jump);
+            return;
+        }
+        if (k == s) return;
+    }
+}
+void a64_icall_guest(Ctx *c, uint64_t target, uint64_t site) {
+    old_path(site, target, 0);
+    a64_icall(c, target);
+}
+void a64_ijump_guest(Ctx *c, uint64_t target, uint64_t site) {
+    old_path(site, target, 1);
+    a64_ijump(c, target);
+}
+
+/* The host's receiving paths (thread entries, fiber functions, the TLS hooks): the function a code pointer the game
+   handed over names; a guest-valued one is looked up and counted */
+A64Fn a64_fn_of(uint64_t v) {
+    if (A64_HOST_FN(v)) return (A64Fn)(uintptr_t)v;
+    __atomic_add_fetch(&guest_received, 1, __ATOMIC_RELAXED);
+    return a64_lookup(v);
+}
+void a64_call_received(Ctx *c, uint64_t v) {
+    if (!A64_HOST_FN(v)) __atomic_add_fetch(&guest_received, 1, __ATOMIC_RELAXED);
+    a64_icall(c, v);
+}
+void a64_code_ptr_counts(uint64_t *sites, uint64_t *calls, uint64_t *received) {
+    *sites = __atomic_load_n(&old_sites, __ATOMIC_RELAXED);
+    *calls = __atomic_load_n(&old_calls, __ATOMIC_RELAXED);
+    *received = __atomic_load_n(&guest_received, __ATOMIC_RELAXED);
+}
+
+/* The guest address of a code pointer, for logs and the game's own checks (a row, docs/lifter.md): a host function
+   pointer of the table maps back to its guest address (a sorted copy of the table, made on first use); others are
+   returned as they are */
+typedef struct { uint64_t ptr, addr; } ByPtr;
+static ByPtr *by_ptr;   /* (the table sorted by host pointer) */
+static int by_ptr_cmp(const void *a, const void *b) {
+    const uint64_t x = ((const ByPtr *)a)->ptr, y = ((const ByPtr *)b)->ptr;
+    return x < y ? -1 : x > y;
+}
+A64_WEAK uint64_t a64_guest_of_host(uint64_t v) { (void)v; return 0; }   /* (host calls: host/hos_hostcall.c) */
+uint64_t a64_guest_of(uint64_t v) {
+    if (!A64_HOST_FN(v)) return v;
+    ByPtr *t = __atomic_load_n(&by_ptr, __ATOMIC_ACQUIRE);
+    if (!t) {
+        ByPtr *n = (ByPtr *)malloc(sizeof *n * a64_fn_count);
+        if (!n) return v;
+        for (uint32_t i = 0; i < a64_fn_count; i++) n[i].ptr = (uint64_t)(uintptr_t)a64_fn_ptr[i], n[i].addr = a64_fn_addr[i];
+        qsort(n, a64_fn_count, sizeof *n, by_ptr_cmp);
+        ByPtr *was = NULL;
+        if (__atomic_compare_exchange_n(&by_ptr, &was, n, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) t = n;
+        else free(n), t = was;
+    }
+    uint32_t lo = 0, hi = a64_fn_count;
+    while (lo < hi) {
+        const uint32_t mid = (lo + hi) >> 1;
+        if (t[mid].ptr < v) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo < a64_fn_count && t[lo].ptr == v) return t[lo].addr;
+    const uint64_t h = a64_guest_of_host(v);
+    return h ? h : v;
 }
 
 /* A64_SITE_PROFILE=<file> (profiling runs, for the lifter's A64_DEVIRT): call sites remember no targets, so every BLR

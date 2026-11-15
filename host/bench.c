@@ -269,6 +269,8 @@ void hos_bench_present(int64_t now) {
         if (nrows == frames_wanted) {
             state = DONE;
             bench_finish(rows, nrows, ready_at, cpu0, ncpu0);
+            void hos_code_ptr_report(void);
+            hos_code_ptr_report();   /* code_ptrs.c */
             hos_log_flush();
             ExitProcess(0);
         }

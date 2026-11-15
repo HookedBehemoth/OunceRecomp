@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
+void f_807981f0(Ctx *), f_80797240(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 extern volatile LONG64 hos_present_count;
 
@@ -115,7 +116,7 @@ ENTRY_HOOK(0x807981f0) {
     if (tl_in_move) return tl_in_move = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
     if (!rx_direct() || !direct_assets_on()) return 0;
     static A64Fn body;
-    if (!body) body = a64_lookup(0x807981f0ull);
+    if (!body) body = f_807981f0;
     if (!body) return 0;
     const uint64_t td = a->x[0];
     const nvn_tex *t = hos_guest_range(td, 0x1d0) ? tex_of(td) : NULL;
@@ -156,7 +157,7 @@ ENTRY_HOOK(0x80797240) {
     if (tl_in_update) return tl_in_update = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
     if (!rx_direct() || !direct_assets_on() || !rx_direct()->vram_free) return 0;
     static A64Fn body;
-    if (!body) body = a64_lookup(0x80797240ull);
+    if (!body) body = f_80797240;
     if (!body) return 0;
     const uint64_t mgr = a->x[0];
     if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1ee8, 8)) return 0;

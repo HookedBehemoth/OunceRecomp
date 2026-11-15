@@ -285,7 +285,7 @@ void hos_thread_dump(void) {
         }
         bt[n] = 0;
         hos_log("thread %-24s lr %#llx sp %#llx x0 %#llx; frames%s", threads[i]->name, (unsigned long long)c->x[30],
-                (unsigned long long)c->x[31], (unsigned long long)c->x[0], bt);
+                (unsigned long long)c->x[31], (unsigned long long)a64_guest_of(c->x[0]), bt);
         if (hos_game_is_mkw() && c->x[30] == 0x825c6844ULL) continue;   /* (MKW's idle thread loop) */
         /* registers (current at the call out), with the text a register (or the word it points to) leads to */
         for (int r = 0; r < 29; r++) {
@@ -391,17 +391,17 @@ static DWORD WINAPI thread_main(void *p) {
     c->x[0] = t->arg;
     c->x[30] = 0;
     c->x[31] = (t->stack + t->stack_size) & ~15ULL;
-    A64Fn f = a64_lookup(t->entry);
-    if (!f) hos_fatal(c, "thread %s: entry %#llx is not a function", t->name, (unsigned long long)t->entry);
+    A64Fn f = a64_fn_of(t->entry);
+    if (!f) hos_fatal(c, "thread %s: entry %#llx is not a function", t->name, (unsigned long long)a64_guest_of(t->entry));
     a64_fpcr_sync(c);   /* (MXCSR from the guest FPCR: a new host thread may inherit its creator's) */
-    if (hos_trace) hos_log("thread start: entry %#llx arg %#llx", (unsigned long long)t->entry, (unsigned long long)t->arg);
+    if (hos_trace) hos_log("thread start: entry %#llx arg %#llx", (unsigned long long)a64_guest_of(t->entry), (unsigned long long)t->arg);
     /* What the SDK's own thread entry does before the thread function (see build.py thread_hooks): nnmusl's start
        hook gives the thread its TLS (thread pointer with the DTV at TP+8, every module's TLS block) and leaves the
        thread pointer at TLR+0x1F0. Without it every thread would share one DTV, and so every thread_local. */
     uint64_t hook = hos_thread_start_hook ? G64(hos_thread_start_hook) : 0;
     if (hook) {
         c->x[0] = t->guest_tt;
-        a64_icall(c, hook);
+        a64_call_received(c, hook);
         if (G64(t->tlr + 0x1F0)) c->tpidr_el0 = G64(t->tlr + 0x1F0);
         if (hos_trace || getenv("HOS_TLS_TRACE"))
             hos_log("thread %s: TLS hook gave TP %#llx, DTV %#llx; ideal core %d mask %#llx priority %d", t->name,
@@ -415,7 +415,7 @@ static DWORD WINAPI thread_main(void *p) {
     hook = hos_thread_exit_hook ? G64(hos_thread_exit_hook) : 0;
     if (hook) {
         c->x[0] = t->guest_tt;
-        a64_icall(c, hook);
+        a64_call_received(c, hook);
     }
     if (hos_trace) hos_log("thread exit");
     return 0;
@@ -823,7 +823,7 @@ void hos_oot_present_sleep(int64_t ns, uint64_t x22, uint64_t x23, uint64_t x24)
             const char *hos_hostcall_name(uint64_t addr);
             const uint64_t fp = G64(x24), sync = x23 + (uint64_t)G32(x22 + 0x164) * 64;
             const char *n = hos_hostcall_name(fp);
-            hos_log("sleep: OoT's present poll: fn %#llx (%s), arg %#llx, sleep %lld ns", (unsigned long long)fp,
+            hos_log("sleep: OoT's present poll: fn %#llx (%s), arg %#llx, sleep %lld ns", (unsigned long long)a64_guest_of(fp),
                     n ? n : "guest code", (unsigned long long)sync, (long long)ns);
         }
     }
@@ -977,7 +977,7 @@ static void WINAPI fiber_main(void *p) {
     c->x[30] = 0;
     c->x[31] = (f->stack + f->size) & ~15ULL;
     a64_fpcr_sync(c);   /* (the FPCR it inherited at its first switch; the host fiber starts from another MXCSR) */
-    a64_icall(c, f->fn);   /* FiberType* (*)(void*) */
+    a64_call_received(c, f->fn);   /* FiberType* (*)(void*) */
     const uint64_t next = c->x[0];
     f->done = 1;
     HosFiber *to = next ? fiber_of_ft(next) : NULL;   /* (NULL: back to the thread's own context, as nn::os does) */
@@ -1035,7 +1035,7 @@ HLE(_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi) {
     static volatile LONG logged;
     if (InterlockedIncrement(&logged) <= 8 || hos_trace)
         hos_log("fiber %#llx: function %#llx arg %#llx stack %#llx+%#llx flags %d", (unsigned long long)f->ft,
-                (unsigned long long)f->fn, (unsigned long long)f->arg, (unsigned long long)f->stack,
+                (unsigned long long)a64_guest_of(f->fn), (unsigned long long)f->arg, (unsigned long long)f->stack,
                 (unsigned long long)f->size, (int)ARG(5));
 }
 

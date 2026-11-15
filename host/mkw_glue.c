@@ -107,6 +107,9 @@ static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
             hos_log("CRASH:   x%-2d %016llx  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx", i,
                     (unsigned long long)c->x[i], i + 1, (unsigned long long)c->x[i + 1], i + 2,
                     (unsigned long long)c->x[i + 2], i + 3, i + 3 < 31 ? (unsigned long long)c->x[i + 3] : 0ULL);
+        for (int i = 0; i < 31; i++)   /* (a code pointer is a host function pointer: its guest function) */
+            if (c->x[i] >> 32 && a64_guest_of(c->x[i]) != c->x[i])
+                hos_log("CRASH:   x%d is the code pointer of f_%08llx", i, (unsigned long long)a64_guest_of(c->x[i]));
         char bt[1024];
         int n = snprintf(bt, sizeof bt, "CRASH: guest backtrace: lr %#llx", (unsigned long long)c->x[30]);
         uint64_t fp = c->x[29];

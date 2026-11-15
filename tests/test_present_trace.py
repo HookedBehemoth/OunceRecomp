@@ -47,6 +47,7 @@ static void realtime_step(int64_t now) { (void)now; ++steps; }
 static int hos_bench_on(void) { return 0; }   /* (HOS_BENCH off) */
 static void hos_bench_present(int64_t now) { (void)now; }
 static void hos_thread_fp_log(long long present) { (void)present; }   /* (HOS_FP_LOG off) */
+void hos_code_ptr_report(void) {}   /* (host/code_ptrs.c) */
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static int hos_log_switch(const char *item) { (void)item; return 0; }
 static uint64_t hos_ticks(void) { return 0; }

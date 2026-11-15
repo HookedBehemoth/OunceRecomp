@@ -40,6 +40,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <windows.h>
+void f_80798b60(Ctx *), f_80792bd0(Ctx *), f_80f6c580(Ctx *), f_8152f540(Ctx *), f_81539300(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 uint8_t *hos_guest_base(void);
 uint64_t hos_guest_size(void);
@@ -272,9 +273,8 @@ ENTRY_HOOK(0x807982f0) {
 /* in-place files: the file, for this thread while its textures are initialized */
 static _Thread_local uint64_t tl_inplace;
 static _Thread_local int tl_in_body;
-static int run_inplace(HookCall *h, uint64_t addr, uint64_t file) {
+static int run_inplace(HookCall *h, A64Fn f, uint64_t file) {
     if (tl_in_body || !ready()) return 0;
-    A64Fn f = a64_lookup(addr);
     if (!f) return 0;
     const uint64_t was = tl_inplace;
     tl_inplace = file;
@@ -284,8 +284,8 @@ static int run_inplace(HookCall *h, uint64_t addr, uint64_t file) {
     tl_inplace = was;
     return 1;
 }
-ENTRY_HOOK(0x80798b60) { return run_inplace(h, 0x80798b60ull, a->x[0]); }   /* ResTextureFile in place (ui2d) */
-ENTRY_HOOK(0x80792bd0) { return run_inplace(h, 0x80792bd0ull, a->x[1]); }   /* in-place BNTX */
+ENTRY_HOOK(0x80798b60) { return run_inplace(h, f_80798b60, a->x[0]); }   /* ResTextureFile in place (ui2d) */
+ENTRY_HOOK(0x80792bd0) { return run_inplace(h, f_80792bd0, a->x[1]); }   /* in-place BNTX */
 
 /* nn::gfx TextureImpl<NVN>::Initialize(obj, device, info, pool, offset, size): an in-place file's texture */
 ENTRY_HOOK(0x80798920) {
@@ -354,7 +354,7 @@ ENTRY_HOOK(0x80f6c580) {
     if (tl_heap_token) return tl_heap_token = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
     if (!rx_direct() || !direct_assets_on()) return 0;
     static A64Fn body;
-    if (!body) body = a64_lookup(0x80f6c580ull);
+    if (!body) body = f_80f6c580;
     if (!body) return 0;
     tl_heap_init = tl_heap_token = 1;
     hook_run(h, body);
@@ -543,7 +543,7 @@ static _Thread_local struct { int in_pack, in_plot, have; uint32_t x, y, w, h; }
 ENTRY_HOOK(0x8152f540) {   /* the shelf packer (cache, &x, &y, w, h) */
     if (gl.in_pack || !gl.in_plot || !direct_assets_on()) return 0;
     static A64Fn f;
-    if (!f) f = a64_lookup(0x8152f540ull);
+    if (!f) f = f_8152f540;
     if (!f) return 0;
     const uint64_t px = a->x[1], py = a->x[2];
     const uint32_t cw = (uint32_t)a->x[3], ch = (uint32_t)a->x[4];
@@ -556,7 +556,7 @@ ENTRY_HOOK(0x8152f540) {   /* the shelf packer (cache, &x, &y, w, h) */
 ENTRY_HOOK(0x81539300) {   /* nn::font's plot (cache, glyph, ...) */
     if (gl.in_plot || !ready()) return 0;
     static A64Fn f;
-    if (!f) f = a64_lookup(0x81539300ull);
+    if (!f) f = f_81539300;
     if (!f) return 0;
     const uint64_t cache = a->x[0];
     gl.have = 0;

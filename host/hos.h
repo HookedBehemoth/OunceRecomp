@@ -53,6 +53,14 @@ typedef struct HookCall HookCall;   /* (the hooked call: only the hook_* functio
 int hook_return(HookCall *h, uint64_t x0);
 void hook_set_arg(HookCall *h, int n, uint64_t v);
 void hook_run(HookCall *h, A64Fn body);
+/* rt/a64_rt.c: code pointers are host function pointers (docs/lifter.md, "Indirect calls and jumps"). What the game
+   hands the host (thread entries, fiber functions, the TLS hooks) goes through these: a64_fn_of the function a code
+   pointer names, a64_call_received a call of it (a guest-valued one is looked up and counted); a64_guest_of the guest
+   address of a code pointer, for logs */
+A64Fn a64_fn_of(uint64_t v);
+void a64_call_received(Ctx *c, uint64_t v);
+uint64_t a64_guest_of(uint64_t v);
+#define CODE_PTR(f) ((uint64_t)(uintptr_t)(f))   /* (a lifted function, f_<address>, as the game sees it) */
 uint64_t hook_result(HookCall *h);
 uint64_t hook_call_guest(HookCall *h, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
 /* At rows (nx2/lift2/probes.py): host functions of plain values; a 16-byte vector register ("qN") is a hos_q. A row

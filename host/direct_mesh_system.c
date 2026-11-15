@@ -20,6 +20,7 @@
 #include "direct.h"
 #include <string.h>
 #include <windows.h>
+void f_801060f0(Ctx *), f_80100210(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 uint64_t eng_jobs_drawctx(void);   /* eng_jobs.c */
 
@@ -51,13 +52,13 @@ void direct_mesh_system_bind(GuestCall *g, uint64_t job_sp) {
     if (!hos_guest_range(sp, 0x200)) { InterlockedIncrement64(&n.no_ctx); return; }
     memset(GP(info), 0, 0x100);
     G64(info + 0xb0) = dc;
-    guest_call(g, sp, 0x801060f0ull, info, G64(v + 0x538), 0xfb000000u, 0, 0);
-    guest_call(g, sp, 0x801060f0ull, info, G64(v + 0x540), 0xfb010101u, 0, 0);
+    guest_call(g, sp, CODE_PTR(f_801060f0), info, G64(v + 0x538), 0xfb000000u, 0, 0);
+    guest_call(g, sp, CODE_PTR(f_801060f0), info, G64(v + 0x540), 0xfb010101u, 0, 0);
     if (hos_guest_range(0x84ca0fa8, 8) && hos_guest_range(G64(0x84ca0fa8), 8))
-        guest_call(g, sp, 0x801060f0ull, info, G64(G64(0x84ca0fa8)), 0xfb020202u, 0, 0);
+        guest_call(g, sp, CODE_PTR(f_801060f0), info, G64(G64(0x84ca0fa8)), 0xfb020202u, 0, 0);
     if (hos_guest_range(0x84c9e740, 8) && hos_guest_range(G64(0x84c9e740), 8) && hos_guest_range(G64(G64(0x84c9e740)) + 0x1e8, 8)) {
         const uint64_t l = G64(G64(G64(0x84c9e740)) + 0x1e8);
-        if (l && hos_guest_range(l + 0xc00, 8) && G64(l + 0xc00)) guest_call(g, sp, 0x80100210ull, G64(l + 0xc00), dc, 0xfb030303u, 0, 0);
+        if (l && hos_guest_range(l + 0xc00, 8) && G64(l + 0xc00)) guest_call(g, sp, CODE_PTR(f_80100210), G64(l + 0xc00), dc, 0xfb030303u, 0, 0);
     }
     InterlockedIncrement64(&n.jobs);
 }

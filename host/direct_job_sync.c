@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+void f_8067c310(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 uint64_t nvn_native_proc(const char *name);   /* nvn_native.c */
 uint64_t hos_hostcall(const char *name, void (*fn)(Ctx *, void *), void *user);   /* hos_hostcall.c */
@@ -146,7 +147,7 @@ static void call_fn(Ctx *c, void *u) {
        job cut at the dispatch; not done */
     for (int i = 0; i < k.nw; i++) hos_call_guest(c, p_wait, cmd, k.w[i].ev, k.w[i].mode, k.w[i].value);
     if (k.bits) hos_call_guest(c, p_barrier, cmd, k.bits, 0, 0);
-    for (int i = 0; i < k.nd; i++) hos_call_guest(c, 0x8067c310ull, k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3);
+    for (int i = 0; i < k.nd; i++) hos_call_guest(c, CODE_PTR(f_8067c310), k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3);
     hos_call_guest(c, p_call, cmd, cnt, handles, 0);
     InterlockedAdd64(&n.placed_waits, k.nw);
     InterlockedAdd64(&n.placed_barriers, k.bits ? 1 : 0);

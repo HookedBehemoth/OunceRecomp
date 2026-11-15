@@ -498,6 +498,8 @@ static int game_main(int argc, char **argv) {
         return 1;
     }
     hos_mem_init(hos_image_end);
+    void hos_code_ptrs_init(void);
+    hos_code_ptrs_init();   /* code_ptrs.c */
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
            Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio. Wider

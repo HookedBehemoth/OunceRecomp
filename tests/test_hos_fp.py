@@ -135,7 +135,7 @@ class Text(unittest.TestCase):
         self.assertIn("a64_fpcr_sync(c);", main[:main.index("f(c);")], "thread_main: MXCSR before guest code")
         fm = s[s.index("static void WINAPI fiber_main"):]
         fm = fm[:fm.index("\n}\n")]
-        self.assertLess(fm.index("a64_fpcr_sync(c);"), fm.index("a64_icall(c, f->fn);"), "fiber_main")
+        self.assertLess(fm.index("a64_fpcr_sync(c);"), fm.index("a64_call_received(c, f->fn);"), "fiber_main")
         sw = s[s.index("static void fiber_switch(Ctx *from, HosFiber *to) {"):]
         sw = sw[:sw.index("\n}\n")]
         self.assertTrue(re.search(r"SwitchToFiber\([^;]*\);\s*(/\*.*?\*/\s*)?a64_fpcr_sync\(from\);", sw, re.S),

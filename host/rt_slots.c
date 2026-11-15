@@ -54,6 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+void f_802737a0(Ctx *), f_8005ed00(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 #define DTA_NRECS 0x2a48        /* u32 pool records */
 #define DTA_RECS 0x2a50         /* u64 -> array of pool record pointers */
@@ -335,7 +336,7 @@ static int holds(uint64_t m, uint64_t lr) {
 }
 static void release_now(HookCall *h, uint64_t lr, uint64_t dta, uint64_t entry) {
     releasing = 1;
-    hook_call_guest(h, 0x802737a0ull, dta, entry, 0, 0, 0);
+    hook_call_guest(h, CODE_PTR(f_802737a0), dta, entry, 0, 0, 0);
     releasing = 0;
     if (check_on()) check_arenas("after the release of", lr, dta, entry);
 }
@@ -468,7 +469,7 @@ ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
     if (off_()) return handled;
     if (!handled) {
         static A64Fn body;
-        if (!body) body = a64_lookup(0x8005ed00ull);
+        if (!body) body = f_8005ed00;
         if (!body) return 0;
         in_alloc = 1;
         hook_run(h, body);
