@@ -5,10 +5,10 @@ Adapted from a64-kit's build.py (TOTKPort e88744a: implemented, gen_stubs, OS_NA
 thread_hooks, write_image_c), for MKW's Eden-layout image in the 64-bit window.
 
 The model is TOTKPort's: the SDK is replaced at the nn:: boundary where it talks to system services. A function the
-runtime defines as `HLE(<mangled name>)` (host/patch.h) is hooked where the game imports it and
-at the sdk's own definition. Every other free function of an OS-facing namespace the game imports gets a generated
-stub that logs its first call and returns 0. The rest of the SDK (libc, nn::util, nn::mem, std, the NVN driver)
-runs as lifted code.
+runtime defines as `HLE(<mangled name>)` or answers as `PATCH_ANSWER(<mangled name>, value, "why")` (host/patch.h) is
+hooked where the game imports it and at the sdk's own definition. Every other free function of an OS-facing namespace
+the game imports gets a generated stub that stops the game when called, naming the function and its caller. The rest
+of the SDK (libc, nn::util, nn::mem, std, the NVN driver) runs as lifted code.
 """
 import os
 import re
@@ -24,7 +24,8 @@ from horizon import OS_NAMESPACES  # noqa: E402,F401  (the platform's: nx2/horiz
 
 
 def implemented():
-    """C names (imp_<symbol>) of the functions the host's HLE(symbol) declarations replace (nx2/lift2/patch_scan.py)"""
+    """C names (imp_<symbol>) of the functions the host's HLE(symbol) and PATCH_ANSWER(symbol, ...) declarations replace
+    (nx2/lift2/patch_scan.py)"""
     from lift2 import patch_scan
     return {"imp_" + s for s in patch_scan.patches().hle_symbols()}
 
@@ -89,12 +90,10 @@ def hle_set(modules):
     the OS-facing functions the game modules import that it does not define"""
     hle = {n[4:] for n in implemented()}
     known = {s["name"] for m in modules for s in m.symbols if s["name"]}
-    # (TOTK's SDK functions that MKW's newer SDK no longer has: their HLE stays unused; a typo shows here too)
-    missing = sorted(hle - known)
+    missing = sorted(hle - known)   # (another SDK's function, or a typo: a declaration that replaces nothing)
     if missing:
-        print("host/ defines %d imp_ functions for symbols no module has (unused):\n  %s"
-              % (len(missing), "\n  ".join(missing)))
-        hle -= set(missing)
+        sys.exit("host/ replaces %d functions no module of this image has (HLE / PATCH_ANSWER):\n  %s"
+                 % (len(missing), "\n  ".join(missing)))
     kind = {s["name"]: s["type"] for m in modules for s in m.symbols if s["defined"] and s["name"]}
     stubbed = set()
     for m in modules:
@@ -114,14 +113,15 @@ def demangle(syms):
 
 
 def gen_stubs(gen, meta):
+    """gen/a64_stubs.c: a stop for each OS-facing import the host neither replaces nor answers (host/hos_hostcall.c
+    hos_import_stop: the game ends there, the function and its caller named); the count"""
     have = implemented() | {"imp_" + h["sym"] for h in meta["hooks"] if nvn_proc_name(h["sym"])}
     hooks = [h for h in meta["hooks"] if h["c"] not in have]
     dm = demangle([h["sym"] for h in hooks])
-    lines = ['#include "a64.h"', "void a64_unimplemented(Ctx *A64_NOESC c, const char *sym, int *seen);", ""]
+    lines = ['#include "a64.h"', "void hos_import_stop(Ctx *A64_NOESC c, const char *sym, const char *name);", ""]
     for h in hooks:
-        lines.append("/* %s */" % dm[h["sym"]].replace("*/", "* /"))
-        lines.append('void %s(Ctx *A64_NOESC c) { static int seen; a64_unimplemented(c, "%s", &seen); }'
-                     % (h["c"], h["sym"]))
+        lines.append('void %s(Ctx *A64_NOESC c) { hos_import_stop(c, "%s", "%s"); }'
+                     % (h["c"], h["sym"], dm[h["sym"]].replace("\\", "\\\\").replace('"', '\\"')))
     text = "\n".join(lines) + "\n"
     path = os.path.join(gen, "a64_stubs.c")
     if not os.path.exists(path) or open(path).read() != text:

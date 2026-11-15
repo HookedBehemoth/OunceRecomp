@@ -342,7 +342,6 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_NVN_LOG_POOLS` | (set) who makes each memory pool |
 | `HOS_NVN_LOG_VMAP` | (set) virtual pools logged with their flags and caller |
 | `HOS_NVN_DEVINFO_LOG` | (set) every `nvnDeviceGetInteger` query and its answer |
-| `HOS_NVN_STRICT` | (set) an unimplemented NVN call stops the game |
 | `HOS_NVN_SYNC_LOG` | `<present>`: NVN sync calls logged from that present on |
 | `HOS_NVN_WATCH_DRAW` | `<count>[,<after s>]`: logs the draw with that count |
 | `HOS_NVN_WATCH_DRAW_THREAD` | only draws recorded on threads whose name holds this |

@@ -1345,22 +1345,6 @@ HLE(_ZN2nn5audio13SetVoicePitchEPNS0_9VoiceTypeEf) {
     au_unlock();
 }
 HLE(_ZN2nn5audio16SetVoicePriorityEPNS0_9VoiceTypeEi) {}
-/* BiquadFilterParameter: bool enable @0, int16 numerator[3] @2, int16 denominator[2] @8 (Q14) */
-HLE(_ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_21BiquadFilterParameterE) {
-    au_lock();
-    Voice *v = voice_of(ARG(0));
-    const int f = (int)ARG(1);
-    if (v && f >= 0 && f < 2 && ARG(2)) {
-        const uint64_t p = ARG(2);
-        Cmd k = {.op = OP_VOICE_BIQUAD, .idx = (int)(v - voices), .i0 = f, .i1 = *(uint8_t *)GP(p) != 0};
-        for (int n = 0; n < 3; n++) k.b[n] = *(int16_t *)GP(p + 2 + 2 * n) / 16384.0f;
-        for (int n = 0; n < 2; n++) k.a[n] = *(int16_t *)GP(p + 8 + 2 * n) / 16384.0f;
-        submit(&k);
-        static int logged;
-        if (k.i1 && logged++ < 8) AUT("audio: voice biquad %d: b %.3f %.3f %.3f a %.3f %.3f", f, k.b[0], k.b[1], k.b[2], k.a[0], k.a[1]);
-    }
-    au_unlock();
-}
 /* TBiquadFilterParameter<float>: bool @0, numerator[3] @4, additive-feedback denominator[2] @16. */
 HLE(_ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIfEE) {
     au_lock();

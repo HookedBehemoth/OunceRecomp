@@ -13,7 +13,6 @@ static void *guest_ptr(uint64_t address) { CHECK(address < sizeof guest); return
 #define G64(a) (*(uint64_t *)GP(a))
 #define ARG(n) (c->x[n])
 #define HLE(sym) void imp_##sym(Ctx *c)
-#define A64_WEAK
 #define AUT(...) ((void)0)
 
 /* Single-threaded test boundaries. Scheduling, allocation failure and output devices are outside this fixture. */
@@ -25,7 +24,6 @@ static const char *fixture_getenv(const char *name) { (void)name; return NULL; }
 
 /* The extracted production types precede these globals and the actual queue functions. */
 #define FLOAT_SETTER imp__ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIfEE
-#define LEGACY_SETTER imp__ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_21BiquadFilterParameterE
 
 /* The generated section keeps real Voice/Mix/Splitter types ahead of its fixture globals and production functions. */
 #include "actual_audio_biquad.inc"
@@ -154,29 +152,13 @@ static void voice_filter_channel_isolation(void) {
     clear_samples(out); out[0][0] = 1;
     filter_samples(&voices[0], out); close_to(out[0][0], 0.125f);
 }
-static void legacy_q14(void) {
-    reset();
-    uint8_t packet[12];
-    memset(packet, 0xa5, sizeof packet); packet[0] = 1;
-    const int16_t coefs[] = {8192, 0, 0, 8192, 0};
-    memcpy(packet + 2, coefs, sizeof coefs); memcpy(GP(PACKET), packet, sizeof packet);
-    Ctx c = {0}; c.x[0] = OBJECT0; c.x[1] = 0; c.x[2] = PACKET;
-    LEGACY_SETTER(&c);
-    CHECK(ncmds == 1 && !voices[0].bq_on[0]);
-    memset(GP(PACKET), 0xa5, sizeof packet); commit();
-    close_to(voices[0].bq_b[0][0], 0.5f); close_to(voices[0].bq_a[0][0], 0.5f);
-    float out[MAX_CH][FRAME] = {{0}}; out[0][0] = 1;
-    filter_samples(&voices[0], out);
-    close_to(out[0][0], 0.5f); close_to(out[0][1], 0.25f); close_to(out[0][2], 0.125f);
-}
 int main(void) {
     identity_and_packet_lifetime();
     attenuation_and_additive_feedback();
     state_and_reenable();
     invalid_inputs();
     voice_filter_channel_isolation();
-    legacy_q14();
     free(cmds);
-    puts("PASS: actual float/Q14 voice setters, queued commit, biquad response/history/reset and isolation");
+    puts("PASS: actual float voice setter, queued commit, biquad response/history/reset and isolation");
     return 0;
 }

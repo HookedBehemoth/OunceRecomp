@@ -386,11 +386,16 @@ names its instruction word, so another game version stops the lift or the build.
     each hook's first call.
   - `HLE(symbol, effect...)`: the function is replaced by `void imp_<symbol>(Ctx *c)`, hooked where the game imports
     it and at the SDK's definition (`nx2/standalone.py`, `a64_hooks.c`: `f_<addr>` is the host function; the guest body
-    is not lifted); OS-facing imports without one get generated stubs. `NV(name, effect...)`: an NVN proc, `static void
-    n_<name>(Ctx *c, void *u_)` (`host/nvn_native.c`'s table; the SDK's export `name` is routed to it). `HLE_EFFECTS(
-    symbol, effect...)`: the effects of a replaced function whose body is not declared here (a stub or a dispatch). A
-    call reads the AAPCS arguments, x8, v0-v7, SP and x30 (`host_effects.HLE_ARGS`) plus its `reads(...)`, and keeps
-    x19-x29 and SP unless it declares `clobbers("why")` (Calls and returns).
+    is not lifted). `PATCH_ANSWER(symbol, value, "why")`: the same, replaced by a constant answer in x0 (nothing else
+    written), with the reason it is enough (`host/nn_answers.c`: the SDK functions OoT was seen calling that need no
+    more). Every other OS-facing import the game makes gets a generated stub (`gen/a64_stubs.c`) that stops the game
+    when called, naming the function, its caller in the log (`hos_import_stop`, `host/hos_hostcall.c`); an HLE or
+    answer of a symbol no module of the image has stops the lift. `NV(name, effect...)`: an NVN proc, `static void
+    n_<name>(Ctx *c, void *u_)` (`host/nvn_native.c`'s table; the SDK's export `name` is routed to it); a proc the game
+    asks for that has none is handed out, and a call of it stops the game with its name. `HLE_EFFECTS(symbol,
+    effect...)`: the effects of a replaced function whose body is not declared here (a dispatch). A call reads the AAPCS
+    arguments, x8, v0-v7, SP and x30 (`host_effects.HLE_ARGS`) plus its `reads(...)`, and keeps x19-x29 and SP unless
+    it declares `clobbers("why")` (Calls and returns).
   - effects: `reads(reg..., "why")` (xN, vN or sp, the reason a string), `guest(A, ...)` (hooks only), `clobbers("why")`
     (HLE, NV, HLE_EFFECTS only), each at most once.
 
@@ -398,7 +403,7 @@ names its instruction word, so another game version stops the lift or the build.
   `#define` whose body names a kind); a bare number where `word(...)` belongs; an unknown mode, result, register or
   effect; a reason that is not a string; a second `PATCH_AT` of one function, a `PATCH_AT_SITE` before or without its
   `PATCH_AT` or of other types, a duplicate site; a second hook of one function; a symbol declared twice, or an
-  `HLE_EFFECTS` of a function `HLE` declares. The build compares the compiled host's records with the scan
+  `HLE_EFFECTS` or `PATCH_ANSWER` of a function `HLE` declares. The build compares the compiled host's records with the scan
   (`patch_scan.check_records`, `nx2/build.py`: count and text as tokens), so a declaration one of them sees and the
   other does not stops it. What the lift reads of the host's C is the set of `HLE` symbols (the functions it hooks:
   `standalone.implemented`, `nx2/lift_mark.py`); everything else is read by the build, so adding, changing or removing

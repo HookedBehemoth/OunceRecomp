@@ -3539,40 +3539,25 @@ static const nvn_impl impls[] = {
 /* end of table */
 };
 
-/* NVN functions the SDK exports with no proc here: a call goes through nvn2_dispatch to unimplemented below, whose
-   context use is not audited */
-HLE_EFFECTS(nvnInstallGlobalDebugCallback, clobbers("no proc here: unimplemented, not audited"));
-HLE_EFFECTS(nvnBootstrapLoaderInternal, clobbers("no proc here: unimplemented, not audited"));
-HLE_EFFECTS(nvnDevtoolsBootstrap, clobbers("no proc here: unimplemented, not audited"));
-HLE_EFFECTS(_Z22nvndetailUseMiddleWarev, clobbers("no proc here: unimplemented, not audited"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetDefaults, clobbers("no proc here: unimplemented, not audited"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetDevice, clobbers("no proc here: unimplemented, not audited"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetNativeMemoryHandle, clobbers("no proc here: unimplemented, not audited"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderGetDevice, clobbers("no proc here: unimplemented, not audited"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderGetNativeMemoryHandle, clobbers("no proc here: unimplemented, not audited"));
+/* NVN functions the SDK exports with no proc here: a call goes through nvn2_dispatch to unimplemented below, which
+   stops the game (the record keeps none of the caller's registers: the call does not come back) */
+HLE_EFFECTS(nvnInstallGlobalDebugCallback, clobbers("no proc here: a call stops the game (unimplemented)"));
+HLE_EFFECTS(nvnBootstrapLoaderInternal, clobbers("no proc here: a call stops the game (unimplemented)"));
+HLE_EFFECTS(nvnDevtoolsBootstrap, clobbers("no proc here: a call stops the game (unimplemented)"));
+HLE_EFFECTS(_Z22nvndetailUseMiddleWarev, clobbers("no proc here: a call stops the game (unimplemented)"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetDefaults, clobbers("no proc here: a call stops the game (unimplemented)"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetDevice, clobbers("no proc here: a call stops the game (unimplemented)"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetNativeMemoryHandle,
+            clobbers("no proc here: a call stops the game (unimplemented)"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderGetDevice, clobbers("no proc here: a call stops the game (unimplemented)"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderGetNativeMemoryHandle,
+            clobbers("no proc here: a call stops the game (unimplemented)"));
 
-/* (mkw-recomp) A proc not implemented here: logged at its first call and answered 0 (initializers: 1, success),
-   so the game goes on and the log lists what is left. HOS_NVN_STRICT=1: it stops the game, as in TOTKPort. */
+/* A proc not implemented here: the game may ask for it (nvnDeviceGetProcAddress hands out every name it asks for), a
+   call of it stops the game with its name and caller. A proc the game needs is an NV(...) above. */
 static void unimplemented(Ctx *c, void *name) {
-    static int strict = -1;
-    if (strict < 0) strict = getenv("HOS_NVN_STRICT") != NULL;
-    if (strict)
-        die("NVN %s is not implemented (x0 %#llx x1 %#llx x2 %#llx)", (const char *)name, (unsigned long long)c->x[0],
-            (unsigned long long)c->x[1], (unsigned long long)c->x[2]);
-    static struct { const char *name; } seen[512];
-    static volatile LONG nseen;
-    static SRWLOCK lock = SRWLOCK_INIT;
-    AcquireSRWLockExclusive(&lock);
-    LONG i;
-    for (i = 0; i < nseen && seen[i].name != name; i++) {}
-    if (i == nseen && nseen < 512) {
-        seen[nseen++].name = (const char *)name;
-        hos_log("nvn: %s is not implemented: answered %d (x0 %#llx x1 %#llx x2 %#llx, lr %#llx)", (const char *)name,
-                strstr((const char *)name, "Initialize") ? 1 : 0, (unsigned long long)c->x[0],
-                (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[30]);
-    }
-    ReleaseSRWLockExclusive(&lock);
-    RET(strstr((const char *)name, "Initialize") ? 1 : 0);
+    die("the game called NVN %s, which is not implemented (x0 %#llx x1 %#llx x2 %#llx)", (const char *)name,
+        (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2]);
 }
 static int cmp_impl(const void *a, const void *b) { return strcmp(((const nvn_impl *)a)->name, ((const nvn_impl *)b)->name); }
 uint64_t nvn_native_proc(const char *name) {

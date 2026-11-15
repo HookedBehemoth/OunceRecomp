@@ -1,8 +1,7 @@
 """Compile actual voice-filter setters, queued updates and the render_voice biquad loop.
 
 Inputs and sample buffers are authored. No game, SDK, output device or resampler
-is used. --source can select the prior release: its missing float import calls
-the actual public runtime fallback, then fails the same queued-filter invariant.
+is used.
 """
 import argparse
 import importlib.util
@@ -15,7 +14,6 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FLOAT = "_ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIfEE"
-LEGACY = "_ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_21BiquadFilterParameterE"
 
 
 def main():
@@ -35,7 +33,6 @@ def main():
         constants.extend(matches)
     types = source[source.index("enum { K_VOICE"):source.index("static CRITICAL_SECTION lock;")]
     queue = source[source.index("enum { OP_VOICE_RELEASE"):source.index("static int64_t last_update_ns;")]
-    runtime = (ROOT / "third_party/a64-kit/rt/a64_rt.c").read_text(encoding="utf-8")
     actual = ["\n".join(constants), types, """
 static Voice voices[MAX_VOICES];
 static Mix mixes[MAX_MIXES];
@@ -46,13 +43,7 @@ static void release_wb(Voice *voice, uint64_t buffer) { (void)voice; (void)buffe
     actual.extend(helper.block(source, marker) for marker in (
         "static void put_handle(", "static int get_handle(", "static int voice_index(", "static Voice *voice_of("))
     actual.extend([queue, helper.block(source, "static void apply("), helper.block(source, "static void submit("),
-                   helper.block(source, "static void commit("), helper.block(runtime, "A64_WEAK void a64_unimplemented(")])
-    actual.append(helper.block(source, "HLE(" + LEGACY + ")"))
-    try:
-        actual.append(helper.block(source, "HLE(" + FLOAT + ")"))
-    except ValueError:
-        # An authored import dispatch for the absent HLE, using the real runtime fallback (not a replacement DSP/setter).
-        actual.append('HLE(' + FLOAT + ') { static int seen; a64_unimplemented(c, "' + FLOAT + '", &seen); }')
+                   helper.block(source, "static void commit("), helper.block(source, "HLE(" + FLOAT + ")")])
     render = helper.block(source, "static void render_voice(")
     loop = helper.block(render, "for (int f = 0; f < 2; f++)")
     actual.append("static void filter_samples(Voice *v, float out[MAX_CH][FRAME]) {\n" + loop + "\n}")

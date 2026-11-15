@@ -16,6 +16,7 @@ Kinds:
   HLE(symbol, effect...) { body }                                  the function symbol replaced (imp_<symbol>)
   NV(name, effect...) { body }                                     an NVN proc (n_<name>), the function name too
   HLE_EFFECTS(symbol, effect...);                                  the effects of a replaced function written elsewhere
+  PATCH_ANSWER(symbol, value, "why");                              the function symbol replaced by a constant answer in x0
 operands: xN wN sN qN sp ld(xN|sp, K) add(xN, K) k(K) as(<operand>, name) guest(A, ...) | guest(computed) io(r, ...)
 results: none xN wN sN qN
 effects: reads(reg..., "why") (registers beyond the kind's own: a hook's x0-x7 and x30, an HLE'd function's AAPCS
@@ -28,7 +29,7 @@ written: resolve() finds it from the plan, and a site in no function or in more 
 """
 import os
 
-KINDS = ("PATCH_AT", "PATCH_AT_SITE", "PATCH_HOOK", "PATCH_HOOK_SYM", "HLE", "NV", "HLE_EFFECTS")
+KINDS = ("PATCH_AT", "PATCH_AT_SITE", "PATCH_HOOK", "PATCH_HOOK_SYM", "HLE", "NV", "HLE_EFFECTS", "PATCH_ANSWER")
 SITES = ("PATCH_AT", "PATCH_AT_SITE")
 HOOKS = ("PATCH_HOOK", "PATCH_HOOK_SYM")
 REPLACED = ("HLE", "NV", "HLE_EFFECTS")
@@ -461,11 +462,26 @@ class Replaced:
             fail(where, "HLE_EFFECTS without an effect")
 
 
+class Answer:
+    """a PATCH_ANSWER declaration: the symbol, the value its replacement leaves in x0, the reason, where"""
+    def __init__(self, d):
+        a, where = d.args, d.where
+        self.kind, self.where, self.decl = d.kind, where, d
+        if len(a) != 3:
+            fail(where, 'PATCH_ANSWER(symbol, value, "why")')
+        self.symbol = _ident(a[0], where, "the symbol")
+        self.value = _num(a[1], where, "the answer")
+        if len(a[2]) != 1 or a[2][0][0] != "str" or len(a[2][0][1]) <= 2:
+            fail(where, 'PATCH_ANSWER(symbol, value, "why"): the reason as a string')
+        self.why = a[2][0][1]
+
+
 class PatchSet:
     """the scan's result: sites ([Site], declaration order), hooks ([Hook]), replaced ({symbol: Replaced}: HLE and
-    HLE_EFFECTS by symbol, NV by proc name)"""
-    def __init__(self, sites=(), hooks=(), replaced=()):
+    HLE_EFFECTS by symbol, NV by proc name), answers ({symbol: Answer})"""
+    def __init__(self, sites=(), hooks=(), replaced=(), answers=()):
         self.sites, self.hooks = list(sites), list(hooks)
+        self.answers = {a.symbol: a for a in answers}
         self.hle = {r.symbol: r for r in replaced if r.kind == "HLE"}
         self.nv = {r.symbol: r for r in replaced if r.kind == "NV"}
         self.declared = {r.symbol: r for r in replaced if r.kind == "HLE_EFFECTS"}
@@ -476,8 +492,8 @@ class PatchSet:
         return self.hle.get(symbol) or self.declared.get(symbol) or self.nv.get(symbol)
 
     def hle_symbols(self):
-        """the symbols HLE(...) replaces (imp_<symbol>)"""
-        return set(self.hle)
+        """the symbols HLE(...) and PATCH_ANSWER(...) replace (imp_<symbol>)"""
+        return set(self.hle) | set(self.answers)
 
 
 def _read(path):
@@ -500,7 +516,7 @@ def scan_text(text, path="t.c"):
 
 def scan_texts(texts):
     """the PatchSet of [(file name, its text)]"""
-    out, hooks, replaced = [], [], []
+    out, hooks, replaced, answers = [], [], [], []
     for rel, text in texts:
         if not any(k in text for k in KINDS):   # (a file without a declaration's name has none)
             continue
@@ -509,6 +525,8 @@ def scan_texts(texts):
                 out.append(Site(d))
             elif d.kind in HOOKS:
                 hooks.append(Hook(d))
+            elif d.kind == "PATCH_ANSWER":
+                answers.append(Answer(d))
             else:
                 replaced.append(Replaced(d))
     first = {}
@@ -549,7 +567,15 @@ def scan_texts(texts):
         if r.kind == "HLE_EFFECTS" and r.symbol in hle:
             fail(r.where, "HLE_EFFECTS of %s, which HLE declares at %s:%d: its effects go there"
                  % ((r.symbol,) + hle[r.symbol].where))
-    return PatchSet(out, hooks, replaced)
+    seen = {}
+    for a in answers:
+        if a.symbol in seen:
+            fail(a.where, "PATCH_ANSWER of %s again (the first at %s:%d)" % ((a.symbol,) + seen[a.symbol]))
+        seen[a.symbol] = a.where
+        other = hle.get(a.symbol) or next((r for r in replaced if r.kind == "HLE_EFFECTS" and r.symbol == a.symbol), None)
+        if other is not None:
+            fail(a.where, "PATCH_ANSWER of %s, which %s declares at %s:%d" % ((a.symbol, other.kind) + other.where))
+    return PatchSet(out, hooks, replaced, answers)
 
 
 _PATCHES = None

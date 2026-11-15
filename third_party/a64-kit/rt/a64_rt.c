@@ -311,15 +311,6 @@ A64_WEAK void a64_svc(Ctx *c, uint32_t imm) {
 
 void a64_ret_mismatch(Ctx *c, uint64_t pc) { a64_on_trap(c, pc, 0, "return to an address that is not the caller"); }
 
-/* Generated import stubs (gen/a64_stubs.c) land here: log the first call, return 0. */
-A64_WEAK void a64_unimplemented(Ctx *c, const char *sym, int *seen) {
-    if (!*seen) {
-        *seen = 1;
-        fprintf(stderr, "[a64] unimplemented import %s (lr %#llx)\n", sym, (unsigned long long)c->x[30]);
-    }
-    c->x[0] = 0;
-}
-
 void recomp_unhandled(GuestContext *c, uint32_t insn, uint64_t pc) { a64_trap(c, pc, insn); }
 void recomp_ic_ivau(GuestContext *c, uint64_t address, int v) { (void)c; (void)address; (void)v; }
 void recomp_barrier(void) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }

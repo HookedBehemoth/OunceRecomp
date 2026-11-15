@@ -3,7 +3,7 @@
 - The scan: comments, strings, line continuations and nested parentheses; the errors (inside #if, inside a function,
   made by another macro, a bare word, an unknown mode / result / operand, a second PATCH_AT, a further site of another
   type, a duplicate site), each with file:line. The hooks (PATCH_HOOK, PATCH_HOOK_SYM) and the replaced functions (HLE,
-  NV, HLE_EFFECTS) with their effects (reads, guest, clobbers), their errors, and a hook's checks against a plan.
+  NV, HLE_EFFECTS, PATCH_ANSWER) with their effects (reads, guest, clobbers), their errors, and a hook's checks against a plan.
 - The macros: a declaration compiles to its function's prototype (a body written against it compiles; a further site
   whose operands are other types does not) and to a record; the build's cross-check passes for the same text and stops
   for a record the scan did not see.
@@ -45,6 +45,7 @@ HLE(nn_a) { c->x[0] = 1; }
 HLE(nn_b, clobbers("a context switch")) {}
 NV(nvnFoo, reads(x29, x19, "a log label")) { (void)c; (void)u_; }
 HLE_EFFECTS(nvnBar, clobbers("not audited"));
+PATCH_ANSWER(nn_c, 0x2a, "the answer the game needs");
 '''
 
 
@@ -113,7 +114,10 @@ class Scan(unittest.TestCase):
         self.assertEqual((h["entry_0x80002000"].reads, h["entry_0x80002000"].guest), ((), ()))
         self.assertEqual((h["entry_sym_memcpy"].symbol, h["entry_sym_memcpy"].addr), ("memcpy", None))
         self.assertEqual(h["entry_0x80001000"].where, ("t.c", 1))
-        self.assertEqual(sorted(ps.hle_symbols()), ["nn_a", "nn_b"])
+        self.assertEqual(sorted(ps.hle_symbols()), ["nn_a", "nn_b", "nn_c"])
+        self.assertEqual((ps.answers["nn_c"].value, ps.answers["nn_c"].why, ps.answers["nn_c"].where),
+                         (0x2a, '"the answer the game needs"', ("t.c", 10)))
+        self.assertIsNone(ps.effects("nn_c"))
         self.assertEqual((ps.effects("nn_a").reads, ps.effects("nn_a").clobbers), ((), None))
         self.assertEqual(ps.effects("nn_b").clobbers, '"a context switch"')
         self.assertEqual(ps.effects("nvnFoo").reads, ("x29", "x19"))
@@ -135,6 +139,12 @@ class Scan(unittest.TestCase):
                 ("HLE(f) {}\nHLE(f) {}", "t.c:2: f declared again (the first at t.c:1)"),
                 ("HLE(f) {}\nHLE_EFFECTS(f, clobbers(\"w\"));", "t.c:2: HLE_EFFECTS of f, which HLE declares at t.c:1"),
                 ("HLE_EFFECTS(f);", "HLE_EFFECTS without an effect"),
+                ("PATCH_ANSWER(f, 0);", 'PATCH_ANSWER(symbol, value, "why")'),
+                ("PATCH_ANSWER(f, x, \"w\");", "the answer: a number"),
+                ("PATCH_ANSWER(f, 0, why);", "the reason as a string"),
+                ("PATCH_ANSWER(f, 0, \"\");", "the reason as a string"),
+                ("PATCH_ANSWER(f, 0, \"w\");\nPATCH_ANSWER(f, 1, \"w\");", "t.c:2: PATCH_ANSWER of f again"),
+                ("HLE(f) {}\nPATCH_ANSWER(f, 0, \"w\");", "t.c:2: PATCH_ANSWER of f, which HLE declares at t.c:1"),
                 ("void g(void) { HLE(f); }", "t.c:1: HLE inside a function"),
                 ("#if X\nNV(f) {}\n#endif\n", "t.c:2: NV inside conditional"),
                 ("#define M(n) HLE(n) {}\n", "another macro")):
@@ -225,9 +235,9 @@ class Macros(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             r, obj, src = self.compile(d, HOOKS + "void use(Ctx *c) { n_nvnFoo(c, 0); }\n")
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("declarations: 7,", patch_scan.check_records([obj], [src]))
+            self.assertIn("declarations: 8,", patch_scan.check_records([obj], [src]))
             nm = subprocess.run(["nm", obj], capture_output=True, text=True).stdout.split()
-            for name in ("entry_0x80001000", "entry_0x80002000", "entry_sym_memcpy", "imp_nn_a", "imp_nn_b"):
+            for name in ("entry_0x80001000", "entry_0x80002000", "entry_sym_memcpy", "imp_nn_a", "imp_nn_b", "imp_nn_c"):
                 self.assertIn(name, nm)
 
 
@@ -237,6 +247,9 @@ class Host(unittest.TestCase):
         self.assertGreater(len(ps.hooks), 30)
         self.assertGreater(len(ps.hle), 400)
         self.assertGreater(len(ps.nv), 400)
+        self.assertGreater(len(ps.answers), 60)
+        for a in ps.answers.values():
+            self.assertTrue(a.where[0].startswith("host/"), a.where)
         for h in ps.hooks:
             self.assertEqual(h.addr is None, h.word is None, h.where)
 

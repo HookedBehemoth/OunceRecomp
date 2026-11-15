@@ -31,7 +31,12 @@
        definition); an NVN proc, static void n_<name>(Ctx *c, void *u_) (host/nvn_native.c's table); the effects of a
        replaced function whose body is not declared here (a generated stub or dispatch). effects: reads(reg..., "why")
        the registers a call reads beyond the AAPCS arguments, x8, v0-v7, sp and x30; clobbers("why") a call keeps no
-       register. */
+       register.
+     PATCH_ANSWER(symbol, value, "why");
+       a function the image replaces with a constant answer: void imp_<symbol>(Ctx *c) setting x0 to value and nothing
+       else (any other result register keeps what it held), hooked as HLE's are. An import the game calls that the host
+       neither implements nor answers stops the game, naming it (nx2/standalone.py gen_stubs): each answer is one the
+       game was seen to need, with the reason it is enough. */
 #ifndef HOS_PATCH_H
 #define HOS_PATCH_H
 #include <stdint.h>
@@ -714,6 +719,10 @@
     ENTRY_HOOK_COUNTED(entry_sym_##sym, entry_body_sym_##sym)
 #define HLE(sym, ...) HOS_PATCH_RECORD("HLE", #sym "," #__VA_ARGS__) void imp_##sym(Ctx *c)
 #define NV(name, ...) HOS_PATCH_RECORD("NV", #name "," #__VA_ARGS__) static void n_##name(Ctx *c, void *u_)
+#define PATCH_ANSWER(sym, value, why)                                                                                 \
+    HOS_PATCH_RECORD("PATCH_ANSWER", #sym "," #value "," #why)                                                       \
+    void imp_##sym(Ctx *c) { c->x[0] = (uint64_t)(value); }                                                         \
+    _Static_assert(1, #sym)
 #define HLE_EFFECTS(sym, ...) HOS_PATCH_RECORD("HLE_EFFECTS", #sym "," #__VA_ARGS__) _Static_assert(1, #sym)
 #define PATCH_AT_SITE(pc, word, mode, result, fn, ...)                                                                \
     HOS_PATCH_RECORD("PATCH_AT_SITE", #pc "," #word "," #mode "," #result "," #fn "," #__VA_ARGS__)                \

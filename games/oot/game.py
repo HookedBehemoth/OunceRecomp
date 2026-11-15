@@ -19,10 +19,10 @@ GAME = Game(
         "direct_patches.c", "direct_rt_ids.c", "direct_sky_lut.c", "direct_tex_dedup.c", "direct_texdata.c",
         "direct_texwatch.c", "discord_rpc.c", "eng_jobs.c", "hos_fp.c", "hos_hostcall.c", "hos_main.c", "hos_mem.c",
         "hos_relaunch.c", "hos_sdl.c", "hos_setjmp.c", "hos_svc.c", "hos_thread.c", "lift2_verify.c", "mkw_glue.c",
-        "mods.c", "mouse_native.c", "nn_applet.c", "nn_audio.c", "nn_audio_in.c", "nn_codec.c", "nn_diag.c", "nn_fs.c",
-        "nn_gs.c", "nn_hid.c", "nn_libc.c", "nn_os_sync.c", "nn_syncpt.c", "nn_vi.c", "nn_video.c", "nn_zstd.c",
-        "nvdrv.c", "nvn_layout.c", "nvn_list.c", "nvn_native.c", "oot_probes.c", "pad_sdl.c", "prompts.c",
-        "rt_slots.c", "rx_backend.c",
+        "mods.c", "mouse_native.c", "nn_answers.c", "nn_applet.c", "nn_audio.c", "nn_audio_in.c", "nn_codec.c",
+        "nn_diag.c", "nn_fs.c", "nn_gs.c", "nn_hid.c", "nn_libc.c", "nn_os_sync.c", "nn_syncpt.c", "nn_vi.c",
+        "nn_video.c", "nn_zstd.c", "nvdrv.c", "nvn_layout.c", "nvn_list.c", "nvn_native.c", "oot_probes.c", "pad_sdl.c",
+        "prompts.c", "rt_slots.c", "rx_backend.c",
     ),
     # (zstd_decompress_sequences' local continuations: `adr x7, <label>` ... `br x7` inside the function, pc: word; the
     # code pointer audit accepts them, nx2/lift2/code_ptrs.py)

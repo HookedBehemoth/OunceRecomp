@@ -1260,9 +1260,6 @@ HLE(_ZN2nn2os33DetachReadableHandleOfSystemEventEPNS0_15SystemEventTypeE) { RET(
 HLE(_ZN2nn2os33DetachWritableHandleOfSystemEventEPNS0_15SystemEventTypeE) { RET(0xFFFF0002u); }
 HLE(_ZN2nn2os30GetReadableHandleOfSystemEventEPKNS0_15SystemEventTypeE) { RET(0xFFFF0001u); }
 HLE(_ZN2nn2os30GetWritableHandleOfSystemEventEPKNS0_15SystemEventTypeE) { RET(0xFFFF0002u); }
-/* nn::os::SystemEvent: the C++ wrapper holds a SystemEventType at offset 0 */
-HLE(_ZN2nn2os11SystemEventC2ENS0_14EventClearModeEb) { event_init(ARG(0), 0, (int)ARG(1)); }
-HLE(_ZN2nn2os11SystemEventD2Ev) { drop(ARG(0)); }
 
 /* ---- the remaining waits on the HLE's objects ----------------------------------------------------------------- */
 HLE(_ZN2nn2os9WaitEventEPNS0_9EventTypeE) { event_wait(obj(ARG(0), K_EVENT), 0, 0); }

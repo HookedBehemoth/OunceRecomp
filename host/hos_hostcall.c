@@ -136,6 +136,12 @@ int a64_call_miss(Ctx *c, uint64_t target) {
     return 1;
 }
 
+/* An OS-facing import the host neither replaces (HLE) nor answers (PATCH_ANSWER, host/nn_answers.c): the generated stub
+   (gen/a64_stubs.c, nx2/standalone.py gen_stubs) stops the game here, naming the function; the caller is the lr. */
+void hos_import_stop(Ctx *c, const char *sym, const char *name) {
+    hos_fatal(c, "the game called %s (%s), which the host neither implements nor answers", name, sym);
+}
+
 /* Call guest code from inside a host function (an HLE handler), with up to four arguments, on the current guest
    stack. The guest callee keeps the AArch64 callee-saved registers; LR is restored here. Returns x0. */
 uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
