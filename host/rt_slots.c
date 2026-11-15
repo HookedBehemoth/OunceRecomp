@@ -776,7 +776,7 @@ PATCH_AT_SITE(0x80061814, word(0xf9001eea), after, x10, rt_slots_offset, x8, x10
    the texture object registered under that id (f_800634b0: the object is the manager's, initialized over the entry's
    storage). Its image claims its memory in the transient pool if another image has had it since. The address lookup
    this replaces (the live texture at the block's storage) named another object after a reuse: the back end then let
-   go of maps drawn in that very present (docs/direct/shadow-maps.md 5.3). An entry with no id yet is registered by
+   go of maps drawn in that very present (docs/direct/transient-pool.md). An entry with no id yet is registered by
    its caller, and that initialization claims. */
 static void alloc_gave(uint64_t entry) {
     const hsd_fns *d = rx_direct();

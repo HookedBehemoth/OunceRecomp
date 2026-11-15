@@ -113,9 +113,9 @@
 80557420 desc_deferred_free_drain         # docs/direct/texture-streaming.md: returns freed descriptor ids after the flip
 80966440 desc_pools_create                # work/assets/native/engine-materials.md: the texture pool (33,068 ids) and the sampler pool
 80064920 desc_register_texture            # docs/direct/texture-streaming.md: agl descriptor manager (mgr, texture, view, owner) -> RegisterTexture
-800634b0 desc_reregister                  # docs/direct/texture-streaming.md, docs/direct/shadow-maps.md 2: frees an entry's descriptor id and takes a new one (ENTRY_HOOK); with no pool (+0x10 = 0) it only frees it (+0x68 = -1); docs/direct/transient-pool.md: reads the NVN format table 0x83f4848c (u32 per agl format, 0x5f entries) and initializes the manager's texture object over the entry's pool (+0x10) and offset (+0)
-834bf750 desc_register_view               # docs/direct/shadow-maps.md 2: a texture object of the manager's own over a TextureData copy, initialized and registered: a new id (local shadows, sun cascades)
-834bf9b0 desc_id_release                  # docs/direct/shadow-maps.md 2: an id's count down; at 0 onto the deferred list (+0xa00 by +0xa60) that f_80557420 drains
+800634b0 desc_reregister                  # docs/direct/texture-streaming.md: frees an entry's descriptor id and takes a new one (ENTRY_HOOK); with no pool (+0x10 = 0) it only frees it (+0x68 = -1); docs/direct/transient-pool.md: reads the NVN format table 0x83f4848c (u32 per agl format, 0x5f entries) and initializes the manager's texture object over the entry's pool (+0x10) and offset (+0)
+834bf750 desc_register_view               # docs/direct/texture-streaming.md: a texture object of the manager's own over a TextureData copy, initialized and registered: a new id (local shadows, sun cascades)
+834bf9b0 desc_id_release                  # docs/direct/texture-streaming.md: an id's count down; at 0 onto the deferred list (+0xa00 by +0xa60) that f_80557420 drains
 800656b0 desc_texture_slot_b              # work/assets/native/rt-alloc.md, work/assets/native/cores.md: texture descriptor slot, with f_80064920 and f_80065880: texture object, builder from TextureData, register
 80065880 desc_texture_slot_c              # work/assets/native/rt-alloc.md, work/assets/native/nvn-callpaths.md: (same group; also re-made transient targets each frame)
 80667d20 system_texture_table_write       # docs/direct/texture-streaming.md, the 30-slot table per view; its bl f_800634b0 at 0x806680d8 replaced by an At row with a guest call (host/direct_rt_ids.c)
@@ -238,8 +238,8 @@
 806688c0 pass_job_caller                  # docs/direct/jobs.md: (pipeline, drawctx, idx): calls a pass's render jobs (job-call splice at 0x80668a9c)
 802a9520 pass_linear_depth                # work/assets/native/engine-frame.md: linear depth
 8067d7a0 pass_linear_depth_grid           # work/assets/native/engine-frame.md: linear depth, HalfNld, grid dispatches
-80255be0 pass_local_shadow                # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawDepth": each light of its list with +0x5f8 bit 2 draws its map, then bit 3 is set
-802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/shadow-maps.md 2: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/transient-pool.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
+80255be0 pass_local_shadow                # work/assets/native/engine-frame.md, docs/direct/render-targets.md: "LocalDepthShadow::drawDepth": each light of its list with +0x5f8 bit 2 draws its map, then bit 3 is set
+802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/render-targets.md: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/transient-pool.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
 800672e0 pass_mip_chain_compute           # work/assets/native/engine-frame.md, nx2/lift2/probes.py (WHOLE_SITES): the async-compute interaction wave sim (water ripples; called in the Deku Tree web room too), (int)step x substeps (+76) dispatches a frame, its mip chain by compute, 2 barriers per level
 802ad740 pass_occlusion_depth             # work/assets/native/engine-frame.md, work/assets/native/readback.md: agl::utl::DepthBufferEx::OcclusionDepthBuffer, 11 reports
 8067d890 pass_occlusion_grid_gather       # work/assets/native/engine-frame.md: occlusion grid gather dispatch
@@ -264,22 +264,22 @@
 802715b0 pass_smaa_output                 # work/assets/native/engine-frame.md: "smaa_output"
 80666d20 pass_soft_edge_depth             # host/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy, blr at 0x806675d8, replaced by an instead row)
 80668fc0 pass_sun_shadow                  # work/assets/native/engine-frame.md: sun shadow cascades (x3)
-80669460 pass_sun_shadow_alloc            # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "shadow_map_depth" array (transient when +0x110 is 0, size +0x70 x +0x90, layers = cascades)
-80f76a20 pass_local_shadow_static         # docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawStaticDepth": f_802640a0 with flag 1
-80663f00 pass_local_shadow_updatable      # docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawUpdatableStaticDepth": two maps (+8, +0x500)
-809ec950 pass_static_shadow_depth         # docs/direct/shadow-maps.md 1, work/assets/native/rt-alloc.md sites: "static_shadow_depth" (a kept texture at +0x578 in mode 2, else a DTA target)
-8065ddf0 pass_shadow_prepass_temp         # docs/direct/shadow-maps.md 1, work/assets/native/rt-alloc.md sites: "shadow_prepass_light_buffer_temp" (_half)
-8065e180 pass_shadow_prepass              # docs/direct/shadow-maps.md 1, work/assets/native/rt-alloc.md sites: "shadow_prepass_light_buffer"
-80664830 pass_screen_space_shadow         # docs/direct/shadow-maps.md 1, work/assets/native/rt-alloc.md sites: "ScreenSpaceShadow"
-83568010 pass_shadow_reduce_depth         # docs/direct/shadow-maps.md 1, work/assets/native/rt-alloc.md sites: "shadow_map_reduce_depth"
-83626d20 pass_shadow_mask_temp            # docs/direct/shadow-maps.md 1, work/assets/native/rt-alloc.md sites: "shadow_mask_temp"
+80669460 pass_sun_shadow_alloc            # work/assets/native/engine-frame.md, docs/direct/render-targets.md: "shadow_map_depth" array (transient when +0x110 is 0, size +0x70 x +0x90, layers = cascades)
+80f76a20 pass_local_shadow_static         # docs/direct/render-targets.md: "LocalDepthShadow::drawStaticDepth": f_802640a0 with flag 1
+80663f00 pass_local_shadow_updatable      # docs/direct/render-targets.md: "LocalDepthShadow::drawUpdatableStaticDepth": two maps (+8, +0x500)
+809ec950 pass_static_shadow_depth         # docs/direct/render-targets.md, work/assets/native/rt-alloc.md sites: "static_shadow_depth" (a kept texture at +0x578 in mode 2, else a DTA target)
+8065ddf0 pass_shadow_prepass_temp         # docs/direct/render-targets.md, work/assets/native/rt-alloc.md sites: "shadow_prepass_light_buffer_temp" (_half)
+8065e180 pass_shadow_prepass              # docs/direct/render-targets.md, work/assets/native/rt-alloc.md sites: "shadow_prepass_light_buffer"
+80664830 pass_screen_space_shadow         # docs/direct/render-targets.md, work/assets/native/rt-alloc.md sites: "ScreenSpaceShadow"
+83568010 pass_shadow_reduce_depth         # docs/direct/render-targets.md, work/assets/native/rt-alloc.md sites: "shadow_map_reduce_depth"
+83626d20 pass_shadow_mask_temp            # docs/direct/render-targets.md, work/assets/native/rt-alloc.md sites: "shadow_mask_temp"
 8028f980 pass_sun_shadow_cascade          # work/assets/native/engine-frame.md: sun shadow cascades
 8028f770 pass_sun_shadow_cascade_caller   # work/assets/native/engine-frame.md: (its caller)
 81503660 pass_texture_clear               # work/assets/native/engine-frame.md: ClearTexture (SMAA edge / blend weights)
 802650f0 pass_ui_layer_b                  # work/assets/native/engine-frame.md: UI layers #103/#107
 802800c0 pass_ui_layer_clear              # work/assets/native/engine-frame.md: UI layer clear (#237)
 802910a0 pass_vegetation_compute          # work/assets/native/engine-layers.md, work/assets/native/engine-frame.md: vegetation compute (SsboMeshPlacement), GPU culling
-802740c0 pass_vrs_bilateral               # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md, docs/direct/shadow-maps.md 2: shading-rate image, bilateral grid; a pipeline stage callback that also frees the view's transients, the local-light maps (light +0x420, lr 0x802747b4 / 0x80274b14)
+802740c0 pass_vrs_bilateral               # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md, docs/direct/render-targets.md: shading-rate image, bilateral grid; a pipeline stage callback that also frees the view's transients, the local-light maps (light +0x420, lr 0x802747b4 / 0x80274b14)
 80279400 pass_water                       # docs/direct/jobs.md: water drawer (WaitEvent b90 at 0x8027944c)
 80279b30 pass_water_caller                # docs/direct/jobs.md: tail-calls the water drawer
 802771e0 pass_water_depth_copy            # work/assets/native/engine-layers.md: "Ext::BeforeWater::FullDepthCopy"
