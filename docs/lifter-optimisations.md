@@ -24,8 +24,9 @@ What every item is checked against:
 
 - **setjmp owners**: a longjmp re-enters the owner mid-function through `hos_sj_call` (`host/hos_setjmp.c`); 14 call
   sites of `__setjmp` in 13 owners, 11 of `longjmp`. Calls of owners stay "reload everything".
-- **hooks**: entry hooks (`entry_<addr>(ctx)` reads and writes registers at the entry), C-after and SPLICE sites
-  (`lift2_after_<pc>(ctx)` at their pc). At rows take SSA values and are unaffected.
+- **hooks**: entry hooks (`entry_<addr>(ctx)` reads x0-x7, x30 and its declared extras at the entry; its "return 1"
+  path may write x0-x7) and HLE'd functions, both counted by the summaries by their declarations
+  (`host_effects.py`); At rows take SSA values and count as their instruction's.
 - **frame readers**: the host sites that read a lifted function's frame (lifter.md, pessimization 2).
 - **indirect entry**: any function may be entered through `a64_lookup`'s table.
 
@@ -42,23 +43,36 @@ Each is kept until its experiment runs.
   materialisations, vtables and pointer tables in data, thread and fiber entries, exports, hooks) into `a64_table.c`
   and trap in `a64_lookup`'s miss path (`third_party/a64-kit/rt/a64_rt.c:31`) on a target outside it; smoke and market
   bench. Shrinks D's target domain.
-- **Write-through before calls beyond the sites that need it** (pessimization 1): decided by C's dead-store step.
+- **Write-through before calls beyond the sites that need it** (pessimization 1): the dead stores are gone
+  (`build_ir.omit_stores`); the callee-saved registers a callee only saves remain (C1).
 - **Saves and frames beyond the five frame readers** (pessimization 2): decided by C's pair deletion and F.
 - **memmove semantics for `memcpy`** in `host/nn_libc.c`'s hooks: from the initial import, costs nothing; G keeps
   `llvm.memmove`. No experiment needed.
 
 ## C. Summary-driven call boundaries: what remains
 
+- **Entry hooks read x0-x7 whether they use them or not** (`host/hos.h` `HookArgs`, `host_effects.HOOK_ARGS`): the
+  libc hooks (memset, strlen, strcmp, memcpy, memcmp, memmove: 3-5 arguments or fewer) widen the inputs of about
+  2,800 functions that reach them (x1-x7 beyond their arguments), and their stores stay before every such call. A per-hook argument count in the
+  declaration (checked by `tests/test_host_context_reads.py`) removes them.
+- **A BL to an entry-hooked function keeps only what the guest functions in `host_effects.CALLS` preserve too**
+  (`bounds.call_bounds`), though `hook_call_guest` runs them through `call_restoring` (`host/hos_hostcall.c`), which
+  puts every register back. Unproven only in that nothing tests it; dropping the check gives the three mesh drawer
+  hooks' callers their registers back. Experiment: drop it, verification smoke (`lift2_host_exit`-style check of the
+  hooked call).
+- **The fiber HLEs and the unaudited NVN exports read every register** (`host_effects.CLOBBERS`,
+  `summary.host_summary`): their callers' inputs include x9-x18 and the flags, which widens the inputs of about
+  430 functions and demotes part of them (tmp_in, flags_in). A declaration of what `fiber_switch` really reads (its argument; the context it
+  saves is restored before the caller reads it again) removes that.
+
 Done: no reload of the preserved x19-x29 and SP after a BL to a full-summary callee the host does not edit, and
 `unreachable` after noreturn callees (lifter.md, "Functions, registers and the context"). What remains, each on the
 generic `f_<addr>(ptr ctx)`:
 
-1. **Dead stores before calls.** A write of x9-x18 that is neither a callee input nor read after the call needs no
-   write-back (a backward liveness pass per function, killed by callee inputs). x30: drop the store only for leaf
-   callees that do not read x30 as data (`lr_data`). Flags: drop the store when the target has no `flags_in`.
-   *Conditions:* every reader of the context sees what it needs: the callee's inputs (its summary), entry hooks,
-   C-after and SPLICE sites, `a64_svc`, `recomp_ldxr`/`recomp_stxr`, `a64_icall`/`a64_ijump`, `hos_sj_call`, the
-   stall dump; a host-edited or unknown callee keeps every store.
+1. **Callee-saved registers a callee only saves.** The stores before a BL of x19-x29 (and x30) that the callee
+   reads only to save them in its frame and restore them (1.32 M in the IR model). Needs the summaries' inputs
+   without save-only registers and the frame readers checked (a save slot would hold an older value). Flags at
+   exits: drop the store when the target has no `flags_in`.
 2. **Pair deletion.** Delete the callee-saved save/restore pairs of full-summary functions outside the frame readers'
    functions (612,455 pairs). With throws fatal (`host/cxx_throw.c`) no unwinder reads the saves. *Conditions:* the
    frame readers' functions excluded; the guest stack is then not what it was (a debugger, the stall dump and a
@@ -166,6 +180,9 @@ into the wrappers. C takes the pair deletion and the kept SSA values without the
 - Virtual cores: removed; every guest thread runs freely, the per-core rings asserted single-writer.
 - C++ throws: a fatal stop (`host/cxx_throw.c`).
 - C, first step: preserved x19-x29 and SP kept across direct calls; `unreachable` after noreturn calls (lifter.md,
+  "Functions, registers and the context").
+- C, dead stores: `build_ir.omit_stores` drops a register's store no reader can read (overwritten, dead at a BL whose
+  callee does not read it, not a result at a return); verification poisons the omitted fields at each BL (lifter.md,
   "Functions, registers and the context").
 - E, jump tables as index switches: 1,197 of 1,475 tables switch on the index, cases `0..n-1` (lifter.md, "Jump tables").
 

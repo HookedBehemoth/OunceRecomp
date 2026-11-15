@@ -510,7 +510,7 @@ def t_sysreg(b, f, pc, p):
         elif name in ("TPIDR_EL0", "TPIDRRO_EL0"):
             v = b.op("ctxload", "i64", off={"TPIDR_EL0": CTX_TPIDR, "TPIDRRO_EL0": CTX_TPIDRRO}[name])
         elif name in ("CNTPCT_EL0", "CNTVCT_EL0"):
-            v = b.op("call", "i64", fn="recomp_cntpct", ctx=True)
+            v = b.op("call", "i64", fn="recomp_cntpct", ctx=True, regs=0)
         elif name == "CNTFRQ_EL0":
             v = b.const(31250000)   # (the Switch 2's counter, host/mkw_glue.c a64_cntpct_host)
         elif name == "CTR_EL0":
@@ -610,9 +610,9 @@ def t_ldstex(b, f, pc, p):
     addr = getx(b, rn, 1, sp=True)
     n = b.const(1 << size, "i32")
     if f["L"]:   # (LDAXR: x86 loads are acquire loads, and the call keeps the compiler from moving accesses)
-        setx(b, rt, b.op("call", "i64", addr, n, fn="recomp_ldxr", ctx=True))
+        setx(b, rt, b.op("call", "i64", addr, n, fn="recomp_ldxr", ctx=True, regs=0))
     else:
-        st = b.op("call", "i32", addr, n, getx(b, rt, 1), fn="recomp_stxr", ctx=True)
+        st = b.op("call", "i32", addr, n, getx(b, rt, 1), fn="recomp_stxr", ctx=True, regs=0)
         setx(b, f["Rs"], st)
 
 
@@ -622,12 +622,12 @@ def t_ldstexp(b, f, pc, p):
     addr = getx(b, rn, 1, sp=True)
     n = b.const(8 if sz else 4, "i32")
     if f["L"]:
-        lo = b.op("call", "i64", addr, n, fn="lift2_ldxp_lo", ctx=True, helper=True)
+        lo = b.op("call", "i64", addr, n, fn="lift2_ldxp_lo", ctx=True, regs=0, helper=True)
         hi = b.op("ctxload", "i64", off=0x340)   # (excl_hi, which lift2_ldxp_lo's recomp_ldxp left)
         setx(b, rt, lo)
         setx(b, f["Rt2"], hi)
     else:
-        st = b.op("call", "i32", addr, n, getx(b, rt, 1), getx(b, f["Rt2"], 1), fn="recomp_stxp", ctx=True)
+        st = b.op("call", "i32", addr, n, getx(b, rt, 1), getx(b, f["Rt2"], 1), fn="recomp_stxp", ctx=True, regs=0)
         setx(b, f["Rs"], st)
 
 

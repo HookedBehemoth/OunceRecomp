@@ -31,7 +31,7 @@ class Program:
     no_call: the setjmp owners (scope refuses a BL to one unless a bound routes it through its stub)"""
 
     def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None, classes=None,
-                 jt_index=None, bound=None):
+                 jt_index=None, bound=None, omit=False, verify=False):
         self.classes = set(classes) if classes is not None else None   # (None: every class of sem.CLASS)
         # (entries, jt and plt are shared, not copied: the discovery fills them as it walks)
         self.entries = entries if isinstance(entries, set) else set(entries)
@@ -41,6 +41,8 @@ class Program:
         self.jt_index = jt_index if jt_index is not None else {}
         symbol = symbol or (lambda e: "g_%08x" % e)
         self.bound = bound or (lambda e: bounds.unknown("unknown", symbol(e)))
+        self.omit = omit       # (omit_stores: the context stores no reader reads go)
+        self.verify = verify   # (HOOKSHOT_LIFT_VERIFY: omitted fields poisoned before a call, omit_stores)
         self.callee = callee or (lambda t: t)
         self.no_call = set(no_call)
         self.probes = {}   # pc -> fn(builder, insn, pc): the instruction replaced by a probe (probes.py, section 9)
@@ -211,7 +213,7 @@ def build(entry, pcs, word, prog=LEAF):
                 if v is not None:
                     held[var] = v
             b.set("x30", b.const(pc + 4))
-            b.op("gcall", "void", sym=bd.symbol)
+            b.op("gcall", "void", sym=bd.symbol, callee=callee, pc=pc)
             b.after_call()
             cur.defs.update(held)
             for post in prog.after.get(pc, ()):
@@ -308,7 +310,117 @@ def build(entry, pcs, word, prog=LEAF):
     for blk in cycle_edges(fn):
         blk.ops.append(fn.new_value("void", "barrier", ()))
     ir.finish(fn)
+    omit_stores(fn, prog)
     return fn
+
+
+# ---- stores no reader can read
+# (register variables: x0-x30, SP, V0-V31 by their summary bit; the flags are never omitted)
+_BIT = {v: 1 << k for k, v in enumerate(ir.VARS)}
+_REGS = sum(m for v, m in _BIT.items() if v not in ("n", "z", "c", "v"))
+_EXITS = ("ret", "tail", "ijump", "noreturn", "trap")
+_CALLEE_SAVED = sum(_BIT["x%d" % r] for r in range(19, 30)) | _BIT["sp"] | sum(_BIT["v%d" % r] for r in range(8, 16))
+# (verification: the value an omitted field holds at the call: 0xDEAF, the register, the call's guest address)
+SITE_POISON = 0xDEAF
+
+
+def _reads(v, prog):
+    """(read, killed) by an operation as register masks: read, every register (_REGS) or what a BL's callee reads
+    (its call-boundary record); killed, what it writes on every path before anything reads the context's old value.
+    A call taking the context reads every register unless the template that made it says which it reads (`regs`:
+    the runtime's helpers of the monitor, FPCR/FPSR, the counter read only the context's other fields)"""
+    op = v.op
+    if op == "regload":
+        return _BIT[v.attrs["var"]], 0
+    if op == "gcall":
+        bd = prog.bound(v.attrs["callee"])
+        return bd.reads & _REGS, bd.must & _REGS
+    if op in ("icall", "svc"):
+        return _REGS, 0
+    if op in ("call", "rowio") and v.attrs.get("ctx"):
+        return v.attrs.get("regs", _REGS) & _REGS, 0
+    return 0, 0
+
+
+def omit_stores(fn, prog):
+    """Deletes each register's write-through store (`writeback`) that no reader can read before the register's next
+    store: overwritten first, or dead at a direct call whose callee does not read it and the caller does not reload
+    it before the callee writes it on every path, or dead at a return: neither a result the function's callers read
+    nor a callee-saved register or SP. What a call reads and writes is its callee's call-boundary record
+    (prog.bound); every register is read by BLR, SVC, a call taking the context unless it says otherwise, tail calls,
+    indirect jumps, traps, and the returns of a function whose record does not know its results. With prog.verify a
+    BL is preceded by `sitepoison` of the fields no reader reads there (host/lift2_verify.c names the site)."""
+    if not prog.omit:
+        return
+    own = prog.bound(fn.entry)
+    at_ret = (own.results | _CALLEE_SAVED) & _REGS
+    own_may = own.clobbers   # (the poison writes only what the function may write itself)
+    blocks = list(fn.blocks.values())
+    info = {}
+    for blk in blocks:   # (per block, backward: what it reads before writing, and what it writes first)
+        gen = kill = 0
+        for v in reversed(blk.ops):
+            if v.op == "writeback":
+                m = _BIT[v.attrs["var"]] & _REGS
+                gen &= ~m
+                kill |= m
+                continue
+            rd, k = _reads(v, prog)
+            if rd == _REGS:
+                gen, kill = _REGS, 0
+            elif rd or k:
+                gen = rd | (gen & ~k)
+                kill = (kill | k) & ~rd
+        info[id(blk)] = (gen, kill)
+    live_in = {id(b): 0 for b in blocks}
+
+    def live_out(blk):
+        if blk.term[0] == "ret":
+            return at_ret
+        if blk.term[0] in _EXITS:
+            return _REGS
+        out = 0
+        for s in blk.succs():
+            out |= live_in[id(s)]
+        return out
+    changed = True
+    while changed:
+        changed = False
+        for blk in reversed(blocks):
+            gen, kill = info[id(blk)]
+            li = gen | (live_out(blk) & ~kill)
+            if li != live_in[id(blk)]:
+                live_in[id(blk)] = li
+                changed = True
+    for blk in blocks:
+        live = live_out(blk)
+        keep = []
+        for v in reversed(blk.ops):
+            if v.op == "writeback":
+                m = _BIT[v.attrs["var"]]
+                if m & _REGS and not live & m:
+                    continue
+                live &= ~m
+                keep.append(v)
+                continue
+            if v.op == "gcall" and prog.verify:
+                keep.append(v)
+                bd = prog.bound(v.attrs["callee"])
+                # (the fields no reader reads at the call)
+                dead = _REGS & ~bd.reads & ~(live & ~bd.must) & ~_BIT["sp"] & own_may
+                if dead:
+                    keep.append(fn.new_value("void", "sitepoison", (), {"mask": dead, "pc": v.attrs["pc"]}))
+                rd, k = _reads(v, prog)
+                live = _REGS if rd == _REGS else rd | (live & ~k)
+                continue
+            rd, k = _reads(v, prog)
+            if rd == _REGS:
+                live = _REGS
+            elif rd or k:
+                live = rd | (live & ~k)
+            keep.append(v)
+        keep.reverse()
+        blk.ops = keep
 
 
 def cycle_edges(fn):

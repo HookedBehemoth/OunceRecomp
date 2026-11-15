@@ -10,7 +10,9 @@ Guest memory: `getelementptr i8, ptr inttoptr (i64 A64_HOST_BASE to ptr), i64 <g
 import re
 
 from . import fp_estimate
-from .ir import WIDTH, lanes
+from .ir import VARS, WIDTH, lanes
+
+VARS_BY_BIT = {v: k for k, v in enumerate(VARS) if v not in ("n", "z", "c", "v")}
 
 HOST_BASE = 0x100000000000
 CTX_OFF = {**{"x%d" % i: 8 * i for i in range(31)}, "sp": 248, "n": 0x108, "z": 0x109, "c": 0x10A, "v": 0x10B,
@@ -123,6 +125,8 @@ def emit_function(fn, decls, flags_out=False):
                 used.add(v.attrs["var"])
             elif v.op == "flagsout":
                 used.update("nzcv")
+            elif v.op == "sitepoison":
+                used.update(var for var in VARS_BY_BIT if v.attrs["mask"] >> VARS_BY_BIT[var] & 1)
     for var in sorted(used, key=lambda x: CTX_OFF[x]):
         out.append("  %%cx.%s = getelementptr i8, ptr %%ctx, i64 %d" % (var, CTX_OFF[var]))
     for var, p in eb.params.items():
@@ -419,6 +423,14 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
     elif op == "svc":
         decls.add("declare void @a64_svc(ptr, i32)")
         out.append("  call void @a64_svc(ptr %%ctx, i32 %d)" % v.attrs["imm"])
+    elif op == "sitepoison":   # (verification: the fields no reader reads at a call, build_ir.omit_stores)
+        from .build_ir import SITE_POISON
+        for var, k in VARS_BY_BIT.items():
+            if v.attrs["mask"] >> k & 1:
+                pv = SITE_POISON << 48 | k << 40 | v.attrs["pc"] & 0xFFFFFFFFFF
+                pv -= 1 << 64   # (as LLVM writes it: signed)
+                val = "<2 x i64> <i64 %d, i64 %d>" % (pv, pv) if var[0] == "v" else "i64 %d" % pv
+                out.append("  store %s, ptr %%cx.%s, align 8" % (val, var))
     elif op == "barrier":   # (no instruction; guest loads are not moved across it or merged over it)
         out.append('  call void asm sideeffect "", "~{memory}"()')
     elif op == "flagsout":

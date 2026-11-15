@@ -23,7 +23,7 @@ sample of 120 functions of the play binary at 860eb332, recompiled from edited I
 | LLVM IR | `nx2/lift2/emit_llvm.py` | one textual module per partition |
 | build | `nx2/lift2/game.py` `prepare`, `nx2/build.py` | partitions lifted in worker processes, piped into `clang -x ir -` (cold ones through `opt` first; no IR on disk), cached by input key; runtime and host compiled and linked |
 | runtime | `nx2/rtgen.py` from `third_party/a64-kit/rt` | `a64.h` (`GuestContext`, the guest window) and `a64_rt.c` (`a64_lookup`, `a64_icall`, `a64_ijump`, `a64_trap`, the exclusive monitor, the counter) |
-| summaries | `nx2/lift2/summary.py` | whole-program register facts, for the verification build only |
+| summaries | `nx2/lift2/summary.py` | whole-program register facts: call boundaries, omitted stores, the verification build |
 
 `nx2/lift.py` runs the steps up to the plan and the tables (`scripts/relift.sh`); `nx2/build.py` runs the rest. The
 plan holds instructions, not lifted code, so a change to the lifter needs only a build.
@@ -72,6 +72,22 @@ writes for.
   context escapes at the first call, any guest load may read it, and a large function's thousands of uses of it
   exceed the default limits: on the market's five hottest functions 40-47 % more context stores and 10-14 % more
   code.
+- **Stores no reader reads are not emitted** (`build_ir.omit_stores`, a backward pass over each function's IR after
+  it is built): a register's store is dropped when no reader can read it before the register's next store. What
+  each call reads and writes is its callee's call-boundary record (`bounds.call_bounds`, below), the same record the
+  lift keeps registers by. Readers: a load of the register after a call; a BL's callee, which reads the record's
+  reads and passes on what it does not write on every path (the record's must-writes; the summaries and the lift
+  resolve a BL through a PLT stub to the same target, `Program.callee`) to the caller's later loads:
+  a lifted callee its summary's inputs and must-writes, an entry-hooked one its summary's too (the hook's reads and
+  its "return 1" path are in it: must-writes none), an HLE'd one its declared reads (`host_effects.hle_reads`, checked
+  against the host's IR by `tests/test_host_context_reads.py`; must-writes none); a return, which reads the record's
+  results (the summary's: what its callers read after it), x19-x29, SP and v8-v15; a call taking the context, which
+  reads every register unless the template that made it says which (`regs=0` on the runtime's monitor, counter and
+  FPCR/FPSR helpers, `recomp_*`, `a64_fp*`, the estimate helpers: they read only the context's other fields). Every
+  register is read by BLR, SVC, an At row calling guest code, a BL to a callee whose record is `bounds.unknown` (no
+  summary, demoted, setjmp owner, HLE'd and declared clobbering), tail calls, indirect jumps, traps, and the returns
+  of a function without a full summary. The flags are not affected. On 6 cold partitions after LLVM's DSE: context stores -20.9 %, instructions
+  -6.6 %, `.text` -6.7 %; on the market's five hottest functions -18.2 %, -5.5 %, -5.9 %.
 - **Reload after calls**: after a BL, BLR, SVC or a call into host code with the context, every register read loads
   the context again (`ir.Builder.after_call` clears the block's definitions), except after a BL to a callee with a
   full summary that the host does not edit, or to a host callee with a declared effect: the values of x19-x29 and SP
@@ -130,7 +146,11 @@ exclusives' runtime calls cost nothing measurable.
   thread calling into the host periodically. Every guest thread runs freely on its own host thread
   (`host/hos_thread.c`, "no scheduler"); process exit is `_exit`; the profiler samples by signal
   (`host/posix/prof.c`); fiber switches are host calls. The stall dump reads each thread's context as of its last
-  call out of lifted code, so a thread spinning without calls shows stale registers.
+  call out of lifted code, so a thread spinning without calls shows stale registers. The stall dump, the crash
+  handler and the handle dump read a context from outside the thread: a register whose store `omit_stores` dropped
+  shows an older value there (a temporary, x30 or an argument register before a BL to a callee that does not read
+  it, a register that is not a result at a return); the registers read at BLR, SVC and calls into the host are
+  current.
 
 ### Calls and returns
 
@@ -425,9 +445,18 @@ that the summary says is not; then it restores what is preserved and poisons the
 (`0xDEAE`). Violations are logged once per function, kind and register to the game log and `lift2_violations.txt`.
 Result (2026-11-14, 262,527 functions): zero violations and no crash in the kokiri smoke scene, the market and
 zoo_static benches (600 frames each) and a 100 s title boot.
+Before every BL it fills the context fields no reader reads there (`omit_stores`: neither the callee's record reads
+them nor the caller reloads them before the callee must write them) with `0xDEAF`, the register and the BL's address
+(IR `sitepoison`; only registers the function itself may write).
+The exit check reports a result the summary says the function writes on every path still holding it ("result not
+written, store omitted at a call", naming the BL); an input holding it at entry is counted, not reported, as inputs
+over-approximate (an indirect jump's target is assumed to read the AAPCS64's arguments, not the x29 and x30 a callee
+saves; host code calls guest functions with fewer arguments than their summaries list). The log counts entries
+meeting the site poison and exits poisoning registers (`lift2 verify: N ...` at powers of two).
 It also routes every BL to an HLE'd function declared clean through a stub (`hchk_<addr>`, `game.HOST_CHECK`) that
 reports x19-x29 or SP changed by the host (`lift2_host_enter`/`lift2_host_exit`). Result (2026-11-15, with the host
-checks): zero violations in the kokiri smoke scene.
+checks, the omitted stores and the patches in the summaries): zero violations in the kokiri smoke scene (40 s), with
+2^28 entries meeting a site poison, 2^20 of them in an input, and 2^27 exits poisoning a register.
 
 ## The build
 
@@ -460,13 +489,13 @@ checks): zero violations in the kokiri smoke scene.
 
 | measure | value | at |
 |---|---|---|
-| executable | 223.17 MB (223.20 MB at 828448d7) | ad50fede |
-| `.text` / lifted code (hot / cold partitions) / bss | 186.29 MB / 183.28 MB (8.25 / 175.03) / 40.05 MB | 828448d7 with cold DSE (ad50fede: `.text` 186.29 MB) |
+| executable | 209.24 MB | stores no reader reads omitted, by the call-boundary records |
+| `.text` / lifted code (hot / cold partitions) / bss | 172.33 MB / 169.35 MB (7.72 / 161.63) / 40.05 MB | stores no reader reads omitted, by the call-boundary records |
 | x86 code bytes per guest instruction | 15.6 on average (with page marks and polls; not rescaled) | 860eb332 |
-| relift, cold (`scripts/relift.sh`) | 419 s (lift 90 s, partitions lifted 100 s, compiled 218 s with 7 jobs), 13.41 GB peak (16 GB scope) | 828448d7 with cold DSE |
+| relift, cold (`scripts/relift.sh`) | 556 s with the summaries computed (lift 95 s; build: summaries 110 s, partitions lifted 106 s, compiled 237 s with 7 jobs), 13.07 GB peak (16 GB scope); from the summaries' cache about 110 s less | stores no reader reads omitted, by the call-boundary records |
 | relift, warm (partitions from the cache) | about 100 s | 338ce2c0 |
 | host-only change | about a minute | commit not recorded |
-| market 600, fixed step | frame mean 9.458 ms, median 9.446, p99 10.022; CPU 14.39 s over the 600 frames (828448d7: 9.454, 9.429, 10.040; 14.15 s) | ad50fede, declared rows and hooks |
+| market 600, fixed step | frame mean 9.43-9.63 ms (one run on each of this change's last three builds), median 9.42-9.60, p99 10.02-10.34; CPU 14.04-14.41 s over the 600 frames | stores no reader reads omitted |
 | lift speed, one core | 33-56 k guest instructions/s (decode, IR, LLVM IR) | commit not recorded |
 
 ## Checks
@@ -495,8 +524,10 @@ tree shows the constraint is needed; the experiment named decides it.
    stays (2026-11-15, the lifter's IR over the whole game): of 8.45 M stores reaching a reader, 29 % are read (callee
    inputs, reloads, results), 25 % dead (a temporary the callee does not read and the caller does not reload), 21 %
    kept only for a BLR, SVC, unknown callee or exit, 14 % callee-saved registers and x30 the callee only saves, 9 %
-   callee-saved registers at a return (7 % epilogue restores). Removed by flushing at the readers instead of writing
-   through ([lifter-optimisations.md](lifter-optimisations.md), C).
+   callee-saved registers at a return (7 % epilogue restores). `omit_stores` now drops the dead ones (overwritten,
+   dead at a BL whose callee does not read them, not a result at a return); the stores kept only for a BLR, SVC,
+   unknown callee or exit, and the callee-saved registers a callee only saves, remain
+   ([lifter-optimisations.md](lifter-optimisations.md), C).
    *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs, entry
    hooks (`emit_llvm.emit_function`: x0-x7, x30 and `host_effects.HOOK_READS`), `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
    `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts, HLE'd functions (they read their arguments

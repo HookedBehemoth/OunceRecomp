@@ -349,10 +349,10 @@ def estimate(b, x, fn):
     lt = lane_of(x.ty)
     name = "lift2_%s_%s" % (fn, lt)
     if x.ty[0] != "v":
-        return b.op("call", lt, x, fn=name, ctx=True, helper=True)
+        return b.op("call", lt, x, fn=name, ctx=True, regs=0, helper=True)
     r = x
     for k in range(lanes(x.ty)[0]):
-        r = b.insert(r, b.op("call", lt, b.extract(x, k), fn=name, ctx=True, helper=True), k)
+        r = b.insert(r, b.op("call", lt, b.extract(x, k), fn=name, ctx=True, regs=0, helper=True), k)
     return r
 
 

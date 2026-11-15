@@ -110,7 +110,8 @@ def main():
         import entry_hooks
         gen = os.path.join(kit.WORK, "sa", "gen")
         bound = bounds.call_bounds(plan, entry_hooks.wanted(gen)[0], host_effects.hle_names(gen))
-    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, jt_index=L.jt_index, bound=bound)
+    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, jt_index=L.jt_index, bound=bound,
+                            omit=bound is not None)
     names = {v: k for k, v in lab.items()}
     for e in funcs:
         d = os.path.join(out, "%08x" % e)

@@ -289,7 +289,7 @@ def compile_part(job):
     return obj, time.time() - t, None
 
 
-VERIFY_WRAPPER = """@sum_%(a)08x = private constant [6 x i64] [i64 %(inputs)d, i64 %(may)d, i64 %(res)d, i64 %(pres)d, i64 %(flags)d, i64 %(a)d]
+VERIFY_WRAPPER = """@sum_%(a)08x = private constant [7 x i64] [i64 %(inputs)d, i64 %(may)d, i64 %(res)d, i64 %(pres)d, i64 %(flags)d, i64 %(a)d, i64 %(must)d]
 define void @f_%(a)08x(ptr %%ctx) {
   %%fr = alloca [32 x i64], align 8
   call void @lift2_check_enter(ptr %%ctx, ptr @sum_%(a)08x, ptr %%fr)
@@ -321,7 +321,7 @@ def lift_part(args):
         _BOUNDS[key] = bounds.call_bounds(plan, hooks, hle, verify)
     bound = _BOUNDS[key]
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
-                            jt_index=plan.get("jt_index"), bound=bound)
+                            jt_index=plan.get("jt_index"), bound=bound, omit=True, verify=verify)
     m = emit_llvm.Module()
     extra = []
     for e in names:
@@ -338,7 +338,7 @@ def lift_part(args):
             fn.name = "body_%08x" % e
             s = plan["summaries"][e]
             extra.append(VERIFY_WRAPPER % {"a": e, "inputs": s[0] & GPR, "may": s[1] & GPR, "res": s[4] & GPR,
-                                           "pres": s[3] & GPR, "flags": 1 if s[5] else 0})
+                                           "pres": s[3] & GPR, "flags": 1 if s[5] else 0, "must": s[2] & GPR})
         m.add(fn)
         m.defined = m.defined | {"f_%08x" % e}   # (with verification the wrapper defines f_; drop declarations of it)
     if verify:
