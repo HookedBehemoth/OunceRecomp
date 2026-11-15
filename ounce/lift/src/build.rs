@@ -159,18 +159,31 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
     fun.block(BKey::Pc(entry));
 
     // the block a branch to t goes to: one of the function's, or a tail-call exit
-    fn goto(fun: &mut Function, prog: &Prog, exits: &mut Vec<BlockId>, t: u64) -> BlockId {
+    // (an answered callee, PATCH_ANSWER: a return with x0 the answer)
+    fn goto(b: &mut Builder, prog: &Prog, exits: &mut Vec<BlockId>, t: u64) -> BlockId {
         if prog.inside(t) {
-            return fun.block(BKey::Pc(t));
+            return b.f.block(BKey::Pc(t));
         }
-        let key = BKey::Exit(b't', t);
-        if let Some(b) = fun.find(key) {
-            return b;
+        let bd = prog.bound(prog.callee(t));
+        let key = BKey::Exit(if bd.answer.is_some() { b'a' } else { b't' }, t);
+        if let Some(blk) = b.f.find(key) {
+            return blk;
         }
-        let b = fun.block(key);
-        fun.bm(b).term = Some(Term::Tail(prog.bound(prog.callee(t)).tail.clone().into()));
-        exits.push(b);
-        b
+        let blk = b.f.block(key);
+        exits.push(blk);
+        match bd.answer {
+            None => b.f.bm(blk).term = Some(Term::Tail(bd.tail.clone().into())),
+            Some(answer) => {
+                b.f.bm(blk).term = Some(Term::Ret);
+                let (here, cmp) = (b.blk, b.cmp);
+                b.at(blk);
+                let v = b.c64(answer as i128);
+                b.set(x(0), v);
+                b.blk = here;
+                b.cmp = cmp;
+            }
+        }
+        blk
     }
 
     let mut cur: Option<BlockId> = None;
@@ -201,7 +214,7 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
         let i = &insns[k];
         let t = i.enc.template;
         let falls_out = |b: &mut Builder, exits: &mut Vec<BlockId>| {
-            let g = goto(b.f, prog, exits, pc + 4);
+            let g = goto(b, prog, exits, pc + 4);
             b.f.bm(c).term = Some(Term::Br(g));
         };
         if !is_term(t) {
@@ -265,6 +278,21 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
         if is_bl {
             let callee = prog.callee(target(i, pc).unwrap());
             let bd = prog.bound(callee);
+            if let Some(answer) = bd.answer {
+                // (PATCH_ANSWER: no call; x0 the answer, x30 the BL's, everything else as it was)
+                let ra = b.c64(pc as i128 + 4);
+                b.set(x(30), ra);
+                let v = b.c64(answer as i128);
+                b.set(x(0), v);
+                for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    at_post(&mut b, row);
+                }
+                if !body.contains(&(pc + 4)) {
+                    falls_out(&mut b, &mut exits);
+                    cur = None;
+                }
+                continue;
+            }
             let mut held: Vec<(Var, ValueId)> = Vec::new();
             for &var in KEEP.iter().filter(|&&v| bd.keeps >> v & 1 != 0) {
                 let mut v = b.f.b(c).defs[var as usize];
@@ -277,7 +305,7 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
             }
             let ra = b.c64(pc as i128 + 4);
             b.set(x(30), ra);
-            b.op(Op::Gcall { sym: bd.symbol.as_str().into(), callee, pc }, Ty::Void, &[]);
+            b.op(Op::Gcall { sym: bd.symbol.as_str().into(), callee, pc, stop: bd.kind == "stop" }, Ty::Void, &[]);
             b.after_call();
             for (var, v) in held {
                 b.f.bm(c).defs[var as usize] = Some(v);
@@ -326,12 +354,21 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
         if prog.after.contains_key(&pc) {
             panic!("code after the branch at {pc:#x}");
         }
+        if t == "br" && prog.replace.contains_key(&pc) {
+            // (a row in place of a tail call: its result the callee's, then return)
+            for row in &prog.replace[&pc] {
+                at_post(&mut b, row);
+            }
+            b.f.bm(c).term = Some(Term::Ret);
+            cur = None;
+            continue;
+        }
         let term = match t {
-            "b" => Term::Br(goto(b.f, prog, &mut exits, target(i, pc).unwrap())),
+            "b" => Term::Br(goto(&mut b, prog, &mut exits, target(i, pc).unwrap())),
             "bcond" => {
                 let cv = cond(&mut b, i.f("cond"));
-                let tb = goto(b.f, prog, &mut exits, target(i, pc).unwrap());
-                let fb = goto(b.f, prog, &mut exits, pc + 4);
+                let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
+                let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             "cbz" => {
@@ -339,8 +376,8 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
                 let t0 = b.ty(v);
                 let z = b.c(0, t0);
                 let cv = b.icmp(if i.f("op") != 0 { "ne" } else { "eq" }, v, z);
-                let tb = goto(b.f, prog, &mut exits, target(i, pc).unwrap());
-                let fb = goto(b.f, prog, &mut exits, pc + 4);
+                let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
+                let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             "tbz" => {
@@ -351,8 +388,8 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
                 let v = b.bin(BinOp::And, r, m);
                 let z = b.c64(0);
                 let cv = b.icmp(if i.f("op") != 0 { "ne" } else { "eq" }, v, z);
-                let tb = goto(b.f, prog, &mut exits, target(i, pc).unwrap());
-                let fb = goto(b.f, prog, &mut exits, pc + 4);
+                let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
+                let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             "ret" => Term::Ret,
@@ -373,7 +410,7 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
                 let term = if at.is_some() && at.unwrap().0 == c {
                     let tab = &prog.jt_index.iter().find(|r| r.0 == pc).unwrap().4;
                     let cases: Vec<(u64, BlockId)> =
-                        tab.iter().enumerate().map(|(n, &t2)| (n as u64, goto(b.f, prog, &mut exits, t2))).collect();
+                        tab.iter().enumerate().map(|(n, &t2)| (n as u64, goto(&mut b, prog, &mut exits, t2))).collect();
                     Term::Switch(at.unwrap().1, cases, ij)
                 } else if !targets.is_empty() {
                     let lo = targets[0];
@@ -382,7 +419,7 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
                     let two = b.c64(2);
                     let idx = b.intr("fshr", I64, &[d, d, two]);
                     let cases: Vec<(u64, BlockId)> =
-                        targets.iter().map(|&t2| ((t2 - lo) >> 2, goto(b.f, prog, &mut exits, t2))).collect();
+                        targets.iter().map(|&t2| ((t2 - lo) >> 2, goto(&mut b, prog, &mut exits, t2))).collect();
                     Term::Switch(idx, cases, ij)
                 } else {
                     Term::Br(ij)

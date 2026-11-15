@@ -1,4 +1,4 @@
-//! ounce-lift <export dir> <out dir> [-j N] [--parts a,b,...] [--skip]: one .ll per partition of the export.
+//! ounce-lift <export dir> <out dir> [-j N (default: the CPUs)] [--parts a,b,...] [--skip]: one .ll per partition of the export.
 //! --skip: a function using a template not ported yet is left out and counted ("skipped: template X").
 
 use ounce_lift::export::{read_meta, read_part};
@@ -35,10 +35,31 @@ mod count {
     static A: Counting = Counting;
 }
 
+/// the answers module's name (the build's lift_answers.o)
+const ANSWERS: &str = "lift_answers";
+
+/// the generic entries of the answered functions (game.answers_ir): f_<addr> writes the answer to x0 and returns
+fn answers_ir(meta: &ounce_lift::export::Meta) -> String {
+    use std::fmt::Write;
+    let mut s = format!("target triple = \"{}\"", ounce_lift::emit::TRIPLE);
+    for (a, name, v) in &meta.answers {
+        write!(
+            s,
+            "\ndefine void @f_{a:08x}(ptr noalias nocapture %ctx) {{   ; {name}\n  %x0 = getelementptr i8, ptr %ctx, i64 {}\n  store i64 {}, ptr %x0, align 8\n  ret void\n}}",
+            ounce_lift::emit::ctx_off(0),
+            *v as i64
+        )
+        .unwrap();
+    }
+    s.push('\n');
+    s
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut pos = Vec::new();
-    let (mut jobs, mut only, mut skip) = (6usize, None::<Vec<String>>, false);
+    let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let (mut only, mut skip) = (None::<Vec<String>>, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "-j" => jobs = args.next().unwrap().parse().unwrap(),
@@ -61,6 +82,9 @@ fn main() {
         .map(|p| p.name.clone())
         .filter(|n| only.as_ref().map_or(true, |o| o.contains(n)))
         .collect();
+    if only.as_ref().map_or(true, |o| o.iter().any(|n| n == ANSWERS)) {
+        std::fs::write(out.join(format!("{ANSWERS}.ll")), answers_ir(&meta)).unwrap();
+    }
     let t0 = Instant::now();
     let next = AtomicUsize::new(0);
     let total = Mutex::new((0usize, BTreeMap::<String, usize>::new(), 0f64, 0f64));

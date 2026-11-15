@@ -170,7 +170,8 @@ pub enum Op {
     CtxStore(u32),
     RegLoad(Var),
     Writeback(Var),
-    Gcall { sym: Box<str>, callee: u64, pc: u64 },
+    /// stop: the callee stops the game (an import the host neither implements nor answers): a noreturn call
+    Gcall { sym: Box<str>, callee: u64, pc: u64, stop: bool },
     Icall(u64),
     Svc(u32),
     Barrier,

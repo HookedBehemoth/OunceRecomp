@@ -18,6 +18,9 @@ pub struct Meta {
     pub omit: bool,
     pub code_targets: Vec<u64>,
     pub sj_rets: Vec<[u64; 5]>,
+    /// [entry, symbol, value] of the answered functions (PATCH_ANSWER), by entry: the answers module
+    #[serde(default)]
+    pub answers: Vec<(u64, String, u64)>,
     pub partitions: Vec<PartInfo>,
 }
 
@@ -56,6 +59,9 @@ pub struct Bound {
     pub noreturn: bool,
     pub symbol: String,
     pub tail: String,
+    /// kind "answer" (PATCH_ANSWER): the constant x0 is answered with; a call of it is no call
+    #[serde(default)]
+    pub answer: Option<u64>,
 }
 
 #[derive(Deserialize, Debug)]

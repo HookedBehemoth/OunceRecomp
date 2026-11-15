@@ -716,9 +716,9 @@ fn emit_op(e: &mut Em, v: ValueId) {
                 if x.ty.is_vec() { 16 } else { 8 }
             ));
         }
-        Op::Gcall { sym, .. } => {
+        Op::Gcall { sym, stop, .. } => {
             e.decls.insert(format!("declare void @{sym}(ptr)"));
-            e.line(format_args!("call void @{sym}(ptr %ctx)"));
+            e.line(format_args!("call void @{sym}(ptr %ctx){}", if *stop { " noreturn" } else { "" }));
         }
         Op::Icall(pc) => {
             e.decls.insert("helper:lift2_icall".into());
