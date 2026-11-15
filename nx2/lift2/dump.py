@@ -104,7 +104,12 @@ def main():
         with open(plan_path, "rb") as f:
             plan = pickle.load(f)
     L.index_tables()   # (over the tables of the functions walked so far)
-    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, jt_index=L.jt_index)
+    keeps = noreturn = None
+    if plan and plan.get("summaries"):   # (the call boundaries as the build makes them; the entry hooks not known here)
+        from lift2 import game
+        keeps, noreturn = game.call_bounds(plan, game.host_edited(plan, {}))
+    prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, jt_index=L.jt_index, keeps=keeps,
+                            noreturn=noreturn)
     names = {v: k for k, v in lab.items()}
     for e in funcs:
         d = os.path.join(out, "%08x" % e)
