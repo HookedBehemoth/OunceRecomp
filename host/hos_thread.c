@@ -1080,8 +1080,8 @@ void hos_thread_log_handles(void) {
    then the one waiting longest). A waiter better than a holder asks it to give the core up (vc_kick), which it does at
    its next checkpoint (every nn::os call and SVC: hos_vcore_checkpoint), as Horizon would run the better thread at
    once. Guest code with no checkpoint (a spin loop) keeps its core, so a waiter that has waited too long runs anyway
-   without one (an "escape", logged with the holders): HOS_VCORE_ESCAPE_US for a better waiter (default 1000),
-   HOS_VCORE_ESCAPE_EQ_US otherwise (20000). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
+   without one (an "escape", logged with the holders): HOS_VCORE_ESCAPE_US for a better waiter (default 250000),
+   HOS_VCORE_ESCAPE_EQ_US otherwise (250000). Every 5 s the log has a "vcores:" line. GetCurrentCoreNumber answers the
    core a thread holds. */
 #if !defined(__EMSCRIPTEN__)
 static SRWLOCK vc_lock = SRWLOCK_INIT;
