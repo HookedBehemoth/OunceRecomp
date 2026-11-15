@@ -180,6 +180,7 @@ static void bench_finish(const BenchRow *rows, int n, double ready_at, const Cpu
     hos_log("bench: %d frames in %.3f s (ready at %.2f s): frame mean %.3f ms, median %.3f, p99 %.3f, max %.3f; %.1f draws a "
             "frame; game steps not 1/60 s: %lld", n, s.total / 1e3, ready_at, s.mean, s.median, s.p99, s.max, (double)draws / n,
             (long long)steps_off);
+    hos_cxx_throw_totals();
     CpuGroup cpu1[CPU_GROUPS];
     const int ncpu1 = cpu_sample(cpu1);
     if (ncpu1) {   /* (the CPU seconds of the measured frames by thread group, the busiest first) */

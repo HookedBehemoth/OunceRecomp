@@ -370,6 +370,12 @@ the other counters the scripts read stay); `HOS_DBG=<item>,...` turns a part on,
 A line that says the same most blocks (`validation:`, `strict:`, `transient pool: descriptor ids`) is printed at the first
 block and again when its text changes.
 
+`throw: <name> #<n> from <lr>` (always on, `host/cxx_throw.c`): the game called `__cxa_throw`, `__cxa_rethrow`,
+`_Unwind_RaiseException`, `_Unwind_ForcedUnwind` or `_Unwind_Resume`. Each name's first 16 calls are logged, then
+every power of two. The lifted code runs on unchanged. Unwinding through lifted code has never worked
+([lifter-abi-census.md](lifter-abi-census.md) section 3), so a line here explains a crash that follows it. A bench run's
+end logs the exact totals: `throws: __cxa_throw N, ...`.
+
 ### HOS_DBG
 
 `HOS_DBG=<item>,<item>:<value>,...` turns on the direct back end's and the host's debug aids; with it unset each costs a

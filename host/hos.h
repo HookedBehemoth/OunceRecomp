@@ -30,6 +30,7 @@
    HOS_DBG=hooks (diagnostic): each hook's first call logged (hos_hook_seen, host/hos_thread.c). */
 extern int hos_hooks_dbg;
 void hos_hook_seen(const char *name);
+void hos_cxx_throw_totals(void);   /* (host/cxx_throw.c) the run's C++ throws and unwinds so far, one log line */
 #define ENTRY_HOOK_COUNTED(name, body)                                                                                 \
     static int body(Ctx *c);                                                                                           \
     int name(Ctx *c) {                                                                                                 \
