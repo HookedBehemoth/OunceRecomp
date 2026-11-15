@@ -23,6 +23,88 @@ pub struct Meta {
     #[serde(default)]
     pub answers: Vec<(u64, String, u64)>,
     pub partitions: Vec<PartInfo>,
+    // ---- what the summaries and the call-boundary records read (format 3)
+    /// every function entry of the program (lifted and hooked), sorted
+    pub entries: Vec<u64>,
+    /// [stub, target, slot] of the PLT stubs, by stub
+    pub plt: Vec<(u64, u64, u64)>,
+    /// [entry, symbol] of the image's symbols: the noreturn seeds match them
+    pub names: Vec<(u64, String)>,
+    pub noreturn_names: Vec<String>,
+    pub noreturn_parts: Vec<String>,
+    /// the HLE'd functions, by address
+    pub hle: Vec<Hle>,
+    /// the patch rows' declared effects, by pc
+    pub row_effects: Vec<RowEffect>,
+    /// the PATCH_FUNCs' declarations, by entry
+    pub patch_funcs: Vec<PatchDecl>,
+    /// the bodies the summaries see where they differ from the lifted ones
+    pub summary_bodies: Vec<SummaryBody>,
+}
+
+/// an HLE'd function: [address, symbol, stops, answer, declared clobbering, reads mask]
+#[derive(Deserialize, Debug)]
+pub struct Hle(pub u64, pub String, pub bool, pub Option<u64>, pub bool, #[serde(deserialize_with = "de_mask")] pub u128);
+
+/// the guest functions host code calls: "computed" (any), or their addresses
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum GuestCalls {
+    Computed(String),
+    List(Vec<u64>),
+}
+
+/// a pc's rows' declared effects: [pc, before reads, after reads, before writes, after writes, guest calls, replace]
+#[derive(Deserialize, Debug)]
+pub struct RowEffect(
+    pub u64,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    pub GuestCalls,
+    pub bool,
+);
+
+/// a PATCH_FUNC: [entry, reads mask, result mask, orig, guest callees]
+#[derive(Deserialize, Debug)]
+pub struct PatchDecl(
+    pub u64,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    pub bool,
+    pub Vec<u64>,
+);
+
+#[derive(Deserialize, Debug)]
+pub struct SummaryBody {
+    pub entry: u64,
+    pub pcs: Vec<(u64, u64)>,
+    pub words: String,
+}
+
+impl SummaryBody {
+    /// (pcs, words)
+    pub fn body(&self) -> (Vec<u64>, Vec<u32>) {
+        let pcs = expand(&self.pcs);
+        let w = self.words.as_bytes();
+        assert_eq!(w.len(), 8 * pcs.len(), "export: summary body f_{:08x}", self.entry);
+        (pcs, w.as_chunks::<8>().0.iter().map(|h| hex_word(h)).collect())
+    }
+}
+
+fn de_mask<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
+    let s: Cow<str> = Deserialize::deserialize(d)?;
+    u128::from_str_radix(&s, 16).map_err(serde::de::Error::custom)
+}
+
+fn expand(runs: &[(u64, u64)]) -> Vec<u64> {
+    let n: u64 = runs.iter().map(|r| r.1).sum();
+    let mut pcs = Vec::with_capacity(n as usize);
+    for &(a, n) in runs {
+        pcs.extend((0..n).map(|k| a + 4 * k));
+    }
+    pcs
 }
 
 #[derive(Deserialize, Debug)]
@@ -70,16 +152,54 @@ impl Names {
 pub struct Part {
     pub name: String,
     pub functions: Vec<Func>,
-    /// sorted by addr
-    pub bounds: Vec<Bound>,
-    /// sorted by t
-    pub redirect: Vec<(u64, u64)>,
     pub names: Names,
 }
 
+/// why a call-boundary record is what it is (bounds.Bound.kind)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundKind {
+    Lifted,
+    Noreturn,
+    Hle,
+    PatchFunc,
+    SetjmpOwner,
+    NoSummary,
+    Demoted,
+    HleClobbering,
+    PatchFuncUnproven,
+    Answer,
+    Stop,
+}
+
+impl BoundKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            BoundKind::Lifted => "lifted",
+            BoundKind::Noreturn => "noreturn",
+            BoundKind::Hle => "HLE",
+            BoundKind::PatchFunc => "PATCH_FUNC",
+            BoundKind::SetjmpOwner => "setjmp owner",
+            BoundKind::NoSummary => "no summary",
+            BoundKind::Demoted => "demoted",
+            BoundKind::HleClobbering => "HLE declared clobbering",
+            BoundKind::PatchFuncUnproven => "PATCH_FUNC with orig, body not proven",
+            BoundKind::Answer => "answer",
+            BoundKind::Stop => "stop",
+        }
+    }
+    fn parse(s: &str) -> BoundKind {
+        use BoundKind::*;
+        [Lifted, Noreturn, Hle, PatchFunc, SetjmpOwner, NoSummary, Demoted, HleClobbering, PatchFuncUnproven, Answer, Stop]
+            .into_iter()
+            .find(|k| k.name() == s)
+            .unwrap_or_else(|| panic!("export: record kind {s}"))
+    }
+}
+
 /// a call-boundary record (bounds.Bound)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bound {
+    pub kind: BoundKind,
     pub addr: u64,
     pub reads: u128,
     pub clobbers: u128,
@@ -240,7 +360,6 @@ pub struct Func {
     pub values: Vec<ValueRow>,
     pub rows: Vec<AtRow>,
     pub func: Option<PatchFunc>,
-    pub own: Bound,
 }
 
 // ---- the JSON as written, borrowed from the file's bytes
@@ -255,9 +374,6 @@ struct RawPart<'a> {
     name: Cow<'a, str>,
     #[serde(borrow)]
     functions: Vec<RawFunc<'a>>,
-    #[serde(borrow)]
-    bounds: Vec<RawBound<'a>>,
-    redirect: Vec<(u64, u64)>,
 }
 
 #[derive(Deserialize)]
@@ -334,13 +450,12 @@ struct RawFunc<'a> {
     rows: Vec<RawAtRow<'a>>,
     #[serde(borrow)]
     func: Option<RawPatchFunc<'a>>,
-    #[serde(borrow)]
-    own: RawBound<'a>,
 }
 
 impl RawBound<'_> {
     fn typed(&self, names: &mut Names) -> Bound {
         Bound {
+            kind: BoundKind::parse(&self.kind),
             addr: self.addr,
             reads: mask(&self.reads),
             clobbers: mask(&self.clobbers),
@@ -369,11 +484,7 @@ fn hex_word(h: &[u8]) -> u32 {
 
 impl RawFunc<'_> {
     fn typed(self, names: &mut Names) -> Func {
-        let n: u64 = self.pcs.iter().map(|r| r.1).sum();
-        let mut pcs = Vec::with_capacity(n as usize);
-        for &(a, n) in &self.pcs {
-            pcs.extend((0..n).map(|k| a + 4 * k));
-        }
+        let pcs = expand(&self.pcs);
         let w = self.words.as_bytes();
         assert_eq!(w.len(), 8 * pcs.len(), "export: f_{:08x}'s words", self.entry);
         let words = w.as_chunks::<8>().0.iter().map(|h| hex_word(h)).collect();
@@ -427,7 +538,6 @@ impl RawFunc<'_> {
                 })
                 .collect(),
             func: self.func.map(|p| PatchFunc { name: names.sym(&p.name), orig_name: names.sym(&p.orig_name) }),
-            own: self.own.typed(names),
         }
     }
 }
@@ -443,26 +553,57 @@ pub fn read_part(dir: &Path, name: &str) -> Result<Part, String> {
     let s = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     let raw: RawPart = serde_json::from_slice(&s).map_err(|e| format!("{}: {e}", p.display()))?;
     let mut names = Names::default();
-    let bounds: Vec<Bound> = raw.bounds.iter().map(|b| b.typed(&mut names)).collect();
-    assert!(bounds.windows(2).all(|w| w[0].addr < w[1].addr), "export: bounds not sorted");
-    assert!(raw.redirect.windows(2).all(|w| w[0].0 < w[1].0), "export: redirect not sorted");
     let functions = raw.functions.into_iter().map(|f| f.typed(&mut names)).collect();
-    Ok(Part { name: raw.name.into_owned(), functions, bounds, redirect: raw.redirect, names })
+    Ok(Part { name: raw.name.into_owned(), functions, names })
 }
 
-impl Part {
-    /// callee(t): the PLT stubs followed
-    pub fn callee(&self, t: u64) -> u64 {
-        match self.redirect.binary_search_by_key(&t, |r| r.0) {
-            Ok(k) => self.redirect[k].1,
-            Err(_) => t,
-        }
+/// the diagnostic's reference (check/bounds.json): Python's records of every callee the partitions read, and the
+/// PATCH_FUNCs' own records; the symbols as names
+pub struct CheckBounds {
+    pub bounds: Vec<Bound>,
+    pub own: Vec<Bound>,
+    pub names: Names,
+}
+
+pub fn read_check_bounds(dir: &Path) -> Result<CheckBounds, String> {
+    #[derive(Deserialize)]
+    struct Raw<'a> {
+        #[serde(borrow)]
+        bounds: Vec<RawBound<'a>>,
+        #[serde(borrow)]
+        own: Vec<RawBound<'a>>,
     }
-    /// bound(c): the record of a callee
-    pub fn bound(&self, c: u64) -> &Bound {
-        match self.bounds.binary_search_by_key(&c, |b| b.addr) {
-            Ok(k) => &self.bounds[k],
-            Err(_) => panic!("export: no record of {c:#x}"),
-        }
-    }
+    let p = dir.join("check").join("bounds.json");
+    let s = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let raw: Raw = serde_json::from_slice(&s).map_err(|e| format!("{}: {e}", p.display()))?;
+    let mut names = Names::default();
+    let bounds = raw.bounds.iter().map(|b| b.typed(&mut names)).collect();
+    let own = raw.own.iter().map(|b| b.typed(&mut names)).collect();
+    Ok(CheckBounds { bounds, own, names })
+}
+
+/// a packed summary as check/summaries.json has it (summary.pack): [entry, inputs, clobbers, mustdef, preserved,
+/// results, returns, demote, unknown, frame, pairs, boundary, fp, writes_fpcr]
+#[derive(Deserialize, Debug)]
+pub struct PackedSummary(
+    pub u64,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    #[serde(deserialize_with = "de_mask")] pub u128,
+    pub bool,
+    pub Vec<String>,
+    pub bool,
+    pub i64,
+    pub u32,
+    pub bool,
+    pub bool,
+    pub bool,
+);
+
+pub fn read_check_summaries(dir: &Path) -> Result<Vec<PackedSummary>, String> {
+    let p = dir.join("check").join("summaries.json");
+    let s = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    serde_json::from_slice(&s).map_err(|e| format!("{}: {e}", p.display()))
 }

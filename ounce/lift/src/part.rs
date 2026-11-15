@@ -1,6 +1,7 @@
 //! One partition's IR text (nx2/lift2/game.py lift_part, verify off): its functions, the PATCH_FUNC stubs, the
 //! setjmp owners' sjcall_ stubs and the code-pointer-sites trailer.
 
+use crate::bounds::Records;
 use crate::build::{build, scope, Prog, Scratch};
 use crate::emit::{sym, Decl, Module};
 use crate::export::{Meta, Part};
@@ -31,7 +32,7 @@ pub struct Lifted {
     pub skipped: BTreeMap<String, usize>,
 }
 
-pub fn lift_part(w: &mut Worker, meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bool) -> Lifted {
+pub fn lift_part(w: &mut Worker, meta: &Meta, code_targets: &HashSet<u64>, rec: &Records, part: &Part, skip: bool) -> Lifted {
     let insns = part.functions.iter().map(|f| f.pcs.len()).sum();
     let mut m = Module::new(&part.names, false, std::mem::take(&mut w.body), insns);
     let (fun, sc) = (&mut w.fun, &mut w.scratch);
@@ -48,7 +49,7 @@ pub fn lift_part(w: &mut Worker, meta: &Meta, code_targets: &HashSet<u64>, part:
                 continue;
             }
         }
-        let prog = Prog::new(f, code_targets, part, meta.omit);
+        let prog = Prog::new(f, code_targets, rec, meta.omit);
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(f, &prog, fun, sc)));
         match built {
             Ok(()) => {}

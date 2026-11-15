@@ -1,7 +1,12 @@
-//! ounce-lift <export dir> <out dir> [-j N (default: the CPUs)] [--parts a,b,...] [--skip]: one .ll per partition of the export.
+//! ounce-lift <export dir> <out dir> [-j N (default: the CPUs)] [--parts a,b,...] [--skip] [--check]: one .ll per
+//! partition of the export, its summaries and call-boundary records computed first (summary, bounds).
 //! --skip: a function using a template not ported yet is left out and counted ("skipped: template X").
+//! --check: compare every summary and record with Python's (the export's check/) and stop: the diagnostic gate.
 
-use ounce_lift::export::{read_meta, read_part};
+use ounce_lift::bounds::Records;
+use ounce_lift::export::{read_meta, read_part, Part};
+use ounce_lift::summary::{summarise, Program};
+use rayon::prelude::*;
 use ounce_lift::part::{lift_part, Worker};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -59,12 +64,13 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mut pos = Vec::new();
     let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let (mut only, mut skip) = (None::<Vec<String>>, false);
+    let (mut only, mut skip, mut check) = (None::<Vec<String>>, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "-j" => jobs = args.next().unwrap().parse().unwrap(),
             "--parts" => only = Some(args.next().unwrap().split(',').map(String::from).collect()),
             "--skip" => skip = true,
+            "--check" => check = true,
             _ => pos.push(PathBuf::from(a)),
         }
     }
@@ -85,7 +91,26 @@ fn main() {
     if only.as_ref().is_none_or(|o| o.iter().any(|n| n == ANSWERS)) {
         std::fs::write(out.join(format!("{ANSWERS}.ll")), answers_ir(&meta)).unwrap();
     }
+    rayon::ThreadPoolBuilder::new().num_threads(jobs.max(1)).build_global().unwrap();
     let t0 = Instant::now();
+    // every partition's functions: the summaries read the whole program
+    let all: Vec<String> = meta.partitions.iter().map(|p| p.name.clone()).collect();
+    let parts: Vec<Part> = all.par_iter().map(|n| read_part(dir, n).unwrap_or_else(|e| panic!("{e}"))).collect();
+    let t_read = t0.elapsed().as_secs_f64();
+    let ts = Instant::now();
+    let mut prog = Program::new(&meta, &parts);
+    let (sums, st) = summarise(&mut prog);
+    let rec = Records::new(&prog, &sums, &meta.sj_rets);
+    println!(
+        "summaries: {} functions, {} components (largest {}) in {} levels, {} noreturn by callers; graph {:.2} s, fixed point {:.2} s, results {:.2} s; {:.2} s in all (read {:.2} s)",
+        st.functions, st.sccs, st.largest, st.levels, st.noreturn_by_callers, st.graph_s, st.fixed_s, st.results_s,
+        ts.elapsed().as_secs_f64(), t_read
+    );
+    if check {
+        let (a, b) = ounce_lift::check::check(dir, &prog, &sums, &rec, 40);
+        std::process::exit(if a + b == 0 { 0 } else { 1 });
+    }
+    let by_name: std::collections::HashMap<&str, &Part> = parts.iter().map(|p| (p.name.as_str(), p)).collect();
     let next = AtomicUsize::new(0);
     let total = Mutex::new((0usize, BTreeMap::<String, usize>::new(), 0f64, 0f64));
     std::thread::scope(|s| {
@@ -97,11 +122,10 @@ fn main() {
                 if k >= names.len() {
                     break;
                 }
+                let part = by_name[names[k].as_str()];
+                let tr = 0.0;
                 let t = Instant::now();
-                let part = read_part(dir, &names[k]).unwrap_or_else(|e| panic!("{e}"));
-                let tr = t.elapsed().as_secs_f64();
-                let t = Instant::now();
-                let l = lift_part(&mut w, &meta, &targets, &part, skip);
+                let l = lift_part(&mut w, &meta, &targets, &rec, part, skip);
                 let tl = t.elapsed().as_secs_f64();
                 {
                     use std::io::Write;

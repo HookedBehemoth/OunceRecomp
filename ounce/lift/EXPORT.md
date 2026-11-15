@@ -1,9 +1,10 @@
 # The lift export: what the Rust lifter reads
 
-`nx2/lift_export.py` writes everything `nx2/lift2/game.py`'s `lift_part` needs to produce a partition's LLVM IR,
-already resolved: the partitions as `prepare()` makes them, every function's instructions, and every fact of other
-functions, of the patches and of the summaries the lift reads, as plain data. The Rust lifter needs no Python, no plan
-pickle, no host C scan and no summaries: it reads this and emits the same IR text, byte for byte (phase 1).
+`nx2/lift_export.py` writes everything `nx2/lift2/game.py`'s `lift_part` needs to produce a partition's LLVM IR: the
+partitions as `prepare()` makes them, every function's instructions, the facts of the patches, and what the
+whole-program summaries (nx2/lift2/summary.py) and the call-boundary records (nx2/lift2/bounds.py) are computed from,
+as plain data. The Rust lifter computes the summaries and the records itself (src/summary.rs, src/bounds.rs) and emits
+the same IR text, byte for byte. It needs no Python, no plan pickle and no host C scan.
 
     work/venv/bin/python -I nx2/lift_export.py --game games/oot work/ounce/export
 
@@ -14,8 +15,10 @@ The export is of the build without `HOOKSHOT_LIFT_VERIFY` (`verify` off: no `bod
 
 ## Files
 
-    <out>/meta.json                 the export's facts and the partitions' list
-    <out>/parts/<name>.json         one per partition: its functions and the records they read
+    <out>/meta.json                 the export's facts, the summaries' inputs and the partitions' list
+    <out>/parts/<name>.json         one per partition: its functions
+    <out>/check/summaries.json      Python's summaries and records: the diagnostic's reference (ounce-lift --check),
+    <out>/check/bounds.json         read by nothing else
 
 All files are UTF-8 JSON (one object, no comments). Numbers are JSON integers (all fit in `u64`; addresses are guest
 virtual addresses, decimal). The only values wider than 64 bits, the register masks, are hex strings (see *Masks*).
@@ -25,7 +28,7 @@ Lists keep the order given here; where an order matters it says so.
 
 ```json
 {
-  "format": 2,                      // 2 since 5bd7beba (answers, stops)
+  "format": 3,                      // 2 since 5bd7beba (answers, stops); 3: the summaries' inputs, no records
   "commit": "1e054a23...",          // git HEAD of the Python lifter the export was made at ("+dirty" if the tree was)
   "input_key": "…",                 // lift_export.input_key: every input of the IR (the golden's stamp is the same key)
   "code_key": "…",                  // game.code_key(): the lifter's code as the build keys it
@@ -39,9 +42,29 @@ Lists keep the order given here; where an order matters it says so.
   "partitions": [
     {"name": "lift_c000", "tag": "c", "index": 0, "functions": 1234, "insns": 120017},
     …
-  ]
+  ],
+  // the summaries' and records' inputs (format 3)
+  "entries": [a, …],                // sorted: plan["entries"], every function entry (lifted and hooked)
+  "plt": [[stub, target, slot], …], // sorted by stub: plan["plt"]; callee(t) follows it, at most 4 steps
+  "names": [[entry, "symbol"], …],  // the image's symbols (the summary input's names): the noreturn seeds match them
+  "noreturn_names": ["abort", …], "noreturn_parts": ["AbortImpl", …],   // nx2/horizon NORETURN_NAMES, _PARTS
+  "hle": [[addr, "symbol", stops, answer | null, clobbering, "reads"], …],   // by addr: the HLE'd functions
+  "row_effects": [[pc, "bu", "au", "bd", "ad", guest, replace], …],         // by pc: summary.rows()
+  "patch_funcs": [[entry, "reads", "result", orig, [guest, …]], …],         // by entry: summary.func_facts
+  "summary_bodies": [{"entry": e, "pcs": [[pc, n], …], "words": "…"}, …]
 }
 ```
+
+- `hle`: plan["hle"] (equal to plan["hooks"] and to gen/a64_hooks.c's map: the export checks) with each symbol's
+  declaration: `host_effects.stops`, `.answer` (u64), `.clobbers(...) is not None`, and the mask of `.hle_reads`.
+- `row_effects`: per pc, every Value probe's and At row's declared reads and writes (masks) before and after the
+  instruction, the guest functions their host functions call (a list, or `"computed"`), and whether a row replaces the
+  instruction. They apply to every body holding the pc, not only the row's function.
+- `patch_funcs`: each PATCH_FUNC's operands read, its result (a mask of one register or 0), `orig`, its guest callees.
+- `summary_bodies`: the functions whose body the summaries see differs from the lifted one (`pcs`/`words` of the
+  Function): the summary input holds the discovered body, the plan's body a UDF trap (game.write_plan: a module's
+  first word, not an instruction). Four in OOT, the modules' headers. An inconsistency of the Python lifter kept to stay
+  identical: one body per function is the fix, after the port.
 
 - `partitions` is `prepare()`'s list in its order: first the cold partitions (`tag` "c", functions not on the hot
   list), then the hot ones (`tag` "h"), each group by ascending entry, cut after the function that brings the
@@ -63,9 +86,7 @@ Lists keep the order given here; where an order matters it says so.
   "name": "lift_c000",
   "tag": "c",
   "index": 0,
-  "functions": [ Function, … ],     // the partition's functions in lift order (ascending entry)
-  "bounds": [ Bound, … ],           // every call-boundary record these functions read, sorted by addr
-  "redirect": [[t, c], …]           // sorted by t: callee(t) = c for every t the functions reach where c != t
+  "functions": [ Function, … ]      // the partition's functions in lift order (ascending entry)
 }
 ```
 
@@ -83,8 +104,7 @@ Lists keep the order given here; where an order matters it says so.
   "code_sites": [[pc, entry, page | null], …],      // sorted by pc: code_ptrs.sites (page null: an ADR site)
   "values": [ValueRow, …],          // its Value probes, in declaration order
   "rows": [AtRow, …],               // its At rows, in declaration order
-  "func": null | {"name": "hos_func_…", "orig_name": "…"},   // a PATCH_FUNC at this entry
-  "own": Bound                       // bound.own(entry): the record omit_stores takes for the function itself
+  "func": null | {"name": "hos_func_…", "orig_name": "…"}    // a PATCH_FUNC at this entry
 }
 ```
 
@@ -105,16 +125,17 @@ What `lift_part` / `build_ir.build` do with these, as `Program`:
   exists only if they all passed.
 - `func`: a PATCH_FUNC (`patch_scan.check_funcs`): the lifted function is named `orig_name` instead of
   `f_%08x`, and `lift_part` appends `FUNC_STUB` with `fn = name`.
-- `own`: `prog.bound.own(entry)`: equal to `bound(entry)` except for a PATCH_FUNC (its body's own record).
+- the record omit_stores takes for the function itself is `bound.own(entry)`: equal to `bound(entry)` except for a
+  PATCH_FUNC (its body's own record).
 
 ### callee(t) and bound(c)
 
-`prog.callee(t)` (PLT stubs followed, at most 4 steps) is resolved: `callee(t)` is the `c` of the partition's
-`redirect` pair for `t`, else `t` itself. `prog.bound(c)` is the partition's `bounds` entry with `addr == c`. The
-partition carries the record of `callee(t)` for every `t` whose record its functions' lift reads: every BL target;
-every B/B.cond/CB(N)Z/TB(N)Z target and every `pc + 4` that is not `inside()` (not in the body, or another
-function's entry in it); every jump-table case of a BR in the body (`jt` and `jt_index` targets) that is not
-`inside()`; a PLT stub's `target`; plus every function's own entry. A lookup that finds no record is a bug of the export: stop.
+`prog.callee(t)` follows the PLT stubs (`plt`, at most 4 steps). `prog.bound(c)` is `bounds.call_bounds` (verify off)
+over the summaries the Rust side computes from the inputs above (summary.summarise_parallel's fixed point, the results
+and the fall-through demotion, then bounds.make / func_bound). `ounce-lift --check` compares every function's summary
+(`check/summaries.json`: `summary.pack` with the masks as hex and the demotion reasons as a list) and every record the
+partitions read (`check/bounds.json`: `{"bounds": [Bound…], "own": [Bound… of the PATCH_FUNCs]}`) with Python's, field
+by field.
 
 ### Bound
 
@@ -123,7 +144,7 @@ function's entry in it); every jump-table case of a BR in the body (`jt` and `jt
  "noreturn": false, "symbol": "f_80020000", "tail": "f_80020000", "answer": null}
 ```
 
-`bounds.Bound` field for field. `kind` is a reason ("lifted", "noreturn", "HLE", "PATCH_FUNC", "setjmp owner",
+`bounds.Bound` field for field (in check/bounds.json). `kind` is a reason ("lifted", "noreturn", "HLE", "PATCH_FUNC", "setjmp owner",
 "no summary", "demoted", "HLE declared clobbering", "PATCH_FUNC with orig, body not proven", and since 5bd7beba
 "answer" and "stop"); only "stop" enters the IR (see below). `answer`: null, or the u64 a BL to it answers. `symbol` is the symbol a BL calls (`gcall`), `tail` the one a tail branch jumps to. In `own`, `addr` is the entry.
 

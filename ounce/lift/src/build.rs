@@ -1,7 +1,8 @@
 //! A guest function -> IR (nx2/lift2/build_ir.py: scope, build, omit_stores, cycle_edges), and the patch rows'
 //! lowering (nx2/lift2/probes.py Value.lower, At.post).
 
-use crate::export::{AtArg, AtRow, Bound, Func, Mode, Part, Reg, ValueArg, ValueRow};
+use crate::bounds::Records;
+use crate::export::{AtArg, AtRow, Bound, Func, Mode, Reg, ValueArg, ValueRow};
 use crate::ir::*;
 use crate::sem;
 use crate::sem::{Code, Kind};
@@ -28,13 +29,13 @@ pub struct Prog<'a> {
     pub before: HashMap<u64, Vec<&'a AtRow>>,
     pub after: HashMap<u64, Vec<&'a AtRow>>,
     pub replace: HashMap<u64, Vec<&'a AtRow>>,
-    pub part: &'a Part,
-    pub own: &'a Bound,
+    pub rec: &'a Records<'a>,
+    pub own: Bound,
     pub omit: bool,
 }
 
 impl<'a> Prog<'a> {
-    pub fn new(f: &'a Func, code_targets: &'a HashSet<u64>, part: &'a Part, omit: bool) -> Prog<'a> {
+    pub fn new(f: &'a Func, code_targets: &'a HashSet<u64>, rec: &'a Records<'a>, omit: bool) -> Prog<'a> {
         let mut p = Prog {
             entry: f.entry,
             body: &f.pcs,
@@ -47,8 +48,8 @@ impl<'a> Prog<'a> {
             before: HashMap::new(),
             after: HashMap::new(),
             replace: HashMap::new(),
-            part,
-            own: &f.own,
+            rec,
+            own: rec.own(f.entry),
             omit,
         };
         for r in &f.rows {
@@ -62,10 +63,10 @@ impl<'a> Prog<'a> {
         p
     }
     fn callee(&self, t: u64) -> u64 {
-        self.part.callee(t)
+        self.rec.callee(t)
     }
-    fn bound(&self, c: u64) -> &'a Bound {
-        self.part.bound(c)
+    fn bound(&self, c: u64) -> Bound {
+        self.rec.bound(c)
     }
     /// a branch to t stays in the function (a goto), or leaves it (a tail call)
     fn inside(&self, t: u64) -> bool {

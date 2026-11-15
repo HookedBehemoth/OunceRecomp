@@ -13,7 +13,7 @@ import time
 
 NX2 = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(NX2)
-FORMAT = 2
+FORMAT = 3
 
 
 def commit():
@@ -106,11 +106,10 @@ def row_json(p):
 
 
 def export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_targets):
-    """(the partition's functions, its records, its redirects) as EXPORT.md describes them"""
+    """(the partition's functions as EXPORT.md describes them, the callees whose records they read)"""
     from lift2 import code_ptrs, probes
     jt, jt_index, plt = plan["jt"], plan.get("jt_index", {}), plan["plt"]
     fns, reach = [], set()
-    redirect = {}
     for e in names:
         pcs, words = plan["bodies"][e]
         pcs, words = list(pcs), list(words)
@@ -145,10 +144,7 @@ def export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_t
             targets.add(t)
             p = {"target": t, "slot": slot, "target_is_code": t in code_targets}
         for t in targets:
-            c = callee(t)
-            reach.add(c)
-            if c != t:
-                redirect[t] = c
+            reach.add(callee(t))
         rows = rows_by_func.get(e, ([], []))
         f = funcs.get(e)
         fns.append({
@@ -161,10 +157,58 @@ def export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_t
             "values": [row_json(r) for r in rows[0]],
             "rows": [row_json(r) for r in rows[1]],
             "func": {"name": f.name, "orig_name": f.orig_name} if f is not None else None,
-            "own": bound_json(e, bound.own(e)),
         })
         reach.add(e)
-    return fns, [bound_json(c, bound(c)) for c in sorted(reach)], [[t, c] for t, c in sorted(redirect.items())]
+    return fns, reach
+
+
+def summary_inputs(plan, hle, funcs):
+    """what the summaries and the call-boundary records read beyond the partitions' functions (EXPORT.md, format 3):
+    the program's entries and PLT stubs, the symbol names the noreturn seeds match, the HLE'd functions' declared
+    effects, the rows' declared effects by pc, the PATCH_FUNCs' declarations, and the bodies the summaries see where
+    they differ from the lifted ones"""
+    import pickle
+    from horizon import NORETURN_NAMES, NORETURN_PARTS
+    from lift2 import game, host_effects, summary
+    with open(plan["summary_input"], "rb") as f:
+        d = pickle.load(f)
+    if d["hle"] != hle or set(plan["hooks"]) != set(hle):
+        raise SystemExit("export: the summaries' HLE'd functions are not the image's hooks")
+    over = []
+    for e, (pcs, words) in sorted(d["funcs"].items()):
+        b = plan["bodies"][e]
+        if list(b[0]) != list(pcs) or list(b[1]) != list(words):
+            over.append({"entry": e, "pcs": runs(list(pcs)), "words": "".join("%08x" % x for x in words)})
+    if set(d["funcs"]) != set(plan["bodies"]):
+        raise SystemExit("export: the summaries' functions are not the plan's")
+    facts = game.replaced(os.path.join(os.path.dirname(plan["summary_input"]), "gen"))
+    if set(facts) != set(funcs):
+        raise SystemExit("export: the summaries' PATCH_FUNCs are not the build's")
+    hle_rows = []
+    for a, n in sorted(hle.items()):
+        v = host_effects.answer(n)
+        hle_rows.append([a, n, bool(host_effects.stops(n)), None if v is None else v & 0xFFFFFFFFFFFFFFFF,
+                         host_effects.clobbers(n) is not None, mask(sum(summary.BIT[r] for r in host_effects.hle_reads(n)))])
+    rows = []
+    for pc, (bu, au, bd, ad, calls, repl) in sorted(summary.rows().items()):
+        rows.append([pc, mask(bu), mask(au), mask(bd), mask(ad), calls if calls == "computed" else list(calls), repl])
+    return {
+        "entries": sorted(plan["entries"]),
+        "plt": [[s, t, slot] for s, (t, slot) in sorted(plan["plt"].items())],
+        "names": [[e, n] for e, n in sorted(d["names"].items())],
+        "noreturn_names": list(NORETURN_NAMES), "noreturn_parts": list(NORETURN_PARTS),
+        "hle": hle_rows,
+        "row_effects": rows,
+        "patch_funcs": [[e, mask(r), mask(res), bool(o), list(g)] for e, (r, res, o, g) in sorted(facts.items())],
+        "summary_bodies": over,
+    }
+
+
+def pack_json(e, s):
+    """a packed summary (summary.pack) as check/summaries.json has it"""
+    (inputs, clobbers, mustdef, preserved, results, returns, demote, unknown, frame, pairs, boundary, fp, fpcr) = s
+    return [e, mask(inputs), mask(clobbers), mask(mustdef), mask(preserved), mask(results), bool(returns),
+            list(demote), bool(unknown), frame, pairs, bool(boundary), bool(fp), bool(fpcr)]
 
 
 def main():
@@ -190,14 +234,16 @@ def main():
         rows_by_func.setdefault(p.func, ([], []))[1].append(p)
     os.makedirs(os.path.join(a.out, "parts"), exist_ok=True)
     meta_parts = []
+    os.makedirs(os.path.join(a.out, "check"), exist_ok=True)
     t1 = time.time()
+    reach = set()
     for k, (tag, names) in enumerate(parts):
         name = part_name(tag, k)
-        fns, bds, red = export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_targets)
+        fns, r = export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_targets)
+        reach |= r
         path = os.path.join(a.out, "parts", name + ".json")
         with open(path + ".tmp", "w") as f:
-            json.dump({"name": name, "tag": tag, "index": k, "functions": fns, "bounds": bds, "redirect": red}, f,
-                      separators=(",", ":"))
+            json.dump({"name": name, "tag": tag, "index": k, "functions": fns}, f, separators=(",", ":"))
         os.replace(path + ".tmp", path)
         meta_parts.append({"name": name, "tag": tag, "index": k, "functions": len(names),
                            "insns": sum(len(plan["bodies"][e][0]) for e in names)})
@@ -208,6 +254,13 @@ def main():
             "sj_rets": [[e] + list(r) for e, r in sorted(plan.get("sj_rets", {}).items())],
             "answers": answers(hle),
             "partitions": meta_parts}
+    meta.update(summary_inputs(plan, hle, funcs))
+    # (the diagnostic's reference, read by ounce-lift --check only: Python's summaries and records)
+    with open(os.path.join(a.out, "check", "summaries.json"), "w") as f:
+        json.dump([pack_json(e, s) for e, s in sorted(plan["summaries"].items())], f, separators=(",", ":"))
+    with open(os.path.join(a.out, "check", "bounds.json"), "w") as f:
+        json.dump({"bounds": [bound_json(c, bound(c)) for c in sorted(reach)],
+                   "own": [bound_json(e, bound.own(e)) for e in sorted(funcs)]}, f, separators=(",", ":"))
     with open(os.path.join(a.out, "meta.json"), "w") as f:
         json.dump(meta, f, separators=(",", ":"))
     size = sum(os.path.getsize(os.path.join(d, x)) for d, _, xs in os.walk(a.out) for x in xs)
