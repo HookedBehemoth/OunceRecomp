@@ -80,3 +80,27 @@ def load(out_dir):
 def check(gen_edited, predicted):
     """the functions the build found edited in the C that the prediction missed (each one lost its edit)"""
     return sorted(set(gen_edited) - set(predicted))
+
+
+def hot_list():
+    """the hot list's functions as the lift takes it (A64_HOT_FUNCS: one f_<addr> a line)"""
+    path = os.environ.get("A64_HOT_FUNCS")
+    if not path:
+        return set()
+    return {w for line in open(path) for w in line.split()[:1] if w.startswith("f_")}
+
+
+TRAPS = "lift1_traps.c"
+
+
+def write_traps(gen, own):
+    """(HOOKSHOT_LIFT1=0 with HOOKSHOT_LIFT1_TRAP=1) each function the present lifter would own, a trap at its entry"""
+    path = os.path.join(gen, TRAPS)
+    if not own:
+        if os.path.exists(path):
+            os.remove(path)
+        return
+    with open(path, "w", newline="\n") as f:
+        f.write("/* The present lifter's functions in a build without it (HOOKSHOT_LIFT1_TRAP=1): each stops the thread. */\n")
+        f.write('#include "a64.h"\n')
+        f.write("".join("void f_%08x(Ctx *A64_NOESC c) { a64_trap(c, %#x, 0); }\n" % (e, e) for e in sorted(own)))

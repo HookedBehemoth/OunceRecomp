@@ -72,6 +72,7 @@ class Discovery:
         self.jt_missing = {}  # br pc -> its register, for BRs whose table address was not found
         self.plt = {}         # stub entry -> (final target, GOT slot)
         self.stats = Counter()
+        self.after = {}       # pc -> C after the instruction (nx2/oot_wide.py ...: lift 2 calls it, mixed.lift_part)
         # function starts from unwind info bound jump-table targets; without them, every entry does
         self.eh_starts = sorted(getattr(img, "eh_starts", None) or self.entries)
 

@@ -699,7 +699,9 @@ def main():
     srcs = [os.path.join(gen, c) for c in chunks]
     host_srcs = []
     if not a.only:
-        srcs += [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_suyu.c")] + \
+        # (a64_suyu.c: the present lifter's runtime, written by its lift; lift1_traps.c: HOOKSHOT_LIFT1=0's traps)
+        srcs += [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_suyu.c", "lift1_traps.c")
+                 if f in ("a64_table.c", "a64_hooks.c") or os.path.exists(os.path.join(gen, f))] + \
                 [os.path.join(rt64, "a64_rt.c")]
         if a.standalone:
             srcs += [os.path.join(gen, f) for f in ("a64_stubs.c", "hos_image.c", "nvn2_exports.c")]

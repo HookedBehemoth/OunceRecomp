@@ -41,7 +41,9 @@ class Marks(unittest.TestCase):
         lift = read("nx2", "lift.py")
         self.assertLess(lift.index("lift_mark.begin(out_dir)"), lift.index("meta = img.write(img_dir)"),
                         "the mark goes up before the lift writes anything")
-        self.assertLess(lift.index("chunks.write("), lift.index("lift_mark.done(out_dir)"), "and comes down last")
+        self.assertLess(lift.index("chunks.write("), lift.rindex("lift_mark.done(out_dir)"), "and comes down last")
+        self.assertLess(lift.index("write_without_lift1(L,"), lift.index("lift_mark.done(out_dir)"),
+                        "(also without the present lifter)")
         self.assertIn("lift_mark.check(", read("nx2", "build.py"))
         refresh = read("scripts", "play-refresh.sh")
         self.assertLess(refresh.index("LIFT_INCOMPLETE"), refresh.index("oot_patches.apply"),

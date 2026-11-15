@@ -27,21 +27,25 @@ import capstone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
 import kit
 import nso2  # noqa: F401  (DT_RELR)
-import insn
-import lift_fixes
-import chunks
 import standalone
 import adr_entries  # noqa: E402
 import nso
-import poll
 import nx_image
 import image as eden_image
-import a64emit
-import a64_lift
-import a64_rtgen
 
-insn.install()
-lift_fixes.install()
+# HOOKSHOT_LIFT1=0 (milestone 19, step 4): no present lifter in the path, not even imported: lift 2's discovery, plan
+# and runtime tables only. Its functions must be none (nx2/lift2/owned.py), or HOOKSHOT_LIFT1_TRAP=1 makes each a trap.
+LIFT1 = os.environ.get("HOOKSHOT_LIFT1", "1") != "0"
+if LIFT1:
+    import insn
+    import lift_fixes
+    import chunks
+    import poll
+    import a64emit
+    import a64_lift
+    import a64_rtgen
+    insn.install()
+    lift_fixes.install()
 
 
 def module_of(img, pc):
@@ -160,7 +164,11 @@ def main():
         img.entries |= new
         print("ADR / ADRP+ADD code addresses outside the %d unwind-covered functions: %d, %d of them new entries" % (
             len(spans), len(refs), len(new)))
-    L = a64_lift.Lifter(img)
+    if LIFT1:
+        L = a64_lift.Lifter(img)
+    else:   # (lift 2's discovery is the program's facts; it has no emitter)
+        from lift2 import discover
+        L = discover.Discovery(img)
     if a.standalone:   # (hookshot) widescreen and ultrawide: C after a few of the game's instructions
         import oot_wide
         oot_wide.install(L, img)
@@ -171,6 +179,11 @@ def main():
     # the functions: lift 2's discovery (nx2/lift2/discover.py, the default), the present lifter's (HOOKSHOT_DISCOVERY=
     # lift1), or both compared (=check: lift 2's report of every difference; the present lifter's result is used)
     how = os.environ.get("HOOKSHOT_DISCOVERY", "lift2")
+    if not LIFT1:
+        td = time.time()
+        L.discover(max_insns=a.max_func)
+        print("discovery (lift 2): %d functions (%.0fs)" % (len(L.funcs), time.time() - td))
+        how = None
     if how in ("lift1", "check"):
         L.discover(max_insns=a.max_func)
     if how in ("lift2", "check"):
@@ -186,7 +199,7 @@ def main():
             discover.adopt(L, D)
         del D
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
-    total = coverage(L, img, img_dir)
+    total = coverage(L, img, img_dir) if LIFT1 else None
     jt = L.stats
     print("jump tables %d (bounded %d, bounded by function %d, ADR table %d), BR without a table %d, PLT stubs %d" % (
         len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
@@ -206,7 +219,7 @@ def main():
                                                     if l.strip() and not l.startswith("#")}
             L.only, predicted = owned.compute({e: b for e, (b, _) in L.funcs.items()}, bodies,
                                               os.path.join(out_dir, "gen"), listed)
-            owned.save(out_dir, L.only, predicted, a64_lift.hot_functions())
+            owned.save(out_dir, L.only, predicted, owned.hot_list())
             print("present lifter: %d of %d functions are its own (%d with host edits); lift 2 has the rest" % (
                 len(L.only), len(L.funcs), len(predicted)), flush=True)
         elif a.write:
@@ -214,7 +227,10 @@ def main():
             if os.path.exists(os.path.join(out_dir, owned.FILE)):
                 os.remove(os.path.join(out_dir, owned.FILE))
         del bodies
-    if a.write:
+    if a.write and not LIFT1:
+        write_without_lift1(L, img, meta, a, out_dir, t0)
+        lift_mark.done(out_dir)
+    elif a.write:
         if not a.no_polls:
             poll.install()
         gen = os.path.join(out_dir, "gen")
@@ -238,6 +254,41 @@ def main():
         print("wrote %d code files to %s (%.0fs)" % (len(files), gen, time.time() - t0))
         lift_mark.done(out_dir)
     print("done (%.0fs)" % (time.time() - t0))
+
+
+def write_without_lift1(L, img, meta, a, out_dir, t0):
+    """the gen folder of a build with no present lifter: the runtime's tables, the image's C, and for each function the
+    present lifter would own a trap (HOOKSHOT_LIFT1_TRAP=1; without it the lift stops when there is one)"""
+    from lift2 import owned, tables
+    own = getattr(L, "only", None) or set()
+    if own and not os.environ.get("HOOKSHOT_LIFT1_TRAP"):
+        raise SystemExit("lift: HOOKSHOT_LIFT1=0, but the present lifter still owns %d functions (%s%s, in %s): port "
+                         "them, or set HOOKSHOT_LIFT1_TRAP=1 to make each a trap" % (
+                             len(own), " ".join("f_%08x" % e for e in sorted(own)[:8]), " ..." if len(own) > 8 else "",
+                             owned.FILE))
+    gen = os.path.join(out_dir, "gen")
+    os.makedirs(gen, exist_ok=True)
+    for f in os.listdir(gen):   # (the present lifter's files of an earlier lift)
+        if (f.startswith("code_") and f.endswith(".c")) or f in ("a64_suyu.c", "a64_suyu.h", "a64_fpx.h",
+                                                                  "code_hot.c.whole", "chunk_costs.txt"):
+            os.remove(os.path.join(gen, f))
+    tables.write(gen, L.funcs, L.hooks)
+    owned.write_traps(gen, own)
+    with open(os.path.join(gen, "functions.txt"), "w") as f:
+        f.write("".join("%08x %d\n" % (e, len(L.funcs[e][0])) for e in sorted(L.funcs)))
+    if a.standalone:
+        start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
+        print("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
+            start, exit_, standalone.gen_stubs(gen, meta)))
+        nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
+        standalone.write_nvn_exports(gen, nvn)
+        print("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
+    loaded = sorted(n for n in sys.modules if n in ("a64_lift", "a64emit", "a64_rtgen", "insn", "lift_fixes", "chunks",
+                                                   "poll", "lifted_c"))
+    if loaded:   # (the mode's promise: nothing of the present lifter ran)
+        raise SystemExit("lift: HOOKSHOT_LIFT1=0 loaded the present lifter's %s" % ", ".join(loaded))
+    print("no present lifter (HOOKSHOT_LIFT1=0): the tables, the image's C and %d traps in %s (%.0fs)" % (
+        len(own), gen, time.time() - t0))
 
 
 if __name__ == "__main__":
