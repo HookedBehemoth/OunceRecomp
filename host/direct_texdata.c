@@ -1,4 +1,4 @@
-/* agl::TextureDataMgr's own texture events, hooked (direct mode only; docs/direct/texture-streaming.md 7).
+/* agl::TextureDataMgr's own texture events, hooked (direct mode only; docs/direct/texture-streaming.md).
    One table keyed by the TextureData (td), written only by these hooks:
      - created with data, or as a UnifyTex alias: f_80798690 loadImage_ (direct_assets.c calls direct_texdata_created; an
        alias's target is the head of its chain, direct_tex_dedup.c);
@@ -131,7 +131,7 @@ void direct_texdata_line(char *out, size_t cap) {
 /* (game patch) The cache eviction driven by free VRAM, not by the texture heap's bytes. agl's per-frame update
    f_80797240(mgr) destroys cached (count 0) textures, through its own f_8079bbe0, while the heap's free bytes
    ([mgr+0x40]+0x1ee8) are under mgr+0x340 (TextureCacheRejectionThreshold, 120 MB) and compaction is idle
-   (docs/direct/texture-streaming.md 2.6). The heap's bytes say nothing about VRAM here (the store's BC images are 1-2x the
+   (docs/direct/texture-streaming.md). The heap's bytes say nothing about VRAM here (the store's BC images are 1-2x the
    console's bytes, the console's texels are never copied). So for that one call the threshold is raised by what free
    VRAM lacks of kVramMargin: the game then evicts LRU textures until its heap has that many more bytes free (or nothing
    is cached), in its own order and through its own destroy; the value is put back after the call, so the game's own

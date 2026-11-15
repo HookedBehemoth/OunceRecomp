@@ -5,7 +5,7 @@
    alias of System/Gfx/UnifyTex.Product.100.byml (5,186 names, 333 targets): f_807974f0 gives it a TextureData of its own
    that shares its target's slot and copies its target's BRTI, appends it to the target's alias chain (td+0x188 prev,
    td+0x190 next; the head, the target, has prev 0) and initializes its NVN texture over the target's storage
-   (docs/direct/texture-streaming.md 2.3). On the console, as in the frozen back end, it reads its target's texels.
+   (docs/direct/texture-streaming.md). On the console, as in the frozen back end, it reads its target's texels.
 
    The direct back end never reads texture storage, so it is told: the alias's target is read from the alias itself, the
    head of its chain, and handed over as HSD_ASSET_SAME with that texture's NVN object (the target is live and registered

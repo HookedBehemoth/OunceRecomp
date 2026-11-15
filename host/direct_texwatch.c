@@ -1,5 +1,5 @@
 /* HOS_DBG=texwatch (direct mode, diagnosis only): which code writes texels into a texture's storage with
-   the CPU. The direct back end never reads texture storage (docs/direct-backend-plan.md, Textures), so a texture whose
+   the CPU. The direct back end never reads texture storage (docs/direct/architecture.md, "Textures"), so a texture whose
    texels the CPU stores there, with no NVN call, never gets them: each such writer needs a game patch that hands the
    bytes to the back end (hsd_texels), as the glyph writer has (docs/direct/terrain-texels.md).
 

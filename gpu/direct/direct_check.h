@@ -1,5 +1,5 @@
 // Checks that can fail: the validation layer's messages counted and proven heard, and rule 2's
-// strict mode (docs/direct-backend-plan.md, Rules 2; Checks, "Counters").
+// strict mode (docs/direct-backend-plan.md, "Rules" and "Checks").
 //
 // Validation. When the Khronos validation layer is in the process (the existing way of turning it on for a run: the loader's
 // VK_LOADER_LAYERS_ENABLE=*validation, with VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true for synchronization validation; or

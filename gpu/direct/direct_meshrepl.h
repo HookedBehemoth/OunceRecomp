@@ -1,4 +1,4 @@
-// Hand-written mesh stages in place of the translator's (docs/direct/mesh-harness.md section 6, docs/direct/hang-fix.md):
+// Hand-written mesh stages in place of the translator's (docs/direct/task-mesh.md):
 // a game mesh stage, by its code key, is drawn with a stage of ours (gpu/direct/shaders/mesh, listed in swap.txt) that emits
 // the same geometry bit for bit. The translator still translates the stage (its Info drives the heap mappings, the push data
 // and the fragment stage's inputs, and the program cache keeps its SPIR-V); the replacement takes its place when the shader

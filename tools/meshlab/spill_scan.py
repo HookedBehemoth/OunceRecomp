@@ -6,7 +6,7 @@
 For every mesh program of each capture (one draw of it), `RADV_DEBUG=shaders meshlab <frame> stats <seq...>` makes its shader
 objects (nothing is drawn) and RADV prints each stage as ACO compiled it; this counts `scratch_store_dword` and
 `scratch_load_dword` (ACO's spills of vector registers: storage:vgpr_spill) in each stage after register allocation, and
-reads the stage's size. A mesh stage that spills is the Hyrule Field loss's kind (docs/direct/hang-fix.md). Prints one
+reads the stage's size. A mesh stage that spills is the Hyrule Field loss's kind (docs/direct/task-mesh.md). Prints one
 line a stage code (mesh stages by their code key, task stages as the compute shader the back end makes of them, fragment
 stages by program: the harness's constant one unless --fs-real), spilling ones first. --late <kinds>: the stages of these
 kinds (mesh, task, fragment) with the back end's register-pressure pass, as the game makes them

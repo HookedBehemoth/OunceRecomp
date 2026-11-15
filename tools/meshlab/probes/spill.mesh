@@ -1,6 +1,5 @@
 // meshlab probe: a mesh stage with more values alive at once than a thread has vector registers, so that the compiler spills
-// registers to scratch memory, and that draws real triangles (docs/direct/hang-fix.md, "A reproducer without game
-// data"). No game data: the table it reads is the harness's own (every word 1.0).
+// registers to scratch memory, and that draws real triangles (docs/direct/task-mesh.md). No game data: the table it reads is the harness's own (every word 1.0).
 //
 // Each workgroup draws one patch of 8 x 8 vertices (98 triangles) in a cell of a grid over the target. Every invocation
 // first loads VALUES words of the table at its own offset, then folds them pairwise from both ends, so that all of them are

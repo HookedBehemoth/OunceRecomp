@@ -40,7 +40,7 @@ VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3{VK_STRUCTURE_TYPE_PHYSICAL
 VkPhysicalDeviceProvokingVertexFeaturesEXT pv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT};
 VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
 // (M4b: mesh shading with the mesh stage only. The task stage is never enabled: native task-stage draws lose the device on this
-// GPU (plan, "Task and mesh shaders"); with the feature off no task shader object can be made at all)
+// GPU (docs/direct/task-mesh.md); with the feature off no task shader object can be made at all)
 VkPhysicalDeviceMeshShaderFeaturesEXT mesh_feat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
 bool has_ext[8]{};
 enum { E_SHOBJ, E_HEAP, E_EDS3, E_PV, E_STENCIL, E_ATOMIC_FLOAT, E_M5, E_MESH };

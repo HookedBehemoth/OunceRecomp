@@ -1,4 +1,4 @@
-// Reports and render conditions on the GPU (docs/direct-backend-plan.md, Reports and conditions).
+// Reports and render conditions on the GPU (docs/direct/architecture.md, "Reports and render conditions").
 //
 // NVN's counters are running GPU counters: ResetCounter zeroes one, ReportCounter writes {value, timestamp} to guest
 // memory. Samples passed becomes Vulkan occlusion queries: from a reset the counter counts while the list renders, one

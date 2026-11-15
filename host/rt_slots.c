@@ -75,7 +75,7 @@ void f_802737a0(Ctx *), f_8005ed00(Ctx *);   /* (lifted functions the host calls
 /* Direct mode: the slots lie after the pool's end (offsets past its size: nvn_native.c leaves those GPU addresses
    unused after every virtual pool), the arenas keep the whole pool for their bookkeeping, and the range is the back
    end's transient pool: device memory of a constant size, twice the game's pool (whose size follows the output
-   resolution, hos_rt_pool_size) and at least SLOTS_MB_DIRECT (docs/direct/transient-pool.md, "The constant"). Twice,
+   resolution, hos_rt_pool_size) and at least SLOTS_MB_DIRECT (docs/direct/transient-pool.md). Twice,
    since a slot never shares its memory where the game's lanes alias each other's: a range of the pool's size leaves a
    target of a new size no gap, and it is placed outside the slots. Another back end: the top 320 MB of the pool */
 #define SLOTS_MB_DIRECT 512

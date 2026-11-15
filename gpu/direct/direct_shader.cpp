@@ -1,8 +1,8 @@
 // Programs to shader objects (direct_shader.h). Lifted from gpu/legacy/vk/vk_shader.cpp (the code's reading and lowering, Env, the
 // profile, the graphics translation, the key, the answers, the cache's record format) with its switches as the constants
 // the frozen back end runs with (RX_VK_DESC_HEAP_BDA=2: storage buffers by address, wide), and from vk_desc_heap.cpp
-// make_program (the heap mapping) and vk_shader_object.cpp so_make (the shader objects). What differs (step A,
-// shader-contract.md section 6): uniform buffers are read through addresses (an address table in the frame arena, its
+// make_program (the heap mapping) and vk_shader_object.cpp so_make (the shader objects). What differs (docs/direct/shader-contract.md,
+// "What a draw provides"): uniform buffers are read through addresses (an address table in the frame arena, its
 // address pushed), not ring descriptors; a texture whose handle is a game buffer's word reads it there through the buffer's
 // pushed address, as a driver bank's; textures and samplers are the registration-time entries.
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):

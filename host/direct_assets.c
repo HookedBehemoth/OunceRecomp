@@ -351,7 +351,7 @@ int direct_assets_skip_packaged(uint64_t bytes) {
    binds pools (direct_pools.cpp layer0_pool_native). The manager makes more than one (Kokiri: 2432 MB at boot, 201 MB and
    2 MB at the scene load): each is named. find_heap still names the asset heap's pool (127) to the asset path, as before. */
 /* f_80f6c9d0 (lr 0x80f6cb20) is agl's generic pool wrapper (tera's pools and Replace requests use it too:
-   docs/direct/texture-streaming.md 1): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
+   docs/direct/texture-streaming.md): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
    (f_80f6c580), whose body runs from here with this thread noted */
 static _Thread_local int tl_heap_init;
 PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, direct_assets_heap_init,

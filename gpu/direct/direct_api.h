@@ -46,7 +46,7 @@ typedef struct hsd_asset_key {
     const void *data;              /* data_offset 0: mip 0's bytes in the decompressed file (host pointer): the record whose
                                       data offset back from it is its BNTX's header is the one */
     const void *same_as;           /* HSD_ASSET_SAME: the NVNtexture whose load's content this texture has (M6f: an
-                                      alias's target, docs/direct/texture-streaming.md 2.3) */
+                                      alias's target, docs/direct/texture-streaming.md) */
 } hsd_asset_key;
 enum { HSD_ASSET_LOAD = 1, HSD_ASSET_INPLACE = 2, HSD_ASSET_REBIND = 3, HSD_ASSET_SAME = 4 };
 /* (REBIND: a record found replaces the link; none: the link stays, armed as by hsd_asset_rebind. SAME : a load with no

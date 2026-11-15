@@ -1,5 +1,5 @@
 // What every replacement mesh stage shares: the direct back end's interface for a mesh stage (push data, the task header,
-// the guest's memory by address) and small helpers. Written for gpu/direct (docs/direct/mesh-harness.md, "What to swap"):
+// the guest's memory by address) and small helpers. Written for gpu/direct (docs/direct/mesh-harness.md):
 // the replacement takes the translator's place for one stage and keeps its heap mappings, so its uniform buffers are the
 // bindings the translator gave the stage (one a buffer the stage reads, in ascending buffer index), and the rest is read by
 // address as the translator reads it.

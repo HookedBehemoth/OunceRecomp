@@ -1,182 +1,81 @@
 # Task and mesh shaders
 
-Analysis only; nothing was run. Tools (all under `work/proto/direct-m0/tm/`, nothing leaves the PC): `seed.py` takes
-every task (NVN stage 6), mesh (7) and compute (5) stage out of the romfs seed (`hookshot_shaders.bin`, code key as
-`vk_shader.cpp` computes it); `tmtool` (`build.sh`, links the `vk_eden_*` / `vk_sirit_*` objects of `work/sa/build`)
-lowers and translates one stage as `translate_mesh_into` does and writes the IR, a structured print of it (`*.ir.c`) and
-SPIR-V; `progmap.py` maps the program keys of a run log (`shader objects: fallback ... (task + mesh)`) back to their task
-and mesh code keys. Output in `tm/out/`. The game has **20 distinct task stages** (one, `64ba846654e63ea4`, does not
-lower: "native stage buffer access mode", as in play).
+This page explains how the back end draws the game's task+mesh and mesh-only programs, which mesh stages it replaces
+with hand-written ones and why, and what to check before you change anything in that path. Read it before you touch
+`gpu/direct/direct_task.cpp`, `gpu/direct/direct_meshrepl.cpp`, the shaders in `gpu/direct/shaders/mesh` or the
+translator's handling of mesh stages.
 
-**Scenes** (CONFIRMED, `e7_gold_hf` / `e7_gold_kokiri`, all 40 / 22 program keys mapped): Hyrule Field draws task
-`2c56dc1006942f74` (33 programs), `8fb3abacd57f1ee6` (2), `1813f9ceef04a63f` (2), `d91e4f46becaba90` (2),
-`919b5a760b54adf1` (1); Kokiri `2c56` (15), `563d4c2d98c4a4da`, `8fb3`, `1813` (2 each), `919b` (1).
+## How a task+mesh draw runs
 
-## 1. What the task stages do
+The device runs with the task stage off: native task shaders lost the device on this GPU. A task+mesh draw is two
+pieces of work:
 
-Every task stage reads `IsbeRead(0)` = its task workgroup index, which the translator turns into workgroup + the draw's
-first task (`EmitIsbeRead`). None reads gl_DrawID, instance or vertex builtins. The mesh group count is the payload's
-byte 4 (`IsbeWriteAttribute(4, n)`), the translator's `TaskEpilogue` emits `min(n, task threads)`. CONFIRMED (IR):
+1. **The task stage runs as a compute shader**, one workgroup per task workgroup of the draw. It writes the draw's task
+   header in the frame arena: a map entry for each mesh workgroup it starts, its payload once, and the total count of
+   mesh workgroups.
+2. **The mesh stage is drawn natively** with `vkCmdDrawMeshTasksIndirectEXT` on that header. Each mesh workgroup reads
+   its map entry and its task's payload by address.
 
-| Family (code keys) | Input | Payload written | Mesh groups | Data-bounded loops |
-|---|---|---|---|---|
-| **A** meshlet cull: `2c56` (+ `340f`, `6e08`, `7e9d`, `ab1c`, `b588`, `fdad`, 256 B) | lane = meshlet `wg*32+lane` of a range in ssbo c0+0x670 (+16/+20); meshlet records by address (5 words at +84..+100); c3 view constants; the coarse depth grid in **c3 words from +3120**, its width / height **c3+3088 / +3092** | ids of the kept meshlets, compacted by ballot, at bytes 16 + 4k | popcount of kept lanes, 0..32 | the depth-grid walk (two copies): rows x columns of the meshlet's screen box, both ends clamped to `[0, W-1]`, `[0, H-1]`, **W, H read from c3** |
-| **B** instance/patch: `8fb3` (+ `c8a0`, `b50a`, `577e`, 3200 B) | wg = an instance (wg > 4095: nothing); its list entry ssbo c0+0x680 at `wg*4 + 64` (past the culling list's 64-byte header, section 3); item range `n = min(end - start, 256)` from a table by address | +16 instance, +20 kept count K, three arrays of 256 words at +24, +1048, +2072 | `ceil(2K/32)`, 0..16 | **`for (i = 0; ; i++) { ...; if (i + 1 > (n - 1) >> 5) break; }`** |
-| **B'** `919b` (+ `a5b4`), `1813` (+ `0c4a`) | as B (`1813` also walks the grid, its bounds hard-coded 31 x 17) | as B | `ceil(K/8)`, 0..32 | as B; `1813`'s grid walk is constant-bounded |
-| **C** `d91e` (+ `e85f`, 1152 B) | as B | +16, +20, one array at +24 | `ceil(K/32)`, 0..8 | as B but guarded: `n == 0` writes 0 and skips; also exits at 8 |
-| `563d` (Kokiri) | none | `wg*32+lane` per lane at 16 + 4k | 32 | none |
-| `a1cb` (1 thread) | c3+16 | +16 = c3+16 | `ceil(c3[16]/32)`, unbounded; the epilogue's cap of 1 (its thread count) cuts it to 1 (INFERRED: wrong if c3+16 > 32; not in these scenes) | none |
+A compute step cannot run inside a rendering. In a job, the step is recorded into two plain secondaries that the layer
+list executes at the job's call, before the job; in a layer list, the rendering is ended before the step and begun
+again after it. For an indirect draw the task count is known only on the GPU, so a one-invocation compute step
+(`shaders/task_prep.comp`) reads the game's record first.
 
-**The B / B' runaway** (CONFIRMED in the native code, not a translation artefact: `8fb3` native +21 `SHF.R.U32.HI` of
-`n - 1` by 5, +22 `ISETP.GE.U32 ..., RZ`, always true; `919b`, `1813`, `c8a0`, `b50a`, `577e`, `a5b4`, `0c4a` the
-same, only family C tests `n != 0`): with **n = 0 the loop runs 2^27 times** per task workgroup (each iteration a
-ballot, shuffles and a skipped body). On the console n is never 0, because every listed instance has items. It is 0
-whenever the instance list or the item table is read as zeros: read before the culling dispatch wrote it, a fresh
-or cleared allocation, or the zeroed slot of section 3. INFERRED: this is the best candidate for **hang 1** (task
-shaders on the ACE ring under faster timing, `nocap_allcull` still hung with the grid walk removed). `8fb3`, `919b` and
-`1813` programs are named in the `nocap_allcull` and `vc0` logs before the loss; the other lost runs name too few keys to
-tell.
+Folding the task stage into the mesh stage is not possible: one task workgroup feeds up to 32 mesh workgroups of up to
+126 vertices each, past the mesh output limits.
 
-**The A walk** (CONFIRMED): at most W x H cells a lane, a dense 4-byte cell at `c3 + 3120 + 4*(row*W + col)`.
-`1813` hard-codes the same grid as 32 x 18 (= readback2.md's grid made by `3018813b775edcb6`), so W, H = 32, 18 in
-play (INFERRED). W and H come from a uniform buffer: stale or garbage words give an unbounded walk (**hang 2**). Read
-as zeros it is one iteration and harmless. `RX_VK_MESH_NOCULL` removes the walk together with the culling.
+### The culling's indirect records
 
-**Side effects** (CONFIRMED): the HF / Kokiri task stages only read memory and write the payload. `340f`, `7e9d` and
-`ab1c` add 8 statistics counters (ssbo c0+0x670, +288) under `c3+2320 & 8`, a debug flag. Two mesh stages (`6ba0b411`
-of `8fb3`, `9d026703` of `d91e`) add their primitive counts to ssbo c0+0x780 (+32, +44). The split below keeps the mesh
-stage as it is, so those counters stay correct.
+The game's GPU culling writes the indirect mesh-draw records. NVN reads a record as `{count, first}`, Vulkan as
+`{x, y, z}`. Two patches make the game's CPU reset write `{0, 1, 1, 0}` instead of zeros, so the culling shaders leave
+a valid Vulkan record in place and no conversion copy is needed: `host/direct_mesh_args.c` and
+`host/direct_mesh_lists.c` (log lines "direct patch mesh args", "direct patch mesh lists").
 
-A loop in `340f` / `b588` exits only when the counter reaches `0xffffffff` (native +108 `ISETP.NE ... 0xffffffff`). It
-is a 64-bit bit-mask scan, and how it really exits was not settled (needs the native CFG). It is not in HF or Kokiri.
+## What the task stages do
 
-## 2. Is the split mechanical?
+The game has about 20 task stages; six appear in the scenes tested. They only read memory and write a payload and a
+group count. Some meshlet-culling families walk a depth grid whose width and height come from a uniform buffer, and
+some instance families loop over an item count from memory. Both loops are bounded on the console's data, but run
+very long on zeros or garbage. If a task stage hangs the GPU, look at what it read first.
 
-**Not as the plan words it** (CONFIRMED). The count and payload belong to each *task workgroup*, not to each draw. A draw
-starts N task workgroups (N = the draw's count, from the CPU or the indirect record; up to 4096 in B), and each one
-emits 0..32 mesh groups with its own payload. Family A's payload splits into one word per mesh group: mesh `072e452f`
-reads only `payload[16 + 4*meshgroup]`. Families B, B' and C share a header among the task's mesh groups: their meshes
-read +16 and +20 and index the arrays at +24 / +1048 / +2072 by group and lane. So a flattened `{count, payload}` per
-draw does not exist.
+## Replaced mesh stages
 
-What is mechanical is the existing fallback's **task half alone** (`TaskEpilogue`'s `mesh_fallback` branch, already in
-the translator). The task runs as a compute dispatch, one workgroup per task workgroup. Each emitted group takes a slot
-from an atomic counter in the draw's header (`MESH_FALLBACK_DISPATCH_WORD`) and writes the slot's task workgroup and
-local index to a map. The task copies its payload once to `payload[task]`. Then the mesh stage runs **natively** with
-`vkCmdDrawMeshTasksIndirectEXT(header)`, header = `{slots, 1, 1}`, on the graphics ring only. Its `IsbeRead(0)` is the
-local index and its other `IsbeRead`s go to `payload[task]` (the fallback's `FallbackSlot` / `PayloadWord` loads, with
-the native mesh outputs instead of `MeshFallbackEpilogue`). Dropped against the old emulation: the mesh-as-compute
-pass, the 64 MB records buffer, the generated vertex stage and two of the four barriers. What breaks it: slot order
-is atomic, so primitive order within a draw changes (INFERRED harmless for the alpha-tested foliage, not for blended
-draws). The payload buffer is up to N x 3200 B a draw (13 MB at N = 4096: allocate only for tasks that emit). Every
-pass needs its task inputs ready before it (pre-work, fallbacks.md 3a/5).
+Some of the game's mesh stages are drawn with hand-written stages that emit the same geometry bit for bit:
 
-**Folding the task into the mesh stage does not work** (CONFIRMED by the counts). One task workgroup feeds up to 32
-mesh groups of up to 126 vertices and 64 primitives each, and a mesh workgroup can output at most 256 of either. The
-only fold that fits runs the 32-lane task program again in every mesh group (32 times its work, the grid walk
-included). Rejected.
+- The sources are in `gpu/direct/shaders/mesh` (`meshlet_depth.mesh`, `meshlet_lit.mesh`, `probe_light.glsl`).
+- `gpu/direct/shaders/mesh/codes.txt` maps a game stage's code key to its source and defines;
+  `tools/meshlab/build_shaders.sh` compiles them into `<code key>_spv.h`.
+- `gpu/direct/shaders/mesh/swap.txt` lists the stages the back end actually swaps in. A stage is listed only when
+  `meshlab compare` reports every captured draw of it equal; see [the mesh harness](mesh-harness.md).
+- The translator still translates the stage: its interface information drives the heap mappings, the push data and the
+  fragment stage's inputs. The replacement takes its place when the shader object is made.
 
-## 3. The culling's indirect records
+`HOS_DBG=nomeshrepl` draws with the translator's stages instead.
 
-**Writers** (CONFIRMED, IR of the seed's compute stages). The indirect mesh draws (`kind 1, max 1, stride 0`) point into
-the six double-buffered lists of `f_80362ff0` (readback2.md 1). `e6_warm_hf` logs the addresses 0x117cf04000,
-0x117d03c000, 0x117d8d4000 and 0x117db24000 + 0x10 / + 0x20, which are slot bases plus a record. Their writers are
-`4247f1b4c3ce6cf3`, `f0fed2bbccae7bdc`, `cb2e06ddfb9d7d27` and `3e6fe279463b020e`. The 64-byte slot header is four
-16-byte records, and each writer touches a record r in only two ways:
-`atomicAdd(hdr + 16r + 12, items)` (the append count, whose result is the list position) and
-`atomicMax(hdr + 16r + 0, ceil(min(total, 0x1400) / 16))` (the group count). **Record = `{x = groups, w1 = 0, w2 = 0,
-w3 = appended}`**. NVN reads `{count = w0, first = w1}`. w1 and w2 are written by nobody on the GPU. The CPU zeroes the
-whole header each frame (`f_80362ff0`, after reading w0 and w3 of record 0 and w3 of records 1-3). INFERRED: the five
-other indirect addresses in the log (0x117896a000, 0x1178982000, 0x117898e000, 0x117a4d6040, 0x117c7cc000) have
-another writer, possibly `7984161db3e053b5`. A frame dump (`RX_VK_DUMP` step 000 with each dispatch's storage ranges)
-in HF settles it.
+### Why: the Hyrule Field hang
 
-**Readers.** The draws themselves; `f_80362ff0` (w0, w3); the translator, which reads the draw's first task from w1
-(`EmitIsbeRead`, the `RX_VK_MESH_FIRST_WORD=1` copy). `f_801a6410` reads the CPU copies, not the header.
+One mesh stage, `40d0c0768e874600` (the lit meshlet stage plus per-vertex light probes, drawn for ivy on the way from
+Kokiri to Hyrule Field), lost the device every time as RADV compiled the translator's SPIR-V for it. RADV is Mesa's
+Vulkan driver for AMD GPUs. That stage was the only mesh stage of the captured scenes that spilled registers to scratch
+memory: the translator emits the native code's order, which loads all 112 probe rows before using the first, and RADV's
+compiler (ACO) needs 258 vector registers where it has 256.
 
-**Smallest change: patch the CPU, not the shaders.** In `f_80362ff0`, write `{0, 1, 1, 0}` into each of the four
-records instead of zeros. The culling's atomicMax and atomicAdd then leave a valid Vulkan record `{x, 1, 1}` in place.
-Nothing is copied or converted, and the draw is `vkCmdDrawMeshTasksIndirectEXT(record, 1, 16)`. Its first task is 0 by
-construction (nothing ever writes w1): the translator takes `first = 0` for these draws instead of reading w1.
-Replacing the four culling shaders by hash would do the same with four rewrites instead of one store site. A slot
-not yet zeroed by the CPU (its first frame) holds y = z = 0 and draws nothing, which is harmless.
+The hand-written stage needs far fewer registers and draws the same triangles. With it, the walk that lost the device
+every time survives. Why a spilling mesh stage hangs the GPU is inferred, not known; the open work is listed in
+[the direct back end plan](../direct-backend-plan.md).
 
-## 4. The smallest bounds
+Two more defenses exist:
 
-Two IR rewrites at translation, next to `mesh_nocull` in `vk_shader.cpp`, matched by pattern (the families share it)
-and logged per code key. Both are exact for every value the console produces:
+- **The register-pressure pass** reorders every translated mesh stage so fewer values are live at once; see
+  [the register-pressure pass](spv-late.md).
+- **A wait before task+mesh draws.** `HOS_DBG=tmwait` records a framebuffer-local barrier before every task+mesh draw.
+  It stopped the market's device losses before the stage was replaced; it is off by default.
 
-1. **B / B'**: `ShiftRightLogical32(IAdd32(UMin32(x, 256), -1), 5)`, the trip bound, becomes `UMin32(..., 7)`. n = 0
-   then takes 8 empty iterations (K = 0, no mesh groups); n in 1..256 is unchanged.
-2. **A**: the two clamp ends `W - 1` (`CompositeExtract(GetCbufU32x2(3, 3088), 0) - 1`) and `H - 1` (c3+3092) become
-   `SMin32(W - 1, 31)` and `SMin32(H - 1, 17)`: at most 576 cells a lane, the bound `1813` has. This replaces
-   `RX_VK_MESH_NOCULL` and keeps the culling.
+## Check your change
 
-A test can check both offline only on synthetic IR (no game code in CI). A local check is `tmtool` on the seed.
-
-## Decision for the plan
-
-The plan's step 3 as written (a per-draw `{count, payload}`) is wrong. Payload and count are per task workgroup, so the
-"split" is the old fallback's task half plus a native mesh stage. That is a real but bounded translator change (a new
-`RuntimeInfo` mode that reuses `TaskEpilogue`'s fallback branch and the slot and payload loads, with the native mesh
-epilogue). Folding the task into the mesh stage is not possible. Order instead:
-
-- **(a)** Land the two clamps of section 4 first. They are small, exact on console data, and remove the only
-  data-bounded loops in the HF / Kokiri task stages. The B runaway at n = 0 is the strongest candidate yet for hang 1.
-- **(b)** Then run the plan's diagnosis step 1 (native task shaders, control run) with the clamps in. If it no longer
-  hangs, native task shaders are the answer and nothing is split.
-- **(c)** Build the task-as-compute split only if the ACE ring still fails with the clamps in.
-- **(d)** Settle the indirect records by the `f_80362ff0` header patch `{0, 1, 1, 0}` and `first = 0` for these draws.
-  This needs no culling-shader replacement and no conversion copy. It still needs the writer of the five other
-  indirect addresses identified.
-
-## The stuck program (`m0_mark_h1`, follow-up)
-
-**What `ffb53ed102dd9908` is** (CONFIRMED). The marker prints `Program::key` (`checkpoint()`, `vk_draw.cpp:4094`, set in
-`push_constants` / `heap_draw` **before** each draw). For an ordinary program that key is `graphics_key`. Other runs
-name the stages: `in play: graphics ffb53ed102dd9908 (365b92d206544e3f acfb185a608654e9)`; the shader-object lines
-show stage 0x1 + 0x10. It is **an ordinary vertex + fragment program, not a task or mesh program**. Translated offline
-(`tm/out/g_0_365b92d206544e3f.ir.c`, `g_1_acfb185a608654e9.ir.c`):
-- The vertex stage, 59 native instructions with no branch and no loop, reads generic 0 (xyz). It applies a 3x4 model
-  matrix (c4), then a 3x4 view and 4x4 projection (c3), and writes the position only.
-- The fragment stage writes colour (1,1,1,1) and nothing else. It is the game's generic position-only depth program.
-
-**What it draws** (CONFIRMED, logs). It is a plain draw call, not a mesh draw, so there is no first-task word and no
-GPU group count. No run logs one of its draws as indirect. It draws into:
-- the depth-only passes 4096x4096 and 12288x12288 (586 pass ends each with it as the last program), the 1600x1600
-  shadow map (beside the other shadow casters), and 384x216 / 512x288;
-- the 1536x864 scene with colour writes off (`wm0`), followed by REPORT_COUNTERs: occlusion proxies.
-
-The replay writes those reports on the CPU (`vk_replay.cpp:1479`), so no GPU command sits between its draws.
-
-**Why it "fails to finish"** (INFERRED). Nothing in its shaders can run long. The markers stand before each draw:
-`last_done = 3386` means everything up to and including draw 3385 finished. `reached = 3386` means the command
-processor never reached marker 3387 (the "running" lines past 3386 are listed, not reached). So the only GPU work in
-the window is draw 3386 itself, a few hundred vertices of position-only depth. Its pass is depth-only (a 4096 or 12288
-cascade by the other runs; this log does not name the size). A draw like that does not take 10 s on its own. What
-differs from the compute emulation is the context, not this draw:
-- Natively, the task+mesh draws of the same frame run as gang submits, and the comp_1.1.1 timeout says this run's ACE
-  job was still pending. With the emulation, each mesh draw ends the pass and drains the pipe with full barriers
-  (`fallback_record`), so a plain vertex draw never follows a mesh pipeline in the same unbroken pass.
-- The 2c56 depth-grid walk was off in this run (`RX_VK_MESH_NOCULL`, logged 4 times), but the B-family n = 0 loop
-  (section 1) was not. It runs on the ACE and cannot stall a vertex draw on the graphics ring. It can, however, keep
-  the task side from ever writing the draw-ring entries that the next `DISPATCH_TASKMESH_GFX` of the same command
-  buffer waits for.
-
-The earlier dump and this
-one (the ACE also pending) both point at **the 3D pipe wedged by state from the native mesh path**, with
-`ffb53ed102dd9908` as the first plain draw caught behind it. They do not point at the program.
-
-**Smallest experiments (one device loss at most):**
-1. **The same run with `RX_VK_SKIP_PROG=ffb53ed102dd9908`** (the existing switch; only these draws are left out).
-   - If it survives past frame 499 (say 3x the time), the trigger is these draws in their pass. The next step is the
-     pass: a full barrier before the first plain draw that follows a mesh draw in a pass.
-   - If it hangs again with the markers on another plain program, the program is a bystander and the cause is the
-     mesh-to-vertex switch or the gang.
-2. If (1) points at the switch, the same native run with a pipe drain after every native mesh draw (a
-   `vkCmdPipelineBarrier2` ALL_GRAPHICS -> ALL_GRAPHICS outside the pass, i.e. the emulation's pass split without
-   the emulation) confirms it with one more run.
-
-Both are cheaper than a shader patch. **No shader patch is indicated for this program**: it has no loop and no data
-bound. The marker record lacks the draw's counts and target. Adding vertex / instance count, indexed / indirect and
-the target size to `Checkpoint` would let the next loss say whether draw 3386 was unusual.
+1. Run the spill scan and the register gate (`tools/meshlab/spill_scan.py`, `tools/meshlab/late_gate.py`) on captures of
+   the three scenes. No mesh stage may start to spill.
+2. For a new replacement, capture a frame with `HOS_DBG=meshcap:<present>` and run `meshlab compare` against the
+   translator's stage; add the stage to `swap.txt` only when every draw is equal.
+3. Walk from Kokiri to Hyrule Field and stand in the market. Save the kernel log into the run folder after any device
+   loss, and use `HOS_DBG=marks` to see which command was running.
