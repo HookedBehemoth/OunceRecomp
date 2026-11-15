@@ -799,7 +799,7 @@ PATCH_AT(0x8059051c, word(0x94db4a31), instead, none, hos_oot_present_sleep, as(
     hos_sleep_logged(ns, 0x80590520);
 }
 /* (hookshot, OoT) The calc jobs' runner f_800998a0 (label job_calc_runner: main and ModuleSystemWorker1-5 in calc stage C,
-   docs/direct/boot-to-main-loop.md 4.3) waits for its sub-stages by SleepThread(20 us) and looking again, at three
+   docs/direct/frame-loop.md) waits for its sub-stages by SleepThread(20 us) and looking again, at three
    sites, ~30 times a frame on each of its six threads: the five others wait while one thread builds the occlusion grid
    (~0.5 ms) and while the last shape items finish. A sleep under a millisecond is yield-spun to its time (sleep_ns), so
    the six threads stayed on the CPU for the whole phase: 4 of its 10 ms of CPU a frame (market, uncapped). Here it is

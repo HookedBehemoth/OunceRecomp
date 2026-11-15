@@ -124,28 +124,28 @@
 # --- the frame: heads, the gate, submits, present
 806650d0 frame_compute_list_begin         # host/direct.c, work/assets/native/engine-frame.md: an async-compute list's begin
 8066fc80 frame_draw_tv                    # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md: "Draw(TV)": frame begin .. end
-802eacc0 sead_method_tree_call            # docs/direct/boot-to-main-loop.md: the method tree's recursive call (calc and draw trees)
-802eb020 frame_proc_draw                  # docs/direct/boot-to-main-loop.md: procDraw: gate primary, the draw tree, message to the Presentation Thread
+802eacc0 sead_method_tree_call            # docs/direct/frame-loop.md: the method tree's recursive call (calc and draw trees)
+802eb020 frame_proc_draw                  # docs/direct/frame-loop.md: procDraw: gate primary, the draw tree, message to the Presentation Thread
 802eb390 frame_gate_primary               # host/direct.c, work/assets/native/command-lists.md: the CPU gate list: nvnEventSignal + WaitEvent a frame
 83b6ea90 frame_global_step                # host/oot_probes.c: the global step the engine reads
 83b7c710 movie_player_update              # host/oot_probes.c: a movie player's update, counts its frames at +760 (movie frames patch)
 80665980 frame_head_begin                 # host/direct.c, work/assets/native/command-lists.md: a queue's head (frame primary) begin
-8042cd20 frame_end_wait_and_gate          # docs/direct/boot-to-main-loop.md: frame end: frame callback, fence and window/vsync waits, the CPU gate signal (tail call); sleeps only without a present
+8042cd20 frame_end_wait_and_gate          # docs/direct/frame-loop.md: frame end: frame callback, fence and window/vsync waits, the CPU gate signal (tail call); sleeps only without a present
 806668b0 frame_list_end_submit            # work/assets/native/command-lists.md: End, submit, FenceSync, SyncWait
-8348c680 frame_body                       # docs/direct/boot-to-main-loop.md: the frame body, tail-called each frame from f_83b6ea90; its frame-end GetSystemTick call (bl at 0x8348c76c) replaced by an At row that also notes x19, the graphics module (host/hos_thread.c hos_oot_frame_end_tick)
+8348c680 frame_body                       # docs/direct/frame-loop.md: the frame body, tail-called each frame from f_83b6ea90; its frame-end GetSystemTick call (bl at 0x8348c76c) replaced by an At row that also notes x19, the graphics module (host/hos_thread.c hos_oot_frame_end_tick)
 805902c0 frame_present_submit             # work/assets/native/engine-frame.md: Presentation thread: QueueWaitSync, submit, FenceSync; its event poll SleepThread (bl at 0x8059051c) replaced by an At row (host/hos_thread.c hos_oot_present_sleep, HOS_PRESENT_POLL)
 80547f20 frame_queue_present              # work/assets/native/engine-frame.md: QueuePresentTexture
 83b6e300 frame_seconds_from_ratio         # host/nn_vi.c, nx2/step_readers.py: seconds = ratio / 60; fills the frame-time object (**0x84c9e890): +16 ratio, +24, +28 an integer cut of the step (INFERRED: a whole-frame count)
 83b6e7b0 frame_step_getter_a              # nx2/step_readers.py: returns a step of the frame-time object in s0
 83b6e9c0 frame_step_getter_b              # nx2/step_readers.py: returns a step of the frame-time object in s0 (compares it)
 8306f530 frame_time_object_getter         # nx2/step_readers.py: returns the frame-time object in x0
-80706be0 module_calc                      # docs/direct/boot-to-main-loop.md: moduleCalc_: the three module-graph stages of a frame (A game logic, B, C jobs and layer lists)
+80706be0 module_calc                      # docs/direct/frame-loop.md: moduleCalc_: the three module-graph stages of a frame (A game logic, B, C jobs and layer lists)
 80527f00 frame_submit_queues              # work/assets/native/command-lists.md, work/assets/native/engine-frame.md: Presentation thread: submits compute + heads
 804fc0f0 frame_variable_refresh           # host/nn_vi.c: variable refresh (+0x231)
 
 # --- jobs: the task graph, the scheduler, render jobs and their sync
-800ad2b0 job_calc_once_a                  # docs/direct/boot-to-main-loop.md 4.3: once a frame in the calc runner (one thread, ~0.3 ms): f_836c06d0 over 14 object lists of [0x84ca2bc8]
-800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md, docs/direct/boot-to-main-loop.md 4.3: calc jobs runner on main and ModuleSystemWorker1-5: sub-stages claimed by bit masks, polled with SleepThread(20 us) (host/hos_thread.c calc_poll_nap: the three calls replaced by At rows, hos_oot_calc_sleep): the grid occluder, then the shape culler f_8009bb80 over ~290 items # ? work/assets/native/engine-layers.md says the model scene job
+800ad2b0 job_calc_once_a                  # docs/direct/frame-loop.md: once a frame in the calc runner (one thread, ~0.3 ms): f_836c06d0 over 14 object lists of [0x84ca2bc8]
+800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md, docs/direct/frame-loop.md: calc jobs runner on main and ModuleSystemWorker1-5: sub-stages claimed by bit masks, polled with SleepThread(20 us) (host/hos_thread.c calc_poll_nap: the three calls replaced by At rows, hos_oot_calc_sleep): the grid occluder, then the shape culler f_8009bb80 over ~290 items # ? work/assets/native/engine-layers.md says the model scene job
 8007de00 job_gpu_sync                     # work/assets/native/command-lists.md: a synchronous GPU job: record, submit, fence, wait
 80070ea0 job_graph_build                  # work/assets/native/engine-jobs.md: (pool, graph, desc): the frame's task graph
 80070d30 job_graph_kick                   # work/assets/native/engine-jobs.md: virtual, vtable 0x84c85738
@@ -171,14 +171,14 @@
 # --- layers: agl::lyr lists and the pipeline hook table (slot = offset in vtable 0x84c847f0)
 8006f9c0 layer_decals_static_shadow       # work/assets/native/engine-layers.md 6.1: raises hook +0x50 (decals, static shadow)
 8007d2e0 layer_gpu_cull_graphics          # work/assets/native/engine-frame.md: layer #240: GPU culling's graphics side, sky/env
-8006e160 layer_item_step                  # docs/direct/jobs.md, docs/direct/boot-to-main-loop.md 4.3: one step of a layer by kind (0, 1, 2 decals, 4 opaque/xlu, 5 scene layers, 7 post, 9)
+8006e160 layer_item_step                  # docs/direct/jobs.md, docs/direct/frame-loop.md: one step of a layer by kind (0, 1, 2 decals, 4 opaque/xlu, 5 scene layers, 7 post, 9)
 8007b520 layer_list_begin_unused          # docs/direct/jobs.md, begins a list for every layer job; never submitted
 8007da20 layer_list_end_b                 # work/assets/native/engine-frame.md, work/assets/native/engine-jobs.md: layer list end (0x8007dabc)
 8007ad40 layer_list_record_b              # host/direct.c, agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
 8006cd60 layer_list_record_post           # host/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
-8006fe10 layer_step_kind0                 # docs/direct/boot-to-main-loop.md 4.3: layer_item_step's handler for step kind 0
-806dc280 layer_step_kind1                 # docs/direct/boot-to-main-loop.md 4.3: layer_item_step's handler for step kind 1
-802702e0 layer_step_kind9                 # docs/direct/boot-to-main-loop.md 4.3: layer_item_step's handler for step kind 9
+8006fe10 layer_step_kind0                 # docs/direct/frame-loop.md: layer_item_step's handler for step kind 0
+806dc280 layer_step_kind1                 # docs/direct/frame-loop.md: layer_item_step's handler for step kind 1
+802702e0 layer_step_kind9                 # docs/direct/frame-loop.md: layer_item_step's handler for step kind 9
 807cd380 layer_lists_call                 # work/assets/native/engine-frame.md, gpu/legacy/vk/eng_pass.h: calls the 9 layer lists
 807ccda0 layer_lists_call_caller          # work/assets/native/engine-frame.md
 802aba50 layer_lists_caller               # work/assets/native/engine-frame.md: calls the 9 layer lists (via f_807ccda0)
@@ -360,16 +360,16 @@
 80105e80 vbuf_dynamic_map                 # work/assets/native/alloc-transfer.md: maps 2 MB dynamic CPU vertex / scratch buffers
 
 # --- culling, readbacks and reports, dynamic resolution, exposure
-808226e0 cull_cpu_objects                 # docs/direct/boot-to-main-loop.md 4.3: the grid occluder's math (under f_80822260): one call a frame, ~0.5 ms on one thread
-80029240 cull_frustum_aabb                # docs/direct/boot-to-main-loop.md 4.3: frustum vs AABB: the frustum's bounds box, then the p-vertex against each plane (count +0xe0); called by f_8009bb80
+808226e0 cull_cpu_objects                 # docs/direct/frame-loop.md: the grid occluder's math (under f_80822260): one call a frame, ~0.5 ms on one thread
+80029240 cull_frustum_aabb                # docs/direct/frame-loop.md: frustum vs AABB: the frustum's bounds box, then the p-vertex against each plane (count +0xe0); called by f_8009bb80
 812342c0 cull_cpu_occlusion_reader        # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: the CPU culler: per-shape visibility from the occlusion report slots; wraps ring slots as NVNbuffers
 8009bb80 cull_cpu_shapes                  # the CPU culler (calls f_812342c0)
 80364080 cull_gpu_dispatch                # work/assets/native/alloc-transfer.md: dispatches the GPU-culling compute, 112 KB instance list
 80361a00 cull_gpu_list_reset_one          # host/direct_mesh_lists.c, resets one list's first record (an At row after it)
 80361c80 cull_gpu_lists_reset             # host/direct_mesh_lists.c, once a frame, resets the first record of each GPU culling list (At rows after them)
-80822260 cull_grid_occluder               # docs/direct/boot-to-main-loop.md 4.3: the grid's CPU occluder: one view's grid from the GPU depth grid (f_80365f00) and its camera
+80822260 cull_grid_occluder               # docs/direct/frame-loop.md: the grid's CPU occluder: one view's grid from the GPU depth grid (f_80365f00) and its camera
 8035d5a0 cull_grid_view_rebuild           # work/assets/native/readback.md: rebuilds the producing frame's camera view
-800a8120 cull_submesh_next_visible        # docs/direct/boot-to-main-loop.md 4.3: next sub-mesh bounds (0x20-byte AABBs) of a shape's LOD that passes the frustum test of f_80029240
+800a8120 cull_submesh_next_visible        # docs/direct/frame-loop.md: next sub-mesh bounds (0x20-byte AABBs) of a shape's LOD that passes the frustum test of f_80029240
 82bde830 cull_precomputed                 # work/assets/native/engine-layers.md: precomputed culling
 8034dac0 dynres_a                         # work/assets/native/cpu-to-gpu.md: dynamic resolution
 831f41d0 dynres_fixed_flag                # host/oot_probes.c
@@ -444,7 +444,7 @@
 80f6ecf0 thread_navmesh_worker_a          # work/assets/native/engine-layers.md: NavMeshCAStepDepWorker / NavMeshDepWorker
 8102f6e0 thread_navmesh_worker_b          # work/assets/native/engine-layers.md
 834a2e50 thread_sead_entry                # work/assets/native/engine-layers.md: sead thread entry
-834a3060 sead_message_queue_receive       # docs/direct/boot-to-main-loop.md, host/bench.c: sead's message-queue receive (queue, w1 0: blocking, else a try); where every idle worker thread waits (lr 0x834a3084)
+834a3060 sead_message_queue_receive       # docs/direct/frame-loop.md, host/bench.c: sead's message-queue receive (queue, w1 0: blocking, else a try); where every idle worker thread waits (lr 0x834a3084)
 80df25c0 thread_sead_loop_a               # work/assets/native/engine-layers.md: thread loop (every sead thread)
 80df2680 thread_sead_loop_b               # work/assets/native/engine-layers.md: thread loop (every sead thread; the Presentation thread's)
 80df5760 thread_sead_main                 # work/assets/native/engine-layers.md: sead::MainThread
@@ -520,8 +520,8 @@
 821056c0 ndve_create                      # docs/direct/movie-player.md: makes the NDVE network from the resource blob and the movie's size (movie_player_renderer_init)
 821057c0 ndve_output_size                 # docs/direct/movie-player.md: the network's output size, stored at renderer+0x2e0 # ?
 821056f0 ndve_destroy                     # docs/direct/movie-player.md: frees the NDVE object (movie_renderer release, f_83b82dc0)
-83b827e0 movie_media_source_client_open   # docs/direct/boot-to-main-loop.md section 6 (MovieMediaSourceClient), host/nn_video.c: opens the movie file (nn::fs OpenFile, GetFileSize) and asks nn::movie::MediaExtractor for its media-source-mode events
-83b7cec0 movie_player_init                # docs/direct/movie-player.md, docs/direct/boot-to-main-loop.md section 6: the movie player's constructor (zeroes its 0x468 bytes, sets up its heap and events)
+83b827e0 movie_media_source_client_open   # docs/direct/movie-player.md (MovieMediaSourceClient), host/nn_video.c: opens the movie file (nn::fs OpenFile, GetFileSize) and asks nn::movie::MediaExtractor for its media-source-mode events
+83b7cec0 movie_player_init                # docs/direct/movie-player.md: the movie player's constructor (zeroes its 0x468 bytes, sets up its heap and events)
 8210a8c0 ndve_programs_init_a             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the compute programs it makes at 0x8210aa40
 82105e20 ndve_programs_init_b             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the programs it makes at 0x821062ac # ?
 821066c0 ndve_programs_init_c             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the programs it makes at 0x8210676c # ?
@@ -553,7 +553,7 @@
 # --- game: actors, physics, camera, events, game data, world
 8004ab40 actor_baseproc_executor          # work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
 804bd8c0 actor_life_write                 # docs/parked-patches.md: an actor's life write (the hearts cheat's sites, the CAS at 0x804bdcf8 and 0x804bded0)
-82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc # ? docs/direct/boot-to-main-loop.md 4.3: called for every actor (~50 a frame) from actor_calc_one
+82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc # ? docs/direct/frame-loop.md: called for every actor (~50 a frame) from actor_calc_one
 82c1d750 actor_records_read_a             # work/assets/native/alloc-transfer.md: CPU reads of its own records in GPU pools
 82c1d340 actor_records_read_b             # work/assets/native/alloc-transfer.md
 80186a00 actor_update_a                   # work/assets/native/cpu-to-gpu.md: actor update, per actor
@@ -584,14 +584,14 @@
 81b56de0 phys_cloth_solve                 # work/assets/native/cpu-to-gpu.md: Solve / CollideAndSolve
 8016b620 phys_cloth_step                  # work/assets/native/cpu-to-gpu.md: Havok cloth hclWorld::stepSingleThreaded
 81b38800 phys_cloth_update_aabbs          # work/assets/native/cpu-to-gpu.md: updateAabbs
-817f1d68 phys_hknp_step_collide         # docs/direct/boot-to-main-loop.md 4.3: hknpWorld::stepCollide (string); not called in play
-817f6f80 phys_hknp_step_solve           # docs/direct/boot-to-main-loop.md 4.3: hknpWorld::stepSolve (string); not called in play
-817f3ce0 phys_hknp_generate_solve_tasks  # docs/direct/boot-to-main-loop.md 4.3: hknpWorldEx::generateSolveTasks (string)
-80372ad4 phys_hknp_generate_collide_tasks  # docs/direct/boot-to-main-loop.md 4.3: hknpWorld::generateCollideTasks (string)
-803719e0 phys_solve_tasks_job           # docs/direct/boot-to-main-loop.md 4.3: the executor job that calls phys_hknp_generate_solve_tasks
-8073a4a0 phys_step_phase_job            # docs/direct/boot-to-main-loop.md 4.3: one job a frame at the head of the physics phase, hknp-heavy (role)
-820cc4f4 phys_ai_avoidance_step         # docs/direct/boot-to-main-loop.md 4.3: hkaiCollisionAvoidance::System::step (string)
-81884800 phys_hknp_particles_collider_step  # docs/direct/boot-to-main-loop.md 4.3: hknpParticlesCollider::step (string)
+817f1d68 phys_hknp_step_collide         # docs/direct/frame-loop.md: hknpWorld::stepCollide (string); not called in play
+817f6f80 phys_hknp_step_solve           # docs/direct/frame-loop.md: hknpWorld::stepSolve (string); not called in play
+817f3ce0 phys_hknp_generate_solve_tasks  # docs/direct/frame-loop.md: hknpWorldEx::generateSolveTasks (string)
+80372ad4 phys_hknp_generate_collide_tasks  # docs/direct/frame-loop.md: hknpWorld::generateCollideTasks (string)
+803719e0 phys_solve_tasks_job           # docs/direct/frame-loop.md: the executor job that calls phys_hknp_generate_solve_tasks
+8073a4a0 phys_step_phase_job            # docs/direct/frame-loop.md: one job a frame at the head of the physics phase, hknp-heavy (role)
+820cc4f4 phys_ai_avoidance_step         # docs/direct/frame-loop.md: hkaiCollisionAvoidance::System::step (string)
+81884800 phys_hknp_particles_collider_step  # docs/direct/frame-loop.md: hknpParticlesCollider::step (string)
 81f3f634 hkai_reset_clearance_mediator_task  # work/assets/native/engine-layers.md; the name comes from the function's string (ResetClearanceMediatorTask)
 80715ae0 phys_phive_static_compound       # work/assets/native/engine-layers.md
 80718040 phys_phive_volume_stats          # work/assets/native/engine-layers.md: Phive volume stats / static compound
