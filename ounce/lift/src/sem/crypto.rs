@@ -4,7 +4,7 @@
 use crate::ir::{BinOp, Builder, Callee, ValueId};
 use crate::sem::fp::{llcall, vread, vwrite};
 use crate::ty::{Ty, I32, I64};
-use ounce_decode::Insn;
+use ounce_decode::{Insn, Fld};
 
 fn v2i64() -> Ty {
     Ty::vec(2, I64)
@@ -16,11 +16,11 @@ fn x86(b: &mut Builder, name: &'static str, args: &[ValueId]) -> ValueId {
 
 fn t_crypto_aes(b: &mut Builder, i: &Insn, _pc: u64) {
     b.f.target_features.push("+aes");
-    let op = i.f("op");
-    let mut x = vread(b, if op < 2 { i.f("Rd") } else { i.f("Rn") }, v2i64());
+    let op = i.f(Fld::op);
+    let mut x = vread(b, if op < 2 { i.f(Fld::Rd) } else { i.f(Fld::Rn) }, v2i64());
     let zero = b.zero(v2i64());
     let r = if op < 2 {
-        let n = vread(b, i.f("Rn"), v2i64());
+        let n = vread(b, i.f(Fld::Rn), v2i64());
         x = b.bin(BinOp::Xor, x, n);
         x86(b, if op == 0 { "x86.aesni.aesenclast" } else { "x86.aesni.aesdeclast" }, &[x, zero])
     } else if op == 2 {
@@ -29,7 +29,7 @@ fn t_crypto_aes(b: &mut Builder, i: &Insn, _pc: u64) {
     } else {
         x86(b, "x86.aesni.aesimc", &[x])
     };
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 // ---- SHA, on lists of i32 values (lane 0 first)
@@ -92,9 +92,9 @@ fn majority(b: &mut Builder, x: ValueId, y: ValueId, z: ValueId) -> ValueId {
 type F3 = fn(&mut Builder, ValueId, ValueId, ValueId) -> ValueId;
 
 fn sha1_rounds(b: &mut Builder, i: &Insn, f: F3) {
-    let mut xs = lanes32(b, i.f("Rd"));
-    let mut y = vread(b, i.f("Rn"), I32);
-    let w = lanes32(b, i.f("Rm"));
+    let mut xs = lanes32(b, i.f(Fld::Rd));
+    let mut y = vread(b, i.f(Fld::Rn), I32);
+    let w = lanes32(b, i.f(Fld::Rm));
     for &we in &w[..4] {
         let t = f(b, xs[1], xs[2], xs[3]);
         let r5 = rol(b, xs[0], 5);
@@ -106,7 +106,7 @@ fn sha1_rounds(b: &mut Builder, i: &Insn, f: F3) {
         y = top;
     }
     let r = pack32(b, &xs);
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn sigma0(b: &mut Builder, x: ValueId) -> ValueId {
@@ -142,30 +142,30 @@ fn sha256_hash(b: &mut Builder, x: &[ValueId], y: &[ValueId], w: &[ValueId], par
 }
 
 fn t_crypto_sha3(b: &mut Builder, i: &Insn, _pc: u64) {
-    let o = i.f("opcode");
+    let o = i.f(Fld::opcode);
     if o < 3 {
         let f: F3 = [choose as F3, parity, majority][o as usize];
         sha1_rounds(b, i, f);
     } else if o == 3 {
-        let d = vread(b, i.f("Rd"), v2i64());
-        let n = vread(b, i.f("Rn"), v2i64());
-        let m = vread(b, i.f("Rm"), v2i64());
+        let d = vread(b, i.f(Fld::Rd), v2i64());
+        let n = vread(b, i.f(Fld::Rn), v2i64());
+        let m = vread(b, i.f(Fld::Rm), v2i64());
         let t = b.shuffle(d, n, &[1, 2]);
         let a = b.bin(BinOp::Xor, t, d);
         let r = b.bin(BinOp::Xor, a, m);
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
     } else if o == 4 || o == 5 {
-        let d = lanes32(b, i.f("Rd"));
-        let n = lanes32(b, i.f("Rn"));
-        let w = lanes32(b, i.f("Rm"));
+        let d = lanes32(b, i.f(Fld::Rd));
+        let n = lanes32(b, i.f(Fld::Rn));
+        let w = lanes32(b, i.f(Fld::Rm));
         let r = if o == 4 { sha256_hash(b, &d, &n, &w, true) } else { sha256_hash(b, &n, &d, &w, false) };
         let p = pack32(b, &r);
-        vwrite(b, i.f("Rd"), p);
+        vwrite(b, i.f(Fld::Rd), p);
     } else {
         // SHA256SU1
-        let d = lanes32(b, i.f("Rd"));
-        let n = lanes32(b, i.f("Rn"));
-        let m = lanes32(b, i.f("Rm"));
+        let d = lanes32(b, i.f(Fld::Rd));
+        let n = lanes32(b, i.f(Fld::Rn));
+        let m = lanes32(b, i.f(Fld::Rm));
         let t0 = [n[1], n[2], n[3], m[0]];
         let t1 = [m[2], m[3]];
         let mut r: Vec<ValueId> = Vec::new();
@@ -180,20 +180,20 @@ fn t_crypto_sha3(b: &mut Builder, i: &Insn, _pc: u64) {
             r.push(v);
         }
         let p = pack32(b, &r);
-        vwrite(b, i.f("Rd"), p);
+        vwrite(b, i.f(Fld::Rd), p);
     }
 }
 
 fn t_crypto_sha2(b: &mut Builder, i: &Insn, _pc: u64) {
-    let o = i.f("opcode");
+    let o = i.f(Fld::opcode);
     if o == 0 {
-        let x = vread(b, i.f("Rn"), I32);
+        let x = vread(b, i.f(Fld::Rn), I32);
         let r = rol(b, x, 30);
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
     } else if o == 1 {
         // SHA1SU1
-        let d = lanes32(b, i.f("Rd"));
-        let n = lanes32(b, i.f("Rn"));
+        let d = lanes32(b, i.f(Fld::Rd));
+        let n = lanes32(b, i.f(Fld::Rn));
         let mut t = Vec::new();
         for k in 0..4 {
             t.push(if k < 3 { b.bin(BinOp::Xor, d[k], n[k + 1]) } else { d[3] });
@@ -202,11 +202,11 @@ fn t_crypto_sha2(b: &mut Builder, i: &Insn, _pc: u64) {
         let x = rol(b, t[0], 2);
         r[3] = b.bin(BinOp::Xor, r[3], x);
         let p = pack32(b, &r);
-        vwrite(b, i.f("Rd"), p);
+        vwrite(b, i.f(Fld::Rd), p);
     } else {
         // SHA256SU0
-        let d = lanes32(b, i.f("Rd"));
-        let n = lanes32(b, i.f("Rn"));
+        let d = lanes32(b, i.f(Fld::Rd));
+        let n = lanes32(b, i.f(Fld::Rn));
         let tt = [d[1], d[2], d[3], n[0]];
         let mut r = Vec::new();
         for e in 0..4 {
@@ -218,7 +218,7 @@ fn t_crypto_sha2(b: &mut Builder, i: &Insn, _pc: u64) {
             r.push(add(b, &[x, d[e]]));
         }
         let p = pack32(b, &r);
-        vwrite(b, i.f("Rd"), p);
+        vwrite(b, i.f(Fld::Rd), p);
     }
 }
 

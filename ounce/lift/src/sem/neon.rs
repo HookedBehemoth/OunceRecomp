@@ -6,7 +6,7 @@ use crate::ir::{BinOp, Builder, Call, Callee, CastOp, Op, ValueId};
 use crate::sem::fp::{fbin, fconst, fma, fsqrt, intr, llcall, to_int, vread, vwrite};
 use crate::sem::int::{getx, setx};
 use crate::ty::{Ty, I1, I128, I16, I32, I64, I8};
-use ounce_decode::{info, Insn, Param};
+use ounce_decode::{info, Insn, Param, Fld};
 
 // ---- types
 fn lane_t(size: u32, fp: bool) -> Ty {
@@ -613,63 +613,63 @@ fn scalar(i: &Insn) -> bool {
 
 // ---- templates
 fn t_simd_copy(b: &mut Builder, i: &Insn, _pc: u64) {
-    let q = i.f("Q");
-    let (kind, size) = info::copy_info(q, i.f("op"), i.f("imm5"), i.f("imm4")).unwrap();
-    let idx = i.f("imm5") >> (size + 1);
+    let q = i.f(Fld::Q);
+    let (kind, size) = info::copy_info(q, i.f(Fld::op), i.f(Fld::imm5), i.f(Fld::imm4)).unwrap();
+    let idx = i.f(Fld::imm5) >> (size + 1);
     let lt = lane_t(size, false);
     match kind {
         "dup_elem" => {
-            let e = lane_extract(b, i.f("Rn"), size, idx, false);
+            let e = lane_extract(b, i.f(Fld::Rn), size, idx, false);
             let r = splat(b, e, VT(size, q, false));
-            vwrite(b, i.f("Rd"), r);
+            vwrite(b, i.f(Fld::Rd), r);
         }
         "dup_gen" => {
-            let x = getx(b, i.f("Rn"), 1, false);
+            let x = getx(b, i.f(Fld::Rn), 1, false);
             let x = if size < 3 { trunc(b, x, lt) } else { x };
             let r = splat(b, x, VT(size, q, false));
-            vwrite(b, i.f("Rd"), r);
+            vwrite(b, i.f(Fld::Rd), r);
         }
         "smov" | "umov" => {
-            let mut x = lane_extract(b, i.f("Rn"), size, idx, false);
+            let mut x = lane_extract(b, i.f(Fld::Rn), size, idx, false);
             if kind == "smov" {
                 x = ext(b, x, if q != 0 { I64 } else { I32 }, true);
             }
-            setx(b, i.f("Rd"), x, false);
+            setx(b, i.f(Fld::Rd), x, false);
         }
         _ => {
             let vt = vty(16 >> size, lt);
             let x = if kind == "ins_gen" {
-                let x = getx(b, i.f("Rn"), 1, false);
+                let x = getx(b, i.f(Fld::Rn), 1, false);
                 if size < 3 { trunc(b, x, lt) } else { x }
             } else {
-                lane_extract(b, i.f("Rn"), size, i.f("imm4") >> size, false)
+                lane_extract(b, i.f(Fld::Rn), size, i.f(Fld::imm4) >> size, false)
             };
-            let old = vread(b, i.f("Rd"), vt);
+            let old = vread(b, i.f(Fld::Rd), vt);
             let r = b.insert(old, x, idx);
-            vwrite(b, i.f("Rd"), r);
+            vwrite(b, i.f(Fld::Rd), r);
         }
     }
 }
 
 fn t_simd_dups(b: &mut Builder, i: &Insn, _pc: u64) {
-    let size = info::lowest(i.f("imm5")).unwrap();
-    let e = lane_extract(b, i.f("Rn"), size, i.f("imm5") >> (size + 1), false);
-    vwrite(b, i.f("Rd"), e);
+    let size = info::lowest(i.f(Fld::imm5)).unwrap();
+    let e = lane_extract(b, i.f(Fld::Rn), size, i.f(Fld::imm5) >> (size + 1), false);
+    vwrite(b, i.f(Fld::Rd), e);
 }
 
 fn operand_types(i: &Insn, size: u32, fp: bool, sc: bool) -> Ty {
-    if sc { lane_t(size, fp) } else { VT(size, i.f("Q"), fp) }
+    if sc { lane_t(size, fp) } else { VT(size, i.f(Fld::Q), fp) }
 }
 
 fn t_simd_3same(b: &mut Builder, i: &Insn, _pc: u64) {
     let sc = scalar(i);
     let (mn, kind, size) =
-        info::same3_info(if sc { 1 } else { i.f("Q") }, i.f("U"), i.f("size"), i.f("opcode"), sc).unwrap();
+        info::same3_info(if sc { 1 } else { i.f(Fld::Q) }, i.f(Fld::U), i.f(Fld::size), i.f(Fld::opcode), sc).unwrap();
     if kind == "l" {
-        let t = VT(0, i.f("Q"), false);
-        let n = vread(b, i.f("Rn"), t);
-        let m = vread(b, i.f("Rm"), t);
-        let d = vread(b, i.f("Rd"), t);
+        let t = VT(0, i.f(Fld::Q), false);
+        let n = vread(b, i.f(Fld::Rn), t);
+        let m = vread(b, i.f(Fld::Rm), t);
+        let d = vread(b, i.f(Fld::Rd), t);
         let r = match mn {
             "and" => bin(b, BinOp::And, n, m),
             "orr" => bin(b, BinOp::Or, n, m),
@@ -697,15 +697,15 @@ fn t_simd_3same(b: &mut Builder, i: &Insn, _pc: u64) {
                 bin(b, BinOp::Or, a, c)
             }
         };
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
         return;
     }
     let fp = kind == "f";
     let t = operand_types(i, size, fp, sc);
-    let n = vread(b, i.f("Rn"), t);
-    let m = vread(b, i.f("Rm"), t);
+    let n = vread(b, i.f(Fld::Rn), t);
+    let m = vread(b, i.f(Fld::Rm), t);
     let d = if matches!(mn, "saba" | "uaba" | "mla" | "mls" | "fmla" | "fmls") {
-        Some(vread(b, i.f("Rd"), t))
+        Some(vread(b, i.f(Fld::Rd), t))
     } else {
         None
     };
@@ -718,17 +718,17 @@ fn t_simd_3same(b: &mut Builder, i: &Insn, _pc: u64) {
     } else {
         int3(b, mn, n, m, d)
     };
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_simd_3diff(b: &mut Builder, i: &Insn, _pc: u64) {
-    let (mn, kind, size) = info::diff3_info(i.f("U"), i.f("size"), i.f("opcode")).unwrap();
-    let (q, u) = (i.f("Q"), i.f("U"));
+    let (mn, kind, size) = info::diff3_info(i.f(Fld::U), i.f(Fld::size), i.f(Fld::opcode)).unwrap();
+    let (q, u) = (i.f(Fld::Q), i.f(Fld::U));
     let signed = u == 0;
     let wt = VT(size + 1, 1, false);
     if kind == "n" {
-        let x = vread(b, i.f("Rn"), wt);
-        let y = vread(b, i.f("Rm"), wt);
+        let x = vread(b, i.f(Fld::Rn), wt);
+        let y = vread(b, i.f(Fld::Rm), wt);
         let mut s = bin(b, if mn.contains("sub") { BinOp::Sub } else { BinOp::Add }, x, y);
         let w = 8i128 << size;
         if mn.starts_with('r') {
@@ -738,30 +738,30 @@ fn t_simd_3diff(b: &mut Builder, i: &Insn, _pc: u64) {
         let k = K(b, w, wt);
         let sh = bin(b, BinOp::Lshr, s, k);
         let r = trunc(b, sh, VT(size, 0, false));
-        put_half(b, i.f("Rd"), r, q);
+        put_half(b, i.f(Fld::Rd), r, q);
         return;
     }
     if size == 3 {
         b.f.target_features.push("+pclmul");
-        let x = vread(b, i.f("Rn"), vty(2, I64));
-        let y = vread(b, i.f("Rm"), vty(2, I64));
+        let x = vread(b, i.f(Fld::Rn), vty(2, I64));
+        let y = vread(b, i.f(Fld::Rm), vty(2, I64));
         let c = b.c(if q != 0 { 0x11 } else { 0 }, I8);
         let r = call(b, Callee::llvm("x86.pclmulqdq"), vty(2, I64), &[x, y, c]);
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
         return;
     }
-    let hm = half(b, i.f("Rm"), size, q);
+    let hm = half(b, i.f(Fld::Rm), size, q);
     let y = ext(b, hm, wt, signed);
     if kind == "w" {
-        let x = vread(b, i.f("Rn"), wt);
+        let x = vread(b, i.f(Fld::Rn), wt);
         let r = bin(b, if mn.contains("sub") { BinOp::Sub } else { BinOp::Add }, x, y);
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
         return;
     }
-    let xn = half(b, i.f("Rn"), size, q);
-    let yn = half(b, i.f("Rm"), size, q);
+    let xn = half(b, i.f(Fld::Rn), size, q);
+    let yn = half(b, i.f(Fld::Rm), size, q);
     let x = ext(b, xn, wt, signed);
-    let d = vread(b, i.f("Rd"), wt);
+    let d = vread(b, i.f(Fld::Rd), wt);
     let r = match mn {
         "saddl" | "uaddl" => bin(b, BinOp::Add, x, y),
         "ssubl" | "usubl" => bin(b, BinOp::Sub, x, y),
@@ -799,7 +799,7 @@ fn t_simd_3diff(b: &mut Builder, i: &Insn, _pc: u64) {
         }
         _ => panic!("3diff {mn}"),
     };
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 /// REV16/32/64: the lanes of x reversed in groups of group lanes
@@ -812,9 +812,9 @@ fn rev(b: &mut Builder, x: ValueId, group: u32) -> ValueId {
 
 fn t_simd_2misc(b: &mut Builder, i: &Insn, _pc: u64) {
     let sc = scalar(i);
-    let q = if sc { 1 } else { i.f("Q") };
-    let (mn, kind, size) = info::misc2_info(q, i.f("U"), i.f("size"), i.f("opcode"), sc).unwrap();
-    let (rn, rd) = (i.f("Rn"), i.f("Rd"));
+    let q = if sc { 1 } else { i.f(Fld::Q) };
+    let (mn, kind, size) = info::misc2_info(q, i.f(Fld::U), i.f(Fld::size), i.f(Fld::opcode), sc).unwrap();
+    let (rn, rd) = (i.f(Fld::Rn), i.f(Fld::Rd));
     let v4f16 = vty(4, Ty::F16);
     match kind {
         "f" | "fz" => {
@@ -1038,17 +1038,17 @@ fn tree(b: &mut Builder, mut xs: Vec<ValueId>, f: impl Fn(&mut Builder, ValueId,
 }
 
 fn t_simd_across(b: &mut Builder, i: &Insn, _pc: u64) {
-    let (mn, kind, size) = info::across_info(i.f("Q"), i.f("U"), i.f("size"), i.f("opcode")).unwrap();
+    let (mn, kind, size) = info::across_info(i.f(Fld::Q), i.f(Fld::U), i.f(Fld::size), i.f(Fld::opcode)).unwrap();
     if kind == "f" {
-        let x = vread(b, i.f("Rn"), vty(4, Ty::F32));
+        let x = vread(b, i.f(Fld::Rn), vty(4, Ty::F32));
         let k: &'static str = &mn[..mn.len() - 1];
         let xs: Vec<ValueId> = (0..4).map(|j| b.extract(x, j)).collect();
         let r = tree(b, xs, |b, u, w| fp3(b, k, u, w, None));
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
         return;
     }
-    let t = VT(size, i.f("Q"), false);
-    let x = vread(b, i.f("Rn"), t);
+    let t = VT(size, i.f(Fld::Q), false);
+    let x = vread(b, i.f(Fld::Rn), t);
     let r = if mn == "saddlv" || mn == "uaddlv" {
         let wt = shape(t, lane_t(size + 1, false));
         let e = ext(b, x, wt, mn.starts_with('s'));
@@ -1063,11 +1063,11 @@ fn t_simd_across(b: &mut Builder, i: &Insn, _pc: u64) {
         };
         call(b, Callee::llvm1(op, t), lane_t(size, false), &[x])
     };
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_simd_spair(b: &mut Builder, i: &Insn, _pc: u64) {
-    let (mn, kind, size) = info::pair_info(i.f("U"), i.f("size"), i.f("opcode")).unwrap();
+    let (mn, kind, size) = info::pair_info(i.f(Fld::U), i.f(Fld::size), i.f(Fld::opcode)).unwrap();
     let t = if kind == "f" && size == 2 {
         vty(2, Ty::F32)
     } else if kind == "f" {
@@ -1075,7 +1075,7 @@ fn t_simd_spair(b: &mut Builder, i: &Insn, _pc: u64) {
     } else {
         vty(2, I64)
     };
-    let x = vread(b, i.f("Rn"), t);
+    let x = vread(b, i.f(Fld::Rn), t);
     let e0 = b.extract(x, 0);
     let e1 = b.extract(x, 1);
     let r = if kind == "f" {
@@ -1090,15 +1090,15 @@ fn t_simd_spair(b: &mut Builder, i: &Insn, _pc: u64) {
     } else {
         bin(b, BinOp::Add, e0, e1)
     };
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_simd_perm(b: &mut Builder, i: &Insn, _pc: u64) {
-    let t = VT(i.f("size"), i.f("Q"), false);
-    let x = vread(b, i.f("Rn"), t);
-    let y = vread(b, i.f("Rm"), t);
+    let t = VT(i.f(Fld::size), i.f(Fld::Q), false);
+    let x = vread(b, i.f(Fld::Rn), t);
+    let y = vread(b, i.f(Fld::Rm), t);
     let n = t.lanes().0 as i32;
-    let o = i.f("opcode");
+    let o = i.f(Fld::opcode);
     let part = (o >> 2) as i32;
     let m: Vec<i32> = if o & 3 == 1 {
         (0..n).map(|k| 2 * k + part).collect()
@@ -1109,34 +1109,34 @@ fn t_simd_perm(b: &mut Builder, i: &Insn, _pc: u64) {
         (0..n / 2).flat_map(|k| [base + k, n + base + k]).collect()
     };
     let r = b.shuffle(x, y, &m);
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_simd_ext(b: &mut Builder, i: &Insn, _pc: u64) {
-    let t = VT(0, i.f("Q"), false);
-    let x = vread(b, i.f("Rn"), t);
-    let y = vread(b, i.f("Rm"), t);
+    let t = VT(0, i.f(Fld::Q), false);
+    let x = vread(b, i.f(Fld::Rn), t);
+    let y = vread(b, i.f(Fld::Rm), t);
     let n = t.lanes().0 as i32;
-    let m: Vec<i32> = (0..n).map(|k| i.f("imm4") as i32 + k).collect();
+    let m: Vec<i32> = (0..n).map(|k| i.f(Fld::imm4) as i32 + k).collect();
     let r = b.shuffle(x, y, &m);
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 /// TBL/TBX
 fn t_simd_tbl(b: &mut Builder, i: &Insn, _pc: u64) {
-    let q = i.f("Q");
+    let q = i.f(Fld::Q);
     let v16 = vty(16, I8);
     let idx = if q != 0 {
-        vread(b, i.f("Rm"), v16)
+        vread(b, i.f(Fld::Rm), v16)
     } else {
-        let a = vread(b, i.f("Rm"), vty(8, I8));
-        let c = vread(b, i.f("Rm"), vty(8, I8));
+        let a = vread(b, i.f(Fld::Rm), vty(8, I8));
+        let c = vread(b, i.f(Fld::Rm), vty(8, I8));
         let m: Vec<i32> = (0..8).chain(std::iter::repeat_n(-1, 8)).collect();
         b.shuffle(a, c, &m)
     };
     let mut r: Option<ValueId> = None;
-    for k in 0..=i.f("len") {
-        let tab = vread(b, (i.f("Rn") + k) % 32, v16);
+    for k in 0..=i.f(Fld::len) {
+        let tab = vread(b, (i.f(Fld::Rn) + k) % 32, v16);
         let mut ix = if k != 0 {
             let c = K(b, 16 * k as i128, v16);
             bin(b, BinOp::Sub, idx, c)
@@ -1152,9 +1152,9 @@ fn t_simd_tbl(b: &mut Builder, i: &Insn, _pc: u64) {
         });
     }
     let mut r = r.unwrap();
-    if i.f("op") != 0 {
-        let d = vread(b, i.f("Rd"), v16);
-        let c = K(b, 16 * (i.f("len") as i128 + 1), v16);
+    if i.f(Fld::op) != 0 {
+        let d = vread(b, i.f(Fld::Rd), v16);
+        let c = K(b, 16 * (i.f(Fld::len) as i128 + 1), v16);
         let out = b.op(Op::Icmp("uge"), vty(16, I1), &[idx, c]);
         r = b.select(out, d, r);
     }
@@ -1162,21 +1162,21 @@ fn t_simd_tbl(b: &mut Builder, i: &Insn, _pc: u64) {
         let m: Vec<i32> = (0..8).collect();
         r = b.shuffle(r, r, &m);
     }
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_simd_modimm(b: &mut Builder, i: &Insn, _pc: u64) {
-    let q = i.f("Q");
-    let (mn, _t, _sk) = info::modimm_info(q, i.f("op"), i.f("cmode"), i.f("o2")).unwrap();
-    let imm8 = i.f("abc") << 5 | i.f("defgh");
-    let mut val = info::modimm_value(i.f("op"), i.f("cmode"), imm8);
+    let q = i.f(Fld::Q);
+    let (mn, _t, _sk) = info::modimm_info(q, i.f(Fld::op), i.f(Fld::cmode), i.f(Fld::o2)).unwrap();
+    let imm8 = i.f(Fld::abc) << 5 | i.f(Fld::defgh);
+    let mut val = info::modimm_value(i.f(Fld::op), i.f(Fld::cmode), imm8);
     if mn == "mvni" {
         val = !val;
     }
     let v2 = vty(2, I64);
     let c = b.vconst(&if q != 0 { [val, val] } else { [val, 0] }, v2);
     if mn == "orr" || mn == "bic" {
-        let d = vread(b, i.f("Rd"), v2);
+        let d = vread(b, i.f(Fld::Rd), v2);
         let mut r = if mn == "bic" {
             let c = b.vconst(&if q != 0 { [!val, !val] } else { [!val, 0] }, v2);
             bin(b, BinOp::And, d, c)
@@ -1188,10 +1188,10 @@ fn t_simd_modimm(b: &mut Builder, i: &Insn, _pc: u64) {
             let e = b.extract(r, 0);
             r = b.insert(z, e, 0);
         }
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
         return;
     }
-    vwrite(b, i.f("Rd"), c);
+    vwrite(b, i.f(Fld::Rd), c);
 }
 
 /// x >> sh for 1 <= sh <= the lane width, rounded when rnd
@@ -1219,11 +1219,11 @@ fn rshift(b: &mut Builder, x: ValueId, sh: i128, signed: bool, rnd: bool) -> Val
 
 fn t_simd_shift(b: &mut Builder, i: &Insn, _pc: u64) {
     let sc = scalar(i);
-    let q = if sc { 1 } else { i.f("Q") };
-    let (mn, kind, esz) = info::shift_info(q, i.f("U"), i.f("immh"), i.f("opcode"), sc).unwrap();
-    let sh = info::shift_amount(kind, esz, i.f("immh"), i.f("immb")) as i128;
-    let u = i.f("U");
-    let (rn, rd) = (i.f("Rn"), i.f("Rd"));
+    let q = if sc { 1 } else { i.f(Fld::Q) };
+    let (mn, kind, esz) = info::shift_info(q, i.f(Fld::U), i.f(Fld::immh), i.f(Fld::opcode), sc).unwrap();
+    let sh = info::shift_amount(kind, esz, i.f(Fld::immh), i.f(Fld::immb)) as i128;
+    let u = i.f(Fld::U);
+    let (rn, rd) = (i.f(Fld::Rn), i.f(Fld::Rd));
     if kind == "f" {
         let ft = if sc { lane_t(esz, true) } else { VT(esz, q, true) };
         let r = if mn == "scvtf" || mn == "ucvtf" {
@@ -1344,15 +1344,15 @@ fn t_simd_shift(b: &mut Builder, i: &Insn, _pc: u64) {
 
 fn t_simd_elem(b: &mut Builder, i: &Insn, _pc: u64) {
     let sc = scalar(i);
-    let q = if sc { 1 } else { i.f("Q") };
-    let (mn, kind, size) = info::elem_info(q, i.f("U"), i.f("size"), i.f("L"), i.f("opcode"), sc).unwrap();
-    let (rm, idx) = info::elem_index(size, i.f("L"), i.f("M"), i.f("Rm"), i.f("H"));
+    let q = if sc { 1 } else { i.f(Fld::Q) };
+    let (mn, kind, size) = info::elem_info(q, i.f(Fld::U), i.f(Fld::size), i.f(Fld::L), i.f(Fld::opcode), sc).unwrap();
+    let (rm, idx) = info::elem_index(size, i.f(Fld::L), i.f(Fld::M), i.f(Fld::Rm), i.f(Fld::H));
     let fp = kind == "f";
     let e = lane_extract(b, rm, size, idx, fp);
-    let (rn, rd) = (i.f("Rn"), i.f("Rd"));
+    let (rn, rd) = (i.f(Fld::Rn), i.f(Fld::Rd));
     if kind == "l" {
         let wt = VT(size + 1, 1, false);
-        let signed = i.f("U") == 0;
+        let signed = i.f(Fld::U) == 0;
         let xn = half(b, rn, size, q);
         let x = ext(b, xn, wt, signed);
         let s = splat(b, e, VT(size, 0, false));
@@ -1386,14 +1386,14 @@ fn t_simd_elem(b: &mut Builder, i: &Insn, _pc: u64) {
 
 /// SDOT/UDOT
 fn t_simd_dot(b: &mut Builder, i: &Insn, _pc: u64) {
-    let q = i.f("Q");
-    let signed = i.f("U") == 0;
+    let q = i.f(Fld::Q);
+    let signed = i.f(Fld::U) == 0;
     let n = if q != 0 { 16 } else { 8 };
     let bt = VT(0, q, false);
     let wt = vty(n, I32);
-    let v = vread(b, i.f("Rn"), bt);
+    let v = vread(b, i.f(Fld::Rn), bt);
     let x = ext(b, v, wt, signed);
-    let v = vread(b, i.f("Rm"), bt);
+    let v = vread(b, i.f(Fld::Rm), bt);
     let y = ext(b, v, wt, signed);
     let pr = bin(b, BinOp::Mul, x, y);
     let mut s: Option<ValueId> = None;
@@ -1405,16 +1405,16 @@ fn t_simd_dot(b: &mut Builder, i: &Insn, _pc: u64) {
             Some(p) => bin(b, BinOp::Add, p, part),
         });
     }
-    let d = vread(b, i.f("Rd"), VT(2, q, false));
+    let d = vread(b, i.f(Fld::Rd), VT(2, q, false));
     let r = bin(b, BinOp::Add, d, s.unwrap());
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 /// FNEG/FABS of half-precision lanes: the sign bit
 fn t_simd_2misc16(b: &mut Builder, i: &Insn, _pc: u64) {
-    let t = VT(1, i.f("Q"), false);
-    let x = vread(b, i.f("Rn"), t);
-    let mn = info::fp16_misc_info(i.f("U"), i.f("a"), i.f("opcode")).unwrap();
+    let t = VT(1, i.f(Fld::Q), false);
+    let x = vread(b, i.f(Fld::Rn), t);
+    let mn = info::fp16_misc_info(i.f(Fld::U), i.f(Fld::a), i.f(Fld::opcode)).unwrap();
     let r = if mn == "fneg" {
         let k = K(b, 0x8000, t);
         bin(b, BinOp::Xor, x, k)
@@ -1422,7 +1422,7 @@ fn t_simd_2misc16(b: &mut Builder, i: &Insn, _pc: u64) {
         let k = K(b, 0x7FFF, t);
         bin(b, BinOp::And, x, k)
     };
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 #[allow(dead_code)]

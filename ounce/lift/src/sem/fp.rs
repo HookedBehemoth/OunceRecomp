@@ -4,7 +4,7 @@
 use crate::ir::{vreg, BinOp, Builder, Call, Callee, CastOp, Cmp, Op, ValueId};
 use crate::sem::int::{cond, extend, getx, set_nzcv, setx, store, sx};
 use crate::ty::{Ty, I1, I16, I32, I64, I8};
-use ounce_decode::{info, Insn, Param};
+use ounce_decode::{info, Insn, Param, Fld};
 use std::sync::OnceLock;
 
 pub fn fty(ftype: u32) -> Ty {
@@ -213,20 +213,20 @@ fn flags_cmp(b: &mut Builder, x: ValueId, y: ValueId) -> [ValueId; 4] {
 
 // ---- templates
 fn t_fp_dp1(b: &mut Builder, i: &Insn, _pc: u64) {
-    let ty = fty(i.f("ftype"));
-    let o = i.f("opcode");
+    let ty = fty(i.f(Fld::ftype));
+    let o = i.f(Fld::opcode);
     let r = if matches!(o, 4 | 5 | 7) {
         let to = match o {
             4 => Ty::F32,
             5 => Ty::F64,
             _ => Ty::F16,
         };
-        let x = vread(b, i.f("Rn"), ty);
+        let x = vread(b, i.f(Fld::Rn), ty);
         b.cast(if to.width() > ty.width() { CastOp::Fpext } else { CastOp::Fptrunc }, x, to)
     } else if o == 0 {
-        vread(b, i.f("Rn"), ity_of(ty))
+        vread(b, i.f(Fld::Rn), ity_of(ty))
     } else {
-        let x = vread(b, i.f("Rn"), ty);
+        let x = vread(b, i.f(Fld::Rn), ty);
         match o {
             1 => intr(b, "fabs", ty, &[x]),
             2 => b.op(Op::FNeg, ty, &[x]),
@@ -234,23 +234,23 @@ fn t_fp_dp1(b: &mut Builder, i: &Insn, _pc: u64) {
             _ => intr(b, rint(o), ty, &[x]),
         }
     };
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_fp_dp2(b: &mut Builder, i: &Insn, _pc: u64) {
-    let ty = fty(i.f("ftype"));
-    let n = vread(b, i.f("Rn"), ty);
-    let m = vread(b, i.f("Rm"), ty);
-    let r = fbin(b, i.f("opcode"), n, m);
-    vwrite(b, i.f("Rd"), r);
+    let ty = fty(i.f(Fld::ftype));
+    let n = vread(b, i.f(Fld::Rn), ty);
+    let m = vread(b, i.f(Fld::Rm), ty);
+    let r = fbin(b, i.f(Fld::opcode), n, m);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_fp_dp3(b: &mut Builder, i: &Insn, _pc: u64) {
-    let ty = fty(i.f("ftype"));
-    let mut n = vread(b, i.f("Rn"), ty);
-    let m = vread(b, i.f("Rm"), ty);
-    let mut a = vread(b, i.f("Ra"), ty);
-    let k = i.f("o1") * 2 + i.f("o0");
+    let ty = fty(i.f(Fld::ftype));
+    let mut n = vread(b, i.f(Fld::Rn), ty);
+    let m = vread(b, i.f(Fld::Rm), ty);
+    let mut a = vread(b, i.f(Fld::Ra), ty);
+    let k = i.f(Fld::o1) * 2 + i.f(Fld::o0);
     if k == 1 || k == 2 {
         n = b.op(Op::FNeg, ty, &[n]);
     }
@@ -258,25 +258,25 @@ fn t_fp_dp3(b: &mut Builder, i: &Insn, _pc: u64) {
         a = b.op(Op::FNeg, ty, &[a]);
     }
     let r = fma(b, a, n, m);
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_fp_cmp(b: &mut Builder, i: &Insn, _pc: u64) {
-    let ty = fty(i.f("ftype"));
-    let x = vread(b, i.f("Rn"), ty);
-    let y = if i.f("opc") & 1 != 0 { b.c(0, ty) } else { vread(b, i.f("Rm"), ty) };
+    let ty = fty(i.f(Fld::ftype));
+    let x = vread(b, i.f(Fld::Rn), ty);
+    let y = if i.f(Fld::opc) & 1 != 0 { b.c(0, ty) } else { vread(b, i.f(Fld::Rm), ty) };
     let fl = flags_cmp(b, x, y);
     set_nzcv(b, fl[0], fl[1], fl[2], fl[3]);
     b.cmp = Some(Cmp { nzcv: fl, a: x, b: y, kind: "fcmp" });
 }
 
 fn t_fp_ccmp(b: &mut Builder, i: &Insn, _pc: u64) {
-    let ty = fty(i.f("ftype"));
-    let ok = cond(b, i.f("cond"));
-    let x = vread(b, i.f("Rn"), ty);
-    let y = vread(b, i.f("Rm"), ty);
+    let ty = fty(i.f(Fld::ftype));
+    let ok = cond(b, i.f(Fld::cond));
+    let x = vread(b, i.f(Fld::Rn), ty);
+    let y = vread(b, i.f(Fld::Rm), ty);
     let fl = flags_cmp(b, x, y);
-    let nzcv = i.f("nzcv");
+    let nzcv = i.f(Fld::nzcv);
     let mut s = [fl[0]; 4];
     for k in 0..4 {
         let c = b.c((nzcv >> (3 - k) & 1) as i128, I1);
@@ -287,18 +287,18 @@ fn t_fp_ccmp(b: &mut Builder, i: &Insn, _pc: u64) {
 }
 
 fn t_fp_csel(b: &mut Builder, i: &Insn, _pc: u64) {
-    let ty = ity_of(fty(i.f("ftype")));
-    let c = cond(b, i.f("cond"));
-    let n = vread(b, i.f("Rn"), ty);
-    let m = vread(b, i.f("Rm"), ty);
+    let ty = ity_of(fty(i.f(Fld::ftype)));
+    let c = cond(b, i.f(Fld::cond));
+    let n = vread(b, i.f(Fld::Rn), ty);
+    let m = vread(b, i.f(Fld::Rm), ty);
     let r = b.select(c, n, m);
-    vwrite(b, i.f("Rd"), r);
+    vwrite(b, i.f(Fld::Rd), r);
 }
 
 fn t_fp_imm(b: &mut Builder, i: &Insn, _pc: u64) {
-    let ty = fty(i.f("ftype"));
-    let c = b.c(info::fp_imm_bits(i.f("imm8"), i.f("ftype")) as i128, ity_of(ty));
-    vwrite(b, i.f("Rd"), c);
+    let ty = fty(i.f(Fld::ftype));
+    let c = b.c(info::fp_imm_bits(i.f(Fld::imm8), i.f(Fld::ftype)) as i128, ity_of(ty));
+    vwrite(b, i.f(Fld::Rd), c);
 }
 
 fn cvt_rnd(rm: u32) -> Option<&'static str> {
@@ -311,59 +311,59 @@ fn cvt_rnd(rm: u32) -> Option<&'static str> {
 }
 
 fn t_fp_int(b: &mut Builder, i: &Insn, _pc: u64) {
-    let (sf, ft, rm, o) = (i.f("sf"), i.f("ftype"), i.f("rmode"), i.f("opcode"));
+    let (sf, ft, rm, o) = (i.f(Fld::sf), i.f(Fld::ftype), i.f(Fld::rmode), i.f(Fld::opcode));
     let ity = if sf != 0 { I64 } else { I32 };
     if ft == 2 {
-        let r = if o == 6 { i.f("Rn") } else { i.f("Rd") };
+        let r = if o == 6 { i.f(Fld::Rn) } else { i.f(Fld::Rd) };
         let g = b.get(vreg(r));
         let v = b.bitcast(g, Ty::vec(2, I64));
         if o == 6 {
             let e = b.extract(v, 1);
-            setx(b, i.f("Rd"), e, false);
+            setx(b, i.f(Fld::Rd), e, false);
         } else {
-            let x = getx(b, i.f("Rn"), 1, false);
+            let x = getx(b, i.f(Fld::Rn), 1, false);
             let ins = b.insert(v, x, 1);
             let c = b.bitcast(ins, Ty::V128);
-            b.set(vreg(i.f("Rd")), c);
+            b.set(vreg(i.f(Fld::Rd)), c);
         }
         return;
     }
     let ty = fty(ft);
     if o == 6 {
-        let v = vread(b, i.f("Rn"), ity);
-        setx(b, i.f("Rd"), v, false);
+        let v = vread(b, i.f(Fld::Rn), ity);
+        setx(b, i.f(Fld::Rd), v, false);
     } else if o == 7 {
-        let x = getx(b, i.f("Rn"), sf, false);
-        vwrite(b, i.f("Rd"), x);
+        let x = getx(b, i.f(Fld::Rn), sf, false);
+        vwrite(b, i.f(Fld::Rd), x);
     } else if o == 2 || o == 3 {
-        let x = getx(b, i.f("Rn"), sf, false);
+        let x = getx(b, i.f(Fld::Rn), sf, false);
         let r = b.cast(if o == 2 { CastOp::Sitofp } else { CastOp::Uitofp }, x, ty);
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
     } else {
         let rnd = if o >= 4 { Some("round") } else { cvt_rnd(rm) };
-        let x = vread(b, i.f("Rn"), ty);
+        let x = vread(b, i.f(Fld::Rn), ty);
         let r = to_int(b, x, ity, o & 1 == 0, rnd);
-        setx(b, i.f("Rd"), r, false);
+        setx(b, i.f(Fld::Rd), r, false);
     }
 }
 
 fn t_fp_fixed(b: &mut Builder, i: &Insn, _pc: u64) {
-    let (sf, o) = (i.f("sf"), i.f("opcode"));
-    let ty = fty(i.f("ftype"));
+    let (sf, o) = (i.f(Fld::sf), i.f(Fld::opcode));
+    let ty = fty(i.f(Fld::ftype));
     let ity = if sf != 0 { I64 } else { I32 };
-    let fb = 64 - i.f("scale") as i32;
+    let fb = 64 - i.f(Fld::scale) as i32;
     if o == 2 || o == 3 {
-        let g = getx(b, i.f("Rn"), sf, false);
+        let g = getx(b, i.f(Fld::Rn), sf, false);
         let x = b.cast(if o == 2 { CastOp::Sitofp } else { CastOp::Uitofp }, g, ty);
         let k = fconst(b, 2f64.powi(-fb), ty);
         let r = b.op(Op::Bin(BinOp::Fmul), ty, &[x, k]);
-        vwrite(b, i.f("Rd"), r);
+        vwrite(b, i.f(Fld::Rd), r);
     } else {
-        let v = vread(b, i.f("Rn"), ty);
+        let v = vread(b, i.f(Fld::Rn), ty);
         let k = fconst(b, 2f64.powi(fb), ty);
         let x = b.op(Op::Bin(BinOp::Fmul), ty, &[v, k]);
         let r = to_int(b, x, ity, o == 0, None);
-        setx(b, i.f("Rd"), r, false);
+        setx(b, i.f(Fld::Rd), r, false);
     }
 }
 
@@ -393,46 +393,46 @@ fn mode(i: &Insn) -> &'static str {
 }
 
 fn t_ldst_v(b: &mut Builder, i: &Insn, _pc: u64) {
-    let sc = info::v_scale(i.f("size"), i.f("opc"));
-    let base = getx(b, i.f("Rn"), 1, true);
+    let sc = info::v_scale(i.f(Fld::size), i.f(Fld::opc));
+    let base = getx(b, i.f(Fld::Rn), 1, true);
     let mut wb = None;
     let addr = match mode(i) {
         "uimm" => {
-            let c = b.c64((i.f("imm12") as i128) << sc);
+            let c = b.c64((i.f(Fld::imm12) as i128) << sc);
             b.bin(BinOp::Add, base, c)
         }
         "unscaled" => {
-            let c = b.c64(sx(i.f("imm9"), 9));
+            let c = b.c64(sx(i.f(Fld::imm9), 9));
             b.bin(BinOp::Add, base, c)
         }
         "post" => {
-            let c = b.c64(sx(i.f("imm9"), 9));
+            let c = b.c64(sx(i.f(Fld::imm9), 9));
             wb = Some(b.bin(BinOp::Add, base, c));
             base
         }
         "pre" => {
-            let c = b.c64(sx(i.f("imm9"), 9));
+            let c = b.c64(sx(i.f(Fld::imm9), 9));
             let a = b.bin(BinOp::Add, base, c);
             wb = Some(a);
             a
         }
         _ => {
-            let m = getx(b, i.f("Rm"), 1, false);
-            let e = extend(b, m, i.f("option"), if i.f("S") != 0 { sc } else { 0 }, I64);
+            let m = getx(b, i.f(Fld::Rm), 1, false);
+            let e = extend(b, m, i.f(Fld::option), if i.f(Fld::S) != 0 { sc } else { 0 }, I64);
             b.bin(BinOp::Add, base, e)
         }
     };
-    ldst_reg(b, addr, i.f("opc") & 1, i.f("Rt"), sc);
+    ldst_reg(b, addr, i.f(Fld::opc) & 1, i.f(Fld::Rt), sc);
     if let Some(w) = wb {
-        setx(b, i.f("Rn"), w, true);
+        setx(b, i.f(Fld::Rn), w, true);
     }
 }
 
 fn t_ldst_v_pair(b: &mut Builder, i: &Insn, _pc: u64) {
-    let (opc, mode, l) = (i.f("opc"), i.f("mode"), i.f("L"));
+    let (opc, mode, l) = (i.f(Fld::opc), i.f(Fld::mode), i.f(Fld::L));
     let sc = 2 + opc;
-    let base = getx(b, i.f("Rn"), 1, true);
-    let off = b.c64(sx(i.f("imm7"), 7) << sc);
+    let base = getx(b, i.f(Fld::Rn), 1, true);
+    let off = b.c64(sx(i.f(Fld::imm7), 7) << sc);
     let mut wb = None;
     let addr = if mode == 1 {
         wb = Some(b.bin(BinOp::Add, base, off));
@@ -450,30 +450,30 @@ fn t_ldst_v_pair(b: &mut Builder, i: &Insn, _pc: u64) {
     if l != 0 {
         let lo = load(b, addr, t);
         let hi = load(b, addr2, t);
-        vwrite(b, i.f("Rt"), lo);
-        vwrite(b, i.f("Rt2"), hi);
+        vwrite(b, i.f(Fld::Rt), lo);
+        vwrite(b, i.f(Fld::Rt2), hi);
     } else {
-        let v1 = vread(b, i.f("Rt"), t);
-        let v2 = vread(b, i.f("Rt2"), t);
+        let v1 = vread(b, i.f(Fld::Rt), t);
+        let v2 = vread(b, i.f(Fld::Rt2), t);
         store(b, addr, v1);
         store(b, addr2, v2);
     }
     if let Some(w) = wb {
-        setx(b, i.f("Rn"), w, true);
+        setx(b, i.f(Fld::Rn), w, true);
     }
 }
 
 fn t_ldr_v_lit(b: &mut Builder, i: &Insn, pc: u64) {
-    let sc = 2 + i.f("opc");
-    let a = b.c64(pc as i128 + (sx(i.f("imm19"), 19) << 2));
+    let sc = 2 + i.f(Fld::opc);
+    let a = b.c64(pc as i128 + (sx(i.f(Fld::imm19), 19) << 2));
     let v = load(b, a, VTY[sc as usize]);
-    vwrite(b, i.f("Rt"), v);
+    vwrite(b, i.f(Fld::Rt), v);
 }
 
 fn post_index(b: &mut Builder, i: &Insn, base: ValueId, nbytes: u32) {
-    let inc = if i.f("Rm") == 31 { b.c64(nbytes as i128) } else { getx(b, i.f("Rm"), 1, false) };
+    let inc = if i.f(Fld::Rm) == 31 { b.c64(nbytes as i128) } else { getx(b, i.f(Fld::Rm), 1, false) };
     let s = b.bin(BinOp::Add, base, inc);
-    setx(b, i.f("Rn"), s, true);
+    setx(b, i.f(Fld::Rn), s, true);
 }
 
 fn post(i: &Insn) -> bool {
@@ -482,19 +482,19 @@ fn post(i: &Insn) -> bool {
 
 /// LD1-LD4/ST1-ST4 (multiple structures)
 fn t_ldst_mult(b: &mut Builder, i: &Insn, _pc: u64) {
-    let (nreg, selem) = info::mult(i.f("opcode")).unwrap();
-    let (q, size, t) = (i.f("Q"), i.f("size"), i.f("Rt"));
+    let (nreg, selem) = info::mult(i.f(Fld::opcode)).unwrap();
+    let (q, size, t) = (i.f(Fld::Q), i.f(Fld::size), i.f(Fld::Rt));
     let rbytes = if q != 0 { 16 } else { 8 };
     let lane = Ty::I(8 << size);
     let per = rbytes >> size;
     let rty = Ty::vec(per, lane);
-    let base = getx(b, i.f("Rn"), 1, true);
+    let base = getx(b, i.f(Fld::Rn), 1, true);
     let regs: Vec<u32> = (0..nreg).map(|k| (t + k) % 32).collect();
     if selem == 1 {
         for (k, &rn) in regs.iter().enumerate() {
             let c = b.c64(k as i128 * rbytes as i128);
             let addr = b.bin(BinOp::Add, base, c);
-            if i.f("L") != 0 {
+            if i.f(Fld::L) != 0 {
                 let v = load(b, addr, rty);
                 vwrite(b, rn, v);
             } else {
@@ -504,7 +504,7 @@ fn t_ldst_mult(b: &mut Builder, i: &Insn, _pc: u64) {
         }
     } else {
         let allty = Ty::vec(per * selem, lane);
-        if i.f("L") != 0 {
+        if i.f(Fld::L) != 0 {
             let whole = load(b, base, allty);
             for (k, &rn) in regs.iter().enumerate() {
                 let m: Vec<i32> = (0..per).map(|e| (k as u32 + selem * e) as i32).collect();
@@ -537,22 +537,22 @@ fn t_ldst_mult(b: &mut Builder, i: &Insn, _pc: u64) {
 
 /// LD1-LD4/ST1-ST4 (single structure) of one lane, and LD1R-LD4R
 fn t_ldst_one(b: &mut Builder, i: &Insn, _pc: u64) {
-    let s = info::one_shape(i.f("opcode"), i.f("S"), i.f("size"), i.f("Q"), i.f("R"));
+    let s = info::one_shape(i.f(Fld::opcode), i.f(Fld::S), i.f(Fld::size), i.f(Fld::Q), i.f(Fld::R));
     let sc = s.scale;
     let lane = Ty::I(8 << sc);
-    let base = getx(b, i.f("Rn"), 1, true);
+    let base = getx(b, i.f(Fld::Rn), 1, true);
     for k in 0..s.selem {
-        let rn = (i.f("Rt") + k) % 32;
+        let rn = (i.f(Fld::Rt) + k) % 32;
         let c = b.c64((k as i128) << sc);
         let addr = b.bin(BinOp::Add, base, c);
         if s.replicate {
-            let per = (if i.f("Q") != 0 { 16 } else { 8 }) >> sc;
+            let per = (if i.f(Fld::Q) != 0 { 16 } else { 8 }) >> sc;
             let x = load(b, addr, lane);
             let z = b.zero(Ty::vec(per, lane));
             let v = b.insert(z, x, 0);
             let r = b.shuffle(v, v, &vec![0; per as usize]);
             vwrite(b, rn, r);
-        } else if i.f("L") != 0 {
+        } else if i.f(Fld::L) != 0 {
             let vt = Ty::vec(16 >> sc, lane);
             let old = vread(b, rn, vt);
             let x = load(b, addr, lane);

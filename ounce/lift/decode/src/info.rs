@@ -9,8 +9,11 @@ pub type Op = (&'static str, &'static str, u32);
 
 // ---- enc.py
 
+/// a system register: (op0 - 2, op1, CRn, CRm, op2), its name, writable at EL0
+pub type SysReg = ((u32, u32, u32, u32, u32), &'static str, bool);
+
 /// MRS/MSR's system registers, (op0 - 2, op1, CRn, CRm, op2) -> (name, writable at EL0): enc.SYSREGS
-pub const SYSREGS: &[((u32, u32, u32, u32, u32), &str, bool)] = &[
+pub const SYSREGS: &[SysReg] = &[
     ((1, 3, 4, 2, 0), "NZCV", true),
     ((1, 3, 4, 4, 0), "FPCR", true),
     ((1, 3, 4, 4, 1), "FPSR", true),

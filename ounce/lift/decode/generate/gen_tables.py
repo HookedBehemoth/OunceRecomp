@@ -109,6 +109,29 @@ def gen_tables():
                    % (i, e.name, e.template, params, e.mask, e.value, fields, vfs, vt))
     out.append("];")
     out.append("")
+    # typed field access: every field name, and per entry each field's (shift | width << 8), 0 where it has none
+    names = []
+    for e in enc.ENTRIES:
+        for n, _, _ in e.fields:
+            if n not in names:
+                names.append(n)
+    assert len(names) < 256
+    out.append("/// A field of the encodings by name (the patterns' field names): `Insn::f(Fld::Rn)`.")
+    out.append("#[allow(non_camel_case_types)]")
+    out.append("#[derive(Debug, Clone, Copy, PartialEq, Eq)]")
+    out.append("#[repr(u8)]")
+    out.append("pub enum Fld { %s }" % ", ".join(names))
+    out.append("pub(crate) const NFLD: usize = %d;" % len(names))
+    out.append("pub(crate) static FLD_NAMES: [&str; NFLD] = [%s];" % ", ".join('"%s"' % n for n in names))
+    out.append("pub(crate) static FIELD_AT: [[u16; NFLD]; %d] = [" % len(enc.ENTRIES))
+    for e in enc.ENTRIES:
+        at = [0] * len(names)
+        for n, sh, m in e.fields:
+            assert m.bit_length() > 0
+            at[names.index(n)] = sh | m.bit_length() << 8
+        out.append("    [%s]," % ", ".join(map(str, at)))
+    out.append("];")
+    out.append("")
     # dispatch
     nb = 1 << (32 - DISPATCH_SHIFT)
     hm = (0xFFFFFFFF >> DISPATCH_SHIFT) << DISPATCH_SHIFT

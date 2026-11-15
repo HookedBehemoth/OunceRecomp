@@ -6,7 +6,7 @@ use crate::ir::*;
 use crate::sem;
 use crate::sem::int::{cond, getx, setx, sx};
 use crate::ty::{Ty, I32, I64};
-use ounce_decode::{decode, Insn};
+use ounce_decode::{decode, Insn, Fld};
 use std::collections::{HashMap, HashSet};
 
 const TERMINATORS: [&str; 8] = ["b", "bcond", "cbz", "tbz", "ret", "udf", "br", "blr"];
@@ -91,9 +91,9 @@ impl<'a> Prog<'a> {
 pub fn target(i: &Insn, pc: u64) -> Option<u64> {
     let t = i.enc.template;
     let off = match t {
-        "b" => sx(i.f("imm26"), 26),
-        "bcond" | "cbz" => sx(i.f("imm19"), 19),
-        "tbz" => sx(i.f("imm14"), 14),
+        "b" => sx(i.f(Fld::imm26), 26),
+        "bcond" | "cbz" => sx(i.f(Fld::imm19), 19),
+        "tbz" => sx(i.f(Fld::imm14), 14),
         _ => return None,
     };
     Some((pc as i128 + (off << 2)) as u64)
@@ -241,9 +241,9 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             let probe = prog.probes.get(&pc).copied();
             if let Some((_, Some(page))) = site {
                 if probe.is_none() {
-                    let v = b.get(x(i.f("Rn")));
+                    let v = b.get(x(i.f(Fld::Rn)));
                     if b.konst(v) != Some(page as u128) {
-                        panic!("code pointer at {pc:#x}: x{} does not hold the page {page:#x} here", i.f("Rn"));
+                        panic!("code pointer at {pc:#x}: x{} does not hold the page {page:#x} here", i.f(Fld::Rn));
                     }
                 }
             }
@@ -253,15 +253,15 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             }
             if let (Some((e, _)), None) = (site, probe) {
                 let ca = b.codeaddr(e);
-                setx(&mut b, i.f("Rd"), ca, false);
+                setx(&mut b, i.f(Fld::Rd), ca, false);
                 b.f.code_sites += 1;
             } else if CODE_FORMS.contains(&t)
                 && !prog.code_targets.is_empty()
-                && (if i.has("Rd") { i.f("Rd") } else { 31 }) != 31
-                && !(t == "adr" && i.f("op") != 0)
-                && (!i.has("sf") || i.f("sf") != 0)
+                && (if i.has(Fld::Rd) { i.f(Fld::Rd) } else { 31 }) != 31
+                && !(t == "adr" && i.f(Fld::op) != 0)
+                && (!i.has(Fld::sf) || i.f(Fld::sf) != 0)
             {
-                if let Some(v) = b.f.b(c).defs[x(i.f("Rd")) as usize] {
+                if let Some(v) = b.f.b(c).defs[x(i.f(Fld::Rd)) as usize] {
                     if let Some(k) = b.konst(v) {
                         if prog.code_targets.contains(&(k as u64)) {
                             panic!("f_{k:08x}'s address formed at {pc:#x}, not a code_ptrs.sites shape");
@@ -278,7 +278,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             }
             continue;
         }
-        let is_bl = t == "b" && i.f("op") != 0;
+        let is_bl = t == "b" && i.f(Fld::op) != 0;
         if prog.replace.contains_key(&pc) && (t == "blr" || is_bl) {
             let ra = b.c64(pc as i128 + 4);
             b.set(x(30), ra);
@@ -344,7 +344,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             continue;
         }
         if t == "blr" {
-            let rn = i.f("Rn");
+            let rn = i.f(Fld::Rn);
             let tv = if rn != 31 { b.get(x(rn)) } else { b.c64(0) };
             let ra = b.c64(pc as i128 + 4);
             b.set(x(30), ra);
@@ -359,10 +359,10 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             }
             continue;
         }
-        if t == "exc" && i.f("opc") == 0 {
+        if t == "exc" && i.f(Fld::opc) == 0 {
             let fl: Vec<ValueId> = FLAGS.iter().map(|&v| b.get(v)).collect();
             b.op(Op::FlagsOut { always: false }, Ty::Void, &fl);
-            b.op(Op::Svc(i.f("imm16")), Ty::Void, &[]);
+            b.op(Op::Svc(i.f(Fld::imm16)), Ty::Void, &[]);
             b.after_call();
             if !prog.in_body(pc + 4) {
                 falls_out(&mut b, &mut exits);
@@ -385,35 +385,35 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
         let term = match t {
             "b" => Term::Br(goto(&mut b, prog, &mut exits, target(i, pc).unwrap())),
             "bcond" => {
-                let cv = cond(&mut b, i.f("cond"));
+                let cv = cond(&mut b, i.f(Fld::cond));
                 let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
                 let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             "cbz" => {
-                let v = getx(&mut b, i.f("Rt"), i.f("sf"), false);
+                let v = getx(&mut b, i.f(Fld::Rt), i.f(Fld::sf), false);
                 let t0 = b.ty(v);
                 let z = b.c(0, t0);
-                let cv = b.icmp(if i.f("op") != 0 { "ne" } else { "eq" }, v, z);
+                let cv = b.icmp(if i.f(Fld::op) != 0 { "ne" } else { "eq" }, v, z);
                 let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
                 let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             "tbz" => {
-                let bit = i.f("b5") << 5 | i.f("b40");
-                let rt = i.f("Rt");
+                let bit = i.f(Fld::b5) << 5 | i.f(Fld::b40);
+                let rt = i.f(Fld::Rt);
                 let r = if rt != 31 { b.get(x(rt)) } else { b.c64(0) };
                 let m = b.c64(1i128 << bit);
                 let v = b.bin(BinOp::And, r, m);
                 let z = b.c64(0);
-                let cv = b.icmp(if i.f("op") != 0 { "ne" } else { "eq" }, v, z);
+                let cv = b.icmp(if i.f(Fld::op) != 0 { "ne" } else { "eq" }, v, z);
                 let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
                 let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             "ret" => Term::Ret,
             "br" => {
-                let rn = i.f("Rn");
+                let rn = i.f(Fld::Rn);
                 let xv = if rn != 31 { b.get(x(rn)) } else { b.c64(0) };
                 let ij = {
                     let key = BKey::Exit(b'j', pc);

@@ -8,6 +8,15 @@
 pub mod info;
 mod tables;
 
+pub use tables::Fld;
+
+impl Fld {
+    /// the field's name in the patterns ("Rn")
+    pub fn name(self) -> &'static str {
+        tables::FLD_NAMES[self as usize]
+    }
+}
+
 /// A fixed parameter of an entry (the Python params dict's values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Param {
@@ -85,18 +94,20 @@ pub struct Insn {
 }
 
 impl Insn {
-    /// a field's value by its pattern name ("Rd", "sf", "imm12"); panics if the entry has no such field
+    /// a field's value (`i.f(Fld::Rd)`); panics if the entry has no such field
     #[inline]
-    pub fn f(&self, field: &str) -> u32 {
-        match self.enc.field(field) {
-            Some(f) => f.get(self.word),
-            None => panic!("{}: no field {}", self.enc.name, field),
+    pub fn f(&self, field: Fld) -> u32 {
+        let at = tables::FIELD_AT[self.enc.id as usize][field as usize] as u32;
+        if at == 0 {
+            panic!("{}: no field {}", self.enc.name, field.name());
         }
+        (self.word >> (at & 0xFF)) & ((1u32 << (at >> 8)) - 1)
     }
 
+    /// whether the entry has the field
     #[inline]
-    pub fn has(&self, field: &str) -> bool {
-        self.enc.field(field).is_some()
+    pub fn has(&self, field: Fld) -> bool {
+        tables::FIELD_AT[self.enc.id as usize][field as usize] != 0
     }
 
     #[inline]
@@ -161,20 +172,20 @@ mod tests {
         let i = decode(0x91004020).unwrap();
         assert_eq!(i.name(), "ADDSUB_IMM");
         assert_eq!(i.enc.template, "addsub_imm");
-        assert_eq!((i.f("sf"), i.f("op"), i.f("S"), i.f("sh")), (1, 0, 0, 0));
-        assert_eq!((i.f("imm12"), i.f("Rn"), i.f("Rd")), (0x10, 1, 0));
+        assert_eq!((i.f(Fld::sf), i.f(Fld::op), i.f(Fld::S), i.f(Fld::sh)), (1, 0, 0, 0));
+        assert_eq!((i.f(Fld::imm12), i.f(Fld::Rn), i.f(Fld::Rd)), (0x10, 1, 0));
         // ldr x0, [x1, #8]
         let i = decode(0xf9400420).unwrap();
         assert_eq!(i.name(), "LDST_UIMM");
         assert_eq!(i.p("mode"), Some(&Param::Str("uimm")));
-        assert_eq!(i.f("imm12"), 1);
+        assert_eq!(i.f(Fld::imm12), 1);
         // ret
         assert_eq!(decode(0xd65f03c0).unwrap().name(), "RET");
         // retaa: params {"pac": True}
         let i = decode(0xd65f0bff).unwrap();
         assert_eq!(i.name(), "RETA");
         assert_eq!(i.p("pac"), Some(&Param::Bool(true)));
-        assert!(!i.has("Rn"));
+        assert!(!i.has(Fld::Rn));
         // nop
         assert_eq!(decode(0xd503201f).unwrap().name(), "HINT");
         // movz with opc 1: unallocated
@@ -200,6 +211,22 @@ mod tests {
             assert_eq!(lit & e.mask, 0);
             assert_eq!(lit | e.mask, u32::MAX);
         }
+    }
+
+    /// The typed field table is the fields' by name: every name of every entry, and nothing else.
+    #[test]
+    fn field_table() {
+        for e in all_encodings() {
+            for (k, name) in tables::FLD_NAMES.iter().enumerate() {
+                let at = tables::FIELD_AT[e.id as usize][k] as u32;
+                match e.field(name) {
+                    Some(f) => assert_eq!((at & 0xFF, at >> 8), (f.shift, f.width), "{} {name}", e.name),
+                    None => assert_eq!(at, 0, "{} {name}", e.name),
+                }
+            }
+        }
+        assert_eq!(Fld::Rn.name(), "Rn");
+        assert_eq!(tables::FLD_NAMES.len(), tables::NFLD);
     }
 
     /// The dispatch finds what a scan of every entry finds, and no word matches two entries (enc.py's rule).
