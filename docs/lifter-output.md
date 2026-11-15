@@ -65,8 +65,9 @@ thread, and nothing depends on lifted code calling into the host regularly.
 - **PLT stubs** are resolved: a call of a stub calls its target.
 - **setjmp callers** are called through a host stub that saves a host `setjmp`. A guest `longjmp` returns there and
   resumes the caller at the setjmp return address (`host/hos_setjmp.c`).
-- **Calls of host code** follow the host's declarations: a replaced function keeps `x19`-`x29` and SP unless its
-  declaration says `clobbers(...)`. See [Write a patch](patches.md).
+- **Calls of host code** follow the host's declarations. A function replaced with `PATCH_FUNC` reads its declared
+  operands and writes its result; an `HLE` or `NV` replacement keeps `x19`-`x29` and SP unless its declaration says
+  `clobbers(...)`. See [Write a patch](patches.md).
 
 ## Indirect calls and jumps
 
