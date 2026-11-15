@@ -30,6 +30,224 @@ Our hazards, which every item is checked against:
 
 Bench step: one on/off run of `scripts/bench.sh market 600` per item.
 
+## What the plan preserves, and why
+
+This host came from emulator-style code. A constraint stays only if this tree shows it is needed. Verdicts:
+- **NEEDED**: something breaks without it.
+- **UNPROVEN**: inherited, nothing here shows a need; one experiment decides it.
+- **NOT NEEDED**: delete it.
+
+### How the counts were made
+
+- **Static counts**: from `work/sa/plan.pickle` (the plan of HOS_GAME_VERSION 100: 294,523 bodies, PLT stubs resolved
+  through its `plt` map), by `xlat_survey/why/count.py` and `spin.py` in the session scratchpad. Each was a light read
+  under a 3 GB memory cap; no lift and no build.
+- **sdk symbols**: from the NSO symbol table. sdk base 0x84fa0000, e.g. `__cxa_throw` 0x857ef650.
+- **Run results**: quoted from `work/assets/native/cores.md` (2026-11-11) and the scratchpad's `spin_status.txt`. Not
+  rerun here.
+
+| # | constraint | verdict |
+|---|---|---|
+| 1 | virtual cores | NEEDED: same-(core, priority) exclusion and core masks. UNPROVEN: the 2 ms equal-priority slice, kicks, escapes |
+| 2 | the poll (`ctx.poll`, `a64_poll_cur`) | UNPROVEN (serves only 1's kicks) |
+| 3 | a memory barrier on every loop cycle | NEEDED (cheap) |
+| 4 | C++ unwinding through lifted frames | NOT NEEDED, once a throw is a fatal stop |
+| 5 | setjmp owners and fibers kept generic | NEEDED (cheap) |
+| 6 | any function may be entered by BLR through the table | UNPROVEN |
+| 7 | write-through of every register before calls | NEEDED only at the sites listed; elsewhere decided by C and the summaries |
+| 8 | libc hooks: guest-range check, memmove semantics | range check NEEDED; memmove for memcpy UNPROVEN (free to keep) |
+| 9 | FP: MXCSR follows FPCR, no contraction | FZ/RMode NEEDED; contraction off costs nothing |
+| 10 | STLR as `xchg` | UNPROVEN |
+| 11 | host code that reads a lifted function's frame | NEEDED: four sites, all named |
+
+### 1. Virtual cores — NEEDED in part
+
+- **What the game relies on.**
+  - sead's thread entry 0x834a2e50 stores `GetCurrentCoreNumber() + 1` in a TLS slot when the thread's mask has one bit.
+  - 324 call sites in main read that slot. 166 of them index a six-entry per-core array without a lock (`cmp w0, #6`;
+    `host/hos_thread.c:107-112`; cores.md "How the game uses the core number", counted by
+    `work/proto/cores/coreuse.py`).
+  - 68 of 72 threads ask once, at their start.
+- **What broke without exclusion** (cores.md table):
+  - `HOS_VCORE_ANY` crashed ModuleSystemWorker1-4 (a read of 0x24900000004), at 24 GB and 27 fps.
+  - Showing a thread a core outside its mask aborted the movie library at 7 s (`HOS_VCORE_LEND_TLS` prototype).
+  - `HOS_VCORES=0` survived its runs and was the fastest (Hyrule Field +2.5 fps walking), but it runs the ~20 core-1
+    threads at once with the same number. A market A/B in the scratchpad's `spin_status.txt` found no difference
+    (13.3-13.6 ms either way, 4.1 k kicks/s at the default).
+- **The needed guarantee.** No two threads with the same cached core number and the same priority run guest code at
+  once, and no thread is shown a core outside its mask.
+  - Horizon preempts across priorities at any instruction, so per-core data shared across priorities must already be
+    locked by the game.
+  - `HOS_VCORE_BY_PRIO` (commit 67a7e492, on no branch) keeps exactly this guarantee. Measured: waits ~27,000 → ~2,100
+    per 5 s, kicks ~13,000 → ~1, zero escapes, gameplay 2-3 s sooner, fps unchanged; 6 soak runs and ~20 Hyrule Field
+    checks without a hang.
+- **Inherited and UNPROVEN.**
+  - The equal-priority time slice (`HOS_VCORE_SLICE_US`, 2 ms). cores.md: "Horizon does not time-slice these".
+  - Kicks across priorities. They are only needed for latency; no recorded bug.
+  - The escapes. They break the guarantee themselves (6-10 per run). The comment at `host/hos_thread.c:1083` gives
+    defaults of 1000/20000 µs; the code reads 250000.
+  - The vcores arrived with the initial import (04407384), citing other recompilers (MacNativeGames, totk-pc-recomp),
+    not this game.
+- **Residual risk** (cores.md): data the game shares one-way between a better and a worse thread. Nothing found
+  relies on it.
+- **One host thread per guest thread, no vcores**: correct only if the 166 per-core array sites get a per-thread or
+  locked replacement. That is a patch of the game (TLS slot per thread, arrays sized per thread), in the spirit of
+  patching the game rather than imitating the console. Not attempted.
+- **Experiment.** Land BY_PRIO with the slice, the kicks and the escapes off; run the cores soak
+  (`work/proto/cores/soak.sh`) and the market bench.
+- **Plan items that change.** A: the poll's only consumer shrinks to near zero kicks (entry 2).
+
+### 2. The poll — UNPROVEN
+
+- **Its only consumer is the virtual-core kick.**
+  - The only writer of `ctx.poll` is `vc_acquire` (`host/hos_thread.c:1209`). A fiber switch carries a pending request
+    over (`:1010`).
+  - `a64_poll_cur` (`host/mkw_glue.c:216`) calls only `hos_vcore_checkpoint` (`:1311`).
+  - Nothing else reads the flag: no suspension, shutdown, profiler, bench step or stop-the-world (grep of `host`,
+    `gpu/direct`, the runtime).
+- **Every nn::os call and SVC checkpoints anyway.** The poll serves only a lifted loop that makes no OS call while a
+  better thread of its core waits. Under BY_PRIO that is about 1 kick per 5 s. For equal priorities the console would
+  not preempt at all.
+- **The switch.** `nx2/build.py --no-polls` only drops `-DA64_POLLING` for C. Lift 2 polls unconditionally
+  (`nx2/lift2/build_ir.py` near line 247), so the experiment needs a lift-time switch.
+- **Experiment.** Lift without polls (an empty memory barrier on cycles instead, entry 3), under BY_PRIO. Watch the
+  `vcores:` log lines (waits, max wait, escapes) in the soak.
+- **Plan items that change.** A: if the poll goes, A is the whole 13.3 % of bytes (measured share) instead of
+  6.6 % + 6.3 %, and step 4 (signals) is not needed.
+
+### 3. A memory barrier on every loop cycle — NEEDED (zero bytes)
+
+- **Spin-waits on plain loads exist.** Scan for loops of at most 10 instructions with no call and no store, ending in a
+  backward branch, that load:
+  - 52,281 plain: almost all searches and walks;
+  - 242 with an acquire load or CAS retry (e.g. `0x800db740`);
+  - 8 with YIELD on a plain byte load. In the sdk at 0x850f5640-0x850fac30:
+    `subs w20, w20, #1; b.eq out; yield; ldrb w8, [x19, #0x40]; tbnz w8, #0, loop`.
+  - WFE 1 site, SEV none, YIELD 27 sites.
+- **What the barrier protects.** Those 8 are count-bounded. Without a barrier LLVM may hoist the load, and the loop
+  then waits out the count instead of seeing the flag. That changes timing, not a hang. An unbounded plain-load spin
+  was not found by this scan (loops over 10 instructions not looked at).
+- **What the game waits with.** The sdk's waits are OS calls (`hos_cv_sleep`, light events, `hos_sleep_ns`,
+  `hos_thread.c:619-850`), which release the core.
+- **Verdict.** Keep a zero-byte `asm sideeffect "" ~{memory}` (or the poll) on cycles; no reason to spend effort
+  removing it.
+
+### 4. C++ unwinding through lifted frames — NOT NEEDED, with a throw made a fatal stop
+
+Static counts (`count.py`):
+
+| what | count |
+|---|---|
+| `__cxa_throw` call sites | 24 (main 6, sdk 18); `__cxa_allocate_exception` 24, the same functions |
+| `__cxa_rethrow` | 4 (main 1, in 0x823b01c0) |
+| `_Unwind_RaiseException` callers | 4, all sdk |
+| functions calling `__cxa_begin_catch` | 10, of which 0x82118640 is `__clang_call_terminate` |
+| real catchers | 9: one in main (0x823b01c0, which rethrows), 8 in the sdk |
+| `_Unwind_Resume` (cleanup-only pads) | 984 sites in 623 functions |
+| `std::terminate` callers | 106 |
+| libc++ `__throw_bad_alloc` callers | 33 sites |
+| `__throw_system_error` callers | 25 sites |
+| main FDEs with an LSDA | 2,183 of 247,520; rtld and subsdk0 have none (`docs/lifter-abi-census.md` section 3) |
+
+- **What the throws are.** The census reads main's throwers as `vector`/`basic_string` length and allocation errors.
+  Most of main's libc++ is built `-fno-exceptions`.
+- **Measured.** The throw/unwind counters of `host/cxx_throw.c` read zero in a kokiri smoke and a 600-frame market
+  bench.
+- **Today.** Unwinding through lifted frames cannot work anyway (census section 3: no guest SP/x30 chain the unwinder
+  could resume into).
+- **Verdict.** Hook `__cxa_throw`, `__cxa_rethrow`, `_Unwind_RaiseException` and `_Unwind_ForcedUnwind` to a fatal stop
+  that names the type and the caller, and mark them and `_Unwind_Resume` noreturn. That is the census's own proposed
+  treatment. Landing pads become dead code.
+  - Not yet looked at: what 0x823b01c0 catches (the one main-side catch).
+- **Experiment.** None needed for correctness. The fatal stop is the assertion: a run that throws stops loudly.
+- **Plan items that change.**
+  - C may delete the callee-saved save/restore pairs (612,455; docs/lifter.md section 7). That is the fast-entry gain,
+    without the prototype.
+  - F loses its unwind limit: slots across calls may be promoted (entries 5 and 11 remain).
+  - The paused fast entries lose their soundness objection; the boot crash and the doubled size remain.
+
+### 5. setjmp owners and fibers — NEEDED (cheap)
+
+- **setjmp.** 14 call sites in 13 owner functions (the plan's `no_call`/`sj_rets`):
+  - main: 0x8167a900, 0x81681670 (`sys_setjmp_wrapper`), 0x82385230;
+  - sdk: 10.
+  - `longjmp` has 11 call sites.
+  - They go through `hos_sj_call` (`host/hos_setjmp.c`) because a longjmp re-enters the owner mid-function.
+- **Fibers.** `nn::os::SwitchToFiber` has 20 call sites in 9 functions (main 3: 0x83adb550, 0x83b53060 with 10 sites,
+  0x83bdef30). `InitializeFiber` has 2, sdk. The fiber functions are HLE'd host code.
+- **Cost of keeping them generic.** 13 functions and their calls. Nothing measurable.
+- **Not checked.** Whether they run. `HOS_DBG=hooks` logs each hook's first call; setjmp owners have no such counter.
+- **Plan items that change.** None. C, D and F treat these as unknown callees, already written.
+
+### 6. Entry through the function table — UNPROVEN
+
+- **What the table holds.** `a64_lookup` serves every lifted entry (295,270 in the plan's `entries`).
+- **What could replace it.** The address-taken set: relocation targets, ADR/ADRP+ADD materialisations
+  (`nx2/adr_entries.py`), vtables and pointer tables in data, thread and fiber entry points, exports, hooks. It is not
+  computed as a set today; its size against 294,523 is unknown.
+- **What trusting it would allow.** Functions outside it could drop their generic entry, and D's site caches would only
+  ever see members.
+- **What is unsound.** Guest code that computes a code address arithmetically (a jump into the middle of a table of
+  stubs). The jump tables are resolved separately.
+- **Experiment.** Emit the set into `a64_table.c`. In `a64_lookup`'s miss path (`third_party/a64-kit/rt/a64_rt.c:31`),
+  trap with the address when a target is not in the set. Then run the smoke and the market bench. No switch exists.
+- **Plan items that change.** D (smaller target domain) and the fast entries.
+
+### 7. Who reads the context of a running lifted function from outside — NEEDED at these sites only
+
+- **Entry hooks** (`entry_<addr>(ctx)` at entry, `emit_llvm.emit_function`): read and write registers at the entry.
+- **C-after and SPLICE sites** (`lift2_after_<pc>(ctx)`: `oot_wide`, `oot_jitter`, `host/direct_*.c`,
+  `host/rt_slots.c`): read and write at their pc.
+- **At rows**: take SSA values, not the context.
+- **SVC and runtime calls with ctx**: `a64_svc`, `recomp_ldxr`/`stxr`, `a64_icall`/`ijump`, `hos_sj_call`.
+- **The stall dump** (`host/hos_thread.c:276-301`): reads the saved `ctx.x[29]` and walks the frame chain. It is a
+  diagnostic and accepts stale values (the comment at `:1305` says so).
+- **Not readers.** The vcore checkpoint (`:1305-1312`: "must never read or write the thread's guest context"). The
+  unwinder reads guest memory, not the context.
+- **So.** Write-through is needed before calls to unknown callees, hooks, splices and runtime calls. Elsewhere C's
+  summaries decide.
+- **Plan items that change.** C (its checklist already names hooks and splices).
+
+### 8. libc hooks' extra semantics
+
+- **Guest-range check: NEEDED.** Commit 6f8f2432, "host copies, file reads and writes, and the NV12 reader stay in
+  guest memory", with `tests/test_guest_copies.py`. It keeps a host `memmove` from writing outside the guest
+  reservation. This is host memory safety, not imitation.
+- **memmove for memcpy: UNPROVEN** (from the initial import). It costs nothing. For G's intrinsic keep `llvm.memmove`;
+  no experiment needed.
+
+### 9. Floating point
+
+- **FZ: NEEDED.** The game sets FPCR.FZ on its main thread (docs/lifter.md section 8: `sys_fpcr_flush_to_zero`,
+  observed in the game). Results differ without it.
+- **RMode following: NEEDED in principle.** Only reachable through `fesetround`/`fesetenv` by function pointer.
+  Kept because it is free outside `strictfp` functions.
+- **No contraction: costs nothing.** The emitter writes plain `fmul`/`fadd` without `contract` flags, and LLVM does
+  not fuse those.
+- **Default NaN and the other 8.1 deviations.** Already not imitated.
+- **No evidence in the tree for frame-rate determinism tied to these.** No doc mentions determinism. Nothing to
+  decide.
+
+### 10. STLR as `xchg` — UNPROVEN
+
+- **Counts.** 1,546 STLR sites, 52 in hot functions; LDAR 1,478.
+- **What it protects.** A plain x86 store is already a release store. The `xchg` matters only for STLR followed by
+  LDAR to another address, where the game relies on store-load order (a Dekker-style flag pair). None was looked for or
+  found.
+- **Experiment.** A lift-time switch emitting STLR as `store atomic release` (a `mov`), then the cores soak and the
+  market bench. No switch exists.
+- **Gain.** Small: 52 hot sites.
+
+### 11. Host code that reads a lifted function's frame — NEEDED (four sites, named)
+
+- `host/direct_layer_ahead.c:213`: `c->x[31]`.
+- `host/direct_job_sync.c:117`: `G64(c->x[31] + 0x10)`, a frame slot of its caller.
+- `host/direct_mesh_system.c:52-56`: builds a call frame below SP and calls guest code.
+- `host/rt_slots.c:718`: `alloc_sp = c->x[31]`.
+- Plus the stall dump's frame-chain walk (entry 7).
+- **Plan items that change.** F must exclude the functions of these splice sites. A frame slot those splices read
+  must stay in guest memory.
+
 ## A. Poll placement
 
 ### Our side (read)
@@ -128,6 +346,9 @@ Bench step: one on/off run of `scripts/bench.sh market 600` per item.
 5. **Counted-loop exemption.** Not transferred (HotSpot's lesson above, and our IR does not know trip counts).
 
 ### Soundness checklist
+
+- **Whether the poll is needed at all** is UNPROVEN ("What the plan preserves", entries 1-3). Its only consumer is the
+  virtual-core kick. The cycle barrier stays either way.
 
 - **unwind**: polls touch no guest state; unaffected.
 - **setjmp/fibers**: the flag is the running context's (`run_ctx`); unchanged.
@@ -230,6 +451,10 @@ What this changes in code:
 
 ### Soundness checklist
 
+- **Constraints this checklist relies on**: "What the plan preserves", entries 4, 5, 7 and 11.
+- **If a throw becomes a fatal stop** (entry 4, NOT NEEDED), the unwind condition below no longer holds C back: the
+  save/restore pairs may go too.
+
 - **unwind**: saves unchanged in guest frames; ctx live values unchanged at every call. Safe as argued in 1 and 2.
 - **setjmp/fibers**: setjmp-owner calls and the HLE'd fiber functions (host hooks) count as unknown callees, so
   everything is reloaded.
@@ -321,6 +546,8 @@ Step 2 only (no reloads of the preserved set after BLs to full-summary, unhooked
 
 ### Soundness checklist
 
+- **The table-entry assumption** is entry 6 (UNPROVEN). An asserted address-taken set would shrink D's target domain.
+
 - **unwind**: unchanged; the call is a call.
 - **setjmp/fibers**: a promoted target that is a setjmp owner or hooked must go through the same path a BL to it
   takes (`hos_sj_call`, the hook symbol). Use `prog.symbol(prog.callee(K))` as for BL.
@@ -389,6 +616,8 @@ Index switches for bounded tables only (1,385 of 1,475 per docs/lifter.md sectio
 - rev.ng `detect-stack-size`, `promote-stack-pointer`, `segregate-stack-accesses`: names and order only; not read.
 
 ### Our hazards decide the subset
+
+- **Re-judged in "What the plan preserves".** With a throw made fatal (entry 4), the unwind limit below goes. setjmp owners (entry 5) and the four frame-reading splice sites (entry 11) remain.
 
 - **Unwind**: a promoted save slot breaks the guest unwinder. So never promote the callee-saved save slots, and never
   promote a slot that is live across a call that may unwind (most calls).
@@ -496,16 +725,17 @@ If a reader is ever needed, these are the options in order of cost:
 
 ## Summary
 
-Order by value, given the measurements: A (bytes measured), C (the 31-33 % context traffic is the convention), D
+The constraints behind each risk are judged in "What the plan preserves, and why". Order by value, given the
+measurements: A (bytes measured), C (the 31-33 % context traffic is the convention), D
 (166k opaque calls), E, then F and G. B is decided (marks deleted, nothing reads them) and is listed last.
 
 | item | value | depends on | first step | risk |
 |---|---|---|---|---|
-| A poll placement | HIGH: -6.6 % and -6.3 % measured | nothing | polls on natural-loop back edges only | spin loops need a barrier on every cycle |
-| C call boundaries | HIGH | summaries every build (117 s, 1.7 GB cached) | no reload of preserved registers after full-summary, unhooked BLs | wrong summary (verify build), hooks returning 1, splices writing ctx |
+| A poll placement | HIGH: -6.6 % and -6.3 % measured; the whole 13.3 % if the poll goes (preserves 2) | nothing; BY_PRIO for removal (preserves 1) | polls on natural-loop back edges only | spin loops need a barrier on every cycle |
+| C call boundaries | HIGH; larger with pair deletion if a throw is fatal (preserves 4) | summaries every build (117 s, 1.7 GB cached) | no reload of preserved registers after full-summary, unhooked BLs | wrong summary (verify build), hooks returning 1, splices writing ctx |
 | D indirect calls | MEDIUM-HIGH | nothing (1); a profile (2) | per-site 2-slot cache (existing runtime code) | none (exact compare) |
 | E index switches | MEDIUM (speed) | discovery's load pc and index register | bounded tables only | none |
-| F frame slots | LOW-MEDIUM | `frame_pass` per function | leaf functions, frame not taken | unwind if extended beyond the subset |
+| F frame slots | LOW-MEDIUM; MEDIUM if a throw is fatal (preserves 4) | `frame_pass` per function | leaf functions, frame not taken | unwind if extended beyond the subset |
 | G libc intrinsics, CRC32C, noreturn, CCMP, NEON, build | LOW-MEDIUM each | various | one each | small |
 | B page marks | done by deletion: 12.5 % of bytes | nothing (no reader) | the deletion branch | none; a future reader takes the fallbacks in B |
 
