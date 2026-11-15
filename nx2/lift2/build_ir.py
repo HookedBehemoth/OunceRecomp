@@ -7,12 +7,13 @@ branch.
 
 Control leaving the function:
 - BL: the callee's generic entry with the context (x30 set to the return address first); every register is the
-  context's again after it;
+  context's again after it; a callee that stops the game (bounds: an import stub) is a noreturn call; an answered
+  callee (PATCH_ANSWER) is no call: x0 the answer, x30 the return address;
 - BLR: a call of the target when it is a host function pointer (code pointers are, lift2/code_ptrs.py), else the
   runtime's a64_icall_guest(ctx, target, pc); the same after it;
 - B, or falling through, to another function's entry: a tail call of its generic entry (musttail: all generic entries
   share one prototype);
-- BR: a jump table's switch when the discovery resolved one (the cases inside the function are branches, the others
+- BR: a row in place of it (a tail call: probes.At replace), then a return; a jump table's switch when the discovery resolved one (the cases inside the function are branches, the others
   tail calls), else a tail call of the target when it is a host function pointer, else the runtime's
   a64_ijump_guest(ctx, target, pc);
 - RET: return; BRK, HLT, UDF: the runtime's a64_trap;
@@ -139,10 +140,21 @@ def build(entry, pcs, word, prog=LEAF):
         return fn
 
     def goto(t, frm):
-        """the block a branch from frm to t goes to: one of the function's, or a tail-call exit"""
+        """the block a branch from frm to t goes to: one of the function's, a tail-call exit, or (an answered callee,
+        PATCH_ANSWER) a return with x0 the answer"""
         if inside(prog, entry, body, t):
             return fn.block(t)
-        return exit_block("t", t, ("tail", prog.bound(prog.callee(t)).tail))
+        bd = prog.bound(prog.callee(t))
+        if bd.answer is None:
+            return exit_block("t", t, ("tail", bd.tail))
+        blk = fn.blocks.get(("a", t))
+        if blk is None:
+            blk = exit_block("a", t, ("ret",))
+            here, cmp = b.blk, b.cmp
+            b.at(blk)
+            b.set("x0", b.const(bd.answer))
+            b.blk, b.cmp = here, cmp
+        return blk
 
     def exit_block(kind, t, term):
         key = (kind, t)
@@ -231,6 +243,15 @@ def build(entry, pcs, word, prog=LEAF):
         if t == "b" and f["op"]:   # BL
             callee = prog.callee(target(i, pc))
             bd = prog.bound(callee)
+            if bd.answer is not None:   # (PATCH_ANSWER: no call; x0 the answer, x30 the BL's, everything else as it was)
+                b.set("x30", b.const(pc + 4))
+                b.set("x0", b.const(bd.answer))
+                for post in prog.after.get(pc, ()):
+                    post(b)
+                if pc + 4 not in body:
+                    cur.term = ("br", goto(pc + 4, pc))
+                    cur = None
+                continue
             held = {}
             for var in bounds.keep_vars(bd):   # (written through to the context before the call, as every register)
                 v = cur.defs.get(var)
@@ -239,7 +260,7 @@ def build(entry, pcs, word, prog=LEAF):
                 if v is not None:
                     held[var] = v
             b.set("x30", b.const(pc + 4))
-            b.op("gcall", "void", sym=bd.symbol, callee=callee, pc=pc)
+            b.op("gcall", "void", sym=bd.symbol, callee=callee, pc=pc, stop=bd.kind == "stop")
             b.after_call()
             cur.defs.update(held)
             for post in prog.after.get(pc, ()):
@@ -273,6 +294,12 @@ def build(entry, pcs, word, prog=LEAF):
             continue
         if pc in prog.after:   # (a branch: nothing runs after it on every path)
             raise ValueError("code after the branch at %#x" % pc)
+        if t == "br" and pc in prog.replace:   # (a row in place of a tail call: its result the callee's, then return)
+            for rep in prog.replace[pc]:
+                rep(b)
+            cur.term = ("ret",)
+            cur = None
+            continue
         if t == "b":
             cur.term = ("br", goto(target(i, pc), pc))
         elif t == "bcond":

@@ -385,6 +385,22 @@ define void @f_%(a)08x(ptr %%ctx) {
   ret void
 }"""
 GPR = (1 << 32) - 1
+
+
+def answers_ir(hle):
+    """the generic entries of the answered functions (PATCH_ANSWER, host/patch.h; hle: {address: symbol}), reached
+    through a code pointer or a BLR: f_<addr> writes the answer to x0 and returns, the record a direct call of it has
+    (bounds: no call there, the lift writes x0 itself); the one definition of an answer is its declaration"""
+    out = ['target triple = "%s"' % emit_llvm.TRIPLE]
+    for a, n in sorted(hle.items()):
+        v = host_effects.answer(n)
+        if v is not None:
+            out.append("define void @f_%08x(ptr noalias nocapture %%ctx) {   ; %s\n  %%x0 = getelementptr i8, ptr %%ctx, "
+                       "i64 %d\n  store i64 %s, ptr %%x0, align 8\n  ret void\n}"
+                       % (a, n, emit_llvm.CTX_OFF["x0"], emit_llvm.int_text(v & (1 << 64) - 1, 64)))
+    return "\n".join(out) + "\n"
+
+
 HOST_CHECK = """define internal void @hchk_%(a)08x(ptr %%ctx) {
   %%fr = alloca [32 x i64], align 8
   call void @lift2_host_enter(ptr %%ctx, ptr %%fr)
@@ -421,7 +437,7 @@ def lift_part(args):
         prog.probes = probes.find(e, pcs, w.__getitem__)
         prog.before = probes.at(e, pcs, w.__getitem__, before=True, jt=prog.jt, entries=prog.entries)
         prog.after = probes.at(e, pcs, w.__getitem__)
-        prog.replace = probes.at(e, pcs, w.__getitem__, replace=True)
+        prog.replace = probes.at(e, pcs, w.__getitem__, replace=True, jt=prog.jt)
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
         n_code += fn.code_sites
         fn.name = "f_%08x" % e
@@ -634,12 +650,16 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
                          "first from f_%08x: census %d, translated %d" % ((len(bad),) + bad[0]))
     t_lift = time.time() - t0
     cjobs = [(clang, text, objs_k[k], flags[k], pres[k], cache) for k, text in zip(todo, texts)]
+    # (the answered functions' generic entries: one small module, cached by its text as a partition is)
+    cjobs.append((clang, answers_ir(hle), os.path.join(obj_dir, "lift_answers.o"), flags[0], pres[0], cache))
     objs, failed, t1 = [o for k, o in enumerate(objs_k) if k not in set(todo)], [], time.time()
     with concurrent.futures.ThreadPoolExecutor(jobs) as ex:
-        for (obj, secs, err), k in zip(ex.map(compile_part, cjobs), todo):
+        for (obj, secs, err), k in zip(ex.map(compile_part, cjobs), todo + [None]):
             objs.append(obj)
             if err:
                 failed.append((obj, err))
+                continue
+            if k is None:
                 continue
             try:
                 hit = os.path.join(cache, "liftin_%s.o" % keys[k])

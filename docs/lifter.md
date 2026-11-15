@@ -172,7 +172,15 @@ exclusives' runtime calls cost nothing measurable.
 - **BL**: x30 := the return address, then `call void @f_<callee>(ptr %ctx)`, then the reload of every register but
   the callee's preserved x19-x29 and SP (see above). A callee the summaries prove noreturn is followed by
   `a64_trap(ctx, <BL address>, <BL word>)` and `unreachable`, so a wrong summary stops the game; the code only its
-  return reached is dropped.
+  return reached is dropped. A BL to an import that stops the game (record kind `stop`: one of the 155 generated
+  import stubs, or one of the 9 SDK NVN exports with no `NV(...)` proc, `host_effects.stops`) is the call of its stub
+  marked `noreturn`, then the same trap and `unreachable` (225 BL and 8 tail-B sites at 1e054a23). A BL to an answered
+  function (record kind `answer`, `PATCH_ANSWER`) is no call: x0 := the answer, x30 := the return address, every other
+  register as it was (record: reads nothing, writes and must-writes x0 and x30, results x0); a tail branch to one is a
+  return with x0 the answer (99 BL and 9 tail-B sites at 1e054a23, 18 of them with a branch or compare on x0 within
+  four instructions; all in start-up, audio set-up and network paths, so the expected effect on speed is about 0: the
+  point is one definition of an answer and no host call). The summaries take the same records
+  (`summary.host_summary`).
 - **The call-boundary record** (`nx2/lift2/bounds.py`, `bounds.call_bounds`): every direct callee has one record,
   computed once per build worker from the plan's summaries and the host's declarations, and the lift (`Program.bound`),
   the verification build, the build's call report (`bounds.call_report`) and `nx2/lift2/dump.py` all read it. It
@@ -186,8 +194,7 @@ exclusives' runtime calls cost nothing measurable.
   (`probes.row_effects`, `summary.rows`, below). What a call of a host callee keeps is its declared effect (the declarations' `reads(...)`,
   `guest(...)`, `clobbers(...)`, Hooks and probes; the rules in `nx2/lift2/host_effects.py`):
   - an HLE'd function keeps x19-x29 and SP unless its declaration says `clobbers("why")` (the three fiber
-    functions: a context switch or a host fiber deleted; nine sdk NVN exports with no host proc, `HLE_EFFECTS` in
-    `host/nvn_native.c`: not audited);
+    functions: a context switch or a host fiber deleted);
   - a function replaced by a typed host function (`PATCH_FUNC`, `bounds.func_bound`) has one record, from its
     declaration: it reads its operands and the inputs of the guest functions its `guest(...)` names (`guest_call` puts
     every register back, so they cost no kept register), writes its result (on every return) and x30 and nothing else
@@ -400,13 +407,17 @@ names its instruction word, so another game version stops the lift or the build.
     as for rows, since guest code called from inside a host function must not change what the caller keeps.
   - `HLE(symbol, effect...)`: the function is replaced by `void imp_<symbol>(Ctx *c)`, hooked where the game imports
     it and at the SDK's definition (`nx2/standalone.py`, `a64_hooks.c`: `f_<addr>` is the host function; the guest body
-    is not lifted). `PATCH_ANSWER(symbol, value, "why")`: the same, replaced by a constant answer in x0 (nothing else
-    written), with the reason it is enough (`host/nn_answers.c`: the SDK functions OoT was seen calling that need no
-    more). Every other OS-facing import the game makes gets a generated stub (`gen/a64_stubs.c`) that stops the game
-    when called, naming the function, its caller in the log (`hos_import_stop`, `host/hos_hostcall.c`); an HLE or
+    is not lifted). `PATCH_ANSWER(symbol, value, "why")`: the function replaced by a constant answer in x0 (nothing
+    else written), with the reason it is enough (`host/nn_answers.c`: the SDK functions OoT was seen calling that need
+    no more). It has no host function: a direct call is lowered in place (Calls and returns), and its generic entry
+    `f_<addr>` (a code pointer, a BLR) is lifted IR that writes x0 and returns (`game.answers_ir`, one small object;
+    `a64_hooks.c` keeps a comment line for it), so the declaration is the one definition. Every other OS-facing import
+    the game makes gets a generated stub (`gen/a64_stubs.c`) that stops the game when called, naming the function, its
+    caller in the log (`hos_import_stop`, `host/hos_hostcall.c`, noreturn); a direct call of one is a noreturn call; an HLE or
     answer of a symbol no module of the image has stops the lift. `NV(name, effect...)`: an NVN proc, `static void
     n_<name>(Ctx *c, void *u_)` (`host/nvn_native.c`'s table; the SDK's export `name` is routed to it); a proc the game
-    asks for that has none is handed out, and a call of it stops the game with its name. `HLE_EFFECTS(symbol,
+    asks for that has none is handed out, and a call of it stops the game with its name (an SDK export with no proc is a
+    stop, so a direct call of it is noreturn; a proc pointer's call is a BLR, which stays a call). `HLE_EFFECTS(symbol,
     effect...)`: the effects of a replaced function whose body is not declared here (a dispatch). A call reads the AAPCS
     arguments, x8, v0-v7, SP and x30 (`host_effects.HLE_ARGS`) plus its `reads(...)`, and keeps x19-x29 and SP unless
     it declares `clobbers("why")` (Calls and returns).
@@ -433,7 +444,9 @@ names its instruction word, so another game version stops the lift or the build.
   - mode `after`: after the instruction (after a BL or BLR when the call returns); `before`: on the edge into it, which
     must not be a branch target of its function, a jump-table target or another function's entry (its own entry is
     allowed: the row runs on every call); `instead`: in place of the BL or BLR (the call is not made, x30 set as the call
-    would; an At row with `replace`), or in place of any other instruction's result (a Value probe: the declared
+    would; an At row with `replace`; on a BLR the target register is an operand like any other), in place of a BR that
+    is no jump table's (a tail call: the row runs, its result is the tail callee's, then the function returns; the
+    record is the row's reads and writes at a return), or in place of any other instruction's result (a Value probe: the declared
     result must be the instruction's one destination register Rd at its width, `wN` for a 32-bit destination and `xN`
     for a 64-bit one, and the operands `xN`, `add(xN, K)` or `sN`; as the frame-step cuts of the pick-up indicator and
     the water's ripples, `fcvtzs w12, s0` at 0x80a88300 and `fcvtzs w9, s0` at 0x800675f8, take `hos_frame_whole`).
@@ -466,7 +479,7 @@ names its instruction word, so another game version stops the lift or the build.
 | occlusion off (`HOOKSHOT_OCCLUSION_OFF=1`) | `hos_oot_occlusion_flag` (x6) | `f_811cc790` |
 | `HOS_BENCH`'s "in play" | `hos_oot_player_update` | `f_82c415e0` |
 | per-core ring owners | `hos_oot_ring_write` (x14: 7 pushes, 7 pops) | `f_8004ab40`, `f_800aff80`, `f_800b3ce0`, `f_800b73d0`, `f_8073a090`, `f_8073c900`, `f_83af6150`, `f_83af59c0` |
-| renderer patches (`host/direct_*.c`, `host/rt_slots.c`) | depth copy and job sync retargets (x8 / x4), job call (x8, x21, `[sp+0x10]`), mesh list resets, mesh args, sky LUT and terrain tiles (x2: the memcpy's size), render-target slot (x10, `[sp+192]`), mesh system binds (guest call), layer ahead (guest call, `[sp+0x48]`), inline passes (two calls of `f_80681320`), the job view (x25), list kinds (13 recorders) | see the table below |
+| renderer patches (`host/direct_*.c`, `host/rt_slots.c`) | depth copy (instead of 2 BLRs: the proc x8, x0-x7), job sync (instead of 4 BLRs and 1 BR: the proc x8 / x4 and its arguments), job call (instead of its BLR: x8, x0-x2, x21, `[sp+0x10]`), mesh list resets, mesh args, sky LUT and terrain tiles (x2: the memcpy's size), render-target slot (x10, `[sp+192]`), mesh system binds (guest call), layer ahead (guest call, `[sp+0x48]`), inline passes (two calls of `f_80681320`), the job view (x25), list kinds (13 recorders) | see the table below |
 
 The patches a caller makes of its own call (no host function is told who called it; a row at the call site says it):
 
@@ -477,7 +490,14 @@ The patches a caller makes of its own call (no host function is told who called 
 | `f_805902c0` frame_present_submit | `bl` SleepThread at 0x8059051c, replaced | polls its frame's NVN event between sleeps; `HOS_PRESENT_POLL=1` (an experiment, off) looks at the event between yields |
 | `f_80667d20` system_texture_table_write | `bl` f_800634b0 at 0x806680d8, replaced (guest call) | re-registers one system texture's descriptor every frame; the call is skipped while the entry, view and texture are unchanged |
 | `f_80f6c9d0` agl_memory_pool_create | after `ldr x8, [x8]` at 0x80f6cb18 | agl's pool wrapper; names the pool its nvnMemoryPoolInitialize makes, so the texture heap (made inside f_80f6c580's run) is told to the back end |
-| `f_80289590`, `f_80666d20` | the depth-copy retargets (#0, #1) | the two depth copies that need barriers around them (their calls at 0x80289cc0, 0x806675d8) |
+| `f_80289590`, `f_80666d20` | instead of the depth copies' `blr x8` (0x80289cc0, 0x806675d8) | the two depth copies that need barriers around them |
+| `f_82c02f20`, `f_82c03170`, `f_831fa4a0` | instead of WaitEvent's and Barrier's `blr x8` (0x82c03018, 0x82c030c0, 0x82c03268, 0x82c03310) and of f_831fa4a0's tail jump `br x4` (0x831fa588) | a job's waits and barrier kept for the layer list that calls the job (`host/direct_job_sync.c`) |
+| `f_806688c0` pass_job_caller | instead of CallCommands' `blr x8` at 0x80668c80 | the kept waits, barrier and grid dispatches recorded before the job's commands |
+
+No patch rewrites a code pointer or hands the game a host-call slot: until 2026-11-15, 19 After rows rewrote the proc
+just loaded (x8 / x4) to a host-call slot (`hos_hostcall`) of a substitute taking the context; 7 of them are the rows
+above, and 12 were deleted (on loads that feed no call of the proc they tested: counters, a vtable call, other procs'
+slots, and a third copy only counted). `hos_hostcall` serves the NVN procs alone.
 | the 13 list recorders (`host/direct.c`) | after `ldr x8, [x8]` before BeginRecording's blr | the function beginning a command list names its kind (load lists 1-6, job, layer, gate, compute, head) |
 | `f_80084de0` render_job_record | after `ldr x8, [x8]` at 0x80085334 | its BeginRecording's list is the job's; x25 is the job's view record |
 | `f_802640a0` pass_local_shadow_depth | after `str w8, [sp, #0x38]` at 0x80264128 | its alloc of the local shadow map, whose size is a class (`host/rt_slots.c`) |

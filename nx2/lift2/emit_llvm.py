@@ -439,7 +439,8 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
         out.append("  %s = load %s, ptr %%io%d.%d, align %d" % (r, lltype(v.ty), src.id, k, 16 if v.ty[0] == "v" else 8))
     elif op == "gcall":
         decls.add("declare void @%s(ptr)" % v.attrs["sym"])
-        out.append("  call void @%s(ptr %%ctx)" % v.attrs["sym"])
+        # (a stop, an import the host neither implements nor answers: a noreturn call, its block's trap unreachable)
+        out.append("  call void @%s(ptr %%ctx)%s" % (v.attrs["sym"], " noreturn" if v.attrs.get("stop") else ""))
     elif op == "icall":   # (lift2_icall: a host function pointer called directly, a guest address counted)
         decls.add("helper:lift2_icall")
         decls.update(HELPER_DECLS["lift2_icall"])

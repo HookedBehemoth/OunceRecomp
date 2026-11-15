@@ -3528,19 +3528,10 @@ static const nvn_impl impls[] = {
 /* end of table */
 };
 
-/* NVN functions the SDK exports with no proc here: a call goes through nvn2_dispatch to unimplemented below, which
-   stops the game (the record keeps none of the caller's registers: the call does not come back) */
-HLE_EFFECTS(nvnInstallGlobalDebugCallback, clobbers("no proc here: a call stops the game (unimplemented)"));
-HLE_EFFECTS(nvnBootstrapLoaderInternal, clobbers("no proc here: a call stops the game (unimplemented)"));
-HLE_EFFECTS(nvnDevtoolsBootstrap, clobbers("no proc here: a call stops the game (unimplemented)"));
-HLE_EFFECTS(_Z22nvndetailUseMiddleWarev, clobbers("no proc here: a call stops the game (unimplemented)"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetDefaults, clobbers("no proc here: a call stops the game (unimplemented)"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetDevice, clobbers("no proc here: a call stops the game (unimplemented)"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetNativeMemoryHandle,
-            clobbers("no proc here: a call stops the game (unimplemented)"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderGetDevice, clobbers("no proc here: a call stops the game (unimplemented)"));
-HLE_EFFECTS(nvnExternalMemoryPoolBuilderGetNativeMemoryHandle,
-            clobbers("no proc here: a call stops the game (unimplemented)"));
+/* An NVN function the SDK exports with no NV(...) here (nvnInstallGlobalDebugCallback, nvnBootstrapLoaderInternal,
+   nvnDevtoolsBootstrap, the external memory pool builder, nvndetailUseMiddleWare): a call goes through nvn2_dispatch to
+   unimplemented below, which stops the game; a direct call of one is lifted as a noreturn call
+   (nx2/lift2/host_effects.py stops) */
 
 /* A proc not implemented here: the game may ask for it (nvnDeviceGetProcAddress hands out every name it asks for), a
    call of it stops the game with its name and caller. A proc the game needs is an NV(...) above. */

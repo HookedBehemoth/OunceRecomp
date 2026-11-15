@@ -504,7 +504,7 @@ declarations. It compiles nothing and lifts nothing.
     registers the body reads.
 - `... check --all` runs the checks the build makes on every declaration and prints each error with its file:line.
   The checks: the word, a site in exactly one function, `before` not on a branch, jump-table or other entry target,
-  `instead` on a call, a Value's result being its instruction's destination, result and io registers, `PATCH_FUNC`s'
+  `instead` on a call (BL, BLR) or a tail call (a BR without a jump table), a Value's result being its instruction's destination, result and io registers, `PATCH_FUNC`s'
   first words, body hashes, exports and the argument registers an `orig` body reads, `HLE_EFFECTS` symbols. A guest function that a host function calls without declaring it is not
   checked here: `tests/test_host_context_reads.py` compiles the host to find those.
 - `... check <file:line>` also prints what that declaration costs. `... check -` does the same for a proposed
@@ -515,7 +515,11 @@ declarations. It compiles nothing and lifts nothing.
 - `... report` prints one line per declaration, costliest first, in about half a minute:
   - the registers the declaration reads and writes beyond its instruction's own;
   - how its function's summary differs without it (the callees' summaries are the plan's);
-  - the BL sites whose call record changes because of it.
+  - the BL sites whose call record changes because of it;
+  - for each `PATCH_ANSWER`, its direct call sites (BL and tail branches, which make no call) and its record.
+- To patch an indirect call, put an `instead` row on its `blr` (or the `br` of a tail call) with the target register
+  as an operand, and call the target through `guest_call` / `guest_call8` with `guest(computed)` when the original
+  behaviour is wanted (`host/direct_job_sync.c`, `host/direct_depth_copy.c`). A row never rewrites a code pointer.
 
 Example. Run `site 0x8009a474` before replacing the sleep call of `job_calc_runner`. It prints the BL to
 `os_sleep_thread`; no other path into it; `live in: x0-x7,...`; that `job_calc_runner` is demoted (`tmp_after_call,

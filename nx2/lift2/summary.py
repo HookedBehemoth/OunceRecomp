@@ -195,8 +195,17 @@ def is_host(c, hooks):
 
 def host_summary(symbol):
     """the summary of an HLE'd function (symbol: its name, as in imp_<symbol>; None: not known): AAPCS64 facts with
-    what its declaration reads; one declared clobbers("...") or unknown reads every register"""
+    what its declaration reads; one declared clobbers("...") or unknown reads every register. An answered one
+    (PATCH_ANSWER): reads nothing, writes x0 (and x30, the BL) and nothing else; one that stops the game
+    (host_effects.stops): noreturn"""
+    if host_effects.stops(symbol):
+        return NORETURN_HOST
     s = Summary()
+    if host_effects.answer(symbol) is not None:
+        s.clobbers = s.mustdef = X[0] | X[30]
+        s.results = X[0]
+        s.returns = s.boundary = True
+        return s
     clean = symbol is not None and host_effects.clobbers(symbol) is None
     s.inputs = sum(BIT[v] for v in host_effects.hle_reads(symbol)) if clean else ALL
     s.clobbers, s.mustdef, s.preserved = CALLER_SAVED, X[30], CALLEE_SAVED
@@ -239,8 +248,9 @@ class Func:
                 bu, au, bd, ad, calls, repl = row
                 if calls:
                     self.guest[k] = calls
-                if repl:   # (in place of the call: the BL / BLR writes x30, the rows what they declare)
-                    u, d = bu | au, bd | ad | X[30]
+                if repl:   # (in place of the call: the BL / BLR writes x30, the rows what they declare; a BR's x30 is
+                    # the function's return, which follows)
+                    u, d = bu | au, bd | ad | (0 if i is not None and i.entry.template == "br" else X[30])
                 elif i is not None and (i.entry.template == "blr" or i.entry.template == "b" and i.f["op"]):
                     # (after the call returns: liveness and call_reads take the after reads past the callee's
                     # must-writes, Func.after)
@@ -269,6 +279,8 @@ class Func:
                 self._edge(k, [nxt])
                 if self.kind[k] == "tail":
                     self.falls_into.add(self.callee[k])
+            elif row is not None and row[5] and t == "br":   # (a row replaced a tail call: the function returns)
+                self.kind[k] = "ret"
             elif row is not None and row[5]:   # (a row replaced the BL / BLR: no call)
                 self._edge(k, [nxt])
             elif t == "b" and f["op"]:

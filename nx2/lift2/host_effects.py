@@ -29,6 +29,8 @@ An HLE_EFFECTS of a symbol the image does not replace stops the build (check); a
 import os
 import re
 
+from horizon import nvn_proc_name
+
 # the registers every HLE'd function may read (AAPCS64: arguments x0-x7, the indirect result x8, v0-v7, the stack; x30)
 HLE_ARGS = tuple("x%d" % i for i in range(9)) + tuple("v%d" % i for i in range(8)) + ("sp", "x30")
 
@@ -44,6 +46,27 @@ def clobbers(symbol):
     return d.clobbers if d is not None else None
 
 
+def answer(symbol):
+    """the value a PATCH_ANSWER of symbol answers (host/patch.h: the lift writes it to x0 at each direct call, and the
+    function's generic entry is lifted IR doing the same, game.answers_ir), or None"""
+    a = _patches().answers.get(symbol) if symbol is not None else None
+    return a.value if a is not None else None
+
+
+def stops(symbol):
+    """a call of the hooked function symbol stops the game, never returning: a generated import stub (the host neither
+    implements nor answers it: nx2/standalone.py gen_stubs, host/hos_hostcall.c hos_import_stop), or an NVN function the
+    SDK exports that no NV(...) implements (host/nvn_native.c nvn2_dispatch: unimplemented). A BL to it is a noreturn
+    call (bounds.call_bounds, summary.host_summary)"""
+    if symbol is None:
+        return False
+    ps = _patches()
+    if symbol in ps.hle or symbol in ps.answers or symbol in ps.declared:   # (HLE_EFFECTS: a body declared elsewhere)
+        return False
+    proc = nvn_proc_name(symbol)
+    return proc not in ps.nv if proc else True
+
+
 def hle_reads(symbol):
     """the registers a call of the HLE'd function symbol reads"""
     d = _patches().effects(symbol)
@@ -51,6 +74,8 @@ def hle_reads(symbol):
 
 
 HOOK_LINE = re.compile(r"^void f_([0-9a-f]{8})\(Ctx \*A64_NOESC c\) \{ TAILCALL\(imp_(\w+)\); \}", re.M)
+# (an answered function: its f_<address> is lifted IR, nx2/lift2/tables.py)
+ANSWER_LINE = re.compile(r"^/\* f_([0-9a-f]{8}) answers imp_(\w+): lifted IR \*/$", re.M)
 
 
 def hle_symbols(hooks):
@@ -64,7 +89,8 @@ def hle_names(gen):
     if not os.path.exists(path):
         return {}
     with open(path) as f:
-        return {int(a, 16): s for a, s in HOOK_LINE.findall(f.read())}
+        text = f.read()
+    return {int(a, 16): s for a, s in HOOK_LINE.findall(text) + ANSWER_LINE.findall(text)}
 
 
 def errors(names):

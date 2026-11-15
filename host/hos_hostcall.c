@@ -2,7 +2,8 @@
 
    The lifted code reaches them through indirect calls (blr / br): rt/a64_rt.c asks a64_call_miss for any address
    that is not a lifted function. Each host call is a 16-byte slot in HOS_HOSTCALL_BASE.. (no memory behind it).
-   Used for APIs that hand out function pointers, NVN above all: every proc nvnDeviceGetProcAddress returns is one. */
+   Used for the API that hands out function pointers, NVN: every proc nvnDeviceGetProcAddress returns is one (the Proc
+   kind). No patch hands the game one: a patch of an indirect call is an instead row on its BLR / BR (host/patch.h). */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,9 +138,12 @@ int a64_call_miss(Ctx *c, uint64_t target) {
 }
 
 /* An OS-facing import the host neither replaces (HLE) nor answers (PATCH_ANSWER, host/nn_answers.c): the generated stub
-   (gen/a64_stubs.c, nx2/standalone.py gen_stubs) stops the game here, naming the function; the caller is the lr. */
+   (gen/a64_stubs.c, nx2/standalone.py gen_stubs) stops the game here, naming the function; the caller is the lr. A
+   direct call of the stub is lifted as a noreturn call (nx2/lift2/bounds.py "stop") */
+__attribute__((noreturn)) void hos_import_stop(Ctx *c, const char *sym, const char *name);
 void hos_import_stop(Ctx *c, const char *sym, const char *name) {
     hos_fatal(c, "the game called %s (%s), which the host neither implements nor answers", name, sym);
+    __builtin_unreachable();   /* (hos_fatal ends the process) */
 }
 
 /* Call guest code from inside a host function (an HLE handler), with up to four arguments, on the current guest
@@ -155,12 +159,12 @@ uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t 
 
 /* Guest code from an At row or a replaced function (guest_call), transparent to the lifted caller: every register (x0-x30,
    SP, NZCV, V0-V31) as it was afterwards, so the lifted code keeps its values as SSA values across it (host/hos.h). */
-static uint64_t call_restoring(Ctx *c, uint64_t sp, uint64_t fn, const uint64_t a[5]) {
+static uint64_t call_restoring(Ctx *c, uint64_t sp, uint64_t fn, const uint64_t *a, int n) {
     uint64_t x[32], v[32][2];
     uint8_t f[4] = {c->n, c->z, c->c, c->v};
     memcpy(x, c->x, sizeof x);
     memcpy(v, c->vreg, sizeof v);
-    memcpy(c->x, a, 5 * sizeof *a);
+    memcpy(c->x, a, n * sizeof *a);
     c->x[31] = sp, c->x[30] = 0;
     a64_icall(c, fn);
     const uint64_t r = c->x[0];
@@ -171,7 +175,12 @@ static uint64_t call_restoring(Ctx *c, uint64_t sp, uint64_t fn, const uint64_t 
 }
 uint64_t guest_call(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
     const uint64_t a[5] = {a0, a1, a2, a3, a4};
-    return call_restoring((Ctx *)g, sp, fn, a);
+    return call_restoring((Ctx *)g, sp, fn, a, 5);
+}
+uint64_t guest_call8(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
+                     uint64_t a5, uint64_t a6, uint64_t a7) {
+    const uint64_t a[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+    return call_restoring((Ctx *)g, sp, fn, a, 8);
 }
 
 /* HOS_HOSTCALL_STATS=1: at exit, how often each host call ran (the NVN surface a game really uses). */

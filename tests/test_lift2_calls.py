@@ -177,6 +177,110 @@ class RowsInSummaries(unittest.TestCase):
         self.assertFalse(s[0x1000].clobbers & x5)
 
 
+# (answers and stops: f 0x2000: stp x29, x30, [sp, #-16]!; mov x29, sp; bl ans; cbz x0, 1f; bl die; 1: mov x0, #7;
+#  ldp x29, x30, [sp], #16; ret   g 0x2020: b ans   ans 0x2024: ret   die 0x2028: brk #1   stop 0x202c: ret
+#  h 0x2030: bl stop; mov x0, #3; ret)
+ANS_CODE = [0xa9bf7bfd, 0x910003fd, 0x94000007, 0xb4000040, 0x94000006, 0xd28000e0, 0xa8c17bfd, 0xd65f03c0,
+            0x14000001, 0xd65f03c0, 0xd4200020, 0xd65f03c0, 0x97ffffff, 0xd2800060, 0xd65f03c0]
+ANS = {"f": 0x2000, "g": 0x2020, "ans": 0x2024, "die": 0x2028, "stop": 0x202c, "h": 0x2030}
+
+
+class AnswersAndStops(unittest.TestCase):
+    """a BL to an answered function (PATCH_ANSWER) is no call: x0 is the answer, so a branch on it folds and the code it
+    skips goes; a tail branch to one returns the answer; its generic entry is lifted IR writing it; a BL to an import
+    the host neither implements nor answers (host_effects.stops) is a noreturn call, the code after it gone"""
+    def lift(self):
+        word = lambda pc: ANS_CODE[(pc - 0x2000) // 4]
+        entries = set(ANS.values())
+        funcs = summary.walk(entries, word)
+        hle = {ANS["ans"]: "nn_ans", ANS["stop"]: "nn_stop"}
+        with declared('PATCH_ANSWER(nn_ans, 0, "test");\nHLE(nn_other) {}\n'):
+            prog = build_ir.Program(entries=entries)
+            sums, _, _ = summary.summarise(funcs, prog, summary.host_summaries(hle), word)
+            plan = {"summaries": {e: summary.pack(s) for e, s in sums.items()}, "plt": {}, "hooks": sorted(hle),
+                    "sj_rets": {}, "bodies": {}}
+            bound = bounds.call_bounds(plan, hle, False, {})
+            bd = {n: bound(ANS[n]) for n in ("ans", "stop", "die")}
+            entry_ir = game.answers_ir(hle)
+        prog = build_ir.Program(entries=entries, bound=lambda e: bound(e)._replace(symbol="g_%08x" % e,
+                                                                                 tail="g_%08x" % e))
+        fns = {n: build_ir.build(ANS[n], sorted(funcs[ANS[n]]), word, prog) for n in ("f", "g", "h")}
+        return fns, sums, bd, entry_ir
+
+    def opt(self, fn):
+        m = emit_llvm.Module()
+        fn.name = "t"
+        m.add(fn)
+        return subprocess.run([llvm.check("clang"), "-O2", "-x", "ir", "-", "-S", "-emit-llvm", "-o", "-"],
+                              input=m.text(), capture_output=True, text=True, check=True).stdout
+
+    def test_records(self):
+        _, sums, bd, _ = self.lift()
+        x0, x30 = summary.BIT["x0"], summary.BIT["x30"]
+        self.assertEqual((bd["ans"].kind, bd["ans"].reads, bd["ans"].clobbers, bd["ans"].must, bd["ans"].answer),
+                         ("answer", 0, x0 | x30, x0 | x30, 0))
+        self.assertEqual((bd["stop"].kind, bd["stop"].noreturn), ("stop", True))
+        self.assertFalse(sums[ANS["h"]].returns)   # (h only calls the stop)
+        self.assertFalse(sums[ANS["f"]].inputs & summary.BIT["x1"])
+
+    def test_answer_folds(self):
+        fns, _, _, _ = self.lift()
+        self.assertFalse([v for blk in fns["f"].blocks.values() for v in blk.ops if v.op == "gcall"
+                          and v.attrs["callee"] == ANS["ans"]])
+        out = self.opt(fns["f"])
+        self.assertNotIn("g_%08x" % ANS["die"], out)   # (x0 is 0: the call of die is dead code)
+        self.assertNotIn("a64_trap", out)
+        self.assertRegex(out, r"store i64 7, ptr %ctx")
+
+    def test_tail_answer(self):
+        fns, _, _, _ = self.lift()
+        self.assertEqual(sorted(b.term[0] for b in fns["g"].blocks.values()), ["br", "ret"])   # (no tail call)
+        out = self.opt(fns["g"])
+        self.assertRegex(out, r"store i64 0, ptr %ctx")
+        self.assertNotIn("g_%08x" % ANS["ans"], out)
+
+    def test_stop(self):
+        fns, _, _, _ = self.lift()
+        out = self.opt(fns["h"])
+        self.assertRegex(out, r"call void @g_%08x\(ptr [^)]*%%ctx\)( #\d+)?\n  unreachable" % ANS["stop"])
+        self.assertNotIn("store i64 3", out)   # (the code after the stop is gone)
+        self.assertNotIn("a64_trap", out)
+
+    def test_generic_entry(self):
+        _, _, _, entry_ir = self.lift()
+        out = subprocess.run([llvm.check("clang"), "-O2", "-x", "ir", "-", "-S", "-emit-llvm", "-o", "-"],
+                             input=entry_ir, capture_output=True, text=True, check=True).stdout
+        self.assertRegex(out, r"define void @f_%08x\(ptr [^\n]*%%ctx\)[^{\n]*\{\n  store i64 0, ptr %%ctx, align 8\n  "
+                              r"ret void" % ANS["ans"])
+        self.assertNotIn("f_%08x" % ANS["stop"], entry_ir)   # (only answers: a stop's entry is its generated stub)
+
+
+class InsteadOfTail(unittest.TestCase):
+    """an instead row on a BR without a jump table stands in place of the tail call: the row runs with its operands (the
+    target register among them), its result is the callee's, then the function returns (f 0x3000: br x4)"""
+    def test_br(self):
+        word = {0x3000: 0xd61f0080}.__getitem__
+        row = probes.At(0x3000, 0x3000, 0xd61f0080, "t_row", ("x4", "x0"), "x0", replace=True)
+        real = probes.use([], [row])
+        try:
+            self.assertEqual(probes.errors(row, {0x3000}, word), [])
+            self.assertTrue(probes.errors(row, {0x3000}, word, {0x3000: [0x3004]}))   # (a jump table's BR: no)
+            funcs = {0x3000: [0x3000]}
+            prog = build_ir.Program(entries={0x3000})
+            sums, _, _ = summary.summarise(funcs, prog, set(), word)
+            s = sums[0x3000]
+            bit = summary.BIT
+            self.assertEqual(s.inputs & summary.ALL & ~bit["x30"], bit["x4"] | bit["x0"])
+            self.assertTrue(s.returns and s.mustdef & bit["x0"] and not s.clobbers & bit["x30"])
+            prog.replace = probes.at(0x3000, [0x3000], word, replace=True, jt={})
+            fn = build_ir.build(0x3000, [0x3000], word, prog)
+            self.assertEqual([b.term[0] for b in fn.blocks.values()], ["ret"])
+            self.assertTrue(any(v.op == "call" and v.attrs.get("fn") == "t_row" for b in fn.blocks.values() for v in b.ops))
+        finally:
+            probes.use(*real)
+            summary._ROWS = None
+
+
 class Calls(unittest.TestCase):
     def test_kept(self):
         fns, _ = lift()

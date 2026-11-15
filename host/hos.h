@@ -30,6 +30,9 @@ uint64_t a64_guest_of(uint64_t v);
 typedef uint64_t hos_q __attribute__((vector_size(16)));
 typedef struct GuestCall GuestCall;
 uint64_t guest_call(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+/* (the same with eight arguments, x0-x7) */
+uint64_t guest_call8(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
+                     uint64_t a5, uint64_t a6, uint64_t a7);
 #define ARG(n) (c->x[n])
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define GP(a) ((void *)A64_PTR(a))           /* host pointer of a guest address */

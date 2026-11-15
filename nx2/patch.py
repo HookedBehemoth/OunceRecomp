@@ -13,7 +13,8 @@ the proposed one) by the build's own summary job from the input the lift left, a
 record changes, summaries demoted, call sites whose kept registers change). That takes about two minutes and the
 summary job's memory (several GB).
 report: every declaration with its local cost: the registers it reads and writes beyond its instruction's own, whether
-its function's record changes without it, and how many call sites keep other registers because of it.
+its function's record changes without it, and how many call sites keep other registers because of it; each answer
+(PATCH_ANSWER) with its direct call sites, where no call is made, and its record.
 
 --plan: the plan (default <work>/sa/plan.pickle); its gen/ beside it gives the HLE'd functions and the replaced
 functions' symbols.
@@ -479,6 +480,20 @@ def local(P, e, ps):
         summary.patched(summary.host_summaries(P.hle), summary.func_facts(P.funcs))
 
 
+def tail_sites(P):
+    """{callee: number of tail branches (B out of the body) to it} over every body"""
+    n = collections.Counter()
+    entries = P.prog.entries
+    for e, (pcs, words) in P.plan["bodies"].items():
+        body = set(pcs)
+        for pc, w in zip(pcs, words):
+            if w & 0xFC000000 == 0x14000000:
+                t = (pc + ((w & 0x3FFFFFF) - ((w & 0x2000000) << 1)) * 4) & 0xFFFFFFFFFFFFFFFF
+                if t not in body or (t != e and t in entries):
+                    n[P.callee(t)] += 1
+    return n
+
+
 def kept(key):
     """(what a BL keeps, what it reads) of a callee with that local key: bounds' rule for a lifted callee"""
     full = key[4] and not key[5]
@@ -542,6 +557,15 @@ def report(P, out=print):
                       ", ".join(P.name(a) for a in addrs[:2]) or "-",
                       ("clobbers: %d BL sites keep nothing" % n) if r.clobbers is not None else
                       "reads %s at %d BL sites" % (",".join(r.reads), n)))
+    tails = None
+    for a in sorted(ps.answers.values(), key=lambda a: a.where):   # (no call at its sites: x0 the answer)
+        addrs = by_sym.get(a.symbol, [])
+        if tails is None:
+            tails = tail_sites(P)
+        n, t = sum(calls[x] for x in addrs), sum(tails[x] for x in addrs)
+        rec = record(P.bound(addrs[0])) if addrs else "no hooked address"
+        lines.append((0, 0, 0, a.where, a.kind, a.symbol[:22], ", ".join(P.name(x) for x in addrs[:1]) or "-",
+                      "x0 = %#x at %d BL and %d tail-branch sites (no call); %s" % (a.value, n, t, rec)))
     lines.sort(key=lambda l: (-l[0], -l[1], -l[2], l[3]))
     out("%-34s %-22s %-11s %-40s %7s  %s" % ("declaration", "kind", "site", "function", "sites", "cost"))
     for sites, nf, nr, where, kind, at, name, what in lines:

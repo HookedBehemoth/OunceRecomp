@@ -11,7 +11,8 @@ stay SSA values; the summaries count a row's reads and writes as the instruction
   address, "sN" for Sn as a float);
 - At(func, pc, word, fn, args, result, before=False, io=(), guest=None, replace=False): fn(args) after the instruction
   (after a BL / BLR when it returns), or before it, or in place of a BL / BLR (replace: the call is not made; x30 is
-  set as the call would), its result in a register; io: registers the host function reads and rewrites through a
+  set as the call would) or of a BR that is a tail call (replace: the row's result is the tail callee's, then the
+  function returns), its result in a register; io: registers the host function reads and rewrites through a
   struct; guest: the host function calls guest code (declared callees) with every register as it was after.
 """
 import re
@@ -160,7 +161,7 @@ def errors(p, pcs, word, jt=None, entries=()):
     - the instruction is there and holds the declared word (else another game version);
     - Value: the instruction writes one general register, its Rd, and the declared result is that register at the
       instruction's width (wN for a 32-bit destination, xN for 64);
-    - At instead: the instruction is a BL or BLR;
+    - At instead: the instruction is a BL, a BLR or a BR without a jump table (a tail call);
     - At before: no branch of the function, no jump table and no other function's entry goes to the instruction (the
       row runs on the edge into it alone);
     - At: a result or io register is caller-saved or written by the instruction (a row never changes what its function
@@ -182,8 +183,10 @@ def errors(p, pcs, word, jt=None, entries=()):
             out.append("Value at %#x: the result is %s, the instruction's destination is %s%d"
                        % (p.pc, p.result, "w" if d[1] == 32 else "x", d[0]))
         return out
-    if p.replace and not is_call(p.word):
-        out.append("At f_%08x replacing %#x: not a BL or BLR" % (p.func or 0, p.pc))
+    if p.replace and not is_call(p.word) and not is_tail(p.word):
+        out.append("At f_%08x replacing %#x: not a BL, BLR or BR" % (p.func or 0, p.pc))
+    if p.replace and is_tail(p.word) and jt and jt.get(p.pc):
+        out.append("At f_%08x replacing %#x: a jump table's BR, not a tail call" % (p.func or 0, p.pc))
     if p.before:
         from .build_ir import target
         for pc in sorted(have):
@@ -363,6 +366,12 @@ def is_call(w):
     """a BL or BLR: what comes after it runs when the call returns"""
     i = enc.decode(w)
     return i is not None and (i.entry.template == "blr" or i.entry.template == "b" and i.f["op"] == 1)
+
+
+def is_tail(w):
+    """a BR: a tail call through a register (or a jump table's switch, which no row replaces)"""
+    i = enc.decode(w)
+    return i is not None and i.entry.template == "br"
 
 
 def merge(*posts):

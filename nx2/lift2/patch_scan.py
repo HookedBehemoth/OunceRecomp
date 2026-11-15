@@ -24,7 +24,8 @@ results: none xN wN sN qN
 effects (HLE, NV, HLE_EFFECTS): reads(reg..., "why") (registers beyond an HLE'd function's AAPCS arguments);
   clobbers("why") (a call of it keeps no register)
 
-An `instead` site on a BL or BLR replaces the call (an At row, replace); on another instruction it replaces the
+An `instead` site on a BL or BLR replaces the call (an At row, replace), on a BR a tail call (the function returns after
+the row); on another instruction it replaces the
 instruction's result (a Value probe: its result is the instruction's destination). The containing function is not
 written: resolve() finds it from the plan, and a site in no function or in more than one stops the build.
 """
@@ -738,7 +739,7 @@ def rows(sites):
     from . import probes
     values, ats = [], []
     for s in sites:
-        call = probes.is_call(s.word)
+        call = probes.is_call(s.word) or probes.is_tail(s.word)
         if s.mode == "instead" and not call:
             if s.guest is not None or s.io:
                 fail(s.where, "an instruction's result replaced (instead, not a call) takes no guest or io")

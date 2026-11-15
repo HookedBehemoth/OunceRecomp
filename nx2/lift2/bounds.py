@@ -8,7 +8,9 @@ A record (Bound) says, as summary masks (nx2/lift2/summary.py: x0-x30, SP, the f
   returns; results: those its callers may read after it returns;
 - keeps: the x19-x29 and SP bits a BL keeps in SSA across the call;
 - noreturn: proven never to return (the BL is followed by a trap);
-- symbol: the symbol a BL calls; tail: the symbol a tail call jumps to.
+- symbol: the symbol a BL calls; tail: the symbol a tail call jumps to;
+- answer: a PATCH_ANSWER's value (host/patch.h): a BL to it is no call, the lift writes the value to x0 and x30 as the BL
+  does (and a tail call is a return with x0 the value); None for any other callee.
 Anything without a declaration or a full summary reads and writes every register, writes none on every path, keeps
 nothing and returns (UNKNOWN): a callee nobody classified can only cost speed.
 """
@@ -20,7 +22,7 @@ ALL = summary.ALL
 KEEP = [(r, "x%d" % r) for r in range(19, 30)] + [(31, "sp")]   # (summary bits: x19-x29, SP)
 KEEP_ALL = sum(1 << r for r, _ in KEEP)
 
-Bound = namedtuple("Bound", "kind reads clobbers keeps must results noreturn symbol tail")
+Bound = namedtuple("Bound", "kind reads clobbers keeps must results noreturn symbol tail answer", defaults=(None,))
 
 
 def unknown(kind, symbol, tail=None):
@@ -66,6 +68,12 @@ def call_bounds(plan, hle, verify=False, funcs=None):
             return unknown("setjmp owner", "sjcall_%08x" % c, tail)
         if c in hle_set:
             name = hle.get(c)
+            if host_effects.stops(name):   # (a generated import stub, an NVN export without a proc: it stops the game)
+                return Bound("stop", ALL, ALL, 0, 0, ALL, True, sym, tail)
+            value = host_effects.answer(name)
+            if value is not None:   # (no call: x0 the answer, x30 the BL's; summary.host_summary the same)
+                x0 = summary.X[0]
+                return Bound("answer", 0, x0 | summary.X[30], KEEP_ALL, x0 | summary.X[30], x0, False, sym, tail, value)
             if name is None or host_effects.clobbers(name) is not None:
                 return unknown("HLE declared clobbering", sym, tail)
             # (AAPCS-clean by declaration, as the summaries take it (summary.host_summary): its arguments and the
@@ -130,7 +138,8 @@ def probes_var(r):
 
 
 # the reasons call_report gives a site that keeps nothing, by its record's kind
-REPORT = {"lifted": "full, nothing preserved", "noreturn": "noreturn (trap after)"}
+REPORT = {"lifted": "full, nothing preserved", "noreturn": "noreturn (trap after)",
+          "stop": "a stop (noreturn, trap after)"}
 
 
 def call_report(plan, bound, chosen):
@@ -138,7 +147,7 @@ def call_report(plan, bound, chosen):
     many on average; how many of them call host code), and those reloading every register, by reason; BLR sites"""
     import collections
     callee = callee_fn(plan["plt"])
-    why, kept, blr, host = collections.Counter(), 0, 0, 0
+    why, kept, blr, host, answered = collections.Counter(), 0, 0, 0, 0
     for e in chosen:
         pcs, words = plan["bodies"][e]
         for pc, w in zip(pcs, words):
@@ -146,6 +155,9 @@ def call_report(plan, bound, chosen):
                 blr += (w & 0xFFFFFC1F) == 0xD63F0000 or (w & 0xFFFFF800) == 0xD73F0800
                 continue
             b = bound(callee((pc + ((w & 0x3FFFFFF) - ((w & 0x2000000) << 1)) * 4) & 0xFFFFFFFFFFFFFFFF))
+            if b.answer is not None:
+                answered += 1
+                continue
             if b.keeps:
                 why["kept"] += 1
                 kept += bin(b.keeps).count("1")
@@ -153,9 +165,9 @@ def call_report(plan, bound, chosen):
             else:
                 why[REPORT.get(b.kind, b.kind)] += 1
     return ("calls: %d direct sites, %d keep registers across the call (%.1f a site of x19-x29, SP; %d of them to host "
-            "callees); reload all: %s; %d BLR sites reload all" % (
+            "callees); reload all: %s; %d BLR sites reload all; %d BL sites of an answered function make no call" % (
                 sum(why.values()), why["kept"], kept / max(1, why["kept"]), host,
-                ", ".join("%s %d" % kv for kv in why.most_common() if kv[0] != "kept"), blr))
+                ", ".join("%s %d" % kv for kv in why.most_common() if kv[0] != "kept"), blr, answered))
 
 
 def callee_fn(plt):

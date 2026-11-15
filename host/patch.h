@@ -7,8 +7,10 @@
 
      PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }
        mode: after (the instruction at pc; after a BL / BLR when it returns), before (on the edge into it: pc must be no
-       branch target), instead (in place of a BL / BLR: the call is not made, x30 set as it would be; in place of any
-       other instruction: its result, the instruction's destination, is fn's). The containing function is found by the
+       branch target), instead (in place of a BL / BLR: the call is not made, x30 set as it would be, the target
+       register of a BLR an operand like any other; in place of a BR that is a tail call, no jump table's: fn's result
+       is the tail callee's, then the function returns; in place of any other instruction: its result, the
+       instruction's destination, is fn's). The containing function is found by the
        lifter from pc; word is the instruction's, checked at the build: another game version stops it.
        result: none, xN (uint64_t), wN (uint32_t, zero-extended), sN (float, the rest of Vn zero), qN (hos_q). A result
        is caller-saved or written by the instruction itself (checked).
@@ -37,10 +39,12 @@
        the registers a call reads beyond the AAPCS arguments, x8, v0-v7, sp and x30; clobbers("why") a call keeps no
        register.
      PATCH_ANSWER(symbol, value, "why");
-       a function the image replaces with a constant answer: void imp_<symbol>(Ctx *c) setting x0 to value and nothing
-       else (any other result register keeps what it held), hooked as HLE's are. An import the game calls that the host
-       neither implements nor answers stops the game, naming it (nx2/standalone.py gen_stubs): each answer is one the
-       game was seen to need, with the reason it is enough. */
+       a function the image replaces with a constant answer: x0 is value and nothing else is written (any other result
+       register keeps what it held). No host function: at a direct call (BL, or a tail branch) the lifter writes value to
+       x0 and x30 as the BL would, and makes no call; the function's generic entry f_<addr> (a code pointer, a BLR) is
+       lifted IR doing the same (nx2/lift2/game.py answers_ir). An import the game calls that the host neither
+       implements nor answers stops the game, naming it (nx2/standalone.py gen_stubs; a direct call of it is noreturn):
+       each answer is one the game was seen to need, with the reason it is enough. */
 #ifndef HOS_PATCH_H
 #define HOS_PATCH_H
 #include <stdint.h>
@@ -811,10 +815,7 @@ typedef struct GuestFn { struct GuestContext *c; void (*body)(struct GuestContex
     HOS_FUNC_(HOS_CAT(hos_func_sym_, sym), HOS_CAT(hos_orig_sym_, sym), result, fn, __VA_ARGS__)
 #define HLE(sym, ...) HOS_PATCH_RECORD("HLE", #sym "," #__VA_ARGS__) void imp_##sym(Ctx *c)
 #define NV(name, ...) HOS_PATCH_RECORD("NV", #name "," #__VA_ARGS__) static void n_##name(Ctx *c, void *u_)
-#define PATCH_ANSWER(sym, value, why)                                                                                 \
-    HOS_PATCH_RECORD("PATCH_ANSWER", #sym "," #value "," #why)                                                       \
-    void imp_##sym(Ctx *c) { c->x[0] = (uint64_t)(value); }                                                         \
-    _Static_assert(1, #sym)
+#define PATCH_ANSWER(sym, value, why) HOS_PATCH_RECORD("PATCH_ANSWER", #sym "," #value "," #why) _Static_assert(1, #sym)
 #define HLE_EFFECTS(sym, ...) HOS_PATCH_RECORD("HLE_EFFECTS", #sym "," #__VA_ARGS__) _Static_assert(1, #sym)
 #define PATCH_AT_SITE(pc, word, mode, result, fn, ...)                                                                \
     HOS_PATCH_RECORD("PATCH_AT_SITE", #pc "," #word "," #mode "," #result "," #fn "," #__VA_ARGS__)                \

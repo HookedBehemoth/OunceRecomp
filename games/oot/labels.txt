@@ -163,7 +163,7 @@
 80083960 job_scheduler_virtual            # work/assets/native/engine-jobs.md, host/eng_jobs.c: the scheduler's virtual twin
 82c02f20 job_sync_pre_draw_a              # docs/direct/jobs-state.md, docs/direct/patch-sites.md: pre-draw hook: waits for GPU culling (WaitEvent b00 + Barrier)
 82c03170 job_sync_pre_draw_b              # docs/direct/jobs-state.md: same code, WaitEvent b48
-831fa4a0 job_sync_water_wait              # host/direct_job_sync.c, [renderer+0x150]: tail-jumps to WaitEvent
+831fa4a0 job_sync_water_wait              # host/direct_job_sync.c, [renderer+0x150]: tail-jumps to WaitEvent (br x4 at 0x831fa588, replaced by an instead row)
 8007fe10 job_worker_calc                  # work/assets/native/engine-jobs.md: worker thread's calc_(msg): msg 1 runs the scheduler
 800711c0 job_workers_post                 # work/assets/native/engine-jobs.md: INFERRED: posts msg 1 to the workers
 80084de0 render_job_record                # docs/direct-backend-plan.md, docs/direct/job-formats.md: a render job's recorder (x3: the pass key)
@@ -230,7 +230,7 @@
 802631a0 pass_env_cubemap_face            # work/assets/native/engine-frame.md: one prefilter draw
 80285b00 pass_final_blit                  # work/assets/native/engine-frame.md: the final draw to the window texture
 802ad020 pass_fluid_depth                 # work/assets/native/engine-frame.md: "Fluid 2dVolume New Depth"
-80289590 pass_fog_half_depth              # host/direct_depth_copy.c: FogPrePass::HalfDepth (its depth copy retargeted by an At row)
+80289590 pass_fog_half_depth              # host/direct_depth_copy.c: FogPrePass::HalfDepth (its depth copy, blr at 0x80289cc0, replaced by an instead row)
 8028a7f0 pass_fog_prepass_depth           # work/assets/native/engine-frame.md: " Depth For FogPrePass "
 8028b110 pass_fog_water                   # work/assets/native/engine-frame.md: "FogPrePass AfterWater/BeforeWataer"
 802a3700 pass_half_color                  # work/assets/native/engine-frame.md: "gsys::RenderBuffer::Color(half)"
@@ -262,7 +262,7 @@
 802722b0 pass_smaa_args                   # docs/direct/terrain-texels.md: the SMAA pass's argument block
 80271be0 pass_smaa_edge                   # work/assets/native/engine-frame.md, docs/direct/terrain-texels.md: "ndsr::smaa_edge/blendweights", edge list as a buffer
 802715b0 pass_smaa_output                 # work/assets/native/engine-frame.md: "smaa_output"
-80666d20 pass_soft_edge_depth             # host/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy retargeted by an At row)
+80666d20 pass_soft_edge_depth             # host/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy, blr at 0x806675d8, replaced by an instead row)
 80668fc0 pass_sun_shadow                  # work/assets/native/engine-frame.md: sun shadow cascades (x3)
 80669460 pass_sun_shadow_alloc            # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "shadow_map_depth" array (transient when +0x110 is 0, size +0x70 x +0x90, layers = cascades)
 80f76a20 pass_local_shadow_static         # docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawStaticDepth": f_802640a0 with flag 1

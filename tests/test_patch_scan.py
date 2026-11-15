@@ -277,6 +277,7 @@ class Macros(unittest.TestCase):
             nm = subprocess.run(["nm", obj], capture_output=True, text=True).stdout.split()
             for name in ("hos_func_0x80001000", "hos_func_0x80002000", "hos_func_sym_strlen", "imp_nn_a", "imp_nn_b"):
                 self.assertIn(name, nm)
+            self.assertNotIn("imp_nn_c", nm)   # (an answer is no host function: the lift writes it, game.answers_ir)
 
     def test_adapter(self):
         """the adapter reads the operands from the context and writes the result; orig runs the body with the

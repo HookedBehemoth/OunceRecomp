@@ -4,6 +4,7 @@
   host calls into the guest: third_party/a64-kit/rt/a64_rt.c through nx2/rtgen.py);
 - a64_hooks.c: the hooked addresses (the image's hooks: HLE functions and generated stubs, nx2/image.py), each
   f_<addr> a tail call of its host function, so a call of a hooked function reaches the host under the guest name;
+  an answered one (PATCH_ANSWER, host/patch.h) only as a comment line: its f_<addr> is lifted IR (game.answers_ir);
 - a64_code_slots.c: every relocated slot of the image whose value is a function of the table (lift2/code_ptrs.py: not
   a module's base), with that function's index in a64_table.c: the host writes the function's host pointer there when
   the image is loaded (host/code_ptrs.c). image.bin keeps the guest values.
@@ -16,8 +17,9 @@ def fname(a):
     return "f_%08x" % a
 
 
-def write(out_dir, functions, hooks):
-    """functions: every function entry; hooks: {guest address: the host function's C name}"""
+def write(out_dir, functions, hooks, answered=()):
+    """functions: every function entry; hooks: {guest address: the host function's C name}; answered: the hooked
+    addresses PATCH_ANSWER answers (no host function: their f_<addr> is the lift's)"""
     fns = sorted(set(functions) | set(hooks))
     with open(os.path.join(out_dir, "a64_table.c"), "w", newline="\n") as f:
         f.write('#include "a64.h"\n')
@@ -28,8 +30,9 @@ def write(out_dir, functions, hooks):
     with open(os.path.join(out_dir, "a64_hooks.c"), "w", newline="\n") as f:
         f.write("/* Hooked guest addresses: f_<address> is the host function (an HLE or a generated stub). */\n")
         f.write('#include "a64.h"\n')
-        f.write("".join("void %s(Ctx *A64_NOESC);\n" % n for n in sorted(set(hooks.values()))))
-        f.write("".join("void f_%08x(Ctx *A64_NOESC c) { TAILCALL(%s); }\n" % (a, n) for a, n in sorted(hooks.items())))
+        f.write("".join("void %s(Ctx *A64_NOESC);\n" % n for n in sorted({n for a, n in hooks.items() if a not in answered})))
+        f.write("".join(("/* f_%08x answers %s: lifted IR */\n" if a in answered else
+                         "void f_%08x(Ctx *A64_NOESC c) { TAILCALL(%s); }\n") % (a, n) for a, n in sorted(hooks.items())))
 
 
 def write_code_slots(out_dir, img, functions, hooks):

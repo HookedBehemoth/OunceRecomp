@@ -20,7 +20,7 @@ import kit
 import toolchain
 
 
-from horizon import OS_NAMESPACES  # noqa: E402,F401  (the platform's: nx2/horizon)
+from horizon import OS_NAMESPACES, nvn_proc_name  # noqa: E402,F401  (the platform's: nx2/horizon)
 
 
 def implemented():
@@ -62,15 +62,6 @@ def nvn_exports(modules):
     have = {n[4:] for n in implemented()}
     return sorted(s["name"] for s in sdk.symbols if s["defined"] and s["name"] and nvn_proc_name(s["name"])
                   and s["type"] == "func" and s["name"] not in have)
-
-
-def nvn_proc_name(sym):
-    """The NVN proc a symbol is: a C name (nvnFoo), or a C++ one (_Z<len>nvnFoo<args>: the Switch 2 driver exports
-    some, nvnNativeImageInitialize among them); None for anything else"""
-    if sym.startswith("nvn"):
-        return sym
-    m = re.match(r"_Z(\d+)(nvn\w+)", sym)
-    return m.group(2)[:int(m.group(1))] if m else None
 
 
 def write_nvn_exports(gen, names):
@@ -118,7 +109,8 @@ def gen_stubs(gen, meta):
     have = implemented() | {"imp_" + h["sym"] for h in meta["hooks"] if nvn_proc_name(h["sym"])}
     hooks = [h for h in meta["hooks"] if h["c"] not in have]
     dm = demangle([h["sym"] for h in hooks])
-    lines = ['#include "a64.h"', "void hos_import_stop(Ctx *A64_NOESC c, const char *sym, const char *name);", ""]
+    lines = ['#include "a64.h"',
+             "__attribute__((noreturn)) void hos_import_stop(Ctx *A64_NOESC c, const char *sym, const char *name);", ""]
     for h in hooks:
         lines.append('void %s(Ctx *A64_NOESC c) { hos_import_stop(c, "%s", "%s"); }'
                      % (h["c"], h["sym"], dm[h["sym"]].replace("\\", "\\\\").replace('"', '\\"')))

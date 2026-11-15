@@ -83,7 +83,7 @@ def main():
         img.entries |= new
         print("ADR / ADRP+ADD code addresses outside the %d unwind-covered functions: %d, %d of them new entries" % (
             len(spans), len(refs), len(new)))
-    from lift2 import discover, game, tables
+    from lift2 import discover, game, host_effects, tables
     L = discover.Discovery(img)
     L.discover(max_insns=a.max_func)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
@@ -111,7 +111,7 @@ def main():
                 if os.path.isfile(p):
                     os.remove(p)
         desc.record(out_dir)   # (the game lifted, for the build's check: gamedesc.check_lift)
-        tables.write(gen, L.funcs, L.hooks)
+        tables.write(gen, L.funcs, L.hooks, {a for a, n in L.hooks.items() if host_effects.answer(n[4:]) is not None})
         print("code pointers: %d relocated slots hold a function of the table (gen/a64_code_slots.c)"
               % tables.write_code_slots(gen, img, L.funcs, L.hooks))
         with open(os.path.join(gen, "functions.txt"), "w") as f:

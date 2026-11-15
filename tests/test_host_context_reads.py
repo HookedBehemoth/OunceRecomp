@@ -11,8 +11,8 @@ inlining), and every load from a context pointer traced through the functions it
 - Every guest function a replaced function's or an At row's host function enters, on any path through the host's
   calls, is declared (the summaries read its inputs there): a constant target in its guest(...), a computed one as
   guest(computed) (rows). A replaced function's own body, orig, needs none (its record joins the function's). Guest
-  code is entered through guest_call, hos_call_guest, a64_icall, a64_ijump or a call of an f_<addr> / body_<addr>; a
-  guest function's host pointer (CODE_PTR(f_<addr>)) is a constant target. A guest function reaches host code by its
+  code is entered through guest_call, guest_call8, hos_call_guest, a64_icall, a64_ijump or a call of an f_<addr> /
+  body_<addr>; a guest function's host pointer (CODE_PTR(f_<addr>)) is a constant target. A guest function reaches host code by its
   name or from a64_lookup / a64_fn_of, which only the boot and the thread start call, and no static holds one
   (checked), so any other indirect call is of host code (orig's, through its GuestFn, is the body's).
 No game is used.
@@ -112,7 +112,7 @@ def reads(funcs, name, k=0, seen=None, api=None):
     for i, o, callee, arg in f["calls"]:
         if i != k:
             continue
-        if callee == "guest_call":
+        if callee in ("guest_call", "guest_call8"):
             api.add(callee)
             continue
         if GUEST.match(callee) or callee == "<indirect>":
@@ -127,7 +127,7 @@ def reads(funcs, name, k=0, seen=None, api=None):
 CALL = re.compile(r"call [^@%(]*?(?:@([\w.$]+)|(%[\w.]+))\((.*)\)")
 DEF_ALL = re.compile(r"^define ([^@]*)@([\w.$]+)\((.*)\)[^{]*\{")
 # (the call that enters guest code: the index of its target argument)
-ENTER = {"guest_call": 2, "hos_call_guest": 1, "a64_icall": 1, "a64_ijump": 1}
+ENTER = {"guest_call": 2, "guest_call8": 2, "hos_call_guest": 1, "a64_icall": 1, "a64_ijump": 1}
 INT = re.compile(r"-?\d+$")
 GUEST_FN = re.compile(r"@(?:f|body)_([0-9a-f]{8})\b")
 STORED_FN = re.compile(r"store ptr @(?:f|body)_([0-9a-f]{8}), ptr @")
