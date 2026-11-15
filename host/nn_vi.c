@@ -147,18 +147,16 @@ int hos_vi_native_interval(Ctx *c, int requested) {
    the frame presented after it is shown. The acquire of a frame waits for its texture: with `active` textures, the
    texture of the frame `active` back, freed when the frame after that one is shown. With three (OoT) a frame slower
    than the display waits for nothing and a fast one is held to the display's rate, two frames queued at most;
-   the acquire waited for one interval after the last present before (two textures' behaviour), which held every
-   frame over 16.7 ms to the next vsync step (gameplay at 27 ms frames, 5 ms of them in this sleep). HOS_VI_DOUBLE=1:
-   that behaviour */
+   waiting one interval after the last present instead (two textures' behaviour) holds every frame over 16.7 ms to
+   the next vsync step (gameplay at 27 ms frames, 5 ms of them in that sleep) */
 static int64_t shown_at[16];
 static volatile LONG64 shown_count;
 void hos_vi_native_acquire(int active) {
-    static int no_pacing = -1, double_buffered = -1;
+    static int no_pacing = -1;
     if (no_pacing < 0) no_pacing = getenv("HOS_NO_PACING") != NULL || hos_bench_on();   /* (HOS_BENCH: unpaced) */
-    if (double_buffered < 0) double_buffered = getenv("HOS_VI_DOUBLE") != NULL;
     if (no_pacing || !next_frame_at) return;
     int64_t until = next_frame_at;
-    if (!double_buffered && active >= 2) {
+    if (active >= 2) {
         const int64_t n = shown_count, frame = n - active + 1;   /* (the frame whose showing frees this texture) */
         until = frame >= 0 && frame < n ? shown_at[frame & 15] : 0;
     }

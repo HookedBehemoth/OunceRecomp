@@ -12,9 +12,7 @@
      the content still to come; -1 failed (or entered failed), -2 the output too small, -3 entered done.
 
    Dictionaries: the guest DDict (0x6860 bytes, made by reference: +8 its content, +0x10 the size) gets a host DDict by
-   reference to the same guest bytes, made once per (DDict, content, size).
-
-   HOS_GUEST_ZSTD=1: the game's own decoder, for A/B. */
+   reference to the same guest bytes, made once per (DDict, content, size). */
 #define ZSTD_DISABLE_ASM 1
 #define ZSTD_LEGACY_SUPPORT 0
 #define ZSTD_MULTITHREAD 0
@@ -34,12 +32,6 @@
 #include "hos.h"
 #include <pthread.h>
 #include <stdlib.h>
-
-static int guest_zstd(void) {
-    static int v = -1;
-    if (v < 0) v = getenv("HOS_GUEST_ZSTD") && atoi(getenv("HOS_GUEST_ZSTD")) != 0;
-    return v;
-}
 
 /* ---- host DDicts for guest DDicts ---- */
 typedef struct { uint64_t guest, content, size; ZSTD_DDict *d; } DictEntry;
@@ -73,7 +65,6 @@ static int64_t st_files, st_bytes, st_streams;
 
 /* ZSTD_decompressMultiFrame: a whole file at once */
 ENTRY_HOOK(0x8010b380) {
-    if (guest_zstd()) return 0;
     const uint64_t dst = ARG(1), cap = ARG(2), src = ARG(3), n = ARG(4), dict = ARG(5), dict_size = ARG(6), ddict = ARG(7);
     if (!hos_guest_range(dst, cap) || !hos_guest_range(src, n) || (dict && !hos_guest_range(dict, dict_size))) return 0;
     if (!tl_dctx && !(tl_dctx = ZSTD_createDCtx())) return 0;
@@ -122,7 +113,6 @@ static ZSTD_DCtx *job_dctx(uint64_t job) {
 static void job_ret(Ctx *c, uint32_t v) { RET(v); }
 
 ENTRY_HOOK(0x80115c80) {
-    if (guest_zstd()) return 0;
     const uint64_t job = ARG(0), chunk = ARG(1), ddict = ARG(3);
     const uint32_t n = (uint32_t)ARG(2);
     if (!hos_guest_range(job, 64) || !hos_guest_range(chunk, n)) return 0;

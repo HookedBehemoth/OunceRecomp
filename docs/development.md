@@ -286,10 +286,6 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_CORES` | `<1..8>`: the cores the game sees (default 6) |
 | `HOS_VCORES` | `0`: no virtual cores |
 | `HOS_RESERVE_CORE` | `0`: no core kept for the renderer |
-| `HOS_SPIN_ALWAYS` | (set) waits spin without the adaptive back-off |
-| `HOS_NO_HANDOFF` | `1`: any thread may take a mutex a signal's waiter is owed |
-| `HOS_MUTEX_OBJ` | (set) mutex owners kept in the host's objects, not in the guest's MutexType word |
-| `HOS_NO_OBJ_CACHE` | (set) no per-thread cache of kernel objects |
 | `HOS_NO_RENDERER_WAIT` | non-zero: the game's first GPU work does not wait for the renderer to be up |
 | `HOS_LAYER_AHEAD` | `0`: calc stage C's long layer waits for the render jobs, as the game orders it (on by default: it starts with them; docs/direct/patch-sites.md 8) |
 
@@ -302,8 +298,6 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_THP` | (set) the guest window keeps transparent huge pages |
 | `HOS_ZERO_ALL_PAGES` | (set) zero the whole range above 4 GB too (that once wiped live data) |
 | `HOS_PREFAULT` | `1`: new heap pages are touched at once, so the game's first touches are not page faults (experiment) |
-| `HOS_GUEST_LIBC` | (set) the SDK's own libc copies run instead of the host's (host/nn_libc.c:7) |
-| `HOS_GUEST_ZSTD` | `1`: the game's own zstd decoder runs instead of the host's (host/nn_zstd.c:40) |
 
 ### Render-target slots
 
@@ -493,12 +487,10 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_FS_KEEP_CORE_KB` host/nn_fs.c:417
 - `HOS_GPU_RANGE_GAP_MB` host/nvdrv.c:201
 - `HOS_HOSTCALL_SLOW` host/hos_hostcall.c:61
-- `HOS_KEEP_DEAD_OBJECTS` host/nn_os_sync.c:94
 - `HOS_KEEP_FREED_PAGES` host/hos_mem.c:131
 - `HOS_MEM_MAP` host/mkw_glue.c:716
 - `HOS_MKW_INTERVAL` host/nn_vi.c:407
 - `HOS_MOTION_DEBUG` host/pad_sdl.c:182
-- `HOS_MW_WAKE` host/nn_os_sync.c:326
 - `HOS_NVN_CHMASK_LOG` host/nvn_native.c:2626
 - `HOS_NVN_HOLD` host/nvn_native.c:1177
 - `HOS_NVN_NO_SWEEP` host/nvn_native.c:1741
@@ -523,17 +515,13 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_SCAN_DT` host/nn_vi.c:174
 - `HOS_SDL_VERSION` host/hos_sdl.c:106
 - `HOS_SHADER_DUMP` host/nvn_native.c:1110
-- `HOS_SHORT_SLEEP_TIMER` host/hos_thread.c:831
 - `HOS_SIZE_TRACE` host/nvn_native.c:629
 - `HOS_SLEEP_LOG` host/hos_thread.c:937
 - `HOS_SPIN_US` host/hos_svc.c:118
-- `HOS_SYNC_TABLE_LOCK` host/nn_os_sync.c:224
-- `HOS_TICK_CONVERT_192` host/hos_thread.c:1078
 - `HOS_TICK_LOG` host/hos_thread.c:1064
 - `HOS_VCORE_ESCAPE_EQ_US` host/hos_thread.c:1318
 - `HOS_VCORE_ESCAPE_US` host/hos_thread.c:1319
 - `HOS_VCORE_SLICE_US` host/hos_thread.c:1320
-- `HOS_VI_DOUBLE` host/nn_vi.c:157
 - `HOS_WAKE_LAT` host/nn_os_sync.c:636
 - `HOS_WATCH` host/posix/prof.c:533
 - `RX_NVN_WATCH_AFTER` host/nvn_native.c:934

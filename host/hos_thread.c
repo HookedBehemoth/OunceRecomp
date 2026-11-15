@@ -854,10 +854,8 @@ static void sleep_ns(int64_t ns) {
     return;
 #endif
     /* Under a millisecond: yielded away until the time (the timer's ~0.5 ms granularity made TOTK's 20 us waits for
-       its job workers 25x longer, ~2000 a second on the frame's critical path). HOS_SHORT_SLEEP_TIMER=1: as before */
-    static int short_timer = -1;
-    if (short_timer < 0) short_timer = getenv("HOS_SHORT_SLEEP_TIMER") != NULL;
-    if (ns < 1000000 && !short_timer) {
+       its job workers 25x longer, ~2000 a second on the frame's critical path) */
+    if (ns < 1000000) {
         while (hos_now_ns() < until)
             if (!SwitchToThread()) YieldProcessor();
         return;
@@ -1128,23 +1126,14 @@ HLE(_ZN2nn2os13GetSystemTickEv) {
     RET(hos_ticks());
 }
 HLE(_ZN2nn2os22GetSystemTickFrequencyEv) { RET(HOS_TICK_HZ); }
-/* (hookshot) At the counter's own rate, HOS_TICK_HZ (31.25 MHz: 32 ns a tick). These converted at the Switch 1's
-   19.2 MHz (ticks = ns * 12 / 625) while GetSystemTick counts 31.25 MHz, so a tick span came out 1.63x too long: OoT's
-   present slept 1.63 ms for its 1 ms poll step (0x80590500: SleepThread(ConvertToTimeSpan(frequency / 1000))), and
-   any of its timing through these was off by as much. HOS_TICK_CONVERT_192=1: as before */
-static int tick_convert_192(void) {
-    static int on = -1;
-    if (on < 0) on = getenv("HOS_TICK_CONVERT_192") != NULL;
-    return on;
-}
+/* (hookshot) At the counter's own rate, HOS_TICK_HZ (31.25 MHz: 32 ns a tick), the rate GetSystemTick counts (the Switch
+   1's 19.2 MHz made a tick span 1.63x too long: OoT's present slept 1.63 ms for its 1 ms poll step, 0x80590500) */
 HLE(_ZN2nn2os13ConvertToTickENS_8TimeSpanE) {
     int64_t ns = (int64_t)ARG(0);
-    if (tick_convert_192()) { RET((ns / 625) * 12 + (ns % 625) * 12 / 625); return; }
     RET(ns / (int64_t)(1000000000ULL / HOS_TICK_HZ));
 }
 HLE(_ZN2nn2os17ConvertToTimeSpanENS0_4TickE) {
     int64_t t = (int64_t)ARG(0);
-    if (tick_convert_192()) { RET((t / 12) * 625 + (t % 12) * 625 / 12); return; }
     RET(t * (int64_t)(1000000000ULL / HOS_TICK_HZ));
 }
 

@@ -1,6 +1,6 @@
 """A WaitAny is woken only by an object some holder links into a multi-wait (host/nn_os_sync.c poke_multiwait). The actual
 functions (the watched-address table, poke_multiwait, holder_watch, Link/Unlink/UnlinkAll/MoveAll) are compiled with a
-harness that counts WakeAllConditionVariable and every object lookup. Every change anywhere woke every WaitAny before.
+harness that counts WakeAllConditionVariable and every object lookup: a change to an object no holder links wakes no WaitAny.
 
 python -I -B tests/test_multiwait_wake.py [--cxx clang++]
 """
@@ -103,20 +103,19 @@ static void expect(const char *step, int e1, int e2) {
 }
 static int poked(uint64_t k, int waiting) { mw_waiting = waiting; wakes = 0; poke_multiwait(&objs[k]); return wakes; }
 static void call(void (*f)(Ctx *), uint64_t a, uint64_t b) { Ctx c = {{a, b}}; f(&c); }
-int main(int argc, char **argv) {
+int main(void) {
     mw_cv_at = &mw_cv, mw_lock_at = &mw_lock;
-    const int all = argc > 1;   /* (HOS_MW_WAKE=all set by the caller) */
     const uint64_t A = 10, B = 11, h1 = 20, h2 = 21, h3 = 22, h4 = 23;
     objs[1].key = 1; objs[2].key = 2;
     objs[h1].event = 1; objs[h1].sem_max = H_EVENT;   /* (two holders over event 1, one over event 2, one over a thread) */
     objs[h2].event = 1; objs[h2].sem_max = H_EVENT;
     objs[h3].event = 2; objs[h3].sem_max = H_EVENT;
     objs[h4].event = 3; objs[h4].sem_max = H_THREAD;
-    if (poked(1, 1) != all) { puts("FAIL: an unwatched change woke WaitAny"); bad = 1; }
+    if (poked(1, 1)) { puts("FAIL: an unwatched change woke WaitAny"); bad = 1; }
     for (uint64_t h = h1; h <= h4; h++) call(LINK, A, h);
     expect("four links", 2, 1);
     if (poked(1, 1) != 1 || poked(2, 1) != 1) { puts("FAIL: a watched change did not wake WaitAny"); bad = 1; }
-    if (poked(5, 1) != all) { puts("FAIL: an unwatched change woke WaitAny with holders linked"); bad = 1; }
+    if (poked(5, 1)) { puts("FAIL: an unwatched change woke WaitAny with holders linked"); bad = 1; }
     if (poked(1, 0)) { puts("FAIL: a wake with no WaitAny waiting"); bad = 1; }
     call(UNLINK, h2, 0);
     expect("unlink one", 1, 1);
@@ -368,18 +367,11 @@ def main():
         exe = folder / ("fixture.exe" if os.name == "nt" else "fixture")
         subprocess.run([compiler, "-std=c++17", "-O1", "-w", str(folder / "fixture.cpp"), "-o", str(exe)], check=True,
                        timeout=120)
-        env = os.environ.copy()
-        for mode in ("targeted", "all"):
-            env.pop("HOS_MW_WAKE", None)
-            argv = [str(exe)]
-            if mode == "all":
-                env["HOS_MW_WAKE"] = "all"
-                argv.append("all")
-            result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
-            print(mode + ":", result.stdout.strip())
-            if result.returncode:
-                raise SystemExit("FAIL: " + mode)
-    print("PASS: WaitAny woken only for watched addresses (HOS_MW_WAKE=all: every change); link, unlink, unlink all and move all"
+        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30)
+        print(result.stdout.strip())
+        if result.returncode:
+            raise SystemExit("FAIL")
+    print("PASS: WaitAny woken only for watched addresses; link, unlink, unlink all and move all"
           " keep the counts by address; a re-initialized watched event still wakes; finalize-before-unlink resurrects nothing;"
           " no watched-target lookups or lookups under the extracted paths' mw_lock; allocation failure preserves wakes")
 
