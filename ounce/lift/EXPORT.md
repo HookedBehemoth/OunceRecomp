@@ -25,7 +25,7 @@ Lists keep the order given here; where an order matters it says so.
 
 ```json
 {
-  "format": 1,
+  "format": 2,                      // 2 since 5bd7beba (answers, stops)
   "commit": "1e054a23...",          // git HEAD of the Python lifter the export was made at ("+dirty" if the tree was)
   "input_key": "…",                 // lift_export.input_key: every input of the IR (the golden's stamp is the same key)
   "code_key": "…",                  // game.code_key(): the lifter's code as the build keys it
@@ -35,6 +35,7 @@ Lists keep the order given here; where an order matters it says so.
   "omit": true,
   "code_targets": [2147614720, …],  // sorted: code_ptrs.targets(plan) (every function-table entry less the modules' bases)
   "sj_rets": [[entry, r0, r1, r2, r3], …],   // sorted by entry: the setjmp owners' sjcall_ stub constants
+  "answers": [[entry, "symbol", value], …],   // sorted by entry: the answered functions (new at 5bd7beba, below)
   "partitions": [
     {"name": "lift_c000", "tag": "c", "index": 0, "functions": 1234, "insns": 120017},
     …
@@ -119,12 +120,12 @@ function's entry in it); every jump-table case of a BR in the body (`jt` and `jt
 
 ```json
 {"addr": 2147614720, "kind": "lifted", "reads": "…", "clobbers": "…", "keeps": "…", "must": "…", "results": "…",
- "noreturn": false, "symbol": "f_80020000", "tail": "f_80020000"}
+ "noreturn": false, "symbol": "f_80020000", "tail": "f_80020000", "answer": null}
 ```
 
 `bounds.Bound` field for field. `kind` is a reason ("lifted", "noreturn", "HLE", "PATCH_FUNC", "setjmp owner",
-"no summary", "demoted", "HLE declared clobbering", "PATCH_FUNC with orig, body not proven"); it does not enter the
-IR. `symbol` is the symbol a BL calls (`gcall`), `tail` the one a tail branch jumps to. In `own`, `addr` is the entry.
+"no summary", "demoted", "HLE declared clobbering", "PATCH_FUNC with orig, body not proven", and since 5bd7beba
+"answer" and "stop"); only "stop" enters the IR (see below). `answer`: null, or the u64 a BL to it answers. `symbol` is the symbol a BL calls (`gcall`), `tail` the one a tail branch jumps to. In `own`, `addr` is the entry.
 
 ### Masks
 
@@ -155,6 +156,46 @@ constant; K decimal or 0x hex), `[xN+K]` / `[sp+K]` (the i64 loaded there); `res
 `io`: registers passed through a struct (`rowio`/`rowout`); `guest`: null, `"computed"`, or the list of guest
 addresses the host function calls: the IR only reads whether it is null (`ctx = guest is not None`).
 
+## Changes at 5bd7beba
+
+Commit 68927513 ("answers and stops lowered at their call sites; the retarget rows become instead rows on the calls")
+changed what the lift emits. What the export adds for it (format 2):
+
+1. **`Bound.answer`** (new field; null, or a u64). Set on a record of kind `"answer"`: the callee is a PATCH_ANSWER
+   (an SDK function answered by a constant). Its masks are reads 0, clobbers and must x0|x30, keeps x19-x29|SP,
+   results x0, noreturn false. `build_ir.build` then:
+   - **BL to it is no call**: in place of the `gcall`, `set x30 := const(pc + 4)`, then `set x0 := const(answer)`
+     (in that order), then the instruction's `after` rows; then, as for any call, if `pc + 4` is not in the body the
+     block ends with `br goto(pc + 4)`. No `held`, no `after_call`, no `gcall` op (so `omit_stores` sees no call).
+   - **A tail branch to it** (any `goto(t)` whose `t` is not `inside()` and whose `bound(callee(t)).answer` is not
+     null) goes to an exit block keyed `("a", t)` (one per `t`, created on first use, appended to `exits` like the
+     `("t", t)` blocks: it gets the flags-out of an exit) holding `set x0 := const(answer)` and terminator `("ret",)`;
+     the builder's current block and `cmp` are restored after filling it. Other tail targets keep the `("t", t)` exit.
+2. **`kind == "stop"`** (an import the host neither implements nor answers, or an NVN export without a proc): the
+   record is noreturn (reads/clobbers/results ALL, keeps 0, must 0, noreturn true), and the `gcall` op carries
+   `stop=True`: the emitter writes `  call void @<sym>(ptr %ctx) noreturn` (the ` noreturn` suffix is new); the block
+   then ends as any noreturn call (`("noreturn", pc, word)`: a64_trap, unreachable). Tail branches to a stop are
+   ordinary tail calls of `tail`.
+3. **Instead rows on a BR** (an indirect tail call): an `AtRow` with `mode` "instead" may now sit on a BR (never a
+   jump table's BR: the export ran `probes.at(replace=True, jt=...)`'s check). `build` handles it before the B/BR
+   terminators: if the instruction is a BR and `pc` has instead rows, run them in order (`At.post`), the block's
+   terminator is `("ret",)`, and nothing else of the BR is lowered (no switch, no ijump block). Unlike a BL/BLR
+   instead row, no `x30` is set and no `after` rows run.
+4. **`answers`** in meta.json and the **answers module**: `game.answers_ir(hle)` is a module of its own (the build's
+   `lift_answers.o`), the generic entries of the answered functions, for calls through a code pointer or a BLR. Its
+   text, exactly (`%d` the decimal byte offset of x0 in the context, 0; the value printed signed 64-bit, as
+   `emit_llvm.int_text(v, 64)`):
+
+       target triple = "x86_64-pc-linux-gnu"
+       define void @f_<entry %08x>(ptr noalias nocapture %ctx) {   ; <symbol>
+         %x0 = getelementptr i8, ptr %ctx, i64 0
+         store i64 <value as signed i64>, ptr %x0, align 8
+         ret void
+       }
+       … one per answer, ascending entry, joined by "\n", the text ending in "\n"
+
+   The golden has it as `lift_answers` (below); the Rust side writes `<dir>/lift_answers.ll`.
+
 ## Golden (work/ounce/golden)
 
 `ounce/lift/tools/golden.py` writes the Python lifter's IR of every partition, `lift_part`'s text exactly (verify off):
@@ -166,4 +207,22 @@ addresses the host function calls: the IR only reads whether it is null (`ctx = 
                                          uncompressed text (its `define` line to its closing `}` line, inclusive) and
                                          the sha1 of those bytes; keyed by the name it is defined as
 
-`ounce/lift/tools/compare.py <dir of Rust .ll>` compares `<dir>/<name>.ll` against the golden, per partition.
+    work/ounce/golden/lift_answers.ll.zst, .idx.json   the answers module (game.answers_ir), listed last in partitions
+    work/ounce/golden/compile.json       each partition's (and the answers module's) clang flags and `opt` command
+                                         (game.part_flags, game.opt_argv: cold O1, hot O2), and the generated C's
+                                         flags (build.flags)
+    work/ounce/golden/gen/<file>.zst     the lift's generated files (nx2/lift.py --standalone --write): a64_table.c,
+                                         a64_hooks.c, a64_code_slots.c, a64_stubs.c, hos_image.c, nvn2_exports.c,
+                                         functions.txt
+    work/ounce/golden/rt64/<file>.zst    a64.h, a64_rt.c (nx2/rtgen.py: the build writes them before compiling)
+    work/ounce/golden/image/<file>.zst   image.json, functions.json (the lift's image description and function list)
+
+The golden is everything generated before the compile of a standalone lift and build, of the lift whose LIFT_OK
+meta.json records (`lift`) and the dump in `dump` (game.json: build id, main's sha256); `files` holds every included
+file's sha256 (uncompressed). Not included: `image/image.bin` (the guest image, data hookshot loads at run time: its
+sha256 in `files`), the plan and summary pickles (the lift's hand-off to the build: their content is in the IR), the
+host's C, a64-kit's, the direct back end's and third-party sources (checked in, not generated), and the version stamp
+`build.py` passes to hos_main.c alone.
+
+`ounce/lift/tools/compare.py <dir of Rust .ll>` compares `<dir>/<name>.ll` against the golden, per partition (and
+`lift_answers`).

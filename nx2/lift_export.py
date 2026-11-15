@@ -13,7 +13,7 @@ import time
 
 NX2 = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(NX2)
-FORMAT = 1
+FORMAT = 2
 
 
 def commit():
@@ -54,10 +54,22 @@ def input_key(plan, gen, funcs):
     import hashlib
     from lift2 import game, host_effects
     hle = host_effects.hle_names(gen)
-    decl = {n: (host_effects.clobbers(n), host_effects.hle_reads(n)) for n in sorted(set(hle.values()))}
+    decl = {n: (host_effects.clobbers(n), host_effects.hle_reads(n), host_effects.answer(n), host_effects.stops(n))
+            for n in sorted(set(hle.values()))}
     return hashlib.sha1(repr((game.code_key(), game.facts_key(plan), plan.get("summary_cache"),
                               sorted(game.patch_rows().items()), sorted((a, f.name, f.orig_name) for a, f in funcs.items()),
                               sorted(hle.items()), sorted(decl.items()))).encode(), usedforsecurity=False).hexdigest()
+
+
+def answers(hle):
+    """[[address, symbol, value]] of the answered functions (PATCH_ANSWER), by address: game.answers_ir's module"""
+    from lift2 import host_effects
+    out = []
+    for a, n in sorted(hle.items()):
+        v = host_effects.answer(n)
+        if v is not None:
+            out.append([a, n, v & 0xFFFFFFFFFFFFFFFF])
+    return out
 
 
 def part_name(tag, k):
@@ -71,7 +83,7 @@ def mask(m):
 def bound_json(addr, b):
     return {"addr": addr, "kind": b.kind, "reads": mask(b.reads), "clobbers": mask(b.clobbers), "keeps": mask(b.keeps),
             "must": mask(b.must), "results": mask(b.results), "noreturn": bool(b.noreturn), "symbol": b.symbol,
-            "tail": b.tail}
+            "tail": b.tail, "answer": None if b.answer is None else b.answer & 0xFFFFFFFFFFFFFFFF}
 
 
 def runs(pcs):
@@ -106,7 +118,7 @@ def export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_t
         body = set(pcs)
         # (the checks lift_part's probes.find / probes.at make: an export exists only if they pass)
         probes.find(e, pcs, w.__getitem__)
-        for kw in ({"before": True, "jt": jt, "entries": entries}, {}, {"replace": True}):
+        for kw in ({"before": True, "jt": jt, "entries": entries}, {}, {"replace": True, "jt": jt}):
             probes.at(e, pcs, w.__getitem__, **kw)
         # (the targets build_ir reads a record of: a BL's, and a branch or fall-through leaving the function: not
         # inside(), a goto of its body)
@@ -194,6 +206,7 @@ def main():
             "summary_cache": plan.get("summary_cache"), "verify": False, "omit": True,
             "code_targets": sorted(code_targets),
             "sj_rets": [[e] + list(r) for e, r in sorted(plan.get("sj_rets", {}).items())],
+            "answers": answers(hle),
             "partitions": meta_parts}
     with open(os.path.join(a.out, "meta.json"), "w") as f:
         json.dump(meta, f, separators=(",", ":"))

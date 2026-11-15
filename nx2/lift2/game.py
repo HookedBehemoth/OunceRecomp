@@ -561,6 +561,12 @@ def part_key(plan, names, funcs, bound, rows):
     return h.hexdigest()
 
 
+def part_flags(level, march_flags):
+    """clang's flags for a partition's IR at level (O1 cold, the hot level for the hot list's)"""
+    return march_flags + ["-" + level, "-g0", "-Wno-everything", "-ffunction-sections",
+                          "-mllvm", "-rotation-max-header-size=0"] + DSE_FLAGS
+
+
 def partitions(plan):
     """[(tag, [entries])]: the partitions by address, the hot functions apart ("h"; the others "c"), each cut after the
     function that brings it to PART_INSNS instructions or more"""
@@ -613,8 +619,7 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     flags, pres, keys, objs_k = [], [], [], []
     for k, (tag, names) in enumerate(parts):
         level = hot_opt if tag == "h" else opt
-        fl = march_flags + ["-" + level, "-g0", "-Wno-everything", "-ffunction-sections",
-                            "-mllvm", "-rotation-max-header-size=0"] + DSE_FLAGS
+        fl = part_flags(level, march_flags)
         pre = opt_argv(clang, level, march_flags)
         flags.append(fl)
         pres.append(pre)
