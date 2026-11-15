@@ -88,8 +88,9 @@ class Tools(unittest.TestCase):
         self.assertIn("generates: uint64_t my_fn(uint64_t x0, uint64_t x1, uint64_t x2)", t)
         self.assertIn("the build's checks: it passes", t)
         t = self.run_site(F)   # (at an entry: the function replaced, its body hash, the argument registers it reads)
-        self.assertIn("PATCH_FUNC(0x80001000, word(0xb4000040), body(%#018x), aapcs, x0, my_fn, orig, x0, x1, x2) {"
+        self.assertIn("PATCH_FUNC(0x80001000, word(0xb4000040), body(%#018x), aapcs, x0, my_fn, orig) {"
                       % patch_scan.body_hash(WORDS[F]), t)
+        self.assertIn("the body reads x0, x1, x2", t)
 
     def test_check(self):
         errs = ["%s:%d: %s" % (w[0], w[1], m) for w, m in patch.errors(self.P)]

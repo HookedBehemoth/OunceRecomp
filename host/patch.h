@@ -25,10 +25,11 @@
        the lifted function at addr (its first word W and its body's hash H, nx2/lift2/patch_scan.py body_hash, checked
        at the build), or the one the image exports as symbol, replaced by fn: every call of it is a call of fn with the
        declared operands (x0-x8, w0-w8, s0-s7, q0-q7, x30 for the return address, sp; as(...) names them), its result
-       (none, x0, w0, s0, q0) the call's. orig, first: fn may run the function's own lifted body, GuestFn *orig, as
-       guest_orig(orig, a0, ...) (a0.. in x0..; the body's other registers are the call's); the build stops when the
-       body reads an argument register the declaration does not take. guest(A, ...): fn calls those guest functions
-       through guest_call (GuestCall *g, after orig), on the call's stack: sp is then an operand.
+       (none, x0, w0, s0, q0) the call's. The operands are what fn itself uses. orig, first: fn may run the function's
+       own lifted body, GuestFn *orig, as guest_orig(orig, a0, ...): a0.. go to x0.. (an argument fn changes is passed
+       so, never written into the context: fn has none), every other register is the call's own. guest(A, ...): fn
+       calls those guest functions through guest_call (GuestCall *g, after orig), on the call's stack: sp is then an
+       operand.
      HLE(symbol, effect...) { body }     NV(name, effect...) { body }     HLE_EFFECTS(symbol, effect...);
        a function the image replaces: void imp_<symbol>(Ctx *c) (hooked where the game imports it and at the SDK's
        definition); an NVN proc, static void n_<name>(Ctx *c, void *u_) (host/nvn_native.c's table); the effects of a
@@ -49,8 +50,8 @@
    The body writes what its summary says it may; the function's callers get that in its record (nx2/lift2/bounds.py) */
 typedef struct GuestFn { struct GuestContext *c; void (*body)(struct GuestContext *); } GuestFn;
 #define HOS_NARGS_(_1, _2, _3, _4, _5, _6, _7, _8, _9, n, ...) n
-#define HOS_NARGS(...) HOS_NARGS_(__VA_ARGS__, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
-#define guest_orig(orig, ...) hos_guest_orig(orig, HOS_NARGS(__VA_ARGS__), ((const uint64_t[]){__VA_ARGS__}))
+#define HOS_NARGS(...) HOS_NARGS_(__VA_ARGS__ __VA_OPT__(,) 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+#define guest_orig(orig, ...) hos_guest_orig(orig, HOS_NARGS(__VA_ARGS__), ((const uint64_t[]){__VA_ARGS__ __VA_OPT__(,) 0}))
 #define hos_guest_orig(o, n, a) ({                                                                                    \
     GuestFn *o_ = (o);                                                                                                \
     const uint64_t *a_ = (a);                                                                                         \
@@ -794,7 +795,7 @@ typedef struct GuestFn { struct GuestContext *c; void (*body)(struct GuestContex
    function's own lifted body is hos_orig_<key> (nx2/lift2/game.py), handed to fn as orig) */
 #define HOS_FUNC_(fname, oname, result, fn, ...)                                                                      \
     static HOS_R_##result fn(HOS_PARAMS(__VA_ARGS__));                                                               \
-    void oname(Ctx *A64_NOESC c);                                                                                     \
+    void oname(Ctx *A64_NOESC c) __attribute__((weak));   /* (referenced only through orig) */                        \
     void fname(Ctx *A64_NOESC c);                                                                                     \
     void fname(Ctx *A64_NOESC c) {                                                                                    \
         GuestFn hos_orig_ = {c, oname};                                                                               \

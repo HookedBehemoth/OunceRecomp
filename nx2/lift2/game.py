@@ -155,9 +155,21 @@ def summary_effects(hle, funcs):
     return hashlib.sha1(repr(facts).encode(), usedforsecurity=False).hexdigest()
 
 
+_SUMMARY_CODE = []
+
+
+def summary_code():
+    """the code the summaries run as it is now (code_key of SUMMARY_SOURCES; once a process)"""
+    if not _SUMMARY_CODE:
+        _SUMMARY_CODE.append(code_key(SUMMARY_SOURCES))
+    return _SUMMARY_CODE[0]
+
+
 def summary_cache(plan_path, base, effects):
-    """the summaries' cache file for the lift's key (base) and the patches' effects"""
-    k = hashlib.sha1((base + effects).encode(), usedforsecurity=False).hexdigest()[:16]
+    """the summaries' cache file for the lift's key (base), the patches' effects and the summaries' code as it is now:
+    a build after an edit of summary.py, bounds.py, ... computes them again from the input the lift left (base holds
+    the code as the lift had it)"""
+    k = hashlib.sha1((base + effects + summary_code()).encode(), usedforsecurity=False).hexdigest()[:16]
     return os.path.join(os.path.dirname(plan_path), "summaries_%s.pickle" % k)
 
 

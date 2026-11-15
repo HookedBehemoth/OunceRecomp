@@ -681,20 +681,12 @@ def funcs(gen, ps=None):
     return out, missing
 
 
-# the registers a replaced body may read only as a declared operand of its PATCH_FUNC (with orig): the integer argument
-# registers and x8 (guest_orig passes x0.. in order; the declaration says which the body takes)
-ORIG_ARGS = tuple("x%d" % i for i in range(9))
-
-
 def func_errors(plan, gen, ps=None):
     """[(where, what is wrong)] of the PATCH_FUNCs against the plan: a symbol the image does not export, no lifted
-    function at the address, a first word or body hash other than the declared one, an orig body reading an argument
-    register the declaration does not take (with the plan's summaries)"""
-    from . import summary
+    function at the address, a first word or body hash other than the declared one"""
     ps = ps or patches()
     found, missing = funcs(gen, ps)
     out = [(f.where, "%s: the image exports no %s" % (f.kind, f.symbol)) for f in missing]
-    summ = plan.get("summaries", {})
     for a, f in sorted(found.items()):
         body = plan["bodies"].get(a)
         if body is None or body[0][0] != a:
@@ -706,13 +698,6 @@ def func_errors(plan, gen, ps=None):
         elif f.body is not None and body_hash(body[1]) != f.body:
             out.append((f.where, "PATCH_FUNC at %#x: the function's body is body(%#018x), not body(%#018x) (%d "
                         "instructions)" % (a, body_hash(body[1]), f.body, len(body[1]))))
-        s = summ.get(a)
-        if f.orig and s is not None:
-            took = f.reads()
-            more = [r for r in ORIG_ARGS if s[0] & summary.BIT[r] and r not in took]
-            if more:
-                out.append((f.where, "%s at %#x: its body reads %s, which the declaration does not take: list %s as "
-                            "operand%s" % (f.kind, a, ", ".join(more), " and ".join(more), "s" if len(more) > 1 else "")))
     return out
 
 

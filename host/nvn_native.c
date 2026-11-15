@@ -421,11 +421,10 @@ NV(nvnMemoryPoolFlushMappedRange) {}
    (f_80357060, read and zeroed) keeps its wait. */
 static _Thread_local int tl_grid_reader;
 /* report_reader_a: the grid reader's body (orig), this thread noted */
-PATCH_FUNC(0x80365f00, word(0xd503237f), body(0x7f2d99cdf2bfd4bf), aapcs, x0, nvn_grid_reader,
-           orig, x0, x1, x2, x3, x4, x5, x6, x7) {
-    if (tl_grid_reader) return guest_orig(orig, x0, x1, x2, x3, x4, x5, x6, x7);
+PATCH_FUNC(0x80365f00, word(0xd503237f), body(0x7f2d99cdf2bfd4bf), aapcs, x0, nvn_grid_reader, orig) {
+    if (tl_grid_reader) return guest_orig(orig);
     tl_grid_reader = 1;
-    const uint64_t r = guest_orig(orig, x0, x1, x2, x3, x4, x5, x6, x7);
+    const uint64_t r = guest_orig(orig);
     tl_grid_reader = 0;
     return r;
 }

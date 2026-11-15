@@ -1,8 +1,8 @@
 """Host copies the game asks for stay in guest memory (host/nn_libc.c, host/nn_fs.c, host/nn_video.c).
 
-- The memcpy, memmove and memset replacements (PATCH_FUNC_SYM): a range past the guest window is left to the game's
-  own (lifted) copy, orig, never done by the host. Built from host/nn_libc.c and host/patch.h as they are, over a small
-  window with a guard page after it.
+- The memcpy, memmove and memset replacements (PATCH_FUNC_SYM): inside the guest window the host copies; a range
+  outside it is a fatal stop naming the function, the range and the caller (the game's own copy could not reach it
+  either). Built from host/nn_libc.c and host/patch.h as they are, over a small window with a page after it.
 - nn::fs reads and writes take guest buffers only, and GetFileSize answers 0 for a handle with no size.
 - ReadDecoderOutputImageNv12 reads nothing when the pool's NV12 allocation failed (its NULL plus an offset was any host
   address, copied to the game).
@@ -51,58 +51,58 @@ typedef struct GuestCall GuestCall;
 typedef uint64_t hos_q __attribute__((vector_size(16)));
 #include "patch.h"
 static inline void *hos_guest_range(uint64_t a, uint64_t n) { return a < WINDOW && n <= WINDOW - a ? GP(a) : (void *)0; }
+void hos_fatal(Ctx *c, const char *fmt, ...);
 '''
 
 FIXTURE = r'''
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/mman.h>
 #include "hos.h"
 uint8_t *window;
-/* (the game's own copies, orig: counted) */
-static int origs, last;
-void hos_orig_sym_memcpy(Ctx *c) { (void)c; origs++, last = 1; }
-void hos_orig_sym_memmove(Ctx *c) { (void)c; origs++, last = 2; }
-void hos_orig_sym_memset(Ctx *c) { (void)c; origs++, last = 3; }
-void hos_orig_sym_memcmp(Ctx *c) { (void)c; }
-void hos_orig_sym_strlen(Ctx *c) { (void)c; }
-void hos_orig_sym_strcmp(Ctx *c) { (void)c; }
+void hos_fatal(Ctx *c, const char *fmt, ...) {   /* (the stop: its message, exit 7) */
+    (void)c;
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    printf("\n");
+    fflush(stdout);
+    _exit(7);
+}
 #include "nn_libc.c"
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
-int main(void) {
+int main(int argc, char **argv) {
     window = mmap(NULL, WINDOW + 0x1000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(window != MAP_FAILED);
-    uint8_t *after = window + WINDOW;
-    memset(after, 0xAB, 0x1000);
+    memset(window + WINDOW, 0xAB, 0x1000);
     Ctx c = {{0}};
+    c.x[30] = 0x80001234;
+    const int stop = argc > 1 ? atoi(argv[1]) : 0;
+    if (stop) {   /* (a range outside the window: a fatal stop, the page after it untouched) */
+        static const uint64_t cases[][3] = {{WINDOW - 8, 0, 64}, {WINDOW - 8, 0x100, 64}, {0x100, WINDOW + 0x10, 8},
+                                            {~0ull - 4, 0, 16}};
+        c.x[0] = cases[stop - 1][0], c.x[1] = cases[stop - 1][1], c.x[2] = cases[stop - 1][2];
+        if (stop == 1 || stop == 4) hos_func_sym_memset(&c);
+        else if (stop == 2) hos_func_sym_memmove(&c);
+        else hos_func_sym_memcpy(&c);
+        return 0;   /* (not reached) */
+    }
     /* inside the window: the host copies, x0 the destination */
     memcpy(window + 0x100, "guest", 6);
     c.x[0] = 0x200, c.x[1] = 0x100, c.x[2] = 6;
     hos_func_sym_memcpy(&c);
-    CHECK(origs == 0 && c.x[0] == 0x200 && !memcmp(window + 0x200, "guest", 6));
+    CHECK(c.x[0] == 0x200 && !memcmp(window + 0x200, "guest", 6));
     c.x[0] = 0x300, c.x[1] = 0x41, c.x[2] = 16;
     hos_func_sym_memset(&c);
-    CHECK(origs == 0 && c.x[0] == 0x300 && window[0x30f] == 0x41);
-    /* running past the window's end: the game's own copy (orig), the page after untouched */
-    c.x[0] = WINDOW - 8, c.x[1] = 0, c.x[2] = 64;
-    hos_func_sym_memset(&c);
-    CHECK(origs == 1 && last == 3);
-    c.x[0] = WINDOW - 8, c.x[1] = 0x100, c.x[2] = 64;
+    CHECK(c.x[0] == 0x300 && window[0x30f] == 0x41);
+    c.x[0] = ~0ull - 4, c.x[1] = 0, c.x[2] = 0;   /* (nothing to copy: no range to check) */
     hos_func_sym_memcpy(&c);
-    CHECK(origs == 2 && last == 1);
-    c.x[0] = WINDOW - 8, c.x[1] = 0x100, c.x[2] = 64;
-    hos_func_sym_memmove(&c);
-    CHECK(origs == 3 && last == 2);
-    /* a source past the window, or an address that wraps */
-    c.x[0] = 0x100, c.x[1] = WINDOW + 0x10, c.x[2] = 8;
-    hos_func_sym_memcpy(&c);
-    CHECK(origs == 4);
-    c.x[0] = ~0ull - 4, c.x[1] = 0, c.x[2] = 16;
-    hos_func_sym_memset(&c);
-    CHECK(origs == 5);
-    for (int i = 0; i < 0x1000; i++) CHECK(after[i] == 0xAB);
-    printf("PASS: the libc replacements copy inside the guest window and leave the rest to the game's own code\n");
+    CHECK(c.x[0] == ~0ull - 4);
+    printf("PASS: the libc replacements copy inside the guest window\n");
     return 0;
 }
 '''
@@ -139,6 +139,11 @@ def main():
                         str(tmp / "fixture.c"), "-o", str(exe)],
                        check=True)
         subprocess.run([str(exe)], check=True)
+        for k, fn in ((1, "memset"), (2, "memmove"), (3, "memcpy"), (4, "memset")):
+            r = subprocess.run([str(exe), str(k)], capture_output=True, text=True)
+            check(r.returncode == 7 and r.stdout.startswith(fn + ": ") and "outside the guest window (lr 0x80001234)"
+                  in r.stdout, "case %d: %r" % (k, r.stdout))
+        print("PASS: a range outside the guest window stops the game, naming the function, the range and lr")
 
 
 if __name__ == "__main__":

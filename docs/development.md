@@ -80,8 +80,8 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
   - host code that only watches a call: `PATCH_AT(<the function's address>, word(W), before, none, fn, operand...)`;
   - a function replaced: `PATCH_FUNC(0x8xxxxxxx, word(W), body(H), aapcs, result, fn, [orig,] [guest(A, ...),]
     operand...) { ... }` or `PATCH_FUNC_SYM(name, aapcs, result, fn, ...) { ... }`: `fn` takes the operands it
-    declares and returns the result; with `orig` it may run the game's body, `guest_orig(orig, x0, ...)` (the build
-    names an argument register the body reads that the declaration lacks), with `guest(A, ...)` and `sp` it calls
+    declares (only what it uses) and returns the result; with `orig` it may run the game's body, `guest_orig(orig)`
+    with the call's registers or `guest_orig(orig, x0, ...)` with arguments it changed, with `guest(A, ...)` and `sp` it calls
     guest code through `guest_call`. `W` is the instruction's or the function's first word, `H` its body's hash (the
     build's error names the right one); names of `PATCH_FUNC_SYM` resolve through `work/sa/image/image.json`;
   - an SDK function replaced: `HLE(symbol) { ... }` (this one does need a lift: the lift hooks it), an NVN proc

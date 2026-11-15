@@ -207,13 +207,12 @@ static int index_in(uint64_t bntx, uint64_t brti, const char *nm, uint32_t nl, u
 void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: HOS_DBG=nodata, either back end) */
 static int load_image(uint64_t td, uint64_t src);
 PATCH_FUNC(0x80798690, word(0xd503237f), body(0xd3402c5c84ac23f3), aapcs, x0, direct_assets_load_image,
-           orig, as(x0, td), as(x1, ctx), as(x2, src), x3, x4, x5, x6, x7, as(x30, lr)) {
+           orig, as(x0, td), as(x1, ctx), as(x2, src), as(x30, lr)) {
     direct_diag_nodata_load(td, src, lr);
-    return guest_orig(orig, td, ctx, load_image(td, src) ? 0 : src, x3, x4, x5, x6, x7);
+    return guest_orig(orig, td, ctx, load_image(td, src) ? 0 : src);   /* (x2 changed: x0-x2 passed) */
 }
 /* 1: the back end has the texture's texels; its src is not copied into the heap */
 static int load_image(uint64_t td, uint64_t src) {
-    if (!rx_direct()) return 0;
     const int on = ready();
     if (!hos_guest_range(td, 0x100)) return 0;
     const uint64_t brti = td + 0x58, gfx = G64(td + 0xd8);
@@ -276,24 +275,24 @@ PATCH_AT(0x807982f0, word(0xd503237f), before, none, direct_assets_rebind, as(x0
 /* in-place files: the file, for this thread while its textures are initialized (the game's body, orig, runs) */
 static _Thread_local uint64_t tl_inplace;
 static _Thread_local int tl_in_body;   /* (a call inside another's body keeps the outer file) */
-static uint64_t run_inplace(GuestFn *orig, const uint64_t x[8], uint64_t file) {
-    if (tl_in_body || !ready()) return guest_orig(orig, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
+static uint64_t run_inplace(GuestFn *orig, uint64_t file) {
+    if (tl_in_body || !ready()) return guest_orig(orig);
     const uint64_t was = tl_inplace;
     tl_inplace = file;
     tl_in_body = 1;
-    const uint64_t r = guest_orig(orig, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
+    const uint64_t r = guest_orig(orig);
     tl_in_body = 0;
     tl_inplace = was;
     return r;
 }
 /* ResTextureFile in place (ui2d) */
 PATCH_FUNC(0x80798b60, word(0xd503237f), body(0xbc01f749f0fff475), aapcs, x0, direct_assets_inplace_res,
-           orig, x0, x1, x2, x3, x4, x5, x6, x7) {
-    return run_inplace(orig, (const uint64_t[8]){x0, x1, x2, x3, x4, x5, x6, x7}, x0);
+           orig, x0) {
+    return run_inplace(orig, x0);
 }
 PATCH_FUNC(0x80792bd0, word(0xd503237f), body(0x388a5e46c19d2d62), aapcs, x0, direct_assets_inplace_bntx,
-           orig, x0, x1, x2, x3, x4, x5, x6, x7) {
-    return run_inplace(orig, (const uint64_t[8]){x0, x1, x2, x3, x4, x5, x6, x7}, x1);   /* in-place BNTX */
+           orig, x1) {
+    return run_inplace(orig, x1);   /* in-place BNTX */
 }
 
 /* nn::gfx TextureImpl<NVN>::Initialize(obj, device, info, pool, offset, size): an in-place file's texture */
@@ -340,7 +339,7 @@ PATCH_AT(0x83537d90, word(0xd503237f), before, none, direct_assets_replace_load,
 }
 
 int direct_assets_skip_packaged(uint64_t bytes) {
-    if (!rx_direct() || !direct_assets_on()) return 0;
+    if (!direct_assets_on()) return 0;
     InterlockedIncrement64(&n_pkg);
     InterlockedAdd64(&n_pkg_bytes, (LONG64)bytes);
     return 1;
@@ -356,10 +355,10 @@ int direct_assets_skip_packaged(uint64_t bytes) {
    (f_80f6c580), whose body runs from here with this thread noted */
 static _Thread_local int tl_heap_init;
 PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, direct_assets_heap_init,
-           orig, x0, x1, x2, x3, x4, x5, x6, x7, x8) {
-    if (!rx_direct() || !direct_assets_on()) return guest_orig(orig, x0, x1, x2, x3, x4, x5, x6, x7, x8);
+           orig) {
+    if (!direct_assets_on()) return guest_orig(orig);
     tl_heap_init = 1;
-    const uint64_t r = guest_orig(orig, x0, x1, x2, x3, x4, x5, x6, x7, x8);
+    const uint64_t r = guest_orig(orig);
     tl_heap_init = 0;
     return r;
 }
@@ -370,7 +369,7 @@ PATCH_AT(0x80f6cb18, word(0xf9400108), after, none, direct_assets_agl_pool) { tl
 void direct_assets_pool_made(uint64_t gpu, uint64_t size) {
     const int agl = tl_agl_pool;
     tl_agl_pool = 0;
-    if (!agl || !tl_heap_init || !rx_direct() || !direct_assets_on()) return;
+    if (!agl || !tl_heap_init || !direct_assets_on()) return;
     hos_log("assets: the texture data pool made: %#llx + %llu MB (agl::TextureDataMgr)", (unsigned long long)gpu,
             (unsigned long long)(size >> 20));
     rx_direct()->texture_data_pool(gpu, gpu + size);
@@ -378,7 +377,7 @@ void direct_assets_pool_made(uint64_t gpu, uint64_t size) {
 
 /* ---- the terrain overlay ---- */
 const char *direct_assets_overlay(void) {
-    if (!rx_direct() || !direct_assets_on()) return NULL;
+    if (!direct_assets_on()) return NULL;
     static char root[1100];
     const char *d = prepared_dir();
     struct stat st;
@@ -543,22 +542,22 @@ static void tile_upload_as(uint32_t source, const nvn_tex *tp, const uint8_t *sr
 /* ---- the font glyph cache ---- */
 static _Thread_local struct { int in_pack, in_plot, have; uint32_t x, y, w, h; } gl;
 PATCH_FUNC(0x8152f540, word(0xb941400c), body(0xab2b6fd8adce95a6), aapcs, x0, direct_assets_glyph_pack,
-           orig, as(x0, cache), as(x1, px), as(x2, py), as(x3, w), as(x4, h)) {   /* the shelf packer (cache, &x, &y, w, h) */
-    if (gl.in_pack || !gl.in_plot || !direct_assets_on()) return guest_orig(orig, cache, px, py, w, h);
+           orig, as(x1, px), as(x2, py), as(w3, w), as(w4, h)) {   /* the shelf packer (cache, &x, &y, w, h) */
+    if (gl.in_pack || !gl.in_plot || !direct_assets_on()) return guest_orig(orig);
     gl.in_pack = 1;
-    const uint64_t r = guest_orig(orig, cache, px, py, w, h);
+    const uint64_t r = guest_orig(orig);
     gl.in_pack = 0;
     if (hos_guest_range(px, 4) && hos_guest_range(py, 4))
-        gl.x = G32(px), gl.y = G32(py), gl.w = (uint32_t)w, gl.h = (uint32_t)h, gl.have = 1;
+        gl.x = G32(px), gl.y = G32(py), gl.w = w, gl.h = h, gl.have = 1;
     return r;
 }
 static void glyph_plotted(uint64_t cache);
 PATCH_FUNC(0x81539300, word(0xd503237f), body(0xee537395c207a3f6), aapcs, x0, direct_assets_glyph_plot,
-           orig, as(x0, cache), x1, x2, x3, x4, x5, x6, x7) {   /* nn::font's plot (cache, glyph, ...) */
-    if (gl.in_plot || !ready()) return guest_orig(orig, cache, x1, x2, x3, x4, x5, x6, x7);
+           orig, as(x0, cache)) {   /* nn::font's plot (cache, glyph, ...) */
+    if (gl.in_plot || !ready()) return guest_orig(orig);
     gl.have = 0;
     gl.in_plot = 1;
-    const uint64_t r = guest_orig(orig, cache, x1, x2, x3, x4, x5, x6, x7);
+    const uint64_t r = guest_orig(orig);
     gl.in_plot = 0;
     glyph_plotted(cache);
     return r;

@@ -45,7 +45,7 @@ static int snap(uint64_t entry, uint64_t view, Snap *s) {
 
 /* f_80667d20 at 0x806680d8 in place of its bl f_800634b0: sp the caller's, x0-x2 the call's arguments */
 PATCH_AT(0x806680d8, word(0x97e7ecf6), instead, none, direct_rt_ids_reregister, guest(0x800634b0), sp, as(x0, entry), as(x1, view), as(x2, flag)) {
-    if (!rx_direct() || !view) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }
+    if (!view) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }
     InterlockedIncrement64(&n.calls);
     Snap now;
     if (!snap(entry, view, &now)) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }

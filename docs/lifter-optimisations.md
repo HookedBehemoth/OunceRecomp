@@ -144,8 +144,8 @@ a C-after or SPLICE site. At rows take register values, not slots.
   `__memcpy_aarch64` and `__memcpy_aarch64_simd`) becomes `llvm.memmove`/`llvm.memset` on `gaddr` plus x0 := x0, x9-x18
   poison, x30 not stored. Source: FEX lists memcpy/memset with a compile-time direction among its optimisations
   (https://fex-emu.com/FEX-2312/; code not read). Soundness: the site keeps the replacements' `hos_guest_range` check on both
-  ranges as an inline compare with the replacement's call as the fallback (commit 6f8f2432, `tests/test_guest_copies.py`: host
-  memory safety), and memmove semantics. First step: the three functions' BLs, on/off.
+  ranges as an inline compare with the replacement's call (its fatal stop) as the fallback (`tests/test_guest_copies.py`:
+  host memory safety), and memmove semantics. First step: the three functions' BLs, on/off.
 - **CRC32C as `crc32`.** `sem_int.t_crc32` with `emit_llvm.HELPERS["lift2_crc32"]` is a bit loop; the C variants equal
   SSE4.2's `crc32`. The ISO variant needs a table or PCLMUL. Exact. First step: count the sites, then the C variants
   on/off.

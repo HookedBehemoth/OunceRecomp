@@ -4,6 +4,7 @@
   was; editing code changes it (the host's patch declarations are in no lifter source: host/patch.h).
 - part_key: a partition's key changes with its own functions' rows, PATCH_FUNCs and summaries and with the
   call-boundary records of the functions they branch or call to, and with nothing of another partition.
+- summary_cache: changes with the summaries' code as it is at the build (an edit of summary.py needs no lift).
 - summary_effects: changes with a row's declared reads or writes, not with its host function's name; with a
   PATCH_FUNC's operands, result, orig and guest callees, with its presence (a function replaced needs no lift), not
   with its body or its place; and with an HLE'd function's declared reads and clobbers.
@@ -83,6 +84,23 @@ class PartKey(unittest.TestCase):
             a2, b2 = self.keys(p2, r2, h2, c2)
             self.assertNotEqual(a2, a, change)
             self.assertEqual(b2, b, change)
+
+
+class SummaryCode(unittest.TestCase):
+    def test_code_in_the_cache_key(self):
+        """the summaries' cache is keyed by their code as it is at the build, not only as the lift had it (base): a
+        build after an edit of summary.py computes them again (finish_summaries finds no cache of that name)"""
+        self.assertEqual(game.summary_code(), game.code_key(game.SUMMARY_SOURCES))
+        k = game.summary_cache("/p/plan.pickle", "base", "effects")
+        saved = list(game._SUMMARY_CODE)
+        try:
+            game._SUMMARY_CODE[:] = [game.source_key("summary.py", text("summary.py").replace(
+                "CALLER_SAVED = sum(", "CALLER_SAVED = 0 | sum("))]
+            self.assertNotEqual(game.summary_cache("/p/plan.pickle", "base", "effects"), k)
+            game._SUMMARY_CODE[:] = saved
+            self.assertEqual(game.summary_cache("/p/plan.pickle", "base", "effects"), k)
+        finally:
+            game._SUMMARY_CODE[:] = saved
 
 
 class SummaryEffects(unittest.TestCase):

@@ -198,10 +198,10 @@ PATCH_AT_SITE(0x80668fb0, word(0xf9400108), after, x8, direct_job_sync_call, x8,
 /* the occlusion grid's dispatch (grid entry, drawctx, flag, flag): kept for the view's job (its x0 left as it came), or
    the game's (orig) */
 PATCH_FUNC(0x8067c310, word(0xb9400808), body(0xf7211f1c433e65c6), aapcs, x0, direct_job_sync_grid_dispatch,
-           orig, as(x0, entry), as(x1, drawctx), x2, x3, x4, x5, x6, x7) {
-    if (!ready()) return guest_orig(orig, entry, drawctx, x2, x3, x4, x5, x6, x7);
+           orig, as(x0, entry), as(x1, drawctx), x2, x3) {
+    if (!ready()) return guest_orig(orig);
     const uint64_t view = hos_guest_range(drawctx + 216, 8) ? job_view(G64(drawctx + 216)) : 0;
-    if (!view) return guest_orig(orig, entry, drawctx, x2, x3, x4, x5, x6, x7);
+    if (!view) return guest_orig(orig);
     AcquireSRWLockExclusive(&kept_lock);
     Kept *k = kept_of(view);
     if (k && k->nd < 8) {
@@ -211,7 +211,7 @@ PATCH_FUNC(0x8067c310, word(0xb9400808), body(0xf7211f1c433e65c6), aapcs, x0, di
         return entry;
     }
     ReleaseSRWLockExclusive(&kept_lock);
-    return guest_orig(orig, entry, drawctx, x2, x3, x4, x5, x6, x7);
+    return guest_orig(orig);
 }
 
 void direct_job_sync_log(double frames) {

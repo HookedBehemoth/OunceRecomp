@@ -23,7 +23,6 @@ static const char *const names[D_N] = {"f_801a43e0", "f_801a46a0", "f_801a6720"}
 static struct { volatile LONG64 calls, bound, inactive; } n[D_N];
 
 static void drawer(GuestCall *g, uint64_t sp, uint64_t p1, uint64_t item, int which) {
-    if (!rx_direct()) return;
     InterlockedIncrement64(&n[which].calls);
     if (!hos_guest_range(p1 + 0x18, 8) || !hos_guest_range(G64(p1 + 0x18) + 0x338, 8) || !hos_guest_range(item, 8)) return;
     const uint64_t o = G64(G64(p1 + 0x18) + 0x338);

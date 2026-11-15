@@ -193,7 +193,6 @@ class Scan(unittest.TestCase):
     def test_funcs_in_a_plan(self):
         import json
         from array import array
-        from lift2 import summary
         words = [0xd503237f, 0xd65f03c0]
         h = "body(%#x)" % patch_scan.body_hash(words)
         ps = patch_scan.scan_text(FUNCS.replace("body(0x1234)", h).replace("body(0x5678)", h))
@@ -207,14 +206,6 @@ class Scan(unittest.TestCase):
             got = patch_scan.check_funcs(plan, gen, ps)
             self.assertEqual({a: f.fn for a, f in got.items()}, {0x80001000: "t_alloc", 0x80002000: "t_watch",
                                                                  0x80005000: "t_strlen"})
-            # (orig's body reading argument registers the declaration does not take: x1, x2, x8)
-            ins = sum(summary.BIT[r] for r in ("x0", "x1", "x2", "x3", "x8", "x19", "sp"))
-            plan["summaries"] = {0x80001000: (ins,)}
-            with self.assertRaises(SystemExit) as e:
-                patch_scan.check_funcs(plan, gen, ps)
-            self.assertIn("t.c:1: PATCH_FUNC at 0x80001000: its body reads x1, x2, x8, which the declaration does not "
-                          "take", str(e.exception))
-            del plan["summaries"]
             plan["bodies"][0x80002000][1][1] = 0xd503201f
             with self.assertRaises(SystemExit) as e:
                 patch_scan.check_funcs(plan, gen, ps)

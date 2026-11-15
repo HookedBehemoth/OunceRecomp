@@ -25,14 +25,13 @@ static _Thread_local uint64_t jt_cmd;   /* the guest command buffer the job on t
 /* the job recorder (ctx, drawctx, cmdpool, key, job, &range, stats): the game's (orig) with this thread's job noted; a
    pass whose formats are not known returns at once (its x0 as it came) */
 PATCH_FUNC(0x80084de0, word(0xd503237f), body(0x961fa51430550d71), aapcs, x0, eng_jobs_record,
-           orig, as(x0, ctx), as(x1, drawctx), x2, as(x3, key), x4, as(x5, range), x6, x7, as(x30, lr)) {
-    if (!rx_direct() || jt.active) return guest_orig(orig, ctx, drawctx, x2, key, x4, range, x6, x7);   /* (not direct mode,
-                                                                                    or a recorder run inside one: the game's) */
+           orig, as(x0, ctx), as(x1, drawctx), as(x3, key), as(x5, range), as(x30, lr)) {
+    if (jt.active) return guest_orig(orig);   /* (a recorder run inside one: the game's) */
     if (direct_passes_recorder(key)) { direct_layer_ahead_job_done(range, lr); return ctx; }
     memset(&jt, 0, sizeof jt);
     jt.active = 1;
     jt.ctx = ctx, jt.drawctx = drawctx, jt.key = key;
-    const uint64_t r = guest_orig(orig, ctx, drawctx, x2, key, x4, range, x6, x7);
+    const uint64_t r = guest_orig(orig);
     jt.active = 0;
     direct_layer_ahead_job_done(range, lr);
     return r;

@@ -292,14 +292,14 @@ def site(P, pc, out=print):
     out("/* the build's checks: %s */" % ("; ".join(errs) if errs else "it passes"))
     if pc == e:
         pcs, words = P.plan["bodies"][e]
-        args = [r for r in patch_scan.ORIG_ARGS if s is not None and s.inputs & summary.BIT[r]]
-        out("/* or, the function replaced (orig: its body, callable; operands: the argument registers it reads) */")
-        out("PATCH_FUNC(%#x, word(%#010x), body(%#018x), aapcs, x0, my_fn, orig%s) {" % (
-            pc, w, patch_scan.body_hash(list(words)), "".join(", " + r for r in args)))
-        out("    return guest_orig(orig%s);" % "".join(", " + r for r in args))
+        args = [r for r in ("x%d" % i for i in range(9)) if s is not None and s.inputs & summary.BIT[r]]
+        out("/* or, the function replaced: orig its body, run with the call's registers; the operands are those the")
+        out("   host function uses (the body reads %s: what a call of it passes) */" % (", ".join(args) or "none of x0-x8"))
+        out("PATCH_FUNC(%#x, word(%#010x), body(%#018x), aapcs, x0, my_fn, orig) {" % (
+            pc, w, patch_scan.body_hash(list(words))))
+        out("    return guest_orig(orig);")
         out("}")
-        out("/* generates: static uint64_t my_fn(GuestFn *orig%s), called by hos_func_%#x(Ctx *) */" % (
-            "".join(", uint64_t " + r for r in args), pc))
+        out("/* generates: static uint64_t my_fn(GuestFn *orig), called by hos_func_%#x(Ctx *) */" % pc)
 
 
 # ---- check

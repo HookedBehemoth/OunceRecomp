@@ -28,7 +28,6 @@ static volatile uint64_t view_obj;   /* (V, the last the binder was called with)
 static struct { volatile LONG64 binder, views, jobs, no_view, no_ctx; } n;
 
 PATCH_AT(0x80101ec0, word(0xd503237f), before, none, direct_mesh_system_binder, as(x0, info)) {   /* (info): V noted */
-    if (!rx_direct()) return;
     InterlockedIncrement64(&n.binder);
     if (!hos_guest_range(info + 0xe0, 8) || !hos_guest_range(G64(info + 0xe0) + 8, 8)) return;
     const uint64_t v = G64(G64(info + 0xe0) + 8);
@@ -42,7 +41,6 @@ PATCH_AT(0x80101ec0, word(0xd503237f), before, none, direct_mesh_system_binder, 
 
 /* (f_80084de0 after its blr x8 to SetDepthRange: sp the job's) */
 PATCH_AT(0x800855a8, word(0xd63f0100), after, none, direct_mesh_system_bind, guest(0x801060f0, 0x80100210), as(sp, job_sp)) {
-    if (!rx_direct()) return;
     const uint64_t v = view_obj, dc = eng_jobs_drawctx();
     if (!v || !hos_guest_range(v + 0x538, 16)) { InterlockedIncrement64(&n.no_view); return; }
     if (!dc) { InterlockedIncrement64(&n.no_ctx); return; }

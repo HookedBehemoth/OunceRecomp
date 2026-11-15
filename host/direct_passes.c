@@ -100,14 +100,12 @@ static void inline_pass(int site, int nk, const uint64_t *ks, uint64_t drawctx) 
 }
 /* f_806688c0 before its call (0x80668d80): x6 = [sp + 0x18] the key + 0xc0, x1 = [sp + 0x10] the list's draw context */
 PATCH_AT(0x80668d7c, word(0xf90483e8), after, none, direct_passes_inline_job, as(x6, key_c0), as(x1, drawctx)) {   /* str x8, [sp, #0x900] */
-    if (!rx_direct()) return;
     const uint64_t key = key_c0 - 0xc0;
     inline_pass(0, key_known(key), &key, drawctx);
 }
 /* f_8028a2a0 before its call (0x8028a588): x2 a copy of the key, x1 the draw context; keys with the same bytes (cube
    faces of two sets share them) all name this pass */
 PATCH_AT(0x8028a584, word(0xaa1303e1), after, none, direct_passes_inline_key, as(x2, key_copy), as(x1, drawctx)) {   /* mov x1, x19 */
-    if (!rx_direct()) return;
     uint64_t ks[8];
     inline_pass(1, keys_by_bytes(key_copy, ks, 8), ks, drawctx);
 }

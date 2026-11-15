@@ -72,8 +72,6 @@ void f_802737a0(Ctx *), f_8005ed00(Ctx *);   /* (lifted functions the host calls
 #define SP_ENTRY 40             /* alloc's frame: the entry, from 0x80060308 on (before: the descriptor cache's candidate) */
 #define SP_ALIGN 192            /* alloc's frame: s32 the TextureData's storage alignment */
 
-/* The slots are the direct back end's: another renderer leaves the game's allocator untouched */
-static int off_(void) { return !rx_direct(); }
 /* Direct mode: the slots lie after the pool's end (offsets past its size: nvn_native.c leaves those GPU addresses
    unused after every virtual pool), the arenas keep the whole pool for their bookkeeping, and the range is the back
    end's transient pool: device memory of a constant size, twice the game's pool (whose size follows the output
@@ -463,18 +461,15 @@ static uint32_t shadow_size(uint64_t obj, uint32_t w);
 static void alloc_gave(uint64_t entry);
 /* DTA::alloc(dta, ctx, desc, flags): the alloc's body (orig) runs from here, so the entry it gives is seen (alloc_gave) */
 PATCH_FUNC(0x8005ed00, word(0xd503237f), body(0xa0d86942ab307816), aapcs, x0, rt_slots_alloc,
-           orig, guest(0x802737a0), as(x0, dta), as(x1, ctx), as(x2, desc), as(x3, flags), x4, x5, x6, x7, as(x30, lr), sp) {
+           orig, guest(0x802737a0), as(x0, dta), as(x2, desc), as(x3, flags), as(x30, lr), sp) {
     uint64_t e = 0;
-    const int handled = alloc_pre(g, sp, lr, dta, desc, flags, &e);
-    const int off = off_();
-    if (!handled) e = guest_orig(orig, dta, ctx, desc, flags, x4, x5, x6, x7);
-    if (!off) alloc_gave(e);
+    if (!alloc_pre(g, sp, lr, dta, desc, flags, &e)) e = guest_orig(orig);
+    alloc_gave(e);
     return e;
 }
 static int alloc_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64_t desc, uint64_t flags, uint64_t *entry) {
     const int local_shadow = tl_local_shadow;
     tl_local_shadow = 0;
-    if (off_()) return 0;
     alloc_sp = 0;   /* (M6f: the splice of this call sets it) */
     dta_seen = dta;
     __atomic_add_fetch(&n.calls, 1, __ATOMIC_RELAXED);
@@ -709,7 +704,7 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
 PATCH_AT(0x8005fb74, word(0xf9001eea), after, x10, rt_slots_offset, as(x8, pool), as(x10, game), as(x23, block), sp, as(ld(sp, 192), align_slot)) {
     alloc_sp = sp, alloc_block = block;   /* (M6f: persistent allocations too: the entry's texture, below) */
     if (!cur.valid) {
-        if (!off_()) __atomic_add_fetch(&n.unspliced, 1, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&n.unspliced, 1, __ATOMIC_RELAXED);
         return game;
     }
     const Cur k = cur;
@@ -852,11 +847,10 @@ static uint32_t shadow_size(uint64_t obj, uint32_t w) {
 static int free_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64_t e);
 /* DTA::free(dta, entry): the game's free (orig) unless the entry is parked or has no block */
 PATCH_FUNC(0x802737a0, word(0xd503237f), body(0x2ec356fee2c2fb11), aapcs, none, rt_slots_free,
-           orig, guest(0x802737a0), as(x0, dta), as(x1, e), x2, x3, x4, x5, x6, x7, x8, as(x30, lr), sp) {
-    if (!free_pre(g, sp, lr, dta, e)) guest_orig(orig, dta, e, x2, x3, x4, x5, x6, x7, x8);
+           orig, guest(0x802737a0), as(x0, dta), as(x1, e), as(x30, lr), sp) {
+    if (!free_pre(g, sp, lr, dta, e)) guest_orig(orig);
 }
 static int free_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint64_t e) {
-    if (off_()) return 0;
     if (!hos_guest_range(e, 0x180)) return 0;
     if (check_on()) check_arenas("free of", lr, dta, e);
     const uint64_t block = G64(e + ENT_BLOCK);
@@ -987,7 +981,7 @@ void rt_slots_frame(void) {
         if (held > held_peak) held_peak = held;
         if (held > held_peak_block) held_peak_block = held;
     }
-    if (f % 600 || (off_() && !log_slots()) || (state < 0 && !off_())) return;
+    if (f % 600 || state < 0) return;
     AcquireSRWLockShared(&mu);
     int busy = 0;
     for (int i = 0; i < nslots; i++) busy += slots[i].block != 0;

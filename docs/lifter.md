@@ -190,10 +190,12 @@ exclusives' runtime calls cost nothing measurable.
     `host/nvn_native.c`: not audited);
   - a function replaced by a typed host function (`PATCH_FUNC`, `bounds.func_bound`) has one record, from its
     declaration: it reads its operands and the inputs of the guest functions its `guest(...)` names (`guest_call` puts
-    every register back, so they cost no kept register), writes the caller-saved registers and its result (on every
-    return), and keeps x19-x29 and SP (the verification build checks it through its `hchk_` stub, as an HLE'd callee);
-    with `orig` its lifted body may run in it, so the body's inputs and clobbers join the record and the body's kept
-    registers bound it; a body without a full summary makes the record unknown;
+    every register back, so they cost no kept register), writes its result (on every return) and x30 and nothing else
+    (the adapter is the only code that writes the context: the host function takes and returns values; so the
+    caller-saved registers stay the caller's), and keeps x19-x29 and SP (the verification build checks it through its `hchk_` stub, as an HLE'd callee);
+    with `orig` its lifted body may run in it, so the body's inputs and clobbers join the record, x0-x8 are written
+    (`guest_orig`'s arguments) and the body's kept registers bound it; a body without a full summary makes the record
+    unknown;
   - setjmp owners keep nothing.
   An `HLE_EFFECTS` of a function the image does not replace stops the build (`host_effects.check`). Every guest
   function a replaced function's or a row's host function enters, on any path through the host's own calls, is
@@ -382,12 +384,13 @@ names its instruction word, so another game version stops the lift or the build.
   - `PATCH_FUNC(addr, word(W), body(H), aapcs, result, fn, [orig,] [guest(A, ...),] operand...)` /
     `PATCH_FUNC_SYM(symbol, aapcs, result, fn, ...)`: the function is replaced by `fn`, a C function of exactly the
     operands it declares (x0-x8, w0-w8, s0-s7, q0-q7, x30 for the return address, sp) returning its result (none, x0,
-    w0, s0, q0). `f_<addr>` is a tail call of the adapter the macro makes, `hos_func_<key>(ctx)`, which reads the
-    operands from the context, calls `fn` and writes its result there (`game.FUNC_STUB`); the lifted body stays,
-    under `hos_orig_<key>`. With `orig` first, `fn` gets it as `GuestFn *orig` and may run it as `guest_orig(orig,
-    a0, ...)`: a0.. go to x0.. and the body runs on the call's context and stack, every other register as the call
-    had it (the caller stored all the body reads: the record has its inputs). The build stops when an `orig` body reads
-    an argument register (x0-x8) the declaration does not take, naming it; then the declaration lists it.
+    w0, s0, q0); the operands are what `fn` itself uses, nothing more. `f_<addr>` is a tail call of the adapter the
+    macro makes, `hos_func_<key>(ctx)`, which reads the operands from the context, calls `fn` and writes its result
+    there (`game.FUNC_STUB`); the lifted body stays, under `hos_orig_<key>`. With `orig` first, `fn` gets it as
+    `GuestFn *orig` and may run it as `guest_orig(orig, a0, ...)`: a0.. go to x0.. and the body runs on the call's
+    context and stack, every other register as the call had it (the caller stored all the body reads: the record has
+    its inputs). An argument `fn` changes before the body runs (loadImage_'s src, the movie's NDVE resource) is passed
+    so; `fn` has no context to write it into.
     `guest(A, ...)`: `fn` calls those guest functions through `guest_call` (`GuestCall *g`, after `orig`), on the
     call's stack, so `sp` is then an operand. A call of it has one record (Calls and returns), never the "may decline"
     pair of the entry hooks this replaced. `W` is the first word and `H` `patch_scan.body_hash` (the first 64 bits of
@@ -522,10 +525,11 @@ step computes them before the lift workers and the
 compilers start, in a process of its own (`game.finish_summaries`, `summary.job`: 8 workers over the components' DAG,
 `HOOKSHOT_LIFT_SUMMARY_JOBS`), then packs them into the plan. Cold: 108 s (graph 17 s, fixed point 59 s, results
 26 s), 1.4 GB in the summary process and 1.3 GB in its largest worker; from the cache: 5 s. The build uses them at
-direct calls (above) and prints the sites (`bounds.call_report`): of 794,900 BL sites, 766,648 keep registers across
-the call (12.0 of x19-x29 and SP a site on average), 71,491 of them to host callees; the others reload everything: a
-noreturn callee (trap after) 14,170, a demoted one 13,693, an entry-hooked function whose body has no full summary 327
-(192 of them to `f_8005ed00`, the render-target allocator), a setjmp owner 39, an HLE'd function declared clobbering 23.
+direct calls (above) and prints the sites (`bounds.call_report`): of 794,900 BL sites, 766,689 keep registers across
+the call (12.0 of x19-x29 and SP a site on average), 71,482 of them to host callees; the others reload everything: a
+noreturn callee (trap after) 14,170, a demoted one 13,774, a `PATCH_FUNC` with `orig` whose body has no full summary 205
+(was 327 for the entry hooks it replaced), a setjmp owner 39, an HLE'd function declared clobbering 23 (2026-11-15, at
+the replaced functions' landing; the summaries: 287,073 of 294,523 full).
 The 182,791 BLR sites reload everything. (Before the probes declared their effects, 2026-11-15, a call of a function
 with a probe, splice or C after an instruction reloaded everything: 551 sites.)
 
