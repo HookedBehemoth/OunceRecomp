@@ -174,9 +174,14 @@ exclusives' runtime calls cost nothing measurable.
   - an entry-hooked function keeps what its lifted body's full summary preserves (the hook declines and the body runs,
     or the hook handled the call, writing no callee-saved register, or ran the body itself through `a64_lookup`), and
     for a hook that calls other guest code what every callee in `host_effects.CALLS` keeps too (the three mesh drawer
-    hooks, `host/direct_mesh_binds.c`); a body without a full summary keeps nothing;
+    hooks, `host/direct_mesh_binds.c`; the render-target alloc and free, `host/rt_slots.c`, which call the free); a
+    body without a full summary keeps nothing;
   - setjmp owners keep nothing.
-  A name in `CLOBBERS` that is no HLE'd function, or a `CALLS` key that is no entry hook, stops the build. The default
+  A name in `CLOBBERS` that is no HLE'd function, or a `CALLS` key that is no entry hook, stops the build. Every guest
+  function a hook or a row's host function enters, on any path through the host's own calls, is declared:
+  `tests/test_host_context_reads.py` follows the host's LLVM IR from each hook and row function to every
+  `hook_call_guest`, `guest_call`, `hos_call_guest`, `a64_icall`, `a64_ijump`, `f_<addr>` call and `hook_run` (constant
+  targets followed through arguments) and fails on a target missing from `CALLS` or the row's `guest`. The default
   rests on an audit of the host's C (2026-11-15, its LLVM IR: stores into a context's x19-x31 and v8-v15, calls of
   guest code, fiber switches, through direct calls and signature-matched indirect ones): stores to x19-x31 are only in
   thread and fiber setup, `hos_call_guest` (x30) and the guest calls of hooks and rows, which put every register back

@@ -24,7 +24,8 @@ behaviour by its caller; the caller's patch is an At row at the call site, nx2/l
 declares by name, with the reason. An entry hook reads x0-x7 and x30 (host/hos.h HookArgs: the hook sees nothing else of
 the call), plus HOOK_READS by name (SP for a hook that calls guest code, hook_call_guest); a hook that runs the body
 (hook_run) reads what the body reads, which its summary gives. tests/test_host_context_reads.py compiles host/*.c and
-fails on a read of a context register outside these declarations.
+fails on a read of a context register outside these declarations, and on guest code a hook or a row's host function
+enters (on any path through the host's calls) that CALLS or the row's guest=... does not declare.
 
 A name in CLOBBERS or HLE_READS that is no HLE'd function, or a key of CALLS or HOOK_READS that is no entry hook, stops
 the build.
@@ -57,6 +58,8 @@ CALLS = {
     "entry_0x801a43e0": (0x801a2d70, 0x801a6a40),   # (host/direct_mesh_binds.c drawer: hos_call_guest of both)
     "entry_0x801a46a0": (0x801a2d70, 0x801a6a40),
     "entry_0x801a6720": (0x801a2d70, 0x801a6a40),
+    "entry_0x8005ed00": (0x802737a0,),   # (host/rt_slots.c release_now: hook_call_guest of the free, from the alloc's sweep)
+    "entry_0x802737a0": (0x802737a0,),   # (the same, from the free's own sweep: the function itself)
 }
 
 # the registers every HLE'd function may read (AAPCS64: arguments x0-x7, the indirect result x8, v0-v7, the stack; x30)
