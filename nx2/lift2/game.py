@@ -29,7 +29,7 @@ import sys
 import time
 from array import array
 
-from . import build_ir, emit_llvm, enc, host_effects, llvm, probes
+from . import bounds, build_ir, emit_llvm, enc, host_effects, llvm, probes
 
 PART_INSNS = 120000
 # (dead context stores: LLVM drops a store a later one overwrites only if it can see that nothing reads the context
@@ -80,14 +80,7 @@ def compile_ir(clang, text, out, fl, pre, emit=("-c",)):
 CLASSES = ("int", "fp", "neon", "crypto")
 
 
-def callee_fn(plt):
-    def callee(t):
-        seen = 0
-        while t in plt and seen < 4:
-            t = plt[t][0]
-            seen += 1
-        return t
-    return callee
+callee_fn = bounds.callee_fn
 
 
 def reachable(entry, pcs, word, jt):
@@ -309,150 +302,21 @@ HOST_CHECK = """define internal void @hchk_%(a)08x(ptr %%ctx) {
 }"""
 
 
-def verified(plan, e):
-    """a function the verification build checks: a full summary (no demotion)"""
-    s = plan.get("summaries", {}).get(e)
-    return s is not None and not s[6] and not s[7]
-
-
-def host_edited(plan, hooks):
-    """The functions the host edits or replaces: the HLE'd functions (plan hooks), the entry hooks (hooks: the hook
-    may handle the call) and the setjmp owners (called through hos_sj_call). None is treated as noreturn; a direct call
-    reloads every register after one unless host_clean says what it keeps. Probes and At rows do not edit a function:
-    each declares what it reads and writes, and the summaries count it as the instruction's (probes.row_effects)."""
-    return set(hooks) | set(plan.get("hooks", ())) | set(plan.get("sj_rets", {}))
-
-
-KEEP = [(r, "x%d" % r) for r in range(19, 30)] + [(31, "sp")]   # (summary bits: x19-x29, SP)
-KEEP_ALL = sum(1 << r for r, _ in KEEP)
-
-
-def full(s):
-    """a summary with every fact known and no demotion, of a function that returns"""
-    return s is not None and not s[6] and not s[7] and bool(s[5])
-
-
-def host_clean(plan, hooks, names):
-    """{host callee: the bits of x19-x29 and SP a direct call keeps across it} (host_effects.py): the HLE'd functions
-    (names: host_effects.hle_names) not declared clobbering keep all of them; an entry-hooked function what its body's
-    full summary and the summaries of the guest functions its hook calls (host_effects.CALLS) all preserve. A setjmp
-    owner is not in it. The build checks the declarations first (host_effects.check)."""
-    summ = plan.get("summaries", {})
-    other = set(plan.get("sj_rets", {}))
-    out = {}
-    for e in plan.get("hooks", ()):
-        if e in names and names[e] not in host_effects.CLOBBERS and e not in other:
-            out[e] = KEEP_ALL
-    for e, name in hooks.items():
-        if e in other or e in out:
-            continue
-        mask = KEEP_ALL
-        for c in (e,) + tuple(host_effects.CALLS.get(name, ())):
-            s = summ.get(c)
-            mask = mask & s[3] if full(s) else 0
-        if mask:
-            out[e] = mask
-    return out
-
-
-def call_bounds(plan, edited, clean=None):
-    """(keeps, noreturn) for build_ir.Program: a callee with a full summary that the host does not edit keeps the
-    callee-saved registers its summary proves preserved, a host callee what clean (host_clean) says; one the summaries
-    prove noreturn is followed by a trap"""
-    summ = plan.get("summaries", {})
-    clean = clean or {}
-
-    def keeps(c):
-        if c in clean:
-            return [v for r, v in KEEP if clean[c] >> r & 1]
-        s = summ.get(c)
-        if not full(s) or c in edited:
-            return ()
-        return [v for r, v in KEEP if s[3] >> r & 1]
-
-    def noreturn(c):
-        s = summ.get(c)
-        return s is not None and s[5] is False and c not in edited
-    return keeps, noreturn
-
-
-def call_report(plan, edited, hooks, chosen, clean=None):
-    """one line: the direct call sites (BL) of the lifted functions, those keeping registers across the call (and how
-    many on average; how many of them call host code), and those reloading every register, by reason; BLR sites"""
-    import collections
-    summ, plt, sj = plan.get("summaries", {}), plan["plt"], plan.get("sj_rets", {})
-    clean = clean or {}
-    callee = callee_fn(plt)
-    why, kept, blr, host = collections.Counter(), 0, 0, 0
-    plan_hooks = set(plan.get("hooks", ()))
-    for e in chosen:
-        pcs, words = plan["bodies"][e]
-        for pc, w in zip(pcs, words):
-            if (w & 0xFC000000) != 0x94000000:
-                blr += (w & 0xFFFFFC1F) == 0xD63F0000 or (w & 0xFFFFF800) == 0xD73F0800
-                continue
-            c = callee((pc + ((w & 0x3FFFFFF) - ((w & 0x2000000) << 1)) * 4) & 0xFFFFFFFFFFFFFFFF)
-            s = summ.get(c)
-            if c in clean:
-                why["kept"] += 1
-                kept += sum(clean[c] >> r & 1 for r, _ in KEEP)
-                host += 1
-            elif c in plan_hooks:
-                why["HLE declared clobbering"] += 1
-            elif c in sj:
-                why["setjmp owner"] += 1
-            elif c in hooks:
-                why["entry hook, body not proven"] += 1
-            elif s is None:
-                why["no summary"] += 1
-            elif s[5] is False:
-                why["noreturn (trap after)"] += 1
-            elif s[6] or s[7]:
-                why["demoted"] += 1
-            else:
-                n = sum(s[3] >> r & 1 for r, _ in KEEP)
-                if n:
-                    why["kept"] += 1
-                    kept += n
-                else:
-                    why["full, nothing preserved"] += 1
-    total = sum(why.values())
-    return ("calls: %d direct sites, %d keep registers across the call (%.1f a site of x19-x29, SP; %d of them to host "
-            "callees); reload all: %s; %d BLR sites reload all" % (
-                total, why["kept"], kept / max(1, why["kept"]), host,
-                ", ".join("%s %d" % kv for kv in why.most_common() if kv[0] != "kept"), blr))
-
-
 def lift_part(args):
     """(lifted in a worker process) the IR text of one partition"""
     plan_path, names, hooks = args
     plan = _plan(plan_path)
     plt = plan["plt"]
     verify = bool(os.environ.get("HOOKSHOT_LIFT_VERIFY"))
-    base_symbol = lambda e: "f_%08x" % e
     sj = plan.get("sj_rets", {})
-    key = (plan_path, tuple(sorted(hooks)))
-    if key not in _EDITED:   # (once a worker process: it scans every body for the C after instructions)
-        _EDITED.clear()
+    key = (plan_path, tuple(sorted(hooks.items())), verify)
+    if key not in _BOUNDS:   # (once a worker process)
+        _BOUNDS.clear()
         hle = host_effects.hle_names(os.path.join(os.path.dirname(plan_path), "gen"))
-        _EDITED[key] = (host_edited(plan, hooks), host_clean(plan, hooks, hle))
-    edited, clean = _EDITED[key]
-    # (verification: a call of an HLE'd function declared clean goes through a stub that checks x19-x29 and SP on
-    # its return, host/lift2_verify.c lift2_host_exit)
-    hchk = {e for e in clean if e in set(plan.get("hooks", ()))} if verify else set()
-
-    def symbol(e):
-        if e in sj:   # (a call of a setjmp owner: hos_sj_call through a per-owner stub, host/hos_setjmp.c)
-            return "sjcall_%08x" % e
-        return "hchk_%08x" % e if e in hchk else base_symbol(e)
-    # (verification: a tail call goes to the callee's body, past its checks, so that a loop of tail calls does not
-    # grow the host stack; the caller's own checks cover the callee's effects)
-    def tail_symbol(e):
-        return "body_%08x" % e if verify and verified(plan, e) else base_symbol(e)
-    keeps, noreturn = call_bounds(plan, edited, clean)
+        _BOUNDS[key] = bounds.call_bounds(plan, hooks, hle, verify)
+    bound = _BOUNDS[key]
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
-                            symbol=symbol, tail_symbol=tail_symbol, jt_index=plan.get("jt_index"), keeps=keeps,
-                            noreturn=noreturn)
+                            jt_index=plan.get("jt_index"), bound=bound)
     m = emit_llvm.Module()
     extra = []
     for e in names:
@@ -465,7 +329,7 @@ def lift_part(args):
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
         fn.name = "f_%08x" % e
         fn.entry_hook = hooks.get(e)
-        if verify and verified(plan, e):
+        if verify and bounds.verified(plan, e):
             fn.name = "body_%08x" % e
             s = plan["summaries"][e]
             extra.append(VERIFY_WRAPPER % {"a": e, "inputs": s[0] & GPR, "may": s[1] & GPR, "res": s[4] & GPR,
@@ -487,7 +351,7 @@ def lift_part(args):
         m.defined = m.defined | {"sjcall_%08x" % e for e in stubs}
         extra.append("declare void @hos_sj_call(ptr, ptr, i64, i64, i64, i64)")
         for e in stubs:
-            t = base_symbol(e)
+            t = "f_%08x" % e
             if t not in m.defined:
                 m.decls.add("declare void @%s(ptr)" % t)
             extra.append("define internal void @sjcall_%08x(ptr %%ctx) {\n  call void @hos_sj_call(ptr %%ctx, ptr @%s, "
@@ -496,7 +360,7 @@ def lift_part(args):
 
 
 _PLAN = {}
-_EDITED = {}
+_BOUNDS = {}
 
 
 def _plan(path):
@@ -603,5 +467,5 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
                                                     len(parts) - len(todo), t_lift, time.time() - t1))
     if failed:
         raise SystemExit("lift: %d partitions failed to compile:\n%s" % (len(failed), failed[0][1]))
-    print(call_report(plan, host_edited(plan, hooks), hooks, chosen, host_clean(plan, hooks, hle)), flush=True)
+    print(bounds.call_report(plan, bounds.call_bounds(plan, hooks, hle), chosen), flush=True)
     return srcs, objs, line

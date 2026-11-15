@@ -75,8 +75,7 @@ writes for.
 - **Reload after calls**: after a BL, BLR, SVC or a call into host code with the context, every register read loads
   the context again (`ir.Builder.after_call` clears the block's definitions), except after a BL to a callee with a
   full summary that the host does not edit, or to a host callee with a declared effect: the values of x19-x29 and SP
-  the callee keeps stay SSA values across the call (`build_ir.build`, `Program.keeps`; `game.call_bounds`,
-  `game.host_edited`, `game.host_clean`, `nx2/lift2/host_effects.py`). The registers are still written to the context
+  the callee keeps stay SSA values across the call (`build_ir.build`; the callee's call-boundary record, below). The registers are still written to the context
   before the call. The low halves of v8-v15 are reloaded: their upper halves are not
   preserved, so the register needs its load anyway.
 - No `alloca` is emitted except for host-stack temporaries of runtime helpers (`lift2_ldxp_lo`).
@@ -138,10 +137,18 @@ exclusives' runtime calls cost nothing measurable.
 - **BL**: x30 := the return address, then `call void @f_<callee>(ptr %ctx)`, then the reload of every register but
   the callee's preserved x19-x29 and SP (see above). A callee the summaries prove noreturn is followed by
   `a64_trap(ctx, <BL address>, <BL word>)` and `unreachable`, so a wrong summary stops the game; the code only its
-  return reached is dropped. Host-edited callees (`game.host_edited`: HLE'd functions, entry hooks, setjmp owners) are
-  not treated as noreturn. A function with Value probes or At rows is not host-edited: each row declares what it reads
-  and writes, and the summaries count it as its instruction's (`probes.row_effects`, `summary.rows`). What a call of a
-  host-edited callee keeps is its declared effect (`game.host_clean`, `nx2/lift2/host_effects.py`):
+  return reached is dropped.
+- **The call-boundary record** (`nx2/lift2/bounds.py`, `bounds.call_bounds`): every direct callee has one record,
+  computed once per build worker from the plan's summaries and the host's declarations, and the lift (`Program.bound`),
+  the verification build, the build's call report (`bounds.call_report`) and `nx2/lift2/dump.py` all read it. It
+  gives the kind, the registers the callee may read, may write and writes on every returning path, those its callers
+  read after it, the x19-x29 and SP bits a BL keeps in SSA, noreturn, and the symbols of its call and tail call. A
+  callee without a declaration or a full summary (no summary, demoted, setjmp owner, an HLE'd function declared
+  clobbering) gets `bounds.unknown`: it reads and writes every register, keeps nothing and returns, so a callee no rule
+  classifies costs speed, never correctness. Only a lifted callee whose summary proves it (demoted or not) is
+  noreturn; HLE'd, entry-hooked and setjmp-owner callees never are. A function with Value probes or At rows is lifted as any other: each row
+  declares what it reads and writes, and the summaries count it as its instruction's (`probes.row_effects`,
+  `summary.rows`). What a call of a host callee keeps is its declared effect (`nx2/lift2/host_effects.py`):
   - an HLE'd function keeps x19-x29 and SP unless `host_effects.CLOBBERS` names it with the reason (the three fiber
     functions: a context switch or a host fiber deleted; nine sdk NVN exports with no host proc: not audited);
   - an entry-hooked function keeps what its lifted body's full summary preserves (the hook declines and the body runs,
@@ -353,7 +360,7 @@ Every build has them: the lift writes the job's input beside the plan unless the
 compilers start, in a process of its own (`game.finish_summaries`, `summary.job`: 8 workers over the components' DAG,
 `HOOKSHOT_LIFT_SUMMARY_JOBS`), then packs them into the plan. Cold: 108 s (graph 17 s, fixed point 59 s, results
 26 s), 1.4 GB in the summary process and 1.3 GB in its largest worker; from the cache: 5 s. The build uses them at
-direct calls (above) and prints the sites (`game.call_report`): of 794,900 BL sites, 767,213 keep registers across
+direct calls (above) and prints the sites (`bounds.call_report`): of 794,900 BL sites, 767,213 keep registers across
 the call (12.0 of x19-x29 and SP a site on average), 71,491 of them to host callees; the others reload everything: a
 noreturn callee (trap after) 14,170, a demoted one 13,128, an entry-hooked function whose body has no full summary 327
 (192 of them to `f_8005ed00`, the render-target allocator), a setjmp owner 39, an HLE'd function declared clobbering 23.

@@ -1,4 +1,4 @@
-"""What a direct call of a host function keeps: the declared effects of host callees (nx2/lift2/game.py call_bounds).
+"""What a direct call of a host function keeps: the declared effects of host callees (nx2/lift2/bounds.py call_bounds).
 
 A BL to an HLE'd function (a guest function replaced by `imp_<symbol>` in host/, gen/a64_hooks.c) or to a function with
 an ENTRY_HOOK keeps x19-x29 and SP in SSA across the call, as a BL to a lifted callee with a full summary does:

@@ -18,19 +18,20 @@ Control leaving the function:
 Every edge that closes a cycle carries a compiler barrier (cycle_edges).
 scope() says why a function cannot be lifted yet.
 """
-from . import enc, ir, sem, sem_int
+from . import bounds, enc, ir, sem, sem_int
 
 TERMINATORS = {"b", "bcond", "cbz", "tbz", "ret", "udf", "br", "blr", "exc"}
 
 
 class Program:
     """What lifting one function needs to know about the others. entries: every function entry; jt: BR address ->
-    jump table targets; callee(t): the function a call or tail branch to t reaches (PLT stubs resolved);
-    symbol(e): the generic entry's symbol of function e; no_lift: functions to pass over (setjmp owners: milestone 7)"""
+    jump table targets; callee(t): the function a call or tail branch to t reaches (PLT stubs resolved); bound(e):
+    the call-boundary record of a direct callee e (nx2/lift2/bounds.py: what a BL keeps, whether it returns, the
+    symbols of its call and tail call); without one every callee is unknown, called and tail-called as symbol(e);
+    no_call: the setjmp owners (scope refuses a BL to one unless a bound routes it through its stub)"""
 
     def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None, classes=None,
-                 tail_symbol=None, jt_index=None, keeps=None, noreturn=None):
-        self.tail_symbol = tail_symbol or symbol or (lambda e: "g_%08x" % e)   # (a tail call's target symbol)
+                 jt_index=None, bound=None):
         self.classes = set(classes) if classes is not None else None   # (None: every class of sem.CLASS)
         # (entries, jt and plt are shared, not copied: the discovery fills them as it walks)
         self.entries = entries if isinstance(entries, set) else set(entries)
@@ -38,12 +39,9 @@ class Program:
         self.jt = jt if jt is not None else {}
         # BR address -> (load address, index register, LDR extend, [target per index]): the switch on the index
         self.jt_index = jt_index if jt_index is not None else {}
-        # keeps(callee): the registers a BL's callee is proven to return unchanged (their SSA values stay live across
-        # the call, no reload); noreturn(callee): proven never to return (the BL is followed by a trap)
-        self.keeps = keeps or (lambda e: ())
-        self.noreturn = noreturn or (lambda e: False)
+        symbol = symbol or (lambda e: "g_%08x" % e)
+        self.bound = bound or (lambda e: bounds.unknown("unknown", symbol(e)))
         self.callee = callee or (lambda t: t)
-        self.symbol = symbol or (lambda e: "g_%08x" % e)
         self.no_call = set(no_call)
         self.probes = {}   # pc -> fn(builder, insn, pc): the instruction replaced by a probe (probes.py, section 9)
         self.before = {}   # pc -> [fn(builder)]: run before the instruction at pc, whatever it is (probes.splice_before, At)
@@ -123,7 +121,7 @@ def build(entry, pcs, word, prog=LEAF):
         b.at(fn.block(entry))
         b.set("x16", b.const(slot))
         b.set("x17", b.const(t))
-        fn.blocks[entry].term = ("tail", prog.tail_symbol(prog.callee(t)))
+        fn.blocks[entry].term = ("tail", prog.bound(prog.callee(t)).tail)
         ir.finish(fn)
         return fn
 
@@ -131,7 +129,7 @@ def build(entry, pcs, word, prog=LEAF):
         """the block a branch from frm to t goes to: one of the function's, or a tail-call exit"""
         if inside(prog, entry, body, t):
             return fn.block(t)
-        return exit_block("t", t, ("tail", prog.tail_symbol(prog.callee(t))))
+        return exit_block("t", t, ("tail", prog.bound(prog.callee(t)).tail))
 
     def exit_block(kind, t, term):
         key = (kind, t)
@@ -204,20 +202,21 @@ def build(entry, pcs, word, prog=LEAF):
             continue
         if t == "b" and f["op"]:   # BL
             callee = prog.callee(target(i, pc))
+            bd = prog.bound(callee)
             held = {}
-            for var in prog.keeps(callee):   # (written through to the context before the call, as every register)
+            for var in bounds.keep_vars(bd):   # (written through to the context before the call, as every register)
                 v = cur.defs.get(var)
                 if v is None and not cur.called:
                     v = b.get(var)   # (a parameter of the block: no load)
                 if v is not None:
                     held[var] = v
             b.set("x30", b.const(pc + 4))
-            b.op("gcall", "void", sym=prog.symbol(callee))
+            b.op("gcall", "void", sym=bd.symbol)
             b.after_call()
             cur.defs.update(held)
             for post in prog.after.get(pc, ()):
                 post(b)
-            if pc not in prog.after and prog.noreturn(callee):
+            if pc not in prog.after and bd.noreturn:
                 cur.term = ("noreturn", pc, i.word)   # (a64_trap, then unreachable: a wrong summary stops loudly)
                 cur = None
                 continue

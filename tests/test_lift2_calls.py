@@ -1,4 +1,4 @@
-"""Call boundaries from the whole-program summaries (nx2/lift2/game.py call_bounds, build_ir.py BL), without the dump.
+"""Call boundaries from the whole-program summaries (nx2/lift2/bounds.py call_bounds, build_ir.py BL), without the dump.
 
 Small functions: c1 keeps x19 and x29 in a frame and calls `keep` (which writes no callee-saved register); c2 the same
 calling `clob` (writes x19: its summary is demoted); c3 calls `keep` through BLR; c4 calls `die` (BRK: noreturn) when
@@ -20,7 +20,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
-from lift2 import build_ir, emit_llvm, game, host_effects, llvm, probes, summary, tables  # noqa: E402
+from lift2 import bounds, build_ir, emit_llvm, game, host_effects, llvm, probes, summary, tables  # noqa: E402
 import rtgen  # noqa: E402
 
 BASE = 0x80000000
@@ -80,12 +80,12 @@ def lift(hooks=(), sj=(), hle=None, calls=None):
     host_effects.CALLS.clear()
     host_effects.CALLS.update(calls or {})
     try:
-        clean = game.host_clean(plan, entry, hle)
+        bound = bounds.call_bounds(plan, entry, hle)
+        bound(A["keep"])   # (memoised: computed while CALLS holds the test's declarations)
     finally:
         host_effects.CALLS.clear()
         host_effects.CALLS.update(saved)
-    keeps, noreturn = game.call_bounds(plan, game.host_edited(plan, entry), clean)
-    prog = build_ir.Program(entries=entries, symbol=lambda e: "g_%08x" % e, keeps=keeps, noreturn=noreturn)
+    prog = build_ir.Program(entries=entries, bound=lambda e: bound(e)._replace(symbol="g_%08x" % e))
     fns = {n: build_ir.build(a, sorted(funcs[a]), word, prog) for n, a in A.items()}
     return fns, funcs
 
