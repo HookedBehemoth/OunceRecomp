@@ -141,7 +141,7 @@ def main():
         dump = None
         if "--dump-info" in sys.argv:
             dump = sys.argv[sys.argv.index("--dump-info") + 1]
-        with open(os.path.join(HERE, "..", "tests", "info_digests.rs"), "w", newline="\n") as f:
+        with open(os.path.join(HERE, "..", "tests", "data", "info_digests.rs"), "w", newline="\n") as f:
             f.write(info_vectors.digests_rs(dump))
 
 
