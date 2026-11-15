@@ -1096,6 +1096,25 @@ The build's cold lift 2 compile is once per change of the chosen set; a warm reb
 of 69. The peak is the build's (lift 2's partition workers), not the lift's. Smoke kokiri PASS (worst distance 4),
 title boot 40 s right.
 
+## 14g. Milestone 19, step 2: discovery in lift 2
+
+`nx2/lift2/discover.py` (`Discovery`) finds the functions without the present lifter: bodies from the entries
+(a function is an entry plus what it reaches without crossing another entry), jump tables (the symbolic scan before a
+BR, the reaching ADRP/ADR constants, the hoisted and function-wide constants, the bound from CMP + B.HI/B.HS, an
+AND mask or CCMP, unbounded tables read to the function's extent), the second pass over the tables a first pass
+missed, PLT stubs, setjmp owners and their return addresses, and the split of very large functions. It is the
+present lifter's discovery moved here with what nx2 had wrapped around it built in: `nx2/insn.py`'s
+pointer-authenticated branches (RETAA/RETAB, BRAA*/BLRAA*) and `nx2/lift_fixes.py`'s three jump-table fixes. It reads
+only the image (`entries`, `hooks`, `word`, `read`, `in_code`, `eh_starts`).
+
+`nx2/lift.py` uses it by default and hands its result to the present lifter's emitter (`discover.adopt`);
+`HOOKSHOT_DISCOVERY=lift1` runs the present lifter's own, `=check` runs both and compares (`discover.compare`:
+entries, bodies with their words, labels, jump tables and their targets, BRs without a table, PLT stubs, setjmp
+owners). Over the whole game the two are equal (294,523 functions; 96 s and 7.9 GB for both in one process). The
+first comparison, without the wrapped-in rules, differed in 136,720 bodies (RETAB not a return) and 2 jump tables
+(the hoisted table register reused before the BR). `tests/test_lift2_discover.py` compares the two on a synthetic
+image without the dump.
+
 ## 15. Risks not retired
 
 - **Non-AAPCS functions** (SDK assembly, outlined helpers, veneers reading x16/x17): their number decides how much
