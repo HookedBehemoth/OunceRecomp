@@ -78,8 +78,9 @@ def find(func, pcs, word):
 # the instruction's word, checked at lift time: a word that differs stops the lift (another game version). The function
 # must be lift 2's (mixed.prepare stops otherwise): the present lifter does not make these.
 class At:
-    def __init__(self, func, pc, word, fn, args=(), result=None):
+    def __init__(self, func, pc, word, fn, args=(), result=None, before=False):
         self.func, self.pc, self.word, self.fn, self.args, self.result = func, pc, word, fn, tuple(args), result
+        self.before = before   # (before the instruction instead: pc must not be a branch target, so it runs on one edge)
 
     def post(self, b):
         vals = []
@@ -102,7 +103,7 @@ class At:
             setx(b, n, r)
 
 
-# (host/oot_probes.c says what each does and why)
+# (host/oot_probes.c says what each does and why; hos_mouse_camera: host/mouse_native.c)
 AT = [
     # dynamic resolution and the fixed scale
     At(0x80825aa0, 0x80825bcc, 0xb9409508, "hos_oot_dynres_flags", ("w8",), "w8"),   # ldr w8, [x8, #148]
@@ -129,17 +130,28 @@ AT = [
     At(0x83b7b340, 0x83b7b438, 0xaa1703e2, "hos_oot_rt_heap_size", ("x0",), "x0"),         # mov x2, x23 (x0: the heap's size)
     At(0x83b7b340, 0x83b7b4dc, 0xd63f0100, "hos_oot_rt_heap_use", ("x0", "x21", "x22"), "x0"),   # blr x8 (returns the use)
     At(0x80b72340, 0x80b723a4, 0x52800024, "hos_oot_rt_rest", ("x0",), "x0"),              # mov w4, #1 (x0: the size)
+    # text speed: the letters' time (s0) on the block's fall-through edge, past the hidden / no-text checks
+    At(0x80b1e140, 0x80b1e1bc, 0x37201528, "hos_oot_text_time", ("s0",), "s0", before=True),   # tbnz w8, #4
+    # native mouse camera: the player camera's update (x0: the camera), first
+    At(0x80644c80, 0x80644c80, 0xd503237f, "hos_mouse_camera", ("x0",)),                   # hint #27 (PACIBSP)
 ]
 AT_FUNCS = {p.func for p in AT}
 
 
-def at(func, pcs, word):
-    """{pc: [fn(builder)]} of a function's At probes, for Program.after; SystemExit when a word differs"""
+def at(func, pcs, word, before=False):
+    """{pc: [fn(builder)]} of a function's At probes, for Program.after (before: the ones for Program.before);
+    SystemExit when a word differs, or when a before probe's instruction is a branch target"""
     out = {}
     have = set(pcs)
     for p in AT:
-        if p.func != func:
+        if p.func != func or p.before != before:
             continue
+        if before:
+            from .build_ir import target
+            for pc in pcs:
+                i = enc.decode(word(pc))
+                if i is not None and target(i, pc) == p.pc:
+                    raise SystemExit("lift2 probes: At f_%08x before %#x: a branch target (from %#x)" % (func, p.pc, pc))
         if p.pc not in have or word(p.pc) != p.word:
             raise SystemExit("lift2 probes: At f_%08x at %#x holds %s, not %08x (another game version?)"
                              % (func, p.pc, "%08x" % word(p.pc) if p.pc in have else "nothing", p.word))

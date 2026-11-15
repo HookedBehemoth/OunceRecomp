@@ -540,7 +540,7 @@
 833ac950 ui_serialize_capture_b           # work/assets/native/block-linear.md: ui::SerializeCapture
 8088ffc0 ui_set_focus                     # host/oot_menu.c: (screen, button, flag): the focus setter
 81681690 ui_text_box_texture_thread       # host/hos_setjmp.c: UpdateTextBoxTextureThread (setjmp)
-80b1e140 ui_text_letter_anim              # nx2/oot_parked.py: steps a text pane's letter animation (text speed patch)
+80b1e140 ui_text_letter_anim              # host/oot_probes.c: steps a text pane's letter animation (text speed patch)
 80794b00 ui_text_skip                     # nx2/oot_parked.py: the game's own skip on A
 
 # --- game: actors, physics, camera, events, game data, world

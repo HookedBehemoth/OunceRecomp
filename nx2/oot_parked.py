@@ -1,7 +1,8 @@
 """Parked patches of the lifted C for Ocarina of Time, not applied while the present lifter is being retired.
 
 Each was a text edit of the present lifter's C (nx2/oot_patches.py applied them); lift 2 writes no C, so they wait here
-until each is ported to a guest-address probe (nx2/lift2/probes.py) or dropped. Nothing calls this module: the lift and
+until each is ported to a guest-address probe (nx2/lift2/probes.py) or dropped. (Ported: the native mouse camera and
+text speed, At probes.) Nothing calls this module: the lift and
 the build leave these functions to lift 2 unchanged, and the host's switches for them do nothing meanwhile. The table of
 what each did, its switch and what is lost while parked: docs/lifter2-design.md, "Parked patches". The text is kept as
 it was, as the reference for the port.
@@ -9,18 +10,10 @@ it was, as the reference for the port.
 - Player heart protection (patch_life, f_804bd8c0), player flight (patch_movement, f_82c415e0) and its rotation
   (patch_flight_rotation, f_806d2530): host/oot_cheats.c's switches.
 - Free camera (patch_view, f_804e48c0's view loop): hos_oot_free_view.
-- Native mouse camera (patch_mouse_camera, f_80644c80): host/mouse_native.c.
-- Text speed (patch_text_speed, f_80b1e140): the Insert menu's "Text speed" (hos_text_scale). f_80b1e140 steps a text
-  pane's letter animation, the LetterAnimControl of the panes with "LetterAnimOn" user data (dialogue, Navi, signs). Its
-  time argument (s0) moves the letters' clock (+0x60 += rate +0x4c * time, the rate from the message's speed tag) and the
-  pauses' timer (+0x58 -= time); hos_text_scale multiplies it, 1.0 as shipped. The auto-advance timer (+0x5c, before)
-  keeps the game's time. A huge scale shows a page at once (one frame per pause), as the game's own skip on A (+0x72 = 2,
-  f_80794b00) without its flags.
 - The menus' mouse (patch_menu_focus, f_802ed660; patch_menu_tick, f_802f1380): host/oot_menu.c. It was always on:
   while parked the game's menus do not follow the mouse.
 """
 
-TEXT_DECL = "extern volatile float hos_text_scale;\n"
 LIFE_HEAD = "void f_804bd8c0(Ctx *__restrict A64_NOESC c) {\n"
 MOVE_HEAD = "void f_82c415e0(Ctx *__restrict A64_NOESC c) {\n"
 MOVE_ANCHOR = ("if (((c->x[8] >> 1) & 1)) { goto L_82c41748; }\n")
@@ -101,57 +94,6 @@ def patch_view(source):
     body = body.replace(anchor, anchor + "    hos_oot_free_view(c, c->x[20]);\n")
     return (source[:start] + body + source[end:]).replace(
         '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_free_view(Ctx *c, uint64_t view);\n', 1)
-
-# Native mouse look (host/mouse_native.c): the player camera's update, f_80644c80 (a virtual method, the camera in x0), hands
-# its camera to the host before anything else, on the game's thread, once a frame; with the menu's Mouse camera on the mouse's
-# motion turns the camera's yaw (+0x1a4) and pitch (+0x18c) there, before the camera reads its input.
-CAM_HEAD = "void f_80644c80(Ctx *__restrict A64_NOESC c) {\n"
-
-
-def patch_mouse_camera(source):
-    start = source.find(CAM_HEAD)
-    if start < 0:
-        return None
-    if "hos_mouse_camera(c->x[0]);" in source:   # (made before: a lift patched again)
-        return source
-    at = start + len(CAM_HEAD)
-    source = source[:at] + "    hos_mouse_camera(c->x[0]);   /* (nx2/oot_patches.py: native mouse look) */\n" + source[at:]
-    return source.replace('#include "a64.h"\n', '#include "a64.h"\nextern void hos_mouse_camera(uint64_t camera);\n', 1)
-
-
-TEXT_HEAD = "void f_80b1e140(Ctx *__restrict A64_NOESC c) {"
-# (the letters' block: past the early returns, the auto-advance timer and the hidden / no-text checks; reached once a call)
-TEXT_OLD = ("L_80b1e1b4:;\n"
-            "    c->x[9]=recomp_load16(c,c->x[19] + 110);\n"
-            "if ((uint32_t)c->x[9] == 0) { goto L_80b1e18c; }\n")
-# (the same block in a build with interrupt polls: nx2/poll.py puts the poll before each backward goto, as a block)
-TEXT_OLD_POLLED = TEXT_OLD.replace("{ goto L_80b1e18c; }", "{ { A64_POLL(c); goto L_80b1e18c; } }")
-TEXT_ADD = ("    if (hos_text_scale != 1.0f) { float _t; uint32_t _u; memcpy(&_t,c->vreg[0],4); _t *= hos_text_scale; "
-            "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); }   /* (nx2/oot_patches.py: text speed) */\n")
-TEXT_NEW = TEXT_OLD + TEXT_ADD
-
-
-def patch_text_speed(s):
-    """The scale at the head of the letters' block of f_80b1e140; None when the file has no such function, s unchanged when the
-    function is there but its code differs (another game version)."""
-    head = s.find(TEXT_HEAD)
-    if head < 0:
-        return None
-    end = s.find("\nvoid f_", head + len(TEXT_HEAD))
-    body = s[head:end if end >= 0 else len(s)]
-    for old in (TEXT_OLD_POLLED, TEXT_OLD):   # (with the interrupt poll before the block's backward goto, or without: --no-polls)
-        if old + TEXT_ADD in body:   # (applied already: a second run)
-            return s
-        if body.count(old) == 1:
-            break
-    else:
-        return s
-    if body.count("goto L_80b1e1b4;") != 1:
-        return s
-    at = head + body.index(old)
-    s = s[:at] + old + TEXT_ADD + s[at + len(old):]
-    return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXT_DECL, 1)
-
 
 MENU_FOCUS_HEAD = "void f_802ed660(Ctx *__restrict A64_NOESC c) {\n"
 

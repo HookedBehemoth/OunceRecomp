@@ -1163,13 +1163,15 @@ functions they called stay. Each comes back as a probe (`nx2/lift2/probes.py`) o
 
 | patch | function | what it did | switch | default | lost while parked |
 |---|---|---|---|---|---|
-| heart protection (`patch_life`) | `f_804bd8c0` | a hit on the player does not lower its life | Insert menu cheat, `HOS_OOT_PROTECT_HEARTS` | off | the cheat |
-| flight (`patch_movement`) | `f_82c415e0` | lifts the player and poses it in flight (`hos_oot_lift_player`, `hos_oot_flight_pose`) | Insert menu cheat (`HOS_OPT_CHEAT_FLIGHT`) | off | the cheat |
-| flight rotation (`patch_flight_rotation`) | `f_806d2530` | the flight's turn (`hos_oot_flight_rotation`) | as flight | off | as flight |
-| free camera (`patch_view`) | `f_804e48c0` (the view loop's head) | `hos_oot_free_view`: the view follows the free camera | Insert menu cheat (`HOS_OPT_CHEAT_CAMERA`) | off | the free camera; `f_804e48c0` keeps its widescreen C after an instruction, on lift 2 |
-| native mouse camera (`patch_mouse_camera`) | `f_80644c80` | `hos_mouse_camera` first in the player camera's update: the mouse turns the camera | Insert menu "Mouse camera", `HOS_MOUSE_NATIVE` | off | mouse look |
-| text speed (`patch_text_speed`) | `f_80b1e140` | the text pane's letter clock times `hos_text_scale` | Insert menu "Text speed", `HOS_TEXT_SPEED` | 1.0 | faster text |
-| the menus' mouse (`patch_menu_focus`, `patch_menu_tick`) | `f_802ed660`, `f_802f1380` | `hos_oot_menu_focus` / `hos_oot_menu_tick` first: the game's menus follow, click and scroll with the mouse (`host/oot_menu.c`) | none | **on** | the game's menus no longer follow the mouse until it is re-implemented |
+| heart protection (`patch_life`) | `f_804bd8c0` | a hit on the player does not lower its life | Insert menu cheat, `HOS_OOT_PROTECT_HEARTS` | off | the cheat. Awkward as a probe: `hos_oot_is_player` and the cheats' host code take the context and read actors by raw offsets (`recomp_load*`) |
+| flight (`patch_movement`) | `f_82c415e0` | lifts the player and poses it in flight (`hos_oot_lift_player`, `hos_oot_flight_pose`) | Insert menu cheat (`HOS_OPT_CHEAT_FLIGHT`) | off | the cheat. Awkward: its host side builds a guest event on the guest stack (the context's SP) and calls game functions with the context |
+| flight rotation (`patch_flight_rotation`) | `f_806d2530` | the flight's turn (`hos_oot_flight_rotation`) | as flight | off | as flight (the same host code) |
+| free camera (`patch_view`) | `f_804e48c0` (the view loop's head) | `hos_oot_free_view`: the view follows the free camera | Insert menu cheat (`HOS_OPT_CHEAT_CAMERA`) | off | the free camera. Awkward: the host writes the view's matrix through the context by raw offsets; `f_804e48c0`'s widescreen C after an instruction is on lift 2 |
+| the menus' mouse (`patch_menu_focus`, `patch_menu_tick`) | `f_802ed660`, `f_802f1380` | `hos_oot_menu_focus` / `hos_oot_menu_tick` first: the game's menus follow, click and scroll with the mouse (`host/oot_menu.c`) | none | **on** | the game's menus no longer follow the mouse until it is re-implemented. Awkward: `host/oot_menu.c` calls the game's own menu functions with the context (17 calls that save and restore it) and reads some 40 UI fields by offset through a range-checked `peek`; the probes themselves would be plain (`x0, x1, x30` and `x0`), the host side needs a rewrite onto typed structs and a context-free call of guest code |
+
+Ported since: the native mouse camera (`f_80644c80`, `hos_mouse_camera(x0)` after its first instruction, the camera an
+`OotPlayerCamera` struct) and text speed (`f_80b1e140`, `s0 := hos_oot_text_time(s0)` before its `tbnz w8, #4` at
+`0x80b1e1bc`, the fall-through edge past the block's checks), both At probes (section 14i).
 
 The resolution and frame-rate patches are not parked: they are lift 2's At probes (section 14i).
 
@@ -1195,6 +1197,8 @@ not lift 2's: the present lifter does not make these patches any more.
 | movie frames | `hos_oot_movie_count` | `f_83b7c710` |
 | output size | `hos_oot_output_size`, `hos_oot_output_config`, `hos_oot_base_size` (x2), `hos_oot_base_size_bits` (x2) | `f_81222ce0`, `f_810a7b70`, `f_80ea2f30` |
 | render-target pool | `hos_oot_rt_pool_config`, `hos_oot_rt_heap_size`, `hos_oot_rt_heap_use` (after a BLR), `hos_oot_rt_rest` | `f_836ce9d0`, `f_83b7b340`, `f_80b72340` |
+| text speed | `hos_oot_text_time` (before an instruction: `At(..., before=True)`, on the edge into it, which must not be a branch target) | `f_80b1e140` |
+| native mouse camera | `hos_mouse_camera` (`host/mouse_native.c`) | `f_80644c80` |
 
 Before and after, the output size in nnMain (`f_81222ce0`). The present lifter's text edit replaced two lines of its C:
 

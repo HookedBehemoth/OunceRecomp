@@ -3,8 +3,8 @@
    smoothing and no top speed, in place of the mouse as the right stick (nn_hid.c's mouse_stick).
 
    Where the angles are: the player camera's update, f_80644c80 (a virtual method, the camera in x0), calls
-   hos_mouse_camera first (nx2/oot_parked.py, patch_mouse_camera: parked, not called while the present lifter is retired), on the game's thread, once a frame while that camera
-   runs. The camera holds its pitch limits at +0x178 ({-85, 89} in the field), its pitch at +0x18c and its yaw at +0x1a4.
+   hos_mouse_camera first (lift 2's At probe after its first instruction, nx2/lift2/probes.py AT), on the game's thread,
+   once a frame while that camera runs. The camera holds its pitch limits at +0x178 ({-85, 89} in the field), its pitch at +0x18c and its yaw at +0x1a4.
    The game turns them by the right stick in f_80649c10 (yaw, wrapped at 180) and f_8064b770 (pitch, within the limits),
    which f_80644c80 calls only while the stick is out of its dead zone (found with hardware write watchpoints on the two
    angles in Kokiri Forest). Yaw falls as the view turns right and pitch rises as it tilts down.
@@ -23,6 +23,7 @@
    or the menu's Invert mouse vertical flips up and down. */
 #include "hos.h"
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,7 +35,20 @@ void hos_mouse_give_back(int32_t dx, int32_t dy);                               
 int rx_option(int id, int otherwise);
 extern double hos_mouse_sens;
 
-enum { LIMITS_AT = 0x178, PITCH_AT = 0x18c, YAW_AT = 0x1a4, STATE_AT = 0x204 };
+/* the player camera, the fields used here (may_alias: the lifted code reaches them through other types, and the host's C
+   is built with strict aliasing) */
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[0x178];
+    float pitch_limit[2];   /* +0x178: {-85, 89} in the field */
+    uint8_t _1[0x18c - 0x180];
+    float pitch;            /* +0x18c: rises as the view tilts down */
+    uint8_t _2[0x1a4 - 0x190];
+    float yaw;              /* +0x1a4: falls as the view turns right */
+    uint8_t _3[0x204 - 0x1a8];
+    uint32_t state;         /* +0x204: 3 following Link, 4 turned by the player */
+} OotPlayerCamera;
+_Static_assert(offsetof(OotPlayerCamera, pitch_limit) == 0x178 && offsetof(OotPlayerCamera, pitch) == 0x18c &&
+               offsetof(OotPlayerCamera, yaw) == 0x1a4 && offsetof(OotPlayerCamera, state) == 0x204, "camera");
 #define LIVE_NS 150000000LL   /* (the hook ran this recently: the camera takes the mouse) */
 #define DEG_PER_COUNT 0.1
 
@@ -42,8 +56,6 @@ static volatile LONG64 last_hook_ns;
 static volatile LONG64 last_camera;
 static long long applied, cameras_seen;
 
-static float getf(uint64_t a) { float f; memcpy(&f, GP(a), 4); return f; }
-static void putf(uint64_t a, float f) { memcpy(GP(a), &f, 4); }
 
 /* the menu's Mouse camera (option 6), or HOS_MOUSE_NATIVE */
 static int native_on(void) {
@@ -60,21 +72,21 @@ static int invert_y(void) {
 }
 
 /* a camera's angles as the game keeps them: limits in order within +-90, angles finite */
-static int looks_like_camera(uint64_t cam) {
-    const float lo = getf(cam + LIMITS_AT), hi = getf(cam + LIMITS_AT + 4), p = getf(cam + PITCH_AT), y = getf(cam + YAW_AT);
+static int looks_like_camera(const OotPlayerCamera *cam) {
+    const float lo = cam->pitch_limit[0], hi = cam->pitch_limit[1], p = cam->pitch, y = cam->yaw;
     return isfinite(lo) && isfinite(hi) && lo < hi && lo >= -90.0f && hi <= 90.0f && isfinite(p) && isfinite(y) &&
            fabsf(y) <= 360.0f;
 }
 
-/* f_80644c80's first line (nx2/oot_parked.py: parked): cam is the player camera, the game's thread */
-void hos_mouse_camera(uint64_t cam) {
+/* after f_80644c80's first instruction (x0: the player camera), on the game's thread */
+void hos_mouse_camera(uint64_t camera) {
+    OotPlayerCamera *cam = camera ? (OotPlayerCamera *)A64_PTR(camera) : NULL;
     if (!cam || !native_on() || !looks_like_camera(cam)) return;
     /* Only while it is the view: following Link (3) or turned by the player (4). Aiming the slingshot in first person
        leaves this camera updating with its state 0 while another one draws (traced at Hyrule Castle); shops are reported
        the same. In any other state the mouse is the right stick, which those views turn by (the hook counts as not
        run, so hos_mouse_native gives -1) */
-    uint32_t state;
-    memcpy(&state, GP(cam + STATE_AT), 4);
+    const uint32_t state = cam->state;
     if (state != 3 && state != 4) {
         /* (at once: the stick takes the next motion, not one burst once the 150 ms run out) */
         InterlockedExchange64(&last_hook_ns, 0);
@@ -91,18 +103,18 @@ void hos_mouse_camera(uint64_t cam) {
         return;
     }
     InterlockedExchange64(&last_hook_ns, hos_now_ns());
-    if (InterlockedExchange64(&last_camera, (LONG64)cam) != (LONG64)cam && cameras_seen++ < 8)
-        hos_log("mouse native: the player camera at %#llx turns with the mouse", (unsigned long long)cam);
+    if (InterlockedExchange64(&last_camera, (LONG64)camera) != (LONG64)camera && cameras_seen++ < 8)
+        hos_log("mouse native: the player camera at %#llx turns with the mouse", (unsigned long long)camera);
     int32_t dx, dy;
     if (!hos_mouse_take(&dx, &dy) || (!dx && !dy)) return;
     const double k = DEG_PER_COUNT * hos_mouse_sens;
-    float y = getf(cam + YAW_AT) - (float)(dx * k), p = getf(cam + PITCH_AT) + (float)((invert_y() ? -dy : dy) * k);
-    const float lo = getf(cam + LIMITS_AT), hi = getf(cam + LIMITS_AT + 4);
+    float y = cam->yaw - (float)(dx * k), p = cam->pitch + (float)((invert_y() ? -dy : dy) * k);
+    const float lo = cam->pitch_limit[0], hi = cam->pitch_limit[1];
     while (y > 180.0f) y -= 360.0f;
     while (y < -180.0f) y += 360.0f;
     if (p < lo) p = lo;
     if (p > hi) p = hi;
-    putf(cam + YAW_AT, y), putf(cam + PITCH_AT, p);
+    cam->yaw = y, cam->pitch = p;
     if ((++applied & 4095) == 1)
         hos_log("mouse native: %lld moves applied; pitch %.2f yaw %.2f", applied, p, y);
 }

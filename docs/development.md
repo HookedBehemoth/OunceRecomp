@@ -54,8 +54,7 @@ is not a focus override.
 **Parked while the present lifter is retired** (`nx2/oot_parked.py`; the table in
 [lifter2-design.md](lifter2-design.md#14i-parked-patches)): the game's menus no longer follow the mouse (pointing,
 clicking and scrolling in the title, pause and option menus) until those hooks are re-implemented on lift 2. The
-native mouse camera, the free camera, text speed, heart protection and flight are parked too: their switches do
-nothing meanwhile.
+free camera, heart protection and flight are parked too: their switches do nothing meanwhile.
 
 ## Iterating quickly (Linux)
 
@@ -238,7 +237,7 @@ beside them are listed at the end, under Undocumented, with where they are read.
 | `HOS_XINPUT` | (set) poll XInput even when SDL has open controllers |
 | `HOS_NO_SDL` | (set) controllers are not read through SDL |
 | `HOS_HD_RUMBLE` | `0`: no HD rumble |
-| `HOS_MOUSE_NATIVE` | `<0|1>` over the menu: native mouse look (parked: no effect for now) |
+| `HOS_MOUSE_NATIVE` | `<0|1>` over the menu: native mouse look |
 | `HOS_MOUSE_INVERT_Y` | (set) invert the mouse's vertical axis |
 | `HOS_MOUSE_SENS` | `<factor>`: mouse sensitivity, over the menu and `mouse_sens.txt` |
 | `HOS_MOUSE_DECAY` | `<percent>`: the mouse look's decay rate (default 0.30) |

@@ -1342,7 +1342,7 @@ class AfterC(unittest.TestCase):
         saved = dict(probes.SPLICE_BEFORE)
         probes.SPLICE_BEFORE[base] = (base, words[0])
         try:
-            prog.before = probes.splice_before(base, pcs, word)
+            prog.before = probes.merge(probes.splice_before(base, pcs, word))
         finally:
             probes.SPLICE_BEFORE.clear()
             probes.SPLICE_BEFORE.update(saved)

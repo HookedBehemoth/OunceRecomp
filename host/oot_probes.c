@@ -178,6 +178,15 @@ float hos_oot_frame_step_probe(float base, float quotient, uint64_t module) {
 /* f_83b7c710: the movie player's count after its add of one: that one is the frames' time instead */
 uint32_t hos_oot_movie_count(uint32_t count, uint64_t player) { return count - 1 + hos_movie_frames(player); }
 
+/* f_80b1e140, a text pane's letter animation, on the edge past its hidden / no-text checks: the time (s0) that moves
+   the letters' clock and the pauses' timer, times the Insert menu's Text speed (hos_text_scale, 1.0 as shipped; the
+   auto-advance timer before keeps the game's time) */
+float hos_oot_text_time(float time) {
+    extern volatile float hos_text_scale;
+    const float k = hos_text_scale;
+    return k != 1.0f ? time * k : time;
+}
+
 /* ---- output size */
 
 /* nnMain's display size for the framework's create arg (width | height << 32, the pair the game stores at +20) */

@@ -284,7 +284,7 @@ def lift_part(args):
         pcs, words = plan["bodies"][e]
         w = dict(zip(pcs, words))
         prog.probes = probes.find(e, pcs, w.__getitem__)
-        prog.before = probes.splice_before(e, pcs, w.__getitem__)
+        prog.before = probes.merge(probes.at(e, pcs, w.__getitem__, before=True), probes.splice_before(e, pcs, w.__getitem__))
         # (after an instruction, in this order: the At probes, the C after it, the SPLICE_AT splices)
         prog.after = probes.merge(probes.at(e, pcs, w.__getitem__),
                                   probes.after_c(plan.get("after_c", {}), pcs, w.__getitem__),

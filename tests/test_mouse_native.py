@@ -1,7 +1,7 @@
 """Native mouse look turns the player camera's own angles (host/mouse_native.c).
 
 The file is compiled on its own against a fake guest memory that holds one player camera: its pitch limits at +0x178, its
-pitch at +0x18c and its yaw at +0x1a4. hos_mouse_camera is what the camera's update (f_80644c80, nx2/oot_patches.py) calls
+pitch at +0x18c and its yaw at +0x1a4. hos_mouse_camera is what the camera's update (f_80644c80, lift 2's At probe) calls
 each frame. Until it has run the mouse's motion is the right stick's (hos_mouse_native gives -1); then it turns yaw and
 pitch by 0.1 degrees a count at sensitivity 1, pitch kept within the limits and yaw wrapped at 180, up and down swapped
 with the menu's Invert mouse vertical (option 8), and the controller reads leave the motion to the camera. Without the
@@ -26,7 +26,8 @@ HOS_H = r"""
 #include <stddef.h>
 extern uint8_t *fake_heap;
 #define HOS_HEAP_BASE 0x1000000000ULL
-#define GP(a) ((void *)(fake_heap + ((uint64_t)(a) - HOS_HEAP_BASE)))
+#define A64_PTR(a) (fake_heap + ((uint64_t)(a) - HOS_HEAP_BASE))
+#define GP(a) ((void *)A64_PTR(a))
 extern uint64_t hos_heap_size;
 void hos_log(const char *fmt, ...);
 int64_t hos_now_ns(void);

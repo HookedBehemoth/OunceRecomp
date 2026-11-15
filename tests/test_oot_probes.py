@@ -37,17 +37,19 @@ def have(tool):
 
 class Table(unittest.TestCase):
     def test_rows(self):
-        with open(HOST) as f:
-            host = f.read()
+        host = ""
+        for name in (HOST, os.path.join(ROOT, "host", "mouse_native.c")):
+            with open(name) as f:
+                host += f.read()
         for p in probes.AT:
             i = enc.decode(p.word)
             self.assertIsNotNone(i, hex(p.pc))
-            self.assertTrue(i.entry.template not in TERMINATORS or probes.is_call(p.word), "%#x is a branch" % p.pc)
+            self.assertTrue(p.before or i.entry.template not in TERMINATORS or probes.is_call(p.word), "%#x is a branch" % p.pc)
             self.assertLessEqual(p.func, p.pc)
             for a in p.args:
                 self.assertRegex(a, ARG)
             self.assertTrue(p.result is None or ARG.fullmatch(p.result) and p.result[0] != "#", p.result)
-            self.assertIn(" %s(" % p.fn, host, "%s is not in host/oot_probes.c" % p.fn)
+            self.assertIn(" %s(" % p.fn, host, "%s is not in host/oot_probes.c or host/mouse_native.c" % p.fn)
         self.assertEqual({p.func for p in probes.AT}, probes.AT_FUNCS)
 
     def test_word_checked(self):
@@ -59,6 +61,25 @@ class Table(unittest.TestCase):
         with self.assertRaises(SystemExit):   # (the instruction is not in the function)
             probes.at(p.func, sorted(words)[1:], words.__getitem__)
         self.assertEqual(probes.at(0x80000000, sorted(words), words.__getitem__), {})
+
+
+class Before(unittest.TestCase):
+    def test_branch_target_refused(self):
+        """an At probe before an instruction runs on the edge into it alone: a branch target there is refused"""
+        base = 0x80003000
+        words = [0x34000040, 0xd503201f, 0xd65f03c0]   # cbz w0, +8; nop; ret
+        word = lambda pc: words[(pc - base) // 4]
+        pcs = [base, base + 4, base + 8]
+        real = probes.AT
+        try:
+            probes.AT = [probes.At(base, base + 4, words[1], "t_none", ("x0",), before=True)]
+            self.assertEqual(list(probes.at(base, pcs, word, before=True)), [base + 4])
+            self.assertEqual(probes.at(base, pcs, word), {})
+            probes.AT = [probes.At(base, base + 8, words[2], "t_none", ("x0",), before=True)]
+            with self.assertRaises(SystemExit):
+                probes.at(base, pcs, word, before=True)
+        finally:
+            probes.AT = real
 
 
 LOWER_HARNESS = r"""
@@ -145,6 +166,7 @@ uint8_t mem[1 << 16];
 volatile int hos_fixed_resolution, hos_dynres_runs, hos_native_scene, hos_fix_res;
 volatile uint32_t hos_fixed_scale_bits = 0x3f400000, hos_frame_seconds_bits;
 volatile uint64_t hos_res_module, hos_step_probe;
+volatile float hos_text_scale = 1.0f;
 static uint32_t out_w = 3840, out_h = 2160;
 uint32_t hos_output_size(int height) { return height ? out_h : out_w; }
 uint64_t hos_rt_pool_size(uint64_t game) { return game * out_w / 2560 * out_h / 1440; }
@@ -184,6 +206,7 @@ int main(void) {
     hos_fixed_resolution = 1; hos_fix_res = 1; G32(0x1000 + 0xe2c) = 0; G32(0x1000 + 0xe5c) = bits(1.0f);
     hos_oot_scene_check(0x1000); CHECK(G32(0x1000 + 0xe2c) == 8);
     G32(0x1000 + 0xe2c) = 0; G32(0x1000 + 0xe5c) = bits(0.75f); hos_oot_scene_check(0x1000); CHECK(G32(0x1000 + 0xe2c) == 0);
+    CHECK(hos_oot_text_time(0.5f) == 0.5f); hos_text_scale = 3.0f; CHECK(hos_oot_text_time(0.5f) == 1.5f);
     CHECK(hos_oot_movie_count(10, 7) == 11 && hos_oot_movie_count(10, 1) == 10);
     /* the render-target pool */
     G64(0x3000 + 1464) = 0x13100000; hos_oot_rt_pool_config(0x3000);
