@@ -589,7 +589,7 @@ alone is not benched yet: the benches stall before they are ready on the current
 - **Non-AAPCS functions** (SDK assembly, outlined helpers, veneers reading x16/x17): their number decides how much
   code keeps the generic convention. The summaries' demotion list (section 7) counts them. A static census (`nx2/lift2/abi_census.py`, [lifter-abi-census.md](lifter-abi-census.md)) lists what
   breaks the model besides setjmp and the fibers: libunwind's context pair, C++ exceptions (thrown in main and the
-  SDK), about 3,500 noreturn call sites, 25 split frames, ST1/LD1 saves of d8-d15; and the rule that finds them.
+  SDK; a throw is a fatal stop, `host/cxx_throw.c`), about 3,500 noreturn call sites, 25 split frames, ST1/LD1 saves of d8-d15; and the rule that finds them.
 - **Host FP mode divergence** in the game: NaN sign and propagation, the FZ tininess boundary, the 8 FPSR read sites.
   Replays and goldens were re-baselined for it.
 - **Summary time**: the whole game's summaries take a minute or more and up to 9 GB; they are computed only for

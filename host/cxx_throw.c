@@ -1,30 +1,43 @@
-/* C++ exceptions raised by the game: each call of __cxa_throw, __cxa_rethrow, _Unwind_RaiseException,
-   _Unwind_ForcedUnwind and _Unwind_Resume logged ("throw: <name> #<n> from <lr>": the first 16 of each, then every
-   power of two, so the last line of a name holds its count within a factor of two), then the game's own code runs
-   as before. hos_cxx_throw_totals() logs the exact counts in one line ("throws: ..."; a bench run's end calls it).
-   Unwinding through lifted code has never worked (docs/lifter-abi-census.md section 3): these lines say whether a
-   run tried. */
+/* C++ exceptions raised by the game stop it, loudly. Unwinding through lifted code cannot work: the guest unwinder's
+   resume returns into the host frames instead of a landing pad (docs/lifter-abi-census.md section 3), so a throw
+   that went on would continue somewhere wrong. __cxa_throw, __cxa_rethrow, _Unwind_RaiseException and
+   _Unwind_ForcedUnwind are a fatal error with the thrown type (__cxa_throw's type_info name, read from guest memory)
+   and the caller's guest address; hos_fatal names the thread. No run has thrown (the kokiri and market runs count 0);
+   the main module's one catch (f_823b01c0, a catch (...) that destroys a vector's elements and rethrows) is reached
+   only from libc++'s length errors. */
 #include "hos.h"
 #include <stdint.h>
 
-static const char *const NAMES[] = {"__cxa_throw", "__cxa_rethrow", "_Unwind_RaiseException", "_Unwind_ForcedUnwind",
-                                    "_Unwind_Resume"};
-static volatile long counts[5];
-
-static int seen(Ctx *c, int k) {
-    const long n = __atomic_add_fetch(&counts[k], 1, __ATOMIC_RELAXED);
-    if (n <= 16 || !(n & (n - 1)))
-        hos_log("throw: %s #%ld from %#llx", NAMES[k], n, (unsigned long long)c->x[30]);
-    return 0;
+/* (a NUL-terminated guest string, at most size - 1 bytes; "?" when the address is outside guest memory) */
+static const char *guest_str(uint64_t a, char *out, size_t size) {
+    size_t n = 0;
+    for (const char *p; a && n + 1 < size && (p = hos_guest_range(a + n, 1)) && *p; n++) out[n] = *p;
+    if (!n) return "?";
+    out[n] = 0;
+    return out;
 }
 
-void hos_cxx_throw_totals(void) {
-    hos_log("throws: %s %ld, %s %ld, %s %ld, %s %ld, %s %ld", NAMES[0], counts[0], NAMES[1], counts[1], NAMES[2],
-            counts[2], NAMES[3], counts[3], NAMES[4], counts[4]);
+ENTRY_HOOK_SYM(__cxa_throw) {   /* (x0 the exception object, x1 its std::type_info, x2 its destructor) */
+    char name[160];
+    const uint64_t ti = c->x[1];
+    const uint64_t *name_at = ti ? hos_guest_range(ti + 8, 8) : 0;   /* (type_info: vtable, then the name) */
+    const uint64_t at = name_at ? *name_at : 0;
+    hos_fatal(c, "the game threw a C++ exception of type %s from %#llx (unwinding through lifted code cannot work)",
+              guest_str(at, name, sizeof name), (unsigned long long)c->x[30]);
+    return 1;
 }
-
-ENTRY_HOOK_SYM(__cxa_throw) { return seen(c, 0); }
-ENTRY_HOOK_SYM(__cxa_rethrow) { return seen(c, 1); }
-ENTRY_HOOK_SYM(_Unwind_RaiseException) { return seen(c, 2); }
-ENTRY_HOOK_SYM(_Unwind_ForcedUnwind) { return seen(c, 3); }
-ENTRY_HOOK_SYM(_Unwind_Resume) { return seen(c, 4); }
+ENTRY_HOOK_SYM(__cxa_rethrow) {
+    hos_fatal(c, "the game rethrew a C++ exception from %#llx (unwinding through lifted code cannot work)",
+              (unsigned long long)c->x[30]);
+    return 1;
+}
+ENTRY_HOOK_SYM(_Unwind_RaiseException) {
+    hos_fatal(c, "_Unwind_RaiseException from %#llx (unwinding through lifted code cannot work)",
+              (unsigned long long)c->x[30]);
+    return 1;
+}
+ENTRY_HOOK_SYM(_Unwind_ForcedUnwind) {
+    hos_fatal(c, "_Unwind_ForcedUnwind from %#llx (unwinding through lifted code cannot work)",
+              (unsigned long long)c->x[30]);
+    return 1;
+}

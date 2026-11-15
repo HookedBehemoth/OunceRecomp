@@ -51,7 +51,7 @@ This host came from emulator-style code. A constraint stays only if this tree sh
 | 1 | virtual cores | NEEDED: exclusion per (core, priority), true masks. NOT NEEDED: the 2 ms slice, cross-priority kicks, escapes |
 | 2 | the poll (`ctx.poll`, `a64_poll_cur`) | NOT NEEDED under the minimal scheduler; UNPROVEN until it lands |
 | 3 | a memory barrier on every loop cycle | NEEDED (cheap) |
-| 4 | C++ unwinding through lifted frames | NOT NEEDED, once a throw is a fatal stop |
+| 4 | C++ unwinding through lifted frames | NOT NEEDED: a throw is a fatal stop (`host/cxx_throw.c`) |
 | 5 | setjmp owners and fibers kept generic | NEEDED (cheap) |
 | 6 | any function may be entered by BLR through the table | UNPROVEN |
 | 7 | write-through of every register before calls | NEEDED only at the sites listed; elsewhere decided by C and the summaries |
@@ -222,7 +222,7 @@ Evidence is the code at c987e637 and one run of it: a headless `scripts/bench.sh
 - **Verdict.** Keep a zero-byte `asm sideeffect "" ~{memory}` (or the poll) on cycles; no reason to spend effort
   removing it.
 
-### 4. C++ unwinding through lifted frames — NOT NEEDED, with a throw made a fatal stop
+### 4. C++ unwinding through lifted frames — NOT NEEDED: a throw is a fatal stop (`host/cxx_throw.c`)
 
 Static counts (`count.py`):
 
@@ -245,10 +245,14 @@ Static counts (`count.py`):
   bench.
 - **Today.** Unwinding through lifted frames cannot work anyway (census section 3: no guest SP/x30 chain the unwinder
   could resume into).
-- **Verdict.** Hook `__cxa_throw`, `__cxa_rethrow`, `_Unwind_RaiseException` and `_Unwind_ForcedUnwind` to a fatal stop
-  that names the type and the caller, and mark them and `_Unwind_Resume` noreturn. That is the census's own proposed
-  treatment. Landing pads become dead code.
-  - Not yet looked at: what 0x823b01c0 catches (the one main-side catch).
+- **Verdict.** A throw is a fatal stop (`host/cxx_throw.c`): `__cxa_throw`, `__cxa_rethrow`, `_Unwind_RaiseException`
+  and `_Unwind_ForcedUnwind` stop the game with the type and the caller. The summaries already treat them and
+  `_Unwind_Resume` as noreturn. Landing pads are dead code.
+  - 0x823b01c0, the one catch in main, is a `catch (...)` around building a vector of string entries. It destroys the
+    elements made so far (`f_823b92d0` in a loop) and rethrows. The only throws inside its try range come from
+    libc++'s length checks: `f_821195b0` and `f_8211bc70` (through `f_821197b0`), reached when a `strlen` result
+    plus 9 overflows or a size exceeds `max_size`. Its allocator (`f_82155120`) calls nothing and does not throw. No
+    path in normal play throws into it.
 - **Experiment.** None needed for correctness. The fatal stop is the assertion: a run that throws stops loudly.
 - **Plan items that change.**
   - C may delete the callee-saved save/restore pairs (612,455; docs/lifter.md section 7). That is the fast-entry gain,
