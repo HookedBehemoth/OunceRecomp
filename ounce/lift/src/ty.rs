@@ -29,6 +29,8 @@ pub const I16: Ty = Ty::I(16);
 pub const I32: Ty = Ty::I(32);
 pub const I64: Ty = Ty::I(64);
 pub const I128: Ty = Ty::I(128);
+/// <2 x i64> as a lane type (not the V register's own v128)
+pub const V2I64: Ty = Ty::Vec(2, Lane::I(64));
 
 impl Lane {
     pub fn width(self) -> u32 {

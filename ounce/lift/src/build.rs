@@ -1,12 +1,12 @@
 //! A guest function -> IR (nx2/lift2/build_ir.py: scope, build, omit_stores, cycle_edges), and the patch rows'
 //! lowering (nx2/lift2/probes.py Value.lower, At.post).
 
-use crate::export::{AtRow, Bound, Func, Part, ValueRow};
+use crate::export::{AtArg, AtRow, Bound, Func, Mode, Part, Reg, ValueArg, ValueRow};
 use crate::ir::*;
 use crate::sem;
 use crate::sem::{Code, Kind};
 use crate::sem::int::{cond, getx, setx, sx};
-use crate::ty::{Ty, I32, I64};
+use crate::ty::{Ty, I32, I64, V2I64};
 use ounce_decode::{decode, Insn, Fld};
 use std::collections::{HashMap, HashSet};
 
@@ -52,11 +52,10 @@ impl<'a> Prog<'a> {
             omit,
         };
         for r in &f.rows {
-            let m = match r.mode.as_str() {
-                "before" => &mut p.before,
-                "after" => &mut p.after,
-                "instead" => &mut p.replace,
-                m => panic!("row mode {m}"),
+            let m = match r.mode {
+                Mode::Before => &mut p.before,
+                Mode::After => &mut p.after,
+                Mode::Instead => &mut p.replace,
             };
             m.entry(r.pc).or_default().push(r);
         }
@@ -664,7 +663,7 @@ pub fn vread(b: &mut Builder, n: u32, ty: Ty) -> ValueId {
         return b.bitcast(v, ty);
     }
     if ty.is_vec() {
-        let c = b.bitcast(v, Ty::parse("v2i64"));
+        let c = b.bitcast(v, V2I64);
         let e = b.extract(c, 0);
         return b.bitcast(e, ty);
     }
@@ -690,99 +689,91 @@ pub fn vwrite(b: &mut Builder, n: u32, val: ValueId) {
 
 /// probes.Value.lower: the instruction's result register gets fn(args)
 fn value_lower(b: &mut Builder, p: &ValueRow) {
-    let mut vals = Vec::new();
-    for a in &p.args {
-        if let Some(r) = a.strip_prefix('x') {
-            let (n, off) = match r.split_once('+') {
-                Some((n, o)) => (n, Some(o)),
-                None => (r, None),
-            };
-            let mut v = getx(b, n.parse().unwrap(), 1, false);
-            if let Some(o) = off {
-                let k = b.c64(o.parse::<i128>().unwrap());
-                v = b.bin(BinOp::Add, v, k);
+    let mut vals = Vec::with_capacity(p.args.len());
+    for &a in &p.args {
+        vals.push(match a {
+            ValueArg::X(n, off) => {
+                let v = getx(b, n, 1, false);
+                match off {
+                    Some(o) => {
+                        let k = b.c64(o);
+                        b.bin(BinOp::Add, v, k)
+                    }
+                    None => v,
+                }
             }
-            vals.push(v);
-        } else {
-            let n = a[1..].parse().unwrap();
-            vals.push(vread(b, n, Ty::F32));
-        }
+            ValueArg::S(n) => vread(b, n, Ty::F32),
+        });
     }
-    let ty = if p.result.starts_with('w') { I32 } else { I64 };
+    let (ty, n) = match p.result {
+        Reg::W(n) => (I32, n),
+        Reg::X(n) => (I64, n),
+        r => unreachable!("value result {r:?}"),
+    };
     let r = b.call(Call::new(Callee::Host(p.func)), ty, &vals);
-    setx(b, p.result[1..].parse().unwrap(), r, false);
-}
-
-fn int0(s: &str) -> i128 {
-    match s.strip_prefix("0x") {
-        Some(h) => i128::from_str_radix(h, 16).unwrap(),
-        None => s.parse().unwrap(),
-    }
+    setx(b, n, r, false);
 }
 
 /// probes.At.post: fn(args) at its place, its result in a register, io registers through a struct
 fn at_post(b: &mut Builder, row: &AtRow) {
-    let mut vals = Vec::new();
-    for a in &row.args {
-        let (kind, n) = (a.as_bytes()[0], &a[1..]);
-        let v = if kind == b'#' {
-            b.c(int0(n), I32)
-        } else if a == "sp" {
-            b.get(SP)
-        } else if kind == b'[' {
-            let (base, off) = n.trim_end_matches(']').split_once('+').unwrap();
-            let v = if base == "sp" { b.get(SP) } else { getx(b, base[1..].parse().unwrap(), 1, false) };
-            let k = b.c64(int0(off));
-            let ad = b.bin(BinOp::Add, v, k);
-            b.op(Op::Load, I64, &[ad])
-        } else if kind == b'x' || kind == b'w' {
-            getx(b, n.parse().unwrap(), (kind == b'x') as u32, false)
-        } else if kind == b'q' {
-            vread(b, n.parse().unwrap(), Ty::parse("v2i64"))
-        } else {
-            vread(b, n.parse().unwrap(), Ty::F32)
-        };
-        vals.push(v);
+    let mut vals = Vec::with_capacity(row.args.len() + row.io.len());
+    for &a in &row.args {
+        vals.push(match a {
+            AtArg::Imm(k) => b.c(k, I32),
+            AtArg::Sp => b.get(SP),
+            AtArg::Load(base, off) => {
+                let v = match base {
+                    None => b.get(SP),
+                    Some(n) => getx(b, n, 1, false),
+                };
+                let k = b.c64(off);
+                let ad = b.bin(BinOp::Add, v, k);
+                b.op(Op::Load, I64, &[ad])
+            }
+            AtArg::Reg(Reg::X(n)) => getx(b, n, 1, false),
+            AtArg::Reg(Reg::W(n)) => getx(b, n, 0, false),
+            AtArg::Reg(Reg::Q(n)) => vread(b, n, V2I64),
+            AtArg::Reg(Reg::S(n)) => vread(b, n, Ty::F32),
+        });
     }
-    let ty = match row.result.as_deref().map(|r| r.as_bytes()[0]) {
+    let ty = match row.result {
         None => Ty::Void,
-        Some(b'x') => I64,
-        Some(b'w') => I32,
-        Some(b's') => Ty::F32,
-        _ => Ty::parse("v2i64"),
+        Some(Reg::X(_)) => I64,
+        Some(Reg::W(_)) => I32,
+        Some(Reg::S(_)) => Ty::F32,
+        Some(Reg::Q(_)) => V2I64,
     };
     let guest = row.guest;
     let r = if !row.io.is_empty() {
         let nargs = vals.len() as u32;
-        for r in &row.io {
-            let n = r[1..].parse().unwrap();
-            let v = if r.starts_with('q') { vread(b, n, Ty::parse("v2i64")) } else { getx(b, n, 1, false) };
-            vals.push(v);
+        for &r in &row.io {
+            vals.push(match r {
+                Reg::Q(n) => vread(b, n, V2I64),
+                Reg::X(n) | Reg::W(n) | Reg::S(n) => getx(b, n, 1, false),
+            });
         }
         let k = b.f.calls.len() as u32;
         b.f.calls.push(Call { ctx: guest, ..Call::new(Callee::Host(row.func)) });
         let call = b.op(Op::RowIo { call: k, nargs }, ty, &vals);
-        for (k, r) in row.io.iter().enumerate() {
-            let q = r.starts_with('q');
-            let v = b.op(Op::RowOut(k as u32), if q { Ty::parse("v2i64") } else { I64 }, &[call]);
-            let n = r[1..].parse().unwrap();
-            if q {
-                vwrite(b, n, v);
-            } else {
-                let v = if r.starts_with('w') { b.trunc(v, I32) } else { v };
-                setx(b, n, v, false);
+        for (k, &r) in row.io.iter().enumerate() {
+            let q = matches!(r, Reg::Q(_));
+            let v = b.op(Op::RowOut(k as u32), if q { V2I64 } else { I64 }, &[call]);
+            match r {
+                Reg::Q(n) => vwrite(b, n, v),
+                Reg::W(n) => {
+                    let v = b.trunc(v, I32);
+                    setx(b, n, v, false);
+                }
+                Reg::X(n) | Reg::S(n) => setx(b, n, v, false),
             }
         }
         call
     } else {
         b.call(Call { effects: true, ctx: guest, ..Call::new(Callee::Host(row.func)) }, ty, &vals)
     };
-    let Some(res) = &row.result else { return };
-    let n = res[1..].parse().unwrap();
-    if res.starts_with('s') || res.starts_with('q') {
-        vwrite(b, n, r);
-    } else {
-        setx(b, n, r, false);
+    match row.result {
+        None => {}
+        Some(Reg::S(n) | Reg::Q(n)) => vwrite(b, n, r),
+        Some(Reg::X(n) | Reg::W(n)) => setx(b, n, r, false),
     }
 }
-
