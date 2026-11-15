@@ -434,7 +434,7 @@ The five other threads wait for 0.9 ms of the 1.75, while one thread builds the 
 **4.0 ms of the 20 µs sleeps** (~31 a thread, 22 µs each), which the host yield-spun to their time, and 0.6 ms of
 yields (~100 a thread). The lifted code runs at -O1: `f_8009bb80` is 12.5k guest instructions and 409 KB of x86, and
 `f_808226e0` 1.5k and 85 KB, with every scalar FP op an out-of-line `a64_fpx_*` call (a64-kit's lifter, since deleted:
-the lifter inlines FP, [lifter.md](../lifter.md) section 8).
+the lifter inlines FP, [lifter.md](../lifter.md), "FP and NEON").
 
 `host/hos_thread.c` `calc_poll_nap` turns the three poll sleeps into timed sleeps with a 1 µs timer slack (Linux;
 `HOS_CALC_NAP=0` spins them again). The phase keeps its 1.75 ms (1.765 with the timers'

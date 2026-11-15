@@ -373,8 +373,8 @@ cannot work ([lifter-abi-census.md](lifter-abi-census.md) section 3), so a throw
 continuation. The type is the mangled name from `__cxa_throw`'s type_info; the line names the thread.
 
 `ring owner: ring N pushed by <A> and <B> (pc <site>)` (always on, `host/oot_probes.c` `hos_oot_ring_write`): a second
-thread wrote one of the actor singleton's per-core rings, which the game updates without a lock ([lifter.md](lifter.md)
-section 10.2). A bench run's end logs `rings: second writers N; <ring> <owner> <pushes>+<pops>/frame; ...`.
+thread wrote one of the actor singleton's per-core rings, which the game updates without a lock ([lifter.md](lifter.md),
+"Hooks and probes"). A bench run's end logs `rings: second writers N; <ring> <owner> <pushes>+<pops>/frame; ...`.
 
 ### HOS_DBG
 
@@ -446,7 +446,7 @@ load and a branch. `logall` turns every `log*` item on.
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `-v2`, else `x86-64`) |
 | `RX_HOT_OPT`, `RX_NO_ORDER` | Optimisation level of the hot code; no hot-function link order |
 | `HOOKSHOT_HOT_FUNCS=<file>` | (lift time) The hot list, one `f_<address>` a line (default `work/hot_funcs_play.txt`, else `work/hot_funcs.txt`): their partitions are built at `RX_HOT_OPT` |
-| `HOOKSHOT_LIFT_VERIFY=1`, `HOOKSHOT_LIFT_SUMMARIES=1` | (lift and build time) The verification build: every function with a full summary checked at run time (`host/lift2_verify.c`, [lifter.md](lifter.md) section 7); the summaries alone (about 9 GB) |
+| `HOOKSHOT_LIFT_VERIFY=1`, `HOOKSHOT_LIFT_SUMMARIES=1` | (lift and build time) The verification build: every function with a full summary checked at run time (`host/lift2_verify.c`, [lifter.md](lifter.md), "Whole-program summaries and the verification build"); the summaries alone (about 9 GB) |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
 ### Function labels

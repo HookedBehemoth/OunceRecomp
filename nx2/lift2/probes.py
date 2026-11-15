@@ -1,4 +1,4 @@
-"""Probes: host code at guest addresses, where the game's code needs the host (docs/lifter.md section 10).
+"""Probes: host code at guest addresses, where the game's code needs the host (docs/lifter.md, "Hooks and probes").
 
 Every probe names a function, one of its instructions and that instruction's word; a word that differs, or an
 instruction missing, stops the build (another game version's code). The host side takes plain values (host/oot_probes.c):

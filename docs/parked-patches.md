@@ -4,7 +4,7 @@ This page records four game patches and the host code they drove. They were remo
 lifter (the lifter that wrote C, whose text these patches edited) was retired. Nothing else of them is left in the
 repository. They were cheats and debug tools, all off by default.
 
-To bring one back, write it as a lift 2 probe (`nx2/lift2/probes.py`, docs/lifter.md section 10):
+To bring one back, write it as a probe (`nx2/lift2/probes.py`, docs/lifter.md "Hooks and probes"):
 declared registers, a host function of plain values and typed structs, and the instruction word checked at lift time.
 
 ## What went with them

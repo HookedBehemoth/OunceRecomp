@@ -1,12 +1,12 @@
 """FP scalar semantics, vector/FP register loads and stores, FPCR/FPSR access: templates for enc_fp.py's table.
 
-Host FP mode (docs/lifter.md section 8): FP arithmetic is LLVM's native FP operations and intrinsics, which
+Host FP mode (docs/lifter.md, "FP and NEON"): FP arithmetic is LLVM's native FP operations and intrinsics, which
 the code generator makes SSE/AVX/FMA3 instructions. Rounding and flush-to-zero come from the host's MXCSR, which the
 runtime keeps equal to the guest FPCR (RMode -> RC, FZ -> DAZ|FTZ). No FPSR bookkeeping: MRS/MSR FPSR and FPCR are
 calls of runtime helpers. The fix-ups are where x86 values differ from ARM's in ways a program sees: FMIN/FMAX and
 FMINNM/FMAXNM (signed zeros, NaNs: LLVM's minimum/maximum and minimumnum/maximumnum), FCVT*S/U (saturating
 conversions, NaN to 0), the FRINT* and FCVT[NPMA]* rounding modes (rounding intrinsics), FCMP's unordered flags.
-The allowed deviations from ARM are listed in docs/lifter.md section 8.1; LIFT2_DEFAULT_NAN=1 at lift time replaces a
+The allowed deviations from ARM are listed in docs/lifter.md ("FP and NEON"); LIFT2_DEFAULT_NAN=1 at lift time replaces a
 NaN generated from non-NaN operands by ARM's default NaN (positive) instead of x86's (negative).
 
 V registers are the v128 variables "v0".."v31". A scalar write zeroes the rest of the register (ARM's V[d] = ZeroExtend),
