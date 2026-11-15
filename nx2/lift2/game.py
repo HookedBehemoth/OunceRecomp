@@ -13,12 +13,17 @@ their own partitions, compiled at the hot level (-O2). It returns the objects to
 
 The whole-program summaries (nx2/lift2/summary.py) are computed by the first build after a lift, in a process of
 their own (finish_summaries, summary.job: workers over the components' DAG), and cached beside the plan, keyed by the
-image, the discovery's facts and the lifter sources they read (plan_summaries). HOOKSHOT_LIFT_SUMMARY_JOBS: their
-workers (8).
+image, the discovery's facts, the lifter code they run (source_key) and the patches' declared effects
+(summary_effects); a build whose patches declare other effects than the plan's summaries count computes them again
+from the input the lift left, without a lift. HOOKSHOT_LIFT_SUMMARY_JOBS: their workers (8).
+A partition's object is cached by what its IR is made of (part_key): the lifter's code, the discovery's facts, its
+functions, their rows, entry hooks and summaries, and the call-boundary records of every function they branch or call
+to; editing a row or a hook's declaration recompiles the partitions whose IR it changes.
 HOOKSHOT_LIFT_VERIFY=1 (at build time): every function with a full summary is checked at run time
 (host/lift2_verify.c).
 HOOKSHOT_HOT_FUNCS: the hot list (one f_<addr> a line; default work/hot_funcs_play.txt, else work/hot_funcs.txt).
 """
+import ast
 import concurrent.futures
 import hashlib
 import json
@@ -107,34 +112,86 @@ def reachable(entry, pcs, word, jt):
     return [pc for pc in pcs if pc in seen]
 
 
-# the lifter's files the summaries depend on (the summary cache's key)
+# the lifter's files the summaries depend on (the summary cache's key; probes.py and host_effects.py by their code alone:
+# the patch tables in them enter by their effects, summary_effects)
 SUMMARY_SOURCES = re.compile(r"^(enc.*|sem.*|ir|bounds|build_ir|summary|probes|host_effects)\.py$")
+# the patch tables (module-level names, and the loops that index them) the keys take by what they declare, not as code
+PATCH_TABLES = {"probes.py": {"PROBES", "BY_FUNC", "DIRECT", "AT", "AT_FUNCS", "_p"},
+                "host_effects.py": {"CLOBBERS", "CALLS", "HLE_ARGS", "HLE_READS", "_X29_LOG", "HOOK_ARGS", "HOOK_READS"}}
+
+
+def source_key(name, text):
+    """a lifter source as the keys take it: its syntax tree, without comments and docstrings (they change no IR), and
+    for probes.py and host_effects.py without their patch tables (PATCH_TABLES: the keys take what they declare)"""
+    tree = ast.parse(text)
+    drop = PATCH_TABLES.get(name, set())
+
+    def names(n):
+        if isinstance(n, ast.For):
+            return {t.id for t in ast.walk(n.target) if isinstance(t, ast.Name)}
+        if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            ts = n.targets if isinstance(n, ast.Assign) else [n.target]
+            return {t.id for x in ts for t in ast.walk(x) if isinstance(t, ast.Name)}
+        return set()
+    tree.body = [n for n in tree.body if not (names(n) & drop)]
+    for n in ast.walk(tree):
+        body = getattr(n, "body", None)
+        if isinstance(body, list) and body and isinstance(body[0], ast.Expr) and \
+                isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+            n.body = body[1:] or [ast.Pass()]
+    return ast.dump(tree, annotate_fields=False)
+
+
+def code_key(match=None):
+    """the lifter's code (every nx2/lift2 source, or those match accepts), as source_key takes it"""
+    h = hashlib.sha1(usedforsecurity=False)
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in sorted(os.listdir(here)):
+        if name.endswith(".py") and (match is None or match.match(name)):
+            with open(os.path.join(here, name), encoding="utf-8") as f:
+                h.update(name.encode() + b"\0" + source_key(name, f.read()).encode() + b"\0")
+    return h.hexdigest()
+
+
+def summary_effects(entry, hle):
+    """what the summaries take from the host's patches, as a key: every row's declared reads, writes, guest callees and
+    replace (summary.rows), every entry hook's reads, writes and guest callees (summary.entry_hooks; entry: {address:
+    hook C name}) and every HLE'd function's summary (summary.host_summary; hle: {address: symbol})"""
+    from . import summary
+    facts = (sorted(summary.rows().items()), sorted(summary.entry_hooks(entry).items()),
+             sorted((e, summary.pack(summary.host_summary(n))) for e, n in hle.items()))
+    return hashlib.sha1(repr(facts).encode(), usedforsecurity=False).hexdigest()
+
+
+def summary_cache(plan_path, base, effects):
+    """the summaries' cache file for the lift's key (base) and the patches' effects"""
+    k = hashlib.sha1((base + effects).encode(), usedforsecurity=False).hexdigest()[:16]
+    return os.path.join(os.path.dirname(plan_path), "summaries_%s.pickle" % k)
 
 
 def plan_summaries(L, img, path, hooks, no_call, classes, entry):
-    """the summaries' job (summary.job) for the plan: (cache, input). The cache is keyed by the image, the discovery's
-    facts, the host's patches (the HLE'd functions' symbols, the entry hooks: entry, {address: hook C name}; the rows
-    are in probes.py) and the sources the summaries read; when it has them, input is None. Else the job's input is
-    written beside the plan and the build computes them (finish_summaries) in a process of its own, after the lift's
-    memory is gone"""
+    """the summaries' key and input for the plan: (base, input path, {address: HLE symbol}). base is the image, the
+    discovery's facts, the entry hooks and HLE'd functions and the lifter code the summaries run (SUMMARY_SOURCES); the
+    patches' effects complete the cache's key at build time (summary_cache). The input (every function's instructions
+    and the facts) is written beside the plan unless it is there, and stays until the next lift: a build whose patches
+    declare other effects computes the summaries again from it (finish_summaries), after the lift's memory is gone"""
     hle = host_effects.hle_symbols(L.hooks)
     names = getattr(img, "names", {}) or {}
     h = hashlib.sha1(bytes(img.mem), usedforsecurity=False)
-    here = os.path.dirname(os.path.abspath(__file__))
-    for name in sorted(os.listdir(here)):
-        if SUMMARY_SOURCES.match(name):
-            with open(os.path.join(here, name), "rb") as f:
-                h.update(name.encode() + f.read())
+    h.update(code_key(SUMMARY_SOURCES).encode())
     h.update(repr((sorted(L.entries), sorted(hooks), sorted(L.jt.items()), sorted(L.plt.items()), sorted(no_call),
                    sorted(names.items()), sorted(hle.items()), sorted(entry.items()))).encode())
+    base = h.hexdigest()
     d = os.path.dirname(path)
-    cache = os.path.join(d, "summaries_%s.pickle" % h.hexdigest()[:16])
-    if os.path.exists(cache):
-        print("summaries: from the cache %s" % os.path.basename(cache))
-        return cache, None
-    inp = cache + ".in"
-    for old in [x for x in os.listdir(d) if x.startswith("summaries_") and x.endswith(".in")]:
+    inp = os.path.join(d, "summary_input_%s.pickle" % base[:16])
+    for old in [x for x in os.listdir(d) if x.startswith("summary_input_") and x != os.path.basename(inp)
+                or x.startswith("summaries_") and x.endswith(".in")]:
         os.remove(os.path.join(d, old))
+    cache = summary_cache(path, base, summary_effects(entry, hle))
+    if os.path.exists(cache):
+        print("summaries: in the cache %s" % os.path.basename(cache))
+    if os.path.exists(inp):
+        return base, inp, hle
     with open(inp + ".tmp", "wb") as f:
         fs = {}
         for e, (b, _) in L.funcs.items():
@@ -144,19 +201,24 @@ def plan_summaries(L, img, path, hooks, no_call, classes, entry):
                      "classes": classes, "hle": hle, "entry_hooks": dict(entry),
                      "names": dict(names)}, f, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(inp + ".tmp", inp)
-    print("summaries: to be computed by the build (%s)" % os.path.basename(inp))
-    return cache, inp
+    if not os.path.exists(cache):
+        print("summaries: to be computed by the build (%s)" % os.path.basename(inp))
+    return base, inp, hle
 
 
 def finish_summaries(plan_path, plan):
-    """the plan with its summaries (summary_step, in a process of its own: the summaries' objects never enter the
-    build's process, which keeps only the packed tuples)"""
-    cache, inp = plan.get("summary_job") or (None, None)
-    if cache is None or plan.get("summaries"):
+    """the plan with the summaries of the patches' declared effects as they are now (summary_step, in a process of its
+    own: the summaries' objects never enter the build's process, which keeps only the packed tuples)"""
+    if "summary_base" not in plan:
+        raise SystemExit("build: the plan predates the summaries' content keys: lift again (scripts/relift.sh)")
+    cache = summary_cache(plan_path, plan["summary_base"], summary_effects(plan["entry_hooks"], plan["hle"]))
+    if plan.get("summaries") and plan.get("summary_cache") == os.path.basename(cache):
         return plan
+    if plan.get("summary_cache"):
+        print("summaries: the patches' declared effects differ from those the plan's summaries count", flush=True)
     nx2 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     subprocess.run([sys.executable, "-I", "-u", "-c", "import sys; sys.path.insert(0, %r); from lift2 import game; "
-                    "game.summary_step(%r)" % (nx2, plan_path)], check=True)
+                    "game.summary_step(%r, %r)" % (nx2, plan_path, cache)], check=True)
     del plan
     _PLAN.pop(plan_path, None)
     import gc
@@ -164,12 +226,12 @@ def finish_summaries(plan_path, plan):
     return _plan(plan_path)
 
 
-def summary_step(plan_path):
+def summary_step(plan_path, cache):
     """the plan's summaries from their cache, or computed by summary.job (HOOKSHOT_LIFT_SUMMARY_JOBS workers, default
     8) from the input the lift left; the plan file is rewritten with them, packed"""
     from . import summary
     plan = _plan(plan_path)
-    cache, inp = plan["summary_job"]
+    inp = plan["summary_input"]
     t1 = time.time()
     if not os.path.exists(cache):
         if inp is None or not os.path.exists(inp):
@@ -183,11 +245,13 @@ def summary_step(plan_path):
             sums, stats, edges = pickle.load(f)
         os.remove(out)
         d = os.path.dirname(cache)
-        for old in [x for x in os.listdir(d) if x.startswith("summaries_") and not x.startswith(os.path.basename(cache))]:
+        keep = sorted((x for x in os.listdir(d) if x.startswith("summaries_") and x.endswith(".pickle")),
+                      key=lambda x: os.path.getmtime(os.path.join(d, x)))[-2:]   # (and the one before: an edit undone)
+        for old in [x for x in os.listdir(d) if x.startswith("summaries_") and x not in keep]:
             os.remove(os.path.join(d, old))
         with open(cache + ".tmp", "wb") as f:
             pickle.dump((sums, edges, stats), f, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(cache + ".tmp", cache)   # (the input stays until the next lift: tools recompute from it)
+        os.replace(cache + ".tmp", cache)   # (the input stays until the next lift: builds and tools recompute from it)
         summary.report(sums, edges, plan["insns"], plan.get("hot", ()))
         print("summaries: %(functions)d functions, %(sccs)d components (largest %(largest scc)d) in %(levels)d "
               "levels; graph %(graph s).0fs, fixed point %(fixed point s).0fs, results %(results s).0fs" % stats)
@@ -197,6 +261,7 @@ def summary_step(plan_path):
         with open(cache, "rb") as f:
             sums, _, _ = pickle.load(f)
     plan["summaries"] = {e: summary.pack(s) for e, s in sums.items()}
+    plan["summary_cache"] = os.path.basename(cache)
     with open(plan_path + ".tmp", "wb") as f:
         pickle.dump(plan, f, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(plan_path + ".tmp", plan_path)
@@ -249,11 +314,12 @@ def write_plan(L, img, path, hot=()):
     # the whole program's summaries: computed (or taken from their cache) by the build, finish_summaries
     import entry_hooks   # (host/*.c's ENTRY_HOOKs: the summaries count what each reads and writes)
     entry, missing = entry_hooks.wanted(os.path.join(os.path.dirname(path), "gen"))
-    job = plan_summaries(L, img, path, hooks, no_call, classes, entry)
-    plan = {"summaries": {}, "summary_job": job, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets,
+    base, inp, hle = plan_summaries(L, img, path, hooks, no_call, classes, entry)
+    plan = {"summaries": {}, "summary_base": base, "summary_input": inp, "hle": hle, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets,
             "hooks": sorted(hooks), "entry_hooks": entry, "bodies": bodies, "why": why, "hot": sorted(set(hot) & set(bodies)),
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()},
             "code_excluded": sorted(m.base for m in img.modules)}   # (code_ptrs.targets: the modules' bases stay guest)
+    plan["facts_key"] = facts_key(plan)
     with open(path + ".tmp", "wb") as f:
         pickle.dump(plan, f, protocol=pickle.HIGHEST_PROTOCOL)
     os.replace(path + ".tmp", path)
@@ -391,19 +457,63 @@ def _plan(path):
     return _PLAN[path]
 
 
-def input_base(plan_path):
-    """what every partition's input key starts from: the plan's bytes and the lifter's source files"""
+# the plan's fields that are not the discovery's facts (the summaries come in by function: part_key)
+NOT_FACTS = ("summaries", "summary_cache", "facts_key")
+
+
+def facts_key(plan):
+    """the discovery's facts in the plan (everything the lift wrote but the summaries) as a key"""
+    k = plan.get("facts_key")
+    if k:
+        return k
+    return hashlib.sha1(pickle.dumps({n: v for n, v in plan.items() if n not in NOT_FACTS},
+                                     protocol=pickle.HIGHEST_PROTOCOL), usedforsecurity=False).hexdigest()
+
+
+def branch_targets(pcs, words):
+    """the addresses a body's code may go to outside it (B, BL, B.cond, CBZ/CBNZ, TBZ/TBNZ targets, and the next word
+    where the body does not continue: a fall into the next function), and every BL target (a call of itself
+    included): the functions whose call-boundary records its IR may read"""
+    body = set(pcs)
+    out = set()
+    for pc, w in zip(pcs, words):
+        if w & 0x7C000000 == 0x14000000:   # (B, BL)
+            t = pc + (((w & 0x3FFFFFF) ^ 0x2000000) - 0x2000000) * 4
+            if w & 0x80000000 or t not in body:
+                out.add(t)
+        elif w & 0xFF000010 == 0x54000000 or w & 0x7E000000 == 0x34000000:   # (B.cond, CBZ / CBNZ)
+            t = pc + ((((w >> 5) & 0x7FFFF) ^ 0x40000) - 0x40000) * 4
+            if t not in body:
+                out.add(t)
+        elif w & 0x7E000000 == 0x36000000:   # (TBZ / TBNZ)
+            t = pc + ((((w >> 5) & 0x3FFF) ^ 0x2000) - 0x2000) * 4
+            if t not in body:
+                out.add(t)
+        if pc + 4 not in body:
+            out.add(pc + 4)
+    return {t & 0xFFFFFFFFFFFFFFFF for t in out}
+
+
+def patch_rows():
+    """{function: [the declaration of each Value probe and At row in it, as a string]}"""
+    out = {}
+    for p in list(probes.PROBES) + list(probes.AT):
+        out.setdefault(p.func, []).append(type(p).__name__ + repr(sorted(vars(p).items())))
+    return out
+
+
+def part_key(plan, names, hooks, bound, rows):
+    """what a partition's IR is made of beyond the lifter's code and the discovery's facts: for each of its functions
+    its rows, its entry hook, its summary, and the call-boundary record of every function it may branch or call to
+    (branch_targets: what the lift reads of the callees)"""
     h = hashlib.sha1(usedforsecurity=False)
-    with open(plan_path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 24), b""):
-            h.update(block)
-    h.update(b"verify" if os.environ.get("HOOKSHOT_LIFT_VERIFY") else b"")   # (lift_part reads it)
-    here = os.path.dirname(os.path.abspath(__file__))
-    for name in sorted(os.listdir(here)):
-        if name.endswith(".py"):
-            with open(os.path.join(here, name), "rb") as f:
-                h.update(name.encode() + f.read())
-    return h.hexdigest().encode()
+    callee = callee_fn(plan["plt"])
+    summ = plan.get("summaries", {})
+    for e in names:
+        pcs, words = plan["bodies"][e]
+        h.update(repr((e, rows.get(e), hooks.get(e), summ.get(e),
+                       [(t, bound(callee(t))) for t in sorted(branch_targets(pcs, words))])).encode())
+    return h.hexdigest()
 
 
 def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
@@ -414,6 +524,7 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     if not os.path.exists(plan_path):
         raise SystemExit("build: no plan %s: lift the game first (scripts/relift.sh)" % plan_path)
     plan = finish_summaries(plan_path, _plan(plan_path))
+    t_sum = time.time() - t0
     if os.environ.get("HOOKSHOT_LIFT_VERIFY") and not plan.get("summaries"):
         raise SystemExit("build: HOOKSHOT_LIFT_VERIFY needs summaries in the plan: lift again")
     chosen = set(plan["bodies"])
@@ -447,7 +558,10 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     # rebuild then costs the hashing, not the 2-3 minutes of lifting)
     hle = host_effects.hle_names(gen)   # (the HLE'd functions' names decide what a call of one keeps)
     host_effects.check(hle, hooks)
-    base = input_base(plan_path) + repr(sorted(hooks.items())).encode() + repr(sorted(hle.items())).encode()
+    t_key = time.time()
+    verify = bool(os.environ.get("HOOKSHOT_LIFT_VERIFY"))   # (lift_part reads it)
+    base = ("%s %s %s\n" % (code_key(), facts_key(plan), "verify" if verify else "")).encode()
+    bound, rows = bounds.call_bounds(plan, hooks, hle, verify), patch_rows()
     flags, pres, keys, objs_k = [], [], [], []
     for k, (tag, names) in enumerate(parts):
         level = hot_opt if tag == "h" else opt
@@ -456,9 +570,11 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
         pre = opt_argv(clang, level, march_flags)
         flags.append(fl)
         pres.append(pre)
-        keys.append(hashlib.sha1(base + (" ".join(fl + (pre or [])) + "\n" + ",".join("%x" % e for e in names)).encode(),
+        keys.append(hashlib.sha1(base + (" ".join(fl + (pre or [])) + "\n" + ",".join("%x" % e for e in names) + "\n" +
+                                         part_key(plan, names, hooks, bound, rows)).encode(),
                                  usedforsecurity=False).hexdigest())
         objs_k.append(os.path.join(obj_dir, "lift_%s%03d.o" % (tag, k)))
+    t_lift_start = time.time()
     todo = []
     lifted_sites = {}   # (partition -> the code pointer sites its lift translated: from its text, or beside its cached object)
     for k in range(len(parts)):
@@ -512,9 +628,11 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
                 pass
     n_insn = sum(len(plan["bodies"][e][0]) for e in chosen)
     line = ("lift: %d functions (%d instructions; %d of them hot) in %d partitions (%d from the cache by their inputs); "
-            "lifted in %.0fs, compiled in %.0fs; %d code pointer sites translated (the census's); code addresses left "
-            "guest: %s" % (len(chosen), n_insn, len(chosen & hot), len(parts), len(parts) - len(todo), t_lift,
-                            time.time() - t1, sum(census), ", ".join("%s %d" % kv for kv in sorted(other.items()))))
+            "summaries %.0fs, keys %.0fs, lifted (and the code pointer census) in %.0fs, compiled in %.0fs; %d code pointer "
+            "sites translated (the census's); code addresses left guest: %s" % (
+                len(chosen), n_insn, len(chosen & hot), len(parts), len(parts) - len(todo), t_sum, t_lift_start - t_key,
+                t_lift - (t_lift_start - t0), time.time() - t1, sum(census),
+                ", ".join("%s %d" % kv for kv in sorted(other.items()))))
     if failed:
         raise SystemExit("lift: %d partitions failed to compile:\n%s" % (len(failed), failed[0][1]))
     print(bounds.call_report(plan, bounds.call_bounds(plan, hooks, hle), chosen), flush=True)

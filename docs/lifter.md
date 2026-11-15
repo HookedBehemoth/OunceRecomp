@@ -427,10 +427,15 @@ inside it do not wait (`host/nvn_native.c` `readback_stamped`).
 fixed point inside each): inputs (backward liveness), clobbers and must-defs, the preserved callee-saved registers (a
 frame pass tracking SP, x29 and copies as entry SP plus a constant, and which frame slots hold entry values of
 x19-x30 and d8-d15), results, noreturn (seeded by the fatal functions' names and BLs with nothing after them), FP use.
-Every build has them: the lift writes the job's input beside the plan unless the cache has them
-(`game.plan_summaries`; `work/sa/summaries_<key>.pickle`, the key a SHA-1 of the image, the discovery's facts, the
-HLE'd functions' symbols, the entry hooks and `enc*`/`sem*`/`ir`/`bounds`/`build_ir`/`summary.py`/`probes.py`/
-`host_effects.py`; the input stays beside the cache until the next lift), and the build's first step computes them before the lift workers and the
+Every build has them: the lift writes the job's input beside the plan (`game.plan_summaries`;
+`work/sa/summary_input_<key>.pickle`, kept until the next lift) and the cache's key: `work/sa/summaries_<key>.pickle`,
+a SHA-1 of the image, the discovery's facts, the HLE'd functions' symbols, the entry hooks, the code of
+`enc*`/`sem*`/`ir`/`bounds`/`build_ir`/`summary`/`probes`/`host_effects.py` (`game.source_key`: the syntax tree without
+comments, docstrings and the patch tables) and the patches' declared effects (`game.summary_effects`: every row's reads,
+writes, guest callees and replace; every entry hook's reads, writes and guest callees; every HLE'd function's summary).
+A build whose patches declare other effects than the summaries in the plan count computes them again from the input,
+without a lift; a row whose effects are the same (its host function renamed, say) reruns nothing. The build's first
+step computes them before the lift workers and the
 compilers start, in a process of its own (`game.finish_summaries`, `summary.job`: 8 workers over the components' DAG,
 `HOOKSHOT_LIFT_SUMMARY_JOBS`), then packs them into the plan. Cold: 108 s (graph 17 s, fixed point 59 s, results
 26 s), 1.4 GB in the summary process and 1.3 GB in its largest worker; from the cache: 5 s. The build uses them at
@@ -523,9 +528,17 @@ checks, the omitted stores and the patches in the summaries): zero violations in
   Every partition also gets `-march` (`RX_MARCH`, else the host's: x86-64-v3 on an AVX2 machine), `-ffp-contract=off`,
   `-ffunction-sections`, `-mllvm -rotation-max-header-size=0` and `game.DSE_FLAGS` (capture tracking up to 100,000
   uses, DSE's per-block definitions 100,000, scan and walk 1,000, other-block cost 1). No `-mno-red-zone`.
-- **Caching**: a partition's object is kept in `work/objcache` by an input key (the plan's bytes, the lifter's
-  sources, the flags, its functions, the hooks, `HOOKSHOT_LIFT_VERIFY`); an unchanged partition is neither lifted nor
-  compiled again. Objects no build links are removed after `HOOKSHOT_OBJCACHE_DAYS` (default 3).
+- **Caching**: a partition's object is kept in `work/objcache` by an input key: the lifter's code (`game.code_key`:
+  every `nx2/lift2` source as `game.source_key` takes it, so comments and the patch tables are not in it), the
+  discovery's facts (`game.facts_key`: the plan as the lift wrote it, the summaries left out), the flags,
+  `HOOKSHOT_LIFT_VERIFY`, its functions, and for each its rows, its entry hook, its summary and the call-boundary record
+  of every function it may branch, call or fall to (`game.part_key`, `game.branch_targets`). The code pointer translation
+  (`code_ptrs.targets`, `code_ptrs.sites`) reads only the plan (`code_excluded`, the bodies, the jump tables) and its
+  own code, both in the key; the count of sites a partition translated is kept beside its object under the same key
+  (`.cp`). An unchanged partition is
+  neither lifted nor compiled again: editing a row recompiles the partition holding its function (and those whose
+  callees' records its declared effects change); editing a semantic template, the IR, the emitter, `bounds.py` or the
+  lowering code of `probes.py` recompiles every partition, as every function's IR may change with them. Objects no build links are removed after `HOOKSHOT_OBJCACHE_DAYS` (default 3).
 
 | switch | when | what |
 |---|---|---|
