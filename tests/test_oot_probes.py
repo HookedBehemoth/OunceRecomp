@@ -258,6 +258,19 @@ int main(void) {
     CHECK(G32(0x7000 - 40 + 8) == bits(12.5f) && G32(0x7000 - 40 + 16) == bits(87.5f));
     /* occlusion off: the byte reads 0 */
     CHECK(hos_oot_occlusion_flag(1) == 1); hos_occlusion_off = 1; CHECK(hos_oot_occlusion_flag(1) == 0);
+    /* the per-core rings: the first writer owns a ring; another thread is logged once, the owner never */
+    {
+        G64(0xe890) = 0xc000; G64(0xc000) = 0xc100;   /* (slot -> holder -> the singleton) */
+        const uint64_t r2 = 0xc100 + 0x20 + 2 * 0x30;
+        cur_thread = (HosThread *)"BaseProcExecutor2"; logged = 0;
+        hos_oot_ring_write(r2, 0, 0x800b4228); hos_oot_ring_write(r2, 1, 0x800b4468);
+        CHECK(logged == 1 && rings[2].owner == cur_thread && rings[2].pushes == 1 && rings[2].pops == 1);
+        cur_thread = (HosThread *)"ModuleSystemWorker2";
+        hos_oot_ring_write(r2, 0, 0x8004c820); hos_oot_ring_write(r2, 0, 0x8004c820);
+        CHECK(logged == 2 && ring_conflicts == 1 && rings[2].pushes == 3);
+        hos_oot_ring_write(0xc100 + 0x20 + 7 * 0x30, 0, 0); CHECK(logged == 2);   /* (past the seven rings: ignored) */
+        hos_present_count = 3; hos_oot_ring_report(); CHECK(logged == 3);
+    }
     if (!bad) printf("ok\n");
     return bad;
 }
@@ -272,7 +285,13 @@ static int hos_bench_on(void) { return bench_on; }
 #define GP(a) ((void *)A64_PTR(a))
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))
-static void hos_log(const char *f, ...) { (void)f; }
+static int logged;
+static void hos_log(const char *f, ...) { (void)f; logged++; }
+typedef struct HosThread HosThread;
+static HosThread *cur_thread;
+static HosThread *hos_self(void) { return cur_thread; }
+static const char *hos_thread_name(HosThread *t) { return (const char *)t; }
+volatile int64_t hos_present_count;
 """
 
 

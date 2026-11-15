@@ -144,7 +144,18 @@ AT = [
     # occlusion off (cLohan's community patch, as Fritchii ships it): the byte that decides the queries (ldrb w8, [x0])
 ] + [At(f, pc, 0x39400008, "hos_oot_occlusion_flag", ("w8",), "w8")
      for f, pc in ((0x811cc790, 0x811cce68), (0x811cc790, 0x811d828c), (0x811cc790, 0x811d82a4),
-                   (0x811cc790, 0x811ccec8), (0x811cc790, 0x811d82dc), (0x811cc790, 0x811d82f4))]
+                   (0x811cc790, 0x811ccec8), (0x811cc790, 0x811d82dc), (0x811cc790, 0x811d82f4))] + [
+    # per-core rings of the actor singleton (host/oot_probes.c hos_oot_ring_write): after each store of a ring's count,
+    # the ring's address in the register the store used; #0 a push (count + 1), #1 a pop (count - 1)
+    At(f, pc, w, "hos_oot_ring_write", (reg, "#%d" % pop, "#%#x" % pc)) for f, pc, w, reg, pop in (
+        (0x8004ab40, 0x8004c820, 0xb9002128, "x9", 0), (0x800aff80, 0x800b0b1c, 0xb9002128, "x9", 0),
+        (0x800b3ce0, 0x800b4228, 0xb900212b, "x9", 0), (0x800b73d0, 0x800b7630, 0xb9002128, "x9", 0),
+        (0x8073a090, 0x8073a17c, 0xb900212b, "x9", 0), (0x83af6150, 0x83af6328, 0xb9002128, "x9", 0),
+        (0x83af59c0, 0x83af5bb4, 0xb9002128, "x9", 0),
+        (0x8004ab40, 0x8004c988, 0xb9002109, "x8", 1), (0x800aff80, 0x800b0ca0, 0xb9002109, "x8", 1),
+        (0x800b3ce0, 0x800b4468, 0xb900210a, "x8", 1), (0x800b73d0, 0x800b787c, 0xb900210a, "x8", 1),
+        (0x8073c900, 0x8073c9d0, 0xb900210a, "x8", 1), (0x83af6150, 0x83af6724, 0xb900210a, "x8", 1),
+        (0x83af59c0, 0x83af5d9c, 0xb900210a, "x8", 1))]
 AT_FUNCS = {p.func for p in AT}
 
 

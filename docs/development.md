@@ -375,6 +375,10 @@ block and again when its text changes.
 cannot work ([lifter-abi-census.md](lifter-abi-census.md) section 3), so a throw is a fatal stop rather than a wrong
 continuation. The type is the mangled name from `__cxa_throw`'s type_info; the line names the thread.
 
+`ring owner: ring N pushed by <A> and <B> (pc <site>)` (always on, `host/oot_probes.c` `hos_oot_ring_write`): a second
+thread wrote one of the actor singleton's per-core rings, which the game updates without a lock ([lifter.md](lifter.md)
+section 10.2). A bench run's end logs `rings: second writers N; <ring> <owner> <pushes>+<pops>/frame; ...`.
+
 ### HOS_DBG
 
 `HOS_DBG=<item>,<item>:<value>,...` turns on the direct back end's and the host's debug aids; with it unset each costs a

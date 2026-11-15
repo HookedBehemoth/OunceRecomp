@@ -868,6 +868,11 @@
 80140700 actor_after_calcs_job_d         # the fourth; the physics phase follows (role)
 801d99a0 model_anim_eval_large           # the largest function of the player's calc before actor_update_a (string UseRotatedTranslate) # ? animation, inferred
 83af6150 actor_calc_late_one              # one actor's late (post-physics) calc in the second BaseProc step; the player's ends the step
+800aff80 actor_calc_one_b                 # host/oot_probes.c (ring owner): pushes and pops the per-core ring of the singleton at **0x84c9e890 around its work, as actor_calc_one (role)
+800b73d0 actor_calc_one_c                 # host/oot_probes.c (ring owner): the same per-core ring push and pop as actor_calc_one (role)
+8073a090 actor_core_ring_push             # host/oot_probes.c (ring owner): a push onto the per-core ring of the singleton at **0x84c9e890 alone (role)
+8073c900 actor_core_ring_pop              # host/oot_probes.c (ring owner): the matching pop of actor_core_ring_push (role)
+83af59c0 actor_calc_late_one_b            # host/oot_probes.c (ring owner): the same per-core ring push and pop as actor_calc_late_one (role)
 82c43780 actor_baseproc_post_phys_job     # one actor's post-physics step, ~90 a frame after the physics phase of the second step
 804352d0 module_stage_a_last_job_a        # one of the two jobs that end stage A (role)
 83b525b0 module_stage_a_last_job_b        # the other job that ends stage A; reads the system tick, light events (role)

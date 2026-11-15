@@ -41,6 +41,7 @@
      keeps its shipped size. */
 #include "hos.h"
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -372,4 +373,58 @@ void hos_oot_wide_movie(uint64_t frame) {
 uint32_t hos_oot_occlusion_flag(uint32_t flag) {
     extern volatile int hos_occlusion_off;
     return hos_occlusion_off ? 0 : flag;
+}
+
+/* ---- the actor singleton's per-core rings (singleton at 0x84c9e890; ring k at +0x20 + k * 0x30: buffer +0x10,
+   capacity +0x18, head +0x1c, count +0x20). The game pushes and pops them without a lock or atomics, indexed by
+   GetCurrentCoreNumber, so they are safe only while one thread per core number ever writes each ring. Every push and
+   pop site (nx2/lift2/probes.py, "per-core rings") calls hos_oot_ring_write with the ring's address. The first
+   writer of a ring is its owner (logged: "ring owner: ring N is A's"); a different thread writing it is logged once
+   per (ring, thread): "ring owner: ring N pushed by A and B (pc P)". Always on: on the owner's writes, a guest load
+   of the singleton, a relaxed add and a compare. */
+enum { OOT_RING_SLOT = 0x84c9e890, OOT_RINGS = 7 };
+static struct {
+    HosThread *volatile owner;
+    volatile int64_t pushes, pops;
+    HosThread *volatile others[4];
+    char pad[64 - 7 * 8];
+} rings[OOT_RINGS];
+static volatile int64_t ring_conflicts;
+
+void hos_oot_ring_write(uint64_t elem, uint32_t pop, uint32_t pc) {
+    const uint64_t obj = singleton(OOT_RING_SLOT);
+    const uint64_t k = (elem - obj - 0x20) / 0x30;
+    if (!obj || elem < obj + 0x20 || k >= OOT_RINGS) return;
+    HosThread *self = hos_self();
+    __atomic_fetch_add(pop ? &rings[k].pops : &rings[k].pushes, 1, __ATOMIC_RELAXED);
+    HosThread *owner = __atomic_load_n(&rings[k].owner, __ATOMIC_RELAXED);
+    if (owner == self) return;
+    if (!owner && __atomic_compare_exchange_n(&rings[k].owner, &owner, self, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        hos_log("ring owner: ring %d is %s's (pc %#x)", (int)k, hos_thread_name(self), (unsigned)pc);
+        return;
+    }
+    for (int i = 0; i < 4; i++) {   /* (once per (ring, thread)) */
+        HosThread *seen = __atomic_load_n(&rings[k].others[i], __ATOMIC_RELAXED);
+        if (seen == self) return;
+        if (!seen && __atomic_compare_exchange_n(&rings[k].others[i], &seen, self, 0, __ATOMIC_RELAXED,
+                                                 __ATOMIC_RELAXED))
+            break;
+        if (seen == self) return;
+    }
+    __atomic_fetch_add(&ring_conflicts, 1, __ATOMIC_RELAXED);
+    hos_log("ring owner: ring %d %s by %s and %s (pc %#x)", (int)k, pop ? "popped" : "pushed",
+            hos_thread_name(owner), hos_thread_name(self), (unsigned)pc);
+}
+
+/* (a bench run's end: who owns each ring, and its pushes and pops per present so far) */
+void hos_oot_ring_report(void) {
+    extern volatile int64_t hos_present_count;   /* (display.c, a LONG64) */
+    const double frames = hos_present_count > 0 ? (double)hos_present_count : 1.0;
+    char line[1024];
+    int n = snprintf(line, sizeof line, "rings: second writers %lld;", (long long)ring_conflicts);
+    for (int k = 0; k < OOT_RINGS && n < (int)sizeof line - 96; k++)
+        n += snprintf(line + n, sizeof line - n, " %d %s %.1f+%.1f/frame;", k,
+                      rings[k].owner ? hos_thread_name(rings[k].owner) : "-", rings[k].pushes / frames,
+                      rings[k].pops / frames);
+    hos_log("%s", line);
 }

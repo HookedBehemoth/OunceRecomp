@@ -470,6 +470,14 @@ is checked at lift time (another game version stops the lift).
 | widescreen | `hos_oot_wide_out` (x2), `hos_oot_wide_scene`, `hos_oot_wide_ratio`, `hos_oot_wide_projection_ratio` (x4), `hos_oot_wide_movie` | `f_81222ce0`, `f_83213890`, `f_804e48c0`, `f_834a5cc0`, `f_8006ec60`, `f_8025b910`, `f_8035a8c0`, `f_83b7c710` |
 | occlusion off (`HOOKSHOT_OCCLUSION_OFF=1`) | `hos_oot_occlusion_flag` (x6) | `f_811cc790` |
 | `HOS_BENCH`'s "in play" | `hos_oot_player_update` (Link updated, no map loading, no event playing) | `f_82c415e0` |
+| per-core ring owners | `hos_oot_ring_write` (x14: 7 pushes, 7 pops) | `f_8004ab40`, `f_800aff80`, `f_800b3ce0`, `f_800b73d0`, `f_8073a090`, `f_8073c900`, `f_83af6150`, `f_83af59c0` |
+
+The per-core rings are an assertion, not a patch. The singleton at `**0x84c9e890` holds seven rings, ring k at
++0x20 + k * 0x30: a buffer at +0x10, a capacity at +0x18, a head at +0x1c and a count at +0x20. The game picks a ring
+by GetCurrentCoreNumber and pushes and pops it without a lock or atomics. That is safe only while one thread per core
+number writes each ring. Each of the 14 sites is an At probe after the store of the count, given the ring's address.
+The first thread that writes a ring is its owner. Another thread writing it is logged once per ring and thread, and
+the game goes on. The probes stay on in normal play.
 
 The output size in nnMain (`f_81222ce0`): the probe names the instruction (`mov x8, #2560; movk x8, #1440, lsl #32`, then the store at +20):
 
