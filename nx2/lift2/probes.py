@@ -274,7 +274,8 @@ AT = [
     At(0x80644c80, 0x80644c80, 0xd503237f, "hos_mouse_camera", ("x0",)),                   # hint #27 (PACIBSP)
     # the player's update, for HOS_BENCH's "in play" (x19 the player actor)
     At(0x82c415e0, 0x82c41728, 0xf9000bea, "hos_oot_player_update", ("x19",)),            # str x10, [sp, #16]
-    # widescreen (nx2/oot_wide.py: where they come from; after the output size at 0x81222ee4)
+    # widescreen (host/oot_probes.c "widescreen and ultrawide": what they do and where they come from; after the output
+    # size at 0x81222ee4)
     At(0x81222ce0, 0x81222ee4, 0xf2c0b408, "hos_oot_wide_out", ("x8",), "x8"),     # movk x8, #1440, lsl #32: {2560, 1440}
     At(0x83213890, 0x832139f8, 0xf2c0b408, "hos_oot_wide_out", ("x8",), "x8"),     # likewise, the display settings
     At(0x83213890, 0x83213a04, 0xf2c08708, "hos_oot_wide_scene", ("x8",), "x8"),   # movk x8, #1080, lsl #32: {1920, 1080}
@@ -285,7 +286,7 @@ AT = [
     At(0x8035a8c0, 0x8035b82c, 0x2d558440, "hos_oot_wide_projection_ratio", ("s1", "x2"), "s1"),
     At(0x83b7c710, 0x83b7c758, 0xa941a269, "hos_oot_wide_movie", ("x29",)),         # ldp x9, x8, [x19, #0x18]
     # the HUD's projection rows (ldp q1, q4, [x2]; x0 the canvas) and the save picture's viewport (ldr x8, [x8] before
-    # blr x8: SetViewport(w1, w2, w3, w4)), nx2/oot_wide.py
+    # blr x8: SetViewport(w1, w2, w3, w4)), host/oot_probes.c
     At(0x80794330, 0x80794368, 0xad401041, "hos_oot_wide_hud", ("x0", "q1", "q4"), "q1"),
     At(0x802a46e0, 0x802a4824, 0xf9400108, "hos_oot_wide_save_picture", (), io=("w1", "w2", "w3", "w4")),
     # the frame body's frame-end clock read: GetSystemTick replaced by one that also notes x19, the graphics module, for

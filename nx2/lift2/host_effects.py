@@ -12,9 +12,9 @@ an ENTRY_HOOK keeps x19-x29 and SP in SSA across the call, as a BL to a lifted c
   nothing.
 
 The audit behind the default (2026-11-15): the host's C, compiled to LLVM IR, has stores to x19-x31 or v8-v15 of a
-context only in thread and fiber setup (host/hos_thread.c thread_main, fiber_main; hos_main.c), in hos_call_guest and
-the splices (x30), in splice 0x80084de0 (SP, restored) and in restores of saved values (direct_mesh_binds.c,
-rt_slots.c, direct_depth_copy.c, direct_layer_ahead.c); no HLE'd function reaches one, a call of guest code, or a
+context only in thread and fiber setup (host/hos_thread.c thread_main, fiber_main; hos_main.c), in hos_call_guest (x30),
+in the guest calls of hooks and rows (host/hos_hostcall.c call_restoring: every register put back) and in restores of
+saved values (direct_mesh_binds.c, rt_slots.c, direct_depth_copy.c, direct_layer_ahead.c); no HLE'd function reaches one, a call of guest code, or a
 context switch, except those CLOBBERS names. The verification build (HOOKSHOT_LIFT_VERIFY=1) checks every BL to a clean
 HLE'd function: x19-x29 and SP on its return equal their values at the call (host/lift2_verify.c lift2_host_exit).
 

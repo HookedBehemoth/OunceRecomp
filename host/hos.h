@@ -16,10 +16,10 @@
 #include <stdarg.h>
 
 #define HLE(sym) void imp_##sym(Ctx *c)
-/* HOS_GAME_VERSION: the game update the address hooks below are for, from the build (build.py reads the main
-   module's build id). An update moves the game's functions, so a hook compiles the address of the version it is
-   for and the other version's hooks are left out (ENTRY_HOOKs: the address is not in the lift; SPLICE_AFTERs:
-   skipped with a note). */
+/* HOS_GAME_VERSION: the game update the host's guest addresses are for: 100, the only one (nothing sets it; host/
+   hos_thread.c's calc_poll_nap is the one place that tests it). What holds the addresses to the dump is the lift: an
+   At row or Value probe (nx2/lift2/probes.py) names its instruction's word and an ENTRY_HOOK's address must be a
+   lifted function, or the build stops. */
 #ifndef HOS_GAME_VERSION
 #define HOS_GAME_VERSION 100
 #endif

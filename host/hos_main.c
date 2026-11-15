@@ -347,7 +347,7 @@ static void load_hookshot_env(void) {
 }
 
 float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
-/* (nx2/oot_wide.py) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
+/* (host/oot_probes.c, the widescreen rows) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
 /* (host/oot_probes.c) mode 1's scene base scale 1.0 instead of 0.8: Resolution 100% (host/nn_vi.c keeps it current),
    HOS_SCENE_NATIVE=0/1 over it */
@@ -500,7 +500,7 @@ static int game_main(int argc, char **argv) {
     hos_mem_init(hos_image_end);
     void hos_code_ptrs_init(void);
     hos_code_ptrs_init();   /* code_ptrs.c */
-    {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
+    {   /* (hookshot) Widescreen and ultrawide (host/oot_probes.c's rows): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
            Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio. Wider
            than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
