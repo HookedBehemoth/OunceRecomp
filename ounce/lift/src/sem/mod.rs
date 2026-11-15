@@ -7,7 +7,7 @@ pub mod int;
 pub mod neon;
 
 use crate::ir::Builder;
-use ounce_decode::Insn;
+use ounce_decode::{all_encodings, Insn};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -37,4 +37,79 @@ pub fn templates() -> &'static HashMap<&'static str, Entry> {
 
 pub fn get(name: &str) -> Option<&'static Entry> {
     templates().get(name)
+}
+
+/// what the lift does with an instruction, by its encoding: the branches and exceptions build_ir lowers itself
+/// (they end a block), or a semantic template
+#[derive(Copy, Clone, Debug)]
+pub enum Kind {
+    /// B and BL (op)
+    B,
+    Bcond,
+    /// CBZ, CBNZ
+    Cbz,
+    /// TBZ, TBNZ
+    Tbz,
+    Ret,
+    Udf,
+    Br,
+    Blr,
+    /// SVC, BRK, HLT, ... (opc)
+    Exc,
+    /// lowered by a template; code: an address-forming form (ADR/ADRP, ADD immediate) the code-pointer check reads
+    Sem(Template, Code),
+    /// a template the decoder names but no module registers (the lift stops; --skip counts it)
+    Missing,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Code {
+    No,
+    Adr,
+    AddSubImm,
+}
+
+impl Kind {
+    /// ends a block
+    pub fn is_term(self) -> bool {
+        !matches!(self, Kind::Sem(..) | Kind::Missing)
+    }
+}
+
+/// the kind of each encoding, by its id
+pub fn kinds() -> &'static [Kind] {
+    static K: OnceLock<Vec<Kind>> = OnceLock::new();
+    K.get_or_init(|| {
+        all_encodings()
+            .iter()
+            .map(|e| match e.template {
+                "b" => Kind::B,
+                "bcond" => Kind::Bcond,
+                "cbz" => Kind::Cbz,
+                "tbz" => Kind::Tbz,
+                "ret" => Kind::Ret,
+                "udf" => Kind::Udf,
+                "br" => Kind::Br,
+                "blr" => Kind::Blr,
+                "exc" => Kind::Exc,
+                t => match get(t) {
+                    Some(en) => Kind::Sem(
+                        en.f,
+                        match t {
+                            "adr" => Code::Adr,
+                            "addsub_imm" => Code::AddSubImm,
+                            _ => Code::No,
+                        },
+                    ),
+                    None => Kind::Missing,
+                },
+            })
+            .collect()
+    })
+}
+
+/// the instruction's kind
+#[inline]
+pub fn kind(i: &Insn) -> Kind {
+    kinds()[i.enc.id as usize]
 }

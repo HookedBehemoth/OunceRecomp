@@ -4,15 +4,12 @@
 use crate::export::{AtRow, Bound, Func, Part, ValueRow};
 use crate::ir::*;
 use crate::sem;
+use crate::sem::{Code, Kind};
 use crate::sem::int::{cond, getx, setx, sx};
 use crate::ty::{Ty, I32, I64};
 use ounce_decode::{decode, Insn, Fld};
 use std::collections::{HashMap, HashSet};
 
-const TERMINATORS: [&str; 8] = ["b", "bcond", "cbz", "tbz", "ret", "udf", "br", "blr"];
-fn is_term(t: &str) -> bool {
-    TERMINATORS.contains(&t) || t == "exc"
-}
 
 /// what lifting one function needs to know (build_ir.Program, for one function: the export's facts)
 pub struct Prog<'a> {
@@ -89,11 +86,10 @@ impl<'a> Prog<'a> {
 }
 
 pub fn target(i: &Insn, pc: u64) -> Option<u64> {
-    let t = i.enc.template;
-    let off = match t {
-        "b" => sx(i.f(Fld::imm26), 26),
-        "bcond" | "cbz" => sx(i.f(Fld::imm19), 19),
-        "tbz" => sx(i.f(Fld::imm14), 14),
+    let off = match sem::kind(i) {
+        Kind::B => sx(i.f(Fld::imm26), 26),
+        Kind::Bcond | Kind::Cbz => sx(i.f(Fld::imm19), 19),
+        Kind::Tbz => sx(i.f(Fld::imm14), 14),
         _ => return None,
     };
     Some((pc as i128 + (off << 2)) as u64)
@@ -106,15 +102,13 @@ pub fn scope(pcs: &[u64], words: &[u32]) -> Option<String> {
             Some(i) => i,
             None => return Some(format!("word {w:08x} at {pc:#x} not decoded")),
         };
-        let t = i.enc.template;
-        if !is_term(t) && sem::get(t).is_none() {
-            return Some(format!("template {t}"));
+        if let Kind::Missing = sem::kind(&i) {
+            return Some(format!("template {}", i.enc.template));
         }
     }
     None
 }
 
-const CODE_FORMS: [&str; 2] = ["adr", "addsub_imm"];
 /// (summary bits: x19-x29, SP) a BL keeps in SSA
 const KEEP: [Var; 12] = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, SP];
 
@@ -162,12 +156,12 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
     mark(entry);
     for (k, &pc) in pcs.iter().enumerate() {
         let i = &insns[k];
-        let t = i.enc.template;
-        if is_term(t) {
+        let kd = sem::kind(i);
+        if kd.is_term() {
             if let Some(tg) = target(i, pc) {
                 mark(tg);
             }
-            if t == "br" {
+            if let Kind::Br = kd {
                 for &x in prog.jt(pc).unwrap_or(&[]) {
                     mark(x);
                 }
@@ -231,12 +225,16 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             index_at.insert(br, (c, v));
         }
         let i = &insns[k];
-        let t = i.enc.template;
+        let kd = sem::kind(i);
         let falls_out = |b: &mut Builder, exits: &mut Vec<BlockId>| {
             let g = goto(b, prog, exits, pc + 4);
             b.f.bm(c).term = Some(Term::Br(g));
         };
-        if !is_term(t) {
+        if !kd.is_term() {
+            let (lower, code) = match kd {
+                Kind::Sem(f, c) => (Some(f), c),
+                _ => (None, Code::No),
+            };
             let site = prog.code_site(pc);
             let probe = prog.probes.get(&pc).copied();
             if let Some((_, Some(page))) = site {
@@ -249,16 +247,16 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             }
             match probe {
                 Some(p) => value_lower(&mut b, p),
-                None => (sem::get(t).expect(t).f)(&mut b, i, pc),
+                None => (lower.unwrap_or_else(|| panic!("{}", i.enc.template)))(&mut b, i, pc),
             }
             if let (Some((e, _)), None) = (site, probe) {
                 let ca = b.codeaddr(e);
                 setx(&mut b, i.f(Fld::Rd), ca, false);
                 b.f.code_sites += 1;
-            } else if CODE_FORMS.contains(&t)
+            } else if code != Code::No
                 && !prog.code_targets.is_empty()
                 && (if i.has(Fld::Rd) { i.f(Fld::Rd) } else { 31 }) != 31
-                && !(t == "adr" && i.f(Fld::op) != 0)
+                && !(code == Code::Adr && i.f(Fld::op) != 0)
                 && (!i.has(Fld::sf) || i.f(Fld::sf) != 0)
             {
                 if let Some(v) = b.f.b(c).defs[x(i.f(Fld::Rd)) as usize] {
@@ -278,8 +276,8 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             }
             continue;
         }
-        let is_bl = t == "b" && i.f(Fld::op) != 0;
-        if prog.replace.contains_key(&pc) && (t == "blr" || is_bl) {
+        let is_bl = matches!(kd, Kind::B) && i.f(Fld::op) != 0;
+        if prog.replace.contains_key(&pc) && (matches!(kd, Kind::Blr) || is_bl) {
             let ra = b.c64(pc as i128 + 4);
             b.set(x(30), ra);
             for row in &prog.replace[&pc] {
@@ -343,7 +341,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             }
             continue;
         }
-        if t == "blr" {
+        if let Kind::Blr = kd {
             let rn = i.f(Fld::Rn);
             let tv = if rn != 31 { b.get(x(rn)) } else { b.c64(0) };
             let ra = b.c64(pc as i128 + 4);
@@ -359,7 +357,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             }
             continue;
         }
-        if t == "exc" && i.f(Fld::opc) == 0 {
+        if matches!(kd, Kind::Exc) && i.f(Fld::opc) == 0 {
             let fl: Vec<ValueId> = FLAGS.iter().map(|&v| b.get(v)).collect();
             b.op(Op::FlagsOut { always: false }, Ty::Void, &fl);
             b.op(Op::Svc(i.f(Fld::imm16)), Ty::Void, &[]);
@@ -373,7 +371,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
         if prog.after.contains_key(&pc) {
             panic!("code after the branch at {pc:#x}");
         }
-        if t == "br" && prog.replace.contains_key(&pc) {
+        if matches!(kd, Kind::Br) && prog.replace.contains_key(&pc) {
             // (a row in place of a tail call: its result the callee's, then return)
             for row in &prog.replace[&pc] {
                 at_post(&mut b, row);
@@ -382,15 +380,15 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             cur = None;
             continue;
         }
-        let term = match t {
-            "b" => Term::Br(goto(&mut b, prog, &mut exits, target(i, pc).unwrap())),
-            "bcond" => {
+        let term = match kd {
+            Kind::B => Term::Br(goto(&mut b, prog, &mut exits, target(i, pc).unwrap())),
+            Kind::Bcond => {
                 let cv = cond(&mut b, i.f(Fld::cond));
                 let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
                 let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
-            "cbz" => {
+            Kind::Cbz => {
                 let v = getx(&mut b, i.f(Fld::Rt), i.f(Fld::sf), false);
                 let t0 = b.ty(v);
                 let z = b.c(0, t0);
@@ -399,7 +397,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
-            "tbz" => {
+            Kind::Tbz => {
                 let bit = i.f(Fld::b5) << 5 | i.f(Fld::b40);
                 let rt = i.f(Fld::Rt);
                 let r = if rt != 31 { b.get(x(rt)) } else { b.c64(0) };
@@ -411,8 +409,8 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 let fb = goto(&mut b, prog, &mut exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
-            "ret" => Term::Ret,
-            "br" => {
+            Kind::Ret => Term::Ret,
+            Kind::Br => {
                 let rn = i.f(Fld::Rn);
                 let xv = if rn != 31 { b.get(x(rn)) } else { b.c64(0) };
                 let ij = {
