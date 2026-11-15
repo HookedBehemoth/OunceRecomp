@@ -72,7 +72,7 @@ def summaries(L, img, path, prog, hooks):
     names = getattr(img, "names", {}) or {}
     sums, F, stats = summary.summarise({e: sorted(b) for e, (b, _) in L.funcs.items()}, prog, hooks, img.word,
                                        names)
-    hot_path = os.environ.get("A64_HOT_FUNCS") or os.path.join(os.path.dirname(os.path.dirname(path)), "..",
+    hot_path = os.environ.get("HOOKSHOT_HOT_FUNCS") or os.path.join(os.path.dirname(os.path.dirname(path)), "..",
                                                                "hot_funcs_play.txt")
     hot = []
     if os.path.exists(hot_path):

@@ -442,19 +442,20 @@ The lifted code is never edited after the lift: everything the host adds is name
   replaces an instruction's result, `At(...)` calls a host function of the named registers after (or before) an
   instruction and writes its result to a register; the instruction's word is checked at lift time, so another game
   version stops the lift.
-- **C after an instruction** (`nx2/oot_wide.py`, `oot_jitter.py`, `oot_occlusion.py`: `Discovery.after`) and the
+- **C after an instruction** (`nx2/oot_wide.py`'s HUD and save picture, `oot_jitter.py`: `Discovery.after`) and the
   **SPLICE_AFTER** host functions (`host/direct_*.c`, sites named by address in `probes.SPLICE_AT`/`SPLICE_BEFORE`):
   written as host functions `lift2_after_<pc>(ctx)` the lifted code calls with the registers in the context.
 
 ### 10.1 Probes: Value
 
 The game's counters that add the frame step cut to whole frames (the pick-up indicator, the water's ripples) take
-`hos_frame_whole` (`host/frame_whole.h`) in place of the cut: `probes.PROBES`.
+`hos_frame_whole` (`host/frame_whole.h`) in place of the cut: `probes.PROBES`, each naming its instruction and word
+(`fcvtzs w12, s0` at `0x80a88300`, `fcvtzs w9, s0` at `0x800675f8`).
 
 ### 10.2 At probes: the frame-rate and resolution patches
 
 A patch that needs a few registers is a row of `probes.AT`: `At(func, pc, word, fn, args, result)`, "after the
-instruction at `pc`: `result := fn(args...)`". Arguments are `xN`, `wN`, `sN` (the bits of Sn) or an `#K` constant; the
+instruction at `pc`: `result := fn(args...)`". Arguments are `xN`, `wN`, `sN` (Sn as a float) or an `#K` constant; the
 result is `xN`, `wN` (zero-extended), `sN` (the rest of Vn zero) or none. `Program.after` runs it after the
 instruction's own semantics, or when a BL / BLR returns; the values stay SSA values (no store and reload of the
 context around the call), and the call is never moved or removed, since the host function may read and write guest
@@ -474,6 +475,9 @@ is checked at lift time (another game version stops the lift).
 | render-target pool | `hos_oot_rt_pool_config`, `hos_oot_rt_heap_size`, `hos_oot_rt_heap_use` (after a BLR), `hos_oot_rt_rest` | `f_836ce9d0`, `f_83b7b340`, `f_80b72340` |
 | text speed | `hos_oot_text_time` (before an instruction: `At(..., before=True)`, on the edge into it, which must not be a branch target) | `f_80b1e140` |
 | native mouse camera | `hos_mouse_camera` (`host/mouse_native.c`) | `f_80644c80` |
+| widescreen | `hos_oot_wide_out` (x2), `hos_oot_wide_scene`, `hos_oot_wide_ratio`, `hos_oot_wide_projection_ratio` (x4), `hos_oot_wide_movie` | `f_81222ce0`, `f_83213890`, `f_804e48c0`, `f_834a5cc0`, `f_8006ec60`, `f_8025b910`, `f_8035a8c0`, `f_83b7c710` |
+| occlusion off (`HOOKSHOT_OCCLUSION_OFF=1`) | `hos_oot_occlusion_flag` (x6) | `f_811cc790` |
+| `HOS_BENCH`'s "in play" | `hos_oot_player_update` (Link updated, no map loading, no event playing) | `f_82c415e0` |
 
 The output size in nnMain (`f_81222ce0`): the probe names the instruction (`mov x8, #2560; movk x8, #1440, lsl #32`, then the store at +20):
 
@@ -482,28 +486,36 @@ At(0x81222ce0, 0x81222ee4, 0xf2c0b408, "hos_oot_output_size", (), "x8"),   # mov
 uint64_t hos_oot_output_size(void) { return hos_output_size(0) | (uint64_t)hos_output_size(1) << 32; }
 ```
 
-The Ctx-based C after an instruction (`probes.after_c`, `lift2_after_<pc>(ctx)`) stays where a patch reads or writes
-many registers or was written against the whole context: `oot_wide` (11 sites), `oot_jitter` (3), `oot_occlusion` (6),
-and the `SPLICE_AT` splices of `host/direct_*.c`. They are candidates for At rows later.
-### 10.3 Parked patches
+Every site names its instruction and word, and a word that differs stops the lift: the At and Value rows
+(`probes.at`, `probes.find`), `SPLICE_AT` and `SPLICE_BEFORE`, the C-after sites that remain (`oot_wide.install`,
+`oot_jitter.install`), and every ENTRY_HOOK (one whose address is not a lifted function, or a symbol the dump does not
+export, stops the build; `HOS_DBG=hooks` logs each hook's first call). Tolerances removed: the Value probes' match of the
+instruction's text (now pc and word); the "main+... holds ...: left out" paths of `oot_wide`, `oot_jitter` and
+`oot_occlusion` (a site skipped, the lift going on); ENTRY_HOOKs left out silently when their function was not lifted;
+the frame step's no-hook fallback in `host/nn_vi.c` (`hos_step_probe` unset: the rate up to the cap, as an unpatched
+game); the parked patches' "found 0 times" warnings with the patches themselves.
 
-Patches that were text edits of the deleted lifter's C and are not ported yet, so are not applied. Their code is
-kept in `nx2/oot_parked.py`, which nothing calls; the host
-functions they called stay. Each comes back as a probe (`nx2/lift2/probes.py`) or is dropped.
+The Ctx-based C after an instruction (`probes.after_c`, `lift2_after_<pc>(ctx)`) stays for:
+- `oot_wide`'s HUD (`f_80794330`, after `ldp q1, q4, [x2]`): it reads Q1 and a lane of Q4 and rewrites all of Q1; an At
+  row has no 128-bit arguments or results yet.
+- `oot_wide`'s save picture (`f_802a46e0`, before its `blr x8`): it rewrites four W registers at once (x1..x4); an At
+  row has one result.
+- `oot_jitter` (3 sites in `f_806dc520`): Q registers again. Nothing reaches it in this build: `hos_dlss_jitter_clip`
+  gives a jitter only when the renderer's options `HOS_OPT_DLSS_JITTER_W`/`_H` are set, which only the legacy Vulkan
+  back end's DLSS and FSR did; the direct back end answers no options. Proposed: removed like the parked patches, its
+  record in `docs/parked-patches.md`.
+- the `SPLICE_AT` / `SPLICE_BEFORE` splices of `host/direct_*.c` and `host/rt_slots.c` (`SPLICE_AFTER` in the host):
+  the depth copy's and job sync's retargets (x8 or x4 := f(x8)) and the mesh lists' record (x19 + x8) would be plain
+  At rows; the mesh system's (saves the registers and calls guest code), the layer-ahead's (reads the guest stack
+  through SP), the sky LUT's and assets' (x0..x2 and the Z flag) and `rt_slots`' (four registers, block state) need more
+  than one result or the whole context. They are the next At conversions.
+### 10.3 Removed patches
 
-| patch | function | what it did | switch | default | lost while parked |
-|---|---|---|---|---|---|
-| heart protection (`patch_life`) | `f_804bd8c0` | a hit on the player does not lower its life | Insert menu cheat, `HOS_OOT_PROTECT_HEARTS` | off | the cheat. Awkward as a probe: `hos_oot_is_player` and the cheats' host code take the context and read actors by raw offsets (`recomp_load*`) |
-| flight (`patch_movement`) | `f_82c415e0` | lifts the player and poses it in flight (`hos_oot_lift_player`, `hos_oot_flight_pose`) | Insert menu cheat (`HOS_OPT_CHEAT_FLIGHT`) | off | the cheat. Awkward: its host side builds a guest event on the guest stack (the context's SP) and calls game functions with the context |
-| flight rotation (`patch_flight_rotation`) | `f_806d2530` | the flight's turn (`hos_oot_flight_rotation`) | as flight | off | as flight (the same host code) |
-| free camera (`patch_view`) | `f_804e48c0` (the view loop's head) | `hos_oot_free_view`: the view follows the free camera | Insert menu cheat (`HOS_OPT_CHEAT_CAMERA`) | off | the free camera. Awkward: the host writes the view's matrix through the context by raw offsets; `f_804e48c0` also has widescreen C after an instruction |
-| the menus' mouse (`patch_menu_focus`, `patch_menu_tick`) | `f_802ed660`, `f_802f1380` | `hos_oot_menu_focus` / `hos_oot_menu_tick` first: the game's menus follow, click and scroll with the mouse (`host/oot_menu.c`) | none | **on** | the game's menus no longer follow the mouse until it is re-implemented. Awkward: `host/oot_menu.c` calls the game's own menu functions with the context (17 calls that save and restore it) and reads some 40 UI fields by offset through a range-checked `peek`; the probes themselves would be plain (`x0, x1, x30` and `x0`), the host side needs a rewrite onto typed structs and a context-free call of guest code |
-
-Ported since: the native mouse camera (`f_80644c80`, `hos_mouse_camera(x0)` after its first instruction, the camera an
-`OotPlayerCamera` struct) and text speed (`f_80b1e140`, `s0 := hos_oot_text_time(s0)` before its `tbnz w8, #4` at
-`0x80b1e1bc`, the fall-through edge past the block's checks), both At probes (section 10.2).
-
-The resolution and frame-rate patches are not parked: they are At probes (section 10.2).
+The patches that were text edits of the deleted lifter's C and did not fit the probe style are removed: the game
+menus' mouse entirely; heart protection, flight and its rotation, and the free camera with their host code (the Cheats
+page's actions, the live `!cheat`/`!warp` commands), their record in [parked-patches.md](parked-patches.md): what each
+did, the guest functions and fields, the guest calls, the logic as pseudo-code, what a probe would need. The native
+mouse camera and text speed came back as At rows (section 10.2).
 
 ## 11. Polls, SVC, traps, setjmp
 
