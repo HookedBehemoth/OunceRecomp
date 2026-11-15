@@ -1230,14 +1230,20 @@ present-lifter C or runtime (`a64_suyu.*`, `a64_fpx.h`, `code_*.c` of an earlier
 Proof:
 - `tests/test_lift2_nolift1.py` (no dump): a synthetic program discovered, lifted, tabled and run through `a64_icall`
   and `a64_lookup` with the generated runtime; none of the present lifter is loaded.
-- The whole game (worktree, 14 GB scope): without the trap switch the lift stops ("owns 57 functions"); with it the
-  lift takes 85 s of work, the build links (313 MB, 0 kept on the present lifter), and the game stops at its first
-  owned function, nnMain (0x81222ce0, owned for the output-size patch). It boots once the owned count is zero.
+- The whole game at 2fae7ef (the present lifter owns nothing there): the lift takes 88 s and writes only the tables,
+  the image's C and `functions.txt`; the build links (314 MB) with no present-lifter C, header or runtime (no
+  `code_*.c`, no `a64_suyu.*`/`a64_fpx.h`, no `recomp_fpe_*` symbol); smoke kokiri PASS twice (worst distance 2),
+  the 40 s title boot is right; the benches stall in "messages waiting" exactly as the build with the present lifter
+  does at 2fae7ef (both runs never reach their scene: a regression of native-vk, not of this mode).
+- Found on the way: host/hos_thread.c called `recomp_cntpct` with only the present lifter's `a64_suyu.h` declaring it;
+  without that header the call was implicit and the 64-bit counter came back cut to an int (an SDK thread's
+  `svcBreak` about a minute in). It is declared in `a64.h` now, and the host's code fails on a call without a
+  declaration (`-Werror=implicit-function-declaration`). `nx2/oot_wide.py`'s C called `a64_vset64`, the present
+  lifter's FP header's: it sets the register itself now.
+- `HOOKSHOT_LIFT1` defaults to 0 (the flip, its own commit): the same checks pass with no variable set.
 
-What remains before the present lifter can go: the 57 owned functions (the patches of `nx2/oot_patches.py` that are
-not probes yet, the two SPLICE_AFTERs after a TBZ and a BLR, the C after an instruction once
-`mixed.edited_functions` stops counting it, the one function lift 2 cannot take: a word it does not decode). Then
-the deletion list, each with what replaces it:
+What remained before the present lifter could go, the functions it owned, went with the FP agent's ports (2fae7ef:
+none owned). Then the deletion list, each with what replaces it:
 
 | delete | replaced by |
 |---|---|
