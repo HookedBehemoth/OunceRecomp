@@ -24,11 +24,16 @@ Every item must stay correct for these cases:
 2. **Pair deletion.** Delete the save and restore pairs of full-summary functions outside the frame readers'
    functions. Throws are fatal, so no unwinder reads the saves. The guest stack then no longer holds what a debugger,
    the stall dump or a `longjmp` buffer expects. Needs a verification run.
-3. **The fiber functions and unaudited NVN exports read every register** because they declare `clobbers(...)`. That
-   widens the inputs of about 430 callers and demotes some. A declaration of what the fiber switch really reads
-   removes it.
+3. **The fiber functions read every register** because they declare `clobbers(...)`. That widens the inputs of their
+   callers and demotes some. A declaration of what the fiber switch really reads removes it.
 4. **Path-sensitive liveness** in the summaries would remove most demotions for temporary registers live at entry or
    after a call; the examples read are on paths that correlated branches make infeasible.
+5. **Typed prototypes for host-implemented functions.** Every call of an `HLE` or `NV` function counts as reading
+   `x0`-`x8`; a typed prototype, as `PATCH_FUNC` has, would say what each reads.
+6. **A record for NVN procs.** A row with `guest(computed)` counts as reading every register because a proc's facts are
+   unknown; a record per NVN proc would remove that.
+7. **Register-passing prototypes.** Passing arguments and results in registers instead of the context is the step
+   expected to change speed. An earlier attempt is paused (below).
 
 Sources:
 
@@ -78,10 +83,17 @@ guaranteed. First step: the leaf subset, on/off.
   already recovers it.
 - **NEON gaps.** The saturating shifts by register on 8-bit and 16-bit lanes need widening; SHA-256 needs a
   per-function `+sha` feature with a CPUID check. First step: whether the sites are hot.
-- **STLR as a release store** and **removing the guest-address path**: see the constraints table for their
-  experiments.
+- **STLR as a release store**: see the constraints table for its experiment.
 - **`nx2/adr_entries.py` pairs an ADRP with any ADD of the register within four instructions**, even when the register
   is written in between, which adds a few dozen false entries. Harmless so far; `code_ptrs.py` pairs correctly.
+- **Remove the old code-pointer resolver path** once a long play session logs zero guest-address calls (see the
+  constraints table).
+- **The null-call skip in the runtime's call-miss handler** (`a64_call_miss`, `host/hos_hostcall.c`) exists for a game
+  site nobody has identified. Find the site and patch it there, or remove the skip.
+- **The host reads the caller's frame chain** in `pool_creation_key` (`host/nvn_native.c`), and the render-target slot
+  family key hashes the caller's return address (`host/rt_slots.c`). Both tie the host to the guest's frames and return
+  addresses; a row at the calling site would say it explicitly.
+- **Split `host/`** into the OS layer, the renderer's host side and a per-game folder.
 - **Build.** `-fsplit-machine-functions` with a profile, hot and cold wrappers, and 2 MB text pages for the lifted code.
   None measured.
 

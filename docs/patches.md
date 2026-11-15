@@ -12,12 +12,12 @@ host function's prototype. The authoritative description of every macro, mode an
 
 | To do this | Declare | Needs a new lift |
 |---|---|---|
-| Run host code after, before, or instead of one instruction | `PATCH_AT(pc, word(W), mode, result, fn, operand...) { ... }`, plus `PATCH_AT_SITE(...)` for further sites | No |
+| Run host code after, before, or instead of one instruction, including an indirect call | `PATCH_AT(pc, word(W), mode, result, fn, operand...) { ... }`, plus `PATCH_AT_SITE(...)` for further sites | No |
 | Watch every call of a function without changing it | `PATCH_AT` at the function's entry with mode `before` and result `none` | No |
 | Replace a guest function | `PATCH_FUNC(addr, word(W), body(H), aapcs, result, fn, [orig,] [guest(...),] operand...) { ... }` | No |
 | Replace a function the image exports by name | `PATCH_FUNC_SYM(symbol, aapcs, result, fn, ...) { ... }` | No |
 | Implement an SDK function the game imports | `HLE(symbol, effect...) { ... }` | Yes |
-| Answer an SDK function with a constant | `PATCH_ANSWER(symbol, value, "why");` | Yes |
+| Answer an SDK function with a constant (no host code: each direct call becomes the constant) | `PATCH_ANSWER(symbol, value, "why");` | Yes |
 | Implement an NVN proc | `NV(name, effect...) { ... }` in `host/nvn_native.c` | No |
 
 A few real declarations, one per kind:
@@ -70,7 +70,7 @@ PATCH_ANSWER(_ZN2nn3aoc17CountAddOnContentEv, 0, "0: no add-on content");
 To see what a declaration costs, run `check <file:line>`, or `check -` with a proposed declaration on standard input.
 It recomputes the summaries without the declaration and lists the functions and call sites whose kept registers
 change. It takes about two minutes and several GB of memory, so run it like any other heavy job. `report` prints the
-local cost of every declaration, costliest first, in about half a minute.
+local cost of every declaration, costliest first, in about half a minute, and each answer's direct call sites.
 
 ## Rules the scanner and the build enforce
 
@@ -86,6 +86,17 @@ local cost of every declaration, costliest first, in about half a minute.
   changes what its function preserves.
 - The build compares the compiled host's declarations with the scan. A declaration that one of them sees and the other
   does not stops the build.
+
+## Patch an indirect call
+
+To change what a BLR (or a BR that is a tail call) does, put an `instead` row on that instruction. Pass the target
+register as an operand, and assert in the host function that it is the proc you expect. To keep the original behavior,
+call the target through `guest_call`, declared with `guest(computed)`. A row never rewrites a code pointer, and no
+host-call slot is handed to the game for a patch. `host/direct_job_sync.c` and `host/direct_depth_copy.c` are worked
+examples.
+
+`guest(computed)` counts as reading every register, so such a row costs more than one that names its guest callees;
+`report` shows it.
 
 ## What the host function gets
 

@@ -27,7 +27,7 @@ new to the code.
 ## The renderer
 
 - [Renderer docs](direct/README.md): the direct back end and what we know about the game's GPU work.
-- [Direct back end plan](direct-backend-plan.md): the renderer's open work.
+- [Direct back end plan](direct-backend-plan.md): the rules every renderer change keeps, and its open work.
 
 ## Records and guides
 

@@ -45,8 +45,8 @@ versioned interface in `gpu/api/vk_api.h`. The back end replays them on Vulkan 1
 memory at the guest address, the game's SM86 shader programs go through a fork of Eden's shader recompiler to SPIR-V,
 and task and mesh programs use `VK_EXT_mesh_shader`.
 
-The renderer's design, rules and open problems are in the [direct back end plan](direct-backend-plan.md) and the
-[renderer docs](direct/README.md).
+The renderer's design is in [the back end's architecture](direct/architecture.md), its rules and open work in the
+[direct back end plan](direct-backend-plan.md), and the rest in the [renderer docs](direct/README.md).
 
 ## Rules that hold everywhere
 

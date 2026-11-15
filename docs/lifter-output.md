@@ -65,6 +65,12 @@ thread, and nothing depends on lifted code calling into the host regularly.
 - **PLT stubs** are resolved: a call of a stub calls its target.
 - **setjmp callers** are called through a host stub that saves a host `setjmp`. A guest `longjmp` returns there and
   resumes the caller at the setjmp return address (`host/hos_setjmp.c`).
+- **A BL to an answered function** (`PATCH_ANSWER`) makes no call: `x0` gets the answer and `x30` the return
+  address, and nothing else changes. A tail branch to one returns with the answer in `x0`. An indirect call reaches a
+  small lifted function that does the same.
+- **A BL to an import the host lacks** is a call that never returns: the stub stops the game, naming the function.
+- **An `instead` row** can replace a BL, a BLR, or a BR that is a tail call; the row's host function runs in its
+  place ([Write a patch](patches.md#patch-an-indirect-call)).
 - **Calls of host code** follow the host's declarations. A function replaced with `PATCH_FUNC` reads its declared
   operands and writes its result; an `HLE` or `NV` replacement keeps `x19`-`x29` and SP unless its declaration says
   `clobbers(...)`. See [Write a patch](patches.md).
@@ -78,7 +84,7 @@ Code pointers are host function pointers. The lifter translates them where they 
 - Where the code forms a function's address with `ADR` or `ADRP`+`ADD`, the lifter emits the address of `f_<entry>`.
   The build stops if the number of translated sites differs from the census, or if code forms an entry's address any
   other way.
-- Host functions handed to the game are host pointers too.
+- The NVN procs the host hands the game are host pointers too.
 
 A BLR tests whether the target's high 32 bits are set. If they are, it calls the target directly. Otherwise it takes
 the guest-address path: the runtime looks the address up in the function table and counts it. The host logs
