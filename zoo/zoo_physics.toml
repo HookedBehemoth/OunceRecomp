@@ -2,7 +2,7 @@
 # their shards and rupees fall and bounce. Columns of pots dropped from 1 to 9 m keep the bodies moving for the first
 # 0.7 s of the scene (measured). Placed rupees, hearts, rocks, boxes and items stay where they are put (with or without
 # IsPhysicsStable): nothing found yet falls and settles whole. The three cloth carriers are stepped by Havok Cloth every
-# frame (measured in Hyrule Field with HOS_DBG=havok: 3 more cloth steps a frame, +0.65 ms), but their cloth does not
+# frame (measured in Hyrule Field: 3 more cloth steps a frame, +0.65 ms), but their cloth does not
 # move on screen there or here.
 base = "SageRoom"
 start = ""

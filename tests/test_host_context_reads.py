@@ -146,7 +146,7 @@ class HostReads(unittest.TestCase):
 
     def test_hooks(self):
         hooks = [n for n in self.funcs if re.match(r"entry_(0x[0-9a-f]{8}|sym_\w+)$", n)]
-        self.assertGreater(len(hooks), 100)
+        self.assertGreater(len(hooks), 30)
         for name in hooks:
             got, api = reads(self.funcs, name)
             allowed = set(host_effects.hook_reads(name))

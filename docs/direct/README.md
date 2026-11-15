@@ -16,7 +16,7 @@ The game
 - [terrain-texels.md](terrain-texels.md): terrain tiles and the other CPU texel paths.
 - [task-mesh.md](task-mesh.md): the game's task and mesh shaders.
 - [movie-player.md](movie-player.md): the movie player, its frame chooser, the NDVE network and how the movie file reaches it.
-- [havok.md](havok.md): how the physics, cloth and AI work reaches Havok, its cost per frame (`HOS_DBG=havok`), its kernels.
+- [havok.md](havok.md): how the physics, cloth and AI work reaches Havok, its kernels.
 
 The back end
 
