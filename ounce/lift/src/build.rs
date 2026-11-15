@@ -17,12 +17,16 @@ fn is_term(t: &str) -> bool {
 /// what lifting one function needs to know (build_ir.Program, for one function: the export's facts)
 pub struct Prog<'a> {
     pub entry: u64,
-    pub body: HashSet<u64>,
-    pub entries: HashSet<u64>,
-    pub jt: HashMap<u64, Vec<u64>>,
-    pub jt_index: Vec<(u64, u64, u32, u32, Vec<u64>)>,
+    /// the body's pcs, ascending
+    pub body: &'a [u64],
+    /// the body's pcs that are function entries, ascending
+    pub entries: &'a [u64],
+    /// by br
+    pub jt: &'a [(u64, Vec<u64>)],
+    pub jt_index: &'a [(u64, u64, u32, u32, Vec<u64>)],
     pub code_targets: &'a HashSet<u64>,
-    pub code_sites: HashMap<u64, (u64, Option<u64>)>,
+    /// by pc
+    pub code_sites: &'a [(u64, u64, Option<u64>)],
     pub probes: HashMap<u64, &'a ValueRow>,
     pub before: HashMap<u64, Vec<&'a AtRow>>,
     pub after: HashMap<u64, Vec<&'a AtRow>>,
@@ -36,12 +40,12 @@ impl<'a> Prog<'a> {
     pub fn new(f: &'a Func, code_targets: &'a HashSet<u64>, part: &'a Part, omit: bool) -> Prog<'a> {
         let mut p = Prog {
             entry: f.entry,
-            body: f.pcs.iter().copied().collect(),
-            entries: f.body_entries.iter().copied().collect(),
-            jt: f.jt.iter().cloned().collect(),
-            jt_index: f.jt_index.clone(),
+            body: &f.pcs,
+            entries: &f.body_entries,
+            jt: &f.jt,
+            jt_index: &f.jt_index,
             code_targets,
-            code_sites: f.code_sites.iter().map(|&(pc, e, page)| (pc, (e, page))).collect(),
+            code_sites: &f.code_sites,
             probes: f.values.iter().map(|v| (v.pc, v)).collect(),
             before: HashMap::new(),
             after: HashMap::new(),
@@ -69,7 +73,18 @@ impl<'a> Prog<'a> {
     }
     /// a branch to t stays in the function (a goto), or leaves it (a tail call)
     fn inside(&self, t: u64) -> bool {
-        self.body.contains(&t) && (t == self.entry || !self.entries.contains(&t))
+        self.in_body(t) && (t == self.entry || self.entries.binary_search(&t).is_err())
+    }
+    fn in_body(&self, pc: u64) -> bool {
+        self.body.binary_search(&pc).is_ok()
+    }
+    /// the jump table's targets of the BR at pc
+    fn jt(&self, pc: u64) -> Option<&'a [u64]> {
+        self.jt.binary_search_by_key(&pc, |r| r.0).ok().map(|k| &self.jt[k].1[..])
+    }
+    /// (entry, page) of the code pointer site at pc
+    fn code_site(&self, pc: u64) -> Option<(u64, Option<u64>)> {
+        self.code_sites.binary_search_by_key(&pc, |r| r.0).ok().map(|k| (self.code_sites[k].1, self.code_sites[k].2))
     }
 }
 
@@ -116,18 +131,18 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
         b.set(x(17), t);
         let tail = prog.bound(prog.callee(plt.target)).tail;
         fun.bm(e).term = Some(Term::Tail(tail));
+        fun.link();
         finish(&mut fun);
         return fun;
     }
-    let body = &prog.body;
     let mut exits: Vec<BlockId> = Vec::new();
 
     // the BR's table index read at its load: BR -> (block, value)
     let mut index_load: HashMap<u64, (u64, u32, u32)> = HashMap::new();
-    for (br, load, reg, opt, _) in &prog.jt_index {
+    for (br, load, reg, opt, _) in prog.jt_index {
         let (br, load) = (*br, *load);
-        if body.contains(&br)
-            && body.contains(&load)
+        if prog.in_body(br)
+            && prog.in_body(load)
             && !(load..br + 4).step_by(4).any(|q| {
                 prog.probes.contains_key(&q) || prog.before.contains_key(&q) || prog.after.contains_key(&q)
             })
@@ -137,22 +152,27 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
     }
     let mut index_at: HashMap<u64, (BlockId, ValueId)> = HashMap::new();
     let insns: Vec<Insn> = words.iter().map(|&w| decode(w).expect("decode")).collect();
-    let mut leaders: HashSet<u64> = HashSet::from([entry]);
+    // (a block starts at each instruction marked: a branch target in the body, the one after a branch)
+    let mut leader = vec![false; pcs.len()];
+    let mut mark = |pc: u64| {
+        if let Ok(k) = pcs.binary_search(&pc) {
+            leader[k] = true;
+        }
+    };
+    mark(entry);
     for (k, &pc) in pcs.iter().enumerate() {
         let i = &insns[k];
         let t = i.enc.template;
         if is_term(t) {
             if let Some(tg) = target(i, pc) {
-                if body.contains(&tg) {
-                    leaders.insert(tg);
-                }
+                mark(tg);
             }
             if t == "br" {
-                if let Some(ts) = prog.jt.get(&pc) {
-                    leaders.extend(ts.iter().filter(|x| body.contains(x)));
+                for &x in prog.jt(pc).unwrap_or(&[]) {
+                    mark(x);
                 }
             }
-            leaders.insert(pc + 4);
+            mark(pc + 4);
         }
     }
     fun.block(BKey::Pc(entry));
@@ -188,7 +208,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
     let mut cur: Option<BlockId> = None;
     let mut b = Builder::new(&mut fun);
     for (k, &pc) in pcs.iter().enumerate() {
-        if leaders.contains(&pc) || cur.is_none() {
+        if leader[k] || cur.is_none() {
             let nxt = b.f.block(BKey::Pc(pc));
             if let Some(c) = cur {
                 if b.f.b(c).term.is_none() {
@@ -217,7 +237,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             b.f.bm(c).term = Some(Term::Br(g));
         };
         if !is_term(t) {
-            let site = prog.code_sites.get(&pc).copied();
+            let site = prog.code_site(pc);
             let probe = prog.probes.get(&pc).copied();
             if let Some((_, Some(page))) = site {
                 if probe.is_none() {
@@ -252,7 +272,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
                 at_post(&mut b, row);
             }
-            if !body.contains(&(pc + 4)) {
+            if !prog.in_body(pc + 4) {
                 falls_out(&mut b, &mut exits);
                 cur = None;
             }
@@ -268,7 +288,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
                 at_post(&mut b, row);
             }
-            if !body.contains(&(pc + 4)) {
+            if !prog.in_body(pc + 4) {
                 falls_out(&mut b, &mut exits);
                 cur = None;
             }
@@ -286,7 +306,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
                     at_post(&mut b, row);
                 }
-                if !body.contains(&(pc + 4)) {
+                if !prog.in_body(pc + 4) {
                     falls_out(&mut b, &mut exits);
                     cur = None;
                 }
@@ -317,7 +337,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 cur = None;
                 continue;
             }
-            if !body.contains(&(pc + 4)) {
+            if !prog.in_body(pc + 4) {
                 falls_out(&mut b, &mut exits);
                 cur = None;
             }
@@ -333,7 +353,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             for row in prog.after.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
                 at_post(&mut b, row);
             }
-            if !body.contains(&(pc + 4)) {
+            if !prog.in_body(pc + 4) {
                 falls_out(&mut b, &mut exits);
                 cur = None;
             }
@@ -344,7 +364,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             b.op(Op::FlagsOut { always: false }, Ty::Void, &fl);
             b.op(Op::Svc(i.f("imm16")), Ty::Void, &[]);
             b.after_call();
-            if !body.contains(&(pc + 4)) {
+            if !prog.in_body(pc + 4) {
                 falls_out(&mut b, &mut exits);
                 cur = None;
             }
@@ -402,7 +422,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                     exits.push(blk);
                     blk
                 };
-                let mut targets: Vec<u64> = prog.jt.get(&pc).cloned().unwrap_or_default();
+                let mut targets: Vec<u64> = prog.jt(pc).unwrap_or(&[]).to_vec();
                 targets.sort();
                 targets.dedup();
                 let at = index_at.get(&pc).copied();
@@ -435,21 +455,23 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
         b.f.bm(c).term = Some(term);
         cur = None;
     }
-    drop(b);
+    fun.link();
     if fun.order.iter().any(|&bl| matches!(fun.b(bl).term, Some(Term::NoReturn(..)))) {
         // blocks only a noreturn call's return reached: gone
         let e = fun.entry_block();
-        let mut seen: HashSet<BlockId> = HashSet::from([e]);
+        let mut seen = vec![false; fun.blocks.len()];
+        seen[e.0 as usize] = true;
         let mut todo = vec![e];
         while let Some(bl) = todo.pop() {
-            for s in fun.b(bl).succs() {
-                if seen.insert(s) {
+            for &s in fun.succs(bl) {
+                if !seen[s.0 as usize] {
+                    seen[s.0 as usize] = true;
                     todo.push(s);
                 }
             }
         }
-        fun.retain_blocks(|bl| seen.contains(&bl));
-        exits.retain(|bl| seen.contains(bl));
+        fun.retain_blocks(|bl| seen[bl.0 as usize]);
+        exits.retain(|bl| seen[bl.0 as usize]);
     }
     if fun.written & (0xFu128 << FN) != 0 {
         let mut b = Builder::new(&mut fun);
@@ -496,8 +518,8 @@ fn reads(f: &Function, v: ValueId, prog: &Prog) -> (u128, u128) {
 /// the verification build's poison is not ported: the export is of the build without it)
 fn omit_stores(f: &mut Function, prog: &Prog) {
     let at_ret = (prog.own.results | CALLEE_SAVED) & REGS;
-    let blocks = f.order.clone();
-    let mut info: HashMap<BlockId, (u128, u128)> = HashMap::new();
+    let blocks = std::mem::take(&mut f.order);
+    let mut info = vec![(0u128, 0u128); f.blocks.len()];
     for &bl in &blocks {
         let (mut gen, mut kill) = (0u128, 0u128);
         for &v in f.b(bl).ops.iter().rev() {
@@ -516,24 +538,24 @@ fn omit_stores(f: &mut Function, prog: &Prog) {
                 kill = (kill | k) & !rd;
             }
         }
-        info.insert(bl, (gen, kill));
+        info[bl.0 as usize] = (gen, kill);
     }
-    let mut live_in: HashMap<BlockId, u128> = blocks.iter().map(|&b| (b, 0)).collect();
-    let live_out = |f: &Function, live_in: &HashMap<BlockId, u128>, bl: BlockId| -> u128 {
+    let mut live_in = vec![0u128; f.blocks.len()];
+    let live_out = |f: &Function, live_in: &[u128], bl: BlockId| -> u128 {
         match f.b(bl).term.as_ref().unwrap() {
             Term::Ret => at_ret,
             Term::Tail(_) | Term::IJump(..) | Term::NoReturn(..) | Term::Trap(..) => REGS,
-            _ => f.b(bl).succs().iter().fold(0, |o, s| o | live_in[s]),
+            _ => f.succs(bl).iter().fold(0, |o, s| o | live_in[s.0 as usize]),
         }
     };
     let mut changed = true;
     while changed {
         changed = false;
         for &bl in blocks.iter().rev() {
-            let (gen, kill) = info[&bl];
+            let (gen, kill) = info[bl.0 as usize];
             let li = gen | (live_out(f, &live_in, bl) & !kill);
-            if li != live_in[&bl] {
-                live_in.insert(bl, li);
+            if li != live_in[bl.0 as usize] {
+                live_in[bl.0 as usize] = li;
                 changed = true;
             }
         }
@@ -562,48 +584,47 @@ fn omit_stores(f: &mut Function, prog: &Prog) {
         keep.reverse();
         f.bm(bl).ops = keep;
     }
+    f.order = blocks;
 }
 
 /// the blocks whose terminator has an edge closing a cycle (back edges of a depth-first search from the entry, then
 /// from any block it did not reach)
 pub fn cycle_edges(f: &Function) -> Vec<BlockId> {
     let entry = f.entry_block();
-    let mut order = vec![entry];
-    order.extend(f.order.iter().copied().filter(|&b| b != entry));
-    let mut state: HashMap<BlockId, u8> = HashMap::new();
+    // (0 unvisited, 1 on the stack, 2 done)
+    let mut state = vec![0u8; f.blocks.len()];
     let mut out: Vec<BlockId> = Vec::new();
-    for root in order {
-        if state.contains_key(&root) {
+    let mut stack: Vec<(BlockId, usize)> = Vec::new();
+    for root in std::iter::once(entry).chain(f.order.iter().copied().filter(|&b| b != entry)) {
+        if state[root.0 as usize] != 0 {
             continue;
         }
-        state.insert(root, 1);
-        let mut stack: Vec<(BlockId, Vec<BlockId>, usize)> = vec![(root, f.b(root).succs(), 0)];
+        state[root.0 as usize] = 1;
+        stack.push((root, 0));
         while let Some(top) = stack.last_mut() {
             let blk = top.0;
-            if top.2 >= top.1.len() {
-                state.insert(blk, 2);
+            let Some(&nxt) = f.succs(blk).get(top.1) else {
+                state[blk.0 as usize] = 2;
                 stack.pop();
                 continue;
-            }
-            let nxt = top.1[top.2];
-            top.2 += 1;
-            match state.get(&nxt) {
-                Some(1) => {
+            };
+            top.1 += 1;
+            match state[nxt.0 as usize] {
+                1 => {
                     if out.last() != Some(&blk) {
                         out.push(blk);
                     }
                 }
-                None => {
-                    state.insert(nxt, 1);
-                    let s = f.b(nxt).succs();
-                    stack.push((nxt, s, 0));
+                0 => {
+                    state[nxt.0 as usize] = 1;
+                    stack.push((nxt, 0));
                 }
                 _ => {}
             }
         }
     }
-    let mut seen = HashSet::new();
-    out.retain(|b| seen.insert(*b));
+    let mut seen = vec![false; f.blocks.len()];
+    out.retain(|b| !std::mem::replace(&mut seen[b.0 as usize], true));
     out
 }
 

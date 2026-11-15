@@ -603,8 +603,10 @@ pub struct Module<'n> {
 }
 
 impl<'n> Module<'n> {
-    pub fn new(names: &'n Names, flags_out: bool) -> Module<'n> {
-        Module { names, body: Vec::new(), decls: HashSet::new(), defined: HashSet::new(), flags_out }
+    /// insns: the module's instructions, to size the text's buffer (about 256 bytes of text per instruction)
+    pub fn new(names: &'n Names, flags_out: bool, insns: usize) -> Module<'n> {
+        let body = Vec::with_capacity(insns * 256);
+        Module { names, body, decls: HashSet::new(), defined: HashSet::new(), flags_out }
     }
     pub fn add(&mut self, f: &Function, name: Sym) {
         emit_function(f, name, self);

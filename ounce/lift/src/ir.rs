@@ -8,6 +8,7 @@
 
 use crate::ty::{Ty, I1, I64};
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::num::NonZeroU32;
 
 /// a guest register variable: x0-x30 (0-30), sp (31), the flags n z c v (32-35), v0-v31 (36-67); its index is its
@@ -254,7 +255,6 @@ pub struct Block {
     pub ops: Vec<ValueId>,
     /// the block parameters in creation order
     pub params: Vec<(Var, ValueId)>,
-    param_of: [Option<ValueId>; NVARS],
     pub defs: [Option<ValueId>; NVARS],
     pub term: Option<Term>,
     pub preds: Vec<BlockId>,
@@ -268,7 +268,6 @@ impl Block {
             key,
             ops: Vec::new(),
             params: Vec::new(),
-            param_of: [None; NVARS],
             defs: [None; NVARS],
             term: None,
             preds: Vec::new(),
@@ -280,38 +279,12 @@ impl Block {
             BKey::Pc(p) | BKey::Exit(_, p) => p,
         }
     }
-    pub fn param(&self, v: Var) -> Option<ValueId> {
-        self.param_of[v as usize]
-    }
     fn add_param(&mut self, var: Var, v: ValueId) {
-        self.param_of[var as usize] = Some(v);
         self.params.push((var, v));
     }
     /// the block's label
     pub fn name(&self) -> BlockName {
         BlockName(self.key)
-    }
-    pub fn succs(&self) -> Vec<BlockId> {
-        match self.term.as_ref().expect("no terminator") {
-            Term::Br(b) => vec![*b],
-            Term::CondBr(_, a, b) => {
-                if a == b {
-                    vec![*a]
-                } else {
-                    vec![*a, *b]
-                }
-            }
-            Term::Switch(_, cases, def) => {
-                let mut out = vec![*def];
-                for (_, b) in cases {
-                    if !out.contains(b) {
-                        out.push(*b);
-                    }
-                }
-                out
-            }
-            _ => vec![],
-        }
     }
 }
 
@@ -339,12 +312,15 @@ pub struct Function {
     pub blocks: Vec<Block>,
     /// the live blocks in creation order
     pub order: Vec<BlockId>,
-    map: HashMap<BKey, BlockId>,
+    map: FxMap<BKey, BlockId>,
     /// guest variables some block writes (a bit per Var)
     pub written: u128,
-    consts: HashMap<CKey, ValueId>,
+    consts: FxMap<CKey, ValueId>,
     /// the calls of Op::Call and Op::RowIo
     pub calls: Vec<Call>,
+    /// every block's successors (link): succ[succ_at[b]..succ_at[b + 1]]
+    succ_at: Vec<u32>,
+    succ: Vec<BlockId>,
     /// writes FPCR: emitted strictfp (sem_fp)
     pub strict_fp: bool,
     /// target features (AES-NI, PCLMUL)
@@ -360,9 +336,11 @@ impl Function {
             args: Vec::new(),
             blocks: Vec::new(),
             order: Vec::new(),
-            map: HashMap::new(),
+            map: FxMap::default(),
+            succ_at: Vec::new(),
+            succ: Vec::new(),
             written: 0,
-            consts: HashMap::new(),
+            consts: FxMap::default(),
             calls: Vec::new(),
             strict_fp: false,
             target_features: Vec::new(),
@@ -412,6 +390,42 @@ impl Function {
         self.order.push(id);
         self.map.insert(key, id);
         id
+    }
+    /// the successors of every block from their terminators, in the order the passes visit them: a branch's target, a
+    /// conditional branch's two (one if equal), a switch's default then its cases' blocks, each once
+    pub fn link(&mut self) {
+        let n = self.blocks.len();
+        self.succ_at.clear();
+        self.succ.clear();
+        let mut seen = vec![u32::MAX; n];
+        for k in 0..n {
+            self.succ_at.push(self.succ.len() as u32);
+            let mut add = |s: BlockId, succ: &mut Vec<BlockId>| {
+                if seen[s.0 as usize] != k as u32 {
+                    seen[s.0 as usize] = k as u32;
+                    succ.push(s);
+                }
+            };
+            match &self.blocks[k].term {
+                Some(Term::Br(b)) => add(*b, &mut self.succ),
+                Some(Term::CondBr(_, a, b)) => {
+                    add(*a, &mut self.succ);
+                    add(*b, &mut self.succ);
+                }
+                Some(Term::Switch(_, cases, def)) => {
+                    add(*def, &mut self.succ);
+                    for &(_, b) in cases {
+                        add(b, &mut self.succ);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.succ_at.push(self.succ.len() as u32);
+    }
+    /// a block's successors (after link)
+    pub fn succs(&self, b: BlockId) -> &[BlockId] {
+        &self.succ[self.succ_at[b.0 as usize] as usize..self.succ_at[b.0 as usize + 1] as usize]
     }
     pub fn find(&self, key: BKey) -> Option<BlockId> {
         self.map.get(&key).copied()
@@ -509,9 +523,9 @@ impl<'f> Builder<'f> {
         }
         let v = if self.f.b(b).called {
             self.op(Op::RegLoad(var), var_type(var), &[])
-        } else if let Some(p) = self.f.b(b).param(var) {
-            p
         } else {
+            // (a block's first read of a register it has not written: a parameter; defs keeps it, and only a call,
+            // after which reads load, clears defs)
             let p = self.f.new_value(var_type(var), Op::Param(var), &[]);
             self.f.bm(b).add_param(var, p);
             p
@@ -715,26 +729,28 @@ pub fn fold(op: BinOp, a: u128, b: u128, w: u32) -> Option<u128> {
     })
 }
 
-/// predecessor lists, and the values each predecessor passes for its successors' parameters
+/// predecessor lists, and the values each predecessor passes for its successors' parameters (after link)
 pub fn finish(f: &mut Function) {
-    let order = f.order.clone();
-    for &b in &order {
+    for k in 0..f.order.len() {
+        let b = f.order[k];
         f.bm(b).preds.clear();
     }
-    for &b in &order {
-        for s in f.b(b).succs() {
+    for k in 0..f.order.len() {
+        let b = f.order[k];
+        for j in 0..f.succs(b).len() {
+            let s = f.succs(b)[j];
             f.bm(s).preds.push(b);
         }
     }
     let mut work: Vec<(BlockId, Var)> = Vec::new();
-    for &b in &order {
+    for &b in &f.order {
         for &(var, _) in &f.b(b).params {
             work.push((b, var));
         }
     }
     while let Some((b, var)) = work.pop() {
-        let preds = f.b(b).preds.clone();
-        for p in preds {
+        for k in 0..f.b(b).preds.len() {
+            let p = f.b(b).preds[k];
             if f.b(p).defs[var as usize].is_some() {
                 continue;
             }
@@ -753,6 +769,42 @@ pub fn finish(f: &mut Function) {
         }
     }
 }
+
+/// FxHash (rustc's): the maps keyed by small integers in one function's lift need no DoS-resistant hash
+#[derive(Default, Clone, Copy)]
+pub struct Fx(u64);
+impl Hasher for Fx {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for c in bytes.chunks(8) {
+            let mut w = [0u8; 8];
+            w[..c.len()].copy_from_slice(c);
+            self.write_u64(u64::from_le_bytes(w));
+        }
+    }
+    fn write_u8(&mut self, i: u8) {
+        self.write_u64(i as u64)
+    }
+    fn write_u16(&mut self, i: u16) {
+        self.write_u64(i as u64)
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(i as u64)
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    fn write_u128(&mut self, i: u128) {
+        self.write_u64(i as u64);
+        self.write_u64((i >> 64) as u64)
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64)
+    }
+}
+pub type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 
 #[cfg(test)]
 mod tests {

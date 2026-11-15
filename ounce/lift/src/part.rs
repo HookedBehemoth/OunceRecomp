@@ -18,7 +18,8 @@ pub struct Lifted {
 }
 
 pub fn lift_part(meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bool) -> Lifted {
-    let mut m = Module::new(&part.names, false);
+    let insns = part.functions.iter().map(|f| f.pcs.len()).sum();
+    let mut m = Module::new(&part.names, false, insns);
     let mut extra: Vec<u8> = Vec::new();
     let mut n_code = 0;
     let mut lifted = 0;
