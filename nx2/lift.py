@@ -33,9 +33,10 @@ import nso
 import nx_image
 import image as eden_image
 
-# HOOKSHOT_LIFT1=0 (milestone 19, step 4): no present lifter in the path, not even imported: lift 2's discovery, plan
-# and runtime tables only. Its functions must be none (nx2/lift2/owned.py), or HOOKSHOT_LIFT1_TRAP=1 makes each a trap.
-LIFT1 = os.environ.get("HOOKSHOT_LIFT1", "1") != "0"
+# No present lifter in the path, not even imported (the default since milestone 19): lift 2's discovery, plan and
+# runtime tables only. Its functions must be none (nx2/lift2/owned.py), or HOOKSHOT_LIFT1_TRAP=1 makes each a trap.
+# HOOKSHOT_LIFT1=1: the present lifter as before (until its deletion).
+LIFT1 = os.environ.get("HOOKSHOT_LIFT1", "0") != "0"
 if LIFT1:
     import insn
     import lift_fixes
