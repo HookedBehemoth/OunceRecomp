@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022]
+        os: [ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -59,32 +59,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y g++ clang spirv-tools
 
       # (the steps below all run when one before them failed, so one run shows every failure)
-      - name: Check Windows native source regressions
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        shell: cmd
-        run: |
-          @echo off
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-          if not exist "%VSWHERE%" (
-            echo Visual Studio locator not found.
-            exit /b 1
-          )
-          set "VSROOT="
-          for /f "usebackq delims=" %%i in (`call "%VSWHERE%" -latest -products * -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
-          if not defined VSROOT (
-            echo Visual Studio 2022 C++ tools not found.
-            exit /b 1
-          )
-          if not exist "%VSROOT%\Common7\Tools\VsDevCmd.bat" (
-            echo Visual Studio developer command prompt not found.
-            exit /b 1
-          )
-          call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
-          if errorlevel 1 exit /b 1
-          where cl
-          if errorlevel 1 exit /b 1
-          python -I -B tests/test_invalidate_vcore.py --cxx cl
-          if errorlevel 1 exit /b 1
       # (--strict: a check whose compiler, headers or package is missing here fails instead of being skipped)
       - name: Every test
         if: ${{ !cancelled() }}

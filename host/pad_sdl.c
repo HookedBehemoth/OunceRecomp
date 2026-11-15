@@ -408,7 +408,6 @@ static DWORD WINAPI pad_main(void *arg) {
         Sleep(4);
     }
 }
-#ifndef _WIN32
 int hos_display_owns_sdl(void);   /* host/posix/display_sdl.c */
 /* (linux) SDL also runs the window (host/posix/display_sdl.c), and its event queue is not for two threads. Polled
    from the window's thread, between its events. Two threads pumping it corrupted the heap once a controller was
@@ -419,7 +418,6 @@ void hos_sdl_pads_pump(void) {
     if (!state && pads_loaded) state = pads_start() ? 1 : -1;
     if (state > 0) pads_poll();
 }
-#endif
 
 /* The controllers' merged state (nn_hid.c): ORs their inputs in (1 << HOS_PAD_*), keeps the larger stick
    deflections; returns how many controllers SDL has open. Starts the SDL thread on the first call. */
@@ -431,14 +429,10 @@ int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
             hos_log("hid: no SDL beside the exe or on the system: only XInput controllers (Xbox pads) work");
             return 0;
         }
-#ifdef _WIN32
-        CreateThread(NULL, 0, pad_main, NULL, 0, NULL);
-#else
         if (hos_display_owns_sdl())
             InterlockedExchange(&pads_loaded, 1);   /* (the window's thread polls: hos_sdl_pads_pump) */
         else
             CreateThread(NULL, 0, pad_main, NULL, 0, NULL);   /* (no window: nothing else pumps SDL) */
-#endif
     }
     AcquireSRWLockShared(&state_lock);
     const int n = state_count;

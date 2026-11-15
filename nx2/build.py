@@ -27,7 +27,6 @@ Usage:  python -I nx2/build.py [--jobs 1] [--only 0,7] [--opt O1] [--no-polls] [
 """
 import argparse
 import concurrent.futures
-import ctypes
 import hashlib
 import json
 import re
@@ -44,7 +43,6 @@ import lifted_c
 import rtgen
 import toolchain
 import version
-import win_manifest
 
 NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
@@ -57,10 +55,11 @@ PGO = os.environ.get("RX_PGO", "")
 # (linux) Linux builds: an ELF executable and hookshot_direct.so, the Win32 calls of host/ on POSIX
 # (host/posix: its windows.h is found first), the window and sound on SDL2. HOOKSHOT_SYSROOT=<dir>: compile and link
 # against that root (the AppImage's: glibc 2.35, so the game runs on older systems than the one that built it).
-LINUX = not toolchain.windows()   # (hookshot: RX_TARGET=windows on Linux builds the Windows game, with llvm-mingw)
+if toolchain.windows():
+    raise SystemExit("build.py: the host is built for Linux only (RX_TARGET=windows is not supported)")
 POSIX = os.path.join(kit.HERE, "..", "host", "posix")
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
-EXE = "hookshot" if LINUX else "hookshot.exe"
+EXE = "hookshot"
 DIRECT_LIB = "hookshot_direct.so"
 
 
@@ -105,41 +104,18 @@ def check_backend_symbols(so):
 
 def target():
     """toolchain.native_target(), with the sysroot on Linux"""
-    return toolchain.native_target() + (["--sysroot=" + SYSROOT] if LINUX and SYSROOT else [])
+    return toolchain.native_target() + (["--sysroot=" + SYSROOT] if SYSROOT else [])
 
-
-def no_throttle(handle=None):
-    """(issue 87) Windows' power throttling (EcoQoS) slows a background window's processes to almost nothing on some machines: the
-    build sat at 0% CPU. Turned off for this process, or the one whose handle this is"""
-    if os.name != "nt":
-        return
-    import ctypes
-    class State(ctypes.Structure):
-        _fields_ = [("Version", ctypes.c_ulong), ("ControlMask", ctypes.c_ulong), ("StateMask", ctypes.c_ulong)]
-    k = ctypes.WinDLL("kernel32")
-    k.GetCurrentProcess.restype = ctypes.c_void_p
-    k.SetProcessInformation.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
-    s = State(1, 1, 0)   # (PROCESS_POWER_THROTTLING_EXECUTION_SPEED in the mask, off in the state)
-    try:
-        k.SetProcessInformation(ctypes.c_void_p(int(handle)) if handle else k.GetCurrentProcess(), 4, ctypes.byref(s), ctypes.sizeof(s))
-    except (OSError, ValueError, TypeError):
-        pass
 
 def HOT_ORDER():
     p = os.path.join(kit.WORK, "hot_order.txt")
     if not os.path.exists(p) or os.environ.get("RX_NO_ORDER"):
         return []
-    if LINUX:
-        return ["-Wl,--symbol-ordering-file=" + p, "-Wl,--no-warn-symbol-ordering"]
-    return [toolchain.link_opt("/order:@" + p.replace("\\", "/")), toolchain.link_opt("/ignore:4037")]
+    return ["-Wl,--symbol-ordering-file=" + p, "-Wl,--no-warn-symbol-ordering"]
 
 
-HOST_LIBS = ["-lpthread", "-ldl", "-lm"] if LINUX else \
-    ["-lwinhttp", "-luser32", "-lwinmm", "-ladvapi32", "-lole32", "-lshell32", "-lgdi32", "-ldbghelp"]
+HOST_LIBS = ["-lpthread", "-ldl", "-lm"]
 GPU = os.path.join(kit.HERE, "..", "gpu")
-# FFmpeg (libavcodec's VP8/VP9 decoders, swscale) for nn::codec's video decoders (host/nn_video.c): the static build
-# in the Eglantine clone's package cache
-FFMPEG = None   # (found in the CPM caches below, once cpm_dirs is defined)
 def tree_headers(*roots, skip=()):
     """Every header under these folders, as one dependency blob (suyu's headers sit in many folders); folders named
     in skip are left out"""
@@ -283,28 +259,14 @@ def prune_object_cache(now=None):
     return removed, freed, kept
 
 
-class MemoryStatus(ctypes.Structure):   # (Windows' MEMORYSTATUSEX, for GlobalMemoryStatusEx)
-    _fields_ = [("len", ctypes.c_uint32), ("load", ctypes.c_uint32)] + \
-               [(f, ctypes.c_uint64) for f in ("total", "avail", "pt", "pa", "vt", "va", "ve")]
-
-
-class ProcessMemory(ctypes.Structure):   # (Windows' PROCESS_MEMORY_COUNTERS, for GetProcessMemoryInfo)
-    _fields_ = [("cb", ctypes.c_uint32), ("faults", ctypes.c_uint32)] + \
-               [(f, ctypes.c_size_t) for f in ("peak_ws", "ws", "qpp", "qp", "qnpp", "qnp", "pf", "peak_pf")]
-
-
 # (what one compiler is counted at where its own need is not worked out: a hot piece (0.8-1.7 GB measured, -O2 and the profile),
 # and the compile countdown's guess of how many the free memory holds. About the median chunk's peak)
 COMPILER_MB = 1500
 
 
 def free_mb():
-    """The memory free now (MemAvailable on Linux, the available physical memory on Windows), in MB; None: not known"""
+    """The memory free now (MemAvailable), in MB; None: not known"""
     try:
-        if os.name == "nt":
-            m = MemoryStatus()
-            m.len = ctypes.sizeof(MemoryStatus)
-            return m.avail >> 20 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else None
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
@@ -331,54 +293,6 @@ def tree_rss(pid):
     return n
 
 
-class ProcessEntry(ctypes.Structure):   # (Windows' PROCESSENTRY32W, for CreateToolhelp32Snapshot)
-    _fields_ = [("size", ctypes.c_uint32), ("usage", ctypes.c_uint32), ("pid", ctypes.c_uint32), ("heap", ctypes.c_size_t),
-                ("module", ctypes.c_uint32), ("threads", ctypes.c_uint32), ("parent", ctypes.c_uint32), ("base", ctypes.c_long),
-                ("flags", ctypes.c_uint32), ("exe", ctypes.c_wchar * 260)]
-
-
-def tree_ws(pid):
-    """(windows) The working set in bytes of a process and the processes it started: llvm-mingw's clang.exe is a 5 MB driver, and the
-    memory is in the clang-23.exe it runs"""
-    k = ctypes.WinDLL("kernel32")
-    psapi = ctypes.WinDLL("psapi")
-    k.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
-    k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-    k.Process32FirstW.argtypes = k.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ProcessEntry)]
-    k.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-    k.OpenProcess.restype = ctypes.c_void_p
-    k.CloseHandle.argtypes = [ctypes.c_void_p]
-    psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(ProcessMemory), ctypes.c_uint32]
-    snapshot = k.CreateToolhelp32Snapshot(2, 0)   # (TH32CS_SNAPPROCESS)
-    if snapshot in (None, ctypes.c_void_p(-1).value):
-        return 0
-    children = {}
-    try:
-        e = ProcessEntry()
-        e.size = ctypes.sizeof(ProcessEntry)
-        more = k.Process32FirstW(snapshot, ctypes.byref(e))
-        while more:
-            children.setdefault(e.parent, []).append(e.pid)
-            more = k.Process32NextW(snapshot, ctypes.byref(e))
-    finally:
-        k.CloseHandle(snapshot)
-    total, seen, todo = 0, set(), [pid]
-    while todo:
-        p = todo.pop()
-        if p in seen:   # (Windows reuses ids: a parent id can name a newer process, and even loop)
-            continue
-        seen.add(p)
-        todo += children.get(p, [])
-        handle = k.OpenProcess(0x1000, 0, p)   # (PROCESS_QUERY_LIMITED_INFORMATION)
-        if handle:
-            c = ProcessMemory()
-            c.cb = ctypes.sizeof(ProcessMemory)
-            if psapi.GetProcessMemoryInfo(handle, ctypes.byref(c), c.cb):
-                total += c.ws
-            k.CloseHandle(handle)
-    return total
-
-
 def rss_mb(proc):
     """A running compiler's resident memory in MB (0: exited, not known, or not started yet)"""
     if proc is None:
@@ -387,8 +301,6 @@ def rss_mb(proc):
         # A retained Popen can outlive its driver while PID counters still remain.
         if proc.poll() is not None:
             return 0
-        if os.name == "nt":
-            return tree_ws(proc.pid) >> 20
         return tree_rss(proc.pid) >> 20
     except (OSError, ValueError, AttributeError, IndexError):
         return 0
@@ -416,17 +328,15 @@ class MemoryGate:
     """(issue 418) Compilers started by the memory there is, not only by --jobs: one per CPU thread ran PCs out of memory (the kernel
     stopped a compiler, or the whole build), and a count low enough for the biggest files and the PC's other programs left most of
     the threads idle. A compile starts when the memory free, less what the compilers running may still take on top of what they
-    hold now (mem_need), keeps its own need and HOOKSHOT_MEM_RESERVE_GB (default 1.5) free. The floor:
-    on Windows up to 4 (half the threads on smaller CPUs) always run, as Windows pages rather than fails (issues 502, 503, 511: 1-2
-    compilers on 16 GB PCs took hours); on Linux one (issue 531: Linux stops a compiler that does not fit, and it is compiled again
-    alone). The free memory is read again as compiles start and end, so a game or browser opened during the build makes later
+    hold now (mem_need), keeps its own need and HOOKSHOT_MEM_RESERVE_GB (default 1.5) free. The floor is one
+    (issue 531: Linux stops a compiler that does not fit, and it is compiled again alone). The free memory is read again as compiles start and end, so a game or browser opened during the build makes later
     compiles wait"""
 
     def __init__(self):
         self.cv = threading.Condition()
         self.running = {}   # (per-compile lease: [need, Popen or None]; one source can have several objects)
         self.reserve = float(os.environ.get("HOOKSHOT_MEM_RESERVE_GB") or 1.5) * 1024
-        self.floor = max(1, min(4, (os.cpu_count() or 2) // 2)) if os.name == "nt" else 1
+        self.floor = 1
 
     def enter(self, src):
         need = mem_need(src)
@@ -464,9 +374,6 @@ class MemoryGate:
 GATE = None   # (main's MemoryGate; None: compiles start as the jobs allow)
 
 
-FFMPEG = next((os.path.join(d, n) for d in [os.path.join(r, "ffmpeg") for r in cpm_dirs()] if os.path.isdir(d)
-               for n in sorted(os.listdir(d)) if os.path.isdir(os.path.join(d, n, "lib"))
-               and "linux" not in n.lower()), None)   # (hookshot: a cache with both systems' builds, cross-building)
 FFMPEG_LIBS = ("avcodec", "swscale", "swresample", "avutil")
 
 
@@ -487,18 +394,14 @@ def ffmpeg_linux():
         return None
 
 
-if LINUX:
-    FFMPEG_LX = ffmpeg_linux()
-    FFMPEG = None
+FFMPEG_LX = ffmpeg_linux()
 
 
 def ffmpeg_version_key():
     """The FFmpeg headers this build compiles against, so a host object from another major version is not reused.
     Codec numbers and struct layouts differ between them."""
     incs = []
-    if FFMPEG:
-        incs.append(os.path.join(FFMPEG, "include"))
-    if LINUX and FFMPEG_LX:
+    if FFMPEG_LX:
         incs += [f[2:] for f in FFMPEG_LX[0] if f.startswith("-I")]
     incs.append("/usr/include")
     for inc in incs:
@@ -697,7 +600,6 @@ def compile_one(job):
     t = time.time()
     try:
         with subprocess.Popen([cc] + fl + ["-c", src, "-o", obj], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as p:
-            no_throttle(getattr(p, "_handle", None))
             if GATE:
                 GATE.started(lease, p)
             out, err = p.communicate()
@@ -775,9 +677,9 @@ def main():
         if a.standalone:
             srcs += [os.path.join(gen, f) for f in ("a64_stubs.c", "hos_image.c", "nvn2_exports.c")]
             host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c") and (f != "pgo_rt.c" or PGO == "gen")
-                               and not (LINUX and f in ("display.c", "mf_av1.c")))
-            if LINUX:   # (the window on SDL2, the Win32 calls on POSIX, no Media Foundation)
-                host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
+                               )
+            host_srcs += [  # (the window on SDL2, the Win32-named calls on POSIX)
+                os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
         else:
             srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
     if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)
@@ -821,19 +723,17 @@ def main():
         fp(deps), fp(norm(fl)), fp(norm(hot_fl)), code.hexdigest()[:10],
         sum(1 for x in srcs if os.path.basename(x).startswith("code_"))), flush=True)
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
-    host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + \
+    host_fl = target() + CPU + ["-I" + POSIX, "-D_GNU_SOURCE"] + \
         ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK + \
         ["-Werror=implicit-function-declaration"]   # (a call without a declaration returns an int: a 64-bit value cut)
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
-    if LINUX:
-        host_deps += b"".join(open(os.path.join(POSIX, f), "rb").read() for f in sorted(os.listdir(POSIX)) if f.endswith(".h"))
+    host_deps += b"".join(open(os.path.join(POSIX, f), "rb").read() for f in sorted(os.listdir(POSIX)) if f.endswith(".h"))
     host_deps += b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
     host_deps += ffmpeg_version_key()
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
-              (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
-              (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
+              (FFMPEG_LX[0] if FFMPEG_LX else []) +
               ([stamp_def] if os.path.basename(s) == "hos_main.c" else []), host_deps) for s in host_srcs]
     # libopus 1.5.2 (third_party/opus, from TOTKPort): nn::codec's hardware Opus decoder (host/nn_codec.c)
     # (hookshot: built for the same CPU target as the rest (CPU), so its float code can be vectorized where the target has
@@ -850,7 +750,7 @@ def main():
     vk_headers = header_package("vulkanheaders", "vulkan/vulkan.h", "HOOKSHOT_VULKAN_HEADERS")
     spirv_headers = header_package("spirv-headers", "spirv/unified1/spirv.h", "HOOKSHOT_SPIRV_HEADERS")
     vma_headers = header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "HOOKSHOT_VMA_HEADERS")
-    build_direct = a.standalone and not a.only and LINUX
+    build_direct = a.standalone and not a.only
     if build_direct and not (vk_headers and spirv_headers and vma_headers):
         missing = [n for n, p in (("Vulkan", vk_headers), ("SPIR-V", spirv_headers), ("VMA", vma_headers)) if not p]
         print("no headers for %s (missing %s). Set RX_CPM to a CPM cache, or HOOKSHOT_VULKAN_HEADERS / "
@@ -1002,10 +902,10 @@ def main():
         lib = os.path.join(out, "hookshot_game.lib")
         subprocess.run([toolchain.lld_link(), "/lib", "/out:" + lib, "@" + rsp], check=True)
         print("wrote %s (%d objects, %d MB)" % (lib, len(objs), os.path.getsize(lib) >> 20))
-    if a.standalone and not a.only and not direct_only and LINUX:
+    if a.standalone and not a.only and not direct_only:
         exe = os.path.join(out, EXE)   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()
-        # (--export-dynamic-symbol: the window's state, which the Vulkan back end's own Win32 calls read by name)
+        # (--export-dynamic-symbol: the window's state, which host/posix/win32_posix.c looks up by name)
         r = subprocess.run([cc] + target() + ["-fuse-ld=lld", "-o", exe, "-Wl,-Map=" + exe + ".map", "-Wl,--gc-sections",
                                               "-Wl,--export-dynamic-symbol=hos_posix_*", "@" + rsp] + HOT_ORDER() +
                            (["-fprofile-instr-generate"] if PGO == "gen" else []) +
@@ -1024,44 +924,6 @@ def main():
         if sdl and os.path.exists(sdl):
             import shutil
             shutil.copyfile(sdl, os.path.join(out, "libSDL2-2.0.so.0"))
-    elif a.standalone and not a.only and not direct_only:
-        exe = os.path.join(out, "hookshot.exe")   # (+ hookshot.map: crash offsets -> f_<guest address>)
-        t = time.time()
-        r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
-                           ["-o", exe, toolchain.link_opt("/map:" + exe[:-4] + ".map"), toolchain.link_opt("/stack:8388608"), "@" + rsp] + HOT_ORDER() + HOST_LIBS +
-                           ([toolchain.link_opt("/nodefaultlib:clang_rt.profile.lib")] if PGO == "gen" else []) +
-                           ([os.path.join(kit.WORK, "hookshot.res")] if os.path.exists(os.path.join(kit.WORK, "hookshot.res")) else []) +   # (nx2/make_icon.py)
-                           [win_manifest.write(os.path.join(out, "hookshot_manifest.res"))] +   # (UTF-8 paths: nx2/win_manifest.py)
-                           ([toolchain.link_opt("/subsystem:windows"), toolchain.link_opt("/entry:mainCRTStartup")] if os.environ.get("RX_RELEASE") == "1" else []) +   # (no console window)
-                           ([os.path.join(FFMPEG, "lib", l + ".lib") for l in ("avcodec", "swscale", "swresample", "avutil")] +
-                            ["-lbcrypt", "-lmfplat", "-lmfuuid", "-lstrmiids", "-lole32"] if FFMPEG else []) +
-                           (["-lc++", "-lunwind"] if toolchain.mingw() else []),   # (llvm-mingw: the C++ parts' runtime, linked in; MSVC's comes by itself)
-                           capture_output=True, text=True)
-        undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
-        if r.returncode:
-            print("link FAILED (%.0fs), %d undefined symbols" % (time.time() - t, len(undefined)))
-            print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
-            return 1
-        print("linked %s: %d MB (%.0fs)" % (exe, os.path.getsize(exe) >> 20, time.time() - t))
-        # (hookshot) a shared FFmpeg's DLLs beside it (an LGPL shared build, as cross builds find: the static one needs none)
-        for l in FFMPEG_LIBS if FFMPEG and os.path.isdir(os.path.join(FFMPEG, "bin")) else ():
-            import shutil
-            for f in os.listdir(os.path.join(FFMPEG, "bin")):
-                if f.startswith(l + "-") and f.endswith(".dll"):
-                    shutil.copyfile(os.path.join(FFMPEG, "bin", f), os.path.join(out, f))
-        # (hookshot) SDL2.dll beside it: host/pad_sdl.c's controllers (DualSense, DualShock 4, Switch Pro ...)
-        sdl = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL2.dll")
-        sdl_dst = os.path.join(out, "SDL2.dll")
-        if os.path.exists(sdl) and (not os.path.exists(sdl_dst) or os.path.getsize(sdl_dst) != os.path.getsize(sdl)):
-            import shutil
-            shutil.copyfile(sdl, sdl_dst)
-        # (SDL2.dll is sdl2-compat: the SDL2 calls on SDL3, whose controller support is current (a Steam Controller user's
-        # report). It loads SDL3.dll from beside it)
-        sdl3 = os.path.join(kit.HERE, "..", "third_party", "sdl2", "SDL3.dll")
-        sdl3_dst = os.path.join(out, "SDL3.dll")
-        if os.path.exists(sdl3) and (not os.path.exists(sdl3_dst) or os.path.getsize(sdl3_dst) != os.path.getsize(sdl3)):
-            import shutil
-            shutil.copyfile(sdl3, sdl3_dst)
     if direct_jobs:   # (hookshot_direct.so beside the exe, loaded by host/rx_backend.c)
         ddll = os.path.join(out, DIRECT_LIB)
         drsp = os.path.join(out, "direct_objs.rsp")

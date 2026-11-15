@@ -1,6 +1,5 @@
-"""The memory gate reads what a compiler holds, not what its driver holds (nx2/build.py rss_mb): llvm-mingw's clang.exe is a small
-driver that runs clang-23.exe as its child. Counting the driver alone counted every running compiler's whole need again on top of
-the memory it already held, and Windows builds stayed at the floor's 4 compilers.
+"""The memory gate reads what a compiler holds, not what its driver holds (nx2/build.py rss_mb): a compiler driver that runs the
+compiler as its child (or ccache) is counted with its children, each once.
 
 python -I -B tests/test_mem_gate_children.py
 """

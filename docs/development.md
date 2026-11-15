@@ -233,7 +233,6 @@ beside them are listed at the end, under Undocumented, with where they are read.
 | `HOS_INPUT_RECORD` | `<dir>`: the save folder copied to `<dir>/user` at the start, and every pad state the game reads written to `<dir>/input.rec` (on each change and once a second) |
 | `HOS_INPUT_REPLAY` | `<dir>/input.rec`: its states instead of the devices' until its last line |
 | `HOS_INPUT_REPLAY_KEY` | what a replayed line is matched by: `read` (the default: the game's pad reads), `present`, or `ms` (wall time) |
-| `HOS_XINPUT` | (set) poll XInput even when SDL has open controllers |
 | `HOS_NO_SDL` | (set) controllers are not read through SDL |
 | `HOS_HD_RUMBLE` | `0`: no HD rumble |
 | `HOS_MOUSE_NATIVE` | `<0|1>` over the menu: native mouse look |
@@ -544,7 +543,7 @@ the Discord rich presence reads `discord_app_id`.
 |---|---|
 | `docs/` | `design.md` (architecture, MKW's lessons as rules, testing), `direct-backend-plan.md` (the renderer), `direct/` (what we know about the game and the back end) |
 | `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths); no player builder for now: [builder-notes.md](builder-notes.md) |
-| `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux |
+| `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has its Win32-named calls on Linux (the host is Linux-only; a narrow host API over SDL replaces them later) |
 | `gpu/direct/` | the direct back end (`hookshot_direct.so`), with its fork of Eden's shader recompiler and sirit in `eden/` |
 | `gpu/api/` | what the host and the direct back end share: the versioned table (`vk_api.h`), the NVN objects and command records (`rx_nvn.h`) |
 | `gpu/legacy/` | upstream's older renderers, reference source only: not built, not tested |

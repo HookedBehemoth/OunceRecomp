@@ -1,8 +1,7 @@
 """Alt+Enter toggles fullscreen and presses no button (Enter is Plus by default, and any button can be bound to it; issue #390).
 
-The bound keys' helper (host/nn_hid.c's kmap_down) is compiled alone against fake key states; the window
-procedures (host/display.c, host/posix/display_sdl.c) are checked to toggle on Alt+Enter, once per press, and to
-leave other Alt keys (Alt+F4) to Windows.
+The bound keys' helper (host/nn_hid.c's kmap_down) is compiled alone against fake key states; the window's
+event handling (host/posix/display_sdl.c) is checked to toggle on Alt+Enter, once per press.
 
 python -I -B tests/test_alt_enter.py [--cc gcc]
 """
@@ -29,17 +28,6 @@ def case(text, label):
     start = text.index("case %s:" % label)
     end = text.index("    case ", start + 1)
     return text[start:end]
-
-
-def check_windows():
-    src = (ROOT / "host" / "display.c").read_text(encoding="utf-8")
-    sys_down = case(src, "WM_SYSKEYDOWN")
-    for need, why in (("VK_RETURN", "Enter"), ("1 << 29", "the Alt bit"), ("1 << 30", "a held key repeating"),
-                      ("set_fullscreen(w, !fullscreen)", "the toggle"), ("break;", "other Alt keys to DefWindowProc")):
-        if need not in sys_down:
-            raise SystemExit("display.c: WM_SYSKEYDOWN lacks %s (%s)" % (need, why))
-    if "'\\r'" not in case(src, "WM_SYSCHAR"):
-        raise SystemExit("display.c: Alt+Enter's WM_SYSCHAR is not taken (Windows beeps)")
 
 
 def check_linux():
@@ -78,7 +66,6 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
-    check_windows()
     check_linux()
     hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
     fn = block(hid, "static int kmap_down(")

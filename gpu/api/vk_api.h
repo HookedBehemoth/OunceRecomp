@@ -189,14 +189,9 @@ typedef struct MkwVkRenderer {
 /* the DLL's one export: null when Vulkan is not usable */
 typedef const MkwVkRenderer *(*mkwvk_init_fn)(const MkwVkHost *host);
 #ifdef MKWVK_BUILDING
-#ifdef _WIN32
-__declspec(dllexport) const MkwVkRenderer *mkwvk_init(const MkwVkHost *host);
-#else
 __attribute__((visibility("default"))) const MkwVkRenderer *mkwvk_init(const MkwVkHost *host);
 #endif
-#endif
 
-#ifndef _WIN32
 /* (linux) what start() is given in place of a window handle (host/posix/display_sdl.c): the window makes the
    surface (SDL_Vulkan_CreateSurface: X11 or Wayland) and says its size in pixels */
 #define MKWVK_WINDOW_VERSION 2
@@ -208,7 +203,6 @@ typedef struct MkwVkWindow {
     /* (version 2) the refresh rate of the display the window is on, in mHz; 0 when not known (frame generation's Auto) */
     int (*refresh_mhz)(void *window);
 } MkwVkWindow;
-#endif
 
 #ifdef __cplusplus
 }

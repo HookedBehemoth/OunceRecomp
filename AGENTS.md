@@ -18,9 +18,10 @@ What CONTRIBUTING.md does not spell out, and agents trip on:
   beside them; regenerate them with glslang rather than editing them.
 - **`gpu/legacy/` is not built.** Upstream's Vulkan and WebGPU renderers, kept as reference source; no build, test or CI
   reaches them.
-- **One renderer, one platform for it.** The direct back end (`gpu/direct`, Linux, RADV) is the only renderer. The host
-  is built for Windows with llvm-mingw too: keep host code portable, and paths UTF-8
-  (no `CP_ACP`; `tests/test_utf8_paths.py`).
+- **One renderer, one platform.** The direct back end (`gpu/direct`, Linux, RADV) is the only renderer, and the host is
+  built for Linux only. Its Win32-named calls go through `host/posix` (kept as it is for now); portability comes back
+  later through a narrow host API over SDL, not through more Windows APIs. Paths stay UTF-8 (no `CP_ACP`;
+  `tests/test_utf8_paths.py`). No player builder for now: [docs/builder-notes.md](docs/builder-notes.md).
 - **No game in CI.** Checks must run without a dump. A run in the game is for you to do locally and report.
 
 Pull requests: **open the description with why the PR is needed**, in one or two plain sentences, and **include

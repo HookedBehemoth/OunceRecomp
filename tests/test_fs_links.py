@@ -8,7 +8,6 @@ functions, then checks:
 - DeleteDirectoryRecursively's walk removes a link inside the save, not the folder or file it points to;
 - the mod index leaves out links to folders (two links back up made the walk endless) and still lists files;
 - GetFileAttributesA marks a link as a reparse point (DeleteDirectoryRecursively on a link removes only the link);
-- guest_path_ok as Windows builds it refuses device names: COM1, COM\u00b9 (UTF-8), "NUL .txt", CLOCK$.
 
 python -I -B tests/test_fs_links.py [--cc gcc]
 """
@@ -134,32 +133,6 @@ int main(int argc, char **argv) {
         if r.returncode:
             print(r.stderr, end="")
             raise SystemExit("test_fs_links: failed (exit %d)" % r.returncode)
-        # guest_path_ok as Windows builds it (its device-name part), on this compiler
-        win = block(fs, "static int guest_path_ok(const char *rest) {").replace("#ifdef _WIN32", "#if 1")
-        src = tmp / "win_names.c"
-        src.write_text(r'''#include <stdio.h>
-#include <string.h>
-#include <strings.h>
-#define _strnicmp strncasecmp
-''' + win + r'''
-#define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); return 1; } } while (0)
-int main(void) {
-    CHECK(guest_path_ok("slot_00/progress.sav") && guest_path_ok("console/a.bin") && guest_path_ok("COMX") && guest_path_ok("nullx"));
-    CHECK(!guest_path_ok("CON") && !guest_path_ok("a/nul.txt") && !guest_path_ok("Com1") && !guest_path_ok("lpt9.log"));
-    CHECK(!guest_path_ok("COM\xc2\xb9") && !guest_path_ok("lpt\xc2\xb3.x") && guest_path_ok("COM\xc2\xb4"));
-    CHECK(!guest_path_ok("NUL .txt") && !guest_path_ok("a/aux  .b") && !guest_path_ok("CLOCK$") && !guest_path_ok("conin$"));
-    CHECK(!guest_path_ok("a.") && !guest_path_ok("a ") && guest_path_ok("NUL x"));
-    printf("PASS: Windows device names refused\n");
-    return 0;
-}
-''', encoding="utf-8")
-        exe = tmp / "win_names"
-        subprocess.run([a.cc, "-std=gnu11", "-Wno-unused-function", str(src), "-o", str(exe)], check=True)
-        r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
-        print(r.stdout, end="")
-        if r.returncode:
-            print(r.stderr, end="")
-            raise SystemExit("test_fs_links: Windows names failed (exit %d)" % r.returncode)
 
 
 if __name__ == "__main__":

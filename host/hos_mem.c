@@ -5,19 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-static SRWLOCK lock = SRWLOCK_INIT;
-#define LOCK() AcquireSRWLockExclusive(&lock)
-#define UNLOCK() ReleaseSRWLockExclusive(&lock)
-#else
 #include <pthread.h>
 #include <sys/mman.h>
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 #define LOCK() pthread_mutex_lock(&lock)
 #define UNLOCK() pthread_mutex_unlock(&lock)
-#endif
 
 uint64_t hos_heap_size, hos_heap_used, hos_total_memory, hos_program_size;
 static uint64_t sys_next = HOS_SYSTEM_BASE;
@@ -130,19 +122,7 @@ static void discard_pages(uint64_t addr, uint64_t size) {
     static int keep = -1;
     if (keep < 0) keep = getenv("HOS_KEEP_FREED_PAGES") != NULL;
     if (hi <= lo || keep) return;
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    extern int hos_large_pages;   /* (hos_main.c: large pages cannot be discarded) */
-    if (hos_large_pages) return;
-    typedef DWORD(WINAPI * DiscardFn)(PVOID, SIZE_T);
-    static DiscardFn discard;
-    static int looked;
-    if (!looked) {
-        looked = 1;
-        discard = (DiscardFn)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "DiscardVirtualMemory");
-    }
-    if (!discard || discard(GP(lo), (SIZE_T)(hi - lo)) != ERROR_SUCCESS)
-        VirtualAlloc(GP(lo), (SIZE_T)(hi - lo), MEM_RESET, PAGE_READWRITE);
-#elif !defined(__EMSCRIPTEN__)
+#if !defined(__EMSCRIPTEN__)
     extern int hos_posix_guest_discard(void *p, size_t n);   /* (hos_main.c: MADV_REMOVE on the memfd window) */
     extern int rx_guest_imported(uint64_t lo, uint64_t hi);
     /* (pages a dma-buf import holds stay where they are, zeroed: a hole punched under one would leave the GPU on
@@ -306,14 +286,10 @@ HLE(_ZN2nn2os15FreeMemoryPagesEmm) {
            still maps them, and decommitted pages under an import faulted the device. Read as zero, as freed pages) */
         extern int rx_guest_imported(uint64_t lo, uint64_t hi);
         if (hi > lo && rx_guest_imported(lo, hi)) memset(GP(lo), 0, (size_t)(hi - lo));
-#if defined(_WIN32)
-        else if (hi > lo) VirtualFree(GP(lo), (SIZE_T)(hi - lo), MEM_DECOMMIT);
-#else
         else if (hi > lo) {   /* (linux: kept mapped, the pages read as zero; MADV_REMOVE on the memfd window) */
             extern int hos_posix_guest_discard(void *p, size_t n);
             hos_posix_guest_discard(GP(lo), (size_t)(hi - lo));
         }
-#endif
         RET(0);
         return;
     }

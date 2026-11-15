@@ -114,19 +114,7 @@ int hos_sdl_gyro_status(void);   /* pad_sdl.c */
 extern const char *hos_romfs_dir;   /* nn_fs.c, set by hos_main.c */
 static const char *host_romfs_dir(void) { return hos_romfs_dir; }
 
-#ifdef _WIN32
-static unsigned char menu_key_press[256];
-void hos_vk_note_key_press(unsigned key) {
-    if (key < sizeof menu_key_press) __atomic_store_n(&menu_key_press[key], 1, __ATOMIC_RELAXED);
-}
-int hos_vk_take_key_press(int key) {
-    return (unsigned)key < sizeof menu_key_press &&
-           __atomic_exchange_n(&menu_key_press[key], 0, __ATOMIC_RELAXED);
-}
-#define host_take_key_press hos_vk_take_key_press
-#else
 #define host_take_key_press NULL
-#endif
 
 static const MkwVkHost vk_host = {
     MKWVK_API_VERSION, host_log, hos_guest_base, hos_guest_size, hos_gpu_ptr, nvn_gpu_guest, nvn_gpu_read,

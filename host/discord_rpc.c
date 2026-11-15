@@ -22,16 +22,12 @@
 #include <string.h>
 #include <time.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#endif
 
 #include "../gpu/api/vk_api.h"
 
@@ -46,39 +42,6 @@ enum { OP_HANDSHAKE = 0, OP_FRAME = 1, OP_CLOSE = 2, OP_PING = 3, OP_PONG = 4 };
 #define ANSWER_CAP 8192
 
 /* ---- the local connection: a named pipe on Windows, a Unix socket elsewhere ---- */
-#ifdef _WIN32
-typedef HANDLE Ipc;
-#define IPC_NONE INVALID_HANDLE_VALUE
-static uint64_t now_ms(void) { return GetTickCount64(); }
-static void sleep_ms(unsigned ms) { Sleep(ms); }
-static Ipc ipc_connect(int i) {
-    char name[48];
-    snprintf(name, sizeof name, "\\\\.\\pipe\\discord-ipc-%d", i);
-    /* (identification only: another program that made a pipe of this name cannot act as this one) */
-    return CreateFileA(name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                       NULL);
-}
-static void ipc_close(Ipc p) { CloseHandle(p); }
-static int ipc_write(Ipc p, const void *d, size_t n) {
-    DWORD done = 0;
-    return WriteFile(p, d, (DWORD)n, &done, NULL) && done == n;
-}
-/* bytes read (0: none came before the deadline), -1 broken */
-static int ipc_read(Ipc p, void *d, size_t n, uint64_t deadline) {
-    for (;;) {
-        DWORD avail = 0;
-        if (!PeekNamedPipe(p, NULL, 0, NULL, &avail, NULL)) return -1;
-        if (avail) {
-            DWORD got = 0;
-            if (!ReadFile(p, d, (DWORD)(n < avail ? n : avail), &got, NULL)) return -1;
-            return (int)got;
-        }
-        if (now_ms() >= deadline) return 0;
-        Sleep(10);
-    }
-}
-static unsigned long process_id(void) { return GetCurrentProcessId(); }
-#else
 typedef int Ipc;
 #define IPC_NONE (-1)
 static uint64_t now_ms(void) {
@@ -125,7 +88,6 @@ static int ipc_read(Ipc p, void *d, size_t n, uint64_t deadline) {
     return got > 0 ? (int)got : -1;
 }
 static unsigned long process_id(void) { return (unsigned long)getpid(); }
-#endif
 
 /* ---- settings ---- */
 static int valid_app_id(const char *s) {
@@ -293,32 +255,17 @@ static void presence_main(void) {
         }
     }
 }
-#ifdef _WIN32
-static DWORD WINAPI presence_thread(LPVOID arg) {
-    (void)arg;
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
-    presence_main();
-    return 0;
-}
-#else
 static void *presence_thread(void *arg) {
     (void)arg;
     presence_main();
     return NULL;
 }
-#endif
 
 /* hos_main.c, once the game starts (not for --prepare-shaders). HOS_DISCORD=0: no thread at all */
 void hos_discord_start(void) {
     const char *e = getenv("HOS_DISCORD");
     if (e && !atoi(e)) return;
-#ifdef _WIN32
-    HANDLE t = CreateThread(NULL, 256u << 10, presence_thread, NULL, 0, NULL);
-    if (t) CloseHandle(t);
-    else hos_log("discord: cannot start the presence thread");
-#else
     pthread_t t;
     if (!pthread_create(&t, NULL, presence_thread, NULL)) pthread_detach(t);
     else hos_log("discord: cannot start the presence thread");
-#endif
 }

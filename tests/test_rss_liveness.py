@@ -11,7 +11,7 @@ import build  # noqa: E402
 
 
 def main():
-    backend = "tree_ws" if os.name == "nt" else "tree_rss"
+    backend = "tree_rss"
     p = subprocess.Popen([sys.executable, "-I", "-c",
                           "import sys; print('ready', flush=True); sys.stdin.read()"],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)

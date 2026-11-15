@@ -4,12 +4,7 @@
 #include "a64.h"
 #include <stdio.h>
 #include <stdlib.h>
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
 #include <time.h>
-#endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
 #define A64_WEAK
@@ -120,13 +115,9 @@ static volatile long site_prof_writing;
 static uint64_t site_prof_last;
 
 static uint64_t prof_ms(void) {
-#if defined(_WIN32)
-    return GetTickCount64();
-#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
-#endif
 }
 
 static void site_prof_write(void) {
@@ -306,28 +297,12 @@ void recomp_clrex(GuestContext *c) { c->excl_valid = 0; }
 
 /* ---- CNTPCT_EL0: the 19.2 MHz counter ---------------------------------------------------------------- */
 A64_WEAK uint64_t a64_cntpct_host(void) {
-#if defined(_WIN32)
-    static LARGE_INTEGER base;
-    static uint64_t mult;
-    LARGE_INTEGER now;
-    if (!__atomic_load_n(&mult, __ATOMIC_ACQUIRE)) {
-        LARGE_INTEGER f, b;
-        QueryPerformanceFrequency(&f);
-        QueryPerformanceCounter(&b);
-        base = b;
-        __atomic_store_n(&mult, (19200000ULL << 32) / (uint64_t)f.QuadPart, __ATOMIC_RELEASE);
-    }
-    QueryPerformanceCounter(&now);
-    const uint64_t d = (uint64_t)(now.QuadPart - base.QuadPart);
-    return (uint64_t)(((unsigned __int128)d * mult) >> 32);
-#else
     static uint64_t base;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
     if (!base) base = ns;
     return (ns - base) * 192ULL / 10000ULL;
-#endif
 }
 
 uint64_t recomp_cntpct(GuestContext *c) { (void)c; return a64_cntpct_host(); }

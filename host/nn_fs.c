@@ -14,70 +14,9 @@
 #include <windows.h>
 
 /* (hookshot, #1468) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
-   Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, and on Windows each file call goes through
-   its wide function: the path converted from the game's UTF-8 strings and, when it is
-   long and absolute, given the extended-length prefix \\?\ (with its / made \), which Windows takes without its long-paths
-   setting. Short paths are as they were. */
+   Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, UTF-8 as the
+   game's strings are. */
 #define HOS_FS_PATH 1024
-#ifdef _WIN32
-static const wchar_t *fs_wide(const char *p, wchar_t *w, size_t cap) {
-    const size_t n = strlen(p);
-    const int already = p[0] == '\\' && p[1] == '\\' && p[2] == '?';
-    const int unc = !already && p[0] == '\\' && p[1] == '\\';
-    const int drive = p[0] && p[1] == ':' && (p[2] == '\\' || p[2] == '/');
-    const int extended = !already && n >= 240 && (drive || unc);
-    size_t at = 0;
-    if (extended) {
-        wcscpy(w, unc ? L"\\\\?\\UNC" : L"\\\\?\\");
-        at = wcslen(w);
-        if (unc) p++;   /* (\\server\share -> \\?\UNC\server\share) */
-    }
-    if (MultiByteToWideChar(CP_UTF8, 0, p, -1, w + at, (int)(cap - at)) <= 0) w[0] = 0;
-    if (extended)
-        for (wchar_t *q = w; *q; q++)
-            if (*q == L'/') *q = L'\\';
-    return w;
-}
-#define FS_W(p) fs_wide((p), (wchar_t[HOS_FS_PATH + 8]){0}, HOS_FS_PATH + 8)
-static void fs_find_data(const WIN32_FIND_DATAW *w, WIN32_FIND_DATAA *a) {
-    a->dwFileAttributes = w->dwFileAttributes;
-    a->ftCreationTime = w->ftCreationTime, a->ftLastAccessTime = w->ftLastAccessTime, a->ftLastWriteTime = w->ftLastWriteTime;
-    a->nFileSizeHigh = w->nFileSizeHigh, a->nFileSizeLow = w->nFileSizeLow;
-    a->dwReserved0 = w->dwReserved0, a->dwReserved1 = w->dwReserved1;
-    if (WideCharToMultiByte(CP_UTF8, 0, w->cFileName, -1, a->cFileName, (int)sizeof a->cFileName, NULL, NULL) <= 0) a->cFileName[0] = 0;
-    if (WideCharToMultiByte(CP_UTF8, 0, w->cAlternateFileName, -1, a->cAlternateFileName, (int)sizeof a->cAlternateFileName, NULL,
-                            NULL) <= 0)
-        a->cAlternateFileName[0] = 0;
-}
-static HANDLE fs_CreateFile(const char *p, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa, DWORD how, DWORD flags, HANDLE t) {
-    return CreateFileW(FS_W(p), access, share, sa, how, flags, t);
-}
-static DWORD fs_GetFileAttributes(const char *p) { return GetFileAttributesW(FS_W(p)); }
-static BOOL fs_CreateDirectory(const char *p, LPSECURITY_ATTRIBUTES sa) { return CreateDirectoryW(FS_W(p), sa); }
-static BOOL fs_DeleteFile(const char *p) { return DeleteFileW(FS_W(p)); }
-static BOOL fs_RemoveDirectory(const char *p) { return RemoveDirectoryW(FS_W(p)); }
-static BOOL fs_MoveFileEx(const char *a, const char *b, DWORD flags) { return MoveFileExW(FS_W(a), FS_W(b), flags); }
-static HANDLE fs_FindFirstFile(const char *p, WIN32_FIND_DATAA *fd) {
-    WIN32_FIND_DATAW w;
-    const HANDLE h = FindFirstFileW(FS_W(p), &w);
-    if (h != INVALID_HANDLE_VALUE) fs_find_data(&w, fd);
-    return h;
-}
-static BOOL fs_FindNextFile(HANDLE h, WIN32_FIND_DATAA *fd) {
-    WIN32_FIND_DATAW w;
-    if (!FindNextFileW(h, &w)) return FALSE;
-    fs_find_data(&w, fd);
-    return TRUE;
-}
-#define CreateFileA fs_CreateFile
-#define GetFileAttributesA fs_GetFileAttributes
-#define CreateDirectoryA fs_CreateDirectory
-#define DeleteFileA fs_DeleteFile
-#define RemoveDirectoryA fs_RemoveDirectory
-#define MoveFileExA fs_MoveFileEx
-#define FindFirstFileA fs_FindFirstFile
-#define FindNextFileA fs_FindNextFile
-#endif
 
 const char *hos_romfs_dir, *hos_user_dir;
 
@@ -118,36 +57,14 @@ int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
 
 /* (hookshot) a guest path below its mount stays below it on the host: no "." or ".." part, no \\ or : (a drive or a
-   Windows stream), no control characters; on Windows also no part ending in a dot or a space (Windows drops them) and
-   no device name (CON, NUL, COM1, COM\u00b9, "NUL .txt"...) */
+   Windows stream), no control characters */
 static int guest_path_ok(const char *rest) {
-#ifdef _WIN32
-    static const char *const devices[] = {"CON", "PRN", "AUX", "NUL", "COM", "LPT", "CONIN$", "CONOUT$", "CLOCK$"};
-#endif
     for (const char *p = rest; *p;) {
         const char *e = strchr(p, '/');
         const size_t n = e ? (size_t)(e - p) : strlen(p);
         if ((n == 1 && p[0] == '.') || (n == 2 && p[0] == '.' && p[1] == '.')) return 0;
         for (size_t i = 0; i < n; i++)
             if ((unsigned char)p[i] < 32 || p[i] == '\\' || p[i] == ':') return 0;
-#ifdef _WIN32
-        if (n && (p[n - 1] == '.' || p[n - 1] == ' ')) return 0;
-        for (size_t d = 0; d < sizeof devices / sizeof *devices; d++) {
-            const size_t k = strlen(devices[d]);
-            if (n < k || _strnicmp(p, devices[d], k)) continue;
-            const char *after = p + k;
-            if (k == 3 && (!strcmp(devices[d], "COM") || !strcmp(devices[d], "LPT"))) {
-                /* (a digit, or a superscript 1, 2 or 3 in UTF-8, the game's code page: Windows takes those too) */
-                if (after < p + n && *after >= '0' && *after <= '9') after++;
-                else if (after + 1 < p + n && (unsigned char)after[0] == 0xC2 &&
-                         ((unsigned char)after[1] == 0xB9 || (unsigned char)after[1] == 0xB2 || (unsigned char)after[1] == 0xB3))
-                    after += 2;
-                else continue;
-            }
-            while (after < p + n && *after == ' ') after++;   /* ("NUL .txt" is NUL too) */
-            if (after == p + n || *after == '.') return 0;
-        }
-#endif
         p += n;
         while (*p == '/') p++;
     }

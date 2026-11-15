@@ -3,7 +3,8 @@
 Hookshot is a static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake: the game's AArch64
 code is lifted to C, the Horizon OS and NVN2 are implemented natively, and the GPU work is replayed on Vulkan by one
 renderer, the direct back end. No emulator is involved, and the game is built on your PC from your own copy. The tree
-targets Linux with Mesa RADV (developed on an RX 6950 XT).
+targets Linux only, with Mesa RADV (developed on an RX 6950 XT); other platforms come back later through a narrow host
+API over SDL. Paths are UTF-8.
 
 This page covers what to send, how to build and test it, and the rules that keep the project out of trouble. The
 [development guide](docs/development.md) has the full pipeline and its commands; the [design notes](docs/design.md) have
@@ -93,7 +94,7 @@ Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` o
 validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
 cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
 says so; CI passes `--strict`, which fails it instead. The skip list at the top of `tests/run_all.py` names the checks
-that cannot run in CI (a GPU, the game, a Visual Studio prompt) and the few that run on Linux only; `--no-skip` runs
+that cannot run in CI (a GPU, the game); `--no-skip` runs
 them anyway.
 
 ### Checks that need your dump or a run

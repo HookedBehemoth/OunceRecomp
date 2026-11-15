@@ -13,7 +13,7 @@
    The game's parameter changes take effect together at RequestUpdateAudioRenderer, and volume changes ramp over a
    frame, as the console's renderer does them (see "parameter updates").
    HOS_AUDIO_DUMP=<file.wav>: also write what is played (checking without speakers); HOS_AUDIO=0: silence;
-   HOS_AUDIO_DEVICE=<n>: that waveOut device first; HOS_AUDIO_MUTE=1: the device fed at volume 0 (test runs);
+   HOS_AUDIO_DEVICE=<n>: that output device first;
    HOS_AUDIO_CHANNELS=2 or 6: stereo or 5.1 whatever the default output has and the Insert menu's Audio output say
    (see au_speakers). */
 #include "hos.h"
@@ -24,14 +24,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
-#ifdef _WIN32
-#include <mmreg.h>
-#include <objbase.h>
-#include <mmdeviceapi.h>
-#include <audioclient.h>
-#else
 #include "hos_sdl.h"
-#endif
 #include "hos_paths.h"   /* (the game folder: hookshot_options.ini, au_menu_output) */
 
 void hos_system_event_init(uint64_t key, int autoclear);
@@ -587,60 +580,18 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
 
 /* (the output's platform parts, outside the section tests/audio_output_errors_test.c compiles with its own) */
 static unsigned au_device_count(void) {
-#ifdef _WIN32
-    return waveOutGetNumDevs();
-#else
     return 0;   /* (linux: waveOut is SDL's default device) */
-#endif
 }
 static void au_device_name(unsigned device, char *out, size_t size) {
     snprintf(out, size, "device %u", device);
-#ifdef _WIN32
-    WAVEOUTCAPSA caps;
-    if (waveOutGetDevCapsA(device, &caps, sizeof caps) == MMSYSERR_NOERROR) snprintf(out, size, "%s", caps.szPname);
-#endif
 }
 static uint64_t au_ms(void) { return (uint64_t)GetTickCount64(); }
-/* HOS_AUDIO_MUTE=1 (test runs): the device opened and fed as for a player, at volume 0 */
+/* (the device just opened: nothing to set on it here) */
 static void au_opened(HWAVEOUT w) {
-#ifdef _WIN32
-    if (getenv("HOS_AUDIO_MUTE")) waveOutSetVolume(w, 0);
-#else
     (void)w;
-#endif
 }
-/* The default output's channels (its shared-mode mix format on Windows, SDL's default device on Linux); 2 when
-   unknown. */
-#ifdef _WIN32
-static int au_device_channels(void) {
-    static const GUID clsid_enumerator = {0xbcde0395, 0xe52f, 0x467c, {0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e}};
-    static const GUID iid_enumerator = {0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}};
-    static const GUID iid_audio_client = {0x1cb9ad4c, 0xdbfa, 0x4c32, {0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2}};
-    int n = 2;
-    const HRESULT com = CoInitializeEx(NULL, COINIT_MULTITHREADED);   /* (a thread in another apartment keeps it) */
-    IMMDeviceEnumerator *e = NULL;
-    if (SUCCEEDED(CoCreateInstance(&clsid_enumerator, NULL, CLSCTX_ALL, &iid_enumerator, (void **)&e)) && e) {
-        IMMDevice *d = NULL;
-        if (SUCCEEDED(e->lpVtbl->GetDefaultAudioEndpoint(e, eRender, eConsole, &d)) && d) {
-            IAudioClient *a = NULL;
-            if (SUCCEEDED(d->lpVtbl->Activate(d, &iid_audio_client, CLSCTX_ALL, NULL, (void **)&a)) && a) {
-                WAVEFORMATEX *mix = NULL;
-                if (SUCCEEDED(a->lpVtbl->GetMixFormat(a, &mix)) && mix) {
-                    n = mix->nChannels;
-                    CoTaskMemFree(mix);
-                }
-                a->lpVtbl->Release(a);
-            }
-            d->lpVtbl->Release(d);
-        }
-        e->lpVtbl->Release(e);
-    }
-    if (SUCCEEDED(com)) CoUninitialize();
-    return n;
-}
-#else
+/* The default output's channels (SDL's default device); 2 when unknown. */
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
-#endif
 /* (hookshot) The Insert menu's Audio output (gpu/legacy/vk/vk_menu.cpp): audio_output= in hookshot_options.ini beside the game,
    0 Auto, 1 Stereo, 2 5.1 (a number past them is the nearest, as the menu reads it). Read from the file, as
    host/nn_applet.c reads the Handheld profile: the game asks for its speakers only once, at its start */
@@ -692,21 +643,7 @@ static int au_speakers(void) {
 /* The device's format, 16-bit PCM at 48 kHz: Windows takes more than two channels only as WAVE_FORMAT_EXTENSIBLE,
    with the speakers named (5.1: FL FR FC LFE BL BR, the device sink's order). SDL takes the channel count as it is. */
 static const WAVEFORMATEX *au_format(const WAVEFORMATEX *f) {
-#ifdef _WIN32
-    if (f->nChannels <= 2) return f;
-    static const GUID pcm = {0x00000001, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
-    static WAVEFORMATEXTENSIBLE x;
-    memset(&x, 0, sizeof x);
-    x.Format = *f;
-    x.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    x.Format.cbSize = sizeof x - sizeof x.Format;
-    x.Samples.wValidBitsPerSample = f->wBitsPerSample;
-    x.dwChannelMask = 0x3F;   /* front left, right, centre, low frequency, back left, right */
-    x.SubFormat = pcm;        /* (KSDATAFORMAT_SUBTYPE_PCM) */
-    return &x.Format;
-#else
     return f;
-#endif
 }
 
 /* ---- output: waveOut, 10 ms blocks; a WAV file with HOS_AUDIO_DUMP ---------------------------------------------- */

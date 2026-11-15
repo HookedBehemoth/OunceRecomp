@@ -1,5 +1,5 @@
-/* (linux) The Win32 calls of host/posix/windows.h, on POSIX. Built into the executable and, on its own, into
-   hookshot_direct.so (each its own copy, -Bsymbolic: the executable exports nothing of it). */
+/* (linux) The Win32 calls of host/posix/windows.h, on POSIX. Built into the executable only (nx2/build.py's host
+   sources); hookshot_direct.so has none of it. */
 #define _GNU_SOURCE
 #include <windows.h>
 #include <mmsystem.h>
@@ -1197,7 +1197,7 @@ LPTOP_LEVEL_EXCEPTION_FILTER SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_F
     return old;
 }
 
-/* ---- the window's state, kept by display_sdl.c in the executable (found by name from the Vulkan back end) ---- */
+/* ---- the window's state, kept by display_sdl.c (hos_posix_keys, looked up by name in the executable) ---- */
 static volatile uint8_t no_keys[256];
 static volatile uint8_t *keys_table(void) {
     static volatile uint8_t *keys;
@@ -1253,7 +1253,6 @@ int MessageBoxA(HWND w, LPCSTR text, LPCSTR caption, UINT type) {
 }
 
 /* ---- waveOut on SDL's audio (host/hos_sdl.c): a callback takes the written blocks in order and marks them done ---- */
-/* (the executable's: this file is in the Vulkan back end too, which plays no sound and has no hos_sdl.c) */
 int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user, uint8_t *out, int len), void *user)
     __attribute__((weak));
 typedef struct {

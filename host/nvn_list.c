@@ -6,13 +6,8 @@
 #include "../gpu/api/rx_nvn.h"
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-#define list_yield() SwitchToThread()
-#else
 #include <sched.h>
 #define list_yield() sched_yield()
-#endif
 
 static int check_on;
 static void (*say)(const char *fmt, ...);

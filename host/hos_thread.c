@@ -91,18 +91,9 @@ uint64_t *hos_tls_slots(HosThread *t) { return t->tls_slots; }
 /* The core a thread runs on. Most of TOTK's threads have no ideal core (-2, "use default") and a one-core affinity
    mask, so the mask decides; the engine keys per-core resources (its command memory arenas, for one) on
    GetCurrentCoreNumber, so threads pinned to different cores must report different ones. */
-/* HOS_PIN_BY_CORE=1 (experiment): every game thread runs on the host's logical core 2 x its core number (one per
-   physical core on SMT machines), so threads the game puts on the same core never run at the same time, as on the
-   Switch, where TOTK keeps per-core data without locks (both MacNativeGames and totk-pc-recomp found it relies on
-   that); they are still time-sliced at any instruction, not scheduled by priority as Horizon does. */
+/* (no pinning by core: the threads run where the host's scheduler puts them) */
 static void pin_by_core(HosThread *t) {
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    static int on = -1;
-    if (on < 0) on = getenv("HOS_PIN_BY_CORE") != NULL;
-    if (on && t->handle) SetThreadAffinityMask(t->handle, (DWORD_PTR)1 << (2 * hos_thread_core(t)));
-#else
     (void)t;
-#endif
 }
 void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask) {
     if (ideal >= 0) t->ideal_core = ideal;
@@ -111,13 +102,7 @@ void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask) {
 }
 uint64_t hos_thread_mask(HosThread *t) { return t->core_mask; }
 void hos_thread_boost(int level) {
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    static int off = -1;
-    if (off < 0) off = getenv("HOS_NO_PRIORITIES") != NULL;
-    if (!off) SetThreadPriority(GetCurrentThread(), level >= 2 ? THREAD_PRIORITY_HIGHEST : THREAD_PRIORITY_ABOVE_NORMAL);
-#else
     (void)level;
-#endif
 }
 
 int hos_cores(void) {
@@ -158,165 +143,8 @@ int hos_thread_priority(HosThread *t, int set, int value) {
     return old;
 }
 
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-static SRWLOCK log_lock = SRWLOCK_INIT, log_write_lock = SRWLOCK_INIT;
-static CONDITION_VARIABLE log_cv = CONDITION_VARIABLE_INIT;
-static char *log_q[2048];
-static int log_head, log_count;
-static volatile LONG log_async = -1;
-static volatile DWORD log_writer;   /* log_main's thread */
-
-static int log_take_locked(char **out) {
-    int n = 0;
-    while (log_count) {
-        out[n++] = log_q[log_head];
-        log_head = (log_head + 1) % 2048;
-        log_count--;
-    }
-    return n;
-}
-
-/* (hookshot) A batch goes out in one write. stderr is unbuffered (hos_main.c), so each line was a write of its own: 30-90 a
-   second in play, every one extending the log file. With the game on a slow disk (a SATA SSD, 90% full) those writes kept
-   the disk busy: its 4 KB reads took 10-200 ms where they take 0.4 ms, and what the game read from it meanwhile (a page of
-   its own code, a file of the game's) waited as long: the long frames of a session. */
-static void log_write(char **lines, int n) {
-    size_t total = 0;
-    for (int i = 0; i < n; i++) total += strlen(lines[i]);
-    char *all = n > 1 ? (char *)malloc(total + 1) : NULL;
-    if (all) {
-        size_t at = 0;
-        for (int i = 0; i < n; i++) {
-            const size_t len = strlen(lines[i]);
-            memcpy(all + at, lines[i], len);
-            at += len;
-            free(lines[i]);
-        }
-        fwrite(all, 1, total, stderr);
-        free(all);
-    } else {   /* (one line, or no memory for the batch: line by line) */
-        for (int i = 0; i < n; i++) {
-            fputs(lines[i], stderr);
-            free(lines[i]);
-        }
-    }
-    fflush(stderr);
-}
-
-/* (hookshot) and the writer waits a little after the line it is woken for, so the lines of that time go out together: a few
-   writes a second however many lines there are. A queue half full goes out at once, before a burst can fill it (a full
-   queue has the thread that logs write the line itself). HOS_LOG_BATCH_MS=<ms> (default 250, at most 2000; 0: the lines
-   there are at each wake, as before). Nothing waiting is lost: every way out writes the queue first (log_flush,
-   log_crash_filter), and the writer holds no lock while it waits */
-enum { LOG_BATCH_FULL = 1024 };
-static DWORD log_batch_ms(void) {
-    static int ms = -1;
-    if (ms < 0) {
-        const char *e = getenv("HOS_LOG_BATCH_MS");
-        const int v = e && *e ? atoi(e) : 250;
-        ms = v < 0 ? 0 : v > 2000 ? 2000 : v;
-    }
-    return (DWORD)ms;
-}
-
-static DWORD WINAPI log_main(void *p) {
-    (void)p;
-    static char *batch[2048];
-    log_writer = GetCurrentThreadId();
-    for (;;) {
-        AcquireSRWLockExclusive(&log_lock);
-        while (!log_count) SleepConditionVariableSRW(&log_cv, &log_lock, INFINITE, 0);
-        /* (log_queue wakes it at each line: until the time is up or the queue half full) */
-        const ULONGLONG until = GetTickCount64() + log_batch_ms();
-        for (ULONGLONG now; log_count < LOG_BATCH_FULL && (now = GetTickCount64()) < until;)
-            SleepConditionVariableSRW(&log_cv, &log_lock, (DWORD)(until - now), 0);
-        const int n = log_take_locked(batch);
-        AcquireSRWLockExclusive(&log_write_lock);
-        ReleaseSRWLockExclusive(&log_lock);
-        log_write(batch, n);
-        ReleaseSRWLockExclusive(&log_write_lock);
-    }
-}
-
-/* the queued lines straight to the handle (crash paths: no CRT stream, no write lock) */
-static void log_drain_raw(void) {
-    if (!TryAcquireSRWLockExclusive(&log_lock)) return;
-    HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-    while (log_count) {
-        const char *line = log_q[log_head];
-        DWORD written;
-        WriteFile(err, line, (DWORD)strlen(line), &written, NULL);
-        log_head = (log_head + 1) % 2048;
-        log_count--;
-    }
-    ReleaseSRWLockExclusive(&log_lock);
-}
-
-static void log_flush(void) {
-    if (log_async <= 0) return;
-    /* (a crash report on the writer itself, in its own write: it holds log_write_lock) */
-    if (GetCurrentThreadId() == log_writer) { log_drain_raw(); return; }
-    static char *batch[2048];
-    AcquireSRWLockExclusive(&log_write_lock);
-    AcquireSRWLockExclusive(&log_lock);
-    const int n = log_take_locked(batch);
-    ReleaseSRWLockExclusive(&log_lock);
-    log_write(batch, n);
-    ReleaseSRWLockExclusive(&log_write_lock);
-}
-
-static LPTOP_LEVEL_EXCEPTION_FILTER log_prev_filter;
-
-static LONG WINAPI log_crash_filter(EXCEPTION_POINTERS *e) {
-    if (GetCurrentThreadId() == log_writer) log_drain_raw();
-    else {
-        /* the writer may be in the middle of a batch: it finishes first (at most 2 s: a write stuck on the disk), then the
-           rest of the queue goes out (before: the queue was left unwritten whenever the writer was busy) */
-        int got = 0;
-        for (int i = 0; i < 2000 && !(got = TryAcquireSRWLockExclusive(&log_write_lock)); i++) Sleep(1);
-        log_drain_raw();
-        if (got) ReleaseSRWLockExclusive(&log_write_lock);
-    }
-    return log_prev_filter ? log_prev_filter(e) : EXCEPTION_CONTINUE_SEARCH;
-}
-
-/* Lines are written by log_main, not by the thread that logs: a write that blocks (a console; the log file while the
-   disk is busy: the render thread was seen held 140-310 ms in one line's write) holds no game thread. Nothing queued is
-   lost when the game ends or crashes: hos_fatal, report_crash/report_fatal (mkw_glue.c), log_crash_filter,
-   svcExitProcess, the window's close and the process's exit (atexit) write the queue first. HOS_LOG_SYNC=1: each line
-   written by the thread that logs it, as files and pipes were before */
-static int log_queue(const char *line) {
-    if (log_async < 0) {
-        AcquireSRWLockExclusive(&log_lock);
-        if (log_async < 0) {
-            int on = !getenv("HOS_LOG_SYNC");
-            if (on && !CreateThread(NULL, 0, log_main, NULL, 0, NULL)) on = 0;
-            if (on) log_prev_filter = SetUnhandledExceptionFilter(log_crash_filter);
-            if (on) atexit(log_flush);
-            log_async = on;
-        }
-        ReleaseSRWLockExclusive(&log_lock);
-    }
-    if (!log_async) return 0;
-    char *s = _strdup(line);
-    if (!s) return 0;
-    AcquireSRWLockExclusive(&log_lock);
-    if (log_count < 2048) {
-        log_q[(log_head + log_count) % 2048] = s;
-        log_count++;
-        ReleaseSRWLockExclusive(&log_lock);
-        WakeConditionVariable(&log_cv);
-        return 1;
-    }
-    ReleaseSRWLockExclusive(&log_lock);
-    free(s);
-    log_flush();
-    return 0;
-}
-#else
 static int log_queue(const char *line) { (void)line; return 0; }
 static void log_flush(void) {}
-#endif
 
 void hos_log_flush(void) { log_flush(); }
 
@@ -710,47 +538,11 @@ static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *c
     if (logical < 8 || fast < 4) return 0;
     return last;
 }
-#if defined(_WIN32)
-/* (pick_reserved_core over the calling thread's group's cores; *cores: how many, 0 when they could not be read) */
-static uint64_t last_fastest_core(int *cores) {
-    static uint64_t masks[256];
-    static unsigned char classes[256];
-    DWORD len = 0;
-    int n = 0;
-    *cores = 0;
-    GROUP_AFFINITY ga;
-    const WORD group = GetThreadGroupAffinity(GetCurrentThread(), &ga) ? ga.Group : 0;
-    if (GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
-        return 0;
-    char *buf = (char *)malloc(len);
-    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)buf, &len))
-        for (DWORD at = 0; at < len && n < 256;) {
-            const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(buf + at);
-            if (!e->Size) break;
-            if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount && e->Processor.GroupMask[0].Group == group) {
-                masks[n] = (uint64_t)e->Processor.GroupMask[0].Mask;
-                classes[n] = e->Processor.EfficiencyClass;
-                n++;
-            }
-            at += e->Size;
-        }
-    free(buf);
-    *cores = n;
-    return pick_reserved_core(masks, classes, n);
-}
-#endif
 uint64_t hos_reserved_cpus(void) {
     static uint64_t mask = ~0ull;
     if (mask != ~0ull) return mask;
     mask = 0;
     if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) return mask;
-#if defined(_WIN32)
-    {
-        int cores = 0;
-        const uint64_t fast = last_fastest_core(&cores);
-        if (cores) return mask = fast;
-    }
-#endif
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION info[256];
     DWORD len = sizeof info;
     if (!GetLogicalProcessorInformation(info, &len)) return mask;

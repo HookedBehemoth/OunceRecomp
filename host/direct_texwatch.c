@@ -16,9 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
-#ifndef _WIN32
 #include <sys/mman.h>
-#endif
 
 extern volatile LONG64 hos_present_count;
 uint64_t nvn_gpu_guest(uint64_t gpu);
@@ -289,9 +287,6 @@ void direct_texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what) 
 }
 
 static void mem_find(void) {
-#ifdef _WIN32
-    hos_log("memfind: Linux only");
-#else
     const uint64_t lo = 0x1000000000ull, hi = lo + hos_heap_size;
     const long pg = 4096;
     unsigned char v[256];
@@ -310,7 +305,6 @@ static void mem_find(void) {
         }
     }
     hos_log("memfind: done at present %lld (%d places, %.0f ms)", (long long)hos_present_count, found, (hos_now_ns() - t0) / 1e6);
-#endif
 }
 
 void direct_texwatch_frame(void) {

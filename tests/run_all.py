@@ -26,11 +26,7 @@ OS = "windows" if WINDOWS else "linux"
 # skipped, or fails with --strict. Tests not listed run with no arguments and their own defaults.
 ARGS = {
     "tests/test_direct_spv_late.py": ["--cxx", "{cxx}"],
-    "tests/test_fs_path_utf8.py": ["--cc", "gcc"],
     "tests/test_multiwait_wake.py": ["--cxx", "{cxx}"],
-    "tests/test_screensaver.py": ["--cc", "gcc"],
-    "tests/test_windows_display_startup.py": ["--cc", "gcc"],
-        "tests/test_log_batch.py": ["--cc", "gcc"],
     "tests/test_oot_wide_save_picture.py": ["--cc", "gcc"],
     "tests/test_frame_rate_cap_step.py": ["--cc", "gcc"],
     "tests/test_reserved_core.py": ["--cxx", "g++"],
@@ -62,8 +58,6 @@ MODULES = {
 
 # Checks that cannot run in CI, with why, by OS. Each still runs with --no-skip (or by name).
 SKIP = {
-    "tests/test_fs_path_utf8.py": ({"linux"}, "native Windows filesystem conversion APIs"),
-    "tests/test_log_batch.py": ({"linux"}, "the Windows log writer: SRW locks and threads"),
     # (the game: these run the lifted code of a real dump against Unicorn)
     "nx2/test_insn.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),
     "nx2/test_leaf.py": ({"linux", "windows"}, "needs the game's modules (work/dump) and Unicorn"),

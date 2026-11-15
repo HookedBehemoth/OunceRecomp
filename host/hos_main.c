@@ -20,7 +20,7 @@
 #define HOOKSHOT_VERSION "unknown"
 #endif
 const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's status) */
-#if defined(_WIN32) || defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
@@ -37,13 +37,8 @@ const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's
 #include <sys/syscall.h>
 #endif
 /* (linux) the separator of the paths the executable's folder is joined with */
-#ifdef _WIN32
-#define SEP 92
-#define SEP_S "\\"
-#else
 #define SEP '/'
 #define SEP_S "/"
-#endif
 
 #ifdef A64_MEM_ZERO
 /* web: guest address = wasm address; the guest window is wasm memory below the host's data (-sGLOBAL_BASE) */
@@ -55,20 +50,6 @@ uint64_t hos_space_end;
 #endif
 #define IMAGE_BASE hos_image_base   /* (the lift's: Eden's layout) */
 
-#ifdef _WIN32
-static void no_power_throttling(void) {
-    const char *e = getenv("HOS_POWER_THROTTLING");
-    if (e && atoi(e)) return;
-    typedef BOOL(WINAPI * SetInfo)(HANDLE, int, LPVOID, DWORD);
-    SetInfo set = (SetInfo)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetProcessInformation");
-    if (!set) return;
-    struct { ULONG version, control, state; } s = {1, 0x1 | 0x4, 0};
-    if (!set(GetCurrentProcess(), 4, &s, sizeof s)) {
-        s.control = 0x1;
-        set(GetCurrentProcess(), 4, &s, sizeof s);
-    }
-}
-#endif
 
 int hos_game_is_mkw(void) { return !strcmp(hos_main_build_id, "d00e4f399e411d0613aa8d26b1c02fef"); }
 
@@ -83,38 +64,11 @@ extern const uint64_t hos_entry_init_libc0, hos_entry_init_libc1, hos_entry_init
 /* nn_fs.c */
 extern const char *hos_romfs_dir, *hos_user_dir;
 
-/* HOS_LARGE_PAGES=1 (experiment): the guest window in 2 MB pages, for fewer TLB misses (the game touches hundreds of MB
-   of scattered heap; 4 KB pages cover only ~12 MB of it in the CPU's TLB). The whole window is then physical memory at
-   once (4 GB, locked), and Windows needs the account to hold "Lock pages in memory" (SeLockMemoryPrivilege, Local
-   Security Policy > User Rights Assignment; log off and on after): without it this logs why and uses normal pages. */
+/* (hos_large_pages: the guest window in locked large pages; never set on Linux, where transparent huge pages are the
+   switch: HOS_THP) */
 int hos_large_pages;   /* (hos_mem.c: freed pages are not discarded then) */
-#if defined(_WIN32) && !defined(A64_MEM_ZERO)
-#pragma comment(lib, "advapi32.lib")   /* (the token privilege calls) */
-static void *reserve_large(SIZE_T size) {
-    HANDLE token;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) return NULL;
-    TOKEN_PRIVILEGES tp = {0};
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    const BOOL looked = LookupPrivilegeValueA(NULL, "SeLockMemoryPrivilege", &tp.Privileges[0].Luid);
-    const BOOL adjusted = looked && AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL);
-    const DWORD err = GetLastError();
-    CloseHandle(token);
-    if (!adjusted || err == ERROR_NOT_ALL_ASSIGNED) {
-        hos_log("mem: HOS_LARGE_PAGES: this account does not hold SeLockMemoryPrivilege (\"Lock pages in memory\"): "
-                "normal pages");
-        return NULL;
-    }
-    const SIZE_T large = GetLargePageMinimum();
-    if (!large || size % large) return NULL;
-    void *p = VirtualAlloc((void *)A64_HOST_BASE, size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-    if (!p) hos_log("mem: HOS_LARGE_PAGES: %llu MB of large pages not available (error %lu): normal pages",
-                    (unsigned long long)(size >> 20), GetLastError());
-    return p;
-}
-#endif
 
-#if !defined(_WIN32) && !defined(A64_MEM_ZERO)
+#if !defined(A64_MEM_ZERO)
 extern int hos_guest_memfd;   /* (below) */
 #endif
 /* The guest window lives at the constant A64_HOST_BASE (rt/a64.h), so lifted code never loads its base. */
@@ -122,24 +76,6 @@ static int reserve_guest(void) {
 #if defined(A64_MEM_ZERO)
     hos_space_end = (uint64_t)(uintptr_t)&__global_base & ~0xFFFFULL;
     return hos_space_end >= (1ULL << 30);
-#elif defined(_WIN32)
-    /* Committed but untouched pages cost no physical memory. Write-watched: the renderer's buffer cache asks which
-       pages changed (GetWriteWatch) so that it uploads only those (soft write watch builds mark pages themselves). */
-#if defined(A64_WRITE_TRACK)
-    const DWORD watch = 0;
-    if (getenv("HOS_LARGE_PAGES") && reserve_large(GUEST_SPACE) == (void *)A64_HOST_BASE) {
-        hos_large_pages = 1;
-        hos_log("mem: the guest window is in large pages (%llu MB)", (unsigned long long)(GUEST_SPACE >> 20));
-        return 1;
-    }
-#else
-    const DWORD watch = MEM_WRITE_WATCH;
-#endif
-    /* mkw-recomp: 512 GB reserved (write-watched: the renderer's change tracking, a 16 MB bitmap), committed as the
-       runtime hands memory out (hos_commit) or on first touch */
-    void hos_commit_init(void);
-    hos_commit_init();
-    return VirtualAlloc((void *)A64_HOST_BASE, GUEST_SPACE, MEM_RESERVE | watch, PAGE_NOACCESS) == (void *)A64_HOST_BASE;
 #else
     /* (linux) the whole window readable and writable at once, its pages made as they are first touched (no commit
        step: MAP_NORESERVE). Decommitting is madvise (host/posix/win32_posix.c VirtualFree): the pages read as zero. */
@@ -205,7 +141,7 @@ static int reserve_guest(void) {
 #endif
 }
 
-#if !defined(_WIN32) && !defined(A64_MEM_ZERO)
+#if !defined(A64_MEM_ZERO)
 /* the guest window's memfd for the Vulkan back end (-1: anonymous memory), and freeing guest pages so that
    they read as zero again on either kind of mapping */
 int hos_guest_memfd = -1;
@@ -290,7 +226,6 @@ static void delete_tree(const char *p) {
     }
     RemoveDirectoryA(p);
 }
-#ifndef _WIN32
 /* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
    A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
    cannot be moved keeps the old place. --user still wins. */
@@ -342,7 +277,6 @@ static const char *saves_dir(const char *beside) {
     }
     return dir;
 }
-#endif
 
 /* hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
@@ -412,12 +346,7 @@ static void load_hookshot_env(void) {
             fprintf(stderr, "env: hookshot_env.txt: %s left out (only the game's switches, and no paths, are taken from it)\n", s);
             continue;
         }
-#ifdef _WIN32
-        *eq = '=';
-        _putenv(s);
-#else
         setenv(s, eq + 1, 1);
-#endif
     }
     fclose(f);
 }
@@ -442,7 +371,7 @@ int hos_oot_is_player(Ctx *c, uint64_t actor) {
            recomp_load8(c, resource + 94) == 0;
 }
 
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(__linux__)
 /* OneShotAddOrRemovePouchContent (f_828d4a70) for one pouch content by actor name: delta > 0 adds, < 0 removes.
    Returns the event status (top bits of the result word), or -1 when the pouch is not ready. */
 static int oot_pouch_change(Ctx *c, const char *name, int delta) {
@@ -1136,7 +1065,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
 #endif
 
 int hos_oot_flight_shortcut_ready(void) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(__linux__)
     const int64_t seen = __atomic_load_n(&flight_player_seen, __ATOMIC_RELAXED);
     return seen && hos_now_ns() - seen < 250000000;
 #else
@@ -1144,7 +1073,7 @@ int hos_oot_flight_shortcut_ready(void) {
 #endif
 }
 
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(__linux__)
 static void oot_write_flight_rotation(Ctx *c, uint64_t matrix) {
     const float s = sinf(flight_transform_yaw), co = cosf(flight_transform_yaw);
     const float rotation[3][3] = {{co, 0, s}, {0, 1, 0}, {-s, 0, co}};
@@ -1159,7 +1088,7 @@ static void oot_write_flight_rotation(Ctx *c, uint64_t matrix) {
 #endif
 
 void hos_oot_flight_rotation(Ctx *c, uint64_t controller, uint64_t matrix) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(__linux__)
     if (flight_transform_controller == controller) oot_write_flight_rotation(c, matrix);
 #else
     (void)c;
@@ -1169,7 +1098,7 @@ void hos_oot_flight_rotation(Ctx *c, uint64_t controller, uint64_t matrix) {
 }
 
 void hos_oot_flight_pose(Ctx *c, uint64_t actor, uint64_t matrix) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(__linux__)
     if (flight_pose_actor == actor) {
         flight_pose_actor = 0;
         oot_write_flight_rotation(c, matrix);
@@ -1182,7 +1111,7 @@ void hos_oot_flight_pose(Ctx *c, uint64_t actor, uint64_t matrix) {
 }
 
 void hos_oot_lift_player(Ctx *c, uint64_t actor) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(__linux__)
     flight_pose_actor = 0;
     if (recomp_load64(c, actor) != 0x84b45e18ULL) return;
     const uint64_t components = recomp_load64(c, actor + 624);
@@ -1201,7 +1130,7 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
 #endif
 }
 
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(__linux__)
 static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
     int rx_option(int id, int otherwise);
     static uint64_t active_view;
@@ -1262,7 +1191,7 @@ static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
 #endif
 
 void hos_oot_free_view(Ctx *c, uint64_t view) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(__linux__)
     int rx_option(int id, int otherwise);
     if (!view || recomp_load64(c, view) != 0x84c18a88ULL) return;
 
@@ -1311,12 +1240,7 @@ static int memory_notice_text(unsigned long long ram_mb, unsigned long long swap
 #ifndef A64_MEM_ZERO
 static void memory_notice(void) {
     unsigned long long ram = 0, swap = 0;   /* (MB) */
-#ifdef _WIN32
-    MEMORYSTATUSEX m = {sizeof m};
-    if (!GlobalMemoryStatusEx(&m)) return;
-    ram = m.ullTotalPhys >> 20;
-    swap = m.ullTotalPageFile > m.ullTotalPhys ? (m.ullTotalPageFile - m.ullTotalPhys) >> 20 : 0;   /* (the commit limit: RAM and page file) */
-#elif defined(__linux__)
+#if defined(__linux__)
     struct sysinfo si;
     if (sysinfo(&si)) return;
     ram = ((unsigned long long)si.totalram * si.mem_unit) >> 20, swap = ((unsigned long long)si.totalswap * si.mem_unit) >> 20;
@@ -1330,81 +1254,18 @@ static void memory_notice(void) {
     }
     hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
     if (getenv("HOS_HEADLESS")) return;
-#ifndef _WIN32
     int hos_sdl_load(void);
     hos_sdl_load();   /* (host/posix MessageBoxA shows it through the SDL already loaded) */
-#endif
     MessageBoxA(NULL, text, "Hookshot", MB_OK | MB_ICONWARNING);
 }
 #endif
-#ifdef _WIN32
-/* (hookshot) On laptops with two GPUs, the drivers run a program on the dedicated one when it exports these (NVIDIA Optimus, AMD
-   PowerXpress): without them a laptop could put the game on its integrated GPU, 5 fps (issue 176) */
-__declspec(dllexport) unsigned long NvOptimusEnablement = 1;
-__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
-
-/* (hookshot) The game's paths are UTF-8 char strings through Windows' A functions and fopen: its manifest (nx2/win_manifest.py)
-   makes the process's code page UTF-8, from Windows 10 1903 on. Before that, or with the manifest missing, those take the system's
-   ANSI code page, and a folder name it cannot spell (Japanese on a Western Windows, an emoji) comes back as "?": nothing opens and
-   the game closed with no window and no log. The exe's own path through GetModuleFileNameA must name the exe (a name past MAX_PATH
-   bytes fails the same way); when it does not, a message says why. */
-static int narrow_paths_ok(int argc, char **argv) {
-    char a[MAX_PATH];
-    const DWORD n = GetModuleFileNameA(NULL, a, MAX_PATH);
-    if (n && n < MAX_PATH && GetFileAttributesA(a) != INVALID_FILE_ATTRIBUTES) return 1;
-    wchar_t w[MAX_PATH * 2] = L"";
-    GetModuleFileNameW(NULL, w, MAX_PATH * 2);
-    fprintf(stderr, "hookshot: this folder's path cannot be opened (code page %u, %s): move the game to a folder with a plain name\n",
-            GetACP(), n >= MAX_PATH ? "too long" : "has characters the code page lacks");
-    int quiet = getenv("HOS_HEADLESS") != NULL;
-    if (!quiet) {
-        wchar_t text[MAX_PATH * 2 + 640];
-        _snwprintf(text, sizeof text / sizeof text[0],
-                   L"Hookshot can't open its files in this folder:\n\n%ls\n\n"
-                   L"%ls\n\nMove the game folder somewhere with a shorter name of plain letters and digits (for example C:\\Games\\Hookshot), "
-                   L"or update Windows.",
-                   w, GetACP() == CP_UTF8 ? L"The path is too long."
-                                          : L"Its name has characters this Windows can only give the game from Windows 10 version 1903 on.");
-        text[sizeof text / sizeof text[0] - 1] = 0;
-        MessageBoxW(NULL, text, L"Hookshot", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
-    }
-    return 0;
-}
-
-int main(int argc, char **argv) {
-#else
 static int game_main(int argc, char **argv) {
-#endif
-#ifdef _WIN32
-    if (!narrow_paths_ok(argc, argv)) return 1;
-    load_hookshot_env();
-#endif
     occlusion_switch();
     {
         const char *protect_hearts = getenv("HOS_OOT_PROTECT_HEARTS");
         hos_oot_protect_hearts = protect_hearts && !strcmp(protect_hearts, "1");
     }
-#ifdef _WIN32
-    {   // (the whole process, not only the window's thread: the renderer asks the window's size from its own, and on a 4K screen at 150%
-        // Windows answered such a thread 2560 x 1440: the picture was that size, in the corner of the window. Hookshot issues 15, 18, 20)
-        typedef BOOL(WINAPI * SetAware)(void *);
-        SetAware set = (SetAware)(void *)GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext");
-        if (set && !getenv("HOS_DPI_UNAWARE")) set((void *)(intptr_t)-4);
-    }
-#endif
     {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
-#ifdef _WIN32
-        {   /* (started again by the Insert menu's Restart now (host/hos_relaunch.c): the run before still has its log open until
-               it exits, so wait for it (up to 10 s) before the log moves to .1, or the move fails and its log is overwritten) */
-            const char *of = getenv("HOS_RESTART_OF");
-            if (of && *of) {
-                HANDLE before = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)strtoul(of, NULL, 10));
-                if (before) WaitForSingleObject(before, 10000), CloseHandle(before);
-                SetEnvironmentVariableA("HOS_RESTART_OF", NULL);   /* (not passed on: a later restart sets its own) */
-                _putenv("HOS_RESTART_OF=");
-            }
-        }
-#endif
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
         if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
             char path[MAX_PATH + 32];
@@ -1431,13 +1292,6 @@ static int game_main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
         else if (!image) image = argv[i];
     }
-#ifdef _WIN32
-    {   /* (hookshot) the Discord status (discord_rpc.c), a game run only. Linux starts
-           it in its own main, below; on Windows it was never started: no status and no "discord:" line in any log */
-        void hos_discord_start(void);
-        hos_discord_start();
-    }
-#endif
     static char beside_image[MAX_PATH], beside_romfs[MAX_PATH], beside_user[MAX_PATH];
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[MAX_PATH];
@@ -1452,11 +1306,7 @@ static int game_main(int argc, char **argv) {
             if (GetFileAttributesA(beside_image) != INVALID_FILE_ATTRIBUTES) {
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
-#ifndef _WIN32
                 if (!hos_user_dir) hos_user_dir = saves_dir(beside_user);
-#else
-                if (!hos_user_dir) hos_user_dir = beside_user;
-#endif
             }
         }
     }
@@ -1592,10 +1442,6 @@ static int game_main(int argc, char **argv) {
     uint64_t sp = c->x[31];
     void hos_prof_start(void);
     hos_prof_start();   /* HOS_PROFILE=<seconds> */
-#ifdef _WIN32
-    timeBeginPeriod(1);   /* 1 ms timer resolution: the 60 Hz vsync and the game's frame pacing sleep in short steps */
-    no_power_throttling();
-#endif
     void hos_display_start(void);
     hos_display_start();  /* the game's window; HOS_HEADLESS=1 for none */
     /* nn::init::Start's order (sdk+0xfa060), with rtld's three callbacks done here: f1 only marks rtld initialized,
@@ -1621,7 +1467,6 @@ static int game_main(int argc, char **argv) {
     return 0;
 }
 
-#ifndef _WIN32
 /* (linux) The window belongs on the process's main thread (SDL), so the game runs on a thread of its own, with the
    stack the guest main thread's lifted code needs (the main thread has the system's 8 MB): host/posix/display_sdl.c */
 static int game_argc;
@@ -1654,4 +1499,3 @@ int main(int argc, char **argv) {
     WaitForSingleObject(t, INFINITE);
     return 0;
 }
-#endif

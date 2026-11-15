@@ -18,39 +18,6 @@ static volatile LONG relaunch_asked;
 
 void hos_relaunch_ask(void) { InterlockedExchange(&relaunch_asked, 1); }
 
-#ifdef _WIN32
-static void relaunch(void) {
-    wchar_t exe[MAX_PATH * 4];
-    const DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH * 4);
-    if (!n || n >= MAX_PATH * 4) {
-        hos_log("restart: this executable's path was not found: the game only exits");
-        return;
-    }
-    const wchar_t *line = GetCommandLineW();
-    const size_t len = wcslen(line);
-    wchar_t *cmd = (wchar_t *)malloc((len + 1) * sizeof *cmd);   /* (CreateProcessW may write into it) */
-    if (!cmd) return;
-    memcpy(cmd, line, (len + 1) * sizeof *cmd);
-    STARTUPINFOW si;
-    PROCESS_INFORMATION pi;
-    memset(&si, 0, sizeof si);
-    si.cb = sizeof si;
-    /* (the new process waits for this one to end before it moves hookshot_log.txt to .1 and opens its own: this one still
-       has it open until it exits, and a rename of an open file fails on Windows, so the new run overwrote the old run's
-       log. hos_main.c reads HOS_RESTART_OF) */
-    wchar_t pid[16];
-    swprintf(pid, 16, L"%lu", (unsigned long)GetCurrentProcessId());
-    SetEnvironmentVariableW(L"HOS_RESTART_OF", pid);
-    if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-    } else {
-        hos_log("restart: the game could not be started again (error %lu): it only exits", (unsigned long)GetLastError());
-        hos_log_flush();
-    }
-    free(cmd);
-}
-#else
 #include "hos_relaunch.h"
 #include <dirent.h>
 #include <fcntl.h>
@@ -82,7 +49,6 @@ static void relaunch(void) {
     hos_log("restart: the game could not be started again: it only exits");
     hos_log_flush();
 }
-#endif
 
 /* The window was closed (host/display.c's WM_CLOSE, host/posix/display_sdl.c's quit): the game exits, and starts again
    first when the menu asked for it */

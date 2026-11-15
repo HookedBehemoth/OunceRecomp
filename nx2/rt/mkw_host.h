@@ -56,11 +56,7 @@ typedef struct MkwHost {
     uint64_t (*cntpct)(void *user);
 } MkwHost;
 
-#if defined(_WIN32)
-#define MKW_EXPORT __declspec(dllexport)
-#else
 #define MKW_EXPORT __attribute__((visibility("default")))
-#endif
 
 /* exported by mkw_game.dll */
 typedef struct MkwGameInfo {

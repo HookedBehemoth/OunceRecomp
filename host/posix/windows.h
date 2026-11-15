@@ -1,6 +1,5 @@
-/* (linux) The part of the Win32 API Hookshot's runtime and Vulkan back end use, on POSIX: host/posix is on the include
-   path of Linux builds only (nx2/build.py), so `#include <windows.h>` finds this file and the Windows code paths stay
-   as they are. Implemented in win32_posix.c (threads, events, fibers, files, memory, modules, exceptions, waveOut) and
+/* (linux) The part of the Win32 API Hookshot's runtime uses, on POSIX: host/posix is on the host's include path
+   (nx2/build.py), so `#include <windows.h>` finds this file. Implemented in win32_posix.c (threads, events, fibers, files, memory, modules, exceptions, waveOut) and
    display_sdl.c (the window, keyboard, mouse).
 
    Not a general emulation: what is here is what the code calls, with the behaviour it relies on. Handles are
@@ -525,7 +524,7 @@ static inline void *RtlVirtualUnwind(DWORD type, DWORD64 base, DWORD64 pc, PRUNT
 #define VK_OEM_5 0xDC
 #define VK_OEM_6 0xDD
 #define VK_OEM_7 0xDE
-/* the window's key state: 0x8000 while down (display_sdl.c fills it; the Vulkan back end reads the executable's) */
+/* the window's key state: 0x8000 while down (display_sdl.c fills it) */
 SHORT GetAsyncKeyState(int vk);
 SHORT GetKeyState(int vk);
 #define SM_CXSCREEN 0

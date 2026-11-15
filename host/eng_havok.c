@@ -148,15 +148,9 @@ static int havok_on(void) {
 }
 
 static int64_t thread_cpu_ns(void) {
-#ifdef _WIN32
-    FILETIME c, e, k, u;
-    if (!GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)) return 0;
-    return (int64_t)(((uint64_t)k.dwHighDateTime << 32 | k.dwLowDateTime) + ((uint64_t)u.dwHighDateTime << 32 | u.dwLowDateTime)) * 100;
-#else
     struct timespec ts;
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-#endif
 }
 
 static Slot *slot(void) {
