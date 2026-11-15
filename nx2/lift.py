@@ -218,6 +218,10 @@ def main():
         if not a.no_polls:
             poll.install()
         gen = os.path.join(out_dir, "gen")
+        L.write_tables = False   # (lift 2's side writes the runtime's tables: nx2/lift2/tables.py)
+        from lift2 import tables
+        os.makedirs(gen, exist_ok=True)
+        tables.write(gen, L.funcs, L.hooks)
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
                              counters=[] if a.no_polls else [poll.stats])
         import oot_patches

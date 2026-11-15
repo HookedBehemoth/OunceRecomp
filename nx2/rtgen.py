@@ -71,6 +71,9 @@ SUBST = {
         (RET_MISMATCH, RET_MISMATCH + POLL_DECL),
         ("#define A64_PTR(a) (A64_MEM + (uint32_t)(a))", ADDR64),
         (MARK_NATIVE, MARK_NATIVE_64),
+        # (the present lifter's headers, written by its lift beside its C: only a build with present-lifter C has them)
+        ('#include "a64_suyu.h"\n#include "a64_fpx.h"\n', '#if __has_include("a64_suyu.h")   /* (nx2/rtgen.py) */\n'
+         '#include "a64_suyu.h"\n#endif\n#if __has_include("a64_fpx.h")\n#include "a64_fpx.h"\n#endif\n'),
     ],
     "a64_rt.c": [
         (LOOKUP, "#if A64_ADDR64\n    if (addr >> 32) return NULL;   /* (code lies below 4 GB: never a truncated match) */\n"

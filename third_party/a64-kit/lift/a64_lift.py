@@ -2207,7 +2207,8 @@ class Lifter:
         if hot:
             print("hot functions (A64_HOT_FUNCS): %d of %d listed found%s" % (nhot, len(hot),
                                                                          ", in code_hot.c" if hot_chunk else ""))
-        self._write_table(out_dir)
+        if getattr(self, "write_tables", True):   # (hookshot: nx2/lift2/tables.py writes them in the game's lift)
+            self._write_table(out_dir)
         with open(os.path.join(out_dir, "functions.txt"), "w") as f:
             for e in sorted(self.funcs):
                 f.write("%08x %d\n" % (e, len(self.funcs[e][0])))
