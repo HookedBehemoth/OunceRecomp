@@ -51,9 +51,8 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses. It
 is not a focus override.
 
-**Parked** (`nx2/oot_parked.py`; the table in [lifter.md](lifter.md#103-parked-patches)): text patches of the old
-lifter's C not ported yet. The free camera, heart protection and flight are parked: their switches do nothing
-meanwhile.
+The heart protection, flight and free-camera cheats and their Cheats page are gone with the present lifter;
+[parked-patches.md](parked-patches.md) records what they were.
 
 ## Iterating quickly (Linux)
 
@@ -224,7 +223,7 @@ beside them are listed at the end, under Undocumented, with where they are read.
 | Switch | What it does |
 |---|---|
 | `HOS_INPUT_SCRIPT` | presses timed from the game's first controller read (syntax below) |
-| `HOS_INPUT_LIVE` | `<file>`: lines of presses appended by a test, read every 30 ms; `!cheat <n>` sends a Cheats page action, `!synclog` logs the NVN syncs |
+| `HOS_INPUT_LIVE` | `<file>`: lines of presses appended by a test, read every 30 ms; `!synclog` logs the NVN syncs |
 | `HOS_INPUT_FRAME_CLOCK` | `1`: the script's time runs at 60 game frames a second instead of the wall clock |
 | `HOS_INPUT_EXCLUSIVE` | (set) the script alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses |
 | `HOS_INPUT_BACKGROUND` | controllers count while the window is behind another one (`0` overrides the option) |
@@ -486,9 +485,6 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_NVN_REC_SHIFT` host/nvn_native.c:1937
 - `HOS_NVN_SYNC_BLOCK` host/nvn_native.c:1223
 - `HOS_OCB_NORMAL` host/hos_thread.c:762
-- `HOS_OOT_PROTECT_HEARTS` host/hos_main.c:1375
-- `HOS_OOT_TELEPORT_EVENT` host/hos_main.c:807
-- `HOS_OOT_TELEPORT_STARTER` host/hos_main.c:809
 - `HOS_PIN` host/hos_thread.c:752
 - `HOS_POLL_SLEEP_NS` host/hos_thread.c:932
 - `HOS_PRESENT_NOWAIT` host/nvn_native.c:1255

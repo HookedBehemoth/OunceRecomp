@@ -531,9 +531,9 @@
 802f1380 ui_menu_screen_update            # (found for the menus' mouse, since removed): every menu screen's update, each frame
 8078fcb0 ui_pane_position                 # (found for the menus' mouse, since removed): a pane's position
 802ed660 ui_pause_menu_pane_focus         # (found for the menus' mouse, since removed): pause menu's handler of a pane getting the focus
-828d4a70 ui_pouch_add_remove              # host/hos_main.c: OneShotAddOrRemovePouchContent
-805b63e0 ui_pouch_count                   # host/hos_main.c: (pouch manager, &name, 0, 0) counts one content
-82a3c260 ui_pouch_count_query             # host/hos_main.c: QueryGetPouchContentNumByActorName
+828d4a70 ui_pouch_add_remove              # docs/parked-patches.md: OneShotAddOrRemovePouchContent
+805b63e0 ui_pouch_count                   # docs/parked-patches.md: (pouch manager, &name, 0, 0) counts one content
+82a3c260 ui_pouch_count_query             # docs/parked-patches.md: QueryGetPouchContentNumByActorName
 807923a0 ui_screen_name                   # (found for the menus' mouse, since removed): a screen's name (obj+128 -> +248 -> +24)
 80795090 ui_screen_set_focus_caller       # (found for the menus' mouse, since removed): how the screens call the focus setter
 80bd1820 ui_serialize_capture             # work/assets/native/block-linear.md: ui::SerializeCapture
@@ -541,11 +541,11 @@
 8088ffc0 ui_set_focus                     # (found for the menus' mouse, since removed): (screen, button, flag): the focus setter
 81681690 ui_text_box_texture_thread       # host/hos_setjmp.c: UpdateTextBoxTextureThread (setjmp)
 80b1e140 ui_text_letter_anim              # host/oot_probes.c: steps a text pane's letter animation (text speed patch)
-80794b00 ui_text_skip                     # nx2/oot_parked.py: the game's own skip on A
+80794b00 ui_text_skip                     # host/oot_probes.c (text speed): the game's own skip on A
 
 # --- game: actors, physics, camera, events, game data, world
 8004ab40 actor_baseproc_executor          # work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
-804bd8c0 actor_life_write                 # nx2/oot_parked.py patch_life: an actor's life write (patched for the hearts cheat)
+804bd8c0 actor_life_write                 # docs/parked-patches.md: an actor's life write (the hearts cheat's sites, the CAS at 0x804bdcf8 and 0x804bded0)
 82c3fab0 actor_player_calc                # work/assets/native/cpu-to-gpu.md: actor/player calc # ? docs/direct/boot-to-main-loop.md 4.3: called for every actor (~50 a frame) from actor_calc_one
 82c1d750 actor_records_read_a             # work/assets/native/alloc-transfer.md: CPU reads of its own records in GPU pools
 82c1d340 actor_records_read_b             # work/assets/native/alloc-transfer.md
@@ -554,21 +554,21 @@
 80644c80 camera_player_update             # host/mouse_native.c: the player camera's update (patched: mouse look)
 8064b770 camera_stick_pitch               # host/mouse_native.c: turns pitch by the right stick
 80649c10 camera_stick_yaw                 # host/mouse_native.c: turns yaw by the right stick
-804e48c0 camera_view_loop                 # nx2/oot_parked.py, tests/test_free_view_anchor.py: the view's loop (free camera hook)
-829df380 event_banc_change_arg            # host/hos_main.c: QueryBancChangeEventRequestArg: fills an EventRequestArg
-80d99f10 event_make_arg                   # host/hos_main.c oot_request_banc: used by the teleport cheat
-8022b6f0 event_release_link               # host/hos_main.c oot_request_banc: used by the teleport cheat (release_link)
-80d9a820 event_request                    # host/hos_main.c oot_request_banc: used by the teleport cheat
-802dc440 event_set_link                   # host/hos_main.c oot_request_banc: used by the teleport cheat (set_link)
+804e48c0 camera_view_loop                 # docs/parked-patches.md: the view's loop (the free camera's site, 0x804e5068)
+829df380 event_banc_change_arg            # docs/parked-patches.md: QueryBancChangeEventRequestArg: fills an EventRequestArg
+80d99f10 event_make_arg                   # docs/parked-patches.md (the teleport cheat): used by the teleport cheat
+8022b6f0 event_release_link               # docs/parked-patches.md (the teleport cheat): used by the teleport cheat (release_link)
+80d9a820 event_request                    # docs/parked-patches.md (the teleport cheat): used by the teleport cheat
+802dc440 event_set_link                   # docs/parked-patches.md (the teleport cheat): used by the teleport cheat (set_link)
 83b6b870 event_settings                   # work/assets/native/engine-layers.md: event settings
-8022d9c0 gamedata_get_bool                # host/hos_main.c: GameDataMgr bool by MurMur3 name hash
-80cd0ea0 gamedata_get_string              # host/hos_main.c: GameDataMgr String64 by MurMur3 name hash
+8022d9c0 gamedata_get_bool                # docs/parked-patches.md: GameDataMgr bool by MurMur3 name hash
+80cd0ea0 gamedata_get_string              # docs/parked-patches.md: GameDataMgr String64 by MurMur3 name hash
 8342a460 map_player_pos                   # work/assets/native/engine-layers.md: map player pos
 8243f470 net_env_id_check                 # host/nn_applet.c: checks the nsd environment id for a "t-" prefix (site 0x8243f490)
 8214e9a0 net_npln_worker                  # host/nn_applet.c: OoT's npln worker (site 0x8214eac0 waits on the account AsyncContext)
 820da77c phys_ai_avoidance_a              # work/assets/native/cpu-to-gpu.md, work/assets/native/engine-layers.md: Havok AI collision avoidance (NavMesh step)
 820d94ac phys_ai_avoidance_b              # work/assets/native/engine-layers.md: Havok AI collision avoidance
-806d2530 phys_cct_change_position         # host/hos_main.c, nx2/oot_parked.py: OneShotPhysicsCctChangePosition (vtable 0x84c54f10 +0xe8)
+806d2530 phys_cct_change_position         # docs/parked-patches.md: OneShotPhysicsCctChangePosition (vtable 0x84c54f10 +0xe8)
 81b0e600 phys_cloth_display_prepare       # work/assets/native/cpu-to-gpu.md: Display Prepare
 81b0fe60 phys_cloth_display_release       # work/assets/native/cpu-to-gpu.md: Display Release
 81dddcc0 phys_cloth_interpolate           # work/assets/native/cpu-to-gpu.md: interpolate transforms
@@ -588,12 +588,12 @@
 81f3f634 hkai_reset_clearance_mediator_task  # work/assets/native/engine-layers.md; the name comes from the function's string (ResetClearanceMediatorTask)
 80715ae0 phys_phive_static_compound       # work/assets/native/engine-layers.md
 80718040 phys_phive_volume_stats          # work/assets/native/engine-layers.md: Phive volume stats / static compound
-82c415e0 player_movement                  # nx2/oot_parked.py patch_movement: movement step (patched for flight)
+82c415e0 player_movement                  # docs/parked-patches.md: movement step (the flight's sites)
 80494360 scene_env_state                  # work/assets/native/cpu-to-gpu.md: scene state (volume mask, depth probes "depth valid")
 83bca670 scene_params                     # work/assets/native/engine-layers.md: scene params
 831f3200 scene_resolution_update          # host/oot_probes.c: the scene's update: cached scale, fixed path (patched)
 832ee450 seq_clear_texture_cache_all      # docs/direct/texture-streaming.md: INFERRED: SeqOneShotClearTextureCacheAll
-834722d0 world_set_time                   # host/hos_main.c: ExecuteWmSetTime: seconds since midnight
+834722d0 world_set_time                   # docs/parked-patches.md: ExecuteWmSetTime: seconds since midnight
 
 # --- zstd and resource loading (work/assets/zstd.md: the decoder's map)
 80108da0 fs_ares_load_zstd                # work/assets/native/asset-loading.md, host/nn_zstd.c: the ARes loader (virtual): reads a file, zstd-decodes it
