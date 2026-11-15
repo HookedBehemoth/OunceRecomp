@@ -42,28 +42,27 @@ Each is kept until its experiment runs.
   materialisations, vtables and pointer tables in data, thread and fiber entries, exports, hooks) into `a64_table.c`
   and trap in `a64_lookup`'s miss path (`third_party/a64-kit/rt/a64_rt.c:31`) on a target outside it; smoke and market
   bench. Shrinks D's target domain.
-- **Write-through and reloads beyond the sites that need them** (pessimization 1): decided by C's first step.
+- **Write-through before calls beyond the sites that need it** (pessimization 1): decided by C's dead-store step.
 - **Saves and frames beyond the five frame readers** (pessimization 2): decided by C's pair deletion and F.
 - **memmove semantics for `memcpy`** in `host/nn_libc.c`'s hooks: from the initial import, costs nothing; G keeps
   `llvm.memmove`. No experiment needed.
 
-## C. Summary-driven call boundaries
+## C. Summary-driven call boundaries: what remains
 
-**What.** Keep the generic `f_<addr>(ptr ctx)`. Around a direct BL whose callee has full facts:
+Done: no reload of the preserved x19-x29 and SP after a BL to a full-summary callee the host does not edit, and
+`unreachable` after noreturn callees (lifter.md, "Functions, registers and the context"). What remains, each on the
+generic `f_<addr>(ptr ctx)`:
 
-1. After the call, do not reload the registers the callee's summary preserves; the caller keeps its SSA values
-   (`ir.Builder.after_call(preserved)` keeps their `defs`; `build_ir.build` looks the callee's summary up through
-   `Program`).
-2. Do not store dead temporaries: a write of x9-x18 that is neither a callee input nor read after the call needs no
-   write-back (a backward liveness pass per function, killed by callee inputs).
-3. x30: drop the store only for leaf callees that do not read x30 as data (`lr_data`). Flags: drop the store when the
-   target has no `flags_in`.
-4. Delete the callee-saved save/restore pairs of full-summary functions outside the frame readers' functions (612,455
-   pairs). With throws fatal (`host/cxx_throw.c`) no unwinder reads the saves.
-5. Reloads of everything else stay: callee inputs it may write, results x0/x1/v0-v3, everything after an unknown
-   callee, a BLR, an SVC, a hooked function.
-
-No change to `emit_llvm`.
+1. **Dead stores before calls.** A write of x9-x18 that is neither a callee input nor read after the call needs no
+   write-back (a backward liveness pass per function, killed by callee inputs). x30: drop the store only for leaf
+   callees that do not read x30 as data (`lr_data`). Flags: drop the store when the target has no `flags_in`.
+   *Conditions:* every reader of the context sees what it needs: the callee's inputs (its summary), entry hooks,
+   C-after and SPLICE sites, `a64_svc`, `recomp_ldxr`/`recomp_stxr`, `a64_icall`/`a64_ijump`, `hos_sj_call`, the
+   stall dump; a host-edited or unknown callee keeps every store.
+2. **Pair deletion.** Delete the callee-saved save/restore pairs of full-summary functions outside the frame readers'
+   functions (612,455 pairs). With throws fatal (`host/cxx_throw.c`) no unwinder reads the saves. *Conditions:* the
+   frame readers' functions excluded; the guest stack is then not what it was (a debugger, the stall dump and a
+   longjmp's buffer read it); a verification run.
 
 **Sources.**
 - XenonRecomp (`XenonRecomp/recompiler.cpp`, https://github.com/hedge-dev/XenonRecomp; MIT). Non-volatile and
@@ -76,20 +75,8 @@ No change to `emit_llvm`.
   register promoted to a local, argument or return value after `enforce-abi`. It needs the full prototype.
 - Dynarmic `a64_get_set_elimination_pass.cpp` (0BSD): block-local get/set forwarding; SSA gives us that already.
 
-**Needs.** Summaries on every build (394 s and 8.4 GB in the lift today; a job of its own on `agent/lift-fast`: 117 s,
-1.7 GB, cached). Per-function liveness for step 2.
-
-**Soundness.**
-- A wrong summary breaks step 1: `HOOKSHOT_LIFT_VERIFY=1` checks "preserved register changed" at every exit.
-- setjmp owners and the HLE'd fiber functions count as unknown callees.
-- A hooked function (entry hook returning 1 replaces the body) counts as an unknown callee; the hook list is known at
-  lift time (`nx2/entry_hooks.py`).
-- A C-after or SPLICE site that writes a register into ctx (`rt_slots`, the mesh system) ends the kept-SSA region: it
-  counts as a call that clobbers everything.
-- Step 4 excludes the functions of the frame readers.
-
-**First step.** Step 1 only, with summaries on: `market 600` on/off and one verification run for violations. Steps 2-4
-follow. Gain not measured; the bound is the 31-33 % of context traffic.
+**Soundness.** A wrong summary breaks what is done: `HOOKSHOT_LIFT_VERIFY=1` checks "preserved register changed"
+and "returned (summary: noreturn)" at every exit of a full-summary function.
 
 ## D. Indirect calls
 
@@ -178,6 +165,8 @@ into the wrappers. C takes the pair deletion and the kept SSA values without the
 - Page marks: none emitted; a guest store is one plain store.
 - Virtual cores: removed; every guest thread runs freely, the per-core rings asserted single-writer.
 - C++ throws: a fatal stop (`host/cxx_throw.c`).
+- C, first step: preserved x19-x29 and SP kept across direct calls; `unreachable` after noreturn calls (lifter.md,
+  "Functions, registers and the context").
 - E, jump tables as index switches: 1,197 of 1,475 tables switch on the index, cases `0..n-1` (lifter.md, "Jump tables").
 
 ## Ruled out, with the count

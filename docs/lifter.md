@@ -67,7 +67,11 @@ writes for.
 - **Write-through**: every register write is also stored to the context where it happens (`ir.Builder.set` emits a
   `writeback`). LLVM drops a store that a later one overwrites before any call or return; the last one stays.
 - **Reload after calls**: after a BL, BLR, SVC or a call into host code with the context, every register read loads
-  the context again (`ir.Builder.after_call` clears the block's definitions).
+  the context again (`ir.Builder.after_call` clears the block's definitions), except after a BL to a callee with a
+  full summary that the host does not edit: the values of x19-x29 and SP its summary proves preserved stay SSA values
+  across the call (`build_ir.build`, `Program.keeps`; `game.call_bounds`, `game.host_edited`). The registers are still
+  written to the context before the call. The low halves of v8-v15 are reloaded: their upper halves are not
+  preserved, so the register needs its load anyway.
 - No `alloca` is emitted except for host-stack temporaries of runtime helpers (`lift2_ldxp_lo`).
 
 ### Flags
@@ -124,7 +128,11 @@ exclusives' runtime calls cost nothing measurable.
 
 ### Calls and returns
 
-- **BL**: x30 := the return address, then `call void @f_<callee>(ptr %ctx)`, then the reload of every register.
+- **BL**: x30 := the return address, then `call void @f_<callee>(ptr %ctx)`, then the reload of every register but
+  the callee's preserved x19-x29 and SP (see above). A callee the summaries prove noreturn is followed by
+  `a64_trap(ctx, <BL address>, <BL word>)` and `unreachable`, so a wrong summary stops the game; the code only its
+  return reached is dropped. Host-edited callees (`game.host_edited`: HLE'd functions, entry hooks, setjmp owners,
+  Value/At probes, splices, C after an instruction) reload everything and are not treated as noreturn.
 - **B to another entry, or falling into one**: `musttail call void @f_<callee>(ptr %ctx)`; every function has the same
   prototype, so every tail branch is a guaranteed tail call.
 - **RET**: `ret void`.
@@ -287,8 +295,16 @@ names its instruction word, so another game version stops the lift or the build.
 fixed point inside each): inputs (backward liveness), clobbers and must-defs, the preserved callee-saved registers (a
 frame pass tracking SP, x29 and copies as entry SP plus a constant, and which frame slots hold entry values of
 x19-x30 and d8-d15), results, noreturn (seeded by the fatal functions' names and BLs with nothing after them), FP use.
-The lift computes them only with `HOOKSHOT_LIFT_VERIFY=1` or `HOOKSHOT_LIFT_SUMMARIES=1`: 394 s in the lift's process
-(the fixed point 288 s), 8.4 GB at the peak. The normal build uses none of it.
+Every build has them: the lift writes the job's input beside the plan unless the cache has them
+(`game.plan_summaries`; `work/sa/summaries_<key>.pickle`, the key a SHA-1 of the image, the discovery's facts and
+`enc*`/`sem*`/`ir`/`build_ir`/`summary.py`), and the build's first step computes them before the lift workers and the
+compilers start, in a process of its own (`game.finish_summaries`, `summary.job`: 8 workers over the components' DAG,
+`HOOKSHOT_LIFT_SUMMARY_JOBS`), then packs them into the plan. Cold: 108 s (graph 17 s, fixed point 59 s, results
+26 s), 1.4 GB in the summary process and 1.3 GB in its largest worker; from the cache: 5 s. The build uses them at
+direct calls (above) and prints the sites (`game.call_report`): of 794,900 BL sites, 695,413 keep registers across
+the call (12.0 of x19-x29 and SP a site on average); the others reload everything: to an HLE'd function 44,288, an
+entry hook 27,616, a noreturn callee (trap after) 14,170, a demoted one 13,049, a probe, splice or C-after function
+325, a setjmp owner 39. The 182,791 BLR sites reload everything.
 
 A function is demoted (its interface is outside the AAPCS64) by detection, not by list:
 
@@ -324,7 +340,7 @@ callee-saved save/restore pairs in 174,749 functions. Call edges (1,073,423):
 | direct to a demoted function (13,544 + 1,405) | 14,949 | 1.4 % |
 | a noreturn seed | 14,573 | 1.4 % |
 
-**The verification build** (`HOOKSHOT_LIFT_VERIFY=1` at lift and build time) wraps every function with a full summary
+**The verification build** (`HOOKSHOT_LIFT_VERIFY=1` at build time) wraps every function with a full summary
 in `host/lift2_verify.c`: at entry it poisons the registers the summary says are not read (`0xDEAD`, register,
 function); at exit it reports a noreturn function that returned, a preserved register changed, and a register written
 that the summary says is not; then it restores what is preserved and poisons the written registers no caller reads
@@ -349,10 +365,9 @@ zoo_static benches (600 frames each) and a 100 s title boot.
 | `RX_HOT_OPT` | build | the hot partitions' level (default `O2`) |
 | `RX_MARCH` | build | the target CPU (default: the host's) |
 | `HOOKSHOT_HOT_FUNCS` | lift | the hot list |
-| `HOOKSHOT_LIFT_VERIFY=1` | lift and build | the verification build |
-| `HOOKSHOT_LIFT_SUMMARIES=1` | lift | the summaries without the verification |
+| `HOOKSHOT_LIFT_VERIFY=1` | build | the verification build |
+| `HOOKSHOT_LIFT_SUMMARY_JOBS` | build | the summaries' workers (8) |
 | `LIFT2_DEFAULT_NAN=1` | lift | ARM's default NaN for generated NaNs |
-| `LIFT2_SUMMARY_DEBUG=<addr,...>` | lift | a function's call sites and their callees |
 | `HOOKSHOT_LLVM_BIN` | lift and build | where clang is |
 | `nx2/lift.py --max-func N` | lift | cut functions larger than N instructions where no branch crosses |
 | `HOOKSHOT_OBJCACHE_DAYS` | build | object cache retention |
@@ -385,15 +400,16 @@ zoo_static benches (600 frames each) and a 100 s title boot.
 Each entry: what is emitted, what it costs, what would remove it, and why it is kept. "Unproven" means nothing in this
 tree shows the constraint is needed; the experiment named decides it.
 
-1. **Context traffic.** Write-through of every register before calls and exits, and a reload of every register after
-   every BL, BLR and SVC. About 31-33 % of code bytes on the sample are context accesses (`disp(%reg)`), a share of
-   the binary at 860eb332, which still had page marks and polls (not rescaled). `nocapture`
-   on callees saves 0.0 % (-O1) / 0.7 % (-O2), so the cost is the convention, not missing alias facts. Removed by
-   keeping preserved registers as SSA values across calls to callees with full summaries and dropping dead
-   temporaries' stores ([lifter-optimisations.md](lifter-optimisations.md), C).
-   *Justification:* needed before calls to code that reads the context: entry hooks (`emit_llvm.emit_function`),
-   C-after and SPLICE sites, `a64_svc`, `recomp_ldxr`/`recomp_stxr`, `a64_icall`/`a64_ijump`, `hos_sj_call`, callees
-   with unknown facts. Elsewhere unproven; the experiment is C's first step with a verification run.
+1. **Context traffic.** Write-through of every register before calls and exits, and a reload after every BLR and
+   SVC, and after a BL of every register but the callee's preserved x19-x29 and SP (all of them after a callee
+   without a full summary or one the host edits). About 31-33 % of code bytes on the sample were context accesses
+   (`disp(%reg)`) at 860eb332, before the preserved registers stayed in SSA; not measured again. `nocapture` on
+   callees saves 0.0 % (-O1) / 0.7 % (-O2), so the cost is the convention, not missing alias facts. Reduced further by
+   dropping dead temporaries' stores ([lifter-optimisations.md](lifter-optimisations.md), C).
+   *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs, entry
+   hooks (`emit_llvm.emit_function`), C-after and SPLICE sites, `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
+   `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts; the reloads after callees the summaries do not
+   cover or the host edits. Elsewhere unproven.
 2. **Callee-saved saves and restores, and guest frames in guest memory.** Every function keeps its x19-x30 and d8-d15
    saves and restores (612,455 pairs in 174,749 functions) and its frame in guest memory. Not measured alone.
    Removed by deleting the pairs and promoting frame slots ([lifter-optimisations.md](lifter-optimisations.md), C and
@@ -440,9 +456,7 @@ tree shows the constraint is needed; the experiment named decides it.
     Whether the sites are hot is unproven.
 12. **CRC32 as a bit loop.** The C (Castagnoli) variants equal SSE4.2's `crc32`, one instruction. Sites not counted.
     *Justification:* none.
-13. **No `unreachable` after noreturn calls.** The 708 noreturn functions' callers keep the code after the call.
-    Size only, not measured. *Justification:* the normal build computes no summaries; needs them on every build.
-14. **-O1 for cold partitions.** -O2 is 1 % smaller on the sample. *Justification:* build time and memory; unproven
+13. **-O1 for cold partitions.** -O2 is 1 % smaller on the sample. *Justification:* build time and memory; unproven
     (the cold build at -O2 was not timed).
 
 ## Open items
@@ -450,7 +464,7 @@ tree shows the constraint is needed; the experiment named decides it.
 One line each; the queue with sources, soundness conditions and first steps is
 [lifter-optimisations.md](lifter-optimisations.md).
 
-- C: no reload of preserved registers after calls to full-summary callees; then dead temporaries, pair deletion.
+- C: dead temporaries' stores before calls; pair deletion.
 - D: per-site indirect call cache; profile-guided promotion.
 - F: frame-slot promotion, leaves first.
 - G: libc calls as intrinsics, CRC32C as `crc32`, noreturn as `unreachable`, CCMP chains, NEON gaps.
