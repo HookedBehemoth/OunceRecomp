@@ -12,6 +12,7 @@
 #include "dlss_math.h"
 #include "direct.h"
 #include "direct_crit.h"
+int rx_option(int id, int otherwise);   /* (defined below) */
 
 /* what the back end is given */
 uint8_t *hos_guest_base(void);

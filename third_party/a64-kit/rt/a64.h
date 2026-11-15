@@ -160,6 +160,9 @@ void a64_ret_mismatch(Ctx *A64_NOESC c, uint64_t pc);         /* RET to somethin
 unsigned hos_fp_mxcsr(uint64_t fpcr);
 void a64_fpcr_sync(Ctx *A64_NOESC c);                          /* MXCSR = c->fpcr (after the present lifter's MSR FPCR) */
 void a64_fpsr_sync(Ctx *A64_NOESC c);                          /* MXCSR's flags cleared (after its MSR FPSR) */
+/* (hookshot) the counter (a64_rt.c): declared here, not only in the present lifter's a64_suyu.h, as host/hos_thread.c
+   calls it (without a declaration its 64-bit value came back cut to an int) */
+uint64_t recomp_cntpct(GuestContext *c);
 uint64_t a64_fpcr_read(Ctx *A64_NOESC c);
 void a64_fpcr_write(Ctx *A64_NOESC c, uint64_t v);
 uint64_t a64_fpsr_read(Ctx *A64_NOESC c);
