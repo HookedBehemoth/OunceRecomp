@@ -241,10 +241,11 @@ What is emitted:
   guest address (the crash report, the thread dump, the thread and fiber logs).
 - **The game's own checks**: `__nnmusl_init_dso` (0x85056160) tests whether nnMain, loaded from its relocated slot,
   lies inside the module's range; an At row after the load (0x850565b0) gives it nnMain's guest address
-  (`hos_code_guest_value`). `f_823a6140` (`net_grpc_authority_table_arg_cmp`), the compare of a gRPC pointer channel argument
-  ("grpc.target_authority_table", vtable 0x84978ed8 set at 0x823a608c): three-way, by the function pointer at +0x10,
-  then +0x18. It orders channel arguments (gRPC sorts and compares them to tell channels apart); with host pointers
-  that order differs from the guest's and between runs (ASLR), which nothing observes; left as it is.
+  (`hos_code_guest_value`). `f_823a6140` (`net_grpc_authority_table_arg_cmp`), the compare of a gRPC pointer
+  channel argument ("grpc.target_authority_table", vtable 0x84978ed8 set at 0x823a608c): three-way, by the function
+  pointer at +0x10, then +0x18. It orders channel arguments (gRPC sorts and compares them to tell channels apart);
+  with host pointers that order differs from the guest's and between runs (ASLR), which nothing observes; left as it
+  is.
 - A guest load of a host-valued code pointer as data faults: the guest window is 2^39 bytes at 0x1000_0000_0000 and a
   host pointer is above 2^39.
 - `a64_rt.c` also holds a per-site two-slot cache (`A64_SITE_CALL`, `site_call`) and a site profiler
@@ -608,7 +609,9 @@ tree shows the constraint is needed; the experiment named decides it.
    *Justification:* evidence, not yet proof. The origins of code pointers are closed in this census: every relocated
    value that is code lands on a function entry (453,943 slots, 0 elsewhere), every code address formed in code is an
    entry or one of the kinds `code_ptrs.audit` accounts for, and in a kokiri smoke and a market bench (agent/addr-taken,
-   HOS_DBG=addrtaken) no called target came from outside that set, apart from host calls and the host's own constants.
+   HOS_DBG=addrtaken) no called target came from outside that set, apart from host calls and the host's own constants;
+   with the translation, a kokiri smoke and a market bench logged `0 sites and 0 calls took the guest-address path; 0
+   guest-valued code addresses reached the host`.
    Not proven: uses of vtable-loaded pointers other than calls (a static scan sees only the build-time origins), and
    coverage beyond two scenes. A non-call use found: one ordered compare (`net_grpc_authority_table_arg_cmp`), whose
    order now follows host addresses. Experiment that closes it: the summary line over a long play session
