@@ -1246,17 +1246,6 @@ class Probe(unittest.TestCase):
         self.assertEqual(out, ["1234", "1360", "40400000", "42"])
 
 
-AFTER_HARNESS = r"""
-#include "a64.h"
-#include <stdio.h>
-void g_80003000(Ctx *);
-int main(void) {
-    Ctx c; memset(&c, 0, sizeof c); c.x[0] = 5;
-    g_80003000(&c);
-    printf("%llu %llu\n", (unsigned long long)c.x[8], (unsigned long long)c.x[9]);
-    return 0;
-}
-"""
 CTX_H = """#include <stdint.h>
 #include <string.h>
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
@@ -1265,66 +1254,10 @@ typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; ui
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and have("clang"), "Linux and clang of the pinned LLVM major")
-class AfterC(unittest.TestCase):
-    def test_after_c(self):
-        """C after an instruction (oot_occlusion's form): the instruction, then the host function on the context, and
-        the registers are read back from it (x9 = x8 + 1 sees the C's x8)"""
-        from lift2 import probes
-        words = [0x91000408, 0x91000509, 0xd65f03c0]   # add x8, x0, #1; add x9, x8, #1; ret
-        base = 0x80003000
-        word = lambda pc: words[(pc - base) // 4]
-        pcs = [base + 4 * k for k in range(len(words))]
-        prog = build_ir.Program()
-        prog.after = probes.merge(probes.after_c({base: "c->x[8] = 40;"}, pcs, word))
-        fn = build_ir.build(base, pcs, word, prog)
-        m = emit_llvm.Module()
-        m.add(fn)
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "a64.h"), "w") as fo:
-                fo.write(CTX_H)
-            after = probes.write_after_c({base: "c->x[8] = 40;"}, d)
-            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
-            with open(ll, "w") as fo:
-                fo.write(m.text())
-            with open(c, "w") as fo:
-                fo.write(AFTER_HARNESS)
-            subprocess.run([llvm.check("clang"), "-O1", "-w", "-I" + d, c, after, ll, "-o", exe], check=True)
-            out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
-        self.assertEqual(out, ["40", "41"])
-
-    def test_after_c_on_a_call(self):
-        """C after a BL (the RT pool's f_83b7b340 has one after a BLR): it runs when the call returns, and the code
-        after it reads what the C wrote (x9 = x0 + 1 sees the callee's 10 plus the C's 5)"""
-        from lift2 import probes
-        base = 0x80003000
-        words = [0x94000400, 0x91000409, 0xd65f03c0]   # bl 0x80004000; add x9, x0, #1; ret
-        word = lambda pc: words[(pc - base) // 4]
-        pcs = [base + 4 * k for k in range(len(words))]
-        texts = {base: "c->x[0] += 5;"}
-        prog = build_ir.Program()
-        prog.after = probes.merge(probes.after_c(texts, pcs, word))
-        fn = build_ir.build(base, pcs, word, prog)
-        m = emit_llvm.Module()
-        m.add(fn)
-        harness = AFTER_HARNESS.replace("void g_80003000(Ctx *);",
-                                        "void g_80003000(Ctx *);\nvoid g_80004000(Ctx *c) { c->x[0] = 10; }")
-        harness = harness.replace("c.x[8], (unsigned long long)c.x[9]", "c.x[0], (unsigned long long)c.x[9]")
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "a64.h"), "w") as fo:
-                fo.write(CTX_H)
-            after = probes.write_after_c(texts, d)
-            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
-            with open(ll, "w") as fo:
-                fo.write(m.text())
-            with open(c, "w") as fo:
-                fo.write(harness)
-            subprocess.run([llvm.check("clang"), "-O1", "-w", "-I" + d, c, after, ll, "-o", exe], check=True)
-            out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
-        self.assertEqual(out, ["15", "16"])
-
-    def test_splice_before_a_branch(self):
-        """SPLICE_BEFORE (f_8007fe60's form): the splice runs on a TBZ's fall-through, before the CBNZ there, and the
-        CBNZ reads the register the splice wrote (x1 = 0: falls through to the add)"""
+class BeforeRow(unittest.TestCase):
+    def test_before_a_branch(self):
+        """an At row before an instruction (f_8007fe60's form): it runs on a TBZ's fall-through, before the CBNZ there,
+        and the CBNZ reads the register the row wrote (io x8 += 1, x1 = 0: falls through to the add)"""
         from lift2 import probes
         # tbz w0, #0, #12; cbnz x1, #8; add x8, x8, #100; ret
         words = [0x36000060, 0xb5000041, 0x91019108, 0xd65f03c0]
@@ -1332,13 +1265,12 @@ class AfterC(unittest.TestCase):
         word = lambda pc: words[(pc - base) // 4]
         pcs = [base + 4 * k for k in range(len(words))]
         prog = build_ir.Program()
-        saved = dict(probes.SPLICE_BEFORE)
-        probes.SPLICE_BEFORE[base] = (base, words[0])
+        real = probes.AT
+        probes.AT = [probes.At(base, base + 4, words[1], "t_before", (), before=True, io=("x8", "x1"))]
         try:
-            prog.before = probes.merge(probes.splice_before(base, pcs, word))
+            prog.before = probes.at(base, pcs, word, before=True)
         finally:
-            probes.SPLICE_BEFORE.clear()
-            probes.SPLICE_BEFORE.update(saved)
+            probes.AT = real
         self.assertEqual(list(prog.before), [base + 4])
         fn = build_ir.build(base, pcs, word, prog)
         m = emit_llvm.Module()
@@ -1348,7 +1280,7 @@ class AfterC(unittest.TestCase):
 #include <stdio.h>
 void g_80003000(Ctx *);
 static int calls;
-void splice_0x80003000(Ctx *c) { calls++; c->x[8] += 1; c->x[1] = 0; }
+void t_before(uint64_t *io) { calls++; io[0] += 1; io[1] = 0; }
 int main(void) {
     for (int k = 0; k < 3; k++) {
         Ctx c; memset(&c, 0, sizeof c); c.x[0] = k != 0; c.x[1] = k == 2 ? 5 : 0; calls = 0;

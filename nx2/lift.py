@@ -81,11 +81,6 @@ def main():
             len(spans), len(refs), len(new)))
     from lift2 import discover, game, tables
     L = discover.Discovery(img)
-    if a.standalone:   # (hookshot) widescreen and ultrawide: C after a few of the game's instructions
-        import oot_wide
-        oot_wide.install(L, img)
-        import oot_jitter   # (the temporal upscalers' camera jitter, DLSS's and FSR 3.1's: none unless one runs, host/rx_backend.c)
-        oot_jitter.install(L, img)
     L.discover(max_insns=a.max_func)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
     jt = L.stats

@@ -38,6 +38,9 @@ Operations (Value.op):
   ctxstore               (value i64,), attrs off
   call                   (args...), attrs fn, ctx (bool: the context pointer first): a runtime function returning
                          the value's type ("void" for none); helper (an internal function emit_llvm.HELPERS defines)
+  rowio                  (args..., io values...), attrs fn, nargs, ctx: an At row whose host function also takes a
+                         struct of registers it rewrites (nx2/lift2/probes.py At io); the value's type is its result
+  rowout                 (rowio,), attrs k: the k-th io register's value after the row
   gcall                  attrs sym: a guest function through its generic entry `void sym(ptr ctx)` (BL); the
                          builder's after_call() follows
   icall                  (target i64,): BLR through the runtime's a64_icall(ctx, target); after_call() follows

@@ -131,3 +131,34 @@ teleport and age (Cheats page, live "!warp"):
     to call guest code from a host function without the caller's context, and none exists.
 - **The Cheats page's actions** (pouch, time, teleport, age) need the same kind of guest calls.
 - **The live commands and `scene: ready`** were test tooling built on those actions.
+
+# Parked patch: the temporal upscalers' camera jitter (removed)
+
+`nx2/oot_jitter.py` added a sub-pixel jitter to the scene's projection for a temporal upscaler (NVIDIA DLSS, AMD FSR 3.1
+and 4, `gpu/legacy/vk`). It was C after three instructions on the whole guest context. Nothing could reach it on the
+direct back end: the jitter came from `rx_option(HOS_OPT_DLSS_JITTER_W/_H)`, which the direct back end does not answer,
+so it was always 0. It was removed with the last whole-context sites (declared rows only, docs/lifter.md "Hooks and
+probes"). `host/dlss_math.h` (the Halton sequence, the clip-space offset and the projection check) stays, with
+`tests/test_dlss_math.py`.
+
+| function | site | registers |
+|---|---|---|
+| `f_806dc520` (main+0x6bc520: fills each view's uniform buffers) | after `ldp q21, q22, [x8, #0x20]` at main+0x6bc708 (word `ad415915`) | rows 0 and 1 in q19, q20 (loaded just before) |
+| | after `ldr q26, [x9]` at main+0x6bcf8c (`3dc0013a`) | row 0 in q26 |
+| | after `ldr q6, [x9]` at main+0x6bcf9c (`3dc00126`) | row 1 in q6 |
+
+The view is x28 at all three; its projection's rows are at x28 + 0x1a8, 16 bytes apart. The jitter goes on the third
+column of the first two rows (P[0][2], P[1][2]) in the registers only, so the uniform buffers get the jittered matrix and
+everything made from it, while the game's cameras (and the shadow cascades fitted to them on the CPU, #841) keep the
+projection as it is.
+
+```
+at each site, with x the row register of P[0] (or none) and y that of P[1] (or none):
+    j = jitter_clip(projection = x28 + 0x1a8)      # 0 unless an upscaler runs and the projection is the picture's:
+                                                   # perspective, of 16:9 or the window's ratio (dlss_jitter_clip)
+    if j: x.lane[2] += j.x; y.lane[2] += j.y       # (float lanes; the frame's Halton (2, 3) offset in clip space,
+                                                   #  over dlss_jitter_phases(render, output) frames)
+```
+
+As a row it would be `At(0x806dc520, pc, word, "jitter", ("x28", "q19", "q20"), io=("q19", "q20"))` (and one io
+register for the other two sites).

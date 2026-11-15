@@ -6,7 +6,7 @@
    in the list begun from 0x8007b0c8 (f_8007ad40), with an event signal and wait but no barrier: on the console the copy
    engine follows the 3D engine in order; Vulkan needs the copy to wait for the rendering's depth store (read after write),
    for the last pass that used the destination (write after write), and the next pass for the copy's read (write after
-   read). A SPLICE after the line that loads the proc into x8 points those two calls at a host function, which records
+   read). An At row after the line that loads the proc into x8 (nx2/lift2/probes.py DIRECT) points those two calls at a host function, which records
    Barrier(ORDER_FRAGMENTS | INVALIDATE_TEXTURE), the copy, and the same barrier again, on the list's command buffer.
 
    Check that it applies: the 600-present line "direct patch depth copy" (copies a frame with their barriers, per site). */
@@ -25,12 +25,14 @@ static void barrier(Ctx *c, uint64_t cmd) {
     c->x[0] = cmd, c->x[1] = BITS;
     a64_icall(c, p_barrier);
 }
+static _Thread_local int tl_site = -1;   /* (the row that pointed this call here: 0, 1 the two copies, -1 another) */
 static void copy_fn(Ctx *c, void *u) {   /* (cmd, src, src view, src region, dst, dst view, dst region, flags) */
     (void)u;
     const uint64_t lr = c->x[30];
     uint64_t a[8];
     memcpy(a, c->x, sizeof a);
-    const int site = lr == 0x80289cc4ull ? 0 : lr == 0x806675dcull ? 1 : -1;
+    const int site = tl_site;
+    tl_site = -1;
     if (site >= 0) barrier(c, a[0]), memcpy(c->x, a, sizeof a);
     c->x[30] = lr;
     a64_icall(c, p_copy);
@@ -48,11 +50,13 @@ static int ready(void) {
     InterlockedExchange(&state, p_copy && p_barrier && s_copy ? 1 : 2);
     return state == 1;
 }
-static void retarget(Ctx *c) {
-    if (ready() && c->x[8] == p_copy) c->x[8] = s_copy;
+/* (f_80289590, f_80666d20: after each ldr x8, [x8]) the proc just loaded, the host's copy in place of the copy proc;
+   site: 0 at f_80289590's copy (its blr returns to 0x80289cc4), 1 at f_80666d20's (0x806675dc), 2 the others */
+uint64_t direct_depth_copy_retarget(uint64_t proc, uint32_t site) {
+    if (!ready() || proc != p_copy) return proc;
+    tl_site = site < 2 ? (int)site : -1;
+    return s_copy;
 }
-SPLICE_AFTER_EACH(0x80289590, "c->x[8]=recomp_load64(c,c->x[8] + 0);") { retarget(c); }
-SPLICE_AFTER_EACH(0x80666d20, "c->x[8]=recomp_load64(c,c->x[8] + 0);") { retarget(c); }
 
 void direct_depth_copy_log(double frames) {
     static LONG64 last[3];

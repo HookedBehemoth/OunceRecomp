@@ -11,7 +11,7 @@
    Why it is changed: the direct back end has no block-linear code and never reads texture storage, so the LUT pass read
    zeros (black) and the scene's ambient light followed. nx2/prepare_skybin.py writes the archive with the member linear
    (same sizes) into the prepared overlay (direct_assets_overlay(): work/prepared/terrain), which nn_fs.c serves in direct
-   mode. Here, before each of the three memcpys (x0 the storage, x1 the part, x2 its size), the part goes to its
+   mode. Here (an At row, nx2/lift2/probes.py DIRECT), before each of the three memcpys (x0 the storage, x1 the part, x2 its size), the part goes to its
    texture's image (hsd_texels, a region of the whole level) and the memcpy copies nothing. Converted is told from not by
    where the archive was read: the patch uploads only when the overlay served it (direct_sky_lut_opened, from
    direct_assets_overlay_opened); otherwise the textures get the placeholder, counted. The part sizes are checked
@@ -37,16 +37,16 @@ void direct_sky_lut_opened(const char *path) {
     }
 }
 
-/* f_80846070: after each `x0 = the storage's CPU address` (the line before each of its three memcpys) */
-SPLICE_AFTER_EACH(0x80846070, "(c->z) ? (uint64_t)0 : c->x[8]; c->x[0] = _r;") {
-    if (!direct_assets_on()) return;
-    const uint64_t dst = c->x[0], src = c->x[1], size = c->x[2];
+/* f_80846070: after each `x0 = the storage's CPU address` (the line before each of its three memcpys): x0 the storage,
+   x1 the part, x2 its size. Returns the size the memcpy copies: 0 when the part went to the texture */
+uint64_t direct_sky_lut_part(uint64_t dst, uint64_t src, uint64_t size) {
+    if (!direct_assets_on()) return size;
     nvn_tex t;
     if (!dst || !nvn_tex_live_at(dst, &t)) {
         if (InterlockedIncrement64(&n.notex) <= 5)
             hos_log("direct patch sky lut: no texture at %#llx (%llu bytes from %#llx): left alone", (unsigned long long)dst,
                     (unsigned long long)size, (unsigned long long)src);
-        return;
+        return size;
     }
     int bw = 1, bh = 1;
     const int bpb = nvn_fmt_bpb(t.d.format, &bw, &bh);
@@ -58,7 +58,7 @@ SPLICE_AFTER_EACH(0x80846070, "(c->z) ? (uint64_t)0 : c->x[8]; c->x[0] = _r;") {
             hos_log("direct patch sky lut: texture %#llx (%ux%ux%u, format %#x, target %d) and a part of %llu bytes: left alone",
                     (unsigned long long)t.gpu, t.d.width, t.d.height, t.d.depth, t.d.format, t.d.target,
                     (unsigned long long)size);
-        return;
+        return size;
     }
     NVNcopyRegion r = {0, 0, 0, (int)t.d.width, (int)t.d.height, (int)d};
     if (converted) {
@@ -71,7 +71,7 @@ SPLICE_AFTER_EACH(0x80846070, "(c->z) ? (uint64_t)0 : c->x[8]; c->x[0] = _r;") {
             hos_log("direct patch sky lut: %s was not read from the prepared overlay (nx2/prepare_skybin.py): texture %#llx "
                     "is the placeholder", kFile, (unsigned long long)t.gpu);
     }
-    c->x[2] = 0;   /* (the memcpy copies nothing: the storage stays unwritten) */
+    return 0;   /* (the memcpy copies nothing: the storage stays unwritten) */
 }
 
 void direct_sky_lut_log(double frames) {

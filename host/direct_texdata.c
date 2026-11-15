@@ -62,8 +62,8 @@ void direct_texdata_created(uint64_t td, int alias) {
 /* f_8079aa20(&td->slot, evictable): released to the LRU cache (1), taken back from it (0) */
 ENTRY_HOOK(0x8079aa20) {
     if (!rx_direct() || !direct_assets_on()) return 0;
-    const uint64_t td = ARG(0) - 0x18;
-    const int to_cache = (ARG(1) & 1) != 0;
+    const uint64_t td = a->x[0] - 0x18;
+    const int to_cache = (a->x[1] & 1) != 0;
     if (!hos_guest_range(td, 0x1d0)) return 0;
     int known = 0, changed = 0;
     AcquireSRWLockExclusive(&lock);
@@ -89,7 +89,7 @@ ENTRY_HOOK(0x8079aa20) {
 /* f_8079bbe0(mgr, td): destroyed (its NVN texture is finalized inside, and released as any finalize) */
 ENTRY_HOOK(0x8079bbe0) {
     if (!rx_direct() || !direct_assets_on()) return 0;
-    const uint64_t td = ARG(1);
+    const uint64_t td = a->x[1];
     int was_cached = 0;
     AcquireSRWLockExclusive(&lock);
     const int i = td_slot(td, 0);
@@ -117,11 +117,11 @@ ENTRY_HOOK(0x807981f0) {
     static A64Fn body;
     if (!body) body = a64_lookup(0x807981f0ull);
     if (!body) return 0;
-    const uint64_t td = ARG(0);
+    const uint64_t td = a->x[0];
     const nvn_tex *t = hos_guest_range(td, 0x1d0) ? tex_of(td) : NULL;
     tl_moving = t && t->magic == NVN_MAGIC('T', 'E', 'X', 0) && t->serial ? (const void *)t : NULL;
     tl_in_move = 1;
-    body(c);
+    hook_run(h, body);
     tl_in_move = 0;
     tl_moving = NULL;
     InterlockedIncrement64(&n_moves);
@@ -158,7 +158,7 @@ ENTRY_HOOK(0x80797240) {
     static A64Fn body;
     if (!body) body = a64_lookup(0x80797240ull);
     if (!body) return 0;
-    const uint64_t mgr = ARG(0);
+    const uint64_t mgr = a->x[0];
     if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1ee8, 8)) return 0;
     const int64_t vf = rx_direct()->vram_free();
     last_free_vram = vf;
@@ -170,7 +170,7 @@ ENTRY_HOOK(0x80797240) {
     }
     const LONG64 d0 = n_destroyed;
     tl_in_update = 1;
-    body(c);
+    hook_run(h, body);
     tl_in_update = 0;
     if (raised) {
         G64(mgr + 0x340) = game_thr;

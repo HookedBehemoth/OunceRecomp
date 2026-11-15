@@ -6,14 +6,16 @@
      (0x82c030c4 / 0x82c03314), on the job's command buffer;
    - f_80279400 (water): its call at 0x80279448 of f_831fa4a0, which tail-jumps to WaitEvent (return 0x8027944c);
    - f_8067c310 (the occlusion grid's dispatch), tail-called by f_8067c110 from a job's item callback.
-   Each of those calls the NVN proc through a register loaded just before the call: a SPLICE after that load points the call
+   Each of those calls the NVN proc through a register loaded just before the call: an At row after that load (nx2/lift2/
+   probes.py DIRECT) points the call
    at a host function instead, which, when the command buffer is the job's own (host/eng_jobs.c: the job this thread
    records), keeps (event, mode, value) or the barrier bits for the job's view record, and else calls the proc. f_8067c310 is
    hooked at its entry: inside a job its call (entry, flags) is kept the same way. The CPU side of the hooks (the event slot
    and value taken under the game's mutex) runs as before.
 
-   At the job-call site, f_806688c0's CallCommands (return 0x80668c84; x21 the view record found, [sp + 0x10] the list's draw
-   context, x0 the list's command buffer) is pointed at a host function too: it records the kept waits and one barrier of
+   At the job-call site, f_806688c0's CallCommands (return 0x80668c84; x0 the list's command buffer) is pointed at a host
+   function too, and the row that does it hands over the view record found (x21) and the list's draw context ([sp + 0x10])
+   for this thread, so the host function reads only its arguments: it records the kept waits and one barrier of
    the kept bits on the layer list's command buffer, then the kept dispatches (f_8067c310 with the list's draw context;
    M6d: before the job's commands, not after), then the CallCommands. The water wait may only go here (jobs-state.md B:
    earlier positions deadlock); f_8028a2a0's call
@@ -111,10 +113,13 @@ static void barrier_fn(Ctx *c, void *u) {   /* (cmd, bits) */
     InterlockedIncrement64(&n.through);
     hos_call_guest(c, p_barrier, c->x[0], c->x[1], 0, 0);
 }
+/* the job call's view record and draw context, handed over by direct_job_sync_call just before the call */
+static _Thread_local uint64_t call_view, call_drawctx;
 /* f_806688c0's CallCommands (cmd, count, handles): the view record's kept ops around it */
 static void call_fn(Ctx *c, void *u) {
     (void)u;
-    const uint64_t cmd = c->x[0], cnt = c->x[1], handles = c->x[2], view = c->x[21], drawctx = G64(c->x[31] + 0x10);
+    const uint64_t cmd = c->x[0], cnt = c->x[1], handles = c->x[2], view = call_view, drawctx = call_drawctx;
+    call_view = call_drawctx = 0;
     Kept k;
     int have = 0;
     AcquireSRWLockExclusive(&kept_lock);
@@ -163,32 +168,29 @@ static int ready(void) {
     InterlockedExchange(&state, on);
     return on == 1;
 }
-/* the call target just loaded into x8, at the sites below: the wait and barrier procs pointed at the host's */
-static void retarget(Ctx *c) {
-    if (!ready()) return;
-    if (c->x[8] == p_wait) c->x[8] = s_wait;
-    else if (c->x[8] == p_barrier) c->x[8] = s_barrier;
+/* the call target just loaded (f_82c02f20, f_82c03170: x8 after each ldr x8, [x8]; f_831fa4a0: x4, the same wait code
+   as f_82c02f20's, which tail-jumps to WaitEvent through x4 (f_80279400, water, calls it at 0x80279448: WaitEvent's
+   return is 0x8027944c)): the wait and barrier procs pointed at the host's */
+uint64_t direct_job_sync_retarget(uint64_t proc) {
+    if (!ready()) return proc;
+    return proc == p_wait ? s_wait : proc == p_barrier ? s_barrier : proc;
 }
-SPLICE_AFTER_EACH(0x82c02f20, "c->x[8]=recomp_load64(c,c->x[8] + 0);") { retarget(c); }
-SPLICE_AFTER_EACH(0x82c03170, "c->x[8]=recomp_load64(c,c->x[8] + 0);") { retarget(c); }
-/* f_80279400 (water) calls [renderer + 0x150] at 0x80279448: f_831fa4a0, the same wait code as f_82c02f20's, which
-   tail-jumps to WaitEvent through x4 (so WaitEvent's return is 0x8027944c) */
-SPLICE_AFTER(0x831fa4a0, "c->x[4]=recomp_load64(c,c->x[8] + 0);") {
-    if (ready() && c->x[4] == p_wait) c->x[4] = s_wait;
-}
-/* the job-call site: its CallCommands (the only call of that proc in f_806688c0 through x8) */
-SPLICE_AFTER_EACH(0x806688c0, "c->x[8]=recomp_load64(c,c->x[8] + 0);") {
-    if (ready() && c->x[8] == p_call) c->x[8] = s_call;
+/* the job-call site, f_806688c0 after each ldr x8, [x8]: its CallCommands (the only call of that proc there through
+   x8) pointed at call_fn, with the view record (x21) and the list's draw context ([sp + 0x10]) for it */
+uint64_t direct_job_sync_call(uint64_t proc, uint64_t view, uint64_t drawctx) {
+    if (!ready() || proc != p_call) return proc;
+    call_view = view, call_drawctx = drawctx;
+    return s_call;
 }
 
 ENTRY_HOOK(0x8067c310) {   /* (grid entry, drawctx, flag, flag): the occlusion grid's dispatch */
     if (!ready()) return 0;
-    const uint64_t view = hos_guest_range(c->x[1] + 216, 8) ? job_view(G64(c->x[1] + 216)) : 0;
+    const uint64_t view = hos_guest_range(a->x[1] + 216, 8) ? job_view(G64(a->x[1] + 216)) : 0;
     if (!view) return 0;
     AcquireSRWLockExclusive(&kept_lock);
     Kept *k = kept_of(view);
     if (k && k->nd < 8) {
-        k->d[k->nd].entry = c->x[0], k->d[k->nd].x2 = c->x[2], k->d[k->nd].x3 = c->x[3], k->nd++;
+        k->d[k->nd].entry = a->x[0], k->d[k->nd].x2 = a->x[2], k->d[k->nd].x3 = a->x[3], k->nd++;
         ReleaseSRWLockExclusive(&kept_lock);
         InterlockedIncrement64(&n.dispatches);
         return 1;

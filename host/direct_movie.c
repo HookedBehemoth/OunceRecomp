@@ -7,6 +7,6 @@
 #include <stdlib.h>
 
 ENTRY_HOOK(0x83b7c020) {
-    if (!getenv("HOS_NDVE")) ARG(2) = 0;
+    if (!getenv("HOS_NDVE")) hook_set_arg(h, 2, 0);
     return 0;
 }

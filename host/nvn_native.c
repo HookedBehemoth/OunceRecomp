@@ -345,7 +345,7 @@ NV(nvnMemoryPoolInitialize) {
         guest_chain(c, b, sizeof b);
         hos_log("nvn: pool %#llx size %#llx flags %#x made by %s", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags, b);
     }
-    direct_assets_pool_made(c->x[30], o->gpu, o->size);   /* (M4f: the texture data pool named to the direct back end before its binding) */
+    direct_assets_pool_made(o->gpu, o->size);   /* (M4f: the texture data pool named to the direct back end before its binding) */
     rx_nvn_pool_native(o->gpu, o->size, o->flags, pool_creation_key(c), 1);   /* (native-vk layer 0: placed by its flags, before any binding) */
     rx_nvn_pool_created(o->gpu, o->size);
     OLOG("pool %#llx size %#llx flags %#x", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags);
@@ -415,14 +415,21 @@ NV(nvnMemoryPoolFlushMappedRange) {}
    console the invalidate is a cache op. Here the invalidate waits for the submission writing the slot back, ~8 ms every
    frame on a job worker on the frame's critical path (the replay is a frame behind the game). No wait for any of its four
    invalidates: lr 0x803665d4 and 0x80366168 (the current slot, before and after the copy), 0x8036635c (the other slot),
-   and the tail call's (lr the caller's, 0x80099d84). The exposure meter (f_80357060, read and zeroed) keeps its wait.
-   MKW (hos_game_is_mkw): every invalidate waits */
-static int readback_stamped(const Ctx *c) {
-    static int all = -1;
-    if (all < 0) all = hos_game_is_mkw();
-    const uint64_t lr = c->x[30];
-    return !all && c->x[2] == 0x3980 && ((lr >= 0x80365f00ull && lr < 0x80366600ull) || lr == 0x80099d84ull);
+   and the tail call's (lr the caller's, 0x80099d84): the reader marks its own run (its ENTRY_HOOK below runs its body
+   with this thread noted), so the invalidate is told by who asks, not by its return address. The exposure meter
+   (f_80357060, read and zeroed) keeps its wait. MKW (hos_game_is_mkw): every invalidate waits */
+static _Thread_local int tl_grid_reader;
+ENTRY_HOOK(0x80365f00) {   /* report_reader_a: the grid reader's body, this thread noted */
+    if (tl_grid_reader) return 0;   /* (the body, run below) */
+    static A64Fn body;
+    if (!body) body = a64_lookup(0x80365f00ull);
+    if (!body || hos_game_is_mkw()) return 0;
+    tl_grid_reader = 1;
+    hook_run(h, body);
+    tl_grid_reader = 0;
+    return 1;
 }
+static int readback_stamped(const Ctx *c) { return tl_grid_reader && c->x[2] == 0x3980; }
 NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the GPU wrote */
     if (no_pool(c, "invalidate mapped range")) return;
     const nvn_pool *o = (const nvn_pool *)P(0);
@@ -1815,7 +1822,7 @@ NV(nvnCommandBufferBeginRecording) {
         hsd_list_info info = {0};
         hsd_classify(c, &info);
         info.cmd = h2g(o);
-        if (info.kind == HSD_LIST_JOB && !eng_jobs_tag(c, &info.pass_key, &info.view)) info.pass_key = info.view = 0;
+        if (info.kind == HSD_LIST_JOB && !eng_jobs_tag(c->x[0], &info.pass_key, &info.view)) info.pass_key = info.view = 0;
         r->dl = rx_direct()->list_begin(&info);
         o->rec_start = o->cmd_used;
         uint8_t *p = cmd_alloc(o, 8);

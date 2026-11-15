@@ -6,6 +6,7 @@
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -114,6 +115,35 @@ uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t 
     c->x[30] = lr;
     return c->x[0];
 }
+
+/* Guest code from a hook or an At row, transparent to the lifted caller: every register (x0-x30, SP, NZCV, V0-V31) as
+   it was afterwards, so the lifted code keeps its values as SSA values across it (host/hos.h). */
+static uint64_t call_restoring(Ctx *c, uint64_t sp, uint64_t fn, const uint64_t a[5]) {
+    uint64_t x[32], v[32][2];
+    uint8_t f[4] = {c->n, c->z, c->c, c->v};
+    memcpy(x, c->x, sizeof x);
+    memcpy(v, c->vreg, sizeof v);
+    memcpy(c->x, a, 5 * sizeof *a);
+    c->x[31] = sp, c->x[30] = 0;
+    a64_icall(c, fn);
+    const uint64_t r = c->x[0];
+    memcpy(c->x, x, sizeof x);
+    memcpy(c->vreg, v, sizeof v);
+    c->n = f[0], c->z = f[1], c->c = f[2], c->v = f[3];
+    return r;
+}
+uint64_t guest_call(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    const uint64_t a[5] = {a0, a1, a2, a3, a4};
+    return call_restoring((Ctx *)g, sp, fn, a);
+}
+uint64_t hook_call_guest(HookCall *h, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    const uint64_t a[5] = {a0, a1, a2, a3, a4};
+    return call_restoring((Ctx *)h, ((Ctx *)h)->x[31], fn, a);
+}
+int hook_return(HookCall *h, uint64_t x0) { ((Ctx *)h)->x[0] = x0; return 1; }
+void hook_set_arg(HookCall *h, int n, uint64_t v) { if (n >= 0 && n < 8) ((Ctx *)h)->x[n] = v; }
+void hook_run(HookCall *h, A64Fn body) { body((Ctx *)h); }
+uint64_t hook_result(HookCall *h) { return ((Ctx *)h)->x[0]; }
 
 /* HOS_HOSTCALL_STATS=1: at exit, how often each host call ran (the NVN surface a game really uses). */
 void hos_hostcall_stats(void) {

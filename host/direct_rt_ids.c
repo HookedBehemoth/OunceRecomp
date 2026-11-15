@@ -5,9 +5,10 @@
    f_800634b0(entry, view, 0) at 0x806680d8 (return 0x806680dc) with a texture view built on its stack. Given a view,
    f_800634b0 frees the entry's id (+0x68) and registers the texture again under a new one (agl's descriptor ring), even when
    nothing changed: table word 4 gets a fresh id every frame, a heap entry is written and the deferred table copied at the
-   submit changes. Here, at that call only: when the entry has an id, and the entry's first 0xc0 bytes (the texture
+   submit changes. Here, at that call only (an At row in place of the BL, nx2/lift2/probes.py DIRECT; it makes the call
+   itself through guest_call when the call is to run): when the entry has an id, and the entry's first 0xc0 bytes (the texture
    pointer and settings at +0x00..+0x64, the id at +0x68, the copies f_800634b0 keeps of them from +0x70), the view's 16
-   bytes and the texture object (descriptor, layout, storage address) are all what they were right after this hook last let
+   bytes and the texture object (descriptor, layout, storage address) are all what they were right after this row last let
    the call run, the call is skipped: the id stays, nothing is freed or registered. Any difference runs the game's path (new
    id, the old one freed after the frames in flight). An id is reused only for an identical descriptor.
 
@@ -27,7 +28,6 @@ typedef struct {
 #define NE 64
 static struct { uint64_t entry; int have; Snap s; } ents[NE];
 static SRWLOCK lock = SRWLOCK_INIT;
-static _Thread_local int inside;
 static struct { volatile LONG64 calls, kept, run_first, run_no_id, run_entry, run_view, run_tex, run_other_caller; } n;
 
 static int snap(uint64_t entry, uint64_t view, Snap *s) {
@@ -40,14 +40,14 @@ static int snap(uint64_t entry, uint64_t view, Snap *s) {
     return 1;
 }
 
-ENTRY_HOOK(0x800634b0) {   /* (entry, view, flag) */
-    if (inside || !rx_direct()) return 0;
-    if (c->x[30] != 0x806680dcull) return 0;
-    const uint64_t entry = c->x[0], view = c->x[1];
-    if (!view) return 0;
+#define REREGISTER 0x800634b0ull   /* f_800634b0 desc_reregister (entry, view, flag) */
+
+/* f_80667d20 at 0x806680d8 in place of its bl f_800634b0: sp the caller's, x0-x2 the call's arguments */
+void direct_rt_ids_reregister(GuestCall *g, uint64_t sp, uint64_t entry, uint64_t view, uint64_t flag) {
+    if (!rx_direct() || !view) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }
     InterlockedIncrement64(&n.calls);
     Snap now;
-    if (!snap(entry, view, &now)) return 0;
+    if (!snap(entry, view, &now)) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }
     AcquireSRWLockShared(&lock);
     int i = 0;
     for (; i < NE && ents[i].entry && ents[i].entry != entry; i++) {}
@@ -72,15 +72,10 @@ ENTRY_HOOK(0x800634b0) {   /* (entry, view, flag) */
     ReleaseSRWLockShared(&lock);
     if (same) {
         InterlockedIncrement64(&n.kept);
-        return 1;   /* (the id and its registration stay; f_800634b0's result is not read at 0x806680dc) */
+        return;   /* (the id and its registration stay; f_800634b0's result is not read at 0x806680dc) */
     }
     InterlockedIncrement64(why == 1 ? &n.run_first : why == 2 ? &n.run_no_id : why == 3 ? &n.run_entry : why == 4 ? &n.run_view : &n.run_tex);
-    static A64Fn orig;
-    if (!orig) orig = a64_lookup(0x800634b0);
-    if (!orig) return 0;
-    inside = 1;
-    orig(c);
-    inside = 0;
+    guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0);
     Snap after;
     if (snap(entry, view, &after)) {
         AcquireSRWLockExclusive(&lock);
@@ -89,7 +84,6 @@ ENTRY_HOOK(0x800634b0) {   /* (entry, view, flag) */
         if (j < NE) ents[j].entry = entry, ents[j].s = after, ents[j].have = 1;
         ReleaseSRWLockExclusive(&lock);
     }
-    return 1;
 }
 
 void direct_rt_ids_log(double frames) {

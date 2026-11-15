@@ -8,13 +8,13 @@
      - f_80361c80, once a frame, resets the first record of each of them on the CPU: `str xzr, [x19, layout[+4]]` (w0 and
        w1: NVN's count and first) and `str wzr, [x19, layout[+0x10]]` (the appended count). Found by a page watch on
        0x117a4d6000 (HOS_DBG=memwatch, run m4d_mw_k: lr 0x80362038, every frame, the only CPU writer after the buffer's
-       clear at creation). The splice after each of its 64-bit zero stores writes w1 = w2 = 1 after it.
+       clear at creation). An At row after each of its 64-bit zero stores writes w1 = w2 = 1 after it.
      - f_80361a00, called twice from f_80361c80 (0x80361e08, 0x80361e10: the lists at [x27+0x180], [x27+0x1b8], in
        Kokiri the headers 0x117982a000 and 0x1178b7e000), resets its list's first record the same way (`str xzr, [x22, x8]`
        at 0x80361b3c, x8 = layout[+4]; `str wzr` the appended count). M4d took the w1 = 0 these two kept for a GPU
        write; a page watch (HOS_DBG=memwatch, run m4e_mw_k: guest lr 0x80361b2c < 0x80361e14, every frame) found this
        CPU store, and the culling shader 3de6d86e touches the record only by atomicMax(+0) and atomicAdd(+12) (its IR):
-       no shader needs replacing. The same splice follows it.
+       no shader needs replacing. The same row follows it.
      - their other records are reset on the GPU (w0 and w3 only; w1 and w2 are never written by anyone: M4b's sentinel).
        They get w1 = w2 = 1 where an indirect mesh draw names them (nvnCommandBufferDrawMeshTasksIndirect /
        MultiDrawMeshTasksIndirectCount, nvn_native.c, direct mode), once: only a record whose w1 and w2 are both 0 is
@@ -31,17 +31,11 @@ static void put(uint64_t rec) {
     G32(rec + 4) = 1, G32(rec + 8) = 1;
 }
 
-/* f_80361c80: after each `str xzr, [x19, x8]` (a list's first record, w0 and w1, zeroed) */
-SPLICE_AFTER_EACH(0x80361c80, "64(c,(c->x[19] + c->x[8]),(uint64_t)0);") {
+/* (At rows, nx2/lift2/probes.py DIRECT) f_80361c80: after each `str xzr, [x19, x8]`; f_80361a00: after its
+   `str xzr, [x22, x8]` (a list's first record, w0 and w1, zeroed): the list and the record's offset */
+void direct_mesh_lists_reset(uint64_t list, uint64_t off) {
     if (!rx_direct()) return;
-    put(c->x[19] + c->x[8]);
-    InterlockedIncrement64(&n.resets);
-}
-
-/* f_80361a00: after its `str xzr, [x22, x8]` (its list's first record, w0 and w1, zeroed) */
-SPLICE_AFTER(0x80361a00, "64(c,(c->x[22] + c->x[8]),(uint64_t)0);") {
-    if (!rx_direct()) return;
-    put(c->x[22] + c->x[8]);
+    put(list + off);
     InterlockedIncrement64(&n.resets);
 }
 

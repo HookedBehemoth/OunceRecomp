@@ -18,8 +18,9 @@
 
      ENTRY_HOOK(0x8005ed00)       DTA::alloc(dta, ctx, desc, flags): note lr/name/shape for this thread (flags bit 0:
                                   transient); the first call shrinks the arenas. Returns 0 (the lifted body runs).
-     SPLICE_AFTER_EACH(0x8005ed00) the two lines (0x8005fb74, 0x80061814) that store block +0x38 = the aligned offset:
-                                  x23 block, x10 offset, x8 the block's pool. Both are rewritten to the slot.
+     At rows in f_8005ed00 (nx2/lift2/probes.py DIRECT) after the two lines (0x8005fb74, 0x80061814) that store block
+                                  +0x38 = the aligned offset: x23 block, x10 offset, x8 the block's pool, the alignment
+                                  in the frame at [sp + 192]. Both (x10 and block +0x38) are rewritten to the slot.
      ENTRY_HOOK(0x802737a0)       DTA::free(dta, entry): the slot of entry +0xc0's block is free again.
 
    Persistent allocations (f_80062c50, from the top of the free block) do not set the note and are left to the game.
@@ -44,7 +45,7 @@
    The game's free tells the back end nothing: the memory is the pool's, and a freed target's image is only an object.
    HOS_RT_SLOTS_LOG=1: every slot made, with its name, and why the allocator's first initializations after 1000
    presents were not skipped. Addresses and offsets are HOS_GAME_VERSION 100's (the only one);
-   the splice's anchor stops the build on a lift without it. */
+   the rows' instruction words stop the lift on another build. */
 #include "hos.h"
 #include "../gpu/api/rx_nvn.h"
 #include "direct.h"
@@ -53,7 +54,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
-uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);   /* hos_hostcall.c */
 
 #define DTA_NRECS 0x2a48        /* u32 pool records */
 #define DTA_RECS 0x2a50         /* u64 -> array of pool record pointers */
@@ -128,7 +128,10 @@ static int shadow_classes_on(void) {
     if (v < 0) v = getenv("HOS_RT_QUANT") ? atoi(getenv("HOS_RT_QUANT")) : 1;
     return v;   /* 0 off, 1 the classes, more: multiples of it */
 }
-#define LR_LOCAL_SHADOW 0x80264130ull
+/* (an At row in f_802640a0 pass_local_shadow_depth just before its bl f_8005ed00 at 0x8026412c) the next alloc on this
+   thread is the local shadow map's: its size is a class (shadow_size) */
+static _Thread_local int tl_local_shadow;
+void rt_slots_local_shadow(void) { tl_local_shadow = 1; }
 #define REUSE_AFTER 3   /* presents after a slot's last use before another image may take its memory */
 static int log_slots(void) {
     static int v = -1;
@@ -141,6 +144,7 @@ typedef struct {
     uint32_t fmt, type, w, h, d, mips, flags, arg;   /* arg: alloc's flags argument */
     uint8_t desc[0x38];                              /* the whole descriptor (parking's key) */
     int valid;
+    int local_shadow;                                /* (f_802640a0's alloc: rt_slots_local_shadow) */
 } Cur;
 static _Thread_local Cur cur;
 static _Thread_local uint64_t alloc_sp, alloc_block;   /* (debug: the splice's frame, for the texture init after it) */
@@ -250,7 +254,7 @@ static void shrink_arenas(uint64_t dta) {
 }
 
 static int check_on(void);   /* (HOS_RT_CHECK, below) */
-static void check_arenas(const char *what, Ctx *c, uint64_t dta, uint64_t e);
+static void check_arenas(const char *what, uint64_t lr, uint64_t dta, uint64_t e);
 typedef struct { Cur key; uint64_t entry, block, frame; } Parked;
 static uint64_t steal_q[64];   /* entries whose slots were taken: released at the next sweep (under mu) */
 static int nsteal_q;
@@ -318,29 +322,27 @@ static uint64_t unpark(const Cur *k, uint64_t *drain) {
    keeps the guest's ABI; caller-saved registers restored), never while this thread holds one of the DTA's mutexes
    (a free from an alloc hook deadlocked once: sead::MainThread held +0x29e8/+0x2a08 for good, f_hf_new1) */
 void imp__ZN2nn2os28IsMutexLockedByCurrentThreadEPKNS0_9MutexTypeE(Ctx *c);   /* (nn_os_sync.c) */
-static int holds(Ctx *c, uint64_t m) {
-    const uint64_t x0 = c->x[0];
-    c->x[0] = m;
-    imp__ZN2nn2os28IsMutexLockedByCurrentThreadEPKNS0_9MutexTypeE(c);
-    const int r = c->x[0] != 0;
-    c->x[0] = x0;
-    return r;
+/* an nn::os mutex function (HLE) on a context of its own: x0 the mutex, lr for its logs; its x0 */
+static uint64_t call_mutex(void (*f)(Ctx *), uint64_t m, uint64_t lr) {
+    Ctx t;
+    memset(&t, 0, sizeof t);
+    t.x[0] = m, t.x[30] = lr;
+    f(&t);
+    return t.x[0];
 }
-static void release_now(Ctx *c, uint64_t dta, uint64_t entry) {
-    uint64_t x[19];
-    memcpy(x, c->x, sizeof x);
-    const uint64_t lr = c->x[30];
+static int holds(uint64_t m, uint64_t lr) {
+    return call_mutex(imp__ZN2nn2os28IsMutexLockedByCurrentThreadEPKNS0_9MutexTypeE, m, lr) != 0;
+}
+static void release_now(HookCall *h, uint64_t lr, uint64_t dta, uint64_t entry) {
     releasing = 1;
-    hos_call_guest(c, 0x802737a0ull, dta, entry, 0, 0);
+    hook_call_guest(h, 0x802737a0ull, dta, entry, 0, 0, 0);
     releasing = 0;
-    if (check_on()) check_arenas("after the release of", c, dta, entry);
-    memcpy(c->x, x, sizeof x);
-    c->x[30] = lr;
+    if (check_on()) check_arenas("after the release of", lr, dta, entry);
 }
-static void sweep(Ctx *c, uint64_t dta) {
+static void sweep(HookCall *h, uint64_t lr, uint64_t dta) {
     const uint64_t f = frame;
     if (__atomic_load_n(&last_sweep, __ATOMIC_RELAXED) == f) return;
-    if (holds(c, dta + 0x29e8) || holds(c, dta + 0x2a08)) return;
+    if (holds(dta + 0x29e8, lr) || holds(dta + 0x2a08, lr)) return;
     uint64_t go[MAX_PARKED + 64][2];
     int ngo = 0;
     AcquireSRWLockExclusive(&mu);
@@ -359,18 +361,12 @@ static void sweep(Ctx *c, uint64_t dta) {
         nparked = k;
     }
     ReleaseSRWLockExclusive(&mu);
-    for (int i = 0; i < ngo; i++) release_now(c, go[i][0], go[i][1]);
+    for (int i = 0; i < ngo; i++) release_now(h, lr, go[i][0], go[i][1]);
     if (ngo) __atomic_add_fetch(&n.released, (uint64_t)ngo, __ATOMIC_RELAXED);
 }
 
 void imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE(Ctx *c);     /* (nn_os_sync.c) */
 void imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE(Ctx *c);
-static void call_mutex(Ctx *c, void (*f)(Ctx *), uint64_t m) {   /* (c->x[0] kept) */
-    const uint64_t x0 = c->x[0];
-    c->x[0] = m;
-    f(c);
-    c->x[0] = x0;
-}
 /* a sead list (circular: node +0 previous, +8 next; the sentinel its own when empty; count at sentinel +0x10): 0 when
    every node's previous is the one before it and count nodes lead back to the sentinel; else where it is not (1 + k:
    a previous link, 1000: no way back, 2000 + k: another count, 3000 + k: a link out of guest memory) */
@@ -410,8 +406,8 @@ static void ev_log(const Ev *v) {
     hos_log("rt check:   %.6f %s %s entry %#llx block %#llx lr %#llx", v->ns / 1e9, v->thread, v->what,
             (unsigned long long)v->e, (unsigned long long)v->blk, (unsigned long long)v->lr);
 }
-static void ev(const char *what, Ctx *c, uint64_t e) {
-    const Ev v = {hos_now_ns(), what, hos_thread_name(hos_self()), e, c->x[30],
+static void ev(const char *what, uint64_t lr, uint64_t e) {
+    const Ev v = {hos_now_ns(), what, hos_thread_name(hos_self()), e, lr,
                   e && hos_guest_range(e, 0xc8) ? G64(e + ENT_BLOCK) : 0};
     evs[(InterlockedIncrement(&nev) - 1) & 255] = v;
     if (!e) return;
@@ -432,13 +428,13 @@ static void ev(const char *what, Ctx *c, uint64_t e) {
         }
     }
 }
-static void check_arenas(const char *what, Ctx *c, uint64_t dta, uint64_t e) {
+static void check_arenas(const char *what, uint64_t lr, uint64_t dta, uint64_t e) {
     if (!check_on() || state < 0) return;
-    ev(what, c, e);
-    if (holds(c, dta + 0x29e8) || holds(c, dta + 0x2a08)) return;
+    ev(what, lr, e);
+    if (holds(dta + 0x29e8, lr) || holds(dta + 0x2a08, lr)) return;
     static volatile LONG told;
     static const int lists[3] = {0x58, 0x70, 0x88};
-    call_mutex(c, imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE, dta + 0x2a08);
+    call_mutex(imp__ZN2nn2os9LockMutexEPNS0_9MutexTypeE, dta + 0x2a08, lr);
     const uint64_t recs = G64(dta + DTA_RECS);
     for (uint32_t r = 0; r < *(uint32_t *)GP(dta + DTA_NRECS) && r < 4; r++) {
         const uint64_t rec = G64(recs + 8ull * r), ar = G64(rec + REC_ARENAS);
@@ -454,13 +450,13 @@ static void check_arenas(const char *what, Ctx *c, uint64_t dta, uint64_t e) {
                 }
                 hos_log("rt check: at %s entry %#llx: record %u arena %u list +%#x broken at %d (count %u, %llu MB used); "
                         "lr %#llx thread %s", what, (unsigned long long)e, r, i, lists[l], bad, G32(sn + 0x10),
-                        (unsigned long long)(G64(ar + (uint64_t)i * 0xe8 + AR_BYTES) >> 20), (unsigned long long)c->x[30],
+                        (unsigned long long)(G64(ar + (uint64_t)i * 0xe8 + AR_BYTES) >> 20), (unsigned long long)lr,
                         hos_thread_name(hos_self()));
             }
     }
-    call_mutex(c, imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE, dta + 0x2a08);
+    call_mutex(imp__ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE, dta + 0x2a08, lr);
 }
-static int alloc_pre(Ctx *c);
+static int alloc_pre(const HookArgs *a, HookCall *h);
 static _Thread_local uint64_t shadow_obj;   /* (f_802640a0's shadow object, for the alloc it makes) */
 static uint32_t shadow_size(uint64_t obj, uint32_t w);
 static void alloc_gave(uint64_t entry);
@@ -468,37 +464,39 @@ static _Thread_local int in_alloc;
 /* The alloc's body runs from here, so the entry it gives is seen (alloc_gave) */
 ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
     if (in_alloc) return in_alloc = 0, 0;   /* (the lifted body, called below: the flag is taken by its first entry, so a nested call is hooked as any) */
-    const int handled = alloc_pre(c);
+    const int handled = alloc_pre(a, h);
     if (off_()) return handled;
     if (!handled) {
         static A64Fn body;
         if (!body) body = a64_lookup(0x8005ed00ull);
         if (!body) return 0;
         in_alloc = 1;
-        body(c);
+        hook_run(h, body);
         in_alloc = 0;
     }
-    alloc_gave(c->x[0]);
+    alloc_gave(hook_result(h));
     return 1;
 }
-static int alloc_pre(Ctx *c) {
+static int alloc_pre(const HookArgs *a, HookCall *h) {
+    const int local_shadow = tl_local_shadow;
+    tl_local_shadow = 0;
     if (off_()) return 0;
     alloc_sp = 0;   /* (M6f: the splice of this call sets it) */
-    dta_seen = ARG(0);
+    dta_seen = a->x[0];
     __atomic_add_fetch(&n.calls, 1, __ATOMIC_RELAXED);
     if (cur.valid) __atomic_add_fetch(&n.stale, 1, __ATOMIC_RELAXED);   /* the last transient call never reached the splice */
     cur.valid = 0;
     if (state < 0) {
         AcquireSRWLockExclusive(&mu);
-        if (state < 0) shrink_arenas(ARG(0));
+        if (state < 0) shrink_arenas(a->x[0]);
         ReleaseSRWLockExclusive(&mu);
     }
-    if (check_on()) check_arenas("alloc", c, ARG(0), 0);
-    if (!(ARG(3) & 1)) return 0;   /* persistent: the game's */
+    if (check_on()) check_arenas("alloc", a->lr, a->x[0], 0);
+    if (!(a->x[3] & 1)) return 0;   /* persistent: the game's */
     __atomic_add_fetch(&n.transient, 1, __ATOMIC_RELAXED);
-    const uint64_t d = ARG(2);
+    const uint64_t d = a->x[2];
     if (state != 1 || !hos_guest_range(d, 0x38)) return 0;
-    if (c->x[30] == LR_LOCAL_SHADOW && shadow_classes_on()) {   /* (the descriptor is the caller's, on its stack, read only here) */
+    if (local_shadow && shadow_classes_on()) {   /* (the descriptor is the caller's, on its stack, read only here) */
         const uint32_t w = G32(d + 0x10), h = G32(d + 0x14);
         const uint32_t q = (uint32_t)shadow_classes_on();
         if (q > 1) {
@@ -514,16 +512,16 @@ static int alloc_pre(Ctx *c) {
         }
         shadow_obj = 0;
     }
-    Cur k = {c->x[30], G64(d), ARG(0), G32(d + 8), G32(d + 0xc), G32(d + 0x10), G32(d + 0x14), G32(d + 0x18),
-             G32(d + 0x1c), G32(d + 0x30), (uint32_t)ARG(3), {0}, 1};
+    Cur k = {a->lr, G64(d), a->x[0], G32(d + 8), G32(d + 0xc), G32(d + 0x10), G32(d + 0x14), G32(d + 0x18),
+             G32(d + 0x1c), G32(d + 0x30), (uint32_t)a->x[3], {0}, 1, local_shadow};
     memcpy(k.desc, GP(d), sizeof k.desc);
     if (park_on()) {
         uint64_t drain = 0;
         const uint64_t e = unpark(&k, &drain);
         if (drain) {   /* its arena is tight: back to the game now (this thread holds neither DTA mutex at an alloc's
                           entry, as sweep checks), the caller's own lane allocates below */
-            if (!holds(c, ARG(0) + 0x29e8) && !holds(c, ARG(0) + 0x2a08)) {
-                release_now(c, ARG(0), drain);
+            if (!holds(a->x[0] + 0x29e8, a->lr) && !holds(a->x[0] + 0x2a08, a->lr)) {
+                release_now(h, a->lr, a->x[0], drain);
                 __atomic_add_fetch(&n.released, 1, __ATOMIC_RELAXED);
             } else {   /* (not expected) parked again: the sweep releases it */
                 AcquireSRWLockExclusive(&mu);
@@ -532,8 +530,7 @@ static int alloc_pre(Ctx *c) {
             }
         }
         if (e) {   /* the same target as last frame: its entry, whole */
-            RET(e);
-            return 1;
+            return hook_return(h, e);
         }
     }
     cur = k;
@@ -665,7 +662,7 @@ static Slot *take(uint64_t fam, uint64_t need, uint64_t align, uint64_t block) {
     } else {
         /* a family seen before (its size moves, or more of it live at once) gets a quarter more room; not the local
            shadows, whose sizes are classes */
-        const uint64_t cap = ((family && cur.lr != LR_LOCAL_SHADOW ? need + need / 4 : need) + 0xffff) & ~0xffffULL;
+        const uint64_t cap = ((family && !cur.local_shadow ? need + need / 4 : need) + 0xffff) & ~0xffffULL;
         const uint64_t at = nslots < MAX_SLOTS ? place(cap, align) : ~0ull;
         if (at == ~0ull) return steal(need, align, block);
         best = &slots[nslots++];
@@ -711,19 +708,19 @@ static int pool_ok(uint64_t pool) {   /* a virtual pool that holds the slot rang
     return 1;
 }
 
-/* (lifted f_8005ed00, after each "block +0x38 = aligned offset"): x23 block, x10 offset, x8 the pool. The next lifted
+/* (an At row in f_8005ed00, after each "block +0x38 = aligned offset"): x8 the pool, x10 the offset, x23 the block, the
+   alignment at [sp + SP_ALIGN] (sp kept for the HOS_RT_SLOTS_LOG lines). Returns x10: the slot's offset. The next lifted
    line adds the TextureData's base to x10; everything after (entry +0, the registration compare, SetStorage, views
    made later from the entry) reads the offset from x10 or block +0x38. */
-SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
-    alloc_sp = c->x[31], alloc_block = c->x[23];   /* (M6f: persistent allocations too: the entry's texture, below) */
+uint64_t rt_slots_offset(uint64_t pool, uint64_t game, uint64_t block, uint64_t sp, uint64_t align_slot) {
+    alloc_sp = sp, alloc_block = block;   /* (M6f: persistent allocations too: the entry's texture, below) */
     if (!cur.valid) {
         if (!off_()) __atomic_add_fetch(&n.unspliced, 1, __ATOMIC_RELAXED);
-        return;
+        return game;
     }
     const Cur k = cur;
     cur.valid = 0;
-    const uint64_t block = c->x[23], game = c->x[10];
-    const uint64_t align = (uint64_t)(int64_t)(int32_t)G32(c->x[31] + SP_ALIGN);
+    const uint64_t align = (uint64_t)(int64_t)(int32_t)(uint32_t)align_slot;   /* (s32 at [sp + SP_ALIGN]) */
     uint64_t dev_align = 0;
     const uint64_t dev_need = device_need(&k, &dev_align);
     AcquireSRWLockExclusive(&mu);
@@ -736,7 +733,7 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
         if (game + game_need > lo) back_off("an arena offset in the slot range", game, game_need);
         else if (*(uint32_t *)GP(k.dta + DTA_NRECS) != nrecs0) back_off("a second pool record", nrecs0, 0);
         else if (align & (align - 1) || align > 0x1000000 || dev_align > 0x10000) back_off("alignment", align, dev_align);
-        else if (pool_ok(c->x[8])) {
+        else if (pool_ok(pool)) {
             cur = k;   /* (take reads the shape and name from it) */
             s = take(fam_of(&k), need, align, block);
             cur.valid = 0;
@@ -777,10 +774,10 @@ SPLICE_AFTER_EACH(0x8005ed00, "c->x[23] + 56,c->x[10]);") {
                      (unsigned long long)k.lr, (unsigned long long)(G64(block + BLK_SIZE) >> 10), (unsigned long long)game);
             d->host_event("a transient target placed outside the slots", w);
         }
-        return;
+        return game;
     }
-    c->x[10] = s->off;
     G64(block + 0x38) = s->off;
+    return s->off;
 }
 
 /* The entry an alloc gave (a new one, one from the allocator's free lists, or a parked one handed back), told to the
@@ -831,7 +828,7 @@ static uint32_t class_of(uint32_t w) {
 static struct { uint64_t obj; uint32_t cls; } ls_tab[LS_TAB];
 static SRWLOCK ls_lock = SRWLOCK_INIT;
 ENTRY_HOOK(0x802640a0) {   /* (shadow object = light + 0x100, ctx, flags): noted; the lifted body runs */
-    shadow_obj = ARG(0);
+    shadow_obj = a->x[0];
     return 0;
 }
 /* the size a light's map gets for the size w it wants */
@@ -861,9 +858,9 @@ static uint32_t shadow_size(uint64_t obj, uint32_t w) {
 
 ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
     if (off_()) return 0;
-    const uint64_t e = ARG(1);
+    const uint64_t e = a->x[1];
     if (!hos_guest_range(e, 0x180)) return 0;
-    if (check_on()) check_arenas("free of", c, ARG(0), e);
+    if (check_on()) check_arenas("free of", a->lr, a->x[0], e);
     const uint64_t block = G64(e + ENT_BLOCK);
     if (!block && (*(uint8_t *)GP(e + 0xba) & 3)) {
         /* an entry the game's alloc gave no block (its arena was full): its free would read block 0 and link a node at
@@ -871,18 +868,18 @@ ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
         static volatile LONG told;
         if (InterlockedIncrement(&told) <= 10)
             hos_log("rt slots: free of entry %#llx without a block (an arena ran out), skipped; lr %#llx",
-                    (unsigned long long)e, (unsigned long long)c->x[30]);
+                    (unsigned long long)e, (unsigned long long)a->lr);
         __atomic_add_fetch(&n.blockless, 1, __ATOMIC_RELAXED);
         return 1;
     }
-    if (park_on() && !releasing) sweep(c, ARG(0));
+    if (park_on() && !releasing) sweep(h, a->lr, a->x[0]);
     int park = 0;
     AcquireSRWLockExclusive(&mu);
     n.frees++;
     if (block)
         for (int i = 0; i < nslots; i++)
             if (slots[i].block == block) {
-                if (park_on() && !releasing && state == 1 && slots[i].key.valid && slots[i].key.dta == ARG(0) &&
+                if (park_on() && !releasing && state == 1 && slots[i].key.valid && slots[i].key.dta == a->x[0] &&
                     !G64(block + 0x88)) {   /* (not a block with an on-free delegate, +0x78..+0x90) */
                     if (nparked < MAX_PARKED) {   /* kept whole: the slot stays with the block */
                         parked[nparked++] = (Parked){slots[i].key, e, block, frame};

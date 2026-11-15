@@ -20,7 +20,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
-from lift2 import build_ir, emit_llvm, game, host_effects, llvm, summary, tables  # noqa: E402
+from lift2 import build_ir, emit_llvm, game, host_effects, llvm, probes, summary, tables  # noqa: E402
 import rtgen  # noqa: E402
 
 BASE = 0x80000000
@@ -73,7 +73,7 @@ def lift(hooks=(), sj=(), hle=None, calls=None):
     sums, _, _ = summary.summarise(funcs, prog, set(), word)
     hle = hle or {}
     plan = {"summaries": {e: summary.pack(s) for e, s in sums.items()}, "plt": {}, "hooks": sorted(hle),
-            "sj_rets": {e: (0, 0, 0, 0) for e in sj}, "after_c": {},
+            "sj_rets": {e: (0, 0, 0, 0) for e in sj},
             "bodies": {e: (sorted(pcs), [word(p) for p in sorted(pcs)]) for e, pcs in funcs.items()}}
     entry = {e: "entry_0x%08x" % e for e in hooks}
     saved = dict(host_effects.CALLS)
@@ -130,6 +130,26 @@ class Calls(unittest.TestCase):
         fns, _ = lift(hooks=[A["keep"]], calls={"entry_0x%08x" % A["keep"]: (A["clob"],)})
         self.assertIn("x19", loads_after_call(fns["c1"]))
 
+    def test_row_callee(self):
+        """a callee with an At row is not host-edited: a call of it keeps what its summary preserves, and the summary
+        counts the row's declared reads; a row writing a callee-saved register its instruction does not stops the lift"""
+        real = probes.AT
+        try:
+            probes.AT = [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0", "x5"), "x0")]
+            summary._ROWS = None
+            fns, funcs = lift()
+            self.assertFalse(loads_after_call(fns["c1"]) & {"x19", "x29", "sp"}, loads_after_call(fns["c1"]))
+            sums, _, _ = summary.summarise(funcs, build_ir.Program(entries=set(A.values())), set(), word)
+            self.assertTrue(sums[A["keep"]].inputs & summary.BIT["x5"])   # (the row's argument)
+            pcs = sorted(funcs[A["keep"]])
+            self.assertEqual(list(probes.at(A["keep"], pcs, word)), [A["keep"]])
+            probes.AT = [probes.At(A["keep"], A["keep"], word(A["keep"]), "t_row", ("x0",), "x19")]
+            with self.assertRaises(SystemExit):
+                probes.at(A["keep"], pcs, word)
+        finally:
+            probes.AT = real
+            summary._ROWS = None
+
     def test_declared_clobbering(self):
         host_effects.CLOBBERS["nn_keep"] = "test"
         try:
@@ -141,10 +161,11 @@ class Calls(unittest.TestCase):
     def test_undeclared_name(self):
         names = {e: "nn_" + n for n, e in A.items()}
         hooks = {A["keep"]: "entry_0x%08x" % A["keep"]}
-        saved = (dict(host_effects.CLOBBERS), dict(host_effects.CALLS))
+        saved = (dict(host_effects.CLOBBERS), dict(host_effects.CALLS), dict(host_effects.HOOK_READS))
         try:
             host_effects.CLOBBERS.clear()
             host_effects.CALLS.clear()
+            host_effects.HOOK_READS.clear()
             host_effects.CLOBBERS["nn_clob"] = "test"
             host_effects.CALLS["entry_0x%08x" % A["keep"]] = (A["clob"],)
             host_effects.check(names, hooks)   # (both exist)
@@ -155,8 +176,12 @@ class Calls(unittest.TestCase):
             host_effects.CALLS["entry_0x00000000"] = ()
             with self.assertRaises(SystemExit):
                 host_effects.check(names, hooks)
+            del host_effects.CALLS["entry_0x00000000"]
+            host_effects.HOOK_READS["entry_0x00000000"] = ("sp",)   # (a hook's declared reads: no such hook)
+            with self.assertRaises(SystemExit):
+                host_effects.check(names, hooks)
         finally:
-            for d, v in zip((host_effects.CLOBBERS, host_effects.CALLS), saved):
+            for d, v in zip((host_effects.CLOBBERS, host_effects.CALLS, host_effects.HOOK_READS), saved):
                 d.clear()
                 d.update(v)
 

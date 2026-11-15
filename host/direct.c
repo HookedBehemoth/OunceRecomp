@@ -6,38 +6,31 @@
 #include <string.h>
 #include <windows.h>
 
-/* The game's load-time lists (vertex, draw, shape, material and the two measuring copies of the first two), by where their
-   recording began: the guest return address after BeginRecording; 0: not one of them. The value is the list's load kind. */
-static int load_kind(uint64_t lr) {
-    switch (lr) {
-    case 0x804582acull: return 1;   /* vertex list: f_804581b0 <- f_80457e60 */
-    case 0x80293b14ull: return 2;   /* draw list: f_80293890 <- f_804566e0 */
-    case 0x806006d8ull: return 3;   /* per-instance shape list: f_806002e0 <- f_8009bb80 */
-    case 0x80445314ull: return 4;   /* material list: f_80445020 <- f_80443000 */
-    case 0x8044ea20ull: return 5;   /* vertex list's measuring copy: f_8044e8e0 <- f_8044e020 */
-    case 0x80293460ull: return 6;   /* draw list's measuring copy: f_80293190 <- f_8044cb30 */
-    default: return 0;
-    }
-}
-
-/* ---- the list kinds, by the return address of BeginRecording (this build of the game; engine-frame.md section 1 as
-   checked by a run). An address not here begins a PACKET list (counted, named in the log) ---- */
+/* ---- the list kinds: the function that begins a recording names it, by an At row just before its BeginRecording call
+   (nx2/lift2/probes.py DIRECT: direct_list_kind); a recording no row named is a PACKET list (counted, named in the log).
+   1-6: the game's load-time lists (the list's load kind): 1 vertex list (f_804581b0 <- f_80457e60), 2 draw list
+   (f_80293890 <- f_804566e0), 3 per-instance shape list (f_806002e0 <- f_8009bb80), 4 material list (f_80445020 <-
+   f_80443000), 5 the vertex list's measuring copy (f_8044e8e0 <- f_8044e020), 6 the draw list's measuring copy
+   (f_80293190 <- f_8044cb30); 16 JOB (f_80084de0, the render-job recorder), 17 LAYER (f_8006cd60, an agl::lyr layer's
+   list; f_8007ad40; f_8007b520, a layer job's too: 5 a frame, never called, M1 run), 18 GATE (f_802eb390, the gate
+   primary), 19 COMPUTE (f_806650d0, an async-compute list), 20 HEAD (f_80665980, a queue's head, command-lists.md).
+   The return address and frame pointer are kept in the info as labels for the logs. ---- */
+static _Thread_local uint32_t tl_kind;
+void direct_list_kind(uint32_t kind) { tl_kind = kind; }
 void hsd_classify(Ctx *c, hsd_list_info *info) {
-    const uint64_t lr = c->x[30];
-    info->lr = lr, info->fp = c->x[29];
-    const int load = load_kind(lr);
-    if (load) {
-        info->kind = HSD_LIST_LOAD, info->load_kind = (uint32_t)load;
+    info->lr = c->x[30], info->fp = c->x[29];
+    const uint32_t k = tl_kind;
+    tl_kind = 0;
+    if (k >= 1 && k <= 6) {
+        info->kind = HSD_LIST_LOAD, info->load_kind = k;
         return;
     }
-    switch (lr) {
-    case 0x8008533cull: info->kind = HSD_LIST_JOB; break;       /* f_80084de0, the render-job recorder */
-    case 0x8006d258ull:                                         /* f_8006cd60, an agl::lyr layer's list */
-    case 0x8007b0c8ull:                                         /* f_8007ad40 */
-    case 0x8007ba00ull: info->kind = HSD_LIST_LAYER; break;     /* f_8007b520, a layer job's too: 5 a frame, never called (M1 run) */
-    case 0x802eb3fcull: info->kind = HSD_LIST_GATE; break;      /* f_802eb390, the gate primary */
-    case 0x80665580ull: info->kind = HSD_LIST_COMPUTE; break;   /* f_806650d0, an async-compute list */
-    case 0x80665ffcull: info->kind = HSD_LIST_HEAD; break;      /* f_80665980, a queue's head (command-lists.md) */
+    switch (k) {
+    case 16: info->kind = HSD_LIST_JOB; break;
+    case 17: info->kind = HSD_LIST_LAYER; break;
+    case 18: info->kind = HSD_LIST_GATE; break;
+    case 19: info->kind = HSD_LIST_COMPUTE; break;
+    case 20: info->kind = HSD_LIST_HEAD; break;
     default: info->kind = HSD_LIST_PACKET; break;
     }
 }

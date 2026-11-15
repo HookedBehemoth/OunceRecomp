@@ -10,65 +10,58 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n);   /* gpu/api/rx_nvn.
 #endif
 
 ENTRY_HOOK_SYM(memcpy) {
-    const uint64_t n = ARG(2);
-    if (!hos_guest_range(ARG(0), n) || !hos_guest_range(ARG(1), n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
+    const uint64_t n = a->x[2];
+    if (!hos_guest_range(a->x[0], n) || !hos_guest_range(a->x[1], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
     if (n) {
-        WAIT_WRITEBACKS(GP(ARG(1)), n);   /* (TOTK copies some rendered maps with the CPU) */
-        memmove(GP(ARG(0)), GP(ARG(1)), (size_t)n);
+        WAIT_WRITEBACKS(GP(a->x[1]), n);   /* (TOTK copies some rendered maps with the CPU) */
+        memmove(GP(a->x[0]), GP(a->x[1]), (size_t)n);
     }
     return 1;
 }
 
-/* the sdk's own copies, which the game calls by name past memcpy: __memcpy_aarch64 (sdk f_8575cdc0) was
-   90% of the game's loads and stores of GPU pool memory and 2.8 s of the loading screen's CPU, lifted */
-ENTRY_HOOK_SYM(__memcpy_aarch64) { return entry_sym_memcpy(c); }
-ENTRY_HOOK_SYM(__memcpy_aarch64_simd) { return entry_sym_memcpy(c); }
 
 ENTRY_HOOK_SYM(memmove) {
-    const uint64_t n = ARG(2);
-    if (!hos_guest_range(ARG(0), n) || !hos_guest_range(ARG(1), n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
+    const uint64_t n = a->x[2];
+    if (!hos_guest_range(a->x[0], n) || !hos_guest_range(a->x[1], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
     if (n) {
-        WAIT_WRITEBACKS(GP(ARG(1)), n);
-        memmove(GP(ARG(0)), GP(ARG(1)), (size_t)n);
+        WAIT_WRITEBACKS(GP(a->x[1]), n);
+        memmove(GP(a->x[0]), GP(a->x[1]), (size_t)n);
     }
     return 1;
 }
 
 ENTRY_HOOK_SYM(memset) {
-    const uint64_t n = ARG(2);
-    if (!hos_guest_range(ARG(0), n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
+    const uint64_t n = a->x[2];
+    if (!hos_guest_range(a->x[0], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
     if (n) {
-        memset(GP(ARG(0)), (int)(uint8_t)ARG(1), (size_t)n);
+        memset(GP(a->x[0]), (int)(uint8_t)a->x[1], (size_t)n);
     }
     return 1;
 }
 
 ENTRY_HOOK_SYM(memcmp) {
-    const uint8_t *a = (const uint8_t *)GP(ARG(0)), *b = (const uint8_t *)GP(ARG(1));
-    const size_t n = (size_t)ARG(2);
+    const uint8_t *p = (const uint8_t *)GP(a->x[0]), *q = (const uint8_t *)GP(a->x[1]);
+    const size_t n = (size_t)a->x[2];
     int r = 0;
-    if (n && memcmp(a, b, n)) {
+    if (n && memcmp(p, q, n)) {
         size_t i = 0;
-        while (a[i] == b[i]) i++;
-        r = (int)a[i] - (int)b[i];
+        while (p[i] == q[i]) i++;
+        r = (int)p[i] - (int)q[i];
     }
-    RET((uint64_t)(int64_t)r);
-    return 1;
+    return hook_return(h, (uint64_t)(int64_t)r);
 }
 
 ENTRY_HOOK_SYM(strlen) {
-    RET(strlen((const char *)GP(ARG(0))));
-    return 1;
+    return hook_return(h, strlen((const char *)GP(a->x[0])));
 }
 
 ENTRY_HOOK_SYM(strcmp) {
-    const uint8_t *a = (const uint8_t *)GP(ARG(0)), *b = (const uint8_t *)GP(ARG(1));
+    const uint8_t *p = (const uint8_t *)GP(a->x[0]), *q = (const uint8_t *)GP(a->x[1]);
     int r = 0;
-    if (strcmp((const char *)a, (const char *)b)) {
+    if (strcmp((const char *)p, (const char *)q)) {
         size_t i = 0;
-        while (a[i] && a[i] == b[i]) i++;
-        r = (int)a[i] - (int)b[i];
+        while (p[i] && p[i] == q[i]) i++;
+        r = (int)p[i] - (int)q[i];
     }
-    RET((uint64_t)(int64_t)r);
-    return 1;
+    return hook_return(h, (uint64_t)(int64_t)r);
 }

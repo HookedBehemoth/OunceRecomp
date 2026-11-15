@@ -129,7 +129,7 @@ pool` lines of `work/runs/sa_w8`, `sb_base`, `warmsh2`), and 884 MB of 1374 MB a
    answers docked (`host/nn_applet.c:154`).
 2. **Window textures.** `nnMain` (`f_81222ce0`) writes `O` into the framework's create argument (`+20`, `+24`); the
    framework makes 3 window textures of that size (`f_8348be50` `sead_framework_graphics_init`). Edit 0 of `OUT_EDITS`.
-   With a screen wider or narrower than 16:9, `hos_wide_out` replaces it (`nx2/oot_wide.py:69`, `host/hos_main.c:1555-1566`:
+   With a screen wider or narrower than 16:9, `hos_wide_out` replaces it (`nx2/lift2/probes.py` `hos_oot_wide_out`, `host/hos_main.c:1555-1566`:
    the height stays `O`'s, the width follows the screen's shape, capped at 3840 x 2160's pixels).
 3. **Display-size object.** `f_810a7b70` `display_size_setup` takes a config's docked size list; its first entry
    (2560 x 1440) is replaced by `O` (edit 1). It becomes the frame's base (`B+244`).
@@ -139,7 +139,7 @@ pool` lines of `work/runs/sa_w8`, `sb_base`, `warmsh2`), and 884 MB of 1374 MB a
    (`host/oot_probes.c` `hos_oot_scene_mode`).
 5. **Scene base.** `f_80ea2f30` `display_base_resolution` reads ResolutionParam's `BaseResolution` (1920 x 1080 as
    constants, 3/4 of 2560 x 1440); edit 2 scales it with `O`, edit 3 writes `O * 3/4` as floats into the module's `+0xe54` and `+0xe58`
-   (the sizes the 3D scale is taken against). `nx2/oot_wide.py:72` (`hos_wide_scene`) replaces it for a non-16:9 screen.
+   (the sizes the 3D scale is taken against). `hos_oot_wide_scene` (`hos_wide_scene`, `nx2/lift2/probes.py`) replaces it for a non-16:9 screen.
 6. **3D scale.** `f_831f3200` `scene_resolution_update` computes `+0xe5c = requested * (+0xe58) / (+0xe50)` when `+0xe2c`
    bit 3 is set. The dynamic path (the engine's flag `+0x94`, bit cleared by `hos_oot_dynres_flags`, `host/oot_probes.c`) follows
    the GPU time; the fixed path takes `hos_fixed_scale_bits` (`hos_oot_fixed_scale`), and `hos_oot_scale_recompute`
@@ -170,7 +170,7 @@ pool` lines of `work/runs/sa_w8`, `sb_base`, `warmsh2`), and 884 MB of 1374 MB a
 What depends on the shadow resolution: the PCF filter width and offsets (`DepthShadowPcfOffset`, `PcfWidth`, the
 `LocalDepthShadowSetting` `PcfType` and `BlurWidth`) are in texels, so a larger map gives a narrower penumbra unless they
 scale with it; the depth bias (`DepthShadowPolygonOffset`, `DepthShadowPolygonScale`) is in depth units and does not
-follow the texel size. The cascade fit is done on the CPU from the view's frustum (`nx2/oot_jitter.py` docstring). The
+follow the texel size. The cascade fit is done on the CPU from the view's frustum (docs/parked-patches.md, the camera jitter). The
 local map's viewport comes from the target's own width (`f_802640a0`, [shadow-maps.md](shadow-maps.md) 2, step 2), so a
 larger target is drawn whole; rt_slots already rounds it up (`host/rt_slots.c:493-500`). Whether the sun cascades' viewport
 also comes from the target was not checked.
@@ -226,7 +226,7 @@ engine already writes, or the previous bones, and a second colour output in the 
 
 | Input | In the game | Notes |
 |---|---|---|
-| Jittered projection | Not live. `nx2/oot_jitter.py` (installed by `nx2/lift.py:164`) adds a jitter to `P[0][2]`, `P[1][2]` in the view's uniform-buffer fill (`main+0x6bc708`, `0x6bcf8c`, `0x6bcf9c`) when `hos_dlss_jitter_clip` (`host/rx_backend.c:331`) returns one. It asks `rx_option(HOS_OPT_DLSS_JITTER_W/H/PHASES)` (`gpu/api/vk_api.h:23`); the direct back end answers no options (`gpu/direct/direct_main.cpp:393`), so the jitter is always 0 | The sequence is Halton (2, 3) over 8-64 phases (`host/dlss_math.h`) |
+| Jittered projection | Removed (docs/parked-patches.md). `nx2/oot_jitter.py` added a jitter to `P[0][2]`, `P[1][2]` in the view's uniform-buffer fill (`main+0x6bc708`, `0x6bcf8c`, `0x6bcf9c`) when `hos_dlss_jitter_clip` returned one. It asked `rx_option(HOS_OPT_DLSS_JITTER_W/H/PHASES)` (`gpu/api/vk_api.h:23`); the direct back end answers no options (`gpu/direct/direct_main.cpp:393`), so the jitter was always 0 | The sequence is Halton (2, 3) over 8-64 phases (`host/dlss_math.h`) |
 | Colour | `color(AA)` R11G11B10F at `S` before SMAA, or `smaa_output` RGB9E5F after it (display-referred, square-root encoded) | Tone mapping happens before SMAA (inferred from the network's input) |
 | Depth | `RawDepth(Full)` / `SoftEdgeDepth` DEPTH32F at `S`; 0 at the near plane (not reversed: `gpu/legacy/vk/fsr3_math.h:23`) | FSR's copy is 1 - d |
 | Motion vectors | None (above) | Derived as the old renderer did |
@@ -270,10 +270,10 @@ and cannot be tested here; it stays optional.
   pool's size again past its end (`host/rt_slots.c` header), so it grows with the pool.
 - **Widescreen cap.** `hos_wide_out` is capped at 3840 x 2160's pixels (`host/hos_main.c:1557-1563`); a pool of 1.4 GB
   failed the game's own reservation at boot.
-- **UI.** The UI is laid out on a 3840 x 2160 grid (`nx2/oot_wide.py`, `UI_M00`/`UI_M11`) and kept in a middle 16:9 on
+- **UI.** The UI is laid out on a 3840 x 2160 grid (`host/oot_probes.c` `hos_oot_wide_hud`) and kept in a middle 16:9 on
   other shapes. The UI layer is `F`; it scales with `F`, not with `S`.
 - **Movies.** `NDVE_Output` is 2560 x 1440 and `MovieRenderer` the movie's size at every output; the movie layer draws
-  into the middle 16:9 (`nx2/oot_wide.py`, `MOVIE`).
+  into the middle 16:9 (`host/oot_probes.c` `hos_oot_wide_movie`).
 - **Fixed targets.** The bloom chain (480 x 270 down), the DOF mip chain (960 x 540), the bilateral grid and the occlusion
   depth (256 x 144) do not scale. The occlusion depth feeds the GPU's occlusion test; its size is fixed in the culling
   code's uniforms (inferred).
@@ -320,12 +320,12 @@ end. The proposal adds:
    function instead, which asks the back end for an upscale: a new `MkwVkRenderer` entry such as
    `upscale(in_colour, depth, camera, jitter, out)` in `gpu/api/vk_api.h` (bumps `MKWVK_API_VERSION`). The game decides
    when (its own call site); the back end runs a plain operation on images it is handed. Inputs: `color(AA)` (pre-SMAA)
-   or `smaa_output`, `RawDepth(Full)`, the camera from the uniform-buffer fill that `nx2/oot_jitter.py` patches. Output:
+   or `smaa_output`, `RawDepth(Full)`, the camera from the uniform-buffer fill that the parked camera jitter patched (docs/parked-patches.md). Output:
    the network's output image at `F`. Skip SMAA with it (patch `f_80270da0` to copy) when the upscaler does its own AA.
    Also check `CreateNdsr` in a romfs overlay first: if the game then renders `S` straight into the frame with a plain
    scale, that is the data-only bypass.
 4. **Jitter.** Make `hos_dlss_jitter_clip` (`host/rx_backend.c:331`) read the host's own state (render size, phases)
-   instead of `rx_option`, so the lifted sites in `nx2/oot_jitter.py` act on the direct back end.
+   instead of `rx_option`, so the camera jitter's sites (parked: docs/parked-patches.md) act on the direct back end.
 5. **Pool.** Size `hos_rt_pool_size` from `max(S_max, F)` pixels, not `O` alone, with `S_max` = window x the largest bias
    allowed.
 6. **Present.** No change: the blit takes the window texture (`O`) to the swapchain. With `O` = screen size the blit is 1:1

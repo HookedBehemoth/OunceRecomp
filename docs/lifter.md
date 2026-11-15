@@ -138,21 +138,24 @@ exclusives' runtime calls cost nothing measurable.
 - **BL**: x30 := the return address, then `call void @f_<callee>(ptr %ctx)`, then the reload of every register but
   the callee's preserved x19-x29 and SP (see above). A callee the summaries prove noreturn is followed by
   `a64_trap(ctx, <BL address>, <BL word>)` and `unreachable`, so a wrong summary stops the game; the code only its
-  return reached is dropped. Host-edited callees (`game.host_edited`: HLE'd functions, entry hooks, setjmp owners,
-  Value/At probes, splices, C after an instruction) are not treated as noreturn. What a call of one keeps is its
-  declared effect (`game.host_clean`, `nx2/lift2/host_effects.py`):
+  return reached is dropped. Host-edited callees (`game.host_edited`: HLE'd functions, entry hooks, setjmp owners) are
+  not treated as noreturn. A function with Value probes or At rows is not host-edited: each row declares what it reads
+  and writes, and the summaries count it as its instruction's (`probes.row_effects`, `summary.rows`). What a call of a
+  host-edited callee keeps is its declared effect (`game.host_clean`, `nx2/lift2/host_effects.py`):
   - an HLE'd function keeps x19-x29 and SP unless `host_effects.CLOBBERS` names it with the reason (the three fiber
     functions: a context switch or a host fiber deleted; nine sdk NVN exports with no host proc: not audited);
   - an entry-hooked function keeps what its lifted body's full summary preserves (the hook declines and the body runs,
     or the hook handled the call, writing no callee-saved register, or ran the body itself through `a64_lookup`), and
     for a hook that calls other guest code what every callee in `host_effects.CALLS` keeps too (the three mesh drawer
     hooks, `host/direct_mesh_binds.c`); a body without a full summary keeps nothing;
-  - setjmp owners, probes, splices and C after an instruction keep nothing.
+  - setjmp owners keep nothing.
   A name in `CLOBBERS` that is no HLE'd function, or a `CALLS` key that is no entry hook, stops the build. The default
   rests on an audit of the host's C (2026-11-15, its LLVM IR: stores into a context's x19-x31 and v8-v15, calls of
   guest code, fiber switches, through direct calls and signature-matched indirect ones): stores to x19-x31 are only in
-  thread and fiber setup, `hos_call_guest` and splices (x30), splice 0x80084de0 (SP, restored) and restores of saved
-  values; no HLE'd function reaches one, a guest call or a switch except those declared. The summaries already give
+  thread and fiber setup, `hos_call_guest` (x30) and the guest calls of hooks and rows, which put every register back
+  (`host/hos_hostcall.c` `call_restoring`); no HLE'd function reaches one, a guest call or a switch except those
+  declared. What the host reads is declared too (`host_effects.HLE_ARGS`, `HLE_READS`, `HOOK_ARGS`, `HOOK_READS`) and
+  checked against the host's IR by `tests/test_host_context_reads.py`. The summaries already give
   every HLE'd callee and BLR target AAPCS facts (`summary.callee_summary`).
 - **B to another entry, or falling into one**: `musttail call void @f_<callee>(ptr %ctx)`; every function has the same
   prototype, so every tail branch is a guaranteed tail call.
@@ -261,17 +264,28 @@ names its instruction word, so another game version stops the lift or the build.
 - **Entry hooks**: `ENTRY_HOOK(0xADDR)` and `ENTRY_HOOK_SYM(name)` in `host/*.c` (read by `nx2/entry_hooks.py`). The
   function starts with `entry_<addr>(ctx)`; 1 returns at once (the hook did the call's work), 0 runs the body. A hook
   whose address is not a lifted function, or whose symbol the dump does not export, stops the build (`game.prepare`).
-  A BL to an entry-hooked function keeps what its body's summary (and `host_effects.CALLS`) keeps.
-  `HOS_DBG=hooks` logs each hook's first call.
+  The hook's C never sees the context: `host/hos.h`'s macro hands it x0-x7 and x30 as plain values (`HookArgs`) and an
+  opaque `HookCall` through which alone it acts on the call: `hook_return` (x0), `hook_set_arg` (x0-x7 before the
+  body), `hook_run` (the lifted body now), `hook_call_guest` (guest code on the call's stack, every register put back).
+  Its declared reads are x0-x7 and x30 (`host_effects.HOOK_ARGS`), plus SP for the five that call guest code
+  (`HOOK_READS`); a hook that runs the body reads what the body reads. A BL to an entry-hooked function keeps what its
+  body's summary (and `host_effects.CALLS`) keeps. `HOS_DBG=hooks` logs each hook's first call.
 - **Value probes** (`probes.PROBES`): replace an instruction's result. The frame-step cuts of the pick-up indicator and
   the water's ripples (`fcvtzs w12, s0` at 0x80a88300, `fcvtzs w9, s0` at 0x800675f8) take `hos_frame_whole`
   (`host/frame_whole.h`).
 - **At rows** (`probes.AT`): `At(func, pc, word, fn, args, result)` is "after the instruction at `pc` (or before it,
-  `before=True`, on the edge into it, which must not be a branch target): `result := fn(args...)`". Arguments are
-  `xN`, `wN`, `sN` (a float) or `#K`; the result is `xN`, `wN`, `sN` or none. After a BL or BLR the row runs when the
-  call returns. The values stay SSA values; the call is never moved or removed. The host functions
-  (`host/oot_probes.c`) take plain values and guest addresses, never the context; a guest object is a typed pointer to a
-  struct of the fields used at their guest offsets, each `_Static_assert`ed, `may_alias`.
+  `before=True`, on the edge into it, which must not be a branch target; or in place of the BL or BLR at `pc`,
+  `replace=True`, x30 set as the call would): `result := fn(args...)`". Arguments are `xN`, `wN`, `sN` (a float), `qN`
+  (the whole vector register, `hos_q` in C), `sp`, `#K`, or `[xN+K]` / `[sp+K]` (the 64-bit guest word there, loaded by
+  the lifted code: a frame slot the host needs is handed over as a value, the host does not read the frame); the result
+  is `xN`, `wN`, `sN`, `qN` or none. `io=(...)` passes registers (`xN`, `wN`, `qN`) the host function rewrites through a
+  struct (its last argument; the lifter allocates it in the entry block). `guest=(callees...)` or `guest="computed"`:
+  the host function calls guest code, its first argument a `GuestCall` whose `guest_call` runs it on a given SP and
+  puts every register back, so the row writes nothing else. After a BL or BLR the row runs when the call returns. The
+  values stay SSA values; the call is never moved or removed unless the row replaces it. A row's result or io register
+  must be caller-saved or written by the instruction itself, so a row never changes what its function preserves
+  (checked at lift time). The host functions take plain values and guest addresses, never the context; a guest object
+  is a typed pointer to a struct of the fields used at their guest offsets, each `_Static_assert`ed, `may_alias`.
 
 | family | host functions | guest functions |
 |---|---|---|
@@ -283,23 +297,38 @@ names its instruction word, so another game version stops the lift or the build.
 | render-target pool | `hos_oot_rt_pool_config`, `hos_oot_rt_heap_size`, `hos_oot_rt_heap_use` (after a BLR), `hos_oot_rt_rest` | `f_836ce9d0`, `f_83b7b340`, `f_80b72340` |
 | text speed | `hos_oot_text_time` (before) | `f_80b1e140` |
 | native mouse camera | `hos_mouse_camera` (`host/mouse_native.c`) | `f_80644c80` |
-| widescreen | `hos_oot_wide_out` (x2), `hos_oot_wide_scene`, `hos_oot_wide_ratio`, `hos_oot_wide_projection_ratio` (x4), `hos_oot_wide_movie` | `f_81222ce0`, `f_83213890`, `f_804e48c0`, `f_834a5cc0`, `f_8006ec60`, `f_8025b910`, `f_8035a8c0`, `f_83b7c710` |
+| widescreen | `hos_oot_wide_out` (x2), `hos_oot_wide_scene`, `hos_oot_wide_ratio`, `hos_oot_wide_projection_ratio` (x4), `hos_oot_wide_movie`, `hos_oot_wide_hud` (q1, q4 -> q1), `hos_oot_wide_save_picture` (io w1-w4) | `f_81222ce0`, `f_83213890`, `f_804e48c0`, `f_834a5cc0`, `f_8006ec60`, `f_8025b910`, `f_8035a8c0`, `f_83b7c710`, `f_80794330`, `f_802a46e0` |
 | occlusion off (`HOOKSHOT_OCCLUSION_OFF=1`) | `hos_oot_occlusion_flag` (x6) | `f_811cc790` |
 | `HOS_BENCH`'s "in play" | `hos_oot_player_update` | `f_82c415e0` |
 | per-core ring owners | `hos_oot_ring_write` (x14: 7 pushes, 7 pops) | `f_8004ab40`, `f_800aff80`, `f_800b3ce0`, `f_800b73d0`, `f_8073a090`, `f_8073c900`, `f_83af6150`, `f_83af59c0` |
+| renderer patches (`probes.DIRECT`, `host/direct_*.c`, `host/rt_slots.c`) | depth copy and job sync retargets (x8 / x4), job call (x8, x21, `[sp+0x10]`), mesh list resets, mesh args, sky LUT and terrain tiles (x2: the memcpy's size), render-target slot (x10, `[sp+192]`), mesh system binds (guest call), layer ahead (guest call, `[sp+0x48]`), inline passes (two calls of `f_80681320`), the job view (x25), list kinds (13 recorders) | see the table below |
+
+The patches a caller makes of its own call (no host function is told who called it; a row at the call site says it):
+
+| caller | site | what the caller does, and why it is patched |
+|---|---|---|
+| `f_8348c680` frame_body | `bl` GetSystemTick at 0x8348c76c, replaced | its frame-end clock read; the replacement also notes x19, the graphics module, for `host/nn_vi.c`'s real-time step |
+| `f_800998a0` job_calc_runner | three `bl` SleepThread (0x8009a474, 0x8009afec, 0x8009b230), replaced | polls its sub-stages with SleepThread(20 us); a timed 20 us sleep with 1 us timer slack (`hos_oot_calc_sleep`) where SleepThread spins, ~3.9 ms of CPU a frame less (`HOS_CALC_NAP=0`: SleepThread's own) |
+| `f_805902c0` frame_present_submit | `bl` SleepThread at 0x8059051c, replaced | polls its frame's NVN event between sleeps; `HOS_PRESENT_POLL=1` (an experiment, off) looks at the event between yields |
+| `f_80667d20` system_texture_table_write | `bl` f_800634b0 at 0x806680d8, replaced (guest call) | re-registers one system texture's descriptor every frame; the call is skipped while the entry, view and texture are unchanged |
+| `f_80f6c9d0` agl_memory_pool_create | after `ldr x8, [x8]` at 0x80f6cb18 | agl's pool wrapper; names the pool its nvnMemoryPoolInitialize makes, so the texture heap (made inside f_80f6c580's run) is told to the back end |
+| `f_80289590`, `f_80666d20` | the depth-copy retargets (#0, #1) | the two depth copies that need barriers around them (their calls at 0x80289cc0, 0x806675d8) |
+| the 13 list recorders (`host/direct.c`) | after `ldr x8, [x8]` before BeginRecording's blr | the function beginning a command list names its kind (load lists 1-6, job, layer, gate, compute, head) |
+| `f_80084de0` render_job_record | after `ldr x8, [x8]` at 0x80085334 | its BeginRecording's list is the job's; x25 is the job's view record |
+| `f_802640a0` pass_local_shadow_depth | after `str w8, [sp, #0x38]` at 0x80264128 | its alloc of the local shadow map, whose size is a class (`host/rt_slots.c`) |
+| `f_806688c0`, `f_8028a2a0` | before their calls of `f_80681320` | the layer list drawing a recorded pass inline; the pass's key and draw context handed over (`host/direct_passes.c`) |
+
+`f_80365f00` (report_reader_a) marks its own run with an entry hook that runs its body, so the occlusion grid slots' invalidates
+inside it do not wait (`host/nvn_native.c` `readback_stamped`).
 
 - **The per-core rings** are an assertion, not a patch. The singleton at `**0x84c9e890` holds seven rings (ring k at
   +0x20 + k * 0x30: buffer +0x10, capacity +0x18, head +0x1c, count +0x20). The game picks a ring by
   GetCurrentCoreNumber and pushes and pops without a lock or atomics, which is safe only while one thread per core
   number writes each ring. `hos_oot_ring_write` (`host/oot_probes.c:394`) records each ring's first writer and logs
   another writer once per ring and thread; the bench's end logs each ring's owner. The rows stay on in normal play.
-- **The context-based sites**: C after an instruction (`probes.after_c`: `oot_wide`'s HUD in `f_80794330` and save
-  picture in `f_802a46e0`, `oot_jitter`'s 3 sites in `f_806dc520`) and the `SPLICE_AFTER` bodies of `host/direct_*.c`
-  and `host/rt_slots.c` at `probes.SPLICE_AT`/`SPLICE_BEFORE`. Each is a host function `lift2_after_<pc>(Ctx *c)` the
-  lifted code calls with the context; the registers are reloaded after it. They exist where an At row cannot express
-  the patch: 128-bit registers (the HUD, jitter), several results (the save picture, the sky LUT and assets, `rt_slots`),
-  guest calls (the mesh system) or the guest stack through SP (the layer-ahead). `oot_jitter` gives a jitter only when
-  the renderer sets `HOS_OPT_DLSS_JITTER_W`/`_H`, which the direct back end does not.
+- **No site takes the whole context.** The former C after an instruction (widescreen's HUD and save picture) and the
+  `SPLICE_AFTER` bodies of the renderer patches are At rows; the camera jitter for temporal upscalers is parked
+  ([parked-patches.md](parked-patches.md)).
 
 ### Fibers and C++ exceptions
 
@@ -435,7 +464,7 @@ tree shows the constraint is needed; the experiment named decides it.
 1. **Context traffic.** Write-through of every register before calls and exits, and a reload after every BLR and
    SVC, and after a BL of every register but the callee's preserved x19-x29 and SP (all of them after a callee
    without a full summary, an HLE'd function declared clobbering, an entry-hooked function whose body has no full
-   summary, a setjmp owner, a probe, splice or C-after function). About 31-33 % of code bytes on the sample were context accesses
+   summary, a setjmp owner). About 31-33 % of code bytes on the sample were context accesses
    (`disp(%reg)`) at 860eb332, before the preserved registers stayed in SSA; not measured again. Since `captures(none)`
    on the declarations and `game.DSE_FLAGS`, a store overwritten before anything reads the context is dropped. What
    stays (2026-11-15, the lifter's IR over the whole game): of 8.45 M stores reaching a reader, 29 % are read (callee
@@ -444,7 +473,7 @@ tree shows the constraint is needed; the experiment named decides it.
    callee-saved registers at a return (7 % epilogue restores). Removed by flushing at the readers instead of writing
    through ([lifter-optimisations.md](lifter-optimisations.md), C).
    *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs, entry
-   hooks (`emit_llvm.emit_function`), C-after and SPLICE sites, `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
+   hooks (`emit_llvm.emit_function`: x0-x7, x30 and `host_effects.HOOK_READS`), `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
    `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts, HLE'd functions (they read their arguments
    from the context); the reloads after callees the summaries do not cover and the host callees listed above.
    Elsewhere unproven.
@@ -452,11 +481,12 @@ tree shows the constraint is needed; the experiment named decides it.
    saves and restores (612,455 pairs in 174,749 functions) and its frame in guest memory. Not measured alone.
    Removed by deleting the pairs and promoting frame slots ([lifter-optimisations.md](lifter-optimisations.md), C and
    F).
-   *Justification:* host code reads lifted frames at five places: `host/direct_layer_ahead.c:213` (SP, then
-   `[sp + 0x48]`), `host/direct_job_sync.c:117` (`[sp + 0x10]`, a frame slot of its caller),
-   `host/direct_mesh_system.c:52-56` (builds a call frame below SP and calls guest code), `host/rt_slots.c:718` and
-   `:726` (SP and `[sp + SP_ALIGN]`), and the stall dump's x29 frame walk (`host/hos_thread.c:277`, a diagnostic).
-   Their functions must keep their frames. For every other function unproven: unwinding is not a reason (throws are
+   *Justification:* the frame slots the host needs are loaded by the lifted code and handed over by At rows
+   (`[sp+0x48]` in `f_8007fe60`, `[sp+0x10]` in `f_806688c0`, `[sp+192]` in `f_8005ed00`), so a promotion sees them as
+   guest loads. The host still reads frames through x29: `pool_creation_key` (`host/nvn_native.c`, the return
+   addresses of a pool's creation hashed into its placement key; `host_effects.HLE_READS`), the NVN logs' chain walks
+   and the stall dump (diagnostics); and the guest calls of rows and hooks (`guest_call`, `hook_call_guest`) run below
+   the SP they are given (`host/direct_mesh_system.c` builds a 0x100-byte block there). Those must keep x29 chains. For every other function unproven: unwinding is not a reason (throws are
    fatal). The experiment is the pair deletion for full-summary functions with a verification run.
 3. **Host-stack spills.** 5.8 % of code bytes on the sample (size-weighted) are spills to the host stack. Cause not
    analysed. *Justification:* none; unproven what removes it (read the spills of the largest sample functions with

@@ -16,15 +16,14 @@
 #include <string.h>
 #include <windows.h>
 
-uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);   /* hos_hostcall.c */
 
 enum { D_43E0, D_46A0, D_6720, D_N };
 static const char *const names[D_N] = {"f_801a43e0", "f_801a46a0", "f_801a6720"};
 static struct { volatile LONG64 calls, bound, inactive; } n[D_N];
 
-static int drawer(Ctx *c, int which) {
+static int drawer(const HookArgs *a, HookCall *h, int which) {
     if (!rx_direct()) return 0;
-    const uint64_t p1 = c->x[0], item = c->x[1];
+    const uint64_t p1 = a->x[0], item = a->x[1];
     InterlockedIncrement64(&n[which].calls);
     if (!hos_guest_range(p1 + 0x18, 8) || !hos_guest_range(G64(p1 + 0x18) + 0x338, 8) || !hos_guest_range(item, 8)) return 0;
     const uint64_t o = G64(G64(p1 + 0x18) + 0x338);
@@ -34,19 +33,14 @@ static int drawer(Ctx *c, int which) {
     }
     const uint64_t ctx = hos_guest_range(G64(item) + 0x28, 8) ? G64(G64(item) + 0x28) : 0;
     if (!ctx) return 0;
-    uint64_t saved[19];
-    memcpy(saved, c->x, sizeof saved);
-    c->x[4] = 0;
-    hos_call_guest(c, 0x801a2d70ull, ctx, item, 4, o + 0x1b0);
-    c->x[4] = 0;
-    hos_call_guest(c, 0x801a6a40ull, ctx, item, 5, o + 0xd70);
-    memcpy(c->x, saved, sizeof saved);   /* (the drawer's arguments and the caller-saved registers as they were) */
+    hook_call_guest(h, 0x801a2d70ull, ctx, item, 4, o + 0x1b0, 0);   /* (the drawer's registers as they were after each) */
+    hook_call_guest(h, 0x801a6a40ull, ctx, item, 5, o + 0xd70, 0);
     InterlockedIncrement64(&n[which].bound);
     return 0;
 }
-ENTRY_HOOK(0x801a43e0) { return drawer(c, D_43E0); }
-ENTRY_HOOK(0x801a46a0) { return drawer(c, D_46A0); }
-ENTRY_HOOK(0x801a6720) { return drawer(c, D_6720); }
+ENTRY_HOOK(0x801a43e0) { return drawer(a, h, D_43E0); }
+ENTRY_HOOK(0x801a46a0) { return drawer(a, h, D_46A0); }
+ENTRY_HOOK(0x801a6720) { return drawer(a, h, D_6720); }
 
 void direct_mesh_binds_log(double frames) {
     static LONG64 last[D_N][3];

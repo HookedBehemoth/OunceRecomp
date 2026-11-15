@@ -10,9 +10,9 @@
    groups from 0, the stride 16. Nothing on the GPU writes w1 or w2, so NVN's first is 0 there, as the back end takes it
    for every indirect mesh draw.
 
-   The site: the splice after the last of the four stores (`stp xzr, xzr, [x8, #32]`, records 1-3 at x8 + 0 / 16 / 32);
+   The site: an At row (nx2/lift2/probes.py DIRECT) after the last of the four stores (`stp xzr, xzr, [x8, #32]`, records 1-3 at x8 + 0 / 16 / 32);
    record 0 is at [x19 + 32] + u32([[x19 + 24]] + 4), records 1-3 at [x19 + 32] + u32([[x19 + 24]] + 16), the addresses the
-   function itself computes. The splice checks that x8 is that second address (else it writes nothing and counts it).
+   function itself computes. The row checks that x8 is that second address (else it writes nothing and counts it).
 
    Check that it applies: the 600-present line "direct patch mesh args" (headers a frame, mismatches 0). */
 #include "direct.h"
@@ -25,15 +25,15 @@ static void put(uint64_t rec) {   /* {0, 1, 1, 0}: the counts' words stay as the
     G32(rec + 4) = 1, G32(rec + 8) = 1;
 }
 
-SPLICE_AFTER(0x80362ff0, "int64_t _o=32; recomp_stp64(c,(_b+_o),(uint64_t)0,(uint64_t)0);") {
+/* (x19 the list slot's object, x8 the address of records 1-3) */
+void direct_mesh_args_header(uint64_t obj, uint64_t x8) {
     if (!rx_direct()) return;
-    const uint64_t obj = c->x[19];
     if (!hos_guest_range(obj + 24, 16)) { InterlockedIncrement64(&n.outside); return; }
     const uint64_t base = G64(obj + 32), lay = G64(obj + 24);
     if (!hos_guest_range(lay, 8) || !hos_guest_range(G64(lay), 20)) { InterlockedIncrement64(&n.outside); return; }
     const uint64_t layout = G64(lay);
     const uint64_t r0 = base + G32(layout + 4), r1 = base + G32(layout + 16);
-    if (r1 != c->x[8]) { InterlockedIncrement64(&n.mismatch); return; }
+    if (r1 != x8) { InterlockedIncrement64(&n.mismatch); return; }
     put(r0), put(r1), put(r1 + 16), put(r1 + 32);
     InterlockedIncrement64(&n.headers);
 }

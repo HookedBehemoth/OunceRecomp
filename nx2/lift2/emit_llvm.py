@@ -132,6 +132,10 @@ def emit_function(fn, decls, flags_out=False):
         else:
             out.append("  %%in.%s = load %s, ptr %%cx.%s, align 8" % (var, lltype(p.ty), var))
         ins[var] = "%%in.%s" % var
+    for blk in fn.blocks.values():   # (an At row's io struct: one slot block each, in the entry, nx2/lift2/probes.py)
+        for v in blk.ops:
+            if v.op == "rowio":
+                out.append("  %%io%d = alloca [%d x i8], align 16" % (v.id, io_size(v)))
     out.append("  br label %%%s" % eb.name)
     for blk in fn.blocks.values():
         out.append("%s:" % blk.name)
@@ -279,6 +283,22 @@ def emit_strict(v, ref, typed, out, decls):
 CASTS = ("zext", "sext", "trunc", "bitcast", "sitofp", "uitofp", "fptosi", "fptoui", "fpext", "fptrunc")
 
 
+def io_slots(v):
+    """[(offset, size)] of a rowio's slots: 8 bytes for an X register, 16 for a vector, at their alignment"""
+    out, off = [], 0
+    for x in v.args[v.attrs["nargs"]:]:
+        size = 16 if x.ty[0] == "v" else 8
+        off = (off + size - 1) // size * size
+        out.append((off, size))
+        off += size
+    return out
+
+
+def io_size(v):
+    off, size = io_slots(v)[-1]
+    return off + size
+
+
 def emit_op(v, ref, typed, out, decls, flags_out=False):
     op, a, r = v.op, v.args, ref(v)
     if op in ("add", "sub", "mul", "and", "or", "xor", "shl", "lshr", "ashr", "udiv", "sdiv", "fadd", "fsub", "fmul",
@@ -374,6 +394,22 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
         decls.update(HELPER_DECLS.get(fn, ()) if at.get("helper") else ())
         lhs = "" if v.ty == "void" else "%s = " % r
         out.append("  %scall %s @%s(%s)" % (lhs, rt, fn, ", ".join(args)))
+    elif op == "rowio":
+        # an At row with io registers (probes.At): their values into the slots, the host function with a pointer to
+        # them last, their new values read back by the rowout operations that follow
+        fn, at = v.attrs["fn"], v.attrs
+        n = at["nargs"]
+        for k, (off, _) in enumerate(io_slots(v)):
+            out.append("  %%io%d.%d = getelementptr i8, ptr %%io%d, i64 %d" % (v.id, k, v.id, off))
+            out.append("  store %s, ptr %%io%d.%d, align %d" % (typed(a[n + k]), v.id, k, 16 if a[n + k].ty[0] == "v" else 8))
+        args = (["ptr %ctx"] if at.get("ctx") else []) + [typed(x) for x in a[:n]] + ["ptr %%io%d" % v.id]
+        rt = lltype(v.ty) if v.ty != "void" else "void"
+        tys = (["ptr"] if at.get("ctx") else []) + [lltype(x.ty) for x in a[:n]] + ["ptr"]
+        decls.add("declare %s @%s(%s)" % (rt, fn, ", ".join(tys)))
+        out.append("  %scall %s @%s(%s)" % ("" if v.ty == "void" else "%s = " % r, rt, fn, ", ".join(args)))
+    elif op == "rowout":
+        k, src = v.attrs["k"], a[0]
+        out.append("  %s = load %s, ptr %%io%d.%d, align %d" % (r, lltype(v.ty), src.id, k, 16 if v.ty[0] == "v" else 8))
     elif op == "gcall":
         decls.add("declare void @%s(ptr)" % v.attrs["sym"])
         out.append("  call void @%s(ptr %%ctx)" % v.attrs["sym"])

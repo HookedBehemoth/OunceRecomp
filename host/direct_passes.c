@@ -4,7 +4,7 @@
    f_80084de0 (the job recorder) is entered through host/eng_jobs.c's ENTRY_HOOK; in direct mode it asks here first. Its
    pass key (x3) is the pass's identity. If the back end's format table does not know the key, the recorder returns at entry,
    as its own early return at 0x8008693c does (no view record, no slot): the layer list then finds no record and draws the
-   pass through the game's inline path f_80681320, after its own SetRenderTargets. The entry hook of f_80681320 below names
+   pass through the game's inline path f_80681320, after its own SetRenderTargets. At rows before its two calls name
    that pass's key to the back end, which takes the formats from the targets the list set (hsd_pass_inline). A key's first
    frame therefore draws inline, the frames after it as jobs.
 
@@ -21,7 +21,7 @@
 #include <windows.h>
 
 static struct {
-    volatile LONG64 asked, early, inl[2], inl_no_jobs[2], inl_other, inl_no_list;
+    volatile LONG64 asked, early, inl[2], inl_no_jobs[2], inl_no_list;
 } n;
 
 /* the recorder's keys by the first 0x70 bytes of the key (a few dozen; written by the recorders, read at the inline path) */
@@ -74,10 +74,9 @@ static int key_known(uint64_t key) {
     return k;
 }
 
-int direct_passes_recorder(Ctx *c) {
+int direct_passes_recorder(uint64_t key) {
     const hsd_fns *d = rx_direct();
     if (!d) return 0;
-    const uint64_t key = c->x[3];
     key_note(key);
     InterlockedIncrement64(&n.asked);
     if (d->pass_known(key)) return 0;
@@ -85,42 +84,41 @@ int direct_passes_recorder(Ctx *c) {
     return 1;   /* (as 0x8008693c: nothing recorded, no view record) */
 }
 
-ENTRY_HOOK(0x80681320) {   /* (queue, drawctx, &key, owner, ...): the game's inline path of a pass */
+/* The game's inline path of a pass, f_80681320(queue, drawctx, &key, owner, ...), from its two callers: At rows just
+   before each call (nx2/lift2/probes.py DIRECT) hand over the key and the list's draw context */
+static void inline_pass(int site, int nk, const uint64_t *ks, uint64_t drawctx) {
     const hsd_fns *d = rx_direct();
-    if (!d) return 0;
-    const uint64_t lr = c->x[30], sp = c->x[31];
-    int site, nk = 0;
-    uint64_t ks[8], cmd;
-    if (lr == 0x80668d84ull) {   /* f_806688c0: [sp + 0x18] = key + 0xc0, the list's draw context at [sp + 0x10] */
-        site = 0;
-        ks[0] = G64(sp + 0x18) - 0xc0, cmd = G64(G64(sp + 0x10) + 216);
-        nk = key_known(ks[0]);
-    } else if (lr == 0x8028a58cull) {   /* f_8028a2a0: x2 a copy of the key, x1 the draw context; keys with the same bytes
-                                           (cube faces of two sets share them) all name this pass */
-        site = 1;
-        nk = keys_by_bytes(c->x[2], ks, 8), cmd = G64(c->x[1] + 216);
-    } else {
-        InterlockedIncrement64(&n.inl_other);
-        return 0;
-    }
+    if (!d) return;
     if (!nk) {
         InterlockedIncrement64(&n.inl_no_jobs[site]);
-        return 0;
+        return;
     }
-    void *list = direct_cmd_list(cmd);
+    void *list = direct_cmd_list(hos_guest_range(drawctx + 216, 8) ? G64(drawctx + 216) : 0);
     if (!list) InterlockedIncrement64(&n.inl_no_list);
     for (int i = 0; i < nk; i++) d->pass_inline(list, ks[i]);
-    InterlockedIncrement64(&n.inl[site]);
-    return 0;   /* (the game's body draws the pass) */
+    InterlockedIncrement64(&n.inl[site]);   /* (the game's body draws the pass) */
+}
+/* f_806688c0 before its call (0x80668d80): x6 = [sp + 0x18] the key + 0xc0, x1 = [sp + 0x10] the list's draw context */
+void direct_passes_inline_job(uint64_t key_c0, uint64_t drawctx) {
+    if (!rx_direct()) return;
+    const uint64_t key = key_c0 - 0xc0;
+    inline_pass(0, key_known(key), &key, drawctx);
+}
+/* f_8028a2a0 before its call (0x8028a588): x2 a copy of the key, x1 the draw context; keys with the same bytes (cube
+   faces of two sets share them) all name this pass */
+void direct_passes_inline_key(uint64_t key_copy, uint64_t drawctx) {
+    if (!rx_direct()) return;
+    uint64_t ks[8];
+    inline_pass(1, keys_by_bytes(key_copy, ks, 8), ks, drawctx);
 }
 
 void direct_passes_log(double frames) {
-    static LONG64 last[9];
-    const LONG64 now[9] = {n.asked, n.early, n.inl[0], n.inl[1], n.inl_no_jobs[0], n.inl_no_jobs[1], n.inl_other, n.inl_no_list, nkeys};
-    hos_log("direct patch passes (f_80084de0 entry, f_80681320 entry): a frame: recorder asked %.2f, early returns %.2f; inline "
-            "passes of recorder keys %.2f (f_806688c0) %.2f (f_8028a2a0); inline passes no recorder asked for %.2f / %.2f; other "
-            "callers %.2f; with no list %lld; %lld keys noted",
+    static LONG64 last[8];
+    const LONG64 now[8] = {n.asked, n.early, n.inl[0], n.inl[1], n.inl_no_jobs[0], n.inl_no_jobs[1], n.inl_no_list, nkeys};
+    hos_log("direct patch passes (f_80084de0 entry, f_80681320's calls in f_806688c0 and f_8028a2a0): a frame: recorder asked "
+            "%.2f, early returns %.2f; inline passes of recorder keys %.2f (f_806688c0) %.2f (f_8028a2a0); inline passes no "
+            "recorder asked for %.2f / %.2f; with no list %lld; %lld keys noted",
             (now[0] - last[0]) / frames, (now[1] - last[1]) / frames, (now[2] - last[2]) / frames, (now[3] - last[3]) / frames,
-            (now[4] - last[4]) / frames, (now[5] - last[5]) / frames, (now[6] - last[6]) / frames, (long long)now[7], (long long)now[8]);
+            (now[4] - last[4]) / frames, (now[5] - last[5]) / frames, (long long)now[6], (long long)now[7]);
     memcpy(last, now, sizeof last);
 }

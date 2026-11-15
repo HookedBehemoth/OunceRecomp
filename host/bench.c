@@ -63,7 +63,7 @@ static int msg_group_of(const char *name) {
     return i;
 }
 ENTRY_HOOK(0x834a3060) {
-    if (!hos_bench_on() || (uint32_t)c->x[1]) return 0;
+    if (!hos_bench_on() || (uint32_t)a->x[1]) return 0;
     if (msg_group < 0) {
         HosThread *t = hos_self();
         msg_group = msg_group_of(t ? hos_thread_name(t) : "host");

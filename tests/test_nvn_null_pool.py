@@ -78,6 +78,7 @@ static uint64_t h2g(void *p) { return (uint64_t)(uintptr_t)p; }
 static int invalidated;
 static void rx_nvn_invalidate(uint64_t a, uint64_t b) { (void)a; (void)b; invalidated++; }
 static int hos_game_is_mkw(void) { return 0; }
+static int tl_grid_reader;   /* (the grid reader's ENTRY_HOOK marks its run) */
 ''' + stamped + "\n" + guard + "\n" + flags + "\n" + size + "\n" + map_ + "\n" + address + "\n" + invalidate + r'''
 int main(void) {
     Ctx c;
@@ -144,21 +145,29 @@ int main(void) {
         fprintf(stderr, "FAIL: a real pool's invalidate reached the renderer %d times\n", invalidated);
         return 1;
     }
-    /* OoT's occlusion grid slots (0x3980 bytes, read from f_80365f00 or its tail call): no wait; others as before */
-    static const uint64_t lrs[] = {0x803665d4, 0x80366168, 0x8036635c, 0x80099d84};
+    /* OoT's occlusion grid slots (0x3980 bytes, while f_80365f00 runs: its hook marks it): no wait, whatever the return
+       address; others as before */
+    tl_grid_reader = 1;
     for (int i = 0; i < 4; i++) {
-        c.x[0] = (uint64_t)(uintptr_t)&pool, c.x[1] = 0, c.x[2] = 0x3980, c.x[30] = lrs[i];
+        c.x[0] = (uint64_t)(uintptr_t)&pool, c.x[1] = 0, c.x[2] = 0x3980, c.x[30] = 0x80000000u + 4u * i;
         n_nvnMemoryPoolInvalidateMappedRange(&c, NULL);
     }
     if (invalidated != 1) {
         fprintf(stderr, "FAIL: the occlusion grid's invalidates reached the renderer\n");
         return 1;
     }
+    c.x[0] = (uint64_t)(uintptr_t)&pool, c.x[2] = 0xc0;   /* (another size in the reader: waits) */
+    n_nvnMemoryPoolInvalidateMappedRange(&c, NULL);
+    tl_grid_reader = 0;
+    if (invalidated != 2) {
+        fprintf(stderr, "FAIL: another size's invalidate in the grid reader skipped the renderer\n");
+        return 1;
+    }
     c.x[0] = (uint64_t)(uintptr_t)&pool, c.x[2] = 0xc0, c.x[30] = 0x80357d40;   /* (the exposure meter: waits) */
     n_nvnMemoryPoolInvalidateMappedRange(&c, NULL);
     c.x[0] = (uint64_t)(uintptr_t)&pool, c.x[2] = 0x3980, c.x[30] = 0x80357d40;
     n_nvnMemoryPoolInvalidateMappedRange(&c, NULL);
-    if (invalidated != 3) {
+    if (invalidated != 4) {
         fprintf(stderr, "FAIL: an invalidate elsewhere skipped the renderer\n");
         return 1;
     }

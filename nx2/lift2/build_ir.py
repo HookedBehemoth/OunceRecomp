@@ -48,6 +48,7 @@ class Program:
         self.probes = {}   # pc -> fn(builder, insn, pc): the instruction replaced by a probe (probes.py, section 9)
         self.before = {}   # pc -> [fn(builder)]: run before the instruction at pc, whatever it is (probes.splice_before, At)
         self.after = {}   # pc -> [fn(builder)]: run after the instruction at pc, after a BL / BLR when it returns (probes.post)
+        self.replace = {}   # pc -> [fn(builder)]: run in place of the BL / BLR at pc (probes.At replace)
 
 
 LEAF = Program()
@@ -188,6 +189,16 @@ def build(entry, pcs, word, prog=LEAF):
             for post in prog.after.get(pc, ()):
                 post(b)
             if pc + 4 not in body:   # (falls through into another function: a tail call)
+                cur.term = ("br", goto(pc + 4, pc))
+                cur = None
+            continue
+        if pc in prog.replace and (t == "blr" or t == "b" and f["op"]):   # (a row in place of the call)
+            b.set("x30", b.const(pc + 4))
+            for rep in prog.replace[pc]:
+                rep(b)
+            for post in prog.after.get(pc, ()):
+                post(b)
+            if pc + 4 not in body:
                 cur.term = ("br", goto(pc + 4, pc))
                 cur = None
             continue

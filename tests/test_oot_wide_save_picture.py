@@ -1,10 +1,10 @@
-"""Compile nx2/oot_wide.py's save-picture patch (issue 952) around authored registers.
+"""Compile host/oot_probes.c's save-picture row (issue 952, hos_oot_wide_save_picture) around authored registers.
 
 The pause menu draws the whole picture into the save's 543 x 306 JPEG through the game's viewport helper. Past 16:9 the
 patch widens that one SetViewport, centred, so the middle 16:9 of the picture fills the texture; narrower than 16:9 (4:3,
 16:10) it makes it taller, centred, so the picture's middle band fills the texture at its own shape; every other
-viewport, and a 16:9 window, stay as the game set them. No game or image is used: the site's C is taken from the module as the
-lifter would place it.
+viewport, and a 16:9 window, stay as the game set them. No game or image is used: the function is cut out of
+host/oot_probes.c, and the row (nx2/lift2/probes.py AT) is checked to pass it w1-w4 at the viewport helper's site.
 """
 import argparse
 import os
@@ -15,7 +15,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
-import oot_wide  # noqa: E402
+from lift2 import probes  # noqa: E402
 
 FIXTURE = r"""
 #include <stdint.h>
@@ -25,15 +25,13 @@ FIXTURE = r"""
 typedef struct { uint64_t x[32]; } Ctx;
 volatile float hos_wide_ratio;
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
-static void site(Ctx *c) {
 SITE_C
-}
 static Ctx viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     Ctx c;
     memset(&c, 0, sizeof c);
-    c.x[1] = x, c.x[2] = y, c.x[3] = w, c.x[4] = h, c.x[8] = 0x1234;
-    site(&c);
-    CHECK(c.x[8] == 0x1234);   /* (the call's address, loaded just before) */
+    OotViewportRegs v = {x, y, w, h};
+    hos_oot_wide_save_picture(&v);   /* (the row: w1-w4 in and out through the struct) */
+    c.x[1] = (uint32_t)v.x, c.x[2] = (uint32_t)v.y, c.x[3] = (uint32_t)v.w, c.x[4] = (uint32_t)v.h;
     return c;
 }
 static void same(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
@@ -90,7 +88,7 @@ int main(void) {
     same(0, 0, 542, 306);
     same(1, 0, 543, 306);
     same(0, 1, 543, 306);
-    puts("PASS: oot_wide's save-picture viewport: the middle 16:9 past 16:9, the middle band below it, the game's own otherwise");
+    puts("PASS: the save-picture viewport: the middle 16:9 past 16:9, the middle band below it, the game's own otherwise");
     return 0;
 }
 """
@@ -100,13 +98,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
-    sites = [s for s in oot_wide.SITES if s[2] is oot_wide.THUMB]
-    assert sites == [(0x284824, 0xf9400108, oot_wide.THUMB)], sites
+    rows = [p for p in probes.AT if p.fn == "hos_oot_wide_save_picture"]
+    assert len(rows) == 1 and rows[0].pc == 0x802a4824 and rows[0].word == 0xf9400108, rows
+    assert rows[0].io == ("w1", "w2", "w3", "w4"), rows[0].io
+    src = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
+    start = src.index("typedef struct { uint64_t x, y, w, h; } OotViewportRegs;")
+    end = src.index("\n}\n", src.index("void hos_oot_wide_save_picture(")) + 3
+    site_c = src[start:end]
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     with tempfile.TemporaryDirectory(prefix="oot-wide-save-picture-") as temporary:
         folder = Path(temporary)
         source = folder / "fixture.c"
-        source.write_text(FIXTURE.replace("SITE_C", oot_wide.THUMB), encoding="utf-8")
+        source.write_text(FIXTURE.replace("SITE_C", site_c), encoding="utf-8")
         executable = folder / "fixture.exe"
         for command in ([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(executable)],
                         [str(executable)]):

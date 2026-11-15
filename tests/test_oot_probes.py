@@ -24,7 +24,6 @@ from lift2 import build_ir, emit_llvm, enc, llvm, probes  # noqa: E402
 from lift2.build_ir import TERMINATORS  # noqa: E402
 
 HOST = os.path.join(ROOT, "host", "oot_probes.c")
-ARG = re.compile(r"[xws]([0-9]|[12][0-9]|30)|#\d+")
 
 
 def have(tool):
@@ -38,18 +37,24 @@ def have(tool):
 class Table(unittest.TestCase):
     def test_rows(self):
         host = ""
-        for name in (HOST, os.path.join(ROOT, "host", "mouse_native.c")):
-            with open(name) as f:
-                host += f.read()
+        for name in sorted(os.listdir(os.path.join(ROOT, "host"))):
+            if name.endswith(".c"):
+                with open(os.path.join(ROOT, "host", name), encoding="utf-8", errors="replace") as f:
+                    host += f.read()
         for p in probes.AT:
             i = enc.decode(p.word)
             self.assertIsNotNone(i, hex(p.pc))
             self.assertTrue(p.before or i.entry.template not in TERMINATORS or probes.is_call(p.word), "%#x is a branch" % p.pc)
+            self.assertTrue(not p.replace or probes.is_call(p.word), "%#x replaces no call" % p.pc)
             self.assertLessEqual(p.func, p.pc)
             for a in p.args:
-                self.assertRegex(a, ARG)
-            self.assertTrue(p.result is None or ARG.fullmatch(p.result) and p.result[0] != "#", p.result)
-            self.assertIn(" %s(" % p.fn, host, "%s is not in host/oot_probes.c or host/mouse_native.c" % p.fn)
+                self.assertRegex(a, probes.ARG)
+            self.assertTrue(p.result is None or probes.RESULT.fullmatch(p.result), p.result)
+            # (the host function takes plain values: a GuestCall first when it calls guest code, never the context)
+            m = re.search(r"\b\w+ \**%s\(([^)]*)\)\s*\{" % p.fn, host)
+            self.assertIsNotNone(m, "%s is not defined in host/*.c" % p.fn)
+            self.assertNotIn("Ctx", m.group(1), p.fn)
+            self.assertEqual(m.group(1).startswith("GuestCall *"), p.guest is not None, p.fn)
         self.assertEqual({p.func for p in probes.AT}, probes.AT_FUNCS)
 
     def test_word_checked(self):
@@ -156,6 +161,50 @@ class Lowering(unittest.TestCase):
         # (w1: 7 * 3 + 2 = 23, the upper half gone; x2: 100 + 23; s3: 3 with V3's upper half 0; t_none saw x2; x0: 15)
         self.assertEqual(out, ["17", "123", "3", "0", "123", "15", "16"])
 
+    def test_declared_kinds(self):
+        """the row kinds beyond one plain result: a vector in and out (q3 := t_q(q3, x2), lane 1 + x2), registers
+        rewritten through a struct (t_io: x1 += x2, x4 *= 2), a guest load and SP as values (x6 := t_load([sp+8], sp),
+        the guest window mapped at its address for the run), and the BL replaced by a host function with a GuestCall (x0 := t_replace(ctx, x0):
+        the callee g_80004000 is not called)"""
+        base = 0x80003000
+        # nop; nop; bl 0x80004000; add x9, x0, #1; ret
+        words = [0xd503201f, 0xd503201f, 0x940003fe, 0x91000409, 0xd65f03c0]
+        word = lambda pc: words[(pc - base) // 4]
+        pcs = [base + 4 * k for k in range(len(words))]
+        rows = [probes.At(base, base, words[0], "t_q", ("q3", "x2"), "q3"),
+                probes.At(base, base, words[0], "t_io", ("x2",), io=("x1", "x4")),
+                probes.At(base, base + 4, words[1], "t_load", ("[sp+8]", "sp"), "x6"),
+                probes.At(base, base + 8, words[2], "t_replace", ("x0",), "x0", replace=True, guest="computed")]
+        real = probes.AT
+        try:
+            probes.AT = rows
+            prog = build_ir.Program()
+            prog.after = probes.merge(probes.at(base, pcs, word))
+            prog.replace = probes.at(base, pcs, word, replace=True)
+            self.assertEqual(list(prog.replace), [base + 8])
+            self.assertEqual(rows[1].effects(), ({"x2", "x1", "x4"}, {"x1", "x4"}))
+            self.assertEqual(rows[2].effects(), ({"sp"}, {"x6"}))
+        finally:
+            probes.AT = real
+        fn = build_ir.build(base, pcs, word, prog)
+        self.assertIn("load", {v.op for blk in fn.blocks.values() for v in blk.ops})
+        m = emit_llvm.Module()
+        m.add(fn)
+        text = m.text()
+        self.assertNotIn("@g_80004000", text)
+        with tempfile.TemporaryDirectory() as d:
+            ll, c, exe = (os.path.join(d, x) for x in ("f.ll", "h.c", "h"))
+            # (the guest load at [sp + 8] reads the window: t_load is given a no-op body on the host and sp 0)
+            with open(ll, "w") as fo:
+                fo.write(text)
+            with open(c, "w") as fo:
+                fo.write(KINDS_HARNESS)
+            subprocess.run([llvm.check("clang"), "-O1", "-w", c, ll, "-o", exe], check=True)
+            out = subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
+        if out != ["skip"]:
+            # (q3: lane 1 2 + 5; x1 10 + 5, x4 6 * 2; x6 the word at [sp + 8], t_load saw sp; x0 3 * 100, not 999; x9 x0 + 1)
+            self.assertEqual(out, ["1", "7", "15", "12", "85", "256", "300", "301"])
+
     def test_after_a_branch_refused(self):
         base = 0x80003000
         words = [0x14000002, 0xd503201f, 0xd65f03c0]   # b +8; nop; ret
@@ -165,6 +214,35 @@ class Lowering(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_ir.build(base, [base, base + 4, base + 8], word, prog)
 
+
+KINDS_HARNESS = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
+                 uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
+typedef uint64_t q __attribute__((vector_size(16)));
+void g_80003000(Ctx *);
+void g_80004000(Ctx *c) { c->x[0] = 999; }
+static uint64_t seen_sp = 7;
+q t_q(q a, uint64_t b) { a[1] += b; return a; }
+void t_io(uint64_t k, uint64_t *io) { io[0] += k, io[1] *= 2; }
+uint64_t t_load(uint64_t v, uint64_t sp) { seen_sp = sp; return v; }
+uint64_t t_replace(Ctx *g, uint64_t x0) { return g ? x0 * 100 : 0; }
+int main(void) {
+    uint8_t *w = mmap((void *)0x100000000000ULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (w == MAP_FAILED) { puts("skip"); return 0; }
+    const uint64_t v = 0x55; memcpy(w + 0x108, &v, 8);   /* ([sp + 8], sp 0x100) */
+    Ctx c; memset(&c, 0, sizeof c);
+    c.x[0] = 3, c.x[1] = 10, c.x[2] = 5, c.x[4] = 6, c.x[31] = 0x100, c.vreg[3][0] = 1, c.vreg[3][1] = 2;
+    g_80003000(&c);
+    printf("%llu %llu %llu %llu %llu %llu %llu %llu\n", (unsigned long long)c.vreg[3][0], (unsigned long long)c.vreg[3][1],
+           (unsigned long long)c.x[1], (unsigned long long)c.x[4], (unsigned long long)c.x[6], (unsigned long long)seen_sp,
+           (unsigned long long)c.x[0], (unsigned long long)c.x[9]);
+    return 0;
+}
+"""
 
 HOST_HARNESS = r"""
 #include <stdio.h>
@@ -179,7 +257,7 @@ volatile float hos_text_scale = 1.0f;
 static int seen_loading = -1, seen_event = -1;
 void hos_bench_player(int loading, int event_playing) { seen_loading = loading, seen_event = event_playing; }
 volatile uint64_t hos_wide_out, hos_wide_scene;
-volatile float hos_wide_ratio, hos_wide_margin;
+volatile float hos_wide_ratio, hos_wide_margin, hos_wide_squeeze;
 volatile int hos_occlusion_off;
 static uint32_t out_w = 3840, out_h = 2160;
 uint32_t hos_output_size(int height) { return height ? out_h : out_w; }
@@ -255,6 +333,19 @@ int main(void) {
     hos_oot_wide_movie(0x7000); CHECK(G32(0x7000 - 40 + 8) == bits(0.0f));   /* (no margin: as it was) */
     hos_wide_margin = 0.125f; hos_oot_wide_movie(0x7000);
     CHECK(G32(0x7000 - 40 + 8) == bits(12.5f) && G32(0x7000 - 40 + 16) == bits(87.5f));
+    /* the HUD: the UI's orthographic rows squeezed into the middle 16:9, other projections and the kept screens as they are */
+    {
+        const float r0[4] = {2.0f / 3840.0f, 0, 0, -1}, r1[4] = {0, 2.0f / 2160.0f, 0, 1};
+        hos_q q1, q4, out;
+        memcpy(&q1, r0, 16), memcpy(&q4, r1, 16);
+        G64(0x8000 - 0x1b8) = 0x1234;   /* (the canvas's screen: an ordinary one) */
+        out = hos_oot_wide_hud(0x8000, q1, q4); CHECK(!memcmp(&out, &q1, 16));   /* (16:9: squeeze 0) */
+        hos_wide_squeeze = 0.5f;
+        out = hos_oot_wide_hud(0x8000, q1, q4);
+        float o[4]; memcpy(o, &out, 16); CHECK(o[0] == r0[0] * 0.5f && o[3] == -0.5f);
+        G64(0x8000 - 0x1b8) = OOT_MAIN + 0x4bed098; out = hos_oot_wide_hud(0x8000, q1, q4); CHECK(!memcmp(&out, &q1, 16));
+        hos_wide_squeeze = 0;
+    }
     /* occlusion off: the byte reads 0 */
     CHECK(hos_oot_occlusion_flag(1) == 1); hos_occlusion_off = 1; CHECK(hos_oot_occlusion_flag(1) == 0);
     /* the per-core rings: the first writer owns a ring; another thread is logged once, the owner never */
@@ -282,6 +373,7 @@ static inline void *hos_guest_range(uint64_t a, uint64_t n) { return a && (a & 0
 static int bench_on;
 static int hos_bench_on(void) { return bench_on; }
 #define GP(a) ((void *)A64_PTR(a))
+typedef uint64_t hos_q __attribute__((vector_size(16)));
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))
 static int logged;

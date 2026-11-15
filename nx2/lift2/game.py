@@ -1,16 +1,15 @@
 """The game's lift and build (nx2/lift.py, nx2/build.py): every function of the game through the lifter.
 
 At lift time write_plan() keeps what the build needs from the discovery (nx2/lift2/discover.py): the entries, jump
-tables, PLT stubs, setjmp owners, hooked addresses, the C put after instructions (nx2/oot_wide.py, oot_jitter.py,
-oot_occlusion.py), the hot list, and every function's instructions, in <work>/sa/plan.pickle. A function the
+tables, PLT stubs, setjmp owners, hooked addresses, the hot list, and every function's instructions, in
+<work>/sa/plan.pickle. A function the
 lifter cannot take (build_ir.scope: a word it does not decode) is lifted as a trap at its entry and listed.
 
 At build time prepare() lifts the functions into partitions by guest address, each `f_<addr>` (the name the function
 table, the hooks and the host call), and streams each partition's text into `clang -x ir -` (no IR on disk; at a
 level whose pipeline has no DSE, -O1, through `opt` with clang's pipeline plus DSE first: opt_argv); a
 partition whose inputs are unchanged comes from the object cache by an input key. The hot list's functions go into
-their own partitions, compiled at the hot level (-O2). It returns the C it writes beside (the C after instructions
-and the SPLICE_AFTER calls, as host functions the lifted code calls) and the objects to link.
+their own partitions, compiled at the hot level (-O2). It returns the objects to link.
 
 The whole-program summaries (nx2/lift2/summary.py) are computed by the first build after a lift, in a process of
 their own (finish_summaries, summary.job: workers over the components' DAG), and cached beside the plan, keyed by the
@@ -115,7 +114,7 @@ def reachable(entry, pcs, word, jt):
 
 
 # the lifter's files the summaries depend on (the summary cache's key)
-SUMMARY_SOURCES = re.compile(r"^(enc.*|sem.*|ir|build_ir|summary)\.py$")
+SUMMARY_SOURCES = re.compile(r"^(enc.*|sem.*|ir|build_ir|summary|probes)\.py$")
 
 
 def plan_summaries(L, img, path, hooks, no_call, classes):
@@ -226,7 +225,6 @@ def write_plan(L, img, path, hot=()):
     # (a BL to a setjmp owner is lifted as a call of hos_sj_call, host/hos_setjmp.c: scope need not refuse it)
     scope_prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, classes=classes)
     sj_rets = {e: tuple((list(r) + [0, 0, 0, 0])[:4]) for e, r in (getattr(L, "setjmp_owner", {}) or {}).items()}
-    after_c = dict(getattr(L, "after", {}) or {})   # (C after an instruction: oot_wide, oot_jitter, oot_occlusion)
     hooks = set(L.hooks)
     bodies, why = {}, {}
     for e, (body, _) in L.funcs.items():
@@ -234,10 +232,6 @@ def write_plan(L, img, path, hot=()):
             why["hooked"] = why.get("hooked", 0) + 1
             continue
         pcs = sorted(body)
-        if any(after_c.get(pc) and enc.decode(img.word(pc)) is not None and not probes.is_call(img.word(pc)) and
-               enc.decode(img.word(pc)).entry.template in build_ir.TERMINATORS for pc in pcs):
-            why["C added after a branch"] = why.get("C added after a branch", 0) + 1   # (after a call: Program.after)
-            continue
         r = build_ir.scope(e, pcs, img.word, scope_prog)
         if r is not None and "not decoded" in r:   # (data the discovery took for code: unreachable from the entry)
             live = reachable(e, pcs, img.word, prog.jt)
@@ -257,7 +251,7 @@ def write_plan(L, img, path, hot=()):
         bodies[e] = (array("Q", pcs), array("I", (img.word(pc) for pc in pcs)))
     # the whole program's summaries: computed (or taken from their cache) by the build, finish_summaries
     job = plan_summaries(L, img, path, hooks, no_call, classes)
-    plan = {"summaries": {}, "summary_job": job, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets, "after_c": after_c,
+    plan = {"summaries": {}, "summary_job": job, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets,
             "hooks": sorted(hooks), "bodies": bodies, "why": why, "hot": sorted(set(hot) & set(bodies)),
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
     with open(path + ".tmp", "wb") as f:
@@ -323,21 +317,10 @@ def verified(plan, e):
 
 def host_edited(plan, hooks):
     """The functions the host edits or replaces: the HLE'd functions (plan hooks), the entry hooks (hooks: the hook
-    may handle the call), the setjmp owners (called through hos_sj_call), and those whose code calls the host with the
-    context (Value and At probes, splices, the C after an instruction). None is treated as noreturn; a direct call
-    reloads every register after one unless host_clean says what it keeps."""
-    out = set(hooks) | set(plan.get("hooks", ())) | set(plan.get("sj_rets", {})) | probe_edited(plan)
-    return out
-
-
-def probe_edited(plan):
-    """the functions whose code calls the host with the context: Value and At probes, splices, the C after an
-    instruction"""
-    out = set(probes.BY_FUNC) | set(probes.AT_FUNCS) | set(probes.SPLICE_AT) | set(probes.SPLICE_BEFORE)
-    after = set(plan.get("after_c", {}))
-    if after:
-        out |= {e for e, (pcs, _) in plan["bodies"].items() if not after.isdisjoint(pcs)}
-    return out
+    may handle the call) and the setjmp owners (called through hos_sj_call). None is treated as noreturn; a direct call
+    reloads every register after one unless host_clean says what it keeps. Probes and At rows do not edit a function:
+    each declares what it reads and writes, and the summaries count it as the instruction's (probes.row_effects)."""
+    return set(hooks) | set(plan.get("hooks", ())) | set(plan.get("sj_rets", {}))
 
 
 KEEP = [(r, "x%d" % r) for r in range(19, 30)] + [(31, "sp")]   # (summary bits: x19-x29, SP)
@@ -352,11 +335,10 @@ def full(s):
 def host_clean(plan, hooks, names):
     """{host callee: the bits of x19-x29 and SP a direct call keeps across it} (host_effects.py): the HLE'd functions
     (names: host_effects.hle_names) not declared clobbering keep all of them; an entry-hooked function what its body's
-    full summary and the summaries of the guest functions its hook calls (host_effects.CALLS) all preserve. A function
-    the host also edits otherwise (a setjmp owner, a probe, a splice, C after an instruction) is not in it. The build
-    checks the declarations first (host_effects.check)."""
+    full summary and the summaries of the guest functions its hook calls (host_effects.CALLS) all preserve. A setjmp
+    owner is not in it. The build checks the declarations first (host_effects.check)."""
     summ = plan.get("summaries", {})
-    other = set(plan.get("sj_rets", {})) | probe_edited(plan)
+    other = set(plan.get("sj_rets", {}))
     out = {}
     for e in plan.get("hooks", ()):
         if e in names and names[e] not in host_effects.CLOBBERS and e not in other:
@@ -419,10 +401,8 @@ def call_report(plan, edited, hooks, chosen, clean=None):
                 why["HLE declared clobbering"] += 1
             elif c in sj:
                 why["setjmp owner"] += 1
-            elif c in hooks and c not in probe_edited_cache(plan):
+            elif c in hooks:
                 why["entry hook, body not proven"] += 1
-            elif c in edited:
-                why["probe, splice or C after"] += 1
             elif s is None:
                 why["no summary"] += 1
             elif s[5] is False:
@@ -441,17 +421,6 @@ def call_report(plan, edited, hooks, chosen, clean=None):
             "callees); reload all: %s; %d BLR sites reload all" % (
                 total, why["kept"], kept / max(1, why["kept"]), host,
                 ", ".join("%s %d" % kv for kv in why.most_common() if kv[0] != "kept"), blr))
-
-
-_PROBE_EDITED = {}
-
-
-def probe_edited_cache(plan):
-    k = id(plan)
-    if k not in _PROBE_EDITED:
-        _PROBE_EDITED.clear()
-        _PROBE_EDITED[k] = probe_edited(plan)
-    return _PROBE_EDITED[k]
 
 
 def lift_part(args):
@@ -490,11 +459,9 @@ def lift_part(args):
         pcs, words = plan["bodies"][e]
         w = dict(zip(pcs, words))
         prog.probes = probes.find(e, pcs, w.__getitem__)
-        prog.before = probes.merge(probes.at(e, pcs, w.__getitem__, before=True), probes.splice_before(e, pcs, w.__getitem__))
-        # (after an instruction, in this order: the At probes, the C after it, the SPLICE_AT splices)
-        prog.after = probes.merge(probes.at(e, pcs, w.__getitem__),
-                                  probes.after_c(plan.get("after_c", {}), pcs, w.__getitem__),
-                                  probes.after_c(probes.splice_texts(e, w.__getitem__), pcs, w.__getitem__))
+        prog.before = probes.at(e, pcs, w.__getitem__, before=True)
+        prog.after = probes.at(e, pcs, w.__getitem__)
+        prog.replace = probes.at(e, pcs, w.__getitem__, replace=True)
         fn = build_ir.build(e, list(pcs), w.__getitem__, prog)
         fn.name = "f_%08x" % e
         fn.entry_hook = hooks.get(e)
@@ -573,12 +540,7 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
         raise SystemExit("build: ENTRY_HOOKs with no lifted function: %s" % ", ".join(
             ["%s (not exported)" % m for m in missing] + ["%s at %#x" % (wanted[e], e) for e in absent]))
     hooks = wanted
-    src_dir = os.path.join(out, "lift_src")
-    os.makedirs(src_dir, exist_ok=True)
-    # (the C put after an instruction, and the SPLICE_AT calls, as host functions the lifted code calls)
-    after = dict(plan.get("after_c", {}))
-    after.update(probes.all_splice_texts())
-    srcs = [probes.write_after_c(after, src_dir)]
+    srcs = []
     # partitions: by address, the hot functions apart, about PART_INSNS instructions each
     parts = []
     for group, tag in ((sorted(chosen - hot), "c"), (sorted(chosen & hot), "h")):

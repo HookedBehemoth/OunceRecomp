@@ -176,7 +176,7 @@ static int fn_index(uint64_t addr) {
 }
 
 /* the hook: 0 runs the lifted body as usual (switch off, or the hook's own call of it); else the body run and timed */
-static int span(Ctx *c, uint64_t addr) {
+static int span(HookCall *h, uint64_t addr) {
     if (tl_enter == addr) { tl_enter = 0; return 0; }
     if (!havok_on()) return 0;
     const int i = fn_index(addr);
@@ -187,7 +187,7 @@ static int span(Ctx *c, uint64_t addr) {
     const int cpu = k != K_QUERY || outer;
     const int64_t c0 = cpu ? thread_cpu_ns() : 0, t0 = hos_now_ns();
     tl_enter = addr;
-    body(c);
+    hook_run(h, body);
     const int64_t t1 = hos_now_ns(), c1 = cpu ? thread_cpu_ns() : 0;
     tl_depth[k]--, tl_any--;
     const int64_t wall = t1 - t0;
@@ -265,98 +265,98 @@ void havok_stats_frame(void) {
     if (++fn_frames >= FUNCS_EVERY) write_funcs(t, present), fflush(csv);
 }
 
-ENTRY_HOOK(0x8016b620) { return span(c, 0x8016b620ull); }
-ENTRY_HOOK(0x80372ad4) { return span(c, 0x80372ad4ull); }
-ENTRY_HOOK(0x8073a4a0) { return span(c, 0x8073a4a0ull); }
-ENTRY_HOOK(0x817f3ce0) { return span(c, 0x817f3ce0ull); }
-ENTRY_HOOK(0x817f4aa0) { return span(c, 0x817f4aa0ull); }
-ENTRY_HOOK(0x818337b4) { return span(c, 0x818337b4ull); }
-ENTRY_HOOK(0x81834588) { return span(c, 0x81834588ull); }
-ENTRY_HOOK(0x818b5df8) { return span(c, 0x818b5df8ull); }
-ENTRY_HOOK(0x818b6800) { return span(c, 0x818b6800ull); }
-ENTRY_HOOK(0x818b7720) { return span(c, 0x818b7720ull); }
-ENTRY_HOOK(0x818b8640) { return span(c, 0x818b8640ull); }
-ENTRY_HOOK(0x818b9140) { return span(c, 0x818b9140ull); }
-ENTRY_HOOK(0x818b9be0) { return span(c, 0x818b9be0ull); }
-ENTRY_HOOK(0x818ba6e0) { return span(c, 0x818ba6e0ull); }
-ENTRY_HOOK(0x818bb580) { return span(c, 0x818bb580ull); }
-ENTRY_HOOK(0x818bc530) { return span(c, 0x818bc530ull); }
-ENTRY_HOOK(0x818bd320) { return span(c, 0x818bd320ull); }
-ENTRY_HOOK(0x818be1c0) { return span(c, 0x818be1c0ull); }
-ENTRY_HOOK(0x818f4f28) { return span(c, 0x818f4f28ull); }
-ENTRY_HOOK(0x818f5450) { return span(c, 0x818f5450ull); }
-ENTRY_HOOK(0x818f5998) { return span(c, 0x818f5998ull); }
-ENTRY_HOOK(0x818f5ec8) { return span(c, 0x818f5ec8ull); }
-ENTRY_HOOK(0x818f64cc) { return span(c, 0x818f64ccull); }
-ENTRY_HOOK(0x818f6a08) { return span(c, 0x818f6a08ull); }
-ENTRY_HOOK(0x818f6f44) { return span(c, 0x818f6f44ull); }
-ENTRY_HOOK(0x818f74b0) { return span(c, 0x818f74b0ull); }
-ENTRY_HOOK(0x818f7a20) { return span(c, 0x818f7a20ull); }
-ENTRY_HOOK(0x818f8740) { return span(c, 0x818f8740ull); }
-ENTRY_HOOK(0x818f8c7c) { return span(c, 0x818f8c7cull); }
-ENTRY_HOOK(0x8191ee00) { return span(c, 0x8191ee00ull); }
-ENTRY_HOOK(0x81994b48) { return span(c, 0x81994b48ull); }
-ENTRY_HOOK(0x81995360) { return span(c, 0x81995360ull); }
-ENTRY_HOOK(0x81995fc4) { return span(c, 0x81995fc4ull); }
-ENTRY_HOOK(0x81996780) { return span(c, 0x81996780ull); }
-ENTRY_HOOK(0x81997f00) { return span(c, 0x81997f00ull); }
-ENTRY_HOOK(0x819989dc) { return span(c, 0x819989dcull); }
-ENTRY_HOOK(0x8199c860) { return span(c, 0x8199c860ull); }
-ENTRY_HOOK(0x8199d5b8) { return span(c, 0x8199d5b8ull); }
-ENTRY_HOOK(0x8199e040) { return span(c, 0x8199e040ull); }
-ENTRY_HOOK(0x8199e714) { return span(c, 0x8199e714ull); }
-ENTRY_HOOK(0x8199f7c0) { return span(c, 0x8199f7c0ull); }
-ENTRY_HOOK(0x819a3d20) { return span(c, 0x819a3d20ull); }
-ENTRY_HOOK(0x819a8fac) { return span(c, 0x819a8facull); }
-ENTRY_HOOK(0x819a9348) { return span(c, 0x819a9348ull); }
-ENTRY_HOOK(0x819aa220) { return span(c, 0x819aa220ull); }
-ENTRY_HOOK(0x819ab300) { return span(c, 0x819ab300ull); }
-ENTRY_HOOK(0x819ad000) { return span(c, 0x819ad000ull); }
-ENTRY_HOOK(0x819aeae8) { return span(c, 0x819aeae8ull); }
-ENTRY_HOOK(0x819affa0) { return span(c, 0x819affa0ull); }
-ENTRY_HOOK(0x819b25e0) { return span(c, 0x819b25e0ull); }
-ENTRY_HOOK(0x819b8e20) { return span(c, 0x819b8e20ull); }
-ENTRY_HOOK(0x819c67a0) { return span(c, 0x819c67a0ull); }
-ENTRY_HOOK(0x819c6d20) { return span(c, 0x819c6d20ull); }
-ENTRY_HOOK(0x819c7628) { return span(c, 0x819c7628ull); }
-ENTRY_HOOK(0x819c7b40) { return span(c, 0x819c7b40ull); }
-ENTRY_HOOK(0x81a14200) { return span(c, 0x81a14200ull); }
-ENTRY_HOOK(0x81a191a0) { return span(c, 0x81a191a0ull); }
-ENTRY_HOOK(0x81a19f80) { return span(c, 0x81a19f80ull); }
-ENTRY_HOOK(0x81a42cd8) { return span(c, 0x81a42cd8ull); }
-ENTRY_HOOK(0x81f18280) { return span(c, 0x81f18280ull); }
-ENTRY_HOOK(0x81f19b60) { return span(c, 0x81f19b60ull); }
-ENTRY_HOOK(0x81f1b2e0) { return span(c, 0x81f1b2e0ull); }
-ENTRY_HOOK(0x81f363d0) { return span(c, 0x81f363d0ull); }
-ENTRY_HOOK(0x81f36c0c) { return span(c, 0x81f36c0cull); }
-ENTRY_HOOK(0x81f38900) { return span(c, 0x81f38900ull); }
-ENTRY_HOOK(0x81f39944) { return span(c, 0x81f39944ull); }
-ENTRY_HOOK(0x81f3a8d8) { return span(c, 0x81f3a8d8ull); }
-ENTRY_HOOK(0x81f3b8a0) { return span(c, 0x81f3b8a0ull); }
-ENTRY_HOOK(0x81f3c840) { return span(c, 0x81f3c840ull); }
-ENTRY_HOOK(0x81f3d7d0) { return span(c, 0x81f3d7d0ull); }
-ENTRY_HOOK(0x81f3e774) { return span(c, 0x81f3e774ull); }
-ENTRY_HOOK(0x81f3f634) { return span(c, 0x81f3f634ull); }
-ENTRY_HOOK(0x81f405dc) { return span(c, 0x81f405dcull); }
-ENTRY_HOOK(0x81f41684) { return span(c, 0x81f41684ull); }
-ENTRY_HOOK(0x81f42660) { return span(c, 0x81f42660ull); }
-ENTRY_HOOK(0x81f4370c) { return span(c, 0x81f4370cull); }
-ENTRY_HOOK(0x81f446dc) { return span(c, 0x81f446dcull); }
-ENTRY_HOOK(0x81f45674) { return span(c, 0x81f45674ull); }
-ENTRY_HOOK(0x81f4660c) { return span(c, 0x81f4660cull); }
-ENTRY_HOOK(0x81f4761c) { return span(c, 0x81f4761cull); }
-ENTRY_HOOK(0x81f525c0) { return span(c, 0x81f525c0ull); }
-ENTRY_HOOK(0x81f57c3c) { return span(c, 0x81f57c3cull); }
-ENTRY_HOOK(0x81f59a60) { return span(c, 0x81f59a60ull); }
-ENTRY_HOOK(0x81f5cff8) { return span(c, 0x81f5cff8ull); }
-ENTRY_HOOK(0x81f5dd60) { return span(c, 0x81f5dd60ull); }
-ENTRY_HOOK(0x81f621ec) { return span(c, 0x81f621ecull); }
-ENTRY_HOOK(0x820d2180) { return span(c, 0x820d2180ull); }
-ENTRY_HOOK(0x820d33d8) { return span(c, 0x820d33d8ull); }
-ENTRY_HOOK(0x820d41c0) { return span(c, 0x820d41c0ull); }
-ENTRY_HOOK(0x820d5140) { return span(c, 0x820d5140ull); }
-ENTRY_HOOK(0x820d6e20) { return span(c, 0x820d6e20ull); }
-ENTRY_HOOK(0x820d81dc) { return span(c, 0x820d81dcull); }
-ENTRY_HOOK(0x820d94ac) { return span(c, 0x820d94acull); }
-ENTRY_HOOK(0x820da77c) { return span(c, 0x820da77cull); }
-ENTRY_HOOK(0x820dba4c) { return span(c, 0x820dba4cull); }
+ENTRY_HOOK(0x8016b620) { return span(h, 0x8016b620ull); }
+ENTRY_HOOK(0x80372ad4) { return span(h, 0x80372ad4ull); }
+ENTRY_HOOK(0x8073a4a0) { return span(h, 0x8073a4a0ull); }
+ENTRY_HOOK(0x817f3ce0) { return span(h, 0x817f3ce0ull); }
+ENTRY_HOOK(0x817f4aa0) { return span(h, 0x817f4aa0ull); }
+ENTRY_HOOK(0x818337b4) { return span(h, 0x818337b4ull); }
+ENTRY_HOOK(0x81834588) { return span(h, 0x81834588ull); }
+ENTRY_HOOK(0x818b5df8) { return span(h, 0x818b5df8ull); }
+ENTRY_HOOK(0x818b6800) { return span(h, 0x818b6800ull); }
+ENTRY_HOOK(0x818b7720) { return span(h, 0x818b7720ull); }
+ENTRY_HOOK(0x818b8640) { return span(h, 0x818b8640ull); }
+ENTRY_HOOK(0x818b9140) { return span(h, 0x818b9140ull); }
+ENTRY_HOOK(0x818b9be0) { return span(h, 0x818b9be0ull); }
+ENTRY_HOOK(0x818ba6e0) { return span(h, 0x818ba6e0ull); }
+ENTRY_HOOK(0x818bb580) { return span(h, 0x818bb580ull); }
+ENTRY_HOOK(0x818bc530) { return span(h, 0x818bc530ull); }
+ENTRY_HOOK(0x818bd320) { return span(h, 0x818bd320ull); }
+ENTRY_HOOK(0x818be1c0) { return span(h, 0x818be1c0ull); }
+ENTRY_HOOK(0x818f4f28) { return span(h, 0x818f4f28ull); }
+ENTRY_HOOK(0x818f5450) { return span(h, 0x818f5450ull); }
+ENTRY_HOOK(0x818f5998) { return span(h, 0x818f5998ull); }
+ENTRY_HOOK(0x818f5ec8) { return span(h, 0x818f5ec8ull); }
+ENTRY_HOOK(0x818f64cc) { return span(h, 0x818f64ccull); }
+ENTRY_HOOK(0x818f6a08) { return span(h, 0x818f6a08ull); }
+ENTRY_HOOK(0x818f6f44) { return span(h, 0x818f6f44ull); }
+ENTRY_HOOK(0x818f74b0) { return span(h, 0x818f74b0ull); }
+ENTRY_HOOK(0x818f7a20) { return span(h, 0x818f7a20ull); }
+ENTRY_HOOK(0x818f8740) { return span(h, 0x818f8740ull); }
+ENTRY_HOOK(0x818f8c7c) { return span(h, 0x818f8c7cull); }
+ENTRY_HOOK(0x8191ee00) { return span(h, 0x8191ee00ull); }
+ENTRY_HOOK(0x81994b48) { return span(h, 0x81994b48ull); }
+ENTRY_HOOK(0x81995360) { return span(h, 0x81995360ull); }
+ENTRY_HOOK(0x81995fc4) { return span(h, 0x81995fc4ull); }
+ENTRY_HOOK(0x81996780) { return span(h, 0x81996780ull); }
+ENTRY_HOOK(0x81997f00) { return span(h, 0x81997f00ull); }
+ENTRY_HOOK(0x819989dc) { return span(h, 0x819989dcull); }
+ENTRY_HOOK(0x8199c860) { return span(h, 0x8199c860ull); }
+ENTRY_HOOK(0x8199d5b8) { return span(h, 0x8199d5b8ull); }
+ENTRY_HOOK(0x8199e040) { return span(h, 0x8199e040ull); }
+ENTRY_HOOK(0x8199e714) { return span(h, 0x8199e714ull); }
+ENTRY_HOOK(0x8199f7c0) { return span(h, 0x8199f7c0ull); }
+ENTRY_HOOK(0x819a3d20) { return span(h, 0x819a3d20ull); }
+ENTRY_HOOK(0x819a8fac) { return span(h, 0x819a8facull); }
+ENTRY_HOOK(0x819a9348) { return span(h, 0x819a9348ull); }
+ENTRY_HOOK(0x819aa220) { return span(h, 0x819aa220ull); }
+ENTRY_HOOK(0x819ab300) { return span(h, 0x819ab300ull); }
+ENTRY_HOOK(0x819ad000) { return span(h, 0x819ad000ull); }
+ENTRY_HOOK(0x819aeae8) { return span(h, 0x819aeae8ull); }
+ENTRY_HOOK(0x819affa0) { return span(h, 0x819affa0ull); }
+ENTRY_HOOK(0x819b25e0) { return span(h, 0x819b25e0ull); }
+ENTRY_HOOK(0x819b8e20) { return span(h, 0x819b8e20ull); }
+ENTRY_HOOK(0x819c67a0) { return span(h, 0x819c67a0ull); }
+ENTRY_HOOK(0x819c6d20) { return span(h, 0x819c6d20ull); }
+ENTRY_HOOK(0x819c7628) { return span(h, 0x819c7628ull); }
+ENTRY_HOOK(0x819c7b40) { return span(h, 0x819c7b40ull); }
+ENTRY_HOOK(0x81a14200) { return span(h, 0x81a14200ull); }
+ENTRY_HOOK(0x81a191a0) { return span(h, 0x81a191a0ull); }
+ENTRY_HOOK(0x81a19f80) { return span(h, 0x81a19f80ull); }
+ENTRY_HOOK(0x81a42cd8) { return span(h, 0x81a42cd8ull); }
+ENTRY_HOOK(0x81f18280) { return span(h, 0x81f18280ull); }
+ENTRY_HOOK(0x81f19b60) { return span(h, 0x81f19b60ull); }
+ENTRY_HOOK(0x81f1b2e0) { return span(h, 0x81f1b2e0ull); }
+ENTRY_HOOK(0x81f363d0) { return span(h, 0x81f363d0ull); }
+ENTRY_HOOK(0x81f36c0c) { return span(h, 0x81f36c0cull); }
+ENTRY_HOOK(0x81f38900) { return span(h, 0x81f38900ull); }
+ENTRY_HOOK(0x81f39944) { return span(h, 0x81f39944ull); }
+ENTRY_HOOK(0x81f3a8d8) { return span(h, 0x81f3a8d8ull); }
+ENTRY_HOOK(0x81f3b8a0) { return span(h, 0x81f3b8a0ull); }
+ENTRY_HOOK(0x81f3c840) { return span(h, 0x81f3c840ull); }
+ENTRY_HOOK(0x81f3d7d0) { return span(h, 0x81f3d7d0ull); }
+ENTRY_HOOK(0x81f3e774) { return span(h, 0x81f3e774ull); }
+ENTRY_HOOK(0x81f3f634) { return span(h, 0x81f3f634ull); }
+ENTRY_HOOK(0x81f405dc) { return span(h, 0x81f405dcull); }
+ENTRY_HOOK(0x81f41684) { return span(h, 0x81f41684ull); }
+ENTRY_HOOK(0x81f42660) { return span(h, 0x81f42660ull); }
+ENTRY_HOOK(0x81f4370c) { return span(h, 0x81f4370cull); }
+ENTRY_HOOK(0x81f446dc) { return span(h, 0x81f446dcull); }
+ENTRY_HOOK(0x81f45674) { return span(h, 0x81f45674ull); }
+ENTRY_HOOK(0x81f4660c) { return span(h, 0x81f4660cull); }
+ENTRY_HOOK(0x81f4761c) { return span(h, 0x81f4761cull); }
+ENTRY_HOOK(0x81f525c0) { return span(h, 0x81f525c0ull); }
+ENTRY_HOOK(0x81f57c3c) { return span(h, 0x81f57c3cull); }
+ENTRY_HOOK(0x81f59a60) { return span(h, 0x81f59a60ull); }
+ENTRY_HOOK(0x81f5cff8) { return span(h, 0x81f5cff8ull); }
+ENTRY_HOOK(0x81f5dd60) { return span(h, 0x81f5dd60ull); }
+ENTRY_HOOK(0x81f621ec) { return span(h, 0x81f621ecull); }
+ENTRY_HOOK(0x820d2180) { return span(h, 0x820d2180ull); }
+ENTRY_HOOK(0x820d33d8) { return span(h, 0x820d33d8ull); }
+ENTRY_HOOK(0x820d41c0) { return span(h, 0x820d41c0ull); }
+ENTRY_HOOK(0x820d5140) { return span(h, 0x820d5140ull); }
+ENTRY_HOOK(0x820d6e20) { return span(h, 0x820d6e20ull); }
+ENTRY_HOOK(0x820d81dc) { return span(h, 0x820d81dcull); }
+ENTRY_HOOK(0x820d94ac) { return span(h, 0x820d94acull); }
+ENTRY_HOOK(0x820da77c) { return span(h, 0x820da77cull); }
+ENTRY_HOOK(0x820dba4c) { return span(h, 0x820dba4cull); }

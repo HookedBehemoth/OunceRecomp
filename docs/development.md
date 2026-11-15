@@ -73,8 +73,9 @@ everything; a change in `host/` or `gpu/direct/` recompiles only that file and l
   `ENTRY_HOOK_SYM` names resolve through `work/sa/image/image.json`.
 - A new `host/*.c` file is picked up by the next build only (the file list is taken at its start).
 - `RX_DIRECT_ONLY=1` builds the back end alone, with no lift.
-- **A new lift** is needed after a change to the lift (`nx2/lift.py`, `nx2/lift2/discover.py`, the C after an instruction
-  in `nx2/oot_wide.py`, `oot_jitter.py`, `oot_occlusion.py`) or to the dump: `scripts/relift.sh` lifts and builds, for the
+- **A new lift** is needed after a change to the lift (`nx2/lift.py`, `nx2/lift2/discover.py`) or to the dump (a
+  change to the At rows, `nx2/lift2/probes.py`, needs only a build; the summaries count the rows, so the build
+  recomputes them): `scripts/relift.sh` lifts and builds, for the
   checkout it is run from; in the main checkout on native-vk through `scripts/play-refresh.sh`, so `BUILD.txt` names the
   head. It stops while a game runs from that build. About 100 s of lift (6 GB at its peak); a cold build about 5
   minutes at 6 jobs; log `work/play/relift.log` (a worktree: `work/sa/relift.log`). `scripts/play-refresh.sh` lifts

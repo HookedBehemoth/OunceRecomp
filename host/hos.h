@@ -23,28 +23,44 @@
 #ifndef HOS_GAME_VERSION
 #define HOS_GAME_VERSION 100
 #endif
-/* ENTRY_HOOK(0x0xxxxxxx) { ... }: runs at the entry of the lifted guest function at that address (8 hex digits),
-   with its arguments in c; return 1 when it handled the call (the function then returns at once, x0 is the result),
-   0 to run the function as usual. Lift 2 calls it at the function's generic entry (nx2/lift2/mixed.py); a hook whose
-   address is not a lifted function stops the build.
+/* ENTRY_HOOK(0x0xxxxxxx) { ... }: runs at the entry of the lifted guest function at that address (8 hex digits); return
+   1 when it handled the call (the function then returns at once), 0 to run the function as usual. Lift 2 calls it at
+   the function's generic entry (nx2/lift2/emit_llvm.py); a hook whose address is not a lifted function stops the build.
+   A hook sees the call's arguments x0-x7 and its return address as plain values (a->x[n], a->lr), never the guest
+   context: that is what a call of a hooked function must have stored (nx2/lift2/host_effects.py HOOK_READS). Everything
+   else it does to the call goes through h:
+     hook_return(h, v)        x0 := v; returns 1 (`return hook_return(h, v);`)
+     hook_set_arg(h, n, v)    the argument xn (n < 8) the body will see, before returning 0
+     hook_run(h, body)        the lifted body now (a64_lookup of the hooked address: the hook sees that call too and
+                              must let it run); hook_result(h) its x0 afterwards. The hook then returns 1
+     hook_call_guest(h, ...)  guest code on the call's stack (reads SP: declared in host_effects.HOOK_READS), every
+                              register as it was afterwards; its x0
    HOS_DBG=hooks (diagnostic): each hook's first call logged (hos_hook_seen, host/hos_thread.c). */
 extern int hos_hooks_dbg;
 void hos_hook_seen(const char *name);
+typedef struct { uint64_t x[8]; uint64_t lr; } HookArgs;
+typedef struct HookCall HookCall;   /* (the hooked call: only the hook_* functions below look inside) */
 #define ENTRY_HOOK_COUNTED(name, body)                                                                                 \
-    static int body(Ctx *c);                                                                                           \
-    int name(Ctx *c) {                                                                                                 \
+    static int body(const HookArgs *a, HookCall *h);                                                                   \
+    int name(Ctx *A64_NOESC c) {                                                                                       \
         if (__builtin_expect(hos_hooks_dbg, 0)) hos_hook_seen(#name);                                                  \
-        return body(c);                                                                                                \
+        const HookArgs a_ = {{c->x[0], c->x[1], c->x[2], c->x[3], c->x[4], c->x[5], c->x[6], c->x[7]}, c->x[30]};      \
+        return body(&a_, (HookCall *)c);                                                                               \
     }                                                                                                                  \
-    static int body(Ctx *c)
+    static int body(const HookArgs *a, HookCall *h)
 #define ENTRY_HOOK(addr) ENTRY_HOOK_COUNTED(entry_##addr, entry_body_##addr)
 #define ENTRY_HOOK_SYM(sym) ENTRY_HOOK_COUNTED(entry_sym_##sym, entry_body_sym_##sym)
-/* SPLICE_AFTER(0x0xxxxxxx, "text") { ... }: runs inside the lifted guest function at that address, right after the
-   first line of its lifted C that contains the text (a game patch in the middle of a function: c holds the guest
-   registers there). build.py splices the call in and stops the build if the text is not found. One per function. */
-#define SPLICE_AFTER(addr, anchor) void splice_##addr(Ctx *c)
-/* SPLICE_AFTER_EACH(0x0xxxxxxx, "text") { ... }: the same after every line of that function with the text */
-#define SPLICE_AFTER_EACH(addr, anchor) void splice_##addr(Ctx *c)
+int hook_return(HookCall *h, uint64_t x0);
+void hook_set_arg(HookCall *h, int n, uint64_t v);
+void hook_run(HookCall *h, A64Fn body);
+uint64_t hook_result(HookCall *h);
+uint64_t hook_call_guest(HookCall *h, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+/* At rows (nx2/lift2/probes.py): host functions of plain values; a 16-byte vector register ("qN") is a hos_q. A row
+   declared to call guest code gets a GuestCall first: guest_call runs guest code at fn with the arguments, SP sp and
+   LR 0, and puts every register back as it was (the row writes none); its x0 */
+typedef uint64_t hos_q __attribute__((vector_size(16)));
+typedef struct GuestCall GuestCall;
+uint64_t guest_call(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
 #define ARG(n) (c->x[n])
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define GP(a) ((void *)A64_PTR(a))           /* host pointer of a guest address */

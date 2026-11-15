@@ -117,7 +117,7 @@
 834bf9b0 desc_id_release                  # docs/direct/shadow-maps.md 2: an id's count down; at 0 onto the deferred list (+0xa00 by +0xa60) that f_80557420 drains
 800656b0 desc_texture_slot_b              # work/assets/native/rt-alloc.md, work/assets/native/cores.md: texture descriptor slot, with f_80064920 and f_80065880: texture object, builder from TextureData, register
 80065880 desc_texture_slot_c              # work/assets/native/rt-alloc.md, work/assets/native/nvn-callpaths.md: (same group; also re-made transient targets each frame)
-80667d20 system_texture_table_write       # docs/direct/patch-sites.md, the 30-slot table per view
+80667d20 system_texture_table_write       # docs/direct/patch-sites.md, the 30-slot table per view; its bl f_800634b0 at 0x806680d8 replaced by an At row with a guest call (host/direct_rt_ids.c)
 800662e0 texview_mip_chain_register       # work/assets/native/descriptor-heap.md, work/assets/native/nvn-callpaths.md: Hi-Z / mip chain per-level image views
 
 # --- the frame: heads, the gate, submits, present
@@ -131,8 +131,8 @@
 80665980 frame_head_begin                 # host/direct.c, work/assets/native/command-lists.md: a queue's head (frame primary) begin
 8042cd20 frame_end_wait_and_gate          # docs/direct/boot-to-main-loop.md: frame end: frame callback, fence and window/vsync waits, the CPU gate signal (tail call); sleeps only without a present
 806668b0 frame_list_end_submit            # work/assets/native/command-lists.md: End, submit, FenceSync, SyncWait
-8348c680 frame_body                       # docs/direct/boot-to-main-loop.md: the frame body, tail-called each frame from f_83b6ea90
-805902c0 frame_present_submit             # work/assets/native/engine-frame.md: Presentation thread: QueueWaitSync, submit, FenceSync
+8348c680 frame_body                       # docs/direct/boot-to-main-loop.md: the frame body, tail-called each frame from f_83b6ea90; its frame-end GetSystemTick call (bl at 0x8348c76c) replaced by an At row that also notes x19, the graphics module (host/hos_thread.c hos_oot_frame_end_tick)
+805902c0 frame_present_submit             # work/assets/native/engine-frame.md: Presentation thread: QueueWaitSync, submit, FenceSync; its event poll SleepThread (bl at 0x8059051c) replaced by an At row (host/hos_thread.c hos_oot_present_sleep, HOS_PRESENT_POLL)
 80547f20 frame_queue_present              # work/assets/native/engine-frame.md: QueuePresentTexture
 83b6e300 frame_seconds_from_ratio         # host/nn_vi.c, nx2/step_readers.py: seconds = ratio / 60; fills the frame-time object (**0x84c9e890): +16 ratio, +24, +28 an integer cut of the step (INFERRED: a whole-frame count)
 83b6e7b0 frame_step_getter_a              # nx2/step_readers.py: returns a step of the frame-time object in s0
@@ -144,7 +144,7 @@
 
 # --- jobs: the task graph, the scheduler, render jobs and their sync
 800ad2b0 job_calc_once_a                  # docs/direct/boot-to-main-loop.md 4.3: once a frame in the calc runner (one thread, ~0.3 ms): f_836c06d0 over 14 object lists of [0x84ca2bc8]
-800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md, docs/direct/boot-to-main-loop.md 4.3: calc jobs runner on main and ModuleSystemWorker1-5: sub-stages claimed by bit masks, polled with SleepThread(20 us) (host/hos_thread.c calc_poll_nap): the grid occluder, then the shape culler f_8009bb80 over ~290 items # ? work/assets/native/engine-layers.md says the model scene job
+800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md, docs/direct/boot-to-main-loop.md 4.3: calc jobs runner on main and ModuleSystemWorker1-5: sub-stages claimed by bit masks, polled with SleepThread(20 us) (host/hos_thread.c calc_poll_nap: the three calls replaced by At rows, hos_oot_calc_sleep): the grid occluder, then the shape culler f_8009bb80 over ~290 items # ? work/assets/native/engine-layers.md says the model scene job
 8007de00 job_gpu_sync                     # work/assets/native/command-lists.md: a synchronous GPU job: record, submit, fence, wait
 80070ea0 job_graph_build                  # work/assets/native/engine-jobs.md: (pool, graph, desc): the frame's task graph
 80070d30 job_graph_kick                   # work/assets/native/engine-jobs.md: virtual, vtable 0x84c85738
@@ -229,7 +229,7 @@
 802631a0 pass_env_cubemap_face            # work/assets/native/engine-frame.md: one prefilter draw
 80285b00 pass_final_blit                  # work/assets/native/engine-frame.md: the final draw to the window texture
 802ad020 pass_fluid_depth                 # work/assets/native/engine-frame.md: "Fluid 2dVolume New Depth"
-80289590 pass_fog_half_depth              # host/direct_depth_copy.c: FogPrePass::HalfDepth (its depth copy spliced)
+80289590 pass_fog_half_depth              # host/direct_depth_copy.c: FogPrePass::HalfDepth (its depth copy retargeted by an At row)
 8028a7f0 pass_fog_prepass_depth           # work/assets/native/engine-frame.md: " Depth For FogPrePass "
 8028b110 pass_fog_water                   # work/assets/native/engine-frame.md: "FogPrePass AfterWater/BeforeWataer"
 802a3700 pass_half_color                  # work/assets/native/engine-frame.md: "gsys::RenderBuffer::Color(half)"
@@ -261,7 +261,7 @@
 802722b0 pass_smaa_args                   # docs/direct/terrain-texels.md: the SMAA pass's argument block
 80271be0 pass_smaa_edge                   # work/assets/native/engine-frame.md, docs/direct/terrain-texels.md: "ndsr::smaa_edge/blendweights", edge list as a buffer
 802715b0 pass_smaa_output                 # work/assets/native/engine-frame.md: "smaa_output"
-80666d20 pass_soft_edge_depth             # host/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy spliced)
+80666d20 pass_soft_edge_depth             # host/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy retargeted by an At row)
 80668fc0 pass_sun_shadow                  # work/assets/native/engine-frame.md: sun shadow cascades (x3)
 80669460 pass_sun_shadow_alloc            # work/assets/native/engine-frame.md, docs/direct/shadow-maps.md 1: "shadow_map_depth" array (transient when +0x110 is 0, size +0x70 x +0x90, layers = cascades)
 80f76a20 pass_local_shadow_static         # docs/direct/shadow-maps.md 1: "LocalDepthShadow::drawStaticDepth": f_802640a0 with flag 1
@@ -311,7 +311,7 @@
 8008b3e0 draw_state_polygon               # work/assets/native/engine-layers.md: agl driver helper: polygon state
 80104de0 draw_texture_handle              # work/assets/native/engine-layers.md: agl driver helper: texture handle
 80265350 draw_viewport                    # work/assets/native/engine-layers.md: agl driver helper: viewport
-802a46e0 draw_viewport_scissor            # nx2/oot_wide.py: SetScissor then SetViewport
+802a46e0 draw_viewport_scissor            # host/oot_probes.c hos_oot_wide_save_picture: SetScissor then SetViewport (At row at 0x802a4824, io w1-w4)
 801a2d70 mesh_bind_name4                  # docs/direct/jobs-state.md, host/direct_mesh_binds.c: binds resource name 4 of a mesh drawer (ctx, item, 4, ..)
 801a6a40 mesh_bind_name5                  # docs/direct/jobs-state.md, host/direct_mesh_binds.c: binds resource name 5 (ctx, item, 5, ..)
 801a43e0 mesh_drawer_a                    # docs/direct/jobs-state.md, docs/direct/patch-sites.md: a mesh-task drawer that binds neither task slot
@@ -353,7 +353,7 @@
 8005e7c0 ubo_ring_alloc_helper            # work/assets/native/uniform-buffers.md, work/assets/native/engine-layers.md: helper of the per-draw ring pool f_809de920
 81500200 ubo_shape_block_write            # work/assets/native/uniform-buffers.md, work/assets/native/cpu-to-gpu.md: shape / material / skeleton pool writer
 83647b20 ubo_transient_buffer_wrap        # work/assets/native/alloc-transfer.md, work/assets/native/nvn-callpaths.md: transient NVNbuffer Init/GetAddress/Finalize
-806dc520 ubo_view_camera_write            # work/assets/native/alloc-transfer.md, work/assets/native/uniform-buffers.md: view (camera) pools: memcpys 8.4 KB a frame
+806dc520 ubo_view_camera_write            # work/assets/native/alloc-transfer.md, work/assets/native/uniform-buffers.md: view (camera) pools: memcpys 8.4 KB a frame; the parked camera jitter's three sites (docs/parked-patches.md)
 80354ac0 ubo_view_pool_write              # work/assets/native/alloc-transfer.md, work/assets/native/uniform-buffers.md: small per-view uniform pool writer
 80075d40 ubo_view_small_block_write       # work/assets/native/uniform-buffers.md: a per-view small block
 80105e80 vbuf_dynamic_map                 # work/assets/native/alloc-transfer.md: maps 2 MB dynamic CPU vertex / scratch buffers
@@ -364,8 +364,8 @@
 812342c0 cull_cpu_occlusion_reader        # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: the CPU culler: per-shape visibility from the occlusion report slots; wraps ring slots as NVNbuffers
 8009bb80 cull_cpu_shapes                  # the CPU culler (calls f_812342c0)
 80364080 cull_gpu_dispatch                # work/assets/native/alloc-transfer.md: dispatches the GPU-culling compute, 112 KB instance list
-80361a00 cull_gpu_list_reset_one          # host/direct_mesh_lists.c, resets one list's first record (spliced)
-80361c80 cull_gpu_lists_reset             # host/direct_mesh_lists.c, once a frame, resets the first record of each GPU culling list (spliced)
+80361a00 cull_gpu_list_reset_one          # host/direct_mesh_lists.c, resets one list's first record (an At row after it)
+80361c80 cull_gpu_lists_reset             # host/direct_mesh_lists.c, once a frame, resets the first record of each GPU culling list (At rows after them)
 80822260 cull_grid_occluder               # docs/direct/boot-to-main-loop.md 4.3: the grid's CPU occluder: one view's grid from the GPU depth grid (f_80365f00) and its camera
 8035d5a0 cull_grid_view_rebuild           # work/assets/native/readback.md: rebuilds the producing frame's camera view
 800a8120 cull_submesh_next_visible        # docs/direct/boot-to-main-loop.md 4.3: next sub-mesh bounds (0x20-byte AABBs) of a shape's LOD that passes the frustum test of f_80029240
@@ -380,7 +380,7 @@
 8007c120 dynres_update                    # work/assets/native/engine-layers.md: dynamic resolution (reads GPU timestamps)
 83485280 exposure_compute                 # work/assets/native/readback2.md: the exposure / adaptation
 80354060 report_gpu_timestamps_read       # work/assets/native/engine-layers.md, work/assets/native/readback2.md: 29 x 64-byte readbacks (agl GPU timestamps)
-80365f00 report_reader_a                  # host/nvn_native.c: (the occlusion grid reader, agl::utl::DepthBufferEx)
+80365f00 report_reader_a                  # host/nvn_native.c: (the occlusion grid reader, agl::utl::DepthBufferEx); ENTRY_HOOK marks its run: its 0x3980-byte invalidates do not wait
 80362ff0 report_reader_b                  # docs/direct/task-mesh.md: (GPU-culling append counters, read-and-zero)
 80357060 report_reader_c                  # work/assets/native/engine-layers.md: (the exposure reader, luminance rings)
 
@@ -401,7 +401,7 @@
 80c4da80 agl_dynamic_block_alloc_c        # work/assets/native/engine-layers.md: (same group)
 80c4fd10 agl_gpu_timestamp_array          # work/assets/native/engine-layers.md: agl::perf::GPUTimeStampArray
 80f46f80 agl_init_params                  # work/assets/native/engine-layers.md: "AglWork", "AglFrame", "DynamicTextureAllocatorMem" ..
-80f6c9d0 agl_memory_pool_create           # docs/direct/texture-streaming.md: agl's generic pool wrapper, five callers
+80f6c9d0 agl_memory_pool_create           # docs/direct/texture-streaming.md: agl's generic pool wrapper, five callers; an At row before its nvnMemoryPoolInitialize (0x80f6cb18) names the pool (host/direct_assets.c direct_assets_agl_pool)
 80f6cf50 agl_memory_pool_create_b         # docs/direct/texture-streaming.md: pool wrapper used by the tera manager
 809e9300 agl_primitive_texture            # work/assets/native/block-linear.md: agl::PrimitiveTexture (WriteTexels caller)
 809ed030 agl_render_display               # work/assets/native/rt-alloc.md: agl::RenderDisplay(color/depth)
@@ -459,7 +459,7 @@
 83a6d540 terrain_read_texels              # docs/direct/terrain-texels.md: InvalidateTexels + ReadTexels, or CopyTextureToBuffer
 809e3350 terrain_tera_mgr_init            # docs/direct/terrain-texels.md, docs/direct/texture-streaming.md: the tera manager: device bytes, its own pools
 80d7e090 terrain_tera_polish              # docs/direct/terrain-texels.md: tera polish
-80c17040 terrain_tile_load                # docs/direct/terrain-texels.md: its memcpy at +0x544 is spliced
+80c17040 terrain_tile_load                # docs/direct/terrain-texels.md: its memcpy at +0x544 is an At row (host/direct_assets.c direct_assets_tile)
 83a6d8f0 terrain_write_texels             # docs/direct/terrain-texels.md, work/assets/native/block-linear.md: WriteTexels + Flush (w3 0) or CopyBufferToTexture
 808833e0 vegetation_mesh_placement        # work/assets/native/engine-layers.md: SsboMeshPlacement
 
@@ -1022,4 +1022,4 @@
 8025b910 sead_persp_proj_inline_a         # host/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8025b9a8)
 8035a8c0 sead_persp_proj_inline_b         # host/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8035b82c)
 811cc790 occl_query_decide                # host/oot_probes.c (occlusion off): loads the byte that decides the occlusion queries, at six places
-80794330 ui2d_canvas_setup                # nx2/oot_wide.py: the 2D canvas setup, the layout's projection rows (HUD site 0x80794368)
+80794330 ui2d_canvas_setup                # host/oot_probes.c hos_oot_wide_hud: the 2D canvas setup, the layout's projection rows (HUD site 0x80794368)

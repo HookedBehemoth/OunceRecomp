@@ -73,7 +73,7 @@ const void *direct_texdata_moving(void);   /* (this thread's texture being moved
 void direct_texdata_line(char *out, size_t cap);
 int direct_assets_on(void);
 /* nvnMemoryPoolInitialize (lr its return address): agl::TextureDataMgr's pool is named to the back end */
-void direct_assets_pool_made(uint64_t lr, uint64_t gpu, uint64_t size);
+void direct_assets_pool_made(uint64_t gpu, uint64_t size);
 /* nvn_native.c nvnTextureInitialize, after the back end made its image: terrain tiles given for its storage before it */
 extern volatile long direct_assets_tiles_pending;
 extern volatile long direct_assets_tilelog;   /* (M6f: HOS_DBG=tilelog, a diagnosis) */
@@ -81,7 +81,7 @@ void direct_assets_texture_init(const void *nvn_texture);   /* (an nvn_tex) */
 /* nvn_native.c : the back end's open list of a guest command buffer (this thread's record handed over first) */
 void *direct_cmd_list(uint64_t cmd);
 /* direct_passes.c : the job recorder's entry in direct mode (eng_jobs.c): 1 = take the game's early return */
-int direct_passes_recorder(Ctx *c);
+int direct_passes_recorder(uint64_t key);
 /* direct_patches.c : the game patches' counters, every 600 presents (nvn_native.c's present, direct mode) */
 void direct_patches_frame(void);
 /* direct_texwatch.c : HOS_DBG=texwatch, CPU writes into texture storage (diagnosis): nvn_native.c's texture

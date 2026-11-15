@@ -114,6 +114,26 @@ def def_use(w):
     return got
 
 
+_ROWS = None
+
+
+def rows():
+    """{pc: (use mask, def mask)}: the Value probes' and At rows' declared reads and writes (nx2/lift2/probes.py), counted
+    as their instruction's: a row reads its arguments there and writes its result (a before row's writes are
+    over-approximated as the instruction's, which only adds definitions the code after it may also make)"""
+    global _ROWS
+    if _ROWS is None:
+        from . import probes
+        _ROWS = {}
+        for pc, effs in probes.row_effects().items():
+            u = d = 0
+            for r, w, _ in effs:
+                u |= sum(BIT[v] for v in r)
+                d |= sum(BIT[v] for v in w)
+            _ROWS[pc] = (u, d)
+    return _ROWS
+
+
 # ---- the function's instructions, with control flow and calls
 class Func:
     """kinds per instruction: 'op', 'goto' (succs), 'call' (callee or None: unknown; then the next instruction),
@@ -134,8 +154,11 @@ class Func:
         self.ctail = {}         # call index -> the function its return falls into (the body ends after the call)
         self.falls_into = set() # entries this function falls into without a branch
         body = set(pcs)
+        extra = rows()
         for k, pc in enumerate(pcs):
             i, u, d = def_use(self.words[k])
+            if pc in extra:   # (a probe or At row there: its declared reads and writes)
+                u, d = u | extra[pc][0], d | extra[pc][1]
             self.insn[k], self.use[k], self.dfn[k] = i, u, d
             if i is None:
                 self.kind[k] = "trap"

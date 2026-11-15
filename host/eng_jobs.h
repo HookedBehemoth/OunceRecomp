@@ -8,5 +8,5 @@
 
 /* BeginRecording, its guest registers in c: 1 and the recorder's pass key pointer (its x3) and view record when this is the
    recording of a job the hook is running on this thread; 0: not a job's */
-int eng_jobs_tag(Ctx *c, uint64_t *key, uint64_t *view);
+int eng_jobs_tag(uint64_t cmd, uint64_t *key, uint64_t *view);   /* (a JOB list's BeginRecording: its x0) */
 #endif

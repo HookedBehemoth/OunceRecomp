@@ -53,7 +53,7 @@ static void report(void) {
 }
 
 /* from direct_assets.c's hook of f_80798690 (x0 td, x2 src), before anything else */
-void direct_diag_nodata_load(Ctx *c) {
+void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr) {
     if (!nodata_on()) return;
     const LONG64 p = hos_present_count;
     if (p / 300 != last_report / 300) {
@@ -61,7 +61,6 @@ void direct_diag_nodata_load(Ctx *c) {
         if (p / 300 != last_report / 300) last_report = p, report();
         ReleaseSRWLockExclusive(&lock);
     }
-    const uint64_t td = c->x[0], src = c->x[2];
     if (!hos_guest_range(td, 0x100)) return;
     const uint64_t brti = td + 0x58, np = G64(brti + 0x60);
     char name[64] = "";
@@ -108,7 +107,7 @@ void direct_diag_nodata_load(Ctx *c) {
     if (dup) return;
     hos_log("nodata: '%s' td %#llx slot %#llx size %u (format %#x %ux%u, %u mips) lr %#llx at present %lld", name,
             (unsigned long long)td, (unsigned long long)slot, size, G32(brti + 0x1c), G32(brti + 0x24), G32(brti + 0x28),
-            *(const uint16_t *)GP(brti + 0x16), (unsigned long long)c->x[30], (long long)p);
+            *(const uint16_t *)GP(brti + 0x16), (unsigned long long)lr, (long long)p);
     if (want[0] && strstr(name, want)) {
         hos_backtrace();
         if (slot && size) hos_watch_guest_writes(GP(slot), size);

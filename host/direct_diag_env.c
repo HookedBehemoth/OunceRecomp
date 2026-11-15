@@ -32,12 +32,12 @@ static uint64_t g64(uint64_t a) { return a && hos_guest_range(a, 8) ? G64(a) : 0
 static uint32_t g32(uint64_t a) { return a && hos_guest_range(a, 4) ? G32(a) : 0; }
 
 ENTRY_HOOK(0x80357060) {
-    if (!envlog_on() || !(c->x[1] & 1)) return 0;
+    if (!envlog_on() || !(a->x[1] & 1)) return 0;
     static LONG64 last = -1;
     const LONG64 p = hos_present_count;
     if (p / 300 == last / 300) return 0;
     last = p;
-    const uint64_t o = c->x[0];
+    const uint64_t o = a->x[0];
     const uint64_t a1 = g64(o + 0x48) + g32(g64(g64(o + 0x40)) + 4);
     const uint64_t a2 = g64(o + 0x1f0) + g32(g64(g64(o + 0x1e8)) + 4);
     const uint64_t a3 = g64(o + 0x280) + g32(g64(g64(o + 0x278)) + 4);

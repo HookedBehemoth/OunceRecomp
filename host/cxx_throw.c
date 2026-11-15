@@ -19,25 +19,25 @@ static const char *guest_str(uint64_t a, char *out, size_t size) {
 
 ENTRY_HOOK_SYM(__cxa_throw) {   /* (x0 the exception object, x1 its std::type_info, x2 its destructor) */
     char name[160];
-    const uint64_t ti = c->x[1];
+    const uint64_t ti = a->x[1];
     const uint64_t *name_at = ti ? hos_guest_range(ti + 8, 8) : 0;   /* (type_info: vtable, then the name) */
     const uint64_t at = name_at ? *name_at : 0;
-    hos_fatal(c, "the game threw a C++ exception of type %s from %#llx (unwinding through lifted code cannot work)",
-              guest_str(at, name, sizeof name), (unsigned long long)c->x[30]);
+    hos_fatal(NULL, "the game threw a C++ exception of type %s from %#llx (unwinding through lifted code cannot work)",
+              guest_str(at, name, sizeof name), (unsigned long long)a->lr);
     return 1;
 }
 ENTRY_HOOK_SYM(__cxa_rethrow) {
-    hos_fatal(c, "the game rethrew a C++ exception from %#llx (unwinding through lifted code cannot work)",
-              (unsigned long long)c->x[30]);
+    hos_fatal(NULL, "the game rethrew a C++ exception from %#llx (unwinding through lifted code cannot work)",
+              (unsigned long long)a->lr);
     return 1;
 }
 ENTRY_HOOK_SYM(_Unwind_RaiseException) {
-    hos_fatal(c, "_Unwind_RaiseException from %#llx (unwinding through lifted code cannot work)",
-              (unsigned long long)c->x[30]);
+    hos_fatal(NULL, "_Unwind_RaiseException from %#llx (unwinding through lifted code cannot work)",
+              (unsigned long long)a->lr);
     return 1;
 }
 ENTRY_HOOK_SYM(_Unwind_ForcedUnwind) {
-    hos_fatal(c, "_Unwind_ForcedUnwind from %#llx (unwinding through lifted code cannot work)",
-              (unsigned long long)c->x[30]);
+    hos_fatal(NULL, "_Unwind_ForcedUnwind from %#llx (unwinding through lifted code cannot work)",
+              (unsigned long long)a->lr);
     return 1;
 }

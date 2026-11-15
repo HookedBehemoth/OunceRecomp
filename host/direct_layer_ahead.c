@@ -8,7 +8,7 @@
    layer recorded by f_8006cd60, layer at item + 0x18) and the scheduler runs it as [[item] + 0x10](item). Queue 1's first
    item is the 3D layer (the pipeline, post effects: 3.6 ms in the market); the counters are reset at stage C's start.
 
-   The splice sits where a thread enters a render-job loop node (the bit-10 branch of f_8007fe60): the first thread of
+   An At row (nx2/lift2/probes.py DIRECT, a guest call) sits where a thread enters a render-job loop node (the bit-10 branch of f_8007fe60): the first thread of
    the frame that may take queue 1 claims its item 0 there (the same counter, 0 -> 1) and runs it before its job loop,
    so the five other threads record the jobs meanwhile. The rest of both queues stays with the layer phase.
 
@@ -188,11 +188,11 @@ static void wait_for(uint64_t key) {
 }
 
 ENTRY_HOOK(0x806688c0) {   /* (owner, drawctx, i): the pass's key at owner + 0x3830 + i * 0xd0 */
-    if (ahead_thread) wait_for(c->x[0] + 0x3830 + (uint64_t)(uint32_t)c->x[2] * 0xd0);
+    if (ahead_thread) wait_for(a->x[0] + 0x3830 + (uint64_t)(uint32_t)a->x[2] * 0xd0);
     return 0;
 }
 ENTRY_HOOK(0x8028a2a0) {   /* (owner, drawctx, key) */
-    if (ahead_thread) wait_for(c->x[2]);
+    if (ahead_thread) wait_for(a->x[2]);
     return 0;
 }
 ENTRY_HOOK(0x80706be0) {   /* moduleCalc_ */
@@ -207,12 +207,11 @@ static uint32_t worker_index(void) {
     return v ? (uint32_t)(v - 1) : (uint32_t)hos_current_core(0);
 }
 
-SPLICE_AFTER(0x8007fe60, "if (!((c->x[23] >> 10) & 1)) { goto L_800809d4; }") {
+/* (an At row in f_8007fe60, the job loop, on the TBZ's fall-through: sp the loop's, s its scheduler record from
+   [sp + 0x48]) */
+void direct_layer_ahead_run(GuestCall *g, uint64_t sp, uint64_t s) {
     if (!enabled()) return;
     order_jobs();
-    const uint64_t sp = c->x[31];
-    if (!hos_guest_range(sp + 0x48, 8)) return;
-    const uint64_t s = G64(sp + 0x48);
     if (!s || !hos_guest_range(s + 0xd0, 8)) return;
     const uint64_t w = G64(s + 0xd0);
     if (!w || !hos_guest_range(w + 0x4d8, 0x30)) return;
@@ -224,17 +223,10 @@ SPLICE_AFTER(0x8007fe60, "if (!((c->x[23] >> 10) & 1)) { goto L_800809d4; }") {
     if (worker_index() == G32(w + 0x4d8)) { InterlockedIncrement64(&n.skip_thread); return; }
     uint32_t zero = 0;
     if (!__atomic_compare_exchange_n(ctr, &zero, 1u, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return;
-    /* (the guest state around the call: the lifted scheduler keeps values in caller-saved registers here) */
-    Ctx *save = (Ctx *)malloc(sizeof *save);
-    if (!save) hos_fatal(NULL, "layer ahead: a context copy");
-    memcpy(save, c, sizeof *save);
-    c->x[0] = item;
-    c->x[30] = 0;
+    /* (guest_call puts every register back: the lifted scheduler keeps values in caller-saved registers here) */
     ahead_thread = 1;
-    a64_icall(c, G64(G64(item) + 0x10));
+    guest_call(g, sp, G64(G64(item) + 0x10), item, 0, 0, 0, 0);
     ahead_thread = 0;
-    memcpy(c, save, sizeof *save);
-    free(save);
     InterlockedIncrement64(&n.runs);
 }
 

@@ -314,11 +314,19 @@ void hos_oot_player_update(uint64_t actor) {
     hos_bench_player(gamedata_bool(OOT_SEQUENCE_IS_LOADING_BANC) == 1, event);
 }
 
-/* ---- widescreen (nx2/oot_wide.py says where each comes from; host/hos_main.c sets the globals from the window's
-   shape, all 0 for a 16:9 window: the game as shipped) */
+/* ---- widescreen and ultrawide. The game draws a 2560x1440 picture whatever the screen and renders its scene at
+   1920x1080; its cameras use a 16:9 ratio. With these rows (nx2/lift2/probes.py AT) the picture takes the window's shape
+   (the height stays the game's, the width grows on an ultrawide screen and shrinks on a 16:10 or 4:3 one), the 16:9
+   cameras take the picture's ratio, the HUD and menus keep their 16:9 shape in the middle of a wider picture (a narrower
+   one: its whole width), pre-rendered movies play in that middle 16:9, and the picture a save keeps shows that middle
+   16:9 (a narrower picture: its middle band, at the texture's shape). host/hos_main.c sets the globals from the window's
+   shape, all 0 for a 16:9 window: the game as shipped.
+   The sites come from NX2navi's recomp/patches-v111.txt, where they are credited to Ivan0xFF (MIT, "The matrix-update,
+   UI and movie sites: Copyright (c) 2026 Ivan0xFF"); the picture and scene size sites are the same constants that file
+   names; the save picture's site is Hookshot's own (issue 952). */
 
 extern volatile uint64_t hos_wide_out, hos_wide_scene;
-extern volatile float hos_wide_ratio, hos_wide_margin;
+extern volatile float hos_wide_ratio, hos_wide_margin, hos_wide_squeeze;
 
 /* the picture's {2560, 1440} (width | height << 32 in x8, just built by mov + movk): the window's shape at the game's height */
 uint64_t hos_oot_wide_out(uint64_t size) { const uint64_t s = hos_wide_out; return s ? s : size; }
@@ -362,6 +370,49 @@ void hos_oot_wide_movie(uint64_t frame) {
     OotMovieViewport *v = GUEST(OotMovieViewport, frame - 40);
     const float in = (v->max_x - v->min_x) * m;
     v->min_x += in, v->max_x -= in;
+}
+
+/* the 2D canvas setup's projection rows, just loaded (ldp q1, q4, [x2]; the canvas in x0, its screen 0x1b8 before it):
+   the UI's full-screen orthographic projection (a 3840x2160 grid: q1 lane 0 2/3840, q4 lane 1 2/2160) gets its first
+   row squeezed, so the HUD keeps its 16:9 in the middle of a wider picture; the screens whose UI keeps the whole picture
+   (the item-wheel and pause / system menu backgrounds redraw a capture of it; the event and loading fades cover it) are
+   left alone, by their screen's vtable. Returns q1 */
+#define OOT_MAIN 0x80020000ull
+static const uint64_t oot_keep_vtables[] = {OOT_MAIN + 0x4bed098, OOT_MAIN + 0x4be4fb0, OOT_MAIN + 0x4be61c8,
+                                            OOT_MAIN + 0x4be7b30};
+hos_q hos_oot_wide_hud(uint64_t canvas, hos_q q1, hos_q q4) {
+    const float s = hos_wide_squeeze;
+    if (!(s > 0.0f)) return q1;
+    float m00, m11, row[4];
+    memcpy(&m00, &q1, 4);
+    memcpy(&m11, (const uint8_t *)&q4 + 4, 4);
+    if (m00 != 2.0f / 3840.0f || m11 != 2.0f / 2160.0f || !hos_guest_range(canvas - 0x1b8, 8)) return q1;
+    const uint64_t vt = *(const uint64_t *)GP(canvas - 0x1b8);
+    for (size_t k = 0; k < sizeof oot_keep_vtables / sizeof *oot_keep_vtables; k++)
+        if (vt == oot_keep_vtables[k]) return q1;
+    memcpy(row, &q1, 16);
+    for (int k = 0; k < 4; k++) row[k] *= s;
+    memcpy(&q1, row, 16);
+    return q1;
+}
+
+/* The save's picture (issue 952): the pause menu draws the whole picture into a 543 x 306 texture, the save's JPEG,
+   through the game's viewport-and-scissor helper (f_802a46e0: SetScissor, then SetViewport(x, y, w, h) in w1-w4, called
+   by blr x8 after ldr x8, [x8]). Wider than 16:9 the whole picture was squeezed into it: that one viewport is made wider
+   than the texture by the picture's ratio over 16:9, centred, so the middle 16:9 fills the texture (the scissor keeps
+   the texture's), as a 16:9 window would show. Narrower than 16:9 (4:3, 16:10) it is made taller instead, by 16:9 over
+   the picture's ratio: the picture's middle band fills the texture at its own shape, neither squeezed nor with bars. */
+typedef struct { uint64_t x, y, w, h; } OotViewportRegs;   /* (w1-w4, the row's io slots) */
+void hos_oot_wide_save_picture(OotViewportRegs *v) {
+    const float r = hos_wide_ratio;
+    if (!(r > 0.0f) || (uint32_t)v->x != 0 || (uint32_t)v->y != 0 || (uint32_t)v->w != 543 || (uint32_t)v->h != 306) return;
+    if (r > 16.0f / 9.0f) {
+        const int w = (int)(543.0f * r / (16.0f / 9.0f) + 0.5f);
+        v->x = (uint32_t)((543 - w) / 2), v->w = (uint32_t)w;
+    } else {
+        const int h = (int)(306.0f * (16.0f / 9.0f) / r + 0.5f);
+        v->y = (uint32_t)((306 - h) / 2), v->h = (uint32_t)h;
+    }
 }
 
 /* ---- occlusion off: cLohan's community patch (zortos293/Lichii#641), as Fritchii ships it (Frizti/Fritchii 1a46ba972,

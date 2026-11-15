@@ -144,7 +144,7 @@ def main():
         raise SystemExit("no C compiler")
     src = (ROOT / "host/rt_slots.c").read_text(encoding="utf-8")
     parts = [
-        until(src, "#define LR_LOCAL_SHADOW", "\n"),
+        until(src, "static _Thread_local int tl_local_shadow;", "\n"),
         until(src, "#define REUSE_AFTER", "\n"),
         until(src, "#define BIG_SLOT", "\n"),
         until(src, "typedef struct {\n    uint64_t lr, name, dta;", "} Cur;"),

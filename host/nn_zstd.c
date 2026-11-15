@@ -65,7 +65,7 @@ static int64_t st_files, st_bytes, st_streams;
 
 /* ZSTD_decompressMultiFrame: a whole file at once */
 ENTRY_HOOK(0x8010b380) {
-    const uint64_t dst = ARG(1), cap = ARG(2), src = ARG(3), n = ARG(4), dict = ARG(5), dict_size = ARG(6), ddict = ARG(7);
+    const uint64_t dst = a->x[1], cap = a->x[2], src = a->x[3], n = a->x[4], dict = a->x[5], dict_size = a->x[6], ddict = a->x[7];
     if (!hos_guest_range(dst, cap) || !hos_guest_range(src, n) || (dict && !hos_guest_range(dict, dict_size))) return 0;
     if (!tl_dctx && !(tl_dctx = ZSTD_createDCtx())) return 0;
     size_t r;
@@ -86,8 +86,7 @@ ENTRY_HOOK(0x8010b380) {
         if (told++ < 8) hos_log("zstd: a file failed: %s (src %#llx+%llu, dst %llu)", ZSTD_getErrorName(r),
                                 (unsigned long long)src, (unsigned long long)n, (unsigned long long)cap);
     }
-    RET(r);
-    return 1;
+    return hook_return(h, r);
 }
 
 /* ---- ParallelDecompThread's streaming jobs ---- */
@@ -109,23 +108,21 @@ static ZSTD_DCtx *job_dctx(uint64_t job) {
 #define J8(o) (*(uint8_t *)GP(job + (o)))
 #define J32(o) (*(uint32_t *)GP(job + (o)))
 #define J64(o) (*(uint64_t *)GP(job + (o)))
-static void job_ret(Ctx *c, uint32_t v) { RET(v); }
 
 ENTRY_HOOK(0x80115c80) {
-    const uint64_t job = ARG(0), chunk = ARG(1), ddict = ARG(3);
-    const uint32_t n = (uint32_t)ARG(2);
+    const uint64_t job = a->x[0], chunk = a->x[1], ddict = a->x[3];
+    const uint32_t n = (uint32_t)a->x[2];
     if (!hos_guest_range(job, 64) || !hos_guest_range(chunk, n)) return 0;
     const uint8_t state = J8(0);
-    if (state == 3) { job_ret(c, 0xffffffffu); return 1; }
-    if (state == 4) { job_ret(c, 0xfffffffdu); return 1; }
+    if (state == 3) return hook_return(h, 0xffffffffu);
+    if (state == 4) return hook_return(h, 0xfffffffdu);
     ZSTD_DCtx *d = job_dctx(job);
     if (!d) return 0;
     if (state == 1) {   /* (the frame's header is in the first chunk) */
         const unsigned long long size = ZSTD_getFrameContentSize(GP(chunk), n);
         if (size == ZSTD_CONTENTSIZE_ERROR || size == ZSTD_CONTENTSIZE_UNKNOWN) {
             J8(0) = 3;
-            job_ret(c, 0xffffffffu);
-            return 1;
+            return hook_return(h, 0xffffffffu);
         }
         ZSTD_DCtx_reset(d, ZSTD_reset_session_only);
         ZSTD_DCtx_refDDict(d, host_ddict(ddict));
@@ -154,11 +151,9 @@ ENTRY_HOOK(0x80115c80) {
         J8(0) = 3;
         static int told;
         if (told++ < 8) hos_log("zstd: a stream failed: %s", ZSTD_getErrorName(r));
-        job_ret(c, ZSTD_getErrorCode(r) == ZSTD_error_dstSize_tooSmall ? 0xfffffffeu : 0xffffffffu);
-        return 1;
+        return hook_return(h, ZSTD_getErrorCode(r) == ZSTD_error_dstSize_tooSmall ? 0xfffffffeu : 0xffffffffu);
     }
     if (r == 0) J8(0) = 4;   /* (the frame is whole) */
-    job_ret(c, J32(20));
-    return 1;
+    return hook_return(h, J32(20));
 }
 

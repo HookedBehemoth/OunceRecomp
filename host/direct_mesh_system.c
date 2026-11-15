@@ -12,15 +12,15 @@
    only info + 0xb0 (the draw context, whose + 0xd8 is the command buffer) and info + 0xbc (the kind: 0x20 binds otherwise).
    So the patch needs only V, which the binder is hooked at its entry to note (every V it is called with is counted: one
    is expected), and the job's draw context (host/eng_jobs.c). The splice sits after the job prologue's SetDepthRange
-   (the call returning to 0x800855ac in f_80084de0), as the M3 survey placed it; the four binds go to the job's own
-   command buffer through a 0x100-byte block on the guest stack (info + 0xb0 = the job's draw context, + 0xbc = 0).
+   (the call returning to 0x800855ac in f_80084de0: an At row, nx2/lift2/probes.py DIRECT, that calls guest code), as the
+   M3 survey placed it; the four binds go to the job's own command buffer through a 0x100-byte block on the guest stack
+   below the job's SP (info + 0xb0 = the job's draw context, + 0xbc = 0).
 
    Check that it applies: the 600-present line "direct patch mesh system" (jobs bound a frame, the view objects seen). */
 #include "direct.h"
 #include <string.h>
 #include <windows.h>
 
-uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3);   /* hos_hostcall.c */
 uint64_t eng_jobs_drawctx(void);   /* eng_jobs.c */
 
 static volatile uint64_t view_obj;   /* (V, the last the binder was called with) */
@@ -29,7 +29,7 @@ static struct { volatile LONG64 binder, views, jobs, no_view, no_ctx; } n;
 ENTRY_HOOK(0x80101ec0) {   /* (info): V noted, the body runs */
     if (!rx_direct()) return 0;
     InterlockedIncrement64(&n.binder);
-    const uint64_t info = c->x[0];
+    const uint64_t info = a->x[0];
     if (!hos_guest_range(info + 0xe0, 8) || !hos_guest_range(G64(info + 0xe0) + 8, 8)) return 0;
     const uint64_t v = G64(G64(info + 0xe0) + 8);
     if (v && v != view_obj) {
@@ -41,29 +41,24 @@ ENTRY_HOOK(0x80101ec0) {   /* (info): V noted, the body runs */
     return 0;
 }
 
-SPLICE_AFTER(0x80084de0, "c->x[30] = 0x800855acULL; A64_ICALL(c, _t); }") {
+/* (f_80084de0 after its blr x8 to SetDepthRange: sp the job's) */
+void direct_mesh_system_bind(GuestCall *g, uint64_t job_sp) {
     if (!rx_direct()) return;
     const uint64_t v = view_obj, dc = eng_jobs_drawctx();
     if (!v || !hos_guest_range(v + 0x538, 16)) { InterlockedIncrement64(&n.no_view); return; }
     if (!dc) { InterlockedIncrement64(&n.no_ctx); return; }
-    uint64_t saved[32];
-    memcpy(saved, c->x, sizeof saved);
-    const int z = c->z, nf = c->n, cf = c->c, vf = c->v;
-    const uint64_t sp = (c->x[31] - 0x200) & ~15ull, info = sp + 0x100;
+    const uint64_t sp = (job_sp - 0x200) & ~15ull, info = sp + 0x100;
     if (!hos_guest_range(sp, 0x200)) { InterlockedIncrement64(&n.no_ctx); return; }
     memset(GP(info), 0, 0x100);
     G64(info + 0xb0) = dc;
-    c->x[31] = sp;
-    hos_call_guest(c, 0x801060f0ull, info, G64(v + 0x538), 0xfb000000u, 0);
-    hos_call_guest(c, 0x801060f0ull, info, G64(v + 0x540), 0xfb010101u, 0);
+    guest_call(g, sp, 0x801060f0ull, info, G64(v + 0x538), 0xfb000000u, 0, 0);
+    guest_call(g, sp, 0x801060f0ull, info, G64(v + 0x540), 0xfb010101u, 0, 0);
     if (hos_guest_range(0x84ca0fa8, 8) && hos_guest_range(G64(0x84ca0fa8), 8))
-        hos_call_guest(c, 0x801060f0ull, info, G64(G64(0x84ca0fa8)), 0xfb020202u, 0);
+        guest_call(g, sp, 0x801060f0ull, info, G64(G64(0x84ca0fa8)), 0xfb020202u, 0, 0);
     if (hos_guest_range(0x84c9e740, 8) && hos_guest_range(G64(0x84c9e740), 8) && hos_guest_range(G64(G64(0x84c9e740)) + 0x1e8, 8)) {
         const uint64_t l = G64(G64(G64(0x84c9e740)) + 0x1e8);
-        if (l && hos_guest_range(l + 0xc00, 8) && G64(l + 0xc00)) hos_call_guest(c, 0x80100210ull, G64(l + 0xc00), dc, 0xfb030303u, 0);
+        if (l && hos_guest_range(l + 0xc00, 8) && G64(l + 0xc00)) guest_call(g, sp, 0x80100210ull, G64(l + 0xc00), dc, 0xfb030303u, 0, 0);
     }
-    memcpy(c->x, saved, sizeof saved);
-    c->z = z, c->n = nf, c->c = cf, c->v = vf;
     InterlockedIncrement64(&n.jobs);
 }
 
