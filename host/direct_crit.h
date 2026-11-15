@@ -1,6 +1,6 @@
 /* HOS_DBG=crit[:<first present>[:<presents>]] (measurement only, direct mode): a trace of what every guest
    thread does over a window of presents, for the frame's critical path. Each guest thread's
-   blocks (the virtual core given up: what it waited on, its guest caller), its waits for a virtual core, the wakes of
+   blocks (hos_block_begin/end: what it waited on, its guest caller), the wakes of
    the objects it waits on, and every call into the direct back end (the record emits merged into bursts) are spans
    with TSC times. At the window's end they go to crit.bin in the working directory (the run folder), the thread names to
    crit_threads.txt; scripts/crit_path.py reads them. With HOS_DBG unset, or without "crit", nothing is recorded and the
@@ -19,8 +19,8 @@ enum {
     CRIT_BLOCK_CV = 0,      /* a = the condition variable slept on, b = guest lr */
     CRIT_BLOCK_THREAD = 1,  /* hos_thread_wait (the kernel's arbiter, mutexes): a = the thread, b = guest lr */
     CRIT_BLOCK_SLEEP = 2,   /* a = ns asked, b = guest lr */
-    CRIT_BLOCK_OTHER = 3,   /* a = the host caller of hos_vcore_away, b = guest lr */
-    CRIT_VCWAIT = 4,        /* a = the thread's vc_cv, b = 0 after a block, 1 a yield, 2 a kick by a better thread, 3 by an equal one */
+    CRIT_BLOCK_OTHER = 3,   /* a = the host caller of hos_block_begin, b = guest lr */
+    CRIT_VCWAIT = 4,        /* (none any more: the waits for a virtual core, which are gone) */
     CRIT_WAKE = 5,          /* instant: a = the object woken (cv, thread or vc_cv) */
     CRIT_BE_EMIT = 10,      /* a burst of hsd_emit: a = tsc inside the calls, b = calls */
     CRIT_BE_BEGIN = 11, CRIT_BE_END = 12, CRIT_BE_CALL = 13, CRIT_BE_SUBMIT = 14, CRIT_BE_PRESENT = 15,

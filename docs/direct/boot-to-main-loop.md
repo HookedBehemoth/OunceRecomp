@@ -77,7 +77,7 @@ Everything under `work/proto/boot` is local (decompiler output, game-derived dat
 | the image | `host/hos_main.c:1492-1511` | `image.bin` read whole to `0x80000000` (96 MB); its size must equal `hos_image_end - hos_image_base` of the lift (`work/sa/gen/hos_image.c`) |
 | memory | `hos_mem_init`, `host/hos_mem.c:34` | the system region committed; `hos_total_memory` = 9809 MB (a Switch 2 application's, `HOS_MEMORY_MB` overrides); the heap is placed at `HOS_HEAP_BASE` = `0x1000000000` when the game asks (`SetMemoryHeapSize`, `host/hos_mem.c:190`, log "heap: 6894 MB at 0x1000000000") |
 | widescreen, mods | `host/hos_main.c:1513-1581` | `HOS_ASPECT` / the options file, `hos_mods_init` |
-| the guest main thread | `hos_boot_main_thread`, `host/hos_thread.c:489` | a ThreadType and a 1 MB stack (`hos_main_stack_size`, `0x100000`, from the lift's `gen/hos_image.c`) in the system region, priority 44, ideal core 0, named "MainThread"; `setup_guest` (`host/hos_thread.c:368`): TLS block, TLR, kernel handle; takes a virtual core (`hos_vcore_back`) before any guest code |
+| the guest main thread | `hos_boot_main_thread`, `host/hos_thread.c:489` | a ThreadType and a 1 MB stack (`hos_main_stack_size`, `0x100000`, from the lift's `gen/hos_image.c`) in the system region, priority 44, ideal core 0, named "MainThread"; `setup_guest` (`host/hos_thread.c:368`): TLS block, TLR, kernel handle |
 | profiler, display | `host/hos_main.c:1586-1592` | `hos_prof_start` (`HOS_PROFILE`), `hos_display_start` |
 | the guest calls | `call_guest_args`, `host/hos_main.c:224` | `a64_lookup(addr)` gives the lifted function; lr = 0, sp = the stack's top; the order is nn::init::Start's (`host/hos_main.c:1593-1611`): `_init_libc0` (`0x85717e50`), `nnosInitialize` (`0x8510f720`, x0 = the thread's handle), `hos_thread_adopt_guest` (`host/hos_thread.c:60`: the SDK's own ThreadType from TLR+0x1F8), `_init_libc1` (`0x85717e60`), `nninitStartup` (`0x8262bb10`), `_init_libc2` (`0x85717e80`), `DT_INIT` of main (`0x812377e0`), subsdk0 (`0x84ec0040`), sdk (`0x84fa0060`), then `nnMain` (`0x81222cd0`). `nninitInitializeSdkModule` (`0x850d5130`) is not run: it only opens the SDK's IPC service clients, which the HLE stands in for |
 
@@ -88,10 +88,11 @@ Other host machinery the guest meets from here on:
 - **Threads**: `nn::os::CreateThread` (`host/hos_thread.c:844`) makes a host thread per guest thread
   (`hos_thread_create`, `:549`); its start (`thread_main`, `:511`) runs the SDK's TLS start hook
   (`hos_thread_start_hook` from the lift) before the entry. Names come from `SetThreadName` (`:876`).
-- **Virtual cores**: `hos_cores()` = 6 (`:119`); a guest thread holds one of the 6 virtual cores while it runs guest code
-  and gives it up around every block; `vc_allowed` (`:1247`) is its core mask; a better waiter kicks the holder;
-  equal-priority holders are kicked after `HOS_VCORE_SLICE_US` (2 ms). Details and measurements: cores.md.
-  `GetCurrentCoreNumber` answers the held core (`:895`); `GetThreadAvailableCoreMask` 0x3f (`:896`).
+- **No scheduler**: every guest thread runs freely on its host thread. `hos_cores()` = 6, the game's number (its
+  per-core arrays have six entries); `GetCurrentCoreNumber` answers the core of a one-core mask, else the ideal core if
+  the mask has it, else the mask's lowest core (`hos_thread_core`); `GetThreadAvailableCoreMask` 0x3f. (Before
+  2026-11-15 a virtual-core scheduler kept one guest thread per core number; the measurements below that name waits
+  for a virtual core are from then.)
 - **NVN**: `nvnBootstrapLoader` (`host/nvn_native.c:3921`) hands out the native NVN layer's procs; the back end behind
   it is chosen at the first device call (log "rx: direct mode").
 - **Services**: every `nn::*` import the game calls is an HLE function in `host/nn_*.c`; the unimplemented ones log
@@ -658,8 +659,7 @@ log). Blocks on: `m6a_crit2_k`, the guest lr of the thread's main blocking call 
 | Thread_824c2960 | `0x824c2960` (not sead) | - | 28 | 0x2 | - |
 
 Title only: MovieOperateThread, MovieEventHandleThread, MovieMediaSourceClient (`f_83b7cec0`, `f_83b827e0`) and an
-unnamed movie input thread; joined at the new-game transition (boot-speed.md). Core masks and priorities do not
-change with `HOS_CORES` (cores.md).
+unnamed movie input thread; joined at the new-game transition (boot-speed.md).
 
 ## 7. Where to hook
 

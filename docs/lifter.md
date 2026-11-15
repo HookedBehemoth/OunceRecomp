@@ -520,9 +520,9 @@ mouse camera and text speed came back as At rows (section 10.2).
 ## 11. Polls, SVC, traps, setjmp
 
 - **Polls.**
-  - *Why they exist:* the virtual cores (`HOS_VCORES`, `host/hos_thread.c`) multiplex guest threads so that a
-    waiting higher-priority thread can take a core from a running one. A guest loop with no SVC or nn::os call
-    would never give it up.
+  - *Why they existed:* the virtual cores multiplexed guest threads, and a waiting thread asked a running one to give
+    its core up through `ctx.poll`. The virtual cores are gone (`host/hos_thread.c`, "no scheduler"): nothing writes
+    `ctx.poll`, `a64_poll_cur` is empty, and the polls are to be removed from the lifter.
   - *Where:* every back edge (a branch to an earlier address).
   - *Emitted form:* `load atomic i32 monotonic` of `ctx.poll` and a cold call of `a64_poll_cur()`.
   - *Declaration invariant:* `a64_poll_cur` takes no argument: it may read and write guest memory, which keeps spin

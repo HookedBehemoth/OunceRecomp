@@ -186,7 +186,6 @@ void hos_commit_init(void) {
    share of a core (guest threads by their guest names, host threads by their descriptions): which one a frame rate
    waits for */
 void hos_mem_checkpoint(const char *what) { (void)what; }        /* (hos_prof.c: HOS_MEM_TIMELINE) */
-int hos_game_cores(void) { return 0; }                           /* (totk_cores.c) */
 int hos_blank_cached_icon(const char *guest, const char *host) { (void)guest, (void)host; return 0; }   /* (TOTK) */
 int hos_ultrawide_redirect(const char *guest, char *out, size_t cap) { (void)guest, (void)out, (void)cap; return 0; }
 uint64_t hos_title_input(uint64_t buttons) { return buttons; }   /* (totk_title.c) */
@@ -206,13 +205,8 @@ void hos_gpu_queue_submit(int channel_fd, const uint64_t *entries, uint32_t n, i
     hos_gpu_submit(channel_fd, entries, n);
 }
 
-/* The loop-header interrupt polls (nx2/poll.py): the virtual cores (HOS_VCORES) ask a thread holding a core a
-   waiter should have to give it up there, so guest code with no nn::os call or SVC in it (a long job) is preempted
-   as Horizon would preempt it. */
-/* (nx2/rtgen.py) the loop-header poll: the lifted code has cleared c->poll and calls this with no argument, so that the
-   compiler keeps guest registers in host registers across the loop header (a call handed the context could change any
-   of it). The thread's context is the running one's (hos_ctx: a fiber's while it runs one), which is where the kick
-   (hos_thread.c) set the flag; nothing here reads it */
+/* (nx2/rtgen.py) the lifted code's loop poll calls this when Ctx.poll is set; nothing sets it any more (the virtual
+   cores that did are gone), so it is never reached. It stays until the lifter stops emitting the polls */
 void a64_poll_cur(void) {
     void hos_vcore_checkpoint(void);
     hos_vcore_checkpoint();

@@ -276,8 +276,6 @@ case-sensitive, and an unknown one is ignored.
 
 | Switch | What it does |
 |---|---|
-| `HOS_CORES` | `<1..8>`: the cores the game sees (default 6) |
-| `HOS_VCORES` | `0`: no virtual cores |
 | `HOS_RESERVE_CORE` | `0`: no core kept for the renderer |
 | `HOS_NO_RENDERER_WAIT` | non-zero: the game's first GPU work does not wait for the renderer to be up |
 | `HOS_LAYER_AHEAD` | `0`: calc stage C's long layer waits for the render jobs, as the game orders it (on by default: it starts with them; docs/direct/patch-sites.md 8) |
@@ -364,7 +362,6 @@ the other counters the scripts read stay); `HOS_DBG=<item>,...` turns a part on,
 | `logcompute` | `compute N first dispatched` |
 | `logpatch` | the `direct patch ...` statistics of the game-code patches, a line each, and the first records the mesh patches name |
 | `lognvn` | the `nvn:` call traces (`CommandBufferWaitEvent`, `SignalEvent`, `EventSignal`, `QueueSubmitCommands`, `DrawMeshTasks`, `WaitSync`) |
-| `logvcores` | `vcores:` every 5 s |
 | `logvi` | `vi: N frames presented` (the fps is on the `vk:` line too) |
 
 A line that says the same most blocks (`validation:`, `strict:`, `transient pool: descriptor ids`) is printed at the first
@@ -512,9 +509,6 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_SLEEP_LOG` host/hos_thread.c:937
 - `HOS_SPIN_US` host/hos_svc.c:118
 - `HOS_TICK_LOG` host/hos_thread.c:1064
-- `HOS_VCORE_ESCAPE_EQ_US` host/hos_thread.c:1318
-- `HOS_VCORE_ESCAPE_US` host/hos_thread.c:1319
-- `HOS_VCORE_SLICE_US` host/hos_thread.c:1320
 - `HOS_WAKE_LAT` host/nn_os_sync.c:636
 - `HOS_WATCH` host/posix/prof.c:533
 - `RX_NVN_WATCH_AFTER` host/nvn_native.c:934

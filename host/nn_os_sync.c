@@ -191,13 +191,9 @@ static Obj *obj_lookup(uint64_t key, int kind);
    direct-mapped cache per thread answers those. An entry holds while its object is still that address's and of the
    kind asked for (objects are reused, never freed: spares). */
 static Obj *obj_nockpt(uint64_t key, int kind);
-static Obj *obj(uint64_t key, int kind) {
-    hos_vcore_checkpoint();   /* (virtual cores: every nn::os call, where a better waiter takes the core) */
-    return obj_nockpt(key, kind);
-}
-/* obj without the checkpoint, for lookups under a host lock: a checkpoint there can give the core up and wait for one
-   while the lock is held, and a thread that holds a core can then block on that lock (wait_any's scan under mw_lock vs
-   poke_multiwait: a stall until the 250 ms vcore escape) */
+static Obj *obj(uint64_t key, int kind) { return obj_nockpt(key, kind); }
+/* (the lookup itself; obj was once the scheduling point of every nn::os call, which a lookup under a host lock had to
+   avoid: wait_any's scan under mw_lock looks up with this) */
 static Obj *obj_nockpt(uint64_t key, int kind) {
     /* (hookshot: 128 still missed: obj_lookup was the busiest leaf in dense Kokiri, 3.2% of all samples, 4.3% of the instants when one
        thread alone ran; each actor has its own mutexes) */
@@ -601,20 +597,19 @@ HLE(_ZN2nn2os13FinalizeMutexEPNS0_9MutexTypeE) {
     drop(ARG(0));
 }
 HLE(_ZN2nn2os9LockMutexEPNS0_9MutexTypeE) {
-    if (!watch_mutex()) { hos_vcore_checkpoint(); mx_lock(ARG(0), c); return; }
+    if (!watch_mutex()) { mx_lock(ARG(0), c); return; }
     Obj *m = obj(ARG(0), K_MUTEX);
     if (watched(ARG(0))) watch_log("lock", ARG(0), 0, c, m);
     mx_lock(ARG(0), c);
     if (watched(ARG(0))) watch_log("locked", ARG(0), 0, c, m);
 }
 HLE(_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE) {
-    if (!watch_mutex()) { hos_vcore_checkpoint(); mx_unlock(ARG(0)); return; }
+    if (!watch_mutex()) { mx_unlock(ARG(0)); return; }
     Obj *m = obj(ARG(0), K_MUTEX);
     if (watched(ARG(0))) watch_log("unlock", ARG(0), 0, c, m);
     mx_unlock(ARG(0));
 }
 HLE(_ZN2nn2os12TryLockMutexEPNS0_9MutexTypeE) {
-    hos_vcore_checkpoint();
     uint32_t *w = mx_word(ARG(0));
     const uint32_t id = mx_id();
     uint32_t v = 0;
@@ -1137,7 +1132,7 @@ static void holder(Ctx *c, int what) {
     h->sem_max = what;   /* the kind of object watched (Obj fields reused: a holder has no semaphore) */
 }
 /* Ready now? Consumes an auto-clear event's signal, as the kernel does when a wait is satisfied by it. */
-/* (under mw_lock: lookups without the vcore checkpoint, obj_nockpt) */
+/* (under mw_lock: lookups with obj_nockpt) */
 static int holder_ready(Obj *h) {
     switch (h->sem_max) {
     case H_EVENT: return event_peek(obj_nockpt(h->event, K_EVENT));

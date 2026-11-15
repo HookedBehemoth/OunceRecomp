@@ -115,22 +115,17 @@ void hos_thread_join(HosThread *t);
 void hos_thread_destroy(HosThread *t);
 void hos_thread_set_name(HosThread *t, const char *name);
 void hos_thread_pin(void *h, const char *name);   /* HOS_PIN: host CPU affinity by thread name */
-int hos_game_cores(void);   /* totk_cores.c: HOS_GAME_CORES, or 0 */
 const char *hos_thread_name(HosThread *t);
 void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask);
 uint64_t hos_thread_mask(HosThread *t);
 int hos_thread_priority(HosThread *t, int set, int value);
 int hos_thread_core(HosThread *t);
 int hos_cores(void);
-/* virtual cores (hos_thread.c, HOS_VCORES=1): a guest thread gives its core up for a block (hos_vcore_away: 1 if it
-   held one) and takes one again after it (hos_vcore_back); checkpoints hand it to a better waiter that asked */
-int hos_vcores_on(void);
-int hos_vcore_away(void);
-int hos_vcore_away_why(int why, const void *key);   /* (HOS_DBG=crit: the same, the block named: direct_crit.h) */
-void hos_vcore_back(void);
-void hos_vcore_checkpoint(void);
-void hos_vcore_yield(void);
-void hos_vcore_dump(void);   /* (HOS_DUMP_FILE) the owners of the virtual cores and their waiters, to the log */
+/* (HOS_DBG=crit: direct_crit.h) a guest thread's block in a host call: hos_block_begin names it (1 if recorded), and
+   hos_block_end after it records the span. No scheduler: guest threads run freely on their host threads (hos_thread.c) */
+int hos_block_begin(int why, const void *key);
+void hos_block_end(void);
+void hos_vcore_checkpoint(void);   /* (the lifted code's loop polls, a64_poll_cur: empty; nothing sets Ctx.poll) */
 void hos_thread_fp_log(long long present);   /* (hos_thread.c) HOS_FP_LOG=1: FPCR and MXCSR of the presenting thread */
 int hos_current_core(uint64_t lr);   /* (hos_thread.c) GetCurrentCoreNumber for the running thread */
 int hos_cv_sleep(void *cv, void *srw_lock, unsigned ms);   /* SleepConditionVariableSRW (exclusive) for guest threads */

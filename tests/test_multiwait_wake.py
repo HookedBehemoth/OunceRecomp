@@ -311,11 +311,11 @@ def main():
 
     unsafe = locked_regions_unsafe(source)
     if unsafe:
-        raise SystemExit("FAIL: waits for a virtual core while holding a lock WaitAny's scan takes: " + ", ".join(unsafe))
+        raise SystemExit("FAIL: sleeps or yields while holding a lock WaitAny's scan takes: " + ", ".join(unsafe))
     for what, old, new in (("a checkpoint in event_signal holding e->lk", "    AcquireSRWLockExclusive(&e->lk);\n    e->signaled = 1;",
                             "    AcquireSRWLockExclusive(&e->lk);\n    hos_vcore_checkpoint();\n    e->signaled = 1;"),
-                           ("an obj() lookup under table_lock", "static Obj *obj_lookup(uint64_t key, int kind) {",
-                            "static Obj *obj_lookup(uint64_t key, int kind) { AcquireSRWLockShared(&table_lock); obj(1, 2); ReleaseSRWLockShared(&table_lock);")):
+                           ("a sleep under table_lock", "static Obj *obj_lookup(uint64_t key, int kind) {",
+                            "static Obj *obj_lookup(uint64_t key, int kind) { AcquireSRWLockShared(&table_lock); Sleep(1); ReleaseSRWLockShared(&table_lock);")):
         if old not in source:
             raise SystemExit("FAIL: the locked-region check's control '%s' lost its anchor: update the test" % what)
         if not locked_regions_unsafe(source.replace(old, new, 1)):

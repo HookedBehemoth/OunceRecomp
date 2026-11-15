@@ -351,7 +351,6 @@ static void query_memory(uint64_t out, uint64_t addr) {
 static HosThread *thread_handle(uint32_t h) { return h == CUR_THREAD ? hos_self() : hos_thread_by_handle(h); }
 
 void a64_svc(Ctx *c, uint32_t imm) {
-    hos_vcore_checkpoint();
     switch (imm) {
     case 0x01: { /* SetHeapSize(-, size) -> (result, heap address) */
         int hos_heap_size_fits(uint64_t size);   /* (hookshot, hos_mem.c: the heap stays in the guest window) */
@@ -372,7 +371,7 @@ void a64_svc(Ctx *c, uint32_t imm) {
         c->x[0] = R_OK;
         return;
     case 0x0A:   /* ExitThread */
-        hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)12);
+        hos_block_begin(CRIT_BLOCK_OTHER, (const void *)12);
         ExitThread(0);
         return;
     case 0x07:   /* ExitProcess */

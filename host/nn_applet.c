@@ -227,9 +227,9 @@ static void socket_poll(Ctx *c) {
     const int timeout = (int)ARG(2);
     for (uint64_t i = 0; fds && i < n && i < 4096; i++) *(uint16_t *)GP(fds + 8 * i + 6) = 0;   /* revents */
     if (timeout != 0) {
-        const int away = hos_vcore_away_why(CRIT_BLOCK_OTHER, (const void *)11);
+        const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)11);
         hos_sleep_ns((int64_t)(timeout < 0 || timeout > 50 ? 50 : timeout) * 1000000);
-        if (away) hos_vcore_back();
+        if (away) hos_block_end();
     }
     RET(0);
 }

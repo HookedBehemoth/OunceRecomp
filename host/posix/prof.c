@@ -499,8 +499,8 @@ static DWORD WINAPI watch_thread(void *p) {
     return 0;
 }
 
-/* HOS_DUMP_FILE=<path> (diagnostic): when <path> exists, every guest thread's guest frames (hos_thread_dump) and the
-   virtual cores' owners and waiters (hos_vcore_dump) go to the log, and <path> is removed: what a stalled game waits in
+/* HOS_DUMP_FILE=<path> (diagnostic): when <path> exists, every guest thread's guest frames (hos_thread_dump) go to the
+   log, and <path> is removed: what a stalled game waits in
    without a debugger (ptrace is limited to a process's ancestors here) */
 static DWORD WINAPI dump_thread(void *p) {
     const char *path = (const char *)p;
@@ -510,7 +510,6 @@ static DWORD WINAPI dump_thread(void *p) {
         if (access(path, F_OK)) continue;
         unlink(path);
         hos_log("dump: asked");
-        hos_vcore_dump();
         void rt_slots_dump(void);
         rt_slots_dump();
         hos_thread_dump();
