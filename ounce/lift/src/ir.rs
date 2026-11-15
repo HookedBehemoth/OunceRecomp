@@ -84,7 +84,7 @@ impl ValueId {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BlockId(pub u32);
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum BinOp {
     Add, Sub, Mul, And, Or, Xor, Shl, Lshr, Ashr, Udiv, Sdiv, Fadd, Fsub, Fmul, Fdiv,
 }
@@ -99,7 +99,7 @@ impl BinOp {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CastOp {
     Zext, Sext, Trunc, Bitcast, Sitofp, Uitofp, Fptosi, Fptoui, Fpext, Fptrunc,
 }
@@ -113,34 +113,68 @@ impl CastOp {
     }
 }
 
-/// a call of an LLVM intrinsic, a runtime function or an internal helper (emit HELPERS)
-#[derive(Clone, Debug, Default)]
+/// a symbol the IR names: a function's generic entry `f_<addr>`, a setjmp owner's `sjcall_<addr>` stub, or any other
+/// name of the export (HLE and patch functions), interned in the partition's `Names`
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub enum Sym {
+    Entry(u64),
+    SjCall(u64),
+    Name(u32),
+}
+
+/// what a call calls
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Callee {
+    /// `llvm.<name>[.<ty>[.<ty>]]`: an LLVM intrinsic and its overload types (Void: none)
+    Llvm(&'static str, [Ty; 2]),
+    /// a runtime function of the host (a64_*, recomp_*)
+    Rt(&'static str),
+    /// an internal function of emit::helpers(), by index
+    Helper(u8),
+    /// a patch row's host function
+    Host(Sym),
+}
+
+impl Callee {
+    pub fn llvm(name: &'static str) -> Callee {
+        Callee::Llvm(name, [Ty::Void; 2])
+    }
+    pub fn llvm1(name: &'static str, t: Ty) -> Callee {
+        Callee::Llvm(name, [t, Ty::Void])
+    }
+    pub fn llvm2(name: &'static str, t: Ty, u: Ty) -> Callee {
+        Callee::Llvm(name, [t, u])
+    }
+}
+
+/// a call of an LLVM intrinsic, a runtime function, an internal helper or a host function (kept in the function's
+/// call table: Op::Call and Op::RowIo name it by index)
+#[derive(Copy, Clone, Debug)]
 pub struct Call {
-    pub func: String,
+    pub callee: Callee,
     /// the context pointer passed first
     pub ctx: bool,
     /// reads or writes state: never removed or moved
     pub effects: bool,
-    /// an internal function of emit::HELPERS
-    pub helper: bool,
-    /// with ctx: the registers it reads of the context (None: every one)
-    pub regs: Option<u128>,
+    /// with ctx: the registers it reads of the context
+    pub regs: u128,
 }
 
-/// an At row whose host function also takes a struct of registers it rewrites
-#[derive(Clone, Debug)]
-pub struct RowIo {
-    pub func: String,
-    pub nargs: u32,
-    pub ctx: bool,
-    pub regs: Option<u128>,
+impl Call {
+    pub fn new(callee: Callee) -> Call {
+        Call { callee, ctx: false, effects: false, regs: REGS }
+    }
+    /// a call with the context that reads no register of it
+    pub fn ctx(callee: Callee, effects: bool) -> Call {
+        Call { callee, ctx: true, effects, regs: 0 }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum Op {
     Const(u128),
-    /// lane bits
-    VConst(Box<[u64]>),
+    /// a vector constant: its lanes packed, lane 0 in the low bits
+    VConst(u128),
     /// the host function pointer of the function at a guest address (code_ptrs)
     CodeAddr(u64),
     Param(Var),
@@ -157,7 +191,8 @@ pub enum Op {
     Extract(u32),
     Insert(u32),
     Shuffle(Box<[i32]>),
-    Call(Box<Call>),
+    /// a call of the function's call table
+    Call(u32),
     Load,
     Store,
     ALoad(&'static str),
@@ -171,13 +206,15 @@ pub enum Op {
     RegLoad(Var),
     Writeback(Var),
     /// stop: the callee stops the game (an import the host neither implements nor answers): a noreturn call
-    Gcall { sym: Box<str>, callee: u64, pc: u64, stop: bool },
+    Gcall { sym: Sym, callee: u64, pc: u64, stop: bool },
     Icall(u64),
     Svc(u32),
     Barrier,
     FlagsOut { always: bool },
     SitePoison { mask: u128, pc: u64 },
-    RowIo(Box<RowIo>),
+    /// an At row's call of the call table that also takes a struct of the registers it rewrites: its first nargs
+    /// arguments are the row's, the others the registers
+    RowIo { call: u32, nargs: u32 },
     RowOut(u32),
 }
 
@@ -196,7 +233,7 @@ pub enum Term {
     Switch(ValueId, Vec<(u64, BlockId)>, BlockId),
     Ret,
     /// a tail call of another function's generic entry
-    Tail(Box<str>),
+    Tail(Sym),
     /// a BR the lift could not resolve: (target, pc); None until the exit's block is filled
     IJump(Option<ValueId>, u64),
     /// a call of a callee proven never to return came back: (pc, word)
@@ -291,14 +328,12 @@ impl std::fmt::Display for BlockName {
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum CKey {
     Int(u128, Ty),
-    Vec(Box<[u64]>, Ty),
+    Vec(u128, Ty),
     Code(u64),
 }
 
 pub struct Function {
     pub entry: u64,
-    /// the LLVM symbol
-    pub name: String,
     values: Vec<Value>,
     args: Vec<ValueId>,
     pub blocks: Vec<Block>,
@@ -308,6 +343,8 @@ pub struct Function {
     /// guest variables some block writes (a bit per Var)
     pub written: u128,
     consts: HashMap<CKey, ValueId>,
+    /// the calls of Op::Call and Op::RowIo
+    pub calls: Vec<Call>,
     /// writes FPCR: emitted strictfp (sem_fp)
     pub strict_fp: bool,
     /// target features (AES-NI, PCLMUL)
@@ -319,7 +356,6 @@ impl Function {
     pub fn new(entry: u64) -> Function {
         Function {
             entry,
-            name: format!("g_{entry:08x}"),
             values: Vec::new(),
             args: Vec::new(),
             blocks: Vec::new(),
@@ -327,6 +363,7 @@ impl Function {
             map: HashMap::new(),
             written: 0,
             consts: HashMap::new(),
+            calls: Vec::new(),
             strict_fp: false,
             target_features: Vec::new(),
             code_sites: 0,
@@ -353,6 +390,9 @@ impl Function {
         self.args(v)[k]
     }
     /// the constant's bits, if v is an integer constant ("const")
+    pub fn call(&self, k: u32) -> &Call {
+        &self.calls[k as usize]
+    }
     pub fn konst(&self, v: ValueId) -> Option<u128> {
         match self.v(v).op {
             Op::Const(c) => Some(c),
@@ -579,13 +619,14 @@ impl<'f> Builder<'f> {
     pub fn vconst(&mut self, bits: &[u64], ty: Ty) -> ValueId {
         let (n, lane) = ty.lanes();
         assert_eq!(bits.len(), n as usize);
-        let m = if lane.width() >= 64 { u64::MAX } else { (1u64 << lane.width()) - 1 };
-        let lanes: Box<[u64]> = bits.iter().map(|&x| x & m).collect();
-        let key = CKey::Vec(lanes.clone(), ty);
+        let w = lane.width();
+        let m = if w >= 64 { u64::MAX } else { (1u64 << w) - 1 };
+        let packed = bits.iter().enumerate().fold(0u128, |p, (k, &x)| p | ((x & m) as u128) << (k as u32 * w));
+        let key = CKey::Vec(packed, ty);
         if let Some(&c) = self.f.consts.get(&key) {
             return c;
         }
-        let c = self.f.new_value(ty, Op::VConst(lanes), &[]);
+        let c = self.f.new_value(ty, Op::VConst(packed), &[]);
         self.f.consts.insert(key, c);
         c
     }
@@ -621,7 +662,9 @@ impl<'f> Builder<'f> {
     }
     /// a call of an LLVM intrinsic or a runtime function returning ty (Void for none)
     pub fn call(&mut self, call: Call, ty: Ty, args: &[ValueId]) -> ValueId {
-        self.op(Op::Call(Box::new(call)), ty, args)
+        let k = self.f.calls.len() as u32;
+        self.f.calls.push(call);
+        self.op(Op::Call(k), ty, args)
     }
     pub fn extract(&mut self, vec: ValueId, i: u32) -> ValueId {
         let t = self.ty(vec).lanes().1.ty();

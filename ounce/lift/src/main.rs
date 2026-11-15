@@ -101,7 +101,12 @@ fn main() {
                 let t = Instant::now();
                 let l = lift_part(&meta, &targets, &part, skip);
                 let tl = t.elapsed().as_secs_f64();
-                std::fs::write(out.join(format!("{}.ll", names[k])), &l.text).unwrap();
+                {
+                    use std::io::Write;
+                    let mut file = std::fs::File::create(out.join(format!("{}.ll", names[k]))).unwrap();
+                    file.write_all(&l.head).unwrap();
+                    file.write_all(&l.body).unwrap();
+                }
                 let mut g = total.lock().unwrap();
                 g.0 += l.lifted;
                 for (why, n) in l.skipped {

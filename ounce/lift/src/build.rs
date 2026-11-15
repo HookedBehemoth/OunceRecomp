@@ -1,7 +1,7 @@
 //! A guest function -> IR (nx2/lift2/build_ir.py: scope, build, omit_stores, cycle_edges), and the patch rows'
 //! lowering (nx2/lift2/probes.py Value.lower, At.post).
 
-use crate::export::{AtRow, Bound, Calls, Func, ValueRow};
+use crate::export::{AtRow, Bound, Func, Part, ValueRow};
 use crate::ir::*;
 use crate::sem;
 use crate::sem::int::{cond, getx, setx, sx};
@@ -27,16 +27,16 @@ pub struct Prog<'a> {
     pub before: HashMap<u64, Vec<&'a AtRow>>,
     pub after: HashMap<u64, Vec<&'a AtRow>>,
     pub replace: HashMap<u64, Vec<&'a AtRow>>,
-    pub calls: &'a Calls,
+    pub part: &'a Part,
     pub own: &'a Bound,
     pub omit: bool,
 }
 
 impl<'a> Prog<'a> {
-    pub fn new(f: &'a Func, pcs: &[u64], code_targets: &'a HashSet<u64>, calls: &'a Calls, omit: bool) -> Prog<'a> {
+    pub fn new(f: &'a Func, code_targets: &'a HashSet<u64>, part: &'a Part, omit: bool) -> Prog<'a> {
         let mut p = Prog {
             entry: f.entry,
-            body: pcs.iter().copied().collect(),
+            body: f.pcs.iter().copied().collect(),
             entries: f.body_entries.iter().copied().collect(),
             jt: f.jt.iter().cloned().collect(),
             jt_index: f.jt_index.clone(),
@@ -46,7 +46,7 @@ impl<'a> Prog<'a> {
             before: HashMap::new(),
             after: HashMap::new(),
             replace: HashMap::new(),
-            calls,
+            part,
             own: &f.own,
             omit,
         };
@@ -62,10 +62,10 @@ impl<'a> Prog<'a> {
         p
     }
     fn callee(&self, t: u64) -> u64 {
-        self.calls.callee(t)
+        self.part.callee(t)
     }
     fn bound(&self, c: u64) -> &'a Bound {
-        self.calls.bound(c)
+        self.part.bound(c)
     }
     /// a branch to t stays in the function (a goto), or leaves it (a tail call)
     fn inside(&self, t: u64) -> bool {
@@ -103,9 +103,8 @@ const CODE_FORMS: [&str; 2] = ["adr", "addsub_imm"];
 /// (summary bits: x19-x29, SP) a BL keeps in SSA
 const KEEP: [Var; 12] = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, SP];
 
-pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
-    let entry = f.entry;
-    let word: HashMap<u64, u32> = pcs.iter().copied().zip(words.iter().copied()).collect();
+pub fn build(f: &Func, prog: &Prog) -> Function {
+    let (entry, pcs, words) = (f.entry, &f.pcs[..], &f.words[..]);
     let mut fun = Function::new(entry);
     if let Some(plt) = &f.plt {
         let e = fun.block(BKey::Pc(entry));
@@ -115,8 +114,8 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
         b.set(x(16), s);
         let t = if plt.target_is_code { b.codeaddr(plt.target) } else { b.c64(plt.target as i128) };
         b.set(x(17), t);
-        let tail = prog.bound(prog.callee(plt.target)).tail.clone();
-        fun.bm(e).term = Some(Term::Tail(tail.into()));
+        let tail = prog.bound(prog.callee(plt.target)).tail;
+        fun.bm(e).term = Some(Term::Tail(tail));
         finish(&mut fun);
         return fun;
     }
@@ -137,7 +136,7 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
         }
     }
     let mut index_at: HashMap<u64, (BlockId, ValueId)> = HashMap::new();
-    let insns: Vec<Insn> = pcs.iter().map(|pc| decode(word[pc]).expect("decode")).collect();
+    let insns: Vec<Insn> = words.iter().map(|&w| decode(w).expect("decode")).collect();
     let mut leaders: HashSet<u64> = HashSet::from([entry]);
     for (k, &pc) in pcs.iter().enumerate() {
         let i = &insns[k];
@@ -172,7 +171,7 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
         let blk = b.f.block(key);
         exits.push(blk);
         match bd.answer {
-            None => b.f.bm(blk).term = Some(Term::Tail(bd.tail.clone().into())),
+            None => b.f.bm(blk).term = Some(Term::Tail(bd.tail)),
             Some(answer) => {
                 b.f.bm(blk).term = Some(Term::Ret);
                 let (here, cmp) = (b.blk, b.cmp);
@@ -305,7 +304,7 @@ pub fn build(f: &Func, pcs: &[u64], words: &[u32], prog: &Prog) -> Function {
             }
             let ra = b.c64(pc as i128 + 4);
             b.set(x(30), ra);
-            b.op(Op::Gcall { sym: bd.symbol.as_str().into(), callee, pc, stop: bd.kind == "stop" }, Ty::Void, &[]);
+            b.op(Op::Gcall { sym: bd.symbol, callee, pc, stop: bd.stop }, Ty::Void, &[]);
             b.after_call();
             for (var, v) in held {
                 b.f.bm(c).defs[var as usize] = Some(v);
@@ -488,8 +487,7 @@ fn reads(f: &Function, v: ValueId, prog: &Prog) -> (u128, u128) {
             (bd.reads & REGS, bd.must & REGS)
         }
         Op::Icall(_) | Op::Svc(_) => (REGS, 0),
-        Op::Call(c) if c.ctx => (c.regs.unwrap_or(REGS) & REGS, 0),
-        Op::RowIo(r) if r.ctx => (r.regs.unwrap_or(REGS) & REGS, 0),
+        Op::Call(k) | Op::RowIo { call: k, .. } if f.call(*k).ctx => (f.call(*k).regs & REGS, 0),
         _ => (0, 0),
     }
 }
@@ -664,7 +662,7 @@ fn value_lower(b: &mut Builder, p: &ValueRow) {
         }
     }
     let ty = if p.result.starts_with('w') { I32 } else { I64 };
-    let r = b.call(Call { func: p.func.clone(), ..Default::default() }, ty, &vals);
+    let r = b.call(Call::new(Callee::Host(p.func)), ty, &vals);
     setx(b, p.result[1..].parse().unwrap(), r, false);
 }
 
@@ -706,7 +704,7 @@ fn at_post(b: &mut Builder, row: &AtRow) {
         Some(b's') => Ty::F32,
         _ => Ty::parse("v2i64"),
     };
-    let guest = !row.guest.is_null();
+    let guest = row.guest;
     let r = if !row.io.is_empty() {
         let nargs = vals.len() as u32;
         for r in &row.io {
@@ -714,11 +712,9 @@ fn at_post(b: &mut Builder, row: &AtRow) {
             let v = if r.starts_with('q') { vread(b, n, Ty::parse("v2i64")) } else { getx(b, n, 1, false) };
             vals.push(v);
         }
-        let call = b.op(
-            Op::RowIo(Box::new(RowIo { func: row.func.clone(), nargs, ctx: guest, regs: None })),
-            ty,
-            &vals,
-        );
+        let k = b.f.calls.len() as u32;
+        b.f.calls.push(Call { ctx: guest, ..Call::new(Callee::Host(row.func)) });
+        let call = b.op(Op::RowIo { call: k, nargs }, ty, &vals);
         for (k, r) in row.io.iter().enumerate() {
             let q = r.starts_with('q');
             let v = b.op(Op::RowOut(k as u32), if q { Ty::parse("v2i64") } else { I64 }, &[call]);
@@ -732,7 +728,7 @@ fn at_post(b: &mut Builder, row: &AtRow) {
         }
         call
     } else {
-        b.call(Call { func: row.func.clone(), effects: true, ctx: guest, ..Default::default() }, ty, &vals)
+        b.call(Call { effects: true, ctx: guest, ..Call::new(Callee::Host(row.func)) }, ty, &vals)
     };
     let Some(res) = &row.result else { return };
     let n = res[1..].parse().unwrap();

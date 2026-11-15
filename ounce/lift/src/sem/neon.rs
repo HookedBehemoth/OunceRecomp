@@ -2,8 +2,8 @@
 //! arrangements; scalar forms use the same operations on scalar types. Values are created in the Python's order
 //! (its argument evaluation order), so the value numbers match. Raw `b.op` where the Python calls b.op (no folding).
 
-use crate::ir::{BinOp, Builder, Call, CastOp, Op, ValueId};
-use crate::sem::fp::{fbin, fconst, fma, fsqrt, intr, llcall, suffix, to_int, vread, vwrite};
+use crate::ir::{BinOp, Builder, Call, Callee, CastOp, Op, ValueId};
+use crate::sem::fp::{fbin, fconst, fma, fsqrt, intr, llcall, to_int, vread, vwrite};
 use crate::sem::int::{getx, setx};
 use crate::ty::{Ty, I1, I128, I16, I32, I64, I8};
 use ounce_decode::{info, Insn, Param};
@@ -96,8 +96,8 @@ fn fop(b: &mut Builder, op: BinOp, t: Ty, x: ValueId, y: ValueId) -> ValueId {
     b.op(Op::Bin(op), t, &[x, y])
 }
 
-fn call(b: &mut Builder, name: String, t: Ty, args: &[ValueId]) -> ValueId {
-    llcall(b, name, t, args)
+fn call(b: &mut Builder, callee: Callee, t: Ty, args: &[ValueId]) -> ValueId {
+    llcall(b, callee, t, args)
 }
 
 /// scalar x in every lane of t
@@ -147,8 +147,23 @@ fn smax_of(w: u32) -> i128 {
     (1i128 << (w - 1)) - 1
 }
 
-fn sfx(t: Ty) -> String {
-    suffix(t)
+/// the saturating add/sub intrinsic of SQADD UQADD SQSUB UQSUB
+fn sat_name(mn: &str) -> &'static str {
+    match mn {
+        "sqadd" => "sadd.sat",
+        "uqadd" => "uadd.sat",
+        "sqsub" => "ssub.sat",
+        _ => "usub.sat",
+    }
+}
+
+fn minmax_name(mn: &str) -> &'static str {
+    match mn {
+        "smax" => "smax",
+        "umax" => "umax",
+        "smin" => "smin",
+        _ => "umin",
+    }
 }
 
 // ---- integer operations, any integer type
@@ -196,13 +211,13 @@ fn shl_reg(b: &mut Builder, x: ValueId, m: ValueId, signed: bool, rnd: bool) -> 
     let mut right;
     if signed {
         let kw1 = K(b, w - 1, t);
-        let cl = call(b, format!("llvm.umin.{}", sfx(t)), t, &[nsh, kw1]);
+        let cl = call(b, Callee::llvm1("umin", t), t, &[nsh, kw1]);
         right = bin(b, BinOp::Ashr, x, cl);
         if rnd {
             let k1 = K(b, 1, t);
             let n1 = bin(b, BinOp::Sub, nsh, k1);
             let kw1 = K(b, w - 1, t);
-            let um = call(b, format!("llvm.umin.{}", sfx(t)), t, &[n1, kw1]);
+            let um = call(b, Callee::llvm1("umin", t), t, &[n1, kw1]);
             let ls = bin(b, BinOp::Lshr, x, um);
             let k1 = K(b, 1, t);
             let bit = bin(b, BinOp::And, ls, k1);
@@ -246,12 +261,12 @@ fn sat_narrow(b: &mut Builder, x: ValueId, nt: Ty, signed_in: bool, signed_out: 
     let mut x = x;
     if signed_in {
         let k = if lo != 0 || signed_out { K(b, lo, t) } else { K(b, 0, t) };
-        x = call(b, format!("llvm.smax.{}", sfx(t)), t, &[x, k]);
+        x = call(b, Callee::llvm1("smax", t), t, &[x, k]);
         let k = K(b, hi, t);
-        x = call(b, format!("llvm.smin.{}", sfx(t)), t, &[x, k]);
+        x = call(b, Callee::llvm1("smin", t), t, &[x, k]);
     } else {
         let k = K(b, hi, t);
-        x = call(b, format!("llvm.umin.{}", sfx(t)), t, &[x, k]);
+        x = call(b, Callee::llvm1("umin", t), t, &[x, k]);
     }
     trunc(b, x, nt)
 }
@@ -282,7 +297,7 @@ fn int3(b: &mut Builder, mn: &str, x: ValueId, y: ValueId, d: Option<ValueId>) -
         "sub" => bin(b, BinOp::Sub, x, y),
         "mul" => bin(b, BinOp::Mul, x, y),
         "sqadd" | "uqadd" | "sqsub" | "uqsub" => {
-            call(b, format!("llvm.{}{}.sat.{}", if signed { "s" } else { "u" }, &mn[2..], sfx(t)), t, &[x, y])
+            call(b, Callee::llvm1(sat_name(mn), t), t, &[x, y])
         }
         "cmgt" => mask(b, "sgt", x, y, false),
         "cmhi" => mask(b, "ugt", x, y, false),
@@ -294,7 +309,7 @@ fn int3(b: &mut Builder, mn: &str, x: ValueId, y: ValueId, d: Option<ValueId>) -
             let k = K(b, 0, t);
             mask(b, "ne", a, k, false)
         }
-        "smax" | "umax" | "smin" | "umin" => call(b, format!("llvm.{mn}.{}", sfx(t)), t, &[x, y]),
+        "smax" | "umax" | "smin" | "umin" => call(b, Callee::llvm1(minmax_name(mn), t), t, &[x, y]),
         "shadd" | "uhadd" | "srhadd" | "urhadd" | "shsub" | "uhsub" => {
             halving(b, x, y, signed, mn.contains("sub"), mn.contains("rh"))
         }
@@ -349,12 +364,12 @@ fn qshl_lane(b: &mut Builder, x: ValueId, m: ValueId, signed: bool, rnd: bool) -
     let c0 = b.c(0, wt);
     let pos = b.icmp("sge", sh, c0);
     let c64 = b.c(64, wt);
-    let um = call(b, "llvm.umin.i128".into(), wt, &[sh, c64]);
+    let um = call(b, Callee::llvm1("umin", I128), wt, &[sh, c64]);
     let l = bin(b, BinOp::Shl, xx, um);
     let c0 = b.c(0, wt);
     let neg = bin(b, BinOp::Sub, c0, sh);
     let c127 = b.c(127, wt);
-    let n = call(b, "llvm.umin.i128".into(), wt, &[neg, c127]);
+    let n = call(b, Callee::llvm1("umin", I128), wt, &[neg, c127]);
     let mut rr = xx;
     if rnd {
         let c1 = b.c(1, wt);
@@ -367,12 +382,12 @@ fn qshl_lane(b: &mut Builder, x: ValueId, m: ValueId, signed: bool, rnd: bool) -
     let mut v = b.select(pos, l, r);
     if signed {
         let lo = b.c(-(1i128 << (w - 1)), wt);
-        v = call(b, "llvm.smax.i128".into(), wt, &[v, lo]);
+        v = call(b, Callee::llvm1("smax", I128), wt, &[v, lo]);
         let hi = b.c(smax_of(w), wt);
-        v = call(b, "llvm.smin.i128".into(), wt, &[v, hi]);
+        v = call(b, Callee::llvm1("smin", I128), wt, &[v, hi]);
     } else {
         let hi = b.c((1i128 << w) - 1, wt);
-        v = call(b, "llvm.umin.i128".into(), wt, &[v, hi]);
+        v = call(b, Callee::llvm1("umin", I128), wt, &[v, hi]);
     }
     trunc(b, v, t)
 }
@@ -521,8 +536,7 @@ fn int_pair(b: &mut Builder, mn: &str, x: ValueId, y: ValueId) -> ValueId {
 fn estimate(b: &mut Builder, x: ValueId, f: &str) -> ValueId {
     let t = b.ty(x);
     let lt = lane_of(t);
-    let name = format!("lift2_{f}_{lt}");
-    let c = || Call { func: name.clone(), ctx: true, effects: false, helper: true, regs: Some(0) };
+    let c = || Call::ctx(Callee::Helper(crate::emit::estimate_helper(f, lt)), false);
     if !t.is_vec() {
         return b.call(c(), lt, &[x]);
     }
@@ -732,7 +746,7 @@ fn t_simd_3diff(b: &mut Builder, i: &Insn, _pc: u64) {
         let x = vread(b, i.f("Rn"), vty(2, I64));
         let y = vread(b, i.f("Rm"), vty(2, I64));
         let c = b.c(if q != 0 { 0x11 } else { 0 }, I8);
-        let r = call(b, "llvm.x86.pclmulqdq".into(), vty(2, I64), &[x, y, c]);
+        let r = call(b, Callee::llvm("x86.pclmulqdq"), vty(2, I64), &[x, y, c]);
         vwrite(b, i.f("Rd"), r);
         return;
     }
@@ -776,10 +790,10 @@ fn t_simd_3diff(b: &mut Builder, i: &Insn, _pc: u64) {
         }
         "sqdmull" | "sqdmlal" | "sqdmlsl" => {
             let pr = bin(b, BinOp::Mul, x, y);
-            let mut r = call(b, format!("llvm.sadd.sat.{}", sfx(wt)), wt, &[pr, pr]);
+            let mut r = call(b, Callee::llvm1("sadd.sat", wt), wt, &[pr, pr]);
             if mn != "sqdmull" {
                 let op = if mn == "sqdmlal" { "add" } else { "sub" };
-                r = call(b, format!("llvm.s{op}.sat.{}", sfx(wt)), wt, &[d, r]);
+                r = call(b, Callee::llvm1(if op == "add" { "sadd.sat" } else { "ssub.sat" }, wt), wt, &[d, r]);
             }
             r
         }
@@ -888,14 +902,14 @@ fn t_simd_2misc(b: &mut Builder, i: &Insn, _pc: u64) {
                 "cnt" => intr(b, "ctpop", t, &[x]),
                 "clz" => {
                     let c = b.c(0, I1);
-                    call(b, format!("llvm.ctlz.{}", sfx(t)), t, &[x, c])
+                    call(b, Callee::llvm1("ctlz", t), t, &[x, c])
                 }
                 "cls" => {
                     let k = K(b, (w - 1) as i128, t);
                     let s = bin(b, BinOp::Ashr, x, k);
                     let y = bin(b, BinOp::Xor, x, s);
                     let c = b.c(0, I1);
-                    let z = call(b, format!("llvm.ctlz.{}", sfx(t)), t, &[y, c]);
+                    let z = call(b, Callee::llvm1("ctlz", t), t, &[y, c]);
                     let k = K(b, 1, t);
                     bin(b, BinOp::Sub, z, k)
                 }
@@ -903,7 +917,7 @@ fn t_simd_2misc(b: &mut Builder, i: &Insn, _pc: u64) {
                 "rbit" => intr(b, "bitreverse", t, &[x]),
                 "abs" => {
                     let c = b.c(0, I1);
-                    call(b, format!("llvm.abs.{}", sfx(t)), t, &[x, c])
+                    call(b, Callee::llvm1("abs", t), t, &[x, c])
                 }
                 "neg" => {
                     let k = K(b, 0, t);
@@ -921,7 +935,7 @@ fn t_simd_2misc(b: &mut Builder, i: &Insn, _pc: u64) {
                     let mn_ = K(b, 1i128 << (w - 1), t);
                     let a = if mn == "sqabs" {
                         let c = b.c(0, I1);
-                        call(b, format!("llvm.abs.{}", sfx(t)), t, &[x, c])
+                        call(b, Callee::llvm1("abs", t), t, &[x, c])
                     } else {
                         let k = K(b, 0, t);
                         bin(b, BinOp::Sub, k, x)
@@ -958,9 +972,9 @@ fn d_add(b: &mut Builder, d: ValueId, n: ValueId, signed_d: bool) -> ValueId {
 fn sat_lane(b: &mut Builder, v: ValueId, w: u32, signed: bool) -> ValueId {
     let (lo, hi) = if signed { (-(1i128 << (w - 1)), smax_of(w)) } else { (0, (1i128 << w) - 1) };
     let k = b.c(lo, I128);
-    let v = call(b, "llvm.smax.i128".into(), I128, &[v, k]);
+    let v = call(b, Callee::llvm1("smax", I128), I128, &[v, k]);
     let k = b.c(hi, I128);
-    let v = call(b, "llvm.smin.i128".into(), I128, &[v, k]);
+    let v = call(b, Callee::llvm1("smin", I128), I128, &[v, k]);
     trunc(b, v, Ty::I(w as u16))
 }
 
@@ -1038,16 +1052,16 @@ fn t_simd_across(b: &mut Builder, i: &Insn, _pc: u64) {
     let r = if mn == "saddlv" || mn == "uaddlv" {
         let wt = shape(t, lane_t(size + 1, false));
         let e = ext(b, x, wt, mn.starts_with('s'));
-        call(b, format!("llvm.vector.reduce.add.{}", sfx(wt)), lane_t(size + 1, false), &[e])
+        call(b, Callee::llvm1("vector.reduce.add", wt), lane_t(size + 1, false), &[e])
     } else {
         let op = match mn {
-            "addv" => "add",
-            "smaxv" => "smax",
-            "umaxv" => "umax",
-            "sminv" => "smin",
-            _ => "umin",
+            "addv" => "vector.reduce.add",
+            "smaxv" => "vector.reduce.smax",
+            "umaxv" => "vector.reduce.umax",
+            "sminv" => "vector.reduce.smin",
+            _ => "vector.reduce.umin",
         };
-        call(b, format!("llvm.vector.reduce.{op}.{}", sfx(t)), lane_t(size, false), &[x])
+        call(b, Callee::llvm1(op, t), lane_t(size, false), &[x])
     };
     vwrite(b, i.f("Rd"), r);
 }
@@ -1130,8 +1144,8 @@ fn t_simd_tbl(b: &mut Builder, i: &Insn, _pc: u64) {
             idx
         };
         let c = K(b, 0x70, v16);
-        ix = call(b, "llvm.uadd.sat.v16i8".into(), v16, &[ix, c]);
-        let s = call(b, "llvm.x86.ssse3.pshuf.b.128".into(), v16, &[tab, ix]);
+        ix = call(b, Callee::llvm1("uadd.sat", Ty::parse("v16i8")), v16, &[ix, c]);
+        let s = call(b, Callee::llvm("x86.ssse3.pshuf.b.128"), v16, &[tab, ix]);
         r = Some(match r {
             None => s,
             Some(p) => bin(b, BinOp::Or, p, s),
@@ -1346,10 +1360,10 @@ fn t_simd_elem(b: &mut Builder, i: &Insn, _pc: u64) {
         let d = vread(b, rd, wt);
         let mut pr = bin(b, BinOp::Mul, x, y);
         let r = if mn.starts_with("sqd") {
-            pr = call(b, format!("llvm.sadd.sat.{}", sfx(wt)), wt, &[pr, pr]);
+            pr = call(b, Callee::llvm1("sadd.sat", wt), wt, &[pr, pr]);
             if mn != "sqdmull" {
                 let op = if mn == "sqdmlal" { "add" } else { "sub" };
-                pr = call(b, format!("llvm.s{op}.sat.{}", sfx(wt)), wt, &[d, pr]);
+                pr = call(b, Callee::llvm1(if op == "add" { "sadd.sat" } else { "ssub.sat" }, wt), wt, &[d, pr]);
             }
             pr
         } else if mn.ends_with("mull") {

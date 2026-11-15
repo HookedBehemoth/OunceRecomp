@@ -1,7 +1,7 @@
 //! FP scalar semantics and vector/FP register loads and stores (nx2/lift2/sem_fp.py): templates for enc_fp's table,
 //! and the FP operations sem/neon.rs shares. Values are created in the Python's order (value numbers match).
 
-use crate::ir::{vreg, BinOp, Builder, Call, CastOp, Cmp, Op, ValueId};
+use crate::ir::{vreg, BinOp, Builder, Call, Callee, CastOp, Cmp, Op, ValueId};
 use crate::sem::int::{cond, extend, getx, set_nzcv, setx, store, sx};
 use crate::ty::{Ty, I1, I16, I32, I64, I8};
 use ounce_decode::{info, Insn, Param};
@@ -91,18 +91,13 @@ pub fn fconst(b: &mut Builder, value: f64, ty: Ty) -> ValueId {
     b.c(bits as i128, ty)
 }
 
-/// an LLVM intrinsic's type suffix: f32, v4f32 (ir.py's name)
-pub fn suffix(t: Ty) -> String {
-    t.to_string()
-}
-
-pub fn llcall(b: &mut Builder, name: String, ty: Ty, args: &[ValueId]) -> ValueId {
-    b.call(Call { func: name, ..Default::default() }, ty, args)
+pub fn llcall(b: &mut Builder, callee: Callee, ty: Ty, args: &[ValueId]) -> ValueId {
+    b.call(Call::new(callee), ty, args)
 }
 
 /// llvm.<name>.<suffix(ty)>
-pub fn intr(b: &mut Builder, name: &str, ty: Ty, args: &[ValueId]) -> ValueId {
-    llcall(b, format!("llvm.{name}.{}", suffix(ty)), ty, args)
+pub fn intr(b: &mut Builder, name: &'static str, ty: Ty, args: &[ValueId]) -> ValueId {
+    llcall(b, Callee::llvm1(name, ty), ty, args)
 }
 
 /// the i1 shape of a type (i1, or a vector of i1)
@@ -197,14 +192,14 @@ pub fn rint(o: u32) -> &'static str {
 }
 
 /// FCVT[NPMZA][SU]: rounded by rnd (None: toward zero), then the saturating conversion
-pub fn to_int(b: &mut Builder, x: ValueId, ity: Ty, signed: bool, rnd: Option<&str>) -> ValueId {
+pub fn to_int(b: &mut Builder, x: ValueId, ity: Ty, signed: bool, rnd: Option<&'static str>) -> ValueId {
     let mut x = x;
     if let Some(r) = rnd {
         let t = b.ty(x);
         x = intr(b, r, t, &[x]);
     }
     let xt = b.ty(x);
-    llcall(b, format!("llvm.fpto{}i.sat.{}.{}", if signed { "s" } else { "u" }, suffix(ity), suffix(xt)), ity, &[x])
+    llcall(b, Callee::llvm2(if signed { "fptosi.sat" } else { "fptoui.sat" }, ity, xt), ity, &[x])
 }
 
 /// FCMP's NZCV

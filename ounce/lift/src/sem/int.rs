@@ -1,7 +1,7 @@
 //! Integer instruction semantics (nx2/lift2/sem_int.py): one template per family of encodings. Values are created in
 //! the Python's order (its argument evaluation order), so the value numbers match.
 
-use crate::ir::{x, BinOp, Builder, Call, Cmp, Op, ValueId, FC, FLAGS, FN, FV, FZ, SP};
+use crate::ir::{x, BinOp, Builder, Call, Callee, Cmp, Op, ValueId, FC, FLAGS, FN, FV, FZ, SP};
 use crate::ty::{Ty, I1, I128, I16, I32, I64, I8};
 use ounce_decode::{Insn, Param};
 
@@ -716,7 +716,7 @@ fn t_ldr_lit(b: &mut Builder, i: &Insn, pc: u64) {
 
 fn t_hint(b: &mut Builder, i: &Insn, _pc: u64) {
     if i.f("CRm") == 0 && (i.f("op2") == 1 || i.f("op2") == 2) {
-        b.call(Call { func: "llvm.x86.sse2.pause".into(), effects: true, ..Default::default() }, Ty::Void, &[]);
+        b.call(Call { effects: true, ..Call::new(Callee::llvm("x86.sse2.pause")) }, Ty::Void, &[]);
     }
 }
 
@@ -728,7 +728,7 @@ fn t_crc32(b: &mut Builder, i: &Insn, _pc: u64) {
     let acc = getx(b, i.f("Rn"), 0, false);
     let poly = b.c(if i.f("C") != 0 { 0x82F63B78 } else { 0xEDB88320 }, I32);
     let n = b.c(8 << sz, I32);
-    let r = b.call(Call { func: "lift2_crc32".into(), helper: true, ..Default::default() }, I32, &[acc, data, n, poly]);
+    let r = b.call(Call::new(Callee::Helper(crate::emit::H_CRC32)), I32, &[acc, data, n, poly]);
     setx(b, i.f("Rd"), r, false);
 }
 
@@ -769,8 +769,8 @@ fn sysreg_name(k: (u32, u32, u32, u32, u32)) -> &'static str {
     }
 }
 
-fn ctx_call(func: &str, effects: bool) -> Call {
-    Call { func: func.into(), ctx: true, effects, regs: Some(0), helper: false }
+fn ctx_call(func: &'static str, effects: bool) -> Call {
+    Call::ctx(Callee::Rt(func), effects)
 }
 
 /// sem_fp.fp_sysreg_read
@@ -957,8 +957,7 @@ fn t_ldstexp(b: &mut Builder, i: &Insn, _pc: u64) {
     let addr = getx(b, rn, 1, true);
     let n = b.c(if sz != 0 { 8 } else { 4 }, I32);
     if i.f("L") != 0 {
-        let mut c = ctx_call("lift2_ldxp_lo", false);
-        c.helper = true;
+        let c = Call::ctx(Callee::Helper(crate::emit::H_LDXP_LO), false);
         let lo = b.call(c, I64, &[addr, n]);
         let hi = b.op(Op::CtxLoad(0x340), I64, &[]);
         setx(b, rt, lo, false);

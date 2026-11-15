@@ -1,7 +1,7 @@
 //! The cryptographic extension's semantics (nx2/lift2/sem_crypto.py): AES through AES-NI, SHA1/SHA256 lane by lane on
 //! 32-bit values. Values are created in the Python's order.
 
-use crate::ir::{BinOp, Builder, ValueId};
+use crate::ir::{BinOp, Builder, Callee, ValueId};
 use crate::sem::fp::{llcall, vread, vwrite};
 use crate::ty::{Ty, I32, I64};
 use ounce_decode::Insn;
@@ -10,8 +10,8 @@ fn v2i64() -> Ty {
     Ty::vec(2, I64)
 }
 
-fn x86(b: &mut Builder, name: &str, args: &[ValueId]) -> ValueId {
-    llcall(b, format!("llvm.x86.aesni.{name}"), v2i64(), args)
+fn x86(b: &mut Builder, name: &'static str, args: &[ValueId]) -> ValueId {
+    llcall(b, Callee::llvm(name), v2i64(), args)
 }
 
 fn t_crypto_aes(b: &mut Builder, i: &Insn, _pc: u64) {
@@ -22,12 +22,12 @@ fn t_crypto_aes(b: &mut Builder, i: &Insn, _pc: u64) {
     let r = if op < 2 {
         let n = vread(b, i.f("Rn"), v2i64());
         x = b.bin(BinOp::Xor, x, n);
-        x86(b, if op == 0 { "aesenclast" } else { "aesdeclast" }, &[x, zero])
+        x86(b, if op == 0 { "x86.aesni.aesenclast" } else { "x86.aesni.aesdeclast" }, &[x, zero])
     } else if op == 2 {
-        let d = x86(b, "aesdeclast", &[x, zero]);
-        x86(b, "aesenc", &[d, zero])
+        let d = x86(b, "x86.aesni.aesdeclast", &[x, zero]);
+        x86(b, "x86.aesni.aesenc", &[d, zero])
     } else {
-        x86(b, "aesimc", &[x])
+        x86(b, "x86.aesni.aesimc", &[x])
     };
     vwrite(b, i.f("Rd"), r);
 }
