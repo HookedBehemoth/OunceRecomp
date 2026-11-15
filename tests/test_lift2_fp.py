@@ -3,7 +3,7 @@ to IR and LLVM IR, compiled, run from edge-value and random states (signed zeros
 rounding ties, saturation edges; FPCR 0 and FZ), and compared with values computed here from the Arm ARM's
 definitions: exact rational arithmetic rounded as FPRound does, ARM's NaN and min/max rules, saturation.
 
-The comparison allows exactly the deviations of docs/lifter2-design.md section 7.1: a NaN where ARM has a NaN (any
+The comparison allows exactly the deviations of docs/lifter.md section 8.1: a NaN where ARM has a NaN (any
 sign or payload), and under FZ a result of the smallest normal magnitude where ARM flushes to zero (or the reverse).
 Everything else must be equal bit for bit. FPSR is not compared (its cumulative flags are not kept per operation).
 

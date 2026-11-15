@@ -542,7 +542,7 @@ def t_barrier(b, f, pc, p):
     """ISB: nothing (no self-modifying code)"""
 
 
-# ---- atomics and ordering (docs/lifter2-design.md section 8: x86-TSO mapping)
+# ---- atomics and ordering (docs/lifter.md section 9: x86-TSO mapping)
 RMW = {0: "add", 1: "clr", 2: "xor", 3: "or", 4: "max", 5: "min", 6: "umax", 7: "umin"}
 
 

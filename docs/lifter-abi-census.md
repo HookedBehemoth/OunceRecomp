@@ -1,7 +1,7 @@
-# Lifter 2: which guest functions are not ordinary AAPCS64 functions
+# The lifter: which guest functions are not ordinary AAPCS64 functions
 
-The question: lifter 2 keeps guest registers in SSA values and trusts callee-saved registers and the stack discipline
-across calls (docs/lifter2-design.md, sections 5 and 6). setjmp/longjmp and the fiber switch are already replaced by
+The question: the lifter's fast entries (open work) keep guest registers in SSA values and trust callee-saved
+registers and the stack discipline across calls (docs/lifter.md, sections 6, 7 and 15). setjmp/longjmp and the fiber switch are already replaced by
 host code. Are those all the functions that break that model?
 
 **Short answer: no, but almost.** Every function in the game that switches stacks or restores callee-saved registers
@@ -13,7 +13,7 @@ pads), noreturn callees (about 3,500 call sites that the compiler ended with not
 discovery cuts so that a frame spans two entries (25), and hand-written assembly that saves d8-d15 with ST1/LD1 or
 uses x29 as a general register. The summary stage can find all of them with one rule (below) instead of a list.
 
-The census is `nx2/lift2/abi_census.py` (lift 2's decoder, the present lift's discovery with its HLE set, an abstract
+The census is `nx2/lift2/abi_census.py` (the lifter's decoder, the discovery with its HLE set, an abstract
 interpretation of SP, x29, x30, x19-x28, d8-d15 and the own frame per function, 294,523 functions in 2.5 minutes on
 4 processes). Its output is `work/lift2/abi_census.txt` (local).
 
@@ -21,12 +21,12 @@ interpretation of SP, x29, x30, x19-x28, d8-d15 and the own frame per function, 
 
 | what | functions | how | where |
 |---|---|---|---|
-| setjmp owners | `__setjmp` 0x8504ec40 (`libc_setjmp`), `longjmp` 0x8504ed50 (`libc_longjmp`); 14 callers of `__setjmp` (main 4, sdk 10), 11 of `longjmp` (incl. `pthread_exit` 0x85112e10) | setjmp and longjmp run lifted; each setjmp return address becomes an entry (13, all of the census' "entry inside another function's FDE"), each call of an owner is wrapped in a host setjmp, a BR to a pushed return address is a host longjmp | `third_party/a64-kit/lift/a64_lift.py:1398` (`find_setjmp_owners`), `:2059` (the wrapper); `host/hos_setjmp.c:1`, `:167`, `:186` |
+| setjmp owners | `__setjmp` 0x8504ec40 (`libc_setjmp`), `longjmp` 0x8504ed50 (`libc_longjmp`); 14 callers of `__setjmp` (main 4, sdk 10), 11 of `longjmp` (incl. `pthread_exit` 0x85112e10) | setjmp and longjmp run lifted; each setjmp return address becomes an entry (13, all of the census' "entry inside another function's FDE"), each call of an owner is wrapped in a host setjmp, a BR to a pushed return address is a host longjmp | `nx2/lift2/discover.py` (`find_setjmp_owners`), `nx2/lift2/game.py` (`sjcall_<owner>`); `host/hos_setjmp.c:1`, `:167`, `:186` |
 | fibers | `nn::os::InitializeFiber`, `SwitchToFiber`, `FinalizeFiber`, `GetCurrentFiber` | HLE at the definition: a guest fiber is a host fiber with its own guest context; the SDK's `DispatchFiberContext` 0x8510d214 and `CallFiberFunction` 0x8510d430 are only reached from inside the HLE'd functions | `host/hos_thread.c:1133-1246` |
 | HLE / stubs | 529 host `imp_` functions + 218 stubbed OS-facing imports, hooked at their definition; among them `nn::diag::detail::AbortImpl` (noreturn), `nn::diag::GetBacktrace` (walks the x29 chain), `nn::os::CreateThread`/`StartThread` (thread first frames: x30 = 0, SP set, `a64_icall`) | the lifter emits a call of the host function; the body is not lifted | `nx2/standalone.py:97` (`hle_set`), `nx2/lift.py:135`; `host/hos_thread.c:544,565`, `host/nn_diag.c` |
 | `ENTRY_HOOK` | 136: Havok timing 95 (`host/eng_havok.c`), assets/textures 14, direct back end passes/layers/mesh 13, libc by symbol 8 (`host/nn_libc.c`: memcpy, memmove, memset, memcmp, strlen, strcmp), zstd 2, render slots 3, bench 1 | `if (entry_<addr>(c)) return;` at the top; engine and performance hooks. None exists because of SP/LR/callee-saved behaviour | `nx2/entry_hooks.py`, `host/*.c` |
 | PAC | PACIBSP/AUTIBSP/RETAB (182,316 functions), PAC/AUT register forms on x30 (3: setjmp, longjmp, DispatchFiberContext) | the identity | `nx2/insn.py` |
-| noreturn | none listed | a UDF after a call traps as on the hardware; a BL followed by another function's entry falls into it in the old lift (never executed) | `nx2/lift.py:64` |
+| noreturn | none listed | a UDF after a call traps as on the hardware; a BL followed by another function's entry fell into it in a64-kit's lifter (never executed) | the summaries' noreturn seeds |
 
 ## 2. Census classes and counts
 
@@ -68,7 +68,7 @@ All modules the lift covers (main, subsdk0, sdk, rtld), HLE'd functions excluded
 (`__throw_system_error`, `__throw_bad_alloc`), libpng's `png_error`/`png_chunk_error`/`png_fixed_error` (longjmp
 out), `TryEnterInternalCriticalSectionAbort`, and in main `libcxx_bad_variant_access_abort` 0x8284c6f0 (603 sites),
 `libcxx_bad_optional_access_abort` 0x82becaf0 (139), `cxx_call_terminate` 0x82118640 (44) and 20 more with 1-4 sites.
-Without a noreturn mark, the old lift falls from the BL into the next function's entry (dead, harmless); lift 2 would
+Without a noreturn mark, a64-kit's lifter fell from the BL into the next function's entry (dead, harmless); the lifter would
 emit a call followed by a tail call that the summary then counts as an exit (wrong SP/x30 at that "exit").
 
 ## 3. C++ exceptions
@@ -85,7 +85,7 @@ emit a call followed by a tail call that the summary then counts as an exit (wro
 - Can it happen? Statically: the throw sites exist and are reachable from normal code, but they are error paths
   (container length overflow, allocation failure, `system_error`). Nothing shows a throw used for control flow. If one
   ever ran, `_Unwind_RaiseException` would walk guest frames by `.eh_frame` from the guest SP and x30: lifted frames
-  keep neither in memory, so unwinding through lifted code cannot work under lift 2 (it does not work under the old
+  keep neither in memory, so unwinding through lifted code cannot work under the lifter (it did not work under the old
   lift either; its context SP is right but the host stack is not unwound).
 - Treatment: REPLACE `__cxa_throw`, `__cxa_rethrow` and `_Unwind_RaiseException`/`_Unwind_ForcedUnwind` with a host
   function that logs the type and aborts the run (`hos_fatal`), and mark them and `_Unwind_Resume` noreturn. Landing
@@ -105,7 +105,7 @@ emit a call followed by a tail call that the summary then counts as an exit (wro
 | noreturn callees (68, list above) | | noreturn annotation from the summary (rule below); the BL ends the block | 13 (wrong exits), 15 |
 | 12 split-frame pairs, main 0x824c43bc-0x824f8adc; 5 merged bodies (0x8507fcd0, 0x81dc6f78, 0x81dcff78, 0x824e2ea8, 0x857da520) | the discovery cut a function at an inner entry, or merged two | merge the halves back into one function (the inner entry stays a generic entry for its other callers); until then generic-only | 13, 15, 16 |
 | jsimd (18) and audio tap filters (4) | hand-written NEON; d8-d15 saved with ST1/LD1 | fine as lifted, but the summary's save pattern must accept ST1/LD1 of d8-d15 or they are demoted | 13 (demotion), 16 |
-| 10 sdk audio/AAC functions (above) | x29/x25-x28 at a return not proven by the tool | lift 2's summary decides; demoted if not proven | 13 |
+| 10 sdk audio/AAC functions (above) | x29/x25-x28 at a return not proven by the tool | the lifter's summary decides; demoted if not proven | 13 |
 
 Nothing else in the game manipulates SP, x30 or callee-saved registers outside the AAPCS64. The remaining census hits
 are benign (x30 as scratch, alloca, TLS, flag save/restore within a function) or the tool's path-insensitivity.
@@ -130,7 +130,7 @@ failure demotes it to generic-entry-only and lists it with the reason:
    point over SCCs, seeded with UDF/BRK and the REPLACE'd fatal functions). A BL whose return address is not in the
    body, or is another function's entry, must reach a noreturn callee; otherwise demote.
 6. **Inputs**: x9-x18 or NZCV live at entry, and x9-x18 read after a BL that the callee's summary clobbers, demote
-   (needs path-sensitive liveness in the IR, which lift 2's SSA gives; the census' path-insensitive version over-reports
+   (needs path-sensitive liveness in the IR, which the lifter's SSA gives; the census' path-insensitive version over-reports
    by about 1,000).
 
 The runtime verification build (milestone 14) is the check that the rule is conservative enough.
@@ -140,7 +140,7 @@ The runtime verification build (milestone 14) is the check that the rule is cons
 - Whether any C++ exception is thrown in a real run (the throw sites are error paths; a host breakpoint on the
   REPLACE'd `__cxa_throw` answers it).
 - The 23 `lr_exit` and 34 `cs_entry_data` hits in main that are not split/merged functions: the tool loses frame
-  slots to overlapping and register-offset stores; lift 2's IR will decide.
+  slots to overlapping and register-offset stores; the lifter's IR will decide.
 - The identity of main's exception-enabled component (0x8211xxxx-0x824xxxxx) and of the merged bodies 0x81dc6f78,
   0x81dcff78, 0x857da520.
 - Whether the SDK's own threads ever run `UserExceptionHandler` (only on a guest CPU fault, which the host turns into a

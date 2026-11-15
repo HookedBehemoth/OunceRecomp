@@ -29,5 +29,5 @@ mkw-recomp's changes:
   `nn_image_debug.c`, `totk_*.c`. `mkw_glue.c` stands in for the hooks the taken files call into them. `mods.c`
   came back later as Hookshot's `host/mods.c`: the RomFS part of Skybound's loader (`NotRexed/SkyboundTotk`, MIT).
 
-Licensing follows a64-kit: GPL, through suyu's translator in the lifted code (see
-`third_party/a64-kit/NOTICE.TOTKPort.md`).
+Licensing: GPL-3.0-or-later, as the rest of Hookshot (see `third_party/a64-kit/NOTICE.TOTKPort.md` for the kit's
+history).

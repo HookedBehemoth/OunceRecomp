@@ -188,7 +188,7 @@ also comes from the target was not checked.
 | UI and composite | layers `#103`, `#107`; `f_80285b00` | frame + UI layer | window texture `O` |
 
 The network has fixed shares: one program per ratio of `S` to `F` (3/4 for `fd029a317a9a4b94`; "a smaller network, 1/3"
-when `S` would exceed `BaseResolution`: `nx2/oot_patches.py:384-386`; `gpu/legacy/vk/vk_draw.cpp:6380`). It is not a
+when `S` would exceed `BaseResolution`: the output-size note of the old `nx2/oot_patches.py`, now the At probes in `nx2/lift2/probes.py`; `gpu/legacy/vk/vk_draw.cpp:6380`). It is not a
 temporal upscaler: no target carries colour across frames (rt-alloc.md 2: "no TAA history"). On the direct back end it
 runs as the game has it, with the matrix multiplies in software (`gpu/direct/direct_compute.cpp:6`, `:80`); it is the
 frame's heaviest pass, about 1 ms ([shader-costs.md](shader-costs.md)).

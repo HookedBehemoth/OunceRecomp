@@ -1,5 +1,4 @@
-"""Probes: host code at guest addresses, the lift 2 form of the present lifter's text patches (docs/lifter2-design.md
-section 9).
+"""Probes: host code at guest addresses, where the game's code needs the host (docs/lifter.md section 10).
 
 A probe names a function and one of its instructions, found by llvm-mc's text of the instruction (a pattern the
 function has exactly once, as the text patches' anchors were), and says what the host does there:
@@ -8,9 +7,7 @@ function has exactly once, as the text patches' anchors were), and says what the
 - the other kinds of section 9 (Before, After, CondOr, CallSite) are the same lookup with the call placed before or
   after the instruction's own semantics, or as the condition / the call target; they come with the patches that need
   them.
-The present lifter's patch of each probed function leaves a marker in its lifted C (MARKS): mixed.py takes a function
-whose only host edit is that marker, and lift 2 must then find the probe's instruction (a missing one stops the build:
-another game version's code).
+The lifter must find each probe's instruction: a missing one stops the build (another game version's code).
 """
 import os
 import re

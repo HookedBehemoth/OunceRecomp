@@ -1,11 +1,11 @@
-"""Parked patches of the lifted C for Ocarina of Time, not applied while the present lifter is being retired.
+"""Parked patches of the lifted C for Ocarina of Time, not applied.
 
-Each was a text edit of the present lifter's C (nx2/oot_patches.py applied them); lift 2 writes no C, so they wait here
-until each is ported to a guest-address probe (nx2/lift2/probes.py) or dropped. (Ported: the native mouse camera and
-text speed, At probes.) Nothing calls this module: the lift and
-the build leave these functions to lift 2 unchanged, and the host's switches for them do nothing meanwhile. The table of
-what each did, its switch and what is lost while parked: docs/lifter2-design.md, "Parked patches". The text is kept as
-it was, as the reference for the port.
+Each was a text edit of a64-kit's lifted C (nx2/oot_patches.py applied them; both are deleted). The lifter writes no C,
+so they wait here until each is ported to a guest-address probe (nx2/lift2/probes.py) or dropped. (Ported: the native
+mouse camera and text speed, At probes.) Nothing calls this module: the lift and the build leave these functions to the
+lifter unchanged, and the host's switches for them do nothing meanwhile. The table of what each did, its switch and
+what is lost while parked: docs/lifter.md, "Parked patches". The text is kept as it was, as the reference for the
+port.
 
 - Player heart protection (patch_life, f_804bd8c0), player flight (patch_movement, f_82c415e0) and its rotation
   (patch_flight_rotation, f_806d2530): host/oot_cheats.c's switches.

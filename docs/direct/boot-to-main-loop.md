@@ -8,7 +8,8 @@ work do not re-derive it. Addresses are guest addresses of HOS_GAME_VERSION 100 
 How each claim is known:
 
 - **VERIFIED (decompile)**: read in the Ghidra output (`work/ghidra/decomp.sh`, outputs in `work/proto/boot/d1`..`d5`)
-  or in the lifted C (`work/sa/gen`, call lists by `work/proto/boot/tools/calls.py`).
+  or in the lifted code (`nx2/lift2/dump.py`; the call lists of that time came from `work/proto/boot/tools/calls.py`
+  over a64-kit's lifted C, since deleted).
 - **VERIFIED (run)**: seen in a run. Two short gdb runs on the chiseled Kokiri boot (`chisel_kokiri`, default
   settings, `RUN=check`, a copy of the `work/sa/build` build of 2026-11-11, the old Vulkan renderer: the guest code is the same lift): `m6j_tree1` dumps sead's method trees
   at presents 60, 300 and 1200 and every sead thread's start (`work/proto/boot/gdb/tree.py`, output
@@ -160,7 +161,7 @@ DebugHeap and its children (aresDebug 1366 MB, ResourceDebug) have size 0 at the
 
 ### 2.3 The framework object
 
-`0x84c83f80` (no RTTI). The slots this document uses (VERIFIED decompile; thunks resolved in the lifted C):
+`0x84c83f80` (no RTTI). The slots this document uses (VERIFIED decompile; thunks resolved in the lifted code):
 
 | Slot | Function | What |
 |---|---|---|
@@ -282,7 +283,7 @@ What the modules initialise in that window (the subsystems), with the log's time
 
 ### 4.1 The loop and the frame, on sead::MainThread
 
-`f_809667b0` (VERIFIED lifted C): `for (;;) { fw->vtable[0xe0](fw); }`.
+`f_809667b0` (VERIFIED lifted code): `for (;;) { fw->vtable[0xe0](fw); }`.
 
 The frame, in order. Order VERIFIED (run `m6j_order1`, two whole frames, identical) and the calls VERIFIED
 (decompile); "blocks on" from the code and the `m6a_crit2_k` trace (Kokiri, pacing off; ms a frame are that run's).
@@ -431,7 +432,8 @@ The five other threads wait for 0.9 ms of the 1.75, while one thread builds the 
 `a64_fpx_*` of its file ~0.4 ms), the grid 0.5, `f_800ad2b0` 0.3, the dynres 0.15, other 0.2. The rest is waiting:
 **4.0 ms of the 20 µs sleeps** (~31 a thread, 22 µs each), which the host yield-spun to their time, and 0.6 ms of
 yields (~100 a thread). The lifted code runs at -O1: `f_8009bb80` is 12.5k guest instructions and 409 KB of x86, and
-`f_808226e0` 1.5k and 85 KB, with every scalar FP op an out-of-line `a64_fpx_*` call.
+`f_808226e0` 1.5k and 85 KB, with every scalar FP op an out-of-line `a64_fpx_*` call (a64-kit's lifter, since deleted:
+the lifter inlines FP, [lifter.md](../lifter.md) section 8).
 
 `host/hos_thread.c` `calc_poll_nap` turns the three poll sleeps into timed sleeps with a 1 µs timer slack (Linux;
 `HOS_CALC_NAP=0` spins them again). The phase keeps its 1.75 ms (1.765 with the timers'
@@ -485,7 +487,7 @@ not a wait on a lock: while the player's calc runs no other job is ready, becaus
 (the actors ordered after the player, the physics phase, post-physics) depends on it.
 
 CPU (perf samples, the executors' share in stage A): game code 29%, hknp physics 20%, the lifter's FP helpers 15%
-(`a64_fpx_*`; a vector FP op is four calls of the scalar helper), host and kernel 12%, the host's spin 8%, Havok
+(`a64_fpx_*` of a64-kit's lifter, since deleted; a vector FP op was four calls of the scalar helper), host and kernel 12%, the host's spin 8%, Havok
 cloth 7.5% (with its FP helpers, `phys_cloth_step` is 12%), Havok Common/Base 7%. `phys_cloth_step` runs about 23
 times a frame for 2.7-3.1 ms of CPU a frame. It runs once a frame per instance with the frame's step, so its cost per
 second grows with the frame rate. `hknpWorld::stepCollide` and `stepSolve` are not called in play: the world steps
@@ -666,7 +668,7 @@ function's entry, `host/hos.h:26`; a mark at the end of a phase is the entry of 
 
 | Phase | Boundary | Notes |
 |---|---|---|
-| a frame | `f_83b6ea90` entry (procFrame) | once a frame on sead::MainThread, before anything else of the frame; `host/oot_probes.c` (lift 2 At probes) already puts the real-time step here and in `f_80706be0` |
+| a frame | `f_83b6ea90` entry (procFrame) | once a frame on sead::MainThread, before anything else of the frame; `host/oot_probes.c` (the lifter's At probes) already puts the real-time step here and in `f_80706be0` |
 | the frame's CPU work ends | the tail `nvnEventSignal(value 1)` of `f_8042cd20` | already timed by the back end (the CPU event signal, `host/rx_backend.c`); M6a's frame boundary |
 | task create/destroy | `f_802eaf10`, `f_802eaa40`, `f_802ead80` | rare work; a scene change's task churn shows here |
 | calc | `f_802eabd0` entry / `f_8348d430` entry | everything of 4.3 |

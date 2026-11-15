@@ -4,8 +4,7 @@
 
 A form is llvm-mc's mnemonic plus the operand shape: register classes (X, W, SP, V.<arrangement>, Q/D/S/H/B),
 immediates as #i, addressing modes kept. Every word of each module's .text is counted (the little data in .text
-included). The classes follow docs/lifter.md section 3; the integer classes are the ones milestones 1-2
-cover. Writes one line per form (count, class, covered, form, an example) and prints the coverage per class.
+included). The classes follow docs/lifter.md section 3. Writes one line per form (count, class, covered, form, an example) and prints the coverage per class.
 """
 import argparse
 import collections

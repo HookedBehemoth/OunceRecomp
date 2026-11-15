@@ -1,7 +1,7 @@
 # A player builder: what a new one needs
 
 The player builders (the Windows WPF app, the Linux AppImage with its Tk window, `nx2/make_game.py` under both, the
-setup, release-part and update scripts) were removed: they drove the old lifter's C output, packaged the old renderers
+setup, release-part and update scripts) were removed: they drove a64-kit's lifter's C output, packaged the old renderers
 (DLSS, shader seeds, `hookshot_vk.so`), and never made the direct back end's prepared assets. This page is the starting
 point for a new one. The developer path (`nx2/nup.py`, `scripts/relift.sh`, `nx2/build.py`) is what it should drive.
 
@@ -16,7 +16,7 @@ A builder is a thin front end over steps that exist:
    `nup.stand_in_damaged(romfs, progress)` replaces each by a whole file of the same kind and returns what it did; say
    so to the player (without it the game leaves out the walls and floors using them, issue 1002). It opens every `.zs`
    file: minutes, so report progress, and do it once per unpack (a stamp beside the romfs).
-3. **Lift.** The lifter's own entry point (lift 2), as `scripts/relift.sh` runs it.
+3. **Lift.** `nx2/lift.py`, as `scripts/relift.sh` runs it.
 4. **Build.** `nx2/build.py --standalone --jobs N`: the game and `hookshot_direct.so`. It needs clang/lld, the Vulkan,
    SPIR-V and VMA headers (`HOOKSHOT_SPIRV_HEADERS`, `HOOKSHOT_VMA_HEADERS`) and FFmpeg (`scripts/linux/deps.sh` pins
    and builds the versions).

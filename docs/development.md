@@ -9,7 +9,7 @@ replayed on Vulkan by the direct back end. It is a fork of mkw-recomp (Mario Kar
 fixes apply here.
 
 **No game files are in this repository.** The dump is read where it lies (`work/dump.txt`); everything made from it
-(modules, image, lifted C, builds, runs) goes to `work/`, which git ignores.
+(modules, image, the lift's plan, builds, runs) goes to `work/`, which git ignores.
 
 The design and the lessons carried over from MKW: [design.md](design.md). The renderer: [direct-backend-plan.md](direct-backend-plan.md),
 and what we know about the game: [direct/](direct/README.md).
@@ -28,10 +28,10 @@ Run everything with `python -I` from this folder.
 |---|---|
 | `python -I nx2/nup.py <file.nup> --extract work/dump` | the `.nup` dump package to `work/dump/exefs` + `romfs` (newest title; ZBIC NSOs made plain by `nx2/unpack.py`) |
 | `python -I nx2/dump.py --dump <folder with exefs/ and romfs/> --set` | what the dump is (Switch 1 or 2, ids, modules, SDK, NVN); `--set` records it in `work/dump.txt` |
-| `python -I nx2/lift.py [--write]` | image + discovery + coverage; `--write` emits the C |
-| `python -I nx2/census.py --nx2` | instruction census per module, after the Switch 2 forms |
-| `python -I nx2/test_insn.py [--per 6 --states 12]` | every instruction form the game uses, Unicorn vs lifted C |
-| `python -I nx2/test_leaf.py [--count 3000 --states 4] [--calls]` | random whole functions (or call trees), Unicorn vs recompiled native code on the real image |
+| `python -I nx2/lift.py --standalone [--write]` | image + discovery + the plan (`work/sa/plan.pickle`); `--write` also the runtime's tables and the image's C |
+| `python -I nx2/lift2/census.py` | instruction census of the game's code: the forms and what the lifter covers |
+| `python -I nx2/lift2/selfcheck.py` | the lifter's decoder against llvm-mc on every distinct word of the game |
+| `python -I nx2/test_lift2_leaf.py [--count 500 --states 4] [--calls]` | random whole functions (or call trees) of the game, lifted and compared with Unicorn |
 | `python -I nx2/lift.py --standalone --write` then `python -I nx2/build.py --standalone --jobs 4` | the standalone game: `work/sa/build/hookshot` + `hookshot_direct.so`, the only renderer |
 | `scripts/run-vk.sh <name> [seconds] [-- NAME=VALUE ...]` | a muted, headless test run (Linux), with screenshots in `work/runs/<name>/shots`; see Iterating below |
 | `python -I scripts/prof.py <stacks file>` | a profile sampled with `HOS_PROFILE=<seconds>` + `HOS_SAMPLE=<thread>` + `HOS_SAMPLE_FILE=<stacks file>` (the sampler runs only with `HOS_PROFILE` set), named from the linker maps |
@@ -51,10 +51,10 @@ background when the existing "Controller in background" option or `HOS_INPUT_BAC
 alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses. It
 is not a focus override.
 
-**Parked while the present lifter is retired** (`nx2/oot_parked.py`; the table in
-[lifter2-design.md](lifter2-design.md#14i-parked-patches)): the game's menus no longer follow the mouse (pointing,
-clicking and scrolling in the title, pause and option menus) until those hooks are re-implemented on lift 2. The
-free camera, heart protection and flight are parked too: their switches do nothing meanwhile.
+**Parked** (`nx2/oot_parked.py`; the table in [lifter.md](lifter.md#103-parked-patches)): text patches of the old
+lifter's C not ported yet. The game's menus no longer follow the mouse (pointing, clicking and scrolling in the title,
+pause and option menus) until those hooks are re-implemented. The free camera, heart protection and flight are parked
+too: their switches do nothing meanwhile.
 
 ## Iterating quickly (Linux)
 
@@ -63,29 +63,29 @@ Everything made from the game lives in `work/` (git ignores it). Run Python as `
 **Setup once.** `python3 -m venv work/venv && work/venv/bin/pip install -r requirements.txt`; extract the dump
 (`nx2/nup.py <.nup> --extract work/dump`) and record it (`nx2/dump.py --dump work/dump --set`); put the SPIR-V and VMA
 headers where `nx2/build.py` finds them (`/usr`, or `HOOKSHOT_SPIRV_HEADERS` and `HOOKSHOT_VMA_HEADERS`; the Vulkan
-ones likewise with `HOOKSHOT_VULKAN_HEADERS`); `nx2/lift.py --standalone --write` lifts the game into `work/sa/gen`.
+ones likewise with `HOOKSHOT_VULKAN_HEADERS`); `scripts/relift.sh` lifts the game (the plan in `work/sa/plan.pickle`, the
+tables and the image's C in `work/sa/gen`) and builds it.
 
 **Build.** `work/venv/bin/python -I -u nx2/build.py --standalone --jobs 12` writes `work/sa/build/` (`hookshot`,
 `hookshot_direct.so`, the caches beside them). A change to a header every file includes, or to the build flags, rebuilds
 everything; a change in `host/` or `gpu/direct/` recompiles only that file and links.
 - To replace a game function, write `ENTRY_HOOK(0x8xxxxxxx)` or `ENTRY_HOOK_SYM(name)` in a `host/*.c` file (return 1
-  when it handled the call), run `work/venv/bin/python -I nx2/entry_hooks.py work/sa/gen` (the lift runs it too), then
-  build: only the spliced code file and the runtime recompile. Read the lifted body first:
-  `grep -l "^void f_<addr>(Ctx \*__restrict" work/sa/gen/code_*.c`. `ENTRY_HOOK_SYM` names resolve through
-  `work/sa/image/image.json`.
+  when it handled the call) and build: the lifter calls the hook at the function's entry, and only the partition that
+  holds the function is lifted and compiled again. Read the function first: `nx2/lift2/dump.py <address>`.
+  `ENTRY_HOOK_SYM` names resolve through `work/sa/image/image.json`.
 - A new `host/*.c` file is picked up by the next build only (the file list is taken at its start).
 - `RX_DIRECT_ONLY=1` builds the back end alone, with no lift.
-- **A new lift** is needed after a change to the lifter (`third_party/a64-kit/lift`, `nx2/lift.py`, `nx2/chunks.py`) or to a
-  lift-time patch the lifted C as it stands cannot take: `scripts/relift.sh` lifts (with the hot set `work/hot_funcs_play.txt`,
-  else `work/hot_funcs.txt`: `A64_HOT_FUNCS`, `A64_HOT_CHUNK=1`) and builds, for the checkout it is run from; in the main
-  checkout on native-vk through `scripts/play-refresh.sh`, so `BUILD.txt` names the head. It stops while a game runs from that
-  build. About 5 minutes of lift and 9 of build (8 jobs); log `work/play/relift.log` (a worktree: `work/sa/relift.log`).
-- **The game is the mixed build** by default: every function lift 2 can take (`docs/lifter2-design.md` 14c, 14d; int,
-  FP and NEON: 98.8 % of the guest instructions) comes from `nx2/lift2`, the rest (host edits, setjmp owners' callers)
-  from the present lifter. `HOOKSHOT_LIFT2=0` at lift and build time gives the present lifter's build alone. A host-only
-  rebuild takes lift 2's objects from `work/objcache` by their inputs (plan, chosen functions, `nx2/lift2` sources,
-  flags) without lifting or compiling them again (a host-only rebuild: about a minute).
-  `nx2/build.py` splits a whole `code_hot.c` into pieces itself (`nx2/split_hot.py`: one file took 79 minutes on one core).
+- **A new lift** is needed after a change to the lift (`nx2/lift.py`, `nx2/lift2/discover.py`, the C after an instruction
+  in `nx2/oot_wide.py`, `oot_jitter.py`, `oot_occlusion.py`) or to the dump: `scripts/relift.sh` lifts and builds, for the
+  checkout it is run from; in the main checkout on native-vk through `scripts/play-refresh.sh`, so `BUILD.txt` names the
+  head. It stops while a game runs from that build. About 100 s of lift (6 GB at its peak); a cold build about 5
+  minutes at 6 jobs; log `work/play/relift.log` (a worktree: `work/sa/relift.log`). `scripts/play-refresh.sh` lifts
+  again by itself when the lift's inputs changed (`nx2/lift_mark.py`).
+- **The lifter** (`nx2/lift2`, [lifter.md](lifter.md)) lifts every function at build time: a change to it needs only a
+  build. Its partitions' objects stay in `work/objcache` by their inputs (the plan, the lifter's sources, the flags, the
+  functions, the hooks): a host-only rebuild neither lifts nor compiles them again (about a minute). The hot list
+  (`work/hot_funcs_play.txt`, else `work/hot_funcs.txt`, or `HOOKSHOT_HOT_FUNCS`) puts its functions in partitions built
+  at -O2.
 - To keep builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`, `*.idx`)
   to `work/sa/<name>/` and run with `EXE=`.
 
@@ -173,9 +173,9 @@ fast-forwards it; `drop <name>` removes the worktree and the branch once landed.
   nothing else.
 - Tests: `work/venv/bin/python -I -B tests/run_all.py`.
 
-**Lift 2's output for a function.** `work/venv/bin/python -I nx2/lift2/dump.py <address or label>... [--tree] [--opt O1|O2]
-[--asm] [--old]` writes the guest code, lift 2's IR, its LLVM IR and optionally the optimised IR, the x86 and the present
-lifter's C and x86 to `work/lift2/dump/<address>/`, and prints the function's summary when `work/sa/lift2_plan.pickle` has one.
+**The lifter's output for a function.** `work/venv/bin/python -I nx2/lift2/dump.py <address or label>... [--tree]
+[--opt O1|O2] [--asm]` writes the guest code, the IR, the LLVM IR and optionally the optimised IR and the x86 to
+`work/lift2/dump/<address>/`, and prints the function's summary when `work/sa/plan.pickle` has one.
 
 **Reverse engineering.** Flat modules `work/re/{main,sdk,subsdk0}.bin` (main's base is 0x80020000), the exports in
 `work/sa/image/image.json`, and the scripts in `tools/re/` (`disasm.py`, `xref.py`, `callers.py`; see its README) and
@@ -265,7 +265,6 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_SAMPLE_ALL` | `<file>`: every game and renderer thread every 2 ms while `<file>.go` exists (needs `HOS_PROFILE`); `scripts/crit.py` and `scripts/hotlist.py` read it |
 | `HOS_THREAD_TIMES` | `<seconds>`: every interval, the threads that used over 5% of a core |
 | `HOS_STATS_AFTER` | `<seconds>`: a statistics report after that time (host/mkw_glue.c:206) |
-| `HOS_PGO` | in a run of an `RX_PGO=gen` build: `<file>.reset` clears the counters, `<file>.dump` writes them to `<file>` |
 | `HOS_FPS_LOG` | (set) the frame limiter's state logged every 300 presents |
 | `HOS_FPS_MAX` | `<fps>`: the frame-rate cap (60 to 240), over the option |
 | `HOS_FPS_STEP` | `0`: the rate goes up to the cap as one step, not timed |
@@ -438,18 +437,14 @@ load and a branch. `logall` turns every `log*` item on.
 | Switch | What it does |
 |---|---|
 | `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (one per CPU thread by default, each started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns the check off, `HOOKSHOT_MEM_RESERVE_GB` is the memory kept free, 1.5 by default) |
-| `HOOKSHOT_LIFT_JOBS=<n>` | Processes that write the lifted C (default the cores, at most 16) |
-| `HOOKSHOT_LIFT2=0`, `HOOKSHOT_LIFT2=<file>`, `HOOKSHOT_LIFT2_CLASSES=int[,fp,neon]` | (lift and build time) The present lifter's build alone; only the listed functions from lift 2 (`nx2/lift2/bisect.py`); the instruction classes lift 2 takes (default all three) |
-| `HOOKSHOT_KEEP_BUILD_FILES=1` | Keeps the lifted C and the objects after a build, so the next one compiles only what changed |
 | `RX_DIRECT_ONLY=1` | Only the direct back end, with no lift |
 | `HOOKSHOT_VULKAN_HEADERS`, `HOOKSHOT_SPIRV_HEADERS`, `HOOKSHOT_VMA_HEADERS`, `RX_CPM` | Where the headers are (a package root or its `include/`; `RX_CPM` is a CPM cache) |
 | `HOOKSHOT_FFMPEG=<prefix>`, `HOOKSHOT_SDL2` | FFmpeg's static libraries, SDL2's library folder |
 | `RX_RELEASE=1` | A release-style build: the shaders are prepared before the title |
-| `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `-v2`, else `x86-64`) |
 | `RX_HOT_OPT`, `RX_NO_ORDER`, `RX_SOFT_WRITE_WATCH=0` | Optimisation level of the hot code; no hot-function link order; no software write watch |
-| `A64_VFPX_ELEM=0`, `A64_FPX_SLOWPATH=0`, `A64_FPX_FMA3=0`, `A64_VFMINMAX=0` | (lift time) Turn off one of the FP lowerings that are on by default: NEON FMUL / FMLA / FMLS by element and vector FMLA as one SSE / AVX2 op; the exact slow paths' quiet-NaN, FDIV and estimate shortcuts; the binary32 FMA fast path by FMA3; vector FMIN / FMAX / FMINNM / FMAXNM (.2S / .4S) as one MINPS / MAXPS. Each is bit-exact (`tests/test_vfpx_elem.py`, `tests/test_fpx_slowpath.py`, `tests/test_vfminmax.py`); with all four `=0` the lift is byte for byte the one without them |
-| `A64_HOT_FUNCS=<file>`, `A64_HOT_CHUNK=1` | (lift time) The listed functions call the FP helpers' inline fast paths and are lifted together into `code_hot.c`, built at `RX_HOT_OPT` (`scripts/relift.sh` sets both) |
+| `HOOKSHOT_HOT_FUNCS=<file>` | (lift time) The hot list, one `f_<address>` a line (default `work/hot_funcs_play.txt`, else `work/hot_funcs.txt`): their partitions are built at `RX_HOT_OPT` |
+| `HOOKSHOT_LIFT_VERIFY=1`, `HOOKSHOT_LIFT_SUMMARIES=1` | (lift and build time) The verification build: every function with a full summary checked at run time (`host/lift2_verify.c`, [lifter.md](lifter.md) section 7); the summaries alone (about 9 GB) |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
 ### Function labels
@@ -541,15 +536,14 @@ the Discord rich presence reads `discord_app_id`.
 
 | Path | What |
 |---|---|
-| `docs/` | `design.md` (architecture, MKW's lessons as rules, testing), `direct-backend-plan.md` (the renderer), `direct/` (what we know about the game and the back end) |
-| `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths); no player builder for now: [builder-notes.md](builder-notes.md) |
+| `docs/` | `design.md` (architecture, MKW's lessons as rules, testing), `lifter.md` (the lifter), `direct-backend-plan.md` (the renderer), `direct/` (what we know about the game and the back end) |
+| `nx2/` | the image, the lift and the build (`lift.py`, `build.py`; the lifter in `nx2/lift2`), the game's patches as probes and host hooks (`kit.py` has the paths); no player builder for now: [builder-notes.md](builder-notes.md) |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has its Win32-named calls on Linux (the host is Linux-only; a narrow host API over SDL replaces them later) |
 | `gpu/direct/` | the direct back end (`hookshot_direct.so`), with its fork of Eden's shader recompiler and sirit in `eden/` |
 | `gpu/api/` | what the host and the direct back end share: the versioned table (`vk_api.h`), the NVN objects and command records (`rx_nvn.h`) |
 | `gpu/legacy/` | upstream's older renderers, reference source only: not built, not tested |
 | `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), `scripts/linux` (dependencies) |
 | `tests/` | the game-free checks, all run by `tests/run_all.py` |
-| `third_party/` | a64-kit (Hookshot's few changes marked `(hookshot)`), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only), SDL2's licence, Dear ImGui and its Vulkan backend, zstd's decoder, the Libertinus fonts |
+| `third_party/` | a64-kit's runtime, loader and tools (its lifter is gone; Hookshot's changes marked `(hookshot)`), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only), SDL2's licence, Dear ImGui and its Vulkan backend, zstd's decoder, the Libertinus fonts |
 
-License: GPL-3.0-or-later, as mkw-recomp: a64-kit's translator is suyu's (GPL-2.0-or-later) and Eden's code is
-GPL-3.0.
+License: GPL-3.0-or-later, as mkw-recomp: Eden's code is GPL-3.0.

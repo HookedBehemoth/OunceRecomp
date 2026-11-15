@@ -1,7 +1,8 @@
 # Notes for AI coding agents
 
 **Start with the [development guide](docs/development.md)** (layout, commands, switches, the build/run/measure loop in
-"Iterating quickly"), the [design notes](docs/design.md) (architecture and the rules the replay keeps) and the
+"Iterating quickly"), the [design notes](docs/design.md) (architecture and the rules the replay keeps), the
+[lifter](docs/lifter.md) (how the game's code becomes native code) and the
 [direct back end plan](docs/direct-backend-plan.md) (the one renderer: what it is and what is open).
 
 Follow [CONTRIBUTING.md](CONTRIBUTING.md): its rules apply to agents as to everyone, above all that no game files or

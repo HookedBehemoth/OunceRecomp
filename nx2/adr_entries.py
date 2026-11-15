@@ -7,7 +7,7 @@ character-output callback at 0x824c5560 of a printf-style formatter, on the thre
 
 Most such addresses are labels inside functions (jump-table bases, landing pads). As entries those are costly: each
 one lifts the rest of its function again, and in OoT the 1,512 new ones added 1.68 M instructions (+9.5%), mostly
-inside a few 30k-instruction functions near 0x81b8c000, which made one chunk 122 MB and took clang hours. So a
+inside a few 30k-instruction functions near 0x81b8c000, which made one compile unit 122 MB and took clang hours. So a
 target strictly inside a function the unwind info covers (its FDE's [pc_begin, pc_begin + pc_range)) is dropped:
 such functions are found from .eh_frame anyway. lift.py adds the rest unless --no-adr-entries.
 """

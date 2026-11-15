@@ -3,8 +3,8 @@
 # version stays the same. Run on the oldest system the AppImage is for (CI: Ubuntu 22.04, glibc 2.35).
 #
 #   emsdk/upstream/   LLVM's clang and lld (the layout third_party/a64-kit/tools/toolchain.py finds through EMSDK):
-#                     the player's PC compiles the game with them. The play profile (work/hookshot_pieces.prof) wants
-#                     LLVM 23 or newer.
+#                     the player's PC compiles the game with them. The lifter's textual IR wants LLVM 23
+#                     (nx2/lift2/llvm.py).
 #   python/           CPython (python-build-standalone) with lz4, numpy, capstone, unicorn and zstandard: the tools
 #                     (and nx2/prompt_requirements.txt's, which draw the button prompts)
 #   tk/               libtcl9tk9.0.so built with Xft, with libXft and libXrender: put over python/'s, which draws only

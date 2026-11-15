@@ -3,7 +3,7 @@ large functions.
 
 The model: a function is an entry plus everything reachable from it without crossing another entry; branches into
 another entry are tail calls. (It began as a64-kit's discovery with Hookshot's pointer-authenticated branches and
-jump-table fixes, and compared equal to it over the whole game before that was deleted: docs/lifter2-design.md.)
+jump-table fixes, and compared equal to it over the whole game before that was deleted: docs/lifter.md.)
 
 Input (an image): .entries, .hooks {addr: name}, .word(addr), .read(addr, n), .in_code(addr), optional .names and
 .eh_starts (function starts from the unwind info: the extent a jump table's targets must lie in).

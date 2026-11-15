@@ -1,7 +1,7 @@
-"""Build the game: work/sa/build/hookshot (hookshot.exe on Windows) from the lift (work/sa, `lift.py --standalone
+"""Build the game: work/sa/build/hookshot from the lift (work/sa, `lift.py --standalone
 --write`): the lifted code (nx2/lift2/game.py: the plan's functions, lifted to LLVM IR and compiled by partition), the
 runtime's tables and the image's C (work/sa/gen), the runtime (nx2/rtgen.py from third_party/a64-kit/rt), the native
-runtime in host/ (TOTKPort's hos/, adapted) and, on Linux, the direct back end (gpu/direct: hookshot_direct.so).
+runtime in host/ (TOTKPort's hos/, adapted) and the direct back end (gpu/direct: hookshot_direct.so).
 Linking it is also the check that the whole game closes over itself: any unresolved symbol fails the link.
 
 Objects are cached by their key in work/objcache; a lifted partition whose inputs are unchanged comes from the cache
@@ -103,7 +103,7 @@ def HOT_ORDER():
 HOST_LIBS = ["-lpthread", "-ldl", "-lm"]
 GPU = os.path.join(kit.HERE, "..", "gpu")
 def tree_headers(*roots, skip=()):
-    """Every header under these folders, as one dependency blob (suyu's headers sit in many folders); folders named
+    """Every header under these folders, as one dependency blob (Eden's headers sit in many folders); folders named
     in skip are left out"""
     h = hashlib.sha1(usedforsecurity=False)
     for root in roots:
@@ -245,8 +245,8 @@ def prune_object_cache(now=None):
     return removed, freed, kept
 
 
-# (what one compiler is counted at where its own need is not worked out: a hot piece (0.8-1.7 GB measured, -O2 and the profile),
-# and the compile countdown's guess of how many the free memory holds. About the median chunk's peak)
+# (what one compiler is counted at where its own need is not worked out: a hot piece (0.8-1.7 GB measured at -O2),
+# and the compile countdown's guess of how many the free memory holds. About the median partition's peak)
 COMPILER_MB = 1500
 
 
@@ -473,7 +473,7 @@ def per_file_seconds(jobs, history):
             out.append(max(0.05, history[name]))
         elif rate is not None:
             out.append(max(0.5, rate * mb))
-        else:   # (seconds per MB measured on a full build: the eight hot files, the game chunks, the rest)
+        else:   # (seconds per MB measured on a full build: the hot partitions, the cold ones, the rest)
             out.append(1.3)
     return out
 

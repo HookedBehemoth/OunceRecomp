@@ -1,4 +1,4 @@
-"""Lifter 2: AArch64 guest code -> typed SSA IR -> LLVM IR (docs/lifter2-design.md).
+"""The lifter: AArch64 guest code -> typed SSA IR -> LLVM IR (docs/lifter.md).
 
 enc.py         the instruction encodings as data, and the decoder built from them
 asm.py         decoded instructions printed in LLVM's syntax (the decoder's check against llvm-mc)

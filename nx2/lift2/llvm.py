@@ -1,7 +1,6 @@
 """The LLVM tools the lifter depends on, pinned to one major version.
 
-The emitter writes textual LLVM IR, whose syntax is only guaranteed for the LLVM major it was written for, and the
-Linux clang and the pinned llvm-mingw must read the same IR. check() refuses any other major with a message that says
+The emitter writes textual LLVM IR, whose syntax is only guaranteed for the LLVM major it was written for. check() refuses any other major with a message that says
 which one was found and what to do, before anything is compiled.
 """
 import os

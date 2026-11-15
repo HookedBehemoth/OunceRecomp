@@ -17,7 +17,7 @@ renderer's design and open problems.
 never will. That includes:
 
 - the `.nup`, `romfs`, `exefs`, `.nso`, `.nca`, `.nsp`, `.xci` or `.nsz`/`.xcz` files, and any title keys;
-- `work/` and everything in it: the extracted dump, `image.bin`, the lifted C, test builds, runs and screenshots;
+- `work/` and everything in it: the extracted dump, `image.bin`, the lift's plan, test builds, runs and screenshots;
 - `hookshot`, `hookshot_direct.so`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
   `mkw_vk_pipelines.bin` and other build output;
 - saves (`user/`), `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`.
@@ -72,7 +72,7 @@ Run everything with `python -I` from the repository root. The Vulkan, SPIR-V and
 | `scripts/run-vk.sh <name> 120` | Run the standalone build headless and take screenshots in `work/runs/<name>/shots`. |
 | `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 
-Use `OOT_WORK` if you keep more than one dump around. The lifted C and every build are local artifacts; they are never
+Use `OOT_WORK` if you keep more than one dump around. The lifted code and every build are local artifacts; they are never
 committed. The development guide's "Iterating quickly" has the build, run and measure loop.
 
 ## Testing
@@ -103,8 +103,8 @@ These are slow and local, and they need `work/dump.txt` from `nx2/dump.py --set`
 
 | Command | What it checks |
 |---|---|
-| `python -I nx2/test_insn.py` | Every instruction form the game uses, Unicorn against the lifted C. |
-| `python -I nx2/test_leaf.py --calls` | Whole functions and call trees on the relocated image, native against Unicorn. |
+| `python -I nx2/lift2/selfcheck.py` | The lifter's decoder against llvm-mc on every distinct word of the game. |
+| `python -I nx2/test_lift2_leaf.py --calls` | Whole functions and call trees on the relocated image, lifted and run natively against Unicorn. |
 | `python -I nx2/census.py --nx2` | The instruction census per module. |
 | `python -I nx2/lower_test.py work/lowfail` | Shader programs that failed to lower. |
 | `scripts/run-vk.sh <name> 120` and `scripts/smoke.sh <name>` | An in-game run with screenshots, and the smoke test against a golden run. |

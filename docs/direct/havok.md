@@ -84,7 +84,7 @@ barrier on the Ctx) was tried on four of these kernels compiled alone: their Ctx
 instruction in `phys_vertices_aabb`) but host-stack spills rose as much and their x86 instructions by 2-10%.
 
 Vector FMIN / FMAX / FMINNM / FMAXNM (.2S / .4S, 4438 sites in the lift, 494 in the hot set) are one MINPS / MAXPS
-(`A64_VFMINMAX`, `a64_vfminmax32`): the box loops of `phys_vertices_aabb`, `phys_cloth_update_aabbs` and the queries
+(a64-kit's lifter, since deleted; the lifter's `llvm.minimum`/`minimumnum` do the same): the box loops of `phys_vertices_aabb`, `phys_cloth_update_aabbs` and the queries
 were per-lane exact code with two FPCR reads a lane. Market, three alternating pairs of 60 s runs with `HOS_DBG=havok`:
 hknp tasks 3.14 -> 2.60 ms CPU a frame, cloth 2.41 -> 2.17, queries 1.34 -> 1.13, the step-phase job 0.47 -> 0.40;
 all Havok 9.8 -> 8.7. Frames 82.3 -> 84.6 fps (median 11.79 -> 11.61 ms, p99 15.7 -> 15.0), inside the runs' spread

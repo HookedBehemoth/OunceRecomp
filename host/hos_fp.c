@@ -1,6 +1,6 @@
 /* (hookshot) The guest's FP mode on the host: MXCSR follows the guest FPCR, and the FP routines the lifted code calls.
 
-   The lifted code (docs/lifter2-design.md section 7) computes FP natively, so the host's MXCSR is the guest's FPCR on every
+   The lifted code (docs/lifter.md section 8) computes FP natively, so the host's MXCSR is the guest's FPCR on every
    thread while guest code runs: FPCR.FZ is MXCSR.DAZ|FTZ, RMode is RC, every exception stays masked. It is set where
    FPCR changes or a guest context starts running on a host thread:
    - MSR FPCR: the lifted code calls a64_fpcr_write;
