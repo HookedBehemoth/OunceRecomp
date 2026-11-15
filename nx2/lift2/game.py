@@ -32,6 +32,13 @@ from array import array
 from . import build_ir, emit_llvm, enc, host_effects, llvm, probes
 
 PART_INSNS = 120000
+# (dead context stores: LLVM drops a store a later one overwrites only if it can see that nothing reads the context
+# in between. Capture tracking gives up past N uses of the context pointer (a large function has thousands) and then
+# assumes the context escaped; DSE stops after so many definitions in a block or steps of its walk. Measured on the
+# market's hot functions: context stores after -O2 -40 to -47 %, compile time of the largest 1.6 s -> 3.8 s)
+DSE_FLAGS = ["-mllvm", "-capture-tracking-max-uses-to-explore=100000", "-mllvm", "-dse-memoryssa-defs-per-block-limit=100000",
+             "-mllvm", "-dse-memoryssa-scanlimit=1000", "-mllvm", "-dse-memoryssa-walklimit=1000",
+             "-mllvm", "-dse-memoryssa-otherbb-cost=1"]
 CLASSES = ("int", "fp", "neon", "crypto")
 
 
@@ -479,7 +486,7 @@ def lift_part(args):
                 m.decls.add("declare void @%s(ptr)" % t)
             extra.append("define internal void @sjcall_%08x(ptr %%ctx) {\n  call void @hos_sj_call(ptr %%ctx, ptr @%s, "
                          "i64 %d, i64 %d, i64 %d, i64 %d)\n  ret void\n}" % ((e, t) + sj[e]))
-    return m.text() + "\n".join(extra) + "\n"
+    return m.text() + emit_llvm.no_capture("\n".join(extra)) + "\n"
 
 
 _PLAN = {}
@@ -555,7 +562,7 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     flags, keys, objs_k = [], [], []
     for k, (tag, names) in enumerate(parts):
         fl = march_flags + ["-" + (hot_opt if tag == "h" else opt), "-g0", "-Wno-everything", "-ffunction-sections",
-                            "-mllvm", "-rotation-max-header-size=0"]
+                            "-mllvm", "-rotation-max-header-size=0"] + DSE_FLAGS
         flags.append(fl)
         keys.append(hashlib.sha1(base + (" ".join(fl) + "\n" + ",".join("%x" % e for e in names)).encode(),
                                  usedforsecurity=False).hexdigest())

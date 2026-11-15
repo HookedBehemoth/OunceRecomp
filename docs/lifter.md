@@ -65,7 +65,12 @@ writes for.
   W writes zero-extend, the flags are four `i1`, V registers `<2 x i64>` bitcast to lane types per operation.
 - The entry block loads from the context the registers the function reads before writing them.
 - **Write-through**: every register write is also stored to the context where it happens (`ir.Builder.set` emits a
-  `writeback`). LLVM drops a store that a later one overwrites before any call or return; the last one stays.
+  `writeback`). LLVM drops a store that a later one overwrites before any call or return; the last one stays. For
+  that it must see that nothing in between reads the context: every declaration taking it says `ptr captures(none)`
+  (`emit_llvm.no_capture`; the callees keep no copy, `A64_NOESC`), and the partitions are compiled with capture
+  tracking and DSE limits raised (`game.DSE_FLAGS`). Without them the context escapes at the first call, any guest
+  load may read it, and a large function's thousands of uses of it exceed the default limits: on the market's five
+  hottest functions 40-47 % more context stores and 10-14 % more code.
 - **Reload after calls**: after a BL, BLR, SVC or a call into host code with the context, every register read loads
   the context again (`ir.Builder.after_call` clears the block's definitions), except after a BL to a callee with a
   full summary that the host does not edit, or to a host callee with a declared effect: the values of x19-x29 and SP
@@ -375,7 +380,8 @@ checks): zero violations in the kokiri smoke scene.
   (`HOOKSHOT_HOT_FUNCS`, default `work/hot_funcs_play.txt`, made by `scripts/hotlist.py`) in partitions of their own.
 - **Optimisation levels**: hot partitions at `-O2` (`RX_HOT_OPT`), the rest at `-O1` (`nx2/build.py --opt`). Every
   partition also gets `-march` (`RX_MARCH`, else the host's: x86-64-v3 on an AVX2 machine), `-ffp-contract=off`,
-  `-ffunction-sections`, `-mllvm -rotation-max-header-size=0`. No `-mno-red-zone`.
+  `-ffunction-sections`, `-mllvm -rotation-max-header-size=0` and `game.DSE_FLAGS` (capture tracking up to 100,000
+  uses, DSE's per-block definitions 100,000, scan and walk 1,000, other-block cost 1). No `-mno-red-zone`.
 - **Caching**: a partition's object is kept in `work/objcache` by an input key (the plan's bytes, the lifter's
   sources, the flags, its functions, the hooks, `HOOKSHOT_LIFT_VERIFY`); an unchanged partition is neither lifted nor
   compiled again. Objects no build links are removed after `HOOKSHOT_OBJCACHE_DAYS` (default 3).
@@ -425,9 +431,13 @@ tree shows the constraint is needed; the experiment named decides it.
    SVC, and after a BL of every register but the callee's preserved x19-x29 and SP (all of them after a callee
    without a full summary, an HLE'd function declared clobbering, an entry-hooked function whose body has no full
    summary, a setjmp owner, a probe, splice or C-after function). About 31-33 % of code bytes on the sample were context accesses
-   (`disp(%reg)`) at 860eb332, before the preserved registers stayed in SSA; not measured again. `nocapture` on
-   callees saves 0.0 % (-O1) / 0.7 % (-O2), so the cost is the convention, not missing alias facts. Reduced further by
-   dropping dead temporaries' stores ([lifter-optimisations.md](lifter-optimisations.md), C).
+   (`disp(%reg)`) at 860eb332, before the preserved registers stayed in SSA; not measured again. Since `captures(none)`
+   on the declarations and `game.DSE_FLAGS`, a store overwritten before anything reads the context is dropped. What
+   stays (2026-11-15, the lifter's IR over the whole game): of 8.45 M stores reaching a reader, 29 % are read (callee
+   inputs, reloads, results), 25 % dead (a temporary the callee does not read and the caller does not reload), 21 %
+   kept only for a BLR, SVC, unknown callee or exit, 14 % callee-saved registers and x30 the callee only saves, 9 %
+   callee-saved registers at a return (7 % epilogue restores). Removed by flushing at the readers instead of writing
+   through ([lifter-optimisations.md](lifter-optimisations.md), C).
    *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs, entry
    hooks (`emit_llvm.emit_function`), C-after and SPLICE sites, `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
    `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts, HLE'd functions (they read their arguments

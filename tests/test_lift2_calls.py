@@ -11,6 +11,7 @@ of `die` a trap and `unreachable`. The program, lifted, compiled and run, return
 python -I -B tests/test_lift2_calls.py
 """
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -140,6 +141,35 @@ class Calls(unittest.TestCase):
             for d, v in zip((host_effects.CLOBBERS, host_effects.CALLS), saved):
                 d.clear()
                 d.update(v)
+
+    def test_context_not_captured(self):
+        # (every declaration taking the context says it keeps no copy: otherwise a guest access after a call may read
+        # the context, and LLVM keeps the context stores a later store overwrites)
+        fns, _ = lift()
+        m = emit_llvm.Module()
+        m.add(fns["c1"])
+        decls = [l for l in m.text().splitlines() if l.startswith("declare") and "(ptr" in l]
+        self.assertTrue(decls)
+        for d in decls:
+            self.assertIn("(ptr captures(none)", d)
+        # (x9 stored, a guest load, x9 stored again, a call: the first store goes at -O2 with the build's flags)
+        ir_text = emit_llvm.no_capture("""target triple = "x86_64-pc-linux-gnu"
+declare void @g(ptr)
+define void @f(ptr noalias nocapture %ctx, i64 %a) {
+  %cx = getelementptr i8, ptr %ctx, i64 72
+  store i64 1, ptr %cx, align 8
+  call void @g(ptr %ctx)
+  store i64 2, ptr %cx, align 8
+  %p = getelementptr i8, ptr inttoptr (i64 17592186044416 to ptr), i64 %a
+  %v = load i64, ptr %p, align 1
+  store i64 %v, ptr %cx, align 8
+  call void @g(ptr %ctx)
+  ret void
+}
+""")
+        out = subprocess.run([llvm.check("clang"), "-O2", "-x", "ir", "-", "-S", "-emit-llvm", "-o", "-"] + game.DSE_FLAGS,
+                             input=ir_text, capture_output=True, text=True, check=True).stdout
+        self.assertEqual(len(re.findall(r"store i64 [^\n]*ptr %cx", out)), 2, out)   # (1 before the call, %v)
 
     def test_noreturn(self):
         fns, _ = lift()

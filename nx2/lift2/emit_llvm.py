@@ -68,9 +68,21 @@ class Module:
         defined = getattr(self, "defined", set())
         decls = [d for d in sorted(self.decls)
                  if not (d.startswith("declare void @") and d.split("@")[1].split("(")[0] in defined)]
-        helpers = [HELPERS[d[7:]] for d in decls if d.startswith("helper:")]
-        decls = [d for d in decls if not d.startswith("helper:")]
+        helpers = [no_capture(HELPERS[d[7:]]) for d in decls if d.startswith("helper:")]
+        decls = [no_capture(d) for d in decls if not d.startswith("helper:")]
         return "\n".join(head + decls + helpers + self.funcs) + "\n"
+
+
+# Every function the lifted code calls with the context (the lifted functions, the runtime's, the host's: A64_NOESC in
+# rt/a64.h) keeps no copy of the pointer: `captures(none)` on that parameter. Without it the context escapes at the
+# first call, and LLVM must assume any guest load or store (an address made from an integer) may read it, so it keeps
+# context stores that a later store overwrites before anything reads them.
+CTX_PARAM = re.compile(r"^declare (\S+) @(?!llvm\.)([\w.$]+)\(ptr(?=[,)])", re.M)
+
+
+def no_capture(decl):
+    """a declaration whose first parameter is the context, with captures(none) on it"""
+    return CTX_PARAM.sub(r"declare \1 @\2(ptr captures(none)", decl)
 
 
 def emit_function(fn, decls, flags_out=False):

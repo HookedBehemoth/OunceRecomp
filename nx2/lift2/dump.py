@@ -21,9 +21,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lift2 import enc  # noqa: E402  (first: its tables import asm)
-from lift2 import asm, build_ir, emit_llvm, llvm, summary  # noqa: E402
+from lift2 import asm, build_ir, emit_llvm, game, llvm, summary  # noqa: E402
 
-IR_FLAGS = ["-march=x86-64-v3", "-g0", "-Wno-everything", "-mllvm", "-rotation-max-header-size=0"]
+IR_FLAGS = ["-march=x86-64-v3", "-g0", "-Wno-everything", "-mllvm", "-rotation-max-header-size=0"]   # (+ game.DSE_FLAGS)
 
 
 def labels():
@@ -106,7 +106,7 @@ def main():
     L.index_tables()   # (over the tables of the functions walked so far)
     keeps = noreturn = None
     if plan and plan.get("summaries"):   # (the call boundaries as the build makes them)
-        from lift2 import game, host_effects
+        from lift2 import host_effects
         import entry_hooks
         gen = os.path.join(kit.WORK, "sa", "gen")
         hooks = entry_hooks.wanted(gen)[0]
@@ -143,11 +143,11 @@ def main():
         with open(ll, "w") as f:
             f.write(m.text())
         if a.opt:
-            subprocess.run([clang, "-S", "-emit-llvm", "-" + a.opt] + IR_FLAGS + [ll, "-o", os.path.join(d, "lift2.opt.ll")],
+            subprocess.run([clang, "-S", "-emit-llvm", "-" + a.opt] + IR_FLAGS + game.DSE_FLAGS + [ll, "-o", os.path.join(d, "lift2.opt.ll")],
                            check=True)
         if a.asm:
             obj = os.path.join(d, "lift2.o")
-            subprocess.run([clang, "-c", "-" + (a.opt or "O1")] + IR_FLAGS + [ll, "-o", obj], check=True)
+            subprocess.run([clang, "-c", "-" + (a.opt or "O1")] + IR_FLAGS + game.DSE_FLAGS + [ll, "-o", obj], check=True)
             with open(os.path.join(d, "lift2.s"), "w") as f:
                 f.write(subprocess.run(["objdump", "-d", "--no-show-raw-insn", "-M", "intel", obj],
                                        capture_output=True, text=True).stdout)
