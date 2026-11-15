@@ -465,7 +465,7 @@ A BaseProc step: the node's `f_806afc40` sends the executors their message (each
 `f_8004ab40`, then signals its light event +0x1e8) and waits on the six light events (`0x806afd14`; it does not take
 work itself). `f_8004ab40` runs a work-stealing job graph: a node's pending-predecessor count at +0x3c, ring queues at
 executor +0x40 + i·0x50, a ready node queued by `f_8004fa40`; an executor with nothing ready waits in a libc++ atomic
-wait (steady_clock polls, then the host's 20 µs spin `spin_until_set` and a sleep at `0x8004af4c`), woken by the
+wait (steady_clock polls, then the host's spin `spin_until_set` (`HOS_SPIN_US`, 5 µs) and a sleep at `0x8004af4c`), woken by the
 executor that finishes a predecessor.
 
 Step 2 (ms from the step's start, market; the town in brackets):

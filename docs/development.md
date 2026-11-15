@@ -279,6 +279,7 @@ case-sensitive, and an unknown one is ignored.
 | `HOS_RESERVE_CORE` | `0`: no core kept for the renderer |
 | `HOS_NO_RENDERER_WAIT` | non-zero: the game's first GPU work does not wait for the renderer to be up |
 | `HOS_LAYER_AHEAD` | `0`: calc stage C's long layer waits for the render jobs, as the game orders it (on by default: it starts with them; docs/direct/patch-sites.md 8) |
+| `HOS_SPIN_US` | `<us>`: how long an nn::os wait (event, semaphore, queue, mutex) spins before it sleeps (default 5; `0`: no spin, a wait whose object is not ready sleeps at once; an object whose spins keep missing spins one wait in 32) |
 
 ### Memory
 
@@ -507,7 +508,6 @@ Read by code, but what they do is not stated beside the read (file:line of the f
 - `HOS_SHADER_DUMP` host/nvn_native.c:1110
 - `HOS_SIZE_TRACE` host/nvn_native.c:629
 - `HOS_SLEEP_LOG` host/hos_thread.c:937
-- `HOS_SPIN_US` host/hos_svc.c:118
 - `HOS_TICK_LOG` host/hos_thread.c:1064
 - `HOS_WAKE_LAT` host/nn_os_sync.c:636
 - `HOS_WATCH` host/posix/prof.c:533

@@ -311,14 +311,18 @@ static void poke_multiwait(Obj *o) {
 
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
 #include <emmintrin.h>
-static int64_t spin_ns(void) {
+/* how long a wait spins before it sleeps, in ns: HOS_SPIN_US (default 5 us; 0: no spin). The default was 20 us; one
+   market bench per setting at ea6b61d8 gave CPU over 600 frames 16.02 s at 20 us, 14.75 s at 5, 14.77 s at 0, frame
+   mean and median unchanged, p99 10.06 / 10.07 / 10.46 ms. Also the arbitration mutex's spin (hos_svc.c) */
+int64_t hos_spin_ns(void) {
     static int64_t ns = -1;
     if (ns < 0) {
         const char *e = getenv("HOS_SPIN_US");
-        ns = (e ? atoll(e) : 20) * 1000;
+        ns = (e ? atoll(e) : 5) * 1000;
     }
     return ns;
 }
+static int64_t spin_ns(void) { return hos_spin_ns(); }
 static int spin_begin(Obj *o, int *misses) {
     if (spin_ns() <= 0) return 0;
     *misses = __atomic_load_n(&o->spin_misses, __ATOMIC_RELAXED);
