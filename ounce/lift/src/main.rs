@@ -60,6 +60,18 @@ fn answers_ir(meta: &ounce_lift::export::Meta) -> String {
     s
 }
 
+/// (process CPU seconds, user and system; VmHWM in MB)
+fn usage() -> (f64, f64) {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    let f: Vec<&str> = stat.rsplit(')').next().unwrap_or("").split_whitespace().collect();
+    let tick = |k: usize| f.get(k).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0) / 100.0;
+    let hwm = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("VmHWM:")).and_then(|l| l[6..].trim().trim_end_matches(" kB").trim().parse::<f64>().ok()))
+        .unwrap_or(0.0);
+    (tick(11) + tick(12), hwm / 1024.0)
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut pos = Vec::new();
@@ -97,14 +109,17 @@ fn main() {
     let all: Vec<String> = meta.partitions.iter().map(|p| p.name.clone()).collect();
     let parts: Vec<Part> = all.par_iter().map(|n| read_part(dir, n).unwrap_or_else(|e| panic!("{e}"))).collect();
     let t_read = t0.elapsed().as_secs_f64();
+    let (c_read, m_read) = usage();
     let ts = Instant::now();
     let mut prog = Program::new(&meta, &parts);
     let (sums, st) = summarise(&mut prog);
     let rec = Records::new(&prog, &sums, &meta.sj_rets);
+    let (c_sum, m_sum) = usage();
+    println!("read: {} partitions in {:.2} s wall, {:.2} s CPU; peak {:.0} MB", all.len(), t_read, c_read, m_read);
     println!(
-        "summaries: {} functions, {} components (largest {}) in {} levels, {} noreturn by callers; graph {:.2} s, fixed point {:.2} s, results {:.2} s; {:.2} s in all (read {:.2} s)",
+        "summaries: {} functions, {} components (largest {}) in {} levels, {} noreturn by callers; graph {:.2} s, fixed point {:.2} s, results {:.2} s; {:.2} s wall, {:.2} s CPU; peak {:.0} MB",
         st.functions, st.sccs, st.largest, st.levels, st.noreturn_by_callers, st.graph_s, st.fixed_s, st.results_s,
-        ts.elapsed().as_secs_f64(), t_read
+        ts.elapsed().as_secs_f64(), c_sum - c_read, m_sum
     );
     if check {
         let (a, b) = ounce_lift::check::check(dir, &prog, &sums, &rec, 40);

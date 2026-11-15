@@ -17,6 +17,8 @@ use ounce_decode::{decode, Fld, Insn, Param};
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 pub type FnId = u32;
 
@@ -384,9 +386,6 @@ impl<'a> Program<'a> {
             None => Tgt { addr: a, cls: Cls::Other, id: 0, aux: 0, noret },
         }
     }
-    fn rows_at(&self, pc: u64) -> Option<&Rows> {
-        self.rows.binary_search_by_key(&pc, |r| r.pc).ok().map(|k| &self.rows[k])
-    }
 }
 
 /// a function that does not return whatever its code says (summary.noreturn_seed)
@@ -461,6 +460,25 @@ impl DefUse {
     }
 }
 
+// ---- facts of each encoding the flow reads, by encoding id
+
+const EF_FP: u8 = 1;
+const EF_SYSREG: u8 = 2;
+
+/// per encoding: its template's class is fp or neon (summary.Func's fp), it is a system register access
+fn enc_facts() -> &'static [u8] {
+    static T: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        ounce_decode::all_encodings()
+            .iter()
+            .map(|e| {
+                let fp = sem::get(e.template).is_some_and(|t| t.class == "fp" || t.class == "neon");
+                (if fp { EF_FP } else { 0 }) | if e.template == "sysreg" { EF_SYSREG } else { 0 }
+            })
+            .collect()
+    })
+}
+
 // ---- a function's instructions, with control flow and calls (summary.Func)
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -517,6 +535,8 @@ pub struct Flow {
     pub fallthrough_entry: bool,
     // (build scratch)
     local: Vec<Result<u32, u64>>,
+    is_ent: Vec<bool>,
+    row_k: Vec<u32>,
 }
 
 fn sx(v: u32, bits: u32) -> i64 {
@@ -572,11 +592,27 @@ impl Flow {
         self.writes_fpcr = false;
         self.falls_into.clear();
         self.fallthrough_entry = false;
-        let in_body = |t: u64| pcs.binary_search(&t).ok();
-        // to(tg): a local index, or a tail exit to callee(tg)
-        let to = |tg: u64| -> Result<u32, u64> {
-            if let Some(j) = in_body(tg) {
-                if tg == entry || !prog.is_entry(tg) {
+        // which of the body's pcs are entries, and the rows' pcs in it: one walk of each sorted list beside the body's
+        let mut is_ent = std::mem::take(&mut self.is_ent);
+        is_ent.clear();
+        let mut ei = prog.entries.partition_point(|&e| e < pcs.first().copied().unwrap_or(0));
+        let mut ri = prog.rows.partition_point(|r| r.pc < pcs.first().copied().unwrap_or(0));
+        let mut row_k = std::mem::take(&mut self.row_k);
+        row_k.clear();
+        for &pc in pcs {
+            while ei < prog.entries.len() && prog.entries[ei] < pc {
+                ei += 1;
+            }
+            is_ent.push(ei < prog.entries.len() && prog.entries[ei] == pc);
+            while ri < prog.rows.len() && prog.rows[ri].pc < pc {
+                ri += 1;
+            }
+            row_k.push(if ri < prog.rows.len() && prog.rows[ri].pc == pc { ri as u32 } else { u32::MAX });
+        }
+        // to(tg, None): a local index, or a tail exit to callee(tg); j: tg's index if known
+        let to = |tg: u64, j: Option<usize>| -> Result<u32, u64> {
+            if let Some(j) = j.or_else(|| pcs.binary_search(&tg).ok()) {
+                if tg == entry || !is_ent[j] {
                     return Ok(j as u32);
                 }
             }
@@ -589,7 +625,7 @@ impl Flow {
                 Some(i) => du.get(i),
                 None => (0, 0),
             };
-            let row = prog.rows_at(pc);
+            let row = (row_k[k] != u32::MAX).then(|| &prog.rows[row_k[k] as usize]);
             let tmpl = i.map(|i| sem::kind(&i));
             if let Some(r) = row {
                 match &r.calls {
@@ -629,17 +665,22 @@ impl Flow {
                 Some(i) => i,
             };
             let t = sem::kind(&i);
-            if let Kind::Sem(..) | Kind::Missing = t {
-                if let Some(e) = sem::get(i.enc.template) {
-                    if e.class == "fp" || e.class == "neon" {
-                        self.fp = true;
-                    }
-                }
+            let ef = enc_facts()[i.enc.id as usize];
+            if ef & EF_FP != 0 {
+                self.fp = true;
             }
-            if i.enc.template == "sysreg" && i.f(Fld::L) == 0 && i.f(Fld::CRn) == 4 && i.f(Fld::op2) == 0 && i.f(Fld::CRm) == 4 {
+            if ef & EF_SYSREG != 0 && i.f(Fld::L) == 0 && i.f(Fld::CRn) == 4 && i.f(Fld::op2) == 0 && i.f(Fld::CRm) == 4 {
                 self.writes_fpcr = true;
             }
-            let nxt = if in_body(pc + 4).is_some() || prog.is_entry(prog.callee(pc + 4)) { Some(to(pc + 4)) } else { None };
+            // (pc + 4 in the body: the next pc, the body being sorted)
+            let next_in = pcs.get(k + 1) == Some(&(pc + 4));
+            let nxt = if next_in {
+                Some(to(pc + 4, Some(k + 1)))
+            } else if prog.is_entry(prog.callee(pc + 4)) {
+                Some(to(pc + 4, None))
+            } else {
+                None
+            };
             let repl = row.is_some_and(|r| r.repl);
             let mut local = std::mem::take(&mut self.local);
             local.clear();
@@ -669,12 +710,12 @@ impl Flow {
                     self.edge(prog, k, &local, true);
                 }
                 Kind::B => {
-                    local.push(to(target(sx(i.f(Fld::imm26), 26))));
+                    local.push(to(target(sx(i.f(Fld::imm26), 26)), None));
                     self.edge(prog, k, &local, false);
                 }
                 Kind::Bcond | Kind::Cbz | Kind::Tbz => {
                     let tg = if let Kind::Tbz = t { target(sx(i.f(Fld::imm14), 14)) } else { target(sx(i.f(Fld::imm19), 19)) };
-                    local.push(to(tg));
+                    local.push(to(tg, None));
                     local.extend(nxt);
                     self.edge(prog, k, &local, false);
                 }
@@ -687,7 +728,7 @@ impl Flow {
                 Kind::Br => match body.jt.binary_search_by_key(&pc, |r| r.0) {
                     Ok(j) if !body.jt[j].1.is_empty() => {
                         // (sorted, unique in the export)
-                        local.extend(body.jt[j].1.iter().map(|&x| to(x)));
+                        local.extend(body.jt[j].1.iter().map(|&x| to(x, None)));
                         self.edge(prog, k, &local, false);
                     }
                     _ => {
@@ -706,6 +747,8 @@ impl Flow {
             self.local = local;
         }
         self.succ_at.push(self.succ.len() as u32);
+        self.is_ent = is_ent;
+        self.row_k = row_k;
     }
 
     /// successors of instruction k (summary.Func._edge): local indices; tail exits make it a tail when alone
@@ -739,9 +782,15 @@ impl Flow {
 // ---- the analyses of one function, given its callees' summaries
 
 /// the summaries a component's analysis reads: earlier components' (final), and the component's own (local)
+/// the finished summaries: during the fixed point each set once, when its component is done; after it plain
+pub enum Done<'s> {
+    Once(&'s [OnceLock<Summary>]),
+    Plain(&'s [Summary]),
+}
+
 pub struct Sums<'s> {
     pub prog: &'s Program<'s>,
-    pub done: &'s [Summary],
+    pub done: Done<'s>,
     /// comp_of[f]: f's component
     pub comp_of: &'s [u32],
     pub pos: &'s [u32],
@@ -755,7 +804,10 @@ impl<'s> Sums<'s> {
         if self.comp_of[f as usize] == self.cur {
             &self.local[self.pos[f as usize] as usize]
         } else {
-            &self.done[f as usize]
+            match self.done {
+                Done::Plain(d) => &d[f as usize],
+                Done::Once(d) => d[f as usize].get().expect("a callee's summary before its component ran"),
+            }
         }
     }
     /// summary.callee_summary
@@ -1492,6 +1544,65 @@ thread_local! {
     static DU: RefCell<DefUse> = RefCell::new(DefUse::new());
 }
 
+/// the fixed point's schedule: a component runs when its last callee component is done, then releases its callers
+struct Wave<'a> {
+    prog: &'a Program<'a>,
+    comps: &'a [Vec<FnId>],
+    comp_of: &'a [u32],
+    pos: &'a [u32],
+    fallthrough: &'a [bool],
+    pending: &'a [AtomicU32],
+    dep_at: &'a [u32],
+    dep: &'a [u32],
+    done: &'a [OnceLock<Summary>],
+}
+
+thread_local! {
+    static WORKER: RefCell<Worker> = RefCell::new(Worker::default());
+}
+
+impl<'a> Wave<'a> {
+    fn run<'s>(&'s self, k: u32, sc: &rayon::Scope<'s>) {
+        let comp = &self.comps[k as usize];
+        let prog = self.prog;
+        WORKER.with(|w| {
+            let w = &mut *w.borrow_mut();
+            let mut local = vec![Summary::START; comp.len()];
+            for (p, &e) in comp.iter().enumerate() {
+                w.flow(p, prog, e).fallthrough_entry = self.fallthrough[e as usize];
+            }
+            let self_call = comp.len() == 1 && {
+                let f = &w.flows[0];
+                (0..f.n).any(|k| matches!(f.callee[k], Callee::One(t) if t.func() == Some(f.me)))
+            };
+            loop {
+                let mut changed = false;
+                for p in 0..comp.len() {
+                    let s = {
+                        let ctx = Sums { prog, done: Done::Once(self.done), comp_of: self.comp_of, pos: self.pos, cur: k, local: &local };
+                        analyse(&w.flows[p], &ctx, &mut w.sc)
+                    };
+                    if s.key() != local[p].key() {
+                        changed = true;
+                    }
+                    local[p] = s;
+                }
+                if !changed || (comp.len() == 1 && !self_call) {
+                    break;
+                }
+            }
+            for (p, s) in local.into_iter().enumerate() {
+                assert!(self.done[comp[p] as usize].set(s).is_ok());
+            }
+        });
+        for &d in &self.dep[self.dep_at[k as usize] as usize..self.dep_at[k as usize + 1] as usize] {
+            if self.pending[d as usize].fetch_sub(1, Ordering::AcqRel) == 1 {
+                sc.spawn(move |sc| self.run(d, sc));
+            }
+        }
+    }
+}
+
 /// one worker's state: its flows, def/use cache and analysis buffers
 #[derive(Default)]
 struct Worker {
@@ -1691,93 +1802,83 @@ pub fn summarise(prog: &mut Program) -> (Vec<Summary>, Stats) {
         level[k] = lv;
     }
     let nlevels = level.iter().max().map_or(0, |m| m + 1) as usize;
-    let mut by_level: Vec<Vec<u32>> = vec![Vec::new(); nlevels];
-    for (k, &lv) in level.iter().enumerate() {
-        by_level[lv as usize].push(k as u32);
-    }
-    let mut sums = vec![Summary::START; n];
-    for lv in &by_level {
-        let got: Vec<(u32, Vec<Summary>)> = {
-            let done: &[Summary] = &sums;
-            lv.par_iter()
-                .map_init(Worker::default, |w, &k| {
-                    let comp = &comps[k as usize];
-                    let mut local = vec![Summary::START; comp.len()];
-                    for (p, &e) in comp.iter().enumerate() {
-                        w.flow(p, prog, e).fallthrough_entry = fallthrough[e as usize];
-                    }
-                    let self_call = comp.len() == 1 && {
-                        let f = &w.flows[0];
-                        (0..f.n).any(|k| matches!(f.callee[k], Callee::One(t) if t.func() == Some(f.me)))
-                    };
-                    loop {
-                        let mut changed = false;
-                        for p in 0..comp.len() {
-                            let s = {
-                                let ctx = Sums { prog, done, comp_of: &comp_of, pos: &pos, cur: k, local: &local };
-                                analyse(&w.flows[p], &ctx, &mut w.sc)
-                            };
-                            if s.key() != local[p].key() {
-                                changed = true;
-                            }
-                            local[p] = s;
-                        }
-                        if !changed || (comp.len() == 1 && !self_call) {
-                            break;
-                        }
-                    }
-                    (k, local)
-                })
-                .collect()
-        };
-        for (k, local) in got {
-            for (p, s) in local.into_iter().enumerate() {
-                sums[comps[k as usize][p] as usize] = s;
+    // each component runs once its callees' components are done (a count of the cross-component edges left), on
+    // the pool: no barrier between levels
+    let nc = comps.len();
+    let mut pending: Vec<u32> = vec![0; nc];
+    let mut dep_at = vec![0u32; nc + 1];
+    for (e, &k) in comp_of.iter().enumerate() {
+        for &g in &adj[at[e] as usize..at[e + 1] as usize] {
+            let kk = comp_of[g as usize];
+            if kk != k {
+                pending[k as usize] += 1;
+                dep_at[kk as usize + 1] += 1;
             }
         }
     }
+    for k in 0..nc {
+        dep_at[k + 1] += dep_at[k];
+    }
+    let mut dep = vec![0u32; dep_at[nc] as usize];
+    let mut fill = dep_at.clone();
+    for (e, &k) in comp_of.iter().enumerate() {
+        for &g in &adj[at[e] as usize..at[e + 1] as usize] {
+            let kk = comp_of[g as usize];
+            if kk != k {
+                dep[fill[kk as usize] as usize] = k;
+                fill[kk as usize] += 1;
+            }
+        }
+    }
+    drop(fill);
+    let roots: Vec<u32> = (0..nc as u32).filter(|&k| pending[k as usize] == 0).collect();
+    let pending: Vec<AtomicU32> = pending.into_iter().map(AtomicU32::new).collect();
+    let done: Vec<OnceLock<Summary>> = (0..n).map(|_| OnceLock::new()).collect();
+    let wave = Wave { prog, comps: &comps, comp_of: &comp_of, pos: &pos, fallthrough: &fallthrough, pending: &pending, dep_at: &dep_at, dep: &dep, done: &done };
+    rayon::scope(|sc| {
+        for &k in &roots {
+            let w = &wave;
+            sc.spawn(move |sc| w.run(k, sc));
+        }
+    });
+    let mut sums: Vec<Summary> = done.into_iter().map(|s| s.into_inner().expect("a component never ran")).collect();
     let t2 = std::time::Instant::now();
     // results: what callers read after their calls, and what callers pass on as their own results
-    let reads: Vec<Vec<(FnId, u128, u128)>> = {
+    // (and the calls whose return falls into another function's entry: a fact of the fixed point's returns)
+    type Reads = (Vec<(FnId, u128, u128)>, Vec<FnId>);
+    let reads: Vec<Reads> = {
         let done: &[Summary] = &sums;
         (0..n as FnId)
             .into_par_iter()
             .map_init(Worker::default, |w, e| {
                 w.flow(0, prog, e);
-                let ctx = Sums { prog, done, comp_of: &comp_of, pos: &pos, cur: u32::MAX, local: &[] };
-                call_reads(&w.flows[0], &ctx, &mut w.sc)
+                let f = &w.flows[0];
+                let ctx = Sums { prog, done: Done::Plain(done), comp_of: &comp_of, pos: &pos, cur: u32::MAX, local: &[] };
+                let falls = (0..f.n)
+                    .filter_map(|k| {
+                        let c = f.ctail[k]?.func()?;
+                        (f.kind[k] == K::Svc || callee_of(f, k, &ctx).returns).then_some(c)
+                    })
+                    .collect();
+                (call_reads(f, &ctx, &mut w.sc), falls)
             })
             .collect()
     };
     let mut passes: Vec<(FnId, FnId, u128)> = Vec::new();
-    for (e, rs) in reads.into_iter().enumerate() {
+    let mut falls = Vec::new();
+    for (e, (rs, fl)) in reads.into_iter().enumerate() {
         for (c, m, pt) in rs {
             sums[c as usize].results |= m;
             passes.push((e as FnId, c, pt));
         }
+        falls.extend(fl);
     }
     for (e, g) in graph.iter().enumerate() {
         passes.extend(g.tails.iter().map(|&c| (e as FnId, c, ALL)));
     }
     propagate_results(&mut sums, &passes);
     // a call whose return falls into another function's entry: that entry is entered by falling through
-    let falls: Vec<Vec<FnId>> = {
-        let done: &[Summary] = &sums;
-        (0..n as FnId)
-            .into_par_iter()
-            .map_init(Worker::default, |w, e| {
-                let f = w.flow(0, prog, e);
-                let ctx = Sums { prog, done, comp_of: &comp_of, pos: &pos, cur: u32::MAX, local: &[] };
-                (0..f.n)
-                    .filter_map(|k| {
-                        let c = f.ctail[k]?.func()?;
-                        (f.kind[k] == K::Svc || callee_of(f, k, &ctx).returns).then_some(c)
-                    })
-                    .collect()
-            })
-            .collect()
-    };
-    for c in falls.into_iter().flatten() {
+    for c in falls {
         sums[c as usize].demote |= why::FALLTHROUGH_ENTRY;
     }
     let t3 = std::time::Instant::now();
