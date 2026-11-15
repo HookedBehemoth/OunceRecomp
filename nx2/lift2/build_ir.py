@@ -29,7 +29,7 @@ class Program:
     symbol(e): the generic entry's symbol of function e; no_lift: functions to pass over (setjmp owners: milestone 7)"""
 
     def __init__(self, entries=(), jt=None, callee=None, symbol=None, no_call=(), plt=None, classes=None,
-                 tail_symbol=None, jt_index=None):
+                 tail_symbol=None, jt_index=None, keeps=None):
         self.tail_symbol = tail_symbol or symbol or (lambda e: "g_%08x" % e)   # (a tail call's target symbol)
         self.classes = set(classes) if classes is not None else None   # (None: every class of sem.CLASS)
         # (entries, jt and plt are shared, not copied: the discovery fills them as it walks)
@@ -38,6 +38,9 @@ class Program:
         self.jt = jt if jt is not None else {}
         # BR address -> (load address, index register, LDR extend, [target per index]): the switch on the index
         self.jt_index = jt_index if jt_index is not None else {}
+        # keeps(callee): the registers a BL's callee is proven to return unchanged (their SSA values stay live across
+        # the call, no reload)
+        self.keeps = keeps or (lambda e: ())
         self.callee = callee or (lambda t: t)
         self.symbol = symbol or (lambda e: "g_%08x" % e)
         self.no_call = set(no_call)
@@ -188,9 +191,18 @@ def build(entry, pcs, word, prog=LEAF):
                 cur = None
             continue
         if t == "b" and f["op"]:   # BL
+            callee = prog.callee(target(i, pc))
+            held = {}
+            for var in prog.keeps(callee):   # (written through to the context before the call, as every register)
+                v = cur.defs.get(var)
+                if v is None and not cur.called:
+                    v = b.get(var)   # (a parameter of the block: no load)
+                if v is not None:
+                    held[var] = v
             b.set("x30", b.const(pc + 4))
-            b.op("gcall", "void", sym=prog.symbol(prog.callee(target(i, pc))))
+            b.op("gcall", "void", sym=prog.symbol(callee))
             b.after_call()
+            cur.defs.update(held)
             for post in prog.after.get(pc, ()):
                 post(b)
             if pc + 4 not in body:

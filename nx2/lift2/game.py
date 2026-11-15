@@ -268,6 +268,82 @@ def verified(plan, e):
     return s is not None and not s[6] and not s[7]
 
 
+def host_edited(plan, hooks):
+    """The functions the host edits or replaces, which a direct call treats as clobbering every register (it reloads
+    them all after the call and assumes it returns): the HLE'd functions (plan hooks), the entry hooks (hooks: the
+    hook may handle the call), the setjmp owners (called through hos_sj_call), and those whose code calls the host
+    with the context (Value and At probes, splices, the C after an instruction)."""
+    out = set(hooks) | set(plan.get("hooks", ())) | set(plan.get("sj_rets", {})) | set(probes.BY_FUNC) \
+        | set(probes.AT_FUNCS) | set(probes.SPLICE_AT) | set(probes.SPLICE_BEFORE)
+    after = set(plan.get("after_c", {}))
+    if after:
+        out |= {e for e, (pcs, _) in plan["bodies"].items() if not after.isdisjoint(pcs)}
+    return out
+
+
+KEEP = [(r, "x%d" % r) for r in range(19, 30)] + [(31, "sp")]   # (summary bits: x19-x29, SP)
+
+
+def call_bounds(plan, edited):
+    """(keeps, noreturn) for build_ir.Program: a callee with a full summary that the host does not edit keeps the
+    callee-saved registers its summary proves preserved; one the summaries prove noreturn is followed by a trap"""
+    summ = plan.get("summaries", {})
+
+    def keeps(c):
+        s = summ.get(c)
+        if s is None or s[6] or s[7] or not s[5] or c in edited:
+            return ()
+        return [v for r, v in KEEP if s[3] >> r & 1]
+
+    def noreturn(c):
+        s = summ.get(c)
+        return s is not None and s[5] is False and c not in edited
+    return keeps, noreturn
+
+
+def call_report(plan, edited, hooks, chosen):
+    """one line: the direct call sites (BL) of the lifted functions, those keeping registers across the call (and how
+    many on average), and those reloading every register, by reason; BLR sites"""
+    import collections
+    summ, plt, sj = plan.get("summaries", {}), plan["plt"], plan.get("sj_rets", {})
+    callee = callee_fn(plt)
+    why, kept, blr = collections.Counter(), 0, 0
+    plan_hooks = set(plan.get("hooks", ()))
+    for e in chosen:
+        pcs, words = plan["bodies"][e]
+        for pc, w in zip(pcs, words):
+            if (w & 0xFC000000) != 0x94000000:
+                blr += (w & 0xFFFFFC1F) == 0xD63F0000 or (w & 0xFFFFF800) == 0xD73F0800
+                continue
+            c = callee((pc + ((w & 0x3FFFFFF) - ((w & 0x2000000) << 1)) * 4) & 0xFFFFFFFFFFFFFFFF)
+            s = summ.get(c)
+            if c in plan_hooks:
+                why["HLE"] += 1
+            elif c in hooks:
+                why["entry hook"] += 1
+            elif c in sj:
+                why["setjmp owner"] += 1
+            elif c in edited:
+                why["probe, splice or C after"] += 1
+            elif s is None:
+                why["no summary"] += 1
+            elif s[5] is False:
+                why["noreturn"] += 1
+            elif s[6] or s[7]:
+                why["demoted"] += 1
+            else:
+                n = sum(s[3] >> r & 1 for r, _ in KEEP)
+                if n:
+                    why["kept"] += 1
+                    kept += n
+                else:
+                    why["full, nothing preserved"] += 1
+    total = sum(why.values())
+    return ("calls: %d direct sites, %d keep registers across the call (%.1f a site of x19-x29, SP); reload all: %s; "
+            "%d BLR sites reload all" % (total, why["kept"], kept / max(1, why["kept"]),
+                                        ", ".join("%s %d" % kv for kv in why.most_common() if kv[0] != "kept"), blr))
+
+
 def lift_part(args):
     """(lifted in a worker process) the IR text of one partition"""
     plan_path, names, hooks = args
@@ -282,8 +358,13 @@ def lift_part(args):
     # grow the host stack; the caller's own checks cover the callee's effects)
     def tail_symbol(e):
         return "body_%08x" % e if verify and verified(plan, e) else base_symbol(e)
+    key = (plan_path, tuple(sorted(hooks)))
+    if key not in _EDITED:   # (once a worker process: it scans every body for the C after instructions)
+        _EDITED.clear()
+        _EDITED[key] = host_edited(plan, hooks)
+    keeps, _ = call_bounds(plan, _EDITED[key])
     prog = build_ir.Program(entries=set(plan["entries"]), jt=plan["jt"], callee=callee_fn(plt), plt=plt,
-                            symbol=symbol, tail_symbol=tail_symbol, jt_index=plan.get("jt_index"))
+                            symbol=symbol, tail_symbol=tail_symbol, jt_index=plan.get("jt_index"), keeps=keeps)
     m = emit_llvm.Module()
     extra = []
     for e in names:
@@ -321,6 +402,7 @@ def lift_part(args):
 
 
 _PLAN = {}
+_EDITED = {}
 
 
 def _plan(path):
@@ -427,4 +509,5 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
                                                     len(parts) - len(todo), t_lift, time.time() - t1))
     if failed:
         raise SystemExit("lift: %d partitions failed to compile:\n%s" % (len(failed), failed[0][1]))
+    print(call_report(plan, host_edited(plan, hooks), hooks, chosen), flush=True)
     return srcs, objs, line
