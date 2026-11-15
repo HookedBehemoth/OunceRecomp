@@ -1,4 +1,4 @@
-/* Patch declarations: host code at guest addresses, written next to its body (docs/lifter.md, "Hooks and probes").
+/* Patch declarations: host code at guest addresses, written next to its body (docs/patches.md).
 
    The lifter reads these macros from the source with a token scanner of a fixed grammar (nx2/lift2/patch_scan.py), and
    the compiler expands the same text into the host function's prototype and a record in the object section hos_patch

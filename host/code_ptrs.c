@@ -1,4 +1,4 @@
-/* Code pointers are host function pointers (docs/lifter.md, "Indirect calls and jumps"): this file reports what still
+/* Code pointers are host function pointers (docs/lifter-output.md, "Indirect calls and jumps"): this file reports what still
    takes the guest-address path. Each site is logged once (rt/a64_rt.c calls a64_old_path_site on a site's first
    guest-valued call), and hos_code_ptr_report logs the totals (every 1800 presents, host/nn_vi.c, and at a bench's
    exit, host/bench.c). When a long play session's line shows 0 sites and 0 received, the guest path can go. */

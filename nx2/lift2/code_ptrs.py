@@ -1,4 +1,4 @@
-"""Code pointers are host function pointers (docs/lifter.md, "Indirect calls and jumps"): where the lifted code forms a
+"""Code pointers are host function pointers (docs/lifter-output.md, "Indirect calls and jumps"): where the lifted code forms a
 function's address, it gets the host function's address instead.
 
 The shapes, and only these (the census of agent/addr-taken: every relocated value that is code lands on a function

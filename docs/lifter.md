@@ -1,791 +1,93 @@
 # The lifter
 
-Hookshot's lifter turns the game's AArch64 code into x86-64 code at build time: every function is decoded, built into
-a typed SSA IR, emitted as textual LLVM IR and compiled by clang. This document says what the lifter emits, how the
-build runs, where the emitted code is knowingly worse than it could be and why that is kept. The queue of changes is
-[lifter-optimisations.md](lifter-optimisations.md); the census of non-AAPCS64 functions is
-[lifter-abi-census.md](lifter-abi-census.md).
+This page explains how Hookshot turns the game's AArch64 code into x86-64 code, and where to look when you change the
+lifter or need to understand what it did to a function. Read it before you touch `nx2/lift2`, or before you write a
+patch.
 
-Measurements are on the development PC (Zen, x86-64-v3) with clang/LLVM 23.1.3. "The sample" is a size-weighted
-sample of 120 functions of the play binary at 860eb332, recompiled from edited IR; its savings were the same at -O1 and
--O2. That binary still had page marks and polls, so shares of it are shares of that binary, not rescaled.
+The lifter runs at build time. It decodes every function of the game, builds a typed SSA IR from it, writes the IR as
+textual LLVM IR, and compiles that with clang. Nothing is translated while the game runs, and there is no interpreter
+or fallback: every instruction form the game contains decodes.
 
-## Pipeline and files
+## Related pages
 
-| step | files | what |
-|---|---|---|
-| image | `nx2/image.py`, `third_party/a64-kit/hos/nx_image.py`, `nx2/nso2.py`, `nx2/standalone.py` | the modules (rtld, main, subsdk*, sdk) loaded at their addresses and relocated; entries from symbols, unwind info and relocations; the HLE functions and stubs hooked |
-| entries | `nx2/adr_entries.py` | code addresses the code builds with ADR / ADRP+ADD (callbacks reached only through a pointer) |
-| discovery | `nx2/lift2/discover.py` | function bodies (an entry plus what it reaches without crossing another entry), jump tables, PLT stubs, setjmp owners, the split of very large functions (`--max-func`) |
-| plan | `nx2/lift2/game.py` `write_plan` | every function's instructions and the program's facts in `work/sa/plan.pickle`; the summaries when asked |
-| runtime tables | `nx2/lift2/tables.py`, `nx2/standalone.py` | `a64_table.c` (the function table), `a64_hooks.c`, `a64_code_slots.c` (the relocated slots holding a function), `hos_image.c`, `a64_stubs.c`, `nvn2_exports.c` in `work/sa/gen` |
-| IR | `nx2/lift2/enc*.py`, `sem*.py`, `build_ir.py`, `ir.py` | the decoder's encoding tables, each form's semantics as IR, a function's IR |
-| LLVM IR | `nx2/lift2/emit_llvm.py` | one textual module per partition |
-| build | `nx2/lift2/game.py` `prepare`, `nx2/build.py` | partitions lifted in worker processes, piped into `clang -x ir -` (cold ones through `opt` first; no IR on disk), cached by input key; runtime and host compiled and linked |
-| runtime | `nx2/rtgen.py` from `third_party/a64-kit/rt` | `a64.h` (`GuestContext`, the guest window) and `a64_rt.c` (`a64_lookup`, `a64_icall`, `a64_ijump`, `a64_trap`, the exclusive monitor, the counter) |
-| summaries | `nx2/lift2/summary.py` | whole-program register facts: call boundaries, omitted stores, the verification build |
-
-`nx2/lift.py` runs the steps up to the plan and the tables (`scripts/relift.sh`); `nx2/build.py` runs the rest. The
-plan holds instructions, not lifted code, so a change to the lifter needs only a build.
-
-**The game boundary.** The lifter (`nx2/lift2`) holds no fact of one game; `tests/test_lifter_game_free.py` checks its
-code for game addresses (literals of the image's range other than encodings and constants of the architecture), game
-labels and game symbols. What one game adds comes in three places:
-- its description, `games/<game>/game.py` (`nx2/gamedesc.py`; data and constructor calls only), which `nx2/lift.py`,
-  `nx2/build.py` and the tools (`nx2/lift2/dump.py`, `abi_census.py`, `nx2/label_syms.py`, `nx2/lift_mark.py`) take as
-  `--game`, exactly one, and hand their worker processes in `HOOKSHOT_GAME`: the identity (main's build id and the
-  SHA-256 of `exefs/main`; `check_exefs` stops the lift before anything else of the dump is read, the lift records
-  it in `work/sa/game.json`, and `check_lift` stops a build of another game's lift, each with both values), the
-  label file, the hot list (one file, `HOOKSHOT_HOT_FUNCS` the override; a missing one stops the lift), the host's C
-  files the build compiles and the patch scan reads (`patch_scan.host_sources`), and `local_continuations` (the code
-  pointer audit's `adr` ... `br` pairs inside one function);
-- its patch declarations in those host files (Hooks and probes);
-- nothing else: the platform's facts (Horizon, the SDK, its runtime and libraries: `SETJMP_NAMES`, the noreturn seeds
-  `NORETURN_NAMES` / `NORETURN_PARTS`, `OS_NAMESPACES`) are in `nx2/horizon`, for any title on this SDK.
-
-Coverage: the modules' `.text` has 18.16 M words, 2.03 M distinct, in 1,699 forms (mnemonic plus operand shape). Every
-form decodes; there is no fallback. `nx2/lift2/selfcheck.py` compares the decoder with llvm-mc on every distinct word
-(2,032,675 words, 0 differences); `nx2/lift2/census.py` writes the form list to `work/lift2/forms.txt`. A function
-with a word that does not decode is lifted as a trap at its entry and listed by the lift (none in OoT 1.1.1).
-
-| class | forms | words | share |
-|---|---|---|---|
-| integer data processing | 331 | 6.81 M | 37.5 % |
-| integer load/store (atomics included) | 269 | 5.58 M | 30.7 % |
-| branches | 22 | 3.36 M | 18.5 % |
-| vector/FP load/store | 367 | 0.57 M | 3.1 % |
-| udf/nop (padding, data) | 2 | 0.55 M | 3.1 % |
-| FP scalar | 121 | 0.53 M | 2.9 % |
-| NEON | 534 | 0.50 M | 2.7 % |
-| system (MRS/MSR, barriers, PAC, hints, SVC) | 53 | 0.27 M | 1.5 % |
-
-Discovery over the whole game: 294,523 functions, 1,475 jump tables (1,385 with a bound from CMP + B.HI/B.HS, CCMP,
-an AND mask or a copy of the index; the rest read until an entry leaves the function's unwind extent), no BR without a
-table, 9,917 PLT stubs. RETAA/RETAB are returns and BRAA*/BLRAA* are BR/BLR (the modifier ignored).
-
-The output format is LLVM IR rather than C for its exact intrinsics (`llvm.fptosi.sat`, `llvm.minimum`/`maximum`,
-`llvm.minimumnum`/`maximumnum`, `llvm.fma`, the rounding intrinsics, the overflow intrinsics), `poison`, and block
-parameters that map one to one onto `phi`. For integer code C gives the same machine code (24,189 x86 instructions over
-the same 120 functions either way). `nx2/lift2/llvm.py` refuses a clang of another LLVM major than the one the emitter
-writes for.
-
-## What is emitted
-
-### Functions, registers and the context
-
-- Every function is `void f_<addr>(ptr noalias nocapture %ctx)` (`emit_llvm.emit_function`): the symbol the function
-  table, the hooks and the host use, and what every call reaches. `%ctx` is the thread's `GuestContext`: x0-x30 and SP
-  at 8 * n, N Z C V as bytes at 0x108-0x10B, V0-V31 at 0x110 + 16 * n.
-- Inside a function guest registers are SSA values; blocks take parameters, emitted as `phi`. X registers are `i64`,
-  W writes zero-extend, the flags are four `i1`, V registers `<2 x i64>` bitcast to lane types per operation.
-- The entry block loads from the context the registers the function reads before writing them.
-- **Write-through**: every register write is also stored to the context where it happens (`ir.Builder.set` emits a
-  `writeback`). LLVM drops a store that a later one overwrites before any call or return; the last one stays. For
-  that it must see that nothing in between reads the context: every declaration taking it says `ptr captures(none)`
-  (`emit_llvm.no_capture`; the callees keep no copy, `A64_NOESC`), and the partitions are compiled with capture
-  tracking and DSE limits raised (`game.DSE_FLAGS`) and with DSE at both levels (The build). Without them the
-  context escapes at the first call, any guest load may read it, and a large function's thousands of uses of it
-  exceed the default limits: on the market's five hottest functions 40-47 % more context stores and 10-14 % more
-  code.
-- **Stores no reader reads are not emitted** (`build_ir.omit_stores`, a backward pass over each function's IR after
-  it is built): a register's store is dropped when no reader can read it before the register's next store. What
-  each call reads and writes is its callee's call-boundary record (`bounds.call_bounds`, below), the same record the
-  lift keeps registers by. Readers: a load of the register after a call; a BL's callee, which reads the record's
-  reads and passes on what it does not write on every path (the record's must-writes; the summaries and the lift
-  resolve a BL through a PLT stub to the same target, `Program.callee`) to the caller's later loads:
-  a lifted callee its summary's inputs and must-writes, a replaced one (`PATCH_FUNC`) its declared operands and the
-  inputs of its guest callees (with `orig` its body's too; must-writes its result), an HLE'd one its declared reads (`host_effects.hle_reads`, checked
-  against the host's IR by `tests/test_host_context_reads.py`; must-writes none); a return, which reads the record's
-  results (the summary's: what its callers read after it), x19-x29, SP and v8-v15; a call taking the context, which
-  reads every register unless the template that made it says which (`regs=0` on the runtime's monitor, counter and
-  FPCR/FPSR helpers, `recomp_*`, `a64_fp*`, the estimate helpers: they read only the context's other fields). Every
-  register is read by BLR, SVC, an At row calling guest code, a BL to a callee whose record is `bounds.unknown` (no
-  summary, demoted, setjmp owner, HLE'd and declared clobbering), tail calls, indirect jumps, traps, and the returns
-  of a function without a full summary. The flags are not affected. On 6 cold partitions after LLVM's DSE: context stores -20.9 %, instructions
-  -6.6 %, `.text` -6.7 %; on the market's five hottest functions -18.2 %, -5.5 %, -5.9 %.
-- **Reload after calls**: after a BL, BLR, SVC or a call into host code with the context, every register read loads
-  the context again (`ir.Builder.after_call` clears the block's definitions), except after a BL to a callee with a
-  full summary that the host does not edit, or to a host callee with a declared effect: the values of x19-x29 and SP
-  the callee keeps stay SSA values across the call (`build_ir.build`; the callee's call-boundary record, below). The registers are still written to the context
-  before the call. The low halves of v8-v15 are reloaded: their upper halves are not
-  preserved, so the register needs its load anyway.
-- No `alloca` is emitted except for host-stack temporaries of runtime helpers (`lift2_ldxp_lo`).
-
-### Flags
-
-- N, Z, C, V are computed with `llvm.[us]{add,sub}.with.overflow`; a condition whose four flags come from one compare
-  folds to one `icmp` (`sem_int.cond`), an FCMP's to one `fcmp` with the matching ordered/unordered predicate.
-- Flags are not written through. They are stored to the context only before an SVC and in the exit blocks that leave
-  the function for other code (a tail call, `a64_ijump`), when the function writes flags (`build_ir.build`, the
-  `flagsout` loop). A RET stores no flags: the AAPCS64 leaves them undefined at a return.
-
-### Memory and ordering
-
-- **Window.** A guest address `a` is `getelementptr i8, ptr inttoptr (i64 0x100000000000 to ptr), i64 a`: one
-  `movabs` per function, folded into addressing. No bounds checks.
-- **Plain accesses** are LLVM plain loads and stores with `align 1` (`emit_llvm.emit_op`, `load`/`store`). A guest
-  store is one plain store: nothing records which guest pages were written. Host code writes guest memory plainly too.
-- **Ordering under x86-TSO:**
-
-| guest | emitted | x86 |
-|---|---|---|
-| LDR/STR | plain | mov |
-| LDAR, LDAPR | `load atomic acquire` | mov |
-| STLR | `store atomic seq_cst` (`sem_int.t_ldstord`) | xchg |
-| DMB/DSB ISH, SY, OSH, NSH | `fence seq_cst` | `lock or [rsp-64],0` |
-| DMB/DSB ISHLD, ISHST and other load-only or store-only kinds | `fence acq_rel` | nothing (compiler barrier) |
-| ISB | nothing | |
-| LDADD/LDCLR/LDEOR/LDSET/SWP and the signed/unsigned max/min, every ordering | `atomicrmw seq_cst` | lock-prefixed |
-| CAS | `cmpxchg seq_cst` | `lock cmpxchg` |
-| CASP | `cmpxchg` i128 | `lock cmpxchg16b` (`-mcx16`) |
-| LDXR/LDAXR, STXR/STLXR | calls of `recomp_ldxr`/`recomp_stxr` (`sem_int.t_ldstex`): the runtime's monitor keeps the address, size and value LDXR saw; STXR compare-and-swaps against that value | call |
-| LDXP/STXP | `recomp_ldxp`/`recomp_stxp` | call |
-| CLREX | a store of 0 to the context's monitor | mov |
-
-The whole game has 3 LDXR/LDAXR and 2 STXR against 10,721 CAS and 25,802 LDADD-family LSE operations, so the
-exclusives' runtime calls cost nothing measurable.
-
-### Loops
-
-- **The cycle barrier.** A block with an edge that closes a cycle of the function's CFG gets the IR op `barrier`,
-  emitted as `call void asm sideeffect "", "~{memory}"()` (with `strictfp` appended in a `strictfp` function).
-  Placement is `build_ir.cycle_edges`: a depth-first search from the entry, then from any block not reached; a block
-  gets the barrier when one of its edges goes to a block still on the search's stack. So every cycle has one: natural
-  loops, irreducible regions, self-loops, cycles through a jump table's switch, a branch to the function's own entry.
-  LLVM treats the barrier as reading and writing any memory, so a guest load inside a loop is done each time round.
-  It emits no instruction: `ldr w0, [x1]; cbz w0, back` compiles at -O1 and -O2 to a loop that reloads each
-  iteration with no call (`tests/test_lift2_barrier.py`). Whole game: 142,299 barrier blocks in 43,613 of 294,523
-  functions.
-- YIELD and WFE are `pause` (`llvm.x86.sse2.pause`, `sem_int.t_hint`). NOP, SEV and the PAC hints are nothing.
-- **No polls.** The lifted code never checks for a request from another thread, and nothing depends on a lifted
-  thread calling into the host periodically. Every guest thread runs freely on its own host thread
-  (`host/hos_thread.c`, "no scheduler"); process exit is `_exit`; the profiler samples by signal
-  (`host/posix/prof.c`); fiber switches are host calls. The stall dump reads each thread's context as of its last
-  call out of lifted code, so a thread spinning without calls shows stale registers. The stall dump, the crash
-  handler and the handle dump read a context from outside the thread: a register whose store `omit_stores` dropped
-  shows an older value there (a temporary, x30 or an argument register before a BL to a callee that does not read
-  it, a register that is not a result at a return); the registers read at BLR, SVC and calls into the host are
-  current.
-
-### Calls and returns
-
-- **BL**: x30 := the return address, then `call void @f_<callee>(ptr %ctx)`, then the reload of every register but
-  the callee's preserved x19-x29 and SP (see above). A callee the summaries prove noreturn is followed by
-  `a64_trap(ctx, <BL address>, <BL word>)` and `unreachable`, so a wrong summary stops the game; the code only its
-  return reached is dropped. A BL to an import that stops the game (record kind `stop`: one of the 155 generated
-  import stubs, or one of the 9 SDK NVN exports with no `NV(...)` proc, `host_effects.stops`) is the call of its stub
-  marked `noreturn`, then the same trap and `unreachable` (225 BL and 8 tail-B sites at 1e054a23). A BL to an answered
-  function (record kind `answer`, `PATCH_ANSWER`) is no call: x0 := the answer, x30 := the return address, every other
-  register as it was (record: reads nothing, writes and must-writes x0 and x30, results x0); a tail branch to one is a
-  return with x0 the answer (99 BL and 9 tail-B sites at 1e054a23, 18 of them with a branch or compare on x0 within
-  four instructions; all in start-up, audio set-up and network paths, so the expected effect on speed is about 0: the
-  point is one definition of an answer and no host call). The summaries take the same records
-  (`summary.host_summary`).
-- **The call-boundary record** (`nx2/lift2/bounds.py`, `bounds.call_bounds`): every direct callee has one record,
-  computed once per build worker from the plan's summaries and the host's declarations, and the lift (`Program.bound`),
-  the verification build, the build's call report (`bounds.call_report`) and `nx2/lift2/dump.py` all read it. It
-  gives the kind, the registers the callee may read, may write and writes on every returning path, those its callers
-  read after it, the x19-x29 and SP bits a BL keeps in SSA, noreturn, and the symbols of its call and tail call. A
-  callee without a declaration or a full summary (no summary, demoted, setjmp owner, an HLE'd function declared
-  clobbering) gets `bounds.unknown`: it reads and writes every register, keeps nothing and returns, so a callee no rule
-  classifies costs speed, never correctness. Only a lifted callee whose summary proves it (demoted or not) is
-  noreturn; HLE'd, replaced (`PATCH_FUNC`) and setjmp-owner callees never are. A function with Value probes or At rows is lifted as any other: each row
-  declares what it reads and writes, and the summaries count it beside its instruction, where it runs
-  (`probes.row_effects`, `summary.rows`, below). What a call of a host callee keeps is its declared effect (the declarations' `reads(...)`,
-  `guest(...)`, `clobbers(...)`, Hooks and probes; the rules in `nx2/lift2/host_effects.py`):
-  - an HLE'd function keeps x19-x29 and SP unless its declaration says `clobbers("why")` (the three fiber
-    functions: a context switch or a host fiber deleted);
-  - a function replaced by a typed host function (`PATCH_FUNC`, `bounds.func_bound`) has one record, from its
-    declaration: it reads its operands and the inputs of the guest functions its `guest(...)` names (`guest_call` puts
-    every register back, so they cost no kept register), writes its result (on every return) and x30 and nothing else
-    (the adapter is the only code that writes the context: the host function takes and returns values; so the
-    caller-saved registers stay the caller's), and keeps x19-x29 and SP (the verification build checks it through its `hchk_` stub, as an HLE'd callee);
-    with `orig` its lifted body may run in it, so the body's inputs and clobbers join the record, x0-x8 are written
-    (`guest_orig`'s arguments) and the body's kept registers bound it; a body without a full summary makes the record
-    unknown;
-  - setjmp owners keep nothing.
-  An `HLE_EFFECTS` of a function the image does not replace stops the build (`host_effects.check`). Every guest
-  function a replaced function's or a row's host function enters, on any path through the host's own calls, is
-  declared: `tests/test_host_context_reads.py` follows the host's LLVM IR from each adapter and row function to every
-  `guest_call`, `hos_call_guest`, `a64_icall`, `a64_ijump` and `f_<addr>` call (constant targets followed through
-  arguments) and fails on a target missing from its `guest(...)`; `orig` is not such an entry (its body's facts are in
-  the record). The default
-  rests on an audit of the host's C (2026-11-15, its LLVM IR: stores into a context's x19-x31 and v8-v15, calls of
-  guest code, fiber switches, through direct calls and signature-matched indirect ones): stores to x19-x31 are only in
-  thread and fiber setup, `hos_call_guest` (x30) and the guest calls of rows and replaced functions, which put every
-  register back (`host/hos_hostcall.c` `call_restoring`); no HLE'd function reaches one, a guest call or a switch except
-  those declared. What the host reads is declared too (`host_effects.HLE_ARGS` plus each declaration's `reads(...)`; a
-  replaced function's adapter reads its operands only) and
-  checked against the host's IR by `tests/test_host_context_reads.py`, and the summaries count every declaration
-  (Whole-program summaries, "The host's patches").
-- **B to another entry, or falling into one**: `musttail call void @f_<callee>(ptr %ctx)`; every function has the same
-  prototype, so every tail branch is a guaranteed tail call.
-- **RET**: `ret void`.
-- **PLT stubs**: a call of one calls its target (`Program.callee`); a stub reached indirectly sets x16 (the GOT slot)
-  and x17 (the target) and tail-calls the target.
-- **setjmp owners** (the 13 functions that call `__setjmp`; their 14 return addresses are extra entries): a BL to one
-  calls `sjcall_<owner>`, a stub that enters `hos_sj_call` (`host/hos_setjmp.c`). A longjmp comes back there and runs
-  the owner from the setjmp return address. `__setjmp` and `longjmp` themselves run lifted.
-
-### Indirect calls and jumps
-
-Code pointers are host function pointers, translated where they originate (`nx2/lift2/code_ptrs.py`):
-
-- **Relocated slots.** Every relocated slot of the image whose value is a function of the table (453,943 slots:
-  RELATIVE/RELR 437,540, JUMP_SLOT 11,697, ABS64 4,542, GLOB_DAT 164; vtables and pointer tables in `.data`, the GOT,
-  `init_array`) is listed in `gen/a64_code_slots.c` (slot, function index; `nx2/lift.py`, `tables.write_code_slots`).
-  The host writes the function's host pointer there right after `image.bin` is loaded (`host/code_ptrs.c`
-  `hos_code_ptrs_init`, which stops when a slot does not hold the lift's value). `image.bin` keeps guest values.
-- **Addresses the code forms.** At `ADR Xd, <entry>` and at the `ADD Xd, Xn, #imm12` of an `ADRP Xn` + `ADD` pair
-  (within 4 instructions, one block, Xn not written between) that forms an entry, the lifter emits
-  `ptrtoint (ptr @f_<entry> to i64)` (IR value `codeaddr`). An entry is a function of the table except the modules'
-  bases: every module's DT_INIT passes its own base to `__nnmusl_init_dso` as a range bound (main's at 0x81237808), and
-  `f_80020000` (main's MOD0 header, taken for code) is a table entry. The census (`code_ptrs.sites`) finds 8,180 ADR
-  and 11,067 ADD sites; the lift translates exactly those (`build_ir.build` stops when a site's ADD does not see the
-  page as a constant, or when an ADR or a 64-bit ADD/SUB immediate forms an entry's address anywhere else; MOVZ/MOVK
-  and ORR make integers in this position-independent code, and some equal an entry: 0x80000100 at 0x81701194), and
-  the build stops when a partition's translated count differs from the census (`game.prepare`; the count of a cached
-  partition is kept beside its object, `.cp`). `code_ptrs.audit` accounts for every other code address the code forms
-  and the build stops on one of no known kind: 1,419 jump-table bases, 20 module bases (14 at the base, 6 at base + 1),
-  zstd_decompress_sequences' 2 local continuations (`adr x7` ... `br x7`), and 11,075 ADRPs of a text page each
-  consumed in its block by the entry-forming ADD (11,067) or a module base's (8). An indirectly reached PLT stub's
-  x17 (its GOT value) is the target's `codeaddr` too.
-- **The host's hand-outs.** A host call without user data is handed out as the handler itself (`hos_hostcall`: every
-  NVN proc, the substituted job-sync and depth-copy procs); the 16 guest functions the host calls by address are named
-  by their `f_` symbols (`CODE_PTR`).
-
-What is emitted:
-
-- **BLR**: `call void @lift2_icall(ptr %ctx, i64 %target, i64 <pc>)`, an always-inlined helper: a target with any of
-  its high 32 bits set (host code; guest code addresses are below 4 GB) is called directly, else
-  `a64_icall_guest(ctx, target, pc)`; then the reload of every register. A site's code is `mov; shr $32; je; call *%r`
-  (it was `call a64_icall`, then the global cache's hash, load and compare, then the call); LLVM turns a BLR of a
-  known `codeaddr` into a direct call.
-- **BR without a table**: the same test, then a `musttail` call of the host pointer, else `a64_ijump_guest(ctx, target,
-  pc)` and return.
-- **The guest-address path** (`third_party/a64-kit/rt/a64_rt.c`): `a64_icall_guest` / `a64_ijump_guest` count every
-  call, log each site once (`host/code_ptrs.c`), then `a64_icall` / `a64_ijump` look the address up: one global
-  direct-mapped cache of 2^18 64-bit slots keyed `(a >> 2 ^ a >> 20)`, each `address << 32 | offset`, in front of a
-  binary search of the function table, then the host's functions (`a64_lookup_host`). It takes setjmp return
-  addresses (a longjmp's BR, `host/hos_setjmp.c`), host calls with user data (the unimplemented NVN procs) and any
-  origin the translation missed. `hos_code_ptr_report` logs `code pointers: N sites and M calls took the
-  guest-address path; K guest-valued code addresses reached the host` every 1800 presents and at a bench's exit.
-- **The host's receiving paths**: thread entries, fiber functions and the TLS hooks take either kind (`a64_fn_of`,
-  `a64_call_received`: a guest-valued one is looked up and counted). `a64_guest_of` maps a host pointer back to its
-  guest address (the crash report, the thread dump, the thread and fiber logs).
-- **The game's own checks**: `__nnmusl_init_dso` (0x85056160) tests whether nnMain, loaded from its relocated slot,
-  lies inside the module's range; an At row after the load (0x850565b0) gives it nnMain's guest address
-  (`hos_code_guest_value`). `f_823a6140` (`net_grpc_authority_table_arg_cmp`), the compare of a gRPC pointer
-  channel argument ("grpc.target_authority_table", vtable 0x84978ed8 set at 0x823a608c): three-way, by the function
-  pointer at +0x10, then +0x18. It orders channel arguments (gRPC sorts and compares them to tell channels apart);
-  with host pointers that order differs from the guest's and between runs (ASLR), which nothing observes; left as it
-  is.
-- A guest load of a host-valued code pointer as data faults: the guest window is 2^39 bytes at 0x1000_0000_0000 and a
-  host pointer is above 2^39.
-- `a64_rt.c` also holds a per-site two-slot cache (`A64_SITE_CALL`, `site_call`) and a site profiler
-  (`A64_SITE_PROFILE`); the lifter emits neither.
-
-### Jump tables
-
-A BR with a table the discovery resolved is a `switch` on the index the guest loaded the entry with, cases `0..n-1`
-(dense: LLVM lowers a table), when the discovery proves the table's facts (`Discovery.index_tables`): one table, its
-address at the load and the ADD's base each one ADRP/ADR(+ADD) constant on every path of the function's CFG
-(`exact_constant`), the table in `.text`/`.rodata`, the LDR's index scaled by the entry size, the ADD's extend computed
-exactly, and the load to the BR one straight-line block (with a probe in it, the offset switch). `build_ir.build`
-reads the index, extended as the LDR extends it, as an SSA value at the load (the register may be reused before the
-BR). Targets inside the function are branches,
-the others tail calls; the default, which an index out of range reaches, is `a64_ijump` of the BR's register. Any other
-table (`Discovery.jt_offset` holds why; the lift prints the count) is a `switch` on `fshr(t - lo, t - lo, 2)`, `lo` the
-lowest target, cases `(target - lo) >> 2`, as sparse as its targets are spread.
-
-### FP and NEON
-
-- **Arithmetic** is native: `fadd`, `fsub`, `fmul`, `fdiv`, `llvm.sqrt`, `llvm.fma` for FMADD/FMSUB/FNMADD/FNMSUB and
-  vector FMLA/FMLS. Correctly rounded, so equal to ARM's in every rounding mode. The emitter writes no `contract`
-  flags and the build passes `-ffp-contract=off` (`nx2/build.py:403`): nothing the guest kept separate is fused.
-- **FPCR to MXCSR** (`host/hos_fp.c`): FPCR.FZ sets MXCSR.DAZ and FTZ, RMode sets RC (RN/RP/RM/RZ to 0/2/1/3), every
-  exception stays masked.
-  - MSR FPCR calls `a64_fpcr_write`, which stores the context's `fpcr` and sets MXCSR.
-  - A function with an MSR FPCR is emitted `strictfp` (`sem_fp.fp_sysreg_write`, `emit_llvm.emit_strict`): its
-    rounding-dependent FP operations are constrained intrinsics with a dynamic rounding mode, kept in order with the
-    write. No function with an MSR FPCR, and no direct caller of one two levels up, contains FP arithmetic.
-  - MXCSR is set from the context before a thread's first guest instruction (`host/hos_thread.c:396`), at a fiber's
-    start (`:964`) and when a fiber switch returns (`:999`). `host/hos_setjmp.c` saves and loads MXCSR.
-  - HLE host code on a guest thread runs under the guest's MXCSR.
-- **What the game sets**: 31 MSR/MRS FPCR/FPSR sites in 11 functions. `sys_fpcr_flush_to_zero` (f_80ec0e90 →
-  f_80ec0ea0) sets FZ on the main thread (seen in the game with `HOS_FP_LOG=1`: FPCR 0x1000000 at 0.17 s); f_8169d350
-  sets or clears FZ by its argument. RMode changes only through the SDK's `fesetround`/`fesetenv`, reached by function
-  pointer only. A new thread starts at FPCR 0; a fiber inherits its first switcher's FPCR.
-- **Why MXCSR follows FPCR**: FZ because the game sets it (above) and results differ without it; RMode because it
-  costs nothing outside the `strictfp` functions, though no caller of `fesetround`/`fesetenv` was found to run.
-  Contraction off costs nothing: LLVM does not fuse operations without `contract` flags.
-- **FPSR**: MRS FPSR (8 sites) reads the context's `fpsr` ORed with MXCSR's sticky bits; MSR FPSR writes the context
-  and clears them.
-- **Fix-ups where x86 differs:**
-
-| operation | fix-up |
+| Page | What it covers |
 |---|---|
-| FMIN, FMAX | `llvm.minimum`/`llvm.maximum` |
-| FMINNM, FMAXNM | `llvm.minimumnum`/`llvm.maximumnum` |
-| FCVTZS/FCVTZU, every width | `llvm.fpto[su]i.sat` (NaN to 0, saturating) |
-| FCVTNS/NU/AS/AU/MS/MU/PS/PU | rounding intrinsic, then `.sat` |
-| FRINTN/A/M/P/Z | `llvm.roundeven`/`round`/`floor`/`ceil`/`trunc` |
-| FRECPE, FRSQRTE | ARM's estimate algorithm inline per lane, bit-exact (`nx2/lift2/fp_estimate.py`: the estimate table as a constant computed from RecipEstimate/RecipSqrtEstimate, integer arithmetic and selects, FZ and RMode from the context's FPCR); the game has 904 FRSQRTE and 130 FRECPE sites, all single precision, 2 or 4 lanes |
-| FRECPS, FRSQRTS | `fma` plus the 0·∞ special case |
-| FCVT to and from half | `fptrunc`/`fpext` (F16C); FZ16 and AHP not supported |
-| FCMP, FCCMP | four `fcmp`s give NZCV (unordered 0011) |
-| TBL, TBX | `pshufb` per table register, index made relative and `uadd.sat(idx, 0x70)` to set bit 7 past 15 |
-| AESE/AESD/AESMC/AESIMC, PMULL 1Q | AES-NI and PCLMUL, by a per-function `target-features` (`sem_crypto.features`) |
-| SHA1*, SHA256* | the Arm ARM's pseudocode in scalar code, lane by lane (`sem_crypto.py`) |
-| SQSHL/UQSHL/SQRSHL/UQRSHL by register | one lane at a time (`sem_neon.lanewise`) |
-| CRC32*, CRC32C* | a bit loop (`emit_llvm.HELPERS["lift2_crc32"]`) |
+| [What the lifter emits](lifter-output.md) | The code a guest instruction becomes: registers, memory order, calls, code pointers, FP |
+| [Write a patch](patches.md) | How to run host code at a guest instruction or replace a guest function |
+| [Build and iterate on the lifter](lifter-build.md) | When you need a lift or only a build, caching, the inspection tools and checks |
+| [Pessimizations and constraints](lifter-costs.md) | Where the emitted code is knowingly slow, and the rules that keep it correct |
+| [Open lifter work](lifter-open-work.md) | The queue of output improvements, with sources and first steps |
 
-- **Allowed deviations from ARM.** `tests/test_lift2_fp.py` and `nx2/test_lift2_leaf.py` accept exactly these,
-  count them by class and fail on anything else:
+## How the parts fit
 
-| class | what differs | where |
+The lift and the build are two separate steps:
+
+1. `nx2/lift.py` loads the game's modules at their addresses, relocates them, finds the functions, and writes the
+   *plan* (`work/sa/plan.pickle`) and the runtime's tables (`work/sa/gen`). The plan holds each function's
+   instructions, not lifted code.
+2. `nx2/build.py` computes the whole-program summaries, lifts every function from the plan into LLVM IR in parallel
+   worker processes, compiles them with clang, and links them with the runtime and `host/`.
+
+Because the plan holds instructions, a change to the lifter needs only a build, not a new lift.
+
+| Part | Where | What it does |
 |---|---|---|
-| `nan` | a NaN result with another sign or payload than ARM's: x86's default NaN is negative (0xFFC00000), x86 propagates the first NaN operand where ARM prefers a signalling one, LLVM may commute operands; FPCR.DN is not modelled. `LIFT2_DEFAULT_NAN=1` at lift time gives ARM's default NaN for a NaN made from non-NaN operands | every FP operation producing a NaN |
-| `fz-boundary` | under FZ, a result of the smallest normal magnitude: ARM detects tininess before rounding, x86 after | FP arithmetic under FZ |
-| `fz-minmax` | under FZ, a subnormal operand returned unflushed where ARM returns the signed zero | FMIN/FMAX/FMINNM/FMAXNM and their pairwise and across-lane forms |
-| `snan-minmax` | a signalling NaN operand treated as quiet (the number returned) | FMINNM/FMAXNM and their pairwise/across forms |
-| FPSR | MRS FPSR sees MXCSR's sticky bits, which also record lanes and operations the guest never had | MRS FPSR (8 sites) |
-| FRSQRTS | the halving is a separate exact multiply by 0.5 after the fused (3 - a*b) | results below 2^-125 (single) |
+| Image | `nx2/image.py`, `nx2/nso2.py`, `nx2/standalone.py` | Loads and relocates the modules, binds imports, hooks the replaced SDK functions |
+| Discovery | `nx2/lift2/discover.py` | Finds function bodies, jump tables, PLT stubs and setjmp callers |
+| Semantics | `nx2/lift2/enc*.py`, `sem*.py` | The decoder tables and each instruction form's meaning as IR |
+| IR and emitter | `nx2/lift2/build_ir.py`, `ir.py`, `emit_llvm.py` | A function's IR, and the textual LLVM module of a partition |
+| Summaries | `nx2/lift2/summary.py`, `bounds.py` | Whole-program register facts and each callee's call-boundary record |
+| Patches | `nx2/lift2/patch_scan.py`, `probes.py`, `host_effects.py` | Reads the host's patch declarations and lowers them into the IR |
+| Build driver | `nx2/lift2/game.py` | Partitions, worker processes, clang flags and the object cache |
+| Runtime | `third_party/a64-kit/rt`, generated by `nx2/rtgen.py` | The guest context, the guest window, indirect-call lookup, exclusive monitor |
 
-  Exact: FMIN/FMAX/FMINNM/FMAXNM signed zeros and quiet NaNs, every saturating conversion and rounding mode of
-  FCVT*/FRINT*, FRECPE/FRSQRTE, FRECPS, FCMP/FCCMP flags, every integer NEON operation.
+LLVM IR, rather than C, is the output format because it has exact intrinsics for saturating conversions, IEEE
+min and max, fused multiply-add and overflow flags, and because SSA block parameters map one to one onto `phi`. The
+lifter refuses a clang whose LLVM major version differs from the one the emitter targets.
 
-### System calls and traps
+## The game boundary
 
-- **SVC**: the flags stored, `a64_svc(ctx, imm)`, then the reload of every register.
-- **UDF, BRK, HLT** and words that are not code: `a64_trap(ctx, pc, word)`.
-- MRS/MSR TPIDR_EL0 and MRS TPIDRRO_EL0 read and write the context; MRS CNTPCT_EL0/CNTVCT_EL0 call `recomp_cntpct`
-  (the host's `a64_cntpct_host`, `host/hos_process.c`: 31.25 MHz), CNTFRQ_EL0 is the constant 31,250,000.
+The lifter holds no fact about one game. `tests/test_lifter_game_free.py` fails if game addresses, labels or symbols
+appear in `nx2/lift2`. What one game adds comes from three places:
 
-### Hooks and probes
+- **The game description**, `games/<game>/game.py` (`nx2/gamedesc.py` documents its fields). Every lift, build and
+  lifter tool takes exactly one, as `--game games/oot`. It names the dump's identity (the main module's build ID and
+  the SHA-256 of `exefs/main`), the label file, the hot list, and the host's C files. Another dump stops the lift,
+  and a build of another game's lift stops the build, each naming both values.
+- **The patch declarations** in those host C files. See [Write a patch](patches.md).
+- **The platform's facts** (Horizon, the SDK, setjmp and noreturn names) in `nx2/horizon`, shared by any title on this
+  SDK.
 
-The lifted code is never edited after the lift: everything the host adds is named by guest address, and every site
-names its instruction word, so another game version stops the lift or the build.
+## Whole-program summaries
 
-- **Patch declarations** (`host/patch.h`): every patch is a macro at file scope in the host's C, next to its body. The
-  lifter reads them with a token scanner of a fixed grammar (`nx2/lift2/patch_scan.py`: comments, strings,
-  continuations and nested parentheses handled; no C parser, no regular expression over the source), without compiling
-  the host; the compiler expands the same text into the C function (its prototype from the declaration) and into a
-  record in the object section `hos_patch`. One example of each kind:
+The summaries are what let lifted code keep registers in SSA values across calls instead of reloading them from the
+guest context. For every function, `nx2/lift2/summary.py` computes over the call graph which registers it reads,
+which it may write and must write, which callee-saved registers it preserves, what its callers read after it, and
+whether it returns.
 
-  ```c
-  PATCH_AT(0x8009a474, word(0x94ef225b), instead, none, hos_oot_calc_sleep, as(x0, ns), as(k(0x8009a478), lr)) { ... }
-  PATCH_AT_SITE(0x8009afec, word(0x94ef1f7d), instead, none, hos_oot_calc_sleep, as(x0, ns), as(k(0x8009aff0), lr));
-  PATCH_AT(0x802640a0, word(0xd503237f), before, none, rt_slots_shadow, as(x0, obj)) { shadow_obj = obj; }
-  PATCH_FUNC(0x8005ed00, word(0xd503237f), body(0xa0d86942ab307816), aapcs, x0, rt_slots_alloc,
-             orig, guest(0x802737a0), as(x0, dta), as(x1, ctx), as(x2, desc), as(x3, flags), as(x30, lr), sp) { ... }
-  PATCH_FUNC_SYM(strlen, aapcs, x0, hos_strlen, as(x0, s)) { return strlen((const char *)GP(s)); }
-  HLE(_ZN2nn2os13SwitchToFiberEPNS0_9FiberTypeE, clobbers("context switch: ...")) { ... }
-  NV(nvnMemoryPoolInitialize, reads(x29, "the frame-pointer chain's return addresses hashed into ...")) { ... }
-  HLE_EFFECTS(nvnDevtoolsBootstrap, clobbers("no proc here: unimplemented, not audited"));
-  ```
+A function gets a *full summary* only when its behavior is proven on its own code and its callees' summaries.
+Otherwise it is *demoted*: callers assume it reads and writes every register and preserves nothing. Demotion is by
+detection, not by list. The reasons are things such as a temporary register live at entry, a stack pointer that is
+not the entry value at a return, a return not through the entry `x30`, or a call to a function with unknown facts.
+About 97 % of functions get a full summary.
 
-  - `PATCH_AT` / `PATCH_AT_SITE`: host code at an instruction (Value probes and At rows, below).
-  - `PATCH_AT` at a function's entry, mode `before`: host code that watches a call (reads its arguments, changes
-    no register): the counters, waits and notes at 16 entries.
-  - `PATCH_FUNC(addr, word(W), body(H), aapcs, result, fn, [orig,] [guest(A, ...),] operand...)` /
-    `PATCH_FUNC_SYM(symbol, aapcs, result, fn, ...)`: the function is replaced by `fn`, a C function of exactly the
-    operands it declares (x0-x8, w0-w8, s0-s7, q0-q7, x30 for the return address, sp) returning its result (none, x0,
-    w0, s0, q0); the operands are what `fn` itself uses, nothing more. `f_<addr>` is a tail call of the adapter the
-    macro makes, `hos_func_<key>(ctx)`, which reads the operands from the context, calls `fn` and writes its result
-    there (`game.FUNC_STUB`); the lifted body stays, under `hos_orig_<key>`. With `orig` first, `fn` gets it as
-    `GuestFn *orig` and may run it as `guest_orig(orig, a0, ...)`: a0.. go to x0.. and the body runs on the call's
-    context and stack, every other register as the call had it (the caller stored all the body reads: the record has
-    its inputs). An argument `fn` changes before the body runs (loadImage_'s src, the movie's NDVE resource) is passed
-    so; `fn` has no context to write it into.
-    `guest(A, ...)`: `fn` calls those guest functions through `guest_call` (`GuestCall *g`, after `orig`), on the
-    call's stack, so `sp` is then an operand. A call of it has one record (Calls and returns), never the "may decline"
-    pair of the entry hooks this replaced. `W` is the first word and `H` `patch_scan.body_hash` (the first 64 bits of
-    the SHA-1 of the body's words): the build stops on another function there, no lifted function, or a symbol the
-    image does not export (`patch_scan.check_funcs`). No save or restore is left around `orig` (the body writes what
-    its summary says, which the callers reload); `guest_call` keeps `call_restoring`, which puts every register back,
-    as for rows, since guest code called from inside a host function must not change what the caller keeps.
-  - `HLE(symbol, effect...)`: the function is replaced by `void imp_<symbol>(Ctx *c)`, hooked where the game imports
-    it and at the SDK's definition (`nx2/standalone.py`, `a64_hooks.c`: `f_<addr>` is the host function; the guest body
-    is not lifted). `PATCH_ANSWER(symbol, value, "why")`: the function replaced by a constant answer in x0 (nothing
-    else written), with the reason it is enough (`host/nn_answers.c`: the SDK functions OoT was seen calling that need
-    no more). It has no host function: a direct call is lowered in place (Calls and returns), and its generic entry
-    `f_<addr>` (a code pointer, a BLR) is lifted IR that writes x0 and returns (`game.answers_ir`, one small object;
-    `a64_hooks.c` keeps a comment line for it), so the declaration is the one definition. Every other OS-facing import
-    the game makes gets a generated stub (`gen/a64_stubs.c`) that stops the game when called, naming the function, its
-    caller in the log (`hos_import_stop`, `host/hos_hostcall.c`, noreturn); a direct call of one is a noreturn call; an HLE or
-    answer of a symbol no module of the image has stops the lift. `NV(name, effect...)`: an NVN proc, `static void
-    n_<name>(Ctx *c, void *u_)` (`host/nvn_native.c`'s table; the SDK's export `name` is routed to it); a proc the game
-    asks for that has none is handed out, and a call of it stops the game with its name (an SDK export with no proc is a
-    stop, so a direct call of it is noreturn; a proc pointer's call is a BLR, which stays a call). `HLE_EFFECTS(symbol,
-    effect...)`: the effects of a replaced function whose body is not declared here (a dispatch). A call reads the AAPCS
-    arguments, x8, v0-v7, SP and x30 (`host_effects.HLE_ARGS`) plus its `reads(...)`, and keeps x19-x29 and SP unless
-    it declares `clobbers("why")` (Calls and returns).
-  - effects: `reads(reg..., "why")` (xN, vN or sp, the reason a string), `clobbers("why")` (HLE, NV, HLE_EFFECTS
-    only), each at most once.
+Each patch declaration's effects are part of the facts, so a summary covers the host code that runs inside the
+function. A build whose declarations changed recomputes the summaries without a new lift.
 
-  The scan stops with file:line on: a declaration inside `#if`, inside a function or made by another macro (a
-  `#define` whose body names a kind); a bare number where `word(...)` belongs; an unknown mode, result, register or
-  effect; a reason that is not a string; a second `PATCH_AT` of one function, a `PATCH_AT_SITE` before or without its
-  `PATCH_AT` or of other types, a duplicate site; a second `PATCH_FUNC` of one function or of one C function, an
-  operand or result outside its set, `orig` or `guest(...)` out of place, `guest(...)` without `sp`; a symbol declared
-  twice, or an
-  `HLE_EFFECTS` or `PATCH_ANSWER` of a function `HLE` declares. The build compares the compiled host's records with the scan
-  (`patch_scan.check_records`, `nx2/build.py`: count and text as tokens), so a declaration one of them sees and the
-  other does not stops it. What the lift reads of the host's C is the set of `HLE` symbols (the functions it hooks:
-  `standalone.implemented`, `nx2/lift_mark.py`); everything else is read by the build, so adding, changing or removing
-  a row, replaced function or effect needs no lift (the game boundary: Pipeline and files).
+What to expect: computing the summaries cold takes about two minutes and about 1.5 GB per process; from the cache, a
+few seconds. The build prints how many call sites keep registers and why the others do not.
 
-  Value probes and At rows: `PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }` and, for each further site
-  of the same function, `PATCH_AT_SITE(...)` (a further site whose operand types differ is a compile error). The
-  containing function is not written: the build finds it from the plan (`probes.resolve`), and a site in no lifted
-  function or in more than one stops it with the declaration's file:line. Rows at one instruction run in the order of
-  their declarations (the host's files in the build's order, each file's in its order).
-  - mode `after`: after the instruction (after a BL or BLR when the call returns); `before`: on the edge into it, which
-    must not be a branch target of its function, a jump-table target or another function's entry (its own entry is
-    allowed: the row runs on every call); `instead`: in place of the BL or BLR (the call is not made, x30 set as the call
-    would; an At row with `replace`; on a BLR the target register is an operand like any other), in place of a BR that
-    is no jump table's (a tail call: the row runs, its result is the tail callee's, then the function returns; the
-    record is the row's reads and writes at a return), or in place of any other instruction's result (a Value probe: the declared
-    result must be the instruction's one destination register Rd at its width, `wN` for a 32-bit destination and `xN`
-    for a 64-bit one, and the operands `xN`, `add(xN, K)` or `sN`; as the frame-step cuts of the pick-up indicator and
-    the water's ripples, `fcvtzs w12, s0` at 0x80a88300 and `fcvtzs w9, s0` at 0x800675f8, take `hos_frame_whole`).
-    `probes.errors` holds these checks; the build and `nx2/patch.py check` both run it.
-  - result: `none`, `xN` (`uint64_t`), `wN` (`uint32_t`, zero-extended), `sN` (`float`, the rest of Vn zero), `qN`
-    (`hos_q`). Operands, one parameter each: `xN`, `wN`, `sN`, `qN`, `sp`, `ld(xN or sp, K)` (the 64-bit guest word
-    there, loaded by the lifted code: a frame slot the host needs is handed over as a value, the host does not read
-    the frame), `add(xN, K)`, `k(K)` (a constant); `as(operand, name)` names the parameter. `guest(callees...)` or
-    `guest(computed)` first: the host function calls guest code, its first parameter a `GuestCall` whose `guest_call`
-    runs it on a given SP and puts every register back, so the row writes nothing else. `io(regs...)` last: registers
-    (`xN`, `wN`, `qN`) the host function rewrites through a struct (its last parameter; the lifter allocates it in the
-    entry block).
-  The values stay SSA values; the call is never moved or removed unless the row replaces it. A row's result or io
-  register must be caller-saved or written by the instruction itself, so a row never changes what its function
-  preserves (checked at the build). The host functions take plain values and guest addresses, never the context; a
-  guest object is a typed pointer to a struct of the fields used at their guest offsets, each `_Static_assert`ed,
-  `may_alias`.
+## The verification build
 
-| family | host functions | guest functions |
-|---|---|---|
-| dynamic resolution, fixed scale | `hos_oot_dynres_flags`, `hos_oot_fixed_scale`, `hos_oot_scale_recompute`, `hos_oot_scale_flags` | `f_80825aa0`, `f_831f3200` |
-| native scene (`HOS_SCENE_NATIVE`), `HOS_FIX_RES` | `hos_oot_scene_mode`, `hos_oot_scene_check` | `f_806702e0`, `f_831f3200` |
-| frame seconds | `hos_oot_frame_step_probe`, `hos_oot_frame_step` | `f_80706be0`, `f_83b6ea90` |
-| movie frames | `hos_oot_movie_count` | `f_83b7c710` |
-| output size | `hos_oot_output_size`, `hos_oot_output_config`, `hos_oot_base_size` (x2), `hos_oot_base_size_bits` (x2) | `f_81222ce0`, `f_810a7b70`, `f_80ea2f30` |
-| render-target pool | `hos_oot_rt_pool_config`, `hos_oot_rt_heap_size`, `hos_oot_rt_heap_use` (after a BLR), `hos_oot_rt_rest` | `f_836ce9d0`, `f_83b7b340`, `f_80b72340` |
-| text speed | `hos_oot_text_time` (before) | `f_80b1e140` |
-| native mouse camera | `hos_mouse_camera` (`host/mouse_native.c`) | `f_80644c80` |
-| widescreen | `hos_oot_wide_out` (x2), `hos_oot_wide_scene`, `hos_oot_wide_ratio`, `hos_oot_wide_projection_ratio` (x4), `hos_oot_wide_movie`, `hos_oot_wide_hud` (q1, q4 -> q1), `hos_oot_wide_save_picture` (io w1-w4) | `f_81222ce0`, `f_83213890`, `f_804e48c0`, `f_834a5cc0`, `f_8006ec60`, `f_8025b910`, `f_8035a8c0`, `f_83b7c710`, `f_80794330`, `f_802a46e0` |
-| occlusion off (`HOOKSHOT_OCCLUSION_OFF=1`) | `hos_oot_occlusion_flag` (x6) | `f_811cc790` |
-| `HOS_BENCH`'s "in play" | `hos_oot_player_update` | `f_82c415e0` |
-| per-core ring owners | `hos_oot_ring_write` (x14: 7 pushes, 7 pops) | `f_8004ab40`, `f_800aff80`, `f_800b3ce0`, `f_800b73d0`, `f_8073a090`, `f_8073c900`, `f_83af6150`, `f_83af59c0` |
-| renderer patches (`host/direct_*.c`, `host/rt_slots.c`) | depth copy (instead of 2 BLRs: the proc x8, x0-x7), job sync (instead of 4 BLRs and 1 BR: the proc x8 / x4 and its arguments), job call (instead of its BLR: x8, x0-x2, x21, `[sp+0x10]`), mesh list resets, mesh args, sky LUT and terrain tiles (x2: the memcpy's size), render-target slot (x10, `[sp+192]`), mesh system binds (guest call), layer ahead (guest call, `[sp+0x48]`), inline passes (two calls of `f_80681320`), the job view (x25), list kinds (13 recorders) | see the table below |
+To check that the summaries are conservative enough, build with `HOOKSHOT_LIFT_VERIFY=1`. Every function with a full
+summary is then wrapped (`host/lift2_verify.c`):
 
-The patches a caller makes of its own call (no host function is told who called it; a row at the call site says it):
+- At entry, registers the summary says are not read are poisoned.
+- At exit, a returning noreturn function, a changed preserved register, or a write the summary does not allow is
+  reported.
+- Before each call, context fields that the lifter decided no one reads are poisoned, so a wrong omission shows up.
+- Calls to replaced SDK functions go through a stub that reports a callee-saved register the host changed.
 
-| caller | site | what the caller does, and why it is patched |
-|---|---|---|
-| `f_8348c680` frame_body | `bl` GetSystemTick at 0x8348c76c, replaced | its frame-end clock read; the replacement also notes x19, the graphics module, for `host/nn_vi.c`'s real-time step |
-| `f_800998a0` job_calc_runner | three `bl` SleepThread (0x8009a474, 0x8009afec, 0x8009b230), replaced | polls its sub-stages with SleepThread(20 us); a timed 20 us sleep with 1 us timer slack (`hos_oot_calc_sleep`) where SleepThread spins, ~3.9 ms of CPU a frame less (`HOS_CALC_NAP=0`: SleepThread's own) |
-| `f_805902c0` frame_present_submit | `bl` SleepThread at 0x8059051c, replaced | polls its frame's NVN event between sleeps; `HOS_PRESENT_POLL=1` (an experiment, off) looks at the event between yields |
-| `f_80667d20` system_texture_table_write | `bl` f_800634b0 at 0x806680d8, replaced (guest call) | re-registers one system texture's descriptor every frame; the call is skipped while the entry, view and texture are unchanged |
-| `f_80f6c9d0` agl_memory_pool_create | after `ldr x8, [x8]` at 0x80f6cb18 | agl's pool wrapper; names the pool its nvnMemoryPoolInitialize makes, so the texture heap (made inside f_80f6c580's run) is told to the back end |
-| `f_80289590`, `f_80666d20` | instead of the depth copies' `blr x8` (0x80289cc0, 0x806675d8) | the two depth copies that need barriers around them |
-| `f_82c02f20`, `f_82c03170`, `f_831fa4a0` | instead of WaitEvent's and Barrier's `blr x8` (0x82c03018, 0x82c030c0, 0x82c03268, 0x82c03310) and of f_831fa4a0's tail jump `br x4` (0x831fa588) | a job's waits and barrier kept for the layer list that calls the job (`host/direct_job_sync.c`) |
-| `f_806688c0` pass_job_caller | instead of CallCommands' `blr x8` at 0x80668c80 | the kept waits, barrier and grid dispatches recorded before the job's commands |
-
-No patch rewrites a code pointer or hands the game a host-call slot: until 2026-11-15, 19 After rows rewrote the proc
-just loaded (x8 / x4) to a host-call slot (`hos_hostcall`) of a substitute taking the context; 7 of them are the rows
-above, and 12 were deleted (on loads that feed no call of the proc they tested: counters, a vtable call, other procs'
-slots, and a third copy only counted). `hos_hostcall` serves the NVN procs alone.
-| the 13 list recorders (`host/direct.c`) | after `ldr x8, [x8]` before BeginRecording's blr | the function beginning a command list names its kind (load lists 1-6, job, layer, gate, compute, head) |
-| `f_80084de0` render_job_record | after `ldr x8, [x8]` at 0x80085334 | its BeginRecording's list is the job's; x25 is the job's view record |
-| `f_802640a0` pass_local_shadow_depth | after `str w8, [sp, #0x38]` at 0x80264128 | its alloc of the local shadow map, whose size is a class (`host/rt_slots.c`) |
-| `f_806688c0`, `f_8028a2a0` | before their calls of `f_80681320` | the layer list drawing a recorded pass inline; the pass's key and draw context handed over (`host/direct_passes.c`) |
-
-`f_80365f00` (report_reader_a) marks its own run with a `PATCH_FUNC` that runs its body (orig), so the occlusion grid slots' invalidates
-inside it do not wait (`host/nvn_native.c` `readback_stamped`).
-
-- **The per-core rings** are an assertion, not a patch. The singleton at `**0x84c9e890` holds seven rings (ring k at
-  +0x20 + k * 0x30: buffer +0x10, capacity +0x18, head +0x1c, count +0x20). The game picks a ring by
-  GetCurrentCoreNumber and pushes and pops without a lock or atomics, which is safe only while one thread per core
-  number writes each ring. `hos_oot_ring_write` (`host/oot_probes.c:394`) records each ring's first writer and logs
-  another writer once per ring and thread; the bench's end logs each ring's owner. The rows stay on in normal play.
-- **No site takes the whole context.** The former C after an instruction (widescreen's HUD and save picture) and the
-  `SPLICE_AFTER` bodies of the renderer patches are At rows; the camera jitter for temporal upscalers is parked
-  ([parked-patches.md](parked-patches.md)).
-
-### Fibers and C++ exceptions
-
-- **Fibers**: `nn::os::InitializeFiber`, `SwitchToFiber`, `FinalizeFiber`, `GetCurrentFiber` are HLE'd
-  (`host/hos_thread.c`): a guest fiber is a host fiber with its own guest context. The SDK's fiber assembly is never
-  reached.
-- **C++ throws are a fatal stop** (`host/cxx_throw.c`): `__cxa_throw` (with the type_info's name), `__cxa_rethrow`,
-  `_Unwind_RaiseException` and `_Unwind_ForcedUnwind` stop the game with the caller's guest address. Unwinding through
-  lifted frames is not supported: the guest unwinder's resume would return into host frames. The game has 24
-  `__cxa_throw` call sites (main 6, sdk 18) and 9 real catchers (main 1, sdk 8); the one in main (0x823b01c0) is
-  reached only from libc++'s length checks. The kokiri smoke and a 600-frame market bench throw nothing.
-
-## Whole-program summaries and the verification build
-
-`nx2/lift2/summary.py` computes per function, over the call graph's strongly connected components (callees first, a
-fixed point inside each): inputs (backward liveness), clobbers and must-defs, the preserved callee-saved registers (a
-frame pass tracking SP, x29 and copies as entry SP plus a constant, and which frame slots hold entry values of
-x19-x30 and d8-d15), results, noreturn (seeded by the fatal functions' names and BLs with nothing after them), FP use.
-Every build has them: the lift writes the job's input beside the plan (`game.plan_summaries`;
-`work/sa/summary_input_<key>.pickle`, kept until the next lift) and the cache's key: `work/sa/summaries_<key>.pickle`,
-a SHA-1 of the image, the discovery's facts, the HLE'd functions' symbols, the code of
-`enc*`/`sem*`/`ir`/`bounds`/`build_ir`/`summary`/`probes`/`host_effects.py` (`game.source_key`: the syntax tree without
-comments and docstrings) and the patches' declared effects (`game.summary_effects`: every row's reads,
-writes, guest callees and replace; every HLE'd function's summary; every `PATCH_FUNC`'s operands, result, `orig` and
-guest callees).
-A build whose patches declare other effects than the summaries in the plan count computes them again from the input,
-without a lift; a row whose effects are the same (its host function renamed, say) reruns nothing. The build's first
-step computes them before the lift workers and the
-compilers start, in a process of its own (`game.finish_summaries`, `summary.job`: 8 workers over the components' DAG,
-`HOOKSHOT_LIFT_SUMMARY_JOBS`), then packs them into the plan. Cold: 108 s (graph 17 s, fixed point 59 s, results
-26 s), 1.4 GB in the summary process and 1.3 GB in its largest worker; from the cache: 5 s. The build uses them at
-direct calls (above) and prints the sites (`bounds.call_report`): of 794,900 BL sites, 766,689 keep registers across
-the call (12.0 of x19-x29 and SP a site on average), 71,482 of them to host callees; the others reload everything: a
-noreturn callee (trap after) 14,170, a demoted one 13,774, a `PATCH_FUNC` with `orig` whose body has no full summary 205
-(was 327 for the entry hooks it replaced), a setjmp owner 39, an HLE'd function declared clobbering 23 (2026-11-15, at
-the replaced functions' landing; the summaries: 287,073 of 294,523 full).
-The 182,791 BLR sites reload everything. (Before the probes declared their effects, 2026-11-15, a call of a function
-with a probe, splice or C after an instruction reloaded everything: 551 sites.)
-
-**The host's patches** are part of the facts, each by its declaration, so a function's summary covers the host code
-that runs inside it or in its callees:
-- Value probes and At rows (`probes.row_effects`, `summary.rows`, `summary.Func`): their declared reads and writes
-  are placed where they happen.
-  - A before row's reads are before the instruction, and its writes are before the instruction reads, so what the row
-    writes is not an input there.
-  - A Value probe's reads are the instruction's own.
-  - An after row reads once the instruction has written its destination. Every write of an instruction's template
-    happens, and a W destination is its whole X. So the row's reads of what the instruction writes are no inputs.
-    After a BL or BLR the after rows run when the call returns (`Func.after`). Their reads are taken past the callee's
-    must-writes (`liveness`), and they count among what the caller reads after the call (`call_reads`, the callee's
-    results; `tmp_after_call`). A row's guest callees' inputs are still counted at the instruction (an
-    over-approximation).
-  - An after row's writes are after the instruction.
-  - A row whose host function calls guest code (`guest`, through `guest_call`, which puts every register back) also
-    reads those functions' inputs there (a call-graph edge to each), and every register for `"computed"`.
-  - A row in place of a BL or BLR (`replace`) makes that instruction no call: its reads are the rows', and it writes
-    x30 and the rows' results.
-- A replaced function (`summary.FUNCS`, `func_facts`, `func_summary`; the declarations as `patch_scan.funcs` finds them
-  at the build, not from the lift): its body keeps its own summary, unchanged by the replacement; a call of it has the
-  declaration's record: its operands and its guest callees' inputs read (a call-graph edge from the body to each, so
-  they come first), its result and x30 written on every return and nothing else, the callee-saved registers kept, and
-  it returns; with `orig`, the body's inputs, clobbers and preserved registers joined, x0-x8 written (`guest_orig`'s
-  arguments), and unknown if the body's facts are. What its callers read after it does not become its body's results
-  (`call_reads`): the body's only caller is `guest_orig`, which reads x0.
-- An HLE'd callee (`summary.host_summary`): AAPCS64 facts with the declared reads (`host_effects.hle_reads`:
-  x0-x8, v0-v7, SP, x30 and its `reads(...)`); one declared `clobbers(...)` or without a known symbol reads every
-  register. The lift's record of an HLE'd callee takes the same facts (`bounds.call_bounds`).
-
-A function is demoted (its interface is outside the AAPCS64) by detection, not by list:
-
-| reason | functions | what |
-|---|---|---|
-| tmp_in | 7,110 | x9-x18 live at entry |
-| tmp_after_call | 5,391 | x9-x18 or flags read after a call that may change them |
-| cs_clobber | 2,086 | a callee-saved register not proven preserved at a return |
-| unknown callee | 1,729 | calls a function with unknown facts |
-| sp | 1,682 | SP not entry SP plus a constant, or not entry SP at a return |
-| lr_ret | 1,575 | a return not through the entry x30 |
-| flags_in | 692 | NZCV live at entry |
-| split_frame | 214 | a tail call with the frame still allocated |
-| save_ptr | 26 | entry x19-x30, SP or d8-d15 stored through a pointer outside the frame |
-| inconsistent | 20 | a preserved register written but never read |
-| lr_data | 7 | entry x30 used as data |
-| fallthrough_entry | 1 | entered by falling through from another function |
-| dangling_bl | 1 | a BL with nothing after it to a callee that returns |
-
-sp, save_ptr, lr_data, lr_ret and split_frame make a function's facts unknown (its callers assume it reads and writes
-everything and preserves nothing). The x9-x18 counts are upper bounds: the liveness is path-insensitive, and the
-examples read (main 0x809d78c0, 0x80051080) read x18 or x12 on paths correlated branches make infeasible.
-
-Over the whole game (294,523 functions, 17.65 M instructions): 287,064 functions (88.1 % of the instructions) have
-full summaries; 669 are noreturn; 6,996 write FPCR or call something that does; 31,854 contain FP or NEON; 610,321
-callee-saved save/restore pairs in 174,408 functions. Call edges (1,073,417; a noreturn seed counted as its target):
-
-| target | edges | share |
-|---|---|---|
-| direct to a full summary (BL 735,355, tail 68,519) | 803,874 | 74.9 % |
-| indirect (BLR 182,791, BR 23,561) | 206,352 | 19.2 % |
-| an HLE'd function (44,283 + 2,221) | 46,504 | 4.3 % |
-| direct to a demoted function (15,256 + 1,431) | 16,687 | 1.6 % |
-
-**The verification build** (`HOOKSHOT_LIFT_VERIFY=1` at build time) wraps every function with a full summary
-in `host/lift2_verify.c`: at entry it poisons the registers the summary says are not read (`0xDEAD`, register,
-function); at exit it reports a noreturn function that returned, a preserved register changed, and a register written
-that the summary says is not; then it restores what is preserved and poisons the written registers no caller reads
-(`0xDEAE`). Violations are logged once per function, kind and register to the game log and `lift2_violations.txt`.
-Result (2026-11-14, 262,527 functions): zero violations and no crash in the kokiri smoke scene, the market and
-zoo_static benches (600 frames each) and a 100 s title boot.
-Before every BL it fills the context fields no reader reads there (`omit_stores`: neither the callee's record reads
-them nor the caller reloads them before the callee must write them) with `0xDEAF`, the register and the BL's address
-(IR `sitepoison`; only registers the function itself may write).
-The exit check reports a result the summary says the function writes on every path still holding it ("result not
-written, store omitted at a call", naming the BL); an input holding it at entry is counted, not reported, as inputs
-over-approximate (an indirect jump's target is assumed to read the AAPCS64's arguments, not the x29 and x30 a callee
-saves; host code calls guest functions with fewer arguments than their summaries list). The log counts entries
-meeting the site poison and exits poisoning registers (`lift2 verify: N ...` at powers of two).
-It also routes every BL to an HLE'd function declared clean through a stub (`hchk_<addr>`, `game.HOST_CHECK`) that
-reports x19-x29 or SP changed by the host (`lift2_host_enter`/`lift2_host_exit`). Result (2026-11-15, with the host
-checks, the omitted stores and the patches in the summaries): zero violations in the kokiri smoke scene (40 s), with
-2^28 entries meeting a site poison, 2^20 of them in an input, and 2^27 exits poisoning a register.
-
-## The build
-
-- **Partitions** by guest address, about 120,000 guest instructions each (`game.PART_INSNS`); the hot list's functions
-  (`HOOKSHOT_HOT_FUNCS`, default the game description's, `work/hot_funcs_play.txt`, made by `scripts/hotlist.py`) in
-  partitions of their own.
-- **Optimisation levels**: hot partitions at `-O2` (`RX_HOT_OPT`), the rest at `-O1` (`nx2/build.py --opt`). clang's
-  -O1 pipeline has no DSE, so a level without it runs as `opt` with clang's own pipeline for that level and `dse` after
-  `memcpyopt`, where -O2 has it, then `clang -Xclang -disable-llvm-passes` for the code generation at that level
-  (`game.opt_argv`, `game.compile_ir`; `dump.py` the same). On 6 cold partitions against plain -O1: `.text` -13.3 %,
-  context stores in the optimised IR -32.8 %, compile time the same (59 s); -O2 gave -15.9 % and -36.7 % in 133 s.
-  Every partition also gets `-march` (`RX_MARCH`, else the host's: x86-64-v3 on an AVX2 machine), `-ffp-contract=off`,
-  `-ffunction-sections`, `-mllvm -rotation-max-header-size=0` and `game.DSE_FLAGS` (capture tracking up to 100,000
-  uses, DSE's per-block definitions 100,000, scan and walk 1,000, other-block cost 1). No `-mno-red-zone`.
-- **Caching**: a partition's object is kept in `work/objcache` by an input key: the lifter's code (`game.code_key`:
-  every `nx2/lift2` source as `game.source_key` takes it, so comments are not in it; the patch declarations are in
-  the host's C), the discovery's facts (`game.facts_key`: the plan as the lift wrote it, the summaries left out), the flags,
-  `HOOKSHOT_LIFT_VERIFY`, its functions, and for each its rows, its `PATCH_FUNC`, its summary and the call-boundary record
-  of every function it may branch, call or fall to (`game.part_key`, `game.branch_targets`). The code pointer translation
-  (`code_ptrs.targets`, `code_ptrs.sites`) reads only the plan (`code_excluded`, the bodies, the jump tables) and its
-  own code, both in the key; the count of sites a partition translated is kept beside its object under the same key
-  (`.cp`). An unchanged partition is
-  neither lifted nor compiled again: editing a row recompiles the partition holding its function (and those whose
-  callees' records its declared effects change); editing a semantic template, the IR, the emitter, `bounds.py` or the
-  lowering code of `probes.py` recompiles every partition, as every function's IR may change with them. Objects no build links are removed after `HOOKSHOT_OBJCACHE_DAYS` (default 3).
-
-| switch | when | what |
-|---|---|---|
-| `nx2/build.py --jobs N` (`HOOKSHOT_JOBS`), `--opt O1` | build | parallel jobs (default: by the memory, `build.default_jobs`); the cold partitions' level |
-| `RX_HOT_OPT` | build | the hot partitions' level (default `O2`) |
-| `RX_MARCH` | build | the target CPU (default: the host's) |
-| `--game games/<game>` | lift, build, tools | the game description (`nx2/gamedesc.py`), required |
-| `HOOKSHOT_HOT_FUNCS` | lift | the hot list (over the description's) |
-| `HOOKSHOT_LIFT_VERIFY=1` | build | the verification build |
-| `HOOKSHOT_LIFT_SUMMARY_JOBS` | build | the summaries' workers (8) |
-| `LIFT2_DEFAULT_NAN=1` | lift | ARM's default NaN for generated NaNs |
-| `HOOKSHOT_LLVM_BIN` | lift and build | where clang is |
-| `nx2/lift.py --max-func N` | lift | cut functions larger than N instructions where no branch crosses |
-| `HOOKSHOT_OBJCACHE_DAYS` | build | object cache retention |
-
-| measure | value | at |
-|---|---|---|
-| executable | 209.24 MB | stores no reader reads omitted, by the call-boundary records |
-| `.text` / lifted code (hot / cold partitions) / bss | 172.33 MB / 169.35 MB (7.72 / 161.63) / 40.05 MB | stores no reader reads omitted, by the call-boundary records |
-| x86 code bytes per guest instruction | 15.6 on average (with page marks and polls; not rescaled) | 860eb332 |
-| relift, cold (`scripts/relift.sh`) | 556 s with the summaries computed (lift 95 s; build: summaries 110 s, partitions lifted 106 s, compiled 237 s with 7 jobs), 13.07 GB peak (16 GB scope); from the summaries' cache about 110 s less | stores no reader reads omitted, by the call-boundary records |
-| relift, warm (partitions from the cache) | about 100 s | 338ce2c0 |
-| host-only change | about a minute | commit not recorded |
-| market 600, fixed step | frame mean 9.43-9.63 ms (one run on each of this change's last three builds), median 9.42-9.60, p99 10.02-10.34; CPU 14.04-14.41 s over the 600 frames | stores no reader reads omitted |
-| lift speed, one core | 33-56 k guest instructions/s (decode, IR, LLVM IR) | commit not recorded |
-
-## Checks
-
-| check | what |
-|---|---|
-| `tests/test_lift2.py` | the decoder's tables, every template on synthetic states, small programs (no dump) |
-| `tests/test_lift2_fp.py` | FP and NEON forms on edge values; the allowed deviations counted |
-| `tests/test_lift2_discover.py`, `test_lift2_tables.py`, `test_lift2_program.py`, `test_lift2_summary.py`, `test_lift2_verify.py` | discovery on a synthetic image, tables, a lifted program with the generated runtime, summaries, the verification wrapper |
-| `nx2/lift2/selfcheck.py` | the decoder against llvm-mc on every distinct word of the game |
-| `nx2/test_lift2_leaf.py` | random functions and call trees of the game run from random states against Unicorn (`nx2/lift2/reference.py`; the dump) |
-| `nx2/lift2/dump.py` | a function's guest code, IR, LLVM IR, optimised IR and x86, to read |
-| in the game | the smoke scene against the phashed golden, a title boot, the benches (`docs/development.md`) |
-
-## Pessimizations and their justification
-
-Each entry: what is emitted, what it costs, what would remove it, and why it is kept. "Unproven" means nothing in this
-tree shows the constraint is needed; the experiment named decides it.
-
-1. **Context traffic.** Write-through of every register before calls and exits, and a reload after every BLR and
-   SVC, and after a BL of every register but the callee's preserved x19-x29 and SP (all of them after a callee
-   without a full summary, an HLE'd function declared clobbering, a `PATCH_FUNC` with `orig` whose body has no full
-   summary, a setjmp owner). About 31-33 % of code bytes on the sample were context accesses
-   (`disp(%reg)`) at 860eb332, before the preserved registers stayed in SSA; not measured again. Since `captures(none)`
-   on the declarations and `game.DSE_FLAGS`, a store overwritten before anything reads the context is dropped. What
-   stays (2026-11-15, the lifter's IR over the whole game): of 8.45 M stores reaching a reader, 29 % are read (callee
-   inputs, reloads, results), 25 % dead (a temporary the callee does not read and the caller does not reload), 21 %
-   kept only for a BLR, SVC, unknown callee or exit, 14 % callee-saved registers and x30 the callee only saves, 9 %
-   callee-saved registers at a return (7 % epilogue restores). `omit_stores` now drops the dead ones (overwritten,
-   dead at a BL whose callee does not read them, not a result at a return); the stores kept only for a BLR, SVC,
-   unknown callee or exit, and the callee-saved registers a callee only saves, remain
-   ([lifter-optimisations.md](lifter-optimisations.md), C).
-   *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs (a
-   replaced function's declared operands: its adapter reads them from the context), `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
-   `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts, HLE'd functions (they read their arguments
-   from the context); the reloads after callees the summaries do not cover and the host callees listed above.
-   Elsewhere unproven.
-2. **Callee-saved saves and restores, and guest frames in guest memory.** Every function keeps its x19-x30 and d8-d15
-   saves and restores (612,455 pairs in 174,749 functions) and its frame in guest memory. Not measured alone.
-   Removed by deleting the pairs and promoting frame slots ([lifter-optimisations.md](lifter-optimisations.md), C and
-   F).
-   *Justification:* the frame slots the host needs are loaded by the lifted code and handed over by At rows
-   (`[sp+0x48]` in `f_8007fe60`, `[sp+0x10]` in `f_806688c0`, `[sp+192]` in `f_8005ed00`), so a promotion sees them as
-   guest loads. The host still reads frames through x29: `pool_creation_key` (`host/nvn_native.c`, the return
-   addresses of a pool's creation hashed into its placement key; `NV(nvnMemoryPoolInitialize, reads(x29, ...))`), the NVN logs' chain walks
-   and the stall dump (diagnostics); and the guest calls of rows and replaced functions (`guest_call`) run below
-   the SP they are given (`host/direct_mesh_system.c` builds a 0x100-byte block there). Those must keep x29 chains. For every other function unproven: unwinding is not a reason (throws are
-   fatal). The experiment is the pair deletion for full-summary functions with a verification run.
-3. **Host-stack spills.** 5.8 % of code bytes on the sample (size-weighted) are spills to the host stack. Cause not
-   analysed. *Justification:* none; unproven what removes it (read the spills of the largest sample functions with
-   `nx2/lift2/dump.py`).
-4. **Sparse jump-table switches.** The tables the discovery cannot prove (278 of 1,475: the table's address not one
-   constant on every path 223, no table load (a BR to ADR candidates 39, to a constant 1), a join between the load
-   and the BR 15) switch on the target's offset, which LLVM lowers to compare chains when sparse. *Justification:*
-   their index switch would rest on an unproven fact.
-5. **STLR as `xchg`.** Every STLR is a `seq_cst` store (1,546 sites, 52 in hot functions; LDAR 1,478), so an STLR
-   followed by an LDAR of another address keeps ARM's RCsc order. A plain x86 store is already a release store.
-   *Justification:* unproven: no store-then-load-acquire pattern was looked for. Experiment: STLR as
-   `store atomic release` (a `mov`) behind a lift-time switch, then the smoke and the market bench.
-6. **Every function has a generic entry reachable through the table, and a guest-address path behind every BLR.**
-   `a64_lookup` still serves all 295,270 table entries, though 102,243 of them are in no origin (no relocation, no
-   code-formed address, no export, no init/fini entry); the BLR keeps its `a64_icall_guest` branch.
-   *Justification:* evidence, not yet proof. The origins of code pointers are closed in this census: every relocated
-   value that is code lands on a function entry (453,943 slots, 0 elsewhere), every code address formed in code is an
-   entry or one of the kinds `code_ptrs.audit` accounts for, and in a kokiri smoke and a market bench (agent/addr-taken,
-   HOS_DBG=addrtaken) no called target came from outside that set, apart from host calls and the host's own constants;
-   with the translation, a kokiri smoke and a market bench logged `0 sites and 0 calls took the guest-address path; 0
-   guest-valued code addresses reached the host`.
-   Not proven: uses of vtable-loaded pointers other than calls (a static scan sees only the build-time origins), and
-   coverage beyond two scenes. A non-call use found: one ordered compare (`net_grpc_authority_table_arg_cmp`), whose
-   order now follows host addresses. Experiment that closes it: the summary line over a long play session
-   (`code pointers: 0 sites ... 0 guest-valued`); then the guest path, the lookup's cache and the unreached entries go.
-7. **Indirect calls through a pointer, opaque.** 182,791 BLR sites (19.2 % of call edges with BR's 23,561), 166,256 of
-   them loading the target from a computed address (vtables), 1,335 from writable globals, 0 from read-only memory.
-   Each calls a host pointer through a register: no per-site cache, no promotion, the callee unknown to LLVM.
-   Removed by profile-guided promotion ([lifter-optimisations.md](lifter-optimisations.md), D). *Justification:* none.
-8. **The cycle barrier.** A guest load in a loop is not hoisted out of it or merged across iterations (142,299 barrier
-   blocks in 43,613 functions). Zero bytes; speed not measured. *Justification:* evidence: 8 count-bounded YIELD spin-waits on a plain byte load in the sdk
-   (0x850f5640-0x850fac30, `subs w20, w20, #1; b.eq out; yield; ldrb w8, [x19, #0x40]; tbnz w8, #0, loop`) would wait
-   out their count instead of seeing the flag if LLVM hoisted the load.
-9. **Flags stored at exits.** A function that writes flags stores all four before every tail call and indirect jump.
-   Not measured. *Justification:* evidence: 595 functions read NZCV at entry (`flags_in`), reached by split functions
-   and shared tails; with summaries the store could be limited to targets with `flags_in`.
-10. **SQRSHL and the other saturating shifts by register, lane by lane** (34 SQRSHL sites): an extract, a 128-bit
-    computation and an insert per lane. Not measured. *Justification:* AVX2 has variable shifts for 32/64-bit lanes
-    only; whether the sites are hot is unproven.
-11. **SHA-256 in scalar code** (392 sites). Not measured. *Justification:* the build targets x86-64-v3, which has no
-    SHA-NI (`nx2/build.py:403`); a per-function `target-features="+sha"` with a CPUID check is possible as for AES.
-    Whether the sites are hot is unproven.
-12. **CRC32 as a bit loop.** The C (Castagnoli) variants equal SSE4.2's `crc32`, one instruction. Sites not counted.
-    *Justification:* none.
-13. **-O1 for cold partitions** (with DSE added, The build). On 6 cold partitions -O2 is 3.0 % smaller (`.text`
-    6.24 MB against 6.43 MB) and takes 2.25 times the compile time (133 s against 59 s). *Justification:* build time:
-    the cold build's compile would go from about 4 to about 9 minutes for 3 % of cold code no profile shows hot.
-
-## Open items
-
-One line each; the queue with sources, soundness conditions and first steps is
-[lifter-optimisations.md](lifter-optimisations.md).
-
-- C: dead temporaries' stores before calls; pair deletion.
-- D: per-site indirect call cache; profile-guided promotion.
-- F: frame-slot promotion, leaves first.
-- G: libc calls as intrinsics, CRC32C as `crc32`, noreturn as `unreachable`, CCMP chains, NEON gaps.
-- STLR as release stores; the asserted address-taken set (pessimizations 5 and 6).
-- Path-sensitive liveness for the summaries (the x9-x18 demotions).
+Violations go to the game log and `lift2_violations.txt`, once per function, kind and register. A good run reports
+none. Run the smoke scene and a benchmark with this build after any change to the summaries or to what the lifter
+keeps across calls.

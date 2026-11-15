@@ -1,4 +1,4 @@
-"""Which guest functions break the AAPCS64 assumptions the lifter's fast convention makes (docs/lifter-abi-census.md).
+"""Which guest functions break the AAPCS64 assumptions the lifter's fast convention makes (docs/lifter-costs.md, "Functions outside the AAPCS64").
 
     python -I nx2/lift2/abi_census.py [--out work/lift2/abi_census.txt] [--jobs 4] [--only 0xADDR,...]
 

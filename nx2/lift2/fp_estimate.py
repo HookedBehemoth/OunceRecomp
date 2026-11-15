@@ -6,7 +6,7 @@ arithmetic below), not pasted: 256 entries for the reciprocal (index: the fracti
 root (index 128-511: the top 8 fraction bits with an even exponent, the top 7 with an odd one), each the estimate's low
 8 bits (bit 8 is always set). Everything else is integer arithmetic and selects, no branches; FPCR.FZ and RMode come
 from the context's FPCR (the host keeps MXCSR equal to it, host/hos_fp.c). A NaN operand comes back quieted (FPCR.DN
-is not modelled, docs/lifter.md "FP and NEON"); a negative FRSQRTE operand gives the default NaN. No FPSR flag is
+is not modelled, docs/lifter-output.md "FP and NEON"); a negative FRSQRTE operand gives the default NaN. No FPSR flag is
 set (the lifted code keeps no cumulative flags per operation)."""
 
 FPCR_OFF = 0x320   # offsetof(GuestContext, fpcr), third_party/a64-kit/rt/a64.h (checked by tests/test_lift2_fpest.py)

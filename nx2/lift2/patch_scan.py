@@ -1,5 +1,4 @@
-"""The host's patch declarations, read from its C source (host/patch.h says how each is written; docs/lifter.md, "Patch
-declarations").
+"""The host's patch declarations, read from its C source (host/patch.h says how each is written; docs/patches.md).
 
 A declaration is a macro of host/patch.h at file scope: the lifter reads it with a token scanner of a fixed grammar
 (comments, string and character literals, line continuations and nested parentheses handled; no C parser, no regular

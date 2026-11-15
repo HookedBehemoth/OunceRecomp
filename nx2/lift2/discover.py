@@ -2,7 +2,7 @@
 large functions.
 
 The model: a function is an entry plus everything reachable from it without crossing another entry; branches into
-another entry are tail calls. (docs/lifter.md, "Pipeline and files".)
+another entry are tail calls. (docs/lifter.md, "How the parts fit".)
 
 Input (an image): .entries, .hooks {addr: name}, .word(addr), .read(addr, n), .in_code(addr), optional .names and
 .eh_starts (function starts from the unwind info: the extent a jump table's targets must lie in).

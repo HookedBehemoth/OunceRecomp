@@ -450,9 +450,9 @@
 80df5760 thread_sead_main                 # work/assets/native/engine-layers.md: sead::MainThread
 835867c0 config_render_visit_params       # the heavy-functions analysis (agent/heavy-funcs): the render pipeline's settings visited field by field through an archive's vtable (CreateLightMap ... CreateDlss, CreateNdsr, DepthShadow*, ViewFrustumCluster*: 337 fields, each with a guarded static) (role)
 80689bf0 util_hash_murmur64a_cstr         # the heavy-functions analysis (agent/heavy-funcs): MurmurHash64A over a NUL-terminated string (multiplier 0xc6a4a7935bd1e995)
-823a6080 net_grpc_authority_table_arg     # docs/lifter.md, "Indirect calls and jumps": a gRPC pointer channel argument "grpc.target_authority_table" (x1 the pointer) with the vtable 0x84978ed8 (role)
-823a6140 net_grpc_authority_table_arg_cmp # docs/lifter.md, "Indirect calls and jumps": that vtable's compare (+0x10): three-way, by the function pointer at +0x10 (null: 0x823a62b0) by address, then +0x18: the one ordered compare of code addresses in main; it orders channel arguments, so host pointers change only that order
-85056160 module_nnmusl_init_dso           # docs/lifter.md, "Indirect calls and jumps": __nnmusl_init_dso (sdk export), from each module's DT_INIT: tests whether nnMain's address lies in the module's range (cmp/ccmp/b.hi at 0x850565b4); an At row gives it nnMain's guest address
+823a6080 net_grpc_authority_table_arg     # docs/lifter-output.md, "Indirect calls and jumps": a gRPC pointer channel argument "grpc.target_authority_table" (x1 the pointer) with the vtable 0x84978ed8 (role)
+823a6140 net_grpc_authority_table_arg_cmp # docs/lifter-output.md, "Indirect calls and jumps": that vtable's compare (+0x10): three-way, by the function pointer at +0x10 (null: 0x823a62b0) by address, then +0x18: the one ordered compare of code addresses in main; it orders channel arguments, so host pointers change only that order
+85056160 module_nnmusl_init_dso           # docs/lifter-output.md, "Indirect calls and jumps": __nnmusl_init_dso (sdk export), from each module's DT_INIT: tests whether nnMain's address lies in the module's range (cmp/ccmp/b.hi at 0x850565b4); an At row gives it nnMain's guest address
 8510d0d0 os_fiber_impl_initialize         # agent/addr-taken's analysis: nn::os::detail::FiberImplByHorizon::Initialize (sdk export): os_fiber_start_impl's address | 1, PAC-signed, into the fiber's first context (unreached: nn::os::InitializeFiber is HLE)
 
 # --- terrain, sky, vegetation

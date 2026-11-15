@@ -28,7 +28,7 @@ static int slow_calls(void) {
 }
 
 /* What the game is handed for a host call named `name` (made on first request, the same after): the host function
-   itself when it takes no user data (a code pointer is a host function pointer, docs/lifter.md "Indirect calls and
+   itself when it takes no user data (a code pointer is a host function pointer, docs/lifter-output.md "Indirect calls and
    jumps"; such handlers do not read their user argument), else its guest address in HOS_HOSTCALL_BASE.., which the
    lifted code's guest-address path takes to a64_call_miss. */
 uint64_t hos_hostcall(const char *name, HostFn fn, void *user) {

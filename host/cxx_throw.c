@@ -1,5 +1,5 @@
 /* C++ exceptions raised by the game stop it, loudly. Unwinding through lifted code cannot work: the guest unwinder's
-   resume returns into the host frames instead of a landing pad (docs/lifter-abi-census.md section 3), so a throw
+   resume returns into the host frames instead of a landing pad (docs/lifter-output.md, "Fibers and C++ exceptions"), so a throw
    that went on would continue somewhere wrong. __cxa_throw, __cxa_rethrow, _Unwind_RaiseException and
    _Unwind_ForcedUnwind are a fatal error with the thrown type (__cxa_throw's type_info name, read from guest memory)
    and the caller's guest address; hos_fatal names the thread. No run has thrown (the kokiri and market runs count 0);

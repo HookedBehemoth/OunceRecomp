@@ -1,4 +1,4 @@
-"""Probes: host code at guest addresses, where the game's code needs the host (docs/lifter.md, "Hooks and probes").
+"""Probes: host code at guest addresses, where the game's code needs the host (docs/patches.md).
 
 The probes are declared in the host's C next to their bodies (host/patch.h PATCH_AT, PATCH_AT_SITE; read by
 nx2/lift2/patch_scan.py): this module holds what they become, their checks and their lowering. Every probe names one

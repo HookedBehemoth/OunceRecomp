@@ -15,7 +15,7 @@
 #include "a64.h"
 #include <stdarg.h>
 
-/* rt/a64_rt.c: code pointers are host function pointers (docs/lifter.md, "Indirect calls and jumps"). What the game
+/* rt/a64_rt.c: code pointers are host function pointers (docs/lifter-output.md, "Indirect calls and jumps"). What the game
    hands the host (thread entries, fiber functions, the TLS hooks) goes through these: a64_fn_of the function a code
    pointer names, a64_call_received a call of it (a guest-valued one is looked up and counted); a64_guest_of the guest
    address of a code pointer, for logs */
