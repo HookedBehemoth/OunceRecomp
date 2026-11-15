@@ -167,6 +167,8 @@ volatile int hos_fixed_resolution, hos_dynres_runs, hos_native_scene, hos_fix_re
 volatile uint32_t hos_fixed_scale_bits = 0x3f400000, hos_frame_seconds_bits;
 volatile uint64_t hos_res_module, hos_step_probe;
 volatile float hos_text_scale = 1.0f;
+static int seen_loading = -1, seen_event = -1;
+void hos_bench_player(int loading, int event_playing) { seen_loading = loading, seen_event = event_playing; }
 static uint32_t out_w = 3840, out_h = 2160;
 uint32_t hos_output_size(int height) { return height ? out_h : out_w; }
 uint64_t hos_rt_pool_size(uint64_t game) { return game * out_w / 2560 * out_h / 1440; }
@@ -215,6 +217,21 @@ int main(void) {
     CHECK(hos_oot_rt_heap_size(0x34900000) == 0x34900000 + g && hos_oot_rt_heap_size(0x1000) == 0x1000);
     G64(0x4000 + 2 * 8) = 0x348ffe20; CHECK(hos_oot_rt_heap_use(g + 5, 0x4000, 2) == 5 && hos_oot_rt_heap_use(g + 5, 0x4000, 1) == g + 5);
     CHECK(hos_oot_rt_rest(g + 0x1b6cb48) == 0x1b6cb48);
+    /* the player's update for HOS_BENCH: Link's actor chain, the loading bool by its hash, the event manager */
+    {
+        const uint64_t actor = 0x8000, comp = 0x8400, mv = 0xad50, res = 0xa000;   /* (Link's life actor at mv - 0x1d50) */
+        G64(actor) = 0x84b45e18ULL; G64(actor + 624) = comp; G64(comp + 800) = mv; G64(mv + 24) = actor;
+        G64(mv - 0x1d50) = 0x84b6c460ULL; G64(mv - 0x1d50 + 16) = res; memcpy(mem + res + 88, "Player", 7);
+        G64(0xe180) = 0xb000; G64(0xb000) = 0xb100;   /* (GameDataMgr: slot -> holder -> manager) */
+        G32(0xb100 + 16) = 4; G64(0xb100 + 24) = 0xb200; G64(0xb100 + 32) = 0xb300; G32(0xb100 + 44) = 8;
+        G32(0xb300 + (0xef2b60c2u % 8) * 8) = 0xef2b60c2u; G32(0xb300 + (0xef2b60c2u % 8) * 8 + 4) = 2;
+        mem[0xb200 + 2 * 24 + 22] = 1;
+        G64(0xe090) = 0xb400; G64(0xb400) = 0xb500; G64(0xb500 + 104) = 0;
+        hos_oot_player_update(actor); CHECK(seen_loading == -1);   /* (no bench: nothing) */
+        bench_on = 1; hos_oot_player_update(actor); CHECK(seen_loading == 1 && seen_event == 0);
+        mem[0xb200 + 2 * 24 + 22] = 0; G64(0xb500 + 104) = 1; hos_oot_player_update(actor); CHECK(seen_loading == 0 && seen_event == 1);
+        seen_loading = -1; memcpy(mem + res + 88, "Navi\0\0", 7); hos_oot_player_update(actor); CHECK(seen_loading == -1);
+    }
     if (!bad) printf("ok\n");
     return bad;
 }
@@ -222,7 +239,10 @@ int main(void) {
 STUB_HOS = """#pragma once
 #include <stdint.h>
 extern uint8_t mem[1 << 16];
-#define A64_PTR(a) (mem + (a))
+#define A64_PTR(a) (mem + ((uint64_t)(a) & 0xffff))   /* (guest addresses folded into the small memory) */
+static inline void *hos_guest_range(uint64_t a, uint64_t n) { return a && (a & 0xffff) + n <= sizeof mem ? A64_PTR(a) : 0; }
+static int bench_on;
+static int hos_bench_on(void) { return bench_on; }
 #define GP(a) ((void *)A64_PTR(a))
 #define G64(a) (*(uint64_t *)GP(a))
 #define G32(a) (*(uint32_t *)GP(a))

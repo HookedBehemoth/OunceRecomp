@@ -239,3 +239,77 @@ uint64_t hos_oot_rt_rest(uint64_t size) {
     const uint64_t g = pool_growth();
     return size > g ? size - g : size;
 }
+
+/* ---- the player's update, for HOS_BENCH's "in play" (host/bench.c hos_bench_player): Link updated, no map loading
+   and no event playing. Read by the game's own structures, no guest call */
+
+typedef struct __attribute__((may_alias)) { uint64_t vtable; uint8_t _0[616]; uint64_t components; } OotPlayerActor;
+_Static_assert(offsetof(OotPlayerActor, components) == 624, "components");
+typedef struct __attribute__((may_alias)) { uint8_t _0[800]; uint64_t movement; } OotPlayerComponents;
+_Static_assert(offsetof(OotPlayerComponents, movement) == 800, "movement");
+typedef struct __attribute__((may_alias)) { uint8_t _0[24]; uint64_t actor; } OotPlayerMovement;   /* (Link's actor at movement - 0x1d50) */
+_Static_assert(offsetof(OotPlayerMovement, actor) == 24, "actor");
+typedef struct __attribute__((may_alias)) { uint64_t vtable; uint8_t _0[8]; uint64_t resource; } OotLifeActor;
+_Static_assert(offsetof(OotLifeActor, resource) == 16, "resource");
+typedef struct __attribute__((may_alias)) { uint8_t _0[88]; char name[8]; } OotActorResource;   /* "Player" for Link */
+_Static_assert(offsetof(OotActorResource, name) == 88, "name");
+typedef struct __attribute__((may_alias)) {   /* GameDataMgr: its bools, as f_8022d9c0 (gamedata_get_bool) reads them */
+    uint8_t _0[16];
+    uint32_t bool_count;   /* +16 */
+    uint8_t _1[4];
+    uint64_t bools;        /* +24: entries of 24 bytes, the value at +22 */
+    uint64_t table;        /* +32: (name hash, index) pairs, open addressing */
+    uint8_t _2[4];
+    uint32_t table_size;   /* +44 */
+} OotGameDataMgr;
+_Static_assert(offsetof(OotGameDataMgr, bool_count) == 16 && offsetof(OotGameDataMgr, bools) == 24 &&
+               offsetof(OotGameDataMgr, table) == 32 && offsetof(OotGameDataMgr, table_size) == 44, "GameDataMgr");
+typedef struct __attribute__((may_alias)) { uint32_t hash, index; } OotGameDataSlot;
+typedef struct __attribute__((may_alias)) { uint8_t _0[22]; uint8_t value; uint8_t _1; } OotGameDataBool;
+_Static_assert(sizeof(OotGameDataBool) == 24, "bool entry");
+typedef struct __attribute__((may_alias)) { uint8_t _0[104]; uint64_t playing; } OotEventMgr;   /* +104: an event plays */
+_Static_assert(offsetof(OotEventMgr, playing) == 104, "playing");
+
+enum { OOT_GAMEDATA_SLOT = 0x84c9e180, OOT_EVENTMGR_SLOT = 0x84c9e090 };
+#define OOT_SEQUENCE_IS_LOADING_BANC 0xef2b60c2u   /* (MurMur3 of the bool's name) */
+
+static uint64_t singleton(uint64_t slot) {
+    const uint64_t holder = *GUEST(uint64_t, slot);
+    return holder && hos_guest_range(holder, 8) ? *GUEST(uint64_t, holder) : 0;
+}
+
+/* a GameData bool by its name's hash: -1 when not found */
+static int gamedata_bool(uint32_t hash) {
+    const uint64_t m = singleton(OOT_GAMEDATA_SLOT);
+    if (!m || !hos_guest_range(m, sizeof(OotGameDataMgr))) return -1;
+    const OotGameDataMgr *g = GUEST(OotGameDataMgr, m);
+    const uint32_t size = g->table_size;
+    if (!g->table || !size || !hos_guest_range(g->table, size * 8ULL)) return -1;
+    const OotGameDataSlot *t = GUEST(OotGameDataSlot, g->table);
+    for (uint32_t probe = 0, k = hash % size; probe < size; probe++, k = (k + 1) % size) {
+        if (!t[k].hash) return -1;
+        if (t[k].hash != hash) continue;
+        if (t[k].index >= g->bool_count || !hos_guest_range(g->bools + t[k].index * 24ULL, 24)) return -1;
+        return GUEST(OotGameDataBool, g->bools + t[k].index * 24ULL)->value & 1;
+    }
+    return -1;
+}
+
+/* f_82c415e0, the player actor's movement step (x19 the actor): once a frame Link is updated */
+void hos_oot_player_update(uint64_t actor) {
+    if (!hos_bench_on()) return;
+    void hos_bench_player(int loading, int event_playing);
+    if (!hos_guest_range(actor, sizeof(OotPlayerActor)) || GUEST(OotPlayerActor, actor)->vtable != 0x84b45e18ULL) return;
+    const uint64_t comp = GUEST(OotPlayerActor, actor)->components;
+    if (!hos_guest_range(comp, sizeof(OotPlayerComponents))) return;
+    const uint64_t mv = GUEST(OotPlayerComponents, comp)->movement;
+    if (mv < 0x1d50 || !hos_guest_range(mv, sizeof(OotPlayerMovement)) || GUEST(OotPlayerMovement, mv)->actor != actor) return;
+    const uint64_t link = mv - 0x1d50;
+    if (!hos_guest_range(link, sizeof(OotLifeActor)) || GUEST(OotLifeActor, link)->vtable != 0x84b6c460ULL) return;
+    const uint64_t res = GUEST(OotLifeActor, link)->resource;   /* (other actors share the vtable: Link's resource is "Player") */
+    if (!res || !hos_guest_range(res, sizeof(OotActorResource)) || memcmp(GUEST(OotActorResource, res)->name, "Player", 7)) return;
+    const uint64_t ev = singleton(OOT_EVENTMGR_SLOT);
+    const int event = ev && hos_guest_range(ev, sizeof(OotEventMgr)) && GUEST(OotEventMgr, ev)->playing;
+    hos_bench_player(gamedata_bool(OOT_SEQUENCE_IS_LOADING_BANC) == 1, event);
+}
+

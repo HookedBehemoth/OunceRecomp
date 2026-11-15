@@ -130,7 +130,8 @@ AT = [
     # text speed: the letters' time (s0) on the block's fall-through edge, past the hidden / no-text checks
     At(0x80b1e140, 0x80b1e1bc, 0x37201528, "hos_oot_text_time", ("s0",), "s0", before=True),   # tbnz w8, #4
     # native mouse camera: the player camera's update (x0: the camera), first
-    At(0x80644c80, 0x80644c80, 0xd503237f, "hos_mouse_camera", ("x0",)),                   # hint #27 (PACIBSP)
+    At(0x80644c80, 0x80644c80, 0xd503237f, "hos_mouse_camera", ("x0",)),                   # hint #27 (PACIBSP)    # the player's update, for HOS_BENCH's "in play" (x19 the player actor)
+    At(0x82c415e0, 0x82c41728, 0xf9000bea, "hos_oot_player_update", ("x19",)),            # str x10, [sp, #16]
 ]
 AT_FUNCS = {p.func for p in AT}
 
