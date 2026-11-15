@@ -9,6 +9,32 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
+#[cfg(feature = "count-alloc")]
+mod count {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    pub static N: AtomicU64 = AtomicU64::new(0);
+    pub static BYTES: AtomicU64 = AtomicU64::new(0);
+    pub struct Counting;
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            N.fetch_add(1, Relaxed);
+            BYTES.fetch_add(l.size() as u64, Relaxed);
+            System.alloc(l)
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            System.dealloc(p, l)
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+            N.fetch_add(1, Relaxed);
+            BYTES.fetch_add(n.saturating_sub(l.size()) as u64, Relaxed);
+            System.realloc(p, l, n)
+        }
+    }
+    #[global_allocator]
+    static A: Counting = Counting;
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut pos = Vec::new();
@@ -78,6 +104,12 @@ fn main() {
         .and_then(|s| s.lines().find(|l| l.starts_with("VmHWM:")).map(|l| l[6..].trim().to_string()))
         .unwrap_or_default();
     println!("peak memory (VmHWM): {hwm}");
+    #[cfg(feature = "count-alloc")]
+    println!(
+        "allocations: {} ({:.1} MB requested)",
+        count::N.load(std::sync::atomic::Ordering::Relaxed),
+        count::BYTES.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6
+    );
     let mut by: Vec<_> = g.1.into_iter().collect();
     by.sort_by(|a, b| b.1.cmp(&a.1));
     for (why, n) in by.iter().take(40) {
