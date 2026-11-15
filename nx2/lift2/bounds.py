@@ -65,7 +65,7 @@ def call_bounds(plan, hooks, hle, verify=False):
             return unknown("setjmp owner", "sjcall_%08x" % c, tail)
         if c in hle_set:
             name = hle.get(c)
-            if name is None or name in host_effects.CLOBBERS:
+            if name is None or host_effects.clobbers(name) is not None:
                 return unknown("HLE declared clobbering", sym, tail)
             # (AAPCS-clean by declaration, as the summaries take it (summary.host_summary): its arguments and the
             # declared extra reads, the caller-saved registers written; the verification build checks x19-x29 and SP
@@ -75,10 +75,10 @@ def call_bounds(plan, hooks, hle, verify=False):
                          "hchk_%08x" % c if verify else sym, tail)
         if c in hooks:
             # (the function's summary counts its hook: summary.ENTRY. A BL keeps what the body and the guest code the
-            # hook calls (host_effects.CALLS) all preserve)
+            # hook calls (its guest(...)) all preserve)
             s = summ.get(c)
             keeps = KEEP_ALL
-            for g in (c,) + tuple(host_effects.CALLS.get(hooks[c], ())):
+            for g in (c,) + host_effects.hook_calls(hooks[c]):
                 sg = summ.get(g)
                 keeps = keeps & sg[3] if full(sg) else 0
             if not full(s) or not keeps:

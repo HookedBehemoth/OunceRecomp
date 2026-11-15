@@ -204,7 +204,7 @@ static int index_in(uint64_t bntx, uint64_t brti, const char *nm, uint32_t nl, u
 }
 
 /* TextureData::loadImage_(td, ctx, src) */
-ENTRY_HOOK(0x80798690) {
+PATCH_HOOK(0x80798690, word(0xd503237f)) {
     void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr);   /* (M4g: HOS_DBG=nodata, either back end) */
     direct_diag_nodata_load(a->x[0], a->x[2], a->lr);
     if (!rx_direct()) return 0;
@@ -241,7 +241,7 @@ ENTRY_HOOK(0x80798690) {
 }
 
 /* TextureData::rebind_(td, newBase, res, ctx) */
-ENTRY_HOOK(0x807982f0) {
+PATCH_HOOK(0x807982f0, word(0xd503237f)) {
     if (!ready()) return 0;
     const uint64_t td = a->x[0];
     if (!hos_guest_range(td, 0x100)) return 0;
@@ -284,11 +284,12 @@ static int run_inplace(HookCall *h, A64Fn f, uint64_t file) {
     tl_inplace = was;
     return 1;
 }
-ENTRY_HOOK(0x80798b60) { return run_inplace(h, f_80798b60, a->x[0]); }   /* ResTextureFile in place (ui2d) */
-ENTRY_HOOK(0x80792bd0) { return run_inplace(h, f_80792bd0, a->x[1]); }   /* in-place BNTX */
+/* ResTextureFile in place (ui2d) */
+PATCH_HOOK(0x80798b60, word(0xd503237f)) { return run_inplace(h, f_80798b60, a->x[0]); }
+PATCH_HOOK(0x80792bd0, word(0xd503237f)) { return run_inplace(h, f_80792bd0, a->x[1]); }   /* in-place BNTX */
 
 /* nn::gfx TextureImpl<NVN>::Initialize(obj, device, info, pool, offset, size): an in-place file's texture */
-ENTRY_HOOK(0x80798920) {
+PATCH_HOOK(0x80798920, word(0xd503237f)) {
     const uint64_t bntx = tl_inplace;
     if (!bntx || !direct_assets_on()) return 0;
     const uint64_t brti = a->x[2] - 0x10, obj = a->x[0];
@@ -313,7 +314,7 @@ ENTRY_HOOK(0x80798920) {
 }
 
 /* the compaction step (worker): its movers copy only with [worker+0x1f21] == 1 */
-ENTRY_HOOK(0x807da480) {
+PATCH_HOOK(0x807da480, word(0xd503237f)) {
     if (!ready()) return 0;
     const uint64_t w = a->x[0];
     InterlockedIncrement64(&n_compaction);
@@ -326,7 +327,7 @@ ENTRY_HOOK(0x807da480) {
 }
 
 /* TextureDataMgr replaceLoad_(replacer, td, src, size, align): counted */
-ENTRY_HOOK(0x83537d90) {
+PATCH_HOOK(0x83537d90, word(0xd503237f)) {
     if (!ready()) return 0;
     if (InterlockedIncrement64(&n_replace) <= 10)
         hos_log("assets: a Replace load (td %#llx, %llu bytes): its copy into the heap is not skipped", (unsigned long long)a->x[1],
@@ -350,7 +351,7 @@ int direct_assets_skip_packaged(uint64_t bytes) {
    docs/direct/texture-streaming.md 1): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap
    (f_80f6c580), whose body runs from here with this thread noted */
 static _Thread_local int tl_heap_init, tl_heap_token;
-ENTRY_HOOK(0x80f6c580) {
+PATCH_HOOK(0x80f6c580, word(0xd503237f)) {
     if (tl_heap_token) return tl_heap_token = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
     if (!rx_direct() || !direct_assets_on()) return 0;
     static A64Fn body;
@@ -540,7 +541,7 @@ static void tile_upload_as(uint32_t source, const nvn_tex *tp, const uint8_t *sr
 
 /* ---- the font glyph cache ---- */
 static _Thread_local struct { int in_pack, in_plot, have; uint32_t x, y, w, h; } gl;
-ENTRY_HOOK(0x8152f540) {   /* the shelf packer (cache, &x, &y, w, h) */
+PATCH_HOOK(0x8152f540, word(0xb941400c)) {   /* the shelf packer (cache, &x, &y, w, h) */
     if (gl.in_pack || !gl.in_plot || !direct_assets_on()) return 0;
     static A64Fn f;
     if (!f) f = f_8152f540;
@@ -553,7 +554,7 @@ ENTRY_HOOK(0x8152f540) {   /* the shelf packer (cache, &x, &y, w, h) */
     if (hos_guest_range(px, 4) && hos_guest_range(py, 4)) gl.x = G32(px), gl.y = G32(py), gl.w = cw, gl.h = ch, gl.have = 1;
     return 1;
 }
-ENTRY_HOOK(0x81539300) {   /* nn::font's plot (cache, glyph, ...) */
+PATCH_HOOK(0x81539300, word(0xd503237f)) {   /* nn::font's plot (cache, glyph, ...) */
     if (gl.in_plot || !ready()) return 0;
     static A64Fn f;
     if (!f) f = f_81539300;

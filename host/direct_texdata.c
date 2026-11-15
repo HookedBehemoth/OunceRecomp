@@ -61,7 +61,7 @@ void direct_texdata_created(uint64_t td, int alias) {
 }
 
 /* f_8079aa20(&td->slot, evictable): released to the LRU cache (1), taken back from it (0) */
-ENTRY_HOOK(0x8079aa20) {
+PATCH_HOOK(0x8079aa20, word(0xd503237f)) {
     if (!rx_direct() || !direct_assets_on()) return 0;
     const uint64_t td = a->x[0] - 0x18;
     const int to_cache = (a->x[1] & 1) != 0;
@@ -88,7 +88,7 @@ ENTRY_HOOK(0x8079aa20) {
 }
 
 /* f_8079bbe0(mgr, td): destroyed (its NVN texture is finalized inside, and released as any finalize) */
-ENTRY_HOOK(0x8079bbe0) {
+PATCH_HOOK(0x8079bbe0, word(0xd503237f)) {
     if (!rx_direct() || !direct_assets_on()) return 0;
     const uint64_t td = a->x[1];
     int was_cached = 0;
@@ -112,7 +112,7 @@ ENTRY_HOOK(0x8079bbe0) {
 static _Thread_local const void *tl_moving;
 static _Thread_local int tl_in_move;
 const void *direct_texdata_moving(void) { return tl_moving; }
-ENTRY_HOOK(0x807981f0) {
+PATCH_HOOK(0x807981f0, word(0xd503237f)) {
     if (tl_in_move) return tl_in_move = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
     if (!rx_direct() || !direct_assets_on()) return 0;
     static A64Fn body;
@@ -153,7 +153,7 @@ void direct_texdata_line(char *out, size_t cap) {
 #define kVramMargin (1536ll << 20)
 static _Thread_local int tl_in_update;
 static volatile LONG64 n_vram_evicted, n_vram_frames, last_free_vram = -1, last_line;
-ENTRY_HOOK(0x80797240) {
+PATCH_HOOK(0x80797240, word(0xd503237f)) {
     if (tl_in_update) return tl_in_update = 0, 0;   /* (the lifted body, called below; a nested call is hooked as any) */
     if (!rx_direct() || !direct_assets_on() || !rx_direct()->vram_free) return 0;
     static A64Fn body;

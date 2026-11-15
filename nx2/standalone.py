@@ -5,7 +5,7 @@ Adapted from a64-kit's build.py (TOTKPort e88744a: implemented, gen_stubs, OS_NA
 thread_hooks, write_image_c), for MKW's Eden-layout image in the 64-bit window.
 
 The model is TOTKPort's: the SDK is replaced at the nn:: boundary where it talks to system services. A function the
-runtime defines as `HLE(<mangled name>)` / `void imp_<mangled name>(Ctx *c)` is hooked where the game imports it and
+runtime defines as `HLE(<mangled name>)` (host/patch.h) is hooked where the game imports it and
 at the sdk's own definition. Every other free function of an OS-facing namespace the game imports gets a generated
 stub that logs its first call and returns 0. The rest of the SDK (libc, nn::util, nn::mem, std, the NVN driver)
 runs as lifted code.
@@ -29,14 +29,11 @@ OS_NAMESPACES = {"audio", "hid", "oe", "prepo", "nfp", "time", "account", "vi", 
 
 
 def implemented(host=HOST):
-    """C names of the HLE functions in host/*.c: `void imp_x(Ctx` definitions and `HLE(x)` macros"""
-    names = set()
-    for f in os.listdir(host):
-        if f.endswith(".c"):
-            src = open(os.path.join(host, f), errors="replace").read()
-            names |= set(re.findall(r"^void (imp_\w+)\(Ctx", src, re.M))
-            names |= {"imp_" + n for n in re.findall(r"^HLE\((\w+)\)", src, re.M)}
-    return names
+    """C names (imp_<symbol>) of the functions the host's HLE(symbol) declarations replace (nx2/lift2/patch_scan.py)"""
+    from lift2 import patch_scan
+    ps = patch_scan.patches() if os.path.abspath(host) == patch_scan.HOST else \
+        patch_scan.scan(patch_scan.host_sources(host))
+    return {"imp_" + s for s in ps.hle_symbols()}
 
 
 def nested_name(sym):

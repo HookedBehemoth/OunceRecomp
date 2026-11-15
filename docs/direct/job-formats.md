@@ -69,7 +69,7 @@ key forced down this path would confirm it by its pictures. The recorder also ha
 
 ## 4. Recommended mechanism
 
-1. **Recorder entry** (`ENTRY_HOOK 0x80084de0`, which `host/eng_jobs.c` already has). Look up `formats[x3]`:
+1. **Recorder entry** (`PATCH_HOOK(0x80084de0)`, which `host/eng_jobs.c` already has). Look up `formats[x3]`:
    - on a hit, record the secondary with those formats (`VkCommandBufferInheritanceRenderingInfo`, samples 1);
    - on a miss, take the native early return (`0x8008693c`): no view record and no slot for that key this frame.
 2. **Job-call splice**, before the handles are called: `f_806688c0` at `0x80668a9c` (record found; key = `[sp+0x18]-0xc0`)

@@ -67,15 +67,24 @@ tables and the image's C in `work/sa/gen`) and builds it.
 **Build.** `work/venv/bin/python -I -u nx2/build.py --standalone` writes `work/sa/build/` (`hookshot`,
 `hookshot_direct.so`, the caches beside them). A change to a header every file includes, or to the build flags, rebuilds
 everything; a change in `host/` or `gpu/direct/` recompiles only that file and links.
-- To replace a game function, write `ENTRY_HOOK(0x8xxxxxxx)` or `ENTRY_HOOK_SYM(name)` in a `host/*.c` file (return 1
-  when it handled the call) and build: the lifter calls the hook at the function's entry, and only the partition that
-  holds the function is lifted and compiled again. Read the function first: `nx2/lift2/dump.py <address>`.
-  `ENTRY_HOOK_SYM` names resolve through `work/sa/image/image.json`.
+- To patch the game, declare the patch next to its body in a `host/*.c` file (`host/patch.h`; docs/lifter.md, "Hooks
+  and probes", has one example per kind) and build; no lift is needed:
+  - host code at an instruction: `PATCH_AT(pc, word(W), mode, result, fn, operand...) { ... }`, further sites
+    `PATCH_AT_SITE(...)`;
+  - host code at a function's entry: `PATCH_HOOK(0x8xxxxxxx, word(W)) { ... }` or `PATCH_HOOK_SYM(name) { ... }` (return
+    1 when it handled the call), with `reads(sp, "why")` and `guest(A, ...)` when it calls guest code. `W` is the
+    instruction's or the function's first word; names of `PATCH_HOOK_SYM` resolve through `work/sa/image/image.json`;
+  - an SDK function replaced: `HLE(symbol) { ... }` (this one does need a lift: the lift hooks it), an NVN proc
+    `NV(name) { ... }`, with `reads(reg, "why")` or `clobbers("why")` when a call of it reads more than its arguments
+    or keeps no register.
+  The scan stops on a malformed declaration with its file:line, and the build on a word that differs from the game's
+  or on a declaration the compiler saw and the scan did not. Only the partitions whose functions a changed declaration
+  touches are lifted and compiled again. Read the function first: `nx2/lift2/dump.py <address>`.
 - A new `host/*.c` file is picked up by the next build only (the file list is taken at its start).
 - `RX_DIRECT_ONLY=1` builds the back end alone, with no lift.
 - **A new lift** is needed after a change to the lift (`nx2/lift.py`, `nx2/lift2/discover.py`) or to the dump (a
-  change to the At rows, the `PATCH_AT` declarations in `host/*.c`, needs only a build; the summaries count the
-  rows, so the build recomputes them when a row's declared registers change): `scripts/relift.sh` lifts and builds, for the
+  change to the patch declarations in `host/*.c` other than an `HLE` added or removed needs only a build; the summaries
+  count the rows and hooks, so the build recomputes them when their declared effects change): `scripts/relift.sh` lifts and builds, for the
   checkout it is run from; in the main checkout on native-vk through `scripts/play-refresh.sh`, so `BUILD.txt` names the
   head. It stops while a game runs from that build. About 100 s of lift (6 GB at its peak); a cold build about 5
   minutes at 6 jobs; log `work/play/relift.log` (a worktree: `work/sa/relift.log`). `scripts/play-refresh.sh` lifts

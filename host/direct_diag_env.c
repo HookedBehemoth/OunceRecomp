@@ -31,7 +31,7 @@ static float gf(uint64_t a) {
 static uint64_t g64(uint64_t a) { return a && hos_guest_range(a, 8) ? G64(a) : 0; }
 static uint32_t g32(uint64_t a) { return a && hos_guest_range(a, 4) ? G32(a) : 0; }
 
-ENTRY_HOOK(0x80357060) {
+PATCH_HOOK(0x80357060, word(0xd503237f)) {
     if (!envlog_on() || !(a->x[1] & 1)) return 0;
     static LONG64 last = -1;
     const LONG64 p = hos_present_count;

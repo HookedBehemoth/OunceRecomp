@@ -131,7 +131,7 @@ Logged after each `f_80667d20(ctx, buffer_idx)` (m0diag's table address computat
 - Words 1/10/16/26 and 13/18 alternate between two textures (ping-pong): stable ids, the game's own double buffering;
   parking already keeps the DTA ones. Word 17 is a target parking misses (re-registered).
 
-**Patch:** `ENTRY_HOOK(0x800634b0)` when the caller is `0x806680dc` (from `f_80667d20`): if the entry already has an id
+**Patch:** `PATCH_HOOK(0x800634b0)` when the caller is `0x806680dc` (from `f_80667d20`): if the entry already has an id
 (`+0x68 != -1`) and its texture object (storage address, format, size) and view bytes equal what that id was registered
 with (kept by the hook), return without freeing or registering. Reusing an id is safe only for an identical descriptor:
 an id whose descriptor changes while the previous frame's GPU work still samples it would show the new texture in that
@@ -159,7 +159,7 @@ texture from its initialization caught the stores (`m3_font3_k`).
   the first stores seen on every texture), then max-blends the FreeType bitmap (`glyph+0x18`) into
   `[cache+0xf0] + (y+row)*[cache+0x140] + x`. `[cache+0xf0]` is the texture's storage, `[cache+0x140]` its stride.
 
-**Patch:** `ENTRY_HOOK(0x8152f540)` notes the cell it returns (x, y, w, h) for the thread; an entry hook on `f_81539300`
+**Patch:** `PATCH_HOOK(0x8152f540)` notes the cell it returns (x, y, w, h) for the thread; an entry hook on `f_81539300`
 runs the body and then queues a region upload (WriteTexels-like) of rows y..y+h+3, columns x..x+w+4 (the memset extent)
 of the texture whose storage starts at `[cache+0xf0]`, source pitch `[cache+0x140]`. The texture is found by its storage
 address. All 30 (writer, texture) faults were these memsets, so this covers the cache; no page tracking needed.
@@ -193,11 +193,11 @@ the stage (boot-to-main-loop.md 4.3). The game's job-call sites do not wait for 
   `W + 0x4dc`, count `+0x4e8`, items `+0x4f0`; the thread whose worker index, TLS slot `[0x84e9f7ac]` - 1, is `W + 0x4d8`
   skips queue 1) claims queue 1's item 0 (kind `item + 0x10` = 0, a layer) with the same counter, 0 to 1, and runs it
   as the scheduler does, `[[item] + 0x10](item)`, before its job loop.
-- `ENTRY_HOOK(0x806688c0)` (key bytes at `x0 + 0x3830 + x2 * 0xd0`) and `ENTRY_HOOK(0x8028a2a0)` (key bytes at `x2`),
+- `PATCH_HOOK(0x806688c0)` (key bytes at `x0 + 0x3830 + x2 * 0xd0`) and `PATCH_HOOK(0x8028a2a0)` (key bytes at `x2`),
   on that thread only: wait until every list entry with the key's first 0x70 bytes went through the recorder this frame.
   The recorder's hook (`host/eng_jobs.c`) stamps each entry, recorded or taken by the early return; a condition variable
   (the virtual core given up) is woken by each, and the wait gives up after 50 ms.
-- `ENTRY_HOOK(0x80706be0)` counts frames for the stamps.
+- `PATCH_HOOK(0x80706be0)` counts frames for the stamps.
 
 **What it leaves to the game:** the rest of both queues, the phase's per-list work (bit 11) and every node of the graph.
 Recording order changes nothing in the picture: a pass calls its jobs sorted by their item ranges (+0x68).

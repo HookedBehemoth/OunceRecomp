@@ -53,7 +53,7 @@ class Inputs(unittest.TestCase):
     def tree(self, d):
         files = {"third_party/a64-kit/rt/a64.h": "runtime", "nx2/lift.py": "lift", "nx2/lift2/game.py": "game",
                  "nx2/build.py": "build", "nx2/oot_wide.py": "patches",
-                 "host/a.c": "int x;\nENTRY_HOOK(0x80001000) { return 0; }\n"}
+                 "host/a.c": "int x;\nHLE(nn_a) {}\nPATCH_HOOK(0x80001000, word(0x1)) { return 0; }\n"}
         for rel, text in files.items():
             os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
             with open(os.path.join(d, rel), "w") as f:
@@ -78,7 +78,8 @@ class Inputs(unittest.TestCase):
             for rel, old, new, changes in (
                     ("host/a.c", "int x;", "int y;", False),                     # (host code: the fast path)
                     ("nx2/build.py", "build", "build2", False),                  # (the build, not the lift)
-                    ("host/a.c", "0x80001000", "0x80002000", True),              # (an entry hook the lift writes)
+                    ("host/a.c", "0x80001000", "0x80002000", False),             # (an entry hook: the build's)
+                    ("host/a.c", "HLE(nn_a)", "HLE(nn_b)", True),                # (a function the lift hooks)
                     ("nx2/lift.py", "lift", "lift2", True),
                     ("third_party/a64-kit/rt/a64.h", "runtime", "runtime2", True),
                     ("nx2/lift2/game.py", "game", "game2", True),

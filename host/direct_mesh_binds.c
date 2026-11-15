@@ -39,9 +39,15 @@ static int drawer(const HookArgs *a, HookCall *h, int which) {
     InterlockedIncrement64(&n[which].bound);
     return 0;
 }
-ENTRY_HOOK(0x801a43e0) { return drawer(a, h, D_43E0); }
-ENTRY_HOOK(0x801a46a0) { return drawer(a, h, D_46A0); }
-ENTRY_HOOK(0x801a6720) { return drawer(a, h, D_6720); }
+PATCH_HOOK(0x801a43e0, word(0xd503237f),
+           reads(sp, "hook_call_guest on the call's stack"),
+           guest(0x801a2d70, 0x801a6a40)) { return drawer(a, h, D_43E0); }
+PATCH_HOOK(0x801a46a0, word(0xd503237f),
+           reads(sp, "hook_call_guest on the call's stack"),
+           guest(0x801a2d70, 0x801a6a40)) { return drawer(a, h, D_46A0); }
+PATCH_HOOK(0x801a6720, word(0xd503237f),
+           reads(sp, "hook_call_guest on the call's stack"),
+           guest(0x801a2d70, 0x801a6a40)) { return drawer(a, h, D_6720); }
 
 void direct_mesh_binds_log(double frames) {
     static LONG64 last[D_N][3];

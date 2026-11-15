@@ -168,25 +168,28 @@ exclusives' runtime calls cost nothing measurable.
   classifies costs speed, never correctness. Only a lifted callee whose summary proves it (demoted or not) is
   noreturn; HLE'd, entry-hooked and setjmp-owner callees never are. A function with Value probes or At rows is lifted as any other: each row
   declares what it reads and writes, and the summaries count it as its instruction's (`probes.row_effects`,
-  `summary.rows`). What a call of a host callee keeps is its declared effect (`nx2/lift2/host_effects.py`):
-  - an HLE'd function keeps x19-x29 and SP unless `host_effects.CLOBBERS` names it with the reason (the three fiber
-    functions: a context switch or a host fiber deleted; nine sdk NVN exports with no host proc: not audited);
+  `summary.rows`). What a call of a host callee keeps is its declared effect (the declarations' `reads(...)`,
+  `guest(...)`, `clobbers(...)`, Hooks and probes; the rules in `nx2/lift2/host_effects.py`):
+  - an HLE'd function keeps x19-x29 and SP unless its declaration says `clobbers("why")` (the three fiber
+    functions: a context switch or a host fiber deleted; nine sdk NVN exports with no host proc, `HLE_EFFECTS` in
+    `host/nvn_native.c`: not audited);
   - an entry-hooked function keeps what its lifted body's full summary preserves (the hook declines and the body runs,
     or the hook handled the call, writing no callee-saved register, or ran the body itself through `a64_lookup`), and
-    for a hook that calls other guest code what every callee in `host_effects.CALLS` keeps too (the three mesh drawer
+    for a hook that calls other guest code what every callee in its `guest(...)` keeps too (the three mesh drawer
     hooks, `host/direct_mesh_binds.c`; the render-target alloc and free, `host/rt_slots.c`, which call the free); a
     body without a full summary keeps nothing;
   - setjmp owners keep nothing.
-  A name in `CLOBBERS` that is no HLE'd function, or a `CALLS` key that is no entry hook, stops the build. Every guest
+  An `HLE_EFFECTS` of a function the image does not replace stops the build (`host_effects.check`). Every guest
   function a hook or a row's host function enters, on any path through the host's own calls, is declared:
   `tests/test_host_context_reads.py` follows the host's LLVM IR from each hook and row function to every
   `hook_call_guest`, `guest_call`, `hos_call_guest`, `a64_icall`, `a64_ijump`, `f_<addr>` call and `hook_run` (constant
-  targets followed through arguments) and fails on a target missing from `CALLS` or the row's `guest`. The default
+  targets followed through arguments) and fails on a target missing from the hook's or the row's `guest(...)`. The default
   rests on an audit of the host's C (2026-11-15, its LLVM IR: stores into a context's x19-x31 and v8-v15, calls of
   guest code, fiber switches, through direct calls and signature-matched indirect ones): stores to x19-x31 are only in
   thread and fiber setup, `hos_call_guest` (x30) and the guest calls of hooks and rows, which put every register back
   (`host/hos_hostcall.c` `call_restoring`); no HLE'd function reaches one, a guest call or a switch except those
-  declared. What the host reads is declared too (`host_effects.HLE_ARGS`, `HLE_READS`, `HOOK_ARGS`, `HOOK_READS`) and
+  declared. What the host reads is declared too (`host_effects.HLE_ARGS` and `HOOK_ARGS`, plus each declaration's
+  `reads(...)`) and
   checked against the host's IR by `tests/test_host_context_reads.py`, and the summaries count every declaration
   (Whole-program summaries, "The host's patches").
 - **B to another entry, or falling into one**: `musttail call void @f_<callee>(ptr %ctx)`; every function has the same
@@ -338,31 +341,60 @@ lowest target, cases `(target - lo) >> 2`, as sparse as its targets are spread.
 The lifted code is never edited after the lift: everything the host adds is named by guest address, and every site
 names its instruction word, so another game version stops the lift or the build.
 
-- **Image hooks** (`nx2/standalone.py`, `a64_hooks.c`): HLE functions in `host/` and generated stubs for the OS-facing
-  imports. `f_<addr>` is the host function; the guest body is not lifted. A BL to one keeps x19-x29 and SP unless
-  `host_effects.CLOBBERS` names it (Calls and returns).
-- **Entry hooks**: `ENTRY_HOOK(0xADDR)` and `ENTRY_HOOK_SYM(name)` in `host/*.c` (read by `nx2/entry_hooks.py`). The
-  function starts with `entry_<addr>(ctx)`; 1 returns at once (the hook did the call's work), 0 runs the body. A hook
-  whose address is not a lifted function, or whose symbol the dump does not export, stops the build (`game.prepare`).
-  The hook's C never sees the context: `host/hos.h`'s macro hands it x0-x7 and x30 as plain values (`HookArgs`) and an
-  opaque `HookCall` through which alone it acts on the call: `hook_return` (x0), `hook_set_arg` (x0-x7 before the
-  body), `hook_run` (the lifted body now), `hook_call_guest` (guest code on the call's stack, every register put back).
-  Its declared reads are x0-x7 and x30 (`host_effects.HOOK_ARGS`), plus SP for the five that call guest code
-  (`HOOK_READS`); a hook that runs the body reads what the body reads. A BL to an entry-hooked function keeps what its
-  body's summary (and `host_effects.CALLS`) keeps. `HOS_DBG=hooks` logs each hook's first call.
-- **Patch declarations** (`host/patch.h`): Value probes and At rows are declared in the host's C, next to their bodies:
-  `PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }` and, for each further site of the same function,
-  `PATCH_AT_SITE(...)`. The lifter reads them with a token scanner of a fixed grammar (`nx2/lift2/patch_scan.py`:
-  comments, strings, continuations and nested parentheses handled; no C parser, no regular expression over the
-  source); the compiler expands the same text into the function's prototype (a further site whose operand types differ
-  is a compile error) and into a record in the object section `hos_patch`, which the build compares with the scan
-  (`patch_scan.check_records`: a declaration one of them sees and the other does not stops the build). A declaration
-  stands at file scope, outside `#if`, and is never made by another macro; a malformed one, a bare word where
-  `word(...)` belongs, an unknown register, mode or result, a second `PATCH_AT` of one function or a duplicate site
-  stops the scan with file:line. The containing function is not written: the build finds it from the plan
-  (`probes.resolve`), and a site in no lifted function or in more than one stops it with the declaration's file:line.
-  Rows at one instruction run in the order of their declarations (the host's files in the build's order, each file's
-  in its order).
+- **Patch declarations** (`host/patch.h`): every patch is a macro at file scope in the host's C, next to its body. The
+  lifter reads them with a token scanner of a fixed grammar (`nx2/lift2/patch_scan.py`: comments, strings,
+  continuations and nested parentheses handled; no C parser, no regular expression over the source), without compiling
+  the host; the compiler expands the same text into the C function (its prototype from the declaration) and into a
+  record in the object section `hos_patch`. One example of each kind:
+
+  ```c
+  PATCH_AT(0x8009a474, word(0x94ef225b), instead, none, hos_oot_calc_sleep, as(x0, ns), as(k(0x8009a478), lr)) { ... }
+  PATCH_AT_SITE(0x8009afec, word(0x94ef1f7d), instead, none, hos_oot_calc_sleep, as(x0, ns), as(k(0x8009aff0), lr));
+  PATCH_HOOK(0x8005ed00, word(0xd503237f), reads(sp, "hook_call_guest on the call's stack"), guest(0x802737a0)) { ... }
+  PATCH_HOOK_SYM(memcpy) { ... }
+  HLE(_ZN2nn2os13SwitchToFiberEPNS0_9FiberTypeE, clobbers("context switch: ...")) { ... }
+  NV(nvnMemoryPoolInitialize, reads(x29, "the frame-pointer chain's return addresses hashed into ...")) { ... }
+  HLE_EFFECTS(nvnDevtoolsBootstrap, clobbers("no proc here: unimplemented, not audited"));
+  ```
+
+  - `PATCH_AT` / `PATCH_AT_SITE`: host code at an instruction (Value probes and At rows, below).
+  - `PATCH_HOOK(addr, word(W), effect...)` / `PATCH_HOOK_SYM(symbol, effect...)`: an entry hook. The function starts
+    with `entry_<addr>(ctx)` / `entry_sym_<symbol>(ctx)`; 1 returns at once (the hook did the call's work), 0 runs the
+    body. The hook's C never sees the context: `host/hos.h` (`ENTRY_HOOK_COUNTED`) hands it x0-x7 and x30 as plain
+    values (`HookArgs *a`) and an opaque `HookCall *h` through which alone it acts on the call: `hook_return` (x0),
+    `hook_set_arg` (x0-x7 before the body), `hook_run` (the lifted body now), `hook_call_guest` (guest code on the
+    call's stack, every register put back). It reads x0-x7 and x30 (`host_effects.HOOK_ARGS`) plus its `reads(...)`
+    (SP for the five that call guest code), and calls the guest functions its `guest(...)` names; a hook that runs the
+    body reads what the body reads. A BL to an entry-hooked function keeps what its body's summary (and its `guest`
+    callees') keeps. The build stops with the declaration's file:line on a hook of no lifted function, a symbol the
+    image does not export, or a function whose first word is not `W` (`patch_scan.check_hooks`). `HOS_DBG=hooks` logs
+    each hook's first call.
+  - `HLE(symbol, effect...)`: the function is replaced by `void imp_<symbol>(Ctx *c)`, hooked where the game imports
+    it and at the SDK's definition (`nx2/standalone.py`, `a64_hooks.c`: `f_<addr>` is the host function; the guest body
+    is not lifted); OS-facing imports without one get generated stubs. `NV(name, effect...)`: an NVN proc, `static void
+    n_<name>(Ctx *c, void *u_)` (`host/nvn_native.c`'s table; the SDK's export `name` is routed to it). `HLE_EFFECTS(
+    symbol, effect...)`: the effects of a replaced function whose body is not declared here (a stub or a dispatch). A
+    call reads the AAPCS arguments, x8, v0-v7, SP and x30 (`host_effects.HLE_ARGS`) plus its `reads(...)`, and keeps
+    x19-x29 and SP unless it declares `clobbers("why")` (Calls and returns).
+  - effects: `reads(reg..., "why")` (xN, vN or sp, the reason a string), `guest(A, ...)` (hooks only), `clobbers("why")`
+    (HLE, NV, HLE_EFFECTS only), each at most once.
+
+  The scan stops with file:line on: a declaration inside `#if`, inside a function or made by another macro (a
+  `#define` whose body names a kind); a bare number where `word(...)` belongs; an unknown mode, result, register or
+  effect; a reason that is not a string; a second `PATCH_AT` of one function, a `PATCH_AT_SITE` before or without its
+  `PATCH_AT` or of other types, a duplicate site; a second hook of one function; a symbol declared twice, or an
+  `HLE_EFFECTS` of a function `HLE` declares. The build compares the compiled host's records with the scan
+  (`patch_scan.check_records`, `nx2/build.py`: count and text as tokens), so a declaration one of them sees and the
+  other does not stops it. What the lift reads of the host's C is the set of `HLE` symbols (the functions it hooks:
+  `standalone.implemented`, `nx2/lift_mark.py`); everything else is read by the build, so adding, changing or removing
+  a row, hook or effect needs no lift. `tests/test_lifter_game_free.py` holds `nx2/lift2` free of game addresses,
+  labels and symbols (an allow-list of encoding constants and code_ptrs' two zstd continuations).
+
+  Value probes and At rows: `PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }` and, for each further site
+  of the same function, `PATCH_AT_SITE(...)` (a further site whose operand types differ is a compile error). The
+  containing function is not written: the build finds it from the plan (`probes.resolve`), and a site in no lifted
+  function or in more than one stops it with the declaration's file:line. Rows at one instruction run in the order of
+  their declarations (the host's files in the build's order, each file's in its order).
   - mode `after`: after the instruction (after a BL or BLR when the call returns); `before`: on the edge into it, which
     must not be a branch target; `instead`: in place of the BL or BLR (the call is not made, x30 set as the call
     would; an At row with `replace`), or in place of any other instruction's result (a Value probe: the result is the
@@ -444,9 +476,9 @@ frame pass tracking SP, x29 and copies as entry SP plus a constant, and which fr
 x19-x30 and d8-d15), results, noreturn (seeded by the fatal functions' names and BLs with nothing after them), FP use.
 Every build has them: the lift writes the job's input beside the plan (`game.plan_summaries`;
 `work/sa/summary_input_<key>.pickle`, kept until the next lift) and the cache's key: `work/sa/summaries_<key>.pickle`,
-a SHA-1 of the image, the discovery's facts, the HLE'd functions' symbols, the entry hooks, the code of
+a SHA-1 of the image, the discovery's facts, the HLE'd functions' symbols, the code of
 `enc*`/`sem*`/`ir`/`bounds`/`build_ir`/`summary`/`probes`/`host_effects.py` (`game.source_key`: the syntax tree without
-comments, docstrings and the patch tables) and the patches' declared effects (`game.summary_effects`: every row's reads,
+comments and docstrings) and the patches' declared effects (`game.summary_effects`: every row's reads,
 writes, guest callees and replace; every entry hook's reads, writes and guest callees; every HLE'd function's summary).
 A build whose patches declare other effects than the summaries in the plan count computes them again from the input,
 without a lift; a row whose effects are the same (its host function renamed, say) reruns nothing. The build's first
@@ -467,16 +499,16 @@ that runs inside it or in its callees:
   instruction's; a row whose host function calls guest code (`guest`, through `guest_call`, which puts every register
   back) also reads those functions' inputs there (a call-graph edge to each), and every register for `"computed"`; a
   row in place of a BL or BLR (`replace`) makes that instruction no call: it writes x30 and the row's result.
-- An ENTRY_HOOK (`summary.ENTRY`, `entry_hooks`): at the entry it reads `host_effects.hook_reads` (x0-x7 and x30, SP
-  for the five hooks that call guest code) and the inputs of the guest functions `host_effects.CALLS` lists; its
+- An entry hook (`summary.ENTRY`, `entry_hooks`; the hooks as `patch_scan.entry_hooks` finds them at the build, not
+  from the lift): at the entry it reads `host_effects.hook_reads` (x0-x7 and x30, SP for the five hooks that call guest
+  code) and the inputs of the guest functions its `guest(...)` names; its
   "return 1" path is a return that may write x0-x7 (`hook_return`, `hook_set_arg`), so the function returns (never
   noreturn), writes nothing on every path (must-writes 0) and may write x0-x7. `hook_run` runs the function's own
   body, whose facts the summary has. These reads are not the entry instruction's: x30 read by the hook is a label, not
   the function's LR as data.
 - An HLE'd callee (`summary.host_summary`): AAPCS64 facts with the declared reads (`host_effects.hle_reads`:
-  x0-x8, v0-v7, SP, x30 and `HLE_READS`); one declared clobbering (`CLOBBERS`) or without a known symbol reads every
+  x0-x8, v0-v7, SP, x30 and its `reads(...)`); one declared `clobbers(...)` or without a known symbol reads every
   register. The lift's record of an HLE'd callee takes the same facts (`bounds.call_bounds`).
-The build stops when the ENTRY_HOOKs it finds differ from those the plan's summaries count (lift again).
 
 A function is demoted (its interface is outside the AAPCS64) by detection, not by list:
 
@@ -544,8 +576,8 @@ checks, the omitted stores and the patches in the summaries): zero violations in
   `-ffunction-sections`, `-mllvm -rotation-max-header-size=0` and `game.DSE_FLAGS` (capture tracking up to 100,000
   uses, DSE's per-block definitions 100,000, scan and walk 1,000, other-block cost 1). No `-mno-red-zone`.
 - **Caching**: a partition's object is kept in `work/objcache` by an input key: the lifter's code (`game.code_key`:
-  every `nx2/lift2` source as `game.source_key` takes it, so comments and the patch tables are not in it), the
-  discovery's facts (`game.facts_key`: the plan as the lift wrote it, the summaries left out), the flags,
+  every `nx2/lift2` source as `game.source_key` takes it, so comments are not in it; the patch declarations are in
+  the host's C), the discovery's facts (`game.facts_key`: the plan as the lift wrote it, the summaries left out), the flags,
   `HOOKSHOT_LIFT_VERIFY`, its functions, and for each its rows, its entry hook, its summary and the call-boundary record
   of every function it may branch, call or fall to (`game.part_key`, `game.branch_targets`). The code pointer translation
   (`code_ptrs.targets`, `code_ptrs.sites`) reads only the plan (`code_excluded`, the bodies, the jump tables) and its
@@ -610,7 +642,7 @@ tree shows the constraint is needed; the experiment named decides it.
    unknown callee or exit, and the callee-saved registers a callee only saves, remain
    ([lifter-optimisations.md](lifter-optimisations.md), C).
    *Justification:* the stores are needed before calls to code that reads the context: the callee's inputs, entry
-   hooks (`emit_llvm.emit_function`: x0-x7, x30 and `host_effects.HOOK_READS`), `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
+   hooks (`emit_llvm.emit_function`: x0-x7, x30 and the hook's `reads(...)`), `a64_svc`, `recomp_ldxr`/`recomp_stxr`,
    `a64_icall`/`a64_ijump`, `hos_sj_call`, callees with unknown facts, HLE'd functions (they read their arguments
    from the context); the reloads after callees the summaries do not cover and the host callees listed above.
    Elsewhere unproven.
@@ -621,7 +653,7 @@ tree shows the constraint is needed; the experiment named decides it.
    *Justification:* the frame slots the host needs are loaded by the lifted code and handed over by At rows
    (`[sp+0x48]` in `f_8007fe60`, `[sp+0x10]` in `f_806688c0`, `[sp+192]` in `f_8005ed00`), so a promotion sees them as
    guest loads. The host still reads frames through x29: `pool_creation_key` (`host/nvn_native.c`, the return
-   addresses of a pool's creation hashed into its placement key; `host_effects.HLE_READS`), the NVN logs' chain walks
+   addresses of a pool's creation hashed into its placement key; `NV(nvnMemoryPoolInitialize, reads(x29, ...))`), the NVN logs' chain walks
    and the stall dump (diagnostics); and the guest calls of rows and hooks (`guest_call`, `hook_call_guest`) run below
    the SP they are given (`host/direct_mesh_system.c` builds a 0x100-byte block there). Those must keep x29 chains. For every other function unproven: unwinding is not a reason (throws are
    fatal). The experiment is the pair deletion for full-summary functions with a verification run.

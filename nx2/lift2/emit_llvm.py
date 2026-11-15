@@ -107,7 +107,7 @@ def emit_function(fn, decls, flags_out=False):
     out.append("define void @%s(ptr noalias nocapture %%ctx)%s%s {" % (fn.name, " strictfp" if strict else "",
                ' "target-features"="%s"' % ",".join(sorted(tf)) if tf else ""))
     hook = getattr(fn, "entry_hook", None)
-    if hook:   # (ENTRY_HOOK, nx2/entry_hooks.py: the host's function first; 1 means it did the call's work)
+    if hook:   # (PATCH_HOOK, host/patch.h: the host's function first; 1 means it did the call's work)
         decls.add("declare i32 @%s(ptr)" % hook)
         out.append("hook:")
         out.append("  %%hk = call i32 @%s(ptr %%ctx)" % hook)

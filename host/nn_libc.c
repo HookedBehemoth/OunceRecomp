@@ -9,7 +9,7 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n);   /* gpu/api/rx_nvn.
 #define WAIT_WRITEBACKS(p, n) ((void)0)
 #endif
 
-ENTRY_HOOK_SYM(memcpy) {
+PATCH_HOOK_SYM(memcpy) {
     const uint64_t n = a->x[2];
     if (!hos_guest_range(a->x[0], n) || !hos_guest_range(a->x[1], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
     if (n) {
@@ -20,7 +20,7 @@ ENTRY_HOOK_SYM(memcpy) {
 }
 
 
-ENTRY_HOOK_SYM(memmove) {
+PATCH_HOOK_SYM(memmove) {
     const uint64_t n = a->x[2];
     if (!hos_guest_range(a->x[0], n) || !hos_guest_range(a->x[1], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
     if (n) {
@@ -30,7 +30,7 @@ ENTRY_HOOK_SYM(memmove) {
     return 1;
 }
 
-ENTRY_HOOK_SYM(memset) {
+PATCH_HOOK_SYM(memset) {
     const uint64_t n = a->x[2];
     if (!hos_guest_range(a->x[0], n)) return 0;   /* (hookshot: past the guest window, the game's own copy) */
     if (n) {
@@ -39,7 +39,7 @@ ENTRY_HOOK_SYM(memset) {
     return 1;
 }
 
-ENTRY_HOOK_SYM(memcmp) {
+PATCH_HOOK_SYM(memcmp) {
     const uint8_t *p = (const uint8_t *)GP(a->x[0]), *q = (const uint8_t *)GP(a->x[1]);
     const size_t n = (size_t)a->x[2];
     int r = 0;
@@ -51,11 +51,11 @@ ENTRY_HOOK_SYM(memcmp) {
     return hook_return(h, (uint64_t)(int64_t)r);
 }
 
-ENTRY_HOOK_SYM(strlen) {
+PATCH_HOOK_SYM(strlen) {
     return hook_return(h, strlen((const char *)GP(a->x[0])));
 }
 
-ENTRY_HOOK_SYM(strcmp) {
+PATCH_HOOK_SYM(strcmp) {
     const uint8_t *p = (const uint8_t *)GP(a->x[0]), *q = (const uint8_t *)GP(a->x[1]);
     int r = 0;
     if (strcmp((const char *)p, (const char *)q)) {

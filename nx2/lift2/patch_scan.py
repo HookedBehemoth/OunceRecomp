@@ -1,5 +1,5 @@
-"""The host's patch declarations, read from its C source (host/patch.h says how each is written; docs/lifter.md, "Hooks
-and probes").
+"""The host's patch declarations, read from its C source (host/patch.h says how each is written; docs/lifter.md, "Patch
+declarations").
 
 A declaration is a macro of host/patch.h at file scope: the lifter reads it with a token scanner of a fixed grammar
 (comments, string and character literals, line continuations and nested parentheses handled; no C parser, no regular
@@ -11,8 +11,16 @@ duplicate site, and on an unknown register or kind.
 Kinds:
   PATCH_AT(pc, word(W), mode, result, fn, operand...) { body }    mode: after | before | instead
   PATCH_AT_SITE(pc, word(W), mode, result, fn, operand...);        another site of fn, checked against its prototype
+  PATCH_HOOK(addr, word(W), effect...) { body }                    host code at the entry of the function at addr
+  PATCH_HOOK_SYM(symbol, effect...) { body }                       the same, the function an export of the image
+  HLE(symbol, effect...) { body }                                  the function symbol replaced (imp_<symbol>)
+  NV(name, effect...) { body }                                     an NVN proc (n_<name>), the function name too
+  HLE_EFFECTS(symbol, effect...);                                  the effects of a replaced function written elsewhere
 operands: xN wN sN qN sp ld(xN|sp, K) add(xN, K) k(K) as(<operand>, name) guest(A, ...) | guest(computed) io(r, ...)
 results: none xN wN sN qN
+effects: reads(reg..., "why") (registers beyond the kind's own: a hook's x0-x7 and x30, an HLE'd function's AAPCS
+  arguments); guest(A, ...) (a hook: the guest functions it calls); clobbers("why") (an HLE'd function: a call of it
+  keeps no register)
 
 An `instead` site on a BL or BLR replaces the call (an At row, replace); on another instruction it replaces the
 instruction's result (a Value probe: its result is the instruction's destination). The containing function is not
@@ -20,7 +28,10 @@ written: resolve() finds it from the plan, and a site in no function or in more 
 """
 import os
 
-KINDS = ("PATCH_AT", "PATCH_AT_SITE")
+KINDS = ("PATCH_AT", "PATCH_AT_SITE", "PATCH_HOOK", "PATCH_HOOK_SYM", "HLE", "NV", "HLE_EFFECTS")
+SITES = ("PATCH_AT", "PATCH_AT_SITE")
+HOOKS = ("PATCH_HOOK", "PATCH_HOOK_SYM")
+REPLACED = ("HLE", "NV", "HLE_EFFECTS")
 MODES = ("after", "before", "instead")
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOST = os.path.join(os.path.dirname(os.path.dirname(HERE)), "host")
@@ -231,7 +242,7 @@ def _regs(prefix, n):
     return {"%s%d" % (prefix, i) for i in range(n)}
 
 
-XREG, WREG, SREG, QREG = _regs("x", 31), _regs("w", 31), _regs("s", 32), _regs("q", 32)
+XREG, WREG, SREG, QREG, VREG = _regs("x", 31), _regs("w", 31), _regs("s", 32), _regs("q", 32), _regs("v", 32)
 RESULTS = XREG | WREG | SREG | QREG | {"none"}
 
 
@@ -377,16 +388,128 @@ def host_sources(host=HOST):
     return sorted(os.path.join(host, f) for f in os.listdir(host) if f.endswith(".c"))
 
 
+def _effects(args, where, allowed):
+    """(reads, why, guest, clobbers) of a declaration's effect clauses: reads(reg..., "why"), guest(A, ...) or
+    guest(computed), clobbers("why"), each at most once and only those allowed"""
+    out = {}
+    for a in args:
+        name = a[0][1] if a and a[0][0] == "id" else None
+        inner = _call(a, name) if name else None
+        if inner is None or name not in allowed:
+            fail(where, "an effect: %s, not %r" % (" or ".join("%s(...)" % k for k in allowed),
+                                                    " ".join(t[1] for t in a)))
+        if name in out:
+            fail(where, "%s(...) twice" % name)
+        if name == "reads":
+            if len(inner) < 2 or len(inner[-1]) != 1 or inner[-1][0][0] != "str":
+                fail(where, 'reads(reg..., "why"): the registers, then the reason as a string')
+            regs = tuple(_ident(r, where, "a register read") for r in inner[:-1])
+            bad = [r for r in regs if r not in XREG | VREG | {"sp"}]
+            if bad:
+                fail(where, "reads: xN, vN or sp, not %s" % ", ".join(bad))
+            out[name] = (regs, inner[-1][0][1])
+        elif name == "clobbers":
+            if len(inner) != 1 or len(inner[0]) != 1 or inner[0][0][0] != "str":
+                fail(where, 'clobbers("why"): the reason as a string')
+            out[name] = inner[0][0][1]
+        else:
+            out[name] = operand(a, where)[1]
+    return out.get("reads", ((), None)), out.get("guest", ()), out.get("clobbers")
+
+
+class Hook:
+    """a PATCH_HOOK / PATCH_HOOK_SYM declaration: addr and word (by address) or symbol, its C name (entry_<addr>,
+    entry_sym_<symbol>, as host/hos.h makes it), the registers it reads beyond x0-x7 and x30, the guest functions it
+    calls, where"""
+    def __init__(self, d):
+        a, where = d.args, d.where
+        self.kind, self.where, self.decl = d.kind, where, d
+        self.addr = self.word = self.symbol = None
+        if d.kind == "PATCH_HOOK":
+            if len(a) < 2:
+                fail(where, "PATCH_HOOK(addr, word(W), effect...)")
+            self.addr = _num(a[0], where, "the function's address")
+            w = _call(a[1], "word")
+            if w is None or len(w) != 1:
+                fail(where, "the function's first word is written word(0x...), not %r" % " ".join(t[1] for t in a[1]))
+            self.word = _num(w[0], where, "word")
+            self.name = "entry_" + a[0][0][1]
+            rest = a[2:]
+        else:
+            if not a or not a[0]:
+                fail(where, "PATCH_HOOK_SYM(symbol, effect...)")
+            self.symbol = _ident(a[0], where, "the symbol")
+            self.name = "entry_sym_" + self.symbol
+            rest = a[1:]
+        (self.reads, self.why), self.guest, _ = _effects([x for x in rest if x], where, ("reads", "guest"))
+        if self.guest == "computed":
+            fail(where, "a hook names the guest functions it calls")
+
+
+class Replaced:
+    """an HLE / NV / HLE_EFFECTS declaration: the symbol (an NVN proc's name), the registers a call of it reads beyond
+    the AAPCS arguments, clobbers (the reason a call of it keeps no register, or None), where"""
+    def __init__(self, d):
+        a, where = d.args, d.where
+        self.kind, self.where, self.decl = d.kind, where, d
+        if not a or not a[0]:
+            fail(where, "%s(symbol, effect...)" % d.kind)
+        self.symbol = _ident(a[0], where, "the symbol")
+        (self.reads, self.why), _, self.clobbers = _effects([x for x in a[1:] if x], where, ("reads", "clobbers"))
+        if d.kind == "HLE_EFFECTS" and not self.reads and self.clobbers is None:
+            fail(where, "HLE_EFFECTS without an effect")
+
+
+class PatchSet:
+    """the scan's result: sites ([Site], declaration order), hooks ([Hook]), replaced ({symbol: Replaced}: HLE and
+    HLE_EFFECTS by symbol, NV by proc name)"""
+    def __init__(self, sites=(), hooks=(), replaced=()):
+        self.sites, self.hooks = list(sites), list(hooks)
+        self.hle = {r.symbol: r for r in replaced if r.kind == "HLE"}
+        self.nv = {r.symbol: r for r in replaced if r.kind == "NV"}
+        self.declared = {r.symbol: r for r in replaced if r.kind == "HLE_EFFECTS"}
+        self.hook_named = {h.name: h for h in self.hooks}
+
+    def effects(self, symbol):
+        """the declaration of the replaced function symbol (its HLE, HLE_EFFECTS or NV), or None"""
+        return self.hle.get(symbol) or self.declared.get(symbol) or self.nv.get(symbol)
+
+    def hle_symbols(self):
+        """the symbols HLE(...) replaces (imp_<symbol>)"""
+        return set(self.hle)
+
+
+def _read(path):
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
 def scan(paths=None):
-    """[Site] of every declaration in the files (in their order, each file's in its order); SystemExit on an error"""
-    out = []
-    for path in paths if paths is not None else host_sources():
-        with open(path, encoding="utf-8", errors="replace") as f:
-            text = f.read()
+    """the PatchSet of every declaration in the files (in their order, each file's in its order); SystemExit on an
+    error"""
+    root = os.path.dirname(HOST)
+    return scan_texts((os.path.relpath(p, root) if os.path.abspath(p).startswith(root + os.sep) else p, _read(p))
+                      for p in (paths if paths is not None else host_sources()))
+
+
+def scan_text(text, path="t.c"):
+    """the PatchSet of one source text (tests)"""
+    return scan_texts([(path, text)])
+
+
+def scan_texts(texts):
+    """the PatchSet of [(file name, its text)]"""
+    out, hooks, replaced = [], [], []
+    for rel, text in texts:
         if not any(k in text for k in KINDS):   # (a file without a declaration's name has none)
             continue
-        rel = os.path.relpath(path, os.path.dirname(HOST))
-        out.extend(Site(d) for d in declarations(text, rel))
+        for d in declarations(text, rel):
+            if d.kind in SITES:
+                out.append(Site(d))
+            elif d.kind in HOOKS:
+                hooks.append(Hook(d))
+            else:
+                replaced.append(Replaced(d))
     first = {}
     for s in out:
         if s.kind == "PATCH_AT":
@@ -408,7 +531,84 @@ def scan(paths=None):
         if k in seen:
             fail(s.where, "the same site as %s:%d" % seen[k])
         seen[k] = s.where
-    return out
+    seen = {}
+    for h in hooks:
+        k = h.addr if h.addr is not None else h.symbol
+        if k in seen:
+            fail(h.where, "a second hook of %s (the first at %s:%d)" % ((h.name,) + seen[k]))
+        seen[k] = h.where
+    seen = {}
+    for r in replaced:
+        k = (r.kind, r.symbol)
+        if k in seen:
+            fail(r.where, "%s declared again (the first at %s:%d)" % ((r.symbol,) + seen[k]))
+        seen[k] = r.where
+    hle = {r.symbol: r for r in replaced if r.kind == "HLE"}
+    for r in replaced:
+        if r.kind == "HLE_EFFECTS" and r.symbol in hle:
+            fail(r.where, "HLE_EFFECTS of %s, which HLE declares at %s:%d: its effects go there"
+                 % ((r.symbol,) + hle[r.symbol].where))
+    return PatchSet(out, hooks, replaced)
+
+
+_PATCHES = None
+
+
+def patches():
+    """the host's PatchSet (scanned on first use in a process), or the one use() gave"""
+    global _PATCHES
+    if _PATCHES is None:
+        _PATCHES = scan()
+    return _PATCHES
+
+
+def use(ps):
+    """ps (a test's PatchSet, e.g. scan_text's) in place of the host's declarations; returns the one before"""
+    global _PATCHES
+    before = patches()
+    _PATCHES = ps
+    from . import summary
+    summary.ENTRY.clear()
+    return before
+
+
+def entry_hooks(gen, ps=None):
+    """({address: the hook's C name}, [Hook by a symbol the image does not export]): the PATCH_HOOK addresses, and the
+    PATCH_HOOK_SYM symbols through the image's exports (<gen>/../image/image.json)"""
+    import json
+    ps = ps or patches()
+    exports = {}
+    meta = os.path.join(os.path.dirname(gen), "image", "image.json")
+    if any(h.symbol for h in ps.hooks) and os.path.exists(meta):
+        with open(meta) as f:
+            exports = json.load(f).get("exports", {})
+    out, missing = {}, []
+    for h in ps.hooks:
+        a = h.addr if h.symbol is None else exports.get(h.symbol)
+        if a is None:
+            missing.append(h)
+        else:
+            out[a] = h.name
+    return out, missing
+
+
+def check_hooks(plan, gen, ps=None):
+    """SystemExit with file:line for a hook whose function the plan does not lift, whose symbol the image does not
+    export, or whose function's first word is not the declared one; else {address: hook C name}"""
+    ps = ps or patches()
+    hooks, missing = entry_hooks(gen, ps)
+    for h in missing:
+        fail(h.where, "%s: the image exports no %s" % (h.kind, h.symbol))
+    by_name = ps.hook_named
+    for a, n in sorted(hooks.items()):
+        h = by_name[n]
+        body = plan["bodies"].get(a)
+        if body is None:
+            fail(h.where, "%s at %#x: no lifted function there" % (h.kind, a))
+        if h.word is not None and (body[0][0] != a or body[1][0] != h.word):
+            fail(h.where, "PATCH_HOOK at %#x: the function's first word is %#010x, not %#010x"
+                 % (a, body[1][0] if body[0][0] == a else 0, h.word))
+    return hooks
 
 
 def rows(sites):
@@ -505,8 +705,7 @@ def check_records(objects, paths=None):
                 got[_key(r.decode("utf-8", "replace"))] += 1
     want = collections.Counter()
     for path in paths if paths is not None else host_sources():
-        with open(path, encoding="utf-8", errors="replace") as f:
-            text = f.read()
+        text = _read(path)
         if any(k in text for k in KINDS):
             for d in declarations(text, path):
                 want[_key(d.canonical())] += 1

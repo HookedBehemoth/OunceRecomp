@@ -142,25 +142,24 @@ def rows():
     return _ROWS
 
 
-# ---- the host's code at a function's entry (ENTRY_HOOK) and HLE'd functions (nx2/lift2/host_effects.py)
+# ---- the host's code at a function's entry (PATCH_HOOK) and HLE'd functions (nx2/lift2/host_effects.py)
 ENTRY = {}   # entry -> (what the hook reads, what it may write, the guest functions it calls): summarise() sets it
 
 
 def entry_hooks(hooks):
     """{entry: (reads, may-writes, guest calls)} of the entry hooks ({entry: hook C name}): the hook reads its declared
     registers (host_effects.hook_reads) at the entry, may write x0-x7 (hook_return, hook_set_arg) and calls the guest
-    functions host_effects.CALLS lists (hook_call_guest: their inputs are read, every register is put back); hook_run
+    functions its guest(...) names (hook_call_guest: their inputs are read, every register is put back); hook_run
     runs the function's own body, whose effects the summary has already"""
-    return {e: (sum(BIT[v] for v in host_effects.hook_reads(n)), sum(X[0:8]), tuple(host_effects.CALLS.get(n, ())))
+    return {e: (sum(BIT[v] for v in host_effects.hook_reads(n)), sum(X[0:8]), host_effects.hook_calls(n))
             for e, n in hooks.items()}
 
 
 def host_summary(symbol):
     """the summary of an HLE'd function (symbol: its name, as in imp_<symbol>; None: not known): AAPCS64 facts with
-    what host_effects declares it reads; one declared clobbering (host_effects.CLOBBERS) or unknown reads every
-    register"""
+    what its declaration reads; one declared clobbers("...") or unknown reads every register"""
     s = Summary()
-    clean = symbol is not None and symbol not in host_effects.CLOBBERS
+    clean = symbol is not None and host_effects.clobbers(symbol) is None
     s.inputs = sum(BIT[v] for v in host_effects.hle_reads(symbol)) if clean else ALL
     s.clobbers, s.mustdef, s.preserved = CALLER_SAVED, X[30], CALLEE_SAVED
     s.returns = s.boundary = True
@@ -193,7 +192,7 @@ class Func:
         self.falls_into = set() # entries this function falls into without a branch
         body = set(pcs)
         extra = rows()
-        self.hook = ENTRY.get(entry)   # (an ENTRY_HOOK: (reads, may-writes, guest calls), or None)
+        self.hook = ENTRY.get(entry)   # (a PATCH_HOOK: (reads, may-writes, guest calls), or None)
         self.guest = {}         # instruction index -> the guest functions a row there calls, or "computed"
         for k, pc in enumerate(pcs):
             i, u, d = def_use(self.words[k])
@@ -808,7 +807,7 @@ def guest_callees(fn):
 
 def summarise(funcs, prog, hooks, word, names=None, log=print, entry=None):
     """funcs: entry -> sorted pcs; hooks: the HLE'd functions ({entry: Summary}, host_summaries; or a set: AAPCS);
-    names: entry -> symbol name (the noreturn seeds); entry: {entry: hook C name} (ENTRY_HOOKs). Returns (summaries,
+    names: entry -> symbol name (the noreturn seeds); entry: {entry: hook C name} (PATCH_HOOKs). Returns (summaries,
     Funcs, statistics)"""
     t0 = time.time()
     hooks = patched(hooks, entry)
@@ -1183,7 +1182,7 @@ def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print,
     return sums, stats, edges
 
 
-def job(inp, out, jobs):
+def job(inp, out, jobs, entry):
     """the summaries in a process of their own (game.finish_summaries): inp, a pickle of the functions (entry -> (pcs,
     words)) and the discovery's facts; out, a pickle of (summaries, stats, edges). Its workers fork from a process
     that holds only this, not the lifter."""
@@ -1203,7 +1202,7 @@ def job(inp, out, jobs):
     prog = build_ir.Program(entries=d["entries"], jt=d["jt"], callee=callee, plt=plt, no_call=d["no_call"],
                             classes=d["classes"])
     funcs, names = d["funcs"], d["names"]
-    hooks, entry = host_summaries(d["hle"]), d["entry_hooks"]
+    hooks = host_summaries(d["hle"])
     del d
     sums, stats, edges = summarise_parallel(funcs, prog, hooks, None, names, jobs=jobs, entry=entry)
     stats["main peak MB"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10

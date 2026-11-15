@@ -64,7 +64,7 @@ static _Thread_local ZSTD_DCtx *tl_dctx;
 static int64_t st_files, st_bytes, st_streams;
 
 /* ZSTD_decompressMultiFrame: a whole file at once */
-ENTRY_HOOK(0x8010b380) {
+PATCH_HOOK(0x8010b380, word(0xd503237f)) {
     const uint64_t dst = a->x[1], cap = a->x[2], src = a->x[3], n = a->x[4], dict = a->x[5], dict_size = a->x[6], ddict = a->x[7];
     if (!hos_guest_range(dst, cap) || !hos_guest_range(src, n) || (dict && !hos_guest_range(dict, dict_size))) return 0;
     if (!tl_dctx && !(tl_dctx = ZSTD_createDCtx())) return 0;
@@ -109,7 +109,7 @@ static ZSTD_DCtx *job_dctx(uint64_t job) {
 #define J32(o) (*(uint32_t *)GP(job + (o)))
 #define J64(o) (*(uint64_t *)GP(job + (o)))
 
-ENTRY_HOOK(0x80115c80) {
+PATCH_HOOK(0x80115c80, word(0xd503237f)) {
     const uint64_t job = a->x[0], chunk = a->x[1], ddict = a->x[3];
     const uint32_t n = (uint32_t)a->x[2];
     if (!hos_guest_range(job, 64) || !hos_guest_range(chunk, n)) return 0;

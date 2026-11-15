@@ -377,7 +377,7 @@ job-call site `f_806688c0` does not wait for a pass's jobs (decompile): it looks
 with no slot in (record +0xc8 < 1), leaves through `0x80668c94` without a `CallCommands`; the graph's join is what
 makes the jobs complete.
 
-Times in stage C (VERIFIED, ENTRY_HOOK timers, runs `tail_p2`-`tail_p7`, market overlay, uncapped, 13.5 ms frames;
+Times in stage C (VERIFIED, entry-hook timers, runs `tail_p2`-`tail_p7`, market overlay, uncapped, 13.5 ms frames;
 ms from the stage's join start, the stage 7.4 ms): calc jobs 0.02-1.73 on main and five workers (10.1 ms of CPU a
 frame); the render jobs 2.07-4.03; the BaseProc late step (`f_83acfb90` on every worker, the executors) 3.59-4.35; the
 small layers 3.80-4.37; the decal/static-shadow step as its own node (`f_8006e160`) 4.10-5.48; **the long layer**
@@ -410,7 +410,7 @@ market the layer then waits 0.12 ms a frame at 1.3 of its 26 job calls, and the 
 frame with almost no waiting (0.01 ms) and the frame does not change (10.4-10.5 ms both ways); why (presumably the layer is not
 what ends stage C there) is not measured.
 
-**The calc jobs** (VERIFIED: ENTRY_HOOK timers per thread, runs `cull_t1`-`cull_t3`, 600 frames each; a perf profile
+**The calc jobs** (VERIFIED: entry-hook timers per thread, runs `cull_t1`-`cull_t3`, 600 frames each; a perf profile
 of the six threads, run `cull_perf`; decompiles; market overlay, uncapped). `f_800998a0` (label `job_calc_runner`) is
 one function that all six threads run (main and ModuleSystemWorker1-5). Each sub-stage is claimed through bit masks and
 atomic counters in the job object, and the threads with nothing to claim poll with `SleepThread(20 µs)` (sites
@@ -663,7 +663,7 @@ unnamed movie input thread; joined at the new-game transition (boot-speed.md).
 
 ## 7. Where to hook
 
-The cleanest function boundary for a timing mark or a patch, per phase (an `ENTRY_HOOK(0x...)` runs at a lifted
+The cleanest function boundary for a timing mark or a patch, per phase (an `PATCH_HOOK(0x...)` runs at a lifted
 function's entry, `host/hos.h:26`; a mark at the end of a phase is the entry of the next one).
 
 | Phase | Boundary | Notes |

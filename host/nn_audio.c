@@ -1511,14 +1511,6 @@ static void ret_float(Ctx *c, float f) {
     memset(&c->vreg[0], 0, sizeof c->vreg[0]);
     memcpy(&c->vreg[0][0], &bits, 4);
 }
-#define REVERB_FLOAT(NAME, field) \
-    HLE(_ZN2nn5audio##NAME##EPNS0_15I3dl2ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->field = farg(c, 0); }
-#define REVERB_FLOAT_GET(NAME, field) \
-    HLE(_ZN2nn5audio##NAME##EPKNS0_15I3dl2ReverbTypeE) { Reverb *rv = reverb_of(ARG(0)); ret_float(c, rv ? rv->field : 0.0f); }
-#define REVERB_TIME(NAME, field) \
-    HLE(_ZN2nn5audio##NAME##EPNS0_15I3dl2ReverbTypeENS_8TimeSpanE) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->field = (int64_t)ARG(1); }
-#define REVERB_TIME_GET(NAME, field) \
-    HLE(_ZN2nn5audio##NAME##EPKNS0_15I3dl2ReverbTypeE) { Reverb *rv = reverb_of(ARG(0)); RET(rv ? (uint64_t)rv->field : 0); }
 HLE(_ZN2nn5audio22SetI3dl2ReverbRoomGainEPNS0_15I3dl2ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->room = farg(c, 0); }
 HLE(_ZN2nn5audio22GetI3dl2ReverbRoomGainEPKNS0_15I3dl2ReverbTypeE) { Reverb *rv = reverb_of(ARG(0)); ret_float(c, rv ? rv->room : 0.0f); }
 HLE(_ZN2nn5audio24SetI3dl2ReverbRoomHfGainEPNS0_15I3dl2ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->room_hf = farg(c, 0); }

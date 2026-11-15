@@ -61,12 +61,12 @@ Each is kept until its experiment runs.
   libc hooks (memset, strlen, strcmp, memcpy, memcmp, memmove: 3-5 arguments or fewer) widen the inputs of about
   2,800 functions that reach them (x1-x7 beyond their arguments), and their stores stay before every such call. A per-hook argument count in the
   declaration (checked by `tests/test_host_context_reads.py`) removes them.
-- **A BL to an entry-hooked function keeps only what the guest functions in `host_effects.CALLS` preserve too**
+- **A BL to an entry-hooked function keeps only what the guest functions its hook's `guest(...)` names preserve too**
   (`bounds.call_bounds`), though `hook_call_guest` runs them through `call_restoring` (`host/hos_hostcall.c`), which
   puts every register back. Unproven only in that nothing tests it; dropping the check gives the three mesh drawer
   hooks' callers their registers back. Experiment: drop it, verification smoke (`lift2_host_exit`-style check of the
   hooked call).
-- **The fiber HLEs and the unaudited NVN exports read every register** (`host_effects.CLOBBERS`,
+- **The fiber HLEs and the unaudited NVN exports read every register** (their declarations' `clobbers(...)`,
   `summary.host_summary`): their callers' inputs include x9-x18 and the flags, which widens the inputs of about
   430 functions and demotes part of them (tmp_in, flags_in). A declaration of what `fiber_switch` really reads (its argument; the context it
   saves is restored before the caller reads it again) removes that.

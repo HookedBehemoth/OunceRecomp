@@ -167,7 +167,7 @@ int hos_dbg_item(const char *item) {
 }
 int hos_log_switch(const char *item) { return hos_dbg_item(item) || hos_dbg_item("logall"); }
 
-/* HOS_DBG=hooks (diagnostic, host/hos.h ENTRY_HOOK): each entry hook's first call, with how many hooks have run so far */
+/* HOS_DBG=hooks (diagnostic, host/hos.h ENTRY_HOOK_COUNTED): each entry hook's first call, with how many have run */
 int hos_hooks_dbg;
 void hos_hook_seen(const char *name) {
     enum { MAX = 512 };
@@ -1018,7 +1018,8 @@ static void fiber_switch(Ctx *from, HosFiber *to) {
 }
 
 /* InitializeFiber(FiberType*, FiberType* (*)(void*), void* arg, void* stack, unsigned long size, int flags) */
-HLE(_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi) {
+HLE(_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi,
+    clobbers("deletes a host fiber (DeleteFiber), which may be the running one")) {
     HosFiber *f = fiber_of_ft(ARG(0));
     if (!f) {
         f = (HosFiber *)calloc(1, sizeof *f);
@@ -1041,7 +1042,8 @@ HLE(_ZN2nn2os15InitializeFiberEPNS0_9FiberTypeEPFS2_PvES3_S3_mi) {
                 (unsigned long long)f->size, (int)ARG(5));
 }
 
-HLE(_ZN2nn2os13FinalizeFiberEPNS0_9FiberTypeE) {
+HLE(_ZN2nn2os13FinalizeFiberEPNS0_9FiberTypeE,
+    clobbers("deletes a host fiber (DeleteFiber), which may be the running one")) {
     HosFiber *f = fiber_of_ft(ARG(0));
     if (f && f->host && &f->ctx != c) { DeleteFiber(f->host); f->host = NULL; f->done = 1; }
 }
@@ -1052,7 +1054,8 @@ HLE(_ZN2nn2os15GetCurrentFiberEv) {
 }
 
 /* SwitchToFiber(FiberType*): NULL goes back to the thread's own context */
-HLE(_ZN2nn2os13SwitchToFiberEPNS0_9FiberTypeE) {
+HLE(_ZN2nn2os13SwitchToFiberEPNS0_9FiberTypeE,
+    clobbers("context switch: the call returns when another context switches back (fiber_switch)")) {
     HosFiber *to = NULL;
     if (ARG(0) && !(to = fiber_of_ft(ARG(0))))
         hos_fatal(c, "SwitchToFiber(%#llx): not an initialized fiber", (unsigned long long)ARG(0));

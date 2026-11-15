@@ -1,11 +1,12 @@
 """The build's content keys (nx2/lift2/game.py): what makes a partition compile again and the summaries be computed again.
 
-- source_key: a lifter source without comments and docstrings, and host_effects.py without its tables: editing a
-  comment or a table leaves the lifter's code key as it was; editing code changes it (the host's patch declarations are
-  in no lifter source: host/patch.h).
+- source_key: a lifter source without comments and docstrings: editing a comment leaves the lifter's code key as it
+  was; editing code changes it (the host's patch declarations are in no lifter source: host/patch.h).
 - part_key: a partition's key changes with its own functions' rows, entry hooks and summaries and with the
   call-boundary records of the functions they branch or call to, and with nothing of another partition.
-- summary_effects: changes with a row's declared reads or writes, not with its host function's name.
+- summary_effects: changes with a row's declared reads or writes, not with its host function's name; with an entry
+  hook's declared reads and guest callees, with its presence (a hook added needs no lift), and with an HLE'd
+  function's declared reads and clobbers.
 No game is used.
 
 python -I -B tests/test_lift2_keys.py
@@ -17,7 +18,7 @@ from array import array
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
-from lift2 import game, probes, summary  # noqa: E402
+from lift2 import game, patch_scan, probes, summary  # noqa: E402
 
 HERE = os.path.join(ROOT, "nx2", "lift2")
 
@@ -37,12 +38,6 @@ class SourceKey(unittest.TestCase):
         self.assertIn(code, src)
         self.assertNotEqual(game.source_key("probes.py", src.replace(code, "        self.before = not before   #")),
                             key)
-
-    def test_host_effects_tables(self):
-        src = text("host_effects.py")
-        key = game.source_key("host_effects.py", src)
-        self.assertEqual(game.source_key("host_effects.py", src.replace('"entry_0x802737a0": ("sp",),', "")), key)
-        self.assertNotEqual(game.source_key("host_effects.py", src.replace("return HOOK_ARGS + ", "return ")), key)
 
     def test_other_sources_keep_their_code(self):
         src = text("bounds.py")
@@ -105,6 +100,23 @@ class SummaryEffects(unittest.TestCase):
         self.assertEqual(self.effects([probes.At(0x1000, 0x1004, 0xd503201f, "other", ("x0",), "x1")]), k)
         self.assertNotEqual(self.effects([probes.At(0x1000, 0x1004, 0xd503201f, "fn", ("x2",), "x1")]), k)
         self.assertNotEqual(self.effects([probes.At(0x1000, 0x1004, 0xd503201f, "fn", ("x0",), "x3")]), k)
+
+    def declared(self, text, hooks):
+        before = patch_scan.use(patch_scan.scan_text(text))
+        try:
+            return game.summary_effects(hooks, {0x2000: "nn_f"})
+        finally:
+            patch_scan.use(before)
+
+    def test_hooks_and_hle(self):
+        hook = "PATCH_HOOK(0x1000, word(0x1)%s) { return 0; }\n"
+        named = {0x1000: "entry_0x1000"}
+        k = self.declared(hook % "" + "HLE(nn_f) {}", named)
+        self.assertNotEqual(self.declared(hook % "" + "HLE(nn_f) {}", {}), k)   # (no hook)
+        for text in (hook % ', reads(sp, "t")' + "HLE(nn_f) {}", hook % ", guest(0x3000)" + "HLE(nn_f) {}",
+                     hook % "" + 'HLE(nn_f, reads(x29, "t")) {}', hook % "" + 'HLE(nn_f, clobbers("t")) {}'):
+            self.assertNotEqual(self.declared(text, named), k, text)
+        self.assertEqual(self.declared("/* moved */\n" + hook % "" + "HLE(nn_f) { int body; }", named), k)
 
 
 if __name__ == "__main__":

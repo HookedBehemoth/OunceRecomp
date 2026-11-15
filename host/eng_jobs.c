@@ -22,7 +22,7 @@ typedef struct {
 static _Thread_local job_tls jt;
 static _Thread_local uint64_t jt_cmd;   /* the guest command buffer the job on this thread records into */
 
-ENTRY_HOOK(0x80084de0) {   /* (ctx, drawctx, cmdpool, key, job, &range, stats) */
+PATCH_HOOK(0x80084de0, word(0xd503237f)) {   /* (ctx, drawctx, cmdpool, key, job, &range, stats) */
     if (!rx_direct() || jt.active) return 0;   /* (not direct mode, or the game's recorder run from here: its body) */
     const uint64_t range = a->x[5], lr = a->lr;
     if (direct_passes_recorder(a->x[3])) { direct_layer_ahead_job_done(range, lr); return 1; }   /* (the pass's formats not known: the early return) */

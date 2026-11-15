@@ -6,7 +6,8 @@ LIFT_INCOMPLETE behind, and nx2/build.py and scripts/play-refresh.sh refuse to b
 built and was stamped as the play build. A folder with neither mark (lifted before the marks) builds as before.
 
 LIFT_OK also records a hash of the lift's inputs (inputs_hash: the lift's sources in nx2/, the
-ENTRY_HOOK lines of host/*.c, the hot list, the dump's code files, the switches). scripts/play-refresh.sh
+functions host/*.c replaces (its HLE declarations, nx2/lift2/patch_scan.py), the hot list, the dump's code files, the
+switches). scripts/play-refresh.sh
 asks stale() and lifts again when they changed, instead of building a lift older than the lifter (the merge of a
 lifter change once stamped a play build made from the old lift); a host-only change keeps its fast path.
 """
@@ -22,19 +23,18 @@ OK = "LIFT_OK"
 SWITCHES = ("HOOKSHOT_LIFT_VERIFY", "HOOKSHOT_HOT_FUNCS")
 
 
-# what the lift reads, relative to the repository: whole files (globs), and host files of which only the lines the lift
-# reads count (nx2/entry_hooks.py's ENTRY_HOOK, ENTRY_HOOK_SYM)
+# what the lift reads, relative to the repository: whole files (globs); of the host's C, the symbols its HLE
+# declarations replace (the lift hooks them: nx2/standalone.py hle_set)
 LIFT_SOURCES = ("third_party/a64-kit/rt/a64.h", "third_party/a64-kit/hos/*.py", "third_party/a64-kit/tools/nso.py",
                 "nx2/*.py", "nx2/lift2/*.py")
-HOST_LINES = ("host/*.c",)
-HOST_LINE = re.compile(r"^(?:ENTRY_HOOK|ENTRY_HOOK_SYM)\(.*$", re.M)
 NOT_LIFT = re.compile(r"(^|/)(test_|build\.py$|prompt_|prepare_|nup|win_manifest|make_icon|"
                       r"dump\.py$|disasm\.py$|xref\.py$|samap|sasym|census\.py$|fault\.py$|label_syms|zbic|"
                       r"version\.py$|unpack\.py$)")
 
 
 def inputs_hash(root, env=None, hot=None, exefs=None):
-    """a hash of what a lift of the repository at root reads: see LIFT_SOURCES, HOST_LINES; the hot list file
+    """a hash of what a lift of the repository at root reads: see LIFT_SOURCES; the host's HLE'd symbols; the hot list
+    file
     (HOOKSHOT_HOT_FUNCS as the lift takes it); the dump's exefs files (name, size, modification time); the switches"""
     env = os.environ if env is None else env
     h = hashlib.sha1(usedforsecurity=False)
@@ -46,12 +46,11 @@ def inputs_hash(root, env=None, hot=None, exefs=None):
             h.update(rel.encode() + b"\0")
             with open(path, "rb") as f:
                 h.update(f.read())
-    for pat in HOST_LINES:
-        for path in sorted(glob.glob(os.path.join(root, pat))):
-            with open(path, encoding="utf-8", errors="replace") as f:
-                lines = HOST_LINE.findall(f.read())
-            if lines:
-                h.update(os.path.basename(path).encode() + b"\0" + "\n".join(lines).encode())
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from lift2 import patch_scan
+    host = os.path.join(root, "host")
+    if os.path.isdir(host):
+        h.update(b"hle\0" + "\n".join(sorted(patch_scan.scan(patch_scan.host_sources(host)).hle_symbols())).encode())
     if hot and os.path.exists(hot):
         with open(hot, "rb") as f:
             h.update(b"hot\0" + f.read())

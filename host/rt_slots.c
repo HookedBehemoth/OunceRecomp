@@ -16,12 +16,12 @@
    own registration compare at alloc never hits on its own: the entry it picks has no registration. Parking, below,
    keeps the entry with its target, so the ~42 initializations a frame drop to ~2.)
 
-     ENTRY_HOOK(0x8005ed00)       DTA::alloc(dta, ctx, desc, flags): note lr/name/shape for this thread (flags bit 0:
+     PATCH_HOOK(0x8005ed00)       DTA::alloc(dta, ctx, desc, flags): note lr/name/shape for this thread (flags bit 0:
                                   transient); the first call shrinks the arenas. Returns 0 (the lifted body runs).
      At rows in f_8005ed00 (a PATCH_AT declaration, host/patch.h) after the two lines (0x8005fb74, 0x80061814) that store block
                                   +0x38 = the aligned offset: x23 block, x10 offset, x8 the block's pool, the alignment
                                   in the frame at [sp + 192]. Both (x10 and block +0x38) are rewritten to the slot.
-     ENTRY_HOOK(0x802737a0)       DTA::free(dta, entry): the slot of entry +0xc0's block is free again.
+     PATCH_HOOK(0x802737a0)       DTA::free(dta, entry): the slot of entry +0xc0's block is free again.
 
    Persistent allocations (f_80062c50, from the top of the free block) do not set the note and are left to the game.
    Any mismatch (arenas not fresh, a pool smaller than the slot range, an arena offset inside it, a second pool record)
@@ -463,7 +463,9 @@ static uint32_t shadow_size(uint64_t obj, uint32_t w);
 static void alloc_gave(uint64_t entry);
 static _Thread_local int in_alloc;
 /* The alloc's body runs from here, so the entry it gives is seen (alloc_gave) */
-ENTRY_HOOK(0x8005ed00) {   /* (dta, ctx, desc, flags) */
+PATCH_HOOK(0x8005ed00, word(0xd503237f),
+           reads(sp, "hook_call_guest on the call's stack"),
+           guest(0x802737a0)) {   /* (dta, ctx, desc, flags) */
     if (in_alloc) return in_alloc = 0, 0;   /* (the lifted body, called below: the flag is taken by its first entry, so a nested call is hooked as any) */
     const int handled = alloc_pre(a, h);
     if (off_()) return handled;
@@ -829,7 +831,8 @@ static uint32_t class_of(uint32_t w) {
 #define LS_TAB 2048
 static struct { uint64_t obj; uint32_t cls; } ls_tab[LS_TAB];
 static SRWLOCK ls_lock = SRWLOCK_INIT;
-ENTRY_HOOK(0x802640a0) {   /* (shadow object = light + 0x100, ctx, flags): noted; the lifted body runs */
+/* (shadow object = light + 0x100, ctx, flags): noted; the lifted body runs */
+PATCH_HOOK(0x802640a0, word(0xd503237f)) {
     shadow_obj = a->x[0];
     return 0;
 }
@@ -858,7 +861,9 @@ static uint32_t shadow_size(uint64_t obj, uint32_t w) {
     return want;
 }
 
-ENTRY_HOOK(0x802737a0) {   /* (dta, entry) */
+PATCH_HOOK(0x802737a0, word(0xd503237f),
+           reads(sp, "hook_call_guest on the call's stack"),
+           guest(0x802737a0)) {   /* (dta, entry) */
     if (off_()) return 0;
     const uint64_t e = a->x[1];
     if (!hos_guest_range(e, 0x180)) return 0;

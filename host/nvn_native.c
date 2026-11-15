@@ -58,7 +58,6 @@ static uint64_t pool_creation_key(const Ctx *c) {
 }
 
 /* ---- calling convention: arguments from the guest registers ---- */
-#define NV(name) static void n_##name(Ctx *c, void *u_)
 static void die(const char *fmt, ...);
 /* (hookshot) guest memory this layer reads or writes for the game: the n bytes at a, which must lie in the guest window
    (die otherwise). Objects and arrays are guest memory, so their addresses and sizes are checked before use. An
@@ -306,7 +305,8 @@ NV(nvnMemoryPoolBuilderSetDevice) { ((nvn_pool_builder *)P(0))->dev = P(1); }
 NV(nvnMemoryPoolBuilderSetStorage) { ((nvn_pool_builder *)P(0))->mem = U64(1); ((nvn_pool_builder *)P(0))->size = U64(2); }
 NV(nvnMemoryPoolBuilderSetFlags) { ((nvn_pool_builder *)P(0))->flags = U32(1); }
 static void guest_chain(Ctx *c, char *b, size_t cap);
-NV(nvnMemoryPoolInitialize) {
+NV(nvnMemoryPoolInitialize,
+   reads(x29, "the frame-pointer chain's return addresses hashed into the pool's creation key, which places it")) {
     const nvn_pool_builder *b = (const nvn_pool_builder *)P(1);
     nvn_pool *o = (nvn_pool *)P(0);
     memset(o, 0, sizeof *o);
@@ -416,11 +416,11 @@ NV(nvnMemoryPoolFlushMappedRange) {}
    console the invalidate is a cache op. Here the invalidate waits for the submission writing the slot back, ~8 ms every
    frame on a job worker on the frame's critical path (the replay is a frame behind the game). No wait for any of its four
    invalidates: lr 0x803665d4 and 0x80366168 (the current slot, before and after the copy), 0x8036635c (the other slot),
-   and the tail call's (lr the caller's, 0x80099d84): the reader marks its own run (its ENTRY_HOOK below runs its body
+   and the tail call's (lr the caller's, 0x80099d84): the reader marks its own run (its PATCH_HOOK below runs its body
    with this thread noted), so the invalidate is told by who asks, not by its return address. The exposure meter
    (f_80357060, read and zeroed) keeps its wait. MKW (hos_game_is_mkw): every invalidate waits */
 static _Thread_local int tl_grid_reader;
-ENTRY_HOOK(0x80365f00) {   /* report_reader_a: the grid reader's body, this thread noted */
+PATCH_HOOK(0x80365f00, word(0xd503237f)) {   /* report_reader_a: the grid reader's body, this thread noted */
     if (tl_grid_reader) return 0;   /* (the body, run below) */
     static A64Fn body;
     if (!body) body = f_80365f00;
@@ -1042,10 +1042,14 @@ static void texels(Ctx *c, int write, int strided) {
     if (write) rx_nvn_write_texels(t, level, layer0, r, data, row, img), watch_texels_source(t, data, img);
     else rx_nvn_read_texels(t, level, layer0, r, data, row, img);
 }
-NV(nvnTextureReadTexels) { texels(c, 0, 0); }
-NV(nvnTextureReadTexelsStrided) { texels(c, 0, 1); }
-NV(nvnTextureWriteTexels) { texels(c, 1, 0); }
-NV(nvnTextureWriteTexelsStrided) { texels(c, 1, 1); }
+NV(nvnTextureReadTexels,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) { texels(c, 0, 0); }
+NV(nvnTextureReadTexelsStrided,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) { texels(c, 0, 1); }
+NV(nvnTextureWriteTexels,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) { texels(c, 1, 0); }
+NV(nvnTextureWriteTexelsStrided,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) { texels(c, 1, 1); }
 NV(nvnTextureFlushTexels) {}
 NV(nvnTextureInvalidateTexels) {}
 
@@ -1806,7 +1810,8 @@ NV(nvnCommandBufferGetCommandMemorySize) { RET(CB(P(0))->game_size); }
 NV(nvnCommandBufferGetCommandMemoryUsed) { const nvn_cmd *o = CB(P(0)); RET(o->hw_used < o->game_size ? o->hw_used : o->game_size); }
 NV(nvnCommandBufferGetCommandMemoryFree) { const nvn_cmd *o = CB(P(0)); RET(o->game_size - (o->hw_used < o->game_size ? o->hw_used : o->game_size)); }
 
-NV(nvnCommandBufferBeginRecording) {
+NV(nvnCommandBufferBeginRecording,
+   reads(x29, "the frame pointer kept with the list's info as a log label (host/direct.c hsd_classify)")) {
     nvn_cmd *o = CB(P(0));
     if (o->recording) hos_log("nvn: BeginRecording while recording");
     o->recording = 1;
@@ -2009,7 +2014,8 @@ static void call_direct(nvn_cmd *o, const uint64_t *h, int n) {
         if (r->dl && k) rx_direct()->list_call(r->dl, users, k);
     }
 }
-NV(nvnCommandBufferCallCommands) {
+NV(nvnCommandBufferCallCommands,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
     const uint64_t *h = (const uint64_t *)PN(2, 8ull * (uint32_t)I(1));
     if (rx_direct()) {
         call_direct(CB(P(0)), h, I(1));
@@ -2020,7 +2026,8 @@ NV(nvnCommandBufferCallCommands) {
         inline_recording(CB(P(0)), h[i]);
     }
 }
-NV(nvnCommandBufferCopyCommands) {
+NV(nvnCommandBufferCopyCommands,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
     const uint64_t *h = (const uint64_t *)PN(2, 8ull * (uint32_t)I(1));
     if (rx_direct()) {
         call_direct(CB(P(0)), h, I(1));
@@ -2186,7 +2193,8 @@ static void watch_rt(Ctx *c, const uint64_t *ct, const uint64_t *cv, int n) {
         return;
     }
 }
-NV(nvnCommandBufferSetRenderTargets) {
+NV(nvnCommandBufferSetRenderTargets,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
     nvn_cmd *o = CB(P(0));
     int n = I(1);
     if (n < 0 || n > 8) die("SetRenderTargets with %d targets", n);
@@ -2376,8 +2384,15 @@ static void watch_tex(Ctx *c, const uint64_t *h, int n) {
         return;
     }
 }
-NV(nvnCommandBufferBindTexture) { const uint64_t h = U64(3); watch_tex(c, &h, 1); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), 1, &h, 0, 0); }
-NV(nvnCommandBufferBindTextures) { watch_tex(c, (const uint64_t *)P(4), I(3)); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), 0, 0); }
+NV(nvnCommandBufferBindTexture,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
+    const uint64_t h = U64(3); watch_tex(c, &h, 1); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), 1, &h, 0, 0);
+}
+NV(nvnCommandBufferBindTextures,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
+    watch_tex(c, (const uint64_t *)P(4), I(3));
+    bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), 0, 0);
+}
 NV(nvnCommandBufferBindImage) { const uint64_t h = U64(3); bind_handles(CB(P(0)), NOP_BIND_IMG, I(1), I(2), 1, &h, 0, 24); }
 NV(nvnCommandBufferBindImages) { bind_handles(CB(P(0)), NOP_BIND_IMG, I(1), I(2), I(3), (const uint64_t *)P(4), 0, 16 + 8 * (uint64_t)I(3)); }
 NV(nvnCommandBufferBindSeparateTexture) { const uint64_t h = U64(3); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), 1, &h, 0, 24); }
@@ -2386,7 +2401,11 @@ NV(nvnCommandBufferBindSeparateSampler) { const uint64_t h = U64(3); bind_handle
 NV(nvnCommandBufferBindSeparateSamplers) { bind_handles(CB(P(0)), NOP_BIND_SAMP, I(1), I(2), I(3), (const uint64_t *)P(4), 0, 16 + 8 * (uint64_t)I(3)); }
 /* NVN 55 *Deferred binds (what the inline fast paths call: always, see nvn_cmd.inline_cur): the console driver only
    records the game's handle array and reads it at submit; the game fills material tables after recording */
-NV(nvnCommandBufferBindTexturesDeferred) { watch_tex(c, (const uint64_t *)P(4), I(3)); bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 0); }
+NV(nvnCommandBufferBindTexturesDeferred,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
+    watch_tex(c, (const uint64_t *)P(4), I(3));
+    bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 0);
+}
 NV(nvnCommandBufferBindImagesDeferred) { bind_handles(CB(P(0)), NOP_BIND_IMG, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 16 + 8 * (uint64_t)I(3)); }
 NV(nvnCommandBufferBindSeparateTexturesDeferred) { bind_handles(CB(P(0)), NOP_BIND_TEX, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 16 + 8 * (uint64_t)I(3)); }
 NV(nvnCommandBufferBindSeparateSamplersDeferred) { bind_handles(CB(P(0)), NOP_BIND_SAMP, I(1), I(2), I(3), (const uint64_t *)P(4), U64(4), 16 + 8 * (uint64_t)I(3)); }
@@ -2445,9 +2464,18 @@ static void draw_idx(Ctx *c, int base_vertex, int base_instance, int instances, 
     r->base_vertex = base_vertex, r->base_instance = base_instance, r->instances = instances;
     hw_fix(o, hw);
 }
-NV(nvnCommandBufferDrawElements) { draw_idx(c, 0, 0, 1, 48); }
-NV(nvnCommandBufferDrawElementsBaseVertex) { draw_idx(c, I(5), 0, 1, 44); }
-NV(nvnCommandBufferDrawElementsInstanced) { if (I(7) > 0) draw_idx(c, I(5), I(6), I(7), 44); }
+NV(nvnCommandBufferDrawElements,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
+    draw_idx(c, 0, 0, 1, 48);
+}
+NV(nvnCommandBufferDrawElementsBaseVertex,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
+    draw_idx(c, I(5), 0, 1, 44);
+}
+NV(nvnCommandBufferDrawElementsInstanced,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
+    if (I(7) > 0) draw_idx(c, I(5), I(6), I(7), 44);
+}
 NV(nvnCommandBufferDispatchCompute) {
     nvn_p_dispatch *r = REC(CB(P(0)), NOP_DISPATCH, nvn_p_dispatch);
     r->x = I(1), r->y = I(2), r->z = I(3);
@@ -2508,7 +2536,8 @@ static void tex_copy(const nvn_tex **dst, uint64_t t) {
     *dst = pins[s];
     ReleaseSRWLockExclusive(&pin_lock);
 }
-NV(nvnCommandBufferCopyBufferToTexture) {
+NV(nvnCommandBufferCopyBufferToTexture,
+   reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
     nvn_p_copy_bt *r = REC(CB(P(0)), NOP_COPY_B2T, nvn_p_copy_bt);
     r->buf = U64(1);
     tex_copy(&r->tex, U64(2));
@@ -2827,7 +2856,7 @@ NV(nvnWindowSetNumActiveTextures) { nvn_win *o = (nvn_win *)P(0); if (I(1) < 2 |
 NV(nvnWindowGetNumActiveTextures) { const nvn_win *o = (const nvn_win *)P(0); RET((uint32_t)(o->active ? o->active : o->ntex)); }
 NV(nvnWindowGetPresentInterval) { RET((uint32_t)((const nvn_win *)P(0))->interval); }
 /* the game picks its interval from its frame time; in real-time mode (nn_vi.c) frames are paced by our limiter */
-NV(nvnWindowSetPresentInterval) {
+NV(nvnWindowSetPresentInterval, reads(x19, "MKW's frame pacer object (hos_game_is_mkw only)")) {
     nvn_win *o = (nvn_win *)P(0);
     {   /* (OoT changes it several times a second: logged with a backtrace only the first times, it was a syscall-heavy cost) */
         static int told;
@@ -3509,6 +3538,18 @@ static const nvn_impl impls[] = {
     {"nvnTexturePoolRegisterImage", n_nvnTexturePoolRegisterImage},
 /* end of table */
 };
+
+/* NVN functions the SDK exports with no proc here: a call goes through nvn2_dispatch to unimplemented below, whose
+   context use is not audited */
+HLE_EFFECTS(nvnInstallGlobalDebugCallback, clobbers("no proc here: unimplemented, not audited"));
+HLE_EFFECTS(nvnBootstrapLoaderInternal, clobbers("no proc here: unimplemented, not audited"));
+HLE_EFFECTS(nvnDevtoolsBootstrap, clobbers("no proc here: unimplemented, not audited"));
+HLE_EFFECTS(_Z22nvndetailUseMiddleWarev, clobbers("no proc here: unimplemented, not audited"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetDefaults, clobbers("no proc here: unimplemented, not audited"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetDevice, clobbers("no proc here: unimplemented, not audited"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderSetNativeMemoryHandle, clobbers("no proc here: unimplemented, not audited"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderGetDevice, clobbers("no proc here: unimplemented, not audited"));
+HLE_EFFECTS(nvnExternalMemoryPoolBuilderGetNativeMemoryHandle, clobbers("no proc here: unimplemented, not audited"));
 
 /* (mkw-recomp) A proc not implemented here: logged at its first call and answered 0 (initializers: 1, success),
    so the game goes on and the log lists what is left. HOS_NVN_STRICT=1: it stops the game, as in TOTKPort. */

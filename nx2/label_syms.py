@@ -3,7 +3,7 @@
 nx2/oot_labels.txt lists guest address -> label (one game build: the addresses are HOS_GAME_VERSION 100's). After the
 link, the executable's symbol f_<address> becomes <label>.f_<address>: the label first (a profiler's column shows it),
 the address kept (unique, and every tool that looks for f_<address> still finds it). Only the symbol table changes:
-the generated C, the hooks (ENTRY_HOOK(0x...)), the linker map and the loaded bytes are as before, so a label costs
+the generated C, the hooks (PATCH_HOOK(0x...)), the linker map and the loaded bytes are as before, so a label costs
 no rebuild beyond the 1 s rewrite of the executable.
 
 The list holds descriptions, not the game's names: lower case, digits and underscores, each used once.

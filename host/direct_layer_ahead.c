@@ -186,15 +186,15 @@ static void wait_for(uint64_t key) {
     InterlockedExchangeAdd64(&w.wait_ns, hos_now_ns() - t0);
 }
 
-ENTRY_HOOK(0x806688c0) {   /* (owner, drawctx, i): the pass's key at owner + 0x3830 + i * 0xd0 */
+PATCH_HOOK(0x806688c0, word(0xd503237f)) {   /* (owner, drawctx, i): the pass's key at owner + 0x3830 + i * 0xd0 */
     if (ahead_thread) wait_for(a->x[0] + 0x3830 + (uint64_t)(uint32_t)a->x[2] * 0xd0);
     return 0;
 }
-ENTRY_HOOK(0x8028a2a0) {   /* (owner, drawctx, key) */
+PATCH_HOOK(0x8028a2a0, word(0xd503237f)) {   /* (owner, drawctx, key) */
     if (ahead_thread) wait_for(a->x[2]);
     return 0;
 }
-ENTRY_HOOK(0x80706be0) {   /* moduleCalc_ */
+PATCH_HOOK(0x80706be0, word(0xd503237f)) {   /* moduleCalc_ */
     InterlockedIncrement64(&gen);
     return 0;
 }

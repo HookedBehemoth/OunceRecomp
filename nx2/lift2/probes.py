@@ -56,7 +56,7 @@ def tables():
     global _SET
     if _SET is None:
         from . import patch_scan
-        _SET = patch_scan.rows(patch_scan.scan())
+        _SET = patch_scan.rows(patch_scan.patches().sites)
     return _SET
 
 

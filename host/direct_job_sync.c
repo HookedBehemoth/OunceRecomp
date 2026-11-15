@@ -194,7 +194,7 @@ PATCH_AT(0x80668c7c, word(0xf9400108), after, x8, direct_job_sync_call, as(x8, p
 PATCH_AT_SITE(0x80668dd8, word(0xf9400108), after, x8, direct_job_sync_call, x8, x21, ld(sp, 0x10));
 PATCH_AT_SITE(0x80668fb0, word(0xf9400108), after, x8, direct_job_sync_call, x8, x21, ld(sp, 0x10));
 
-ENTRY_HOOK(0x8067c310) {   /* (grid entry, drawctx, flag, flag): the occlusion grid's dispatch */
+PATCH_HOOK(0x8067c310, word(0xb9400808)) {   /* (grid entry, drawctx, flag, flag): the occlusion grid's dispatch */
     if (!ready()) return 0;
     const uint64_t view = hos_guest_range(a->x[1] + 216, 8) ? job_view(G64(a->x[1] + 216)) : 0;
     if (!view) return 0;

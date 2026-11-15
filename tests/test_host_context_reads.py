@@ -1,15 +1,16 @@
-"""What the host reads of the guest context, against what it declares (nx2/lift2/host_effects.py): host/*.c compiled to
-LLVM IR (-O1, no inlining), and every load from a context pointer traced through the functions it is passed to.
+"""What the host reads of the guest context, against what it declares (its patch declarations, host/patch.h, as
+nx2/lift2/patch_scan.py reads them; the rules in nx2/lift2/host_effects.py): host/*.c compiled to LLVM IR (-O1, no
+inlining), and every load from a context pointer traced through the functions it is passed to.
 
-- An entry hook (entry_0x*, entry_sym_*) reads x0-x7 and x30 (host/hos.h HookArgs) and passes the call only to the
-  hook_* functions; one that calls hook_call_guest declares SP in host_effects.HOOK_READS.
-- An HLE'd function (imp_*, and the NVN procs n_nvn*) reads x19-x29 or v8-v15 of its caller only where
-  host_effects.HLE_READS declares it.
+- An entry hook (PATCH_HOOK: entry_0x*, entry_sym_*) reads x0-x7 and x30 (host/hos.h HookArgs) and passes the call
+  only to the hook_* functions; one that calls hook_call_guest declares reads(sp, ...).
+- An HLE'd function (HLE: imp_*, and the NVN procs NV: n_nvn*) reads x19-x29 or v8-v15 of its caller only where its
+  declaration's reads(...) says so.
 - No host function compares the return address with a guest address any more except as a label: checked by the source
   (host/*.c) having no `x[30] ==` / `x[30] !=` / `lr ==` / `lr !=` against a literal outside the listed diagnostics.
 - Every guest function an entry hook or an At row's host function enters, on any path through the host's calls, is
-  declared (the summaries read its inputs there): a constant target in host_effects.CALLS (a hook) or the row's
-  guest=(...), a computed one as guest="computed". A hook's hook_run of its own body needs none (its summary is the
+  declared (the summaries read its inputs there): a constant target in the hook's guest(...) or the row's
+  guest(...), a computed one as guest(computed). A hook's hook_run of its own body needs none (its summary is the
   body's). Guest code is entered through hook_call_guest, guest_call, hos_call_guest, a64_icall, a64_ijump, a call of
   an f_<addr> / body_<addr>, or hook_run; a guest function's host pointer (CODE_PTR(f_<addr>), f_<addr> kept in a
   static) is a constant target. A guest function reaches host code by its name or from a64_lookup / a64_fn_of, which
@@ -32,7 +33,7 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 import rtgen  # noqa: E402
-from lift2 import host_effects, probes  # noqa: E402
+from lift2 import host_effects, patch_scan, probes  # noqa: E402
 
 DEF = re.compile(r"^define [^@]*@([\w.$]+)\((.*)\)[^{]*\{")
 HOOK_API = {"hook_return", "hook_set_arg", "hook_run", "hook_result", "hook_call_guest"}
@@ -245,22 +246,21 @@ class HostReads(unittest.TestCase):
     def test_hooks(self):
         hooks = [n for n in self.funcs if re.match(r"entry_(0x[0-9a-f]{8}|sym_\w+)$", n)]
         self.assertGreater(len(hooks), 30)
+        self.assertEqual(sorted(hooks), sorted(h.name for h in patch_scan.patches().hooks))   # (each one declared)
         for name in hooks:
             got, api = reads(self.funcs, name)
             allowed = set(host_effects.hook_reads(name))
             self.assertFalse(got - allowed, "%s reads %s" % (name, sorted(got - allowed)))
             if "hook_call_guest" in api:
-                self.assertIn("sp", host_effects.HOOK_READS.get(name, ()), "%s calls guest code: declare sp" % name)
+                self.assertIn("sp", allowed, "%s calls guest code: declare reads(sp, ...)" % name)
 
     def test_guest_calls_declared(self):
         """every guest function a hook or a row's host function enters is declared where the summaries read it"""
         roots = {}
-        for n in self.graph:
-            if isinstance(n, str) and re.match(r"entry_(0x[0-9a-f]{8}|sym_\w+)$", n):
-                roots[n] = ("host_effects.CALLS[%r]" % n, set(host_effects.CALLS.get(n, ())),
-                            int(n[6:], 16) if n.startswith("entry_0x") else None)
+        for h in patch_scan.patches().hooks:
+            roots[h.name] = ("the guest(...) of %s at %s:%d" % ((h.name,) + h.where), set(h.guest), h.addr)
         for p in probes.AT:   # (a row's host function: what its rows declare, all of them)
-            what, decl, _ = roots.get(p.fn, ("guest= of the rows calling %s" % p.fn, set(), None))
+            what, decl, _ = roots.get(p.fn, ("the guest(...) of the PATCH_AT of %s" % p.fn, set(), None))
             decl = "computed" if "computed" in (decl, p.guest) else decl | set(p.guest or ())
             roots[p.fn] = (what, decl, None)
         for p in probes.PROBES:
@@ -318,7 +318,8 @@ class HostReads(unittest.TestCase):
                 continue
             n += 1
             got = reads(self.funcs, name)[0] & cs
-            declared = set(host_effects.HLE_READS.get(m.group(1), ((), ""))[0])
+            d = patch_scan.patches().effects(m.group(1))
+            declared = set(d.reads if d is not None else ())
             self.assertFalse(got - declared, "%s reads its caller's %s" % (name, sorted(got - declared)))
         self.assertGreater(n, 300)
 

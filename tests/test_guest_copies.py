@@ -45,10 +45,10 @@ extern uint8_t *window;
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define GP(a) ((void *)(window + (a)))
 #define HOS_WRITTEN(p, n) ((void)0)
-typedef struct { uint64_t x[8]; uint64_t lr; } HookArgs;   /* (host/hos.h's hook form) */
+typedef struct { uint64_t x[8]; uint64_t lr; } HookArgs;   /* (host/hos.h's and patch.h's hook form) */
 typedef struct HookCall HookCall;
 static int hook_return(HookCall *h, uint64_t x0) { ((Ctx *)h)->x[0] = x0; return 1; }
-#define ENTRY_HOOK_SYM(sym) \
+#define PATCH_HOOK_SYM(sym, ...) \
     static int body_##sym(const HookArgs *a, HookCall *h); \
     int entry_sym_##sym(Ctx *c) { \
         const HookArgs a_ = {{c->x[0], c->x[1], c->x[2], c->x[3], c->x[4], c->x[5], c->x[6], c->x[7]}, c->x[30]}; \

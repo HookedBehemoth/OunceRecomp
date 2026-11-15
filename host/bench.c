@@ -62,7 +62,7 @@ static int msg_group_of(const char *name) {
     ReleaseSRWLockExclusive(&msg_lock);
     return i;
 }
-ENTRY_HOOK(0x834a3060) {
+PATCH_HOOK(0x834a3060, word(0xd503237f)) {
     if (!hos_bench_on() || (uint32_t)a->x[1]) return 0;
     if (msg_group < 0) {
         HosThread *t = hos_self();

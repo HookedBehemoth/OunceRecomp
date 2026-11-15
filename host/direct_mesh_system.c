@@ -27,7 +27,7 @@ uint64_t eng_jobs_drawctx(void);   /* eng_jobs.c */
 static volatile uint64_t view_obj;   /* (V, the last the binder was called with) */
 static struct { volatile LONG64 binder, views, jobs, no_view, no_ctx; } n;
 
-ENTRY_HOOK(0x80101ec0) {   /* (info): V noted, the body runs */
+PATCH_HOOK(0x80101ec0, word(0xd503237f)) {   /* (info): V noted, the body runs */
     if (!rx_direct()) return 0;
     InterlockedIncrement64(&n.binder);
     const uint64_t info = a->x[0];

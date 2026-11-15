@@ -1,6 +1,6 @@
 /* Horizon OS layer (HLE of the Nintendo SDK at the nn:: boundary) for a64-kit games.
 
-   An import or SDK function the game calls is a C function `void imp_<mangled name>(Ctx *c)` (HLE(...) below):
+   An import or SDK function the game calls is a C function `void imp_<mangled name>(Ctx *c)` (HLE(...), host/patch.h):
    arguments in c->x[0..7], the result in c->x[0]. A symbol with such a definition is hooked both where the game
    imports it and at the sdk's own definition, so lifted SDK code reaching it lands here too (nx_image.py).
    Everything without a definition gets a generated stub that logs its first call and returns 0.
@@ -15,25 +15,24 @@
 #include "a64.h"
 #include <stdarg.h>
 
-#define HLE(sym) void imp_##sym(Ctx *c)
 /* HOS_GAME_VERSION: the game update the host's guest addresses are for: 100, the only one (nothing sets it; host/
    hos_thread.c's calc_poll_nap is the one place that tests it). What holds the addresses to the dump is the lift: an
-   At row or Value probe (PATCH_AT, host/patch.h) names its instruction's word and an ENTRY_HOOK's address must be a
-   lifted function, or the build stops. */
+   At row or Value probe (PATCH_AT, host/patch.h) names its instruction's word and a PATCH_HOOK its function's first
+   word, or the build stops. */
 #ifndef HOS_GAME_VERSION
 #define HOS_GAME_VERSION 100
 #endif
-/* ENTRY_HOOK(0x0xxxxxxx) { ... }: runs at the entry of the lifted guest function at that address (8 hex digits); return
-   1 when it handled the call (the function then returns at once), 0 to run the function as usual. Lift 2 calls it at
-   the function's generic entry (nx2/lift2/emit_llvm.py); a hook whose address is not a lifted function stops the build.
-   A hook sees the call's arguments x0-x7 and its return address as plain values (a->x[n], a->lr), never the guest
-   context: that is what a call of a hooked function must have stored (nx2/lift2/host_effects.py HOOK_READS). Everything
-   else it does to the call goes through h:
+/* An entry hook (PATCH_HOOK / PATCH_HOOK_SYM, host/patch.h, made by ENTRY_HOOK_COUNTED): runs at the entry of the
+   lifted guest function; returns 1 when it handled the call (the function then returns at once), 0 to run the function
+   as usual. Lift 2 calls it at the function's generic entry (nx2/lift2/emit_llvm.py). A hook sees the call's arguments
+   x0-x7 and its return address as plain values (a->x[n], a->lr), never the guest context: that is what a call of a
+   hooked function must have stored (more only as its declaration's reads(...)). Everything else it does to the call
+   goes through h:
      hook_return(h, v)        x0 := v; returns 1 (`return hook_return(h, v);`)
      hook_set_arg(h, n, v)    the argument xn (n < 8) the body will see, before returning 0
      hook_run(h, body)        the lifted body now (a64_lookup of the hooked address: the hook sees that call too and
                               must let it run); hook_result(h) its x0 afterwards. The hook then returns 1
-     hook_call_guest(h, ...)  guest code on the call's stack (reads SP: declared in host_effects.HOOK_READS), every
+     hook_call_guest(h, ...)  guest code on the call's stack (reads SP: declared as reads(sp, ...)), every
                               register as it was afterwards; its x0
    HOS_DBG=hooks (diagnostic): each hook's first call logged (hos_hook_seen, host/hos_thread.c). */
 extern int hos_hooks_dbg;
@@ -48,8 +47,6 @@ typedef struct HookCall HookCall;   /* (the hooked call: only the hook_* functio
         return body(&a_, (HookCall *)c);                                                                               \
     }                                                                                                                  \
     static int body(const HookArgs *a, HookCall *h)
-#define ENTRY_HOOK(addr) ENTRY_HOOK_COUNTED(entry_##addr, entry_body_##addr)
-#define ENTRY_HOOK_SYM(sym) ENTRY_HOOK_COUNTED(entry_sym_##sym, entry_body_sym_##sym)
 int hook_return(HookCall *h, uint64_t x0);
 void hook_set_arg(HookCall *h, int n, uint64_t v);
 void hook_run(HookCall *h, A64Fn body);
@@ -183,5 +180,5 @@ uint64_t hos_ticks(void);
 void hos_sleep_ns(int64_t ns);
 int64_t hos_now_ns(void);
 int64_t hos_spin_ns(void);   /* how long a sync wait spins before it sleeps: HOS_SPIN_US, default 5 us (nn_os_sync.c) */
-#include "patch.h"   /* (the patch declarations: PATCH_AT, PATCH_AT_SITE) */
+#include "patch.h"   /* (the patch declarations: PATCH_AT, PATCH_HOOK, HLE, NV, ...) */
 #endif

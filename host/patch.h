@@ -19,7 +19,19 @@
        through guest_call; its first parameter is GuestCall *g. io(r, ...), last: those registers (x and w as 8-byte
        slots, q as 16) in a struct the function gets as io (tagged hos_io_<line>) and leaves their new values in.
      PATCH_AT_SITE(pc, word(W), mode, result, fn, operand...);
-       another site of fn (after its PATCH_AT): the operands' types must be fn's parameters' (a compile error else). */
+       another site of fn (after its PATCH_AT): the operands' types must be fn's parameters' (a compile error else).
+     PATCH_HOOK(addr, word(W), effect...) { body }     PATCH_HOOK_SYM(symbol, effect...) { body }
+       host code at the entry of the lifted function at addr (its first word W, checked at the build), or of the one
+       the image exports as symbol: int entry_<addr>(Ctx *) / entry_sym_<symbol>(Ctx *), the body seeing the call's
+       HookArgs *a and HookCall *h and returning 1 (handled) or 0 (the function runs) (host/hos.h ENTRY_HOOK_COUNTED).
+       effects: reads(reg..., "why") the registers it reads beyond x0-x7 and x30 (sp for hook_call_guest); guest(A, ...)
+       the guest functions it calls besides its own body.
+     HLE(symbol, effect...) { body }     NV(name, effect...) { body }     HLE_EFFECTS(symbol, effect...);
+       a function the image replaces: void imp_<symbol>(Ctx *c) (hooked where the game imports it and at the SDK's
+       definition); an NVN proc, static void n_<name>(Ctx *c, void *u_) (host/nvn_native.c's table); the effects of a
+       replaced function whose body is not declared here (a generated stub or dispatch). effects: reads(reg..., "why")
+       the registers a call reads beyond the AAPCS arguments, x8, v0-v7, sp and x30; clobbers("why") a call keeps no
+       register. */
 #ifndef HOS_PATCH_H
 #define HOS_PATCH_H
 #include <stdint.h>
@@ -694,6 +706,15 @@
     HOS_PATCH_RECORD("PATCH_AT", #pc "," #word "," #mode "," #result "," #fn "," #__VA_ARGS__)                     \
     __VA_OPT__(HOS_FOR_EACH(HOS_D_, HOS_NOSEP, __VA_ARGS__))                                                         \
     HOS_R_##result fn(HOS_PARAMS(__VA_ARGS__))
+#define PATCH_HOOK(addr, word, ...)                                                                                   \
+    HOS_PATCH_RECORD("PATCH_HOOK", #addr "," #word "," #__VA_ARGS__)                                                 \
+    ENTRY_HOOK_COUNTED(entry_##addr, entry_body_##addr)
+#define PATCH_HOOK_SYM(sym, ...)                                                                                      \
+    HOS_PATCH_RECORD("PATCH_HOOK_SYM", #sym "," #__VA_ARGS__)                                                        \
+    ENTRY_HOOK_COUNTED(entry_sym_##sym, entry_body_sym_##sym)
+#define HLE(sym, ...) HOS_PATCH_RECORD("HLE", #sym "," #__VA_ARGS__) void imp_##sym(Ctx *c)
+#define NV(name, ...) HOS_PATCH_RECORD("NV", #name "," #__VA_ARGS__) static void n_##name(Ctx *c, void *u_)
+#define HLE_EFFECTS(sym, ...) HOS_PATCH_RECORD("HLE_EFFECTS", #sym "," #__VA_ARGS__) _Static_assert(1, #sym)
 #define PATCH_AT_SITE(pc, word, mode, result, fn, ...)                                                                \
     HOS_PATCH_RECORD("PATCH_AT_SITE", #pc "," #word "," #mode "," #result "," #fn "," #__VA_ARGS__)                \
     _Static_assert(__builtin_types_compatible_p(__typeof__(&fn), HOS_R_##result (*)(HOS_TYPES(__VA_ARGS__))),       \

@@ -6,7 +6,7 @@
 #include "direct.h"
 #include <stdlib.h>
 
-ENTRY_HOOK(0x83b7c020) {
+PATCH_HOOK(0x83b7c020, word(0x3940a008)) {
     if (!getenv("HOS_NDVE")) hook_set_arg(h, 2, 0);
     return 0;
 }

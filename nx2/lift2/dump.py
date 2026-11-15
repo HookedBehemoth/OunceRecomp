@@ -106,10 +106,9 @@ def main():
     L.index_tables()   # (over the tables of the functions walked so far)
     bound = None
     if plan and plan.get("summaries"):   # (the call boundaries as the build makes them)
-        from lift2 import bounds, host_effects
-        import entry_hooks
+        from lift2 import bounds, host_effects, patch_scan
         gen = os.path.join(kit.WORK, "sa", "gen")
-        bound = bounds.call_bounds(plan, entry_hooks.wanted(gen)[0], host_effects.hle_names(gen))
+        bound = bounds.call_bounds(plan, patch_scan.entry_hooks(gen)[0], host_effects.hle_names(gen))
     prog = build_ir.Program(entries=L.entries, jt=L.jt, callee=L.callee, plt=L.plt, jt_index=L.jt_index, bound=bound,
                             omit=bound is not None)
     names = {v: k for k, v in lab.items()}
