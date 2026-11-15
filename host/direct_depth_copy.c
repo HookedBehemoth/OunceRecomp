@@ -40,15 +40,17 @@ static void copy_fn(Ctx *c, void *u) {   /* (cmd, src, src view, src region, dst
     else InterlockedIncrement64(&n_other);
     c->x[30] = lr;
 }
+/* the procs and the host call, made on the first call (1); a piece missing stops the game: the direct back end is the
+   only renderer, and the patch is never off */
 static int ready(void) {
     static volatile LONG state;
-    if (state) return state == 1;
-    if (!rx_direct()) return InterlockedExchange(&state, 2), 0;
+    if (state) return 1;
     p_copy = nvn_native_proc("nvnCommandBufferCopyTextureToTexture");
     p_barrier = nvn_native_proc("nvnCommandBufferBarrier");
     s_copy = hos_hostcall("direct_depth_copy copy", copy_fn, NULL);
-    InterlockedExchange(&state, p_copy && p_barrier && s_copy ? 1 : 2);
-    return state == 1;
+    if (!p_copy || !p_barrier || !s_copy) hos_fatal(NULL, "direct depth copy: the copy or barrier proc was not found");
+    InterlockedExchange(&state, 1);
+    return 1;
 }
 /* (f_80289590, f_80666d20: after each ldr x8, [x8]) the proc just loaded, the host's copy in place of the copy proc;
    site: 0 at f_80289590's copy (its blr returns to 0x80289cc4), 1 at f_80666d20's (0x806675dc), 2 the others */

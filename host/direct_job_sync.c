@@ -154,20 +154,21 @@ static void call_fn(Ctx *c, void *u) {
     InterlockedAdd64(&n.placed_dispatches, k.nd);
 }
 
+/* the procs and the host calls, made on the first call (1); a piece missing stops the game: the direct back end is the
+   only renderer, and the patch is never off */
 static int ready(void) {
-    static volatile LONG state;   /* 0 not yet, 1 on, 2 off */
-    if (state) return state == 1;
-    if (!rx_direct()) return InterlockedExchange(&state, 2), 0;
+    static volatile LONG state;
+    if (state) return 1;
     p_wait = nvn_native_proc("nvnCommandBufferWaitEvent");
     p_barrier = nvn_native_proc("nvnCommandBufferBarrier");
     p_call = nvn_native_proc("nvnCommandBufferCallCommands");
     s_wait = hos_hostcall("direct_job_sync wait", wait_fn, NULL);
     s_barrier = hos_hostcall("direct_job_sync barrier", barrier_fn, NULL);
     s_call = hos_hostcall("direct_job_sync call", call_fn, NULL);
-    const LONG on = p_wait && p_barrier && p_call && s_wait && s_barrier && s_call ? 1 : 2;
-    if (on != 1) hos_log("direct patch job sync: the procs were not found: off");
-    InterlockedExchange(&state, on);
-    return on == 1;
+    if (!p_wait || !p_barrier || !p_call || !s_wait || !s_barrier || !s_call)
+        hos_fatal(NULL, "direct job sync: the wait, barrier or call proc was not found");
+    InterlockedExchange(&state, 1);
+    return 1;
 }
 /* the call target just loaded (f_82c02f20, f_82c03170: x8 after each ldr x8, [x8]; f_831fa4a0: x4, the same wait code
    as f_82c02f20's, which tail-jumps to WaitEvent through x4 (f_80279400, water, calls it at 0x80279448: WaitEvent's

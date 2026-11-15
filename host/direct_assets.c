@@ -154,8 +154,7 @@ static void start(void) {
     snprintf(tex, sizeof tex, "%s/tex", d ? d : ".");
     store_ok = rx_direct()->assets_open(tex) > 0;
 }
-static int ready(void) {   /* (direct mode: the memory line runs, and with the patches on, the store is open) */
-    if (!rx_direct()) return 0;
+static int ready(void) {   /* (the memory line runs, and with the patches on (not HOS_DBG=noassets), the store is open) */
     pthread_once(&start_once, start);
     return direct_assets_on();
 }
