@@ -42,6 +42,24 @@ F = {"c1": 0x00, "c2": 0x30, "c3": 0x54, "c4": 0x7c, "keep": 0x98, "clob": 0xa0,
 A = {k: BASE + v for k, v in F.items()}
 
 
+# (x9 stored, a call, x9 stored, a guest load, x9 stored again, a call: the second store is overwritten before
+# anything can read the context)
+OVERWRITTEN = """target triple = "x86_64-pc-linux-gnu"
+declare void @g(ptr)
+define void @f(ptr noalias nocapture %ctx, i64 %a) {
+  %cx = getelementptr i8, ptr %ctx, i64 72
+  store i64 1, ptr %cx, align 8
+  call void @g(ptr %ctx)
+  store i64 2, ptr %cx, align 8
+  %p = getelementptr i8, ptr inttoptr (i64 17592186044416 to ptr), i64 %a
+  %v = load i64, ptr %p, align 1
+  store i64 %v, ptr %cx, align 8
+  call void @g(ptr %ctx)
+  ret void
+}
+"""
+
+
 def word(pc):
     return CODE[(pc - BASE) // 4]
 
@@ -153,23 +171,27 @@ class Calls(unittest.TestCase):
         for d in decls:
             self.assertIn("(ptr captures(none)", d)
         # (x9 stored, a guest load, x9 stored again, a call: the first store goes at -O2 with the build's flags)
-        ir_text = emit_llvm.no_capture("""target triple = "x86_64-pc-linux-gnu"
-declare void @g(ptr)
-define void @f(ptr noalias nocapture %ctx, i64 %a) {
-  %cx = getelementptr i8, ptr %ctx, i64 72
-  store i64 1, ptr %cx, align 8
-  call void @g(ptr %ctx)
-  store i64 2, ptr %cx, align 8
-  %p = getelementptr i8, ptr inttoptr (i64 17592186044416 to ptr), i64 %a
-  %v = load i64, ptr %p, align 1
-  store i64 %v, ptr %cx, align 8
-  call void @g(ptr %ctx)
-  ret void
-}
-""")
+        ir_text = emit_llvm.no_capture(OVERWRITTEN)
         out = subprocess.run([llvm.check("clang"), "-O2", "-x", "ir", "-", "-S", "-emit-llvm", "-o", "-"] + game.DSE_FLAGS,
                              input=ir_text, capture_output=True, text=True, check=True).stdout
         self.assertEqual(len(re.findall(r"store i64 [^\n]*ptr %cx", out)), 2, out)   # (1 before the call, %v)
+
+    def test_cold_partition_dse(self):
+        # (clang's -O1 pipeline has no DSE: a cold partition goes through opt with clang's -O1 pipeline plus DSE,
+        # game.opt_argv, then clang's code generation; the overwritten store goes there too. -O2 has DSE itself)
+        clang = llvm.check("clang")
+        march = ["-march=x86-64-v3"]
+        pre = game.opt_argv(clang, "O1", march)
+        self.assertIsNotNone(pre)
+        self.assertIn("memcpyopt,dse,", pre[2])
+        self.assertIsNone(game.opt_argv(clang, "O2", march))
+        fl = ["-O1"] + march + game.DSE_FLAGS
+        r = game.compile_ir(clang, emit_llvm.no_capture(OVERWRITTEN), "-", fl, pre, ("-S", "-emit-llvm"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout.decode()
+        self.assertEqual(len(re.findall(r"store i64 [^\n]*ptr %cx", out)), 2, out)
+        plain = game.compile_ir(clang, emit_llvm.no_capture(OVERWRITTEN), "-", fl, None, ("-S", "-emit-llvm"))
+        self.assertEqual(len(re.findall(r"store i64 [^\n]*ptr %cx", plain.stdout.decode())), 3)   # (without: kept)
 
     def test_noreturn(self):
         fns, _ = lift()

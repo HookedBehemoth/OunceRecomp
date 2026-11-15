@@ -21,7 +21,7 @@ sample of 120 functions of the play binary at 860eb332, recompiled from edited I
 | runtime tables | `nx2/lift2/tables.py`, `nx2/standalone.py` | `a64_table.c` (the function table), `a64_hooks.c`, `hos_image.c`, `a64_stubs.c`, `nvn2_exports.c` in `work/sa/gen` |
 | IR | `nx2/lift2/enc*.py`, `sem*.py`, `build_ir.py`, `ir.py` | the decoder's encoding tables, each form's semantics as IR, a function's IR |
 | LLVM IR | `nx2/lift2/emit_llvm.py` | one textual module per partition |
-| build | `nx2/lift2/game.py` `prepare`, `nx2/build.py` | partitions lifted in worker processes, piped into `clang -x ir -` (no IR on disk), cached by input key; runtime and host compiled and linked |
+| build | `nx2/lift2/game.py` `prepare`, `nx2/build.py` | partitions lifted in worker processes, piped into `clang -x ir -` (cold ones through `opt` first; no IR on disk), cached by input key; runtime and host compiled and linked |
 | runtime | `nx2/rtgen.py` from `third_party/a64-kit/rt` | `a64.h` (`GuestContext`, the guest window) and `a64_rt.c` (`a64_lookup`, `a64_icall`, `a64_ijump`, `a64_trap`, the exclusive monitor, the counter) |
 | summaries | `nx2/lift2/summary.py` | whole-program register facts, for the verification build only |
 
@@ -68,9 +68,10 @@ writes for.
   `writeback`). LLVM drops a store that a later one overwrites before any call or return; the last one stays. For
   that it must see that nothing in between reads the context: every declaration taking it says `ptr captures(none)`
   (`emit_llvm.no_capture`; the callees keep no copy, `A64_NOESC`), and the partitions are compiled with capture
-  tracking and DSE limits raised (`game.DSE_FLAGS`). Without them the context escapes at the first call, any guest
-  load may read it, and a large function's thousands of uses of it exceed the default limits: on the market's five
-  hottest functions 40-47 % more context stores and 10-14 % more code.
+  tracking and DSE limits raised (`game.DSE_FLAGS`) and with DSE at both levels (The build). Without them the
+  context escapes at the first call, any guest load may read it, and a large function's thousands of uses of it
+  exceed the default limits: on the market's five hottest functions 40-47 % more context stores and 10-14 % more
+  code.
 - **Reload after calls**: after a BL, BLR, SVC or a call into host code with the context, every register read loads
   the context again (`ir.Builder.after_call` clears the block's definitions), except after a BL to a callee with a
   full summary that the host does not edit, or to a host callee with a declared effect: the values of x19-x29 and SP
@@ -378,8 +379,12 @@ checks): zero violations in the kokiri smoke scene.
 
 - **Partitions** by guest address, about 120,000 guest instructions each (`game.PART_INSNS`); the hot list's functions
   (`HOOKSHOT_HOT_FUNCS`, default `work/hot_funcs_play.txt`, made by `scripts/hotlist.py`) in partitions of their own.
-- **Optimisation levels**: hot partitions at `-O2` (`RX_HOT_OPT`), the rest at `-O1` (`nx2/build.py --opt`). Every
-  partition also gets `-march` (`RX_MARCH`, else the host's: x86-64-v3 on an AVX2 machine), `-ffp-contract=off`,
+- **Optimisation levels**: hot partitions at `-O2` (`RX_HOT_OPT`), the rest at `-O1` (`nx2/build.py --opt`). clang's
+  -O1 pipeline has no DSE, so a level without it runs as `opt` with clang's own pipeline for that level and `dse` after
+  `memcpyopt`, where -O2 has it, then `clang -Xclang -disable-llvm-passes` for the code generation at that level
+  (`game.opt_argv`, `game.compile_ir`; `dump.py` the same). On 6 cold partitions against plain -O1: `.text` -13.3 %,
+  context stores in the optimised IR -32.8 %, compile time the same (59 s); -O2 gave -15.9 % and -36.7 % in 133 s.
+  Every partition also gets `-march` (`RX_MARCH`, else the host's: x86-64-v3 on an AVX2 machine), `-ffp-contract=off`,
   `-ffunction-sections`, `-mllvm -rotation-max-header-size=0` and `game.DSE_FLAGS` (capture tracking up to 100,000
   uses, DSE's per-block definitions 100,000, scan and walk 1,000, other-block cost 1). No `-mno-red-zone`.
 - **Caching**: a partition's object is kept in `work/objcache` by an input key (the plan's bytes, the lifter's
@@ -401,13 +406,13 @@ checks): zero violations in the kokiri smoke scene.
 
 | measure | value | at |
 |---|---|---|
-| executable | 234 MB | 338ce2c0 |
-| `.text` / lifted code / bss | 232.63 MB / 196.46 MB / 40.10 MB | 338ce2c0 |
+| executable | 223.20 MB | 828448d7 with cold DSE |
+| `.text` / lifted code (hot / cold partitions) / bss | 186.29 MB / 183.28 MB (8.25 / 175.03) / 40.05 MB | 828448d7 with cold DSE |
 | x86 code bytes per guest instruction | 15.6 on average (with page marks and polls; not rescaled) | 860eb332 |
-| relift, cold (`scripts/relift.sh`) | 414 s (lift 89 s, compile 230 s), 10.4 GB peak | 338ce2c0 |
+| relift, cold (`scripts/relift.sh`) | 419 s (lift 90 s, partitions lifted 100 s, compiled 218 s with 7 jobs), 13.41 GB peak (16 GB scope) | 828448d7 with cold DSE |
 | relift, warm (partitions from the cache) | about 100 s | 338ce2c0 |
 | host-only change | about a minute | commit not recorded |
-| market 600, fixed step | frame mean 9.543 ms, median 9.536, p99 10.047; CPU 16.89 s over the 600 frames | 338ce2c0 |
+| market 600, fixed step | frame mean 9.454 ms, median 9.429, p99 10.040; CPU 14.15 s over the 600 frames | 828448d7 with cold DSE |
 | lift speed, one core | 33-56 k guest instructions/s (decode, IR, LLVM IR) | commit not recorded |
 
 ## Checks
@@ -489,8 +494,9 @@ tree shows the constraint is needed; the experiment named decides it.
     Whether the sites are hot is unproven.
 12. **CRC32 as a bit loop.** The C (Castagnoli) variants equal SSE4.2's `crc32`, one instruction. Sites not counted.
     *Justification:* none.
-13. **-O1 for cold partitions.** -O2 is 1 % smaller on the sample. *Justification:* build time and memory; unproven
-    (the cold build at -O2 was not timed).
+13. **-O1 for cold partitions** (with DSE added, The build). On 6 cold partitions -O2 is 3.0 % smaller (`.text`
+    6.24 MB against 6.43 MB) and takes 2.25 times the compile time (133 s against 59 s). *Justification:* build time:
+    the cold build's compile would go from about 4 to about 9 minutes for 3 % of cold code no profile shows hot.
 
 ## Open items
 

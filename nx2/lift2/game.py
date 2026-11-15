@@ -6,7 +6,8 @@ oot_occlusion.py), the hot list, and every function's instructions, in <work>/sa
 lifter cannot take (build_ir.scope: a word it does not decode) is lifted as a trap at its entry and listed.
 
 At build time prepare() lifts the functions into partitions by guest address, each `f_<addr>` (the name the function
-table, the hooks and the host call), and streams each partition's text into `clang -x ir -` (no IR on disk); a
+table, the hooks and the host call), and streams each partition's text into `clang -x ir -` (no IR on disk; at a
+level whose pipeline has no DSE, -O1, through `opt` with clang's pipeline plus DSE first: opt_argv); a
 partition whose inputs are unchanged comes from the object cache by an input key. The hot list's functions go into
 their own partitions, compiled at the hot level (-O2). It returns the C it writes beside (the C after instructions
 and the SPLICE_AFTER calls, as host functions the lifted code calls) and the objects to link.
@@ -39,6 +40,44 @@ PART_INSNS = 120000
 DSE_FLAGS = ["-mllvm", "-capture-tracking-max-uses-to-explore=100000", "-mllvm", "-dse-memoryssa-defs-per-block-limit=100000",
              "-mllvm", "-dse-memoryssa-scanlimit=1000", "-mllvm", "-dse-memoryssa-walklimit=1000",
              "-mllvm", "-dse-memoryssa-otherbb-cost=1"]
+_PIPELINES = {}
+
+
+def opt_argv(clang, level, march_flags):
+    """the `opt` command a partition's IR goes through before clang's code generation, or None (clang optimises).
+    clang's -O1 pipeline has no DSE, so every context store a later one overwrites stayed in the cold partitions: at
+    a level whose pipeline lacks `dse`, the IR runs through clang's own pipeline for that level with `dse` after
+    `memcpyopt`, where -O2 has it (6 cold partitions: .text -13 %, context stores -33 %, compile time unchanged; -O2
+    gave -16 % at 2.25 times the time)"""
+    k = (clang, level, tuple(march_flags))
+    if k not in _PIPELINES:
+        r = subprocess.run([clang, "-" + level] + march_flags + ["-Wno-everything", "-mllvm", "-print-pipeline-passes",
+                            "-x", "ir", os.devnull, "-c", "-o", os.devnull], capture_output=True, text=True, check=True)
+        p = r.stdout.strip()
+        names = set(re.findall(r"[\w-]+", p))
+        argv = None
+        if "dse" not in names and "memcpyopt" in names:
+            assert p.count("memcpyopt,") == 1, "clang -%s: memcpyopt not once in its pipeline" % level
+            cpu = [f.replace("-march=", "-mcpu=") for f in march_flags if f.startswith("-march=")]
+            argv = [llvm.check("opt")] + cpu + ["-passes=" + p.replace("memcpyopt,", "memcpyopt,dse,")] + \
+                [f for f in DSE_FLAGS if f != "-mllvm"]
+        _PIPELINES[k] = argv
+    return _PIPELINES[k]
+
+
+def compile_ir(clang, text, out, fl, pre, emit=("-c",)):
+    """clang on IR text (fl: its flags; emit: what it writes to `out`), after `pre` (opt_argv) when given; the
+    completed process of the step that failed, else of clang"""
+    data = text.encode() if isinstance(text, str) else text
+    cl = [clang] + fl
+    if pre:
+        r = subprocess.run(pre + ["-", "-o", "-"], input=data, capture_output=True)
+        if r.returncode:
+            return r
+        data, cl = r.stdout, cl + ["-Xclang", "-disable-llvm-passes"]
+    return subprocess.run(cl + ["-x", "ir", "-"] + list(emit) + ["-o", out], input=data, capture_output=True)
+
+
 CLASSES = ("int", "fp", "neon", "crypto")
 
 
@@ -233,8 +272,8 @@ def write_plan(L, img, path, hot=()):
 
 def compile_part(job):
     """one partition: IR text streamed into clang, the object cached by the text's hash"""
-    clang, text, obj, fl, cache = job
-    key = hashlib.sha1((" ".join(fl) + "\n").encode() + text.encode(), usedforsecurity=False).hexdigest()
+    clang, text, obj, fl, pre, cache = job
+    key = hashlib.sha1((" ".join(fl + (pre or [])) + "\n").encode() + text.encode(), usedforsecurity=False).hexdigest()
     stamp = obj + ".sha1"
     if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
         return obj, 0.0, None
@@ -246,9 +285,9 @@ def compile_part(job):
         open(stamp, "w").write(key)
         return obj, 0.0, None
     t = time.time()
-    r = subprocess.run([clang] + fl + ["-x", "ir", "-", "-c", "-o", obj], input=text, capture_output=True, text=True)
+    r = compile_ir(clang, text, obj, fl, pre)
     if r.returncode:
-        return obj, time.time() - t, (r.stderr or r.stdout)[-3000:]
+        return obj, time.time() - t, (r.stderr or r.stdout)[-3000:].decode(errors="replace")
     open(stamp, "w").write(key)
     try:
         os.link(obj, cached + ".tmp")
@@ -559,12 +598,15 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     hle = host_effects.hle_names(gen)   # (the HLE'd functions' names decide what a call of one keeps)
     host_effects.check(hle, hooks)
     base = input_base(plan_path) + repr(sorted(hooks.items())).encode() + repr(sorted(hle.items())).encode()
-    flags, keys, objs_k = [], [], []
+    flags, pres, keys, objs_k = [], [], [], []
     for k, (tag, names) in enumerate(parts):
-        fl = march_flags + ["-" + (hot_opt if tag == "h" else opt), "-g0", "-Wno-everything", "-ffunction-sections",
+        level = hot_opt if tag == "h" else opt
+        fl = march_flags + ["-" + level, "-g0", "-Wno-everything", "-ffunction-sections",
                             "-mllvm", "-rotation-max-header-size=0"] + DSE_FLAGS
+        pre = opt_argv(clang, level, march_flags)
         flags.append(fl)
-        keys.append(hashlib.sha1(base + (" ".join(fl) + "\n" + ",".join("%x" % e for e in names)).encode(),
+        pres.append(pre)
+        keys.append(hashlib.sha1(base + (" ".join(fl + (pre or [])) + "\n" + ",".join("%x" % e for e in names)).encode(),
                                  usedforsecurity=False).hexdigest())
         objs_k.append(os.path.join(obj_dir, "lift_%s%03d.o" % (tag, k)))
     todo = []
@@ -579,7 +621,7 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     with concurrent.futures.ProcessPoolExecutor(min(jobs, 16)) as ex:
         texts = list(ex.map(lift_part, [(plan_path, parts[k][1], hooks) for k in todo])) if todo else []
     t_lift = time.time() - t0
-    cjobs = [(clang, text, objs_k[k], flags[k], cache) for k, text in zip(todo, texts)]
+    cjobs = [(clang, text, objs_k[k], flags[k], pres[k], cache) for k, text in zip(todo, texts)]
     objs, failed, t1 = [o for k, o in enumerate(objs_k) if k not in set(todo)], [], time.time()
     with concurrent.futures.ThreadPoolExecutor(jobs) as ex:
         for (obj, secs, err), k in zip(ex.map(compile_part, cjobs), todo):

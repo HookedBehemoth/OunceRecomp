@@ -142,12 +142,19 @@ def main():
         ll = os.path.join(d, "lift2.ll")
         with open(ll, "w") as f:
             f.write(m.text())
+        text = m.text()
+        level = a.opt or "O1"
+        pre = game.opt_argv(clang, level, IR_FLAGS[:1])   # (as the build: -O1 through opt with DSE)
+        fl = ["-" + level] + IR_FLAGS + game.DSE_FLAGS
         if a.opt:
-            subprocess.run([clang, "-S", "-emit-llvm", "-" + a.opt] + IR_FLAGS + game.DSE_FLAGS + [ll, "-o", os.path.join(d, "lift2.opt.ll")],
-                           check=True)
+            r = game.compile_ir(clang, text, os.path.join(d, "lift2.opt.ll"), fl, pre, ("-S", "-emit-llvm"))
+            if r.returncode:
+                raise SystemExit(r.stderr.decode(errors="replace"))
         if a.asm:
             obj = os.path.join(d, "lift2.o")
-            subprocess.run([clang, "-c", "-" + (a.opt or "O1")] + IR_FLAGS + game.DSE_FLAGS + [ll, "-o", obj], check=True)
+            r = game.compile_ir(clang, text, obj, fl, pre)
+            if r.returncode:
+                raise SystemExit(r.stderr.decode(errors="replace"))
             with open(os.path.join(d, "lift2.s"), "w") as f:
                 f.write(subprocess.run(["objdump", "-d", "--no-show-raw-insn", "-M", "intel", obj],
                                        capture_output=True, text=True).stdout)
