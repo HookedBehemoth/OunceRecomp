@@ -49,7 +49,7 @@ A few jobs record work that a rendering secondary cannot hold: event waits, barr
 | Work | Where it goes |
 |---|---|
 | two culling waits and their barriers | before the job call, on the layer list |
-| the water pass's wait for its FFT compute | at the colour pass's job-call site only; earlier positions deadlock |
+| the water pass's wait for its FFT compute | at the color pass's job-call site only; earlier positions deadlock |
 | the occlusion-grid dispatch | before the job's commands at the job-call site |
 
 The occlusion-grid dispatch must run before the job's draws. If it runs after them, the grid's corner sampler reads the

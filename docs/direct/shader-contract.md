@@ -13,7 +13,7 @@ translator's push-data layout in `gpu/direct/eden/shader_recompiler/backend/spir
 - A program is a slot found by its NVN serial in a table read without a lock. Its stages are read and lowered when the
   game sets them (`nvnProgramSetShaders`), on a worker.
 - A draw finds its **variant** by a key made of the stages' code, the vertex input types the vertex stage reads and the
-  colour-target types the fragment stage writes, plus the bound textures' **answers**: each texture's type and whether
+  color-target types the fragment stage writes, plus the bound textures' **answers**: each texture's type and whether
   it is an integer format, as the translation assumed them. A draw checks the answers it depends on before it draws.
   In practice there is one variant per program.
 - A draw with no ready variant is skipped and counted, and the translation is queued. Workers run four classes of jobs,

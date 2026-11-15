@@ -69,7 +69,7 @@ The source file exists only during the load, so the host must find the prepared 
   under-lit. `HOS_DBG=nochanmap` turns the map off, for a comparison.
 - **The game renders into compressed textures.** It encodes its noise volumes to BC4 on the GPU, through a view of an
   uncompressed format of the block's size. A compressed image that is not from the prepared store is therefore made
-  view-compatible and usable as a colour attachment.
+  view-compatible and usable as a color attachment.
 - **Persistent descriptor ids are reused.** agl's descriptor ring frees an id after the frames in flight and hands it
   out again within seconds. The back end changes a heap entry only when the game registers an id again; NVN has no
   "unregister".

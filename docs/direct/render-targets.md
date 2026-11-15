@@ -51,7 +51,7 @@ To log every slot made, with its name, size and format, run with `HOS_RT_SLOTS_L
 
 | Kind | Examples | Size |
 |---|---|---|
-| scene targets | the lit colour (R11G11B10F), depth (D32F), SMAA, SSAO, fog, depth probes, the shading-rate image | `S`, `S`/2, `S`/4 or `S`/16, from the view rectangle |
+| scene targets | the lit color (R11G11B10F), depth (D32F), SMAA, SSAO, fog, depth probes, the shading-rate image | `S`, `S`/2, `S`/4 or `S`/16, from the view rectangle |
 | fixed targets | bloom and depth-of-field chains, the bilateral grid, the 256 x 144 occlusion depth, the cube-map depth | constant |
 | output-derived | `DepthBuffer` and `Reprojection` | `O`/4 |
 | shadows | sun cascades, local-light maps, the static sun shadow | from the scene config and per light (below) |
@@ -60,7 +60,7 @@ To log every slot made, with its name, size and format, run with `HOS_RT_SLOTS_L
 
 At the defaults the transient targets peak at roughly 300-350 MB; at `O` = 3840 x 2160 near 900 MB.
 
-The frame is forward-rendered: a depth prepass, then colour draws into the lit R11G11B10F target. The RGBA8 scene-sized
+The frame is forward-rendered: a depth prepass, then color draws into the lit R11G11B10F target. The RGBA8 scene-sized
 target is a screen-space mask, not a normals target.
 
 ## Shadows
@@ -83,16 +83,16 @@ Shadow filter widths are in texels, so a larger map gives a narrower penumbra un
 
 The game's path, after the scene, lighting, fog and post effects:
 
-1. The lit colour is copied for anti-aliasing and resolved by SMAA into `ndsr::smaa_output` (RGB9E5F, `S`).
+1. The lit color is copied for anti-aliasing and resolved by SMAA into `ndsr::smaa_output` (RGB9E5F, `S`).
 2. The game's upscale network, the compute program `fd029a317a9a4b94`, takes it from `S` to the frame (R11G11B10F, `F`).
    It is the frame's heaviest pass, about 1 ms; see [the shader census](shader-costs.md).
 3. The UI is composed over the frame into the window texture.
 
-The network exists only for fixed ratios of `S` to `F` (3/4 by default). It is not temporal: no target carries colour
+The network exists only for fixed ratios of `S` to `F` (3/4 by default). It is not temporal: no target carries color
 across frames, and the game writes no motion-vector target. Rendering at the window's size times a free bias needs an
 upscaler of ours in place of the network. That work is open; the inputs it needs are:
 
-- the colour before SMAA (`color(AA)`) or after it (`smaa_output`, square-root encoded);
+- the color before SMAA (`color(AA)`) or after it (`smaa_output`, square-root encoded);
 - depth (`RawDepth(Full)`, D32F at `S`, 0 at the near plane);
 - a jittered projection and motion vectors, which the game does not provide: camera motion can be derived from depth
   and the two frames' view-projection matrices;

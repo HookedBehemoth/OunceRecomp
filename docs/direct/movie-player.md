@@ -1,7 +1,7 @@
 # The movie player
 
 This page explains how the game plays its movies (the title and the intro): how the file reaches the decoder, how frames
-are chosen, and how they are drawn. Read it when a movie stutters, jumps or shows wrong colours, or before you change
+are chosen, and how they are drawn. Read it when a movie stutters, jumps or shows wrong colors, or before you change
 `host/nn_video.c` or `host/direct_movie.c`. The player's functions carry the prefixes `movie_` and `ndve_` in
 `games/oot/labels.txt`.
 
