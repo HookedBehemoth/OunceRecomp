@@ -349,15 +349,16 @@ frame pass tracking SP, x29 and copies as entry SP plus a constant, and which fr
 x19-x30 and d8-d15), results, noreturn (seeded by the fatal functions' names and BLs with nothing after them), FP use.
 Every build has them: the lift writes the job's input beside the plan unless the cache has them
 (`game.plan_summaries`; `work/sa/summaries_<key>.pickle`, the key a SHA-1 of the image, the discovery's facts and
-`enc*`/`sem*`/`ir`/`build_ir`/`summary.py`), and the build's first step computes them before the lift workers and the
+`enc*`/`sem*`/`ir`/`build_ir`/`summary.py`/`probes.py`), and the build's first step computes them before the lift workers and the
 compilers start, in a process of its own (`game.finish_summaries`, `summary.job`: 8 workers over the components' DAG,
 `HOOKSHOT_LIFT_SUMMARY_JOBS`), then packs them into the plan. Cold: 108 s (graph 17 s, fixed point 59 s, results
 26 s), 1.4 GB in the summary process and 1.3 GB in its largest worker; from the cache: 5 s. The build uses them at
-direct calls (above) and prints the sites (`game.call_report`): of 794,900 BL sites, 766,920 keep registers across
-the call (12.0 of x19-x29 and SP a site on average), 71,507 of them to host callees (44,265 to HLE'd functions,
-27,242 to entry-hooked ones); the others reload everything: a noreturn callee (trap after) 14,170, a demoted one
-13,049, a probe, splice or C-after function 551, an entry-hooked function whose body has no full summary 148, a
-setjmp owner 39, an HLE'd function declared clobbering 23. The 182,791 BLR sites reload everything.
+direct calls (above) and prints the sites (`game.call_report`): of 794,900 BL sites, 767,213 keep registers across
+the call (12.0 of x19-x29 and SP a site on average), 71,491 of them to host callees; the others reload everything: a
+noreturn callee (trap after) 14,170, a demoted one 13,128, an entry-hooked function whose body has no full summary 327
+(192 of them to `f_8005ed00`, the render-target allocator), a setjmp owner 39, an HLE'd function declared clobbering 23.
+The 182,791 BLR sites reload everything. (Before the probes declared their effects, 2026-11-15, a call of a function
+with a probe, splice or C after an instruction reloaded everything: 551 sites.)
 
 A function is demoted (its interface is outside the AAPCS64) by detection, not by list:
 
@@ -435,13 +436,13 @@ checks): zero violations in the kokiri smoke scene.
 
 | measure | value | at |
 |---|---|---|
-| executable | 223.20 MB | 828448d7 with cold DSE |
-| `.text` / lifted code (hot / cold partitions) / bss | 186.29 MB / 183.28 MB (8.25 / 175.03) / 40.05 MB | 828448d7 with cold DSE |
+| executable | 223.17 MB (223.20 MB at 828448d7) | ad50fede |
+| `.text` / lifted code (hot / cold partitions) / bss | 186.29 MB / 183.28 MB (8.25 / 175.03) / 40.05 MB | 828448d7 with cold DSE (ad50fede: `.text` 186.29 MB) |
 | x86 code bytes per guest instruction | 15.6 on average (with page marks and polls; not rescaled) | 860eb332 |
 | relift, cold (`scripts/relift.sh`) | 419 s (lift 90 s, partitions lifted 100 s, compiled 218 s with 7 jobs), 13.41 GB peak (16 GB scope) | 828448d7 with cold DSE |
 | relift, warm (partitions from the cache) | about 100 s | 338ce2c0 |
 | host-only change | about a minute | commit not recorded |
-| market 600, fixed step | frame mean 9.454 ms, median 9.429, p99 10.040; CPU 14.15 s over the 600 frames | 828448d7 with cold DSE |
+| market 600, fixed step | frame mean 9.458 ms, median 9.446, p99 10.022; CPU 14.39 s over the 600 frames (828448d7: 9.454, 9.429, 10.040; 14.15 s) | ad50fede, declared rows and hooks |
 | lift speed, one core | 33-56 k guest instructions/s (decode, IR, LLVM IR) | commit not recorded |
 
 ## Checks
