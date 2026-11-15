@@ -1,5 +1,5 @@
-"""host/hos_fp.c without the game: MXCSR follows the guest FPCR, the MRS/MSR FPCR/FPSR helpers the lifted code calls, the
-FRECPE/FRSQRTE routines, and MXCSR across a fiber switch (host/posix/win32_posix.c's fibers, cut out of the file,
+"""host/hos_fp.c without the game: MXCSR follows the guest FPCR, the MRS/MSR FPCR/FPSR helpers the lifted code calls, and
+MXCSR across a fiber switch (host/posix/win32_posix.c's fibers, cut out of the file,
 switched the way host/hos_thread.c's fiber_switch does it, which this test also checks by text).
 
 python -I -B tests/test_hos_fp.py      (the compile-and-run cases need a C compiler on x86-64 Linux)
@@ -107,17 +107,6 @@ int main(void) {
     CHECK(a64_fpsr_read(&c) == 0, "DE without FZ");
     c.fpcr = 1u << 24;
     CHECK(a64_fpsr_read(&c) == 128u, "DE under FZ is IDC");
-    /* the estimates */
-    c.fpcr = 0; a64_fpcr_sync(&c);
-    uint32_t u; float r = a64_frecpe_f32(2.0f); memcpy(&u, &r, 4);
-    CHECK(u == 0x3EFF8000, "frecpe(2) %x", u);
-    r = a64_frsqrte_f32(4.0f); memcpy(&u, &r, 4);
-    CHECK(u == 0x3EFF8000, "frsqrte(4) %x", u);
-    r = a64_frecpe_f32(1e-40f); memcpy(&u, &r, 4);
-    CHECK(u == 0x7F800000, "frecpe(subnormal) overflows to inf under RN %x", u);
-    c.fpcr = 1u << 24; a64_fpcr_sync(&c);
-    r = a64_frecpe_f32(1e-39f); memcpy(&u, &r, 4);
-    CHECK(u == 0x7F800000, "frecpe(subnormal) under FZ: flushed, inf %x", u);
     /* a fiber switch: the thread runs with FZ, the fiber starts from the thread's FPCR (as nn::os inherits it) */
     thread_fiber = ConvertThreadToFiberEx(NULL, 0);
     guest_fiber = CreateFiberEx(1 << 16, 1 << 20, 0, fiber_fn, NULL);

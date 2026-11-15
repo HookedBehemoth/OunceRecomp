@@ -345,14 +345,14 @@ def int_pair(b, mn, x, y):
 
 
 def estimate(b, x, fn):
-    """FRECPE/FRSQRTE: host/hos_fp.c's routine for each lane (a64_frecpe_f32 ...)"""
+    """FRECPE/FRSQRTE: the inline estimate (nx2/lift2/fp_estimate.py) for each lane"""
     lt = lane_of(x.ty)
-    name = "a64_%s_%s" % (fn, lt)
+    name = "lift2_%s_%s" % (fn, lt)
     if x.ty[0] != "v":
-        return b.call(name, lt, x)
+        return b.op("call", lt, x, fn=name, ctx=True, helper=True)
     r = x
     for k in range(lanes(x.ty)[0]):
-        r = b.insert(r, b.call(name, lt, b.extract(x, k)), k)
+        r = b.insert(r, b.op("call", lt, b.extract(x, k), fn=name, ctx=True, helper=True), k)
     return r
 
 

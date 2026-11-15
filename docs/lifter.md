@@ -197,7 +197,7 @@ lowest target, cases `(target - lo) >> 2`, as sparse as its targets are spread.
 | FCVTZS/FCVTZU, every width | `llvm.fpto[su]i.sat` (NaN to 0, saturating) |
 | FCVTNS/NU/AS/AU/MS/MU/PS/PU | rounding intrinsic, then `.sat` |
 | FRINTN/A/M/P/Z | `llvm.roundeven`/`round`/`floor`/`ceil`/`trunc` |
-| FRECPE, FRSQRTE | ARM's estimate algorithm out of line per lane (`a64_frecpe_f32/f64`, `a64_frsqrte_f32/f64` in `host/hos_fp.c`) |
+| FRECPE, FRSQRTE | ARM's estimate algorithm inline per lane, bit-exact (`nx2/lift2/fp_estimate.py`: the estimate table as a constant computed from RecipEstimate/RecipSqrtEstimate, integer arithmetic and selects, FZ and RMode from the context's FPCR); the game has 904 FRSQRTE and 130 FRECPE sites, all single precision, 2 or 4 lanes |
 | FRECPS, FRSQRTS | `fma` plus the 0·∞ special case |
 | FCVT to and from half | `fptrunc`/`fpext` (F16C); FZ16 and AHP not supported |
 | FCMP, FCCMP | four `fcmp`s give NZCV (unordered 0011) |

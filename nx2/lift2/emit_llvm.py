@@ -9,6 +9,7 @@ Guest memory: `getelementptr i8, ptr inttoptr (i64 A64_HOST_BASE to ptr), i64 <g
 """
 import re
 
+from . import fp_estimate
 from .ir import WIDTH, lanes
 
 HOST_BASE = 0x100000000000
@@ -217,6 +218,12 @@ define internal i64 @lift2_ldxp_lo(ptr %ctx, i64 %a, i32 %n) alwaysinline {
 }""",
 }
 
+# FRECPE and FRSQRTE, inline and bit-exact (nx2/lift2/fp_estimate.py), and the declarations they need
+HELPER_DECLS = {}
+for _name, (_text, _decls) in fp_estimate.helpers().items():
+    HELPERS[_name] = _text
+    HELPER_DECLS[_name] = _decls
+
 
 # A function that writes FPCR (MSR FPCR: Function.strict_fp, sem_fp.fp_sysreg_write) is strictfp: its FP operations
 # are LLVM's constrained intrinsics with a dynamic rounding mode, which LLVM does not move across the FPCR write (a
@@ -352,6 +359,7 @@ def emit_op(v, ref, typed, out, decls, flags_out=False):
         pure = fn.startswith("a64_") and not at.get("effects") and not at.get("ctx")
         decls.add(("helper:%s" % fn) if at.get("helper") else "declare %s @%s(%s)%s" % (
             rt, fn, ", ".join(tys), " memory(none) nounwind willreturn" if pure else ""))
+        decls.update(HELPER_DECLS.get(fn, ()) if at.get("helper") else ())
         lhs = "" if v.ty == "void" else "%s = " % r
         out.append("  %scall %s @%s(%s)" % (lhs, rt, fn, ", ".join(args)))
     elif op == "gcall":
