@@ -19,7 +19,7 @@ import sys
 
 INCOMPLETE = "LIFT_INCOMPLETE"
 OK = "LIFT_OK"
-SWITCHES = ("HOOKSHOT_LIFT_VERIFY", "HOOKSHOT_LIFT_SUMMARIES", "HOOKSHOT_HOT_FUNCS")
+SWITCHES = ("HOOKSHOT_LIFT_VERIFY", "HOOKSHOT_HOT_FUNCS")
 
 
 # what the lift reads, relative to the repository: whole files (globs), and host files of which only the lines the lift

@@ -102,6 +102,14 @@ class Summaries(unittest.TestCase):
         self.assertNotIn("dangling_bl", self.s["callnr"].demote)
         self.assertNotIn("fallthrough_entry", self.s["flagin"].demote)   # (callnr's BL never comes back)
 
+    def test_parallel_matches(self):
+        word = lambda pc: WORDS[(pc - BASE) // 4]
+        entries = {BASE + o for o in ENTRIES.values()}
+        funcs = S.walk(entries, word)
+        par, _, _ = S.summarise_parallel(funcs, build_ir.Program(entries=entries), set(), word, jobs=2)
+        for e, s in self.sums.items():
+            self.assertEqual((s.key(), s.demote, s.results), (par[e].key(), par[e].demote, par[e].results), "%x" % e)
+
     def test_flags_at_entry(self):
         self.assertIn("flags_in", self.s["flagin"].demote)
 

@@ -1,4 +1,4 @@
-"""Whole-program summaries of the guest functions (milestone 13).
+"""Whole-program summaries of the guest functions.
 
 For every function, over the call graph to a fixed point (strongly connected components callees first, iterated
 inside a component until nothing changes):
@@ -31,6 +31,7 @@ is outside the AAPCS64).
 
 Registers are bit masks over ir.VARS (X0-X30 bits 0-30, SP 31, N Z C V 32-35, V0-V31 36-67).
 """
+import os
 import time
 
 from . import enc, ir, sem, sem_int
@@ -68,6 +69,7 @@ def mask_names(m):
 
 # ---- per-instruction register use and definition, from the semantic templates themselves
 _du = {}
+CACHE_MAX = 200000
 TERMS = {"b", "bcond", "cbz", "tbz", "ret", "udf", "br", "blr", "exc"}
 
 
@@ -105,6 +107,9 @@ def def_use(w):
             use = sum(BIT[v] for v in fn.block(0).params)
             dfn = sum(BIT[v] for v in fn.written)
     got = (i, use, dfn)
+    if len(_du) >= CACHE_MAX:   # (bounded: a worker of the parallel pass would otherwise grow by ~1 GB)
+        _du.clear()
+        enc._cache.clear()
     _du[w] = got
     return got
 
@@ -121,7 +126,7 @@ class Func:
         self.pcs = pcs
         idx = {pc: k for k, pc in enumerate(pcs)}
         n = len(pcs)
-        self.words = [word(pc) for pc in pcs]
+        self.words = [word(pc) for pc in pcs] if callable(word) else list(word)   # (or the words themselves)
         self.kind, self.succ, self.callee = [None] * n, [()] * n, [None] * n
         self.use, self.dfn, self.insn = [0] * n, [0] * n, [None] * n
         self.fp = self.writes_fpcr = False
@@ -265,8 +270,10 @@ def site_summary(sums, fn, k, hooks):
 
 
 # ---- the analyses of one function, given its callees' summaries
-def liveness(fn, sums, hooks):
-    """live-in per instruction (backward, to a fixed point); the inputs are the entry's"""
+def liveness(fn, sums, hooks, ret_live=0):
+    """live-in per instruction (backward, to a fixed point); the inputs are the entry's. ret_live: live at the
+    returns (ALL: what may reach a return unwritten, the registers a call's value may pass on to the caller's own)"""
+    use = fn.use
     n = len(fn.pcs)
     live = [0] * n
     changed = True
@@ -275,32 +282,32 @@ def liveness(fn, sums, hooks):
         for k in range(n - 1, -1, -1):
             kind = fn.kind[k]
             if kind == "ret":
-                v = fn.use[k] & ~X[30]   # (RET's X30 is the host's return, not data)
+                v = use[k] & ~X[30] | ret_live   # (RET's X30 is the host's return, not data)
             elif kind == "trap":
-                v = fn.use[k]
+                v = use[k]
             elif kind == "tail":
                 s = callee_summary(sums, fn.callee[k], hooks)
-                v = fn.use[k] | (s.inputs & ~fn.dfn[k])
+                v = use[k] | ((s.inputs | (ret_live & ~s.mustdef)) & ~fn.dfn[k])
             else:
                 out = 0
                 for j in fn.succ[k]:
                     out |= live[j]
                 if k in fn.ctail:
-                    out |= callee_summary(sums, fn.ctail[k], hooks).inputs
+                    out |= callee_summary(sums, fn.ctail[k], hooks).inputs | ret_live
                 c = fn.callee[k]
                 if isinstance(c, tuple):   # (leaving edges of a conditional or switch)
                     for t in c[1]:
-                        out |= callee_summary(sums, t, hooks).inputs
+                        out |= callee_summary(sums, t, hooks).inputs | ret_live
                 if kind == "call" or kind == "svc":
                     s = AAPCS if kind == "svc" else callee_summary(sums, c, hooks)
                     if kind == "svc":
-                        v = fn.use[k] | (out & ~fn.dfn[k])
+                        v = use[k] | (out & ~fn.dfn[k])
                     else:
                         if s.returns is False:
                             out = 0
-                        v = fn.use[k] | s.inputs | (out & ~(s.mustdef | X[30]))
+                        v = use[k] | s.inputs | (out & ~(s.mustdef | X[30]))
                 else:
-                    v = fn.use[k] | (out & ~fn.dfn[k])
+                    v = use[k] | (out & ~fn.dfn[k])
             if v != live[k]:
                 live[k] = v
                 changed = True
@@ -745,30 +752,16 @@ def summarise(funcs, prog, hooks, word, names=None, log=print):
             if not changed or (len(comp) == 1 and not _self_call(F[comp[0]])):
                 break
     t2 = time.time()
-    # results: what callers read after their calls, and what tail callers pass on
+    # results: what callers read after their calls, and what callers pass on as their own results
+    passes = []
     for e, fn in F.items():
-        live = liveness(fn, sums, hooks)
+        for c, m, pt in call_reads(fn, sums, hooks):
+            sums[c].results |= m
+            passes.append((e, c, pt))
         for k, kind in enumerate(fn.kind):
-            if kind == "call" and fn.callee[k] in sums:
-                out = 0
-                for j in fn.succ[k]:
-                    out |= live[j]
-                g = sums[fn.callee[k]]
-                g.results |= out & g.clobbers
-    for s in sums.values():
-        s.results |= ABI_RESULTS & s.clobbers
-        s.results &= ~s.preserved   # (a preserved register read after the call is the caller's own value)
-    changed = True
-    while changed:
-        changed = False
-        for e, fn in F.items():
-            for k, kind in enumerate(fn.kind):
-                if kind == "tail" and fn.callee[k] in sums:
-                    g = sums[fn.callee[k]]
-                    r = g.results | (sums[e].results & g.clobbers)
-                    if r != g.results:
-                        g.results = r
-                        changed = True
+            if kind == "tail" and fn.callee[k] in sums:
+                passes.append((e, fn.callee[k], ALL))
+    propagate_results(sums, passes)
     # a call whose return falls into another function's entry: that entry is entered by falling through
     for e, fn in F.items():
         for k, c in fn.ctail.items():
@@ -780,6 +773,13 @@ def summarise(funcs, prog, hooks, word, names=None, log=print):
              "disagree sample": ["%08x" % c for c in disagree[:12]], "functions": len(F), "sccs": len(comps), "largest scc": max(len(c) for c in comps) if comps else 0,
              "iterations": iters, "build s": t1 - t0, "fixed point s": t2 - t1, "results s": t3 - t2}
     return sums, F, stats
+
+
+def pack(s):
+    """a summary as the plan keeps it (a tuple: inputs, clobbers, mustdef, preserved, results, returns, demotion
+    reasons, unknown facts, frame, pairs, boundary, FP use, writes FPCR)"""
+    return (s.inputs, s.clobbers, s.mustdef, s.preserved, s.results, s.returns, tuple(s.demote), s.unknown, s.frame,
+            s.pairs, s.boundary, s.fp, s.writes_fpcr)
 
 
 def _self_call(fn):
@@ -818,23 +818,23 @@ def walk(entries, word, jt=None):
     return out
 
 
-def report(sums, F, hot=(), log=print):
-    """the distribution of the summaries over the program (milestone 13's numbers)"""
+def edges_of(F):
+    """(kind, callee) of every call and tail call of each function (report()'s input)"""
+    return {e: [(kind, fn.callee[k]) for k, kind in enumerate(fn.kind)
+                if kind in ("call", "tail") and not isinstance(fn.callee[k], tuple)] for e, fn in F.items()}
+
+
+def report(sums, edges_by_fn, n_ins, hot=(), log=print):
+    """the distribution of the summaries over the program; n_ins: entry -> instructions"""
     import collections
-    n_ins = {e: len(fn.pcs) for e, fn in F.items()}
     total = sum(n_ins.values())
     full = [e for e, s in sums.items() if not s.demote]
     reasons = collections.Counter(r for s in sums.values() for r in s.demote)
     hot = [e for e in hot if e in sums]
     hot_full = [e for e in hot if not sums[e].demote]
     edges = collections.Counter()
-    for e, fn in F.items():
-        for k, kind in enumerate(fn.kind):
-            if kind not in ("call", "tail"):
-                continue
-            c = fn.callee[k]
-            if isinstance(c, tuple):
-                continue
+    for e, ed in edges_by_fn.items():
+        for kind, c in ed:
             tag = "tail " if kind == "tail" else ""
             if c is None:
                 edges[tag + "indirect"] += 1
@@ -885,3 +885,218 @@ def explain(e, sums, F, hooks, depth=2, log=print, _seen=None):
                                             "%08x" % t if t is not None else "?", tag))
                 if depth > 0 and t in sums:
                     explain(t, sums, F, hooks, depth - 1, log, _seen)
+
+
+# ---- the same, in parallel: processes forked with the program's facts; the fixed point
+# runs level by level over the DAG of strongly connected components (a component's callees are in earlier levels)
+_G = {}
+
+
+def _graph_part(entries):
+    """(worker) per function: its callees, the functions it falls into, its call-continuation targets"""
+    out = []
+    for e in entries:
+        fn = Func(e, *_G["funcs"][e], _G["prog"], _G["hooks"])
+        callees = []
+        for k, kind in enumerate(fn.kind):
+            c = fn.callee[k]
+            if isinstance(c, tuple):
+                callees += list(c[1])
+            elif kind in ("call", "tail") and c is not None:
+                callees.append(c)
+        dangling = [fn.callee[k] for k in fn.ctail if fn.kind[k] == "call" and fn.callee[k] is not None]
+        tails = [fn.callee[k] for k, kind in enumerate(fn.kind) if kind == "tail" and isinstance(fn.callee[k], int)]
+        ctails = [(fn.callee[k], c, fn.kind[k]) for k, c in fn.ctail.items()]
+        edges = [(kind, fn.callee[k]) for k, kind in enumerate(fn.kind)
+                 if kind in ("call", "tail") and not isinstance(fn.callee[k], tuple)]
+        out.append((e, callees + list(fn.ctail.values()), list(fn.falls_into), dangling, tails, ctails, edges))
+    return out
+
+
+def _analyse_part(batch):
+    """(worker) the fixed point of each component of a batch, given its callees' summaries"""
+    comps, known = batch
+    sums = dict(known)
+    hooks = _G["hooks"]
+    out = {}
+    for comp in comps:
+        F = {}
+        for e in comp:
+            F[e] = Func(e, *_G["funcs"][e], _G["prog"], hooks)
+            F[e].fallthrough_entry = e in _G["fallthrough"]
+            sums[e] = Summary()
+        while True:
+            changed = False
+            for e in comp:
+                s = analyse(F[e], sums, hooks)
+                if s.key() != sums[e].key() or s.demote != sums[e].demote:
+                    changed = True
+                sums[e] = s
+            if not changed or (len(comp) == 1 and not _self_call(F[comp[0]])):
+                break
+        for e in comp:
+            out[e] = sums[e]
+    return out
+
+
+def call_reads(fn, sums, hooks):
+    """[(callee, what the caller reads after the call, what may reach the caller's returns unwritten)] of a
+    function's calls of functions with summaries"""
+    out = []
+    live = pt = None
+    for k, kind in enumerate(fn.kind):
+        if kind == "call" and fn.callee[k] in sums:
+            if live is None:
+                live = liveness(fn, sums, hooks)
+                pt = liveness(fn, sums, hooks, ALL)
+            o = p = 0
+            for j in fn.succ[k]:
+                o |= live[j]
+                p |= pt[j]
+            g = sums[fn.callee[k]]
+            out.append((fn.callee[k], o & g.clobbers, p & g.clobbers))
+    return out
+
+
+def propagate_results(sums, passes):
+    """the AAPCS64's results for callers the program cannot see; then, to a fixed point, a caller's results that a
+    callee's value may become (passes: (caller, callee, mask): what may reach the caller's returns unwritten after
+    the call; everything after a tail call). A preserved register is never a result (read after the call, it is the
+    caller's own value)."""
+    for s in sums.values():
+        s.results = (s.results | (ABI_RESULTS & s.clobbers)) & ~s.preserved
+    changed = True
+    while changed:
+        changed = False
+        for e, c, m in passes:
+            g = sums[c]
+            r = g.results | (sums[e].results & m & g.clobbers & ~g.preserved)
+            if r != g.results:
+                g.results = r
+                changed = True
+
+
+def _results_part(batch):
+    """(worker) what each function's callers read after its calls and pass on: [(caller, callee, read, passed)]"""
+    entries, known = batch
+    sums = known
+    hooks = _G["hooks"]
+    out = []
+    for e in entries:
+        fn = Func(e, *_G["funcs"][e], _G["prog"], hooks)
+        out.extend((e, c, m, pt) for c, m, pt in call_reads(fn, sums, hooks))
+    return out
+
+
+def summarise_parallel(funcs, prog, hooks, word, names=None, jobs=16, log=print):
+    """summarise() over processes: the same summaries; funcs: entry -> sorted pcs (any sequence), or with word None
+    entry -> (pcs, their words). The workers are forked with the functions as flat arrays (pages they only read,
+    shared)."""
+    import multiprocessing as mp
+    from array import array
+    t0 = time.time()
+    ctx = mp.get_context("fork")
+    _G.clear()
+    if word is None:
+        fs = {e: (array("Q", p), array("I", w)) for e, (p, w) in funcs.items()}
+    else:
+        fs = {e: (array("Q", pcs), array("I", (word(pc) for pc in pcs))) for e, pcs in funcs.items()}
+    _G.update(funcs=fs, prog=prog, hooks=set(hooks), fallthrough=set())
+    NORETURN.clear()
+    NORETURN.update(e for e, n in (names or {}).items() if noreturn_seed(n))
+    order = sorted(_G["funcs"])
+    chunks = [order[k::jobs * 8] for k in range(jobs * 8)]
+    with ctx.Pool(jobs) as pool:
+        graph = [r for part in pool.map(_graph_part, chunks) for r in part]
+    callees, tails, ctails, edges = {}, {}, {}, {}
+    by_callers = set()
+    for e, cs, falls, dangling, tl, ct, ed in graph:
+        edges[e] = ed
+        callees[e] = [c for c in cs if c in _G["funcs"]]
+        tails[e] = tl
+        ctails[e] = ct
+        by_callers.update(dangling)
+        for f in falls:
+            if f in _G["funcs"] and f != e:
+                _G["fallthrough"].add(f)
+    NORETURN.update(by_callers)
+    t1 = time.time()
+    comps = sccs(order, lambda e: callees[e])
+    comp_of = {e: k for k, c in enumerate(comps) for e in c}
+    level = [0] * len(comps)
+    for k, c in enumerate(comps):   # (callees first: a component's level is one above its deepest callee's)
+        lv = 0
+        for e in c:
+            for g in callees[e]:
+                kk = comp_of[g]
+                if kk != k:
+                    lv = max(lv, level[kk] + 1)
+        level[k] = lv
+    levels = {}
+    for k, lv in enumerate(level):
+        levels.setdefault(lv, []).append(comps[k])
+    sums = {}
+    with ctx.Pool(jobs) as pool:
+        for lv in sorted(levels):
+            cs = levels[lv]
+            nb = max(1, min(len(cs), jobs * 4))
+            batches = []
+            for b in range(nb):
+                part = cs[b::nb]
+                need = {g for c in part for e in c for g in callees[e]}
+                batches.append((part, {g: sums[g] for g in need if g in sums}))
+            for got in pool.map(_analyse_part, batches):
+                sums.update(got)
+        t2 = time.time()
+        nb = jobs * 8
+        batches = []
+        for b in range(nb):
+            part = order[b::nb]
+            need = {g for e in part for g in callees[e]}
+            batches.append((part, {g: sums[g] for g in need}))
+        passes = []
+        for got in pool.map(_results_part, batches):
+            for e, g, m, pt in got:
+                sums[g].results |= m
+                passes.append((e, g, pt))
+    passes += [(e, c, ALL) for e, tl in tails.items() for c in tl if c in sums]
+    propagate_results(sums, passes)
+    for e, ct in ctails.items():   # (a call whose return falls into another function's entry)
+        for callee, c, kind in ct:
+            if c in sums and (kind == "svc" or callee_summary(sums, callee, hooks).returns) \
+                    and "fallthrough_entry" not in sums[c].demote:
+                sums[c].demote = sorted(sums[c].demote + ["fallthrough_entry"])
+    t3 = time.time()
+    stats = {"functions": len(sums), "sccs": len(comps), "largest scc": max(len(c) for c in comps) if comps else 0,
+             "levels": len(levels), "noreturn by callers": len(by_callers),
+             "graph s": t1 - t0, "fixed point s": t2 - t1, "results s": t3 - t2}
+    return sums, stats, edges
+
+
+def job(inp, out, jobs):
+    """the summaries in a process of their own (game.finish_summaries): inp, a pickle of the functions (entry -> (pcs,
+    words)) and the discovery's facts; out, a pickle of (summaries, stats, edges). Its workers fork from a process
+    that holds only this, not the lifter."""
+    import pickle
+    import resource
+    from . import build_ir
+    with open(inp, "rb") as f:
+        d = pickle.load(f)
+    plt = d["plt"]
+
+    def callee(t):
+        seen = 0
+        while t in plt and seen < 4:
+            t = plt[t][0]
+            seen += 1
+        return t
+    prog = build_ir.Program(entries=d["entries"], jt=d["jt"], callee=callee, plt=plt, no_call=d["no_call"],
+                            classes=d["classes"])
+    funcs, hooks, names = d["funcs"], d["hooks"], d["names"]
+    del d
+    sums, stats, edges = summarise_parallel(funcs, prog, hooks, None, names, jobs=jobs)
+    stats["main peak MB"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
+    stats["worker peak MB"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss >> 10
+    with open(out + ".tmp", "wb") as f:
+        pickle.dump((sums, stats, edges), f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(out + ".tmp", out)

@@ -7,8 +7,17 @@
    preserved register changed; a register claimed not written was written; then the registers claimed not written go
    back to their entry values and the written ones no caller reads are poisoned (0xDEAE). Each violation is logged
    once per function, kind and register, to the game log and to lift2_violations.txt in the working folder. */
+#ifdef LIFT2_VERIFY_STANDALONE   /* (tests/test_lift2_verify.py: the checks alone, without the host) */
+#include <pthread.h>
+typedef pthread_mutex_t SRWLOCK;
+#define SRWLOCK_INIT PTHREAD_MUTEX_INITIALIZER
+#define AcquireSRWLockExclusive pthread_mutex_lock
+#define ReleaseSRWLockExclusive pthread_mutex_unlock
+#define hos_log(...) ((void)0)
+#else
 #include "hos.h"
 #include <windows.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

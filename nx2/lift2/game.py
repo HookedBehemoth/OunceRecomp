@@ -11,8 +11,12 @@ partition whose inputs are unchanged comes from the object cache by an input key
 their own partitions, compiled at the hot level (-O2). It returns the C it writes beside (the C after instructions
 and the SPLICE_AFTER calls, as host functions the lifted code calls) and the objects to link.
 
-HOOKSHOT_LIFT_VERIFY=1 (at lift and build time): every function with a full summary (nx2/lift2/summary.py) is checked
-at run time (host/lift2_verify.c). The lift computes the summaries only with it or with HOOKSHOT_LIFT_SUMMARIES=1.
+The whole-program summaries (nx2/lift2/summary.py) are computed by the first build after a lift, in a process of
+their own (finish_summaries, summary.job: workers over the components' DAG), and cached beside the plan, keyed by the
+image, the discovery's facts and the lifter sources they read (plan_summaries). HOOKSHOT_LIFT_SUMMARY_JOBS: their
+workers (8).
+HOOKSHOT_LIFT_VERIFY=1 (at build time): every function with a full summary is checked at run time
+(host/lift2_verify.c).
 HOOKSHOT_HOT_FUNCS: the hot list (one f_<addr> a line; default work/hot_funcs_play.txt, else work/hot_funcs.txt).
 """
 import concurrent.futures
@@ -21,6 +25,7 @@ import os
 import pickle
 import re
 import subprocess
+import sys
 import time
 from array import array
 
@@ -63,31 +68,96 @@ def reachable(entry, pcs, word, jt):
     return [pc for pc in pcs if pc in seen]
 
 
-def summaries(L, img, path, prog, hooks):
-    """milestone 13's summaries of every function , packed for the
-    plan"""
-    import resource
-    from . import summary
-    t1 = time.time()
+# the lifter's files the summaries depend on (the summary cache's key)
+SUMMARY_SOURCES = re.compile(r"^(enc.*|sem.*|ir|build_ir|summary)\.py$")
+
+
+def plan_summaries(L, img, path, hooks, no_call, classes):
+    """the summaries' job (summary.job) for the plan: (cache, input). The cache is keyed by the image, the discovery's
+    facts and the sources the summaries read; when it has them, input is None. Else the job's input is written beside
+    the plan and the build computes them (finish_summaries) in a process of its own, after the lift's memory is gone"""
     names = getattr(img, "names", {}) or {}
-    sums, F, stats = summary.summarise({e: sorted(b) for e, (b, _) in L.funcs.items()}, prog, hooks, img.word,
-                                       names)
-    hot_path = os.environ.get("HOOKSHOT_HOT_FUNCS") or os.path.join(os.path.dirname(os.path.dirname(path)), "..",
-                                                               "hot_funcs_play.txt")
-    hot = []
-    if os.path.exists(hot_path):
-        hot = [int(l.strip()[2:], 16) for l in open(hot_path) if l.strip().startswith("f_")]
-    summary.report(sums, F, hot)
-    for a in os.environ.get("LIFT2_SUMMARY_DEBUG", "").split(","):   # (a function's call sites and their callees)
-        if a:
-            summary.explain(int(a, 16), sums, F, hooks)
-    print("summaries: %(functions)d functions, %(sccs)d components (largest %(largest scc)d), %(iterations)d "
-          "analyses; decode and graph %(build s).0fs, fixed point %(fixed point s).0fs, results %(results s).0fs" % stats)
-    print("summaries: %.0fs in all, peak memory %d MB (one process)" % (
-        time.time() - t1, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10), flush=True)
-    packed = {e: (s.inputs, s.clobbers, s.mustdef, s.preserved, s.results, s.returns, tuple(s.demote), s.unknown,
-                  s.frame, s.pairs, s.boundary, s.fp, s.writes_fpcr) for e, s in sums.items()}
-    return packed
+    h = hashlib.sha1(bytes(img.mem), usedforsecurity=False)
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in sorted(os.listdir(here)):
+        if SUMMARY_SOURCES.match(name):
+            with open(os.path.join(here, name), "rb") as f:
+                h.update(name.encode() + f.read())
+    h.update(repr((sorted(L.entries), sorted(hooks), sorted(L.jt.items()), sorted(L.plt.items()), sorted(no_call),
+                   sorted(names.items()))).encode())
+    d = os.path.dirname(path)
+    cache = os.path.join(d, "summaries_%s.pickle" % h.hexdigest()[:16])
+    if os.path.exists(cache):
+        print("summaries: from the cache %s" % os.path.basename(cache))
+        return cache, None
+    inp = cache + ".in"
+    for old in [x for x in os.listdir(d) if x.startswith("summaries_") and x.endswith(".in")]:
+        os.remove(os.path.join(d, old))
+    with open(inp + ".tmp", "wb") as f:
+        fs = {}
+        for e, (b, _) in L.funcs.items():
+            pcs = array("Q", sorted(b))
+            fs[e] = (pcs, array("I", map(img.word, pcs)))
+        pickle.dump({"funcs": fs, "entries": set(L.entries), "jt": dict(L.jt), "plt": dict(L.plt), "no_call": no_call,
+                     "classes": classes, "hooks": hooks, "names": dict(names)}, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(inp + ".tmp", inp)
+    print("summaries: to be computed by the build (%s)" % os.path.basename(inp))
+    return cache, inp
+
+
+def finish_summaries(plan_path, plan):
+    """the plan with its summaries (summary_step, in a process of its own: the summaries' objects never enter the
+    build's process, which keeps only the packed tuples)"""
+    cache, inp = plan.get("summary_job") or (None, None)
+    if cache is None or plan.get("summaries"):
+        return plan
+    nx2 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    subprocess.run([sys.executable, "-I", "-u", "-c", "import sys; sys.path.insert(0, %r); from lift2 import game; "
+                    "game.summary_step(%r)" % (nx2, plan_path)], check=True)
+    del plan
+    _PLAN.pop(plan_path, None)
+    import gc
+    gc.collect()
+    return _plan(plan_path)
+
+
+def summary_step(plan_path):
+    """the plan's summaries from their cache, or computed by summary.job (HOOKSHOT_LIFT_SUMMARY_JOBS workers, default
+    8) from the input the lift left; the plan file is rewritten with them, packed"""
+    from . import summary
+    plan = _plan(plan_path)
+    cache, inp = plan["summary_job"]
+    t1 = time.time()
+    if not os.path.exists(cache):
+        if inp is None or not os.path.exists(inp):
+            raise SystemExit("build: the plan's summaries are neither cached nor computable (%s): lift again" % cache)
+        jobs = int(os.environ.get("HOOKSHOT_LIFT_SUMMARY_JOBS") or 8)
+        out = cache + ".out"
+        nx2 = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, %r); from lift2 import summary; "
+                        "summary.job(%r, %r, %d)" % (nx2, inp, out, jobs)], check=True)
+        with open(out, "rb") as f:
+            sums, stats, edges = pickle.load(f)
+        os.remove(out)
+        d = os.path.dirname(cache)
+        for old in [x for x in os.listdir(d) if x.startswith("summaries_") and not x.startswith(os.path.basename(cache))]:
+            os.remove(os.path.join(d, old))
+        with open(cache + ".tmp", "wb") as f:
+            pickle.dump((sums, edges, stats), f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(cache + ".tmp", cache)
+        os.remove(inp)
+        summary.report(sums, edges, plan["insns"], plan.get("hot", ()))
+        print("summaries: %(functions)d functions, %(sccs)d components (largest %(largest scc)d) in %(levels)d "
+              "levels; graph %(graph s).0fs, fixed point %(fixed point s).0fs, results %(results s).0fs" % stats)
+        print("summaries: %.0fs in all; peak memory of the summary process %s MB, of its largest worker %s MB" % (
+            time.time() - t1, stats.get("main peak MB", "?"), stats.get("worker peak MB", "?")), flush=True)
+    else:
+        with open(cache, "rb") as f:
+            sums, _, _ = pickle.load(f)
+    plan["summaries"] = {e: summary.pack(s) for e, s in sums.items()}
+    with open(plan_path + ".tmp", "wb") as f:
+        pickle.dump(plan, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(plan_path + ".tmp", plan_path)
 
 
 def hot_list(work):
@@ -139,14 +209,9 @@ def write_plan(L, img, path, hot=()):
             bodies[e] = (array("Q", [e]), array("I", [0]))
             continue
         bodies[e] = (array("Q", pcs), array("I", (img.word(pc) for pc in pcs)))
-    # the whole program's summaries, only when something uses them (the verification build, or
-    # HOOKSHOT_LIFT_SUMMARIES=1): they peak at about 9 GB in this process
-    packed = {}
-    if os.environ.get("HOOKSHOT_LIFT_VERIFY") or os.environ.get("HOOKSHOT_LIFT_SUMMARIES"):
-        packed = summaries(L, img, path, prog, hooks)
-        import gc
-        gc.collect()   # (the analysis' graph is garbage now)
-    plan = {"summaries": packed, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets, "after_c": after_c,
+    # the whole program's summaries: computed (or taken from their cache) by the build, finish_summaries
+    job = plan_summaries(L, img, path, hooks, no_call, classes)
+    plan = {"summaries": {}, "summary_job": job, "entries": sorted(L.entries), "jt": dict(L.jt), "jt_index": dict(L.jt_index), "plt": dict(L.plt), "no_call": sorted(no_call), "sj_rets": sj_rets, "after_c": after_c,
             "hooks": sorted(hooks), "bodies": bodies, "why": why, "hot": sorted(set(hot) & set(bodies)),
             "insns": {e: len(b) for e, (b, _) in L.funcs.items()}}
     with open(path + ".tmp", "wb") as f:
@@ -287,9 +352,9 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     plan_path = os.path.join(os.path.dirname(gen), "plan.pickle")
     if not os.path.exists(plan_path):
         raise SystemExit("build: no plan %s: lift the game first (scripts/relift.sh)" % plan_path)
-    plan = _plan(plan_path)
+    plan = finish_summaries(plan_path, _plan(plan_path))
     if os.environ.get("HOOKSHOT_LIFT_VERIFY") and not plan.get("summaries"):
-        raise SystemExit("build: HOOKSHOT_LIFT_VERIFY needs summaries in the plan: lift again with it set")
+        raise SystemExit("build: HOOKSHOT_LIFT_VERIFY needs summaries in the plan: lift again")
     chosen = set(plan["bodies"])
     hot = set(plan.get("hot", ()))
     import entry_hooks   # (host/*.c's ENTRY_HOOKs: a call at the function's entry, emit_llvm entry_hook)
