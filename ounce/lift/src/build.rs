@@ -112,12 +112,32 @@ pub fn scope(pcs: &[u64], words: &[u32]) -> Option<String> {
 /// (summary bits: x19-x29, SP) a BL keeps in SSA
 const KEEP: [Var; 12] = [19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, SP];
 
-pub fn build(f: &Func, prog: &Prog) -> Function {
+/// a worker's buffers for build's per-function work, kept from one function to the next
+#[derive(Default)]
+pub struct Scratch {
+    insns: Vec<Insn>,
+    /// a bit per instruction: a block starts there
+    leader: Vec<bool>,
+    /// the blocks leaving the function (tail calls, indirect jumps, answers)
+    exits: Vec<BlockId>,
+    /// a byte per block: reached, or the depth-first search's state
+    mark: Vec<u8>,
+    /// blocks to visit, or the blocks closing a cycle
+    blocks: Vec<BlockId>,
+    stack: Vec<(BlockId, usize)>,
+    /// per block: (gen, kill), live-in
+    flow: Vec<(u128, u128)>,
+    live: Vec<u128>,
+    keep: Vec<ValueId>,
+}
+
+/// the function's IR into fun (emptied first: a worker lifts every function into the same one)
+pub fn build(f: &Func, prog: &Prog, fun: &mut Function, sc: &mut Scratch) {
     let (entry, pcs, words) = (f.entry, &f.pcs[..], &f.words[..]);
-    let mut fun = Function::new(entry);
+    fun.reset(entry);
     if let Some(plt) = &f.plt {
         let e = fun.block(BKey::Pc(entry));
-        let mut b = Builder::new(&mut fun);
+        let mut b = Builder::new(fun);
         b.at(e);
         let s = b.c64(plt.slot as i128);
         b.set(x(16), s);
@@ -126,10 +146,11 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
         let tail = prog.bound(prog.callee(plt.target)).tail;
         fun.bm(e).term = Some(Term::Tail(tail));
         fun.link();
-        finish(&mut fun);
-        return fun;
+        finish(fun);
+        return;
     }
-    let mut exits: Vec<BlockId> = Vec::new();
+    let Scratch { insns, leader, exits, mark, blocks, stack, flow, live, keep } = sc;
+    exits.clear();
 
     // the BR's table index read at its load: BR -> (block, value)
     let mut index_load: HashMap<u64, (u64, u32, u32)> = HashMap::new();
@@ -145,28 +166,30 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
         }
     }
     let mut index_at: HashMap<u64, (BlockId, ValueId)> = HashMap::new();
-    let insns: Vec<Insn> = words.iter().map(|&w| decode(w).expect("decode")).collect();
+    insns.clear();
+    insns.extend(words.iter().map(|&w| decode(w).expect("decode")));
     // (a block starts at each instruction marked: a branch target in the body, the one after a branch)
-    let mut leader = vec![false; pcs.len()];
-    let mut mark = |pc: u64| {
+    leader.clear();
+    leader.resize(pcs.len(), false);
+    let mut lead = |pc: u64| {
         if let Ok(k) = pcs.binary_search(&pc) {
             leader[k] = true;
         }
     };
-    mark(entry);
+    lead(entry);
     for (k, &pc) in pcs.iter().enumerate() {
         let i = &insns[k];
         let kd = sem::kind(i);
         if kd.is_term() {
             if let Some(tg) = target(i, pc) {
-                mark(tg);
+                lead(tg);
             }
             if let Kind::Br = kd {
                 for &x in prog.jt(pc).unwrap_or(&[]) {
-                    mark(x);
+                    lead(x);
                 }
             }
-            mark(pc + 4);
+            lead(pc + 4);
         }
     }
     fun.block(BKey::Pc(entry));
@@ -200,7 +223,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
     }
 
     let mut cur: Option<BlockId> = None;
-    let mut b = Builder::new(&mut fun);
+    let mut b = Builder::new(fun);
     for (k, &pc) in pcs.iter().enumerate() {
         if leader[k] || cur.is_none() {
             let nxt = b.f.block(BKey::Pc(pc));
@@ -271,7 +294,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 at_post(&mut b, row);
             }
             if !prog.in_body(pc + 4) {
-                falls_out(&mut b, &mut exits);
+                falls_out(&mut b, exits);
                 cur = None;
             }
             continue;
@@ -287,7 +310,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 at_post(&mut b, row);
             }
             if !prog.in_body(pc + 4) {
-                falls_out(&mut b, &mut exits);
+                falls_out(&mut b, exits);
                 cur = None;
             }
             continue;
@@ -305,7 +328,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                     at_post(&mut b, row);
                 }
                 if !prog.in_body(pc + 4) {
-                    falls_out(&mut b, &mut exits);
+                    falls_out(&mut b, exits);
                     cur = None;
                 }
                 continue;
@@ -336,7 +359,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 continue;
             }
             if !prog.in_body(pc + 4) {
-                falls_out(&mut b, &mut exits);
+                falls_out(&mut b, exits);
                 cur = None;
             }
             continue;
@@ -352,7 +375,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 at_post(&mut b, row);
             }
             if !prog.in_body(pc + 4) {
-                falls_out(&mut b, &mut exits);
+                falls_out(&mut b, exits);
                 cur = None;
             }
             continue;
@@ -363,7 +386,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             b.op(Op::Svc(i.f(Fld::imm16)), Ty::Void, &[]);
             b.after_call();
             if !prog.in_body(pc + 4) {
-                falls_out(&mut b, &mut exits);
+                falls_out(&mut b, exits);
                 cur = None;
             }
             continue;
@@ -381,11 +404,11 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             continue;
         }
         let term = match kd {
-            Kind::B => Term::Br(goto(&mut b, prog, &mut exits, target(i, pc).unwrap())),
+            Kind::B => Term::Br(goto(&mut b, prog, exits, target(i, pc).unwrap())),
             Kind::Bcond => {
                 let cv = cond(&mut b, i.f(Fld::cond));
-                let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
-                let fb = goto(&mut b, prog, &mut exits, pc + 4);
+                let tb = goto(&mut b, prog, exits, target(i, pc).unwrap());
+                let fb = goto(&mut b, prog, exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             Kind::Cbz => {
@@ -393,8 +416,8 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 let t0 = b.ty(v);
                 let z = b.c(0, t0);
                 let cv = b.icmp(if i.f(Fld::op) != 0 { "ne" } else { "eq" }, v, z);
-                let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
-                let fb = goto(&mut b, prog, &mut exits, pc + 4);
+                let tb = goto(&mut b, prog, exits, target(i, pc).unwrap());
+                let fb = goto(&mut b, prog, exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             Kind::Tbz => {
@@ -405,8 +428,8 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 let v = b.bin(BinOp::And, r, m);
                 let z = b.c64(0);
                 let cv = b.icmp(if i.f(Fld::op) != 0 { "ne" } else { "eq" }, v, z);
-                let tb = goto(&mut b, prog, &mut exits, target(i, pc).unwrap());
-                let fb = goto(&mut b, prog, &mut exits, pc + 4);
+                let tb = goto(&mut b, prog, exits, target(i, pc).unwrap());
+                let fb = goto(&mut b, prog, exits, pc + 4);
                 Term::CondBr(cv, tb, fb)
             }
             Kind::Ret => Term::Ret,
@@ -427,7 +450,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                 let term = if let Some((_, at)) = at.filter(|a| a.0 == c) {
                     let tab = &prog.jt_index.iter().find(|r| r.0 == pc).unwrap().4;
                     let cases: Vec<(u64, BlockId)> =
-                        tab.iter().enumerate().map(|(n, &t2)| (n as u64, goto(&mut b, prog, &mut exits, t2))).collect();
+                        tab.iter().enumerate().map(|(n, &t2)| (n as u64, goto(&mut b, prog, exits, t2))).collect();
                     Term::Switch(at, cases, ij)
                 } else if !targets.is_empty() {
                     let lo = targets[0];
@@ -436,7 +459,7 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
                     let two = b.c64(2);
                     let idx = b.intr("fshr", I64, &[d, d, two]);
                     let cases: Vec<(u64, BlockId)> =
-                        targets.iter().map(|&t2| ((t2 - lo) >> 2, goto(&mut b, prog, &mut exits, t2))).collect();
+                        targets.iter().map(|&t2| ((t2 - lo) >> 2, goto(&mut b, prog, exits, t2))).collect();
                     Term::Switch(idx, cases, ij)
                 } else {
                     Term::Br(ij)
@@ -457,23 +480,25 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
     if fun.order.iter().any(|&bl| matches!(fun.b(bl).term, Some(Term::NoReturn(..)))) {
         // blocks only a noreturn call's return reached: gone
         let e = fun.entry_block();
-        let mut seen = vec![false; fun.blocks.len()];
-        seen[e.0 as usize] = true;
-        let mut todo = vec![e];
-        while let Some(bl) = todo.pop() {
+        mark.clear();
+        mark.resize(fun.blocks.len(), 0);
+        mark[e.0 as usize] = 1;
+        blocks.clear();
+        blocks.push(e);
+        while let Some(bl) = blocks.pop() {
             for &s in fun.succs(bl) {
-                if !seen[s.0 as usize] {
-                    seen[s.0 as usize] = true;
-                    todo.push(s);
+                if mark[s.0 as usize] == 0 {
+                    mark[s.0 as usize] = 1;
+                    blocks.push(s);
                 }
             }
         }
-        fun.retain_blocks(|bl| seen[bl.0 as usize]);
-        exits.retain(|bl| seen[bl.0 as usize]);
+        fun.retain_blocks(|bl| mark[bl.0 as usize] != 0);
+        exits.retain(|bl| mark[bl.0 as usize] != 0);
     }
     if fun.written & (0xFu128 << FN) != 0 {
-        let mut b = Builder::new(&mut fun);
-        for &bl in &exits {
+        let mut b = Builder::new(fun);
+        for &bl in exits.iter() {
             b.at(bl);
             let fl: Vec<ValueId> = FLAGS.iter().map(|&v| b.get(v)).collect();
             b.op(Op::FlagsOut { always: false }, Ty::Void, &fl);
@@ -484,15 +509,15 @@ pub fn build(f: &Func, prog: &Prog) -> Function {
             panic!("block {} has no terminator", fun.b(bl).name());
         }
     }
-    for bl in cycle_edges(&fun) {
+    cycle_edges(fun, mark, stack, blocks);
+    for &bl in blocks.iter() {
         let v = fun.new_value(Ty::Void, Op::Barrier, &[]);
         fun.bm(bl).ops.push(v);
     }
-    finish(&mut fun);
+    finish(fun);
     if prog.omit {
-        omit_stores(&mut fun, prog);
+        omit_stores(fun, prog, flow, live, keep);
     }
-    fun
 }
 
 /// summary bits of the callee-saved registers and SP (build_ir._CALLEE_SAVED)
@@ -514,10 +539,11 @@ fn reads(f: &Function, v: ValueId, prog: &Prog) -> (u128, u128) {
 
 /// deletes each register's write-through store no reader can read before the register's next store (build_ir.omit_stores;
 /// the verification build's poison is not ported: the export is of the build without it)
-fn omit_stores(f: &mut Function, prog: &Prog) {
+fn omit_stores(f: &mut Function, prog: &Prog, info: &mut Vec<(u128, u128)>, live_in: &mut Vec<u128>, keep: &mut Vec<ValueId>) {
     let at_ret = (prog.own.results | CALLEE_SAVED) & REGS;
     let blocks = std::mem::take(&mut f.order);
-    let mut info = vec![(0u128, 0u128); f.blocks.len()];
+    info.clear();
+    info.resize(f.blocks.len(), (0, 0));
     for &bl in &blocks {
         let (mut gen, mut kill) = (0u128, 0u128);
         for &v in f.b(bl).ops.iter().rev() {
@@ -538,7 +564,8 @@ fn omit_stores(f: &mut Function, prog: &Prog) {
         }
         info[bl.0 as usize] = (gen, kill);
     }
-    let mut live_in = vec![0u128; f.blocks.len()];
+    live_in.clear();
+    live_in.resize(f.blocks.len(), 0);
     let live_out = |f: &Function, live_in: &[u128], bl: BlockId| -> u128 {
         match f.b(bl).term.as_ref().unwrap() {
             Term::Ret => at_ret,
@@ -551,7 +578,7 @@ fn omit_stores(f: &mut Function, prog: &Prog) {
         changed = false;
         for &bl in blocks.iter().rev() {
             let (gen, kill) = info[bl.0 as usize];
-            let li = gen | (live_out(f, &live_in, bl) & !kill);
+            let li = gen | (live_out(f, live_in, bl) & !kill);
             if li != live_in[bl.0 as usize] {
                 live_in[bl.0 as usize] = li;
                 changed = true;
@@ -559,8 +586,8 @@ fn omit_stores(f: &mut Function, prog: &Prog) {
         }
     }
     for &bl in &blocks {
-        let mut live = live_out(f, &live_in, bl);
-        let mut keep = Vec::with_capacity(f.b(bl).ops.len());
+        let mut live = live_out(f, live_in, bl);
+        keep.clear();
         for &v in f.b(bl).ops.iter().rev() {
             if let Op::Writeback(var) = f.v(v).op {
                 let m = bit(var);
@@ -579,20 +606,22 @@ fn omit_stores(f: &mut Function, prog: &Prog) {
             }
             keep.push(v);
         }
-        keep.reverse();
-        f.bm(bl).ops = keep;
+        let ops = &mut f.bm(bl).ops;
+        ops.clear();
+        ops.extend(keep.iter().rev());
     }
     f.order = blocks;
 }
 
 /// the blocks whose terminator has an edge closing a cycle (back edges of a depth-first search from the entry, then
-/// from any block it did not reach)
-pub fn cycle_edges(f: &Function) -> Vec<BlockId> {
+/// from any block it did not reach), into out; state and stack: buffers
+pub fn cycle_edges(f: &Function, state: &mut Vec<u8>, stack: &mut Vec<(BlockId, usize)>, out: &mut Vec<BlockId>) {
     let entry = f.entry_block();
     // (0 unvisited, 1 on the stack, 2 done)
-    let mut state = vec![0u8; f.blocks.len()];
-    let mut out: Vec<BlockId> = Vec::new();
-    let mut stack: Vec<(BlockId, usize)> = Vec::new();
+    state.clear();
+    state.resize(f.blocks.len(), 0);
+    out.clear();
+    stack.clear();
     for root in std::iter::once(entry).chain(f.order.iter().copied().filter(|&b| b != entry)) {
         if state[root.0 as usize] != 0 {
             continue;
@@ -621,9 +650,8 @@ pub fn cycle_edges(f: &Function) -> Vec<BlockId> {
             }
         }
     }
-    let mut seen = vec![false; f.blocks.len()];
-    out.retain(|b| !std::mem::replace(&mut seen[b.0 as usize], true));
-    out
+    // (each once: state 3 marks one kept)
+    out.retain(|b| std::mem::replace(&mut state[b.0 as usize], 3) != 3);
 }
 
 // ---- patch rows (nx2/lift2/probes.py)

@@ -326,6 +326,11 @@ pub struct Function {
     /// target features (AES-NI, PCLMUL)
     pub target_features: Vec<&'static str>,
     pub code_sites: u32,
+    /// emptied blocks of earlier lifts, their buffers kept
+    spare: Vec<Block>,
+    /// link's last-added mark per block; finish's work list
+    seen: Vec<u32>,
+    work: Vec<(BlockId, Var)>,
 }
 
 impl Function {
@@ -345,7 +350,36 @@ impl Function {
             strict_fp: false,
             target_features: Vec::new(),
             code_sites: 0,
+            spare: Vec::new(),
+            seen: Vec::new(),
+            work: Vec::new(),
         }
+    }
+
+    /// empties the function for the lift of another, keeping every buffer (and the blocks' own) for reuse
+    pub fn reset(&mut self, entry: u64) {
+        self.entry = entry;
+        self.values.clear();
+        self.args.clear();
+        let mut blocks = std::mem::take(&mut self.blocks);
+        for mut b in blocks.drain(..) {
+            b.ops.clear();
+            b.params.clear();
+            b.preds.clear();
+            b.term = None;
+            self.spare.push(b);
+        }
+        self.blocks = blocks;
+        self.order.clear();
+        self.map.clear();
+        self.succ_at.clear();
+        self.succ.clear();
+        self.written = 0;
+        self.consts.clear();
+        self.calls.clear();
+        self.strict_fp = false;
+        self.target_features.clear();
+        self.code_sites = 0;
     }
 
     pub fn new_value(&mut self, ty: Ty, op: Op, args: &[ValueId]) -> ValueId {
@@ -386,7 +420,16 @@ impl Function {
             return b;
         }
         let id = BlockId(self.blocks.len() as u32);
-        self.blocks.push(Block::new(key));
+        let blk = match self.spare.pop() {
+            Some(mut b) => {
+                b.key = key;
+                b.defs = [None; NVARS];
+                b.called = false;
+                b
+            }
+            None => Block::new(key),
+        };
+        self.blocks.push(blk);
         self.order.push(id);
         self.map.insert(key, id);
         id
@@ -397,7 +440,9 @@ impl Function {
         let n = self.blocks.len();
         self.succ_at.clear();
         self.succ.clear();
-        let mut seen = vec![u32::MAX; n];
+        let seen = &mut self.seen;
+        seen.clear();
+        seen.resize(n, u32::MAX);
         for k in 0..n {
             self.succ_at.push(self.succ.len() as u32);
             let mut add = |s: BlockId, succ: &mut Vec<BlockId>| {
@@ -730,7 +775,8 @@ pub fn finish(f: &mut Function) {
             f.bm(s).preds.push(b);
         }
     }
-    let mut work: Vec<(BlockId, Var)> = Vec::new();
+    let mut work = std::mem::take(&mut f.work);
+    work.clear();
     for &b in &f.order {
         for &(var, _) in &f.b(b).params {
             work.push((b, var));
@@ -756,6 +802,7 @@ pub fn finish(f: &mut Function) {
             }
         }
     }
+    f.work = work;
 }
 
 /// FxHash (rustc's): the maps keyed by small integers in one function's lift need no DoS-resistant hash

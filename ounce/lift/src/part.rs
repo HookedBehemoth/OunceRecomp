@@ -1,25 +1,40 @@
 //! One partition's IR text (nx2/lift2/game.py lift_part, verify off): its functions, the PATCH_FUNC stubs, the
 //! setjmp owners' sjcall_ stubs and the code-pointer-sites trailer.
 
-use crate::build::{build, scope, Prog};
+use crate::build::{build, scope, Prog, Scratch};
 use crate::emit::{sym, Decl, Module};
 use crate::export::{Meta, Part};
-use crate::ir::Sym;
+use crate::ir::{Function, Sym};
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 
-pub struct Lifted {
-    /// the text: the module's header (triple, declarations, helpers), then its body
-    pub head: Vec<u8>,
+/// what a worker keeps from one partition's lift to the next: the function it builds every function into and the
+/// text's buffer, so their memory is allocated (and faulted in) once
+pub struct Worker {
+    fun: Function,
+    scratch: Scratch,
+    /// the last partition's text after its header (Lifted::head)
     pub body: Vec<u8>,
+}
+
+impl Default for Worker {
+    fn default() -> Worker {
+        Worker { fun: Function::new(0), scratch: Scratch::default(), body: Vec::new() }
+    }
+}
+
+pub struct Lifted {
+    /// the text: the module's header (triple, declarations, helpers), then the worker's body
+    pub head: Vec<u8>,
     pub lifted: usize,
     /// reason -> functions skipped for it
     pub skipped: BTreeMap<String, usize>,
 }
 
-pub fn lift_part(meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bool) -> Lifted {
+pub fn lift_part(w: &mut Worker, meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bool) -> Lifted {
     let insns = part.functions.iter().map(|f| f.pcs.len()).sum();
-    let mut m = Module::new(&part.names, false, insns);
+    let mut m = Module::new(&part.names, false, std::mem::take(&mut w.body), insns);
+    let (fun, sc) = (&mut w.fun, &mut w.scratch);
     let mut extra: Vec<u8> = Vec::new();
     let mut n_code = 0;
     let mut lifted = 0;
@@ -34,9 +49,9 @@ pub fn lift_part(meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bo
             }
         }
         let prog = Prog::new(f, code_targets, part, meta.omit);
-        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(f, &prog)));
-        let fun = match built {
-            Ok(fun) => fun,
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(f, &prog, fun, sc)));
+        match built {
+            Ok(()) => {}
             Err(e) if skip => {
                 let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()));
                 eprintln!("f_{:08x}: {}", f.entry, msg.as_deref().unwrap_or("panic"));
@@ -45,12 +60,12 @@ pub fn lift_part(meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bo
                 continue;
             }
             Err(e) => std::panic::resume_unwind(e),
-        };
+        }
         n_code += fun.code_sites;
         match &f.func {
             Some(pf) => {
                 // (a PATCH_FUNC: the lifted body is named orig_name; f_<entry> tail-calls the host function)
-                m.add(&fun, pf.orig_name);
+                m.add(fun, pf.orig_name);
                 let mut n = Vec::new();
                 sym(&mut n, &part.names, pf.name);
                 let n = String::from_utf8(n).expect("utf-8");
@@ -64,7 +79,7 @@ pub fn lift_part(meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bo
                 )
                 .unwrap();
             }
-            None => m.add(&fun, fname),
+            None => m.add(fun, fname),
         }
         m.defined.insert(fname);
         lifted += 1;
@@ -103,5 +118,6 @@ pub fn lift_part(meta: &Meta, code_targets: &HashSet<u64>, part: &Part, skip: bo
     let (head, mut body) = m.finish();
     body.extend_from_slice(&extra);
     write!(body, "\n; code pointer sites: {n_code}\n").unwrap();
-    Lifted { head, body, lifted, skipped }
+    w.body = body;
+    Lifted { head, lifted, skipped }
 }

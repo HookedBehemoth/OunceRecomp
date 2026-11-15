@@ -2,7 +2,7 @@
 //! --skip: a function using a template not ported yet is left out and counted ("skipped: template X").
 
 use ounce_lift::export::{read_meta, read_part};
-use ounce_lift::part::lift_part;
+use ounce_lift::part::{lift_part, Worker};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -90,7 +90,9 @@ fn main() {
     let total = Mutex::new((0usize, BTreeMap::<String, usize>::new(), 0f64, 0f64));
     std::thread::scope(|s| {
         for _ in 0..jobs.max(1) {
-            s.spawn(|| loop {
+            s.spawn(|| {
+            let mut w = Worker::default();
+            loop {
                 let k = next.fetch_add(1, Ordering::Relaxed);
                 if k >= names.len() {
                     break;
@@ -99,13 +101,13 @@ fn main() {
                 let part = read_part(dir, &names[k]).unwrap_or_else(|e| panic!("{e}"));
                 let tr = t.elapsed().as_secs_f64();
                 let t = Instant::now();
-                let l = lift_part(&meta, &targets, &part, skip);
+                let l = lift_part(&mut w, &meta, &targets, &part, skip);
                 let tl = t.elapsed().as_secs_f64();
                 {
                     use std::io::Write;
                     let mut file = std::fs::File::create(out.join(format!("{}.ll", names[k]))).unwrap();
                     file.write_all(&l.head).unwrap();
-                    file.write_all(&l.body).unwrap();
+                    file.write_all(&w.body).unwrap();
                 }
                 let mut g = total.lock().unwrap();
                 g.0 += l.lifted;
@@ -114,6 +116,7 @@ fn main() {
                 }
                 g.2 += tr;
                 g.3 += tl;
+            }
             });
         }
     });

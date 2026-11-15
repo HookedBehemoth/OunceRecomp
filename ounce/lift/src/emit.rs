@@ -603,9 +603,11 @@ pub struct Module<'n> {
 }
 
 impl<'n> Module<'n> {
-    /// insns: the module's instructions, to size the text's buffer (about 256 bytes of text per instruction)
-    pub fn new(names: &'n Names, flags_out: bool, insns: usize) -> Module<'n> {
-        let body = Vec::with_capacity(insns * 256);
+    /// body: the buffer the functions' text goes to (emptied; a worker passes the one of its last module);
+    /// insns: the module's instructions, to size it (about 256 bytes of text per instruction)
+    pub fn new(names: &'n Names, flags_out: bool, mut body: Vec<u8>, insns: usize) -> Module<'n> {
+        body.clear();
+        body.reserve(insns * 256);
         Module { names, body, decls: HashSet::new(), defined: HashSet::new(), flags_out }
     }
     pub fn add(&mut self, f: &Function, name: Sym) {
