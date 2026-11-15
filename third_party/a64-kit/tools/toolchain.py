@@ -16,7 +16,7 @@ def windows():
 def mingw(host=False):
     """(hookshot) HOOKSHOT_MINGW=<llvm-mingw folder>: Windows builds with that toolchain's clang, headers and libraries (the GNU ABI
     on the UCRT), as TotK Recomp's installer does: nothing of Visual Studio or the Windows SDK is needed. Empty: the MSVC target.
-    host: for a tool the build itself runs (zbic, a64emit), which a cross build makes for this PC, not for Windows"""
+    host: for a tool the build itself runs (zbic), which a cross build makes for this PC, not for Windows"""
     return os.environ.get("HOOKSHOT_MINGW", "") if windows() and not (host and os.name != "nt") else ""
 
 

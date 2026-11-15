@@ -1,5 +1,5 @@
-/* Lift 2's summary verification (milestone 14, nx2/lift2/mixed.py with HOOKSHOT_LIFT2_VERIFY=1): each summarised
-   function's generic entry calls lift2_check_enter before its body and lift2_check_exit after it, with its summary
+/* The lifter's summary verification (nx2/lift2/game.py with HOOKSHOT_LIFT_VERIFY=1): each summarised
+   function's entry calls lift2_check_enter before its body and lift2_check_exit after it, with its summary
    (sum: inputs, may-write, results, preserved masks over x0-x30 and SP, flags, guest address).
 
    At entry: the entry registers are saved; the registers the summary says are not read are poisoned

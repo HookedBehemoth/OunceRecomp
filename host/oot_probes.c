@@ -1,4 +1,4 @@
-/* Frame-rate and resolution patches of Ocarina of Time 1.1.1: the host side of lift 2's At probes (nx2/lift2/probes.py
+/* Frame-rate and resolution patches of Ocarina of Time 1.1.1: the host side of the lifter's At probes (nx2/lift2/probes.py
    AT, one row each: a guest instruction, the registers passed here, the register given the result). Plain values and
    guest addresses in, a value out; no guest context. Each is a runtime switch where it can be, so the game's own path
    stays reachable.

@@ -513,7 +513,7 @@ def t_sysreg(b, f, pc, p):
         elif name == "CNTFRQ_EL0":
             v = b.const(31250000)   # (the Switch 2's counter, host/mkw_glue.c a64_cntpct_host)
         elif name == "CTR_EL0":
-            v = b.const(0x8444C004)   # (suyu's dynarmic configuration, as the present lifter)
+            v = b.const(0x8444C004)   # (dynarmic's configuration, as suyu reports it)
         else:   # DCZID_EL0: DC ZVA clears 64 bytes
             v = b.const(4)
         setx(b, rt, v)
@@ -613,7 +613,7 @@ def t_ldstord(b, f, pc, p):
 
 def t_ldstex(b, f, pc, p):
     """LDXR/LDAXR, STXR/STLXR: the runtime's monitor (rt/a64_rt.c recomp_ldxr/recomp_stxr: the address, size and
-    value LDXR saw; STXR compare-and-swaps against that value), as the present lifter models them"""
+    value LDXR saw; STXR compare-and-swaps against that value), as the runtime's monitor models them"""
     size, rt, rn = f["size"], f["Rt"], f["Rn"]
     addr = getx(b, rn, 1, sp=True)
     n = b.const(1 << size, "i32")

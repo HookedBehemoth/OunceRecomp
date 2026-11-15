@@ -1179,7 +1179,7 @@ int main(void) {
 @unittest.skipUnless(sys.platform.startswith("linux") and have("clang"), "Linux and clang of the pinned LLVM major")
 class EntryHook(unittest.TestCase):
     def test_entry_hook(self):
-        """ENTRY_HOOK at lift 2's generic entry: the hook first; 1 returns at once, 0 runs the body (whose loop does not
+        """ENTRY_HOOK at the function's entry: the hook first; 1 returns at once, 0 runs the body (whose loop does not
         call it again: 2 calls for 2 runs)"""
         words = [0xd2800000, 0x91000400, 0xf100241f, 0x54ffffc3, 0xd65f03c0]   # mov x0,#0; add x0,x0,#1; cmp x0,#9; b.lo; ret
         base = 0x80001000

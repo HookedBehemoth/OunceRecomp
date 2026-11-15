@@ -1,7 +1,7 @@
 """A Frame rate cap above 60 steps the game by the frames' own time, so the game is not sped up.
 
 The engine's rate is a whole number of display intervals, 60 at most, and it puts 60 back over a higher one: with only the
-rate raised, every frame above 60 fps still stepped 1/60 s. lift 2's At probes (nx2/lift2/probes.py AT) give the
+rate raised, every frame above 60 fps still stepped 1/60 s. The lifter's At probes (nx2/lift2/probes.py AT) give the
 engine's two step divides the host's measured frame time (host/oot_probes.c hos_oot_frame_step, after each FDIV), and host/nn_vi.c realtime_step publishes it while the cap is above
 60 and the hook is in the build. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
 code differs keeps its own code (both divides or neither) and the build goes on with a message.

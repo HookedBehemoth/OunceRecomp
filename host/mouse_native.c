@@ -3,7 +3,7 @@
    smoothing and no top speed, in place of the mouse as the right stick (nn_hid.c's mouse_stick).
 
    Where the angles are: the player camera's update, f_80644c80 (a virtual method, the camera in x0), calls
-   hos_mouse_camera first (lift 2's At probe after its first instruction, nx2/lift2/probes.py AT), on the game's thread,
+   hos_mouse_camera first (the lifter's At probe after its first instruction, nx2/lift2/probes.py AT), on the game's thread,
    once a frame while that camera runs. The camera holds its pitch limits at +0x178 ({-85, 89} in the field), its pitch at +0x18c and its yaw at +0x1a4.
    The game turns them by the right stick in f_80649c10 (yaw, wrapped at 180) and f_8064b770 (pitch, within the limits),
    which f_80644c80 calls only while the stick is out of its dead zone (found with hardware write watchpoints on the two

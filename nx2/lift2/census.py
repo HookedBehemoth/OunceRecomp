@@ -1,10 +1,10 @@
-"""Which instruction forms the game's code uses, and which of them lifter 2's decoder covers.
+"""Which instruction forms the game's code uses, and which of them the lifter's decoder covers.
 
     python -I nx2/lift2/census.py [--out work/lift2/forms.txt]
 
 A form is llvm-mc's mnemonic plus the operand shape: register classes (X, W, SP, V.<arrangement>, Q/D/S/H/B),
 immediates as #i, addressing modes kept. Every word of each module's .text is counted (the little data in .text
-included). The classes follow docs/lifter2-design.md section 3; the integer classes are the ones milestones 1-2
+included). The classes follow docs/lifter.md section 3; the integer classes are the ones milestones 1-2
 cover. Writes one line per form (count, class, covered, form, an example) and prints the coverage per class.
 """
 import argparse

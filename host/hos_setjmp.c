@@ -7,8 +7,8 @@
    have returned by then: 0x81681670 is a wrapper that returns setjmp's result, which works on the console because
    its stack frame is still intact when longjmp comes back to it.
 
-   So the lifter (a64_lift.py find_setjmp_owners) makes each setjmp return address an entry, and wraps every call of
-   a function that calls setjmp (its "owner") as
+   So the discovery (nx2/lift2/discover.py find_setjmp_owners) makes each setjmp return address an entry, and every
+   call of a function that calls setjmp (its "owner") goes through hos_sj_call (below), which does
 
        { void **sj = recomp_sj_push(c, r0..r3); if (recomp_sj_setjmp(sj) == 0) f_owner(c);
          else a64_icall(c, recomp_sj_target(sj)); recomp_sj_pop(sj); }
@@ -89,7 +89,7 @@ void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3
     return s->buf;
 }
 
-/* lift 2's call of a setjmp owner (nx2/lift2/mixed.py sjcall_<owner>): the present lifter's block around the call, in this
+/* the lifted code's call of a setjmp owner (nx2/lift2/game.py sjcall_<owner>): a block around the call, in this
    frame, which is alive while the owner runs; a longjmp to the owner's setjmp comes back here and runs the owner's code from
    the return address */
 void hos_sj_call(Ctx *c, void (*f)(Ctx *), uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3) {

@@ -2,7 +2,7 @@
 
 The game's movie player counts its updates while a movie plays, and a cutscene that shows a movie places its narration, its
 rumble and its end by that count. The movie's picture and sound follow the clock, so at 120 fps the cues came twice too early:
-narration lines started over each other. lift 2's At probe (nx2/lift2/probes.py AT) makes the count's step hos_movie_frames(player)
+narration lines started over each other. The lifter's At probe (nx2/lift2/probes.py AT) makes the count's step hos_movie_frames(player)
 (host/oot_probes.c hos_oot_movie_count after the update's add w8, w8, #1, which takes the one back), and host/nn_vi.c
 answers 1 while the host gives no frame time (a cap of 60: as shipped) and the frames' time in 60ths, the rest carried to the
 player's next update, while it does (HOS_FPS_MOVIE=0: 1 then too, for comparisons). A game version whose code differs keeps

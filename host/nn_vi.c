@@ -285,7 +285,7 @@ uint32_t hos_movie_frames(uint64_t player) {
     ReleaseSRWLockExclusive(&lock);
     return movie_log(n);
 }
-/* (lift 2's Value probes, nx2/lift2/probes.py) the whole frames a game counter at `at` takes for an amount of the frame
+/* (the lifter's Value probes, nx2/lift2/probes.py) the whole frames a game counter at `at` takes for an amount of the frame
    step: with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
 #include "frame_whole.h"
 static FrameWhole frame_whole_state;

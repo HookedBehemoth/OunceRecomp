@@ -1,4 +1,4 @@
-"""The AArch64 encodings lifter 2 decodes, as data, and the decoder built from them.
+"""The AArch64 encodings the lifter decodes, as data, and the decoder built from them.
 
 Each entry of ENCODINGS is (name, pattern, template, params, valid):
 - pattern: the 32 bits from bit 31 down, as space-separated tokens: a run of literal bits ("100010") or a field

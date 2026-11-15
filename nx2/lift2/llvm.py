@@ -1,4 +1,4 @@
-"""The LLVM tools lifter 2 depends on, pinned to one major version.
+"""The LLVM tools the lifter depends on, pinned to one major version.
 
 The emitter writes textual LLVM IR, whose syntax is only guaranteed for the LLVM major it was written for, and the
 Linux clang and the pinned llvm-mingw must read the same IR. check() refuses any other major with a message that says
@@ -41,11 +41,11 @@ def check(name="clang"):
         return _checked[name]
     path = tool(name)
     if path is None:
-        raise VersionError("lift2: %s not found (LLVM %d is needed; HOOKSHOT_LLVM_BIN names its bin folder)"
+        raise VersionError("lift: %s not found (LLVM %d is needed; HOOKSHOT_LLVM_BIN names its bin folder)"
                            % (name, PINNED_MAJOR))
     got = major(path)
     if got != PINNED_MAJOR:
-        raise VersionError("lift2: %s is LLVM %s, but the emitted IR is written for LLVM %d. Install LLVM %d "
+        raise VersionError("lift: %s is LLVM %s, but the emitted IR is written for LLVM %d. Install LLVM %d "
                            "(HOOKSHOT_LLVM_BIN=<its bin folder>), or move nx2/lift2/llvm.py PINNED_MAJOR and check "
                            "the emitter against the new version's IR syntax." % (path, got, PINNED_MAJOR, PINNED_MAJOR))
     _checked[name] = path

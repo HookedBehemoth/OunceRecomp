@@ -1,7 +1,7 @@
 """Hot lifted functions from an all-thread sample (HOS_SAMPLE_ALL, scripts/crit.py): for each sample of a game thread
 running in hookshot.exe (on Linux hookshot), the innermost lifted function (f_...) is charged. Writes the functions that make up the
-first <share> of those samples, hottest first, one a line, for the lift's A64_HOT_FUNCS (their FP ops call the
-helpers' inline fast paths; with A64_HOT_CHUNK=1 they are compiled together in code_hot.c).
+first <share> of those samples, hottest first, one a line, for the build's hot partitions (work/hot_funcs_play.txt:
+nx2/lift2/game.py compiles them at -O2).
 
     python -I scripts/hotlist.py work/runs/<run>_all.txt <out> [share 0.85] [max 1500]
 """
@@ -43,7 +43,7 @@ for n, k in c.most_common():
     out.append(n)
     acc += k
 # (the game's Zstd decoder: the job loop's f_80115bf0 -> f_80115c80 tree. It runs while areas load and stream, which a play
-# profile seldom samples, so it fell to the cold -O1 chunks. At the hot flags a whole decode takes 16% less time and the
+# profile seldom samples, so it fell to the cold -O1 partitions. At the hot flags a whole decode takes 16% less time and the
 # code is no bigger; the functions match Unicorn on every register and written page either way. Listed whatever the profile says)
 ZSTD_DECODER = ("f_80115c80 f_80109790 f_80113880 f_80116490 f_801099a0 f_8010b160 f_8010ffc0 f_801102e0 f_80110860 "
                 "f_801117a0 f_80112880 f_80113080 f_801156e0 f_80115880 f_8010ad60 f_834ab610 f_834abda0 f_834ab4a0 "
