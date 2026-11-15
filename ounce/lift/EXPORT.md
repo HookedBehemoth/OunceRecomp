@@ -215,14 +215,16 @@ changed what the lift emits. What the export adds for it (format 2):
                                          a64_hooks.c, a64_code_slots.c, a64_stubs.c, hos_image.c, nvn2_exports.c,
                                          functions.txt
     work/ounce/golden/rt64/<file>.zst    a64.h, a64_rt.c (nx2/rtgen.py: the build writes them before compiling)
-    work/ounce/golden/image/<file>.zst   image.json, functions.json (the lift's image description and function list)
+    work/ounce/golden/reference/image/<file>.zst   image.json, functions.json: not compile inputs (below)
 
 The golden is everything generated before the compile of a standalone lift and build, of the lift whose LIFT_OK
-meta.json records (`lift`) and the dump in `dump` (game.json: build id, main's sha256); `files` holds every included
-file's sha256 (uncompressed). Not included: `image/image.bin` (the guest image, data hookshot loads at run time: its
-sha256 in `files`), the plan and summary pickles (the lift's hand-off to the build: their content is in the IR), the
-host's C, a64-kit's, the direct back end's and third-party sources (checked in, not generated), and the version stamp
-`build.py` passes to hos_main.c alone.
+meta.json records (`lift`) and the dump in `dump` (game.json: build id, main's sha256). `files` gates the compile
+inputs: the sha256 (uncompressed) of every file under gen/ and rt64/, and of `image/image.bin`, the run-time image
+hookshot loads (by its sha256 alone: the file is not in the golden). `reference` lists reference/image/image.json and
+functions.json with their sha256, not gated: the image stage's intermediate data, which nothing reads at run time (the
+Rust pipeline keeps it in memory), kept to check that stage against. Not included at all: the plan and summary pickles
+(the lift's hand-off to the build: their content is in the IR), the host's C, a64-kit's, the direct back end's and
+third-party sources (checked in, not generated), and the version stamp `build.py` passes to hos_main.c alone.
 
 `ounce/lift/tools/compare.py <dir of Rust .ll>` compares `<dir>/<name>.ll` against the golden, per partition (and
 `lift_answers`).
