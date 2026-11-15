@@ -1,7 +1,6 @@
-"""A lifted program with no present lifter in the path (milestone 19, step 4): lift 2's discovery, IR and LLVM emission,
-its runtime tables (nx2/lift2/tables.py) and the generated runtime (nx2/rtgen.py: a64.h, a64_rt.c), compiled and run.
-The guest calls through a64_icall and a64_lookup, a jump table, a PAC return, a tail call and a PLT stub; nothing of
-third_party/a64-kit/lift is imported (checked). No dump.
+"""A lifted program end to end, as the game's build makes it: the discovery, IR and LLVM emission, the runtime's tables
+(nx2/lift2/tables.py) and the generated runtime (nx2/rtgen.py: a64.h, a64_rt.c), compiled and run. The guest calls
+through a64_icall and a64_lookup, a jump table, a PAC return, a tail call and a PLT stub. No dump.
 
 python -I -B tests/test_lift2_nolift1.py
 """
@@ -48,8 +47,8 @@ int main(void) {
 """
 
 
-class NoLift1(unittest.TestCase):
-    def test_runs_without_the_present_lifter(self):
+class Program(unittest.TestCase):
+    def test_runs(self):
         img = T.Image()
         D = discover.Discovery(img)
         D.discover()
@@ -62,7 +61,6 @@ class NoLift1(unittest.TestCase):
             m.add(fn)
             extra.append("define void @f_%08x(ptr %%ctx) {\n  musttail call void @g_%08x(ptr %%ctx)\n  ret void\n}"
                          % (e, e))
-        self.assertFalse([n for n in sys.modules if n in ("a64_lift", "a64emit", "a64_rtgen", "insn", "lift_fixes")])
         with tempfile.TemporaryDirectory() as d:
             rt = rtgen.write(os.path.join(d, "rt64"))
             tables.write(d, D.funcs, {})

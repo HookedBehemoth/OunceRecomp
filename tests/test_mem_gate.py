@@ -1,12 +1,10 @@
 """The compile's memory gate (nx2/build.py MemoryGate): a compile waits while the memory free, less what the compilers running may
-still take, would not hold it; the floor's few always run; a compile that ends lets the next start. mem_need counts a giant function for more
-than its bytes, and the free memory reads on this OS.
+still take, would not hold it; the floor's few always run; a compile that ends lets the next start; and the free memory
+reads on this OS.
 
 python -I -B tests/test_mem_gate.py
 """
-import os
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -14,15 +12,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
 import build  # noqa: E402
-
-PREAMBLE = '#include "a64.h"\nvoid f_90000000(Ctx *A64_NOESC);\n'
-
-
-def function(addr, size):
-    head = "void f_%08x(Ctx *__restrict A64_NOESC c) {\n" % addr
-    line = "c->x[1] = c->x[2] + 1;\n"
-    return head + line * max(1, (size - len(head) - 2) // len(line)) + "}\n"
-
 
 def check(what, ok):
     if not ok:
@@ -33,16 +22,7 @@ def main():
     free = build.free_mb()
     check("the free memory reads (%r)" % free, isinstance(free, int) and free > 0)
 
-    with tempfile.TemporaryDirectory(prefix="hookshot-mem-gate-") as d:
-        small = os.path.join(d, "code_000.c")
-        Path(small).write_text(PREAMBLE + "".join(function(0x80000000 + 16 * i, 4000) for i in range(500)), newline=chr(10))
-        giant = os.path.join(d, "code_001.c")
-        Path(giant).write_text(PREAMBLE + function(0x81000000, 2000000), newline=chr(10))
-        hot = os.path.join(d, "code_hot_0.c")
-        Path(hot).write_text(PREAMBLE + function(0x82000000, 4000), newline=chr(10))
-        a, b = build.mem_need(small), build.mem_need(giant)
-        check("a giant function counts for more than plain code of its size (%d, %d MB)" % (a, b), b > a + 200)
-        check("a hot piece's need is not its size (%d MB)" % build.mem_need(hot), build.mem_need(hot) >= 1000)
+    check("a C++ file needs more than a C file", build.mem_need("x.cpp") > build.mem_need("x.c"))
 
     real = build.free_mb
     try:

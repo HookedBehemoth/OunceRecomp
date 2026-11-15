@@ -1,4 +1,4 @@
-"""host/hos_fp.c without the game: MXCSR follows the guest FPCR, the MRS/MSR FPCR/FPSR helpers lift 2 calls, the
+"""host/hos_fp.c without the game: MXCSR follows the guest FPCR, the MRS/MSR FPCR/FPSR helpers the lifted code calls, the
 FRECPE/FRSQRTE routines, and MXCSR across a fiber switch (host/posix/win32_posix.c's fibers, cut out of the file,
 switched the way host/hos_thread.c's fiber_switch does it, which this test also checks by text).
 
@@ -152,16 +152,6 @@ class Text(unittest.TestCase):
         self.assertTrue(re.search(r"SwitchToFiber\([^;]*\);\s*(/\*.*?\*/\s*)?a64_fpcr_sync\(from\);", sw, re.S),
                         "fiber_switch: MXCSR of `from` when it runs again")
         self.assertIn("to->ctx.fpcr = from->fpcr;", sw)
-
-    def test_old_lift_msr_patched(self):
-        src = read(os.path.join(ROOT, "third_party", "a64-kit", "lift", "a64_lift.py"))
-        ns = {"re": re}
-        a = src.index("FPCR_WRITE = ")
-        exec(src[a:src.index("def op_text", a)], ns)
-        t = "    c->fpcr = (c->x[8] & 0xffffffffULL) | (c->fpcr & RECOMP_FPX_INHIBIT);\n    c->fpsr = c->x[1];"
-        out = ns["fp_mode_sync"](t)
-        self.assertIn("RECOMP_FPX_INHIBIT); a64_fpcr_sync(c);", out)
-        self.assertIn("c->fpsr = c->x[1]; a64_fpsr_sync(c);", out)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and cc() and os.uname().machine == "x86_64",

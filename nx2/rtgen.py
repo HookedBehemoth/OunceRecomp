@@ -6,7 +6,7 @@ regions. With A64_ADDR64 (defined by the generated header) an access is `A64_MEM
 whole 39-bit space (Eden's fastmem arena, or our own), and lookups of code addresses refuse anything above 4 GB
 instead of truncating it (code always lies below: Eden loads it at 0x80000000).
 
-It also adds the interrupt flag and A64_POLL that nx2/poll.py's loop-header polls use.
+It also adds the interrupt flag the lifted loops' polls read, and a64_poll_cur.
 
 The changes are text substitutions on the vendored files, each required to match exactly once, so a refreshed
 a64-kit that moved these lines fails here loudly instead of silently keeping the 32-bit window.
@@ -16,24 +16,11 @@ import os
 import kit
 
 POLL_DECL = r"""
-/* (nx2/poll.py) loop back-edge interrupt polls: A64_POLLING builds clear c->poll and call a64_poll_cur, the backend's,
-   when it is set. The call is handed nothing on purpose: the context parameter is noescape (A64_NOESC) and never
-   captured, so a call with no pointer argument cannot touch *c, and the compiler keeps guest registers in host registers
-   across the loop. (a64_poll(c), the old form, made every loop body reload and store them: a call that takes c may change
-   any of it.) The poll sits before the backward goto, after the body's stores: at the loop header, a call C cannot mark
-   as returning (LLVM's willreturn) left the stores after it not guaranteed to execute, and nothing was promoted.
-   a64_poll_cur finds the thread's context itself (host/mkw_glue.c, hos_ctx). A64_POLL_CTX keeps the old form for the
-   emulator-hosted DLL (nx2/rt/eden_shim.c), whose host's poll takes the context. */
-void a64_poll(Ctx *A64_NOESC c);
-void a64_poll_cur(void);
-#if defined(A64_POLLING) && defined(A64_POLL_CTX)
-#define A64_POLL(c) do { if (__builtin_expect(__atomic_load_n(&(c)->poll, __ATOMIC_RELAXED) != 0, 0)) a64_poll(c); } while (0)
-#elif defined(A64_POLLING)
-#define A64_POLL(c) do { if (__builtin_expect(__atomic_load_n(&(c)->poll, __ATOMIC_RELAXED) != 0, 0)) { \
-    __atomic_store_n(&(c)->poll, 0, __ATOMIC_RELAXED); a64_poll_cur(); } } while (0)
-#else
-#define A64_POLL(c) ((void)0)
-#endif"""
+/* (nx2/rtgen.py) the loop back edges' interrupt polls (the lifter's lift2_poll): the context's poll is cleared and
+   a64_poll_cur, the host's, called when it is set. It is handed nothing on purpose: the context parameter is noescape
+   (A64_NOESC) and never captured, so a call with no pointer argument cannot touch *c, and the compiler keeps guest
+   registers in host registers across the loop. a64_poll_cur finds the thread's context itself (host/mkw_glue.c). */
+void a64_poll_cur(void);"""
 
 ADDR64 = r"""#ifndef A64_ADDR64
 #define A64_ADDR64 1   /* (nx2/rtgen.py: 64-bit guest window) */
@@ -71,9 +58,6 @@ SUBST = {
         (RET_MISMATCH, RET_MISMATCH + POLL_DECL),
         ("#define A64_PTR(a) (A64_MEM + (uint32_t)(a))", ADDR64),
         (MARK_NATIVE, MARK_NATIVE_64),
-        # (the present lifter's headers, written by its lift beside its C: only a build with present-lifter C has them)
-        ('#include "a64_suyu.h"\n#include "a64_fpx.h"\n', '#if __has_include("a64_suyu.h")   /* (nx2/rtgen.py) */\n'
-         '#include "a64_suyu.h"\n#endif\n#if __has_include("a64_fpx.h")\n#include "a64_fpx.h"\n#endif\n'),
     ],
     "a64_rt.c": [
         (LOOKUP, "#if A64_ADDR64\n    if (addr >> 32) return NULL;   /* (code lies below 4 GB: never a truncated match) */\n"

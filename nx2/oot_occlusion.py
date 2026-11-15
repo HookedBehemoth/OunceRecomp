@@ -1,4 +1,4 @@
-"""Occlusion Off for Ocarina of Time 1.1.1: C added after six instructions of the game (a64_lift.py Lifter.after).
+"""Occlusion Off for Ocarina of Time 1.1.1: C added after six instructions of the game (Discovery.after: the lifter calls it).
 
 The game decides at six places whether to make its z-prepass occlusion queries and its samples-passed queries, each by a
 byte it loads (ldrb w8, [x0]). With hos_occlusion_off set (HOOKSHOT_OCCLUSION_OFF=1), that byte reads 0: the game makes

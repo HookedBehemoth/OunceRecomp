@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # A new lift of the game and the build on it, for the checkout this copy of the script is in (the main checkout or an agent's
-# worktree). Needed after a change to the lifter (third_party/a64-kit/lift, nx2/lift.py, chunks.py) or to a lift-time patch
-# that the lifted C as it stands cannot take (scripts/play-refresh.sh makes the game's patches and entry hooks in it without a
-# lift). The mixed build by default (lift 2 for every function it can take, docs/lifter2-design.md 14d; HOOKSHOT_LIFT2=0:
-# the present lifter's alone). About 5 minutes of lift and 9 minutes of build here (8 jobs).
+# worktree). Needed after a change to the lift (nx2/lift.py, nx2/lift2/discover.py, the lift-time patch sources); a change
+# to the lifter itself needs only a build (the plan holds instructions, not lifted code; scripts/play-refresh.sh lifts again
+# by itself when the lift's inputs changed). About 1.5 minutes of lift and 2-5 minutes of build here (6 jobs; the lifted
+# partitions come from the object cache when their inputs are unchanged).
 #
 #   scripts/relift.sh
 #
 # Stops when a game runs from this checkout's work/sa/build. The hot set: work/hot_funcs_play.txt, else work/hot_funcs.txt
-# (one f_<address> a line, from game profiles; it stays in work/), lifted as A64_HOT_FUNCS with A64_HOT_CHUNK=1 (code_hot.c,
-# built at -O2; nx2/build.py splits it into pieces first). In the main checkout on native-vk the build is
+# (one f_<address> a line, from game profiles; it stays in work/): its functions' partitions are built at -O2
+# (nx2/lift2/game.py). In the main checkout on native-vk the build is
 # scripts/play-refresh.sh's (it writes work/sa/build/BUILD.txt last), else nx2/build.py here. Log: work/play/relift.log in the
 # main checkout, work/sa/relift.log in a worktree (its work/play is the main checkout's).
 set -uo pipefail
@@ -44,18 +44,14 @@ start=$(date +%s)
     (
         exec 9>"$bd/.build.lock"; flock 9
         rm -f "$bd/BUILD.txt"
-        if [ -n "$hot" ]; then
-            A64_HOT_FUNCS=$hot A64_HOT_CHUNK=1 work/venv/bin/python -I -u nx2/lift.py --standalone --write
-        else
-            work/venv/bin/python -I -u nx2/lift.py --standalone --write
-        fi
+        work/venv/bin/python -I -u nx2/lift.py --standalone --write
     ) || { echo "relift: the lift failed"; exit 1; }
     echo "lift: $(( $(date +%s) - start )) s"
 } >> "$log" 2>&1 || { echo "relift: the lift failed (see $log)"; exit 1; }
 
 b0=$(date +%s)
 if [ -n "$play" ]; then
-    # (play-refresh.sh: the patches and hooks again (already there: left alone), the build, BUILD.txt last; it writes its own log)
+    # (play-refresh.sh: the build, BUILD.txt last; it writes its own log)
     "$root/scripts/play-refresh.sh" >> "$log" 2>&1 || { echo "relift: the build failed (see $log and work/play/refresh.log)"; exit 1; }
 else
     { exec 9>"$bd/.build.lock"; flock 9

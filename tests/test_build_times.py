@@ -63,7 +63,6 @@ class EstimateTests(unittest.TestCase):
             seconds = build.per_file_seconds(jobs, {})
             self.assertEqual(len(seconds), 3)
             self.assertTrue(all(seconds))
-            self.assertGreater(seconds[0], seconds[1])   # (the hot file's rate is the highest)
 
     def test_a_broken_record_is_no_estimate(self):
         with tempfile.TemporaryDirectory() as d:

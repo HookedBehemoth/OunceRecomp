@@ -1,6 +1,5 @@
-"""Lift 2's discovery (nx2/lift2/discover.py) against the present lifter's (third_party/a64-kit/lift/a64_lift.py with
-nx2/insn.py and nx2/lift_fixes.py installed, as nx2/lift.py runs it) on a synthetic image: calls, a tail call, a
-jump table, a RETAB, a PLT stub. No dump.
+"""The discovery (nx2/lift2/discover.py) on a synthetic image: calls, a tail call, a byte jump table, a RETAB, a PLT
+stub. No dump.
 
 python -I -B tests/test_lift2_discover.py
 """
@@ -11,7 +10,6 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
-sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "lift"))
 from lift2 import discover  # noqa: E402
 
 BASE = 0x80000000
@@ -54,21 +52,6 @@ class Image:
 
 
 class Discover(unittest.TestCase):
-    def test_same_as_the_present_lifter(self):
-        try:
-            import a64_lift
-            import insn
-            import lift_fixes
-        except Exception as e:   # (the present lifter needs its translator library; gone after milestone 19)
-            self.skipTest("the present lifter does not load here: %s" % e)
-        insn.install()
-        lift_fixes.install()
-        L = a64_lift.Lifter(Image())
-        L.discover()
-        D = discover.Discovery(Image())
-        D.discover()
-        self.assertTrue(discover.compare(L, D))
-
     def test_facts(self):
         D = discover.Discovery(Image())
         D.discover()

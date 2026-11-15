@@ -1,28 +1,20 @@
-"""The lift driver: image (we are rtld) -> function discovery -> C, on the vendored a64-kit plus the Switch 2
-additions (nso2: DT_RELR, insn: ARMv8.1-8.5 forms, lift_fixes: jump tables).
+"""The lift: image (we are rtld) -> function discovery -> the plan the build lifts (nx2/lift2/game.py).
 
 Usage:  python -I nx2/lift.py [--exefs <dir>] [--work <dir>] [--write] [--max-func N] [--layout eden|a64] [--aslr 0]
-  --layout eden (default): Eglantine's addresses, rtld included, from 0x80000000 + --aslr (image.py; an emulator
-           run must use the same offset: rng_seed_enabled=true, rng_seed=<aslr >> 12>);
+  --layout eden (default): Eglantine's addresses, rtld included, from 0x80000000 + --aslr (image.py);
   --layout a64: a64-kit's own layout from 0x08000000 (its native runtime, below 4 GB)
-  Always: builds <work>/image (image.bin, image.json), discovers every function of rtld-less main + subsdk* + sdk,
-          and prints coverage: functions, instructions, jump tables, indirect branches, and the functions whose every
-          instruction translates (coverage.txt has the untranslated words by site count).
-  --write: also writes the lifted C to <work>/gen (about a gigabyte; game code: stays local, never committed).
-  --standalone: the standalone build's lift (<work>/sa/image, <work>/sa/gen): the SDK's OS-facing functions hooked
-           to the native runtime in host/ or to generated stubs, plus hos_image.c (nx2/standalone.py). It shares the
-           chunk boundaries of <work>/image, so its unhooked chunks are the emulator build's, byte for byte.
+  Always: builds <work>/image (image.bin, image.json), discovers every function of rtld-less main + subsdk* + sdk
+          (nx2/lift2/discover.py) and writes the plan (<work>/plan.pickle: every function's instructions and the
+          program's facts).
+  --write: also writes <work>/gen: the runtime's tables (a64_table.c, a64_hooks.c) and functions.txt.
+  --standalone: the standalone build's lift (<work>/sa): the SDK's OS-facing functions hooked to the native runtime
+           in host/ or to generated stubs, plus hos_image.c, a64_stubs.c and nvn2_exports.c (nx2/standalone.py).
 """
 import argparse
-import collections
-import glob
 import json
 import os
-import struct
 import sys
 import time
-
-import capstone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
 import kit
@@ -33,89 +25,12 @@ import nso
 import nx_image
 import image as eden_image
 
-# No present lifter in the path, not even imported (the default since milestone 19): lift 2's discovery, plan and
-# runtime tables only. Its functions must be none (nx2/lift2/owned.py), or HOOKSHOT_LIFT1_TRAP=1 makes each a trap.
-# HOOKSHOT_LIFT1=1: the present lifter as before (until its deletion).
-LIFT1 = os.environ.get("HOOKSHOT_LIFT1", "0") != "0"
-if LIFT1:
-    import insn
-    import lift_fixes
-    import chunks
-    import poll
-    import a64emit
-    import a64_lift
-    import a64_rtgen
-    insn.install()
-    lift_fixes.install()
-
 
 def module_of(img, pc):
     for lo, hi, name in img.code:
         if lo <= pc < hi:
             return name
     return "?"
-
-
-def coverage(L, img, out_dir):
-    """Per-module: functions, instructions, untranslated words; and the share of functions that translate fully."""
-    keys = {}
-    for body, _ in L.funcs.values():
-        for pc, (k, w) in body.items():
-            if k[0] == "op":
-                keys.setdefault(w, pc)
-    words = list(keys)
-    _, flags = a64emit.translate([(keys[w], w) for w in words])
-    bad = {w for w, f in zip(words, flags) if f & a64emit.UNHANDLED}
-    # UDF and unallocated encodings trap on the hardware too (code falls into them after noreturn calls): the
-    # lifter's trap is their exact translation, so they do not count against coverage
-    md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
-    undefined = set()
-    for w in bad:
-        ins = next(md.disasm(struct.pack("<I", w), 0), None)
-        if ins is None or ins.mnemonic == "udf":
-            undefined.add(w)
-    bad -= undefined
-    per = collections.defaultdict(collections.Counter)
-    sites = collections.Counter()
-    for e, (body, _) in L.funcs.items():
-        m = module_of(img, e)
-        n_bad = 0
-        for pc, (k, w) in body.items():
-            if k[0] == "op" and w in bad:
-                n_bad += 1
-                sites[w] += 1
-            elif k[0] == "op" and w in undefined:
-                per[m]["undefined"] += 1
-        kinds = collections.Counter(k[0] for k, _ in body.values())
-        c = per[m]
-        c["functions"] += 1
-        c["instructions"] += len(body)
-        c["untranslated"] += n_bad
-        c["complete"] += n_bad == 0
-        c["leaf"] += not (kinds["bl"] or kinds["blr"] or kinds["svc"])
-        c["indirect_br"] += sum(1 for pc, (k, _) in body.items() if k[0] == "br" and pc not in L.jt)
-        c["blr"] += kinds["blr"]
-    total = collections.Counter()
-    lines = ["module    functions  complete   leaf      instructions  untranslated  BLR       BR(not table)"]
-    for m in sorted(per, key=lambda m: -per[m]["instructions"]):
-        c = per[m]
-        total.update(c)
-        lines.append("%-8s  %9d  %6.2f%%  %8d  %12d  %12d  %8d  %8d" % (
-            m, c["functions"], 100.0 * c["complete"] / c["functions"], c["leaf"], c["instructions"], c["untranslated"],
-            c["blr"], c["indirect_br"]))
-    lines.append("%-8s  %9d  %6.2f%%  %8d  %12d  %12d  %8d  %8d" % (
-        "all", total["functions"], 100.0 * total["complete"] / total["functions"], total["leaf"],
-        total["instructions"], total["untranslated"], total["blr"], total["indirect_br"]))
-    lines.append("undefined encodings reached (UDF, unallocated: trap, as on the hardware): %d sites" % total["undefined"])
-    lines.append("translated instructions: %.4f%% of %d (shared tails counted once per function)" % (
-        100.0 - 100.0 * total["untranslated"] / max(1, total["instructions"]), total["instructions"]))
-    print("\n".join(lines))
-    with open(os.path.join(out_dir, "coverage.txt"), "w") as f:
-        f.write("\n".join(lines) + "\n\nuntranslated words by site count\n")
-        f.write("".join("%08x %d\n" % (w, n) for w, n in sites.most_common()))
-    return total
-
-
 
 
 def main():
@@ -127,8 +42,6 @@ def main():
     p.add_argument("--max-func", type=int, default=0)
     p.add_argument("--layout", choices=("eden", "a64"), default="eden")
     p.add_argument("--aslr", type=lambda v: int(v, 0), default=0)
-    p.add_argument("--no-polls", action="store_true", help="no loop-header interrupt polls (nx2/poll.py)")
-    p.add_argument("--rechunk", action="store_true", help="chunk boundaries from the sizes again (nx2/chunks.py)")
     p.add_argument("--standalone", action="store_true", help="the standalone build's lift (nx2/standalone.py)")
     p.add_argument("--entries", help="extra entry addresses, one hex address a line (e.g. the misses ArmRecomp logged)")
     p.add_argument("--no-adr-entries", action="store_true",
@@ -165,11 +78,8 @@ def main():
         img.entries |= new
         print("ADR / ADRP+ADD code addresses outside the %d unwind-covered functions: %d, %d of them new entries" % (
             len(spans), len(refs), len(new)))
-    if LIFT1:
-        L = a64_lift.Lifter(img)
-    else:   # (lift 2's discovery is the program's facts; it has no emitter)
-        from lift2 import discover
-        L = discover.Discovery(img)
+    from lift2 import discover, game, tables
+    L = discover.Discovery(img)
     if a.standalone:   # (hookshot) widescreen and ultrawide: C after a few of the game's instructions
         import oot_wide
         oot_wide.install(L, img)
@@ -177,30 +87,8 @@ def main():
         oot_jitter.install(L, img)
         import oot_occlusion   # (no occlusion queries when HOOKSHOT_OCCLUSION_OFF=1: Fritchii's Occlusion Off)
         oot_occlusion.install(L, img)
-    # the functions: lift 2's discovery (nx2/lift2/discover.py, the default), the present lifter's (HOOKSHOT_DISCOVERY=
-    # lift1), or both compared (=check: lift 2's report of every difference; the present lifter's result is used)
-    how = os.environ.get("HOOKSHOT_DISCOVERY", "lift2")
-    if not LIFT1:
-        td = time.time()
-        L.discover(max_insns=a.max_func)
-        print("discovery (lift 2): %d functions (%.0fs)" % (len(L.funcs), time.time() - td))
-        how = None
-    if how in ("lift1", "check"):
-        L.discover(max_insns=a.max_func)
-    if how in ("lift2", "check"):
-        from lift2 import discover
-        td = time.time()
-        D = discover.Discovery(img)
-        D.discover(max_insns=a.max_func)
-        print("discovery (lift 2): %d functions (%.0fs)" % (len(D.funcs), time.time() - td))
-        if how == "check":
-            ok = discover.compare(L, D)
-            print("discovery check: %s" % ("the same" if ok else "DIFFERENT (above)"), flush=True)
-        else:
-            discover.adopt(L, D)
-        del D
+    L.discover(max_insns=a.max_func)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
-    total = coverage(L, img, img_dir) if LIFT1 else None
     jt = L.stats
     print("jump tables %d (bounded %d, bounded by function %d, ADR table %d), BR without a table %d, PLT stubs %d" % (
         len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
@@ -210,40 +98,18 @@ def main():
         print("  BR without a table: %#x (x%d)" % (pc, reg))
     with open(os.path.join(img_dir, "functions.json"), "w") as f:
         json.dump({"%x" % e: [len(b), module_of(img, e)] for e, (b, _) in L.funcs.items()}, f)
-    from lift2 import mixed
-    if mixed.spec():   # (the mixed build, the default: what lift 2 needs, nx2/lift2/mixed.py; HOOKSHOT_LIFT2=0: none)
-        bodies = mixed.write_plan(L, img, os.path.join(out_dir, "lift2_plan.pickle"))
-        if a.write and not os.environ.get("HOOKSHOT_LIFT1_ALL"):   # (the present lifter writes only what it owns)
-            from lift2 import owned
-            sp = mixed.spec()
-            listed = None if sp == "all-safe" else {int(l.split()[0], 16) for l in open(sp)
-                                                    if l.strip() and not l.startswith("#")}
-            L.only, predicted = owned.compute({e: b for e, (b, _) in L.funcs.items()}, bodies,
-                                              os.path.join(out_dir, "gen"), listed)
-            owned.save(out_dir, L.only, predicted, owned.hot_list())
-            print("present lifter: %d of %d functions are its own (%d with host edits); lift 2 has the rest" % (
-                len(L.only), len(L.funcs), len(predicted)), flush=True)
-        elif a.write:
-            from lift2 import owned
-            if os.path.exists(os.path.join(out_dir, owned.FILE)):
-                os.remove(os.path.join(out_dir, owned.FILE))
-        del bodies
-    if a.write and not LIFT1:
-        write_without_lift1(L, img, meta, a, out_dir, t0)
-        lift_mark.done(out_dir)
-    elif a.write:
-        if not a.no_polls:
-            poll.install()
+    game.write_plan(L, img, os.path.join(out_dir, "plan.pickle"), game.hot_list(a.work))
+    if a.write:
         gen = os.path.join(out_dir, "gen")
-        L.write_tables = False   # (lift 2's side writes the runtime's tables: nx2/lift2/tables.py)
-        from lift2 import owned, tables
         os.makedirs(gen, exist_ok=True)
+        for f in os.listdir(gen):   # (C an earlier lift wrote that this one does not)
+            if f not in ("a64_table.c", "a64_hooks.c", "a64_stubs.c", "hos_image.c", "nvn2_exports.c", "functions.txt"):
+                p = os.path.join(gen, f)
+                if os.path.isfile(p):
+                    os.remove(p)
         tables.write(gen, L.funcs, L.hooks)
-        owned.write_traps(gen, set())   # (a HOOKSHOT_LIFT1=0 lift's traps go: the present lifter defines its functions)
-        files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
-                             counters=[] if a.no_polls else [poll.stats])
-        chunks.edit_c(gen, L.stats)
-        a64_rtgen.write(gen)
+        with open(os.path.join(gen, "functions.txt"), "w") as f:
+            f.write("".join("%08x %d\n" % (e, len(L.funcs[e][0])) for e in sorted(L.funcs)))
         if a.standalone:
             start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
             print("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
@@ -251,46 +117,9 @@ def main():
             nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
             standalone.write_nvn_exports(gen, nvn)
             print("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
-        L.report()
-        print("interrupt polls: %d loop headers in %d functions" % (poll.stats["polls"], poll.stats["functions"]))
-        print("wrote %d code files to %s (%.0fs)" % (len(files), gen, time.time() - t0))
+        print("wrote the tables and the image's C to %s (%.0fs)" % (gen, time.time() - t0))
         lift_mark.done(out_dir)
     print("done (%.0fs)" % (time.time() - t0))
-
-
-def write_without_lift1(L, img, meta, a, out_dir, t0):
-    """the gen folder of a build with no present lifter: the runtime's tables, the image's C, and for each function the
-    present lifter would own a trap (HOOKSHOT_LIFT1_TRAP=1; without it the lift stops when there is one)"""
-    from lift2 import owned, tables
-    own = getattr(L, "only", None) or set()
-    if own and not os.environ.get("HOOKSHOT_LIFT1_TRAP"):
-        raise SystemExit("lift: HOOKSHOT_LIFT1=0, but the present lifter still owns %d functions (%s%s, in %s): port "
-                         "them, or set HOOKSHOT_LIFT1_TRAP=1 to make each a trap" % (
-                             len(own), " ".join("f_%08x" % e for e in sorted(own)[:8]), " ..." if len(own) > 8 else "",
-                             owned.FILE))
-    gen = os.path.join(out_dir, "gen")
-    os.makedirs(gen, exist_ok=True)
-    for f in os.listdir(gen):   # (the present lifter's files of an earlier lift)
-        if (f.startswith("code_") and f.endswith(".c")) or f in ("a64_suyu.c", "a64_suyu.h", "a64_fpx.h",
-                                                                  "code_hot.c.whole", "chunk_costs.txt"):
-            os.remove(os.path.join(gen, f))
-    tables.write(gen, L.funcs, L.hooks)
-    owned.write_traps(gen, own)
-    with open(os.path.join(gen, "functions.txt"), "w") as f:
-        f.write("".join("%08x %d\n" % (e, len(L.funcs[e][0])) for e in sorted(L.funcs)))
-    if a.standalone:
-        start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
-        print("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
-            start, exit_, standalone.gen_stubs(gen, meta)))
-        nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
-        standalone.write_nvn_exports(gen, nvn)
-        print("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
-    loaded = sorted(n for n in sys.modules if n in ("a64_lift", "a64emit", "a64_rtgen", "insn", "lift_fixes", "chunks",
-                                                   "poll", "lifted_c"))
-    if loaded:   # (the mode's promise: nothing of the present lifter ran)
-        raise SystemExit("lift: HOOKSHOT_LIFT1=0 loaded the present lifter's %s" % ", ".join(loaded))
-    print("no present lifter (HOOKSHOT_LIFT1=0): the tables, the image's C and %d traps in %s (%.0fs)" % (
-        len(own), gen, time.time() - t0))
 
 
 if __name__ == "__main__":

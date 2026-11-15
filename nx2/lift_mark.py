@@ -1,11 +1,11 @@
-"""Whether the lift in a work folder (work/sa: its gen/, image/ and lift2_plan.pickle) is whole.
+"""Whether the lift in a work folder (work/sa: its gen/, image/ and plan.pickle) is whole.
 
 nx2/lift.py --write marks the folder LIFT_INCOMPLETE before it writes anything and, as its last step, replaces the mark
 by LIFT_OK (the lifter's commit and the switches it ran with). A lift that is killed (out of memory, a signal) leaves
 LIFT_INCOMPLETE behind, and nx2/build.py and scripts/play-refresh.sh refuse to build from it: a half-written gen/ once
 built and was stamped as the play build. A folder with neither mark (lifted before the marks) builds as before.
 
-LIFT_OK also records a hash of the lift's inputs (inputs_hash: the lifter's sources, the lift-time patch sources, the
+LIFT_OK also records a hash of the lift's inputs (inputs_hash: the lift's sources in nx2/, the
 ENTRY_HOOK / SPLICE_AFTER lines of host/*.c, the hot list, the dump's code files, the switches). scripts/play-refresh.sh
 asks stale() and lifts again when they changed, instead of building a lift older than the lifter (the merge of a
 lifter change once stamped a play build made from the old lift); a host-only change keeps its fast path.
@@ -19,24 +19,23 @@ import sys
 
 INCOMPLETE = "LIFT_INCOMPLETE"
 OK = "LIFT_OK"
-SWITCHES = ("HOOKSHOT_LIFT2", "HOOKSHOT_LIFT2_CLASSES", "HOOKSHOT_LIFT2_VERIFY", "HOOKSHOT_LIFT2_SUMMARIES",
-            "A64_HOT_FUNCS", "A64_HOT_CHUNK", "HOOKSHOT_LIFT_JOBS")
+SWITCHES = ("HOOKSHOT_LIFT_VERIFY", "HOOKSHOT_LIFT_SUMMARIES", "HOOKSHOT_HOT_FUNCS")
 
 
 # what the lift reads, relative to the repository: whole files (globs), and host files of which only the lines the lift
 # reads count (nx2/entry_hooks.py's ENTRY_HOOK, ENTRY_HOOK_SYM, SPLICE_AFTER)
-LIFT_SOURCES = ("third_party/a64-kit/lift/*.py", "third_party/a64-kit/lift/liba64emit.so.sha1",
-                "third_party/a64-kit/rt/a64.h", "nx2/*.py", "nx2/lift2/*.py")
+LIFT_SOURCES = ("third_party/a64-kit/rt/a64.h", "third_party/a64-kit/hos/*.py", "third_party/a64-kit/tools/nso.py",
+                "nx2/*.py", "nx2/lift2/*.py")
 HOST_LINES = ("host/*.c",)
 HOST_LINE = re.compile(r"^(?:ENTRY_HOOK|ENTRY_HOOK_SYM|SPLICE_AFTER|SPLICE_AFTER_EACH)\(.*$", re.M)
-NOT_LIFT = re.compile(r"(^|/)(test_|build\.py$|make_game\.py$|prompt_|prepare_|nup|win_manifest|make_icon|dll|"
+NOT_LIFT = re.compile(r"(^|/)(test_|build\.py$|make_game\.py$|prompt_|prepare_|nup|win_manifest|make_icon|"
                       r"dump\.py$|disasm\.py$|xref\.py$|samap|sasym|census\.py$|fault\.py$|label_syms|zbic|"
-                      r"pgo_pieces|step_readers|version\.py$|unpack\.py$)")
+                      r"version\.py$|unpack\.py$)")
 
 
 def inputs_hash(root, env=None, hot=None, exefs=None):
     """a hash of what a lift of the repository at root reads: see LIFT_SOURCES, HOST_LINES; the hot list file
-    (A64_HOT_FUNCS as the lift takes it); the dump's exefs files (name, size, modification time); the switches"""
+    (HOOKSHOT_HOT_FUNCS as the lift takes it); the dump's exefs files (name, size, modification time); the switches"""
     env = os.environ if env is None else env
     h = hashlib.sha1(usedforsecurity=False)
     for pat in LIFT_SOURCES:
@@ -60,7 +59,7 @@ def inputs_hash(root, env=None, hot=None, exefs=None):
         for name in sorted(os.listdir(exefs)):
             st = os.stat(os.path.join(exefs, name))
             h.update(("exefs %s %d %d" % (name, st.st_size, int(st.st_mtime))).encode())
-    h.update(repr([(k, env.get(k)) for k in SWITCHES if k != "HOOKSHOT_LIFT_JOBS"]).encode())
+    h.update(repr([(k, env.get(k)) for k in SWITCHES]).encode())
     return h.hexdigest()
 
 
@@ -91,7 +90,7 @@ def default_inputs(root):
     """(the hot list, the exefs) as nx2/lift.py and scripts/relift.sh take them"""
     hot = next((f for f in (os.path.join(root, "work", "hot_funcs_play.txt"), os.path.join(root, "work", "hot_funcs.txt"))
                 if os.path.exists(f)), None)
-    hot = os.environ.get("A64_HOT_FUNCS") or hot
+    hot = os.environ.get("HOOKSHOT_HOT_FUNCS") or hot
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
         import kit

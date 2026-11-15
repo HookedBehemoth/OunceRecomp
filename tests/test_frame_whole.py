@@ -1,5 +1,5 @@
 """Game counters that add the frame step, or the step times a whole number, cut to whole frames keep counting above 60 fps
-(host/frame_whole.h, nx2/oot_patches.py patch_whole_frames).
+(host/frame_whole.h; the lifter calls it at the two counters' instructions: nx2/lift2/probes.py WHOLE).
 
 The pick-up indicator above Link's head (f_80a87e50) moves the count it shows toward the wallet's by (int)(step * per) and fades
 when they meet. Under a Frame rate cap above 60 the step is the frame's own
@@ -8,8 +8,7 @@ as the step (carry), hos_frame_whole adds the amount to the counter's own remain
 60/144 are 60; an amount of 1 or more keeps its fraction too; two counters keep their own remainders; NaN and amounts below zero
 give 0. Without it, the amount is cut as the game cuts it (60 fps as before). The water renderer (f_800672e0) runs its ripple
 simulation (int)step times a frame the same way, its remainder kept per water object: forty surfaces stepped in turn each still
-count their 60 frames a second. The patch replaces the one cut of each site, once,
-declares the hook, and leaves a file patched before and a function whose code differs as they are.
+count their 60 frames a second.
 
 python -I -B tests/test_frame_whole.py
 """
@@ -22,7 +21,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
-import oot_patches  # noqa: E402
 
 FIXTURE = r"""
 #include "frame_whole.h"
@@ -62,10 +60,6 @@ int main(void) {
 }
 """
 
-LIFTED = ['#include "a64.h"\n' + head + "    c->x[9] = recomp_load32(c,(c->x[19] + 864));\n" + old + "return;\n}\n"
-          for head, old, _ in oot_patches.WHOLE_SITES]
-
-
 class FrameWholeTests(unittest.TestCase):
     def test_counter_keeps_counting_under_one(self):
         compiler = shutil.which("gcc") or shutil.which("clang")
@@ -80,23 +74,6 @@ class FrameWholeTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-
-    def test_patch_replaces_the_cut_once(self):
-        for lifted, (_, old, key) in zip(LIFTED, oot_patches.WHOLE_SITES):
-            out, n = oot_patches.patch_whole_frames(lifted)
-            self.assertEqual(n, 1)
-            self.assertEqual(out.count("=hos_frame_whole(%s, %s);" % (key, oot_patches.WHOLE_AMOUNT)), 1)
-            self.assertNotIn("recomp_fp_to_int", out)
-            self.assertIn(oot_patches.WHOLE_DECL, out)
-            self.assertEqual(oot_patches.patch_whole_frames(out), (out, 0))   # (patched before: as it is)
-            other = lifted.replace("32,32,", "32,31,")   # (another game version's code)
-            self.assertEqual(oot_patches.patch_whole_frames(other), (other, 0))
-            none = lifted.replace("void f_8", "void f_9")
-            self.assertEqual(oot_patches.patch_whole_frames(none), (none, 0))
-        # (a lift where the function is hot: its float helpers are a64_fpx_hot_*, the cut the same)
-        _, old0, _ = oot_patches.WHOLE_SITES[0]
-        hot = LIFTED[0].replace(old0, "    _v=a64_fpx_hot_mul32_fma32(c,_a,_b,_z);\n    a64_vset64(c->vreg[0],_v);}\n" + old0)
-        self.assertEqual(oot_patches.patch_whole_frames(hot)[1], 1)
 
 
 if __name__ == "__main__":

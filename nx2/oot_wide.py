@@ -1,4 +1,4 @@
-"""Widescreen and ultrawide for Ocarina of Time 1.1.1: C added after a few instructions of the game (a64_lift.py Lifter.after).
+"""Widescreen and ultrawide for Ocarina of Time 1.1.1: C added after a few instructions of the game (Discovery.after: the lifter calls it, nx2/lift2/probes.py after_c).
 
 The game draws a 2560x1440 picture whatever the screen and renders its scene at 1920x1080; its cameras use a 16:9 ratio.
 With these patches the picture takes the window's shape (the height stays the game's, the width grows on an ultrawide

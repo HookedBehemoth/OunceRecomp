@@ -1,16 +1,13 @@
-/* (hookshot) The guest's FP mode on the host: MXCSR follows the guest FPCR, and the FP routines lift 2's code calls.
+/* (hookshot) The guest's FP mode on the host: MXCSR follows the guest FPCR, and the FP routines the lifted code calls.
 
-   Lift 2 (docs/lifter2-design.md section 7) computes FP natively, so the host's MXCSR is the guest's FPCR on every
+   The lifted code (docs/lifter2-design.md section 7) computes FP natively, so the host's MXCSR is the guest's FPCR on every
    thread while guest code runs: FPCR.FZ is MXCSR.DAZ|FTZ, RMode is RC, every exception stays masked. It is set where
    FPCR changes or a guest context starts running on a host thread:
-   - MSR FPCR: lift 2 calls a64_fpcr_write; the present lifter writes c->fpcr and then calls a64_fpcr_sync (its MSR
-     text is patched by a64_lift.py fpcr_sync);
+   - MSR FPCR: the lifted code calls a64_fpcr_write;
    - thread start (hos_thread.c thread_main) and both sides of a fiber switch (fiber_main, fiber_switch): a host
      thread or fiber does not reliably start from, or keep, the MXCSR its guest context needs.
-   The present lifter's FP stays exact under it: its native fast paths run only with RMode RN and test FZ themselves
-   (subnormal operands and tiny results take the exact body), and its exact bodies are integer code.
 
-   FPSR: lift 2 keeps no cumulative flags per instruction; MRS FPSR (a64_fpsr_read) is the context's FPSR with MXCSR's
+   FPSR: the lifted code keeps no cumulative flags per instruction; MRS FPSR (a64_fpsr_read) is the context's FPSR with MXCSR's
    sticky bits folded in, MSR FPSR (a64_fpsr_write) clears them.
 
    FRECPE and FRSQRTE are Arm's estimate algorithm (the Arm ARM's FPRecipEstimate and FPRSqrtEstimate with
@@ -42,7 +39,7 @@ void a64_fpcr_sync(Ctx *A64_NOESC c) {
 
 uint64_t a64_fpcr_read(Ctx *A64_NOESC c) { return c->fpcr & 0xFFFFFFFFu; }
 
-/* (bits 32 and up of c->fpcr are the host's: the present lifter's RECOMP_FPX_INHIBIT; MSR keeps them) */
+/* (bits 32 and up of c->fpcr are the host's; MSR keeps them) */
 void a64_fpcr_write(Ctx *A64_NOESC c, uint64_t v) {
     c->fpcr = (v & 0xFFFFFFFFu) | (c->fpcr & ~(uint64_t)0xFFFFFFFFu);
     a64_fpcr_sync(c);
@@ -62,9 +59,6 @@ void a64_fpsr_write(Ctx *A64_NOESC c, uint64_t v) {
     c->fpsr = v;
     _mm_setcsr(_mm_getcsr() & ~0x3Fu);
 }
-
-/* after the present lifter's MSR FPSR (c->fpsr written): MXCSR's sticky bits cleared, as a64_fpsr_write */
-void a64_fpsr_sync(Ctx *A64_NOESC c) { (void)c; _mm_setcsr(_mm_getcsr() & ~0x3Fu); }
 
 static int fz(void) { return (_mm_getcsr() & 0x8040) != 0; }
 static int rmode(void) { unsigned rc = _mm_getcsr() >> 13 & 3; return rc == 1 ? 2 : rc == 2 ? 1 : (int)rc; }

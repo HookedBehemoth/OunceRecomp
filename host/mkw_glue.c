@@ -217,10 +217,6 @@ void a64_poll_cur(void) {
     void hos_vcore_checkpoint(void);
     hos_vcore_checkpoint();
 }
-void a64_poll(Ctx *c) {   /* (the old form, A64_POLL_CTX builds) */
-    c->poll = 0;
-    a64_poll_cur();
-}
 
 /* CNTPCT_EL0 at the Switch 2's 31.25 MHz (rt/a64_rt.c's default counts the Switch 1's 19.2 MHz). The SDK checks
    nn::os::GetSystemTickFrequency against 31250000 at init and aborts otherwise. */

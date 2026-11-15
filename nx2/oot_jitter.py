@@ -1,5 +1,5 @@
-"""The temporal upscalers' camera jitter for Ocarina of Time 1.1.1: C added after a few instructions of the game (a64_lift.py
-Lifter.after). One jitter for all of them: NVIDIA DLSS and AMD FSR 4 (gpu/legacy/vk/vk_temporal.cpp, the frame chain they share) and
+"""The temporal upscalers' camera jitter for Ocarina of Time 1.1.1: C added after a few instructions of the game
+(Discovery.after; the lifter calls it after them: nx2/lift2/probes.py after_c). One jitter for all of them: NVIDIA DLSS and AMD FSR 4 (gpu/legacy/vk/vk_temporal.cpp, the frame chain they share) and
 AMD FSR 3.1 (gpu/legacy/vk/vk_fsr3_inputs.cpp).
 
 A temporal upscaler resolves detail finer than a pixel from frames whose camera moved by a different fraction of a

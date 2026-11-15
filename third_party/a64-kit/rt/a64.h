@@ -1,10 +1,6 @@
-/* a64-kit guest model: what every lifted AArch64 function sees.
-
-   The instruction bodies come from suyu's translator (lift/suyu/arm64_to_c.h), which writes C against a
-   `GuestContext` and calls `recomp_load*` / `recomp_store*` / `recomp_ldxr` ...; this header supplies those
-   for Rexcomp: one flat guest memory below 4 GB (`A64_MEM + (uint32_t)addr`), no page table, no host bridge.
-   The FP helpers and the rest of suyu's runtime header are generated next to the lifted code
-   (a64_suyu.h, by lift/a64_rtgen.py) and included at the end. */
+/* a64-kit guest model: what lifted AArch64 code and the host runtime see of a guest thread: the context
+   (`GuestContext`), guest memory (`A64_PTR`, `recomp_load*` / `recomp_store*`), the page marks, and the runtime's
+   entry points (a64_rt.c). Hookshot's copy is generated from this by nx2/rtgen.py (the 64-bit guest window, polls). */
 #ifndef A64_H
 #define A64_H
 #include <stdint.h>
@@ -12,7 +8,7 @@
 #include <string.h>
 
 typedef struct GuestContext {
-    uint64_t x[32];             /* x[31] is SP: suyu's translator spells SP as x[31] where the encoding means SP */
+    uint64_t x[32];             /* x[31] is SP */
     uint64_t pc;                /* only written where the lifter stops a thread (traps, unhandled) */
     uint8_t n, z, c, v;         /* NZCV, one byte each */
     int halted;
@@ -95,7 +91,7 @@ A64_INLINE void recomp_store8(GuestContext *c, uint64_t a, uint64_t v) { (void)c
 A64_INLINE void recomp_store16(GuestContext *c, uint64_t a, uint64_t v) { uint16_t t = (uint16_t)v; (void)c; memcpy(A64_PTR(a), &t, 2); A64_MARK(a, 2); }
 A64_INLINE void recomp_store32(GuestContext *c, uint64_t a, uint64_t v) { uint32_t t = (uint32_t)v; (void)c; memcpy(A64_PTR(a), &t, 4); A64_MARK(a, 4); }
 A64_INLINE void recomp_store64(GuestContext *c, uint64_t a, uint64_t v) { (void)c; memcpy(A64_PTR(a), &v, 8); A64_MARK(a, 8); }
-/* Stores through SP (stack_stores in lift/a64_lift.py): the guest stack is never memory the GPU reads, so they mark no
+/* Stores through SP: the guest stack is never memory the GPU reads, so they mark no
    page. They are a quarter of TOTK's store sites (prologue saves, nearly every STP). */
 A64_INLINE void recomp_store8_sp(GuestContext *c, uint64_t a, uint64_t v) { (void)c; *(uint8_t *)A64_PTR(a) = (uint8_t)v; }
 A64_INLINE void recomp_store16_sp(GuestContext *c, uint64_t a, uint64_t v) { uint16_t t = (uint16_t)v; (void)c; memcpy(A64_PTR(a), &t, 2); }
@@ -158,61 +154,12 @@ void a64_trap(Ctx *A64_NOESC c, uint64_t pc, uint32_t insn);  /* BRK, HLT, UDF a
 void a64_ret_mismatch(Ctx *A64_NOESC c, uint64_t pc);         /* RET to something other than the caller (debug builds) */
 /* (hookshot) the guest's FP mode on the host (host/hos_fp.c): MXCSR follows FPCR; lift 2's MRS/MSR FPCR/FPSR */
 unsigned hos_fp_mxcsr(uint64_t fpcr);
-void a64_fpcr_sync(Ctx *A64_NOESC c);                          /* MXCSR = c->fpcr (after the present lifter's MSR FPCR) */
-void a64_fpsr_sync(Ctx *A64_NOESC c);                          /* MXCSR's flags cleared (after its MSR FPSR) */
-/* (hookshot) the counter (a64_rt.c): declared here, not only in the present lifter's a64_suyu.h, as host/hos_thread.c
-   calls it (without a declaration its 64-bit value came back cut to an int) */
+void a64_fpcr_sync(Ctx *A64_NOESC c);                          /* MXCSR = c->fpcr */
+/* (hookshot) the counter (a64_rt.c), also for host/hos_thread.c */
 uint64_t recomp_cntpct(GuestContext *c);
 uint64_t a64_fpcr_read(Ctx *A64_NOESC c);
 void a64_fpcr_write(Ctx *A64_NOESC c, uint64_t v);
 uint64_t a64_fpsr_read(Ctx *A64_NOESC c);
 void a64_fpsr_write(Ctx *A64_NOESC c, uint64_t v);
 
-#include "a64_suyu.h"
-#include "a64_fpx.h"
-
-/* ---- A64_INLINE_RT (experiment, off): LDXR/STXR, CLREX, DMB and the high multiplies inline in lifted code instead of
-   calls to a64_rt.c / a64_suyu.c. Measured 2026-10-21 (castle, 3 interleaved rounds at -O3): 69.5 -> 68.4 fps, game
-   threads +0.7 ms CPU a frame, though an LDXR/STXR pair becomes one inline lock cmpxchg: not kept. */
-#if defined(A64_INLINE_RT) && !defined(A64_RT_IMPL)
-A64_INLINE uint64_t a64_i_load_n(uint64_t a, uint32_t size) {
-    switch (size) {
-    case 1: return __atomic_load_n((uint8_t *)A64_PTR(a), __ATOMIC_SEQ_CST);
-    case 2: return __atomic_load_n((uint16_t *)A64_PTR(a), __ATOMIC_SEQ_CST);
-    case 4: return __atomic_load_n((uint32_t *)A64_PTR(a), __ATOMIC_SEQ_CST);
-    default: return __atomic_load_n((uint64_t *)A64_PTR(a), __ATOMIC_SEQ_CST);
-    }
-}
-A64_INLINE int a64_i_cas_n(uint64_t a, uint32_t size, uint64_t expect, uint64_t value) {
-    A64_MARK(a, size);
-    switch (size) {
-    case 1: { uint8_t e = (uint8_t)expect; return __atomic_compare_exchange_n((uint8_t *)A64_PTR(a), &e, (uint8_t)value, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
-    case 2: { uint16_t e = (uint16_t)expect; return __atomic_compare_exchange_n((uint16_t *)A64_PTR(a), &e, (uint16_t)value, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
-    case 4: { uint32_t e = (uint32_t)expect; return __atomic_compare_exchange_n((uint32_t *)A64_PTR(a), &e, (uint32_t)value, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
-    default: { uint64_t e = expect; return __atomic_compare_exchange_n((uint64_t *)A64_PTR(a), &e, value, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
-    }
-}
-A64_INLINE uint64_t a64_i_ldxr(GuestContext *c, uint64_t addr, uint32_t size) {
-    const uint64_t v = a64_i_load_n(addr, size);
-    c->excl_addr = addr; c->excl_size = size; c->excl_lo = v; c->excl_valid = 1;
-    return v;
-}
-A64_INLINE uint32_t a64_i_stxr(GuestContext *c, uint64_t addr, uint32_t size, uint64_t value) {
-    const int ok = c->excl_valid && c->excl_addr == addr && c->excl_size == size && a64_i_cas_n(addr, size, c->excl_lo, value);
-    c->excl_valid = 0;
-    return ok ? 0 : 1;
-}
-A64_INLINE void a64_i_clrex(GuestContext *c) { c->excl_valid = 0; }
-A64_INLINE void a64_i_barrier(void) { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
-#if defined(__SIZEOF_INT128__)
-A64_INLINE uint64_t a64_i_umulh(uint64_t a, uint64_t b) { return (uint64_t)((unsigned __int128)a * b >> 64); }
-A64_INLINE uint64_t a64_i_smulh(uint64_t a, uint64_t b) { return (uint64_t)((__int128)(int64_t)a * (int64_t)b >> 64); }
-#define recomp_umulh a64_i_umulh
-#define recomp_smulh a64_i_smulh
-#endif
-#define recomp_ldxr a64_i_ldxr
-#define recomp_stxr a64_i_stxr
-#define recomp_clrex a64_i_clrex
-#define recomp_barrier a64_i_barrier
-#endif
 #endif

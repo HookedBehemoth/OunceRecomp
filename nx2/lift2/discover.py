@@ -1,11 +1,9 @@
-"""Lift 2's function discovery (milestone 19): function bodies from the entries, jump tables, PLT stubs, setjmp
-owners and the split of very large functions, without the present lifter.
+"""Function discovery: function bodies from the entries, jump tables, PLT stubs, setjmp owners and the split of very
+large functions.
 
-Ported from the present lifter's discovery (third_party/a64-kit/lift/a64_lift.py, Lifter.discover and what it calls,
-with nx2/insn.py's pointer-authenticated branches and nx2/lift_fixes.py's jump-table fixes built in),
-the same rules on the same raw words, so that it can replace it: nx2/lift2/discover_check.py compares the two over the
-whole game (entries, bodies, jump tables, PLT stubs, setjmp owners). The model: a function is an entry plus everything
-reachable from it without crossing another entry; branches into another entry are tail calls.
+The model: a function is an entry plus everything reachable from it without crossing another entry; branches into
+another entry are tail calls. (It began as a64-kit's discovery with Hookshot's pointer-authenticated branches and
+jump-table fixes, and compared equal to it over the whole game before that was deleted: docs/lifter2-design.md.)
 
 Input (an image): .entries, .hooks {addr: name}, .word(addr), .read(addr, n), .in_code(addr), optional .names and
 .eh_starts (function starts from the unwind info: the extent a jump table's targets must lie in).
@@ -23,7 +21,7 @@ def sx(v, bits):
 
 def classify(w, pc):
     """(kind, ...) for control flow and specials; ("op",) for everything the emitter translates. The pointer-
-    authenticated forms (nx2/insn.py's classify_ext): RETAA/RETAB are returns; BRAA*/BRAB* and BLRAA*/BLRAB* are BR and
+    authenticated forms: RETAA/RETAB are returns; BRAA*/BRAB* and BLRAA*/BLRAB* are BR and
     BLR through Xn."""
     if w in (0xD65F0BFF, 0xD65F0FFF):                 # RETAA / RETAB
         return ("ret", 30)
@@ -72,7 +70,7 @@ class Discovery:
         self.jt_missing = {}  # br pc -> its register, for BRs whose table address was not found
         self.plt = {}         # stub entry -> (final target, GOT slot)
         self.stats = Counter()
-        self.after = {}       # pc -> C after the instruction (nx2/oot_wide.py ...: lift 2 calls it, mixed.lift_part)
+        self.after = {}       # pc -> C after the instruction (nx2/oot_wide.py ...: the lifter calls it, game.lift_part)
         # function starts from unwind info bound jump-table targets; without them, every entry does
         self.eh_starts = sorted(getattr(img, "eh_starts", None) or self.entries)
 
@@ -201,7 +199,7 @@ class Discovery:
 
     # ---- jump tables ---------------------------------------------------------------------------------
     def jump_table(self, br_pc, reg, window=32):
-        """the jump table of a BR (nx2/lift_fixes.py's fixes 2 and 3 around the scan): the window starts after the
+        """the jump table of a BR: the window starts after the
         last pointer-authenticated return or branch; when the window writes the table load's base register again
         after the load, that register is resolved at the load"""
         img = self.img
@@ -521,7 +519,7 @@ class Discovery:
         return ((w >> 27) & 7) == 5 and (w >> 22) & 1 and not (w >> 26) & 1 and ((w >> 10) & 31) == reg
 
     def function_constant(self, br_pc, reg):
-        """the one constant the function assigns to reg (ADRP+ADD; else, nx2/lift_fixes.py's fix 1, also ADR)"""
+        """the one constant the function assigns to reg (ADRP+ADD; else also ADR: rtld's dynamic-section loop sets its table so)"""
         v = self._function_constant(br_pc, reg)
         if v is not None:
             return v
@@ -649,52 +647,3 @@ class Discovery:
             seen += 1
         return t
 
-
-def adopt(L, D):
-    """the present lifter's emitter takes lift 2's discovery: its functions, tables, stubs and setjmp owners"""
-    L.entries, L.funcs, L.jt, L.jt_missing, L.plt = D.entries, D.funcs, D.jt, D.jt_missing, D.plt
-    L.setjmp_owner = D.setjmp_owner
-    L.stats.update(D.stats)
-
-
-def compare(L, D, show=12):
-    """the present lifter's discovery (L) against lift 2's (D): entries, bodies (addresses and words), labels, jump
-    tables, PLT stubs, setjmp owners; prints each kind of difference with examples; True when there is none"""
-    same = True
-
-    def report(what, a, b):
-        nonlocal same
-        only_a, only_b = sorted(set(a) - set(b)), sorted(set(b) - set(a))
-        if only_a or only_b:
-            same = False
-            print("discovery check: %s: %d only in the present lifter's (%s), %d only in lift 2's (%s)" % (
-                what, len(only_a), " ".join("%x" % x for x in only_a[:show]), len(only_b),
-                " ".join("%x" % x for x in only_b[:show])))
-    report("entries", L.entries, D.entries)
-    report("functions", L.funcs, D.funcs)
-    diff_body = [e for e in L.funcs if e in D.funcs and L.funcs[e][0] != D.funcs[e][0]]
-    diff_labels = [e for e in L.funcs if e in D.funcs and L.funcs[e][1] != D.funcs[e][1]]
-    for e in diff_body[:3]:   # (the first differences of a few, to classify them)
-        a, b = L.funcs[e][0], D.funcs[e][0]
-        pa, pb = sorted(set(a) - set(b)), sorted(set(b) - set(a))
-        dv = [pc for pc in a if pc in b and a[pc] != b[pc]][:2]
-        print("discovery check: f_%08x: %d pcs only the present lifter's (%s), %d only lift 2's (%s), values %s" % (
-            e, len(pa), " ".join("%x" % x for x in pa[:4]), len(pb), " ".join("%x" % x for x in pb[:4]),
-            "; ".join("%x %r / %r" % (pc, a[pc], b[pc]) for pc in dv)))
-    for what, d in (("bodies", diff_body), ("labels", diff_labels)):
-        if d:
-            same = False
-            print("discovery check: %d functions with other %s (%s)" % (len(d), what,
-                                                                        " ".join("%x" % e for e in d[:show])))
-    report("jump tables", L.jt, D.jt)
-    dt = [pc for pc in L.jt if pc in D.jt and L.jt[pc] != D.jt[pc]]
-    if dt:
-        same = False
-        print("discovery check: %d jump tables with other targets (%s)" % (len(dt), " ".join("%x" % x for x in dt[:show])))
-    report("BR without a table", L.jt_missing, D.jt_missing)
-    report("PLT stubs", L.plt, D.plt)
-    if any(L.plt[e] != D.plt[e] for e in L.plt if e in D.plt):
-        same = False
-        print("discovery check: PLT stubs with other targets")
-    report("setjmp owners", getattr(L, "setjmp_owner", {}), D.setjmp_owner)
-    return same

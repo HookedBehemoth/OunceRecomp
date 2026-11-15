@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Keeps the build scripts/play.sh runs (the main checkout's work/sa/build) at its native-vk head: builds there and writes
 # work/sa/build/BUILD.txt (short hash, date, subject) last. Exit 0 only when BUILD.txt names HEAD. Needs a clean native-vk
-# checkout; one build at a time (flock on work/sa/build/.build.lock). Log: work/play/refresh.log. The build is the mixed one
-# (nx2/lift2 for every function it can take) unless HOOKSHOT_LIFT2=0; a host-only refresh takes lift 2's objects from the
-# object cache. When the lift's inputs changed since work/sa was lifted (nx2/lift_mark.py stale: the lifter, the lift-time
+# checkout; one build at a time (flock on work/sa/build/.build.lock). Log: work/play/refresh.log. A host-only refresh takes
+# the lifted partitions from the object cache. When the lift's inputs changed since work/sa was lifted (nx2/lift_mark.py stale: the lifter, the lift-time
 # patches, the hot list, the dump), it lifts again first instead of building the old lift. Heavy work takes
 # work/heavy.lock (one heavy job on the machine at a time) and runs in a memory-capped scope (HOOKSHOT_REFRESH_MEM, 18G).
 #   scripts/play-refresh.sh [--install-hook]   --install-hook writes .git/hooks/post-merge (a refresh in the background after a merge onto native-vk)
@@ -55,17 +54,11 @@ start=$(date +%s)
 lift_if_stale() {   # (a lifter change: lift again, as scripts/relift.sh does, before the build)
   [ -n "$stale" ] || return 0
   echo "play-refresh: $stale: lifting again"
-  local hot=; for f in "$root/work/hot_funcs_play.txt" "$root/work/hot_funcs.txt"; do [ -f "$f" ] && { hot=$f; break; }; done
-  if [ -n "$hot" ]; then capped env A64_HOT_FUNCS="$hot" A64_HOT_CHUNK=1 work/venv/bin/python -I -u nx2/lift.py --standalone --write
-  else capped work/venv/bin/python -I -u nx2/lift.py --standalone --write; fi
+  capped work/venv/bin/python -I -u nx2/lift.py --standalone --write
 }
 {
   echo "== $(date '+%F %T') refresh to $head"
   lift_if_stale &&
-  # (the game's patches are made at the lift: a patch added since is made here, in the lifted C as it stands; the ones in
-  # it already are left alone, and the supported build's optional ones are not added)
-  work/venv/bin/python -I -c "import sys; sys.path.insert(0, 'nx2'); import oot_patches; oot_patches.apply('work/sa/gen')" &&
-  work/venv/bin/python -I nx2/entry_hooks.py work/sa/gen &&
   HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
     capped work/venv/bin/python -I -u nx2/build.py --standalone --jobs 8
 } > "$log" 2>&1 || fail "the build failed"

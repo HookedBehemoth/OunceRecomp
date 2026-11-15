@@ -1,5 +1,4 @@
-"""The runtime's tables of the lifted game, written by lift 2's side (milestone 19, step 3): what the present lifter's
-Lifter._write_table wrote, byte for byte.
+"""The runtime's tables of the lifted game:
 
 - a64_table.c: every function and hooked address, sorted, with its f_<addr>: a64_lookup's binary search (BLR, BR,
   host calls into the guest: third_party/a64-kit/rt/a64_rt.c through nx2/rtgen.py);
