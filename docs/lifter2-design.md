@@ -1115,6 +1115,37 @@ first comparison, without the wrapped-in rules, differed in 136,720 bodies (RETA
 (the hoisted table register reused before the BR). `tests/test_lift2_discover.py` compares the two on a synthetic
 image without the dump.
 
+## 14h. Milestone 19, step 3: the runtime from lift 2's side, and what the build needs without the present lifter
+
+What a build is made of besides the lifted code, and who writes it now:
+
+| piece | file | written by |
+|---|---|---|
+| indirect-call table (a64_lookup's sorted addresses and f_ pointers) | gen/a64_table.c | `nx2/lift2/tables.py` (was `Lifter._write_table`; the same bytes, `tests/test_lift2_tables.py`) |
+| hooked addresses (the image's HLE functions and generated stubs: f_<addr> a tail call of the host function) | gen/a64_hooks.c | `nx2/lift2/tables.py`, from the image's hooks (`nx2/image.py`) |
+| the memory image, its relocations, the import stubs, the sdk's NVN exports | gen/hos_image.c, gen/a64_stubs.c, gen/nvn2_exports.c, work/sa/image/ | `nx2/standalone.py`, `nx2/image.py` (never the present lifter) |
+| the context header and the runtime (GuestContext, guest memory, A64_MARK, a64_lookup, a64_icall/ijump/trap, LDXR/STXR monitor, CNTPCT) | rt64/a64.h, rt64/a64_rt.c | `nx2/rtgen.py` from `third_party/a64-kit/rt` (64-bit window, polls). a64.h includes the present lifter's a64_suyu.h and a64_fpx.h only where its lift wrote them (`__has_include`) |
+| the FP mode, FPCR/FPSR | host/hos_fp.c | host |
+| what lift 2's code calls | a64_icall, a64_ijump, a64_trap, a64_svc, a64_poll_cur, recomp_ldxr/stxr/ldxp/stxp, recomp_cntpct (rt64/a64_rt.c, host); a64_fpcr_read/write, a64_fpsr_read/write (host/hos_fp.c); hos_sj_call (host/hos_setjmp.c); lift2_after_<pc> (`probes.write_after_c`) | |
+| the present lifter's own runtime | gen/a64_suyu.c, a64_suyu.h, a64_fpx.h (suyu's FP helpers, `a64_rtgen.py`, `Lifter.write`) | needed only by present-lifter C |
+
+What the build still needs once the present lifter owns nothing, and why:
+- `third_party/a64-kit/rt/a64.h`, `a64_rt.c`: the runtime above (through `nx2/rtgen.py`).
+- `third_party/a64-kit/hos/nx_image.py`: the module loader `nx2/image.py` uses (relocations, symbols, the layout).
+- `third_party/a64-kit/tools/nso.py`: NSO reading (`nx2/image.py`, `nx2/lift.py`, `nx2/nso2.py`);
+  `tools/toolchain.py`: the compiler search (`nx2/build.py`, `nx2/make_game.py`, `nx2/sasym.py`).
+- `nx2/lift.py` (the image, entries, discovery, plan: its present-lifter half goes), `nx2/kit.py`, `nx2/image.py`,
+  `nx2/adr_entries.py` (entries from ADR/ADRP), `nx2/standalone.py`, `nx2/entry_hooks.py` (ENTRY_HOOK, SPLICE: read
+  by lift 2), `nx2/oot_wide.py`, `nx2/oot_jitter.py`, `nx2/oot_occlusion.py` (the C after an instruction, which lift 2
+  calls), `nx2/oot_patches.py` until its last patch is a probe, `nx2/lift_mark.py`, `nx2/rtgen.py`, `nx2/build.py`,
+  `nx2/host_cpu.py`, `nx2/whole_write.py`, `nx2/nso2.py`, `nx2/lift2/*`.
+- Not needed: `third_party/a64-kit/lift/` (a64_lift.py, a64emit.py/.cpp, build_emit.py, liba64emit.so, a64_rtgen.py,
+  suyu/arm64_to_c.h: the translator), `third_party/a64-kit/tests/insn_test.py`, `nx2/chunks.py`, `nx2/poll.py`,
+  `nx2/insn.py`, `nx2/lift_fixes.py` (their rules are in `nx2/lift2/discover.py`), `nx2/lifted_c.py`,
+  `nx2/split_hot.py`, `nx2/pgo_pieces.py`, `nx2/census.py`, `nx2/test_insn.py`, `nx2/test_leaf.py` and the parts of
+  `nx2/test_lift2_leaf.py` that compare with the present lifter; `nx2/build.py`'s present-lifter paths (code_*.c,
+  a64_suyu.c, the thunked sources). Step 4's deletion list gives each with what replaces it.
+
 ## 15. Risks not retired
 
 - **Non-AAPCS functions** (SDK assembly, outlined helpers, veneers reading x16/x17): their number decides how much
