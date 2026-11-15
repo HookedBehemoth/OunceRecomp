@@ -25,9 +25,20 @@
 #endif
 /* ENTRY_HOOK(0x0xxxxxxx) { ... }: runs at the entry of the lifted guest function at that address (8 hex digits),
    with its arguments in c; return 1 when it handled the call (the function then returns at once, x0 is the result),
-   0 to run the function as usual. build.py splices the call into the lifted code (only that file recompiles). */
-#define ENTRY_HOOK(addr) int entry_##addr(Ctx *c)
-#define ENTRY_HOOK_SYM(sym) int entry_sym_##sym(Ctx *c)
+   0 to run the function as usual. Lift 2 calls it at the function's generic entry (nx2/lift2/mixed.py); a hook whose
+   address is not a lifted function stops the build.
+   HOS_DBG=hooks (diagnostic): each hook's first call logged (hos_hook_seen, host/hos_thread.c). */
+extern int hos_hooks_dbg;
+void hos_hook_seen(const char *name);
+#define ENTRY_HOOK_COUNTED(name, body)                                                                                 \
+    static int body(Ctx *c);                                                                                           \
+    int name(Ctx *c) {                                                                                                 \
+        if (__builtin_expect(hos_hooks_dbg, 0)) hos_hook_seen(#name);                                                  \
+        return body(c);                                                                                                \
+    }                                                                                                                  \
+    static int body(Ctx *c)
+#define ENTRY_HOOK(addr) ENTRY_HOOK_COUNTED(entry_##addr, entry_body_##addr)
+#define ENTRY_HOOK_SYM(sym) ENTRY_HOOK_COUNTED(entry_sym_##sym, entry_body_sym_##sym)
 /* SPLICE_AFTER(0x0xxxxxxx, "text") { ... }: runs inside the lifted guest function at that address, right after the
    first line of its lifted C that contains the text (a game patch in the middle of a function: c holds the guest
    registers there). build.py splices the call in and stops the build if the text is not found. One per function. */

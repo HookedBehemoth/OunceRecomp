@@ -292,7 +292,12 @@ def prepare(gen, out, jobs, opt, hot_opt, march_flags, cache):
     chosen = set(plan["bodies"])
     hot = set(plan.get("hot", ()))
     import entry_hooks   # (host/*.c's ENTRY_HOOKs: a call at the function's entry, emit_llvm entry_hook)
-    hooks = {e: n for e, n in entry_hooks.wanted(gen)[0].items() if e in chosen}
+    wanted, missing = entry_hooks.wanted(gen)
+    absent = sorted(e for e in wanted if e not in chosen)
+    if missing or absent:   # (a hook the build would leave out: its host code dead and nothing saying so)
+        raise SystemExit("build: ENTRY_HOOKs with no lifted function: %s" % ", ".join(
+            ["%s (not exported)" % m for m in missing] + ["%s at %#x" % (wanted[e], e) for e in absent]))
+    hooks = wanted
     src_dir = os.path.join(out, "lift_src")
     os.makedirs(src_dir, exist_ok=True)
     # (the C put after an instruction, and the SPLICE_AT calls, as host functions the lifted code calls)

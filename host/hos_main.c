@@ -1221,6 +1221,7 @@ static void memory_notice(void) {
 #endif
 static int game_main(int argc, char **argv) {
     occlusion_switch();
+    hos_hooks_dbg = hos_dbg_item("hooks");
     {
         const char *protect_hearts = getenv("HOS_OOT_PROTECT_HEARTS");
         hos_oot_protect_hearts = protect_hearts && !strcmp(protect_hearts, "1");
