@@ -107,3 +107,9 @@ file could change with the toolchain; they come from cpp_demangle now, its versi
 the host defines a hook was asked by mixing two spellings (imp_<symbol> against the hook's C name, the symbol made
 an identifier), so a symbol whose C name differs was stubbed even when implemented; it is asked by symbol now.
 diffout 0 changed: the 155 stubs' text equal to llvm-cxxfilt's.
+
+## v2.5 kept: one build id (flaw 18)
+
+hos_image.c's main build id was the header's 32-byte field less its trailing zero bytes, the identity check's the
+field's first 20 bytes: equal unless the id ends in a zero byte. Both are nso::build_id now, the first 20 bytes.
+diffout 0 changed.

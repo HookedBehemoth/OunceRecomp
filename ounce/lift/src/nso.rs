@@ -55,6 +55,11 @@ pub struct Nso {
     pub relocs: Vec<Reloc>,
 }
 
+/// an NSO's build id as hex: the header's first 20 bytes of it (0x40..0x54), what the game's identity names
+pub fn build_id(raw: &[u8]) -> String {
+    raw[0x40..0x54].iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// an LZ4 block (no frame) of `size` bytes (lz4_flex)
 pub fn lz4_block(src: &[u8], size: usize) -> Result<Vec<u8>, String> {
     let out = lz4_flex::block::decompress(src, size).map_err(|e| format!("lz4: {e}"))?;
@@ -101,11 +106,7 @@ impl Nso {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let flags = u32le(&raw, 0xC);
         let bss_size = u32le(&raw, 0x3C) as u64;
-        let mut id = &raw[0x40..0x60];
-        while let [rest @ .., 0] = id {
-            id = rest;
-        }
-        let build_id = id.iter().map(|b| format!("{b:02x}")).collect();
+        let build_id = build_id(&raw);
         let mut segments = Vec::new();
         let mut datas = Vec::new();
         let mut end = 0;

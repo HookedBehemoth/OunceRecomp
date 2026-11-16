@@ -88,7 +88,7 @@ impl Game {
         if data.len() < 0x54 || &data[..4] != b"NSO0" {
             return Err(format!("game {}: {} is not an NSO", self.name, path.display()));
         }
-        let seen = Identity { build_id: hex(&data[0x40..0x54]), main_sha256: sha256_file(&path)? };
+        let seen = Identity { build_id: crate::nso::build_id(&data), main_sha256: sha256_file(&path)? };
         for (what, got, want) in [
             ("build_id", &seen.build_id, &self.identity.build_id),
             ("main_sha256", &seen.main_sha256, &self.identity.main_sha256),
