@@ -1,5 +1,5 @@
 //! NSO (Switch executable) loading (third_party/a64-kit/tools/nso.py with nx2/nso2.py's DT_RELR): the three
-//! LZ4-block segments, MOD0, the dynamic section, symbols, relocations (RELA, JMPREL, and RELR as RELATIVE), the
+//! LZ4-block segments (lz4_flex), MOD0, the dynamic section, symbols, relocations (RELA, JMPREL, and RELR as RELATIVE), the
 //! init array and the .eh_frame_hdr function starts. Offsets are the module's own (from its .text).
 
 use std::collections::HashMap;
@@ -57,43 +57,9 @@ pub struct Nso {
     pub eh_funcs: Vec<u64>,
 }
 
-/// an LZ4 block (no frame): literals and matches until the input ends
+/// an LZ4 block (no frame) of `size` bytes (lz4_flex)
 pub fn lz4_block(src: &[u8], size: usize) -> Result<Vec<u8>, String> {
-    let mut out: Vec<u8> = Vec::with_capacity(size);
-    let mut i = 0;
-    let len = |i: &mut usize, mut n: usize| -> Result<usize, String> {
-        if n == 15 {
-            loop {
-                let b = *src.get(*i).ok_or("lz4: truncated length")? as usize;
-                *i += 1;
-                n += b;
-                if b != 255 {
-                    break;
-                }
-            }
-        }
-        Ok(n)
-    };
-    while i < src.len() {
-        let token = src[i];
-        i += 1;
-        let lit = len(&mut i, (token >> 4) as usize)?;
-        out.extend_from_slice(src.get(i..i + lit).ok_or("lz4: truncated literals")?);
-        i += lit;
-        if i >= src.len() {
-            break;
-        }
-        let off = u16::from_le_bytes([src[i], *src.get(i + 1).ok_or("lz4: truncated offset")?]) as usize;
-        i += 2;
-        let m = len(&mut i, (token & 15) as usize)? + 4;
-        if off == 0 || off > out.len() {
-            return Err("lz4: bad offset".into());
-        }
-        let start = out.len() - off;
-        for k in 0..m {
-            out.push(out[start + k]);
-        }
-    }
+    let out = lz4_flex::block::decompress(src, size).map_err(|e| format!("lz4: {e}"))?;
     if out.len() != size {
         return Err(format!("lz4: {} bytes, expected {size}", out.len()));
     }
@@ -324,9 +290,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lz4_literals_and_match() {
-        // "abcabcabcabc": 3 literals, then a match of 9 at offset 3
-        let src = [0x35, b'a', b'b', b'c', 3, 0];
-        assert_eq!(lz4_block(&src, 12).unwrap(), b"abcabcabcabc");
+    fn lz4_round_trip() {
+        let data: Vec<u8> = (0..4096u32).map(|i| (i % 7) as u8).collect();
+        let c = lz4_flex::block::compress(&data);
+        assert_eq!(lz4_block(&c, data.len()).unwrap(), data);
+        assert!(lz4_block(&c, data.len() + 1).is_err());
     }
 }
