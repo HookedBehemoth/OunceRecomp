@@ -7,7 +7,10 @@ use ounce_lift::bounds::Records;
 use ounce_lift::discover::Discovery;
 use ounce_lift::export::{read_meta, Part};
 use ounce_lift::game::Game;
-use ounce_lift::image::Image;
+use ounce_lift::eden;
+use ounce_lift::export::Hle;
+use ounce_lift::gen;
+use std::collections::BTreeSet;
 use ounce_lift::plan::{self, Plan};
 use std::collections::HashMap;
 use ounce_lift::summary::{summarise, Program};
@@ -48,10 +51,10 @@ mod count {
 const ANSWERS: &str = "lift_answers";
 
 /// the generic entries of the answered functions (game.answers_ir): f_<addr> writes the answer to x0 and returns
-fn answers_ir(meta: &ounce_lift::export::Meta) -> String {
+fn answers_ir(answers: &[(u64, String, u64)]) -> String {
     use std::fmt::Write;
     let mut s = format!("target triple = \"{}\"", ounce_lift::emit::TRIPLE);
-    for (a, name, v) in &meta.answers {
+    for (a, name, v) in answers {
         write!(
             s,
             "\ndefine void @f_{a:08x}(ptr noalias nocapture %ctx) {{   ; {name}\n  %x0 = getelementptr i8, ptr %ctx, i64 {}\n  store i64 {}, ptr %x0, align 8\n  ret void\n}}",
@@ -62,6 +65,44 @@ fn answers_ir(meta: &ounce_lift::export::Meta) -> String {
     }
     s.push('\n');
     s
+}
+
+/// the dump's exefs as nx2/kit.py finds it: OOT_EXEFS, OOT_DUMP/exefs, else the first line of work/dump.txt
+fn dump_exefs(work: &std::path::Path) -> PathBuf {
+    if let Some(e) = std::env::var_os("OOT_EXEFS").filter(|v| !v.is_empty()) {
+        return PathBuf::from(e);
+    }
+    if let Some(d) = std::env::var_os("OOT_DUMP").filter(|v| !v.is_empty()) {
+        return PathBuf::from(d).join("exefs");
+    }
+    let cfg = work.join("dump.txt");
+    let text = std::fs::read_to_string(&cfg).unwrap_or_else(|e| panic!("no exefs: set OOT_DUMP or write the dump folder into {}: {e}", cfg.display()));
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).expect("dump.txt: no dump folder");
+    PathBuf::from(line).join("exefs")
+}
+
+/// the generated files and image.bin against the golden's sha256 (golden/meta.json "files"): the differing count
+fn check_golden(golden: &std::path::Path, files: &[(String, Vec<u8>)], image: &[u8]) -> usize {
+    use sha2::{Digest, Sha256};
+    let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(golden.join("meta.json")).expect("golden meta.json")).unwrap();
+    let want = meta["files"].as_object().expect("golden files");
+    let hex = |d: &[u8]| Sha256::digest(d).iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let mut bad = 0;
+    let mut seen = 0;
+    for (name, data) in files.iter().map(|(n, d)| (n.as_str(), d.as_slice())).chain([("image/image.bin", image)]) {
+        match want.get(name).and_then(|v| v.as_str()) {
+            Some(w) => {
+                seen += 1;
+                if hex(data) != w {
+                    bad += 1;
+                    println!("golden: {name} differs");
+                }
+            }
+            None => println!("golden: {name} not in the golden"),
+        }
+    }
+    println!("golden: {} of {} files equal (gen/, rt64/, image.bin)", seen - bad, want.len());
+    bad + want.len() - seen
 }
 
 /// the parallel stages' busy seconds so far (ounce_lift::busy)
@@ -87,6 +128,7 @@ fn main() {
     let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     let (mut only, mut skip, mut check) = (None::<Vec<String>>, false, false);
     let (mut game_dir, mut work, mut max_func) = (PathBuf::from("games/oot"), PathBuf::from("work"), 0usize);
+    let (mut exefs, mut root, mut golden) = (None::<PathBuf>, PathBuf::from("."), None::<PathBuf>);
     while let Some(a) = args.next() {
         match a.as_str() {
             "-j" => jobs = args.next().unwrap().parse().unwrap(),
@@ -96,6 +138,9 @@ fn main() {
             "--game" => game_dir = PathBuf::from(args.next().unwrap()),
             "--work" => work = PathBuf::from(args.next().unwrap()),
             "--max-func" => max_func = args.next().unwrap().parse().unwrap(),
+            "--exefs" => exefs = Some(PathBuf::from(args.next().unwrap())),
+            "--root" => root = PathBuf::from(args.next().unwrap()),
+            "--golden" => golden = Some(PathBuf::from(args.next().unwrap())),
             _ => pos.push(PathBuf::from(a)),
         }
     }
@@ -105,24 +150,48 @@ fn main() {
     }
     let (dir, out) = (&pos[0], &pos[1]);
     let meta = read_meta(dir).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(meta.format, 4, "export format");
+    assert_eq!(meta.format, 5, "export format");
     std::fs::create_dir_all(out).unwrap();
     rayon::ThreadPoolBuilder::new().num_threads(jobs.max(1)).build_global().unwrap();
     let t0 = Instant::now();
     let game = Game::load(&game_dir).unwrap_or_else(|e| panic!("{e}"));
-    // the image and its entries (nx2/lift.py: the image's, then those ADR / ADRP+ADD form outside unwind-covered code)
-    let img = Image::load(&dir.join("image")).unwrap_or_else(|e| panic!("{e}"));
-    let mut eh: Vec<u64> = meta.eh_frame_hdr.iter().flat_map(|(_, s, e)| img.eh_funcs(*s, *e)).collect();
-    eh.sort_unstable();
-    let spans = img.fde_spans(&meta.eh_frame_hdr);
-    let mut entries = meta.image_entries.clone();
+    // the exefs, checked to be the game's, its modules loaded (nso.py), the HLE'd and stubbed symbols
+    // (standalone.hle_set) and the image (EdenImage)
+    let exefs = exefs.unwrap_or_else(|| dump_exefs(&work));
+    game.check_exefs(&exefs).unwrap_or_else(|e| panic!("{e}"));
+    let mods = ounce_lift::nso::load_exefs(&exefs).unwrap_or_else(|e| panic!("{e}"));
+    let implemented: BTreeSet<String> = meta.hle_symbols.iter().cloned().collect();
+    let (hle, stubbed) = eden::hle_set(&mods, &implemented, &meta.os_namespaces).unwrap_or_else(|e| panic!("{e}"));
+    let nvn = eden::nvn_exports(&mods, &implemented);
+    let all_hle: BTreeSet<String> = hle.union(&stubbed).cloned().collect();
+    let t_load = t0.elapsed().as_secs_f64();
+    let (img, facts) = eden::build(mods, &all_hle).unwrap_or_else(|e| panic!("{e}"));
+    let t_build = t0.elapsed().as_secs_f64() - t_load;
+    // (nx2/lift.py: the image's entries, then those ADR / ADRP+ADD form outside unwind-covered code)
+    let spans = img.fde_spans(&facts.eh_frame_hdr);
+    let mut entries = facts.entries.clone();
     let have: HashSet<u64> = entries.iter().copied().collect();
     entries.extend(img.code_address_refs(&spans).into_iter().filter(|&e| img.in_code(e) && !have.contains(&e)));
     let (c_img, _) = usage();
     let t_img = t0.elapsed().as_secs_f64();
+    // the HLE'd functions at their addresses, with their declared facts (summary.host_summary, bounds)
+    let facts_by: HashMap<&str, &ounce_lift::export::HleFact> = meta.hle.iter().map(|h| (h.0.as_str(), h)).collect();
+    let hle_at: Vec<Hle> = img
+        .hooks
+        .iter()
+        .filter_map(|h| h.c.strip_prefix("imp_").map(|s| (h.addr, s)))
+        .map(|(a, s)| {
+            let f = facts_by.get(s).unwrap_or_else(|| panic!("export: no declared facts of the HLE'd {s}"));
+            Hle(a, s.to_string(), f.1, f.2, f.3, f.4)
+        })
+        .collect();
+    let answers: Vec<(u64, String, u64)> = hle_at
+        .iter()
+        .filter_map(|h| meta.answers.iter().find(|a| a.0 == h.1).map(|a| (h.0, h.1.clone(), a.1)))
+        .collect();
     // discovery (sequential: Python's order), then the plan
     let td = Instant::now();
-    let mut d = Discovery::new(&img, &entries, &meta.names, &meta.setjmp_names, eh);
+    let mut d = Discovery::new(&img, &entries, &facts.names, &meta.setjmp_names, facts.eh_starts.clone());
     d.discover(max_func);
     let (c_disc, _) = usage();
     let t_disc = td.elapsed().as_secs_f64();
@@ -141,9 +210,14 @@ fn main() {
     let (c_plan, m_plan) = usage();
     let t_plan = tp.elapsed().as_secs_f64();
     println!(
-        "image: {} entries, {} more from ADR / ADRP+ADD; {:.2} s wall, {:.2} s CPU",
-        meta.image_entries.len(),
-        entries.len() - meta.image_entries.len(),
+        "image: exefs loaded in {:.2} s, built in {:.2} s; {} hooks ({} HLE, {} stubbed), {} entries, {} more from ADR / ADRP+ADD; {:.2} s wall, {:.2} s CPU",
+        t_load,
+        t_build,
+        img.hooks.len(),
+        hle.len(),
+        stubbed.len(),
+        facts.entries.len(),
+        entries.len() - facts.entries.len(),
         t_img,
         c_img
     );
@@ -168,6 +242,37 @@ fn main() {
         b_plan,
         m_plan
     );
+    // the generated sources and the image (nx2/lift.py --write --standalone, nx2/rtgen.py)
+    let tg = Instant::now();
+    let functions: Vec<u64> = plan.bodies.iter().map(|b| b.entry).collect();
+    let answered: BTreeSet<u64> = answers.iter().map(|a| a.0).collect();
+    let (table_c, hooks_c) = gen::tables(&functions, &img.hooks, &answered);
+    let (stubs, nstubs) = gen::stubs_c(&img.hooks, &implemented);
+    let sizes: Vec<(u64, usize)> = functions.iter().copied().zip(plan.insns.iter().copied()).collect();
+    let mut files: Vec<(String, Vec<u8>)> = vec![
+        ("gen/a64_table.c".into(), table_c.into_bytes()),
+        ("gen/a64_hooks.c".into(), hooks_c.into_bytes()),
+        ("gen/a64_code_slots.c".into(), gen::code_slots(&img, &facts, &functions).into_bytes()),
+        ("gen/a64_stubs.c".into(), stubs.into_bytes()),
+        ("gen/hos_image.c".into(), gen::image_c(&img, &facts, &exefs).unwrap_or_else(|e| panic!("{e}")).into_bytes()),
+        ("gen/nvn2_exports.c".into(), gen::nvn_exports_c(&nvn).into_bytes()),
+        ("gen/functions.txt".into(), gen::functions_txt(&sizes).into_bytes()),
+    ];
+    for (name, text) in gen::rt64(&root).unwrap_or_else(|e| panic!("{e}")) {
+        files.push((format!("rt64/{name}"), text.into_bytes()));
+    }
+    for (name, data) in &files {
+        let p = out.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, data).unwrap();
+    }
+    std::fs::create_dir_all(out.join("image")).unwrap();
+    std::fs::write(out.join("image/image.bin"), &img.mem).unwrap();
+    println!("gen: {} files, {} import stubs; {:.2} s wall", files.len(), nstubs, tg.elapsed().as_secs_f64());
+    let mut gen_bad = 0;
+    if let Some(g) = &golden {
+        gen_bad = check_golden(g, &files, &img.mem);
+    }
     drop(d);
     if !check {
         // (the partitions hold the bodies now; the check compares the plan's)
@@ -184,10 +289,10 @@ fn main() {
     let parts = &pp.parts;
     let names: Vec<String> = parts.iter().map(|p| p.name.clone()).filter(|n| only.as_ref().is_none_or(|o| o.contains(n))).collect();
     if only.as_ref().is_none_or(|o| o.iter().any(|n| n == ANSWERS)) {
-        std::fs::write(out.join(format!("{ANSWERS}.ll")), answers_ir(&meta)).unwrap();
+        std::fs::write(out.join(format!("{ANSWERS}.ll")), answers_ir(&answers)).unwrap();
     }
     let ts = Instant::now();
-    let mut prog = Program::new(&meta, &plan, parts, &img);
+    let mut prog = Program::new(&meta, &plan, parts, &img, &hle_at, &facts.names);
     let (sums, st) = summarise(&mut prog);
     let rec = Records::new(&prog, &sums, &plan.sj_rets);
     let b_sum = busy_s() - b_plan;
@@ -198,7 +303,7 @@ fn main() {
         ts.elapsed().as_secs_f64(), c_sum - c_plan, b_sum, m_sum
     );
     if check {
-        let n = ounce_lift::check::check_plan(dir, &plan, &pp, &img, 20);
+        let n = ounce_lift::check::check_plan(dir, &plan, &pp, &img, 20) + ounce_lift::check::check_image(dir, &meta, &img, &facts, 20) + gen_bad;
         let (a, b) = ounce_lift::check::check(dir, &prog, &sums, &rec, 40);
         std::process::exit(if a + b + n == 0 { 0 } else { 1 });
     }

@@ -1,61 +1,60 @@
 # The lift export: what the Rust lifter reads
 
-`nx2/lift_export.py` writes what the Rust lifter (`ounce-lift`) cannot compute yet: the image the lift built and the
-facts of it the image files do not hold, the patches' declarations and rows (resolved by Python), and Python's plan,
-summaries and records as the diagnostic's reference. The Rust side computes the rest, in nx2/lift.py's order: the ADR /
-ADRP+ADD entries (src/image.rs, adr_entries.py), the discovery (src/discover.rs, discover.py), the plan (src/plan.rs:
-write_plan's bodies, the partitions, the code-pointer targets, sites and census), the summaries and the call-boundary
-records (src/summary.rs, src/bounds.rs), and each partition's IR, byte for byte the Python lifter's.
+`nx2/lift_export.py` writes what the Rust lifter (`ounce-lift`) cannot compute yet: the results of the host's patch
+scan (nx2/lift2/patch_scan.py, probes.resolve over Python's plan), a few platform name lists, and Python's plan,
+image, summaries and records as the diagnostic's reference. The Rust side computes everything else from the dump's
+exefs, in nx2/lift.py --standalone --write's order: the modules (src/nso.rs: nso.py, nso2.py), the HLE'd and stubbed
+symbols and the image (src/eden.rs: standalone.hle_set, EdenImage), the ADR / ADRP+ADD entries (src/image.rs), the
+discovery (src/discover.rs), the plan (src/plan.rs), the generated sources (src/gen.rs: tables.py, standalone.py's
+hos_image.c, a64_stubs.c, nvn2_exports.c, functions.txt, rtgen.py), the summaries and records (src/summary.rs,
+src/bounds.rs) and each partition's IR, byte for byte the Python lifter's.
 
     work/venv/bin/python -I nx2/lift_export.py --game games/oot work/ounce/export
-    ounce/lift/target/release/ounce-lift work/ounce/export <out dir> [--game games/oot] [--work work] [--check]
+    ounce/lift/target/release/ounce-lift work/ounce/export <out dir> [--game games/oot] [--work work] [--exefs <dir>]
+        [--root .] [--golden work/ounce/golden] [--check]
+
+The exefs is the dump's (`--exefs`, else OOT_EXEFS, OOT_DUMP/exefs, or the first line of `<work>/dump.txt`, as
+nx2/kit.py), checked against games/oot/game.toml's identity first. `--root` is the repository (a64-kit's rt/ sources
+for rt64/). The output holds `<name>.ll` per partition, `lift_answers.ll`, `gen/`, `rt64/` and `image/image.bin`;
+`--golden` checks gen/, rt64/ and image.bin against the golden's sha256 (its meta.json `files`).
 
 The export is made from the game: it stays under `work/` and never enters git (CONTRIBUTING.md). It is of the build
-without `HOOKSHOT_LIFT_VERIFY` (no `body_`/`hchk_`/`sum_` wrappers, no `sitepoison`) and with `omit` on.
-
-The game description (`--game`, games/oot/game.toml: src/game.rs) gives the hot list's file under `--work` and the
-local continuations the census accepts.
+without `HOOKSHOT_LIFT_VERIFY` and with `omit` on.
 
 ## Files
 
-    <out>/meta.json                 the export's facts, the patches, what discovery and the summaries read
-    <out>/image/image.bin           the lift's image (nx2/lift.py --standalone: EdenImage, ASLR 0), copied
-    <out>/image/image.json          its modules, segments and hooks
+    <out>/meta.json                 the patch scan's results, platform lists, keys
     <out>/check/plan.json           Python's discovery and plan,
+    <out>/check/image.json          the lift's image.json and
+    <out>/check/image_entries.json  its entry candidates (before the ADR ones),
     <out>/check/summaries.json      summaries and records: the diagnostic's reference (ounce-lift --check), read by
     <out>/check/bounds.json         nothing else
-
-All files are UTF-8 JSON (one object, no comments). Numbers are JSON integers (all fit in `u64`; addresses are guest
-virtual addresses, decimal). The register masks are hex strings (see *Masks*).
 
 ## meta.json
 
 ```json
 {
-  "format": 4,                      // 2: answers, stops; 3: the summaries' inputs; 4: the discovery's inputs, no parts
+  "format": 5,                      // 3: summaries' inputs; 4: discovery's inputs, no parts; 5: no image, from the exefs
   "commit": "…", "input_key": "…", "code_key": "…", "facts_key": "…", "summary_cache": "…",
   "verify": false, "omit": true,
-  "image_sha256": "…",              // of image/image.bin (the export checks the image built now is the lift's)
-  "image_entries": [a, …],          // sorted: nx_image._entries (eh_frame starts, exported functions, INIT/FINI,
-                                    //   RELATIVE/ABS64 results in code, BL targets, init arrays), before the ADR ones
-  "eh_frame_hdr": [["main", start, end], …],  // each module's .eh_frame_hdr, absolute: its table gives the function
-                                    //   starts (the jump tables' extent) and the FDE spans (the ADR entries' filter)
-  "setjmp_names": ["__setjmp", …],  // nx2/horizon SETJMP_NAMES: a BL to one makes its function a setjmp owner
+  "image_sha256": "…",              // the lift's image.bin (the Rust side's must equal it: --check)
+  "hle_symbols": ["…", …],          // patch_scan.patches().hle_symbols(): HLE(...) and PATCH_ANSWER(...) symbols
+  "os_namespaces": ["account", …],  // nx2/horizon OS_NAMESPACES: an imported free function of one is stubbed
+  "setjmp_names": ["__setjmp", …],  // nx2/horizon SETJMP_NAMES
+  "noreturn_names": ["abort", …], "noreturn_parts": ["AbortImpl", …],
   "part_insns": 120000,             // game.PART_INSNS
-  "answers": [[entry, "symbol", value], …],
+  "answers": [["symbol", value], …],          // the PATCH_ANSWER values, by symbol
+  "hle": [["symbol", stops, answer | null, clobbering, "reads"], …],   // each hooked symbol's declared facts
   "values": [ValueRow + "func", …], // every Value probe, in declaration order, with its function (probes.resolve)
   "rows": [AtRow + "func", …],      // every At row, likewise
   "func_names": [[entry, "hos_func_…", "hos_orig_…"], …],   // the PATCH_FUNCs' adapter and lifted body names
-  "names": [[entry, "symbol"], …],  // the image's symbols (img.names): setjmp owners, noreturn seeds
-  "noreturn_names": ["abort", …], "noreturn_parts": ["AbortImpl", …],
-  "hle": [[addr, "symbol", stops, answer | null, clobbering, "reads"], …],
   "row_effects": [[pc, "bu", "au", "bd", "ad", guest, replace], …],
   "patch_funcs": [[entry, "reads", "result", orig, [guest, …]], …]
 }
 ```
 
-- `hle`: plan["hle"] (equal to the image's hooks and to gen/a64_hooks.c's map: the export checks) with each symbol's
-  declaration: `host_effects.stops`, `.answer` (u64), `.clobbers(...) is not None`, and the mask of `.hle_reads`.
+- `hle`: for every hooked symbol (the hook's C name less `imp_`, as host_effects is asked), its declaration:
+  `host_effects.stops`, `.answer` (u64), `.clobbers(...) is not None`, and the mask of `.hle_reads`.
 - `row_effects`: per pc, every Value probe's and At row's declared reads and writes (masks) before and after the
   instruction, the guest functions their host functions call (a list, or `"computed"`), and whether a row replaces the
   instruction. They apply to every body holding the pc, not only the row's function.

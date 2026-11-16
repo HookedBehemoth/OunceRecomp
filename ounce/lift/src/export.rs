@@ -17,15 +17,15 @@ pub struct Meta {
     pub commit: String,
     pub verify: bool,
     pub omit: bool,
-    /// [entry, symbol, value] of the answered functions (PATCH_ANSWER), by entry: the answers module
-    #[serde(default)]
-    pub answers: Vec<(u64, String, u64)>,
-    // ---- what the discovery reads beyond image.bin / image.json (format 4)
+    /// [symbol, value] of the answered functions (PATCH_ANSWER): the answers module
+    pub answers: Vec<(String, u64)>,
+    /// the lift's image.bin's sha256 (the image the Rust side builds must be the same)
     pub image_sha256: String,
-    /// the image's entry candidates (nx_image._entries), before the ADR / ADRP+ADD ones
-    pub image_entries: Vec<u64>,
-    /// [module, start, end] of each module's .eh_frame_hdr, absolute
-    pub eh_frame_hdr: Vec<(String, u64, u64)>,
+    // ---- the patch scan's results the image stage reads (format 5)
+    /// the symbols the host's HLE(...) and PATCH_ANSWER(...) replace
+    pub hle_symbols: Vec<String>,
+    /// nx2/horizon OS_NAMESPACES: an import of a free function of one is stubbed
+    pub os_namespaces: Vec<String>,
     pub setjmp_names: Vec<String>,
     pub part_insns: usize,
     /// the Value probes and At rows, each with its function, in declaration order
@@ -34,12 +34,10 @@ pub struct Meta {
     /// [entry, adapter name, orig name] of the PATCH_FUNCs, by entry
     pub func_names: Vec<(u64, String, String)>,
     // ---- what the summaries and the call-boundary records read (format 3)
-    /// [entry, symbol] of the image's symbols: the noreturn seeds and the setjmp owners match them
-    pub names: Vec<(u64, String)>,
     pub noreturn_names: Vec<String>,
     pub noreturn_parts: Vec<String>,
-    /// the HLE'd functions, by address
-    pub hle: Vec<Hle>,
+    /// the HLE'd functions' declarations, by symbol
+    pub hle: Vec<HleFact>,
     /// the patch rows' declared effects, by pc
     pub row_effects: Vec<RowEffect>,
     /// the PATCH_FUNCs' declarations, by entry
@@ -113,9 +111,14 @@ pub fn at_row(r: &MetaAt, names: &mut Names) -> AtRow {
     }
 }
 
-/// an HLE'd function: [address, symbol, stops, answer, declared clobbering, reads mask]
+/// an HLE'd function's declared facts: [symbol (its hook's C name less imp_), stops, answer, declared clobbering,
+/// reads mask]
 #[derive(Deserialize, Debug)]
-pub struct Hle(pub u64, pub String, pub bool, pub Option<u64>, pub bool, #[serde(deserialize_with = "de_mask")] pub u128);
+pub struct HleFact(pub String, pub bool, pub Option<u64>, pub bool, #[serde(deserialize_with = "de_mask")] pub u128);
+
+/// an HLE'd function at its address: [address, symbol, stops, answer, declared clobbering, reads mask]
+#[derive(Debug)]
+pub struct Hle(pub u64, pub String, pub bool, pub Option<u64>, pub bool, pub u128);
 
 /// the guest functions host code calls: "computed" (any), or their addresses
 #[derive(Deserialize, Debug, Clone)]

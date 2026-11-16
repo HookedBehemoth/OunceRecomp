@@ -13,7 +13,7 @@ import time
 
 NX2 = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(NX2)
-FORMAT = 4
+FORMAT = 5
 
 
 def commit():
@@ -128,9 +128,9 @@ def summary_inputs(plan, hle, funcs):
     if set(facts) != set(funcs):
         raise SystemExit("export: the summaries' PATCH_FUNCs are not the build's")
     hle_rows = []
-    for a, n in sorted(hle.items()):
+    for n in sorted(set(hle.values())):   # (by the symbol the lifter asks host_effects with: the hook's C name less imp_)
         v = host_effects.answer(n)
-        hle_rows.append([a, n, bool(host_effects.stops(n)), None if v is None else v & 0xFFFFFFFFFFFFFFFF,
+        hle_rows.append([n, bool(host_effects.stops(n)), None if v is None else v & 0xFFFFFFFFFFFFFFFF,
                          host_effects.clobbers(n) is not None, mask(sum(summary.BIT[r] for r in host_effects.hle_reads(n)))])
     rows = []
     for pc, (bu, au, bd, ad, calls, repl) in sorted(summary.rows().items()):
@@ -264,8 +264,8 @@ def main():
     a = ap.parse_args()
     t0 = time.time()
     plan_path, plan, gen, funcs, parts = setup(a.game)
-    from horizon import SETJMP_NAMES
-    from lift2 import bounds, game, host_effects, probes
+    from horizon import OS_NAMESPACES, SETJMP_NAMES
+    from lift2 import bounds, game, host_effects, patch_scan, probes
     hle = host_effects.hle_names(gen)
     host_effects.check(hle)
     img, sha = image_facts(plan_path)
@@ -274,10 +274,11 @@ def main():
     entries = set(plan["entries"])
     values, ats = probes.tables()
     os.makedirs(os.path.join(a.out, "check"), exist_ok=True)
-    os.makedirs(os.path.join(a.out, "image"), exist_ok=True)
     src = os.path.join(os.path.dirname(plan_path), "image")
-    for f in ("image.bin", "image.json"):
-        shutil.copyfile(os.path.join(src, f), os.path.join(a.out, "image", f))
+    # (the image check's reference: the lift's image.json and entry candidates)
+    shutil.copyfile(os.path.join(src, "image.json"), os.path.join(a.out, "check", "image.json"))
+    with open(os.path.join(a.out, "check", "image_entries.json"), "w") as f:
+        json.dump(sorted(img.entries), f)
     t1 = time.time()
     rows_checked = {p.func for p in values} | {p.func for p in ats}
     reach = set()
@@ -287,18 +288,18 @@ def main():
             "facts_key": game.facts_key(plan),
             "summary_cache": plan.get("summary_cache"), "verify": False, "omit": True,
             "image_sha256": sha,
-            "image_entries": sorted(img.entries),
-            "eh_frame_hdr": [[m.name, m.base + m.eh_frame_hdr[0], m.base + m.eh_frame_hdr[1]] for m in img.modules],
+            "hle_symbols": sorted(patch_scan.patches().hle_symbols()),
+            "os_namespaces": sorted(OS_NAMESPACES),
             "setjmp_names": list(SETJMP_NAMES),
             "part_insns": game.PART_INSNS,
-            "answers": answers(hle),
+            "answers": [[n, v] for _, n, v in answers(hle)],
             "values": [dict(row_json(p), func=p.func) for p in values],
             "rows": [dict(row_json(p), func=p.func) for p in ats],
             "func_names": [[e, f.name, f.orig_name] for e, f in sorted(funcs.items())]}
     si = summary_inputs(plan, hle, funcs)
     for k in ("entries", "plt", "summary_bodies"):   # (computed by the Rust side now: the discovery)
         del si[k]
-    if si["names"] != [[e, n] for e, n in sorted(img.names.items())]:
+    if si.pop("names") != [[e, n] for e, n in sorted(img.names.items())]:
         raise SystemExit("export: the summaries' names are not the image's")
     meta.update(si)
     texts = [(seg["addr"], seg["addr"] + seg["size"]) for mod in json.load(open(os.path.join(src, "image.json")))["modules"]

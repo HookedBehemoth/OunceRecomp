@@ -5,22 +5,30 @@
 use serde::Deserialize;
 use std::path::Path;
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct Segment {
     pub name: String,
     pub addr: u64,
     pub size: u64,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct Module {
     pub name: String,
     pub base: u64,
     pub size: u64,
+    #[serde(default)]
+    pub build_id: String,
+    #[serde(default)]
+    pub init: u64,
+    #[serde(default)]
+    pub fini: u64,
     pub segments: Vec<Segment>,
+    #[serde(default)]
+    pub bss: [u64; 2],
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct Hook {
     pub addr: u64,
     pub c: String,

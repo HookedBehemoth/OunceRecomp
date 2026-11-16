@@ -10,7 +10,7 @@
 //! definition comes from the semantic templates themselves, run on a scratch builder (summary.def_use), cached per
 //! worker by word. The fixed point runs level by level over the components' DAG, a level's components in parallel.
 
-use crate::export::{GuestCalls, Meta, Part};
+use crate::export::{GuestCalls, Hle, Meta, Part};
 use crate::image::Image;
 use crate::plan::Plan;
 use crate::ir::{bit, BKey, Builder, Function, ALL};
@@ -282,7 +282,7 @@ pub struct Program<'a> {
 impl<'a> Program<'a> {
     /// the program from the plan: each function's body as the summaries see it (the discovered one where the lift
     /// traps or cuts it: Plan::raw, its words the image's), the rest of the facts from the export
-    pub fn new(meta: &'a Meta, plan: &'a Plan, parts: &'a [Part], img: &Image) -> Program<'a> {
+    pub fn new(meta: &'a Meta, plan: &'a Plan, parts: &'a [Part], img: &Image, hle: &[Hle], names: &[(u64, String)]) -> Program<'a> {
         let mut fs: Vec<(u64, Body<'a>)> = parts
             .iter()
             .flat_map(|p| p.functions.iter())
@@ -306,8 +306,7 @@ impl<'a> Program<'a> {
             fs[k].1 = Body { pcs: Cow::Borrowed(&pcs[..]), words: Cow::Owned(words), jt: Cow::Owned(jt) };
         }
         let (fns, bodies): (Vec<u64>, Vec<Body>) = fs.into_iter().unzip();
-        let hooks = meta
-            .hle
+        let hooks = hle
             .iter()
             .map(|h| HookFacts {
                 addr: h.0,
@@ -343,8 +342,7 @@ impl<'a> Program<'a> {
                 repl: r.6,
             })
             .collect();
-        let mut noret: Vec<u64> = meta
-            .names
+        let mut noret: Vec<u64> = names
             .iter()
             .filter(|(_, n)| noreturn_seed(n, &meta.noreturn_names, &meta.noreturn_parts))
             .map(|(e, _)| *e)

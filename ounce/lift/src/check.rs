@@ -223,3 +223,57 @@ pub fn check_plan(dir: &Path, plan: &crate::plan::Plan, parts: &crate::plan::Par
     println!("check: discovery and plan: {n} differences");
     n
 }
+
+// ---- the image against the lift's (check/image.json, check/image_entries.json, meta.image_sha256)
+
+/// differences of the image the Rust side built from the lift's
+pub fn check_image(dir: &Path, meta: &crate::export::Meta, img: &crate::image::Image, facts: &crate::eden::Facts, show: usize) -> usize {
+    use sha2::{Digest, Sha256};
+    #[derive(serde::Deserialize)]
+    struct PyImage {
+        base: u64,
+        end: u64,
+        tramp_base: u64,
+        modules: Vec<crate::image::Module>,
+        skipped: Vec<String>,
+        hooks: Vec<crate::image::Hook>,
+        unresolved: serde_json::Map<String, serde_json::Value>,
+        init_arrays: serde_json::Map<String, serde_json::Value>,
+        exports: serde_json::Map<String, serde_json::Value>,
+    }
+    let p = dir.join("check").join("image.json");
+    let py: PyImage = serde_json::from_slice(&std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display())))
+        .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let p = dir.join("check").join("image_entries.json");
+    let py_entries: Vec<u64> = serde_json::from_slice(&std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))).unwrap();
+    let mut n = 0;
+    let sha: String = Sha256::digest(&img.mem).iter().map(|b| format!("{b:02x}")).collect();
+    if sha != meta.image_sha256 {
+        n += 1;
+        println!("image.bin: sha256 rust {sha} python {}", meta.image_sha256);
+    }
+    n += field("base/end/tramp", &[img.base, img.end, crate::eden::TRAMP_BASE], &[py.base, py.end, py.tramp_base], show);
+    n += field("skipped", &[] as &[String], &py.skipped, show);
+    n += field("modules", &img.modules, &py.modules, show);
+    n += field("hooks", &img.hooks, &py.hooks, show);
+    let as_list = |m: &serde_json::Map<String, serde_json::Value>| -> Vec<(String, serde_json::Value)> {
+        m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    };
+    // (by key: serde_json's map is sorted; the order of Python's dicts is not a fact the build reads)
+    let sorted = |mut v: Vec<(String, serde_json::Value)>| {
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    };
+    let unresolved: Vec<(String, serde_json::Value)> = facts.unresolved.iter().map(|(k, v)| (k.clone(), (*v).into())).collect();
+    let unresolved = sorted(unresolved);
+    n += field("unresolved", &unresolved, &as_list(&py.unresolved), show);
+    let init: Vec<(String, serde_json::Value)> = facts.init_arrays.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect();
+    let init = sorted(init);
+    n += field("init_arrays", &init, &as_list(&py.init_arrays), show);
+    let exports: Vec<(String, serde_json::Value)> = facts.exports.iter().map(|(k, v)| (k.clone(), (*v).into())).collect();
+    let exports = sorted(exports);
+    n += field("exports", &exports, &as_list(&py.exports), show);
+    n += field("entries", &facts.entries, &py_entries, show);
+    println!("check: image: {n} differences");
+    n
+}
