@@ -34,7 +34,7 @@ pub struct Facts {
 /// nx_image.c_ident
 pub fn c_ident(sym: &str) -> String {
     let mut s = String::from("imp_");
-    s.extend(sym.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }));
+    s.extend(sym.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }));
     s
 }
 

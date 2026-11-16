@@ -113,3 +113,11 @@ diffout 0 changed: the 155 stubs' text equal to llvm-cxxfilt's.
 hos_image.c's main build id was the header's 32-byte field less its trailing zero bytes, the identity check's the
 field's first 20 bytes: equal unless the id ends in a zero byte. Both are nso::build_id now, the first 20 bytes.
 diffout 0 changed.
+
+## v2.5 kept: the scan reads every host file, in ASCII (flaws 20, 21, 23)
+
+A host file without a declaration keyword was skipped before it was tokenised, so a malformed one went unreported;
+every file is read now (the scan and the records check). Identifiers and numbers are ASCII, as C's (Python's tests
+took any Unicode letter or digit, the Rust number test did not); the C names of hooks too. A # after a block comment
+spanning lines is a directive exactly when the comment began its line: that is C's rule (a comment is one space) and
+cpp's, kept and now tested. diffout 0 changed; all 62 host files tokenise.

@@ -151,16 +151,16 @@ pub fn tokens(text: &str, path: &str) -> Res<Vec<Tok>> {
             }
             out.push(Tok { kind: if c == '"' { TK::Str } else { TK::Chr }, text: t[i..j + 1].iter().collect(), line: start });
             i = j + 1;
-        } else if c.is_alphabetic() || c == '_' {
+        } else if c.is_ascii_alphabetic() || c == '_' {
             let mut j = i;
-            while j < n && (t[j].is_alphanumeric() || t[j] == '_') {
+            while j < n && (t[j].is_ascii_alphanumeric() || t[j] == '_') {
                 j += 1;
             }
             out.push(Tok { kind: TK::Id, text: t[i..j].iter().collect(), line: start });
             i = j;
         } else if c.is_ascii_digit() || (c == '.' && i + 1 < n && t[i + 1].is_ascii_digit()) {
             let mut j = i;
-            while j < n && (t[j].is_alphanumeric() || t[j] == '.' || t[j] == '_' || ((t[j] == '+' || t[j] == '-') && matches!(t[j - 1], 'e' | 'E' | 'p' | 'P'))) {
+            while j < n && (t[j].is_ascii_alphanumeric() || t[j] == '.' || t[j] == '_' || ((t[j] == '+' || t[j] == '-') && matches!(t[j - 1], 'e' | 'E' | 'p' | 'P'))) {
                 j += 1;
             }
             out.push(Tok { kind: TK::Num, text: t[i..j].iter().collect(), line: start });
@@ -188,7 +188,7 @@ fn words(s: &str) -> Vec<String> {
     let mut w = Vec::new();
     let mut cur = String::new();
     for c in s.chars() {
-        if c.is_alphanumeric() || c == '_' {
+        if c.is_ascii_alphanumeric() || c == '_' {
             cur.push(c);
         } else if !cur.is_empty() {
             w.push(std::mem::take(&mut cur));
@@ -794,10 +794,8 @@ pub struct PatchSet {
 /// patch_scan.scan_texts: [(file name, text)]
 pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
     let (mut sites, mut replaced, mut funcs, mut answers) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // (every file tokenised, one without a declaration too: a malformed one is reported, not skipped)
     for (rel, text) in texts {
-        if !KINDS.iter().any(|k| text.contains(k)) {
-            continue;
-        }
         for d in declarations(text, rel)? {
             match d.kind {
                 "PATCH_AT" | "PATCH_AT_SITE" => sites.push(Site::new(&d)?),
@@ -1385,6 +1383,27 @@ mod tests {
     }
 
     #[test]
+    fn a_file_without_declarations_is_read() {
+        assert_eq!(err("int f(void) { return '; }"), "patch declarations: t.c:1: a literal that does not end");
+    }
+
+    #[test]
+    fn directives_after_a_comment() {
+        // (a comment is one space (C's phase 3): a # after one that began a line starts a directive, after one that
+        // follows a token on its line not, its newlines notwithstanding; as cpp)
+        assert_eq!(err("/* a\n */ #if X\nHLE(f) {}\n#endif"), "patch declarations: t.c:3: HLE inside conditional compilation (#if at line 2)");
+        let ps = scan_texts(&[("t.c".into(), "int a; /* a\n */ #if X\nHLE(f) {}".into())]).unwrap();
+        assert!(ps.hle.contains_key("f"));
+    }
+
+    #[test]
+    fn identifiers_and_numbers_are_ascii() {
+        let t = tokens("a\u{e9}b 1\u{b2}", "t.c").unwrap();
+        let texts: Vec<&str> = t.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, vec!["a", "\u{e9}", "b", "1", "\u{b2}"]);
+    }
+
+    #[test]
     fn errors_name_file_and_line() {
         assert_eq!(err("\n#if X\nHLE(f) {}\n#endif"), "patch declarations: t.c:3: HLE inside conditional compilation (#if at line 2)");
         assert_eq!(err("void g(void) { HLE(f); }"), "patch declarations: t.c:1: HLE inside a function or an initializer: declarations stand at file scope");
@@ -1589,9 +1608,6 @@ pub fn check_records(root: &Path, files: &[String], objects: &[std::path::PathBu
         let p = root.join("host").join(f);
         let b = std::fs::read(&p).map_err(|e| format!("patch declarations: {}: {e}", p.display()))?;
         let text = String::from_utf8_lossy(&b);
-        if !KINDS.iter().any(|k| text.contains(k)) {
-            continue;
-        }
         for d in declarations(&text, &format!("host/{f}"))? {
             let canon = format!(
                 "{}({})",
