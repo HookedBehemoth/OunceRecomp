@@ -1786,7 +1786,16 @@ fn graph_of(f: &Flow, prog: &Program) -> GraphOut {
             _ => {}
         }
     }
-    GraphOut { callees, falls: f.falls_into.clone(), dangling, tails }
+    // (the entries this one falls into: after an instruction, or after a call that returns: an SVC or an indirect
+    // call; a direct call's callee with nothing after it is a noreturn seed by the callers' evidence, dangling)
+    let mut falls = f.falls_into.clone();
+    for k in 0..f.n {
+        let Some(t) = f.ctail[k] else { continue };
+        if f.kind[k] == K::Svc || matches!(f.callee[k], Callee::One(c) if c.cls == Cls::Indirect) {
+            falls.push(t.addr);
+        }
+    }
+    GraphOut { callees, falls, dangling, tails }
 }
 
 /// Tarjan's strongly connected components, iteratively, callees before callers (summary.sccs: the same order)
@@ -1972,9 +1981,7 @@ pub fn summarise(prog: &mut Program) -> (Vec<Summary>, Stats) {
     let mut sums: Vec<Summary> = done.into_iter().map(|s| s.into_inner().expect("a component never ran")).collect();
     let t2 = std::time::Instant::now();
     // results: what callers read after their calls, and what callers pass on as their own results
-    // (and the calls whose return falls into another function's entry: a fact of the fixed point's returns)
-    type Reads = (Vec<(FnId, u128, u128)>, Vec<FnId>);
-    let reads: Vec<Reads> = {
+    let reads: Vec<Vec<(FnId, u128, u128)>> = {
         let done: &[Summary] = &sums;
         (0..n as FnId)
             .into_par_iter()
@@ -1982,33 +1989,21 @@ pub fn summarise(prog: &mut Program) -> (Vec<Summary>, Stats) {
                 w.flow(0, prog, e);
                 let f = &w.flows[0];
                 let ctx = Sums { prog, done: Done::Plain(done), comp_of: &comp_of, pos: &pos, cur: u32::MAX, local: &[] };
-                let falls = (0..f.n)
-                    .filter_map(|k| {
-                        let c = f.ctail[k]?.func()?;
-                        (f.kind[k] == K::Svc || callee_of(f, k, &ctx).returns).then_some(c)
-                    })
-                    .collect();
-                (call_reads(f, &ctx, &mut w.sc), falls)
+                call_reads(f, &ctx, &mut w.sc)
             }))
             .collect()
     };
     let mut passes: Vec<(FnId, FnId, u128)> = Vec::new();
-    let mut falls = Vec::new();
-    for (e, (rs, fl)) in reads.into_iter().enumerate() {
+    for (e, rs) in reads.into_iter().enumerate() {
         for (c, m, pt) in rs {
             sums[c as usize].results |= m;
             passes.push((e as FnId, c, pt));
         }
-        falls.extend(fl);
     }
     for (e, g) in graph.iter().enumerate() {
         passes.extend(g.tails.iter().map(|&c| (e as FnId, c, ALL)));
     }
     propagate_results(&mut sums, &passes);
-    // a call whose return falls into another function's entry: that entry is entered by falling through
-    for c in falls {
-        sums[c as usize].demote |= why::FALLTHROUGH_ENTRY;
-    }
     let t3 = std::time::Instant::now();
     let stats = Stats {
         functions: n,

@@ -66,3 +66,11 @@ with no probe or row up to the BR; the summaries read the BR's whole resolved ta
 index tables the lift switches on, and the summaries take their entries as the BR's targets; the lift stops if such a
 table's load is in another block than its BR. For this game every index table's entries are its whole table:
 diffout 0 changed, 0 facts changed.
+
+## v2.3 kept: a fall-through after a call is known before the fixed point (flaw 6)
+
+An entry a call's return falls into was demoted after the fixed point, once the call was known to return, so its
+summary during the fixed point (what its callers read) lacked the reason. Which calls those are is known before: a
+direct call with nothing after it makes its callee a noreturn seed (the callers' evidence), so only an SVC or an
+indirect call returns into the next entry. The call graph's pass marks those entries with the others that are fallen
+into. Nothing reads a callee's demotion during the fixed point today: diffout 0 changed, 0 facts changed.
