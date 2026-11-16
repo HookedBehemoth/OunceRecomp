@@ -235,14 +235,13 @@ fn main() {
     let (c_img, _) = usage();
     let t_img = t0.elapsed().as_secs_f64();
     // the HLE'd functions at their addresses, with their declared facts (summary.host_summary, bounds)
-    // (host_effects is asked with the hook's C name less imp_)
+    // (by the hook's symbol: its C name is the symbol made an identifier, which may name no declaration)
     let hle_at: Vec<Hle> = img
         .hooks
         .iter()
-        .filter_map(|h| h.c.strip_prefix("imp_").map(|s| (h.addr, s)))
-        .map(|(a, s)| {
-            let f = ps.hle_fact(s);
-            Hle(a, s.to_string(), f.1, f.2, f.3, f.4)
+        .map(|h| {
+            let f = ps.hle_fact(&h.sym);
+            Hle(h.addr, h.sym.clone(), f.1, f.2, f.3, f.4)
         })
         .collect();
     let answer_list = ps.answers();
