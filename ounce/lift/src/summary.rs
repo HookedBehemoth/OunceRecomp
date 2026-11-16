@@ -777,8 +777,18 @@ impl Flow {
         self.kind[k] = if nlocal > 0 || ntails == 0 { K::Goto } else { K::Tail };
         if self.kind[k] == K::Tail {
             let t0 = first_tail.unwrap();
-            let one = targets.iter().all(|t| *t == Err(t0));
-            self.callee[k] = if one { Callee::One(prog.tgt(t0)) } else { Callee::One(Tgt::INDIRECT) };
+            if targets.iter().all(|t| *t == Err(t0)) {
+                self.callee[k] = Callee::One(prog.tgt(t0));
+            } else {
+                // (a conditional branch or a table whose targets are all other functions: a tail call of each)
+                let a = self.tails.len() as u32;
+                for t in targets.iter().filter_map(|t| t.err()) {
+                    if !self.tails[a as usize..].iter().any(|x| x.addr == t) {
+                        self.tails.push(prog.tgt(t));
+                    }
+                }
+                self.callee[k] = Callee::Tails(a, self.tails.len() as u32);
+            }
             return;
         }
         self.succ.extend(targets.iter().filter_map(|t| t.ok()));
@@ -896,11 +906,9 @@ pub fn liveness(f: &Flow, s: &Sums, ret_live: u128, live: &mut Vec<u128>) {
                 K::Ret => u & !X30 | ret_live,
                 K::Trap => u,
                 K::Tail => {
-                    let c = match f.callee[k] {
-                        Callee::One(t) => s.callee(&t),
-                        _ => Cow::Borrowed(&AAPCS),
-                    };
-                    u | ((c.inputs | (ret_live & !c.mustdef)) & !f.dfn[k])
+                    let mut v = u;
+                    each_callee(f, k, s, |c| v |= (c.inputs | (ret_live & !c.mustdef)) & !f.dfn[k]);
+                    v
                 }
                 kind => {
                     let mut out = 0;
@@ -942,6 +950,14 @@ pub fn liveness(f: &Flow, s: &Sums, ret_live: u128, live: &mut Vec<u128>) {
                 changed = true;
             }
         }
+    }
+}
+
+/// the summary of each function a call or tail k reaches (a tail of several targets: each one's)
+fn each_callee(f: &Flow, k: usize, s: &Sums, mut g: impl FnMut(&Summary)) {
+    match f.callee[k] {
+        Callee::Tails(a, b) => f.tails_of(a, b).iter().for_each(|t| g(&s.callee(t))),
+        _ => g(&callee_of(f, k, s)),
     }
 }
 
@@ -994,11 +1010,12 @@ fn must_and_may(f: &Flow, s: &Sums, must: &mut Vec<Option<u128>>) -> (u128, u128
                 continue;
             }
             if kind == K::Tail {
-                let c = callee_of(f, k, s);
-                if c.returns {
-                    exit_must &= out | c.mustdef;
-                    returns = true;
-                }
+                each_callee(f, k, s, |c| {
+                    if c.returns {
+                        exit_must &= out | c.mustdef;
+                        returns = true;
+                    }
+                });
                 continue;
             }
             if let Callee::Tails(a, b) = f.callee[k] {
@@ -1030,10 +1047,12 @@ fn must_and_may(f: &Flow, s: &Sums, must: &mut Vec<Option<u128>>) -> (u128, u128
                 may |= s.callee(t).clobbers;
             }
         }
-        if matches!(kind, K::Call | K::Tail) {
-            may |= callee_of(f, k, s).clobbers | if kind == K::Call { X30 } else { 0 };
+        if kind == K::Call {
+            may |= callee_of(f, k, s).clobbers | X30;
         }
-        if let Callee::Tails(a, b) = f.callee[k] {
+        if kind == K::Tail {
+            each_callee(f, k, s, |c| may |= c.clobbers);
+        } else if let Callee::Tails(a, b) = f.callee[k] {
             for t in f.tails_of(a, b) {
                 may |= s.callee(t).clobbers;
             }
@@ -1384,14 +1403,15 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
             continue;
         }
         if kind == K::Tail {
-            let c = callee_of(f, k, s);
             let indirect = matches!(f.callee[k], Callee::One(Tgt { cls: Cls::Indirect, .. }));
             if sp != Some(0) && !indirect {
                 reasons |= why::SPLIT_FRAME;
             }
-            if c.returns {
-                fs.exits.push((sp, if c.preserved & SPM != 0 { holds & (c.preserved | SPM) } else { 0 }));
-            }
+            each_callee(f, k, s, |c| {
+                if c.returns {
+                    fs.exits.push((sp, if c.preserved & SPM != 0 { holds & (c.preserved | SPM) } else { 0 }));
+                }
+            });
             continue;
         }
         if let Callee::Tails(a, b) = f.callee[k] {
@@ -1519,15 +1539,22 @@ fn analyse(f: &Flow, s: &Sums, sc: &mut Scratch) -> Summary {
     let mut boundary = f.guest.iter().any(|g| matches!(g, Guest::Computed));
     for k in 0..f.n {
         let kind = f.kind[k];
-        let c = match f.callee[k] {
-            Callee::One(t) => Some(t),
-            _ => None,
+        let cs: &[Tgt] = match f.callee[k] {
+            Callee::One(ref t) => std::slice::from_ref(t),
+            Callee::Tails(a, b) if kind == K::Tail => f.tails_of(a, b),
+            _ => &[],
         };
         let callish = matches!(kind, K::Call | K::Tail);
-        if kind == K::Svc || (callish && c.is_none_or(|t| t.cls == Cls::Indirect || t.is_host())) {
+        if kind == K::Svc || (callish && cs.is_empty()) {
             boundary = true;
-        } else if callish {
-            if let Some(g) = c.and_then(|t| t.func()) {
+        }
+        if !callish {
+            continue;
+        }
+        for c in cs {
+            if c.cls == Cls::Indirect || c.is_host() {
+                boundary = true;
+            } else if let Some(g) = c.func() {
                 let cs = s.get(g);
                 if cs.boundary || cs.unknown {
                     boundary = true;
@@ -1675,13 +1702,15 @@ fn graph_of(f: &Flow, prog: &Program) -> GraphOut {
             _ => None,
         })
         .collect();
-    let tails = (0..f.n)
-        .filter(|&k| f.kind[k] == K::Tail)
-        .filter_map(|k| match f.callee[k] {
-            Callee::One(t) if t.cls == Cls::Fn => Some(t.id),
-            _ => None,
-        })
-        .collect();
+    // (a function a tail exit reaches returns to this one's callers: it passes their results on)
+    let mut tails = Vec::new();
+    for k in 0..f.n {
+        match f.callee[k] {
+            Callee::One(t) if f.kind[k] == K::Tail && t.cls == Cls::Fn => tails.push(t.id),
+            Callee::Tails(a, b) => tails.extend(f.tails_of(a, b).iter().filter(|t| t.cls == Cls::Fn).map(|t| t.id)),
+            _ => {}
+        }
+    }
     GraphOut { callees, falls: f.falls_into.clone(), dangling, tails }
 }
 
