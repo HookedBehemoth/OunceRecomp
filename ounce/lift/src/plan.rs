@@ -155,7 +155,7 @@ impl Plan {
         let jt = &d.jt;
         let chosen: Vec<Chosen> = es
             .par_iter()
-            .map(|&e| {
+            .map(|&e| crate::busy(|| {
                 let raw = &d.funcs[&e].order;
                 let mut pcs = raw.clone();
                 pcs.sort_unstable();
@@ -182,7 +182,7 @@ impl Plan {
                 let words = pcs.iter().map(|&p| img.word(p)).collect();
                 let over = (pcs != raw_sorted).then_some(raw_sorted);
                 (PBody { entry: e, pcs, words }, over, n, None)
-            })
+            }))
             .collect();
         let mut why: BTreeMap<String, u32> = BTreeMap::new();
         let n_hooked = es.iter().filter(|e| hooks.contains(e)).count() as u32;
@@ -503,7 +503,7 @@ pub fn parts(plan: &Plan, meta: &Meta, img: &Image, continuations: &HashMap<u64,
     let built: Vec<(Part, Census)> = parts
         .par_iter()
         .enumerate()
-        .map(|(k, (tag, idx))| {
+        .map(|(k, (tag, idx))| crate::busy(|| {
             let mut names = Names::default();
             let mut fns = Vec::with_capacity(idx.len());
             let (mut nsites, mut kinds, mut odd) = (0u64, BTreeMap::new(), Vec::new());
@@ -560,7 +560,7 @@ pub fn parts(plan: &Plan, meta: &Meta, img: &Image, continuations: &HashMap<u64,
             }
             let name = format!("lift_{tag}{k:03}");
             (Part { name, functions: fns, names }, (nsites, kinds, odd))
-        })
+        }))
         .collect();
     let (parts, census) = built.into_iter().unzip();
     Parts { parts, census, code_targets: tg }

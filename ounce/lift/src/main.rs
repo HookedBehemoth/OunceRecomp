@@ -64,6 +64,11 @@ fn answers_ir(meta: &ounce_lift::export::Meta) -> String {
     s
 }
 
+/// the parallel stages' busy seconds so far (ounce_lift::busy)
+fn busy_s() -> f64 {
+    ounce_lift::BUSY_NS.load(Ordering::Relaxed) as f64 / 1e9
+}
+
 /// (process CPU seconds, user and system; VmHWM in MB)
 fn usage() -> (f64, f64) {
     let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
@@ -129,9 +134,10 @@ fn main() {
         .filter_map(|l| l.split_whitespace().next())
         .filter_map(|w| w.strip_prefix("f_").map(|h| u64::from_str_radix(h, 16).unwrap()))
         .collect();
-    let plan = Plan::new(&d, &img, &hot);
+    let mut plan = Plan::new(&d, &img, &hot);
     let continuations: HashMap<u64, u32> = game.local_continuations.iter().copied().collect();
     let pp = plan::parts(&plan, &meta, &img, &continuations);
+    let b_plan = busy_s();
     let (c_plan, m_plan) = usage();
     let t_plan = tp.elapsed().as_secs_f64();
     println!(
@@ -142,7 +148,7 @@ fn main() {
         c_img
     );
     println!(
-        "discovery: {} functions, {} jump tables ({} on their index), {} PLT stubs, {} setjmp owners; {:.2} s wall, {:.2} s CPU",
+        "discovery: {} functions, {} jump tables ({} on their index), {} PLT stubs, {} setjmp owners; {:.2} s wall, {:.2} s CPU (one thread)",
         d.funcs.len(),
         d.jt.len(),
         d.jt_index.len(),
@@ -152,15 +158,24 @@ fn main() {
         c_disc - c_img
     );
     println!(
-        "plan: {} bodies ({} traps by reason), {} partitions, census {} sites; {:.2} s wall, {:.2} s CPU; peak {:.0} MB",
+        "plan: {} bodies ({} traps by reason), {} partitions, census {} sites; {:.2} s wall, {:.2} s CPU ({:.2} s busy); peak {:.0} MB",
         plan.bodies.len(),
         plan.why.values().sum::<u32>(),
         pp.parts.len(),
         pp.census.iter().map(|c| c.0).sum::<u64>(),
         t_plan,
         c_plan - c_disc,
+        b_plan,
         m_plan
     );
+    drop(d);
+    if !check {
+        // (the partitions hold the bodies now; the check compares the plan's)
+        for b in &mut plan.bodies {
+            b.pcs = Vec::new();
+            b.words = Vec::new();
+        }
+    }
     let odd: Vec<&(u64, String)> = pp.census.iter().flat_map(|c| c.2.iter()).collect();
     if !odd.is_empty() && !check {
         panic!("{} code addresses formed in a way code_ptrs does not know, first {:#x}: {}", odd.len(), odd[0].0, odd[0].1);
@@ -175,11 +190,12 @@ fn main() {
     let mut prog = Program::new(&meta, &plan, parts, &img);
     let (sums, st) = summarise(&mut prog);
     let rec = Records::new(&prog, &sums, &plan.sj_rets);
+    let b_sum = busy_s() - b_plan;
     let (c_sum, m_sum) = usage();
     println!(
-        "summaries: {} functions, {} components (largest {}) in {} levels, {} noreturn by callers; graph {:.2} s, fixed point {:.2} s, results {:.2} s; {:.2} s wall, {:.2} s CPU; peak {:.0} MB",
+        "summaries: {} functions, {} components (largest {}) in {} levels, {} noreturn by callers; graph {:.2} s, fixed point {:.2} s, results {:.2} s; {:.2} s wall, {:.2} s CPU ({:.2} s busy); peak {:.0} MB",
         st.functions, st.sccs, st.largest, st.levels, st.noreturn_by_callers, st.graph_s, st.fixed_s, st.results_s,
-        ts.elapsed().as_secs_f64(), c_sum - c_plan, m_sum
+        ts.elapsed().as_secs_f64(), c_sum - c_plan, b_sum, m_sum
     );
     if check {
         let n = ounce_lift::check::check_plan(dir, &plan, &pp, &img, 20);
@@ -236,7 +252,12 @@ fn main() {
         c_lift - c_lift0,
         g.3
     );
-    println!("whole pipeline: {:.2} s wall, {:.2} s CPU", t0.elapsed().as_secs_f64(), c_lift);
+    println!(
+        "whole pipeline: {:.2} s wall, {:.2} s CPU ({:.2} s of it busy in tasks: discovery, plan, summaries, lift)",
+        t0.elapsed().as_secs_f64(),
+        c_lift,
+        c_disc - c_img + busy_s() + g.3 + c_img
+    );
     let hwm = std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|s| s.lines().find(|l| l.starts_with("VmHWM:")).map(|l| l[6..].trim().to_string()))

@@ -16,3 +16,15 @@ pub mod plan;
 pub mod sem;
 pub mod summary;
 pub mod ty;
+
+/// nanoseconds the parallel stages' tasks ran (their busy time: the process CPU less the pool's idle spinning)
+pub static BUSY_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// runs a parallel stage's task, counting its time into BUSY_NS
+#[inline]
+pub fn busy<R>(f: impl FnOnce() -> R) -> R {
+    let t = std::time::Instant::now();
+    let r = f();
+    BUSY_NS.fetch_add(t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+    r
+}

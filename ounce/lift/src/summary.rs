@@ -1587,6 +1587,7 @@ impl<'a> Wave<'a> {
     fn run<'s>(&'s self, k: u32, sc: &rayon::Scope<'s>) {
         let comp = &self.comps[k as usize];
         let prog = self.prog;
+        let t = std::time::Instant::now();
         WORKER.with(|w| {
             let w = &mut *w.borrow_mut();
             let mut local = vec![Summary::START; comp.len()];
@@ -1617,6 +1618,7 @@ impl<'a> Wave<'a> {
                 assert!(self.done[comp[p] as usize].set(s).is_ok());
             }
         });
+        crate::BUSY_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         for &d in &self.dep[self.dep_at[k as usize] as usize..self.dep_at[k as usize + 1] as usize] {
             if self.pending[d as usize].fetch_sub(1, Ordering::AcqRel) == 1 {
                 sc.spawn(move |sc| self.run(d, sc));
@@ -1770,8 +1772,10 @@ pub fn summarise(prog: &mut Program) -> (Vec<Summary>, Stats) {
         (0..n as FnId)
             .into_par_iter()
             .map_init(Worker::default, |w, i| {
-                let f = w.flow(0, p, i);
-                graph_of(f, p)
+                crate::busy(|| {
+                    let f = w.flow(0, p, i);
+                    graph_of(f, p)
+                })
             })
             .collect()
     };
@@ -1872,7 +1876,7 @@ pub fn summarise(prog: &mut Program) -> (Vec<Summary>, Stats) {
         let done: &[Summary] = &sums;
         (0..n as FnId)
             .into_par_iter()
-            .map_init(Worker::default, |w, e| {
+            .map_init(Worker::default, |w, e| crate::busy(|| {
                 w.flow(0, prog, e);
                 let f = &w.flows[0];
                 let ctx = Sums { prog, done: Done::Plain(done), comp_of: &comp_of, pos: &pos, cur: u32::MAX, local: &[] };
@@ -1883,7 +1887,7 @@ pub fn summarise(prog: &mut Program) -> (Vec<Summary>, Stats) {
                     })
                     .collect();
                 (call_reads(f, &ctx, &mut w.sc), falls)
-            })
+            }))
             .collect()
     };
     let mut passes: Vec<(FnId, FnId, u128)> = Vec::new();
