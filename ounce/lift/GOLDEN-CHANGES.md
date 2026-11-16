@@ -83,3 +83,11 @@ tail call of an HLE'd function no longer counts x30 as written on every path.
 
 diffout: 530 functions' facts changed (mustdef: x30 out; 529 records' must), 0 functions' IR changed, gen/ and
 image.bin equal.
+
+## v2.5: functions.txt gives the lifted bodies' sizes (flaw 9)
+
+The plan's instruction counts (gen/functions.txt) were the discovered bodies' sizes, while the partitions, the
+summaries and the lift count the lifted ones. They are the lifted sizes now: the four trapped module headers count
+one instruction (their trap); no body is cut to its reachable part in this game.
+
+diffout: 0 functions changed, 0 facts changed; gen/functions.txt 4 lines (the headers).

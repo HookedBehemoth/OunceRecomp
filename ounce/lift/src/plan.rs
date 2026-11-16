@@ -31,7 +31,7 @@ pub struct Plan {
     /// the discovered bodies (the summaries' view, their words the image's) where the lifted ones differ: trapped or
     /// cut to their reachable part, by entry
     pub raw: BTreeMap<u64, Vec<u64>>,
-    /// the discovered bodies' sizes (plan["insns"]), by entry as bodies
+    /// the lifted bodies' sizes (plan["insns"]), by entry as bodies
     pub insns: Vec<usize>,
     pub jt: HashMap<u64, Vec<u64>>,
     pub jt_index: HashMap<u64, (u64, u32, u32, Vec<u64>)>,
@@ -147,8 +147,8 @@ pub fn why_key(r: &str) -> String {
     out
 }
 
-/// a function's lifted body, its discovered body where that differs, the discovered size, the trap's reason
-type Chosen = (PBody, Option<Vec<u64>>, usize, Option<String>);
+/// a function's lifted body, its discovered body where that differs, the trap's reason
+type Chosen = (PBody, Option<Vec<u64>>, Option<String>);
 
 impl Plan {
     /// game.write_plan over a finished discovery; hot: the hot list's functions
@@ -163,7 +163,6 @@ impl Plan {
                 let raw = &d.funcs[&e].order;
                 let mut pcs = raw.clone();
                 pcs.sort_unstable();
-                let n = pcs.len();
                 let mut r = scope(d, e, &pcs, img);
                 if r.as_deref().is_some_and(|r| r.contains("not decoded")) {
                     let live = reachable(e, &pcs, img, jt);
@@ -181,11 +180,11 @@ impl Plan {
                     // (a trap at its entry; an entry whose first word is no instruction (a module's MOD0 header) is
                     // lifted as UDF #0, the others counted by their reason)
                     let why = if decode(img.word(e)).is_none() { None } else { Some(why_key(&r)) };
-                    return (PBody { entry: e, pcs: vec![e], words: vec![0] }, Some(raw_sorted), n, why);
+                    return (PBody { entry: e, pcs: vec![e], words: vec![0] }, Some(raw_sorted), why);
                 }
                 let words = pcs.iter().map(|&p| img.word(p)).collect();
                 let over = (pcs != raw_sorted).then_some(raw_sorted);
-                (PBody { entry: e, pcs, words }, over, n, None)
+                (PBody { entry: e, pcs, words }, over, None)
             }))
             .collect();
         let mut why: BTreeMap<String, u32> = BTreeMap::new();
@@ -196,14 +195,14 @@ impl Plan {
         let mut bodies = Vec::with_capacity(chosen.len());
         let mut raw = BTreeMap::new();
         let mut insns = Vec::with_capacity(chosen.len());
-        for (b, over, n, w) in chosen {
+        for (b, over, w) in chosen {
             if let Some(o) = over {
                 raw.insert(b.entry, o);
             }
             if let Some(w) = w {
                 *why.entry(w).or_insert(0) += 1;
             }
-            insns.push(n);
+            insns.push(b.pcs.len());
             bodies.push(b);
         }
         let mut entries: Vec<u64> = d.entries.iter().copied().collect();

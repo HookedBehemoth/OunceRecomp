@@ -81,7 +81,7 @@ pub fn code_slots(img: &Image, facts: &Facts, functions: &[u64]) -> String {
     s
 }
 
-/// functions.txt: every discovered function and its body's size
+/// functions.txt: every lifted function and its lifted body's size
 pub fn functions_txt(sizes: &[(u64, usize)]) -> String {
     let mut s = String::new();
     for (e, n) in sizes {
