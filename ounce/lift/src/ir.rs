@@ -394,6 +394,42 @@ impl Function {
     pub fn ty(&self, v: ValueId) -> Ty {
         self.v(v).ty
     }
+    /// the function as text to read (ounce-lift dump's ir.txt): each live block with its parameters, operations and
+    /// terminator
+    pub fn text(&self) -> String {
+        use std::fmt::Write;
+        let names = crate::summary::mask_names(ALL);
+        let mut s = format!("function f_{:08x}\n", self.entry);
+        for &b in &self.order {
+            let blk = &self.blocks[b.0 as usize];
+            let params: Vec<String> = blk.params.iter().map(|(var, v)| format!("{}=%v{}", names[*var as usize], v.n())).collect();
+            let preds: Vec<String> = blk.preds.iter().map(|p| self.blocks[p.0 as usize].name().to_string()).collect();
+            writeln!(s, "{}({})   ; preds {}", blk.name(), params.join(", "), if preds.is_empty() { "-".into() } else { preds.join(" ") }).unwrap();
+            for &v in &blk.ops {
+                let args: Vec<String> = self.args(v).iter().map(|a| format!("%v{}", a.n())).collect();
+                writeln!(s, "  %v{} = {:?} {:?} {}", v.n(), self.ty(v), self.v(v).op, args.join(", ")).unwrap();
+            }
+            match &blk.term {
+                Some(t) => writeln!(s, "  {}", self.term_text(t)).unwrap(),
+                None => writeln!(s, "  (no terminator)").unwrap(),
+            }
+        }
+        s
+    }
+    fn term_text(&self, t: &Term) -> String {
+        let n = |b: &BlockId| self.blocks[b.0 as usize].name().to_string();
+        match t {
+            Term::Br(b) => format!("br {}", n(b)),
+            Term::CondBr(c, a, b) => format!("br %v{} ? {} : {}", c.n(), n(a), n(b)),
+            Term::Switch(v, cases, d) => format!(
+                "switch %v{} [{}] default {}",
+                v.n(),
+                cases.iter().map(|(k, b)| format!("{k}: {}", n(b))).collect::<Vec<_>>().join(", "),
+                n(d)
+            ),
+            other => format!("{other:?}"),
+        }
+    }
     pub fn args(&self, v: ValueId) -> &[ValueId] {
         let x = self.v(v);
         &self.args[x.a0 as usize..(x.a0 + x.an) as usize]

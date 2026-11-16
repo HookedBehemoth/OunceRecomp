@@ -4,7 +4,7 @@ The pause menu draws the whole picture into the save's 543 x 306 JPEG through th
 patch widens that one SetViewport, centred, so the middle 16:9 of the picture fills the texture; narrower than 16:9 (4:3,
 16:10) it makes it taller, centred, so the picture's middle band fills the texture at its own shape; every other
 viewport, and a 16:9 window, stay as the game set them. No game or image is used: the function is cut out of
-host/oot_probes.c, and the row (nx2/lift2/probes.py AT) is checked to pass it w1-w4 at the viewport helper's site.
+host/oot_probes.c, and the row (ounce-lift scan's At rows) is checked to pass it w1-w4 at the viewport helper's site.
 """
 import argparse
 import os
@@ -14,10 +14,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import gamedesc  # noqa: E402
-gamedesc.use(os.path.join(ROOT, "games", "oot"))   # (the game whose host files and patches these read)
-from lift2 import probes  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+import lift_scan  # noqa: E402  (the host's rows as the lifter reads them: ounce-lift scan)
 
 FIXTURE = r"""
 #include <stdint.h>
@@ -101,7 +99,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
-    rows = [p for p in probes.AT if p.fn == "hos_oot_wide_save_picture"]
+    rows = [p for p in lift_scan.load().AT if p.fn == "hos_oot_wide_save_picture"]
     assert len(rows) == 1 and rows[0].pc == 0x802a4824 and rows[0].word == 0xf9400108, rows
     assert rows[0].io == ("w1", "w2", "w3", "w4"), rows[0].io
     src = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")

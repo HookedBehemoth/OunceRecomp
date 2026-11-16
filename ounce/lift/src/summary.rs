@@ -261,6 +261,29 @@ pub struct Body<'a> {
     pub jt: Cow<'a, [(u64, Vec<u64>)]>,
 }
 
+/// the rows' declared reads and writes by pc as the summaries take them (meta.row_effects)
+pub fn rows_from(effects: &[crate::export::RowEffect]) -> Vec<Rows> {
+    effects
+        .iter()
+        .map(|r| Rows {
+            pc: r.0,
+            bu: r.1,
+            au: r.2,
+            bd: r.3,
+            ad: r.4,
+            calls: match &r.5 {
+                GuestCalls::Computed(s) => {
+                    assert_eq!(s, "computed");
+                    Some(None)
+                }
+                GuestCalls::List(l) if l.is_empty() => None,
+                GuestCalls::List(l) => Some(Some(l.clone())),
+            },
+            repl: r.6,
+        })
+        .collect()
+}
+
 /// the whole program as the summaries read it (summary.job's input)
 pub struct Program<'a> {
     /// the lifted functions' entries, sorted: a FnId is an index here
@@ -307,26 +330,7 @@ impl<'a> Program<'a> {
             .iter()
             .map(|p| Patch { entry: p.0, reads: p.1, result: p.2, orig: p.3, guest: p.4.clone() })
             .collect();
-        let rows = meta
-            .row_effects
-            .iter()
-            .map(|r| Rows {
-                pc: r.0,
-                bu: r.1,
-                au: r.2,
-                bd: r.3,
-                ad: r.4,
-                calls: match &r.5 {
-                    GuestCalls::Computed(s) => {
-                        assert_eq!(s, "computed");
-                        Some(None)
-                    }
-                    GuestCalls::List(l) if l.is_empty() => None,
-                    GuestCalls::List(l) => Some(Some(l.clone())),
-                },
-                repl: r.6,
-            })
-            .collect();
+        let rows = rows_from(&meta.row_effects);
         let mut noret: Vec<u64> = names
             .iter()
             .filter(|(_, n)| noreturn_seed(n, &meta.noreturn_names, &meta.noreturn_parts))
@@ -2009,6 +2013,142 @@ fn propagate_results(sums: &mut [Summary], passes: &[(FnId, FnId, u128)]) {
                 changed = true;
             }
         }
+    }
+}
+
+// ---- one function, after the summaries (the patch tools)
+
+/// a function's flow as the summaries see it
+pub fn flow_of(prog: &Program, me: FnId) -> Flow {
+    let mut f = Flow::default();
+    DU.with(|du| f.build(prog, &mut du.borrow_mut(), me));
+    f
+}
+
+/// the finished summaries as Sums reads them
+pub struct Plain {
+    zero: Vec<u32>,
+}
+
+impl Plain {
+    pub fn new(n: usize) -> Plain {
+        Plain { zero: vec![0; n] }
+    }
+    pub fn sums<'s>(&'s self, prog: &'s Program<'s>, sums: &'s [Summary]) -> Sums<'s> {
+        Sums { prog, done: Done::Plain(sums), comp_of: &self.zero, pos: &self.zero, cur: u32::MAX, local: &[] }
+    }
+}
+
+/// (live-in, live-out) per instruction (summary.liveness, summary.live_out): at a return, ret_live
+pub fn live_in_out(f: &Flow, s: &Sums, ret_live: u128) -> (Vec<u128>, Vec<u128>) {
+    let mut live = Vec::new();
+    liveness(f, s, ret_live, &mut live);
+    let mut out = vec![0u128; f.n];
+    for (k, o) in out.iter_mut().enumerate() {
+        *o = match f.kind[k] {
+            K::Ret => ret_live,
+            K::Trap => 0,
+            K::Tail => {
+                let mut v = 0;
+                each_callee(f, k, s, |c| v |= c.inputs | (ret_live & !c.mustdef));
+                v
+            }
+            _ => {
+                let mut o = 0;
+                for &j in f.succs(k) {
+                    o |= live[j as usize];
+                }
+                if let Some(t) = &f.ctail[k] {
+                    o |= s.inputs(t) | ret_live;
+                }
+                if let Callee::Tails(a, b) = f.callee[k] {
+                    for t in f.tails_of(a, b) {
+                        o |= s.inputs(t) | ret_live;
+                    }
+                }
+                o
+            }
+        };
+    }
+    (live, out)
+}
+
+/// the function's summary analysed alone, its callees' summaries s's (summary.analyse)
+pub fn analyse_alone(f: &Flow, s: &Sums) -> Summary {
+    analyse(f, s, &mut Scratch::default())
+}
+
+/// the register names of a mask (ir.VARS order)
+pub fn mask_names(m: u128) -> Vec<String> {
+    (0..crate::ir::NVARS as u32)
+        .filter(|&b| m >> b & 1 != 0)
+        .map(|b| match b {
+            0..=30 => format!("x{b}"),
+            31 => "sp".into(),
+            32 => "n".into(),
+            33 => "z".into(),
+            34 => "c".into(),
+            35 => "v".into(),
+            _ => format!("v{}", b - 36),
+        })
+        .collect()
+}
+
+/// a register mask as text: x0-x3,x8,sp,nzcv,v0-v1 (patch.regs)
+pub fn regs(m: u128) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for (prefix, base) in [("x", 0u32), ("v", 36u32)] {
+        let n = if prefix == "x" { 31 } else { 32 };
+        let mut k = 0;
+        while k < n {
+            if m >> (base + k) & 1 != 0 {
+                let a = k;
+                while k + 1 < n && m >> (base + k + 1) & 1 != 0 {
+                    k += 1;
+                }
+                out.push(if a == k { format!("{prefix}{a}") } else { format!("{prefix}{a}-{prefix}{k}") });
+            }
+            k += 1;
+        }
+        if prefix == "x" {
+            if m & SPM != 0 {
+                out.push("sp".into());
+            }
+            if m & NZCV == NZCV {
+                out.push("nzcv".into());
+            } else {
+                for (b, c) in ["n", "z", "c", "v"].iter().enumerate() {
+                    if m >> (32 + b) & 1 != 0 {
+                        out.push(c.to_string());
+                    }
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        "-".into()
+    } else {
+        out.join(",")
+    }
+}
+
+/// a register's bit by name (x0-x30, w0-w30 as x, sp, n z c v, v0-v31 and q/d/s as v)
+pub fn reg_bit(name: &str) -> Option<u128> {
+    let n = name.trim();
+    match n {
+        "sp" => return Some(SPM),
+        "n" => return Some(1 << 32),
+        "z" => return Some(1 << 33),
+        "c" => return Some(1 << 34),
+        "v" => return Some(1 << 35),
+        _ => {}
+    }
+    let (p, num) = n.split_at(1);
+    let k: u32 = num.parse().ok()?;
+    match p {
+        "x" | "w" if k <= 30 => Some(xm(k)),
+        "v" | "q" | "d" | "s" if k < 32 => Some(1u128 << (36 + k)),
+        _ => None,
     }
 }
 

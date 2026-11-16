@@ -165,7 +165,7 @@ pub fn expand(runs: &[(u64, u64)]) -> Vec<u64> {
 }
 
 /// the names of a partition's symbols other than `f_<addr>` and `sjcall_<addr>`
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Names {
     list: Vec<Box<str>>,
     index: HashMap<Box<str>, u32>,
@@ -197,6 +197,7 @@ impl Names {
     }
 }
 
+#[derive(Clone)]
 pub struct Part {
     pub name: String,
     pub functions: Vec<Func>,
@@ -263,14 +264,14 @@ pub struct Bound {
     pub answer: Option<u64>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Plt {
     pub target: u64,
     pub slot: u64,
     pub target_is_code: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PatchFunc {
     pub name: Sym,
     pub orig_name: Sym,
@@ -393,7 +394,7 @@ pub struct AtRow {
     pub guest: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Func {
     pub entry: u64,
     /// the body's pcs, ascending

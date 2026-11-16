@@ -1,5 +1,5 @@
 """What the host reads of the guest context, against what it declares (its patch declarations, host/patch.h, as
-nx2/lift2/patch_scan.py reads them; the rules in nx2/lift2/host_effects.py): host/*.c compiled to LLVM IR (-O1, no
+ounce-lift scan reads them; the rules in ounce/lift/src/patch.rs): host/*.c compiled to LLVM IR (-O1, no
 inlining), and every load from a context pointer traced through the functions it is passed to.
 
 - A replaced function's adapter (PATCH_FUNC: hos_func_0x*, hos_func_sym_*) reads only its declared operands of the
@@ -31,10 +31,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
-import gamedesc  # noqa: E402
-gamedesc.use(os.path.join(ROOT, "games", "oot"))   # (the game whose host files and patches these read)
-import rtgen  # noqa: E402
-from lift2 import host_effects, patch_scan, probes  # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+import lift_scan  # noqa: E402  (the host's declarations as the lifter reads them: ounce-lift scan)
 
 DEF = re.compile(r"^define [^@]*@([\w.$]+)\((.*)\)[^{]*\{")
 GUEST = re.compile(r"^(a64_icall|a64_ijump|hos_call_guest|hos_sj_call)$")
@@ -213,7 +211,8 @@ class HostReads(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         d = cls.tmp.name
-        rt = rtgen.write(os.path.join(d, "rt64"))
+        rt = lift_scan.rt64(os.path.join(d, "rt64"))
+        cls.scan = lift_scan.load()
         flags = ["-S", "-emit-llvm", "-O1", "-fno-inline", "-g0", "-Wno-everything", "-D_GNU_SOURCE",
                  "-I" + os.path.join(ROOT, "host", "posix"), "-I" + os.path.join(ROOT, "host"), "-I" + rt,
                  "-I" + os.path.join(ROOT, "gpu", "api")]
@@ -238,7 +237,7 @@ class HostReads(unittest.TestCase):
 
     def test_funcs(self):
         funcs = [n for n in self.funcs if re.match(r"hos_func_(0x[0-9a-f]{8}|sym_\w+)$", n)]
-        decl = {f.name: f for f in patch_scan.patches().funcs}
+        decl = {f.name: f for f in self.scan.funcs}
         self.assertGreater(len(funcs), 20)
         self.assertEqual(sorted(funcs), sorted(decl))   # (each one declared)
         for name in funcs:
@@ -251,13 +250,13 @@ class HostReads(unittest.TestCase):
         """every guest function a replaced function or a row's host function enters is declared where the summaries
         read it"""
         roots = {}
-        for f in patch_scan.patches().funcs:   # (its adapter, which calls it)
+        for f in self.scan.funcs:   # (its adapter, which calls it)
             roots[f.name] = ("the guest(...) of the PATCH_FUNC of %s at %s:%d" % ((f.fn,) + f.where), set(f.guest), None)
-        for p in probes.AT:   # (a row's host function: what its rows declare, all of them)
+        for p in self.scan.AT:   # (a row's host function: what its rows declare, all of them)
             what, decl, _ = roots.get(p.fn, ("the guest(...) of the PATCH_AT of %s" % p.fn, set(), None))
             decl = "computed" if "computed" in (decl, p.guest) else decl | set(p.guest or ())
             roots[p.fn] = (what, decl, None)
-        for p in probes.PROBES:
+        for p in self.scan.PROBES:
             roots.setdefault(p.fn, ("Value probes cannot call guest code (%s)" % p.fn, set(), None))
         self.assertGreater(len(roots), 60)
         bad = []
@@ -293,7 +292,7 @@ class HostReads(unittest.TestCase):
                 continue
             n += 1
             got = reads(self.funcs, name)[0] & cs
-            d = patch_scan.patches().effects(m.group(1))
+            d = self.scan.effects(m.group(1))
             declared = set(d.reads if d is not None else ())
             self.assertFalse(got - declared, "%s reads its caller's %s" % (name, sorted(got - declared)))
         self.assertGreater(n, 300)

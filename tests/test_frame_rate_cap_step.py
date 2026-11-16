@@ -1,7 +1,7 @@
 """A Frame rate cap above 60 steps the game by the frames' own time, so the game is not sped up.
 
 The engine's rate is a whole number of display intervals, 60 at most, and it puts 60 back over a higher one: with only the
-rate raised, every frame above 60 fps still stepped 1/60 s. The lifter's At probes (nx2/lift2/probes.py AT) give the
+rate raised, every frame above 60 fps still stepped 1/60 s. The lifter's At probes (ounce-lift scan's At rows) give the
 engine's two step divides the host's measured frame time (host/oot_probes.c hos_oot_frame_step, after each FDIV), and host/nn_vi.c realtime_step publishes it while the cap is above
 60 and the hook is in the build. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
 code differs keeps its own code (both divides or neither) and the build goes on with a message.
@@ -17,10 +17,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import gamedesc  # noqa: E402
-gamedesc.use(os.path.join(ROOT, "games", "oot"))   # (the game whose host files and patches these read)
-from lift2 import probes  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+import lift_scan  # noqa: E402  (the host's rows as the lifter reads them: ounce-lift scan)
 
 def block(source, marker):
     start = source.index(marker)
@@ -112,7 +110,7 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    sites = {p.pc: p for p in probes.AT if p.fn.startswith("hos_oot_frame_step")}
+    sites = {p.pc: p for p in lift_scan.load().AT if p.fn.startswith("hos_oot_frame_step")}
     check(sorted(sites) == [0x80706cc4, 0x83b6eaf8], "the two step divides, one probe each")
     check((sites[0x80706cc4].pc, sites[0x80706cc4].word, sites[0x80706cc4].fn, sites[0x80706cc4].args, sites[0x80706cc4].result)
           == (0x80706cc4, 0x1e201828, "hos_oot_frame_step_probe", ("s1", "s8", "x19"), "s8"),

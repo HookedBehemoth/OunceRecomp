@@ -6,23 +6,20 @@
 //! --golden: gen/, rt64/ and image.bin against the golden's sha256.
 
 use ounce_lift::bounds::Records;
-use ounce_lift::discover::Discovery;
-use ounce_lift::export::{read_meta, Meta, Part};
-use ounce_lift::patch;
-use ounce_lift::game::Game;
-use ounce_lift::eden;
-use ounce_lift::export::Hle;
+use ounce_lift::export::Part;
 use ounce_lift::gen;
-use std::collections::BTreeSet;
-use ounce_lift::plan::{self, Plan};
-use std::collections::HashMap;
-use ounce_lift::summary::{summarise, Program};
 use ounce_lift::part::{lift_part, Worker};
-use std::collections::{BTreeMap, HashSet};
+use ounce_lift::session::{Base, Opts};
+use ounce_lift::summary::{summarise, Program};
+use ounce_lift::game::Game;
+use ounce_lift::patch;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
+
+mod tools;
 
 #[cfg(feature = "count-alloc")]
 mod count {
@@ -68,20 +65,6 @@ fn answers_ir(answers: &[(u64, String, u64)]) -> String {
     }
     s.push('\n');
     s
-}
-
-/// the dump's exefs as nx2/kit.py finds it: OOT_EXEFS, OOT_DUMP/exefs, else the first line of work/dump.txt
-fn dump_exefs(work: &std::path::Path) -> PathBuf {
-    if let Some(e) = std::env::var_os("OOT_EXEFS").filter(|v| !v.is_empty()) {
-        return PathBuf::from(e);
-    }
-    if let Some(d) = std::env::var_os("OOT_DUMP").filter(|v| !v.is_empty()) {
-        return PathBuf::from(d).join("exefs");
-    }
-    let cfg = work.join("dump.txt");
-    let text = std::fs::read_to_string(&cfg).unwrap_or_else(|e| panic!("no exefs: set OOT_DUMP or write the dump folder into {}: {e}", cfg.display()));
-    let line = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).expect("dump.txt: no dump folder");
-    PathBuf::from(line).join("exefs")
 }
 
 /// the generated files and image.bin against the golden's sha256 (golden/meta.json "files"): the differing count
@@ -211,17 +194,50 @@ fn rt64(argv: Vec<String>) {
     }
 }
 
+/// the options every subcommand that lifts takes
+const OPTS: &str = "[--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]";
+
+/// takes one of OPTS (and its value) into o: false when a is none of them
+fn opt_arg(o: &mut Opts, a: &str, args: &mut impl Iterator<Item = String>) -> bool {
+    let mut val = || PathBuf::from(args.next().unwrap_or_else(|| fail(format!("{a} wants a value"))));
+    match a {
+        "--game" => o.game = val(),
+        "--work" => o.work = val(),
+        "--root" => o.root = val(),
+        "--exefs" => o.exefs = Some(val()),
+        "--max-func" => o.max_func = val().to_string_lossy().parse().unwrap_or_else(|_| fail("--max-func N")),
+        _ => return false,
+    }
+    true
+}
+
 /// the message on stderr, exit status 1
 fn fail(msg: impl std::fmt::Display) -> ! {
     eprintln!("ounce-lift: {msg}");
     std::process::exit(1)
 }
 
+const HELP: &str = "ounce-lift: the lifter. Subcommands (each but rt64, records and scan reads the dump; OPTS: --game <dir> (games/oot), --work <dir> (work), --root <dir> (.), --exefs <dir>):
+  [lift] <out> [-j N] [--parts a,b] [--skip] [--golden <dir>] OPTS   the lift: <out>/gen, rt64, image/image.bin, lift_*.ll
+  rt64 <dir> [--root <dir>]                                         the guest model (a64.h, a64_rt.c)
+  records [--game] [--root] <object>...                             the host objects' hos_patch records against the scan
+  scan [--game] [--root] [<out.json>]                               the host's declarations as the lift reads them, as JSON
+  site <address|label>... OPTS                                      what a patch site is: paths, liveness, record, a PATCH_AT to paste
+  check [<file:line> | - | --all] OPTS                              the declarations against the plan; one: its cost (the summaries' difference)
+  report OPTS                                                       every declaration's local cost, costliest first
+  dump <address|label>... [--tree] [--opt O1|O2] [--asm] [-o <dir>] OPTS   a function's guest code, IR and LLVM IR";
+
 fn main() {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
         Some("records") => records(argv.split_off(1)),
         Some("rt64") => rt64(argv.split_off(1)),
+        Some("scan") => tools::scan(argv.split_off(1)),
+        Some("site") => tools::site(argv.split_off(1)),
+        Some("check") => tools::check(argv.split_off(1)),
+        Some("report") => tools::report(argv.split_off(1)),
+        Some("dump") => tools::dump(argv.split_off(1)),
+        Some("-h" | "--help" | "help") => println!("{}", HELP),
         Some("lift") => lift(argv.split_off(1)),
         _ => lift(argv),
     }
@@ -230,168 +246,53 @@ fn main() {
 /// `ounce-lift [lift] ...`: the whole lift (the module's description)
 fn lift(argv: Vec<String>) {
     let mut args = argv.into_iter();
-    let mut pos = Vec::new();
+    let mut out = None::<PathBuf>;
     let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let (mut only, mut skip, mut check) = (None::<Vec<String>>, false, false);
-    let (mut game_dir, mut work, mut max_func) = (PathBuf::from("games/oot"), PathBuf::from("work"), 0usize);
-    let (mut exefs, mut root, mut golden) = (None::<PathBuf>, PathBuf::from("."), None::<PathBuf>);
+    let (mut only, mut skip, mut golden) = (None::<Vec<String>>, false, None::<PathBuf>);
+    let mut o = Opts::default();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-j" => jobs = args.next().unwrap().parse().unwrap(),
             "--parts" => only = Some(args.next().unwrap().split(',').map(String::from).collect()),
             "--skip" => skip = true,
-            "--check" => check = true,
-            "--game" => game_dir = PathBuf::from(args.next().unwrap()),
-            "--work" => work = PathBuf::from(args.next().unwrap()),
-            "--max-func" => max_func = args.next().unwrap().parse().unwrap(),
-            "--exefs" => exefs = Some(PathBuf::from(args.next().unwrap())),
-            "--root" => root = PathBuf::from(args.next().unwrap()),
             "--golden" => golden = Some(PathBuf::from(args.next().unwrap())),
-            _ => pos.push(PathBuf::from(a)),
+            _ if opt_arg(&mut o, &a, &mut args) => {}
+            _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
+            _ => fail(format!("lift: what is {a}? usage: ounce-lift [lift] <out dir> [-j N] [--parts a,b] [--skip] [--golden <dir>] {OPTS}")),
         }
     }
-    if pos.is_empty() || pos.len() > 2 || (check && pos.len() != 2) {
-        eprintln!("usage: ounce-lift [<export dir (the --check reference)>] <out dir> [-j N] [--parts a,b] [--skip] [--check] [--golden <dir>] [--game <dir>] [--work <dir>] [--exefs <dir>] [--root <dir>]");
-        std::process::exit(2);
-    }
-    let (dir, out) = if pos.len() == 2 { (Some(&pos[0]), &pos[1]) } else { (None, &pos[0]) };
-    let py_meta = dir.map(|d| read_meta(d).unwrap_or_else(|e| panic!("{e}")));
-    if let Some(m) = &py_meta {
-        assert_eq!(m.format, 5, "export format");
-    }
+    let out = &out.unwrap_or_else(|| fail(format!("usage: ounce-lift [lift] <out dir> [-j N] [--parts a,b] [--skip] [--golden <dir>] {OPTS}")));
     std::fs::create_dir_all(out).unwrap();
     rayon::ThreadPoolBuilder::new().num_threads(jobs.max(1)).build_global().unwrap();
     let t0 = Instant::now();
-    let game = Game::load(&game_dir).unwrap_or_else(|e| panic!("{e}"));
-    // the host's patch declarations (patch_scan) and the platform's facts
-    let ps = patch::scan(&root, &game.host).unwrap_or_else(|e| panic!("{e}"));
-    let horizon = patch::Horizon::load(&root).unwrap_or_else(|e| panic!("{e}"));
-    let t_scan = t0.elapsed().as_secs_f64();
-    // the exefs, checked to be the game's, its modules loaded (nso.py), the HLE'd and stubbed symbols
-    // (standalone.hle_set) and the image (EdenImage)
-    let exefs = exefs.unwrap_or_else(|| dump_exefs(&work));
-    game.check_exefs(&exefs).unwrap_or_else(|e| panic!("{e}"));
-    let mods = ounce_lift::nso::load_exefs(&exefs).unwrap_or_else(|e| panic!("{e}"));
-    let implemented: BTreeSet<String> = ps.hle_symbols();
-    let (hle, stubbed) = eden::hle_set(&mods, &implemented, &horizon.os_namespaces).unwrap_or_else(|e| panic!("{e}"));
-    let nvn = eden::nvn_exports(&mods, &implemented);
-    let all_hle: BTreeSet<String> = hle.union(&stubbed).cloned().collect();
-    let t_load = t0.elapsed().as_secs_f64() - t_scan;
-    let (img, facts) = eden::build(mods, &all_hle).unwrap_or_else(|e| panic!("{e}"));
-    let t_build = t0.elapsed().as_secs_f64() - t_load - t_scan;
-    // (nx2/lift.py: the image's entries, then those ADR / ADRP+ADD form outside unwind-covered code)
-    let spans = img.fde_spans(&facts.eh_frame_hdr);
-    let mut entries = facts.entries.clone();
-    let have: HashSet<u64> = entries.iter().copied().collect();
-    entries.extend(img.code_address_refs(&spans).into_iter().filter(|&e| img.in_code(e) && !have.contains(&e)));
-    let (c_img, _) = usage();
-    let t_img = t0.elapsed().as_secs_f64();
-    // the HLE'd functions at their addresses, with their declared facts (summary.host_summary, bounds)
-    // (by the hook's symbol: its C name is the symbol made an identifier, which may name no declaration)
-    let hle_at: Vec<Hle> = img
-        .hooks
-        .iter()
-        .map(|h| {
-            let f = ps.hle_fact(&h.sym);
-            Hle(h.addr, h.sym.clone(), f.1, f.2, f.3, f.4)
-        })
-        .collect();
-    let answer_list = ps.answers();
-    let answers: Vec<(u64, String, u64)> = hle_at
-        .iter()
-        .filter_map(|h| answer_list.iter().find(|a| a.0 == h.1).map(|a| (h.0, h.1.clone(), a.1)))
-        .collect();
-    // discovery (in rounds to the tables' fixed point, each round in parallel), then the plan
-    let td = Instant::now();
-    let mut d = Discovery::new(&img, &entries, &facts.names, &horizon.setjmp_names, facts.eh_starts.clone());
-    d.discover(max_func);
+    // the scan of the host's declarations, the image from the exefs, the discovery and the plan (session::Base)
+    let base = Base::new(&o).unwrap_or_else(|e| fail(e));
     let (c_disc, _) = usage();
-    let t_disc = td.elapsed().as_secs_f64();
     let tp = Instant::now();
-    let hot_path = game.hot_path(&work).unwrap_or_else(|e| panic!("{e}"));
-    let hot: HashSet<u64> = std::fs::read_to_string(&hot_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", hot_path.display()))
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .filter_map(|w| w.strip_prefix("f_").map(|h| u64::from_str_radix(h, 16).unwrap()))
-        .collect();
-    let mut plan = Plan::new(&d, &img, &hot);
-    // the rows' functions over the plan and the lift's checks of them (probes.resolve, find, at), the PATCH_FUNCs
-    // against the plan (check_funcs): the patches as the lift reads them
-    let mut rows = patch::rows(&ps.sites).unwrap_or_else(|e| panic!("{e}"));
-    {
-        let bodies: Vec<(u64, &[u64])> = plan.bodies.iter().map(|b| (b.entry, &b.pcs[..])).collect();
-        patch::resolve(&mut rows, &bodies).unwrap_or_else(|e| panic!("{e}"));
-        let entry_set: HashSet<u64> = plan.entries.iter().copied().collect();
-        for r in &rows {
-            let b = &plan.bodies[plan.bodies.binary_search_by_key(&r.func, |b| b.entry).unwrap()];
-            let (jt, ents) = match (r.value, r.mode.as_str()) {
-                (false, "before") => (Some(&plan.jt), Some(&entry_set)),
-                (false, "instead") => (Some(&plan.jt), None),
-                _ => (None, None),
-            };
-            if let Some(e) = patch::errors(r, &b.pcs, &b.words, jt, ents).unwrap_or_else(|e| panic!("{e}")).first() {
-                panic!("{}", patch::fail::<()>(&r.at, e).unwrap_err());
-            }
-        }
-    }
-    let found = patch::check_funcs(&ps, &facts.exports, &|a| {
-        plan.bodies.binary_search_by_key(&a, |b| b.entry).ok().map(|k| (plan.bodies[k].pcs.clone(), plan.bodies[k].words.clone()))
-    })
-    .unwrap_or_else(|e| panic!("{e}"));
-    let (patch_funcs, func_names) = patch::func_facts(&found);
-    let (values, at_rows) = patch::meta_rows(&rows);
-    let mut hle_syms: Vec<&str> = hle_at.iter().map(|h| h.1.as_str()).collect();
-    hle_syms.sort_unstable();
-    hle_syms.dedup();
-    let meta = Meta {
-        format: 5,
-        commit: String::new(),
-        verify: false,
-        omit: true,
-        answers: answer_list.clone(),
-        image_sha256: String::new(),
-        hle_symbols: implemented.iter().cloned().collect(),
-        os_namespaces: horizon.os_namespaces.clone(),
-        setjmp_names: horizon.setjmp_names.clone(),
-        part_insns: plan::PART_INSNS,
-        values,
-        rows: at_rows,
-        func_names,
-        noreturn_names: horizon.noreturn_names.clone(),
-        noreturn_parts: horizon.noreturn_parts.clone(),
-        hle: hle_syms.iter().map(|s| ps.hle_fact(s)).collect(),
-        row_effects: patch::row_effects(&rows),
-        patch_funcs,
-    };
-    let continuations: HashMap<u64, u32> = game.local_continuations.iter().copied().collect();
-    let pp = plan::parts(&plan, &meta, &img, &continuations);
+    // the rows' functions and the lift's checks of them, the PATCH_FUNCs: the patches as the lift reads them
+    let pa = base.patches(&base.ps).unwrap_or_else(|e| fail(e));
+    let (game, ps, img, facts, plan) = (&base.game, &base.ps, &base.img, &base.facts, &base.plan);
+    let (meta, pp, hle_at, answers) = (&pa.meta, &pa.parts, &pa.hle_at, &pa.answers);
     let b_plan = busy_s();
     let (c_plan, m_plan) = usage();
     let t_plan = tp.elapsed().as_secs_f64();
-    println!("patch scan: {} files, {} sites, {} functions, {} HLE / {} NV / {} effects, {} answers; {:.3} s", game.host.len(), ps.sites.len(), ps.funcs.len(), ps.hle.len(), ps.nv.len(), ps.declared.len(), ps.answers.len(), t_scan);
+    let tm = base.times;
+    println!("patch scan: {} files, {} sites, {} functions, {} HLE / {} NV / {} effects, {} answers; {:.3} s", game.host.len(), ps.sites.len(), ps.funcs.len(), ps.hle.len(), ps.nv.len(), ps.declared.len(), ps.answers.len(), tm.scan);
     println!(
-        "image: exefs loaded in {:.2} s, built in {:.2} s; {} hooks ({} HLE, {} stubbed), {} entries, {} more from ADR / ADRP+ADD; {:.2} s wall, {:.2} s CPU",
-        t_load,
-        t_build,
+        "image: exefs loaded in {:.2} s, built in {:.2} s; {} hooks ({} HLE, {} stubbed), {} entries, {} more from ADR / ADRP+ADD; {:.2} s wall",
+        tm.load,
+        tm.build,
         img.hooks.len(),
-        hle.len(),
-        stubbed.len(),
+        base.hle.len(),
+        base.stubbed.len(),
         facts.entries.len(),
-        entries.len() - facts.entries.len(),
-        t_img,
-        c_img
+        base.entries.len() - facts.entries.len(),
+        tm.image,
     );
+    let f = base.found;
     println!(
-        "discovery: {} functions, {} jump tables ({} on their index) in {} rounds, {} PLT stubs, {} setjmp owners; {:.2} s wall, {:.2} s CPU",
-        d.funcs.len(),
-        d.jt.len(),
-        d.jt_index.len(),
-        d.rounds + 1,
-        d.plt.len(),
-        d.setjmp_owner.len(),
-        t_disc,
-        c_disc - c_img
+        "discovery: {} functions, {} jump tables ({} on their index) in {} rounds, {} PLT stubs, {} setjmp owners; {:.2} s wall",
+        f.0, f.1, f.2, f.5, f.3, f.4, tm.discovery
     );
     println!(
         "plan: {} bodies ({} traps by reason), {} partitions, census {} sites; {:.2} s wall, {:.2} s CPU ({:.2} s busy); peak {:.0} MB",
@@ -404,23 +305,23 @@ fn lift(argv: Vec<String>) {
         b_plan,
         m_plan
     );
-    // the generated sources and the image (nx2/lift.py --write --standalone, nx2/rtgen.py)
+    // the generated sources and the image
     let tg = Instant::now();
     let functions: Vec<u64> = plan.bodies.iter().map(|b| b.entry).collect();
     let answered: BTreeSet<u64> = answers.iter().map(|a| a.0).collect();
     let (table_c, hooks_c) = gen::tables(&functions, &img.hooks, &answered);
-    let (stubs, nstubs) = gen::stubs_c(&img.hooks, &implemented);
+    let (stubs, nstubs) = gen::stubs_c(&img.hooks, &base.implemented);
     let sizes: Vec<(u64, usize)> = functions.iter().copied().zip(plan.insns.iter().copied()).collect();
     let mut files: Vec<(String, Vec<u8>)> = vec![
         ("gen/a64_table.c".into(), table_c.into_bytes()),
         ("gen/a64_hooks.c".into(), hooks_c.into_bytes()),
-        ("gen/a64_code_slots.c".into(), gen::code_slots(&img, &facts, &functions).into_bytes()),
+        ("gen/a64_code_slots.c".into(), gen::code_slots(img, facts, &functions).into_bytes()),
         ("gen/a64_stubs.c".into(), stubs.into_bytes()),
-        ("gen/hos_image.c".into(), gen::image_c(&img, &facts, &exefs).unwrap_or_else(|e| panic!("{e}")).into_bytes()),
-        ("gen/nvn2_exports.c".into(), gen::nvn_exports_c(&nvn).into_bytes()),
+        ("gen/hos_image.c".into(), gen::image_c(img, facts, &base.exefs).unwrap_or_else(|e| fail(e)).into_bytes()),
+        ("gen/nvn2_exports.c".into(), gen::nvn_exports_c(&base.nvn).into_bytes()),
         ("gen/functions.txt".into(), gen::functions_txt(&sizes).into_bytes()),
     ];
-    for (name, text) in gen::rt64(&root).unwrap_or_else(|e| panic!("{e}")) {
+    for (name, text) in gen::rt64(&o.root).unwrap_or_else(|e| fail(e)) {
         files.push((format!("rt64/{name}"), text.into_bytes()));
     }
     for (name, data) in &files {
@@ -431,30 +332,19 @@ fn lift(argv: Vec<String>) {
     std::fs::create_dir_all(out.join("image")).unwrap();
     std::fs::write(out.join("image/image.bin"), &img.mem).unwrap();
     println!("gen: {} files, {} import stubs; {:.2} s wall", files.len(), nstubs, tg.elapsed().as_secs_f64());
-    let mut gen_bad = 0;
-    if let Some(g) = &golden {
-        gen_bad = check_golden(g, &files, &img.mem);
-    }
-    drop(d);
-    if !check {
-        // (the partitions hold the bodies now; the check compares the plan's)
-        for b in &mut plan.bodies {
-            b.pcs = Vec::new();
-            b.words = Vec::new();
-        }
-    }
+    let gen_bad = golden.as_ref().map_or(0, |g| check_golden(g, &files, &img.mem));
     let odd: Vec<&(u64, String)> = pp.census.iter().flat_map(|c| c.2.iter()).collect();
-    if !odd.is_empty() && !check {
-        panic!("{} code addresses formed in a way code_ptrs does not know, first {:#x}: {}", odd.len(), odd[0].0, odd[0].1);
+    if !odd.is_empty() {
+        fail(format!("{} code addresses formed in a way code_ptrs does not know, first {:#x}: {}", odd.len(), odd[0].0, odd[0].1));
     }
     let targets: HashSet<u64> = pp.code_targets.iter().copied().collect();
     let parts = &pp.parts;
     let names: Vec<String> = parts.iter().map(|p| p.name.clone()).filter(|n| only.as_ref().is_none_or(|o| o.contains(n))).collect();
     if only.as_ref().is_none_or(|o| o.iter().any(|n| n == ANSWERS)) {
-        std::fs::write(out.join(format!("{ANSWERS}.ll")), answers_ir(&answers)).unwrap();
+        std::fs::write(out.join(format!("{ANSWERS}.ll")), answers_ir(answers)).unwrap();
     }
     let ts = Instant::now();
-    let mut prog = Program::new(&meta, &plan, parts, &hle_at, &facts.names);
+    let mut prog = Program::new(meta, plan, parts, hle_at, &facts.names);
     let (sums, st) = summarise(&mut prog);
     let rec = Records::new(&prog, &sums, &plan.sj_rets);
     write_facts(&out.join("facts.tsv"), &prog, &sums, &rec);
@@ -465,15 +355,6 @@ fn lift(argv: Vec<String>) {
         st.functions, st.sccs, st.largest, st.levels, st.noreturn_by_callers, st.graph_s, st.fixed_s, st.results_s,
         ts.elapsed().as_secs_f64(), c_sum - c_plan, b_sum, m_sum
     );
-    if check {
-        let (dir, py) = (dir.unwrap(), py_meta.as_ref().unwrap());
-        let n = ounce_lift::check::check_scan(&meta, py, 20)
-            + ounce_lift::check::check_plan(dir, &plan, &pp, &img, 20)
-            + ounce_lift::check::check_image(dir, py, &img, &facts, 20)
-            + gen_bad;
-        let (a, b) = ounce_lift::check::check(dir, &prog, &sums, &rec, 40);
-        std::process::exit(if a + b + n == 0 { 0 } else { 1 });
-    }
     let by_name: HashMap<&str, (usize, &Part)> = parts.iter().enumerate().map(|(k, p)| (p.name.as_str(), (k, p))).collect();
     let (c_lift0, _) = usage();
     let tl = Instant::now();
@@ -491,7 +372,7 @@ fn lift(argv: Vec<String>) {
                 let (pk, part) = by_name[names[k].as_str()];
                 let tr = 0.0;
                 let t = Instant::now();
-                let l = lift_part(&mut w, &meta, &plan.sj_rets, &targets, &rec, part, skip);
+                let l = lift_part(&mut w, meta, &plan.sj_rets, &targets, &rec, part, skip);
                 // (every code pointer site of the census translated, and no other: game.prepare's check)
                 assert_eq!(l.sites as u64, pp.census[pk].0, "{}: code pointer sites translated differ from the census", part.name);
                 let tl = t.elapsed().as_secs_f64();
@@ -528,7 +409,7 @@ fn lift(argv: Vec<String>) {
         "whole pipeline: {:.2} s wall, {:.2} s CPU ({:.2} s of it busy in tasks: discovery, plan, summaries, lift)",
         t0.elapsed().as_secs_f64(),
         c_lift,
-        c_disc - c_img + busy_s() + g.3 + c_img
+        c_disc + busy_s() + g.3
     );
     let hwm = std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -545,5 +426,8 @@ fn lift(argv: Vec<String>) {
     by.sort_by_key(|b| std::cmp::Reverse(b.1));
     for (why, n) in by.iter().take(40) {
         println!("  skipped: {why}: {n}");
+    }
+    if gen_bad > 0 {
+        std::process::exit(1);
     }
 }

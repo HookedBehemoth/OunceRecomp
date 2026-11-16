@@ -12,7 +12,7 @@ use std::io::Write;
 /// what a worker keeps from one partition's lift to the next: the function it builds every function into and the
 /// text's buffer, so their memory is allocated (and faulted in) once
 pub struct Worker {
-    fun: Function,
+    pub fun: Function,
     scratch: Scratch,
     /// the last partition's text after its header (Lifted::head)
     pub body: Vec<u8>,

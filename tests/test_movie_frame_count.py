@@ -2,7 +2,7 @@
 
 The game's movie player counts its updates while a movie plays, and a cutscene that shows a movie places its narration, its
 rumble and its end by that count. The movie's picture and sound follow the clock, so at 120 fps the cues came twice too early:
-narration lines started over each other. The lifter's At probe (nx2/lift2/probes.py AT) makes the count's step hos_movie_frames(player)
+narration lines started over each other. The lifter's At probe (ounce-lift scan's At rows) makes the count's step hos_movie_frames(player)
 (host/oot_probes.c hos_oot_movie_count after the update's add w8, w8, #1, which takes the one back), and host/nn_vi.c
 answers 1 while the host gives no frame time (a cap of 60: as shipped) and the frames' time in 60ths, the rest carried to the
 player's next update, while it does (HOS_FPS_MOVIE=0: 1 then too, for comparisons). A game version whose code differs keeps
@@ -21,10 +21,8 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
-import gamedesc  # noqa: E402
-gamedesc.use(os.path.join(ROOT, "games", "oot"))   # (the game whose host files and patches these read)
-from lift2 import probes  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests"))
+import lift_scan  # noqa: E402  (the host's rows as the lifter reads them: ounce-lift scan)
 
 # (the lifted update: the count loaded, one added (the instruction the probe follows), stored)
 LOAD_ADD = ("    c->x[8]=recomp_load32(c,c->x[20] + 760);\n"
@@ -179,7 +177,7 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    rows = [p for p in probes.AT if p.fn == "hos_oot_movie_count"]
+    rows = [p for p in lift_scan.load().AT if p.fn == "hos_oot_movie_count"]
     check(len(rows) == 1, "one probe")
     p0 = rows[0]
     check((p0.pc, p0.word, p0.fn, p0.args, p0.result) == (0x83b7c7c8, 0x11000508, "hos_oot_movie_count", ("w8", "x20"), "w8"),

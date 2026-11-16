@@ -506,7 +506,7 @@ fn is_result(r: &str) -> bool {
 }
 
 impl Site {
-    fn new(d: &Decl) -> Res<Site> {
+    pub fn new(d: &Decl) -> Res<Site> {
         let (a, at) = (&d.args, &d.at);
         if a.len() < 5 {
             return fail(at, format!("{}(pc, word(W), mode, result, fn, operand...)", d.kind));
@@ -781,7 +781,7 @@ impl Answer {
 }
 
 /// the scan's result (patch_scan.PatchSet)
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct PatchSet {
     pub sites: Vec<Site>,
     pub funcs: Vec<Func>,
@@ -995,7 +995,7 @@ pub struct Row {
 
 impl Row {
     /// (the guest variables the row reads, those it writes) (Value.effects, At.effects)
-    fn effects(&self) -> (BTreeSet<String>, BTreeSet<String>) {
+    pub fn effects(&self) -> (BTreeSet<String>, BTreeSet<String>) {
         if self.value {
             return (self.args.iter().map(|a| var(a.split('+').next().unwrap())).collect(), BTreeSet::new());
         }
@@ -1015,7 +1015,7 @@ impl Row {
     }
 }
 
-fn is_call(w: u32) -> bool {
+pub fn is_call(w: u32) -> bool {
     match ounce_decode::decode(w) {
         Some(i) => i.enc.template == "blr" || (i.enc.template == "b" && i.f(ounce_decode::Fld::op) == 1),
         None => false,
@@ -1096,7 +1096,7 @@ fn template_run(w: u32) -> Option<(crate::ir::Function, crate::ir::BlockId)> {
 const TERMINATORS: [&str; 9] = ["b", "bcond", "cbz", "tbz", "ret", "br", "blr", "udf", "exc"];
 
 /// (register, bits) of the one general register the word writes as its Rd (probes.dest)
-fn dest(w: u32) -> Option<(u32, u32)> {
+pub fn dest(w: u32) -> Option<(u32, u32)> {
     use ounce_decode::Fld;
     let i = ounce_decode::decode(w)?;
     if !i.has(Fld::Rd) || TERMINATORS.contains(&i.enc.template) {
@@ -1302,6 +1302,15 @@ pub fn body_hash(words: &[u32]) -> u64 {
 /// {address: Func} of the PATCH_FUNCs (a PATCH_FUNC_SYM through the image's function exports), checked against the
 /// plan's bodies: the first error stops with file:line
 pub fn check_funcs<'a>(ps: &'a PatchSet, exports: &[(String, u64)], bodies: &dyn Fn(u64) -> Option<(Vec<u64>, Vec<u32>)>) -> Res<BTreeMap<u64, &'a Func>> {
+    let (found, errs) = func_errors(ps, exports, bodies);
+    if let Some((w, m)) = errs.first() {
+        return fail(w, m);
+    }
+    Ok(found)
+}
+
+/// ({address: Func}, [(where, what is wrong)]) of the PATCH_FUNCs against the plan's bodies (patch_scan.func_errors)
+pub fn func_errors<'a>(ps: &'a PatchSet, exports: &[(String, u64)], bodies: &dyn Fn(u64) -> Option<(Vec<u64>, Vec<u32>)>) -> (BTreeMap<u64, &'a Func>, Vec<(Where, String)>) {
     let ex: HashMap<&str, u64> = exports.iter().map(|(n, a)| (n.as_str(), *a)).collect();
     let mut found = BTreeMap::new();
     let mut errs: Vec<(Where, String)> = Vec::new();
@@ -1337,10 +1346,7 @@ pub fn check_funcs<'a>(ps: &'a PatchSet, exports: &[(String, u64)], bodies: &dyn
             )));
         }
     }
-    if let Some((w, m)) = errs.first() {
-        return fail(w, m);
-    }
-    Ok(found)
+    (found, errs)
 }
 
 /// the PATCH_FUNCs' facts as the summaries take them (summary.func_facts) and their names
@@ -1423,6 +1429,88 @@ mod tests {
         assert_eq!(py_int("0x10u"), Some(16));
         assert_eq!(py_int("010"), None);
         assert_eq!(py_int("1_000"), Some(1000));
+    }
+
+    /// the one row of a declaration, at its function func
+    fn row(decl: &str, func: u64) -> Row {
+        let ps = scan_texts(&[("host/t.c".into(), format!("{decl} {{}}"))]).unwrap();
+        let mut r = rows(&ps.sites).unwrap().remove(0);
+        r.func = func;
+        r
+    }
+
+    #[test]
+    fn the_hosts_rows_are_sites_the_lift_takes() {
+        // (tests/test_oot_probes.py's table: every row's word decodes, and an At row follows no branch unless it runs
+        // before it, follows a call that returns, or replaces a call or a tail call)
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let game = crate::game::Game::load(&root.join("games/oot")).unwrap();
+        let ps = scan(&root, &game.host).unwrap();
+        let rs = rows(&ps.sites).unwrap();
+        assert!(rs.iter().filter(|r| !r.value).count() > 100);
+        assert!(rs.iter().any(|r| r.value));
+        for r in &rs {
+            let i = ounce_decode::decode(r.word).unwrap_or_else(|| panic!("{:#x}: its word does not decode", r.pc));
+            let branch = TERMINATORS.contains(&i.enc.template);
+            assert!(r.value || r.mode == "before" || !branch || is_call(r.word) || (r.mode == "instead" && is_tail(r.word)), "{:#x} is a branch", r.pc);
+            assert!(r.at.0.starts_with("host/") && r.at.1 > 0);
+        }
+    }
+
+    #[test]
+    fn a_word_or_an_instruction_that_differs_stops() {
+        let r = row("PATCH_AT(0x80001004, word(0x8b020020), after, x0, f, x0, x1)", 0x8000_1000);
+        let (pcs, words) = (vec![0x8000_1000, 0x8000_1004], vec![0xd503_201f, 0x8b02_0020]);
+        assert!(errors(&r, &pcs, &words, None, None).unwrap().is_empty());
+        let e = errors(&r, &pcs, &[0xd503_201f, 0x8b02_0021], None, None).unwrap();
+        assert!(e[0].contains("another game version"), "{e:?}");
+        let e = errors(&r, &pcs[..1], &words[..1], None, None).unwrap();
+        assert!(e[0].contains("holds nothing"), "{e:?}");
+    }
+
+    #[test]
+    fn before_a_branch_target_a_jump_table_target_or_an_entry_is_refused() {
+        // cbz w0, +8; nop; ret
+        let (pcs, words) = (vec![0x8000_3000, 0x8000_3004, 0x8000_3008], vec![0x3400_0040, 0xd503_201f, 0xd65f_03c0]);
+        let r = row("PATCH_AT(0x80003004, word(0xd503201f), before, none, t_none, x0)", 0x8000_3000);
+        assert!(errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&HashSet::new())).unwrap().is_empty());
+        let r = row("PATCH_AT(0x80003008, word(0xd65f03c0), before, none, t_none, x0)", 0x8000_3000);
+        let e = errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&HashSet::new())).unwrap();
+        assert!(e[0].contains("a branch target"), "{e:?}");
+        // br x16; nop; ret
+        let (pcs, words) = (vec![0x8000_4000, 0x8000_4004, 0x8000_4008], vec![0xd61f_0200, 0xd503_201f, 0xd65f_03c0]);
+        let r = row("PATCH_AT(0x80004004, word(0xd503201f), before, none, t_none, x0)", 0x8000_4000);
+        let entry = HashSet::from([0x8000_4000]);
+        assert!(errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&entry)).unwrap().is_empty());
+        let jt = HashMap::from([(0x8000_4000, vec![0x8000_4004, 0x8000_4008])]);
+        let e = errors(&r, &pcs, &words, Some(&jt), Some(&entry)).unwrap();
+        assert!(e[0].contains("jump-table target"), "{e:?}");
+        let e = errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&HashSet::from([0x8000_4000, 0x8000_4004]))).unwrap();
+        assert!(e[0].contains("another function's entry"), "{e:?}");
+        let r = row("PATCH_AT(0x80004000, word(0xd61f0200), before, none, t_none, x0)", 0x8000_4000);
+        assert!(errors(&r, &pcs, &words, Some(&HashMap::new()), Some(&entry)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_value_probes_result_is_its_instructions_destination() {
+        assert_eq!(dest(0x1e38_000c), Some((12, 32))); // fcvtzs w12, s0
+        assert_eq!(dest(0x9e38_000c), Some((12, 64))); // fcvtzs x12, s0
+        assert_eq!(dest(0xd280_054d), Some((13, 64))); // mov x13, #42
+        assert_eq!(dest(0x5280_054d), Some((13, 32))); // mov w13, #42
+        assert_eq!(dest(0x8b02_0020), Some((0, 64))); // add x0, x1, x2
+        assert_eq!(dest(0xf900_0020), None); // str x0, [x1]
+        assert_eq!(dest(0xd65f_03c0), None); // ret
+        assert_eq!(dest(0xab02_0020), None); // adds x0, x1, x2: the flags too
+        let (pcs, words) = (vec![0x1000], vec![0x1e38_000c]);
+        for (res, ok) in [("w12", true), ("x12", false), ("w13", false)] {
+            let r = row(&format!("PATCH_AT(0x1000, word(0x1e38000c), instead, {res}, t_v, s0)"), 0x1000);
+            assert!(r.value);
+            assert_eq!(errors(&r, &pcs, &words, None, None).unwrap().is_empty(), ok, "{res}");
+        }
+        let r = row("PATCH_AT(0x1000, word(0x1e38000c), instead, w12, t_v, w1)", 0x1000);
+        assert!(errors(&r, &pcs, &words, None, None).unwrap()[0].contains("operands"));
+        let r = row("PATCH_AT(0x1000, word(0xf9000020), instead, w0, t_v, x1)", 0x1000);
+        assert!(errors(&r, &pcs, &[0xf900_0020], None, None).unwrap()[0].contains("no single general register"));
     }
 
     #[test]
@@ -1534,4 +1622,41 @@ pub fn check_records(root: &Path, files: &[String], objects: &[std::path::PathBu
     }
     let hex: String = h.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect();
     Ok(format!("patch declarations: {}, the compiled host's records the same ({hex})", total(&want)))
+}
+
+// ---- the C a declaration's macro generates (the patch tools' suggestion)
+
+/// (C type, parameter name) of one operand as host/patch.h makes it (patch_scan.param)
+fn param(arg: &[Tok], at: &Where) -> Res<(String, String)> {
+    if let Some(inner) = call(arg, "as") {
+        if inner.len() == 2 {
+            return Ok((param(&owned(&inner[0]), at)?.0, ident(&owned(&inner[1]), at, "as's name")?));
+        }
+    }
+    if call(arg, "guest").is_some() {
+        return Ok(("GuestCall *".into(), "g".into()));
+    }
+    if call(arg, "io").is_some() {
+        return Ok((format!("struct hos_io_{} *", at.1), "io".into()));
+    }
+    for (name, ty) in [("ld", "uint64_t"), ("add", "uint64_t"), ("k", "uint32_t")] {
+        if let Some(inner) = call(arg, name) {
+            let mut parts = vec![name.to_string()];
+            parts.extend(inner.iter().flat_map(|a| a.iter().map(|t| t.text.clone())));
+            return Ok((ty.into(), parts.join("_")));
+        }
+    }
+    let r = ident(arg, at, "an operand")?;
+    Ok((ctype(Some(&r)).into(), r))
+}
+
+/// the C prototype a PATCH_AT's macro generates for its function (patch_scan.prototype)
+pub fn prototype(d: &Decl) -> Res<String> {
+    let s = Site::new(d)?;
+    let mut ps = Vec::new();
+    for a in d.args.iter().skip(5).filter(|a| !a.is_empty()) {
+        let (ty, name) = param(a, &d.at)?;
+        ps.push(format!("{ty}{}{name}", if ty.ends_with('*') { "" } else { " " }));
+    }
+    Ok(format!("{} {}({})", ctype(s.result.as_deref()), s.fname, if ps.is_empty() { "void".into() } else { ps.join(", ") }))
 }

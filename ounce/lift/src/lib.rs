@@ -17,6 +17,7 @@ pub mod nso;
 pub mod part;
 pub mod patch;
 pub mod plan;
+pub mod session;
 pub mod sem;
 pub mod summary;
 pub mod ty;

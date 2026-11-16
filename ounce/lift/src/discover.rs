@@ -274,7 +274,7 @@ impl<'a> Discovery<'a> {
                     _ => groups.push((lo, vec![(br, reg)])),
                 }
             }
-            let got: Vec<Vec<(u64, Option<Vec<u64>>, Cand)>> = groups
+            let got: Vec<Vec<Resolved>> = groups
                 .par_iter()
                 .map(|(_, g)| {
                     crate::busy(|| {
@@ -506,6 +506,9 @@ impl<'a> Discovery<'a> {
         self.jt_index = out;
     }
 }
+
+/// a BR, its table if resolved, and why not or which candidate
+type Resolved = (u64, Option<Vec<u64>>, Cand);
 
 /// the unwind-described function a pc is in: [the start at or before it, the next start)
 fn extent(eh_starts: &[u64], pc: u64) -> (u64, u64) {
