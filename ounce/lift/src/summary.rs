@@ -1254,8 +1254,33 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
     let mut reasons = 0u16;
     let mut lowest = 0i64;
     let (mut taken, mut lr_data) = (false, false);
-    while let Some(k) = fs.work.pop() {
-        let k = k as usize;
+    // (two phases: the states to their fixed point, then one pass over the final states that collects the exits,
+    // saves, restores and reasons: an intermediate state, larger than the final one, adds none of its own)
+    let (mut collect, mut next) = (false, 0usize);
+    loop {
+        let k = if !collect {
+            match fs.work.pop() {
+                Some(k) => k as usize,
+                None => {
+                    collect = true;
+                    (reasons, lowest, taken, lr_data) = (0, 0, false, false);
+                    fs.exits.clear();
+                    fs.saves.clear();
+                    fs.restores.clear();
+                    fs.other_reads.clear();
+                    continue;
+                }
+            }
+        } else {
+            while next < n && fs.state[next].is_none() {
+                next += 1;
+            }
+            if next == n {
+                break;
+            }
+            next += 1;
+            next - 1
+        };
         let st = fs.state[k].clone().unwrap();
         let (mut sp, mut fregs, mut holds, mut slots) = (st.sp, st.fregs, st.holds, st.slots);
         let kind = f.kind[k];
@@ -1406,6 +1431,9 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                     fs.exits.push((sp, holds & c.preserved));
                 }
             }
+        }
+        if collect {
+            continue;
         }
         let new = FState { sp, fregs, holds, slots };
         for &j in f.succs(k) {

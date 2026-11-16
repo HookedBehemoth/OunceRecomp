@@ -233,6 +233,10 @@ impl<'a> Discovery<'a> {
         }
     }
 
+    fn function_extent(&self, pc: u64) -> (u64, u64) {
+        extent(&self.eh_starts, pc)
+    }
+
     fn resolver(&self) -> Resolver<'_> {
         Resolver { img: self.img, eh_starts: &self.eh_starts, entries: &self.entries, jt: &self.jt, preds: Map::default(), redirect: None, cand: Cand::Why("unusual shape") }
     }
@@ -244,31 +248,50 @@ impl<'a> Discovery<'a> {
     pub fn discover(&mut self, max_insns: usize) {
         let mut es: Vec<u64> = self.entries.iter().copied().filter(|e| !self.hooks.contains(e)).collect();
         es.sort_unstable();
-        let mut walked: Vec<Walked> = es.par_iter().map(|&e| crate::busy(|| self.walk(e))).collect();
+        let walk_all = |d: &Self, ks: &[usize]| -> Vec<Walked> {
+            ks.par_iter().map_init(HashSet::new, |seen, &k| crate::busy(|| d.walk_in(es[k], seen))).collect()
+        };
+        let mut walked: Vec<Walked> = walk_all(self, &(0..es.len()).collect::<Vec<_>>());
+        // (a BR's resolution reads the tables of its own extent only, through that extent's predecessor map: a round
+        // resolves again the BRs of the extents a changed table is in, and the BRs new to the bodies, each extent's
+        // in one task with its map built once)
+        let mut res: Map<u64, (Option<Vec<u64>>, Cand)> = Map::default();
+        let mut dirty: HashSet<u64> = HashSet::new();
         loop {
             let mut brs: Vec<(u64, u32)> = walked.iter().flat_map(|w| w.brs.iter().copied()).collect();
             brs.sort_unstable();
             brs.dedup();
-            let got: Vec<(u64, Option<Vec<u64>>, Cand)> = brs
-                .par_iter()
-                .map_init(
-                    || self.resolver(),
-                    |r, &(br, reg)| {
-                        crate::busy(|| {
-                            let t = r.jump_table(br, reg);
-                            (br, t, std::mem::replace(&mut r.cand, Cand::Why("unusual shape")))
-                        })
-                    },
-                )
-                .collect();
-            let mut jt: Map<u64, Vec<u64>> = Map::default();
-            self.jt_cand.clear();
-            for (br, t, c) in got {
-                self.jt_cand.insert(br, c);
-                if let Some(t) = t {
-                    jt.insert(br, t);
+            let live: HashSet<u64> = brs.iter().map(|b| b.0).collect();
+            res.retain(|b, _| live.contains(b));
+            let mut groups: Vec<(u64, Vec<(u64, u32)>)> = Vec::new();
+            for &(br, reg) in &brs {
+                let lo = self.function_extent(br).0;
+                if res.contains_key(&br) && !dirty.contains(&lo) {
+                    continue;
+                }
+                match groups.last_mut() {
+                    Some(g) if g.0 == lo => g.1.push((br, reg)),
+                    _ => groups.push((lo, vec![(br, reg)])),
                 }
             }
+            let got: Vec<Vec<(u64, Option<Vec<u64>>, Cand)>> = groups
+                .par_iter()
+                .map(|(_, g)| {
+                    crate::busy(|| {
+                        let mut r = self.resolver();
+                        g.iter()
+                            .map(|&(br, reg)| {
+                                let t = r.jump_table(br, reg);
+                                (br, t, std::mem::replace(&mut r.cand, Cand::Why("unusual shape")))
+                            })
+                            .collect()
+                    })
+                })
+                .collect();
+            for (br, t, c) in got.into_iter().flatten() {
+                res.insert(br, (t, c));
+            }
+            let jt: Map<u64, Vec<u64>> = res.iter().filter_map(|(b, (t, _))| t.clone().map(|t| (*b, t))).collect();
             if jt == self.jt {
                 break;
             }
@@ -276,13 +299,14 @@ impl<'a> Discovery<'a> {
             assert!(self.rounds < 64, "discovery: the jump tables reach no fixed point in {} rounds", self.rounds);
             let changed: HashSet<u64> =
                 jt.iter().filter(|(b, t)| self.jt.get(b) != Some(t)).map(|(b, _)| *b).chain(self.jt.keys().filter(|b| !jt.contains_key(b)).copied()).collect();
+            dirty = changed.iter().map(|&b| self.function_extent(b).0).collect();
             self.jt = jt;
             let again: Vec<usize> = (0..walked.len()).filter(|&k| walked[k].brs.iter().any(|b| changed.contains(&b.0))).collect();
-            let fresh: Vec<Walked> = again.par_iter().map(|&k| crate::busy(|| self.walk(es[k]))).collect();
-            for (k, w) in again.into_iter().zip(fresh) {
-                walked[k] = w;
+            for (k, w) in again.iter().zip(walk_all(self, &again)) {
+                walked[*k] = w;
             }
         }
+        self.jt_cand = res.into_iter().map(|(b, (_, c))| (b, c)).collect();
         for (e, w) in es.iter().zip(walked) {
             self.funcs.insert(*e, w.body);
         }
@@ -407,7 +431,12 @@ impl<'a> Discovery<'a> {
     /// the body from an entry, a BR's successors its table in the current map (the walk reads nothing else that
     /// changes)
     fn walk(&self, entry: u64) -> Walked {
-        let mut seen: HashSet<u64> = HashSet::new();
+        self.walk_in(entry, &mut HashSet::new())
+    }
+
+    /// walk with a scratch set
+    fn walk_in(&self, entry: u64, seen: &mut HashSet<u64>) -> Walked {
+        seen.clear();
         let mut order = Vec::new();
         let mut brs = Vec::new();
         let mut todo = vec![entry];
@@ -478,6 +507,14 @@ impl<'a> Discovery<'a> {
     }
 }
 
+/// the unwind-described function a pc is in: [the start at or before it, the next start)
+fn extent(eh_starts: &[u64], pc: u64) -> (u64, u64) {
+    let i = eh_starts.partition_point(|&s| s <= pc);
+    let lo = if i > 0 { eh_starts[i - 1] } else { 0 };
+    let hi = if i < eh_starts.len() { eh_starts[i] } else { u64::MAX };
+    (lo, hi)
+}
+
 /// A BR's table resolved against the round's fixed table map: the predecessor maps of the function extents (built
 /// from that map, cached for the resolver's life), the constants reaching the table's address and index.
 struct Resolver<'r> {
@@ -494,10 +531,7 @@ struct Resolver<'r> {
 
 impl<'r> Resolver<'r> {
     fn function_extent(&self, pc: u64) -> (u64, u64) {
-        let i = self.eh_starts.partition_point(|&s| s <= pc);
-        let lo = if i > 0 { self.eh_starts[i - 1] } else { 0 };
-        let hi = if i < self.eh_starts.len() { self.eh_starts[i] } else { u64::MAX };
-        (lo, hi)
+        extent(self.eh_starts, pc)
     }
     /// hi - lo > 0x40000 (Python's hi is 1 << 64 past the last start)
     fn too_big(lo: u64, hi: u64) -> bool {
