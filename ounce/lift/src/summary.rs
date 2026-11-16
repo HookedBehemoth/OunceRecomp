@@ -175,10 +175,11 @@ fn host_summary(stops: bool, answer: Option<u64>, clobbering: bool, reads: u128)
     if answer.is_some() {
         return Summary { clobbers: X0 | X30, mustdef: X0 | X30, results: X0, returns: true, boundary: true, ..Summary::START };
     }
+    // (mustdef none, as its record's must: the host's code is not known to write x30 on every path)
     Summary {
         inputs: if clobbering { ALL } else { reads },
         clobbers: CALLER_SAVED,
-        mustdef: X30,
+        mustdef: 0,
         preserved: CALLEE_SAVED,
         returns: true,
         boundary: true,

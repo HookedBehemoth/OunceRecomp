@@ -74,3 +74,12 @@ summary during the fixed point (what its callers read) lacked the reason. Which 
 direct call with nothing after it makes its callee a noreturn seed (the callers' evidence), so only an SVC or an
 indirect call returns into the next entry. The call graph's pass marks those entries with the others that are fallen
 into. Nothing reads a callee's demotion during the fixed point today: diffout 0 changed, 0 facts changed.
+
+## v2.4: an HLE'd function writes no register on every path (flaw 7)
+
+An HLE'd function's summary said it writes x30 on every path (host_summary's mustdef, the AAPCS one), its record
+said none (must 0). The host's code is not known to write x30: the summary says none too. A function that ends in a
+tail call of an HLE'd function no longer counts x30 as written on every path.
+
+diffout: 530 functions' facts changed (mustdef: x30 out; 529 records' must), 0 functions' IR changed, gen/ and
+image.bin equal.
