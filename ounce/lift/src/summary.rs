@@ -1255,11 +1255,13 @@ pub struct FrameOut {
     pub lr_data: bool,
 }
 
+/// a may state of the frame pass: the entry values held and the slots holding one, on some path
+type MayState = (u128, Vec<(i64, u8, i64)>);
+
 #[derive(Default)]
 pub struct FrameScratch {
     state: Vec<Option<FState>>,
-    /// the may states: the entry values held and the slots holding one on some path
-    may: Vec<Option<(u128, Vec<(i64, u8, i64)>)>>,
+    may: Vec<Option<MayState>>,
     work: Vec<u32>,
     exits: Vec<(Option<i64>, u128)>,
     saves: Vec<(u8, i64)>,
