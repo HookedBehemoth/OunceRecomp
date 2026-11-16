@@ -144,3 +144,14 @@ registers it or a callee reads only to save.
 diffout: 204412 functions' facts changed (inputs 204052, records 197920, results 435; 21 undemoted: inconsistent
 found by the saves of callees it missed), 123075 functions' IR changed (the stores before calls gone), 0
 unexplained, gen/ and image.bin equal. f_800200a0's stores of x19 and x29 before memset are gone.
+
+## v2.7: the analyses start at the entry, not at the body's lowest address
+
+A body is sorted by address, and 26 functions have code below their entry (shared returns, table cases): the
+liveness took the inputs at the body's first instruction, and the must-definitions and the frame pass started
+there, so their summaries described the code below the entry (f_824f4454: inputs none, from a `mov w0, #4; ret` at
+0x824d793c). The Python lifter did the same. They start at the entry's instruction now.
+
+diffout: 58 functions' facts changed (the 26 and their callers: inputs 34, mustdef 24, preserved 8, results 33,
+unknown 7; 3 newly demoted, by sp, lr_ret or cs_clobber their own code shows), 10 functions' IR changed, 0
+unexplained, gen/ and image.bin equal.

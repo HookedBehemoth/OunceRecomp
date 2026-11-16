@@ -535,6 +535,8 @@ enum Guest {
 #[derive(Default)]
 pub struct Flow {
     pub entry: u64,
+    /// the entry's instruction (the body is sorted: code below the entry comes first)
+    pub at_entry: usize,
     pub me: FnId,
     pub n: usize,
     pub kind: Vec<K>,
@@ -592,6 +594,7 @@ impl Flow {
         let entry = prog.fns[me as usize];
         let n = pcs.len();
         self.entry = entry;
+        self.at_entry = pcs.binary_search(&entry).unwrap_or(0);
         self.me = me;
         self.n = n;
         self.kind.clear();
@@ -997,7 +1000,7 @@ fn must_and_may(f: &Flow, s: &Sums, must: &mut Vec<Option<u128>>) -> (u128, u128
     must.clear();
     must.resize(n, None);
     if n > 0 {
-        must[0] = Some(0);
+        must[f.at_entry] = Some(0);
     }
     let (mut exit_must, mut may, mut returns) = (ALL, 0u128, false);
     let mut changed = true;
@@ -1302,8 +1305,8 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
     if n == 0 {
         return FrameOut { preserved: CALLEE_SAVED, reasons: 0, frame: 0, taken: false, pairs: 0, lr_data: false };
     }
-    fs.state[0] = Some(FState { sp: Some(0), fregs: Vec::new(), holds: TRACKED | SPM, slots: Vec::new() });
-    fs.work.push(0);
+    fs.state[f.at_entry] = Some(FState { sp: Some(0), fregs: Vec::new(), holds: TRACKED | SPM, slots: Vec::new() });
+    fs.work.push(f.at_entry as u32);
     let mut reasons = 0u16;
     let mut lowest = 0i64;
     let (mut taken, mut lr_data) = (false, false);
@@ -1320,8 +1323,8 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                 None => {
                     phase += 1;
                     if phase == 1 {
-                        fs.may[0] = Some((TRACKED | SPM, Vec::new()));
-                        fs.work.push(0);
+                        fs.may[f.at_entry] = Some((TRACKED | SPM, Vec::new()));
+                        fs.work.push(f.at_entry as u32);
                     } else {
                         (reasons, lowest, taken, lr_data) = (0, 0, false, false);
                         fs.exits.clear();
@@ -1615,7 +1618,7 @@ fn analyse(f: &Flow, s: &Sums, sc: &mut Scratch) -> Summary {
     let saved = save_uses(f.n, &sc.frame, if out.returns && fr.reasons & why::SAVE_PTR == 0 { fr.preserved & range(19, 30) } else { 0 }, &mut sc.unuse);
     liveness_less(f, s, 0, &mut sc.live, &sc.unuse);
     let live = &sc.live;
-    out.inputs = if f.n > 0 { live[0] } else { 0 };
+    out.inputs = if f.n > 0 { live[f.at_entry] } else { 0 };
     // (the inputs counting the saves, its own and its callees': what a restore may write back)
     let mut saved = saved;
     for k in 0..f.n {
