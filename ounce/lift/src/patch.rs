@@ -909,6 +909,9 @@ pub fn scan(root: &Path, files: &[String]) -> Res<PatchSet> {
     scan_texts(&texts)
 }
 
+/// host_effects.HLE_ARGS: what an HLE'd function reads besides its declared reads (x0-x8, v0-v7, SP, x30)
+const HLE_ARGS: u128 = 0x1FF | (0xFF << 36) | (1 << 31) | (1 << 30);
+
 impl PatchSet {
     /// the symbols HLE(...) and PATCH_ANSWER(...) replace
     pub fn hle_symbols(&self) -> BTreeSet<String> {
@@ -929,12 +932,11 @@ impl PatchSet {
         };
         let answer = self.answers.get(symbol).map(|a| (a.value & 0xFFFF_FFFF_FFFF_FFFF) as u64);
         let d = self.effects_of(symbol);
-        // (host_effects.HLE_ARGS + the declared reads, summed as Python sums the bits: a declared read of an argument
-        // register counts twice)
-        let mut reads: u128 = (0..9).map(|i| 1u128 << i).sum::<u128>() + (0..8).map(|i| 1u128 << (36 + i)).sum::<u128>() + (1 << 31) + (1 << 30);
+        // (host_effects.HLE_ARGS: x0-x8, v0-v7, SP, x30, and the declared reads)
+        let mut reads: u128 = HLE_ARGS;
         if let Some(d) = d {
             for r in &d.reads {
-                reads = reads.wrapping_add(var_bit(r));
+                reads |= var_bit(r);
             }
         }
         HleFact(symbol.to_string(), stops, answer, d.is_some_and(|d| d.clobbers.is_some()), reads)
@@ -1393,6 +1395,13 @@ mod tests {
             err("PATCH_FUNC_SYM(s, aapcs, x0, f, guest(0x10), x0);"),
             "patch declarations: t.c:1: guest(...) runs on the call's stack: sp is an operand (guest_call's sp)"
         );
+    }
+
+    #[test]
+    fn hle_reads_are_a_union() {
+        // (a declared read of an argument register is the argument register, not a carry into the next bit)
+        let ps = scan_texts(&[("t.c".into(), "HLE(f, reads(x0, x9, \"why\")) { }".into())]).unwrap();
+        assert_eq!(ps.hle_fact("f").4, HLE_ARGS | 1 << 9);
     }
 
     #[test]
