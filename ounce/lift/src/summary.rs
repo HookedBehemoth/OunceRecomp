@@ -11,7 +11,6 @@
 //! worker by word. The fixed point runs level by level over the components' DAG, a level's components in parallel.
 
 use crate::export::{GuestCalls, Hle, Meta, Part};
-use crate::image::Image;
 use crate::plan::Plan;
 use crate::ir::{bit, BKey, Builder, Function, ALL};
 use crate::sem::{self, Kind};
@@ -280,31 +279,17 @@ pub struct Program<'a> {
 }
 
 impl<'a> Program<'a> {
-    /// the program from the plan: each function's body as the summaries see it (the discovered one where the lift
-    /// traps or cuts it: Plan::raw, its words the image's), the rest of the facts from the export
-    pub fn new(meta: &'a Meta, plan: &'a Plan, parts: &'a [Part], img: &Image, hle: &[Hle], names: &[(u64, String)]) -> Program<'a> {
+    /// the program from the plan: each function's body as the lift lifts it (a trapped one a trap at its entry), the
+    /// rest of the facts from the patch scan
+    pub fn new(meta: &'a Meta, plan: &'a Plan, parts: &'a [Part], hle: &[Hle], names: &[(u64, String)]) -> Program<'a> {
         let mut fs: Vec<(u64, Body<'a>)> = parts
             .iter()
             .flat_map(|p| p.functions.iter())
             .map(|f| (f.entry, Body { pcs: Cow::Borrowed(&f.pcs[..]), words: Cow::Borrowed(&f.words[..]), jt: Cow::Borrowed(&f.jt[..]) }))
             .collect();
         fs.sort_unstable_by_key(|f| f.0);
-        for (e, pcs) in &plan.raw {
-            let k = fs.binary_search_by_key(e, |f| f.0).expect("summary body of no function");
-            let words: Vec<u32> = pcs.iter().map(|&p| img.word(p)).collect();
-            let jt: Vec<(u64, Vec<u64>)> = pcs
-                .iter()
-                .filter_map(|pc| {
-                    plan.jt.get(pc).map(|t| {
-                        let mut t = t.clone();
-                        t.sort_unstable();
-                        t.dedup();
-                        (*pc, t)
-                    })
-                })
-                .collect();
-            fs[k].1 = Body { pcs: Cow::Borrowed(&pcs[..]), words: Cow::Owned(words), jt: Cow::Owned(jt) };
-        }
+        // (a row's pc is in exactly one of these bodies, the row's function: patch::resolve checks it over the same
+        // bodies, so a row's effects apply where the lift applies the row)
         let (fns, bodies): (Vec<u64>, Vec<Body>) = fs.into_iter().unzip();
         let hooks = hle
             .iter()

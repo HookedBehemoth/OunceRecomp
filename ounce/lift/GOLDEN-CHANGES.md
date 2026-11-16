@@ -26,3 +26,12 @@ across a call that may clobber them.
 
 diffout: 487 functions' facts changed (316 Lifted -> Demoted, 0 the other way; inputs 339, clobbers 319, preserved
 319, results 434, mustdef 39), 396 functions' IR changed, 0 unexplained, gen/ and image.bin equal.
+
+## v2.2: the summaries read the bodies the lift lifts (flaws 1, 3)
+
+The summaries read the discovered body of a function the lift traps (Plan::raw: the four module headers f_80020000,
+f_80020008, f_84ec0000, f_84fa0000, lifted as UDF #0); they read the trap now. With that the summaries' bodies are
+the ones patch::resolve checks a row's pc against, so a row's effects apply in its function only (flaw 3).
+
+diffout: 4 functions' facts changed (body, insns: the four headers), their summaries and records unchanged; 0 IR
+changed.
