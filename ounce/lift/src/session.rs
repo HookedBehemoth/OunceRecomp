@@ -106,9 +106,8 @@ impl Base {
         let implemented: BTreeSet<String> = ps.hle_symbols();
         let (hle, stubbed) = eden::hle_set(&mods, &implemented, &horizon.os_namespaces)?;
         let nvn = eden::nvn_exports(&mods, &implemented);
-        let all_hle: BTreeSet<String> = hle.union(&stubbed).cloned().collect();
         times.load = t0.elapsed().as_secs_f64() - times.scan;
-        let (img, facts) = eden::build(mods, &all_hle)?;
+        let (img, facts) = eden::build(mods, &hle, &stubbed)?;
         times.build = t0.elapsed().as_secs_f64() - times.load - times.scan;
         let spans = img.fde_spans(&facts.eh_frame_hdr);
         let mut entries = facts.entries.clone();

@@ -53,7 +53,6 @@ pub struct Nso {
     pub dynamic: HashMap<i64, Vec<u64>>,
     pub symbols: Vec<Symbol>,
     pub relocs: Vec<Reloc>,
-    pub init_array: Vec<u64>,
 }
 
 /// an LZ4 block (no frame) of `size` bytes (lz4_flex)
@@ -138,7 +137,6 @@ impl Nso {
             dynamic: HashMap::new(),
             symbols: Vec::new(),
             relocs: Vec::new(),
-            init_array: Vec::new(),
         };
         n.read_mod0()?;
         Ok(n)
@@ -211,8 +209,6 @@ impl Nso {
                 off += 24;
             }
         }
-        let (ia, isz) = (self.d(DT_INIT_ARRAY), self.d(DT_INIT_ARRAYSZ));
-        self.init_array = (0..isz / 8).map(|i| u64le(&self.image, (ia + 8 * i) as usize)).collect();
         // (nso2.py: DT_RELR, the packed relative relocations, as RELATIVE entries whose addend is the stored offset)
         let (start, size) = (self.d(DT_RELR), self.d(DT_RELRSZ));
         if start != 0 && size != 0 {

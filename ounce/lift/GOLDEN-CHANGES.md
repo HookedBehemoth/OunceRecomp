@@ -91,3 +91,11 @@ summaries and the lift count the lifted ones. They are the lifted sizes now: the
 one instruction (their trap); no body is cut to its reachable part in this game.
 
 diffout: 0 functions changed, 0 facts changed; gen/functions.txt 4 lines (the headers).
+
+## v2.5 kept: symbols at one address, and C names (flaws 14, 17)
+
+Two HLE'd or stubbed symbols at one address gave the hook to the later in sorted order, silently; and two symbols of
+one C identifier overwrote each other's symbol. Now an implemented symbol takes its address before a stubbed one
+(the first stubbed of several), two implemented ones stop the lift, and so do two symbols of one C name. None occurs
+in this game. The NSO loader's init-array list, read from the unrelocated bytes and read by nothing, is gone (the
+image's init arrays are read relocated). diffout 0 changed.

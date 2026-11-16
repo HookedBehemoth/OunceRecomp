@@ -48,8 +48,10 @@ fn eh_starts(img: &Image, hdrs: &[(String, u64, u64)]) -> Vec<u64> {
     starts
 }
 
-/// builds the image (EdenImage(exefs, 0, hle=hle))
-pub fn build(mut mods: Vec<Nso>, hle: &BTreeSet<String>) -> Result<(Image, Facts), String> {
+/// builds the image (EdenImage(exefs, 0, hle=hle)): hle the symbols the host implements, stubbed those it stops on
+pub fn build(mut mods: Vec<Nso>, implemented: &BTreeSet<String>, stubbed: &BTreeSet<String>) -> Result<(Image, Facts), String> {
+    let all: BTreeSet<String> = implemented.union(stubbed).cloned().collect();
+    let hle = &all;
     let mut base = CODE_39BIT;
     let mut bases = Vec::new();
     for m in mods.iter_mut() {
@@ -81,10 +83,23 @@ pub fn build(mut mods: Vec<Nso>, hle: &BTreeSet<String>) -> Result<(Image, Facts
     let addr_of = |(mi, si): (usize, usize)| bases[mi] + mods[mi].symbols[si].value;
     let mut hooks: BTreeMap<u64, String> = BTreeMap::new();
     let mut hook_syms: HashMap<String, String> = HashMap::new();
-    for sym in hle {
+    // (symbols at one address: an implemented one before a stubbed one, the first stubbed of several; two
+    // implemented ones are an error: which one the guest's calls reach would be a choice)
+    for sym in implemented.iter().chain(stubbed.iter().filter(|s| !implemented.contains(*s))) {
         if let Some(&hit) = exports.get(sym.as_str()) {
+            let a = addr_of(hit);
+            if let Some(o) = hooks.get(&a) {
+                let other = &hook_syms[o];
+                if implemented.contains(sym) {
+                    return Err(format!("host/ replaces both {other} and {sym}, one function at {a:#x}: replace one of them"));
+                }
+                continue;
+            }
             let name = c_ident(sym);
-            hooks.insert(addr_of(hit), name.clone());
+            if let Some(o) = hook_syms.get(&name) {
+                return Err(format!("{o} and {sym} have one C name, {name}"));
+            }
+            hooks.insert(a, name.clone());
             hook_syms.insert(name, sym.clone());
         }
     }
@@ -120,6 +135,9 @@ pub fn build(mut mods: Vec<Nso>, hle: &BTreeSet<String>) -> Result<(Image, Facts
                                     let a = TRAMP_BASE + 16 * tramp.len() as u64;
                                     tramp.insert(sym.to_string(), a);
                                     let name = c_ident(sym);
+                                    if let Some(o) = hook_syms.get(&name) {
+                                        return Err(format!("{o} and {sym} have one C name, {name}"));
+                                    }
                                     hooks.insert(a, name.clone());
                                     hook_syms.insert(name, sym.to_string());
                                     a
@@ -350,6 +368,39 @@ mod tests {
         let hdrs = vec![("main".to_string(), start, start + 0x20)];
 
         assert_eq!(eh_starts(&img, &hdrs), vec![target]);
+    }
+
+    fn module(syms: &[(&str, u64)]) -> Nso {
+        let symbols = syms
+            .iter()
+            .map(|&(n, v)| crate::nso::Symbol { name: n.into(), typ: STT_FUNC, bind: 1, defined: true, value: v, size: 4 })
+            .collect();
+        Nso {
+            name: "main".into(),
+            build_id: String::new(),
+            segments: vec![(0, 0x1000, ".text"), (0x1000, 0x1000, ".rodata"), (0x2000, 0x1000, ".data")],
+            bss_size: 0,
+            image: vec![0; 0x3000],
+            mod0: 0,
+            bss: (0x3000, 0x3000),
+            eh_frame_hdr: (0, 0),
+            dynamic: HashMap::new(),
+            symbols,
+            relocs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn hooks_at_one_address() {
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<String>>();
+        let mods = || vec![module(&[("alias_a", 0x100), ("alias_b", 0x100)])];
+        // (an implemented symbol wins over a stubbed one at its address, whichever sorts first)
+        let (img, _) = build(mods(), &set(&["alias_b"]), &set(&["alias_a"])).unwrap();
+        assert_eq!(img.hooks.len(), 1);
+        assert_eq!(img.hooks[0].sym, "alias_b");
+        // (two implemented ones: which the guest reaches would be a choice)
+        let e = build(mods(), &set(&["alias_a", "alias_b"]), &set(&[])).err().unwrap();
+        assert!(e.contains("alias_a") && e.contains("alias_b"), "{e}");
     }
 
     #[test]
