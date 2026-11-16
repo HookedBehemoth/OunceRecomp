@@ -108,6 +108,57 @@ fn check_golden(golden: &std::path::Path, files: &[(String, Vec<u8>)], image: &[
     bad + want.len() - seen
 }
 
+/// facts.tsv: per lifted function its body (size, a hash of its pcs, words and tables), its summary and its call
+/// record, one line each by entry: what tools/diffout.py explains a change of the IR with (no compile input)
+fn write_facts(path: &std::path::Path, prog: &Program, sums: &[ounce_lift::summary::Summary], rec: &Records) {
+    use std::fmt::Write as _;
+    let fnv = |h: &mut u64, v: u64| {
+        for b in v.to_le_bytes() {
+            *h = (*h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+    };
+    let mut s = String::from("entry\tinsns\tbody\tinputs\tclobbers\tmustdef\tpreserved\tresults\treturns\tdemote\tunknown\tboundary\trecord\n");
+    for (k, &e) in prog.fns.iter().enumerate() {
+        let b = &prog.bodies[k];
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for (&p, &w) in b.pcs.iter().zip(b.words.iter()) {
+            fnv(&mut h, p);
+            fnv(&mut h, w as u64);
+        }
+        for (br, t) in b.jt.iter() {
+            fnv(&mut h, *br);
+            for &x in t {
+                fnv(&mut h, x);
+            }
+        }
+        let m = &sums[k];
+        let r = rec.bound(e);
+        writeln!(
+            s,
+            "f_{e:08x}\t{}\t{h:016x}\t{:x}\t{:x}\t{:x}\t{:x}\t{:x}\t{}\t{}\t{}\t{}\t{:?}/{:x}/{:x}/{:x}/{:x}/{:x}/{}",
+            b.pcs.len(),
+            m.inputs,
+            m.clobbers,
+            m.mustdef,
+            m.preserved,
+            m.results,
+            m.returns as u8,
+            ounce_lift::summary::reason_names(m.demote).join(","),
+            m.unknown as u8,
+            m.boundary as u8,
+            r.kind,
+            r.reads,
+            r.clobbers,
+            r.keeps,
+            r.must,
+            r.results,
+            r.noreturn as u8
+        )
+        .unwrap();
+    }
+    std::fs::write(path, s).unwrap();
+}
+
 /// the parallel stages' busy seconds so far (ounce_lift::busy)
 fn busy_s() -> f64 {
     ounce_lift::BUSY_NS.load(Ordering::Relaxed) as f64 / 1e9
@@ -354,6 +405,7 @@ fn main() {
     let mut prog = Program::new(&meta, &plan, parts, &img, &hle_at, &facts.names);
     let (sums, st) = summarise(&mut prog);
     let rec = Records::new(&prog, &sums, &plan.sj_rets);
+    write_facts(&out.join("facts.tsv"), &prog, &sums, &rec);
     let b_sum = busy_s() - b_plan;
     let (c_sum, m_sum) = usage();
     println!(
