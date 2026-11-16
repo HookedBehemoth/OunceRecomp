@@ -917,8 +917,13 @@ impl PatchSet {
     pub fn hle_symbols(&self) -> BTreeSet<String> {
         self.hle.keys().chain(self.answers.keys()).cloned().collect()
     }
+    /// the declaration of a hooked symbol's effects: its HLE, its declared effects, or its NVN proc's (by the proc's
+    /// name: a C++-mangled NVN export is the same proc as the C one)
     fn effects_of(&self, symbol: &str) -> Option<&Replaced> {
-        self.hle.get(symbol).or_else(|| self.declared.get(symbol)).or_else(|| self.nv.get(symbol))
+        self.hle
+            .get(symbol)
+            .or_else(|| self.declared.get(symbol))
+            .or_else(|| self.nv.get(crate::eden::nvn_proc_name(symbol).unwrap_or(symbol)))
     }
     /// host_effects' facts of a hooked symbol (stops, answer, clobbers, hle_reads)
     pub fn hle_fact(&self, symbol: &str) -> HleFact {
@@ -1402,6 +1407,15 @@ mod tests {
         // (a declared read of an argument register is the argument register, not a carry into the next bit)
         let ps = scan_texts(&[("t.c".into(), "HLE(f, reads(x0, x9, \"why\")) { }".into())]).unwrap();
         assert_eq!(ps.hle_fact("f").4, HLE_ARGS | 1 << 9);
+    }
+
+    #[test]
+    fn nv_effects_of_a_mangled_export() {
+        let ps = scan_texts(&[("t.c".into(), "NV(nvnFooBar, clobbers(\"why\")) { }".into())]).unwrap();
+        for s in ["nvnFooBar", "_Z9nvnFooBarP9NVNdevice"] {
+            let f = ps.hle_fact(s);
+            assert!(!f.1 && f.3, "{s}: an NV proc, clobbering");
+        }
     }
 
     #[test]
