@@ -1,12 +1,13 @@
 //! Function discovery (nx2/lift2/discover.py): function bodies from the entries, jump tables (and those switched on
 //! their index), PLT stubs, setjmp owners and the split of very large functions.
 //!
-//! A function is an entry plus everything reachable from it without crossing another entry. The walk is Python's,
-//! in Python's order: what a jump table resolves to depends on the tables resolved before it (the predecessor maps are
-//! cached per function extent with the edges known then), so the functions are walked one after the other in the
-//! same order, with the same cache life cycle.
+//! A function is an entry plus everything reachable from it without crossing another entry. What a jump table
+//! resolves to depends on the tables known (another switch's edges reach the table's constants), so the tables are
+//! found in rounds against the tables of the round before, to a fixed point (Discovery::discover): the walks and
+//! the resolutions of a round read only that round's fixed state and run in parallel, in any order.
 
 use crate::image::Image;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 type Map<K, V> = HashMap<K, V>;
@@ -174,47 +175,34 @@ enum Cand {
     Shape { load: u64, idx: u32, opt: u32, s: u32, size: u64, opc: u32, treg: u32, table: u64, add: u64, areg: Option<u32>, k: u32, ext: Option<u32>, count: Option<u64> },
 }
 
-/// an insertion-ordered map (a Python dict's order)
-#[derive(Default)]
-struct Ordered {
-    keys: Vec<u64>,
-    vals: Map<u64, u32>,
-}
-
-impl Ordered {
-    fn insert(&mut self, k: u64, v: u32) {
-        if self.vals.insert(k, v).is_none() {
-            self.keys.push(k);
-        }
-    }
-    fn items(&self) -> Vec<(u64, u32)> {
-        self.keys.iter().map(|k| (*k, self.vals[k])).collect()
-    }
-}
-
+/// The walk of the functions against a table map fixed for the round: a function's body is the code reachable from
+/// its entry without crossing another entry, a BR's successors its table's targets in that map.
 pub struct Discovery<'a> {
     img: &'a Image,
     pub entries: HashSet<u64>,
     pub hooks: HashSet<u64>,
     /// the functions whose symbol is a setjmp
     setjmp_syms: HashSet<u64>,
-    /// entry -> body, and the order the functions were found in (Python's dict order)
+    /// entry -> body; the functions by entry
     pub funcs: Map<u64, Body>,
     pub order: Vec<u64>,
     pub jt: Map<u64, Vec<u64>>,
     /// br -> (load pc, index register, LDR extend option, targets)
     pub jt_index: Map<u64, (u64, u32, u32, Vec<u64>)>,
+    /// the shape of each BR's table as its last resolution read it
     jt_cand: Map<u64, Cand>,
-    jt_missing: Ordered,
     pub plt: Map<u64, (u64, u64)>,
     /// owner -> the return addresses of its setjmp calls
     pub setjmp_owner: Vec<(u64, Vec<u64>)>,
     eh_starts: Vec<u64>,
-    preds: Option<Map<u64, Map<u64, Vec<u64>>>>,
-    /// jump_table's redirection of the resolvers to the table load: (br, table register, load pc)
-    redirect: Option<(u64, u32, u64)>,
-    // (walk scratch)
-    seen: HashSet<u64>,
+    /// the rounds the tables took to reach their fixed point
+    pub rounds: u32,
+}
+
+/// a walked function: its body and the BRs it holds (pc, register)
+struct Walked {
+    body: Body,
+    brs: Vec<(u64, u32)>,
 }
 
 impl<'a> Discovery<'a> {
@@ -238,65 +226,80 @@ impl<'a> Discovery<'a> {
             jt: Map::default(),
             jt_index: Map::default(),
             jt_cand: Map::default(),
-            jt_missing: Ordered::default(),
             plt: Map::default(),
             setjmp_owner: Vec::new(),
             eh_starts: eh,
-            preds: Some(Map::default()),
-            redirect: None,
-            seen: HashSet::new(),
+            rounds: 0,
         }
+    }
+
+    fn resolver(&self) -> Resolver<'_> {
+        Resolver { img: self.img, eh_starts: &self.eh_starts, entries: &self.entries, jt: &self.jt, preds: Map::default(), redirect: None, cand: Cand::Why("unusual shape") }
+    }
+
+    /// The tables to their fixed point, in rounds: each round walks the functions against the tables of the round
+    /// before and resolves every BR the bodies hold against them too (a table found through another switch's edges
+    /// needs those edges known), until a round changes no table. Each walk and each resolution reads only the
+    /// round's fixed state: the result is independent of the order and the thread count they run in.
+    pub fn discover(&mut self, max_insns: usize) {
+        let mut es: Vec<u64> = self.entries.iter().copied().filter(|e| !self.hooks.contains(e)).collect();
+        es.sort_unstable();
+        let mut walked: Vec<Walked> = es.par_iter().map(|&e| crate::busy(|| self.walk(e))).collect();
+        loop {
+            let mut brs: Vec<(u64, u32)> = walked.iter().flat_map(|w| w.brs.iter().copied()).collect();
+            brs.sort_unstable();
+            brs.dedup();
+            let got: Vec<(u64, Option<Vec<u64>>, Cand)> = brs
+                .par_iter()
+                .map_init(
+                    || self.resolver(),
+                    |r, &(br, reg)| {
+                        crate::busy(|| {
+                            let t = r.jump_table(br, reg);
+                            (br, t, std::mem::replace(&mut r.cand, Cand::Why("unusual shape")))
+                        })
+                    },
+                )
+                .collect();
+            let mut jt: Map<u64, Vec<u64>> = Map::default();
+            self.jt_cand.clear();
+            for (br, t, c) in got {
+                self.jt_cand.insert(br, c);
+                if let Some(t) = t {
+                    jt.insert(br, t);
+                }
+            }
+            if jt == self.jt {
+                break;
+            }
+            self.rounds += 1;
+            assert!(self.rounds < 64, "discovery: the jump tables reach no fixed point in {} rounds", self.rounds);
+            let changed: HashSet<u64> =
+                jt.iter().filter(|(b, t)| self.jt.get(b) != Some(t)).map(|(b, _)| *b).chain(self.jt.keys().filter(|b| !jt.contains_key(b)).copied()).collect();
+            self.jt = jt;
+            let again: Vec<usize> = (0..walked.len()).filter(|&k| walked[k].brs.iter().any(|b| changed.contains(&b.0))).collect();
+            let fresh: Vec<Walked> = again.par_iter().map(|&k| crate::busy(|| self.walk(es[k]))).collect();
+            for (k, w) in again.into_iter().zip(fresh) {
+                walked[k] = w;
+            }
+        }
+        for (e, w) in es.iter().zip(walked) {
+            self.funcs.insert(*e, w.body);
+        }
+        self.order = es;
+        if max_insns > 0 {
+            self.split_large(max_insns);
+        }
+        let plt: Vec<(u64, (u64, u64))> = self.order.iter().filter_map(|&e| self.plt_target(e).map(|t| (e, t))).collect();
+        self.plt.extend(plt);
+        self.find_setjmp_owners();
+        self.index_tables();
     }
 
     fn set_func(&mut self, e: u64, b: Body) {
         if self.funcs.insert(e, b).is_none() {
             self.order.push(e);
         }
-    }
-
-    pub fn discover(&mut self, max_insns: usize) {
-        let mut es: Vec<u64> = self.entries.iter().copied().collect();
-        es.sort_unstable();
-        for e in es {
-            if self.hooks.contains(&e) {
-                continue;
-            }
-            let b = self.walk(e);
-            self.set_func(e, b);
-        }
-        // (a table found through another switch's edges needs those resolved first: the misses once more, with every
-        // function's tables known; the functions holding a newly resolved one walked again)
-        let missing = std::mem::take(&mut self.jt_missing).items();
-        self.preds = Some(Map::default());
-        let mut redo: Vec<u64> = Vec::new();
-        for (pc, reg) in missing {
-            if let Some(t) = self.jump_table(pc, reg) {
-                self.jt.insert(pc, t);
-                for e in &self.order {
-                    if self.funcs[e].order.contains(&pc) {
-                        redo.push(*e);
-                    }
-                }
-            }
-        }
-        // (Python walks the set `redo` in its iteration order; sorted here: see the oddities, docs)
-        redo.sort_unstable();
-        redo.dedup();
-        for e in redo {
-            let b = self.walk(e);
-            self.set_func(e, b);
-        }
-        if max_insns > 0 {
-            self.split_large(max_insns);
-        }
-        for i in 0..self.order.len() {
-            let e = self.order[i];
-            if let Some(t) = self.plt_target(e) {
-                self.plt.insert(e, t);
-            }
-        }
-        self.find_setjmp_owners();
-        self.index_tables();
     }
 
     pub fn callee(&self, mut t: u64) -> u64 {
@@ -327,7 +330,7 @@ impl<'a> Discovery<'a> {
             for r in rets {
                 if !self.funcs.contains_key(&r) {
                     self.entries.insert(r);
-                    let b = self.walk(r);
+                    let b = self.walk(r).body;
                     self.set_func(r, b);
                 }
             }
@@ -396,46 +399,41 @@ impl<'a> Discovery<'a> {
         todo.sort_unstable();
         todo.dedup();
         for a in todo {
-            let b = self.walk(a);
+            let b = self.walk(a).body;
             self.set_func(a, b);
         }
     }
 
-    pub fn walk(&mut self, entry: u64) -> Body {
-        let mut seen = std::mem::take(&mut self.seen);
-        seen.clear();
+    /// the body from an entry, a BR's successors its table in the current map (the walk reads nothing else that
+    /// changes)
+    fn walk(&self, entry: u64) -> Walked {
+        let mut seen: HashSet<u64> = HashSet::new();
         let mut order = Vec::new();
+        let mut brs = Vec::new();
         let mut todo = vec![entry];
+        let visit = |t: u64, todo: &mut Vec<u64>| {
+            if (t == entry || !self.entries.contains(&t)) && self.img.in_code(t) {
+                todo.push(t);
+            }
+        };
         while let Some(mut pc) = todo.pop() {
             while !seen.contains(&pc) {
                 if (pc != entry && self.entries.contains(&pc)) || !self.img.in_code(pc) {
                     break;
                 }
-                let w = self.img.word(pc);
-                let k = classify(w, pc);
+                let k = classify(self.img.word(pc), pc);
                 seen.insert(pc);
                 order.push(pc);
-                let visit = |t: u64, todo: &mut Vec<u64>, d: &Self| {
-                    if t != entry && d.entries.contains(&t) {
-                        return;
-                    }
-                    if d.img.in_code(t) {
-                        todo.push(t);
-                    }
-                };
                 match k {
                     Ck::B(t) => {
-                        visit(t, &mut todo, self);
+                        visit(t, &mut todo);
                         break;
                     }
-                    Ck::Bcond(t) | Ck::Cbz(t) | Ck::Tbz(t) => visit(t, &mut todo, self),
+                    Ck::Bcond(t) | Ck::Cbz(t) | Ck::Tbz(t) => visit(t, &mut todo),
                     Ck::Br(r) => {
-                        if let Some(targets) = self.jump_table(pc, r) {
-                            self.jt.insert(pc, targets.clone());
-                            self.add_jt_edges(pc, &targets);
-                            for t in targets {
-                                visit(t, &mut todo, self);
-                            }
+                        brs.push((pc, r));
+                        for &t in self.jt.get(&pc).map(|v| v.as_slice()).unwrap_or(&[]) {
+                            visit(t, &mut todo);
                         }
                         break;
                     }
@@ -445,12 +443,56 @@ impl<'a> Discovery<'a> {
                 pc += 4;
             }
         }
-        self.seen = seen;
-        Body { order }
+        Walked { body: Body { order }, brs }
     }
 
-    // ---- jump tables
+    // ---- PLT stubs
 
+    fn plt_target(&self, e: u64) -> Option<(u64, u64)> {
+        let img = self.img;
+        let w: Vec<u32> = (0..4).map(|i| img.try_word(e + 4 * i)).collect::<Option<_>>()?;
+        if w[0] & 0x9F00001F != 0x90000010 || w[1] & 0xFFC003FF != 0xF9400211 || w[2] & 0xFFC003FF != 0x91000210 || w[3] != 0xD61F0220 {
+            return None;
+        }
+        let slot = adrp_page(w[0], e) + ((w[1] >> 10) & 0xFFF) as u64 * 8;
+        let t = u64::from_le_bytes(img.read(slot, 8).expect("PLT slot outside the image").try_into().unwrap());
+        self.entries.contains(&t).then_some((t, slot))
+    }
+
+    // ---- jump tables on their index
+
+    fn index_tables(&mut self) {
+        let mut brs: Vec<u64> = self.jt.keys().copied().collect();
+        brs.sort_unstable();
+        let mut r = self.resolver();
+        let mut out = Map::default();
+        for br in brs {
+            let c = self.jt_cand.get(&br).cloned().unwrap_or(Cand::Why("unusual shape"));
+            if let Cand::Shape { .. } = c {
+                if let Some(v) = r.index_table(br, &c) {
+                    out.insert(br, v);
+                }
+            }
+        }
+        self.jt_index = out;
+    }
+}
+
+/// A BR's table resolved against the round's fixed table map: the predecessor maps of the function extents (built
+/// from that map, cached for the resolver's life), the constants reaching the table's address and index.
+struct Resolver<'r> {
+    img: &'r Image,
+    eh_starts: &'r [u64],
+    entries: &'r HashSet<u64>,
+    jt: &'r Map<u64, Vec<u64>>,
+    preds: Map<u64, Map<u64, Vec<u64>>>,
+    /// jump_table's redirection of the resolvers to the table load: (br, table register, load pc)
+    redirect: Option<(u64, u32, u64)>,
+    /// the shape of the table the last jump_table read, or why it has none
+    cand: Cand,
+}
+
+impl<'r> Resolver<'r> {
     fn function_extent(&self, pc: u64) -> (u64, u64) {
         let i = self.eh_starts.partition_point(|&s| s <= pc);
         let lo = if i > 0 { self.eh_starts[i - 1] } else { 0 };
@@ -518,7 +560,7 @@ impl<'a> Discovery<'a> {
 
     fn jump_table_window(&mut self, br_pc: u64, reg: u32, window: u64) -> Option<Vec<u64>> {
         let img = self.img;
-        self.jt_cand.insert(br_pc, Cand::Why("unusual shape"));
+        self.cand = Cand::Why("unusual shape");
         let mut r: Map<u32, Option<V>> = Map::default();
         // (bound: the last CMP / CCMP's immediate, and the count a B.HI / B.HS after it gives)
         let mut bound: Option<(Option<u64>, Option<u64>)> = None;
@@ -644,7 +686,7 @@ impl<'a> Discovery<'a> {
             // (br to a code constant: `adr x19, label ... br x19`, a continuation in a register)
             let (lo, hi) = self.function_extent(br_pc);
             if lo <= c && c < hi && img.in_code(c) {
-                self.jt_cand.insert(br_pc, Cand::Why("no table (a constant)"));
+                self.cand = Cand::Why("no table (a constant)");
                 return Some(vec![c]);
             }
             return None;
@@ -652,7 +694,7 @@ impl<'a> Discovery<'a> {
         let add = match v {
             Some(V::Add(a)) => a,
             _ => {
-                self.jt_cand.insert(br_pc, Cand::Why("no table (ADR candidates)"));
+                self.cand = Cand::Why("no table (ADR candidates)");
                 return self.adr_targets(br_pc, reg);
             }
         };
@@ -667,7 +709,6 @@ impl<'a> Discovery<'a> {
         let (base, ld) = match (&a, &b) {
             (Some(V::C(c)), Some(V::Ld(l))) => (*c, l.clone()),
             _ => {
-                self.jt_missing.insert(br_pc, reg);
                 return None;
             }
         };
@@ -692,11 +733,10 @@ impl<'a> Discovery<'a> {
                 ts.sort_unstable();
                 ts.dedup();
                 if ts.is_empty() {
-                    self.jt_missing.insert(br_pc, reg);
                     return None;
                 }
                 if ts.len() > 1 {
-                    self.jt_cand.insert(br_pc, Cand::Why("several tables"));
+                    self.cand = Cand::Why("several tables");
                 }
                 ts
             }
@@ -747,28 +787,25 @@ impl<'a> Discovery<'a> {
         if targets.is_empty() {
             return None;
         }
-        if tables.len() == 1 && matches!(self.jt_cand.get(&br_pc), Some(Cand::Why("unusual shape"))) {
+        if tables.len() == 1 && matches!(self.cand, Cand::Why("unusual shape")) {
             if !ld_shifted {
-                self.jt_cand.insert(br_pc, Cand::Why("entry not the ADD's shifted operand"));
+                self.cand = Cand::Why("entry not the ADD's shifted operand");
             } else {
-                self.jt_cand.insert(
-                    br_pc,
-                    Cand::Shape {
-                        load: ld.pc,
-                        idx,
-                        opt: ld.opt,
-                        s: ld.s,
-                        size,
-                        opc: ld.opc,
-                        treg: ld.n,
-                        table: tables[0],
-                        add: add.pc,
-                        areg: if !swapped { Some(add.n) } else { None },
-                        k,
-                        ext: add.ext,
-                        count,
-                    },
-                );
+                self.cand = Cand::Shape {
+                    load: ld.pc,
+                    idx,
+                    opt: ld.opt,
+                    s: ld.s,
+                    size,
+                    opc: ld.opc,
+                    treg: ld.n,
+                    table: tables[0],
+                    add: add.pc,
+                    areg: if !swapped { Some(add.n) } else { None },
+                    k,
+                    ext: add.ext,
+                    count,
+                };
             }
         }
         Some(targets)
@@ -776,9 +813,8 @@ impl<'a> Discovery<'a> {
 
     fn preds(&mut self, lo: u64, hi: u64) -> &Map<u64, Vec<u64>> {
         let img = self.img;
-        let jt = &self.jt;
-        let cache = self.preds.get_or_insert_with(Map::default);
-        cache.entry(lo).or_insert_with(|| {
+        let jt = self.jt;
+        self.preds.entry(lo).or_insert_with(|| {
             let mut p: Map<u64, Vec<u64>> = Map::default();
             let mut pc = lo;
             while pc < hi {
@@ -800,20 +836,6 @@ impl<'a> Discovery<'a> {
         })
     }
 
-    fn add_jt_edges(&mut self, br_pc: u64, targets: &[u64]) {
-        let (lo, _) = self.function_extent(br_pc);
-        if let Some(cache) = &mut self.preds {
-            // (Python: only when the cache holds any extent at all)
-            if !cache.is_empty() {
-                if let Some(p) = cache.get_mut(&lo) {
-                    for &t in targets {
-                        p.entry(t).or_default().push(br_pc);
-                    }
-                }
-            }
-        }
-    }
-
     fn reaching_constants(&mut self, at: u64, reg: u32) -> Vec<u64> {
         let at = self.redirected(at, reg);
         let mut v: Vec<u64> = self.reaching(at, Loc::Reg(reg), 50000, 0).into_iter().collect();
@@ -833,7 +855,7 @@ impl<'a> Discovery<'a> {
         let mut todo = vec![at];
         while !todo.is_empty() && seen.len() < limit {
             let q = todo.pop().unwrap();
-            let ps: Vec<u64> = self.preds.as_ref().unwrap()[&lo].get(&q).cloned().unwrap_or_default();
+            let ps: Vec<u64> = self.preds[&lo].get(&q).cloned().unwrap_or_default();
             for p in ps {
                 if !seen.insert(p) {
                     continue;
@@ -1002,35 +1024,6 @@ impl<'a> Discovery<'a> {
         None
     }
 
-    // ---- PLT stubs
-
-    fn plt_target(&self, e: u64) -> Option<(u64, u64)> {
-        let img = self.img;
-        let w: Vec<u32> = (0..4).map(|i| img.try_word(e + 4 * i)).collect::<Option<_>>()?;
-        if w[0] & 0x9F00001F != 0x90000010 || w[1] & 0xFFC003FF != 0xF9400211 || w[2] & 0xFFC003FF != 0x91000210 || w[3] != 0xD61F0220 {
-            return None;
-        }
-        let slot = adrp_page(w[0], e) + ((w[1] >> 10) & 0xFFF) as u64 * 8;
-        let t = u64::from_le_bytes(img.read(slot, 8).expect("PLT slot outside the image").try_into().unwrap());
-        self.entries.contains(&t).then_some((t, slot))
-    }
-
-    // ---- jump tables on their index
-
-    fn index_tables(&mut self) {
-        self.jt_index.clear();
-        let mut brs: Vec<u64> = self.jt.keys().copied().collect();
-        brs.sort_unstable();
-        for br in brs {
-            let c = self.jt_cand.get(&br).cloned().unwrap_or(Cand::Why("unusual shape"));
-            if let Cand::Shape { .. } = c {
-                if let Some(v) = self.index_table(br, &c) {
-                    self.jt_index.insert(br, v);
-                }
-            }
-        }
-    }
-
     fn index_table(&mut self, br: u64, c: &Cand) -> Option<(u64, u32, u32, Vec<u64>)> {
         let Cand::Shape { load, idx, opt, s, size, opc, treg, table, add, areg, k, ext, count } = *c else {
             return None;
@@ -1052,7 +1045,7 @@ impl<'a> Discovery<'a> {
             if !matches!(classify(img.word(q), q), Ck::Op | Ck::Isb | Ck::Ic) {
                 return None;
             }
-            let ok = self.preds.as_ref().unwrap()[&lo].get(&(q + 4)).is_some_and(|p| p.as_slice() == [q]);
+            let ok = self.preds[&lo].get(&(q + 4)).is_some_and(|p| p.as_slice() == [q]);
             if self.entries.contains(&(q + 4)) || !ok {
                 return None;
             }
@@ -1114,7 +1107,7 @@ impl<'a> Discovery<'a> {
         let mut seen: HashSet<u64> = HashSet::from([at]);
         let mut todo = vec![at];
         while let Some(q) = todo.pop() {
-            let ps: Vec<u64> = self.preds.as_ref().unwrap()[&lo].get(&q).cloned().unwrap_or_default();
+            let ps: Vec<u64> = self.preds[&lo].get(&q).cloned().unwrap_or_default();
             if self.entries.contains(&q) || ps.is_empty() || seen.len() > 50000 {
                 return None;
             }

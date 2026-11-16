@@ -35,3 +35,11 @@ the ones patch::resolve checks a row's pc against, so a row's effects apply in i
 
 diffout: 4 functions' facts changed (body, insns: the four headers), their summaries and records unchanged; 0 IR
 changed.
+
+## v2.2 kept: discovery in rounds to the tables' fixed point (flaws 10, 12)
+
+The Python walk resolved each BR when its walk met it, against predecessor maps cached per extent with the edges
+known then (a table found later added its edges only to a cached extent, twice when met twice; the second pass over
+the misses added none; the last walk of a shared BR won; the redo set's order decided). Now each round walks every
+function against the previous round's tables and resolves every BR its bodies hold against them, until no table
+changes (4 rounds here). For this game the result is the same: diffout 0 changed, 0 facts changed.

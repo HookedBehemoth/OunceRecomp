@@ -249,7 +249,7 @@ fn main() {
         .iter()
         .filter_map(|h| answer_list.iter().find(|a| a.0 == h.1).map(|a| (h.0, h.1.clone(), a.1)))
         .collect();
-    // discovery (sequential: Python's order), then the plan
+    // discovery (in rounds to the tables' fixed point, each round in parallel), then the plan
     let td = Instant::now();
     let mut d = Discovery::new(&img, &entries, &facts.names, &horizon.setjmp_names, facts.eh_starts.clone());
     d.discover(max_func);
@@ -331,10 +331,11 @@ fn main() {
         c_img
     );
     println!(
-        "discovery: {} functions, {} jump tables ({} on their index), {} PLT stubs, {} setjmp owners; {:.2} s wall, {:.2} s CPU (one thread)",
+        "discovery: {} functions, {} jump tables ({} on their index) in {} rounds, {} PLT stubs, {} setjmp owners; {:.2} s wall, {:.2} s CPU",
         d.funcs.len(),
         d.jt.len(),
         d.jt_index.len(),
+        d.rounds + 1,
         d.plt.len(),
         d.setjmp_owner.len(),
         t_disc,
