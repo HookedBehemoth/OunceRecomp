@@ -155,3 +155,12 @@ there, so their summaries described the code below the entry (f_824f4454: inputs
 diffout: 58 functions' facts changed (the 26 and their callers: inputs 34, mustdef 24, preserved 8, results 33,
 unknown 7; 3 newly demoted, by sp, lr_ret or cs_clobber their own code shows), 10 functions' IR changed, 0
 unexplained, gen/ and image.bin equal.
+
+## v2.8: LR at a tail call
+
+The frame pass checked that x30 holds its entry value at a `ret`, not at a tail call (a direct or indirect tail
+call, or a Callee::Tails exit) whose callee returns: the callee's lifted `ret` returns to our caller, so a call made
+with B (`adr x30, 1f; b g`) or a tail call after a missing restore went wrong silently. It is lr_ret now.
+
+diffout: 117 functions' facts changed (demote only: lr_ret added; all were demoted already, by sp, cs_clobber,
+split_frame or an unknown callee), 0 functions' IR changed, 0 unexplained, gen/ and image.bin equal.

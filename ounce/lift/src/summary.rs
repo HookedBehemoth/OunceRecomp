@@ -1492,16 +1492,26 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
             if sp != Some(0) && !indirect {
                 reasons |= why::SPLIT_FRAME;
             }
+            // (a tail call returns through the callee's return to our caller: LR must hold its entry value, as at a
+            // ret; else the guest's callee returns elsewhere, a call made with B)
+            let mut back = false;
             each_callee(f, k, s, |c| {
                 if c.returns {
+                    back = true;
                     fs.exits.push((sp, if c.preserved & SPM != 0 { holds & (c.preserved | SPM) } else { 0 }));
                 }
             });
+            if back && holds & X30 == 0 {
+                reasons |= why::LR_RET;
+            }
             continue;
         }
         if let Callee::Tails(a, b) = f.callee[k] {
             for t in f.tails_of(a, b) {
                 let c = s.callee(t);
+                if c.returns && holds & X30 == 0 {
+                    reasons |= why::LR_RET;
+                }
                 if c.returns {
                     fs.exits.push((sp, holds & c.preserved));
                 }
