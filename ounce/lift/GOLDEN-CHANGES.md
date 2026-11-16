@@ -99,3 +99,11 @@ one C identifier overwrote each other's symbol. Now an implemented symbol takes 
 (the first stubbed of several), two implemented ones stop the lift, and so do two symbols of one C name. None occurs
 in this game. The NSO loader's init-array list, read from the unrelocated bytes and read by nothing, is gone (the
 image's init arrays are read relocated). diffout 0 changed.
+
+## v2.5 kept: a64_stubs.c without the toolchain, and by symbol (flaws 16, 17)
+
+The stubs' demangled names came from whichever llvm-cxxfilt was found first ($EMSDK, else PATH), so the generated
+file could change with the toolchain; they come from cpp_demangle now, its version fixed by Cargo.lock. And whether
+the host defines a hook was asked by mixing two spellings (imp_<symbol> against the hook's C name, the symbol made
+an identifier), so a symbol whose C name differs was stubbed even when implemented; it is asked by symbol now.
+diffout 0 changed: the 155 stubs' text equal to llvm-cxxfilt's.

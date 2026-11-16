@@ -33,6 +33,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
+name = "cpp_demangle"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b0fa7b695ebf7023a5af95490233db9d2987c212ce56ec1cf831763f9deaf80"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -194,6 +203,7 @@ version = "0.1.0"
 name = "ounce-lift"
 version = "0.1.0"
 dependencies = [
+ "cpp_demangle",
  "lz4_flex",
  "ounce-decode",
  "rayon",

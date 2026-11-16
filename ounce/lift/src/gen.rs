@@ -6,7 +6,7 @@ use crate::eden::{nvn_proc_name, Facts};
 use crate::image::{Hook, Image};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn fname(a: u64) -> String {
     format!("f_{a:08x}")
@@ -99,64 +99,21 @@ pub fn nvn_exports_c(names: &[String]) -> String {
     s
 }
 
-/// llvm-cxxfilt as toolchain.find finds it: $EMSDK (else ~/emsdk)/upstream/bin, else PATH
-fn cxxfilt() -> PathBuf {
-    let root = std::env::var_os("EMSDK").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("emsdk"));
-    let p = root.join("upstream").join("bin").join("llvm-cxxfilt");
-    if p.is_file() {
-        return p;
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for d in std::env::split_paths(&path) {
-            let c = d.join("llvm-cxxfilt");
-            if c.is_file() {
-                return c;
-            }
-        }
-    }
-    p
-}
-
-/// symbol -> its demangled form, by one llvm-cxxfilt run (standalone.demangle: the names themselves if it fails)
-fn demangle(syms: &[&str]) -> HashMap<String, String> {
-    use std::io::Write as _;
-    let ident = || syms.iter().map(|s| (s.to_string(), s.to_string())).collect();
-    let child = std::process::Command::new(cxxfilt())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else { return ident() };
-    let input = syms.join("\n");
-    let mut stdin = child.stdin.take().unwrap();
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(input.as_bytes());
-    });
-    let out = child.wait_with_output();
-    let _ = writer.join();
-    let Ok(out) = out else { return ident() };
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    // (Python's str.splitlines)
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() != syms.len() {
-        return ident();
-    }
-    syms.iter().zip(lines).map(|(s, d)| (s.to_string(), d.to_string())).collect()
+/// a symbol's demangled form (cpp_demangle, a fixed version: the generated file does not depend on the toolchain),
+/// the symbol itself when it is no C++ name
+fn demangle(sym: &str) -> String {
+    let opts = cpp_demangle::DemangleOptions::default();
+    cpp_demangle::Symbol::new(sym).ok().and_then(|d| d.demangle_with_options(&opts).ok()).unwrap_or_else(|| sym.to_string())
 }
 
 /// a64_stubs.c (standalone.gen_stubs) and the number of stubs
 pub fn stubs_c(hooks: &[Hook], implemented: &BTreeSet<String>) -> (String, usize) {
-    // (the C names the host defines: imp_<symbol> of each HLE / PATCH_ANSWER, and of each NVN function hooked)
-    let have: std::collections::HashSet<String> = implemented
-        .iter()
-        .map(|s| format!("imp_{s}"))
-        .chain(hooks.iter().filter(|h| nvn_proc_name(&h.sym).is_some()).map(|h| format!("imp_{}", h.sym)))
-        .collect();
-    let hs: Vec<&Hook> = hooks.iter().filter(|h| !have.contains(&h.c)).collect();
-    let dm = demangle(&hs.iter().map(|h| h.sym.as_str()).collect::<Vec<_>>());
+    // (the hooks the host defines, by symbol: each HLE / PATCH_ANSWER, and each NVN function hooked (nvn2_exports.c);
+    // a hook's C name is its symbol made an identifier)
+    let hs: Vec<&Hook> = hooks.iter().filter(|h| !implemented.contains(&h.sym) && nvn_proc_name(&h.sym).is_none()).collect();
     let mut s = String::from("#include \"a64.h\"\n__attribute__((noreturn)) void hos_import_stop(Ctx *A64_NOESC c, const char *sym, const char *name);\n\n");
     for h in &hs {
-        writeln!(s, "void {}(Ctx *A64_NOESC c) {{ hos_import_stop(c, \"{}\", \"{}\"); }}", h.c, h.sym, dm[&h.sym].replace('\\', "\\\\").replace('"', "\\\"")).unwrap();
+        writeln!(s, "void {}(Ctx *A64_NOESC c) {{ hos_import_stop(c, \"{}\", \"{}\"); }}", h.c, h.sym, demangle(&h.sym).replace('\\', "\\\\").replace('"', "\\\"")).unwrap();
     }
     (s, hs.len())
 }
