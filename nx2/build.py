@@ -1,11 +1,12 @@
-"""Build the game: work/sa/build/hookshot from the lift (work/sa, `lift.py --standalone
---write`): the lifted code (nx2/lift2/game.py: the plan's functions, lifted to LLVM IR and compiled by partition), the
-runtime's tables and the image's C (work/sa/gen), the runtime (nx2/rtgen.py from third_party/a64-kit/rt), the native
-runtime in host/ (TOTKPort's hos/, adapted) and the direct back end (gpu/direct: hookshot_direct.so).
-Linking it is also the check that the whole game closes over itself: any unresolved symbol fails the link.
+"""Build the game: work/sa/build/hookshot. Every build lifts first: ounce-lift (ounce/lift, built here with cargo; about
+8 s) writes into work/sa the lifted code (one LLVM IR file a partition, lift_<c|h><n>.ll, and lift_answers.ll), the
+runtime's tables and the image's C (gen/), the guest model (rt64/) and the image (image/image.bin). The build compiles
+those with the native runtime in host/ (TOTKPort's hos/, adapted) and the direct back end (gpu/direct:
+hookshot_direct.so). Linking it is also the check that the whole game closes over itself: any unresolved symbol fails
+the link.
 
-Objects are cached by their key in work/objcache; a lifted partition whose inputs are unchanged comes from the cache
-by an input key without being lifted again.
+Objects are cached by their key in work/objcache: a C file's by its text, flags and headers (object_key); a partition's
+by its IR text and flags (ir_key), so a partition whose IR did not change is not compiled again.
 
 Usage:  python -I nx2/build.py [--jobs N] [--opt O1] [--standalone]   (--jobs default: HOOKSHOT_JOBS, else by memory)
   --standalone: accepted for the scripts that pass it (the build is always the standalone game)
@@ -29,11 +30,11 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
 import gamedesc
 import kit
-import rtgen
 import toolchain
 import version
 
 HOST = os.path.join(kit.HERE, "..", "host")
+LIFTER = os.path.join(kit.ROOT, "ounce", "lift")   # (the lifter's crate; its binary: target/release/ounce-lift)
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
@@ -249,63 +250,58 @@ def prune_object_cache(now=None):
 # (what one compiler is counted at where its own need is not worked out: a hot piece (0.8-1.7 GB measured at -O2),
 # and the compile countdown's guess of how many the free memory holds. About the median partition's peak)
 COMPILER_MB = 1500
-# (the default job count: what one job of the lifted game's build takes at its peak, a lift worker holding the plan or a
-# compiler of a partition, and what the build's own process holds beside them (the plan with its summaries and every
-# partition's IR text between the lift and the compile) plus a margin. Measured on TOTK, cold, in a capped scope (the
-# whole scope's memory.peak): 6 jobs 10.8 GB without summaries in the plan, 8 jobs 14.2 GB with them; the summary step
-# runs before the lift workers and the compilers (game.finish_summaries), its own peak 1.4 GB plus its workers')
-JOB_MB = 1700
-BASE_MB = 3000
-
-
-def memory_limit_mb():
-    """(MB, what it is) the memory the build may use: the smallest memory.max of this process's cgroup and its parents
-    (a capped scope: systemd-run -p MemoryMax=...), and MemAvailable"""
-    out = []
-    try:
-        with open("/proc/self/cgroup") as f:
-            path = [l.split(":", 2)[2].strip() for l in f if l.startswith("0::")][0]
-        while True:
-            try:
-                with open("/sys/fs/cgroup%s/memory.max" % path.rstrip("/")) as f:
-                    v = f.read().strip()
-                if v != "max":
-                    out.append((int(v) >> 20, "the cgroup's memory.max"))
-            except (OSError, ValueError):
-                pass
-            if path in ("/", ""):
-                break
-            path = os.path.dirname(path)
-    except (OSError, IndexError):
-        pass
-    free = free_mb()
-    if free is not None:
-        out.append((free, "MemAvailable"))
-    return min(out) if out else (None, "unknown")
 
 
 def default_jobs():
-    """(jobs, why): HOOKSHOT_JOBS, else what the memory holds ((limit - BASE_MB) / JOB_MB), between 1 and the CPUs"""
+    """(jobs, why): HOOKSHOT_JOBS, else every CPU (the memory gate, MemoryGate, holds compiles back when memory is short)"""
     if os.environ.get("HOOKSHOT_JOBS"):
         return int(os.environ["HOOKSHOT_JOBS"]), "HOOKSHOT_JOBS"
     cpus = os.cpu_count() or 1
-    limit, what = memory_limit_mb()
-    if limit is None:
-        return cpus, "%d CPUs (the memory not known)" % cpus
-    n = max(1, min(cpus, (limit - BASE_MB) // JOB_MB))
-    return n, "%s %d MB: (%d - %d) / %d MB a job, at most %d CPUs" % (what, limit, limit, BASE_MB, JOB_MB, cpus)
+    return cpus, "%d CPUs; compiles wait on the memory gate" % cpus
+
+
+def cgroup_room_mb():
+    """The room left under the tightest memory.max of this process's cgroup and its parents (a capped scope:
+    systemd-run -p MemoryMax=...), in MB: memory.max less memory.current; None without a limit"""
+    room = None
+    try:
+        with open("/proc/self/cgroup") as f:
+            path = [l.split(":", 2)[2].strip() for l in f if l.startswith("0::")][0].rstrip("/")
+    except (OSError, IndexError):
+        return None
+    while True:
+        d = "/sys/fs/cgroup" + path
+        try:
+            with open(d + "/memory.max") as f:
+                v = f.read().strip()
+            if v != "max":
+                with open(d + "/memory.current") as f:
+                    left = (int(v) - int(f.read().strip())) >> 20
+                room = left if room is None else min(room, left)
+        except (OSError, ValueError):
+            pass
+        if path in ("", "/"):
+            break
+        path = os.path.dirname(path)
+    return room
 
 
 def free_mb():
-    """The memory free now (MemAvailable), in MB; None: not known"""
+    """The memory free now, in MB: MemAvailable, or less when this build runs in a capped cgroup (cgroup_room_mb);
+    None: not known"""
+    free = None
     try:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) >> 10
+                    free = int(line.split()[1]) >> 10
+                    break
     except (OSError, ValueError, AttributeError):
         return None
-    return None
+    room = cgroup_room_mb()
+    if room is not None:
+        free = room if free is None else min(free, room)
+    return free
 
 
 def tree_rss(pid):
@@ -340,7 +336,9 @@ def rss_mb(proc):
 
 def mem_need(src):
     """What compiling a file takes at its peak, in MB, a little over: the runtime's C files ~0.2 GB, the C++ files up to
-    ~1 GB (the lifted partitions are compiled by nx2/lift2/game.py, each its own clang)"""
+    ~1 GB, a lifted partition's IR COMPILER_MB"""
+    if src.endswith(".ll"):
+        return COMPILER_MB
     return 1000 if src.endswith(".cpp") else 400
 
 
@@ -477,6 +475,144 @@ def object_key(src, fl, deps):
     return hashlib.sha1(open(src, "rb").read() + flag_text(fl).encode() + deps, usedforsecurity=False).hexdigest()
 
 
+# ---- the lifted code: ounce-lift's partitions, LLVM IR compiled by clang (after `opt` at a level without DSE)
+
+# (dead context stores: LLVM drops a store a later one overwrites only if it can see that nothing reads the context
+# in between. Capture tracking gives up past N uses of the context pointer (a large function has thousands) and then
+# assumes the context escaped; DSE stops after so many definitions in a block or steps of its walk. Measured on the
+# market's hot functions: context stores after -O2 -40 to -47 %, compile time of the largest 1.6 s -> 3.8 s)
+DSE_FLAGS = ["-mllvm", "-capture-tracking-max-uses-to-explore=100000", "-mllvm", "-dse-memoryssa-defs-per-block-limit=100000",
+             "-mllvm", "-dse-memoryssa-scanlimit=1000", "-mllvm", "-dse-memoryssa-walklimit=1000",
+             "-mllvm", "-dse-memoryssa-otherbb-cost=1"]
+_PIPELINES = {}
+
+
+def part_flags(level, march_flags):
+    """clang's flags for a partition's IR at level (O1 cold, the hot level for the hot list's)"""
+    return march_flags + ["-" + level, "-g0", "-Wno-everything", "-ffunction-sections",
+                          "-mllvm", "-rotation-max-header-size=0"] + DSE_FLAGS
+
+
+def opt_argv(clang, level, march_flags):
+    """the `opt` command a partition's IR goes through before clang's code generation, or None (clang optimises).
+    clang's -O1 pipeline has no DSE, so every context store a later one overwrites stayed in the cold partitions: at
+    a level whose pipeline lacks `dse`, the IR runs through clang's own pipeline for that level with `dse` after
+    `memcpyopt`, where -O2 has it (6 cold partitions: .text -13 %, context stores -33 %, compile time unchanged; -O2
+    gave -16 % at 2.25 times the time). The pipeline is asked of the installed clang, so it follows the toolchain"""
+    k = (clang, level, tuple(march_flags))
+    if k not in _PIPELINES:
+        r = subprocess.run([clang, "-" + level] + march_flags + ["-Wno-everything", "-mllvm", "-print-pipeline-passes",
+                            "-x", "ir", os.devnull, "-c", "-o", os.devnull], capture_output=True, text=True, check=True)
+        p = r.stdout.strip()
+        names = set(re.findall(r"[\w-]+", p))
+        argv = None
+        if "dse" not in names and "memcpyopt" in names:
+            assert p.count("memcpyopt,") == 1, "clang -%s: memcpyopt not once in its pipeline" % level
+            cpu = [f.replace("-march=", "-mcpu=") for f in march_flags if f.startswith("-march=")]
+            argv = [toolchain.need(toolchain.find("opt"))] + cpu + ["-passes=" + p.replace("memcpyopt,", "memcpyopt,dse,")] + \
+                [f for f in DSE_FLAGS if f != "-mllvm"]
+        _PIPELINES[k] = argv
+    return _PIPELINES[k]
+
+
+# (the lifter writes textual LLVM IR, whose syntax is only kept within one LLVM major)
+LLVM_MAJOR = 23
+
+
+def check_llvm(clang):
+    """SystemExit unless clang is of LLVM_MAJOR, the version the lifter's IR text is written for"""
+    m = re.search(r"clang version (\d+)\.", subprocess.run([clang, "--version"], capture_output=True, text=True).stdout)
+    if not m or int(m.group(1)) != LLVM_MAJOR:
+        raise SystemExit("build: %s is LLVM %s, but the lifter's IR is written for LLVM %d: install LLVM %d, or move "
+                         "LLVM_MAJOR (nx2/build.py) and check the emitter (ounce/lift/src/emit.rs) against the new "
+                         "version's IR syntax" % (clang, m.group(1) if m else "?", LLVM_MAJOR, LLVM_MAJOR))
+
+
+def ir_key(src, fl, pre):
+    """A partition's object key: its flags, the `opt` command (pre) and its IR text"""
+    return hashlib.sha1((" ".join(fl + (pre or [])) + "\n").encode() + open(src, "rb").read(),
+                        usedforsecurity=False).hexdigest()
+
+
+def job_key(job):
+    """The object key of a compile job: (cc, src, obj, flags, headers) for C and C++, (clang, src, obj, flags, pre) for IR"""
+    _, src, _, fl, deps = job
+    return ir_key(src, fl, deps) if src.endswith(".ll") else object_key(src, fl, deps)
+
+
+def lifter():
+    """ounce-lift, built (cargo build --release; nothing to do when it is up to date)"""
+    cargo = shutil.which("cargo") or os.path.expanduser("~/.cargo/bin/cargo")
+    r = subprocess.run([cargo, "build", "--release", "--quiet", "--manifest-path", os.path.join(LIFTER, "Cargo.toml")])
+    if r.returncode:
+        raise SystemExit("build: ounce-lift did not build (cargo, ounce/lift)")
+    return os.path.join(LIFTER, "target", "release", "ounce-lift")
+
+
+def lift(sa, game, jobs):
+    """The lift into sa (ounce-lift): gen/, rt64/, image/image.bin and the partitions' IR; the partitions' paths"""
+    for d in ("gen", "rt64", "image"):   # (a worktree's work/sa once linked these to the main checkout's)
+        if os.path.islink(os.path.join(sa, d)):
+            os.remove(os.path.join(sa, d))
+    for f in os.listdir(sa):   # (an earlier lift's partitions: the count changes with the code)
+        if f.startswith("lift_") and f.endswith(".ll"):
+            os.remove(os.path.join(sa, f))
+    t = time.time()
+    r = subprocess.run([lifter(), "lift", sa, "--game", game, "--work", kit.WORK, "--root", kit.ROOT, "-j", str(jobs)],
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit("build: the lift failed:\n" + (r.stdout + r.stderr)[-4000:])
+    for line in r.stdout.splitlines():
+        if line.startswith(("lift:", "whole pipeline:")):
+            print(line, flush=True)
+    print("lift: %.0fs" % (time.time() - t), flush=True)
+    return sorted((os.path.join(sa, f) for f in os.listdir(sa) if f.startswith("lift_") and f.endswith(".ll")),
+                  key=lambda p: -os.path.getsize(p))   # (the biggest first: the compile's long pole starts early)
+
+
+def compile_ll(job):
+    """One partition's IR: through `opt` (pre) when given, then clang; the object cached by ir_key"""
+    clang, src, obj, fl, pre = job
+    key = PLANNED.get((src, obj)) or ir_key(src, fl, pre)
+    stamp = obj + ".sha1"
+    if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
+        return src, 0.0, None
+    cached = os.path.join(OBJ_CACHE, key + ".o")
+    if os.path.exists(cached):
+        if os.path.exists(obj):
+            os.remove(obj)
+        os.link(cached, obj)
+        open(stamp, "w").write(key)
+        return src, 0.0, None
+    lease = GATE.enter(src) if GATE else None
+    t = time.time()
+    try:
+        cl = [clang] + fl
+        data = open(src, "rb").read()
+        if pre:
+            with subprocess.Popen(pre + ["-", "-o", "-"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE) as p:
+                if GATE:
+                    GATE.started(lease, p)
+                data, err = p.communicate(data)
+            if p.returncode:
+                return src, time.time() - t, (err or b"opt exited with status %d" % p.returncode)[-3000:].decode(errors="replace")
+            cl += ["-Xclang", "-disable-llvm-passes"]
+        with subprocess.Popen(cl + ["-x", "ir", "-", "-c", "-o", obj], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE) as p:
+            if GATE:
+                GATE.started(lease, p)
+            out, err = p.communicate(data)
+        if p.returncode:
+            return src, time.time() - t, (err or out or b"clang exited with status %d" % p.returncode)[-3000:].decode(errors="replace")
+    finally:
+        if GATE:
+            GATE.leave(lease)
+    open(stamp, "w").write(key)
+    cache_put(obj, key)
+    return src, time.time() - t, None
+
+
 def times_from(path):
     """The seconds each module took on this PC, from a front end's build_times.json (HOOKSHOT_TIMES), or {} when there is no record to
     use (a first build, one half written, or one another version of the tools wrote): the countdown then falls back to
@@ -524,7 +660,7 @@ def plan_jobs(jobs):
     The keys go to compile_one, which then does not hash every source a second time."""
     work, keys = [], {}
     for cc, src, obj, fl, deps in jobs:
-        key = object_key(src, fl, deps)
+        key = job_key((cc, src, obj, fl, deps))
         keys[(src, obj)] = key
         stamp = obj + ".sha1"
         if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
@@ -540,6 +676,8 @@ PLANNED = {}   # (src, obj) -> the object key plan_jobs worked out, so compile_o
 
 def compile_one(job):
     cc, src, obj, fl, deps = job
+    if src.endswith(".ll"):   # (a lifted partition)
+        return compile_ll(job)
     key = PLANNED.get((src, obj)) or object_key(src, fl, deps)
     stamp = obj + ".sha1"
     if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
@@ -597,14 +735,16 @@ def main():
     os.makedirs(obj_dir, exist_ok=True)
     if os.environ.get("RX_DIRECT_ONLY") or a.dry_run:   # (the direct back end needs no game: built so with no lift)
         os.makedirs(gen, exist_ok=True)
+    rt64 = os.path.join(sa, "rt64")
+    parts = []
+    if os.environ.get("RX_DIRECT_ONLY") or a.dry_run:   # (no lift: the guest model alone, which needs no dump)
+        if subprocess.run([lifter(), "rt64", rt64, "--root", kit.ROOT]).returncode:
+            raise SystemExit("build: ounce-lift rt64 failed")
     else:
-        import lift_mark   # (a lift that was stopped before its end is not built from)
-        why = lift_mark.check(os.path.dirname(gen))
-        if why:
-            raise SystemExit("build: " + why)
-        desc.check_lift(sa)   # (the lift is of this game: its identity, gamedesc)
-    rt64 = rtgen.write(os.path.join(out, "rt64"))
+        parts = lift(sa, os.path.abspath(a.game), a.jobs)
     cc = toolchain.need(toolchain.find("clang"))
+    if parts:
+        check_llvm(cc)
     drop_stale_objects(cc, [obj_dir])
     fl = flags(gen, rt64, a.opt)
     # (which Hookshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
@@ -617,7 +757,6 @@ def main():
     srcs = [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_code_slots.c", "a64_stubs.c", "hos_image.c",
                                            "nvn2_exports.c")] + \
         [os.path.join(rt64, "a64_rt.c")]
-    from lift2 import patch_scan
     host_srcs = desc.host_sources()   # (the game description's; the patch declarations are scanned in them, too)
     host_srcs += [  # (the window on SDL2, the Win32-named calls on POSIX)
         os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
@@ -625,15 +764,14 @@ def main():
         srcs = [s for s in srcs if os.path.exists(s)]
     if a.dry_run:   # (the lift's files: there is no game here)
         srcs = [s for s in srcs if os.path.dirname(s) != gen]
-    # the lifted game (nx2/lift2/game.py): its partitions' objects, and the C it writes beside them
-    lift_objs = []
-    if not a.dry_run and not os.environ.get("RX_DIRECT_ONLY"):
-        from lift2 import game
-        more, lift_objs, line = game.prepare(gen, out, a.jobs, a.opt, os.environ.get("RX_HOT_OPT", "O2"), target() + CPU,
-                                             OBJ_CACHE)
-        srcs += more
-        print(line, flush=True)
-    jobs = [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"), fl, deps) for s in srcs]
+    # the lifted game: each partition at its level (lift_h*: the hot list's, RX_HOT_OPT, default O2; the rest and
+    # lift_answers at --opt), through opt_argv's pipeline where clang's has no DSE
+    jobs = []
+    for s in parts:
+        level = os.environ.get("RX_HOT_OPT", "O2") if os.path.basename(s).startswith("lift_h") else a.opt
+        jobs.append((cc, s, os.path.join(obj_dir, os.path.basename(s)[:-3] + ".o"), part_flags(level, target() + CPU),
+                     opt_argv(cc, level, target() + CPU)))
+    jobs += [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"), fl, deps) for s in srcs]
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + ["-I" + POSIX, "-D_GNU_SOURCE"] + \
         ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16"] + \
@@ -806,11 +944,13 @@ def main():
     if still:
         return 1
     if host_srcs:   # (the patch declarations the lifter scanned, against what the compiler made of them)
-        from lift2 import patch_scan
-        print(patch_scan.check_records([j[2] for j in jobs if j[1] in set(host_srcs)], host_srcs), flush=True)
+        r = subprocess.run([lifter(), "records", "--game", a.game, "--root", kit.ROOT] +
+                           [j[2] for j in jobs if j[1] in set(host_srcs)], capture_output=True, text=True)
+        print((r.stdout + r.stderr).strip(), flush=True)
+        if r.returncode:
+            return 1
     vk_objs = {j[2] for j in direct_jobs}   # (the back end's objects: not the exe's)
     objs = [j[2] for j in jobs if j[2] not in vk_objs]
-    objs += lift_objs
     rsp = os.path.join(out, "objs.rsp")
     open(rsp, "w", encoding="utf-8").write("\n".join('"%s"' % o.replace("\\", "/") for o in objs))
     if not direct_only:

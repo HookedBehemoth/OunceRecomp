@@ -4,11 +4,11 @@
 #
 #   scripts/agent-worktree.sh new <name> [base]   work/wt/<name> on branch agent/<name> (from base, default the
 #                                                 main checkout's branch). Its work/ links to the main work/
-#                                                 (dump, image, runs, overlays, venv, locks, objcache) except sa/gen
-#                                                 and sa/build, which are its own reflink copies (instant on btrfs):
-#                                                 hooks splice into its own lift, builds go to its own
-#                                                 work/sa/build. Objects are shared through work/objcache (content-
-#                                                 keyed), so a host-only change rebuilds in ~40 s.
+#                                                 (dump, runs, overlays, venv, locks, objcache) except sa/, which is
+#                                                 its own: its build lifts into it (ounce-lift) and builds into
+#                                                 work/sa/build, a reflink copy of the main one's (instant on btrfs).
+#                                                 Objects are shared through work/objcache (content-keyed), so a
+#                                                 host-only change rebuilds in ~40 s.
 #   scripts/agent-worktree.sh land <name>         rebase agent/<name> onto the main branch and fast-forward it
 #   scripts/agent-worktree.sh drop <name>         remove the worktree and its branch, if the branch has landed
 #
@@ -31,10 +31,7 @@ new)
         case "$b" in sa|wt) continue ;; esac
         ln -s "$e" "$wt/work/$b"
     done
-    for e in "$root"/work/sa/*; do
-        b=$(basename "$e")
-        case "$b" in gen|build) cp -a --reflink=auto "$e" "$wt/work/sa/$b" ;; *) ln -s "$e" "$wt/work/sa/$b" ;; esac
-    done
+    [ ! -d "$root/work/sa/build" ] || cp -a --reflink=auto "$root/work/sa/build" "$wt/work/sa/build"
     rm -f "$wt/work/sa/build/"*.lock
     echo "worktree $wt on $branch (from $base); build there, run with EXE=$wt/work/sa/build/hookshot"
     ;;

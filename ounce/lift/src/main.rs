@@ -176,8 +176,60 @@ fn usage() -> (f64, f64) {
     (tick(11) + tick(12), hwm / 1024.0)
 }
 
+/// `ounce-lift records [--game <dir>] [--root <dir>] <object>...`: the host objects' hos_patch records against the scan
+fn records(argv: Vec<String>) {
+    let (mut game_dir, mut root, mut objs) = (PathBuf::from("games/oot"), PathBuf::from("."), Vec::new());
+    let mut args = argv.into_iter();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--game" => game_dir = PathBuf::from(args.next().unwrap()),
+            "--root" => root = PathBuf::from(args.next().unwrap()),
+            _ => objs.push(PathBuf::from(a)),
+        }
+    }
+    let game = Game::load(&game_dir).unwrap_or_else(|e| fail(e));
+    match patch::check_records(&root, &game.host, &objs) {
+        Ok(line) => println!("{line}"),
+        Err(e) => fail(e),
+    }
+}
+
+/// `ounce-lift rt64 <dir> [--root <dir>]`: the guest model (a64.h, a64_rt.c), which needs no dump
+fn rt64(argv: Vec<String>) {
+    let (mut root, mut out) = (PathBuf::from("."), None);
+    let mut args = argv.into_iter();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--root" => root = PathBuf::from(args.next().unwrap()),
+            _ => out = Some(PathBuf::from(a)),
+        }
+    }
+    let out = out.unwrap_or_else(|| fail("usage: ounce-lift rt64 <dir> [--root <dir>]"));
+    std::fs::create_dir_all(&out).unwrap_or_else(|e| fail(e));
+    for (name, text) in gen::rt64(&root).unwrap_or_else(|e| fail(e)) {
+        std::fs::write(out.join(name), text).unwrap_or_else(|e| fail(e));
+    }
+}
+
+/// the message on stderr, exit status 1
+fn fail(msg: impl std::fmt::Display) -> ! {
+    eprintln!("ounce-lift: {msg}");
+    std::process::exit(1)
+}
+
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    match argv.first().map(String::as_str) {
+        Some("records") => records(argv.split_off(1)),
+        Some("rt64") => rt64(argv.split_off(1)),
+        Some("lift") => lift(argv.split_off(1)),
+        _ => lift(argv),
+    }
+}
+
+/// `ounce-lift [lift] ...`: the whole lift (the module's description)
+fn lift(argv: Vec<String>) {
+    let mut args = argv.into_iter();
     let mut pos = Vec::new();
     let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     let (mut only, mut skip, mut check) = (None::<Vec<String>>, false, false);

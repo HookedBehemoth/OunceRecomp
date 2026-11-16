@@ -1448,3 +1448,90 @@ impl Horizon {
         toml::from_str(&t).map_err(|e| format!("{}: {e}", p.display()))
     }
 }
+
+// ---- the build's cross-check: the records the compiler made of the declarations against the scan
+
+/// the bytes of a 64-bit ELF object's sections named `name` (none: empty)
+fn elf_sections(path: &Path, name: &[u8]) -> Res<Vec<u8>> {
+    let data = std::fs::read(path).map_err(|e| format!("patch declarations: {}: {e}", path.display()))?;
+    if data.len() < 0x40 || &data[..4] != b"\x7fELF" || data[4] != 2 {
+        return Err(format!("patch declarations: {} is not a 64-bit ELF object", path.display()));
+    }
+    let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]) as usize;
+    let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
+    let u64_at = |o: usize| u64::from_le_bytes(data[o..o + 8].try_into().unwrap()) as usize;
+    let (shoff, shentsize, shnum, shstrndx) = (u64_at(0x28), u16_at(0x3a), u16_at(0x3c), u16_at(0x3e));
+    let sec = |k: usize| shoff + k * shentsize;
+    let strtab = u64_at(sec(shstrndx) + 0x18);
+    let mut out = Vec::new();
+    for k in 0..shnum {
+        let h = sec(k);
+        let start = strtab + u32_at(h);
+        let end = start + data[start..].iter().position(|&b| b == 0).unwrap_or(0);
+        if &data[start..end] == name && u32_at(h + 4) != 8 {
+            // (not SHT_NOBITS)
+            let (off, size) = (u64_at(h + 0x18), u64_at(h + 0x20));
+            out.extend_from_slice(&data[off..off + size]);
+        }
+    }
+    Ok(out)
+}
+
+/// a declaration as tokens (a trailing comma before the closing parenthesis dropped: an empty operand list)
+fn record_key(text: &str) -> Res<Vec<String>> {
+    let mut v: Vec<String> = tokens(text, "<record>")?.into_iter().map(|t| t.text).collect();
+    if v.len() >= 2 && v[v.len() - 2] == "," {
+        v.remove(v.len() - 2);
+    }
+    Ok(v)
+}
+
+/// an error unless the hos_patch records of the host's objects are the declarations the scan reads in `files`
+/// (root/host/<file>; as many, the same text as tokens): a declaration the compiler saw and the scan did not (or the
+/// reverse) cannot ship. Ok: the report line.
+pub fn check_records(root: &Path, files: &[String], objects: &[std::path::PathBuf]) -> Res<String> {
+    let mut got: BTreeMap<Vec<String>, i64> = BTreeMap::new();
+    for o in objects {
+        for r in elf_sections(o, b"hos_patch")?.split(|&b| b == 0).filter(|r| !r.is_empty()) {
+            *got.entry(record_key(&String::from_utf8_lossy(r))?).or_insert(0) += 1;
+        }
+    }
+    let mut want: BTreeMap<Vec<String>, i64> = BTreeMap::new();
+    for f in files {
+        let p = root.join("host").join(f);
+        let b = std::fs::read(&p).map_err(|e| format!("patch declarations: {}: {e}", p.display()))?;
+        let text = String::from_utf8_lossy(&b);
+        if !KINDS.iter().any(|k| text.contains(k)) {
+            continue;
+        }
+        for d in declarations(&text, &format!("host/{f}"))? {
+            let canon = format!(
+                "{}({})",
+                d.kind,
+                d.args.iter().map(|a| a.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join(",")
+            );
+            *want.entry(record_key(&canon)?).or_insert(0) += 1;
+        }
+    }
+    let total = |m: &BTreeMap<Vec<String>, i64>| m.values().sum::<i64>();
+    if got != want {
+        let only = |a: &BTreeMap<Vec<String>, i64>, b: &BTreeMap<Vec<String>, i64>| {
+            let v: Vec<String> = a.iter().filter(|(k, n)| **n > b.get(*k).copied().unwrap_or(0)).take(4).map(|(k, _)| k.join(" ")).collect();
+            if v.is_empty() { "-".to_string() } else { v.join("; ") }
+        };
+        return Err(format!(
+            "patch declarations: the compiled host's records differ from the scan: {} records, {} declarations\n  compiled only: {}\n  scanned only: {}",
+            total(&got),
+            total(&want),
+            only(&got, &want),
+            only(&want, &got)
+        ));
+    }
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for (k, n) in &want {
+        h.update(format!("{n} {}\n", k.join(" ")));
+    }
+    let hex: String = h.finalize().iter().take(6).map(|b| format!("{b:02x}")).collect();
+    Ok(format!("patch declarations: {}, the compiled host's records the same ({hex})", total(&want)))
+}
