@@ -102,11 +102,10 @@ pub fn reads_rt_only(w: u32) -> bool {
 }
 
 /// discover.writes: the instruction may write X`reg`
-#[allow(clippy::bad_bit_mask)]
 pub fn writes(w: u32, reg: u32) -> bool {
     if (w >> 25) & 7 == 7 {
-        // (the UMOV / SMOV test never holds: its mask lacks bit 13, which its value has; Python's the same, kept)
-        return w & 31 == reg && (w & 0x5F20FC00 == 0x1E200000 || w & 0xBFE0DC00 == 0x0E002C00);
+        // (of the SIMD and FP class only FMOV / FCVT* to a general register, and UMOV / SMOV: imm4 0111 / 0101)
+        return w & 31 == reg && (w & 0x5F20FC00 == 0x1E200000 || w & 0xBFE0EC00 == 0x0E002C00);
     }
     if w & 0x0A000000 == 0x08000000 && (w >> 26) & 1 != 0 {
         return false;
@@ -1182,5 +1181,10 @@ mod tests {
         assert!(!writes(0xF9000020, 0));
         // ldp x2, x3, [sp] writes x3 (Rt2)
         assert!(writes(0xA9400FE2, 3));
+        // umov w3, v1.s[1]; smov x3, v1.h[0]; mov x3, v1.d[0] (UMOV); not ins v3.s[1], w1
+        assert!(writes(0x0E0C3C23, 3));
+        assert!(writes(0x4E022C23, 3));
+        assert!(writes(0x4E083C23, 3));
+        assert!(!writes(0x4E0C1C23, 3));
     }
 }
