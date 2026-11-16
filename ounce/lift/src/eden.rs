@@ -42,6 +42,12 @@ fn page_align(v: u64) -> u64 {
     (v + PAGE - 1) & !(PAGE - 1)
 }
 
+fn eh_starts(img: &Image, hdrs: &[(String, u64, u64)]) -> Vec<u64> {
+    let mut starts: Vec<u64> = hdrs.iter().flat_map(|(_, s, e)| img.eh_funcs(*s, *e)).collect();
+    starts.sort_unstable();
+    starts
+}
+
 /// builds the image (EdenImage(exefs, 0, hle=hle))
 pub fn build(mut mods: Vec<Nso>, hle: &BTreeSet<String>) -> Result<(Image, Facts), String> {
     let mut base = CODE_39BIT;
@@ -147,6 +153,12 @@ pub fn build(mut mods: Vec<Nso>, hle: &BTreeSet<String>) -> Result<(Image, Facts
     let code: Vec<(u64, u64)> = mods.iter().zip(&bases).map(|(m, &b)| (b + m.code_range().0, b + m.code_range().1)).collect();
     let hook_list: Vec<Hook> = hooks.iter().map(|(&a, n)| Hook { addr: a, c: n.clone(), sym: hook_syms[n].clone() }).collect();
     let img = Image { base: CODE_39BIT, end, mem, modules, hooks: hook_list, code };
+    let eh_frame_hdr: Vec<(String, u64, u64)> = mods
+        .iter()
+        .zip(&bases)
+        .map(|(m, &b)| (m.name.clone(), b + m.eh_frame_hdr.0, b + m.eh_frame_hdr.1))
+        .collect();
+    let eh_starts = eh_starts(&img, &eh_frame_hdr);
     // entry candidates
     let mut e: HashSet<u64> = HashSet::new();
     let mut init_arrays = Vec::new();
@@ -159,7 +171,6 @@ pub fn build(mut mods: Vec<Nso>, hle: &BTreeSet<String>) -> Result<(Image, Facts
                 e.insert(b + v);
             }
         }
-        e.extend(m.eh_funcs.iter().map(|f| b + f));
         e.extend(m.symbols.iter().filter(|s| s.defined && s.typ == STT_FUNC && s.value != 0).map(|s| b + s.value));
         for r in &m.relocs {
             if matches!(r.typ, RelType::Relative | RelType::Abs64) {
@@ -186,14 +197,12 @@ pub fn build(mut mods: Vec<Nso>, hle: &BTreeSet<String>) -> Result<(Image, Facts
         let arr: Vec<u64> = (0..size / 8).map(|i| u64::from_le_bytes(img.read(b + start + 8 * i, 8).unwrap().try_into().unwrap())).collect();
         init_arrays.push((m.name.clone(), arr));
     }
+    e.extend(eh_starts.iter().copied());
     for (_, arr) in &init_arrays {
         e.extend(arr.iter().copied().filter(|&a| img.in_code(a)));
     }
     let mut entries: Vec<u64> = e.into_iter().filter(|&a| img.in_code(a)).collect();
     entries.sort_unstable();
-    let mut eh_starts: Vec<u64> = mods.iter().zip(&bases).flat_map(|(m, &b)| m.eh_funcs.iter().map(move |f| b + f)).collect();
-    eh_starts.sort_unstable();
-    let eh_frame_hdr = mods.iter().zip(&bases).map(|(m, &b)| (m.name.clone(), b + m.eh_frame_hdr.0, b + m.eh_frame_hdr.1)).collect();
     let mut names: BTreeMap<u64, String> = BTreeMap::new();
     for (m, &b) in mods.iter().zip(&bases) {
         for s in &m.symbols {
@@ -327,6 +336,21 @@ pub fn hle_set(mods: &[Nso], implemented: &BTreeSet<String>, namespaces: &[Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unwind_starts_come_from_image_bytes() {
+        let base = 0x1000;
+        let start = 0x1010;
+        let target = 0x1028;
+        let mut mem = vec![0; 0x40];
+        mem[0x10..0x14].copy_from_slice(&[1, 0x03, 0x03, 0x3b]);
+        mem[0x18..0x1c].copy_from_slice(&1u32.to_le_bytes());
+        mem[0x1c..0x20].copy_from_slice(&((target - start) as i32).to_le_bytes());
+        let img = Image { base, end: base + mem.len() as u64, mem, modules: Vec::new(), hooks: Vec::new(), code: Vec::new() };
+        let hdrs = vec![("main".to_string(), start, start + 0x20)];
+
+        assert_eq!(eh_starts(&img, &hdrs), vec![target]);
+    }
 
     #[test]
     fn names() {

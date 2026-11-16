@@ -54,7 +54,6 @@ pub struct Nso {
     pub symbols: Vec<Symbol>,
     pub relocs: Vec<Reloc>,
     pub init_array: Vec<u64>,
-    pub eh_funcs: Vec<u64>,
 }
 
 /// an LZ4 block (no frame) of `size` bytes (lz4_flex)
@@ -140,7 +139,6 @@ impl Nso {
             symbols: Vec::new(),
             relocs: Vec::new(),
             init_array: Vec::new(),
-            eh_funcs: Vec::new(),
         };
         n.read_mod0()?;
         Ok(n)
@@ -215,7 +213,6 @@ impl Nso {
         }
         let (ia, isz) = (self.d(DT_INIT_ARRAY), self.d(DT_INIT_ARRAYSZ));
         self.init_array = (0..isz / 8).map(|i| u64le(&self.image, (ia + 8 * i) as usize)).collect();
-        self.eh_funcs = self.eh_table();
         // (nso2.py: DT_RELR, the packed relative relocations, as RELATIVE entries whose addend is the stored offset)
         let (start, size) = (self.d(DT_RELR), self.d(DT_RELRSZ));
         if start != 0 && size != 0 {
@@ -249,23 +246,6 @@ impl Nso {
             }
         }
         Ok(())
-    }
-
-    fn eh_table(&self) -> Vec<u64> {
-        let (s, e) = self.eh_frame_hdr;
-        if e <= s {
-            return Vec::new();
-        }
-        let h = &self.image[s as usize..s as usize + 4];
-        if h[0] != 1 || h[3] != 0x3B || h[2] != 0x03 {
-            return Vec::new();
-        }
-        if !matches!(h[1] & 0x0F, 0x0B | 0x03) {
-            return Vec::new();
-        }
-        let p = s as usize + 8;
-        let count = u32le(&self.image, p) as usize;
-        (0..count).map(|i| (s as i64 + i32::from_le_bytes(self.image[p + 4 + 8 * i..p + 8 + 8 * i].try_into().unwrap()) as i64) as u64).collect()
     }
 
     pub fn code_range(&self) -> (u64, u64) {
