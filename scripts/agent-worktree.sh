@@ -3,12 +3,15 @@
 # changes or splice into the same lifted code.
 #
 #   scripts/agent-worktree.sh new <name> [base]   work/wt/<name> on branch agent/<name> (from base, default the
-#                                                 main checkout's branch). Its work/ links to the main work/
-#                                                 (dump, runs, overlays, venv, locks, objcache) except sa/, which is
-#                                                 its own: its build lifts into it (ounce-lift) and builds into
-#                                                 work/sa/build, a reflink copy of the main one's (instant on btrfs).
-#                                                 Objects are shared through work/objcache (content-keyed), so a
-#                                                 host-only change rebuilds in ~40 s.
+#                                                 main checkout's branch). Linked to the main work/: everything in
+#                                                 it but sa/ and wt/ (dump, runs, overlays, venv, deps, locks,
+#                                                 objcache, hot list). Its own: work/sa. Copied: work/sa/build, a
+#                                                 reflink of the main one's (3 GB, shared extents on btrfs: next to
+#                                                 nothing until rebuilt). Made by its first build (ounce-lift, ~8 s):
+#                                                 work/sa/lift_*.ll (~4.5 GB of IR), gen/ and image/ (~0.1 GB), so a
+#                                                 worktree takes ~4.6 GB of its own once built. Objects are shared
+#                                                 through work/objcache (content-keyed), so a host-only change
+#                                                 rebuilds in ~40 s.
 #   scripts/agent-worktree.sh land <name>         rebase agent/<name> onto the main branch and fast-forward it
 #   scripts/agent-worktree.sh drop <name>         remove the worktree and its branch, if the branch has landed
 #
