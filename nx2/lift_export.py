@@ -1,5 +1,5 @@
-"""The lift's input as plain data, for the Rust lifter (ounce/lift): every partition prepare() makes, each function's
-instructions and every fact lift_part reads of other functions, the patches and the summaries, resolved. The format is
+"""The lift's input as plain data, for the Rust lifter (ounce/lift): the image and the facts of it the image files do not
+hold, the patches' declarations and rows, and Python's plan, summaries and records as the diagnostic's reference. The format is
 ounce/lift/EXPORT.md. Made from the game: written under work/, never committed. (It is outside nx2/lift2: the build
 keys its objects by every source there.)
 
@@ -13,7 +13,7 @@ import time
 
 NX2 = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(NX2)
-FORMAT = 3
+FORMAT = 4
 
 
 def commit():
@@ -105,63 +105,6 @@ def row_json(p):
     return d
 
 
-def export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_targets):
-    """(the partition's functions as EXPORT.md describes them, the callees whose records they read)"""
-    from lift2 import code_ptrs, probes
-    jt, jt_index, plt = plan["jt"], plan.get("jt_index", {}), plan["plt"]
-    fns, reach = [], set()
-    for e in names:
-        pcs, words = plan["bodies"][e]
-        pcs, words = list(pcs), list(words)
-        w = dict(zip(pcs, words))
-        body = set(pcs)
-        # (the checks lift_part's probes.find / probes.at make: an export exists only if they pass)
-        probes.find(e, pcs, w.__getitem__)
-        for kw in ({"before": True, "jt": jt, "entries": entries}, {}, {"replace": True, "jt": jt}):
-            probes.at(e, pcs, w.__getitem__, **kw)
-        # (the targets build_ir reads a record of: a BL's, and a branch or fall-through leaving the function: not
-        # inside(), a goto of its body)
-        body_entries = body & entries
-        targets = set()
-        for pc, word in zip(pcs, words):
-            t = code_ptrs._branch_target(pc, word)
-            if t is not None:
-                t &= 0xFFFFFFFFFFFFFFFF
-                if (word & 0xFC000000) == 0x94000000 or t not in body or (t != e and t in body_entries):
-                    targets.add(t)
-            n = pc + 4
-            if n not in body or (n != e and n in body_entries):
-                targets.add(n)
-        # (a BR's jump-table cases leaving the function are tail calls too: build_ir.build's goto of each case, from
-        # the plan's targets or the index table's)
-        for br in body & (set(jt) | set(jt_index)):
-            for t in list(jt.get(br, ())) + list(jt_index[br][3] if br in jt_index else ()):
-                if t not in body or (t != e and t in body_entries):
-                    targets.add(t)
-        p = None
-        if e in plt:
-            t, slot = plt[e]
-            targets.add(t)
-            p = {"target": t, "slot": slot, "target_is_code": t in code_targets}
-        for t in targets:
-            reach.add(callee(t))
-        rows = rows_by_func.get(e, ([], []))
-        f = funcs.get(e)
-        fns.append({
-            "entry": e, "pcs": runs(pcs), "words": "".join("%08x" % x for x in words), "plt": p,
-            "body_entries": sorted(body_entries),
-            "jt": [[br, sorted(set(jt[br]))] for br in sorted(body & set(jt))],
-            "jt_index": [[br, v[0], v[1], v[2], list(v[3])] for br, v in sorted((br, jt_index[br])
-                                                                                for br in body & set(jt_index))],
-            "code_sites": [[pc, s[0], s[1]] for pc, s in sorted(code_ptrs.sites(pcs, words, code_targets, jt).items())],
-            "values": [row_json(r) for r in rows[0]],
-            "rows": [row_json(r) for r in rows[1]],
-            "func": {"name": f.name, "orig_name": f.orig_name} if f is not None else None,
-        })
-        reach.add(e)
-    return fns, reach
-
-
 def summary_inputs(plan, hle, funcs):
     """what the summaries and the call-boundary records read beyond the partitions' functions (EXPORT.md, format 3):
     the program's entries and PLT stubs, the symbol names the noreturn seeds match, the HLE'd functions' declared
@@ -211,51 +154,158 @@ def pack_json(e, s):
             list(demote), bool(unknown), frame, pairs, bool(boundary), bool(fp), bool(fpcr)]
 
 
+def image_facts(plan_path):
+    """(the image as the lift built it, its facts the image files do not hold): EdenImage at ASLR 0 with the standalone
+    HLE set, as nx2/lift.py --standalone builds it; checked against the lift's image.bin"""
+    import hashlib
+    import kit
+    import nso
+    import standalone
+    import image as eden_image
+    exefs = kit.need_exefs()
+    hle, stubbed = standalone.hle_set(nso.load_exefs(exefs))
+    img = eden_image.EdenImage(exefs, 0, hle=hle | stubbed)
+    path = os.path.join(os.path.dirname(plan_path), "image", "image.bin")
+    with open(path, "rb") as f:
+        disk = f.read()
+    if hashlib.sha256(bytes(img.mem)).hexdigest() != hashlib.sha256(disk).hexdigest():
+        raise SystemExit("export: the image built now is not the lift's %s: lift again" % path)
+    return img, hashlib.sha256(disk).hexdigest()
+
+
+def words_key(words):
+    """a body's words as check/plan.json keys them: sha256 of their little-endian bytes, 16 hex digits"""
+    import hashlib
+    import struct
+    return hashlib.sha256(struct.pack("<%dI" % len(words), *words)).hexdigest()[:16]
+
+
+_CENSUS = {}
+
+
+def _census(names):
+    from lift2 import code_ptrs
+    a, p, kinds, odd = code_ptrs.count(_CENSUS["plan"], names, _CENSUS["texts"])
+    return [a + p, kinds, [[pc, why] for pc, why in odd]]
+
+
+def check_plan(plan, parts, texts, jobs=8):
+    """the diagnostic's reference of the discovery and the plan (check/plan.json): Python's plan and summary input"""
+    import multiprocessing as mp
+    import pickle
+    with open(plan["summary_input"], "rb") as f:
+        raw = pickle.load(f)["funcs"]
+    bodies, raw_diff = [], []
+    for e, (pcs, words) in sorted(plan["bodies"].items()):
+        bodies.append([e, runs(list(pcs)), words_key(list(words))])
+        rp, rw = raw[e]
+        if list(rp) != list(pcs) or list(rw) != list(words):
+            raw_diff.append([e, runs(list(rp)), words_key(list(rw))])
+    _CENSUS.update(plan=plan, texts=texts)
+    with mp.get_context("fork").Pool(jobs) as pool:
+        census = pool.map(_census, [names for _, names in parts])
+    return {
+        "entries": sorted(plan["entries"]), "bodies": bodies, "raw_bodies": raw_diff,
+        "insns": [[e, n] for e, n in sorted(plan["insns"].items())],
+        "jt": [[br, list(t)] for br, t in sorted(plan["jt"].items())],
+        "jt_index": [[br, v[0], v[1], v[2], list(v[3])] for br, v in sorted(plan["jt_index"].items())],
+        "plt": [[s, t, slot] for s, (t, slot) in sorted(plan["plt"].items())],
+        "no_call": sorted(plan["no_call"]), "sj_rets": [[e] + list(r) for e, r in sorted(plan["sj_rets"].items())],
+        "hooks": sorted(plan["hooks"]), "why": sorted(plan["why"].items()), "hot": sorted(plan["hot"]),
+        "code_excluded": sorted(plan["code_excluded"]),
+        "partitions": [[tag, names] for tag, names in parts],
+        "census": census,
+    }
+
+
+def reach_of(plan, names, callee, entries, rows_checked):
+    """the callees whose records the functions' lift reads (EXPORT.md, "callee(t) and bound(c)"), after the checks
+    lift_part's probes.find / probes.at make"""
+    from lift2 import code_ptrs, probes
+    jt, jt_index, plt = plan["jt"], plan.get("jt_index", {}), plan["plt"]
+    reach = set()
+    for e in names:
+        pcs, words = plan["bodies"][e]
+        pcs, words = list(pcs), list(words)
+        body = set(pcs)
+        if e in rows_checked:
+            w = dict(zip(pcs, words))
+            probes.find(e, pcs, w.__getitem__)
+            for kw in ({"before": True, "jt": jt, "entries": entries}, {}, {"replace": True, "jt": jt}):
+                probes.at(e, pcs, w.__getitem__, **kw)
+        body_entries = body & entries
+        targets = set()
+        for pc, word in zip(pcs, words):
+            t = code_ptrs._branch_target(pc, word)
+            if t is not None:
+                t &= 0xFFFFFFFFFFFFFFFF
+                if (word & 0xFC000000) == 0x94000000 or t not in body or (t != e and t in body_entries):
+                    targets.add(t)
+            n = pc + 4
+            if n not in body or (n != e and n in body_entries):
+                targets.add(n)
+        for br in body & (set(jt) | set(jt_index)):
+            for t in list(jt.get(br, ())) + list(jt_index[br][3] if br in jt_index else ()):
+                if t not in body or (t != e and t in body_entries):
+                    targets.add(t)
+        if e in plt:
+            targets.add(plt[e][0])
+        reach |= {callee(t) for t in targets}
+        reach.add(e)
+    return reach
+
+
 def main():
     import argparse
+    import shutil
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--game", required=True, help="the game description, games/<game>")
     ap.add_argument("out", help="the export's folder (under work/)")
     a = ap.parse_args()
     t0 = time.time()
     plan_path, plan, gen, funcs, parts = setup(a.game)
-    from lift2 import bounds, code_ptrs, game, host_effects, probes
+    from horizon import SETJMP_NAMES
+    from lift2 import bounds, game, host_effects, probes
     hle = host_effects.hle_names(gen)
     host_effects.check(hle)
+    img, sha = image_facts(plan_path)
     bound = bounds.call_bounds(plan, hle, False, funcs)
     callee = game.callee_fn(plan["plt"])
-    code_targets = code_ptrs.targets(plan)
     entries = set(plan["entries"])
-    rows_by_func = {}
     values, ats = probes.tables()
-    for p in values:
-        rows_by_func.setdefault(p.func, ([], []))[0].append(p)
-    for p in ats:
-        rows_by_func.setdefault(p.func, ([], []))[1].append(p)
-    os.makedirs(os.path.join(a.out, "parts"), exist_ok=True)
-    meta_parts = []
     os.makedirs(os.path.join(a.out, "check"), exist_ok=True)
+    os.makedirs(os.path.join(a.out, "image"), exist_ok=True)
+    src = os.path.join(os.path.dirname(plan_path), "image")
+    for f in ("image.bin", "image.json"):
+        shutil.copyfile(os.path.join(src, f), os.path.join(a.out, "image", f))
     t1 = time.time()
+    rows_checked = {p.func for p in values} | {p.func for p in ats}
     reach = set()
-    for k, (tag, names) in enumerate(parts):
-        name = part_name(tag, k)
-        fns, r = export_part(plan, names, funcs, bound, callee, rows_by_func, entries, code_targets)
-        reach |= r
-        path = os.path.join(a.out, "parts", name + ".json")
-        with open(path + ".tmp", "w") as f:
-            json.dump({"name": name, "tag": tag, "index": k, "functions": fns}, f, separators=(",", ":"))
-        os.replace(path + ".tmp", path)
-        meta_parts.append({"name": name, "tag": tag, "index": k, "functions": len(names),
-                           "insns": sum(len(plan["bodies"][e][0]) for e in names)})
+    for tag, names in parts:
+        reach |= reach_of(plan, names, callee, entries, rows_checked)
     meta = {"format": FORMAT, "commit": commit(), "input_key": input_key(plan, gen, funcs), "code_key": game.code_key(),
             "facts_key": game.facts_key(plan),
             "summary_cache": plan.get("summary_cache"), "verify": False, "omit": True,
-            "code_targets": sorted(code_targets),
-            "sj_rets": [[e] + list(r) for e, r in sorted(plan.get("sj_rets", {}).items())],
+            "image_sha256": sha,
+            "image_entries": sorted(img.entries),
+            "eh_frame_hdr": [[m.name, m.base + m.eh_frame_hdr[0], m.base + m.eh_frame_hdr[1]] for m in img.modules],
+            "setjmp_names": list(SETJMP_NAMES),
+            "part_insns": game.PART_INSNS,
             "answers": answers(hle),
-            "partitions": meta_parts}
-    meta.update(summary_inputs(plan, hle, funcs))
-    # (the diagnostic's reference, read by ounce-lift --check only: Python's summaries and records)
+            "values": [dict(row_json(p), func=p.func) for p in values],
+            "rows": [dict(row_json(p), func=p.func) for p in ats],
+            "func_names": [[e, f.name, f.orig_name] for e, f in sorted(funcs.items())]}
+    si = summary_inputs(plan, hle, funcs)
+    for k in ("entries", "plt", "summary_bodies"):   # (computed by the Rust side now: the discovery)
+        del si[k]
+    if si["names"] != [[e, n] for e, n in sorted(img.names.items())]:
+        raise SystemExit("export: the summaries' names are not the image's")
+    meta.update(si)
+    texts = [(seg["addr"], seg["addr"] + seg["size"]) for mod in json.load(open(os.path.join(src, "image.json")))["modules"]
+             for seg in mod["segments"] if seg["name"] == ".text"]
+    # (the diagnostic's reference, read by ounce-lift --check only: Python's plan, summaries and records)
+    with open(os.path.join(a.out, "check", "plan.json"), "w") as f:
+        json.dump(check_plan(plan, parts, texts), f, separators=(",", ":"))
     with open(os.path.join(a.out, "check", "summaries.json"), "w") as f:
         json.dump([pack_json(e, s) for e, s in sorted(plan["summaries"].items())], f, separators=(",", ":"))
     with open(os.path.join(a.out, "check", "bounds.json"), "w") as f:

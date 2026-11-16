@@ -117,3 +117,109 @@ pub fn check(dir: &Path, prog: &Program, sums: &[Summary], rec: &Records, show: 
     );
     (nsum, nb)
 }
+
+// ---- the discovery and the plan against Python's (check/plan.json)
+
+/// a body's words as check/plan.json keys them: sha256 of their little-endian bytes, 16 hex digits
+fn words_key(words: impl Iterator<Item = u32>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for w in words {
+        h.update(w.to_le_bytes());
+    }
+    h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+fn runs(pcs: &[u64]) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for &pc in pcs {
+        match out.last_mut() {
+            Some(r) if r.0 + 4 * r.1 == pc => r.1 += 1,
+            _ => out.push((pc, 1)),
+        }
+    }
+    out
+}
+
+/// one field's comparison: prints the first differences, returns their count
+fn field<T: PartialEq + std::fmt::Debug>(what: &str, rust: &[T], py: &[T], show: usize) -> usize {
+    let mut n = 0;
+    for k in 0..rust.len().max(py.len()) {
+        let (a, b) = (rust.get(k), py.get(k));
+        if a != b {
+            n += 1;
+            if n <= show {
+                println!("{what}[{k}]: rust {a:?} python {b:?}");
+            }
+        }
+    }
+    if rust.len() != py.len() {
+        println!("{what}: rust {} python {}", rust.len(), py.len());
+    }
+    n
+}
+
+/// (entry, pcs as runs, words key)
+type BodyKey = (u64, Vec<(u64, u64)>, String);
+
+#[derive(serde::Deserialize)]
+struct PyPlan {
+    entries: Vec<u64>,
+    bodies: Vec<BodyKey>,
+    raw_bodies: Vec<BodyKey>,
+    insns: Vec<(u64, usize)>,
+    jt: Vec<(u64, Vec<u64>)>,
+    jt_index: Vec<(u64, u64, u32, u32, Vec<u64>)>,
+    plt: Vec<(u64, u64, u64)>,
+    no_call: Vec<u64>,
+    sj_rets: Vec<[u64; 5]>,
+    hooks: Vec<u64>,
+    why: Vec<(String, u32)>,
+    hot: Vec<u64>,
+    code_excluded: Vec<u64>,
+    partitions: Vec<(String, Vec<u64>)>,
+    census: Vec<crate::plan::Census>,
+}
+
+/// differences of the discovery and the plan from Python's
+pub fn check_plan(dir: &Path, plan: &crate::plan::Plan, parts: &crate::plan::Parts, img: &crate::image::Image, show: usize) -> usize {
+    use rayon::prelude::*;
+    let p = dir.join("check").join("plan.json");
+    let py: PyPlan = serde_json::from_slice(&std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display())))
+        .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    let mut n = 0;
+    n += field("entries", &plan.entries, &py.entries, show);
+    let bodies: Vec<BodyKey> =
+        plan.bodies.par_iter().map(|b| (b.entry, runs(&b.pcs), words_key(b.words.iter().copied()))).collect();
+    n += field("bodies", &bodies, &py.bodies, show);
+    let raw: Vec<BodyKey> =
+        plan.raw.iter().map(|(e, pcs)| (*e, runs(pcs), words_key(pcs.iter().map(|&p| img.word(p))))).collect();
+    // (Python lists the discovered bodies that differ from the lifted ones; the Rust side keeps those of the trapped
+    // and cut functions: the same unless a trapped body's discovered words are its trap's)
+    n += field("raw_bodies", &raw, &py.raw_bodies, show);
+    let insns: Vec<(u64, usize)> = plan.bodies.iter().zip(&plan.insns).map(|(b, &k)| (b.entry, k)).collect();
+    n += field("insns", &insns, &py.insns, show);
+    let mut jt: Vec<(u64, Vec<u64>)> = plan.jt.iter().map(|(k, v)| (*k, v.clone())).collect();
+    jt.sort_unstable();
+    n += field("jt", &jt, &py.jt, show);
+    let mut ji: Vec<(u64, u64, u32, u32, Vec<u64>)> = plan.jt_index.iter().map(|(k, v)| (*k, v.0, v.1, v.2, v.3.clone())).collect();
+    ji.sort_unstable();
+    n += field("jt_index", &ji, &py.jt_index, show);
+    n += field("plt", &plan.plt, &py.plt, show);
+    n += field("no_call", &plan.no_call, &py.no_call, show);
+    n += field("sj_rets", &plan.sj_rets, &py.sj_rets, show);
+    n += field("hooks", &plan.hooks, &py.hooks, show);
+    let why: Vec<(String, u32)> = plan.why.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    n += field("why", &why, &py.why, show);
+    n += field("hot", &plan.hot, &py.hot, show);
+    n += field("code_excluded", &plan.code_excluded, &py.code_excluded, show);
+    let pt: Vec<(String, Vec<u64>)> = parts
+        .parts
+        .iter()
+        .map(|p| (p.name[5..6].to_string(), p.functions.iter().map(|f| f.entry).collect()))
+        .collect();
+    n += field("partitions", &pt, &py.partitions, show);
+    n += field("census", &parts.census, &py.census, show);
+    println!("check: discovery and plan: {n} differences");
+    n
+}

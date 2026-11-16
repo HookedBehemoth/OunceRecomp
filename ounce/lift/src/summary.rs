@@ -11,6 +11,8 @@
 //! worker by word. The fixed point runs level by level over the components' DAG, a level's components in parallel.
 
 use crate::export::{GuestCalls, Meta, Part};
+use crate::image::Image;
+use crate::plan::Plan;
 use crate::ir::{bit, BKey, Builder, Function, ALL};
 use crate::sem::{self, Kind};
 use ounce_decode::{decode, Fld, Insn, Param};
@@ -257,7 +259,7 @@ pub struct Body<'a> {
     pub pcs: Cow<'a, [u64]>,
     pub words: Cow<'a, [u32]>,
     /// the jump tables of the body's BRs, by br
-    pub jt: &'a [(u64, Vec<u64>)],
+    pub jt: Cow<'a, [(u64, Vec<u64>)]>,
 }
 
 /// the whole program as the summaries read it (summary.job's input)
@@ -278,19 +280,30 @@ pub struct Program<'a> {
 }
 
 impl<'a> Program<'a> {
-    pub fn new(meta: &'a Meta, parts: &'a [Part]) -> Program<'a> {
+    /// the program from the plan: each function's body as the summaries see it (the discovered one where the lift
+    /// traps or cuts it: Plan::raw, its words the image's), the rest of the facts from the export
+    pub fn new(meta: &'a Meta, plan: &'a Plan, parts: &'a [Part], img: &Image) -> Program<'a> {
         let mut fs: Vec<(u64, Body<'a>)> = parts
             .iter()
             .flat_map(|p| p.functions.iter())
-            .map(|f| (f.entry, Body { pcs: Cow::Borrowed(&f.pcs[..]), words: Cow::Borrowed(&f.words[..]), jt: &f.jt[..] }))
+            .map(|f| (f.entry, Body { pcs: Cow::Borrowed(&f.pcs[..]), words: Cow::Borrowed(&f.words[..]), jt: Cow::Borrowed(&f.jt[..]) }))
             .collect();
         fs.sort_unstable_by_key(|f| f.0);
-        for sb in &meta.summary_bodies {
-            // (a body the summaries see as discovered where the lift traps: EXPORT.md summary_bodies)
-            let k = fs.binary_search_by_key(&sb.entry, |f| f.0).expect("summary body of no function");
-            let (pcs, words) = sb.body();
-            fs[k].1.pcs = Cow::Owned(pcs);
-            fs[k].1.words = Cow::Owned(words);
+        for (e, pcs) in &plan.raw {
+            let k = fs.binary_search_by_key(e, |f| f.0).expect("summary body of no function");
+            let words: Vec<u32> = pcs.iter().map(|&p| img.word(p)).collect();
+            let jt: Vec<(u64, Vec<u64>)> = pcs
+                .iter()
+                .filter_map(|pc| {
+                    plan.jt.get(pc).map(|t| {
+                        let mut t = t.clone();
+                        t.sort_unstable();
+                        t.dedup();
+                        (*pc, t)
+                    })
+                })
+                .collect();
+            fs[k].1 = Body { pcs: Cow::Borrowed(&pcs[..]), words: Cow::Owned(words), jt: Cow::Owned(jt) };
         }
         let (fns, bodies): (Vec<u64>, Vec<Body>) = fs.into_iter().unzip();
         let hooks = meta
@@ -341,8 +354,8 @@ impl<'a> Program<'a> {
         Program {
             fns,
             bodies,
-            entries: &meta.entries,
-            plt: meta.plt.iter().map(|p| (p.0, p.1)).collect(),
+            entries: &plan.entries,
+            plt: plan.plt.iter().map(|p| (p.0, p.1)).collect(),
             hooks,
             patches,
             rows,
@@ -1542,6 +1555,15 @@ fn analyse(f: &Flow, s: &Sums, sc: &mut Scratch) -> Summary {
 
 thread_local! {
     static DU: RefCell<DefUse> = RefCell::new(DefUse::new());
+}
+
+/// (use, def) of a word's instruction: the registers its template reads and writes (summary.def_use; 0, 0 when it
+/// does not decode)
+pub fn def_use(w: u32) -> (u128, u128) {
+    match decode(w) {
+        None => (0, 0),
+        Some(i) => DU.with(|du| du.borrow_mut().get(&i)),
+    }
 }
 
 /// the fixed point's schedule: a component runs when its last callee component is done, then releases its callers

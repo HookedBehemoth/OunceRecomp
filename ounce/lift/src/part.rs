@@ -28,11 +28,13 @@ pub struct Lifted {
     /// the text: the module's header (triple, declarations, helpers), then the worker's body
     pub head: Vec<u8>,
     pub lifted: usize,
+    /// the code pointer sites translated (the trailer's count)
+    pub sites: usize,
     /// reason -> functions skipped for it
     pub skipped: BTreeMap<String, usize>,
 }
 
-pub fn lift_part(w: &mut Worker, meta: &Meta, code_targets: &HashSet<u64>, rec: &Records, part: &Part, skip: bool) -> Lifted {
+pub fn lift_part(w: &mut Worker, meta: &Meta, sj_rets: &[[u64; 5]], code_targets: &HashSet<u64>, rec: &Records, part: &Part, skip: bool) -> Lifted {
     let insns = part.functions.iter().map(|f| f.pcs.len()).sum();
     let mut m = Module::new(&part.names, false, std::mem::take(&mut w.body), insns);
     let (fun, sc) = (&mut w.fun, &mut w.scratch);
@@ -106,8 +108,8 @@ pub fn lift_part(w: &mut Worker, meta: &Meta, code_targets: &HashSet<u64>, rec: 
             if !m.defined.contains(&Sym::Entry(e)) {
                 m.declare(Decl::Fn(Sym::Entry(e)));
             }
-            let k = meta.sj_rets.binary_search_by_key(&e, |r| r[0]);
-            let r = meta.sj_rets[k.unwrap_or_else(|_| panic!("export: no sj_rets of {e:#x}"))];
+            let k = sj_rets.binary_search_by_key(&e, |r| r[0]);
+            let r = sj_rets[k.unwrap_or_else(|_| panic!("export: no sj_rets of {e:#x}"))];
             write!(
                 extra,
                 "\ndefine internal void @sjcall_{e:08x}(ptr %ctx) {{\n  call void @hos_sj_call(ptr %ctx, ptr @f_{e:08x}, i64 {}, i64 {}, i64 {}, i64 {})\n  ret void\n}}",
@@ -120,5 +122,5 @@ pub fn lift_part(w: &mut Worker, meta: &Meta, code_targets: &HashSet<u64>, rec: 
     body.extend_from_slice(&extra);
     write!(body, "\n; code pointer sites: {n_code}\n").unwrap();
     w.body = body;
-    Lifted { head, lifted, skipped }
+    Lifted { head, lifted, sites: n_code as usize, skipped }
 }

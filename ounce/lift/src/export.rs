@@ -17,18 +17,24 @@ pub struct Meta {
     pub commit: String,
     pub verify: bool,
     pub omit: bool,
-    pub code_targets: Vec<u64>,
-    pub sj_rets: Vec<[u64; 5]>,
     /// [entry, symbol, value] of the answered functions (PATCH_ANSWER), by entry: the answers module
     #[serde(default)]
     pub answers: Vec<(u64, String, u64)>,
-    pub partitions: Vec<PartInfo>,
+    // ---- what the discovery reads beyond image.bin / image.json (format 4)
+    pub image_sha256: String,
+    /// the image's entry candidates (nx_image._entries), before the ADR / ADRP+ADD ones
+    pub image_entries: Vec<u64>,
+    /// [module, start, end] of each module's .eh_frame_hdr, absolute
+    pub eh_frame_hdr: Vec<(String, u64, u64)>,
+    pub setjmp_names: Vec<String>,
+    pub part_insns: usize,
+    /// the Value probes and At rows, each with its function, in declaration order
+    pub values: Vec<MetaValue>,
+    pub rows: Vec<MetaAt>,
+    /// [entry, adapter name, orig name] of the PATCH_FUNCs, by entry
+    pub func_names: Vec<(u64, String, String)>,
     // ---- what the summaries and the call-boundary records read (format 3)
-    /// every function entry of the program (lifted and hooked), sorted
-    pub entries: Vec<u64>,
-    /// [stub, target, slot] of the PLT stubs, by stub
-    pub plt: Vec<(u64, u64, u64)>,
-    /// [entry, symbol] of the image's symbols: the noreturn seeds match them
+    /// [entry, symbol] of the image's symbols: the noreturn seeds and the setjmp owners match them
     pub names: Vec<(u64, String)>,
     pub noreturn_names: Vec<String>,
     pub noreturn_parts: Vec<String>,
@@ -38,8 +44,73 @@ pub struct Meta {
     pub row_effects: Vec<RowEffect>,
     /// the PATCH_FUNCs' declarations, by entry
     pub patch_funcs: Vec<PatchDecl>,
-    /// the bodies the summaries see where they differ from the lifted ones
-    pub summary_bodies: Vec<SummaryBody>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct MetaValue {
+    pub pc: u64,
+    pub word: u32,
+    #[serde(rename = "fn")]
+    pub fname: String,
+    pub args: Vec<String>,
+    pub result: String,
+    pub func: u64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct MetaAt {
+    pub pc: u64,
+    pub word: u32,
+    #[serde(rename = "fn")]
+    pub fname: String,
+    pub mode: String,
+    pub args: Vec<String>,
+    pub result: Option<String>,
+    #[serde(default)]
+    pub io: Vec<String>,
+    #[serde(default)]
+    pub guest: Option<serde_json::Value>,
+    pub func: u64,
+}
+
+/// a Value probe as the lift reads it
+pub fn value_row(r: &MetaValue, names: &mut Names) -> ValueRow {
+    ValueRow {
+        pc: r.pc,
+        word: r.word,
+        func: names.sym(&r.fname),
+        args: r.args.iter().map(|a| ValueArg::parse(a)).collect(),
+        result: match Reg::parse(&r.result) {
+            x @ (Reg::X(_) | Reg::W(_)) => x,
+            _ => panic!("export: value result {}", r.result),
+        },
+    }
+}
+
+/// an At row as the lift reads it
+pub fn at_row(r: &MetaAt, names: &mut Names) -> AtRow {
+    AtRow {
+        pc: r.pc,
+        word: r.word,
+        func: names.sym(&r.fname),
+        mode: match &*r.mode {
+            "before" => Mode::Before,
+            "after" => Mode::After,
+            "instead" => Mode::Instead,
+            m => panic!("export: row mode {m}"),
+        },
+        args: r.args.iter().map(|a| AtArg::parse(a)).collect(),
+        result: r.result.as_deref().map(Reg::parse),
+        io: r
+            .io
+            .iter()
+            .map(|s| match Reg::parse(s) {
+                Reg::S(_) => panic!("export: io register {s}"),
+                x => x,
+            })
+            .collect(),
+        guest: r.guest.as_ref().is_some_and(|g| !g.is_null()),
+    }
 }
 
 /// an HLE'd function: [address, symbol, stops, answer, declared clobbering, reads mask]
@@ -76,44 +147,18 @@ pub struct PatchDecl(
     pub Vec<u64>,
 );
 
-#[derive(Deserialize, Debug)]
-pub struct SummaryBody {
-    pub entry: u64,
-    pub pcs: Vec<(u64, u64)>,
-    pub words: String,
-}
-
-impl SummaryBody {
-    /// (pcs, words)
-    pub fn body(&self) -> (Vec<u64>, Vec<u32>) {
-        let pcs = expand(&self.pcs);
-        let w = self.words.as_bytes();
-        assert_eq!(w.len(), 8 * pcs.len(), "export: summary body f_{:08x}", self.entry);
-        (pcs, w.as_chunks::<8>().0.iter().map(|h| hex_word(h)).collect())
-    }
-}
-
 fn de_mask<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
     let s: Cow<str> = Deserialize::deserialize(d)?;
     u128::from_str_radix(&s, 16).map_err(serde::de::Error::custom)
 }
 
-fn expand(runs: &[(u64, u64)]) -> Vec<u64> {
+pub fn expand(runs: &[(u64, u64)]) -> Vec<u64> {
     let n: u64 = runs.iter().map(|r| r.1).sum();
     let mut pcs = Vec::with_capacity(n as usize);
     for &(a, n) in runs {
         pcs.extend((0..n).map(|k| a + 4 * k));
     }
     pcs
-}
-
-#[derive(Deserialize, Debug)]
-pub struct PartInfo {
-    pub name: String,
-    pub tag: String,
-    pub index: u32,
-    pub functions: u32,
-    pub insns: u64,
 }
 
 /// the names of a partition's symbols other than `f_<addr>` and `sjcall_<addr>`
@@ -369,14 +414,6 @@ fn mask(s: &str) -> u128 {
 }
 
 #[derive(Deserialize)]
-struct RawPart<'a> {
-    #[serde(borrow)]
-    name: Cow<'a, str>,
-    #[serde(borrow)]
-    functions: Vec<RawFunc<'a>>,
-}
-
-#[derive(Deserialize)]
 struct RawBound<'a> {
     addr: u64,
     #[serde(borrow)]
@@ -400,58 +437,6 @@ struct RawBound<'a> {
     answer: Option<u64>,
 }
 
-#[derive(Deserialize)]
-struct RawPatchFunc<'a> {
-    #[serde(borrow)]
-    name: Cow<'a, str>,
-    #[serde(borrow)]
-    orig_name: Cow<'a, str>,
-}
-
-#[derive(Deserialize)]
-struct RawValueRow<'a> {
-    pc: u64,
-    word: u32,
-    #[serde(rename = "fn", borrow)]
-    func: Cow<'a, str>,
-    args: Vec<String>,
-    result: String,
-}
-
-#[derive(Deserialize)]
-struct RawAtRow<'a> {
-    pc: u64,
-    word: u32,
-    #[serde(rename = "fn", borrow)]
-    func: Cow<'a, str>,
-    mode: String,
-    args: Vec<String>,
-    result: Option<String>,
-    #[serde(default)]
-    io: Vec<String>,
-    #[serde(default)]
-    guest: Option<serde::de::IgnoredAny>,
-}
-
-#[derive(Deserialize)]
-struct RawFunc<'a> {
-    entry: u64,
-    pcs: Vec<(u64, u64)>,
-    #[serde(borrow)]
-    words: Cow<'a, str>,
-    plt: Option<Plt>,
-    body_entries: Vec<u64>,
-    jt: Vec<(u64, Vec<u64>)>,
-    jt_index: Vec<(u64, u64, u32, u32, Vec<u64>)>,
-    code_sites: Vec<(u64, u64, Option<u64>)>,
-    #[serde(borrow)]
-    values: Vec<RawValueRow<'a>>,
-    #[serde(borrow)]
-    rows: Vec<RawAtRow<'a>>,
-    #[serde(borrow)]
-    func: Option<RawPatchFunc<'a>>,
-}
-
 impl RawBound<'_> {
     fn typed(&self, names: &mut Names) -> Bound {
         Bound {
@@ -471,90 +456,10 @@ impl RawBound<'_> {
     }
 }
 
-fn hex_word(h: &[u8]) -> u32 {
-    h.iter().fold(0u32, |w, &c| {
-        let d = match c {
-            b'0'..=b'9' => c - b'0',
-            b'a'..=b'f' => c - b'a' + 10,
-            _ => panic!("export: word digit {}", c as char),
-        };
-        w << 4 | d as u32
-    })
-}
-
-impl RawFunc<'_> {
-    fn typed(self, names: &mut Names) -> Func {
-        let pcs = expand(&self.pcs);
-        let w = self.words.as_bytes();
-        assert_eq!(w.len(), 8 * pcs.len(), "export: f_{:08x}'s words", self.entry);
-        let words = w.as_chunks::<8>().0.iter().map(|h| hex_word(h)).collect();
-        Func {
-            entry: self.entry,
-            pcs,
-            words,
-            plt: self.plt,
-            body_entries: self.body_entries,
-            jt: self.jt,
-            jt_index: self.jt_index,
-            code_sites: self.code_sites,
-            values: self
-                .values
-                .into_iter()
-                .map(|r| ValueRow {
-                    pc: r.pc,
-                    word: r.word,
-                    func: names.sym(&r.func),
-                    args: r.args.iter().map(|a| ValueArg::parse(a)).collect(),
-                    result: match Reg::parse(&r.result) {
-                        x @ (Reg::X(_) | Reg::W(_)) => x,
-                        _ => panic!("export: value result {}", r.result),
-                    },
-                })
-                .collect(),
-            rows: self
-                .rows
-                .into_iter()
-                .map(|r| AtRow {
-                    pc: r.pc,
-                    word: r.word,
-                    func: names.sym(&r.func),
-                    mode: match &*r.mode {
-                        "before" => Mode::Before,
-                        "after" => Mode::After,
-                        "instead" => Mode::Instead,
-                        m => panic!("export: row mode {m}"),
-                    },
-                    args: r.args.iter().map(|a| AtArg::parse(a)).collect(),
-                    result: r.result.as_deref().map(Reg::parse),
-                    io: r
-                        .io
-                        .iter()
-                        .map(|s| match Reg::parse(s) {
-                            Reg::S(_) => panic!("export: io register {s}"),
-                            x => x,
-                        })
-                        .collect(),
-                    guest: r.guest.is_some(),
-                })
-                .collect(),
-            func: self.func.map(|p| PatchFunc { name: names.sym(&p.name), orig_name: names.sym(&p.orig_name) }),
-        }
-    }
-}
-
 pub fn read_meta(dir: &Path) -> Result<Meta, String> {
     let p = dir.join("meta.json");
     let s = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
     serde_json::from_slice(&s).map_err(|e| format!("{}: {e}", p.display()))
-}
-
-pub fn read_part(dir: &Path, name: &str) -> Result<Part, String> {
-    let p = dir.join("parts").join(format!("{name}.json"));
-    let s = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    let raw: RawPart = serde_json::from_slice(&s).map_err(|e| format!("{}: {e}", p.display()))?;
-    let mut names = Names::default();
-    let functions = raw.functions.into_iter().map(|f| f.typed(&mut names)).collect();
-    Ok(Part { name: raw.name.into_owned(), functions, names })
 }
 
 /// the diagnostic's reference (check/bounds.json): Python's records of every callee the partitions read, and the

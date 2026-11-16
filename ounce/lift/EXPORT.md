@@ -1,141 +1,83 @@
 # The lift export: what the Rust lifter reads
 
-`nx2/lift_export.py` writes everything `nx2/lift2/game.py`'s `lift_part` needs to produce a partition's LLVM IR: the
-partitions as `prepare()` makes them, every function's instructions, the facts of the patches, and what the
-whole-program summaries (nx2/lift2/summary.py) and the call-boundary records (nx2/lift2/bounds.py) are computed from,
-as plain data. The Rust lifter computes the summaries and the records itself (src/summary.rs, src/bounds.rs) and emits
-the same IR text, byte for byte. It needs no Python, no plan pickle and no host C scan.
+`nx2/lift_export.py` writes what the Rust lifter (`ounce-lift`) cannot compute yet: the image the lift built and the
+facts of it the image files do not hold, the patches' declarations and rows (resolved by Python), and Python's plan,
+summaries and records as the diagnostic's reference. The Rust side computes the rest, in nx2/lift.py's order: the ADR /
+ADRP+ADD entries (src/image.rs, adr_entries.py), the discovery (src/discover.rs, discover.py), the plan (src/plan.rs:
+write_plan's bodies, the partitions, the code-pointer targets, sites and census), the summaries and the call-boundary
+records (src/summary.rs, src/bounds.rs), and each partition's IR, byte for byte the Python lifter's.
 
     work/venv/bin/python -I nx2/lift_export.py --game games/oot work/ounce/export
+    ounce/lift/target/release/ounce-lift work/ounce/export <out dir> [--game games/oot] [--work work] [--check]
 
-The export is made from the game: it stays under `work/` and never enters git (CONTRIBUTING.md).
+The export is made from the game: it stays under `work/` and never enters git (CONTRIBUTING.md). It is of the build
+without `HOOKSHOT_LIFT_VERIFY` (no `body_`/`hchk_`/`sum_` wrappers, no `sitepoison`) and with `omit` on.
 
-The export is of the build without `HOOKSHOT_LIFT_VERIFY` (`verify` off: no `body_`/`hchk_`/`sum_` wrappers, no
-`sitepoison`) and with `omit` on (`omit_stores` runs), as `prepare()` lifts.
+The game description (`--game`, games/oot/game.toml: src/game.rs) gives the hot list's file under `--work` and the
+local continuations the census accepts.
 
 ## Files
 
-    <out>/meta.json                 the export's facts, the summaries' inputs and the partitions' list
-    <out>/parts/<name>.json         one per partition: its functions
-    <out>/check/summaries.json      Python's summaries and records: the diagnostic's reference (ounce-lift --check),
-    <out>/check/bounds.json         read by nothing else
+    <out>/meta.json                 the export's facts, the patches, what discovery and the summaries read
+    <out>/image/image.bin           the lift's image (nx2/lift.py --standalone: EdenImage, ASLR 0), copied
+    <out>/image/image.json          its modules, segments and hooks
+    <out>/check/plan.json           Python's discovery and plan,
+    <out>/check/summaries.json      summaries and records: the diagnostic's reference (ounce-lift --check), read by
+    <out>/check/bounds.json         nothing else
 
 All files are UTF-8 JSON (one object, no comments). Numbers are JSON integers (all fit in `u64`; addresses are guest
-virtual addresses, decimal). The only values wider than 64 bits, the register masks, are hex strings (see *Masks*).
-Lists keep the order given here; where an order matters it says so.
+virtual addresses, decimal). The register masks are hex strings (see *Masks*).
 
 ## meta.json
 
 ```json
 {
-  "format": 3,                      // 2 since 5bd7beba (answers, stops); 3: the summaries' inputs, no records
-  "commit": "1e054a23...",          // git HEAD of the Python lifter the export was made at ("+dirty" if the tree was)
-  "input_key": "…",                 // lift_export.input_key: every input of the IR (the golden's stamp is the same key)
-  "code_key": "…",                  // game.code_key(): the lifter's code as the build keys it
-  "facts_key": "…",                 // the plan's facts_key
-  "summary_cache": "summaries_….pickle",
-  "verify": false,
-  "omit": true,
-  "code_targets": [2147614720, …],  // sorted: code_ptrs.targets(plan) (every function-table entry less the modules' bases)
-  "sj_rets": [[entry, r0, r1, r2, r3], …],   // sorted by entry: the setjmp owners' sjcall_ stub constants
-  "answers": [[entry, "symbol", value], …],   // sorted by entry: the answered functions (new at 5bd7beba, below)
-  "partitions": [
-    {"name": "lift_c000", "tag": "c", "index": 0, "functions": 1234, "insns": 120017},
-    …
-  ],
-  // the summaries' and records' inputs (format 3)
-  "entries": [a, …],                // sorted: plan["entries"], every function entry (lifted and hooked)
-  "plt": [[stub, target, slot], …], // sorted by stub: plan["plt"]; callee(t) follows it, at most 4 steps
-  "names": [[entry, "symbol"], …],  // the image's symbols (the summary input's names): the noreturn seeds match them
-  "noreturn_names": ["abort", …], "noreturn_parts": ["AbortImpl", …],   // nx2/horizon NORETURN_NAMES, _PARTS
-  "hle": [[addr, "symbol", stops, answer | null, clobbering, "reads"], …],   // by addr: the HLE'd functions
-  "row_effects": [[pc, "bu", "au", "bd", "ad", guest, replace], …],         // by pc: summary.rows()
-  "patch_funcs": [[entry, "reads", "result", orig, [guest, …]], …],         // by entry: summary.func_facts
-  "summary_bodies": [{"entry": e, "pcs": [[pc, n], …], "words": "…"}, …]
+  "format": 4,                      // 2: answers, stops; 3: the summaries' inputs; 4: the discovery's inputs, no parts
+  "commit": "…", "input_key": "…", "code_key": "…", "facts_key": "…", "summary_cache": "…",
+  "verify": false, "omit": true,
+  "image_sha256": "…",              // of image/image.bin (the export checks the image built now is the lift's)
+  "image_entries": [a, …],          // sorted: nx_image._entries (eh_frame starts, exported functions, INIT/FINI,
+                                    //   RELATIVE/ABS64 results in code, BL targets, init arrays), before the ADR ones
+  "eh_frame_hdr": [["main", start, end], …],  // each module's .eh_frame_hdr, absolute: its table gives the function
+                                    //   starts (the jump tables' extent) and the FDE spans (the ADR entries' filter)
+  "setjmp_names": ["__setjmp", …],  // nx2/horizon SETJMP_NAMES: a BL to one makes its function a setjmp owner
+  "part_insns": 120000,             // game.PART_INSNS
+  "answers": [[entry, "symbol", value], …],
+  "values": [ValueRow + "func", …], // every Value probe, in declaration order, with its function (probes.resolve)
+  "rows": [AtRow + "func", …],      // every At row, likewise
+  "func_names": [[entry, "hos_func_…", "hos_orig_…"], …],   // the PATCH_FUNCs' adapter and lifted body names
+  "names": [[entry, "symbol"], …],  // the image's symbols (img.names): setjmp owners, noreturn seeds
+  "noreturn_names": ["abort", …], "noreturn_parts": ["AbortImpl", …],
+  "hle": [[addr, "symbol", stops, answer | null, clobbering, "reads"], …],
+  "row_effects": [[pc, "bu", "au", "bd", "ad", guest, replace], …],
+  "patch_funcs": [[entry, "reads", "result", orig, [guest, …]], …]
 }
 ```
 
-- `hle`: plan["hle"] (equal to plan["hooks"] and to gen/a64_hooks.c's map: the export checks) with each symbol's
+- `hle`: plan["hle"] (equal to the image's hooks and to gen/a64_hooks.c's map: the export checks) with each symbol's
   declaration: `host_effects.stops`, `.answer` (u64), `.clobbers(...) is not None`, and the mask of `.hle_reads`.
 - `row_effects`: per pc, every Value probe's and At row's declared reads and writes (masks) before and after the
   instruction, the guest functions their host functions call (a list, or `"computed"`), and whether a row replaces the
   instruction. They apply to every body holding the pc, not only the row's function.
 - `patch_funcs`: each PATCH_FUNC's operands read, its result (a mask of one register or 0), `orig`, its guest callees.
-- `summary_bodies`: the functions whose body the summaries see differs from the lifted one (`pcs`/`words` of the
-  Function): the summary input holds the discovered body, the plan's body a UDF trap (game.write_plan: a module's
-  first word, not an instruction). Four in OOT, the modules' headers. An inconsistency of the Python lifter kept to stay
-  identical: one body per function is the fix, after the port.
+- The partitions, each function's body, jump tables, PLT stub, entries in its body, code pointer sites and the setjmp
+  owners' stub constants are the Rust side's now (`plan::parts` makes them as the export's parts were made).
 
-- `partitions` is `prepare()`'s list in its order: first the cold partitions (`tag` "c", functions not on the hot
-  list), then the hot ones (`tag` "h"), each group by ascending entry, cut after the function that brings the
-  partition to `PART_INSNS` (120000) instructions or more. `index` is the position in this list (`k` in `prepare`),
-  `name` is `"lift_%s%03d" % (tag, index)` (the object `prepare` writes is `<name>.o`). The cold level is the build's
-  `-O1`, the hot one `-O2`; that is the compile's business, not the IR's.
-- `code_targets`: `Program.code_targets`. The IR reads it in two places: a PLT stub's `x17` (see `plt` below, already
-  resolved per function) and the check in `build_ir.build` that a constant formed by `ADR`/`ADRP+ADD`/... outside a
-  code pointer site is not an entry (`ValueError`, "not a code_ptrs.sites shape"). Only that check needs the global
-  set.
-- `sj_rets`: `plan["sj_rets"]`: for a setjmp owner `e`, the four integers `lift_part` passes to `hos_sj_call` in the
-  `sjcall_%08x` stub it appends. A partition needs those of the owners whose `sjcall_` symbol its IR calls (a record
-  whose `symbol` is `sjcall_<addr>`).
+## What the Rust side derives per function
 
-## parts/<name>.json
-
-```json
-{
-  "name": "lift_c000",
-  "tag": "c",
-  "index": 0,
-  "functions": [ Function, … ]      // the partition's functions in lift order (ascending entry)
-}
-```
-
-### Function
-
-```json
-{
-  "entry": 2147614720,
-  "pcs": [[2147614720, 12], [2147614800, 3]],   // runs [first pc, count]: pc, pc+4, … (the body's pcs, ascending)
-  "words": "d10083ffa9017bfd…",                 // the instruction words, 8 lowercase hex digits each, in pcs order
-  "plt": null | {"target": t, "slot": s, "target_is_code": bool},
-  "body_entries": [a, …],           // sorted: the body's pcs that are function entries (plan["entries"]), entry included
-  "jt": [[br, [t0, t1, …]], …],     // sorted by br: the jump tables of the BRs in the body, targets sorted, unique
-  "jt_index": [[br, load, reg, opt, [t0, …]], …],   // sorted by br: plan["jt_index"] for the BRs in the body
-  "code_sites": [[pc, entry, page | null], …],      // sorted by pc: code_ptrs.sites (page null: an ADR site)
-  "values": [ValueRow, …],          // its Value probes, in declaration order
-  "rows": [AtRow, …],               // its At rows, in declaration order
-  "func": null | {"name": "hos_func_…", "orig_name": "…"}    // a PATCH_FUNC at this entry
-}
-```
-
-What `lift_part` / `build_ir.build` do with these, as `Program`:
-
-- `pcs`, `words`: `plan["bodies"][entry]`. `word(pc)` is the word at pc. A body may have gaps (runs).
-- `plt`: non-null when `entry in plan["plt"]` (a PLT stub). Then `build` emits: `x16 = slot`; `x17 =
-  codeaddr(target)` if `target_is_code` else `const(target)`; the block's terminator `("tail", bound(callee(target)).tail)`.
-- `body_entries`: the `t in prog.entries` test of `inside()`: a branch to `t` stays in the function iff `t` is in the
-  body and (`t == entry` or `t` not in `body_entries`). Only pcs of the body are ever asked, so this is the whole of
-  `prog.entries` the lift reads.
-- `jt`: `prog.jt` restricted to the body's BRs (`build` only looks up BRs at body pcs). `jt_index`: `prog.jt_index`
-  restricted to `br in body` (the loop in `build` skips the others); `build` itself still checks `load in body` and
-  that no probe, before row or after row lies in `load..br`. `opt`: 2 UXTW, 6 SXTW, other: none.
-- `code_sites`: `prog.code_sites` (`code_ptrs.sites` of this body).
-- `values`, `rows`: `prog.probes`, `prog.before`, `prog.after`, `prog.replace` (below). The Python side has already
-  run every check `probes.find` / `probes.at` make (word matches, Value result is the destination, ...): an export
-  exists only if they all passed.
-- `func`: a PATCH_FUNC (`patch_scan.check_funcs`): the lifted function is named `orig_name` instead of
-  `f_%08x`, and `lift_part` appends `FUNC_STUB` with `fn = name`.
-- the record omit_stores takes for the function itself is `bound.own(entry)`: equal to `bound(entry)` except for a
-  PATCH_FUNC (its body's own record).
+As `lift_part` / `build_ir.build` read them (`Program`): the plan's body (pcs, words); `plt` (target, slot, whether the
+target is a code target); the body's pcs that are entries (`inside()`); `jt` restricted to the body's BRs (targets
+sorted, unique) and `jt_index` likewise; `code_sites` (`code_ptrs.sites`); its Value and At rows (by `func`); its
+PATCH_FUNC names. The summaries see the discovered body (summary.job's input) where the plan traps or cuts it.
 
 ### callee(t) and bound(c)
 
-`prog.callee(t)` follows the PLT stubs (`plt`, at most 4 steps). `prog.bound(c)` is `bounds.call_bounds` (verify off)
-over the summaries the Rust side computes from the inputs above (summary.summarise_parallel's fixed point, the results
-and the fall-through demotion, then bounds.make / func_bound). `ounce-lift --check` compares every function's summary
-(`check/summaries.json`: `summary.pack` with the masks as hex and the demotion reasons as a list) and every record the
-partitions read (`check/bounds.json`: `{"bounds": [Bound…], "own": [Bound… of the PATCH_FUNCs]}`) with Python's, field
-by field.
+`prog.callee(t)` follows the PLT stubs (at most 4 steps). `prog.bound(c)` is `bounds.call_bounds` (verify off) over the
+summaries the Rust side computes. `ounce-lift --check` compares the discovery and the plan (`check/plan.json`: entries,
+every body as pc runs and a key of its words, the discovered bodies that differ, insns, jt, jt_index, plt, setjmp
+owners, hooks, traps by reason, the hot set, the partitions and each one's census), every function's summary
+(`check/summaries.json`: `summary.pack`, masks as hex) and every record the partitions read (`check/bounds.json`) with
+Python's, field by field.
 
 ### Bound
 
