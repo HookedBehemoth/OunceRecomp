@@ -277,3 +277,28 @@ pub fn check_image(dir: &Path, meta: &crate::export::Meta, img: &crate::image::I
     println!("check: image: {n} differences");
     n
 }
+
+// ---- the patch scan against Python's (the export's meta.json)
+
+/// differences of the Rust side's patch scan, rows and effects from Python's
+pub fn check_scan(rust: &crate::export::Meta, py: &crate::export::Meta, show: usize) -> usize {
+    let mut n = 0;
+    n += field("hle_symbols", &rust.hle_symbols, &py.hle_symbols, show);
+    let mut a = rust.answers.clone();
+    a.sort();
+    let mut b = py.answers.clone();
+    b.sort();
+    n += field("answers", &a, &b, show);
+    n += field("hle", &rust.hle, &py.hle, show);
+    n += field("values", &rust.values, &py.values, show);
+    n += field("rows", &rust.rows, &py.rows, show);
+    n += field("func_names", &rust.func_names, &py.func_names, show);
+    n += field("row_effects", &rust.row_effects, &py.row_effects, show);
+    n += field("patch_funcs", &rust.patch_funcs, &py.patch_funcs, show);
+    n += field("os_namespaces", &rust.os_namespaces, &py.os_namespaces, show);
+    n += field("setjmp_names", &rust.setjmp_names, &py.setjmp_names, show);
+    n += field("noreturn", &[&rust.noreturn_names, &rust.noreturn_parts], &[&py.noreturn_names, &py.noreturn_parts], show);
+    n += field("part_insns", &[rust.part_insns], &[py.part_insns], show);
+    println!("check: patch scan: {n} differences");
+    n
+}

@@ -44,7 +44,7 @@ pub struct Meta {
     pub patch_funcs: Vec<PatchDecl>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, PartialEq)]
 pub struct MetaValue {
     pub pc: u64,
     pub word: u32,
@@ -55,7 +55,7 @@ pub struct MetaValue {
     pub func: u64,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, PartialEq)]
 pub struct MetaAt {
     pub pc: u64,
     pub word: u32,
@@ -113,7 +113,7 @@ pub fn at_row(r: &MetaAt, names: &mut Names) -> AtRow {
 
 /// an HLE'd function's declared facts: [symbol (its hook's C name less imp_), stops, answer, declared clobbering,
 /// reads mask]
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct HleFact(pub String, pub bool, pub Option<u64>, pub bool, #[serde(deserialize_with = "de_mask")] pub u128);
 
 /// an HLE'd function at its address: [address, symbol, stops, answer, declared clobbering, reads mask]
@@ -121,7 +121,7 @@ pub struct HleFact(pub String, pub bool, pub Option<u64>, pub bool, #[serde(dese
 pub struct Hle(pub u64, pub String, pub bool, pub Option<u64>, pub bool, pub u128);
 
 /// the guest functions host code calls: "computed" (any), or their addresses
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum GuestCalls {
     Computed(String),
@@ -129,7 +129,7 @@ pub enum GuestCalls {
 }
 
 /// a pc's rows' declared effects: [pc, before reads, after reads, before writes, after writes, guest calls, replace]
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, PartialEq)]
 pub struct RowEffect(
     pub u64,
     #[serde(deserialize_with = "de_mask")] pub u128,
@@ -141,7 +141,7 @@ pub struct RowEffect(
 );
 
 /// a PATCH_FUNC: [entry, reads mask, result mask, orig, guest callees]
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, PartialEq)]
 pub struct PatchDecl(
     pub u64,
     #[serde(deserialize_with = "de_mask")] pub u128,

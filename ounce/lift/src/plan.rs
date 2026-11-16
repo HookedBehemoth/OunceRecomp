@@ -12,6 +12,10 @@ use ounce_decode::{decode, Fld};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+/// a partition is cut after the function that brings it to this many instructions or more (game.PART_INSNS: a build
+/// parameter)
+pub const PART_INSNS: usize = 120000;
+
 /// a lifted function's body: sorted pcs and their words
 pub struct PBody {
     pub entry: u64,

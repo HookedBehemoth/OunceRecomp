@@ -1,11 +1,14 @@
-//! ounce-lift <export dir> <out dir> [-j N (default: the CPUs)] [--parts a,b,...] [--skip] [--check]: one .ll per
-//! partition of the export, its summaries and call-boundary records computed first (summary, bounds).
+//! ounce-lift [<export dir>] <out dir> [-j N] [--parts a,b,...] [--skip] [--check] [--golden <dir>] [--game <dir>]
+//! [--work <dir>] [--exefs <dir>] [--root <dir>]: the whole lift from the dump's exefs, the host's C and the game
+//! description: gen/, rt64/, image/image.bin and one .ll per partition (EXPORT.md).
 //! --skip: a function using a template not ported yet is left out and counted ("skipped: template X").
-//! --check: compare every summary and record with Python's (the export's check/) and stop: the diagnostic gate.
+//! --check: compare the scan, the image, the plan, every summary and record with Python's (the export) and stop.
+//! --golden: gen/, rt64/ and image.bin against the golden's sha256.
 
 use ounce_lift::bounds::Records;
 use ounce_lift::discover::Discovery;
-use ounce_lift::export::{read_meta, Part};
+use ounce_lift::export::{read_meta, Meta, Part};
+use ounce_lift::patch;
 use ounce_lift::game::Game;
 use ounce_lift::eden;
 use ounce_lift::export::Hle;
@@ -144,29 +147,35 @@ fn main() {
             _ => pos.push(PathBuf::from(a)),
         }
     }
-    if pos.len() != 2 {
-        eprintln!("usage: ounce-lift <export dir> <out dir> [-j N] [--parts a,b] [--skip]");
+    if pos.is_empty() || pos.len() > 2 || (check && pos.len() != 2) {
+        eprintln!("usage: ounce-lift [<export dir (the --check reference)>] <out dir> [-j N] [--parts a,b] [--skip] [--check] [--golden <dir>] [--game <dir>] [--work <dir>] [--exefs <dir>] [--root <dir>]");
         std::process::exit(2);
     }
-    let (dir, out) = (&pos[0], &pos[1]);
-    let meta = read_meta(dir).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(meta.format, 5, "export format");
+    let (dir, out) = if pos.len() == 2 { (Some(&pos[0]), &pos[1]) } else { (None, &pos[0]) };
+    let py_meta = dir.map(|d| read_meta(d).unwrap_or_else(|e| panic!("{e}")));
+    if let Some(m) = &py_meta {
+        assert_eq!(m.format, 5, "export format");
+    }
     std::fs::create_dir_all(out).unwrap();
     rayon::ThreadPoolBuilder::new().num_threads(jobs.max(1)).build_global().unwrap();
     let t0 = Instant::now();
     let game = Game::load(&game_dir).unwrap_or_else(|e| panic!("{e}"));
+    // the host's patch declarations (patch_scan) and the platform's facts
+    let ps = patch::scan(&root, &game.host).unwrap_or_else(|e| panic!("{e}"));
+    let horizon = patch::Horizon::load(&root).unwrap_or_else(|e| panic!("{e}"));
+    let t_scan = t0.elapsed().as_secs_f64();
     // the exefs, checked to be the game's, its modules loaded (nso.py), the HLE'd and stubbed symbols
     // (standalone.hle_set) and the image (EdenImage)
     let exefs = exefs.unwrap_or_else(|| dump_exefs(&work));
     game.check_exefs(&exefs).unwrap_or_else(|e| panic!("{e}"));
     let mods = ounce_lift::nso::load_exefs(&exefs).unwrap_or_else(|e| panic!("{e}"));
-    let implemented: BTreeSet<String> = meta.hle_symbols.iter().cloned().collect();
-    let (hle, stubbed) = eden::hle_set(&mods, &implemented, &meta.os_namespaces).unwrap_or_else(|e| panic!("{e}"));
+    let implemented: BTreeSet<String> = ps.hle_symbols();
+    let (hle, stubbed) = eden::hle_set(&mods, &implemented, &horizon.os_namespaces).unwrap_or_else(|e| panic!("{e}"));
     let nvn = eden::nvn_exports(&mods, &implemented);
     let all_hle: BTreeSet<String> = hle.union(&stubbed).cloned().collect();
-    let t_load = t0.elapsed().as_secs_f64();
+    let t_load = t0.elapsed().as_secs_f64() - t_scan;
     let (img, facts) = eden::build(mods, &all_hle).unwrap_or_else(|e| panic!("{e}"));
-    let t_build = t0.elapsed().as_secs_f64() - t_load;
+    let t_build = t0.elapsed().as_secs_f64() - t_load - t_scan;
     // (nx2/lift.py: the image's entries, then those ADR / ADRP+ADD form outside unwind-covered code)
     let spans = img.fde_spans(&facts.eh_frame_hdr);
     let mut entries = facts.entries.clone();
@@ -175,23 +184,24 @@ fn main() {
     let (c_img, _) = usage();
     let t_img = t0.elapsed().as_secs_f64();
     // the HLE'd functions at their addresses, with their declared facts (summary.host_summary, bounds)
-    let facts_by: HashMap<&str, &ounce_lift::export::HleFact> = meta.hle.iter().map(|h| (h.0.as_str(), h)).collect();
+    // (host_effects is asked with the hook's C name less imp_)
     let hle_at: Vec<Hle> = img
         .hooks
         .iter()
         .filter_map(|h| h.c.strip_prefix("imp_").map(|s| (h.addr, s)))
         .map(|(a, s)| {
-            let f = facts_by.get(s).unwrap_or_else(|| panic!("export: no declared facts of the HLE'd {s}"));
+            let f = ps.hle_fact(s);
             Hle(a, s.to_string(), f.1, f.2, f.3, f.4)
         })
         .collect();
+    let answer_list = ps.answers();
     let answers: Vec<(u64, String, u64)> = hle_at
         .iter()
-        .filter_map(|h| meta.answers.iter().find(|a| a.0 == h.1).map(|a| (h.0, h.1.clone(), a.1)))
+        .filter_map(|h| answer_list.iter().find(|a| a.0 == h.1).map(|a| (h.0, h.1.clone(), a.1)))
         .collect();
     // discovery (sequential: Python's order), then the plan
     let td = Instant::now();
-    let mut d = Discovery::new(&img, &entries, &facts.names, &meta.setjmp_names, facts.eh_starts.clone());
+    let mut d = Discovery::new(&img, &entries, &facts.names, &horizon.setjmp_names, facts.eh_starts.clone());
     d.discover(max_func);
     let (c_disc, _) = usage();
     let t_disc = td.elapsed().as_secs_f64();
@@ -204,11 +214,60 @@ fn main() {
         .filter_map(|w| w.strip_prefix("f_").map(|h| u64::from_str_radix(h, 16).unwrap()))
         .collect();
     let mut plan = Plan::new(&d, &img, &hot);
+    // the rows' functions over the plan and the lift's checks of them (probes.resolve, find, at), the PATCH_FUNCs
+    // against the plan (check_funcs): the patches as the lift reads them
+    let mut rows = patch::rows(&ps.sites).unwrap_or_else(|e| panic!("{e}"));
+    {
+        let bodies: Vec<(u64, &[u64])> = plan.bodies.iter().map(|b| (b.entry, &b.pcs[..])).collect();
+        patch::resolve(&mut rows, &bodies).unwrap_or_else(|e| panic!("{e}"));
+        let entry_set: HashSet<u64> = plan.entries.iter().copied().collect();
+        for r in &rows {
+            let b = &plan.bodies[plan.bodies.binary_search_by_key(&r.func, |b| b.entry).unwrap()];
+            let (jt, ents) = match (r.value, r.mode.as_str()) {
+                (false, "before") => (Some(&plan.jt), Some(&entry_set)),
+                (false, "instead") => (Some(&plan.jt), None),
+                _ => (None, None),
+            };
+            if let Some(e) = patch::errors(r, &b.pcs, &b.words, jt, ents).unwrap_or_else(|e| panic!("{e}")).first() {
+                panic!("{}", patch::fail::<()>(&r.at, e).unwrap_err());
+            }
+        }
+    }
+    let found = patch::check_funcs(&ps, &facts.exports, &|a| {
+        plan.bodies.binary_search_by_key(&a, |b| b.entry).ok().map(|k| (plan.bodies[k].pcs.clone(), plan.bodies[k].words.clone()))
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
+    let (patch_funcs, func_names) = patch::func_facts(&found);
+    let (values, at_rows) = patch::meta_rows(&rows);
+    let mut hle_syms: Vec<&str> = hle_at.iter().map(|h| h.1.as_str()).collect();
+    hle_syms.sort_unstable();
+    hle_syms.dedup();
+    let meta = Meta {
+        format: 5,
+        commit: String::new(),
+        verify: false,
+        omit: true,
+        answers: answer_list.clone(),
+        image_sha256: String::new(),
+        hle_symbols: implemented.iter().cloned().collect(),
+        os_namespaces: horizon.os_namespaces.clone(),
+        setjmp_names: horizon.setjmp_names.clone(),
+        part_insns: plan::PART_INSNS,
+        values,
+        rows: at_rows,
+        func_names,
+        noreturn_names: horizon.noreturn_names.clone(),
+        noreturn_parts: horizon.noreturn_parts.clone(),
+        hle: hle_syms.iter().map(|s| ps.hle_fact(s)).collect(),
+        row_effects: patch::row_effects(&rows),
+        patch_funcs,
+    };
     let continuations: HashMap<u64, u32> = game.local_continuations.iter().copied().collect();
     let pp = plan::parts(&plan, &meta, &img, &continuations);
     let b_plan = busy_s();
     let (c_plan, m_plan) = usage();
     let t_plan = tp.elapsed().as_secs_f64();
+    println!("patch scan: {} files, {} sites, {} functions, {} HLE / {} NV / {} effects, {} answers; {:.3} s", game.host.len(), ps.sites.len(), ps.funcs.len(), ps.hle.len(), ps.nv.len(), ps.declared.len(), ps.answers.len(), t_scan);
     println!(
         "image: exefs loaded in {:.2} s, built in {:.2} s; {} hooks ({} HLE, {} stubbed), {} entries, {} more from ADR / ADRP+ADD; {:.2} s wall, {:.2} s CPU",
         t_load,
@@ -303,7 +362,11 @@ fn main() {
         ts.elapsed().as_secs_f64(), c_sum - c_plan, b_sum, m_sum
     );
     if check {
-        let n = ounce_lift::check::check_plan(dir, &plan, &pp, &img, 20) + ounce_lift::check::check_image(dir, &meta, &img, &facts, 20) + gen_bad;
+        let (dir, py) = (dir.unwrap(), py_meta.as_ref().unwrap());
+        let n = ounce_lift::check::check_scan(&meta, py, 20)
+            + ounce_lift::check::check_plan(dir, &plan, &pp, &img, 20)
+            + ounce_lift::check::check_image(dir, py, &img, &facts, 20)
+            + gen_bad;
         let (a, b) = ounce_lift::check::check(dir, &prog, &sums, &rec, 40);
         std::process::exit(if a + b + n == 0 { 0 } else { 1 });
     }

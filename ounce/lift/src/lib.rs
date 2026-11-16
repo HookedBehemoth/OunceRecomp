@@ -15,6 +15,7 @@ pub mod image;
 pub mod ir;
 pub mod nso;
 pub mod part;
+pub mod patch;
 pub mod plan;
 pub mod sem;
 pub mod summary;

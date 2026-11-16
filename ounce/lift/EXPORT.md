@@ -1,17 +1,20 @@
-# The lift export: what the Rust lifter reads
+# The lift export: the Rust lifter's reference
 
-`nx2/lift_export.py` writes what the Rust lifter (`ounce-lift`) cannot compute yet: the results of the host's patch
-scan (nx2/lift2/patch_scan.py, probes.resolve over Python's plan), a few platform name lists, and Python's plan,
-image, summaries and records as the diagnostic's reference. The Rust side computes everything else from the dump's
-exefs, in nx2/lift.py --standalone --write's order: the modules (src/nso.rs: nso.py, nso2.py), the HLE'd and stubbed
-symbols and the image (src/eden.rs: standalone.hle_set, EdenImage), the ADR / ADRP+ADD entries (src/image.rs), the
-discovery (src/discover.rs), the plan (src/plan.rs), the generated sources (src/gen.rs: tables.py, standalone.py's
-hos_image.c, a64_stubs.c, nvn2_exports.c, functions.txt, rtgen.py), the summaries and records (src/summary.rs,
-src/bounds.rs) and each partition's IR, byte for byte the Python lifter's.
+`ounce-lift` needs no export: it lifts the game from the dump's exefs, the host's C (its patch declarations: src/patch.rs,
+patch_scan.py, probes.py, host_effects.py) and the game description (games/oot/game.toml), with the platform's facts in
+ounce/lift/data/horizon.toml (kept equal to nx2/horizon by tests/test_horizon_data.py). In nx2/lift.py --standalone
+--write's order: the scan, the modules (src/nso.rs), the HLE'd and stubbed symbols and the image (src/eden.rs), the ADR /
+ADRP+ADD entries (src/image.rs), the discovery (src/discover.rs), the plan (src/plan.rs), the rows resolved and checked
+and the PATCH_FUNCs checked against the plan, the generated sources (src/gen.rs), the summaries and records
+(src/summary.rs, src/bounds.rs) and each partition's IR, byte for byte the Python lifter's.
 
-    work/venv/bin/python -I nx2/lift_export.py --game games/oot work/ounce/export
-    ounce/lift/target/release/ounce-lift work/ounce/export <out dir> [--game games/oot] [--work work] [--exefs <dir>]
-        [--root .] [--golden work/ounce/golden] [--check]
+`nx2/lift_export.py` writes Python's results as the diagnostic's reference: `ounce-lift <export> <out> --check` compares
+the scan's products (meta.json), the image, the discovery and plan, the summaries and the records with them.
+
+    ounce/lift/target/release/ounce-lift <out dir> [--game games/oot] [--work work] [--exefs <dir>] [--root .]
+        [--golden work/ounce/golden]
+    work/venv/bin/python -I nx2/lift_export.py --game games/oot work/ounce/export     (the reference, for --check)
+    ounce/lift/target/release/ounce-lift work/ounce/export <out dir> --check [--golden work/ounce/golden]
 
 The exefs is the dump's (`--exefs`, else OOT_EXEFS, OOT_DUMP/exefs, or the first line of `<work>/dump.txt`, as
 nx2/kit.py), checked against games/oot/game.toml's identity first. `--root` is the repository (a64-kit's rt/ sources
@@ -23,7 +26,8 @@ without `HOOKSHOT_LIFT_VERIFY` and with `omit` on.
 
 ## Files
 
-    <out>/meta.json                 the patch scan's results, platform lists, keys
+    <out>/meta.json                 Python's patch scan results (rows with their functions, effects, PATCH_FUNC facts),
+                                    the platform lists, keys
     <out>/check/plan.json           Python's discovery and plan,
     <out>/check/image.json          the lift's image.json and
     <out>/check/image_entries.json  its entry candidates (before the ADR ones),
