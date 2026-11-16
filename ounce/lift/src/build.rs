@@ -154,16 +154,10 @@ pub fn build(f: &Func, prog: &Prog, fun: &mut Function, sc: &mut Scratch) {
 
     // the BR's table index read at its load: BR -> (block, value)
     let mut index_load: HashMap<u64, (u64, u32, u32)> = HashMap::new();
+    // (plan::parts keeps the tables whose load is in the body with no probe or row up to the BR: the summaries read
+    // their targets as the BR's)
     for (br, load, reg, opt, _) in prog.jt_index {
-        let (br, load) = (*br, *load);
-        if prog.in_body(br)
-            && prog.in_body(load)
-            && !(load..br + 4).step_by(4).any(|q| {
-                prog.probes.contains_key(&q) || prog.before.contains_key(&q) || prog.after.contains_key(&q)
-            })
-        {
-            index_load.insert(load, (br, *reg, *opt));
-        }
+        index_load.insert(*load, (*br, *reg, *opt));
     }
     let mut index_at: HashMap<u64, (BlockId, ValueId)> = HashMap::new();
     insns.clear();
@@ -447,7 +441,10 @@ pub fn build(f: &Func, prog: &Prog, fun: &mut Function, sc: &mut Scratch) {
                 targets.sort();
                 targets.dedup();
                 let at = index_at.get(&pc).copied();
-                let term = if let Some((_, at)) = at.filter(|a| a.0 == c) {
+                if at.is_some_and(|a| a.0 != c) {
+                    panic!("f_{entry:08x}: the table of the BR at {pc:#x} is loaded in another block");
+                }
+                let term = if let Some((_, at)) = at {
                     let tab = &prog.jt_index.iter().find(|r| r.0 == pc).unwrap().4;
                     let cases: Vec<(u64, BlockId)> =
                         tab.iter().enumerate().map(|(n, &t2)| (n as u64, goto(&mut b, prog, exits, t2))).collect();

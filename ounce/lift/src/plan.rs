@@ -528,9 +528,17 @@ pub fn parts(plan: &Plan, meta: &Meta, img: &Image, continuations: &HashMap<u64,
                     })
                     .collect();
                 jt.sort_unstable_by_key(|r| r.0);
+                // (the tables the lift switches on by their index: the load in the body, no probe or row from the
+                // load to the BR; the summaries read the same)
+                let rowed = |lo: u64, hi: u64| {
+                    let at = |pc: u64| lo <= pc && pc <= hi;
+                    values_by.get(&e).is_some_and(|v| v.iter().any(|&j| at(meta.values[j].pc)))
+                        || rows_by.get(&e).is_some_and(|v| v.iter().any(|&j| meta.rows[j].mode != "instead" && at(meta.rows[j].pc)))
+                };
                 let jt_index: Vec<(u64, u64, u32, u32, Vec<u64>)> = pcs
                     .iter()
                     .filter_map(|pc| plan.jt_index.get(pc).map(|v| (*pc, v.0, v.1, v.2, v.3.clone())))
+                    .filter(|r| inb(r.1) && !rowed(r.1, r.0))
                     .collect();
                 let code_sites = sites(pcs, words, &tg, &plan.jt);
                 nsites += code_sites.len() as u64;
@@ -547,7 +555,6 @@ pub fn parts(plan: &Plan, meta: &Meta, img: &Image, continuations: &HashMap<u64,
                     .binary_search_by_key(&e, |f| f.0)
                     .ok()
                     .map(|j| PatchFunc { name: names.sym(&meta.func_names[j].1), orig_name: names.sym(&meta.func_names[j].2) });
-                let _ = inb;
                 fns.push(Func {
                     entry: e,
                     pcs: pcs.clone(),

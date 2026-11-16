@@ -10,7 +10,7 @@
 //! definition comes from the semantic templates themselves, run on a scratch builder (summary.def_use), cached per
 //! worker by word. The fixed point runs level by level over the components' DAG, a level's components in parallel.
 
-use crate::export::{GuestCalls, Hle, Meta, Part};
+use crate::export::{Func, GuestCalls, Hle, Meta, Part};
 use crate::plan::Plan;
 use crate::ir::{bit, BKey, Builder, Function, ALL};
 use crate::sem::{self, Kind};
@@ -301,6 +301,23 @@ pub struct Program<'a> {
     pub noret: Vec<u64>,
 }
 
+/// a function's tables as the lift switches on them: a table on its index has its entries' targets as the BR's
+/// (the others of the table reach the BR's indirect exit only)
+fn index_switch(f: &Func) -> Cow<'_, [(u64, Vec<u64>)]> {
+    if f.jt_index.is_empty() {
+        return Cow::Borrowed(&f.jt[..]);
+    }
+    let mut jt = f.jt.clone();
+    for (br, _, _, _, tab) in &f.jt_index {
+        let k = jt.binary_search_by_key(br, |r| r.0).expect("an index table of no table");
+        let mut t = tab.clone();
+        t.sort_unstable();
+        t.dedup();
+        jt[k].1 = t;
+    }
+    Cow::Owned(jt)
+}
+
 impl<'a> Program<'a> {
     /// the program from the plan: each function's body as the lift lifts it (a trapped one a trap at its entry), the
     /// rest of the facts from the patch scan
@@ -308,7 +325,7 @@ impl<'a> Program<'a> {
         let mut fs: Vec<(u64, Body<'a>)> = parts
             .iter()
             .flat_map(|p| p.functions.iter())
-            .map(|f| (f.entry, Body { pcs: Cow::Borrowed(&f.pcs[..]), words: Cow::Borrowed(&f.words[..]), jt: Cow::Borrowed(&f.jt[..]) }))
+            .map(|f| (f.entry, Body { pcs: Cow::Borrowed(&f.pcs[..]), words: Cow::Borrowed(&f.words[..]), jt: index_switch(f) }))
             .collect();
         fs.sort_unstable_by_key(|f| f.0);
         // (a row's pc is in exactly one of these bodies, the row's function: patch::resolve checks it over the same

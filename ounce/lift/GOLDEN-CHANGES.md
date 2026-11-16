@@ -58,3 +58,11 @@ diffout: 1733 functions' facts changed (110 Lifted -> Demoted, 60 the other way;
 preserved 172, clobbers 122, mustdef 60), 668 functions' IR changed, 0 unexplained, gen/ and image.bin equal. The new
 save_ptr are stores on a path where the register still holds its entry value (e.g. f_829537f0 spills x21 through x29
 on a path that skips x21's load, where x29 is not known to be a frame register on every path).
+
+## v2.3 kept: a table on its index is the BR's targets in the summaries too (flaw 2)
+
+The lift switches on a table's index (its entries, the rest to the BR's indirect exit) where the load is in the body
+with no probe or row up to the BR; the summaries read the BR's whole resolved table. plan::parts now keeps only the
+index tables the lift switches on, and the summaries take their entries as the BR's targets; the lift stops if such a
+table's load is in another block than its BR. For this game every index table's entries are its whole table:
+diffout 0 changed, 0 facts changed.
