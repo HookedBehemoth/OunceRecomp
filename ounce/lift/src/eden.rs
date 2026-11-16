@@ -117,7 +117,14 @@ pub fn build(mut mods: Vec<Nso>, implemented: &BTreeSet<String>, stubbed: &BTree
             let v: u64 = match r.typ {
                 RelType::Relative => (bases[mi] as i64).wrapping_add(r.addend) as u64,
                 RelType::Abs64 | RelType::GlobDat | RelType::JumpSlot => {
-                    let sym = m.rel_sym(r).ok_or_else(|| format!("{}: a symbol relocation without a symbol at {:#x}", m.name, r.offset))?;
+                    // (no symbol, index 0: the symbol's value is 0, ELF's S)
+                    let Some(sym) = m.rel_sym(r)? else {
+                        let v = if r.typ == RelType::Abs64 { r.addend as u64 } else { 0 };
+                        let o = (at - CODE_39BIT) as usize;
+                        mem[o..o + 8].copy_from_slice(&v.to_le_bytes());
+                        reloc_slots.push(at);
+                        continue;
+                    };
                     let weak = bind.get(sym) == Some(&STB_WEAK);
                     let a = match exports.get(sym) {
                         Some(&hit) => addr_of(hit),
@@ -401,6 +408,23 @@ mod tests {
         // (two implemented ones: which the guest reaches would be a choice)
         let e = build(mods(), &set(&["alias_a", "alias_b"]), &set(&[])).err().unwrap();
         assert!(e.contains("alias_a") && e.contains("alias_b"), "{e}");
+    }
+
+    #[test]
+    fn relocation_without_symbol() {
+        let mut m = module(&[]);
+        m.image[0x2008..0x2010].fill(0xAA);
+        m.relocs = vec![
+            crate::nso::Reloc { offset: 0x2000, typ: RelType::Abs64, sym: 0, addend: 0x1234 },
+            crate::nso::Reloc { offset: 0x2008, typ: RelType::GlobDat, sym: 0, addend: 0 },
+        ];
+        let (img, facts) = build(vec![m], &BTreeSet::new(), &BTreeSet::new()).unwrap();
+        assert_eq!(img.read(CODE_39BIT + 0x2000, 8).unwrap(), 0x1234u64.to_le_bytes());
+        assert_eq!(img.read(CODE_39BIT + 0x2008, 8).unwrap(), [0; 8]);
+        assert_eq!(facts.reloc_slots, vec![CODE_39BIT + 0x2000, CODE_39BIT + 0x2008]);
+        let mut m = module(&[]);
+        m.relocs = vec![crate::nso::Reloc { offset: 0x2000, typ: RelType::JumpSlot, sym: 7, addend: 0 }];
+        assert!(build(vec![m], &BTreeSet::new(), &BTreeSet::new()).is_err());
     }
 
     #[test]

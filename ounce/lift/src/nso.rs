@@ -251,8 +251,15 @@ impl Nso {
         self.dynamic.get(&k).map(|v| v[0])
     }
     /// the relocation's symbol name (None: index 0)
-    pub fn rel_sym(&self, r: &Reloc) -> Option<&str> {
-        (r.sym != 0).then(|| self.symbols[r.sym as usize].name.as_str())
+    /// a relocation's symbol: Ok(None) for index 0 (no symbol: its value is 0), Err past the symbol table
+    pub fn rel_sym(&self, r: &Reloc) -> Result<Option<&str>, String> {
+        if r.sym == 0 {
+            return Ok(None);
+        }
+        match self.symbols.get(r.sym as usize) {
+            Some(s) => Ok(Some(s.name.as_str())),
+            None => Err(format!("{}: the relocation at {:#x} names symbol {} of {}", self.name, r.offset, r.sym, self.symbols.len())),
+        }
     }
 }
 
