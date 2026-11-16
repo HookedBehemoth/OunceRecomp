@@ -128,3 +128,19 @@ The unwind data's function starts were read from each module's unrelocated bytes
 relocated image; they are read from the image now (eden::eh_starts over the modules' .eh_frame_hdr). Discovery's
 rounds re-resolve only the BRs of the function extents whose tables changed (a resolution reads its own extent's
 tables only). diffout 0 changed.
+
+## v2.6: a save of a callee-saved register is no read of it
+
+A function's inputs counted the prologue's store of x19-x29's entry values as a read, so every caller wrote those
+registers to the context before the call, though the callee only saves and restores them. A save of x19-x29's entry
+value into a frame slot the register is restored from, the slot read by nothing else, the register preserved and no
+save_ptr, is now no use of the register: liveness runs without those uses, and the inputs (and the records' reads)
+lose the registers that only such saves read, up the call graph. The callee then saves and restores a stale context
+value no one reads (C++ unwinding stops, host/cxx_throw.c; backtraces are replaced, host/nn_diag.c); a caller keeps
+its value in SSA (the register is in the record's keeps). The frame address being taken does not matter: only an
+out-of-bounds read reaches a save slot. inconsistent asks the inputs with the saves counted: the summary's saved, the
+registers it or a callee reads only to save.
+
+diffout: 204412 functions' facts changed (inputs 204052, records 197920, results 435; 21 undemoted: inconsistent
+found by the saves of callees it missed), 123075 functions' IR changed (the stores before calls gone), 0
+unexplained, gen/ and image.bin equal. f_800200a0's stores of x19 and x29 before memset are gone.

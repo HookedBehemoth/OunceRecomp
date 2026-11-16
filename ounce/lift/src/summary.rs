@@ -85,6 +85,8 @@ pub mod why {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Summary {
     pub inputs: u128,
+    /// x19-x29 it or a callee reads only to save them (not inputs): what its restores write
+    pub saved: u128,
     pub clobbers: u128,
     pub mustdef: u128,
     pub preserved: u128,
@@ -106,6 +108,7 @@ impl Summary {
     /// the optimistic start of the fixed point: nothing read or written, everything preserved
     pub const START: Summary = Summary {
         inputs: 0,
+        saved: 0,
         clobbers: 0,
         mustdef: ALL,
         preserved: CALLEE_SAVED,
@@ -122,9 +125,11 @@ impl Summary {
         lr_data: false,
     };
     /// what changes the fixed point looks at (summary.Summary.key, and the demotion reasons)
-    fn key(&self) -> (u128, u128, u128, u128, bool, bool, bool, bool, u16) {
+    #[allow(clippy::type_complexity)]
+    fn key(&self) -> (u128, u128, u128, u128, u128, bool, bool, bool, bool, u16) {
         (
             self.inputs,
+            self.saved,
             self.clobbers,
             self.mustdef,
             self.preserved,
@@ -867,11 +872,15 @@ impl<'s> Sums<'s> {
                 let gp = t.aux as usize;
                 if !seen.contains(&gp) && gp != p {
                     seen.push(p);
-                    s.inputs |= self.func_summary(gp, t.id, seen).inputs;
+                    let g = self.func_summary(gp, t.id, seen);
+                    s.inputs |= g.inputs;
+                    s.saved |= g.saved;
                     seen.pop();
                 }
             } else {
-                s.inputs |= self.inputs(&t);
+                let c = self.callee(&t);
+                s.inputs |= c.inputs;
+                s.saved |= c.saved;
             }
         }
         s.clobbers = X30 | d.result;
@@ -885,6 +894,7 @@ impl<'s> Sums<'s> {
                 return UNKNOWN;
             }
             s.inputs |= b.inputs;
+            s.saved |= b.saved;
             s.clobbers |= b.clobbers | ORIG_ARGS;
             s.preserved &= b.preserved;
             s.writes_fpcr = b.writes_fpcr;
@@ -901,6 +911,12 @@ impl<'s> Sums<'s> {
 
 /// live-in per instruction (summary.liveness)
 pub fn liveness(f: &Flow, s: &Sums, ret_live: u128, live: &mut Vec<u128>) {
+    liveness_less(f, s, ret_live, live, &[]);
+}
+
+/// liveness with instruction k's uses less unuse[k] (empty: none less): the saves of entry values the frame pass
+/// finds restored
+fn liveness_less(f: &Flow, s: &Sums, ret_live: u128, live: &mut Vec<u128>, unuse: &[u128]) {
     let n = f.n;
     live.clear();
     live.resize(n, 0);
@@ -908,7 +924,7 @@ pub fn liveness(f: &Flow, s: &Sums, ret_live: u128, live: &mut Vec<u128>) {
     while changed {
         changed = false;
         for k in (0..n).rev() {
-            let u = f.use_[k];
+            let u = f.use_[k] & !unuse.get(k).copied().unwrap_or(0);
             let mut v = match f.kind[k] {
                 K::Ret => u & !X30 | ret_live,
                 K::Trap => u,
@@ -1265,6 +1281,8 @@ pub struct FrameScratch {
     work: Vec<u32>,
     exits: Vec<(Option<i64>, u128)>,
     saves: Vec<(u8, i64)>,
+    /// (instruction, register, slot) of each save, of the final must states
+    save_at: Vec<(u32, u8, i64)>,
     restores: Vec<(u8, i64)>,
     other_reads: Vec<i64>,
 }
@@ -1278,6 +1296,7 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
     fs.work.clear();
     fs.exits.clear();
     fs.saves.clear();
+    fs.save_at.clear();
     fs.restores.clear();
     fs.other_reads.clear();
     if n == 0 {
@@ -1307,6 +1326,7 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                         (reasons, lowest, taken, lr_data) = (0, 0, false, false);
                         fs.exits.clear();
                         fs.saves.clear();
+                        fs.save_at.clear();
                         fs.restores.clear();
                         fs.other_reads.clear();
                     }
@@ -1382,6 +1402,7 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                                     Err(p) => slots.insert(p, (at, r, size)),
                                 }
                                 fs.saves.push((r, at));
+                                fs.save_at.push((k as u32, r, at));
                             }
                         } else {
                             let held = slots.iter().any(|&(x, xr, _)| x == at && xr == r);
@@ -1550,9 +1571,29 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
     FrameOut { preserved, reasons, frame: -lowest, taken, pairs, lr_data }
 }
 
+/// per instruction, the registers its saves need not read (unuse, empty when none): the saves of the final must
+/// states of regs (frame_pass) into a slot the register is restored from and nothing else reads; their registers
+fn save_uses(n: usize, fs: &FrameScratch, regs: u128, unuse: &mut Vec<u128>) -> u128 {
+    unuse.clear();
+    let mut saved = 0;
+    for &(k, r, at) in &fs.save_at {
+        let b = rbit(r);
+        if regs & b == 0 || fs.restores.binary_search(&(r, at)).is_err() || fs.other_reads.binary_search(&at).is_ok() {
+            continue;
+        }
+        if unuse.is_empty() {
+            unuse.resize(n, 0);
+        }
+        unuse[k as usize] |= b;
+        saved |= b;
+    }
+    saved
+}
+
 /// a worker's buffers
 #[derive(Default)]
 pub struct Scratch {
+    unuse: Vec<u128>,
     live: Vec<u128>,
     live2: Vec<u128>,
     must: Vec<Option<u128>>,
@@ -1562,14 +1603,32 @@ pub struct Scratch {
 /// summary.analyse
 fn analyse(f: &Flow, s: &Sums, sc: &mut Scratch) -> Summary {
     let mut out = Summary::START;
-    liveness(f, s, 0, &mut sc.live);
-    let live = &sc.live;
-    out.inputs = if f.n > 0 { live[0] } else { 0 };
     let (mustdef, clobbers, returns) = must_and_may(f, s, &mut sc.must);
     out.mustdef = mustdef;
     out.clobbers = clobbers;
     out.returns = returns;
     let fr = frame_pass(f, s, &mut sc.frame);
+    // (a save of x19-x29's entry value into a frame slot the register is restored from, the slot read by nothing
+    // else, the register preserved: no read of the register. A caller that keeps it in SSA need not write it to the
+    // context: the save stores a stale value and the restore brings it back, which no one reads (C++ unwinding and
+    // backtraces stop or are replaced, host/cxx_throw.c, nn_diag.c))
+    let saved = save_uses(f.n, &sc.frame, if out.returns && fr.reasons & why::SAVE_PTR == 0 { fr.preserved & range(19, 30) } else { 0 }, &mut sc.unuse);
+    liveness_less(f, s, 0, &mut sc.live, &sc.unuse);
+    let live = &sc.live;
+    out.inputs = if f.n > 0 { live[0] } else { 0 };
+    // (the inputs counting the saves, its own and its callees': what a restore may write back)
+    let mut saved = saved;
+    for k in 0..f.n {
+        match f.kind[k] {
+            K::Call | K::Tail => each_callee(f, k, s, |c| saved |= c.saved),
+            _ => {}
+        }
+        if let Some(t) = &f.ctail[k] {
+            saved |= s.callee(t).saved;
+        }
+    }
+    out.saved = saved & !out.inputs;
+    let read = out.inputs | saved;
     let mut reasons = fr.reasons;
     out.frame = fr.frame;
     out.frame_taken = fr.taken;
@@ -1582,7 +1641,7 @@ fn analyse(f: &Flow, s: &Sums, sc: &mut Scratch) -> Summary {
     if out.returns && (CALLEE_SAVED & !SPM) & !out.preserved != 0 {
         reasons |= why::CS_CLOBBER;
     }
-    if out.clobbers & out.preserved & !out.inputs & range(19, 30) != 0 {
+    if out.clobbers & out.preserved & !read & range(19, 30) != 0 {
         reasons |= why::INCONSISTENT;
     }
     if out.inputs & NZCV != 0 {
