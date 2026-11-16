@@ -43,3 +43,18 @@ known then (a table found later added its edges only to a cached extent, twice w
 the misses added none; the last walk of a shared BR won; the redo set's order decided). Now each round walks every
 function against the previous round's tables and resolves every BR its bodies hold against them, until no table
 changes (4 rounds here). For this game the result is the same: diffout 0 changed, 0 facts changed.
+
+## v2.3: the frame pass in phases, each independent of its visiting order (flaw 5)
+
+The frame pass collected its exits, saves, restores and reasons from every state it computed on the way, so a state
+that was not final yet (one path's, larger than the join of all) added exits and reasons the final one does not have,
+and which states those were depended on the worklist's order. Now the must states reach their fixed point first; then
+the may states (the same transfer, joined by union) over those; then one pass over the final states collects. A store
+of a callee-saved register's entry value through another pointer (save_ptr) and LR used as data (lr_data) are asked
+of the may states (on some path), the rest of the must states. A save_ptr store is a whole one (8 bytes or more): a
+narrower store keeps no value to restore. A FIFO worklist gives the same facts.
+
+diffout: 1733 functions' facts changed (110 Lifted -> Demoted, 60 the other way; demote 193, results 1634, inputs 167,
+preserved 172, clobbers 122, mustdef 60), 668 functions' IR changed, 0 unexplained, gen/ and image.bin equal. The new
+save_ptr are stores on a path where the register still holds its entry value (e.g. f_829537f0 spills x21 through x29
+on a path that skips x21's load, where x29 is not known to be a frame register on every path).

@@ -1206,6 +1206,12 @@ fn fpop(fr: &mut Vec<(u8, i64)>, r: u32) {
         fr.remove(k);
     }
 }
+fn union<T: Ord + Copy>(a: &[T], b: &[T]) -> Vec<T> {
+    let mut out: Vec<T> = a.iter().chain(b).copied().collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
 fn intersect<T: Ord + Copy>(a: &[T], b: &[T]) -> Vec<T> {
     let (mut i, mut j, mut out) = (0, 0, Vec::new());
     while i < a.len() && j < b.len() {
@@ -1234,6 +1240,8 @@ pub struct FrameOut {
 #[derive(Default)]
 pub struct FrameScratch {
     state: Vec<Option<FState>>,
+    /// the may states: the entry values held and the slots holding one on some path
+    may: Vec<Option<(u128, Vec<(i64, u8, i64)>)>>,
     work: Vec<u32>,
     exits: Vec<(Option<i64>, u128)>,
     saves: Vec<(u8, i64)>,
@@ -1245,6 +1253,8 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
     let n = f.n;
     fs.state.clear();
     fs.state.resize(n, None);
+    fs.may.clear();
+    fs.may.resize(n, None);
     fs.work.clear();
     fs.exits.clear();
     fs.saves.clear();
@@ -1258,20 +1268,28 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
     let mut reasons = 0u16;
     let mut lowest = 0i64;
     let (mut taken, mut lr_data) = (false, false);
-    // (two phases: the states to their fixed point, then one pass over the final states that collects the exits,
-    // saves, restores and reasons: an intermediate state, larger than the final one, adds none of its own)
-    let (mut collect, mut next) = (false, 0usize);
+    // (three phases, each independent of the order it visits instructions in: the must states to their fixed point;
+    // over them, the may states (the same transfer, joined by union: an entry value held, or a slot holding one, on
+    // some path); then one pass over the final states that collects the exits, saves, restores and reasons. A save
+    // through another pointer and LR as data are of the may states, the rest of the must states)
+    let mut phase = 0u8;
+    let mut next = 0usize;
     loop {
-        let k = if !collect {
+        let k = if phase < 2 {
             match fs.work.pop() {
                 Some(k) => k as usize,
                 None => {
-                    collect = true;
-                    (reasons, lowest, taken, lr_data) = (0, 0, false, false);
-                    fs.exits.clear();
-                    fs.saves.clear();
-                    fs.restores.clear();
-                    fs.other_reads.clear();
+                    phase += 1;
+                    if phase == 1 {
+                        fs.may[0] = Some((TRACKED | SPM, Vec::new()));
+                        fs.work.push(0);
+                    } else {
+                        (reasons, lowest, taken, lr_data) = (0, 0, false, false);
+                        fs.exits.clear();
+                        fs.saves.clear();
+                        fs.restores.clear();
+                        fs.other_reads.clear();
+                    }
                     continue;
                 }
             }
@@ -1287,6 +1305,14 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
         };
         let st = fs.state[k].clone().unwrap();
         let (mut sp, mut fregs, mut holds, mut slots) = (st.sp, st.fregs, st.holds, st.slots);
+        let may_holds = match &fs.may[k] {
+            Some(m) => m.0,
+            None => holds,
+        };
+        if phase == 1 {
+            let m = fs.may[k].clone().unwrap();
+            (holds, slots) = (m.0, m.1);
+        }
         let kind = f.kind[k];
         let i = f.insn[k];
         if let Some(i) = &i {
@@ -1338,8 +1364,8 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                                 fs.saves.push((r, at));
                             }
                         } else {
-                            let held = slots.binary_search_by_key(&at, |x| x.0).ok().map(|p| slots[p].1);
-                            if held == Some(r) && r != XZR && size >= 8 {
+                            let held = slots.iter().any(|&(x, xr, _)| x == at && xr == r);
+                            if held && r != XZR && size >= 8 {
                                 holds |= rbit(r);
                                 fs.restores.push((r, at));
                             } else {
@@ -1364,15 +1390,16 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                     }
                     handled = true;
                 }
-                // (a store through another pointer: of an entry value of x19-x30 (setjmp, context captures))
-                Some(a) if a.st && a.regs[..a.nregs].iter().any(|&(r, _, _)| holds & rbit(r) & TRACKED != 0) => {
+                // (a store through another pointer: of an entry value of x19-x30 (setjmp, context captures), whole: a
+                // narrower store keeps no value to restore)
+                Some(a) if a.st && a.regs[..a.nregs].iter().any(|&(r, _, size)| size >= 8 && may_holds & rbit(r) & TRACKED != 0) => {
                     reasons |= why::SAVE_PTR;
                 }
                 _ => {}
             }
             if !handled {
                 let d = f.dfn[k];
-                if holds & X30 != 0 && f.use_[k] & X30 != 0 && kind != K::Ret && t != "blr" && t != "br" && !acc.as_ref().is_some_and(|a| a.st) {
+                if may_holds & X30 != 0 && f.use_[k] & X30 != 0 && kind != K::Ret && t != "blr" && t != "br" && !acc.as_ref().is_some_and(|a| a.st) {
                     lr_data = true;
                 }
                 if f.use_[k] & SPM != 0 && t != "addsub_imm" && acc.is_none() && !(t == "ldst" && pmode(i) == "reg") {
@@ -1436,7 +1463,21 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                 }
             }
         }
-        if collect {
+        if phase == 2 {
+            continue;
+        }
+        if phase == 1 {
+            for &j in f.succs(k) {
+                let j = j as usize;
+                let m = match &fs.may[j] {
+                    None => (holds, slots.clone()),
+                    Some(old) => (old.0 | holds, union(&old.1, &slots)),
+                };
+                if fs.may[j].as_ref() != Some(&m) {
+                    fs.may[j] = Some(m);
+                    fs.work.push(j as u32);
+                }
+            }
             continue;
         }
         let new = FState { sp, fregs, holds, slots };
