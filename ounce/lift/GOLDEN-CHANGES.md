@@ -121,3 +121,10 @@ every file is read now (the scan and the records check). Identifiers and numbers
 took any Unicode letter or digit, the Rust number test did not); the C names of hooks too. A # after a block comment
 spanning lines is a directive exactly when the comment began its line: that is C's rule (a comment is one space) and
 cpp's, kept and now tested. diffout 0 changed; all 62 host files tokenise.
+
+## v2.5 kept: the unwind function starts from the image (flaw 8)
+
+The unwind data's function starts were read from each module's unrelocated bytes, while discovery reads the
+relocated image; they are read from the image now (eden::eh_starts over the modules' .eh_frame_hdr). Discovery's
+rounds re-resolve only the BRs of the function extents whose tables changed (a resolution reads its own extent's
+tables only). diffout 0 changed.
