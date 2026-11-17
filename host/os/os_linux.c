@@ -51,11 +51,6 @@ int64_t os_now_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
-int64_t os_wall_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-}
 static struct timespec ts_of(int64_t ns) {
     struct timespec ts = {(time_t)(ns / 1000000000LL), (long)(ns % 1000000000LL)};
     return ts;
@@ -863,12 +858,3 @@ bool os_stderr_shown(void) {
     return S_ISCHR(st.st_mode) && isatty(2);
 }
 
-/* ---- dialogs ---- */
-void os_message_box(const char *title, const char *text) {
-    fprintf(stderr, "%s: %s\n", title ? title : "Hookshot", text ? text : "");
-    typedef int (*ShowFn)(uint32_t, const char *, const char *, void *);   /* (SDL3's and SDL2's alike) */
-    void *sdl = dlopen("libSDL3.so.0", RTLD_NOW | RTLD_NOLOAD);
-    if (!sdl) sdl = dlopen("libSDL2-2.0.so.0", RTLD_NOW | RTLD_NOLOAD);
-    ShowFn show = sdl ? (ShowFn)dlsym(sdl, "SDL_ShowSimpleMessageBox") : NULL;
-    if (show) show(0x10, title ? title : "Hookshot", text ? text : "", NULL);   /* (SDL_MESSAGEBOX_ERROR) */
-}

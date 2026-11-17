@@ -98,5 +98,4 @@ Every line of `hookshot_log.txt` (or a test run's `log.txt`) starts with `[hos <
 ## The options file
 
 `hookshot_options.ini` beside the game holds `<key>=<number>` lines. The host reads `output_res` (0 to 4, as
-`HOS_OUTPUT_RES`), `handheld_profile` (0 or 1), `frame_rate_cap` (an index into 60, 90, 120, 144, 165, 240) and
-`discord_app_id`.
+`HOS_OUTPUT_RES`), `handheld_profile` (0 or 1) and `frame_rate_cap` (an index into 60, 90, 120, 144, 165, 240).

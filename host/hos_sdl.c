@@ -133,6 +133,12 @@ void hos_sdl_identity(const char *name, const char *app_id) {
     setenv("SDL_VIDEO_X11_WMCLASS", app_id, 0);
 }
 const char *hos_sdl_error(void) { return version ? CALL(const char *(*)(void), GetError)() : "no SDL"; }
+void hos_sdl_message_box(const char *title, const char *text) {
+    fprintf(stderr, "%s: %s\n", title, text);
+    typedef int (*ShowFn)(uint32_t, const char *, const char *, void *);   /* (SDL3's and SDL2's alike) */
+    ShowFn show = hos_sdl_load() ? (ShowFn)os_lib_sym(lib, "SDL_ShowSimpleMessageBox") : NULL;
+    if (show) show(0x10, title, text, NULL);   /* (SDL_MESSAGEBOX_ERROR) */
+}
 
 /* ---- the window ---- */
 enum { WIN_SHOWN2 = 0x4, WIN_RESIZABLE = 0x20, WIN_HIGH_DENSITY = 0x2000, WIN_VULKAN = 0x10000000, CENTRED = 0x2FFF0000 };

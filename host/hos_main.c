@@ -18,7 +18,7 @@
 #ifndef HOOKSHOT_VERSION   /* (nx2/build.py gives it: the release and a fingerprint of the sources, nx2/version.py) */
 #define HOOKSHOT_VERSION "unknown"
 #endif
-const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's status) */
+const char *hos_version(void) { return HOOKSHOT_VERSION; }
 #include "os.h"
 #include "hos_sdl.h"
 #include <sys/mman.h>
@@ -374,8 +374,7 @@ static void memory_notice(void) {
     }
     hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
     if (getenv("HOS_HEADLESS")) return;
-    hos_sdl_load();   /* (os_message_box shows it through the SDL already loaded) */
-    os_message_box("Hookshot", text);
+    hos_sdl_message_box("Hookshot", text);
 }
 #endif
 static int game_main(int argc, char **argv) {
@@ -601,10 +600,6 @@ int main(int argc, char **argv) {
     if (window < 0) {
         hos_log_flush();
         return 1;
-    }
-    {   /* (hookshot) the Discord status (discord_rpc.c) */
-        void hos_discord_start(void);
-        hos_discord_start();
     }
     os_thread *t = os_thread_start(game_thread, NULL, 64u << 20, "Game");
     if (!t) {

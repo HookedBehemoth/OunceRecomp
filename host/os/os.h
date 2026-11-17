@@ -58,7 +58,6 @@ enum {
 
 /* ---- time ---------------------------------------------------------------------------------------------------------- */
 int64_t os_now_ns(void);                    /* monotonic */
-int64_t os_wall_ns(void);                   /* real time: nanoseconds since 1970-01-01 UTC */
 void os_sleep_ns(int64_t ns);               /* at least ns (to within the kernel's wake-up latency: no rounding to ms) */
 void os_sleep_until_ns(int64_t deadline);   /* until os_now_ns() >= deadline */
 void os_yield(void);                        /* gives the core to another ready thread, if there is one */
@@ -214,9 +213,6 @@ os_dir *os_dir_open(const char *path, int *err);
 bool os_dir_next(os_dir *d, os_dirent *e);   /* the next entry, "." and ".." left out; false at the end */
 void os_dir_close(os_dir *d);
 bool os_stderr_shown(void);   /* stderr goes somewhere a person sees (a terminal, a file or a pipe; not /dev/null) */
-
-/* ---- dialogs ----------------------------------------------------------------------------------------------------- */
-void os_message_box(const char *title, const char *text);   /* on stderr, and in a dialog when SDL is loaded */
 
 #ifdef __cplusplus
 }

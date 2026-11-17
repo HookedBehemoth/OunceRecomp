@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 int hos_sdl_load(void);   /* 3 or 2, the SDL loaded (the first call loads it); 0 when there is none */
+void hos_sdl_message_box(const char *title, const char *text);   /* on stderr, and in a dialog when SDL is there */
 
 enum { HOS_SDL_AUDIO = 0x10, HOS_SDL_VIDEO = 0x20, HOS_SDL_GAMEPAD = 0x2000, HOS_SDL_EVENTS = 0x4000 };   /* (both's) */
 int hos_sdl_init(uint32_t subsystems);   /* 1 when started */
