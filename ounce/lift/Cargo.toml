@@ -20,14 +20,9 @@ toml = "1"
 sha2 = "0.11"
 rayon = "1.10"
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode"] }
-sha1 = "0.10"
+sha1.workspace = true
 cpp_demangle = "0.6"
 
 [features]
 # a global allocator that counts allocations and bytes (reported at the end of a run)
 count-alloc = []
-
-[profile.release]
-debug = 1
-lto = "fat"
-codegen-units = 1

@@ -34,7 +34,7 @@ import toolchain
 import version
 
 HOST = os.path.join(kit.HERE, "..", "host")
-LIFTER = os.path.join(kit.ROOT, "ounce", "lift")   # (the lifter's crate; its binary: target/release/ounce-lift)
+LIFTER = os.path.join(kit.ROOT, "ounce", "lift")   # (the lifter's crate, in the ounce workspace: ounce/target)
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 
@@ -565,7 +565,7 @@ def lifter():
     r = subprocess.run([cargo, "build", "--release", "--quiet", "--manifest-path", os.path.join(LIFTER, "Cargo.toml")])
     if r.returncode:
         raise SystemExit("build: ounce-lift did not build (cargo, ounce/lift)")
-    return os.path.join(LIFTER, "target", "release", "ounce-lift")
+    return os.path.join(kit.ROOT, "ounce", "target", "release", "ounce-lift")
 
 
 def lift(sa, game, jobs):

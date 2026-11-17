@@ -1,8 +1,8 @@
 # The player builder
 
-This page is the plan for `hookshot-builder` (`builder/`): one Rust executable that turns a player's dump (a `.nup`,
-or an `exefs/` and `romfs/` folder) into a portable game folder, with no Python and no compiler on the player's PC.
-Read it before you work on the builder; [builder notes](builder-notes.md) has the facts earlier builders learned.
+This page is the plan for `hookshot-builder` (`ounce/builder`, in the `ounce` cargo workspace with the lifter): one
+Rust executable that turns a player's dump (a `.nup`, or an `exefs/` and `romfs/` folder) into a portable game folder,
+with no Python and no compiler on the player's PC. Read it before you work on the builder; [builder notes](builder-notes.md) has the facts earlier builders learned.
 
 ## What ships
 
@@ -23,9 +23,9 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 |---|---|---|
 | Read the dump | `.nup` or folder; the exefs first, so the lift starts while the romfs is copied | not measured |
 | Lift | `ounce-lift` as a library | 7 s |
-| Compile | the partitions in this process (`builder/src/compile.rs`), byte for byte `nx2/build.py`'s objects | 173 s at 12 jobs, 3.5 GB peak |
+| Compile | the partitions in this process (`ounce/builder/src/compile.rs`), byte for byte `nx2/build.py`'s objects | 173 s at 12 jobs, 3.5 GB peak |
 | Generated code | `gen/*.ll` from `ounce-lift`, compiled as the cold partitions are | 4.5 s |
-| Link | lld in this process (`builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
+| Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `prepare_textures` in Rust, with the native encoders linked statically | 440 s (Python, fast settings) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
 
@@ -34,7 +34,7 @@ build does not prepare them and the folder keeps the game's files.
 
 ## The compile
 
-- Cold partitions: clang 23's printed -O1 pipeline with `dse` after `memcpyopt` (`builder/data/pipeline_cold_O1.txt`),
+- Cold partitions: clang 23's printed -O1 pipeline with `dse` after `memcpyopt` (`ounce/builder/data/pipeline_cold_O1.txt`),
   -O1 code generation, as build.py's `opt | clang`.
 - Hot partitions: `default<O2>` with the SLP vectorizer, as clang -O2. The pipeline text clang prints cannot stand in
   for it: it loses VectorCombine's early-folds-only setting.

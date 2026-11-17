@@ -11,6 +11,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "ounce-decode-check"
 path = "tools/check.rs"
-
-[profile.release]
-debug = 1

@@ -21,7 +21,7 @@ ROOT = os.path.abspath(os.path.join(CRATE, "..", "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 from lift2 import enc  # noqa: E402
 
-TOOL = os.path.join(CRATE, "target", "release", "ounce-decode-check")
+TOOL = os.path.join(ROOT, "ounce", "target", "release", "ounce-decode-check")   # (the workspace's target/)
 INDEX = {id(e): k for k, e in enumerate(enc.ENTRIES)}
 
 

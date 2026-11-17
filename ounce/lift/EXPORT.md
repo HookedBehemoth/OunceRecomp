@@ -11,10 +11,10 @@ and the PATCH_FUNCs checked against the plan, the generated sources (src/gen.rs)
 `nx2/lift_export.py` writes Python's results as the diagnostic's reference: `ounce-lift <export> <out> --check` compares
 the scan's products (meta.json), the image, the discovery and plan, the summaries and the records with them.
 
-    ounce/lift/target/release/ounce-lift <out dir> [--game games/oot] [--work work] [--exefs <dir>] [--root .]
+    ounce/target/release/ounce-lift <out dir> [--game games/oot] [--work work] [--exefs <dir>] [--root .]
         [--golden work/ounce/golden]
     work/venv/bin/python -I nx2/lift_export.py --game games/oot work/ounce/export     (the reference, for --check)
-    ounce/lift/target/release/ounce-lift work/ounce/export <out dir> --check [--golden work/ounce/golden]
+    ounce/target/release/ounce-lift work/ounce/export <out dir> --check [--golden work/ounce/golden]
 
 The exefs is the dump's (`--exefs`, else OOT_EXEFS, OOT_DUMP/exefs, or the first line of `<work>/dump.txt`, as
 nx2/kit.py), checked against games/oot/game.toml's identity first. `--root` is the repository (a64-kit's rt/ sources

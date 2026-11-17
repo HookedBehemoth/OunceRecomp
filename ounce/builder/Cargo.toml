@@ -10,10 +10,7 @@ name = "hookshot-builder"
 path = "src/main.rs"
 
 [dependencies]
-sha1 = "0.10"
+sha1.workspace = true
 
 [build-dependencies]
 cc = "1"
-
-[profile.release]
-debug = 1

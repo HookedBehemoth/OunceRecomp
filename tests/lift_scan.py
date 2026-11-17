@@ -20,7 +20,7 @@ def binary():
     if not os.path.exists(cargo):
         return None
     subprocess.run([cargo, "build", "--release", "--quiet", "--manifest-path", os.path.join(CRATE, "Cargo.toml")], check=True)
-    return os.path.join(CRATE, "target", "release", "ounce-lift")
+    return os.path.join(ROOT, "ounce", "target", "release", "ounce-lift")
 
 
 class Scan:
