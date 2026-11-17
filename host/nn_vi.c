@@ -183,20 +183,13 @@ static void scan_dt(long long presents) {
     FILE *f = fopen(name, "w");
     if (!f) return;
     size_t hits = 0;
-    for (uint64_t a = 0x80000000ULL; a < 0x2000000000ULL && hits < 4000000;) {
-        os_mem_info m;
-        if (os_mem_query(GP(a), &m)) break;
-        const uint64_t size = m.size;
-        if (m.state == OS_MEM_COMMITTED && m.prot == OS_PROT_RW) {
-            const uint32_t *w = (const uint32_t *)m.base;
-            for (size_t i = 0; i < size / 4; i++)
-                if (w[i] >= 0x3c800000 && w[i] <= 0x3d230000) {
-                    fprintf(f, "%llx %08x\n", (unsigned long long)((uint8_t *)&w[i] - (uint8_t *)GP(0)), w[i]);
-                    if (++hits >= 4000000) break;
-                }
+    const uint64_t end = 0x2000000000ULL < (uint64_t)HOS_SPACE_END ? 0x2000000000ULL : (uint64_t)HOS_SPACE_END;
+    const uint32_t *w = (const uint32_t *)hos_guest_range(0x80000000ULL, end - 0x80000000ULL);   /* (the guest window: RW) */
+    for (size_t i = 0; w && i < (end - 0x80000000ULL) / 4 && hits < 4000000; i++)
+        if (w[i] >= 0x3c800000 && w[i] <= 0x3d230000) {
+            fprintf(f, "%llx %08x\n", (unsigned long long)((uint8_t *)&w[i] - (uint8_t *)GP(0)), w[i]);
+            hits++;
         }
-        a = (uint64_t)((uint8_t *)m.base - (uint8_t *)GP(0)) + size;
-    }
     fclose(f);
     hos_log("vi: scan %s: %zu floats", name, hits);
 }

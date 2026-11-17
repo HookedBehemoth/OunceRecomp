@@ -168,11 +168,6 @@ int os_mem_protect(void *addr, size_t size, int prot);   /* (commits reserved pa
 int os_mem_discard(void *addr, size_t size);             /* the pages' contents dropped: they read as zero again */
 /* which pages of [addr, addr + size) are in memory (addr page-aligned): out[i] & 1 for the i-th; 0 or < 0 */
 int os_mem_resident(const void *addr, size_t size, uint8_t *out);
-enum { OS_MEM_FREE = 0, OS_MEM_RESERVED = 1, OS_MEM_COMMITTED = 2 };
-typedef struct { uintptr_t base, size; int state, prot; } os_mem_info;   /* (size: from base to the region's end) */
-int os_mem_query(const void *addr, os_mem_info *out);
-/* a region the caller made and keeps (the guest window): os_mem_query answers for it without asking the kernel */
-void os_mem_declare(void *base, size_t size, int prot);
 typedef struct { uint64_t resident, peak_resident, private_bytes; } os_mem_usage;
 int os_mem_usage_get(os_mem_usage *out);
 

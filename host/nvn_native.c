@@ -1115,8 +1115,7 @@ static void dump_stage(uint64_t code, uint64_t ctl) {
     if (os_path_kind(path) != OS_PATH_NONE) return;
     os_mkdir(dir);
     uint64_t n = 0;
-    os_mem_info mi;
-    while (n < 0x10000 && !os_mem_query(GP(code + n), &mi) && mi.state == OS_MEM_COMMITTED) n += 0x1000;
+    while (n < 0x10000 && hos_guest_range(code + n, 0x1000)) n += 0x1000;
     FILE *f = fopen(path, "wb");
     if (f) { fwrite(GP(code), 1, (size_t)n, f); fclose(f); }
     snprintf(path, sizeof path, "%s/%010llx.ctl", dir, (unsigned long long)code);

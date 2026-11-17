@@ -67,8 +67,7 @@ static int reserve_guest(void) {
     return hos_space_end >= (1ULL << 30);
 #else
     /* (linux) the whole window readable and writable at once, its pages made as they are first touched (no commit
-       step: MAP_NORESERVE). Decommitting is madvise (hos_posix_guest_discard): the pages read as zero. Declared to the OS
-       layer once mapped (os_mem_declare), so os_mem_query answers for it. */
+       step: MAP_NORESERVE). Decommitting is madvise (hos_posix_guest_discard): the pages read as zero. */
     void hos_commit_init(void);
     hos_commit_init();   /* (the crash report) */
     /* The window is a memfd's, shared, so the Vulkan back end can hand the GPU the game's own pages as a dma-buf
@@ -106,7 +105,6 @@ static int reserve_guest(void) {
                                MAP_SHARED | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, 0);
                 if (p == (void *)A64_HOST_BASE) {
                     hos_guest_memfd = fd;
-                    os_mem_declare((void *)A64_HOST_BASE, GUEST_SPACE, OS_PROT_RW);
                     hos_log("mem: the guest window is a memfd's (%d), shared with the GPU as dma-bufs", fd);
                     return 1;
                 }
@@ -119,7 +117,6 @@ static int reserve_guest(void) {
     if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
         return 0;
-    os_mem_declare((void *)A64_HOST_BASE, GUEST_SPACE, OS_PROT_RW);
     /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */

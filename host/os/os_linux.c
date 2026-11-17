@@ -548,44 +548,6 @@ int os_mem_discard(void *addr, size_t size) {
 int os_mem_resident(const void *addr, size_t size, uint8_t *out) {
     return mincore((void *)addr, size, out) ? err_of(errno) : 0;
 }
-static struct { uintptr_t lo, hi; int prot; } declared[8];
-static int ndeclared;
-void os_mem_declare(void *base, size_t size, int prot) {
-    if (ndeclared < 8) declared[ndeclared].lo = (uintptr_t)base, declared[ndeclared].hi = (uintptr_t)base + size,
-                       declared[ndeclared].prot = prot, ndeclared++;
-}
-int os_mem_query(const void *addr, os_mem_info *out) {
-    const uintptr_t a = (uintptr_t)addr, page = a & ~(uintptr_t)(os_page_size() - 1);
-    memset(out, 0, sizeof *out);
-    out->base = page;
-    for (int i = 0; i < ndeclared; i++)
-        if (a >= declared[i].lo && a < declared[i].hi) {
-            out->size = declared[i].hi - page, out->state = OS_MEM_COMMITTED, out->prot = declared[i].prot;
-            return 0;
-        }
-    FILE *f = fopen("/proc/self/maps", "r");
-    if (!f) return err_of(errno);
-    char line[512];
-    uintptr_t prev_end = 0;
-    out->state = OS_MEM_FREE, out->size = os_page_size();
-    while (fgets(line, sizeof line, f)) {
-        unsigned long lo, hi;
-        char perms[8] = "";
-        if (sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3) continue;
-        if (a < lo) {
-            out->size = lo - (page > prev_end ? page : prev_end);
-            break;
-        }
-        prev_end = hi;
-        if (a >= hi) continue;
-        out->size = hi - page;
-        out->prot = (perms[0] == 'r' ? OS_PROT_R : 0) | (perms[1] == 'w' ? OS_PROT_W : 0) | (perms[2] == 'x' ? OS_PROT_X : 0);
-        out->state = out->prot ? OS_MEM_COMMITTED : OS_MEM_RESERVED;
-        break;
-    }
-    fclose(f);
-    return 0;
-}
 int os_mem_usage_get(os_mem_usage *out) {
     memset(out, 0, sizeof *out);
     FILE *f = fopen("/proc/self/status", "r");

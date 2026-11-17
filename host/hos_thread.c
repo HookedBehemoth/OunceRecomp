@@ -256,8 +256,7 @@ void hos_thread_dump(void) {
         int n = 0;
         uint64_t fp = c->x[29];
         for (int k = 0; k < 12 && fp && !(fp & 15) && fp < HOS_GUEST_SPACE && n < (int)sizeof bt - 24; k++) {
-            os_mem_info mi;
-            if (os_mem_query(GP(fp), &mi) || mi.state != OS_MEM_COMMITTED) break;
+            if (!hos_guest_range(fp, 16)) break;
             n += snprintf(bt + n, sizeof bt - n, " %#llx", (unsigned long long)G64(fp + 8));
             const uint64_t next = G64(fp);
             if (next <= fp) break;
@@ -269,9 +268,8 @@ void hos_thread_dump(void) {
         /* registers (current at the call out), with the text a register (or the word it points to) leads to */
         for (int r = 0; r < 29; r++) {
             uint64_t v = c->x[r], s = 0;
-            os_mem_info mi;
             for (int hop = 0; hop < 2 && v > 0x100000 && v < HOS_GUEST_SPACE - 64; hop++) {
-                if (os_mem_query(GP(v), &mi) || mi.state != OS_MEM_COMMITTED) break;
+                if (!hos_guest_range(v, 64)) break;
                 const uint8_t *p = (const uint8_t *)GP(v);
                 int k = 0;
                 while (k < 48 && p[k] >= 0x20 && p[k] < 0x7f) k++;

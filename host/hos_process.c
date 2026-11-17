@@ -21,8 +21,7 @@ void hos_commit(uint64_t addr, uint64_t size) {
 /* A crash nothing handles: what, where (hookshot+offset: nx2/samap.py names the lifted function), and the guest
    state of the thread, as of its last call out of lifted code, with its frame chain from x29. */
 static uint64_t peek_guest(uint64_t a) {
-    os_mem_info mi;
-    if (a >= HOS_GUEST_SPACE - 8 || os_mem_query(GP(a), &mi) || mi.state != OS_MEM_COMMITTED) return 0;
+    if (a >= HOS_GUEST_SPACE - 8 || !hos_guest_range(a, 8)) return 0;
     return G64(a);
 }
 

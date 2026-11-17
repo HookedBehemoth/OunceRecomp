@@ -194,11 +194,8 @@ int main(void) {
     const size_t pg = os_page_size();
     char *m = (char *)os_mem_map(NULL, 16 * pg, OS_PROT_NONE);
     CHECK(m);
-    os_mem_info mi;
-    CHECK(os_mem_query(m, &mi) == 0 && mi.state == OS_MEM_RESERVED);
     CHECK(os_mem_protect(m, 4 * pg, OS_PROT_RW) == 0);
     m[0] = 7;
-    CHECK(os_mem_query(m, &mi) == 0 && mi.state == OS_MEM_COMMITTED && (mi.prot & OS_PROT_W));
     CHECK(os_mem_discard(m, pg) == 0 && m[0] == 0);
     CHECK(os_mem_unmap(m, 16 * pg) == 0);
 
