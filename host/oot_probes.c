@@ -139,8 +139,12 @@ PATCH_AT(0x831f3f08, word(0xf9471288), after, x8, hos_oot_scale_flags, as(x20, m
    compare unequal once (0xff), so the game's own refresh runs; the same after a window resize (the game then sizes its
    frame again, makes its targets at that size and sets the window's crop to it) */
 static volatile int frame_refresh;   /* (hos_oot_frame_set: the game's frame to be sized again) */
+static void hud_rescale(void);
 PATCH_AT(0x80670308, word(0x3955280e), after, w14, hos_oot_scene_mode, as(x0, config), as(w14, mode)) {   /* ldrb w14, [x0, #1354] */
-    if (__atomic_exchange_n(&frame_refresh, 0, __ATOMIC_ACQ_REL)) mode = 0xff;
+    if (__atomic_exchange_n(&frame_refresh, 0, __ATOMIC_ACQ_REL)) {   /* (on the game's thread, in the frame it sizes again) */
+        mode = 0xff;
+        hud_rescale();
+    }
     if (!hos_native_scene) return mode;
     OotScaleConfig *c = GUEST(OotScaleConfig, config);
     OotScaleTable *const tables[2] = {&c->profile0, &c->profile1};
@@ -374,7 +378,6 @@ PATCH_AT(0x8114c604, word(0xf8687928), after, x8, hos_oot_frame_max, as(x8, size
 /* host/hos_main.c (start), host/posix/display_sdl.c (a settled resize): the game's frame is
    now w x h (the window's pixels, at most 3840 x 2160's count, at most the picture's size): the main camera, HUD and
    movies take its shape, and the game sizes its frame and targets again */
-static void hud_rescale(void);
 void hos_oot_frame_set(uint32_t w, uint32_t h, int start) {
     extern volatile uint64_t hos_wide_out;
     const uint64_t pic = hos_wide_out;
@@ -390,7 +393,6 @@ void hos_oot_frame_set(uint32_t w, uint32_t h, int start) {
     hos_wide_margin = (1.0f - hos_wide_squeeze) / 2.0f;
     frame_size = (uint64_t)h << 32 | w;
     __atomic_store_n(&frame_refresh, 1, __ATOMIC_RELEASE);
-    hud_rescale();
     hos_log("frame: %ux%u, camera ratio %.4f, HUD and movies in the middle %.1f%%", w, h, (double)ratio, hos_wide_squeeze * 100.0);
 }
 
@@ -455,7 +457,7 @@ static float hud_x(void) { const float s = hos_wide_squeeze; return s > 0.0f && 
 static float hud_y(void) { const float r = hos_wide_ratio, game = 16.0f / 9.0f; return r > 0.0f && r < game ? r / game : 1.0f; }
 
 /* The canvases set up once with the squeeze of their time (the setup runs when a screen is made, not every frame):
-   their matrices are scaled again when the frame's shape changes. A canvas is known by its address and its screen's
+   their matrices are scaled again in the frame the game sizes its frame again. A canvas is known by its address and its screen's
    vtable; one whose screen is gone (another vtable there) is dropped */
 enum { HUD_CANVASES = 256 };
 static struct { uint64_t canvas, vt; float x, y; } hud_canvas[HUD_CANVASES];
@@ -475,7 +477,7 @@ static void hud_note(uint64_t canvas, int axis, float k) {
     }
     os_mutex_unlock(&hud_lock);
 }
-/* (hos_oot_frame_set) each noted canvas's matrices (+8, and +72 its copy with the y row negated: 4x4 stored by
+/* (hos_oot_scene_mode, when a resize sizes the frame again) each noted canvas's matrices (+8, and +72 its copy with the y row negated: 4x4 stored by
    columns, the x row at floats 0, 4, 8, 12, the y row at 1, 5, 9, 13) scaled from the squeeze they have to the frame's */
 static void hud_rescale(void) {
     const float x = hud_x(), y = hud_y();
