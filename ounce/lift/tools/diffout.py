@@ -8,7 +8,7 @@ An output is ounce-lift's directory (<part>.ll, gen/, rt64/, facts.tsv, image/im
 (each file .zst, image.bin by its sha256 in meta.json). Functions are compared across partitions (a function may move
 between them). A changed function's reason is a change of its own facts (facts.tsv: its body, summary and call
 record) or of the facts of a function its IR names, or a change of a hook its IR names (f_<addr> or fv_<addr>, the
-hook's lines in gen/a64_hooks.c); a function whose IR is the same but for its values' numbers is "renumbered" (the
+hook's entries in gen/a64_hooks.ll); a function whose IR is the same but for its values' numbers is "renumbered" (the
 lift numbers values as it builds, a block it drops included); one that only adds or removes write-through stores to
 the context (and their slots' addresses) is "context stores only", counted apart: which stores the lift may omit is
 a rule of its own, each change of it argued in GOLDEN-CHANGES.md; a change with none is UNEXPLAINED. Exit status 1 when any change is unexplained.
@@ -134,9 +134,12 @@ def gen_files(d):
 
 
 def hook_lines(d):
-    """{address: the lines of gen/a64_hooks.c naming f_<address> or fv_<address>}"""
+    """{address: the entries of gen/a64_hooks.ll (a definition or a comment; a64_hooks.c's lines in an older output)
+    naming f_<address> or fv_<address>}"""
     out = {}
-    for line in (read(d, "gen/a64_hooks.c") or b"").splitlines():
+    ll = read(d, "gen/a64_hooks.ll")
+    entries = re.split(rb"\n(?=define |declare |; )", ll) if ll is not None else (read(d, "gen/a64_hooks.c") or b"").splitlines()
+    for line in entries:
         for m in HOOK_LINE.finditer(line):
             out.setdefault(m.group(1), set()).add(line)
     return out

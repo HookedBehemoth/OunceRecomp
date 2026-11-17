@@ -1,8 +1,8 @@
-//! The generated sources of a standalone lift, byte for byte the Python side's: gen/a64_table.c, a64_hooks.c,
-//! a64_code_slots.c (nx2/lift2/tables.py), functions.txt (nx2/lift.py), hos_image.c, a64_stubs.c, nvn2_exports.c
-//! (nx2/standalone.py) and rt64/a64.h, a64_rt.c (nx2/rtgen.py: a64-kit's runtime with the 64-bit guest window).
-//! Each of the six gen/ files is also written as IR (gen/*.ll) for the player builder, which has no
-//! C compiler; their objects equal the C files' in every loaded byte.
+//! The generated sources of a standalone lift, as IR (gen/*.ll), so the build needs no C compiler for them: the
+//! runtime's tables (a64_table: every function; a64_hooks: the hooked addresses; a64_code_slots: the relocated slots
+//! holding a function), the image's description (hos_image), the import stops (a64_stubs) and the NVN functions
+//! routed to host/nvn2.c (nvn2_exports); functions.txt; and the guest model rt64/a64.h, a64_rt.c (a64-kit's runtime
+//! with the 64-bit guest window), which reads no dump.
 
 use crate::eden::{nvn_proc_name, Facts};
 use crate::image::{Hook, Image};
@@ -14,71 +14,18 @@ fn fname(a: u64) -> String {
     format!("f_{a:08x}")
 }
 
-/// Python's "%#x": 0x0 for zero too
-fn hx(v: u64) -> String {
-    format!("{v:#x}")
-}
-
-/// a64_table.c and a64_hooks.c (tables.write): functions, every hook, the answered hooks' addresses
-pub fn tables(functions: &[u64], hooks: &[Hook], answered: &BTreeSet<u64>) -> (String, String) {
-    let mut fns: Vec<u64> = functions.iter().copied().chain(hooks.iter().map(|h| h.addr)).collect();
-    fns.sort_unstable();
-    fns.dedup();
-    let mut t = String::from("#include \"a64.h\"\n");
-    for &a in &fns {
-        writeln!(t, "void {}(Ctx *A64_NOESC);", fname(a)).unwrap();
-    }
-    writeln!(t, "const uint32_t a64_fn_count = {};", fns.len()).unwrap();
-    t.push_str("const uint32_t a64_fn_addr[] = {\n");
-    for &a in &fns {
-        writeln!(t, "0x{a:08x},").unwrap();
-    }
-    t.push_str("};\nconst A64Fn a64_fn_ptr[] = {\n");
-    for &a in &fns {
-        writeln!(t, "{},", fname(a)).unwrap();
-    }
-    t.push_str("};\n");
-    let mut h = String::from("/* Hooked guest addresses: f_<address> is the host function (an HLE or a generated stub). */\n#include \"a64.h\"\n");
-    let names: BTreeSet<&str> = hooks.iter().filter(|x| !answered.contains(&x.addr)).map(|x| x.c.as_str()).collect();
-    for n in names {
-        writeln!(h, "void {n}(Ctx *A64_NOESC);").unwrap();
-    }
-    for x in hooks {
-        if answered.contains(&x.addr) {
-            writeln!(h, "/* f_{:08x} answers {}: lifted IR */", x.addr, x.c).unwrap();
-        } else {
-            writeln!(h, "void f_{:08x}(Ctx *A64_NOESC c) {{ TAILCALL({}); }}", x.addr, x.c).unwrap();
-        }
-    }
-    (t, h)
-}
-
-/// The relocated slots holding a function of the table, by address: (slot, the function's index in a64_table.c)
-fn slot_list(img: &Image, facts: &Facts, functions: &[u64]) -> Vec<(u64, usize)> {
-    let mut fns: Vec<u64> = functions.iter().copied().chain(img.hooks.iter().map(|h| h.addr)).collect();
-    fns.sort_unstable();
-    fns.dedup();
-    let bases: Vec<u64> = img.modules.iter().map(|m| m.base).collect();
-    let mut slots: Vec<(u64, usize)> = facts
-        .reloc_slots
-        .iter()
-        .filter_map(|&at| {
-            let v = u64::from_le_bytes(img.read(at, 8).unwrap().try_into().unwrap());
-            let k = fns.binary_search(&v).ok()?;
-            (!bases.contains(&v)).then_some((at, k))
-        })
-        .collect();
-    slots.sort_unstable();
-    slots
-}
-
-/// a64_hooks.c as IR (a64_hooks.ll): f_<address> tail-calls the hook's host function
+/// a64_hooks.ll: f_<address> tail-calls the hook's host function; an answered hook (its f_<address> is lifted IR)
+/// is a comment naming it
 pub fn hooks_ll(hooks: &[Hook], answered: &BTreeSet<u64>) -> String {
     let mut m = Ll::new();
-    let live: Vec<&Hook> = hooks.iter().filter(|x| !answered.contains(&x.addr)).collect();
-    for x in &live {
-        writeln!(m.s, "define dso_local void @f_{:08x}({CTX} %0) local_unnamed_addr #0 {{\n  musttail call void @{}({CTX} %0) #2\n  ret void\n}}", x.addr, x.c).unwrap();
+    for x in hooks {
+        if answered.contains(&x.addr) {
+            writeln!(m.s, "; f_{:08x} answers {}: lifted IR", x.addr, x.c).unwrap();
+        } else {
+            writeln!(m.s, "define dso_local void @f_{:08x}({CTX} %0) local_unnamed_addr #0 {{\n  musttail call void @{}({CTX} %0) #2\n  ret void\n}}", x.addr, x.c).unwrap();
+        }
     }
+    let live: Vec<&Hook> = hooks.iter().filter(|x| !answered.contains(&x.addr)).collect();
     for n in live.iter().map(|x| x.c.as_str()).collect::<BTreeSet<&str>>() {
         writeln!(m.s, "declare void @{n}({CTX}) local_unnamed_addr #1").unwrap();
     }
@@ -86,7 +33,7 @@ pub fn hooks_ll(hooks: &[Hook], answered: &BTreeSet<u64>) -> String {
     m.s
 }
 
-/// a64_table.c's definitions as IR (a64_table.ll): the function count, their addresses and their pointers
+/// a64_table.ll: the function count, their addresses (sorted: a64_lookup's binary search) and their pointers
 pub fn table_ll(functions: &[u64], hooks: &[Hook]) -> String {
     let mut fns: Vec<u64> = functions.iter().copied().chain(hooks.iter().map(|h| h.addr)).collect();
     fns.sort_unstable();
@@ -107,24 +54,27 @@ pub fn table_ll(functions: &[u64], hooks: &[Hook]) -> String {
     m.s
 }
 
-/// a64_code_slots.c (tables.write_code_slots): the relocated slots holding a function of the table
-pub fn code_slots(img: &Image, facts: &Facts, functions: &[u64]) -> String {
-    let slots = slot_list(img, facts, functions);
-    let mut s = String::from("/* Generated by nx2/lift.py: relocated slots holding a function of a64_table.c (lift2/tables.py) */\n#include <stdint.h>\n");
-    writeln!(s, "const uint32_t a64_code_slot_count = {};", slots.len()).unwrap();
-    s.push_str("const uint32_t a64_code_slot[] = {\n");
-    for (a, _) in &slots {
-        writeln!(s, "0x{a:08x},").unwrap();
-    }
-    s.push_str("};\nconst uint32_t a64_code_slot_fn[] = {\n");
-    for (_, k) in &slots {
-        writeln!(s, "{k},").unwrap();
-    }
-    s.push_str("};\n");
-    s
+/// The relocated slots holding a function of the table, by address: (slot, the function's index in a64_table)
+fn slot_list(img: &Image, facts: &Facts, functions: &[u64]) -> Vec<(u64, usize)> {
+    let mut fns: Vec<u64> = functions.iter().copied().chain(img.hooks.iter().map(|h| h.addr)).collect();
+    fns.sort_unstable();
+    fns.dedup();
+    let bases: Vec<u64> = img.modules.iter().map(|m| m.base).collect();
+    let mut slots: Vec<(u64, usize)> = facts
+        .reloc_slots
+        .iter()
+        .filter_map(|&at| {
+            let v = u64::from_le_bytes(img.read(at, 8).unwrap().try_into().unwrap());
+            let k = fns.binary_search(&v).ok()?;
+            (!bases.contains(&v)).then_some((at, k))
+        })
+        .collect();
+    slots.sort_unstable();
+    slots
 }
 
-/// a64_code_slots.c's definitions as IR (a64_code_slots.ll)
+/// a64_code_slots.ll: the relocated slots holding a function of the table, and that function's index; the host
+/// writes the function's host pointer there
 pub fn code_slots_ll(img: &Image, facts: &Facts, functions: &[u64]) -> String {
     let slots = slot_list(img, facts, functions);
     let mut m = Ll::new();
@@ -149,8 +99,8 @@ fn fn_attrs(noreturn: bool) -> String {
 /// The context parameter (`Ctx *A64_NOESC c`)
 const CTX: &str = "ptr noundef captures(address)";
 
-/// A data-only IR module: constant globals with the linkage and alignment clang gives a C file's `const`
-/// definitions in a PIE (dso_local; an array of 16 bytes or more aligned to 16)
+/// An IR module of constant globals with the linkage and alignment clang gives a C file's `const` definitions in a
+/// PIE (dso_local; an array of 16 bytes or more aligned to 16), so the objects equal those of the C they replace
 struct Ll {
     s: String,
     strs: usize,
@@ -242,16 +192,7 @@ pub fn functions_txt(sizes: &[(u64, usize)]) -> String {
     s
 }
 
-/// nvn2_exports.c (standalone.write_nvn_exports)
-pub fn nvn_exports_c(names: &[String]) -> String {
-    let mut s = String::from("/* Generated by nx2/lift.py --standalone: the sdk's NVN functions, routed to host/nvn2.c. */\n#include \"a64.h\"\nvoid nvn2_dispatch(Ctx *c, const char *name, void **cache);\n\n");
-    for n in names {
-        writeln!(s, "void imp_{n}(Ctx *A64_NOESC c) {{ static void *k[2]; nvn2_dispatch(c, \"{}\", k); }}", nvn_proc_name(n).unwrap()).unwrap();
-    }
-    s
-}
-
-/// nvn2_exports.c as IR (nvn2_exports.ll)
+/// nvn2_exports.ll: imp_<symbol> of each NVN function the SDK has, routed to host/nvn2.c's nvn2_dispatch
 pub fn nvn_exports_ll(names: &[String]) -> String {
     let mut m = Ll::new();
     let mut calls = Vec::new();
@@ -274,17 +215,19 @@ fn demangle(sym: &str) -> String {
     cpp_demangle::Symbol::new(sym).ok().and_then(|d| d.demangle_with_options(&opts).ok()).unwrap_or_else(|| sym.to_string())
 }
 
-/// The hooks a64_stubs.c stops in: those the host does not define, by symbol (each HLE / PATCH_ANSWER, and each NVN
-/// function hooked (nvn2_exports.c); a hook's C name is its symbol made an identifier)
+/// The hooks a64_stubs.ll stops in: those the host does not define, by symbol (each HLE / PATCH_ANSWER, and each NVN
+/// function hooked (nvn2_exports.ll); a hook's C name is its symbol made an identifier)
 fn stub_hooks<'a>(hooks: &'a [Hook], implemented: &BTreeSet<String>) -> Vec<&'a Hook> {
     hooks.iter().filter(|h| !implemented.contains(&h.sym) && nvn_proc_name(&h.sym).is_none()).collect()
 }
 
-/// a64_stubs.c as IR (a64_stubs.ll)
-pub fn stubs_ll(hooks: &[Hook], implemented: &BTreeSet<String>) -> String {
+/// a64_stubs.ll: each hook the host does not define stops the game, naming the import; and the number of stubs
+pub fn stubs_ll(hooks: &[Hook], implemented: &BTreeSet<String>) -> (String, usize) {
     let mut m = Ll::new();
     let mut calls = Vec::new();
-    for h in stub_hooks(hooks, implemented) {
+    let hs = stub_hooks(hooks, implemented);
+    let n = hs.len();
+    for h in hs {
         let sym = m.literal(&h.sym);
         calls.push((h, sym, m.literal(&demangle(&h.sym))));
     }
@@ -293,17 +236,7 @@ pub fn stubs_ll(hooks: &[Hook], implemented: &BTreeSet<String>) -> String {
     }
     writeln!(m.s, "declare void @hos_import_stop({CTX}, ptr noundef, ptr noundef) local_unnamed_addr #1").unwrap();
     m.s.push_str(&fn_attrs(true));
-    m.s
-}
-
-/// a64_stubs.c (standalone.gen_stubs) and the number of stubs
-pub fn stubs_c(hooks: &[Hook], implemented: &BTreeSet<String>) -> (String, usize) {
-    let hs = stub_hooks(hooks, implemented);
-    let mut s = String::from("#include \"a64.h\"\n__attribute__((noreturn)) void hos_import_stop(Ctx *A64_NOESC c, const char *sym, const char *name);\n\n");
-    for h in &hs {
-        writeln!(s, "void {}(Ctx *A64_NOESC c) {{ hos_import_stop(c, \"{}\", \"{}\"); }}", h.c, h.sym, demangle(&h.sym).replace('\\', "\\\\").replace('"', "\\\"")).unwrap();
-    }
-    (s, hs.len())
+    (m.s, n)
 }
 
 /// the SDK thread entry's start and exit hooks (standalone.thread_hooks)
@@ -337,7 +270,7 @@ fn thread_hooks(img: &Image) -> (u64, u64) {
     (0, 0)
 }
 
-/// What hos_image.c defines: the main thread's start from main.npdm, the image's bounds and modules, the entry
+/// What hos_image.ll defines: the main thread's start from main.npdm, the image's bounds and modules, the entry
 /// points the host calls, the main module's build id and the thread hooks
 struct ImageDefs {
     stack: u64,
@@ -388,28 +321,7 @@ fn image_defs(img: &Image, facts: &Facts, exefs: &Path) -> Result<ImageDefs, Str
     })
 }
 
-/// hos_image.c (standalone.write_image_c)
-pub fn image_c(img: &Image, facts: &Facts, exefs: &Path) -> Result<String, String> {
-    let d = image_defs(img, facts, exefs)?;
-    let mut s = String::from("/* Generated by nx2/lift.py --standalone. */\n#include <stdint.h>\n");
-    writeln!(s, "const uint64_t hos_main_stack_size = {}ULL;", hx(d.stack)).unwrap();
-    writeln!(s, "const int hos_main_priority = {}, hos_main_core = {};", d.prio, d.core).unwrap();
-    writeln!(s, "const uint64_t hos_image_base = {}ULL, hos_image_end = {}ULL;", hx(d.base), hx(d.end)).unwrap();
-    writeln!(s, "const int hos_module_count = {};", d.mods.len()).unwrap();
-    writeln!(s, "const uint64_t hos_module_init[] = {{{}}};", d.mods.iter().map(|m| format!("{}ULL", hx(m.0))).collect::<Vec<_>>().join(", ")).unwrap();
-    writeln!(s, "const char *const hos_module_name[] = {{{}}};", d.mods.iter().map(|m| format!("\"{}\"", m.1)).collect::<Vec<_>>().join(", ")).unwrap();
-    writeln!(s, "const uint64_t hos_entry_nninitStartup = {}ULL;", hx(d.start)).unwrap();
-    writeln!(s, "const uint64_t hos_entry_nnMain = {}ULL;", hx(d.main)).unwrap();
-    writeln!(s, "const uint64_t hos_program_id = {}ULL;   /* (main.npdm's ACI0) */", hx(d.program_id)).unwrap();
-    writeln!(s, "const char hos_main_build_id[] = \"{}\";", d.build_id).unwrap();
-    for (name, a) in &d.entries {
-        writeln!(s, "const uint64_t hos_entry_{name} = {}ULL;", hx(*a)).unwrap();
-    }
-    writeln!(s, "const uint64_t hos_thread_start_hook = {}ULL, hos_thread_exit_hook = {}ULL;", hx(d.thread_start), hx(d.thread_exit)).unwrap();
-    Ok(s)
-}
-
-/// hos_image.c's definitions as IR (hos_image.ll)
+/// hos_image.ll
 pub fn image_ll(img: &Image, facts: &Facts, exefs: &Path) -> Result<String, String> {
     let d = image_defs(img, facts, exefs)?;
     let mut m = Ll::new();

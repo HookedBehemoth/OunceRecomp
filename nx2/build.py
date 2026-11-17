@@ -1,7 +1,7 @@
 """Build the game: work/sa/build/hookshot. Every build lifts first: ounce-lift (ounce/lift, built here with cargo; about
 8 s) writes into work/sa the lifted code (one LLVM IR file a partition, lift_<c|h><n>.ll, and lift_answers.ll), the
-runtime's tables and the image's C (gen/), the guest model (rt64/) and the image (image/image.bin). The build compiles
-those with the native runtime in host/ (TOTKPort's hos/, adapted) and the direct back end (gpu/direct:
+runtime's tables and the image's description (gen/*.ll) and the image (image/image.bin); `ounce-lift rt64` writes the
+guest model (rt64/), which reads no dump. The build compiles those with the native runtime in host/ (TOTKPort's hos/, adapted) and the direct back end (gpu/direct:
 hookshot_direct.so). Linking it is also the check that the whole game closes over itself: any unresolved symbol fails
 the link.
 
@@ -465,9 +465,10 @@ if MARCH != "x86-64-v3":
 CPU = ["-march=" + MARCH, "-ffp-contract=off"]
 
 
-def flags(gen, rt64, opt):
+def flags(rt64, opt):
+    """the guest model's runtime (rt64/a64_rt.c)"""
     return target() + CPU + [
-        "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-Wno-everything",
+        "-I" + rt64, "-I" + os.path.join(kit.KIT, "rt"), "-Wno-everything",
         "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
         "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"]
 
@@ -568,13 +569,17 @@ def lifter():
 
 
 def lift(sa, game, jobs):
-    """The lift into sa (ounce-lift): gen/, rt64/, image/image.bin and the partitions' IR; the partitions' paths"""
-    for d in ("gen", "rt64", "image"):   # (a worktree's work/sa once linked these to the main checkout's)
+    """The lift into sa (ounce-lift): gen/, image/image.bin and the partitions' IR; the partitions' paths"""
+    for d in ("gen", "image"):   # (a worktree's work/sa once linked these to the main checkout's)
         if os.path.islink(os.path.join(sa, d)):
             os.remove(os.path.join(sa, d))
     for f in os.listdir(sa):   # (an earlier lift's partitions: the count changes with the code)
         if f.startswith("lift_") and f.endswith(".ll"):
             os.remove(os.path.join(sa, f))
+    gen = os.path.join(sa, "gen")
+    for f in os.listdir(gen) if os.path.isdir(gen) else []:   # (the C an earlier lift wrote: no reader may take it)
+        if f.endswith(".c"):
+            os.remove(os.path.join(gen, f))
     t = time.time()
     r = subprocess.run([lifter(), "lift", sa, "--game", game, "--work", kit.WORK, "--root", kit.ROOT, "-j", str(jobs)],
                        capture_output=True, text=True)
@@ -751,37 +756,33 @@ def main():
     out = os.path.join(sa, "build")
     obj_dir = os.path.join(out, "obj")
     os.makedirs(obj_dir, exist_ok=True)
-    if os.environ.get("RX_DIRECT_ONLY") or a.dry_run:   # (the direct back end needs no game: built so with no lift)
-        os.makedirs(gen, exist_ok=True)
     rt64 = os.path.join(sa, "rt64")
     parts = []
-    if os.environ.get("RX_DIRECT_ONLY") or a.dry_run:   # (no lift: the guest model alone, which needs no dump)
-        if subprocess.run([lifter(), "rt64", rt64, "--root", kit.ROOT]).returncode:
-            raise SystemExit("build: ounce-lift rt64 failed")
-    else:
+    if os.path.islink(rt64):   # (a worktree's work/sa once linked it to the main checkout's)
+        os.remove(rt64)
+    if subprocess.run([lifter(), "rt64", rt64, "--root", kit.ROOT]).returncode:   # (the guest model: needs no dump)
+        raise SystemExit("build: ounce-lift rt64 failed")
+    if not (os.environ.get("RX_DIRECT_ONLY") or a.dry_run):
         parts = lift(sa, os.path.abspath(a.game), a.jobs)
     cc = toolchain.need(toolchain.find("clang"))
     if parts:
         check_llvm(cc)
     drop_stale_objects(cc, [obj_dir])
-    fl = flags(gen, rt64, a.opt)
+    fl = flags(rt64, a.opt)
     # (which Hookshot this is, for the log's first line and the Insert menu: given to those two files only, so a new
     # release name rebuilds them and nothing else)
     stamp_def = version.define()
     print("version: %s" % version.describe(), flush=True)
-    # (the C files the lift writes include only the guest model)
-    deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (gen, rt64) for f in sorted(os.listdir(d))
-                    if f.endswith(".h"))
-    srcs = [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_code_slots.c", "a64_stubs.c", "hos_image.c",
-                                           "nvn2_exports.c")] + \
-        [os.path.join(rt64, "a64_rt.c")]
+    deps = b"".join(open(os.path.join(rt64, f), "rb").read() for f in sorted(os.listdir(rt64)) if f.endswith(".h"))
+    # (the lift's generated IR, compiled as lift_answers is; none without a lift)
+    gen_ir = [os.path.join(gen, f + ".ll") for f in ("a64_table", "a64_hooks", "a64_code_slots", "a64_stubs", "hos_image",
+                                                     "nvn2_exports")]
+    if os.environ.get("RX_DIRECT_ONLY") or a.dry_run:
+        gen_ir = []
+    srcs = [os.path.join(rt64, "a64_rt.c")]
     host_srcs = desc.host_sources()   # (the game description's; the patch declarations are scanned in them, too)
     host_srcs += [os.path.join(POSIX, f) for f in ("display_sdl.c",)] + \
         [os.path.join(OS_DIR, "os_linux.c"), os.path.join(OS_DIR, "os_guest_linux.c")]
-    if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)
-        srcs = [s for s in srcs if os.path.exists(s)]
-    if a.dry_run:   # (the lift's files: there is no game here)
-        srcs = [s for s in srcs if os.path.dirname(s) != gen]
     # the lifted game: each partition at its level (lift_h*: the hot list's, RX_HOT_OPT, default O2; the rest and
     # lift_answers at --opt), through opt_argv's pipeline where clang's has no DSE
     jobs = []
@@ -789,10 +790,12 @@ def main():
         level = os.environ.get("RX_HOT_OPT", "O2") if os.path.basename(s).startswith("lift_h") else a.opt
         jobs.append((cc, s, os.path.join(obj_dir, os.path.basename(s)[:-3] + ".o"), part_flags(level, target() + CPU),
                      opt_argv(cc, level, target() + CPU)))
+    jobs += [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-3] + ".o"), part_flags(a.opt, target() + CPU),
+              opt_argv(cc, a.opt, target() + CPU)) for s in gen_ir]
     jobs += [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"), fl, deps) for s in srcs]
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + ["-I" + OS_DIR, "-D_GNU_SOURCE"] + \
-        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16"] + \
+        ["-I" + HOST, "-I" + rt64, "-Wno-everything", "-O2", "-g0", "-mcx16"] + \
         ["-Werror=implicit-function-declaration",   # (a call without a declaration returns an int: a 64-bit value cut)
          "-Werror=incompatible-pointer-types"]   # (a lock or handle of one kind handed where another is wanted)
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))

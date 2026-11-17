@@ -205,3 +205,14 @@ return (the 31 sites of 27 undeclared numbers: the wrappers and 105 functions th
 stopped at those before too, in a64_svc's default), their mustdef ALL and inputs gaining x19-x29 (a save of a function
 that does not return is a read), 55 lose `boundary` (the svc was it). 33 sites call 27 declared numbers. image.bin
 equal. In the game: smoke test in Kokiri passes (pictures within 2 of 64 bits of the golden runs, 1,800 presents).
+
+## v2.13: the generated code is IR; the guest model leaves the lift
+
+gen/ holds IR instead of C: a64_table, a64_hooks, a64_code_slots, a64_stubs, hos_image and nvn2_exports `.ll`, the
+build compiling them as it compiles lift_answers. The lift no longer writes rt64/: `ounce-lift rt64` does, before
+the lift, as it reads no dump. Each object equals clang's of the C it replaces in its allocated sections, symbols but
+the file symbol, and relocations (`hookshot-builder objeq`, .text and .eh_frame included); the executable built so
+equals the one before in every loaded byte but the build ID, with the version stamp held equal. An answered hook is a
+comment in a64_hooks.ll, `; f_<address> answers <symbol>: lifted IR`.
+
+diffout: 0 functions changed, 0 facts changed, 0 partition headers; image.bin equal; every gen/ file replaced.

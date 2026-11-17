@@ -107,7 +107,7 @@ def compile_inputs(out, sa, parts, names):
                      "opt": game.opt_argv(clang, level, march)})
     unit.append({"name": ANSWERS, "tag": "c", "level": unit[0]["level"], "clang": unit[0]["clang"], "opt": unit[0]["opt"]})
     gen_c = {"sources": ["gen/" + f for f in GEN if f.endswith(".c")] + ["rt64/a64_rt.c"],
-             "clang": build.flags("<gen>", "<rt64>", opt)}
+             "clang": build.flags("<rt64>", opt)}
     with open(os.path.join(out, "compile.json"), "w") as f:
         json.dump({"partitions": unit, "generated_c": gen_c,
                    "note": "clang flags without the input and output; opt: the `opt` command the IR goes through first "

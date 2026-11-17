@@ -83,14 +83,21 @@ def hle_symbols(hooks):
     return {a: n[4:] for a, n in hooks.items() if n.startswith("imp_")}
 
 
+# (the same in ounce-lift's gen/a64_hooks.ll)
+HOOK_IR = re.compile(r"^define dso_local void @f_([0-9a-f]{8})\(.*\n  musttail call void @imp_(\w+)\(", re.M)
+ANSWER_IR = re.compile(r"^; f_([0-9a-f]{8}) answers imp_(\w+): lifted IR$", re.M)
+
+
 def hle_names(gen):
-    """{guest address: symbol} of the HLE'd functions, from gen/a64_hooks.c (the lift writes it)"""
-    path = os.path.join(gen, "a64_hooks.c")
-    if not os.path.exists(path):
-        return {}
-    with open(path) as f:
-        text = f.read()
-    return {int(a, 16): s for a, s in HOOK_LINE.findall(text) + ANSWER_LINE.findall(text)}
+    """{guest address: symbol} of the HLE'd functions, from gen/a64_hooks.ll (ounce-lift) or a64_hooks.c (the Python
+    lift)"""
+    for name, hook, answer in (("a64_hooks.ll", HOOK_IR, ANSWER_IR), ("a64_hooks.c", HOOK_LINE, ANSWER_LINE)):
+        path = os.path.join(gen, name)
+        if os.path.exists(path):
+            with open(path) as f:
+                text = f.read()
+            return {int(a, 16): s for a, s in hook.findall(text) + answer.findall(text)}
+    return {}
 
 
 def errors(names):

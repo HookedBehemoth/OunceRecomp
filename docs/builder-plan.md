@@ -24,7 +24,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Read the dump | `.nup` or folder; the exefs first, so the lift starts while the romfs is copied | not measured |
 | Lift | `ounce-lift` as a library | 7 s |
 | Compile | the partitions in this process (`builder/src/compile.rs`), byte for byte `nx2/build.py`'s objects | 173 s at 12 jobs, 3.5 GB peak |
-| Generated code | `gen/*.ll` from `ounce-lift`, compiled as the cold partitions are | 4.4 s (3 of 6 files) |
+| Generated code | `gen/*.ll` from `ounce-lift`, compiled as the cold partitions are | 4.5 s |
 | Link | lld in this process (`builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `prepare_textures` in Rust, with the native encoders linked statically | 440 s (Python, fast settings) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
@@ -42,7 +42,7 @@ build does not prepare them and the folder keeps the game's files.
   and leaves the cold ones at 16. The compile runs hot and cold partitions apart (a gate in `compile.rs`).
 - The target machine has clang's options (PIC, function sections, addrsig); the module's name is `<stdin>`, so the
   object's file symbol is build.py's. `hookshot-builder compile-all <lift dir> <out> --check <obj dir>` compares every
-  object with build.py's.
+  object (the partitions' and gen/'s) with build.py's.
 
 ## The link
 
@@ -57,17 +57,11 @@ build does not prepare them and the folder keeps the game's files.
 
 ## The generated code
 
-`ounce-lift` writes the definitions of `a64_table.c`, `a64_code_slots.c` and `hos_image.c` a second time as IR
-(`gen/*.ll`). Compiled by the builder, each object equals clang's object of the C file in its loaded sections, symbols
-and relocations; only the file symbol and `.comment` differ, so a link with them differs from build.py's in the build
-ID alone.
-
-What remains:
-
-- `a64_hooks.c`, `a64_stubs.c` and `nvn2_exports.c` define one-line functions (a tail call, or a call with the
-  context). As IR they need clang's function attributes for this target to give the same code.
-- `rt64/a64_rt.c` reads no dump, so it is built with the prebuilt host instead.
-- build.py compiles the IR instead of the C, and the C goes.
+`ounce-lift` writes the runtime's tables, the image's description, the import stops and the NVN routes as IR
+(`gen/*.ll`); build.py and the builder compile them as they compile `lift_answers`, so neither needs a C compiler
+for them. Each object equals clang's object of the C these files replace in its loaded sections, symbols and
+relocations (`hookshot-builder objeq <a.o> <b.o>`). The guest model's runtime (`rt64/a64_rt.c`) reads no dump: it is
+built with the host.
 
 ## The output folder
 
@@ -76,7 +70,7 @@ caches and `user/`. The host needs two changes for it: the prepared store and th
 
 ## Order of work
 
-1. The compile and lld in this process (done), then the generated code as IR (three of six files done).
+1. The compile, lld and the generated code as IR in this process (done).
 2. `ounce-lift` as a library: `lift()` out of its `main.rs`, the partitions handed over in memory.
 3. CI: the host and `hookshot_direct.so` prebuilt; the sysroot.
 4. The dump reader (`nx2/nup.py`, `unpack.py`, the ZBIC decompressor) in Rust.

@@ -60,8 +60,8 @@ fn main() {
     }
 }
 
-/// `compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]`: every lift_*.ll of a lift, compiled as build.py
-/// compiles it (lift_h*: hot, the rest cold); --check compares each object with build.py's of the same name
+/// `compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]`: every lift_*.ll and gen/*.ll of a lift, compiled
+/// as build.py compiles it (lift_h*: hot, the rest cold); --check compares each object with build.py's of the same name
 fn compile_all(args: &[String]) {
     let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     let (mut dirs, mut check) = (Vec::new(), None::<PathBuf>);
@@ -75,11 +75,15 @@ fn compile_all(args: &[String]) {
     }
     let [src, out] = &dirs[..] else { fail("compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]") };
     std::fs::create_dir_all(out).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
-    let mut parts: Vec<(PathBuf, u64, compile::Level)> = std::fs::read_dir(src)
-        .unwrap_or_else(|e| fail(format!("{}: {e}", src.display())))
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "ll") && p.file_name().unwrap().to_string_lossy().starts_with("lift_"))
+    // (the partitions, lift_*.ll, and the generated code, gen/*.ll, which build.py compiles as lift_answers)
+    let list = |d: &std::path::Path| -> Vec<PathBuf> {
+        std::fs::read_dir(d).unwrap_or_else(|e| fail(format!("{}: {e}", d.display()))).filter_map(|e| e.ok()).map(|e| e.path()).collect()
+    };
+    let mut parts: Vec<(PathBuf, u64, compile::Level)> = list(src)
+        .into_iter()
+        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("lift_"))
+        .chain(list(&src.join("gen")))
+        .filter(|p| p.extension().is_some_and(|x| x == "ll"))
         .map(|p| {
             let hot = p.file_name().unwrap().to_string_lossy().starts_with("lift_h");
             let n = std::fs::metadata(&p).map_or(0, |m| m.len());

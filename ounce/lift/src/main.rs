@@ -1,9 +1,9 @@
 //! ounce-lift [<export dir>] <out dir> [-j N] [--parts a,b,...] [--skip] [--check] [--golden <dir>] [--game <dir>]
 //! [--work <dir>] [--exefs <dir>] [--root <dir>]: the whole lift from the dump's exefs, the host's C and the game
-//! description: gen/, rt64/, image/image.bin and one .ll per partition (EXPORT.md).
+//! description: gen/, image/image.bin and one .ll per partition (EXPORT.md).
 //! --skip: a function using a template not ported yet is left out and counted ("skipped: template X").
 //! --check: compare the scan, the image, the plan, every summary and record with Python's (the export) and stop.
-//! --golden: gen/, rt64/ and image.bin against the golden's sha256.
+//! --golden: gen/ and image.bin against the golden's sha256.
 
 use ounce_lift::bounds::Records;
 use ounce_lift::export::Part;
@@ -87,7 +87,7 @@ fn check_golden(golden: &std::path::Path, files: &[(String, Vec<u8>)], image: &[
             None => println!("golden: {name} not in the golden"),
         }
     }
-    println!("golden: {} of {} files equal (gen/, rt64/, image.bin)", seen - bad, want.len());
+    println!("golden: {} of {} files equal (gen/, image.bin)", seen - bad, want.len());
     bad + want.len() - seen
 }
 
@@ -218,7 +218,7 @@ fn fail(msg: impl std::fmt::Display) -> ! {
 }
 
 const HELP: &str = "ounce-lift: the lifter. Subcommands (each but rt64, records and scan reads the dump; OPTS: --game <dir> (games/oot), --work <dir> (work), --root <dir> (.), --exefs <dir>):
-  [lift] <out> [-j N] [--parts a,b] [--skip] [--golden <dir>] OPTS   the lift: <out>/gen, rt64, image/image.bin, lift_*.ll
+  [lift] <out> [-j N] [--parts a,b] [--skip] [--golden <dir>] OPTS   the lift: <out>/gen, image/image.bin, lift_*.ll
   rt64 <dir> [--root <dir>]                                         the guest model (a64.h, a64_rt.c)
   records [--game] [--root] <object>...                             the host objects' hos_patch records against the scan
   scan [--game] [--root] [<out.json>]                               the host's declarations as the lift reads them, as JSON
@@ -309,37 +309,21 @@ fn lift(argv: Vec<String>) {
     let tg = Instant::now();
     let functions: Vec<u64> = plan.bodies.iter().map(|b| b.entry).collect();
     let answered: BTreeSet<u64> = answers.iter().map(|a| a.0).collect();
-    let (table_c, hooks_c) = gen::tables(&functions, &img.hooks, &answered);
-    let (stubs, nstubs) = gen::stubs_c(&img.hooks, &base.implemented);
+    let (stubs, nstubs) = gen::stubs_ll(&img.hooks, &base.implemented);
     let sizes: Vec<(u64, usize)> = functions.iter().copied().zip(plan.insns.iter().copied()).collect();
-    let mut files: Vec<(String, Vec<u8>)> = vec![
-        ("gen/a64_table.c".into(), table_c.into_bytes()),
-        ("gen/a64_hooks.c".into(), hooks_c.into_bytes()),
-        ("gen/a64_code_slots.c".into(), gen::code_slots(img, facts, &functions).into_bytes()),
-        ("gen/a64_stubs.c".into(), stubs.into_bytes()),
-        ("gen/hos_image.c".into(), gen::image_c(img, facts, &base.exefs).unwrap_or_else(|e| fail(e)).into_bytes()),
-        ("gen/nvn2_exports.c".into(), gen::nvn_exports_c(&base.nvn).into_bytes()),
+    let files: Vec<(String, Vec<u8>)> = vec![
+        ("gen/a64_table.ll".into(), gen::table_ll(&functions, &img.hooks).into_bytes()),
+        ("gen/a64_hooks.ll".into(), gen::hooks_ll(&img.hooks, &answered).into_bytes()),
+        ("gen/a64_code_slots.ll".into(), gen::code_slots_ll(img, facts, &functions).into_bytes()),
+        ("gen/a64_stubs.ll".into(), stubs.into_bytes()),
+        ("gen/hos_image.ll".into(), gen::image_ll(img, facts, &base.exefs).unwrap_or_else(|e| fail(e)).into_bytes()),
+        ("gen/nvn2_exports.ll".into(), gen::nvn_exports_ll(&base.nvn).into_bytes()),
         ("gen/functions.txt".into(), gen::functions_txt(&sizes).into_bytes()),
     ];
-    for (name, text) in gen::rt64(&o.root).unwrap_or_else(|e| fail(e)) {
-        files.push((format!("rt64/{name}"), text.into_bytes()));
-    }
     for (name, data) in &files {
         let p = out.join(name);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, data).unwrap();
-    }
-    // (the same definitions as IR, for the player builder, which has no C compiler; not in the golden)
-    let lls = [
-        ("gen/a64_table.ll", gen::table_ll(&functions, &img.hooks)),
-        ("gen/a64_hooks.ll", gen::hooks_ll(&img.hooks, &answered)),
-        ("gen/a64_stubs.ll", gen::stubs_ll(&img.hooks, &base.implemented)),
-        ("gen/nvn2_exports.ll", gen::nvn_exports_ll(&base.nvn)),
-        ("gen/hos_image.ll", gen::image_ll(img, facts, &base.exefs).unwrap_or_else(|e| fail(e))),
-        ("gen/a64_code_slots.ll", gen::code_slots_ll(img, facts, &functions)),
-    ];
-    for (name, text) in &lls {
-        std::fs::write(out.join(name), text).unwrap();
     }
     std::fs::create_dir_all(out.join("image")).unwrap();
     std::fs::write(out.join("image/image.bin"), &img.mem).unwrap();
