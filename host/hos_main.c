@@ -92,7 +92,7 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
     call_guest_args(c, addr, sp, what);
 }
 
-/* A folder tree copied and deleted: the saves' move (below) and the input record's copy of them (main) */
+/* A folder tree copied and deleted: the input record's copy of the saves (main) */
 static int is_dir(const char *p) {
     return (os_path_kind(p) & OS_PATH_DIR) != 0;
 }
@@ -135,53 +135,30 @@ static void delete_tree(const char *p) {
     os_dir_close(d);
     os_rmdir(p);
 }
-/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
-   A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
-   cannot be moved keeps the old place. --user still wins. */
+/* (linux) Saves live in the game folder's user/ when it has one (the builder makes it), so the folder holds the whole
+   game; else in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot). --user still wins. */
 static const char *saves_dir(const char *beside) {
     static char dir[OS_PATH_MAX];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-    if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s", xdg);
-    else if (home && home[0] == '/') {
-        snprintf(dir, sizeof dir, "%s/.local", home);
-        os_mkdir(dir);
-        snprintf(dir, sizeof dir, "%s/.local/share", home);
-    } else return beside;
-    os_mkdir(dir);
-    snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/hookshot");
-    os_mkdir(dir);
-    if (os_path_kind(dir) == OS_PATH_NONE) return beside;
-    os_dir *d = os_dir_open(beside, NULL);
-    if (!d) return dir;
-    int moved = 0, kept = 0;
-    os_dirent e;
-    while (os_dir_next(d, &e)) {
-        char from[OS_PATH_MAX], to[OS_PATH_MAX];
-        snprintf(from, sizeof from, "%s/%s", beside, e.name);
-        snprintf(to, sizeof to, "%s/%s", dir, e.name);
-        if (os_path_kind(to) != OS_PATH_NONE) kept++;
-        else if (!os_rename(from, to, false)) moved++;
-        else if (copy_tree(from, to)) delete_tree(from), moved++;
-        else delete_tree(to), kept++;
-    }
-    os_dir_close(d);
-    if (kept) {
-        hos_log("saves: %d of %s's entries could not go to %s: the saves stay in %s", kept, beside, dir, beside);
+    if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s/hookshot", xdg);
+    else if (home && home[0] == '/') snprintf(dir, sizeof dir, "%s/.local/share/hookshot", home);
+    else dir[0] = 0;
+    if (is_dir(beside)) {
+        char old[OS_PATH_MAX + 8], mine[OS_PATH_MAX + 8];
+        snprintf(old, sizeof old, "%s/save", dir);
+        snprintf(mine, sizeof mine, "%s/save", beside);
+        if (dir[0] && is_dir(old) && !is_dir(mine)) hos_log("saves: in %s; an earlier build's are in %s (copy them over to continue them)", beside, dir);
         return beside;
     }
-    os_rmdir(beside);
-    if (moved) {
-        char note[OS_PATH_MAX];
-        const char *sep = strrchr(beside, '/');
-        snprintf(note, sizeof note, "%.*s/saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
-        FILE *f = fopen(note, "w");
-        if (f) {
-            fprintf(f, "Hookshot's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
-            fclose(f);
-        }
-        hos_log("saves: moved from %s to %s", beside, dir);
+    if (!dir[0]) return beside;
+    if (xdg && xdg[0] == '/') os_mkdir(xdg);
+    else {
+        char p[OS_PATH_MAX];
+        snprintf(p, sizeof p, "%s/.local", home), os_mkdir(p);
+        snprintf(p, sizeof p, "%s/.local/share", home), os_mkdir(p);
     }
-    return dir;
+    os_mkdir(dir);
+    return os_path_kind(dir) == OS_PATH_NONE ? beside : dir;
 }
 
 /* hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
