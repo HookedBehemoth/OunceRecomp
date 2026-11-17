@@ -32,4 +32,5 @@ new to the code.
 
 - [Parked patches](parked-patches.md): removed features, with what you need to rebuild them.
 - [Player builder notes](builder-notes.md): what a new player-facing builder needs.
+- [The player builder](builder-plan.md): `hookshot-builder`, the dump to a portable game folder in one process.
 - [Using a save from an emulator](saves.md): moving saves between Hookshot and emulators.
