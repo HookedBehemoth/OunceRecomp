@@ -19,6 +19,7 @@ extern "C" {
     ) -> *mut c_void;
     fn hk_free(p: *mut c_void);
     fn hk_llvm_stage_seconds(out: *mut f64);
+    fn hk_llvm_uint_option(name: *const c_char, set: c_int, v: u32, out: *mut u32) -> c_int;
 }
 
 fn take_err(e: *mut c_char) -> String {
@@ -90,4 +91,12 @@ pub fn stage_seconds() -> [f64; 4] {
     let mut s = [0f64; 4];
     unsafe { hk_llvm_stage_seconds(s.as_mut_ptr()) };
     s
+}
+
+/// an unsigned option of LLVM's (a -mllvm one): its value after setting it to `set` (None: read only); None when LLVM
+/// has no option of that name
+pub fn uint_option(name: &str, set: Option<u32>) -> Option<u32> {
+    let n = CString::new(name).unwrap();
+    let mut out = 0u32;
+    (unsafe { hk_llvm_uint_option(n.as_ptr(), set.is_some() as c_int, set.unwrap_or(0), &mut out) } == 0).then_some(out)
 }

@@ -86,6 +86,17 @@ static std::unique_ptr<TargetMachine> target_machine(const Triple &triple, const
 // -> code generation at `level` -> the object's bytes (malloc'd, *out_n). NULL and *err on a failure.
 // LoopRotation.cpp's -rotation-max-header-size, read while the pass runs: the caller keeps compiles that want
 // different values apart (src/compile.rs)
+// an unsigned option of LLVM's (cl::opt<unsigned>, as every one the builder sets is): its value, set first when `set`
+extern "C" int hk_llvm_uint_option(const char *name, int set, unsigned v, unsigned *out) {
+    auto &all = cl::getRegisteredOptions();
+    auto it = all.find(name);
+    if (it == all.end()) return 1;
+    auto *o = static_cast<cl::opt<unsigned> *>(it->second);
+    if (set) o->setValue(v);
+    *out = o->getValue();
+    return 0;
+}
+
 static void set_rotation_threshold(int v) {
     static cl::opt<unsigned> *opt = [] {
         auto &all = cl::getRegisteredOptions();

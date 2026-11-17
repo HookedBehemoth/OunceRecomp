@@ -2,7 +2,10 @@
 
 #[cfg(feature = "clang")]
 mod clang;
+mod cache;
 mod compile;
+#[cfg(feature = "clang")]
+mod host;
 mod labels;
 mod lift;
 mod link;
@@ -15,8 +18,11 @@ use std::time::Instant;
 const HELP: &str = "hookshot-builder <command> ...
   compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object, as nx2/build.py compiles it
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
-  lift-compile <out dir> [-j N] [--check <obj dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
+  lift-compile <out dir> [-j N] [--check <obj dir>] [--cache <dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
                                        the lift and the compile of every partition and generated module, in memory
+  build <out dir> --direct <hookshot_direct.so> [-j N] [--cache <dir>] [--version <text>] [--check <obj dir>]
+        [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
+                                       the game folder: the lift, every compile and the link in this process (feature clang)
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (build.py's objs.rsp), lld in this process
   objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
@@ -55,6 +61,8 @@ fn main() {
         Some("compile-all") => compile_all(&argv[1..]),
         Some("link") => link_cmd(&argv[1..]),
         Some("lift-compile") => lift_compile(&argv[1..]),
+        #[cfg(feature = "clang")]
+        Some("build") => build(&argv[1..]),
         Some("objeq") => {
             let [a, b] = &argv[1..] else { fail("objeq <a.o> <b.o>") };
             let read = |p: &String| std::fs::read(p).unwrap_or_else(|e| fail(format!("{p}: {e}")));
@@ -201,13 +209,14 @@ fn link_cmd(args: &[String]) {
 fn lift_compile(args: &[String]) {
     let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     let mut run = ounce_lift::pipeline::Run { jobs, hot_first: true, ..Default::default() };
-    let (mut cjobs, mut out, mut check) = (jobs, None::<PathBuf>, None::<PathBuf>);
+    let (mut cjobs, mut out, mut check, mut cache_dir) = (jobs, None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || PathBuf::from(it.next().unwrap_or_else(|| fail(format!("{a} wants a value"))));
         match a.as_str() {
             "-j" => cjobs = val().to_string_lossy().parse().unwrap_or_else(|_| fail("-j N")),
             "--check" => check = Some(val()),
+            "--cache" => cache_dir = Some(val()),
             "--game" => run.opts.game = val(),
             "--work" => run.opts.work = val(),
             "--root" => run.opts.root = val(),
@@ -218,11 +227,12 @@ fn lift_compile(args: &[String]) {
     }
     let out = out.unwrap_or_else(|| fail("lift-compile <out dir> [-j N] [--check <obj dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]"));
     let t = Instant::now();
-    let d = lift::lift_compile(&run, &out, cjobs, check.as_deref()).unwrap_or_else(|e| fail(e));
+    let cache = cache_dir.map(|d| cache::Cache::open(&d).unwrap_or_else(|e| fail(e)));
+    let d = lift::lift_compile(&run, &out, cjobs, cache.as_ref(), check.as_deref()).unwrap_or_else(|e| fail(e));
     let (cpu, hwm) = ounce_lift::pipeline::usage();
     println!(
         "lift-compile: {} objects, {:.0} s wall, {:.0} s in compiles, {:.0} s CPU, peak {:.0} MB{}",
-        d.objects,
+        d.objects.len(),
         t.elapsed().as_secs_f64(),
         d.compile_s,
         cpu,
@@ -233,4 +243,98 @@ fn lift_compile(args: &[String]) {
         println!("differ: {}", d.differ.join(" "));
         std::process::exit(1);
     }
+}
+
+/// the clang resource folder: --resource-dir, else the static LLVM's build tree's
+#[cfg(feature = "clang")]
+const RESOURCE_DIR: &str = env!("HK_CLANG_RESOURCE_DIR");
+
+/// `build <out dir> --direct <so> ...`: the game folder (hookshot, hookshot_direct.so, image.bin) from the dump,
+/// with nx2/build.py's objects and link
+#[cfg(feature = "clang")]
+fn build(args: &[String]) {
+    let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let mut run = ounce_lift::pipeline::Run { jobs, hot_first: true, ..Default::default() };
+    let (mut cjobs, mut out, mut check, mut direct) = (jobs, None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
+    let (mut cache_dir, mut version, mut resource) = (None::<PathBuf>, String::from("hookshot-builder"), PathBuf::from(RESOURCE_DIR));
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
+        match a.as_str() {
+            "-j" => cjobs = val().parse().unwrap_or_else(|_| fail("-j N")),
+            "--check" => check = Some(val().into()),
+            "--direct" => direct = Some(val().into()),
+            "--cache" => cache_dir = Some(val().into()),
+            "--version" => version = val(),
+            "--resource-dir" => resource = val().into(),
+            "--game" => run.opts.game = val().into(),
+            "--work" => run.opts.work = val().into(),
+            "--root" => run.opts.root = val().into(),
+            "--exefs" => run.opts.exefs = Some(val().into()),
+            _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
+            _ => fail(format!("build: what is {a}?")),
+        }
+    }
+    let (Some(out), Some(direct)) = (out, direct) else { fail("build <out dir> --direct <hookshot_direct.so> [...]") };
+    let t0 = Instant::now();
+    let root = run.opts.root.clone();
+    let obj = out.join("obj");
+    let rt64 = out.join("rt64");
+    for d in [&obj, &rt64] {
+        std::fs::create_dir_all(d).unwrap_or_else(|e| fail(format!("{}: {e}", d.display())));
+    }
+    for (name, text) in ounce_lift::gen::rt64(&root).unwrap_or_else(|e| fail(e)) {
+        std::fs::write(rt64.join(name), text).unwrap_or_else(|e| fail(e));
+    }
+    let cache = cache_dir.unwrap_or_else(|| run.opts.work.join("builder-cache"));
+    let cache = cache::Cache::open(&cache).unwrap_or_else(|e| fail(e));
+    compile::init().unwrap_or_else(|e| fail(e));
+    let game = ounce_lift::game::Game::load(&run.opts.game).unwrap_or_else(|e| fail(e));
+    // (the host's C at LLVM's defaults, then the runtime at its two -mllvm options, then the lift and its compile)
+    let t = Instant::now();
+    let host_jobs = host::host_jobs(&root, &rt64, &game.host, &version).unwrap_or_else(|e| fail(e));
+    let rt = host::rt_job(&root, &rt64);
+    let hits = host::compile(&host_jobs, &obj, cjobs, Some(&cache), &resource).unwrap_or_else(|e| fail(e))
+        + host::compile(std::slice::from_ref(&rt), &obj, 1, Some(&cache), &resource).unwrap_or_else(|e| fail(e));
+    println!("host C: {} files ({hits} from the cache) in {:.1} s", host_jobs.len() + 1, t.elapsed().as_secs_f64());
+    let d = lift::lift_compile(&run, &obj, cjobs, Some(&cache), check.as_deref()).unwrap_or_else(|e| fail(e));
+    println!(
+        "lift and compile: {} modules ({} from the cache), the lift's state freed at {:.0} s; {:.0} s",
+        d.objects.len(),
+        d.cached,
+        d.lift_s,
+        t0.elapsed().as_secs_f64()
+    );
+    if !d.differ.is_empty() {
+        fail(format!("objects unlike the check folder's: {}", d.differ.join(" ")));
+    }
+    // (build.py's order: the partitions largest IR first, the generated code, the runtime, the host)
+    let mut parts: Vec<&(String, usize)> = d.objects.iter().filter(|o| o.0.starts_with("lift_")).collect();
+    parts.sort_by_key(|o| std::cmp::Reverse(o.1));
+    let mut objects: Vec<PathBuf> = parts.iter().map(|o| obj.join(format!("{}.o", o.0))).collect();
+    for g in ["a64_table", "a64_hooks", "a64_code_slots", "a64_stubs", "hos_image", "nvn2_exports"] {
+        objects.push(obj.join(format!("{g}.o")));
+    }
+    objects.push(obj.join(&rt.obj));
+    objects.extend(host_jobs.iter().map(|j| obj.join(&j.obj)));
+    let exe = out.join("hookshot");
+    let map = out.join("hookshot.map");
+    let game_dir = if run.opts.game.is_dir() { run.opts.game.clone() } else { run.opts.game.parent().unwrap().to_path_buf() };
+    let order_bin = game_dir.join("hot_order.bin");
+    let order = order_bin.exists().then(|| link::order_file(&order_bin, &out).unwrap_or_else(|e| fail(e)));
+    let libs: Vec<String> = ["-lavcodec", "-lswscale", "-lswresample", "-lavutil"].map(String::from).to_vec();
+    let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
+    let x = link::Exe { out: &exe, map: Some(&map), objects: &objects, order: order.as_deref(), libs: &libs };
+    let t = Instant::now();
+    if let Err(m) = link::lld(&link::exe_args(&x, &sys)) {
+        fail(format!("the link failed:\n{m}"));
+    }
+    let l = labels::read(&game.labels).unwrap_or_else(|e| fail(e));
+    let (n, _) = labels::apply(&exe, &l).unwrap_or_else(|e| fail(e));
+    println!("linked {} ({} MB, {n} functions named) in {:.1} s", exe.display(), std::fs::metadata(&exe).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
+    for (from, to) in [(direct.clone(), out.join("hookshot_direct.so")), (obj.join("image.bin"), out.join("image.bin"))] {
+        std::fs::copy(&from, &to).unwrap_or_else(|e| fail(format!("{} -> {}: {e}", from.display(), to.display())));
+    }
+    let (cpu, hwm) = ounce_lift::pipeline::usage();
+    println!("build: {:.1} s wall, {cpu:.0} s CPU, peak {hwm:.0} MB", t0.elapsed().as_secs_f64());
 }

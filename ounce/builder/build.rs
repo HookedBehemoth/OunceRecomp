@@ -56,6 +56,8 @@ fn static_llvm() {
     b.cpp(true).file("src/llvm_shim.cpp").file("src/lld_shim.cpp").warnings(false).cargo_metadata(false);
     if clang {
         b.file("src/clang_shim.cpp");
+        // (the resource headers the build tree has, until the builder ships its own)
+        println!("cargo:rustc-env=HK_CLANG_RESOURCE_DIR={}", dir.join("lib/clang").join(run(&["--version"]).split('.').next().unwrap()).display());
     }
     for f in run(&["--cxxflags"]).split_whitespace() {
         b.flag(f);

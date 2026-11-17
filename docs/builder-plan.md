@@ -22,7 +22,8 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Step | What | Time |
 |---|---|---|
 | Read the dump | `.nup` or folder; the exefs first, so the lift starts while the romfs is copied | not measured |
-| Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte `nx2/build.py`'s objects | 164 s at 16 jobs, 7.8 GB peak |
+| Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte `nx2/build.py`'s objects | 164 s at 16 jobs |
+| Host C | `host/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `prepare_textures` in Rust, with the native encoders linked statically | 440 s (Python, fast settings) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
@@ -45,12 +46,27 @@ build does not prepare them and the folder keeps the game's files.
 ## The lift in this process
 
 - `hookshot-builder lift-compile <out> [--check <obj dir>]` runs the lift and hands every partition and generated
-  module to the compile threads through a queue as long as the thread count, so no IR is written to disk. With
-  `--check`, every object is compared with build.py's.
+  module to the compile threads, so no IR is written to disk. With `--check`, every object is compared with
+  build.py's.
 - The lift hands the hot partitions over first and the builder holds the cold generated modules until they are out:
   hot and cold compiles never run at once (`compile.rs`'s gate), so the long hot compiles start first.
-- Against the separate steps (the lift to files, 6 s; `compile-all`, 160 s and 4.5 GB), the wall time is the same
-  and the peak is 3.3 GB higher: the lift's state stays alive until its last partition is queued.
+- A cold build peaks at 6.4 GB: the compiles (4.5 GB at 16 jobs) and the compressed IR waiting for them.
+
+## The game folder
+
+`hookshot-builder build <out> --direct <hookshot_direct.so>` (the `clang` feature) makes the game folder in one
+process: the host's C (`host/*.c`, libopus and `rt64/a64_rt.c`, with build.py's flags and
+`-fstack-protector-strong`), the lift and its compile, the link and the labels. Its executable equals build.py's in
+every loaded byte but the build ID when both are given the same version text (`--version`).
+
+- LLVM's `-mllvm` options are globals of the process, so the compiles run in phases: the host's C at LLVM's
+  defaults, then the runtime at its two options, then the partitions at theirs.
+- The lift hands every module over LZ4-compressed and ends within seconds; its state is freed before the compiles
+  are done.
+- Objects are cached in `work/builder-cache`, apart from build.py's `work/objcache` because the keys are built
+  differently. A module is found by its IR, recipe and the partitions' options; a C file by a manifest of the files
+  its last compile read (clang's dependency list) and their contents; both keys name the LLVM version and the
+  builder's recipes. A rebuild with nothing changed takes 8 s, most of it the lift.
 
 ## The link
 

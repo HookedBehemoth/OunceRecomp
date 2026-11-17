@@ -173,6 +173,7 @@ name = "hookshot-builder"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "lz4_flex",
  "ounce-lift",
  "sha1",
 ]
