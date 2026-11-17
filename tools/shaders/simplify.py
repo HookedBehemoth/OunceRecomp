@@ -1,7 +1,7 @@
-"""meshlab simplify: a meshtool flat print (<prefix>.flat.c) read back as expressions and printed as C-like code with the
+"""simplify: a meshtool flat print (<prefix>.flat.c) read back as expressions and printed as C-like code with the
 translation's noise taken out, for reading a game mesh stage line by line before rewriting it.
 
-    work/venv/bin/python -I tools/meshlab/simplify.py <prefix>.flat.c > <prefix>.simple.c
+    work/venv/bin/python -I tools/shaders/simplify.py <prefix>.flat.c > <prefix>.simple.c
 
 What is folded (each a pattern of the Ampere-to-Maxwell lowering or of the translator, not of the game's logic):
 - XMAD multiplies: ((a.lo*b.hi + a.hi*b.lo) << 16) + a.lo*b.lo  ->  a * b   (IMAD lowered to 16-bit halves)

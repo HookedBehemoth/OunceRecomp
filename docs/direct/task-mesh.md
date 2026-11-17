@@ -40,13 +40,13 @@ very long on zeros or garbage. If a task stage hangs the GPU, look at what it re
 
 ## Replaced mesh stages
 
-Some of the game's mesh stages are drawn with hand-written stages that emit the same geometry bit for bit:
+One of the game's mesh stages is drawn with a hand-written stage that emits the same geometry bit for bit:
 
 - The sources are in `gpu/direct/shaders/mesh` (`meshlet_depth.mesh`, `meshlet_lit.mesh`, `probe_light.glsl`).
 - `gpu/direct/shaders/mesh/codes.txt` maps a game stage's code key to its source and defines;
-  `tools/meshlab/build_shaders.sh` compiles them into `<code key>_spv.h`.
-- `gpu/direct/shaders/mesh/swap.txt` lists the stages the back end actually swaps in. A stage is listed only when
-  `meshlab compare` reports every captured draw of it equal; see [the mesh harness](mesh-harness.md).
+  `tools/shaders/build_shaders.sh` compiles them into `<code key>_spv.h`.
+- `gpu/direct/shaders/mesh/swap.txt` lists the stages the back end actually swaps in. The set is closed: the stage
+  listed stays, and no new ones are added.
 - The translator still translates the stage: its interface information drives the heap mappings, the push data and the
   fragment stage's inputs. The replacement takes its place when the shader object is made.
 
@@ -73,9 +73,7 @@ Two more defenses exist:
 
 ## Check your change
 
-1. Run the spill scan and the register gate (`tools/meshlab/spill_scan.py`, `tools/meshlab/late_gate.py`) on captures of
-   the three scenes. No mesh stage may start to spill.
-2. For a new replacement, run `meshlab compare` on a kept capture against the
-   translator's stage; add the stage to `swap.txt` only when every draw is equal.
-3. Walk from Kokiri to Hyrule Field and stand in the market. Save the kernel log into the run folder after any device
+1. Run the register gate (`tools/shaders/late_gate.py`, see [the register-pressure pass](spv-late.md)). No mesh stage
+   may start to spill.
+2. Walk from Kokiri to Hyrule Field and stand in the market. Save the kernel log into the run folder after any device
    loss, and use `HOS_DBG=marks` to see which command was running.

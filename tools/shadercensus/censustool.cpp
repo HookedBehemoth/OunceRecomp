@@ -1,5 +1,5 @@
 // censustool: every stage of the game's shader seed (hookshot_shaders.bin, nx2/shader_census.py) through the direct back end's
-// translator fork as the back end translates it (tools/meshlab/offline.h), a static profile of each from the IR (inputs and
+// translator fork as the back end translates it (tools/shaders/offline.h), a static profile of each from the IR (inputs and
 // outputs, texture samples by kind and by where they sit, memory, control flow and loop bounds) and, with --compile, RADV's
 // compile of its SPIR-V with the back end's heap mappings (direct_shader.cpp finish) and the driver's statistics of it
 // (VK_KHR_pipeline_executable_properties: ACO's instruction count, code size, registers, LDS, scratch, its latency and throughput
@@ -15,7 +15,7 @@
 // own count for the stage ("late": the most 32-bit values held before and after, instructions moved, the pass's time), whether
 // or not it is applied. --objects: the stage also made as the shader object the game makes of it (unlinked; RADV reports no
 // statistics of those: with RADV_DEBUG=shaders its compile is printed between "@@object <index> <key> <kind>" and "@@end" on
-// stderr, which tools/meshlab/late_gate.py reads). --list: a line a stage of the seed (index, kind), nothing translated.
+// stderr, which tools/shaders/late_gate.py reads). --list: a line a stage of the seed (index, kind), nothing translated.
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
@@ -30,9 +30,9 @@
 
 #include <vulkan/vulkan.h>
 
-#include "../meshlab/offline.h"
+#include "../shaders/offline.h"
 #include "../../gpu/direct/direct_spv_late.cpp"
-#include "../meshlab/ir_pretty.h"
+#include "../shaders/ir_pretty.h"
 #include "shader_recompiler/frontend/ir/abstract_syntax_list.h"
 #include "shader_recompiler/frontend/ir/modifiers.h"
 
@@ -788,7 +788,7 @@ std::string late(Made& m, bool task) {
                   r.moved, r.sunk, r.blocks, r.blocks_changed, r.peak_before, r.peak_after, ms);
     return b;
 }
-/// The stage as the shader object the game makes of it (direct_shader.cpp finish; tools/meshlab/meshlab.cpp make_shader)
+/// The stage as the shader object the game makes of it (direct_shader.cpp finish)
 int make_object(const Made& m) {
     const auto maps = mappings(m.t->program.info);
     VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};

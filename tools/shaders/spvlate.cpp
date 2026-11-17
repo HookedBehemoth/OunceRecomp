@@ -1,11 +1,9 @@
-// spvlate: the back end's late scheduling of a stage's SPIR-V (gpu/direct/direct_spv_late.h) as a command, for the harness
-// and the gate (tools/meshlab/late_gate.py):
+// spvlate: the back end's late scheduling of a stage's SPIR-V (gpu/direct/direct_spv_late.h) as a command, for the gate
+// (tools/shaders/late_gate.py) and tests/test_direct_spv_late.py:
 //   spvlate <in.spv> <out.spv> [--budget N] [--sink-peak N] [--reps N] [--blocks]   (--blocks: a line a block looked at)
 //   spvlate --dir <in dir> <out dir> [--budget N]      every *.spv of a folder
 // One line a module: instructions moved, blocks looked at and changed, the most 32-bit values a block held before and after
-// (the pass's own count), and the pass's time. `meshlab compare --repl` with the result in place of the translator's stage
-// checks that it emits the same geometry; tools/meshlab/spill_scan.py --repl counts what RADV spills with it.
-// Built by tools/meshlab/build.sh.
+// (the pass's own count), and the pass's time. Built by tools/shaders/build.sh.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>

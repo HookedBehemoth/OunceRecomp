@@ -2,15 +2,7 @@
 
 The pass keeps a block's new order by its own count of the values held; what decides whether a stage spills is ACO's
 register allocation. So before the pass is on (and after a change to it, to the translator or to the driver) RADV's
-compile of every stage is held against it, and the stages' outputs on captured draws:
-
-    late_gate.py captures --meshlab <meshlab> --out <dir> [--spvlate <spvlate>] [--kinds mesh[,task,fragment]] [--margin 8]
-                          [--compare] <frame.bin | roll.bin:present>...
-        every mesh program of the captures (HOS_DBG=meshcap frames) compiled as the game's shader objects, as the
-        translator emitted its stages and with the pass (meshlab stats --late): scratch spills (the driver's scheduler on,
-        as the game compiles) and register demand (ACO_DEBUG=nosched) of every stage, before and after. Nothing is drawn.
-        --compare: then every captured mesh draw's geometry with the pass against the translator's, bit for bit
-        (meshlab compare --late mesh under the GPU lock, tools/meshlab/gpu_run.sh: one draw each, the rasterizer off).
+compile of every stage is held against it:
 
     late_gate.py seed --censustool <censustool> --seed <hookshot_shaders.bin> --out <dir> [--spvlate <spvlate>]
                       [--kinds mesh] [--margin 8] [--jobs 6] [--budget N] [--sink-peak N]
@@ -32,11 +24,45 @@ import struct
 import subprocess
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-import spill_scan   # noqa: E402
 
 LIMIT = 256   # (vector registers a thread)
+
+
+def demand_of(ir):
+    """The most vector registers the values of ACO's program hold at once, from its print after register allocation: each
+    temporary from its first to its last line (straight-line code is exact; a loop's back edge is not followed)"""
+    first, last, size = {}, {}, {}
+    for n, line in enumerate(ir.split("\n")):
+        for m in re.finditer(r"%(\d+):v\[(\d+)(?:-(\d+))?\]", line):
+            i, a, b = int(m.group(1)), int(m.group(2)), int(m.group(3) or m.group(2))
+            first.setdefault(i, n)
+            last[i], size[i] = n, b - a + 1
+    events = {}
+    for i in first:
+        events[first[i]] = events.get(first[i], 0) + size[i]
+        events[last[i] + 1] = events.get(last[i] + 1, 0) - size[i]
+    live = peak = 0
+    for n in sorted(events):
+        live += events[n]
+        peak = max(peak, live)
+    return peak
+
+
+def stages_of(text):
+    """[(stage name, stores, loads, spill operands, instructions, register demand)] from one RADV_DEBUG=shaders output"""
+    out = []
+    parts = re.split(r"^shader: MESA_SHADER_(\w+)$", text, flags=re.M)
+    for i in range(1, len(parts), 2):
+        name, body = parts[i], parts[i + 1]
+        ra = body.split("After RA:", 1)
+        ir = ra[1].split("disasm:", 1)[0] if len(ra) > 1 else ""
+        dis = body.split("disasm:", 1)[1] if "disasm:" in body else ""
+        stores = len(re.findall(r"^\s*scratch_store_dword ", ir, flags=re.M))
+        loads = len(re.findall(r"= scratch_load_dword ", ir))
+        spill = len(re.findall(r"storage:vgpr_spill", ir))
+        instructions = len(re.findall(r"^\t\S.*;\s[0-9a-f]{8}", dis, flags=re.M))
+        out.append((name, stores, loads, spill, instructions, demand_of(ir)))
+    return out
 
 
 def verdict(before, after, margin, out, label):
@@ -120,44 +146,6 @@ def valid(a, before, label, fails, summary):
     shutil.rmtree(before, ignore_errors=True), shutil.rmtree(after, ignore_errors=True)
 
 
-def captures(a):
-    os.makedirs(a.out, exist_ok=True)
-    fs_real = "fragment" in a.kinds.split(",")
-    res = {}
-    for label, late in (("before", None), ("after", a.kinds)):
-        for demand in (False, True):
-            name = label + ("_demand" if demand else "")
-            print("captures, %s%s" % (label, ", register demand" if demand else ""), file=sys.stderr)
-            res[name] = spill_scan.scan(a.meshlab, a.frames, late=late, fs_real=fs_real, demand=demand, jobs=a.jobs,
-                                        out=os.path.join(a.out, "radv_" + name) if a.keep else None)
-    pair = lambda label: {k: (v[0] + v[1], res[label + "_demand"][k][5]) for k, v in res[label].items() if k in res[label + "_demand"]}
-    fails, summary = verdict(pair("before"), pair("after"), a.margin, a.out, "captures")
-    if a.spvlate:
-        for spec in a.frames:
-            frame, _, present = spec.partition(":")
-            scene = os.path.basename(os.path.dirname(os.path.dirname(frame))) + ("_" + present if present else "")
-            d = os.path.join(a.out, "spv_" + scene)
-            os.makedirs(d, exist_ok=True)
-            subprocess.run([a.meshlab, frame, "extract", d] + (["--present", present] if present else []), capture_output=True, check=True)
-            valid(a, d, scene, fails, summary)
-    if a.compare:
-        gpu_run = os.path.join(HERE, "gpu_run.sh")
-        for spec in a.frames:
-            frame, _, present = spec.partition(":")
-            scene = os.path.basename(os.path.dirname(os.path.dirname(frame))) + ("_" + present if present else "")
-            out = os.path.join(a.out, "compare_%s.txt" % scene)
-            cmd = [gpu_run, out, frame, "compare", "all", "--late", "mesh", "--quiet"] + (["--present", present] if present else [])
-            r = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, MESHLAB=a.meshlab, MESHLAB_TIMEOUT="900"))
-            m = re.search(r"^compare: (\d+) equal, (\d+) different, (\d+) without", r.stdout, flags=re.M)
-            if not m:
-                fails.append("%s: the compare did not finish (%s)" % (scene, out))
-            else:
-                summary.append("%s: %s of %d mesh draws equal with the pass" % (scene, m.group(1), int(m.group(1)) + int(m.group(2))))
-                if int(m.group(2)) or r.returncode != 0:
-                    fails.append("%s: %s draws DIFFERENT with the pass (%s)" % (scene, m.group(2), out))
-    return finish(a, "captures", fails, summary)
-
-
 def seed_scan(a, late, demand, label):
     """{(kind, code): (spills, demand, instructions)}: censustool --objects in shards, RADV's print read from stderr"""
     nvn = {"vertex": "0", "fragment": "1", "compute": "5", "task": "6", "mesh": "7"}
@@ -180,7 +168,7 @@ def seed_scan(a, late, demand, label):
         for i in range(1, len(parts), 4):
             index, code, kind, text = parts[i], parts[i + 1], parts[i + 2], parts[i + 3].split("@@end", 1)[0]
             want = {"mesh": "MESH", "task": "COMPUTE", "compute": "COMPUTE", "fragment": "FRAGMENT", "vertex": "VERTEX"}[kind]
-            for name, stores, loads, spill, instructions, dem in spill_scan.stages_of(text):
+            for name, stores, loads, spill, instructions, dem in stages_of(text):
                 if name == want:
                     found.append((kind, code, stores + loads, dem, instructions))
         info = {}
@@ -251,14 +239,6 @@ def finish(a, label, fails, summary):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="mode", required=True)
-    c = sub.add_parser("captures")
-    c.add_argument("--meshlab", required=True)
-    c.add_argument("--kinds", default="mesh")
-    c.add_argument("--compare", action="store_true")
-    c.add_argument("--keep", action="store_true", help="keep RADV's prints in <out>/radv_*")
-    c.add_argument("--budget", type=int, default=160, help="for --spvlate: LateOptions::budget (meshlab uses the pass's defaults)")
-    c.add_argument("--sink-peak", type=int, default=0)
-    c.add_argument("frames", nargs="+")
     s = sub.add_parser("seed")
     s.add_argument("--censustool", required=True)
     s.add_argument("--seed", required=True)
@@ -267,13 +247,13 @@ def main():
     s.add_argument("--only", help="stage indices of the seed, comma separated")
     s.add_argument("--budget", type=int, default=160, help="LateOptions::budget (gpu/direct/direct_spv_late.h)")
     s.add_argument("--sink-peak", type=int, default=0, help="LateOptions::sink_peak")
-    for p in (c, s):
+    for p in (s,):
         p.add_argument("--out", required=True)
-        p.add_argument("--spvlate", help="tools/meshlab/spvlate: every stage's SPIR-V through the pass must keep its instructions and stay valid (spirv-val)")
+        p.add_argument("--spvlate", help="tools/shaders/spvlate: every stage's SPIR-V through the pass must keep its instructions and stay valid (spirv-val)")
         p.add_argument("--margin", type=int, default=8)
         p.add_argument("--jobs", type=int, default=4)
     a = ap.parse_args()
-    return captures(a) if a.mode == "captures" else seed(a)
+    return seed(a)
 
 
 if __name__ == "__main__":

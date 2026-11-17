@@ -32,5 +32,4 @@ made from the game belongs in these pages or in the repository; it stays under `
 
 ## Tools
 
-- [The mesh harness](mesh-harness.md): capture mesh draws and run them outside the game.
 - [The shader census](shader-costs.md): what the game's shaders cost, offline and in the game.

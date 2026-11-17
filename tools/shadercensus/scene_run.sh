@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One game run for the shader census (scripts/run-vk.sh) under the GPU lock with the hang rules of tools/meshlab/gpu_run.sh:
+# One game run for the shader census (scripts/run-vk.sh) under the GPU lock, with these hang rules:
 # it takes the gate and the lock exclusively, starts only when the last reset of this boot is 3 minutes old and vulkaninfo
 # works, and after a run that lost the device saves the kernel log into the run's folder and keeps the lock until the reset is
 # 3 minutes old again.

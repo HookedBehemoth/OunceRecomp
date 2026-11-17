@@ -1,7 +1,7 @@
 // The direct back end's translation of one NVN2 stage, offline (no device, no game state): its code read from a control
 // section and code area (as the romfs seed holds them), the translator's questions answered as direct_shader.cpp /
 // direct_compute.cpp answer them with nothing bound, and the profile they translate with on this card. Shared by meshtool
-// (tools/meshlab) and the shader census (tools/shadercensus). Nothing of the game is in this file.
+// (tools/shaders/meshtool.cpp) and the shader census (tools/shadercensus). Nothing of the game is in this file.
 #pragma once
 #include <algorithm>
 #include <array>

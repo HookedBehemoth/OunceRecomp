@@ -1,11 +1,11 @@
 """Every GLSL.std.450 Fma of a SPIR-V module decorated NoContraction (in place).
 
-    python3 tools/meshlab/spv_exact_fma.py <module.spv>
+    python3 tools/shaders/spv_exact_fma.py <module.spv>
 
 The translator decorates each of its fused multiply-adds NoContraction, and Mesa keeps such an Fma fused; glslang leaves a
 `precise` fma() undecorated, and Mesa then splits it into a multiply and an add (vtn: an Fma that is not exact). A replacement
 stage that must give the translator's results bit for bit (gpu/direct/shaders/frag) is built through this step
-(tools/meshlab/build_shaders.sh). Decorations already present are kept.
+(tools/shaders/build_shaders.sh). Decorations already present are kept.
 """
 import struct
 import sys

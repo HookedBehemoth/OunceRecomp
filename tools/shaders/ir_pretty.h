@@ -1,4 +1,4 @@
-// meshlab: a structured, expression-inlined print of an Eden IR program (analysis only; from M0's task/mesh tool)
+// A structured, expression-inlined print of an Eden IR program (analysis only)
 #include <map>
 #include <sstream>
 #include <fmt/format.h>

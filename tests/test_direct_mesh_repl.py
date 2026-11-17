@@ -3,7 +3,7 @@
 gpu/direct/shaders/mesh/swap.txt lists them ("<code key> <shape> <uniform buffers>"). Each must be a line of codes.txt (its
 source and defines), have its SPIR-V header beside the sources (<code key>_spv.h) and a line in direct_meshrepl.cpp's table
 with the same shape and uniform buffers; and no header or table line is left without a swap.txt line. With
-glslangValidator on the PATH each header is the source compiled now (tools/meshlab/build_shaders.sh writes them:
+glslangValidator on the PATH each header is the source compiled now (tools/shaders/build_shaders.sh writes them:
 glslangValidator -V --target-env vulkan1.3 -I<dir> <defines> --vn mesh_<code key>_spv -o <code key>_spv.h <source>).
 
     python -I -B tests/test_direct_mesh_repl.py
@@ -60,7 +60,7 @@ def main():
                 if r.returncode != 0:
                     failed.append("%s does not compile: %s" % (src, r.stdout + r.stderr))
                 elif words(made.read_text()) != words(header.read_text()):
-                    failed.append("%s is not %s %s compiled now (tools/meshlab/build_shaders.sh writes it)" % (header.name, src, " ".join(defs)))
+                    failed.append("%s is not %s %s compiled now (tools/shaders/build_shaders.sh writes it)" % (header.name, src, " ".join(defs)))
         else:
             print("glslangValidator not found: %s not checked against its source" % header.name)
     listed = {s[0] for s in swaps}

@@ -13,11 +13,11 @@ Modules built here have the shape the translator emits (the native code's order:
 - the same input gives the same output.
 
 With glslangValidator on the PATH the hand-written mesh stages (gpu/direct/shaders/mesh) go through the pass too, and
-with spirv-opt the harness's synthetic spilling stage (tools/meshlab/probes/spill.mesh: 320 values loaded before the
+with spirv-opt the synthetic spilling stage (tools/shaders/probes/spill.mesh: 320 values loaded before the
 first is used), which must come out holding about the budget; every output through spirv-val when it is there.
 
 The gate that holds RADV's compile of the game's stages against the pass needs the player's captures and a GPU, and is a
-tool: tools/meshlab/late_gate.py (docs/direct/spv-late.md).
+tool: tools/shaders/late_gate.py (docs/direct/spv-late.md).
 
     python -I -B tests/test_direct_spv_late.py [--cxx clang++]
 """
@@ -246,7 +246,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         exe = tmp / "spvlate"
-        r = subprocess.run([a.cxx, "-std=c++20", "-O1", "-o", str(exe), str(ROOT / "tools" / "meshlab" / "spvlate.cpp")], capture_output=True, text=True)
+        r = subprocess.run([a.cxx, "-std=c++20", "-O1", "-o", str(exe), str(ROOT / "tools" / "shaders" / "spvlate.cpp")], capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stdout + r.stderr)
             print("FAIL: spvlate does not build")
@@ -348,7 +348,7 @@ def main():
             opt = shutil.which("spirv-opt")
             if opt:   # (the stage's locals as values, as the translator's stages have them: glslang keeps them in variables)
                 spv, ssa = tmp / "spill.in.spv", tmp / "spill.ssa.spv"
-                subprocess.run([glslang, "-V", "--target-env", "vulkan1.3", "-o", str(spv), str(ROOT / "tools" / "meshlab" / "probes" / "spill.mesh")], check=True, capture_output=True)
+                subprocess.run([glslang, "-V", "--target-env", "vulkan1.3", "-o", str(spv), str(ROOT / "tools" / "shaders" / "probes" / "spill.mesh")], check=True, capture_output=True)
                 subprocess.run([opt, "--eliminate-local-single-block", "--eliminate-local-single-store", "--ssa-rewrite", "--eliminate-dead-code-aggressive",
                                 "-o", str(ssa), str(spv)], check=True, capture_output=True)
                 data = ssa.read_bytes()

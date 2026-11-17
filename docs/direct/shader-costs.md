@@ -49,8 +49,6 @@ a result.
 The census translates each stage as the back end does and, with `--compile`, has RADV compile it and records its
 statistics. It draws nothing and needs no GPU lock. Its output is made from the game's code and stays under `work/`.
 
-## Time a replacement stage
+## Replaced stages
 
-`meshlab bench` times a mesh stage against its replacement on captured draws, and `meshlab fs` does the same for a
-fragment stage; see [the mesh harness](mesh-harness.md). The replaced fragment stages are listed in
-`gpu/direct/shaders/frag/codes.txt`.
+The replaced fragment stages are listed in `gpu/direct/shaders/frag/codes.txt`.

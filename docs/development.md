@@ -103,7 +103,7 @@ the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It ref
 | `gpu/api/` | What the host and the back end share: the versioned interface (`vk_api.h`) and the NVN command records |
 | `gpu/legacy/` | Upstream's older renderers, kept as reference source; not built or tested |
 | `scripts/` | Test runs, the play build, log and profile readers, the save copier |
-| `tools/` | Readers for the game's formats (`tools/dump`), reverse-engineering searches (`tools/re`), the mesh-shader workbench (`tools/meshlab`) |
+| `tools/` | Readers for the game's formats (`tools/dump`), reverse-engineering searches (`tools/re`), the shader tools (`tools/shaders`: the register gate, the offline translator, the replacement stage's build) and the shader census (`tools/shadercensus`) |
 | `tests/` | The game-free checks, all run by `tests/run_all.py` |
 | `third_party/` | Upstream code with its own licenses: a64-kit's runtime and loader, Opus, zbic, SDL2's license, Dear ImGui, zstd, fonts |
 

@@ -45,21 +45,16 @@ every program once more on its first start. You don't need to delete anything.
 
 ## Check a change: the gate
 
-The pass's count of live values is not ACO's register allocation. `tools/meshlab/late_gate.py` holds one against the
-other. Run it before you change the pass's defaults, after a translator change, on a capture of a new scene and after a
-driver update:
+The pass's count of live values is not ACO's register allocation. `tools/shaders/late_gate.py` holds one against the
+other. Run it before you change the pass's defaults, after a translator change and after a driver update:
 
 ```
-python3 -I tools/meshlab/late_gate.py captures --meshlab <meshlab> --spvlate <spvlate> --out <dir> --compare <frame.bin>...
-python3 -I tools/meshlab/late_gate.py seed --censustool <censustool> --spvlate <spvlate> --seed <hookshot_shaders.bin> --out <dir> --kinds mesh
+python3 -I tools/shaders/late_gate.py seed --censustool <censustool> --spvlate <spvlate> --seed <hookshot_shaders.bin> --out <dir> --kinds mesh
 ```
 
-The first form compiles every mesh program of the kept captures before and after the pass and, with
-`--compare`, checks every captured draw's geometry bit for bit. The second compiles every mesh stage of the game's
-shader seed. The gate fails when a stage starts to spill, spills more, or needs noticeably more registers.
-
-Take the captures with `HOS_DBG=nolate`: a capture taken with the pass on holds the pass's output, and "before" is then
-not before. How to build the tools is in [the mesh harness](mesh-harness.md).
+It compiles every mesh stage of the game's shader seed before and after the pass. The gate fails when a stage starts
+to spill, spills more, or needs noticeably more registers. `tools/shaders/build.sh` builds `spvlate`, and
+`tools/shadercensus/build.sh` builds `censustool`.
 
 The pass has a unit test: `tests/test_direct_spv_late.py`.
 

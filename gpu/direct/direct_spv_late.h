@@ -34,7 +34,7 @@
 // calls never leave their block. The step is kept only when the function then holds fewer values than without it.
 //
 // The count is the pass's, not ACO's (it knows nothing of variables the driver turns into registers, of values the driver
-// keeps in scalar registers, or of what the driver's own scheduler does): tools/meshlab/late_gate.py holds RADV's compile of
+// keeps in scalar registers, or of what the driver's own scheduler does): tools/shaders/late_gate.py holds RADV's compile of
 // every stage against it.
 //
 // Values are not changed: the same instructions, in another order. The same input gives the same output (no order taken

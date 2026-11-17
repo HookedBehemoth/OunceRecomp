@@ -1,13 +1,13 @@
 """A scene's GPU work by program: HOS_DBG=pstats's per-command statistics joined with the census's static cost per unit.
 
-    work/venv/bin/python -I tools/shadercensus/scene.py <run dir> --census <stages.jsonl> [--meshcap <frame.bin>] [--clock 2.3]
+    work/venv/bin/python -I tools/shadercensus/scene.py <run dir> --census <stages.jsonl> [--clock 2.3]
                                                        [--simds 160] [--out <dir>]
 
-<run dir> is a run of the game with HOS_DBG=pstats:<present>,drawlog:<present>[,meshcap:<present>] (direct_pstats.csv and the
+<run dir> is a run of the game with HOS_DBG=pstats:<present>,drawlog:<present> (direct_pstats.csv and the
 drawlog lines in log.txt). For each command: the vertex stage's cost a vertex x its vertex invocations, the fragment stage's
 cost a pixel x its fragment invocations, the task stage's cost a workgroup x its workgroups (compute invocations / threads),
-a dispatch's cost an invocation x its compute invocations, a mesh stage's cost a workgroup x its workgroups (from the meshcap
-frame's task headers and draw counts, by program, when given: RADV gives no mesh invocation statistics on this GPU). Costs are
+a dispatch's cost an invocation x its compute invocations (mesh stages are not costed: RADV gives no mesh invocation
+statistics on this GPU). Costs are
 ACO's estimates in SIMD cycles (tools/shadercensus/report.py); a millisecond estimate divides them by the GPU's SIMDs (80 CUs
 x 2 SIMD32) and clock. Prints Markdown tables; writes <out>/programs.csv (local: keys and counts, and the texture names the
 drawlog gave, which are the game's).
@@ -44,20 +44,6 @@ def census_costs(path):
     return by_key
 
 
-def mesh_groups(frame):
-    """Mesh workgroups a program drew in the captured frame (meshlab list)"""
-    meshlab = os.path.join(ROOT, "work", "meshlab", "meshlab")
-    out = subprocess.run([meshlab, frame, "list"], capture_output=True, text=True).stdout
-    g = collections.Counter()
-    n = collections.Counter()
-    for line in out.splitlines():
-        m = re.match(r"\s+#(\d+)\s+(task\+mesh|mesh indirect|mesh)\s+([0-9a-f]{16}) mesh ([0-9a-f]{16}) task ([0-9a-f]{16}) groups (\d+)", line)
-        if m:
-            g[m[3]] += int(m[6])
-            n[m[3]] += 1
-    return g, n
-
-
 def drawlog_names(log):
     """Per program: the texture names its draws sampled (drawlog), the passes"""
     names = collections.defaultdict(collections.Counter)
@@ -80,14 +66,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
     ap.add_argument("--census", required=True)
-    ap.add_argument("--meshcap")
     ap.add_argument("--clock", type=float, default=2.3)
     ap.add_argument("--simds", type=int, default=160)
     ap.add_argument("--out")
     ap.add_argument("--top", type=int, default=20)
     a = ap.parse_args()
     cost = census_costs(a.census)
-    groups, mesh_draws = mesh_groups(a.meshcap) if a.meshcap else ({}, {})
     names, passes = drawlog_names(os.path.join(a.run, "log.txt"))
     rows = list(csv.DictReader(open(os.path.join(a.run, "direct_pstats.csv"))))
     cyc_ms = 1.0 / (a.simds * a.clock * 1e6)   # (SIMD cycles -> ms of the whole GPU)
@@ -151,13 +135,6 @@ def main():
             else:
                 missing[(1, r["code1"])] += 1
         p["clip_prims"] += int(r["clip_primitives"])
-    for key, p in P.items():   # (mesh workgroups from the capture: by program)
-        codes = info[key]["codes"]
-        if key in groups:
-            c = cost.get((7, codes[0]))
-            p["mesh_groups"] = groups[key]
-            if c:
-                p["cycles_ms"] = c["unit"] * groups[key]
     tot = collections.Counter()
     for p in P.values():
         for k in ("cycles_vs", "cycles_fs", "cycles_cs", "cycles_task", "cycles_ms", "vs_inv", "fs_inv", "cs_inv", "commands", "mesh_groups", "measured_ns"):
@@ -165,7 +142,7 @@ def main():
     total_cycles = sum(tot[k] for k in ("cycles_vs", "cycles_fs", "cycles_cs", "cycles_task", "cycles_ms"))
     print("Commands measured: %d (%d without results). Programs: %d. Stages used: %s." % (
         len(rows), unavailable, len(P), dict(collections.Counter({0: "vertex", 1: "fragment", 5: "compute", 6: "task", 7: "mesh"}[k] for k, _ in stages_used))))
-    print("Invocations: vertex %d, fragment %d, compute %d; mesh workgroups %d (capture)." % (tot["vs_inv"], tot["fs_inv"], tot["cs_inv"], tot["mesh_groups"]))
+    print("Invocations: vertex %d, fragment %d, compute %d." % (tot["vs_inv"], tot["fs_inv"], tot["cs_inv"]))
     print("Estimated GPU time (ACO cycles / (%d SIMDs x %.2f GHz)): total %.2f ms; vertex %.2f, fragment %.2f, mesh %.2f, task %.2f, compute %.2f." % (
         a.simds, a.clock, total_cycles * cyc_ms, tot["cycles_vs"] * cyc_ms, tot["cycles_fs"] * cyc_ms, tot["cycles_ms"] * cyc_ms,
         tot["cycles_task"] * cyc_ms, tot["cycles_cs"] * cyc_ms))
