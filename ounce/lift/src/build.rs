@@ -7,7 +7,7 @@ use crate::ir::*;
 use crate::sem;
 use crate::sem::{Code, Kind};
 use crate::sem::int::{cond, getx, setx, sx};
-use crate::ty::{Ty, I32, I64, V2I64};
+use crate::ty::{Ty, I128, I32, I64, V2I64};
 use ounce_decode::{decode, Insn, Fld};
 use std::collections::{HashMap, HashSet};
 
@@ -375,10 +375,41 @@ pub fn build(f: &Func, prog: &Prog, fun: &mut Function, sc: &mut Scratch) {
             continue;
         }
         if matches!(kd, Kind::Exc) && i.f(Fld::opc) == 0 {
-            let fl: Vec<ValueId> = FLAGS.iter().map(|&v| b.get(v)).collect();
-            b.op(Op::FlagsOut { always: false }, Ty::Void, &fl);
-            b.op(Op::Svc(i.f(Fld::imm16)), Ty::Void, &[]);
-            b.after_call();
+            let imm = i.f(Fld::imm16);
+            let Some((ins, outs)) = prog.rec.prog.svc(imm) else {
+                // (an SVC the host does not declare: a stop, as the summaries take it)
+                b.f.bm(c).term = Some(Term::SvcStop(pc, imm));
+                cur = None;
+                continue;
+            };
+            // (hos_svc_<number>(x0..x7, pc, more) -> x0 | x1 << 64, no context: its inputs as values, poison beyond;
+            // its results x0 and x1 from the value, x2 up from more, a local array holding the registers' values before;
+            // every other register keeps its value)
+            let mut vals = Vec::with_capacity(9 + outs.saturating_sub(2) as usize);
+            for k in 0..8 {
+                vals.push(if k < ins { b.get(x(k)) } else { b.poison(I64) });
+            }
+            vals.push(b.c64(pc as i128));
+            for k in 2..outs {
+                vals.push(b.get(x(k)));
+            }
+            let kc = b.f.calls.len() as u32;
+            b.f.calls.push(Call { effects: true, ctx: false, ..Call::new(Callee::Host(Sym::Svc(imm))) });
+            let r = b.op(Op::RowIo { call: kc, nargs: 9 }, I128, &vals);
+            if outs > 0 {
+                let lo = b.trunc(r, I64);
+                b.set(x(0), lo);
+            }
+            if outs > 1 {
+                let s = b.c(64, I128);
+                let hi = b.bin(BinOp::Lshr, r, s);
+                let hi = b.trunc(hi, I64);
+                b.set(x(1), hi);
+            }
+            for k in 2..outs {
+                let v = b.op(Op::RowOut(k - 2), I64, &[r]);
+                b.set(x(k), v);
+            }
             if !prog.in_body(pc + 4) {
                 falls_out(&mut b, exits);
                 cur = None;
@@ -474,7 +505,7 @@ pub fn build(f: &Func, prog: &Prog, fun: &mut Function, sc: &mut Scratch) {
         cur = None;
     }
     fun.link();
-    if fun.order.iter().any(|&bl| matches!(fun.b(bl).term, Some(Term::NoReturn(..)))) {
+    if fun.order.iter().any(|&bl| matches!(fun.b(bl).term, Some(Term::NoReturn(..) | Term::SvcStop(..)))) {
         // blocks only a noreturn call's return reached: gone
         let e = fun.entry_block();
         mark.clear();
@@ -530,7 +561,7 @@ fn reads(f: &Function, v: ValueId, prog: &Prog) -> (u128, u128) {
             let bd = prog.bound(*callee);
             (bd.reads & REGS, bd.must & !bd.keeps & REGS)
         }
-        Op::Icall(_) | Op::Svc(_) => (REGS, 0),
+        Op::Icall(_) => (REGS, 0),
         Op::Call(k) | Op::RowIo { call: k, .. } if f.call(*k).ctx => (f.call(*k).regs & REGS, 0),
         _ => (0, 0),
     }
@@ -569,6 +600,8 @@ fn omit_stores(f: &mut Function, prog: &Prog, info: &mut Vec<(u128, u128)>, live
         match f.b(bl).term.as_ref().unwrap() {
             Term::Ret => at_ret,
             Term::Tail(_) | Term::IJump(..) | Term::NoReturn(..) | Term::Trap(..) => REGS,
+            // (a stop that reads no register)
+            Term::SvcStop(..) => 0,
             _ => f.succs(bl).iter().fold(0, |o, s| o | live_in[s.0 as usize]),
         }
     };

@@ -330,7 +330,8 @@ impl Base {
         let continuations: HashMap<u64, u32> = self.game.local_continuations.iter().copied().collect();
         let parts = plan::parts(&self.plan, &meta, &self.img, &continuations);
         let funcs: Vec<u64> = found.keys().copied().collect();
-        Ok(Patches { meta, parts, hle_at, answers, rows, funcs })
+        let svcs = ps.svcs.values().map(|s| (s.number, s.inputs, s.results)).collect();
+        Ok(Patches { meta, parts, hle_at, answers, rows, funcs, svcs })
     }
 
     fn errors_effects(&self, ps: &PatchSet) -> Vec<(Where, String)> {
@@ -357,6 +358,8 @@ pub struct Patches {
     pub rows: Vec<Row>,
     /// the PATCH_FUNCs' entries
     pub funcs: Vec<u64>,
+    /// (number, inputs, results) of the declared SVCs, by number
+    pub svcs: Vec<(u32, u32, u32)>,
 }
 
 /// what the discovery and the plan are made from

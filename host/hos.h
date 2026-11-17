@@ -78,6 +78,8 @@ void hos_bench_present(int64_t now);
     (unsigned long long)c->x[0], (unsigned long long)c->x[1], (unsigned long long)c->x[2], \
     (unsigned long long)c->x[3], (unsigned long long)c->x[30]); } while (0)
 void hos_fatal(Ctx *c, const char *fmt, ...);
+/* (the same without a context: the guest address it reports, an SVC's or a caller's) */
+void hos_fatal_lr(uint64_t lr, const char *fmt, ...) __attribute__((noreturn));
 
 /* ---- guest memory (hos_mem.c) */
 uint64_t hos_sys_alloc(uint64_t size, uint64_t align);     /* zeroed, from the system region, never freed */
@@ -114,6 +116,7 @@ void hos_thread_fp_log(long long present);   /* (hos_thread.c) HOS_FP_LOG=1: FPC
 int hos_current_core(uint64_t lr);   /* (hos_thread.c) GetCurrentCoreNumber for the running thread */
 int hos_cv_sleep(void *cv, void *srw_lock, unsigned ms);   /* SleepConditionVariableSRW (exclusive) for guest threads */
 void hos_thread_stack(HosThread *t, uint64_t *addr, uint64_t *size);
+uint64_t hos_thread_tlr(HosThread *t);   /* its TPIDRRO_EL0: the thread local region */
 uint64_t *hos_tls_slots(HosThread *t);                     /* nn::os TLS slot values */
 #define HOS_TLS_SLOTS 32
 Ctx *hos_boot_main_thread(uint64_t stack_size);           /* the calling host thread becomes the guest main thread */

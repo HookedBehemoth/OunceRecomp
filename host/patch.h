@@ -44,7 +44,14 @@
        x0 and x30 as the BL would, and makes no call; the function's generic entry f_<addr> (a code pointer, a BLR) is
        lifted IR doing the same (nx2/lift2/game.py answers_ir). An import the game calls that the host neither
        implements nor answers stops the game, naming it (nx2/standalone.py gen_stubs; a direct call of it is noreturn):
-       each answer is one the game was seen to need, with the reason it is enough. */
+       each answer is one the game was seen to need, with the reason it is enough.
+     SVC(number, name, inputs, results) { body }
+       the host's answer to the guest's `svc #number` (number: 0x and two upper-case hex digits), unsigned __int128
+       hos_svc_<number>(x0..x7, pc, uint64_t *more), which the lifter calls with the registers x0 up to inputs as
+       values and takes x0 up to results back (x0 and x1 returned, x2 up in more, which holds their values before);
+       every other register keeps its value. No context: an SVC sees no register but its inputs. An SVC no declaration
+       answers is lifted as a stop (hos_svc_stop). The body gets a SvcCall *c: c->x[n] the registers, c->pc the svc's
+       address. */
 #ifndef HOS_PATCH_H
 #define HOS_PATCH_H
 #include <stdint.h>
@@ -815,6 +822,27 @@ typedef struct GuestFn { struct GuestContext *c; void (*body)(struct GuestContex
     HOS_FUNC_(HOS_CAT(hos_func_sym_, sym), HOS_CAT(hos_orig_sym_, sym), result, fn, __VA_ARGS__)
 #define HLE(sym, ...) HOS_PATCH_RECORD("HLE", #sym "," #__VA_ARGS__) void imp_##sym(Ctx *c)
 #define NV(name, ...) HOS_PATCH_RECORD("NV", #name "," #__VA_ARGS__) static void n_##name(Ctx *c, void *u_)
+#define HOS_SVC_PARAMS                                                                                                \
+    uint64_t a0_, uint64_t a1_, uint64_t a2_, uint64_t a3_, uint64_t a4_, uint64_t a5_, uint64_t a6_, uint64_t a7_,  \
+        uint64_t pc_
+/* An SVC's call: its registers x0-x7 (beyond its inputs unspecified; its results written here), the svc's address */
+typedef struct SvcCall {
+    uint64_t x[8];
+    uint64_t pc;
+} SvcCall;
+#define SVC(number, name, inputs, results)                                                                            \
+    HOS_PATCH_RECORD("SVC", #number "," #name "," #inputs "," #results)                                               \
+    _Static_assert((inputs) >= 0 && (inputs) <= 8 && (results) >= 0 && (results) <= 8, "SVC " #name);              \
+    static inline __attribute__((always_inline)) void svc_##name(SvcCall *c);                                       \
+    unsigned __int128 hos_svc_##number(HOS_SVC_PARAMS, uint64_t *more_);                                             \
+    unsigned __int128 hos_svc_##number(HOS_SVC_PARAMS, uint64_t *more_) {                                            \
+        SvcCall s_ = {{a0_, a1_, a2_, a3_, a4_, a5_, a6_, a7_}, pc_};                                                 \
+        for (int i_ = 2; i_ < (results); i_++) s_.x[i_] = more_[i_ - 2];                                              \
+        svc_##name(&s_);                                                                                              \
+        for (int i_ = 2; i_ < (results); i_++) more_[i_ - 2] = s_.x[i_];                                              \
+        return ((results) > 0 ? s_.x[0] : 0) | (unsigned __int128)((results) > 1 ? s_.x[1] : 0) << 64;                \
+    }                                                                                                                 \
+    static inline __attribute__((always_inline)) void svc_##name(SvcCall *c)
 #define PATCH_ANSWER(sym, value, why) HOS_PATCH_RECORD("PATCH_ANSWER", #sym "," #value "," #why) _Static_assert(1, #sym)
 #define HLE_EFFECTS(sym, ...) HOS_PATCH_RECORD("HLE_EFFECTS", #sym "," #__VA_ARGS__) _Static_assert(1, #sym)
 #define PATCH_AT_SITE(pc, word, mode, result, fn, ...)                                                                \

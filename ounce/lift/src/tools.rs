@@ -201,7 +201,7 @@ fn wh(w: &Where) -> String {
 /// the analysis of one set of declarations, built on the caller's stack
 macro_rules! analysis {
     ($b:expr, $pa:expr, $prog:ident, $sums:ident) => {
-        let mut $prog = Program::new(&$pa.meta, &$b.plan, &$pa.parts.parts, &$pa.hle_at, &$b.facts.names);
+        let mut $prog = Program::new(&$pa.meta, &$b.plan, &$pa.parts.parts, &$pa.hle_at, &$pa.svcs, &$b.facts.names);
         let ($sums, _) = summarise(&mut $prog);
     };
 }

@@ -118,6 +118,7 @@ int hos_thread_core(HosThread *t) {
     return m ? (int)(__builtin_ctzll(m) % (unsigned)n) : 0;
 }
 void hos_thread_stack(HosThread *t, uint64_t *addr, uint64_t *size) { *addr = t->stack; *size = t->stack_size; }
+uint64_t hos_thread_tlr(HosThread *t) { return t->tlr; }
 
 int hos_thread_priority(HosThread *t, int set, int value) {
     int old = t->priority;
@@ -195,6 +196,23 @@ void hos_fatal(Ctx *c, const char *fmt, ...) {
     fprintf(stderr, "%s] FATAL: %s", stamp, buf);
     if (c) fprintf(stderr, " (lr %#llx sp %#llx)", (unsigned long long)c->x[30], (unsigned long long)c->x[31]);
     fprintf(stderr, "\n");
+    fflush(stderr);
+    void hos_backtrace(void), hos_hostcall_stats(void);
+    hos_backtrace();
+    hos_hostcall_stats();
+    ExitProcess(3);
+}
+
+void hos_fatal_lr(uint64_t lr, const char *fmt, ...) {
+    char buf[1024], stamp[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    log_flush();
+    log_stamp(stamp, sizeof stamp);
+    stamp[strlen(stamp) - 2] = 0;
+    fprintf(stderr, "%s] FATAL: %s (lr %#llx)\n", stamp, buf, (unsigned long long)lr);
     fflush(stderr);
     void hos_backtrace(void), hos_hostcall_stats(void);
     hos_backtrace();

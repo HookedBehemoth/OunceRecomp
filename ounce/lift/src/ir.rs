@@ -120,6 +120,8 @@ impl CastOp {
 pub enum Sym {
     Entry(u64),
     SjCall(u64),
+    /// a declared SVC's host function, `hos_svc_0x<NN>` (host/patch.h SVC)
+    Svc(u32),
     Name(u32),
 }
 
@@ -174,6 +176,8 @@ impl Call {
 #[derive(Clone, Debug)]
 pub enum Op {
     Const(u128),
+    /// an operand whose value does not matter (an SVC's argument register beyond its inputs)
+    Poison,
     /// a vector constant: its lanes packed, lane 0 in the low bits
     VConst(u128),
     /// the host function pointer of the function at a guest address (code_ptrs)
@@ -209,7 +213,6 @@ pub enum Op {
     /// stop: the callee stops the game (an import the host neither implements nor answers): a noreturn call
     Gcall { sym: Sym, callee: u64, pc: u64, stop: bool },
     Icall(u64),
-    Svc(u32),
     Barrier,
     FlagsOut { always: bool },
     SitePoison { mask: u128, pc: u64 },
@@ -239,6 +242,8 @@ pub enum Term {
     IJump(Option<ValueId>, u64),
     /// a call of a callee proven never to return came back: (pc, word)
     NoReturn(u64, u32),
+    /// an SVC the host does not declare: (pc, number), hos_svc_stop
+    SvcStop(u64, u32),
     Trap(u64, u32),
 }
 
@@ -303,6 +308,7 @@ enum CKey {
     Int(u128, Ty),
     Vec(u128, Ty),
     Code(u64),
+    Poison(Ty),
 }
 
 pub struct Function {
@@ -574,6 +580,16 @@ impl<'f> Builder<'f> {
             return c;
         }
         let c = self.f.new_value(ty, Op::Const(v), &[]);
+        self.f.consts.insert(key, c);
+        c
+    }
+    /// a value that does not matter
+    pub fn poison(&mut self, ty: Ty) -> ValueId {
+        let key = CKey::Poison(ty);
+        if let Some(&c) = self.f.consts.get(&key) {
+            return c;
+        }
+        let c = self.f.new_value(ty, Op::Poison, &[]);
         self.f.consts.insert(key, c);
         c
     }

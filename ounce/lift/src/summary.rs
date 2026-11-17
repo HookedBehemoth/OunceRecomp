@@ -305,6 +305,8 @@ pub struct Program<'a> {
     pub rows: Vec<Rows>,
     /// the noreturn seeds, sorted (by name, then with the callers' evidence)
     pub noret: Vec<u64>,
+    /// (number, inputs, results) of the declared SVCs (host/hos_svc.c), by number
+    pub svcs: Vec<(u32, u32, u32)>,
 }
 
 /// a function's tables as the lift switches on them: a table on its index has its entries' targets as the BR's
@@ -327,7 +329,7 @@ fn index_switch(f: &Func) -> Cow<'_, [(u64, Vec<u64>)]> {
 impl<'a> Program<'a> {
     /// the program from the plan: each function's body as the lift lifts it (a trapped one a trap at its entry), the
     /// rest of the facts from the patch scan
-    pub fn new(meta: &'a Meta, plan: &'a Plan, parts: &'a [Part], hle: &[Hle], names: &[(u64, String)]) -> Program<'a> {
+    pub fn new(meta: &'a Meta, plan: &'a Plan, parts: &'a [Part], hle: &[Hle], svcs: &[(u32, u32, u32)], names: &[(u64, String)]) -> Program<'a> {
         let mut fs: Vec<(u64, Body<'a>)> = parts
             .iter()
             .flat_map(|p| p.functions.iter())
@@ -370,7 +372,13 @@ impl<'a> Program<'a> {
             patches,
             rows,
             noret,
+            svcs: svcs.to_vec(),
         }
+    }
+
+    /// the declared SVC of a number: (inputs, results), registers x0 up; None: the lift stops there (hos_svc_stop)
+    pub fn svc(&self, n: u32) -> Option<(u32, u32)> {
+        self.svcs.binary_search_by_key(&n, |s| s.0).ok().map(|k| (self.svcs[k].1, self.svcs[k].2))
     }
 
     /// the function a call of t reaches: PLT stubs followed, at most 4 steps
@@ -763,11 +771,22 @@ impl Flow {
                     }
                 },
                 Kind::Ret => self.kind[k] = K::Ret,
-                Kind::Exc if i.f(Fld::opc) == 0 => {
-                    self.kind[k] = K::Svc;
-                    local.extend(nxt);
-                    self.edge(prog, k, &local, true);
-                }
+                Kind::Exc if i.f(Fld::opc) == 0 => match prog.svc(i.f(Fld::imm16)) {
+                    // (a declared SVC reads its inputs and writes its results, every other register kept; an
+                    // undeclared one stops the game)
+                    Some((ins, outs)) => {
+                        self.kind[k] = K::Svc;
+                        self.use_[k] = range(0, ins);
+                        self.dfn[k] = range(0, outs);
+                        local.extend(nxt);
+                        self.edge(prog, k, &local, true);
+                    }
+                    None => {
+                        self.kind[k] = K::Trap;
+                        self.use_[k] = 0;
+                        self.dfn[k] = 0;
+                    }
+                },
                 _ => self.kind[k] = K::Trap,
             }
             self.local = local;

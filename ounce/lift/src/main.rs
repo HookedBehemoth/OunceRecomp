@@ -344,7 +344,7 @@ fn lift(argv: Vec<String>) {
         std::fs::write(out.join(format!("{ANSWERS}.ll")), answers_ir(answers)).unwrap();
     }
     let ts = Instant::now();
-    let mut prog = Program::new(meta, plan, parts, hle_at, &facts.names);
+    let mut prog = Program::new(meta, plan, parts, hle_at, &pa.svcs, &facts.names);
     let (sums, st) = summarise(&mut prog);
     let rec = Records::new(&prog, &sums, &plan.sj_rets);
     write_facts(&out.join("facts.tsv"), &prog, &sums, &rec);

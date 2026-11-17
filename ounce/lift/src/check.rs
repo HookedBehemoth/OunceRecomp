@@ -11,6 +11,7 @@ fn sym_text(s: Sym, names: Option<&Names>) -> String {
     match s {
         Sym::Entry(a) => format!("f_{a:08x}"),
         Sym::SjCall(a) => format!("sjcall_{a:08x}"),
+        Sym::Svc(n) => format!("hos_svc_0x{n:02X}"),
         Sym::Name(k) => names.map_or(format!("#{k}"), |n| n.name(k).to_string()),
     }
 }

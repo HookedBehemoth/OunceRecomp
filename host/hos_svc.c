@@ -1,7 +1,8 @@
 /* Horizon supervisor calls that lifted SDK code still makes (the game itself has none; the SDK has ~60 wrappers).
    The HLE above nn:: should keep most of them from ever running: what reaches here is either trivial
-   (debug output, ticks, info queries) or a sign that an SDK function above it wants an HLE. Unknown ones stop the
-   run with the svc number and the caller, so the log says what to do next. Numbers: switchbrew.org "SVC". */
+   (debug output, ticks, info queries) or a sign that an SDK function above it wants an HLE. Each one answered is an SVC
+   declaration below, which the lifter calls with values; any other is lifted as a stop that names the svc number and
+   its address, so the log says what to do next. Numbers: switchbrew.org "SVC". */
 #include "hos.h"
 #include "direct_crit.h"
 #include <stdio.h>
@@ -346,178 +347,162 @@ static void query_memory(uint64_t out, uint64_t addr) {
 #define CUR_THREAD 0xFFFF8000u
 static HosThread *thread_handle(uint32_t h) { return h == CUR_THREAD ? hos_self() : hos_thread_by_handle(h); }
 
-void a64_svc(Ctx *c, uint32_t imm) {
-    switch (imm) {
-    case 0x01: { /* SetHeapSize(-, size) -> (result, heap address) */
-        int hos_heap_size_fits(uint64_t size);   /* (hookshot, hos_mem.c: the heap stays in the guest window) */
-        if (!hos_heap_size_fits(c->x[1])) {
-            c->x[0] = 0xCA01;   /* svc::ResultOutOfMemory */
-            return;
-        }
-        hos_heap_size = c->x[1];
-        c->x[0] = R_OK;
-        c->x[1] = HOS_HEAP_BASE;
+/* Each SVC the host answers (host/patch.h SVC: number, name, the registers it reads from x0 and writes from x0, as
+   switchbrew's tables and Atmosphere's svc_definition_macro.hpp give them; the inputs only those the host uses); an
+   svc of any other number is lifted as a stop, hos_svc_stop. "-": a register the svc does not read. */
+SVC(0x01, SetHeapSize, 2, 2) {   /* (-, size) -> (result, heap address) */
+    int hos_heap_size_fits(uint64_t size);   /* (hookshot, hos_mem.c: the heap stays in the guest window) */
+    if (!hos_heap_size_fits(c->x[1])) {
+        c->x[0] = 0xCA01;   /* svc::ResultOutOfMemory */
         return;
     }
-    case 0x02:   /* SetMemoryPermission */
-    case 0x03:   /* SetMemoryAttribute */
-    case 0x16:   /* CloseHandle */
-    case 0x2A:   /* FlushEntireDataCache */
-    case 0x2B:   /* FlushDataCache */
-        c->x[0] = R_OK;
-        return;
-    case 0x0A:   /* ExitThread */
-        hos_block_begin(CRIT_BLOCK_OTHER, (const void *)12);
-        ExitThread(0);
-        return;
-    case 0x07:   /* ExitProcess */
-        hos_log("svcExitProcess");
-        hos_log_flush();
-        ExitProcess(0);
-        return;
-    case 0x0C: { /* GetThreadPriority(-, handle) -> (result, priority) */
-        HosThread *t = thread_handle((uint32_t)c->x[1]);
-        c->x[1] = t ? (uint32_t)hos_thread_prio(t) : 44;
-        c->x[0] = t ? R_OK : 0xE401;   /* svc::ResultInvalidHandle */
-        return;
-    }
-    case 0x0D: { /* SetThreadPriority(handle, priority) */
-        HosThread *t = thread_handle((uint32_t)c->x[0]);
-        if (t) hos_thread_priority(t, 1, (int)c->x[1]);
-        c->x[0] = t ? R_OK : 0xE401;
-        return;
-    }
-    case 0x0E: { /* GetThreadCoreMask(-, -, handle) -> (result, ideal core, affinity mask) */
-        HosThread *t = thread_handle((uint32_t)c->x[2]);
-        c->x[1] = t ? (uint32_t)hos_thread_core(t) : 0;
-        c->x[2] = t && hos_thread_mask(t) ? hos_thread_mask(t) : 0x7;
-        c->x[0] = t ? R_OK : 0xE401;
-        return;
-    }
-    case 0x0F: { /* SetThreadCoreMask(handle, ideal core, mask): -1 keeps the ideal core, -2/-3 defaults */
-        HosThread *t = thread_handle((uint32_t)c->x[0]);
-        if (t) hos_thread_affinity(t, (int)c->x[1], c->x[2]);
-        c->x[0] = t ? R_OK : 0xE401;
-        return;
-    }
-    case 0x24:   /* GetProcessId(-, handle) -> (result, id) */
-        c->x[1] = 0x51;
-        c->x[0] = R_OK;
-        return;
-    case 0x06:   /* QueryMemory(MemoryInfo* out, -, address) -> (result, page info) */
-        query_memory(c->x[0], c->x[2]);
-        c->x[0] = R_OK;
-        c->x[1] = 0;
-        return;
-    case 0x1A:   /* ArbitrateLock(owner handle, mutex, tag) */
-        c->x[0] = arbitrate_lock((uint32_t)c->x[0], c->x[1], (uint32_t)c->x[2]);
-        return;
-    case 0x1B:   /* ArbitrateUnlock(mutex) */
-        c->x[0] = arbitrate_unlock(c->x[0]);
-        return;
-    case 0x1C:   /* WaitProcessWideKeyAtomic(mutex, key, tag, timeout) */
-        c->x[0] = wait_key(c->x[0], c->x[1], (uint32_t)c->x[2], (int64_t)c->x[3]);
-        return;
-    case 0x34:   /* WaitForAddress(address, type, value, timeout) (hookshot) */
-        c->x[0] = wait_address(c->x[0], (uint32_t)c->x[1], c->x[2], (int64_t)c->x[3]);
-        return;
-    case 0x35:   /* SignalToAddress(address, type, value, count) (hookshot) */
-        c->x[0] = signal_address(c->x[0], (uint32_t)c->x[1], (int32_t)c->x[2], (int32_t)c->x[3]);
-        return;
-    case 0x1D:   /* SignalProcessWideKey(key, count) */
-        signal_key(c->x[0], (int32_t)c->x[1]);
-        return;
-    case 0x0B: { /* SleepThread(ns) */
-        void hos_sleep_logged(int64_t ns, uint64_t lr);
-        hos_sleep_logged((int64_t)c->x[0], c->x[30] | 1);
-        return;
-    }
-    case 0x10:   /* GetCurrentProcessorNumber */
-        c->x[0] = (uint32_t)hos_current_core(c->x[30]);
-        return;
-    case 0x1E:   /* GetSystemTick */
-        c->x[0] = hos_ticks();
-        return;
-    case 0x25: { /* GetThreadId(-, handle) -> (result, id) */
-        HosThread *t = thread_handle((uint32_t)c->x[1]);
-        c->x[1] = hos_thread_id(t ? t : hos_self());
-        c->x[0] = R_OK;
-        return;
-    }
-    case 0x26: { /* Break(reason, info, size) */
-        hos_fatal(c, "svcBreak(reason %#llx, info %#llx, size %#llx)", (unsigned long long)c->x[0],
-                  (unsigned long long)c->x[1], (unsigned long long)c->x[2]);
-        return;
-    }
-    case 0x27: { /* OutputDebugString(str, size) */
-        uint64_t n = c->x[1] > 4096 ? 4096 : c->x[1];
-        char buf[4097];
-        memcpy(buf, GP(c->x[0]), n);
-        buf[n] = 0;
-        hos_log("debug: %s", buf);
-        c->x[0] = R_OK;
+    hos_heap_size = c->x[1];
+    c->x[0] = R_OK;
+    c->x[1] = HOS_HEAP_BASE;
+}
+SVC(0x02, SetMemoryPermission, 0, 1) { c->x[0] = R_OK; }
+SVC(0x03, SetMemoryAttribute, 0, 1) { c->x[0] = R_OK; }
+SVC(0x16, CloseHandle, 0, 1) { c->x[0] = R_OK; }
+SVC(0x2A, FlushEntireDataCache, 0, 0) { (void)c; }   /* (void) */
+SVC(0x2B, FlushDataCache, 0, 1) { c->x[0] = R_OK; }
+SVC(0x0A, ExitThread, 0, 0) {
+    (void)c;
+    hos_block_begin(CRIT_BLOCK_OTHER, (const void *)12);
+    ExitThread(0);
+}
+SVC(0x07, ExitProcess, 0, 0) {
+    (void)c;
+    hos_log("svcExitProcess");
+    hos_log_flush();
+    ExitProcess(0);
+}
+SVC(0x0C, GetThreadPriority, 2, 2) {   /* (-, handle) -> (result, priority) */
+    HosThread *t = thread_handle((uint32_t)c->x[1]);
+    c->x[1] = t ? (uint32_t)hos_thread_prio(t) : 44;
+    c->x[0] = t ? R_OK : 0xE401;   /* svc::ResultInvalidHandle */
+}
+SVC(0x0D, SetThreadPriority, 2, 1) {   /* (handle, priority) */
+    HosThread *t = thread_handle((uint32_t)c->x[0]);
+    if (t) hos_thread_priority(t, 1, (int)c->x[1]);
+    c->x[0] = t ? R_OK : 0xE401;
+}
+SVC(0x0E, GetThreadCoreMask, 3, 3) {   /* (-, -, handle) -> (result, ideal core, affinity mask) */
+    HosThread *t = thread_handle((uint32_t)c->x[2]);
+    c->x[1] = t ? (uint32_t)hos_thread_core(t) : 0;
+    c->x[2] = t && hos_thread_mask(t) ? hos_thread_mask(t) : 0x7;
+    c->x[0] = t ? R_OK : 0xE401;
+}
+SVC(0x0F, SetThreadCoreMask, 3, 1) {   /* (handle, ideal core, mask): -1 keeps the ideal core, -2/-3 defaults */
+    HosThread *t = thread_handle((uint32_t)c->x[0]);
+    if (t) hos_thread_affinity(t, (int)c->x[1], c->x[2]);
+    c->x[0] = t ? R_OK : 0xE401;
+}
+SVC(0x24, GetProcessId, 0, 2) {   /* (-, handle) -> (result, id) */
+    c->x[1] = 0x51;
+    c->x[0] = R_OK;
+}
+SVC(0x06, QueryMemory, 3, 2) {   /* (MemoryInfo* out, -, address) -> (result, page info) */
+    query_memory(c->x[0], c->x[2]);
+    c->x[0] = R_OK;
+    c->x[1] = 0;
+}
+SVC(0x1A, ArbitrateLock, 3, 1) {   /* (owner handle, mutex, tag) */
+    c->x[0] = arbitrate_lock((uint32_t)c->x[0], c->x[1], (uint32_t)c->x[2]);
+}
+SVC(0x1B, ArbitrateUnlock, 1, 1) { c->x[0] = arbitrate_unlock(c->x[0]); }
+SVC(0x1C, WaitProcessWideKeyAtomic, 4, 1) {   /* (mutex, key, tag, timeout) */
+    c->x[0] = wait_key(c->x[0], c->x[1], (uint32_t)c->x[2], (int64_t)c->x[3]);
+}
+SVC(0x34, WaitForAddress, 4, 1) {   /* (address, type, value, timeout) (hookshot) */
+    c->x[0] = wait_address(c->x[0], (uint32_t)c->x[1], c->x[2], (int64_t)c->x[3]);
+}
+SVC(0x35, SignalToAddress, 4, 1) {   /* (address, type, value, count) (hookshot) */
+    c->x[0] = signal_address(c->x[0], (uint32_t)c->x[1], (int32_t)c->x[2], (int32_t)c->x[3]);
+}
+SVC(0x1D, SignalProcessWideKey, 2, 0) { signal_key(c->x[0], (int32_t)c->x[1]); }   /* (key, count) */
+SVC(0x0B, SleepThread, 1, 0) {   /* (ns) */
+    void hos_sleep_logged(int64_t ns, uint64_t lr);
+    hos_sleep_logged((int64_t)c->x[0], c->pc | 1);
+}
+SVC(0x10, GetCurrentProcessorNumber, 0, 1) { c->x[0] = (uint32_t)hos_current_core(c->pc); }
+SVC(0x1E, GetSystemTick, 0, 1) { c->x[0] = hos_ticks(); }
+SVC(0x25, GetThreadId, 2, 2) {   /* (-, handle) -> (result, id) */
+    HosThread *t = thread_handle((uint32_t)c->x[1]);
+    c->x[1] = hos_thread_id(t ? t : hos_self());
+    c->x[0] = R_OK;
+}
+SVC(0x26, Break, 3, 0) {   /* (reason, info, size) */
+    hos_fatal_lr(c->pc, "svcBreak(reason %#llx, info %#llx, size %#llx)", (unsigned long long)c->x[0],
+                 (unsigned long long)c->x[1], (unsigned long long)c->x[2]);
+}
+SVC(0x27, OutputDebugString, 2, 1) {   /* (str, size) */
+    uint64_t n = c->x[1] > 4096 ? 4096 : c->x[1];
+    char buf[4097];
+    memcpy(buf, GP(c->x[0]), n);
+    buf[n] = 0;
+    hos_log("debug: %s", buf);
+    c->x[0] = R_OK;
+}
+SVC(0x2C, MapPhysicalMemory, 2, 1) {   /* (address, size) */
+    hos_commit(c->x[0], c->x[1]);
+    if (hos_trace) hos_log("MapPhysicalMemory(%#llx, %#llx)", (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
+    c->x[0] = R_OK;
+}
+SVC(0x2D, UnmapPhysicalMemory, 2, 1) {   /* (address, size): the pages read as zero if mapped again */
+    if (!hos_guest_range(c->x[0], c->x[1])) {   /* (hookshot: guest pages only) */
+        c->x[0] = 0xCA01;
         return;
     }
-    case 0x2C:   /* MapPhysicalMemory(address, size) */
-        hos_commit(c->x[0], c->x[1]);
-        if (hos_trace) hos_log("MapPhysicalMemory(%#llx, %#llx)", (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
-        c->x[0] = R_OK;
-        return;
-    case 0x2D:   /* UnmapPhysicalMemory(address, size): the pages read as zero if mapped again */
-        if (!hos_guest_range(c->x[0], c->x[1])) {   /* (hookshot: guest pages only) */
-            c->x[0] = 0xCA01;
-            return;
-        }
-        {   /* (pages under a Vulkan import stay committed, zeroed: hos_mem.c FreeMemoryPages) */
-            extern int rx_guest_imported(uint64_t lo, uint64_t hi);
-            if (rx_guest_imported(c->x[0], c->x[0] + c->x[1])) memset(GP(c->x[0]), 0, (size_t)c->x[1]);
-            else VirtualFree(GP(c->x[0]), (SIZE_T)c->x[1], MEM_DECOMMIT);
-        }
-        c->x[0] = R_OK;
-        return;
-    case 0x1F: { /* ConnectToNamedPort(-, name) -> (result, session handle): (hookshot) SDK code that resolves a
-                    service through "sm:" (nn::sm::Initialize, from nn::nsd's HIPC client in OoT) gets a session
-                    whose requests svc 0x21 answers empty, as for any service the runtime does not emulate. */
-        static volatile LONG next = 0;
-        const char *name = c->x[1] ? (const char *)GP(c->x[1]) : "";
-        uint32_t h = 0x7E000000u | (uint32_t)InterlockedIncrement(&next);
-        hos_log("ipc: ConnectToNamedPort(\"%.11s\") -> session %#x (requests answered empty) (lr %#llx)", name, h,
-                (unsigned long long)c->x[30]);
-        c->x[0] = R_OK;
-        c->x[1] = h;
-        return;
-    }
-    case 0x21: { /* SendSyncRequest(session handle): (mkw-recomp) a service the runtime does not emulate. The request
-                    is in the thread's IPC buffer (TLS + 0); the answer is a CMIF success with zeroed outputs, as
-                    Eglantine's auto-stub does, so a lifted service client sees an empty, successful reply. */
-        uint8_t *tls = (uint8_t *)GP(c->tpidrro_el0);
-        const uint32_t w0 = *(uint32_t *)tls, w1 = *(uint32_t *)(tls + 4);
-        /* the request's CMIF header ('SFCI', version, command id) after the HIPC header, 16-byte aligned */
-        uint32_t cmd = 0;
-        for (int off = 8; off < 0x40; off += 4)
-            if (*(uint32_t *)(tls + off) == 0x49434653u) { cmd = *(uint32_t *)(tls + off + 8); break; }
-        static volatile LONG logged;
-        if (InterlockedIncrement(&logged) <= 64)
-            hos_log("ipc: handle %#x command %u (hipc %08x %08x, lr %#llx): answered empty", (uint32_t)c->x[0], cmd,
-                    w0, w1, (unsigned long long)c->x[30]);
-        memset(tls, 0, 0x100);
-        *(uint32_t *)(tls + 0) = 0;                 /* HIPC: type 0, no descriptors */
-        *(uint32_t *)(tls + 4) = 16;                /* 16 raw data words, no handle descriptor */
-        *(uint32_t *)(tls + 16) = 0x4F434653u;      /* CMIF response 'SFCO', version 0, result 0 */
-        c->x[0] = R_OK;
-        return;
-    }
-    case 0x29: { /* GetInfo(id0, handle, id1) -> (result, value) */
-        int ok;
-        uint64_t v = get_info((uint32_t)c->x[1], c->x[3], &ok);
-        if (!ok) hos_log("svcGetInfo: unknown id %#x/%#llx (lr %#llx)", (uint32_t)c->x[1],
-                         (unsigned long long)c->x[3], (unsigned long long)c->x[30]);
-        c->x[1] = v;
-        c->x[0] = ok ? R_OK : R_INVALID_ENUM;
-        return;
-    }
-    default:
-        hos_fatal(c, "svc %#x not implemented (x0 %#llx x1 %#llx x2 %#llx)", imm, (unsigned long long)c->x[0],
-                  (unsigned long long)c->x[1], (unsigned long long)c->x[2]);
-    }
+    /* (pages under a Vulkan import stay committed, zeroed: hos_mem.c FreeMemoryPages) */
+    extern int rx_guest_imported(uint64_t lo, uint64_t hi);
+    if (rx_guest_imported(c->x[0], c->x[0] + c->x[1])) memset(GP(c->x[0]), 0, (size_t)c->x[1]);
+    else VirtualFree(GP(c->x[0]), (SIZE_T)c->x[1], MEM_DECOMMIT);
+    c->x[0] = R_OK;
+}
+/* (-, name) -> (result, session handle): (hookshot) SDK code that resolves a service through "sm:" (nn::sm::Initialize,
+   from nn::nsd's HIPC client in OoT) gets a session whose requests svc 0x21 answers empty, as for any service the
+   runtime does not emulate. */
+SVC(0x1F, ConnectToNamedPort, 2, 2) {
+    static volatile LONG next = 0;
+    const char *name = c->x[1] ? (const char *)GP(c->x[1]) : "";
+    uint32_t h = 0x7E000000u | (uint32_t)InterlockedIncrement(&next);
+    hos_log("ipc: ConnectToNamedPort(\"%.11s\") -> session %#x (requests answered empty) (pc %#llx)", name, h,
+            (unsigned long long)c->pc);
+    c->x[0] = R_OK;
+    c->x[1] = h;
+}
+/* (session handle): (mkw-recomp) a service the runtime does not emulate. The request is in the thread's IPC buffer
+   (TLS + 0); the answer is a CMIF success with zeroed outputs, as Eglantine's auto-stub does, so a lifted service
+   client sees an empty, successful reply. */
+SVC(0x21, SendSyncRequest, 1, 1) {
+    uint8_t *tls = (uint8_t *)GP(hos_thread_tlr(hos_self()));   /* (the thread's TPIDRRO_EL0) */
+    const uint32_t w0 = *(uint32_t *)tls, w1 = *(uint32_t *)(tls + 4);
+    /* the request's CMIF header ('SFCI', version, command id) after the HIPC header, 16-byte aligned */
+    uint32_t cmd = 0;
+    for (int off = 8; off < 0x40; off += 4)
+        if (*(uint32_t *)(tls + off) == 0x49434653u) { cmd = *(uint32_t *)(tls + off + 8); break; }
+    static volatile LONG logged;
+    if (InterlockedIncrement(&logged) <= 64)
+        hos_log("ipc: handle %#x command %u (hipc %08x %08x, pc %#llx): answered empty", (uint32_t)c->x[0], cmd, w0,
+                w1, (unsigned long long)c->pc);
+    memset(tls, 0, 0x100);
+    *(uint32_t *)(tls + 0) = 0;                 /* HIPC: type 0, no descriptors */
+    *(uint32_t *)(tls + 4) = 16;                /* 16 raw data words, no handle descriptor */
+    *(uint32_t *)(tls + 16) = 0x4F434653u;      /* CMIF response 'SFCO', version 0, result 0 */
+    c->x[0] = R_OK;
+}
+SVC(0x29, GetInfo, 4, 2) {   /* (-, id0, handle, id1) -> (result, value) */
+    int ok;
+    uint64_t v = get_info((uint32_t)c->x[1], c->x[3], &ok);
+    if (!ok) hos_log("svcGetInfo: unknown id %#x/%#llx (pc %#llx)", (uint32_t)c->x[1], (unsigned long long)c->x[3],
+                     (unsigned long long)c->pc);
+    c->x[1] = v;
+    c->x[0] = ok ? R_OK : R_INVALID_ENUM;
+}
+
+/* An svc no SVC declares: the lifter stops there (it is the end of the code after it, as a noreturn call) */
+void hos_svc_stop(uint32_t imm, uint64_t pc) __attribute__((noreturn));
+void hos_svc_stop(uint32_t imm, uint64_t pc) {
+    hos_fatal_lr(pc, "svc %#x is not implemented (no SVC declaration in host/hos_svc.c) at %#llx", imm,
+                 (unsigned long long)pc);
 }

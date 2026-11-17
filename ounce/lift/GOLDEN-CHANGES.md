@@ -187,3 +187,21 @@ headless in Kokiri, as the build without v2.6.
 
 tools/diffout.py: a change by a hook (gen/a64_hooks.c's lines naming it), a function only renumbered, and context stores
 only, each counted apart from the unexplained ones.
+
+## v2.10: SVCs called with values, without the context; the undeclared ones stops
+
+`svc #n` was a context call of `a64_svc(ctx, n)`. Now host/hos_svc.c declares each SVC it answers,
+SVC(number, name, inputs, results) (host/patch.h): the lift calls hos_svc_0x<NN>(x0..x7, pc, more) -> i128, no
+context: x0 up to inputs as values (poison beyond), x0 and x1 from the result, x2 up through `more` (a local array
+holding the registers' values before; GetThreadCoreMask only); every other register keeps its value, nothing is
+written to or reloaded from the context. The summaries take a declared svc as reading x0..inputs-1 and writing
+x0..results-1 (they took x0-x7 both). An undeclared number is a stop, hos_svc_stop(number, pc) (noreturn, reads no
+register), and a trap to the summaries. The counts: switchbrew's tables and Atmosphere's svc definitions; the inputs
+checked against the compiled host (tests/test_host_context_reads.py test_svc_inputs).
+
+diffout: 261 functions' IR changed, 0 unexplained (the svc wrappers and the callers whose callees' facts changed);
+3,425 functions' facts changed: mustdef shrinks in 3,126 (a declared svc writes its results, not x0-x7), 138 no longer
+return (the 31 sites of 27 undeclared numbers: the wrappers and 105 functions that reach one on every path; the game
+stopped at those before too, in a64_svc's default), their mustdef ALL and inputs gaining x19-x29 (a save of a function
+that does not return is a read), 55 lose `boundary` (the svc was it). 33 sites call 27 declared numbers. image.bin
+equal. In the game: smoke test in Kokiri passes (pictures within 2 of 64 bits of the golden runs, 1,800 presents).

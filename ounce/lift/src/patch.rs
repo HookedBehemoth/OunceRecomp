@@ -9,7 +9,7 @@ use crate::export::{GuestCalls, HleFact, MetaAt, MetaValue, PatchDecl, RowEffect
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-pub const KINDS: [&str; 8] = ["PATCH_AT", "PATCH_AT_SITE", "PATCH_FUNC", "PATCH_FUNC_SYM", "HLE", "NV", "HLE_EFFECTS", "PATCH_ANSWER"];
+pub const KINDS: [&str; 9] = ["PATCH_AT", "PATCH_AT_SITE", "PATCH_FUNC", "PATCH_FUNC_SYM", "HLE", "NV", "HLE_EFFECTS", "PATCH_ANSWER", "SVC"];
 
 /// (file, line) of a declaration
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -780,6 +780,38 @@ impl Answer {
     }
 }
 
+/// an SVC: the host's answer to `svc #number`, hos_svc_<number>(ctx, x0..x7, pc) -> x0 | x1 << 64 (host/patch.h)
+#[derive(Clone, Debug)]
+pub struct Svc {
+    pub at: Where,
+    pub number: u32,
+    pub name: String,
+    /// the argument registers it reads, x0 up
+    pub inputs: u32,
+    /// the registers it writes, x0 up (x0 and x1 returned, any further one through the context)
+    pub results: u32,
+}
+
+impl Svc {
+    fn new(d: &Decl) -> Res<Svc> {
+        let (a, at) = (&d.args, &d.at);
+        if a.len() != 4 {
+            return fail(at, "SVC(number, name, inputs, results)");
+        }
+        let n = num(&a[0], at, "the svc number")?;
+        if !(0..0x100).contains(&n) || a[0][0].text != format!("0x{n:02X}") {
+            return fail(at, format!("the svc number: two upper-case hex digits, 0x{:02X} (its host function's name)", n.clamp(0, 0xFF)));
+        }
+        let name = ident(&a[1], at, "the name")?;
+        let inputs = num(&a[2], at, "the inputs")?;
+        let results = num(&a[3], at, "the results")?;
+        if !(0..=8).contains(&inputs) || !(0..=8).contains(&results) {
+            return fail(at, "SVC's inputs and results: registers x0 up, 0 to 8");
+        }
+        Ok(Svc { at: at.clone(), number: n as u32, name, inputs: inputs as u32, results: results as u32 })
+    }
+}
+
 /// the scan's result (patch_scan.PatchSet)
 #[derive(Default, Debug, Clone)]
 pub struct PatchSet {
@@ -789,11 +821,14 @@ pub struct PatchSet {
     pub nv: BTreeMap<String, Replaced>,
     pub declared: BTreeMap<String, Replaced>,
     pub answers: BTreeMap<String, Answer>,
+    /// by number
+    pub svcs: BTreeMap<u32, Svc>,
 }
 
 /// patch_scan.scan_texts: [(file name, text)]
 pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
     let (mut sites, mut replaced, mut funcs, mut answers) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut svcs: BTreeMap<u32, Svc> = BTreeMap::new();
     // (every file tokenised, one without a declaration too: a malformed one is reported, not skipped)
     for (rel, text) in texts {
         for d in declarations(text, rel)? {
@@ -801,6 +836,13 @@ pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
                 "PATCH_AT" | "PATCH_AT_SITE" => sites.push(Site::new(&d)?),
                 "PATCH_FUNC" | "PATCH_FUNC_SYM" => funcs.push(Func::new(&d)?),
                 "PATCH_ANSWER" => answers.push(Answer::new(&d)?),
+                "SVC" => {
+                    let s = Svc::new(&d)?;
+                    if let Some(o) = svcs.get(&s.number) {
+                        return fail(&s.at, format!("svc 0x{:02X} declared again (the first at {}:{})", s.number, o.at.0, o.at.1));
+                    }
+                    svcs.insert(s.number, s);
+                }
                 _ => replaced.push(Replaced::new(&d)?),
             }
         }
@@ -880,7 +922,7 @@ pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
             return fail(&a.at, format!("PATCH_ANSWER of {}, which {} declares at {}:{}", a.symbol, o.kind, o.at.0, o.at.1));
         }
     }
-    let mut ps = PatchSet { sites, funcs, ..Default::default() };
+    let mut ps = PatchSet { sites, funcs, svcs, ..Default::default() };
     // (dict by symbol: a later declaration of one kind would replace an earlier, but the checks above refuse those)
     for r in replaced {
         let m = match r.kind {
@@ -1432,6 +1474,23 @@ mod tests {
         // (a declared read of an argument register is the argument register, not a carry into the next bit)
         let ps = scan_texts(&[("t.c".into(), "HLE(f, reads(x0, x9, \"why\")) { }".into())]).unwrap();
         assert_eq!(ps.hle_fact("f").4, HLE_ARGS | 1 << 9);
+    }
+
+    #[test]
+    fn svcs_by_number() {
+        let ps = scan_texts(&[("t.c".into(), "SVC(0x01, SetHeapSize, 2, 2) { } SVC(0x2A, Flush, 0, 1) { }".into())]).unwrap();
+        assert_eq!(ps.svcs.keys().copied().collect::<Vec<_>>(), vec![0x01, 0x2A]);
+        assert_eq!((ps.svcs[&1].name.as_str(), ps.svcs[&1].inputs, ps.svcs[&1].results), ("SetHeapSize", 2, 2));
+        for (text, msg) in [
+            ("SVC(0x1, A, 0, 1) { }", "two upper-case hex digits, 0x01"),
+            ("SVC(0x2a, A, 0, 1) { }", "two upper-case hex digits, 0x2A"),
+            ("SVC(0x01, A, 9, 1) { }", "0 to 8"),
+            ("SVC(0x01, A, 0) { }", "SVC(number, name, inputs, results)"),
+            ("SVC(0x01, A, 0, 1) { } SVC(0x01, B, 0, 1) { }", "svc 0x01 declared again (the first at t.c:1)"),
+        ] {
+            let err = scan_texts(&[("t.c".into(), text.into())]).unwrap_err();
+            assert!(err.contains(msg), "{text}: {err}");
+        }
     }
 
     #[test]

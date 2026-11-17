@@ -121,6 +121,29 @@ def reads(funcs, name, k=0, seen=None, api=None):
     return out, api
 
 
+def bodies(folder):
+    """{function: (its parameters' names, its lines)} (the last definition of a name: static ones recur)"""
+    out = {}
+    for path in sorted(glob.glob(os.path.join(folder, "*.ll"))):
+        cur = None
+        with open(path, errors="replace") as fh:
+            text = fh.readlines()
+        for line in text:
+            m = DEF.match(line)
+            if m:
+                params = [(re.search(r"(%[\w.]+)\s*$", p.strip()) or [None, None])[1]
+                          for p in re.split(r",(?![^(]*\))", m.group(2))]
+                cur = out[m.group(1)] = (params, [])
+                continue
+            if cur is None:
+                continue
+            if line.startswith("}"):
+                cur = None
+                continue
+            cur[1].append(line)
+    return out
+
+
 # ---- the guest code host code enters: every call, with constant arguments followed through the host's own calls
 CALL = re.compile(r"call [^@%(]*?(?:@([\w.$]+)|(%[\w.]+))\((.*)\)")
 DEF_ALL = re.compile(r"^define ([^@]*)@([\w.$]+)\((.*)\)[^{]*\{")
@@ -230,6 +253,7 @@ class HostReads(unittest.TestCase):
         assert not bad, bad[0]
         cls.funcs = trace(d)
         cls.graph = call_graph(d)
+        cls.bodies = bodies(d)
 
     @classmethod
     def tearDownClass(cls):
@@ -296,6 +320,22 @@ class HostReads(unittest.TestCase):
             declared = set(d.reads if d is not None else ())
             self.assertFalse(got - declared, "%s reads its caller's %s" % (name, sorted(got - declared)))
         self.assertGreater(n, 300)
+
+    def test_svc_inputs(self):
+        """an SVC (host/patch.h) reads no register beyond its declared inputs: the lift passes poison there (a result
+        it leaves unwritten is the input it was, so such a register is an input too)"""
+        with open(os.path.join(ROOT, "host", "hos_svc.c"), encoding="utf-8") as f:
+            decls = re.findall(r"^SVC\((0x[0-9A-F]{2}), (\w+), (\d+), (\d+)\)", f.read(), re.M)
+        self.assertGreater(len(decls), 25)
+        bad = []
+        for num, name, ins, _ in decls:
+            params, lines = self.bodies["hos_svc_" + num]
+            self.assertEqual(len(params), 10, name)
+            used = [k for k in range(8) if any(re.search(re.escape(params[k]) + r"\b", ln) for ln in lines)]
+            beyond = [k for k in used if k >= int(ins)]
+            if beyond:
+                bad.append("SVC %s %s reads x%s beyond its %s inputs" % (num, name, beyond, ins))
+        self.assertFalse(bad, "\n".join(bad))
 
     def test_no_return_address_keys(self):
         """no host behaviour keyed on a guest return address (the caller's patch is an At row at its call site)"""

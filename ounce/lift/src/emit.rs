@@ -168,6 +168,7 @@ pub fn sym(out: &mut Vec<u8>, names: &Names, s: Sym) {
             out.extend_from_slice(b"sjcall_");
             hex8(out, a);
         }
+        Sym::Svc(n) => out.extend_from_slice(format!("hos_svc_0x{n:02X}").as_bytes()),
         Sym::Name(k) => out.extend_from_slice(names.name(k).as_bytes()),
     }
 }
@@ -339,7 +340,7 @@ pub enum Decl {
 const IJUMP_GUEST: &str = "declare void @a64_ijump_guest(ptr, i64, i64)";
 const EXPECT: &str = "declare i1 @llvm.expect.i1(i1, i1)";
 const TRAP: &str = "declare void @a64_trap(ptr, i64, i32)";
-const SVC: &str = "declare void @a64_svc(ptr, i32)";
+const SVC_STOP: &str = "declare void @hos_svc_stop(i32, i64)";
 
 impl Decl {
     /// its text (a helper: `helper:<name>`, which sorts it after every declaration as the Python's set does)
@@ -711,6 +712,9 @@ impl Em<'_, '_> {
         match x.op {
             Op::Const(c) => const_text(&mut self.m.body, x.ty, c),
             Op::VConst(c) => const_text(&mut self.m.body, x.ty, c),
+            Op::Poison => {
+                self.s("poison");
+            }
             Op::CodeAddr(e) => {
                 self.m.declare(Decl::Fn(Sym::Entry(e)));
                 self.s("ptrtoint (ptr @f_");
@@ -926,6 +930,11 @@ fn emit_function(f: &Function, name: Sym, m: &mut Module) {
             Term::NoReturn(pc, w) => {
                 e.m.declare(Decl::Fixed(TRAP));
                 e.l().s("call void @a64_trap(ptr %ctx, i64 ").n(*pc).s(", i32 ").n(*w as u64).s(")").call_nl();
+                e.l().s("unreachable").nl();
+            }
+            Term::SvcStop(pc, n) => {
+                e.m.declare(Decl::Fixed(SVC_STOP));
+                e.l().s("call void @hos_svc_stop(i32 ").n(*n as u64).s(", i64 ").n(*pc).s(") noreturn").call_nl();
                 e.l().s("unreachable").nl();
             }
             Term::Trap(pc, w) => {
@@ -1181,10 +1190,6 @@ fn emit_op(e: &mut Em, v: ValueId) {
             }
             e.l().s("call void @lift2_icall(ptr %ctx, ").t(a[0]).s(", i64 ").n(pc).s(")").call_nl();
         }
-        Op::Svc(imm) => {
-            e.m.declare(Decl::Fixed(SVC));
-            e.l().s("call void @a64_svc(ptr %ctx, i32 ").n(imm as u64).s(")").call_nl();
-        }
         Op::SitePoison { mask, pc } => {
             for var in 0..NVARS as Var {
                 if is_flag(var) || mask & bit(var) == 0 {
@@ -1208,7 +1213,7 @@ fn emit_op(e: &mut Em, v: ValueId) {
                 e.l().s("store i8 %fo").n(id).s(".").s(nm).s(", ptr %cx.").s(nm).s(", align 1").nl();
             }
         }
-        Op::Writeback(_) | Op::Param(_) | Op::Const(_) | Op::VConst(_) | Op::CodeAddr(_) => {
+        Op::Writeback(_) | Op::Param(_) | Op::Const(_) | Op::VConst(_) | Op::Poison | Op::CodeAddr(_) => {
             panic!("emit: op {:?}", x.op)
         }
     }
