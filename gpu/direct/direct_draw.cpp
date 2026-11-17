@@ -27,6 +27,11 @@
 #include "direct_task.h"
 
 namespace hsd {
+struct List;
+bool cap_pass(const List* l);   // (direct_pass.cpp, HOS_DBG=capture)
+}
+
+namespace hsd {
 bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)
 
 // ---- the frame arena ----
@@ -920,6 +925,8 @@ uint64_t tsc_device = 0;
 int64_t t_device = 0;   // (host->now_ns() when the draws' device part was made: the start of the start-time lines)
 void strict_draw(List* l, Reason r);
 void count(List* l, Reason r) {
+    if (cap_pass(l)) logf("capture: a draw into the 543x306 target: %s (list kind %u, present %llu)", kReasons[r], l->info.kind,
+                          (unsigned long long)present_count());
     if (r != R_DRAWN && strict_on()) strict_draw(l, r);
     if (r == R_DRAWN) l->n_drawn++;
     else if (r == R_MESH || r == R_TASK_MESH) l->n_mesh++;

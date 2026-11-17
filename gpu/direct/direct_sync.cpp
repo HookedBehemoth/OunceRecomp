@@ -685,6 +685,26 @@ extern "C" __attribute__((visibility("default"))) void hsd_submit(uint64_t queue
     {
         auto lk = lock_mu();
         Queue* q = queue_of(queue);
+        static const bool cap = dbg("capture");   // (HOS_DBG=capture: an immediate list's submit, and what the queues hold)
+        bool imm = false, drawn = false;
+        struct R { static bool any(const List* l, int d) {
+            if (l->cap_drawn) return true;
+            if (d > 8) return false;
+            for (const FrameOp& o : l->ops) if (o.op == NOP_CALL && o.callee && any(o.callee, d + 1)) return true;
+            for (const Seg& g : l->segs) if (g.callee && any(g.callee, d + 1)) return true;
+            return false;
+        } };
+        if (cap) for (const List* l : s.lists) imm |= l->info.kind == HSD_LIST_IMMEDIATE, drawn |= R::any(l, 0);
+        if (cap && drawn) logf("capture: a list that renders the 543x306 target submitted on queue %u at present %llu", q->index,
+                               (unsigned long long)present_count());
+        if (cap && imm) {
+            char b[256];
+            int k = 0;
+            for (const Queue* x : queues)
+                k += std::snprintf(b + k, k < (int)sizeof b ? sizeof b - k : 0, " q%u %zu", x->index, x->subs.size());
+            logf("capture: immediate list submitted on queue %u at present %llu; not sent yet per queue:%s", q->index,
+                 (unsigned long long)present_count(), b);
+        }
         s.seq = ++q->seq;
         s.wait_fences.swap(q->wait_fences);
         q->subs.push_back(std::move(s));

@@ -258,7 +258,14 @@ void suspend(List* l) {
     p.last_prog = 0;
     query_flush(l, &cmd);   // (M5: its reports written, after it and before what follows)
 }
+static bool cap_target(const PassRec& p) {   // (HOS_DBG=capture: a pass whose first colour target is 543x306)
+    static const bool cap = dbg("capture");
+    return cap && p.noted && p.n && p.color[0].im && p.color[0].im->width == 543 && p.color[0].im->height == 306;
+}
 void end_pass(List* l) {
+    if (cap_target(l->pass))
+        logf("capture: pass on image %u ends: list kind %u lr %#llx at present %llu, rendered %d, load %#x", l->pass.color[0].im->id,
+             l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count(), (int)l->pass.rendered, l->pass.load), l->cap_drawn = true;
     suspend(l);
     l->pass.noted = false;
 }
@@ -407,7 +414,17 @@ VkCommandBuffer barrier_buffer() {
 
 void copy_bt(List* l, const nvn_p_copy_bt& p, bool to_image) {
     Sub s;
-    if (!image_sub(p.tex, p.has_view ? &p.view : nullptr, p.r, s) || (to_image && s.im->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)))
+    const bool ok = image_sub(p.tex, p.has_view ? &p.view : nullptr, p.r, s);
+    static const bool cap = dbg("capture");   // (HOS_DBG=capture, diagnosis: each copy to a buffer, its source image)
+    if (cap && !to_image) {
+        const Image* im = s.im;
+        logf("capture: T2B list kind %u lr %#llx at present %llu: tex %#llx -> buf %#llx (%dx%d): %s; image %u %ux%u pooled %d owner %d "
+             "claimed %llu written %#x placeholder %d", l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count(),
+             (unsigned long long)(p.tex ? p.tex->gpu : 0), (unsigned long long)p.buf, p.r.width, p.r.height, ok ? "found" : "NO IMAGE",
+             im ? im->id : 0, im ? im->width : 0, im ? im->height : 0, im ? (int)im->pooled : -1, im ? (int)im->owner.load() : -1,
+             im ? (unsigned long long)im->claimed.load() : 0ull, im ? im->written.load() : 0, im ? (int)im->placeholder : -1);
+    }
+    if (!ok || (to_image && s.im->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)))
         return count(S_COPY_SKIPPED);
     const uint64_t wb = (s.w + s.bw - 1) / s.bw, hb = (s.h + s.bh - 1) / s.bh;
     const uint64_t row = l->pass.copy_stride > 0 ? (uint64_t)l->pass.copy_stride : wb * s.bpb;
@@ -510,6 +527,7 @@ bool payload(const void* p, uint32_t size, T& out) {
 }
 
 }  // namespace
+bool cap_pass(const List* l) { return cap_target(l->pass); }   // (HOS_DBG=capture)
 
 void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     PassRec& p = l->pass;

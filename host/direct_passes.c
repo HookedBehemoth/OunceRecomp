@@ -20,6 +20,7 @@
 #include <string.h>
 #include "os.h"
 
+extern volatile int64_t hos_present_count;
 static struct {
     volatile int64_t asked, early, inl[2], inl_no_jobs[2], inl_no_list;
 } n;
@@ -81,6 +82,12 @@ int direct_passes_recorder(uint64_t key) {
     os_atomic_inc(&n.asked);
     if (d->pass_known(key)) return 0;
     os_atomic_inc(&n.early);
+    {   /* HOS_DBG=capture (diagnosis): each early return, by key */
+        static int on = -1;
+        if (on < 0) on = hos_dbg_item("capture");
+        if (on) hos_log("capture: recorder early return: key %#llx (bytes %#llx) at present %lld", (unsigned long long)key,
+                        (unsigned long long)key_hash(key), (long long)hos_present_count);
+    }
     return 1;   /* (as 0x8008693c: nothing recorded, no view record) */
 }
 
@@ -89,9 +96,20 @@ int direct_passes_recorder(uint64_t key) {
 static void inline_pass(int site, int nk, const uint64_t *ks, uint64_t drawctx) {
     const hsd_fns *d = rx_direct();
     if (!d) return;
+    {
+        static int on0 = -1;
+        if (on0 < 0) on0 = hos_dbg_item("capture");
+        if (on0) hos_log("capture: inline site %d reached with %d keys at present %lld", site, nk, (long long)hos_present_count);
+    }
     if (!nk) {
         os_atomic_inc(&n.inl_no_jobs[site]);
         return;
+    }
+    {
+        static int on = -1;
+        if (on < 0) on = hos_dbg_item("capture");
+        for (int i = 0; on && i < nk; i++)
+            hos_log("capture: inline pass (site %d): key %#llx at present %lld", site, (unsigned long long)ks[i], (long long)hos_present_count);
     }
     void *list = direct_cmd_list(hos_guest_range(drawctx + 216, 8) ? G64(drawctx + 216) : 0);
     if (!list) os_atomic_inc(&n.inl_no_list);

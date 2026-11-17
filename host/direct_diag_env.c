@@ -63,3 +63,15 @@ PATCH_AT(0x80357060, word(0xd503237f), before, none, direct_diag_env, as(x0, o),
             (unsigned long long)g, (unsigned long long)l, gf(g + 0xdac), gf(l + 0x9c0), gf(l + 0x9c4), gf(l + 0x9c8), gf(l + 0x9cc),
             gf(l + 0x960), gf(l + 0x980), gf(l + 0x9a0), gf(l + 0xaf0), gf(l + 0x6c0), gf(l + 0x6c4), gf(l + 0x6c8));
 }
+
+/* (HOS_DBG=capture, diagnosis) texdata_serialize_jpg right after its texdata_copy_to_buffer: the read-back's mean byte */
+PATCH_AT(0x80bd1eb0, word(0x71000b7f), after, none, direct_diag_capture, as(x23, buf), as(w27, h)) {
+    static int on = -1;
+    if (on < 0) on = hos_dbg_item("capture");
+    if (!on || !buf || !hos_guest_range(buf, (uint64_t)h * 543 * 4)) return;
+    const uint8_t *p = (const uint8_t *)GP(buf);
+    uint64_t sum = 0, nz = 0, n = (uint64_t)h * 543 * 4;
+    for (uint64_t i = 0; i < n; i++) sum += p[i], nz += p[i] != 0;
+    hos_log("capture: read back %#llx rows %u: mean byte %.2f, nonzero %llu of %llu", (unsigned long long)buf, h, (double)sum / n,
+            (unsigned long long)nz, (unsigned long long)n);
+}

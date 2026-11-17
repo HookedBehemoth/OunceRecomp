@@ -97,6 +97,7 @@ struct List {
     bool packet = false;      // (load-time and unclassified lists: a packet, expanded into each caller at its call)
     std::vector<uint8_t> pkt; // (the packet: per op {op, size} then the payload, 8-byte aligned; callees in place)
     uint32_t pkt_ops = 0;
+    bool cap_drawn = false;   // (HOS_DBG=capture: it renders into a 543x306 target)
     uint64_t counted = 0;     // (its bytes as counted to MO_M_LISTS)
     std::vector<const List*> executed;   // (secondaries executed in its renderings: their slots go with its submissions)
     uint32_t sec_draws = 0;   // (a secondary's draw ops so far: its first is timed apart)
