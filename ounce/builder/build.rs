@@ -1,5 +1,5 @@
-// The C++ shims over libLLVM and lld (src/llvm_shim.cpp, src/lld_shim.cpp), built against the LLVM that llvm-config names (LLVM_CONFIG, else
-// llvm-config on the PATH); libLLVM is linked dynamically.
+// The C++ shims over LLVM, lld and clang (src/*_shim.cpp). By default against the LLVM that llvm-config names (LLVM_CONFIG,
+// else llvm-config on the PATH), libLLVM linked dynamically; with the `static-llvm` feature against a static build tree.
 use std::process::Command;
 
 const LLVM_MAJOR: u32 = 23;
@@ -14,7 +14,12 @@ fn llvm_config(args: &[&str]) -> String {
 fn main() {
     println!("cargo:rerun-if-changed=src/llvm_shim.cpp");
     println!("cargo:rerun-if-changed=src/lld_shim.cpp");
+    println!("cargo:rerun-if-changed=src/clang_shim.cpp");
     println!("cargo:rerun-if-env-changed=LLVM_CONFIG");
+    println!("cargo:rerun-if-env-changed=LLVM_STATIC_DIR");
+    if std::env::var_os("CARGO_FEATURE_STATIC_LLVM").is_some() {
+        return static_llvm();
+    }
     let version = llvm_config(&["--version"]);
     let major: u32 = version.split('.').next().unwrap().parse().unwrap();
     assert_eq!(major, LLVM_MAJOR, "LLVM {version}: the lifter's IR is written for LLVM {LLVM_MAJOR}");
@@ -33,4 +38,53 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib={l}");
     }
     println!("cargo:rustc-link-lib=dylib=stdc++");
+}
+
+/// The `static-llvm` feature: LLVM and lld (and with `clang`, clang's libraries) linked statically from the build tree
+/// LLVM_STATIC_DIR (its source tree beside it, ../src), every archive in one group so the linker takes only what is
+/// used
+fn static_llvm() {
+    let dir = std::path::PathBuf::from(std::env::var("LLVM_STATIC_DIR").expect("static-llvm: set LLVM_STATIC_DIR to the LLVM build tree"));
+    let src = dir.join("../src");
+    let config = dir.join("bin/llvm-config");
+    let run = |args: &[&str]| {
+        let out = Command::new(&config).args(args).output().unwrap_or_else(|e| panic!("{}: {e}", config.display()));
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let clang = std::env::var_os("CARGO_FEATURE_CLANG").is_some();
+    let mut b = cc::Build::new();
+    b.cpp(true).file("src/llvm_shim.cpp").file("src/lld_shim.cpp").warnings(false).cargo_metadata(false);
+    if clang {
+        b.file("src/clang_shim.cpp");
+    }
+    for f in run(&["--cxxflags"]).split_whitespace() {
+        b.flag(f);
+    }
+    for inc in [src.join("lld/include"), src.join("clang/include"), dir.join("tools/clang/include")] {
+        b.include(inc);
+    }
+    b.flag("-ffunction-sections").flag("-fdata-sections");
+    b.compile("llvm_shim");
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let mut archives: Vec<std::path::PathBuf> = std::fs::read_dir(dir.join("lib"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p.file_name().unwrap().to_string_lossy();
+            n.ends_with(".a") && (n.starts_with("libLLVM") || n.starts_with("liblld") || clang && n.starts_with("libclang"))
+        })
+        .collect();
+    archives.sort();
+    println!("cargo:rustc-link-arg=-Wl,--gc-sections");
+    println!("cargo:rustc-link-arg=-Wl,--start-group");
+    println!("cargo:rustc-link-arg={}", out.join("libllvm_shim.a").display());
+    for a in &archives {
+        println!("cargo:rustc-link-arg={}", a.display());
+    }
+    println!("cargo:rustc-link-arg=-Wl,--end-group");
+    for l in run(&["--link-static", "--system-libs"]).split_whitespace() {
+        println!("cargo:rustc-link-arg={l}");
+    }
+    println!("cargo:rustc-link-arg=-lstdc++");
 }

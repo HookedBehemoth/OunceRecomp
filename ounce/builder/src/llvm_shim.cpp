@@ -21,6 +21,7 @@
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Triple.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -96,11 +97,39 @@ static void set_rotation_threshold(int v) {
 
 // slp: PipelineTuningOptions.SLPVectorization (clang: -vectorize-slp, on from -O2); rotation: the threshold above
 // (-1: as it is)
+// the last compile's stage seconds on this thread: parse, pipeline, code generation, teardown
+static thread_local double stage_s[4];
+extern "C" void hk_llvm_stage_seconds(double *out) { memcpy(out, stage_s, sizeof stage_s); }
+
+static double since(std::chrono::steady_clock::time_point &t) {
+    auto now = std::chrono::steady_clock::now();
+    double s = std::chrono::duration<double>(now - t).count();
+    t = now;
+    return s;
+}
+
+static void *compile(LLVMContext &ctx, const char *ir, size_t n, const char *name, const char *cpu, const char *pipeline,
+                     int level, int slp, int rotation, size_t *out_n, char **err, std::chrono::steady_clock::time_point &t);
+
 extern "C" void *hk_llvm_compile(const char *ir, size_t n, const char *name, const char *cpu, const char *pipeline,
                                  int level, int slp, int rotation, size_t *out_n, char **err) {
-    LLVMContext ctx;   // (textual IR needs its value names: clang keeps them for IR input too)
+    auto t = std::chrono::steady_clock::now();
+    void *out;
+    double module_s;
+    {
+        auto ctx = std::make_unique<LLVMContext>();   // (textual IR needs its value names: clang keeps them for IR input too)
+        out = compile(*ctx, ir, n, name, cpu, pipeline, level, slp, rotation, out_n, err, t);
+        module_s = since(t);   // (the module freed as compile returns)
+    }
+    stage_s[3] = module_s + since(t);   // (and the context)
+    return out;
+}
+
+static void *compile(LLVMContext &ctx, const char *ir, size_t n, const char *name, const char *cpu, const char *pipeline,
+                     int level, int slp, int rotation, size_t *out_n, char **err, std::chrono::steady_clock::time_point &t) {
     SMDiagnostic diag;
     std::unique_ptr<Module> m = parseIR(MemoryBufferRef(StringRef(ir, n), name), diag, ctx);
+    stage_s[0] = since(t);
     if (!m) {
         std::string msg;
         raw_string_ostream os(msg);
@@ -140,6 +169,7 @@ extern "C" void *hk_llvm_compile(const char *ir, size_t n, const char *name, con
         }
         mpm.run(*m, mam);
     }
+    stage_s[1] = since(t);
     if (const char *dump = getenv("HK_DUMP_IR")) {   // (a diagnosis: the module after the pipeline)
         std::error_code ec;
         raw_fd_ostream f(dump, ec);
@@ -156,6 +186,7 @@ extern "C" void *hk_llvm_compile(const char *ir, size_t n, const char *name, con
         return nullptr;
     }
     cg.run(*m);
+    stage_s[2] = since(t);
     void *out = malloc(obj.size() ? obj.size() : 1);
     memcpy(out, obj.data(), obj.size());
     *out_n = obj.size();

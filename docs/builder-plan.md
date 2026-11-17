@@ -71,6 +71,26 @@ for them. Each object equals clang's object of the C these files replace in its 
 relocations (`hookshot-builder objeq <a.o> <b.o>`). The guest model's runtime (`rt64/a64_rt.c`) reads no dump: it is
 built with the host.
 
+## LLVM linked statically
+
+`--features static-llvm` links LLVM and lld from a static build tree (`LLVM_STATIC_DIR`: Release, X86 only, clang
+and lld projects, no tools); `--features clang` adds clang's libraries and `hookshot-builder compile-c`, a C file
+compiled in this process from build.py's flags. Its objects equal the system clang's for every host C file when
+`-fstack-protector-strong` is given (the distribution's clang turns it on by default). Sizes of the stripped builder
+(the lifter included):
+
+| Builder | Raw | zstd -19 | xz -9 | squashfs (zstd 19) |
+|---|---|---|---|---|
+| LLVM and lld | 54.5 MB | 16.2 MB | 14.7 MB | 19.9 MB |
+| LLVM, lld and clang | 98.1 MB | 27.2 MB | 24.4 MB | 33.7 MB |
+
+The static build compiles the same objects (all 154, byte for byte) 28 % slower than the distribution's libLLVM
+(CachyOS, built for x86-64-v3): 215 s against 168 s for the lift and compile. A shipped static LLVM wants the same
+build: x86-64-v3, LTO and profile-guided optimisation.
+
+The host's C needs 153 of clang's resource headers (3.3 MB, 0.2 MB compressed); the whole folder is 16.4 MB
+(0.8 MB compressed).
+
 ## The output folder
 
 `hookshot`, `hookshot_direct.so`, `libSDL2-2.0.so.0`, `image.bin`, `romfs/` (a copy), `prepared/tex/`, the shader

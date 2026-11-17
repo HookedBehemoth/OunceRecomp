@@ -1,5 +1,7 @@
 //! hookshot-builder: a player's dump -> a portable game folder (docs/builder-plan.md).
 
+#[cfg(feature = "clang")]
+mod clang;
 mod compile;
 mod labels;
 mod lift;
@@ -18,6 +20,7 @@ const HELP: &str = "hookshot-builder <command> ...
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (build.py's objs.rsp), lld in this process
   objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
+  compile-c <out.o> -- <clang args>... a C file compiled in this process by clang's libraries (feature clang)
   llvm-version                         the libLLVM this process uses";
 
 pub fn fail(msg: impl std::fmt::Display) -> ! {
@@ -58,6 +61,15 @@ fn main() {
             let (same, lines) = objeq::compare(&read(a), &read(b)).unwrap_or_else(|e| fail(e));
             println!("{}", lines.join("\n"));
             std::process::exit(if same { 0 } else { 1 });
+        }
+        #[cfg(feature = "clang")]
+        Some("compile-c") => {
+            let Some(k) = argv.iter().position(|a| a == "--") else { fail("compile-c <out.o> -- <clang args>...") };
+            let [out] = &argv[1..k] else { fail("compile-c <out.o> -- <clang args>...") };
+            let t = Instant::now();
+            let o = clang::compile(&argv[k + 1..]).unwrap_or_else(|e| fail(e));
+            std::fs::write(out, &o).unwrap_or_else(|e| fail(format!("{out}: {e}")));
+            println!("{out}: {} bytes in {:.2} s", o.len(), t.elapsed().as_secs_f64());
         }
         Some("llvm-version") => println!("{}", llvm::version()),
         _ => println!("{HELP}"),

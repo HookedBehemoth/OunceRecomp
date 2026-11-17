@@ -18,6 +18,7 @@ extern "C" {
         err: *mut *mut c_char,
     ) -> *mut c_void;
     fn hk_free(p: *mut c_void);
+    fn hk_llvm_stage_seconds(out: *mut f64);
 }
 
 fn take_err(e: *mut c_char) -> String {
@@ -82,4 +83,11 @@ pub fn compile(ir: &[u8], name: &str, r: &Recipe) -> Result<Vec<u8>, String> {
     let v = unsafe { std::slice::from_raw_parts(p as *const u8, n) }.to_vec();
     unsafe { hk_free(p) };
     Ok(v)
+}
+
+/// this thread's last compile's seconds: parse, pass pipeline, code generation, teardown (module and context)
+pub fn stage_seconds() -> [f64; 4] {
+    let mut s = [0f64; 4];
+    unsafe { hk_llvm_stage_seconds(s.as_mut_ptr()) };
+    s
 }

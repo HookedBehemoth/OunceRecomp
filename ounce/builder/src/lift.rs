@@ -113,6 +113,7 @@ fn compile_thread(rx: &Mutex<Receiver<Job>>, out: &Path, check: Option<&Path>, d
         let t = Instant::now();
         let o = compile::partition(&ir, "<stdin>", level).unwrap_or_else(|e| crate::fail(format!("{name}: {e}")));
         let dt = t.elapsed().as_secs_f64();
+        let ir_mb = ir.len() >> 20;
         drop(ir);
         let path: PathBuf = out.join(format!("{name}.o"));
         std::fs::write(&path, &o).unwrap_or_else(|e| crate::fail(format!("{}: {e}", path.display())));
@@ -132,6 +133,7 @@ fn compile_thread(rx: &Mutex<Receiver<Job>>, out: &Path, check: Option<&Path>, d
         if verdict == Some("DIFFERS") {
             d.differ.push(name.clone());
         }
-        println!("{name}: {level:?} {dt:.1} s{} [{}, {:.0} s]", verdict.map_or(String::new(), |v| format!(", {v}")), d.objects, t0.elapsed().as_secs_f64());
+        let st = crate::llvm::stage_seconds();
+        println!("{name}: {level:?} {dt:.1} s (parse {:.2}, passes {:.2}, codegen {:.2}, teardown {:.2}; {} MB IR){} [{}, {:.0} s]", st[0], st[1], st[2], st[3], ir_mb, verdict.map_or(String::new(), |v| format!(", {v}")), d.objects, t0.elapsed().as_secs_f64());
     }
 }
