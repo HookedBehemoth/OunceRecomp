@@ -220,7 +220,7 @@
 8086e790 pass_cubemap_filter_caller       # work/assets/native/engine-frame.md
 8066bec0 pass_deferred_lighting           # work/assets/native/engine-frame.md: deferred lighting / composite
 8065c660 pass_depth_buffer                # work/assets/native/engine-frame.md, work/assets/native/rt-alloc.md: "DepthBuffer", "Reprojection"
-8028a2a0 pass_depth_probe_list            # docs/direct/jobs.md: depth probes' layer list (owner, drawctx, key)
+8028a2a0 pass_key_draw                    # docs/direct/jobs.md, host/direct_passes.c: (owner, drawctx, key): draws a pass by its key, inline through pass_draw_inline (0x8028a588); shared by the depth probes, fog half depth, fog pre-pass depth, skin shading and others (was pass_depth_probe_list, its first caller)
 802867f0 pass_depth_probes                # work/assets/native/engine-frame.md: "inner/outer_depth_probe_tex"
 80280270 pass_dof                         # work/assets/native/engine-frame.md: DOF / bilateral grid group
 80681320 pass_draw_inline                 # docs/direct-backend-plan.md, docs/direct/jobs.md: the layer list drawing a pass itself
