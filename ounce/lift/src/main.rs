@@ -332,6 +332,9 @@ fn lift(argv: Vec<String>) {
     // (the same definitions as IR, for the player builder, which has no C compiler; not in the golden)
     let lls = [
         ("gen/a64_table.ll", gen::table_ll(&functions, &img.hooks)),
+        ("gen/a64_hooks.ll", gen::hooks_ll(&img.hooks, &answered)),
+        ("gen/a64_stubs.ll", gen::stubs_ll(&img.hooks, &base.implemented)),
+        ("gen/nvn2_exports.ll", gen::nvn_exports_ll(&base.nvn)),
         ("gen/hos_image.ll", gen::image_ll(img, facts, &base.exefs).unwrap_or_else(|e| fail(e))),
         ("gen/a64_code_slots.ll", gen::code_slots_ll(img, facts, &functions)),
     ];

@@ -1,7 +1,7 @@
 //! The generated sources of a standalone lift, byte for byte the Python side's: gen/a64_table.c, a64_hooks.c,
 //! a64_code_slots.c (nx2/lift2/tables.py), functions.txt (nx2/lift.py), hos_image.c, a64_stubs.c, nvn2_exports.c
 //! (nx2/standalone.py) and rt64/a64.h, a64_rt.c (nx2/rtgen.py: a64-kit's runtime with the 64-bit guest window).
-//! a64_table, a64_code_slots and hos_image are also written as IR (gen/*.ll) for the player builder, which has no
+//! Each of the six gen/ files is also written as IR (gen/*.ll) for the player builder, which has no
 //! C compiler; their objects equal the C files' in every loaded byte.
 
 use crate::eden::{nvn_proc_name, Facts};
@@ -72,6 +72,20 @@ fn slot_list(img: &Image, facts: &Facts, functions: &[u64]) -> Vec<(u64, usize)>
     slots
 }
 
+/// a64_hooks.c as IR (a64_hooks.ll): f_<address> tail-calls the hook's host function
+pub fn hooks_ll(hooks: &[Hook], answered: &BTreeSet<u64>) -> String {
+    let mut m = Ll::new();
+    let live: Vec<&Hook> = hooks.iter().filter(|x| !answered.contains(&x.addr)).collect();
+    for x in &live {
+        writeln!(m.s, "define dso_local void @f_{:08x}({CTX} %0) local_unnamed_addr #0 {{\n  musttail call void @{}({CTX} %0) #2\n  ret void\n}}", x.addr, x.c).unwrap();
+    }
+    for n in live.iter().map(|x| x.c.as_str()).collect::<BTreeSet<&str>>() {
+        writeln!(m.s, "declare void @{n}({CTX}) local_unnamed_addr #1").unwrap();
+    }
+    m.s.push_str(&fn_attrs(false));
+    m.s
+}
+
 /// a64_table.c's definitions as IR (a64_table.ll): the function count, their addresses and their pointers
 pub fn table_ll(functions: &[u64], hooks: &[Hook]) -> String {
     let mut fns: Vec<u64> = functions.iter().copied().chain(hooks.iter().map(|h| h.addr)).collect();
@@ -119,6 +133,21 @@ pub fn code_slots_ll(img: &Image, facts: &Facts, functions: &[u64]) -> String {
     m.ints("a64_code_slot_fn", 32, slots.iter().map(|x| x.1 as u64));
     m.s
 }
+
+/// The attribute groups of a module of one-line functions, as clang gives C functions here (the target CPU is the
+/// compile's, as for the partitions): #0 the definitions, #1 the declarations, #2 the calls; `noreturn` on all
+/// three when the callee does not return
+fn fn_attrs(noreturn: bool) -> String {
+    let nr = if noreturn { "noreturn " } else { "" };
+    format!(
+        "attributes #0 = {{ {nr}nounwind sspstrong uwtable \"min-legal-vector-width\"=\"0\" \"no-trapping-math\"=\"true\" \"stack-protector-buffer-size\"=\"8\" }}\n\
+         attributes #1 = {{ {nr}\"no-trapping-math\"=\"true\" \"stack-protector-buffer-size\"=\"8\" }}\n\
+         attributes #2 = {{ {nr}nounwind }}\n"
+    )
+}
+
+/// The context parameter (`Ctx *A64_NOESC c`)
+const CTX: &str = "ptr noundef captures(address)";
 
 /// A data-only IR module: constant globals with the linkage and alignment clang gives a C file's `const`
 /// definitions in a PIE (dso_local; an array of 16 bytes or more aligned to 16)
@@ -182,14 +211,20 @@ impl Ll {
         self.global(name, &ty, &init, Self::array_align(text.len() as u64 + 1, 1));
     }
 
-    /// `const char *const name[] = {"a", ...};`: the strings as clang's private .str constants
+    /// a string literal: clang's private .str constant; its name
+    fn literal(&mut self, text: &str) -> String {
+        let id = if self.strs == 0 { ".str".to_string() } else { format!(".str.{}", self.strs) };
+        self.strs += 1;
+        let (ty, init) = Self::c_bytes(text);
+        writeln!(self.s, "@{id} = private unnamed_addr constant {ty} {init}, align 1").unwrap();
+        id
+    }
+
+    /// `const char *const name[] = {"a", ...};`
     fn strs(&mut self, name: &str, texts: &[&str]) {
         let mut refs = Vec::new();
         for t in texts {
-            let id = if self.strs == 0 { ".str".to_string() } else { format!(".str.{}", self.strs) };
-            self.strs += 1;
-            let (ty, init) = Self::c_bytes(t);
-            writeln!(self.s, "@{id} = private unnamed_addr constant {ty} {init}, align 1").unwrap();
+            let id = self.literal(t);
             refs.push(format!("ptr @{id}"));
         }
         let n = texts.len() as u64;
@@ -216,6 +251,22 @@ pub fn nvn_exports_c(names: &[String]) -> String {
     s
 }
 
+/// nvn2_exports.c as IR (nvn2_exports.ll)
+pub fn nvn_exports_ll(names: &[String]) -> String {
+    let mut m = Ll::new();
+    let mut calls = Vec::new();
+    for n in names {
+        writeln!(m.s, "@imp_{n}.k = internal global [2 x ptr] zeroinitializer, align 16").unwrap();
+        calls.push((n, m.literal(nvn_proc_name(n).unwrap())));
+    }
+    for (n, lit) in calls {
+        writeln!(m.s, "define dso_local void @imp_{n}({CTX} %0) local_unnamed_addr #0 {{\n  tail call void @nvn2_dispatch(ptr noundef %0, ptr noundef nonnull @{lit}, ptr noundef nonnull @imp_{n}.k) #2\n  ret void\n}}").unwrap();
+    }
+    m.s.push_str("declare void @nvn2_dispatch(ptr noundef, ptr noundef, ptr noundef) local_unnamed_addr #1\n");
+    m.s.push_str(&fn_attrs(false));
+    m.s
+}
+
 /// a symbol's demangled form (cpp_demangle, a fixed version: the generated file does not depend on the toolchain),
 /// the symbol itself when it is no C++ name
 fn demangle(sym: &str) -> String {
@@ -223,11 +274,31 @@ fn demangle(sym: &str) -> String {
     cpp_demangle::Symbol::new(sym).ok().and_then(|d| d.demangle_with_options(&opts).ok()).unwrap_or_else(|| sym.to_string())
 }
 
+/// The hooks a64_stubs.c stops in: those the host does not define, by symbol (each HLE / PATCH_ANSWER, and each NVN
+/// function hooked (nvn2_exports.c); a hook's C name is its symbol made an identifier)
+fn stub_hooks<'a>(hooks: &'a [Hook], implemented: &BTreeSet<String>) -> Vec<&'a Hook> {
+    hooks.iter().filter(|h| !implemented.contains(&h.sym) && nvn_proc_name(&h.sym).is_none()).collect()
+}
+
+/// a64_stubs.c as IR (a64_stubs.ll)
+pub fn stubs_ll(hooks: &[Hook], implemented: &BTreeSet<String>) -> String {
+    let mut m = Ll::new();
+    let mut calls = Vec::new();
+    for h in stub_hooks(hooks, implemented) {
+        let sym = m.literal(&h.sym);
+        calls.push((h, sym, m.literal(&demangle(&h.sym))));
+    }
+    for (h, sym, name) in calls {
+        writeln!(m.s, "define dso_local void @{}({CTX} %0) local_unnamed_addr #0 {{\n  tail call void @hos_import_stop({CTX} %0, ptr noundef nonnull @{sym}, ptr noundef nonnull @{name}) #2\n  unreachable\n}}", h.c).unwrap();
+    }
+    writeln!(m.s, "declare void @hos_import_stop({CTX}, ptr noundef, ptr noundef) local_unnamed_addr #1").unwrap();
+    m.s.push_str(&fn_attrs(true));
+    m.s
+}
+
 /// a64_stubs.c (standalone.gen_stubs) and the number of stubs
 pub fn stubs_c(hooks: &[Hook], implemented: &BTreeSet<String>) -> (String, usize) {
-    // (the hooks the host defines, by symbol: each HLE / PATCH_ANSWER, and each NVN function hooked (nvn2_exports.c);
-    // a hook's C name is its symbol made an identifier)
-    let hs: Vec<&Hook> = hooks.iter().filter(|h| !implemented.contains(&h.sym) && nvn_proc_name(&h.sym).is_none()).collect();
+    let hs = stub_hooks(hooks, implemented);
     let mut s = String::from("#include \"a64.h\"\n__attribute__((noreturn)) void hos_import_stop(Ctx *A64_NOESC c, const char *sym, const char *name);\n\n");
     for h in &hs {
         writeln!(s, "void {}(Ctx *A64_NOESC c) {{ hos_import_stop(c, \"{}\", \"{}\"); }}", h.c, h.sym, demangle(&h.sym).replace('\\', "\\\\").replace('"', "\\\"")).unwrap();
