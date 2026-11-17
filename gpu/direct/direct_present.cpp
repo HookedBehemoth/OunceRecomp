@@ -366,8 +366,9 @@ int present_start(void* hwnd) {
             vkCreateSemaphore(dev.device, &si, nullptr, &f.acquired) != VK_SUCCESS)
             return 0;
     }
-    if (!hwnd) {   // (HOS_HEADLESS)
+    if (!hwnd) {   // (HOS_HEADLESS: an image of the size a resize before the start asked for, else 1920x1080)
         dev.offscreen = true;
+        if (const uint64_t want = resize_to.exchange(0, std::memory_order_acquire)) extent = {(uint32_t)(want >> 32), (uint32_t)want};
         logf("direct: no window: presents clear an image of their own (%ux%u)", extent.width, extent.height);
         return make_offscreen() ? 1 : 0;
     }

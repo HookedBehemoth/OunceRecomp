@@ -3,6 +3,7 @@
    A library that does not load or start ends the game. Calls made before rx_start that the back end needs are kept and given
    to it at the start, in order. */
 #include "hos.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"
@@ -195,6 +196,9 @@ int rx_start(void *hwnd) {
     }
     mkwvk_init_fn init = (mkwvk_init_fn)os_lib_sym(direct_module, "mkwvk_init");
     const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
+    int w = 0, h = 0;   /* (no window: the offscreen image takes HOS_WINDOW_SIZE, as the window would) */
+    if (r && !hwnd && getenv("HOS_WINDOW_SIZE") && sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64)
+        r->resize(w, h);
     if (!r || r->version != MKWVK_API_VERSION || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectLib);
     vk = r;
     flush_early();

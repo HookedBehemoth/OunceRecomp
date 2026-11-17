@@ -402,34 +402,20 @@ static int game_main(int argc, char **argv) {
     hos_mem_init(hos_image_end);
     void hos_code_ptrs_init(void);
     hos_code_ptrs_init();   /* code_ptrs.c */
-    {   /* (hookshot) Widescreen and ultrawide (host/oot_probes.c's rows): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
-           Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
-           world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio. Wider
-           than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
-           constant in the game's data was changed and the 16:9 picture stretched to the window. */
+    {   /* (hookshot) Widescreen and ultrawide (host/oot_probes.c's rows): the window's shape at start, HOS_WINDOW_SIZE's
+           when set, else the main monitor's (the window opens at that shape); HOS_ASPECT=<ratio> over both. The game's
+           picture takes that shape at its own height (the world wider at the sides on an ultrawide screen, narrower on a
+           16:10 or 4:3 one), its main camera the picture's ratio. Wider than 16:9 the HUD, menus and movies keep the
+           middle 16:9; narrower they fill the picture's width. The picture's size is fixed at start: a window resized to
+           another shape shows it letterboxed, not stretched. */
         const char *e = getenv("HOS_ASPECT");
         float want = e ? (float)atof(e) : 0.0f;
-        if (!e) {
-            int on = 0;
-            char path[OS_PATH_MAX];
-            const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
-            char *slash = len ? strrchr(path, '/') : NULL;
-            if (slash) {
-                snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
-                FILE *o = fopen(path, "r");
-                if (o) {
-                    char line[80];
-                    while (fgets(line, sizeof line, o)) {
-                        if (!strncmp(line, "ultrawide=", 10)) on = atoi(line + 10) != 0;
-                        /* (the game sizes its scene before the menu is up: Resolution 100% read here too) */
-                        /* (resolution=1 no longer raises the scene: #849 makes a fixed Resolution reach the 3D; HOS_SCENE_NATIVE=1 below) */
-                    }
-                    fclose(o);
-                }
-            }
-            int sw, sh;
-            hos_screen_size(&sw, &sh);
-            if (on && sh > 0) want = (float)sw / (float)sh;
+        int ww = 0, wh = 0;
+        if (!e && getenv("HOS_WINDOW_SIZE") && sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &ww, &wh) == 2 && ww >= 64 && wh >= 64)
+            want = (float)ww / (float)wh;
+        else if (!e) {
+            hos_screen_size(&ww, &wh);   /* (0 x 0 headless) */
+            if (wh > 0) want = (float)ww / (float)wh;
         }
         if (getenv("HOS_SCENE_NATIVE")) hos_native_scene = atoi(getenv("HOS_SCENE_NATIVE")) != 0;
         if (getenv("HOS_FIX_RES")) hos_fix_res = atoi(getenv("HOS_FIX_RES")) != 0;

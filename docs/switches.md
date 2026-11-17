@@ -29,10 +29,10 @@ The build's own switches are in [Build and iterate on the lifter](lifter-build.m
 | Switch | What it does |
 |---|---|
 | `HOS_HEADLESS` | No window: the renderer draws offscreen |
-| `HOS_WINDOW_SIZE=<w>x<h>` | The window's size (1280x720 by default) |
+| `HOS_WINDOW_SIZE=<w>x<h>` | The window's size, or the headless image's (720 high at the monitor's shape by default). Its shape at start is the picture's |
 | `HOS_AUDIO=0` | Opens no sound device |
 | `HOS_OUTPUT_RES=<0..4>` | The output resolution, over the options file |
-| `HOS_ASPECT=<ratio>` | A picture wider than 16:9; the HUD, menus and movies keep the middle 16:9 |
+| `HOS_ASPECT=<ratio>` | The picture's shape instead of the window's; wider than 16:9 the HUD, menus and movies keep the middle 16:9 |
 | `HOS_FS_OVERLAY=<folder>` | Patched game files read before the RomFS (a chiseled boot) |
 | `HOS_NO_MOVIES` | Reports movie files as missing, so the game goes on without them |
 | `HOS_TRACE=1` | Logs every Horizon call, like `--trace` |

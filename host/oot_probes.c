@@ -318,8 +318,8 @@ PATCH_AT(0x82c41728, word(0xf9000bea), after, none, hos_oot_player_update, as(x1
 
 /* ---- widescreen and ultrawide. The game draws a 2560x1440 picture whatever the screen and renders its scene at
    1920x1080; its cameras use a 16:9 ratio. With these rows (PATCH_AT declarations, host/patch.h) the picture takes the window's shape
-   (the height stays the game's, the width grows on an ultrawide screen and shrinks on a 16:10 or 4:3 one), the 16:9
-   cameras take the picture's ratio, the HUD and menus keep their 16:9 shape in the middle of a wider picture (a narrower
+   (the height stays the game's, the width grows on an ultrawide screen and shrinks on a 16:10 or 4:3 one), the main
+   camera takes the picture's ratio, the HUD and menus keep their 16:9 shape in the middle of a wider picture (a narrower
    one: its whole width), pre-rendered movies play in that middle 16:9, and the picture a save keeps shows that middle
    16:9 (a narrower picture: its middle band, at the texture's shape). host/hos_main.c sets the globals from the window's
    shape, all 0 for a 16:9 window: the game as shipped.
@@ -336,29 +336,13 @@ PATCH_AT_SITE(0x832139f8, word(0xf2c0b408), after, x8, hos_oot_wide_out, x8);   
 /* the scene the upscaler takes in, {1920, 1080}, likewise */
 PATCH_AT(0x83213a04, word(0xf2c08708), after, x8, hos_oot_wide_scene, as(x8, size)) { const uint64_t s = hos_wide_scene; return s ? s : size; }
 
-/* a camera ratio just loaded: when it is 16:9 (within 0.01), the picture's */
-PATCH_AT(0x804e5334, word(0xbd414260), after, s0, hos_oot_wide_ratio, as(s0, ratio)) {   /* ldr s0, [x19, #0x140]: the camera's ratio */
+/* f_804e48c0 (camera_view_loop), the main camera's ratio just loaded, which it copies to its projection's aspect
+   ([[x19 + 0x18] + 0x10] + 0xb0, read by the projection's matrix update and culling): when it is 16:9 (within 0.01), the
+   picture's. Only this camera is widened; other perspective projections keep their 16:9 */
+PATCH_AT(0x804e5334, word(0xbd414260), after, s0, hos_oot_wide_ratio, as(s0, ratio)) {   /* ldr s0, [x19, #0x140] */
     const float w = hos_wide_ratio, d = ratio - 16.0f / 9.0f;
     return w > 0.0f && d <= 0.01f && d >= -0.01f ? w : ratio;
 }
-
-/* sead's perspective projection, the field its matrix update and culling read */
-typedef struct __attribute__((may_alias)) {
-    uint8_t _0[0xb0];
-    float aspect;   /* +0xb0 */
-} OotSeadPerspectiveProjection;
-_Static_assert(offsetof(OotSeadPerspectiveProjection, aspect) == 0xb0, "aspect");
-
-/* the projection's matrix update (and its inlined copies): its ratio just loaded, the picture's when it is 16:9, and kept
-   in the projection too */
-PATCH_AT(0x834a5cc0, word(0x2d558400), after, s1, hos_oot_wide_projection_ratio, as(s1, ratio), as(x0, projection)) {   /* ldp s0, s1, [x0, #0xac] */
-    const float r = hos_oot_wide_ratio(ratio);
-    if (r != ratio) GUEST(OotSeadPerspectiveProjection, projection)->aspect = r;
-    return r;
-}
-PATCH_AT_SITE(0x8006f1e8, word(0x2d558ea0), after, s3, hos_oot_wide_projection_ratio, s3, x21);   /* (its inlined copies) */
-PATCH_AT_SITE(0x8025b9a8, word(0x2d558c00), after, s3, hos_oot_wide_projection_ratio, s3, x0);
-PATCH_AT_SITE(0x8035b82c, word(0x2d558440), after, s1, hos_oot_wide_projection_ratio, s1, x2);
 
 /* the movie layer's draw: its viewport in its frame (x29 - 40), min x at +8 and max x at +16 */
 typedef struct __attribute__((may_alias)) {

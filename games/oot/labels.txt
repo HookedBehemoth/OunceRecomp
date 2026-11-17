@@ -564,7 +564,7 @@
 80644c80 camera_player_update             # host/mouse_native.c: the player camera's update (patched: mouse look)
 8064b770 camera_stick_pitch               # host/mouse_native.c: turns pitch by the right stick
 80649c10 camera_stick_yaw                 # host/mouse_native.c: turns yaw by the right stick
-804e48c0 camera_view_loop                 # docs/parked-patches.md: the view's loop (the free camera's site, 0x804e5068)
+804e48c0 camera_view_loop                 # docs/parked-patches.md, host/oot_probes.c hos_oot_wide_ratio: the view's loop (the free camera's site, 0x804e5068); copies the camera's ratio (+0x140) to its projection's aspect ([[cam + 0x18] + 0x10] + 0xb0, 0x804e5334)
 829df380 event_banc_change_arg            # docs/parked-patches.md: QueryBancChangeEventRequestArg: fills an EventRequestArg
 80d99f10 event_make_arg                   # docs/parked-patches.md (the teleport cheat): used by the teleport cheat
 8022b6f0 event_release_link               # docs/parked-patches.md (the teleport cheat): used by the teleport cheat (release_link)
@@ -1026,7 +1026,7 @@
 82118640 cxx_call_terminate               # docs/lifter2-abi-census.md: __clang_call_terminate: __cxa_begin_catch then std::terminate, noreturn
 # --- widescreen and occlusion off (lift 2 At probes and C after instructions)
 83213890 display_settings_build           # host/oot_probes.c (widescreen): builds {2560, 1440} (0x832139f8) and {1920, 1080} (0x83213a04) in x8
-834a5cc0 sead_persp_proj_update           # host/oot_probes.c (widescreen): sead's perspective projection's matrix update, ldp s0, s1, [x0, #0xac] first
+834a5cc0 sead_persp_proj_update           # host/oot_probes.c (widescreen): sead's perspective projection's matrix update, ldp s0, s1, [x0, #0xac] first (aspect +0xb0; not patched: the main camera's ratio is set in camera_view_loop)
 8025b910 sead_persp_proj_inline_a         # host/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8025b9a8)
 8035a8c0 sead_persp_proj_inline_b         # host/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8035b82c)
 811cc790 occl_query_decide                # host/oot_probes.c (occlusion off): loads the byte that decides the occlusion queries, at six places
