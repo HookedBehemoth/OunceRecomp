@@ -1040,3 +1040,13 @@
 80bd2690 gfx_immediate_end                # host/direct.c: ends the immediate command buffer (EndRecording, memory used, pool flush) and unlocks it
 812bd720 vfx_noise_list_begin             # host/direct.c: begins the command buffer of vfx_curl_noise_staging's one-shot upload (its only caller), which submits and finishes it
 80a87e50 frame_counter_whole_step         # host/nn_vi.c: a virtual update that turns the frame step into whole frames for its counter at x19+864 (fcvtzs at 0x80a88300, hos_frame_whole)
+
+# --- UI layouts (Nintendo.Ui): a layout's panes, 0xb0 bytes each at layout + 0x100, its record at layout + 0xf8
+81549620 ui_pane_build                    # host/oot_probes.c hos_oot_hud_anchor: a pane made from its layout record (translate +0x6c, size +0x58) or copied from a template; HUD site 0x81549918
+8045b1f0 ui_layout_pane_at                # host/oot_probes.c: (layout, index) -> layout + 0x100's pane at index * 0xb0
+815476d0 ui_layout_pane_index             # host/oot_probes.c: (layout, pane) -> its index
+8045e300 ui_layout_pane_by_name           # host/oot_probes.c: (layout, name) -> pane, by the record's name hashes (+0x30) and names (+0x20)
+80791cf0 ui_layout_pane_name              # host/oot_probes.c: (layout, index) -> the pane's name and length
+8045c040 ui_layout_wrapper_layout         # host/oot_probes.c: a layout wrapper's layout (+0x40)
+815457d0 ui_pane_changed_notify           # host/oot_probes.c: after a pane's changed bits (+0) gain watched ones (+4): its capture and redraw follow-ups
+8078fbe0 ui_pane_slide_update             # host/oot_probes.c: a slider sets a pane's translate (+0x6c, +0x70) from a value, then marks bit 0x40 changed

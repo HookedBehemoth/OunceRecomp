@@ -140,11 +140,13 @@ PATCH_AT(0x831f3f08, word(0xf9471288), after, x8, hos_oot_scale_flags, as(x20, m
    frame again, makes its targets at that size and sets the window's crop to it) */
 static volatile int frame_refresh;   /* (hos_oot_frame_set: the game's frame to be sized again) */
 static void hud_rescale(void);
+static void hud_follow(void);
 PATCH_AT(0x80670308, word(0x3955280e), after, w14, hos_oot_scene_mode, as(x0, config), as(w14, mode)) {   /* ldrb w14, [x0, #1354] */
     if (__atomic_exchange_n(&frame_refresh, 0, __ATOMIC_ACQ_REL)) {   /* (on the game's thread, in the frame it sizes again) */
         mode = 0xff;
         hud_rescale();
     }
+    hud_follow();
     if (!hos_native_scene) return mode;
     OotScaleConfig *c = GUEST(OotScaleConfig, config);
     OotScaleTable *const tables[2] = {&c->profile0, &c->profile1};
@@ -479,6 +481,7 @@ static void hud_note(uint64_t canvas, int axis, float k) {
 }
 /* (hos_oot_scene_mode, when a resize sizes the frame again) each noted canvas's matrices (+8, and +72 its copy with the y row negated: 4x4 stored by
    columns, the x row at floats 0, 4, 8, 12, the y row at 1, 5, 9, 13) scaled from the squeeze they have to the frame's */
+static void hud_reanchor(void);
 static void hud_rescale(void) {
     const float x = hud_x(), y = hud_y();
     os_mutex_lock(&hud_lock);
@@ -497,6 +500,7 @@ static void hud_rescale(void) {
         hud_canvas[i].x = x, hud_canvas[i].y = y;
         __atomic_fetch_add(&hud_n[3], 1, __ATOMIC_RELAXED);
     }
+    hud_reanchor();
     os_mutex_unlock(&hud_lock);
 }
 
@@ -521,6 +525,143 @@ PATCH_AT(0x80794368, word(0xad401041), after, q4, hos_oot_tall_hud, as(x0, canva
     if (k != 1.0f) scale_row(&q4, k);
     return q4;
 }
+/* The HUD's corners at the window's edges. The layouts (UI/Layout2Archive, Nintendo.Ui) have no anchors: each pane sits
+   at a fixed offset from the middle of the 3840 x 2160 grid, and the HUD's corner groups are nodes placed at the grid's
+   corners. In a canvas wider or taller than 16:9 those nodes are moved out by the extra half width or height, so
+   their panes keep their size and sit at the window's edges. The pane builder (f_81549620) copies a pane's translate
+   from its record; that copy gets the offset, and a resize moves the panes by the change (hud_rescale). The minimap's
+   icons are placed by an animation (at the minimap, or over the pause menu's map), so their child node is moved each
+   frame while they stand at the minimap */
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[0x18];
+    uint64_t name;    /* +0x18: the layout's name ("PlayerStatus_00") */
+    uint64_t names;   /* +0x20: its panes' names, by index */
+    uint8_t _1[0x38 - 0x28];
+    uint32_t count;   /* +0x38: its panes */
+} OotLayoutRes;
+typedef struct __attribute__((may_alias)) {
+    uint32_t changed, watched;   /* +0, +4: the changes seen, the changes looked for (bit 6: the translate) */
+    uint8_t _0[0x18 - 8];
+    uint64_t layout;             /* +0x18 */
+    uint8_t _1[0x6c - 0x20];
+    float x, y;                  /* +0x6c, +0x70: the translate */
+} OotPane;
+typedef struct __attribute__((may_alias)) {
+    uint8_t _0[0xf8];
+    uint64_t res;     /* +0xf8: its OotLayoutRes */
+    uint64_t panes;   /* +0x100: its panes, 0xb0 bytes each */
+} OotLayout;
+_Static_assert(offsetof(OotLayoutRes, names) == 0x20 && offsetof(OotLayoutRes, count) == 0x38 && offsetof(OotPane, x) == 0x6c && offsetof(OotLayout, panes) == 0x100, "ui");
+enum { OOT_PANE_SIZE = 0xb0 };
+
+/* (layout, pane, side: x -1 left / +1 right, y -1 bottom / +1 top; gate: the pane is moved only while that pane, its
+   parent, stands at (at_x, at_y)) */
+static const struct { const char *layout, *pane; signed char x, y; const char *gate; float at_x, at_y; } hud_anchors[] = {
+    {"PlayerStatus_00", "N_ScaleL_00", -1, 1},               /* hearts, magic, the d-pad guide */
+    {"PlayerStatus_00", "N_ScaleR_00", 1, 1},                /* the item buttons */
+    {"PlayerStatus_00", "N_SubItemBaseFishing_00", 1, 1},
+    {"PlayerStatus_00", "N_VRS_00", 1, 1},
+    {"MapMenu_00", "N_Field_01", 1, -1},                     /* the minimap outdoors */
+    {"MapMenu_00", "N_Dungeon_01", 1, -1},                   /* in a dungeon */
+    {"MapMenu_00", "N_MiniMapReplace_00", 1, -1},            /* its edges, and their captures */
+    {"MapMenu_00", "N_MiniMapCap_00", 1, -1},
+    {"MapMenu_00", "N_EventEndIn_01", 1, -1},                /* its frame and floor */
+    {"MapMenu_00", "N_VRS_00", 1, -1},
+    {"MapMenu_00", "N_PatternField_01", 1, -1, "N_MapIcon_00", 1490, -644},   /* the map's icons, while at the minimap */
+    {"SaveLoadIcon_00", "N_InOut_00", -1, -1},
+};
+enum { HUD_PANES = 256 };
+static struct {
+    uint64_t pane, layout, res;
+    uint32_t index;
+    int anchor;     /* (its hud_anchors row) */
+    float dx, dy;   /* the offset it has */
+    uint64_t gate;  /* (its gate pane) */
+} hud_pane[HUD_PANES];
+static float hud_dx(void) { return 1920.0f / hud_x() - 1920.0f; }
+static float hud_dy(void) { return 1080.0f / hud_y() - 1080.0f; }
+static const char *guest_str(uint64_t a) { return a && hos_guest_range(a, 64) ? (const char *)GP(a) : ""; }
+
+/* (its lock held) an anchored pane, or NULL when its layout is gone (its pane array, record or index not the noted
+   ones): then dropped */
+static OotPane *hud_pane_live(int i) {
+    const uint64_t p = hud_pane[i].pane;
+    if (!p) return NULL;
+    const OotLayout *l = hos_guest_range(hud_pane[i].layout, sizeof(OotLayout)) ? GUEST(OotLayout, hud_pane[i].layout) : NULL;
+    if (!hos_guest_range(p, OOT_PANE_SIZE) || !l || GUEST(OotPane, p)->layout != hud_pane[i].layout ||
+        l->res != hud_pane[i].res || l->panes + (uint64_t)hud_pane[i].index * OOT_PANE_SIZE != p) {
+        hud_pane[i].pane = 0;
+        return NULL;
+    }
+    return GUEST(OotPane, p);
+}
+
+/* the pane builder (pane x19, its layout's record x27, its index x21), the translate in d0 about to be stored */
+PATCH_AT(0x81549918, word(0xfc06c260), before, q0, hos_oot_hud_anchor, as(x19, pane), as(x27, res), as(x21, index), as(q0, t)) {   /* stur d0, [x19, #0x6c] */
+    const OotLayoutRes *r = GUEST(OotLayoutRes, res);
+    const char *layout = guest_str(r->name);
+    for (int k = 0; k < (int)(sizeof hud_anchors / sizeof *hud_anchors); k++) {
+        if (strcmp(layout, hud_anchors[k].layout)) continue;
+        if (!hos_guest_range(r->names + 8 * (uint32_t)index, 8)) return t;
+        if (strcmp(guest_str(*(const uint64_t *)GP(r->names + 8 * (uint32_t)index)), hud_anchors[k].pane)) continue;
+        float xy[2];
+        memcpy(xy, &t, 8);
+        os_mutex_lock(&hud_lock);
+        const float dx = hud_anchors[k].gate ? 0.0f : hud_dx() * hud_anchors[k].x;
+        const float dy = hud_anchors[k].gate ? 0.0f : hud_dy() * hud_anchors[k].y;
+        int slot = -1;   /* (its own, or a free one: a pane whose layout is gone frees its own) */
+        for (int i = 0; i < HUD_PANES && slot < 0; i++)
+            if (hud_pane[i].pane == pane || !hud_pane_live(i)) slot = i;
+        if (slot >= 0) {
+            const uint64_t l = GUEST(OotPane, pane)->layout;
+            hud_pane[slot].pane = pane, hud_pane[slot].layout = l, hud_pane[slot].index = (uint32_t)index;
+            hud_pane[slot].res = hos_guest_range(l, sizeof(OotLayout)) ? GUEST(OotLayout, l)->res : 0;
+            hud_pane[slot].anchor = k, hud_pane[slot].dx = dx, hud_pane[slot].dy = dy, hud_pane[slot].gate = 0;
+            for (uint32_t j = 0; hud_anchors[k].gate && j < r->count && hos_guest_range(r->names + 8 * j, 8); j++)
+                if (!strcmp(guest_str(*(const uint64_t *)GP(r->names + 8 * j)), hud_anchors[k].gate))
+                    hud_pane[slot].gate = GUEST(OotLayout, l)->panes + (uint64_t)j * OOT_PANE_SIZE;
+            xy[0] += dx, xy[1] += dy;
+        }
+        os_mutex_unlock(&hud_lock);
+        memcpy(&t, xy, 8);
+        return t;
+    }
+    return t;
+}
+
+/* (its lock held) a pane moved to the frame's offset (a gated one: to none while its gate is elsewhere) */
+static void hud_pane_place(int i, OotPane *pane) {
+    const int k = hud_pane[i].anchor;
+    float nx = hud_dx() * hud_anchors[k].x, ny = hud_dy() * hud_anchors[k].y;
+    if (hud_anchors[k].gate) {
+        const OotPane *g = hos_guest_range(hud_pane[i].gate, OOT_PANE_SIZE) ? GUEST(OotPane, hud_pane[i].gate) : NULL;
+        if (!g || g->x != hud_anchors[k].at_x || g->y != hud_anchors[k].at_y) nx = ny = 0.0f;
+    }
+    if (nx == hud_pane[i].dx && ny == hud_pane[i].dy) return;
+    pane->x += nx - hud_pane[i].dx, pane->y += ny - hud_pane[i].dy;
+    pane->changed |= pane->watched & 0x40;
+    hud_pane[i].dx = nx, hud_pane[i].dy = ny;
+}
+
+/* (hud_rescale, its lock held) every anchored pane given the new offset */
+static void hud_reanchor(void) {
+    for (int i = 0; i < HUD_PANES; i++) {
+        OotPane *pane = hud_pane_live(i);
+        if (pane) hud_pane_place(i, pane);
+    }
+}
+
+/* (each frame, on the game's thread) the gated panes placed by their gate's pose */
+static void hud_follow(void) {
+    os_mutex_lock(&hud_lock);
+    for (int i = 0; i < HUD_PANES; i++) {
+        if (!hud_pane[i].pane || !hud_anchors[hud_pane[i].anchor].gate) continue;
+        OotPane *pane = hud_pane_live(i);
+        if (pane) hud_pane_place(i, pane);
+    }
+    os_mutex_unlock(&hud_lock);
+}
+
 void hos_oot_hud_log(void) {
     hos_log("widescreen HUD: canvas setups %lld, squeezed %lld, kept whole %lld, rescaled at resizes %lld (since the start)",
             (long long)hud_n[0], (long long)hud_n[1], (long long)hud_n[2], (long long)hud_n[3]);
