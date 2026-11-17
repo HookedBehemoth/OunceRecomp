@@ -34,6 +34,7 @@ FIXTURE = r"""
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/sysinfo.h>
 static int boxes;
@@ -46,6 +47,12 @@ static void hos_log(const char *fmt, ...) {
 static void hos_sdl_message_box(const char *title, const char *text) {
     (void)title, (void)text;
     ++boxes;
+}
+static int os_mem_available(uint64_t *ram, uint64_t *swap) {   /* (host/os/os_linux.c's) */
+    struct sysinfo si;
+    if (sysinfo(&si)) return -1;
+    *ram = (uint64_t)si.totalram * si.mem_unit, *swap = (uint64_t)si.totalswap * si.mem_unit;
+    return 0;
 }
 @@CODE@@
 int main(void) {
@@ -75,8 +82,8 @@ def main():
     call = src.find("memory_notice();", boot)
     if call < 0 or call > src.index("hos_mods_init(image);", boot):
         raise SystemExit("FAIL: the game does not check its memory at boot")
-    if "#include <sys/sysinfo.h>" not in src:
-        raise SystemExit("FAIL: host/hos_main.c reads Linux's memory without <sys/sysinfo.h>")
+    if "os_mem_available(" not in src:
+        raise SystemExit("FAIL: host/hos_main.c does not read the machine's memory (os_mem_available)")
     if os.name == "nt":
         print("PASS (source only): the fixture reads Linux's memory")
         return

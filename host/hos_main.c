@@ -23,7 +23,6 @@ const char *hos_version(void) { return HOOKSHOT_VERSION; }
 #include "hos_sdl.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/sysinfo.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -349,10 +348,9 @@ static int memory_notice_text(unsigned long long ram_mb, unsigned long long swap
 }
 #ifndef A64_MEM_ZERO
 static void memory_notice(void) {
-    unsigned long long ram = 0, swap = 0;   /* (MB) */
-    struct sysinfo si;
-    if (sysinfo(&si)) return;
-    ram = ((unsigned long long)si.totalram * si.mem_unit) >> 20, swap = ((unsigned long long)si.totalswap * si.mem_unit) >> 20;
+    uint64_t ram_b, swap_b;
+    if (os_mem_available(&ram_b, &swap_b)) return;
+    const unsigned long long ram = ram_b >> 20, swap = swap_b >> 20;   /* (MB) */
     char text[512];
     if (!memory_notice_text(ram, swap, text, sizeof text)) {
         hos_log("boot: %llu MB of memory, %llu MB of swap", ram, swap);

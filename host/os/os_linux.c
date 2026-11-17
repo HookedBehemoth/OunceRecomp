@@ -22,6 +22,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/sysinfo.h>
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -386,6 +387,32 @@ void os_exit(int code) {
     _exit(code);
 }
 
+int os_threads_cpu(os_threads_cpu_fn fn, void *ctx) {
+    DIR *d = opendir("/proc/self/task");
+    if (!d) return 0;
+    const double ns_per_tick = 1e9 / (double)sysconf(_SC_CLK_TCK);
+    int n = 0;
+    for (struct dirent *e; (e = readdir(d));) {
+        const int tid = atoi(e->d_name);
+        if (tid <= 0) continue;
+        char path[64], line[512];
+        snprintf(path, sizeof path, "/proc/self/task/%d/stat", tid);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;   /* (it has ended) */
+        const size_t len = fread(line, 1, sizeof line - 1, f);
+        fclose(f);
+        line[len] = 0;
+        char *open = strchr(line, '('), *close = strrchr(line, ')');
+        unsigned long long ut = 0, st = 0;   /* (fields 14 and 15, after the state at field 3) */
+        if (!open || !close || sscanf(close + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) != 2) continue;
+        *close = 0;
+        fn(ctx, (uint32_t)tid, open + 1, (int64_t)((double)(ut + st) * ns_per_tick));
+        n++;
+    }
+    closedir(d);
+    return n;
+}
+
 /* ---- processors ---- */
 int os_cpu_count(void) { return (int)sysconf(_SC_NPROCESSORS_ONLN); }
 /* The process's mask as it started, taken before main (Linux keeps no process mask apart from its threads': read
@@ -497,6 +524,12 @@ int os_mem_protect(void *addr, size_t size, int prot) {
     uintptr_t lo, hi;
     page_span(addr, size, &lo, &hi);
     return mprotect((void *)lo, hi - lo, prot_of(prot)) ? err_of(errno) : 0;
+}
+int os_mem_available(uint64_t *ram, uint64_t *swap) {
+    struct sysinfo si;
+    if (sysinfo(&si)) return err_of(errno);
+    *ram = (uint64_t)si.totalram * si.mem_unit, *swap = (uint64_t)si.totalswap * si.mem_unit;
+    return 0;
 }
 int os_mem_resident(const void *addr, size_t size, uint8_t *out) {
     return mincore((void *)addr, size, out) ? err_of(errno) : 0;

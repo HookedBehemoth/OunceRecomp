@@ -13,8 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
-#include <unistd.h>
 
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines);   /* (rx_backend.c: the back end's) */
 double hos_log_seconds(void);   /* (hos_thread.c: the log's seconds since the process started) */
@@ -109,43 +107,30 @@ typedef struct {
     int64_t draws, waiting, shader_jobs, fs_reads, lists, list_calls;
 } BenchRow;
 
-/* ---- CPU time by thread group (Linux: /proc/self/task; the group is the thread's name without its trailing digits) ---- */
+/* ---- CPU time by thread group (the group is the thread's name without its trailing digits) ---- */
 #define CPU_GROUPS 48
 typedef struct { char name[20]; double secs; } CpuGroup;
-static int cpu_sample(CpuGroup *g) {
-    int n = 0;
-    DIR *d = opendir("/proc/self/task");
-    if (!d) return 0;
-    const double tick = (double)sysconf(_SC_CLK_TCK);
-    for (struct dirent *e; (e = readdir(d));) {
-        if (e->d_name[0] == '.') continue;
-        char path[64], line[512];
-        snprintf(path, sizeof path, "/proc/self/task/%s/stat", e->d_name);
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        const size_t len = fread(line, 1, sizeof line - 1, f);
-        fclose(f);
-        line[len] = 0;
-        char *open = strchr(line, '('), *close = strrchr(line, ')');
-        if (!open || !close) continue;
-        char name[20];
-        size_t m = (size_t)(close - open - 1);
-        if (m >= sizeof name) m = sizeof name - 1;
-        memcpy(name, open + 1, m);
-        while (m && ((name[m - 1] >= '0' && name[m - 1] <= '9') || name[m - 1] == ' ' || name[m - 1] == '_' || name[m - 1] == '-')) m--;
-        name[m] = 0;
-        unsigned long long ut = 0, st = 0;   /* (fields 14 and 15, after the state at field 3) */
-        if (sscanf(close + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) != 2) continue;
-        int i = 0;
-        while (i < n && strcmp(g[i].name, name)) i++;
-        if (i == n) {
-            if (n == CPU_GROUPS) continue;
-            snprintf(g[n].name, sizeof g[n].name, "%s", name), g[n].secs = 0, n++;
-        }
-        g[i].secs += (double)(ut + st) / tick;
+typedef struct { CpuGroup *g; int n; } CpuGroups;
+static void cpu_add(void *ctx, uint32_t tid, const char *thread, int64_t cpu_ns) {
+    (void)tid;
+    CpuGroups *c = (CpuGroups *)ctx;
+    char name[20];
+    snprintf(name, sizeof name, "%s", thread);
+    size_t m = strlen(name);
+    while (m && ((name[m - 1] >= '0' && name[m - 1] <= '9') || name[m - 1] == ' ' || name[m - 1] == '_' || name[m - 1] == '-')) m--;
+    name[m] = 0;
+    int i = 0;
+    while (i < c->n && strcmp(c->g[i].name, name)) i++;
+    if (i == c->n) {
+        if (c->n == CPU_GROUPS) return;
+        snprintf(c->g[c->n].name, sizeof c->g[c->n].name, "%s", name), c->g[c->n].secs = 0, c->n++;
     }
-    closedir(d);
-    return n;
+    c->g[i].secs += cpu_ns / 1e9;
+}
+static int cpu_sample(CpuGroup *g) {
+    CpuGroups c = {g, 0};
+    os_threads_cpu(cpu_add, &c);
+    return c.n;
 }
 
 static double game_clock(void) {

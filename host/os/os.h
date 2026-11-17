@@ -111,6 +111,10 @@ int os_thread_priority(os_thread *t);                  /* the one last set that 
 uint64_t os_thread_set_affinity(os_thread *t, uint64_t mask);   /* the mask it had; 0 when refused */
 __attribute__((noreturn)) void os_thread_exit(void);
 __attribute__((noreturn)) void os_exit(int code);      /* at once: stdio flushed, no exit handlers, no destructors */
+/* every thread of the process (also those this layer did not start), each once: fn(ctx, its system id, its name, the
+   CPU time it has used in ns). The count */
+typedef void (*os_threads_cpu_fn)(void *ctx, uint32_t tid, const char *name, int64_t cpu_ns);
+int os_threads_cpu(os_threads_cpu_fn fn, void *ctx);
 
 /* ---- processors ------------------------------------------------------------------------------------------------------ */
 int os_cpu_count(void);                      /* logical processors online */
@@ -131,6 +135,8 @@ size_t os_page_size(void);
 int os_mem_protect(void *addr, size_t size, int prot);   /* (commits reserved pages, with a prot other than NONE) */
 /* which pages of [addr, addr + size) are in memory (addr page-aligned): out[i] & 1 for the i-th; 0 or < 0 */
 int os_mem_resident(const void *addr, size_t size, uint8_t *out);
+/* the machine's memory and swap, in bytes (installed, not free): 0 or < 0 */
+int os_mem_available(uint64_t *ram, uint64_t *swap);
 
 /* ---- faults: access violations, illegal instructions, division by zero, traps ---------------------------------------- */
 enum { OS_FAULT_ACCESS = 1, OS_FAULT_ILLEGAL, OS_FAULT_DIVIDE, OS_FAULT_TRAP };

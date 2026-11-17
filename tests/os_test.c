@@ -107,6 +107,14 @@ static void stream_reader(void *arg) {
     }
 }
 
+struct listed { int n, me; };
+static struct listed listed;
+static void count_thread(void *ctx, uint32_t tid, const char *name, int64_t cpu_ns) {
+    struct listed *l = (struct listed *)ctx;
+    l->n++;
+    if (tid == os_tid()) l->me = name[0] != 0 && cpu_ns > 0;
+}
+
 static void run_all(os_thread_fn fn, int n, int tagged) {
     os_thread *t[THREADS];
     os_event_init(&go, true, false);
@@ -193,6 +201,11 @@ int main(void) {
     CHECK(os_process_affinity() != 0 && os_cpu_count() > 0);
     uint64_t cores[64];
     CHECK(os_cpu_cores(cores, 64) > 0);
+
+    /* every thread of the process, with its CPU time */
+    CHECK(os_threads_cpu(count_thread, &listed) >= 1 && listed.me);
+    uint64_t ram = 0, swap = 0;
+    CHECK(os_mem_available(&ram, &swap) == 0 && ram > ((uint64_t)256 << 20));
 
     /* memory */
     const size_t pg = os_page_size();
