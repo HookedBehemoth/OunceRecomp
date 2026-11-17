@@ -7,10 +7,10 @@ Everything these tools read or write comes from your dump and stays in `work/`.
 
 ## Read a function
 
-- **Lifted output:** `python -I nx2/lift2/dump.py --game games/oot <address or label>` writes the guest code, the IR
-  and the LLVM IR to `work/lift2/dump/<address>/` and prints the function's summary
+- **Lifted output:** `ounce/target/release/ounce-lift dump --game games/oot <address or label>` writes the guest code, the IR
+  and the LLVM IR to a folder per address and prints the function's summary
   ([Build and iterate](lifter-build.md#inspect-a-function)).
-- **A patch site:** `python -I nx2/patch.py --game games/oot site <address or label>` shows the instruction, the paths
+- **A patch site:** `ounce/target/release/ounce-lift site --game games/oot <address or label>` shows the instruction, the paths
   into it and the registers live there ([Write a patch](patches.md)).
 - **Exports and module layout:** `work/sa/image/image.json` lists the image's modules and exported symbols. The main
   module is loaded at `0x80020000`.

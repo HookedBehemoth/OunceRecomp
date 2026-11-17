@@ -75,8 +75,6 @@ its rules and open work in the [direct back end plan](direct-backend-plan.md).
   `MKWVK_API_VERSION`, because the host and `hookshot_direct.so` are built and loaded separately.
 - **Generated files are regenerated, not edited.** The SPIR-V headers in `gpu/direct/shaders/` (`*_spv.h`) are compiled
   from the shader beside them with glslang; an edit by hand is lost at the next regeneration.
-- **`gpu/legacy/` is reference source.** Upstream's older Vulkan and WebGPU renderers are kept for reading; no build,
-  test or CI reaches them, so a change there has no effect.
 - **`third_party/` stays as upstream ships it.** Its parts keep their own licenses and notices; add a folder rather than
   editing one, so upstream updates stay a copy.
 - **Checks run without the game.** CI has no dump, so every check reads source or synthetic data; a run in the game is

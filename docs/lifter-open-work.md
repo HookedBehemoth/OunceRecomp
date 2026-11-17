@@ -84,8 +84,6 @@ guaranteed. First step: the leaf subset, on/off.
 - **NEON gaps.** The saturating shifts by register on 8-bit and 16-bit lanes need widening; SHA-256 needs a
   per-function `+sha` feature with a CPUID check. First step: whether the sites are hot.
 - **STLR as a release store**: see the constraints table for its experiment.
-- **`nx2/adr_entries.py` pairs an ADRP with any ADD of the register within four instructions**, even when the register
-  is written in between, which adds a few dozen false entries. Harmless so far; `code_ptrs.py` pairs correctly.
 - **Remove the old code-pointer resolver path** once a long play session logs zero guest-address calls (see the
   constraints table).
 - **The null-call skip in the runtime's call-miss handler** (`a64_call_miss`, `host/hos_hostcall.c`) exists for a game

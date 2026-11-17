@@ -15,7 +15,7 @@ python -I -B tests/run_all.py
 
 It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, byte-compiles every tracked Python file, goes
 on after a failure, and ends with a table (slowest first) and each failure's output. To run only some checks, name part
-of their path: `python -I -B tests/run_all.py lift2`.
+of their path: `python -I -B tests/run_all.py frame`.
 
 Many checks read source text: they cut a function out of a source file and compile it with stubs. A rename or a
 reshaped function can break a check far from your change. Update the check in the same change rather than weakening

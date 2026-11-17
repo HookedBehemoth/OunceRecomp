@@ -37,21 +37,17 @@ that build. Its log is `work/sa/relift.log` (in the main checkout, `work/play/re
 To see what the lifter made of a function, run:
 
 ```sh
-python -I nx2/lift2/dump.py --game games/oot <address or label> [--tree] [--opt O1|O2] [--asm]
+ounce/target/release/ounce-lift dump --game games/oot <address or label> [--tree] [--opt O1|O2] [--asm] [-o <dir>]
 ```
 
 It writes the guest code, the lifter's IR, the LLVM IR and, with the options, the optimized IR and the x86 assembly to
-`work/lift2/dump/<address>/`. It prints the function's summary when the plan has one. `--tree` includes the callees.
+`-o <dir>`. It prints the function's summary when the plan has one. `--tree` includes the callees.
 
 ## Check the lifter
 
 | Check | What it tests | Needs the dump |
 |---|---|---|
-| `tests/test_lift2*.py` | The decoder, every semantic template on synthetic states, FP edge values, discovery, summaries, the verification wrapper | No |
-| `python -I nx2/lift2/selfcheck.py --game` | The decoder against `llvm-mc` on every distinct word of the game | Yes |
-| `python -I nx2/test_lift2_leaf.py [--calls]` | Random functions (or call trees) of the game, lifted and run against Unicorn from random states | Yes |
-| `python -I nx2/lift2/census.py` | The instruction forms of the game and which class each belongs to | Yes |
-| `python -I nx2/lift2/abi_census.py --game games/oot` | Functions that do not follow the AAPCS64 (see [constraints](lifter-costs.md#functions-outside-the-aapcs64)) | Yes |
+| `cargo test --manifest-path ounce/Cargo.toml` | The lifter's decoder and lift | No |
 | The verification build | The summaries against a real run ([The lifter](lifter.md#the-verification-build)) | Yes |
 
 In the game, the smoke test and a benchmark are the landing checks ([Test Hookshot](testing.md)).
@@ -68,4 +64,4 @@ In the game, the smoke test and a benchmark are the landing checks ([Test Hooksh
 | `HOOKSHOT_LIFT_SUMMARY_JOBS` | Build | The summary job's workers (default 8) |
 | `LIFT2_DEFAULT_NAN=1` | Lift | ARM's default NaN for NaNs made from non-NaN operands |
 | `HOOKSHOT_LLVM_BIN` | Lift, build | Where clang and the LLVM tools are |
-| `nx2/lift.py --max-func N` | Lift | Split functions larger than N instructions where no branch crosses |
+| `ounce-lift --max-func N` | Lift | Split functions larger than N instructions where no branch crosses |

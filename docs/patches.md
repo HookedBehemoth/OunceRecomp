@@ -4,7 +4,7 @@ This page shows you how to change what the game does: run host code at a guest i
 or stand in for an SDK function. Read it before you add or change a declaration in `host/`.
 
 A patch is a C declaration at file scope in a host source file, next to the host function it runs. The lifter reads
-the declarations with a fixed-grammar scanner (`nx2/lift2/patch_scan.py`); the compiler expands the same text into the
+the declarations with a fixed-grammar scanner (`ounce/lift/src/patch.rs`); the compiler expands the same text into the
 host function's prototype. The authoritative description of every macro, mode and operand is the comment at the top of
 `host/patch.h`.
 
@@ -36,13 +36,13 @@ PATCH_ANSWER(_ZN2nn3aoc17CountAddOnContentEv, 0, "0: no add-on content");
 1. Read the function first. To see its guest code and lifted output, run:
 
    ```sh
-   python -I nx2/lift2/dump.py --game games/oot <address or label>
+   ounce/target/release/ounce-lift dump --game games/oot <address or label>
    ```
 
 2. Print the site's facts and a declaration to start from:
 
    ```sh
-   python -I nx2/patch.py --game games/oot site <address or label>
+   ounce/target/release/ounce-lift site --game games/oot <address or label>
    ```
 
    It prints the instruction and its neighbors, every path into the instruction (branches, jump tables, other
@@ -58,7 +58,7 @@ PATCH_ANSWER(_ZN2nn3aoc17CountAddOnContentEv, 0, "0: no add-on content");
 5. Check every declaration against the plan:
 
    ```sh
-   python -I nx2/patch.py --game games/oot check --all
+   ounce/target/release/ounce-lift check --game games/oot --all
    ```
 
    It runs the checks the build runs and prints each error with its `file:line`. When everything fits, it ends with

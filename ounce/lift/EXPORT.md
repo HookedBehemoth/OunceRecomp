@@ -2,18 +2,17 @@
 
 `ounce-lift` needs no export: it lifts the game from the dump's exefs, the host's C (its patch declarations: src/patch.rs,
 patch_scan.py, probes.py, host_effects.py) and the game description (games/oot/game.toml; its binary files: docs/lifter.md, "Game description files"), with the platform's facts in
-ounce/lift/data/horizon.toml (kept equal to nx2/horizon by tests/test_horizon_data.py). In nx2/lift.py --standalone
---write's order: the scan, the modules (src/nso.rs), the HLE'd and stubbed symbols and the image (src/eden.rs), the ADR /
+ounce/lift/data/horizon.toml (kept equal to nx2/horizon by tests/test_horizon_data.py). In order: the scan, the modules (src/nso.rs), the HLE'd and stubbed symbols and the image (src/eden.rs), the ADR /
 ADRP+ADD entries (src/image.rs), the discovery (src/discover.rs), the plan (src/plan.rs), the rows resolved and checked
 and the PATCH_FUNCs checked against the plan, the generated sources (src/gen.rs), the summaries and records
 (src/summary.rs, src/bounds.rs) and each partition's IR, byte for byte the Python lifter's.
 
-`nx2/lift_export.py` writes Python's results as the diagnostic's reference: `ounce-lift <export> <out> --check` compares
-the scan's products (meta.json), the image, the discovery and plan, the summaries and the records with them.
+`ounce-lift <export> <out> --check` compares the scan's products (meta.json), the image, the discovery and plan, the
+summaries and the records with an export of the Python lifter's results. The Python lifter is gone from the tree, so
+no tool writes that export now; an export made earlier still works.
 
     ounce/target/release/ounce-lift <out dir> [--game games/oot] [--work work] [--exefs <dir>] [--root .]
         [--golden work/ounce/golden]
-    work/venv/bin/python -I nx2/lift_export.py --game games/oot work/ounce/export     (the reference, for --check)
     ounce/target/release/ounce-lift work/ounce/export <out dir> --check [--golden work/ounce/golden]
 
 The exefs is the dump's (`--exefs`, else OOT_EXEFS, OOT_DUMP/exefs, or the first line of `<work>/dump.txt`, as
@@ -164,7 +163,7 @@ changed what the lift emits. What the export adds for it (format 2):
 
 ## Golden (work/ounce/golden)
 
-`ounce/lift/tools/golden.py` writes the Python lifter's IR of every partition, `lift_part`'s text exactly (verify off):
+The golden is the Python lifter's IR of every partition, `lift_part`'s text exactly (verify off). The tool that wrote it is gone from the tree; a golden made earlier is still read (`ounce-lift --golden`, `ounce/lift/tools/compare.py`):
 
     work/ounce/golden/meta.json          {"commit", "input_key", "code_key", "facts_key", "partitions": [names],
                                          "seconds"}: made again only when input_key differs (or --force)
@@ -177,10 +176,10 @@ changed what the lift emits. What the export adds for it (format 2):
     work/ounce/golden/compile.json       each partition's (and the answers module's) clang flags and `opt` command
                                          (game.part_flags, game.opt_argv: cold O1, hot O2), and the generated C's
                                          flags (build.flags)
-    work/ounce/golden/gen/<file>.zst     the lift's generated files (nx2/lift.py --standalone --write): a64_table.c,
+    work/ounce/golden/gen/<file>.zst     the lift's generated files : a64_table.c,
                                          a64_hooks.c, a64_code_slots.c, a64_stubs.c, hos_image.c, nvn2_exports.c,
                                          functions.txt
-    work/ounce/golden/rt64/<file>.zst    a64.h, a64_rt.c (nx2/rtgen.py: the build writes them before compiling)
+    work/ounce/golden/rt64/<file>.zst    a64.h, a64_rt.c (the build writes them before compiling)
     work/ounce/golden/reference/image/<file>.zst   image.json, functions.json: not compile inputs (below)
 
 The golden is everything generated before the compile of a standalone lift and build, of the lift whose LIFT_OK

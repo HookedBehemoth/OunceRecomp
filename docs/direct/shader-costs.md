@@ -36,8 +36,7 @@ a result.
 ## Run the offline census
 
 1. Build the tool: `tools/shadercensus/build.sh`.
-2. Make the shader seed, `hookshot_shaders.bin`, from the romfs. The tool that makes it is kept as unbuilt reference
-   source in `gpu/legacy/tools/shader_census.py`; run it from there.
+2. Make the shader seed, `hookshot_shaders.bin`, from the romfs. No tool in the tree makes it.
 3. Run the census, which is sharded and resumable:
 
    ```

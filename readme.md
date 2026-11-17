@@ -60,8 +60,7 @@ The [development guide](docs/development.md) has the build and run loop and the 
 3. `host/nvn_native.c` records the game's NVN2 graphics calls, and `gpu/direct` replays them on Vulkan.
 4. A fork of Eden's shader recompiler (`gpu/direct/eden`) translates the Switch 2 shaders to SPIR-V.
 
-The [design page](docs/design.md) shows how the parts fit. Upstream's older renderers are kept as unbuilt reference
-source in `gpu/legacy`.
+The [design page](docs/design.md) shows how the parts fit.
 
 ## Credits
 
@@ -89,7 +88,7 @@ Hookshot exists thanks to the work of many people:
 
 Hookshot is free software under the [GNU General Public License, version 3 or later](LICENSE) (GPL-3.0-or-later).
 It includes code from Eden, suyu and Orchid, which are under the GPL too. Third-party parts under other licenses that
-work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, Dear ImGui, zstd, the Libertinus fonts, zbic and the
+work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, zstd, zbic and the
 a64-kit tools) keep their own notices in their folders.
 
 Hookshot is an unofficial fan project, not affiliated with or endorsed by Nintendo. The Legend of Zelda and Ocarina of

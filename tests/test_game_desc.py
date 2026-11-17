@@ -3,8 +3,6 @@
 - games/oot loads; its host files exist, each once, and every host/*.c is some game's;
 - the identity: a dump whose main has another build id, or the same build id and other bytes, stops with both values
   (check_exefs); a lift recorded for another game or version, or none, stops the build (check_lift);
-- nx2/lift.py stops on a wrong identity before anything else (run here on a fabricated exefs and a
-  fabricated lift record: no dump needed), and it does not run without --game;
 - the hot list is one file beside the description; a missing one stops and names it.
 No game is used.
 
@@ -14,7 +12,6 @@ import glob
 import hashlib
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -109,34 +106,6 @@ class Description(unittest.TestCase):
             with open(os.path.join(game, "hot.txt"), "wb") as f:
                 f.write(b"HOTF\x02\0\0\0\x40\xab\x04\x80\x80\xbb\x09\x80")
             self.assertEqual(g.hot_list(), [0x8004ab40, 0x8009bb80])
-
-    def run_py(self, args, env, py=sys.executable):
-        e = {k: v for k, v in os.environ.items() if k != "HOOKSHOT_GAME"}
-        e.update(env)
-        return subprocess.run([py, "-I", "-B"] + args, capture_output=True, text=True, env=e, cwd=ROOT, timeout=120)
-
-    def test_lift_stops(self):
-        with tempfile.TemporaryDirectory() as d:
-            exefs, _ = self.fake(d)
-            _, other = self.fake(os.path.join(d, "o"), build_id="22" * 20)
-            work = os.path.join(d, "work")
-            os.makedirs(os.path.join(work, "sa"))
-            # (the lift imports lz4 (the NSO reader): the venv's python when this one lacks it, requirements.txt)
-            py = next((p for p in (sys.executable, os.path.join(ROOT, "work", "venv", "bin", "python"))
-                       if os.path.exists(p) and subprocess.run([p, "-I", "-c", "import lz4.block"],
-                                                               capture_output=True).returncode == 0), None)
-            if py:
-                r = self.run_py(["nx2/lift.py", "--game", other, "--exefs", exefs, "--work", work, "--standalone"], {},
-                                py)
-                self.assertNotEqual(r.returncode, 0)
-                self.assertIn("the dump is another game or version: main's build_id is %s" % BUILD_ID, r.stderr)
-                self.assertFalse(os.listdir(os.path.join(work, "sa")))   # (nothing written)
-                r = self.run_py(["nx2/lift.py", "--exefs", exefs, "--work", work], {}, py)
-                self.assertNotEqual(r.returncode, 0)
-                self.assertIn("--game", r.stderr)
-            else:
-                print("(the lift's run skipped: no python with lz4 here)")
-
 
 
 if __name__ == "__main__":

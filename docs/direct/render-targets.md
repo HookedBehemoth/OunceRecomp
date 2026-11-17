@@ -98,8 +98,6 @@ upscaler of ours in place of the network. That work is open; the inputs it needs
   and the two frames' view-projection matrices;
 - the hand-back point: in place of the network's output, before the UI.
 
-The old renderer's integrations of FSR and DLSS remain in `gpu/legacy` as unbuilt reference source.
-
 ## Things to keep consistent
 
 - **A format change must reach the jobs.** A render job's pass formats come from the targets its layer list sets

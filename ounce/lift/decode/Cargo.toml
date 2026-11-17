@@ -2,7 +2,7 @@
 name = "ounce-decode"
 version = "0.1.0"
 edition = "2021"
-description = "The AArch64 decoder of the ounce lifter: a port of nx2/lift2/enc*.py"
+description = "The AArch64 decoder of the ounce lifter"
 publish = false
 
 [lib]

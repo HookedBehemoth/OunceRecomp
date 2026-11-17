@@ -19,7 +19,7 @@ or says *unproven* and names the experiment that decides it.
    frame in guest memory (about 600,000 pairs). Not measured alone. Removed by: pair deletion and frame-slot
    promotion.
 3. **Host-stack spills.** About 6 % of code bytes in a sample of functions. The cause is not analyzed. Next step: read
-   the spills of the largest functions with `nx2/lift2/dump.py`.
+   the spills of the largest functions with `ounce-lift dump`.
 4. **Sparse jump-table switches.** About a fifth of the jump tables cannot be proven and switch on the target's
    offset, which LLVM lowers to compare chains. Kept because an index switch would rest on an unproven fact.
 5. **STLR as `xchg`.** Every STLR is a sequentially consistent store, although a plain x86 store is already a release
@@ -58,7 +58,7 @@ or says *unproven* and names the experiment that decides it.
 ## Functions outside the AAPCS64
 
 Keeping registers across calls trusts the stack and callee-saved discipline. The census
-(`nx2/lift2/abi_census.py`, output in `work/lift2/abi_census.txt`) found these exceptions in the game, and each is
+found these exceptions in the game, and each is
 handled:
 
 | Functions | What they do | Treatment |

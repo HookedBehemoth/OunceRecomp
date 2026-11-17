@@ -2,7 +2,7 @@
 name = "ounce-lift"
 version = "0.1.0"
 edition = "2021"
-description = "The lifter (nx2/lift2) in Rust: AArch64 -> typed SSA IR -> LLVM IR"
+description = "The lifter: AArch64 -> typed SSA IR -> LLVM IR"
 publish = false
 
 [lib]

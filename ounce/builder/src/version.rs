@@ -99,7 +99,7 @@ mod tests {
     use super::*;
 
     fn tree(root: &Path, eol: &str) {
-        for rel in ["host/a.c", "gpu/legacy/vk/b.cpp", "nx2/c.py"] {
+        for rel in ["host/a.c", "gpu/direct/b.cpp", "nx2/c.py"] {
             let p = root.join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, format!("line one{eol}line two{eol}")).unwrap();
