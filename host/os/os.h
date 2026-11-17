@@ -77,8 +77,8 @@ void os_mutex_lock(os_mutex *m);
 bool os_mutex_trylock(os_mutex *m);
 void os_mutex_unlock(os_mutex *m);
 
-/* a reader/writer lock: any number of readers or one writer. Readers are let in while no writer holds it (a waiting
-   writer does not hold them back) */
+/* a reader/writer lock: any number of readers or one writer. Writers go first: a new reader waits while a writer holds
+   the lock or waits for it */
 typedef struct os_rwlock { volatile uint32_t state; } os_rwlock;
 #define OS_RWLOCK_INIT {0}
 void os_rwlock_lock(os_rwlock *l);           /* exclusive */

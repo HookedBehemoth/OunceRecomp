@@ -105,6 +105,17 @@ static void once_worker(void *arg) {
     if (os_atomic_load(&once_runs) == 1) os_atomic_inc(&once_seen);   /* (returned only after it ran) */
 }
 
+/* writers get in under a stream of readers whose holds overlap */
+static volatile uint32_t stream_stop;
+static void stream_reader(void *arg) {
+    (void)arg;
+    while (!os_atomic_load(&stream_stop)) {
+        os_rwlock_lock_shared(&rw);
+        for (volatile int k = 0; k < 2000; k++) {}
+        os_rwlock_unlock_shared(&rw);
+    }
+}
+
 static void run_all(os_thread_fn fn, int n, int tagged) {
     os_thread *t[THREADS];
     os_event_init(&go, true, false);
@@ -129,6 +140,16 @@ int main(void) {
     CHECK(counter == (uint64_t)(THREADS / 2) * (ROUNDS / 4));
 
     os_thread *t[THREADS];
+    for (int i = 0; i < THREADS - 1; i++) t[i] = os_thread_start(stream_reader, NULL, 0, "reader");
+    os_sleep_ns(10000000);   /* (the readers under way) */
+    int64_t w0 = os_now_ns();
+    for (int i = 0; i < 1000; i++) { os_rwlock_lock(&rw); counter++; os_rwlock_unlock(&rw); }
+    const int64_t wrote = os_now_ns() - w0;
+    os_atomic_store(&stream_stop, 1u);
+    for (int i = 0; i < THREADS - 1; i++) { CHECK(os_thread_join(t[i], 60000000000LL) == 0); os_thread_release(t[i]); }
+    printf("1000 writes under %d readers: %.1f ms\n", THREADS - 1, wrote / 1e6);
+    CHECK(wrote < 5000000000LL);
+
     for (int i = 0; i < THREADS; i++) t[i] = os_thread_start(i < THREADS / 2 ? producer : consumer, NULL, 0, "q");
     for (int i = 0; i < THREADS; i++) { CHECK(os_thread_join(t[i], 60000000000LL) == 0); os_thread_release(t[i]); }
     CHECK(taken == (THREADS / 2) * (ROUNDS / 4) && !queued);

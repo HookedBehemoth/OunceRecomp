@@ -108,61 +108,77 @@ void os_mutex_unlock(os_mutex *m) {
     }
 }
 
-/* ---- reader/writer lock: state = readers | RW_WRITER | RW_SLEEPERS (someone sleeps on the word) ---- */
+/* ---- reader/writer lock: state = readers (bits 0-15) | waiting writers (bits 16-28) | RW_WRITER (held) |
+   RW_RSLEEP (readers sleep on the word). Writers go first: a reader waits while a writer holds the lock or waits for
+   it. Readers and writers sleep on the word under different futex bitsets, so a wake reaches only the kind that can
+   go on: the last reader out wakes one writer; a writer's unlock wakes one writer if any waits, else every reader. ---- */
+#define RW_READERS 0x0000ffffu
+#define RW_WW1 0x00010000u
+#define RW_WWAIT 0x1fff0000u
 #define RW_WRITER 0x40000000u
-#define RW_SLEEPERS 0x80000000u
-#define RW_READERS 0x3fffffffu
+#define RW_RSLEEP 0x80000000u
+#define RW_BIT_R 1u
+#define RW_BIT_W 2u
+static void rw_sleep(os_rwlock *l, uint32_t s, uint32_t bit) {
+    futex(&l->state, FUTEX_WAIT_BITSET_PRIVATE, s, NULL, bit);
+}
+static void rw_wake(os_rwlock *l, int n, uint32_t bit) { futex(&l->state, FUTEX_WAKE_BITSET_PRIVATE, (uint32_t)n, NULL, bit); }
 void os_rwlock_lock_shared(os_rwlock *l) {
     int spins = SPINS;
     for (;;) {
         uint32_t s = os_atomic_load(&l->state);
-        if (!(s & RW_WRITER)) {
+        if (!(s & (RW_WRITER | RW_WWAIT))) {
             if (os_atomic_cas(&l->state, s, s + 1) == s) return;
             continue;
         }
         if (spins-- > 0) { os_pause(); continue; }
-        if (!(s & RW_SLEEPERS)) {
-            if (os_atomic_cas(&l->state, s, s | RW_SLEEPERS) != s) continue;
-            s |= RW_SLEEPERS;
+        if (!(s & RW_RSLEEP)) {
+            if (os_atomic_cas(&l->state, s, s | RW_RSLEEP) != s) continue;
+            s |= RW_RSLEEP;
         }
-        wait_until(&l->state, s, -1);
+        rw_sleep(l, s, RW_BIT_R);
     }
 }
 bool os_rwlock_trylock_shared(os_rwlock *l) {
     for (;;) {
         const uint32_t s = os_atomic_load(&l->state);
-        if (s & RW_WRITER) return false;
+        if (s & (RW_WRITER | RW_WWAIT)) return false;
         if (os_atomic_cas(&l->state, s, s + 1) == s) return true;
     }
 }
 void os_rwlock_unlock_shared(os_rwlock *l) {
     const uint32_t s = os_atomic_fetch_add(&l->state, (uint32_t)-1);
-    /* (the last reader out, with sleepers: they are writers, or readers that saw a writer since gone) */
-    if ((s & RW_READERS) == 1 && (s & RW_SLEEPERS) && os_atomic_cas(&l->state, RW_SLEEPERS, 0u) == RW_SLEEPERS)
-        os_futex_wake(&l->state, OS_WAKE_ALL);
+    if ((s & RW_READERS) == 1 && (s & RW_WWAIT)) rw_wake(l, 1, RW_BIT_W);   /* (the last reader out: a writer's turn) */
 }
 void os_rwlock_lock(os_rwlock *l) {
+    uint32_t s = os_atomic_load(&l->state);
+    if (!(s & (RW_WRITER | RW_READERS)) && os_atomic_cas(&l->state, s, s | RW_WRITER) == s) return;
+    os_atomic_add(&l->state, RW_WW1);   /* (counted as waiting: new readers hold back from here on) */
     int spins = SPINS;
     for (;;) {
-        uint32_t s = os_atomic_load(&l->state);
-        if (!(s & ~RW_SLEEPERS)) {
-            if (os_atomic_cas(&l->state, s, s | RW_WRITER) == s) return;
+        s = os_atomic_load(&l->state);
+        if (!(s & (RW_WRITER | RW_READERS))) {
+            if (os_atomic_cas(&l->state, s, (s - RW_WW1) | RW_WRITER) == s) return;
             continue;
         }
         if (spins-- > 0) { os_pause(); continue; }
-        if (!(s & RW_SLEEPERS)) {
-            if (os_atomic_cas(&l->state, s, s | RW_SLEEPERS) != s) continue;
-            s |= RW_SLEEPERS;
-        }
-        wait_until(&l->state, s, -1);
+        rw_sleep(l, s, RW_BIT_W);
     }
 }
 bool os_rwlock_trylock(os_rwlock *l) {
     const uint32_t s = os_atomic_load(&l->state);
-    return !(s & ~RW_SLEEPERS) && os_atomic_cas(&l->state, s, s | RW_WRITER) == s;
+    return !(s & (RW_WRITER | RW_READERS)) && os_atomic_cas(&l->state, s, s | RW_WRITER) == s;
 }
 void os_rwlock_unlock(os_rwlock *l) {
-    if (os_atomic_fetch_and(&l->state, ~(RW_WRITER | RW_SLEEPERS)) & RW_SLEEPERS) os_futex_wake(&l->state, OS_WAKE_ALL);
+    uint32_t s = os_atomic_load(&l->state);
+    for (;;) {
+        const uint32_t to = s & RW_WWAIT ? s & ~RW_WRITER : s & ~(RW_WRITER | RW_RSLEEP);
+        const uint32_t was = os_atomic_cas(&l->state, s, to);
+        if (was == s) break;
+        s = was;
+    }
+    if (s & RW_WWAIT) rw_wake(l, 1, RW_BIT_W);
+    else if (s & RW_RSLEEP) rw_wake(l, OS_WAKE_ALL, RW_BIT_R);
 }
 
 /* ---- condition variable: a sequence word, woken only when its waiter count says someone waits. A waiter counts
