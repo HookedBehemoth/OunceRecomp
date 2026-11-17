@@ -7,8 +7,11 @@
 An output is ounce-lift's directory (<part>.ll, gen/, rt64/, facts.tsv, image/image.bin) or one stored by --store
 (each file .zst, image.bin by its sha256 in meta.json). Functions are compared across partitions (a function may move
 between them). A changed function's reason is a change of its own facts (facts.tsv: its body, summary and call
-record) or of the facts of a function its IR names; a change with neither is UNEXPLAINED. Exit status 1 when any
-change is unexplained.
+record) or of the facts of a function its IR names, or a change of a hook its IR names (f_<addr> or fv_<addr>, the
+hook's lines in gen/a64_hooks.c); a function whose IR is the same but for its values' numbers is "renumbered" (the
+lift numbers values as it builds, a block it drops included); one that only adds or removes write-through stores to
+the context (and their slots' addresses) is "context stores only", counted apart: which stores the lift may omit is
+a rule of its own, each change of it argued in GOLDEN-CHANGES.md; a change with none is UNEXPLAINED. Exit status 1 when any change is unexplained.
 """
 import argparse
 import hashlib
@@ -20,6 +23,23 @@ from concurrent.futures import ProcessPoolExecutor
 
 DEFINE = re.compile(rb"^define [^\n]*?@([A-Za-z0-9_.$]+)\(", re.M)
 REF = re.compile(rb"@(f_[0-9a-f]{8})\b")
+HOOK_REF = re.compile(rb"@f(?:v)?_([0-9a-f]{8})\b")
+HOOK_LINE = re.compile(rb"(?:f|fv)_([0-9a-f]{8})\b")
+VALUE = re.compile(rb"%v\d+\b")
+CTX_STORE = re.compile(r"^  (?:store (?:i64|<2 x i64>|i8) [^,]+, ptr %cx\.\w+, align \d+|%cx\.\w+ = getelementptr i8, ptr %ctx, i64 \d+)$")
+
+
+def stores_only(a, b):
+    """the two texts differ only by context stores (and their slots' addresses) added or removed"""
+    import difflib
+    d = [l for l in difflib.ndiff(a.decode().split("\n"), b.decode().split("\n")) if l[:2] in ("- ", "+ ")]
+    return bool(d) and all(CTX_STORE.match(l[2:]) for l in d)
+
+
+def renumbered(text):
+    """the function's text with its values numbered by their first appearance"""
+    names = {}
+    return VALUE.sub(lambda m: b"%%v%d" % names.setdefault(m.group(0), len(names)), text)
 FIELDS = ("insns", "body", "inputs", "clobbers", "mustdef", "preserved", "results", "returns", "demote", "unknown",
           "boundary", "record")
 
@@ -113,6 +133,15 @@ def gen_files(d):
     return sorted(out)
 
 
+def hook_lines(d):
+    """{address: the lines of gen/a64_hooks.c naming f_<address> or fv_<address>}"""
+    out = {}
+    for line in (read(d, "gen/a64_hooks.c") or b"").splitlines():
+        for m in HOOK_LINE.finditer(line):
+            out.setdefault(m.group(1), set()).add(line)
+    return out
+
+
 def image_sha(d):
     p = os.path.join(d, "image", "image.bin")
     if os.path.exists(p):
@@ -167,7 +196,9 @@ def main():
     moved = sum(1 for f in set(ia) & set(ib) if ia[f][0] != ib[f][0])
     ta = texts(a.old, {f: ia[f][0] for f in changed if f in ia})
     tb = texts(a.new, {f: ib[f][0] for f in changed if f in ib})
-    rows, unexplained = [], 0
+    ha, hb = hook_lines(a.old), hook_lines(a.new)
+    hchanged = {h for h in set(ha) | set(hb) if ha.get(h) != hb.get(h)}
+    rows, unexplained, nstores = [], 0, 0
     for f in changed:
         why = []
         if f not in ia or f not in ib:
@@ -178,14 +209,22 @@ def main():
         for r in sorted(x.decode() for x in refs):
             if r != f and r in fchanged:
                 why.append("callee %s %s" % (r, ",".join(fchanged[r])))
+        hooks = set(HOOK_REF.findall(ta.get(f, b""))) | set(HOOK_REF.findall(tb.get(f, b"")))
+        for h in sorted(hooks & hchanged):
+            why.append("hook %s" % h.decode())
+        if not why and f in ta and f in tb and renumbered(ta[f]) == renumbered(tb[f]):
+            why.append("renumbered")
+        if not why and f in ta and f in tb and stores_only(ta[f], tb[f]):
+            why.append("context stores only")
+            nstores += 1
         if not why:
             why = ["UNEXPLAINED"]
             unexplained += 1
         rows.append((f, why))
     # report
     print("old %s\nnew %s" % (a.old, a.new))
-    print("functions: %d old, %d new, %d changed (%d unexplained), %d moved partition" % (
-        len(ia), len(ib), len(changed), unexplained, moved))
+    print("functions: %d old, %d new, %d changed (%d unexplained, %d context stores only), %d moved partition" % (
+        len(ia), len(ib), len(changed), unexplained, nstores, moved))
     by_field = {}
     for f, ks in fchanged.items():
         for k in ks:

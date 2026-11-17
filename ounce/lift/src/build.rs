@@ -525,8 +525,10 @@ fn reads(f: &Function, v: ValueId, prog: &Prog) -> (u128, u128) {
     match &f.v(v).op {
         Op::RegLoad(var) => (bit(*var), 0),
         Op::Gcall { callee, .. } => {
+            // (a register the callee preserves, its record's keeps, is written back as the callee found it in the
+            // context: the call does not kill a store before it, which a later reader still needs)
             let bd = prog.bound(*callee);
-            (bd.reads & REGS, bd.must & REGS)
+            (bd.reads & REGS, bd.must & !bd.keeps & REGS)
         }
         Op::Icall(_) | Op::Svc(_) => (REGS, 0),
         Op::Call(k) | Op::RowIo { call: k, .. } if f.call(*k).ctx => (f.call(*k).regs & REGS, 0),

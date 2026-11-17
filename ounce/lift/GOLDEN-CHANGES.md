@@ -164,3 +164,26 @@ with B (`adr x30, 1f; b g`) or a tail call after a missing restore went wrong si
 
 diffout: 117 functions' facts changed (demote only: lr_ret added; all were demoted already, by sp, cs_clobber,
 split_frame or an unknown callee), 0 functions' IR changed, 0 unexplained, gen/ and image.bin equal.
+
+## v2.9: v2.6's saves made the game hang; the stores they dropped, back
+
+v2.6 (a save of x19-x29 is no read) hung the game in the sdk's static initializers (std::call_once waiting in
+pthread_cond_wait on a flag left "running"); the game was not run after it. Bisected by commit, then by function at
+-O0 (the rule applied to a range of entries): pthread_mutex_lock, f_85111ce0, which saves x19, x20 and x29 only to
+restore them. Two holes:
+
+- omit_stores took a call's record's must as a kill of the registers: a store before the call was dead when the callee
+  writes the register on every path. A callee that preserves a register writes it back as it found it in the
+  context: with the store gone, the stale value. The caller holds the right value in SSA, but writes it no more, and a
+  later reader of the context (a callee that does read it) got the stale one. A preserved register (the record's
+  keeps) is no kill now: the call is transparent for it.
+- a register read after its restore (by a tail call after the epilogue, or anything before the return) is the entry
+  value read through the slot: such a save is a read again.
+
+diffout: 17,465 functions' IR changed, 0 unexplained: 17,089 by context stores only (stores of x19-x29 before calls
+added back, ~64 k), the others by their own or callees' facts (243 functions' inputs gain callee-saved registers, 5
+results; nothing else). In the game: a build with v2.6 to v2.8 never reaches nnMain; with this, 600 presents in 25 s
+headless in Kokiri, as the build without v2.6.
+
+tools/diffout.py: a change by a hook (gen/a64_hooks.c's lines naming it), a function only renumbered, and context stores
+only, each counted apart from the unexplained ones.

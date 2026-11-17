@@ -1287,6 +1287,8 @@ pub struct FrameScratch {
     /// (instruction, register, slot) of each save, of the final must states
     save_at: Vec<(u32, u8, i64)>,
     restores: Vec<(u8, i64)>,
+    /// (instruction, register) of each restore
+    restore_at: Vec<(u32, u8)>,
     other_reads: Vec<i64>,
 }
 
@@ -1301,6 +1303,7 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
     fs.saves.clear();
     fs.save_at.clear();
     fs.restores.clear();
+    fs.restore_at.clear();
     fs.other_reads.clear();
     if n == 0 {
         return FrameOut { preserved: CALLEE_SAVED, reasons: 0, frame: 0, taken: false, pairs: 0, lr_data: false };
@@ -1331,6 +1334,7 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                         fs.saves.clear();
                         fs.save_at.clear();
                         fs.restores.clear();
+                        fs.restore_at.clear();
                         fs.other_reads.clear();
                     }
                     continue;
@@ -1412,6 +1416,7 @@ fn frame_pass(f: &Flow, s: &Sums, fs: &mut FrameScratch) -> FrameOut {
                             if held && r != XZR && size >= 8 {
                                 holds |= rbit(r);
                                 fs.restores.push((r, at));
+                                fs.restore_at.push((k as u32, r));
                             } else {
                                 holds &= !rbit(r);
                                 fs.other_reads.push(at);
@@ -1625,12 +1630,27 @@ fn analyse(f: &Flow, s: &Sums, sc: &mut Scratch) -> Summary {
     // else, the register preserved: no read of the register. A caller that keeps it in SSA need not write it to the
     // context: the save stores a stale value and the restore brings it back, which no one reads (C++ unwinding and
     // backtraces stop or are replaced, host/cxx_throw.c, nn_diag.c))
-    let saved = save_uses(f.n, &sc.frame, if out.returns && fr.reasons & why::SAVE_PTR == 0 { fr.preserved & range(19, 30) } else { 0 }, &mut sc.unuse);
+    let mut regs = if out.returns && fr.reasons & why::SAVE_PTR == 0 { fr.preserved & range(19, 30) } else { 0 };
+    let mut saved = save_uses(f.n, &sc.frame, regs, &mut sc.unuse);
     liveness_less(f, s, 0, &mut sc.live, &sc.unuse);
+    // (and the restored value read by none: a register read after its restore, by a tail call after the epilogue or
+    // anything else before the return, is the entry value read through the slot)
+    if saved != 0 {
+        let mut used = 0;
+        for &(k, r) in &sc.frame.restore_at {
+            if saved & rbit(r) != 0 && f.succs(k as usize).iter().any(|&j| sc.live[j as usize] & rbit(r) != 0) {
+                used |= rbit(r);
+            }
+        }
+        if used != 0 {
+            regs &= !used;
+            saved = save_uses(f.n, &sc.frame, regs, &mut sc.unuse);
+            liveness_less(f, s, 0, &mut sc.live, &sc.unuse);
+        }
+    }
     let live = &sc.live;
     out.inputs = if f.n > 0 { live[f.at_entry] } else { 0 };
     // (the inputs counting the saves, its own and its callees': what a restore may write back)
-    let mut saved = saved;
     for k in 0..f.n {
         match f.kind[k] {
             K::Call | K::Tail => each_callee(f, k, s, |c| saved |= c.saved),
