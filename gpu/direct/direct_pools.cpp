@@ -5,9 +5,6 @@
 // of use for pools up to 64 MB (an importer thread); CPU_NO_ACCESS pools in VRAM (the VRAM class, step 7b), kept 10 s after
 // their finalize and handed back on the same pool again, 2048 MB at most. Left for M2 with the bindings: the per-binding
 // path (a range bound at its first use), the shaders' page table and the BDA window table. Linux only.
-#include <fcntl.h>       // (the udmabuf device: a driver detail, Linux only)
-#include <sys/ioctl.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -24,6 +21,7 @@
 #include "layer0_windows.h"
 #include "direct_assets.h"
 #include "os.h"
+#include "os_guest.h"
 
 namespace hsd {
 void draw_window_made(uint32_t k, uint64_t a);   // (direct_draw.cpp)
@@ -47,40 +45,39 @@ constexpr VkBufferUsageFlags kWindowUsage =
     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
     VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
 
-// ---- dma-bufs of guest memory (vk_memory.cpp dma_buf_memory, dmabuf_ready) ----
-struct UdmabufCreate { uint32_t memfd, flags; uint64_t offset, size; };
-constexpr unsigned long kUdmabufCreate = (1ul << 30) | (sizeof(UdmabufCreate) << 16) | ('u' << 8) | 0x42;   // (_IOW('u', 0x42, ...))
-int dmabuf_memfd = -1, dmabuf_dev = -1, dmabuf_failures = 0;
+// ---- guest memory exported to the GPU (os_guest.h): imported by the handle's kind ----
+int dmabuf_failures = 0;
 uint64_t dmabuf_limit = 0;
 
 bool dmabuf_open() {   // (once, at layer0_on)
-    typedef int (*MemfdFn)(void);
-    const MemfdFn fn = (MemfdFn)os_sym("hos_posix_guest_memfd");
-    const int fd = fn ? fn() : -1;
-    if (fd >= 0 && dev.dma_buf_import) dmabuf_dev = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
-    if (fd < 0 || dmabuf_dev < 0) {
-        logf("direct: layer 0: guest memory is not a memfd shared as dma-bufs (%s)", !fn ? "no memfd window" : fd < 0 ? "anonymous memory"
-                                                                                                               : "/dev/udmabuf cannot be opened");
+    const bool can = os_guest_exportable(&dmabuf_limit);
+    if (!can || !dev.dma_buf_import) {
+        logf("direct: layer 0: guest memory is not exported to the GPU (%s)", !can ? "the window is private memory" : "no dma-buf import");
         return false;
-    }
-    dmabuf_memfd = fd;
-    dmabuf_limit = 64ull << 20;
-    if (FILE* f = fopen("/sys/module/udmabuf/parameters/size_limit_mb", "r")) {
-        unsigned long long mb = 0;
-        if (fscanf(f, "%llu", &mb) == 1 && mb) dmabuf_limit = mb << 20;
-        fclose(f);
     }
     return true;
 }
-/// The memory of guest [lo, lo + size) as an imported dma-buf; VK_NULL_HANDLE when udmabuf or the import refused it
+VkDeviceMemory import_dma_buf(uint64_t lo, uint64_t size, int fd);
+/// The memory of guest [lo, lo + size) as an import of its export; VK_NULL_HANDLE when the export or the import refused it
 std::atomic<uint32_t> import_type{UINT32_MAX};   // (for mem_account at a free)
 VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
-    UdmabufCreate c{(uint32_t)dmabuf_memfd, 1 /* UDMABUF_FLAGS_CLOEXEC */, lo, size};
-    const int fd = ioctl(dmabuf_dev, kUdmabufCreate, &c);
-    if (fd < 0) {
-        if (dmabuf_failures++ < 8) logf("direct: guest %#llx..%#llx: no udmabuf (errno %d)", (unsigned long long)lo, (unsigned long long)(lo + size), errno);
+    os_gpu_handle h;
+    const int r = os_guest_export(lo, size, &h);
+    if (r) {
+        if (dmabuf_failures++ < 8) logf("direct: guest %#llx..%#llx: not exported (%d)", (unsigned long long)lo, (unsigned long long)(lo + size), r);
         return VK_NULL_HANDLE;
     }
+    switch (h.kind) {
+    case OS_GPU_DMABUF_FD: return import_dma_buf(lo, size, h.fd);
+    default:   // (OS_GPU_HOST_POINTER: VK_EXT_external_memory_host, for a system without dma-bufs: not made yet)
+        os_gpu_handle_close(&h);
+        if (dmabuf_failures++ < 8) logf("direct: guest memory exported as handle kind %d, which this back end does not import", h.kind);
+        return VK_NULL_HANDLE;
+    }
+}
+/// a dma-buf's import (fd: the caller's; closed when the import fails, the memory's when it succeeds)
+VkDeviceMemory import_dma_buf(uint64_t lo, uint64_t size, int fd) {
+    os_gpu_handle h{OS_GPU_DMABUF_FD, fd, nullptr, size};
     static uint32_t type = UINT32_MAX;   // (the same for every dma-buf of the window: asked once; the importer and the binders)
     static std::mutex type_mu;
     {
@@ -97,7 +94,7 @@ VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
         }
     }
     if (type == UINT32_MAX) {
-        close(fd);
+        os_gpu_handle_close(&h);
         if (dmabuf_failures++ < 8) logf("direct: a dma-buf of guest memory has no memory type");
         return VK_NULL_HANDLE;
     }
@@ -114,7 +111,7 @@ VkDeviceMemory dma_buf_memory(uint64_t lo, uint64_t size) {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     const VkResult r = vkAllocateMemory(dev.device, &ai, nullptr, &memory);
     if (r != VK_SUCCESS) {   // (the fd is the caller's again when the import fails)
-        close(fd);
+        os_gpu_handle_close(&h);
         if (dmabuf_failures++ < 8)
             logf("direct: guest %#llx..%#llx: its dma-buf not imported (VkResult %d)", (unsigned long long)lo, (unsigned long long)(lo + size), (int)r);
         return VK_NULL_HANDLE;

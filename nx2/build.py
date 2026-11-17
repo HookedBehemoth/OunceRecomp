@@ -773,7 +773,7 @@ def main():
         [os.path.join(rt64, "a64_rt.c")]
     host_srcs = desc.host_sources()   # (the game description's; the patch declarations are scanned in them, too)
     host_srcs += [os.path.join(POSIX, f) for f in ("display_sdl.c",)] + \
-        [os.path.join(OS_DIR, "os_linux.c")]
+        [os.path.join(OS_DIR, "os_linux.c"), os.path.join(OS_DIR, "os_guest_linux.c")]
     if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]
     if a.dry_run:   # (the lift's files: there is no game here)
@@ -793,7 +793,7 @@ def main():
          "-Werror=incompatible-pointer-types"]   # (a lock or handle of one kind handed where another is wanted)
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
-    host_deps += open(os.path.join(OS_DIR, "os.h"), "rb").read()
+    host_deps += open(os.path.join(OS_DIR, "os.h"), "rb").read() + open(os.path.join(OS_DIR, "os_guest.h"), "rb").read()
     host_deps += b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
     host_deps += ffmpeg_version_key()
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
@@ -839,7 +839,7 @@ def main():
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include")]
         ddeps = tree_headers(direct) + b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
-        ddeps += open(os.path.join(OS_DIR, "os.h"), "rb").read()
+        ddeps += open(os.path.join(OS_DIR, "os.h"), "rb").read() + open(os.path.join(OS_DIR, "os_guest.h"), "rb").read()
         # (the direct back end's shader stamps: the translator it builds and the code that decides the translation's output,
         # so its program caches are made again for a change to them only. In direct_shader.cpp and direct_compute.cpp that
         # code is between "// <stamp NAME>" and "// </stamp NAME>" lines: graphics and shared for the graphics programs,
@@ -972,9 +972,9 @@ def main():
     if not direct_only:
         exe = os.path.join(out, EXE)   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()
-        # (--export-dynamic-symbol: os.h's os_*, which hookshot_direct.so calls, and hos_posix_*, which it looks up by name)
+        # (--export-dynamic-symbol: what hookshot_direct.so calls in the exe: os.h's and os_guest.h's os_*, hos_mem_ledger)
         r = subprocess.run([cc] + target() + ["-fuse-ld=lld", "-o", exe, "-Wl,-Map=" + exe + ".map", "-Wl,--gc-sections",
-                                              "-Wl,--export-dynamic-symbol=hos_posix_*", "-Wl,--export-dynamic-symbol=os_*", "@" + rsp] + HOT_ORDER() +
+                                              "-Wl,--export-dynamic-symbol=os_*", "-Wl,--export-dynamic-symbol=hos_mem_ledger", "@" + rsp] + HOT_ORDER() +
                            (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS,
                            capture_output=True, text=True)
         undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

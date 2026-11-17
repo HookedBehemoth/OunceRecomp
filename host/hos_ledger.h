@@ -1,5 +1,5 @@
 /* Main memory by owner, the host's part: the host's larger heap users count their bytes here (pools count what they hold
-   from the heap, in use or free). hos_posix_mem_ledger (hos_mem.c) reports it. */
+   from the heap, in use or free). hos_mem_ledger (hos_mem.c) reports it. */
 #pragma once
 #include <stdint.h>
 #include <stdlib.h>

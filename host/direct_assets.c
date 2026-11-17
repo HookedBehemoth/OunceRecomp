@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"
+#include "os_guest.h"
 void f_80798b60(Ctx *), f_80792bd0(Ctx *), f_80f6c580(Ctx *), f_8152f540(Ctx *), f_81539300(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 uint8_t *hos_guest_base(void);
@@ -103,8 +104,7 @@ static void mem_line(void *arg) {
         uint64_t heap_res = 0, guest_res = 0;
         const uint64_t gsize = hos_guest_size();
         {   /* (the guest memory's pages that exist: the memfd's blocks) */
-            uint64_t hos_posix_guest_resident(void);
-            guest_res = hos_posix_guest_resident() / (uint64_t)pg;
+            guest_res = os_guest_resident() / (uint64_t)pg;
         }
         unsigned char *v = heap_hi > heap_lo ? (unsigned char *)malloc((size_t)((heap_hi - heap_lo) / (uint64_t)pg) + 2) : NULL;
         if (v && heap_hi <= gsize) {

@@ -6,6 +6,7 @@
 #include "direct_check.h"
 #include "direct_internal.h"
 #include "os.h"
+extern "C" size_t hos_mem_ledger(char* out, size_t cap, uint64_t* ours, uint64_t* guest_committed);   // (host/hos_mem.c, exported)
 #include <vk_mem_alloc.h>
 
 
@@ -188,7 +189,7 @@ void mem_stats(char* out, size_t cap) {
 
 // VRAM: VMA's blocks count whole with the driver, so their free room is added to the owners' sum; what is left as
 // "unaccounted" is the driver's own (command buffers, shader objects, descriptor state, the swapchain) or an owner missing.
-// Main memory: /proc/self/status, whose counters cost nothing to read (smaps_rollup walks the address space). Its three
+// Main memory: os_mem_use_get, whose counters cost nothing to read. Its three
 // kinds keep the parts apart: the guest is a memfd, so its touched pages are the shared kind; code and the store's maps are
 // the file kind (mincore would answer for the page cache, not for this process); the owners count heap, the anonymous kind.
 // The Vulkan host heaps are system memory the driver maps without it counting as resident, so they are printed apart; the
@@ -242,26 +243,17 @@ void mem_owner_stats(char* vram, char* main_mem, char* counts, size_t cap) {
     }
 
     // ---- main memory ----
-    long long rss = 0, anon = 0, file = 0, shmem = 0;   // (kB)
-    if (FILE* f = std::fopen("/proc/self/status", "r")) {
-        char line[256];
-        while (std::fgets(line, sizeof line, f)) {
-            if (!std::strncmp(line, "VmRSS:", 6)) rss = std::atoll(line + 6);
-            else if (!std::strncmp(line, "RssAnon:", 8)) anon = std::atoll(line + 8);
-            else if (!std::strncmp(line, "RssFile:", 8)) file = std::atoll(line + 8);
-            else if (!std::strncmp(line, "RssShmem:", 9)) shmem = std::atoll(line + 9);
-        }
-        std::fclose(f);
-    }
-    typedef size_t (*LedgerFn)(char*, size_t, uint64_t*, uint64_t*);
-    static const LedgerFn ledger = (LedgerFn)os_sym("hos_posix_mem_ledger");
-    char host_part[512] = "not counted (no hos_posix_mem_ledger)";
+    os_mem_use mu;
+    os_mem_use_get(&mu);
+    const long long rss = (long long)(mu.resident >> 10), anon = (long long)(mu.private_bytes >> 10),
+                    file = (long long)(mu.file_bytes >> 10), shmem = (long long)(mu.shared_bytes >> 10);   // (kB)
+    char host_part[512];
     uint64_t host_sum = 0, committed = 0;
-    if (ledger) ledger(host_part, sizeof host_part, &host_sum, &committed);
+    hos_mem_ledger(host_part, sizeof host_part, &host_sum, &committed);
     const int64_t ours = sum[2] + (int64_t)im.table + (int64_t)host_sum;
     const long long rest = (rss >> 10) - mb(ours);
     out = main_mem, k = 0;
-    put("main memory (MB): process %lld resident (/proc/self/status) = anonymous %lld + file %lld + shared %lld; anonymous: ours "
+    put("main memory (MB): process %lld resident = anonymous %lld + file %lld + shared %lld; anonymous: ours "
         "%lld (back end: lists %lld, store scratch %lld, shader code %lld, image records %lld; host: %s), unaccounted %lld (the "
         "driver's and the C library's heaps, stacks, tables not counted); file: the program's code and the store's maps (%lld "
         "mapped); shared: the guest's pages touched (its memory manager has handed out %lld of address space); process - ours "

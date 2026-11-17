@@ -2,6 +2,7 @@
    The whole 4 GB window is committed up front (hos_main.c), so "mapping" here is only bookkeeping and zeroing. */
 #include "hos.h"
 #include "hos_ledger.h"
+#include "os_guest.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,18 +115,17 @@ static void pages_mark_used_locked(uint64_t addr, uint64_t size) {
 }
 
 static void discard_pages(uint64_t addr, uint64_t size) {
-    if (!hos_guest_range(addr, size)) return;   /* (hookshot: guest pages only; Linux's discard zeroes what it is given) */
+    if (!hos_guest_range(addr, size)) return;   /* (hookshot: guest pages only; a discard zeroes what it is given) */
     const uint64_t lo = (addr + 0xFFF) & ~0xFFFULL, hi = (addr + size) & ~0xFFFULL;
     static int keep = -1;
     if (keep < 0) keep = getenv("HOS_KEEP_FREED_PAGES") != NULL;
     if (hi <= lo || keep) return;
 #if !defined(__EMSCRIPTEN__)
-    extern int hos_posix_guest_discard(void *p, size_t n);   /* (hos_main.c: MADV_REMOVE on the memfd window) */
     extern int rx_guest_imported(uint64_t lo, uint64_t hi);
     /* (pages a dma-buf import holds stay where they are, zeroed: a hole punched under one would leave the GPU on
        the old pages and the game on new ones) */
     if (rx_guest_imported(lo, hi)) memset(GP(lo), 0, (size_t)(hi - lo));
-    else hos_posix_guest_discard(GP(lo), (size_t)(hi - lo));
+    else os_guest_discard(GP(lo), (size_t)(hi - lo));
 #endif
 }
 
@@ -271,10 +271,7 @@ HLE(_ZN2nn2os15FreeMemoryPagesEmm) {
            still maps them, and decommitted pages under an import faulted the device. Read as zero, as freed pages) */
         extern int rx_guest_imported(uint64_t lo, uint64_t hi);
         if (hi > lo && rx_guest_imported(lo, hi)) memset(GP(lo), 0, (size_t)(hi - lo));
-        else if (hi > lo) {   /* (linux: kept mapped, the pages read as zero; MADV_REMOVE on the memfd window) */
-            extern int hos_posix_guest_discard(void *p, size_t n);
-            hos_posix_guest_discard(GP(lo), (size_t)(hi - lo));
-        }
+        else if (hi > lo) os_guest_discard(GP(lo), (size_t)(hi - lo));   /* (kept mapped, the pages read as zero) */
         RET(0);
         return;
     }
@@ -303,8 +300,8 @@ HLE(_ZN2nn2os15QueryMemoryInfoEPNS0_10MemoryInfoE) {
 HLE(_ZN2nn2os21SetDyingMessageRegionEmm) { RET(0); }
 
 /* The ledger's owners in MB into out, their sum in bytes, and the address space handed to the guest (image, system region,
-   heap, regions). Returns the length written. Called by name from the direct back end (hos_posix_: the exported prefix) */
-size_t hos_posix_mem_ledger(char *out, size_t cap, uint64_t *ours, uint64_t *guest_committed) {
+   heap, regions). Returns the length written. Exported to the direct back end (nx2/build.py) */
+size_t hos_mem_ledger(char *out, size_t cap, uint64_t *ours, uint64_t *guest_committed) {
     static const char *const names[HL_N] = {"nvn recordings", "nvn command memory", "terrain tiles kept", "video pictures"};
     size_t k = 0;
     uint64_t sum = 0;

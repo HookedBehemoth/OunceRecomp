@@ -525,6 +525,20 @@ int os_mem_protect(void *addr, size_t size, int prot) {
     page_span(addr, size, &lo, &hi);
     return mprotect((void *)lo, hi - lo, prot_of(prot)) ? err_of(errno) : 0;
 }
+void os_mem_use_get(os_mem_use *out) {   /* (/proc/self/status: its counters cost nothing to read) */
+    memset(out, 0, sizeof *out);
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return;
+    char line[256];
+    unsigned long long kb;
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "VmRSS: %llu", &kb) == 1) out->resident = kb << 10;
+        else if (sscanf(line, "RssAnon: %llu", &kb) == 1) out->private_bytes = kb << 10;
+        else if (sscanf(line, "RssFile: %llu", &kb) == 1) out->file_bytes = kb << 10;
+        else if (sscanf(line, "RssShmem: %llu", &kb) == 1) out->shared_bytes = kb << 10;
+    }
+    fclose(f);
+}
 int os_mem_available(uint64_t *ram, uint64_t *swap) {
     struct sysinfo si;
     if (sysinfo(&si)) return err_of(errno);

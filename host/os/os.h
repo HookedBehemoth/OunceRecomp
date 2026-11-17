@@ -135,6 +135,9 @@ size_t os_page_size(void);
 int os_mem_protect(void *addr, size_t size, int prot);   /* (commits reserved pages, with a prot other than NONE) */
 /* which pages of [addr, addr + size) are in memory (addr page-aligned): out[i] & 1 for the i-th; 0 or < 0 */
 int os_mem_resident(const void *addr, size_t size, uint8_t *out);
+/* the process's memory in use, in bytes: resident in all, and of it private, file-backed and shared (0 when unknown) */
+typedef struct { uint64_t resident, private_bytes, file_bytes, shared_bytes; } os_mem_use;
+void os_mem_use_get(os_mem_use *out);
 /* the machine's memory and swap, in bytes (installed, not free): 0 or < 0 */
 int os_mem_available(uint64_t *ram, uint64_t *swap);
 
