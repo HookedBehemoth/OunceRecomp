@@ -114,13 +114,7 @@ impl Base {
         let have: HashSet<u64> = entries.iter().copied().collect();
         entries.extend(img.code_address_refs(&spans).into_iter().filter(|&e| img.in_code(e) && !have.contains(&e)));
         times.image = t0.elapsed().as_secs_f64();
-        let hot_path = game.hot_path()?;
-        let hot: HashSet<u64> = std::fs::read_to_string(&hot_path)
-            .map_err(|e| format!("{}: {e}", hot_path.display()))?
-            .lines()
-            .filter_map(|l| l.split_whitespace().next())
-            .filter_map(|w| w.strip_prefix("f_").and_then(|h| u64::from_str_radix(h, 16).ok()))
-            .collect();
+        let hot: HashSet<u64> = game.hot_list()?.into_iter().collect();
         let parts = Inputs { game, exefs, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, hot };
         Ok(Base::of(parts, o, times))
     }

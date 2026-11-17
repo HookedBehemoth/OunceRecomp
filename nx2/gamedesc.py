@@ -13,7 +13,8 @@ Fields:
                 exefs/main. The lift checks the dump before it reads anything else (check_exefs) and records it
                 (record); the build checks the record (check_lift). A mismatch stops with both values.
   labels        guest address -> label file, beside game.py (nx2/label_syms.py, nx2/lift2/dump.py, abi_census.py)
-  hot           the hot list's file, beside game.py (one f_<address> a line); a missing one stops the lift
+  hot           the hot list's file, beside game.py: "HOTF", u32 count, count u32 guest addresses (little-endian,
+                hottest first); a missing or malformed one stops the lift
   host          the host's C files (in host/) the build compiles and the patch scan reads
   local_continuations   {pc: word}: `adr xN, <label>` ... `br xN` inside one function, which the code pointer audit
                 accepts (nx2/lift2/code_ptrs.py)
@@ -22,6 +23,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import struct
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = os.path.join(ROOT, "host")
@@ -58,6 +60,16 @@ class Game:
         if not os.path.exists(p):
             raise SystemExit("game %s: no hot list %s (the description's hot, beside game.py)" % (self.name, p))
         return p
+
+    def hot_list(self):
+        """the hot list's guest addresses, hottest first; SystemExit when the file is missing or malformed"""
+        p = self.hot_path()
+        with open(p, "rb") as f:
+            d = f.read()
+        n = struct.unpack_from("<I", d, 4)[0] if len(d) >= 8 and d[:4] == b"HOTF" else -1
+        if n < 0 or len(d) != 8 + 4 * n:
+            raise SystemExit("game %s: %s is not a hot list (\"HOTF\", u32 count, count u32 addresses)" % (self.name, p))
+        return list(struct.unpack_from("<%dI" % n, d, 8))
 
     def check_exefs(self, exefs):
         """SystemExit unless exefs/main is this game's (its build id, then its SHA-256); returns the Identity seen"""

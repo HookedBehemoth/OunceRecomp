@@ -275,10 +275,9 @@ def summary_step(plan_path, cache):
 
 
 def hot_list():
-    """the hot list's functions (the game description's hot_path, beside game.py; a missing file stops)"""
+    """the hot list's functions (the game description's, beside game.py; a missing or malformed file stops)"""
     import gamedesc
-    path = gamedesc.current().hot_path()
-    return {int(w[2:], 16) for line in open(path) for w in line.split()[:1] if w.startswith("f_")}
+    return set(gamedesc.current().hot_list())
 
 
 def check_complete(entries, bodies, hooks):

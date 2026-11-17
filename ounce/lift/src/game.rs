@@ -64,12 +64,16 @@ impl Game {
         self.host.iter().map(|f| root.join("host").join(f)).collect()
     }
 
-    /// the hot list's file; an error when it does not exist
-    pub fn hot_path(&self) -> Result<PathBuf, String> {
-        if !self.hot.exists() {
-            return Err(format!("game {}: no hot list {} (the description's `hot`, beside game.toml)", self.name, self.hot.display()));
+    /// the hot list's guest addresses, hottest first (the file's format: game.toml, `hot`)
+    pub fn hot_list(&self) -> Result<Vec<u64>, String> {
+        let p = &self.hot;
+        let d = std::fs::read(p)
+            .map_err(|e| format!("game {}: no hot list {} (the description's `hot`, beside game.toml): {e}", self.name, p.display()))?;
+        let n = if d.len() >= 8 && &d[..4] == b"HOTF" { u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize } else { usize::MAX };
+        if n == usize::MAX || d.len() != 8 + 4 * n {
+            return Err(format!("game {}: {} is not a hot list (\"HOTF\", u32 count, count u32 addresses)", self.name, p.display()));
         }
-        Ok(self.hot.clone())
+        Ok(d[8..].chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as u64).collect())
     }
 
     /// Err unless exefs/main is this game's (its build id, then its SHA-256); returns the Identity seen.
@@ -129,8 +133,10 @@ mod tests {
         assert_eq!(g, Game::load(&repo().join("games/oot/game.toml")).unwrap());
         assert_eq!(g.name, "oot");
         assert!(g.labels.ends_with("games/oot/labels.txt"));
-        assert!(g.hot.ends_with("games/oot/hot_funcs.txt"));
-        assert!(g.hot_path().is_ok());
+        assert!(g.hot.ends_with("games/oot/hot_funcs.bin"));
+        let hot = g.hot_list().unwrap();
+        assert_eq!(hot.len(), 852);
+        assert_eq!(hot[0], 0x8004ab40);
         assert_eq!(g.identity.build_id, "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348");
         assert_eq!(g.identity.main_sha256, "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de");
         assert_eq!(g.host.len(), 61);
@@ -173,9 +179,18 @@ mod tests {
     }
 
     #[test]
-    fn hot_path_missing() {
+    fn hot_list_bad() {
         let mut g = Game::load(&repo().join("games/oot")).unwrap();
-        g.hot = PathBuf::from("/nonexistent/hot_funcs.txt");
-        assert!(g.hot_path().unwrap_err().contains("no hot list /nonexistent/hot_funcs.txt"));
+        g.hot = PathBuf::from("/nonexistent/hot_funcs.bin");
+        assert!(g.hot_list().unwrap_err().contains("no hot list /nonexistent/hot_funcs.bin"));
+        let f = std::env::temp_dir().join(format!("ounce_hot_{}.bin", std::process::id()));
+        for bad in [&b"HOTX\0\0\0\0"[..], &b"HOTF\x01\0\0\0"[..], &b"HOTF\x01\0\0\0\x01\0\0\0\0"[..]] {
+            std::fs::write(&f, bad).unwrap();
+            g.hot = f.clone();
+            assert!(g.hot_list().unwrap_err().contains("is not a hot list"));
+        }
+        std::fs::write(&f, b"HOTF\x01\0\0\0\x40\xab\x04\x80").unwrap();
+        assert_eq!(g.hot_list().unwrap(), vec![0x8004ab40]);
+        std::fs::remove_file(&f).unwrap();
     }
 }

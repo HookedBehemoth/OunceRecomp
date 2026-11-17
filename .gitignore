@@ -6,6 +6,9 @@ image/
 exefs/
 romfs/
 *.bin
+# (but a game description's address lists: guest addresses only, no game data; docs/lifter.md)
+!games/*/hot_funcs.bin
+!games/*/hot_order.bin
 *.keys
 *.nso
 *.nca

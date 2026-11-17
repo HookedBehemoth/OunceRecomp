@@ -100,8 +100,15 @@ class Description(unittest.TestCase):
             with self.assertRaises(SystemExit) as e:
                 g.hot_path()
             self.assertIn("no hot list " + os.path.join(game, "hot.txt"), str(e.exception))
-            open(os.path.join(game, "hot.txt"), "w").close()
-            self.assertEqual(g.hot_path(), os.path.join(game, "hot.txt"))
+            for bad in (b"HOTX\0\0\0\0", b"HOTF\x01\0\0\0", b"HOTF\x01\0\0\0\x01\0\0\0\0"):
+                with open(os.path.join(game, "hot.txt"), "wb") as f:
+                    f.write(bad)
+                with self.assertRaises(SystemExit) as e:
+                    g.hot_list()
+                self.assertIn("is not a hot list", str(e.exception))
+            with open(os.path.join(game, "hot.txt"), "wb") as f:
+                f.write(b"HOTF\x02\0\0\0\x40\xab\x04\x80\x80\xbb\x09\x80")
+            self.assertEqual(g.hot_list(), [0x8004ab40, 0x8009bb80])
 
     def run_py(self, args, env, py=sys.executable):
         e = {k: v for k, v in os.environ.items() if k != "HOOKSHOT_GAME"}
