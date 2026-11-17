@@ -787,3 +787,34 @@ fn zbic_of_plain(raw: &[u8]) -> Vec<u8> {
     put32(&mut h, 0xc, flags);
     [h, body].concat()
 }
+
+#[test]
+fn exefs_in_memory_is_the_extracted_one() {
+    // (a package: the update's main taken from the base, as heal does on disk)
+    let f = fixture();
+    let nup = open(&f.t, &healing(b"NSO0authored module"));
+    let title = nup.titles[1].clone();
+    let d = crate::Dump { source: crate::Source::Nup { nup, title }, out: f.out.clone() };
+    let (files, notes) = d.exefs_files().unwrap();
+    assert_eq!(notes, ["main: taken from title 0 (v0)"]);
+    assert_eq!(files["main"], b"NSO0authored module");
+    assert_eq!(files["rtld"], b"NSO0rtld");
+    assert!(!f.out.join("exefs").exists(), "nothing written");
+    // (a folder: ZBIC made plain, main.npdm kept, other files left out)
+    let src = f.t.0.join("dump");
+    std::fs::create_dir_all(src.join("exefs")).unwrap();
+    std::fs::create_dir_all(src.join("romfs")).unwrap();
+    let text: Vec<u8> = (0..300_000u32).map(|i| (i * 7 / 13) as u8).collect();
+    std::fs::write(src.join("exefs/main"), zbic_nso(&[&text, b"ro", b"data"])).unwrap();
+    std::fs::write(src.join("exefs/main.npdm"), b"META").unwrap();
+    std::fs::write(src.join("exefs/notes.txt"), b"x").unwrap();
+    let d = crate::Dump::open(&src, None, &f.out).unwrap();
+    let (files, notes) = d.exefs_files().unwrap();
+    assert_eq!(notes, ["main: ZBIC -> plain NSO"]);
+    assert_eq!(files.keys().collect::<Vec<_>>(), ["main", "main.npdm"]);
+    let on_disk = f.t.0.join("disk");
+    std::fs::create_dir_all(&on_disk).unwrap();
+    std::fs::write(on_disk.join("main"), zbic_nso(&[&text, b"ro", b"data"])).unwrap();
+    nso::unpack_nso(&on_disk.join("main"), &on_disk.join("main.plain")).unwrap();
+    assert_eq!(files["main"], std::fs::read(on_disk.join("main")).unwrap());
+}

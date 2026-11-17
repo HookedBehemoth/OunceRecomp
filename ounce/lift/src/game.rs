@@ -92,13 +92,12 @@ impl Game {
     }
 
     /// Err unless exefs/main is this game's (its build id, then its SHA-256); returns the Identity seen.
-    pub fn check_exefs(&self, exefs: &Path) -> Result<Identity, String> {
-        let path = exefs.join("main");
-        let data = std::fs::read(&path).map_err(|e| format!("game {}: {}: {e}", self.name, path.display()))?;
+    pub fn check_exefs(&self, exefs: &crate::exefs::Exefs) -> Result<Identity, String> {
+        let data = exefs.get("main").map_err(|e| format!("game {}: {e}", self.name))?;
         if data.len() < 0x54 || &data[..4] != b"NSO0" {
-            return Err(format!("game {}: {} is not an NSO", self.name, path.display()));
+            return Err(format!("game {}: exefs/main is not an NSO", self.name));
         }
-        let seen = Identity { build_id: crate::nso::build_id(&data), main_sha256: sha256_file(&path)? };
+        let seen = Identity { build_id: crate::nso::build_id(data), main_sha256: hex(&<sha2::Sha256 as sha2::Digest>::digest(data)) };
         for (what, got, want) in [
             ("build_id", &seen.build_id, &self.identity.build_id),
             ("main_sha256", &seen.main_sha256, &self.identity.main_sha256),
@@ -116,22 +115,6 @@ impl Game {
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = f.read(&mut buf).map_err(|e| format!("{}: {e}", path.display()))?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(hex(&h.finalize()))
 }
 
 #[cfg(test)]
@@ -165,20 +148,18 @@ mod tests {
     }
 
     // a synthetic NSO header: 0x54 bytes, "NSO0", build id bytes 0..20 at 0x40
-    fn synthetic(dir: &Path) {
+    fn synthetic() -> crate::exefs::Exefs {
         let mut d = vec![0u8; 0x54];
         d[..4].copy_from_slice(b"NSO0");
         for i in 0..20 {
             d[0x40 + i] = i as u8;
         }
-        std::fs::write(dir.join("main"), d).unwrap();
+        crate::exefs::Exefs { files: [("main".to_string(), d)].into() }
     }
 
     #[test]
     fn check_exefs_synthetic() {
-        let dir = std::env::temp_dir().join(format!("ounce_game_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        synthetic(&dir);
+        let mut dir = synthetic();
         let mut g = Game::load(&repo().join("games/oot")).unwrap();
         let err = g.check_exefs(&dir).unwrap_err();
         assert!(err.contains("main's build_id is 000102030405060708090a0b0c0d0e0f10111213"), "{err}");
@@ -190,9 +171,8 @@ mod tests {
         assert!(err.contains(&format!("main's main_sha256 is {known},")), "{err}");
         g.identity.main_sha256 = known.into();
         assert_eq!(g.check_exefs(&dir).unwrap().main_sha256, known);
-        std::fs::write(dir.join("main"), b"XXXX").unwrap();
+        dir.files.insert("main".into(), b"XXXX".to_vec());
         assert!(g.check_exefs(&dir).unwrap_err().contains("is not an NSO"));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

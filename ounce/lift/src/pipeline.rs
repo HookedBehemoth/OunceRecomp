@@ -191,7 +191,7 @@ pub fn lift(r: &Run, out: &dyn Out) -> Result<Stats, String> {
         ("gen/a64_hooks.ll", gen::hooks_ll(&img.hooks, &answered).into_bytes()),
         ("gen/a64_code_slots.ll", gen::code_slots_ll(img, facts, &functions).into_bytes()),
         ("gen/a64_stubs.ll", stubs.into_bytes()),
-        ("gen/hos_image.ll", gen::image_ll(img, facts, &base.exefs)?.into_bytes()),
+        ("gen/hos_image.ll", gen::image_ll(img, facts, &base.npdm)?.into_bytes()),
         ("gen/nvn2_exports.ll", gen::nvn_exports_ll(&base.nvn).into_bytes()),
         ("gen/functions.txt", gen::functions_txt(&sizes).into_bytes()),
     ];

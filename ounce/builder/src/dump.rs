@@ -4,6 +4,7 @@ use crate::fail;
 use ounce_dump::extract::Progress;
 use ounce_dump::nup::{self, Nup, Part};
 use ounce_dump::{Done, Dump};
+use ounce_lift::exefs::Exefs;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -19,21 +20,48 @@ fn report(part: &str, d: &Done, secs: f64) {
     }
 }
 
-/// Writes `dir/exefs` and checks it is the supported game's; returns it and the thread writing `dir/romfs`.
-pub fn exefs_then_romfs(src: &Path, title: Option<&str>, dir: &Path, game: &Path) -> Result<(PathBuf, JoinHandle<Result<(), String>>), String> {
+/// The exefs, read in memory (written into `<dir>/exefs` too when `write_exefs`: a developer's dump folder) and checked
+/// against the game description; the dump stays open for its romfs, which goes into `<dir>/romfs`.
+pub fn exefs(src: &Path, title: Option<&str>, dir: &Path, game: &Path, write_exefs: bool) -> Result<(Dump, Exefs), String> {
     let d = Dump::open(src, title, dir)?;
     println!("dump: {}", d.describe());
     let t = Instant::now();
-    report("exefs", &d.exefs(&mut Progress::new(None, ""))?, t.elapsed().as_secs_f64());
-    let exefs = dir.join("exefs");
-    ounce_lift::game::Game::load(game)?.check_exefs(&exefs)?;
-    let romfs = std::thread::spawn(move || {
+    let ex = if write_exefs {
+        report("exefs", &d.exefs(&mut Progress::new(None, ""))?, t.elapsed().as_secs_f64());
+        Exefs::read_dir(&dir.join("exefs"))?
+    } else {
+        let (files, notes) = d.exefs_files()?;
+        println!("dump: exefs read in memory: {} files, {:.0} MB in {:.1} s", files.len(), files.values().map(|f| f.len()).sum::<usize>() as f64 / 1e6, t.elapsed().as_secs_f64());
+        for n in &notes {
+            println!("  {n}");
+        }
+        Exefs { files }
+    };
+    ounce_lift::game::Game::load(game)?.check_exefs(&ex)?;
+    Ok((d, ex))
+}
+
+/// The thread writing the dump's romfs (`<dump's dir>/romfs`), then copying it into `copy_to/romfs` when given (a
+/// developer's dump folder and the game folder). Files named in `stale` (romfs paths, the game folder's hollowed
+/// files of an earlier build) are removed first, so they are written whole again.
+pub fn romfs(d: Dump, copy_to: Option<PathBuf>, stale: Vec<String>) -> JoinHandle<Result<(), String>> {
+    std::thread::spawn(move || {
+        let dest = copy_to.as_deref().unwrap_or(&d.out).join("romfs");
+        for f in &stale {
+            let p = ounce_dump::extract::extraction_path(dest.parent().unwrap(), "romfs", f, ".part")?;
+            let _ = std::fs::remove_file(p);
+        }
         let t = Instant::now();
         let r = d.romfs(&mut Progress::new(Some(Duration::from_secs(30)), "romfs: "))?;
         report("romfs", &r, t.elapsed().as_secs_f64());
+        if let Some(to) = copy_to {
+            let t = Instant::now();
+            let c = Dump::open(&d.out, None, &to)?;
+            let r = c.romfs(&mut Progress::new(Some(Duration::from_secs(30)), "romfs copy: "))?;
+            report("romfs copy", &r, t.elapsed().as_secs_f64());
+        }
         Ok(())
-    });
-    Ok((exefs, romfs))
+    })
 }
 
 pub fn finish_romfs(h: JoinHandle<Result<(), String>>) -> Result<(), String> {

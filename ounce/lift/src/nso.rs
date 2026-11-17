@@ -3,7 +3,6 @@
 //! init array and the .eh_frame_hdr function starts. Offsets are the module's own (from its .text).
 
 use std::collections::HashMap;
-use std::path::Path;
 
 /// nso.MODULE_ORDER: rtld's load order
 pub const MODULE_ORDER: [&str; 13] =
@@ -98,12 +97,12 @@ const DT_RELR: i64 = 36;
 const DT_RELRENT: i64 = 37;
 
 impl Nso {
-    pub fn load(path: &Path) -> Result<Nso, String> {
-        let raw = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    /// the module `name` from its file's bytes
+    pub fn parse(name: &str, raw: &[u8]) -> Result<Nso, String> {
         if raw.len() < 0x100 || &raw[..4] != b"NSO0" {
-            return Err(format!("{}: not an NSO", path.display()));
+            return Err(format!("{name}: not an NSO"));
         }
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let name = name.to_string();
         let flags = u32le(&raw, 0xC);
         let bss_size = u32le(&raw, 0x3C) as u64;
         let build_id = build_id(&raw);
@@ -265,8 +264,8 @@ impl Nso {
 }
 
 /// the exefs's modules in rtld's order (nso.load_exefs)
-pub fn load_exefs(dir: &Path) -> Result<Vec<Nso>, String> {
-    MODULE_ORDER.iter().map(|n| dir.join(n)).filter(|p| p.exists()).map(|p| Nso::load(&p)).collect()
+pub fn load_exefs(ex: &crate::exefs::Exefs) -> Result<Vec<Nso>, String> {
+    MODULE_ORDER.iter().filter_map(|n| ex.files.get(*n).map(|b| Nso::parse(n, b))).collect()
 }
 
 #[cfg(test)]

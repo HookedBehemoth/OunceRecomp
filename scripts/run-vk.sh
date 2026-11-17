@@ -7,6 +7,7 @@
 #   ZOO=<scene>                  the actor-zoo scene zoo/<scene>.toml as the overlay (made on demand: scripts/zoo-overlay.sh)
 #   USER_FROM=<folder>           copied into the run's own user folder first (a save to start from)
 #   EXE=<path>                   another build (default work/sa/build/hookshot; its caches are beside it)
+#   ROMFS=<dir>                  another romfs (default the dump's, work/dump.txt; a game folder's: <folder>/romfs)
 #   WINDOW=1 SOUND=1 SHOT_EVERY=300
 #   RUN=timing|check             the script takes the GPU lock itself; do not wrap it in flock then:
 #     timing  exclusive (flock -x work/run.lock): fps, launch time, anything that may hang the GPU (a reset kills
@@ -60,7 +61,7 @@ out=$root/work/runs/$name
 rm -rf "$out"; mkdir -p "$out/shots" "$out/user"
 [ -n "${USER_FROM:-}" ] && cp -r "$USER_FROM"/. "$out/user/"
 if [ "$mode" != check ] && pgrep -x hookshot >/dev/null; then echo "another hookshot runs"; exit 1; fi
-romfs=$(grep -v '^#' "$root/work/dump.txt" | head -1)/romfs
+romfs=${ROMFS:-$(grep -v '^#' "$root/work/dump.txt" | head -1)/romfs}
 env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}")
 [ "${WINDOW:-0}" = 1 ] || env_args+=(HOS_HEADLESS=1)
 [ "${SOUND:-0}" = 1 ] || env_args+=(HOS_AUDIO=0)

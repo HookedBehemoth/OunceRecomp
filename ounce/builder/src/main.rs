@@ -15,6 +15,7 @@ mod lift;
 mod link;
 mod llvm;
 mod objeq;
+mod probe;
 mod progress;
 mod textures;
 #[cfg(feature = "clang")]
@@ -33,11 +34,15 @@ const HELP: &str = "hookshot-builder <command> ...
   lift-compile <out dir> [-j N] [--check <obj dir>] [--cache <dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
                                        the lift and the compile of every partition and generated module, in memory
   build <out dir> --direct <hookshot_direct.so> [-j N] [--cache <dir>] [--version <text>] [--check <obj dir>]
-        [--gen <lift dir> [--gen-parts]] [--progress] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
-        [--dump <file.nup|folder> [--dump-dir <dir>] [--title <t>]] [--prepared <dir> [--fast-textures] [--romfs <dir>]]
-                                       the game folder: the lift, every compile and the link in this process (feature clang);
-                                       --dump reads the dump into --dump-dir (default <work>/dump), the romfs while the lift runs;
-                                       --prepared writes the texture store (<dir>/tex)
+        [--gen <lift dir> [--gen-parts]] [--progress] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>] [--obj <dir>]
+        [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>] [--no-textures]] [--quality fast|high]
+        [--prepared <dir> [--romfs <dir>]]
+                                       the lift, every compile and the link in this process (feature clang);
+                                       --dump makes <out> a game folder: the exefs read in memory, romfs/ copied while the lift
+                                       runs, then prepared/tex and the romfs's texture files with their texels zeroed, user/;
+                                       --dump-dir also writes the dump there (exefs/, romfs/ whole) for the developer tools;
+                                       --prepared writes a texture store (<dir>/tex) from --romfs (default <work>/dump/romfs)
+  probe                                the Vulkan device check: one line per requirement, then the verdict
   dump <file.nup|folder> [--verify] [--extract <dir>] [--title <index|version|id>] [--only exefs|romfs]
                                        a dump: its titles, its checks (--verify), or written out as exefs/ and romfs/
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
@@ -83,6 +88,7 @@ fn main() {
         Some("lift-compile") => lift_compile(&argv[1..]),
         Some("dump") => dump::command(&argv[1..]),
         Some("textures") => textures::command(&argv[1..]),
+        Some("probe") => probe::command(),
         #[cfg(feature = "clang")]
         Some("build") => build(&argv[1..]),
         Some("objeq") => {
@@ -300,7 +306,8 @@ fn build(args: &[String]) {
     let (mut cache_dir, mut version, mut resource) = (None::<PathBuf>, None::<String>, PathBuf::from(RESOURCE_DIR));
     let (mut gen, mut gen_parts, mut progress) = (None::<PathBuf>, false, false);
     let (mut dump_src, mut dump_dir, mut title) = (None::<PathBuf>, None::<PathBuf>, None::<String>);
-    let (mut prepared, mut fast_textures, mut romfs_dir) = (None::<PathBuf>, false, None::<PathBuf>);
+    let (mut prepared, mut settings, mut romfs_dir) = (None::<PathBuf>, ounce_tex::convert::Settings::FAST, None::<PathBuf>);
+    let (mut obj_dir, mut no_textures) = (None::<PathBuf>, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -322,7 +329,9 @@ fn build(args: &[String]) {
             "--dump-dir" => dump_dir = Some(val().into()),
             "--title" => title = Some(val()),
             "--prepared" => prepared = Some(val().into()),
-            "--fast-textures" => fast_textures = true,
+            "--quality" => settings = textures::quality(&val()),
+            "--no-textures" => no_textures = true,
+            "--obj" => obj_dir = Some(val().into()),
             "--romfs" => romfs_dir = Some(val().into()),
             _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
             _ => fail(format!("build: what is {a}?")),
@@ -334,19 +343,23 @@ fn build(args: &[String]) {
         fail(format!("this process runs LLVM {}, but the lifter's IR is written for LLVM {LLVM_MAJOR}", llvm::version()));
     }
     let t0 = Instant::now();
-    // (the exefs first, so the lift starts while the romfs is written)
-    let dump_root = dump_dir.clone().unwrap_or_else(|| run.opts.work.join("dump"));
-    let romfs_dir = romfs_dir.unwrap_or_else(|| dump_root.join("romfs"));
+    // (a game folder (--dump): the exefs read first, so the lift starts while the romfs is copied into the folder; the
+    // build's own files (objects, the map, the link order) go to <work>/game-build, not into the folder)
+    let game_folder = dump_src.is_some();
+    let inter = if game_folder { run.opts.work.join("game-build") } else { out.clone() };
+    let hollowed_list = out.join("prepared").join(textures::HOLLOWED);
     let romfs = dump_src.map(|src| {
-        let dir = dump_dir.unwrap_or_else(|| run.opts.work.join("dump"));
-        let (exefs, romfs) = dump::exefs_then_romfs(&src, title.as_deref(), &dir, &run.opts.game).unwrap_or_else(|e| fail(e));
-        run.opts.exefs = Some(exefs);
-        romfs
+        std::fs::create_dir_all(&out).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
+        let dir = dump_dir.clone().unwrap_or_else(|| out.clone());
+        let (d, exefs) = dump::exefs(&src, title.as_deref(), &dir, &run.opts.game, dump_dir.is_some()).unwrap_or_else(|e| fail(e));
+        run.opts.exefs_files = Some(std::sync::Arc::new(exefs));
+        let stale: Vec<String> = std::fs::read_to_string(&hollowed_list).map(|t| t.lines().map(String::from).collect()).unwrap_or_default();
+        dump::romfs(d, dump_dir.is_some().then(|| out.clone()), stale)
     });
     let root = run.opts.root.clone();
     let version = version.unwrap_or_else(|| version::describe(&root));
-    let obj = out.join("obj");
-    let rt64 = out.join("rt64");
+    let obj = obj_dir.unwrap_or_else(|| inter.join("obj"));
+    let rt64 = inter.join("rt64");
     for d in [&obj, &rt64] {
         std::fs::create_dir_all(d).unwrap_or_else(|e| fail(format!("{}: {e}", d.display())));
     }
@@ -409,10 +422,10 @@ fn build(args: &[String]) {
     objects.extend(host_jobs.iter().map(|j| obj.join(&j.obj)));
     // (linked and labelled beside, then renamed over the old one: see install)
     let exe = out.join("hookshot.new");
-    let map = out.join("hookshot.map");
+    let map = inter.join("hookshot.map");
     let game_dir = if run.opts.game.is_dir() { run.opts.game.clone() } else { run.opts.game.parent().unwrap().to_path_buf() };
     let order_bin = game_dir.join("hot_order.bin");
-    let order = order_bin.exists().then(|| link::order_file(&order_bin, &out).unwrap_or_else(|e| fail(e)));
+    let order = order_bin.exists().then(|| link::order_file(&order_bin, &inter).unwrap_or_else(|e| fail(e)));
     let libs: Vec<String> = ["-lavcodec", "-lswscale", "-lswresample", "-lavutil"].map(String::from).to_vec();
     let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
     let x = link::Exe { out: &exe, map: Some(&map), objects: &objects, order: order.as_deref(), libs: &libs };
@@ -434,9 +447,24 @@ fn build(args: &[String]) {
     if let Some(r) = romfs {
         dump::finish_romfs(r).unwrap_or_else(|e| fail(e));
     }
-    // (the prepared assets: the texture store, from the romfs)
-    if let Some(p) = &prepared {
-        textures::make(&romfs_dir, &p.join("tex"), &game, fast_textures, cjobs, Vec::new()).unwrap_or_else(|e| fail(e));
+    // (the prepared assets: the texture store from the romfs; in a game folder, from its romfs, whose texture files
+    // are then written with their texels zeroed: the back end takes them from the store)
+    if game_folder && !no_textures {
+        let t = Instant::now();
+        let hollow = ounce_tex::run::HollowTo { dir: out.join("romfs"), level: textures::HOLLOW_LEVEL };
+        let st = textures::make(&out.join("romfs"), &out.join("prepared/tex"), &game, settings, cjobs, Vec::new(), Some(hollow)).unwrap_or_else(|e| fail(e));
+        let mut list = st.hollowed.join("\n");
+        list.push('\n');
+        std::fs::write(&hollowed_list, list).unwrap_or_else(|e| fail(format!("{}: {e}", hollowed_list.display())));
+        println!("textures and the romfs's texture files: {:.0} s", t.elapsed().as_secs_f64());
+    } else if let Some(p) = &prepared {
+        let romfs_dir = romfs_dir.unwrap_or_else(|| run.opts.work.join("dump/romfs"));
+        textures::make(&romfs_dir, &p.join("tex"), &game, settings, cjobs, Vec::new(), None).unwrap_or_else(|e| fail(e));
+    }
+    if game_folder {
+        // (the saves: the host keeps them in user/ beside the executable when the folder has one)
+        let user = out.join("user");
+        std::fs::create_dir_all(&user).unwrap_or_else(|e| fail(format!("{}: {e}", user.display())));
     }
     let days: f64 = std::env::var("HOOKSHOT_OBJCACHE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
     let (pn, pf, pk) = cache.prune(days);

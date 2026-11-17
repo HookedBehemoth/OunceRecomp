@@ -6,6 +6,7 @@ pub mod build;
 pub mod discover;
 pub mod eden;
 pub mod emit;
+pub mod exefs;
 pub mod export;
 pub mod fp_estimate;
 pub mod game;

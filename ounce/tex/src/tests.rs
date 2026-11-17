@@ -324,6 +324,7 @@ fn run_store(romfs: &Path, out: &Path, min_psnr: f64) -> crate::run::Stats {
         jobs: 4,
         pack_limit: 1 << 20,
         only: Vec::new(),
+        hollow: None,
         admit: &admit,
         progress: &progress,
     };
@@ -526,4 +527,33 @@ fn bc4_search_matches_rgbcx() {
         }
         assert_eq!(a, b, "texels {px:?} radius {r}");
     }
+}
+
+#[test]
+fn hollow_zeroes_texels_and_keeps_headers() {
+    use ounce_dump::zstd::{self, Format};
+    let mut rng = Rng(7);
+    let mut rnd = |n| rng.bytes(n);
+    let t = [spec("Kept_BC1", (0x1a << 8) | 6, (100, 60, 1, 5, 2), [2, 3, 4, 5], 1, &mut rnd)];
+    let b = make_bntx(&t);
+    let h = bntx::parse(&b).unwrap();
+    let (lo, hi) = (h.brtd as usize + 0x10, h.rlt_off as usize);
+    // (a BNTX at offset 0x40 of a plain file, after other bytes, then zstd with a checksum)
+    let mut plain = vec![0xAB; 0x40];
+    plain.extend_from_slice(&b);
+    plain.extend_from_slice(&[0xCD; 24]);
+    let framed = zstd::compress(Format::Std, &plain, 3, true);
+    let (out, st) = crate::hollow::hollow(&Default::default(), &framed, 3).unwrap().unwrap();
+    assert_eq!(st.zeroed, (hi - lo) as u64);
+    assert_eq!(st.kept, 0);
+    assert!(out.len() < framed.len() / 4, "{} of {}", out.len(), framed.len());
+    assert!(out[4] & 4 != 0, "the checksum flag is kept");
+    let back = zstd::decompress(Format::Std, &out, plain.len()).unwrap();
+    assert_eq!(back.len(), plain.len());
+    assert_eq!(back[..0x40 + lo], plain[..0x40 + lo], "everything before the texels is kept");
+    assert!(back[0x40 + lo..0x40 + hi].iter().all(|&x| x == 0));
+    assert_eq!(back[0x40 + hi..], plain[0x40 + hi..], "the relocation table and what follows are kept");
+    // (the hollowed file's BNTX parses as before)
+    assert_eq!(bntx::parse(&back[0x40..]).unwrap().textures.len(), 1);
+    assert!(crate::hollow::hollow(&Default::default(), &zstd::compress(Format::Std, &[1u8; 300], 3, false), 3).unwrap().is_none());
 }

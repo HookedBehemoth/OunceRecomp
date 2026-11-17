@@ -3,15 +3,33 @@
 use crate::fail;
 use crate::gate::Gate;
 use ounce_tex::convert::Settings;
-use ounce_tex::run::{GameFiles, Options, Stats};
+use ounce_tex::run::{GameFiles, HollowTo, Options, Stats};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-pub const HELP: &str = "textures <out dir> [--romfs <dir>] [--game <dir>] [--fast] [-j N] [--only <romfs prefix>]...
+pub const HELP: &str = "textures <out dir> [--romfs <dir>] [--game <dir>] [--quality fast|high] [-j N] [--only <romfs prefix>]...
   textures --compare <a> <b>";
 
-/// Makes the store in `out` from `romfs` with the game description's settings for its romfs.
-pub fn make(romfs: &Path, out: &Path, game: &ounce_lift::game::Game, fast: bool, jobs: usize, only: Vec<String>) -> Result<Stats, String> {
+/// The zstd level a texture file is compressed at again once its texels are zeroed: they are mostly zeros and
+/// headers, and a higher level takes longer for next to no bytes.
+pub const HOLLOW_LEVEL: i32 = 9;
+
+/// The list of the romfs files a game folder's store replaced with their texels zeroed (`prepared/hollowed.txt`):
+/// they are written whole again before the next build reads the romfs.
+pub const HOLLOWED: &str = "hollowed.txt";
+
+/// `--quality fast|high`: the encoder settings (fast, the default: a quarter of the time, packs 4 % larger)
+pub fn quality(v: &str) -> Settings {
+    match v {
+        "fast" => Settings::FAST,
+        "high" => Settings::QUALITY,
+        o => fail(format!("--quality fast|high, not {o}")),
+    }
+}
+
+/// Makes the store in `out` from `romfs` with the game description's settings for its romfs; with `hollow`, also
+/// the romfs's texture files with their texels zeroed.
+pub fn make(romfs: &Path, out: &Path, game: &ounce_lift::game::Game, settings: Settings, jobs: usize, only: Vec<String>, hollow: Option<HollowTo>) -> Result<Stats, String> {
     let gate = Gate::new();
     let admit = |mb: u64| -> Box<dyn ounce_tex::run::Held + '_> { Box::new(gate.enter(mb)) };
     let progress = |s: &str| println!("{s}");
@@ -19,10 +37,11 @@ pub fn make(romfs: &Path, out: &Path, game: &ounce_lift::game::Game, fast: bool,
         romfs: romfs.to_path_buf(),
         out: out.to_path_buf(),
         game: GameFiles { zstd_dictionaries: game.assets.zstd_dictionaries.clone(), skip_dirs: game.assets.texture_skip_dirs.clone() },
-        settings: if fast { Settings::FAST } else { Settings::QUALITY },
+        settings,
         jobs,
         pack_limit: 1 << 30,
         only,
+        hollow,
         admit: &admit,
         progress: &progress,
     };
@@ -42,6 +61,16 @@ pub fn make(romfs: &Path, out: &Path, game: &ounce_lift::game::Game, fast: bool,
     for (k, (n, raw, packed)) in kinds {
         println!("  {k:8} {n:6} textures, {:8.0} MB raw, {:8.0} MB packed", *raw as f64 / 1e6, *packed as f64 / 1e6);
     }
+    if !st.hollowed.is_empty() {
+        println!(
+            "romfs: {} texture files written with their texels zeroed: {:.2} GB -> {:.2} GB ({:.1} GB of texels zeroed; {} BNTX inside compressed members kept whole)",
+            st.hollowed.len(),
+            st.hollow_in as f64 / 1e9,
+            st.hollow_out as f64 / 1e9,
+            st.hollow_zeroed as f64 / 1e9,
+            st.hollow_kept
+        );
+    }
     if !st.errors.is_empty() {
         return Err(format!("textures: {} files failed: {}", st.errors.len(), st.errors[..st.errors.len().min(10)].join("; ")));
     }
@@ -49,7 +78,7 @@ pub fn make(romfs: &Path, out: &Path, game: &ounce_lift::game::Game, fast: bool,
 }
 
 pub fn command(args: &[String]) {
-    let (mut out, mut romfs, mut game, mut fast) = (None::<PathBuf>, None::<PathBuf>, PathBuf::from("games/oot"), false);
+    let (mut out, mut romfs, mut game, mut settings) = (None::<PathBuf>, None::<PathBuf>, PathBuf::from("games/oot"), Settings::FAST);
     let (mut jobs, mut only, mut compare) = (crate::gate::default_jobs(), Vec::new(), Vec::<PathBuf>::new());
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -57,7 +86,7 @@ pub fn command(args: &[String]) {
         match a.as_str() {
             "--romfs" => romfs = Some(val().into()),
             "--game" => game = val().into(),
-            "--fast" => fast = true,
+            "--quality" => settings = quality(&val()),
             "-j" => jobs = val().parse().unwrap_or_else(|_| fail("-j N")),
             "--only" => only.push(val()),
             "--compare" => compare = vec![val().into(), val().into()],
@@ -79,8 +108,11 @@ pub fn command(args: &[String]) {
     }
     let Some(out) = out else { fail(HELP) };
     let romfs = romfs.unwrap_or_else(|| PathBuf::from("work/dump/romfs"));
+    if romfs.parent().is_some_and(|d| d.join("prepared").join(HOLLOWED).exists()) {
+        fail(format!("{}: a game folder's romfs, its texels zeroed: make the store from the dump", romfs.display()));
+    }
     let g = ounce_lift::game::Game::load(&game).unwrap_or_else(|e| fail(e));
-    make(&romfs, &out, &g, fast, jobs, only).unwrap_or_else(|e| fail(e));
+    make(&romfs, &out, &g, settings, jobs, only, None).unwrap_or_else(|e| fail(e));
     let (cpu, hwm) = ounce_lift::pipeline::usage();
     println!("textures: {cpu:.0} s CPU, peak {hwm:.0} MB");
 }

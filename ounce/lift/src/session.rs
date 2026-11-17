@@ -21,12 +21,14 @@ pub struct Opts {
     pub work: PathBuf,
     pub root: PathBuf,
     pub exefs: Option<PathBuf>,
+    /// the exefs already in memory (a builder's dump); before `exefs`
+    pub exefs_files: Option<std::sync::Arc<crate::exefs::Exefs>>,
     pub max_func: usize,
 }
 
 impl Default for Opts {
     fn default() -> Opts {
-        Opts { game: PathBuf::from("games/oot"), work: PathBuf::from("work"), root: PathBuf::from("."), exefs: None, max_func: 0 }
+        Opts { game: PathBuf::from("games/oot"), work: PathBuf::from("work"), root: PathBuf::from("."), exefs: None, exefs_files: None, max_func: 0 }
     }
 }
 
@@ -60,7 +62,8 @@ pub fn host_texts(root: &Path, game: &Game) -> Result<Vec<(String, String)>, Str
 pub struct Base {
     pub game: Game,
     pub opts: Opts,
-    pub exefs: PathBuf,
+    /// exefs/main.npdm (gen's image description)
+    pub npdm: Vec<u8>,
     /// the host's declarations
     pub ps: PatchSet,
     pub horizon: Horizon,
@@ -97,12 +100,21 @@ impl Base {
         let ps = patch::scan_texts(&host_texts(&o.root, &game)?)?;
         let horizon = Horizon::load(&o.root)?;
         let mut times = Times { scan: t0.elapsed().as_secs_f64(), ..Times::default() };
-        let exefs = match &o.exefs {
-            Some(e) => e.clone(),
-            None => dump_exefs(&o.work)?,
+        let read;
+        let exefs: &crate::exefs::Exefs = match (&o.exefs_files, &o.exefs) {
+            (Some(f), _) => f,
+            (None, Some(e)) => {
+                read = crate::exefs::Exefs::read_dir(e)?;
+                &read
+            }
+            (None, None) => {
+                read = crate::exefs::Exefs::read_dir(&dump_exefs(&o.work)?)?;
+                &read
+            }
         };
-        game.check_exefs(&exefs)?;
-        let mods: Vec<Nso> = crate::nso::load_exefs(&exefs)?;
+        game.check_exefs(exefs)?;
+        let npdm = exefs.get("main.npdm")?.to_vec();
+        let mods: Vec<Nso> = crate::nso::load_exefs(exefs)?;
         let implemented: BTreeSet<String> = ps.hle_symbols();
         let (hle, stubbed) = eden::hle_set(&mods, &implemented, &horizon.os_namespaces)?;
         let nvn = eden::nvn_exports(&mods, &implemented);
@@ -115,7 +127,7 @@ impl Base {
         entries.extend(img.code_address_refs(&spans).into_iter().filter(|&e| img.in_code(e) && !have.contains(&e)));
         times.image = t0.elapsed().as_secs_f64();
         let hot: HashSet<u64> = game.hot_list()?.into_iter().collect();
-        let parts = Inputs { game, exefs, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, hot };
+        let parts = Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, hot };
         Ok(Base::of(parts, o, times))
     }
 
@@ -129,8 +141,8 @@ impl Base {
             let found = (d.funcs.len(), d.jt.len(), d.jt_index.len(), d.plt.len(), d.setjmp_owner.len(), d.rounds as usize + 1);
             (Plan::new(&d, &i.img, &i.hot), found)
         };
-        let Inputs { game, exefs, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, .. } = i;
-        Base { game, opts: o.clone(), exefs, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, plan, found, times }
+        let Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, .. } = i;
+        Base { game, opts: o.clone(), npdm, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, plan, found, times }
     }
 
     /// a base of synthetic code: (entry, words) functions in one module, the declarations of texts, no hooks (the
@@ -184,7 +196,7 @@ impl Base {
         let implemented = ps.hle_symbols();
         let inputs = Inputs {
             game,
-            exefs: PathBuf::new(),
+            npdm: Vec::new(),
             ps,
             horizon,
             implemented,
@@ -360,7 +372,7 @@ pub struct Patches {
 /// what the discovery and the plan are made from
 struct Inputs {
     game: Game,
-    exefs: PathBuf,
+    npdm: Vec<u8>,
     ps: PatchSet,
     horizon: Horizon,
     implemented: BTreeSet<String>,

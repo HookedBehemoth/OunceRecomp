@@ -13,6 +13,7 @@ mod tests;
 
 use extract::{Output, Progress, Written};
 use nup::{Nup, Part, Title};
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -78,6 +79,42 @@ impl Dump {
         }
         d.notes.extend(nso::unpack_exefs(&self.out)?);
         Ok(d)
+    }
+
+    /// The exefs in memory, as `exefs` would write it: the modules (made whole and plain) and main.npdm, by name.
+    pub fn exefs_files(&self) -> Result<(BTreeMap<String, Vec<u8>>, Vec<String>), String> {
+        let wanted = |n: &str| n == "main.npdm" || nso::NAMES.contains(&n);
+        let mut files = BTreeMap::new();
+        let mut notes = Vec::new();
+        match &self.source {
+            Source::Nup { nup, title } => {
+                if title.exefs == nup::NONE {
+                    return Err(format!("title {} has no exefs", title.index));
+                }
+                for (rel, i) in nup.walk(title.exefs)? {
+                    if wanted(&rel) {
+                        let data = nup.read(&nup.files[i], &rel).map_err(|e| format!("exefs/{rel}: {e}"))?;
+                        files.insert(rel, data);
+                    }
+                }
+                notes.extend(nso::heal_files(nup, title, &mut files)?);
+            }
+            Source::Folder(src) => {
+                for e in std::fs::read_dir(src.join("exefs")).map_err(|e| format!("{}: {e}", src.display()))?.flatten() {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    if wanted(&n) {
+                        files.insert(n, std::fs::read(e.path()).map_err(|err| format!("{}: {err}", e.path().display()))?);
+                    }
+                }
+            }
+        }
+        for (n, b) in files.iter_mut() {
+            if let (_, Some(plain)) = nso::plain_nso(n, b)? {
+                *b = plain;
+                notes.push(format!("{n}: ZBIC -> plain NSO"));
+            }
+        }
+        Ok((files, notes))
     }
 
     /// `<out>/romfs`, its damaged .zs files given stand-ins.

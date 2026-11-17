@@ -290,11 +290,9 @@ struct ImageDefs {
     thread_exit: u64,
 }
 
-fn image_defs(img: &Image, facts: &Facts, exefs: &Path) -> Result<ImageDefs, String> {
+fn image_defs(img: &Image, facts: &Facts, npdm: &[u8]) -> Result<ImageDefs, String> {
     let ex = |n: &str| facts.exports.iter().find(|e| e.0 == n).map_or(0, |e| e.1);
-    let p = exefs.join("main.npdm");
-    let npdm = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    if &npdm[..4] != b"META" {
+    if npdm.len() < 0x80 || &npdm[..4] != b"META" {
         return Err("main.npdm: no META header".into());
     }
     let le = |b: &[u8]| b.iter().rev().fold(0u64, |v, &x| v << 8 | x as u64);
@@ -322,8 +320,8 @@ fn image_defs(img: &Image, facts: &Facts, exefs: &Path) -> Result<ImageDefs, Str
 }
 
 /// hos_image.ll
-pub fn image_ll(img: &Image, facts: &Facts, exefs: &Path) -> Result<String, String> {
-    let d = image_defs(img, facts, exefs)?;
+pub fn image_ll(img: &Image, facts: &Facts, npdm: &[u8]) -> Result<String, String> {
+    let d = image_defs(img, facts, npdm)?;
     let mut m = Ll::new();
     m.int("hos_main_stack_size", 64, d.stack);
     m.int("hos_main_priority", 32, d.prio as u64);

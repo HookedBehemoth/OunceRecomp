@@ -19,6 +19,14 @@ pub struct GameFiles {
     pub skip_dirs: Vec<String>,
 }
 
+/// Where the texture files go with their texels zeroed (`hollow`): a romfs folder (the one read, or another), and
+/// the zstd level they are compressed again at.
+#[derive(Debug, Clone)]
+pub struct HollowTo {
+    pub dir: PathBuf,
+    pub level: i32,
+}
+
 /// Anything held while a file is converted (a memory gate's lease).
 pub trait Held {}
 impl<T> Held for T {}
@@ -32,6 +40,8 @@ pub struct Options<'a> {
     pub pack_limit: u64,
     /// only romfs paths that start with one of these (none: all)
     pub only: Vec<String>,
+    /// also writes each file holding BNTX texels there with them zeroed
+    pub hollow: Option<HollowTo>,
     /// waits until a file needing this many MB may start; the value returned is held while it is converted
     pub admit: &'a (dyn Fn(u64) -> Box<dyn Held + 'a> + Sync),
     pub progress: &'a (dyn Fn(&str) + Sync),
@@ -49,6 +59,13 @@ pub struct Stats {
     pub by_kind: HashMap<&'static str, (usize, u64, u64)>,
     pub errors: Vec<String>,
     pub seconds: f64,
+    /// the files written with their texels zeroed (romfs paths), their bytes before and after, the texel bytes
+    /// zeroed, and BNTX files left whole (inside a compressed archive member)
+    pub hollowed: Vec<String>,
+    pub hollow_in: u64,
+    pub hollow_out: u64,
+    pub hollow_zeroed: u64,
+    pub hollow_kept: u64,
 }
 
 /// (romfs-relative path, size, mtime in ns) of the files to look at.
@@ -107,6 +124,19 @@ struct Done {
     mtime: u64,
     hash: u64,
     bntx: Result<Vec<BntxOut>, String>,
+    hollowed: Option<Result<(u64, crate::hollow::Hollowed), String>>,
+}
+
+/// `path` of the romfs written into `h.dir` with its texels zeroed (beside, then renamed over): its new size
+fn hollow_file(dicts: &Dicts, data: &[u8], h: &HollowTo, path: &str) -> Result<(u64, crate::hollow::Hollowed), String> {
+    let Some((out, st)) = crate::hollow::hollow(dicts, data, h.level)? else { return Ok((data.len() as u64, Default::default())) };
+    let to = h.dir.join(path);
+    let tmp = h.dir.join(format!("{path}.hollow.tmp"));
+    if let Some(d) = to.parent() {
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    std::fs::write(&tmp, &out).and_then(|_| std::fs::rename(&tmp, &to)).map_err(|e| format!("{}: {e}", to.display()))?;
+    Ok((out.len() as u64, st))
 }
 
 /// Makes the store in `o.out` (its packs and index replaced).
@@ -152,14 +182,17 @@ pub fn run(o: &Options) -> Result<Stats, String> {
                         let (path, size, mtime) = &files[i];
                         let _lease = (o.admit)(need_mb(*size));
                         let done = match std::fs::read(o.romfs.join(path)) {
-                            Err(e) => Done { order: i, path: path.clone(), size: *size, mtime: *mtime, hash: 0, bntx: Err(e.to_string()) },
+                            Err(e) => Done { order: i, path: path.clone(), size: *size, mtime: *mtime, hash: 0, bntx: Err(e.to_string()), hollowed: None },
                             Ok(data) => {
                                 let hash = hash64(&[&data]);
-                                let bntx = find_bntx(dicts, &data, path, 0).and_then(|found| {
-                                    drop(data);
-                                    found.iter().map(|(sub, b)| convert::convert_bntx(b, sub, &o.settings)).collect()
-                                });
-                                Done { order: i, path: path.clone(), size: *size, mtime: *mtime, hash, bntx }
+                                let found = find_bntx(dicts, &data, path, 0);
+                                let hollowed = match (&o.hollow, &found) {
+                                    (Some(h), Ok(f)) if !f.is_empty() => Some(hollow_file(dicts, &data, h, path)),
+                                    _ => None,
+                                };
+                                drop(data);
+                                let bntx = found.and_then(|found| found.iter().map(|(sub, b)| convert::convert_bntx(b, sub, &o.settings)).collect());
+                                Done { order: i, path: path.clone(), size: *size, mtime: *mtime, hash, bntx, hollowed }
                             }
                         };
                         if tx.send(done).is_err() {
@@ -189,6 +222,17 @@ fn write_all(o: &Options, rx: mpsc::Receiver<Done>, n_files: usize, st: &mut Sta
     let io = |e: std::io::Error| e.to_string();
     for d in rx {
         st.files += 1;
+        match d.hollowed {
+            Some(Ok((n, h))) if h.zeroed > 0 => {
+                st.hollowed.push(d.path.clone());
+                st.hollow_in += d.size;
+                st.hollow_out += n;
+                st.hollow_zeroed += h.zeroed;
+                st.hollow_kept += h.kept as u64;
+            }
+            Some(Err(e)) => st.errors.push(format!("{}: zeroing its texels: {e}", d.path)),
+            _ => {}
+        }
         let bntx = match d.bntx {
             Ok(b) => b,
             Err(e) => {
