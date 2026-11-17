@@ -530,7 +530,7 @@ std::unique_ptr<std::atomic<Slot*>[]> table;
 std::mutex table_mu;
 std::atomic<double> last_miss_s{0};
 std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_late_stages{0}, st_late_changed{0}, st_late_moved{0}, st_late_ns{0},
-    st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0}, st_bumped{0};
+    st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0}, st_bumped{0}, st_read_here{0};
 
 uint32_t slot_hash(uint64_t serial) { return (uint32_t)((serial * 0x9E3779B97F4A7C15ull) >> 47) & (kSlots - 1); }
 Slot* slot_find(uint64_t serial) {
@@ -1647,10 +1647,12 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
     Slot* slot = slot_find(s.prog.serial);
     if (!slot) slot = heap_on() ? slot_make(s.prog) : nullptr;
     if (!slot) return why = SM_NOT_PARSED, nullptr;
-    const int state = slot->state.load(std::memory_order_acquire);
-    if (state == 0) {   // (still queued with the load's programs: this draw needs it now)
-        if (work::bump(slot->scan)) st_bumped.fetch_add(1, std::memory_order_relaxed);
-        return why = SM_NOT_PARSED, nullptr;
+    int state = slot->state.load(std::memory_order_acquire);
+    if (state == 0) {   // (still queued with the load's programs: this draw needs it now. Read here, or waited for: a draw
+                        // the game makes once, such as the pause picture's, has no later frame to be drawn in)
+        if (work::run_here(slot->scan)) st_read_here.fetch_add(1, std::memory_order_relaxed);
+        state = slot->state.load(std::memory_order_acquire);
+        if (state == 0) return why = SM_NOT_PARSED, nullptr;   // (another slot of its code still reads the family's variants)
     }
     if (state == 4) return why = SM_TASK_MESH, nullptr;
     if (state != 1) return why = SM_NOT_GRAPHICS, nullptr;
@@ -1742,7 +1744,7 @@ void shader_stats(char* out, size_t cap, double frames) {
                   "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed; %lld from binaries, %lld binaries saved, %lld refused), %lld stages unreadable, table full %lld; misses %.1f a frame, "
                   "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
                   "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
-                  "than the push data's room for their addresses; the last miss %.2f s after the device; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all); shader workers: %s; programs a draw moved ahead of the load's %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
+                  "than the push data's room for their addresses; the last miss %.2f s after the device; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all); shader workers: %s; programs a draw moved ahead of the load's %lld, read at their first draw %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
                   st_object_ns.load() / 1e9,
                   (long long)st_object_failed.load(), (long long)sobin::st_hits.load(), (long long)sobin::st_saved.load(),
@@ -1750,7 +1752,7 @@ void shader_stats(char* out, size_t cap, double frames) {
                   st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_multi_answers.load(),
                   (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
                   (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load(), (long long)st_late_stages.load(), (long long)st_late_changed.load(),
-                  (long long)st_late_moved.load(), st_late_ns.load() / 1e6, pool, (long long)st_bumped.load());
+                  (long long)st_late_moved.load(), st_late_ns.load() / 1e6, pool, (long long)st_bumped.load(), (long long)st_read_here.load());
 }
 
 }  // namespace hsd

@@ -260,12 +260,15 @@ void suspend(List* l) {
 }
 static bool cap_target(const PassRec& p) {   // (HOS_DBG=capture: a pass whose first colour target is 543x306)
     static const bool cap = dbg("capture");
-    return cap && p.noted && p.n && p.color[0].im && p.color[0].im->width == 543 && p.color[0].im->height == 306;
+    static const uint32_t also = [] { const char* v = dbg_value("capid"); return v ? (uint32_t)atoi(v) : 0u; }();   // (capid:<image id>)
+    return cap && p.noted && p.n && p.color[0].im &&
+           ((p.color[0].im->width == 543 && p.color[0].im->height == 306) || (also && p.color[0].im->id == also));
 }
 void end_pass(List* l) {
-    if (cap_target(l->pass))
-        logf("capture: pass on image %u ends: list kind %u lr %#llx at present %llu, rendered %d, load %#x", l->pass.color[0].im->id,
-             l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count(), (int)l->pass.rendered, l->pass.load), l->cap_drawn = true;
+    static std::atomic<int> cap_lines{0};
+    if (cap_target(l->pass) && (l->pass.color[0].im->width == 543 || cap_lines++ < 20000))
+        logf("capture: pass on image %u ends: list kind %u lr %#llx at present %llu, rendered %d, load %#x, rt %llu", l->pass.color[0].im->id,
+             l->info.kind, (unsigned long long)l->info.lr, (unsigned long long)present_count(), (int)l->pass.rendered, l->pass.load, (unsigned long long)l->pass.set_rt_at), l->cap_drawn = true;
     suspend(l);
     l->pass.noted = false;
 }
@@ -697,6 +700,10 @@ void pass_call(List* l, const List* callee) {
     if (callee->info.kind == HSD_LIST_JOB) task_job_step(l, callee);
     if (callee->draws) l->draws = true;
     if ((callee->info.kind == HSD_LIST_JOB || callee->draws) && records(l) && l->pass.noted && !l->pass.begun) begin(l);
+    if (cap_target(l->pass))
+        logf("capture: a call into the pass on image %u: callee kind %u lr %#llx, has_cmds %d draws %d secondary %d ended %d sec %d, n_drawn %u",
+             l->pass.color[0].im->id, callee->info.kind, (unsigned long long)callee->info.lr, (int)callee->has_cmds, (int)callee->draws,
+             (int)callee->secondary, (int)callee->ended, callee->sec != VK_NULL_HANDLE, (unsigned)callee->n_drawn);
     if (callee->info.kind == HSD_LIST_JOB) {   // (M3a: executed inside the caller's rendering; the key's formats noted)
         if (!records(l) || !l->pass.noted || l->secondary) return jcount(J_NO_PASS);
         const PassFormats now = formats_of(l->pass);

@@ -16,7 +16,7 @@ namespace hsd::work {
 
 struct Ticket {
     std::function<void()> f;
-    int cls = -1;        // (the class it is queued in; -1 not queued yet, -2 taken by a worker; under mu)
+    int cls = -1;        // (the class it is queued in; -1 not queued yet, -2 taken, -3 done; under mu)
     os_thread* worker = nullptr;   // (the background worker running it at the lower priority, which a bump raises; under mu)
 };
 
@@ -24,6 +24,7 @@ namespace {
 
 std::mutex mu;
 std::condition_variable cv_now, cv_bg;   // (the workers that take only P0; the background ones)
+std::condition_variable cv_done;         // (a job finished: run_here's wait for one a worker had taken)
 std::deque<TicketRef> q[kClasses];   // (newest at the front; a bumped ticket leaves a stale entry behind, skipped)
 size_t live[kClasses]{};             // (tickets queued in each class, stale entries not counted)
 int running = 0;
@@ -68,7 +69,8 @@ void worker(void* arg) {
         f();
         std::lock_guard lk(mu);
         running--;
-        t->worker = nullptr;
+        t->worker = nullptr, t->cls = -3;
+        cv_done.notify_all();
         if (background) lowered = os_thread_priority(me) == OS_PRIO_LOWEST;   // (a bump may have raised it)
     }
 }
@@ -122,6 +124,29 @@ bool bump(const TicketRef& t, Class to) {
         q[to].push_front(t);
     }
     cv_now.notify_one(), cv_bg.notify_one();
+    return true;
+}
+
+bool run_here(const TicketRef& t) {
+    if (!t) return false;
+    std::function<void()> f;
+    {
+        std::unique_lock lk(mu);
+        if (t->cls == -1) return false;
+        if (t->cls == -2) {   // (a worker has it: wait for it, at the game's priority)
+            if (t->worker && os_thread_set_priority(t->worker, OS_PRIO_NORMAL)) t->worker = nullptr;
+            cv_done.wait(lk, [&] { return t->cls == -3; });
+            return true;
+        }
+        if (t->cls == -3) return true;
+        live[t->cls]--;   // (its queue entry stays behind, skipped by take as a bumped one is)
+        t->cls = -2;
+        f = std::move(t->f);
+    }
+    f();
+    std::lock_guard lk(mu);
+    t->cls = -3;
+    cv_done.notify_all();
     return true;
 }
 

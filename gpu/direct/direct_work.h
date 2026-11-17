@@ -27,6 +27,8 @@ inline TicketRef run(Class c, std::function<void()> f) {
 /// Moves a job still queued in a later class to the front of `to` (PW or P0), or raises a running background job to the
 /// game's priority; false when there was nothing to do
 bool bump(const TicketRef& t, Class to = P0);
+/// Runs a queued job now on the calling thread, or waits for the worker that has it; false when it was never queued
+bool run_here(const TicketRef& t);
 
 int workers();
 /// "PW w, P0 a, P1 b, P2 c queued, n running (of w workers, k of them background), b bumped"

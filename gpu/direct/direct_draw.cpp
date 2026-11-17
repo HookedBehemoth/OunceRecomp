@@ -798,11 +798,20 @@ bool drawlog_on() {
 /// texture, the list's kind and return address, the program
 void phlog(const List* l, const DrawProg* p) {
     static const bool on = dbg("phlog");
-    if ((!on && !strict_on()) || !p) return;
+    const bool cap = p && cap_pass(l);   // (HOS_DBG=capture: what a draw into the 543x306 target samples)
+    if ((!on && !strict_on() && !cap) || !p) return;
     static std::mutex mu;
     static std::vector<uint8_t> seen(1u << 20);
     const DState& s = l->dctx->s;
+    if (cap) logf("capture: the draw's program %016llx, %zu texture words", (unsigned long long)p->key, p->tex_words.size());
     for (const auto& t : p->tex_words) {
+        if (cap) {
+            const uint32_t hc = t.bank < 3 && !t.computed && !t.secondary ? bank_word(s, t.bank, t.stage, t.offset) : 0;
+            char e[320] = "";
+            if (hc) heap_describe(hc & 0xFFFFF, e, sizeof e);
+            logf("capture:   texture word c%u+%#x stage %u%s%s: handle %#x %s", t.bank, t.offset, t.stage, t.computed ? " computed" : "",
+                 t.secondary ? " secondary" : "", hc, e);
+        }
         if (t.computed || t.secondary) continue;
         const uint32_t h = t.bank < 3 ? bank_word(s, t.bank, t.stage, t.offset) : 0, id = h & 0xFFFFF;
         if (!h) continue;
