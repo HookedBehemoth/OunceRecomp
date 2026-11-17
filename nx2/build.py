@@ -45,7 +45,7 @@ OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # against that root (the AppImage's: glibc 2.35, so the game runs on older systems than the one that built it).
 if toolchain.windows():
     raise SystemExit("build.py: the host is built for Linux only (RX_TARGET=windows is not supported)")
-POSIX = os.path.join(kit.HERE, "..", "host", "posix")   # (the window on SDL2 and the sampling profiler)
+POSIX = os.path.join(kit.HERE, "..", "host", "posix")   # (the window on SDL2)
 OS_DIR = os.path.join(kit.HERE, "..", "host", "os")   # (os.h, the host's one way to the system, and its os_linux.c)
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot"
@@ -772,7 +772,7 @@ def main():
                                            "nvn2_exports.c")] + \
         [os.path.join(rt64, "a64_rt.c")]
     host_srcs = desc.host_sources()   # (the game description's; the patch declarations are scanned in them, too)
-    host_srcs += [os.path.join(POSIX, f) for f in ("display_sdl.c", "prof.c")] + \
+    host_srcs += [os.path.join(POSIX, f) for f in ("display_sdl.c",)] + \
         [os.path.join(OS_DIR, "os_linux.c")]
     if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]

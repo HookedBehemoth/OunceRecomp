@@ -6,7 +6,6 @@
 
 #include "direct_internal.h"
 #include "direct_marks.h"
-#include "direct_meshcap.h"
 
 namespace hsd {
 
@@ -105,7 +104,6 @@ void mark_after(VkCommandBuffer cb, uint32_t i) {
     pMarker(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, buffer, 8ull * i + 4, (uint32_t)entries[i].seq.load(std::memory_order_relaxed));
 }
 
-uint64_t marks_first_open_present = 0;
 
 void device_lost(const char* why) {
     // (one thread reports; a second submit that fails meanwhile waits here for the first one's abort: it must not end the
@@ -113,7 +111,6 @@ void device_lost(const char* why) {
     static std::mutex one;
     one.lock();
     marks_report(why);
-    meshcap_lost(marks_first_open_present);
     host->log_flush();
     abort();
 }
@@ -138,7 +135,6 @@ void marks_report(const char* why) {
          "%llu commands recorded)", why, open.size(), (unsigned long long)done_most, (unsigned long long)done,
          (unsigned long long)next.load());
     size_t n = 0;
-    if (!open.empty()) marks_first_open_present = entries[open[0].i].present;
     for (const Row& r : open) {
         const Entry& e = entries[r.i];
         // (the finished command recorded just before it in the same command buffer, if the ring still has it)

@@ -1,20 +1,15 @@
 # The mesh harness
 
-This page shows how to capture the game's mesh draws and run them outside the game with `tools/meshlab`: to compare a
+This page shows how to run captured mesh draws outside the game with `tools/meshlab`: to compare a
 replacement stage with the translator's, to find register spills, or to reproduce a GPU hang without the game. Read it
 before you write a replacement mesh stage or change how mesh stages are translated.
 
 The harness links nothing of the game. Captures and everything made from them hold game data: keep them under `work/`.
 
-## Capture a frame
+## Captures
 
-Run the game with `HOS_DBG=meshcap:<present>`. At that present the back end writes `meshcap/frame.bin` into the run
-folder: every task+mesh and mesh-only draw of the frame (program, push data, uniform buffers, the storage the stages
-read, the task header and payload as the GPU left them, pass formats, dynamic state), every vertex draw, and the stages
-of every program. A market frame is a few hundred MB.
-
-Related switches: `meshcapprog:<key>` limits the capture to one program; `meshcaplost` keeps a rolling capture for a
-frame that loses the device.
+The game no longer writes captures. The harness reads the ones kept under `work/` (`meshcap/frame.bin`: every
+task+mesh, mesh-only and vertex draw of one frame, with what their stages read, and the stages of every program).
 
 ## Build the tools
 

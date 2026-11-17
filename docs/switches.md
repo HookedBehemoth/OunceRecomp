@@ -38,7 +38,6 @@ The build's own switches are in [Build and iterate on the lifter](lifter-build.m
 | `HOS_TRACE=1` | Logs every Horizon call, like `--trace` |
 | `HOS_FPS_MAX=<fps>` | The frame-rate cap (60 to 240), over the option |
 | `HOS_BENCH=<frames>[,<ready frames>]` | A benchmark run (`scripts/bench.sh` sets it) |
-| `HOS_THREAD_TIMES=<seconds>` | Logs the threads that used over 5 % of a core |
 | `RX_VK_SHOTS=<dir>`, `RX_VK_SHOT_EVERY=<n>` | Saves a PNG of the presented frame every `n` presents |
 
 ## Drive the game with scripted input

@@ -163,7 +163,6 @@ static uint64_t lo, hi, used, peak;   /* the slot range [lo, hi) of pool offsets
 static volatile uint64_t frame;
 static os_rwlock mu = OS_RWLOCK_INIT;
 static volatile int state = -1;   /* -1 not tried, 0 off (never or backed off), 1 on */
-static uint64_t dta_seen;   /* (the DTA the allocs come for: rt_slots_dump) */
 static volatile uint64_t dta_pool_gpu;   /* the DTA pool's GPU address: a slot's storage is this + its offset */
 static uint32_t nrecs0, narenas;
 static uint64_t arenas0;   /* (the log: the fullest arena) */
@@ -471,7 +470,6 @@ static int alloc_pre(GuestCall *g, uint64_t sp, uint64_t lr, uint64_t dta, uint6
     const int local_shadow = tl_local_shadow;
     tl_local_shadow = 0;
     alloc_sp = 0;   /* (M6f: the splice of this call sets it) */
-    dta_seen = dta;
     __atomic_add_fetch(&n.calls, 1, __ATOMIC_RELAXED);
     if (cur.valid) __atomic_add_fetch(&n.stale, 1, __ATOMIC_RELAXED);   /* the last transient call never reached the splice */
     cur.valid = 0;
@@ -944,29 +942,6 @@ void rt_slots_texture_init(uint64_t obj, uint64_t gpu, const nvn_texdesc *td, in
                 (unsigned long long)G64(b + 104));
     }
     os_rwlock_unlock(&mu);
-}
-
-/* (HOS_DUMP_FILE) the DTA's lists, checked: each arena's used (+0x58), free (+0x70) and spare-node (+0x88) lists with
-   its bytes in use, the 256 descriptor buckets (+0x11d0) and the free-entry LRU (+0x29d0) */
-void rt_slots_dump(void) {
-    const uint64_t dta = dta_seen;
-    if (!dta || state < 0) return;
-    static const int lists[3] = {0x58, 0x70, 0x88};
-    const uint64_t recs = G64(dta + DTA_RECS);
-    for (uint32_t r = 0; r < *(uint32_t *)GP(dta + DTA_NRECS) && r < 4; r++) {
-        const uint64_t rec = G64(recs + 8ull * r), ar = G64(rec + REC_ARENAS);
-        for (uint32_t i = 0; i < G32(rec + REC_NARENAS) && i < 16; i++) {
-            const uint64_t a = ar + (uint64_t)i * 0xe8;
-            hos_log("rt dump: record %u arena %u: %llu MB used; used list %u (%d), free list %u (%d), spare nodes %u (%d)",
-                    r, i, (unsigned long long)(G64(a + AR_BYTES) >> 20), G32(a + lists[0] + 0x10), list_bad(a + lists[0]),
-                    G32(a + lists[1] + 0x10), list_bad(a + lists[1]), G32(a + lists[2] + 0x10), list_bad(a + lists[2]));
-        }
-    }
-    for (int i = -1; i < 256; i++) {
-        const uint64_t b = i < 0 ? dta + 0x29d0 : dta + 0x11d0 + (uint64_t)i * 0x18;
-        const int r = list_bad(b);
-        if (r || i < 0) hos_log("rt dump: %s %d: %u (%d)", i < 0 ? "LRU" : "bucket", i, G32(b + 0x10), r);
-    }
 }
 
 /* (nvn_native.c, at each present) one line every 600 presents */

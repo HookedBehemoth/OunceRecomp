@@ -75,7 +75,7 @@ Two more defenses exist:
 
 1. Run the spill scan and the register gate (`tools/meshlab/spill_scan.py`, `tools/meshlab/late_gate.py`) on captures of
    the three scenes. No mesh stage may start to spill.
-2. For a new replacement, capture a frame with `HOS_DBG=meshcap:<present>` and run `meshlab compare` against the
+2. For a new replacement, run `meshlab compare` on a kept capture against the
    translator's stage; add the stage to `swap.txt` only when every draw is equal.
 3. Walk from Kokiri to Hyrule Field and stand in the market. Save the kernel log into the run folder after any device
    loss, and use `HOS_DBG=marks` to see which command was running.

@@ -69,7 +69,7 @@ its rules and open work in the [direct back end plan](direct-backend-plan.md).
   what was missing. A silent fallback hides a wrong game version or a missing implementation until it shows up as a
   wrong picture.
 - **The CPU saturates first.** The game's threads, the replay and pipeline compiles share the CPU, and extra helper
-  threads have lowered the frame rate before. Measure thread counts (`HOS_THREAD_TIMES`, the samplers) rather than
+  threads have lowered the frame rate before. Measure thread counts (with a system profiler) rather than
   raising them by default.
 - **The back end's interface is versioned.** A change to `MkwVkHost` or `MkwVkRenderer` in `gpu/api/vk_api.h` bumps
   `MKWVK_API_VERSION`, because the host and `hookshot_direct.so` are built and loaded separately.

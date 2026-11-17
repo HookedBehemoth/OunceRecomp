@@ -139,7 +139,6 @@ For short scripted input, set `HOS_INPUT_SCRIPT` ([Switches](switches.md#drive-t
 
 ### Profile the CPU
 
-- **Threads:** run with `HOS_THREAD_TIMES=<seconds>` to log the threads that used over 5 % of a core. For stacks,
-  use a system profiler.
+- **Threads and stacks:** use a system profiler.
 - **Launch time:** `python -I scripts/launch_time.py work/runs/<name>` says when gameplay began and when it was
   playable.

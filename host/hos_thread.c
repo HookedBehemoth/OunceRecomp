@@ -26,7 +26,7 @@ struct HosThread {
     /* the kernel side (hos_svc.c): this thread's Horizon handle and the event it blocks on */
     uint32_t kernel_handle;
     os_event wake;
-    /* (HOS_DUMP_FILE) how often it asked for its core number, the guest callers of its first and last asks */
+    /* (hos_thread_dump) how often it asked for its core number, the guest callers of its first and last asks */
     int64_t core_asks;
     uint64_t core_ask_lr, core_ask_last_lr;
     /* (hookshot) fibers: the context running now (NULL: ctx, the thread's own), the thread's host fiber once it
@@ -86,7 +86,7 @@ uint64_t hos_thread_mask(HosThread *t) { return t->core_mask; }
    this says. */
 int hos_cores(void) { return 6; }
 /* The core number the running thread reads (GetCurrentCoreNumber, svc GetCurrentProcessorNumber; lr: the guest
-   caller, counted for HOS_DUMP_FILE). OoT's sead thread entry (0x834a2e50) keeps a one-core thread's number + 1 in
+   caller, counted for hos_thread_dump). OoT's sead thread entry (0x834a2e50) keeps a one-core thread's number + 1 in
    a TLS slot at its start, and 324 call sites read that slot, falling back to asking (166 of them index a six-entry
    per-core array: `cmp w0, #6`, core 6 and up sharing core 0's entry). So a one-core thread asks once, at its start,
    and uses that number from then on: work/assets/native/cores.md */
@@ -228,17 +228,6 @@ static void track(HosThread *t) {
     os_rwlock_lock(&threads_lock);
     if (nthreads < 1024) threads[nthreads++] = t;
     os_rwlock_unlock(&threads_lock);
-}
-
-/* The system thread ids of every running guest thread, for the profiler (host/posix/prof.c): read under the lock, as
-   a handle may be released once it is let go. */
-int hos_thread_tids(uint32_t *out, const char **names, int max) {
-    int n = 0;
-    os_rwlock_lock_shared(&threads_lock);
-    for (int i = 0; i < nthreads && n < max; i++)
-        if (threads[i]->handle) { out[n] = os_thread_tid(threads[i]->handle); names[n] = threads[i]->name; n++; }
-    os_rwlock_unlock_shared(&threads_lock);
-    return n;
 }
 
 /* (mkw-recomp) Every guest thread's name and guest registers as of its last call out of lifted code, with its

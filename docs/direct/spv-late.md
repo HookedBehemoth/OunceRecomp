@@ -54,7 +54,7 @@ python3 -I tools/meshlab/late_gate.py captures --meshlab <meshlab> --spvlate <sp
 python3 -I tools/meshlab/late_gate.py seed --censustool <censustool> --spvlate <spvlate> --seed <hookshot_shaders.bin> --out <dir> --kinds mesh
 ```
 
-The first form compiles every mesh program of `HOS_DBG=meshcap` captures before and after the pass and, with
+The first form compiles every mesh program of the kept captures before and after the pass and, with
 `--compare`, checks every captured draw's geometry bit for bit. The second compiles every mesh stage of the game's
 shader seed. The gate fails when a stage starts to spill, spills more, or needs noticeably more registers.
 

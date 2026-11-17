@@ -54,7 +54,6 @@
 
 #include "direct_heap.h"
 #include "direct_image.h"
-#include "direct_meshcap.h"
 #include "direct_compute.h"
 #include "direct_shader.h"
 #include "direct_state.h"
@@ -1145,15 +1144,6 @@ bool finish(Variant& v) {
         x.dim_fixed = t.type_fixed, x.desc_type = (uint8_t)t.type, x.depth_float = t.is_depth && !t.is_integer;
         x.want = canonical(a.type, x.dim_fixed, x.desc_type, x.depth_float);
         d.answers.push_back(x);
-    }
-    if (meshcap_on()) {   // (M6e: HOS_DBG=meshcap keeps every mesh program's stages, for the frame it captures; M6h: every program's)
-        std::vector<McStageIn> in;
-        for (size_t si = 0; si < v.stages.size(); si++) {
-            const VStage& st = v.stages[si];
-            in.push_back({(uint32_t)st.vk_stage, (uint32_t)st.nvn_stage, st.threads, st.payload_words, &st.spirv, maps[si].data(), (uint32_t)maps[si].size(),
-                          (uint32_t)sizeof(VkDescriptorSetAndBindingMappingEXT), &st.c1});
-        }
-        meshcap_program(d, d.task_code, in.data(), (uint32_t)in.size());
     }
     // (the shader objects, unlinked: vertex then fragment)
     static const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo size32 = [] {
