@@ -96,17 +96,17 @@ static int get_all(os_lib *m, int three) {
 #undef GET
     return 1;
 }
+static void load_run(void *arg) {
+    (void)arg;
+    const char *want = getenv("HOS_SDL_VERSION");
+    os_lib *m = want && atoi(want) == 2 ? NULL : load_one("libSDL3.so.0");
+    if (m && get_all(m, 1)) version = 3, lib = m;
+    else if ((m = load_one("libSDL2-2.0.so.0")) && get_all(m, 0)) version = 2, lib = m;
+    hos_log(version ? "sdl: SDL%d" : "sdl: no SDL3 or SDL2 found: no window, sound or SDL controllers", version);
+}
 int hos_sdl_load(void) {
-    static volatile int32_t state;   /* 0 not tried, 1 loading, 2 done */
-    if (os_atomic_cas(&state, 0, 1) == 0) {
-        const char *want = getenv("HOS_SDL_VERSION");
-        os_lib *m = want && atoi(want) == 2 ? NULL : load_one("libSDL3.so.0");
-        if (m && get_all(m, 1)) version = 3, lib = m;
-        else if ((m = load_one("libSDL2-2.0.so.0")) && get_all(m, 0)) version = 2, lib = m;
-        hos_log(version ? "sdl: SDL%d" : "sdl: no SDL3 or SDL2 found: no window, sound or SDL controllers", version);
-        os_atomic_store(&state, 2);
-    }
-    while (state != 2) os_yield();
+    static os_once once = OS_ONCE_INIT;
+    os_once_run(&once, load_run, NULL);
     return version;
 }
 

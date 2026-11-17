@@ -100,6 +100,7 @@ void os_cond_broadcast(os_cond *c);
 /* an event: set or not. An auto-reset event lets one waiter through per set (the wait takes it); a manual one stays set
    until reset and lets every waiter through */
 typedef struct os_event { volatile uint32_t state, waiters; uint32_t manual; } os_event;
+#define OS_EVENT_INIT(manual) {0, 0, (manual)}   /* (not set) */
 void os_event_init(os_event *e, bool manual, bool set);
 void os_event_set(os_event *e);
 void os_event_reset(os_event *e);
@@ -111,6 +112,12 @@ typedef struct os_sema { volatile uint32_t count, waiters; } os_sema;
 void os_sema_init(os_sema *s, uint32_t count);
 void os_sema_post(os_sema *s, uint32_t n);
 int os_sema_wait(os_sema *s, int64_t timeout_ns);   /* 0 (one taken) or OS_ETIMEDOUT */
+
+/* a one-time start-up: the first caller runs fn(arg), every other waits until it has returned (asleep, not spinning) */
+typedef struct os_once { volatile uint32_t state; } os_once;
+#define OS_ONCE_INIT {0}
+void os_once_run(os_once *o, void (*fn)(void *arg), void *arg);
+#define os_once_done(o) (os_atomic_load(&(o)->state) == 3)   /* (fn has returned) */
 
 /* ---- threads --------------------------------------------------------------------------------------------------------- */
 typedef struct os_thread os_thread;

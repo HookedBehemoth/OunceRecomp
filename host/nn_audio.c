@@ -581,7 +581,7 @@ static int au_device_channels(void) { return hos_sdl_audio_channels(); }
 static int au_menu_output(void) {
     char path[OS_PATH_MAX];
     const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
-    char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
+    char *slash = len ? strrchr(path, '/') : NULL;
     if (!slash) return 0;
     snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
     FILE *f = fopen(path, "r");

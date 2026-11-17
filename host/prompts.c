@@ -40,7 +40,7 @@ static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0
 static int game_dir(char *out, size_t cap) {   /* the game folder, with its separator */
     char path[OS_PATH_MAX];
     const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
-    char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
+    char *slash = len ? strrchr(path, '/') : NULL;
     if (!slash) return 0;
     slash[1] = 0;
     snprintf(out, cap, "%s", path);
@@ -210,26 +210,27 @@ static uint8_t *read_all(const char *path, const char *magic, long *n) {   /* (t
     return t;
 }
 
-static volatile int32_t setup_state;   /* setup's: 0 not looked, 1 looking, 2 prompts, 3 none */
+static os_once setup_once = OS_ONCE_INIT;
 
 /* the game folder and the face, found once; 0 when the folder has no prompts/ (built before them: the game's own icons) */
-static int setup(char *dir, size_t cap, int *face) {
-    static char d[OS_PATH_MAX];
-    static int f;
-    if (os_atomic_cas(&setup_state, 0, 1) == 0) {
-        char path[OS_PATH_MAX];
-        int ok = game_dir(d, sizeof d);
-        if (ok) {
-            snprintf(path, sizeof path, "%sprompts", d);
-            ok = os_path_kind(path) != OS_PATH_NONE;
-        }
-        if (ok) f = choose_face(d);
-        os_atomic_store(&setup_state, ok ? 2 : 3);
+static char setup_dir[OS_PATH_MAX];
+static int setup_face, setup_ok;
+static void setup_run(void *arg) {
+    (void)arg;
+    char path[OS_PATH_MAX];
+    int ok = game_dir(setup_dir, sizeof setup_dir);
+    if (ok) {
+        snprintf(path, sizeof path, "%sprompts", setup_dir);
+        ok = os_path_kind(path) != OS_PATH_NONE;
     }
-    while (setup_state == 1) os_sleep_ns(1LL * 1000000);
-    snprintf(dir, cap, "%s", d);
-    *face = f;
-    return setup_state == 2;
+    if (ok) setup_face = choose_face(setup_dir);
+    setup_ok = ok;
+}
+static int setup(char *dir, size_t cap, int *face) {
+    os_once_run(&setup_once, setup_run, NULL);
+    snprintf(dir, cap, "%s", setup_dir);
+    *face = setup_face;
+    return setup_ok;
 }
 
 static uint64_t fnv(uint64_t h, const void *p, size_t n) {
@@ -357,7 +358,7 @@ static int build_textures(char *out, size_t cap) {
 int hos_prompts_face(void) {
     char dir[OS_PATH_MAX];
     int face;
-    return setup_state >= 2 && setup(dir, sizeof dir, &face) ? face : -1;
+    return os_once_done(&setup_once) && setup(dir, sizeof dir, &face) ? face : -1;
 }
 
 /* the Talk ring's place for each of A B X Y (0 east, 1 south, 2 north, 3 west: nx2/prompt_assets.py RING_PLACES): where its pad
@@ -496,9 +497,15 @@ static int build(char *out, size_t cap) {
 
 /* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one. Asked only when no mod has
    the file: a mod's own wins */
+static char built_path[3][OS_PATH_MAX];   /* the font, the textures, the layouts */
+static int built_ok[3];
+static void built_run(void *arg) {
+    static int (*const builders[3])(char *, size_t) = {build, build_textures, build_layouts};
+    const int which = (int)(intptr_t)arg;
+    built_ok[which] = builders[which](built_path[which], OS_PATH_MAX);
+}
 int hos_prompts_romfs(const char *key, char *out, size_t cap) {
-    static volatile int32_t state[3];   /* the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none */
-    static char path[3][OS_PATH_MAX];
+    static os_once once[3] = {OS_ONCE_INIT, OS_ONCE_INIT, OS_ONCE_INIT};   /* the font, the textures, the layouts */
     const size_t kn = strlen(key);
     if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {
         char dir[OS_PATH_MAX];   /* (the game's size table with room for the faces' fonts, larger than its: nx2/prompt_assets.py) */
@@ -509,11 +516,8 @@ int hos_prompts_romfs(const char *key, char *out, size_t cap) {
     }
     const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, LAYOUTS_PATH) ? 2 : -1;
     if (which < 0) return 0;
-    static int (*const builders[3])(char *, size_t) = {build, build_textures, build_layouts};
-    if (os_atomic_cas(&state[which], 0, 1) == 0)
-        os_atomic_store(&state[which], builders[which](path[which], OS_PATH_MAX) ? 2 : 3);
-    while (state[which] == 1) os_sleep_ns(1LL * 1000000);
-    if (state[which] != 2) return 0;
-    snprintf(out, cap, "%s", path[which]);
+    os_once_run(&once[which], built_run, (void *)(intptr_t)which);
+    if (!built_ok[which]) return 0;
+    snprintf(out, cap, "%s", built_path[which]);
     return 1;
 }

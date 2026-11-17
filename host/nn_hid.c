@@ -377,17 +377,12 @@ static void binds_default(void) {
     }
 }
 
-static void binds_load(void) {
-    static volatile int32_t state;   /* 0 not read, 1 being read, 2 read */
-    if (state == 2) return;
-    if (os_atomic_cas(&state, 0, 1) != 0) {
-        while (state != 2) os_yield();
-        return;
-    }
+static void binds_read(void *arg) {
+    (void)arg;
     binds_default();
     char path[OS_PATH_MAX];
     const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
-    char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
+    char *slash = len ? strrchr(path, '/') : NULL;
     FILE *f = NULL;
     if (slash) {
         snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
@@ -432,7 +427,10 @@ static void binds_load(void) {
         }
     }
     if (changed) hos_log("hid: %d controls from hookshot_options.ini", changed);
-    os_atomic_store(&state, 2);
+}
+static void binds_load(void) {
+    static os_once once = OS_ONCE_INIT;
+    os_once_run(&once, binds_read, NULL);
 }
 int hos_binding(int set, int button, int slot) {
     binds_load();

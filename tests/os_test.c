@@ -91,6 +91,20 @@ static void sem_taker(void *arg) {
     }
 }
 
+static os_once once = OS_ONCE_INIT;
+static volatile uint32_t once_runs, once_seen;
+static void once_fn(void *arg) {
+    (void)arg;
+    os_sleep_ns(20000000);   /* (the others arrive while it runs) */
+    os_atomic_inc(&once_runs);
+}
+static void once_worker(void *arg) {
+    (void)arg;
+    os_event_wait(&go, OS_FOREVER);
+    os_once_run(&once, once_fn, NULL);
+    if (os_atomic_load(&once_runs) == 1) os_atomic_inc(&once_seen);   /* (returned only after it ran) */
+}
+
 static void run_all(os_thread_fn fn, int n, int tagged) {
     os_thread *t[THREADS];
     os_event_init(&go, true, false);
@@ -106,6 +120,9 @@ int main(void) {
     counter = 0;
     run_all(mutex_worker, THREADS, 0);
     CHECK(counter == (uint64_t)THREADS * ROUNDS);
+
+    run_all(once_worker, THREADS, 0);
+    CHECK(once_runs == 1 && once_seen == THREADS && os_once_done(&once));
 
     counter = 0;
     run_all(rw_worker, THREADS, 1);
@@ -189,7 +206,7 @@ int main(void) {
     char dir[256], path[300], path2[300];
     snprintf(dir, sizeof dir, "/tmp/os_test_%u", os_pid());
     CHECK(os_mkdir(dir) == 0 && os_mkdir(dir) == OS_EEXIST && os_path_kind(dir) == OS_PATH_DIR);
-    snprintf(path, sizeof path, "%s\\a.bin", dir);   /* ('\' is a separator) */
+    snprintf(path, sizeof path, "%s/a.bin", dir);
     int err;
     os_file *f = os_file_open(path, OS_READ | OS_WRITE | OS_EXCL, &err);
     CHECK(f && !err);

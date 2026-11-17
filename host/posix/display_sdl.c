@@ -104,8 +104,7 @@ static void keys_update(void) {
 
 /* ---- the window ---- */
 static volatile int renderer;   /* the renderer presents into the window */
-static os_event renderer_up;   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
-static volatile int renderer_up_made;
+static os_event renderer_up = OS_EVENT_INIT(true);   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
 static int fullscreen;
 
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
@@ -146,7 +145,7 @@ static void renderer_main(void *p) {
    the shaders are prepared is lost. Without a window the renderer starts on the game's own thread, before this is asked */
 void hos_renderer_wait(void) {
     { const char *e = getenv("HOS_NO_RENDERER_WAIT"); if (e && atoi(e) != 0) return; }
-    if (__atomic_load_n(&renderer_up_made, __ATOMIC_ACQUIRE)) os_event_wait(&renderer_up, OS_FOREVER);
+    os_event_wait(&renderer_up, OS_FOREVER);
 }
 
 static volatile int start_asked;
@@ -212,10 +211,9 @@ int hos_display_init(void) {
 void hos_display_start(void) {
     if (getenv("HOS_HEADLESS") || !sdl_ready) {   /* no window: the renderer still draws, offscreen (screenshots) */
         rx_start(NULL);
+        os_event_set(&renderer_up);
         return;
     }
-    os_event_init(&renderer_up, true, false);
-    __atomic_store_n(&renderer_up_made, 1, __ATOMIC_RELEASE);
     __atomic_store_n(&start_asked, 1, __ATOMIC_RELEASE);
 }
 

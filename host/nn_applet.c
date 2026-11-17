@@ -37,7 +37,7 @@ static const char *desired_language(void) {
         char path[300] = "language.txt";
 #if !defined(__EMSCRIPTEN__)
         uint32_t n = hos_game_path_a(path, 260);
-        while (n > 0 && path[n - 1] != 92 && path[n - 1] != 47) n--;
+        while (n > 0 && path[n - 1] != '/') n--;
         snprintf(path + n, sizeof path - n, "language.txt");
 #endif
         FILE *f = fopen(path, "r");
@@ -93,7 +93,7 @@ int hos_ini_option(const char *key, int otherwise);
 int hos_ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert menu's choice, gpu/legacy/vk/vk_menu.cpp; nn_vi.c reads it too) */
     char path[OS_PATH_MAX];
     const uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
-    char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
+    char *slash = n ? strrchr(path, '/') : NULL;   /* (the game folder's) */
     if (!slash) return otherwise;
     snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
     FILE *f = fopen(path, "r");

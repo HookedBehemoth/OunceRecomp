@@ -196,6 +196,21 @@ void os_cond_broadcast(os_cond *c) {
 
 /* ---- event: state 1 set; a waiter counts itself before it looks, a setter sets before it looks for waiters (both
    sequentially consistent: one of the two sees the other) ---- */
+/* ---- once: state 0 not run, 1 running, 2 running with sleepers, 3 done ---- */
+void os_once_run(os_once *o, void (*fn)(void *arg), void *arg) {
+    uint32_t s = os_atomic_load(&o->state);
+    if (s == 3) return;
+    if (s == 0 && os_atomic_cas(&o->state, 0u, 1u) == 0) {
+        fn(arg);
+        if (os_atomic_xchg(&o->state, 3u) == 2) futex(&o->state, FUTEX_WAKE_PRIVATE, OS_WAKE_ALL, NULL, 0);
+        return;
+    }
+    while ((s = os_atomic_load(&o->state)) != 3) {
+        if (s == 1 && os_atomic_cas(&o->state, 1u, 2u) != 1) continue;
+        futex(&o->state, FUTEX_WAIT_PRIVATE, 2, NULL, 0);
+    }
+}
+
 void os_event_init(os_event *e, bool manual, bool set) {
     e->manual = manual;
     e->waiters = 0;
