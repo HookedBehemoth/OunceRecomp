@@ -31,7 +31,7 @@ static struct { volatile int64_t uploads, bytes, unconverted, badsite, notex; } 
 
 void direct_sky_lut_opened(const char *path) {
     const size_t a = strlen(path), b = sizeof kFile - 1;
-    if (a >= b && !strcmp(path + a - b, kFile) && (a == b || path[a - b - 1] == '/' || path[a - b - 1] == '\\')) {
+    if (a >= b && !strcmp(path + a - b, kFile) && (a == b || path[a - b - 1] == '/')) {
         os_atomic_store(&converted, 1);
         hos_log("direct patch sky lut: the converted archive from the overlay: %s", path);
     }

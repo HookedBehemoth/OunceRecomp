@@ -9,7 +9,7 @@
    - the locks, condition variables, events and semaphores are plain structs, valid when zeroed (or set to their
      _INIT), never allocated by this layer. They are futex words: a wake makes a system call only when a thread sleeps
      on the word (each counts its sleepers), and an uncontended lock or unlock is one atomic instruction;
-   - paths are UTF-8 and may use '\' as the separator (it is taken as '/'). */
+   - paths are UTF-8, with '/' as the separator. */
 #ifndef HOOKSHOT_OS_H
 #define HOOKSHOT_OS_H
 #include <stdbool.h>

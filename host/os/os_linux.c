@@ -41,10 +41,6 @@ static int err_of(int e) {
 }
 
 /* a path with '\' made '/' */
-static void unixify(char *dst, size_t cap, const char *src) {
-    snprintf(dst, cap, "%s", src);
-    for (char *p = dst; *p; p++) if (*p == '\\') *p = '/';
-}
 
 /* ---- time ---- */
 int64_t os_now_ns(void) {
@@ -668,8 +664,7 @@ void os_fault_set_last(os_fault_fn fn) {
 /* ---- modules ---- */
 os_lib *os_lib_open(const char *path) {
     if (!path) return NULL;
-    char p[PATH_MAX];
-    unixify(p, sizeof p, path);
+    const char *p = path;
     return (os_lib *)dlopen(p, RTLD_NOW | RTLD_LOCAL);
 }
 void *os_lib_sym(os_lib *l, const char *name) { return l ? dlsym((void *)l, name) : NULL; }
@@ -703,8 +698,7 @@ uintptr_t os_module_of(const void *addr, char *out, size_t cap) {
 /* ---- files ---- */
 struct os_file { int fd; };
 os_file *os_file_open(const char *path, int flags, int *err) {
-    char p[PATH_MAX];
-    unixify(p, sizeof p, path);
+    const char *p = path;
     int o = (flags & OS_READ) && (flags & OS_WRITE) ? O_RDWR : (flags & OS_WRITE) ? O_WRONLY : O_RDONLY;
     if (flags & OS_CREATE) o |= O_CREAT;
     if (flags & OS_EXCL) o |= O_CREAT | O_EXCL;
@@ -768,8 +762,7 @@ const void *os_file_map_read(os_file *f, size_t *size) {
     return p;
 }
 int os_path_kind(const char *path) {
-    char p[PATH_MAX];
-    unixify(p, sizeof p, path);
+    const char *p = path;
     struct stat st, link;
     if (stat(p, &st)) return OS_PATH_NONE;
     int k = S_ISDIR(st.st_mode) ? OS_PATH_DIR : OS_PATH_FILE;
@@ -777,38 +770,30 @@ int os_path_kind(const char *path) {
     return k;
 }
 int64_t os_path_size(const char *path) {
-    char p[PATH_MAX];
-    unixify(p, sizeof p, path);
+    const char *p = path;
     struct stat st;
     if (stat(p, &st)) return err_of(errno);
     return S_ISDIR(st.st_mode) ? OS_EACCES : (int64_t)st.st_size;
 }
 int os_mkdir(const char *path) {
-    char p[PATH_MAX];
-    unixify(p, sizeof p, path);
+    const char *p = path;
     return mkdir(p, 0755) ? err_of(errno) : 0;
 }
 int os_rmdir(const char *path) {
-    char p[PATH_MAX];
-    unixify(p, sizeof p, path);
+    const char *p = path;
     return rmdir(p) ? err_of(errno) : 0;
 }
 int os_remove(const char *path) {
-    char p[PATH_MAX];
-    unixify(p, sizeof p, path);
+    const char *p = path;
     return unlink(p) ? err_of(errno) : 0;
 }
 int os_rename(const char *from, const char *to, bool replace) {
-    char a[PATH_MAX], b[PATH_MAX];
-    unixify(a, sizeof a, from);
-    unixify(b, sizeof b, to);
+    const char *a = from, *b = to;
     if (!replace) return renameat2(AT_FDCWD, a, AT_FDCWD, b, RENAME_NOREPLACE) ? err_of(errno) : 0;
     return rename(a, b) ? err_of(errno) : 0;
 }
 int os_copy_file(const char *from, const char *to, bool replace) {
-    char a[PATH_MAX], b[PATH_MAX];
-    unixify(a, sizeof a, from);
-    unixify(b, sizeof b, to);
+    const char *a = from, *b = to;
     const int in = open(a, O_RDONLY | O_CLOEXEC);
     if (in < 0) return err_of(errno);
     const int out = open(b, O_WRONLY | O_CREAT | O_CLOEXEC | (replace ? O_TRUNC : O_EXCL), 0644);
@@ -823,14 +808,13 @@ int os_copy_file(const char *from, const char *to, bool replace) {
     return r;
 }
 int os_chdir(const char *path) {
-    char p[PATH_MAX];
-    unixify(p, sizeof p, path);
+    const char *p = path;
     return chdir(p) ? err_of(errno) : 0;
 }
 struct os_dir { DIR *d; char path[PATH_MAX]; };
 os_dir *os_dir_open(const char *path, int *err) {
     os_dir *d = (os_dir *)calloc(1, sizeof *d);
-    unixify(d->path, sizeof d->path, path);
+    snprintf(d->path, sizeof d->path, "%s", path);
     size_t n = strlen(d->path);
     while (n > 1 && d->path[n - 1] == '/') d->path[--n] = 0;
     d->d = opendir(d->path);

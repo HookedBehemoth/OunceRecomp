@@ -30,8 +30,6 @@ const char *hos_version(void) { return HOOKSHOT_VERSION; }
 #include <unistd.h>
 #include <sys/syscall.h>
 /* (linux) the separator of the paths the executable's folder is joined with */
-#define SEP '/'
-#define SEP_S "/"
 
 #ifdef A64_MEM_ZERO
 /* web: guest address = wasm address; the guest window is wasm memory below the host's data (-sGLOBAL_BASE) */
@@ -189,8 +187,8 @@ static int copy_tree(const char *from, const char *to) {
     int ok = 1;
     while (d && ok && os_dir_next(d, &e)) {
         char a[OS_PATH_MAX], b[OS_PATH_MAX];
-        snprintf(a, sizeof a, "%s" SEP_S "%s", from, e.name);
-        snprintf(b, sizeof b, "%s" SEP_S "%s", to, e.name);
+        snprintf(a, sizeof a, "%s/%s", from, e.name);
+        snprintf(b, sizeof b, "%s/%s", to, e.name);
         ok = copy_tree(a, b);
     }
     os_dir_close(d);
@@ -205,7 +203,7 @@ static void delete_tree(const char *p) {
     os_dirent e;
     while (d && os_dir_next(d, &e)) {
         char a[OS_PATH_MAX];
-        snprintf(a, sizeof a, "%s" SEP_S "%s", p, e.name);
+        snprintf(a, sizeof a, "%s/%s", p, e.name);
         delete_tree(a);
     }
     os_dir_close(d);
@@ -233,8 +231,8 @@ static const char *saves_dir(const char *beside) {
     os_dirent e;
     while (os_dir_next(d, &e)) {
         char from[OS_PATH_MAX], to[OS_PATH_MAX];
-        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, e.name);
-        snprintf(to, sizeof to, "%s" SEP_S "%s", dir, e.name);
+        snprintf(from, sizeof from, "%s/%s", beside, e.name);
+        snprintf(to, sizeof to, "%s/%s", dir, e.name);
         if (os_path_kind(to) != OS_PATH_NONE) kept++;
         else if (!os_rename(from, to, false)) moved++;
         else if (copy_tree(from, to)) delete_tree(from), moved++;
@@ -248,8 +246,8 @@ static const char *saves_dir(const char *beside) {
     os_rmdir(beside);
     if (moved) {
         char note[OS_PATH_MAX];
-        const char *sep = strrchr(beside, SEP);
-        snprintf(note, sizeof note, "%.*s" SEP_S "saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
+        const char *sep = strrchr(beside, '/');
+        snprintf(note, sizeof note, "%.*s/saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
         FILE *f = fopen(note, "w");
         if (f) {
             fprintf(f, "Hookshot's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
@@ -267,7 +265,7 @@ static const char *saves_dir(const char *beside) {
    player's hookshot_env.txt as it is.
    (hookshot) hookshot_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
    HOOKSHOT_, EDEN_, NVN_, TOTK_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
-   path but RX_VK_DLSS_DIR's: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
+   path: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
    the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
 static int env_line_allowed(const char *name, const char *value) {
     static const char *const prefixes[] = {"RX_", "HOS_", "HOOKSHOT_", "EDEN_", "NVN_", "TOTK_", "SDL_"};
@@ -295,12 +293,8 @@ static int env_line_allowed(const char *name, const char *value) {
         "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
         "RX_WGSL_OVERRIDE"};
     for (size_t i = 0; i < sizeof by_name / sizeof *by_name; i++) names_file |= !strcmp(name, by_name[i]);
-    /* RX_VK_DLSS_DIR: a folder on this PC, not a share (\\server\x or //server/x) or a device path */
-    if (!strcmp(name, "RX_VK_DLSS_DIR"))
-        return !((value[0] == '\\' || value[0] == '/') && (value[1] == '\\' || value[1] == '/'));
     if (names_file) return 0;
-    const int drive = ((value[0] | 0x20) >= 'a' && (value[0] | 0x20) <= 'z' && value[1] == ':');
-    return !strpbrk(value, "/\\") && !drive && value[0] != '~' && strcmp(value, ".") && strcmp(value, "..");
+    return !strchr(value, '/') && value[0] != '~' && strcmp(value, ".") && strcmp(value, "..");
 }
 static void load_hookshot_env(void) {
     char path[OS_PATH_MAX + 32];
@@ -309,7 +303,7 @@ static void load_hookshot_env(void) {
         snprintf(path, sizeof path, "%s", other);
     } else {
         uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
-        while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
+        while (n && path[n - 1] != '/') n--;
         memcpy(path + n, "hookshot_env.txt", 17);
     }
     FILE *f = fopen(path, "r");
@@ -383,7 +377,7 @@ static int game_main(int argc, char **argv) {
         if (!os_stderr_shown()) {
             char path[OS_PATH_MAX + 32];
             uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
-            while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
+            while (n && path[n - 1] != '/') n--;
             /* (the four runs before stay as hookshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
                crash sent in the new run's log, and the crash was gone) */
             char from[OS_PATH_MAX + 32], to[OS_PATH_MAX + 32];
@@ -409,13 +403,13 @@ static int game_main(int argc, char **argv) {
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[OS_PATH_MAX];
         const uint32_t len = hos_game_path_a(dir, OS_PATH_MAX);
-        char *slash = len ? strrchr(dir, SEP) : NULL;
+        char *slash = len ? strrchr(dir, '/') : NULL;
         if (slash) {
             *slash = 0;
             os_chdir(dir);
-            snprintf(beside_image, OS_PATH_MAX, "%s" SEP_S "image.bin", dir);
-            snprintf(beside_romfs, OS_PATH_MAX, "%s" SEP_S "romfs", dir);
-            snprintf(beside_user, OS_PATH_MAX, "%s" SEP_S "user", dir);
+            snprintf(beside_image, OS_PATH_MAX, "%s/image.bin", dir);
+            snprintf(beside_romfs, OS_PATH_MAX, "%s/romfs", dir);
+            snprintf(beside_user, OS_PATH_MAX, "%s/user", dir);
             if (os_path_kind(beside_image) != OS_PATH_NONE) {
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
@@ -438,9 +432,9 @@ static int game_main(int argc, char **argv) {
             char dir[OS_PATH_MAX], user[OS_PATH_MAX];
             snprintf(dir, sizeof dir, "%s", rec);
             for (char *p = dir + 1; *p; p++)   /* (each folder of the path) */
-                if (*p == '/' || *p == 92) { const char sep = *p; *p = 0; os_mkdir(dir); *p = sep; }
+                if (*p == '/') { *p = 0; os_mkdir(dir); *p = '/'; }
             os_mkdir(dir);
-            snprintf(user, sizeof user, "%s" SEP_S "user", dir);
+            snprintf(user, sizeof user, "%s/user", dir);
             delete_tree(user);
             hos_log("hid: input record: save folder %s %s %s", hos_user_dir,
                     copy_tree(hos_user_dir, user) ? "copied to" : "NOT fully copied to", user);
@@ -494,7 +488,7 @@ static int game_main(int argc, char **argv) {
             int on = 0;
             char path[OS_PATH_MAX];
             const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
-            char *slash = len ? strrchr(path, SEP) : NULL;
+            char *slash = len ? strrchr(path, '/') : NULL;
             if (slash) {
                 snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
                 FILE *o = fopen(path, "r");

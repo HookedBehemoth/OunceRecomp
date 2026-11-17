@@ -128,8 +128,7 @@ int hos_thread_prio(HosThread *t);
 void hos_thread_wait(HosThread *t, int64_t timeout_ns, int *timed_out);   /* < 0: forever */
 void hos_thread_wake(HosThread *t);
 
-/* ---- for host-side devices: game files by guest path (nn_fs.c), guest events (nn_os_sync.c) */
-int hos_fs_host_path(const char *guest, char *out, size_t cap);
+/* ---- for host-side devices: guest events (nn_os_sync.c) */
 void hos_event_signal(uint64_t guest_event);
 
 /* ---- videos (movie_mf.c): a video file read as compressed samples or as decoded NV12 frames */

@@ -55,7 +55,7 @@ def main():
 #include <unistd.h>
 #define HOS_FS_PATH 1024   /* (host/nn_fs.c's path buffers, #1497) */
 static void hos_log(const char *f, ...) { (void)f; }
-static void lower_slash(char *s) { (void)s; }
+static void lower(char *s) { (void)s; }
 static int nput;
 static void put(const char *key, const char *host, uint64_t size, int is_dir) { (void)key; (void)host; (void)size; (void)is_dir; nput++; }
 ''' + "\n".join(pieces) + r'''
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     if (argc != 2) return 2;
     CHECK(guest_path_ok("") && guest_path_ok("slot_00/progress.sav") && guest_path_ok("a//b/c.d"));
     CHECK(!guest_path_ok("..") && !guest_path_ok("slot_00/../../x") && !guest_path_ok("a/./b"));
-    CHECK(!guest_path_ok("a\\..\\b") && !guest_path_ok("C:/x") && !guest_path_ok("a:stream") && !guest_path_ok("a\nb"));
+    CHECK(!guest_path_ok("a\nb"));   /* ('\\' and ':' are plain characters: '/' is the only separator) */
     char save[PATH_MAX], victim[PATH_MAX], keep[PATH_MAX], cmd[3 * PATH_MAX];
     snprintf(save, sizeof save, "%s/save", argv[1]);
     snprintf(victim, sizeof victim, "%s/victim", argv[1]);

@@ -28,12 +28,8 @@ static uint64_t hash_str(const char *s) {
     for (; *s; s++) h = (h ^ (uint8_t)*s) * 0x100000001b3ull;
     return h;
 }
-static void lower_slash(char *s) {
-    for (; *s; s++) *s = *s == '\\' ? '/' : (char)tolower((unsigned char)*s);
-}
-static const char *last_sep(const char *s) {   /* (a host path: '\' as we join them, '/' from os_exe_path) */
-    const char *b = strrchr(s, '\\'), *f = strrchr(s, '/');
-    return b > f ? b : f;
+static void lower(char *s) {
+    for (; *s; s++) *s = (char)tolower((unsigned char)*s);
 }
 static Entry *find(const char *key) {
     if (!table_cap) return NULL;
@@ -82,7 +78,7 @@ static int index_romfs(const char *host_dir, const char *rel, int depth) {
     os_dirent fd;
     while (os_dir_next(d, &fd)) {
         char host[OS_PATH_MAX], key[OS_PATH_MAX];
-        snprintf(host, sizeof host, "%s\\%s", host_dir, fd.name);
+        snprintf(host, sizeof host, "%s/%s", host_dir, fd.name);
         /* (hookshot) a link to a folder is not followed (two links back up made the walk endless); links to files are
            (mod managers place files as links) */
         if ((fd.kind & OS_PATH_LINK) && (fd.kind & OS_PATH_DIR)) {
@@ -90,7 +86,7 @@ static int index_romfs(const char *host_dir, const char *rel, int depth) {
             continue;
         }
         snprintf(key, sizeof key, "%s%s%s", rel, *rel ? "/" : "", fd.name);
-        lower_slash(key);
+        lower(key);
         const int is_dir = (fd.kind & OS_PATH_DIR) != 0;
         put(key, host, fd.size, is_dir);
         if (is_dir) {
@@ -111,9 +107,9 @@ static Mod *mods;
 static int nmods, cap_mods;
 static void find_mods(const char *dir, const char *name, int depth) {
     char probe[OS_PATH_MAX];
-    snprintf(probe, sizeof probe, "%s\\romfs", dir);
+    snprintf(probe, sizeof probe, "%s/romfs", dir);
     const int has_romfs = os_path_kind(probe) != OS_PATH_NONE;
-    snprintf(probe, sizeof probe, "%s\\exefs", dir);
+    snprintf(probe, sizeof probe, "%s/exefs", dir);
     const int has_exefs = os_path_kind(probe) != OS_PATH_NONE;
     if ((has_romfs || has_exefs) && depth > 0) {
         if (nmods == cap_mods) mods = (Mod *)realloc(mods, sizeof *mods * (size_t)(cap_mods = cap_mods ? cap_mods * 2 : 16));
@@ -129,11 +125,11 @@ static void find_mods(const char *dir, const char *name, int depth) {
     while (os_dir_next(d, &fd)) {
         if (!(fd.kind & OS_PATH_DIR) || fd.name[0] == '.') continue;
         if (fd.name[0] == '-' || fd.name[0] == '_') {
-            hos_log("mods: %s\\%s is off (its name starts with %c)", dir, fd.name, fd.name[0]);
+            hos_log("mods: %s/%s is off (its name starts with %c)", dir, fd.name, fd.name[0]);
             continue;
         }
         char sub[OS_PATH_MAX], sub_name[OS_PATH_MAX];
-        snprintf(sub, sizeof sub, "%s\\%s", dir, fd.name);
+        snprintf(sub, sizeof sub, "%s/%s", dir, fd.name);
         snprintf(sub_name, sizeof sub_name, "%s%s%s", name, *name ? "/" : "", fd.name);
         find_mods(sub, sub_name, depth + 1);
     }
@@ -149,22 +145,22 @@ void hos_mods_init(const char *image_path) {
         snprintf(root, sizeof root, "%s", getenv("HOS_MODS"));
     } else {
         hos_game_path_a(root, sizeof root);
-        char *slash = (char *)last_sep(root);
+        char *slash = strrchr(root, '/');
         if (!slash) return;
         snprintf(slash + 1, sizeof root - (size_t)(slash + 1 - root), "mods");
     }
     if (os_path_kind(root) == OS_PATH_NONE) return;
     find_mods(root, "", 0);
     if (!nmods) {
-        hos_log("mods: none in %s (a mod: <name>\\romfs)", root);
+        hos_log("mods: none in %s (a mod: <name>/romfs)", root);
         return;
     }
     qsort(mods, (size_t)nmods, sizeof *mods, mod_cmp);
     for (int i = 0; i < nmods; i++) {
         char dir[OS_PATH_MAX];
-        snprintf(dir, sizeof dir, "%s\\romfs", mods[i].path);
+        snprintf(dir, sizeof dir, "%s/romfs", mods[i].path);
         const int files = index_romfs(dir, "", 0);
-        snprintf(dir, sizeof dir, "%s\\exefs", mods[i].path);
+        snprintf(dir, sizeof dir, "%s/exefs", mods[i].path);
         if (os_path_kind(dir) != OS_PATH_NONE)
             hos_log("mods: %s: exefs patches are left out (the code is compiled ahead of time)", mods[i].name);
         hos_log("mods: %s: %d RomFS files", mods[i].name, files);
@@ -176,7 +172,7 @@ void hos_mods_init(const char *image_path) {
 int hos_mods_romfs(const char *rel, char *out, size_t cap) {
     char key[OS_PATH_MAX];
     snprintf(key, sizeof key, "%s", rel);
-    lower_slash(key);
+    lower(key);
     int hos_prompts_romfs(const char *key, char *out, size_t cap);   /* prompts.c: the button prompts, where no mod has the file */
     Entry *e = table_n ? find(key) : NULL;
     if (!e || e->is_dir) return hos_prompts_romfs(key, out, cap);
@@ -205,7 +201,7 @@ int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *
     if (!table_n) return 0;
     char prefix[OS_PATH_MAX];
     snprintf(prefix, sizeof prefix, "%s", rel);
-    lower_slash(prefix);
+    lower(prefix);
     size_t pn = strlen(prefix);
     while (pn && prefix[pn - 1] == '/') prefix[--pn] = 0;
     int n = 0;
@@ -216,10 +212,10 @@ int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *
         if (pn && (strncmp(k, prefix, pn) || k[pn] != '/')) continue;
         const char *name = pn ? k + pn + 1 : k;
         if (!*name || strchr(name, '/')) continue;   /* (deeper) */
-        const char *real = last_sep(e->host);   /* (the name as the mod spells it) */
+        const char *real = strrchr(e->host, '/');   /* (the name as the mod spells it) */
         real = real ? real + 1 : e->host;
         char base[OS_PATH_MAX];
-        snprintf(base, sizeof base, "%s\\%s", base_dir, real);
+        snprintf(base, sizeof base, "%s/%s", base_dir, real);
         if (os_path_kind(base) != OS_PATH_NONE) continue;
         fn(arg, real, e->is_dir, e->size);
         n++;

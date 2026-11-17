@@ -56,15 +56,14 @@ static int mount(const char *name, const char *root, int writable) {   /* 0: the
 int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
 
-/* (hookshot) a guest path below its mount stays below it on the host: no "." or ".." part, no \\ or : (a drive or a
-   Windows stream), no control characters */
+/* (hookshot) a guest path below its mount stays below it on the host: no "." or ".." part, no control characters */
 static int guest_path_ok(const char *rest) {
     for (const char *p = rest; *p;) {
         const char *e = strchr(p, '/');
         const size_t n = e ? (size_t)(e - p) : strlen(p);
         if ((n == 1 && p[0] == '.') || (n == 2 && p[0] == '.' && p[1] == '.')) return 0;
         for (size_t i = 0; i < n; i++)
-            if ((unsigned char)p[i] < 32 || p[i] == '\\' || p[i] == ':') return 0;
+            if ((unsigned char)p[i] < 32) return 0;
         p += n;
         while (*p == '/') p++;
     }
@@ -96,12 +95,9 @@ static int host_path(const char *guest_mem, char *out, size_t cap, int *writable
         }
     }
     os_rwlock_unlock_shared(&mount_lock);
-    for (char *p = out; ok && *p; p++) if (*p == '/') *p = '\\';
     return ok;
 }
 
-/* For other OS layer parts that open game files themselves (videos): "mount:/a/b" -> host path, 0 if unknown. */
-int hos_fs_host_path(const char *guest, char *out, size_t cap) { return host_path(guest, out, cap, NULL); }
 
 /* (hookshot) a guest string: "" unless it lies in guest memory and ends within FS_PATH_MAX bytes */
 static const char *gstr(uint64_t a) {
@@ -115,8 +111,8 @@ static const char *gstr(uint64_t a) {
 static void make_dirs(const char *path) {   /* every parent of path */
     char tmp[HOS_FS_PATH];
     snprintf(tmp, sizeof tmp, "%s", path);
-    for (char *p = tmp + 3; *p; p++)
-        if (*p == '\\') { *p = 0; os_mkdir(tmp); *p = '\\'; }
+    for (char *p = tmp + 1; *p; p++)
+        if (*p == '/') { *p = 0; os_mkdir(tmp); *p = '/'; }
 }
 
 /* ---- handles: a FileHandle / DirectoryHandle is one pointer-sized value; ours are table indices + 1 ----------- */
@@ -162,7 +158,7 @@ HLE(_ZN2nn2fs8MountRomEPKc) {
 
 static int user_mount(const char *name, const char *sub) {
     char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\%s", hos_user_dir, sub);
+    snprintf(root, sizeof root, "%s/%s", hos_user_dir, sub);
     make_dirs(root);
     os_mkdir(root);
     return mount(name, root, 1);
@@ -171,33 +167,33 @@ static int user_mount(const char *name, const char *sub) {
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
 HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
     char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\save\\%016llx%016llx", hos_user_dir, (unsigned long long)G64(ARG(1) + 8),
+    snprintf(root, sizeof root, "%s/save/%016llx%016llx", hos_user_dir, (unsigned long long)G64(ARG(1) + 8),
              (unsigned long long)G64(ARG(1)));
     RET(os_path_kind(root) != OS_PATH_NONE);
 }
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
     char sub[64];
-    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
+    snprintf(sub, sizeof sub, "save/%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* MountSaveDataReadOnly(char const*, ApplicationId, account::Uid const&) */
 HLE(_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE) {
     char sub[64];
-    snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(2) + 8), (unsigned long long)G64(ARG(2)));
+    snprintf(sub, sizeof sub, "save/%016llx%016llx", (unsigned long long)G64(ARG(2) + 8), (unsigned long long)G64(ARG(2)));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 HLE(_ZN2nn2fs21MountTemporaryStorageEPKc) { RET(user_mount(gstr(ARG(0)), "temp") ? 0 : R_NOT_MOUNTED); }
 /* MountCacheStorage(char const*, int index) */
 HLE(_ZN2nn2fs17MountCacheStorageEPKci) {
     char sub[32];
-    snprintf(sub, sizeof sub, "cache\\%d", (int)ARG(1));
+    snprintf(sub, sizeof sub, "cache/%d", (int)ARG(1));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* CreateCacheStorage(int index, long size, long journal) */
 HLE(_ZN2nn2fs18CreateCacheStorageEill) {
     char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s\\cache\\%d\\", hos_user_dir, (int)ARG(0));
+    snprintf(root, sizeof root, "%s/cache/%d/", hos_user_dir, (int)ARG(0));
     make_dirs(root);
     RET(0);
 }
@@ -209,7 +205,7 @@ HLE(_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorage
     int n = 0, max = (int)ARG(3);
     for (; cache_list_pos < 16 && n < max; cache_list_pos++) {
         char root[HOS_FS_PATH];
-        snprintf(root, sizeof root, "%s\\cache\\%d", hos_user_dir, cache_list_pos);
+        snprintf(root, sizeof root, "%s/cache/%d", hos_user_dir, cache_list_pos);
         if (os_path_kind(root) != OS_PATH_NONE) {
             memset(GP(ARG(1) + 0x20 * n), 0, 0x20);
             G32(ARG(1) + 0x20 * n) = (uint32_t)cache_list_pos;
@@ -417,7 +413,7 @@ static void delete_tree(const char *dir) {
     os_dirent e;
     while (d && os_dir_next(d, &e)) {
         char sub[HOS_FS_PATH];
-        snprintf(sub, sizeof sub, "%s\\%s", dir, e.name);
+        snprintf(sub, sizeof sub, "%s/%s", dir, e.name);
         /* (hookshot) a link (a symbolic link, a junction) goes itself: never what it points to */
         if (e.kind & OS_PATH_LINK) { if (os_remove(sub)) os_rmdir(sub); }
         else if (e.kind & OS_PATH_DIR) delete_tree(sub);

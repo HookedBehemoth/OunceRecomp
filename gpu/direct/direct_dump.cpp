@@ -279,7 +279,7 @@ void write_item(DumpItem& it, int n_seq) {
     char path[1024];
     std::snprintf(path, sizeof path, "%s/%03d_%s_%llx.png", dir.c_str(), n_seq, it.what.c_str(), (unsigned long long)it.gpu);
     for (char* c = path + dir.size() + 1; *c; c++)
-        if (*c == ' ' || *c == ':' || *c == '/' || *c == '\\') *c = '_';
+        if (*c == ' ' || *c == ':' || *c == '/') *c = '_';
     write_png(path, rgba.data(), it.w, it.h);
     // (HOS_DBG=dumpraw: a float item's values beside its PNG, <name>.f32: u32 width, u32 height, then RGBA32F rows; the
     // dark values of HDR targets that the PNG rounds to 0. With dumpw:4096, the full-resolution dump scripts/direct_picture_check.py packs)
