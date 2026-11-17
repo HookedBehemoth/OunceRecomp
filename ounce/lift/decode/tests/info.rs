@@ -1,4 +1,4 @@
-//! src/info.rs equals Python's helpers (nx2/lift2/enc*.py) over each one's whole domain: the lines built here are the
+//! src/info.rs equals Python's helpers (generate/encoding/enc*.py) over each one's whole domain: the lines built here are the
 //! ones generate/info_vectors.py hashes into tests/info_digests.rs. On a mismatch, OUNCE_INFO_DUMP=DIR writes this
 //! side's lines to compare with gen_tables.py --dump-info DIR2.
 use ounce_decode::info::*;

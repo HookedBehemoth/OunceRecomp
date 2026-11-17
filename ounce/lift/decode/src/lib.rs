@@ -1,4 +1,4 @@
-//! The AArch64 decoder of the ounce lifter: a port of nx2/lift2/enc.py and its tables (enc_fp, enc_neon, enc_crypto).
+//! The AArch64 decoder of the ounce lifter: a port of generate/encoding/enc.py and its tables (enc_fp, enc_neon, enc_crypto).
 //!
 //! `decode` gives what `enc.decode` gives: the same entry (name, template, params) and the same fields, or None where
 //! Python gives None. The tables (src/tables.rs) are generated from the Python ones by generate/gen_tables.py, the

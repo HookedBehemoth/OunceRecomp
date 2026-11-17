@@ -1,4 +1,4 @@
-//! Hand-ported helpers of nx2/lift2/enc*.py that the semantic templates use: the operation of a NEON word
+//! Hand-ported helpers of generate/encoding/enc*.py that the semantic templates use: the operation of a NEON word
 //! (enc_neon's *_info), DecodeBitMasks, the FP and SIMD immediates, the system registers and SYS operations, the
 //! shapes of vector loads and stores. tests/info.rs proves each equal to Python over its whole domain.
 //!
