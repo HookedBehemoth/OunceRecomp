@@ -114,7 +114,7 @@ impl Base {
         let have: HashSet<u64> = entries.iter().copied().collect();
         entries.extend(img.code_address_refs(&spans).into_iter().filter(|&e| img.in_code(e) && !have.contains(&e)));
         times.image = t0.elapsed().as_secs_f64();
-        let hot_path = game.hot_path(&o.work)?;
+        let hot_path = game.hot_path()?;
         let hot: HashSet<u64> = std::fs::read_to_string(&hot_path)
             .map_err(|e| format!("{}: {e}", hot_path.display()))?
             .lines()
@@ -179,7 +179,7 @@ impl Base {
         let game = Game {
             name: "synthetic".into(),
             labels: PathBuf::new(),
-            hot: String::new(),
+            hot: PathBuf::new(),
             identity: crate::game::Identity { build_id: String::new(), main_sha256: String::new() },
             host: Vec::new(),
             local_continuations: Vec::new(),

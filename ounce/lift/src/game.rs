@@ -33,8 +33,8 @@ pub struct Game {
     pub name: String,
     /// the label file, resolved against the folder of game.toml
     pub labels: PathBuf,
-    /// the hot list's file under the work folder
-    pub hot: String,
+    /// the hot list (one `f_<address>` a line), resolved against the folder of game.toml
+    pub hot: PathBuf,
     pub identity: Identity,
     /// the host's C files (in host/)
     pub host: Vec<String>,
@@ -52,7 +52,7 @@ impl Game {
         Ok(Game {
             name: raw.name,
             labels: folder.join(raw.labels),
-            hot: raw.hot,
+            hot: folder.join(raw.hot),
             identity: Identity { build_id: raw.identity.build_id.to_lowercase(), main_sha256: raw.identity.main_sha256.to_lowercase() },
             host: raw.host,
             local_continuations: raw.local_continuations.into_iter().map(|c| (c.pc, c.word)).collect(),
@@ -64,21 +64,12 @@ impl Game {
         self.host.iter().map(|f| root.join("host").join(f)).collect()
     }
 
-    /// the hot list's file (HOOKSHOT_HOT_FUNCS, else work/<hot>); an error when it does not exist
-    pub fn hot_path(&self, work: &Path) -> Result<PathBuf, String> {
-        let p = match std::env::var_os("HOOKSHOT_HOT_FUNCS").filter(|v| !v.is_empty()) {
-            Some(v) => PathBuf::from(v),
-            None => work.join(&self.hot),
-        };
-        if !p.exists() {
-            return Err(format!(
-                "game {}: no hot list {}: make it from a profile of the game (python -I scripts/hotlist.py work/runs/<run>_all.txt {}) or name one in HOOKSHOT_HOT_FUNCS",
-                self.name,
-                p.display(),
-                p.display()
-            ));
+    /// the hot list's file; an error when it does not exist
+    pub fn hot_path(&self) -> Result<PathBuf, String> {
+        if !self.hot.exists() {
+            return Err(format!("game {}: no hot list {} (the description's `hot`, beside game.toml)", self.name, self.hot.display()));
         }
-        Ok(p)
+        Ok(self.hot.clone())
     }
 
     /// Err unless exefs/main is this game's (its build id, then its SHA-256); returns the Identity seen.
@@ -138,10 +129,11 @@ mod tests {
         assert_eq!(g, Game::load(&repo().join("games/oot/game.toml")).unwrap());
         assert_eq!(g.name, "oot");
         assert!(g.labels.ends_with("games/oot/labels.txt"));
-        assert_eq!(g.hot, "hot_funcs_play.txt");
+        assert!(g.hot.ends_with("games/oot/hot_funcs.txt"));
+        assert!(g.hot_path().is_ok());
         assert_eq!(g.identity.build_id, "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348");
         assert_eq!(g.identity.main_sha256, "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de");
-        assert_eq!(g.host.len(), 62);
+        assert_eq!(g.host.len(), 61);
         assert_eq!(g.host[0], "bench.c");
         assert_eq!(g.local_continuations, vec![(0x8011060C, 0x10FFFCA7), (0x80110694, 0x10000047)]);
         let s = g.host_sources(Path::new("/r"));
@@ -182,9 +174,8 @@ mod tests {
 
     #[test]
     fn hot_path_missing() {
-        let g = Game::load(&repo().join("games/oot")).unwrap();
-        if std::env::var_os("HOOKSHOT_HOT_FUNCS").is_none() {
-            assert!(g.hot_path(Path::new("/nonexistent")).unwrap_err().contains("no hot list"));
-        }
+        let mut g = Game::load(&repo().join("games/oot")).unwrap();
+        g.hot = PathBuf::from("/nonexistent/hot_funcs.txt");
+        assert!(g.hot_path().unwrap_err().contains("no hot list /nonexistent/hot_funcs.txt"));
     }
 }

@@ -20,7 +20,7 @@ import sys
 
 INCOMPLETE = "LIFT_INCOMPLETE"
 OK = "LIFT_OK"
-SWITCHES = ("HOOKSHOT_LIFT_VERIFY", "HOOKSHOT_HOT_FUNCS")
+SWITCHES = ("HOOKSHOT_LIFT_VERIFY",)
 
 
 # what the lift reads, relative to the repository: whole files (globs); of the host's C, the symbols its HLE
@@ -35,7 +35,7 @@ NOT_LIFT = re.compile(r"(^|/)(test_|build\.py$|prompt_|prepare_|nup|win_manifest
 def inputs_hash(root, env=None, hot=None, exefs=None, game=None):
     """a hash of what a lift of the repository at root reads: see LIFT_SOURCES; the game description (game: a
     gamedesc.Game; its file, and the symbols the HLE declarations of its host files replace); the hot list file
-    (HOOKSHOT_HOT_FUNCS as the lift takes it); the dump's exefs files (name, size, modification time); the switches"""
+    (the game description's); the dump's exefs files (name, size, modification time); the switches"""
     env = os.environ if env is None else env
     h = hashlib.sha1(usedforsecurity=False)
     for pat in LIFT_SOURCES:
@@ -92,7 +92,7 @@ def default_inputs(root):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import gamedesc
     game = gamedesc.current()
-    hot = game.hot_path(os.path.join(root, "work"))
+    hot = game.hot_path()
     try:
         import kit
         exefs = kit.EXEFS

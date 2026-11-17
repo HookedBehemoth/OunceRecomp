@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The build again, by force, for the checkout this copy of the script is in (the main checkout or an agent's worktree):
 # every build lifts the game first (ounce-lift, about 8 s; nx2/build.py), so this is a build that does not stop early
-# because work/sa/build/BUILD.txt already names HEAD. Use it after a change the commit does not show: the hot list
-# (work/hot_funcs_play.txt, scripts/hotlist.py), the dump, the toolchain.
+# because work/sa/build/BUILD.txt already names HEAD. Use it after a change the commit does not show: the dump, the
+# toolchain.
 #
 #   scripts/relift.sh
 #

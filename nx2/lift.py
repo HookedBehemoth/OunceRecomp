@@ -100,7 +100,7 @@ def main():
         print("  BR without a table: %#x (x%d)" % (pc, reg))
     with open(os.path.join(img_dir, "functions.json"), "w") as f:
         json.dump({"%x" % e: [len(b), module_of(img, e)] for e, (b, _) in L.funcs.items()}, f)
-    game.write_plan(L, img, os.path.join(out_dir, "plan.pickle"), game.hot_list(a.work))
+    game.write_plan(L, img, os.path.join(out_dir, "plan.pickle"), game.hot_list())
     if a.write:
         gen = os.path.join(out_dir, "gen")
         os.makedirs(gen, exist_ok=True)

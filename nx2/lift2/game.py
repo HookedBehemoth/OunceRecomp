@@ -21,7 +21,6 @@ functions, their rows, PATCH_FUNCs and summaries, and the call-boundary records 
 to; editing a row or a hook's declaration recompiles the partitions whose IR it changes.
 HOOKSHOT_LIFT_VERIFY=1 (at build time): every function with a full summary is checked at run time
 (host/lift2_verify.c).
-HOOKSHOT_HOT_FUNCS: the hot list (one f_<addr> a line; default the game description's, work/<hot>).
 """
 import ast
 import concurrent.futures
@@ -275,11 +274,10 @@ def summary_step(plan_path, cache):
     os.replace(plan_path + ".tmp", plan_path)
 
 
-def hot_list(work):
-    """the hot list's functions (the game description's hot_path: HOOKSHOT_HOT_FUNCS, else work/<hot>; a missing file
-    stops)"""
+def hot_list():
+    """the hot list's functions (the game description's hot_path, beside game.py; a missing file stops)"""
     import gamedesc
-    path = gamedesc.current().hot_path(work)
+    path = gamedesc.current().hot_path()
     return {int(w[2:], 16) for line in open(path) for w in line.split()[:1] if w.startswith("f_")}
 
 

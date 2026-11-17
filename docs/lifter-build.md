@@ -27,8 +27,8 @@ a game runs from that build. Its log is `work/sa/relift.log` (in the main checko
 - **Partitions.** Functions are grouped by guest address into partitions of about 120,000 instructions, and each
   partition is one LLVM module. Functions on the hot list get partitions of their own.
 - **Optimization levels.** Hot partitions build at `-O2` (`RX_HOT_OPT`), the rest at `-O1` with dead-store elimination
-  added. The hot list is the game description's `work/hot_funcs_play.txt`, made from a profile by
-  `scripts/hotlist.py`; `HOOKSHOT_HOT_FUNCS` names another. A missing hot list stops the lift.
+  added. The hot list is the game description's `hot` file, beside `game.toml` (`games/oot/hot_funcs.txt`), a fixed
+  list of `f_<address>` lines. A missing hot list stops the lift.
 - **Object cache.** Each partition's object is kept in `work/objcache` under a key of everything that shaped it: the
   lifter's code (without comments), the plan, the compiler flags, its functions, their patches, their summaries, and
   the call-boundary records of every function they call. An unchanged partition is neither lifted nor compiled again.
@@ -69,7 +69,6 @@ In the game, the smoke test and a benchmark are the landing checks ([Test Hooksh
 | `nx2/build.py --opt O1` | Build | The cold partitions' level |
 | `RX_HOT_OPT` | Build | The hot partitions' level (default `O2`) |
 | `RX_MARCH` | Build | The target CPU (default: this PC's, `x86-64-v3` on an AVX2 machine) |
-| `HOOKSHOT_HOT_FUNCS` | Lift | Another hot list, one `f_<address>` a line |
 | `HOOKSHOT_LIFT_VERIFY=1` | Build | The verification build |
 | `HOOKSHOT_LIFT_SUMMARY_JOBS` | Build | The summary job's workers (default 8) |
 | `LIFT2_DEFAULT_NAN=1` | Lift | ARM's default NaN for NaNs made from non-NaN operands |

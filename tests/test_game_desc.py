@@ -5,7 +5,7 @@
   (check_exefs); a lift recorded for another game or version, or none, stops the build (check_lift);
 - nx2/lift.py and nx2/build.py stop on a wrong identity before anything else (run here on a fabricated exefs and a
   fabricated lift record: no dump needed), and neither runs without --game;
-- the hot list is one file; a missing one stops and names the command that makes it.
+- the hot list is one file beside the description; a missing one stops and names it.
 No game is used.
 
 python -I -B tests/test_game_desc.py
@@ -98,17 +98,13 @@ class Description(unittest.TestCase):
             _, game = self.fake(d)
             g = gamedesc.load(game)
             with self.assertRaises(SystemExit) as e:
-                g.hot_path(d, {})
-            self.assertIn("scripts/hotlist.py", str(e.exception))
-            self.assertIn(os.path.join(d, "hot.txt"), str(e.exception))
-            open(os.path.join(d, "hot.txt"), "w").close()
-            self.assertEqual(g.hot_path(d, {}), os.path.join(d, "hot.txt"))
-            x = os.path.join(d, "x.txt")
-            open(x, "w").close()
-            self.assertEqual(g.hot_path(d, {"HOOKSHOT_HOT_FUNCS": x}), x)
+                g.hot_path()
+            self.assertIn("no hot list " + os.path.join(game, "hot.txt"), str(e.exception))
+            open(os.path.join(game, "hot.txt"), "w").close()
+            self.assertEqual(g.hot_path(), os.path.join(game, "hot.txt"))
 
     def run_py(self, args, env, py=sys.executable):
-        e = {k: v for k, v in os.environ.items() if k not in ("HOOKSHOT_GAME", "HOOKSHOT_HOT_FUNCS")}
+        e = {k: v for k, v in os.environ.items() if k != "HOOKSHOT_GAME"}
         e.update(env)
         return subprocess.run([py, "-I", "-B"] + args, capture_output=True, text=True, env=e, cwd=ROOT, timeout=120)
 

@@ -13,7 +13,7 @@ Fields:
                 exefs/main. The lift checks the dump before it reads anything else (check_exefs) and records it
                 (record); the build checks the record (check_lift). A mismatch stops with both values.
   labels        guest address -> label file, beside game.py (nx2/label_syms.py, nx2/lift2/dump.py, abi_census.py)
-  hot           the hot list's file under the work folder (HOOKSHOT_HOT_FUNCS: another); a missing one stops the lift
+  hot           the hot list's file, beside game.py (one f_<address> a line); a missing one stops the lift
   host          the host's C files (in host/) the build compiles and the patch scan reads
   local_continuations   {pc: word}: `adr xN, <label>` ... `br xN` inside one function, which the code pointer audit
                 accepts (nx2/lift2/code_ptrs.py)
@@ -52,14 +52,11 @@ class Game:
         """the host's C files, as paths, in the build's order"""
         return [os.path.join(HOST, f) for f in self.host]
 
-    def hot_path(self, work, env=None):
-        """the hot list's file (HOOKSHOT_HOT_FUNCS, else work/<hot>); SystemExit when it does not exist"""
-        env = os.environ if env is None else env
-        p = env.get("HOOKSHOT_HOT_FUNCS") or os.path.join(work, self.hot)
+    def hot_path(self):
+        """the hot list's file, beside game.py; SystemExit when it does not exist"""
+        p = os.path.join(self.folder, self.hot)
         if not os.path.exists(p):
-            raise SystemExit("game %s: no hot list %s: make it from a profile of the game (python -I "
-                             "scripts/hotlist.py work/runs/<run>_all.txt %s) or name one in HOOKSHOT_HOT_FUNCS"
-                             % (self.name, p, p))
+            raise SystemExit("game %s: no hot list %s (the description's hot, beside game.py)" % (self.name, p))
         return p
 
     def check_exefs(self, exefs):

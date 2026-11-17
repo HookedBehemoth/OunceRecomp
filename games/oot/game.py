@@ -9,8 +9,8 @@ GAME = Game(
                       main_sha256="2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de"),
     # (guest address -> our label, nx2/label_syms.py, nx2/lift2/dump.py)
     labels="labels.txt",
-    # (the hot list, under the work folder, from a game profile (scripts/hotlist.py); HOOKSHOT_HOT_FUNCS names another)
-    hot="hot_funcs_play.txt",
+    # (the hot list: the functions built at the hot level, one f_<address> a line; beside this file, a fixed list)
+    hot="hot_funcs.txt",
     # (the host's C files the build compiles and the patch scan reads, in host/)
     host=(
         "bench.c", "code_ptrs.c", "cxx_throw.c", "direct.c", "direct_assets.c", "direct_crit.c", "direct_depth_copy.c",
