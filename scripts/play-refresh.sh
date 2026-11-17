@@ -6,7 +6,8 @@
 # work/builder-cache. A change the
 # commit does not show (the hot list, the dump) needs scripts/relift.sh, which builds even when BUILD.txt names HEAD. Heavy
 # work takes work/heavy.lock (one heavy job on the machine at a time) and runs in a memory-capped scope
-# (HOOKSHOT_REFRESH_MEM, 18G).
+# (HOOKSHOT_REFRESH_MEM, 18G). A game running from work/sa/build keeps going: the builder renames each new file over
+# the old one, so the game keeps the files it started with until it is restarted.
 #   scripts/play-refresh.sh [--install-hook]   --install-hook writes .git/hooks/post-merge (a refresh in the background after a merge onto native-vk)
 set -uo pipefail
 # (the main checkout, also when this copy of the script is run from an agent's worktree)

@@ -281,6 +281,21 @@ const RESOURCE_DIR: &str = env!("HK_CLANG_RESOURCE_DIR");
 /// `build <out dir> --direct <so> ...`: the game folder (hookshot, hookshot_direct.so, image.bin) from the dump,
 /// and its checks
 #[cfg(feature = "clang")]
+/// Puts `from` (moved, or copied beside `to` first) at `to` as a new file: synced, then renamed over the old one. A game
+/// running from the folder maps hookshot_direct.so and the executable; a copy over them in place (truncate + write)
+/// changed its code under it and crashed it. The rename leaves it the old files.
+fn install(from: &std::path::Path, to: &std::path::Path, moved: bool) -> Result<(), String> {
+    let err = |p: &std::path::Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let tmp = if moved { from.to_path_buf() } else { to.with_extension("install.tmp") };
+    if !moved {
+        std::fs::copy(from, &tmp).map_err(|e| format!("{} -> {}: {e}", from.display(), tmp.display()))?;
+    }
+    std::fs::File::open(&tmp).and_then(|f| f.sync_all()).map_err(|e| err(&tmp, e))?;
+    std::fs::rename(&tmp, to).map_err(|e| err(to, e))?;
+    let dir = to.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    std::fs::File::open(dir).and_then(|f| f.sync_all()).map_err(|e| err(dir, e))
+}
+
 fn build(args: &[String]) {
     let jobs = gate::default_jobs();
     let mut run = ounce_lift::pipeline::Run { jobs: std::thread::available_parallelism().map_or(1, |n| n.get()), hot_first: true, ..Default::default() };
@@ -395,7 +410,8 @@ fn build(args: &[String]) {
     }
     objects.push(obj.join(&rt.obj));
     objects.extend(host_jobs.iter().map(|j| obj.join(&j.obj)));
-    let exe = out.join("hookshot");
+    // (linked and labelled beside, then renamed over the old one: see install)
+    let exe = out.join("hookshot.new");
     let map = out.join("hookshot.map");
     let game_dir = if run.opts.game.is_dir() { run.opts.game.clone() } else { run.opts.game.parent().unwrap().to_path_buf() };
     let order_bin = game_dir.join("hot_order.bin");
@@ -409,14 +425,15 @@ fn build(args: &[String]) {
     }
     let l = labels::read(&game.labels).unwrap_or_else(|e| fail(e));
     let (n, _) = labels::apply(&exe, &l).unwrap_or_else(|e| fail(e));
-    println!("linked {} ({} MB, {n} functions named) in {:.1} s", exe.display(), std::fs::metadata(&exe).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
+    println!("linked {} ({} MB, {n} functions named) in {:.1} s", out.join("hookshot").display(), std::fs::metadata(&exe).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
     checks::backend_symbols(&direct, &exe).unwrap_or_else(|e| fail(e));
     // (the folder the game runs from: the image beside the executable, where hos_main.c looks without an argument)
     for (from, to) in [(direct.clone(), out.join("hookshot_direct.so")), (obj.join("image.bin"), out.join("image.bin"))] {
         if from != to {
-            std::fs::copy(&from, &to).unwrap_or_else(|e| fail(format!("{} -> {}: {e}", from.display(), to.display())));
+            install(&from, &to, false).unwrap_or_else(|e| fail(e));
         }
     }
+    install(&exe, &out.join("hookshot"), true).unwrap_or_else(|e| fail(e));
     if let Some(r) = romfs {
         dump::finish_romfs(r).unwrap_or_else(|e| fail(e));
     }
@@ -434,4 +451,30 @@ fn build(args: &[String]) {
         pf >> 20,
         pk >> 20
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Seek};
+
+    #[test]
+    fn install_leaves_an_open_file_its_old_contents() {
+        let d = std::env::temp_dir().join(format!("hk-install-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (new, live) = (d.join("new.so"), d.join("live.so"));
+        std::fs::write(&live, b"old contents").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+        let mut held = std::fs::File::open(&live).unwrap();
+        super::install(&new, &live, false).unwrap();
+        assert!(new.exists(), "a copy keeps its source");
+        let mut s = String::new();
+        held.seek(std::io::SeekFrom::Start(0)).unwrap();
+        held.read_to_string(&mut s).unwrap();
+        assert_eq!(s, "old contents");
+        assert_eq!(std::fs::read(&live).unwrap(), b"new");
+        super::install(&new, &live, true).unwrap();
+        assert!(!new.exists(), "a move takes its source");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "no temporary file left");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 }
