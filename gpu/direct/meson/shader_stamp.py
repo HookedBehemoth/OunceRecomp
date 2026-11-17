@@ -46,12 +46,12 @@ def stamp_regions(path, names):
 
 
 def translator():
-    """every file under gpu/direct/eden, and the folders walked"""
+    """every file under gpu/direct/eden but the build's meson.build files, and the folders walked"""
     dirs = []
     files = []
     for d, _, fs in os.walk(EDEN):
         dirs.append(d)
-        files += [os.path.join(d, f) for f in fs]
+        files += [os.path.join(d, f) for f in fs if f != "meson.build"]
     return sorted(files), dirs
 
 

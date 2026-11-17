@@ -23,14 +23,28 @@ if get_option('sysroot') != ''
   target_args = ['--sysroot=' + get_option('sysroot')] + target_args
 endif
 
-# (the header packages: a package root with include/<probe>)
-headers = {}
-foreach name, probe : {'vulkan': 'vulkan/vulkan.h', 'spirv': 'spirv/unified1/spirv.h', 'vma': 'vk_mem_alloc.h'}
-  dir = root / get_option(name + '_headers')
-  if not fs.is_file(dir / 'include' / probe)
-    error('no ' + name + ' headers: ' + dir / 'include' / probe + ' is missing (meson configure -D' + name + '_headers=<package root>)')
-  endif
-  headers += {name: dir}
+# (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not)
+std_includes = []
+foreach h : ['algorithm', 'cstdio', 'cstdlib', 'cstring', 'functional', 'string', 'vector']
+  std_includes += ['-include', h]
 endforeach
+renderer_cpp_args = target_args + ['-D_GNU_SOURCE'] + std_includes + [
+  '-std=c++20', '-O2', '-g0', '-DNDEBUG', '-Wno-everything', '-DVK_NO_PROTOTYPES', '-DMKWVK_BUILDING']
 
-subdir('gpu/direct')
+# (the header packages, each a package root with include/<probe>; options relative to the source root)
+header_dirs = []
+foreach pkg : [['spirv', 'spirv/unified1/spirv.h'], ['vulkan', 'vulkan/vulkan.h'], ['vma', 'vk_mem_alloc.h']]
+  dir = get_option(pkg[0] + '_headers')
+  if not fs.is_file(root / dir / 'include' / pkg[1])
+    error('no ' + pkg[0] + ' headers: ' + root / dir / 'include' / pkg[1] + ' is missing (meson configure -D' + pkg[0] + '_headers=<package root>)')
+  endif
+  header_dirs += dir / 'include'
+  if pkg[0] == 'spirv'
+    header_dirs += dir / 'include/spirv/unified1'
+  endif
+endforeach
+headers_inc = include_directories(header_dirs)
+host_os_inc = include_directories('host/os')
+
+subdir('third_party/zstd')
+subdir('gpu')

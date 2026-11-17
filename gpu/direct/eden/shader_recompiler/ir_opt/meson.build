@@ -1,0 +1,21 @@
+# The translator's IR passes.
+eden_sources += files(
+  'collect_shader_info_pass.cpp',
+  'conditional_barrier_pass.cpp',
+  'constant_propagation_pass.cpp',
+  'dead_code_elimination_pass.cpp',
+  'dual_vertex_pass.cpp',
+  'geometry_compaction_pass.cpp',
+  'global_memory_to_storage_buffer_pass.cpp',
+  'identity_removal_pass.cpp',
+  'layer_pass.cpp',
+  'lower_fp16_to_fp32.cpp',
+  'lower_fp64_to_fp32.cpp',
+  'lower_int64_to_int32.cpp',
+  'position_pass.cpp',
+  'rescaling_pass.cpp',
+  'ssa_rewrite_pass.cpp',
+  'texture_pass.cpp',
+  'vendor_workaround_pass.cpp',
+  'verification_pass.cpp',
+)

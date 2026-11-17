@@ -1,0 +1,21 @@
+# Sirit's SPIR-V instruction emitters.
+eden_sources += files(
+  'annotation.cpp',
+  'arithmetic.cpp',
+  'atomic.cpp',
+  'barrier.cpp',
+  'bit.cpp',
+  'constant.cpp',
+  'conversion.cpp',
+  'debug.cpp',
+  'derivatives.cpp',
+  'extension.cpp',
+  'flow.cpp',
+  'function.cpp',
+  'group.cpp',
+  'image.cpp',
+  'logical.cpp',
+  'memory.cpp',
+  'misc.cpp',
+  'type.cpp',
+)
