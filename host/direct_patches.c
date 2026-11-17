@@ -27,6 +27,8 @@ void direct_patches_frame(void) {
     direct_mesh_args_log(600);
     direct_mesh_binds_log(600);
     direct_mesh_system_log(600);
+    void hos_oot_hud_log(void);   /* (oot_probes.c) */
+    hos_oot_hud_log();
     direct_mesh_lists_log(600);
     direct_sky_lut_log(600);
     direct_layer_ahead_log(600);

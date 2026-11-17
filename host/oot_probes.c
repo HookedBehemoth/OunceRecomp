@@ -40,6 +40,7 @@
      the module's budget (f_83b7b340 aborts below zero), and f_80b72340's heap of what the Graphics heap can still give
      keeps its shipped size. */
 #include "hos.h"
+#include "os.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -353,6 +354,15 @@ PATCH_AT(0x806705f8, word(0x1a89b2c9), after, none, hos_oot_frame_window, io(w8,
     if (f) io->w8 = (uint32_t)f, io->w9 = (uint32_t)(f >> 32);
 }
 
+/* f_80ea2f30 (display_base_resolution), the scale mode's size times its scale (w23 width, w21 height): the frame's
+   while it follows the window. The 3D's scale is taken against the height (+0xe50), so a frame of another size than the
+   mode's made the 3D scale with its height: a short wide frame rendered its 3D far below its pixels */
+PATCH_AT(0x80ea2f94, word(0x1e380017), after, w23, hos_oot_base_frame, as(w23, v), as(k(0), height)) {   /* fcvtzs w23, s0 */
+    const uint64_t f = frame_size;
+    return f ? (uint32_t)(height ? f >> 32 : f) : v;
+}
+PATCH_AT_SITE(0x80ea2fa4, word(0x1e380015), after, w21, hos_oot_base_frame, w21, k(1));   /* fcvtzs w21, s0 */
+
 /* f_8114c5e0, the frame's largest size by mode, from a table of 16:9 sizes ({2560, 1440} docked): as wide as the
    picture's shape at that height, so a wider picture's frame is not cut to 16:9's width */
 PATCH_AT(0x8114c604, word(0xf8687928), after, x8, hos_oot_frame_max, as(x8, size)) {   /* ldr x8, [x9, x8, lsl #3] */
@@ -364,6 +374,7 @@ PATCH_AT(0x8114c604, word(0xf8687928), after, x8, hos_oot_frame_max, as(x8, size
 /* host/hos_main.c (start), host/posix/display_sdl.c (a settled resize): the game's frame is
    now w x h (the window's pixels, at most 3840 x 2160's count, at most the picture's size): the main camera, HUD and
    movies take its shape, and the game sizes its frame and targets again */
+static void hud_rescale(void);
 void hos_oot_frame_set(uint32_t w, uint32_t h, int start) {
     extern volatile uint64_t hos_wide_out;
     const uint64_t pic = hos_wide_out;
@@ -379,6 +390,7 @@ void hos_oot_frame_set(uint32_t w, uint32_t h, int start) {
     hos_wide_margin = (1.0f - hos_wide_squeeze) / 2.0f;
     frame_size = (uint64_t)h << 32 | w;
     __atomic_store_n(&frame_refresh, 1, __ATOMIC_RELEASE);
+    hud_rescale();
     hos_log("frame: %ux%u, camera ratio %.4f, HUD and movies in the middle %.1f%%", w, h, (double)ratio, hos_wide_squeeze * 100.0);
 }
 
@@ -416,26 +428,100 @@ PATCH_AT(0x83b7c758, word(0xa941a269), after, none, hos_oot_wide_movie, as(x29, 
 
 /* the 2D canvas setup's projection rows, just loaded (ldp q1, q4, [x2]; the canvas in x0, its screen 0x1b8 before it):
    the UI's full-screen orthographic projection (a 3840x2160 grid: q1 lane 0 2/3840, q4 lane 1 2/2160) gets its first
-   row squeezed, so the HUD keeps its 16:9 in the middle of a wider picture; the screens whose UI keeps the whole picture
-   (the item-wheel and pause / system menu backgrounds redraw a capture of it; the event and loading fades cover it) are
-   left alone, by their screen's vtable. Returns q1 */
+   row squeezed on a frame wider than 16:9 and its second on a narrower one, so the HUD keeps its 16:9 shape in the
+   middle of any frame; the screens whose UI keeps the whole picture (the item-wheel and pause / system menu
+   backgrounds redraw a capture of it; the event and loading fades cover it) are left alone, by their screen's vtable */
 #define OOT_MAIN 0x80020000ull
 static const uint64_t oot_keep_vtables[] = {OOT_MAIN + 0x4bed098, OOT_MAIN + 0x4be4fb0, OOT_MAIN + 0x4be61c8,
                                             OOT_MAIN + 0x4be7b30};
-PATCH_AT(0x80794368, word(0xad401041), after, q1, hos_oot_wide_hud, as(x0, canvas), q1, q4) {
-    const float s = hos_wide_squeeze;
-    if (!(s > 0.0f)) return q1;
-    float m00, m11, row[4];
-    memcpy(&m00, &q1, 4);
-    memcpy(&m11, (const uint8_t *)&q4 + 4, 4);
-    if (m00 != 2.0f / 3840.0f || m11 != 2.0f / 2160.0f || !hos_guest_range(canvas - 0x1b8, 8)) return q1;
+static volatile int64_t hud_n[4];   /* (canvas setups seen, squeezed, kept whole by their screen, canvases rescaled) */
+static int hud_squeezed(uint64_t canvas, const void *q1, const void *q4) {   /* the UI's full-screen projection, not kept whole */
+    float m00, m11;
+    memcpy(&m00, q1, 4);
+    memcpy(&m11, (const uint8_t *)q4 + 4, 4);
+    if (m00 != 2.0f / 3840.0f || m11 != 2.0f / 2160.0f || !hos_guest_range(canvas - 0x1b8, 8)) return 0;
     const uint64_t vt = *(const uint64_t *)GP(canvas - 0x1b8);
     for (size_t k = 0; k < sizeof oot_keep_vtables / sizeof *oot_keep_vtables; k++)
-        if (vt == oot_keep_vtables[k]) return q1;
-    memcpy(row, &q1, 16);
-    for (int k = 0; k < 4; k++) row[k] *= s;
-    memcpy(&q1, row, 16);
+        if (vt == oot_keep_vtables[k]) return 0;
+    return 1;
+}
+static void scale_row(void *q, float k) {
+    float row[4];
+    memcpy(row, q, 16);
+    for (int i = 0; i < 4; i++) row[i] *= k;
+    memcpy(q, row, 16);
+}
+static float hud_x(void) { const float s = hos_wide_squeeze; return s > 0.0f && s < 1.0f ? s : 1.0f; }
+static float hud_y(void) { const float r = hos_wide_ratio, game = 16.0f / 9.0f; return r > 0.0f && r < game ? r / game : 1.0f; }
+
+/* The canvases set up once with the squeeze of their time (the setup runs when a screen is made, not every frame):
+   their matrices are scaled again when the frame's shape changes. A canvas is known by its address and its screen's
+   vtable; one whose screen is gone (another vtable there) is dropped */
+enum { HUD_CANVASES = 256 };
+static struct { uint64_t canvas, vt; float x, y; } hud_canvas[HUD_CANVASES];
+static os_mutex hud_lock = OS_MUTEX_INIT;
+static void hud_note(uint64_t canvas, int axis, float k) {
+    const uint64_t vt = *(const uint64_t *)GP(canvas - 0x1b8);
+    os_mutex_lock(&hud_lock);
+    int free_slot = -1, i = 0;
+    for (; i < HUD_CANVASES; i++) {
+        if (hud_canvas[i].canvas == canvas) break;
+        if (!hud_canvas[i].canvas && free_slot < 0) free_slot = i;
+    }
+    if (i == HUD_CANVASES && free_slot >= 0) i = free_slot, hud_canvas[i].canvas = canvas, hud_canvas[i].x = hud_canvas[i].y = 1.0f;
+    if (i < HUD_CANVASES) {
+        hud_canvas[i].vt = vt;
+        if (axis) hud_canvas[i].y = k; else hud_canvas[i].x = k;
+    }
+    os_mutex_unlock(&hud_lock);
+}
+/* (hos_oot_frame_set) each noted canvas's matrices (+8, and +72 its copy with the y row negated: 4x4 stored by
+   columns, the x row at floats 0, 4, 8, 12, the y row at 1, 5, 9, 13) scaled from the squeeze they have to the frame's */
+static void hud_rescale(void) {
+    const float x = hud_x(), y = hud_y();
+    os_mutex_lock(&hud_lock);
+    for (int i = 0; i < HUD_CANVASES; i++) {
+        const uint64_t c = hud_canvas[i].canvas;
+        if (!c) continue;
+        if (!hos_guest_range(c - 0x1b8, 0x1b8 + 136) || *(const uint64_t *)GP(c - 0x1b8) != hud_canvas[i].vt) {
+            hud_canvas[i].canvas = 0;
+            continue;
+        }
+        const float kx = x / hud_canvas[i].x, ky = y / hud_canvas[i].y;
+        for (int block = 0; block < 2; block++) {
+            float *m = (float *)GP(c + 8 + block * 64);
+            for (int col = 0; col < 4; col++) m[col * 4] *= kx, m[col * 4 + 1] *= ky;
+        }
+        hud_canvas[i].x = x, hud_canvas[i].y = y;
+        __atomic_fetch_add(&hud_n[3], 1, __ATOMIC_RELAXED);
+    }
+    os_mutex_unlock(&hud_lock);
+}
+
+/* the projection's first row (q1): squeezed on a frame wider than 16:9 */
+PATCH_AT(0x80794368, word(0xad401041), after, q1, hos_oot_wide_hud, as(x0, canvas), q1, q4) {
+    __atomic_fetch_add(&hud_n[0], 1, __ATOMIC_RELAXED);
+    if (!hud_squeezed(canvas, &q1, &q4)) { __atomic_fetch_add(&hud_n[2], 1, __ATOMIC_RELAXED); return q1; }
+    __atomic_fetch_add(&hud_n[1], 1, __ATOMIC_RELAXED);
+    const float k = hud_x();
+    hud_note(canvas, 0, k);
+    if (k != 1.0f) scale_row(&q1, k);
     return q1;
+}
+/* its second row (q4): squeezed on a frame narrower than 16:9, so the HUD keeps its shape in a band across the middle */
+PATCH_AT(0x80794368, word(0xad401041), after, q4, hos_oot_tall_hud, as(x0, canvas), q1, q4) {
+    float probe[4];
+    memcpy(probe, &q1, 16);
+    probe[0] = 2.0f / 3840.0f;   /* (the check sees the game's first row whichever row runs first) */
+    if (!hud_squeezed(canvas, probe, &q4)) return q4;
+    const float k = hud_y();
+    hud_note(canvas, 1, k);
+    if (k != 1.0f) scale_row(&q4, k);
+    return q4;
+}
+void hos_oot_hud_log(void) {
+    hos_log("widescreen HUD: canvas setups %lld, squeezed %lld, kept whole %lld, rescaled at resizes %lld (since the start)",
+            (long long)hud_n[0], (long long)hud_n[1], (long long)hud_n[2], (long long)hud_n[3]);
 }
 
 /* The save's picture (issue 952): the pause menu draws the whole picture into a 543 x 306 texture, the save's JPEG,
