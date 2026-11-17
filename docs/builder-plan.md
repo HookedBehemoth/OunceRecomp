@@ -26,18 +26,16 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Host C | `host/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BCn, packed (`hookshot-builder textures`) | 1055 s (16,000 CPU-s, 2.6 GB peak); 258 s with `--fast` |
-| Overlay | this game's terrain tiles and sky tables made linear (`hookshot-builder overlay`) | 140 s |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
 
 ## The prepared assets
 
-`ounce/tex` makes the store the direct back end maps (`prepared/tex`) and the overlay the host serves over the romfs
-(`prepared/terrain`). [The converters](direct/converters.md) describes both; `ounce/tex/src/store.rs` the format.
+`ounce/tex` makes the store the direct back end maps (`prepared/tex`). [The converters](direct/converters.md) describes
+it; `ounce/tex/src/store.rs` the format.
 
-- `hookshot-builder textures <out>` writes the store; `build --prepared <dir>` writes `<dir>/tex` and `<dir>/terrain`
-  after the link.
-- The game description's `[assets]` names what is the game's: the romfs file of its zstd dictionaries, the folders the
-  texture step skips, and its overlay steps (`tarb_terrain`, `skybin`).
+- `hookshot-builder textures <out>` writes the store; `build --prepared <dir>` writes `<dir>/tex` after the link.
+- The game description's `[assets]` names what is the game's: the romfs file of its zstd dictionaries and the folders
+  the texture step skips.
 - The encoders are bc7enc_rdo's, built into the builder: bc7e (ISPC) for BC7, and for BC4 and BC5 an AVX2 search that
   gives rgbcx's blocks. The sources come from `work/deps/bc7enc_rdo` and ISPC from `work/deps/ispc`
   (`HOOKSHOT_BC7ENC`, `HOOKSHOT_ISPC`).
@@ -168,8 +166,7 @@ The host's C needs 153 of clang's resource headers (3.3 MB, 0.2 MB compressed); 
 
 ## The output folder
 
-`hookshot`, `hookshot_direct.so`, `libSDL2-2.0.so.0`, `image.bin`, `romfs/` (a copy), `prepared/tex/`,
-`prepared/terrain/`, the shader
+`hookshot`, `hookshot_direct.so`, `libSDL2-2.0.so.0`, `image.bin`, `romfs/` (a copy), `prepared/tex/`, the shader
 caches and `user/`. The host needs two changes for it: the prepared store and the saves default to the game folder.
 
 ## Order of work
@@ -179,6 +176,6 @@ caches and `user/`. The host needs two changes for it: the prepared store and th
 3. The builder as the development build too (done: `scripts/build.sh`).
 4. CI: the host and `hookshot_direct.so` prebuilt; the sysroot.
 5. The dump reader in Rust (done: `ounce/dump`).
-6. The texture converter in Rust, and the game's overlay steps (done: `ounce/tex`).
+6. The texture converter in Rust (done: `ounce/tex`).
 7. The output folder, the host's defaults for it, the AppImage.
 8. Shaders ahead of time.

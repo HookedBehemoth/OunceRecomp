@@ -38,6 +38,7 @@ ARGS = {
     "tests/test_nvn_host_tables.py": ["--cc", "gcc"],
     "tests/test_audio_voice_biquad.py": ["--cc", "gcc"],
     "tests/test_motion.py": ["--cc", "gcc"],
+    "tests/test_nvn_deswizzle.py": ["--cc", "gcc"],
     "tests/test_low_memory_notice.py": ["--cc", "gcc"],
     "nx2/test_draw_parameters.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],

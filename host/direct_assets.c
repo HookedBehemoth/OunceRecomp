@@ -3,8 +3,7 @@
    (HOS_DBG=noassets turns every patch here off, for a before/after).
 
    The store: HOS_PREPARED=<folder> (default <the executable's folder>/../../prepared, i.e. work/prepared beside a build in
-   work/sa/<build>, else <romfs>/../../prepared): <folder>/tex is the texture store the back end maps (hsd_assets_open),
-   <folder>/terrain the converted terrain tiles, served as a second file overlay root after HOS_FS_OVERLAY's (nn_fs.c).
+   work/sa/<build>, else <romfs>/../../prepared): <folder>/tex is the texture store the back end maps (hsd_assets_open).
 
    Texture loads (agl::TextureData), each tied to its BNTX record and handed to the back end (hsd_asset_load) before the
    texture's nvnTextureInitialize, which then makes the image from the store:
@@ -21,8 +20,8 @@
      - f_83537d90 replaceLoad_: counted (its copy is not skipped; none was seen in A0's trace).
    Game patches (texels no NVN call carries), as region uploads into the texture's image (hsd_texels):
      - terrain: f_80c17040+0x544, the memcpy of a tile record's GPU blob B (x1, x2 bytes) into the tile texture's storage
-       (x0): a converted file's B is linear (hookshot-builder overlay), recognised by its size, and uploaded instead; an
-       unconverted one is the placeholder, counted; the memcpy copies nothing either way.
+       (x0): B is the storage's block-linear bytes; its level 0 is deswizzled (nvn_tex_level0_linear) and uploaded instead.
+       A B that is not its texture's storage size is the placeholder, counted; the memcpy copies nothing either way.
      - the font glyph cache: f_8152f540 (the shelf packer: cache, &x, &y, w, h) notes the cell for this thread; after
        f_81539300 (nn::font's plot) has written it into the atlas ([cache+0xf0], pitch [cache+0x140]), the cell's rows
        x..x+w+4, y..y+h+3 go to the atlas image (docs/direct/terrain-texels.md).
@@ -49,10 +48,11 @@ int nvn_fmt_bpb(int format, int *bw, int *bh);
 extern const char *hos_romfs_dir;
 
 static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_inplace, n_rebind, n_compaction, n_compaction_cleared,
-    n_replace, n_pkg, n_pkg_bytes, n_tiles, n_tile_bytes, n_tiles_unconv, n_tile_notex, n_tile_badsite, n_glyphs,
-    n_glyph_notex, n_rebind_logged, n_tile_inside, n_tile_held, n_tile_held_max, n_tile_dropped, n_overlay, n_overlay_bytes, n_overlay_raw,
+    n_replace, n_pkg, n_pkg_bytes, n_tiles_unconv, n_tile_notex, n_tile_badsite, n_glyphs,
+    n_glyph_notex, n_rebind_logged, n_tile_inside, n_tile_held, n_tile_held_max, n_tile_dropped,
     n_tile_kept_given, n_tile_kept_other;
 
+static direct_bl_stats tiles_bl;
 static int dbg_has(const char *name) {
     const char *d = getenv("HOS_DBG");
     if (!d) return 0;
@@ -115,16 +115,17 @@ static void mem_line(void *arg) {
         free(v);
         hos_log("assets: resident: the asset heap %llu of %llu MB, guest memory %llu of %llu MB; copies skipped: loads %lld of %lld "
                 "(%lld MB), packaged %lld (%lld MB), compaction steps %lld (copy flag cleared %lld); in-place textures %lld, rebinds "
-                "%lld, replaced %lld; terrain tiles %lld uploaded (%lld MB), %lld not converted, %lld with no texture, %lld odd "
-                "sites, held for their texture %lld (storage addresses kept %lld, %lld dropped; given to textures initialized there %lld, "
-                "a texture of another size there %lld); overlay opens %lld; glyph cells %lld (%lld with no texture)%s",
+                "%lld, replaced %lld; terrain tiles %lld deswizzled (%lld MB, %.1f ms, %.3f ms the longest), %lld placeholders, %lld with no texture, "
+                "%lld odd sites, held for their texture %lld (storage addresses kept %lld, %lld dropped; given to textures initialized "
+                "there %lld, a texture of another size there %lld); glyph cells %lld (%lld with no texture)%s",
                 (unsigned long long)(heap_res * (uint64_t)pg >> 20), (unsigned long long)((heap_hi - heap_lo) >> 20),
                 (unsigned long long)(guest_res * (uint64_t)pg >> 20), (unsigned long long)(gsize >> 20), (long long)n_load_skipped,
                 (long long)n_loads, (long long)(n_load_bytes >> 20), (long long)n_pkg, (long long)(n_pkg_bytes >> 20),
                 (long long)n_compaction, (long long)n_compaction_cleared, (long long)n_inplace, (long long)n_rebind,
-                (long long)n_replace, (long long)n_tiles, (long long)(n_tile_bytes >> 20), (long long)n_tiles_unconv,
+                (long long)n_replace, (long long)tiles_bl.uploads, (long long)(tiles_bl.bytes >> 20), tiles_bl.ns / 1e6,
+                tiles_bl.max_ns / 1e6, (long long)n_tiles_unconv,
                 (long long)n_tile_notex, (long long)n_tile_badsite, (long long)n_tile_held, (long long)n_tile_held_max,
-                (long long)n_tile_dropped, (long long)n_tile_kept_given, (long long)n_tile_kept_other, (long long)n_overlay, (long long)n_glyphs, (long long)n_glyph_notex,
+                (long long)n_tile_dropped, (long long)n_tile_kept_given, (long long)n_tile_kept_other, (long long)n_glyphs, (long long)n_glyph_notex,
                 direct_assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)");
         if (direct_assets_on()) {
             char b[512];
@@ -371,23 +372,33 @@ void direct_assets_pool_made(uint64_t gpu, uint64_t size) {
     rx_direct()->texture_data_pool(gpu, gpu + size);
 }
 
-/* ---- the terrain overlay ---- */
-const char *direct_assets_overlay(void) {
-    if (!direct_assets_on()) return NULL;
-    static char root[1100];
-    const char *d = prepared_dir();
-    snprintf(root, sizeof root, "%s/terrain", d ? d : ".");
-    if (!d || os_path_kind(root) == OS_PATH_NONE) {
-        hos_log("assets: no converted terrain tiles at %s: the game's own files (their tiles the placeholder)", root);
-        return NULL;
+/* ---- block-linear storage bytes to an image ---- */
+int direct_assets_texels_bl(uint32_t source, const void *tex, const uint8_t *src, uint64_t n, direct_bl_stats *st) {
+    const nvn_tex *t = (const nvn_tex *)tex;
+    int bw = 1, bh = 1;
+    const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+    if (bpb <= 0 || n != t->L.size) return 0;
+    const uint32_t depth = t->d.target == NVN_TEXTURE_TARGET_3D ? (t->d.depth ? t->d.depth : 1) : t->L.layers;
+    const uint64_t lin = (uint64_t)((t->d.width + bw - 1) / bw) * ((t->d.height + bh - 1) / bh) * (uint64_t)bpb * depth;
+    static _Thread_local struct { uint8_t *p; uint64_t cap; } buf;   /* (grows to the largest texture this thread uploads) */
+    if (lin > buf.cap) {
+        free(buf.p);
+        buf.p = (uint8_t *)malloc(lin), buf.cap = buf.p ? lin : 0;
+        if (!buf.p) return 0;
     }
-    hos_log("assets: the converted terrain tiles are a file overlay: %s", root);
-    return root;
-}
-void direct_assets_overlay_opened(const char *path) {
-    direct_sky_lut_opened(path);
-    const int64_t k = os_atomic_inc(&n_overlay);
-    if (k <= 20 || k % 100000 == 0) hos_log("assets: overlay open #%lld: %s", (long long)k, path);
+    const int64_t t0 = os_now_ns();
+    if (nvn_tex_level0_linear(&t->d, src, n, buf.p) != lin) return 0;
+    const int64_t ns = os_now_ns() - t0;
+    NVNcopyRegion r = {0, 0, 0, (int)t->d.width, (int)t->d.height, (int)depth};
+    rx_direct()->texels(source, t, 0, 0, &r, buf.p, 0, 0);
+    const int64_t k = os_atomic_inc(&st->uploads);
+    os_atomic_add(&st->bytes, (int64_t)n);
+    os_atomic_add(&st->ns, ns);
+    for (int64_t m = st->max_ns; ns > m && !__sync_bool_compare_and_swap(&st->max_ns, m, ns); m = st->max_ns) {}
+    if (k <= 3)
+        hos_log("assets: deswizzled %ux%ux%u format %#x (%llu bytes, block height %u) in %.3f ms on thread %s", t->d.width,
+                t->d.height, depth, t->d.format, (unsigned long long)n, t->L.tileH, ns / 1e6, hos_thread_name(hos_self()));
+    return 1;
 }
 
 /* ---- the tiles' bytes, kept by storage address ----
@@ -438,14 +449,7 @@ static int tile_keep(uint64_t dst, const uint8_t *src, uint32_t n) {
     os_rwlock_unlock(&held_lock);
     return 1;
 }
-static void tile_upload(const nvn_tex *t, const uint8_t *src, uint32_t n);
-static void tile_upload_as(uint32_t source, const nvn_tex *tp, const uint8_t *src, uint32_t n);
-static uint64_t tile_linear(const nvn_tex *t) {
-    int bw = 1, bh = 1;
-    const int bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-    const uint32_t layers = t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY ? (t->d.depth ? t->d.depth : 1) : 1;
-    return bpb > 0 ? (uint64_t)((t->d.width + bw - 1) / bw) * ((t->d.height + bh - 1) / bh) * (uint64_t)bpb * layers : 0;
-}
+static void tile_upload_as(uint32_t source, const nvn_tex *t, const uint8_t *src, uint32_t n);
 void direct_assets_texture_init(const void *tex) {
     const nvn_tex *t = (const nvn_tex *)tex;
     if (!t->gpu) return;
@@ -455,12 +459,13 @@ void direct_assets_texture_init(const void *tex) {
                 (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)t->serial);
     }
     if (!direct_assets_tiles_pending) return;
-    const uint64_t want = tile_linear(t);
+    const uint64_t want = t->L.size;
     int given = 0, other = 0;
     os_rwlock_lock_shared(&held_lock);   /* (the upload under it: a copy to that storage replaces the bytes only exclusively) */
     for (uint32_t i = held_at(t->gpu), k = 0; k < TILES_HELD && held[i].dst; k++, i = (i + 1) & (TILES_HELD - 1))
         if (held[i].dst == t->gpu) {
-            /* (a texture of another size there: its initialization writes no memory, so the bytes stay for a later one) */
+            /* (a texture of another storage size there: its initialization writes no memory, so the bytes stay for a later
+               one) */
             if (held[i].bytes && held[i].n == want) tile_upload_as(HSD_TEXELS_TERRAIN_KEPT, t, held[i].bytes, held[i].n), given = 1;
             else other = held[i].bytes != NULL;
             break;
@@ -511,27 +516,16 @@ PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst
         hos_log("assets: terrain: a tile at %#llx inside texture %#llx (%ux%ux%u, format %#x, target %d, %llu bytes, layer %llu bytes)",
                 (unsigned long long)dst, (unsigned long long)t.gpu, t.d.width, t.d.height, t.d.depth, t.d.format, t.d.target,
                 (unsigned long long)t.L.size, (unsigned long long)t.L.layer_size);
-    tile_upload(&t, GP(src), n);
+    tile_upload_as(HSD_TEXELS_TERRAIN, &t, GP(src), n);
     return 0;   /* (the memcpy copies nothing: the storage stays unwritten) */
 }
 
-static void tile_upload_as(uint32_t source, const nvn_tex *tp, const uint8_t *src, uint32_t n);
-static void tile_upload(const nvn_tex *tp, const uint8_t *src, uint32_t n) { tile_upload_as(HSD_TEXELS_TERRAIN, tp, src, n); }
-static void tile_upload_as(uint32_t source, const nvn_tex *tp, const uint8_t *src, uint32_t n) {
-    const nvn_tex t = *tp;
-    int bw = 1, bh = 1;
-    const int bpb = nvn_fmt_bpb(t.d.format, &bw, &bh);
-    const uint32_t layers = t.d.target == NVN_TEXTURE_TARGET_2D_ARRAY ? (t.d.depth ? t.d.depth : 1) : 1;
-    const uint64_t linear = (uint64_t)((t.d.width + bw - 1) / bw) * ((t.d.height + bh - 1) / bh) * (uint64_t)bpb * layers;
-    NVNcopyRegion r = {0, 0, 0, (int)t.d.width, (int)t.d.height, (int)layers};
-    if (bpb > 0 && n == linear) {
-        rx_direct()->texels(source, &t, 0, 0, &r, src, 0, 0);
-        os_atomic_inc(&n_tiles);
-        os_atomic_add(&n_tile_bytes, n);
-    } else {
-        rx_direct()->texels(HSD_TEXELS_TERRAIN, &t, 0, 0, &r, NULL, 0, 0);
-        os_atomic_inc(&n_tiles_unconv);
-    }
+static void tile_upload_as(uint32_t source, const nvn_tex *t, const uint8_t *src, uint32_t n) {
+    if (direct_assets_texels_bl(source, t, src, n, &tiles_bl)) return;
+    rx_direct()->texels(HSD_TEXELS_TERRAIN, t, 0, 0, &(NVNcopyRegion){0, 0, 0, (int)t->d.width, (int)t->d.height, 1}, NULL, 0, 0);
+    if (os_atomic_inc(&n_tiles_unconv) <= 5)
+        hos_log("assets: terrain: a tile of %u bytes for texture %#llx (%ux%ux%u, format %#x, storage %llu bytes): the placeholder", n,
+                (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)t->L.size);
 }
 
 /* ---- the font glyph cache ---- */

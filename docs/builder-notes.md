@@ -17,9 +17,9 @@ A builder is a thin front end over the developer path ([Development guide](devel
    same kind and prints what it did; tell the player. A player's own folder is never written to.
 3. **Lift and build.** `hookshot-builder build <folder> --direct <hookshot_direct.so>` lifts, compiles and links
    in one process ([the plan](builder-plan.md)). It needs the FFmpeg and glibc development files.
-4. **Prepare assets.** `hookshot-builder build ... --prepared <folder>` (or `hookshot-builder textures` and
-   `hookshot-builder overlay` alone) writes the direct back end's texture store and the terrain and sky overlay
-   ([the converters](direct/converters.md)). Without them every asset texture and terrain tile is a placeholder.
+4. **Prepare assets.** `hookshot-builder build ... --prepared <folder>` (or `hookshot-builder textures` alone) writes
+   the direct back end's texture store ([the converters](direct/converters.md)). Without it every asset texture is a
+   placeholder.
 5. **Make button prompts.** `nx2/prompt_assets.py --romfs <romfs> --out <game>/prompts` (needs the packages in
    `nx2/prompt_requirements.txt`). Without them the game keeps the Switch's icons.
 6. **Assemble the game folder:** the executable, `hookshot_direct.so`, the SDL library, `image.bin`, `romfs` (a link or

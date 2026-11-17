@@ -37,6 +37,10 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o);
 uint64_t nvn_tex_level_offset(const nvn_texdesc *d, unsigned level);
 int nvn_fmt_bpb(int format, int *bw, int *bh);   /* bytes per block (0: unknown format), block width / height */
 void nvn_tex_level_tiles(const nvn_texdesc *d, unsigned level, unsigned *tileH, unsigned *tileD);
+/* Level 0 of a block-linear texture, every layer and slice, as packed rows into dst (its linear size): src holds the
+   storage from its start (n bytes). Returns the bytes written; 0 for a pitch-linear, multisampled or unknown format, or
+   when n is short */
+uint64_t nvn_tex_level0_linear(const nvn_texdesc *d, const uint8_t *src, uint64_t n, uint8_t *dst);
 /* LINEAR_RENDER_TARGET (0x40) is pitch storage even without LINEAR (0x10) */
 static inline int nvn_tex_is_linear(const nvn_texdesc *d) { return (d->flags & 0x50) != 0; }
 uint32_t nvn_tex_linear_stride(const nvn_texdesc *d);

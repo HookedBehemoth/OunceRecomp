@@ -40,7 +40,7 @@
 80798b60 texdata_load_in_place_a          # docs/direct/texture-streaming.md: ui2d in-place files
 80792bd0 texdata_load_in_place_b          # docs/direct/texture-streaming.md, host/direct_assets.c: BNTX in place (in-place files)
 807974f0 texdata_make_alias               # docs/direct/texture-streaming.md: a no-data load: shares its target's slot, joins its chain
-80ddab00 texdata_model_procedural         # work/assets/native/block-linear.md: ModelProcedural
+80ddab00 texdata_model_procedural         # work/assets/native/block-linear.md: ModelProcedural; makes the two sky LUT sets (host/direct_sky_lut.c)
 809eb4a0 texdata_noise_generators         # docs/direct-backend-plan.md
 809eb720 texdata_noise_textures           # makes the noise generators' textures
 807982f0 texdata_rebind                   # docs/direct/texture-streaming.md: a moved texture under the same descriptor id
@@ -458,6 +458,9 @@
 # --- terrain, sky, vegetation
 80101060 sky_inscatter_ubo_write          # work/assets/native/uniform-buffers.md: the sky ("SkyInscatter") uniform writes (sites 0x80101174..0x80101294)
 80846070 sky_lut_copy                     # host/direct_sky_lut.c: memcpys the skybin's three LUT parts into textures (patched)
+80845d80 sky_lut_scene_load               # host/direct_sky_lut.c: the scene's skybin into both LUT sets ([+0xc98], [+0xca0]) through sky_lut_copy
+80dde4f0 sky_lut_set_setup                # host/direct_sky_lut.c: a LUT set's textures; calls sky_lut_copy only for a blob in its argument block (+0x48), which texdata_model_procedural's two calls leave zero
+80cfc060 sky_lut_set_construct            # host/direct_sky_lut.c: constructs a LUT set (0xfd0 bytes) before sky_lut_set_setup
 80eb8460 terrain_decode_cpu_copy          # docs/direct/terrain-texels.md: decodes a terrain layer's CPU copy
 83a6d170 terrain_polish_readback          # work/assets/native/block-linear.md
 83a6b210 terrain_polish_readback_caller   # work/assets/native/block-linear.md

@@ -184,3 +184,38 @@ uint32_t nvn_tex_linear_stride(const nvn_texdesc *d) {
     const uint64_t s = (((uint64_t)d->width + bw - 1) / bw * bpb + align - 1) & ~(uint64_t)(align - 1);
     return s > 0xFFFFFFFFu ? 0xFFFFFFFFu & ~(align - 1) : (uint32_t)s;
 }
+
+uint64_t nvn_tex_level0_linear(const nvn_texdesc *d, const uint8_t *src, uint64_t n, uint8_t *dst) {
+    fmt_t t = fmt_of(d->format);
+    unsigned dpl; int layered; uint32_t w, h, z;
+    shape(d, &dpl, &layered, &w, &h, &z);
+    if (!t.bpb || nvn_tex_is_linear(d) || d->target == 10 || d->samples > 1) return 0;
+    nvn_texlayout L; nvn_tex_layout(d, &L);
+    unsigned th, td; nvn_tex_level_tiles(d, 0, &th, &td);
+    const uint64_t wb = blk(w, t.bw) * t.bpb, rows = dpl >= 2 ? blk(h, t.bh) : 1, slices = dpl == 3 ? z : 1;
+    const uint64_t gx = (wb + 63) / 64, by = ((rows + 7) / 8 + (1u << th) - 1) >> th, block = 512ull << (th + td);
+    const uint64_t level0 = gx * by * ((slices + (1u << td) - 1) >> td) * block;
+    if ((uint64_t)(L.layers - 1) * L.layer_size + level0 > n) return 0;
+    uint8_t *o = dst;
+    for (uint32_t l = 0; l < L.layers; l++)
+        for (uint64_t s = 0; s < slices; s++) {
+            const uint8_t *slice = src + l * L.layer_size + (s >> td) * by * gx * block + (s & ((1u << td) - 1)) * (512ull << th);
+            for (uint64_t y = 0; y < rows; y++, o += wb) {
+                /* (a GOB is 64 bytes x 8 rows: 16-byte pieces, x bit 5 -> 256, y bit 2 -> 128, x bit 4 -> 64, y bit 1 -> 32,
+                   y bit 0 -> 16) */
+                const uint8_t *row = slice + (y >> (3 + th)) * gx * block + ((y >> 3) & ((1u << th) - 1)) * 512 +
+                                     ((y & 7) >> 2) * 128 + ((y & 3) >> 1) * 32 + (y & 1) * 16;
+                uint64_t x = 0;
+                for (; x + 64 <= wb; x += 64) {
+                    const uint8_t *g = row + (x >> 6) * block;
+                    memcpy(o + x, g, 16), memcpy(o + x + 16, g + 64, 16), memcpy(o + x + 32, g + 256, 16),
+                        memcpy(o + x + 48, g + 320, 16);
+                }
+                for (; x < wb; x += 16) {   /* (a width not a whole GOB) */
+                    static const uint16_t piece[4] = {0, 64, 256, 320};
+                    memcpy(o + x, row + (x >> 6) * block + piece[(x & 63) >> 4], wb - x < 16 ? wb - x : 16);
+                }
+            }
+        }
+    return (uint64_t)(o - dst);
+}

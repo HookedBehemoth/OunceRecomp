@@ -33,9 +33,6 @@ main_sha256 = "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de"
 [assets]
 zstd_dictionaries = "Pack/ZsDic.pack.zs"
 texture_skip_dirs = ["Sound", "Voice", "TerrainArc"]
-# this game's own files made linear into the overlay the host serves over the romfs: the TARB terrain tiles (with the
-# resource size table) and the sky LUT archive
-overlay_steps = ["tarb_terrain", "skybin"]
 
 # zstd_decompress_sequences' local continuations: `adr x7, <label>` ... `br x7` inside the function, pc: word; the
 # code pointer audit accepts them, nx2/lift2/code_ptrs.py

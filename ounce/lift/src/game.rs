@@ -26,9 +26,6 @@ pub struct Assets {
     /// top-level romfs folders the texture store does not look into (they hold no BNTX)
     #[serde(default)]
     pub texture_skip_dirs: Vec<String>,
-    /// this game's own conversions into the romfs overlay (ounce-tex `steps`), in order
-    #[serde(default)]
-    pub overlay_steps: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

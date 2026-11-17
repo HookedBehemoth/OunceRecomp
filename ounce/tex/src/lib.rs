@@ -9,7 +9,6 @@ pub mod native;
 pub mod plan;
 pub mod romfs;
 pub mod run;
-pub mod steps;
 pub mod store;
 
 #[cfg(test)]

@@ -55,12 +55,11 @@ void hsd_flush(void);
 
 /* direct_assets.c : the host's asset patches are on (direct mode, and not HOS_DBG=noassets) */
 int direct_assets_on(void);
-/* nn_fs.c: the overlay root after HOS_FS_OVERLAY's in direct mode (the converted terrain tiles), NULL none; a file opened
-   from it (counted) */
-const char *direct_assets_overlay(void);
-void direct_assets_overlay_opened(const char *path);
-/* direct_sky_lut.c : a file served from the prepared overlay (direct_assets_overlay_opened) */
-void direct_sky_lut_opened(const char *path);
+/* direct_assets.c : the game's block-linear storage bytes for a texture (n bytes, its whole storage), level 0 made
+   packed rows and uploaded to its image, timed into st. 0: n is not the storage's size or the layout is not one to
+   deswizzle (nothing uploaded) */
+typedef struct { volatile int64_t uploads, bytes, ns, max_ns; } direct_bl_stats;
+int direct_assets_texels_bl(uint32_t source, const void *tex, const uint8_t *src, uint64_t n, direct_bl_stats *st);   /* (an nvn_tex) */
 /* nvn_native.c nvnTextureInitialize: packaged texture data the back end never reads, its copy into the storage skipped
    (1) in direct mode */
 int direct_assets_skip_packaged(uint64_t bytes);

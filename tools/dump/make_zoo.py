@@ -19,8 +19,7 @@ The scene description (zoo/*.toml) holds actor names and numbers only:
 Added actors go to the map's Dynamic banc. Their instance hashes come from the scene's name, the entry and the copy, so
 the same description gives the same files. The overlay holds the chiseled boot (make_chisel_overlay.py --route newgame
 --banc <base> --start <start>), the two bancs, and the resource size table with the bancs' entries raised when they grew
-(the loader drops a file larger than its entry). The size table starts from the converted terrain's
-(work/prepared/terrain), which this overlay is read before, so that table's raised entries are kept.
+(the loader drops a file larger than its entry).
 """
 import argparse, hashlib, math, os, shutil, struct, subprocess, sys, tomllib, zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -135,8 +134,7 @@ def main():
 def size_table(romfs, out, sizes):
     """the resource size table with each banc's entry at least its new size plus the entry's allowance over the old"""
     import zstandard
-    prepared = os.path.join(ROOT, 'work', 'prepared', 'terrain', TABLE)
-    src = prepared if os.path.exists(prepared) else os.path.join(romfs, TABLE)
+    src = os.path.join(romfs, TABLE)
     b = bytearray(zs.decompress(open(src, 'rb').read()))
     assert b[:6] == b'RESTBL', src
     _ver, name_len, hashed, named = struct.unpack_from('<IIII', b, 6)
