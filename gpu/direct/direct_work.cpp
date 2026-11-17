@@ -1,10 +1,6 @@
 // The shader workers (direct_work.h).
 #include "direct_work.h"
 
-#include <pthread.h>
-#include <sys/resource.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -12,16 +8,16 @@
 #include <cstdlib>
 #include <deque>
 #include <mutex>
-#include <thread>
 
 #include "direct_internal.h"
+#include "os.h"
 
 namespace hsd::work {
 
 struct Ticket {
     std::function<void()> f;
     int cls = -1;        // (the class it is queued in; -1 not queued yet, -2 taken by a worker; under mu)
-    pid_t tid = 0;       // (the background worker running it at the lower priority, which a bump raises; under mu)
+    os_thread* worker = nullptr;   // (the background worker running it at the lower priority, which a bump raises; under mu)
 };
 
 namespace {
@@ -51,10 +47,10 @@ TicketRef take(bool background, int& cls) {
 
 /// A worker. A background one runs its P1 and P2 jobs at a lower scheduling priority (nice 10), so the game's own threads
 /// go first when the machine is busy with a load, and its PW and P0 jobs at the game's; the others take only those
-void worker(bool background) {
-    pthread_setname_np(pthread_self(), background ? "shader bg" : "shader worker");
-    const pid_t me = gettid();
-    int nice = 0;
+void worker(void* arg) {
+    const bool background = arg != nullptr;
+    os_thread* const me = os_thread_current();
+    bool lowered = false;
     for (;;) {
         TicketRef t;
         int cls = P0;
@@ -63,17 +59,17 @@ void worker(bool background) {
             (background ? cv_bg : cv_now).wait(lk, [&] { return (t = take(background, cls)) != nullptr; });
             running++;
             if (background) {
-                const int want = cls <= P0 ? 0 : 10;
-                if (want != nice && setpriority(PRIO_PROCESS, (id_t)me, want) == 0) nice = want;
-                t->tid = nice ? me : 0;
+                const bool want = cls > P0;
+                if (want != lowered && os_thread_set_priority(me, want ? OS_PRIO_LOWEST : OS_PRIO_NORMAL)) lowered = want;
+                t->worker = lowered ? me : nullptr;
             }
         }
         std::function<void()> f = std::move(t->f);
         f();
         std::lock_guard lk(mu);
         running--;
-        t->tid = 0;
-        if (background) nice = getpriority(PRIO_PROCESS, (id_t)me);   // (a bump may have raised it)
+        t->worker = nullptr;
+        if (background) lowered = os_thread_priority(me) == OS_PRIO_LOWEST;   // (a bump may have raised it)
     }
 }
 
@@ -81,11 +77,12 @@ void start() {
     std::call_once(once, [] {
         // (half the machine's threads: the game's main, module and executor threads keep the other half; HOS_DBG=workers:<n>
         // sets the count, for measuring)
-        const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+        const unsigned hw = (unsigned)std::max(2, os_cpu_count());
         n_workers = (int)std::clamp(hw / 2, 2u, 12u);
         if (const char* v = dbg_value("workers"); v && std::atoi(v) > 0) n_workers = std::clamp(std::atoi(v), 1, 64);
         bg_cap = std::max(1, n_workers / 2);
-        for (int i = 0; i < n_workers; i++) std::thread(worker, i < bg_cap).detach();
+        for (int i = 0; i < n_workers; i++)
+            os_thread_release(os_thread_start(worker, i < bg_cap ? (void*)1 : nullptr, 0, i < bg_cap ? "shader bg" : "shader worker"));
         logf("direct: shader workers: %d (at most %d on work for programs set at the load or speculative)", n_workers, bg_cap);
     });
 }
@@ -114,9 +111,9 @@ bool bump(const TicketRef& t, Class to) {
     if (!t) return false;
     {
         std::lock_guard lk(mu);
-        if (t->cls == -2 && t->tid) {   // (running at the lower priority: raised to the game's)
-            const bool raised = setpriority(PRIO_PROCESS, (id_t)t->tid, 0) == 0;
-            t->tid = 0, bumped += raised;
+        if (t->cls == -2 && t->worker) {   // (running at the lower priority: raised to the game's)
+            const bool raised = os_thread_set_priority(t->worker, OS_PRIO_NORMAL);
+            t->worker = nullptr, bumped += raised;
             return raised;
         }
         if (t->cls < 0 || t->cls <= to) return false;

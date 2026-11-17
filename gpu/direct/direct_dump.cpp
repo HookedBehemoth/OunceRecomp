@@ -1,6 +1,5 @@
 // The frame dump (direct_dump.h). The copies as gpu/legacy/vk/vk_dump.cpp makes them (a nearest blit of colour into a small
 // RGBA32 image of its numeric kind, depth copied as it is), the statistics line and the PNG as it writes them.
-#include <sys/stat.h>
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +9,7 @@
 #include <mutex>
 
 #include "direct_dump.h"
+#include "os.h"
 #include "direct_image.h"
 #include "direct_check.h"
 
@@ -360,7 +360,7 @@ void dump_present(uint64_t present) {
     sync_wait_value(v, UINT64_MAX);
     const char* d = dbg_value("dumpdir");
     dir = std::string(d ? d : ".") + "/dump_" + std::to_string(t);
-    mkdir(dir.c_str(), 0755);
+    os_mkdir(dir.c_str());
     logf("vk: dumping the frame after present %lld to %s (direct: %lld frames, %zu items; %lld recorded, %lld submissions "
          "claimed)", (long long)t, dir.c_str(), (long long)frames(), items.size(), (long long)st_recorded.load(), (long long)st_claims.load());
     for (DumpItem* it : items) {

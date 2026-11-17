@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "direct_compute.h"
+#include "os.h"
 #include "direct_assets.h"
 #include "direct_cmd.h"
 #include "direct_draw.h"
@@ -245,10 +246,15 @@ void shot_write(Frame& f) {   // (its fence has passed)
     char path[1200];
     std::snprintf(path, sizeof path, "%s/vk_%06lld.png", shot_dir.c_str(), (long long)f.shot_present);
     f.shot_present = 0;
-    std::thread([px, p = std::string(path)] {
-        for (size_t i = 3; i < px->size(); i += 4) (*px)[i] = 255;   // (opaque, as shown)
-        if (!dump_write_png(p.c_str(), px->data(), kShotW, kShotH)) logf("direct: shots: %s not written", p.c_str());
-    }).detach();
+    struct Job { std::shared_ptr<std::vector<uint8_t>> px; std::string p; };
+    Job* job = new Job{px, path};
+    os_thread* t = os_thread_start([](void* arg) {
+        const std::unique_ptr<Job> j((Job*)arg);
+        for (size_t i = 3; i < j->px->size(); i += 4) (*j->px)[i] = 255;   // (opaque, as shown)
+        if (!dump_write_png(j->p.c_str(), j->px->data(), kShotW, kShotH)) logf("direct: shots: %s not written", j->p.c_str());
+    }, job, 0, "direct shot");
+    if (t) os_thread_release(t);
+    else delete job;
 }
 
 // the presented image dst (TRANSFER_DST, its blit done) into the shot image and f's buffer; dst back in TRANSFER_DST

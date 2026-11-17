@@ -1,7 +1,6 @@
 // The direct back end's start: libvulkan, the instance, the device (one graphics and compute
 // queue, the sparse-binding queue for layer 0), and the version-14 table the host calls (gpu/api/vk_api.h). Cut down from
 // gpu/legacy/vk/vk_main.cpp: no start-up screen, menu, upscalers, vendor hooks or switches.
-#include <dlfcn.h>
 
 #include <cstdarg>
 #include <cstdio>
@@ -15,6 +14,7 @@
 #include "direct_marks.h"
 #include "direct_pstats.h"
 #include "direct_internal.h"
+#include "os.h"
 #include "direct_api.h"
 #include "direct_image.h"
 #include "direct_heap.h"
@@ -98,9 +98,9 @@ const char* dbg_value(const char* name) {
 namespace {
 
 bool load_global() {
-    void* m = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+    os_lib* m = os_lib_open("libvulkan.so.1");
     if (!m) return false;
-    get_instance_proc = (PFN_vkGetInstanceProcAddr)dlsym(m, "vkGetInstanceProcAddr");
+    get_instance_proc = (PFN_vkGetInstanceProcAddr)os_lib_sym(m, "vkGetInstanceProcAddr");
     if (!get_instance_proc) return false;
 #define HSD_VK_LOAD(f) f = (PFN_##f)get_instance_proc(nullptr, #f);
     HSD_VK_GLOBAL(HSD_VK_LOAD)

@@ -127,8 +127,9 @@ uint32_t os_tid(void);                  /* the calling thread's */
 void os_thread_set_name(os_thread *t, const char *name);
 void os_thread_name(os_thread *t, char *out, size_t cap);
 enum { OS_PRIO_IDLE = -3, OS_PRIO_LOWEST = -2, OS_PRIO_BELOW = -1, OS_PRIO_NORMAL = 0, OS_PRIO_ABOVE = 1, OS_PRIO_HIGHEST = 2 };
-void os_thread_set_priority(os_thread *t, int prio);   /* (Linux: only lowered, with nice values) */
-int os_thread_priority(os_thread *t);                  /* the one last set */
+/* whether it took (Linux: nice values; raising one back needs the system's leave, and fails without it) */
+bool os_thread_set_priority(os_thread *t, int prio);
+int os_thread_priority(os_thread *t);                  /* the one last set that took */
 uint64_t os_thread_set_affinity(os_thread *t, uint64_t mask);   /* the mask it had; 0 when refused */
 int64_t os_thread_cpu_ns(os_thread *t);                /* CPU time used; -1 when unknown (it has ended) */
 __attribute__((noreturn)) void os_thread_exit(void);
@@ -198,6 +199,11 @@ int64_t os_file_size(os_file *f);
 int os_file_resize(os_file *f, uint64_t size);
 int os_file_flush(os_file *f);
 void os_file_close(os_file *f);
+/* an exclusive lock on the file, without waiting: false when another process holds one. Held until the file closes. */
+bool os_file_trylock(os_file *f);
+/* the whole file mapped read-only (its size into *size): NULL when empty or on failure. Given back with os_mem_unmap;
+   the mapping outlives the file's closing. */
+const void *os_file_map_read(os_file *f, size_t *size);
 enum { OS_PATH_NONE = 0, OS_PATH_FILE = 1, OS_PATH_DIR = 2, OS_PATH_LINK = 4 };   /* (LINK: added to FILE or DIR) */
 int os_path_kind(const char *path);   /* what is there (links followed; OS_PATH_LINK when the path itself is one) */
 int64_t os_path_size(const char *path);   /* a file's size, < 0 when there is none */

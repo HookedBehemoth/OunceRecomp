@@ -11,10 +11,6 @@
 //   here, direct_spv_late.*, direct_state.h), the record format (kDiskFormat), the device's answers and the switches that
 //   change the translation; a file of another stamp is made again. Edits outside the marked regions keep it.
 // - hookshot_direct_shader_objects.bin: driver binaries by create info, under the driver's binary UUID and version (sobin).
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -22,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -32,6 +29,7 @@
 #include <vector>
 
 #include "direct_check.h"
+#include "os.h"
 #include "direct_meshrepl.h"
 #include "direct_spv_late.h"
 #include "shader_recompiler/backend/bindings.h"
@@ -707,9 +705,8 @@ uint64_t disk_stamp() {
 }
 
 std::string exe_dir() {
-    char b[4096];
-    const ssize_t n = readlink("/proc/self/exe", b, sizeof b - 1);
-    std::string p(b, n > 0 ? (size_t)n : 0);
+    char b[OS_PATH_MAX];
+    std::string p(b, (size_t)os_exe_path(b, sizeof b));
     return p.substr(0, p.find_last_of('/') + 1);
 }
 
@@ -717,8 +714,9 @@ void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
         const std::string path = exe_dir() + "hookshot_direct_programs.bin";
-        const int fd = open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
-        if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        os_file* lock = os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr);   // (held for the process's life)
+        if (!lock || !os_file_trylock(lock)) {
+            os_file_close(lock);
             logf("direct: program cache %s: another Hookshot is using it: this one runs without it", path.c_str());
             return;
         }
@@ -746,7 +744,8 @@ void disk_init() {
             fclose(f);
         }
         if (good) {
-            if (good != whole && truncate(path.c_str(), good) != 0) good = 0;
+            std::error_code ec;
+            if (good != whole && (std::filesystem::resize_file(path, (uintmax_t)good, ec), ec)) good = 0;
         }
         if (good) {
             disk_out = fopen(path.c_str(), "ab");
@@ -900,7 +899,7 @@ constexpr uint32_t kMagic = 0x4f445348;   // "HSDO"
 constexpr uint32_t kVersion = 1;
 std::once_flag once;
 std::mutex mu;
-int fd = -1;
+os_file* file = nullptr;   // (the binaries, read back)
 FILE* out = nullptr;
 std::unordered_map<uint64_t, std::pair<int64_t, uint32_t>> at;   // (key -> offset of the bytes, size)
 PFN_vkGetShaderBinaryDataEXT get_binary = nullptr;
@@ -925,8 +924,9 @@ void init() {
     std::call_once(once, [] {
         get_binary = (PFN_vkGetShaderBinaryDataEXT)vkGetDeviceProcAddr(dev.device, "vkGetShaderBinaryDataEXT");
         const std::string path = exe_dir() + "hookshot_direct_shader_objects.bin";
-        const int lock = open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
-        if (!get_binary || lock < 0 || flock(lock, LOCK_EX | LOCK_NB) != 0) {
+        os_file* lock = get_binary ? os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr) : nullptr;
+        if (!lock || !os_file_trylock(lock)) {   // (the lock is held for the process's life)
+            os_file_close(lock);
             logf("direct: shader object binaries %s: %s: none kept or saved", path.c_str(),
                  get_binary ? "another Hookshot is using it" : "no vkGetShaderBinaryDataEXT");
             return;
@@ -950,15 +950,16 @@ void init() {
             }
             fclose(f);
         }
-        if (good && good != whole && truncate(path.c_str(), good) != 0) good = 0;
+        std::error_code ec;
+        if (good && good != whole && (std::filesystem::resize_file(path, (uintmax_t)good, ec), ec)) good = 0;
         if (good) {
             out = fopen(path.c_str(), "ab");
         } else {   // (none, or another driver's: made again)
             at.clear();
             if ((out = fopen(path.c_str(), "wb"))) fwrite(&h, sizeof h, 1, out), fflush(out);
         }
-        fd = out ? open(path.c_str(), O_RDONLY | O_CLOEXEC) : -1;
-        if (fd < 0) at.clear();
+        file = out ? os_file_open(path.c_str(), OS_READ, nullptr) : nullptr;
+        if (!file) at.clear();
         logf("direct: shader object binaries %s: %zu kept (driver binary version %u)", path.c_str(), at.size(), h.binary_version);
     });
 }
@@ -981,7 +982,7 @@ std::vector<uint8_t> find(uint64_t key) {
         where = it->second;
     }
     std::vector<uint8_t> b(where.second);
-    if (pread(fd, b.data(), b.size(), where.first) != (ssize_t)b.size()) return {};
+    if (os_file_read_at(file, b.data(), b.size(), (uint64_t)where.first) != (int64_t)b.size()) return {};
     return b;
 }
 void save(uint64_t key, VkShaderEXT obj) {

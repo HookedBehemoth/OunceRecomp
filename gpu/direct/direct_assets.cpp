@@ -4,11 +4,6 @@
 // the texture. Debug aids (HOS_DBG): assetcheck:<n> reads back n prepared images and the sampled terrain and glyph uploads
 // after the load and compares them with the store's bytes and the bytes given; assetdump writes a font atlas, terrain
 // tiles, a UI texture and normal maps as PNGs into <dumpdir or the run's folder>/assets.
-#include <fcntl.h>
-#include <pthread.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <chrono>
 #include <cmath>
@@ -26,6 +21,7 @@
 #include <zstd.h>
 
 #include "direct_api.h"
+#include "os.h"
 #include "direct_check.h"
 #include "direct_assets.h"
 #include "direct_cmd.h"
@@ -60,7 +56,7 @@ struct Store {
     const uint8_t *files = nullptr, *texs = nullptr, *mipr = nullptr, *framer = nullptr, *str = nullptr;
     std::vector<const uint8_t*> packs;
     std::vector<size_t> pack_n;
-    std::vector<int> fds;   // (frames are read with pread: one call, not a page fault at a time)
+    std::vector<os_file*> files_open;   // (frames are read with a read at an offset: one call, not a page fault at a time)
     std::vector<uint32_t> bucket, next;   // (name hash -> first record + 1; chain)
     uint32_t nbucket = 1;
 } S;
@@ -98,14 +94,11 @@ void mip_at(const Rec& r, uint32_t m, uint64_t& off, uint32_t& layer_bytes) {
     off = rd<uint64_t>(p), layer_bytes = rd<uint32_t>(p + 8);
 }
 const uint8_t* map_file(const std::string& path, size_t& n) {
-    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return nullptr;
-    struct stat st{};
-    void* p = MAP_FAILED;
-    if (!fstat(fd, &st) && st.st_size > 0) p = mmap(nullptr, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
-    close(fd);
-    if (p == MAP_FAILED) return nullptr;
-    n = (size_t)st.st_size;
+    os_file* f = os_file_open(path.c_str(), OS_READ, nullptr);
+    if (!f) return nullptr;
+    const void* p = os_file_map_read(f, &n);
+    os_file_close(f);
+    if (!p) return nullptr;
     mem_main_mapped(n);
     return (const uint8_t*)p;
 }
@@ -162,13 +155,13 @@ const char* const kSrcNames[S_N] = {"store", "terrain", "glyph", "texel writes"}
 int src_index(uint8_t bit) { return bit == W_STORE ? S_STORE : bit == W_TERRAIN ? S_TERRAIN : bit == W_GLYPH ? S_GLYPH : S_TEXELS; }
 struct ThreadStat {
     char name[32] = {};
-    pid_t tid = 0;
+    uint32_t tid = 0;
     std::atomic<int64_t> n[S_N]{}, bytes[S_N]{}, ns[S_N]{};
 };
 thread_local ThreadStat* me_stat = nullptr;
 std::mutex stats_mu;
 std::vector<ThreadStat*> all_stats;
-std::atomic<pid_t> present_tid{0};
+std::atomic<uint32_t> present_tid{0};
 std::atomic<int64_t> f_n[S_N]{}, f_bytes[S_N]{}, t_n[S_N]{}, t_bytes[S_N]{}, t_ns[S_N]{}, on_present[S_N]{};
 std::atomic<int64_t> st_loads{0}, st_inplace{0}, st_prepared{0}, st_miss_name{0}, st_miss_desc{0}, st_miss_place{0},
     st_miss_nobntx{0}, st_miss_nostore{0}, st_rebinds{0}, st_rebind_nolink{0}, st_created{0}, st_unarmed{0}, st_link_desc{0},
@@ -180,8 +173,8 @@ std::atomic<int64_t> st_kept_taken{0}, st_kept_had{0};   // (M6f: HSD_TEXELS_TER
 ThreadStat& thread_stat() {
     if (!me_stat) {
         me_stat = new ThreadStat;
-        pthread_getname_np(pthread_self(), me_stat->name, sizeof me_stat->name);
-        me_stat->tid = gettid();
+        os_thread_name(os_thread_current(), me_stat->name, sizeof me_stat->name);
+        me_stat->tid = os_tid();
         std::lock_guard lk(stats_mu);
         all_stats.push_back(me_stat);
     }
@@ -264,7 +257,7 @@ extern "C" __attribute__((visibility("default"))) int hsd_assets_open(const char
         const uint8_t* m = map_file(S.dir + p, n);
         if (!m || n < 64 || std::memcmp(m, "HKTXPAK1", 8)) logf("direct: assets: %s%s not read: its textures fail", dir, p);
         S.packs.push_back(m && n >= 64 ? m : nullptr), S.pack_n.push_back(m ? n : 0);
-        S.fds.push_back(open((S.dir + p).c_str(), O_RDONLY | O_CLOEXEC));
+        S.files_open.push_back(os_file_open((S.dir + p).c_str(), OS_READ, nullptr));
         packed += n;
     }
     while (S.nbucket < S.ntex * 2) S.nbucket <<= 1;
@@ -614,12 +607,8 @@ bool read_range(const Rec& r, uint64_t a, uint64_t b, uint8_t* dst, int64_t& zby
             tl_z.resize(std::max<size_t>(f.csize, 1u << 20));
             mem_account_main(MO_M_SCRATCH, (int64_t)tl_z.capacity() - (int64_t)was);
         }
-        size_t got = 0;
-        while (got < f.csize) {
-            const ssize_t r = pread(S.fds[f.pack], tl_z.data() + got, f.csize - got, (off_t)(f.off + got));
-            if (r <= 0) return false;
-            got += (size_t)r;
-        }
+        os_file* const pack = S.files_open[f.pack];
+        if (!pack || os_file_read_at(pack, tl_z.data(), f.csize, f.off) != (int64_t)f.csize) return false;
         const uint8_t* z = tl_z.data();
         zbytes += f.csize;
         if (fa >= a && fb <= b) {
@@ -912,7 +901,7 @@ void run_dumps() {
     }
     const char* dd = dbg_value("dumpdir");
     const std::string dir = std::string(dd ? dd : ".") + "/assets";
-    mkdir(dir.c_str(), 0755);
+    os_mkdir(dir.c_str());
     int written = 0;
     for (Check& c : todo) {
         Image* im = c.im;
@@ -997,7 +986,7 @@ bool checks_started = false;
 
 void assets_present(uint64_t present) {
     if (present == 1) {
-        present_tid.store(gettid(), std::memory_order_relaxed);
+        present_tid.store(os_tid(), std::memory_order_relaxed);
         load_t0 = host->now_ns();
     }
     const int64_t jobs = st_jobs.exchange(0, std::memory_order_relaxed);
@@ -1014,10 +1003,10 @@ void assets_present(uint64_t present) {
     dbg_read();
     if ((check_n || dump_on) && first_play && !checks_started && present >= first_play + 600) {
         checks_started = true;
-        std::thread([] {
+        os_thread_release(os_thread_start([](void*) {
             if (dump_on) run_dumps();
             if (check_n) run_checks();
-        }).detach();
+        }, nullptr, 0, "direct checks"));
     }
 }
 

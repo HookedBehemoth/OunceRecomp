@@ -5,9 +5,9 @@
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #include "direct_check.h"
 #include "direct_internal.h"
+#include "os.h"
 #include <vk_mem_alloc.h>
 
-#include <dlfcn.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -254,7 +254,7 @@ void mem_owner_stats(char* vram, char* main_mem, char* counts, size_t cap) {
         std::fclose(f);
     }
     typedef size_t (*LedgerFn)(char*, size_t, uint64_t*, uint64_t*);
-    static const LedgerFn ledger = (LedgerFn)dlsym(RTLD_DEFAULT, "hos_posix_mem_ledger");
+    static const LedgerFn ledger = (LedgerFn)os_sym("hos_posix_mem_ledger");
     char host_part[512] = "not counted (no hos_posix_mem_ledger)";
     uint64_t host_sum = 0, committed = 0;
     if (ledger) ledger(host_part, sizeof host_part, &host_sum, &committed);

@@ -24,7 +24,7 @@
 #include <thread>
 #include <unordered_map>
 
-#include <pthread.h>
+#include "os.h"
 
 #include "direct_cmd.h"
 #include "direct_compute.h"
@@ -577,10 +577,7 @@ bool sync_init() {
         logf("direct: no timeline semaphore");
         return false;
     }
-    std::thread([] {
-        pthread_setname_np(pthread_self(), "direct sender");
-        sender_main();
-    }).detach();
+    os_thread_release(os_thread_start([](void*) { sender_main(); }, nullptr, 0, "direct sender"));
     atexit(sender_drain_at_exit);
     return true;
 }

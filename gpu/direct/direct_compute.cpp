@@ -4,12 +4,9 @@
 // through an address table. What differs from the frozen back end: the grid is NumWorkgroups (no CPU read of an indirect
 // dispatch's counts, no copy into c0), the 0x880 pointer table is not made (global memory is translated by address), and
 // the networks run as the game has them (the matrix multiplies in software on this card): no stand-ins (plan rule 8).
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -24,6 +21,7 @@
 #include <vector>
 
 #include "direct_marks.h"
+#include "os.h"
 #include "direct_pstats.h"
 #include "direct_check.h"
 #include "shader_recompiler/backend/bindings.h"
@@ -288,8 +286,11 @@ void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
         const std::string path = parts::program_dir() + "hookshot_direct_compute.bin";
-        const int fd = open((path + ".lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
-        if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) return logf("direct: compute cache %s: in use by another Hookshot: none", path.c_str());
+        os_file* lock = os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr);   // (held for the process's life)
+        if (!lock || !os_file_trylock(lock)) {
+            os_file_close(lock);
+            return logf("direct: compute cache %s: in use by another Hookshot: none", path.c_str());
+        }
         const uint64_t stamp = disk_stamp();
         int64_t good = 0, whole = 0;
         size_t records = 0;
@@ -312,7 +313,8 @@ void disk_init() {
             }
             fclose(f);
         }
-        if (good && good != whole && truncate(path.c_str(), good) != 0) good = 0;
+        std::error_code ec;
+        if (good && good != whole && (std::filesystem::resize_file(path, (uintmax_t)good, ec), ec)) good = 0;
         if (good) {
             disk_out = fopen(path.c_str(), "ab");
         } else {
@@ -326,7 +328,7 @@ void disk_init() {
         disk_on = disk_out && disk_in;
         logf("direct: compute cache %s: %zu variants kept%s", path.c_str(), records, whole && !good ? "; another stamp's file was truncated" : "");
         // (the compute objects' binaries are kept with the graphics ones, by create info: an earlier separate file is removed)
-        unlink((parts::program_dir() + "hookshot_direct_compute_objects.bin").c_str());
+        os_remove((parts::program_dir() + "hookshot_direct_compute_objects.bin").c_str());
     });
 }
 template <class T> void put(std::vector<uint8_t>& o, const T& v) { o.insert(o.end(), (const uint8_t*)&v, (const uint8_t*)&v + sizeof v); }

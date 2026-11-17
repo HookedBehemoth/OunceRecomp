@@ -5,8 +5,7 @@
 // of use for pools up to 64 MB (an importer thread); CPU_NO_ACCESS pools in VRAM (the VRAM class, step 7b), kept 10 s after
 // their finalize and handed back on the same pool again, 2048 MB at most. Left for M2 with the bindings: the per-binding
 // path (a range bound at its first use), the shaders' page table and the BDA window table. Linux only.
-#include <dlfcn.h>
-#include <fcntl.h>
+#include <fcntl.h>       // (the udmabuf device: a driver detail, Linux only)
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -24,6 +23,7 @@
 #include "direct_query.h"
 #include "layer0_windows.h"
 #include "direct_assets.h"
+#include "os.h"
 
 namespace hsd {
 void draw_window_made(uint32_t k, uint64_t a);   // (direct_draw.cpp)
@@ -55,7 +55,7 @@ uint64_t dmabuf_limit = 0;
 
 bool dmabuf_open() {   // (once, at layer0_on)
     typedef int (*MemfdFn)(void);
-    const MemfdFn fn = (MemfdFn)dlsym(RTLD_DEFAULT, "hos_posix_guest_memfd");
+    const MemfdFn fn = (MemfdFn)os_sym("hos_posix_guest_memfd");
     const int fd = fn ? fn() : -1;
     if (fd >= 0 && dev.dma_buf_import) dmabuf_dev = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
     if (fd < 0 || dmabuf_dev < 0) {
@@ -319,8 +319,7 @@ void bind_claimed(const std::vector<uint64_t>& claimed) {
 }
 
 /// The importer: chunks queued by the pools the game makes, imported and bound ahead of their use (8 at a time)
-void worker_main() {
-    pthread_setname_np(pthread_self(), "direct layer 0");
+void worker_main(void*) {
     for (;;) {
         std::vector<uint64_t> claimed;
         {
@@ -573,7 +572,7 @@ bool layer0_on() {
     chunk_memory.assign(bits->chunks, VK_NULL_HANDLE);
     cstate.reset(new std::atomic<uint8_t>[bits->chunks]);
     for (uint64_t c = 0; c < bits->chunks; c++) cstate[c].store(CH_NONE, std::memory_order_relaxed);
-    std::thread(worker_main).detach();
+    os_thread_release(os_thread_start(worker_main, nullptr, 0, "direct layer 0"));
     logf("direct: layer 0 on: guest memory in 4 GB windows every 2 GB, chunks of %llu MB (udmabuf's limit %llu MB), every "
          "GPU-readable pool bound in full at its creation (but the texture data pool); CPU_NO_ACCESS pools in VRAM (up to %llu MB, "
          "kept %.0f s)", (unsigned long long)(chunk >> 20), (unsigned long long)(dmabuf_limit >> 20), (unsigned long long)(kVramLimit >> 20), kKeepS);

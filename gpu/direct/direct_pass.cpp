@@ -9,7 +9,6 @@
 // (direct_cmd.h). Job, load and unclassified lists record none at this stage (jobs as secondaries and packets are M3):
 // what they would have recorded is counted. A call of a list that has command buffers cuts the caller's: the rendering
 // is ended, the caller's buffer too, and the callee's buffers run between (direct_lists.cpp list_buffers).
-#include <pthread.h>
 
 #include <chrono>
 #include <mutex>
@@ -30,6 +29,7 @@
 #include "direct_pass.h"
 #include "direct_query.h"
 #include "direct_task.h"
+#include "os.h"
 
 namespace hsd {
 namespace {
@@ -73,7 +73,7 @@ void count(int k) {
         strict_pass(k);
 }
 
-uint64_t thread_id() { return (uint64_t)pthread_self(); }
+uint64_t thread_id() { return os_tid(); }
 
 // ---- jobs: the format table by pass key, the job's secondary, its execution at its call ----
 enum {

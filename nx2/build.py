@@ -52,14 +52,24 @@ EXE = "hookshot"
 DIRECT_LIB = "hookshot_direct.so"
 
 
-def check_backend_symbols(so):
+def dynamic_exports(exe):
+    """the names exe's dynamic symbol table defines (empty when there is no exe or no nm)"""
+    nm = shutil.which("nm") or shutil.which("llvm-nm")
+    if not nm or not os.path.exists(exe):
+        return set()
+    r = subprocess.run([nm, "-D", "--defined-only", exe], capture_output=True, text=True)
+    return {l.split()[-1] for l in r.stdout.splitlines() if l.split()}
+
+
+def check_backend_symbols(so, exe):
     """The back end is dlopened with RTLD_NOW, so one unresolved symbol stops the whole thing
     loading -- and the only sign of that at run time is "the renderer did not start: the window
     stays black", with no symbol named. The link itself does not fail: a shared object is allowed to
     leave symbols for its loader to supply, which is exactly what the host executable does for the
     weak hos_* ones.
 
-    So: anything still undefined here that is not weak and not the C or C++ runtime's is a mistake,
+    So: anything still undefined here that is not weak, not the C or C++ runtime's and not one the
+    executable exports (os.h's os_*: the back end calls the executable's one OS layer) is a mistake,
     and this says which. It has caught two, each of which had cost a run apiece to find by hand: a
     host function referenced without __attribute__((weak)), and an `extern` of one of our own
     globals written inside an anonymous namespace, which makes a different symbol that nothing
@@ -73,6 +83,7 @@ def check_backend_symbols(so):
                              check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return True
+    exported = dynamic_exports(exe)
     bad = []
     for line in out.splitlines():
         parts = line.split()
@@ -80,6 +91,8 @@ def check_backend_symbols(so):
             continue
         name = parts[1]
         if "@GLIBC" in name or "@CXXABI" in name or "@GLIBCXX" in name or "@GCC" in name:
+            continue
+        if name in exported:
             continue
         bad.append(name)
     if not bad:
@@ -816,7 +829,7 @@ def main():
         direct = os.path.join(GPU, "direct")
         dx_eden = os.path.join(direct, "eden")   # (Eden's recompiler, sirit and their compat headers: the translator)
         zstd = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))   # (the prepared assets' frames: direct_assets)
-        dflags = target() + CPU + ["-fPIC", "-D_GNU_SOURCE"] + [
+        dflags = target() + CPU + ["-fPIC", "-D_GNU_SOURCE", "-I" + OS_DIR] + [
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
             "-include", "string", "-include", "vector",
@@ -826,6 +839,7 @@ def main():
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include")]
         ddeps = tree_headers(direct) + b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
+        ddeps += open(os.path.join(OS_DIR, "os.h"), "rb").read()
         # (the direct back end's shader stamps: the translator it builds and the code that decides the translation's output,
         # so its program caches are made again for a change to them only. In direct_shader.cpp and direct_compute.cpp that
         # code is between "// <stamp NAME>" and "// </stamp NAME>" lines: graphics and shared for the graphics programs,
@@ -958,9 +972,9 @@ def main():
     if not direct_only:
         exe = os.path.join(out, EXE)   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()
-        # (--export-dynamic-symbol: hos_posix_*, which hookshot_direct.so looks up in the exe by name)
+        # (--export-dynamic-symbol: os.h's os_*, which hookshot_direct.so calls, and hos_posix_*, which it looks up by name)
         r = subprocess.run([cc] + target() + ["-fuse-ld=lld", "-o", exe, "-Wl,-Map=" + exe + ".map", "-Wl,--gc-sections",
-                                              "-Wl,--export-dynamic-symbol=hos_posix_*", "@" + rsp] + HOT_ORDER() +
+                                              "-Wl,--export-dynamic-symbol=hos_posix_*", "-Wl,--export-dynamic-symbol=os_*", "@" + rsp] + HOT_ORDER() +
                            (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS,
                            capture_output=True, text=True)
         undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
@@ -988,7 +1002,7 @@ def main():
         if r.returncode:
             print("hookshot_direct.so link FAILED\n" + (r.stdout + r.stderr)[-3000:])
             return 1
-        if not check_backend_symbols(ddll):
+        if not check_backend_symbols(ddll, os.path.join(out, EXE)):
             return 1
         print("linked %s: %d MB (%.0fs)" % (ddll, os.path.getsize(ddll) >> 20, time.time() - t))
     if not a.dry_run:

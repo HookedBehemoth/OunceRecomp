@@ -1,6 +1,5 @@
 // HOS_DBG=meshcap (direct_meshcap.h).
-#include <sys/stat.h>
-#include <unistd.h>
+#include <unistd.h>   // (fsync: the capture survives a hang of the machine)
 
 #include <algorithm>
 #include <atomic>
@@ -12,6 +11,7 @@
 #include <unordered_map>
 
 #include "direct_internal.h"
+#include "os.h"
 #include "direct_meshcap.h"
 #include "direct_shader.h"
 
@@ -297,7 +297,7 @@ uint64_t hash_of(const std::vector<uint8_t>& b) {
 void roll_frame(std::vector<Cmd>& v, uint64_t present, const char* how) {
     if (v.empty() || roll.failed) return;
     if (!roll.f) {
-        mkdir("meshcap", 0755);
+        os_mkdir("meshcap");
         roll.f = std::fopen("meshcap/roll.bin", "wb");
         if (!roll.f) return roll.failed = true, logf("direct: meshcap: meshcap/roll.bin not written");
         const mcap::McFile hdr{mcap::kMagic, mcap::kVersion, present};
@@ -432,7 +432,7 @@ void meshcap_after() {
         const uint64_t total = pointer_targets(heads, add, targets);
         logf("direct: meshcap: %zu pointer targets in the buffers' first 4 KB, %llu MB read after them", targets, (unsigned long long)(total >> 20));
     }
-    mkdir("meshcap", 0755);
+    os_mkdir("meshcap");
     FILE* f = std::fopen("meshcap/frame.bin", "wb");
     if (!f) return logf("direct: meshcap: meshcap/frame.bin not written");
     const mcap::McFile hdr{mcap::kMagic, mcap::kVersion, (uint64_t)at()};

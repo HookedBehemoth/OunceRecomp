@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -366,13 +367,19 @@ void os_thread_set_name(os_thread *t, const char *name) {
     snprintf(shortname, sizeof shortname, "%s", name);
     if (os_thread_tid(t) && !os_event_try(&t->done)) pthread_setname_np(t->th, shortname);
 }
-void os_thread_name(os_thread *t, char *out, size_t cap) { if (cap) snprintf(out, cap, "%s", t->name); }
-/* (only lowered, with nice values: an unprivileged process can neither raise them nor take a lowering back) */
-void os_thread_set_priority(os_thread *t, int prio) {
-    t->priority = prio;
+void os_thread_name(os_thread *t, char *out, size_t cap) {
+    if (!cap) return;
+    snprintf(out, cap, "%s", t->name);
+    if (!t->name[0] && cap >= 16) pthread_getname_np(t->th, out, cap);   /* (a foreign thread: the name the kernel has) */
+}
+/* (nice values; normal and above are nice 0: an unprivileged process cannot go below it, and taking a lowering back
+   needs RLIMIT_NICE or CAP_SYS_NICE) */
+bool os_thread_set_priority(os_thread *t, int prio) {
     const int nice = prio <= OS_PRIO_IDLE ? 19 : prio <= OS_PRIO_LOWEST ? 10 : prio == OS_PRIO_BELOW ? 5 : 0;
     const uint32_t tid = os_thread_tid(t);
-    if (nice && tid) setpriority(PRIO_PROCESS, (id_t)tid, nice);
+    if (!tid || setpriority(PRIO_PROCESS, (id_t)tid, nice)) return false;
+    t->priority = prio;
+    return true;
 }
 int os_thread_priority(os_thread *t) { return t->priority; }
 uint64_t os_thread_set_affinity(os_thread *t, uint64_t mask) {
@@ -749,6 +756,16 @@ void os_file_close(os_file *f) {
     if (!f) return;
     close(f->fd);
     free(f);
+}
+bool os_file_trylock(os_file *f) { return flock(f->fd, LOCK_EX | LOCK_NB) == 0; }
+const void *os_file_map_read(os_file *f, size_t *size) {
+    struct stat st;
+    *size = 0;
+    if (fstat(f->fd, &st) || st.st_size <= 0) return NULL;
+    void *p = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, f->fd, 0);
+    if (p == MAP_FAILED) return NULL;
+    *size = (size_t)st.st_size;
+    return p;
 }
 int os_path_kind(const char *path) {
     char p[PATH_MAX];

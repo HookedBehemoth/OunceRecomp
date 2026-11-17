@@ -1,7 +1,5 @@
 // The validation messenger and strict mode (direct_check.h).
-#include <dlfcn.h>
-#include <link.h>
-#include <unistd.h>
+#include <link.h>   // (dl_iterate_phdr: where the validation layer was loaded from)
 
 #include <algorithm>
 #include <atomic>
@@ -14,6 +12,7 @@
 #include <string>
 
 #include "direct_check.h"
+#include "os.h"
 #include "direct_internal.h"
 
 namespace hsd {
@@ -47,8 +46,7 @@ const StrictKnown* known(const char* reason) {
 
 [[noreturn]] void stop(int code) {
     if (host && host->log_flush) host->log_flush();
-    std::fflush(nullptr);
-    _exit(code);
+    os_exit(code);   // (stdio flushed)
 }
 
 // ---- validation ----

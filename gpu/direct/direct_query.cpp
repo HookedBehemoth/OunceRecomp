@@ -1,6 +1,4 @@
 // Reports and render conditions on the GPU (direct_query.h has the rules).
-#include <time.h>
-
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -9,6 +7,7 @@
 #include <mutex>
 
 #include "direct_check.h"
+#include "os.h"
 #include "direct_cmd.h"
 #include "direct_compute.h"
 #include "direct_counters.h"
@@ -272,12 +271,11 @@ void calibrate() {
     VkCalibratedTimestampInfoKHR ti[2] = {{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR}, {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR}};
     ti[0].timeDomain = VK_TIME_DOMAIN_DEVICE_KHR, ti[1].timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
     uint64_t t[2], dev_max = 0;
-    timespec a, z;
-    clock_gettime(CLOCK_MONOTONIC, &a);
+    const int64_t a = os_now_ns();   // (CLOCK_MONOTONIC, the time domain asked for)
     const uint64_t h = host->ticks() * 32;   // (the guest's tick clock in ns, as nvnDeviceGetCurrentTimestampInNanoseconds)
-    clock_gettime(CLOCK_MONOTONIC, &z);
+    const int64_t z = os_now_ns();
     if (pCalibrated(dev.device, 2, ti, t, &dev_max) != VK_SUCCESS) return;
-    const double mono_at_h = (a.tv_sec * 1e9 + a.tv_nsec + z.tv_sec * 1e9 + z.tv_nsec) / 2;
+    const double mono_at_h = ((double)a + (double)z) / 2;
     const double host_ns = (double)h + ((double)t[1] - mono_at_h);   // (the device timestamp's moment on the guest clock)
     cal_host.store(host_ns * 12 / 625, std::memory_order_relaxed);   // (counter ticks: 19.2 MHz)
     cal_scale.store(dev.props.limits.timestampPeriod * 12.0 / 625, std::memory_order_relaxed);
