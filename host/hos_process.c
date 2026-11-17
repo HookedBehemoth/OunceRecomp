@@ -124,9 +124,6 @@ void hos_commit_init(void) {
 }
 
 /* ---- stand-ins --------------------------------------------------------------------------------------------- */
-/* HOS_PROFILE=<seconds> (in place of TOTKPort's hos_prof.c): every interval, the process's busiest threads and their
-   share of a core (guest threads by their guest names, host threads by their descriptions): which one a frame rate
-   waits for */
 void hos_mem_checkpoint(const char *what) { (void)what; }        /* (hos_prof.c: HOS_MEM_TIMELINE) */
 uint64_t hos_frame_step_buttons(uint64_t buttons) { return buttons; }   /* (nn_vi.c) */
 /* (hookshot) hos_sdl_pads, hos_sdl_rumble: host/pad_sdl.c (from TOTKPort) */

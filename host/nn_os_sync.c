@@ -869,31 +869,9 @@ HLE(_ZN2nn2os16SignalLightEventEPNS0_14LightEventTypeE) {
     event_signal(obj(ARG(0), K_EVENT));
 }
 HLE(_ZN2nn2os15ClearLightEventEPNS0_14LightEventTypeE) { event_clear(obj(ARG(0), K_EVENT)); }
-/* HOS_PROFILE_GATE=<thread name part>:<lr hex> (diagnostic, with HOS_PROFILE): the profiler samples only while that
-   thread waits on a light event from that caller (hos_prof.c): what the other threads run while it waits, the frame's
-   critical path when it is the one the frame waits for */
-volatile long hos_prof_gate;
-static int prof_gate_match(Ctx *c) {
-    static int on = -1;
-    static char thread[64];
-    static uint64_t lr;
-    if (on < 0) {
-        const char *e = getenv("HOS_PROFILE_GATE"), *colon = e ? strchr(e, ':') : NULL;
-        on = colon && colon - e < (long)sizeof thread;
-        if (on) {
-            memcpy(thread, e, (size_t)(colon - e));
-            thread[colon - e] = 0;
-            lr = strtoull(colon + 1, NULL, 16);
-        }
-    }
-    return on && c->x[30] == lr && strstr(hos_thread_name(hos_self()), thread) != NULL;
-}
 HLE(_ZN2nn2os14WaitLightEventEPNS0_14LightEventTypeE) {
     who_note_wait(c, ARG(0));
-    const int gate = prof_gate_match(c);
-    if (gate) __atomic_add_fetch(&hos_prof_gate, 1, __ATOMIC_SEQ_CST);
     logged_wait(c, obj(ARG(0), K_EVENT), 0, 0, "light");
-    if (gate) __atomic_sub_fetch(&hos_prof_gate, 1, __ATOMIC_SEQ_CST);
 }
 HLE(_ZN2nn2os19TimedWaitLightEventEPNS0_14LightEventTypeENS_8TimeSpanE) {
     RET(event_wait(obj(ARG(0), K_EVENT), (int64_t)ARG(1) > 0 ? (int64_t)ARG(1) : 1, (int64_t)ARG(1) <= 0));

@@ -1,11 +1,6 @@
-/* (linux) host/hos_process.c's profilers, with the same variables and the same lines in the log and files:
-   HOS_PROFILE=<seconds> (the busiest threads), HOS_THREAD_TIMES=<seconds> (threads over 5% of a core), HOS_SAMPLE=<thread
-   name> + HOS_SAMPLE_FILE (one thread's stacks every millisecond), HOS_SAMPLE_ALL=<path> (every guest thread and the
-   renderer's at once, every 2 ms, while <path>.go exists) and HOS_WATCH=<file> (data breakpoints on guest addresses).
-   The Windows build read other threads with SuspendThread + GetThreadContext + RtlVirtualUnwind and set debug registers; here:
+/* The host's diagnostic threads (Linux): HOS_THREAD_TIMES=<seconds> (threads over 5% of a core), HOS_WATCH=<file>
+   (data breakpoints on guest addresses) and HOS_DUMP_FILE=<path> (every guest thread's frames on request).
    - CPU time per thread from /proc/self/task/<tid>/schedstat (stat's utime + stime without schedstats);
-   - a thread's stack from inside it: SAMPLE_SIG sent to it with tgkill, its handler takes the interrupted rip from the
-     signal's context and unwinds from there with libgcc's unwinder (the .eh_frame clang writes), the sampler waits;
    - breakpoints with perf_event_open (PERF_TYPE_BREAKPOINT, sigtrap=1: a SIGTRAP in the thread that touched the
      address, si_code TRAP_PERF), allowed on our own threads at the default perf_event_paranoid (2).
    Frames are written as <module>+<offset from its load base>: hookshot and hookshot_direct.so,
@@ -25,7 +20,6 @@
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
-#include <unwind.h>
 #include "os.h"
 #ifndef TRAP_PERF   /* (the kernel's since 5.13; glibc names it from 2.36) */
 #define TRAP_PERF 6
@@ -90,42 +84,6 @@ static int tasks(Task *out, int max) {
     return n;
 }
 
-/* HOS_PROFILE=<seconds>: every interval, the busiest threads and their share of a core */
-static void prof_thread(void *p) {
-    const uint32_t ms = (uint32_t)(uintptr_t)p * 1000;
-    enum { MAXT = 512 };
-    static int ids[MAXT];
-    static uint64_t was[MAXT];
-    int nwas = 0;
-    for (;;) {
-        os_sleep_ns((int64_t)(ms) * 1000000);
-        static Task cur[MAXT];
-        static uint64_t delta[MAXT];
-        const int n = tasks(cur, MAXT);
-        for (int i = 0; i < n; i++) {
-            delta[i] = cur[i].cpu_ns;
-            for (int k = 0; k < nwas; k++)
-                if (ids[k] == cur[i].tid) { delta[i] = cur[i].cpu_ns - was[k]; break; }
-        }
-        for (int i = 0; i < n; i++) ids[i] = cur[i].tid, was[i] = cur[i].cpu_ns;
-        nwas = n;
-        for (int i = 0; i < n; i++)   /* (busiest first) */
-            for (int j = i + 1; j < n; j++)
-                if (delta[j] > delta[i]) {
-                    Task t = cur[i]; cur[i] = cur[j]; cur[j] = t;
-                    const uint64_t d = delta[i]; delta[i] = delta[j]; delta[j] = d;
-                }
-        char line[1024];
-        int len = snprintf(line, sizeof line, "prof: busiest threads (%% of a core):");
-        uint64_t total = 0;
-        for (int i = 0; i < n; i++) total += delta[i];
-        for (int i = 0; i < n && i < 10 && len < (int)sizeof line - 80; i++)
-            len += snprintf(line + len, sizeof line - len, " %s %.0f,", cur[i].name, delta[i] / (ms * 10000.0));
-        snprintf(line + len, sizeof line - len, " all %.0f", total / (ms * 10000.0));
-        hos_log("%s", line);
-    }
-}
-
 /* HOS_THREAD_TIMES=<seconds>: every interval, the threads that used over 5% of a core */
 static void thread_times_thread(void *p) {
     const uint32_t ms = (uint32_t)(uintptr_t)p * 1000;
@@ -152,69 +110,6 @@ static void thread_times_thread(void *p) {
     }
 }
 
-/* ---- one thread's stack, taken inside it ---- */
-#define SAMPLE_SIG (SIGRTMIN + 3)
-enum { DEPTH = 48 };
-static volatile int sample_tid;
-static volatile int sample_done;
-static uintptr_t sample_pcs[DEPTH];
-static int sample_n;
-
-typedef struct { uintptr_t *pcs; int n, max; uintptr_t rip; int found; } Walk;
-static _Unwind_Reason_Code walk_step(struct _Unwind_Context *uc, void *p) {
-    Walk *w = (Walk *)p;
-    int before = 0;
-    const uintptr_t ip = (uintptr_t)_Unwind_GetIPInfo(uc, &before);
-    if (!w->found) {   /* (the handler's frames and the signal's trampoline, up to the interrupted frame: frame 0) */
-        if (ip == w->rip) w->found = 1;
-        return _URC_NO_REASON;
-    }
-    if (w->n >= w->max || !ip) return _URC_END_OF_STACK;
-    w->pcs[w->n++] = ip;   /* (return addresses, as the Windows sampler wrote them) */
-    return _URC_NO_REASON;
-}
-static void on_sample(int sig, siginfo_t *si, void *uctx) {
-    (void)sig, (void)si;
-    const int saved = errno;
-    if ((int)syscall(SYS_gettid) == sample_tid) {
-        const ucontext_t *u = (const ucontext_t *)uctx;
-        const uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
-        Walk w = {sample_pcs + 1, 0, DEPTH - 1, rip, 0};
-        sample_pcs[0] = rip;
-        _Unwind_Backtrace(walk_step, &w);
-        sample_n = 1 + w.n;
-        __atomic_store_n(&sample_done, 1, __ATOMIC_RELEASE);
-    }
-    errno = saved;
-}
-static void sampling_init(void) {
-    static int done;
-    if (done++) return;
-    struct sigaction sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sa_sigaction = on_sample;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SAMPLE_SIG, &sa, NULL);
-    Walk w = {sample_pcs, 0, 1, 0, 1};
-    _Unwind_Backtrace(walk_step, &w);   /* (the unwinder's first use loads and sets up: not in a handler) */
-}
-/* the thread's frames, leaf first, into pcs; 0 when it did not answer within 50 ms or has ended */
-static int sample_one(int tid, uintptr_t *pcs, int max) {
-    __atomic_store_n(&sample_done, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&sample_tid, tid, __ATOMIC_RELEASE);
-    if (syscall(SYS_tgkill, getpid(), tid, SAMPLE_SIG)) { sample_tid = 0; return -1; }
-    const int64_t until = hos_now_ns() + 50000000;
-    while (!__atomic_load_n(&sample_done, __ATOMIC_ACQUIRE)) {
-        if (hos_now_ns() > until) { __atomic_store_n(&sample_tid, 0, __ATOMIC_RELEASE); return 0; }
-        sched_yield();
-    }
-    sample_tid = 0;
-    const int n = sample_n < max ? sample_n : max;
-    memcpy(pcs, sample_pcs, sizeof *pcs * (size_t)n);
-    return n;
-}
-
 /* a code address as module + offset: the module's file name and load base (dladdr) */
 typedef struct { uintptr_t base; char name[64]; } Module;
 static Module mods[64];
@@ -231,150 +126,6 @@ static int module_of(uintptr_t pc, uintptr_t *base) {
     mods[nmods].base = *base;
     snprintf(mods[nmods].name, sizeof mods[nmods].name, "%s", b ? b + 1 : n);
     return nmods++;
-}
-static uintptr_t exe_base(void) {
-    uintptr_t base = 0;
-    module_of((uintptr_t)&hos_prof_start, &base);
-    return base;
-}
-
-/* HOS_SAMPLE=<thread name> (with HOS_PROFILE=<seconds>): that thread sampled every millisecond; every interval its
-   most frequent places, as module+offset of the leaf and of the first frame in the runtime under it. HOS_SAMPLE_FILE:
-   every sample's whole stack too, a line of frames leaf first (scripts/prof.py) */
-static void sample_thread(void *p) {
-    const char *want = (const char *)p;
-    const uint32_t ms = (uint32_t)atoi(getenv("HOS_PROFILE")) * 1000;
-    sampling_init();
-    int tid = 0;
-    while (!tid) {   /* (the renderer's threads start late) */
-        os_sleep_ns(1000LL * 1000000);
-        static Task all[512];
-        const int n = tasks(all, 512);
-        for (int i = 0; i < n && !tid; i++)
-            if (strstr(all[i].name, want)) tid = all[i].tid;
-    }
-    hos_log("prof: sampling thread \"%s\"", want);
-    const uintptr_t exe = exe_base();
-    enum { SLOTS = 4096 };
-    static struct { uint64_t key; uint32_t n; } leaf[SLOTS], ours[SLOTS];
-    uint32_t total = 0;
-    uint32_t last = (uint32_t)(os_now_ns() / 1000000);
-    FILE *stacks = getenv("HOS_SAMPLE_FILE") ? fopen(getenv("HOS_SAMPLE_FILE"), "w") : NULL;
-    for (;;) {
-        os_sleep_ns(1LL * 1000000);
-        uintptr_t pcs[DEPTH];
-        const int n = sample_one(tid, pcs, DEPTH);
-        if (n < 0) return;   /* (the thread ended) */
-        uint64_t keys[2] = {0, 0};
-        char stack_line[1024];
-        int stack_len = 0;
-        for (int depth = 0; depth < n; depth++) {
-            uintptr_t base;
-            const int mi = module_of(pcs[depth], &base);
-            const uint64_t key = (uint64_t)(mi < 0 ? 63 : mi) << 56 | (pcs[depth] - base);
-            if (stacks && stack_len < (int)sizeof stack_line - 96)
-                stack_len += snprintf(stack_line + stack_len, sizeof stack_line - stack_len, "%s%s+%llx", depth ? ";" : "",
-                                      mi < 0 ? "?" : mods[mi].name, (unsigned long long)(pcs[depth] - base));
-            if (depth == 0) keys[0] = key;
-            if (base == exe && !keys[1]) keys[1] = key;
-            if (base == exe && !stacks) break;
-        }
-        if (stacks && stack_len) fprintf(stacks, "%s\n", stack_line);
-        if (n > 0) {
-            total++;
-            for (int t = 0; t < 2; t++) {
-                if (!keys[t]) continue;
-                typeof(leaf[0]) *tab = t ? ours : leaf;
-                for (uint32_t s = (uint32_t)(keys[t] * 0x9E3779B97F4A7C15ull >> 52), k = 0; k < SLOTS; k++, s = (s + 1) % SLOTS) {
-                    if (tab[s].key == keys[t]) { tab[s].n++; break; }
-                    if (!tab[s].key) { tab[s].key = keys[t], tab[s].n = 1; break; }
-                }
-            }
-        }
-        if ((uint32_t)(os_now_ns() / 1000000) - last >= ms) {
-            last = (uint32_t)(os_now_ns() / 1000000);
-            for (int t = 0; t < 2; t++) {
-                typeof(leaf[0]) *tab = t ? ours : leaf;
-                char line[2048];
-                int len = snprintf(line, sizeof line, "prof-sample %s (%u samples):", t ? "ours" : "leaf", total);
-                for (int r = 0; r < 30 && len < (int)sizeof line - 64; r++) {
-                    int best = -1;
-                    for (int s = 0; s < SLOTS; s++) if (tab[s].n && (best < 0 || tab[s].n > tab[best].n)) best = s;
-                    if (best < 0) break;
-                    const int mi = (int)(tab[best].key >> 56);
-                    len += snprintf(line + len, sizeof line - len, " %s+%llx %u,", mi < nmods ? mods[mi].name : "?",
-                                    (unsigned long long)(tab[best].key & ((1ull << 56) - 1)), tab[best].n);
-                    tab[best].n = 0;
-                }
-                hos_log("%s", line);
-                memset(tab, 0, sizeof leaf);
-            }
-            total = 0;
-            if (stacks) fflush(stacks);
-        }
-    }
-}
-
-/* HOS_SAMPLE_ALL=<path> (with HOS_PROFILE): while <path>.go exists, every 2 ms every guest thread and the renderer's
-   threads (names starting "mkw_vk") sampled one after another: a line per thread, "<ms> <name>|<frames>", 16 frames
-   at most (scripts/crit.py, scripts/hotlist.py) */
-static void sample_all_thread(void *p) {
-    const char *path = (const char *)p;
-    char go[OS_PATH_MAX];
-    snprintf(go, sizeof go, "%s.go", path);
-    sampling_init();
-    FILE *out = NULL;
-    enum { MAXT = 128 };
-    static int th[MAXT];
-    static char tn[MAXT][64];
-    int nt = 0;
-    int64_t t0 = 0;
-    const int self = (int)syscall(SYS_gettid);
-    for (;;) {
-        if (access(go, F_OK)) {
-            if (out) { fclose(out); out = NULL; hos_log("prof: all-thread sampling stopped"); }
-            os_sleep_ns(200LL * 1000000);
-            continue;
-        }
-        /* the threads listed again every 250 rounds (~0.5 s): a .go made before the game's threads exist
-           sampled the main thread alone, and the loaders that start later were never seen */
-        static int rounds;
-        if (!out || ++rounds % 250 == 0) {
-            const int fresh = !out;
-            if (fresh) out = fopen(path, "a");
-            if (!out) { os_sleep_ns(1000LL * 1000000); continue; }
-            static Task all[512];
-            const int n = tasks(all, 512);
-            nt = 0;
-            for (int i = 0; i < n && nt < MAXT; i++) {
-                if (all[i].tid == self || (!all[i].guest && strncmp(all[i].name, "mkw_vk", 6))) continue;
-                th[nt] = all[i].tid;
-                snprintf(tn[nt], sizeof tn[nt], "%s", all[i].name);
-                for (char *q = tn[nt]; *q; q++) if (*q == ' ' || *q == '|') *q = '_';
-                nt++;
-            }
-            if (fresh) {
-                t0 = hos_now_ns();
-                hos_log("prof: all-thread sampling of %d threads into %s", nt, path);
-            }
-        }
-        os_sleep_ns(2LL * 1000000);
-        const long ms = (long)((hos_now_ns() - t0) / 1000000);
-        for (int i = 0; i < nt; i++) {
-            uintptr_t pcs[16];
-            const int n = sample_one(th[i], pcs, 16);
-            if (n < 0) continue;
-            char line[1024];
-            int len = snprintf(line, sizeof line, "%ld %s|", ms, tn[i]);
-            for (int depth = 0; depth < n && len < (int)sizeof line - 96; depth++) {
-                uintptr_t base;
-                const int mi = module_of(pcs[depth], &base);
-                len += snprintf(line + len, sizeof line - len, "%s%s+%llx", depth ? ";" : "", mi < 0 ? "?" : mods[mi].name,
-                                (unsigned long long)(pcs[depth] - base));
-            }
-            fprintf(out, "%s\n", line);
-        }
-    }
 }
 
 /* HOS_WATCH=<file> (diagnostic): when <file> exists (up to 4 guest addresses in hex), data breakpoints on them on every
@@ -515,12 +266,6 @@ void hos_prof_start(void) {
     if (dump && *dump) os_thread_release(os_thread_start(dump_thread, (void *)dump, 0, NULL));
     const char *tt = getenv("HOS_THREAD_TIMES");
     if (tt && atoi(tt) > 0) os_thread_release(os_thread_start(thread_times_thread, (void *)(uintptr_t)atoi(tt), 0, NULL));
-    const char *e = getenv("HOS_PROFILE");
-    if (e && atoi(e) > 0) os_thread_release(os_thread_start(prof_thread, (void *)(uintptr_t)atoi(e), 0, NULL));
-    const char *s = getenv("HOS_SAMPLE");
-    if (e && atoi(e) > 0 && s && *s) os_thread_release(os_thread_start(sample_thread, (void *)s, 0, NULL));
-    const char *all = getenv("HOS_SAMPLE_ALL");
-    if (all && *all) os_thread_release(os_thread_start(sample_all_thread, (void *)all, 0, NULL));
     const char *watch = getenv("HOS_WATCH");
     if (watch && *watch) os_thread_release(os_thread_start(watch_thread, (void *)watch, 0, NULL));
 }

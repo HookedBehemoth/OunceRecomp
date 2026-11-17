@@ -351,7 +351,7 @@ Ctx *hos_boot_main_thread(uint64_t stack_size) {
     snprintf(t->name, sizeof t->name, "MainThread");
     t->handle = os_thread_current();   /* (kept: the profiler's) */
     os_thread_retain(t->handle);
-    os_thread_set_name(t->handle, "MainThread");   /* (HOS_SAMPLE finds threads by it) */
+    os_thread_set_name(t->handle, "MainThread");
     hos_thread_pin(t->handle, t->name);
     setup_guest(t);
     t->ctx.x[31] = (t->stack + stack_size) & ~15ULL;
@@ -417,7 +417,7 @@ void hos_thread_start(HosThread *t) {
     if (t->started) return;
     t->started = 1;
     /* Host stack: lifted code nests a C call per guest call, so give it plenty. */
-    /* (named as it starts: the OS name too, for profilers and HOS_SAMPLE) */
+    /* (named as it starts: the OS name too, for profilers) */
     t->handle = os_thread_start(thread_main, t, 64 << 20, t->name);
     if (!t->handle) hos_fatal(NULL, "thread start failed for %s", t->name);
     hos_thread_pin(t->handle, t->name);

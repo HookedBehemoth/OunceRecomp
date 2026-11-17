@@ -139,9 +139,7 @@ For short scripted input, set `HOS_INPUT_SCRIPT` ([Switches](switches.md#drive-t
 
 ### Profile the CPU
 
-- **One thread:** run with `HOS_PROFILE=<seconds> HOS_SAMPLE=<thread> HOS_SAMPLE_FILE=<file>`, then read the file with
-  `python -I scripts/prof.py <file>`.
-- **All threads:** run with `HOS_PROFILE=5 HOS_SAMPLE_ALL=<file>`; sampling runs while `<file>.go` exists. Read it with
-  `RX_MAPS=work/sa/build python -I scripts/crit.py <file>`. `scripts/hotlist.py` makes the hot list from the same file.
+- **Threads:** run with `HOS_THREAD_TIMES=<seconds>` to log the threads that used over 5 % of a core. For stacks,
+  use a system profiler.
 - **Launch time:** `python -I scripts/launch_time.py work/runs/<name>` says when gameplay began and when it was
   playable.
