@@ -99,7 +99,7 @@
 80065b10 dta_alloc_b                      # work/assets/native/block-linear.md: the other DynamicTextureAllocator entry
 80062c50 dta_alloc_persistent             # host/rt_slots.c, work/assets/native/rt-alloc.md: the persistent path's fit, from the top of a free block
 80063090 dta_arena_init                   # work/assets/native/rt-alloc.md: one of the pool record's 7 arenas
-8006ec60 dta_arena_stats                  # work/assets/native/cores.md: sums the arenas' bytes in use for the game's stats # ? host/oot_probes.c finds a projection update's inlined copy in it too (0x8006f1e8)
+8006ec60 pass_pause_texture               # host/oot_probes.c (widescreen): allocates render targets (dta_alloc/dta_free), sets viewports and renders with an inlined projection update (0x8006f1e8); names "pause texture": the pause background capture # ? was dta_arena_stats (work/assets/native/cores.md), which the decompile does not show
 80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, host/oot_probes.c: -> DTA::initialize
 802737a0 dta_free                         # host/rt_slots.c; docs/direct/transient-pool.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
 80c49070 dta_initialize                   # work/assets/native/rt-alloc.md: DTA::initialize: entries, 7 lanes, pool record
@@ -1032,3 +1032,4 @@
 83a6d390 gfx_immediate_context_begin      # host/direct.c: begins a context's one-shot list: gfx_immediate_begin, or the second command buffer (global+0x990) through agl_cmdbuf_begin; for terrain_read_texels and terrain_write_texels
 80bd2690 gfx_immediate_end                # host/direct.c: ends the immediate command buffer (EndRecording, memory used, pool flush) and unlocks it
 812bd720 vfx_noise_list_begin             # host/direct.c: begins the command buffer of vfx_curl_noise_staging's one-shot upload (its only caller), which submits and finishes it
+80a87e50 frame_counter_whole_step         # host/nn_vi.c: a virtual update that turns the frame step into whole frames for its counter at x19+864 (fcvtzs at 0x80a88300, hos_frame_whole)
