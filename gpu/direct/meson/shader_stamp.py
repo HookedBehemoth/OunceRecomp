@@ -3,9 +3,9 @@ translation's output, which keys the program caches. Code inside direct_shader.c
 sits between "// <stamp NAME>" and "// </stamp NAME>" lines: graphics and shared for the graphics programs, compute and
 shared for the compute programs.
 
-    shader_stamp.py graphics|compute <out header> <depfile>
+    shader_stamp.py graphics|compute <out header> <depfile> <toolchain>
 
-writes `#define HOOKSHOT_DIRECT_SHADER_STAMP` (graphics) or `HOOKSHOT_DIRECT_COMPUTE_STAMP` (compute) and a depfile naming
+<toolchain> names the compiler and the flags that build the translator, which the stamp also hashes. It writes `#define HOOKSHOT_DIRECT_SHADER_STAMP` (graphics) or `HOOKSHOT_DIRECT_COMPUTE_STAMP` (compute) and a depfile naming
 every file and folder the stamp read, so a new translator file makes it again.
 """
 import hashlib
@@ -55,12 +55,13 @@ def translator():
     return sorted(files), dirs
 
 
-def stamp(kind):
+def stamp(kind, toolchain=""):
     """the stamp's 16 hex digits and the paths it read"""
     _, whole, regions = KINDS[kind]
     files, dirs = translator()
     read = list(dirs)
     h = hashlib.sha1(usedforsecurity=False)
+    h.update(b"toolchain " + toolchain.encode() + b"\n")
     for f in files + [os.path.join(DIRECT, n) for n in whole]:
         if os.path.isfile(f):
             h.update(os.path.relpath(f, GPU).replace("\\", "/").encode() + lf(f))
@@ -73,7 +74,7 @@ def stamp(kind):
 
 def main():
     kind, out, dep = sys.argv[1:4]
-    digits, read = stamp(kind)
+    digits, read = stamp(kind, " ".join(sys.argv[4:]))
     text = "#define %s 0x%sull\n" % (KINDS[kind][0], digits)
     # (unchanged text keeps the header's time: the one file that includes it is not compiled again)
     if not os.path.exists(out) or open(out).read() != text:

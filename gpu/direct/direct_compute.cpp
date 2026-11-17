@@ -275,9 +275,10 @@ struct DiskRecord {
     size_t size;
 };
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_key;
-/// The cache's stamp: the compute translation's code (HOOKSHOT_DIRECT_COMPUTE_STAMP: the regions marked "stamp compute"
-/// here and "stamp shared" in direct_shader.cpp, and the translator, nx2/build.py), the record format (kDiskVersion), the
-/// device, and the matrix multiplies' form
+/// The cache's stamp: the compute translation's code (HOOKSHOT_DIRECT_COMPUTE_STAMP, gpu/direct/meson/shader_stamp.py: the
+/// regions marked "stamp compute" here and "stamp shared" in direct_shader.cpp, the translator and the compiler and flags
+/// that build it), the record format (kDiskVersion), the device (parts::device_stamp, the loop cap among it), and the
+/// matrix multiplies' form
 uint64_t disk_stamp() {
     const uint64_t s[4] = {HOOKSHOT_DIRECT_COMPUTE_STAMP, parts::device_stamp(), kDiskVersion, Shader::Backend::SPIRV::mma_software ? 1ull : 0ull};
     return hash_bytes(s, sizeof s);

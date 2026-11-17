@@ -7,9 +7,10 @@
 // pushed address, as a driver bank's; textures and samplers are the registration-time entries.
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
 // - hookshot_direct_programs.bin: translated variants by code pair. Stamped by the translation's code only
-//   (HOOKSHOT_DIRECT_SHADER_STAMP, nx2/build.py: the translator and the regions marked "stamp graphics" and "stamp shared"
-//   here, direct_spv_late.*, direct_state.h), the record format (kDiskFormat), the device's answers and the switches that
-//   change the translation; a file of another stamp is made again. Edits outside the marked regions keep it.
+//   (HOOKSHOT_DIRECT_SHADER_STAMP, gpu/direct/meson/shader_stamp.py: the translator, the compiler and flags that build it,
+//   and the regions marked "stamp graphics" and "stamp shared" here, direct_spv_late.*, direct_state.h), the record format
+//   (kDiskFormat), the device's answers and the switches that change the translation; a file of another stamp is made
+//   again. Edits outside the marked regions keep it.
 // - hookshot_direct_shader_objects.bin: driver binaries by create info, under the driver's binary UUID and version (sobin).
 #include <algorithm>
 #include <chrono>
@@ -285,8 +286,8 @@ private:
 // <stamp shared>
 // ---- the profile (vk_shader.cpp make_profile with RX_VK_DESC_HEAP_BDA=2 on layer 0) ----
 Shader::Profile make_profile() {
-    // (HOS_DBG=loopcap:<n>, a diagnosis: the trips the translator's loop safety counter allows, 8192 without it. The value is
-    // in the translated code and not in the caches' keys: run it from a build folder without the direct caches)
+    // (HOS_DBG=loopcap:<n>, a diagnosis: the trips the translator's loop safety counter allows, 8192 without it; in the
+    // caches' stamps, device_stamp)
     if (const char* v = dbg_value("loopcap"); v && std::atoi(v) > 0) {
         Settings::values.shader_loop_safety_count = (u32)std::atoi(v);
         logf("direct: loopcap: loops end after %u trips (a diagnosis)", Settings::values.shader_loop_safety_count);
@@ -669,13 +670,16 @@ void schedule_late(std::vector<uint32_t>& spirv, bool on) {
 
 // </stamp graphics>
 
-/// What translated code depends on besides the translator: the device's subgroup answers, the record's in-memory layout
+/// What translated code depends on besides the translator's source: the device's subgroup answers, the loop cap
+/// (HOS_DBG=loopcap), the compiler that built the translator, the record's in-memory layout
 uint64_t device_stamp() {
     uint64_t h = 0xCBF29CE484222325ull;
     const auto add = [&h](const void* d, size_t n) { h = hash_bytes(d, n, h); };
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
-                              profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)caps.sg32_stages};
+                              profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)caps.sg32_stages,
+                              (uint32_t)Settings::values.shader_loop_safety_count};
     add(lanes, sizeof lanes);
+    add(__VERSION__, sizeof __VERSION__);
     const uint32_t abi[] = {(uint32_t)sizeof(Shader::Info), (uint32_t)sizeof(std::vector<uint32_t>),
 #if defined(_LIBCPP_VERSION)
                             1u, (uint32_t)_LIBCPP_VERSION

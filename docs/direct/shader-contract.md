@@ -57,14 +57,14 @@ read; you don't need to delete one.
 
 | File | Holds | Made again when |
 |---|---|---|
-| `hookshot_direct_programs.bin` | translated graphics variants (SPIR-V, interface info, answers) | the shader stamp changes (the translator, the stamped regions of `direct_shader.cpp`, `direct_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate` and `latevertex` |
-| `hookshot_direct_compute.bin` | translated compute variants | the compute stamp, the record version or the device's answers change |
+| `hookshot_direct_programs.bin` | translated graphics variants (SPIR-V, interface info, answers) | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `direct_shader.cpp`, `direct_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
+| `hookshot_direct_compute.bin` | translated compute variants | the compute stamp (the translator, the compiler and flags, the stamped regions), the record version, the device's answers or `loopcap` change |
 | `hookshot_direct_shader_objects.bin` | driver binaries of the shader objects | the driver's binary UUID or version changes; a binary the driver refuses is compiled again |
 
-The build computes the stamps (`gpu/direct/meson/shader_stamp.py`) by hashing the translator's files (its `meson.build`
-files excepted) and the regions marked `// <stamp graphics>`, `// <stamp shared>` and `// <stamp compute>`. Code that
-decides a translation's output belongs inside a stamped region; editing code outside them keeps the caches. Markers that
-don't pair stop the build. A change to a record's layout
+The build computes the stamps (`gpu/direct/meson/shader_stamp.py`) by hashing the compiler's name, version and flags,
+the translator's files (its `meson.build` files excepted) and the regions marked `// <stamp graphics>`,
+`// <stamp shared>` and `// <stamp compute>`. Code that decides a translation's output belongs inside a stamped region;
+editing code outside them keeps the caches. Markers that don't pair stop the build. A change to a record's layout
 raises `kDiskFormat` or `kDiskVersion`.
 
 ## Debug switches

@@ -44,13 +44,16 @@ direct_deps = [eden_dep, zstd_dep]
 direct_incs = [direct_inc, gpu_api_inc, host_os_inc, headers_inc]
 
 # (the shader stamps, each force-included into the one file whose program cache it keys; Meson takes no per-file
-# flags, so each of those files is a library of its own)
+# flags, so each of those files is a library of its own. The compiler and its flags are in the stamp: they build the
+# translator)
+cpp = meson.get_compiler('cpp')
+toolchain = [cpp.get_id(), cpp.version()] + renderer_cpp_args
 stamped = []
 foreach kind, src : {'graphics': 'direct_shader.cpp', 'compute': 'direct_compute.cpp'}
   stamp = custom_target('shader_stamp_' + kind + '.h',
     output: 'shader_stamp_' + kind + '.h',
     depfile: 'shader_stamp_' + kind + '.h.d',
-    command: [python, '-I', files('meson/shader_stamp.py'), kind, '@OUTPUT@', '@DEPFILE@'])
+    command: [python, '-I', files('meson/shader_stamp.py'), kind, '@OUTPUT@', '@DEPFILE@'] + toolchain)
   stamped += static_library('dx_' + fs.stem(src), [src, stamp] + spv_headers,
     cpp_args: direct_args + ['-include', gen_dir / 'shader_stamp_' + kind + '.h'],
     include_directories: direct_incs, dependencies: direct_deps,
