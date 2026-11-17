@@ -1,6 +1,8 @@
 //! hookshot-builder: a player's dump -> a portable game folder (docs/builder-plan.md).
 
 mod compile;
+mod labels;
+mod link;
 mod llvm;
 
 use std::path::PathBuf;
@@ -8,6 +10,9 @@ use std::time::Instant;
 
 const HELP: &str = "hookshot-builder <command> ...
   compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object, as nx2/build.py compiles it
+  compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
+  link <out> <objs.rsp> [--order <file>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
+                                       the game's link (build.py's objs.rsp), lld in this process
   llvm-version                         the libLLVM this process uses";
 
 fn fail(msg: impl std::fmt::Display) -> ! {
@@ -40,6 +45,7 @@ fn main() {
             println!("{}: {} bytes in {:.2} s", obj.display(), o.len(), t.elapsed().as_secs_f64());
         }
         Some("compile-all") => compile_all(&argv[1..]),
+        Some("link") => link_cmd(&argv[1..]),
         Some("llvm-version") => println!("{}", llvm::version()),
         _ => println!("{HELP}"),
     }
@@ -113,5 +119,49 @@ fn compile_all(args: &[String]) {
              if check.is_some() { format!(", {} differ", r.1) } else { String::new() });
     if r.1 > 0 {
         std::process::exit(1);
+    }
+}
+
+/// `link <out> <objs.rsp> [--order <file>] [--map <file>] [--print] [-- <libs>...]`
+fn link_cmd(args: &[String]) {
+    let (mut pos, mut order, mut map, mut libs, mut print) = (Vec::new(), None::<PathBuf>, None::<PathBuf>, Vec::new(), false);
+    let mut label_file = None::<PathBuf>;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--order" => order = it.next().map(PathBuf::from),
+            "--map" => map = it.next().map(PathBuf::from),
+            "--print" => print = true,
+            "--labels" => label_file = it.next().map(PathBuf::from),
+            "--" => libs.extend(it.by_ref().cloned()),
+            _ => pos.push(PathBuf::from(a)),
+        }
+    }
+    let [out, rsp] = &pos[..] else { fail("link <out> <objs.rsp> [--order <file>] [--map <file>] [-- <libs>...]") };
+    let objects: Vec<PathBuf> = std::fs::read_to_string(rsp)
+        .unwrap_or_else(|e| fail(format!("{}: {e}", rsp.display())))
+        .lines()
+        .map(|l| PathBuf::from(l.trim().trim_matches('"')))
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect();
+    let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
+    let x = link::Exe { out, map: map.as_deref(), objects: &objects, order: order.as_deref(), libs: &libs };
+    let a = link::exe_args(&x, &sys);
+    if print {
+        println!("{}", a.join(" "));
+    }
+    let t = Instant::now();
+    match link::lld(&a) {
+        Ok(m) => {
+            print!("{m}");
+            println!("linked {}: {} MB in {:.1} s", out.display(), std::fs::metadata(out).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
+        }
+        Err(m) => fail(format!("the link failed:\n{m}")),
+    }
+    if let Some(f) = label_file {
+        let l = labels::read(&f).unwrap_or_else(|e| fail(e));
+        let (n, missing) = labels::apply(out, &l).unwrap_or_else(|e| fail(e));
+        println!("labels: {n} functions named{}", if missing.is_empty() { String::new() } else {
+            format!("; no function for {}", missing.iter().map(|a| format!("{a:08x}")).collect::<Vec<_>>().join(", ")) });
     }
 }
