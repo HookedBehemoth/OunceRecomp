@@ -21,8 +21,6 @@ STUB_HOS = r"""
 #include <stdio.h>
 #define A64_NOESC
 typedef struct { uint64_t x[32]; uint64_t pc; } Ctx;
-typedef long LONG;
-static inline LONG InterlockedIncrement(volatile LONG *p) { return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST); }
 static int hos_dbg_item(const char *w) { (void)w; return 0; }
 static void hos_log(const char *f, ...) { (void)f; }
 void a64_icall(Ctx *c, uint64_t target);
@@ -106,13 +104,11 @@ class SjCallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "hos.h"), "w") as f:
                 f.write(STUB_HOS)
-            with open(os.path.join(d, "windows.h"), "w") as f:
-                f.write("")
             with open(os.path.join(d, "t.c"), "w") as f:
                 f.write(HARNESS)
             shutil.copy(SETJMP, d)   # (beside the stub hos.h: its #include "hos.h" looks in its own directory first)
             exe = os.path.join(d, "t")
-            r = subprocess.run([cc(), opt, "-w", "-I", d, "-o", exe,
+            r = subprocess.run([cc(), opt, "-w", "-I", d, "-I", os.path.join(ROOT, "host", "os"), "-o", exe,
                                 os.path.join(d, "t.c")], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
             r = subprocess.run([exe], capture_output=True, text=True, timeout=60)

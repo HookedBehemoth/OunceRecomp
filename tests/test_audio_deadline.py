@@ -28,7 +28,7 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     source = (ROOT / "host" / "nn_audio.c").read_text(encoding="utf-8")
-    loop = source[source.index("static DWORD WINAPI renderer_main"):source.index("/* ---- renderer lifecycle")]
+    loop = source[source.index("static void renderer_main"):source.index("/* ---- renderer lifecycle")]
     if "audio_mix_deadline(" not in loop or "100000000" in loop:
         raise SystemExit("the mixer still drops the frames it woke late for")
     fn = block(source, "int64_t audio_mix_deadline(")

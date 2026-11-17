@@ -30,20 +30,19 @@
 #include "../third_party/zstd/lib/decompress/zstd_decompress_block.c"
 
 #include "hos.h"
-#include <pthread.h>
 #include <stdlib.h>
 
 /* ---- host DDicts for guest DDicts ---- */
 typedef struct { uint64_t guest, content, size; ZSTD_DDict *d; } DictEntry;
 static DictEntry dicts[64];
 static int ndicts;
-static pthread_mutex_t dict_mu = PTHREAD_MUTEX_INITIALIZER;
+static os_mutex dict_mu = OS_MUTEX_INIT;
 
 static ZSTD_DDict *host_ddict(uint64_t guest) {
     if (!guest) return NULL;
     const uint64_t content = G64(guest + 8), size = G64(guest + 0x10);
     if (!hos_guest_range(content, size)) return NULL;
-    pthread_mutex_lock(&dict_mu);
+    os_mutex_lock(&dict_mu);
     ZSTD_DDict *d = NULL;
     for (int i = 0; i < ndicts && !d; i++)
         if (dicts[i].guest == guest && dicts[i].content == content && dicts[i].size == size) d = dicts[i].d;
@@ -56,7 +55,7 @@ static ZSTD_DDict *host_ddict(uint64_t guest) {
                     (unsigned long long)size, (unsigned long long)guest);
         }
     }
-    pthread_mutex_unlock(&dict_mu);
+    os_mutex_unlock(&dict_mu);
     return d;
 }
 
@@ -95,15 +94,15 @@ PATCH_FUNC(0x8010b380, word(0xd503237f), body(0xdc941c9180e8aa10), aapcs, x0, zs
 typedef struct { uint64_t job; ZSTD_DCtx *d; } Job;
 static Job jobs[64];
 static int njobs;
-static pthread_mutex_t job_mu = PTHREAD_MUTEX_INITIALIZER;
+static os_mutex job_mu = OS_MUTEX_INIT;
 
 static ZSTD_DCtx *job_dctx(uint64_t job) {
-    pthread_mutex_lock(&job_mu);
+    os_mutex_lock(&job_mu);
     ZSTD_DCtx *d = NULL;
     for (int i = 0; i < njobs && !d; i++)
         if (jobs[i].job == job) d = jobs[i].d;
     if (!d && njobs < 64 && (d = ZSTD_createDCtx())) jobs[njobs++] = (Job){job, d};
-    pthread_mutex_unlock(&job_mu);
+    os_mutex_unlock(&job_mu);
     return d;
 }
 

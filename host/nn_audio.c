@@ -7,13 +7,12 @@
        -> their destination mix or splitter (per channel pair volumes)
        -> sub mixes in dependency order (sub mix volume, then to their destination)
        -> the final mix (volume) -> the device sink (its channel map: 5.1 as it is to a 5.1 device, else down to stereo)
-       -> waveOut
+       -> SDL's default output
    and signals the renderer event the game's audio thread waits on. Effects are accepted and left out (dry signal);
    aux effects pass through. Played sample counts and released wave buffers go back to the game as on hardware.
    The game's parameter changes take effect together at RequestUpdateAudioRenderer, and volume changes ramp over a
    frame, as the console's renderer does them (see "parameter updates").
    HOS_AUDIO_DUMP=<file.wav>: also write what is played (checking without speakers); HOS_AUDIO=0: silence;
-   HOS_AUDIO_DEVICE=<n>: that output device first;
    HOS_AUDIO_CHANNELS=2 or 6: stereo or 5.1 whatever the default output has and the Insert menu's Audio output say
    (see au_speakers). */
 #include "hos.h"
@@ -21,9 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <mmsystem.h>
+#include "os.h"
 #include "hos_sdl.h"
 #include "hos_paths.h"   /* (the game folder: hookshot_options.ini, au_menu_output) */
 
@@ -90,8 +87,7 @@ typedef struct {
     int dropped;
 } Voice;
 
-static CRITICAL_SECTION lock;
-static int lock_ready;
+static os_mutex lock = OS_MUTEX_INIT;
 static Voice voices[MAX_VOICES];
 static Mix mixes[MAX_MIXES];
 static Splitter splitters[MAX_SPLITTERS];
@@ -100,11 +96,8 @@ static float lim_in = 1.0f, lim_out = 1.0f, lim_threshold = 1.0f, lim_env = 1.0f
 static int lim_enabled;
 static int8_t sink_in[8];
 
-static void au_lock(void) {
-    if (!lock_ready) { InitializeCriticalSection(&lock); lock_ready = 1; }
-    EnterCriticalSection(&lock);
-}
-static void au_unlock(void) { LeaveCriticalSection(&lock); }
+static void au_lock(void) { os_mutex_lock(&lock); }
+static void au_unlock(void) { os_mutex_unlock(&lock); }
 
 static void put_handle(uint64_t obj, int kind, int index) {
     if (obj) G64(obj) = (uint64_t)AU_MAGIC << 32 | (uint64_t)kind << 24 | (uint32_t)index;
@@ -579,24 +572,18 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
 }
 
 /* (the output's platform parts, outside the section tests/audio_output_errors_test.c compiles with its own) */
-static unsigned au_device_count(void) {
-    return 0;   /* (linux: waveOut is SDL's default device) */
-}
-static void au_device_name(unsigned device, char *out, size_t size) {
-    snprintf(out, size, "device %u", device);
-}
-static uint64_t au_ms(void) { return (uint64_t)GetTickCount64(); }
+static uint64_t au_ms(void) { return (uint64_t)(os_now_ns() / 1000000); }
 /* The default output's channels (SDL's default device); 2 when unknown. */
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
 /* (hookshot) The Insert menu's Audio output (gpu/legacy/vk/vk_menu.cpp): audio_output= in hookshot_options.ini beside the game,
    0 Auto, 1 Stereo, 2 5.1 (a number past them is the nearest, as the menu reads it). Read from the file, as
    host/nn_applet.c reads the Handheld profile: the game asks for its speakers only once, at its start */
 static int au_menu_output(void) {
-    char path[MAX_PATH];
-    const DWORD len = hos_game_path_a(path, MAX_PATH);
+    char path[OS_PATH_MAX];
+    const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
     char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
     if (!slash) return 0;
-    snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+    snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     char line[80];
@@ -636,59 +623,77 @@ static int au_speakers(void) {
     }
     return known;
 }
-/* The device's format, 16-bit PCM at 48 kHz: Windows takes more than two channels only as WAVE_FORMAT_EXTENSIBLE,
-   with the speakers named (5.1: FL FR FC LFE BL BR, the device sink's order). SDL takes the channel count as it is. */
-static const WAVEFORMATEX *au_format(const WAVEFORMATEX *f) {
-    return f;
-}
-
-/* ---- output: waveOut, 10 ms blocks; a WAV file with HOS_AUDIO_DUMP ---------------------------------------------- */
+/* ---- output: SDL's default device, 10 ms blocks; a WAV file with HOS_AUDIO_DUMP ----------------------------------
+   The mixer fills the blocks in turn and queues each one full; SDL's thread (output_pull) plays the queued ones in
+   order, giving each back as it takes its last byte, and silence when none is queued. */
 #define NBLOCKS 10
 #define OUT_MAX_CH 6
-static HWAVEOUT wout;
-static WAVEHDR hdr[NBLOCKS];
 static int16_t blocks[NBLOCKS][FRAME * 2 * OUT_MAX_CH];
+static volatile int queued[NBLOCKS];   /* filled, not all taken by the device yet (the device's until then) */
+static os_mutex out_lock;              /* (the device's place: the oldest queued block, its bytes taken) */
+static int play_block, play_pos, block_bytes;
+static uint32_t out_device, out_opens;   /* the open device's number, 0 none (SDL's are never closed: an older one
+                                            pulls silence) */
 static int fill_block, fill_frames;
 static int out_channels = 2;   /* the device's (and the dump's): 2, or 6 for 5.1 */
 static FILE *dump;
 static uint32_t dump_bytes;
 
-static void output_error(const char *operation, MMRESULT result) {
+static void output_pull(void *user, uint8_t *out, int len) {
+    os_mutex_lock(&out_lock);
+    if ((uint32_t)(uintptr_t)user == out_device)
+        while (len > 0 && queued[play_block]) {
+            int n = block_bytes - play_pos;
+            if (n > len) n = len;
+            memcpy(out, (const uint8_t *)blocks[play_block] + play_pos, (size_t)n);
+            out += n, len -= n, play_pos += n;
+            if (play_pos == block_bytes) {
+                os_atomic_store(&queued[play_block], 0);
+                play_block = (play_block + 1) % NBLOCKS, play_pos = 0;
+            }
+        }
+    os_mutex_unlock(&out_lock);
+    if (len > 0) memset(out, 0, (size_t)len);   /* (behind: silence) */
+}
+static void output_error(const char *operation) {
     static unsigned logged;
     if (logged < 8) {
         logged++;
-        hos_log("audio: %s failed (MMRESULT %u)", operation, (unsigned)result);
+        hos_log("audio: %s failed (%s)", operation, hos_sdl_error());
     }
 }
-/* The device: HOS_AUDIO_DEVICE=<n> (a waveOut device number) first, then the Windows default (WAVE_MAPPER), then each
-   device in turn. Players had no sound at all while every other program played ("no sound in 2.0.5"): the log now
-   names the device; one that takes no block for 1.5 s (an unplugged headset, a default bound to a dead output) is
-   closed and the next candidate opened (at most 6 times a run); 10 s after opening the log says how many blocks the
-   device took and how loud the game's sound was, which tells a silent game from a deaf device. */
-static int out_next;           /* the next candidate: 0 = HOS_AUDIO_DEVICE, 1 = the default, 2.. = device n-2 */
+/* Players had no sound at all while every other program played ("no sound in 2.0.5"): the log names the device; one
+   that takes no block for 1.5 s (an unplugged headset, a default bound to a dead output) is left and the default
+   opened again (at most 6 times a run); 10 s after opening the log says how many blocks the device took and how loud
+   the game's sound was, which tells a silent game from a deaf device. */
 static uint64_t out_opened, out_stall_since;
 static unsigned out_played, out_peak, out_reported;
-static int output_try(int candidate, const WAVEFORMATEX *f) {
-    const char *want = getenv("HOS_AUDIO_DEVICE");
-    unsigned device;
-    if (candidate == 0) {
-        if (!want || !*want) return 0;
-        device = (unsigned)atoi(want);
-    } else device = candidate == 1 ? WAVE_MAPPER : (unsigned)(candidate - 2);
-    const MMRESULT result = waveOutOpen(&wout, device, au_format(f), 0, 0, CALLBACK_NULL);
-    if (result != MMSYSERR_NOERROR) {
-        output_error("waveOutOpen", result);
-        wout = NULL;
+static int output_try(int channels) {
+    os_mutex_lock(&out_lock);
+    out_device = ++out_opens;
+    play_block = play_pos = 0;
+    block_bytes = FRAME * 2 * channels * (int)sizeof blocks[0][0];   /* (two frames) */
+    os_mutex_unlock(&out_lock);
+    if (!hos_sdl_audio_open(RATE, channels, 1, output_pull, (void *)(uintptr_t)out_device)) {
+        output_error("hos_sdl_audio_open");
+        os_mutex_lock(&out_lock);
+        out_device = 0;
+        os_mutex_unlock(&out_lock);
         return 0;
     }
-    char name[64];
-    if (device == WAVE_MAPPER) snprintf(name, sizeof name, "the default device");
-    else au_device_name(device, name, sizeof name);
-    hos_log("audio: output on %s (%u devices), %s", name, au_device_count(), f->nChannels == 6 ? "5.1" : "stereo");
+    hos_log("audio: output on the default device, %s", channels == 6 ? "5.1" : "stereo");
     return 1;
 }
-/* The channels: the game's speakers (au_speakers). A 5.1 format no device takes is stereo instead: the device sink's
-   six channels are then mixed down, nothing is lost. */
+/* the device left: what it had queued is given back */
+static void output_close(void) {
+    os_mutex_lock(&out_lock);
+    out_device = 0;
+    for (int i = 0; i < NBLOCKS; i++) os_atomic_store(&queued[i], 0);
+    play_block = play_pos = 0;
+    os_mutex_unlock(&out_lock);
+}
+/* The channels: the game's speakers (au_speakers). A 5.1 format the device does not take is stereo instead: the
+   device sink's six channels are then mixed down, nothing is lost. */
 static void output_open(void) {
     static int dump_done;
     int channels = au_speakers();
@@ -703,32 +708,12 @@ static void output_open(void) {
     }
     if (getenv("HOS_AUDIO") && atoi(getenv("HOS_AUDIO")) == 0) return;
     if (dump) channels = out_channels;   /* (a dump keeps one layout: no stereo fallback) */
-    for (;;) {
-        WAVEFORMATEX f = {0};
-        f.wFormatTag = WAVE_FORMAT_PCM;
-        f.nChannels = channels;
-        f.nSamplesPerSec = RATE;
-        f.wBitsPerSample = 16;
-        f.nBlockAlign = 2 * channels;
-        f.nAvgBytesPerSec = RATE * 2 * channels;
-        const int candidates = 2 + (int)au_device_count();
-        for (int tried = 0; tried < candidates && !wout; tried++) {
-            const int c = out_next;
-            out_next = (out_next + 1) % candidates;
-            output_try(c, &f);
-        }
-        if (wout || channels == 2 || dump) break;
-        hos_log("audio: no device took 5.1: stereo instead");
+    while (!output_try(channels) && channels != 2 && !dump) {
+        hos_log("audio: the device took no 5.1: stereo instead");
         channels = 2;
     }
     out_channels = channels;
-    if (!wout) return;
-    for (int i = 0; i < NBLOCKS; i++) {
-        memset(&hdr[i], 0, sizeof hdr[i]);
-        hdr[i].lpData = (LPSTR)blocks[i];
-        hdr[i].dwBufferLength = FRAME * 2 * channels * sizeof blocks[0][0];   /* (two frames) */
-        hdr[i].dwFlags = WHDR_DONE;
-    }
+    if (!out_device) return;
     fill_block = fill_frames = 0;
     out_opened = au_ms();
     out_stall_since = 0;
@@ -738,12 +723,8 @@ static void output_reopen(void) {
     static int reopens;
     out_stall_since = 0;
     if (++reopens > 6) return;
-    hos_log("audio: the output device took no sound for 1.5 s: trying the next one");
-    waveOutReset(wout);
-    for (int i = 0; i < NBLOCKS; i++)
-        if (hdr[i].dwFlags & WHDR_PREPARED) waveOutUnprepareHeader(wout, &hdr[i], sizeof hdr[i]);
-    waveOutClose(wout);
-    wout = NULL;
+    hos_log("audio: the output device took no sound for 1.5 s: opening the default again");
+    output_close();
     output_open();
 }
 static void dump_finish(void) {
@@ -778,7 +759,7 @@ static void output_frame(const int16_t *pcm) {
             fseek(dump, at, SEEK_SET);
         }
     }
-    if (!wout) return;
+    if (!out_device) return;
     for (int i = 0; i < FRAME * out_channels; i++) {
         const unsigned a = (unsigned)(pcm[i] < 0 ? -pcm[i] : pcm[i]);
         if (a > out_peak) out_peak = a;
@@ -788,39 +769,19 @@ static void output_frame(const int16_t *pcm) {
         hos_log("audio: %u blocks played in the first 10 s, loudest sample %u of 32767%s", out_played, out_peak,
                 out_played == 0 ? " (the device takes nothing)" : out_peak == 0 ? " (the game sent silence)" : "");
     }
-    WAVEHDR *h = &hdr[fill_block];
     if (fill_frames == 0) {
-        if (!(h->dwFlags & WHDR_DONE)) {   /* the device is behind: this frame is dropped */
+        if (os_atomic_load(&queued[fill_block])) {   /* the device is behind: this frame is dropped */
             const uint64_t now = au_ms();
             if (!out_stall_since) out_stall_since = now;
             else if (now - out_stall_since > 1500) output_reopen();
             return;
         }
         out_stall_since = 0;
-        if (h->dwFlags & WHDR_PREPARED) {
-            const MMRESULT result = waveOutUnprepareHeader(wout, h, sizeof *h);
-            if (result != MMSYSERR_NOERROR) {
-                output_error("waveOutUnprepareHeader", result);
-                return;   /* the driver has not released the header: do not change its samples or flags */
-            }
-        }
     }
     memcpy(blocks[fill_block] + fill_frames * FRAME * out_channels, pcm, (size_t)(FRAME * 2 * out_channels));
     if (++fill_frames == 2) {
-        h->dwFlags = 0;
-        const char *operation = "waveOutPrepareHeader";
-        MMRESULT result = waveOutPrepareHeader(wout, h, sizeof *h);
-        if (result == MMSYSERR_NOERROR) {
-            operation = "waveOutWrite";
-            result = waveOutWrite(wout, h, sizeof *h);
-            if (result == MMSYSERR_NOERROR) out_played++;
-        }
-        if (result != MMSYSERR_NOERROR) {
-            output_error(operation, result);
-            /* A failed submission has no completion to set DONE. Reuse only a host-owned block; a prepared header
-               is unprepared on its next turn. Without this, returning to this slot drops every later audio frame. */
-            if (!(h->dwFlags & WHDR_INQUEUE)) h->dwFlags |= WHDR_DONE;
-        }
+        os_atomic_store(&queued[fill_block], 1);
+        out_played++;
         fill_frames = 0;
         fill_block = (fill_block + 1) % NBLOCKS;
     }
@@ -966,9 +927,9 @@ static int64_t audio_mix_deadline(int64_t now, int64_t next, int64_t period) {
 static uint64_t renderer_event;
 static volatile int renderer_running;
 static volatile int64_t elapsed_frames;
-static HANDLE renderer_thread;
+static os_thread *renderer_thread;
 
-static DWORD WINAPI renderer_main(void *p) {
+static void renderer_main(void *p) {
     (void)p;
     output_open();
     int64_t period = 5000000, next = hos_now_ns() + period;   /* one audio frame: 240 samples at 48 kHz */
@@ -996,7 +957,7 @@ HLE(_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEv
     hos_system_event_init(renderer_event, 1);
     au_lock();
     au_unlock();
-    if (!renderer_thread) renderer_thread = CreateThread(NULL, 0, renderer_main, NULL, 0, NULL);
+    if (!renderer_thread) renderer_thread = os_thread_start(renderer_main, NULL, 0, "audio");
     hos_log("audio: renderer opened");
     RET(0);
 }

@@ -23,8 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 
 #define MIC_MAGIC 0x4D494349u   /* "MICI": the high word of our handle in the game's InputStreamType */
 #define MAX_STREAMS 4
@@ -66,8 +65,8 @@ typedef struct {
 
 static InStream streams[MAX_STREAMS];
 static Source sources[MAX_STREAMS];
-static SRWLOCK lock = SRWLOCK_INIT;        /* the streams and the sources (the game's threads) */
-static SRWLOCK list_lock = SRWLOCK_INIT;   /* the device list (the menu's thread too): never held while listing them */
+static os_mutex lock = OS_MUTEX_INIT;        /* the streams and the sources (the game's threads) */
+static os_rwlock list_lock = OS_RWLOCK_INIT;   /* the device list (the menu's thread too): never held while listing them */
 static uint32_t dev_ids[MAX_DEVICES];
 static char dev_names[MAX_DEVICES][128];
 static int dev_count = -1;   /* (-1: not listed yet) */
@@ -82,23 +81,23 @@ int hos_mic_count(void) {   /* (lists them again: a microphone plugged in since 
     uint32_t ids[MAX_DEVICES];
     char names[MAX_DEVICES][128];
     const int n = hos_sdl_mic_list(ids, names, MAX_DEVICES);
-    AcquireSRWLockExclusive(&list_lock);
+    os_rwlock_lock(&list_lock);
     memcpy(dev_ids, ids, sizeof ids), memcpy(dev_names, names, sizeof names), dev_count = n;
-    ReleaseSRWLockExclusive(&list_lock);
+    os_rwlock_unlock(&list_lock);
     return n;
 }
 const char *hos_mic_name(int index) {
     static char name[128];
-    AcquireSRWLockShared(&list_lock);
+    os_rwlock_lock_shared(&list_lock);
     snprintf(name, sizeof name, "%s", index >= 0 && index < dev_count ? dev_names[index] : "");
-    ReleaseSRWLockShared(&list_lock);
+    os_rwlock_unlock_shared(&list_lock);
     return name;
 }
 void hos_mic_select(int mode, const char *name, int index) {   /* (the row's choice: taken at the streams' next read) */
-    AcquireSRWLockExclusive(&list_lock);
+    os_rwlock_lock(&list_lock);
     sel_mode = mode, sel_index = index, sel_gen++;
     snprintf(sel_name, sizeof sel_name, "%s", name ? name : "");
-    ReleaseSRWLockExclusive(&list_lock);
+    os_rwlock_unlock(&list_lock);
 }
 
 /* ---- the sources: one microphone (or silence) for the started streams of one format ---- */
@@ -209,13 +208,13 @@ static void connect(Source *src) {
 }
 /* the menu's choice now: opened again only when it is another microphone */
 static void choose(Source *src) {
-    AcquireSRWLockShared(&list_lock);
+    os_rwlock_lock_shared(&list_lock);
     const long gen = sel_gen;
     const int mode = sel_mode, listed = mode == 2 && sel_index >= 0 && sel_index < dev_count && same_name(dev_names[sel_index], sel_name);
     char want[128];
     snprintf(want, sizeof want, "%s", listed ? dev_names[sel_index] : mode == 2 ? sel_name : "");   /* (the whole name when listed) */
     const uint32_t want_id = listed ? dev_ids[sel_index] : 0;
-    ReleaseSRWLockShared(&list_lock);
+    os_rwlock_unlock_shared(&list_lock);
     if (gen == src->gen) return;
     const int same = src->gen && mode == src->mode && (same_name(want, src->want) || same_name(src->want, want)) &&
                      (!want_id || want_id == src->want_id);
@@ -366,11 +365,11 @@ HLE(_ZN2nn5audio41IsVirtualInputDeviceStreamFormatSupportedERKNS0_15AudioDeviceN
 HLE(_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEi) {
     const uint64_t obj = ARG(0), name = ARG(3), format = ARG(4);
     const int frames = (int)ARG(5);
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     int i = 0;
     while (i < MAX_STREAMS && streams[i].used) i++;
     if (!obj || !format || i == MAX_STREAMS) {
-        ReleaseSRWLockExclusive(&lock);
+        os_mutex_unlock(&lock);
         hos_log("audio in: an input stream did not open (%s)", i == MAX_STREAMS ? "too many" : "no stream or format");
         RET(0x1F3);   /* (a failure: the game leaves the stream alone) */
         return;
@@ -386,20 +385,20 @@ HLE(_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceN
     s->capacity = frames > 0 && frames <= s->rate * 10 ? frames : frames > 0 ? s->rate * 10 : s->rate / 10;
     s->ring = (uint8_t *)malloc((size_t)s->capacity * s->frame_bytes);
     if (!s->ring) {
-        ReleaseSRWLockExclusive(&lock);
+        os_mutex_unlock(&lock);
         RET(0x1F3);
         return;
     }
     s->used = 1, s->source = -1;
     s->raw = name && !memcmp(GP(name), "RawAudioIn", 10);
     G64(obj) = (uint64_t)MIC_MAGIC << 32 | (uint64_t)(i + 1);
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     hos_log("audio in: stream %d opened%s: format %d, %d channel%s, %d Hz, %d frames", i, s->raw ? " (raw)" : "", s->format,
             s->channels, s->channels == 1 ? "" : "s", s->rate, s->capacity);
     RET(0);
 }
 HLE(_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     if (s) {
         if (s->started) detach(s);
@@ -407,44 +406,44 @@ HLE(_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE) {
         memset(s, 0, sizeof *s);
         G64(ARG(0)) = 0;
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
 }
 HLE(_ZN2nn5audio16StartInputStreamEPNS0_15InputStreamTypeE) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     if (s && !s->started) {
         s->started = 1, s->ring_start = s->ring_len = 0;
         attach(s);
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     RET(s ? 0 : 0x1F3);
 }
 HLE(_ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     if (s && s->started) {
         s->started = 0;
         detach(s);
         hos_log("audio in: stream %d stopped (%lld frames read)", (int)(s - streams), (long long)s->frames_read);
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     RET(0);
 }
 HLE(_ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE) {   /* (what was recorded and not read: gone) */
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     if (s) {
         if (s->started) pump_all();   /* (what the source had for it so far goes too) */
         s->ring_start = s->ring_len = 0;
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     RET(0);
 }
 HLE(_ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     RET(s && s->started ? STATE_STARTED : STATE_STOPPED);
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
 }
 static int filled(InStream *s) {
     if (!s->started) return 0;
@@ -452,26 +451,26 @@ static int filled(InStream *s) {
     return s->ring_len / s->frame_bytes;
 }
 HLE(_ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     RET(s ? filled(s) : 0);
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
 }
 HLE(_ZN2nn5audio28GetInputStreamFreeFrameCountEPKNS0_15InputStreamTypeE) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     RET(s ? s->capacity - filled(s) : 0);
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
 }
 HLE(_ZN2nn5audio32GetInputStreamCapacityFrameCountEPKNS0_15InputStreamTypeE) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     RET(s ? s->capacity : 0);
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
 }
 /* ReadInputStream(InputStreamType *, void *buffer, int frames): the frames read */
 HLE(_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     InStream *s = stream_of(ARG(0));
     int frames = 0;
     if (s && ARG(1) && (int)ARG(2) > 0) {
@@ -488,7 +487,7 @@ HLE(_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi) {
             note_read(s, dst, frames);
         }
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     RET(frames);
 }
 /* GetInputStreamStatistics(InputStreamType *, bool reset): a structure returned through x8; the game checks its second

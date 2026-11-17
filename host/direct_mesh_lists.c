@@ -22,12 +22,12 @@
        mesh draw).
    Check that it applies: the 600-present line "direct patch mesh lists". */
 #include "direct.h"
-#include <windows.h>
+#include "os.h"
 
-static struct { volatile LONG64 resets, outside, records, set, set_logged; } n;
+static struct { volatile int64_t resets, outside, records, set, set_logged; } n;
 
 static void put(uint64_t rec) {
-    if (!hos_guest_range(rec, 16)) { InterlockedIncrement64(&n.outside); return; }
+    if (!hos_guest_range(rec, 16)) { os_atomic_inc(&n.outside); return; }
     G32(rec + 4) = 1, G32(rec + 8) = 1;
 }
 
@@ -35,7 +35,7 @@ static void put(uint64_t rec) {
    `str xzr, [x22, x8]` (a list's first record, w0 and w1, zeroed): the list and the record's offset */
 PATCH_AT(0x80361d5c, word(0xf8286a7f), after, none, direct_mesh_lists_reset, as(x19, list), as(x8, off)) {
     put(list + off);
-    InterlockedIncrement64(&n.resets);
+    os_atomic_inc(&n.resets);
 }
 PATCH_AT_SITE(0x80362048, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
 PATCH_AT_SITE(0x803620b0, word(0xf8286a7f), after, none, direct_mesh_lists_reset, x19, x8);
@@ -59,17 +59,17 @@ void direct_mesh_lists_draw(uint64_t gpu, int max, int stride) {
     if (max <= 0) max = 1;
     for (int i = 0; i < max && i < 64; i++) {
         const uint64_t r = rec + (uint64_t)i * (uint64_t)stride;
-        InterlockedIncrement64(&n.records);
-        if (!hos_guest_range(r, 16)) { InterlockedIncrement64(&n.outside); continue; }
+        os_atomic_inc(&n.records);
+        if (!hos_guest_range(r, 16)) { os_atomic_inc(&n.outside); continue; }
         if (G32(r + 4) || G32(r + 8)) continue;
         put(r);
-        InterlockedIncrement64(&n.set);
+        os_atomic_inc(&n.set);
     }
 }
 
 void direct_mesh_lists_log(double frames) {
-    static LONG64 last[4];
-    const LONG64 now[4] = {n.resets, n.records, n.set, n.outside};
+    static int64_t last[4];
+    const int64_t now[4] = {n.resets, n.records, n.set, n.outside};
     hos_log("direct patch mesh lists (f_80361c80's and f_80361a00's first-record resets and the GPU-reset records -> {x, 1, 1, n}): %.2f resets a "
             "frame; records drawn %.2f a frame; set once %lld since the start; outside guest memory %lld",
             (now[0] - last[0]) / frames, (now[1] - last[1]) / frames, (long long)now[2], (long long)(now[3] - last[3]));

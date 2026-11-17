@@ -237,7 +237,7 @@ class HostReads(unittest.TestCase):
         rt = lift_scan.rt64(os.path.join(d, "rt64"))
         cls.scan = lift_scan.load()
         flags = ["-S", "-emit-llvm", "-O1", "-fno-inline", "-g0", "-Wno-everything", "-D_GNU_SOURCE",
-                 "-I" + os.path.join(ROOT, "host", "posix"), "-I" + os.path.join(ROOT, "host"), "-I" + rt,
+                 "-I" + os.path.join(ROOT, "host", "os"), "-I" + os.path.join(ROOT, "host"), "-I" + rt,
                  "-I" + os.path.join(ROOT, "gpu", "api")]
 
         def one(src):

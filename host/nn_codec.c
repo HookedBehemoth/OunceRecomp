@@ -8,8 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <opus.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 
 #define CODEC_MAGIC 0x4F505553u   /* 'OPUS' */
 #define MAX_DECODERS 64
@@ -19,10 +18,10 @@ typedef struct {
     int rate, channels;
 } Dec;
 static Dec decs[MAX_DECODERS];
-static volatile LONG decs_lock;
+static volatile int32_t decs_lock;
 
-static void dlock(void) { while (InterlockedExchange(&decs_lock, 1)) hos_sleep_ns(1000); }
-static void dunlock(void) { InterlockedExchange(&decs_lock, 0); }
+static void dlock(void) { while (os_atomic_xchg(&decs_lock, 1)) hos_sleep_ns(1000); }
+static void dunlock(void) { os_atomic_xchg(&decs_lock, 0); }
 
 static Dec *dec_of(uint64_t obj) {
     if (!obj) return NULL;

@@ -40,12 +40,13 @@ OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 
 
-# (linux) Linux builds: an ELF executable and hookshot_direct.so, the Win32 calls of host/ on POSIX
-# (host/posix: its windows.h is found first), the window and sound on SDL2. HOOKSHOT_SYSROOT=<dir>: compile and link
+# (linux) Linux builds: an ELF executable and hookshot_direct.so; the host reaches the system through host/os/os.h
+# (os_linux.c), the window and sound on SDL2 (host/posix). HOOKSHOT_SYSROOT=<dir>: compile and link
 # against that root (the AppImage's: glibc 2.35, so the game runs on older systems than the one that built it).
 if toolchain.windows():
     raise SystemExit("build.py: the host is built for Linux only (RX_TARGET=windows is not supported)")
-POSIX = os.path.join(kit.HERE, "..", "host", "posix")
+POSIX = os.path.join(kit.HERE, "..", "host", "posix")   # (the window on SDL2 and the sampling profiler)
+OS_DIR = os.path.join(kit.HERE, "..", "host", "os")   # (os.h, the host's one way to the system, and its os_linux.c)
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot"
 DIRECT_LIB = "hookshot_direct.so"
@@ -758,8 +759,8 @@ def main():
                                            "nvn2_exports.c")] + \
         [os.path.join(rt64, "a64_rt.c")]
     host_srcs = desc.host_sources()   # (the game description's; the patch declarations are scanned in them, too)
-    host_srcs += [  # (the window on SDL2, the Win32-named calls on POSIX)
-        os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
+    host_srcs += [os.path.join(POSIX, f) for f in ("display_sdl.c", "prof.c")] + \
+        [os.path.join(OS_DIR, "os_linux.c")]
     if os.environ.get("RX_DIRECT_ONLY"):   # (no lift needed: the back end alone)
         srcs = [s for s in srcs if os.path.exists(s)]
     if a.dry_run:   # (the lift's files: there is no game here)
@@ -773,12 +774,13 @@ def main():
                      opt_argv(cc, level, target() + CPU)))
     jobs += [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"), fl, deps) for s in srcs]
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
-    host_fl = target() + CPU + ["-I" + POSIX, "-D_GNU_SOURCE"] + \
+    host_fl = target() + CPU + ["-I" + OS_DIR, "-D_GNU_SOURCE"] + \
         ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16"] + \
-        ["-Werror=implicit-function-declaration"]   # (a call without a declaration returns an int: a 64-bit value cut)
+        ["-Werror=implicit-function-declaration",   # (a call without a declaration returns an int: a 64-bit value cut)
+         "-Werror=incompatible-pointer-types"]   # (a lock or handle of one kind handed where another is wanted)
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
-    host_deps += b"".join(open(os.path.join(POSIX, f), "rb").read() for f in sorted(os.listdir(POSIX)) if f.endswith(".h"))
+    host_deps += open(os.path.join(OS_DIR, "os.h"), "rb").read()
     host_deps += b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
     host_deps += ffmpeg_version_key()
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
@@ -814,7 +816,7 @@ def main():
         direct = os.path.join(GPU, "direct")
         dx_eden = os.path.join(direct, "eden")   # (Eden's recompiler, sirit and their compat headers: the translator)
         zstd = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))   # (the prepared assets' frames: direct_assets)
-        dflags = target() + CPU + ["-fPIC", "-I" + POSIX, "-D_GNU_SOURCE"] + [
+        dflags = target() + CPU + ["-fPIC", "-D_GNU_SOURCE"] + [
             # (what the code takes for granted, which newer C++ libraries bring in by themselves and older ones do not)
             "-include", "algorithm", "-include", "cstdio", "-include", "cstdlib", "-include", "cstring", "-include", "functional",
             "-include", "string", "-include", "vector",
@@ -956,7 +958,7 @@ def main():
     if not direct_only:
         exe = os.path.join(out, EXE)   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()
-        # (--export-dynamic-symbol: the window's state, which host/posix/win32_posix.c looks up by name)
+        # (--export-dynamic-symbol: hos_posix_*, which hookshot_direct.so looks up in the exe by name)
         r = subprocess.run([cc] + target() + ["-fuse-ld=lld", "-o", exe, "-Wl,-Map=" + exe + ".map", "-Wl,--gc-sections",
                                               "-Wl,--export-dynamic-symbol=hos_posix_*", "@" + rsp] + HOT_ORDER() +
                            (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS,

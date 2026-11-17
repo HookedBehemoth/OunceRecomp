@@ -15,10 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
-#include <sys/mman.h>
+#include "os.h"
 
-extern volatile LONG64 hos_present_count;
+extern volatile int64_t hos_present_count;
 uint64_t nvn_gpu_guest(uint64_t gpu);
 
 static int dbg_has(const char *name) {
@@ -53,7 +52,7 @@ static int dbg_val(const char *name, char *out, size_t cap) {
 static uint64_t mw_addr[NMW], mf_val[NMW];
 static int n_mw, n_mf;
 static int64_t mf_present = -1;
-static volatile LONG mw_logged[NMW];
+static volatile int32_t mw_logged[NMW];
 static void parse_list(const char *v, uint64_t *out, int *n) {
     for (const char *p = v; *p && *n < NMW;) {
         out[(*n)++] = strtoull(p, NULL, 16);
@@ -85,11 +84,11 @@ typedef struct {
     uint64_t serial, init_lr, gpu;
     uint32_t w, h, d, levels, fmt, target, flags, stride;
     int64_t present;
-    volatile LONG dead;
+    volatile int32_t dead;
 } Tex;
 static Tex tex[NTEX];
-static volatile LONG ntex;   /* (slots used: entries are filled before ntex covers them) */
-static SRWLOCK tex_lock = SRWLOCK_INIT;   /* (created / released / the re-arm; never taken by the fault handler) */
+static volatile int32_t ntex;   /* (slots used: entries are filled before ntex covers them) */
+static os_rwlock tex_lock = OS_RWLOCK_INIT;   /* (created / released / the re-arm; never taken by the fault handler) */
 
 #define NPAIR 4096
 typedef struct {
@@ -97,16 +96,15 @@ typedef struct {
     uint64_t lr, f1, f2, addr;
     const char *thread;
     int64_t present;
-    volatile LONG count, logged;
+    volatile int32_t count, logged;
 } Pair;
 static Pair pairs[NPAIR];
-static volatile LONG n_faults, n_outside, n_pairs_full, n_files;
+static volatile int32_t n_faults, n_outside, n_pairs_full, n_files;
 static uintptr_t exe_base;
 
-static void protect(const Tex *t, DWORD how) {
+static void protect(const Tex *t, int prot) {
     const uintptr_t lo = (uintptr_t)GP(t->lo) & ~(uintptr_t)4095, hi = ((uintptr_t)GP(t->hi) + 4095) & ~(uintptr_t)4095;
-    DWORD old;
-    if (hi > lo) VirtualProtect((void *)lo, hi - lo, how, &old);
+    if (hi > lo) os_mem_protect((void *)lo, hi - lo, prot);
 }
 
 static void note(int slot, uint64_t where, uint64_t addr, const char *thread_name) {
@@ -130,30 +128,28 @@ static void note(int slot, uint64_t where, uint64_t addr, const char *thread_nam
             else k = expect;
         }
         if (k == key) {
-            InterlockedIncrement(&pairs[i].count);
+            os_atomic_inc(&pairs[i].count);
             return;
         }
     }
-    InterlockedIncrement(&n_pairs_full);
+    os_atomic_inc(&n_pairs_full);
 }
 
-static LONG CALLBACK handler(EXCEPTION_POINTERS *e) {
-    EXCEPTION_RECORD *r = e->ExceptionRecord;
-    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 || r->ExceptionInformation[0] != 1)
-        return EXCEPTION_CONTINUE_SEARCH;
-    const uint8_t *p = (const uint8_t *)r->ExceptionInformation[1];
+static int handler(const os_fault *f) {
+    if (f->kind != OS_FAULT_ACCESS || !f->write) return OS_FAULT_PASS;
+    const uint8_t *p = (const uint8_t *)f->addr;
     const uint8_t *base = (const uint8_t *)GP(0);
-    if (p < base || p >= base + HOS_GUEST_SPACE) return EXCEPTION_CONTINUE_SEARCH;
+    if (p < base || p >= base + HOS_GUEST_SPACE) return OS_FAULT_PASS;
     const uint64_t a = (uint64_t)(p - base), page = a & ~4095ull;
     int found = 0, inside = 0;
-    const LONG n = __atomic_load_n(&ntex, __ATOMIC_ACQUIRE);
+    const int32_t n = __atomic_load_n(&ntex, __ATOMIC_ACQUIRE);
     HosThread *th = hos_self();
     const char *tn = th ? hos_thread_name(th) : "?";
-    const uint64_t where = (uint64_t)(uintptr_t)r->ExceptionAddress - exe_base;
+    const uint64_t where = (uint64_t)f->pc - exe_base;
     for (int i = 0; i < n_mw; i++)
         if ((mw_addr[i] & ~4095ull) == page) {
             found = 1;
-            if ((a & ~63ull) == (mw_addr[i] & ~63ull) && InterlockedIncrement(&mw_logged[i]) <= 40) {
+            if ((a & ~63ull) == (mw_addr[i] & ~63ull) && os_atomic_inc(&mw_logged[i]) <= 40) {
                 hos_log("memwatch: %#llx written at %#llx by exe+%#llx on %s at present %lld (it held %#llx)", (unsigned long long)mw_addr[i],
                         (unsigned long long)a, (unsigned long long)where, tn, (long long)hos_present_count,
                         (unsigned long long)G64(mw_addr[i] & ~7ull));
@@ -161,18 +157,17 @@ static LONG CALLBACK handler(EXCEPTION_POINTERS *e) {
                 hos_backtrace();
             }
         }
-    for (LONG i = 0; i < n; i++) {
+    for (int32_t i = 0; i < n; i++) {
         const uint64_t lo = tex[i].lo, hi = tex[i].hi;
         if (!lo || tex[i].dead || page >= ((hi + 4095) & ~4095ull) || page + 4096 <= (lo & ~4095ull)) continue;
         found = 1;
         if (a >= lo && a < hi) inside = 1, note((int)i, where, a, tn);
     }
-    if (!found) return EXCEPTION_CONTINUE_SEARCH;
-    InterlockedIncrement(&n_faults);
-    if (!inside) InterlockedIncrement(&n_outside);
-    DWORD old;
-    VirtualProtect((void *)(base + page), 4096, PAGE_READWRITE, &old);
-    return EXCEPTION_CONTINUE_EXECUTION;
+    if (!found) return OS_FAULT_PASS;
+    os_atomic_inc(&n_faults);
+    if (!inside) os_atomic_inc(&n_outside);
+    os_mem_protect((void *)(base + page), 4096, OS_PROT_RW);
+    return OS_FAULT_RESUME;
 }
 
 static void log_pairs(void) {
@@ -193,31 +188,27 @@ static void log_pairs(void) {
     }
 }
 
-static DWORD WINAPI rearm(void *arg) {
+static void rearm(void *arg) {
     (void)arg;
     for (int k = 0;; k++) {
-        Sleep(500);
+        os_sleep_ns(500LL * 1000000);
         log_pairs();
         if (k % 4) continue;
-        AcquireSRWLockShared(&tex_lock);
-        const LONG n = ntex;
-        for (LONG i = 0; i < n; i++)
-            if (tex[i].lo && !tex[i].dead) protect(&tex[i], PAGE_READONLY);
-        ReleaseSRWLockShared(&tex_lock);
-        for (int i = 0; i < n_mw; i++) {
-            DWORD old;
-            VirtualProtect(GP(mw_addr[i] & ~4095ull), 4096, PAGE_READONLY, &old);
-        }
+        os_rwlock_lock_shared(&tex_lock);
+        const int32_t n = ntex;
+        for (int32_t i = 0; i < n; i++)
+            if (tex[i].lo && !tex[i].dead) protect(&tex[i], OS_PROT_R);
+        os_rwlock_unlock_shared(&tex_lock);
+        for (int i = 0; i < n_mw; i++) os_mem_protect(GP(mw_addr[i] & ~4095ull), 4096, OS_PROT_R);
     }
-    return 0;
 }
 
 static void start(void) {
-    static volatile LONG done;
-    if (InterlockedExchange(&done, 1)) return;
-    exe_base = (uintptr_t)GetModuleHandleA(NULL);
-    AddVectoredExceptionHandler(1, handler);
-    CreateThread(NULL, 0, rearm, NULL, 0, NULL);
+    static volatile int32_t done;
+    if (os_atomic_xchg(&done, 1)) return;
+    exe_base = os_exe_base();
+    os_fault_add(handler, true);
+    os_thread_release(os_thread_start(rearm, NULL, 0, "texwatch"));
     hos_log("texwatch: CPU writes into texture storage are watched (HOS_DBG=texwatch; writers named as exe+offset: "
             "nx2/samap.py)");
 }
@@ -231,9 +222,9 @@ void direct_texwatch_created(const void *texture, uint64_t init_lr) {
     const uint64_t g = nvn_gpu_guest(o->gpu);
     if (!g || !o->L.size || !hos_guest_range(g, o->L.size)) return;
     start();
-    AcquireSRWLockExclusive(&tex_lock);
-    LONG at = -1;
-    for (LONG i = 0; i < ntex; i++)
+    os_rwlock_lock(&tex_lock);
+    int32_t at = -1;
+    for (int32_t i = 0; i < ntex; i++)
         if (tex[i].lo && tex[i].dead) { at = i; break; }
     if (at < 0 && ntex < NTEX) at = ntex;
     if (at >= 0) {
@@ -247,9 +238,9 @@ void direct_texwatch_created(const void *texture, uint64_t init_lr) {
         __atomic_store_n(&t->dead, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&t->lo, g, __ATOMIC_RELEASE);
         if (at == ntex) __atomic_store_n(&ntex, ntex + 1, __ATOMIC_RELEASE);
-        protect(t, PAGE_READONLY);
+        protect(t, OS_PROT_R);
     }
-    ReleaseSRWLockExclusive(&tex_lock);
+    os_rwlock_unlock(&tex_lock);
 }
 
 /* (a released slot is reused by a later texture, which overwrites its description: pairs are logged within 0.5 s of
@@ -257,14 +248,14 @@ void direct_texwatch_created(const void *texture, uint64_t init_lr) {
 void direct_texwatch_released(const void *texture) {
     if (!direct_texwatch_on()) return;
     const nvn_tex *o = (const nvn_tex *)texture;
-    AcquireSRWLockExclusive(&tex_lock);
-    for (LONG i = 0; i < ntex; i++)
+    os_rwlock_lock(&tex_lock);
+    for (int32_t i = 0; i < ntex; i++)
         if (tex[i].lo && !tex[i].dead && tex[i].serial == o->serial && tex[i].gpu == o->gpu) {
             tex[i].dead = 1;
-            protect(&tex[i], PAGE_READWRITE);
+            protect(&tex[i], OS_PROT_RW);
             break;
         }
-    ReleaseSRWLockExclusive(&tex_lock);
+    os_rwlock_unlock(&tex_lock);
 }
 
 /* nn_fs.c: a file read into [guest, guest + n): its pages made writable first (the kernel cannot fault), the texture noted */
@@ -272,29 +263,28 @@ void direct_texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what) 
     if (!direct_texwatch_on() || !n) return;
     for (int i = 0; i < n_mw; i++)
         if (mw_addr[i] >= guest && mw_addr[i] < guest + n) hos_log("memwatch: %#llx in a file read: %s", (unsigned long long)mw_addr[i], what);
-    AcquireSRWLockShared(&tex_lock);
-    for (LONG i = 0; i < ntex; i++) {
+    os_rwlock_lock_shared(&tex_lock);
+    for (int32_t i = 0; i < ntex; i++) {
         const uint64_t lo = tex[i].lo, hi = tex[i].hi;
         if (!lo || tex[i].dead || guest >= ((hi + 4095) & ~4095ull) || guest + n <= (lo & ~4095ull)) continue;
-        if (guest < hi && guest + n > lo && InterlockedIncrement(&n_files) <= 40)
+        if (guest < hi && guest + n > lo && os_atomic_inc(&n_files) <= 40)
             hos_log("texwatch: a file read into texture %#llx %ux%ux%u NVN format %#x: %s, %llu bytes to %#llx", (unsigned long long)lo,
                     tex[i].w, tex[i].h, tex[i].d, tex[i].fmt, what, (unsigned long long)n, (unsigned long long)guest);
     }
-    ReleaseSRWLockShared(&tex_lock);
+    os_rwlock_unlock_shared(&tex_lock);
     const uintptr_t plo = (uintptr_t)GP(guest) & ~(uintptr_t)4095, phi = ((uintptr_t)GP(guest + n) + 4095) & ~(uintptr_t)4095;
-    DWORD old;
-    VirtualProtect((void *)plo, phi - plo, PAGE_READWRITE, &old);
+    os_mem_protect((void *)plo, phi - plo, OS_PROT_RW);
 }
 
 static void mem_find(void) {
     const uint64_t lo = 0x1000000000ull, hi = lo + hos_heap_size;
     const long pg = 4096;
-    unsigned char v[256];
+    uint8_t v[256];
     int found = 0;
     const int64_t t0 = hos_now_ns();
     for (uint64_t a = lo; a < hi && found < 64; a += sizeof v * (uint64_t)pg) {
         const uint64_t len = hi - a < sizeof v * (uint64_t)pg ? hi - a : sizeof v * (uint64_t)pg;
-        if (mincore(GP(a), (size_t)len, v)) continue;
+        if (os_mem_resident(GP(a), (size_t)len, v)) continue;
         for (uint64_t k = 0; k < len / (uint64_t)pg && found < 64; k++) {
             if (!(v[k] & 1)) continue;
             const uint64_t *w = (const uint64_t *)GP(a + k * (uint64_t)pg);
@@ -311,7 +301,7 @@ void direct_texwatch_frame(void) {
     if (!direct_texwatch_on()) return;
     if (n_mf && hos_present_count == mf_present) mem_find();
     if (!textures_on() || hos_present_count % 600) return;
-    LONG pairs_n = 0;
+    int32_t pairs_n = 0;
     for (int i = 0; i < NPAIR; i++) pairs_n += pairs[i].key != 0;
     hos_log("texwatch: %ld textures watched (slots), %ld faults (%ld outside a texture), %ld (texture, writer) pairs (%ld not kept), "
             "%ld file reads into one", (long)ntex, (long)n_faults, (long)n_outside, (long)pairs_n, (long)n_pairs_full, (long)n_files);

@@ -27,11 +27,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 
-int hos_mouse_take(int32_t *dx, int32_t *dy);                                   /* display.c */
-void hos_mouse_give_back(int32_t dx, int32_t dy);                               /* display.c */
+int hos_mouse_take(int32_t *dx, int32_t *dy);                                   /* host/posix/display_sdl.c */
+void hos_mouse_give_back(int32_t dx, int32_t dy);                               /* host/posix/display_sdl.c */
 int rx_option(int id, int otherwise);
 extern double hos_mouse_sens;
 
@@ -52,8 +51,8 @@ _Static_assert(offsetof(OotPlayerCamera, pitch_limit) == 0x178 && offsetof(OotPl
 #define LIVE_NS 150000000LL   /* (the hook ran this recently: the camera takes the mouse) */
 #define DEG_PER_COUNT 0.1
 
-static volatile LONG64 last_hook_ns;
-static volatile LONG64 last_camera;
+static volatile int64_t last_hook_ns;
+static volatile int64_t last_camera;
 static long long applied, cameras_seen;
 
 
@@ -89,7 +88,7 @@ PATCH_AT(0x80644c80, word(0xd503237f), after, none, hos_mouse_camera, as(x0, cam
     const uint32_t state = cam->state;
     if (state != 3 && state != 4) {
         /* (at once: the stick takes the next motion, not one burst once the 150 ms run out) */
-        InterlockedExchange64(&last_hook_ns, 0);
+        os_atomic_store(&last_hook_ns, 0);
         /* (each state seen leaving the mouse to the stick, once: what another view, Z-targeting, climbing or swimming,
            is, to add here if one of them should turn with the mouse) */
         static uint32_t said[8];
@@ -102,8 +101,8 @@ PATCH_AT(0x80644c80, word(0xd503237f), after, none, hos_mouse_camera, as(x0, cam
         }
         return;
     }
-    InterlockedExchange64(&last_hook_ns, hos_now_ns());
-    if (InterlockedExchange64(&last_camera, (LONG64)camera) != (LONG64)camera && cameras_seen++ < 8)
+    os_atomic_store(&last_hook_ns, hos_now_ns());
+    if (os_atomic_xchg(&last_camera, (int64_t)camera) != (int64_t)camera && cameras_seen++ < 8)
         hos_log("mouse native: the player camera at %#llx turns with the mouse", (unsigned long long)camera);
     int32_t dx, dy;
     if (!hos_mouse_take(&dx, &dy) || (!dx && !dy)) return;
@@ -124,7 +123,7 @@ PATCH_AT(0x80644c80, word(0xd503237f), after, none, hos_mouse_camera, as(x0, cam
 int hos_mouse_native(void) {
     static int said;
     if (!said) said = 1, hos_log("mouse native: on (the menu's Mouse camera, or HOS_MOUSE_NATIVE)");
-    if (hos_now_ns() - InterlockedCompareExchange64(&last_hook_ns, 0, 0) >= LIVE_NS) return -1;
+    if (hos_now_ns() - os_atomic_load(&last_hook_ns) >= LIVE_NS) return -1;
     int32_t dx, dy;
     const int captured = hos_mouse_take(&dx, &dy);   /* (only to know the capture: the motion is the camera's) */
     if (dx || dy) hos_mouse_give_back(dx, dy);

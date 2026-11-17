@@ -20,16 +20,16 @@
 #include "../gpu/api/rx_nvn.h"
 #include <stdio.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 void f_807981f0(Ctx *), f_80797240(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
-extern volatile LONG64 hos_present_count;
+extern volatile int64_t hos_present_count;
 
 #define TD_N (1 << 15)   /* (TexatureHandleNum is 10,240 textures; aliases have tds of their own too) */
 enum { TD_LIVE = 1, TD_CACHED = 2, TD_ALIAS = 3 };
 static struct { uint64_t td; uint8_t state; } tds[TD_N];   /* (open addressing; a destroyed td's entry stays as a tombstone, state 0) */
-static SRWLOCK lock = SRWLOCK_INIT;
-static volatile LONG64 n_created, n_aliases, n_moves, n_to_cache, n_from_cache, n_destroyed, n_cached_now, n_full, n_unknown;
+static os_mutex lock = OS_MUTEX_INIT;
+static volatile int64_t n_created, n_aliases, n_moves, n_to_cache, n_from_cache, n_destroyed, n_cached_now, n_full, n_unknown;
 
 static uint32_t td_at(uint64_t td) { return (uint32_t)((td >> 3) * 0x9e3779b1u) & (TD_N - 1); }
 static int td_slot(uint64_t td, int make) {   /* (lock held exclusively when make) */
@@ -50,14 +50,14 @@ static const nvn_tex *tex_of(uint64_t td) {
 }
 
 void direct_texdata_created(uint64_t td, int alias) {
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     const int i = td_slot(td, 1);
     if (i >= 0) {
-        if (tds[i].state == TD_CACHED) InterlockedDecrement64(&n_cached_now);
+        if (tds[i].state == TD_CACHED) os_atomic_dec(&n_cached_now);
         tds[i].state = alias ? TD_ALIAS : TD_LIVE;
-    } else InterlockedIncrement64(&n_full);
-    ReleaseSRWLockExclusive(&lock);
-    InterlockedIncrement64(alias ? &n_aliases : &n_created);
+    } else os_atomic_inc(&n_full);
+    os_mutex_unlock(&lock);
+    os_atomic_inc(alias ? &n_aliases : &n_created);
 }
 
 /* f_8079aa20(&td->slot, evictable): released to the LRU cache (1), taken back from it (0) */
@@ -67,7 +67,7 @@ PATCH_AT(0x8079aa20, word(0xd503237f), before, none, direct_texdata_evictable, a
     const int to_cache = (evictable & 1) != 0;
     if (!hos_guest_range(td, 0x1d0)) return;
     int known = 0, changed = 0;
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     const int i = td_slot(td, 0);
     if (i >= 0 && tds[i].state) {
         known = 1;
@@ -75,16 +75,16 @@ PATCH_AT(0x8079aa20, word(0xd503237f), before, none, direct_texdata_evictable, a
         if (tds[i].state != want && tds[i].state != TD_ALIAS) {
             changed = 1;
             tds[i].state = want;
-            if (to_cache) InterlockedIncrement64(&n_cached_now);
-            else InterlockedDecrement64(&n_cached_now);
+            if (to_cache) os_atomic_inc(&n_cached_now);
+            else os_atomic_dec(&n_cached_now);
         }
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     if (!known) {
-        InterlockedIncrement64(&n_unknown);
+        os_atomic_inc(&n_unknown);
         return;
     }
-    InterlockedIncrement64(to_cache ? &n_to_cache : &n_from_cache);
+    os_atomic_inc(to_cache ? &n_to_cache : &n_from_cache);
     const nvn_tex *t = tex_of(td);
     if (changed && t && rx_direct()->texture_cached) rx_direct()->texture_cached(t, to_cache);
 }
@@ -93,15 +93,15 @@ PATCH_AT(0x8079aa20, word(0xd503237f), before, none, direct_texdata_evictable, a
 PATCH_AT(0x8079bbe0, word(0xd503237f), before, none, direct_texdata_destroyed, as(x1, td)) {
     if (!direct_assets_on()) return;
     int was_cached = 0;
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     const int i = td_slot(td, 0);
     if (i >= 0) {
         was_cached = tds[i].state == TD_CACHED;
-        if (was_cached) InterlockedDecrement64(&n_cached_now);
+        if (was_cached) os_atomic_dec(&n_cached_now);
         tds[i].state = 0;
     }
-    ReleaseSRWLockExclusive(&lock);
-    InterlockedIncrement64(&n_destroyed);
+    os_mutex_unlock(&lock);
+    os_atomic_inc(&n_destroyed);
     const nvn_tex *t = tex_of(td);
     if (was_cached && t && rx_direct()->texture_cached) rx_direct()->texture_cached(t, 0);
 }
@@ -117,7 +117,7 @@ PATCH_FUNC(0x807981f0, word(0xd503237f), body(0xd8e8d96c2812b6c3), aapcs, x0, di
     tl_moving = t && t->magic == NVN_MAGIC('T', 'E', 'X', 0) && t->serial ? (const void *)t : NULL;
     const uint64_t r = guest_orig(orig);
     tl_moving = NULL;
-    InterlockedIncrement64(&n_moves);
+    os_atomic_inc(&n_moves);
     return r;
 }
 
@@ -143,7 +143,7 @@ void direct_texdata_line(char *out, size_t cap) {
    m6f_s5_d: the device-local usage rose by 0.6-1.4 GB across a load, store images 0.6 GB and the new scene's targets),
    so that a load that starts at the margin does not exhaust VRAM. */
 #define kVramMargin (1536ll << 20)
-static volatile LONG64 n_vram_evicted, n_vram_frames, last_free_vram = -1, last_line;
+static volatile int64_t n_vram_evicted, n_vram_frames, last_free_vram = -1, last_line;
 PATCH_FUNC(0x80797240, word(0xd503237f), body(0x99d8ac1665d1c349), aapcs, x0, direct_texdata_update, orig, as(x0, mgr)) {
     if (!direct_assets_on() || !rx_direct()->vram_free) return guest_orig(orig);
     if (!hos_guest_range(mgr + 0x340, 8) || !hos_guest_range(G64(mgr + 0x40) + 0x1ee8, 8)) return guest_orig(orig);
@@ -155,12 +155,12 @@ PATCH_FUNC(0x80797240, word(0xd503237f), body(0x99d8ac1665d1c349), aapcs, x0, di
         const uint64_t want = heap_free + (uint64_t)(kVramMargin - vf);
         if (want > game_thr) G64(mgr + 0x340) = want, raised = 1;
     }
-    const LONG64 d0 = n_destroyed;
+    const int64_t d0 = n_destroyed;
     const uint64_t r = guest_orig(orig);
     if (raised) {
         G64(mgr + 0x340) = game_thr;
-        InterlockedAdd64(&n_vram_evicted, n_destroyed - d0);
-        InterlockedIncrement64(&n_vram_frames);
+        os_atomic_add(&n_vram_evicted, n_destroyed - d0);
+        os_atomic_inc(&n_vram_frames);
     }
     if (hos_present_count / 600 != last_line / 600) {
         last_line = hos_present_count;

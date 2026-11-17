@@ -3,7 +3,7 @@
 On 8 GB of RAM and no swap the game closed before the title with no word of why; adding swap let it play. Memory and
 swap (the page file on Windows) together below about 10 GB now give a LOW MEMORY line in the log and a message once at
 boot, and the game starts anyway. memory_notice_text and memory_notice are cut into a fixture with hos_log and
-MessageBoxA as spies: the threshold at a few sizes, the boot line with this PC's numbers, and no message with
+os_message_box as spies: the threshold at a few sizes, the boot line with this PC's numbers, and no message with
 HOS_HEADLESS. The source is checked for the call at boot.
 
     python -I -B tests/test_low_memory_notice.py [--cc gcc]
@@ -36,8 +36,6 @@ FIXTURE = r"""
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sysinfo.h>
-#define MB_OK 0
-#define MB_ICONWARNING 0x30
 static int boxes;
 static void hos_log(const char *fmt, ...) {
     va_list a;
@@ -45,9 +43,9 @@ static void hos_log(const char *fmt, ...) {
     printf("log: "), vprintf(fmt, a), printf("\n");
     va_end(a);
 }
-static int MessageBoxA(void *w, const char *text, const char *caption, unsigned type) {
-    (void)w, (void)text, (void)caption, (void)type;
-    return ++boxes;
+static void os_message_box(const char *title, const char *text) {
+    (void)title, (void)text;
+    ++boxes;
 }
 int hos_sdl_load(void) { return 0; }
 @@CODE@@

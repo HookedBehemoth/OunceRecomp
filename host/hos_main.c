@@ -19,20 +19,16 @@
 #define HOOKSHOT_VERSION "unknown"
 #endif
 const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's status) */
-#if defined(__EMSCRIPTEN__)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <mmsystem.h>
-#else
-#include <windows.h>   /* (linux: host/posix's) */
+#include "os.h"
+#include "hos_sdl.h"
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/syscall.h>
-#endif
 /* (linux) the separator of the paths the executable's folder is joined with */
 #define SEP '/'
 #define SEP_S "/"
@@ -73,7 +69,8 @@ static int reserve_guest(void) {
     return hos_space_end >= (1ULL << 30);
 #else
     /* (linux) the whole window readable and writable at once, its pages made as they are first touched (no commit
-       step: MAP_NORESERVE). Decommitting is madvise (host/posix/win32_posix.c VirtualFree): the pages read as zero. */
+       step: MAP_NORESERVE). Decommitting is madvise (hos_posix_guest_discard): the pages read as zero. Declared to the OS
+       layer once mapped (os_mem_declare), so os_mem_query answers for it. */
     void hos_commit_init(void);
     hos_commit_init();   /* (the crash report) */
     /* The window is a memfd's, shared, so the Vulkan back end can hand the GPU the game's own pages as a dma-buf
@@ -111,6 +108,7 @@ static int reserve_guest(void) {
                                MAP_SHARED | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, 0);
                 if (p == (void *)A64_HOST_BASE) {
                     hos_guest_memfd = fd;
+                    os_mem_declare((void *)A64_HOST_BASE, GUEST_SPACE, OS_PROT_RW);
                     hos_log("mem: the guest window is a memfd's (%d), shared with the GPU as dma-bufs", fd);
                     return 1;
                 }
@@ -123,6 +121,7 @@ static int reserve_guest(void) {
     if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
         return 0;
+    os_mem_declare((void *)A64_HOST_BASE, GUEST_SPACE, OS_PROT_RW);
     /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
@@ -139,6 +138,10 @@ static int reserve_guest(void) {
    they read as zero again on either kind of mapping */
 int hos_guest_memfd = -1;
 int hos_posix_guest_memfd(void) { return hos_guest_memfd; }
+uint64_t hos_posix_guest_resident(void) {   /* (the memfd's pages that exist, in bytes: 0 for anonymous memory) */
+    struct stat st;
+    return hos_guest_memfd >= 0 && !fstat(hos_guest_memfd, &st) ? (uint64_t)st.st_blocks * 512 : 0;
+}
 int hos_posix_guest_discard(void *p, size_t n) {
     return madvise(p, n, hos_guest_memfd >= 0 ? MADV_REMOVE : MADV_DONTNEED);
 }
@@ -167,8 +170,7 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 
 /* A folder tree copied and deleted: the saves' move (below) and the input record's copy of them (main) */
 static int is_dir(const char *p) {
-    const DWORD a = GetFileAttributesA(p);
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+    return (os_path_kind(p) & OS_PATH_DIR) != 0;
 }
 static int copy_tree(const char *from, const char *to) {
     if (!is_dir(from)) {
@@ -181,84 +183,71 @@ static int copy_tree(const char *from, const char *to) {
         if (out && fclose(out)) ok = 0;
         return ok;
     }
-    if (!CreateDirectoryA(to, NULL) && !is_dir(to)) return 0;
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", from);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (os_mkdir(to) && !is_dir(to)) return 0;
+    os_dir *d = os_dir_open(from, NULL);
+    os_dirent e;
     int ok = 1;
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-            char a[MAX_PATH], b[MAX_PATH];
-            snprintf(a, sizeof a, "%s" SEP_S "%s", from, fd.cFileName);
-            snprintf(b, sizeof b, "%s" SEP_S "%s", to, fd.cFileName);
-            ok = copy_tree(a, b);
-        } while (ok && FindNextFileA(h, &fd));
-        FindClose(h);
+    while (d && ok && os_dir_next(d, &e)) {
+        char a[OS_PATH_MAX], b[OS_PATH_MAX];
+        snprintf(a, sizeof a, "%s" SEP_S "%s", from, e.name);
+        snprintf(b, sizeof b, "%s" SEP_S "%s", to, e.name);
+        ok = copy_tree(a, b);
     }
+    os_dir_close(d);
     return ok;
 }
 static void delete_tree(const char *p) {
     if (!is_dir(p)) {
-        DeleteFileA(p);
+        os_remove(p);
         return;
     }
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", p);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-            char a[MAX_PATH];
-            snprintf(a, sizeof a, "%s" SEP_S "%s", p, fd.cFileName);
-            delete_tree(a);
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
+    os_dir *d = os_dir_open(p, NULL);
+    os_dirent e;
+    while (d && os_dir_next(d, &e)) {
+        char a[OS_PATH_MAX];
+        snprintf(a, sizeof a, "%s" SEP_S "%s", p, e.name);
+        delete_tree(a);
     }
-    RemoveDirectoryA(p);
+    os_dir_close(d);
+    os_rmdir(p);
 }
 /* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
    A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
    cannot be moved keeps the old place. --user still wins. */
 static const char *saves_dir(const char *beside) {
-    static char dir[MAX_PATH];
+    static char dir[OS_PATH_MAX];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
     if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s", xdg);
     else if (home && home[0] == '/') {
         snprintf(dir, sizeof dir, "%s/.local", home);
-        CreateDirectoryA(dir, NULL);
+        os_mkdir(dir);
         snprintf(dir, sizeof dir, "%s/.local/share", home);
     } else return beside;
-    CreateDirectoryA(dir, NULL);
+    os_mkdir(dir);
     snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/hookshot");
-    CreateDirectoryA(dir, NULL);
-    if (GetFileAttributesA(dir) == INVALID_FILE_ATTRIBUTES) return beside;
-    char pattern[MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", beside);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) return dir;
+    os_mkdir(dir);
+    if (os_path_kind(dir) == OS_PATH_NONE) return beside;
+    os_dir *d = os_dir_open(beside, NULL);
+    if (!d) return dir;
     int moved = 0, kept = 0;
-    do {
-        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-        char from[MAX_PATH], to[MAX_PATH];
-        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
-        snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
-        if (GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES) kept++;
-        else if (MoveFileExA(from, to, 0)) moved++;
+    os_dirent e;
+    while (os_dir_next(d, &e)) {
+        char from[OS_PATH_MAX], to[OS_PATH_MAX];
+        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, e.name);
+        snprintf(to, sizeof to, "%s" SEP_S "%s", dir, e.name);
+        if (os_path_kind(to) != OS_PATH_NONE) kept++;
+        else if (!os_rename(from, to, false)) moved++;
         else if (copy_tree(from, to)) delete_tree(from), moved++;
         else delete_tree(to), kept++;
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+    }
+    os_dir_close(d);
     if (kept) {
         hos_log("saves: %d of %s's entries could not go to %s: the saves stay in %s", kept, beside, dir, beside);
         return beside;
     }
-    RemoveDirectoryA(beside);
+    os_rmdir(beside);
     if (moved) {
-        char note[MAX_PATH];
+        char note[OS_PATH_MAX];
         const char *sep = strrchr(beside, SEP);
         snprintf(note, sizeof note, "%.*s" SEP_S "saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
         FILE *f = fopen(note, "w");
@@ -314,12 +303,12 @@ static int env_line_allowed(const char *name, const char *value) {
     return !strpbrk(value, "/\\") && !drive && value[0] != '~' && strcmp(value, ".") && strcmp(value, "..");
 }
 static void load_hookshot_env(void) {
-    char path[MAX_PATH + 32];
+    char path[OS_PATH_MAX + 32];
     const char *other = getenv("HOS_ENV_FILE");
     if (other && *other) {
         snprintf(path, sizeof path, "%s", other);
     } else {
-        DWORD n = hos_game_path_a(path, MAX_PATH);
+        uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
         while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
         memcpy(path + n, "hookshot_env.txt", 17);
     }
@@ -385,27 +374,25 @@ static void memory_notice(void) {
     }
     hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
     if (getenv("HOS_HEADLESS")) return;
-    int hos_sdl_load(void);
-    hos_sdl_load();   /* (host/posix MessageBoxA shows it through the SDL already loaded) */
-    MessageBoxA(NULL, text, "Hookshot", MB_OK | MB_ICONWARNING);
+    hos_sdl_load();   /* (os_message_box shows it through the SDL already loaded) */
+    os_message_box("Hookshot", text);
 }
 #endif
 static int game_main(int argc, char **argv) {
     occlusion_switch();
     {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
-        HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-        if (!err || err == INVALID_HANDLE_VALUE || GetFileType(err) == FILE_TYPE_UNKNOWN) {
-            char path[MAX_PATH + 32];
-            DWORD n = hos_game_path_a(path, MAX_PATH);
+        if (!os_stderr_shown()) {
+            char path[OS_PATH_MAX + 32];
+            uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
             while (n && path[n - 1] != 92 && path[n - 1] != 47) n--;
             /* (the four runs before stay as hookshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
                crash sent in the new run's log, and the crash was gone) */
-            char from[MAX_PATH + 32], to[MAX_PATH + 32];
+            char from[OS_PATH_MAX + 32], to[OS_PATH_MAX + 32];
             for (int k = 4; k >= 1; k--) {
                 if (k == 1) memcpy(from + n, "hookshot_log.txt", 17), memcpy(from, path, n);
                 else memcpy(from, path, n), snprintf(from + n, 32, "hookshot_log.%d.txt", k - 1);
                 memcpy(to, path, n), snprintf(to + n, 32, "hookshot_log.%d.txt", k);
-                MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING);
+                os_rename(from, to, true);
             }
             memcpy(path + n, "hookshot_log.txt", 17);
             if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
@@ -419,18 +406,18 @@ static int game_main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
         else if (!image) image = argv[i];
     }
-    static char beside_image[MAX_PATH], beside_romfs[MAX_PATH], beside_user[MAX_PATH];
+    static char beside_image[OS_PATH_MAX], beside_romfs[OS_PATH_MAX], beside_user[OS_PATH_MAX];
     if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
-        char dir[MAX_PATH];
-        const DWORD len = hos_game_path_a(dir, MAX_PATH);
+        char dir[OS_PATH_MAX];
+        const uint32_t len = hos_game_path_a(dir, OS_PATH_MAX);
         char *slash = len ? strrchr(dir, SEP) : NULL;
         if (slash) {
             *slash = 0;
-            SetCurrentDirectoryA(dir);
-            snprintf(beside_image, MAX_PATH, "%s" SEP_S "image.bin", dir);
-            snprintf(beside_romfs, MAX_PATH, "%s" SEP_S "romfs", dir);
-            snprintf(beside_user, MAX_PATH, "%s" SEP_S "user", dir);
-            if (GetFileAttributesA(beside_image) != INVALID_FILE_ATTRIBUTES) {
+            os_chdir(dir);
+            snprintf(beside_image, OS_PATH_MAX, "%s" SEP_S "image.bin", dir);
+            snprintf(beside_romfs, OS_PATH_MAX, "%s" SEP_S "romfs", dir);
+            snprintf(beside_user, OS_PATH_MAX, "%s" SEP_S "user", dir);
+            if (os_path_kind(beside_image) != OS_PATH_NONE) {
                 image = beside_image;
                 if (!hos_romfs_dir) hos_romfs_dir = beside_romfs;
                 if (!hos_user_dir) hos_user_dir = saves_dir(beside_user);
@@ -444,16 +431,16 @@ static int game_main(int argc, char **argv) {
     }
     if (getenv("HOS_TRACE")) hos_trace = 1;
     if (!hos_user_dir) hos_user_dir = "user";
-    CreateDirectoryA(hos_user_dir, NULL);
+    os_mkdir(hos_user_dir);
     {   /* HOS_INPUT_RECORD=<dir>: the save folder as the game starts with it, to <dir>/user (a replay starts from it;
            nn_hid.c writes <dir>/input.rec) */
         const char *rec = getenv("HOS_INPUT_RECORD");
         if (rec && *rec) {
-            char dir[MAX_PATH], user[MAX_PATH];
+            char dir[OS_PATH_MAX], user[OS_PATH_MAX];
             snprintf(dir, sizeof dir, "%s", rec);
             for (char *p = dir + 1; *p; p++)   /* (each folder of the path) */
-                if (*p == '/' || *p == 92) { const char sep = *p; *p = 0; CreateDirectoryA(dir, NULL); *p = sep; }
-            CreateDirectoryA(dir, NULL);
+                if (*p == '/' || *p == 92) { const char sep = *p; *p = 0; os_mkdir(dir); *p = sep; }
+            os_mkdir(dir);
             snprintf(user, sizeof user, "%s" SEP_S "user", dir);
             delete_tree(user);
             hos_log("hid: input record: save folder %s %s %s", hos_user_dir,
@@ -482,7 +469,7 @@ static int game_main(int argc, char **argv) {
     /* exactly the file's size: a read into "the rest of the guest window" (~4 GB) made Windows commit physical memory
        for ~2 GB of it before the game ran (the whole heap was resident from the start, ~1.3 GB of it never used) */
     fseek(f, 0, SEEK_END);
-    const long long file_size = _ftelli64(f);
+    const long long file_size = ftello(f);
     fseek(f, 0, SEEK_SET);
     if (file_size > 0) hos_commit(IMAGE_BASE, (uint64_t)file_size);
     size_t n = file_size > 0 && (uint64_t)file_size <= GUEST_SPACE - IMAGE_BASE
@@ -506,11 +493,11 @@ static int game_main(int argc, char **argv) {
         float want = e ? (float)atof(e) : 0.0f;
         if (!e) {
             int on = 0;
-            char path[MAX_PATH];
-            const DWORD len = hos_game_path_a(path, MAX_PATH);
+            char path[OS_PATH_MAX];
+            const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
             char *slash = len ? strrchr(path, SEP) : NULL;
             if (slash) {
-                snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+                snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
                 FILE *o = fopen(path, "r");
                 if (o) {
                     char line[80];
@@ -522,7 +509,8 @@ static int game_main(int argc, char **argv) {
                     fclose(o);
                 }
             }
-            const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+            int sw, sh;
+            hos_screen_size(&sw, &sh);
             if (on && sh > 0) want = (float)sw / (float)sh;
         }
         if (getenv("HOS_SCENE_NATIVE")) hos_native_scene = atoi(getenv("HOS_SCENE_NATIVE")) != 0;
@@ -600,9 +588,9 @@ static int game_main(int argc, char **argv) {
    stack the guest main thread's lifted code needs (the main thread has the system's 8 MB): host/posix/display_sdl.c */
 static int game_argc;
 static char **game_argv;
-static DWORD WINAPI game_thread(void *p) {
+static void game_thread(void *p) {
     (void)p;
-    ExitProcess((UINT)game_main(game_argc, game_argv));
+    os_exit(game_main(game_argc, game_argv));
 }
 int main(int argc, char **argv) {
     int hos_display_init(void);
@@ -618,13 +606,12 @@ int main(int argc, char **argv) {
         void hos_discord_start(void);
         hos_discord_start();
     }
-    HANDLE t = CreateThread(NULL, 64u << 20, game_thread, NULL, 0, NULL);
+    os_thread *t = os_thread_start(game_thread, NULL, 64u << 20, "Game");
     if (!t) {
         fprintf(stderr, "cannot start the game's thread\n");
         return 1;
     }
-    SetThreadDescription(t, L"Game");
     if (window) hos_display_loop();   /* (does not return: the window's events until the process ends) */
-    WaitForSingleObject(t, INFINITE);
+    os_thread_join(t, OS_FOREVER);
     return 0;
 }

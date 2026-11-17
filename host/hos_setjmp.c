@@ -28,7 +28,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <windows.h>
+#include "os.h"
 #include <string.h>
 
 #define DEPTH 256
@@ -95,9 +95,9 @@ void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3
 void hos_sj_call(Ctx *c, void (*f)(Ctx *), uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3) {
     {   /* HOS_DBG=sj (diagnostic): the first calls */
         static int on = -1;
-        static volatile LONG n;
+        static volatile int32_t n;
         if (on < 0) on = hos_dbg_item("sj");
-        if (on && InterlockedIncrement(&n) <= 8) hos_log("sj: call of a setjmp owner (setjmp returns to %#llx)", (unsigned long long)r0);
+        if (on && os_atomic_inc(&n) <= 8) hos_log("sj: call of a setjmp owner (setjmp returns to %#llx)", (unsigned long long)r0);
     }
     void **sj = recomp_sj_push(c, r0, r1, r2, r3);
     if (recomp_sj_setjmp(sj) == 0)
@@ -121,8 +121,8 @@ void hos_setjmp_return(Ctx *c, uint64_t target) {
     for (int i = stack->depth - 1; i >= 0; i--) {
         SjSlot *s = &stack->slot[i];
         if (s->rets[0] != target && s->rets[1] != target && s->rets[2] != target && s->rets[3] != target) continue;
-        static volatile LONG logged;
-        if (InterlockedIncrement(&logged) <= 4)
+        static volatile int32_t logged;
+        if (os_atomic_inc(&logged) <= 4)
             hos_log("longjmp to %#llx (value %llu, %d slots above dropped)", (unsigned long long)target,
                     (unsigned long long)c->x[0], stack->depth - 1 - i);
         s->target = target;

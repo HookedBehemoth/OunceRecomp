@@ -18,20 +18,20 @@
    Check that it applies: the 600-present line "direct patch mesh system" (jobs bound a frame, the view objects seen). */
 #include "direct.h"
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 void f_801060f0(Ctx *), f_80100210(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 uint64_t eng_jobs_drawctx(void);   /* eng_jobs.c */
 
 static volatile uint64_t view_obj;   /* (V, the last the binder was called with) */
-static struct { volatile LONG64 binder, views, jobs, no_view, no_ctx; } n;
+static struct { volatile int64_t binder, views, jobs, no_view, no_ctx; } n;
 
 PATCH_AT(0x80101ec0, word(0xd503237f), before, none, direct_mesh_system_binder, as(x0, info)) {   /* (info): V noted */
-    InterlockedIncrement64(&n.binder);
+    os_atomic_inc(&n.binder);
     if (!hos_guest_range(info + 0xe0, 8) || !hos_guest_range(G64(info + 0xe0) + 8, 8)) return;
     const uint64_t v = G64(G64(info + 0xe0) + 8);
     if (v && v != view_obj) {
-        if (InterlockedIncrement64(&n.views) <= 8)
+        if (os_atomic_inc(&n.views) <= 8)
             hos_log("direct patch mesh system: the system binder's view object %#llx (was %#llx)", (unsigned long long)v,
                     (unsigned long long)view_obj);
         view_obj = v;
@@ -41,10 +41,10 @@ PATCH_AT(0x80101ec0, word(0xd503237f), before, none, direct_mesh_system_binder, 
 /* (f_80084de0 after its blr x8 to SetDepthRange: sp the job's) */
 PATCH_AT(0x800855a8, word(0xd63f0100), after, none, direct_mesh_system_bind, guest(0x801060f0, 0x80100210), as(sp, job_sp)) {
     const uint64_t v = view_obj, dc = eng_jobs_drawctx();
-    if (!v || !hos_guest_range(v + 0x538, 16)) { InterlockedIncrement64(&n.no_view); return; }
-    if (!dc) { InterlockedIncrement64(&n.no_ctx); return; }
+    if (!v || !hos_guest_range(v + 0x538, 16)) { os_atomic_inc(&n.no_view); return; }
+    if (!dc) { os_atomic_inc(&n.no_ctx); return; }
     const uint64_t sp = (job_sp - 0x200) & ~15ull, info = sp + 0x100;
-    if (!hos_guest_range(sp, 0x200)) { InterlockedIncrement64(&n.no_ctx); return; }
+    if (!hos_guest_range(sp, 0x200)) { os_atomic_inc(&n.no_ctx); return; }
     memset(GP(info), 0, 0x100);
     G64(info + 0xb0) = dc;
     guest_call(g, sp, CODE_PTR(f_801060f0), info, G64(v + 0x538), 0xfb000000u, 0, 0);
@@ -55,12 +55,12 @@ PATCH_AT(0x800855a8, word(0xd63f0100), after, none, direct_mesh_system_bind, gue
         const uint64_t l = G64(G64(G64(0x84c9e740)) + 0x1e8);
         if (l && hos_guest_range(l + 0xc00, 8) && G64(l + 0xc00)) guest_call(g, sp, CODE_PTR(f_80100210), G64(l + 0xc00), dc, 0xfb030303u, 0, 0);
     }
-    InterlockedIncrement64(&n.jobs);
+    os_atomic_inc(&n.jobs);
 }
 
 void direct_mesh_system_log(double frames) {
-    static LONG64 last[5];
-    const LONG64 now[5] = {n.binder, n.views, n.jobs, n.no_view, n.no_ctx};
+    static int64_t last[5];
+    const int64_t now[5] = {n.binder, n.views, n.jobs, n.no_view, n.no_ctx};
     hos_log("direct patch mesh system (the system binder's storage slots 0-3 bound at every job's prologue, f_80084de0 after "
             "0x800855ac): a frame %.2f jobs bound, %.2f system binder calls; view objects seen since the start %lld; jobs "
             "without a view object %lld, without a draw context %lld",

@@ -28,7 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 void f_80365f00(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 uint64_t hos_hostcall(const char *name, void (*fn)(Ctx *, void *), void *user);   /* hos_hostcall.c */
 void hos_gpu_track(uint64_t guest, uint64_t size, int on);                          /* nvdrv.c */
@@ -82,7 +82,7 @@ static const void *in_window(const void *p, size_t n) {
 #define I(i) ((int)c->x[i])
 #define U32(i) ((uint32_t)c->x[i])
 #define U64(i) (c->x[i])
-#define BOOL(i) ((int)(c->x[i] & 0xff))               /* NVNboolean: callers do not extend it */
+#define B(i) ((int)(c->x[i] & 0xff))                   /* NVNboolean: callers do not extend it */
 static float fl(const Ctx *c, int i) { float f; memcpy(&f, &c->vreg[i][0], 4); return f; }
 #define F(i) fl(c, i)                                  /* the i-th float argument (v0-v7) */
 static void retf(Ctx *c, float f) { memset(c->vreg[0], 0, 16); memcpy(&c->vreg[0][0], &f, 4); }
@@ -102,8 +102,8 @@ static void die(const char *fmt, ...) {
 }
 
 /* ---- serials, GPU addresses, virtual pools ---- */
-static volatile LONG64 serials;
-static uint64_t new_serial(void) { return (uint64_t)InterlockedIncrement64(&serials); }
+static volatile int64_t serials;
+static uint64_t new_serial(void) { return (uint64_t)os_atomic_inc(&serials); }
 
 #define VPAGE 0x10000ull                     /* NVN virtual mapping granularity (64 KiB) */
 #define VBASE 0x10000000000ull               /* virtual pools' GPU addresses start at 1 TB: past the 512 GB guest window */
@@ -113,9 +113,9 @@ static uint64_t new_serial(void) { return (uint64_t)InterlockedIncrement64(&seri
    page by page, each page a locked list walk: 8% of the replay thread) */
 struct nvn_vmap { uint64_t gpu, size; uint64_t *page; uint32_t *run; struct nvn_vmap *next; };
 static struct nvn_vmap *vmaps, *dead_vmaps;
-static SRWLOCK vmap_lock = SRWLOCK_INIT;
-static volatile LONG vmap_gen = 1;           /* bumped when a map is added or removed */
-static volatile LONG vpage_gen = 1;          /* bumped by every virtual page (re)mapping too (the renderer's caches) */
+static os_rwlock vmap_lock = OS_RWLOCK_INIT;
+static volatile int32_t vmap_gen = 1;           /* bumped when a map is added or removed */
+static volatile int32_t vpage_gen = 1;          /* bumped by every virtual page (re)mapping too (the renderer's caches) */
 uint32_t nvn_vmap_generation(void) { return (uint32_t)vpage_gen + (uint32_t)vmap_gen; }
 static uint64_t next_vbase = VBASE;
 /* (direct mode; rt_slots.c) GPU addresses left unused after each virtual pool: the transient targets' slots lie after
@@ -126,14 +126,14 @@ uint64_t nvn_virtual_pool_tail(void) { return rx_direct() ? 2ull << 30 : 0; }
 
 static struct nvn_vmap *vmap_find(uint64_t gpu) {
     static _Thread_local struct nvn_vmap *last;
-    static _Thread_local LONG last_gen;
+    static _Thread_local int32_t last_gen;
     struct nvn_vmap *m = last;
     if (m && last_gen == vmap_gen && gpu >= m->gpu && gpu < m->gpu + m->size) return m;
-    AcquireSRWLockShared(&vmap_lock);
+    os_rwlock_lock_shared(&vmap_lock);
     for (m = vmaps; m; m = m->next)
         if (gpu >= m->gpu && gpu < m->gpu + m->size) break;
     last_gen = vmap_gen;
-    ReleaseSRWLockShared(&vmap_lock);
+    os_rwlock_unlock_shared(&vmap_lock);
     last = m;
     return m;
 }
@@ -199,7 +199,7 @@ int nvn_gpu_write(uint64_t gpu, const void *src, uint64_t n) {
 }
 
 /* ---- device ---- */
-static volatile LONG depth_minus_w = 1;   /* (OoT's mode from the start: the shaders prepared before the game made its device were
+static volatile int32_t depth_minus_w = 1;   /* (OoT's mode from the start: the shaders prepared before the game made its device were
                                             translated without the depth conversion, and the menu's text and logo fell outside the depth range
                                             on a first start. d3zessete, Hookshot PR 54) */
 int nvn_depth_minus_w(void) { return depth_minus_w != 0; }
@@ -279,9 +279,9 @@ NV(nvnDeviceSetWindowOriginMode) {
 }
 NV(nvnDeviceSetDepthMode) {
     ((nvn_dev *)P(0))->depth_mode = U32(1);
-    const LONG was = InterlockedExchange(&depth_minus_w, U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
+    const int32_t was = os_atomic_xchg(&depth_minus_w, U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
     hos_log("nvn: depth mode %s", U32(1) == NVN_DEPTH_MODE_NEAR_IS_MINUS_W ? "near = -w (GL)" : "near = 0");
-    if (was != (LONG)(depth_minus_w != 0))
+    if (was != (int32_t)(depth_minus_w != 0))
         hos_log("nvn: the depth mode is not the one the prepared shaders were made for: their vertex stages draw wrong");
 }
 NV(nvnDeviceFinalizeCommandHandle) {}
@@ -320,14 +320,14 @@ NV(nvnMemoryPoolInitialize,
         m->page = (uint64_t *)calloc(o->size / VPAGE, sizeof(uint64_t));
         m->run = (uint32_t *)calloc(o->size / VPAGE, sizeof(uint32_t));
         if (!m->page || !m->run || o->size >= VBASE) die("virtual pool of %#llx bytes", (unsigned long long)o->size);
-        AcquireSRWLockExclusive(&vmap_lock);
+        os_rwlock_lock(&vmap_lock);
         m->gpu = next_vbase;
         m->size = o->size;
         next_vbase += ((o->size + VPAGE - 1) & ~(VPAGE - 1)) + nvn_virtual_pool_tail();
         m->next = vmaps;
         vmaps = m;
-        InterlockedIncrement(&vmap_gen);
-        ReleaseSRWLockExclusive(&vmap_lock);
+        os_atomic_inc(&vmap_gen);
+        os_rwlock_unlock(&vmap_lock);
         o->gpu = m->gpu;
         OLOG("virtual pool %#llx bytes at GPU %#llx", (unsigned long long)o->size, (unsigned long long)o->gpu);
         if (getenv("HOS_NVN_LOG_VMAP"))
@@ -370,7 +370,7 @@ NV(nvnMemoryPoolFinalize) {
         int mapped = 0;   /* (pages still mapped: what the GPU drew there goes into their memory first) */
         for (uint64_t k = 0; k < vm->size / VPAGE && !mapped; k++) mapped = vm->page[k] != 0;
         if (mapped) rx_nvn_vmap_changing(vm->gpu, vm->size);
-        AcquireSRWLockExclusive(&vmap_lock);
+        os_rwlock_lock(&vmap_lock);
         int found = 0;
         for (struct nvn_vmap **p = &vmaps; *p; p = &(*p)->next)
             if (*p == vm) {
@@ -382,8 +382,8 @@ NV(nvnMemoryPoolFinalize) {
             vm->next = dead_vmaps;
             dead_vmaps = vm;
         }
-        InterlockedIncrement(&vmap_gen);
-        ReleaseSRWLockExclusive(&vmap_lock);
+        os_atomic_inc(&vmap_gen);
+        os_rwlock_unlock(&vmap_lock);
     } else if (o->mem) {
         rx_nvn_pool_native(o->gpu, o->size, o->flags, 0, 0);   /* (native-vk layer 0: kept a while for an identical Initialize) */
         hos_gpu_track(o->gpu, o->size, 0);
@@ -470,15 +470,15 @@ NV(nvnMemoryPoolMapVirtual) {
                in all every 2000) */
             static int log_vmap = -1;
             static uint64_t vmap_from;
-            static volatile LONG logged, total;
+            static volatile int32_t logged, total;
             if (log_vmap < 0) {
                 const char *e = getenv("HOS_NVN_LOG_VMAP");
                 log_vmap = e != NULL;
                 vmap_from = e ? strtoull(e, NULL, 16) : 0;
                 if (vmap_from == 1) vmap_from = 0;
             }
-            const LONG t = InterlockedIncrement(&total);
-            if (log_vmap && ((v->gpu >= vmap_from && InterlockedIncrement(&logged) <= 3000) || t % 2000 == 0)) {
+            const int32_t t = os_atomic_inc(&total);
+            if (log_vmap && ((v->gpu >= vmap_from && os_atomic_inc(&logged) <= 3000) || t % 2000 == 0)) {
                 uint64_t nz = 0;   /* (what the physical pages hold as they are mapped) */
                 if (p && p->mem)
                     for (uint64_t k = 0; k < size; k++) nz += ((const uint8_t *)GP(p->mem))[(uint64_t)poff + k] != 0;
@@ -489,12 +489,12 @@ NV(nvnMemoryPoolMapVirtual) {
                         (unsigned long long)nz, (unsigned long long)c->x[30]);
             }
         }
-        AcquireSRWLockExclusive(&vmap_lock);
+        os_rwlock_lock(&vmap_lock);
         for (uint64_t k = 0; k < size / VPAGE; k++)
             vm->page[(uint64_t)voff / VPAGE + k] = p ? p->gpu + (uint64_t)poff + k * VPAGE : 0;
         vmap_runs(vm);
-        InterlockedIncrement(&vpage_gen);
-        ReleaseSRWLockExclusive(&vmap_lock);
+        os_atomic_inc(&vpage_gen);
+        os_rwlock_unlock(&vmap_lock);
     }
     RET(1);
 }
@@ -531,10 +531,10 @@ NV(nvnBufferFinalize) { memset(P(0), 0, sizeof(nvn_buffer)); }
    "flags of no memory pool"). Zeroed scratch memory in the game's address space instead, as large as the biggest asked for
    (never freed: it comes rarely), and who asked, once. */
 static uint64_t scratch_map(uint64_t size, uint64_t lr) {
-    static SRWLOCK lock = SRWLOCK_INIT;
+    static os_mutex lock = OS_MUTEX_INIT;
     static uint64_t at, have;
     static int told;
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     if (size > have) {
         have = (size + 0xffff) & ~0xffffull;
         at = hos_sys_alloc(have, 0x1000);
@@ -542,7 +542,7 @@ static uint64_t scratch_map(uint64_t size, uint64_t lr) {
     const uint64_t r = at;
     if (told++ < 4) hos_log("nvn: a buffer of no memory pool mapped (lr %#llx): %#llx bytes of scratch", (unsigned long long)lr,
                             (unsigned long long)size);
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     return r;
 }
 NV(nvnBufferMap) {
@@ -600,8 +600,8 @@ NV(nvnSamplerPoolRegisterSampler) { rx_nvn_register_sampler(I(1), &((const nvn_s
 static nvn_tex_builder *tb_or_scratch(void *p, uint64_t lr) {
     static nvn_tex_builder scratch;
     if (p) return (nvn_tex_builder *)p;
-    static volatile LONG told;
-    if (InterlockedIncrement(&told) <= 4) hos_log("nvn: a texture builder of no address (lr %#llx): a scratch one", (unsigned long long)lr);
+    static volatile int32_t told;
+    if (os_atomic_inc(&told) <= 4) hos_log("nvn: a texture builder of no address (lr %#llx): a scratch one", (unsigned long long)lr);
     memset(&scratch, 0, sizeof scratch);
     return &scratch;
 }
@@ -630,10 +630,10 @@ NV(nvnTextureBuilderSetSize2D) {
     b->d.width = U32(1), b->d.height = U32(2), b->d.depth = 1;
     {   /* (hookshot) HOS_SIZE_TRACE=1: who asks for the picture's sizes (the output and the scene: for wider screens) */
         static int on = -1;
-        static volatile LONG left = 24;
+        static volatile int32_t left = 24;
         if (on < 0) on = getenv("HOS_SIZE_TRACE") != NULL;
         const uint32_t w = U32(1);
-        if (on && (w == 2560 || w == 2048 || w == 1536 || w == 3840 || w == 1920) && InterlockedDecrement(&left) >= 0) {
+        if (on && (w == 2560 || w == 2048 || w == 1536 || w == 3840 || w == 1920) && os_atomic_dec(&left) >= 0) {
             void hos_backtrace(void);
             hos_log("nvn: texture size %ux%u (lr %#llx)", w, U32(2), (unsigned long long)c->x[30]);
             hos_backtrace();
@@ -713,11 +713,11 @@ NV(nvnTextureBuilderGetViewOffset) {
 /* the texture currently initialised at each storage address (nvn_tex_live_at) */
 #define LIVE_SLOTS 65536
 static struct { uint64_t gpu; nvn_tex t; } live[LIVE_SLOTS];
-static SRWLOCK live_lock = SRWLOCK_INIT;
+static os_rwlock live_lock = OS_RWLOCK_INIT;
 static unsigned live_slot(uint64_t gpu) { return (unsigned)((gpu >> 9) * 0x9E3779B97F4A7C15ull >> 48) & (LIVE_SLOTS - 1); }
 static void live_put(const nvn_tex *t) {
     if (!t->gpu) return;
-    AcquireSRWLockExclusive(&live_lock);
+    os_rwlock_lock(&live_lock);
     unsigned s = live_slot(t->gpu), k;
     for (k = 0; k < 64; k++) {   /* (open addressing over a short run: a stale entry there is simply replaced) */
         const unsigned j = (s + k) & (LIVE_SLOTS - 1);
@@ -731,11 +731,11 @@ static void live_put(const nvn_tex *t) {
         live[s].gpu = t->gpu;
         live[s].t = *t;
     }
-    ReleaseSRWLockExclusive(&live_lock);
+    os_rwlock_unlock(&live_lock);
 }
 static void live_del(const nvn_tex *t) {
     if (!t->gpu) return;
-    AcquireSRWLockExclusive(&live_lock);
+    os_rwlock_lock(&live_lock);
     const unsigned s = live_slot(t->gpu);
     for (unsigned k = 0; k < 64; k++) {
         const unsigned j = (s + k) & (LIVE_SLOTS - 1);
@@ -744,11 +744,11 @@ static void live_del(const nvn_tex *t) {
             break;
         }
     }
-    ReleaseSRWLockExclusive(&live_lock);
+    os_rwlock_unlock(&live_lock);
 }
 int nvn_tex_live_at(uint64_t gpu, nvn_tex *out) {
     int found = 0;
-    AcquireSRWLockShared(&live_lock);
+    os_rwlock_lock_shared(&live_lock);
     const unsigned s = live_slot(gpu);
     for (unsigned k = 0; k < 64; k++) {
         const unsigned j = (s + k) & (LIVE_SLOTS - 1);
@@ -758,23 +758,23 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out) {
             break;
         }
     }
-    ReleaseSRWLockShared(&live_lock);
+    os_rwlock_unlock_shared(&live_lock);
     return found;
 }
 /* (host/direct_assets.c) the live texture whose storage holds gpu (a walk of the table: rare calls) */
 int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out) {
     int found = 0;
-    AcquireSRWLockShared(&live_lock);
+    os_rwlock_lock_shared(&live_lock);
     for (unsigned j = 0; j < LIVE_SLOTS && !found; j++)
         if (live[j].gpu && gpu >= live[j].gpu && gpu < live[j].gpu + live[j].t.L.size) *out = live[j].t, found = 1;
-    ReleaseSRWLockShared(&live_lock);
+    os_rwlock_unlock_shared(&live_lock);
     return found;
 }
 
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* (below) */
 /* (rt_slots.c's log: texture initializations, and those made by agl's DynamicTextureAllocator::alloc, f_8005ed00) */
-volatile LONG64 nvn_texture_inits, nvn_texture_inits_dta;
-extern volatile LONG64 hos_present_count;   /* display.c */
+volatile int64_t nvn_texture_inits, nvn_texture_inits_dta;
+extern volatile int64_t hos_present_count;   /* display.c */
 /* RX_NVN_LOG_TEX=<w>x<h> (debugging): each initialization and finalize of a texture that size, with its caller */
 static int log_tex(const nvn_tex *o) {
     static int on = -1;
@@ -784,10 +784,10 @@ static int log_tex(const nvn_tex *o) {
 }
 static _Thread_local uint64_t tl_moved_serial;   /* (M6f: the serial a texture moved by compaction keeps) */
 NV(nvnTextureInitialize) {
-    InterlockedIncrement64(&nvn_texture_inits);
+    os_atomic_inc(&nvn_texture_inits);
     const nvn_tex_builder *b = CTB(P(1));
     if (c->x[30] >= 0x8005ed00ull && c->x[30] < 0x80062b6cull) {
-        InterlockedIncrement64(&nvn_texture_inits_dta);
+        os_atomic_inc(&nvn_texture_inits_dta);
     }
     {   /* (rt_slots.c: a texture in the transient slots, from any caller: its slot's bytes go to the back end first) */
         void rt_slots_texture_init(uint64_t obj, uint64_t gpu, const nvn_texdesc *d, int dta);
@@ -925,41 +925,35 @@ NV(nvnTextureGetViewOffset) {
    next write to them is logged with the writer's call stack (f_XXXXXXXX frames are guest code), then allowed */
 static uintptr_t wts_lo[16], wts_hi[16];
 static int wts_n;
-static volatile LONG wts_reports;
+static volatile int32_t wts_reports;
 void hos_backtrace(void);
-static LONG CALLBACK wts_handler(EXCEPTION_POINTERS *e) {
-    if (e->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || e->ExceptionRecord->ExceptionInformation[0] != 1)
-        return EXCEPTION_CONTINUE_SEARCH;
-    const uintptr_t a = (uintptr_t)e->ExceptionRecord->ExceptionInformation[1];
+static int wts_handler(const os_fault *f) {
+    if (f->kind != OS_FAULT_ACCESS || !f->write) return OS_FAULT_PASS;
+    const uintptr_t a = f->addr;
     for (int i = 0; i < wts_n; i++)
         if (a >= wts_lo[i] && a < wts_hi[i]) {
             HosThread *th = hos_self();
             const char *tn = th ? hos_thread_name(th) : "?";
-            static ULONGLONG after = ~0ull;   /* RX_NVN_WATCH_AFTER=<seconds>: only writes after that are reported */
-            if (after == ~0ull) after = GetTickCount64() + (getenv("RX_NVN_WATCH_AFTER") ? (ULONGLONG)atoi(getenv("RX_NVN_WATCH_AFTER")) * 1000 : 0);
+            static uint64_t after = ~0ull;   /* RX_NVN_WATCH_AFTER=<seconds>: only writes after that are reported */
+            if (after == ~0ull) after = (uint64_t)(os_now_ns() / 1000000) + (getenv("RX_NVN_WATCH_AFTER") ? (uint64_t)atoi(getenv("RX_NVN_WATCH_AFTER")) * 1000 : 0);
             static int all_threads = -1;   /* RX_NVN_WATCH_ALL=1: the Resource Memory thread's writes too */
             if (all_threads < 0) all_threads = getenv("RX_NVN_WATCH_ALL") != NULL;
-            if ((all_threads || strcmp(tn, "Resource Memory")) && GetTickCount64() >= after && InterlockedIncrement(&wts_reports) <= 12) {   /* (not the allocation's zero fill) */
+            if ((all_threads || strcmp(tn, "Resource Memory")) && (uint64_t)(os_now_ns() / 1000000) >= after && os_atomic_inc(&wts_reports) <= 12) {   /* (not the allocation's zero fill) */
                 hos_log("nvn: write to a WriteTexels source at guest %#llx by %s (host pc exe+%#llx)", (unsigned long long)(a - (uintptr_t)GP(0)), tn,
-                        (unsigned long long)((uintptr_t)e->ExceptionRecord->ExceptionAddress - (uintptr_t)GetModuleHandleA(NULL)));
+                        (unsigned long long)(f->pc - os_exe_base()));
                 hos_backtrace();
             }
-            DWORD old;
-            VirtualProtect((void *)(a & ~(uintptr_t)4095), 4096, PAGE_READWRITE, &old);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            os_mem_protect((void *)(a & ~(uintptr_t)4095), 4096, OS_PROT_RW);
+            return OS_FAULT_RESUME;
         }
-    return EXCEPTION_CONTINUE_SEARCH;
+    return OS_FAULT_PASS;
 }
-static DWORD WINAPI wts_rearm(void *p) {   /* (every 2 ms: the pages a write made writable are watched again) */
+static void wts_rearm(void *p) {   /* (every 2 ms: the pages a write made writable are watched again) */
     (void)p;
     for (int k = 0; k < 300000 && wts_reports < 12; k++) {
-        Sleep(2);
-        for (int i = 0; i < wts_n; i++) {
-            DWORD old;
-            VirtualProtect((void *)wts_lo[i], wts_hi[i] - wts_lo[i], PAGE_READONLY, &old);
-        }
+        os_sleep_ns(2LL * 1000000);
+        for (int i = 0; i < wts_n; i++) os_mem_protect((void *)wts_lo[i], wts_hi[i] - wts_lo[i], OS_PROT_R);
     }
-    return 0;
 }
 /* (also for other debugging hooks: nn_image_debug.c) the pages of [data, data + size) watched as above */
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size) {
@@ -968,12 +962,11 @@ void hos_watch_guest_writes(const uint8_t *data, uint64_t size) {
     if (wts_n >= 16) return;
     static int handler;
     if (!handler++) {
-        AddVectoredExceptionHandler(1, wts_handler);
-        CreateThread(NULL, 0, wts_rearm, NULL, 0, NULL);
+        os_fault_add(wts_handler, true);
+        os_thread_release(os_thread_start(wts_rearm, NULL, 0, "nvn watch"));
     }
     wts_lo[wts_n] = lo, wts_hi[wts_n] = hi, wts_n++;
-    DWORD old;
-    VirtualProtect((void *)lo, hi - lo, PAGE_READONLY, &old);
+    os_mem_protect((void *)lo, hi - lo, OS_PROT_R);
     hos_log("nvn: watching writes to guest %#llx..%#llx", (unsigned long long)(lo - (uintptr_t)GP(0)),
             (unsigned long long)(hi - (uintptr_t)GP(0)));
 }
@@ -987,12 +980,11 @@ static void watch_texels_source(const nvn_tex *t, const uint8_t *data, uint64_t 
     for (int i = 0; i < wts_n; i++) if (wts_lo[i] == lo) return;
     static int handler;
     if (!handler++) {
-        AddVectoredExceptionHandler(1, wts_handler);
-        CreateThread(NULL, 0, wts_rearm, NULL, 0, NULL);
+        os_fault_add(wts_handler, true);
+        os_thread_release(os_thread_start(wts_rearm, NULL, 0, "nvn watch"));
     }
     wts_lo[wts_n] = lo, wts_hi[wts_n] = hi, wts_n++;
-    DWORD old;
-    VirtualProtect((void *)lo, hi - lo, PAGE_READONLY, &old);
+    os_mem_protect((void *)lo, hi - lo, OS_PROT_R);
     hos_log("nvn: watching WriteTexels source guest %#llx..%#llx", (unsigned long long)(lo - (uintptr_t)GP(0)),
             (unsigned long long)(hi - (uintptr_t)GP(0)));
 }
@@ -1118,13 +1110,13 @@ static void dump_stage(uint64_t code, uint64_t ctl) {
     static const char *dir = (const char *)-1;
     if (dir == (const char *)-1) dir = getenv("HOS_SHADER_DUMP");
     if (!dir || !code || !ctl) return;
-    char path[MAX_PATH];
+    char path[OS_PATH_MAX];
     snprintf(path, sizeof path, "%s/%010llx.code", dir, (unsigned long long)code);
-    if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return;
-    CreateDirectoryA(dir, NULL);
+    if (os_path_kind(path) != OS_PATH_NONE) return;
+    os_mkdir(dir);
     uint64_t n = 0;
-    MEMORY_BASIC_INFORMATION mbi;
-    while (n < 0x10000 && VirtualQuery(GP(code + n), &mbi, sizeof mbi) && mbi.State == MEM_COMMIT) n += 0x1000;
+    os_mem_info mi;
+    while (n < 0x10000 && !os_mem_query(GP(code + n), &mi) && mi.state == OS_MEM_COMMITTED) n += 0x1000;
     FILE *f = fopen(path, "wb");
     if (f) { fwrite(GP(code), 1, (size_t)n, f); fclose(f); }
     snprintf(path, sizeof path, "%s/%010llx.ctl", dir, (unsigned long long)code);
@@ -1164,11 +1156,11 @@ volatile int hos_nvn_sync_log_on;   /* (also the live input file's "!synclog": n
 static int sync_log(void) {   /* (the first 30000 calls; HOS_NVN_SYNC_LOG=<n>: from the n-th present on, 400 calls) */
     static int v = -1;
     static long long from;
-    static volatile LONG n;
-    extern volatile LONG64 hos_present_count;   /* display.c */
+    static volatile int32_t n;
+    extern volatile int64_t hos_present_count;   /* display.c */
     if (v < 0) v = getenv("HOS_NVN_SYNC_LOG") != NULL, from = v ? atoll(getenv("HOS_NVN_SYNC_LOG")) : 0;
-    if (v && from > 1) return hos_present_count >= from && InterlockedIncrement(&n) <= 400;
-    return (v || hos_nvn_sync_log_on) && InterlockedIncrement(&n) <= 30000;
+    if (v && from > 1) return hos_present_count >= from && os_atomic_inc(&n) <= 400;
+    return (v || hos_nvn_sync_log_on) && os_atomic_inc(&n) <= 30000;
 }
 /* Submitted command buffers are held until the queue is flushed (nvnQueueFlush, a present, a finish or a wait on a
    fence): NVN starts a submission's work only then, and the game writes what it reads in between. Handed to the replay
@@ -1178,20 +1170,19 @@ static int sync_log(void) {   /* (the first 30000 calls; HOS_NVN_SYNC_LOG=<n>: f
    default; HOS_NVN_HOLD=1: held. */
 typedef struct { int n; uint64_t h[64]; } held_submit;
 static held_submit held[256];
-static volatile LONG nheld;
-static CRITICAL_SECTION held_cs;
-static int held_ready, hold_on = -1;
+static volatile int32_t nheld;
+static os_mutex held_cs = OS_MUTEX_INIT;
+static int hold_on = -1;
 static void held_init(void) {
-    if (!held_ready) { InitializeCriticalSection(&held_cs); held_ready = 1; }
     if (hold_on < 0) { const char *e = getenv("HOS_NVN_HOLD"); hold_on = e && atoi(e) != 0; }   /* (off: see below) */
 }
 static void held_flush(void) {
     held_init();
     if (!nheld) return;
-    EnterCriticalSection(&held_cs);
-    for (LONG i = 0; i < nheld; i++) rx_nvn_submit(held[i].h, held[i].n);
+    os_mutex_lock(&held_cs);
+    for (int32_t i = 0; i < nheld; i++) rx_nvn_submit(held[i].h, held[i].n);
     nheld = 0;
-    LeaveCriticalSection(&held_cs);
+    os_mutex_unlock(&held_cs);
 }
 static uint64_t held_count(void) { return (uint64_t)nheld; }
 
@@ -1204,19 +1195,19 @@ NV(nvnQueueFenceSync) {
     if (sync_log()) hos_log("nvn: FenceSync %p -> %llu (lr %#llx)", (void *)s, (unsigned long long)s->fence, (unsigned long long)c->x[30]);
 }
 /* (the GPU waits the game makes: count and time by kind, logged every 5 s) */
-static volatile LONG64 wait_ns[3], wait_n[3];   /* sync waits that blocked, sync polls that timed out, queue finishes */
+static volatile int64_t wait_ns[3], wait_n[3];   /* sync waits that blocked, sync polls that timed out, queue finishes */
 static void wait_note(int kind, int64_t t0) {
-    InterlockedAdd64(&wait_ns[kind], hos_now_ns() - t0);
-    InterlockedIncrement64(&wait_n[kind]);
-    static volatile LONG64 last;
+    os_atomic_add(&wait_ns[kind], hos_now_ns() - t0);
+    os_atomic_inc(&wait_n[kind]);
+    static volatile int64_t last;
     const int64_t now = hos_now_ns(), l = last;
-    if (now - l >= 5000000000LL && InterlockedCompareExchange64(&last, now, l) == l && l) {
+    if (now - l >= 5000000000LL && os_atomic_cas(&last, l, now) == l && l) {
         hos_log("nvn: GPU waits in 5 s: %lld sync waits (%.0f ms), %lld polls timed out (%.0f ms), %lld queue finishes (%.0f ms)",
-                (long long)InterlockedExchange64(&wait_n[0], 0), InterlockedExchange64(&wait_ns[0], 0) / 1e6,
-                (long long)InterlockedExchange64(&wait_n[1], 0), InterlockedExchange64(&wait_ns[1], 0) / 1e6,
-                (long long)InterlockedExchange64(&wait_n[2], 0), InterlockedExchange64(&wait_ns[2], 0) / 1e6);
+                (long long)os_atomic_xchg(&wait_n[0], 0), os_atomic_xchg(&wait_ns[0], 0) / 1e6,
+                (long long)os_atomic_xchg(&wait_n[1], 0), os_atomic_xchg(&wait_ns[1], 0) / 1e6,
+                (long long)os_atomic_xchg(&wait_n[2], 0), os_atomic_xchg(&wait_ns[2], 0) / 1e6);
     } else if (!l) {
-        InterlockedCompareExchange64(&last, now, 0);
+        os_atomic_cas(&last, 0, now);
     }
 }
 /* never fenced: times out, as on the console; fenced: released once the GPU reached the fence */
@@ -1269,8 +1260,8 @@ static int lognvn(void) {
 NV(nvnEventSignal) {
     const nvn_event *e = (const nvn_event *)P(0);
     {   /* (the CPU's signals, 40 then every 5000: what the GPU's waits above wait for) */
-        static volatile LONG n;
-        const LONG k = InterlockedIncrement(&n);
+        static volatile int32_t n;
+        const int32_t k = os_atomic_inc(&n);
         if (lognvn() && (k <= 40 || k % 5000 == 0))
             hos_log("nvn: EventSignal (CPU) #%ld: event %#llx mode %u value %u (lr %#llx)", (long)k,
                     (unsigned long long)(e ? e->gpu : 0), U32(1), U32(2), (unsigned long long)c->x[30]);
@@ -1359,7 +1350,7 @@ static void list_log(const char *why) {
 #define POOL_MIN 6       /* 64 bytes */
 #define POOL_MAX 26      /* 64 MiB: bigger blocks use the heap */
 #define POOL_KEEP (64ull << 20)
-static SRWLOCK pool_lock = SRWLOCK_INIT;
+static os_mutex pool_lock = OS_MUTEX_INIT;
 static void *pool_head[POOL_MAX + 1];
 static uint64_t pool_bytes[POOL_MAX + 1];
 static int pool_off(void) {
@@ -1377,13 +1368,13 @@ static void *pool_get(size_t n, unsigned *cls) {
     const unsigned c = pool_off() ? POOL_MAX + 1 : pool_class(n);
     *cls = c;
     if (c > POOL_MAX) return hos_ledger_took(HL_NVN_CMD, malloc(n));
-    AcquireSRWLockExclusive(&pool_lock);
+    os_mutex_lock(&pool_lock);
     void *b = pool_head[c];
     if (b) {
         pool_head[c] = *(void **)b;
         pool_bytes[c] -= (uint64_t)1 << c;
     }
-    ReleaseSRWLockExclusive(&pool_lock);
+    os_mutex_unlock(&pool_lock);
     return b ? b : hos_ledger_took(HL_NVN_CMD, malloc((size_t)1 << c));
 }
 static void pool_put(void *b, unsigned cls) {
@@ -1393,14 +1384,14 @@ static void pool_put(void *b, unsigned cls) {
         free(b);
         return;
     }
-    AcquireSRWLockExclusive(&pool_lock);
+    os_mutex_lock(&pool_lock);
     const int keep = pool_bytes[cls] + ((uint64_t)1 << cls) <= POOL_KEEP;
     if (keep) {
         *(void **)b = pool_head[cls];
         pool_head[cls] = b;
         pool_bytes[cls] += (uint64_t)1 << cls;
     }
-    ReleaseSRWLockExclusive(&pool_lock);
+    os_mutex_unlock(&pool_lock);
     if (!keep) hos_ledger_frees(HL_NVN_CMD, b), free(b);
 }
 
@@ -1418,7 +1409,7 @@ typedef struct {
 #define CMD_CHUNK_BITS 10
 #define CMD_CHUNKS 4096u                     /* (4M command buffers at once) */
 static cmd_rec *volatile cmd_chunks[CMD_CHUNKS];
-static SRWLOCK cmd_lock = SRWLOCK_INIT;
+static os_mutex cmd_lock = OS_MUTEX_INIT;
 static uint32_t cmd_next = 1, *cmd_free;     /* (slot 0: none) */
 static size_t ncmd_free, cap_cmd_free;
 static cmd_rec *cmd_slot(uint32_t s) {
@@ -1444,15 +1435,15 @@ static _Thread_local uint32_t cmd_tl_free[64];
 static _Thread_local uint32_t cmd_tl_n;
 static uint32_t cmd_slot_take(void) {
     if (!cmd_tl_n) {
-        AcquireSRWLockExclusive(&cmd_lock);
+        os_mutex_lock(&cmd_lock);
         while (cmd_tl_n < 32) cmd_tl_free[cmd_tl_n++] = cmd_slot_new_locked();
-        ReleaseSRWLockExclusive(&cmd_lock);
+        os_mutex_unlock(&cmd_lock);
     }
     return cmd_tl_free[--cmd_tl_n];
 }
 static void cmd_slot_give(uint32_t s) {
     if (cmd_tl_n == 64) {
-        AcquireSRWLockExclusive(&cmd_lock);
+        os_mutex_lock(&cmd_lock);
         while (cmd_tl_n > 32) {
             if (ncmd_free == cap_cmd_free) {
                 cap_cmd_free = cap_cmd_free ? cap_cmd_free * 2 : 256;
@@ -1461,7 +1452,7 @@ static void cmd_slot_give(uint32_t s) {
             }
             cmd_free[ncmd_free++] = cmd_tl_free[--cmd_tl_n];
         }
-        ReleaseSRWLockExclusive(&cmd_lock);
+        os_mutex_unlock(&cmd_lock);
     }
     cmd_tl_free[cmd_tl_n++] = s;
 }
@@ -1475,24 +1466,24 @@ static cmd_rec *cmd_adopt(nvn_cmd *o) {
         o->slot = s;
         return r;
     }
-    AcquireSRWLockExclusive(&cmd_lock);
+    os_mutex_lock(&cmd_lock);
     const uint32_t s = cmd_slot_new_locked();
     cmd_rec *r = cmd_slot(s);
     memset(r, 0, sizeof *r);
     r->owner = me;
-    ReleaseSRWLockExclusive(&cmd_lock);
+    os_mutex_unlock(&cmd_lock);
     o->slot = s;
     return r;
 }
 static cmd_rec *cmd_host(nvn_cmd *o) {
     cmd_rec *r = cmd_slot(o->slot);
     if (r && r->owner == h2g(o)) return r;
-    static volatile LONG told;
-    if (o->slot && InterlockedIncrement(&told) <= 4)
+    static volatile int32_t told;
+    if (o->slot && os_atomic_inc(&told) <= 4)
         hos_log("nvn: command buffer %#llx names slot %u, which is not its own: a new one", (unsigned long long)h2g(o), o->slot);
     return cmd_adopt(o);
 }
-static volatile LONG64 seg_bytes, seg_count;   /* (the command buffers' segments, for the recordings' log line) */
+static volatile int64_t seg_bytes, seg_count;   /* (the command buffers' segments, for the recordings' log line) */
 static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffer back */
     cmd_rec *r = cmd_slot(o->slot);
     if (!r || r->owner != h2g(o)) {
@@ -1507,11 +1498,11 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
         return;
     }
     if (r->seg) {
-        InterlockedAdd64(&seg_bytes, -(LONG64)(r->end - r->seg));
-        InterlockedDecrement64(&seg_count);
+        os_atomic_add(&seg_bytes, -(int64_t)(r->end - r->seg));
+        os_atomic_dec(&seg_count);
         pool_put(r->seg, pool_off() ? POOL_MAX + 1 : pool_class((size_t)(r->end - r->seg)));
     }
-    AcquireSRWLockExclusive(&cmd_lock);
+    os_mutex_lock(&cmd_lock);
     memset(r, 0, sizeof *r);
     if (ncmd_free == cap_cmd_free) {
         cap_cmd_free = cap_cmd_free ? cap_cmd_free * 2 : 256;
@@ -1519,7 +1510,7 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
         if (!cmd_free) die("command buffer table");
     }
     cmd_free[ncmd_free++] = o->slot;
-    ReleaseSRWLockExclusive(&cmd_lock);
+    os_mutex_unlock(&cmd_lock);
     o->slot = 0;
 }
 static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size);
@@ -1582,12 +1573,12 @@ static void cmd_reserve_rec(cmd_rec *o, size_t need) {
     if (!b) die("recording buffer (%zu bytes)", cap);
     if (o->seg) {
         memcpy(b, o->seg, used);
-        InterlockedAdd64(&seg_bytes, -(LONG64)(o->end - o->seg));
+        os_atomic_add(&seg_bytes, -(int64_t)(o->end - o->seg));
         pool_put(o->seg, pool_off() ? POOL_MAX + 1 : pool_class((size_t)(o->end - o->seg)));
     } else {
-        InterlockedIncrement64(&seg_count);
+        os_atomic_inc(&seg_count);
     }
-    InterlockedAdd64(&seg_bytes, (LONG64)cap);
+    os_atomic_add(&seg_bytes, (int64_t)cap);
     o->seg = b, o->cur = b + used, o->end = b + cap;
 }
 static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size) {
@@ -1635,8 +1626,8 @@ static size_t ncopies;
 static size_t npins;   /* (tex_copy: the texture copies, logged with the recordings) */
 static unsigned rec_shift = 16;   /* (set when the buckets are made) */
 static unsigned rec_bucket(uint64_t ctl) { return (unsigned)(((ctl >> rec_shift) * 0x9E3779B97F4A7C15ull) >> 48) & (REC_BUCKETS - 1); }
-static SRWLOCK copy_lock = SRWLOCK_INIT;
-static volatile LONG64 copy_bytes;
+static os_rwlock copy_lock = OS_RWLOCK_INIT;
+static volatile int64_t copy_bytes;
 #define COPY_MAGIC 0x59504f43444d43ull   /* "CMDCOPY" */
 typedef struct { uint64_t magic, bytes, cls; } copy_prefix;   /* (cls: its pool class) */
 /* released copies wait until the replay passed every submit made before their release (the replay runs behind) */
@@ -1691,7 +1682,7 @@ static void free_dead_copies(void) {   /* (copy_lock held) */
     const uint64_t done = rx_nvn_replayed();
     for (size_t i = 0; i < ndead;) {
         if (dead[i].after <= done) {
-            InterlockedAdd64(&copy_bytes, -(LONG64)dead[i].p->bytes);
+            os_atomic_add(&copy_bytes, -(int64_t)dead[i].p->bytes);
             pool_put(dead[i].p, (unsigned)dead[i].p->cls);
             dead[i] = dead[--ndead];
         } else {
@@ -1702,7 +1693,7 @@ static void free_dead_copies(void) {   /* (copy_lock held) */
 static void release_copies(uint64_t lo, uint64_t hi) {
     if (hi <= lo || !rec_buckets) return;
     const uint64_t after = rx_nvn_pushed() + held_count();   /* (held submits name them too) */
-    AcquireSRWLockExclusive(&copy_lock);
+    os_rwlock_lock(&copy_lock);
     free_dead_copies();
     /* (a range over 4 GiB: every bucket once instead of every block) */
     const uint64_t pages = ((hi - 1) >> rec_shift) - (lo >> rec_shift) + 1;
@@ -1730,7 +1721,7 @@ static void release_copies(uint64_t lo, uint64_t hi) {
             ncopies--;
         }
     }
-    ReleaseSRWLockExclusive(&copy_lock);
+    os_rwlock_unlock(&copy_lock);
 }
 /* Copies whose control memory the game reused for other data: the console driver's handle is a descriptor written in
    the 64 bytes of control memory a recording takes; a mark written there in its place (the copy's address, and a magic)
@@ -1844,7 +1835,7 @@ static uint8_t *flatten(const uint8_t *p, size_t n) {
     pre->cls = cls;
     pre->magic = COPY_MAGIC;
     pre->bytes = sizeof(copy_prefix) + n;
-    InterlockedAdd64(&copy_bytes, (LONG64)pre->bytes);
+    os_atomic_add(&copy_bytes, (int64_t)pre->bytes);
     return out + sizeof(copy_prefix);
 }
 /* (the watches below) the guest's call chain, by frame pointers: "lr < caller < ..." */
@@ -1859,9 +1850,9 @@ static void *watch_draw_cmd;
 static uint64_t watch_handles[16];
 static int nwatch_handles;
 static void watch_handle_called(Ctx *c, uint64_t h, const char *how) {
-    static volatile LONG logged;
+    static volatile int32_t logged;
     for (int i = 0; i < nwatch_handles; i++) {
-        if (watch_handles[i] != h || InterlockedIncrement(&logged) > 60) continue;
+        if (watch_handles[i] != h || os_atomic_inc(&logged) > 60) continue;
         char b[400];
         guest_chain(c, b, sizeof b);
         hos_log("nvn: watched recording %llx %s at %.3f s from %s", (unsigned long long)h, how, hos_now_ns() * 1e-9, b);
@@ -1880,8 +1871,8 @@ static uint64_t end_recording_ref(nvn_cmd *o) {
         const uint64_t mark[2] = {COPY_MARK, h};
         memcpy(gw(at, sizeof mark), mark, sizeof mark);
     }
-    static volatile LONG64 made;
-    const LONG64 k = InterlockedIncrement64(&made);
+    static volatile int64_t made;
+    const int64_t k = os_atomic_inc(&made);
     if (k % 25000 == 0) {
         static int off = -1;
         if (off < 0) off = getenv("HOS_NVN_NO_SWEEP") != NULL;
@@ -1901,8 +1892,8 @@ static uint64_t end_recording_direct(nvn_cmd *o) {
     o->recording = 0;
     hsd_flush();
     if (__atomic_load_n(&r->dl_pending, __ATOMIC_ACQUIRE)) {   /* (a record of it waits on another thread: it arrives late) */
-        static volatile LONG n;
-        if (InterlockedIncrement(&n) <= 8) hos_log("nvn: direct mode: a recording ended with a record of it pending on another thread");
+        static volatile int32_t n;
+        if (os_atomic_inc(&n) <= 8) hos_log("nvn: direct mode: a recording ended with a record of it pending on another thread");
     }
     void *dl = r->dl;
     r->dl = NULL;
@@ -1935,7 +1926,7 @@ NV(nvnCommandBufferEndRecording) {
         memcpy(gw(at, sizeof mark), mark, sizeof mark);
         n->marked = 1;
     }
-    AcquireSRWLockExclusive(&copy_lock);
+    os_rwlock_lock(&copy_lock);
     if (!rec_buckets) {
         const char *e = getenv("HOS_NVN_REC_SHIFT");
         if (e && atoi(e) >= 12 && atoi(e) <= 24) rec_shift = (unsigned)atoi(e);
@@ -1952,7 +1943,7 @@ NV(nvnCommandBufferEndRecording) {
         hos_log("nvn: %llu recordings made, %zu live copies (%.1f MB), %zu texture copies; %lld command buffers' segments "
                 "(%.1f MB)", (unsigned long long)made, ncopies, copy_bytes / 1048576.0, npins, (long long)seg_count,
                 seg_bytes / 1048576.0);
-    ReleaseSRWLockExclusive(&copy_lock);
+    os_rwlock_unlock(&copy_lock);
     if (watch_draw_cmd && watch_draw_cmd == (void *)o && nwatch_handles < 16) {
         watch_handles[nwatch_handles++] = (uint64_t)(uintptr_t)copy;
         watch_draw_cmd = NULL;
@@ -1962,9 +1953,9 @@ NV(nvnCommandBufferEndRecording) {
 }
 NV(nvnCommandBufferIsRecording) { RET(CB(P(0))->recording != 0); }
 static void check_handle(uint64_t h) {
-    AcquireSRWLockShared(&copy_lock);
+    os_rwlock_lock_shared(&copy_lock);
     const int live = live_handle_has(h);
-    ReleaseSRWLockShared(&copy_lock);
+    os_rwlock_unlock_shared(&copy_lock);
     if (!live || ((const copy_prefix *)(uintptr_t)h - 1)->magic != COPY_MAGIC)
         die("command handle %#llx is not a live recording", (unsigned long long)h);
 }
@@ -2043,8 +2034,8 @@ static void *rec(nvn_cmd *o, uint32_t op, size_t payload) {
 
 NV(nvnCommandBufferSignalEvent) {
     {   /* (the GPU's signals as recorded, 40 then every 5000) */
-        static volatile LONG n;
-        const LONG k = InterlockedIncrement(&n);
+        static volatile int32_t n;
+        const int32_t k = os_atomic_inc(&n);
         if (lognvn() && (k <= 40 || k % 5000 == 0))
             hos_log("nvn: CommandBufferSignalEvent #%ld: event %#llx mode %u value %u (lr %#llx)", (long)k,
                     (unsigned long long)((const nvn_event *)P(1))->gpu, U32(2), U32(5), (unsigned long long)c->x[30]);
@@ -2058,8 +2049,8 @@ NV(nvnCommandBufferSignalEvent) {
    event goes on once that queue's work has signalled it (vk_replay.cpp, submit_job). MK World's worker queue and its
    presentation queue pass stages back and forth this way several times a frame. (Logged, 40 calls then every 5000) */
 NV(nvnCommandBufferWaitEvent) {
-    static volatile LONG n;
-    const LONG k = InterlockedIncrement(&n);
+    static volatile int32_t n;
+    const int32_t k = os_atomic_inc(&n);
     const nvn_event *e = (const nvn_event *)P(1);
     if (lognvn() && (k <= 40 || k % 5000 == 0)) {
         uint32_t now = 0;
@@ -2072,8 +2063,8 @@ NV(nvnCommandBufferWaitEvent) {
     w->gpu = e->gpu, w->mode = U32(2), w->value = U32(3);
 }
 NV(nvnCommandBufferWaitSync) {
-    static volatile LONG n;
-    const LONG k = InterlockedIncrement(&n);
+    static volatile int32_t n;
+    const int32_t k = os_atomic_inc(&n);
     if (lognvn() && (k <= 40 || k % 5000 == 0)) hos_log("nvn: CommandBufferWaitSync #%ld (lr %#llx)", (long)k, (unsigned long long)c->x[30]);
 }
 /* (hookshot) nvnCommandBufferPushComputeConstants(cmdbuf, int ?, offset, size, const void* data): compute push
@@ -2096,8 +2087,8 @@ NV(nvnCommandBufferPushComputeConstants) {
    fenced yet (a wait on a fence another queue submits later) cannot be honored that way and is logged. */
 NV(nvnQueueWaitSync) {
     const nvn_sync *s = (const nvn_sync *)P(1);
-    static volatile LONG n;
-    if (s && !s->fenced && InterlockedIncrement(&n) <= 8)
+    static volatile int32_t n;
+    if (s && !s->fenced && os_atomic_inc(&n) <= 8)
         hos_log("nvn: QueueWaitSync on a sync not fenced yet (%p, lr %#llx): not waited for", (void *)s,
                 (unsigned long long)c->x[30]);
     /* (direct mode) the queue's next submission waits for the fence's (gpu/direct/direct_sync.cpp) */
@@ -2118,9 +2109,9 @@ NV(nvnCommandBufferReportCounter) {
     nvn_p_counter *r = REC(CB(P(0)), NOP_REPORT_COUNTER, nvn_p_counter);
     r->type = U32(1);
     {   /* (which counters the game reads: the first report of each type, with its caller) */
-        static volatile LONG seen[64];
+        static volatile int32_t seen[64];
         /* (read first: an exchange at every report is a locked write to a line every recording thread shares) */
-        if (U32(1) < 64 && !seen[U32(1)] && !InterlockedExchange(&seen[U32(1)], 1))
+        if (U32(1) < 64 && !seen[U32(1)] && !os_atomic_xchg(&seen[U32(1)], 1))
             hos_log("nvn: the game reports counter type %u (lr %#llx)", U32(1), (unsigned long long)c->x[30]);
     }
     r->addr = U64(2);
@@ -2209,7 +2200,7 @@ NV(nvnCommandBufferClearColor) {
 NV(nvnCommandBufferClearDepthStencil) {
     nvn_p_clear_ds *r = REC(CB(P(0)), NOP_CLEAR_DS, nvn_p_clear_ds);
     r->depth = F(0);
-    r->depth_mask = BOOL(1);
+    r->depth_mask = B(1);
     r->stencil = I(2);
     r->stencil_mask = I(3);
 }
@@ -2252,8 +2243,8 @@ NV(nvnCommandBufferSetDepthRanges) {
         r->n = v[0], r->f = v[1];
     }
 }
-NV(nvnCommandBufferSetDepthClamp) { REC(CB(P(0)), NOP_DEPTH_CLAMP, nvn_p_flag)->value = BOOL(1) != 0; }
-NV(nvnCommandBufferSetRenderEnable) { REC(CB(P(0)), NOP_RENDER_ENABLE, nvn_p_flag)->value = BOOL(1) != 0; }
+NV(nvnCommandBufferSetDepthClamp) { REC(CB(P(0)), NOP_DEPTH_CLAMP, nvn_p_flag)->value = B(1) != 0; }
+NV(nvnCommandBufferSetRenderEnable) { REC(CB(P(0)), NOP_RENDER_ENABLE, nvn_p_flag)->value = B(1) != 0; }
 /* rendering on when the two NVNcounterData.counter values at addr, addr + 16 are equal (mode 0) / differ (1). TOTK gates
    clears with it: the CPU writes counter = 1 to ask for a clear and the TIMESTAMP_TOP report after it resets it */
 NV(nvnCommandBufferSetRenderEnableConditional) {
@@ -2271,7 +2262,7 @@ NV(nvnCommandBufferSetRenderEnableConditional) {
         r->snapped = cond_on_cpu_timeline() >= 2 || __atomic_load_n(flag, __ATOMIC_RELAXED) == r->addr;
     }
 }
-NV(nvnCommandBufferSetRasterizerDiscard) { REC(CB(P(0)), NOP_RASTER_DISCARD, nvn_p_flag)->value = BOOL(1) != 0; }
+NV(nvnCommandBufferSetRasterizerDiscard) { REC(CB(P(0)), NOP_RASTER_DISCARD, nvn_p_flag)->value = B(1) != 0; }
 NV(nvnCommandBufferBindProgram) {
     nvn_p_bind_program *r = REC(CB(P(0)), NOP_BIND_PROGRAM, nvn_p_bind_program);
     r->prog = (const nvn_prog *)P(1);
@@ -2416,7 +2407,7 @@ NV(nvnCommandBufferSetPolygonOffsetClamp) {
 }
 NV(nvnCommandBufferSetPrimitiveRestart) {
     nvn_p_restart *r = REC(CB(P(0)), NOP_PRIMITIVE_RESTART, nvn_p_restart);
-    r->enable = BOOL(1), r->index = I(2);
+    r->enable = B(1), r->index = I(2);
 }
 NV(nvnCommandBufferDrawArrays) {
     nvn_p_draw *r = REC(CB(P(0)), NOP_DRAW, nvn_p_draw);
@@ -2432,7 +2423,7 @@ NV(nvnCommandBufferDrawArraysInstanced) {
 static void watch_draw(Ctx *c, int count) {
     static int want = -1;
     static int64_t after;
-    static volatile LONG logged;
+    static volatile int32_t logged;
     if (want < 0) {   /* (<count>,<after s>: from that much time on) */
         const char *e = getenv("HOS_NVN_WATCH_DRAW");
         want = e ? atoi(e) : 0;
@@ -2441,7 +2432,7 @@ static void watch_draw(Ctx *c, int count) {
     if (!want || count != want || hos_now_ns() < after) return;
     const char *only = getenv("HOS_NVN_WATCH_DRAW_THREAD");   /* (only draws recorded on threads of that name) */
     if (only && (!hos_self() || !strstr(hos_thread_name(hos_self()), only))) return;
-    if (InterlockedIncrement(&logged) > 60) return;
+    if (os_atomic_inc(&logged) > 60) return;
     watch_draw_cmd = P(0);
     char b[400];
     guest_chain(c, b, sizeof b);
@@ -2483,7 +2474,7 @@ NV(nvnCommandBufferSetShaderScratchMemory) {}
    Copies live for the session (~100 bytes each); the table doubles when half full. */
 static nvn_tex **pins;
 static size_t pin_slots;
-static SRWLOCK pin_lock = SRWLOCK_INIT;
+static os_mutex pin_lock = OS_MUTEX_INIT;
 static uint64_t pin_hash(const nvn_tex *o) {   /* (FNV-1a over the object, its serial as 0) */
     nvn_tex k = *o;
     k.serial = 0;
@@ -2515,7 +2506,7 @@ static void tex_copy(const nvn_tex **dst, uint64_t t) {
     const nvn_tex *o = (const nvn_tex *)gw(t, sizeof(nvn_tex));
     if (!o->serial) die("recording refers to an uninitialized texture object %#llx", (unsigned long long)t);
     const uint64_t h = pin_hash(o);
-    AcquireSRWLockExclusive(&pin_lock);
+    os_mutex_lock(&pin_lock);
     if (npins * 2 >= pin_slots) pins_grow();
     size_t s = (size_t)(h >> 20) & (pin_slots - 1);
     while (pins[s] && !pin_same(pins[s], o)) s = (s + 1) & (pin_slots - 1);
@@ -2525,7 +2516,7 @@ static void tex_copy(const nvn_tex **dst, uint64_t t) {
         npins++;
     }
     *dst = pins[s];
-    ReleaseSRWLockExclusive(&pin_lock);
+    os_mutex_unlock(&pin_lock);
 }
 NV(nvnCommandBufferCopyBufferToTexture,
    reads(x29, "the caller's frame-pointer chain, walked for a log line (guest_chain, watch_*)")) {
@@ -2539,11 +2530,11 @@ NV(nvnCommandBufferCopyBufferToTexture,
         static int on = -1;
         if (on < 0) on = getenv("RX_VK_LOG_B2T") != NULL;
         static uint64_t seen[16];
-        static volatile LONG nseen;
+        static volatile int32_t nseen;
         int k;
         for (k = 0; k < nseen && seen[k] != r->buf; k++) {}
         if (on && r->r.width >= 960 && k == nseen && nseen < 16) {
-            seen[InterlockedIncrement(&nseen) - 1] = r->buf;
+            seen[os_atomic_inc(&nseen) - 1] = r->buf;
             char b[400];
             guest_chain(c, b, sizeof b);
             hos_log("nvn: CopyBufferToTexture from %#llx (%dx%d): %s", (unsigned long long)r->buf, r->r.width, r->r.height, b);
@@ -2593,7 +2584,7 @@ NV(nvnCommandBufferSetBlendColor) { memcpy(REC(CB(P(0)), NOP_BLEND_COLOR, nvn_p_
 NV(nvnCommandBufferSetLineWidth) { if (F(0) != 1.0f) { static int once; if (!once++) hos_log("nvn: SetLineWidth %g: lines are one pixel", F(0)); } }
 NV(nvnCommandBufferSetPointSize) {}
 NV(nvnCommandBufferSetDepthBounds) {
-    if (BOOL(1) && (F(0) > 0.0f || F(1) < 1.0f)) { static int once; if (!once++) hos_log("nvn: SetDepthBounds [%g, %g]: no depth bounds test", F(0), F(1)); }
+    if (B(1) && (F(0) > 0.0f || F(1) < 1.0f)) { static int once; if (!once++) hos_log("nvn: SetDepthBounds [%g, %g]: no depth bounds test", F(0), F(1)); }
 }
 NV(nvnCommandBufferSetTiledCacheAction) {}
 NV(nvnCommandBufferSetTiledCacheTileSize) {}
@@ -2644,7 +2635,7 @@ NV(nvnColorStateSetBlendEnable) {
     nvn_color_st *s = ST(nvn_color_st, P(0));
     const int i = I(1);
     if (i < 0 || i > 7) return;
-    s->blend_en = BOOL(2) ? (s->blend_en | 1u << i) : (s->blend_en & ~(1u << i));
+    s->blend_en = B(2) ? (s->blend_en | 1u << i) : (s->blend_en & ~(1u << i));
 }
 NV(nvnColorStateSetLogicOp) { ST(nvn_color_st, P(0))->logic_op = U32(1); }
 NV(nvnColorStateSetAlphaTest) { ST(nvn_color_st, P(0))->alpha_func = U32(1); }
@@ -2653,25 +2644,25 @@ NV(nvnChannelMaskStateSetChannelMask) {
     static int chmask_log = -1;   /* (asked once: getenv on every call was 15% of the render thread) */
     if (chmask_log < 0) chmask_log = getenv("HOS_NVN_CHMASK_LOG") != NULL;
     if (chmask_log) {   /* (debugging: NVN2's arguments) */
-        static volatile LONG n;
-        if (InterlockedIncrement(&n) <= 40)
+        static volatile int32_t n;
+        if (os_atomic_inc(&n) <= 40)
             hos_log("nvn: SetChannelMask(%#llx, %#llx, %#llx, %#llx, %#llx, %#llx) lr %#llx", (unsigned long long)c->x[0],
                     (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3],
                     (unsigned long long)c->x[4], (unsigned long long)c->x[5], (unsigned long long)c->x[30]);
     }
     const int i = I(1);
     if (i < 0 || i > 7) return;
-    const uint32_t m = (BOOL(2) ? 1 : 0) | (BOOL(3) ? 2 : 0) | (BOOL(4) ? 4 : 0) | (BOOL(5) ? 8 : 0);
+    const uint32_t m = (B(2) ? 1 : 0) | (B(3) ? 2 : 0) | (B(4) ? 4 : 0) | (B(5) ? 8 : 0);
     nvn_chmask_st *s = ST(nvn_chmask_st, P(0));
     s->mask = (s->mask & ~(0xfu << (4 * i))) | m << (4 * i);
 }
 NV(nvnMultisampleStateSetDefaults) { memset(P(0), 0, sizeof(nvn_ms_st)); ST(nvn_ms_st, P(0))->enable = 1; }
-NV(nvnMultisampleStateSetMultisampleEnable) { ST(nvn_ms_st, P(0))->enable = BOOL(1) != 0; }
+NV(nvnMultisampleStateSetMultisampleEnable) { ST(nvn_ms_st, P(0))->enable = B(1) != 0; }
 NV(nvnMultisampleStateSetSamples) { ST(nvn_ms_st, P(0))->samples = (uint8_t)I(1); }
-NV(nvnMultisampleStateSetAlphaToCoverageEnable) { ST(nvn_ms_st, P(0))->a2c = BOOL(1) != 0; }
-NV(nvnMultisampleStateSetAlphaToCoverageDither) { ST(nvn_ms_st, P(0))->a2c_dither = BOOL(1) != 0; }
+NV(nvnMultisampleStateSetAlphaToCoverageEnable) { ST(nvn_ms_st, P(0))->a2c = B(1) != 0; }
+NV(nvnMultisampleStateSetAlphaToCoverageDither) { ST(nvn_ms_st, P(0))->a2c_dither = B(1) != 0; }
 NV(nvnMultisampleStateSetRasterSamples) { ST(nvn_ms_st, P(0))->raster_samples = (uint8_t)I(1); }
-NV(nvnMultisampleStateSetSampleLocationsEnable) { ST(nvn_ms_st, P(0))->sl_en = BOOL(1) != 0; }
+NV(nvnMultisampleStateSetSampleLocationsEnable) { ST(nvn_ms_st, P(0))->sl_en = B(1) != 0; }
 NV(nvnMultisampleStateSetSampleLocations) {}
 NV(nvnPolygonStateSetDefaults) {
     nvn_poly_st *s = ST(nvn_poly_st, P(0));
@@ -2688,10 +2679,10 @@ NV(nvnDepthStencilStateSetDefaults) {
     s->dw = 1, s->df = NVN_DEPTH_FUNC_LESS, s->sf_f = s->sf_b = NVN_STENCIL_FUNC_ALWAYS;
     s->fail_f = s->zfail_f = s->zpass_f = s->fail_b = s->zfail_b = s->zpass_b = NVN_STENCIL_OP_KEEP;
 }
-NV(nvnDepthStencilStateSetDepthTestEnable) { ST(nvn_ds_st, P(0))->dt = BOOL(1) != 0; }
-NV(nvnDepthStencilStateSetDepthWriteEnable) { ST(nvn_ds_st, P(0))->dw = BOOL(1) != 0; }
+NV(nvnDepthStencilStateSetDepthTestEnable) { ST(nvn_ds_st, P(0))->dt = B(1) != 0; }
+NV(nvnDepthStencilStateSetDepthWriteEnable) { ST(nvn_ds_st, P(0))->dw = B(1) != 0; }
 NV(nvnDepthStencilStateSetDepthFunc) { ST(nvn_ds_st, P(0))->df = U32(1); }
-NV(nvnDepthStencilStateSetStencilTestEnable) { ST(nvn_ds_st, P(0))->st = BOOL(1) != 0; }
+NV(nvnDepthStencilStateSetStencilTestEnable) { ST(nvn_ds_st, P(0))->st = B(1) != 0; }
 NV(nvnDepthStencilStateSetStencilFunc) {
     nvn_ds_st *s = ST(nvn_ds_st, P(0));
     if (U32(1) & NVN_FACE_FRONT) s->sf_f = U32(2);
@@ -2735,7 +2726,7 @@ static void resolve_deferred(uint8_t *p) {
     }
 }
 NV(nvnQueueSubmitCommands) {
-    { void hos_renderer_wait(void); static volatile LONG up; if (!up) { hos_renderer_wait(); up = 1; } }   /* (display.c) */
+    { void hos_renderer_wait(void); static volatile int32_t up; if (!up) { hos_renderer_wait(); up = 1; } }   /* (display.c) */
     nvn_queue *q = (nvn_queue *)P(0);
     int n = I(1);
     uint64_t h[64];
@@ -2743,8 +2734,8 @@ NV(nvnQueueSubmitCommands) {
     memcpy(h, PN(2, 8 * (size_t)n), 8 * (size_t)n);
     q->submits++;
     {   /* (which queues submit, 60 lines then every 20000: the game's queues are replayed on one, in arrival order) */
-        static volatile LONG k;
-        const LONG i = InterlockedIncrement(&k);
+        static volatile int32_t k;
+        const int32_t i = os_atomic_inc(&k);
         if (lognvn() && (i <= 60 || i % 20000 == 0))
             hos_log("nvn: QueueSubmitCommands #%ld: queue %p (its #%llu), %d handles (lr %#llx)", (long)i, (void *)q,
                     (unsigned long long)q->submits, n, (unsigned long long)c->x[30]);
@@ -2766,8 +2757,8 @@ NV(nvnQueueSubmitCommands) {
         __atomic_store_n(&list_done, done, __ATOMIC_RELEASE);
         const int bad = nvn_list_submit(h, h, n, done, gw);
         if (bad) die("command handle %#llx is not a live recording", (unsigned long long)h[bad - 1]);
-        static volatile LONG k;
-        if (nvn_list_check_on() && InterlockedIncrement(&k) % 600 == 0) list_log("check, every 600 submits");
+        static volatile int32_t k;
+        if (nvn_list_check_on() && os_atomic_inc(&k) % 600 == 0) list_log("check, every 600 submits");
     } else {
         for (int i = 0; i < n; i++) {
             check_handle(h[i]);
@@ -2785,16 +2776,16 @@ NV(nvnQueueSubmitCommands) {
         if (list_ref()) nvn_list_submitted(rx_nvn_pushed() + held_count());   /* (after the hand-over: what names it) */
         return;
     }
-    EnterCriticalSection(&held_cs);
-    if (nheld == (LONG)(sizeof held / sizeof *held)) {   /* (full: what is held goes now) */
-        for (LONG i = 0; i < nheld; i++) rx_nvn_submit(held[i].h, held[i].n);
+    os_mutex_lock(&held_cs);
+    if (nheld == (int32_t)(sizeof held / sizeof *held)) {   /* (full: what is held goes now) */
+        for (int32_t i = 0; i < nheld; i++) rx_nvn_submit(held[i].h, held[i].n);
         nheld = 0;
     }
     held[nheld].n = n;
     memcpy(held[nheld].h, h, 8 * (size_t)n);
     nheld++;
     if (list_ref()) nvn_list_submitted(rx_nvn_pushed() + held_count());
-    LeaveCriticalSection(&held_cs);
+    os_mutex_unlock(&held_cs);
 }
 
 /* ---- window ---- */
@@ -2902,8 +2893,8 @@ NV(nvnQueuePresentTexture) {
     void rt_slots_frame(void);   /* rt_slots.c */
     rt_slots_frame();
     if (rx_direct()) direct_patches_frame();   /* (M3a: the game patches' lines) */
-    extern volatile LONG64 hos_present_count;   /* display.c */
-    InterlockedIncrement64(&hos_present_count);
+    extern volatile int64_t hos_present_count;   /* display.c */
+    os_atomic_inc(&hos_present_count);
     hos_vi_native_presented();
 }
 
@@ -3073,8 +3064,8 @@ static void draw_mesh(Ctx *c, int kind) {
         void direct_mesh_lists_draw(uint64_t rec, int max, int stride);
         direct_mesh_lists_draw(r->indirect, r->max, r->stride);
     }
-    static volatile LONG64 n;
-    const LONG64 k = InterlockedIncrement64(&n);
+    static volatile int64_t n;
+    const int64_t k = os_atomic_inc(&n);
     if (lognvn() && (k <= 3 || k % 20000 == 0))
         hos_log("nvn: DrawMeshTasks%s: %lld so far (x1 %#llx x2 %#llx x3 %#llx x4 %#llx)",
                 kind == 0 ? "" : kind == 1 ? "Indirect" : " (multi, indirect count)", (long long)k,
@@ -3543,9 +3534,9 @@ static int cmp_impl(const void *a, const void *b) { return strcmp(((const nvn_im
 uint64_t nvn_native_proc(const char *name) {
     static nvn_impl *sorted;
     static uint64_t *addr;
-    static SRWLOCK lock = SRWLOCK_INIT;
+    static os_mutex lock = OS_MUTEX_INIT;
     enum { N = sizeof impls / sizeof *impls };
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     if (!sorted) {
         sorted = (nvn_impl *)malloc(sizeof impls);
         memcpy(sorted, impls, sizeof impls);
@@ -3567,13 +3558,13 @@ uint64_t nvn_native_proc(const char *name) {
         for (k = 0; k < nun && strcmp(un[k].name, name); k++) {}
         if (k == nun) {
             un = realloc(un, (nun + 1) * sizeof *un);
-            un[nun].name = _strdup(name);
+            un[nun].name = strdup(name);
             un[nun].a = hos_hostcall(un[nun].name, unimplemented, un[nun].name);
             nun++;
         }
         a = un[k].a;
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     return a;
 }
 /* The native NVN layer is the default on PC since 2026-10-20 (faster than the emulated GPU: castle 70.6 vs 60.4 fps;

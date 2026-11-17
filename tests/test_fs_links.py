@@ -1,13 +1,12 @@
 """The game's file system stays inside its mounts and never works through links (host/nn_fs.c, host/mods.c).
 
-Linux only (the posix layer's FindFirstFileA marks a symbolic link as a reparse point, as Windows does). Builds, from the
-sources as they are, nn_fs.c's guest_path_ok and delete_tree and mods.c's RomFS walk over host/posix/win32_posix.c's file
-functions, then checks:
+Linux only. Builds, from the sources as they are, nn_fs.c's guest_path_ok and delete_tree and mods.c's RomFS walk over
+host/os (os_linux.c's file functions), then checks:
 
 - guest paths with ".." parts, a \\ or a : are refused, ordinary ones kept;
 - DeleteDirectoryRecursively's walk removes a link inside the save, not the folder or file it points to;
 - the mod index leaves out links to folders (two links back up made the walk endless) and still lists files;
-- GetFileAttributesA marks a link as a reparse point (DeleteDirectoryRecursively on a link removes only the link);
+- os_path_kind marks a link as one (DeleteDirectoryRecursively on a link removes only the link);
 
 python -I -B tests/test_fs_links.py [--cc gcc]
 """
@@ -36,35 +35,17 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
     if os.name == "nt" or sys.platform == "darwin":
-        print("SKIP: the posix layer's checks run on Linux")
+        print("SKIP: the checks run on Linux")
         return
-    posix = (ROOT / "host/posix/win32_posix.c").read_text(encoding="utf-8")
     fs = (ROOT / "host/nn_fs.c").read_text(encoding="utf-8")
     mods = (ROOT / "host/mods.c").read_text(encoding="utf-8")
     pieces = [
-        block(posix, "static DWORD error_of(int e) {"),
-        "static BOOL fail_errno(void) { last_error = error_of(errno); return FALSE; }",
-        "enum { H_THREAD = 0x48540001, H_EVENT, H_SEMA, H_TIMER, H_FILE, H_FIND };",
-        "typedef struct { int type; } HObj;",
-        "static int is(HANDLE h, int type) { return h && h != INVALID_HANDLE_VALUE && (uintptr_t)h > 0x10000 && ((HObj *)h)->type == type; }",
-        block(posix, "static void slashes(char *dst, size_t cap, const char *src) {"),
-        block(posix, "DWORD GetFileAttributesA(LPCSTR name) {"),
-        block(posix, "BOOL RemoveDirectoryA(LPCSTR name) {"),
-        block(posix, "BOOL DeleteFileA(LPCSTR name) {"),
-        "typedef struct { HObj h; DIR *d; char dir[PATH_MAX], pat[256]; } HFind;",
-        block(posix, "static BOOL find_next(HFind *f, WIN32_FIND_DATAA *fd) {"),
-        block(posix, "HANDLE FindFirstFileA(LPCSTR pattern, WIN32_FIND_DATAA *fd) {"),
-        block(posix, "BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *fd) {"),
-        block(posix, "BOOL FindClose(HANDLE h) {"),
         block(fs, "static int guest_path_ok(const char *rest) {"),
         block(fs, "static void delete_tree(const char *dir) {"),
         block(mods, "static int index_romfs(const char *host_dir, const char *rel, int depth) {"),
     ]
     fixture = r'''#define _GNU_SOURCE
-#include <windows.h>
-#include <dirent.h>
-#include <errno.h>
-#include <fnmatch.h>
+#include "os.h"
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -72,7 +53,6 @@ def main():
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-static DWORD last_error;
 #define HOS_FS_PATH 1024   /* (host/nn_fs.c's path buffers, #1497) */
 static void hos_log(const char *f, ...) { (void)f; }
 static void lower_slash(char *s) { (void)s; }
@@ -112,9 +92,8 @@ int main(int argc, char **argv) {
     CHECK(index_romfs(linked_root, "", 0) == 0);
     char dirlink[PATH_MAX];
     snprintf(dirlink, sizeof dirlink, "%s/up1", romfs);
-    CHECK((GetFileAttributesA(dirlink) & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ==
-          (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY));
-    CHECK(!(GetFileAttributesA(romfs) & FILE_ATTRIBUTE_REPARSE_POINT));
+    CHECK(os_path_kind(dirlink) == (OS_PATH_LINK | OS_PATH_DIR));
+    CHECK(os_path_kind(romfs) == OS_PATH_DIR);
     printf("PASS: guest paths stay in their mounts; deleting a save folder removes links, not their targets; mods skip folder links\n");
     return 0;
 }
@@ -124,8 +103,8 @@ int main(int argc, char **argv) {
         src = tmp / "fixture.c"
         src.write_text(fixture, encoding="utf-8")
         exe = tmp / "fixture"
-        subprocess.run([a.cc, "-std=gnu11", "-I", str(ROOT / "host/posix"), "-Wno-unused-function", str(src), "-o", str(exe)],
-                       check=True)
+        subprocess.run([a.cc, "-std=gnu11", "-I", str(ROOT / "host/os"), "-Wno-unused-function", str(src),
+                        str(ROOT / "host/os/os_linux.c"), "-o", str(exe), "-lpthread", "-ldl"], check=True)
         work = tmp / "work"
         work.mkdir()
         r = subprocess.run([str(exe), str(work)], capture_output=True, text=True, timeout=60)

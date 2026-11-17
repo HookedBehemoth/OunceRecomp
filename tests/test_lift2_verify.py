@@ -71,7 +71,8 @@ class Verify(unittest.TestCase):
             c, exe = os.path.join(d, "h.c"), os.path.join(d, "h")
             with open(c, "w") as f:
                 f.write(HARNESS)
-            subprocess.run([CC, "-O1", "-w", "-DLIFT2_VERIFY_STANDALONE", c, os.path.join(ROOT, "host", "lift2_verify.c"),
+            subprocess.run([CC, "-O1", "-w", "-D_GNU_SOURCE", "-DLIFT2_VERIFY_STANDALONE", "-I" + os.path.join(ROOT, "host", "os"),
+                            c, os.path.join(ROOT, "host", "lift2_verify.c"), os.path.join(ROOT, "host", "os", "os_linux.c"),
                             "-o", exe, "-lpthread"], check=True)
             out = subprocess.run([exe], cwd=d, capture_output=True, text=True, check=True).stdout
             log = ""

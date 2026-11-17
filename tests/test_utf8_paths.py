@@ -8,9 +8,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# (the game's own sources: not host/posix, the Linux stand-ins, nor the vendored compiler code)
+# (the game's own sources: not the vendored compiler code)
 SOURCES = [ROOT / "host", ROOT / "gpu" / "direct"]
-VENDORED = ("host/posix/", "gpu/direct/eden/")
+VENDORED = ("gpu/direct/eden/",)
 ANSI = re.compile(r"\b(CP_ACP|CP_OEMCP|CP_THREAD_ACP|CP_MACCP|SetFileApisToOEM|SetFileApisToANSI)\b")
 
 

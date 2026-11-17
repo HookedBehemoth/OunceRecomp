@@ -5,8 +5,7 @@
 #include "hos.h"
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 
 #include "../gpu/api/vk_api.h"
 #include "direct.h"
@@ -93,16 +92,16 @@ typedef struct {
 } early_call;
 static early_call *early;
 static size_t n_early, cap_early;
-static volatile LONG started;   /* rx_start chose (the calls go straight to the renderer from then on) */
-static SRWLOCK early_lock = SRWLOCK_INIT;
+static volatile int32_t started;   /* rx_start chose (the calls go straight to the renderer from then on) */
+static os_mutex early_lock = OS_MUTEX_INIT;
 
 static void forward(const early_call *c);
 /* Keeps a call made before rx_start; 0 when the renderer is chosen already (the caller forwards it) */
 static int keep_early(const early_call *c) {
     if (started) return 0;
-    AcquireSRWLockExclusive(&early_lock);
+    os_mutex_lock(&early_lock);
     if (started) {
-        ReleaseSRWLockExclusive(&early_lock);
+        os_mutex_unlock(&early_lock);
         return 0;
     }
     if (n_early == cap_early) {
@@ -110,12 +109,12 @@ static int keep_early(const early_call *c) {
         early = (early_call *)realloc(early, cap_early * sizeof *early);
     }
     early[n_early++] = *c;
-    ReleaseSRWLockExclusive(&early_lock);
+    os_mutex_unlock(&early_lock);
     return 1;
 }
 /* rx_start: the kept calls given to the renderer chosen, then the gate opened */
 static void flush_early(void) {
-    AcquireSRWLockExclusive(&early_lock);
+    os_mutex_lock(&early_lock);
     size_t texels = 0;
     for (size_t i = 0; i < n_early; i++) {
         forward(&early[i]);
@@ -126,31 +125,31 @@ static void flush_early(void) {
                 texels);
     free(early);
     early = NULL, n_early = cap_early = 0;
-    InterlockedExchange(&started, 1);
-    ReleaseSRWLockExclusive(&early_lock);
+    os_atomic_store(&started, 1);
+    os_mutex_unlock(&early_lock);
 }
 
 /* The direct back end, hookshot_direct.so: the version-14 table for the object layer, sync and present, and the list calls the
    host finds by name (host/direct.h). Read once, at the first call. */
 static hsd_fns direct_fns;
-static volatile LONG direct_state;   /* 0 not loaded yet, 2 loaded */
-static SRWLOCK direct_lock = SRWLOCK_INIT;
-static HMODULE direct_module;
-static const char kDirectDll[] = "hookshot_direct.dll";   /* (the loader maps .dll to .so on Linux) */
+static volatile int32_t direct_state;   /* 0 not loaded yet, 2 loaded */
+static os_mutex direct_lock = OS_MUTEX_INIT;
+static os_lib *direct_module;
+static const char kDirectLib[] = "hookshot_direct.so";
 const hsd_fns *rx_direct(void) {
     if (direct_state) return &direct_fns;
-    AcquireSRWLockExclusive(&direct_lock);
+    os_mutex_lock(&direct_lock);
     if (!direct_state) {
-        char path[MAX_PATH];
-        const DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
-        char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;
-        if (!slash || (size_t)(slash + 1 - path) + sizeof kDirectDll > sizeof path) hos_fatal(NULL, "rx: no path for %s", kDirectDll);
-        memcpy(slash + 1, kDirectDll, sizeof kDirectDll);
-        direct_module = LoadLibraryA(path);
-        if (!direct_module) hos_fatal(NULL, "rx: %s did not load (%lu)", path, GetLastError());
+        char path[OS_PATH_MAX];
+        const int n = os_exe_path(path, sizeof path);
+        char *slash = n ? strrchr(path, '/') : NULL;
+        if (!slash || (size_t)(slash + 1 - path) + sizeof kDirectLib > sizeof path) hos_fatal(NULL, "rx: no path for %s", kDirectLib);
+        memcpy(slash + 1, kDirectLib, sizeof kDirectLib);
+        direct_module = os_lib_open(path);
+        if (!direct_module) hos_fatal(NULL, "rx: %s did not load", path);
         #define DIRECT_FN(field, name)                                                                     \
-    if (!(*(void **)&direct_fns.field = (void *)GetProcAddress(direct_module, name)))               \
-        hos_fatal(NULL, "rx: %s has no %s", kDirectDll, name);
+    if (!(*(void **)&direct_fns.field = os_lib_sym(direct_module, name)))                            \
+        hos_fatal(NULL, "rx: %s has no %s", kDirectLib, name);
         DIRECT_FN(list_begin, "hsd_list_begin")
         DIRECT_FN(emit, "hsd_emit")
         DIRECT_FN(list_call, "hsd_list_call")
@@ -181,9 +180,9 @@ const hsd_fns *rx_direct(void) {
             void crit_wrap(hsd_fns *f);
             if (crit_wanted()) crit_wrap(&direct_fns);
         }
-        InterlockedExchange(&direct_state, 2);
+        os_atomic_store(&direct_state, 2);
     }
-    ReleaseSRWLockExclusive(&direct_lock);
+    os_mutex_unlock(&direct_lock);
     return &direct_fns;
 }
 
@@ -194,9 +193,9 @@ int rx_start(void *hwnd) {
         const char *shots = getenv("RX_VK_SHOTS"), *every = getenv("RX_VK_SHOT_EVERY");
         if (shots && *shots) d->shots(shots, every && atoi(every) > 0 ? atoi(every) : 300);
     }
-    mkwvk_init_fn init = (mkwvk_init_fn)(void *)GetProcAddress(direct_module, "mkwvk_init");
+    mkwvk_init_fn init = (mkwvk_init_fn)os_lib_sym(direct_module, "mkwvk_init");
     const MkwVkRenderer *r = init ? init(&vk_host) : NULL;
-    if (!r || r->version != MKWVK_API_VERSION || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectDll);
+    if (!r || r->version != MKWVK_API_VERSION || !r->start(hwnd)) hos_fatal(NULL, "rx: the direct back end (%s) did not start", kDirectLib);
     vk = r;
     flush_early();
     return 1;
@@ -205,7 +204,7 @@ int rx_start(void *hwnd) {
    seconds at most). One without the export (an older one) has nothing to keep */
 void rx_close_asked(void) {
     if (!direct_module) return;
-    void (*close_asked)(void) = (void (*)(void))(void *)GetProcAddress(direct_module, "mkwvk_close_asked");
+    void (*close_asked)(void) = (void (*)(void))os_lib_sym(direct_module, "mkwvk_close_asked");
     if (close_asked) close_asked();
 }
 void rx_resize(int width, int height) { if (vk) vk->resize(width, height); }

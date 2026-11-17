@@ -6,8 +6,8 @@
 #include "../gpu/api/rx_nvn.h"
 #include <stdlib.h>
 #include <string.h>
-#include <sched.h>
-#define list_yield() sched_yield()
+#include "os.h"
+#define list_yield() os_yield()
 
 static int check_on;
 static void (*say)(const char *fmt, ...);

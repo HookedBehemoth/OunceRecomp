@@ -3,8 +3,7 @@
    so the game takes its SDR path. Frames are paced at the native NVN layer's window acquire (the end of this file). */
 #include "hos.h"
 #include "../gpu/api/vk_api.h"   /* (HOS_OPT_HDR_*: the Insert menu's HDR, answered by the renderer) */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,11 +14,11 @@ void hos_system_event_signal(uint64_t key);
 
 static uint64_t display, layer;
 static uint64_t vsync_events[8];
-static volatile LONG nvsync;
-static HANDLE vsync_thread;
+static volatile int32_t nvsync;
+static os_thread *vsync_thread;
 
 static int fps_max(void);   /* (below: HOS_FPS_MAX) */
-static DWORD WINAPI vsync_main(void *p) {
+static void vsync_main(void *p) {
     (void)p;
     const int64_t period = 1000000000LL / fps_max();
     int64_t next = hos_now_ns() + period;
@@ -28,9 +27,8 @@ static DWORD WINAPI vsync_main(void *p) {
         if (next > now) hos_sleep_ns(next - now);
         next += period;
         if (next < hos_now_ns()) next = hos_now_ns() + period;   /* (fell behind: no burst of vsyncs) */
-        for (LONG i = 0; i < nvsync; i++) hos_system_event_signal(vsync_events[i]);
+        for (int32_t i = 0; i < nvsync; i++) hos_system_event_signal(vsync_events[i]);
     }
-    return 0;
 }
 
 /* nn::vi::Initialize() */
@@ -53,16 +51,16 @@ HLE(_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE) {
 /* nn::vi::GetDisplayVsyncEvent(nn::os::SystemEventType*, nn::vi::Display*) -> Result */
 HLE(_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE) {
     hos_system_event_init(ARG(0), 1);
-    {   /* (hookshot) under a lock: two threads checked the count at once and wrote past the table */
-        static SRWLOCK vsync_lock = SRWLOCK_INIT;
-        AcquireSRWLockExclusive(&vsync_lock);
-        if (nvsync < (LONG)(sizeof vsync_events / sizeof vsync_events[0])) {
+    {   /* (hookshot) under a lock: two threads checked the count at once and wrote past the table (the thread's start too) */
+        static os_mutex vsync_lock = OS_MUTEX_INIT;
+        os_mutex_lock(&vsync_lock);
+        if (nvsync < (int32_t)(sizeof vsync_events / sizeof vsync_events[0])) {
             vsync_events[nvsync] = ARG(0);
-            InterlockedIncrement(&nvsync);
+            os_atomic_inc(&nvsync);
         }
-        ReleaseSRWLockExclusive(&vsync_lock);
+        if (!vsync_thread) vsync_thread = os_thread_start(vsync_main, NULL, 0, "vi vsync");
+        os_mutex_unlock(&vsync_lock);
     }
-    if (!vsync_thread) vsync_thread = CreateThread(NULL, 0, vsync_main, NULL, 0, NULL);
     RET(0);
 }
 
@@ -127,7 +125,7 @@ static int fps_max(void) {
 }
 int hos_fps_max(void) { return fps_max(); }   /* (nn_hid.c: the input record's header) */
 static int64_t next_frame_at, window_start, frames_in_window;
-static volatile LONG64 presents;
+static volatile int64_t presents;
 long long hos_vi_present_number(void) { return __atomic_load_n(&presents, __ATOMIC_RELAXED); }
 int hos_vi_native_interval(Ctx *c, int requested) {
     (void)c;
@@ -151,7 +149,7 @@ int hos_vi_native_interval(Ctx *c, int requested) {
    waiting one interval after the last present instead (two textures' behaviour) holds every frame over 16.7 ms to
    the next vsync step (gameplay at 27 ms frames, 5 ms of them in that sleep) */
 static int64_t shown_at[16];
-static volatile LONG64 shown_count;
+static volatile int64_t shown_count;
 void hos_vi_native_acquire(int active) {
     static int no_pacing = -1;
     if (no_pacing < 0) no_pacing = getenv("HOS_NO_PACING") != NULL || hos_bench_on();   /* (HOS_BENCH: unpaced) */
@@ -186,18 +184,18 @@ static void scan_dt(long long presents) {
     if (!f) return;
     size_t hits = 0;
     for (uint64_t a = 0x80000000ULL; a < 0x2000000000ULL && hits < 4000000;) {
-        MEMORY_BASIC_INFORMATION m;
-        if (!VirtualQuery(GP(a), &m, sizeof m)) break;
-        const uint64_t size = m.RegionSize;
-        if (m.State == MEM_COMMIT && (m.Protect & PAGE_READWRITE)) {
-            const uint32_t *w = (const uint32_t *)m.BaseAddress;
+        os_mem_info m;
+        if (os_mem_query(GP(a), &m)) break;
+        const uint64_t size = m.size;
+        if (m.state == OS_MEM_COMMITTED && m.prot == OS_PROT_RW) {
+            const uint32_t *w = (const uint32_t *)m.base;
             for (size_t i = 0; i < size / 4; i++)
                 if (w[i] >= 0x3c800000 && w[i] <= 0x3d230000) {
                     fprintf(f, "%llx %08x\n", (unsigned long long)((uint8_t *)&w[i] - (uint8_t *)GP(0)), w[i]);
                     if (++hits >= 4000000) break;
                 }
         }
-        a = (uint64_t)((uint8_t *)m.BaseAddress - (uint8_t *)GP(0)) + size;
+        a = (uint64_t)((uint8_t *)m.base - (uint8_t *)GP(0)) + size;
     }
     fclose(f);
     hos_log("vi: scan %s: %zu floats", name, hits);
@@ -248,7 +246,7 @@ uint32_t hos_movie_frames(uint64_t player) {
     enum { PLACES = 16 };
     const uint32_t bits = __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED);   /* (realtime_step writes it at each present) */
     if (!bits) return movie_log(1);
-    static SRWLOCK lock = SRWLOCK_INIT;
+    static os_mutex lock = OS_MUTEX_INIT;
     static int timed = -1;   /* (these four under the lock) */
     static struct { uint64_t player, used; double part; } carry[PLACES];
     static uint64_t calls;
@@ -256,7 +254,7 @@ uint32_t hos_movie_frames(uint64_t player) {
     float secs;
     uint32_t n = 1;
     memcpy(&secs, &bits, 4);
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     if (timed < 0) timed = !(getenv("HOS_FPS_MOVIE") && !atoi(getenv("HOS_FPS_MOVIE")));
     if (timed) {
         int i = 0;
@@ -279,18 +277,18 @@ uint32_t hos_movie_frames(uint64_t player) {
         n = (uint32_t)carry[i].part;
         carry[i].part -= n;
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     return movie_log(n);
 }
 /* (the lifter's Value probes: PATCH_AT ... instead, host/patch.h) the whole frames a game counter at `at` takes for an amount of the frame
    step: with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
 #include "frame_whole.h"
 static FrameWhole frame_whole_state;
-static SRWLOCK frame_whole_lock = SRWLOCK_INIT;   /* (the game's update threads) */
+static os_mutex frame_whole_lock = OS_MUTEX_INIT;   /* (the game's update threads) */
 PATCH_AT(0x80a88300, word(0x1e38000c), instead, w12, hos_frame_whole, as(add(x19, 864), at), as(s0, amount)) {   /* fcvtzs w12, s0 */
-    AcquireSRWLockExclusive(&frame_whole_lock);
+    os_mutex_lock(&frame_whole_lock);
     const uint32_t whole = frame_whole(&frame_whole_state, at, amount, __atomic_load_n(&hos_frame_seconds_bits, __ATOMIC_RELAXED) != 0);
-    ReleaseSRWLockExclusive(&frame_whole_lock);
+    os_mutex_unlock(&frame_whole_lock);
     {   /* HOS_DBG=whole (diagnostic): the first calls, and a count every 600 (which counters, what they took) */
         static int on = -1;
         static volatile long calls;
@@ -515,7 +513,7 @@ void hos_vi_native_presented(void) {
         shown_at[n & 15] = last + period > now ? last + period : now;
         shown_count = n + 1;
     }
-    const int64_t n = InterlockedIncrement64(&presents);
+    const int64_t n = os_atomic_inc(&presents);
     if (n % 1800 == 0) {
         void hos_code_ptr_report(void);
         hos_code_ptr_report();   /* code_ptrs.c */

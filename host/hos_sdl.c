@@ -6,8 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 
 static int version;   /* 3, 2, or 0 none */
 static struct {
@@ -27,16 +26,17 @@ static struct {
 } f;
 #define CALL(type, fn) ((type)f.fn)
 
-static HMODULE load_one(const char *dll) {   /* beside the executable, else the system's */
-    char path[MAX_PATH];
-    DWORD n = GetModuleFileNameA(NULL, path, sizeof path);
-    while (n && path[n - 1] != '\\' && path[n - 1] != '/') n--;
-    snprintf(path + n, sizeof path - n, "%s", dll);
-    HMODULE m = n ? LoadLibraryA(path) : NULL;   /* (no folder: a bare name would search the current folder and PATH) */
-    return m ? m : LoadLibraryA(dll);
+static os_lib *lib;   /* (the SDL loaded) */
+static os_lib *load_one(const char *name) {   /* beside the executable, else the system's */
+    char path[OS_PATH_MAX];
+    int n = os_exe_path(path, sizeof path);
+    while (n && path[n - 1] != '/') n--;
+    snprintf(path + n, sizeof path - n, "%s", name);
+    os_lib *m = n ? os_lib_open(path) : NULL;   /* (no folder: the system's only) */
+    return m ? m : os_lib_open(name);
 }
-static int get_all(HMODULE m, int three) {
-#define GET(field, name) if (!(*(FARPROC *)&f.field = GetProcAddress(m, name))) { hos_log("sdl: SDL%d has no %s", three ? 3 : 2, name); return 0; }
+static int get_all(os_lib *m, int three) {
+#define GET(field, name) if (!(f.field = os_lib_sym(m, name))) { hos_log("sdl: SDL%d has no %s", three ? 3 : 2, name); return 0; }
 #define GET2(field, n3, n2) GET(field, three ? n3 : n2)
     GET(InitSubSystem, "SDL_InitSubSystem");
     GET(SetHint, "SDL_SetHint");
@@ -61,12 +61,12 @@ static int get_all(HMODULE m, int three) {
     GET2(PadName, "SDL_GetGamepadName", "SDL_GameControllerName");
     GET2(PadRumble, "SDL_RumbleGamepad", "SDL_GameControllerRumble");
     /* (SDL2 2.0.12 and 2.0.16 on, SDL3 3.2 on: without them every pad keeps the motor rumble) */
-    *(FARPROC *)&f.PadType = GetProcAddress(m, three ? "SDL_GetGamepadType" : "SDL_GameControllerGetType");
-    *(FARPROC *)&f.PadEffect = GetProcAddress(m, three ? "SDL_SendGamepadEffect" : "SDL_GameControllerSendEffect");
+    f.PadType = os_lib_sym(m, three ? "SDL_GetGamepadType" : "SDL_GameControllerGetType");
+    f.PadEffect = os_lib_sym(m, three ? "SDL_SendGamepadEffect" : "SDL_GameControllerSendEffect");
     /* (motion sensors: SDL 2.0.14 on and every SDL3; without them the pads still play, with no gyro) */
-    *(FARPROC *)&f.PadHasSensor = GetProcAddress(m, three ? "SDL_GamepadHasSensor" : "SDL_GameControllerHasSensor");
-    *(FARPROC *)&f.PadSensorEnable = GetProcAddress(m, three ? "SDL_SetGamepadSensorEnabled" : "SDL_GameControllerSetSensorEnabled");
-    *(FARPROC *)&f.PadSensorData = GetProcAddress(m, three ? "SDL_GetGamepadSensorData" : "SDL_GameControllerGetSensorData");
+    f.PadHasSensor = os_lib_sym(m, three ? "SDL_GamepadHasSensor" : "SDL_GameControllerHasSensor");
+    f.PadSensorEnable = os_lib_sym(m, three ? "SDL_SetGamepadSensorEnabled" : "SDL_GameControllerSetSensorEnabled");
+    f.PadSensorData = os_lib_sym(m, three ? "SDL_GetGamepadSensorData" : "SDL_GameControllerGetSensorData");
     if (three) {
         GET(SetWindowPosition, "SDL_SetWindowPosition");
         GET(GetPrimaryDisplay, "SDL_GetPrimaryDisplay");
@@ -76,14 +76,14 @@ static int get_all(HMODULE m, int three) {
         GET(GetGamepads, "SDL_GetGamepads");
         GET(GetGamepadID, "SDL_GetGamepadID");
         GET(Free, "SDL_free");
-        *(FARPROC *)&f.LoadPNG = GetProcAddress(m, "SDL_LoadPNG");   /* (3.4 on: the icon, when there) */
-        *(FARPROC *)&f.SetWindowIcon = GetProcAddress(m, "SDL_SetWindowIcon");
-        *(FARPROC *)&f.DestroySurface = GetProcAddress(m, "SDL_DestroySurface");
-        *(FARPROC *)&f.GetWindowDisplay = GetProcAddress(m, "SDL_GetDisplayForWindow");   /* (the refresh: hos_sdl_refresh_mhz) */
-        *(FARPROC *)&f.GetCurrentDisplayMode = GetProcAddress(m, "SDL_GetCurrentDisplayMode");
+        f.LoadPNG = os_lib_sym(m, "SDL_LoadPNG");   /* (3.4 on: the icon, when there) */
+        f.SetWindowIcon = os_lib_sym(m, "SDL_SetWindowIcon");
+        f.DestroySurface = os_lib_sym(m, "SDL_DestroySurface");
+        f.GetWindowDisplay = os_lib_sym(m, "SDL_GetDisplayForWindow");   /* (the refresh: hos_sdl_refresh_mhz) */
+        f.GetCurrentDisplayMode = os_lib_sym(m, "SDL_GetCurrentDisplayMode");
     } else {
-        *(FARPROC *)&f.GetWindowDisplay = GetProcAddress(m, "SDL_GetWindowDisplayIndex");   /* (the refresh: hos_sdl_refresh_mhz) */
-        *(FARPROC *)&f.GetCurrentDisplayMode = GetProcAddress(m, "SDL_GetCurrentDisplayMode");
+        f.GetWindowDisplay = os_lib_sym(m, "SDL_GetWindowDisplayIndex");   /* (the refresh: hos_sdl_refresh_mhz) */
+        f.GetCurrentDisplayMode = os_lib_sym(m, "SDL_GetCurrentDisplayMode");
         GET(OpenAudioDevice, "SDL_OpenAudioDevice");
         GET(PauseAudioDevice, "SDL_PauseAudioDevice");
         GET(NumJoysticks, "SDL_NumJoysticks");
@@ -97,16 +97,16 @@ static int get_all(HMODULE m, int three) {
     return 1;
 }
 int hos_sdl_load(void) {
-    static volatile LONG state;   /* 0 not tried, 1 loading, 2 done */
-    if (InterlockedCompareExchange(&state, 1, 0) == 0) {
+    static volatile int32_t state;   /* 0 not tried, 1 loading, 2 done */
+    if (os_atomic_cas(&state, 0, 1) == 0) {
         const char *want = getenv("HOS_SDL_VERSION");
-        HMODULE m = want && atoi(want) == 2 ? NULL : load_one("SDL3.dll");
-        if (m && get_all(m, 1)) version = 3;
-        else if ((m = load_one("SDL2.dll")) && get_all(m, 0)) version = 2;
+        os_lib *m = want && atoi(want) == 2 ? NULL : load_one("libSDL3.so.0");
+        if (m && get_all(m, 1)) version = 3, lib = m;
+        else if ((m = load_one("libSDL2-2.0.so.0")) && get_all(m, 0)) version = 2, lib = m;
         hos_log(version ? "sdl: SDL%d" : "sdl: no SDL3 or SDL2 found: no window, sound or SDL controllers", version);
-        InterlockedExchange(&state, 2);
+        os_atomic_store(&state, 2);
     }
-    while (state != 2) Sleep(0);
+    while (state != 2) os_yield();
     return version;
 }
 
@@ -124,10 +124,7 @@ void hos_sdl_identity(const char *name, const char *app_id) {
     if (!hos_sdl_load()) return;
     if (version == 3) {
         static void *set;
-        if (!set) {
-            HMODULE m = load_one("SDL3.dll");   /* (the one loaded: the same handle back) */
-            set = m ? (void *)GetProcAddress(m, "SDL_SetAppMetadata") : NULL;
-        }
+        if (!set) set = os_lib_sym(lib, "SDL_SetAppMetadata");
         if (set) ((_Bool (*)(const char *, const char *, const char *))set)(name, NULL, app_id);
         return;
     }
@@ -366,17 +363,15 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
    not at load: an SDL without it still plays, in stereo. */
 int hos_sdl_audio_channels(void) {
     if (!hos_sdl_load() || !hos_sdl_init(HOS_SDL_AUDIO)) return 2;
-    HMODULE m = load_one(version == 3 ? "SDL3.dll" : "SDL2.dll");   /* (the one loaded: the same handle back) */
-    if (!m) return 2;
     int n = 0;
     if (version == 3) {
-        void *get = (void *)GetProcAddress(m, "SDL_GetAudioDeviceFormat");
+        void *get = os_lib_sym(lib, "SDL_GetAudioDeviceFormat");
         struct { uint32_t format; int channels, freq; } spec = {0, 0, 0};
         int frames = 0;
         if (get && ((_Bool (*)(uint32_t, void *, int *))get)(0xFFFFFFFFu /* the default output */, &spec, &frames))
             n = spec.channels;
     } else {
-        void *get = (void *)GetProcAddress(m, "SDL_GetDefaultAudioInfo"), *release = (void *)GetProcAddress(m, "SDL_free");
+        void *get = os_lib_sym(lib, "SDL_GetDefaultAudioInfo"), *release = os_lib_sym(lib, "SDL_free");
         struct {
             int freq;
             uint16_t format;
@@ -400,18 +395,17 @@ static struct {
     void *NumDevices, *DeviceName2, *CloseDevice, *LockDevice, *UnlockDevice;   /* (SDL2) */
     int tried, ok;
 } rec;
-#define REC_GET(field, name) (*(FARPROC *)&rec.field = GetProcAddress(m, name))
+#define REC_GET(field, name) (rec.field = os_lib_sym(lib, name))
 static int rec_ready(void) {
     if (!hos_sdl_load()) return 0;
     if (!rec.tried) {
         rec.tried = 1;
-        HMODULE m = load_one(version == 3 ? "SDL3.dll" : "SDL2.dll");   /* (the one loaded: the same handle back) */
-        if (m && version == 3) {
+        if (version == 3) {
             REC_GET(GetDevices, "SDL_GetAudioRecordingDevices"), REC_GET(DeviceName, "SDL_GetAudioDeviceName");
             REC_GET(Available, "SDL_GetAudioStreamAvailable"), REC_GET(GetData, "SDL_GetAudioStreamData");
             REC_GET(Clear, "SDL_ClearAudioStream"), REC_GET(Destroy, "SDL_DestroyAudioStream");
             rec.ok = rec.GetDevices && rec.DeviceName && rec.Available && rec.GetData && rec.Clear && rec.Destroy;
-        } else if (m) {
+        } else {
             REC_GET(NumDevices, "SDL_GetNumAudioDevices"), REC_GET(DeviceName2, "SDL_GetAudioDeviceName");
             REC_GET(CloseDevice, "SDL_CloseAudioDevice"), REC_GET(LockDevice, "SDL_LockAudioDevice");
             REC_GET(UnlockDevice, "SDL_UnlockAudioDevice");

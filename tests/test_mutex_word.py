@@ -27,21 +27,21 @@ HARNESS = r"""
 #include <time.h>
 #include <emmintrin.h>
 typedef long LONG;
-typedef struct { pthread_mutex_t m; } SRWLOCK;
-typedef struct { pthread_cond_t c; } CONDITION_VARIABLE;
+typedef struct { pthread_mutex_t m; } os_mutex;
+typedef struct { pthread_cond_t c; } os_cond;
 typedef struct HosThread HosThread;
 typedef struct { uint64_t x[31]; } Ctx;
-static void AcquireSRWLockExclusive(SRWLOCK *l) { pthread_mutex_lock(&l->m); }
-static void ReleaseSRWLockExclusive(SRWLOCK *l) { pthread_mutex_unlock(&l->m); }
-static void WakeConditionVariable(CONDITION_VARIABLE *c) { pthread_cond_signal(&c->c); }
-static void WakeAllConditionVariable(CONDITION_VARIABLE *c) { pthread_cond_broadcast(&c->c); }
+static void os_mutex_lock(os_mutex *l) { pthread_mutex_lock(&l->m); }
+static void os_mutex_unlock(os_mutex *l) { pthread_mutex_unlock(&l->m); }
+static void os_cond_signal(os_cond *c) { pthread_cond_signal(&c->c); }
+static void os_cond_broadcast(os_cond *c) { pthread_cond_broadcast(&c->c); }
 static void crit_wake(void *p) { (void)p; }
-static LONG InterlockedIncrement(volatile LONG *p) { return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST); }
+#define os_atomic_inc(p) __atomic_add_fetch((p), 1, __ATOMIC_SEQ_CST)
 static int64_t hos_now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000000000LL + t.tv_nsec; }
 static int hos_cv_sleep(void *cv, void *lk, unsigned ms) {
     struct timespec t; clock_gettime(CLOCK_REALTIME, &t);
     t.tv_nsec += (long)ms * 1000000L; t.tv_sec += t.tv_nsec / 1000000000L; t.tv_nsec %= 1000000000L;
-    return pthread_cond_timedwait(&((CONDITION_VARIABLE *)cv)->c, &((SRWLOCK *)lk)->m, &t) == 0;
+    return pthread_cond_timedwait(&((os_cond *)cv)->c, &((os_mutex *)lk)->m, &t) == 0;
 }
 static HosThread *hos_self(void) { return NULL; }
 static const char *hos_thread_name(HosThread *t) { (void)t; return "?"; }
@@ -51,7 +51,7 @@ static void hos_fatal(Ctx *c, const char *f, ...) { (void)c; puts(f); exit(1); }
 static uint8_t guest[4096] __attribute__((aligned(64)));
 #define GP(a) ((void *)(guest + (uint32_t)(a)))
 enum { K_MUTEX = 1 };
-typedef struct Obj { uint64_t key; int kind; SRWLOCK lk; CONDITION_VARIABLE cv; int count, mwait, reserved;
+typedef struct Obj { uint64_t key; int kind; os_mutex lk; os_cond cv; int count, mwait, reserved;
                      int spin_misses, spin_waits; } Obj;
 static Obj objs[16];
 static Obj *obj_nockpt(uint64_t key, int kind) { Obj *o = &objs[key / 64]; o->key = key; o->kind = kind; return o; }

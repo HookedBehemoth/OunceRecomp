@@ -17,7 +17,7 @@
 #include "../gpu/api/rx_nvn.h"
 #include <stddef.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 void f_800634b0(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 #define ENTRY_BYTES 0xc0
@@ -28,8 +28,8 @@ typedef struct {
 } Snap;
 #define NE 64
 static struct { uint64_t entry; int have; Snap s; } ents[NE];
-static SRWLOCK lock = SRWLOCK_INIT;
-static struct { volatile LONG64 calls, kept, run_first, run_no_id, run_entry, run_view, run_tex, run_other_caller; } n;
+static os_rwlock lock = OS_RWLOCK_INIT;
+static struct { volatile int64_t calls, kept, run_first, run_no_id, run_entry, run_view, run_tex, run_other_caller; } n;
 
 static int snap(uint64_t entry, uint64_t view, Snap *s) {
     memset(s, 0, sizeof *s);
@@ -46,10 +46,10 @@ static int snap(uint64_t entry, uint64_t view, Snap *s) {
 /* f_80667d20 at 0x806680d8 in place of its bl f_800634b0: sp the caller's, x0-x2 the call's arguments */
 PATCH_AT(0x806680d8, word(0x97e7ecf6), instead, none, direct_rt_ids_reregister, guest(0x800634b0), sp, as(x0, entry), as(x1, view), as(x2, flag)) {
     if (!view) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }
-    InterlockedIncrement64(&n.calls);
+    os_atomic_inc(&n.calls);
     Snap now;
     if (!snap(entry, view, &now)) { guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0); return; }
-    AcquireSRWLockShared(&lock);
+    os_rwlock_lock_shared(&lock);
     int i = 0;
     for (; i < NE && ents[i].entry && ents[i].entry != entry; i++) {}
     int same = 0, why = 0;
@@ -60,37 +60,37 @@ PATCH_AT(0x806680d8, word(0x97e7ecf6), instead, none, direct_rt_ids_reregister, 
     else if (memcmp(ents[i].s.tex, now.tex, sizeof now.tex)) why = 5;
     else same = 1;
     if (why >= 3) {   /* (the first bytes that differ, named a few times) */
-        static volatile LONG told;
+        static volatile int32_t told;
         const uint8_t *a = why == 3 ? ents[i].s.entry : why == 4 ? ents[i].s.view : ents[i].s.tex;
         const uint8_t *b = why == 3 ? now.entry : why == 4 ? now.view : now.tex;
         const int len = why == 3 ? ENTRY_BYTES : why == 4 ? 16 : (int)sizeof now.tex;
         int k = 0;
         while (k < len && a[k] == b[k]) k++;
-        if (InterlockedIncrement(&told) <= 12)
+        if (os_atomic_inc(&told) <= 12)
             hos_log("direct patch rt ids: entry %#llx: %s differs from byte %#x (%02x -> %02x)", (unsigned long long)entry,
                     why == 3 ? "the entry" : why == 4 ? "the view" : "the texture", k, a[k], b[k]);
     }
-    ReleaseSRWLockShared(&lock);
+    os_rwlock_unlock_shared(&lock);
     if (same) {
-        InterlockedIncrement64(&n.kept);
+        os_atomic_inc(&n.kept);
         return;   /* (the id and its registration stay; f_800634b0's result is not read at 0x806680dc) */
     }
-    InterlockedIncrement64(why == 1 ? &n.run_first : why == 2 ? &n.run_no_id : why == 3 ? &n.run_entry : why == 4 ? &n.run_view : &n.run_tex);
+    os_atomic_inc(why == 1 ? &n.run_first : why == 2 ? &n.run_no_id : why == 3 ? &n.run_entry : why == 4 ? &n.run_view : &n.run_tex);
     guest_call(g, sp, REREGISTER, entry, view, flag, 0, 0);
     Snap after;
     if (snap(entry, view, &after)) {
-        AcquireSRWLockExclusive(&lock);
+        os_rwlock_lock(&lock);
         int j = 0;
         for (; j < NE && ents[j].entry && ents[j].entry != entry; j++) {}
         if (j < NE) ents[j].entry = entry, ents[j].s = after, ents[j].have = 1;
-        ReleaseSRWLockExclusive(&lock);
+        os_rwlock_unlock(&lock);
     }
 }
 
 void direct_rt_ids_log(double frames) {
-    static LONG64 last[7];
-    const LONG64 now[7] = {n.calls, n.kept, n.run_first, n.run_no_id, n.run_entry, n.run_view, n.run_tex};
-    LONG64 d[7];
+    static int64_t last[7];
+    const int64_t now[7] = {n.calls, n.kept, n.run_first, n.run_no_id, n.run_entry, n.run_view, n.run_tex};
+    int64_t d[7];
     for (int i = 0; i < 7; i++) d[i] = now[i] - last[i];
     hos_log("direct patch rt ids (f_800634b0 from 0x806680dc): a frame: %.2f calls, id kept %.2f; the game's path: first %.2f, no id "
             "%.2f, entry changed %.2f, view changed %.2f, texture changed %.2f",

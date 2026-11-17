@@ -50,12 +50,7 @@ def main():
     fixture = r'''#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-typedef volatile long LONG;
-static LONG InterlockedIncrement(volatile LONG *p) { return __sync_add_and_fetch(p, 1); }
-#endif
+#define os_atomic_inc(p) __atomic_add_fetch((p), 1, __ATOMIC_SEQ_CST)
 
 typedef struct { uint64_t x[32]; } Ctx;
 typedef struct { uint32_t swizzle_r, swizzle_g, swizzle_b, swizzle_a; } nvn_texdesc;

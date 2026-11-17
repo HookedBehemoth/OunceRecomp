@@ -8,7 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <windows.h>   /* (the exe's folder; the browser build: the Microsoft C runtime's time functions) */
+#include "os.h"
+#include <strings.h>
 
 static int64_t boot_ns;
 
@@ -34,8 +35,8 @@ static const char *desired_language(void) {
         from = "HOS_LANGUAGE";
     } else {
         char path[300] = "language.txt";
-#if !defined(__EMSCRIPTEN__)   /* (linux too: host/posix) */
-        DWORD n = hos_game_path_a(path, 260);
+#if !defined(__EMSCRIPTEN__)
+        uint32_t n = hos_game_path_a(path, 260);
         while (n > 0 && path[n - 1] != 92 && path[n - 1] != 47) n--;
         snprintf(path + n, sizeof path - n, "language.txt");
 #endif
@@ -57,7 +58,7 @@ static const char *desired_language(void) {
                 code[strcspn(code, " \t\r\n")] = 0;
                 int known = 0;
                 for (size_t i = 0; i < sizeof languages / sizeof *languages; i++)
-                    if (!_stricmp(code, languages[i].code)) snprintf(code, sizeof code, "%s", languages[i].code), known = 1;
+                    if (!strcasecmp(code, languages[i].code)) snprintf(code, sizeof code, "%s", languages[i].code), known = 1;
                 if (!known) continue;
                 snprintf(want, sizeof want, "%s", code);
                 from = "language.txt";
@@ -74,7 +75,7 @@ static const char *desired_language(void) {
     snprintf(lang, sizeof lang, "en-US");
     int found = 0;
     for (size_t i = 0; want[0] && i < sizeof languages / sizeof *languages; i++)
-        if (!_stricmp(want, languages[i].code)) snprintf(lang, sizeof lang, "%s", languages[i].code), found = 1;   /* (HOS_LANGUAGE=pt-br too, as language.txt) */
+        if (!strcasecmp(want, languages[i].code)) snprintf(lang, sizeof lang, "%s", languages[i].code), found = 1;   /* (HOS_LANGUAGE=pt-br too, as language.txt) */
     if (want[0] && !found) hos_log("oe: language \"%s\" (%s) is not one the game has: English (US)", want, from);
     else hos_log("oe: language %s (%s)", lang, from);
     return lang;
@@ -90,11 +91,11 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
 int hos_ini_option(const char *key, int otherwise);
 #define ini_option hos_ini_option
 int hos_ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert menu's choice, gpu/legacy/vk/vk_menu.cpp; nn_vi.c reads it too) */
-    char path[MAX_PATH];
-    const DWORD n = hos_game_path_a(path, MAX_PATH);
+    char path[OS_PATH_MAX];
+    const uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
     char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
     if (!slash) return otherwise;
-    snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+    snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
     FILE *f = fopen(path, "r");
     if (!f) return otherwise;
     char line[80];
@@ -208,7 +209,7 @@ HLE(_ZN2nn4time13IsInitializedEv) { RET(1); }
    follows the time) */
 static uint64_t now_posix(void) {
     static int64_t fixed = -1;
-    if (fixed < 0) fixed = getenv("HOS_FIXED_TIME") ? _atoi64(getenv("HOS_FIXED_TIME")) : 0;
+    if (fixed < 0) fixed = getenv("HOS_FIXED_TIME") ? atoll(getenv("HOS_FIXED_TIME")) : 0;
     return fixed ? (uint64_t)(fixed + hos_now_ns() / 1000000000LL) : (uint64_t)time(NULL);
 }
 HLE(_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE) { G64(ARG(0)) = now_posix(); RET(0); }
@@ -253,7 +254,7 @@ HLE(_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE) {
 static void calendar(uint64_t out, uint64_t info, int64_t posix, int local) {
     time_t t = (time_t)posix;
     struct tm tmv = {0};   /* (hookshot: a time the C library cannot convert left it as the stack had it) */
-    if (local) localtime_s(&tmv, &t); else gmtime_s(&tmv, &t);
+    if (local) localtime_r(&t, &tmv); else gmtime_r(&t, &tmv);
     /* CalendarTime { s16 year; s8 month, day, hour, minute, second; pad } */
     uint8_t ct[8] = {0};
     int16_t year = (int16_t)(tmv.tm_year + 1900);
@@ -289,7 +290,7 @@ HLE(_ZN2nn4time18ToPosixTimeFromUtcERKNS0_12CalendarTimeE) {
     memcpy(&year, ct, 2);
     tmv.tm_year = year - 1900; tmv.tm_mon = ct[2] - 1; tmv.tm_mday = ct[3];
     tmv.tm_hour = ct[4]; tmv.tm_min = ct[5]; tmv.tm_sec = ct[6];
-    RET((uint64_t)_mkgmtime(&tmv));
+    RET((uint64_t)timegm(&tmv));
 }
 /* ClockSnapshot: an opaque 0xD0-byte record; ours holds the POSIX time at +0 */
 HLE(_ZN2nn4time13ClockSnapshotC1Ev) { memset(GP(ARG(0)), 0, 0xD0); }
@@ -371,10 +372,10 @@ HLE(_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERK
 HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
     /* (hookshot) HOS_GRAPHICS_SCALE=<f>: another scale, a test of whether the game sizes its picture by it (4K, issue 68) */
     static float scale = 0;
-    static volatile LONG told;
+    static volatile int32_t told;
     if (scale == 0) scale = getenv("HOS_GRAPHICS_SCALE") ? (float)atof(getenv("HOS_GRAPHICS_SCALE")) : 1.0f;
     if (scale <= 0) scale = 1.0f;
-    if (InterlockedIncrement(&told) <= 3) hos_log("oe: GetCurrentGraphicsScale -> %.2f", scale);
+    if (os_atomic_inc(&told) <= 3) hos_log("oe: GetCurrentGraphicsScale -> %.2f", scale);
     const float one = scale;
     uint32_t bits;
     memcpy(&bits, &one, 4);

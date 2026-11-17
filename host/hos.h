@@ -13,6 +13,7 @@
 #ifndef HOS_H
 #define HOS_H
 #include "a64.h"
+#include "os.h"
 #include <stdarg.h>
 
 /* rt/a64_rt.c: code pointers are host function pointers (docs/lifter-output.md, "Indirect calls and jumps"). What the game
@@ -101,7 +102,7 @@ void hos_thread_start(HosThread *t);
 void hos_thread_join(HosThread *t);
 void hos_thread_destroy(HosThread *t);
 void hos_thread_set_name(HosThread *t, const char *name);
-void hos_thread_pin(void *h, const char *name);   /* HOS_PIN: host CPU affinity by thread name */
+void hos_thread_pin(os_thread *h, const char *name);   /* HOS_PIN: host CPU affinity by thread name */
 const char *hos_thread_name(HosThread *t);
 void hos_thread_affinity(HosThread *t, int ideal, uint64_t mask);
 uint64_t hos_thread_mask(HosThread *t);
@@ -114,7 +115,7 @@ int hos_block_begin(int why, const void *key);
 void hos_block_end(void);
 void hos_thread_fp_log(long long present);   /* (hos_thread.c) HOS_FP_LOG=1: FPCR and MXCSR of the presenting thread */
 int hos_current_core(uint64_t lr);   /* (hos_thread.c) GetCurrentCoreNumber for the running thread */
-int hos_cv_sleep(void *cv, void *srw_lock, unsigned ms);   /* SleepConditionVariableSRW (exclusive) for guest threads */
+int hos_cv_sleep(os_cond *cv, os_mutex *lk, int64_t timeout_ns);   /* os_cond_wait for guest threads: 0 or OS_ETIMEDOUT */
 void hos_thread_stack(HosThread *t, uint64_t *addr, uint64_t *size);
 uint64_t hos_thread_tlr(HosThread *t);   /* its TPIDRRO_EL0: the thread local region */
 uint64_t *hos_tls_slots(HosThread *t);                     /* nn::os TLS slot values */

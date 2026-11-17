@@ -31,7 +31,7 @@ def main():
         matches = re.findall(r"^#define " + name + r"\s+[^\n]+", source, re.M)
         assert len(matches) == 1, name
         constants.extend(matches)
-    types = source[source.index("enum { K_VOICE"):source.index("static CRITICAL_SECTION lock;")]
+    types = source[source.index("enum { K_VOICE"):source.index("static os_mutex lock = OS_MUTEX_INIT;")]
     queue = source[source.index("enum { OP_VOICE_RELEASE"):source.index("static int64_t last_update_ns;")]
     actual = ["\n".join(constants), types, """
 static Voice voices[MAX_VOICES];

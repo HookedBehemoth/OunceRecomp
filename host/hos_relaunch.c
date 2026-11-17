@@ -1,5 +1,5 @@
 /* (hookshot) The Insert menu's Restart now (gpu/legacy/vk/vk_menu.cpp): it saves its options and asks the window to close for a
-   restart (WM_APP + 9: host/display.c, host/posix/display_sdl.c). The window closes as when the player closes it, and at
+   restart (HOS_WINDOW_RESTART to hos_posix_window_ask, host/posix/display_sdl.c). The window closes as when the player closes it, and at
    the very end of that, instead of only exiting, the game is started again:
      Linux: the process becomes the game again (execve) with the arguments and the environment it started with
      (/proc/self/cmdline and /proc/self/environ: hookshot_env.txt's lines are read again, not kept), so whatever waits
@@ -10,11 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 
-static volatile LONG relaunch_asked;
+static volatile int32_t relaunch_asked;
 
-void hos_relaunch_ask(void) { InterlockedExchange(&relaunch_asked, 1); }
+void hos_relaunch_ask(void) { os_atomic_xchg(&relaunch_asked, 1); }
 
 #include "hos_relaunch.h"
 #include <dirent.h>
@@ -48,12 +48,12 @@ static void relaunch(void) {
     hos_log_flush();
 }
 
-/* The window was closed (host/display.c's WM_CLOSE, host/posix/display_sdl.c's quit): the game exits, and starts again
+/* The window was closed (host/posix/display_sdl.c: its close or quit event, the menu's Quit): the game exits, and starts again
    first when the menu asked for it */
 void hos_window_closed_exit(void) {
     const int again = relaunch_asked != 0;
     hos_log(again ? "display: window closed for a restart (the Insert menu's Restart now)" : "display: window closed, exiting");
     hos_log_flush();
     if (again) relaunch();
-    ExitProcess(0);
+    os_exit(0);
 }

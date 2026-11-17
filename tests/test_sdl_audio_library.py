@@ -4,28 +4,28 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SDL = ROOT / "host" / "hos_sdl.c"
-POSIX = ROOT / "host" / "posix" / "win32_posix.c"
+AUDIO = ROOT / "host" / "nn_audio.c"
 
 
 class SdlAudioLibraryTests(unittest.TestCase):
     def test_the_bundled_sdl_first(self):
         text = SDL.read_text(encoding="utf-8")
-        start = text.index("static HMODULE load_one")
+        start = text.index("static os_lib *load_one")
         fn = text[start:text.index("\n}", start)]
-        self.assertLess(fn.index("GetModuleFileNameA"), fn.index("LoadLibraryA(dll)"))
+        self.assertLess(fn.index("os_exe_path"), fn.index("os_lib_open(name)"))
 
     def test_sdl3_before_sdl2(self):
         text = SDL.read_text(encoding="utf-8")
         start = text.index("int hos_sdl_load(void)")
         fn = text[start:text.index("\n}", start)]
-        self.assertLess(fn.index('load_one("SDL3.dll")'), fn.index('load_one("SDL2.dll")'))
+        self.assertLess(fn.index('load_one("libSDL3.so.0")'), fn.index('load_one("libSDL2-2.0.so.0")'))
 
     def test_audio_takes_the_same_sdl(self):
-        text = POSIX.read_text(encoding="utf-8")
-        start = text.index("MMRESULT waveOutOpen")
-        fn = text[start:text.index("MMRESULT waveOutPrepareHeader", start)]
+        text = AUDIO.read_text(encoding="utf-8")
+        start = text.index("static int output_try(")
+        fn = text[start:text.index("\n}", start)]
         self.assertIn("hos_sdl_audio_open(", fn)
-        self.assertNotIn("LoadLibraryA", fn)
+        self.assertNotIn("os_lib_open", fn)
 
     def test_audio_device_buffer_matches_audio_frame_quantum(self):
         text = SDL.read_text(encoding="utf-8")

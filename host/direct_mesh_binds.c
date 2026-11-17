@@ -12,28 +12,29 @@
    Check that it applies: the 600-present line "direct patch mesh binds" (calls a frame per drawer, binds made, skipped
    because the culled-instance object is not active). */
 #include "direct.h"
+#include <stdio.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 void f_801a2d70(Ctx *), f_801a6a40(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 
 enum { D_43E0, D_46A0, D_6720, D_N };
 static const char *const names[D_N] = {"f_801a43e0", "f_801a46a0", "f_801a6720"};
-static struct { volatile LONG64 calls, bound, inactive; } n[D_N];
+static struct { volatile int64_t calls, bound, inactive; } n[D_N];
 
 static void drawer(GuestCall *g, uint64_t sp, uint64_t p1, uint64_t item, int which) {
-    InterlockedIncrement64(&n[which].calls);
+    os_atomic_inc(&n[which].calls);
     if (!hos_guest_range(p1 + 0x18, 8) || !hos_guest_range(G64(p1 + 0x18) + 0x338, 8) || !hos_guest_range(item, 8)) return;
     const uint64_t o = G64(G64(p1 + 0x18) + 0x338);
     if (!o || !hos_guest_range(o + 0xd40, 1) || *(const uint8_t *)GP(o + 0xd40) != 1) {
-        InterlockedIncrement64(&n[which].inactive);
+        os_atomic_inc(&n[which].inactive);
         return;
     }
     const uint64_t ctx = hos_guest_range(G64(item) + 0x28, 8) ? G64(G64(item) + 0x28) : 0;
     if (!ctx) return;
     guest_call(g, sp, CODE_PTR(f_801a2d70), ctx, item, 4, o + 0x1b0, 0);   /* (the drawer's registers as they were after each) */
     guest_call(g, sp, CODE_PTR(f_801a6a40), ctx, item, 5, o + 0xd70, 0);
-    InterlockedIncrement64(&n[which].bound);
+    os_atomic_inc(&n[which].bound);
 }
 /* (at each drawer's entry, on the call's stack: the binds, then its body) */
 PATCH_AT(0x801a43e0, word(0xd503237f), before, none, direct_mesh_binds_43e0, guest(0x801a2d70, 0x801a6a40), sp, x0, x1) {
@@ -47,11 +48,11 @@ PATCH_AT(0x801a6720, word(0xd503237f), before, none, direct_mesh_binds_6720, gue
 }
 
 void direct_mesh_binds_log(double frames) {
-    static LONG64 last[D_N][3];
+    static int64_t last[D_N][3];
     char line[768];
     int k = snprintf(line, sizeof line, "direct patch mesh binds (names 4 and 5 bound before the drawer, as f_82c02bc0 binds them), a frame:");
     for (int i = 0; i < D_N; i++) {
-        const LONG64 now[3] = {n[i].calls, n[i].bound, n[i].inactive};
+        const int64_t now[3] = {n[i].calls, n[i].bound, n[i].inactive};
         k += snprintf(line + k, k < (int)sizeof line ? sizeof line - k : 0, " %s %.2f calls, %.2f bound, %.2f the culled object inactive;",
                       names[i], (now[0] - last[i][0]) / frames, (now[1] - last[i][1]) / frames, (now[2] - last[i][2]) / frames);
         memcpy(last[i], now, sizeof now);

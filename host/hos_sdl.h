@@ -1,8 +1,7 @@
 /* SDL3 or SDL2 behind one set of calls (host/hos_sdl.c): the window (host/posix/display_sdl.c), the sound
-   (host/posix/win32_posix.c's waveOut) and the controllers (host/pad_sdl.c) call these, whichever SDL loaded. One
-   library for the whole process, loaded at run time: SDL3 beside the executable, else the system's, else SDL2 the same
-   way (libSDL3.so.0, libSDL2-2.0.so.0; the host/posix loader maps the .dll names the code asks for). HOS_SDL_VERSION=2 takes SDL2 even with an
-   SDL3 there. */
+   (host/nn_audio.c) and the controllers (host/pad_sdl.c) call these, whichever SDL loaded. One library for the whole
+   process, loaded at run time: SDL3 beside the executable, else the system's, else SDL2 the same way (libSDL3.so.0,
+   libSDL2-2.0.so.0). HOS_SDL_VERSION=2 takes SDL2 even with an SDL3 there. */
 #pragma once
 #include <stdint.h>
 
@@ -28,6 +27,15 @@ const uint8_t *hos_sdl_keys(int *count);   /* the keyboard by scancode (USB HID 
 uint32_t hos_sdl_mouse_buttons(void);   /* 1 left, 2 middle, 4 right */
 void hos_sdl_window_size(void *window, int *width, int *height);   /* (in the units of the mouse's position, not pixels) */
 void hos_sdl_icon(void *window, const char *png);   /* (SDL 3.4's PNG loader: nothing on SDL2 or an older SDL3) */
+
+/* ---- the window's state, kept by its loop (host/posix/display_sdl.c): for the input and the menus ---- */
+int hos_key_down(int vk);    /* a key (hos_keys.h's virtual-key numbers) or mouse button down in the focused window */
+int hos_window_focused(void);
+void hos_screen_size(int *width, int *height);   /* the desktop's, 0 x 0 without a window */
+/* an in-game menu's request to the window, from any thread (applied on the window's): fullscreen on or off, the menu
+   opened or closed (the mouse let go while it is open), restart now, quit. Exported to hookshot_direct.so. */
+enum { HOS_WINDOW_FULLSCREEN, HOS_WINDOW_MENU, HOS_WINDOW_RESTART, HOS_WINDOW_QUIT };
+void hos_posix_window_ask(int what, int on);
 
 /* ---- events, as the window's loop wants them ---- */
 enum {

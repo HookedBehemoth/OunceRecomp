@@ -35,7 +35,7 @@ static volatile LONG64 presents, shown_count;
 static int scans, steps, sleeps, reads;
 static int64_t clock_now;
 #define GP(a) ((void *)(uintptr_t)(a))
-static int64_t InterlockedIncrement64(volatile LONG64 *p) { return ++*p; }
+#define os_atomic_inc(p) (++*(p))
 static int64_t hos_now_ns(void) { ++reads; return clock_now; }
 static void hos_sleep_ns(int64_t ns) { (void)ns; ++sleeps; }
 static void scan_dt(long long frame) { (void)frame; ++scans; }

@@ -32,14 +32,10 @@
 #include "direct.h"
 #include "hos_ledger.h"
 #include "../gpu/api/rx_nvn.h"
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <windows.h>
+#include "os.h"
 void f_80798b60(Ctx *), f_80792bd0(Ctx *), f_80f6c580(Ctx *), f_8152f540(Ctx *), f_81539300(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 uint8_t *hos_guest_base(void);
@@ -51,7 +47,7 @@ int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out);
 int nvn_fmt_bpb(int format, int *bw, int *bh);
 extern const char *hos_romfs_dir;
 
-static volatile LONG64 n_loads, n_load_skipped, n_load_bytes, n_inplace, n_rebind, n_compaction, n_compaction_cleared,
+static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_inplace, n_rebind, n_compaction, n_compaction_cleared,
     n_replace, n_pkg, n_pkg_bytes, n_tiles, n_tile_bytes, n_tiles_unconv, n_tile_notex, n_tile_badsite, n_glyphs,
     n_glyph_notex, n_rebind_logged, n_tile_inside, n_tile_held, n_tile_held_max, n_tile_dropped, n_overlay, n_overlay_bytes, n_overlay_raw,
     n_tile_kept_given, n_tile_kept_other;
@@ -77,12 +73,11 @@ static const char *prepared_dir(void) {
     static int done;
     if (done) return prepared[0] ? prepared : NULL;
     done = 1;
-    struct stat st;
     const char *e = getenv("HOS_PREPARED");
     if (e && *e) snprintf(prepared, sizeof prepared, "%s", e);
     else {
         char exe[1024];
-        const DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
+        const int n = os_exe_path(exe, sizeof exe);
         char *slash = n ? strrchr(exe, '/') : NULL;
         if (slash) {
             *slash = 0;
@@ -90,7 +85,7 @@ static const char *prepared_dir(void) {
         }
         char probe[1100];
         snprintf(probe, sizeof probe, "%s/tex/index.bin", prepared);
-        if (!slash || stat(probe, &st)) snprintf(prepared, sizeof prepared, "%s/../../prepared", hos_romfs_dir ? hos_romfs_dir : "romfs");
+        if (!slash || os_path_kind(probe) == OS_PATH_NONE) snprintf(prepared, sizeof prepared, "%s/../../prepared", hos_romfs_dir ? hos_romfs_dir : "romfs");
     }
     char real[1024];
     if (realpath(prepared, real)) snprintf(prepared, sizeof prepared, "%s", real);
@@ -100,23 +95,21 @@ static const char *prepared_dir(void) {
 
 /* ---- the asset heap (pool 127) and the memory line ---- */
 static uint64_t heap_lo, heap_hi;
-static void *mem_line(void *arg) {
+static void mem_line(void *arg) {
     (void)arg;
-    const long pg = sysconf(_SC_PAGESIZE);
+    const long pg = (long)os_page_size();
     for (;;) {
-        Sleep(10000);
+        os_sleep_ns(10000LL * 1000000);
         uint64_t heap_res = 0, guest_res = 0;
         const uint64_t gsize = hos_guest_size();
         {   /* (the guest memory's pages that exist: the memfd's blocks) */
-            int hos_posix_guest_memfd(void);
-            struct stat st;
-            const int fd = hos_posix_guest_memfd();
-            if (fd >= 0 && !fstat(fd, &st)) guest_res = (uint64_t)st.st_blocks * 512 / (uint64_t)pg;
+            uint64_t hos_posix_guest_resident(void);
+            guest_res = hos_posix_guest_resident() / (uint64_t)pg;
         }
         unsigned char *v = heap_hi > heap_lo ? (unsigned char *)malloc((size_t)((heap_hi - heap_lo) / (uint64_t)pg) + 2) : NULL;
         if (v && heap_hi <= gsize) {
             const uint64_t lo = heap_lo & ~(uint64_t)(pg - 1);
-            if (!mincore(hos_guest_base() + lo, (size_t)(heap_hi - lo), v))
+            if (!os_mem_resident(hos_guest_base() + lo, (size_t)(heap_hi - lo), v))
                 for (uint64_t i = 0; i < (heap_hi - lo) / (uint64_t)pg; i++) heap_res += v[i] & 1;
         }
         free(v);
@@ -139,14 +132,13 @@ static void *mem_line(void *arg) {
             hos_log("assets: %s", b);
         }
     }
-    return NULL;
 }
 
-static pthread_once_t start_once = PTHREAD_ONCE_INIT;
+static volatile int32_t started;
+static os_mutex start_lock = OS_MUTEX_INIT;
 static int store_ok;
 static void start(void) {
-    pthread_t t;
-    if (!pthread_create(&t, NULL, mem_line, NULL)) pthread_detach(t);
+    os_thread_release(os_thread_start(mem_line, NULL, 0, "assets mem"));
     if (!direct_assets_on()) return;
     direct_assets_tilelog = dbg_has("tilelog");
     const char *d = prepared_dir();
@@ -155,13 +147,17 @@ static void start(void) {
     store_ok = rx_direct()->assets_open(tex) > 0;
 }
 static int ready(void) {   /* (the memory line runs, and with the patches on (not HOS_DBG=noassets), the store is open) */
-    pthread_once(&start_once, start);
+    if (!os_atomic_load(&started)) {   /* (once, and the others wait until it is done) */
+        os_mutex_lock(&start_lock);
+        if (!started) start(), os_atomic_store(&started, 1);
+        os_mutex_unlock(&start_lock);
+    }
     return direct_assets_on();
 }
 
 static void find_heap(uint64_t slot) {
-    static volatile LONG done;
-    if (done || InterlockedExchange(&done, 1)) return;
+    static volatile int32_t done;
+    if (done || os_atomic_xchg(&done, 1)) return;
     uint64_t pools[1024][2];
     const int n = hos_gpu_pools(pools, 1024);
     for (int i = 0; i < n; i++)
@@ -235,10 +231,10 @@ static int load_image(uint64_t td, uint64_t src) {
     const int alias = !src && direct_tex_alias(td, &k);
     rx_direct()->asset_load(&k);
     direct_texdata_created(td, alias);   /* (M6f: the event table) */
-    InterlockedIncrement64(&n_loads);
+    os_atomic_inc(&n_loads);
     if (src) {   /* (no copy into the heap: the back end makes the image from the store, or the placeholder) */
-        InterlockedIncrement64(&n_load_skipped);
-        InterlockedAdd64(&n_load_bytes, G32(td + 0xa8));
+        os_atomic_inc(&n_load_skipped);
+        os_atomic_add(&n_load_bytes, G32(td + 0xa8));
         return 1;
     }
     return 0;
@@ -249,7 +245,7 @@ PATCH_AT(0x807982f0, word(0xd503237f), before, none, direct_assets_rebind, as(x0
     if (!ready()) return;
     if (!hos_guest_range(td, 0x100)) return;
     const uint64_t gfx = G64(td + 0xd8);
-    InterlockedIncrement64(&n_rebind);
+    os_atomic_inc(&n_rebind);
     if (!gfx) return;
     /* (res: the BRTI the texture is made from now; in a file (a streamed texture's data), its mip 0 is in that file) */
     hsd_asset_key k;
@@ -264,7 +260,7 @@ PATCH_AT(0x807982f0, word(0xd503237f), before, none, direct_assets_rebind, as(x0
         const uint64_t mip0 = hos_guest_range(mt, 8) ? G64(mt) : 0;
         if (nm) k.name = nm, k.name_len = nl;
         if (mip0 && hos_guest_range(mip0, 1)) k.data = GP(mip0);
-        if (InterlockedIncrement64(&n_rebind_logged) <= 12)
+        if (os_atomic_inc(&n_rebind_logged) <= 12)
             hos_log("assets: rebind td %#llx new base %#llx res %#llx '%.*s' mip 0 %#llx (in the heap: %d)", (unsigned long long)td,
                     (unsigned long long)base, (unsigned long long)res, nm ? (int)nl : 0, nm ? nm : "", (unsigned long long)mip0,
                     mip0 >= heap_lo && mip0 < heap_hi);
@@ -316,16 +312,16 @@ PATCH_AT(0x80798920, word(0xd503237f), before, none, direct_assets_inplace_init,
     const uint64_t mip0 = hos_guest_range(mt, 8) ? REL(bntx, G64(mt)) : 0;
     if (index >= 0 && nm && mip0 > bntx) k.name = nm, k.name_len = nl, k.index = (uint32_t)index, k.data_offset = (uint32_t)(mip0 - bntx);
     rx_direct()->asset_load(&k);
-    InterlockedIncrement64(&n_inplace);
+    os_atomic_inc(&n_inplace);
 }
 
 /* the compaction step (worker): its movers copy only with [worker+0x1f21] == 1 */
 PATCH_AT(0x807da480, word(0xd503237f), before, none, direct_assets_compaction, as(x0, w)) {
     if (!ready()) return;
-    InterlockedIncrement64(&n_compaction);
+    os_atomic_inc(&n_compaction);
     if (hos_guest_range(w + 0x1f21, 1) && *(uint8_t *)GP(w + 0x1f21) == 1) {
         *(uint8_t *)GP(w + 0x1f21) = 0;
-        if (InterlockedIncrement64(&n_compaction_cleared) == 1)
+        if (os_atomic_inc(&n_compaction_cleared) == 1)
             hos_log("assets: compaction (worker %#llx): its texel copies are off (byte +0x1f21 was 1)", (unsigned long long)w);
     }
 }
@@ -333,15 +329,15 @@ PATCH_AT(0x807da480, word(0xd503237f), before, none, direct_assets_compaction, a
 /* TextureDataMgr replaceLoad_(replacer, td, src, size, align): counted */
 PATCH_AT(0x83537d90, word(0xd503237f), before, none, direct_assets_replace_load, as(x1, td), as(x3, size)) {
     if (!ready()) return;
-    if (InterlockedIncrement64(&n_replace) <= 10)
+    if (os_atomic_inc(&n_replace) <= 10)
         hos_log("assets: a Replace load (td %#llx, %llu bytes): its copy into the heap is not skipped", (unsigned long long)td,
                 (unsigned long long)size);
 }
 
 int direct_assets_skip_packaged(uint64_t bytes) {
     if (!direct_assets_on()) return 0;
-    InterlockedIncrement64(&n_pkg);
-    InterlockedAdd64(&n_pkg_bytes, (LONG64)bytes);
+    os_atomic_inc(&n_pkg);
+    os_atomic_add(&n_pkg_bytes, (int64_t)bytes);
     return 1;
 }
 
@@ -380,9 +376,8 @@ const char *direct_assets_overlay(void) {
     if (!direct_assets_on()) return NULL;
     static char root[1100];
     const char *d = prepared_dir();
-    struct stat st;
     snprintf(root, sizeof root, "%s/terrain", d ? d : ".");
-    if (!d || stat(root, &st)) {
+    if (!d || os_path_kind(root) == OS_PATH_NONE) {
         hos_log("assets: no converted terrain tiles at %s: the game's own files (their tiles the placeholder)", root);
         return NULL;
     }
@@ -391,7 +386,7 @@ const char *direct_assets_overlay(void) {
 }
 void direct_assets_overlay_opened(const char *path) {
     direct_sky_lut_opened(path);
-    const LONG64 k = InterlockedIncrement64(&n_overlay);
+    const int64_t k = os_atomic_inc(&n_overlay);
     if (k <= 20 || k % 100000 == 0) hos_log("assets: overlay open #%lld: %s", (long long)k, path);
 }
 
@@ -409,7 +404,7 @@ void direct_assets_overlay_opened(const char *path) {
 volatile long direct_assets_tiles_pending;
 volatile long direct_assets_tilelog;
 static struct { uint64_t dst; uint8_t *bytes; uint32_t n; } held[TILES_HELD];   /* (open addressing; dst stays once seen) */
-static SRWLOCK held_lock = SRWLOCK_INIT;
+static os_rwlock held_lock = OS_RWLOCK_INIT;
 static uint32_t held_at(uint64_t dst) { return (uint32_t)((dst >> 12) * 0x9e3779b1u) & (TILES_HELD - 1); }
 /* the slot of dst (made if new); -1: the table is full (counted as dropped) (held_lock exclusive) */
 static int held_slot(uint64_t dst) {
@@ -425,22 +420,22 @@ static int tile_keep(uint64_t dst, const uint8_t *src, uint32_t n) {
     uint8_t *b = (uint8_t *)hos_ledger_took(HL_TILES, malloc(n));
     if (!b) return 0;
     memcpy(b, src, n);
-    AcquireSRWLockExclusive(&held_lock);
+    os_rwlock_lock(&held_lock);
     const int i = held_slot(dst);
     if (i < 0) {
-        ReleaseSRWLockExclusive(&held_lock);
+        os_rwlock_unlock(&held_lock);
         hos_ledger_frees(HL_TILES, b);
         free(b);
-        InterlockedIncrement64(&n_tile_dropped);
+        os_atomic_inc(&n_tile_dropped);
         return 0;
     }
     if (held[i].bytes) hos_ledger_frees(HL_TILES, held[i].bytes), free(held[i].bytes);
     else {
-        const long live = InterlockedIncrement(&direct_assets_tiles_pending);
+        const long live = os_atomic_inc(&direct_assets_tiles_pending);
         if (live > n_tile_held_max) n_tile_held_max = live;
     }
     held[i].bytes = b, held[i].n = n;
-    ReleaseSRWLockExclusive(&held_lock);
+    os_rwlock_unlock(&held_lock);
     return 1;
 }
 static void tile_upload(const nvn_tex *t, const uint8_t *src, uint32_t n);
@@ -455,14 +450,14 @@ void direct_assets_texture_init(const void *tex) {
     const nvn_tex *t = (const nvn_tex *)tex;
     if (!t->gpu) return;
     if (direct_assets_tilelog && t->d.width == 260) {   /* HOS_DBG=tilelog: tile-sized textures initialized */
-        extern volatile LONG64 hos_present_count;
+        extern volatile int64_t hos_present_count;
         hos_log("tilelog: present %lld init %#llx %ux%ux%u format %#x serial %llu", (long long)hos_present_count,
                 (unsigned long long)t->gpu, t->d.width, t->d.height, t->d.depth, t->d.format, (unsigned long long)t->serial);
     }
     if (!direct_assets_tiles_pending) return;
     const uint64_t want = tile_linear(t);
     int given = 0, other = 0;
-    AcquireSRWLockShared(&held_lock);   /* (the upload under it: a copy to that storage replaces the bytes only exclusively) */
+    os_rwlock_lock_shared(&held_lock);   /* (the upload under it: a copy to that storage replaces the bytes only exclusively) */
     for (uint32_t i = held_at(t->gpu), k = 0; k < TILES_HELD && held[i].dst; k++, i = (i + 1) & (TILES_HELD - 1))
         if (held[i].dst == t->gpu) {
             /* (a texture of another size there: its initialization writes no memory, so the bytes stay for a later one) */
@@ -470,9 +465,9 @@ void direct_assets_texture_init(const void *tex) {
             else other = held[i].bytes != NULL;
             break;
         }
-    ReleaseSRWLockShared(&held_lock);
-    if (given) InterlockedIncrement64(&n_tile_kept_given);
-    if (other) InterlockedIncrement64(&n_tile_kept_other);
+    os_rwlock_unlock_shared(&held_lock);
+    if (given) os_atomic_inc(&n_tile_kept_given);
+    if (other) os_atomic_inc(&n_tile_kept_other);
 }
 
 /* (an At row, a PATCH_AT declaration, host/patch.h) f_80c17040+0x544: memcpy(x0 the tile texture's storage, x1 the record's
@@ -481,7 +476,7 @@ PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst
     if (!direct_assets_on()) return size;
     const uint32_t n = (uint32_t)size;
     if (!hos_guest_range(rec + 0x2c, 8) || src != rec + 0x2c + (uint64_t)(int64_t)(int32_t)G32(rec + 0x2c) || n != G32(rec + 0x30)) {
-        if (InterlockedIncrement64(&n_tile_badsite) <= 5)
+        if (os_atomic_inc(&n_tile_badsite) <= 5)
             hos_log("assets: terrain: the memcpy site with x1 %#llx x2 %#x, not record %#llx's blob: left alone",
                     (unsigned long long)src, n, (unsigned long long)rec);
         return size;
@@ -491,7 +486,7 @@ PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst
         static int tl = -1;
         if (tl < 0) tl = dbg_has("tilelog");
         if (tl) {
-            extern volatile LONG64 hos_present_count;
+            extern volatile int64_t hos_present_count;
             nvn_tex lt;
             const int live = nvn_tex_live_at(dst, &lt) || nvn_tex_live_containing(dst, &lt);
             hos_log("tilelog: present %lld memcpy dst %#llx %u bytes: %s %#llx %ux%ux%u format %#x serial %llu", (long long)hos_present_count,
@@ -504,15 +499,15 @@ PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst
     if (!nvn_tex_live_at(dst, &t) && !nvn_tex_live_containing(dst, &t)) {
         /* (its texture is initialized after the copy: the kept bytes go to it then, direct_assets_texture_init) */
         if (!kept) {
-            if (InterlockedIncrement64(&n_tile_notex) <= 5)
+            if (os_atomic_inc(&n_tile_notex) <= 5)
                 hos_log("assets: terrain: no texture at %#llx (a tile of %u bytes) and no room to keep it: left alone",
                         (unsigned long long)dst, n);
             return size;
         }
-        InterlockedIncrement64(&n_tile_held);
+        os_atomic_inc(&n_tile_held);
         return 0;
     }
-    if (dst != t.gpu && InterlockedIncrement64(&n_tile_inside) <= 5)
+    if (dst != t.gpu && os_atomic_inc(&n_tile_inside) <= 5)
         hos_log("assets: terrain: a tile at %#llx inside texture %#llx (%ux%ux%u, format %#x, target %d, %llu bytes, layer %llu bytes)",
                 (unsigned long long)dst, (unsigned long long)t.gpu, t.d.width, t.d.height, t.d.depth, t.d.format, t.d.target,
                 (unsigned long long)t.L.size, (unsigned long long)t.L.layer_size);
@@ -531,11 +526,11 @@ static void tile_upload_as(uint32_t source, const nvn_tex *tp, const uint8_t *sr
     NVNcopyRegion r = {0, 0, 0, (int)t.d.width, (int)t.d.height, (int)layers};
     if (bpb > 0 && n == linear) {
         rx_direct()->texels(source, &t, 0, 0, &r, src, 0, 0);
-        InterlockedIncrement64(&n_tiles);
-        InterlockedAdd64(&n_tile_bytes, n);
+        os_atomic_inc(&n_tiles);
+        os_atomic_add(&n_tile_bytes, n);
     } else {
         rx_direct()->texels(HSD_TEXELS_TERRAIN, &t, 0, 0, &r, NULL, 0, 0);
-        InterlockedIncrement64(&n_tiles_unconv);
+        os_atomic_inc(&n_tiles_unconv);
     }
 }
 
@@ -569,7 +564,7 @@ static void glyph_plotted(uint64_t cache) {
     const uint32_t stride = G32(cache + 0x140);
     nvn_tex t;
     if (!storage || !stride || !nvn_tex_live_at(storage, &t)) {
-        if (InterlockedIncrement64(&n_glyph_notex) <= 5)
+        if (os_atomic_inc(&n_glyph_notex) <= 5)
             hos_log("assets: glyph: no texture at %#llx (stride %u)", (unsigned long long)storage, stride);
         return;
     }
@@ -580,5 +575,5 @@ static void glyph_plotted(uint64_t cache) {
     if (y + ch > t.d.height) ch = t.d.height - y;
     NVNcopyRegion r = {(int)x, (int)y, 0, (int)cw, (int)ch, 1};
     rx_direct()->texels(HSD_TEXELS_GLYPH, &t, 0, 0, &r, GP(storage + (uint64_t)y * stride + x), stride, 0);
-    InterlockedIncrement64(&n_glyphs);
+    os_atomic_inc(&n_glyphs);
 }

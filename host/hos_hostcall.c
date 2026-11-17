@@ -8,17 +8,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 
 #define HOS_HOSTCALL_BASE 0x06000000ULL
 #define HOS_HOSTCALL_MAX 8192
 
 typedef void (*HostFn)(Ctx *c, void *user);
-typedef struct { HostFn fn; void *user; char name[64]; volatile LONG calls; } HostCall;
+typedef struct { HostFn fn; void *user; char name[64]; volatile int32_t calls; } HostCall;
 static HostCall calls[HOS_HOSTCALL_MAX];
-static volatile LONG ncalls;
-static SRWLOCK lock = SRWLOCK_INIT;
+static volatile int32_t ncalls;
+static os_mutex lock = OS_MUTEX_INIT;
 
 /* HOS_HOSTCALL_STATS, tracing or HOS_HOSTCALL_SLOW=1: every host call through a64_call_miss (it counts there) */
 static int slow_calls(void) {
@@ -32,8 +31,8 @@ static int slow_calls(void) {
    jumps"; such handlers do not read their user argument), else its guest address in HOS_HOSTCALL_BASE.., which the
    lifted code's guest-address path takes to a64_call_miss. */
 uint64_t hos_hostcall(const char *name, HostFn fn, void *user) {
-    AcquireSRWLockExclusive(&lock);
-    LONG i;
+    os_mutex_lock(&lock);
+    int32_t i;
     for (i = 0; i < ncalls && strcmp(calls[i].name, name); i++) {}
     if (i == ncalls) {
         if (ncalls == HOS_HOSTCALL_MAX) hos_fatal(NULL, "out of host calls");
@@ -43,7 +42,7 @@ uint64_t hos_hostcall(const char *name, HostFn fn, void *user) {
         snprintf(calls[i].name, sizeof calls[i].name, "%s", name);
     }
     const HostCall *h = &calls[i];
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
 #ifndef __EMSCRIPTEN__   /* (wasm checks an indirect call's type: a HostFn has two parameters) */
     if (!h->user && !slow_calls()) return (uint64_t)(uintptr_t)h->fn;
 #endif
@@ -51,32 +50,32 @@ uint64_t hos_hostcall(const char *name, HostFn fn, void *user) {
 }
 
 /* the host call an address names, by its guest address or its host function (no user data): its index, or -1 */
-static LONG call_of(uint64_t addr) {
+static int32_t call_of(uint64_t addr) {
     if (addr >> 32) {
-        for (LONG i = 0; i < ncalls; i++)
+        for (int32_t i = 0; i < ncalls; i++)
             if ((uint64_t)(uintptr_t)calls[i].fn == addr && !calls[i].user) return i;
         return -1;
     }
     const uint64_t i = (addr - HOS_HOSTCALL_BASE) / 16;
-    return addr >= HOS_HOSTCALL_BASE && i < (uint64_t)ncalls ? (LONG)i : -1;
+    return addr >= HOS_HOSTCALL_BASE && i < (uint64_t)ncalls ? (int32_t)i : -1;
 }
 
 /* (mkw-recomp) the host function and user data behind a host call's address: 0 when it is not one */
 uint64_t hos_hostcall_target(uint64_t addr, HostFn *fn, void **user) {
-    const LONG i = call_of(addr);
+    const int32_t i = call_of(addr);
     if (i < 0) return 0;
     *fn = calls[i].fn, *user = calls[i].user;
     return addr;
 }
 
 const char *hos_hostcall_name(uint64_t addr) {
-    const LONG i = call_of(addr);
+    const int32_t i = call_of(addr);
     return i < 0 ? NULL : calls[i].name;
 }
 
 /* (rt/a64_rt.c a64_guest_of) a host call's guest address, for logs */
 uint64_t a64_guest_of_host(uint64_t v) {
-    const LONG i = call_of(v);
+    const int32_t i = call_of(v);
     return i < 0 ? 0 : HOS_HOSTCALL_BASE + 16ULL * (uint64_t)i;
 }
 
@@ -99,7 +98,7 @@ A64Fn a64_lookup_host(uint64_t addr) {
 #define RING 256
 typedef struct { uint32_t call; uint32_t thread; uint64_t x[4], lr; } Recent;
 static Recent ring[RING];
-static volatile LONG ring_pos;
+static volatile int32_t ring_pos;
 
 void hos_setjmp_return(Ctx *c, uint64_t target);   /* hos_setjmp.c: a longjmp's BR to a setjmp site */
 int a64_call_miss(Ctx *c, uint64_t target) {
@@ -108,8 +107,8 @@ int a64_call_miss(Ctx *c, uint64_t target) {
         /* (hookshot) a callback table entry zeroed at run time: OoT's UpdateTextBoxTextureThread reaches its text release trampoline
            with a null function pointer at the same cutscene point every session. 0 is never a real function; returning 1 turns the
            tail call into a plain return. chrispository, Hookshot PR 55 */
-        static volatile LONG logged;
-        if (InterlockedIncrement(&logged) <= 8)
+        static volatile int32_t logged;
+        if (os_atomic_inc(&logged) <= 8)
             hos_log("skipped an indirect call to 0 (lr %#llx, thread %s)", (unsigned long long)c->x[30], hos_thread_name(hos_self()));
         return 1;
     }
@@ -125,12 +124,12 @@ int a64_call_miss(Ctx *c, uint64_t target) {
         h->fn(c, h->user);
         return 1;
     }
-    Recent *r = &ring[(InterlockedIncrement(&ring_pos) - 1) & (RING - 1)];
+    Recent *r = &ring[(os_atomic_inc(&ring_pos) - 1) & (RING - 1)];
     r->call = (uint32_t)i;
-    r->thread = GetCurrentThreadId();
+    r->thread = os_tid();
     memcpy(r->x, c->x, sizeof r->x);
     r->lr = c->x[30];
-    LONG n = InterlockedIncrement(&h->calls);
+    int32_t n = os_atomic_inc(&h->calls);
     if (hos_trace && n <= 3) hos_log("hostcall %s(%#llx, %#llx, %#llx, %#llx)", h->name, (unsigned long long)c->x[0],
                                      (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3]);
     h->fn(c, h->user);
@@ -187,10 +186,10 @@ uint64_t guest_call8(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64
 void hos_hostcall_stats(void) {
     if (!getenv("HOS_HOSTCALL_STATS")) return;
     fprintf(stderr, "[hos] host calls:\n");
-    for (LONG i = 0; i < ncalls; i++) fprintf(stderr, "  %10ld  %s\n", calls[i].calls, calls[i].name);
-    LONG end = ring_pos, start = end > RING ? end - RING : 0;
+    for (int32_t i = 0; i < ncalls; i++) fprintf(stderr, "  %10ld  %s\n", calls[i].calls, calls[i].name);
+    int32_t end = ring_pos, start = end > RING ? end - RING : 0;
     fprintf(stderr, "[hos] last %ld host calls (oldest first): thread, call(x0, x1, x2, x3) lr\n", end - start);
-    for (LONG k = start; k < end; k++) {
+    for (int32_t k = start; k < end; k++) {
         Recent *r = &ring[k & (RING - 1)];
         fprintf(stderr, "  %6u %s(%#llx, %#llx, %#llx, %#llx) lr %#llx\n", r->thread, calls[r->call].name,
                 (unsigned long long)r->x[0], (unsigned long long)r->x[1], (unsigned long long)r->x[2],

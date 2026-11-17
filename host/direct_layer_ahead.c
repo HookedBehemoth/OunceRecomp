@@ -22,7 +22,7 @@
 #include "direct.h"
 #include <string.h>
 #include <stdlib.h>
-#include <windows.h>
+#include "os.h"
 
 uint64_t hos_tls_value(uint32_t slot);   /* hos_thread.c */
 
@@ -35,18 +35,18 @@ static int enabled(void) {
     return on;
 }
 
-static struct { volatile LONG64 runs, not_layer, skip_thread, other_caller; } n;
+static struct { volatile int64_t runs, not_layer, skip_thread, other_caller; } n;
 
-static volatile LONG64 gen;   /* (moduleCalc_ calls: the frame) */
+static volatile int64_t gen;   /* (moduleCalc_ calls: the frame) */
 static _Thread_local int ahead_thread;
 
 /* ---- the render-job list entries recorded this frame ---- */
 enum { LISTS = 4, ENTRIES = 1024 };
-static volatile LONG64 done[LISTS][ENTRIES];   /* (gen of the frame the entry was recorded in) */
-static SRWLOCK lk = SRWLOCK_INIT;
-static CONDITION_VARIABLE cv = CONDITION_VARIABLE_INIT;
-static volatile LONG waiters;
-static struct { volatile LONG64 waits, wait_ns, timeouts, checks; } w;
+static volatile int64_t done[LISTS][ENTRIES];   /* (gen of the frame the entry was recorded in) */
+static os_mutex lk = OS_MUTEX_INIT;
+static os_cond cv = OS_COND_INIT;
+static volatile int32_t waiters;
+static struct { volatile int64_t waits, wait_ns, timeouts, checks; } w;
 
 static uint64_t job_lists(uint32_t *nl) {
     const uint64_t r = hos_guest_range(0x84ea2780ull, 8) ? G64(0x84ea2780ull) : 0;
@@ -58,7 +58,7 @@ static uint64_t job_lists(uint32_t *nl) {
 /* (host/eng_jobs.c) the recorder took the entry whose range is at x5 (entry + 0x18), recorded or not */
 void direct_layer_ahead_job_done(uint64_t range, uint64_t lr) {
     if (!enabled()) return;
-    if (lr != 0x8008154cull) InterlockedIncrement64(&n.other_caller);   /* (not f_8007fe60's job loop: f_80083960's twin) */
+    if (lr != 0x8008154cull) os_atomic_inc(&n.other_caller);   /* (not f_8007fe60's job loop: f_80083960's twin) */
     uint32_t nl;
     const uint64_t arr = job_lists(&nl);
     for (uint32_t li = 0; li < nl; li++) {
@@ -72,9 +72,9 @@ void direct_layer_ahead_job_done(uint64_t range, uint64_t lr) {
         break;
     }
     if (__atomic_load_n(&waiters, __ATOMIC_SEQ_CST)) {
-        AcquireSRWLockExclusive(&lk);
-        ReleaseSRWLockExclusive(&lk);
-        WakeAllConditionVariable(&cv);
+        os_mutex_lock(&lk);
+        os_mutex_unlock(&lk);
+        os_cond_broadcast(&cv);
     }
 }
 
@@ -107,9 +107,9 @@ enum { SEQ = 64 };
    layer has ended by then, since stage C's join waits for it and the next frame's job phase opens after that join) */
 static uint64_t seq_use[SEQ], seq_next[SEQ];
 static int n_use, n_next;
-static SRWLOCK order_lk = SRWLOCK_INIT;
-static volatile LONG64 ordered_gen;
-static struct { volatile LONG64 ordered, moved, claimed_before; } o;
+static os_mutex order_lk = OS_MUTEX_INIT;
+static volatile int64_t ordered_gen;
+static struct { volatile int64_t ordered, moved, claimed_before; } o;
 
 static uint64_t key_hash(uint64_t a) {
     const uint8_t *p = (const uint8_t *)GP(a);
@@ -119,7 +119,7 @@ static uint64_t key_hash(uint64_t a) {
 }
 static void order_jobs(void) {
     if (__atomic_load_n(&ordered_gen, __ATOMIC_ACQUIRE) == gen) return;
-    AcquireSRWLockExclusive(&order_lk);
+    os_mutex_lock(&order_lk);
     if (ordered_gen != gen) {
         if (n_next) memcpy(seq_use, seq_next, sizeof seq_use), n_use = n_next, n_next = 0;
         uint32_t nl;
@@ -130,7 +130,7 @@ static void order_jobs(void) {
             const uint64_t base = G64(l + 0x3c18);
             const uint32_t cnt = G32(l + 0x3c28);
             if (!cnt || cnt > G32(l + 0x3c10) || cnt > ENTRIES || !hos_guest_range(base, 0x28ull * cnt)) continue;
-            if (G32(l + 0x3c84) != 0) { InterlockedIncrement64(&o.claimed_before); continue; }
+            if (G32(l + 0x3c84) != 0) { os_atomic_inc(&o.claimed_before); continue; }
             static uint8_t tmp[ENTRIES * 0x28];
             static uint32_t rank[ENTRIES], idx[ENTRIES];
             for (uint32_t i = 0; i < cnt; i++) {
@@ -153,17 +153,17 @@ static void order_jobs(void) {
             if (!moved) continue;
             memcpy(tmp, GP(base), 0x28ull * cnt);
             for (uint32_t i = 0; i < cnt; i++) memcpy(GP(base + 0x28ull * i), tmp + 0x28ull * idx[i], 0x28);
-            InterlockedExchangeAdd64(&o.moved, moved);
+            os_atomic_fetch_add(&o.moved, moved);
         }
-        InterlockedIncrement64(&o.ordered);
+        os_atomic_inc(&o.ordered);
         __atomic_store_n(&ordered_gen, gen, __ATOMIC_RELEASE);
     }
-    ReleaseSRWLockExclusive(&order_lk);
+    os_mutex_unlock(&order_lk);
 }
 
 static void wait_for(uint64_t key) {
     if (!ahead_thread || !hos_guest_range(key, 0x70)) return;
-    InterlockedIncrement64(&w.checks);
+    os_atomic_inc(&w.checks);
     {
         const uint64_t h = key_hash(key);
         if (n_next < SEQ && (!n_next || seq_next[n_next - 1] != h)) {
@@ -174,16 +174,16 @@ static void wait_for(uint64_t key) {
     }
     if (!pending(key)) return;
     const int64_t t0 = hos_now_ns();
-    InterlockedIncrement64(&w.waits);
-    AcquireSRWLockExclusive(&lk);
-    InterlockedIncrement(&waiters);
+    os_atomic_inc(&w.waits);
+    os_mutex_lock(&lk);
+    os_atomic_inc(&waiters);
     while (pending(key)) {
-        if (hos_now_ns() - t0 > 50000000) { InterlockedIncrement64(&w.timeouts); break; }
-        hos_cv_sleep(&cv, &lk, 2);
+        if (hos_now_ns() - t0 > 50000000) { os_atomic_inc(&w.timeouts); break; }
+        hos_cv_sleep(&cv, &lk, 2000000);
     }
-    InterlockedDecrement(&waiters);
-    ReleaseSRWLockExclusive(&lk);
-    InterlockedExchangeAdd64(&w.wait_ns, hos_now_ns() - t0);
+    os_atomic_dec(&waiters);
+    os_mutex_unlock(&lk);
+    os_atomic_fetch_add(&w.wait_ns, hos_now_ns() - t0);
 }
 
 /* (owner, drawctx, i): the pass's key at owner + 0x3830 + i * 0xd0 */
@@ -194,7 +194,7 @@ PATCH_AT(0x8028a2a0, word(0xd503237f), before, none, direct_layer_ahead_key, as(
     if (ahead_thread) wait_for(key);
 }
 PATCH_AT(0x80706be0, word(0xd503237f), before, none, direct_layer_ahead_calc) {   /* moduleCalc_ */
-    InterlockedIncrement64(&gen);
+    os_atomic_inc(&gen);
 }
 
 /* the worker index the scheduler compares with W + 0x4d8: its TLS slot's value - 1, else the core number */
@@ -215,20 +215,20 @@ PATCH_AT(0x800809d0, word(0xb5004ee8), before, none, direct_layer_ahead_run, gue
     if (*ctr != 0 || (int32_t)G32(w + 0x4e8) < 1) return;   /* (taken, or an empty queue) */
     const uint64_t item = G64(G64(w + 0x4f0));
     if (!item || !hos_guest_range(item, 0x20) || !hos_guest_range(G64(item) + 0x10, 8)) return;
-    if (G32(item + 0x10) != 0) { InterlockedIncrement64(&n.not_layer); return; }
-    if (worker_index() == G32(w + 0x4d8)) { InterlockedIncrement64(&n.skip_thread); return; }
+    if (G32(item + 0x10) != 0) { os_atomic_inc(&n.not_layer); return; }
+    if (worker_index() == G32(w + 0x4d8)) { os_atomic_inc(&n.skip_thread); return; }
     uint32_t zero = 0;
     if (!__atomic_compare_exchange_n(ctr, &zero, 1u, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return;
     /* (guest_call puts every register back: the lifted scheduler keeps values in caller-saved registers here) */
     ahead_thread = 1;
     guest_call(g, sp, G64(G64(item) + 0x10), item, 0, 0, 0, 0);
     ahead_thread = 0;
-    InterlockedIncrement64(&n.runs);
+    os_atomic_inc(&n.runs);
 }
 
 void direct_layer_ahead_log(double frames) {
-    static LONG64 last[11];
-    const LONG64 now[11] = {n.runs, n.not_layer, n.skip_thread, w.checks, w.waits, w.wait_ns, w.timeouts, o.ordered, o.moved, o.claimed_before,
+    static int64_t last[11];
+    const int64_t now[11] = {n.runs, n.not_layer, n.skip_thread, w.checks, w.waits, w.wait_ns, w.timeouts, o.ordered, o.moved, o.claimed_before,
                             n.other_caller};
     hos_log("direct patch layer ahead (f_8007fe60 at the job loop; f_806688c0, f_8028a2a0 wait): a frame: run ahead %.2f; queue 1's "
             "first item not a layer %.2f; the queue-1 skipping thread first %.2f; job calls checked %.2f, waited %.2f for %.3f ms; "

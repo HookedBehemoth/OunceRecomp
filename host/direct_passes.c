@@ -18,17 +18,17 @@
    site) and the back end's "jobs a frame" line. */
 #include "direct.h"
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 
 static struct {
-    volatile LONG64 asked, early, inl[2], inl_no_jobs[2], inl_no_list;
+    volatile int64_t asked, early, inl[2], inl_no_jobs[2], inl_no_list;
 } n;
 
 /* the recorder's keys by the first 0x70 bytes of the key (a few dozen; written by the recorders, read at the inline path) */
 #define NKEY 256
 static struct { uint64_t key, hash; } keys[NKEY];
 static int nkeys;
-static SRWLOCK keys_lock = SRWLOCK_INIT;
+static os_rwlock keys_lock = OS_RWLOCK_INIT;
 
 static uint64_t key_hash(uint64_t a) {
     if (!hos_guest_range(a, 0x70)) return 0;
@@ -40,37 +40,37 @@ static uint64_t key_hash(uint64_t a) {
 static void key_note(uint64_t key) {
     const uint64_t h = key_hash(key);
     if (!h) return;
-    AcquireSRWLockShared(&keys_lock);
+    os_rwlock_lock_shared(&keys_lock);
     int found = 0;
     for (int i = 0; i < nkeys; i++)
         if (keys[i].key == key) { found = keys[i].hash == h ? 1 : 2; break; }
-    ReleaseSRWLockShared(&keys_lock);
+    os_rwlock_unlock_shared(&keys_lock);
     if (found == 1) return;
-    AcquireSRWLockExclusive(&keys_lock);
+    os_rwlock_lock(&keys_lock);
     int i = 0;
     for (; i < nkeys; i++)
         if (keys[i].key == key) break;
     if (i == nkeys && nkeys < NKEY) nkeys++;
     if (i < NKEY) keys[i].key = key, keys[i].hash = h;
-    ReleaseSRWLockExclusive(&keys_lock);
+    os_rwlock_unlock(&keys_lock);
 }
 /* the recorder's pointers for key bytes at a: every key with those bytes (the game matches records by them, so they name
    one pass); n of them in out */
 static int keys_by_bytes(uint64_t a, uint64_t *out, int cap) {
     const uint64_t h = key_hash(a);
     int k = 0;
-    AcquireSRWLockShared(&keys_lock);
+    os_rwlock_lock_shared(&keys_lock);
     for (int i = 0; i < nkeys && k < cap; i++)
         if (keys[i].hash == h) out[k++] = keys[i].key;
-    ReleaseSRWLockShared(&keys_lock);
+    os_rwlock_unlock_shared(&keys_lock);
     return k;
 }
 static int key_known(uint64_t key) {
     int k = 0;
-    AcquireSRWLockShared(&keys_lock);
+    os_rwlock_lock_shared(&keys_lock);
     for (int i = 0; i < nkeys; i++)
         if (keys[i].key == key) { k = 1; break; }
-    ReleaseSRWLockShared(&keys_lock);
+    os_rwlock_unlock_shared(&keys_lock);
     return k;
 }
 
@@ -78,9 +78,9 @@ int direct_passes_recorder(uint64_t key) {
     const hsd_fns *d = rx_direct();
     if (!d) return 0;
     key_note(key);
-    InterlockedIncrement64(&n.asked);
+    os_atomic_inc(&n.asked);
     if (d->pass_known(key)) return 0;
-    InterlockedIncrement64(&n.early);
+    os_atomic_inc(&n.early);
     return 1;   /* (as 0x8008693c: nothing recorded, no view record) */
 }
 
@@ -90,13 +90,13 @@ static void inline_pass(int site, int nk, const uint64_t *ks, uint64_t drawctx) 
     const hsd_fns *d = rx_direct();
     if (!d) return;
     if (!nk) {
-        InterlockedIncrement64(&n.inl_no_jobs[site]);
+        os_atomic_inc(&n.inl_no_jobs[site]);
         return;
     }
     void *list = direct_cmd_list(hos_guest_range(drawctx + 216, 8) ? G64(drawctx + 216) : 0);
-    if (!list) InterlockedIncrement64(&n.inl_no_list);
+    if (!list) os_atomic_inc(&n.inl_no_list);
     for (int i = 0; i < nk; i++) d->pass_inline(list, ks[i]);
-    InterlockedIncrement64(&n.inl[site]);   /* (the game's body draws the pass) */
+    os_atomic_inc(&n.inl[site]);   /* (the game's body draws the pass) */
 }
 /* f_806688c0 before its call (0x80668d80): x6 = [sp + 0x18] the key + 0xc0, x1 = [sp + 0x10] the list's draw context */
 PATCH_AT(0x80668d7c, word(0xf90483e8), after, none, direct_passes_inline_job, as(x6, key_c0), as(x1, drawctx)) {   /* str x8, [sp, #0x900] */
@@ -111,8 +111,8 @@ PATCH_AT(0x8028a584, word(0xaa1303e1), after, none, direct_passes_inline_key, as
 }
 
 void direct_passes_log(double frames) {
-    static LONG64 last[8];
-    const LONG64 now[8] = {n.asked, n.early, n.inl[0], n.inl[1], n.inl_no_jobs[0], n.inl_no_jobs[1], n.inl_no_list, nkeys};
+    static int64_t last[8];
+    const int64_t now[8] = {n.asked, n.early, n.inl[0], n.inl[1], n.inl_no_jobs[0], n.inl_no_jobs[1], n.inl_no_list, nkeys};
     hos_log("direct patch passes (f_80084de0 entry, f_80681320's calls in f_806688c0 and f_8028a2a0): a frame: recorder asked "
             "%.2f, early returns %.2f; inline passes of recorder keys %.2f (f_806688c0) %.2f (f_8028a2a0); inline passes no "
             "recorder asked for %.2f / %.2f; with no list %lld; %lld keys noted",

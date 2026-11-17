@@ -20,16 +20,11 @@
    A direct call of an HLE'd function declared clean (nx2/lift2/host_effects.py) goes through lift2_host_enter and
    lift2_host_exit: x19-x29 and SP on its return must equal their values at the call (kind "changed by the host"). */
 #ifdef LIFT2_VERIFY_STANDALONE   /* (tests/test_lift2_verify.py: the checks alone, without the host) */
-#include <pthread.h>
-typedef pthread_mutex_t SRWLOCK;
-#define SRWLOCK_INIT PTHREAD_MUTEX_INITIALIZER
-#define AcquireSRWLockExclusive pthread_mutex_lock
-#define ReleaseSRWLockExclusive pthread_mutex_unlock
 #define hos_log(...) ((void)0)
 #else
 #include "hos.h"
-#include <windows.h>
 #endif
+#include "os.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,19 +37,19 @@ typedef pthread_mutex_t SRWLOCK;
 static uint64_t poison(uint64_t tag, int r, uint64_t fn) { return tag << 48 | (uint64_t)r << 40 | (fn & 0xFFFFFFFFFFull); }
 static int poisoned(uint64_t v) { return (v >> 48) == POISON_IN || (v >> 48) == POISON_OUT; }
 
-static SRWLOCK lock = SRWLOCK_INIT;
+static os_mutex lock = OS_MUTEX_INIT;
 static uint64_t seen[1 << 20];
 static unsigned count;
 
 static void violation(const char *kind, uint64_t fn, int r, uint64_t v) {
     const uint64_t key = (fn << 16) ^ ((uint64_t)(uintptr_t)kind << 6) ^ (uint64_t)r ^ 1;
-    AcquireSRWLockExclusive(&lock);
+    os_mutex_lock(&lock);
     unsigned n = 0;
     for (unsigned h = (unsigned)(key * 0x9E3779B97F4A7C15ull >> 44); n < 64; h = (h + 1) & 0xFFFFF, n++) {
-        if (seen[h] == key) { ReleaseSRWLockExclusive(&lock); return; }
+        if (seen[h] == key) { os_mutex_unlock(&lock); return; }
         if (!seen[h]) { seen[h] = key; break; }
     }
-    if (n == 64 || count >= 100000) { ReleaseSRWLockExclusive(&lock); return; }   /* (full: the run reports no more) */
+    if (n == 64 || count >= 100000) { os_mutex_unlock(&lock); return; }   /* (full: the run reports no more) */
     count++;
     FILE *f = fopen("lift2_violations.txt", "a");
     if (f) {
@@ -66,7 +61,7 @@ static void violation(const char *kind, uint64_t fn, int r, uint64_t v) {
         fclose(f);
     }
     hos_log("lift2 verify: f_%08llx %s x%d %#llx", (unsigned long long)fn, kind, r, (unsigned long long)v);
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
 }
 
 /* (how often the poisons are met: entries with a site-poisoned register, exits that poison a register; logged at

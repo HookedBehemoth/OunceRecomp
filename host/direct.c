@@ -4,7 +4,7 @@
 #include "direct.h"
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 
 /* ---- the list kinds: the function that begins a recording names it, by an At row just before its BeginRecording call
    (a PATCH_AT declaration, host/patch.h: direct_list_kind); a recording no row named is a PACKET list (counted, named in the log).
@@ -57,7 +57,7 @@ typedef struct {
     uint32_t size;
 } pending_rec;
 static _Thread_local pending_rec tl;
-static volatile LONG64 dropped;
+static volatile int64_t dropped;
 
 void hsd_flush(void) {
     if (!tl.size) return;
@@ -65,7 +65,7 @@ void hsd_flush(void) {
     tl.size = 0;
     __atomic_store_n(tl.pending, 0, __ATOMIC_RELEASE);
     if (__atomic_load_n(tl.slot, __ATOMIC_ACQUIRE) != tl.list) {   /* (ended or dropped on another thread meanwhile) */
-        if (InterlockedIncrement64(&dropped) <= 8) hos_log("direct: a record dropped: its list was ended or let go on another thread");
+        if (os_atomic_inc(&dropped) <= 8) hos_log("direct: a record dropped: its list was ended or let go on another thread");
         return;
     }
     uint32_t op;

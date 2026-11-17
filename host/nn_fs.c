@@ -3,15 +3,15 @@
      save:     <user>/save/<uid>     (MountSaveData / MountSaveDataReadOnly)
      cache:    <user>/cache/<index>  (MountCacheStorage)
      temp:     <user>/temp           (MountTemporaryStorage)
-   hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (ReadFile with an offset), so any number
+   hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (os_file_read_at), so any number
    of guest threads can read one file at once. Results: switchbrew "Error codes" (module 2 = fs). */
 #include "hos.h"
 #include "direct_crit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
+#include <strings.h>
 
 /* (hookshot, #1468) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
    Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, UTF-8 as the
@@ -30,15 +30,15 @@ const char *hos_romfs_dir, *hos_user_dir;
 typedef struct { char name[32]; char root[HOS_FS_PATH]; int writable; } Mount;
 static Mount mounts[16];
 static int nmounts;
-static SRWLOCK mount_lock = SRWLOCK_INIT;
+static os_rwlock mount_lock = OS_RWLOCK_INIT;
 
 static int mount(const char *name, const char *root, int writable) {   /* 0: the table is full (16 mounts) */
-    AcquireSRWLockExclusive(&mount_lock);
+    os_rwlock_lock(&mount_lock);
     int i;
     for (i = 0; i < nmounts && strcmp(mounts[i].name, name); i++) {}
     if (i == nmounts) {   /* (hookshot: a 17th name was written past the table) */
         if (nmounts == 16) {
-            ReleaseSRWLockExclusive(&mount_lock);
+            os_rwlock_unlock(&mount_lock);
             hos_log("fs: %s: not mounted (16 mounts already)", name);
             return 0;
         }
@@ -47,8 +47,8 @@ static int mount(const char *name, const char *root, int writable) {   /* 0: the
     snprintf(mounts[i].name, sizeof mounts[i].name, "%s", name);
     snprintf(mounts[i].root, sizeof mounts[i].root, "%s", root);
     mounts[i].writable = writable;
-    ReleaseSRWLockExclusive(&mount_lock);
-    if (writable) CreateDirectoryA(root, NULL);
+    os_rwlock_unlock(&mount_lock);
+    if (writable) os_mkdir(root);
     hos_log("fs: mounted %s: -> %s", name, root);
     return 1;
 }
@@ -82,7 +82,7 @@ static int host_path(const char *guest_mem, char *out, size_t cap, int *writable
     if (!colon) return 0;
     size_t n = (size_t)(colon - guest);
     int ok = 0;
-    AcquireSRWLockShared(&mount_lock);
+    os_rwlock_lock_shared(&mount_lock);
     for (int i = 0; i < nmounts; i++) {
         if (strlen(mounts[i].name) == n && !strncmp(mounts[i].name, guest, n)) {
             const char *rest = colon + 1;
@@ -95,7 +95,7 @@ static int host_path(const char *guest_mem, char *out, size_t cap, int *writable
             break;
         }
     }
-    ReleaseSRWLockShared(&mount_lock);
+    os_rwlock_unlock_shared(&mount_lock);
     for (char *p = out; ok && *p; p++) if (*p == '/') *p = '\\';
     return ok;
 }
@@ -116,23 +116,23 @@ static void make_dirs(const char *path) {   /* every parent of path */
     char tmp[HOS_FS_PATH];
     snprintf(tmp, sizeof tmp, "%s", path);
     for (char *p = tmp + 3; *p; p++)
-        if (*p == '\\') { *p = 0; CreateDirectoryA(tmp, NULL); *p = '\\'; }
+        if (*p == '\\') { *p = 0; os_mkdir(tmp); *p = '\\'; }
 }
 
 /* ---- handles: a FileHandle / DirectoryHandle is one pointer-sized value; ours are table indices + 1 ----------- */
 typedef struct { char name[HOS_FS_PATH]; int is_dir; uint64_t size; } ExtraEntry;   /* (a listed folder's mod-only entries) */
 typedef struct {
-    HANDLE h; int writable; HANDLE find; WIN32_FIND_DATAA fd; int find_done, is_dir; char path[HOS_FS_PATH];
+    os_file *f; int writable; os_dir *dir; os_dirent de; int find_done, is_dir; char path[HOS_FS_PATH];
     ExtraEntry *extras; int nextras, extra_pos;
 } Handle;
 static Handle *handles[4096];
-static SRWLOCK handle_lock = SRWLOCK_INIT;
+static os_mutex handle_lock = OS_MUTEX_INIT;
 
 static uint64_t new_handle(Handle *h) {
-    AcquireSRWLockExclusive(&handle_lock);
+    os_mutex_lock(&handle_lock);
     for (int i = 0; i < 4096; i++)
-        if (!handles[i]) { handles[i] = h; ReleaseSRWLockExclusive(&handle_lock); return (uint64_t)i + 1; }
-    ReleaseSRWLockExclusive(&handle_lock);
+        if (!handles[i]) { handles[i] = h; os_mutex_unlock(&handle_lock); return (uint64_t)i + 1; }
+    os_mutex_unlock(&handle_lock);
     hos_fatal(NULL, "fs: out of handles");
     return 0;
 }
@@ -142,9 +142,9 @@ static Handle *get_handle(Ctx *c, uint64_t id) {
     return h;
 }
 static void free_handle(uint64_t id) {
-    AcquireSRWLockExclusive(&handle_lock);
+    os_mutex_lock(&handle_lock);
     if (id && id <= 4096) handles[id - 1] = NULL;
-    ReleaseSRWLockExclusive(&handle_lock);
+    os_mutex_unlock(&handle_lock);
 }
 
 /* ---- mounts --------------------------------------------------------------------------------------------------- */
@@ -164,7 +164,7 @@ static int user_mount(const char *name, const char *sub) {
     char root[HOS_FS_PATH];
     snprintf(root, sizeof root, "%s\\%s", hos_user_dir, sub);
     make_dirs(root);
-    CreateDirectoryA(root, NULL);
+    os_mkdir(root);
     return mount(name, root, 1);
 }
 
@@ -173,7 +173,7 @@ HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
     char root[HOS_FS_PATH];
     snprintf(root, sizeof root, "%s\\save\\%016llx%016llx", hos_user_dir, (unsigned long long)G64(ARG(1) + 8),
              (unsigned long long)G64(ARG(1)));
-    RET(GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES);
+    RET(os_path_kind(root) != OS_PATH_NONE);
 }
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
@@ -210,7 +210,7 @@ HLE(_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorage
     for (; cache_list_pos < 16 && n < max; cache_list_pos++) {
         char root[HOS_FS_PATH];
         snprintf(root, sizeof root, "%s\\cache\\%d", hos_user_dir, cache_list_pos);
-        if (GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES) {
+        if (os_path_kind(root) != OS_PATH_NONE) {
             memset(GP(ARG(1) + 0x20 * n), 0, 0x20);
             G32(ARG(1) + 0x20 * n) = (uint32_t)cache_list_pos;
             n++;
@@ -221,10 +221,10 @@ HLE(_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorage
 }
 HLE(_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE) {}
 HLE(_ZN2nn2fs7UnmountEPKc) {
-    AcquireSRWLockExclusive(&mount_lock);
+    os_rwlock_lock(&mount_lock);
     for (int i = 0; i < nmounts; i++)
         if (!strcmp(mounts[i].name, gstr(ARG(0)))) { mounts[i] = mounts[--nmounts]; break; }
-    ReleaseSRWLockExclusive(&mount_lock);
+    os_rwlock_unlock(&mount_lock);
 }
 HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
@@ -250,7 +250,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     if (no_movies < 0) no_movies = getenv("HOS_NO_MOVIES") != NULL;
     if (!want_write && no_movies) {
         const size_t n = strlen(g);
-        if (n > 5 && !_stricmp(g + n - 5, ".webm")) {
+        if (n > 5 && !strcasecmp(g + n - 5, ".webm")) {
             static int logged;
             if (!logged++) hos_log("fs: OpenFile(%s): movies are left out (HOS_NO_MOVIES)", g);
             RET(R_PATH_NOT_FOUND);
@@ -266,7 +266,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
         if (rel) {
             char alt[HOS_FS_PATH];
             snprintf(alt, sizeof alt, "%s/%s", ov, rel + 2);
-            if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
+            if (os_path_kind(alt) != OS_PATH_NONE) {
                 hos_log("fs: OpenFile(%s): from the overlay", g);
                 snprintf(path, sizeof path, "%s", alt);
                 rel = NULL;
@@ -281,7 +281,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
         if (ov2 && !want_write && (rel || !ov) && (rel = rel ? rel : strstr(g, ":/"))) {
             char alt[HOS_FS_PATH];
             snprintf(alt, sizeof alt, "%s/%s", ov2, rel + 2);
-            if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
+            if (os_path_kind(alt) != OS_PATH_NONE) {
                 snprintf(path, sizeof path, "%s", alt);
                 direct_assets_overlay_opened(alt);
             }
@@ -289,16 +289,15 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     }
     /* (the host's file calls block: a block for HOS_DBG=crit) */
     const int away = hos_block_begin(CRIT_BLOCK_OTHER, (const void *)9);
-    HANDLE h = CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    os_file *f = os_file_open(path, OS_READ | (want_write ? OS_WRITE : 0), NULL);
     if (away) hos_block_end();
-    if (h == INVALID_HANDLE_VALUE) {
+    if (!f) {
         if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s): not found", g);
         RET(R_PATH_NOT_FOUND);
         return;
     }
     Handle *fh = (Handle *)calloc(1, sizeof *fh);
-    fh->h = h;
+    fh->f = f;
     fh->writable = want_write;
     snprintf(fh->path, sizeof fh->path, "%s", g);
     G64(ARG(0)) = new_handle(fh);
@@ -332,15 +331,8 @@ static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t
         void direct_texwatch_kernel_write(uint64_t guest, uint64_t n, const char *what);
         direct_texwatch_kernel_write(buf, size, fh->path);
     }
-    while (done < size) {
-        OVERLAPPED ov = {0};
-        int64_t o = off + (int64_t)done;
-        ov.Offset = (DWORD)o;
-        ov.OffsetHigh = (DWORD)(o >> 32);
-        DWORD chunk = (DWORD)(size - done > 0x40000000 ? 0x40000000 : size - done), got = 0;
-        if (!ReadFile(fh->h, GP(buf + done), chunk, &got, &ov) || !got) break;
-        done += got;
-    }
+    const int64_t got = os_file_read_at(fh->f, GP(buf), (size_t)size, (uint64_t)off);
+    if (got > 0) done = (uint64_t)got;
     if (away) hos_block_end();
     {   /* HOS_FS_WATCH=<lo hex>:<hi hex> (debugging): reads into that guest range, with the file */
         static int on = -1;
@@ -369,34 +361,26 @@ HLE(_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE) {
 }
 /* GetFileSize(long*, FileHandle) */
 HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
-    LARGE_INTEGER sz = {0};   /* (hookshot: a folder's handle has no size: 0, not the host stack's bytes) */
-    GetFileSizeEx(get_handle(c, ARG(1))->h, &sz);
-    G64(ARG(0)) = (uint64_t)sz.QuadPart;
+    const int64_t sz = os_file_size(get_handle(c, ARG(1))->f);   /* (hookshot: none known: 0, not the host stack's bytes) */
+    G64(ARG(0)) = sz > 0 ? (uint64_t)sz : 0;
     RET(0);
 }
 /* WriteFile(FileHandle, long offset, void const* buf, unsigned long size, WriteOption const&) */
 HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {
     Handle *fh = get_handle(c, ARG(0));
-    OVERLAPPED ov = {0};
-    ov.Offset = (DWORD)ARG(1);
-    ov.OffsetHigh = (DWORD)(ARG(1) >> 32);
-    DWORD put = 0;
-    /* (hookshot) from guest memory only, and the whole size: a DWORD cut wrote less than asked and said so */
-    if (ARG(3) <= 0xFFFFFFFFu && hos_guest_range(ARG(2), ARG(3))) WriteFile(fh->h, GP(ARG(2)), (DWORD)ARG(3), &put, &ov);
-    RET(put == ARG(3) ? 0 : 0x2EE202);
+    int64_t put = 0;
+    /* (hookshot) from guest memory only, and the whole size: a 32-bit cut wrote less than asked and said so */
+    if (ARG(3) <= 0xFFFFFFFFu && hos_guest_range(ARG(2), ARG(3))) put = os_file_write_at(fh->f, GP(ARG(2)), (size_t)ARG(3), ARG(1));
+    RET(put >= 0 && (uint64_t)put == ARG(3) ? 0 : 0x2EE202);
 }
 HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {
-    Handle *fh = get_handle(c, ARG(0));
-    LARGE_INTEGER sz;
-    sz.QuadPart = (LONGLONG)ARG(1);
-    SetFilePointerEx(fh->h, sz, NULL, FILE_BEGIN);
-    SetEndOfFile(fh->h);
+    os_file_resize(get_handle(c, ARG(0))->f, ARG(1));
     RET(0);
 }
-HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { FlushFileBuffers(get_handle(c, ARG(0))->h); RET(0); }
+HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { os_file_flush(get_handle(c, ARG(0))->f); RET(0); }
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
     Handle *fh = get_handle(c, ARG(0));
-    CloseHandle(fh->h);
+    os_file_close(fh->f);
     free_handle(ARG(0));
     free(fh);
 }
@@ -407,19 +391,17 @@ HLE(_ZN2nn2fs10CreateFileEPKcl) {
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
     make_dirs(path);
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) { RET(GetLastError() == ERROR_FILE_EXISTS ? R_PATH_EXISTS : R_PATH_NOT_FOUND); return; }
-    LARGE_INTEGER sz;
-    sz.QuadPart = (LONGLONG)ARG(1);
-    SetFilePointerEx(h, sz, NULL, FILE_BEGIN);
-    SetEndOfFile(h);
-    CloseHandle(h);
+    int err = 0;
+    os_file *f = os_file_open(path, OS_WRITE | OS_EXCL, &err);
+    if (!f) { RET(err == OS_EEXIST ? R_PATH_EXISTS : R_PATH_NOT_FOUND); return; }
+    os_file_resize(f, ARG(1));
+    os_file_close(f);
     RET(0);
 }
 HLE(_ZN2nn2fs10DeleteFileEPKc) {
     char path[HOS_FS_PATH];
     int writable = 0;
-    if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable || !DeleteFileA(path)) { RET(R_PATH_NOT_FOUND); return; }
+    if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable || os_remove(path)) { RET(R_PATH_NOT_FOUND); return; }
     RET(0);
 }
 HLE(_ZN2nn2fs15CreateDirectoryEPKc) {
@@ -427,35 +409,30 @@ HLE(_ZN2nn2fs15CreateDirectoryEPKc) {
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
     make_dirs(path);
-    RET(CreateDirectoryA(path, NULL) ? 0 : GetLastError() == ERROR_ALREADY_EXISTS ? R_PATH_EXISTS : R_PATH_NOT_FOUND);
+    const int r = os_mkdir(path);
+    RET(!r ? 0 : r == OS_EEXIST ? R_PATH_EXISTS : R_PATH_NOT_FOUND);
 }
 static void delete_tree(const char *dir) {
-    char pat[HOS_FS_PATH];
-    WIN32_FIND_DATAA fd;
-    snprintf(pat, sizeof pat, "%s\\*", dir);
-    HANDLE f = FindFirstFileA(pat, &fd);
-    if (f != INVALID_HANDLE_VALUE) {
-        do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-            char sub[HOS_FS_PATH];
-            snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName);
-            /* (hookshot) a link (a symbolic link, a junction) goes itself: never what it points to */
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) { if (!DeleteFileA(sub)) RemoveDirectoryA(sub); }
-            else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) delete_tree(sub);
-            else DeleteFileA(sub);
-        } while (FindNextFileA(f, &fd));
-        FindClose(f);
+    os_dir *d = os_dir_open(dir, NULL);
+    os_dirent e;
+    while (d && os_dir_next(d, &e)) {
+        char sub[HOS_FS_PATH];
+        snprintf(sub, sizeof sub, "%s\\%s", dir, e.name);
+        /* (hookshot) a link (a symbolic link, a junction) goes itself: never what it points to */
+        if (e.kind & OS_PATH_LINK) { if (os_remove(sub)) os_rmdir(sub); }
+        else if (e.kind & OS_PATH_DIR) delete_tree(sub);
+        else os_remove(sub);
     }
-    RemoveDirectoryA(dir);
+    os_dir_close(d);
+    os_rmdir(dir);
 }
 HLE(_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc) {
     char path[HOS_FS_PATH];
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
     /* (hookshot) the folder named itself a link: the link goes, never what it points to (as for the links inside) */
-    const DWORD at = GetFileAttributesA(path);
-    if (at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT)) {
-        if (!DeleteFileA(path)) RemoveDirectoryA(path);
+    if (os_path_kind(path) & OS_PATH_LINK) {
+        if (os_remove(path)) os_rmdir(path);
         RET(0);
         return;
     }
@@ -466,7 +443,7 @@ HLE(_ZN2nn2fs10RenameFileEPKcS2_) {
     char a[HOS_FS_PATH], b[HOS_FS_PATH];
     int w1 = 0, w2 = 0;
     if (!host_path(gstr(ARG(0)), a, sizeof a, &w1) || !host_path(gstr(ARG(1)), b, sizeof b, &w2) || !w1 || !w2) { RET(R_PATH_NOT_FOUND); return; }
-    RET(MoveFileExA(a, b, MOVEFILE_REPLACE_EXISTING) ? 0 : R_PATH_NOT_FOUND);
+    RET(os_rename(a, b, true) ? R_PATH_NOT_FOUND : 0);
 }
 /* a RomFS folder that only mods have: rom:/x -> some mod entry lies under x */
 static void count_extra(void *arg, const char *name, int is_dir, uint64_t size) { (void)name, (void)is_dir, (void)size; ++*(int *)arg; }
@@ -475,12 +452,12 @@ static const char *rom_rel(const char *guest) {   /* the path inside the RomFS m
     if (!colon || !hos_romfs_dir) return NULL;
     char root[HOS_FS_PATH];
     if (!host_path(guest, root, sizeof root, NULL)) return NULL;
-    AcquireSRWLockShared(&mount_lock);
+    os_rwlock_lock_shared(&mount_lock);
     int rom = 0;
     for (int i = 0; i < nmounts; i++)
         if (strlen(mounts[i].name) == (size_t)(colon - guest) && !strncmp(mounts[i].name, guest, (size_t)(colon - guest)))
             rom = !mounts[i].writable && !strcmp(mounts[i].root, hos_romfs_dir);
-    ReleaseSRWLockShared(&mount_lock);
+    os_rwlock_unlock_shared(&mount_lock);
     if (!rom) return NULL;
     const char *rest = colon + 1;
     while (*rest == '/') rest++;
@@ -497,13 +474,13 @@ static int is_mod_dir(const char *guest) {
 HLE(_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc) {
     char path[HOS_FS_PATH];
     if (!host_path(gstr(ARG(1)), path, sizeof path, NULL)) { RET(R_PATH_NOT_FOUND); return; }
-    DWORD at = GetFileAttributesA(path);
-    if (at == INVALID_FILE_ATTRIBUTES && is_mod_dir(gstr(ARG(1)))) at = FILE_ATTRIBUTE_DIRECTORY;   /* (only in mods) */
+    int kind = os_path_kind(path);
+    if (kind == OS_PATH_NONE && is_mod_dir(gstr(ARG(1)))) kind = OS_PATH_DIR;   /* (only in mods) */
     if (fs_trace())
-        hos_log("fs: GetEntryType(%s): %s", gstr(ARG(1)), at == INVALID_FILE_ATTRIBUTES ? "not found"
-                : (at & FILE_ATTRIBUTE_DIRECTORY) ? "directory" : "file");
-    if (at == INVALID_FILE_ATTRIBUTES) { RET(R_PATH_NOT_FOUND); return; }
-    G32(ARG(0)) = (at & FILE_ATTRIBUTE_DIRECTORY) ? 0 : 1;
+        hos_log("fs: GetEntryType(%s): %s", gstr(ARG(1)), kind == OS_PATH_NONE ? "not found"
+                : (kind & OS_PATH_DIR) ? "directory" : "file");
+    if (kind == OS_PATH_NONE) { RET(R_PATH_NOT_FOUND); return; }
+    G32(ARG(0)) = (kind & OS_PATH_DIR) ? 0 : 1;
     RET(0);
 }
 
@@ -516,19 +493,18 @@ static void add_extra(void *arg, const char *name, int is_dir, uint64_t size) {
     e->is_dir = is_dir, e->size = size;
 }
 HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {
-    char path[HOS_FS_PATH], pat[HOS_FS_PATH];
+    char path[HOS_FS_PATH];
     if (!host_path(gstr(ARG(1)), path, sizeof path, NULL)) { RET(R_PATH_NOT_FOUND); return; }
-    snprintf(pat, sizeof pat, "%s\\*", path);
     Handle *dh = (Handle *)calloc(1, sizeof *dh);
     dh->is_dir = (int)ARG(2);   /* mode: 1 directories, 2 files, 3 both */
-    snprintf(dh->path, sizeof dh->path, "%s", pat);   /* (for GetDirectoryEntryCount) */
-    dh->find = FindFirstFileA(pat, &dh->fd);
-    if (dh->find == INVALID_HANDLE_VALUE) dh->find_done = 1;
+    snprintf(dh->path, sizeof dh->path, "%s", path);   /* (for GetDirectoryEntryCount) */
+    dh->dir = os_dir_open(path, NULL);   /* (dh->de: the next entry, not read yet) */
+    if (!dh->dir || !os_dir_next(dh->dir, &dh->de)) dh->find_done = 1;
     if (rom_rel(gstr(ARG(1)))) hos_mods_dir_extras(rom_rel(gstr(ARG(1))), path, add_extra, dh);
     if (fs_trace())
         hos_log("fs: OpenDirectory(%s, mode %d)%s, %d entries from mods", gstr(ARG(1)), (int)ARG(2),
-                dh->find == INVALID_HANDLE_VALUE ? ": not found" : "", dh->nextras);
-    if (dh->find == INVALID_HANDLE_VALUE && !dh->nextras) { free(dh); RET(R_PATH_NOT_FOUND); return; }
+                !dh->dir ? ": not found" : "", dh->nextras);
+    if (!dh->dir && !dh->nextras) { free(dh); RET(R_PATH_NOT_FOUND); return; }
     G64(ARG(0)) = new_handle(dh);
     RET(0);
 }
@@ -537,18 +513,17 @@ HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
     Handle *dh = get_handle(c, ARG(2));
     int64_t n = 0, max = (int64_t)ARG(3);
     while (n < max && !dh->find_done) {
-        WIN32_FIND_DATAA *fd = &dh->fd;
-        int isdir = (fd->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        int want = (isdir && (dh->is_dir & 1)) || (!isdir && (dh->is_dir & 2));
-        if (strcmp(fd->cFileName, ".") && strcmp(fd->cFileName, "..") && want) {
+        const os_dirent *de = &dh->de;
+        int isdir = (de->kind & OS_PATH_DIR) != 0;
+        if ((isdir && (dh->is_dir & 1)) || (!isdir && (dh->is_dir & 2))) {
             uint64_t e = ARG(1) + 0x310 * n;
             memset(GP(e), 0, 0x310);
-            snprintf((char *)GP(e), 0x301, "%s", fd->cFileName);
+            snprintf((char *)GP(e), 0x301, "%s", de->name);
             *(uint8_t *)GP(e + 0x304) = isdir ? 0 : 1;
-            G64(e + 0x308) = ((uint64_t)fd->nFileSizeHigh << 32) | fd->nFileSizeLow;
+            G64(e + 0x308) = de->size;
             n++;
         }
-        if (!FindNextFileA(dh->find, &dh->fd)) dh->find_done = 1;
+        if (!os_dir_next(dh->dir, &dh->de)) dh->find_done = 1;
     }
     while (n < max && dh->find_done && dh->extra_pos < dh->nextras) {   /* then the mods' own entries */
         const ExtraEntry *x = &dh->extras[dh->extra_pos++];
@@ -567,17 +542,13 @@ HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
 HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
     Handle *dh = get_handle(c, ARG(1));
     int64_t n = 0;
-    WIN32_FIND_DATAA fd;
-    HANDLE f = dh->path[0] ? FindFirstFileA(dh->path, &fd) : INVALID_HANDLE_VALUE;
-    if (f != INVALID_HANDLE_VALUE) {
-        do {
-            int isdir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            if (strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, "..") &&
-                ((isdir && (dh->is_dir & 1)) || (!isdir && (dh->is_dir & 2))))
-                n++;
-        } while (FindNextFileA(f, &fd));
-        FindClose(f);
+    os_dir *d = dh->path[0] ? os_dir_open(dh->path, NULL) : NULL;
+    os_dirent de;
+    while (d && os_dir_next(d, &de)) {
+        int isdir = (de.kind & OS_PATH_DIR) != 0;
+        n += (isdir && (dh->is_dir & 1)) || (!isdir && (dh->is_dir & 2));
     }
+    os_dir_close(d);
     for (int i = 0; i < dh->nextras; i++)
         n += (dh->extras[i].is_dir && (dh->is_dir & 1)) || (!dh->extras[i].is_dir && (dh->is_dir & 2));
     G64(ARG(0)) = (uint64_t)n;
@@ -585,7 +556,7 @@ HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
 }
 HLE(_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE) {
     Handle *dh = get_handle(c, ARG(0));
-    if (dh->find != INVALID_HANDLE_VALUE) FindClose(dh->find);
+    os_dir_close(dh->dir);
     free_handle(ARG(0));
     free(dh->extras);
     free(dh);

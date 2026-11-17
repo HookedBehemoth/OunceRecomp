@@ -119,7 +119,7 @@ def main():
     write = block(fs, "HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE)")
     check("hos_guest_range(ARG(2), ARG(3))" in write, "WriteFile reads a buffer it did not check")
     size = block(fs, "HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE)")
-    check("LARGE_INTEGER sz = {0};" in size, "GetFileSize can answer with the host stack's bytes")
+    check("sz > 0 ? (uint64_t)sz : 0" in size, "GetFileSize can answer with the host stack's bytes")
     video = (ROOT / "host" / "nn_video.c").read_text(encoding="utf-8")
     nv12 = block(video, "HLE(_ZN2nn5codec26ReadDecoderOutputImageNv12E")
     check("!o->nv12" in nv12, "ReadDecoderOutputImageNv12 reads a pool whose NV12 was not allocated")

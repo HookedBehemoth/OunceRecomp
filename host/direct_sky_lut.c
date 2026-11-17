@@ -20,19 +20,19 @@
 #include "direct.h"
 #include "../gpu/api/rx_nvn.h"
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 
 int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);
 int nvn_fmt_bpb(int format, int *bw, int *bh);
 
 static const char kFile[] = "Env/GameScene.Nin_Ounce_NVN2.genvb.zs";
-static volatile LONG converted;   /* the archive was read from the prepared overlay */
-static struct { volatile LONG64 uploads, bytes, unconverted, badsite, notex; } n;
+static volatile int32_t converted;   /* the archive was read from the prepared overlay */
+static struct { volatile int64_t uploads, bytes, unconverted, badsite, notex; } n;
 
 void direct_sky_lut_opened(const char *path) {
     const size_t a = strlen(path), b = sizeof kFile - 1;
     if (a >= b && !strcmp(path + a - b, kFile) && (a == b || path[a - b - 1] == '/' || path[a - b - 1] == '\\')) {
-        InterlockedExchange(&converted, 1);
+        os_atomic_store(&converted, 1);
         hos_log("direct patch sky lut: the converted archive from the overlay: %s", path);
     }
 }
@@ -43,7 +43,7 @@ PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, direct_sky_lut_part, as(x0, ds
     if (!direct_assets_on()) return size;
     nvn_tex t;
     if (!dst || !nvn_tex_live_at(dst, &t)) {
-        if (InterlockedIncrement64(&n.notex) <= 5)
+        if (os_atomic_inc(&n.notex) <= 5)
             hos_log("direct patch sky lut: no texture at %#llx (%llu bytes from %#llx): left alone", (unsigned long long)dst,
                     (unsigned long long)size, (unsigned long long)src);
         return size;
@@ -54,7 +54,7 @@ PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, direct_sky_lut_part, as(x0, ds
     const uint64_t linear = (uint64_t)t.d.width * t.d.height * d * (uint64_t)bpb;
     if (bpb <= 0 || bw != 1 || bh != 1 || (t.d.target != 1 && t.d.target != 2) || size != linear ||
         !hos_guest_range(src, size)) {
-        if (InterlockedIncrement64(&n.badsite) <= 5)
+        if (os_atomic_inc(&n.badsite) <= 5)
             hos_log("direct patch sky lut: texture %#llx (%ux%ux%u, format %#x, target %d) and a part of %llu bytes: left alone",
                     (unsigned long long)t.gpu, t.d.width, t.d.height, t.d.depth, t.d.format, t.d.target,
                     (unsigned long long)size);
@@ -63,11 +63,11 @@ PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, direct_sky_lut_part, as(x0, ds
     NVNcopyRegion r = {0, 0, 0, (int)t.d.width, (int)t.d.height, (int)d};
     if (converted) {
         rx_direct()->texels(HSD_TEXELS_FILE, &t, 0, 0, &r, GP(src), 0, 0);
-        InterlockedIncrement64(&n.uploads);
-        InterlockedAdd64(&n.bytes, (LONG64)size);
+        os_atomic_inc(&n.uploads);
+        os_atomic_add(&n.bytes, (int64_t)size);
     } else {
         rx_direct()->texels(HSD_TEXELS_FILE, &t, 0, 0, &r, NULL, 0, 0);
-        if (InterlockedIncrement64(&n.unconverted) <= 3)
+        if (os_atomic_inc(&n.unconverted) <= 3)
             hos_log("direct patch sky lut: %s was not read from the prepared overlay (nx2/prepare_skybin.py): texture %#llx "
                     "is the placeholder", kFile, (unsigned long long)t.gpu);
     }

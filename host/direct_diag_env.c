@@ -9,9 +9,9 @@
 #include "hos.h"
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 
-extern volatile LONG64 hos_present_count;
+extern volatile int64_t hos_present_count;
 
 static int envlog_on(void) {
     static int on = -1;
@@ -33,8 +33,8 @@ static uint32_t g32(uint64_t a) { return a && hos_guest_range(a, 4) ? G32(a) : 0
 
 PATCH_AT(0x80357060, word(0xd503237f), before, none, direct_diag_env, as(x0, o), as(x1, flags)) {
     if (!envlog_on() || !(flags & 1)) return;
-    static LONG64 last = -1;
-    const LONG64 p = hos_present_count;
+    static int64_t last = -1;
+    const int64_t p = hos_present_count;
     if (p / 300 == last / 300) return;
     last = p;
     const uint64_t a1 = g64(o + 0x48) + g32(g64(g64(o + 0x40)) + 4);

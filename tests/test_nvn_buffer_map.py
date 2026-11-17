@@ -53,10 +53,10 @@ typedef struct { uint32_t magic; nvn_pool *pool; int64_t off; uint64_t size; } n
 #define NV(name) static void n_##name(Ctx *c, void *u_)
 
 /* Single-threaded fixture: the host lock and allocator are stand-ins, not tested implementations. */
-typedef int SRWLOCK;
-#define SRWLOCK_INIT 0
-static void AcquireSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
-static void ReleaseSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
+typedef int os_mutex;
+#define OS_MUTEX_INIT 0
+static void os_mutex_lock(os_mutex *lock) { (void)lock; }
+static void os_mutex_unlock(os_mutex *lock) { (void)lock; }
 static void hos_log(const char *format, ...) { (void)format; }
 static void *allocations[4];
 static unsigned allocation_count;

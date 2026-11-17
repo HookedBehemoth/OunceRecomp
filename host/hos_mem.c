@@ -5,11 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
-#include <sys/mman.h>
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-#define LOCK() pthread_mutex_lock(&lock)
-#define UNLOCK() pthread_mutex_unlock(&lock)
+static os_mutex lock = OS_MUTEX_INIT;
+#define LOCK() os_mutex_lock(&lock)
+#define UNLOCK() os_mutex_unlock(&lock)
 
 uint64_t hos_heap_size, hos_heap_used, hos_total_memory, hos_program_size;
 static uint64_t sys_next = HOS_SYSTEM_BASE;

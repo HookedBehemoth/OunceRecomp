@@ -493,7 +493,7 @@ PATCH_AT_SITE(0x83af5d9c, word(0xb900210a), after, none, hos_oot_ring_write, x8,
 
 /* (a bench run's end: who owns each ring, and its pushes and pops per present so far) */
 void hos_oot_ring_report(void) {
-    extern volatile int64_t hos_present_count;   /* (display.c, a LONG64) */
+    extern volatile int64_t hos_present_count;   /* (host/posix/display_sdl.c) */
     const double frames = hos_present_count > 0 ? (double)hos_present_count : 1.0;
     char line[1024];
     int n = snprintf(line, sizeof line, "rings: second writers %lld;", (long long)ring_conflicts);

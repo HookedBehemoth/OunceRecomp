@@ -9,8 +9,7 @@
 #include "hos.h"
 #include "bench.h"
 #include "nvn_list.h"
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>   /* (ExitProcess) */
+#include "os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +45,7 @@ void hos_bench_player(int loading, int event_playing) {
 static char msg_name[MSG_GROUPS][24];
 static int64_t msg_count[MSG_GROUPS];
 static int msg_groups;
-static SRWLOCK msg_lock = SRWLOCK_INIT;
+static os_mutex msg_lock = OS_MUTEX_INIT;
 static _Thread_local int msg_group = -1;
 static int msg_group_of(const char *name) {
     char g[24];
@@ -55,11 +54,11 @@ static int msg_group_of(const char *name) {
     memcpy(g, name, m);
     while (m && ((g[m - 1] >= '0' && g[m - 1] <= '9') || g[m - 1] == ' ' || g[m - 1] == '_')) m--;
     g[m] = 0;
-    AcquireSRWLockExclusive(&msg_lock);
+    os_mutex_lock(&msg_lock);
     int i = 0;
     while (i < msg_groups && strcmp(msg_name[i], g)) i++;
     if (i == msg_groups && i < MSG_GROUPS) snprintf(msg_name[i], sizeof msg_name[i], "%s", g), msg_groups++;
-    ReleaseSRWLockExclusive(&msg_lock);
+    os_mutex_unlock(&msg_lock);
     return i;
 }
 PATCH_AT(0x834a3060, word(0xd503237f), before, none, bench_msg_taken, w1) {
@@ -271,7 +270,7 @@ void hos_bench_present(int64_t now) {
             void hos_code_ptr_report(void);
             hos_code_ptr_report();   /* code_ptrs.c */
             hos_log_flush();
-            ExitProcess(0);
+            os_exit(0);
         }
     }
     last_now = now, last_draws = draws, last_waiting = waiting, last_reads = reads, last_lists = (int64_t)ls.made;

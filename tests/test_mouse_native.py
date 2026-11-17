@@ -9,11 +9,10 @@ menu's Mouse camera (option 6), or on an object that is not a camera, it does no
 pause menu, another camera) give the motion back to the stick. The camera takes the mouse only in its states 3 and 4 (at
 +0x204: following Link, turned by the player): aiming in first person leaves it updating with state 0 while another
 camera draws, and the motion is then the stick's.
-python -I -B tests/test_mouse_native.py   (Linux: host/posix's windows.h)
+python -I -B tests/test_mouse_native.py
 """
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,7 +40,6 @@ FIXTURE = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
 uint8_t *fake_heap;
 uint64_t hos_heap_size = 64 * 4096;
 double hos_mouse_sens = 1.0;
@@ -128,8 +126,6 @@ int main(void) {
 
 class MouseNativeTests(unittest.TestCase):
     def test_turns_the_player_camera(self):
-        if sys.platform == "win32":
-            self.skipTest("host/posix's windows.h stands in for Windows here")
         compiler = shutil.which("gcc") or shutil.which("clang")
         if not compiler:
             self.skipTest("no C compiler")
@@ -141,7 +137,7 @@ class MouseNativeTests(unittest.TestCase):
             shutil.copy(ROOT / "host" / "patch.h", tmp / "patch.h")   # (its declaration: PATCH_AT)
             (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-g", "-I", str(tmp), "-I", str(ROOT / "host" / "posix"),
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-g", "-I", str(tmp), "-I", str(ROOT / "host" / "os"),
                                     str(tmp / "t.c"), str(tmp / "mouse_native.c"), "-o", str(binary), "-lm"],
                                    text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)

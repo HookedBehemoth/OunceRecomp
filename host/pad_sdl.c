@@ -17,8 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 #include "hos_sdl.h"
 #include "hd_rumble.h"
 #include "hos_motion.h"
@@ -53,15 +52,15 @@ static struct {
     int has_bias;
 } pads[MAX_PADS];
 static uint32_t pads_opened;
-static SRWLOCK state_lock = SRWLOCK_INIT;
+static os_rwlock state_lock = OS_RWLOCK_INIT;
 static uint64_t state_buttons;
 static int32_t state_stick[4];
 static int state_count;
 static char state_name[128];   /* the first controller's name (host/prompts.c: the button prompts' Auto) */
-static volatile LONG rumble_low, rumble_high;   /* 0..65535, set by the vibration HLE */
+static volatile int32_t rumble_low, rumble_high;   /* 0..65535, set by the vibration HLE */
 /* the game's own vibration values per side (0 left, 1 right: {amp_low, freq_low, amp_high, freq_high}), for the pads
    that play HD rumble; silence until the game sends one */
-static SRWLOCK hd_lock = SRWLOCK_INIT;
+static os_rwlock hd_lock = OS_RWLOCK_INIT;
 static float hd_values[2][4] = {{0.0f, 160.0f, 0.0f, 320.0f}, {0.0f, 160.0f, 0.0f, 320.0f}};
 /* (motion) the pad read and its filter (the polling thread's own), then what the game is handed (under state_lock): the
    last HOS_MOTION_HISTORY readings, newest at motion_hist[motion_head]; gyro_status for the menu */
@@ -72,7 +71,7 @@ static int motion_pad = -1;
 static uint32_t motion_serial;
 static HosMotionSample motion_hist[HOS_MOTION_HISTORY];
 static int motion_head, motion_count, motion_live;
-static volatile LONG gyro_status;   /* 0 no controller, 1 controllers but none with a gyro, 2 one with a gyro */
+static volatile int32_t gyro_status;   /* 0 no controller, 1 controllers but none with a gyro, 2 one with a gyro */
 
 int32_t hos_stick_axis(int16_t v, int zone);   /* nn_hid.c: the menu's Stick dead zone, as XInput's pads */
 
@@ -204,7 +203,7 @@ static void motion_poll(int64_t now, int count) {
         }
         if (want && pads[i].motion_on && (pick < 0 || pads[i].used_ns > pads[pick].used_ns)) pick = i;
     }
-    InterlockedExchange(&gyro_status, any ? 2 : count ? 1 : 0);
+    os_atomic_store(&gyro_status, any ? 2 : count ? 1 : 0);
     float a[3], g[3];
     const int read = pick >= 0 && hos_sdl_pad_sensor(pads[pick].gc, HOS_SDL_SENSOR_ACCEL, a, 3) &&
                      hos_sdl_pad_sensor(pads[pick].gc, HOS_SDL_SENSOR_GYRO, g, 3);
@@ -216,9 +215,9 @@ static void motion_poll(int64_t now, int count) {
     }
     if (!read) {
         motion_pad = -1;
-        AcquireSRWLockExclusive(&state_lock);
+        os_rwlock_lock(&state_lock);
         motion_live = 0, motion_count = 0;
-        ReleaseSRWLockExclusive(&state_lock);
+        os_rwlock_unlock(&state_lock);
         return;
     }
     int fresh = 0;
@@ -265,13 +264,13 @@ static void motion_poll(int64_t now, int count) {
     r.dt_ns = fresh ? 5000000 : now - motion_reading_ns;
     if (r.dt_ns > (int64_t)(HOS_MOTION_DT_MAX * 1e9)) r.dt_ns = (int64_t)(HOS_MOTION_DT_MAX * 1e9);
     motion_reading_ns = now;
-    AcquireSRWLockExclusive(&state_lock);
+    os_rwlock_lock(&state_lock);
     motion_head = (motion_head + 1) % HOS_MOTION_HISTORY;
     motion_hist[motion_head] = r;
     if (fresh) motion_count = 0;
     if (motion_count < HOS_MOTION_HISTORY) motion_count++;
     motion_live = 1;
-    ReleaseSRWLockExclusive(&state_lock);
+    os_rwlock_unlock(&state_lock);
 }
 
 /* one poll: controllers plugged in or gone (each second), then every open one's buttons, sticks and rumble */
@@ -331,9 +330,9 @@ static void pads_poll(void) {
         uint8_t side[3][4];   /* (the HD rumble pads': each side's bytes, then both merged for a single Joy-Con) */
         {
             float hv[2][4], felt[3][4];
-            AcquireSRWLockShared(&hd_lock);
+            os_rwlock_lock_shared(&hd_lock);
             memcpy(hv, hd_values, sizeof hv);
-            ReleaseSRWLockShared(&hd_lock);
+            os_rwlock_unlock_shared(&hd_lock);
             hd_rumble_felt(hv[0], felt[0]);   /* (the game's small amplitudes, as the motors get them) */
             hd_rumble_felt(hv[1], felt[1]);
             hd_rumble_encode(felt[0], strength, side[0]);
@@ -385,7 +384,7 @@ static void pads_poll(void) {
             }
         }
         motion_poll(now, count);
-        AcquireSRWLockExclusive(&state_lock);
+        os_rwlock_lock(&state_lock);
         state_buttons = b;
         memcpy(state_stick, s, sizeof s);
         state_count = count;
@@ -396,23 +395,23 @@ static void pads_poll(void) {
                 snprintf(state_name, sizeof state_name, "%s", name ? name : "");
                 break;
             }
-        ReleaseSRWLockExclusive(&state_lock);
+        os_rwlock_unlock(&state_lock);
 }
 
-static DWORD WINAPI pad_main(void *arg) {
+static void pad_main(void *arg) {
     (void)arg;
     hos_host_thread_register_self("gamepads (SDL)");
-    if (!pads_start()) return 0;
+    if (!pads_start()) return;
     for (;;) {
         pads_poll();
-        Sleep(4);
+        os_sleep_ns(4LL * 1000000);
     }
 }
 int hos_display_owns_sdl(void);   /* host/posix/display_sdl.c */
 /* (linux) SDL also runs the window (host/posix/display_sdl.c), and its event queue is not for two threads. Polled
    from the window's thread, between its events. Two threads pumping it corrupted the heap once a controller was
    attached. */
-static volatile LONG pads_loaded;
+static volatile int32_t pads_loaded;
 void hos_sdl_pads_pump(void) {
     static int state;   /* 0 not started, 1 polling, -1 not available */
     if (!state && pads_loaded) state = pads_start() ? 1 : -1;
@@ -422,44 +421,44 @@ void hos_sdl_pads_pump(void) {
 /* The controllers' merged state (nn_hid.c): ORs their inputs in (1 << HOS_PAD_*), keeps the larger stick
    deflections; returns how many controllers SDL has open. Starts the SDL thread on the first call. */
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
-    static volatile LONG started;
-    if (!started && !InterlockedExchange(&started, 1)) {
+    static volatile int32_t started;
+    if (!started && !os_atomic_xchg(&started, 1)) {
         if (getenv("HOS_NO_SDL")) return 0;
         if (!hos_sdl_load()) {
             hos_log("hid: no SDL beside the exe or on the system: only XInput controllers (Xbox pads) work");
             return 0;
         }
         if (hos_display_owns_sdl())
-            InterlockedExchange(&pads_loaded, 1);   /* (the window's thread polls: hos_sdl_pads_pump) */
+            os_atomic_store(&pads_loaded, 1);   /* (the window's thread polls: hos_sdl_pads_pump) */
         else
-            CreateThread(NULL, 0, pad_main, NULL, 0, NULL);   /* (no window: nothing else pumps SDL) */
+            os_thread_release(os_thread_start(pad_main, NULL, 0, "gamepads (SDL)"));   /* (no window: nothing else pumps SDL) */
     }
-    AcquireSRWLockShared(&state_lock);
+    os_rwlock_lock_shared(&state_lock);
     const int n = state_count;
     *buttons |= state_buttons;
     for (int k = 0; k < 4; k++)
         if ((state_stick[k] < 0 ? -state_stick[k] : state_stick[k]) > (stick[k] < 0 ? -stick[k] : stick[k]))
             stick[k] = state_stick[k];
-    ReleaseSRWLockShared(&state_lock);
+    os_rwlock_unlock_shared(&state_lock);
     return n;
 }
 
 /* (motion) the latest readings for nn_hid.c's GetSixAxisSensorStates, newest first: up to max, how many there are; 0
    when there are none (Motion controls off, or no pad with a gyroscope) */
 int hos_sdl_motion_history(HosMotionSample *out, int max) {
-    AcquireSRWLockShared(&state_lock);
+    os_rwlock_lock_shared(&state_lock);
     const int n = !motion_live ? 0 : motion_count < max ? motion_count : max;
     for (int i = 0; i < n; i++) out[i] = motion_hist[(motion_head - i + HOS_MOTION_HISTORY) % HOS_MOTION_HISTORY];
-    ReleaseSRWLockShared(&state_lock);
+    os_rwlock_unlock_shared(&state_lock);
     return n;
 }
 /* (the Insert menu's Motion controls row) 0 no controller, 1 controllers with no gyroscope, 2 one with a gyroscope */
 int hos_sdl_gyro_status(void) { return (int)gyro_status; }
 /* The first open controller's name into out ("" with none) */
 void hos_sdl_pad_first_name(char *out, size_t cap) {
-    AcquireSRWLockShared(&state_lock);
+    os_rwlock_lock_shared(&state_lock);
     snprintf(out, cap, "%s", state_name);
-    ReleaseSRWLockShared(&state_lock);
+    os_rwlock_unlock_shared(&state_lock);
 }
 
 /* Vibration from the game (0..1 amplitudes of the low and high bands), for the pads that rumble. */
@@ -468,14 +467,14 @@ void hos_sdl_rumble(float low, float high) {
     if (low > 1) low = 1;
     if (high < 0) high = 0;
     if (high > 1) high = 1;
-    InterlockedExchange(&rumble_low, (LONG)(low * 65535));
-    InterlockedExchange(&rumble_high, (LONG)(high * 65535));
+    os_atomic_store(&rumble_low, (int32_t)(low * 65535));
+    os_atomic_store(&rumble_high, (int32_t)(high * 65535));
 }
 
 /* The game's own vibration value for one side (0 left, 1 right; {amp_low, freq_low, amp_high, freq_high}), for the
    pads that play HD rumble (hd_rumble.h); nn_hid.c's vibration_send, beside hos_sdl_rumble. */
 void hos_sdl_rumble_hd(int side, const float value[4]) {
-    AcquireSRWLockExclusive(&hd_lock);
+    os_rwlock_lock(&hd_lock);
     memcpy(hd_values[side & 1], value, sizeof hd_values[0]);
-    ReleaseSRWLockExclusive(&hd_lock);
+    os_rwlock_unlock(&hd_lock);
 }

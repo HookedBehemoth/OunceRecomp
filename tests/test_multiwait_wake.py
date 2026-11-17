@@ -31,10 +31,10 @@ HARNESS = r"""
 #include <stdlib.h>
 #include <string.h>
 typedef long LONG;
-typedef struct { int x; } SRWLOCK;
-typedef struct { int x; } CONDITION_VARIABLE;
-#define SRWLOCK_INIT {0}
-#define CONDITION_VARIABLE_INIT {0}
+typedef struct { int x; } os_mutex;
+typedef struct { int x; } os_cond;
+#define OS_MUTEX_INIT {0}
+#define OS_COND_INIT {0}
 static int lock_depth, lookups_locked, target_lookups, wakes;
 static int fail_next_realloc;
 static void *test_realloc(void *p, size_t n) {
@@ -42,20 +42,22 @@ static void *test_realloc(void *p, size_t n) {
     return realloc(p, n);
 }
 #define realloc test_realloc
-static LONG InterlockedCompareExchange(volatile LONG *p, LONG x, LONG c) { LONG v = *p; if (v == c) *p = x; return v; }
+#define os_atomic_load(p) (*(p))
 static void *mw_cv_at, *mw_lock_at;   /* (set in main) */
 static int mw_held;                  /* (mw_lock itself held: any sleep then must let it go) */
-static void AcquireSRWLockExclusive(SRWLOCK *l) { lock_depth++; if ((void *)l == mw_lock_at) mw_held++; }
-static void ReleaseSRWLockExclusive(SRWLOCK *l) { lock_depth--; if ((void *)l == mw_lock_at) mw_held--; }
-static void WakeAllConditionVariable(CONDITION_VARIABLE *cv) { (void)cv; wakes++; }
+static void os_mutex_lock(os_mutex *l) { lock_depth++; if ((void *)l == mw_lock_at) mw_held++; }
+static void os_mutex_unlock(os_mutex *l) { lock_depth--; if ((void *)l == mw_lock_at) mw_held--; }
+static void os_cond_broadcast(os_cond *cv) { (void)cv; wakes++; }
+static void os_cond_signal(os_cond *cv) { (void)cv; wakes++; }
 typedef struct Obj {
     uint64_t key, event; int sem_max, kind; struct Obj **links; int nlinks, caplinks; struct Obj *mw;
-    int64_t due_ns, sig_ns; int sem, qlen, qcap, signaled, autoclear; SRWLOCK lk; CONDITION_VARIABLE cv;
+    int64_t due_ns, sig_ns; int sem, qlen, qcap, signaled, autoclear; os_mutex lk; os_cond cv;
 } Obj;
 typedef unsigned long DWORD;
-#define INFINITE 0xFFFFFFFFu
-static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
-static LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
+#define OS_FOREVER ((int64_t)-1)
+#define os_atomic_inc(p) (++*(p))
+#define os_atomic_dec(p) (--*(p))
+#define os_atomic_add(p, v) (*(p) += (v))
 static int64_t hos_now_ns(void) { static int64_t t = 1000; return t += 100000; }   /* (0.1 ms a call: timed waits end) */
 /* (scheduling points and blocking waits: counted when a lock is held; a sleep there never ends in this fixture) */
 static int sched_locked;
@@ -89,9 +91,9 @@ static int wait_until(Obj *o, int64_t deadline) { (void)o; (void)deadline; if (l
 typedef struct { uint64_t x[8]; } Ctx;
 #define ARG(i) (c->x[i])
 #define HLE(name) static void name(Ctx *c)
-static SRWLOCK mw_lock = SRWLOCK_INIT;
-static CONDITION_VARIABLE mw_cv = CONDITION_VARIABLE_INIT;
-static volatile LONG mw_waiting;
+static os_mutex mw_lock = OS_MUTEX_INIT;
+static os_cond mw_cv = OS_COND_INIT;
+static volatile int32_t mw_waiting;
 FUNCTIONS
 static int bad;
 static int count(uint64_t k) { int i = mw_watched_at_locked(k); return i < 0 ? 0 : mw_watched[i].n; }
@@ -219,21 +221,22 @@ def main():
     source = args.source.read_text(encoding="utf-8")
 
     # (scope: a "scheduling point" is a call that can give the virtual core up or wait for one, or put the thread to sleep
-    # (condition or timed wait, Sleep): what turns mw_lock into the 250 ms vcore-escape stall. Out of scope: a short CPU-pause
-    # spin, and blocking on a host lock (an SRW lock keeps the core) whose holders never give the core up while holding it,
+    # (condition or timed wait, sleep): what turns mw_lock into the 250 ms vcore-escape stall. Out of scope: a short CPU-pause
+    # spin, and blocking on a host lock (an os_mutex keeps the core) whose holders never give the core up while holding it,
     # as table_lock, which obj_lookup already takes on a cache miss.
     # the fixture stubs obj_nockpt: everything it can reach in this file runs under mw_lock during WaitAny's scan, so no
     # function in that call graph may hold a virtual-core call, yield, sleep or wait. event_wait is run for real in the
     # fixture, whose stubs count spins, timed waits and vcore calls under the lock and fail on a sleep. Controls below)
-    sched = re.compile(r"\b(hos_vcore_\w+|vc_\w+|hos_cv_sleep|hos_sleep\w*|hos_thread_wait|hos_yield\w*|Sleep\w*|"
-                       r"SwitchToThread|WaitFor\w+|WaitOnAddress|sched_yield|usleep|nanosleep|wait_until|spin_\w+)\s*\(")
+    sched = re.compile(r"\b(hos_vcore_\w+|vc_\w+|hos_cv_sleep|hos_sleep\w*|hos_thread_wait|hos_yield\w*|os_sleep\w*|"
+                       r"os_yield|os_cond_wait\w*|os_futex_wait|os_event_wait|os_sema_wait|wait_until|spin_\w+)\s*\(")
 
     # (an allowlist, not a list of bad names: every call in wait_any's mw_lock region and in what it reaches must be to a
     # function of this file (followed) or to one of these, which keep the core and never sleep; anything else, a wrapper in
     # another file included, fails)
-    safe_external = {"AcquireSRWLockExclusive", "AcquireSRWLockShared", "ReleaseSRWLockExclusive", "ReleaseSRWLockShared",
-                     "InitializeSRWLock", "InitializeConditionVariable", "InterlockedIncrement", "InterlockedDecrement",
-                     "InterlockedCompareExchange", "InterlockedExchange", "__atomic_load_n", "__atomic_store_n",
+    safe_external = {"os_mutex_lock", "os_mutex_unlock", "os_rwlock_lock", "os_rwlock_unlock", "os_rwlock_lock_shared",
+                     "os_rwlock_unlock_shared", "os_cond_signal", "os_cond_broadcast", "os_atomic_inc", "os_atomic_dec",
+                     "os_atomic_add", "os_atomic_load", "os_atomic_store", "os_atomic_cas", "os_atomic_xchg", "__atomic_load_n",
+                     "__atomic_store_n",
                      "malloc", "calloc", "realloc", "free", "memset", "memcpy", "memmove", "getenv", "hos_now_ns", "offsetof"}
     not_calls = {"if", "for", "while", "switch", "return", "sizeof", "case", "SLEEP_LETS_MW_LOCK_GO"}
 
@@ -250,7 +253,7 @@ def main():
                 defs.setdefault(m.group(1), []).append(block(code[m.start():], m.group(0)))   # (this one, not the first alike)
         # (wait_any's own mw_lock region: no call but its one sleep, which lets mw_lock go (the fixture checks that))
         wa = "\n".join(defs.get("wait_any", []))
-        region = wa[wa.find("AcquireSRWLockExclusive(&mw_lock)"):wa.rfind("ReleaseSRWLockExclusive(&mw_lock)")]
+        region = wa[wa.find("os_mutex_lock(&mw_lock)"):wa.rfind("os_mutex_unlock(&mw_lock)")]
         if not region:
             return ["wait_any (its mw_lock region was not found)"]
         rest = re.sub(r"\bhos_cv_sleep\s*\(\s*&mw_cv\s*,\s*&mw_lock\s*,", "SLEEP_LETS_MW_LOCK_GO(", region, count=1)
@@ -278,9 +281,9 @@ def main():
     # virtual core while holding one of those (or mw_lock) can hold the scan up the same way. So no region holding them,
     # nor anything of this file it reaches, may call something that waits for a core. hos_cv_sleep is fine: it lets the
     # lock go before taking a core back)
-    core_wait = re.compile(r"\b(hos_vcore_\w+|vc_\w+|a64_poll\w*|hos_yield\w*|hos_thread_wait|hos_sleep\w*|Sleep\w*|"
-                           r"SwitchToThread|sched_yield)\s*\(")
-    scan_lock = re.compile(r"AcquireSRWLock(?:Exclusive|Shared)\(\s*&\s*(mw_lock|table_lock|\w+\s*->\s*lk)\s*\)")
+    core_wait = re.compile(r"\b(hos_vcore_\w+|vc_\w+|a64_poll\w*|hos_yield\w*|hos_thread_wait|hos_sleep\w*|os_sleep\w*|"
+                           r"os_yield)\s*\(")
+    scan_lock = re.compile(r"os_(?:mutex|rwlock)_lock(?:_shared)?\(\s*&\s*(mw_lock|table_lock|\w+\s*->\s*lk)\s*\)")
 
     def locked_regions_unsafe(text):
         code = code_of(text)
@@ -303,7 +306,7 @@ def main():
                 for m in scan_lock.finditer(b):
                     lk = re.sub(r"\s", "", m.group(1))
                     name_pat = r"\s*->\s*".join(re.escape(part) for part in lk.split("->"))   # (t->lk: any spacing)
-                    rel = re.search(r"ReleaseSRWLock(?:Exclusive|Shared)\(\s*&\s*" + name_pat + r"\s*\)", b[m.end():])
+                    rel = re.search(r"os_(?:mutex|rwlock)_unlock(?:_shared)?\(\s*&\s*" + name_pat + r"\s*\)", b[m.end():])
                     region = b[m.end():m.end() + rel.start()] if rel else b[m.end():]
                     if core_wait.search(region) or any(c in defs and waits_for_core(c) for c in re.findall(r"\b(\w+)\s*\(", region)):
                         bad.append("%s (holding %s)" % (name, lk))
@@ -312,10 +315,10 @@ def main():
     unsafe = locked_regions_unsafe(source)
     if unsafe:
         raise SystemExit("FAIL: sleeps or yields while holding a lock WaitAny's scan takes: " + ", ".join(unsafe))
-    for what, old, new in (("a checkpoint in event_signal holding e->lk", "    AcquireSRWLockExclusive(&e->lk);\n    e->signaled = 1;",
-                            "    AcquireSRWLockExclusive(&e->lk);\n    hos_vcore_checkpoint();\n    e->signaled = 1;"),
+    for what, old, new in (("a checkpoint in event_signal holding e->lk", "    os_mutex_lock(&e->lk);\n    e->signaled = 1;",
+                            "    os_mutex_lock(&e->lk);\n    hos_vcore_checkpoint();\n    e->signaled = 1;"),
                            ("a sleep under table_lock", "static Obj *obj_lookup(uint64_t key, int kind) {",
-                            "static Obj *obj_lookup(uint64_t key, int kind) { AcquireSRWLockShared(&table_lock); Sleep(1); ReleaseSRWLockShared(&table_lock);")):
+                            "static Obj *obj_lookup(uint64_t key, int kind) { os_mutex_lock(&table_lock); os_sleep_ns(1000000); os_mutex_unlock(&table_lock);")):
         if old not in source:
             raise SystemExit("FAIL: the locked-region check's control '%s' lost its anchor: update the test" % what)
         if not locked_regions_unsafe(source.replace(old, new, 1)):
@@ -331,7 +334,7 @@ def main():
                 ("a vcore yield in obj_nockpt", "static Obj *obj_nockpt(uint64_t key, int kind) {",
                  "static Obj *obj_nockpt(uint64_t key, int kind) { hos_vcore_yield();"),
                 ("a sleep in obj_lookup", "static Obj *obj_lookup(uint64_t key, int kind) {",
-                 "static Obj *obj_lookup(uint64_t key, int kind) { Sleep(1);"),
+                 "static Obj *obj_lookup(uint64_t key, int kind) { os_sleep_ns(1000000);"),
                 ("a call through a pointer in obj_nockpt", "static Obj *obj_nockpt(uint64_t key, int kind) {",
                  "static Obj *obj_nockpt(uint64_t key, int kind) { (*lookup_hook)();"),
                 ("a call through an array element in obj_nockpt", "static Obj *obj_nockpt(uint64_t key, int kind) {",

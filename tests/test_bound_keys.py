@@ -44,28 +44,11 @@ PRELUDE = r"""
 #include <string.h>
 #include <stdint.h>
 #include "vk_api.h"
-typedef long LONG;
-typedef unsigned long DWORD;
-#define VK_LBUTTON 0x01
-#define VK_RBUTTON 0x02
-#define VK_MBUTTON 0x04
+#include "os.h"
+#include "hos_keys.h"
 #define VK_XBUTTON1 0x05
 #define VK_XBUTTON2 0x06
-#define VK_TAB 0x09
-#define VK_RETURN 0x0D
-#define VK_SHIFT 0x10
-#define VK_CONTROL 0x11
-#define VK_MENU 0x12
-#define VK_SPACE 0x20
-#define VK_LEFT 0x25
-#define VK_UP 0x26
-#define VK_RIGHT 0x27
-#define VK_DOWN 0x28
-#define MAX_PATH 260
-#define NULL_MODULE 0
-static LONG InterlockedExchange(volatile LONG *p, LONG v) { LONG o = *p; *p = v; return o; }
-static LONG InterlockedCompareExchange(volatile LONG *p, LONG v, LONG c) { LONG o = *p; if (o == c) *p = v; return o; }
-static void Sleep(int ms) { (void)ms; }
+void os_yield(void) {}
 static void hos_log(const char *f, ...) { (void)f; }
 static const char *ini_dir;
 /* (the separator the system's own path has: nn_hid.c looks for a backslash first, so a mixed path finds the wrong folder) */
@@ -74,8 +57,7 @@ static const char *ini_dir;
 #else
 #define EXE_SEP "/"
 #endif
-static DWORD GetModuleFileNameA(void *m, char *b, DWORD n) { (void)m; return (DWORD)snprintf(b, n, "%s" EXE_SEP "hookshot.exe", ini_dir); }
-#define hos_game_path_a(b,n) GetModuleFileNameA(0,b,n)
+static uint32_t hos_game_path_a(char *b, uint32_t n) { return (uint32_t)snprintf(b, n, "%s" EXE_SEP "hookshot.exe", ini_dir); }
 static int held[256];
 static int key(int vk) { return held[vk & 255]; }
 """
@@ -130,7 +112,7 @@ class BoundKeysTests(unittest.TestCase):
         code = [block(hid, "static int kmap_down("),
                 between(hid, "static const char *const bind_names[HOS_KEY_N]", "void hos_bind("),
                 between(hid, "static int mouse_vk_slot(", "static int bound_down(")]
-        code = "\n".join(code).replace("GetModuleFileNameA(NULL,", "GetModuleFileNameA(0,")
+        code = "\n".join(code)
         read = block(hid, "static void read_input(")
         for needle in ("bound_down(HOS_KEY_MOVE_UP,", "bound_down(HOS_KEY_CAM_RIGHT,", "mouse_buttons_arm(", "bound_down(i, 1)"):
             self.assertIn(needle, read, "read_input does not read the bound keys: " + needle)
@@ -141,7 +123,8 @@ class BoundKeysTests(unittest.TestCase):
             (tmp / "t.c").write_text(PRELUDE + code + MAIN, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
             build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wno-unused-function", "-I", str(ROOT / "gpu" / "api"),
-                                    "-I", str(ROOT / "gpu"), str(tmp / "t.c"), "-o", str(binary)], text=True, capture_output=True)
+                                    "-I", str(ROOT / "gpu"), "-I", str(ROOT / "host" / "os"),
+                                    "-I", str(ROOT / "host"), str(tmp / "t.c"), "-o", str(binary)], text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary), str(tmp)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

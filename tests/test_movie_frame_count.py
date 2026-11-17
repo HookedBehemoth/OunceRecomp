@@ -51,10 +51,10 @@ FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 /* (the lock as a flag: taken once, given back once) */
-typedef int SRWLOCK;
-#define SRWLOCK_INIT 0
-static void AcquireSRWLockExclusive(SRWLOCK *l) { CHECK(!*l); *l = 1; }
-static void ReleaseSRWLockExclusive(SRWLOCK *l) { CHECK(*l); *l = 0; }
+typedef int os_mutex;
+#define OS_MUTEX_INIT 0
+static void os_mutex_lock(os_mutex *l) { CHECK(!*l); *l = 1; }
+static void os_mutex_unlock(os_mutex *l) { CHECK(*l); *l = 0; }
 volatile uint32_t hos_frame_seconds_bits;
 static int hos_dbg_item(const char *item) { (void)item; return 0; }
 static void hos_log(const char *fmt, ...) { (void)fmt; }

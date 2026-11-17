@@ -12,11 +12,11 @@
    Check that it applies: the 600-present line "direct patch depth copy" (copies a frame with their barriers, per site). */
 #include "direct.h"
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 
 uint64_t nvn_native_proc(const char *name);   /* nvn_native.c */
 
-static volatile LONG64 n_site[2];
+static volatile int64_t n_site[2];
 #define BITS 0x12u   /* NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT */
 
 /* the host's proc of name (nvn_native_proc, the same each time: a race only looks it up twice) */
@@ -39,14 +39,14 @@ PATCH_AT(0x80289cc0, word(0xd63f0100), instead, none, direct_depth_copy, guest(c
     guest_call(g, sp, barrier, cmd, BITS, 0, 0, 0);
     guest_call8(g, sp, proc, cmd, x1, x2, x3, x4, x5, x6, x7);
     guest_call(g, sp, barrier, cmd, BITS, 0, 0, 0);
-    InterlockedIncrement64(&n_site[site]);
+    os_atomic_inc(&n_site[site]);
 }
 PATCH_AT_SITE(0x806675d8, word(0xd63f0100), instead, none, direct_depth_copy, guest(computed), sp, x8, k(1), x0, x1, x2,
               x3, x4, x5, x6, x7);
 
 void direct_depth_copy_log(double frames) {
-    static LONG64 last[2];
-    const LONG64 now[2] = {n_site[0], n_site[1]};
+    static int64_t last[2];
+    const int64_t now[2] = {n_site[0], n_site[1]};
     hos_log("direct patch depth copy (f_80289590 0x80289cc0, f_80666d20 0x806675d8): a frame: copies with barriers around "
             "them %.2f, %.2f", (now[0] - last[0]) / frames, (now[1] - last[1]) / frames);
     memcpy(last, now, sizeof last);

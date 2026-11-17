@@ -6,7 +6,7 @@
    Keyboard (totk-pc-recomp's layout): WASD left stick, arrows or IJKL right stick (camera), Space X (jump), E A
    (action), Shift B (run/cancel), Q L (abilities), R R, Z ZL, X or F ZR (bow), Ctrl left-stick click (crouch), C
    right-stick click (first person), Tab or Enter Plus, M Minus (map), 1 2 3 4 d-pad left, up, right, down. Only
-   while the game's window is in front (the key state is global).
+   while the game's window is in front.
    Mouse (after a click in the window, display.c; Esc releases): its motion is the right stick (mouse panning,
    mouse_stick), or with the Insert menu's "Mouse camera" set to Native (HOS_MOUSE_NATIVE=1 or 0 overrides it) turns
    the camera itself (mouse_native.c); left button Y (attack), right button ZL (shield, lock on). - and = change its sensitivity (x0.8 /
@@ -30,8 +30,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
+#include "hos_keys.h"
+#include "hos_sdl.h"
 #include "../gpu/api/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
 #include "hos_motion.h"
 
@@ -45,7 +46,7 @@ static int64_t sampling;
 
 int rx_option(int id, int otherwise);
 /* (the Insert menu takes the keyboard while it is open) */
-static int key(int vk) { return !rx_option(1, 0) && (GetAsyncKeyState(vk) & 0x8000) != 0; }
+static int key(int vk) { return !rx_option(1, 0) && hos_key_down(vk); }
 
 int hos_mouse_take(int32_t *dx, int32_t *dy);   /* display.c */
 
@@ -199,33 +200,16 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     return 1;
 }
 
-/* A bound key is down: Enter held with Alt is no button (Alt+Enter is fullscreen, host/display.c and
-   host/posix/display_sdl.c). tests/test_alt_enter.py */
+/* A bound key is down: Enter held with Alt is no button (Alt+Enter is fullscreen, host/posix/display_sdl.c). tests/test_alt_enter.py */
 static int kmap_down(int vk, int (*down)(int)) { return down(vk) && !(vk == VK_RETURN && down(VK_MENU)); }
 
 static int game_in_front(void) {
-    DWORD pid = 0;
-    HWND w = GetForegroundWindow();
-    if (w) GetWindowThreadProcessId(w, &pid);
-    int front = pid == GetCurrentProcessId();
-#ifndef __EMSCRIPTEN__
-    static int last_normal_was_us = 1, was_front = 1;
-    if (w && !front) {
-        const LONG_PTR ex = GetWindowLongPtrA(w, GWL_EXSTYLE);
-        const int overlay = (ex & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) != 0;
-        if (overlay && last_normal_was_us) front = 1;
-        else last_normal_was_us = 0;
-    } else if (front) {
-        last_normal_was_us = 1;
-    }
+    const int front = hos_window_focused() != 0;
+    static int was_front = 1;
     if (front != was_front) {
-        char cls[64] = "";
-        if (w) GetClassNameA(w, cls, sizeof cls);
-        hos_log("hid: game window %s (foreground window: process %lu, class \"%s\")", front ? "in front" : "not in front",
-                (unsigned long)pid, cls);
+        hos_log("hid: game window %s", front ? "in front" : "not in front");
         was_front = front;
     }
-#endif
     return front;
 }
 
@@ -239,12 +223,12 @@ static int npresses = -1;
 static int64_t script_t0, script_end_ms;
 static int script_frame_clock;
 static int64_t script_frame0;
-extern volatile LONG64 hos_present_count;   /* native game presents, not generated frames or HID polls */
+extern volatile int64_t hos_present_count;   /* native game presents, not generated frames or HID polls */
 /* HOS_INPUT_FRAME_CLOCK=1: the existing script seconds/millisecond holds advance at 60 native frames per second.
    Live-file polling and HID diagnostics keep their wall clocks. Default/0/empty retains wall-clock scripts. */
 static int64_t script_elapsed_ms(int64_t now) {
     if (!script_frame_clock) return (now - script_t0) / 1000000;
-    const int64_t frames = InterlockedCompareExchange64(&hos_present_count, 0, 0) - script_frame0;
+    const int64_t frames = os_atomic_load(&hos_present_count) - script_frame0;
     return frames * 1000 / 60;
 }
 
@@ -262,7 +246,7 @@ static void parse_script(void) {
     {
         const char *e = getenv("HOS_INPUT_FRAME_CLOCK");
         script_frame_clock = e && atoi(e) != 0;
-        if (script_frame_clock) script_frame0 = InterlockedCompareExchange64(&hos_present_count, 0, 0);
+        if (script_frame_clock) script_frame0 = os_atomic_load(&hos_present_count);
     }
     parse_presses(getenv("HOS_INPUT_SCRIPT"), 0, 0);
     if (npresses)
@@ -384,29 +368,29 @@ static const unsigned char key_default[HOS_KEY_N][2] = {
     {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
     {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
     {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}};
-static volatile LONG pad_bind[HOS_SW_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
+static volatile int32_t pad_bind[HOS_SW_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
 
 static void binds_default(void) {
     for (int i = 0; i < HOS_KEY_N; i++) {
-        if (i < HOS_SW_N) InterlockedExchange(&pad_bind[i], pad_default[i]);
-        for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
+        if (i < HOS_SW_N) os_atomic_xchg(&pad_bind[i], pad_default[i]);
+        for (int k = 0; k < 2; k++) os_atomic_xchg(&key_bind[i][k], key_default[i][k]);
     }
 }
 
 static void binds_load(void) {
-    static volatile LONG state;   /* 0 not read, 1 being read, 2 read */
+    static volatile int32_t state;   /* 0 not read, 1 being read, 2 read */
     if (state == 2) return;
-    if (InterlockedCompareExchange(&state, 1, 0) != 0) {
-        while (state != 2) Sleep(0);
+    if (os_atomic_cas(&state, 0, 1) != 0) {
+        while (state != 2) os_yield();
         return;
     }
     binds_default();
-    char path[MAX_PATH];
-    const DWORD len = hos_game_path_a(path, MAX_PATH);
+    char path[OS_PATH_MAX];
+    const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
     char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
     FILE *f = NULL;
     if (slash) {
-        snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
+        snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
         f = fopen(path, "r");
     }
     int changed = 0;
@@ -448,7 +432,7 @@ static void binds_load(void) {
         }
     }
     if (changed) hos_log("hid: %d controls from hookshot_options.ini", changed);
-    InterlockedExchange(&state, 2);
+    os_atomic_store(&state, 2);
 }
 int hos_binding(int set, int button, int slot) {
     binds_load();
@@ -467,20 +451,20 @@ void hos_bind(int set, int button, int slot, int code) {
     if (button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1) return;
     if (set == HOS_BIND_PAD) {
         if (slot || code < -1 || code >= HOS_PAD_N) return;
-        const LONG old = pad_bind[button];
+        const int32_t old = pad_bind[button];
         for (int i = 0; i < HOS_SW_N; i++)
-            if (i != button && code >= 0 && pad_bind[i] == code) InterlockedExchange(&pad_bind[i], old);
-        InterlockedExchange(&pad_bind[button], code);
+            if (i != button && code >= 0 && pad_bind[i] == code) os_atomic_xchg(&pad_bind[i], old);
+        os_atomic_store(&pad_bind[button], code);
     } else {
         if (code < 0 || code > 255) return;
         for (int i = 0; i < HOS_KEY_N; i++)
             for (int k = 0; k < 2; k++)
-                if (code && key_bind[i][k] == code) InterlockedExchange(&key_bind[i][k], 0);
-        InterlockedExchange(&key_bind[button][slot], code);
+                if (code && key_bind[i][k] == code) os_atomic_xchg(&key_bind[i][k], 0);
+        os_atomic_store(&key_bind[button][slot], code);
     }
 }
 
-static volatile LONG pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
+static volatile int32_t pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
 uint32_t hos_pad_raw(void) { return (uint32_t)pad_raw_now; }
 
 /* A stick axis cut at the dead zone (pad_sdl.c): zone 0 is 7849 (~24%, XInput's own), 1 to 5 5%, 10%, 15%, 20%, 30%.
@@ -511,7 +495,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
         if (n != was) hos_log("hid: %d controller%s through SDL", n, n == 1 ? "" : "s");
         was = n;
     }
-    InterlockedExchange(&pad_raw_now, (LONG)raw);
+    os_atomic_store(&pad_raw_now, (int32_t)raw);
     /* Back and Start together open the Insert menu (gpu/legacy/vk/vk_menu.cpp, for pads whose Home button the system
        keeps): they reach the game only one at a time */
     const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
@@ -564,8 +548,8 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     scripted_input(buttons, stick);
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
-       while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
-       used to follow the player's pad (and pressed things in its own menus). */
+       while the game's window is in front, like the keyboard: the pads are read whatever window is in front (pad_sdl.c), so a test
+       run in the background used to follow the player's pad (and pressed things in its own menus). */
     /* (hookshot) The player's devices count during a script too (the user plays along in test runs, 2026-11-05):
        the presses add to theirs. HOS_INPUT_EXCLUSIVE=1: the script alone until 5 s after its last press, as before */
     static int exclusive = -1;
@@ -723,7 +707,7 @@ static void input_record_replay(uint64_t *buttons, int32_t stick[4]) {
     static int64_t reads, t0;
     const int64_t now = hos_now_ns();
     if (!reads) t0 = now;
-    const int64_t key[3] = {++reads, InterlockedCompareExchange64(&hos_present_count, 0, 0), (now - t0) / 1000000};
+    const int64_t key[3] = {++reads, os_atomic_load(&hos_present_count), (now - t0) / 1000000};
     input_replay(key, buttons, stick);
     input_record(key, *buttons, stick);
 }
@@ -969,9 +953,9 @@ HLE(_ZN2nn3hid6detail28FlushEnqueuedVibrationValuesEv) { RET(0); }
    runtime does not have). TouchScreenState<16>: {s64 sampling number, s32 count, s32 reserved, TouchState[16]}. */
 HLE(_ZN2nn3hid21InitializeTouchScreenEv) {}
 HLE(_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi) {
-    static volatile LONG64 sampling;
+    static volatile int64_t sampling;
     if ((int)ARG(1) < 1) { RET(0); return; }
     memset(GP(ARG(0)), 0, 16 + 16 * 0x28);
-    G64(ARG(0)) = (uint64_t)InterlockedIncrement64(&sampling);
+    G64(ARG(0)) = (uint64_t)os_atomic_inc(&sampling);
     RET(1);
 }

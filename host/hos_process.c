@@ -1,102 +1,52 @@
-/* The process around the guest (was mkw_glue.c): the 64-bit guest window's commit (reserved whole, committed as used),
-   crash and fatal-error reports with the guest's state, the guest backtrace, HOS_STATS_AFTER, the Switch 2's counter
+/* The process around the guest (was mkw_glue.c): the 64-bit guest window's commit (a range check: the window is mapped
+   whole), crash reports with the guest's state, the guest backtrace, HOS_STATS_AFTER, the Switch 2's counter
    (CNTPCT_EL0), and stand-ins for the hooks of TOTKPort files not taken into host/ (its profiler's memory checkpoints,
    its emulated GPU's submissions, a frame-step input filter). */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <dlfcn.h>
+#include <string.h>
+#include "os.h"
 #include <execinfo.h>
 
 /* ---- the guest window ---------------------------------------------------------------------------------------
-   The runtime commits what it hands out (image, system region, heap, address regions: hos_commit), because host
-   APIs given guest buffers (ReadFile into a game buffer) fail on reserved pages without raising an exception. A
-   guest or host access to a page nothing committed is committed on first touch, 64 KB at a time, by the handler. */
+   The window is mapped whole, readable and writable (hos_main.c), its pages given on first touch: what the runtime
+   hands out (image, system region, heap, address regions: hos_commit) needs nothing more than to be the guest's. */
 void hos_commit(uint64_t addr, uint64_t size) {
     if (!size) return;
-    if (!hos_guest_range(addr, size)) {   /* (hookshot: guest pages only; the posix layer's commit changes any page's protection) */
+    if (!hos_guest_range(addr, size))   /* (hookshot: guest pages only) */
         hos_log("mem: commit of %#llx bytes at %#llx: outside the guest window", (unsigned long long)size, (unsigned long long)addr);
-        return;
-    }
-    const uint64_t lo = addr & ~0xFFFFULL, hi = (addr + size + 0xFFFF) & ~0xFFFFULL;
-    if (!VirtualAlloc(GP(lo), (SIZE_T)(hi - lo), MEM_COMMIT, PAGE_READWRITE)) {
-        const DWORD err = GetLastError();
-        hos_log("mem: commit of %#llx bytes at %#llx failed (error %lu)", (unsigned long long)(hi - lo),
-                (unsigned long long)lo, err);
-        if (err == ERROR_COMMITMENT_LIMIT) {   /* (1455: RAM and page file full; the game crashes soon after. Said once, on its own thread) */
-            static volatile LONG said;
-            if (InterlockedExchange(&said, 1) == 0) {
-                hos_log("mem: Windows is out of memory (RAM and page file): close other programs, or let Windows manage the page file size");
-                extern DWORD WINAPI hos_out_of_memory_box(LPVOID);
-                CloseHandle(CreateThread(NULL, 0, hos_out_of_memory_box, NULL, 0, NULL));
-            }
-        }
-    }
-}
-
-DWORD WINAPI hos_out_of_memory_box(LPVOID unused) {
-    (void)unused;
-    MessageBoxA(NULL,
-                "Windows has run out of memory (RAM plus the page file), so Hookshot may close.\n\n"
-                "Close other programs, and in Windows' System > About > Advanced system settings > Performance > Advanced > Virtual "
-                "memory, choose \"Automatically manage paging file size\" (or give it at least 16 GB). A lower Quality preset in the "
-                "Insert menu also uses less memory.",
-                "Hookshot: out of memory", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-    return 0;
-}
-
-static LONG CALLBACK commit_on_touch(EXCEPTION_POINTERS *info) {
-    EXCEPTION_RECORD *rec = info->ExceptionRecord;
-    if (rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || rec->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
-    const uint8_t *p = (const uint8_t *)rec->ExceptionInformation[1];
-    if (p < A64_MEM || p >= A64_MEM + HOS_GUEST_SPACE) return EXCEPTION_CONTINUE_SEARCH;
-    const uint64_t guest = (uint64_t)(p - A64_MEM);
-    if (guest < 0x100000) return EXCEPTION_CONTINUE_SEARCH;   /* (a null pointer: the game's own fault) */
-    MEMORY_BASIC_INFORMATION mbi;
-    if (!VirtualQuery(p, &mbi, sizeof mbi) || mbi.State != MEM_RESERVE) return EXCEPTION_CONTINUE_SEARCH;
-    static volatile LONG touched;
-    if (InterlockedIncrement(&touched) <= 16)
-        hos_log("mem: %#llx committed on first touch (nothing handed it out)", (unsigned long long)guest);
-    return VirtualAlloc(GP(guest & ~0xFFFFULL), 0x10000, MEM_COMMIT, PAGE_READWRITE) ? EXCEPTION_CONTINUE_EXECUTION
-                                                                                      : EXCEPTION_CONTINUE_SEARCH;
 }
 
 /* A crash nothing handles: what, where (hookshot+offset: nx2/samap.py names the lifted function), and the guest
    state of the thread, as of its last call out of lifted code, with its frame chain from x29. */
 static uint64_t peek_guest(uint64_t a) {
-    MEMORY_BASIC_INFORMATION mbi;
-    if (a >= HOS_GUEST_SPACE - 8 || !VirtualQuery(GP(a), &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return 0;
+    os_mem_info mi;
+    if (a >= HOS_GUEST_SPACE - 8 || os_mem_query(GP(a), &mi) || mi.state != OS_MEM_COMMITTED) return 0;
     return G64(a);
 }
 
-static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
-    EXCEPTION_RECORD *rec = info->ExceptionRecord;
-    const uint64_t rip = info->ContextRecord->Rip;
-    HMODULE mod = NULL;
-    char name[MAX_PATH] = "?";
-    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)rip, &mod))
-        GetModuleFileNameA(mod, name, MAX_PATH);
-    const char *base = strrchr(name, '\\');
-    const uint64_t addr = rec->NumberParameters > 1 ? rec->ExceptionInformation[1] : 0;
-    hos_log("CRASH: exception %#lx (%s %#llx, guest %#llx) at %s+%#llx", rec->ExceptionCode,
-            rec->NumberParameters > 1 && rec->ExceptionInformation[0] == 1 ? "write" : "read",
-            (unsigned long long)addr, (unsigned long long)(addr - (uint64_t)A64_MEM), base ? base + 1 : name,
-            (unsigned long long)(rip - (uint64_t)mod));
-    {   /* (hookshot) Linux: the host stack as module+offset, from glibc (the frames above the signal's included): the
-           x64 unwind data is Windows' */
+static int report_crash(const os_fault *f) {
+    static const char *const kinds[] = {"?", "access violation", "illegal instruction", "division by zero", "trap"};
+    char name[OS_PATH_MAX] = "?";
+    const uintptr_t mod = os_module_of((const void *)f->pc, name, sizeof name);
+    if (!mod) snprintf(name, sizeof name, "?");   /* (the offset is then the address itself) */
+    const char *base = strrchr(name, '/');
+    const uint64_t addr = f->addr;
+    hos_log("CRASH: %s (%s %#llx, guest %#llx) at %s+%#llx", kinds[f->kind >= 1 && f->kind <= 4 ? f->kind : 0],
+            f->write ? "write" : "read", (unsigned long long)addr, (unsigned long long)(addr - (uint64_t)A64_MEM),
+            base ? base + 1 : name, (unsigned long long)(f->pc - mod));
+    {   /* (hookshot) the host stack as module+offset, from glibc (the frames above the signal's included) */
         void *pcs[24];
         const int got = backtrace(pcs, 24);
         char hb[1024];
         int n = snprintf(hb, sizeof hb, "CRASH: host backtrace:");
         for (int i = 0; i < got && n < (int)sizeof hb - 48; i++) {
-            Dl_info d;
-            const char *mn = "?", *mb;
-            uint64_t off = (uint64_t)(uintptr_t)pcs[i];
-            if (dladdr(pcs[i], &d) && d.dli_fname) mn = d.dli_fname, off -= (uint64_t)(uintptr_t)d.dli_fbase;
-            mb = strrchr(mn, '/');
+            char mn[OS_PATH_MAX] = "?";
+            const uintptr_t m = os_module_of(pcs[i], mn, sizeof mn);
+            const uint64_t off = (uint64_t)(uintptr_t)pcs[i] - (uint64_t)m;
+            if (!m) snprintf(mn, sizeof mn, "?");
+            const char *mb = strrchr(mn, '/');
             n += snprintf(hb + n, sizeof hb - n, " %s+%#llx", mb ? mb + 1 : mn, (unsigned long long)off);
         }
         hos_log("%s", hb);
@@ -136,7 +86,7 @@ static LONG WINAPI report_crash(EXCEPTION_POINTERS *info) {
     hos_log_flush();
     void hos_hostcall_stats(void);
     hos_hostcall_stats();   /* (HOS_HOSTCALL_STATS=1: the host calls made, and the last 256 of them) */
-    return EXCEPTION_CONTINUE_SEARCH;
+    return OS_FAULT_PASS;
 }
 
 /* (hos_prof.c's, for hos_fatal) the current thread's guest frame chain from x29 */
@@ -158,31 +108,20 @@ void hos_backtrace(void) {
 
 /* HOS_STATS_AFTER=<seconds> (with HOS_HOSTCALL_STATS=1): the host call counts and the last calls at that time, for
    runs that are stopped rather than exit (what a quiet game is doing) */
-static DWORD WINAPI stats_after(void *p) {
-    Sleep((DWORD)(uintptr_t)p * 1000);
+static void stats_after(void *p) {
+    os_sleep_ns((int64_t)((uint32_t)(uintptr_t)p * 1000) * 1000000);
     void hos_hostcall_stats(void);
     hos_log("stats: after %u s", (unsigned)(uintptr_t)p);
     void hos_thread_dump(void);
     hos_thread_dump();
     hos_log_flush();
     hos_hostcall_stats();
-    return 0;
-}
-
-/* heap corruption and fail-fast reports go to the process's end without reaching the unhandled filter: reported here
-   first (the backtrace is where the heap noticed, after the bad write) */
-static LONG CALLBACK report_fatal(EXCEPTION_POINTERS *info) {
-    const DWORD code = info->ExceptionRecord->ExceptionCode;
-    if (code == 0xC0000374 || code == 0xC0000409) report_crash(info);
-    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 void hos_commit_init(void) {
-    AddVectoredExceptionHandler(1, commit_on_touch);
-    AddVectoredExceptionHandler(0, report_fatal);
-    SetUnhandledExceptionFilter(report_crash);
+    os_fault_set_last(report_crash);
     const char *after = getenv("HOS_STATS_AFTER");
-    if (after && atoi(after) > 0) CreateThread(NULL, 0, stats_after, (void *)(uintptr_t)atoi(after), 0, NULL);
+    if (after && atoi(after) > 0) os_thread_release(os_thread_start(stats_after, (void *)(uintptr_t)atoi(after), 0, "stats after"));
 }
 
 /* ---- stand-ins --------------------------------------------------------------------------------------------- */
@@ -197,8 +136,8 @@ uint64_t hos_frame_step_buttons(uint64_t buttons) { return buttons; }   /* (nn_v
    has none (its NVN2 calls go to nvn_native.c), so a submission is only counted. */
 int hos_gpu_async(void) { return 0; }
 void hos_gpu_submit(int channel_fd, const uint64_t *entries, uint32_t n) {
-    static volatile LONG seen;
-    if (InterlockedIncrement(&seen) <= 4) hos_log("gpu: submit of %u entries on channel %d (no GPU yet)", n, channel_fd);
+    static volatile int32_t seen;
+    if (os_atomic_inc(&seen) <= 4) hos_log("gpu: submit of %u entries on channel %d (no GPU yet)", n, channel_fd);
     (void)entries;
 }
 void hos_gpu_queue_submit(int channel_fd, const uint64_t *entries, uint32_t n, int incr_id) {
@@ -209,21 +148,15 @@ void hos_gpu_queue_submit(int channel_fd, const uint64_t *entries, uint32_t n, i
 /* CNTPCT_EL0 at the Switch 2's 31.25 MHz (rt/a64_rt.c's default counts the Switch 1's 19.2 MHz). The SDK checks
    nn::os::GetSystemTickFrequency against 31250000 at init and aborts otherwise. */
 uint64_t a64_cntpct_host(void) {
-    static LARGE_INTEGER base;
+    static int64_t base;
     static uint64_t mult;
-    LARGE_INTEGER now;
     if (!__atomic_load_n(&mult, __ATOMIC_ACQUIRE)) {
-        LARGE_INTEGER f, b;
-        QueryPerformanceFrequency(&f);
-        QueryPerformanceCounter(&b);
-        base = b;
-        __atomic_store_n(&mult, (HOS_TICK_HZ << 32) / (uint64_t)f.QuadPart, __ATOMIC_RELEASE);
+        base = os_now_ns();
+        __atomic_store_n(&mult, (HOS_TICK_HZ << 32) / 1000000000ULL, __ATOMIC_RELEASE);
     }
-    QueryPerformanceCounter(&now);
-    return (uint64_t)(((unsigned __int128)(uint64_t)(now.QuadPart - base.QuadPart) * mult) >> 32);
+    return (uint64_t)(((unsigned __int128)(uint64_t)(os_now_ns() - base) * mult) >> 32);
 }
 
-void hos_host_thread_register_self(const char *name) {   /* (hos_prof.c: names for its stats; here the thread's description) */
-    wchar_t w[64];
-    if (MultiByteToWideChar(CP_UTF8, 0, name, -1, w, 64)) SetThreadDescription(GetCurrentThread(), w);
+void hos_host_thread_register_self(const char *name) {   /* (hos_prof.c: names for its stats; here the thread's name) */
+    os_thread_set_name(os_thread_current(), name);
 }

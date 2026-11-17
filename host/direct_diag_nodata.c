@@ -9,9 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 
-extern volatile LONG64 hos_present_count;
+extern volatile int64_t hos_present_count;
 void hos_backtrace(void);
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);
 
@@ -32,13 +32,13 @@ static int nodata_on(void) {
 
 #define NSLOT 256
 static struct { uint64_t td, slot; uint32_t size; char name[64]; } slots[NSLOT];
-static volatile LONG nslots;
-static LONG64 last_report = -1;
-static SRWLOCK lock = SRWLOCK_INIT;
+static volatile int32_t nslots;
+static int64_t last_report = -1;
+static os_mutex lock = OS_MUTEX_INIT;
 
 static void report(void) {
-    const LONG n = nslots < NSLOT ? nslots : NSLOT;
-    for (LONG i = 0; i < n && i < 64; i++) {
+    const int32_t n = nslots < NSLOT ? nslots : NSLOT;
+    for (int32_t i = 0; i < n && i < 64; i++) {
         const uint64_t s = slots[i].slot;
         const uint32_t k = slots[i].size < 65536 ? slots[i].size : 65536;
         uint32_t nz = 0;
@@ -55,11 +55,11 @@ static void report(void) {
 /* from direct_assets.c's hook of f_80798690 (x0 td, x2 src), before anything else */
 void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr) {
     if (!nodata_on()) return;
-    const LONG64 p = hos_present_count;
+    const int64_t p = hos_present_count;
     if (p / 300 != last_report / 300) {
-        AcquireSRWLockExclusive(&lock);
+        os_mutex_lock(&lock);
         if (p / 300 != last_report / 300) last_report = p, report();
-        ReleaseSRWLockExclusive(&lock);
+        os_mutex_unlock(&lock);
     }
     if (!hos_guest_range(td, 0x100)) return;
     const uint64_t brti = td + 0x58, np = G64(brti + 0x60);
@@ -72,8 +72,8 @@ void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr) {
     const uint32_t size = G32(td + 0xa8);
     {   /* (every load's slot, with data or not: a slot shared by a load with data and one without is named) */
         static struct { uint64_t slot; uint32_t size; int data; char name[64]; } all[1 << 14];
-        static SRWLOCK all_lock = SRWLOCK_INIT;
-        AcquireSRWLockExclusive(&all_lock);
+        static os_mutex all_lock = OS_MUTEX_INIT;
+        os_mutex_lock(&all_lock);
         for (uint32_t i = (uint32_t)((slot >> 6) * 2654435761u) & ((1 << 14) - 1), n = 0; n < (1 << 14); n++, i = (i + 1) & ((1 << 14) - 1)) {
             if (all[i].slot == slot) {
                 if (all[i].data != !!src || strcmp(all[i].name, name))
@@ -90,20 +90,20 @@ void direct_diag_nodata_load(uint64_t td, uint64_t src, uint64_t lr) {
                 break;
             }
         }
-        ReleaseSRWLockExclusive(&all_lock);
+        os_mutex_unlock(&all_lock);
     }
     if (src) return;
-    AcquireSRWLockExclusive(&lock);
-    const LONG i = nslots;
+    os_mutex_lock(&lock);
+    const int32_t i = nslots;
     int dup = 0;
-    for (LONG j = 0; j < i && j < NSLOT; j++)
+    for (int32_t j = 0; j < i && j < NSLOT; j++)
         if (slots[j].td == td && slots[j].slot == slot) dup = 1;
     if (!dup && i < NSLOT) {
         slots[i].td = td, slots[i].slot = slot, slots[i].size = size;
         snprintf(slots[i].name, sizeof slots[i].name, "%s", name);
         nslots = i + 1;
     }
-    ReleaseSRWLockExclusive(&lock);
+    os_mutex_unlock(&lock);
     if (dup) return;
     hos_log("nodata: '%s' td %#llx slot %#llx size %u (format %#x %ux%u, %u mips) lr %#llx at present %lld", name,
             (unsigned long long)td, (unsigned long long)slot, size, G32(brti + 0x1c), G32(brti + 0x24), G32(brti + 0x28),

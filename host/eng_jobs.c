@@ -10,7 +10,7 @@
 #include "eng_jobs.h"
 #include "direct.h"
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 void f_80084de0(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 void direct_layer_ahead_job_done(uint64_t range, uint64_t lr);   /* direct_layer_ahead.c */
 

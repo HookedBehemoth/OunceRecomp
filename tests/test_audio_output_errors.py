@@ -1,4 +1,4 @@
-"""Compile the real output section with synthetic audio/device spies, without opening a device.
+"""Compile the real output section with a synthetic SDL device that the test pulls from, without opening a device.
 
 python -I -B tests/test_audio_output_errors.py [--cc clang]
 """
@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ("normal", "busy", "prepare", "write", "unprepare", "open", "bounded", "stall", "surround", "fallback")
+CASES = ("normal", "busy", "partial", "behind", "open", "stall", "surround", "fallback")
 
 
 def main():
@@ -42,7 +42,7 @@ def main():
         assert folder.parent == Path(tempfile.gettempdir()).resolve() and folder.name.startswith("audio-output-")
         (folder / "audio_output.inc").write_text(actual, encoding="utf-8")
         executable = folder / "fixture.exe"
-        run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(folder),
+        run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(folder), "-I" + str(ROOT / "host/os"),
              str(ROOT / "tests/audio_output_errors_test.c"), "-o", str(executable)])
         for case in ((args.case,) if args.case else CASES):
             run([str(executable), case])

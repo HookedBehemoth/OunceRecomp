@@ -18,8 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
 #include "../gpu/api/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
 
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
@@ -39,8 +38,8 @@ static const uint16_t switch_code[HOS_SW_N] = {0xE040, 0xE041, 0xE042, 0xE043, 0
                                                0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063, 0xE061};
 
 static int game_dir(char *out, size_t cap) {   /* the game folder, with its separator */
-    char path[MAX_PATH];
-    const DWORD len = hos_game_path_a(path, MAX_PATH);
+    char path[OS_PATH_MAX];
+    const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
     char *slash = len ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/') */
     if (!slash) return 0;
     slash[1] = 0;
@@ -59,7 +58,7 @@ static int contains(const char *text, const char *word) {   /* (any case) */
 
 /* HOS_PROMPT_* (faces[]) */
 static int choose_face(const char *dir) {
-    char path[MAX_PATH], line[80];
+    char path[OS_PATH_MAX], line[80];
     int choice = 0;
     snprintf(path, sizeof path, "%shookshot_options.ini", dir);
     FILE *f = fopen(path, "r");
@@ -76,10 +75,10 @@ static int choose_face(const char *dir) {
     for (int i = 0; i < 30 && !name[0]; i++) {
         hos_sdl_pads(&b, s);
         hos_sdl_pad_first_name(name, sizeof name);
-        if (!name[0]) Sleep(50);
+        if (!name[0]) os_sleep_ns(50LL * 1000000);
     }
     int face;
-    if (!name[0]) face = HOS_PROMPT_SWITCH;   /* (no controller: the keyboard, the game's own icons; or XInput without SDL) */
+    if (!name[0]) face = HOS_PROMPT_SWITCH;   /* (no controller: the keyboard, the game's own icons) */
     else if (contains(name, "dualsense") || contains(name, "ps5")) face = HOS_PROMPT_PS5;
     else if (contains(name, "dualshock") || contains(name, "ps4") || contains(name, "playstation")) face = HOS_PROMPT_PS4;
     else if (contains(name, "steam deck")) face = HOS_PROMPT_STEAMDECK;
@@ -211,23 +210,23 @@ static uint8_t *read_all(const char *path, const char *magic, long *n) {   /* (t
     return t;
 }
 
-static volatile LONG setup_state;   /* setup's: 0 not looked, 1 looking, 2 prompts, 3 none */
+static volatile int32_t setup_state;   /* setup's: 0 not looked, 1 looking, 2 prompts, 3 none */
 
 /* the game folder and the face, found once; 0 when the folder has no prompts/ (built before them: the game's own icons) */
 static int setup(char *dir, size_t cap, int *face) {
-    static char d[MAX_PATH];
+    static char d[OS_PATH_MAX];
     static int f;
-    if (InterlockedCompareExchange(&setup_state, 1, 0) == 0) {
-        char path[MAX_PATH];
+    if (os_atomic_cas(&setup_state, 0, 1) == 0) {
+        char path[OS_PATH_MAX];
         int ok = game_dir(d, sizeof d);
         if (ok) {
             snprintf(path, sizeof path, "%sprompts", d);
-            ok = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+            ok = os_path_kind(path) != OS_PATH_NONE;
         }
         if (ok) f = choose_face(d);
-        InterlockedExchange(&setup_state, ok ? 2 : 3);
+        os_atomic_store(&setup_state, ok ? 2 : 3);
     }
-    while (setup_state == 1) Sleep(1);
+    while (setup_state == 1) os_sleep_ns(1LL * 1000000);
     snprintf(dir, cap, "%s", d);
     *face = f;
     return setup_state == 2;
@@ -269,7 +268,7 @@ static int write_patched(const char *game, const char *out, const char *keypath,
         fclose(f);
     }
     snprintf(want, sizeof want, "%016llx", (unsigned long long)h);
-    int ok = !strcmp(keyline, want) && GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+    int ok = !strcmp(keyline, want) && os_path_kind(out) != OS_PATH_NONE;
     if (!ok) {   /* the game's file through, the chosen runs written over it, out as raw zstd blocks */
         FILE *in = fopen(game, "rb"), *o = fopen(out, "wb");
         uint8_t *chunk = (uint8_t *)malloc(131072);
@@ -315,7 +314,7 @@ static int write_patched(const char *game, const char *out, const char *keypath,
 }
 
 static int build_textures(char *out, size_t cap) {
-    char dir[MAX_PATH], path[MAX_PATH];
+    char dir[OS_PATH_MAX], path[OS_PATH_MAX];
     int face;
     if (!setup(dir, sizeof dir, &face)) return 0;
     snprintf(path, sizeof path, "%sprompts/%s/textures.bin", dir, faces[face]);
@@ -343,7 +342,7 @@ static int build_textures(char *out, size_t cap) {
     }
     snprintf(out, cap, "%sprompts/Common.bntx.zs", dir);
     snprintf(path, sizeof path, "%sprompts/Common.bntx", dir);
-    char keypath[MAX_PATH];
+    char keypath[OS_PATH_MAX];
     snprintf(keypath, sizeof keypath, "%sprompts/Common.key", dir);
     const int ok = write_patched(path, out, keypath, h, runs, nruns);
     hos_log("prompts: %s textures, %zu runs for this pad's controls%s", faces[face], nruns,
@@ -356,7 +355,7 @@ static int build_textures(char *out, size_t cap) {
 /* the face the game was given (faces[]), -1 none: the Insert menu names the pad inputs as that controller does. -1 too
    until the game has asked for a prompt file: the menu asks from the present thread, and choose_face can wait for SDL */
 int hos_prompts_face(void) {
-    char dir[MAX_PATH];
+    char dir[OS_PATH_MAX];
     int face;
     return setup_state >= 2 && setup(dir, sizeof dir, &face) ? face : -1;
 }
@@ -389,7 +388,7 @@ static void ring_places(const int *bind, int place[4]) {
      icon the one before's extra further on, the last one where it is;
    none when both are as the game has them (the game's own file) */
 static int build_layouts(char *out, size_t cap) {
-    char dir[MAX_PATH], path[MAX_PATH];
+    char dir[OS_PATH_MAX], path[OS_PATH_MAX];
     int face;
     if (!setup(dir, sizeof dir, &face)) return 0;
     int bind[HOS_SW_N], place[4];
@@ -451,7 +450,7 @@ static int build_layouts(char *out, size_t cap) {
     }
     int ok = 0;
     if (nruns) {
-        char keypath[MAX_PATH];
+        char keypath[OS_PATH_MAX];
         snprintf(out, cap, "%sprompts/Common.blarc.zs", dir);
         snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
         snprintf(keypath, sizeof keypath, "%sprompts/Common.blarc.key", dir);
@@ -468,7 +467,7 @@ static int build_layouts(char *out, size_t cap) {
 
 /* builds prompts/External.bfotf.zs for this run; 1 when there is one */
 static int build(char *out, size_t cap) {
-    char dir[MAX_PATH], path[MAX_PATH];
+    char dir[OS_PATH_MAX], path[OS_PATH_MAX];
     int face;
     if (!setup(dir, sizeof dir, &face)) return 0;
     /* (a mod's size table is served, not ours: the faces' fonts, larger than the game's, do not fit it) */
@@ -498,22 +497,22 @@ static int build(char *out, size_t cap) {
 /* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one. Asked only when no mod has
    the file: a mod's own wins */
 int hos_prompts_romfs(const char *key, char *out, size_t cap) {
-    static volatile LONG state[3];   /* the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none */
-    static char path[3][MAX_PATH];
+    static volatile int32_t state[3];   /* the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none */
+    static char path[3][OS_PATH_MAX];
     const size_t kn = strlen(key);
     if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {
-        char dir[MAX_PATH];   /* (the game's size table with room for the faces' fonts, larger than its: nx2/prompt_assets.py) */
+        char dir[OS_PATH_MAX];   /* (the game's size table with room for the faces' fonts, larger than its: nx2/prompt_assets.py) */
         int face;
         if (!setup(dir, sizeof dir, &face)) return 0;
         snprintf(out, cap, "%sprompts/rsizetable.zs", dir);
-        return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+        return os_path_kind(out) != OS_PATH_NONE;
     }
     const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, LAYOUTS_PATH) ? 2 : -1;
     if (which < 0) return 0;
     static int (*const builders[3])(char *, size_t) = {build, build_textures, build_layouts};
-    if (InterlockedCompareExchange(&state[which], 1, 0) == 0)
-        InterlockedExchange(&state[which], builders[which](path[which], MAX_PATH) ? 2 : 3);
-    while (state[which] == 1) Sleep(1);
+    if (os_atomic_cas(&state[which], 0, 1) == 0)
+        os_atomic_store(&state[which], builders[which](path[which], OS_PATH_MAX) ? 2 : 3);
+    while (state[which] == 1) os_sleep_ns(1LL * 1000000);
     if (state[which] != 2) return 0;
     snprintf(out, cap, "%s", path[which]);
     return 1;

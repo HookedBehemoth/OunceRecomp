@@ -15,16 +15,15 @@
    The protocol is Discord's documented IPC (discord-rpc's rpc_connection.h): a frame is <opcode u32 LE><length u32 LE><JSON>,
    Handshake 0, Frame 1, Close 2, Ping 3, Pong 4. The handshake {"v":1,"client_id":...} is answered by a Ready frame; a
    SET_ACTIVITY frame by a frame; a Ping is echoed as a Pong. */
-#include "hos_paths.h"   /* (first: hos_game_path_a, and windows.h on Windows) */
+#include "hos_paths.h"
+#include "os.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include <errno.h>
 #include <poll.h>
-#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -44,12 +43,8 @@ enum { OP_HANDSHAKE = 0, OP_FRAME = 1, OP_CLOSE = 2, OP_PING = 3, OP_PONG = 4 };
 /* ---- the local connection: Discord's Unix socket ---- */
 typedef int Ipc;
 #define IPC_NONE (-1)
-static uint64_t now_ms(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
-}
-static void sleep_ms(unsigned ms) { usleep(ms * 1000u); }
+static uint64_t now_ms(void) { return (uint64_t)(os_now_ns() / 1000000); }
+static void sleep_ms(unsigned ms) { os_sleep_ns((int64_t)ms * 1000000); }
 static Ipc ipc_connect(int i) {
     const char *dir = getenv("XDG_RUNTIME_DIR");
     if (!dir) dir = getenv("TMPDIR");
@@ -87,7 +82,7 @@ static int ipc_read(Ipc p, void *d, size_t n, uint64_t deadline) {
     const ssize_t got = recv(p, d, n, 0);
     return got > 0 ? (int)got : -1;
 }
-static unsigned long process_id(void) { return (unsigned long)getpid(); }
+static unsigned long process_id(void) { return os_pid(); }
 
 /* ---- settings ---- */
 static int valid_app_id(const char *s) {
@@ -101,7 +96,7 @@ static int valid_app_id(const char *s) {
 static void read_app_id(char *out, size_t cap) {
     snprintf(out, cap, "%s", HOOKSHOT_DISCORD_APP_ID_DEFAULT);
     char path[1024];
-    const DWORD n = hos_game_path_a(path, (DWORD)sizeof path);
+    const uint32_t n = hos_game_path_a(path, (uint32_t)sizeof path);
     char *slash = n ? (strrchr(path, '\\') ? strrchr(path, '\\') : strrchr(path, '/')) : NULL;
     if (slash) {
         snprintf(slash + 1, (size_t)(path + sizeof path - slash - 1), "hookshot_options.ini");
@@ -206,7 +201,7 @@ static int send_activity(Ipc p, long long started) {
 static void presence_main(void) {
     char app_id[24];
     read_app_id(app_id, sizeof app_id);
-    const long long started = (long long)time(NULL);
+    const long long started = (long long)(os_wall_ns() / 1000000000);
     Ipc ipc = IPC_NONE;
     uint64_t retry_at = 0, send_at = 0, reread_at = now_ms() + 15000;
     int said_no_client = 0, said_no_app = 0;
@@ -255,17 +250,16 @@ static void presence_main(void) {
         }
     }
 }
-static void *presence_thread(void *arg) {
+static void presence_thread(void *arg) {
     (void)arg;
     presence_main();
-    return NULL;
 }
 
 /* hos_main.c, once the game starts (not for --prepare-shaders). HOS_DISCORD=0: no thread at all */
 void hos_discord_start(void) {
     const char *e = getenv("HOS_DISCORD");
     if (e && !atoi(e)) return;
-    pthread_t t;
-    if (!pthread_create(&t, NULL, presence_thread, NULL)) pthread_detach(t);
+    os_thread *t = os_thread_start(presence_thread, NULL, 0, "discord");
+    if (t) os_thread_release(t);
     else hos_log("discord: cannot start the presence thread");
 }

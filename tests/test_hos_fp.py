@@ -1,6 +1,6 @@
 """host/hos_fp.c without the game: MXCSR follows the guest FPCR, the MRS/MSR FPCR/FPSR helpers the lifted code calls, and
-MXCSR across a fiber switch (host/posix/win32_posix.c's fibers, cut out of the file,
-switched the way host/hos_thread.c's fiber_switch does it, which this test also checks by text).
+MXCSR across a fiber switch (host/os/os_linux.c's fibers, switched the way host/hos_thread.c's fiber_switch does it,
+which this test also checks by text).
 
 python -I -B tests/test_hos_fp.py      (the compile-and-run cases need a C compiler on x86-64 Linux)
 """
@@ -15,7 +15,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOS_FP = os.path.join(ROOT, "host", "hos_fp.c")
 THREAD = os.path.join(ROOT, "host", "hos_thread.c")
-POSIX = os.path.join(ROOT, "host", "posix", "win32_posix.c")
+OS_LINUX = os.path.join(ROOT, "host", "os", "os_linux.c")
 
 
 def read(path):
@@ -27,41 +27,24 @@ def cc():
     return shutil.which("clang") or shutil.which("cc")
 
 
-def fibers_text():
-    """win32_posix.c's fiber section, from its heading to the next one"""
-    s = read(POSIX)
-    a = s.index("/* ---- fibers ---- */")
-    b = s.index("/* ---- ", a + 10)
-    return s[a:b]
-
-
 HARNESS = r"""
 #define HOS_FP_TEST
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <ucontext.h>
 #include <xmmintrin.h>
+#include "os.h"
 #define A64_NOESC
 typedef struct { uint64_t x[32]; uint64_t pc; uint8_t n, z, c, v; int halted; uint64_t vreg[32][2];
                  uint64_t tpidr, tpidrro, fpcr, fpsr; } Ctx;
 #include "hos_fp.c"
-typedef unsigned long DWORD; typedef size_t SIZE_T; typedef int BOOL;
-typedef void (*LPFIBER_START_ROUTINE)(void *);
-#define TRUE 1
-#define FALSE 0
-#define ERROR_NOT_ENOUGH_MEMORY 8
-static DWORD last_error;
-static void ExitThread(DWORD code) { exit((int)code); }
-%(fibers)s
 static Ctx thread_ctx, fiber_ctx;
-static void *thread_fiber, *guest_fiber;
+static os_fiber *thread_fiber, *guest_fiber;
 static unsigned seen_in_fiber, seen_in_fiber2;
 /* hos_thread.c's pattern: the switching side syncs MXCSR to its own context when it runs again; a fiber's first run
    syncs to the FPCR it inherited */
-static void switch_to(Ctx *from, void *to) { SwitchToFiber(to); a64_fpcr_sync(from); }
+static void switch_to(Ctx *from, os_fiber *to) { os_fiber_switch(to); a64_fpcr_sync(from); }
 static void fiber_fn(void *p) {
     (void)p;
     a64_fpcr_sync(&fiber_ctx);
@@ -108,8 +91,8 @@ int main(void) {
     c.fpcr = 1u << 24;
     CHECK(a64_fpsr_read(&c) == 128u, "DE under FZ is IDC");
     /* a fiber switch: the thread runs with FZ, the fiber starts from the thread's FPCR (as nn::os inherits it) */
-    thread_fiber = ConvertThreadToFiberEx(NULL, 0);
-    guest_fiber = CreateFiberEx(1 << 16, 1 << 20, 0, fiber_fn, NULL);
+    thread_fiber = os_fiber_from_thread();
+    guest_fiber = os_fiber_create(1 << 20, fiber_fn, NULL);
     thread_ctx.fpcr = 1u << 24;
     a64_fpcr_sync(&thread_ctx);
     fiber_ctx.fpcr = thread_ctx.fpcr;
@@ -130,15 +113,15 @@ int main(void) {
 class Text(unittest.TestCase):
     def test_hos_thread_syncs(self):
         s = read(THREAD)
-        main = s[s.index("static DWORD WINAPI thread_main"):]
+        main = s[s.index("static void thread_main(void *p)"):]
         main = main[:main.index("\n}\n")]
         self.assertIn("a64_fpcr_sync(c);", main[:main.index("f(c);")], "thread_main: MXCSR before guest code")
-        fm = s[s.index("static void WINAPI fiber_main"):]
+        fm = s[s.index("static void fiber_main(void *p)"):]
         fm = fm[:fm.index("\n}\n")]
         self.assertLess(fm.index("a64_fpcr_sync(c);"), fm.index("a64_call_received(c, f->fn);"), "fiber_main")
         sw = s[s.index("static void fiber_switch(Ctx *from, HosFiber *to) {"):]
         sw = sw[:sw.index("\n}\n")]
-        self.assertTrue(re.search(r"SwitchToFiber\([^;]*\);\s*(/\*.*?\*/\s*)?a64_fpcr_sync\(from\);", sw, re.S),
+        self.assertTrue(re.search(r"os_fiber_switch\([^;]*\);\s*(/\*.*?\*/\s*)?a64_fpcr_sync\(from\);", sw, re.S),
                         "fiber_switch: MXCSR of `from` when it runs again")
         self.assertIn("to->ctx.fpcr = from->fpcr;", sw)
 
@@ -150,8 +133,9 @@ class Run(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             c, exe = os.path.join(d, "t.c"), os.path.join(d, "t")
             with open(c, "w") as f:
-                f.write(HARNESS.replace("%(fibers)s", fibers_text()))
-            subprocess.run([cc(), "-O1", "-w", "-I" + os.path.join(ROOT, "host"), c, "-o", exe], check=True)
+                f.write(HARNESS)
+            subprocess.run([cc(), "-O1", "-w", "-D_GNU_SOURCE", "-I" + os.path.join(ROOT, "host"), "-I" + os.path.join(ROOT, "host", "os"),
+                            c, OS_LINUX, "-o", exe, "-lpthread"], check=True)
             r = subprocess.run([exe], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 

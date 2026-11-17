@@ -43,8 +43,10 @@ hookshot_direct.so  the direct back end (gpu/direct), loaded by the host at star
 - **Memory.** The guest window is a 512 GB reservation: the image at `0x80000000`, the heap from 64 GB up, and address
   regions from 512 GB down (`host/hos.h`). Pages are committed as they are handed out or first touched.
 - **Threads.** Every guest thread runs on its own host thread, with no scheduler between them.
-- **Platform.** The host is built for Linux only. Its Win32-named calls go through `host/posix`; portability comes
-  back later through a narrow host API over SDL, not through more Windows APIs. Paths are UTF-8.
+- **Platform.** The host is built for Linux only. It reaches the operating system through `host/os/os.h` alone (threads,
+  futex-based locks and events, time, memory, faults, files, modules), implemented in `host/os/os_linux.c`; another
+  system is another implementation of that header. The window, sound and controllers are SDL's (`host/hos_sdl.h`).
+  Paths are UTF-8.
 
 `host/PROVENANCE.md` records where the runtime came from.
 

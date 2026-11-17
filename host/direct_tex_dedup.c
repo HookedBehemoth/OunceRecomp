@@ -17,28 +17,28 @@
 #include "direct.h"
 #include <stdio.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 
-static volatile LONG64 n_alias, n_none, n_bad;
+static volatile int64_t n_alias, n_none, n_bad;
 
 /* a load with no data, td its TextureData: its target's NVN texture as an HSD_ASSET_SAME key (1); no alias chain (0) */
 int direct_tex_alias(uint64_t td, hsd_asset_key *k) {
-    if (!hos_guest_range(td + 0x188, 0x10)) return InterlockedIncrement64(&n_bad), 0;
+    if (!hos_guest_range(td + 0x188, 0x10)) return os_atomic_inc(&n_bad), 0;
     uint64_t node = td + 0x188, head = 0;
     for (int n = 0; n < 65536; n++) {   /* (prev links back to the head, whose prev is 0) */
         const uint64_t prev = G64(node);
         if (!prev) { head = node; break; }
-        if (!hos_guest_range(prev, 0x10)) return InterlockedIncrement64(&n_bad), 0;
+        if (!hos_guest_range(prev, 0x10)) return os_atomic_inc(&n_bad), 0;
         node = prev;
     }
-    if (!head) return InterlockedIncrement64(&n_bad), 0;
+    if (!head) return os_atomic_inc(&n_bad), 0;
     const uint64_t target = head - 0x188;
-    if (target == td) return InterlockedIncrement64(&n_none), 0;   /* (no chain: not an alias) */
+    if (target == td) return os_atomic_inc(&n_none), 0;   /* (no chain: not an alias) */
     const uint64_t gfx = hos_guest_range(target + 0xd8, 8) ? G64(target + 0xd8) : 0;
-    if (!gfx || !hos_guest_range(gfx + 0x10, 0x40)) return InterlockedIncrement64(&n_bad), 0;
+    if (!gfx || !hos_guest_range(gfx + 0x10, 0x40)) return os_atomic_inc(&n_bad), 0;
     k->path = HSD_ASSET_SAME;
     k->same_as = GP(gfx + 0x10);
-    const LONG64 c = InterlockedIncrement64(&n_alias);
+    const int64_t c = os_atomic_inc(&n_alias);
     if (c <= 4 || c % 100 == 0) {
         char tn[64] = "";
         const uint64_t np = target + 0xf8;

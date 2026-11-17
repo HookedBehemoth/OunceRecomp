@@ -53,7 +53,7 @@ def main():
         block(nvn, "static void cmd_slot_give("),
         block(nvn, "static cmd_rec *cmd_adopt("),
         block(nvn, "static cmd_rec *cmd_host("),
-        "static volatile LONG64 seg_bytes, seg_count;",
+        "static volatile int64_t seg_bytes, seg_count;",
         block(nvn, "static void cmd_release("),
         live_decls,
         block(nvn, "static void live_handle_add("),
@@ -78,16 +78,13 @@ void nvn_list_drop(nvn_lw *w) { (void)w; drops++; }
 static uint8_t *A64_MEM;
 #define GP(a) ((void *)(A64_MEM + (uint64_t)(a)))
 #define HOS_SPACE_END ((uint64_t)WINDOW)
-typedef int SRWLOCK;
-typedef long LONG;
-typedef long long LONG64;
-#define SRWLOCK_INIT 0
-static void AcquireSRWLockExclusive(SRWLOCK *l) { (void)l; }
-static void ReleaseSRWLockExclusive(SRWLOCK *l) { (void)l; }
-static LONG InterlockedIncrement(volatile LONG *v) { return ++*v; }
-static LONG64 InterlockedAdd64(volatile LONG64 *v, LONG64 d) { return *v += d; }
-static LONG64 InterlockedIncrement64(volatile LONG64 *v) { return ++*v; }
-static LONG64 InterlockedDecrement64(volatile LONG64 *v) { return --*v; }
+typedef int os_mutex;
+#define OS_MUTEX_INIT 0
+static void os_mutex_lock(os_mutex *l) { (void)l; }
+static void os_mutex_unlock(os_mutex *l) { (void)l; }
+#define os_atomic_inc(p) __atomic_add_fetch((p), 1, __ATOMIC_SEQ_CST)
+#define os_atomic_dec(p) __atomic_sub_fetch((p), 1, __ATOMIC_SEQ_CST)
+#define os_atomic_add(p, v) __atomic_add_fetch((p), (v), __ATOMIC_SEQ_CST)
 static void hos_log(const char *f, ...) { (void)f; }
 static jmp_buf died;
 static int dying;

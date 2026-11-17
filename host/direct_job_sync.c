@@ -26,15 +26,15 @@
 #include "direct.h"
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "os.h"
 void f_8067c310(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
 
 uint64_t nvn_native_proc(const char *name);   /* nvn_native.c */
 uint64_t eng_jobs_current(uint64_t *view);   /* eng_jobs.c */
-extern volatile LONG64 hos_present_count;
+extern volatile int64_t hos_present_count;
 
 static struct {
-    volatile LONG64 waits, barriers, dispatches, placed_waits, placed_barriers, placed_dispatches, dropped, through, calls,
+    volatile int64_t waits, barriers, dispatches, placed_waits, placed_barriers, placed_dispatches, dropped, through, calls,
         calls_kept;
 } n;
 
@@ -66,14 +66,14 @@ typedef struct {
     struct { uint64_t entry, x2, x3; } d[8];
 } Kept;
 static Kept kept[NV_];
-static SRWLOCK kept_lock = SRWLOCK_INIT;
+static os_mutex kept_lock = OS_MUTEX_INIT;
 
 static Kept *kept_of(uint64_t view) {   /* (lock held) the view record's entry this frame, emptied when it is an older frame's */
     Kept *free_one = NULL;
     for (int i = 0; i < NV_; i++) {
         if (kept[i].view == view) {
             if (kept[i].frame != hos_present_count) {
-                if (kept[i].nw || kept[i].nd || kept[i].bits) InterlockedIncrement64(&n.dropped);
+                if (kept[i].nw || kept[i].nd || kept[i].bits) os_atomic_inc(&n.dropped);
                 memset(&kept[i], 0, sizeof kept[i]);
                 kept[i].view = view, kept[i].frame = hos_present_count;
             }
@@ -82,7 +82,7 @@ static Kept *kept_of(uint64_t view) {   /* (lock held) the view record's entry t
         if (!free_one && (!kept[i].view || kept[i].frame + 4 < hos_present_count)) free_one = &kept[i];
     }
     if (!free_one) return NULL;
-    if (free_one->view && (free_one->nw || free_one->nd || free_one->bits)) InterlockedIncrement64(&n.dropped);
+    if (free_one->view && (free_one->nw || free_one->nd || free_one->bits)) os_atomic_inc(&n.dropped);
     memset(free_one, 0, sizeof *free_one);
     free_one->view = view, free_one->frame = hos_present_count;
     return free_one;
@@ -98,15 +98,15 @@ static uint64_t job_view(uint64_t cmd) {
 static int keep_wait(uint64_t cmd, uint64_t event, uint32_t mode, uint32_t value) {
     const uint64_t view = job_view(cmd);
     if (!view) return 0;
-    AcquireSRWLockExclusive(&kept_lock);
+    os_mutex_lock(&kept_lock);
     Kept *k = kept_of(view);
     if (k && k->nw < 8) {
         k->w[k->nw].ev = event, k->w[k->nw].mode = mode, k->w[k->nw].value = value, k->nw++;
-        ReleaseSRWLockExclusive(&kept_lock);
-        InterlockedIncrement64(&n.waits);
+        os_mutex_unlock(&kept_lock);
+        os_atomic_inc(&n.waits);
         return 1;
     }
-    ReleaseSRWLockExclusive(&kept_lock);
+    os_mutex_unlock(&kept_lock);
     return 0;
 }
 
@@ -117,7 +117,7 @@ PATCH_AT(0x82c03018, word(0xd63f0100), instead, none, direct_job_sync_wait, gues
          as(x8, proc), as(x0, cmd), as(x1, event), as(w2, mode), as(w3, value)) {
     expect(proc, P_WAIT, site, "nvnCommandBufferWaitEvent");
     if (keep_wait(cmd, event, mode, value)) return;
-    InterlockedIncrement64(&n.through);
+    os_atomic_inc(&n.through);
     guest_call(g, sp, proc, cmd, event, mode, value, 0);
 }
 PATCH_AT_SITE(0x82c03268, word(0xd63f0100), instead, none, direct_job_sync_wait, guest(computed), sp, k(0x82c03268), x8,
@@ -131,17 +131,17 @@ PATCH_AT(0x82c030c0, word(0xd63f0100), instead, none, direct_job_sync_barrier, g
     expect(proc, P_BARRIER, site, "nvnCommandBufferBarrier");
     const uint64_t view = job_view(cmd);
     if (view) {
-        AcquireSRWLockExclusive(&kept_lock);
+        os_mutex_lock(&kept_lock);
         Kept *k = kept_of(view);
         if (k) {
             k->bits |= bits;
-            ReleaseSRWLockExclusive(&kept_lock);
-            InterlockedIncrement64(&n.barriers);
+            os_mutex_unlock(&kept_lock);
+            os_atomic_inc(&n.barriers);
             return;
         }
-        ReleaseSRWLockExclusive(&kept_lock);
+        os_mutex_unlock(&kept_lock);
     }
-    InterlockedIncrement64(&n.through);
+    os_atomic_inc(&n.through);
     guest_call(g, sp, proc, cmd, bits, 0, 0, 0);
 }
 PATCH_AT_SITE(0x82c03310, word(0xd63f0100), instead, none, direct_job_sync_barrier, guest(computed), sp, k(0x82c03310),
@@ -154,7 +154,7 @@ PATCH_AT(0x80668c80, word(0xd63f0100), instead, none, direct_job_sync_call, gues
     expect(proc, P_CALL, 0x80668c80, "nvnCommandBufferCallCommands");
     Kept k;
     int have = 0;
-    AcquireSRWLockExclusive(&kept_lock);
+    os_mutex_lock(&kept_lock);
     for (int i = 0; i < NV_; i++)
         if (kept[i].view == view && kept[i].frame == hos_present_count) {
             k = kept[i];
@@ -162,13 +162,13 @@ PATCH_AT(0x80668c80, word(0xd63f0100), instead, none, direct_job_sync_call, gues
             have = k.nw || k.nd || k.bits;
             break;
         }
-    ReleaseSRWLockExclusive(&kept_lock);
-    InterlockedIncrement64(&n.calls);
+    os_mutex_unlock(&kept_lock);
+    os_atomic_inc(&n.calls);
     if (!have) {
         guest_call(g, sp, proc, cmd, count, handles, 0, 0);
         return;
     }
-    InterlockedIncrement64(&n.calls_kept);
+    os_atomic_inc(&n.calls_kept);
     /* The kept grid dispatches go before the job's commands. Inside the job they sat between its items, before most
        of its draws (the frozen back end runs them there: its corner table holds the depth drawn so far, 0.95-1.0); after
        the job (M3a's place) they sampled the finished depth, the same depth 8df993dd samples later, so every corner was
@@ -180,9 +180,9 @@ PATCH_AT(0x80668c80, word(0xd63f0100), instead, none, direct_job_sync_call, gues
     if (k.bits) guest_call(g, sp, P_BARRIER, cmd, k.bits, 0, 0, 0);
     for (int i = 0; i < k.nd; i++) guest_call(g, sp, CODE_PTR(f_8067c310), k.d[i].entry, drawctx, k.d[i].x2, k.d[i].x3, 0);
     guest_call(g, sp, proc, cmd, count, handles, 0, 0);
-    InterlockedAdd64(&n.placed_waits, k.nw);
-    InterlockedAdd64(&n.placed_barriers, k.bits ? 1 : 0);
-    InterlockedAdd64(&n.placed_dispatches, k.nd);
+    os_atomic_add(&n.placed_waits, k.nw);
+    os_atomic_add(&n.placed_barriers, k.bits ? 1 : 0);
+    os_atomic_add(&n.placed_dispatches, k.nd);
 }
 
 /* the occlusion grid's dispatch (grid entry, drawctx, flag, flag): kept for the view's job (its x0 left as it came), or
@@ -191,23 +191,23 @@ PATCH_FUNC(0x8067c310, word(0xb9400808), body(0xf7211f1c433e65c6), aapcs, x0, di
            orig, as(x0, entry), as(x1, drawctx), x2, x3) {
     const uint64_t view = hos_guest_range(drawctx + 216, 8) ? job_view(G64(drawctx + 216)) : 0;
     if (!view) return guest_orig(orig);
-    AcquireSRWLockExclusive(&kept_lock);
+    os_mutex_lock(&kept_lock);
     Kept *k = kept_of(view);
     if (k && k->nd < 8) {
         k->d[k->nd].entry = entry, k->d[k->nd].x2 = x2, k->d[k->nd].x3 = x3, k->nd++;
-        ReleaseSRWLockExclusive(&kept_lock);
-        InterlockedIncrement64(&n.dispatches);
+        os_mutex_unlock(&kept_lock);
+        os_atomic_inc(&n.dispatches);
         return entry;
     }
-    ReleaseSRWLockExclusive(&kept_lock);
+    os_mutex_unlock(&kept_lock);
     return guest_orig(orig);
 }
 
 void direct_job_sync_log(double frames) {
-    static LONG64 last[10];
-    const LONG64 now[10] = {n.waits, n.barriers, n.dispatches, n.placed_waits, n.placed_barriers, n.placed_dispatches, n.dropped,
+    static int64_t last[10];
+    const int64_t now[10] = {n.waits, n.barriers, n.dispatches, n.placed_waits, n.placed_barriers, n.placed_dispatches, n.dropped,
                             n.through, n.calls, n.calls_kept};
-    LONG64 d[10];
+    int64_t d[10];
     for (int i = 0; i < 10; i++) d[i] = now[i] - last[i];
     hos_log("direct patch job sync (f_82c02f20, f_82c03170, f_831fa4a0, f_8067c310 -> f_806688c0's job call): a frame: kept in "
             "jobs %.2f waits, %.2f barriers, %.2f dispatches; placed at the job call %.2f waits, %.2f barriers, %.2f dispatches "

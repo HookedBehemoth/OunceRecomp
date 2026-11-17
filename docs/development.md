@@ -98,7 +98,7 @@ the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It ref
 |---|---|
 | `nx2/` | The dump tools, the lift and the build drivers; the lifter in `nx2/lift2` ([The lifter](lifter.md)) |
 | `games/oot/` | The game description and the function labels |
-| `host/` | The Horizon runtime, the NVN2 layer (`nvn_native.c`), and the game patches; `host/posix` maps its Win32-named calls to Linux |
+| `host/` | The Horizon runtime, the NVN2 layer (`nvn_native.c`), and the game patches; `host/os` is its operating-system layer (`os.h`) |
 | `gpu/direct/` | The direct back end, with its fork of Eden's shader recompiler in `eden/` ([Renderer docs](direct/README.md)) |
 | `gpu/api/` | What the host and the back end share: the versioned interface (`vk_api.h`) and the NVN command records |
 | `gpu/legacy/` | Upstream's older renderers, kept as reference source; not built or tested |

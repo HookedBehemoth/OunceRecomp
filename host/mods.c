@@ -16,8 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "os.h"
+#include <strings.h>
 
 typedef struct { char *key; char *host; uint64_t size; int is_dir, logged; } Entry;   /* key: romfs path, lower case, '/' */
 static Entry *table;
@@ -31,7 +31,7 @@ static uint64_t hash_str(const char *s) {
 static void lower_slash(char *s) {
     for (; *s; s++) *s = *s == '\\' ? '/' : (char)tolower((unsigned char)*s);
 }
-static const char *last_sep(const char *s) {   /* (a host path: '\' on Windows, '/' from host/posix) */
+static const char *last_sep(const char *s) {   /* (a host path: '\' as we join them, '/' from os_exe_path) */
     const char *b = strrchr(s, '\\'), *f = strrchr(s, '/');
     return b > f ? b : f;
 }
@@ -60,9 +60,9 @@ static void put(const char *key, const char *host, uint64_t size, int is_dir) {
     }
     size_t i = hash_str(key) & (table_cap - 1);
     while (table[i].key && strcmp(table[i].key, key)) i = (i + 1) & (table_cap - 1);
-    if (!table[i].key) table[i].key = _strdup(key), table_n++;
+    if (!table[i].key) table[i].key = strdup(key), table_n++;
     else free(table[i].host);
-    table[i].host = _strdup(host);
+    table[i].host = strdup(host);
     table[i].size = size;
     table[i].is_dir = is_dir;
 }
@@ -71,86 +71,80 @@ static void put(const char *key, const char *host, uint64_t size, int is_dir) {
 static int index_romfs(const char *host_dir, const char *rel, int depth) {
     if (depth > 32) return 0;   /* (hookshot: no RomFS is this deep) */
     if (!depth) {   /* (hookshot) the romfs folder itself a link (to / in a mod's archive): the walk covered the whole disk */
-        const DWORD at = GetFileAttributesA(host_dir);
-        if (at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        if (os_path_kind(host_dir) & OS_PATH_LINK) {
             hos_log("mods: %s is a link to a folder: left out", host_dir);
             return 0;
         }
     }
-    char pat[MAX_PATH];
-    snprintf(pat, sizeof pat, "%s\\*", host_dir);
-    WIN32_FIND_DATAA fd;
-    HANDLE f = FindFirstFileA(pat, &fd);
-    if (f == INVALID_HANDLE_VALUE) return 0;
+    os_dir *d = os_dir_open(host_dir, NULL);
+    if (!d) return 0;
     int files = 0;
-    do {
-        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-        char host[MAX_PATH], key[MAX_PATH];
-        snprintf(host, sizeof host, "%s\\%s", host_dir, fd.cFileName);
+    os_dirent fd;
+    while (os_dir_next(d, &fd)) {
+        char host[OS_PATH_MAX], key[OS_PATH_MAX];
+        snprintf(host, sizeof host, "%s\\%s", host_dir, fd.name);
         /* (hookshot) a link to a folder is not followed (two links back up made the walk endless); links to files are
            (mod managers place files as links) */
-        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        if ((fd.kind & OS_PATH_LINK) && (fd.kind & OS_PATH_DIR)) {
             hos_log("mods: %s is a link to a folder: left out", host);
             continue;
         }
-        snprintf(key, sizeof key, "%s%s%s", rel, *rel ? "/" : "", fd.cFileName);
+        snprintf(key, sizeof key, "%s%s%s", rel, *rel ? "/" : "", fd.name);
         lower_slash(key);
-        const int is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        put(key, host, ((uint64_t)fd.nFileSizeHigh << 32) | fd.nFileSizeLow, is_dir);
+        const int is_dir = (fd.kind & OS_PATH_DIR) != 0;
+        put(key, host, fd.size, is_dir);
         if (is_dir) {
-            char sub_rel[MAX_PATH];
-            snprintf(sub_rel, sizeof sub_rel, "%s%s%s", rel, *rel ? "/" : "", fd.cFileName);
+            char sub_rel[OS_PATH_MAX];
+            snprintf(sub_rel, sizeof sub_rel, "%s%s%s", rel, *rel ? "/" : "", fd.name);
             files += index_romfs(host, sub_rel, depth + 1);
         } else {
             files++;
         }
-    } while (FindNextFileA(f, &fd));
-    FindClose(f);
+    }
+    os_dir_close(d);
     return files;
 }
 
 /* the mod folders under root, sorted (a mod: a folder holding romfs or exefs) */
-typedef struct { char path[MAX_PATH]; char name[MAX_PATH]; } Mod;
+typedef struct { char path[OS_PATH_MAX]; char name[OS_PATH_MAX]; } Mod;
 static Mod *mods;
 static int nmods, cap_mods;
 static void find_mods(const char *dir, const char *name, int depth) {
-    char probe[MAX_PATH];
+    char probe[OS_PATH_MAX];
     snprintf(probe, sizeof probe, "%s\\romfs", dir);
-    const int has_romfs = GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES;
+    const int has_romfs = os_path_kind(probe) != OS_PATH_NONE;
     snprintf(probe, sizeof probe, "%s\\exefs", dir);
-    const int has_exefs = GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES;
+    const int has_exefs = os_path_kind(probe) != OS_PATH_NONE;
     if ((has_romfs || has_exefs) && depth > 0) {
         if (nmods == cap_mods) mods = (Mod *)realloc(mods, sizeof *mods * (size_t)(cap_mods = cap_mods ? cap_mods * 2 : 16));
-        snprintf(mods[nmods].path, MAX_PATH, "%s", dir);
-        snprintf(mods[nmods].name, MAX_PATH, "%s", name);
+        snprintf(mods[nmods].path, OS_PATH_MAX, "%s", dir);
+        snprintf(mods[nmods].name, OS_PATH_MAX, "%s", name);
         nmods++;
         return;
     }
     if (depth >= 4) return;
-    char pat[MAX_PATH];
-    snprintf(pat, sizeof pat, "%s\\*", dir);
-    WIN32_FIND_DATAA fd;
-    HANDLE f = FindFirstFileA(pat, &fd);
-    if (f == INVALID_HANDLE_VALUE) return;
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == '.') continue;
-        if (fd.cFileName[0] == '-' || fd.cFileName[0] == '_') {
-            hos_log("mods: %s\\%s is off (its name starts with %c)", dir, fd.cFileName, fd.cFileName[0]);
+    os_dir *d = os_dir_open(dir, NULL);
+    if (!d) return;
+    os_dirent fd;
+    while (os_dir_next(d, &fd)) {
+        if (!(fd.kind & OS_PATH_DIR) || fd.name[0] == '.') continue;
+        if (fd.name[0] == '-' || fd.name[0] == '_') {
+            hos_log("mods: %s\\%s is off (its name starts with %c)", dir, fd.name, fd.name[0]);
             continue;
         }
-        char sub[MAX_PATH], sub_name[MAX_PATH];
-        snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName);
-        snprintf(sub_name, sizeof sub_name, "%s%s%s", name, *name ? "/" : "", fd.cFileName);
+        char sub[OS_PATH_MAX], sub_name[OS_PATH_MAX];
+        snprintf(sub, sizeof sub, "%s\\%s", dir, fd.name);
+        snprintf(sub_name, sizeof sub_name, "%s%s%s", name, *name ? "/" : "", fd.name);
         find_mods(sub, sub_name, depth + 1);
-    } while (FindNextFileA(f, &fd));
-    FindClose(f);
+    }
+    os_dir_close(d);
 }
-static int mod_cmp(const void *a, const void *b) { return _stricmp(((const Mod *)a)->name, ((const Mod *)b)->name); }
+static int mod_cmp(const void *a, const void *b) { return strcasecmp(((const Mod *)a)->name, ((const Mod *)b)->name); }
 
 /* hos_main.c, once the image is loaded (image_path: kept for exefs patches, which are not applied here) */
 void hos_mods_init(const char *image_path) {
     (void)image_path;
-    char root[MAX_PATH];
+    char root[OS_PATH_MAX];
     if (getenv("HOS_MODS")) {
         snprintf(root, sizeof root, "%s", getenv("HOS_MODS"));
     } else {
@@ -159,7 +153,7 @@ void hos_mods_init(const char *image_path) {
         if (!slash) return;
         snprintf(slash + 1, sizeof root - (size_t)(slash + 1 - root), "mods");
     }
-    if (GetFileAttributesA(root) == INVALID_FILE_ATTRIBUTES) return;
+    if (os_path_kind(root) == OS_PATH_NONE) return;
     find_mods(root, "", 0);
     if (!nmods) {
         hos_log("mods: none in %s (a mod: <name>\\romfs)", root);
@@ -167,11 +161,11 @@ void hos_mods_init(const char *image_path) {
     }
     qsort(mods, (size_t)nmods, sizeof *mods, mod_cmp);
     for (int i = 0; i < nmods; i++) {
-        char dir[MAX_PATH];
+        char dir[OS_PATH_MAX];
         snprintf(dir, sizeof dir, "%s\\romfs", mods[i].path);
         const int files = index_romfs(dir, "", 0);
         snprintf(dir, sizeof dir, "%s\\exefs", mods[i].path);
-        if (GetFileAttributesA(dir) != INVALID_FILE_ATTRIBUTES)
+        if (os_path_kind(dir) != OS_PATH_NONE)
             hos_log("mods: %s: exefs patches are left out (the code is compiled ahead of time)", mods[i].name);
         hos_log("mods: %s: %d RomFS files", mods[i].name, files);
     }
@@ -180,15 +174,15 @@ void hos_mods_init(const char *image_path) {
 
 /* nn_fs.c: the mod file for a RomFS path ("UI/x.zs", no mount, no leading slash), or 0 */
 int hos_mods_romfs(const char *rel, char *out, size_t cap) {
-    char key[MAX_PATH];
+    char key[OS_PATH_MAX];
     snprintf(key, sizeof key, "%s", rel);
     lower_slash(key);
     int hos_prompts_romfs(const char *key, char *out, size_t cap);   /* prompts.c: the button prompts, where no mod has the file */
     Entry *e = table_n ? find(key) : NULL;
     if (!e || e->is_dir) return hos_prompts_romfs(key, out, cap);
     snprintf(out, cap, "%s", e->host);
-    static volatile LONG logged;
-    if (!e->logged && InterlockedIncrement(&logged) <= 200) hos_log("mods: %s <- %s", rel, e->host);
+    static volatile int32_t logged;
+    if (!e->logged && os_atomic_inc(&logged) <= 200) hos_log("mods: %s <- %s", rel, e->host);
     e->logged = 1;
     return 1;
 }
@@ -209,7 +203,7 @@ int hos_mods_has(const char *prefix, const char *suffix) {
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t),
                         void *arg) {
     if (!table_n) return 0;
-    char prefix[MAX_PATH];
+    char prefix[OS_PATH_MAX];
     snprintf(prefix, sizeof prefix, "%s", rel);
     lower_slash(prefix);
     size_t pn = strlen(prefix);
@@ -224,9 +218,9 @@ int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *
         if (!*name || strchr(name, '/')) continue;   /* (deeper) */
         const char *real = last_sep(e->host);   /* (the name as the mod spells it) */
         real = real ? real + 1 : e->host;
-        char base[MAX_PATH];
+        char base[OS_PATH_MAX];
         snprintf(base, sizeof base, "%s\\%s", base_dir, real);
-        if (GetFileAttributesA(base) != INVALID_FILE_ATTRIBUTES) continue;
+        if (os_path_kind(base) != OS_PATH_NONE) continue;
         fn(arg, real, e->is_dir, e->size);
         n++;
     }
