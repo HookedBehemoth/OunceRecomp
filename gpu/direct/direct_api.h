@@ -34,7 +34,7 @@ void  hsd_queue_wait_fence(uint64_t queue, uint64_t fence);               /* nvn
 void  hsd_present_queue(uint64_t queue);   /* the queue of the present that follows on this thread (nvnQueuePresentTexture) */
 
 /* Prepared assets. The host's loader hooks name each texture load's BNTX texture;
-   the back end makes that texture's image from the prepared store (nx2/prepare_textures.py) when it is initialized,
+   the back end makes that texture's image from the prepared store (hookshot-builder textures) when it is initialized,
    filled on the initializing thread. Any thread (the game's loaders). */
 typedef struct hsd_asset_key {
     const void *tex;               /* the NVNtexture the load initializes next (host pointer of the guest object) */

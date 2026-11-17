@@ -1,0 +1,17 @@
+[package]
+name = "ounce-tex"
+version = "0.1.0"
+edition = "2021"
+description = "The prepared texture store: every BNTX texture of a romfs deswizzled, ASTC re-encoded to BCn, packed"
+publish = false
+
+[dependencies]
+ounce-dump = { path = "../dump" }
+blake2b_simd = "1"
+memchr = "2"
+rayon = "1"
+sha2 = "0.11"
+texture2ddecoder = "0.1"
+
+[build-dependencies]
+cc = "1"

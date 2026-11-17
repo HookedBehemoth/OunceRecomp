@@ -177,6 +177,7 @@ impl Base {
             identity: crate::game::Identity { build_id: String::new(), main_sha256: String::new() },
             host: Vec::new(),
             local_continuations: Vec::new(),
+            assets: Default::default(),
         };
         let ps = patch::scan_texts(texts)?;
         let horizon = Horizon::load(root)?;

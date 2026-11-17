@@ -16,6 +16,7 @@ mod link;
 mod llvm;
 mod objeq;
 mod progress;
+mod textures;
 #[cfg(feature = "clang")]
 mod version;
 
@@ -33,13 +34,18 @@ const HELP: &str = "hookshot-builder <command> ...
                                        the lift and the compile of every partition and generated module, in memory
   build <out dir> --direct <hookshot_direct.so> [-j N] [--cache <dir>] [--version <text>] [--check <obj dir>]
         [--gen <lift dir> [--gen-parts]] [--progress] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
-        [--dump <file.nup|folder> [--dump-dir <dir>] [--title <t>]]
+        [--dump <file.nup|folder> [--dump-dir <dir>] [--title <t>]] [--prepared <dir> [--fast-textures] [--romfs <dir>]]
                                        the game folder: the lift, every compile and the link in this process (feature clang);
-                                       --dump reads the dump into --dump-dir (default <work>/dump), the romfs while the lift runs
+                                       --dump reads the dump into --dump-dir (default <work>/dump), the romfs while the lift runs;
+                                       --prepared writes the texture store (<dir>/tex) and the overlay (<dir>/terrain)
   dump <file.nup|folder> [--verify] [--extract <dir>] [--title <index|version|id>] [--only exefs|romfs]
                                        a dump: its titles, its checks (--verify), or written out as exefs/ and romfs/
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (a list of objects), lld in this process
+  textures <out dir> [--romfs <dir>] [--game <dir>] [--fast] [-j N] [--only <prefix>]...
+                                       the prepared texture store from a romfs; --compare <a> <b> checks two stores
+  overlay <out dir> [--romfs <dir>] [--game <dir>]
+                                       the game's own files made linear (its overlay_steps), served over the romfs
   objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
   compile-c <out.o> -- <clang args>... a C file compiled in this process by clang's libraries (feature clang)
   version [<root>]                     the version text a build stamps (feature clang)
@@ -78,6 +84,8 @@ fn main() {
         Some("link") => link_cmd(&argv[1..]),
         Some("lift-compile") => lift_compile(&argv[1..]),
         Some("dump") => dump::command(&argv[1..]),
+        Some("textures") => textures::command(&argv[1..]),
+        Some("overlay") => textures::overlay_command(&argv[1..]),
         #[cfg(feature = "clang")]
         Some("build") => build(&argv[1..]),
         Some("objeq") => {
@@ -280,6 +288,7 @@ fn build(args: &[String]) {
     let (mut cache_dir, mut version, mut resource) = (None::<PathBuf>, None::<String>, PathBuf::from(RESOURCE_DIR));
     let (mut gen, mut gen_parts, mut progress) = (None::<PathBuf>, false, false);
     let (mut dump_src, mut dump_dir, mut title) = (None::<PathBuf>, None::<PathBuf>, None::<String>);
+    let (mut prepared, mut fast_textures, mut romfs_dir) = (None::<PathBuf>, false, None::<PathBuf>);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -300,6 +309,9 @@ fn build(args: &[String]) {
             "--dump" => dump_src = Some(val().into()),
             "--dump-dir" => dump_dir = Some(val().into()),
             "--title" => title = Some(val()),
+            "--prepared" => prepared = Some(val().into()),
+            "--fast-textures" => fast_textures = true,
+            "--romfs" => romfs_dir = Some(val().into()),
             _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
             _ => fail(format!("build: what is {a}?")),
         }
@@ -311,6 +323,8 @@ fn build(args: &[String]) {
     }
     let t0 = Instant::now();
     // (the exefs first, so the lift starts while the romfs is written)
+    let dump_root = dump_dir.clone().unwrap_or_else(|| run.opts.work.join("dump"));
+    let romfs_dir = romfs_dir.unwrap_or_else(|| dump_root.join("romfs"));
     let romfs = dump_src.map(|src| {
         let dir = dump_dir.unwrap_or_else(|| run.opts.work.join("dump"));
         let (exefs, romfs) = dump::exefs_then_romfs(&src, title.as_deref(), &dir, &run.opts.game).unwrap_or_else(|e| fail(e));
@@ -405,6 +419,11 @@ fn build(args: &[String]) {
     }
     if let Some(r) = romfs {
         dump::finish_romfs(r).unwrap_or_else(|e| fail(e));
+    }
+    // (the prepared assets: the texture store and the game's overlay, from the romfs)
+    if let Some(p) = &prepared {
+        textures::make(&romfs_dir, &p.join("tex"), &game, fast_textures, cjobs, Vec::new()).unwrap_or_else(|e| fail(e));
+        textures::overlay(&romfs_dir, &p.join("terrain"), &game).unwrap_or_else(|e| fail(e));
     }
     let days: f64 = std::env::var("HOOKSHOT_OBJCACHE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
     let (pn, pf, pk) = cache.prune(days);

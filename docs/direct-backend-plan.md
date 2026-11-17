@@ -59,7 +59,7 @@ Each item is open at the time of writing. Remove an item when you close it.
   (`ndsr::smaa_edge_list`). No patch gives it a buffer of its own; check what the pass reads and writes there, and give
   it a host-owned buffer.
 - **The dump's three damaged terrain files** draw a placeholder and stop strict mode in the market. Have
-  `nx2/prepare_terrain.py` write a neutral record for them.
+  the overlay's terrain step write a neutral record for them.
 
 ### Stability
 

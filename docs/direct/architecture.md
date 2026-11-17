@@ -82,7 +82,7 @@ its draw, is counted, and is compiled in the background.
 
 ## Textures
 
-- **Asset textures** are images made at registration from the prepared pack (`nx2/prepare_textures.py`). The loader
+- **Asset textures** are images made at registration from the prepared pack (`hookshot-builder textures`). The loader
   hook skips the game's texel copy, so guest texel pages stay unbacked. The back end follows the game's own texture
   events and frees an image when the game destroys its texture. See [texture streaming](texture-streaming.md).
 - **Render targets** have an image per stable slot of the game's allocator (`host/rt_slots.c`). Transient targets live

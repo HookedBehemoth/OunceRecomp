@@ -21,7 +21,7 @@
      - f_83537d90 replaceLoad_: counted (its copy is not skipped; none was seen in A0's trace).
    Game patches (texels no NVN call carries), as region uploads into the texture's image (hsd_texels):
      - terrain: f_80c17040+0x544, the memcpy of a tile record's GPU blob B (x1, x2 bytes) into the tile texture's storage
-       (x0): a converted file's B is linear (prepare_terrain.py), recognised by its size, and uploaded instead; an
+       (x0): a converted file's B is linear (hookshot-builder overlay), recognised by its size, and uploaded instead; an
        unconverted one is the placeholder, counted; the memcpy copies nothing either way.
      - the font glyph cache: f_8152f540 (the shelf packer: cache, &x, &y, w, h) notes the cell for this thread; after
        f_81539300 (nn::font's plot) has written it into the atlas ([cache+0xf0], pitch [cache+0x140]), the cell's rows

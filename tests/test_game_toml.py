@@ -23,7 +23,7 @@ class GameToml(unittest.TestCase):
                 with open(os.path.join(GAMES, name, "game.toml"), "rb") as f:
                     t = tomllib.load(f)
                 g = gamedesc.load(os.path.join(GAMES, name))
-                self.assertEqual(set(t), {"name", "labels", "hot", "hot_order", "host", "identity", "local_continuations"})
+                self.assertEqual(set(t), {"name", "labels", "hot", "hot_order", "host", "identity", "local_continuations", "assets"})
                 self.assertEqual(t["name"], g.name)
                 self.assertEqual(t["labels"], g._labels)
                 self.assertEqual(t["hot"], g.hot)

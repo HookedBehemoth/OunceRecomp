@@ -41,16 +41,10 @@ ARGS = {
     "tests/test_low_memory_notice.py": ["--cc", "gcc"],
     "nx2/test_draw_parameters.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
     "nx2/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
-    "tests/test_prepare_textures.py": ["--cxx", "{cxx}"],
-    "tests/test_prepare_terrain.py": ["--cxx", "{cxx}"],
-    "tests/test_prepare_skybin.py": ["--cxx", "{cxx}"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
 MODULES = {
-    "tests/test_prepare_textures.py": ["numpy", "zstandard"],
-    "tests/test_prepare_terrain.py": ["numpy", "zstandard"],
-    "tests/test_prepare_skybin.py": ["numpy", "zstandard"],
     "tests/test_direct_picture_check.py": ["numpy", "zstandard"],
 }
 

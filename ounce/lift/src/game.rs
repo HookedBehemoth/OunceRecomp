@@ -17,6 +17,20 @@ struct Continuation {
     word: u32,
 }
 
+/// What the prepared assets take from the romfs (`[assets]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct Assets {
+    /// the romfs file of the game's zstd dictionaries (a zstd SARC of raw dictionaries)
+    #[serde(default)]
+    pub zstd_dictionaries: Option<String>,
+    /// top-level romfs folders the texture store does not look into (they hold no BNTX)
+    #[serde(default)]
+    pub texture_skip_dirs: Vec<String>,
+    /// this game's own conversions into the romfs overlay (ounce-tex `steps`), in order
+    #[serde(default)]
+    pub overlay_steps: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct Raw {
     name: String,
@@ -26,6 +40,8 @@ struct Raw {
     host: Vec<String>,
     #[serde(default)]
     local_continuations: Vec<Continuation>,
+    #[serde(default)]
+    assets: Assets,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +56,7 @@ pub struct Game {
     pub host: Vec<String>,
     /// `adr xN, <label>` ... `br xN` inside one function: (pc, word)
     pub local_continuations: Vec<(u64, u32)>,
+    pub assets: Assets,
 }
 
 impl Game {
@@ -56,6 +73,7 @@ impl Game {
             identity: Identity { build_id: raw.identity.build_id.to_lowercase(), main_sha256: raw.identity.main_sha256.to_lowercase() },
             host: raw.host,
             local_continuations: raw.local_continuations.into_iter().map(|c| (c.pc, c.word)).collect(),
+            assets: raw.assets,
         })
     }
 
@@ -138,6 +156,8 @@ mod tests {
         assert_eq!(hot.len(), 852);
         assert_eq!(hot[0], 0x8004ab40);
         assert_eq!(g.identity.build_id, "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348");
+        assert_eq!(g.assets.zstd_dictionaries.as_deref(), Some("Pack/ZsDic.pack.zs"));
+        assert!(g.assets.texture_skip_dirs.iter().any(|d| d == "TerrainArc"));
         assert_eq!(g.identity.main_sha256, "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de");
         assert_eq!(g.host.len(), 60);
         assert_eq!(g.host[0], "bench.c");

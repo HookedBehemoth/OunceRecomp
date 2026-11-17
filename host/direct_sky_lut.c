@@ -9,7 +9,7 @@
    0x128480 into the decompressed archive, the member's offset) after texwatch named the writer.
 
    Why it is changed: the direct back end has no block-linear code and never reads texture storage, so the LUT pass read
-   zeros (black) and the scene's ambient light followed. nx2/prepare_skybin.py writes the archive with the member linear
+   zeros (black) and the scene's ambient light followed. hookshot-builder overlay writes the archive with the member linear
    (same sizes) into the prepared overlay (direct_assets_overlay(): work/prepared/terrain), which nn_fs.c serves in direct
    mode. Here (an At row, a PATCH_AT declaration, host/patch.h), before each of the three memcpys (x0 the storage, x1 the part, x2 its size), the part goes to its
    texture's image (hsd_texels, a region of the whole level) and the memcpy copies nothing. Converted is told from not by
@@ -68,7 +68,7 @@ PATCH_AT(0x808460e4, word(0x9a8803e0), after, x2, direct_sky_lut_part, as(x0, ds
     } else {
         rx_direct()->texels(HSD_TEXELS_FILE, &t, 0, 0, &r, NULL, 0, 0);
         if (os_atomic_inc(&n.unconverted) <= 3)
-            hos_log("direct patch sky lut: %s was not read from the prepared overlay (nx2/prepare_skybin.py): texture %#llx "
+            hos_log("direct patch sky lut: %s was not read from the prepared overlay (hookshot-builder overlay): texture %#llx "
                     "is the placeholder", kFile, (unsigned long long)t.gpu);
     }
     return 0;   /* (the memcpy copies nothing: the storage stays unwritten) */

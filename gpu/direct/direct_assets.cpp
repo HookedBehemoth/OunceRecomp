@@ -1,4 +1,4 @@
-// Prepared assets (direct_assets.h). The store is nx2/prepare_textures.py's (FORMAT_VERSION 1; its docstring is the
+// Prepared assets (direct_assets.h). The store is the builder's (FORMAT_VERSION 1; ounce/tex/src/store.rs describes the
 // format): index.bin and the packs are mapped read-only once; a texture's frames are standard zstd frames (third_party/zstd,
 // linked into this library) decompressed straight into the upload's staging, mip by mip, by the thread that initializes
 // the texture. Debug aids (HOS_DBG): assetcheck:<n> reads back n prepared images and the sampled terrain and glyph uploads
@@ -104,7 +104,7 @@ const uint8_t* map_file(const std::string& path, size_t& n) {
 }
 /// The record's block size: the kept formats' from the NVN format, the converted ones' from what they became
 /// A copied record's block from its BNTX format (the record's nvn_format field holds the BNTX code, e.g. 0x1d01: high byte
-/// the type, low byte the variant), as nx2/prepare_textures.py's FMT has it; 0: not a type the converter copies
+/// the type, low byte the variant), as ounce/tex/src/bntx.rs's fmt has it; 0: not a type the converter copies
 int bntx_block(uint32_t format, int& w, int& h) {
     struct B { uint8_t type, w, h, bytes; };
     static const B table[] = {{0x02, 1, 1, 1}, {0x07, 1, 1, 2}, {0x09, 1, 1, 2}, {0x0a, 1, 1, 2}, {0x0b, 1, 1, 4}, {0x0c, 1, 1, 4},

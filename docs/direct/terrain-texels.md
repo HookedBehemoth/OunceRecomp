@@ -13,7 +13,7 @@ Terrain tiles are TARB files under `TerrainArc/` (about 51,000), read by the ter
 manager. Each file holds the tile's GPU texels in the console's block-linear layout. The game copies that blob with
 one `memcpy` into the tile texture's storage.
 
-1. At build time, `nx2/prepare_terrain.py` rewrites each file with its GPU texels linear (see
+1. At build time, `hookshot-builder overlay` rewrites each file with its GPU texels linear (see
    [the converters](converters.md)). The game still loads and decompresses the file itself.
 2. At run time, a patch in `host/direct_assets.c` replaces that `memcpy` with an upload into the tile's image.
 3. The patch tells a converted blob from an unconverted one by its size: the linear and block-linear sizes of the five
@@ -25,7 +25,7 @@ kinds have no CPU copy to upload.
 ## The sky lookup tables
 
 At boot and at each scene load, the game copies a block-linear blob of three RGBA16F textures out of
-`Env/GameScene.Nin_Ounce_NVN2.genvb.zs`. `nx2/prepare_skybin.py` writes that archive with the blob linear into the
+`Env/GameScene.Nin_Ounce_NVN2.genvb.zs`. `hookshot-builder overlay` writes that archive with the blob linear into the
 prepared overlay, and `host/direct_sky_lut.c` uploads each part instead of the `memcpy`. Without it, the scene's ambient
 light is black. Log line: "direct patch sky lut" (6 uploads at boot, 6 at each scene load).
 
