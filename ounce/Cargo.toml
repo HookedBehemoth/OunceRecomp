@@ -1,7 +1,7 @@
 # Hookshot's Rust: the lifter (lift, its decoder lift/decode) and the player's builder (builder), one workspace with one
 # Cargo.lock and one target/.
 [workspace]
-members = ["lift", "lift/decode", "builder"]
+members = ["lift", "lift/decode", "builder", "dump"]
 resolver = "2"
 
 [workspace.dependencies]

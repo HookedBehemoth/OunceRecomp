@@ -6,7 +6,6 @@ frames with the magic `ZBIC` (0x4349425A) and entropy tables written with binary
 - `zstd.c`, `zstd.h`, `zstd_errors.h`: Atmosphere-NX's single-file zstd with `ZSTD_ZBIC_SUPPORT`, as copied into
   <https://github.com/kinnay/zbic> (`src/`, master, fetched 2026-11-04), unmodified. zstd is BSD-or-GPLv2;
   the ZBIC parts come from Atmosphere-NX (GPLv2). `LICENSE` is that repository's GPLv2 text.
-- `zbic_api.c` (ours): two C functions for ctypes.
 
-It is built into `zbic.dll` by `nx2/zbic.py` on first use, and used only to unpack the dump's modules
-(`nx2/unpack.py`). It is a separate tool: none of it is linked into the game.
+It is built twice by `ounce/dump` (the dump reader in `hookshot-builder`): with ZBIC support to unpack the dump's
+modules, and without it for the `.nup` package's compressed members. None of it is linked into the game.

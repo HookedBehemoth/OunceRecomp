@@ -6,6 +6,7 @@ mod cache;
 #[cfg(feature = "clang")]
 mod checks;
 mod compile;
+mod dump;
 mod gate;
 #[cfg(feature = "clang")]
 mod host;
@@ -32,7 +33,11 @@ const HELP: &str = "hookshot-builder <command> ...
                                        the lift and the compile of every partition and generated module, in memory
   build <out dir> --direct <hookshot_direct.so> [-j N] [--cache <dir>] [--version <text>] [--check <obj dir>]
         [--gen <lift dir> [--gen-parts]] [--progress] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
-                                       the game folder: the lift, every compile and the link in this process (feature clang)
+        [--dump <file.nup|folder> [--dump-dir <dir>] [--title <t>]]
+                                       the game folder: the lift, every compile and the link in this process (feature clang);
+                                       --dump reads the dump into --dump-dir (default <work>/dump), the romfs while the lift runs
+  dump <file.nup|folder> [--verify] [--extract <dir>] [--title <index|version|id>] [--only exefs|romfs]
+                                       a dump: its titles, its checks (--verify), or written out as exefs/ and romfs/
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (a list of objects), lld in this process
   objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
@@ -72,6 +77,7 @@ fn main() {
         Some("compile-all") => compile_all(&argv[1..]),
         Some("link") => link_cmd(&argv[1..]),
         Some("lift-compile") => lift_compile(&argv[1..]),
+        Some("dump") => dump::command(&argv[1..]),
         #[cfg(feature = "clang")]
         Some("build") => build(&argv[1..]),
         Some("objeq") => {
@@ -273,6 +279,7 @@ fn build(args: &[String]) {
     let (mut cjobs, mut out, mut check, mut direct) = (jobs, None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
     let (mut cache_dir, mut version, mut resource) = (None::<PathBuf>, None::<String>, PathBuf::from(RESOURCE_DIR));
     let (mut gen, mut gen_parts, mut progress) = (None::<PathBuf>, false, false);
+    let (mut dump_src, mut dump_dir, mut title) = (None::<PathBuf>, None::<PathBuf>, None::<String>);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -290,6 +297,9 @@ fn build(args: &[String]) {
             "--work" => run.opts.work = val().into(),
             "--root" => run.opts.root = val().into(),
             "--exefs" => run.opts.exefs = Some(val().into()),
+            "--dump" => dump_src = Some(val().into()),
+            "--dump-dir" => dump_dir = Some(val().into()),
+            "--title" => title = Some(val()),
             _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
             _ => fail(format!("build: what is {a}?")),
         }
@@ -300,6 +310,13 @@ fn build(args: &[String]) {
         fail(format!("this process runs LLVM {}, but the lifter's IR is written for LLVM {LLVM_MAJOR}", llvm::version()));
     }
     let t0 = Instant::now();
+    // (the exefs first, so the lift starts while the romfs is written)
+    let romfs = dump_src.map(|src| {
+        let dir = dump_dir.unwrap_or_else(|| run.opts.work.join("dump"));
+        let (exefs, romfs) = dump::exefs_then_romfs(&src, title.as_deref(), &dir, &run.opts.game).unwrap_or_else(|e| fail(e));
+        run.opts.exefs = Some(exefs);
+        romfs
+    });
     let root = run.opts.root.clone();
     let version = version.unwrap_or_else(|| version::describe(&root));
     let obj = out.join("obj");
@@ -385,6 +402,9 @@ fn build(args: &[String]) {
         if from != to {
             std::fs::copy(&from, &to).unwrap_or_else(|e| fail(format!("{} -> {}: {e}", from.display(), to.display())));
         }
+    }
+    if let Some(r) = romfs {
+        dump::finish_romfs(r).unwrap_or_else(|e| fail(e));
     }
     let days: f64 = std::env::var("HOOKSHOT_OBJCACHE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
     let (pn, pf, pk) = cache.prune(days);

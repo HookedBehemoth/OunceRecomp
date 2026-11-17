@@ -29,7 +29,8 @@ A build takes tens of minutes and about 60 GB of disk; a run uses about 10 GB of
 
 ```sh
 scripts/linux/deps.sh                      # LLVM, Python, FFmpeg, SDL2, Vulkan headers
-python -I nx2/nup.py <your-game.nup> --extract work/dump
+cargo build --release -p hookshot-builder --manifest-path ounce/Cargo.toml
+ounce/target/release/hookshot-builder dump <your-game.nup> --extract work/dump
 python -I nx2/dump.py --dump work/dump --set
 scripts/build.sh                           # the renderer (Meson), then the lift, compile and link
 ```

@@ -26,7 +26,8 @@ No game files are in this repository. The build reads your dump where it lies, a
 3. Extract your dump and record where it is:
 
    ```sh
-   python -I nx2/nup.py <your-game.nup> --extract work/dump
+   cargo build --release -p hookshot-builder --manifest-path ounce/Cargo.toml
+   ounce/target/release/hookshot-builder dump <your-game.nup> --extract work/dump
    python -I nx2/dump.py --dump work/dump --set
    ```
 

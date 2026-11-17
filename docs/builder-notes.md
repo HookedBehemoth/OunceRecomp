@@ -8,12 +8,13 @@ facts earlier builders learned.
 
 A builder is a thin front end over the developer path ([Development guide](development.md)):
 
-1. **Read and verify the dump.** `nx2/nup.py <file.nup> --extract <dir>` extracts the newest title of the package and
-   checks its hashes; `nx2/dump.py` refuses any build but the supported one.
+1. **Read the dump.** `hookshot-builder dump <file.nup|folder> --extract <dir>` writes the newest title's `exefs/`
+   and `romfs/`, makes ZBIC-compressed modules plain, and replaces damaged `.zs` files (below); `--verify` checks a
+   package's hashes without writing. `hookshot-builder build --dump` does the same inside the build. The lift
+   refuses an `exefs/main` other than the supported one.
 2. **Repair damaged files.** An incomplete dump (about 23.3 GB instead of 23.8 GB) has damaged `.zs` textures, and the
-   game then leaves out walls and floors. `nup.stand_in_damaged(romfs, progress)` replaces each with a whole file of
-   the same kind and returns what it did; tell the player. It opens every `.zs` file and takes minutes, so report
-   progress and do it once per extraction.
+   game then leaves out walls and floors. The reader replaces each in the `romfs/` it writes with a whole file of the
+   same kind and prints what it did; tell the player. A player's own folder is never written to.
 3. **Lift and build.** `hookshot-builder build <folder> --direct <hookshot_direct.so>` lifts, compiles and links
    in one process ([the plan](builder-plan.md)). It needs the FFmpeg and glibc development files.
 4. **Prepare assets.** `nx2/prepare_textures.py`, `nx2/prepare_terrain.py` and `nx2/prepare_skybin.py` write the

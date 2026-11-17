@@ -48,8 +48,6 @@ ARGS = {
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
 MODULES = {
-    "nx2/test_nup_codec.py": ["zstandard"],
-    "nx2/test_nup_verify.py": ["zstandard"],
     "tests/test_prepare_textures.py": ["numpy", "zstandard"],
     "tests/test_prepare_terrain.py": ["numpy", "zstandard"],
     "tests/test_prepare_skybin.py": ["numpy", "zstandard"],

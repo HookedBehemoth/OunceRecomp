@@ -21,7 +21,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 
 | Step | What | Time |
 |---|---|---|
-| Read the dump | `.nup` or folder; the exefs first, so the lift starts while the romfs is copied | not measured |
+| Read the dump | `.nup` or folder (`ounce/dump`); the exefs first, then the romfs on a thread while the lift runs | exefs under 1 s; romfs 30 s (folder) |
 | Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte the objects of `opt \| clang` with the same flags | 164 s at 16 jobs |
 | Host C | `host/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
@@ -30,6 +30,25 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 
 Terrain tiles and the sky's LUT are deswizzled by the game at load time (they are BC and RGBA, never ASTC), so the
 build does not prepare them and the folder keeps the game's files.
+
+## The dump
+
+`ounce/dump` reads a `.nup` package or a folder that holds `exefs/` and `romfs/`, and writes both under one folder,
+where the lift and the game read them.
+
+- `hookshot-builder dump <file.nup|folder>` lists the titles; `--verify` checks the package (its table of contents,
+  every member's extent and SHA-256, the game's zstd header of each `.zs` file) without writing; `--extract <dir>`
+  writes the newest title (`--title` picks another, `--only` one part).
+- `hookshot-builder build --dump <file.nup|folder> [--dump-dir <dir>]` writes the exefs first (into `<work>/dump`
+  unless `--dump-dir` says otherwise), checks it against `game.toml`'s identity, and hands it to the lift; the romfs
+  is written on a thread while the host's C and the lift run, and the build waits for it before it ends.
+- A folder's files are copied with `copy_file_range`: on a file system that shares extents (btrfs, XFS) the copy
+  takes no space. When the folder is the output, nothing is copied.
+- ZBIC modules (firmware 22 and later) are rewritten as plain NSOs. The decoder is `third_party/zbic`'s zstd, built
+  twice (with and without ZBIC) with every symbol but the reader's own made local, so it never meets the `libzstd`
+  that LLVM loads.
+- An interrupted extraction resumes: a file already there with its size is kept. Paths that could leave the folder,
+  links on the way and a temporary with other hard links are refused.
 
 ## The compile
 
@@ -138,7 +157,7 @@ caches and `user/`. The host needs two changes for it: the prepared store and th
 2. `ounce-lift` as a library, the partitions handed to the compile in memory (done).
 3. The builder as the development build too (done: `scripts/build.sh`).
 4. CI: the host and `hookshot_direct.so` prebuilt; the sysroot.
-5. The dump reader (`nx2/nup.py`, `unpack.py`, the ZBIC decompressor) in Rust.
+5. The dump reader in Rust (done: `ounce/dump`).
 6. The texture converter in Rust; terrain and sky deswizzled in the host.
 7. The output folder, the host's defaults for it, the AppImage.
 8. Shaders ahead of time.

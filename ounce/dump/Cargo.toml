@@ -1,0 +1,13 @@
+[package]
+name = "ounce-dump"
+version = "0.1.0"
+edition = "2021"
+description = "A player's dump (.nup, or exefs/ + romfs/) read and written out as the folder the lift and the game read"
+publish = false
+
+[dependencies]
+sha2 = "0.11"
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"

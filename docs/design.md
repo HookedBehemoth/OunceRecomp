@@ -11,7 +11,7 @@ work runs on Vulkan. No CPU or GPU is emulated at any point.
 
 ```
 exefs/{rtld,main,subsdk0,sdk} + romfs/       your dump, read where it lies (work/dump.txt)
-      |  nx2/nup.py, nx2/unpack.py: extract the package, make compressed modules plain
+      |  hookshot-builder dump (ounce/dump): extract the package, make compressed modules plain
       v
 image: modules loaded at 0x80000000 and relocated, imports bound, replaced SDK functions hooked   (ounce/lift)
       |  discovery and the plan: the functions, the partitions

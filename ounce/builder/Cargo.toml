@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 ounce-lift = { path = "../lift" }
+ounce-dump = { path = "../dump" }
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode"] }
 sha1.workspace = true
 
