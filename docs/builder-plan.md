@@ -21,11 +21,11 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 
 | Step | What | Time |
 |---|---|---|
-| Read the dump | `.nup` or folder (`ounce/dump`); the exefs first, then the romfs on a thread while the lift runs | exefs under 1 s; romfs 30 s (folder) |
+| Read the dump | `.nup` or folder (`ounce/dump`); the exefs into memory first, then the romfs into the game folder on a thread while the lift runs | exefs under 1 s; romfs 30 s (folder) |
 | Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte the objects of `opt \| clang` with the same flags | 164 s at 16 jobs |
 | Host C | `host/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
-| Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BCn, packed (`hookshot-builder textures`) | 1055 s (16,000 CPU-s, 2.6 GB peak); 258 s with `--fast` |
+| Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BCn, packed (`hookshot-builder textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
 
 ## The prepared assets
@@ -43,23 +43,27 @@ it; `ounce/tex/src/store.rs` the format.
   another version differs in its packs but not in its content.
 - Files are converted in parallel, largest first, each admitted by the memory gate; the textures, images and bands of
   block rows inside a file run on the same threads.
-- The default settings are BC7 level 4, BC4 and BC5 radius 5 and zstd 19; `--fast` is BC7 level 1, radius 1 and
-  zstd 3, with packs 4 % larger. The records and frames depend on nothing but the settings and the romfs;
+- The default settings (fast) are BC7 level 1, BC4 and BC5 radius 1 and zstd 3; `--quality high` is BC7 level 4,
+  radius 5 and zstd 19, with packs 4 % smaller in four times the time.
+- ASTC is always re-encoded: desktop GPUs do not sample it, so the builder does not look for a GPU that does. The records and frames depend on nothing but the settings and the romfs;
   where a frame lies in the packs follows the order files finish. `hookshot-builder textures --compare <a> <b>` checks
   two stores field by field and frame by frame.
 - The index and every texture record are held until the end; files are written to the packs as they finish.
 
 ## The dump
 
-`ounce/dump` reads a `.nup` package or a folder that holds `exefs/` and `romfs/`, and writes both under one folder,
-where the lift and the game read them.
+`ounce/dump` reads a `.nup` package or a folder that holds `exefs/` and `romfs/`. The lift reads the exefs in memory;
+the romfs is copied into the game folder. Nothing at run time reads the exefs: the game runs from `image.bin`, which
+holds everything the lift took from it (the modules, and `main.npdm`'s program id, stack and priority).
 
 - `hookshot-builder dump <file.nup|folder>` lists the titles; `--verify` checks the package (its table of contents,
   every member's extent and SHA-256, the game's zstd header of each `.zs` file) without writing; `--extract <dir>`
   writes the newest title (`--title` picks another, `--only` one part).
-- `hookshot-builder build --dump <file.nup|folder> [--dump-dir <dir>]` writes the exefs first (into `<work>/dump`
-  unless `--dump-dir` says otherwise), checks it against `game.toml`'s identity, and hands it to the lift; the romfs
-  is written on a thread while the host's C and the lift run, and the build waits for it before it ends.
+- `hookshot-builder build <out> --dump <file.nup|folder>` reads the exefs into memory (its modules made whole and
+  plain, as an extraction does), checks it against `game.toml`'s identity, and hands it to the lift; the romfs is
+  copied into `<out>/romfs` on a thread while the host's C and the lift run.
+- `--dump-dir <dir>` also writes the dump there whole (`exefs/`, `romfs/`), for the developer tools that read
+  `work/dump`; the game folder's romfs is then copied from it.
 - A folder's files are copied with `copy_file_range`: on a file system that shares extents (btrfs, XFS) the copy
   takes no space. When the folder is the output, nothing is copied.
 - ZBIC modules (firmware 22 and later) are rewritten as plain NSOs. The decoder is `third_party/zbic`'s zstd, built
@@ -89,13 +93,13 @@ where the lift and the game read them.
   hot and cold compiles never run at once (`compile.rs`'s gate), so the long hot compiles start first.
 - A cold build peaks at 6.4 GB: the compiles (4.5 GB at 16 jobs) and the compressed IR waiting for them.
 
-## The game folder
+## The build
 
-`hookshot-builder build <out> --direct <hookshot_direct.so>` makes the game folder in one
-process: the host's C (`host/*.c`, libopus and `rt64/a64_rt.c`, each with its flags and
-`-fstack-protector-strong`), the lift and its compile, the link and the labels. The folder holds `hookshot`,
-`hookshot_direct.so` and `image.bin` beside it, where the game looks without an argument; `scripts/run-vk.sh` and
-`scripts/play.sh` take the image from beside the executable when it is there.
+`hookshot-builder build <out> --direct <hookshot_direct.so>` builds the game in one process: the host's C
+(`host/*.c`, libopus and `rt64/a64_rt.c`, each with its flags and `-fstack-protector-strong`), the lift and its
+compile, the link and the labels. `<out>` holds `hookshot`, `hookshot_direct.so` and `image.bin`, where the game
+looks without an argument; `scripts/run-vk.sh` and `scripts/play.sh` take the image from beside the executable when
+it is there. With `--dump`, `<out>` is a whole game folder (below).
 
 - The version text (the release name and a fingerprint of the sources) is computed by the builder
   (`hookshot-builder version`); `--version` replaces it.
@@ -164,10 +168,62 @@ build: x86-64-v3, LTO and profile-guided optimisation.
 The host's C needs 153 of clang's resource headers (3.3 MB, 0.2 MB compressed); the whole folder is 16.4 MB
 (0.8 MB compressed).
 
-## The output folder
+## The game folder
 
-`hookshot`, `hookshot_direct.so`, `libSDL2-2.0.so.0`, `image.bin`, `romfs/` (a copy), `prepared/tex/`, the shader
-caches and `user/`. The host needs two changes for it: the prepared store and the saves default to the game folder.
+`hookshot-builder build <out> --direct <hookshot_direct.so> --dump <file.nup|folder>` makes a folder that holds the
+whole game:
+
+| Path | What |
+|---|---|
+| `hookshot`, `hookshot_direct.so`, `image.bin` | the game, its renderer and its image |
+| `romfs/` | the dump's romfs; its texture files hold their headers, their texels are zeroed |
+| `prepared/tex/` | the texture store; `prepared/hollowed.txt` lists the romfs files whose texels it holds |
+| `hookshot_direct_*.bin` | the shader caches, written by the game beside the executable |
+| `user/` | the saves |
+
+- The host takes everything from beside the executable when it starts with no arguments: the image, `romfs/`,
+  `prepared/` and `user/`. A folder without `user/` keeps its saves in `~/.local/share/hookshot`. The development
+  scripts pass the image, the romfs and the saves folder on the command line, and their builds find
+  `work/prepared`.
+- The build's own files (objects, the map, the link order) go to `<work>/game-build`, not into the folder.
+- `--quality high` uses the slower texture settings; `--no-textures` leaves the store and the romfs's texels as
+  they are.
+
+### The romfs copy
+
+The game reads a texture file's headers and hands its texels to `nvnTextureInitialize`; the host gives the back
+end the texture's prepared record instead, and the back end never reads the texels in guest memory
+([texture streaming](direct/texture-streaming.md)). So the texture step writes each romfs file that holds BNTX
+textures again with its texels zeroed: the file is decompressed, each BNTX's texel data (from its BRTD section to its
+relocation table) is zeroed, and the file is compressed again with its own dictionary and checksum flag at zstd 9.
+The game's texture files are all zstd, so the zeroed texels take next to no space in the frame; sparse holes would
+not help.
+
+For this game, 21,658 files (9.6 GB, 18.1 GB of texels decompressed) become 10 MB, in the texture step's own time:
+the romfs copy is 15.9 GB instead of 25.0 GB, and the folder about 30 GB with its 13.8 GB store.
+
+- `TerrainArc/` stays whole: the terrain manager reads its tiles at run time and the host's terrain patch makes
+  their texels linear from the loaded file ([terrain tiles](direct/terrain-texels.md)).
+- A BNTX inside a compressed member of an archive is left whole.
+- A rebuild writes the files `prepared/hollowed.txt` lists whole again before the texture step reads the romfs.
+  `hookshot-builder textures` refuses a game folder's romfs: make a store from the dump.
+
+## The device check
+
+`hookshot-builder probe` checks the GPU the back end would pick (the first discrete GPU with Vulkan 1.3), with
+libvulkan loaded at run time and no Vulkan crate. It prints one line per item, `@@probe <key> <pass|fail|warn|info>
+<value>`, and last `@@probe verdict <pass|fail> <failed keys>`; it exits 1 when an item fails.
+
+| Key | Needed |
+|---|---|
+| `loader`, `api` | Vulkan 1.3 |
+| `vram` | 8 GB of device-local memory; under 10 GB is a warning |
+| `swapchain`, `external_memory_fd`, `dma_buf`, `udmabuf` | the game's memory imported as dma-bufs through `/dev/udmabuf` |
+| `shader_object`, `descriptor_heap`, `extended_dynamic_state3`, `maintenance7` | the extensions and their features the back end draws with |
+| `core_features` | dynamic rendering, synchronization2, timeline semaphores, buffer device addresses |
+| `graphics_queue`, `sparse_queue` | a graphics and compute family, and a sparse-binding family without either |
+
+`gpu`, `device` and `driver` lines name the GPU and its driver; `gpu` warns when the GPU is not discrete.
 
 ## Order of work
 
@@ -177,5 +233,5 @@ caches and `user/`. The host needs two changes for it: the prepared store and th
 4. CI: the host and `hookshot_direct.so` prebuilt; the sysroot.
 5. The dump reader in Rust (done: `ounce/dump`).
 6. The texture converter in Rust (done: `ounce/tex`).
-7. The output folder, the host's defaults for it, the AppImage.
+7. The game folder and the host's defaults for it (done); the AppImage.
 8. Shaders ahead of time.

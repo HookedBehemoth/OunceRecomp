@@ -12,7 +12,7 @@ patches make their texels linear when the game loads them (see [terrain tiles an
 - It reads the romfs in place (default: `work/dump/romfs`) and writes only into the folder you name. What it writes
   is made from the game: it never leaves the PC and is never committed.
 - It runs in `hookshot-builder` on every CPU and starts a file only when the memory gate has room for it.
-- It is not incremental: each run replaces the whole output (about 18 minutes on 16 threads, 4 with `--fast`).
+- It is not incremental: each run replaces the whole output (about 4 minutes on 16 threads, 18 with `--quality high`).
 
 ## Run the converter
 
@@ -22,11 +22,11 @@ patches make their texels linear when the game loads them (see [terrain tiles an
    hookshot-builder textures work/prepared/tex
    ```
 
-   `--fast` uses quicker encoder settings (a quarter of the time; packs about 4 % larger).
+   `--quality high` uses slower encoder settings (four times the time; packs about 4 % smaller).
    `--only <romfs prefix>` writes a store of those files alone, for a quick check.
 
-2. Or do it in a game build: `hookshot-builder build <out> ... --prepared <folder>` writes `<folder>/tex` after the
-   link.
+2. Or do it in a game build: `hookshot-builder build <out> ... --dump <dump>` writes `<out>/prepared/tex`, and
+   `--prepared <folder>` writes `<folder>/tex` from `work/dump/romfs`.
 
 To check a store against another one, run `hookshot-builder textures --compare <a> <b>`: it compares every index field
 except where the frames lie in the packs, and every frame's bytes.
@@ -54,5 +54,5 @@ The host finds a texture's record when the game loads it; see [texture streaming
 
 ## Point the game at the output
 
-The host finds the store in `work/prepared` beside the build. To use another folder, set `HOS_PREPARED=<folder>`:
+The host finds the store in the game folder's `prepared/`, else in `work/prepared` beside the build. To use another folder, set `HOS_PREPARED=<folder>`:
 `<folder>/tex` is the texture store.
