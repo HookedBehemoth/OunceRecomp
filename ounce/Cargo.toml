@@ -1,7 +1,9 @@
-# Hookshot's Rust: the lifter (lift, its decoder lift/decode) and the player's builder (builder), one workspace with one
-# Cargo.lock and one target/.
+# Hookshot's Rust: the lifter (lift, its decoder lift/decode), the player's builder (builder) and its window (gui), one
+# workspace with one Cargo.lock and one target/.
 [workspace]
-members = ["lift", "lift/decode", "builder", "dump", "tex"]
+members = ["lift", "lift/decode", "builder", "dump", "tex", "gui"]
+# (the window is built on its own: cargo build --profile gui -p hookshot-gui)
+default-members = ["lift", "lift/decode", "builder", "dump", "tex"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -11,3 +13,11 @@ sha1 = "0.10"
 debug = 1
 lto = "fat"
 codegen-units = 1
+
+# the window: no LTO, so its 120 crates take half a minute, not more than a minute
+[profile.gui]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = 0
+strip = true
