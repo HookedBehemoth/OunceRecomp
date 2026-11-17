@@ -402,31 +402,42 @@ static int game_main(int argc, char **argv) {
     hos_mem_init(hos_image_end);
     void hos_code_ptrs_init(void);
     hos_code_ptrs_init();   /* code_ptrs.c */
-    {   /* (hookshot) Widescreen and ultrawide (host/oot_probes.c's rows): the window's shape at start, HOS_WINDOW_SIZE's
-           when set, else the main monitor's (the window opens at that shape); HOS_ASPECT=<ratio> over both. The game's
-           picture takes that shape at its own height (the world wider at the sides on an ultrawide screen, narrower on a
-           16:10 or 4:3 one), its main camera the picture's ratio. Wider than 16:9 the HUD, menus and movies keep the
-           middle 16:9; narrower they fill the picture's width. The picture's size is fixed at start: a window resized to
-           another shape shows it letterboxed, not stretched. */
+    {   /* (hookshot) The game's frame follows the window (host/oot_probes.c's rows): its pixels are the window's (at most
+           3840 x 2160's count, the shape kept) and the main camera, HUD and movies take its shape; a resize, once settled,
+           sizes the frame again (host/posix/display_sdl.c). The game draws its frame into a corner of its picture (the window
+           textures), so the picture is made once as large as any frame: the monitor's size, at least 3840 x 2160. With
+           HOS_ASPECT=<ratio> or an explicit Output resolution (HOS_OUTPUT_RES, output_res) the frame is the game's instead:
+           its picture takes that shape (or the window's) at the output's height, and a resize letterboxes it.
+           Wider than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the frame's width. */
         const char *e = getenv("HOS_ASPECT");
-        float want = e ? (float)atof(e) : 0.0f;
-        int ww = 0, wh = 0;
-        if (!e && getenv("HOS_WINDOW_SIZE") && sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &ww, &wh) == 2 && ww >= 64 && wh >= 64)
-            want = (float)ww / (float)wh;
-        else if (!e) {
-            hos_screen_size(&ww, &wh);   /* (0 x 0 headless) */
-            if (wh > 0) want = (float)ww / (float)wh;
+        int ww = 0, wh = 0, dw = 0, dh = 0;
+        hos_screen_size(&dw, &dh);   /* (0 x 0 headless) */
+        if (getenv("HOS_WINDOW_SIZE") && sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &ww, &wh) == 2 && ww >= 64 && wh >= 64) {
+        } else if (dh > 0) {
+            wh = 720, ww = (int)(720.0 * dw / dh + 0.5);   /* (the window display_sdl.c opens) */
+        } else {
+            ww = 1920, wh = 1080;   /* (the headless image's) */
         }
+        float want = e ? (float)atof(e) : (float)ww / (float)wh;
         if (getenv("HOS_SCENE_NATIVE")) hos_native_scene = atoi(getenv("HOS_SCENE_NATIVE")) != 0;
         if (getenv("HOS_FIX_RES")) hos_fix_res = atoi(getenv("HOS_FIX_RES")) != 0;
         if (hos_native_scene) hos_log("boot: HOS_SCENE_NATIVE=1: the scene's base scale 1.0 (the game's 0.8 otherwise)");
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
+        int hos_output_res_set(void);   /* (host/nn_applet.c: an Output resolution was chosen) */
         const double game = 16.0 / 9.0;
-        /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the
-           cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT
-           at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
-        if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
+        if (!e && !hos_output_res_set()) {
+            const unsigned pw = (unsigned)(dw > 3840 ? dw : 3840), ph = (unsigned)(dh > 2160 ? dh : 2160);
+            hos_wide_out = (uint64_t)ph << 32 | pw;
+            hos_wide_scene = (uint64_t)(ph * 3 / 4) << 32 | (pw * 3 / 4);
+            hos_aspect_ratio = want;
+            void hos_oot_frame_set(uint32_t w, uint32_t h, int start);
+            hos_oot_frame_set((uint32_t)ww, (uint32_t)wh, 1);
+            hos_log("boot: the frame follows the window: picture %ux%u", pw, ph);
+        } else if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
+            /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the
+               camera takes its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3
+               CRT at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
             double r = want > 32.0 / 9.0 ? 32.0 / 9.0 : want < 5.0 / 4.0 ? 5.0 / 4.0 : want;
             uint32_t hos_output_size(int height);   /* (host/nn_applet.c: the Output resolution's height, 1440 as shipped) */
             unsigned oh = hos_output_size(1), ow = (unsigned)(oh * r / 8 + 0.5) * 8;   /* (whole multiples of 8 pixels) */

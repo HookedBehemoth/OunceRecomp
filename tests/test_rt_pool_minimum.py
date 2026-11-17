@@ -2,7 +2,8 @@
 
 The 305 MiB default crashed in Castle Town's guard house; 512 MiB resolved the
 reported conversation/camera reproduction. Keep existing 4K/ultrawide growth
-and explicit HOS_RT_POOL_MB overrides, including overrides below the floor.
+and explicit HOS_RT_POOL_MB overrides, including overrides below the floor; a
+picture larger than 3840 x 2160 grows the pool only to that size.
 """
 import argparse
 import importlib.util
@@ -50,7 +51,7 @@ static const struct {
     {3840, 2160, 0, 305, NULL, 687},
     {2560, 1440, WIDE(3440, 1440), 305, NULL, 512},
     {2560, 1440, WIDE(5120, 1440), 305, NULL, 610},
-    {3840, 2160, WIDE(7680, 2160), 305, NULL, 1373},
+    {3840, 2160, WIDE(7680, 2160), 305, NULL, 687},   /* (a larger picture is only room: 3840 x 2160 at most) */
     {2560, 1440, WIDE(1920, 1080), 305, NULL, 512},
     {2560, 1440, 0, 305, "256", 256},
     {3840, 2160, WIDE(7680, 2160), 305, "768", 768},

@@ -139,6 +139,39 @@ void hos_renderer_wait(void) {
     os_event_wait(&renderer_up, OS_FOREVER);
 }
 
+/* ---- the game's frame follows the window. SDL sends resize events all through a drag and has no event for its end,
+   so a size applies once no resize came for 250 ms; until then the old frame is letterboxed into the window.
+   HOS_DBG=resize:<w>x<h>@<present>[+<w>x<h>@<present>...] resizes as a window would, for headless tests */
+static volatile uint64_t resize_size;   /* (width | height << 32 of the last resize not applied yet) */
+static volatile int64_t resize_ns;
+static void resize_note(int w, int h) {
+    __atomic_store_n(&resize_ns, os_now_ns(), __ATOMIC_RELAXED);
+    __atomic_store_n(&resize_size, (uint64_t)(uint32_t)h << 32 | (uint32_t)w, __ATOMIC_RELEASE);
+}
+static const char *dbg_resize;   /* (the next HOS_DBG resize, or NULL) */
+static int dbg_resize_parsed;
+void hos_display_presented(void) {   /* (the Presentation Thread, after each present) */
+    if (!dbg_resize_parsed) {
+        dbg_resize_parsed = 1;
+        const char *d = getenv("HOS_DBG");
+        if (d && hos_dbg_item("resize")) dbg_resize = strstr(d, "resize:") ? strstr(d, "resize:") + 7 : NULL;
+    }
+    int w, h;
+    long long at;
+    if (dbg_resize && sscanf(dbg_resize, "%dx%d@%lld", &w, &h, &at) == 3 && hos_present_count >= at) {
+        const char *next = strpbrk(dbg_resize, "+,");
+        dbg_resize = next && *next == '+' ? next + 1 : NULL;
+        hos_log("display: HOS_DBG resize to %dx%d", w, h);
+        rx_resize(w, h);
+        resize_note(w, h);
+    }
+    const uint64_t size = __atomic_load_n(&resize_size, __ATOMIC_ACQUIRE);
+    if (!size || os_now_ns() - __atomic_load_n(&resize_ns, __ATOMIC_RELAXED) < 250 * 1000000LL) return;
+    if (!__atomic_compare_exchange_n(&resize_size, &(uint64_t){size}, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return;
+    void hos_oot_frame_set(uint32_t w, uint32_t h, int start);   /* (host/oot_probes.c) */
+    hos_oot_frame_set((uint32_t)size, (uint32_t)(size >> 32), 0);
+}
+
 static volatile int start_asked;
 static int sdl_ready;
 int hos_display_owns_sdl(void) { return sdl_ready; }   /* (controllers stay on this thread while it runs SDL) */
@@ -206,6 +239,11 @@ void hos_display_loop(void) {
     }
     vk_window.window = window;
     focused = 1;
+    {   /* (the window's pixels can differ from the size asked for: a HiDPI scale, a tiling compositor) */
+        int w = 0, h = 0;
+        hos_sdl_pixel_size(window, &w, &h);
+        if (w > 0 && h > 0) resize_note(w, h);
+    }
     {   /* the window's icon: hookshot.png beside the game, when there is one, for X11 and the compositors that
            take one from the window; the others find it through the menu entry */
         char png[OS_PATH_MAX];
@@ -238,6 +276,7 @@ void hos_display_loop(void) {
                         int w = 0, h = 0;
                         hos_sdl_pixel_size(window, &w, &h);
                         rx_resize(w, h);
+                        resize_note(w, h);
                     }
                     break;
                 case HOS_SDL_EV_FOCUS_GAINED:

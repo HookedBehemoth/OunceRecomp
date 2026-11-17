@@ -37,8 +37,12 @@ float hos_aspect_ratio;
 static unsigned out_h = 1440;
 uint32_t hos_output_size(int height) { return height ? out_h : out_h * 16 / 9; }
 static void hos_log(const char *f, ...) { (void)f; }
+int hos_output_res_set(void) { return 1; }   /* (an Output resolution chosen: the fixed-size branch) */
+void hos_oot_frame_set(uint32_t w, uint32_t h, int start) { (void)w, (void)h, (void)start; }
 
 static void wide(float want) {
+    const char *e = "1";
+    const int dw = 0, dh = 0, ww = 0, wh = 0;
 ''' + block() + r'''
 }
 

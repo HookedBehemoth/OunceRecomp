@@ -54,6 +54,9 @@ std::vector<VkImage> images;
 std::vector<VkSemaphore> rendered;   // (per swapchain image: the present waits for its clear)
 std::atomic<uint64_t> resize_to{0};
 VkImage offscreen = VK_NULL_HANDLE;
+VkDeviceMemory offscreen_mem = VK_NULL_HANDLE;
+int64_t offscreen_bytes = 0;
+uint32_t offscreen_type = 0;
 bool unseen = false;
 bool swap_src = false;   // (M4d: the swapchain's images can be read: shots)   // (no image back in 100 ms: a Wayland window that cannot be seen)
 
@@ -182,7 +185,19 @@ bool make_offscreen() {
     VkDeviceMemory mem;
     if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(dev.device, &ai, nullptr, &mem) != VK_SUCCESS) return false;
     mem_account(MO_OTHER, ai.memoryTypeIndex, (int64_t)req.size);
+    offscreen_mem = mem, offscreen_bytes = (int64_t)req.size, offscreen_type = ai.memoryTypeIndex;
     return vkBindImageMemory(dev.device, offscreen, mem, 0) == VK_SUCCESS;
+}
+
+// (no window: a resize remakes the image at the new size, after the frames that use the old one)
+bool resize_offscreen(uint32_t width, uint32_t height) {
+    for (Frame& f : frames) vkWaitForFences(dev.device, 1, &f.done, VK_TRUE, UINT64_MAX);
+    vkDestroyImage(dev.device, offscreen, nullptr);
+    vkFreeMemory(dev.device, offscreen_mem, nullptr);
+    mem_account(MO_OTHER, offscreen_type, -offscreen_bytes);
+    extent = {width, height};
+    logf("direct: no window: the image is now %ux%u", width, height);
+    return make_offscreen();
 }
 
 void barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to, VkPipelineStageFlags2 src,
@@ -389,8 +404,8 @@ int present_start(void* hwnd) {
     return 1;
 }
 
-void present_resize(int width, int height) {   // (the window's thread: noted; the next present makes the swapchain)
-    if (dev.offscreen || width <= 0 || height <= 0) return;
+void present_resize(int width, int height) {   // (the window's thread: noted; the next present makes the swapchain or image)
+    if (width <= 0 || height <= 0) return;
     resize_to.store((uint64_t)(uint32_t)width << 32 | (uint32_t)height, std::memory_order_release);
 }
 
@@ -427,7 +442,9 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
 
 void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's mu held: one at a time)
     draw_meshlog_after();   // (M4a: HOS_DBG=meshlog's GPU-side records)
-    if (const uint64_t want = resize_to.exchange(0, std::memory_order_acquire); want || (!dev.offscreen && !swapchain))
+    if (const uint64_t want = dev.offscreen ? resize_to.exchange(0, std::memory_order_acquire) : 0; want)
+        if (!resize_offscreen((uint32_t)(want >> 32), (uint32_t)want)) return;
+    if (const uint64_t want = dev.offscreen ? 0 : resize_to.exchange(0, std::memory_order_acquire); want || (!dev.offscreen && !swapchain))
         if (!create_swapchain(want ? (uint32_t)(want >> 32) : extent.width, want ? (uint32_t)want : extent.height)) return;
     Frame& f = frames[frame_index];
     frame_index = (frame_index + 1) % 3;

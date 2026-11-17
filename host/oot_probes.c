@@ -40,6 +40,7 @@
      the module's budget (f_83b7b340 aborts below zero), and f_80b72340's heap of what the Graphics heap can still give
      keeps its shipped size. */
 #include "hos.h"
+#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -134,8 +135,11 @@ PATCH_AT(0x831f3f08, word(0xf9471288), after, x8, hos_oot_scale_flags, as(x20, m
 /* ---- native scene (HOS_SCENE_NATIVE, HOS_FIX_RES) */
 
 /* f_806702e0 (config: x0), w14 the current mode: mode 1's base scale 0.8 -> 1.0 in a stock table, and the mode made to
-   compare unequal once (0xff), so the game's own refresh runs */
+   compare unequal once (0xff), so the game's own refresh runs; the same after a window resize (the game then sizes its
+   frame again, makes its targets at that size and sets the window's crop to it) */
+static volatile int frame_refresh;   /* (hos_oot_frame_set: the game's frame to be sized again) */
 PATCH_AT(0x80670308, word(0x3955280e), after, w14, hos_oot_scene_mode, as(x0, config), as(w14, mode)) {   /* ldrb w14, [x0, #1354] */
+    if (__atomic_exchange_n(&frame_refresh, 0, __ATOMIC_ACQ_REL)) mode = 0xff;
     if (!hos_native_scene) return mode;
     OotScaleConfig *c = GUEST(OotScaleConfig, config);
     OotScaleTable *const tables[2] = {&c->profile0, &c->profile1};
@@ -190,25 +194,37 @@ PATCH_AT(0x80b1e1bc, word(0x37201528), before, s0, hos_oot_text_time, as(s0, tim
 
 /* ---- output size */
 
+/* the frame's width (0) or height (1): the window's when the frame follows it (hos_oot_frame_set), else the widescreen
+   picture's (host/hos_main.c), else the output's */
+static volatile uint64_t frame_size;   /* (width | height << 32; 0: the frame does not follow the window) */
+static uint32_t picture_size(int height) {
+    extern volatile uint64_t hos_wide_out;
+    const uint64_t f = frame_size, w = f ? f : hos_wide_out;
+    return w ? (uint32_t)(height ? w >> 32 : w) : hos_output_size(height);
+}
+
 /* nnMain's display size for the framework's create arg (width | height << 32, the pair the game stores at +20) */
 PATCH_AT(0x81222ee4, word(0xf2c0b408), after, x8, hos_oot_output_size) { return hos_output_size(0) | (uint64_t)hos_output_size(1) << 32; }
 
 /* f_810a7b70 (config: x20): the docked size list's first entry, 2560 x 1440, is the output size */
 PATCH_AT(0x810a7b8c, word(0xaa0103f4), after, none, hos_oot_output_config, as(x20, config)) {   /* mov x20, x1 */
     OotDisplaySizeConfig *c = GUEST(OotDisplaySizeConfig, config);
-    if (hos_output_size(0) != 2560 && c->docked_width == 2560) c->docked_width = hos_output_size(0), c->docked_height = hos_output_size(1);
+    extern volatile uint64_t hos_wide_out;
+    const uint64_t pic = hos_wide_out;
+    const uint32_t pw = pic ? (uint32_t)pic : hos_output_size(0), ph = pic ? (uint32_t)(pic >> 32) : hos_output_size(1);
+    if (pw != 2560 && c->docked_width == 2560) c->docked_width = pw, c->docked_height = ph;
 }
 
 /* f_80ea2f30: BaseResolution's width (height 0) or height (1) scaled with the output */
 PATCH_AT(0x80ea2ffc, word(0x29406418), after, w24, hos_oot_base_size, as(w24, v), as(k(0), height)) {   /* ldp w24, w25, [x0] */
-    if (hos_output_size(0) == 2560) return v;
-    return height ? v * hos_output_size(1) / 1440 : v * hos_output_size(0) / 2560;
+    if (picture_size(0) == 2560 && picture_size(1) == 1440) return v;
+    return height ? v * picture_size(1) / 1440 : v * picture_size(0) / 2560;
 }
 PATCH_AT_SITE(0x80ea2ffc, word(0x29406418), after, w25, hos_oot_base_size, w25, k(1));   /* ldp w24, w25, [x0] */
 
 /* f_80ea2f30: the constants 1920.0 / 1080.0, 3/4 of the output (mov w8, #<float>: the float's bits in a W register) */
 PATCH_AT(0x80ea303c, word(0x52a89e08), after, w8, hos_oot_base_size_bits, as(k(0), height)) {   /* mov w8, #1920.0 */
-    const float f = (float)(hos_output_size((int)height) * 3 / 4);
+    const float f = (float)(picture_size((int)height) * 3 / 4);
     uint32_t u;
     memcpy(&u, &f, 4);
     return u;
@@ -329,6 +345,42 @@ PATCH_AT(0x82c41728, word(0xf9000bea), after, none, hos_oot_player_update, as(x1
 
 extern volatile uint64_t hos_wide_out, hos_wide_scene;
 extern volatile float hos_wide_ratio, hos_wide_margin, hos_wide_squeeze;
+
+/* f_806702e0's frame size, the scale mode's size times its scale and clamped (w8, w9 before the stp to its argument of
+   f_810a7f40): the window's pixels while the frame follows the window */
+PATCH_AT(0x806705f8, word(0x1a89b2c9), after, none, hos_oot_frame_window, io(w8, w9)) {   /* csel w9, w22, w9, lt */
+    const uint64_t f = frame_size;
+    if (f) io->w8 = (uint32_t)f, io->w9 = (uint32_t)(f >> 32);
+}
+
+/* f_8114c5e0, the frame's largest size by mode, from a table of 16:9 sizes ({2560, 1440} docked): as wide as the
+   picture's shape at that height, so a wider picture's frame is not cut to 16:9's width */
+PATCH_AT(0x8114c604, word(0xf8687928), after, x8, hos_oot_frame_max, as(x8, size)) {   /* ldr x8, [x9, x8, lsl #3] */
+    const uint32_t w = (uint32_t)size, h = (uint32_t)(size >> 32), pw = picture_size(0), ph = picture_size(1);
+    if (!ph || (uint64_t)pw * h <= (uint64_t)w * ph) return size;
+    return (uint64_t)h << 32 | (uint32_t)((uint64_t)h * pw / ph);
+}
+
+/* host/hos_main.c (start), host/posix/display_sdl.c (a settled resize): the game's frame is
+   now w x h (the window's pixels, at most 3840 x 2160's count, at most the picture's size): the main camera, HUD and
+   movies take its shape, and the game sizes its frame and targets again */
+void hos_oot_frame_set(uint32_t w, uint32_t h, int start) {
+    extern volatile uint64_t hos_wide_out;
+    const uint64_t pic = hos_wide_out;
+    if (!pic || w < 64 || h < 64 || (!start && !frame_size)) return;   /* (a frame that does not follow the window) */
+    const double r = (double)w / h, game = 16.0 / 9.0;
+    if ((double)w * h > 3840.0 * 2160.0) h = (uint32_t)sqrt(3840.0 * 2160.0 / r), w = (uint32_t)(h * r);
+    if (w > (uint32_t)pic) w = (uint32_t)pic, h = (uint32_t)(w / r);
+    if (h > (uint32_t)(pic >> 32)) h = (uint32_t)(pic >> 32), w = (uint32_t)(h * r);
+    w &= ~7u, h &= ~7u;
+    const float ratio = (float)w / (float)h;
+    hos_wide_ratio = ratio;
+    hos_wide_squeeze = (float)(ratio > game ? game / ratio : 1.0);   /* (a narrower frame: the HUD its whole width) */
+    hos_wide_margin = (1.0f - hos_wide_squeeze) / 2.0f;
+    frame_size = (uint64_t)h << 32 | w;
+    __atomic_store_n(&frame_refresh, 1, __ATOMIC_RELEASE);
+    hos_log("frame: %ux%u, camera ratio %.4f, HUD and movies in the middle %.1f%%", w, h, (double)ratio, hos_wide_squeeze * 100.0);
+}
 
 /* the picture's {2560, 1440} (width | height << 32 in x8, just built by mov + movk): the window's shape at the game's height */
 PATCH_AT(0x81222ee4, word(0xf2c0b408), after, x8, hos_oot_wide_out, as(x8, size)) { const uint64_t s = hos_wide_out; return s ? s : size; }
@@ -487,3 +539,4 @@ void hos_oot_ring_report(void) {
                       rings[k].pops / frames);
     hos_log("%s", line);
 }
+

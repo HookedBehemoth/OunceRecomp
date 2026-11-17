@@ -412,8 +412,12 @@
 805c2630 config_heapdef_read              # docs/direct/texture-streaming.md: reads HeapDef.byml values
 831cb910 config_texture_reject_threshold  # docs/direct/texture-streaming.md: TextureCacheRejectionThreshold getter
 80ea2f30 display_base_resolution          # host/oot_probes.c: ResolutionParam's BaseResolution
-806702e0 display_scale_mode_select        # host/oot_probes.c: picks the graphics scale mode (scale table), notifies the resources (patched)
+806702e0 display_scale_mode_select        # host/oot_probes.c: picks the graphics scale mode (scale table), notifies the resources (patched); sizes the frame (mode size x scale, clamped by display_frame_max_size, to f_810a7f40 at 0x80670600) and queues the window crop (display_window_crop_set); a mode that compares unequal makes it size the frame and its targets again
 810a7b70 display_size_setup               # host/oot_probes.c: sets up the display-size object from a config
+8114c5e0 display_frame_max_size           # host/oot_probes.c hos_oot_frame_max: the frame's largest size by mode and operation mode, from a table of 16:9 sizes at 0x83f78540 (640x480 ... 3840x2160)
+80eba850 display_window_crop_set          # host/oot_probes.c (found by a crop probe): stores a window crop (x, y, w, h) in [x0 + 0x80] + 0xac and marks it for frame_wait_present_acquire, which calls nvnWindowSetCrop
+80eba860 display_window_crop_store        # the same stores on the window object itself
+810a7f40 display_frame_size_set           # host/oot_probes.c: the frame size display_scale_mode_select computed (its argument at sp + 16) # ? role from the call site only
 812bda40 gfx_copy_buffer_to_texture       # work/assets/native/block-linear.md: CopyBufferToTexture (Vfx3 noise)
 836cf4b0 gfx_graphics_init                # host/oot_probes.c: the graphics init
 80941b20 gfx_memory_pool_finalize_b       # docs/direct/texture-streaming.md: finalizes a Replace request's pool # ? role from the call only

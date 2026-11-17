@@ -2895,6 +2895,8 @@ NV(nvnQueuePresentTexture) {
     extern volatile int64_t hos_present_count;   /* display.c */
     os_atomic_inc(&hos_present_count);
     hos_vi_native_presented();
+    void hos_display_presented(void);   /* (display_sdl.c: a settled resize sizes the game's frame) */
+    hos_display_presented();
 }
 
 /* ---- NVN2 (mkw-recomp): what the Switch 2's NVN adds, as MKW uses it ---- */

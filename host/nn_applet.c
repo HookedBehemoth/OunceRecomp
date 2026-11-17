@@ -125,6 +125,8 @@ static int output_mode(void) {
     return v;
 }
 int hos_output_res(void) { return output_mode(); }   /* (nn_hid.c: the input record's header) */
+/* (host/hos_main.c) an Output resolution was chosen (HOS_OUTPUT_RES, output_res): the frame does not follow the window */
+int hos_output_res_set(void) { return getenv("HOS_OUTPUT_RES") || ini_option("output_res", -1) >= 0; }
 uint32_t hos_output_size(int height) {
     switch (output_mode()) {
     case 2: return height ? 2160 : 3840;
@@ -145,6 +147,7 @@ uint64_t hos_rt_pool_size(uint64_t game) {
     const uint64_t wide = hos_wide_out, wide_px = (wide >> 32) * (wide & 0xffffffffULL);
     uint64_t px = (uint64_t)hos_output_size(0) * hos_output_size(1);
     if (wide_px > px) px = wide_px;
+    if (px > 3840 * 2160) px = 3840 * 2160;   /* (the frame's largest: a larger picture is only the room it is drawn in) */
     const uint64_t scaled = px > 2560 * 1440 ? (game * px / (2560 * 1440) + 0xfffff) & ~0xfffffULL : game;
     const uint64_t minimum = 512ULL << 20;
     const uint64_t v = e ? strtoull(e, NULL, 0) << 20 : scaled < minimum ? minimum : scaled;

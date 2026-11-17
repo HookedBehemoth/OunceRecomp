@@ -29,10 +29,10 @@ The build's own switches are in [Build and iterate on the lifter](lifter-build.m
 | Switch | What it does |
 |---|---|
 | `HOS_HEADLESS` | No window: the renderer draws offscreen |
-| `HOS_WINDOW_SIZE=<w>x<h>` | The window's size, or the headless image's (720 high at the monitor's shape by default). Its shape at start is the picture's |
+| `HOS_WINDOW_SIZE=<w>x<h>` | The window's size, or the headless image's (720 high at the monitor's shape by default). The game's frame follows the window's pixels |
 | `HOS_AUDIO=0` | Opens no sound device |
-| `HOS_OUTPUT_RES=<0..4>` | The output resolution, over the options file |
-| `HOS_ASPECT=<ratio>` | The picture's shape instead of the window's; wider than 16:9 the HUD, menus and movies keep the middle 16:9 |
+| `HOS_OUTPUT_RES=<0..4>` | A fixed output resolution, over the options file; without one the frame follows the window |
+| `HOS_ASPECT=<ratio>` | A fixed picture shape instead of the window's; wider than 16:9 the HUD, menus and movies keep the middle 16:9 |
 | `HOS_FS_OVERLAY=<folder>` | Patched game files read before the RomFS (a chiseled boot) |
 | `HOS_NO_MOVIES` | Reports movie files as missing, so the game goes on without them |
 | `HOS_TRACE=1` | Logs every Horizon call, like `--trace` |
@@ -72,6 +72,7 @@ while off. These are the ones you reach for first:
 | `frames`, `gputime` | `direct_frames.csv`: a row per present, with the GPU's busy and idle time |
 | `marks` | GPU breadcrumbs for a lost device: the unfinished draws are logged |
 | `crit[:<first>[:<presents>]]` | A trace of every guest thread over a window of presents, for `scripts/crit_path.py` |
+| `resize:<w>x<h>@<present>[+...]` | Resizes the window (or the headless image) at that present, as a drag would |
 | `noassets` | Turns off the prepared-asset patches, for a before-and-after comparison |
 
 To find every item, search `host/` and `gpu/direct/` for `dbg_has`, `dbg_log` and `hos_dbg_item`.
