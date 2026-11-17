@@ -72,6 +72,20 @@ impl Sysroot {
     }
 }
 
+/// The game description's link order (`hot_order.bin`: "HOTO", u32 count, count u32 guest addresses, little-endian)
+/// as lld's symbol-ordering file `hot_order.txt` in `dir`, one f_<address> per line; its path
+pub fn order_file(bin: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let d = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let n = if d.len() >= 8 && &d[..4] == b"HOTO" { u32::from_le_bytes(d[4..8].try_into().unwrap()) as usize } else { usize::MAX };
+    if n == usize::MAX || d.len() != 8 + 4 * n {
+        return Err(format!("{} is not a link order (\"HOTO\", u32 count, count u32 addresses)", bin.display()));
+    }
+    let text: String = d[8..].chunks_exact(4).map(|c| format!("f_{:08x}\n", u32::from_le_bytes(c.try_into().unwrap()))).collect();
+    let p = dir.join("hot_order.txt");
+    std::fs::write(&p, text).map_err(|e| format!("{}: {e}", p.display()))?;
+    Ok(p)
+}
+
 /// What goes into the executable
 pub struct Exe<'a> {
     pub out: &'a Path,
@@ -79,7 +93,7 @@ pub struct Exe<'a> {
     pub map: Option<&'a Path>,
     /// the objects, in build.py's order (its objs.rsp)
     pub objects: &'a [PathBuf],
-    /// --symbol-ordering-file (work/hot_order.txt)
+    /// --symbol-ordering-file (order_file's)
     pub order: Option<&'a Path>,
     /// libraries after the objects: static archives' paths, or -l names
     pub libs: &'a [String],
@@ -101,9 +115,11 @@ pub fn exe_args(x: &Exe, s: &Sysroot) -> Vec<String> {
     if let Some(m) = x.map {
         a.push(format!("-Map={}", p(m)));
     }
-    // (--export-dynamic-symbol: the window's state, which host/posix/win32_posix.c looks up by name)
+    // (--export-dynamic-symbol: what hookshot_direct.so calls in the executable: os.h's and os_guest.h's os_*, and
+    // hos_mem_ledger)
     a.push("--gc-sections".into());
-    a.push("--export-dynamic-symbol=hos_posix_*".into());
+    a.push("--export-dynamic-symbol=os_*".into());
+    a.push("--export-dynamic-symbol=hos_mem_ledger".into());
     a.extend(x.objects.iter().map(|o| p(o)));
     if let Some(o) = x.order {
         a.push(format!("--symbol-ordering-file={}", p(o)));

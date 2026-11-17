@@ -11,7 +11,7 @@ use std::time::Instant;
 const HELP: &str = "hookshot-builder <command> ...
   compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object, as nx2/build.py compiles it
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
-  link <out> <objs.rsp> [--order <file>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
+  link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (build.py's objs.rsp), lld in this process
   llvm-version                         the libLLVM this process uses";
 
@@ -122,7 +122,7 @@ fn compile_all(args: &[String]) {
     }
 }
 
-/// `link <out> <objs.rsp> [--order <file>] [--map <file>] [--print] [-- <libs>...]`
+/// `link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--print] [-- <libs>...]`
 fn link_cmd(args: &[String]) {
     let (mut pos, mut order, mut map, mut libs, mut print) = (Vec::new(), None::<PathBuf>, None::<PathBuf>, Vec::new(), false);
     let mut label_file = None::<PathBuf>;
@@ -137,7 +137,7 @@ fn link_cmd(args: &[String]) {
             _ => pos.push(PathBuf::from(a)),
         }
     }
-    let [out, rsp] = &pos[..] else { fail("link <out> <objs.rsp> [--order <file>] [--map <file>] [-- <libs>...]") };
+    let [out, rsp] = &pos[..] else { fail("link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [-- <libs>...]") };
     let objects: Vec<PathBuf> = std::fs::read_to_string(rsp)
         .unwrap_or_else(|e| fail(format!("{}: {e}", rsp.display())))
         .lines()
@@ -145,6 +145,8 @@ fn link_cmd(args: &[String]) {
         .filter(|p| !p.as_os_str().is_empty())
         .collect();
     let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
+    let dir = out.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let order = order.map(|b| link::order_file(&b, dir).unwrap_or_else(|e| fail(e)));
     let x = link::Exe { out, map: map.as_deref(), objects: &objects, order: order.as_deref(), libs: &libs };
     let a = link::exe_args(&x, &sys);
     if print {
