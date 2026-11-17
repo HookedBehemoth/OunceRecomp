@@ -48,16 +48,10 @@ PRELUDE = r"""
 #include "hos_keys.h"
 #define VK_XBUTTON1 0x05
 #define VK_XBUTTON2 0x06
-void os_yield(void) {}
+void os_once_run(os_once *o, void (*fn)(void *), void *arg) { if (!o->state) { o->state = 3; fn(arg); } }
 static void hos_log(const char *f, ...) { (void)f; }
 static const char *ini_dir;
-/* (the separator the system's own path has: nn_hid.c looks for a backslash first, so a mixed path finds the wrong folder) */
-#ifdef _WIN32
-#define EXE_SEP "\\"
-#else
-#define EXE_SEP "/"
-#endif
-static uint32_t hos_game_path_a(char *b, uint32_t n) { return (uint32_t)snprintf(b, n, "%s" EXE_SEP "hookshot.exe", ini_dir); }
+static uint32_t hos_game_path_a(char *b, uint32_t n) { return (uint32_t)snprintf(b, n, "%s/hookshot.exe", ini_dir); }
 static int held[256];
 static int key(int vk) { return held[vk & 255]; }
 """

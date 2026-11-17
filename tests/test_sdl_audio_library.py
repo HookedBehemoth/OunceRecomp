@@ -16,7 +16,7 @@ class SdlAudioLibraryTests(unittest.TestCase):
 
     def test_sdl3_before_sdl2(self):
         text = SDL.read_text(encoding="utf-8")
-        start = text.index("int hos_sdl_load(void)")
+        start = text.index("static void load_run(void *arg)")
         fn = text[start:text.index("\n}", start)]
         self.assertLess(fn.index('load_one("libSDL3.so.0")'), fn.index('load_one("libSDL2-2.0.so.0")'))
 

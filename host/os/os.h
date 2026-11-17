@@ -6,7 +6,7 @@
    Conventions:
    - timeouts are nanoseconds, OS_FOREVER (any negative value) waits without end;
    - a call that can fail for a reason the caller tells apart returns 0 or a negative OS_E* code;
-   - the locks, condition variables, events and semaphores are plain structs, valid when zeroed (or set to their
+   - the locks, condition variables, events and once words are plain structs, valid when zeroed (or set to their
      _INIT), never allocated by this layer. They are futex words: a wake makes a system call only when a thread sleeps
      on the word (each counts its sleepers), and an uncontended lock or unlock is one atomic instruction;
    - paths are UTF-8, with '/' as the separator. */
@@ -46,35 +46,17 @@ enum {
 #define os_atomic_xchg(p, v) __atomic_exchange_n((p), (v), __ATOMIC_SEQ_CST)        /* the old value */
 /* *p = desired if *p == expected; the value *p had (== expected: it was swapped) */
 #define os_atomic_cas(p, expected, desired) __sync_val_compare_and_swap((p), (expected), (desired))
-#define os_fence() __atomic_thread_fence(__ATOMIC_SEQ_CST)
-#define os_compiler_fence() __atomic_signal_fence(__ATOMIC_SEQ_CST)
-#if defined(__x86_64__) || defined(__i386__)
-#define os_pause() __builtin_ia32_pause()
-#elif defined(__aarch64__)
-#define os_pause() __asm__ __volatile__("yield")
-#else
-#define os_pause() ((void)0)
-#endif
 
 /* ---- time ---------------------------------------------------------------------------------------------------------- */
 int64_t os_now_ns(void);                    /* monotonic */
 void os_sleep_ns(int64_t ns);               /* at least ns (to within the kernel's wake-up latency: no rounding to ms) */
-void os_sleep_until_ns(int64_t deadline);   /* until os_now_ns() >= deadline */
 void os_yield(void);                        /* gives the core to another ready thread, if there is one */
-
-/* ---- waiting on a word ----------------------------------------------------------------------------------------------- */
-/* sleeps while *w == expected, at most timeout_ns: 0 (woken, or *w was not expected: look again) or OS_ETIMEDOUT.
-   Spurious returns happen: callers loop on their own condition. */
-int os_futex_wait(volatile uint32_t *w, uint32_t expected, int64_t timeout_ns);
-#define OS_WAKE_ALL 0x7fffffff
-void os_futex_wake(volatile uint32_t *w, int n);   /* wakes up to n sleepers on w */
 
 /* ---- locks ----------------------------------------------------------------------------------------------------------- */
 /* a mutex: not recursive, owner unchecked. state 0 free, 1 held, 2 held with (possible) sleepers */
 typedef struct os_mutex { volatile uint32_t state; } os_mutex;
 #define OS_MUTEX_INIT {0}
 void os_mutex_lock(os_mutex *m);
-bool os_mutex_trylock(os_mutex *m);
 void os_mutex_unlock(os_mutex *m);
 
 /* a reader/writer lock: any number of readers or one writer. Writers go first: a new reader waits while a writer holds
@@ -82,18 +64,15 @@ void os_mutex_unlock(os_mutex *m);
 typedef struct os_rwlock { volatile uint32_t state; } os_rwlock;
 #define OS_RWLOCK_INIT {0}
 void os_rwlock_lock(os_rwlock *l);           /* exclusive */
-bool os_rwlock_trylock(os_rwlock *l);
 void os_rwlock_unlock(os_rwlock *l);
 void os_rwlock_lock_shared(os_rwlock *l);
-bool os_rwlock_trylock_shared(os_rwlock *l);
 void os_rwlock_unlock_shared(os_rwlock *l);
 
-/* a condition variable, with an os_mutex or an os_rwlock held exclusively. Wake-ups may be spurious: wait in a loop
+/* a condition variable, with an os_mutex held. Wake-ups may be spurious: wait in a loop
    on the condition. A signal or broadcast with no thread waiting is a load and nothing else. */
 typedef struct os_cond { volatile uint32_t seq, waiters; } os_cond;
 #define OS_COND_INIT {0, 0}
 int os_cond_wait(os_cond *c, os_mutex *m, int64_t timeout_ns);       /* 0 or OS_ETIMEDOUT; m held again on return */
-int os_cond_wait_rw(os_cond *c, os_rwlock *l, int64_t timeout_ns);   /* (l held exclusively) */
 void os_cond_signal(os_cond *c);
 void os_cond_broadcast(os_cond *c);
 
@@ -103,15 +82,7 @@ typedef struct os_event { volatile uint32_t state, waiters; uint32_t manual; } o
 #define OS_EVENT_INIT(manual) {0, 0, (manual)}   /* (not set) */
 void os_event_init(os_event *e, bool manual, bool set);
 void os_event_set(os_event *e);
-void os_event_reset(os_event *e);
 int os_event_wait(os_event *e, int64_t timeout_ns);   /* 0 (set; auto-reset: taken) or OS_ETIMEDOUT */
-bool os_event_try(os_event *e);                       /* os_event_wait without waiting */
-
-/* a counting semaphore */
-typedef struct os_sema { volatile uint32_t count, waiters; } os_sema;
-void os_sema_init(os_sema *s, uint32_t count);
-void os_sema_post(os_sema *s, uint32_t n);
-int os_sema_wait(os_sema *s, int64_t timeout_ns);   /* 0 (one taken) or OS_ETIMEDOUT */
 
 /* a one-time start-up: the first caller runs fn(arg), every other waits until it has returned (asleep, not spinning) */
 typedef struct os_once { volatile uint32_t state; } os_once;
@@ -138,10 +109,8 @@ enum { OS_PRIO_IDLE = -3, OS_PRIO_LOWEST = -2, OS_PRIO_BELOW = -1, OS_PRIO_NORMA
 bool os_thread_set_priority(os_thread *t, int prio);
 int os_thread_priority(os_thread *t);                  /* the one last set that took */
 uint64_t os_thread_set_affinity(os_thread *t, uint64_t mask);   /* the mask it had; 0 when refused */
-int64_t os_thread_cpu_ns(os_thread *t);                /* CPU time used; -1 when unknown (it has ended) */
 __attribute__((noreturn)) void os_thread_exit(void);
 __attribute__((noreturn)) void os_exit(int code);      /* at once: stdio flushed, no exit handlers, no destructors */
-uint32_t os_pid(void);
 
 /* ---- processors ------------------------------------------------------------------------------------------------------ */
 int os_cpu_count(void);                      /* logical processors online */
@@ -155,21 +124,13 @@ os_fiber *os_fiber_from_thread(void);     /* the calling thread's own context, a
 os_fiber *os_fiber_create(size_t stack, os_fiber_fn fn, void *arg);
 void os_fiber_switch(os_fiber *to);
 void os_fiber_delete(os_fiber *f);        /* (the running fiber: ends the thread) */
-os_fiber *os_fiber_current(void);
 
 /* ---- memory ---------------------------------------------------------------------------------------------------------- */
 enum { OS_PROT_NONE = 0, OS_PROT_R = 1, OS_PROT_W = 2, OS_PROT_X = 4, OS_PROT_RW = 3, OS_PROT_RX = 5, OS_PROT_RWX = 7 };
 size_t os_page_size(void);
-/* address space at addr (NULL: anywhere; else exactly there, failing when taken), committed with prot or, for
-   OS_PROT_NONE, only reserved. Pages are given on first touch either way. NULL on failure. */
-void *os_mem_map(void *addr, size_t size, int prot);
-int os_mem_unmap(void *addr, size_t size);
 int os_mem_protect(void *addr, size_t size, int prot);   /* (commits reserved pages, with a prot other than NONE) */
-int os_mem_discard(void *addr, size_t size);             /* the pages' contents dropped: they read as zero again */
 /* which pages of [addr, addr + size) are in memory (addr page-aligned): out[i] & 1 for the i-th; 0 or < 0 */
 int os_mem_resident(const void *addr, size_t size, uint8_t *out);
-typedef struct { uint64_t resident, peak_resident, private_bytes; } os_mem_usage;
-int os_mem_usage_get(os_mem_usage *out);
 
 /* ---- faults: access violations, illegal instructions, division by zero, traps ---------------------------------------- */
 enum { OS_FAULT_ACCESS = 1, OS_FAULT_ILLEGAL, OS_FAULT_DIVIDE, OS_FAULT_TRAP };
@@ -177,14 +138,12 @@ typedef struct { int kind, write; uintptr_t addr, pc; } os_fault;   /* (addr, wr
 enum { OS_FAULT_PASS = 0, OS_FAULT_RESUME = 1 };   /* a handler's answer: not mine / handled, run on */
 typedef int (*os_fault_fn)(const os_fault *f);
 void os_fault_add(os_fault_fn fn, bool first);   /* asked in order, first ones first */
-void os_fault_remove(os_fault_fn fn);
 void os_fault_set_last(os_fault_fn fn);          /* asked when no handler resumed (a crash report) */
 
 /* ---- modules --------------------------------------------------------------------------------------------------------- */
 typedef struct os_lib os_lib;
 os_lib *os_lib_open(const char *path);   /* a shared library (by path, or a bare name the loader searches); NULL */
 void *os_lib_sym(os_lib *l, const char *name);
-void os_lib_close(os_lib *l);
 void *os_sym(const char *name);          /* a symbol of the executable or anything loaded (NULL: none) */
 int os_exe_path(char *out, size_t cap);  /* the executable's full path: its length, 0 on failure */
 /* the base address of the module holding addr (0: none), and its path into out when given */
@@ -203,17 +162,15 @@ int os_file_flush(os_file *f);
 void os_file_close(os_file *f);
 /* an exclusive lock on the file, without waiting: false when another process holds one. Held until the file closes. */
 bool os_file_trylock(os_file *f);
-/* the whole file mapped read-only (its size into *size): NULL when empty or on failure. Given back with os_mem_unmap;
-   the mapping outlives the file's closing. */
+/* the whole file mapped read-only (its size into *size): NULL when empty or on failure. Kept for the process's life;
+   it outlives the file's closing. */
 const void *os_file_map_read(os_file *f, size_t *size);
 enum { OS_PATH_NONE = 0, OS_PATH_FILE = 1, OS_PATH_DIR = 2, OS_PATH_LINK = 4 };   /* (LINK: added to FILE or DIR) */
 int os_path_kind(const char *path);   /* what is there (links followed; OS_PATH_LINK when the path itself is one) */
-int64_t os_path_size(const char *path);   /* a file's size, < 0 when there is none */
 int os_mkdir(const char *path);       /* 0, OS_EEXIST, OS_ENOENT (the parent is missing), ... */
 int os_rmdir(const char *path);
 int os_remove(const char *path);
 int os_rename(const char *from, const char *to, bool replace);
-int os_copy_file(const char *from, const char *to, bool replace);
 int os_chdir(const char *path);
 typedef struct os_dir os_dir;
 typedef struct { char name[256]; int kind; uint64_t size; } os_dirent;   /* (kind: as os_path_kind's) */

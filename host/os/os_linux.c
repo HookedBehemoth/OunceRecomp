@@ -52,7 +52,7 @@ static struct timespec ts_of(int64_t ns) {
     struct timespec ts = {(time_t)(ns / 1000000000LL), (long)(ns % 1000000000LL)};
     return ts;
 }
-void os_sleep_until_ns(int64_t deadline) {
+static void os_sleep_until_ns(int64_t deadline) {
     const struct timespec ts = ts_of(deadline);
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
 }
@@ -67,6 +67,15 @@ void os_yield(void) { sched_yield(); }
    set for the main thread here, before anything starts one. */
 __attribute__((constructor)) static void precise_timers(void) { prctl(PR_SET_TIMERSLACK, 1UL, 0, 0, 0); }
 
+#define OS_WAKE_ALL 0x7fffffff
+#if defined(__x86_64__) || defined(__i386__)
+#define os_pause() __builtin_ia32_pause()
+#elif defined(__aarch64__)
+#define os_pause() __asm__ __volatile__("yield")
+#else
+#define os_pause() ((void)0)
+#endif
+
 /* ---- futexes ---- */
 static long futex(volatile uint32_t *w, int op, uint32_t v, const struct timespec *ts, uint32_t v3) {
     return syscall(SYS_futex, w, op, v, ts, NULL, v3);
@@ -80,10 +89,7 @@ static int wait_until(volatile uint32_t *w, uint32_t expected, int64_t deadline)
 }
 static int64_t deadline_of(int64_t timeout_ns) { return timeout_ns < 0 ? -1 : os_now_ns() + timeout_ns; }
 static int past(int64_t deadline) { return deadline >= 0 && os_now_ns() >= deadline; }
-int os_futex_wait(volatile uint32_t *w, uint32_t expected, int64_t timeout_ns) {
-    return wait_until(w, expected, deadline_of(timeout_ns));
-}
-void os_futex_wake(volatile uint32_t *w, int n) { futex(w, FUTEX_WAKE_PRIVATE, (uint32_t)n, NULL, 0); }
+static void os_futex_wake(volatile uint32_t *w, int n) { futex(w, FUTEX_WAKE_PRIVATE, (uint32_t)n, NULL, 0); }
 
 /* ---- mutex: Drepper's three states ("Futexes Are Tricky", mutex3), with a short spin before sleeping ---- */
 enum { SPINS = 100 };
@@ -100,7 +106,6 @@ void os_mutex_lock(os_mutex *m) {
         c = os_atomic_xchg(&m->state, 2u);
     }
 }
-bool os_mutex_trylock(os_mutex *m) { return os_atomic_cas(&m->state, 0u, 1u) == 0; }
 void os_mutex_unlock(os_mutex *m) {
     if (os_atomic_fetch_add(&m->state, (uint32_t)-1) != 1) {
         os_atomic_store(&m->state, 0u);
@@ -139,13 +144,6 @@ void os_rwlock_lock_shared(os_rwlock *l) {
         rw_sleep(l, s, RW_BIT_R);
     }
 }
-bool os_rwlock_trylock_shared(os_rwlock *l) {
-    for (;;) {
-        const uint32_t s = os_atomic_load(&l->state);
-        if (s & (RW_WRITER | RW_WWAIT)) return false;
-        if (os_atomic_cas(&l->state, s, s + 1) == s) return true;
-    }
-}
 void os_rwlock_unlock_shared(os_rwlock *l) {
     const uint32_t s = os_atomic_fetch_add(&l->state, (uint32_t)-1);
     if ((s & RW_READERS) == 1 && (s & RW_WWAIT)) rw_wake(l, 1, RW_BIT_W);   /* (the last reader out: a writer's turn) */
@@ -165,10 +163,6 @@ void os_rwlock_lock(os_rwlock *l) {
         rw_sleep(l, s, RW_BIT_W);
     }
 }
-bool os_rwlock_trylock(os_rwlock *l) {
-    const uint32_t s = os_atomic_load(&l->state);
-    return !(s & (RW_WRITER | RW_READERS)) && os_atomic_cas(&l->state, s, s | RW_WRITER) == s;
-}
 void os_rwlock_unlock(os_rwlock *l) {
     uint32_t s = os_atomic_load(&l->state);
     for (;;) {
@@ -184,21 +178,15 @@ void os_rwlock_unlock(os_rwlock *l) {
 /* ---- condition variable: a sequence word, woken only when its waiter count says someone waits. A waiter counts
    itself and reads the sequence before it lets the lock go, so a signal made under the lock (or after a change made
    under it) sees the waiter and moves the sequence past the value it sleeps on. ---- */
-static int cond_wait(os_cond *c, void (*unlock)(void *), void (*relock)(void *), void *l, int64_t timeout_ns) {
+int os_cond_wait(os_cond *c, os_mutex *m, int64_t timeout_ns) {
     os_atomic_inc(&c->waiters);
     const uint32_t seq = os_atomic_load(&c->seq);
-    unlock(l);
+    os_mutex_unlock(m);
     const int r = wait_until(&c->seq, seq, deadline_of(timeout_ns));
-    relock(l);
+    os_mutex_lock(m);
     os_atomic_dec(&c->waiters);
     return r;
 }
-static void mutex_unlock_(void *l) { os_mutex_unlock((os_mutex *)l); }
-static void mutex_lock_(void *l) { os_mutex_lock((os_mutex *)l); }
-static void rw_unlock_(void *l) { os_rwlock_unlock((os_rwlock *)l); }
-static void rw_lock_(void *l) { os_rwlock_lock((os_rwlock *)l); }
-int os_cond_wait(os_cond *c, os_mutex *m, int64_t timeout_ns) { return cond_wait(c, mutex_unlock_, mutex_lock_, m, timeout_ns); }
-int os_cond_wait_rw(os_cond *c, os_rwlock *l, int64_t timeout_ns) { return cond_wait(c, rw_unlock_, rw_lock_, l, timeout_ns); }
 void os_cond_signal(os_cond *c) {
     if (!os_atomic_load(&c->waiters)) return;
     os_atomic_inc(&c->seq);
@@ -210,8 +198,6 @@ void os_cond_broadcast(os_cond *c) {
     os_futex_wake(&c->seq, OS_WAKE_ALL);
 }
 
-/* ---- event: state 1 set; a waiter counts itself before it looks, a setter sets before it looks for waiters (both
-   sequentially consistent: one of the two sees the other) ---- */
 /* ---- once: state 0 not run, 1 running, 2 running with sleepers, 3 done ---- */
 void os_once_run(os_once *o, void (*fn)(void *arg), void *arg) {
     uint32_t s = os_atomic_load(&o->state);
@@ -227,6 +213,8 @@ void os_once_run(os_once *o, void (*fn)(void *arg), void *arg) {
     }
 }
 
+/* ---- event: state 1 set; a waiter counts itself before it looks, a setter sets before it looks for waiters (both
+   sequentially consistent: one of the two sees the other) ---- */
 void os_event_init(os_event *e, bool manual, bool set) {
     e->manual = manual;
     e->waiters = 0;
@@ -236,8 +224,7 @@ void os_event_set(os_event *e) {
     os_atomic_store(&e->state, 1u);
     if (os_atomic_load(&e->waiters)) os_futex_wake(&e->state, e->manual ? OS_WAKE_ALL : 1);
 }
-void os_event_reset(os_event *e) { os_atomic_store(&e->state, 0u); }
-bool os_event_try(os_event *e) {
+static bool os_event_try(os_event *e) {
     if (e->manual) return os_atomic_load(&e->state) != 0;
     return os_atomic_load(&e->state) && os_atomic_cas(&e->state, 1u, 0u) == 1;
 }
@@ -254,36 +241,6 @@ int os_event_wait(os_event *e, int64_t timeout_ns) {
         }
     }
     os_atomic_dec(&e->waiters);
-    return r;
-}
-
-/* ---- semaphore ---- */
-void os_sema_init(os_sema *s, uint32_t count) { s->waiters = 0; os_atomic_store(&s->count, count); }
-void os_sema_post(os_sema *s, uint32_t n) {
-    os_atomic_add(&s->count, n);
-    if (os_atomic_load(&s->waiters)) os_futex_wake(&s->count, n >= OS_WAKE_ALL ? OS_WAKE_ALL : (int)n);
-}
-static bool sema_take(os_sema *s) {
-    for (uint32_t c = os_atomic_load(&s->count); c;) {
-        const uint32_t was = os_atomic_cas(&s->count, c, c - 1);
-        if (was == c) return true;
-        c = was;
-    }
-    return false;
-}
-int os_sema_wait(os_sema *s, int64_t timeout_ns) {
-    if (sema_take(s)) return 0;
-    if (!timeout_ns) return OS_ETIMEDOUT;
-    const int64_t deadline = deadline_of(timeout_ns);
-    os_atomic_inc(&s->waiters);
-    int r = 0;
-    while (!sema_take(s)) {
-        if (wait_until(&s->count, 0, deadline) == OS_ETIMEDOUT || past(deadline)) {
-            r = sema_take(s) ? 0 : OS_ETIMEDOUT;
-            break;
-        }
-    }
-    os_atomic_dec(&s->waiters);
     return r;
 }
 
@@ -304,7 +261,6 @@ uint32_t os_tid(void) {
     if (!self_tid) self_tid = (uint32_t)syscall(SYS_gettid);
     return self_tid;
 }
-uint32_t os_pid(void) { return (uint32_t)getpid(); }
 void os_thread_retain(os_thread *t) { os_atomic_inc(&t->refs); }
 /* Threads this file starts are joinable, so their pthread descriptor (and stack) stays until the last reference goes:
    a detached thread's could be unmapped while a handle still names it (set_affinity, set_name, cpu_ns use t->th). */
@@ -421,12 +377,6 @@ uint64_t os_thread_set_affinity(os_thread *t, uint64_t mask) {
     for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &old)) r |= (uint64_t)1 << i;
     return r ? r : 1;
 }
-int64_t os_thread_cpu_ns(os_thread *t) {
-    clockid_t clk;
-    struct timespec ts;
-    if (os_event_try(&t->done) || pthread_getcpuclockid(t->th, &clk) || clock_gettime(clk, &ts)) return -1;
-    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
-}
 void os_thread_exit(void) {
     thread_finish();
     pthread_exit(NULL);
@@ -528,7 +478,6 @@ void os_fiber_delete(os_fiber *f) {
     if (f->stack) munmap(f->stack, f->stack_size);
     free(f);
 }
-os_fiber *os_fiber_current(void) { return cur_fiber; }
 
 /* ---- memory ---- */
 size_t os_page_size(void) {
@@ -544,45 +493,21 @@ static void page_span(const void *addr, size_t size, uintptr_t *lo, uintptr_t *h
     *lo = (uintptr_t)addr & ~(page - 1);
     *hi = ((uintptr_t)addr + size + page - 1) & ~(page - 1);
 }
-void *os_mem_map(void *addr, size_t size, int prot) {
-    void *p = mmap(addr, size, prot_of(prot), MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | (addr ? MAP_FIXED_NOREPLACE : 0), -1, 0);
-    if (p == MAP_FAILED) return NULL;
-    if (addr && p != addr) { munmap(p, size); return NULL; }
-    return p;
-}
-int os_mem_unmap(void *addr, size_t size) { return munmap(addr, size) ? err_of(errno) : 0; }
 int os_mem_protect(void *addr, size_t size, int prot) {
     uintptr_t lo, hi;
     page_span(addr, size, &lo, &hi);
     return mprotect((void *)lo, hi - lo, prot_of(prot)) ? err_of(errno) : 0;
 }
-int os_mem_discard(void *addr, size_t size) {
-    uintptr_t lo, hi;
-    page_span(addr, size, &lo, &hi);
-    return madvise((void *)lo, hi - lo, MADV_DONTNEED) ? err_of(errno) : 0;
-}
 int os_mem_resident(const void *addr, size_t size, uint8_t *out) {
     return mincore((void *)addr, size, out) ? err_of(errno) : 0;
 }
-int os_mem_usage_get(os_mem_usage *out) {
-    memset(out, 0, sizeof *out);
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f) return err_of(errno);
-    char line[256];
-    while (fgets(line, sizeof line, f)) {
-        unsigned long long kb;
-        if (sscanf(line, "VmRSS: %llu", &kb) == 1) out->resident = kb << 10;
-        else if (sscanf(line, "VmHWM: %llu", &kb) == 1) out->peak_resident = kb << 10;
-        else if (sscanf(line, "RssAnon: %llu", &kb) == 1) out->private_bytes = kb << 10;
-    }
-    fclose(f);
-    return 0;
-}
 
 /* ---- faults: on SIGSEGV, SIGBUS, SIGILL, SIGFPE ---- */
-static os_fault_fn handlers[16];
-static int nhandlers;
-static os_fault_fn last_handler;
+/* the handlers as one list, replaced whole by a registration (one pointer store) and never changed or freed after, so
+   a fault on any thread walks a complete list without a lock */
+typedef struct { int n; os_fault_fn fn[16]; } handler_list;
+static handler_list *volatile handlers;
+static os_fault_fn volatile last_handler;
 static struct sigaction previous[32];
 static os_mutex handlers_lock = OS_MUTEX_INIT;
 static void on_signal(int sig, siginfo_t *si, void *uctx) {
@@ -599,9 +524,11 @@ static void on_signal(int sig, siginfo_t *si, void *uctx) {
     f.pc = (uintptr_t)uc->uc_mcontext.pc;
 #endif
     if (f.kind == OS_FAULT_ACCESS) f.addr = (uintptr_t)si->si_addr;
-    for (int i = 0; i < nhandlers; i++)
-        if (handlers[i] && handlers[i](&f) == OS_FAULT_RESUME) return;
-    if (last_handler && last_handler(&f) == OS_FAULT_RESUME) return;
+    const handler_list *h = __atomic_load_n(&handlers, __ATOMIC_ACQUIRE);
+    for (int i = 0; h && i < h->n; i++)
+        if (h->fn[i](&f) == OS_FAULT_RESUME) return;
+    const os_fault_fn last = __atomic_load_n(&last_handler, __ATOMIC_ACQUIRE);
+    if (last && last(&f) == OS_FAULT_RESUME) return;
     /* not ours: whoever had the signal before, else the default (the fault comes again and ends the process) */
     const struct sigaction *p = &previous[sig];
     if ((p->sa_flags & SA_SIGINFO) && p->sa_sigaction) { p->sa_sigaction(sig, si, uctx); return; }
@@ -626,31 +553,22 @@ static void install_signals(void) {
 void os_fault_add(os_fault_fn fn, bool first) {
     os_mutex_lock(&handlers_lock);
     install_signals();
-    if (nhandlers < 16) {
-        if (first) {
-            memmove(&handlers[1], &handlers[0], sizeof handlers[0] * (size_t)nhandlers);
-            handlers[0] = fn;
-        } else {
-            handlers[nhandlers] = fn;
-        }
-        nhandlers++;
+    const handler_list *old = handlers;
+    handler_list *l = (handler_list *)calloc(1, sizeof *l);
+    if (l && (!old || old->n < 16)) {
+        if (first) l->fn[l->n++] = fn;
+        for (int i = 0; old && i < old->n; i++) l->fn[l->n++] = old->fn[i];
+        if (!first) l->fn[l->n++] = fn;
+        __atomic_store_n(&handlers, l, __ATOMIC_RELEASE);   /* (the old list stays: a fault may be walking it) */
+    } else {
+        free(l);
     }
-    os_mutex_unlock(&handlers_lock);
-}
-void os_fault_remove(os_fault_fn fn) {
-    os_mutex_lock(&handlers_lock);
-    for (int i = 0; i < nhandlers; i++)
-        if (handlers[i] == fn) {
-            memmove(&handlers[i], &handlers[i + 1], sizeof handlers[0] * (size_t)(nhandlers - i - 1));
-            nhandlers--;
-            break;
-        }
     os_mutex_unlock(&handlers_lock);
 }
 void os_fault_set_last(os_fault_fn fn) {
     os_mutex_lock(&handlers_lock);
     install_signals();
-    last_handler = fn;
+    __atomic_store_n(&last_handler, fn, __ATOMIC_RELEASE);
     os_mutex_unlock(&handlers_lock);
 }
 
@@ -661,7 +579,6 @@ os_lib *os_lib_open(const char *path) {
     return (os_lib *)dlopen(p, RTLD_NOW | RTLD_LOCAL);
 }
 void *os_lib_sym(os_lib *l, const char *name) { return l ? dlsym((void *)l, name) : NULL; }
-void os_lib_close(os_lib *l) { if (l) dlclose((void *)l); }
 void *os_sym(const char *name) { return dlsym(RTLD_DEFAULT, name); }
 int os_exe_path(char *out, size_t cap) {
     if (!cap) return 0;
@@ -762,12 +679,6 @@ int os_path_kind(const char *path) {
     if (lstat(p, &link) == 0 && S_ISLNK(link.st_mode)) k |= OS_PATH_LINK;
     return k;
 }
-int64_t os_path_size(const char *path) {
-    const char *p = path;
-    struct stat st;
-    if (stat(p, &st)) return err_of(errno);
-    return S_ISDIR(st.st_mode) ? OS_EACCES : (int64_t)st.st_size;
-}
 int os_mkdir(const char *path) {
     const char *p = path;
     return mkdir(p, 0755) ? err_of(errno) : 0;
@@ -784,21 +695,6 @@ int os_rename(const char *from, const char *to, bool replace) {
     const char *a = from, *b = to;
     if (!replace) return renameat2(AT_FDCWD, a, AT_FDCWD, b, RENAME_NOREPLACE) ? err_of(errno) : 0;
     return rename(a, b) ? err_of(errno) : 0;
-}
-int os_copy_file(const char *from, const char *to, bool replace) {
-    const char *a = from, *b = to;
-    const int in = open(a, O_RDONLY | O_CLOEXEC);
-    if (in < 0) return err_of(errno);
-    const int out = open(b, O_WRONLY | O_CREAT | O_CLOEXEC | (replace ? O_TRUNC : O_EXCL), 0644);
-    if (out < 0) { const int e = err_of(errno); close(in); return e; }
-    char buf[1 << 16];
-    ssize_t n;
-    int r = 0;
-    while ((n = read(in, buf, sizeof buf)) > 0)
-        if (write(out, buf, (size_t)n) != n) { r = err_of(errno); break; }
-    if (n < 0) r = err_of(errno);
-    close(in), close(out);
-    return r;
 }
 int os_chdir(const char *path) {
     const char *p = path;

@@ -81,15 +81,6 @@ static void ponger(void *arg) {
     }
 }
 
-static os_sema sem;
-static volatile uint32_t sem_got;
-static void sem_taker(void *arg) {
-    (void)arg;
-    for (int i = 0; i < ROUNDS / 8; i++) {
-        CHECK(os_sema_wait(&sem, OS_FOREVER) == 0);
-        os_atomic_inc(&sem_got);
-    }
-}
 
 static os_once once = OS_ONCE_INIT;
 static volatile uint32_t once_runs, once_seen;
@@ -163,13 +154,7 @@ int main(void) {
     }
     CHECK(os_thread_join(p, OS_FOREVER) == 0);
     os_thread_release(p);
-    CHECK(!os_event_try(&ping) && !os_event_try(&pong));
 
-    os_sema_init(&sem, 0);
-    for (int i = 0; i < 4; i++) t[i] = os_thread_start(sem_taker, NULL, 0, "sem");
-    for (int i = 0; i < 4 * (ROUNDS / 8); i++) os_sema_post(&sem, 1);
-    for (int i = 0; i < 4; i++) { CHECK(os_thread_join(t[i], 60000000000LL) == 0); os_thread_release(t[i]); }
-    CHECK(sem_got == 4 * (ROUNDS / 8) && os_sema_wait(&sem, 0) == OS_ETIMEDOUT);
 
     /* timeouts end, near their time */
     os_event never;
@@ -183,7 +168,6 @@ int main(void) {
     CHECK(os_cond_wait(&qcv, &qmu, 5000000) == OS_ETIMEDOUT);
     CHECK(os_now_ns() - t0 >= 5000000);
     os_mutex_unlock(&qmu);
-    CHECK(os_sema_wait(&sem, 1000000) == OS_ETIMEDOUT);
 
     /* a 100 us sleep: at least 100 us, and (the median of 50) well under a millisecond */
     int64_t lat[50];
@@ -206,23 +190,20 @@ int main(void) {
     os_thread_set_name(me, "os_test_main");
     os_thread_name(me, name, sizeof name);
     CHECK(!strcmp(name, "os_test_main"));
-    CHECK(os_thread_cpu_ns(me) > 0);
     CHECK(os_process_affinity() != 0 && os_cpu_count() > 0);
     uint64_t cores[64];
     CHECK(os_cpu_cores(cores, 64) > 0);
 
     /* memory */
     const size_t pg = os_page_size();
-    char *m = (char *)os_mem_map(NULL, 16 * pg, OS_PROT_NONE);
-    CHECK(m);
-    CHECK(os_mem_protect(m, 4 * pg, OS_PROT_RW) == 0);
-    m[0] = 7;
-    CHECK(os_mem_discard(m, pg) == 0 && m[0] == 0);
-    CHECK(os_mem_unmap(m, 16 * pg) == 0);
+    static char page[2 << 16] __attribute__((aligned(1 << 16)));
+    CHECK(pg <= sizeof page && os_mem_protect(page, pg, OS_PROT_R) == 0 && os_mem_protect(page, pg, OS_PROT_RW) == 0);
+    page[0] = 7;
+    CHECK(page[0] == 7);
 
     /* files and folders */
     char dir[256], path[300], path2[300];
-    snprintf(dir, sizeof dir, "/tmp/os_test_%u", os_pid());
+    snprintf(dir, sizeof dir, "/tmp/os_test_%u", os_tid());
     CHECK(os_mkdir(dir) == 0 && os_mkdir(dir) == OS_EEXIST && os_path_kind(dir) == OS_PATH_DIR);
     snprintf(path, sizeof path, "%s/a.bin", dir);
     int err;
@@ -235,9 +216,16 @@ int main(void) {
     CHECK(os_file_resize(f, 3) == 0 && os_file_size(f) == 3 && os_file_flush(f) == 0);
     os_file_close(f);
     snprintf(path2, sizeof path2, "%s/b.bin", dir);
-    CHECK(os_copy_file(path, path2, false) == 0 && os_copy_file(path, path2, false) == OS_EEXIST);
+    f = os_file_open(path2, OS_WRITE | OS_CREATE, &err);
+    CHECK(f && os_file_write_at(f, "x", 1, 0) == 1);
+    os_file_close(f);
     CHECK(os_rename(path, path2, false) == OS_EEXIST && os_rename(path, path2, true) == 0);
-    CHECK(os_path_kind(path) == OS_PATH_NONE && os_path_size(path2) == 3);
+    CHECK(os_path_kind(path) == OS_PATH_NONE);
+    f = os_file_open(path2, OS_READ, &err);
+    size_t mapped = 0;
+    const char *mp = (const char *)os_file_map_read(f, &mapped);
+    CHECK(f && os_file_size(f) == 3 && os_file_trylock(f) && mp && mapped == 3);
+    os_file_close(f);
     os_dir *d = os_dir_open(dir, &err);
     CHECK(d);
     os_dirent e;
