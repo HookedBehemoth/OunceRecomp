@@ -530,8 +530,10 @@ PATCH_AT(0x80794368, word(0xad401041), after, q4, hos_oot_tall_hud, as(x0, canva
    corners. In a canvas wider or taller than 16:9 those nodes are moved out by the extra half width or height, so
    their panes keep their size and sit at the window's edges. The pane builder (f_81549620) copies a pane's translate
    from its record; that copy gets the offset, and a resize moves the panes by the change (hud_rescale). The minimap's
-   icons are placed by an animation (at the minimap, or over the pause menu's map), so their child node is moved each
-   frame while they stand at the minimap */
+   nodes are moved through their parents, which the game's code neither reads nor sets (it places the map's icons from
+   the map and pattern nodes below them, and an icon offset there was carried into the pause menu's map): the minimap's
+   art and edges by N_MiniMap_00, the icons, one tree for the minimap and the pause menu's map, by N_Common_00, each
+   frame while the minimap is shown and the pause menu's map is not */
 typedef struct __attribute__((may_alias)) {
     uint8_t _0[0x18];
     uint64_t name;    /* +0x18: the layout's name ("PlayerStatus_00") */
@@ -545,29 +547,30 @@ typedef struct __attribute__((may_alias)) {
     uint64_t layout;             /* +0x18 */
     uint8_t _1[0x6c - 0x20];
     float x, y;                  /* +0x6c, +0x70: the translate */
+    uint8_t _2[0xa8 - 0x74];
+    uint32_t flags;              /* +0xa8: bit 0, shown */
 } OotPane;
 typedef struct __attribute__((may_alias)) {
     uint8_t _0[0xf8];
     uint64_t res;     /* +0xf8: its OotLayoutRes */
     uint64_t panes;   /* +0x100: its panes, 0xb0 bytes each */
 } OotLayout;
-_Static_assert(offsetof(OotLayoutRes, names) == 0x20 && offsetof(OotLayoutRes, count) == 0x38 && offsetof(OotPane, x) == 0x6c && offsetof(OotLayout, panes) == 0x100, "ui");
+_Static_assert(offsetof(OotLayoutRes, names) == 0x20 && offsetof(OotLayoutRes, count) == 0x38 && offsetof(OotPane, x) == 0x6c &&
+               offsetof(OotPane, flags) == 0xa8 && offsetof(OotLayout, panes) == 0x100, "ui");
 enum { OOT_PANE_SIZE = 0xb0 };
 
-/* (layout, pane, side: x -1 left / +1 right, y -1 bottom / +1 top; gate: the pane is moved only while that pane, its
-   parent, stands at (at_x, at_y)) */
-static const struct { const char *layout, *pane; signed char x, y; const char *gate; float at_x, at_y; } hud_anchors[] = {
+/* (layout, pane, side: x -1 left / +1 right, y -1 bottom / +1 top; shown, hidden, either may be none: the pane is moved
+   only while the layout's pane shown is shown and its pane hidden is not) */
+static const struct { const char *layout, *pane; signed char x, y; const char *shown, *hidden; } hud_anchors[] = {
     {"PlayerStatus_00", "N_ScaleL_00", -1, 1},               /* hearts, magic, the d-pad guide */
     {"PlayerStatus_00", "N_ScaleR_00", 1, 1},                /* the item buttons */
     {"PlayerStatus_00", "N_SubItemBaseFishing_00", 1, 1},
     {"PlayerStatus_00", "N_VRS_00", 1, 1},
-    {"MapMenu_00", "N_Field_01", 1, -1},                     /* the minimap outdoors */
-    {"MapMenu_00", "N_Dungeon_01", 1, -1},                   /* in a dungeon */
-    {"MapMenu_00", "N_MiniMapReplace_00", 1, -1},            /* its edges, and their captures */
-    {"MapMenu_00", "N_MiniMapCap_00", 1, -1},
-    {"MapMenu_00", "N_EventEndIn_01", 1, -1},                /* its frame and floor */
+    {"MapMenu_00", "N_MiniMap_00", 1, -1, 0, "N_LocalMap_00"},      /* the minimap, its edges */
+    {"MapMenu_00", "N_MiniMapCap_00", 1, -1, 0, "N_LocalMap_00"},   /* (its edges' captures) */
+    {"MapMenu_00", "N_EventEndIn_01", 1, -1, 0, "N_LocalMap_00"},   /* its frame and floor */
     {"MapMenu_00", "N_VRS_00", 1, -1},
-    {"MapMenu_00", "N_PatternField_01", 1, -1, "N_MapIcon_00", 1490, -644},   /* the map's icons, while at the minimap */
+    {"MapMenu_00", "N_Common_00", 1, -1, "N_MiniMap_00", "N_LocalMap_00"},   /* the map's icons, on the minimap */
     {"SaveLoadIcon_00", "N_InOut_00", -1, -1},
 };
 enum { HUD_PANES = 256 };
@@ -576,7 +579,7 @@ static struct {
     uint32_t index;
     int anchor;     /* (its hud_anchors row) */
     float dx, dy;   /* the offset it has */
-    uint64_t gate;  /* (its gate pane) */
+    uint64_t shown, hidden;   /* (its gate panes) */
 } hud_pane[HUD_PANES];
 static float hud_dx(void) { return 1920.0f / hud_x() - 1920.0f; }
 static float hud_dy(void) { return 1080.0f / hud_y() - 1080.0f; }
@@ -607,8 +610,8 @@ PATCH_AT(0x81549918, word(0xfc06c260), before, q0, hos_oot_hud_anchor, as(x19, p
         float xy[2];
         memcpy(xy, &t, 8);
         os_mutex_lock(&hud_lock);
-        const float dx = hud_anchors[k].gate ? 0.0f : hud_dx() * hud_anchors[k].x;
-        const float dy = hud_anchors[k].gate ? 0.0f : hud_dy() * hud_anchors[k].y;
+        const int gated = hud_anchors[k].shown || hud_anchors[k].hidden;
+        const float dx = gated ? 0.0f : hud_dx() * hud_anchors[k].x, dy = gated ? 0.0f : hud_dy() * hud_anchors[k].y;
         int slot = -1;   /* (its own, or a free one: a pane whose layout is gone frees its own) */
         for (int i = 0; i < HUD_PANES && slot < 0; i++)
             if (hud_pane[i].pane == pane || !hud_pane_live(i)) slot = i;
@@ -616,10 +619,14 @@ PATCH_AT(0x81549918, word(0xfc06c260), before, q0, hos_oot_hud_anchor, as(x19, p
             const uint64_t l = GUEST(OotPane, pane)->layout;
             hud_pane[slot].pane = pane, hud_pane[slot].layout = l, hud_pane[slot].index = (uint32_t)index;
             hud_pane[slot].res = hos_guest_range(l, sizeof(OotLayout)) ? GUEST(OotLayout, l)->res : 0;
-            hud_pane[slot].anchor = k, hud_pane[slot].dx = dx, hud_pane[slot].dy = dy, hud_pane[slot].gate = 0;
-            for (uint32_t j = 0; hud_anchors[k].gate && j < r->count && hos_guest_range(r->names + 8 * j, 8); j++)
-                if (!strcmp(guest_str(*(const uint64_t *)GP(r->names + 8 * j)), hud_anchors[k].gate))
-                    hud_pane[slot].gate = GUEST(OotLayout, l)->panes + (uint64_t)j * OOT_PANE_SIZE;
+            hud_pane[slot].anchor = k, hud_pane[slot].dx = dx, hud_pane[slot].dy = dy;
+            hud_pane[slot].shown = hud_pane[slot].hidden = 0;
+            for (uint32_t j = 0; gated && j < r->count && hos_guest_range(r->names + 8 * j, 8); j++) {
+                const char *name = guest_str(*(const uint64_t *)GP(r->names + 8 * j));
+                const uint64_t at = GUEST(OotLayout, l)->panes + (uint64_t)j * OOT_PANE_SIZE;
+                if (hud_anchors[k].shown && !strcmp(name, hud_anchors[k].shown)) hud_pane[slot].shown = at;
+                if (hud_anchors[k].hidden && !strcmp(name, hud_anchors[k].hidden)) hud_pane[slot].hidden = at;
+            }
             xy[0] += dx, xy[1] += dy;
         }
         os_mutex_unlock(&hud_lock);
@@ -629,14 +636,13 @@ PATCH_AT(0x81549918, word(0xfc06c260), before, q0, hos_oot_hud_anchor, as(x19, p
     return t;
 }
 
-/* (its lock held) a pane moved to the frame's offset (a gated one: to none while its gate is elsewhere) */
+/* (its lock held) a pane moved to the frame's offset (a gated one: to none while its gates say no) */
+static int hud_shown(uint64_t p) { return hos_guest_range(p, OOT_PANE_SIZE) && (GUEST(OotPane, p)->flags & 1); }
 static void hud_pane_place(int i, OotPane *pane) {
     const int k = hud_pane[i].anchor;
     float nx = hud_dx() * hud_anchors[k].x, ny = hud_dy() * hud_anchors[k].y;
-    if (hud_anchors[k].gate) {
-        const OotPane *g = hos_guest_range(hud_pane[i].gate, OOT_PANE_SIZE) ? GUEST(OotPane, hud_pane[i].gate) : NULL;
-        if (!g || g->x != hud_anchors[k].at_x || g->y != hud_anchors[k].at_y) nx = ny = 0.0f;
-    }
+    if ((hud_anchors[k].shown && !hud_shown(hud_pane[i].shown)) || (hud_anchors[k].hidden && hud_shown(hud_pane[i].hidden)))
+        nx = ny = 0.0f;
     if (nx == hud_pane[i].dx && ny == hud_pane[i].dy) return;
     pane->x += nx - hud_pane[i].dx, pane->y += ny - hud_pane[i].dy;
     pane->changed |= pane->watched & 0x40;
@@ -651,11 +657,11 @@ static void hud_reanchor(void) {
     }
 }
 
-/* (each frame, on the game's thread) the gated panes placed by their gate's pose */
+/* (each frame, on the game's thread) the gated panes placed by their gates */
 static void hud_follow(void) {
     os_mutex_lock(&hud_lock);
     for (int i = 0; i < HUD_PANES; i++) {
-        if (!hud_pane[i].pane || !hud_anchors[hud_pane[i].anchor].gate) continue;
+        if (!hud_pane[i].pane || !(hud_anchors[hud_pane[i].anchor].shown || hud_anchors[hud_pane[i].anchor].hidden)) continue;
         OotPane *pane = hud_pane_live(i);
         if (pane) hud_pane_place(i, pane);
     }
