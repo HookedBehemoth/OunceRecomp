@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 enum { HSD_LIST_PACKET, HSD_LIST_LOAD, HSD_LIST_JOB, HSD_LIST_LAYER, HSD_LIST_GATE, HSD_LIST_COMPUTE, HSD_LIST_HEAD,
-       HSD_LIST_KINDS };
+       HSD_LIST_IMMEDIATE, HSD_LIST_KINDS };   /* IMMEDIATE: a one-shot list the game submits itself and waits for */
 typedef struct hsd_list_info {
     uint32_t kind;        /* HSD_LIST_*; PACKET = not classified (counted, its lr logged once) */
     uint32_t load_kind;   /* HSD_LIST_LOAD: 1 vertex, 2 draw, 3 shape, 4 material, 5 and 6 the measuring copies of 1 and 2 (host/direct.c) */

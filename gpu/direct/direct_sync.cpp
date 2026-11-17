@@ -78,6 +78,7 @@ struct Queue {
 };
 thread_local uint64_t present_queue = 0;   // (hsd_present_queue's, for the present that follows on this thread)
 std::mutex mu;   // (the queues, their submissions, the event and report writes; queue_mu is taken inside it)
+std::atomic<int64_t> st_finish_held{0};   // (finishes that waited for a held submission, since the start)
 std::condition_variable sent_cv;   // (a submission sent: CPU waits for a fence not sent yet)
 std::vector<Queue*> queues;   // (by index; never freed)
 std::unordered_map<uint64_t, Queue*> by_id;
@@ -517,7 +518,25 @@ int nvn_wait(uint64_t fence, uint64_t timeout_ns) {
     st_cpu_wait_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t0).count(), std::memory_order_relaxed);
     return ok ? 1 : 0;
 }
-void nvn_finish() {   // (what is sent done; a submission held at a wait is not: it waits for another queue or the CPU)
+/// nvnQueueFinish: everything submitted so far done. A submission held at a wait (for another queue or the CPU) is sent
+/// first: the finish waits for the queues to drain, then for the GPU. Nothing held: one look under mu
+void nvn_finish() {
+    {
+        std::unique_lock lk(mu);
+        auto drained = [] {
+            for (const Queue* q : queues)
+                if (!q->subs.empty()) return false;
+            return true;
+        };
+        if (!drained()) {
+            st_finish_held.fetch_add(1, std::memory_order_relaxed);
+            if (!sent_cv.wait_for(lk, std::chrono::seconds(2), drained)) {
+                static std::atomic<int> told{0};
+                if (told++ < 4) logf("direct: nvnQueueFinish waits over 2 s for a submission held at a wait");
+                sent_cv.wait(lk, drained);
+            }
+        }
+    }
     const uint64_t v = sent.load(std::memory_order_acquire);
     if (v) sync_wait_value(v, UINT64_MAX);
 }
@@ -619,12 +638,12 @@ void sync_stats(char* out, size_t cap, double frames) {
                   "event signals %.1f, waits met %.1f, held at a wait %.1f (longest %.2f ms, %.2f ms a frame in all; ended by the CPU's signal %.1f, by another queue's %.1f; %zu held now), fence waits held %lld, "
                   "reports written by the CPU %.1f, resets on the CPU %.1f, CPU signals %.1f; CPU fence waits %.1f (%.3f ms a frame); submissions waiting for uploads %lld; "
                   "timeline %llu sent, %llu done; vkQueueSubmit2 %.1f a frame, %.3f ms a frame (all threads); waits for the submit lock %.1f a frame (%.3f ms a frame); "
-                  "the present's fence wait %.3f ms a frame; sends for the CPU's signals %.1f a frame (%.3f ms a frame)",
+                  "the present's fence wait %.3f ms a frame; sends for the CPU's signals %.1f a frame (%.3f ms a frame); finishes that waited for a held submission %lld",
                   st_submits / frames, st_chunks / frames, st_chunk_waits / frames, st_cbs / frames, ns / 1e6 / frames, mx / 1e6, st_signals / frames, st_waits_met / frames, st_held / frames,
                   st_hold_max_ms, st_hold_ms / frames, st_freed_cpu / frames, st_freed_queue / frames, held_now, (long long)st_fence_held, st_reports / frames, st_resets / frames,
                   st_cpu_signals.exchange(0) / frames, st_cpu_waits.exchange(0) / frames, st_cpu_wait_ns.exchange(0) / 1e6 / frames,
                   (long long)st_upload_waits_gpu, (unsigned long long)sent.load(), (unsigned long long)sync_completed(), st_send_n.exchange(0) / frames, st_send_ns.exchange(0) / 1e6 / frames,
-                  st_mu_waits.exchange(0) / frames, st_mu_wait_ns.exchange(0) / 1e6 / frames, st_fence_wait_ns.exchange(0) / 1e6 / frames, st_sig_flush_n / frames, st_sig_flush_ns / 1e6 / frames);
+                  st_mu_waits.exchange(0) / frames, st_mu_wait_ns.exchange(0) / 1e6 / frames, st_fence_wait_ns.exchange(0) / 1e6 / frames, st_sig_flush_n / frames, st_sig_flush_ns / 1e6 / frames, (long long)st_finish_held.load());
     st_sig_flush_ns = st_sig_flush_n = 0;
     st_chunks = st_chunk_waits = st_upload_waits_gpu = st_cbs = st_submits = st_held = st_waits_met = st_signals = st_reports = st_resets = st_fence_held = 0;
     st_hold_max_ms = st_hold_ms = 0, st_freed_cpu = st_freed_queue = 0;

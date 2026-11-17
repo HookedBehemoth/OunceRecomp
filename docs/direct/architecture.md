@@ -34,8 +34,13 @@ The kind of a list is decided at `BeginRecording` from its caller (`HSD_LIST_*` 
 | render job | 102 | one rendering secondary command buffer that inherits its pass's formats |
 | layer list, gate primary | 10 | primary command buffers, cut at cross-queue event waits; it begins and ends rendering and executes its jobs |
 | async-compute list, queue head | 12 | primary command buffers |
+| immediate list (a one-shot list the game submits and waits for, such as the save picture's copy) | 0, a few at a save | primary command buffers |
 | load-time list (vertex, draw, shape, material) | tens of thousands live, hundreds of calls a frame | a packet: a compact op array, expanded into the caller's command buffer where it is called |
 | a list not classified | 0 | a packet, counted |
+
+A packet runs only where a recording list calls it. A packet submitted by itself has nothing to run: it is counted
+and logged as "submitted but never recorded", and it is an event in strict mode. When a shared engine function begins
+lists for several callers, each caller names the kind at its own call.
 
 The packet expander is the only interpreter, and it runs on the calling thread at record time.
 

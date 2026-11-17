@@ -8,6 +8,7 @@
 #include <thread>
 
 #include "direct_assets.h"
+#include "direct_check.h"
 #include "direct_cmd.h"
 #include "direct_compute.h"
 #include "direct_draw.h"
@@ -29,7 +30,7 @@ const char* const kOpNames[NOP_COUNT_] = {
     "SET_TEX_POOL", "SET_SAMP_POOL", "COPY_B2T", "COPY_STRIDE", "BLEND_COLOR", "COPY_T2B", "BIND_IMG", "COPY_T2T",
     "RESET_COUNTER", "CLEAR_TEX", "DEPTH_CLAMP", "RENDER_ENABLE", "RASTER_DISCARD", "RENDER_COND", "PRIMITIVE_RESTART",
     "BIND_BUFS", "DRAW_INDIRECT", "DISPATCH_INDIRECT", "DRAW_MESH", "WAIT_EVENT", "PUSH_CONST", "CLEAR_BUF"};
-const char* const kKindNames[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
+const char* const kKindNames[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head", "immediate"};
 
 // (the recording threads' time in hsd_emit and hsd_list_call, in TSC ticks, by the list's kind. hsd_emit times one op in
 // kEmitEvery, picked at random per thread, and counts it kEmitEvery times: two time-stamp reads an op cost more than most ops)
@@ -67,7 +68,7 @@ constexpr int kSites = 1024;
 struct Site {
     std::atomic<uint64_t> key{0};
     std::atomic<uint32_t> kind{0}, load_kind{0};
-    std::atomic<int64_t> n{0}, submitted{0};
+    std::atomic<int64_t> n{0}, submitted{0}, unrecorded{0};   // (unrecorded: packets of ops submitted, never called)
     int64_t last_n = 0;   // (the 600-present line's: its thread's alone)
 };
 Site sites[kSites];
@@ -115,8 +116,22 @@ void list_unref(List* l) {
         st_live.fetch_sub(1, std::memory_order_relaxed);
     }
 }
+std::atomic<int64_t> st_unrecorded{0};
+/// A packet's ops run only where a recording list calls it: one submitted itself has nothing to run, and its ops are
+/// lost (a begin site no At row classified, or one classified as a load list). Counted, named once per begin site, strict's event
 void list_submitted(const List* l) {
     if (l->site >= 0) sites[l->site].submitted.fetch_add(1, std::memory_order_relaxed);
+    if (!l->packet || !l->pkt_ops) return;
+    st_unrecorded.fetch_add(1, std::memory_order_relaxed);
+    if (l->site < 0 || sites[l->site].unrecorded.fetch_add(1, std::memory_order_relaxed) == 0) {
+        char b[400];
+        int k = std::snprintf(b, sizeof b, "kind %s from %#llx (fp %#llx), %u ops:", kKindNames[l->info.kind], (unsigned long long)l->info.lr,
+                              (unsigned long long)l->info.fp, l->pkt_ops);
+        for (int i = 0; i < NOP_COUNT_ && k < 360; i++)
+            if (l->counts[i]) k += std::snprintf(b + k, sizeof b - k, " %s %u", kOpNames[i], l->counts[i]);
+        logf("direct: a list submitted but never recorded (a packet nobody called): %s", b);
+        strict_event("a list submitted but never recorded", "%s", b);
+    }
 }
 void list_flatten(const List* l, std::vector<const FrameOp*>& out) {
     for (const FrameOp& o : l->ops) {
@@ -190,8 +205,8 @@ void lists_stats(char* out, size_t cap, double frames) {
                        st_pkt_bytes.load() / 1048576.0, st_pkt.take(PK_CALLS) / frames, st_pkt.take(PK_OPS) / frames,
                        st_pkt.take(PK_NESTED) / frames, (long long)st_pkt.total(PK_UNENDED));
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", calls %.1f; %lld lists live, %lld dropped unended, %lld records "
-                       "of no op or outside a list; ops a frame:", st_calls.exchange(0) / frames, (long long)st_live.load(),
-                       (long long)st_dropped.load(), (long long)st_bad_op.load());
+                       "of no op or outside a list, %lld submitted but never recorded; ops a frame:", st_calls.exchange(0) / frames,
+                       (long long)st_live.load(), (long long)st_dropped.load(), (long long)st_bad_op.load(), (long long)st_unrecorded.load());
     for (int i = 0; i < NOP_COUNT_; i++) {
         const int64_t n = st_ops[i].exchange(0);
         if (n) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.1f", kOpNames[i], n / frames);
@@ -228,7 +243,7 @@ extern "C" __attribute__((visibility("default"))) void* hsd_list_begin(const hsd
     if (l->info.kind >= HSD_LIST_KINDS) l->info.kind = HSD_LIST_PACKET;
     l->site = site_note(l->info);
     const uint32_t k = l->info.kind;
-    l->rec = k == HSD_LIST_LAYER || k == HSD_LIST_GATE || k == HSD_LIST_COMPUTE || k == HSD_LIST_HEAD;
+    l->rec = k == HSD_LIST_LAYER || k == HSD_LIST_GATE || k == HSD_LIST_COMPUTE || k == HSD_LIST_HEAD || k == HSD_LIST_IMMEDIATE;
     l->packet = k == HSD_LIST_LOAD || k == HSD_LIST_PACKET;
     if (k == HSD_LIST_JOB) pass_job_begin(l);   // (M3a: its pass's formats known: a rendering secondary)
     st_live.fetch_add(1, std::memory_order_relaxed);

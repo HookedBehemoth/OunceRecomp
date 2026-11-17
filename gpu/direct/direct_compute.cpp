@@ -1331,7 +1331,7 @@ void compute_log(double frames) {
     }
     static char out[4096];
     const size_t cap = sizeof out;
-    static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
+    static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head", "immediate"};
     int k = std::snprintf(out, cap, "dispatches a frame (%.3f ms recording them, all threads; uniform buffers a program may read past their "
                           "bound range %.1f, compute uniform buffers the list updates inline %.1f; buffer copies %.1f (%.1f skipped), clears %.1f "
                           "(%.1f skipped))",

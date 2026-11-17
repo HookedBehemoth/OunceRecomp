@@ -1503,7 +1503,7 @@ void draw_log(double frames) {
              take(&TStats::unbound_mesh, T_UNBOUND_MESH) / frames, take(&TStats::unbound_draws, T_UNBOUND) / frames);
     }
     if (log_draw) {
-        static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head"};
+        static const char* const kinds[HSD_LIST_KINDS] = {"unclassified", "load", "job", "layer", "gate", "compute", "head", "immediate"};
         for (int kind = 0; kind < HSD_LIST_KINDS; kind++) {
             k = std::snprintf(out, cap, "draws a frame in %s lists:", kinds[kind]);
             bool any = false;
