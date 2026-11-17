@@ -327,6 +327,7 @@ fn run_store(romfs: &Path, out: &Path, min_psnr: f64) -> crate::run::Stats {
         hollow: None,
         admit: &admit,
         progress: &progress,
+        each: &|_, _, _, _, _| {},
     };
     crate::run::run(&o).unwrap()
 }

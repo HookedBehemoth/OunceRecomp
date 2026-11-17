@@ -45,6 +45,8 @@ pub struct Options<'a> {
     /// waits until a file needing this many MB may start; the value returned is held while it is converted
     pub admit: &'a (dyn Fn(u64) -> Box<dyn Held + 'a> + Sync),
     pub progress: &'a (dyn Fn(&str) + Sync),
+    /// called as each file is done: (files done, files, bytes done, bytes, its romfs path)
+    pub each: &'a (dyn Fn(usize, usize, u64, u64, &str) + Sync),
 }
 
 #[derive(Debug, Default)]
@@ -92,6 +94,9 @@ pub fn walk(romfs: &Path, skip: &[String], only: &[String]) -> Result<Vec<(Strin
                     continue;
                 }
                 let rel = p.strip_prefix(romfs).unwrap().to_string_lossy().into_owned();
+                if rel.ends_with(".hollow.tmp") {
+                    continue; // (a file being zeroed when a build was stopped; written again and renamed this time)
+                }
                 if !only.is_empty() && !only.iter().any(|o| rel.starts_with(o.as_str())) {
                     continue;
                 }
@@ -157,10 +162,11 @@ pub fn run(o: &Options) -> Result<Stats, String> {
     files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut todo: Vec<usize> = (0..files.len()).collect();
     todo.sort_by_key(|&i| std::cmp::Reverse(files[i].1));
+    let bytes: u64 = files.iter().map(|f| f.1).sum();
     (o.progress)(&format!(
         "textures: {} files ({:.1} GB) from {}, {} threads",
         files.len(),
-        files.iter().map(|f| f.1).sum::<u64>() as f64 / 1e9,
+        bytes as f64 / 1e9,
         o.romfs.display(),
         o.jobs
     ));
@@ -203,7 +209,7 @@ pub fn run(o: &Options) -> Result<Stats, String> {
                 drop(tx);
             });
         });
-        result = write_all(o, rx, files.len(), &mut stats, t0);
+        result = write_all(o, rx, files.len(), bytes, &mut stats, t0);
     });
     result?;
     stats.seconds = t0.elapsed().as_secs_f64();
@@ -212,7 +218,7 @@ pub fn run(o: &Options) -> Result<Stats, String> {
 
 type DedupKey = (u64, u32, u32, u32, u32, u32, u8, u32);
 
-fn write_all(o: &Options, rx: mpsc::Receiver<Done>, n_files: usize, st: &mut Stats, t0: Instant) -> Result<(), String> {
+fn write_all(o: &Options, rx: mpsc::Receiver<Done>, n_files: usize, n_bytes: u64, st: &mut Stats, t0: Instant) -> Result<(), String> {
     let mut packs = Packs::new(&o.out, o.pack_limit);
     let mut done: Vec<Option<Vec<FileEntry>>> = vec![None; n_files];
     // (frames written once per content; every texture of a key in index order: (file order, entry, texture))
@@ -220,8 +226,11 @@ fn write_all(o: &Options, rx: mpsc::Receiver<Done>, n_files: usize, st: &mut Sta
     let mut groups: HashMap<DedupKey, Vec<(usize, usize, usize)>> = HashMap::new();
     let mut last = Instant::now();
     let io = |e: std::io::Error| e.to_string();
+    let mut bytes = 0;
     for d in rx {
         st.files += 1;
+        bytes += d.size;
+        (o.each)(st.files, n_files, bytes, n_bytes, &d.path);
         match d.hollowed {
             Some(Ok((n, h))) if h.zeroed > 0 => {
                 st.hollowed.push(d.path.clone());

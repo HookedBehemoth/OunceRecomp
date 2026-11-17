@@ -71,14 +71,34 @@ pub fn finish_romfs(h: JoinHandle<Result<(), String>>) -> Result<(), String> {
     h.join().map_err(|_| "the romfs thread panicked".to_string())?
 }
 
-/// `dump <file.nup|folder> [--verify] [--extract <dir>] [--title <t>] [--only exefs|romfs]`
+/// `dump <src> --check`: `@@dump <what it is>`, then `@@identity pass <build id>` or `@@identity fail <why>` (exit 1):
+/// the exefs read in memory and checked against the game description, as `build --dump` does first
+fn check(src: &Path, title: Option<&str>, game: &Path) {
+    let r = Dump::open(src, title, Path::new(".")).and_then(|d| {
+        println!("@@dump {}", d.describe());
+        let (files, _) = d.exefs_files()?;
+        ounce_lift::game::Game::load(game)?.check_exefs(&Exefs { files })
+    });
+    match r {
+        Ok(id) => println!("@@identity pass {}", id.build_id),
+        Err(e) => {
+            println!("@@identity fail {}", e.replace('\n', "; "));
+            std::process::exit(1)
+        }
+    }
+}
+
+/// `dump <file.nup|folder> [--verify] [--check [--game <dir>]] [--extract <dir>] [--title <t>] [--only exefs|romfs]`
 pub fn command(args: &[String]) {
     let (mut src, mut out, mut verify, mut title, mut only) = (None::<PathBuf>, None::<PathBuf>, false, None::<String>, None::<Part>);
+    let (mut identity, mut game) = (false, PathBuf::from("games/oot"));
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
         match a.as_str() {
             "--verify" => verify = true,
+            "--check" => identity = true,
+            "--game" => game = val().into(),
             "--extract" => out = Some(val().into()),
             "--title" => title = Some(val()),
             "--only" => {
@@ -92,7 +112,10 @@ pub fn command(args: &[String]) {
             _ => fail(format!("dump: what is {a}?")),
         }
     }
-    let Some(src) = src else { fail("dump <file.nup|folder> [--verify] [--extract <dir>] [--title <t>] [--only exefs|romfs]") };
+    let Some(src) = src else { fail("dump <file.nup|folder> [--verify] [--check [--game <dir>]] [--extract <dir>] [--title <t>] [--only exefs|romfs]") };
+    if identity {
+        return check(&src, title.as_deref(), &game);
+    }
     if verify {
         if out.is_some() {
             fail("--verify does not extract; run the extraction separately");

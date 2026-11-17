@@ -8,7 +8,8 @@ with no Python and no compiler on the player's PC. Read it before you work on th
 
 - `hookshot-builder.AppImage`: the builder, `libLLVM.so.23` and lld (linked dynamically), the prebuilt host (its
   objects and `hookshot_direct.so`, built in CI), and the link's sysroot (glibc 2.35's start files and stub libraries).
-  A GUI comes later over the same steps; every step reports `@@stage/@@progress/@@eta/@@error` lines for it.
+  `hookshot-gui` (`ounce/gui`) is its window: it runs the builder as a child process and reads its `@@` lines
+  ([the window](#the-window)).
 - A folder of the source the lift reads: `host/*.c` (the patch declarations), `games/oot/` (`game.toml`, the labels,
   the hot list `hot_funcs.bin` and the link order `hot_order.bin`), `ounce/lift/data/horizon.toml` and
   `third_party/a64-kit/rt/`.
@@ -56,7 +57,8 @@ it; `ounce/tex/src/store.rs` the format.
 the romfs is copied into the game folder. Nothing at run time reads the exefs: the game runs from `image.bin`, which
 holds everything the lift took from it (the modules, and `main.npdm`'s program id, stack and priority).
 
-- `hookshot-builder dump <file.nup|folder>` lists the titles; `--verify` checks the package (its table of contents,
+- `hookshot-builder dump <file.nup|folder>` lists the titles; `--check [--game <dir>]` reads the exefs in memory and
+  checks it against `game.toml`'s identity, as a build does first (`@@dump`, `@@identity` lines); `--verify` checks the package (its table of contents,
   every member's extent and SHA-256, the game's zstd header of each `.zs` file) without writing; `--extract <dir>`
   writes the newest title (`--title` picks another, `--only` one part).
 - `hookshot-builder build <out> --dump <file.nup|folder>` reads the exefs into memory (its modules made whole and
@@ -105,8 +107,7 @@ it is there. With `--dump`, `<out>` is a whole game folder (below).
   (`hookshot-builder version`); `--version` replaces it.
 - `--gen <dir>` also writes the lift's files for the RE tools and diffout: `gen/*.ll`, `gen/functions.txt`,
   `lift_answers.ll` and `facts.tsv`.
-- `--progress` prints the lines a front end reads: `@@plan`, `@@file <name> <seconds> <new|cached>` and `@@eta`,
-  estimated from the last build's seconds (`seconds.txt` in the cache).
+- `--progress` prints the lines a front end reads ([the window](#the-window) lists them).
 - Checks: the LLVM version the process runs; the patch declarations against the compiled host (`hos_patch`
   records); the back end's undefined symbols against the executable's exports.
 - LLVM's `-mllvm` options are globals of the process, so the compiles run in phases: the host's C at LLVM's
@@ -207,6 +208,35 @@ the romfs copy is 15.9 GB instead of 25.0 GB, and the folder about 30 GB with it
 - A BNTX inside a compressed member of an archive is left whole.
 - A rebuild writes the files `prepared/hollowed.txt` lists whole again before the texture step reads the romfs.
   `hookshot-builder textures` refuses a game folder's romfs: make a store from the dump.
+
+## The window
+
+`hookshot-gui` picks the dump and the game folder, runs `dump --check` and `probe`, then `build --dump --progress`,
+each as a child process, so a step that crashes never takes the window down. It finds `hookshot-builder` beside
+itself or in `ounce/target/release`, and the source folder above itself (`HOOKSHOT_BUILDER`, `HOOKSHOT_ROOT`).
+It is built on its own, `cargo build --profile gui -p hookshot-gui`, without LTO; the workspace's default members
+leave it out.
+
+The lines it reads, one per line on standard output:
+
+| Line | When |
+|---|---|
+| `@@dump <what>`, `@@identity <pass\|fail> <build id or why>` | `dump --check` |
+| `@@probe <key> <state> <value>`, `@@probe verdict <pass\|fail> <keys>` | `probe` |
+| `@@stages <key>...` | `build --progress`: the steps this build runs, of `dump host lift link romfs textures` |
+| `@@stage <key> <what>` | a step begins; `@@stage done <folder>` ends a build |
+| `@@plan <modules> <modules>`, `@@file <name> <seconds> <new\|cached>`, `@@eta <seconds>` | the lift's compiles, the estimate from the last build's seconds (`seconds.txt` in the cache) |
+| `@@tex <files done> <files> <bytes done> <bytes> <path>` | the texture step, at most four a second |
+| `@@error <message>` | the build failed (the message on one line; the log has the rest) |
+
+Stopping a build kills the process, and a build run again over the same folder finishes it:
+
+- `hookshot`, `hookshot_direct.so` and `image.bin` are installed by a rename; objects and cached files are written
+  beside and renamed.
+- The romfs copy keeps a file only when its size is the dump's, and writes through a `.part` file. A texture file
+  whose texels were zeroed is smaller than the dump's, so it is written whole again.
+- The texture store's packs and index are written again from the start; a `.hollow.tmp` file left in the romfs is
+  not read.
 
 ## The device check
 

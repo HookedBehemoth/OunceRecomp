@@ -33,6 +33,15 @@ pub fn make(romfs: &Path, out: &Path, game: &ounce_lift::game::Game, settings: S
     let gate = Gate::new();
     let admit = |mb: u64| -> Box<dyn ounce_tex::run::Held + '_> { Box::new(gate.enter(mb)) };
     let progress = |s: &str| println!("{s}");
+    // (`@@tex <files done> <files> <bytes done> <bytes> <path>` with --progress, at most 4 a second and the last)
+    let last = std::sync::Mutex::new(Instant::now());
+    let each = |n: usize, of: usize, b: u64, of_b: u64, path: &str| {
+        let mut l = last.lock().unwrap();
+        if crate::progress_on() && (n == of || l.elapsed().as_millis() >= 250) {
+            *l = Instant::now();
+            println!("@@tex {n} {of} {b} {of_b} {path}");
+        }
+    };
     let o = Options {
         romfs: romfs.to_path_buf(),
         out: out.to_path_buf(),
@@ -44,6 +53,7 @@ pub fn make(romfs: &Path, out: &Path, game: &ounce_lift::game::Game, settings: S
         hollow,
         admit: &admit,
         progress: &progress,
+        each: &each,
     };
     let st = ounce_tex::run::run(&o)?;
     let mut kinds: Vec<_> = st.by_kind.iter().collect();

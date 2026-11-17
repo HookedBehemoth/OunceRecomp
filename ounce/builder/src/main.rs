@@ -43,8 +43,9 @@ const HELP: &str = "hookshot-builder <command> ...
                                        --dump-dir also writes the dump there (exefs/, romfs/ whole) for the developer tools;
                                        --prepared writes a texture store (<dir>/tex) from --romfs (default <work>/dump/romfs)
   probe                                the Vulkan device check: one line per requirement, then the verdict
-  dump <file.nup|folder> [--verify] [--extract <dir>] [--title <index|version|id>] [--only exefs|romfs]
-                                       a dump: its titles, its checks (--verify), or written out as exefs/ and romfs/
+  dump <file.nup|folder> [--verify] [--check [--game <dir>]] [--extract <dir>] [--title <index|version|id>] [--only exefs|romfs]
+                                       a dump: its titles, its checks (--verify), whether it is the game (--check),
+                                       or written out as exefs/ and romfs/
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (a list of objects), lld in this process
   textures <out dir> [--romfs <dir>] [--game <dir>] [--fast] [-j N] [--only <prefix>]...
@@ -54,9 +55,26 @@ const HELP: &str = "hookshot-builder <command> ...
   version [<root>]                     the version text a build stamps (feature clang)
   llvm-version                         the libLLVM this process uses";
 
+/// `--progress`: the `@@` lines a front end reads are printed
+pub static PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn progress_on() -> bool {
+    PROGRESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn fail(msg: impl std::fmt::Display) -> ! {
+    if progress_on() {
+        println!("@@error {}", msg.to_string().replace('\n', "; "));
+    }
     eprintln!("hookshot-builder: {msg}");
     std::process::exit(1)
+}
+
+/// `@@stage <key> <what>` with --progress: a step of `build` begins
+fn stage(key: &str, what: &str) {
+    if progress_on() {
+        println!("@@stage {key} {what}");
+    }
 }
 
 fn main() {
@@ -337,6 +355,14 @@ fn build(args: &[String]) {
             _ => fail(format!("build: what is {a}?")),
         }
     }
+    if progress {
+        PROGRESS.store(true, std::sync::atomic::Ordering::Relaxed);
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            println!("@@error {}", info.to_string().replace('\n', "; "));
+            hook(info)
+        }));
+    }
     let (Some(out), Some(direct)) = (out, direct) else { fail("build <out dir> --direct <hookshot_direct.so> [...]") };
     let major = llvm::version().split('.').next().and_then(|m| m.parse::<u32>().ok());
     if major != Some(LLVM_MAJOR) {
@@ -346,9 +372,15 @@ fn build(args: &[String]) {
     // (a game folder (--dump): the exefs read first, so the lift starts while the romfs is copied into the folder; the
     // build's own files (objects, the map, the link order) go to <work>/game-build, not into the folder)
     let game_folder = dump_src.is_some();
+    if progress {
+        let textures = game_folder && !no_textures || prepared.is_some();
+        let keys = [(game_folder, "dump"), (true, "host"), (true, "lift"), (true, "link"), (game_folder, "romfs"), (textures, "textures")];
+        println!("@@stages {}", keys.iter().filter(|k| k.0).map(|k| k.1).collect::<Vec<_>>().join(" "));
+    }
     let inter = if game_folder { run.opts.work.join("game-build") } else { out.clone() };
     let hollowed_list = out.join("prepared").join(textures::HOLLOWED);
     let romfs = dump_src.map(|src| {
+        stage("dump", "reading the dump and checking it is the game");
         std::fs::create_dir_all(&out).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
         let dir = dump_dir.clone().unwrap_or_else(|| out.clone());
         let (d, exefs) = dump::exefs(&src, title.as_deref(), &dir, &run.opts.game, dump_dir.is_some()).unwrap_or_else(|e| fail(e));
@@ -387,6 +419,7 @@ fn build(args: &[String]) {
     compile::init().unwrap_or_else(|e| fail(e));
     let game = ounce_lift::game::Game::load(&run.opts.game).unwrap_or_else(|e| fail(e));
     // (the host's C at LLVM's defaults, then the runtime at its two -mllvm options, then the lift and its compile)
+    stage("host", "compiling the host's C");
     let t = Instant::now();
     let host_jobs = host::host_jobs(&root, &rt64, &game.host, &version).unwrap_or_else(|e| fail(e));
     let rt = host::rt_job(&root, &rt64);
@@ -399,6 +432,7 @@ fn build(args: &[String]) {
         Ok(line) => println!("{line}"),
         Err(e) => fail(e),
     }
+    stage("lift", "lifting and compiling the game's code");
     let d = lift::lift_compile(&run, &obj, cjobs, Some(&cache), check.as_deref(), &aux).unwrap_or_else(|e| fail(e));
     println!(
         "lift and compile: {} modules ({} from the cache), the lift's state freed at {:.0} s; {:.0} s",
@@ -429,6 +463,7 @@ fn build(args: &[String]) {
     let libs: Vec<String> = ["-lavcodec", "-lswscale", "-lswresample", "-lavutil"].map(String::from).to_vec();
     let sys = link::Sysroot::find().unwrap_or_else(|e| fail(e));
     let x = link::Exe { out: &exe, map: Some(&map), objects: &objects, order: order.as_deref(), libs: &libs };
+    stage("link", "linking");
     let t = Instant::now();
     if let Err(m) = link::lld(&link::exe_args(&x, &sys)) {
         fail(format!("the link failed:\n{m}"));
@@ -445,11 +480,13 @@ fn build(args: &[String]) {
     }
     install(&exe, &out.join("hookshot"), true).unwrap_or_else(|e| fail(e));
     if let Some(r) = romfs {
+        stage("romfs", "copying the romfs");
         dump::finish_romfs(r).unwrap_or_else(|e| fail(e));
     }
     // (the prepared assets: the texture store from the romfs; in a game folder, from its romfs, whose texture files
     // are then written with their texels zeroed: the back end takes them from the store)
     if game_folder && !no_textures {
+        stage("textures", "converting the textures");
         let t = Instant::now();
         let hollow = ounce_tex::run::HollowTo { dir: out.join("romfs"), level: textures::HOLLOW_LEVEL };
         let st = textures::make(&out.join("romfs"), &out.join("prepared/tex"), &game, settings, cjobs, Vec::new(), Some(hollow)).unwrap_or_else(|e| fail(e));
@@ -458,6 +495,7 @@ fn build(args: &[String]) {
         std::fs::write(&hollowed_list, list).unwrap_or_else(|e| fail(format!("{}: {e}", hollowed_list.display())));
         println!("textures and the romfs's texture files: {:.0} s", t.elapsed().as_secs_f64());
     } else if let Some(p) = &prepared {
+        stage("textures", "converting the textures");
         let romfs_dir = romfs_dir.unwrap_or_else(|| run.opts.work.join("dump/romfs"));
         textures::make(&romfs_dir, &p.join("tex"), &game, settings, cjobs, Vec::new(), None).unwrap_or_else(|e| fail(e));
     }
@@ -475,6 +513,7 @@ fn build(args: &[String]) {
         pf >> 20,
         pk >> 20
     );
+    stage("done", &out.display().to_string());
 }
 
 #[cfg(test)]
