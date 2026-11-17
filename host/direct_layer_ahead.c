@@ -177,9 +177,10 @@ static void wait_for(uint64_t key) {
     os_atomic_inc(&w.waits);
     os_mutex_lock(&lk);
     os_atomic_inc(&waiters);
-    while (pending(key)) {
-        if (hos_now_ns() - t0 > 50000000) { os_atomic_inc(&w.timeouts); break; }
-        hos_cv_sleep(&cv, &lk, 2000000);
+    while (pending(key)) {   /* (each recorded job wakes it: no poll, only the 50 ms cap) */
+        const int64_t left = t0 + 50000000 - hos_now_ns();
+        if (left <= 0) { os_atomic_inc(&w.timeouts); break; }
+        hos_cv_sleep(&cv, &lk, left);
     }
     os_atomic_dec(&waiters);
     os_mutex_unlock(&lk);

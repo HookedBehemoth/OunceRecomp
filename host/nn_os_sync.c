@@ -1177,6 +1177,7 @@ HLE(_ZN2nn2os19LinkMultiWaitHolderEPNS0_13MultiWaitTypeEPNS0_19MultiWaitHolderTy
     h->mw = mw;
     if (holder_watch(h)) mw_watch_add_locked(holder_watch(h));
     os_mutex_unlock(&mw_lock);
+    os_cond_broadcast(&mw_cv);   /* (a WaitAny asleep on this multi-wait looks at the new holder, which may be ready) */
 }
 HLE(_ZN2nn2os21UnlinkMultiWaitHolderEPNS0_19MultiWaitHolderTypeE) {
     Obj *h = obj(ARG(0), K_HOLDER), *mw = h->mw;
@@ -1190,7 +1191,8 @@ HLE(_ZN2nn2os21UnlinkMultiWaitHolderEPNS0_19MultiWaitHolderTypeE) {
     os_mutex_unlock(&mw_lock);
 }
 /* WaitAny / TimedWaitAny / TryWaitAny -> the first ready holder, or 0. timeout_ns: < 0 forever, 0 try.
-   Events signaled through event_signal poke mw_cv; everything else is re-checked every 5 ms. */
+   Every change that can make a holder ready pokes mw_cv (event_signal, the semaphore, the queues, the timers' starts,
+   a Link); a timer's due time ends the sleep by itself. Threads and native handles are never ready. */
 static uint64_t wait_any(uint64_t multiwait, int64_t timeout_ns) {
     Obj *mw = obj(multiwait, K_MULTIWAIT);
     int64_t deadline = timeout_ns > 0 ? hos_now_ns() + timeout_ns : 0;
@@ -1210,7 +1212,7 @@ static uint64_t wait_any(uint64_t multiwait, int64_t timeout_ns) {
         const int64_t now = hos_now_ns();
         if (timeout_ns == 0 || (timeout_ns > 0 && now >= deadline)) break;
         const int64_t left = wake - now;
-        hos_cv_sleep(&mw_cv, &mw_lock, left < 1000 ? 1000 : left < 5000000 ? left : 5000000);   /* (at most 5 ms: a poll) */
+        hos_cv_sleep(&mw_cv, &mw_lock, wake == INT64_MAX ? OS_FOREVER : left < 1000 ? 1000 : left);
     }
     os_atomic_dec(&mw_waiting);
     os_mutex_unlock(&mw_lock);
