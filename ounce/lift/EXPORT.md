@@ -7,31 +7,15 @@ ADRP+ADD entries (src/image.rs), the discovery (src/discover.rs), the plan (src/
 and the PATCH_FUNCs checked against the plan, the generated sources (src/gen.rs), the summaries and records
 (src/summary.rs, src/bounds.rs) and each partition's IR, byte for byte the Python lifter's.
 
-`ounce-lift <export> <out> --check` compares the scan's products (meta.json), the image, the discovery and plan, the
-summaries and the records with an export of the Python lifter's results. The Python lifter is gone from the tree, so
-no tool writes that export now; an export made earlier still works.
+The export was the Python lifter's results, the reference the Rust side was checked against while it was ported. The
+Python lifter is gone, and so are that check and the export; this page keeps the formats, which the Rust side's records
+still follow.
 
     ounce/target/release/ounce-lift <out dir> [--game games/oot] [--work work] [--exefs <dir>] [--root .]
-        [--golden work/ounce/golden]
-    ounce/target/release/ounce-lift work/ounce/export <out dir> --check [--golden work/ounce/golden]
 
 The exefs is the dump's (`--exefs`, else OOT_EXEFS, OOT_DUMP/exefs, or the first line of `<work>/dump.txt`, as
 nx2/kit.py), checked against games/oot/game.toml's identity first. `--root` is the repository (a64-kit's rt/ sources
-for rt64/). The output holds `<name>.ll` per partition, `lift_answers.ll`, `gen/`, `rt64/` and `image/image.bin`;
-`--golden` checks gen/, rt64/ and image.bin against the golden's sha256 (its meta.json `files`).
-
-The export is made from the game: it stays under `work/` and never enters git (CONTRIBUTING.md). It is of the build
-without `HOOKSHOT_LIFT_VERIFY` and with `omit` on.
-
-## Files
-
-    <out>/meta.json                 Python's patch scan results (rows with their functions, effects, PATCH_FUNC facts),
-                                    the platform lists, keys
-    <out>/check/plan.json           Python's discovery and plan,
-    <out>/check/image.json          the lift's image.json and
-    <out>/check/image_entries.json  its entry candidates (before the ADR ones),
-    <out>/check/summaries.json      summaries and records: the diagnostic's reference (ounce-lift --check), read by
-    <out>/check/bounds.json         nothing else
+for rt64/). The output holds `<name>.ll` per partition, `lift_answers.ll`, `gen/`, `rt64/` and `image/image.bin`.
 
 ## meta.json
 
@@ -40,7 +24,7 @@ without `HOOKSHOT_LIFT_VERIFY` and with `omit` on.
   "format": 5,                      // 3: summaries' inputs; 4: discovery's inputs, no parts; 5: no image, from the exefs
   "commit": "…", "input_key": "…", "code_key": "…", "facts_key": "…", "summary_cache": "…",
   "verify": false, "omit": true,
-  "image_sha256": "…",              // the lift's image.bin (the Rust side's must equal it: --check)
+  "image_sha256": "…",              // the lift's image.bin
   "hle_symbols": ["…", …],          // patch_scan.patches().hle_symbols(): HLE(...) and PATCH_ANSWER(...) symbols
   "os_namespaces": ["account", …],  // nx2/horizon OS_NAMESPACES: an imported free function of one is stubbed
   "setjmp_names": ["__setjmp", …],  // nx2/horizon SETJMP_NAMES
@@ -75,11 +59,7 @@ PATCH_FUNC names. The summaries see the discovered body (summary.job's input) wh
 ### callee(t) and bound(c)
 
 `prog.callee(t)` follows the PLT stubs (at most 4 steps). `prog.bound(c)` is `bounds.call_bounds` (verify off) over the
-summaries the Rust side computes. `ounce-lift --check` compares the discovery and the plan (`check/plan.json`: entries,
-every body as pc runs and a key of its words, the discovered bodies that differ, insns, jt, jt_index, plt, setjmp
-owners, hooks, traps by reason, the hot set, the partitions and each one's census), every function's summary
-(`check/summaries.json`: `summary.pack`, masks as hex) and every record the partitions read (`check/bounds.json`) with
-Python's, field by field.
+summaries the Rust side computes.
 
 ### Bound
 
@@ -88,7 +68,7 @@ Python's, field by field.
  "noreturn": false, "symbol": "f_80020000", "tail": "f_80020000", "answer": null}
 ```
 
-`bounds.Bound` field for field (in check/bounds.json). `kind` is a reason ("lifted", "noreturn", "HLE", "PATCH_FUNC", "setjmp owner",
+`bounds.Bound` field for field. `kind` is a reason ("lifted", "noreturn", "HLE", "PATCH_FUNC", "setjmp owner",
 "no summary", "demoted", "HLE declared clobbering", "PATCH_FUNC with orig, body not proven", and since 5bd7beba
 "answer" and "stop"); only "stop" enters the IR (see below). `answer`: null, or the u64 a BL to it answers. `symbol` is the symbol a BL calls (`gcall`), `tail` the one a tail branch jumps to. In `own`, `addr` is the entry.
 
@@ -159,37 +139,4 @@ changed what the lift emits. What the export adds for it (format 2):
        }
        … one per answer, ascending entry, joined by "\n", the text ending in "\n"
 
-   The golden has it as `lift_answers` (below); the Rust side writes `<dir>/lift_answers.ll`.
-
-## Golden (work/ounce/golden)
-
-The golden is the Python lifter's IR of every partition, `lift_part`'s text exactly (verify off). The tool that wrote it is gone from the tree; a golden made earlier is still read (`ounce-lift --golden`, `ounce/lift/tools/compare.py`):
-
-    work/ounce/golden/meta.json          {"commit", "input_key", "code_key", "facts_key", "partitions": [names],
-                                         "seconds"}: made again only when input_key differs (or --force)
-    work/ounce/golden/<name>.ll.zst      the partition's IR text, zstd-compressed
-    work/ounce/golden/<name>.idx.json    {"f_80020000": [start, end, sha1], …}: each function's byte range in the
-                                         uncompressed text (its `define` line to its closing `}` line, inclusive) and
-                                         the sha1 of those bytes; keyed by the name it is defined as
-
-    work/ounce/golden/lift_answers.ll.zst, .idx.json   the answers module (game.answers_ir), listed last in partitions
-    work/ounce/golden/compile.json       each partition's (and the answers module's) clang flags and `opt` command
-                                         (game.part_flags, game.opt_argv: cold O1, hot O2), and the generated C's
-                                         flags (build.flags)
-    work/ounce/golden/gen/<file>.zst     the lift's generated files : a64_table.c,
-                                         a64_hooks.c, a64_code_slots.c, a64_stubs.c, hos_image.c, nvn2_exports.c,
-                                         functions.txt
-    work/ounce/golden/rt64/<file>.zst    a64.h, a64_rt.c (the build writes them before compiling)
-    work/ounce/golden/reference/image/<file>.zst   image.json, functions.json: not compile inputs (below)
-
-The golden is everything generated before the compile of a standalone lift and build, of the lift whose LIFT_OK
-meta.json records (`lift`) and the dump in `dump` (game.json: build id, main's sha256). `files` gates the compile
-inputs: the sha256 (uncompressed) of every file under gen/ and rt64/, and of `image/image.bin`, the run-time image
-hookshot loads (by its sha256 alone: the file is not in the golden). `reference` lists reference/image/image.json and
-functions.json with their sha256, not gated: the image stage's intermediate data, which nothing reads at run time (the
-Rust pipeline keeps it in memory), kept to check that stage against. Not included at all: the plan and summary pickles
-(the lift's hand-off to the build: their content is in the IR), the host's C, a64-kit's, the direct back end's and
-third-party sources (checked in, not generated), and the version stamp `build.py` passes to hos_main.c alone.
-
-`ounce/lift/tools/compare.py <dir of Rust .ll>` compares `<dir>/<name>.ll` against the golden, per partition (and
-`lift_answers`).
+   The Rust side writes `<dir>/lift_answers.ll`.

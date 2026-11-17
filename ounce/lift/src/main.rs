@@ -1,18 +1,14 @@
-//! ounce-lift [<export dir>] <out dir> [-j N] [--parts a,b,...] [--skip] [--check] [--golden <dir>] [--game <dir>]
-//! [--work <dir>] [--exefs <dir>] [--root <dir>]: the whole lift from the dump's exefs, the host's C and the game
-//! description: gen/, image/image.bin and one .ll per partition (EXPORT.md).
+//! ounce-lift <out dir> [-j N] [--parts a,b,...] [--skip] [--game <dir>] [--work <dir>] [--exefs <dir>] [--root <dir>]:
+//! the whole lift from the dump's exefs, the host's C and the game description: gen/, image/image.bin and one .ll per
+//! partition (EXPORT.md).
 //! --skip: a function using a template not ported yet is left out and counted ("skipped: template X").
-//! --check: compare the scan, the image, the plan, every summary and record with Python's (the export) and stop.
-//! --golden: gen/ and image.bin against the golden's sha256.
 
 use ounce_lift::game::Game;
 use ounce_lift::gen;
 use ounce_lift::patch;
 use ounce_lift::pipeline;
 use ounce_lift::session::Opts;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 mod tools;
 
@@ -40,48 +36,6 @@ mod count {
     }
     #[global_allocator]
     static A: Counting = Counting;
-}
-
-/// the generated files (gen/) and image.bin against the golden's sha256 (diffout --store's meta.json: "files" for gen/,
-/// "image_sha256"); the partitions and facts.tsv are diffout's to compare. The count of files that differ or that
-/// only one side has
-fn check_golden(golden: &std::path::Path, files: &[(String, Vec<u8>)], image: &[u8]) -> usize {
-    use sha2::{Digest, Sha256};
-    let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(golden.join("meta.json")).expect("golden meta.json")).unwrap();
-    let hex = |d: &[u8]| Sha256::digest(d).iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let want: BTreeMap<&str, &str> = meta["files"]
-        .as_object()
-        .expect("golden files")
-        .iter()
-        .filter(|(k, _)| k.starts_with("gen/"))
-        .map(|(k, v)| (k.as_str(), v.as_str().unwrap_or("")))
-        .collect();
-    let (mut bad, mut equal) = (0, 0);
-    for (name, data) in files {
-        match want.get(name.as_str()) {
-            Some(w) if *w == hex(data) => equal += 1,
-            Some(_) => {
-                bad += 1;
-                println!("golden: {name} differs");
-            }
-            None => {
-                bad += 1;
-                println!("golden: {name} is not in the golden");
-            }
-        }
-    }
-    for name in want.keys().filter(|k| !files.iter().any(|f| f.0 == **k)) {
-        bad += 1;
-        println!("golden: {name} is in the golden only");
-    }
-    if meta["image_sha256"].as_str() == Some(hex(image).as_str()) {
-        equal += 1;
-    } else {
-        bad += 1;
-        println!("golden: image/image.bin differs");
-    }
-    println!("golden: {equal} of {} files equal (gen/, image.bin)", want.len() + 1);
-    bad
 }
 
 /// `ounce-lift records [--game <dir>] [--root <dir>] <object>...`: the host objects' hos_patch records against the scan
@@ -143,7 +97,7 @@ fn fail(msg: impl std::fmt::Display) -> ! {
 }
 
 const HELP: &str = "ounce-lift: the lifter. Subcommands (each but rt64, records and scan reads the dump; OPTS: --game <dir> (games/oot), --work <dir> (work), --root <dir> (.), --exefs <dir>):
-  [lift] <out> [-j N] [--parts a,b] [--skip] [--golden <dir>] OPTS   the lift: <out>/gen, image/image.bin, lift_*.ll
+  [lift] <out> [-j N] [--parts a,b] [--skip] OPTS                  the lift: <out>/gen, image/image.bin, lift_*.ll
   rt64 <dir> [--root <dir>]                                         the guest model (a64.h, a64_rt.c)
   records [--game] [--root] <object>...                             the host objects' hos_patch records against the scan
   scan [--game] [--root] [<out.json>]                               the host's declarations as the lift reads them, as JSON
@@ -173,35 +127,24 @@ fn lift(argv: Vec<String>) {
     let mut args = argv.into_iter();
     let mut out = None::<PathBuf>;
     let mut r = pipeline::Run { jobs: std::thread::available_parallelism().map_or(1, |n| n.get()), ..Default::default() };
-    let mut golden = None::<PathBuf>;
     while let Some(a) = args.next() {
         match a.as_str() {
             "-j" => r.jobs = args.next().unwrap().parse().unwrap(),
             "--parts" => r.only = Some(args.next().unwrap().split(',').map(String::from).collect()),
             "--skip" => r.skip = true,
-            "--golden" => golden = Some(PathBuf::from(args.next().unwrap())),
             _ if opt_arg(&mut r.opts, &a, &mut args) => {}
             _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
-            _ => fail(format!("lift: what is {a}? usage: ounce-lift [lift] <out dir> [-j N] [--parts a,b] [--skip] [--golden <dir>] {OPTS}")),
+            _ => fail(format!("lift: what is {a}? usage: ounce-lift [lift] <out dir> [-j N] [--parts a,b] [--skip] {OPTS}")),
         }
     }
-    let out = out.unwrap_or_else(|| fail(format!("usage: ounce-lift [lift] <out dir> [-j N] [--parts a,b] [--skip] [--golden <dir>] {OPTS}")));
+    let out = out.unwrap_or_else(|| fail(format!("usage: ounce-lift [lift] <out dir> [-j N] [--parts a,b] [--skip] {OPTS}")));
     std::fs::create_dir_all(&out).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
-    let dir = Dir { root: out, gen: Mutex::new(Vec::new()), image: Mutex::new(Vec::new()) };
-    pipeline::lift(&r, &dir).unwrap_or_else(|e| fail(e));
-    if let Some(g) = golden {
-        let (gen, image) = (dir.gen.into_inner().unwrap(), dir.image.into_inner().unwrap());
-        if check_golden(&g, &gen, &image) > 0 {
-            std::process::exit(1);
-        }
-    }
+    pipeline::lift(&r, &Dir { root: out }).unwrap_or_else(|e| fail(e));
 }
 
-/// The lift's output as files under `root`; gen/ and the image also kept for the golden check
+/// The lift's output as files under `root`
 struct Dir {
     root: PathBuf,
-    gen: Mutex<Vec<(String, Vec<u8>)>>,
-    image: Mutex<Vec<u8>>,
 }
 
 impl pipeline::Out for Dir {
@@ -209,11 +152,6 @@ impl pipeline::Out for Dir {
         let p = self.root.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, &data).unwrap_or_else(|e| fail(format!("{}: {e}", p.display())));
-        if rel.starts_with("gen/") {
-            self.gen.lock().unwrap().push((rel.to_string(), data));
-        } else if rel == "image/image.bin" {
-            *self.image.lock().unwrap() = data;
-        }
     }
 
     fn part(&self, name: &str, head: &[u8], body: &[u8]) {

@@ -1,14 +1,11 @@
-//! The lift export (ounce/lift/EXPORT.md): meta.json and parts/<name>.json, read into typed records.
-//!
-//! A partition's JSON is parsed borrowing from the file's bytes, then turned into the records the lift reads: the
-//! words decoded once, the register masks as u128, every name a `Sym` (the `f_`/`sjcall_` ones as their address, the
-//! others interned in the partition's `Names`).
+//! The lift's typed records, in the shapes the export had them (ounce/lift/EXPORT.md): the scan's products (`Meta`),
+//! the partitions' functions with the words decoded once, the call-boundary records with the register masks as u128,
+//! every name a `Sym` (the `f_`/`sjcall_` ones as their address, the others interned in the partition's `Names`).
 
 use crate::ir::Sym;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::Path;
 
 #[derive(Deserialize, Debug)]
 pub struct Meta {
@@ -236,13 +233,6 @@ impl BoundKind {
             BoundKind::Stop => "stop",
         }
     }
-    fn parse(s: &str) -> BoundKind {
-        use BoundKind::*;
-        [Lifted, Noreturn, Hle, PatchFunc, SetjmpOwner, NoSummary, Demoted, HleClobbering, PatchFuncUnproven, Answer, Stop]
-            .into_iter()
-            .find(|k| k.name() == s)
-            .unwrap_or_else(|| panic!("export: record kind {s}"))
-    }
 }
 
 /// a call-boundary record (bounds.Bound)
@@ -409,110 +399,4 @@ pub struct Func {
     pub values: Vec<ValueRow>,
     pub rows: Vec<AtRow>,
     pub func: Option<PatchFunc>,
-}
-
-// ---- the JSON as written, borrowed from the file's bytes
-
-fn mask(s: &str) -> u128 {
-    u128::from_str_radix(s, 16).unwrap_or_else(|e| panic!("export: mask {s}: {e}"))
-}
-
-#[derive(Deserialize)]
-struct RawBound<'a> {
-    addr: u64,
-    #[serde(borrow)]
-    kind: Cow<'a, str>,
-    #[serde(borrow)]
-    reads: Cow<'a, str>,
-    #[serde(borrow)]
-    clobbers: Cow<'a, str>,
-    #[serde(borrow)]
-    keeps: Cow<'a, str>,
-    #[serde(borrow)]
-    must: Cow<'a, str>,
-    #[serde(borrow)]
-    results: Cow<'a, str>,
-    noreturn: bool,
-    #[serde(borrow)]
-    symbol: Cow<'a, str>,
-    #[serde(borrow)]
-    tail: Cow<'a, str>,
-    #[serde(default)]
-    answer: Option<u64>,
-}
-
-impl RawBound<'_> {
-    fn typed(&self, names: &mut Names) -> Bound {
-        Bound {
-            kind: BoundKind::parse(&self.kind),
-            addr: self.addr,
-            reads: mask(&self.reads),
-            clobbers: mask(&self.clobbers),
-            keeps: mask(&self.keeps),
-            must: mask(&self.must),
-            results: mask(&self.results),
-            noreturn: self.noreturn,
-            stop: self.kind == "stop",
-            symbol: names.sym(&self.symbol),
-            tail: names.sym(&self.tail),
-            answer: self.answer,
-        }
-    }
-}
-
-pub fn read_meta(dir: &Path) -> Result<Meta, String> {
-    let p = dir.join("meta.json");
-    let s = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    serde_json::from_slice(&s).map_err(|e| format!("{}: {e}", p.display()))
-}
-
-/// the diagnostic's reference (check/bounds.json): Python's records of every callee the partitions read, and the
-/// PATCH_FUNCs' own records; the symbols as names
-pub struct CheckBounds {
-    pub bounds: Vec<Bound>,
-    pub own: Vec<Bound>,
-    pub names: Names,
-}
-
-pub fn read_check_bounds(dir: &Path) -> Result<CheckBounds, String> {
-    #[derive(Deserialize)]
-    struct Raw<'a> {
-        #[serde(borrow)]
-        bounds: Vec<RawBound<'a>>,
-        #[serde(borrow)]
-        own: Vec<RawBound<'a>>,
-    }
-    let p = dir.join("check").join("bounds.json");
-    let s = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    let raw: Raw = serde_json::from_slice(&s).map_err(|e| format!("{}: {e}", p.display()))?;
-    let mut names = Names::default();
-    let bounds = raw.bounds.iter().map(|b| b.typed(&mut names)).collect();
-    let own = raw.own.iter().map(|b| b.typed(&mut names)).collect();
-    Ok(CheckBounds { bounds, own, names })
-}
-
-/// a packed summary as check/summaries.json has it (summary.pack): [entry, inputs, clobbers, mustdef, preserved,
-/// results, returns, demote, unknown, frame, pairs, boundary, fp, writes_fpcr]
-#[derive(Deserialize, Debug)]
-pub struct PackedSummary(
-    pub u64,
-    #[serde(deserialize_with = "de_mask")] pub u128,
-    #[serde(deserialize_with = "de_mask")] pub u128,
-    #[serde(deserialize_with = "de_mask")] pub u128,
-    #[serde(deserialize_with = "de_mask")] pub u128,
-    #[serde(deserialize_with = "de_mask")] pub u128,
-    pub bool,
-    pub Vec<String>,
-    pub bool,
-    pub i64,
-    pub u32,
-    pub bool,
-    pub bool,
-    pub bool,
-);
-
-pub fn read_check_summaries(dir: &Path) -> Result<Vec<PackedSummary>, String> {
-    let p = dir.join("check").join("summaries.json");
-    let s = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    serde_json::from_slice(&s).map_err(|e| format!("{}: {e}", p.display()))
 }

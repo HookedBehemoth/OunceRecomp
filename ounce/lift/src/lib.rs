@@ -3,7 +3,6 @@
 
 pub mod bounds;
 pub mod build;
-pub mod check;
 pub mod discover;
 pub mod eden;
 pub mod emit;
