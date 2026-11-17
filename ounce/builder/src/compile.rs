@@ -1,5 +1,5 @@
-//! The lifted code's compile: nx2/build.py's flags, pass pipelines and code generation levels, in this process.
-//! Each partition's object equals the one build.py makes (`opt | clang -x ir -c`), byte for byte.
+//! The lifted code's compile in this process: each partition's object is the one `opt | clang -x ir -c` makes with
+//! the same flags, pass pipeline and code generation level, byte for byte.
 
 use crate::llvm;
 use std::sync::{Condvar, Mutex};
@@ -7,7 +7,7 @@ use std::sync::{Condvar, Mutex};
 /// every partition's (and the generated code's) CPU: the game is built for x86-64-v3 alone
 pub const CPU: &str = "x86-64-v3";
 
-/// clang's and opt's -mllvm options of a partition (build.py DSE_FLAGS). LLVM's options are globals of the process:
+/// clang's and opt's -mllvm options of a partition (the dead-store limits). LLVM's options are globals of the process:
 /// `use_options` sets them for a phase of compiles that all want the same values.
 pub const LLVM_OPTIONS: &[(&str, u32)] = &[
     ("capture-tracking-max-uses-to-explore", 100000),
@@ -40,12 +40,12 @@ pub fn use_options(over: &[(&str, u32)]) {
     }
 }
 
-/// clang 23's -O1 pipeline for x86-64-v3 with `dse` after `memcpyopt`: build.py's `opt` for the cold partitions
-/// (opt_argv: the pipeline text clang prints, which `opt` parses, so the text is exactly what build.py runs)
+/// clang 23's -O1 pipeline for x86-64-v3 with `dse` after `memcpyopt`: the cold partitions' pipeline
+/// (the pipeline text clang prints, which `opt` parses)
 pub const PIPELINE_COLD: &str = include_str!("../data/pipeline_cold_O1.txt");
 
-/// LoopRotation's -rotation-max-header-size: build.py gives `-rotation-max-header-size=0` to clang, which runs the
-/// hot partitions' pipeline, but not to the cold ones' `opt` (the default, 16). The option is a global LLVM reads
+/// LoopRotation's -rotation-max-header-size: 0 for the hot partitions' pipeline, the default (16) for the cold
+/// ones'. The option is a global LLVM reads
 /// while the pass runs, so the gate below keeps hot and cold compiles from running at the same time.
 const ROTATION_HOT: u32 = 0;
 const ROTATION_COLD: u32 = 16;
@@ -99,7 +99,7 @@ fn gated<R>(rotation: Option<u32>, f: impl FnOnce() -> R) -> R {
     r
 }
 
-/// a partition's object. `name` is the module's source name, which the object's file symbol holds (build.py pipes
+/// a partition's object. `name` is the module's source name, which the object's file symbol holds (clang reading
 /// the IR to clang: "<stdin>", for objects equal to its)
 pub fn partition(ir: &[u8], name: &str, level: Level) -> Result<Vec<u8>, String> {
     let r = level.recipe();

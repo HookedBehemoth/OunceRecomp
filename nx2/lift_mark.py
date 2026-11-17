@@ -2,7 +2,7 @@
 
 nx2/lift.py --write marks the folder LIFT_INCOMPLETE before it writes anything and, as its last step, replaces the mark
 by LIFT_OK (the lifter's commit and the switches it ran with). A lift that is killed (out of memory, a signal) leaves
-LIFT_INCOMPLETE behind, and nx2/build.py and scripts/play-refresh.sh refuse to build from it: a half-written gen/ once
+LIFT_INCOMPLETE behind, and nothing may build from it: a half-written gen/ once
 built and was stamped as the play build. A folder with neither mark (lifted before the marks) builds as before.
 
 LIFT_OK also records a hash of the lift's inputs (inputs_hash: the lift's sources in nx2/, the

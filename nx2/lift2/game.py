@@ -1,4 +1,4 @@
-"""The game's lift and build (nx2/lift.py, nx2/build.py): every function of the game through the lifter.
+"""The game's lift (nx2/lift.py): every function of the game through the lifter.
 
 At lift time write_plan() keeps what the build needs from the discovery (nx2/lift2/discover.py): the entries, jump
 tables, PLT stubs, setjmp owners, hooked addresses, the hot list, and every function's instructions, in

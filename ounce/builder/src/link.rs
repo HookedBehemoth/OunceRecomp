@@ -1,5 +1,5 @@
 //! The game's link: lld in this process (src/lld_shim.cpp), with the command line clang's driver gives ld.lld for
-//! build.py's `clang -fuse-ld=lld -o hookshot ...` (a PIE against glibc, libgcc's start and end files).
+//! `clang -fuse-ld=lld -o hookshot ...` (a PIE against glibc, libgcc's start and end files).
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -91,7 +91,7 @@ pub struct Exe<'a> {
     pub out: &'a Path,
     /// the link map beside it (crash offsets -> functions)
     pub map: Option<&'a Path>,
-    /// the objects, in build.py's order (its objs.rsp)
+    /// the objects, in the link's order
     pub objects: &'a [PathBuf],
     /// --symbol-ordering-file (order_file's)
     pub order: Option<&'a Path>,
@@ -99,7 +99,7 @@ pub struct Exe<'a> {
     pub libs: &'a [String],
 }
 
-/// build.py's link line, as clang's driver expands it for ld.lld
+/// the game's link line, as clang's driver expands `clang -fuse-ld=lld` for ld.lld
 pub fn exe_args(x: &Exe, s: &Sysroot) -> Vec<String> {
     let p = |p: &Path| p.to_string_lossy().into_owned();
     let mut a: Vec<String> = ["--hash-style=gnu", "--build-id", "--eh-frame-hdr", "-m", "elf_x86_64", "-pie", "-dynamic-linker",

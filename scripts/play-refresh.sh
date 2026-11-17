@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Keeps the build scripts/play.sh runs (the main checkout's work/sa/build) at its native-vk head: builds there and writes
 # work/sa/build/BUILD.txt (short hash, date, subject) last. Exit 0 only when BUILD.txt names HEAD. Needs a clean native-vk
-# checkout; one build at a time (flock on work/sa/build/.build.lock). Log: work/play/refresh.log. The build lifts the game
-# first (ounce-lift, about 8 s) and takes every partition whose IR did not change from the object cache. A change the
+# checkout; one build at a time (flock on work/sa/build/.build.lock). Log: work/play/refresh.log. The build is
+# scripts/build.sh: it lifts the game first (about 8 s) and takes every object whose inputs did not change from
+# work/builder-cache. A change the
 # commit does not show (the hot list, the dump) needs scripts/relift.sh, which builds even when BUILD.txt names HEAD. Heavy
 # work takes work/heavy.lock (one heavy job on the machine at a time) and runs in a memory-capped scope
 # (HOOKSHOT_REFRESH_MEM, 18G).
@@ -47,14 +48,12 @@ exec 9>"$bd/.build.lock"; flock 9
 [ "$(git rev-parse --abbrev-ref HEAD)" = native-vk ] || fail "the main checkout is not on native-vk"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || fail "the main checkout has uncommitted changes"
 head=$(git rev-parse --short HEAD)
-game=games/oot   # (the game description the lift and the build take: games/oot/game.toml)
 if [ "$(head -1 "$bd/BUILD.txt" 2>/dev/null)" = "$head" ]; then echo "play-refresh: work/sa/build already names $head"; exit 0; fi
 rm -f "$bd/BUILD.txt"
 start=$(date +%s)
 {
   echo "== $(date '+%F %T') refresh to $head"
-  HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
-    capped work/venv/bin/python -I -u nx2/build.py --game "$game"
+  capped scripts/build.sh
 } > "$log" 2>&1 || fail "the build failed"
 printf '%s\n%s %s\n' "$head" "$(date +%F)" "$(git log -1 --format=%s)" > "$bd/BUILD.txt.new" && mv -f "$bd/BUILD.txt.new" "$bd/BUILD.txt"
 echo "play-refresh: work/sa/build is $head ($(( $(date +%s) - start )) s)" | tee -a "$log"

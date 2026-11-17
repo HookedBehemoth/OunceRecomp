@@ -1,5 +1,4 @@
-//! A C file compiled in this process by clang's libraries (src/clang_shim.cpp): the driver's arguments, as build.py
-//! gives them to clang, -> the object's bytes.
+//! A C file compiled in this process by clang's libraries (src/clang_shim.cpp): clang's driver arguments -> the object's bytes.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 

@@ -26,18 +26,18 @@ use std::time::Instant;
 const LLVM_MAJOR: u32 = 23;
 
 const HELP: &str = "hookshot-builder <command> ...
-  compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object, as nx2/build.py compiles it
+  compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
   lift-compile <out dir> [-j N] [--check <obj dir>] [--cache <dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
                                        the lift and the compile of every partition and generated module, in memory
   build <out dir> --direct <hookshot_direct.so> [-j N] [--cache <dir>] [--version <text>] [--check <obj dir>]
-        [--gen <lift dir>] [--progress] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
+        [--gen <lift dir> [--gen-parts]] [--progress] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
                                        the game folder: the lift, every compile and the link in this process (feature clang)
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
-                                       the game's link (build.py's objs.rsp), lld in this process
+                                       the game's link (a list of objects), lld in this process
   objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
   compile-c <out.o> -- <clang args>... a C file compiled in this process by clang's libraries (feature clang)
-  version [<root>]                     the version text a build stamps (nx2/version.py's; feature clang)
+  version [<root>]                     the version text a build stamps (feature clang)
   llvm-version                         the libLLVM this process uses";
 
 pub fn fail(msg: impl std::fmt::Display) -> ! {
@@ -98,7 +98,7 @@ fn main() {
 }
 
 /// `compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]`: every lift_*.ll and gen/*.ll of a lift, compiled
-/// as build.py compiles it (lift_h*: hot, the rest cold); --check compares each object with build.py's of the same name
+/// (lift_h*: hot, the rest cold); --check compares each object with the one of the same name there
 fn compile_all(args: &[String]) {
     let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     let (mut dirs, mut check) = (Vec::new(), None::<PathBuf>);
@@ -112,7 +112,7 @@ fn compile_all(args: &[String]) {
     }
     let [src, out] = &dirs[..] else { fail("compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]") };
     std::fs::create_dir_all(out).unwrap_or_else(|e| fail(format!("{}: {e}", out.display())));
-    // (the partitions, lift_*.ll, and the generated code, gen/*.ll, which build.py compiles as lift_answers)
+    // (the partitions, lift_*.ll, and the generated code, gen/*.ll, compiled as lift_answers is)
     let list = |d: &std::path::Path| -> Vec<PathBuf> {
         std::fs::read_dir(d).unwrap_or_else(|e| fail(format!("{}: {e}", d.display()))).filter_map(|e| e.ok()).map(|e| e.path()).collect()
     };
@@ -242,7 +242,7 @@ fn lift_compile(args: &[String]) {
     let t = Instant::now();
     let cache = cache_dir.map(|d| cache::Cache::open(&d).unwrap_or_else(|e| fail(e)));
     let gate = gate::Gate::new();
-    let aux = lift::Aux { gen: None, gate: &gate, progress: None };
+    let aux = lift::Aux { gen: None, gen_parts: false, gate: &gate, progress: None };
     let d = lift::lift_compile(&run, &out, cjobs, cache.as_ref(), check.as_deref(), &aux).unwrap_or_else(|e| fail(e));
     let (cpu, hwm) = ounce_lift::pipeline::usage();
     println!(
@@ -265,14 +265,14 @@ fn lift_compile(args: &[String]) {
 const RESOURCE_DIR: &str = env!("HK_CLANG_RESOURCE_DIR");
 
 /// `build <out dir> --direct <so> ...`: the game folder (hookshot, hookshot_direct.so, image.bin) from the dump,
-/// with nx2/build.py's objects and link, and its checks
+/// and its checks
 #[cfg(feature = "clang")]
 fn build(args: &[String]) {
     let jobs = gate::default_jobs();
     let mut run = ounce_lift::pipeline::Run { jobs: std::thread::available_parallelism().map_or(1, |n| n.get()), hot_first: true, ..Default::default() };
     let (mut cjobs, mut out, mut check, mut direct) = (jobs, None::<PathBuf>, None::<PathBuf>, None::<PathBuf>);
     let (mut cache_dir, mut version, mut resource) = (None::<PathBuf>, None::<String>, PathBuf::from(RESOURCE_DIR));
-    let (mut gen, mut progress) = (None::<PathBuf>, false);
+    let (mut gen, mut gen_parts, mut progress) = (None::<PathBuf>, false, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
@@ -284,6 +284,7 @@ fn build(args: &[String]) {
             "--version" => version = Some(val()),
             "--resource-dir" => resource = val().into(),
             "--gen" => gen = Some(val().into()),
+            "--gen-parts" => gen_parts = true,
             "--progress" => progress = true,
             "--game" => run.opts.game = val().into(),
             "--work" => run.opts.work = val().into(),
@@ -313,7 +314,19 @@ fn build(args: &[String]) {
     let cache = cache::Cache::open(&cache_dir).unwrap_or_else(|e| fail(e));
     let gate = gate::Gate::new();
     let prog = progress::Progress::new(progress, cjobs, &cache_dir);
-    let aux = lift::Aux { gen: gen.as_deref(), gate: &gate, progress: Some(&prog) };
+    if gen_parts && gen.is_none() {
+        fail("--gen-parts wants --gen <dir>");
+    }
+    if let Some(g) = gen.as_deref() {
+        // (an earlier lift's partitions: the count changes with the code, and without --gen-parts none are current)
+        for e in std::fs::read_dir(g).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("lift_") && n.ends_with(".ll") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let aux = lift::Aux { gen: gen.as_deref(), gen_parts, gate: &gate, progress: Some(&prog) };
     println!("build: {version}; {cjobs} jobs, the memory gate {}", if std::env::var("HOOKSHOT_MEM_GATE").is_ok_and(|v| v == "0") { "off" } else { "on" });
     compile::init().unwrap_or_else(|e| fail(e));
     let game = ounce_lift::game::Game::load(&run.opts.game).unwrap_or_else(|e| fail(e));
@@ -342,7 +355,7 @@ fn build(args: &[String]) {
         fail(format!("objects unlike the check folder's: {}", d.differ.join(" ")));
     }
     prog.save();
-    // (build.py's order: the partitions largest IR first, the generated code, the runtime, the host)
+    // (the link's order: the partitions largest IR first, the generated code, the runtime, the host)
     let mut parts: Vec<&(String, usize)> = d.objects.iter().filter(|o| o.0.starts_with("lift_")).collect();
     parts.sort_by_key(|o| std::cmp::Reverse(o.1));
     let mut objects: Vec<PathBuf> = parts.iter().map(|o| obj.join(format!("{}.o", o.0))).collect();

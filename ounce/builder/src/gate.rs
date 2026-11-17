@@ -1,4 +1,4 @@
-//! The memory gate (nx2/build.py MemoryGate): a compile starts when the memory free, less what the compiles that
+//! The memory gate: a compile starts when the memory free, less what the compiles that
 //! started a moment ago may still take, keeps its own need and a reserve (HOOKSHOT_MEM_RESERVE_GB, 1.5) free. At least
 //! one compile always runs. HOOKSHOT_MEM_GATE=0 turns it off. The free memory is the smaller of MemAvailable and the
 //! room under the tightest memory.max of this process's cgroups (a capped scope).

@@ -1,6 +1,6 @@
 //! The lift and the compile in one process: ounce-lift's pipeline hands each partition and each generated module to
 //! the compile threads, LZ4-compressed, so no IR is written to disk and the lift (and its state) ends within seconds
-//! instead of living as long as the compile. The objects are build.py's: the partitions at their level (lift_h*:
+//! instead of living as long as the compile. The objects: the partitions at their level (lift_h*:
 //! hot), the generated code and lift_answers cold; each one comes from the cache when its key is there.
 
 use crate::cache::{Cache, Key};
@@ -22,8 +22,10 @@ struct Queue<'a> {
     held: Mutex<Option<Vec<Job>>>,
     /// image.bin lands here
     dir: &'a Path,
-    /// the lift's folder for the RE tools (gen/*.ll, gen/functions.txt, facts.tsv), when asked for
+    /// the lift's folder for the RE tools (gen/*.ll, gen/functions.txt, facts.tsv, image/image.bin), when asked for
     gen: Option<&'a Path>,
+    /// the partitions' IR there too (lift_*.ll: diffout, dump.py)
+    gen_parts: bool,
 }
 
 impl Queue<'_> {
@@ -52,7 +54,7 @@ impl Queue<'_> {
 
 impl Out for Queue<'_> {
     fn file(&self, rel: &str, data: Vec<u8>) {
-        if let Some(g) = self.gen.filter(|_| rel.starts_with("gen/") || rel == "facts.tsv" || rel.ends_with(".ll")) {
+        if let Some(g) = self.gen {
             let p = g.join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).and_then(|_| std::fs::write(&p, &data)).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         }
@@ -73,6 +75,10 @@ impl Out for Queue<'_> {
     }
 
     fn part(&self, name: &str, head: &[u8], body: &[u8]) {
+        if let Some(g) = self.gen.filter(|_| self.gen_parts) {
+            let p = g.join(format!("{name}.ll"));
+            std::fs::write(&p, [head, body].concat()).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        }
         let level = if name.starts_with("lift_h") { Level::Hot } else { Level::Cold };
         if level == Level::Cold {
             self.release();
@@ -88,7 +94,7 @@ impl Out for Queue<'_> {
 /// What the compile threads did
 #[derive(Default)]
 pub struct Done {
-    /// (name, its IR's size in bytes: build.py links the partitions largest first) of every object made
+    /// (name, its IR's size in bytes: the link takes the partitions largest first) of every object made
     pub objects: Vec<(String, usize)>,
     pub cached: usize,
     pub compile_s: f64,
@@ -98,10 +104,11 @@ pub struct Done {
 }
 
 /// Lifts with `run` and compiles every module into `out`/<name>.o with `jobs` compile threads; `cache`: objects by
-/// key; `check`: a folder of build.py's objects, each compared byte for byte, then by objeq when the bytes differ
+/// key; `check`: a folder of objects to compare with, each compared byte for byte, then by objeq when the bytes differ
 /// The lift's helpers: where the RE tools' files go, the memory gate, the progress lines
 pub struct Aux<'a> {
     pub gen: Option<&'a Path>,
+    pub gen_parts: bool,
     pub gate: &'a crate::gate::Gate,
     pub progress: Option<&'a crate::progress::Progress>,
 }
@@ -111,7 +118,7 @@ pub fn lift_compile(run: &pipeline::Run, out: &Path, jobs: usize, cache: Option<
     compile::init()?;
     let (tx, rx) = channel::<Job>();
     let rx = Mutex::new(rx);
-    let q = Queue { tx: Mutex::new(Some(tx)), held: Mutex::new(Some(Vec::new())), dir: out, gen: aux.gen };
+    let q = Queue { tx: Mutex::new(Some(tx)), held: Mutex::new(Some(Vec::new())), dir: out, gen: aux.gen, gen_parts: aux.gen_parts };
     let done = Mutex::new(Done::default());
     let t0 = Instant::now();
     let lifted = std::thread::scope(|s| {

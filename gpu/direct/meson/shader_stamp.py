@@ -6,7 +6,7 @@ shared for the compute programs.
     shader_stamp.py graphics|compute <out header> <depfile>
 
 writes `#define HOOKSHOT_DIRECT_SHADER_STAMP` (graphics) or `HOOKSHOT_DIRECT_COMPUTE_STAMP` (compute) and a depfile naming
-every file and folder the stamp read, so a new translator file makes it again. nx2/build.py uses stamp() too.
+every file and folder the stamp read, so a new translator file makes it again.
 """
 import hashlib
 import os

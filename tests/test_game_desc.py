@@ -3,8 +3,8 @@
 - games/oot loads; its host files exist, each once, and every host/*.c is some game's;
 - the identity: a dump whose main has another build id, or the same build id and other bytes, stops with both values
   (check_exefs); a lift recorded for another game or version, or none, stops the build (check_lift);
-- nx2/lift.py and nx2/build.py stop on a wrong identity before anything else (run here on a fabricated exefs and a
-  fabricated lift record: no dump needed), and neither runs without --game;
+- nx2/lift.py stops on a wrong identity before anything else (run here on a fabricated exefs and a
+  fabricated lift record: no dump needed), and it does not run without --game;
 - the hot list is one file beside the description; a missing one stops and names it.
 No game is used.
 
@@ -115,7 +115,7 @@ class Description(unittest.TestCase):
         e.update(env)
         return subprocess.run([py, "-I", "-B"] + args, capture_output=True, text=True, env=e, cwd=ROOT, timeout=120)
 
-    def test_lift_and_build_stop(self):
+    def test_lift_stops(self):
         with tempfile.TemporaryDirectory() as d:
             exefs, _ = self.fake(d)
             _, other = self.fake(os.path.join(d, "o"), build_id="22" * 20)
@@ -136,14 +136,7 @@ class Description(unittest.TestCase):
                 self.assertIn("--game", r.stderr)
             else:
                 print("(the lift's run skipped: no python with lz4 here)")
-            # (the build: a lift recorded for the fabricated game, built with another description)
-            gamedesc.load(os.path.join(d, "games", "fake")).record(os.path.join(work, "sa"))
-            r = self.run_py(["nx2/build.py", "--game", other, "--jobs", "1"], {"OOT_WORK": work})
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn("is of another game or version: its build_id is %s" % BUILD_ID, r.stdout + r.stderr)
-            r = self.run_py(["nx2/build.py", "--jobs", "1"], {"OOT_WORK": work})
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn("--game", r.stderr)
+
 
 
 if __name__ == "__main__":

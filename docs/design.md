@@ -13,11 +13,11 @@ work runs on Vulkan. No CPU or GPU is emulated at any point.
 exefs/{rtld,main,subsdk0,sdk} + romfs/       your dump, read where it lies (work/dump.txt)
       |  nx2/nup.py, nx2/unpack.py: extract the package, make compressed modules plain
       v
-image: modules loaded at 0x80000000 and relocated, imports bound, replaced SDK functions hooked   (nx2/image.py)
-      |  nx2/lift.py --game games/oot: find the functions and write the plan                    (work/sa)
+image: modules loaded at 0x80000000 and relocated, imports bound, replaced SDK functions hooked   (ounce/lift)
+      |  discovery and the plan: the functions, the partitions
       v
-lifter: AArch64 -> typed SSA IR -> LLVM IR, one module per partition                          (nx2/lift2)
-      |  nx2/build.py --game games/oot: clang, then link with the runtime and host/
+lifter: AArch64 -> typed SSA IR -> LLVM IR, one module per partition                          (ounce/lift)
+      |  hookshot-builder build (scripts/build.sh): LLVM and clang in one process, then lld
       v
 hookshot            the lifted game + host/ (Horizon: threads, memory, files, input, audio, display, NVN2)
 hookshot_direct.so  the direct back end (gpu/direct), loaded by the host at start

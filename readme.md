@@ -31,15 +31,14 @@ A build takes tens of minutes and about 60 GB of disk; a run uses about 10 GB of
 scripts/linux/deps.sh                      # LLVM, Python, FFmpeg, SDL2, Vulkan headers
 python -I nx2/nup.py <your-game.nup> --extract work/dump
 python -I nx2/dump.py --dump work/dump --set
-python -I nx2/lift.py --game games/oot --standalone --write
-python -I nx2/build.py --game games/oot --standalone
+scripts/build.sh                           # the renderer (Meson), then the lift, compile and link
 ```
 
-The build writes `work/sa/build/hookshot` and `hookshot_direct.so`. Run it with the image, the RomFS and a folder for
-the saves:
+The build writes the game folder `work/sa/build`: `hookshot`, `hookshot_direct.so` and `image.bin`. Run it with the
+RomFS and a folder for the saves:
 
 ```sh
-work/sa/build/hookshot work/sa/image/image.bin --romfs work/dump/romfs --user work/user
+work/sa/build/hookshot --romfs work/dump/romfs --user work/user
 ```
 
 | Argument | What it does |
@@ -54,7 +53,7 @@ The [development guide](docs/development.md) has the build and run loop and the 
 
 ## How it works
 
-1. `nx2/lift.py` and `nx2/build.py` translate the game's AArch64 code to LLVM IR and compile it to native code
+1. `hookshot-builder` (`ounce/`) translates the game's AArch64 code to LLVM IR and compiles it to native code
    ([the lifter](docs/lifter.md)).
 2. `host/` plays the part of the console's system software and is linked with the lifted code.
 3. `host/nvn_native.c` records the game's NVN2 graphics calls, and `gpu/direct` replays them on Vulkan.

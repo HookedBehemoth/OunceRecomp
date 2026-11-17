@@ -22,13 +22,14 @@ or fallback: every instruction form the game contains decodes.
 
 The lift and the build are two separate steps:
 
-1. `nx2/lift.py` loads the game's modules at their addresses, relocates them, finds the functions, and writes the
-   *plan* (`work/sa/plan.pickle`) and the runtime's tables (`work/sa/gen`). The plan holds each function's
-   instructions, not lifted code.
-2. `nx2/build.py` computes the whole-program summaries, lifts every function from the plan into LLVM IR in parallel
-   worker processes, compiles them with clang, and links them with the runtime and `host/`.
+1. `ounce/lift` loads the game's modules at their addresses, relocates them, finds the functions, and makes the
+   *plan*: each function's instructions and its partition. It writes the runtime's tables as IR (`gen/`).
+2. It computes the whole-program summaries and lifts every function from the plan into LLVM IR, one module per
+   partition, in parallel.
+3. `hookshot-builder build` runs both as a library, compiles each module with LLVM as it is made, compiles the host's
+   C with clang, and links everything with lld, in one process (`scripts/build.sh`).
 
-Because the plan holds instructions, a change to the lifter needs only a build, not a new lift.
+Every build lifts again (about 8 s); objects whose IR did not change come from the cache.
 
 | Part | Where | What it does |
 |---|---|---|

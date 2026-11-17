@@ -1,6 +1,5 @@
 //! The host's C, compiled in this process by clang's libraries: host/*.c (the game description's list and the
-//! platform files), libopus 1.5.2 and the guest model's runtime (rt64/a64_rt.c), each with the flags nx2/build.py
-//! gives it, -fstack-protector-strong explicit (the distribution's clang has it on by default; ours does not).
+//! platform files), libopus 1.5.2 and the guest model's runtime (rt64/a64_rt.c), each with its flags, -fstack-protector-strong explicit (the distribution's clang has it on by default; ours does not).
 //! Objects are cached by the files the compile read (its dependency list) and the flags.
 
 use crate::cache::{Cache, Key};
@@ -9,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 pub struct CJob {
-    /// the object's name in the build folder (build.py's: host_<file>.o, opus_<path>.o, a64_rt.o)
+    /// the object's name in the build folder (host_<file>.o, opus_<path>.o, a64_rt.o)
     pub obj: String,
     pub src: PathBuf,
     pub flags: Vec<String>,
@@ -30,7 +29,7 @@ fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// host/*.c and libopus, in build.py's order; `version` is hos_main.c's HOOKSHOT_VERSION
+/// host/*.c and libopus, in the link's order; `version` is hos_main.c's HOOKSHOT_VERSION
 pub fn host_jobs(root: &Path, rt64: &Path, host: &[String], version: &str) -> Result<Vec<CJob>, String> {
     let h = root.join("host");
     let opus = root.join("third_party/opus");
@@ -64,7 +63,7 @@ pub fn host_jobs(root: &Path, rt64: &Path, host: &[String], version: &str) -> Re
     Ok(jobs)
 }
 
-/// rt64/a64_rt.c at the generated code's flags (build.py flags(): -O1 and two -mllvm options)
+/// rt64/a64_rt.c at the generated code's flags (-O1 and two -mllvm options)
 pub fn rt_job(root: &Path, rt64: &Path) -> CJob {
     let mut f = target();
     f.extend([format!("-I{}", s(rt64)), format!("-I{}", s(&root.join("third_party/a64-kit/rt")))]);

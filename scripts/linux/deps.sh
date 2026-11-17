@@ -12,7 +12,7 @@
 #   ffmpeg/           FFmpeg's libavcodec, libswscale, libswresample, libavutil, static and LGPL, with dav1d for OoT's
 #                     AV1 movies (VP8 / VP9 too) - linked into the game
 #   sdl2/             libSDL2-2.0.so.0: the window, sound and controllers, placed beside the game
-#   cpm/              Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator, in the CPM cache layout nx2/build.py reads
+#   cpm/              Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator, in the CPM cache layout
 #   appimagetool      the AppImage packer
 #   runtime-x86_64    the AppImage runtime it puts in front of the image (pinned: appimagetool's own download of the
 #                     'continuous' one, at packing time, fails whenever GitHub answers 504)

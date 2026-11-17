@@ -124,3 +124,25 @@ fn touch(p: &Path) {
         let _ = f.set_modified(std::time::SystemTime::now());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// an object used is kept; one no build used for longer than the days given is removed
+    #[test]
+    fn prune_by_last_use() {
+        let dir = std::env::temp_dir().join(format!("hk-cache-{}", std::process::id()));
+        let c = Cache::open(&dir).unwrap();
+        c.put(Key::new("t").add(b"old"), b"old object").unwrap();
+        c.put(Key::new("t").add(b"new"), b"new object").unwrap();
+        let old = c.path(&Key::new("t").add(b"old").hex());
+        let f = std::fs::OpenOptions::new().append(true).open(&old).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(5 * 86400)).unwrap();
+        let (n, _, _) = c.prune(3.0);
+        assert_eq!(n, 1);
+        assert!(c.get(Key::new("t").add(b"old")).is_none());
+        assert_eq!(c.get(Key::new("t").add(b"new")).as_deref(), Some(&b"new object"[..]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

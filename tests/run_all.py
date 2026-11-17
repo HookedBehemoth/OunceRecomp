@@ -78,7 +78,7 @@ def which(*names):
 
 
 def header_dir(env, cpm_name, probe):
-    """A headers folder: the environment variable, else the CPM cache nx2/build.py reads (RX_CPM, build-linux/deps/cpm)"""
+    """A headers folder: the environment variable, else the CPM cache (RX_CPM, build-linux/deps/cpm)"""
     if os.environ.get(env):
         return os.environ[env]
     for cpm in (os.environ.get("RX_CPM"), os.path.join(ROOT, "build-linux", "deps", "cpm")):

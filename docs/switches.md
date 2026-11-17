@@ -21,8 +21,8 @@ git grep -n 'getenv("HOS_' -- host
 git grep -n 'getenv("RX_' -- host gpu/direct
 ```
 
-The build's own switches are in [Build and iterate on the lifter](lifter-build.md#lifter-switches) and at the top of
-`nx2/build.py`.
+The build's own switches are in [Build and iterate on the lifter](lifter-build.md#lifter-switches) and in
+`hookshot-builder`'s help.
 
 ## Common runtime switches
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # The build again, by force, for the checkout this copy of the script is in (the main checkout or an agent's worktree):
-# every build lifts the game first (ounce-lift, about 8 s; nx2/build.py), so this is a build that does not stop early
+# every build lifts the game first (about 8 s; scripts/build.sh), so this is a build that does not stop early
 # because work/sa/build/BUILD.txt already names HEAD. Use it after a change the commit does not show: the dump, the
 # toolchain.
 #
 #   scripts/relift.sh
 #
 # Stops when a game runs from this checkout's work/sa/build. In the main checkout on native-vk the build is
-# scripts/play-refresh.sh's (it writes work/sa/build/BUILD.txt last), else nx2/build.py here. Log: work/play/relift.log in
+# scripts/play-refresh.sh's (it writes work/sa/build/BUILD.txt last), else scripts/build.sh here. Log: work/play/relift.log in
 # the main checkout, work/sa/relift.log in a worktree.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -36,8 +36,7 @@ if [ "$root" = "$main" ] && [ "$(git rev-parse --abbrev-ref HEAD)" = native-vk ]
     "$root/scripts/play-refresh.sh" >> "$log" 2>&1 || { echo "relift: the build failed (see $log and work/play/refresh.log)"; exit 1; }
 else
     { exec 9>"$bd/.build.lock"; flock 9
-      HOOKSHOT_SPIRV_HEADERS=$root/work/deps/SPIRV-Headers HOOKSHOT_VMA_HEADERS=$root/work/deps/VulkanMemoryAllocator \
-          work/venv/bin/python -I -u nx2/build.py --game "$game"; } >> "$log" 2>&1 ||
+      scripts/build.sh; } >> "$log" 2>&1 ||
         { echo "relift: the build failed (see $log)"; exit 1; }
 fi
 echo "relift: lift and build of $(git rev-parse --short HEAD) in $(( $(date +%s) - start )) s; log $log" | tee -a "$log"

@@ -5,17 +5,17 @@
 #   scripts/agent-worktree.sh new <name> [base]   work/wt/<name> on branch agent/<name> (from base, default the
 #                                                 main checkout's branch). Linked to the main work/: everything in
 #                                                 it but sa/ and wt/ (dump, runs, overlays, venv, deps, locks,
-#                                                 objcache, builder-cache, hot list). Its own: work/sa. Copied: work/sa/build, a
-#                                                 reflink of the main one's (3 GB, shared extents on btrfs: next to
-#                                                 nothing until rebuilt). Made by its first build (ounce-lift, ~8 s):
-#                                                 work/sa/lift_*.ll (~4.5 GB of IR), gen/ and image/ (~0.1 GB), so a
-#                                                 worktree takes ~4.6 GB of its own once built. Objects are shared
-#                                                 through work/objcache (content-keyed), so a host-only change
-#                                                 rebuilds in ~40 s.
+#                                                 objcache, builder-cache, hot list). Its own: work/sa. Copied:
+#                                                 work/sa/build, a reflink of the main one's (shared extents on
+#                                                 btrfs: next to nothing until rebuilt). Its first scripts/build.sh
+#                                                 makes work/sa/meson (the renderer's build), gen/ and image/; objects
+#                                                 are shared through work/builder-cache (content-keyed), so a build
+#                                                 with nothing new to compile takes about 10 s.
 #   scripts/agent-worktree.sh land <name>         rebase agent/<name> onto the main branch and fast-forward it
 #   scripts/agent-worktree.sh drop <name>         remove the worktree and its branch, if the branch has landed
 #
-# Build inside the worktree as in docs/development.md ("Work in an agent worktree"), run with EXE=work/sa/build/hookshot from it.
+# Build inside the worktree with scripts/build.sh (docs/development.md, "Work in an agent worktree"); run with
+# EXE=work/sa/build/hookshot from it.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cmd=${1:?new|land|drop}; name=${2:?name}

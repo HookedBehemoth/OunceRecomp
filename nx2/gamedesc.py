@@ -2,7 +2,7 @@
 game boundary"). The lifter (nx2/lift2) holds no fact of one game; everything it needs of the game is here or in the
 game's patch declarations (host/patch.h).
 
-A description is a Python file of data and constructor calls: `GAME = Game(...)`. nx2/lift.py and nx2/build.py take
+A description is a Python file of data and constructor calls: `GAME = Game(...)`. nx2/lift.py and the RE tools take
 exactly one (--game games/<game>); use() makes it the process's description, and its path goes to the worker
 processes and the summary job in HOOKSHOT_GAME (set by use(), the transport of the one passed, never a default).
 current() without one stops.
@@ -152,7 +152,7 @@ def current():
     if _CURRENT is None:
         p = os.environ.get(ENV)
         if not p:
-            raise SystemExit("no game description: nx2/lift.py and nx2/build.py take --game games/<game>")
+            raise SystemExit("no game description: nx2/lift.py takes --game games/<game>")
         _CURRENT = load(p)
     return _CURRENT
 

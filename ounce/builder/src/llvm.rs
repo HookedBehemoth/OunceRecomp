@@ -1,4 +1,4 @@
-//! libLLVM in this process (src/llvm_shim.cpp): a module's IR -> an object, as nx2/build.py's `opt | clang -x ir -c`.
+//! libLLVM in this process (src/llvm_shim.cpp): a module's IR -> an object, as `opt | clang -x ir -c` makes it.
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 

@@ -1,5 +1,6 @@
-//! Which Hookshot a build is (nx2/version.py): the release name and a fingerprint of the sources, as the game prints
-//! it in its log and the Insert menu. The text equals version.py's for the same folder.
+//! Which Hookshot a build is: the release name (HOOKSHOT_VERSION, a VERSION file, or `git describe` of a checkout)
+//! and a fingerprint of the sources in host/, gpu/ and nx2/ (line endings aside), as the game prints it in its log
+//! and the Insert menu.
 
 use sha1::{Digest, Sha1};
 use std::path::Path;
@@ -91,4 +92,40 @@ pub fn describe(root: &Path) -> String {
         .map(|c| if c.is_ascii_alphanumeric() || " ._+()/-".contains(c) { c } else { '_' })
         .take(80)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tree(root: &Path, eol: &str) {
+        for rel in ["host/a.c", "gpu/legacy/vk/b.cpp", "nx2/c.py"] {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, format!("line one{eol}line two{eol}")).unwrap();
+        }
+    }
+
+    /// where the release name comes from, a fingerprint that ignores line endings, a text safe in a C literal
+    #[test]
+    fn release_and_fingerprint() {
+        let base = std::env::temp_dir().join(format!("hk-version-{}", std::process::id()));
+        let (lf, crlf) = (base.join("lf"), base.join("crlf"));
+        tree(&lf, "\n");
+        tree(&crlf, "\r\n");
+        std::env::remove_var("HOOKSHOT_VERSION");
+        assert_eq!(release(&lf), "unknown");
+        assert_eq!(fingerprint(&lf), fingerprint(&crlf), "line endings changed the fingerprint");
+        std::fs::write(lf.join("nx2/c.py"), "line one\nline two\nchanged\n").unwrap();
+        assert_ne!(fingerprint(&lf), fingerprint(&crlf), "a changed source kept the fingerprint");
+        std::fs::write(lf.join("VERSION"), "movie-sync\nignored second line\n").unwrap();
+        assert_eq!(release(&lf), "movie-sync");
+        std::env::set_var("HOOKSHOT_VERSION", "from-env");
+        assert_eq!(release(&lf), "from-env", "HOOKSHOT_VERSION comes first");
+        std::env::set_var("HOOKSHOT_VERSION", "v1 \"quoted\" \\ & | %PATH%");
+        let d = describe(&lf);
+        assert!(!d.chars().any(|c| "\"\\&|%".contains(c)), "{d}");
+        std::env::remove_var("HOOKSHOT_VERSION");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

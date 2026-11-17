@@ -8,33 +8,29 @@ inspect and test what the lifter produced. For the general build and run loop, s
 
 | You changed | Run | Typical time |
 |---|---|---|
-| A file in `host/` or `gpu/direct/`, including `PATCH_AT`, `PATCH_FUNC` and `NV` declarations | `nx2/build.py` | About a minute; plus the partitions a declaration touches |
-| The lifter (`nx2/lift2`, except discovery) | `nx2/build.py` | Every partition is lifted and compiled again: several minutes |
-| `nx2/lift.py`, `nx2/lift2/discover.py`, an `HLE` or `PATCH_ANSWER` added or removed, the hot list, or the dump | `scripts/relift.sh` | About 1.5 minutes of lift (peak about 6 GB), then the build |
+| A file in `host/`, including `PATCH_AT`, `PATCH_FUNC` and `NV` declarations | `scripts/build.sh` | Seconds; plus the partitions a declaration touches |
+| A file in `gpu/direct/` | `scripts/build.sh` | The renderer's files, then the link |
+| The lifter (`ounce/lift`) | `scripts/build.sh` | Every partition whose IR changed is compiled again: up to three minutes |
+| The hot list, the dump or the toolchain | `scripts/relift.sh` | The same build, also when `BUILD.txt` names the commit |
 
-To build, run:
-
-```sh
-python -I nx2/build.py --game games/oot --standalone
-```
-
-To lift and build in one step, run `scripts/relift.sh` from the checkout you want to rebuild. It refuses to start while
-a game runs from that build. Its log is `work/sa/relift.log` (in the main checkout, `work/play/relift.log`).
-`scripts/play-refresh.sh` lifts again by itself when the lift's inputs changed (`nx2/lift_mark.py` decides).
+Every build lifts the game first (about 8 s), so there is no separate lift step. `scripts/build.sh` builds the
+checkout it is in; `scripts/relift.sh` runs it under `work/heavy.lock` and refuses to start while a game runs from
+that build. Its log is `work/sa/relift.log` (in the main checkout, `work/play/relift.log`).
 
 ## How the build is organized
 
 - **Partitions.** Functions are grouped by guest address into partitions of about 120,000 instructions, and each
   partition is one LLVM module. Functions on the hot list get partitions of their own.
-- **Optimization levels.** Hot partitions build at `-O2` (`RX_HOT_OPT`), the rest at `-O1` with dead-store elimination
-  added. The hot list is the game description's `hot` file (`games/oot/hot_funcs.bin`); see
+- **Optimization levels.** Hot partitions build at `-O2`, the rest at `-O1` with dead-store elimination added. The hot list is the game description's `hot` file (`games/oot/hot_funcs.bin`); see
   [Game description files](lifter.md#game-description-files).
-- **Object cache.** Each partition's object is kept in `work/objcache` under a key of everything that shaped it: the
-  lifter's code (without comments), the plan, the compiler flags, its functions, their patches, their summaries, and
-  the call-boundary records of every function they call. An unchanged partition is neither lifted nor compiled again.
-  Objects that no build links are removed after `HOOKSHOT_OBJCACHE_DAYS` days (default 3).
-- **Parallelism.** The build starts a compiler only when free memory holds its estimate, so memory, not core count,
-  sets the number of jobs. The build prints the number and why.
+- **Object cache.** Each partition's object is kept in `work/builder-cache` under a key of its IR, its recipe and
+  the LLVM version; a C file's under the files its compile read. An unchanged partition is not compiled again.
+  Objects that no build used are removed after `HOOKSHOT_OBJCACHE_DAYS` days (default 3).
+- **Parallelism.** The build starts a compile only when free memory holds its estimate, so memory, not core count,
+  sets how many run at once. `HOOKSHOT_JOBS` or `-j` caps the number.
+- **The lift's files.** The build writes `work/sa/gen/`, `work/sa/facts.tsv` and `work/sa/image/` for the tools.
+  The partitions' IR (`work/sa/lift_*.ll`, which `ounce/lift/tools/diffout.py` and the dump tools read) only with
+  `scripts/build.sh --gen-parts`.
 
 ## Inspect a function
 
@@ -65,10 +61,9 @@ In the game, the smoke test and a benchmark are the landing checks ([Test Hooksh
 | Switch | When | What it does |
 |---|---|---|
 | `--game games/<game>` | Lift, build, tools | The game description. Required. |
-| `nx2/build.py --jobs N`, `HOOKSHOT_JOBS` | Build | Parallel jobs, instead of the memory-based default |
-| `nx2/build.py --opt O1` | Build | The cold partitions' level |
-| `RX_HOT_OPT` | Build | The hot partitions' level (default `O2`) |
-| `RX_MARCH` | Build | The target CPU (default: this PC's, `x86-64-v3` on an AVX2 machine) |
+| `scripts/build.sh -j N`, `HOOKSHOT_JOBS` | Build | Parallel compiles at most |
+| `HOOKSHOT_MEM_RESERVE_GB`, `HOOKSHOT_MEM_GATE=0` | Build | Memory the build leaves free (default 1.5); no memory gate |
+| `scripts/build.sh --gen-parts` | Build | The partitions' IR in `work/sa` for diffout and the dump tools |
 | `HOOKSHOT_LIFT_VERIFY=1` | Build | The verification build |
 | `HOOKSHOT_LIFT_SUMMARY_JOBS` | Build | The summary job's workers (default 8) |
 | `LIFT2_DEFAULT_NAN=1` | Lift | ARM's default NaN for NaNs made from non-NaN operands |

@@ -3,7 +3,7 @@
 A declaration is a macro of host/patch.h at file scope: the lifter reads it with a token scanner of a fixed grammar
 (comments, string and character literals, line continuations and nested parentheses handled; no C parser, no regular
 expression over the source), and the compiler expands the same text into the host function's prototype and a record
-in the object section `hos_patch`, which the build compares with the scan (nx2/build.py check_records). The scan
+in the object section `hos_patch`, which the build compares with the scan (hookshot-builder, patch::check_records). The scan
 stops with file:line on a malformed declaration, on one inside conditional compilation or made by another macro, on a
 duplicate site, and on an unknown register or kind.
 
@@ -386,7 +386,7 @@ def signature(s):
 
 
 def host_sources():
-    """the host's C files the build compiles (nx2/build.py) and the scan reads: the game description's"""
+    """the host's C files the build compiles and the scan reads: the game description's"""
     import gamedesc
     return gamedesc.current().host_sources()
 

@@ -22,7 +22,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Step | What | Time |
 |---|---|---|
 | Read the dump | `.nup` or folder; the exefs first, so the lift starts while the romfs is copied | not measured |
-| Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte `nx2/build.py`'s objects | 164 s at 16 jobs |
+| Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte the objects of `opt \| clang` with the same flags | 164 s at 16 jobs |
 | Host C | `host/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `prepare_textures` in Rust, with the native encoders linked statically | 440 s (Python, fast settings) |
@@ -34,20 +34,20 @@ build does not prepare them and the folder keeps the game's files.
 ## The compile
 
 - Cold partitions: clang 23's printed -O1 pipeline with `dse` after `memcpyopt` (`ounce/builder/data/pipeline_cold_O1.txt`),
-  -O1 code generation, as build.py's `opt | clang`.
+  -O1 code generation, as `opt | clang`.
 - Hot partitions: `default<O2>` with the SLP vectorizer, as clang -O2. The pipeline text clang prints cannot stand in
   for it: it loses VectorCombine's early-folds-only setting.
-- `-rotation-max-header-size` is a global LLVM reads while LoopRotate runs; build.py gives 0 to the hot partitions
-  and leaves the cold ones at 16. The compile runs hot and cold partitions apart (a gate in `compile.rs`).
+- `-rotation-max-header-size` is a global LLVM reads while LoopRotate runs: 0 for the hot partitions, 16 (the
+  default) for the cold ones. The compile runs hot and cold partitions apart (a gate in `compile.rs`).
 - The target machine has clang's options (PIC, function sections, addrsig); the module's name is `<stdin>`, so the
-  object's file symbol is build.py's. `hookshot-builder compile-all <lift dir> <out> --check <obj dir>` compares every
-  object (the partitions' and gen/'s) with build.py's.
+  object's file symbol is the one of IR piped to clang. `hookshot-builder compile-all <lift dir> <out> --check <obj
+  dir>` compares every object (the partitions' and gen/'s) with the folder's.
 
 ## The lift in this process
 
 - `hookshot-builder lift-compile <out> [--check <obj dir>]` runs the lift and hands every partition and generated
   module to the compile threads, so no IR is written to disk. With `--check`, every object is compared with
-  build.py's.
+  the folder's.
 - The lift hands the hot partitions over first and the builder holds the cold generated modules until they are out:
   hot and cold compiles never run at once (`compile.rs`'s gate), so the long hot compiles start first.
 - A cold build peaks at 6.4 GB: the compiles (4.5 GB at 16 jobs) and the compressed IR waiting for them.
@@ -55,12 +55,13 @@ build does not prepare them and the folder keeps the game's files.
 ## The game folder
 
 `hookshot-builder build <out> --direct <hookshot_direct.so>` makes the game folder in one
-process: the host's C (`host/*.c`, libopus and `rt64/a64_rt.c`, with build.py's flags and
+process: the host's C (`host/*.c`, libopus and `rt64/a64_rt.c`, each with its flags and
 `-fstack-protector-strong`), the lift and its compile, the link and the labels. The folder holds `hookshot`,
 `hookshot_direct.so` and `image.bin` beside it, where the game looks without an argument; `scripts/run-vk.sh` and
 `scripts/play.sh` take the image from beside the executable when it is there.
 
-- The version text is `nx2/version.py`'s, computed by the builder (`hookshot-builder version`); `--version` replaces it.
+- The version text (the release name and a fingerprint of the sources) is computed by the builder
+  (`hookshot-builder version`); `--version` replaces it.
 - `--gen <dir>` also writes the lift's files for the RE tools and diffout: `gen/*.ll`, `gen/functions.txt`,
   `lift_answers.ll` and `facts.tsv`.
 - `--progress` prints the lines a front end reads: `@@plan`, `@@file <name> <seconds> <new|cached>` and `@@eta`,
@@ -75,8 +76,7 @@ process: the host's C (`host/*.c`, libopus and `rt64/a64_rt.c`, with build.py's 
   smaller of MemAvailable and the room in a capped cgroup), less what compiles started in the last 3 s may still
   take, keeps its need and `HOOKSHOT_MEM_RESERVE_GB` (1.5) free. A partition needs about eight times its IR (the
   largest, 42 MB of IR, peaks at 360 MB), a C file 300 MB. `HOOKSHOT_MEM_GATE=0` turns it off.
-- Objects are cached in `work/builder-cache`, apart from build.py's `work/objcache` because the keys are built
-  differently. A module is found by its IR, recipe and the partitions' options; a C file by a manifest of the files
+- Objects are cached in `work/builder-cache`. A module is found by its IR, recipe and the partitions' options; a C file by a manifest of the files
   its last compile read (clang's dependency list) and their contents; both keys name the LLVM version and the
   builder's recipes. Files no build used for `HOOKSHOT_OBJCACHE_DAYS` (3) days are removed at the end of a build.
   A rebuild with nothing changed takes 8 to 10 s, most of it the lift.
@@ -92,20 +92,18 @@ process: the host's C (`host/*.c`, libopus and `rt64/a64_rt.c`, with build.py's 
 
 ## The link
 
-- The command line is the one clang's driver gives `ld.lld` for build.py's link: a PIE against glibc with libgcc's
+- The command line is the one clang's driver gives `ld.lld` for `clang -fuse-ld=lld`: a PIE against glibc with libgcc's
   start and end files, `--gc-sections`, and the symbols `hookshot_direct.so` calls in the executable exported
   (`os_*`, `hos_mem_ledger`).
 - The link order (`hot_order.bin`) becomes lld's symbol-ordering file, `hot_order.txt` beside the executable.
 - The labels rename `f_<address>` to `<label>.f_<address>` in the symbol table only.
-- `hookshot-builder link <out> <objs.rsp> --order <hot_order.bin> --labels <labels.txt> -- <libs>` links build.py's
-  objects. Against build.py's executable, every loaded segment and the symbols are equal; only the section header
-  offset and the string tables' order differ.
+- `hookshot-builder link <out> <objs.rsp> --order <hot_order.bin> --labels <labels.txt> -- <libs>` links a list of
+  objects alone.
 
 ## The generated code
 
 `ounce-lift` writes the runtime's tables, the image's description, the import stops and the NVN routes as IR
-(`gen/*.ll`); build.py and the builder compile them as they compile `lift_answers`, so neither needs a C compiler
-for them. Each object equals clang's object of the C these files replace in its loaded sections, symbols and
+(`gen/*.ll`); the builder compiles them as it compiles `lift_answers`. Each object equals clang's object of the C these files replace in its loaded sections, symbols and
 relocations (`hookshot-builder objeq <a.o> <b.o>`). The guest model's runtime (`rt64/a64_rt.c`) reads no dump: it is
 built with the host.
 
@@ -113,7 +111,7 @@ built with the host.
 
 `--features static-llvm` links LLVM and lld from a static build tree (`LLVM_STATIC_DIR`: Release, X86 only, clang
 and lld projects, no tools); `--features clang` adds clang's libraries and `hookshot-builder compile-c`, a C file
-compiled in this process from build.py's flags. Its objects equal the system clang's for every host C file when
+compiled in this process. Its objects equal the system clang's for every host C file when
 `-fstack-protector-strong` is given (the distribution's clang turns it on by default). Sizes of the stripped builder
 (the lifter included):
 
@@ -138,7 +136,7 @@ caches and `user/`. The host needs two changes for it: the prepared store and th
 
 1. The compile, lld and the generated code as IR in this process (done).
 2. `ounce-lift` as a library, the partitions handed to the compile in memory (done).
-3. The builder as the development build too, in place of `nx2/build.py`'s game path.
+3. The builder as the development build too (done: `scripts/build.sh`).
 4. CI: the host and `hookshot_direct.so` prebuilt; the sysroot.
 5. The dump reader (`nx2/nup.py`, `unpack.py`, the ZBIC decompressor) in Rust.
 6. The texture converter in Rust; terrain and sky deswizzled in the host.

@@ -32,9 +32,8 @@ No game files are in this repository. The build reads your dump where it lies, a
 
    `nx2/dump.py` checks that the dump is the supported build: program `0400486024DEC000`, update v131072, build
    `e0f3ccfa`. Other versions are refused. `--set` writes the path to `work/dump.txt`.
-4. If the headers are not under `/usr`, point the build at them with `HOOKSHOT_VULKAN_HEADERS`,
-   `HOOKSHOT_SPIRV_HEADERS` and `HOOKSHOT_VMA_HEADERS` (a package root or its `include/`), or with `RX_CPM` for a CPM
-   cache. Without them the build stops and says which header is missing.
+4. The renderer's build takes the Vulkan headers from `/usr` and the SPIR-V and VMA headers from `work/deps`
+   (`scripts/linux/deps.sh`). Other places are Meson options (below).
 
 A build needs about 60 GB of disk, and a running game about 10 GB of memory.
 
@@ -43,18 +42,19 @@ A build needs about 60 GB of disk, and a running game about 10 GB of memory.
 To lift the game and build it, run:
 
 ```sh
-python -I nx2/lift.py --game games/oot --standalone --write
-python -I nx2/build.py --game games/oot --standalone
+scripts/build.sh
 ```
 
-`scripts/relift.sh` runs both for the checkout it is in. The build writes `work/sa/build/hookshot`,
-`hookshot_direct.so` and the shader caches beside them. To run the game in a window:
+It builds the renderer with Meson (`work/sa/meson`), the builder with cargo (`ounce/target`), then runs
+`hookshot-builder build`: the lift, the host's C, every compile and the link, in one process. The game folder is
+`work/sa/build`: `hookshot`, `hookshot_direct.so`, `image.bin` and the shader caches beside them. A rebuild with
+nothing changed takes about 10 seconds. To run the game in a window:
 
 ```sh
-work/sa/build/hookshot work/sa/image/image.bin --romfs work/dump/romfs --user work/user
+work/sa/build/hookshot --romfs work/dump/romfs --user work/user
 ```
 
-The game's own arguments are `image.bin`, `--romfs <folder>`, `--user <folder>` (saves, caches and temporary files)
+The game's own arguments are `image.bin` (default: the one beside the executable), `--romfs <folder>`, `--user <folder>` (saves, caches and temporary files)
 and `--trace` (log every Horizon call). The first line of `hookshot_log.txt` names the build.
 
 ## Iterate quickly
@@ -63,10 +63,9 @@ After a change, rebuild only what the change needs:
 
 | You changed | Run |
 |---|---|
-| `host/` or `gpu/direct/`, including patch declarations | `nx2/build.py`: about a minute |
-| Only the renderer | `RX_DIRECT_ONLY=1 nx2/build.py ...`, or Meson (below): builds `hookshot_direct.so` alone |
-| The lifter | `nx2/build.py`: every partition is lifted and compiled again |
-| The lift, discovery, an `HLE` or `PATCH_ANSWER`, the hot list, or the dump | `scripts/relift.sh` |
+| `host/`, `gpu/direct/`, the lifter, including patch declarations | `scripts/build.sh`: what changed is compiled again |
+| Only the renderer | `ninja -C work/sa/meson` (below): builds `hookshot_direct.so` alone |
+| The hot list, the dump or the toolchain | `scripts/relift.sh` |
 
 The details, including what the object cache keeps, are in [Build and iterate on the lifter](lifter-build.md). A new
 file in `host/` belongs in the `host` list of `games/oot/game.py`.
@@ -79,15 +78,15 @@ To keep two builds side by side, copy `hookshot`, `hookshot_direct.so`, `hooksho
 
 ### Build the renderer with Meson
 
-Meson builds the renderer, `hookshot_direct.so`, on its own, with the same flags as `nx2/build.py`. It needs clang,
-lld, Meson, Ninja and `glslangValidator`. To build it, run:
+Meson builds the renderer, `hookshot_direct.so`; `scripts/build.sh` runs it first. It needs clang, lld, Meson,
+Ninja and `glslangValidator`. To build it alone, run:
 
 ```sh
-meson setup --native-file gpu/direct/meson/clang.ini -Dexe=work/sa/build/hookshot work/meson
-ninja -C work/meson
+meson setup --native-file gpu/direct/meson/clang.ini -Dexe=work/sa/build/hookshot work/sa/meson
+ninja -C work/sa/meson
 ```
 
-The library is `work/meson/gpu/direct/hookshot_direct.so`; copy it beside `hookshot` to run it. A clean build takes
+The library is `work/sa/meson/gpu/direct/hookshot_direct.so`; `hookshot-builder build` copies it beside `hookshot`. A clean build takes
 about 40 seconds with six jobs.
 
 - The options `vulkan_headers`, `spirv_headers` and `vma_headers` name the header packages. They default to `/usr`,
@@ -97,13 +96,14 @@ about 40 seconds with six jobs.
   executable exports (`os_*` or `hos_mem_ledger`); otherwise the build fails. Without `exe`, only the names are
   checked.
 - The SPIR-V headers of `gpu/direct/shaders` are compiled from their sources in the build folder. `meson test -C
-  work/meson` checks that the copies in the source tree are still equal to them.
+  work/sa/meson` checks that the copies in the source tree are still equal to them.
 
 ### Work in an agent worktree
 
 To work without disturbing the main checkout's build, run `scripts/agent-worktree.sh new <name>`. It creates
-`work/wt/<name>` on branch `agent/<name>`. Its `work/` shares the main dump, image, runs, overlays, virtual
-environment, locks and object cache, but has its own `sa/gen` and `sa/build`, so a host-only build is quick. Run with
+`work/wt/<name>` on branch `agent/<name>`. Its `work/` shares the main dump, runs, overlays, virtual environment,
+locks and object cache (`work/builder-cache`), but has its own `work/sa` (the game folder, the lift's files and the
+Meson folder), so a host-only build is quick. Run with
 `EXE=work/sa/build/hookshot` from inside it. `land <name>` rebases the branch onto the main checkout's branch and
 fast-forwards it; `drop <name>` removes the worktree and the branch once it has landed.
 
@@ -118,7 +118,8 @@ the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It ref
 
 | Path | What it holds |
 |---|---|
-| `nx2/` | The dump tools, the lift and the build drivers; the lifter in `nx2/lift2` ([The lifter](lifter.md)) |
+| `ounce/` | The lifter (`ounce/lift`) and the builder (`ounce/builder`), one cargo workspace ([The lifter](lifter.md)) |
+| `nx2/` | The dump tools, the asset converters and the Python lifter (`nx2/lift2`), kept as reference |
 | `games/oot/` | The game description and the function labels |
 | `host/` | The Horizon runtime, the NVN2 layer (`nvn_native.c`), and the game patches; `host/os` is its operating-system layer (`os.h`) |
 | `gpu/direct/` | The direct back end, with its fork of Eden's shader recompiler in `eden/` ([Renderer docs](direct/README.md)) |

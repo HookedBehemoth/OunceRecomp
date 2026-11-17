@@ -76,7 +76,6 @@ def compile_inputs(out, sa, parts, names):
     answers module and the generated C; and, under reference/, the image's intermediate data, no compile input
     (({path: sha256} of the compile inputs, {path: sha256} of the reference files) for meta.json)"""
     from compression import zstd
-    import build
     import rtgen
     from lift2 import game, llvm
     files = {}
@@ -98,8 +97,8 @@ def compile_inputs(out, sa, parts, names):
         for f in sorted(os.listdir(d)):
             put("rt64/" + f, open(os.path.join(d, f), "rb").read())
     clang = llvm.check("clang")
-    march = build.target() + build.CPU
-    opt, hot = "O1", os.environ.get("RX_HOT_OPT", "O2")   # (build.py's --opt default and prepare's hot level)
+    march = ["-march=x86-64-v3", "-ffp-contract=off"]
+    opt, hot = "O1", "O2"   # (the cold and hot partitions' levels)
     unit = []
     for k, (tag, _) in enumerate(parts):
         level = hot if tag == "h" else opt
@@ -107,7 +106,9 @@ def compile_inputs(out, sa, parts, names):
                      "opt": game.opt_argv(clang, level, march)})
     unit.append({"name": ANSWERS, "tag": "c", "level": unit[0]["level"], "clang": unit[0]["clang"], "opt": unit[0]["opt"]})
     gen_c = {"sources": ["gen/" + f for f in GEN if f.endswith(".c")] + ["rt64/a64_rt.c"],
-             "clang": build.flags("<rt64>", opt)}
+             "clang": march + ["-I<rt64>", "-Wno-everything", "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm",
+                               "-rotation-max-header-size=0", "-ffunction-sections", "-mllvm",
+                               "-capture-tracking-max-uses-to-explore=5000"]}
     with open(os.path.join(out, "compile.json"), "w") as f:
         json.dump({"partitions": unit, "generated_c": gen_c,
                    "note": "clang flags without the input and output; opt: the `opt` command the IR goes through first "

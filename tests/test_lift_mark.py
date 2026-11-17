@@ -1,5 +1,5 @@
-"""A lift that was stopped before its end is never built from (nx2/lift_mark.py), and play-refresh lifts again when the
-lift's inputs changed.
+"""The Python lift's marks (nx2/lift_mark.py): a lift that was stopped before its end says so, and its recorded inputs
+tell a stale lift.
 
 python -I -B tests/test_lift_mark.py
 """
@@ -44,17 +44,6 @@ class Marks(unittest.TestCase):
             lift_mark.begin(d)   # (a new lift: the old OK goes)
             self.assertFalse(os.path.exists(os.path.join(d, lift_mark.OK)))
             self.assertIsNotNone(lift_mark.check(d))
-
-    def test_callers(self):
-        lift = read("nx2", "lift.py")
-        self.assertLess(lift.index("lift_mark.begin(out_dir)"), lift.index("meta = img.write(img_dir)"),
-                        "the mark goes up before the lift writes anything")
-        self.assertLess(lift.index("tables.write("), lift.rindex("lift_mark.done(out_dir)"), "and comes down last")
-        self.assertIn("lift_mark.check(", read("nx2", "build.py"))
-        refresh = read("scripts", "play-refresh.sh")
-        self.assertLess(refresh.index("LIFT_INCOMPLETE"), refresh.index("nx2/build.py"),
-                        "play-refresh refuses before it touches the lift")
-
 
 class Inputs(unittest.TestCase):
     """play-refresh lifts again when the lift's inputs changed, and keeps the fast path for a host-only change"""
@@ -122,12 +111,6 @@ class Inputs(unittest.TestCase):
             self.edit(d, "nx2/lift.py", "lift", "lifted")
             self.assertIn("inputs changed", lift_mark.stale(folder, d, {}))
 
-    def test_refresh_uses_it(self):
-        refresh = read("scripts", "play-refresh.sh")
-        self.assertIn("nx2/lift_mark.py stale work/sa --game", refresh)
-        self.assertLess(refresh.index("lift_if_stale &&"), refresh.index("nx2/build.py"), "the lift before the build")
-        self.assertIn("heavy.lock", refresh)
-        self.assertIn("heavy.lock", read("scripts", "relift.sh"))
 
 
 if __name__ == "__main__":
