@@ -69,6 +69,8 @@ env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}")
 # (an actor-zoo overlay's live.txt: host commands the scene needs, e.g. its time of day)
 [ -n "${OVERLAY:-}" ] && [ -f "$OVERLAY/live.txt" ] && env_args+=(HOS_INPUT_LIVE="$(cd "$OVERLAY" && pwd)/live.txt")
 exe=$(realpath "${EXE:-$root/work/sa/build/hookshot}")
+# (the image beside the executable, as a game folder has it; work/sa/image/ for a build.py build)
+img=$(dirname "$exe")/image.bin; [ -f "$img" ] || img=$root/work/sa/image/image.bin
 if [ "$mode" = check ]; then   # (a private copy of the build's files: the executable, the renderer, the caches)
   mkdir -p "$out/bin"
   find "$(dirname "$exe")" -maxdepth 1 -type f ! -name '*.lock' -exec cp --reflink=auto -p {} "$out/bin/" \;
@@ -76,7 +78,7 @@ if [ "$mode" = check ]; then   # (a private copy of the build's files: the execu
 fi
 cd "$out"
 t0=$(date +%s)
-env "${env_args[@]}" "$@" "$exe" "$root/work/sa/image/image.bin" --romfs "$romfs" \
+env "${env_args[@]}" "$@" "$exe" "$img" --romfs "$romfs" \
     --user "$out/user" > stdout.txt 2> log.txt &
 pid=$!
 # (the game dies with this script: killed or interrupted, it would otherwise keep running, holding the GPU lock and a

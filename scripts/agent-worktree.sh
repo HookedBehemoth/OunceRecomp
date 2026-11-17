@@ -5,7 +5,7 @@
 #   scripts/agent-worktree.sh new <name> [base]   work/wt/<name> on branch agent/<name> (from base, default the
 #                                                 main checkout's branch). Linked to the main work/: everything in
 #                                                 it but sa/ and wt/ (dump, runs, overlays, venv, deps, locks,
-#                                                 objcache, hot list). Its own: work/sa. Copied: work/sa/build, a
+#                                                 objcache, builder-cache, hot list). Its own: work/sa. Copied: work/sa/build, a
 #                                                 reflink of the main one's (3 GB, shared extents on btrfs: next to
 #                                                 nothing until rebuilt). Made by its first build (ounce-lift, ~8 s):
 #                                                 work/sa/lift_*.ll (~4.5 GB of IR), gen/ and image/ (~0.1 GB), so a
@@ -27,7 +27,7 @@ new)
     base=${3:-$main}
     [ -e "$wt" ] && { echo "$wt exists"; exit 1; }
     git -C "$root" worktree add -q -b "$branch" "$wt" "$base"
-    mkdir -p "$wt/work/sa"
+    mkdir -p "$wt/work/sa" "$root/work/builder-cache"   # (the builder's object cache: shared, like objcache)
     for e in "$root"/work/* "$root"/work/.[!.]*; do
         [ -e "$e" ] || continue
         b=$(basename "$e")

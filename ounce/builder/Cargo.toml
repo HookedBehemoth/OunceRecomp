@@ -18,7 +18,10 @@ sha1.workspace = true
 cc = "1"
 
 [features]
+# the development build: the system's LLVM and clang, dynamically
+default = ["clang"]
 # LLVM, lld (and clang) linked statically from LLVM_STATIC_DIR, a build tree of the same LLVM version
 static-llvm = []
-# clang's libraries too: `compile-c`, a host C file compiled in this process (needs static-llvm)
-clang = ["static-llvm"]
+# clang's libraries too (the system's libclang-cpp, or static with static-llvm): `build` and `compile-c`, the host's C
+# compiled in this process
+clang = []

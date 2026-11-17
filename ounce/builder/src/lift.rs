@@ -20,8 +20,10 @@ struct Queue<'a> {
     /// over before it (Run::hot_first), and a cold compile running would keep the hot ones waiting at compile.rs's
     /// gate until no cold one is left
     held: Mutex<Option<Vec<Job>>>,
-    /// image.bin and functions.txt land here
+    /// image.bin lands here
     dir: &'a Path,
+    /// the lift's folder for the RE tools (gen/*.ll, gen/functions.txt, facts.tsv), when asked for
+    gen: Option<&'a Path>,
 }
 
 impl Queue<'_> {
@@ -50,6 +52,10 @@ impl Queue<'_> {
 
 impl Out for Queue<'_> {
     fn file(&self, rel: &str, data: Vec<u8>) {
+        if let Some(g) = self.gen.filter(|_| rel.starts_with("gen/") || rel == "facts.tsv" || rel.ends_with(".ll")) {
+            let p = g.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).and_then(|_| std::fs::write(&p, &data)).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        }
         if let Some(stem) = rel.strip_suffix(".ll") {
             let job = Self::job(stem.rsplit('/').next().unwrap(), &[&data], Level::Cold);
             let mut held = self.held.lock().unwrap();
@@ -60,7 +66,7 @@ impl Out for Queue<'_> {
                     self.send(job);
                 }
             }
-        } else if rel == "image/image.bin" || rel == "gen/functions.txt" {
+        } else if rel == "image/image.bin" {
             let p = self.dir.join(rel.rsplit('/').next().unwrap());
             std::fs::write(&p, data).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         }
@@ -75,7 +81,7 @@ impl Out for Queue<'_> {
     }
 
     fn wants_facts(&self) -> bool {
-        false
+        self.gen.is_some()
     }
 }
 
@@ -93,17 +99,24 @@ pub struct Done {
 
 /// Lifts with `run` and compiles every module into `out`/<name>.o with `jobs` compile threads; `cache`: objects by
 /// key; `check`: a folder of build.py's objects, each compared byte for byte, then by objeq when the bytes differ
-pub fn lift_compile(run: &pipeline::Run, out: &Path, jobs: usize, cache: Option<&Cache>, check: Option<&Path>) -> Result<Done, String> {
+/// The lift's helpers: where the RE tools' files go, the memory gate, the progress lines
+pub struct Aux<'a> {
+    pub gen: Option<&'a Path>,
+    pub gate: &'a crate::gate::Gate,
+    pub progress: Option<&'a crate::progress::Progress>,
+}
+
+pub fn lift_compile(run: &pipeline::Run, out: &Path, jobs: usize, cache: Option<&Cache>, check: Option<&Path>, aux: &Aux) -> Result<Done, String> {
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     compile::init()?;
     let (tx, rx) = channel::<Job>();
     let rx = Mutex::new(rx);
-    let q = Queue { tx: Mutex::new(Some(tx)), held: Mutex::new(Some(Vec::new())), dir: out };
+    let q = Queue { tx: Mutex::new(Some(tx)), held: Mutex::new(Some(Vec::new())), dir: out, gen: aux.gen };
     let done = Mutex::new(Done::default());
     let t0 = Instant::now();
     let lifted = std::thread::scope(|s| {
         for _ in 0..jobs.max(1) {
-            s.spawn(|| compile_thread(&rx, out, cache, check, &done, t0));
+            s.spawn(|| compile_thread(&rx, out, cache, check, &done, t0, aux));
         }
         let r = pipeline::lift(run, &q);
         q.release();
@@ -124,14 +137,17 @@ fn ir_key(ir: &[u8], level: Level) -> Key {
     k.add(ir)
 }
 
-fn compile_thread(rx: &Mutex<Receiver<Job>>, out: &Path, cache: Option<&Cache>, check: Option<&Path>, done: &Mutex<Done>, t0: Instant) {
+fn compile_thread(rx: &Mutex<Receiver<Job>>, out: &Path, cache: Option<&Cache>, check: Option<&Path>, done: &Mutex<Done>, t0: Instant, aux: &Aux) {
     loop {
         let job = rx.lock().unwrap().recv();
         let Ok((name, packed, n, level)) = job else { break };
         let ir = lz4_flex::decompress_size_prepended(&packed).unwrap_or_else(|e| crate::fail(format!("{name}: {e}")));
         drop(packed);
         let t = Instant::now();
-        let make = || compile::partition(&ir, "<stdin>", level);
+        let make = || {
+            let _lease = aux.gate.enter(crate::gate::need_ir_mb(n));
+            compile::partition(&ir, "<stdin>", level)
+        };
         let (o, hit) = match cache {
             Some(c) => c.get_or(ir_key(&ir, level), make),
             None => make().map(|o| (o, false)),
@@ -151,6 +167,9 @@ fn compile_thread(rx: &Mutex<Receiver<Job>>, out: &Path, cache: Option<&Cache>, 
                 "DIFFERS"
             }
         });
+        if let Some(p) = aux.progress {
+            p.done(&name, dt, hit);
+        }
         let st = if hit { [0.0; 4] } else { crate::llvm::stage_seconds() };
         let mut d = done.lock().unwrap();
         d.objects.push((name.clone(), n));

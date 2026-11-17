@@ -1,5 +1,6 @@
 // The C++ shims over LLVM, lld and clang (src/*_shim.cpp). By default against the LLVM that llvm-config names (LLVM_CONFIG,
-// else llvm-config on the PATH), libLLVM linked dynamically; with the `static-llvm` feature against a static build tree.
+// else llvm-config on the PATH), libLLVM (and with `clang`, libclang-cpp) linked dynamically; with the `static-llvm`
+// feature against a static build tree.
 use std::process::Command;
 
 const LLVM_MAJOR: u32 = 23;
@@ -23,12 +24,22 @@ fn main() {
     let version = llvm_config(&["--version"]);
     let major: u32 = version.split('.').next().unwrap().parse().unwrap();
     assert_eq!(major, LLVM_MAJOR, "LLVM {version}: the lifter's IR is written for LLVM {LLVM_MAJOR}");
+    let clang = std::env::var_os("CARGO_FEATURE_CLANG").is_some();
     let mut b = cc::Build::new();
     b.cpp(true).file("src/llvm_shim.cpp").file("src/lld_shim.cpp").warnings(false);
+    if clang {
+        b.file("src/clang_shim.cpp");
+        // (the system clang's resource headers: the same version as its libclang-cpp)
+        let res = std::path::PathBuf::from(llvm_config(&["--libdir"])).join("clang").join(major.to_string());
+        println!("cargo:rustc-env=HK_CLANG_RESOURCE_DIR={}", res.display());
+    }
     for f in llvm_config(&["--cxxflags"]).split_whitespace() {
         b.flag(f);
     }
     b.compile("llvm_shim");
+    if clang {
+        println!("cargo:rustc-link-lib=dylib=clang-cpp");
+    }
     println!("cargo:rustc-link-search=native={}", llvm_config(&["--libdir"]));
     for l in llvm_config(&["--link-shared", "--libs"]).split_whitespace() {
         println!("cargo:rustc-link-lib=dylib={}", l.trim_start_matches("-l"));

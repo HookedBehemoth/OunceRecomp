@@ -49,6 +49,8 @@ label=$(head -1 "$bin/BUILD.txt" 2>/dev/null || echo none); want=$(git -C "$root
 user=${XDG_DATA_HOME:-$HOME/.local/share}/hookshot; mkdir -p "$user"
 cd "$play"
 echo "playing $label ${scene:-title}; log: $play/log.txt"
-env "${args[@]}" "$@" "$bin/hookshot" "$root/work/sa/image/image.bin" --romfs "$romfs" --user "$user" > stdout.txt 2> log.txt || echo "exited with $?"
+# (the image beside the executable, as a game folder has it; work/sa/image/ for a build.py build)
+img=$bin/image.bin; [ -f "$img" ] || img=$root/work/sa/image/image.bin
+env "${args[@]}" "$@" "$bin/hookshot" "$img" --romfs "$romfs" --user "$user" > stdout.txt 2> log.txt || echo "exited with $?"
 [ -z "$rec" ] || echo "recorded input: $rec"
 journalctl -k -b --no-pager 2>/dev/null | grep -E 'ring .* timeout|GPU reset\(' | tail -2 || true

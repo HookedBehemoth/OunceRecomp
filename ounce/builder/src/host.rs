@@ -17,6 +17,15 @@ pub struct CJob {
 
 const CPU: [&str; 2] = ["-march=x86-64-v3", "-ffp-contract=off"];
 
+/// the target flags every C compile starts with: the CPU, and HOOKSHOT_SYSROOT's --sysroot (the AppImage's glibc)
+fn target() -> Vec<String> {
+    let mut f: Vec<String> = CPU.iter().map(|x| x.to_string()).collect();
+    if let Some(r) = std::env::var_os("HOOKSHOT_SYSROOT").filter(|v| !v.is_empty()) {
+        f.push(format!("--sysroot={}", r.to_string_lossy()));
+    }
+    f
+}
+
 fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
@@ -25,7 +34,7 @@ fn s(p: &Path) -> String {
 pub fn host_jobs(root: &Path, rt64: &Path, host: &[String], version: &str) -> Result<Vec<CJob>, String> {
     let h = root.join("host");
     let opus = root.join("third_party/opus");
-    let mut fl: Vec<String> = CPU.iter().map(|x| x.to_string()).collect();
+    let mut fl = target();
     fl.extend([format!("-I{}", s(&h.join("os"))), "-D_GNU_SOURCE".into(), format!("-I{}", s(&h)), format!("-I{}", s(rt64))]);
     fl.extend(["-Wno-everything", "-O2", "-g0", "-mcx16", "-Werror=implicit-function-declaration", "-Werror=incompatible-pointer-types"].map(String::from));
     fl.push(format!("-I{}", s(&opus.join("include"))));
@@ -45,7 +54,7 @@ pub fn host_jobs(root: &Path, rt64: &Path, host: &[String], version: &str) -> Re
             CJob { obj: format!("host_{stem}.o"), src, flags: f }
         })
         .collect();
-    let mut of: Vec<String> = CPU.iter().map(|x| x.to_string()).collect();
+    let mut of = target();
     of.extend(["-O2", "-g0", "-Wno-everything", "-DOPUS_BUILD", "-DUSE_ALLOCA", "-DHAVE_LRINTF", "-DHAVE_LRINT"].map(String::from));
     of.extend(["include", "celt", "silk", "silk/float", "src"].map(|d| format!("-I{}", s(&opus.join(d)))));
     let list = std::fs::read_to_string(opus.join("sources.txt")).map_err(|e| format!("{}: {e}", opus.join("sources.txt").display()))?;
@@ -57,7 +66,7 @@ pub fn host_jobs(root: &Path, rt64: &Path, host: &[String], version: &str) -> Re
 
 /// rt64/a64_rt.c at the generated code's flags (build.py flags(): -O1 and two -mllvm options)
 pub fn rt_job(root: &Path, rt64: &Path) -> CJob {
-    let mut f: Vec<String> = CPU.iter().map(|x| x.to_string()).collect();
+    let mut f = target();
     f.extend([format!("-I{}", s(rt64)), format!("-I{}", s(&root.join("third_party/a64-kit/rt")))]);
     f.extend(["-Wno-everything", "-fno-strict-aliasing", "-mcx16", "-O1", "-g0", "-mllvm", "-rotation-max-header-size=0", "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"].map(String::from));
     CJob { obj: "a64_rt.o".into(), src: rt64.join("a64_rt.c"), flags: f }
@@ -74,7 +83,7 @@ fn mllvm(flags: &[String]) -> Vec<(String, u32)> {
 
 /// Compiles `jobs` into `out` with `threads` threads. Every job's -mllvm options must be the same (they are LLVM's
 /// globals, set for the phase). Returns how many came from the cache.
-pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>, resource_dir: &Path) -> Result<usize, String> {
+pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>, resource_dir: &Path, aux: &crate::lift::Aux) -> Result<usize, String> {
     let opts = jobs.first().map(|j| mllvm(&j.flags)).unwrap_or_default();
     if jobs.iter().any(|j| mllvm(&j.flags) != opts) {
         return Err("a phase of C compiles with different -mllvm options".into());
@@ -88,8 +97,12 @@ pub fn compile(jobs: &[CJob], out: &Path, threads: usize, cache: Option<&Cache>,
             sc.spawn(|| loop {
                 let k = next.fetch_add(1, Ordering::Relaxed);
                 let Some(j) = jobs.get(k) else { break };
-                match one(j, cache, resource_dir) {
+                let t = std::time::Instant::now();
+                match one(j, cache, resource_dir, aux.gate) {
                     Ok((o, hit)) => {
+                        if let Some(p) = aux.progress {
+                            p.done(&j.obj, t.elapsed().as_secs_f64(), hit);
+                        }
                         hits.fetch_add(hit as usize, Ordering::Relaxed);
                         if let Err(e) = std::fs::write(out.join(&j.obj), o) {
                             *err.lock().unwrap() = Some(format!("{}: {e}", j.obj));
@@ -117,7 +130,7 @@ fn args(j: &CJob, resource_dir: &Path, deps: &Path) -> Vec<String> {
 
 /// one job through the cache: the manifest (by source and flags) names the files the last compile read; the object
 /// is found by their contents. A miss compiles and records both.
-fn one(j: &CJob, cache: Option<&Cache>, resource_dir: &Path) -> Result<(Vec<u8>, bool), String> {
+fn one(j: &CJob, cache: Option<&Cache>, resource_dir: &Path, gate: &crate::gate::Gate) -> Result<(Vec<u8>, bool), String> {
     // (the manifest is found by the flags as given: which files a compile reads depends on the include folders. The
     // object is found by the flags less those folders and the files' contents: what they hold is in the list)
     let flags: Vec<&str> = j.flags.iter().map(String::as_str).filter(|f| !f.starts_with("-I")).collect();
@@ -142,7 +155,9 @@ fn one(j: &CJob, cache: Option<&Cache>, resource_dir: &Path) -> Result<(Vec<u8>,
         }
     }
     let tmp = std::env::temp_dir().join(format!("hk-deps-{}-{}.d", std::process::id(), j.obj));
+    let lease = gate.enter(crate::gate::NEED_C_MB);
     let o = crate::clang::compile(&args(j, resource_dir, &tmp)).map_err(|e| format!("{}: {e}", j.src.display()))?;
+    drop(lease);
     let text = std::fs::read_to_string(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let _ = std::fs::remove_file(&tmp);
     if let Some(c) = cache {

@@ -1,5 +1,6 @@
 //! The builder's object cache: objects by a SHA-1 key of everything that decides them (the module's text, its recipe
 //! or flags, the headers it may read, and the compiler's identity), one file per key in a folder of its own.
+#![cfg_attr(not(feature = "clang"), allow(dead_code))]
 
 use sha1::{Digest, Sha1};
 use std::path::{Path, PathBuf};
@@ -58,7 +59,10 @@ impl Cache {
 
     #[cfg_attr(not(feature = "clang"), allow(dead_code))]
     pub fn get(&self, key: Key) -> Option<Vec<u8>> {
-        std::fs::read(self.path(&key.hex())).ok()
+        let p = self.path(&key.hex());
+        let o = std::fs::read(&p).ok()?;
+        touch(&p);
+        Some(o)
     }
 
     #[cfg_attr(not(feature = "clang"), allow(dead_code))]
@@ -69,7 +73,9 @@ impl Cache {
     #[cfg_attr(not(feature = "clang"), allow(dead_code))]
     /// a C file's manifest: the files its last compile read
     pub fn manifest(&self, key: Key) -> Option<Vec<String>> {
-        let t = std::fs::read_to_string(self.path(&key.hex()).with_extension("deps")).ok()?;
+        let p = self.path(&key.hex()).with_extension("deps");
+        let t = std::fs::read_to_string(&p).ok()?;
+        touch(&p);
         Some(t.lines().map(String::from).collect())
     }
 
@@ -83,10 +89,38 @@ impl Cache {
         let hex = key.hex();
         let p = self.path(&hex);
         if let Ok(o) = std::fs::read(&p) {
+            touch(&p);
             return Ok((o, true));
         }
         let o = make()?;
         self.write(&p, &o)?;
         Ok((o, false))
+    }
+
+    /// Removes what no build used for `days` days (HOOKSHOT_OBJCACHE_DAYS, 3): (files removed, bytes, bytes kept)
+    pub fn prune(&self, days: f64) -> (usize, u64, u64) {
+        let age = std::time::Duration::from_secs_f64(days * 86400.0);
+        let now = std::time::SystemTime::now();
+        let (mut n, mut freed, mut kept) = (0, 0, 0);
+        for sub in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+            for f in std::fs::read_dir(sub.path()).into_iter().flatten().flatten() {
+                let Ok(m) = f.metadata() else { continue };
+                let old = m.modified().ok().and_then(|t| now.duration_since(t).ok()).is_some_and(|d| d > age);
+                if old && std::fs::remove_file(f.path()).is_ok() {
+                    n += 1;
+                    freed += m.len();
+                } else {
+                    kept += m.len();
+                }
+            }
+        }
+        (n, freed, kept)
+    }
+}
+
+/// a file's time of last use: what pruning goes by
+fn touch(p: &Path) {
+    if let Ok(f) = std::fs::OpenOptions::new().append(true).open(p) {
+        let _ = f.set_modified(std::time::SystemTime::now());
     }
 }

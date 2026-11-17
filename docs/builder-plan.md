@@ -54,19 +54,41 @@ build does not prepare them and the folder keeps the game's files.
 
 ## The game folder
 
-`hookshot-builder build <out> --direct <hookshot_direct.so>` (the `clang` feature) makes the game folder in one
+`hookshot-builder build <out> --direct <hookshot_direct.so>` makes the game folder in one
 process: the host's C (`host/*.c`, libopus and `rt64/a64_rt.c`, with build.py's flags and
-`-fstack-protector-strong`), the lift and its compile, the link and the labels. Its executable equals build.py's in
-every loaded byte but the build ID when both are given the same version text (`--version`).
+`-fstack-protector-strong`), the lift and its compile, the link and the labels. The folder holds `hookshot`,
+`hookshot_direct.so` and `image.bin` beside it, where the game looks without an argument; `scripts/run-vk.sh` and
+`scripts/play.sh` take the image from beside the executable when it is there.
 
+- The version text is `nx2/version.py`'s, computed by the builder (`hookshot-builder version`); `--version` replaces it.
+- `--gen <dir>` also writes the lift's files for the RE tools and diffout: `gen/*.ll`, `gen/functions.txt`,
+  `lift_answers.ll` and `facts.tsv`.
+- `--progress` prints the lines a front end reads: `@@plan`, `@@file <name> <seconds> <new|cached>` and `@@eta`,
+  estimated from the last build's seconds (`seconds.txt` in the cache).
+- Checks: the LLVM version the process runs; the patch declarations against the compiled host (`hos_patch`
+  records); the back end's undefined symbols against the executable's exports.
 - LLVM's `-mllvm` options are globals of the process, so the compiles run in phases: the host's C at LLVM's
   defaults, then the runtime at its two options, then the partitions at theirs.
 - The lift hands every module over LZ4-compressed and ends within seconds; its state is freed before the compiles
   are done.
+- Jobs: `-j`, else `HOOKSHOT_JOBS`, else every CPU. A memory gate holds a compile back until the memory free (the
+  smaller of MemAvailable and the room in a capped cgroup), less what compiles started in the last 3 s may still
+  take, keeps its need and `HOOKSHOT_MEM_RESERVE_GB` (1.5) free. A partition needs about eight times its IR (the
+  largest, 42 MB of IR, peaks at 360 MB), a C file 300 MB. `HOOKSHOT_MEM_GATE=0` turns it off.
 - Objects are cached in `work/builder-cache`, apart from build.py's `work/objcache` because the keys are built
   differently. A module is found by its IR, recipe and the partitions' options; a C file by a manifest of the files
   its last compile read (clang's dependency list) and their contents; both keys name the LLVM version and the
-  builder's recipes. A rebuild with nothing changed takes 8 s, most of it the lift.
+  builder's recipes. Files no build used for `HOOKSHOT_OBJCACHE_DAYS` (3) days are removed at the end of a build.
+  A rebuild with nothing changed takes 8 to 10 s, most of it the lift.
+- `HOOKSHOT_SYSROOT` gives the link and the C compiles a sysroot (the AppImage's glibc).
+
+## Building the builder
+
+- Development: `cargo build --release -p hookshot-builder` (the default `clang` feature) links the system's
+  `libLLVM.so` and `libclang-cpp.so` of LLVM 23, and uses the system clang's resource headers.
+- Shipping: `scripts/linux/static-llvm.sh` builds a static LLVM, clang and lld of the pinned release for
+  x86-64-v3; `LLVM_STATIC_DIR=<its build> cargo build --release -p hookshot-builder --features static-llvm,clang`
+  links them. LTO is not set up: the archives would hold bitcode, and the Rust link would have to run LTO.
 
 ## The link
 
