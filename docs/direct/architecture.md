@@ -78,8 +78,9 @@ What a translated program expects at a draw is in [the shader contract](shader-c
 All programs are in the romfs. The back end translates them with its fork of Eden's recompiler (`gpu/direct/eden`) and
 keeps shader objects in caches beside the executable. A table keyed by the NVN program's serial holds the variants and
 is read without locks. A program missing at load is compiled then, and the load waits. A program the game set but the
-workers have not read yet is read at its first draw, which waits for it: a draw the game makes once, such as the pause
-picture's, has no later frame. A variant missing in play skips its draw, is counted, and is compiled in the background.
+workers have not read yet is read at its first draw or dispatch, which waits for it: a draw the game makes once, such
+as the pause picture's, has no later frame. A variant missing in play skips its draw, is counted, and is compiled in
+the background.
 
 ## Textures
 

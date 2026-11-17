@@ -198,7 +198,7 @@ int64_t take_buf(int i) {
 std::atomic<int64_t> st_codes{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_cs_objects{0}, st_object_failed{0}, st_translate_ns{0},
     st_object_ns{0}, st_slots{0}, st_fixups{0}, st_misses{0}, st_variants{0}, st_samp_binds{0};
 std::atomic<double> last_miss_s{0};
-std::atomic<int64_t> st_waited{0}, st_prefetched{0}, st_bumped{0};
+std::atomic<int64_t> st_waited{0}, st_prefetched{0}, st_bumped{0}, st_read_here{0};
 std::atomic<int64_t> st_from_binary{0}, st_binary_failed{0};
 
 // ---- programs: variants per code key, slots per NVN serial ----
@@ -1075,7 +1075,8 @@ void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, Cmd
     const bool wait = !draw_scene_up();
     const auto wait_until = clk::now() + std::chrono::seconds(120);
     const work::Class now = wait ? work::PW : work::P0;   // (before the scene, the game's load waits for it)
-    if (slot->state.load(std::memory_order_acquire) == 0 && work::bump(slot->scan, now)) st_bumped.fetch_add(1, std::memory_order_relaxed);
+    // (still queued with the load's programs: read here, or waited for. A dispatch the game makes once has no later frame)
+    if (slot->state.load(std::memory_order_acquire) == 0 && work::run_here(slot->scan)) st_read_here.fetch_add(1, std::memory_order_relaxed);
     while (wait && slot->state.load(std::memory_order_acquire) == 0 && clk::now() < wait_until) std::this_thread::yield();
     const int state = slot->state.load(std::memory_order_acquire);
     if (state == 0) return count(l, D_NOT_READ);
@@ -1350,12 +1351,12 @@ void compute_log(double frames) {
     const size_t queued = work::queued();
     logf("direct: compute programs (since the start): %lld slots, %lld codes, %lld variants (%lld translated in %.1f s, %lld from the cache, "
          "%lld failed), shader objects %lld (%.1f s, %lld failed; %lld from their binaries, %lld binaries refused), %lld with matrix multiplies, %lld reading the grid otherwise; misses %.1f "
-         "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld; dispatches that waited for their variant at the start %lld; translated when set %lld; moved ahead of the load's work %lld",
+         "a frame, %zu jobs waiting, the last %.2f s after the device; deferred words copied %.1f a frame; separate compute samplers bound %lld; dispatches that waited for their variant at the start %lld; translated when set %lld; moved ahead of the load's work %lld; programs read at their first dispatch %lld",
          (long long)st_slots.load(), (long long)st_codes.load(), (long long)st_variants.load(), (long long)st_translated.load(),
          st_translate_ns.load() / 1e9, (long long)st_from_disk.load(), (long long)st_failed.load(), (long long)st_cs_objects.load(),
          st_object_ns.load() / 1e9, (long long)st_object_failed.load(), (long long)st_from_binary.load(), (long long)st_binary_failed.load(), (long long)st_coopmat.load(), (long long)st_grid_left.load(),
          st_misses.exchange(0) / frames, queued, last_miss_s.load(), st_fixups.exchange(0) / frames, (long long)st_samp_binds.load(), (long long)st_waited.load(), (long long)st_prefetched.load(),
-         (long long)st_bumped.load());
+         (long long)st_bumped.load(), (long long)st_read_here.load());
 }
 
 }  // namespace hsd
