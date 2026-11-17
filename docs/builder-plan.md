@@ -214,14 +214,19 @@ the romfs copy is 15.9 GB instead of 25.0 GB, and the folder about 30 GB with it
 libvulkan loaded at run time and no Vulkan crate. It prints one line per item, `@@probe <key> <pass|fail|warn|info>
 <value>`, and last `@@probe verdict <pass|fail> <failed keys>`; it exits 1 when an item fails.
 
-| Key | Needed |
-|---|---|
-| `loader`, `api` | Vulkan 1.3 |
-| `vram` | 8 GB of device-local memory; under 10 GB is a warning |
-| `swapchain`, `external_memory_fd`, `dma_buf`, `udmabuf` | the game's memory imported as dma-bufs through `/dev/udmabuf` |
-| `shader_object`, `descriptor_heap`, `extended_dynamic_state3`, `maintenance7` | the extensions and their features the back end draws with |
-| `core_features` | dynamic rendering, synchronization2, timeline semaphores, buffer device addresses |
-| `graphics_queue`, `sparse_queue` | a graphics and compute family, and a sparse-binding family without either |
+An item fails only when the back end does not start without it, or starts and draws nothing. What the back end starts
+without is a warning.
+
+| Key | Fails | Warns |
+|---|---|---|
+| `loader`, `api` | under Vulkan 1.3 | |
+| `swapchain`, `external_memory_fd`, `dma_buf` | missing: the device is not made | |
+| `core_features` | no dynamic rendering, synchronization2, timeline semaphores or buffer device addresses | |
+| `graphics_queue`, `sparse_queue` | no graphics and compute family, or no sparse-binding family without either | |
+| `shader_object`, `descriptor_heap`, `extended_dynamic_state3` and their `_feature(s)` | missing: nothing is drawn | |
+| `maintenance7` | | missing: the game's command jobs are not executed |
+| `sparse_residency`, `udmabuf` | | missing: the game's memory is not mapped on the GPU (layer 0 off) |
+| `vram` | | under 10 GB; under 8 GB the textures may not fit |
 
 `gpu`, `device` and `driver` lines name the GPU and its driver; `gpu` warns when the GPU is not discrete.
 

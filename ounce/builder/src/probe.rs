@@ -1,6 +1,7 @@
 //! `hookshot-builder probe`: whether this PC's GPU runs the direct back end. Loads libvulkan, picks the device the
 //! back end picks (gpu/direct/direct_main.cpp: the first discrete GPU of Vulkan 1.3, else the first of 1.3) and checks
-//! what its device creation requires. One line per item, for a front end:
+//! what it needs. An item fails only when the back end refuses to start without it, or starts and draws nothing;
+//! what it starts without and works around is a warning. One line per item, for a front end:
 //!
 //! `@@probe <key> <pass|fail|warn|info> <value>`, then `@@probe verdict <pass|fail> <failed keys>`.
 
@@ -13,7 +14,8 @@ type GetProc = unsafe extern "C" fn(*mut c_void, *const c_char) -> Option<Fp>;
 const API_1_3: u32 = (1 << 22) | (3 << 12);
 const API_1_4: u32 = (1 << 22) | (4 << 12);
 const GB: u64 = 1 << 30;
-/// below this the game does not keep its textures; from `RECOMMENDED` it has room for its caches
+/// below this the game may not keep its textures (the back end does not check); from `RECOMMENDED` it has room for
+/// its caches
 const MIN_VRAM: u64 = 8 * GB;
 const RECOMMENDED_VRAM: u64 = 10 * GB;
 
@@ -76,6 +78,11 @@ struct Item {
 
 fn item(key: &'static str, ok: bool, value: impl Into<String>) -> Item {
     Item { key, state: if ok { "pass" } else { "fail" }, value: value.into() }
+}
+
+/// what the back end starts without
+fn optional(key: &'static str, ok: bool, value: impl Into<String>) -> Item {
+    Item { key, state: if ok { "pass" } else { "warn" }, value: value.into() }
 }
 
 /// The loader's entry points; `None` when libvulkan is not there.
@@ -210,8 +217,8 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         let gb = format!("{:.1} GB", vram as f64 / GB as f64);
         out.push(Item {
             key: "vram",
-            state: if vram < MIN_VRAM - GB / 2 { "fail" } else if vram < RECOMMENDED_VRAM - GB / 2 { "warn" } else { "pass" },
-            value: format!("{gb} (8 GB needed, 10 to 12 GB recommended)"),
+            state: if vram < RECOMMENDED_VRAM - GB / 2 { "warn" } else { "pass" },
+            value: format!("{gb} ({}10 to 12 GB recommended)", if vram < MIN_VRAM - GB / 2 { "under 8 GB the textures may not fit; " } else { "" }),
         });
         // the extensions
         let mut ne = 0u32;
@@ -220,6 +227,7 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
         exts(d, null(), &mut ne, eb.as_mut_ptr());
         let names: Vec<String> = eb.chunks_exact(260).map(|e| cstr(&e[..256])).collect();
         let has = |n: &str| names.iter().any(|e| e == n);
+        // (the device is not made without the first three; without the next three it draws nothing)
         for (key, ext) in [
             ("swapchain", "VK_KHR_swapchain"),
             ("external_memory_fd", "VK_KHR_external_memory_fd"),
@@ -227,10 +235,10 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
             ("shader_object", "VK_EXT_shader_object"),
             ("descriptor_heap", "VK_EXT_descriptor_heap"),
             ("extended_dynamic_state3", "VK_EXT_extended_dynamic_state3"),
-            ("maintenance7", "VK_KHR_maintenance7"),
         ] {
             out.push(item(key, has(ext), if has(ext) { ext.to_string() } else { format!("{ext} missing") }));
         }
+        let m7_ext = has("VK_KHR_maintenance7");
         // the features the back end turns on and needs
         let mut f12 = Feat::<47>::new(ST_V12_FEATURES);
         let mut f13 = Feat::<15>::new(ST_V13_FEATURES);
@@ -271,9 +279,11 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
             let missing: Vec<&str> = want.iter().filter(|w| e3.on[w.0] == 0).map(|w| w.1).collect();
             out.push(item("extended_dynamic_state3_features", missing.is_empty(), if missing.is_empty() { "the ten the back end sets".into() } else { format!("missing {}", missing.join(" ")) }));
         }
-        if has("VK_KHR_maintenance7") {
-            out.push(item("maintenance7_feature", m7.on[0] != 0, "maintenance7"));
-        }
+        let m7_ok = m7_ext && m7.on[0] != 0;
+        out.push(optional("maintenance7", m7_ok, if m7_ok { "VK_KHR_maintenance7" } else { "no VK_KHR_maintenance7: the game's command jobs are not executed" }));
+        // (VkPhysicalDeviceFeatures: sparseBinding is field 44, sparseResidencyBuffer 45, sparseResidencyAliased 52)
+        let sparse_res = f2.on[44] != 0 && f2.on[45] != 0 && f2.on[52] != 0;
+        out.push(optional("sparse_residency", sparse_res, if sparse_res { "aliased sparse buffers" } else { "no aliased sparse buffers: the game's memory is not mapped on the GPU (layer 0 off)" }));
         // the queues: graphics and compute in one family; a sparse-binding family without either
         let mut nq = 0u32;
         queues(d, &mut nq, null_mut());
@@ -295,8 +305,8 @@ fn udmabuf() -> Item {
     let limit = std::fs::read_to_string("/sys/module/udmabuf/parameters/size_limit_mb").ok().and_then(|s| s.trim().parse::<u64>().ok());
     match (dev, limit) {
         (Ok(_), Some(mb)) => item("udmabuf", true, format!("/dev/udmabuf, {mb} MB per buffer")),
-        (Err(e), _) => item("udmabuf", false, format!("/dev/udmabuf cannot be opened: {e}")),
-        (Ok(_), None) => item("udmabuf", false, "udmabuf's size_limit_mb cannot be read"),
+        (Err(e), _) => optional("udmabuf", false, format!("/dev/udmabuf cannot be opened: {e}; the game's memory is not mapped on the GPU (layer 0 off)")),
+        (Ok(_), None) => optional("udmabuf", false, "udmabuf's size_limit_mb cannot be read; the game's memory is not mapped on the GPU (layer 0 off)"),
     }
 }
 
