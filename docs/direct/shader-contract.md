@@ -61,7 +61,7 @@ read; you don't need to delete one.
 | `hookshot_direct_compute.bin` | translated compute variants | the compute stamp, the record version or the device's answers change |
 | `hookshot_direct_shader_objects.bin` | driver binaries of the shader objects | the driver's binary UUID or version changes; a binary the driver refuses is compiled again |
 
-`nx2/build.py` computes the stamps by hashing the translator and the regions marked `// <stamp graphics>`,
+The build computes the stamps (`gpu/direct/meson/shader_stamp.py`) by hashing the translator and the regions marked `// <stamp graphics>`,
 `// <stamp shared>` and `// <stamp compute>`. Code that decides a translation's output belongs inside a stamped region;
 editing code outside them keeps the caches. Markers that don't pair stop the build. A change to a record's layout
 raises `kDiskFormat` or `kDiskVersion`.

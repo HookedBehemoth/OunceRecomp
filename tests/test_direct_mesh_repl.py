@@ -44,7 +44,7 @@ def main():
             failed.append("%s has no MESH_REPL line in direct_meshrepl.cpp" % code)
         elif row != ("true" if shape == "task" else "false", "mesh_%s_spv" % code, len(want), want):
             failed.append("%s: direct_meshrepl.cpp's line (%s) is not swap.txt's (%s, %s)" % (code, row, shape, ubos))
-        if '#include "shaders/mesh/%s_spv.h"' % code not in table:
+        if '#include <shaders/mesh/%s_spv.h>' % code not in table:
             failed.append("%s: direct_meshrepl.cpp does not include its header" % code)
         header = MESH / ("%s_spv.h" % code)
         if not header.is_file():

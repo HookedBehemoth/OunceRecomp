@@ -6,7 +6,7 @@
 #include <set>
 
 #include "direct_internal.h"
-#include "shaders/mesh/40d0c0768e874600_spv.h"
+#include <shaders/mesh/40d0c0768e874600_spv.h>
 
 namespace hsd {
 namespace {

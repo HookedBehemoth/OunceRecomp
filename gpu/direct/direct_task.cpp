@@ -15,7 +15,7 @@
 #include "direct_pass.h"
 #include "direct_shader.h"
 #include "direct_task.h"
-#include "shaders/task_prep_spv.h"
+#include <shaders/task_prep_spv.h>
 
 namespace hsd {
 bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)

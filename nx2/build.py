@@ -847,40 +847,12 @@ def main():
             "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include")]
         ddeps = tree_headers(direct) + b"".join(open(os.path.join(GPU, "api", f), "rb").read() for f in sorted(os.listdir(os.path.join(GPU, "api"))))
         ddeps += open(os.path.join(OS_DIR, "os.h"), "rb").read() + open(os.path.join(OS_DIR, "os_guest.h"), "rb").read()
-        # (the direct back end's shader stamps: the translator it builds and the code that decides the translation's output,
-        # so its program caches are made again for a change to them only. In direct_shader.cpp and direct_compute.cpp that
-        # code is between "// <stamp NAME>" and "// </stamp NAME>" lines: graphics and shared for the graphics programs,
-        # compute and shared for the compute programs)
-        dtranslator = sorted(os.path.join(d, f) for d, _, fs in os.walk(dx_eden) for f in fs)
-
-        def stamp_regions(path, names):
-            text = open(path, "rb").read().replace(bytes((13, 10)), bytes((10,))).decode()
-            out, inside = [], None
-            for line in text.split("\n"):
-                m = re.match(r"^// <(/?)stamp (\w+)>$", line)
-                if m:
-                    if (inside is None) == (m.group(1) == "/") or (m.group(1) and m.group(2) != inside):
-                        raise SystemExit("%s: the stamp markers do not pair at %r" % (path, line))
-                    inside = None if m.group(1) else m.group(2)
-                elif inside in names:
-                    out.append(line)
-            if inside is not None:
-                raise SystemExit("%s: the stamp region %s is not closed" % (path, inside))
-            return "\n".join(out).encode()
-
-        def shader_stamp(files, regions):
-            h = hashlib.sha1(usedforsecurity=False)
-            for f in dtranslator + [os.path.join(direct, n) for n in files]:
-                if os.path.isfile(f):
-                    h.update(os.path.relpath(f, GPU).replace("\\", "/").encode() + open(f, "rb").read().replace(bytes((13, 10)), bytes((10,))))
-            for name, which in regions:
-                h.update(name.encode() + stamp_regions(os.path.join(direct, name), which))
-            return h.hexdigest()[:16]
-        shader_cpp = ("direct_shader.cpp", {"graphics", "shared"})
-        direct_stamp = "-DHOOKSHOT_DIRECT_SHADER_STAMP=0x%sull" % shader_stamp(
-            ("direct_state.h", "direct_spv_late.cpp", "direct_spv_late.h"), (shader_cpp,))
-        compute_stamp = "-DHOOKSHOT_DIRECT_COMPUTE_STAMP=0x%sull" % shader_stamp(
-            (), (("direct_shader.cpp", {"shared"}), ("direct_compute.cpp", {"compute"})))
+        # (the direct back end's shader stamps, which key its program caches: gpu/direct/meson/shader_stamp.py, which the
+        # Meson build runs too)
+        sys.path.insert(0, os.path.join(direct, "meson"))
+        import shader_stamp
+        direct_stamp = "-D%s=0x%sull" % (shader_stamp.KINDS["graphics"][0], shader_stamp.stamp("graphics")[0])
+        compute_stamp = "-D%s=0x%sull" % (shader_stamp.KINDS["compute"][0], shader_stamp.stamp("compute")[0])
         dx_eden_deps = tree_headers(dx_eden, os.path.join(GPU, "compat"))
         for esrc in sorted(os.path.join(d, f) for sub in ("shader_recompiler", os.path.join("sirit", "src"))
                            for d, _, fs in os.walk(os.path.join(dx_eden, sub)) for f in fs if f.endswith(".cpp")):

@@ -64,7 +64,7 @@ After a change, rebuild only what the change needs:
 | You changed | Run |
 |---|---|
 | `host/` or `gpu/direct/`, including patch declarations | `nx2/build.py`: about a minute |
-| Only the renderer | `RX_DIRECT_ONLY=1 nx2/build.py ...`: builds `hookshot_direct.so` alone |
+| Only the renderer | `RX_DIRECT_ONLY=1 nx2/build.py ...`, or Meson (below): builds `hookshot_direct.so` alone |
 | The lifter | `nx2/build.py`: every partition is lifted and compiled again |
 | The lift, discovery, an `HLE` or `PATCH_ANSWER`, the hot list, or the dump | `scripts/relift.sh` |
 
@@ -76,6 +76,28 @@ benchmark and profiling.
 
 To keep two builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`) to
 `work/sa/<name>/` and run with `EXE=work/sa/<name>/hookshot`.
+
+### Build the renderer with Meson
+
+Meson builds the renderer, `hookshot_direct.so`, on its own, with the same flags as `nx2/build.py`. It needs clang,
+lld, Meson, Ninja and `glslangValidator`. To build it, run:
+
+```sh
+meson setup --native-file gpu/direct/meson/clang.ini -Dexe=work/sa/build/hookshot work/meson
+ninja -C work/meson
+```
+
+The library is `work/meson/gpu/direct/hookshot_direct.so`; copy it beside `hookshot` to run it. A clean build takes
+about 40 seconds with six jobs.
+
+- The options `vulkan_headers`, `spirv_headers` and `vma_headers` name the header packages. They default to `/usr`,
+  `work/deps/SPIRV-Headers` and `work/deps/VulkanMemoryAllocator`.
+- `march` sets the CPU level (default `x86-64-v3`).
+- `exe` names the executable to check the library against. Every symbol the library leaves undefined must be one the
+  executable exports (`os_*` or `hos_mem_ledger`); otherwise the build fails. Without `exe`, only the names are
+  checked.
+- The SPIR-V headers of `gpu/direct/shaders` are compiled from their sources in the build folder. `meson test -C
+  work/meson` checks that the copies in the source tree are still equal to them.
 
 ### Work in an agent worktree
 

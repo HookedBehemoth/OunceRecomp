@@ -14,7 +14,7 @@
 #include "direct_draw.h"
 #include "direct_heap.h"
 #include "direct_query.h"
-#include "shaders/report_resolve_spv.h"
+#include <shaders/report_resolve_spv.h>
 
 namespace hsd {
 
