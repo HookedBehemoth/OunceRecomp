@@ -77,6 +77,12 @@ bool dbg(const char* name) {
 
 bool dbg_log(const char* name) { return dbg(name) || dbg("logall"); }
 
+bool loader_layer_enabled(const char* part) {
+    for (const char* v : {"VK_LOADER_LAYERS_ENABLE", "VK_INSTANCE_LAYERS"})
+        if (const char* e = getenv(v); e && std::strstr(e, part)) return true;
+    return false;
+}
+
 PFN_vkGetInstanceProcAddr get_instance_proc;
 
 const char* dbg_value(const char* name) {

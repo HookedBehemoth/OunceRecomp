@@ -1,5 +1,4 @@
 // The validation messenger and strict mode (direct_check.h).
-#include <link.h>   // (dl_iterate_phdr: where the validation layer was loaded from)
 
 #include <algorithm>
 #include <atomic>
@@ -123,13 +122,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL on_message(VkDebugUtilsMessageSeverityFlagBitsEXT
     return VK_FALSE;
 }
 
-int find_layer(struct dl_phdr_info* info, size_t, void*) {
-    if (info->dlpi_name && std::strstr(info->dlpi_name, "VkLayer_khronos_validation")) {
-        layer_path = info->dlpi_name;
-        return 1;
-    }
-    return 0;
-}
+/// the layer is in the instance: asked here (HOS_DBG=validation) or by the loader's variables
+bool layer_enabled() { return layer_asked || loader_layer_enabled("validation"); }
 
 void summary_at_exit() {
     char b[2048];
@@ -192,8 +186,8 @@ void validation_instance_info(VkInstanceCreateInfo& ci, std::vector<const char*>
 }
 
 void validation_instance_made(VkInstance instance) {
-    dl_iterate_phdr(find_layer, nullptr);
-    layer_mapped = !layer_path.empty();
+    layer_mapped = layer_enabled();
+    if (layer_mapped) layer_path = kLayer;
     if (layer_mapped && instance_messenger.pfnUserCallback) {
         auto make = (PFN_vkCreateDebugUtilsMessengerEXT)get_instance_proc(instance, "vkCreateDebugUtilsMessengerEXT");
         VkDebugUtilsMessengerCreateInfoEXT ci = instance_messenger;
@@ -202,13 +196,13 @@ void validation_instance_made(VkInstance instance) {
         messenger_made = messenger_result == VK_SUCCESS;
     }
     if (layer_mapped)
-        logf("validation: the layer is loaded: %s mapped in the process (%s; installed: %s); messenger %s (VkResult %d), status "
+        logf("validation: the layer is on: %s (%s; installed: %s); messenger %s (VkResult %d), status "
              "message %s; warnings and errors counted%s",
              layer_path.c_str(), layer_asked ? "asked by HOS_DBG=validation" : "enabled outside the back end (VK_LOADER_LAYERS_ENABLE)",
              layer_available ? "yes" : "no", messenger_made ? "made" : "NOT made", (int)messenger_result,
              status_heard.load() ? "heard" : "not heard", strict_on() ? ", strict: any warning or error ends the run" : "");
     else
-        logf("validation: off (no validation layer in the process; layer installed: %s)", layer_available ? "yes" : "no");
+        logf("validation: off (the validation layer not enabled; installed: %s)", layer_available ? "yes" : "no");
     if (strict_on()) {
         logf("strict: on: armed at the first present >= %llu that is %llu presents after the last program miss; known list %zu entries%s",
              (unsigned long long)strict_from(), (unsigned long long)kStrictQuiet, kStrictKnownCount, kStrictKnownCount ? ":" : "");

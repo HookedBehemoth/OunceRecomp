@@ -77,7 +77,7 @@ class StrictTests(unittest.TestCase):
         stop = block(self.check, "[[noreturn]] void stop(int code) {")
         self.assertLess(stop.index("log_flush()"), stop.index("_exit(code)"))   # (the reason reaches the log)
         made = block(self.check, "void validation_instance_made(VkInstance instance) {")
-        self.assertIn("dl_iterate_phdr(find_layer", made)                     # (the proof the layer is in the process)
+        self.assertIn("layer_enabled()", made)                                # (asked here or by the loader's variables)
         self.assertIn("strict: known: %s: %s", made)                          # (the known list in the log)
         self.assertIn("kStrictQuiet", self.header)
         arm = block(self.check, "void strict_present(uint64_t present) {")

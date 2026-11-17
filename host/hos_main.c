@@ -22,7 +22,6 @@ const char *hos_version(void) { return HOOKSHOT_VERSION; }
 #include "os.h"
 #include "hos_sdl.h"
 #include <sys/mman.h>
-#include <sys/prctl.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <errno.h>
@@ -53,8 +52,7 @@ extern const uint64_t hos_entry_init_libc0, hos_entry_init_libc1, hos_entry_init
 /* nn_fs.c */
 extern const char *hos_romfs_dir, *hos_user_dir;
 
-/* (hos_large_pages: the guest window in locked large pages; never set on Linux, where transparent huge pages are the
-   switch: HOS_THP) */
+/* (hos_large_pages: the guest window in locked large pages; never set on Linux) */
 int hos_large_pages;   /* (hos_mem.c: freed pages are not discarded then) */
 
 #if !defined(A64_MEM_ZERO)
@@ -119,11 +117,8 @@ static int reserve_guest(void) {
         return 0;
     /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
-       next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
-    if (!getenv("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
-    /* (HOS_NO_THP=1, experiment: none outside the window either. With THP "always" 400-450 MB of the host heap's and the binary's bss are huge
-       pages, each resident whole when any of its 2 MB is touched) */
-    if (getenv("HOS_NO_THP")) prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
+       next submission: ~250 ms a submit on RADV while the GPU sat idle */
+    madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
     return 1;
 #endif
 }

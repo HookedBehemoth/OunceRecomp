@@ -56,6 +56,8 @@ bool dbg(const char* name);
 bool dbg_log(const char* name);
 /// HOS_DBG=...,<name>:<value>,...: the value (null: not named)
 const char* dbg_value(const char* name);
+/// The Vulkan loader's own variables (VK_LOADER_LAYERS_ENABLE, VK_INSTANCE_LAYERS) enable a layer whose name has part
+bool loader_layer_enabled(const char* part);
 
 struct Device {
     VkInstance instance = VK_NULL_HANDLE;

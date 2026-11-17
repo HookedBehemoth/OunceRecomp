@@ -33,10 +33,6 @@ void hos_sdl_icon(void *window, const char *png);   /* (SDL 3.4's PNG loader: no
 int hos_key_down(int vk);    /* a key (hos_keys.h's virtual-key numbers) or mouse button down in the focused window */
 int hos_window_focused(void);
 void hos_screen_size(int *width, int *height);   /* the desktop's, 0 x 0 without a window */
-/* an in-game menu's request to the window, from any thread (applied on the window's): fullscreen on or off, the menu
-   opened or closed (the mouse let go while it is open), restart now, quit. Exported to hookshot_direct.so. */
-enum { HOS_WINDOW_FULLSCREEN, HOS_WINDOW_MENU, HOS_WINDOW_RESTART, HOS_WINDOW_QUIT };
-void hos_posix_window_ask(int what, int on);
 
 /* ---- events, as the window's loop wants them ---- */
 enum {

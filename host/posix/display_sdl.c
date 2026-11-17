@@ -2,12 +2,10 @@
    game on a thread of its own); the Vulkan back end makes its surface through SDL (gpu/api/vk_api.h
    MkwVkWindow), on a thread of its own so the window keeps answering while the shaders are prepared.
 
-   The keyboard's state, the window's focus and the screen's size are kept here for nn_hid.c and the Insert menu
-   (hos_key_down, hos_window_focused, hos_screen_size: hos_sdl.h).
+   The keyboard's state, the window's focus and the screen's size are kept here for nn_hid.c (hos_key_down,
+   hos_window_focused, hos_screen_size: hos_sdl.h).
    HOS_HEADLESS=1: no window. HOS_WINDOW_SIZE=<w>x<h>: its size (default 1280x720). F11: fullscreen (HOS_FULLSCREEN=1 to
-   start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it.
-   While the Insert menu is open the mouse is free (the cursor shown, for the menu's clicks: hos_mouse_pointer) and
-   the game gets none of it; the capture it had comes back when the menu closes. */
+   start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it. */
 #include "../hos.h"
 #include "../hos_sdl.h"
 
@@ -24,8 +22,6 @@ int rx_start(void *hwnd);
 void rx_resize(int width, int height);
 void rx_close_asked(void);
 void hos_sdl_pads_pump(void);   /* host/pad_sdl.c: controllers, on this thread, as SDL's queue wants */
-void hos_relaunch_ask(void);        /* (host/hos_relaunch.c: the Insert menu's Restart now) */
-void hos_window_closed_exit(void);
 
 volatile int64_t hos_present_count;   /* (nvn_native.c: the game's presents) */
 static volatile uint8_t keys[256];
@@ -47,9 +43,8 @@ void hos_mouse_give_back(int32_t dx, int32_t dy) {
     os_atomic_fetch_add(&mouse_dy, dy);
 }
 
-/* ---- the free mouse, for the Insert menu (gpu/api/vk_api.h MkwVkPointer): set on the main thread, read on the renderer's ---- */
-static volatile int32_t ptr_x, ptr_y, ptr_in, ptr_held, ptr_pressed, ptr_wheel;   /* (x, y in window units; wheel in 1/120 notches) */
-static volatile int menu_open;   /* (HOS_WINDOW_MENU: the menu's state, as the window last heard it) */
+/* ---- the free mouse (gpu/api/vk_api.h MkwVkPointer): set on the main thread, read on the renderer's ---- */
+static volatile int32_t ptr_x, ptr_y, ptr_in, ptr_held;   /* (x, y in window units) */
 static void *window;
 int hos_mouse_pointer(MkwVkPointer *out) {
     memset(out, 0, sizeof *out);
@@ -61,10 +56,6 @@ int hos_mouse_pointer(MkwVkPointer *out) {
     out->x = (int32_t)((int64_t)ptr_x * pw / ww), out->y = (int32_t)((int64_t)ptr_y * ph / wh);
     out->width = pw, out->height = ph;
     out->held = (uint32_t)ptr_held;
-    out->pressed = (uint32_t)os_atomic_xchg(&ptr_pressed, 0);
-    const int32_t wheel = os_atomic_xchg(&ptr_wheel, 0);
-    out->wheel = wheel / 120;
-    if (wheel % 120) os_atomic_fetch_add(&ptr_wheel, wheel % 120);   /* (a part of a notch: kept for the next) */
     return ptr_in && focused;
 }
 static uint32_t sdl_button_bit(int b) { return b == 1 ? HOS_MOUSE_LEFT : b == 3 ? HOS_MOUSE_RIGHT : b == 2 ? HOS_MOUSE_MIDDLE : 0; }
@@ -149,31 +140,6 @@ void hos_renderer_wait(void) {
 }
 
 static volatile int start_asked;
-static volatile int fullscreen_asked = -1;   /* (the Insert menu's row, from the renderer's thread: applied on this one) */
-static volatile int menu_asked = -1;         /* (the Insert menu opened or closed, likewise) */
-static volatile int restart_asked;           /* (the Insert menu's Restart now: the window closes as by the player) */
-static volatile int close_asked;             /* (the Insert menu's Quit: likewise, without the relaunch) */
-
-__attribute__((visibility("default"))) void hos_posix_window_ask(int what, int on) {
-    if (what == HOS_WINDOW_FULLSCREEN) __atomic_store_n(&fullscreen_asked, on ? 1 : 0, __ATOMIC_RELEASE);
-    if (what == HOS_WINDOW_MENU) __atomic_store_n(&menu_asked, on ? 1 : 0, __ATOMIC_RELEASE);
-    if (what == HOS_WINDOW_RESTART) __atomic_store_n(&restart_asked, 1, __ATOMIC_RELEASE);
-    if (what == HOS_WINDOW_QUIT) __atomic_store_n(&close_asked, 1, __ATOMIC_RELEASE);
-}
-/* the menu opened: the mouse let go (its capture kept for later); closed: the capture back, if the window still has the focus */
-static int captured_before_menu;
-static void menu_mouse(int open) {
-    if (open == menu_open) return;
-    menu_open = open;
-    if (open) {
-        captured_before_menu = (int)mouse_captured;
-        mouse_capture(0);
-        os_atomic_store(&ptr_pressed, 0), os_atomic_store(&ptr_wheel, 0);
-    } else {
-        if (captured_before_menu && focused) mouse_capture(1);
-        captured_before_menu = 0;
-    }
-}
 static int sdl_ready;
 int hos_display_owns_sdl(void) { return sdl_ready; }   /* (controllers stay on this thread while it runs SDL) */
 
@@ -264,7 +230,9 @@ void hos_display_loop(void) {
                 case HOS_SDL_EV_QUIT:
                 case HOS_SDL_EV_CLOSE:
                     rx_close_asked();   /* (a start still preparing the shaders keeps what it made) */
-                    hos_window_closed_exit();
+                    hos_log("display: window closed, exiting");
+                    hos_log_flush();
+                    os_exit(0);
                 case HOS_SDL_EV_RESIZED:
                     if (renderer) {
                         int w = 0, h = 0;
@@ -298,15 +266,11 @@ void hos_display_loop(void) {
                 case HOS_SDL_EV_MOUSE_DOWN:
                     ptr_x = (int32_t)e.x, ptr_y = (int32_t)e.y, ptr_in = 1;
                     os_atomic_fetch_or(&ptr_held, (int32_t)sdl_button_bit(e.button));
-                    if (menu_open) os_atomic_fetch_or(&ptr_pressed, (int32_t)sdl_button_bit(e.button));   /* (the menu's click) */
-                    else if (renderer && !mouse_captured) mouse_capture(1);
+                    if (renderer && !mouse_captured) mouse_capture(1);
                     break;
                 case HOS_SDL_EV_MOUSE_UP:
                     ptr_x = (int32_t)e.x, ptr_y = (int32_t)e.y;
                     os_atomic_fetch_and(&ptr_held, ~(int32_t)sdl_button_bit(e.button));
-                    break;
-                case HOS_SDL_EV_MOUSE_WHEEL:
-                    if (menu_open) os_atomic_fetch_add(&ptr_wheel, (int32_t)(e.wheel * 120));
                     break;
                 case HOS_SDL_EV_MOUSE_MOTION:
                     if (!mouse_captured) ptr_x = (int32_t)e.x, ptr_y = (int32_t)e.y, ptr_in = 1;
@@ -321,19 +285,6 @@ void hos_display_loop(void) {
                     break;
                 }
             } while (hos_sdl_poll_event(&e));
-        }
-        const int asked = __atomic_exchange_n(&fullscreen_asked, -1, __ATOMIC_ACQ_REL);
-        if (asked >= 0) set_fullscreen(asked);
-        const int menu = __atomic_exchange_n(&menu_asked, -1, __ATOMIC_ACQ_REL);
-        if (menu >= 0) menu_mouse(menu);
-        if (__atomic_load_n(&restart_asked, __ATOMIC_ACQUIRE)) {
-            hos_relaunch_ask();
-            rx_close_asked();
-            hos_window_closed_exit();
-        }
-        if (__atomic_load_n(&close_asked, __ATOMIC_ACQUIRE)) {
-            rx_close_asked();
-            hos_window_closed_exit();
         }
         keys_update();
     }
