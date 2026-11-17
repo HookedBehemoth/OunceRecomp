@@ -4,6 +4,7 @@ mod compile;
 mod labels;
 mod link;
 mod llvm;
+mod objeq;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -13,6 +14,7 @@ const HELP: &str = "hookshot-builder <command> ...
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (build.py's objs.rsp), lld in this process
+  objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
   llvm-version                         the libLLVM this process uses";
 
 fn fail(msg: impl std::fmt::Display) -> ! {
@@ -46,6 +48,13 @@ fn main() {
         }
         Some("compile-all") => compile_all(&argv[1..]),
         Some("link") => link_cmd(&argv[1..]),
+        Some("objeq") => {
+            let [a, b] = &argv[1..] else { fail("objeq <a.o> <b.o>") };
+            let read = |p: &String| std::fs::read(p).unwrap_or_else(|e| fail(format!("{p}: {e}")));
+            let (same, lines) = objeq::compare(&read(a), &read(b)).unwrap_or_else(|e| fail(e));
+            println!("{}", lines.join("\n"));
+            std::process::exit(if same { 0 } else { 1 });
+        }
         Some("llvm-version") => println!("{}", llvm::version()),
         _ => println!("{HELP}"),
     }
