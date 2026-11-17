@@ -22,9 +22,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Step | What | Time |
 |---|---|---|
 | Read the dump | `.nup` or folder; the exefs first, so the lift starts while the romfs is copied | not measured |
-| Lift | `ounce-lift` as a library | 7 s |
-| Compile | the partitions in this process (`ounce/builder/src/compile.rs`), byte for byte `nx2/build.py`'s objects | 173 s at 12 jobs, 3.5 GB peak |
-| Generated code | `gen/*.ll` from `ounce-lift`, compiled as the cold partitions are | 4.5 s |
+| Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte `nx2/build.py`'s objects | 164 s at 16 jobs, 7.8 GB peak |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `prepare_textures` in Rust, with the native encoders linked statically | 440 s (Python, fast settings) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
@@ -43,6 +41,16 @@ build does not prepare them and the folder keeps the game's files.
 - The target machine has clang's options (PIC, function sections, addrsig); the module's name is `<stdin>`, so the
   object's file symbol is build.py's. `hookshot-builder compile-all <lift dir> <out> --check <obj dir>` compares every
   object (the partitions' and gen/'s) with build.py's.
+
+## The lift in this process
+
+- `hookshot-builder lift-compile <out> [--check <obj dir>]` runs the lift and hands every partition and generated
+  module to the compile threads through a queue as long as the thread count, so no IR is written to disk. With
+  `--check`, every object is compared with build.py's.
+- The lift hands the hot partitions over first and the builder holds the cold generated modules until they are out:
+  hot and cold compiles never run at once (`compile.rs`'s gate), so the long hot compiles start first.
+- Against the separate steps (the lift to files, 6 s; `compile-all`, 160 s and 4.5 GB), the wall time is the same
+  and the peak is 3.3 GB higher: the lift's state stays alive until its last partition is queued.
 
 ## The link
 
@@ -71,9 +79,10 @@ caches and `user/`. The host needs two changes for it: the prepared store and th
 ## Order of work
 
 1. The compile, lld and the generated code as IR in this process (done).
-2. `ounce-lift` as a library: `lift()` out of its `main.rs`, the partitions handed over in memory.
-3. CI: the host and `hookshot_direct.so` prebuilt; the sysroot.
-4. The dump reader (`nx2/nup.py`, `unpack.py`, the ZBIC decompressor) in Rust.
-5. The texture converter in Rust; terrain and sky deswizzled in the host.
-6. The output folder, the host's defaults for it, the AppImage.
-7. Shaders ahead of time.
+2. `ounce-lift` as a library, the partitions handed to the compile in memory (done).
+3. The builder as the development build too, in place of `nx2/build.py`'s game path.
+4. CI: the host and `hookshot_direct.so` prebuilt; the sysroot.
+5. The dump reader (`nx2/nup.py`, `unpack.py`, the ZBIC decompressor) in Rust.
+6. The texture converter in Rust; terrain and sky deswizzled in the host.
+7. The output folder, the host's defaults for it, the AppImage.
+8. Shaders ahead of time.

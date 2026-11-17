@@ -16,6 +16,7 @@ pub mod ir;
 pub mod nso;
 pub mod part;
 pub mod patch;
+pub mod pipeline;
 pub mod plan;
 pub mod session;
 pub mod sem;

@@ -2,6 +2,7 @@
 
 mod compile;
 mod labels;
+mod lift;
 mod link;
 mod llvm;
 mod objeq;
@@ -12,12 +13,14 @@ use std::time::Instant;
 const HELP: &str = "hookshot-builder <command> ...
   compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object, as nx2/build.py compiles it
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
+  lift-compile <out dir> [-j N] [--check <obj dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
+                                       the lift and the compile of every partition and generated module, in memory
   link <out> <objs.rsp> [--order <hot_order.bin>] [--map <file>] [--labels <file>] [--print] [-- <libs>...]
                                        the game's link (build.py's objs.rsp), lld in this process
   objeq <a.o> <b.o>                    equal as linker input: allocated sections, symbols but FILE ones, relocations
   llvm-version                         the libLLVM this process uses";
 
-fn fail(msg: impl std::fmt::Display) -> ! {
+pub fn fail(msg: impl std::fmt::Display) -> ! {
     eprintln!("hookshot-builder: {msg}");
     std::process::exit(1)
 }
@@ -48,6 +51,7 @@ fn main() {
         }
         Some("compile-all") => compile_all(&argv[1..]),
         Some("link") => link_cmd(&argv[1..]),
+        Some("lift-compile") => lift_compile(&argv[1..]),
         Some("objeq") => {
             let [a, b] = &argv[1..] else { fail("objeq <a.o> <b.o>") };
             let read = |p: &String| std::fs::read(p).unwrap_or_else(|e| fail(format!("{p}: {e}")));
@@ -178,5 +182,43 @@ fn link_cmd(args: &[String]) {
         let (n, missing) = labels::apply(out, &l).unwrap_or_else(|e| fail(e));
         println!("labels: {n} functions named{}", if missing.is_empty() { String::new() } else {
             format!("; no function for {}", missing.iter().map(|a| format!("{a:08x}")).collect::<Vec<_>>().join(", ")) });
+    }
+}
+
+/// `lift-compile <out dir> [-j N] [--check <obj dir>] OPTS`: ounce-lift's pipeline and the compile in this process
+fn lift_compile(args: &[String]) {
+    let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let mut run = ounce_lift::pipeline::Run { jobs, hot_first: true, ..Default::default() };
+    let (mut cjobs, mut out, mut check) = (jobs, None::<PathBuf>, None::<PathBuf>);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || PathBuf::from(it.next().unwrap_or_else(|| fail(format!("{a} wants a value"))));
+        match a.as_str() {
+            "-j" => cjobs = val().to_string_lossy().parse().unwrap_or_else(|_| fail("-j N")),
+            "--check" => check = Some(val()),
+            "--game" => run.opts.game = val(),
+            "--work" => run.opts.work = val(),
+            "--root" => run.opts.root = val(),
+            "--exefs" => run.opts.exefs = Some(val()),
+            _ if out.is_none() && !a.starts_with('-') => out = Some(PathBuf::from(a)),
+            _ => fail(format!("lift-compile: what is {a}?")),
+        }
+    }
+    let out = out.unwrap_or_else(|| fail("lift-compile <out dir> [-j N] [--check <obj dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]"));
+    let t = Instant::now();
+    let d = lift::lift_compile(&run, &out, cjobs, check.as_deref()).unwrap_or_else(|e| fail(e));
+    let (cpu, hwm) = ounce_lift::pipeline::usage();
+    println!(
+        "lift-compile: {} objects, {:.0} s wall, {:.0} s in compiles, {:.0} s CPU, peak {:.0} MB{}",
+        d.objects,
+        t.elapsed().as_secs_f64(),
+        d.compile_s,
+        cpu,
+        hwm,
+        if check.is_some() { format!(", {} differ", d.differ.len()) } else { String::new() }
+    );
+    if !d.differ.is_empty() {
+        println!("differ: {}", d.differ.join(" "));
+        std::process::exit(1);
     }
 }

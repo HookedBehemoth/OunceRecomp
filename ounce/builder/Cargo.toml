@@ -10,6 +10,7 @@ name = "hookshot-builder"
 path = "src/main.rs"
 
 [dependencies]
+ounce-lift = { path = "../lift" }
 sha1.workspace = true
 
 [build-dependencies]
