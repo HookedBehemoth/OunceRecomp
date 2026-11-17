@@ -329,6 +329,15 @@ fn lift(argv: Vec<String>) {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, data).unwrap();
     }
+    // (the same definitions as IR, for the player builder, which has no C compiler; not in the golden)
+    let lls = [
+        ("gen/a64_table.ll", gen::table_ll(&functions, &img.hooks)),
+        ("gen/hos_image.ll", gen::image_ll(img, facts, &base.exefs).unwrap_or_else(|e| fail(e))),
+        ("gen/a64_code_slots.ll", gen::code_slots_ll(img, facts, &functions)),
+    ];
+    for (name, text) in &lls {
+        std::fs::write(out.join(name), text).unwrap();
+    }
     std::fs::create_dir_all(out.join("image")).unwrap();
     std::fs::write(out.join("image/image.bin"), &img.mem).unwrap();
     println!("gen: {} files, {} import stubs; {:.2} s wall", files.len(), nstubs, tg.elapsed().as_secs_f64());
