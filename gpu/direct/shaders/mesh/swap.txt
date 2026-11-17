@@ -1,6 +1,0 @@
-# The replacement mesh stages the direct back end draws with in place of the translator's (gpu/direct/direct_meshrepl.cpp):
-# "<code key> <shape> <uniform buffers>", the code key one of codes.txt, the shape "task" (the mesh stage of a task+mesh
-# program, reading the draw's task header) or "mesh" (a mesh-only program), the uniform buffers the source declares, by
-# binding from 0 (the game's buffer indices: they must be the translated stage's, in its order). tools/shaders/build_shaders.sh writes each one's <code key>_spv.h here.
-# The set is closed: the stage listed stays, and no new ones are added (docs/direct/task-mesh.md).
-40d0c0768e874600 task c0,c3,c4,c5,c6

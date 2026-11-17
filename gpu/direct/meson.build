@@ -27,7 +27,6 @@ direct_sources = files(
   'direct_lists.cpp',
   'direct_main.cpp',
   'direct_marks.cpp',
-  'direct_meshrepl.cpp',
   'direct_pass.cpp',
   'direct_pools.cpp',
   'direct_present.cpp',

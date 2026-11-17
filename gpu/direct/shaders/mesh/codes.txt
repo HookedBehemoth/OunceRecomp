@@ -1,6 +1,0 @@
-# mesh stage code key -> its replacement source and the defines it is built with
-26fa8419a38c6a41 meshlet_depth.mesh -DMODEL_SLOT=2
-6942222ec7d54fe9 meshlet_depth.mesh -DMODEL_SLOT=0
-ef1f1c50d829bf4e meshlet_depth.mesh -DMODEL_SLOT=0
-e67ab18860ce163e meshlet_lit.mesh -DMODEL_SLOT=0
-40d0c0768e874600 meshlet_lit.mesh -DMODEL_SLOT=2 -DPROBE_LIGHT

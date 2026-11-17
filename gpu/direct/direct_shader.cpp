@@ -30,7 +30,6 @@
 
 #include "direct_check.h"
 #include "os.h"
-#include "direct_meshrepl.h"
 #include "direct_spv_late.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
@@ -530,7 +529,7 @@ constexpr uint32_t kSlots = 1u << 17;
 std::unique_ptr<std::atomic<Slot*>[]> table;
 std::mutex table_mu;
 std::atomic<double> last_miss_s{0};
-std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_mesh_repl{0}, st_mesh_repl_refused{0}, st_late_stages{0}, st_late_changed{0}, st_late_moved{0}, st_late_ns{0},
+std::atomic<int64_t> st_object_ns{0}, st_disk_ns{0}, st_ubos_max{0}, st_ubos_sum{0}, st_ubos_variants{0}, st_ubos_over{0}, st_game_words{0}, st_multi_inputs{0}, st_multi_answers{0}, st_slots{0}, st_full{0}, st_translated{0}, st_failed{0}, st_from_disk{0}, st_objects_made{0}, st_late_stages{0}, st_late_changed{0}, st_late_moved{0}, st_late_ns{0},
     st_object_failed{0}, st_translate_ns{0}, st_queued{0}, st_misses{0}, st_scan_failed{0}, st_bumped{0};
 
 uint32_t slot_hash(uint64_t serial) { return (uint32_t)((serial * 0x9E3779B97F4A7C15ull) >> 47) & (kSlots - 1); }
@@ -1166,26 +1165,6 @@ bool finish(Variant& v) {
         ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
         ci.codeSize = st.spirv.size() * 4;
         ci.pCode = st.spirv.data();
-        // (a hand-written mesh stage for this code, if its interface is the translated stage's: direct_meshrepl.h. The
-        // translated SPIR-V stays the variant's: the cache's and the capture's)
-        if (st.vk_stage == VK_SHADER_STAGE_MESH_BIT_EXT)
-            if (const MeshRepl* repl = mesh_repl_find(d.codes[0], d.task)) {
-                std::vector<uint32_t> ubos;
-                for (const auto& c : st.info.constant_buffer_descriptors) ubos.push_back(c.count == 1 ? c.index : ~0u);
-                std::string why;
-                if (mesh_repl_fits(*repl, st.spirv, ubos, si == 0 ? 0u : ~0u, why)) {
-                    ci.codeSize = (size_t)repl->count * 4, ci.pCode = repl->words;
-                    st_mesh_repl.fetch_add(1, std::memory_order_relaxed);
-                    static std::atomic<int> told{0};
-                    if (told++ < 16) logf("direct: program %016llx: mesh stage %016llx drawn with its hand-written stage (%u words for %zu)",
-                                          (unsigned long long)d.key, (unsigned long long)d.codes[0], repl->count, st.spirv.size());
-                } else {
-                    st_mesh_repl_refused.fetch_add(1, std::memory_order_relaxed);
-                    static std::atomic<int> told{0};
-                    if (told++ < 16) logf("direct: program %016llx: the hand-written stage for mesh stage %016llx REFUSED: %s (drawn as translated)",
-                                          (unsigned long long)d.key, (unsigned long long)d.codes[0], why.c_str());
-                }
-            }
         ci.pName = "main";
         if (caps.sg32_stages & st.vk_stage) sz.pNext = &mi, ci.pNext = &sz;
         else ci.pNext = &mi;
@@ -1763,15 +1742,14 @@ void shader_stats(char* out, size_t cap, double frames) {
                   "from the cache (%.1f s read), %lld shader objects made (%.1f s, %lld failed; %lld from binaries, %lld binaries saved, %lld refused), %lld stages unreadable, table full %lld; misses %.1f a frame, "
                   "%zu jobs waiting; variants past a program's first: %lld for other inputs, %lld for other answers; game buffer words "
                   "asked at translation %lld; uniform buffers a variant reads: %.1f on average, %lld at most, %lld variants with more "
-                  "than the push data's room for their addresses; the last miss %.2f s after the device; mesh stages made from hand-written sources %lld, refused %lld; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all); shader workers: %s; programs a draw moved ahead of the load's %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
+                  "than the push data's room for their addresses; the last miss %.2f s after the device; stages through the register-pressure pass at translation %lld, changed %lld (%lld instructions moved, %.1f ms in all); shader workers: %s; programs a draw moved ahead of the load's %lld", (long long)st_slots.load(), (long long)st_families.load(), (long long)st_translated.load(), st_translate_ns.load() / 1e9,
                   (long long)st_failed.load(), (long long)st_from_disk.load(), st_disk_ns.load() / 1e9, (long long)st_objects_made.load(),
                   st_object_ns.load() / 1e9,
                   (long long)st_object_failed.load(), (long long)sobin::st_hits.load(), (long long)sobin::st_saved.load(),
                   (long long)sobin::st_refused.load(), (long long)st_scan_failed.load(), (long long)st_full.load(),
                   st_misses.exchange(0) / frames, queued, (long long)st_multi_inputs.load(), (long long)st_multi_answers.load(),
                   (long long)st_game_words.load(), st_ubos_variants.load() ? (double)st_ubos_sum.load() / st_ubos_variants.load() : 0.0,
-                  (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load(), (long long)st_mesh_repl.load(),
-                  (long long)st_mesh_repl_refused.load(), (long long)st_late_stages.load(), (long long)st_late_changed.load(),
+                  (long long)st_ubos_max.load(), (long long)st_ubos_over.load(), last_miss_s.load(), (long long)st_late_stages.load(), (long long)st_late_changed.load(),
                   (long long)st_late_moved.load(), st_late_ns.load() / 1e6, pool, (long long)st_bumped.load());
 }
 

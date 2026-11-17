@@ -12,9 +12,9 @@ Modules built here have the shape the translator emits (the native code's order:
   past `sink_peak`;
 - the same input gives the same output.
 
-With glslangValidator on the PATH the hand-written mesh stages (gpu/direct/shaders/mesh) go through the pass too, and
-with spirv-opt the synthetic spilling stage (tools/shaders/probes/spill.mesh: 320 values loaded before the
-first is used), which must come out holding about the budget; every output through spirv-val when it is there.
+With glslangValidator and spirv-opt on the PATH the synthetic spilling stage (tools/shaders/probes/spill.mesh: 320
+values loaded before the first is used) must come out holding about the budget; every output goes through spirv-val
+when it is there.
 
 The gate that holds RADV's compile of the game's stages against the pass needs the player's captures and a GPU, and is a
 tool: tools/shaders/late_gate.py (docs/direct/spv-late.md).
@@ -328,23 +328,6 @@ def main():
         print("PASS: loads that only a branch uses go into it; nothing goes into a loop; a subgroup operation stays in its block")
         glslang = shutil.which("glslangValidator")
         if glslang:
-            mesh = ROOT / "gpu" / "direct" / "shaders" / "mesh"
-            n = 0
-            for entry in (mesh / "codes.txt").read_text().splitlines():
-                if not entry.strip() or entry.startswith("#"):
-                    continue
-                code, src, *defs = entry.split()
-                spv = tmp / (code + ".in.spv")
-                subprocess.run([glslang, "-V", "--target-env", "vulkan1.3", "-I" + str(mesh)] + defs + ["-o", str(spv), str(mesh / src)], check=True, capture_output=True)
-                data = spv.read_bytes()
-                src_words = list(struct.unpack("<%dI" % (len(data) // 4), data))
-                for args in (("--budget", "8"), ("--budget", "8", "--sink-peak", "8")):
-                    out, _ = run(src_words, code, *args)
-                    if sorted(instructions(src_words)) != sorted(instructions(out)):
-                        print("FAIL: %s: the instructions are not the same set" % code)
-                        return 1
-                n += 1
-            print("PASS: %d hand-written mesh stages through the pass: the same instructions%s" % (n, ", spirv-val accepts them" if val else ""))
             opt = shutil.which("spirv-opt")
             if opt:   # (the stage's locals as values, as the translator's stages have them: glslang keeps them in variables)
                 spv, ssa = tmp / "spill.in.spv", tmp / "spill.ssa.spv"
@@ -362,7 +345,7 @@ def main():
             else:
                 print("spirv-opt not found: the synthetic spilling stage not tried")
         else:
-            print("glslangValidator not found: the hand-written mesh stages and the synthetic spilling stage not tried")
+            print("glslangValidator not found: the synthetic spilling stage not tried")
     return 0
 
 

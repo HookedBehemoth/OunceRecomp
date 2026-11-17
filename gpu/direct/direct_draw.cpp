@@ -1332,8 +1332,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
                                                      l->info.kind, l->info.lr, mesh_ind ? nargs : (uint32_t)dm.y, 0) : 0;   // (M6c: HOS_DBG=marks)
         if (marks_on() && prog->task) mark_header(mk, task_last_header);
         // (HOS_DBG=tmwait: a framebuffer-local barrier before every task+mesh draw, so that no two task+mesh draws' mesh stages
-        // overlap; a lever for a mesh stage that hangs the device, which the translator's late scheduling and the hand-written
-        // stages (direct_meshrepl.h) are meant to prevent)
+        // overlap; a lever for a mesh stage that hangs the device, which the translator's late scheduling is meant to prevent)
         const auto apart = [cb] {
             const VkPipelineStageFlags2 fb = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;

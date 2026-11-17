@@ -9,4 +9,3 @@ foreach name : ['report_resolve', 'task_prep']
   spv_headers += spv
   test(name + '_spv.h matches the checked-in copy', cmp, args: [spv, files(name + '_spv.h')], suite: 'renderer')
 endforeach
-subdir('mesh')

@@ -12,7 +12,7 @@ made from the game belongs in these pages or in the repository; it stays under `
 - [Architecture](architecture.md): how NVN commands become Vulkan work, from the seam to the submit.
 - [Render jobs](jobs.md): pass keys, formats, the inline path and the job patches.
 - [The shader contract](shader-contract.md): what a translated program expects at a draw, and the shader caches.
-- [Task and mesh shaders](task-mesh.md): the task stage as compute, the replaced mesh stages and the Hyrule Field hang.
+- [Task and mesh shaders](task-mesh.md): the task stage as compute and the defenses against a mesh stage that hangs the GPU.
 - [The register-pressure pass](spv-late.md): reordering translated mesh stages, and its gate.
 - [Render targets](render-targets.md): sizes, switches, the allocator hook, shadows and upscaling.
 - [The transient pool](transient-pool.md): one allocation for the transient render targets.
