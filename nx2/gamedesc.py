@@ -13,8 +13,8 @@ Fields:
                 exefs/main. The lift checks the dump before it reads anything else (check_exefs) and records it
                 (record); the build checks the record (check_lift). A mismatch stops with both values.
   labels        guest address -> label file, beside game.py (nx2/label_syms.py, nx2/lift2/dump.py, abi_census.py)
-  hot           the hot list's file, beside game.py: "HOTF", u32 count, count u32 guest addresses (little-endian,
-                hottest first); a missing or malformed one stops the lift
+  hot           the hot list's file, beside game.py (docs/lifter.md, "Game description files")
+  hot_order     the link order's file, beside game.py (the same section)
   host          the host's C files (in host/) the build compiles and the patch scan reads
   local_continuations   {pc: word}: `adr xN, <label>` ... `br xN` inside one function, which the code pointer audit
                 accepts (nx2/lift2/code_ptrs.py)
@@ -39,8 +39,8 @@ class Identity:
 
 
 class Game:
-    def __init__(self, name, identity, labels, hot, host, local_continuations=None):
-        self.name, self.identity, self.hot = name, identity, hot
+    def __init__(self, name, identity, labels, hot, host, local_continuations=None, hot_order=None):
+        self.name, self.identity, self.hot, self.hot_order = name, identity, hot, hot_order
         self._labels, self.host = labels, tuple(host)
         self.local_continuations = dict(local_continuations or {})
         self.folder = None   # (load sets it)
@@ -63,12 +63,24 @@ class Game:
 
     def hot_list(self):
         """the hot list's guest addresses, hottest first; SystemExit when the file is missing or malformed"""
-        p = self.hot_path()
+        return self._addresses(self.hot_path(), b"HOTF", "hot list")
+
+    def link_order(self):
+        """the link order's guest addresses (hot_order), [] when the description names none; SystemExit when the file is
+        missing or malformed"""
+        if not self.hot_order:
+            return []
+        p = os.path.join(self.folder, self.hot_order)
+        if not os.path.exists(p):
+            raise SystemExit("game %s: no link order %s (the description's hot_order, beside game.py)" % (self.name, p))
+        return self._addresses(p, b"HOTO", "link order")
+
+    def _addresses(self, p, sig, what):
         with open(p, "rb") as f:
             d = f.read()
-        n = struct.unpack_from("<I", d, 4)[0] if len(d) >= 8 and d[:4] == b"HOTF" else -1
+        n = struct.unpack_from("<I", d, 4)[0] if len(d) >= 8 and d[:4] == sig else -1
         if n < 0 or len(d) != 8 + 4 * n:
-            raise SystemExit("game %s: %s is not a hot list (\"HOTF\", u32 count, count u32 addresses)" % (self.name, p))
+            raise SystemExit("game %s: %s is not a %s (\"%s\", u32 count, count u32 addresses)" % (self.name, p, what, sig.decode()))
         return list(struct.unpack_from("<%dI" % n, d, 8))
 
     def check_exefs(self, exefs):

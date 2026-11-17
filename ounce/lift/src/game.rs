@@ -64,7 +64,7 @@ impl Game {
         self.host.iter().map(|f| root.join("host").join(f)).collect()
     }
 
-    /// the hot list's guest addresses, hottest first (the file's format: game.toml, `hot`)
+    /// the hot list's guest addresses (the file's format: docs/lifter.md, "Game description files")
     pub fn hot_list(&self) -> Result<Vec<u64>, String> {
         let p = &self.hot;
         let d = std::fs::read(p)
@@ -139,7 +139,7 @@ mod tests {
         assert_eq!(hot[0], 0x8004ab40);
         assert_eq!(g.identity.build_id, "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348");
         assert_eq!(g.identity.main_sha256, "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de");
-        assert_eq!(g.host.len(), 61);
+        assert_eq!(g.host.len(), 60);
         assert_eq!(g.host[0], "bench.c");
         assert_eq!(g.local_continuations, vec![(0x8011060C, 0x10FFFCA7), (0x80110694, 0x10000047)]);
         let s = g.host_sources(Path::new("/r"));

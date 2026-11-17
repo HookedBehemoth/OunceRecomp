@@ -27,8 +27,8 @@ a game runs from that build. Its log is `work/sa/relift.log` (in the main checko
 - **Partitions.** Functions are grouped by guest address into partitions of about 120,000 instructions, and each
   partition is one LLVM module. Functions on the hot list get partitions of their own.
 - **Optimization levels.** Hot partitions build at `-O2` (`RX_HOT_OPT`), the rest at `-O1` with dead-store elimination
-  added. The hot list is the game description's `hot` file, beside `game.toml` (`games/oot/hot_funcs.bin`), a fixed
-  list of guest addresses in the format `game.toml` gives. A missing hot list stops the lift.
+  added. The hot list is the game description's `hot` file (`games/oot/hot_funcs.bin`); see
+  [Game description files](lifter.md#game-description-files).
 - **Object cache.** Each partition's object is kept in `work/objcache` under a key of everything that shaped it: the
   lifter's code (without comments), the plan, the compiler flags, its functions, their patches, their summaries, and
   the call-boundary records of every function they call. An unchanged partition is neither lifted nor compiled again.

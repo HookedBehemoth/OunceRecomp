@@ -37,7 +37,6 @@ HOST = os.path.join(kit.HERE, "..", "host")
 LIFTER = os.path.join(kit.ROOT, "ounce", "lift")   # (the lifter's crate; its binary: target/release/ounce-lift)
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
-# (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 
 
 # (linux) Linux builds: an ELF executable and hookshot_direct.so; the host reaches the system through host/os/os.h
@@ -109,10 +108,15 @@ def target():
     return toolchain.native_target() + (["--sysroot=" + SYSROOT] if SYSROOT else [])
 
 
-def HOT_ORDER():
-    p = os.path.join(kit.WORK, "hot_order.txt")
-    if not os.path.exists(p) or os.environ.get("RX_NO_ORDER"):
+def HOT_ORDER(desc, out):
+    """the linker's flags for the game description's link order (hot_order): its functions packed together in that
+    order, through a symbol-ordering file written into the build folder"""
+    order = desc.link_order()
+    if not order:
         return []
+    p = os.path.join(out, "hot_order.txt")
+    with open(p, "w") as f:
+        f.write("".join("f_%08x\n" % a for a in order))
     return ["-Wl,--symbol-ordering-file=" + p, "-Wl,--no-warn-symbol-ordering"]
 
 
@@ -974,7 +978,7 @@ def main():
         t = time.time()
         # (--export-dynamic-symbol: what hookshot_direct.so calls in the exe: os.h's and os_guest.h's os_*, hos_mem_ledger)
         r = subprocess.run([cc] + target() + ["-fuse-ld=lld", "-o", exe, "-Wl,-Map=" + exe + ".map", "-Wl,--gc-sections",
-                                              "-Wl,--export-dynamic-symbol=os_*", "-Wl,--export-dynamic-symbol=hos_mem_ledger", "@" + rsp] + HOT_ORDER() +
+                                              "-Wl,--export-dynamic-symbol=os_*", "-Wl,--export-dynamic-symbol=hos_mem_ledger", "@" + rsp] + HOT_ORDER(desc, out) +
                            (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS,
                            capture_output=True, text=True)
         undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})

@@ -52,11 +52,24 @@ appear in `nx2/lift2`. What one game adds comes from three places:
 
 - **The game description**, `games/<game>/game.py` (`nx2/gamedesc.py` documents its fields). Every lift, build and
   lifter tool takes exactly one, as `--game games/oot`. It names the dump's identity (the main module's build ID and
-  the SHA-256 of `exefs/main`), the label file, the hot list, and the host's C files. Another dump stops the lift,
-  and a build of another game's lift stops the build, each naming both values.
+  the SHA-256 of `exefs/main`), the label file, the hot list, the link order, and the host's C files. Another dump
+  stops the lift, and a build of another game's lift stops the build, each naming both values.
 - **The patch declarations** in those host C files. See [Write a patch](patches.md).
 - **The platform's facts** (Horizon, the SDK, setjmp and noreturn names) in `nx2/horizon`, shared by any title on this
   SDK.
+
+### Game description files
+
+Two binary files beside `game.toml` list guest functions. Both are fixed inputs, committed with the description.
+
+| File (field) | Signature | Used for |
+| --- | --- | --- |
+| `hot_funcs.bin` (`hot`) | `HOTF` | The hot list: the lift gives these functions partitions of their own, built at the hot level |
+| `hot_order.bin` (`hot_order`) | `HOTO` | The link order: the build packs these functions together, in this order |
+
+Each file is the 4-byte signature, a u32 count, then that many u32 guest addresses, all little-endian, in the
+list's order. A missing hot list, a wrong signature, or a length other than 8 + 4 × count stops the lift or the
+build with the file's path. The link order is optional: a description without `hot_order` links in the default order.
 
 ## Whole-program summaries
 

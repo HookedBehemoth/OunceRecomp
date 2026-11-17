@@ -1,7 +1,7 @@
 # The lift export: the Rust lifter's reference
 
 `ounce-lift` needs no export: it lifts the game from the dump's exefs, the host's C (its patch declarations: src/patch.rs,
-patch_scan.py, probes.py, host_effects.py) and the game description (games/oot/game.toml), with the platform's facts in
+patch_scan.py, probes.py, host_effects.py) and the game description (games/oot/game.toml; its binary files: docs/lifter.md, "Game description files"), with the platform's facts in
 ounce/lift/data/horizon.toml (kept equal to nx2/horizon by tests/test_horizon_data.py). In nx2/lift.py --standalone
 --write's order: the scan, the modules (src/nso.rs), the HLE'd and stubbed symbols and the image (src/eden.rs), the ADR /
 ADRP+ADD entries (src/image.rs), the discovery (src/discover.rs), the plan (src/plan.rs), the rows resolved and checked

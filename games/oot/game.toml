@@ -5,9 +5,9 @@ name = "oot"
 # guest address -> our label, nx2/label_syms.py, nx2/lift2/dump.py (a file beside this one)
 labels = "labels.txt"
 
-# the hot list, the functions built at the hot level (beside this file, fixed): "HOTF", u32 count, count u32 guest
-# addresses, little-endian, hottest first
+# the hot list and the link order (docs/lifter.md, "Game description files")
 hot = "hot_funcs.bin"
+hot_order = "hot_order.bin"
 
 # the host's C files the build compiles and the patch scan reads, in host/
 host = [
