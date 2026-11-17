@@ -73,6 +73,7 @@ struct Device {
     std::mutex sparse_mu;
     bool dma_buf_import = false;
     bool nested_rendering = false;   // (M3a: VK_KHR_maintenance7: secondaries and inline commands in one dynamic rendering)
+    bool memory_budget = false;      // (VK_EXT_memory_budget: the driver's heap budgets and usage; without it, estimated)
     // the window (none: presents clear an image of their own)
     bool offscreen = false;
     VkSurfaceKHR surface = VK_NULL_HANDLE;

@@ -54,7 +54,7 @@ bool vma_init() {
     f.vkGetInstanceProcAddr = get_instance_proc;
     f.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VmaAllocatorCreateInfo ci{};
-    ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT | (dev.memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0);
     ci.physicalDevice = dev.physical;
     ci.device = dev.device;
     ci.instance = dev.instance;
@@ -143,18 +143,45 @@ void mem_buffer_free(VkBuffer buffer, Mem* mem) {
 }
 void mem_flush(Mem* mem) { vmaFlushAllocation(vma, (VmaAllocation)mem, 0, VK_WHOLE_SIZE); }
 void mem_invalidate(Mem* mem) { vmaInvalidateAllocation(vma, (VmaAllocation)mem, 0, VK_WHOLE_SIZE); }
-/// Free VRAM as the driver sees it (VK_EXT_memory_budget: the largest device-local heap's budget minus its usage,
-/// so the compositor and other processes count), plus the bytes of images already waiting to be destroyed; sampled once a
-/// present (present path), read by the host (hsd_vram_free) for the game's cache eviction patch
-std::atomic<int64_t> vram_free_now{-1};
-void mem_budget_sample(int64_t pending) {
+namespace {
+/// The heaps with their budgets and usage: the driver's (VK_EXT_memory_budget, so the compositor and other processes
+/// count), or without it an estimate as VMA makes one: 80% of a heap's size, and the back end's accounted bytes with the
+/// free room in VMA's blocks on the largest heap of each kind (device-local, host)
+void heap_budgets(VkPhysicalDeviceMemoryProperties2& p, VkPhysicalDeviceMemoryBudgetPropertiesEXT& bp) {
     static PFN_vkGetPhysicalDeviceMemoryProperties2 props2 =
         (PFN_vkGetPhysicalDeviceMemoryProperties2)get_instance_proc(dev.instance, "vkGetPhysicalDeviceMemoryProperties2");
-    if (!props2) return;
-    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-    VkPhysicalDeviceMemoryProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
-    p.pNext = &bp;
-    props2(dev.physical, &p);
+    p = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    bp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    if (dev.memory_budget) p.pNext = &bp;
+    if (props2) props2(dev.physical, &p);
+    else p.memoryProperties = dev.memory;
+    if (dev.memory_budget && props2) return;
+    VmaBudget vb[VK_MAX_MEMORY_HEAPS] = {};
+    if (vma) vmaGetHeapBudgets(vma, vb);
+    int largest[2] = {-1, -1};
+    int64_t used[2] = {};
+    for (uint32_t h = 0; h < p.memoryProperties.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++) {
+        const VkMemoryHeap& m = p.memoryProperties.memoryHeaps[h];
+        const int c = m.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? 0 : 1;
+        bp.heapBudget[h] = m.size / 10 * 8;
+        used[c] += (int64_t)vb[h].statistics.blockBytes - (int64_t)vb[h].statistics.allocationBytes;
+        if (largest[c] < 0 || m.size > p.memoryProperties.memoryHeaps[largest[c]].size) largest[c] = (int)h;
+    }
+    for (int o = 0; o < MO_N; o++)
+        for (int c = 0; c < 2; c++) used[c] += acct_bytes[o][c].load(std::memory_order_relaxed);
+    for (int c = 0; c < 2; c++)
+        if (largest[c] >= 0) bp.heapUsage[largest[c]] = (VkDeviceSize)std::max<int64_t>(used[c], 0);
+}
+}  // namespace
+
+/// Free VRAM: the largest device-local heap's budget minus its usage (heap_budgets), plus the bytes of images already
+/// waiting to be destroyed; sampled once a present (present path), read by the host (hsd_vram_free) for the game's cache
+/// eviction patch
+std::atomic<int64_t> vram_free_now{-1};
+void mem_budget_sample(int64_t pending) {
+    VkPhysicalDeviceMemoryProperties2 p;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp;
+    heap_budgets(p, bp);
     int best = -1;
     for (uint32_t h = 0; h < p.memoryProperties.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
         if ((p.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
@@ -164,14 +191,11 @@ void mem_budget_sample(int64_t pending) {
     vram_free_now.store((int64_t)bp.heapBudget[best] - (int64_t)bp.heapUsage[best] + pending, std::memory_order_relaxed);
 }
 
-/// The device-local heaps: the driver's usage and budget (VK_EXT_memory_budget), and VMA's blocks and allocations in them
+/// The device-local heaps: the driver's usage and budget (heap_budgets), and VMA's blocks and allocations in them
 void mem_stats(char* out, size_t cap) {
-    static PFN_vkGetPhysicalDeviceMemoryProperties2 props2 =
-        (PFN_vkGetPhysicalDeviceMemoryProperties2)get_instance_proc(dev.instance, "vkGetPhysicalDeviceMemoryProperties2");
-    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-    VkPhysicalDeviceMemoryProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
-    p.pNext = &bp;
-    if (props2) props2(dev.physical, &p);
+    VkPhysicalDeviceMemoryProperties2 p;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp;
+    heap_budgets(p, bp);
     VmaTotalStatistics st{};
     if (vma) vmaCalculateStatistics(vma, &st);
     int k = std::snprintf(out, cap, "memory (MB):");
@@ -195,12 +219,9 @@ void mem_stats(char* out, size_t cap) {
 // The Vulkan host heaps are system memory the driver maps without it counting as resident, so they are printed apart; the
 // imports there are the guest's pages a second time.
 void mem_owner_stats(char* vram, char* main_mem, char* counts, size_t cap) {
-    static PFN_vkGetPhysicalDeviceMemoryProperties2 props2 =
-        (PFN_vkGetPhysicalDeviceMemoryProperties2)get_instance_proc(dev.instance, "vkGetPhysicalDeviceMemoryProperties2");
-    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-    VkPhysicalDeviceMemoryProperties2 p{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
-    p.pNext = &bp;
-    if (props2) props2(dev.physical, &p);
+    VkPhysicalDeviceMemoryProperties2 p;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT bp;
+    heap_budgets(p, bp);
     VmaBudget vb[VK_MAX_MEMORY_HEAPS] = {};
     if (vma) vmaGetHeapBudgets(vma, vb);
     int64_t usage[2] = {}, sum[3] = {}, slack[2] = {}, b[MO_N][3];

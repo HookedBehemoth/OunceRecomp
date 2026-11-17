@@ -44,8 +44,9 @@ The table of texture states lives in `host/direct_texdata.c`. The back end holds
 The game decides eviction by its heap's free bytes, which say nothing about VRAM on a PC (prepared BCn images can be
 larger than the console's bytes, and the console's bytes are never copied). A patch on the game's per-frame update
 raises the cache threshold by however much free VRAM is short of a 1.5 GB margin. The game then evicts LRU textures in
-its own order, through its own destroy. Free VRAM is the back end's figure: the driver's budget minus usage. Look for
-the log line "assets: VRAM eviction patch".
+its own order, through its own destroy. Free VRAM is the back end's figure: the driver's budget minus usage
+(`VK_EXT_memory_budget`, so other processes count). A driver without that extension gets an estimate, 80% of the heap
+less the back end's own bytes, and the log says so at start. Look for the log line "assets: VRAM eviction patch".
 
 This patch can destroy a texture still sampled by draws of the same present; it is on the open-work list in
 [the direct back end plan](../direct-backend-plan.md).

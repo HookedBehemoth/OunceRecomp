@@ -206,7 +206,17 @@ bool create_device() {
             sparse_family = i;
     }
     if (dev.queue_family == UINT32_MAX || sparse_family == UINT32_MAX) {
-        logf("direct: no graphics and compute family, or no sparse-binding family");
+        char fams[256] = "";
+        for (uint32_t i = 0, k = 0; i < n && k < sizeof fams; i++) {
+            const VkQueueFlags f = families[i].queueFlags;
+            k += (uint32_t)std::snprintf(fams + k, sizeof fams - k, "%s%u:%s%s%s%s", i ? ", " : "", i, f & VK_QUEUE_GRAPHICS_BIT ? " graphics" : "",
+                                         f & VK_QUEUE_COMPUTE_BIT ? " compute" : "", f & VK_QUEUE_TRANSFER_BIT ? " transfer" : "",
+                                         f & VK_QUEUE_SPARSE_BINDING_BIT ? " sparse" : "");
+        }
+        if (dev.queue_family == UINT32_MAX) logf("direct: the device has no queue family with both graphics and compute (families %s)", fams);
+        else
+            logf("direct: the device has no queue family for sparse binding without graphics or compute, which layer 0's binds need "
+                 "beside the one queue (families %s)", fams);
         return false;
     }
     const float priority = 1.0f;
@@ -230,6 +240,9 @@ bool create_device() {
     VkPhysicalDeviceMaintenance7FeaturesKHR m7{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_7_FEATURES_KHR};
     const bool has_m7 = has_extension(exts, VK_KHR_MAINTENANCE_7_EXTENSION_NAME);
     if (has_m7) want.push_back(VK_KHR_MAINTENANCE_7_EXTENSION_NAME), *tail = &m7, tail = &m7.pNext;
+    // (the driver's heap budgets and usage, for the free VRAM the host's eviction patch reads, and for VMA)
+    if ((dev.memory_budget = has_extension(exts, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))) want.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    else logf("direct: no VK_EXT_memory_budget: free VRAM is estimated (80%% of the heap less the back end's own bytes)");
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     draw_features_resolved(dev.props.apiVersion >= VK_API_VERSION_1_4 ? &f14 : nullptr);
     if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore || !f12.bufferDeviceAddress) {
