@@ -2,7 +2,7 @@
 
     work/venv/bin/python -I tools/shadercensus/census.py <seed> --out <dir> [--jobs N] [--shard 250] [--compile] [--tool-args "..."]
 
-<seed> is nx2/shader_census.py's output (ounce_shaders.bin, made from the player's romfs). Each shard of stages runs
+<seed> is tools/shadercensus/seed.py's output (made from the player's romfs). Each shard of stages runs
 censustool once (a stage that crashes it is recorded as an error and the rest of the shard is run again without it) and
 writes <out>/shards/<first>.jsonl; a shard already complete is not run again, so the census can be stopped and resumed. At
 the end every shard is joined into <out>/stages.jsonl. All output is made from the game's code and stays under work/.

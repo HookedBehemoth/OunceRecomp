@@ -1,4 +1,4 @@
-// censustool: every stage of the game's shader seed (ounce_shaders.bin, nx2/shader_census.py) through the direct back end's
+// censustool: every stage of the game's shader seed (tools/shadercensus/seed.py) through the direct back end's
 // translator fork as the back end translates it (tools/shaders/offline.h), a static profile of each from the IR (inputs and
 // outputs, texture samples by kind and by where they sit, memory, control flow and loop bounds) and, with --compile, RADV's
 // compile of its SPIR-V with the back end's heap mappings (vk_shader.cpp finish) and the driver's statistics of it
