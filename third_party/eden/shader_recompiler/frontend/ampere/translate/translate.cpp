@@ -185,6 +185,9 @@ void TranslateOne(Translator& t) {
         return;
     case 0x94d:
         return TranslateExit(t);
+    case 0xb82: case 0xab9: case 0xabb: case 0x381: case 0x981: case 0x386: case 0x986: case 0x983: case 0x387:
+    case 0x987: case 0x984: case 0x388: case 0x988:
+        return TranslateMemory(t);
     default:
         break;
     }
@@ -204,8 +207,6 @@ void TranslateOne(Translator& t) {
         break;
     }
     switch (opcode) {
-    case 0xb82: case 0xab9: case 0x381: case 0x981: case 0x983: case 0x984:
-        return TranslateMemory(t);
     case 0x321: case 0x322: case 0x326:
         return TranslateAttribute(t);
     case 0xb60:
