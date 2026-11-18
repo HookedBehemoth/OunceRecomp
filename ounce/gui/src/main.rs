@@ -43,7 +43,7 @@ impl Paths {
             .or_else(|| dir.ancestors().find(|d| d.join("games/oot/game.toml").is_file()).map(Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("."));
         let builder = env("HOOKSHOT_BUILDER").unwrap_or_else(|| first([dir.join("hookshot-builder"), root.join("ounce/target/release/hookshot-builder")]));
-        let direct = env("HOOKSHOT_DIRECT").unwrap_or_else(|| first([dir.join("hookshot_direct.so"), root.join("work/sa/meson/gpu/direct/hookshot_direct.so")]));
+        let direct = env("HOOKSHOT_DIRECT").unwrap_or_else(|| first([dir.join("hookshot_direct.so"), root.join("work/sa/meson/renderer/hookshot_direct.so")]));
         let work = env("HOOKSHOT_WORK").unwrap_or_else(|| root.join("work"));
         let s = |p: PathBuf| p.to_string_lossy().into_owned();
         Paths { builder: s(builder), root: s(root), direct: s(direct), work: s(work) }

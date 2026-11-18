@@ -1,5 +1,5 @@
 //! `hookshot-builder probe`: whether this PC's GPU runs the direct back end. Loads libvulkan, picks the device the
-//! back end picks (gpu/direct/direct_main.cpp: the first discrete GPU of Vulkan 1.3, else the first of 1.3) and checks
+//! back end picks (renderer/direct_main.cpp: the first discrete GPU of Vulkan 1.3, else the first of 1.3) and checks
 //! what it needs. An item fails only when the back end refuses to start without it, or starts and draws nothing;
 //! what it starts without and works around is a warning. One line per item, for a front end:
 //!
