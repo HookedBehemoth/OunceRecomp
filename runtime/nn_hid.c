@@ -917,10 +917,16 @@ HLE(_ZN2nn3hid6detail27BeginPermitVibrationSessionEv) { RET(0); }
 HLE(_ZN2nn3hid6detail25EndPermitVibrationSessionEv) { RET(0); }
 HLE(_ZN2nn3hid6detail25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE) { RET(0); }
 /* GetVibrationDeviceInfo(VibrationDeviceInfo* {u32 type; u32 position}, handle const&): LRA (1), left 1 / right 2 */
-HLE(_ZN2nn3hid6detail22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE) {
+static void vibration_device_info(Ctx *c) {
     G32(ARG(0)) = 1;
     G32(ARG(0) + 4) = ((G32(ARG(1)) >> 16) & 1) + 1;
     RET(0);
+}
+HLE(_ZN2nn3hid6detail22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE) {
+    vibration_device_info(c);
+}
+HLE(_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE) {
+    vibration_device_info(c);
 }
 HLE(_ZN2nn3hid6detail18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE) {
     vibration_send(ARG(0), ARG(1));
@@ -950,10 +956,15 @@ HLE(_ZN2nn3hid6detail28FlushEnqueuedVibrationValuesEv) { RET(0); }
    states written: one, with no touches (the lifted SDK version read the touch screen's shared memory, which this
    runtime does not have). TouchScreenState<16>: {s64 sampling number, s32 count, s32 reserved, TouchState[16]}. */
 HLE(_ZN2nn3hid21InitializeTouchScreenEv) {}
+static volatile int64_t touch_sampling;
 HLE(_ZN2nn3hid20GetTouchScreenStatesILm16EEEiPNS0_16TouchScreenStateIXT_EEEi) {
-    static volatile int64_t sampling;
     if ((int)ARG(1) < 1) { RET(0); return; }
     memset(GP(ARG(0)), 0, 16 + 16 * 0x28);
-    G64(ARG(0)) = (uint64_t)os_atomic_inc(&sampling);
+    G64(ARG(0)) = (uint64_t)os_atomic_inc(&touch_sampling);
     RET(1);
+}
+/* GetTouchScreenState<1>(TouchScreenState<1>*): the latest state, with no touches */
+HLE(_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE) {
+    memset(GP(ARG(0)), 0, 16 + 0x28);
+    G64(ARG(0)) = (uint64_t)os_atomic_inc(&touch_sampling);
 }

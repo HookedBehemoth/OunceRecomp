@@ -187,6 +187,11 @@ HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {
     RET(1);
 }
 HLE(_ZN2nn7account9CloseUserERKNS0_10UserHandleE) {}
+/* GetLastOpenedUser(Uid*): the one user */
+HLE(_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE) {
+    G64(ARG(0)) = user_uid[0];
+    G64(ARG(0) + 8) = user_uid[1];
+}
 /* GetUserId(Uid*, UserHandle const&) -> Result */
 HLE(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE) {
     G64(ARG(0)) = user_uid[0];

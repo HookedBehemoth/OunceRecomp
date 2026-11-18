@@ -1,25 +1,60 @@
 /* The SDK functions the game calls that the host answers with a constant, each with the reason that is enough (runtime/
    patch.h PATCH_ANSWER). An OS-facing import neither implemented (HLE) nor answered here stops the game when called,
    naming it (ounce/lift/src/gen.rs gen_stubs, runtime/hos_hostcall.c hos_import_stop). Every answer below was seen called
-   in play and in the smoke and benchmark runs (they returned 0 as generated stubs before 2026-11-15). Answers that
+   by a game, or belongs to a family one was seen calling (an audio effect's Add, Remove, Set and Is). Answers that
    leave a result unwritten (a float in s0, an output struct) are marked so: real HLEs if the game ever needs more. */
 #include "hos.h"
+
+/* ---- nn::account */
+/* nn::account::LoadCachedNintendoAccountInfo(nn::account::CachedNintendoAccountInfo*, nn::account::UserHandle co... */
+PATCH_ANSWER(_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm, 0x7C7C,
+             "an account error (module 124): no Nintendo Account is linked; the game reads the info only on success");
 
 /* ---- nn::aoc */
 /* nn::aoc::CountAddOnContent() */
 PATCH_ANSWER(_ZN2nn3aoc17CountAddOnContentEv, 0,
              "0: no add-on content");
+/* nn::aoc::ListAddOnContent(int*, int, int) */
+PATCH_ANSWER(_ZN2nn3aoc16ListAddOnContentEPiii, 0,
+             "0 listed, the list left as it was: no add-on content (CountAddOnContent answers 0)");
 
 /* ---- nn::audio */
 /* nn::audio::AcquireAudioOutputDeviceNotification(nn::os::SystemEvent*) */
 PATCH_ANSWER(_ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE, 0,
              "0 (success), the event left as it was: the output device never changes");
+/* nn::audio::AddBiquadFilter(nn::audio::AudioRendererConfig*, nn::audio::BiquadFilterType*, nn::audio::FinalM... */
+PATCH_ANSWER(_ZN2nn5audio15AddBiquadFilterEPNS0_19AudioRendererConfigEPNS0_16BiquadFilterTypeEPNS0_12FinalMixTypeE, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::AddBiquadFilter(nn::audio::AudioRendererConfig*, nn::audio::BiquadFilterType*, nn::audio::SubMixType*) */
 PATCH_ANSWER(_ZN2nn5audio15AddBiquadFilterEPNS0_19AudioRendererConfigEPNS0_16BiquadFilterTypeEPNS0_10SubMixTypeE, 0,
              "0 (success): the filter is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::AddBufferMixer(nn::audio::AudioRendererConfig*, nn::audio::BufferMixerType*, nn::audio::FinalMix... */
+PATCH_ANSWER(_ZN2nn5audio14AddBufferMixerEPNS0_19AudioRendererConfigEPNS0_15BufferMixerTypeEPNS0_12FinalMixTypeE, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::AddBufferMixer(nn::audio::AudioRendererConfig*, nn::audio::BufferMixerType*, nn::audio::SubMixTy... */
+PATCH_ANSWER(_ZN2nn5audio14AddBufferMixerEPNS0_19AudioRendererConfigEPNS0_15BufferMixerTypeEPNS0_10SubMixTypeE, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::AddCompressor(nn::audio::AudioRendererConfig*, nn::audio::CompressorType*, nn::audio::FinalMixTy... */
+PATCH_ANSWER(_ZN2nn5audio13AddCompressorEPNS0_19AudioRendererConfigEPNS0_14CompressorTypeEPNS0_12FinalMixTypeEi, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::AddCompressor(nn::audio::AudioRendererConfig*, nn::audio::CompressorType*, nn::audio::SubMixType... */
+PATCH_ANSWER(_ZN2nn5audio13AddCompressorEPNS0_19AudioRendererConfigEPNS0_14CompressorTypeEPNS0_10SubMixTypeEi, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::AddDelay(nn::audio::AudioRendererConfig*, nn::audio::DelayType*, void*, unsigned long, nn::audio... */
+PATCH_ANSWER(_ZN2nn5audio8AddDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPvmPNS0_12FinalMixTypeENS_8TimeSpanEi, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::AddDelay(nn::audio::AudioRendererConfig*, nn::audio::DelayType*, void*, unsigned long, nn::audio::S...) */
 PATCH_ANSWER(_ZN2nn5audio8AddDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPvmPNS0_10SubMixTypeENS_8TimeSpanEi, 0,
              "0 (success): the delay is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::AddLightLimiter(nn::audio::AudioRendererConfig*, nn::audio::LightLimiterType*, void*, unsigned l... */
+PATCH_ANSWER(_ZN2nn5audio15AddLightLimiterEPNS0_19AudioRendererConfigEPNS0_16LightLimiterTypeEPvmPNS0_10SubMixTypeENS_8TimeSpanEi, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::AddLightLimiter(nn::audio::AudioRendererConfig*, nn::audio::LightLimiterType*, void*, unsigned l... */
+PATCH_ANSWER(_ZN2nn5audio15AddLightLimiterEPNS0_19AudioRendererConfigEPNS0_16LightLimiterTypeEPvmPNS0_12FinalMixTypeENS_8TimeSpanEi, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::AddReverb(nn::audio::AudioRendererConfig*, nn::audio::ReverbType*, void*, unsigned long, nn::aud... */
+PATCH_ANSWER(_ZN2nn5audio9AddReverbEPNS0_19AudioRendererConfigEPNS0_10ReverbTypeEPvmPNS0_12FinalMixTypeEi, 0,
+             "0 (success): the effect is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::AddReverb(nn::audio::AudioRendererConfig*, nn::audio::ReverbType*, void*, unsigned long, nn::audio:...) */
 PATCH_ANSWER(_ZN2nn5audio9AddReverbEPNS0_19AudioRendererConfigEPNS0_10ReverbTypeEPvmPNS0_10SubMixTypeEi, 0,
              "0 (success): the reverb is never applied: the host's mixer has no effects (runtime/nn_audio.c)");
@@ -29,21 +64,93 @@ PATCH_ANSWER(_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE, 
 /* nn::audio::GetAudioRendererVoiceDropParameter(nn::audio::AudioRendererHandle) */
 PATCH_ANSWER(_ZN2nn5audio34GetAudioRendererVoiceDropParameterENS0_19AudioRendererHandleE, 0,
              "x0 only: its float result (s0) keeps what was there (as before); the renderer drops no voices");
+/* nn::audio::GetCompressorInputOutput(nn::audio::CompressorType const*, signed char*, signed char*, int*, int) */
+PATCH_ANSWER(_ZN2nn5audio24GetCompressorInputOutputEPKNS0_14CompressorTypeEPaS4_Pii, 0,
+             "0, outputs unwritten: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::GetDelayTime(nn::audio::DelayType const*) */
 PATCH_ANSWER(_ZN2nn5audio12GetDelayTimeEPKNS0_9DelayTypeE, 0,
              "0 ns: the delay is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::GetLightLimiterInputOutput(nn::audio::LightLimiterType const*, signed char*, signed char*, int*,... */
+PATCH_ANSWER(_ZN2nn5audio26GetLightLimiterInputOutputEPKNS0_16LightLimiterTypeEPaS4_Pii, 0,
+             "0, outputs unwritten: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::GetLightLimiterLookAheadTime(nn::audio::LightLimiterType const*) */
+PATCH_ANSWER(_ZN2nn5audio28GetLightLimiterLookAheadTimeEPKNS0_16LightLimiterTypeE, 0,
+             "0: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::GetReverbInputOutput(nn::audio::ReverbType const*, signed char*, signed char*, int*, int) */
 PATCH_ANSWER(_ZN2nn5audio20GetReverbInputOutputEPKNS0_10ReverbTypeEPaS4_Pii, 0,
              "0, outputs unwritten: the reverb is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::IsBiquadFilterEnabled(nn::audio::BiquadFilterType const*) */
+PATCH_ANSWER(_ZN2nn5audio21IsBiquadFilterEnabledEPKNS0_16BiquadFilterTypeE, 0,
+             "0 (false): the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::IsBufferMixerEnabled(nn::audio::BufferMixerType const*) */
+PATCH_ANSWER(_ZN2nn5audio20IsBufferMixerEnabledEPKNS0_15BufferMixerTypeE, 0,
+             "0 (false): the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::IsCompressorEnabled(nn::audio::CompressorType const*) */
+PATCH_ANSWER(_ZN2nn5audio19IsCompressorEnabledEPKNS0_14CompressorTypeE, 0,
+             "0 (false): the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::IsCompressorRemovable(nn::audio::CompressorType const*) */
+PATCH_ANSWER(_ZN2nn5audio21IsCompressorRemovableEPKNS0_14CompressorTypeE, 1,
+             "1 (true): nothing to wait for: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::IsDelayEnabled(nn::audio::DelayType const*) */
 PATCH_ANSWER(_ZN2nn5audio14IsDelayEnabledEPKNS0_9DelayTypeE, 0,
              "0 (false): the delay is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::IsDelayRemovable(nn::audio::DelayType const*) */
+PATCH_ANSWER(_ZN2nn5audio16IsDelayRemovableEPKNS0_9DelayTypeE, 1,
+             "1 (true): nothing to wait for: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::IsDeviceOutputVolumeAutoTuneModeEnabled() */
 PATCH_ANSWER(_ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv, 0,
              "0 (false): never enabled");
 /* nn::audio::IsReverbEnabled(nn::audio::ReverbType const*) */
 PATCH_ANSWER(_ZN2nn5audio15IsReverbEnabledEPKNS0_10ReverbTypeE, 0,
              "0 (false): the reverb is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveAux(nn::audio::AudioRendererConfig*, nn::audio::AuxType*, nn::audio::FinalMixType*) */
+PATCH_ANSWER(_ZN2nn5audio9RemoveAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_12FinalMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveAux(nn::audio::AudioRendererConfig*, nn::audio::AuxType*, nn::audio::SubMixType*) */
+PATCH_ANSWER(_ZN2nn5audio9RemoveAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_10SubMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveBiquadFilter(nn::audio::AudioRendererConfig*, nn::audio::BiquadFilterType*, nn::audio::Fin... */
+PATCH_ANSWER(_ZN2nn5audio18RemoveBiquadFilterEPNS0_19AudioRendererConfigEPNS0_16BiquadFilterTypeEPNS0_12FinalMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveBiquadFilter(nn::audio::AudioRendererConfig*, nn::audio::BiquadFilterType*, nn::audio::Sub... */
+PATCH_ANSWER(_ZN2nn5audio18RemoveBiquadFilterEPNS0_19AudioRendererConfigEPNS0_16BiquadFilterTypeEPNS0_10SubMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveBufferMixer(nn::audio::AudioRendererConfig*, nn::audio::BufferMixerType*, nn::audio::Final... */
+PATCH_ANSWER(_ZN2nn5audio17RemoveBufferMixerEPNS0_19AudioRendererConfigEPNS0_15BufferMixerTypeEPNS0_12FinalMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveBufferMixer(nn::audio::AudioRendererConfig*, nn::audio::BufferMixerType*, nn::audio::SubMi... */
+PATCH_ANSWER(_ZN2nn5audio17RemoveBufferMixerEPNS0_19AudioRendererConfigEPNS0_15BufferMixerTypeEPNS0_10SubMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveCompressor(nn::audio::AudioRendererConfig*, nn::audio::CompressorType*, nn::audio::FinalMi... */
+PATCH_ANSWER(_ZN2nn5audio16RemoveCompressorEPNS0_19AudioRendererConfigEPNS0_14CompressorTypeEPNS0_12FinalMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveCompressor(nn::audio::AudioRendererConfig*, nn::audio::CompressorType*, nn::audio::SubMixT... */
+PATCH_ANSWER(_ZN2nn5audio16RemoveCompressorEPNS0_19AudioRendererConfigEPNS0_14CompressorTypeEPNS0_10SubMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveDelay(nn::audio::AudioRendererConfig*, nn::audio::DelayType*, nn::audio::FinalMixType*) */
+PATCH_ANSWER(_ZN2nn5audio11RemoveDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPNS0_12FinalMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveDelay(nn::audio::AudioRendererConfig*, nn::audio::DelayType*, nn::audio::SubMixType*) */
+PATCH_ANSWER(_ZN2nn5audio11RemoveDelayEPNS0_19AudioRendererConfigEPNS0_9DelayTypeEPNS0_10SubMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveI3dl2Reverb(nn::audio::AudioRendererConfig*, nn::audio::I3dl2ReverbType*, nn::audio::Final... */
+PATCH_ANSWER(_ZN2nn5audio17RemoveI3dl2ReverbEPNS0_19AudioRendererConfigEPNS0_15I3dl2ReverbTypeEPNS0_12FinalMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveI3dl2Reverb(nn::audio::AudioRendererConfig*, nn::audio::I3dl2ReverbType*, nn::audio::SubMi... */
+PATCH_ANSWER(_ZN2nn5audio17RemoveI3dl2ReverbEPNS0_19AudioRendererConfigEPNS0_15I3dl2ReverbTypeEPNS0_10SubMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveLightLimiter(nn::audio::AudioRendererConfig*, nn::audio::LightLimiterType*, nn::audio::Fin... */
+PATCH_ANSWER(_ZN2nn5audio18RemoveLightLimiterEPNS0_19AudioRendererConfigEPNS0_16LightLimiterTypeEPNS0_12FinalMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveLightLimiter(nn::audio::AudioRendererConfig*, nn::audio::LightLimiterType*, nn::audio::Sub... */
+PATCH_ANSWER(_ZN2nn5audio18RemoveLightLimiterEPNS0_19AudioRendererConfigEPNS0_16LightLimiterTypeEPNS0_10SubMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveReverb(nn::audio::AudioRendererConfig*, nn::audio::ReverbType*, nn::audio::FinalMixType*) */
+PATCH_ANSWER(_ZN2nn5audio12RemoveReverbEPNS0_19AudioRendererConfigEPNS0_10ReverbTypeEPNS0_12FinalMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::RemoveReverb(nn::audio::AudioRendererConfig*, nn::audio::ReverbType*, nn::audio::SubMixType*) */
+PATCH_ANSWER(_ZN2nn5audio12RemoveReverbEPNS0_19AudioRendererConfigEPNS0_10ReverbTypeEPNS0_10SubMixTypeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::SetAudioRendererVoiceDropParameter(nn::audio::AudioRendererHandle, float) */
 PATCH_ANSWER(_ZN2nn5audio34SetAudioRendererVoiceDropParameterENS0_19AudioRendererHandleEf, 0,
              "nothing to do: the host's renderer drops no voices");
@@ -62,6 +169,42 @@ PATCH_ANSWER(_ZN2nn5audio26SetBiquadFilterInputOutputEPNS0_16BiquadFilterTypeEPK
 /* nn::audio::SetBiquadFilterParameter(nn::audio::BiquadFilterType*, nn::audio::TBiquadFilterParameter<float> const&) */
 PATCH_ANSWER(_ZN2nn5audio24SetBiquadFilterParameterEPNS0_16BiquadFilterTypeERKNS0_22TBiquadFilterParameterIfEE, 0,
              "nothing to do: the filter is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetBiquadFilterParameter(nn::audio::BiquadFilterType*, nn::audio::TBiquadFilterParameter<short> const&) */
+PATCH_ANSWER(_ZN2nn5audio24SetBiquadFilterParameterEPNS0_16BiquadFilterTypeERKNS0_22TBiquadFilterParameterIsEE, 0,
+             "nothing to do: the filter is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetBufferMixerEnabled(nn::audio::BufferMixerType*, bool) */
+PATCH_ANSWER(_ZN2nn5audio21SetBufferMixerEnabledEPNS0_15BufferMixerTypeEb, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetBufferMixerInputOutput(nn::audio::BufferMixerType*, signed char const*, signed char const*, int) */
+PATCH_ANSWER(_ZN2nn5audio25SetBufferMixerInputOutputEPNS0_15BufferMixerTypeEPKaS4_i, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetBufferMixerVolume(nn::audio::BufferMixerType*, int, float) */
+PATCH_ANSWER(_ZN2nn5audio20SetBufferMixerVolumeEPNS0_15BufferMixerTypeEif, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetCompressorAttackTime(nn::audio::CompressorType*, nn::TimeSpan) */
+PATCH_ANSWER(_ZN2nn5audio23SetCompressorAttackTimeEPNS0_14CompressorTypeENS_8TimeSpanE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetCompressorEnabled(nn::audio::CompressorType*, bool) */
+PATCH_ANSWER(_ZN2nn5audio20SetCompressorEnabledEPNS0_14CompressorTypeEb, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetCompressorInputOutput(nn::audio::CompressorType*, signed char const*, signed char const*, int) */
+PATCH_ANSWER(_ZN2nn5audio24SetCompressorInputOutputEPNS0_14CompressorTypeEPKaS4_i, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetCompressorMakeupGainEnabled(nn::audio::CompressorType*, bool) */
+PATCH_ANSWER(_ZN2nn5audio30SetCompressorMakeupGainEnabledEPNS0_14CompressorTypeEb, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetCompressorOutGain(nn::audio::CompressorType*, float) */
+PATCH_ANSWER(_ZN2nn5audio20SetCompressorOutGainEPNS0_14CompressorTypeEf, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetCompressorRatio(nn::audio::CompressorType*, float) */
+PATCH_ANSWER(_ZN2nn5audio18SetCompressorRatioEPNS0_14CompressorTypeEf, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetCompressorReleaseTime(nn::audio::CompressorType*, nn::TimeSpan) */
+PATCH_ANSWER(_ZN2nn5audio24SetCompressorReleaseTimeEPNS0_14CompressorTypeENS_8TimeSpanE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetCompressorThreshold(nn::audio::CompressorType*, float) */
+PATCH_ANSWER(_ZN2nn5audio22SetCompressorThresholdEPNS0_14CompressorTypeEf, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::SetDelayChannelSpread(nn::audio::DelayType*, float) */
 PATCH_ANSWER(_ZN2nn5audio21SetDelayChannelSpreadEPNS0_9DelayTypeEf, 0,
              "nothing to do: the delay is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
@@ -89,6 +232,21 @@ PATCH_ANSWER(_ZN2nn5audio12SetDelayTimeEPNS0_9DelayTypeENS_8TimeSpanE, 0,
 /* nn::audio::SetDeviceOutputVolumeAutoTuneModeEnabled(bool) */
 PATCH_ANSWER(_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb, 0,
              "nothing to do: the output volume is the host's");
+/* nn::audio::SetLightLimiterAttackTime(nn::audio::LightLimiterType*, nn::TimeSpan) */
+PATCH_ANSWER(_ZN2nn5audio25SetLightLimiterAttackTimeEPNS0_16LightLimiterTypeENS_8TimeSpanE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetLightLimiterInputOutput(nn::audio::LightLimiterType*, signed char const*, signed char const*,... */
+PATCH_ANSWER(_ZN2nn5audio26SetLightLimiterInputOutputEPNS0_16LightLimiterTypeEPKaS4_i, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetLightLimiterLookAheadTime(nn::audio::LightLimiterType*, nn::TimeSpan) */
+PATCH_ANSWER(_ZN2nn5audio28SetLightLimiterLookAheadTimeEPNS0_16LightLimiterTypeENS_8TimeSpanE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetLightLimiterProcessingMode(nn::audio::LightLimiterType*, nn::audio::LightLimiterType::Process... */
+PATCH_ANSWER(_ZN2nn5audio29SetLightLimiterProcessingModeEPNS0_16LightLimiterTypeENS1_14ProcessingModeE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
+/* nn::audio::SetLightLimiterReleaseTime(nn::audio::LightLimiterType*, nn::TimeSpan) */
+PATCH_ANSWER(_ZN2nn5audio26SetLightLimiterReleaseTimeEPNS0_16LightLimiterTypeENS_8TimeSpanE, 0,
+             "nothing to do: the effect is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
 /* nn::audio::SetReverbColoration(nn::audio::ReverbType*, float) */
 PATCH_ANSWER(_ZN2nn5audio19SetReverbColorationEPNS0_10ReverbTypeEf, 0,
              "nothing to do: the reverb is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
@@ -135,7 +293,48 @@ PATCH_ANSWER(_ZN2nn5audio32SetSplitterBiquadFilterParameterEPNS0_12SplitterTypeE
 PATCH_ANSWER(_ZN2nn5audio32SetSplitterBiquadFilterParameterEPNS0_12SplitterTypeEiPNS0_10SubMixTypeEiRKNS0_22TBiquadFilterParameterIfEE, 0,
              "nothing to do: a splitter's filter is not applied: the host's mixer has no effects (runtime/nn_audio.c)");
 
+/* ---- nn::bcat */
+/* nn::bcat::CancelSyncDeliveryCacheRequest() */
+PATCH_ANSWER(_ZN2nn4bcat30CancelSyncDeliveryCacheRequestEv, 0,
+             "nothing to do: no delivery is ever requested: the host has no network");
+/* nn::bcat::Initialize() */
+PATCH_ANSWER(_ZN2nn4bcat10InitializeEv, 0,
+             "nothing to do: the delivery cache is never mounted");
+/* nn::bcat::MountDeliveryCacheStorage() */
+PATCH_ANSWER(_ZN2nn4bcat25MountDeliveryCacheStorageEv, 0x47a,
+             "ResultNotFound (module 122, description 2): no delivery cache; the game retries only on TargetLocked (3)");
+/* nn::bcat::UnmountDeliveryCacheStorage() */
+PATCH_ANSWER(_ZN2nn4bcat27UnmountDeliveryCacheStorageEv, 0,
+             "nothing to do: the delivery cache is never mounted");
+
 /* ---- nn::hid */
+/* nn::hid::FinalizeJcms() */
+PATCH_ANSWER(_ZN2nn3hid12FinalizeJcmsEv, 0,
+             "nothing to do: the host's controllers have no mouse sensor (Joy-Con 2 as a mouse)");
+/* nn::hid::GetJcmsHandle(unsigned int const&, nn::hid::JcmsType const&) */
+PATCH_ANSWER(_ZN2nn3hid13GetJcmsHandleERKjRKNS0_8JcmsTypeE, 0,
+             "handle 0: the host's controllers have no mouse sensor; the handle is only passed back");
+/* nn::hid::GetJcmsStates(nn::hid::JcmsState*, int, nn::hid::JcmsHandle const&) */
+PATCH_ANSWER(_ZN2nn3hid13GetJcmsStatesEPNS0_9JcmsStateEiRKNS0_10JcmsHandleE, 0,
+             "0 states, the states left as they were: no mouse sensor");
+/* nn::hid::InitializeJcms(void*, unsigned long) */
+PATCH_ANSWER(_ZN2nn3hid14InitializeJcmsEPvm, 0,
+             "nothing to do: the host's controllers have no mouse sensor");
+/* nn::hid::MergeSingleJoyAsDualJoy(unsigned int const&, unsigned int const&) */
+PATCH_ANSWER(_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_, 0,
+             "0 (success): the host's controller is one full-key pad whatever the assignment (runtime/nn_hid.c)");
+/* nn::hid::StartJcms(nn::hid::JcmsHandle const&) */
+PATCH_ANSWER(_ZN2nn3hid9StartJcmsERKNS0_10JcmsHandleE, 0,
+             "0 (success): no mouse sensor; GetJcmsStates reports none");
+/* nn::hid::StopJcms(nn::hid::JcmsHandle const&) */
+PATCH_ANSWER(_ZN2nn3hid8StopJcmsERKNS0_10JcmsHandleE, 0,
+             "0 (success): no mouse sensor");
+/* nn::hid::SetNpadJoyAssignmentModeDual(unsigned int const&) */
+PATCH_ANSWER(_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj, 0,
+             "nothing to do: the host's controller is one full-key pad whatever the assignment (runtime/nn_hid.c)");
+/* nn::hid::SetNpadJoyAssignmentModeSingle(unsigned int const&, nn::hid::NpadJoyDeviceType) */
+PATCH_ANSWER(_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE, 0,
+             "nothing to do: the host's controller is one full-key pad whatever the assignment (runtime/nn_hid.c)");
 /* nn::hid::SetGyroscopeZeroDriftMode(nn::hid::SixAxisSensorHandle const&, nn::hid::GyroscopeZeroDriftMode const&) */
 PATCH_ANSWER(_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE, 0,
              "nothing to do: the host's controllers report no motion (runtime/nn_hid.c)");
@@ -208,10 +407,27 @@ PATCH_ANSWER(_ZN2nn6socket13IsInitializedEv, 0,
 PATCH_ANSWER(_ZN2nn3ssl10InitializeEv, 0,
              "0 (success): the host has no network");
 
+/* ---- nn::streamplay (GameShare: the console streams the game to other consoles) */
+/* nn::streamplay::GetRequiredMemorySize(nn::streamplay::StreamPlayType, nn::streamplay::StreamingMode, int) */
+PATCH_ANSWER(_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi, 0x1000,
+             "a page: the game reserves the larger of two sizes at boot; the host never streams, so it stays unused");
+
 /* ---- nn::vi */
 /* nn::vi::QueryDisplayCurrentRefreshRate(nn::vi::RefreshRate*, bool*, nn::vi::Display const*) */
 PATCH_ANSWER(_ZN2nn2vi30QueryDisplayCurrentRefreshRateEPNS0_11RefreshRateEPbPKNS0_7DisplayE, 0,
              "0 (success), the outputs left as they were: the host paces presents (runtime/nn_vi.c)", sdk(22));
+/* nn::vi::SetLayerNextHdrContentGamutMetadata(nn::vi::Layer*, nn::vi::HdrContentGamut) */
+PATCH_ANSWER(_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE, 0,
+             "0 (success): the host presents SDR; HDR metadata has no consumer");
+/* nn::vi::SetLayerNextHdrExtendedContentLuminanceRangeMetadata(nn::vi::Layer*, unsigned short, unsigned short) */
+PATCH_ANSWER(_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt, 0,
+             "0 (success): the host presents SDR; HDR metadata has no consumer");
+/* nn::vi::SetLayerNextHdrStandardContentLuminanceRangeMetadata(nn::vi::Layer*, unsigned short, unsigned short) */
+PATCH_ANSWER(_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt, 0,
+             "0 (success): the host presents SDR; HDR metadata has no consumer");
+/* nn::vi::SetLayerNextHdrToSdrToneMappingMetadata(nn::vi::Layer*, nn::vi::HdrToneMapping) */
+PATCH_ANSWER(_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE, 0,
+             "0 (success): the host presents SDR; HDR metadata has no consumer");
 /* nn::vi::SetDisplay120HzRefreshRateCapability(nn::vi::Display*, bool) */
 PATCH_ANSWER(_ZN2nn2vi36SetDisplay120HzRefreshRateCapabilityEPNS0_7DisplayEb, 0,
              "0 (success): the host paces presents itself (runtime/nn_vi.c)");

@@ -9,4 +9,4 @@ noreturn_names = ["abort", "__assert_fail", "_Exit", "exit", "__cxa_throw", "__c
 noreturn_parts = ["AbortImpl", "UnexpectedDefaultImpl", "ExitProcess", "QuickExit", "terminateEv", "__throw_", "CriticalSectionAbort"]
 
 # the SDK's OS-facing namespaces: an imported free function of one is stubbed (standalone.hle_set)
-os_namespaces = ["account", "album", "aoc", "apm", "applet", "audio", "bcat", "camera", "capture", "chat", "codec", "detail", "diag", "ec", "err", "fatal", "friends", "gs", "hid", "irsensor", "lbl", "ldn", "movie", "news", "nfp", "nifm", "npns", "ns", "oe", "olsc", "pctl", "pl", "prepo", "ro", "settings", "socket", "ssl", "swkbd", "syncpt", "time", "vi", "web"]
+os_namespaces = ["account", "album", "aoc", "apm", "applet", "audio", "bcat", "camera", "capture", "chat", "codec", "detail", "diag", "ec", "err", "fatal", "friends", "gs", "hid", "irsensor", "lbl", "ldn", "movie", "news", "nfp", "nifm", "npns", "ns", "oe", "olsc", "pctl", "pl", "prepo", "ro", "settings", "socket", "ssl", "streamplay", "swkbd", "syncpt", "time", "vi", "web"]
