@@ -201,7 +201,7 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     return 1;
 }
 
-/* A bound key is down: Enter held with Alt is no button (Alt+Enter is fullscreen, runtime/media/display_sdl.c). tests/test_alt_enter.py */
+/* A bound key is down: Enter held with Alt is no button (Alt+Enter is fullscreen, runtime/media/display_sdl.c). (the check input::alt_enter) */
 static int kmap_down(int vk, int (*down)(int)) { return down(vk) && !(vk == VK_RETURN && down(VK_MENU)); }
 
 static int game_in_front(void) {

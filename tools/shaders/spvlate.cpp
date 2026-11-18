@@ -1,5 +1,5 @@
 // spvlate: the back end's late scheduling of a stage's SPIR-V (renderer/vk_spv_late.h) as a command, for the gate
-// (tools/shaders/late_gate.py) and tests/test_direct_spv_late.py:
+// (tools/shaders/late_gate.py) and the check renderer::spv_late:
 //   spvlate <in.spv> <out.spv> [--budget N] [--sink-peak N] [--reps N] [--blocks]   (--blocks: a line a block looked at)
 //   spvlate --dir <in dir> <out dir> [--budget N]      every *.spv of a folder
 // One line a module: instructions moved, blocks looked at and changed, the most 32-bit values a block held before and after

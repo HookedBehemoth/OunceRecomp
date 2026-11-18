@@ -50,7 +50,7 @@ bool strict_armed();
 void strict_stats(char* out, size_t cap);
 
 /// The known list: reasons strict reports but does not stop on, each with why it is there (logged at the start of a strict
-/// run). One place; tests/test_direct_strict.py reads it.
+/// run). One place; the checks renderer::strict_* read it.
 struct StrictKnown {
     const char* reason;   // (an event reason, or "validation:<message id>")
     const char* why;

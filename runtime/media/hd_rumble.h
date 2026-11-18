@@ -20,7 +20,7 @@
      the low amplitude's 9th bit (0x80); the low amplitude's low 8 bits. Silence is 00 01 40 40 (both bands at 0, at
      320 and 160 Hz), as SDL sends it.
 
-   Pure (no state, no SDL): tests/test_hd_rumble.py compiles it. */
+   Pure (no state, no SDL): the checks input::hd_rumble_* compile it. */
 #pragma once
 #include <math.h>
 #include <stdint.h>

@@ -44,4 +44,4 @@ A builder is a thin front end over the developer path ([Development guide](devel
 - **Read-only installs.** Make files copied from a read-only tools folder writable.
 - **Paths are UTF-8** everywhere.
 - **Links.** Refuse symbolic links inside the dump's folders, and keep the game's file system inside its mounts
-  (`tests/test_fs_links.py`).
+  (the check `os::fs_links`).

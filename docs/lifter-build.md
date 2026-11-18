@@ -47,7 +47,7 @@ It writes the guest code, the lifter's IR, the LLVM IR and, with the options, th
 
 | Check | What it tests | Needs the dump |
 |---|---|---|
-| `cargo test --manifest-path ounce/Cargo.toml` | The lifter's decoder and lift | No |
+| `cargo test --manifest-path ounce/Cargo.toml` | The lifter's decoder and lift, and all the game-free checks ([Test OunceRecomp](testing.md)) | No |
 
 In the game, the smoke test and a benchmark are the landing checks ([Test OunceRecomp](testing.md)).
 

@@ -10,7 +10,7 @@ static uint8_t guest[0x4000];
 #define MOD 0x1000u
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 int rx_option(int id, int otherwise) { (void)id; return otherwise; }
-static int hos_bench_on(void) { return 0; }   /* (HOS_BENCH off: test_bench.py checks it on) */
+static int hos_bench_on(void) { return 0; }   /* (HOS_BENCH off: frame::bench_* check it on) */
 int hos_ini_option(const char *key, int otherwise) { (void)key; return otherwise; }
 volatile uint64_t hos_gfx_module = MOD;
 volatile int hos_fixed_resolution, hos_dynres_runs;

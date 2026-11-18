@@ -56,7 +56,7 @@ It compiles every mesh stage of the game's shader seed before and after the pass
 to spill, spills more, or needs noticeably more registers. `tools/shaders/build.sh` builds `spvlate`, and
 `tools/shadercensus/build.sh` builds `censustool`.
 
-The pass has a unit test: `tests/test_direct_spv_late.py`.
+The pass has a unit test: `renderer::spv_late` in `cargo test`.
 
 ## Limits
 

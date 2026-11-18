@@ -1,5 +1,5 @@
 /* The pure parts of HOS_BENCH (runtime/bench.c): the ready condition held for a number of frames in a row, and the summary of
-   the frames' wall times. No host calls, so tests/test_bench.py compiles it alone. */
+   the frames' wall times. No host calls, so the check frame::bench_* compiles it alone. */
 #pragma once
 #include <stdint.h>
 #include <stdlib.h>

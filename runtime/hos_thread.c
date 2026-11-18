@@ -476,7 +476,7 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
    efficiency ones (i5-1235U) would keep one of the two from the game; then none is kept. The calling thread's
    processor group's cores: the masks the affinity calls take are its group's. Windows only: Linux keeps the last core,
    as before. */
-/* (the choice: the cores' logical processor masks and EfficiencyClass, n of them; 0 for none. tests/test_reserved_core.py) */
+/* (the choice: the cores' logical processor masks and EfficiencyClass, n of them; 0 for none. the check os::reserved_core) */
 static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *classes, int n) {
     uint64_t last = 0;
     int best = -1, fast = 0, logical = 0;

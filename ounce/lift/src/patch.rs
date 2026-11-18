@@ -1518,7 +1518,7 @@ mod tests {
 
     #[test]
     fn the_hosts_rows_are_sites_the_lift_takes() {
-        // (tests/test_oot_probes.py's table: every row's word decodes, and an At row follows no branch unless it runs
+        // (the rows' table: every row's word decodes, and an At row follows no branch unless it runs
         // before it, follows a call that returns, or replaces a call or a tail call)
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let game = crate::game::Game::load(&root.join("games/oot")).unwrap();

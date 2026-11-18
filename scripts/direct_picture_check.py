@@ -468,7 +468,7 @@ def compare(golden, run, noise_path, show_all=False, quiet=False):
     return 1 if bad else 2 if none else 0
 
 
-# ---- the self-test (synthetic pictures; tests/test_direct_picture_check.py runs it) ----
+# ---- the self-test (synthetic pictures; the check python::picture_check runs it) ----
 def selftest():
     import tempfile
     N = np()

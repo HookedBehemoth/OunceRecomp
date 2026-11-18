@@ -16,7 +16,7 @@
 
 namespace hsd {
 
-// ---- the known list (one place: tests/test_direct_strict.py reads it) ----
+// ---- the known list (one place: the checks renderer::strict_* read it) ----
 // Each entry: an event reason (as strict_event names it) or "validation:<message id>", and why strict reports it without
 // stopping. An entry stays only while its cause is understood and cannot be fixed in the stage that added it.
 const StrictKnown kStrictKnown[] = {

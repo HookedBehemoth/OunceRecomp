@@ -120,13 +120,12 @@ the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It ref
 
 | Path | What it holds |
 |---|---|
-| `ounce/` | The lifter (`ounce/lift`) and the builder (`ounce/builder`), one cargo workspace ([The lifter](lifter.md)) |
+| `ounce/` | The lifter (`ounce/lift`), the builder (`ounce/builder`) and the game-free checks (`ounce/tests`), one cargo workspace ([The lifter](lifter.md)) |
 | `runtime/` | The generic runtime: Horizon, the NVN2 layer (`nvn_native.c`), the hook points a game's patches fill (`game_hooks.h`); `runtime/os` is its operating-system layer (`os.h`), `runtime/media` the SDL shim (window, sound, controllers, dialogs) |
 | `renderer/` | The direct back end ([Renderer docs](direct/README.md)); `renderer/api/` is what the runtime and the back end share: the versioned interface (`vk_api.h`), the list calls (`vk_list_api.h`) and the NVN command records |
 | `games/oot/` | The game: its description (`game.toml`), its patch files (`patches/`), the labels, the hot list, the icon and the test scenes (`zoo/`) |
 | `scripts/` | Test runs, the play build, log and profile readers, the save copier |
 | `tools/` | Readers for the game's formats (`tools/dump`), reverse-engineering tools (`tools/re`: the dump check, the labels, the disassemblers and searches), the button-prompt generator (`tools/prompts`), the shader tools (`tools/shaders`: the register gate, the offline translator, the replacement stage's build) and the shader census (`tools/shadercensus`) |
-| `tests/` | The game-free checks, all run by `tests/run_all.py` |
 | `third_party/` | Upstream code with its own licenses, one folder each: Eden's shader translator (our fork) and Sirit, a64-kit's guest model and loader, SPIRV-Headers, VulkanMemoryAllocator, bc7enc_rdo, Opus, zstd, zbic, SDL2's license, Kenney's input prompts |
 
 ## More pages

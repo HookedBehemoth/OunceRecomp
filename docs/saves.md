@@ -105,7 +105,7 @@ that only exists on that side does not stay mixed in with the new save.
 
 - On Linux, a OunceRecomp save copied to Lichii loads at the same spot, and a Lichii save copied to OunceRecomp arrives
   identical.
-- `tests/test_oot_saves.py` covers the script's discovery for every program above, its copies and its backups, on
+- The check `python::oot_saves` (`ounce/tests/py/oot_saves.py`) covers the script's discovery for every program above, its copies and its backups, on
   temporary folders.
 - Windows and every program but Lichii are not tested. Their folders come from their source or documentation, as the
   table says.

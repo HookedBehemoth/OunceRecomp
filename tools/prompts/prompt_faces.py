@@ -2,7 +2,7 @@
 
 To add a face: an entry in FACES below, its HOS_PROMPT_* in renderer/api/vk_api.h (in this order, after the Switch), its name in
 games/oot/patches/prompts.c's faces[], and the Insert menu's names for it (gpu/legacy/vk/vk_menu.cpp tx_prompts, pad_name;
-tests/test_prompt_font_bind.py checks the order). To change one: its entry. To rework a texture by hand: tools/prompts/prompt_assets.py --dump <dir> writes
+ounce/tests/py/prompt_font_bind.py checks the order). To change one: its entry. To rework a texture by hand: tools/prompts/prompt_assets.py --dump <dir> writes
 every image the build makes, as PNG, under the names it looks for in tools/prompts/prompt_faces/<face>/: a PNG put there takes that image's
 place (tools/prompts/prompt_faces/README.md).
 

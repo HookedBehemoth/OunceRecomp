@@ -148,9 +148,39 @@ pub fn run(cmd: &mut Command) -> Output {
     out
 }
 
-/// a command's output, whatever its status (no input)
+/// the longest a command may run before the check fails (a hung fixture must not hang cargo test)
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// a command's output, whatever its status (no input); killed and failed after TIMEOUT
 pub fn output(cmd: &mut Command) -> Output {
-    cmd.stdin(Stdio::null()).output().unwrap_or_else(|e| panic!("{cmd:?}: {e}"))
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("{cmd:?}: {e}"));
+    let drain = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = r.read_to_end(&mut b);
+            b
+        })
+    };
+    let (out, err) = (drain(Box::new(child.stdout.take().unwrap())), drain(Box::new(child.stderr.take().unwrap())));
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if start.elapsed() > TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{cmd:?} still ran after {} s:\n{}{}", TIMEOUT.as_secs(), text(&out.join().unwrap()), text(&err.join().unwrap()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    Output { status, stdout: out.join().unwrap(), stderr: err.join().unwrap() }
 }
 
 pub fn text(b: &[u8]) -> String {

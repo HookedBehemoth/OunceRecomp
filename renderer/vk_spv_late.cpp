@@ -1,5 +1,5 @@
 // Late scheduling of a translated stage's SPIR-V (vk_spv_late.h): the translator's register-pressure pass. Stands alone:
-// tools/shaders/spvlate.cpp builds it into a command, tests/test_direct_spv_late.py checks it, tools/shaders/late_gate.py
+// tools/shaders/spvlate.cpp builds it into a command, the check renderer::spv_late checks it, tools/shaders/late_gate.py
 // holds RADV's compile of every stage against it.
 #include "vk_spv_late.h"
 

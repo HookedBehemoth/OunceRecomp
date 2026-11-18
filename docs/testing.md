@@ -1,35 +1,46 @@
 # Test OunceRecomp
 
-This page shows you how to check a change: the game-free checks that CI runs, and runs of the built game (a headless
+This page shows you how to check a change: the game-free checks, and runs of the built game (a headless
 run with screenshots, the smoke test, a benchmark, a recorded session, and a profile). Read it before you land a
 change.
 
 ## Run the game-free checks
 
-These need no dump, and CI runs them. Every check must run without the game: a run in the game is something you do
-locally and report. To run them all:
+These need no dump. Every check must run without the game: a run in the game is something you do locally and report.
+To run them all, run:
 
 ```sh
-python -I -B tests/run_all.py
+cargo test --manifest-path ounce/Cargo.toml
 ```
 
-It runs every `tests/test_*.py` in its own process, byte-compiles every tracked Python file, goes
-on after a failure, and ends with a table (slowest first) and each failure's output. To run only some checks, name part
-of their path: `python -I -B tests/run_all.py frame`.
+This runs the lifter's and the builder's unit tests and the checks in `ounce/tests`, in parallel. To run some checks
+only, name part of their path, for example `cargo test --manifest-path ounce/Cargo.toml -p ounce-tests frame::`.
 
-Many checks read source text: they cut a function out of a source file and compile it with stubs. A rename or a
-reshaped function can break a check far from your change. Update the check in the same change rather than weakening
-it.
+`ounce/tests` holds one test binary with a module per area:
 
-Some checks need a compiler, `spirv-val`, the SPIR-V or Vulkan headers (`OUNCE_SPIRV_HEADERS`, default
-`third_party/SPIRV-Headers`; `OUNCE_VULKAN_HEADERS`), or the `zstandard` package. A check whose tool is missing is skipped and says
-so; `--strict` (as in CI) fails it instead. The skip list at the top of `tests/run_all.py` names the checks that cannot
-run in CI; `--no-skip` runs them anyway.
+| Module | What it checks |
+|---|---|
+| `audio` | The mixer's deadline, the output section, the voices' filters and wave buffers, which SDL the sound loads |
+| `frame` | Frame pacing above 60 fps, the benchmark mode, the movie count, the widescreen shapes, DLSS's camera math |
+| `input` | Key bindings, rumble, motion, the mouse camera, the sticks' rest, headless shutdown |
+| `nvn` | The NVN layer's pools, buffers, textures and host tables, the render-target slots, host copies into guest memory |
+| `os` | The operating-system layer, the guest FPCR, `setjmp` calls, threads' cores, mutexes and multi-waits, the file system's links |
+| `renderer` | Layer 0's windows, strict mode, the register-pressure pass, Sirit's SPIR-V |
+| `host_reads` | What the host reads of the guest context against what its patch declarations say |
+| `source` | Rules read from the source text, such as UTF-8 paths |
+| `python` | The Python tools' own tests (`ounce/tests/py`) and a byte-compile of every tracked Python file |
 
-To add a check, write a small `tests/test_*.py` that reads source files and runs them, or compiles a
-tiny C or C++ fixture; `tests/run_all.py` picks it up. Keep it on the standard library (the pipeline's own packages
-aside) and fast: all checks share one CI job with a 20-minute limit. A check that takes tools as arguments gets an
-entry in `ARGS` at the top of `tests/run_all.py`; one that cannot run in CI gets an entry in `SKIP`, with the reason.
+Most checks read source text: they cut a function out of a source file, put it into a small C or C++ fixture
+(`ounce/tests/fixtures`) and compile and run it. A rename or a reshaped function can break a check far from your change.
+Update the check in the same change rather than weakening it.
+
+The checks need `clang` and `clang++` (or `CC` and `CXX`), `python3` with `numpy` and `zstandard`, `spirv-val`, and
+`glslangValidator` with `spirv-opt` for one stage of the register-pressure check. A missing tool fails the check that
+needs it. The SPIR-V headers are `OUNCE_SPIRV_HEADERS`, by default `third_party/SPIRV-Headers/include`.
+
+To add a check, add a `#[test]` to the module of its area. Use the helpers in `ounce/tests/src/lib.rs` to cut source
+text, compile a fixture, and run it. A check of a Python tool stays in Python, in `ounce/tests/py`, and gets a
+one-line test in `python`. Keep checks fast: the whole run takes seconds.
 
 ## Run the game
 

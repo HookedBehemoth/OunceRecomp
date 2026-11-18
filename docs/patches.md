@@ -112,7 +112,7 @@ examples.
 - An `HLE` or `NV` function that reads registers beyond the AAPCS64 arguments declares `reads(reg, "why")`. One that
   does not preserve the callee-saved registers declares `clobbers("why")`. Every effect needs its reason.
 
-`tests/test_host_context_reads.py` compiles the host and fails if a host function calls guest code that its
+The check `host_reads` (`cargo test`) compiles the host and fails if a host function calls guest code that its
 declaration does not name, or reads registers it does not declare.
 
 ## Calls that stop the game

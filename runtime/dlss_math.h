@@ -1,5 +1,5 @@
 /* (runtime) NVIDIA DLSS's camera math, as plain functions: the jitter's sequence (runtime/rx_backend.c, in C) and the motion
-   vectors' reprojection (gpu/legacy/vk/vk_dlss.cpp). No Vulkan, no NGX: tests/test_dlss_math.cpp checks them. */
+   vectors' reprojection (gpu/legacy/vk/vk_dlss.cpp). No Vulkan, no NGX: the check frame::dlss_math checks them. */
 #pragma once
 
 #ifdef __cplusplus

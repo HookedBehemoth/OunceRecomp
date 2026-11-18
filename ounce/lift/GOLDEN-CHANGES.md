@@ -197,7 +197,7 @@ holding the registers' values before; GetThreadCoreMask only); every other regis
 written to or reloaded from the context. The summaries take a declared svc as reading x0..inputs-1 and writing
 x0..results-1 (they took x0-x7 both). An undeclared number is a stop, hos_svc_stop(number, pc) (noreturn, reads no
 register), and a trap to the summaries. The counts: switchbrew's tables and Atmosphere's svc definitions; the inputs
-checked against the compiled host (tests/test_host_context_reads.py test_svc_inputs).
+checked against the compiled host (the check host_reads::svc_inputs).
 
 diffout: 261 functions' IR changed, 0 unexplained (the svc wrappers and the callers whose callees' facts changed);
 3,425 functions' facts changed: mustdef shrinks in 3,126 (a declared svc writes its results, not x0-x7), 138 no longer

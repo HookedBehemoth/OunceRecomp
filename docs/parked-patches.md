@@ -138,7 +138,7 @@ of the first two rows (P[0][2], P[1][2]): 0 unless an upscaler runs and the proj
 
 **To rebuild.** An `after` row at each site with `x28` as an operand and the row registers as `io(...)`.
 `runtime/dlss_math.h` (the Halton sequence, the clip-space offset and the projection check) and
-`tests/test_dlss_math.py` remain.
+the check `frame::dlss_math` remain.
 
 ## Mario Kart World's frame pacer
 

@@ -608,7 +608,7 @@ pub fn check(argv: Vec<String>) {
         if only.is_some() {
             ""
         } else {
-            "; a guest function a host function calls without declaring it is not checkable here (tests/test_host_context_reads.py compiles the host for that)"
+            "; a guest function a host function calls without declaring it is not checkable here (the check host_reads compiles the host for that)"
         }
     );
     if let (Some(w), true) = (&only, errs.is_empty()) {

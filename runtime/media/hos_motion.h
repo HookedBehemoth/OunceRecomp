@@ -1,6 +1,6 @@
 /* (runtime) A controller's motion sensors as the Switch reports its six-axis state (runtime/media/pad_sdl.c fills it from
    SDL, runtime/nn_hid.c hands it to the game's GetSixAxisSensorStates). Header-only, no SDL or Windows, so
-   tests/test_motion.py runs it as it is.
+   The check input::motion runs it as it is.
 
    This is Eden's (and yuzu's) motion, the emulators OoT aims right with: SDL's readings turned into the Switch's frame
    and units, and the state built as the console builds it, so the game gets what it gets on hardware and does its own

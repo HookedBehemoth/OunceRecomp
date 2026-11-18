@@ -76,7 +76,7 @@ guaranteed. First step: the leaf subset, on/off.
 
 - **libc copies as intrinsics.** A BL to the replaced `memcpy`, `memset` or `memmove` becomes `llvm.memmove` or
   `llvm.memset` on guest addresses, with an inline range check and the replacement's call as the fallback
-  (`tests/test_guest_copies.py` guards host memory safety). Source: FEX lists compile-time memcpy and memset among its
+  (the check `nvn::guest_copies` guards host memory safety). Source: FEX lists compile-time memcpy and memset among its
   optimizations (code not read).
 - **CRC32C as `crc32`.** Exact. First step: count the sites.
 - **CCMP chains.** Fold the four selects a CCMP builds into one compare and select. First step: read whether LLVM

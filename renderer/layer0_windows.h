@@ -1,6 +1,6 @@
 #pragma once
 // Layer 0's window scheme arithmetic, kept apart from Vulkan so that it can be tested alone
-// (tests/direct_layer0_windows_test.cpp). renderer/vk_pools.cpp is the rest.
+// (the check renderer::layer0_windows). renderer/vk_pools.cpp is the rest.
 //
 // Guest memory is seen by the GPU through window buffers: 4 GB sparse buffers (maxBufferSize is 4 GB on RADV), one starting
 // every 2 GB of guest address space, so window k covers guest [k * 2 GB, k * 2 GB + 4 GB) and every guest byte lies in two
