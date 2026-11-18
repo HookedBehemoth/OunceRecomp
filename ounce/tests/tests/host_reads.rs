@@ -374,9 +374,7 @@ fn sources() -> Vec<PathBuf> {
     };
     add(&path("runtime"));
     add(&path("runtime/media"));
-    for g in std::fs::read_dir(path("games")).unwrap() {
-        add(&g.unwrap().path().join("patches"));
-    }
+    add(&path("games/oot/patches"));   // (the game scan() reads; another game's files of the same names would race for the .ll)
     out.sort();
     out
 }
