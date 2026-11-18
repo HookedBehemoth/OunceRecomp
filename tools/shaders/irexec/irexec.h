@@ -39,9 +39,13 @@ struct Trace {
     uint32_t undefined_reads = 0;               // (shuffles and derivatives from lanes that were not active)
 };
 
+struct Options {
+    std::map<uint32_t, uint32_t> bank_alias;   // (constant banks read and keyed as another: {24, 17} compares a root table at 24 with 17)
+};
+
 class Compiled;
 /// The program prepared for runs (its slots and blocks); it holds pointers into the program
-std::shared_ptr<Compiled> compile(const Shader::IR::Program& program);
+std::shared_ptr<Compiled> compile(const Shader::IR::Program& program, const Options& options = {});
 Trace run(const Compiled& c, const Inputs& in);
 
 /// The IR opcodes the interpreter executes

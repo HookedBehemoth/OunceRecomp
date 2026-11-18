@@ -149,13 +149,18 @@ public:
     bool ftz32 = true, ftz16 = false, ftz64 = false;
     u32 lanes = 32;
     std::array<u32, 3> wg{1, 1, 1};
+    std::map<u32, u32> alias;
+    u32 bank(u32 b) const {
+        const auto it = alias.find(b);
+        return it == alias.end() ? b : it->second;
+    }
 };
 
 namespace {
 
 bool supported(Opcode o);
 
-u64 descriptor_key(const IR::Program& p, Opcode code, const IR::TextureInstInfo info, bool& integer) {
+u64 descriptor_key(const Compiled& c, const IR::Program& p, Opcode code, const IR::TextureInstInfo info, bool& integer) {
     const bool image = code == Opcode::ImageRead || code == Opcode::ImageWrite || (code >= Opcode::ImageAtomicIAdd32 && code <= Opcode::ImageAtomicExchange32);
     const bool buffer = info.type == TextureType::Buffer;
     const u32 i = info.descriptor_index;
@@ -164,24 +169,24 @@ u64 descriptor_key(const IR::Program& p, Opcode code, const IR::TextureInstInfo 
         if (i >= p.info.image_buffer_descriptors.size()) throw bad();
         const auto& d = p.info.image_buffer_descriptors[i];
         integer = d.is_integer;
-        return h(1, d.cbuf_index, d.cbuf_offset, d.handle_program);
+        return h(1, c.bank(d.cbuf_index), d.cbuf_offset, d.handle_program);
     }
     if (image) {
         if (i >= p.info.image_descriptors.size()) throw bad();
         const auto& d = p.info.image_descriptors[i];
         integer = d.is_integer;
-        return h(2, d.cbuf_index, d.cbuf_offset, d.handle_program);
+        return h(2, c.bank(d.cbuf_index), d.cbuf_offset, d.handle_program);
     }
     if (buffer) {
         if (i >= p.info.texture_buffer_descriptors.size()) throw bad();
         const auto& d = p.info.texture_buffer_descriptors[i];
         integer = info.is_integer;
-        return h(h(3, d.cbuf_index, d.cbuf_offset, d.shift_left), d.secondary_cbuf_index, d.secondary_cbuf_offset, d.handle_program);
+        return h(h(3, c.bank(d.cbuf_index), d.cbuf_offset, d.shift_left), c.bank(d.secondary_cbuf_index), d.secondary_cbuf_offset, d.handle_program);
     }
     if (i >= p.info.texture_descriptors.size()) throw bad();
     const auto& d = p.info.texture_descriptors[i];
     integer = d.is_integer || info.is_integer;
-    return h(h(4, d.cbuf_index, d.cbuf_offset, d.shift_left), h(d.secondary_cbuf_index, d.secondary_cbuf_offset, d.secondary_shift_left),
+    return h(h(4, c.bank(d.cbuf_index), d.cbuf_offset, d.shift_left), h(c.bank(d.secondary_cbuf_index), d.secondary_cbuf_offset, d.secondary_shift_left),
              d.handle_program, d.has_secondary);
 }
 
@@ -194,9 +199,10 @@ bool is_texture_op(Opcode o) {
 
 }  // namespace
 
-std::shared_ptr<Compiled> compile(const IR::Program& program) {
+std::shared_ptr<Compiled> compile(const IR::Program& program, const Options& options) {
     auto c = std::make_shared<Compiled>();
     c->program = &program;
+    c->alias = options.bank_alias;
     const Info& info = program.info;
     c->ftz32 = !(info.uses_fp32_denorms_preserve && !info.uses_fp32_denorms_flush);
     c->ftz16 = info.uses_fp16_denorms_flush && !info.uses_fp16_denorms_preserve;
@@ -298,14 +304,14 @@ std::shared_ptr<Compiled> compile(const IR::Program& program) {
                     op.carry = pseudo(Opcode::GetCarryFromOp), op.overflow = pseudo(Opcode::GetOverflowFromOp);
                 }
             }
-            if (is_texture_op(code)) op.key = descriptor_key(program, code, inst.Flags<IR::TextureInstInfo>(), op.integer);
+            if (is_texture_op(code)) op.key = descriptor_key(*c, program, code, inst.Flags<IR::TextureInstInfo>(), op.integer);
             if (is_storage_op(code)) {
                 const IR::Value bind = inst.Arg(0).Resolve();
                 if (!bind.IsImmediate()) throw Error(fmt::format("{} with a dynamic binding", IR::NameOf(code)));
                 const u32 bi = bind.U32();
                 if (bi >= info.storage_buffers_descriptors.size()) throw Error(fmt::format("{}: no storage buffer {}", IR::NameOf(code), bi));
                 const auto& d = info.storage_buffers_descriptors[bi];
-                op.key = h('B', d.cbuf_index, d.cbuf_offset);
+                op.key = h('B', c->bank(d.cbuf_index), d.cbuf_offset);
             }
             if (code == Opcode::IsbeWriteMapU32) {
                 const IR::Value a = inst.Arg(0).Resolve();
@@ -789,7 +795,7 @@ void Machine::exec(const Op& op, u32 mask) {
     const auto sext = [](u32 x, int bits) { return (u32)((s32)(x << (32 - bits)) >> (32 - bits)); };
     const auto cbuf = [&](u32 size, bool sign) {
         EACH {
-            const u32 bank = a32(op, 0, l), off = a32(op, 1, l) & ~(size - 1);
+            const u32 bank = c.bank(a32(op, 0, l)), off = a32(op, 1, l) & ~(size - 1);
             const u32 x = cbuf_bytes(bank, off, size);
             R(op.dst, 0, l) = sign ? sext(x, (int)size * 8) : x;
         }
@@ -850,7 +856,7 @@ void Machine::exec(const Op& op, u32 mask) {
     case Opcode::GetCbufU32: case Opcode::GetCbufF32: cbuf(4, false); return;
     case Opcode::GetCbufU32x2:
         EACH {
-            const u32 bank = a32(op, 0, l), off = a32(op, 1, l) & ~7u;
+            const u32 bank = c.bank(a32(op, 0, l)), off = a32(op, 1, l) & ~7u;
             R(op.dst, 0, l) = cbuf_word(bank, off), R(op.dst, 1, l) = cbuf_word(bank, off + 4);
         }
         return;

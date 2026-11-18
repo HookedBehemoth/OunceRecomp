@@ -5,6 +5,7 @@
 //   irexec <seed> --index <i> [same]                          one stage by seed index
 //   irexec <seed> --all [--first F] [--count C] [--inputs N]   every stage: a line per failure, then the totals
 //   irexec <seed> --opcodes [--first F] [--count C]            the post-pass opcodes of the stages: stages and uses each
+//   --alias <a>=<b>: constant bank a read and keyed as bank b (irexec::Options::bank_alias)
 //   irexec --supported                                         the opcodes the interpreter executes
 // "@@stage <index>" goes to stderr before each stage (a crash names its stage).
 #include <chrono>
@@ -128,10 +129,12 @@ double ms_since(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+irexec::Options options;
+
 int one(int id, int inputs, bool trace, bool ir) {
     Stage s = translate(id);
     if (ir) std::printf("%s\n", Shader::IR::DumpProgram(s.t->program).c_str());
-    const auto c = irexec::compile(s.t->program);
+    const auto c = irexec::compile(s.t->program, options);
     for (int k = 0; k < inputs; k++) {
         irexec::Inputs in;
         in.seed = (uint64_t)k;
@@ -170,7 +173,7 @@ int all(int first, int count, int inputs) {
         translated++;
         t0 = std::chrono::steady_clock::now();
         try {
-            const auto c = irexec::compile(s.t->program);
+            const auto c = irexec::compile(s.t->program, options);
             for (int k = 0; k < inputs; k++) {
                 irexec::Inputs in;
                 in.seed = (uint64_t)k;
@@ -248,7 +251,12 @@ int main(int argc, char** argv) {
         else if (a == "--inputs" && more) inputs = std::atoi(argv[++i]);
         else if (a == "--first" && more) first = std::atoi(argv[++i]);
         else if (a == "--count" && more) count = std::atoi(argv[++i]);
-        else if (a == "--trace") trace = true;
+        else if (a == "--alias" && more) {
+            const std::string v = argv[++i];
+            const size_t eq = v.find('=');
+            if (eq == std::string::npos) return std::fprintf(stderr, "--alias <a>=<b>\n"), 2;
+            options.bank_alias[(uint32_t)std::stoul(v.substr(0, eq))] = (uint32_t)std::stoul(v.substr(eq + 1));
+        } else if (a == "--trace") trace = true;
         else if (a == "--ir") ir = true;
         else if (a == "--all") do_all = true;
         else if (a == "--opcodes") do_opcodes = true;

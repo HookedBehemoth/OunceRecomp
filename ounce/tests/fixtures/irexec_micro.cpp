@@ -72,8 +72,8 @@ struct Prog {
 Node block_node(IR::Block* b) { return {.data{.block = b}, .type = Node::Type::Block}; }
 Node return_node() { return {.type = Node::Type::Return}; }
 
-irexec::Trace run(Prog& p, uint64_t max_steps = 1u << 16) {
-    const auto c = irexec::compile(p.program);
+irexec::Trace run(Prog& p, uint64_t max_steps = 1u << 16, const irexec::Options& options = {}) {
+    const auto c = irexec::compile(p.program, options);
     irexec::Inputs in;
     in.seed = 1;
     in.max_steps = max_steps;
@@ -291,6 +291,20 @@ void atomics() {
     check("SharedAtomicOrder", ok, "each lane's old value is the first lane's plus its lane");
 }
 
+/// A bank alias reads one constant bank as another (the old front's root table at 17, the new one's at 24)
+void bank_alias() {
+    Prog p;
+    IR::Block* const b = p.block();
+    IR::IREmitter ir{*b};
+    ir.WriteShared(32, ir.Imm32(0u), ir.GetCbuf(ir.Imm32(24u), ir.Imm32(0x40u)));
+    ir.WriteShared(32, ir.Imm32(4u), ir.GetCbuf(ir.Imm32(17u), ir.Imm32(0x40u)));
+    p.finish(Stage::Compute, {block_node(b), return_node()});
+    const auto plain = words(run(p), "mem.shared");
+    const auto aliased = words(run(p, 1u << 16, {.bank_alias = {{24, 17}}}), "mem.shared");
+    check("BankAlias", plain.at(0) != plain.at(1) && aliased.at(0) == aliased.at(1) && aliased.at(1) == plain.at(1),
+          "bank 24 read as 17 only with the alias");
+}
+
 }  // namespace
 
 int main() {
@@ -301,6 +315,7 @@ int main() {
         loop_cap();
         fragment();
         atomics();
+        bank_alias();
     } catch (const std::exception& e) {
         std::printf("FAIL exception: %s\n", e.what());
         return 100;

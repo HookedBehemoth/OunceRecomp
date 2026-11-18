@@ -836,5 +836,5 @@ fn irexec_micro() {
     let out = output(&mut Command::new(&exe));
     let stdout = text(&out.stdout);
     assert!(out.status.success(), "irexec micro programs failed:\n{stdout}{}", text(&out.stderr));
-    assert!(stdout.lines().filter(|l| l.starts_with("ok ")).count() >= 36, "cases missing:\n{stdout}");
+    assert!(stdout.lines().filter(|l| l.starts_with("ok ")).count() >= 37, "cases missing:\n{stdout}");
 }
