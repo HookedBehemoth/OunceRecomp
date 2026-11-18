@@ -391,6 +391,14 @@
 812c4f00 gfx_shader_finalize              # work/assets/native/shader-stream.md: nvnProgramFinalize
 812c42c0 gfx_shader_initialize            # work/assets/native/shader-stream.md, work/assets/native/engine-materials.md: nn::gfx Shader::Initialize (NVN2)
 81503ce0 ndsr_networks_init               # work/assets/native/shader-stream.md: NDSR networks (InitializeFromBuilder)
+80f71360 ndsr_networks_load               # games/oot/patches/ndsr.c: agl's resource set-up looks up agl_ndsr.pck, agl_ndsr_vr.pck, agl_ndsr_vr_light.pck in the agl archive and builds a network from each it finds (-1: left out)
+80f718a0 ndsr_network_build               # games/oot/patches/ndsr.c: one network from its .pck (f_80f71a00, then the ratio table)
+80f71a00 ndsr_network_setup               # games/oot/patches/ndsr.c: "SMAA_For_NDSR" library set-up of one network: its pools and the three builder passes (ndsr_networks_init)
+809eafc0 agl_resource_init                # games/oot/patches/ndsr.c: agl's resource archive set-up; the NDSR network holder at +0x88 (ndsr_networks_load)
+811ef5b0 config_create_ndsr_get           # games/oot/patches/ndsr.c: gsys::ModelSceneConfigParam's CreateNdsr (+0x588, set flag +0x618, inherited through +0x10)
+80ec3c70 scene_stages_init                # games/oot/patches/ndsr.c: a model scene's render stages, each made when its resolved config byte is set (CreateNdsr +0xf20: the NDSR stage at +0x200)
+80ea38c0 ndsr_stage_init                  # games/oot/patches/ndsr.c: the NDSR stage, from agl_resource_init's network holder (a network left out is skipped)
+8360d040 scene_stages_dtor                # games/oot/patches/ndsr.c: the stages' destructor (CreateNdsr +0xf20: the NDSR stage's teardown)
 821057e0 ndve_output_view                 # work/assets/native/block-linear.md: NDVE_Output view format
 806569a0 shader_program_create            # work/assets/native/shader-stream.md: agl sharcb programs: nvnProgramSetShaders
 80b65f00 shader_sharcb_load               # work/assets/native/shader-stream.md: agl's sharcb loader

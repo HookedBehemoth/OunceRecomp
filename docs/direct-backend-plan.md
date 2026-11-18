@@ -77,8 +77,8 @@ Each item is open at the time of writing. Remove an item when you close it.
 - **The long layer of calc stage C** records alone at the end of the stage. `HOS_LAYER_AHEAD` starts it with the render
   jobs and saves 0.2-0.5 ms a frame in the market; Hyrule Field shows no gain and has bursts. See
   [the frame loop](direct/frame-loop.md).
-- **Shader cost.** Work through the [shader census](direct/shader-costs.md)'s ranking: the heavy compute pass
-  `fd029a317a9a4b94` first, then per-command overhead, then translator-wide costs. Don't rewrite stages one by one.
+- **Shader cost.** Work through the [shader census](direct/shader-costs.md)'s ranking: per-command overhead first,
+  then translator-wide costs. Don't rewrite stages one by one.
 - **Native task shaders** are not used: RADV runs a task stage on an async-compute ring gang-submitted with the graphics
   ring, so the back end runs the task stage as a compute step. A native run on Mesa main would show whether the compute
   step can go.
@@ -86,8 +86,8 @@ Each item is open at the time of writing. Remove an item when you close it.
 ### Memory and features
 
 - **Memory accounting per owner** in the periodic log. The per-slot arenas, task pools and query pools never shrink.
-- **A temporal upscaler.** The game upscales with a fixed-ratio network and writes no motion vectors. Rendering at the
-  window's size times a bias needs an upscaler of ours in place of the network; see
+- **A temporal upscaler.** The game's NDSR network is off and the game writes no motion vectors. Rendering below the
+  window's size needs an upscaler of ours; see
   [render targets](direct/render-targets.md#upscaling).
 
 ## Checks

@@ -140,6 +140,12 @@
 8070e1e8 dynres_gpu_percentage_get        # system survey: [x0+0x538]+0x64: MaintainGpuPercentage (87.5 default)
 8049a170 dynres_min_scale_get             # system survey: [x0+0x540]+0x64: FrameBufferMinScale
 80499f5c dynres_setup                     # system survey: copies MaintainGpuPercentage and FrameBufferMinScale into the GPU-load controller's profile (+0x24, +0x2c) # ?
+8055a8fc agl_resource_init                # games/dkb/patches/ndsr.c: agl's resource archive set-up; the NDSR network holder at +0x78, then ndsr_network_load into it
+8055ab00 ndsr_network_load                # games/dkb/patches/ndsr.c: builds agl_ndsr.pck's network into the holder (+0x28) and its ratio table (+0x24 entries at +4)
+804c4258 scene_stages_init                # games/dkb/patches/ndsr.c: a model scene's render stages; CreateNdsr (resolved config +0xe10) makes the NDSR stage (+0x2b0)
+806bf9d4 scene_stages_dtor                # games/dkb/patches/ndsr.c: the stages' destructor (CreateNdsr +0xe10: the NDSR stage's teardown)
+803adb98 dynres_ratio_pick_a              # games/dkb/patches/ndsr.c: the dynamic resolution controller: picks from the NDSR holder's ratio table (none: its other path) and NdsrUpscaleMaxRate # ?
+803ae0f0 dynres_ratio_pick_b              # games/dkb/patches/ndsr.c: the same over NdsrUpscaleMinRate/MaxRate # ?
 8070dda4 stage_dynres_profiles_init       # system survey: registers the resolution profiles "Console", "Handheld", "UltraQuality", "HighQuality" (0x30 bytes each) and selects one by [x19+0x3c]
 8070e208 dynres_profile_add               # system survey: appends a profile to the list (+0xa0, count +0x98)
 80216874 dynres_profile_select            # system survey: selects a profile by name: index to +0x8c, +8 bit 0 set

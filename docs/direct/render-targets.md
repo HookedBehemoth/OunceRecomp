@@ -56,7 +56,7 @@ To log every slot made, with its name, size and format, run with `HOS_RT_SLOTS_L
 | output-derived | `DepthBuffer` and `Reprojection` | `O`/4 |
 | shadows | sun cascades, local-light maps, the static sun shadow | from the scene config and per light (below) |
 | movie and UI | the movie planes, `NDVE_Output`, UI captures | the movie's or the layout's size |
-| persistent | window textures (`O`), the UI layer and the upscaler's output (`F`), the static shadow and far-depth maps | made once |
+| persistent | window textures (`O`), the UI layer and the frame (`F`), the static shadow and far-depth maps | made once |
 
 At the defaults the transient targets peak at roughly 300-350 MB; at `O` = 3840 x 2160 near 900 MB.
 
@@ -81,22 +81,24 @@ Shadow filter widths are in texels, so a larger map gives a narrower penumbra un
 
 ## Upscaling
 
-The game's path, after the scene, lighting, fog and post effects:
+The game's NDSR upscaler is off (`games/oot/patches/ndsr.c`): the main scene's `CreateNdsr` reads False, as the UI
+scene's does, and the networks are never built. The game's path, after the scene, lighting, fog and post effects:
 
-1. The lit color is copied for anti-aliasing and resolved by SMAA into `ndsr::smaa_output` (RGB9E5F, `S`).
-2. The game's upscale network, the compute program `fd029a317a9a4b94`, takes it from `S` to the frame (R11G11B10F, `F`).
-   It is the frame's heaviest pass, about 1 ms; see [the shader census](shader-costs.md).
-3. The UI is composed over the frame into the window texture.
+1. The lit color is copied for anti-aliasing (`color(AA)`), at the frame's size.
+2. The UI is composed over the frame into the window texture.
 
-The network exists only for fixed ratios of `S` to `F` (3/4 by default). It is not temporal: no target carries color
-across frames, and the game writes no motion-vector target. Rendering at the window's size times a free bias needs an
-upscaler of ours in place of the network. That work is open; the inputs it needs are:
+With NDSR on, SMAA resolved the copy into `ndsr::smaa_output` (RGB9E5F) and a network of matrix multiplies, which
+this GPU runs in software, took it to the frame (R11G11B10F): about 1.4 ms a frame.
+Neither runs now.
 
-- the color before SMAA (`color(AA)`) or after it (`smaa_output`, square-root encoded);
-- depth (`RawDepth(Full)`, D32F at `S`, 0 at the near plane);
+The game writes no motion-vector target and no target carries color across frames. Rendering below the window's size
+and upscaling needs an upscaler of ours; the inputs it needs are:
+
+- the color before the UI (`color(AA)`);
+- depth (`RawDepth(Full)`, D32F, 0 at the near plane);
 - a jittered projection and motion vectors, which the game does not provide: camera motion can be derived from depth
   and the two frames' view-projection matrices;
-- the hand-back point: in place of the network's output, before the UI.
+- the hand-back point: before the UI.
 
 ## Things to keep consistent
 

@@ -15,12 +15,10 @@ RADV, Mesa's Vulkan driver for AMD GPUs.
   instruction count.
 - **Most of the GPU's frame is not shader ALU work.** ACO's estimate explains under a third of the measured command
   time. The rest is memory latency, fixed function, and many small draws and dispatches with barriers between them.
-- **One compute pass dominates:** `fd029a317a9a4b94`, the game's upscale network, takes about 1 ms a frame, twenty times
-  its estimate. Its 16-bit shared-memory stores are emulated with compare-and-swap loops.
 - **Smaller is not faster.** Hand-written mesh stages that compile much smaller, and a rewritten fog composite, run
   exactly as fast as the translator's in the harness. The limit is outside the stage's ALU and occupancy.
 
-So the order that pays is: the heavy compute pass first, then per-command overhead, then translator-wide costs that RADV
+So the order that pays is: per-command overhead first, then translator-wide costs that RADV
 cannot clean up (sub-word shared stores, the mesh stage buffer in shared memory, duplicated NaN guards). Rewriting
 stages one by one does not pay.
 
