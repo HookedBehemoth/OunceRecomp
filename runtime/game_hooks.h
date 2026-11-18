@@ -29,6 +29,10 @@ int game_invalidate_unneeded(uint64_t size);
 
 /* ---- the frame and the window ---- */
 void game_frame(void);                                        /* each present (nvn_native.c) */
+/* each present (nn_vi.c), now the present's time in ns: the patches' frame timing (time step, limiter) */
+void game_frame_timing(int64_t now);
+/* the game's clock in 1/60 s of game time (a benchmark's game step, a speed check); 0 when not known */
+double game_clock(void);
 void game_frame_size(uint32_t width, uint32_t height, int start);   /* the window's size: at boot (start 1) and after a resize */
 void game_bench_report(void);                                 /* the end of a benchmark run (bench.c): the patches' lines */
 int game_textures_settled(void);                              /* 1: the game streams no textures now (a benchmark's ready test) */

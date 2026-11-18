@@ -688,7 +688,6 @@ HLE(_ZN2nn2os11GetTlsValueENS0_7TlsSlotE) { RET((uint32_t)ARG(0) < HOS_TLS_SLOTS
 HLE(_ZN2nn2os11SetTlsValueENS0_7TlsSlotEm) { if ((uint32_t)ARG(0) < HOS_TLS_SLOTS) cur->tls_slots[(uint32_t)ARG(0)] = ARG(1); }
 
 /* ---- ticks ------------------------------------------------------------------------------------------------- */
-volatile uint64_t hos_gfx_module;   /* (the game's graphics module, set by its patches: nn_vi.c's real-time step) */
 /* HOS_TICK_LOG=1 (diagnostic): who reads the clock, by caller (LR), every 5 s */
 static void tick_log(uint64_t lr) {
     static os_mutex lk = OS_MUTEX_INIT; static uint64_t lrs[512]; static uint32_t counts[512]; static int64_t next;

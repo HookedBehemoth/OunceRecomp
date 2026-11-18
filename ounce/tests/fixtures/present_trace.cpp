@@ -14,14 +14,14 @@ static int64_t clock_now;
 static int64_t hos_now_ns(void) { ++reads; return clock_now; }
 static void hos_sleep_ns(int64_t ns) { (void)ns; ++sleeps; }
 static void scan_dt(long long frame) { (void)frame; ++scans; }
-static void realtime_step(int64_t now) { (void)now; ++steps; }
+static void game_frame_timing(int64_t now) { (void)now; ++steps; }   /* (the game's patches) */
 static int hos_bench_on(void) { return 0; }   /* (HOS_BENCH off) */
 static void hos_bench_present(int64_t now) { (void)now; }
 static void hos_thread_fp_log(long long present) { (void)present; }   /* (HOS_FP_LOG off) */
 void hos_code_ptr_report(void) {}   /* (runtime/code_ptrs.c) */
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static int hos_log_switch(const char *item) { (void)item; return 0; }
-static int fps_max(void) { return 60; }   /* (nn_vi.c's Frame rate cap: the console's 60 here) */
+static int64_t frame_period(void) { return 1000000000LL / 60 * present_interval; }   /* (nn_vi.c: the console's 60 here) */
 @HELPER@
 @PRESENTED@
 

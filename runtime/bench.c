@@ -17,7 +17,7 @@
 
 void rx_stats(int64_t *draws, int64_t *skipped, int64_t *pipelines);   /* (rx_backend.c: the back end's) */
 double hos_log_seconds(void);   /* (hos_thread.c: the log's seconds since the process started) */
-extern volatile uint64_t hos_step_probe;   /* (nn_vi.c: the frame step's object; +0xd58 the game clock in 1/60 s) */
+#include "game_hooks.h"   /* (game_clock: the game's clock in 1/60 s) */
 
 static int frames_wanted = -1, ready_need = 60;
 int hos_bench_on(void) {
@@ -132,13 +132,6 @@ static int cpu_sample(CpuGroup *g) {
     CpuGroups c = {g, 0};
     os_threads_cpu(cpu_add, &c);
     return c.n;
-}
-
-static double game_clock(void) {
-    const uint64_t p = hos_step_probe;
-    double v = 0;
-    if (p) memcpy(&v, GP(p + 0xd58), 8);
-    return v;
 }
 
 static void bench_finish(const BenchRow *rows, int n, double ready_at, const CpuGroup *cpu0, int ncpu0) {

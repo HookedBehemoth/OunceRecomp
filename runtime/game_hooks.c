@@ -11,6 +11,8 @@ WEAK int game_job_list(uint64_t cmd, uint64_t *key, uint64_t *view) { (void)cmd,
 WEAK void game_indirect_mesh_draw(uint64_t gpu, int max, int stride) { (void)gpu, (void)max, (void)stride; }
 WEAK int game_invalidate_unneeded(uint64_t size) { (void)size; return 0; }
 WEAK void game_frame(void) {}
+WEAK void game_frame_timing(int64_t now) { (void)now; }
+WEAK double game_clock(void) { return 0; }
 WEAK void game_frame_size(uint32_t width, uint32_t height, int start) { (void)width, (void)height, (void)start; }
 WEAK void game_bench_report(void) {}
 WEAK int game_textures_settled(void) { return 1; }

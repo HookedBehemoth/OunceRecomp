@@ -105,6 +105,7 @@ static void drawable_size(void *w, int *width, int *height) { hos_sdl_pixel_size
 /* (SDL's display calls belong on this thread: the loop asks every second, the renderer reads what it found) */
 static volatile int refresh_now;
 static int refresh_mhz(void *w) { (void)w; return __atomic_load_n(&refresh_now, __ATOMIC_RELAXED); }
+int hos_display_refresh_mhz(void) { return __atomic_load_n(&refresh_now, __ATOMIC_RELAXED); }   /* (nn_vi.c: the pacing) */
 static MkwVkWindow vk_window = {MKWVK_WINDOW_VERSION, create_surface, drawable_size, NULL, refresh_mhz};
 
 static void mouse_capture(int on) {

@@ -29,7 +29,7 @@ static int64_t now = 1000000000LL;
 static float frames(int n, double seconds) {   /* (n presents that far apart: the seconds the hook is given, 0 when off) */
     float f;
     uint32_t bits;
-    for (int i = 0; i < n; i++) now += (int64_t)(seconds * 1e9), realtime_step(now);
+    for (int i = 0; i < n; i++) now += (int64_t)(seconds * 1e9), game_frame_timing(now);
     bits = hos_frame_seconds_bits;
     memcpy(&f, &bits, 4);
     return bits ? f : 0.0f;
@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "";
     *limit = 60, *rate = 60;
     hos_step_probe = 0x2000;   /* (the lifted code's frame step sets it) */
-    realtime_step(now);
+    game_frame_timing(now);
     if (!strcmp(mode, "cap 120")) {
         CHECK(near(frames(72000, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 120);   /* (the rate stays the engine's) */
         CHECK(near(lifted_step(60.0f, (float)*rate), 0.5) && near(lifted_step(30.0f, (float)*rate), 0.25));   /* (half a 60th a frame) */

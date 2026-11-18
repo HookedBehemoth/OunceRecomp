@@ -1,4 +1,4 @@
-//! The frame's time: runtime/nn_vi.c's real-time clock, frame-rate cap and present tracing, runtime/bench.h,
+//! The frame's time: runtime/nn_vi.c's frame-rate cap and present tracing, games/oot/patches/frame_rate.c's real-time clock, runtime/bench.h,
 //! hos_main.c's widescreen sizes and memory notice, dlss_math.h, and the game's patches that step by the frame's time
 //! (games/oot/patches: frame_whole.h, oot_probes.c's At rows as the lifter scans them), compiled from the source as it
 //! is around authored clocks and registers.
@@ -34,8 +34,9 @@ fn bench_ready_and_summary() {
 #[test]
 fn bench_fixed_step_and_unpaced() {
     let vi = read("runtime/nn_vi.c");
-    let step = body(&vi, "static void realtime_step(int64_t now) {");
-    let branch = &step[find(step, "if ((!rx_option(0, 1) && fps_max() <= 60) || hos_bench_on())")..];
+    let oot = read("games/oot/patches/frame_rate.c");
+    let step = body(&oot, "void game_frame_timing(int64_t now) {");
+    let branch = &step[find(step, "if ((!rx_option(0, 1) && hos_fps_max() <= 60) || hos_bench_on())")..];
     let branch = &branch[..find(branch, "return;")];
     assert!(branch.contains("__atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);"), "no frame seconds");
     assert!(branch.contains("*slot = 60;"), "the nominal rate: a whole 1/60 s step");
@@ -49,10 +50,10 @@ fn bench_fixed_step_and_unpaced() {
 /// caps, a long stall dropped).
 #[test]
 fn realtime_rate() {
-    let vi = read("runtime/nn_vi.c");
-    assert!(block(&vi, "static void realtime_step(").contains("realtime_rate("), "the present path does not use the tested clock quantizer");
+    let oot = read("games/oot/patches/frame_rate.c");
+    assert!(block(&oot, "void game_frame_timing(").contains("realtime_rate("), "the present path does not use the tested clock quantizer");
     let t = Tmp::new("realtime-rate");
-    let exe = build(&t, "fixture.c", &fixture("realtime_rate.c").replace("@RATE@", block(&vi, "static int realtime_rate(")),
+    let exe = build(&t, "fixture.c", &fixture("realtime_rate.c").replace("@RATE@", block(&oot, "static int realtime_rate(")),
                     &["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror"]);
     run(&mut clean(&exe));
 }
@@ -202,8 +203,10 @@ fn frame_rate_cap_step() {
         .map(definition)
         .join("\n");
     let vi = read("runtime/nn_vi.c");
-    let host = ["static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("]
-        .map(|m| block_top(&vi, m))
+    let frame = read("games/oot/patches/frame_rate.c");
+    let host = [block_top(&vi, "static int fps_max(void) {"), "int hos_fps_max(void) { return fps_max(); }",
+                block_top(&frame, "static float text_scale("), block_top(&frame, "static int realtime_rate("),
+                block_top(&frame, "void game_frame_timing(")]
         .join("\n");
     let t = Tmp::new("cap-step");
     let exe = build(&t, "fixture.c", &fixture("frame_rate_cap_step.c").replace("@HOST@", &host).replace("@PROBES@", &hooks),
@@ -237,7 +240,7 @@ fn movie_frame_count() {
     let oot = read("games/oot/patches/oot_probes.c");
     let s = find(&oot, "PATCH_AT(0x83b7c7c8, word(0x11000508), after, w8, hos_oot_movie_count,");
     let count = &oot[s..s + find(&oot[s..], "\n")];
-    let vi = read("runtime/nn_vi.c");
+    let vi = read("games/oot/patches/frame_rate.c");
     let host = format!("{}\n{}", block_top(&vi, "static uint32_t movie_log("), block_top(&vi, "uint32_t hos_movie_frames(uint64_t player) {"));
     let lifted = format!("{LOAD_ADD}    c->x[8] = hos_oot_movie_count((uint32_t)c->x[8], c->x[20]);\n{STORE}");
     let t = Tmp::new("movie-count");

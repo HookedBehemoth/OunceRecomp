@@ -9,7 +9,7 @@
 
 void hos_sleep_logged(int64_t ns, uint64_t lr);   /* (hos_thread.c) */
 uint64_t hos_tick_read(uint64_t lr);             /* (hos_thread.c) */
-extern volatile uint64_t hos_gfx_module;         /* (hos_thread.c) */
+extern volatile uint64_t hos_gfx_module;         /* (frame_rate.c) */
 
 /* The present waits for its frame's GPU work by polling an NVN event, sleeping ~1.6 ms between looks
    (f_805902c0 frame_present_submit at 0x80590500: `while (nvnEventGetValue(e) != 1) SleepThread(...)`, ~3.5 sleeps a frame, 2 ms each on Windows): the
