@@ -271,7 +271,16 @@ enum class Reg : u64 {
 static_assert(static_cast<int>(Reg::RZ) == 255);
 
 constexpr size_t NUM_USER_REGS = 255;
-constexpr size_t NUM_REGS = 512;   // (fork: 256-510 are REGMAP_nx2's extended registers)
+// (fork) 256-510: REGMAP_nx2's extended registers (the Maxwell lowering's, frontend/ampere/lower_to_maxwell.h), and
+// Ampere's uniform registers UR0-UR63 at 256-319 (URZ is the immediate 0). The two fronts never meet in one program;
+// with the lowering gone this is 320.
+constexpr size_t NUM_REGS = 512;
+constexpr size_t UNIFORM_REG_BASE = 256;
+constexpr size_t NUM_UNIFORM_REGS = 64;
+
+[[nodiscard]] constexpr Reg UniformReg(size_t index) noexcept {
+    return static_cast<Reg>(UNIFORM_REG_BASE + index);
+}
 
 [[nodiscard]] constexpr Reg operator+(Reg reg, int num) {
     if (reg == Reg::RZ) {
@@ -324,6 +333,8 @@ struct fmt::formatter<Shader::IR::Reg> {
             return fmt::format_to(ctx.out(), "RZ");
         } else if (static_cast<int>(reg) >= 0 && static_cast<int>(reg) < 255) {
             return fmt::format_to(ctx.out(), "R{}", static_cast<int>(reg));
+        } else if (Shader::IR::RegIndex(reg) < Shader::IR::NUM_REGS) {   // (fork: UR0-UR63, or an extended register)
+            return fmt::format_to(ctx.out(), "UR{}", Shader::IR::RegIndex(reg) - Shader::IR::UNIFORM_REG_BASE);
         } else {
             throw Shader::LogicError("Invalid register with raw value {}", static_cast<int>(reg));
         }

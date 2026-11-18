@@ -114,7 +114,7 @@ struct DefTable {
         overflow_flag.insert_or_assign(block, value);
     }
 
-    std::array<ValueMap, IR::NUM_USER_PREDS> preds;
+    std::array<ValueMap, IR::NUM_PREDS> preds;   // (fork: and the uniform predicates)
     // TODO: Requires stable iterators
     std::unordered_map<u32, ValueMap> goto_vars;
     ValueMap indirect_branch_var;
