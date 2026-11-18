@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Encoding reference: Mesa NAK sm70_encode.rs (MIT), Copyright 2022 Collabora, Ltd.
 
-// (fork) The direct Ampere front's moves: MOV (a register, immediate, constant or uniform register) and UMOV.
+// (fork) The direct Ampere front's moves: MOV (a register, immediate, constant or uniform register), UMOV and R2UR
+// (the first active lane's value).
 
 #include "shader_recompiler/frontend/ampere/translate/translator.h"
 
@@ -29,6 +30,16 @@ void UMOV(Translator& t) {
     const IR::U32 value{t.insn.Opcode() == 0x882 ? t.ir.Imm32(t.insn.Imm32()) : t.UR(t.insn.UReg32())};
     t.SetUR(t.insn.Dst(), value);
 }
+
+void R2UR(Translator& t) {
+    // URd = Ra of the first active lane
+    t.Expect(32, 32, 0, "R2UR mode");
+    t.Expect(64, 17, 0, "R2UR mode");
+    t.Expect(81, 3, PT, "R2UR predicate destination");
+    t.Expect(84, 8, 0, "R2UR mode");
+    t.Expect(22, 2, 0, "R2UR uniform destination");
+    t.SetUR(t.insn.Dst(), t.ir.SubgroupReadFirstLane(t.R(t.insn.Src0())));
+}
 } // Anonymous namespace
 
 void TranslateMove(Translator& t) {
@@ -38,6 +49,8 @@ void TranslateMove(Translator& t) {
     case 0xa02:
     case 0xc02:
         return MOV(t);
+    case 0x3c2:
+        return R2UR(t);
     case 0x882:
     case 0xc82:
         return UMOV(t);
