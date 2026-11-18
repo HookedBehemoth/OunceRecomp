@@ -1,23 +1,4 @@
-"""nn::os mutexes keep their lock in the guest's MutexType (runtime/nn_os_sync.c, "mutex state in the guest's MutexType"):
-the owner's id, the recursion count and MX_SLOW in the u32 at +0x18. The section is cut out of the source and compiled
-with a pthread harness: threads lock and unlock shared mutexes (recursively too) around plain counters, sleepers are
-woken, a mutex reserved for a condition variable's waiter is not taken by others, counts past the field go to the
-object, and a word naming no thread is taken as free.
 
-python -I -B tests/test_mutex_word.py [--cc cc]
-"""
-import argparse
-import os
-from pathlib import Path
-import shutil
-import subprocess
-import tempfile
-
-ROOT = Path(__file__).resolve().parents[1]
-START = "/* ---- mutex state in the guest's MutexType"
-END = "HLE(_ZN2nn2os15InitializeMutexEPNS0_9MutexTypeEbi)"
-
-HARNESS = r"""
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <stdint.h>
@@ -58,7 +39,7 @@ static Obj *obj_nockpt(uint64_t key, int kind) { Obj *o = &objs[key / 64]; o->ke
 static int64_t spin_ns(void) { return 2000; }
 static int spin_begin(Obj *o, int *misses) { *misses = o->spin_misses; return 1; }
 static void spin_end(Obj *o, int misses, int ok) { (void)o; (void)misses; (void)ok; }
-SECTION
+@SECTION@
 enum { THREADS = 8, ROUNDS = 200000, MUTEXES = 4 };
 static long counters[MUTEXES];
 static void *worker(void *arg) {
@@ -134,36 +115,3 @@ int main(void) {
     printf("ok: %d threads x %d recursive lock pairs on %d mutexes\n", THREADS, ROUNDS, MUTEXES);
     return 0;
 }
-"""
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cc", default="cc")
-    args = parser.parse_args()
-    if os.name == "nt":
-        print("SKIP: the harness uses pthreads")
-        return
-    source = (ROOT / "runtime/nn_os_sync.c").read_text(encoding="utf-8")
-    if START not in source or END not in source:
-        raise SystemExit("FAIL: the mutex word section's markers are gone: update the test")
-    section = source[source.index(START):source.index(END)]
-    compiler = shutil.which(args.cc)
-    if not compiler:
-        raise SystemExit("C compiler not found: " + args.cc)
-    with tempfile.TemporaryDirectory(prefix="mutex-word-") as temporary:
-        folder = Path(temporary)
-        (folder / "fixture.c").write_text(HARNESS.replace("SECTION", section), encoding="utf-8")
-        exe = folder / "fixture"
-        subprocess.run([compiler, "-std=gnu11", "-O2", "-pthread", "-w", str(folder / "fixture.c"), "-o", str(exe)],
-                       check=True, timeout=120)
-        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=120)
-        print(result.stdout.strip())
-        if result.returncode:
-            raise SystemExit("FAIL")
-    print("PASS: the guest-word mutex excludes, recurses (past the count field too), wakes its sleepers, keeps a reserved"
-          " mutex for its waiter and takes a word naming no thread as free")
-
-
-if __name__ == "__main__":
-    main()

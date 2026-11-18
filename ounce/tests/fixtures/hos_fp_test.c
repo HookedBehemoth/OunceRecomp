@@ -1,33 +1,4 @@
-"""runtime/hos_fp.c without the game: MXCSR follows the guest FPCR, the MRS/MSR FPCR/FPSR helpers the lifted code calls, and
-MXCSR across a fiber switch (runtime/os/os_linux.c's fibers, switched the way runtime/hos_thread.c's fiber_switch does it,
-which this test also checks by text).
 
-python -I -B tests/test_hos_fp.py      (the compile-and-run cases need a C compiler on x86-64 Linux)
-"""
-import os
-import re
-import shutil
-import subprocess
-import sys
-import tempfile
-import unittest
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOS_FP = os.path.join(ROOT, "runtime", "hos_fp.c")
-THREAD = os.path.join(ROOT, "runtime", "hos_thread.c")
-OS_LINUX = os.path.join(ROOT, "runtime", "os", "os_linux.c")
-
-
-def read(path):
-    with open(path) as f:
-        return f.read()
-
-
-def cc():
-    return shutil.which("clang") or shutil.which("cc")
-
-
-HARNESS = r"""
 #define HOS_FP_TEST
 #include <stdint.h>
 #include <stdio.h>
@@ -107,38 +78,3 @@ int main(void) {
     printf(bad ? "FAIL\n" : "OK\n");
     return bad;
 }
-"""
-
-
-class Text(unittest.TestCase):
-    def test_hos_thread_syncs(self):
-        s = read(THREAD)
-        main = s[s.index("static void thread_main(void *p)"):]
-        main = main[:main.index("\n}\n")]
-        self.assertIn("a64_fpcr_sync(c);", main[:main.index("f(c);")], "thread_main: MXCSR before guest code")
-        fm = s[s.index("static void fiber_main(void *p)"):]
-        fm = fm[:fm.index("\n}\n")]
-        self.assertLess(fm.index("a64_fpcr_sync(c);"), fm.index("a64_call_received(c, f->fn);"), "fiber_main")
-        sw = s[s.index("static void fiber_switch(Ctx *from, HosFiber *to) {"):]
-        sw = sw[:sw.index("\n}\n")]
-        self.assertTrue(re.search(r"os_fiber_switch\([^;]*\);\s*(/\*.*?\*/\s*)?a64_fpcr_sync\(from\);", sw, re.S),
-                        "fiber_switch: MXCSR of `from` when it runs again")
-        self.assertIn("to->ctx.fpcr = from->fpcr;", sw)
-
-
-@unittest.skipUnless(sys.platform.startswith("linux") and cc() and os.uname().machine == "x86_64",
-                     "a C compiler on x86-64 Linux")
-class Run(unittest.TestCase):
-    def test_helpers_and_fiber_switch(self):
-        with tempfile.TemporaryDirectory() as d:
-            c, exe = os.path.join(d, "t.c"), os.path.join(d, "t")
-            with open(c, "w") as f:
-                f.write(HARNESS)
-            subprocess.run([cc(), "-O1", "-w", "-D_GNU_SOURCE", "-I" + os.path.join(ROOT, "runtime"), "-I" + os.path.join(ROOT, "runtime", "os"),
-                            c, OS_LINUX, "-o", exe, "-lpthread"], check=True)
-            r = subprocess.run([exe], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()

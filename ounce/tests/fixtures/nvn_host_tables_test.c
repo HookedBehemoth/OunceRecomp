@@ -1,67 +1,4 @@
-"""The native NVN layer keeps its host pointers in host tables, and checks guest ranges against the guest window.
-
-Compiles the real functions from runtime/nvn_native.c and runtime/hos.h (the guest window range check, the command
-buffers' slot table, the recording handle set) against a small guest window of test memory, with the real object
-layouts of renderer/api/rx_nvn.h. Checks:
-
-- a guest range is accepted only inside the window, including ranges that wrap around;
-- a command buffer's recording buffer is found through its own slot only: a slot number another object owns, or one
-  out of range, gets the object a new slot and never another object's buffer;
-- Finalize gives the slot back, and Initialize again without Finalize reuses nothing of another object;
-- a recording handle is live only while it is in the set (added, found, removed with others still found after the
-  removal moved them);
-- ReadTexels / WriteTexels' buffer extent covers every row and image the renderer walks, and huge strides that would
-  wrap around give 0 (refused).
-
-No game or GPU is involved.
-
-python -I -B tests/test_nvn_host_tables.py [--cc gcc]
-"""
-import argparse
-import importlib.util
-from pathlib import Path
-import shutil
-import subprocess
-import tempfile
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="clang")
-    args = parser.parse_args()
-    spec = importlib.util.spec_from_file_location("null_pool_fixture", ROOT / "tests/test_nvn_null_pool.py")
-    helpers = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helpers)
-    block = helpers.block
-    nvn = (ROOT / "runtime/nvn_native.c").read_text(encoding="utf-8")
-    hos = (ROOT / "runtime/hos.h").read_text(encoding="utf-8")
-    start = nvn.rindex("typedef struct {", 0, nvn.index("} cmd_rec;"))
-    table_decls = nvn[start:nvn.index("static cmd_rec *cmd_slot(", start)]
-    live_decls_start = nvn.index("static uint64_t *live_handles;")
-    live_decls = nvn[live_decls_start:nvn.index("static void live_handle_add(", live_decls_start)]
-    pieces = [
-        block(hos, "static inline void *hos_guest_range("),
-        block(nvn, "static void *gw("),
-        block(nvn, "static const void *in_window("),
-        table_decls,
-        block(nvn, "static cmd_rec *cmd_slot("),
-        block(nvn, "static uint32_t cmd_slot_new_locked("),
-        "static _Thread_local uint32_t cmd_tl_free[64];\nstatic _Thread_local uint32_t cmd_tl_n;",
-        block(nvn, "static uint32_t cmd_slot_take("),
-        block(nvn, "static void cmd_slot_give("),
-        block(nvn, "static cmd_rec *cmd_adopt("),
-        block(nvn, "static cmd_rec *cmd_host("),
-        "static volatile int64_t seg_bytes, seg_count;",
-        block(nvn, "static void cmd_release("),
-        live_decls,
-        block(nvn, "static void live_handle_add("),
-        block(nvn, "static int live_handle_has("),
-        block(nvn, "static void live_handle_remove("),
-        block(nvn, "static uint64_t texels_extent("),
-    ]
-    fixture = r'''#include <stdint.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,7 +32,7 @@ static int pool_off(void) { return 0; }
 static unsigned pool_class(size_t n) { (void)n; return 0; }
 static int puts_count;
 static void pool_put(void *b, unsigned c) { (void)c; free(b); puts_count++; }
-''' + "\n".join(pieces) + r'''
+@PIECES@
 static void require(int ok, const char *m) { if (!ok) { fprintf(stderr, "FAIL: %s\n", m); exit(1); } }
 static int dies(void *(*f)(uint64_t, uint64_t), uint64_t a, uint64_t n) {
     dying = 1;
@@ -186,23 +123,3 @@ int main(void) {
     puts("PASS: guest window ranges, command buffer slots by owner, live recording handles, texel buffer extents");
     return 0;
 }
-'''
-    cc = shutil.which(args.cc)
-    if not cc:
-        raise SystemExit("test_nvn_host_tables: no C compiler %r (pass --cc)" % args.cc)
-    with tempfile.TemporaryDirectory(prefix="nvn-host-tables-") as temporary:
-        path = Path(temporary)
-        authored = path / "fixture.c"
-        executable = path / "fixture.exe"
-        authored.write_text(fixture, encoding="utf-8")
-        subprocess.run([cc, "-std=gnu11", "-O1", "-fno-strict-aliasing", "-I", str(ROOT / "renderer/api"), "-I", str(ROOT / "runtime"), str(authored),
-                        "-o", str(executable)], check=True)
-        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
-        print(result.stdout, end="")
-        if result.returncode:
-            print(result.stderr, end="")
-            raise SystemExit("test_nvn_host_tables: failed (exit %d)" % result.returncode)
-
-
-if __name__ == "__main__":
-    main()

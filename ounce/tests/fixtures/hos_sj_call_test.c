@@ -1,36 +1,4 @@
-"""runtime/hos_setjmp.c's hos_sj_call without the game: the lifted code's call of a setjmp owner (ounce/lift sjcall_<owner>).
-Synthetic owners: one that returns, one whose callee longjmps back to the owner's setjmp (the host comes back to
-hos_sj_call, which runs the code at the return address through a64_icall), and nested owners where the inner one's
-callee longjmps to the outer owner (the inner slot dropped) or to its own.
 
-python -I -B tests/test_hos_sj_call.py      (needs a C compiler on x86-64 Linux)
-"""
-import os
-import platform
-import shutil
-import subprocess
-import sys
-import tempfile
-import unittest
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SETJMP = os.path.join(ROOT, "runtime", "hos_setjmp.c")
-
-STUB_HOS = r"""
-#include <stdint.h>
-#include <stdio.h>
-#define A64_NOESC
-typedef struct { uint64_t x[32]; uint64_t pc; } Ctx;
-static int hos_dbg_item(const char *w) { (void)w; return 0; }
-static void hos_log(const char *f, ...) { (void)f; }
-void a64_icall(Ctx *c, uint64_t target);
-void **recomp_sj_push(Ctx *c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3);
-int recomp_sj_setjmp(void **buf);
-uint64_t recomp_sj_target(void **buf);
-void recomp_sj_pop(void **buf);
-"""
-
-HARNESS = r"""
 #include "hos_setjmp.c"
 #include <stdio.h>
 #define RA 0x81000010u
@@ -90,36 +58,3 @@ int main(void) {
     if (!bad) printf("ok\n");
     return bad;
 }
-"""
-
-
-def cc():
-    return shutil.which("clang") or shutil.which("cc")
-
-
-@unittest.skipUnless(sys.platform.startswith("linux") and platform.machine() in ("x86_64", "AMD64") and cc(),
-                     "needs a C compiler on x86-64 Linux")
-class SjCallTests(unittest.TestCase):
-    def run_at(self, opt):
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "hos.h"), "w") as f:
-                f.write(STUB_HOS)
-            with open(os.path.join(d, "t.c"), "w") as f:
-                f.write(HARNESS)
-            shutil.copy(SETJMP, d)   # (beside the stub hos.h: its #include "hos.h" looks in its own directory first)
-            exe = os.path.join(d, "t")
-            r = subprocess.run([cc(), opt, "-w", "-I", d, "-I", os.path.join(ROOT, "runtime", "os"), "-o", exe,
-                                os.path.join(d, "t.c")], capture_output=True, text=True)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            r = subprocess.run([exe], capture_output=True, text=True, timeout=60)
-            self.assertEqual((r.returncode, r.stdout.strip()), (0, "ok"), r.stdout + r.stderr)
-
-    def test_o0(self):
-        self.run_at("-O0")
-
-    def test_o2(self):
-        self.run_at("-O2")
-
-
-if __name__ == "__main__":
-    unittest.main()

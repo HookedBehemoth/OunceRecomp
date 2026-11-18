@@ -1,38 +1,4 @@
-"""Compile the actual NVN buffer-map functions against authored memory only.
-
-ca58d6c gives a pool-less buffer writable scratch instead of address zero. The
-memory-pool accessor fixture does not call nvnBufferMap. Here newly allocated
-scratch must be zeroed and large enough, repeated maps retain their contents,
-and ordinary pooled mappings and null inputs keep their separate behavior.
-
---source accepts the released a598 version as a negative control: it compiles,
-then fails the first pool-less mapping invariant. No game or GPU is involved.
-"""
-import argparse
-import importlib.util
-from pathlib import Path
-import shutil
-import subprocess
-import tempfile
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="clang")
-    parser.add_argument("--source", type=Path, default=ROOT / "runtime/nvn_native.c")
-    args = parser.parse_args()
-    spec = importlib.util.spec_from_file_location("null_pool_fixture", ROOT / "tests/test_nvn_null_pool.py")
-    helpers = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helpers)
-    source = args.source.read_text(encoding="utf-8")
-    try:
-        scratch = helpers.block(source, "static uint64_t scratch_map(")
-    except ValueError:
-        scratch = ""  # The released negative has no helper; its real map body still compiles.
-    mapping = helpers.block(source, "NV(nvnBufferMap)")
-    fixture = r'''#include <stdint.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,7 +36,8 @@ static uint64_t hos_sys_alloc(uint64_t size, uint64_t alignment) {
     allocation_size = size;
     return (uint64_t)(uintptr_t)p;
 }
-''' + scratch + "\n" + mapping + r'''
+@SCRATCH@
+@MAPPING@
 static void require(int ok, const char *message) {
     if (!ok) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
 }
@@ -123,23 +90,3 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < allocation_count; i++) free(allocations[i]);
     return 0;
 }
-'''
-    cc = shutil.which(args.cc)
-    if not cc:
-        raise SystemExit("test_nvn_buffer_map: no C compiler %r (pass --cc)" % args.cc)
-    with tempfile.TemporaryDirectory(prefix="nvn-buffer-map-") as temporary:
-        path = Path(temporary)
-        authored = path / "fixture.c"
-        executable = path / "fixture.exe"
-        authored.write_text(fixture, encoding="utf-8")
-        subprocess.run([cc, "-std=c11", "-O2", "-fno-strict-aliasing", str(authored), "-o", str(executable)], check=True)
-        for mode in ([], ["zero-size"]):
-            result = subprocess.run([str(executable), *mode], capture_output=True, text=True, timeout=10)
-            print(result.stdout, end="")
-            if result.returncode:
-                print(result.stderr, end="")
-                raise SystemExit("test_nvn_buffer_map: actual mapping contract failed (exit %d)" % result.returncode)
-
-
-if __name__ == "__main__":
-    main()

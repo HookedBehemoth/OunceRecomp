@@ -1,42 +1,10 @@
-"""The core hos_reserved_cpus keeps for the replay (runtime/hos_thread.c pick_reserved_core): the last core of the fastest kind.
 
-On a CPU of one kind every core has the same EfficiencyClass and the last core is kept, as before; on Intel's hybrid CPUs
-the efficiency cores come last and have the lower class, so the last performance core is kept instead. None is kept with
-fewer than 8 logical processors, nor on a CPU of more than one kind with fewer than 4 cores of the fastest kind.
-
-python -I -B tests/test_reserved_core.py [--cxx clang++]
-"""
-import argparse
-from pathlib import Path
-import subprocess
-import tempfile
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index('{', start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == '{') - (text[end] == '}')
-        end += 1
-    return text[start:end]
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--cxx', default='g++')
-    parser.add_argument('--source', type=Path, default=ROOT / 'runtime/hos_thread.c')
-    args = parser.parse_args()
-    helper = block(args.source.read_text(encoding='utf-8'), 'static uint64_t pick_reserved_core(')
-    fixture = r'''
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 #define CHECK(ok) do { if (!(ok)) { std::fprintf(stderr, "failed line %d\n", __LINE__); std::exit(1); } } while (0)
-''' + helper + r'''
+@HELPER@
 struct Core { uint64_t mask; unsigned char cls; };
 uint64_t pick(const std::vector<Core>& cores) {
     std::vector<uint64_t> masks;
@@ -100,14 +68,3 @@ int main() {
     std::puts("PASS: the last core of the fastest kind with 4+ of them, the last core on CPUs of one kind, none under 8 "
               "logical processors");
 }
-'''
-    with tempfile.TemporaryDirectory(prefix='reserved-core-') as tmp:
-        cpp = Path(tmp) / 'fixture.cpp'
-        exe = Path(tmp) / 'fixture.exe'
-        cpp.write_text(fixture, encoding='utf-8')
-        subprocess.run([args.cxx, '-std=c++20', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(exe)], check=True)
-        subprocess.run([str(exe)], check=True)
-
-
-if __name__ == '__main__':
-    main()

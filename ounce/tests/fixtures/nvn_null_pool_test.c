@@ -1,56 +1,4 @@
-"""Compile every guarded NVN memory-pool accessor and call it with no pool.
-
-The crash this guards: while Kakariko changed from day to night, the OptimizeChangeBanc thread called
-nvnMemoryPoolGetFlags(NULL); the HLE read flags at A64_MEM + 4 (guest 0x4) and took an access violation.
-P(0) returns NULL for a 0 argument, but dereferencing it is undefined behaviour, so the compiler may fold the
-check away (and did: the shipped code read 0x100000000004).  The fix guards before the dereference.
-
-Every accessor that checks no_pool is covered here: flags, size, map, buffer address and invalidate mapped range.
-The fixture is built from the actual function bodies in runtime/nvn_native.c, at -O2.  With the pre-fix source the
-null calls crash the fixture; with the fix they answer 0 (or return without touching anything) and a real pool
-still answers with its flags, size, CPU mapping and GPU address.
-
-python tests/test_nvn_null_pool.py [--cc clang] [--source runtime/nvn_native.c]
-"""
-import argparse
-from pathlib import Path
-import shutil
-import subprocess
-import tempfile
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    """The source text of the function or macro block starting at marker, braces balanced."""
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
-
-
-def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--cc", default="clang", help="C compiler (clang or gcc)")
-    p.add_argument("--source", default=str(ROOT / "runtime/nvn_native.c"), type=Path,
-                   help="nvn_native.c to test (the pre-fix file shows the crash)")
-    a = p.parse_args()
-
-    source = a.source.resolve().read_text(encoding="utf-8")
-    try:
-        guard = block(source, "static int no_pool(Ctx *c, const char *what)")
-    except ValueError:
-        guard = ""   # the pre-fix source has no guard
-    flags = block(source, "NV(nvnMemoryPoolGetFlags)")
-    size = block(source, "NV(nvnMemoryPoolGetSize)")
-    map_ = block(source, "NV(nvnMemoryPoolMap)")
-    address = block(source, "NV(nvnMemoryPoolGetBufferAddress)")
-    invalidate = block(source, "NV(nvnMemoryPoolInvalidateMappedRange)")
-
-    fixture = r'''#include <stdint.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -78,7 +26,12 @@ static int invalidated;
 static void rx_nvn_invalidate(uint64_t a, uint64_t b) { (void)a; (void)b; invalidated++; }
 static int tl_grid_reader;   /* (the grid reader's PATCH_FUNC marks its run) */
 int game_invalidate_unneeded(uint64_t size) { return tl_grid_reader && size == 0x3980; }   /* (the game's hooks.c) */
-''' + guard + "\n" + flags + "\n" + size + "\n" + map_ + "\n" + address + "\n" + invalidate + r'''
+@GUARD@
+@FLAGS@
+@SIZE@
+@MAP@
+@ADDRESS@
+@INVALIDATE@
 int main(void) {
     Ctx c;
     memset(&c, 0, sizeof c);
@@ -173,25 +126,3 @@ int main(void) {
     puts("PASS: a null memory pool answers 0; a real pool keeps its flags, size, mapping and address");
     return 0;
 }
-'''
-
-    cc = shutil.which(a.cc)
-    if not cc:
-        raise SystemExit("test_nvn_null_pool: no C compiler %r (pass --cc)" % a.cc)
-    with tempfile.TemporaryDirectory(prefix="nvn-null-pool-") as temp:
-        d = Path(temp)
-        cpp = d / "fixture.c"
-        exe = d / "fixture.exe"
-        cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([cc, "-std=c11", "-O2", "-fno-strict-aliasing", str(cpp), "-o", str(exe)], check=True)
-        result = subprocess.run([str(exe)], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(result.stdout, end="")
-            print(result.stderr, end="")
-            raise SystemExit("test_nvn_null_pool: a null-pool accessor crashed (exit %d); the source dereferences "
-                             "the null pool" % result.returncode)
-        print(result.stdout, end="")
-
-
-if __name__ == "__main__":
-    main()
