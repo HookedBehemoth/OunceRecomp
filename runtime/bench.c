@@ -7,6 +7,7 @@
    shader jobs queued or running, and no draw skipped for a shader not ready), no streaming (no file read by the game since
    the last present), the resource system quiet (resource_work). Unset: off, and nothing here runs but the checks of hos_bench_on. */
 #include "hos.h"
+#include "game_hooks.h"
 #include "bench.h"
 #include "nvn_list.h"
 #include "os.h"
@@ -37,8 +38,8 @@ void hos_bench_player(int loading, int event_playing) {
     else __atomic_store_n(&play_present, -1000, __ATOMIC_RELAXED);
 }
 
-/* The engine's worker threads wait for work in sead's message-queue receive (f_834a3060; w1 0: a blocking receive), one
-   receive a message taken: counted by thread group (the name without its trailing digits) while on */
+/* A message the game's worker threads took from their queues (hos_bench_message, from the game's patches): counted by
+   thread group (the name without its trailing digits) while on */
 #define MSG_GROUPS 64
 static char msg_name[MSG_GROUPS][24];
 static int64_t msg_count[MSG_GROUPS];
@@ -59,8 +60,8 @@ static int msg_group_of(const char *name) {
     os_mutex_unlock(&msg_lock);
     return i;
 }
-PATCH_AT(0x834a3060, word(0xd503237f), before, none, bench_msg_taken, w1) {
-    if (!hos_bench_on() || w1) return;
+void hos_bench_message(void) {
+    if (!hos_bench_on()) return;
     if (msg_group < 0) {
         HosThread *t = hos_self();
         msg_group = msg_group_of(t ? hos_thread_name(t) : "host");
@@ -163,8 +164,7 @@ static void bench_finish(const BenchRow *rows, int n, double ready_at, const Cpu
     hos_log("bench: %d frames in %.3f s (ready at %.2f s): frame mean %.3f ms, median %.3f, p99 %.3f, max %.3f; %.1f draws a "
             "frame; game steps not 1/60 s: %lld", n, s.total / 1e3, ready_at, s.mean, s.median, s.p99, s.max, (double)draws / n,
             (long long)steps_off);
-    void hos_oot_ring_report(void);   /* (oot_probes.c: the per-core rings' owners) */
-    hos_oot_ring_report();
+    game_bench_report();
     CpuGroup cpu1[CPU_GROUPS];
     const int ncpu1 = cpu_sample(cpu1);
     if (ncpu1) {   /* (the CPU seconds of the measured frames by thread group, the busiest first) */
@@ -217,10 +217,9 @@ void hos_bench_present(int64_t now) {
     }
     if (state == WAIT) {
         const long long present = hos_vi_present_number();
-        const uint64_t mgr = G64(0x84ca9bf0);   /* (agl::TextureDataMgr; +0x338 its Replace thread's "work pending") */
         unsigned settled = 0;
         if (present - __atomic_load_n(&play_present, __ATOMIC_RELAXED) <= 3) settled |= BENCH_PLAY;
-        if (mgr && !*(const uint8_t *)GP(mgr + 0x338)) settled |= BENCH_TEXTURES;
+        if (game_textures_settled()) settled |= BENCH_TEXTURES;
         if (!jobs && waiting == last_waiting) settled |= BENCH_SHADERS;
         if (reads == last_reads) settled |= BENCH_STREAMING;
         const int64_t resources = resource_work();
@@ -240,7 +239,7 @@ void hos_bench_present(int64_t now) {
             state = RUN;
         } else if (frames_seen % 600 == 0) {
             hos_log("bench: not ready at present %lld: in play %d, texture work %s, shader jobs %lld, draws waiting for a shader %lld, "
-                    "file reads %lld, resource messages %lld", present, !!(settled & BENCH_PLAY), mgr ? (settled & BENCH_TEXTURES ? "none" : "pending") : "(no manager)",
+                    "file reads %lld, resource messages %lld", present, !!(settled & BENCH_PLAY), settled & BENCH_TEXTURES ? "none" : "pending",
                     (long long)jobs, (long long)(waiting - last_waiting), (long long)(reads - last_reads), (long long)resources);
         }
     } else {

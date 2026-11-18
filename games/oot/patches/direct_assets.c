@@ -28,7 +28,7 @@
    Packaged texture data (nvnTextureBuilderSetPackagedTextureData) is not copied into the storage (nvn_native.c).
    A line every 10 s: the asset heap's resident pages and the guest memory's (mincore), the copies skipped. */
 #include "hos.h"
-#include "direct.h"
+#include "patches.h"
 #include "hos_ledger.h"
 #include "rx_nvn.h"
 #include <stdio.h>
@@ -336,7 +336,7 @@ PATCH_AT(0x83537d90, word(0xd503237f), before, none, direct_assets_replace_load,
                 (unsigned long long)size);
 }
 
-int direct_assets_skip_packaged(uint64_t bytes) {
+int game_skips_packaged_texels(uint64_t bytes) {
     if (!direct_assets_on()) return 0;
     os_atomic_inc(&n_pkg);
     os_atomic_add(&n_pkg_bytes, (int64_t)bytes);
@@ -364,7 +364,7 @@ PATCH_FUNC(0x80f6c580, word(0xd503237f), body(0xd879562121f32735), aapcs, x0, di
    0x80f6cb1c) the next pool this thread makes is agl's wrapper's */
 static _Thread_local int tl_agl_pool;
 PATCH_AT(0x80f6cb18, word(0xf9400108), after, none, direct_assets_agl_pool) { tl_agl_pool = 1; }
-void direct_assets_pool_made(uint64_t gpu, uint64_t size) {
+void game_pool_made(uint64_t gpu, uint64_t size) {
     const int agl = tl_agl_pool;
     tl_agl_pool = 0;
     if (!agl || !tl_heap_init || !direct_assets_on()) return;

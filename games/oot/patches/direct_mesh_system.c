@@ -17,7 +17,7 @@
    below the job's SP (info + 0xb0 = the job's draw context, + 0xbc = 0).
 
    Check that it applies: the 600-present line "direct patch mesh system" (jobs bound a frame, the view objects seen). */
-#include "direct.h"
+#include "patches.h"
 #include <string.h>
 #include "os.h"
 void f_801060f0(Ctx *), f_80100210(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */

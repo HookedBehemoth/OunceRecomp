@@ -23,7 +23,7 @@
 
    Check that it applies: the 600-present line "direct patch job sync" (kept and placed a frame, by kind; dropped; calls of
    the procs that passed through). */
-#include "direct.h"
+#include "patches.h"
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"

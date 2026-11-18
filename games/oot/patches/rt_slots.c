@@ -48,7 +48,7 @@
    the rows' instruction words stop the lift on another build. */
 #include "hos.h"
 #include "rx_nvn.h"
-#include "direct.h"
+#include "patches.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -176,7 +176,8 @@ static struct {   /* counters (under mu, or read racily for the log) */
         slot_told, slot_untold, sized, sized_up;
 } n;
 static uint64_t last_n_calls, last_n_spliced, last_n_inits, last_n_dta_inits, last_n_made, last_frame_log;
-extern volatile int64_t nvn_texture_inits, nvn_texture_inits_dta;   /* (nvn_native.c) */
+extern volatile int64_t nvn_texture_inits;   /* (nvn_native.c) */
+volatile int64_t nvn_texture_inits_dta;   /* (hooks.c: those made by agl's DynamicTextureAllocator::alloc, f_8005ed00) */
 
 static void back_off(const char *why, uint64_t a, uint64_t b) {
     if (state == 1) hos_log("rt slots: off from now (%s: %#llx %#llx); new targets take the game's offsets", why,

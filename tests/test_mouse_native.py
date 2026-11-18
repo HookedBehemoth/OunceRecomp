@@ -2,7 +2,7 @@
 
 The file is compiled on its own against a fake guest memory that holds one player camera: its pitch limits at +0x178, its
 pitch at +0x18c and its yaw at +0x1a4. hos_mouse_camera is what the camera's update (f_80644c80, the lifter's At probe) calls
-each frame. Until it has run the mouse's motion is the right stick's (hos_mouse_native gives -1); then it turns yaw and
+each frame. Until it has run the mouse's motion is the right stick's (game_mouse_camera gives -1); then it turns yaw and
 pitch by 0.1 degrees a count at sensitivity 1, pitch kept within the limits and yaw wrapped at 180, up and down swapped
 with the menu's Invert mouse vertical (option 8), and the controller reads leave the motion to the camera. Without the
 menu's Mouse camera (option 6), or on an object that is not a camera, it does nothing; 150 ms without the camera (the
@@ -51,7 +51,7 @@ static int captured = 1, menu_invert, menu_native = 1;
 int rx_option(int id, int otherwise) { return id == 8 ? menu_invert : id == 6 ? menu_native : otherwise; }
 int hos_mouse_take(int32_t *dx, int32_t *dy) { *dx = move_x, *dy = move_y; move_x = move_y = 0; return captured; }
 void hos_mouse_give_back(int32_t dx, int32_t dy) { move_x += dx, move_y += dy; }
-int hos_mouse_native(void);
+int game_mouse_camera(void);
 void hos_mouse_camera(uint64_t camera);
 static const uint64_t CAM = HOS_HEAP_BASE + 10 * 4096 + 0x40, OTHER = HOS_HEAP_BASE + 20 * 4096;
 static float getf(uint64_t a) { float f; memcpy(&f, GP(a), 4); return f; }
@@ -69,12 +69,12 @@ int main(void) {
     putf(PITCH, 10), putf(YAW, 30);
     state(4);   /* turned by the player */
     move_x = 5, move_y = 3;
-    CHECK(hos_mouse_native() == -1);   /* no camera has run yet: the stick takes it */
+    CHECK(game_mouse_camera() == -1);   /* no camera has run yet: the stick takes it */
     move_x = move_y = 0;
     frame(10, 4);
     CHECK(near(getf(YAW), 29.0f) && near(getf(PITCH), 10.4f));   /* right: yaw falls; down: pitch rises */
     move_x = 3;
-    CHECK(hos_mouse_native() == 1 && move_x == 3);   /* the camera's now: the motion stays for it */
+    CHECK(game_mouse_camera() == 1 && move_x == 3);   /* the camera's now: the motion stays for it */
     frame(-3, 0);
     frame(0, 100000);
     CHECK(near(getf(PITCH), 89.0f));   /* kept within the limits */
@@ -101,23 +101,23 @@ int main(void) {
     menu_native = 1;
     frame(0, 0);
     captured = 0;
-    CHECK(hos_mouse_native() == 0);   /* not captured: nothing */
+    CHECK(game_mouse_camera() == 0);   /* not captured: nothing */
     captured = 1;
     clock_ns += 200000000LL;   /* no camera for 200 ms (the pause menu): the stick again */
-    CHECK(hos_mouse_native() == -1);
+    CHECK(game_mouse_camera() == -1);
     /* aiming in first person (the slingshot): the camera keeps updating, state 0, another draws: the stick takes it */
     state(4);
-    frame(0, 0);   /* the camera's a moment ago (the hook ran: hos_mouse_native would give 1 for 150 ms) */
+    frame(0, 0);   /* the camera's a moment ago (the hook ran: game_mouse_camera would give 1 for 150 ms) */
     state(0);
     putf(YAW, 0);
     frame(10, 0);
     CHECK(near(getf(YAW), 0.0f) && move_x == 10);
-    CHECK(hos_mouse_native() == -1);   /* at once, not 150 ms later */
+    CHECK(game_mouse_camera() == -1);   /* at once, not 150 ms later */
     move_x = 0;
     state(3);   /* following Link again: the mouse turns it */
     frame(10, 0);
     CHECK(near(getf(YAW), -1.0f));
-    CHECK(hos_mouse_native() == 1);
+    CHECK(game_mouse_camera() == 1);
     if (!fails) printf("PASS\n");
     return fails != 0;
 }

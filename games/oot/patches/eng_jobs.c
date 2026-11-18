@@ -5,10 +5,10 @@
    yet (direct_passes_recorder), otherwise notes the arguments for this thread, runs the game's recorder (its lifted
    body, orig) and clears them. Inside it the recorder's BeginRecording
    (lr 0x8008533c) names the job's view record in x25, which an At row before that call hands to eng_jobs_view for
-   eng_jobs_tag, for the back end. Nothing here runs without
+   game_job_list, for the back end. Nothing here runs without
    the direct back end. */
 #include "eng_jobs.h"
-#include "direct.h"
+#include "patches.h"
 #include <string.h>
 #include "os.h"
 void f_80084de0(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
@@ -66,7 +66,7 @@ uint64_t eng_jobs_current(uint64_t *view) {
 /* (games/oot/patches/direct_mesh_system.c) the draw context of the job this thread records now (0: none) */
 uint64_t eng_jobs_drawctx(void) { return jt.active ? jt.drawctx : 0; }
 
-int eng_jobs_tag(uint64_t cmd, uint64_t *key, uint64_t *view) {
+int game_job_list(uint64_t cmd, uint64_t *key, uint64_t *view) {
     if (!eng_jobs_begin(cmd)) return 0;
     *key = jt.key, *view = jt.view;
     return 1;

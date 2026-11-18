@@ -12,15 +12,17 @@ hot_order = "hot_order.bin"
 title = "The Legend of Zelda: Ocarina of Time"
 icon = "icon.bmp"
 
-# the game's patch files (C, beside this file): built with the runtime's (runtime/sources.txt) and read by the patch scan
+# the game's patch files (C, beside this file): built with the runtime's (runtime/sources.txt) and read by the patch scan.
+# Rows at one instruction run in this order (list_kinds.c's before eng_jobs.c's)
 patches = [
-    "patches/direct_assets.c", "patches/direct_depth_copy.c", "patches/direct_diag_env.c",
+    "patches/list_kinds.c", "patches/direct_assets.c", "patches/direct_depth_copy.c", "patches/direct_diag_env.c",
     "patches/direct_diag_nodata.c", "patches/direct_job_sync.c", "patches/direct_layer_ahead.c",
     "patches/direct_mesh_args.c", "patches/direct_mesh_binds.c", "patches/direct_mesh_lists.c",
     "patches/direct_mesh_system.c", "patches/direct_movie.c", "patches/direct_passes.c", "patches/direct_patches.c",
     "patches/direct_rt_ids.c", "patches/direct_sky_lut.c", "patches/direct_tex_dedup.c", "patches/direct_texdata.c",
     "patches/eng_jobs.c", "patches/mouse_native.c", "patches/nn_zstd.c", "patches/oot_probes.c", "patches/prompts.c",
-    "patches/rt_slots.c",
+    "patches/rt_slots.c", "patches/hooks.c",
+    "patches/frame_sleep.c", "patches/frame_counters.c",
 ]
 
 # the main module's build id and the SHA-256 of exefs/main: another dump stops the lift and the build

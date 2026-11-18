@@ -9,6 +9,7 @@
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
+#include "game_hooks.h"
 #include "hos_paths.h"
 #include "vk_api.h"
 #include <math.h>
@@ -408,8 +409,7 @@ static int game_main(int argc, char **argv) {
             hos_wide_out = (uint64_t)ph << 32 | pw;
             hos_wide_scene = (uint64_t)(ph * 3 / 4) << 32 | (pw * 3 / 4);
             hos_aspect_ratio = want;
-            void hos_oot_frame_set(uint32_t w, uint32_t h, int start);
-            hos_oot_frame_set((uint32_t)ww, (uint32_t)wh, 1);
+            game_frame_size((uint32_t)ww, (uint32_t)wh, 1);
             hos_log("boot: the frame follows the window: picture %ux%u", pw, ph);
         } else if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
             /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the

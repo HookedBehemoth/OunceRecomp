@@ -13,7 +13,7 @@
    memcpys (x0 the storage, x1 the part, x2 its size), the part's level 0 is deswizzled and goes to its texture's image,
    and the memcpy copies nothing. A part that is not its texture's storage size leaves the site alone, logged.
    Check that it applies: the 600-present line "direct patch sky lut" (uploads 6 at the boot, 6 more each scene load). */
-#include "direct.h"
+#include "patches.h"
 #include "rx_nvn.h"
 #include "os.h"
 

@@ -10,7 +10,7 @@
    copy, and the same barrier again, on the list's command buffer; it asserts the proc is the copy.
 
    Check that it applies: the 600-present line "direct patch depth copy" (copies a frame with their barriers, per site). */
-#include "direct.h"
+#include "patches.h"
 #include <string.h>
 #include "os.h"
 

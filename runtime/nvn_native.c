@@ -23,7 +23,7 @@
 #include "rx_nvn.h"
 #include "nvn_list.h"
 #include "hos_ledger.h"
-#include "../games/oot/patches/eng_jobs.h"
+#include "game_hooks.h"
 #include "direct.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,7 +346,7 @@ NV(nvnMemoryPoolInitialize,
         guest_chain(c, b, sizeof b);
         hos_log("nvn: pool %#llx size %#llx flags %#x made by %s", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags, b);
     }
-    direct_assets_pool_made(o->gpu, o->size);   /* (M4f: the texture data pool named to the direct back end before its binding) */
+    game_pool_made(o->gpu, o->size);   /* (the patches may name the pool to the back end before its binding) */
     rx_nvn_pool_native(o->gpu, o->size, o->flags, pool_creation_key(c), 1);   /* (native-vk layer 0: placed by its flags, before any binding) */
     rx_nvn_pool_created(o->gpu, o->size);
     OLOG("pool %#llx size %#llx flags %#x", (unsigned long long)o->gpu, (unsigned long long)o->size, o->flags);
@@ -410,29 +410,10 @@ NV(nvnMemoryPoolGetBufferAddress) {
     RET(((const nvn_pool *)P(0))->gpu);
 }
 NV(nvnMemoryPoolFlushMappedRange) {}
-/* (hookshot, OoT) agl::utl::DepthBufferEx's coarse occlusion grid (f_800998a0 -> f_80365f00): two 0x3980-byte slots the GPU
-   writes a frame each, with the frame's camera and a GPU-written frame stamp at +0x1540. The game takes the slot stamped
-   frame-1, else the other one stamped frame-2, else culls without it that frame: it never needs the GPU done, and on the
-   console the invalidate is a cache op. Here the invalidate waits for the submission writing the slot back, ~8 ms every
-   frame on a job worker on the frame's critical path (the replay is a frame behind the game). No wait for any of its four
-   invalidates: lr 0x803665d4 and 0x80366168 (the current slot, before and after the copy), 0x8036635c (the other slot),
-   and the tail call's (lr the caller's, 0x80099d84): the reader marks its own run (its PATCH_FUNC below runs its body
-   with this thread noted), so the invalidate is told by who asks, not by its return address. The exposure meter
-   (f_80357060, read and zeroed) keeps its wait. */
-static _Thread_local int tl_grid_reader;
-/* report_reader_a: the grid reader's body (orig), this thread noted */
-PATCH_FUNC(0x80365f00, word(0xd503237f), body(0x7f2d99cdf2bfd4bf), aapcs, x0, nvn_grid_reader, orig) {
-    if (tl_grid_reader) return guest_orig(orig);
-    tl_grid_reader = 1;
-    const uint64_t r = guest_orig(orig);
-    tl_grid_reader = 0;
-    return r;
-}
-static int readback_stamped(const Ctx *c) { return tl_grid_reader && c->x[2] == 0x3980; }
 NV(nvnMemoryPoolInvalidateMappedRange) {   /* the CPU is about to read what the GPU wrote */
     if (no_pool(c, "invalidate mapped range")) return;
     const nvn_pool *o = (const nvn_pool *)P(0);
-    if (readback_stamped(c)) return;
+    if (game_invalidate_unneeded(U64(2))) return;   /* (a readback the game can do without this frame) */
     if ((int64_t)U64(1) >= 0) rx_nvn_invalidate(o->gpu + U64(1), U64(2));
 }
 NV(nvnMemoryPoolSetDebugLabel) {}
@@ -772,8 +753,7 @@ int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out) {
 }
 
 void hos_watch_guest_writes(const uint8_t *data, uint64_t size);   /* (below) */
-/* (rt_slots.c's log: texture initializations, and those made by agl's DynamicTextureAllocator::alloc, f_8005ed00) */
-volatile int64_t nvn_texture_inits, nvn_texture_inits_dta;
+volatile int64_t nvn_texture_inits;   /* (texture initializations, for the patches' logs) */
 extern volatile int64_t hos_present_count;   /* display.c */
 /* RX_NVN_LOG_TEX=<w>x<h> (debugging): each initialization and finalize of a texture that size, with its caller */
 static int log_tex(const nvn_tex *o) {
@@ -786,14 +766,7 @@ static _Thread_local uint64_t tl_moved_serial;   /* (M6f: the serial a texture m
 NV(nvnTextureInitialize) {
     os_atomic_inc(&nvn_texture_inits);
     const nvn_tex_builder *b = CTB(P(1));
-    if (c->x[30] >= 0x8005ed00ull && c->x[30] < 0x80062b6cull) {
-        os_atomic_inc(&nvn_texture_inits_dta);
-    }
-    {   /* (rt_slots.c: a texture in the transient slots, from any caller: its slot's bytes go to the back end first) */
-        void rt_slots_texture_init(uint64_t obj, uint64_t gpu, const nvn_texdesc *d, int dta);
-        rt_slots_texture_init(c->x[0], b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0, &b->d,
-                              c->x[30] >= 0x8005ed00ull && c->x[30] < 0x80062b6cull);
-    }
+    game_texture_initializing(c->x[0], b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0, &b->d, c->x[30]);
     nvn_tex *o = TX(P(0));
     if (o->magic == NVN_MAGIC('T', 'E', 'X', 0) && o->serial) {   /* initialised again without Finalize */
         if (rx_direct()) direct_texwatch_released(o);
@@ -809,16 +782,16 @@ NV(nvnTextureInitialize) {
     memcpy(o->layout, b->layout, 8);
     nvn_tex_layout(&o->d, &o->L);
     o->gpu = b->pool ? POOL(b->pool)->gpu + (uint64_t)b->off : 0;
-    if (b->pkg_data && !direct_assets_skip_packaged(o->L.size)) {   /* packaged data: copied into the storage (a CPU write the
+    if (b->pkg_data && !game_skips_packaged_texels(o->L.size)) {   /* packaged data: copied into the storage (a CPU write the
                                                                        dirty tracking sees; direct mode: never read, skipped) */
         if (!o->gpu || !nvn_gpu_write(o->gpu, gw(b->pkg_data, o->L.size), o->L.size)) die("packaged texture data without storage");
     }
-    const int moved = tl_moved_serial && o == direct_texdata_moving();   /* (M6f: the second half of a move) */
+    const int moved = tl_moved_serial && o == game_texture_moving();   /* (M6f: the second half of a move) */
     o->serial = moved ? tl_moved_serial : new_serial();
     tl_moved_serial = 0;
     live_put(o);
     if (!moved) rx_nvn_texture_created(o);
-    if (direct_assets_tiles_pending || direct_assets_tilelog) direct_assets_texture_init(o);   /* (A-rt: a terrain tile given before its texture) */
+    game_texture_initialized(o);
     if (rx_direct()) direct_texwatch_created(o, c->x[30]);   /* (M4d: HOS_DBG=texwatch, diagnosis) */
     {   /* RX_NVN_WATCH_TEX=<w>x<h> (debugging): who writes the storage of textures that size (a page watch, with call
            stacks: hos_watch_guest_writes), for writes the dirty tracking misses */
@@ -843,7 +816,7 @@ NV(nvnTextureInitialize) {
 }
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));
-    if (rx_direct() && o == direct_texdata_moving() && o->magic == NVN_MAGIC('T', 'E', 'X', 0)) {
+    if (rx_direct() && o == game_texture_moving() && o->magic == NVN_MAGIC('T', 'E', 'X', 0)) {
         /* a compaction move (direct_texdata.c): the back end keeps the texture's image and registration; the
            initialization that follows over the new storage keeps its serial */
         tl_moved_serial = o->serial;
@@ -1809,7 +1782,7 @@ NV(nvnCommandBufferBeginRecording,
         hsd_list_info info = {0};
         hsd_classify(c, &info);
         info.cmd = h2g(o);
-        if (info.kind == HSD_LIST_JOB && !eng_jobs_tag(c->x[0], &info.pass_key, &info.view)) info.pass_key = info.view = 0;
+        if (info.kind == HSD_LIST_JOB && !game_job_list(c->x[0], &info.pass_key, &info.view)) info.pass_key = info.view = 0;
         r->dl = rx_direct()->list_begin(&info);
         o->rec_start = o->cmd_used;
         uint8_t *p = cmd_alloc(o, 8);
@@ -2889,9 +2862,8 @@ NV(nvnQueuePresentTexture) {
         if (away) hos_block_end();
     }
     o->presents++;
-    void rt_slots_frame(void);   /* rt_slots.c */
-    rt_slots_frame();
-    if (rx_direct()) direct_patches_frame();   /* (M3a: the game patches' lines) */
+    game_frame();
+    if (rx_direct()) direct_texwatch_frame();   /* (HOS_DBG=texwatch: its line) */
     extern volatile int64_t hos_present_count;   /* display.c */
     os_atomic_inc(&hos_present_count);
     hos_vi_native_presented();
@@ -3061,10 +3033,7 @@ static void draw_mesh(Ctx *c, int kind) {
     if (kind == 0) r->x = I(1), r->y = I(2), r->z = I(3);
     else if (kind == 1) r->indirect = U64(1), r->max = 1;
     else r->indirect = U64(1), r->count_addr = U64(2), r->max = I(3), r->stride = I(4);
-    if (kind && rx_direct()) {   /* (M4d: the GPU lists' records in Vulkan's layout, a game patch: direct_mesh_lists.c) */
-        void direct_mesh_lists_draw(uint64_t rec, int max, int stride);
-        direct_mesh_lists_draw(r->indirect, r->max, r->stride);
-    }
+    if (kind && rx_direct()) game_indirect_mesh_draw(r->indirect, r->max, r->stride);
     static volatile int64_t n;
     const int64_t k = os_atomic_inc(&n);
     if (lognvn() && (k <= 3 || k % 20000 == 0))

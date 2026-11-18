@@ -15,7 +15,7 @@
    function itself computes. The row checks that x8 is that second address (else it writes nothing and counts it).
 
    Check that it applies: the 600-present line "direct patch mesh args" (headers a frame, mismatches 0). */
-#include "direct.h"
+#include "patches.h"
 #include "os.h"
 
 static struct { volatile int64_t headers, mismatch, outside; } n;

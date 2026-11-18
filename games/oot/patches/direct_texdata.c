@@ -5,7 +5,7 @@
      - moved by compaction (the frame update f_80797da0 -> f_807981f0(td, ctx) for each moved texture and each alias):
        the rebind's nvnTextureFinalize + nvnTextureInitialize of the td's own NVN object reach the back end as nothing at
        all: the object keeps its serial, so its image (keyed by its record or plain image, never by storage) and its
-       registration follow it (nvn_native.c asks direct_texdata_moving);
+       registration follow it (nvn_native.c asks game_texture_moving);
      - released to the LRU cache / taken back from it: f_8079aa20(&td->slot, 1 / 0), called from the release f_80517d80 and
        the acquire paths; the back end is told (hsd_texture_cached), which counts the cached textures' images;
      - destroyed: f_8079bbe0(mgr, td) (eviction, or a lost load race): its nvnTextureFinalize follows and releases as before.
@@ -16,7 +16,7 @@
    game may take the texture back without a load, so its image stays. The back end has no eviction policy of its own (the
    user: no own eviction, no async upload). */
 #include "hos.h"
-#include "direct.h"
+#include "patches.h"
 #include "rx_nvn.h"
 #include <stdio.h>
 #include <string.h>
@@ -110,7 +110,7 @@ PATCH_AT(0x8079bbe0, word(0xd503237f), before, none, direct_texdata_destroyed, a
    object noted for this thread: nvn_native.c then keeps the object's serial through the rebind's Finalize + Initialize
    and tells the back end nothing (its image and registration follow the object). */
 static _Thread_local const void *tl_moving;
-const void *direct_texdata_moving(void) { return tl_moving; }
+const void *game_texture_moving(void) { return tl_moving; }
 PATCH_FUNC(0x807981f0, word(0xd503237f), body(0xd8e8d96c2812b6c3), aapcs, x0, direct_texdata_move, orig, as(x0, td)) {
     if (!direct_assets_on()) return guest_orig(orig);
     const nvn_tex *t = hos_guest_range(td, 0x1d0) ? tex_of(td) : NULL;

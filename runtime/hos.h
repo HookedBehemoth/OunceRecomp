@@ -47,7 +47,6 @@ uint64_t guest_call8(GuestCall *g, uint64_t sp, uint64_t fn, uint64_t a0, uint64
 extern const uint64_t hos_image_base, hos_image_end;   /* (gen/hos_image.c) */
 extern const uint64_t hos_program_id;                  /* (gen/hos_image.c: main.npdm's) */
 extern const char hos_main_build_id[];                 /* (gen/hos_image.c: main's NSO build id, hex) */
-#define HOS_GAME_TITLE "Hookshot"
 void hos_commit(uint64_t addr, uint64_t size);         /* (hos_process.c) guest pages made usable by host APIs */
 #ifdef A64_MEM_ZERO
 extern uint64_t hos_space_end;   /* web: the guest window ends where the host's own data starts (hos_main.c) */
@@ -73,6 +72,8 @@ int hos_log_switch(const char *item);
 /* HOS_BENCH (runtime/bench.c): the frames to measure, 0 when off; the game's file reads, its player updates, the presents */
 int hos_bench_on(void);
 void hos_bench_fs_read(void);
+void hos_bench_message(void);
+uint64_t hos_code_ptr_as_guest(uint64_t v);   /* (code_ptrs.c: a host code pointer the game compares with guest addresses, as one) */   /* (a message a worker thread of the game took, counted by its thread group) */
 void hos_bench_player(int loading, int event_playing);
 void hos_bench_present(int64_t now);
 #define HOS_TRACE_CALL(name) do { if (hos_trace) hos_log("%s(%#llx, %#llx, %#llx, %#llx) lr %#llx", name, \

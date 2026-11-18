@@ -3,6 +3,7 @@
    A library that does not load or start ends the game. Calls made before rx_start that the back end needs are kept and given
    to it at the start, in order. */
 #include "hos.h"
+#include "game_hooks.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,7 +36,6 @@ int hos_mic_count(void);            /* nn_audio_in.c: the microphones, for the I
 const char *hos_mic_name(int index);
 void hos_mic_select(int mode, const char *name, int index);
 void hos_bind(int set, int button, int slot, int code);
-int hos_prompts_face(void);         /* prompts.c */
 
 static void host_log(const char *line) { hos_log("%s", line); }
 static void host_free_pages(uint32_t *pages) { free(pages); }
@@ -64,7 +64,7 @@ static const MkwVkHost vk_host = {
     nvn_tex_level_offset, nvn_fmt_bpb, nvn_tex_level_tiles, nvn_tex_linear_stride, nvn_depth_minus_w, hos_gpu_pools,
     hos_gpu_maps_generation, nvn_vmap_generation, hos_reserved_cpus, host_guest_alloc,
     host_watch_guest_writes, hos_pad_raw, hos_binding, hos_bind, host_aspect_ratio, host_take_key_press,
-    hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, hos_prompts_face,
+    hos_mouse_pointer, hos_mic_count, hos_mic_name, hos_mic_select, hos_sdl_gyro_status, hos_log_flush, game_prompts_face,
     host_romfs_dir,
 };
 

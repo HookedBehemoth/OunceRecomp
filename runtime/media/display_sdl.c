@@ -7,6 +7,7 @@
    HOS_HEADLESS=1: no window. HOS_WINDOW_SIZE=<w>x<h>: its size (default 1280x720). F11: fullscreen (HOS_FULLSCREEN=1 to
    start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it. */
 #include "hos.h"
+#include "game_hooks.h"
 #include "hos_sdl.h"
 
 /* (the window's app id: a desktop entry names it as its StartupWMClass) */
@@ -15,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"
+#include "hos_paths.h"
 #include "hos_keys.h"
 #include "vk_api.h"
 
@@ -168,8 +170,28 @@ void hos_display_presented(void) {   /* (the Presentation Thread, after each pre
     const uint64_t size = __atomic_load_n(&resize_size, __ATOMIC_ACQUIRE);
     if (!size || os_now_ns() - __atomic_load_n(&resize_ns, __ATOMIC_RELAXED) < 250 * 1000000LL) return;
     if (!__atomic_compare_exchange_n(&resize_size, &(uint64_t){size}, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return;
-    void hos_oot_frame_set(uint32_t w, uint32_t h, int start);   /* (games/oot/patches/oot_probes.c) */
-    hos_oot_frame_set((uint32_t)size, (uint32_t)(size >> 32), 0);
+    game_frame_size((uint32_t)size, (uint32_t)(size >> 32), 0);
+}
+
+/* a file of the game folder (beside the executable: the builder's title.txt and icon.bmp) */
+static void game_file(char *out, size_t cap, const char *name) {
+    uint32_t n = hos_game_path_a(out, (uint32_t)cap);
+    while (n && out[n - 1] != '/') n--;
+    snprintf(out + n, cap - n, "%s", name);
+}
+/* the window's title: title.txt's first line, the game's name; "Hookshot" without one */
+static void window_title(char *out, size_t cap) {
+    char path[OS_PATH_MAX];
+    game_file(path, sizeof path, "title.txt");
+    snprintf(out, cap, "Hookshot");
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[256];
+    if (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (line[0]) snprintf(out, cap, "%s", line);
+    }
+    fclose(f);
 }
 
 static volatile int start_asked;
@@ -230,7 +252,9 @@ void hos_display_loop(void) {
         int w = 0, h = 0;
         if (sscanf(getenv("HOS_WINDOW_SIZE"), "%dx%d", &w, &h) == 2 && w >= 64 && h >= 64) win_w = w, win_h = h;
     }
-    window = hos_sdl_window(HOS_GAME_TITLE, win_w, win_h);
+    char title[256];
+    window_title(title, sizeof title);
+    window = hos_sdl_window(title, win_w, win_h);
     if (!window) {
         hos_log("display: SDL_CreateWindow: %s: no window", hos_sdl_error());
         fprintf(stderr, "display: SDL_CreateWindow: %s: no window\n", hos_sdl_error());
@@ -244,13 +268,11 @@ void hos_display_loop(void) {
         hos_sdl_pixel_size(window, &w, &h);
         if (w > 0 && h > 0) resize_note(w, h);
     }
-    {   /* the window's icon: hookshot.png beside the game, when there is one, for X11 and the compositors that
-           take one from the window; the others find it through the menu entry */
-        char png[OS_PATH_MAX];
-        uint32_t n = (uint32_t)os_exe_path(png, sizeof png);
-        while (n && png[n - 1] != '/') n--;
-        snprintf(png + n, sizeof png - n, "hookshot.png");
-        hos_sdl_icon(window, png);
+    {   /* the window's icon: the game folder's icon.bmp, for X11 and the compositors that take one from the window; the
+           others find it through the menu entry */
+        char bmp[OS_PATH_MAX];
+        game_file(bmp, sizeof bmp, "icon.bmp");
+        if (os_path_kind(bmp) != OS_PATH_NONE) hos_sdl_icon(window, bmp);
     }
     if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(1);
     __atomic_store_n(&refresh_now, hos_sdl_refresh_mhz(window), __ATOMIC_RELAXED);

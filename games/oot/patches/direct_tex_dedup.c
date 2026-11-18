@@ -14,7 +14,7 @@
    images, ASTC placeholders among them). A load with no data that is no alias (no chain) stays
    as before: a plain image, named by the back end. A log line for the first few, and every 100th. With HOS_DBG=noassets nothing here runs. */
 #include "hos.h"
-#include "direct.h"
+#include "patches.h"
 #include <stdio.h>
 #include <string.h>
 #include "os.h"

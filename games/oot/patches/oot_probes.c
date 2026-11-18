@@ -138,7 +138,7 @@ PATCH_AT(0x831f3f08, word(0xf9471288), after, x8, hos_oot_scale_flags, as(x20, m
 /* f_806702e0 (config: x0), w14 the current mode: mode 1's base scale 0.8 -> 1.0 in a stock table, and the mode made to
    compare unequal once (0xff), so the game's own refresh runs; the same after a window resize (the game then sizes its
    frame again, makes its targets at that size and sets the window's crop to it) */
-static volatile int frame_refresh;   /* (hos_oot_frame_set: the game's frame to be sized again) */
+static volatile int frame_refresh;   /* (game_frame_size: the game's frame to be sized again) */
 static void hud_rescale(void);
 static void hud_follow(void);
 PATCH_AT(0x80670308, word(0x3955280e), after, w14, hos_oot_scene_mode, as(x0, config), as(w14, mode)) {   /* ldrb w14, [x0, #1354] */
@@ -201,7 +201,7 @@ PATCH_AT(0x80b1e1bc, word(0x37201528), before, s0, hos_oot_text_time, as(s0, tim
 
 /* ---- output size */
 
-/* the frame's width (0) or height (1): the window's when the frame follows it (hos_oot_frame_set), else the widescreen
+/* the frame's width (0) or height (1): the window's when the frame follows it (game_frame_size), else the widescreen
    picture's (runtime/hos_main.c), else the output's */
 static volatile uint64_t frame_size;   /* (width | height << 32; 0: the frame does not follow the window) */
 static uint32_t picture_size(int height) {
@@ -380,7 +380,7 @@ PATCH_AT(0x8114c604, word(0xf8687928), after, x8, hos_oot_frame_max, as(x8, size
 /* runtime/hos_main.c (start), runtime/media/display_sdl.c (a settled resize): the game's frame is
    now w x h (the window's pixels, at most 3840 x 2160's count, at most the picture's size): the main camera, HUD and
    movies take its shape, and the game sizes its frame and targets again */
-void hos_oot_frame_set(uint32_t w, uint32_t h, int start) {
+void game_frame_size(uint32_t w, uint32_t h, int start) {
     extern volatile uint64_t hos_wide_out;
     const uint64_t pic = hos_wide_out;
     if (!pic || w < 64 || h < 64 || (!start && !frame_size)) return;   /* (a frame that does not follow the window) */
@@ -763,7 +763,7 @@ PATCH_AT_SITE(0x83af6724, word(0xb900210a), after, none, hos_oot_ring_write, x8,
 PATCH_AT_SITE(0x83af5d9c, word(0xb900210a), after, none, hos_oot_ring_write, x8, k(1), k(0x83af5d9c));
 
 /* (a bench run's end: who owns each ring, and its pushes and pops per present so far) */
-void hos_oot_ring_report(void) {
+void game_bench_report(void) {
     extern volatile int64_t hos_present_count;   /* (runtime/media/display_sdl.c) */
     const double frames = hos_present_count > 0 ? (double)hos_present_count : 1.0;
     char line[1024];

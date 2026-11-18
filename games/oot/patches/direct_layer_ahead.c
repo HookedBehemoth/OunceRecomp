@@ -19,7 +19,7 @@
    games/oot/patches/eng_jobs.c's hook). Keys at the sites: f_806688c0(owner, drawctx, i) x0 + 0x3830 + i * 0xd0; f_8028a2a0(owner,
    drawctx, key) x2. The wait sleeps on a condition variable that each recorded job wakes, and
    falls through after 50 ms (counted), as the game's own path would go on. */
-#include "direct.h"
+#include "patches.h"
 #include <string.h>
 #include <stdlib.h>
 #include "os.h"

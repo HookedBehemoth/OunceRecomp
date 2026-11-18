@@ -27,7 +27,7 @@ void hos_sdl_pixel_size(void *window, int *width, int *height);
 const uint8_t *hos_sdl_keys(int *count);   /* the keyboard by scancode (USB HID usage), 1 a key down */
 uint32_t hos_sdl_mouse_buttons(void);   /* 1 left, 2 middle, 4 right */
 void hos_sdl_window_size(void *window, int *width, int *height);   /* (in the units of the mouse's position, not pixels) */
-void hos_sdl_icon(void *window, const char *png);   /* (SDL 3.4's PNG loader: nothing on SDL2 or an older SDL3) */
+void hos_sdl_icon(void *window, const char *bmp);   /* (a BMP file; nothing when it does not load) */
 
 /* ---- the window's state, kept by its loop (runtime/media/display_sdl.c): for the input and the menus ---- */
 int hos_key_down(int vk);    /* a key (hos_keys.h's virtual-key numbers) or mouse button down in the focused window */

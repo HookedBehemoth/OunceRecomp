@@ -21,7 +21,7 @@
        written, which nothing reads but the draw (NVN's first is 0 there, as the back end takes it for every indirect
        mesh draw).
    Check that it applies: the 600-present line "direct patch mesh lists". */
-#include "direct.h"
+#include "patches.h"
 #include "os.h"
 
 static struct { volatile int64_t resets, outside, records, set, set_logged; } n;
@@ -52,7 +52,7 @@ PATCH_AT_SITE(0x80361b3c, word(0xf8286adf), after, none, direct_mesh_lists_reset
 
 /* nvn_native.c draw_mesh (direct mode): the records of an indirect mesh draw (max of them, stride apart; 0: 16) */
 uint64_t nvn_gpu_guest(uint64_t gpu);
-void direct_mesh_lists_draw(uint64_t gpu, int max, int stride) {
+void game_indirect_mesh_draw(uint64_t gpu, int max, int stride) {
     const uint64_t rec = rx_direct() && gpu ? nvn_gpu_guest(gpu) : 0;
     if (!rec) return;
     if (stride <= 0) stride = 16;

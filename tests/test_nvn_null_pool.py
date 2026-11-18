@@ -49,7 +49,6 @@ def main():
     map_ = block(source, "NV(nvnMemoryPoolMap)")
     address = block(source, "NV(nvnMemoryPoolGetBufferAddress)")
     invalidate = block(source, "NV(nvnMemoryPoolInvalidateMappedRange)")
-    stamped = block(source, "static int readback_stamped(const Ctx *c)")
 
     fixture = r'''#include <stdint.h>
 #include <stdio.h>
@@ -78,7 +77,8 @@ static uint64_t h2g(void *p) { return (uint64_t)(uintptr_t)p; }
 static int invalidated;
 static void rx_nvn_invalidate(uint64_t a, uint64_t b) { (void)a; (void)b; invalidated++; }
 static int tl_grid_reader;   /* (the grid reader's PATCH_FUNC marks its run) */
-''' + stamped + "\n" + guard + "\n" + flags + "\n" + size + "\n" + map_ + "\n" + address + "\n" + invalidate + r'''
+int game_invalidate_unneeded(uint64_t size) { return tl_grid_reader && size == 0x3980; }   /* (the game's hooks.c) */
+''' + guard + "\n" + flags + "\n" + size + "\n" + map_ + "\n" + address + "\n" + invalidate + r'''
 int main(void) {
     Ctx c;
     memset(&c, 0, sizeof c);

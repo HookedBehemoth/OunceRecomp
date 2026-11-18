@@ -25,6 +25,7 @@
    Npad states share one layout (NpadCommonState): { s64 sampling; u64 buttons; s32 lx, ly; s32 rx, ry; u32 attributes;
    pad } = 0x28 bytes. */
 #include "hos.h"
+#include "game_hooks.h"
 #include "hos_paths.h"
 #include <math.h>
 #include <stdio.h>
@@ -592,12 +593,11 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     static int native_looked;
     if (!native_looked) native_looked = 1, native_env = getenv("HOS_MOUSE_NATIVE");
     const int native = native_env ? atoi(native_env) != 0 : rx_option(6, 0);
-    int hos_mouse_native(void);
     int captured = 0, as_stick = !native;
     if (native) {
         mouse_setup();
         mouse_sens_keys();
-        captured = hos_mouse_native();
+        captured = game_mouse_camera();
         if (captured < 0) captured = 0, as_stick = 1;
     }
     if (as_stick) {

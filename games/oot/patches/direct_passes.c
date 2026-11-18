@@ -16,7 +16,7 @@
 
    Check that it applies: the 600-present line "direct patch passes" (recorder asked, early returns, inline passes named per
    site) and the back end's "jobs a frame" line. */
-#include "direct.h"
+#include "patches.h"
 #include <string.h>
 #include "os.h"
 

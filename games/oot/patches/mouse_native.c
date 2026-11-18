@@ -15,7 +15,7 @@
    mouse chose eases back as one the game chose does, while yaw stays.
 
    The motion is added before the camera reads its input, so the game's own collision, lock-on and scripted cameras still
-   follow. While the hook has run in the last 150 ms the mouse's motion is the camera's (hos_mouse_native gives 1: the
+   follow. While the hook has run in the last 150 ms the mouse's motion is the camera's (game_mouse_camera gives 1: the
    right stick is left alone); otherwise (the pause menu, cutscenes with another camera, a build the patch did not find
    its place in) it is the right stick as before.
 
@@ -84,7 +84,7 @@ PATCH_AT(0x80644c80, word(0xd503237f), after, none, hos_mouse_camera, as(x0, cam
     /* Only while it is the view: following Link (3) or turned by the player (4). Aiming the slingshot in first person
        leaves this camera updating with its state 0 while another one draws (traced at Hyrule Castle); shops are reported
        the same. In any other state the mouse is the right stick, which those views turn by (the hook counts as not
-       run, so hos_mouse_native gives -1) */
+       run, so game_mouse_camera gives -1) */
     const uint32_t state = cam->state;
     if (state != 3 && state != 4) {
         /* (at once: the stick takes the next motion, not one burst once the 150 ms run out) */
@@ -120,7 +120,7 @@ PATCH_AT(0x80644c80, word(0xd503237f), after, none, hos_mouse_camera, as(x0, cam
 
 /* With each read of the controller (nn_hid.c, the game's threads): 0 if the mouse is not captured, 1 if the camera takes
    its motion (hos_mouse_camera), -1 if no player camera runs now (the right stick takes it) */
-int hos_mouse_native(void) {
+int game_mouse_camera(void) {
     static int said;
     if (!said) said = 1, hos_log("mouse native: on (the menu's Mouse camera, or HOS_MOUSE_NATIVE)");
     if (hos_now_ns() - os_atomic_load(&last_hook_ns) >= LIVE_NS) return -1;

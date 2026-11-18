@@ -14,7 +14,7 @@ static struct {
     /* window */
     void *CreateWindow, *SetWindowPosition, *SetWindowFullscreen, *SetRelativeMouseMode, *GetPrimaryDisplay,
         *GetDesktopDisplayMode, *Vulkan_CreateSurface, *PixelSize, *GetKeyboardState, *GetMouseState, *WaitEventTimeout,
-        *PollEvent, *GetWindowSize, *LoadPNG, *SetWindowIcon, *DestroySurface, *GetWindowDisplay, *GetCurrentDisplayMode;
+        *PollEvent, *GetWindowSize, *LoadBMP, *RWFromFile, *SetWindowIcon, *DestroySurface, *GetWindowDisplay, *GetCurrentDisplayMode;
     /* sound */
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
@@ -67,6 +67,11 @@ static int get_all(os_lib *m, int three) {
     f.PadHasSensor = os_lib_sym(m, three ? "SDL_GamepadHasSensor" : "SDL_GameControllerHasSensor");
     f.PadSensorEnable = os_lib_sym(m, three ? "SDL_SetGamepadSensorEnabled" : "SDL_GameControllerSetSensorEnabled");
     f.PadSensorData = os_lib_sym(m, three ? "SDL_GetGamepadSensorData" : "SDL_GameControllerGetSensorData");
+    /* (the window's icon, when there: SDL_LoadBMP in SDL3; SDL2's SDL_LoadBMP is a macro over SDL_LoadBMP_RW) */
+    f.LoadBMP = os_lib_sym(m, three ? "SDL_LoadBMP" : "SDL_LoadBMP_RW");
+    f.RWFromFile = three ? NULL : os_lib_sym(m, "SDL_RWFromFile");
+    f.SetWindowIcon = os_lib_sym(m, "SDL_SetWindowIcon");
+    f.DestroySurface = os_lib_sym(m, three ? "SDL_DestroySurface" : "SDL_FreeSurface");
     if (three) {
         GET(SetWindowPosition, "SDL_SetWindowPosition");
         GET(GetPrimaryDisplay, "SDL_GetPrimaryDisplay");
@@ -76,9 +81,6 @@ static int get_all(os_lib *m, int three) {
         GET(GetGamepads, "SDL_GetGamepads");
         GET(GetGamepadID, "SDL_GetGamepadID");
         GET(Free, "SDL_free");
-        f.LoadPNG = os_lib_sym(m, "SDL_LoadPNG");   /* (3.4 on: the icon, when there) */
-        f.SetWindowIcon = os_lib_sym(m, "SDL_SetWindowIcon");
-        f.DestroySurface = os_lib_sym(m, "SDL_DestroySurface");
         f.GetWindowDisplay = os_lib_sym(m, "SDL_GetDisplayForWindow");   /* (the refresh: hos_sdl_refresh_mhz) */
         f.GetCurrentDisplayMode = os_lib_sym(m, "SDL_GetCurrentDisplayMode");
     } else {
@@ -201,11 +203,16 @@ void hos_sdl_pixel_size(void *window, int *width, int *height) {
 const uint8_t *hos_sdl_keys(int *count) {   /* (SDL3's bool and SDL2's Uint8: a byte each) */
     return CALL(const uint8_t *(*)(int *), GetKeyboardState)(count);
 }
-void hos_sdl_icon(void *window, const char *png) {
-    if (version != 3 || !f.LoadPNG || !f.SetWindowIcon || !f.DestroySurface) return;
-    void *icon = CALL(void *(*)(const char *), LoadPNG)(png);
-    if (!icon) return;
-    CALL(_Bool (*)(void *, void *), SetWindowIcon)(window, icon);
+void hos_sdl_icon(void *window, const char *bmp) {
+    if (!f.LoadBMP || !f.SetWindowIcon || !f.DestroySurface || (version == 2 && !f.RWFromFile)) return;
+    void *icon = version == 3 ? CALL(void *(*)(const char *), LoadBMP)(bmp)
+                              : CALL(void *(*)(void *, int), LoadBMP)(CALL(void *(*)(const char *, const char *), RWFromFile)(bmp, "rb"), 1);
+    if (!icon) {
+        hos_log("display: no window icon: %s: %s", bmp, hos_sdl_error());
+        return;
+    }
+    if (version == 3) CALL(_Bool (*)(void *, void *), SetWindowIcon)(window, icon);
+    else CALL(void (*)(void *, void *), SetWindowIcon)(window, icon);
     CALL(void (*)(void *), DestroySurface)(icon);
 }
 uint32_t hos_sdl_mouse_buttons(void) {

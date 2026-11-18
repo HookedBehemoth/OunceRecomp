@@ -355,7 +355,7 @@ static int build_textures(char *out, size_t cap) {
 
 /* the face the game was given (faces[]), -1 none: the Insert menu names the pad inputs as that controller does. -1 too
    until the game has asked for a prompt file: the menu asks from the present thread, and choose_face can wait for SDL */
-int hos_prompts_face(void) {
+int game_prompts_face(void) {
     char dir[OS_PATH_MAX];
     int face;
     return os_once_done(&setup_once) && setup(dir, sizeof dir, &face) ? face : -1;
@@ -504,7 +504,7 @@ static void built_run(void *arg) {
     const int which = (int)(intptr_t)arg;
     built_ok[which] = builders[which](built_path[which], OS_PATH_MAX);
 }
-int hos_prompts_romfs(const char *key, char *out, size_t cap) {
+int game_romfs_file(const char *key, char *out, size_t cap) {
     static os_once once[3] = {OS_ONCE_INIT, OS_ONCE_INIT, OS_ONCE_INIT};   /* the font, the textures, the layouts */
     const size_t kn = strlen(key);
     if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {
