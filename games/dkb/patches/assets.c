@@ -17,7 +17,8 @@
    In-place files (a BNTX kept whole in memory): ui2d's layout textures (f_8088e790) and a font's BNTX (f_808aa478) note
    their file for this thread; at TextureImpl::Initialize f_80210fdc inside them, the texture is found in the store by
    its name, index and mip 0's offset in that file.
-   Not covered yet: the font glyph cache (its texels stay unwritten). */
+   The font glyph cache: each glyph the TextureCache plots (f_80767b20) goes to the atlas image as a region upload
+   (gpu_texels) of its cell. */
 #include "hos.h"
 #include "patches.h"
 #include "rx_nvn.h"
@@ -27,10 +28,12 @@
 #include "os.h"
 
 int hos_gpu_pools(uint64_t (*out)[2], int max);
+int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);
 extern const char *hos_romfs_dir;
 
 static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_rebind, n_compaction, n_compaction_cleared, n_pkg,
-    n_pkg_bytes, n_inplace, n_inplace_bad;
+    n_pkg_bytes, n_inplace, n_inplace_bad, n_glyphs,
+    n_glyph_notex;
 
 static int dbg_has(const char *name) {
     const char *d = getenv("HOS_DBG");
@@ -74,10 +77,11 @@ void assets_log(void) {
     char b[512];
     texdata_line(b, sizeof b);
     hos_log("assets: copies skipped: loads %lld of %lld (%lld MB), packaged %lld (%lld MB), compaction steps %lld (copy flag "
-            "cleared %lld); rebinds %lld; in-place textures %lld (not their file's %lld)%s; %s", (long long)n_load_skipped,
+            "cleared %lld); rebinds %lld; in-place textures %lld (not their file's %lld); glyph cells %lld (%lld with no "
+            "texture)%s; %s", (long long)n_load_skipped,
             (long long)n_loads, (long long)(n_load_bytes >> 20),
             (long long)n_pkg, (long long)(n_pkg_bytes >> 20), (long long)n_compaction, (long long)n_compaction_cleared,
-            (long long)n_rebind, (long long)n_inplace, (long long)n_inplace_bad,
+            (long long)n_rebind, (long long)n_inplace, (long long)n_inplace_bad, (long long)n_glyphs, (long long)n_glyph_notex,
             assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)", b);
 }
 
@@ -252,6 +256,35 @@ PATCH_AT(0x80210fdc, word(0xd503237f), before, none, assets_inplace_init, as(x0,
     if (nm && mip0 > bntx) k.name = nm, k.name_len = nl, k.index = (uint32_t)index, k.data_offset = (uint32_t)(mip0 - bntx);
     rx_direct()->asset_load(&k);
     os_atomic_inc(&n_inplace);
+}
+
+/* ---- the font glyph cache ----
+   nn::font's TextureCache plot (f_80767b20, cache x19) writes each glyph into the linear R8 atlas (the pool's mapping
+   x27, pitch [cache+0x28], [cache+0x2c] rows, stored bottom-up: row r of the cache is storage row rows - 1 - r) in its
+   line's cell: column [node+0x40], cache rows from [node+0x42], x22 bytes wide (the glyph's width + 2); the rows below
+   it, down to the line's height (the blr at 0x80768474), are cleared. When the plot unmaps the pool after the glyph
+   (0x80768504), the cell's rows go to the atlas image. */
+static _Thread_local uint32_t tl_line_h;
+PATCH_AT(0x80768478, word(0x79403ee9), after, none, assets_glyph_line, as(x0, h)) { tl_line_h = (uint32_t)h; }
+PATCH_AT(0x80768504, word(0xf94f4e60), after, none, assets_glyph_plotted, as(x19, cache), as(x22, w), as(x27, atlas),
+         as(x28, node)) {
+    if (!assets_on() || !hos_guest_range(cache + 0x28, 8) || !hos_guest_range(node + 0x40, 4)) return;
+    const uint32_t pitch = G32(cache + 0x28), rows = G32(cache + 0x2c);
+    const uint32_t x = *(const uint16_t *)GP(node + 0x40), y = *(const uint16_t *)GP(node + 0x42);
+    nvn_tex t;
+    if (!nvn_tex_live_at(atlas, &t) || t.d.width != pitch || t.d.height != rows) {
+        if (os_atomic_inc(&n_glyph_notex) <= 5)
+            hos_log("assets: glyph: no %ux%u texture at the atlas %#llx", pitch, rows, (unsigned long long)atlas);
+        return;
+    }
+    uint32_t h = tl_line_h + 2, cw = (uint32_t)w;
+    if (x >= pitch || y >= rows) return;
+    if (x + cw > pitch) cw = pitch - x;
+    if (y + h > rows) h = rows - y;
+    const uint32_t top = rows - (y + h);   /* (the cell's first storage row) */
+    NVNcopyRegion r = {(int)x, (int)top, 0, (int)cw, (int)h, 1};
+    rx_direct()->texels(GPU_TEXELS_GLYPH, &t, 0, 0, &r, GP(atlas + (uint64_t)top * pitch + x), pitch, 0);
+    os_atomic_inc(&n_glyphs);
 }
 
 int game_skips_packaged_texels(uint64_t bytes) {

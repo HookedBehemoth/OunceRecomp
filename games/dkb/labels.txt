@@ -171,3 +171,7 @@
 8029d220 g3d_textures_bntx_init           # games/dkb/patches/assets.c: a g3d resource's embedded 'textures.bntx': ResCast, pool, texdata_init_nvn_texture per texture (not patched yet)
 808d1060 vfx2_texture_init_a              # games/dkb/patches/assets.c: nn::vfx2 texture with 'NnVfx2GfxTexture' pool: TextureImpl::Initialize (not patched yet)
 808e9b40 vfx2_texture_init_b              # games/dkb/patches/assets.c: nn::vfx2 emitter set's BNTX: ResCast, pool, TextureImpl::Initialize (not patched yet)
+80767b20 font_glyph_plot                  # games/dkb/patches/assets.c: nn::font TextureCache's plot of its pending glyphs (cache x19) into the R8 atlas, bottom-up rows, cell column [node+0x40], rows from [node+0x42]
+808a6a60 font_cache_line_find             # games/dkb/patches/assets.c: a free cell of a line of the glyph cache's height class (cache, class, width) # ?
+8086a52c gfx_memory_pool_map              # games/dkb/patches/assets.c: the pool's CPU mapping (font_glyph_plot's atlas base, plus [cache+0x1ea0]) # ?
+8086a540 gfx_memory_pool_flush            # games/dkb/patches/assets.c: after a glyph's writes (font_glyph_plot 0x80768508) # ?
