@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Encoding reference: Mesa NAK sm70_encode.rs (MIT), Copyright 2022 Collabora, Ltd.
 
-// (fork) The direct Ampere front's attribute access: ALD and AST (the stage's inputs and outputs at a fixed address)
-// and IPA (a fragment stage's interpolated inputs).
+// (fork) The direct Ampere front's attribute access: ALD and AST (the stage's inputs and outputs at a fixed address),
+// IPA (a fragment stage's interpolated inputs, also indexed by a uniform register) and PIXLD (the sample index).
 
-#include "shader_recompiler/frontend/ampere/translate/translator.h"
+#include "shader_recompiler/frontend/ampere/translate/memory.h"
 #include "shader_recompiler/program_header.h"
 
 namespace Shader::Ampere {
@@ -54,16 +54,25 @@ void AST(Translator& t) {
 
 void IPA(Translator& t) {
     // the attribute 64-71 (address / 4), the location 76-77 (default or centroid), the frequency 78-79 (pass or
-    // constant); no offset register (32-39) and no predicate output (81-83)
+    // constant); no offset register (32-39) and no predicate output (81-83). 0x526: the attribute's byte address plus
+    // a uniform register (24-29, bit 91), an indexed input; its interpolation is the base attribute's
+    const bool indexed{t.insn.Opcode() == 0x526};
     t.Expect(32, 8, RZ, "IPA offset");
     t.Expect(79, 1, 0, "IPA frequency");
     t.Expect(81, 3, PT, "IPA predicate output");
+    t.Expect(84, 7, 0, "IPA mode");
+    t.Expect(91, 1, indexed ? 1 : 0, "IPA mode");
     if (t.insn.Field(76, 2) > 1) {
         t.Fail("IPA location");
     }
     const bool constant{t.insn.Bit(78)};
     const IR::Attribute attribute{t.insn.Field(64, 8)};
-    IR::F32 value{t.ir.GetAttribute(attribute)};
+    const u32 index{indexed ? t.insn.Field(24, 6) : URZ};
+    if (indexed) {
+        t.Expect(30, 2, 0, "IPA index register");
+    }
+    IR::F32 value{index == URZ ? t.ir.GetAttribute(attribute)
+                               : t.ir.GetAttributeIndexed(t.ir.IAdd(t.UR(index), t.ir.Imm32(t.insn.Field(64, 8) * 4)))};
     const bool is_legacy{IR::IsLegacyAttribute(attribute)};
     if (IR::IsGeneric(attribute) || is_legacy) {
         // IPA.PASS of a perspective input gives it times the interpolated w (NAK nak_nir_lower_fs_inputs.c multiplies
@@ -87,6 +96,17 @@ void IPA(Translator& t) {
     }
     t.SetF(t.insn.Dst(), value);
 }
+
+void PIXLD(Translator& t) {
+    // the value 78-80: only MY_INDEX (3), the sample's index, is translated
+    t.Expect(24, 40, 0, "PIXLD mode");
+    ExpectOnly(t, HighBits(78, 84), "PIXLD mode");
+    t.Expect(81, 3, PT, "PIXLD predicate output");
+    if (t.insn.Field(78, 3) != 3) {
+        t.Fail("PIXLD value");
+    }
+    t.SetR(t.insn.Dst(), t.ir.SampleId());
+}
 } // Anonymous namespace
 
 void TranslateAttribute(Translator& t) {
@@ -96,7 +116,10 @@ void TranslateAttribute(Translator& t) {
     case 0x322:
         return AST(t);
     case 0x326:
+    case 0x526:
         return IPA(t);
+    case 0x925:
+        return PIXLD(t);
     default:
         t.Fail("not translated");
     }

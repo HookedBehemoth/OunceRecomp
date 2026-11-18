@@ -194,6 +194,10 @@ void TranslateOne(Translator& t) {
         return TranslateSpecial(t);
     case 0xb1d: case 0x992: case 0x9ab: case 0x98f:
         return TranslateBarrier(t);
+    case 0x923: case 0x927:
+        return TranslateIsbe(t);
+    case 0x321: case 0x322: case 0x326: case 0x526: case 0x925:
+        return TranslateAttribute(t);
     default:
         break;
     }
@@ -213,8 +217,6 @@ void TranslateOne(Translator& t) {
         break;
     }
     switch (opcode) {
-    case 0x321: case 0x322: case 0x326:
-        return TranslateAttribute(t);
     case 0xb60:
         return TranslateTexture(t);
     default:
