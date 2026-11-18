@@ -11,8 +11,9 @@ hot = "hot_funcs.bin"
 exe = "Donkey Kong Bananza"
 title = "Donkey Kong Bananza"
 
-# the game's patch files (C, beside this file): none yet (runtime/game_hooks.c's weak hook points are neutral)
-patches = []
+# the game's patch files (C, beside this file), built with the runtime's and read by the patch scan. Rows at one
+# instruction run in this order (list_kinds.c's before eng_jobs.c's)
+patches = ["patches/list_kinds.c"]
 
 # the main module's build id and the SHA-256 of exefs/main: another dump stops the lift and the build
 [identity]
