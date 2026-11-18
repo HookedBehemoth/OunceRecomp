@@ -636,6 +636,15 @@ Id EmitShuffleDown(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clam
 Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
                         Id segmentation_mask);
 Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane);
+Id EmitSubgroupReadFirstLane(EmitContext& ctx, Id value);
+Id EmitSubgroupReduceIAdd(EmitContext& ctx, Id value);
+Id EmitSubgroupReduceUMin(EmitContext& ctx, Id value);
+Id EmitSubgroupReduceUMax(EmitContext& ctx, Id value);
+Id EmitSubgroupReduceSMin(EmitContext& ctx, Id value);
+Id EmitSubgroupReduceSMax(EmitContext& ctx, Id value);
+Id EmitSubgroupReduceAnd(EmitContext& ctx, Id value);
+Id EmitSubgroupReduceOr(EmitContext& ctx, Id value);
+Id EmitSubgroupReduceXor(EmitContext& ctx, Id value);
 Id EmitMatrixMulAddF16(EmitContext& ctx, Id a, Id b, Id c);
 void DefineSoftwareMatrixFunction(EmitContext& ctx);
 Id EmitQuadSwap(EmitContext& ctx, Id value, Id direction);

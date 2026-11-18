@@ -331,6 +331,66 @@ Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane) {
     return ShuffleAbsolute(ctx, value, src_thread_id);
 }
 
+// (fork) With a subgroup wider than the guest's 32 lanes, the first active lane of this lane's 32
+Id EmitSubgroupReadFirstLane(EmitContext& ctx, Id value) {
+    if (!StageSupportsSubgroups(ctx)) {
+        return value;
+    }
+    if (!ctx.profile.warp_size_potentially_larger_than_guest) {
+        return ctx.OpGroupNonUniformBroadcastFirst(ctx.U32[1], SubgroupScope(ctx), value);
+    }
+    const Id active{WarpExtract(ctx, ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), ctx.true_value))};
+    const Id base{ctx.OpBitwiseAnd(ctx.U32[1], GetThreadId(ctx), ctx.Const(~31u))};
+    const Id first{ctx.OpBitwiseOr(ctx.U32[1], base, ctx.OpFindILsb(ctx.U32[1], active))};
+    return ShuffleAbsolute(ctx, value, first);
+}
+
+namespace {
+// (fork) With a subgroup wider than the guest's 32 lanes, over clusters of 32
+Id SubgroupReduce(EmitContext& ctx, spv::Op op, Id value) {
+    if (!StageSupportsSubgroups(ctx)) {
+        return value;
+    }
+    if (!ctx.profile.warp_size_potentially_larger_than_guest) {
+        return ctx.OpGroupNonUniformArithmetic(op, ctx.U32[1], SubgroupScope(ctx), spv::GroupOperation::Reduce, value);
+    }
+    return ctx.OpGroupNonUniformArithmetic(op, ctx.U32[1], SubgroupScope(ctx), spv::GroupOperation::ClusteredReduce,
+                                           value, ctx.Const(32u));
+}
+} // Anonymous namespace
+
+Id EmitSubgroupReduceIAdd(EmitContext& ctx, Id value) {
+    return SubgroupReduce(ctx, spv::Op::OpGroupNonUniformIAdd, value);
+}
+
+Id EmitSubgroupReduceUMin(EmitContext& ctx, Id value) {
+    return SubgroupReduce(ctx, spv::Op::OpGroupNonUniformUMin, value);
+}
+
+Id EmitSubgroupReduceUMax(EmitContext& ctx, Id value) {
+    return SubgroupReduce(ctx, spv::Op::OpGroupNonUniformUMax, value);
+}
+
+Id EmitSubgroupReduceSMin(EmitContext& ctx, Id value) {
+    return SubgroupReduce(ctx, spv::Op::OpGroupNonUniformSMin, value);
+}
+
+Id EmitSubgroupReduceSMax(EmitContext& ctx, Id value) {
+    return SubgroupReduce(ctx, spv::Op::OpGroupNonUniformSMax, value);
+}
+
+Id EmitSubgroupReduceAnd(EmitContext& ctx, Id value) {
+    return SubgroupReduce(ctx, spv::Op::OpGroupNonUniformBitwiseAnd, value);
+}
+
+Id EmitSubgroupReduceOr(EmitContext& ctx, Id value) {
+    return SubgroupReduce(ctx, spv::Op::OpGroupNonUniformBitwiseOr, value);
+}
+
+Id EmitSubgroupReduceXor(EmitContext& ctx, Id value) {
+    return SubgroupReduce(ctx, spv::Op::OpGroupNonUniformBitwiseXor, value);
+}
+
 Id EmitQuadSwap(EmitContext& ctx, Id value, Id direction) {
     if (ctx.profile.support_quad_shuffles) {
         const Id result{

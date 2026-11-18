@@ -282,6 +282,10 @@ spv::ExecutionMode ExecutionMode(TessSpacing spacing) {
 
 void DefineEntryPoint(const IR::Program& program, EmitContext& ctx, Id main) {
     const std::span interfaces(ctx.interfaces.data(), ctx.interfaces.size());
+    if (program.info.maximal_reconvergence && ctx.profile.support_maximal_reconvergence) {   // (fork)
+        ctx.AddExtension("SPV_KHR_maximal_reconvergence");
+        ctx.AddExecutionMode(main, spv::ExecutionMode::MaximallyReconvergesKHR);
+    }
     if (ctx.mesh_fallback && (program.stage == Stage::Task || program.stage == Stage::Mesh)) {
         // (fork, issue 640: on a GPU without mesh shaders, a task or mesh program is a compute shader)
         ctx.AddExecutionMode(main, spv::ExecutionMode::LocalSize, program.workgroup_size[0], 1U, 1U);
@@ -520,6 +524,12 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
         if (!profile.warp_size_potentially_larger_than_guest) {
             // vote ops are only used when not taking the long path
             ctx.AddCapability(spv::Capability::GroupNonUniformVote);
+        }
+    }
+    if (info.uses_subgroup_reduce && profile.support_vote && profile.SupportsSubgroupStage(ctx.stage)) {
+        ctx.AddCapability(spv::Capability::GroupNonUniformArithmetic);   // (fork: SubgroupReduce*)
+        if (profile.warp_size_potentially_larger_than_guest) {
+            ctx.AddCapability(spv::Capability::GroupNonUniformClustered);
         }
     }
     if (info.uses_cooperative_matrix && !mma_software) {

@@ -90,4 +90,10 @@ Id Module::OpGroupNonUniformBallotFindLSB(Id result_type, Id scope, Id value) {
     return *code << OpId{spv::Op::OpGroupNonUniformBallotFindLSB, result_type} << scope << value << EndOp{};
 }
 
+Id Module::OpGroupNonUniformArithmetic(spv::Op op, Id result_type, Id scope, spv::GroupOperation group_operation,
+                                       Id value, std::optional<Id> cluster_size) {
+    code->Reserve(cluster_size ? 7 : 6);
+    return *code << OpId{op, result_type} << scope << group_operation << value << cluster_size << EndOp{};
+}
+
 } // namespace Sirit

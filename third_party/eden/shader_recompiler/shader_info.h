@@ -280,7 +280,7 @@ struct MeshInfo {
 
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
-    static constexpr size_t MAX_CBUFS{18};
+    static constexpr size_t MAX_CBUFS{25};   // (fork: Ampere's banks, 24 the root table)
     // (fork, as Lichii #434: 64. Fritchii's pass binds every candidate pointer of an ambiguous access; the back end's
     // layouts are built from the list, gpu/vk/vk_draw.cpp ensure_layout)
     static constexpr size_t MAX_SSBOS{64};
@@ -342,6 +342,10 @@ struct Info {
     bool uses_demote_to_helper_invocation{};
     bool uses_subgroup_vote{};
     bool uses_subgroup_mask{};
+    bool uses_subgroup_reduce{};   // (fork: SubgroupReduce*)
+    /// (fork) set by the front: the stage's subgroup operations expect the lanes reconverged where its control flow
+    /// merges (SPV_KHR_maximal_reconvergence, where the profile has it)
+    bool maximal_reconvergence{};
     bool uses_fswzadd{};
     bool uses_derivatives{};
     bool uses_typeless_image_reads{};

@@ -403,6 +403,11 @@ public:
     [[nodiscard]] U32 ShuffleButterfly(const IR::U32& value, const IR::U32& index,
                                        const IR::U32& clamp, const IR::U32& seg_mask);
     [[nodiscard]] U32 QuadBroadcast(const IR::U32& value, const IR::U32& lane);
+    // (fork) the value of the first active lane, for every lane (Ampere's R2UR)
+    [[nodiscard]] U32 SubgroupReadFirstLane(const U32& value);
+    // (fork) the value combined over the active lanes, for every lane (Ampere's REDUX)
+    enum class SubgroupReduceOp { IAdd, UMin, UMax, SMin, SMax, And, Or, Xor };
+    [[nodiscard]] U32 SubgroupReduce(SubgroupReduceOp op, const U32& value);
     // (fork) the subgroup's 16x8x16 f16 matrix multiply: a U32x4, b and c U32x2 fragments
     [[nodiscard]] Value MatrixMulAddF16(const Value& a, const Value& b, const Value& c);
     [[nodiscard]] U32 QuadSwap(const IR::U32& value, const IR::U32& direction);

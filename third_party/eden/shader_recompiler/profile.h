@@ -67,6 +67,7 @@ struct Profile {
     bool support_storage_texel_buffer_array_nonuniform_indexing{};
 
     bool warp_size_potentially_larger_than_guest{};
+    bool support_maximal_reconvergence{};   // (fork: VK_KHR_shader_maximal_reconvergence)
 
     bool lower_left_origin_mode{};
     /// Fragment outputs have to be declared even if they are not written to avoid undefined values.

@@ -615,7 +615,18 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::VoteAny:
     case IR::Opcode::VoteEqual:
     case IR::Opcode::SubgroupBallot:
+    case IR::Opcode::SubgroupReadFirstLane:   // (fork: OpGroupNonUniformBroadcastFirst is a Ballot capability op)
         info.uses_subgroup_vote = true;
+        break;
+    case IR::Opcode::SubgroupReduceIAdd:
+    case IR::Opcode::SubgroupReduceUMin:
+    case IR::Opcode::SubgroupReduceUMax:
+    case IR::Opcode::SubgroupReduceSMin:
+    case IR::Opcode::SubgroupReduceSMax:
+    case IR::Opcode::SubgroupReduceAnd:
+    case IR::Opcode::SubgroupReduceOr:
+    case IR::Opcode::SubgroupReduceXor:
+        info.uses_subgroup_reduce = true;
         break;
     case IR::Opcode::FSwizzleAdd:
         info.uses_fswzadd = true;

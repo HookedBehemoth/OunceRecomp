@@ -2128,6 +2128,32 @@ U32 IREmitter::ShuffleButterfly(const IR::U32& value, const IR::U32& index, cons
     return Inst<U32>(Opcode::ShuffleButterfly, value, index, clamp, seg_mask);
 }
 
+U32 IREmitter::SubgroupReadFirstLane(const U32& value) {
+    return Inst<U32>(Opcode::SubgroupReadFirstLane, value);
+}
+
+U32 IREmitter::SubgroupReduce(SubgroupReduceOp op, const U32& value) {
+    switch (op) {
+    case SubgroupReduceOp::IAdd:
+        return Inst<U32>(Opcode::SubgroupReduceIAdd, value);
+    case SubgroupReduceOp::UMin:
+        return Inst<U32>(Opcode::SubgroupReduceUMin, value);
+    case SubgroupReduceOp::UMax:
+        return Inst<U32>(Opcode::SubgroupReduceUMax, value);
+    case SubgroupReduceOp::SMin:
+        return Inst<U32>(Opcode::SubgroupReduceSMin, value);
+    case SubgroupReduceOp::SMax:
+        return Inst<U32>(Opcode::SubgroupReduceSMax, value);
+    case SubgroupReduceOp::And:
+        return Inst<U32>(Opcode::SubgroupReduceAnd, value);
+    case SubgroupReduceOp::Or:
+        return Inst<U32>(Opcode::SubgroupReduceOr, value);
+    case SubgroupReduceOp::Xor:
+        return Inst<U32>(Opcode::SubgroupReduceXor, value);
+    }
+    throw InvalidArgument("Invalid subgroup reduction {}", static_cast<int>(op));
+}
+
 Value IREmitter::MatrixMulAddF16(const Value& a, const Value& b, const Value& c) {
     return Inst(Opcode::MatrixMulAddF16, a, b, c);
 }

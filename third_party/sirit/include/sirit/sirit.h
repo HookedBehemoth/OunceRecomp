@@ -1340,6 +1340,11 @@ public:
     /// Result is the Value of the invocation within the quad with a quad index equal to Index.
     Id OpGroupNonUniformQuadBroadcast(Id result_type, Id scope, Id value, Id index);
 
+    /// (fork) One of the OpGroupNonUniform arithmetic and bitwise operations (OpGroupNonUniformIAdd to
+    /// OpGroupNonUniformBitwiseXor), by its opcode; cluster_size only for ClusteredReduce.
+    Id OpGroupNonUniformArithmetic(spv::Op op, Id result_type, Id scope, spv::GroupOperation group_operation,
+                                   Id value, std::optional<Id> cluster_size = std::nullopt);
+
     // Atomic
 
     /// Atomically load through Pointer using the given Semantics. All subparts of the value that is
