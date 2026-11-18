@@ -10,6 +10,7 @@
 #include "common/container/unordered_map.h"
 
 #include "common/common_types.h"
+#include "shader_recompiler/exception.h"
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/shader_info.h"
 #include "shader_recompiler/stage.h"
@@ -74,6 +75,12 @@ public:
     virtual ~Environment() = default;
 
     [[nodiscard]] virtual u64 ReadInstruction(u32 address) = 0;
+
+    /// (fork) The 16-byte instruction at address of a native (Ampere) program, low word first. Only the
+    /// environments of the native front have one.
+    [[nodiscard]] virtual u128 ReadInstruction128(u32 address) {
+        throw LogicError("This environment has no 16-byte instructions (read at {:#x})", address);
+    }
 
     [[nodiscard]] virtual u32 TranslateProgramAddress(u32 address) const { return address; }
 
