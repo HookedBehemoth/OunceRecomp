@@ -34,10 +34,8 @@ fi
 
 fail() { echo "play-refresh: $1; BUILD.txt untouched (see $log)"; exit 1; }
 cd "$root" || exit 1
-if [ -z "${OUNCE_HEAVY_HELD:-}" ]; then   # (one heavy job at a time: the agents' and this one's; relift.sh holds it already)
-  mkdir -p "$root/work"
-  exec env OUNCE_HEAVY_HELD=1 flock "$root/work/heavy.lock" "$0" "$@"
-fi
+. "$root/scripts/heavy.sh"
+heavy_lock_or_exec "$@"   # (relift.sh holds it already when it calls this)
 capped() {   # (a memory-capped scope where systemd can make one, else plain)
   if systemd-run --user --scope -q true 2>/dev/null; then
     systemd-run --user --scope -q -p MemoryMax="${OUNCE_REFRESH_MEM:-18G}" -p MemorySwapMax=0 "$@"
