@@ -45,6 +45,7 @@ the game; OoT is the default).
      `blr` with a proc after `;` is a call of that proc (`nvnCommandBufferDrawElements(cmd, ...)`).
    - Never write a call that is not in the listing. Code the function does inline (stores of a command record, a
      copied loop) stays inline as its loads and stores; do not turn it into a call.
+   - Never elide code: a second pass that repeats the first is written out in full, not `/* same as above */`.
    - Write memory as `p->+0x1c:u32` (the offset and the width, as the instruction has them). Do not round or rename
      offsets. Write locals as `local_<sp offset>`.
    - Name registers by what they hold once you know it (`frame`, `list`), and keep the register in a comment the first
