@@ -326,6 +326,27 @@ pub fn nvn_exports(mods: &[Nso], implemented: &BTreeSet<String>) -> Vec<String> 
     v
 }
 
+/// the SDK version the sdk module was built with, from its middleware string `nnSdk-<flavour>_<major>_<minor>_<micro>-...`
+/// (every copy in the module must name the same version)
+pub fn sdk_version(mods: &[Nso]) -> Result<(u32, u32, u32), String> {
+    let sdk = mods.iter().find(|m| m.name == "sdk").ok_or("no sdk module")?;
+    let (img, key) = (&sdk.image, b"nnSdk-");
+    let mut found = BTreeSet::new();
+    for at in (0..img.len().saturating_sub(key.len())).filter(|&k| img[k..].starts_with(key)) {
+        let word: String = img[at + key.len()..].iter().take(64).take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').map(|&c| c as char).collect();
+        let parts: Vec<&str> = word.split('_').collect();
+        let nums = |w: &[&str]| -> Option<(u32, u32, u32)> { Some((w[0].parse().ok()?, w[1].parse().ok()?, w[2].parse().ok()?)) };
+        if let Some(v) = parts.windows(3).find_map(nums) {
+            found.insert(v);
+        }
+    }
+    match found.len() {
+        1 => Ok(found.into_iter().next().unwrap()),
+        0 => Err("the sdk module names no SDK version (no nnSdk-..._<major>_<minor>_<micro> string)".into()),
+        _ => Err(format!("the sdk module names more than one SDK version: {found:?}")),
+    }
+}
+
 /// (HLE'd symbols, stubbed symbols) (standalone.hle_set); implemented: the host's HLE and PATCH_ANSWER symbols
 pub fn hle_set(mods: &[Nso], implemented: &BTreeSet<String>, namespaces: &[String]) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
     let known: HashSet<&str> = mods.iter().flat_map(|m| m.symbols.iter().filter(|s| !s.name.is_empty()).map(|s| s.name.as_str())).collect();
@@ -361,6 +382,27 @@ pub fn hle_set(mods: &[Nso], implemented: &BTreeSet<String>, namespaces: &[Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sdk_version_comes_from_the_sdk_module() {
+        let sdk = |image: &[u8]| Nso {
+            name: "sdk".into(),
+            build_id: String::new(),
+            segments: Vec::new(),
+            bss_size: 0,
+            image: image.to_vec(),
+            mod0: 0,
+            bss: (0, 0),
+            eh_frame_hdr: (0, 0),
+            dynamic: HashMap::new(),
+            symbols: Vec::new(),
+            relocs: Vec::new(),
+        };
+        let one = b"\0SDK MW+Nintendo+NintendoSDK_nnSdk-Generic_20_5_19-Release\0nnSdk-Generic_20_5_19-Release\0";
+        assert_eq!(sdk_version(&[sdk(one)]), Ok((20, 5, 19)));
+        assert!(sdk_version(&[sdk(b"nnSdk-Generic_20_5_19-Release nnSdk-Generic_22_2_8-Release")]).is_err());
+        assert!(sdk_version(&[sdk(b"nnSdk.nss")]).is_err());
+    }
 
     #[test]
     fn unwind_starts_come_from_image_bytes() {

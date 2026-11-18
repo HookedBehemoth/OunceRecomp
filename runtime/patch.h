@@ -37,8 +37,10 @@
        definition); an NVN proc, static void n_<name>(Ctx *c, void *u_) (runtime/nvn_native.c's table); the effects of a
        replaced function whose body is not declared here (a generated stub or dispatch). effects: reads(reg..., "why")
        the registers a call reads beyond the AAPCS arguments, x8, v0-v7, sp and x30; clobbers("why") a call keeps no
-       register.
-     PATCH_ANSWER(symbol, value, "why");
+       register; sdk(min) or sdk(min, max) (HLE, HLE_EFFECTS) the SDK majors the symbol exists in: on an image of another
+       SDK (its sdk module's nnSdk-..._<major>_... string) the declaration is left out, on one of these a missing symbol
+       stops the lift as for any other.
+     PATCH_ANSWER(symbol, value, "why", [sdk(min[, max])]);
        a function the image replaces with a constant answer: x0 is value and nothing else is written (any other result
        register keeps what it held). No host function: at a direct call (BL, or a tail branch) the lifter writes value to
        x0 and x30 as the BL would, and makes no call; the function's generic entry f_<addr> (a code pointer, a BLR) is
@@ -843,7 +845,8 @@ typedef struct SvcCall {
         return ((results) > 0 ? s_.x[0] : 0) | (unsigned __int128)((results) > 1 ? s_.x[1] : 0) << 64;                \
     }                                                                                                                 \
     static inline __attribute__((always_inline)) void svc_##name(SvcCall *c)
-#define PATCH_ANSWER(sym, value, why) HOS_PATCH_RECORD("PATCH_ANSWER", #sym "," #value "," #why) _Static_assert(1, #sym)
+#define PATCH_ANSWER(sym, value, why, ...)                                                                            \
+    HOS_PATCH_RECORD("PATCH_ANSWER", #sym "," #value "," #why "," #__VA_ARGS__) _Static_assert(1, #sym)
 #define HLE_EFFECTS(sym, ...) HOS_PATCH_RECORD("HLE_EFFECTS", #sym "," #__VA_ARGS__) _Static_assert(1, #sym)
 #define PATCH_AT_SITE(pc, word, mode, result, fn, ...)                                                                \
     HOS_PATCH_RECORD("PATCH_AT_SITE", #pc "," #word "," #mode "," #result "," #fn "," #__VA_ARGS__)                \

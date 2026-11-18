@@ -580,18 +580,58 @@ fn signature(s: &Site) -> (&'static str, bool, Vec<&'static str>, Vec<String>) {
 }
 
 /// (reads, clobbers) of a declaration's effect clauses (patch_scan._effects, allowed: reads, clobbers)
-fn effects(args: &[&Vec<Tok>], at: &Where) -> Res<(Vec<String>, Option<String>)> {
+/// the SDK majors a declaration belongs to, sdk(min) or sdk(min, max), both inclusive: on an image of another SDK the
+/// declaration is left out (PatchSet::for_sdk), on one of these its symbol must exist
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SdkRange(pub u32, pub u32);
+
+impl SdkRange {
+    pub const ANY: SdkRange = SdkRange(0, u32::MAX);
+    pub fn has(&self, major: u32) -> bool {
+        self.0 <= major && major <= self.1
+    }
+}
+
+/// `sdk(min)` or `sdk(min, max)`; None if the argument is not an sdk(...)
+fn sdk_range(a: &[Tok], at: &Where) -> Option<Res<SdkRange>> {
+    let inner = call(a, "sdk")?;
+    let bad = || fail(at, "sdk(min) or sdk(min, max): the SDK majors the declaration belongs to");
+    if inner.is_empty() || inner.len() > 2 {
+        return Some(bad());
+    }
+    let mut v = Vec::new();
+    for x in &inner {
+        match num(&owned(x), at, "an SDK major") {
+            Ok(n) if (1..1000).contains(&n) => v.push(n as u32),
+            Ok(_) => return Some(bad()),
+            Err(e) => return Some(Err(e)),
+        }
+    }
+    let r = SdkRange(v[0], *v.get(1).unwrap_or(&u32::MAX));
+    Some(if r.0 > r.1 { bad() } else { Ok(r) })
+}
+
+/// (reads, clobbers, sdk)
+fn effects(args: &[&Vec<Tok>], at: &Where) -> Res<(Vec<String>, Option<String>, SdkRange)> {
     let allowed = ["reads", "clobbers"];
     let mut reads: Option<Vec<String>> = None;
     let mut clobbers: Option<String> = None;
+    let mut sdk: Option<SdkRange> = None;
     for a in args {
+        if let Some(r) = sdk_range(a, at) {
+            if sdk.is_some() {
+                return fail(at, "sdk(...) twice");
+            }
+            sdk = Some(r?);
+            continue;
+        }
         let name = a.first().filter(|t| t.kind == TK::Id).map(|t| t.text.clone());
         let inner = name.as_ref().and_then(|n| call(a, n));
         let (Some(name), Some(inner)) = (name, inner) else {
-            return fail(at, format!("an effect: reads(...) or clobbers(...), not {}", py_repr(&joined(a))));
+            return fail(at, format!("an effect: reads(...), clobbers(...) or sdk(...), not {}", py_repr(&joined(a))));
         };
         if !allowed.contains(&name.as_str()) {
-            return fail(at, format!("an effect: reads(...) or clobbers(...), not {}", py_repr(&joined(a))));
+            return fail(at, format!("an effect: reads(...), clobbers(...) or sdk(...), not {}", py_repr(&joined(a))));
         }
         if (name == "reads" && reads.is_some()) || (name == "clobbers" && clobbers.is_some()) {
             return fail(at, format!("{name}(...) twice"));
@@ -617,7 +657,7 @@ fn effects(args: &[&Vec<Tok>], at: &Where) -> Res<(Vec<String>, Option<String>)>
             clobbers = Some(inner[0][0].text.clone());
         }
     }
-    Ok((reads.unwrap_or_default(), clobbers))
+    Ok((reads.unwrap_or_default(), clobbers, sdk.unwrap_or(SdkRange::ANY)))
 }
 
 /// a PATCH_FUNC / PATCH_FUNC_SYM, parsed
@@ -739,6 +779,7 @@ pub struct Replaced {
     pub symbol: String,
     pub reads: Vec<String>,
     pub clobbers: Option<String>,
+    pub sdk: SdkRange,
 }
 
 impl Replaced {
@@ -749,11 +790,14 @@ impl Replaced {
         }
         let symbol = ident(&a[0], at, "the symbol")?;
         let eff: Vec<&Vec<Tok>> = a[1..].iter().filter(|x| !x.is_empty()).collect();
-        let (reads, clobbers) = effects(&eff, at)?;
+        let (reads, clobbers, sdk) = effects(&eff, at)?;
         if d.kind == "HLE_EFFECTS" && reads.is_empty() && clobbers.is_none() {
             return fail(at, "HLE_EFFECTS without an effect");
         }
-        Ok(Replaced { kind: d.kind, at: at.clone(), symbol, reads, clobbers })
+        if d.kind == "NV" && sdk != SdkRange::ANY {
+            return fail(at, "NV takes no sdk(...): a proc the image lacks is never asked for");
+        }
+        Ok(Replaced { kind: d.kind, at: at.clone(), symbol, reads, clobbers, sdk })
     }
 }
 
@@ -763,20 +807,26 @@ pub struct Answer {
     pub at: Where,
     pub symbol: String,
     pub value: i128,
+    pub sdk: SdkRange,
 }
 
 impl Answer {
     fn new(d: &Decl) -> Res<Answer> {
         let (a, at) = (&d.args, &d.at);
-        if a.len() != 3 {
-            return fail(at, "PATCH_ANSWER(symbol, value, \"why\")");
+        let sdk = match a.get(3).map(|x| sdk_range(x, at)) {
+            None => SdkRange::ANY,
+            Some(Some(r)) if a.len() == 4 => r?,
+            _ => return fail(at, "PATCH_ANSWER(symbol, value, \"why\", [sdk(...)])"),
+        };
+        if a.len() != 3 && a.len() != 4 {
+            return fail(at, "PATCH_ANSWER(symbol, value, \"why\", [sdk(...)])");
         }
         let symbol = ident(&a[0], at, "the symbol")?;
         let value = num(&a[1], at, "the answer")?;
         if a[2].len() != 1 || a[2][0].kind != TK::Str || a[2][0].text.chars().count() <= 2 {
             return fail(at, "PATCH_ANSWER(symbol, value, \"why\"): the reason as a string");
         }
-        Ok(Answer { at: at.clone(), symbol, value })
+        Ok(Answer { at: at.clone(), symbol, value, sdk })
     }
 }
 
@@ -952,6 +1002,15 @@ pub fn scan(root: &Path, files: &[std::path::PathBuf]) -> Res<PatchSet> {
 const HLE_ARGS: u128 = 0x1FF | (0xFF << 36) | (1 << 31) | (1 << 30);
 
 impl PatchSet {
+    /// the set without the HLE, HLE_EFFECTS and PATCH_ANSWER declarations of other SDK majors than the image's;
+    /// (the number left out)
+    pub fn for_sdk(&mut self, major: u32) -> usize {
+        let n = self.hle.len() + self.declared.len() + self.answers.len();
+        self.hle.retain(|_, r| r.sdk.has(major));
+        self.declared.retain(|_, r| r.sdk.has(major));
+        self.answers.retain(|_, a| a.sdk.has(major));
+        n - (self.hle.len() + self.declared.len() + self.answers.len())
+    }
     /// the symbols HLE(...) and PATCH_ANSWER(...) replace
     pub fn hle_symbols(&self) -> BTreeSet<String> {
         self.hle.keys().chain(self.answers.keys()).cloned().collect()
@@ -1421,6 +1480,22 @@ mod tests {
         assert_eq!(ps.sites[0].args, vec!["x0", "[sp+0x10]", "#3"]);
         assert_eq!(ps.hle["_ZN2nn2oe1fEv"].reads, vec!["x9"]);
         assert_eq!(ps.hle_symbols().len(), 2);
+    }
+
+    #[test]
+    fn a_declaration_of_other_sdks_is_left_out() {
+        let mut ps = scan_texts(&[(
+            "t.c".into(),
+            "HLE(a, sdk(22)) { }\nHLE(b, reads(x9, \"why\"), sdk(19, 20)) { }\nPATCH_ANSWER(c, 1, \"why\", sdk(22));\nHLE(d) { }".into(),
+        )])
+        .unwrap();
+        assert_eq!(ps.hle["b"].sdk, SdkRange(19, 20));
+        assert_eq!(ps.clone().for_sdk(22), 1);
+        assert_eq!(ps.for_sdk(20), 2);
+        assert_eq!(ps.hle_symbols().into_iter().collect::<Vec<_>>(), vec!["b", "d"]);
+        assert_eq!(err("HLE(a, sdk(22, 20)) { }"), "patch declarations: t.c:1: sdk(min) or sdk(min, max): the SDK majors the declaration belongs to");
+        assert_eq!(err("PATCH_ANSWER(c, 1, \"why\", 22);"), "patch declarations: t.c:1: PATCH_ANSWER(symbol, value, \"why\", [sdk(...)])");
+        assert_eq!(err("NV(nvnFoo, sdk(22)) { }"), "patch declarations: t.c:1: NV takes no sdk(...): a proc the image lacks is never asked for");
     }
 
     #[test]

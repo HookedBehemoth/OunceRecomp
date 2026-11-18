@@ -534,9 +534,10 @@ fn cost(b: &Base, before: &PatchSet, after: &PatchSet, n: &Names, o: &mut String
     Ok((rows.len(), sites))
 }
 
-/// the PatchSet without the declaration at w
-fn without(texts: &[(String, String)], w: &Where) -> PatchSet {
+/// the PatchSet of the image's SDK without the declaration at w
+fn without(texts: &[(String, String)], sdk: u32, w: &Where) -> PatchSet {
     let mut ps = patch::scan_texts(texts).unwrap_or_else(|e| fail(e));
+    ps.for_sdk(sdk);
     ps.sites.retain(|d| d.at != *w);
     ps.funcs.retain(|d| d.at != *w);
     for m in [&mut ps.hle, &mut ps.nv, &mut ps.declared] {
@@ -572,7 +573,8 @@ pub fn check(argv: Vec<String>) {
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin).unwrap_or_else(|e| fail(e));
         let mut all = texts.clone();
         all.push(("<stdin>".into(), stdin));
-        let after = patch::scan_texts(&all).unwrap_or_else(|e| fail(e));
+        let mut after = patch::scan_texts(&all).unwrap_or_else(|e| fail(e));
+        after.for_sdk(b.sdk.0 .0);
         let errs: Vec<_> = b.errors(&after).unwrap_or_else(|e| fail(e)).into_iter().filter(|(w, _)| w.0 == "<stdin>").collect();
         for (w, m) in &errs {
             println!("{}: {m}", wh(w));
@@ -614,7 +616,7 @@ pub fn check(argv: Vec<String>) {
     if let (Some(w), true) = (&only, errs.is_empty()) {
         println!("cost of {} {} (the summaries computed again without it):", declared_at(&b.ps, w).unwrap(), wh(w));
         let mut o = String::new();
-        cost(&b, &without(&texts, w), &b.ps, &n, &mut o).unwrap_or_else(|e| fail(e));
+        cost(&b, &without(&texts, b.sdk.0 .0, w), &b.ps, &n, &mut o).unwrap_or_else(|e| fail(e));
         print!("{o}");
     }
     if !errs.is_empty() {

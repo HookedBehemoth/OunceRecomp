@@ -121,4 +121,8 @@ declaration does not name, or reads registers it does not declare.
 - A call of an NVN proc the host does not implement stops the game and names the proc.
 - An `HLE` or `PATCH_ANSWER` of a symbol that no module of the image has stops the lift.
 
+A declaration of a symbol that only some SDK versions have names them: `sdk(22)` (22 and later) or `sdk(19, 20)`,
+an effect of an `HLE` or the last operand of a `PATCH_ANSWER`. The lift reads the image's SDK version from its `sdk`
+module and leaves out the declarations of other versions. Inside the range, a missing symbol still stops the lift.
+
 If one of these stops your run, implement the function or add a `PATCH_ANSWER` with the reason the constant is enough.

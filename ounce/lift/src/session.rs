@@ -71,6 +71,8 @@ pub struct Base {
     pub hle: BTreeSet<String>,
     pub stubbed: BTreeSet<String>,
     pub nvn: Vec<String>,
+    /// the image's SDK version, and how many declarations of other SDKs the scan's set left out
+    pub sdk: ((u32, u32, u32), usize),
     pub img: Image,
     pub facts: Facts,
     /// the image's entries and those ADR / ADRP+ADD form outside unwind-covered code
@@ -96,7 +98,7 @@ impl Base {
     pub fn new(o: &Opts) -> Result<Base, String> {
         let t0 = std::time::Instant::now();
         let game = Game::load(&o.game)?;
-        let ps = patch::scan_texts(&host_texts(&o.root, &game)?)?;
+        let mut ps = patch::scan_texts(&host_texts(&o.root, &game)?)?;
         let horizon = Horizon::load(&o.root)?;
         let mut times = Times { scan: t0.elapsed().as_secs_f64(), ..Times::default() };
         let read;
@@ -114,6 +116,8 @@ impl Base {
         game.check_exefs(exefs)?;
         let npdm = exefs.get("main.npdm")?.to_vec();
         let mods: Vec<Nso> = crate::nso::load_exefs(exefs)?;
+        let sdk = eden::sdk_version(&mods)?;
+        let sdk = (sdk, ps.for_sdk(sdk.0));
         let implemented: BTreeSet<String> = ps.hle_symbols();
         let (hle, stubbed) = eden::hle_set(&mods, &implemented, &horizon.os_namespaces)?;
         let nvn = eden::nvn_exports(&mods, &implemented);
@@ -126,7 +130,7 @@ impl Base {
         entries.extend(img.code_address_refs(&spans).into_iter().filter(|&e| img.in_code(e) && !have.contains(&e)));
         times.image = t0.elapsed().as_secs_f64();
         let hot: HashSet<u64> = game.hot_list()?.into_iter().collect();
-        let parts = Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, hot };
+        let parts = Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, facts, entries, hot };
         Ok(Base::of(parts, o, times))
     }
 
@@ -140,8 +144,8 @@ impl Base {
             let found = (d.funcs.len(), d.jt.len(), d.jt_index.len(), d.plt.len(), d.setjmp_owner.len(), d.rounds as usize + 1);
             (Plan::new(&d, &i.img, &i.hot), found)
         };
-        let Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, .. } = i;
-        Base { game, opts: o.clone(), npdm, ps, horizon, implemented, hle, stubbed, nvn, img, facts, entries, plan, found, times }
+        let Inputs { game, npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, facts, entries, .. } = i;
+        Base { game, opts: o.clone(), npdm, ps, horizon, implemented, hle, stubbed, nvn, sdk, img, facts, entries, plan, found, times }
     }
 
     /// a base of synthetic code: (entry, words) functions in one module, the declarations of texts, no hooks (the
@@ -205,6 +209,7 @@ impl Base {
             hle: BTreeSet::new(),
             stubbed: BTreeSet::new(),
             nvn: Vec::new(),
+            sdk: ((0, 0, 0), 0),
             img,
             facts,
             entries,
@@ -381,6 +386,7 @@ struct Inputs {
     hle: BTreeSet<String>,
     stubbed: BTreeSet<String>,
     nvn: Vec<String>,
+    sdk: ((u32, u32, u32), usize),
     img: Image,
     facts: Facts,
     entries: Vec<u64>,

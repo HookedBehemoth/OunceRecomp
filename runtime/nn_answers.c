@@ -211,7 +211,7 @@ PATCH_ANSWER(_ZN2nn3ssl10InitializeEv, 0,
 /* ---- nn::vi */
 /* nn::vi::QueryDisplayCurrentRefreshRate(nn::vi::RefreshRate*, bool*, nn::vi::Display const*) */
 PATCH_ANSWER(_ZN2nn2vi30QueryDisplayCurrentRefreshRateEPNS0_11RefreshRateEPbPKNS0_7DisplayE, 0,
-             "0 (success), the outputs left as they were: the host paces presents (runtime/nn_vi.c)");
+             "0 (success), the outputs left as they were: the host paces presents (runtime/nn_vi.c)", sdk(22));
 /* nn::vi::SetDisplay120HzRefreshRateCapability(nn::vi::Display*, bool) */
 PATCH_ANSWER(_ZN2nn2vi36SetDisplay120HzRefreshRateCapabilityEPNS0_7DisplayEb, 0,
              "0 (success): the host paces presents itself (runtime/nn_vi.c)");

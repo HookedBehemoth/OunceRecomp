@@ -352,7 +352,7 @@ HLE(_ZN2nn5audio28GetDefaultVirtualInputDeviceEPNS0_15AudioDeviceNameE) {
     if (ARG(0)) memset(GP(ARG(0)), 0, 256), memcpy(GP(ARG(0)), "MainAudioIn", 11);
     RET(0);
 }
-HLE(_ZN2nn5audio26GetTrueRawAudioInputDeviceEPNS0_15AudioDeviceNameE) {
+HLE(_ZN2nn5audio26GetTrueRawAudioInputDeviceEPNS0_15AudioDeviceNameE, sdk(22)) {
     if (ARG(0)) memset(GP(ARG(0)), 0, 256), memcpy(GP(ARG(0)), "RawAudioIn", 10);
     RET(0);
 }
