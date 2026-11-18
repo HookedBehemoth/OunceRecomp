@@ -1,13 +1,11 @@
-"""re: the reverse engineering command. One game's executable as compact text for agents, each output within a fixed
+"""re: the reverse engineering command. One game's executable as compact text, each output (but fn's) within a fixed
 budget (cut with a note). Run through tools/re/re (work/venv's python -I).
 
   re [--game games/oot|games/dkb] <command> ...
-    fn <addr|label>                   the whole annotated listing: blocks, callees (with the name of a stored reading),
-                                      strings, globals, NVN procs called through their slots; above FN_LIMIT
-                                      instructions an error instead of a cut listing
-    tree <addr|label> [--depth N]     the callee tree: label, sdk, read: <name> (stored pseudo-C), proc or UNREAD
-    pseudo <addr|label> [--set <file|->]  the stored pseudo-C (the re agent writes it)
-    pc <addr|label>                   experimental pseudo-C without a model
+    fn <addr|label>                   the whole annotated listing: blocks, callees with their arguments, strings,
+                                      globals, NVN procs called through their slots; above FN_LIMIT instructions an
+                                      error instead of a cut listing
+    tree <addr|label> [--depth N]     the callee tree: label, sdk or proc
     callers <addr|label>              who calls it (BL, tail B, 8-byte pointers), one line each
     callees <addr|label>              what it calls, one line each
     xref <string|addr>                code that takes the address of a string or a global (ADRP+ADD/LDR), pointers
@@ -22,7 +20,6 @@ first line of work/<game>/dump.txt, else (OoT) work/dump.txt. Addresses are gues
 those of games/<game>/labels.txt.
 """
 import bisect
-import hashlib
 import os
 import re as regex
 import subprocess
@@ -34,11 +31,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
-import pseudo  # noqa: E402
+import args as cargs  # noqa: E402
+import disasm  # noqa: E402
 
 LIMIT_CHARS = 9000
-FN_LIMIT = 6000     # instructions re fn prints whole: ~40 bytes a line, so ~250 kB (~70k tokens) fits the re agent's
-                    # context with room for its work. 36 of DKB's 188k functions are larger (up to 19000)
+FN_LIMIT = 6000     # instructions re fn prints whole (~50 bytes a line). 36 of DKB's 188k functions are larger
 
 
 def main_root():
@@ -136,7 +133,7 @@ def read_labels(path):
 
 
 class Game:
-    def __init__(self, gamedir, exefs=None, hide=()):
+    def __init__(self, gamedir, exefs=None):
         self.dir = gamedir
         self.game = os.path.basename(os.path.normpath(gamedir))
         self.cache = os.path.join(WORK, "re", self.game)
@@ -167,16 +164,15 @@ class Game:
         for line in open(os.path.join(ex, "plt.tsv")):
             s, t, _ = line.split("\t")
             self.plt[int(s, 16)] = int(t, 16)
-        self.sym = {}
+        self.sym, self.mangled = {}, {}
         for line in open(os.path.join(ex, "names.tsv"), encoding="utf-8", errors="replace"):
             p = line.rstrip("\n").split("\t")
             if len(p) == 3:
                 a = int(p[0], 16)
                 if a not in self.sym:
                     self.sym[a] = short(p[2])
+                    self.mangled[a] = p[1]
         self.labels, self.notes = read_labels(os.path.join(gamedir, "labels.txt"))
-        for a in hide:
-            self.labels.pop(a, None)
         self.by_label = {v: k for k, v in self.labels.items()}
         self.by_sym = {}
         for a, s in self.sym.items():
@@ -185,7 +181,7 @@ class Game:
         self._calls = None
         self._fields = None
         self._procs = None
-        self.hide_name = None
+        self.sigs = cargs.Sigs(self, ROOT)
 
     # -- memory
 
@@ -230,12 +226,6 @@ class Game:
         for s, n in self.runs[int(self.offs[i]):int(self.offs[i + 1])].tolist():
             pcs.extend(range(s, s + 4 * n, 4))
         return pcs
-
-    def body_hash(self, entry):
-        h = hashlib.sha1()
-        for pc in self.body(entry):
-            h.update(self.read(pc, 4))
-        return h.hexdigest()[:16]
 
     def resolve(self, t):
         return self.plt.get(t, t)
@@ -336,8 +326,8 @@ class Game:
         data = self.read(t, 4 * 48)
         written, n = set(), 0
         if data:
-            for i in pseudo.MD.disasm(data, t):
-                x = pseudo.classify(i.address, 0, i)
+            for i in disasm.MD.disasm(data, t):
+                x = disasm.classify(i.address, 0, i)
                 if x.kind in ("bl", "blr", "b", "br", "ret"):
                     if x.kind in ("b", "br"):
                         n = max([n] + [k + 1 for k in x.uses if k < 8 and k not in written])
@@ -532,73 +522,6 @@ def short(name):
     return name
 
 
-# ---- the stored readings: pseudo-C per function (the re agent's), keyed by its body hash
-
-
-def store_path(g, kind, a):
-    return os.path.join(g.cache, kind, "%08x.txt" % a)
-
-
-def stored(g, kind, a):
-    """(text, fresh) of the stored pseudo-C, or (None, False)"""
-    p = store_path(g, kind, a)
-    if not os.path.exists(p):
-        return None, False
-    head, _, text = open(p, encoding="utf-8").read().partition("\n")
-    return text.rstrip("\n"), head.strip() == "body " + g.body_hash(a)
-
-
-def store(g, kind, a, text):
-    p = store_path(g, kind, a)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
-        f.write("body %s\n%s\n" % (g.body_hash(a), text.strip("\n")))
-    return p
-
-
-SIGNATURE = regex.compile(r"^[A-Za-z_][\w \*]*?\b([a-z_][a-z0-9_]*)\s*\(")
-
-
-def read_name(g, a):
-    """the suggested name on the stored pseudo-C's signature line: (name, fresh), or (None, False) when unread"""
-    t, fresh = stored(g, "pseudo", a)
-    if not t:
-        return None, False
-    for line in t.split("\n"):
-        m = SIGNATURE.match(line.strip())
-        if m and not line.startswith((" ", "\t")):
-            return m.group(1), fresh
-    return "?", fresh
-
-
-def read_tag(g, a):
-    """'read: <name>' (stale: the body changed since) or None"""
-    n, fresh = read_name(g, a)
-    if n is None:
-        return None
-    return "read: %s%s" % (n, "" if fresh else ", stale")
-
-
-def cmd_pseudo(g, args):
-    a = fn_entry(g, args)
-    if "--set" in args:
-        k = args.index("--set")
-        src = args[k + 1] if k + 1 < len(args) else "-"
-        text = sys.stdin.read() if src == "-" else open(src, encoding="utf-8").read()
-        print("re: pseudo-C stored: %s" % store(g, "pseudo", a, text))
-        return
-    t, fresh = stored(g, "pseudo", a)
-    if not t:
-        print("// no stored pseudo-C for %s (re fn for the listing; the re agent writes it)" % g.name(a))
-        return
-    o = Out(int(opt(args, "--lines", 200)))
-    if not fresh:
-        o("// (stale: the body changed since this was written)")
-    o("// pseudo-C of %s @ %#x, written by the re agent from re fn (the cheap model's reading)" % (g.name(a), a))
-    o(t)
-    o.done()
-
-
 # ---- field names (offset -> name, any struct: only for distinctive offsets)
 
 
@@ -630,29 +553,37 @@ def cmd_fieldname(g, args):
 # ---- the listing
 
 
-def listing(g, a, hide_name=False, proc_calls=None):
+def listing(g, a, proc_calls=None):
     """the annotated listing; with proc_calls (a dict), only fills it with blr pc -> proc name and returns nothing"""
     pcs = g.body(a)
-    ins = pseudo.decode(g, pcs)
-    blocks, bmap = pseudo.build_blocks(g, a, pcs, ins)
+    ins = disasm.decode(g, pcs)
+    blocks, bmap = disasm.build_blocks(g, a, pcs, ins)
     bname = {b.start: "B%d" % n for n, b in enumerate(blocks)}
     fields = field_names(g)
     out = []
     if proc_calls is None:
         bl, b_ = g.callers(a)
         ptr = g.pointers(a)
-        nm = "f_%08x" % a if hide_name else g.name(a)
+        n = g.callee_inputs(a)
+        nargs = "%d args (x0..x%d read first)" % (n, n - 1) if n else "0 args (none read first)"
         out.append("// %s @ %#x: %d insns, %d blocks; %s; callers: %d bl, %d tail b, %d pointers; frame saves not shown" %
-                   (nm, a, len(pcs), len(blocks), ("args x0..x%d read first" % (g.callee_inputs(a) - 1)) if g.callee_inputs(a) else "no args read first", len(bl), len(b_), len(ptr)))
-        if not hide_name and a in g.notes and g.notes[a]:
+                   (g.name(a), a, len(pcs), len(blocks), nargs, len(bl), len(b_), len(ptr)))
+        if a in g.notes and g.notes[a]:
             out.append("// label note: " + g.notes[a][:300])
-        own = None if hide_name else read_tag(g, a)
-        if own:
-            out.append("// %s (re pseudo)" % own)
+        g.sigs.prefetch({g.resolve(x.target) for x in ins.values() if x.kind in ("bl", "b") and x.target is not None})
     pages = {}
     procs = g.procs()
     held = {}       # reg -> ("slot", address) or ("proc", name): calls through a proc slot get its name
+    state = {}      # block start -> its Regs at the end (the arguments' values)
+    fixed = frame_pointer(g, ins, pcs)
     for blk in sorted(blocks, key=lambda b: b.start):
+        ins_ = [state[p] for p in blk.preds if p in state]
+        if blk.start == a:
+            regs = cargs.Regs(entry=True)
+        elif ins_ and len(ins_) == len(blk.preds):
+            regs = cargs.Regs.merge(ins_)
+        else:
+            regs = cargs.Regs(fixed=fixed)
         preds = ",".join(bname.get(p, "?") for p in sorted(blk.preds))
         succ = ",".join(bname.get(t, "?") for t in blk.succs)
         loop = " loop" if any(p >= blk.start for p in blk.preds) else ""
@@ -665,6 +596,8 @@ def listing(g, a, hide_name=False, proc_calls=None):
                 out.append("  %x  .word %#010x" % (pc, x.w))
                 continue
             mn, ops = i.mnemonic, i.operands
+            if x.kind not in ("bl", "blr", "b", "cond"):
+                regs.step(g, x)
             if frame_insn(i):
                 skipped += 1
                 continue
@@ -683,16 +616,14 @@ def listing(g, a, hide_name=False, proc_calls=None):
                     r = g.resolve(tg)
                     t = regex.sub(r"#0x[0-9a-f]+$", g.name(r), t)
                     if x.kind != "bl":
-                        note = "tail call"
-                    n = read_tag(g, r) if r not in g.labels else None
-                    if n:
-                        note = (note + "; " if note else "") + n
+                        note = "tail call "
+                    note += cargs.call_text(g, regs, g.sigs.of(r), r)
             elif mn == "adrp":
                 pages[ops[0].reg] = ops[1].imm
                 t = "%s, %#x" % (i.reg_name(ops[0].reg), ops[1].imm)
             elif mn == "adr":
                 note = g.addr_text(ops[1].imm)
-            elif mn == "add" and len(ops) == 3 and ops[1].type == pseudo.A.ARM64_OP_REG and ops[2].type == pseudo.A.ARM64_OP_IMM:
+            elif mn == "add" and len(ops) == 3 and ops[1].type == disasm.A.ARM64_OP_REG and ops[2].type == disasm.A.ARM64_OP_IMM:
                 if ops[1].reg in pages:
                     note = g.addr_text(pages[ops[1].reg] + ops[2].imm)
                     if pages[ops[1].reg] + ops[2].imm in procs:
@@ -703,8 +634,11 @@ def listing(g, a, hide_name=False, proc_calls=None):
                 note = held[ops[0].reg][1]
                 if proc_calls is not None:
                     proc_calls[pc] = note
-            elif mn.startswith(("ld", "st")) and any(o.type == pseudo.A.ARM64_OP_MEM for o in ops):
-                m = next(o for o in ops if o.type == pseudo.A.ARM64_OP_MEM)
+                note += " " + cargs.call_text(g, regs, g.sigs.nvn(note))
+            elif x.kind == "blr":
+                note = cargs.call_text(g, regs, None)
+            elif mn.startswith(("ld", "st")) and any(o.type == disasm.A.ARM64_OP_MEM for o in ops):
+                m = next(o for o in ops if o.type == disasm.A.ARM64_OP_MEM)
                 if m.mem.base in pages:
                     ea = pages[m.mem.base] + m.mem.disp
                     note = g.data_text(ea)
@@ -716,7 +650,7 @@ def listing(g, a, hide_name=False, proc_calls=None):
                         got = ("proc", procs[held[m.mem.base][1] + m.mem.disp])
                 elif m.mem.disp in fields and m.mem.disp >= 0x10:
                     note = "." + fields[m.mem.disp]
-            elif mn.startswith("ldr") and len(ops) == 2 and ops[1].type == pseudo.A.ARM64_OP_IMM:
+            elif mn.startswith("ldr") and len(ops) == 2 and ops[1].type == disasm.A.ARM64_OP_IMM:
                 size = 8 if i.reg_name(ops[0].reg)[0] in "xd" else 4
                 v = int.from_bytes(g.read(ops[1].imm, size), "little")
                 note = "= %#x" % v
@@ -726,19 +660,30 @@ def listing(g, a, hide_name=False, proc_calls=None):
                 cases = {}
                 for n_, tg in enumerate(g.jt[pc][2]):
                     cases.setdefault(bname.get(tg, "%x" % tg), []).append(n_)
-                note = "switch x%d: " % g.jt[pc][1] + " ".join("%s=%s" % (pseudo.ranges(v), k) for k, v in cases.items())
+                note = "switch x%d: " % g.jt[pc][1] + " ".join("%s=%s" % (disasm.ranges(v), k) for k, v in cases.items())
             if mn != "adrp":
                 for o in ops:
-                    if o.type == pseudo.A.ARM64_OP_REG and o.access & capstone_write():
+                    if o.type == disasm.A.ARM64_OP_REG and o.access & capstone_write():
                         pages.pop(o.reg, None)
                         held.pop(o.reg, None)
             if x.kind in ("bl", "blr"):
                 for r in [r for r in held if not callee_saved(i.reg_name(r))]:
                     del held[r]
+                regs.call("%s()" % g.name(g.resolve(x.target)) if x.kind == "bl" else None)
             elif got:
                 held[ops[0].reg] = got
             out.append("  %x  %-7s %s%s" % (pc, mn, t, ("   ; " + note) if note else ""))
+        state[blk.start] = regs
     return None if proc_calls is not None else out
+
+
+def frame_pointer(g, ins, pcs):
+    """{29: x29's value} when the entry sets it up once (add x29, sp, #n) and nothing else writes it"""
+    sets = [ins[pc] for pc in pcs if 29 in ins[pc].defs]
+    fp = [x for x in sets if x.mn == "add" and x.i.op_str.startswith("x29, sp, #")]
+    if len(fp) != 1 or any(x is not fp[0] and not x.mn.startswith("ldp") for x in sets):
+        return {}
+    return {29: ("sp+%#x" % fp[0].i.operands[2].imm, frozenset(), None)}
 
 
 def proc_calls(g, a):
@@ -762,12 +707,12 @@ def frame_insn(i):
     if mn in ("pacibsp", "paciasp", "autibsp", "autiasp", "bti"):
         return True
     ops = i.operands
-    if mn in ("sub", "add") and len(ops) == 3 and ops[0].type == pseudo.A.ARM64_OP_REG and \
-            i.reg_name(ops[0].reg) == "sp" and i.reg_name(ops[1].reg) == "sp" and ops[2].type == pseudo.A.ARM64_OP_IMM:
+    if mn in ("sub", "add") and len(ops) == 3 and ops[0].type == disasm.A.ARM64_OP_REG and \
+            i.reg_name(ops[0].reg) == "sp" and i.reg_name(ops[1].reg) == "sp" and ops[2].type == disasm.A.ARM64_OP_IMM:
         return True
     if mn in ("stp", "ldp", "str", "ldr"):
-        regs = [i.reg_name(o.reg) for o in ops if o.type == pseudo.A.ARM64_OP_REG]
-        mem = [o for o in ops if o.type == pseudo.A.ARM64_OP_MEM]
+        regs = [i.reg_name(o.reg) for o in ops if o.type == disasm.A.ARM64_OP_REG]
+        mem = [o for o in ops if o.type == disasm.A.ARM64_OP_MEM]
         if regs and mem and i.reg_name(mem[0].mem.base) == "sp" and all(r in SAVED for r in regs):
             return True
     return False
@@ -782,14 +727,14 @@ def cmd_fn(g, args):
     a = fn_entry(g, args)
     n = len(g.body(a))
     if n > FN_LIMIT:
-        nm = "f_%08x" % a if g.hide_name == a else g.name(a)
-        blocks, _ = pseudo.build_blocks(g, a, g.body(a), pseudo.decode(g, g.body(a)))
-        sys.exit("re: %s @ %#x has %d insns, %d blocks: above the fn limit of %d insns" % (nm, a, n, len(blocks), FN_LIMIT))
-    print("\n".join(listing(g, a, g.hide_name == a)))
+        blocks, _ = disasm.build_blocks(g, a, g.body(a), disasm.decode(g, g.body(a)))
+        sys.exit("re: %s @ %#x has %d insns, %d blocks: above the fn limit of %d insns" % (g.name(a), a, n, len(blocks),
+                                                                                           FN_LIMIT))
+    print("\n".join(listing(g, a)))
 
 
 def cmd_tree(g, args):
-    """the callee tree to a depth, each with its label, symbol or stored pseudo-C's name: what is still unread"""
+    """the callee tree to a depth, each with its label, symbol or proc"""
     depth = int(opt(args, "--depth", 3))
     a = fn_entry(g, args)
     o = Out(int(opt(args, "--lines", 80)))
@@ -808,8 +753,8 @@ def cmd_tree(g, args):
                 continue
             t = g.resolve(t)
             known = t in g.labels or t in g.sym
-            tag = "label" if t in g.labels else "sdk" if t in g.sym else read_tag(g, t) or "UNREAD"
-            o("  " * d + "%x %s  [%s]%s" % (t, g.name(t), tag, " (above)" if t in seen else ""))
+            tag = "  [label]" if t in g.labels else "  [sdk]" if t in g.sym else ""
+            o("  " * d + "%x %s%s%s" % (t, g.name(t), tag, " (above)" if t in seen else ""))
             if t in seen or known or d >= depth or not g.body(t):
                 continue
             seen.add(t)
@@ -832,36 +777,6 @@ def fn_entry(g, args):
         print("// %#x is in %s (+%#x)" % (a, g.name(f), a - f))
         a = f
     return a
-
-
-def cmd_pc(g, args):
-    lines = int(opt(args, "--lines", 150))
-    a = g.parse_addr(args[0])
-    if not g.body(a):
-        f = g.func_of(a)
-        if f is None:
-            sys.exit("re: no function at %#x" % a)
-        print("// %#x is in %s (+%#x)" % (a, g.name(f), a - f))
-        a = f
-    o = Out(lines)
-    for line in fn_text(g, a):
-        o(line)
-    o.done()
-
-
-def fn_text(g, a, hide_name=False):
-    fn, body = pseudo.pseudo(g, a)
-    bl, b = g.callers(a)
-    ptr = g.pointers(a)
-    nm = "f_%08x" % a if hide_name else g.name(a)
-    out = ["// %s @ %#x: %d insns, %d blocks; callers: %d bl, %d tail b, %d pointers" %
-           (nm, a, len(fn.pcs), len(fn.blocks), len(bl), len(b), len(ptr))]
-    if not hide_name and a in g.notes and g.notes[a]:
-        out.append("// label note: " + g.notes[a][:300])
-    out.append("%s %s(%s) {" % ("u64" if fn.retval else "void", nm, ", ".join("x%d" % k for k in fn.args)))
-    out.extend(body)
-    out.append("}")
-    return out
 
 
 def opt(args, name, default):
@@ -894,20 +809,33 @@ def cmd_callers(g, args):
 
 
 def callees(g, a):
-    fn = pseudo.Fn(g, a)
+    """([(pc, callee or None)], {callee or None: [pc]}): bl, tail b (conditional too) and blr, in address order"""
+    pcs = g.body(a)
+    ins = disasm.decode(g, pcs)
+    blocks, _ = disasm.build_blocks(g, a, pcs, ins)
+    tails = {b.pcs[-1]: b.tail for b in blocks if b.tail is not None}
+    calls = []
+    for pc in pcs:
+        x = ins[pc]
+        if x.kind == "bl":
+            calls.append((pc, g.resolve(x.target)))
+        elif x.kind == "blr":
+            calls.append((pc, None))
+        elif pc in tails:
+            calls.append((pc, g.resolve(tails[pc])))
     seen = {}
-    for pc, t in fn.calls:
+    for pc, t in calls:
         seen.setdefault(t, []).append(pc)
-    return fn, seen
+    return calls, seen
 
 
 def cmd_callees(g, args):
     a = g.parse_addr(args[0])
-    fn, seen = callees(g, a)
+    calls, seen = callees(g, a)
     o = Out(int(opt(args, "--lines", 60)))
     named = proc_calls(g, a) if None in seen else {}
     o("// %s @ %#x calls %d functions and %d procs (%d sites)" % (g.name(a), a, len(seen) - (None in seen),
-                                                               len(set(named.values())), len(fn.calls)))
+                                                               len(set(named.values())), len(calls)))
     for t, pcs in seen.items():
         if t is None:
             by = {}
@@ -1036,22 +964,22 @@ def cmd_asm(g, args):
     for k in range(n):
         pc = a + 4 * k
         w = int.from_bytes(data[4 * k:4 * k + 4], "little")
-        ins = next(pseudo.MD.disasm(data[4 * k:4 * k + 4], pc), None)
+        ins = next(disasm.MD.disasm(data[4 * k:4 * k + 4], pc), None)
         if ins is None:
             o("%#x  %08x  .word" % (pc, w))
             continue
         t = "%s %s" % (ins.mnemonic, ins.op_str)
         note = ""
-        if ins.mnemonic in ("bl", "b") and ins.operands and ins.operands[0].type == pseudo.A.ARM64_OP_IMM:
+        if ins.mnemonic in ("bl", "b") and ins.operands and ins.operands[0].type == disasm.A.ARM64_OP_IMM:
             note = g.name(ins.operands[0].imm)
         elif ins.mnemonic == "adrp":
             regs[ins.operands[0].reg] = ins.operands[1].imm
         elif ins.mnemonic in ("add", "ldr", "str") and len(ins.operands) >= 2:
             op1 = ins.operands[1]
-            if ins.mnemonic == "add" and op1.type == pseudo.A.ARM64_OP_REG and op1.reg in regs and len(ins.operands) == 3:
+            if ins.mnemonic == "add" and op1.type == disasm.A.ARM64_OP_REG and op1.reg in regs and len(ins.operands) == 3:
                 v = regs[op1.reg] + ins.operands[2].imm
                 note = g.addr_text(v)
-            elif op1.type == pseudo.A.ARM64_OP_MEM and op1.mem.base in regs:
+            elif op1.type == disasm.A.ARM64_OP_MEM and op1.mem.base in regs:
                 note = g.data_text(regs[op1.mem.base] + op1.mem.disp)
         if pc in g.entry_set:
             o("%s:" % g.name(pc))
@@ -1082,23 +1010,8 @@ def main(argv):
     if cmd == "export":
         print(export(gamedir, os.path.basename(os.path.normpath(gamedir)), exefs))
         return
-    hide = ()
-    if "--hide-label" in args:
-        args.remove("--hide-label")
-        hide = None
     g = Game(gamedir, exefs)
-    if hide is None and args:
-        a = g.parse_addr(args[0])
-        g.labels.pop(a, None)
-        g.by_label = {v: k for k, v in g.labels.items()}
-        g.hide_name = a
-        args[0] = "%x" % a
-    if os.environ.get("OUNCE_RE_HIDE"):       # (the accuracy test: these functions keep no label)
-        for x in os.environ["OUNCE_RE_HIDE"].split(","):
-            a = int(x, 16)
-            g.labels.pop(a, None)
-        g.by_label = {v: k for k, v in g.labels.items()}
-    cmds = {"fn": cmd_fn, "pc": cmd_pc, "pseudo": cmd_pseudo, "tree": cmd_tree,
+    cmds = {"fn": cmd_fn, "tree": cmd_tree,
             "fieldname": cmd_fieldname, "callers": cmd_callers, "callees": cmd_callees, "xref": cmd_xref, "field": cmd_field,
             "asm": cmd_asm}
     if cmd not in cmds or not args:
