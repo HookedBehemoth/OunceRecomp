@@ -3,7 +3,7 @@
 // Encoding reference: Mesa NAK sm70_encode.rs (MIT), Copyright 2022 Collabora, Ltd.
 
 // (fork) The direct Ampere front's attribute access: ALD and AST (the stage's inputs and outputs at a fixed address)
-// and IPA (a fragment stage's interpolated inputs, read as Eden's Maxwell IPA reads them).
+// and IPA (a fragment stage's interpolated inputs).
 
 #include "shader_recompiler/frontend/ampere/translate/translator.h"
 #include "shader_recompiler/program_header.h"
@@ -61,12 +61,13 @@ void IPA(Translator& t) {
     if (t.insn.Field(76, 2) > 1) {
         t.Fail("IPA location");
     }
+    const bool constant{t.insn.Bit(78)};
     const IR::Attribute attribute{t.insn.Field(64, 8)};
     IR::F32 value{t.ir.GetAttribute(attribute)};
     const bool is_legacy{IR::IsLegacyAttribute(attribute)};
     if (IR::IsGeneric(attribute) || is_legacy) {
-        // as Eden's Maxwell IPA: a perspective input (by the program header's map, whatever the frequency) times the
-        // position's w
+        // IPA.PASS of a perspective input gives it times the interpolated w (NAK nak_nir_lower_fs_inputs.c multiplies
+        // by 1 / IPA.PASS of the position's w on SM70+); .CONSTANT gives the provoking vertex's value as it is
         bool is_perspective{is_legacy};
         if (!is_legacy) {
             const ProgramHeader& sph{t.env.SPH()};
@@ -80,7 +81,7 @@ void IPA(Translator& t) {
             }
             is_perspective = effective == PixelImap::Perspective || effective == PixelImap::Unused;
         }
-        if (is_perspective) {
+        if (is_perspective && !constant) {
             value = t.ir.FPMul(value, t.ir.GetAttribute(IR::Attribute::PositionW));
         }
     }
