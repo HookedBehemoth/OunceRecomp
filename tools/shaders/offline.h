@@ -14,9 +14,11 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
+#include "shader_recompiler/frontend/ampere/control_flow.h"
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 #include "shader_recompiler/frontend/ampere/program_address_map.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
+#include "shader_recompiler/frontend/ampere/translate_program.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/program.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
@@ -38,6 +40,10 @@ namespace offline {
 
 constexpr uint32_t kControl = 0xd8, kAmpereHeader = 128;
 
+/// (the differential phase of work/shader-plan, M3-M9: censustool --front new) the direct Ampere front instead of the
+/// lowering to Maxwell
+inline bool new_front = false;
+
 inline uint64_t fnv(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull) {   // (vk_shader.cpp hash_bytes)
     for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)p)[i]) * 0x100000001b3ull;
     return h;
@@ -51,6 +57,7 @@ struct Code {
     uint32_t cs_ubo = 0, cs_ssbo = 0, cs_tex = 0, cs_img = 0, cs_push = 0;   // (compute: vk_compute.cpp Layout)
     bool header_only = false;
     std::vector<uint64_t> code;
+    std::vector<u128> native_code;   // (the native instructions up to the program's end, for the new front)
     std::vector<uint8_t> c1;
     uint8_t sph[sizeof(Shader::ProgramHeader)]{};
     uint32_t cs_ssbo_at() const { return 0x10 + cs_push + 16 * cs_ubo; }
@@ -94,6 +101,19 @@ inline Code load(const uint8_t* ctl, const uint8_t* area_p, size_t area_n) {
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     c.native = (uint32_t)native.size();
+    if (new_front) {
+        for (const Instruction& insn : native)
+            c.native_code.push_back({uint64_t(insn.words[0]) | uint64_t(insn.words[1]) << 32, uint64_t(insn.words[2]) | uint64_t(insn.words[3]) << 32});
+        c.code.assign(sizeof(Shader::ProgramHeader) / 8, 0);
+        if (graphics) std::memcpy(c.code.data(), area.data(), sizeof(Shader::ProgramHeader));
+        if (c1o <= area.size()) c.c1.assign(area.begin() + c1o, area.end());
+        if (graphics) {
+            Shader::ProgramHeader h;
+            std::memcpy(&h, c.sph, sizeof h);
+            c.local_mem = (uint32_t)h.LocalMemorySize() + h.common3.shader_local_memory_crs_size;
+        }
+        return c;
+    }
     Shader::Ampere::native_matrix_multiply = !graphics;   // (compute: the matrix multiplies kept whole, as vk_compute.cpp)
     const auto lowered = Shader::Ampere::LowerToMaxwell(native);
     Shader::Ampere::native_matrix_multiply = false;
@@ -135,6 +155,10 @@ public:
         mesh_registers = regs;
     }
     u64 ReadInstruction(u32 a) override { return a / 8 < nvn.code.size() ? nvn.code[a / 8] : 0; }
+    u128 ReadInstruction128(u32 a) override {
+        if (a % 16 != 0 || a / 16 >= nvn.native_code.size()) throw Shader::RuntimeError("instruction read past the program at {:#x}", a);
+        return nvn.native_code[a / 16];
+    }
     u32 TranslateProgramAddress(u32 a) const override {
         if (const auto t = Shader::Ampere::NativeProgramAddress(nvn.code, a)) return *t;
         throw Shader::RuntimeError("indirect branch to {:#x}", a);
@@ -260,8 +284,13 @@ inline std::unique_ptr<Translation> translate(Env& env) {
         Shader::Optimization::g_nvn2_compute_ssbo_count = env.nvn.cs_ssbo ? env.nvn.cs_ssbo : 16;
         Shader::Optimization::g_nvn2_compute_layout_end = 0;
     }
-    Shader::Maxwell::Flow::CFG cfg(env, t->flow, sizeof(Shader::ProgramHeader), one_exit);
-    t->program = Shader::Maxwell::TranslateProgram(t->insts, t->blocks, env, cfg, host_info());
+    if (new_front) {
+        Shader::Ampere::Flow::CFG cfg(env, t->flow, one_exit);
+        t->program = Shader::Ampere::TranslateProgram(t->insts, t->blocks, env, cfg, host_info());
+    } else {
+        Shader::Maxwell::Flow::CFG cfg(env, t->flow, sizeof(Shader::ProgramHeader), one_exit);
+        t->program = Shader::Maxwell::TranslateProgram(t->insts, t->blocks, env, cfg, host_info());
+    }
     if (cs) Shader::Optimization::g_nvn2_compute_ssbo_base = 0, Shader::Optimization::g_nvn2_compute_ssbo_count = 16;
     return t;
 }

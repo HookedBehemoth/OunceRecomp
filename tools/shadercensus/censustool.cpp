@@ -7,7 +7,7 @@
 // graphics stage with the partner stage of the first program that uses it (vertex + fragment, mesh + fragment), a task or compute
 // stage alone. For the shader census (docs/direct/shader-costs.md); nothing of the game is in this file.
 //
-//   censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...]
+//   censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...] [--front old|new]
 //              [--late <kinds>] [--budget N] [--sink-peak N] [--objects] [--list]
 // One JSON line a stage on stdout; "@@stage <index>" on stderr before each (a crash names its stage).
 // --late <kinds>: the back end's register-pressure pass (renderer/vk_spv_late.h) on the stages of these kinds (a comma
@@ -16,6 +16,8 @@
 // or not it is applied. --objects: the stage also made as the shader object the game makes of it (unlinked; RADV reports no
 // statistics of those: with RADV_DEBUG=shaders its compile is printed between "@@object <index> <key> <kind>" and "@@end" on
 // stderr, which tools/shaders/late_gate.py reads). --list: a line a stage of the seed (index, kind), nothing translated.
+// --front new: the direct Ampere front instead of the lowering to Maxwell (work/shader-plan's differential phase; a partner
+// stage it cannot translate is left out, its error in "partner_error").
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
@@ -850,16 +852,28 @@ void one(int id, bool do_compile, const char* spv_dir) {
         Made m, partner;
         bool has_partner = false;
         std::string extra;
+        // (--front new: a partner the new front does not translate yet is left out, the stage translated alone)
+        const auto partnered = [&](auto&& make) {
+            if (!offline::new_front) return make(), true;
+            try {
+                make();
+                return true;
+            } catch (const std::exception& e) {
+                partner = Made{};
+                extra += ",\"partner_error\":" + json_str(e.what());
+                return false;
+            }
+        };
         if (s.stage == 0) {
             make_vs(m, id);
-            if (pa.fs >= 0) make_fs(partner, pa.fs, &m), has_partner = true;
+            if (pa.fs >= 0) has_partner = partnered([&] { make_fs(partner, pa.fs, &m); });
         } else if (s.stage == 1) {
-            if (pa.vs >= 0) make_vs(partner, pa.vs), has_partner = true;
-            else if (pa.mesh >= 0) make_mesh(partner, pa.mesh, pa.task), has_partner = true;
+            if (pa.vs >= 0) has_partner = partnered([&] { make_vs(partner, pa.vs); });
+            else if (pa.mesh >= 0) has_partner = partnered([&] { make_mesh(partner, pa.mesh, pa.task); });
             make_fs(m, id, has_partner ? &partner : nullptr);
         } else if (s.stage == 7) {
             make_mesh(m, id, pa.task);
-            if (pa.fs >= 0) make_fs(partner, pa.fs, &m), has_partner = true;
+            if (pa.fs >= 0) has_partner = partnered([&] { make_fs(partner, pa.fs, &m); });
             const auto& mp = m.t->program.mesh;
             extra += ",\"max_vertices\":" + std::to_string(mp.max_vertices) + ",\"max_primitives\":" + std::to_string(mp.max_primitives) +
                      ",\"payload_words\":" + std::to_string(mp.payload_words) + ",\"vertex_lines\":" + std::to_string(mp.vertex_lines.size()) +
@@ -977,6 +991,7 @@ int main(int argc, char** argv) {
     for (int i = 4; i < argc; i++) {
         if (!std::strcmp(argv[i], "--compile")) do_compile = true;
         else if (!std::strcmp(argv[i], "--spv") && i + 1 < argc) spv_dir = argv[++i];
+        else if (!std::strcmp(argv[i], "--front") && i + 1 < argc) offline::new_front = !std::strcmp(argv[++i], "new");
         else if (!std::strcmp(argv[i], "--repl") && i + 1 < argc) repl_spv = argv[++i];
         else if (!std::strcmp(argv[i], "--fs-binding-base") && i + 1 < argc) fs_binding_base = (uint32_t)std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--no-ir-guard")) no_ir_guard = true;
