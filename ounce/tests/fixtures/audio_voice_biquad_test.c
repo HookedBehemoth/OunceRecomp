@@ -24,6 +24,7 @@ static const char *fixture_getenv(const char *name) { (void)name; return NULL; }
 
 /* The extracted production types precede these globals and the actual queue functions. */
 #define FLOAT_SETTER imp__ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIfEE
+#define Q14_SETTER imp__ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIsEE
 
 /* The generated section keeps real Voice/Mix/Splitter types ahead of its fixture globals and production functions. */
 #include "actual_audio_biquad.inc"
@@ -152,13 +153,34 @@ static void voice_filter_channel_isolation(void) {
     clear_samples(out); out[0][0] = 1;
     filter_samples(&voices[0], out); close_to(out[0][0], 0.125f);
 }
+static void q14_packet(void) {
+    /* Authored 12-byte packet: bool, one padding byte, three s16 numerators, two additive s16 feedback values (Q14). */
+    reset();
+    uint8_t packet[12];
+    memset(packet, 0xa5, sizeof packet);
+    packet[0] = 1;
+    const int16_t values[] = {12288, 4096, 2048, 8192, -4096};   /* 0.75, 0.25, 0.125, 0.5, -0.25 */
+    memcpy(packet + 2, values, sizeof values);
+    memcpy(GP(PACKET), packet, sizeof packet);
+    Ctx c = {0};
+    c.x[0] = OBJECT0; c.x[1] = 0; c.x[2] = PACKET;
+    Q14_SETTER(&c);
+    CHECK(lock_depth == 0 && ncmds == 1);
+    commit();
+    float out[MAX_CH][FRAME] = {{0}};
+    out[0][0] = 1;
+    filter_samples(&voices[0], out);
+    const float expected[] = {0.75f, 0.625f, 0.25f, -0.03125f, -0.078125f};   /* as the float packet's */
+    for (unsigned i = 0; i < sizeof expected / sizeof *expected; i++) close_to(out[0][i], expected[i]);
+}
 int main(void) {
     identity_and_packet_lifetime();
     attenuation_and_additive_feedback();
     state_and_reenable();
     invalid_inputs();
     voice_filter_channel_isolation();
+    q14_packet();
     free(cmds);
-    puts("PASS: actual float voice setter, queued commit, biquad response/history/reset and isolation");
+    puts("PASS: actual float and Q14 voice setters, queued commit, biquad response/history/reset and isolation");
     return 0;
 }

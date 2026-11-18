@@ -67,13 +67,16 @@ fn build_voice_fixture(name: &str, inc_name: &str, actual: &[String], test_c: &s
 #[test]
 fn voice_biquad() {
     const FLOAT: &str = "_ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIfEE";
+    const Q14: &str = "_ZN2nn5audio29SetVoiceBiquadFilterParameterEPNS0_9VoiceTypeEiRKNS0_22TBiquadFilterParameterIsEE";
     let source = read("runtime/nn_audio.c");
     let mut actual = voice_parts(
         &source,
         "static void release_wb(Voice *voice, uint64_t buffer) { (void)voice; (void)buffer; }\n",
         &["static void put_handle(", "static int get_handle(", "static int voice_index(", "static Voice *voice_of("],
     );
+    actual.push(block(&source, "static void voice_biquad(").to_string());
     actual.push(block(&source, &format!("HLE({FLOAT})")).to_string());
+    actual.push(block(&source, &format!("HLE({Q14})")).to_string());
     let render = block(&source, "static void render_voice(");
     actual.push(format!("static void filter_samples(Voice *v, float out[MAX_CH][FRAME]) {{\n{}\n}}", block(render, "for (int f = 0; f < 2; f++)")));
     build_voice_fixture("audio-voice-biquad", "actual_audio_biquad.inc", &actual, "audio_voice_biquad_test.c", &[]);
