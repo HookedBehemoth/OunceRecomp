@@ -890,6 +890,75 @@ pub fn dump(argv: Vec<String>) {
     }
 }
 
+// ---- re-export
+
+/// `ounce-lift re-export <dir> OPTS`: the discovery's view for tools/re/re (the RE command), in <dir> (game-derived,
+/// under work/, never committed): image.bin (the image from its base), meta.tsv (base, end, each module's code range),
+/// funcs.bin (each function's entry and its body as runs of consecutive pcs: u64 count, u64 entries[count], u64
+/// run offsets[count + 1], u64 (start, length) runs), jt.tsv (br, index load, index register, targets), plt.tsv
+/// (stub, target, slot) and names.tsv (address, symbol, its demangled name without parameters; the hooks' symbols too)
+pub fn re_export(argv: Vec<String>) {
+    let usage = "ounce-lift re-export <dir>";
+    let a = args(argv, &[], &[], usage);
+    let [dir] = a.pos.as_slice() else { fail(format!("usage: {usage} {OPTS}")) };
+    let dir = PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| fail(e));
+    let b = base(&a.o);
+    let img = &b.img;
+    std::fs::write(dir.join("image.bin"), &img.mem).unwrap_or_else(|e| fail(e));
+    let mut meta = format!("base\t{:#x}\nend\t{:#x}\n", img.base, img.end);
+    for (m, &(lo, hi)) in img.modules.iter().zip(&img.code) {
+        meta += &format!("module\t{}\t{:#x}\t{:#x}\t{:#x}\t{:#x}\n", m.name, m.base, m.base + m.size, lo, hi);
+    }
+    std::fs::write(dir.join("meta.tsv"), meta).unwrap_or_else(|e| fail(e));
+    let (mut entries, mut offs, mut runs) = (Vec::new(), vec![0u64], Vec::new());
+    for body in &b.plan.bodies {
+        let mut pcs = b.plan.raw.get(&body.entry).cloned().unwrap_or_else(|| body.pcs.clone());
+        pcs.sort_unstable();
+        pcs.dedup();
+        entries.push(body.entry);
+        let mut k = 0;
+        while k < pcs.len() {
+            let mut n = 1;
+            while k + n < pcs.len() && pcs[k + n] == pcs[k] + 4 * n as u64 {
+                n += 1;
+            }
+            runs.push((pcs[k], n as u64));
+            k += n;
+        }
+        offs.push(runs.len() as u64);
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(8 * (1 + entries.len() * 2 + runs.len() * 2 + 1));
+    out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+    for v in entries.iter().chain(&offs) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    for &(s, n) in &runs {
+        out.extend_from_slice(&s.to_le_bytes());
+        out.extend_from_slice(&n.to_le_bytes());
+    }
+    std::fs::write(dir.join("funcs.bin"), out).unwrap_or_else(|e| fail(e));
+    let mut jt: Vec<_> = b.plan.jt.iter().collect();
+    jt.sort_unstable_by_key(|x| *x.0);
+    let mut t = String::new();
+    for (br, targets) in jt {
+        let (load, idx) = b.plan.jt_index.get(br).map_or((0, 255), |v| (v.0, v.1));
+        let ts: Vec<String> = targets.iter().map(|x| format!("{x:x}")).collect();
+        t += &format!("{br:x}\t{load:x}\t{idx}\t{}\n", ts.join(","));
+    }
+    std::fs::write(dir.join("jt.tsv"), t).unwrap_or_else(|e| fail(e));
+    let plt: String = b.plan.plt.iter().map(|(s, t, slot)| format!("{s:x}\t{t:x}\t{slot:x}\n")).collect();
+    std::fs::write(dir.join("plt.tsv"), plt).unwrap_or_else(|e| fail(e));
+    let opts = cpp_demangle::DemangleOptions::new().no_params().no_return_type();
+    let short = |sym: &str| cpp_demangle::Symbol::new(sym).ok().and_then(|d| d.demangle_with_options(&opts).ok()).unwrap_or_else(|| sym.to_string());
+    let mut names = String::new();
+    for (addr, sym) in b.facts.names.iter().map(|(a, s)| (*a, s.as_str())).chain(img.hooks.iter().map(|h| (h.addr, h.sym.as_str()))) {
+        names += &format!("{addr:x}\t{sym}\t{}\n", short(sym).replace(['\t', '\n'], " "));
+    }
+    std::fs::write(dir.join("names.tsv"), names).unwrap_or_else(|e| fail(e));
+    println!("re-export: {} functions, {} runs, {} tables, {} PLT stubs -> {}", entries.len(), runs.len(), b.plan.jt.len(), b.plan.plt.len(), dir.display());
+}
+
 #[cfg(test)]
 mod tests {
     //! the tools on a small program of their own (no game): site, check, report, the summaries' difference, live-out

@@ -105,7 +105,8 @@ const HELP: &str = "ounce-lift: the lifter. Subcommands (each but rt64, records 
   site <address|label>... OPTS                                      what a patch site is: paths, liveness, record, a PATCH_AT to paste
   check [<file:line> | - | --all] OPTS                              the declarations against the plan; one: its cost (the summaries' difference)
   report OPTS                                                       every declaration's local cost, costliest first
-  dump <address|label>... [--tree] [--opt O1|O2] [--asm] [-o <dir>] OPTS   a function's guest code, IR and LLVM IR";
+  dump <address|label>... [--tree] [--opt O1|O2] [--asm] [-o <dir>] OPTS   a function's guest code, IR and LLVM IR
+  re-export <dir> OPTS                                              the discovery's functions, tables, PLT and names for tools/re/re";
 
 fn main() {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
@@ -117,6 +118,7 @@ fn main() {
         Some("check") => tools::check(argv.split_off(1)),
         Some("report") => tools::report(argv.split_off(1)),
         Some("dump") => tools::dump(argv.split_off(1)),
+        Some("re-export") => tools::re_export(argv.split_off(1)),
         Some("-h" | "--help" | "help") => println!("{}", HELP),
         Some("lift") => lift(argv.split_off(1)),
         _ => lift(argv),
