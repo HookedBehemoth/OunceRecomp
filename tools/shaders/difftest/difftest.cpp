@@ -13,7 +13,7 @@
 // goes to stderr before each (tools/shaders/difftest/difftest.py runs them sharded and sums them up).
 //
 // A micro program loads every register its instruction may name from c[1] (GPRs per lane, so 32 lanes are 32 operand
-// tuples; uniform registers and predicates too, not the uniform predicates yet), runs the instruction as found in the
+// tuples; uniform registers and both predicate files too), runs the instruction as found in the
 // seed, and writes the same registers to the generic outputs of a vertex stage; register windows are the 8 GPRs and 4
 // uniform registers (up to UR27) from each of the fields at bits 16, 24, 32 and 64, which over-covers (an immediate's low
 // byte opens a window too). The scaffold uses only instructions the direct front translates.
@@ -37,9 +37,9 @@ using u128 = unsigned __int128;
 
 // ---- micro programs ----
 
-// (c1: lane l's GPR n at l*kLane + 4n (n < 216), its P k at l*kLane + 0x360 + 4k; UR n at kUniform + 4n. The results go
-// to the generic outputs, one word a slot in Micro::names order)
-constexpr uint32_t kLane = 0x380, kPreds = 0x360, kUniform = 0x7000, kC1Size = kUniform + 0x100;
+// (c1: lane l's GPR n at l*kLane + 4n (n < 216), its P k at l*kLane + 0x360 + 4k; UR n at kUniform + 4n, UP k at kUPreds +
+// 4k. The results go to the generic outputs, one word a slot in Micro::names order)
+constexpr uint32_t kLane = 0x380, kPreds = 0x360, kUniform = 0x7000, kUPreds = kUniform + 0x100, kC1Size = kUPreds + 0x20;
 constexpr uint32_t kGprs = 216;   // (R216 up is the lowering's)
 constexpr uint32_t kSlots = 128;  // (generic outputs 0-31, 4 words each)
 constexpr uint32_t kTestAt = 0xd0;   // (the control section's word holding the index of the instruction under test)
@@ -73,6 +73,8 @@ const u128 s2r = hex128("000e2800000000000000000000057919");     // S2R R, SR_LA
 const u128 imad = hex128("000fca00078e02ffbb40e64d20207824");    // IMAD R, Ra, imm32, RZ
 const u128 isetp = hex128("000fda0003f06070000000ff0300720c");   // ISETP.GE.U32.AND P, PT, Ra, RZ, PT (cmp 76-78)
 const u128 sel = hex128("000fe4000400000000000001ff0e7807");     // SEL R, RZ, 1, !P (pred 87-90)
+const u128 uisetp = hex128("000fe4000bf052700000003f0600728c");  // UISETP.NE.U32.AND UP, UPT, URa, URZ, UPT
+const u128 usel = hex128("000fe400080000000000003004047887");    // USEL UR, URa, imm, UP
 const u128 movu = hex128("000fe40008000f000000000500137c02");    // MOV R, UR (UR at 32-37)
 const u128 ast = hex128("000fe200000004ff00008002ff007322");     // AST a[o], Rb: Ra 24, Rb 32, o 40-49, words - 1 74-75, vertex Rc 64
 const u128 exit = hex128("000fec0003800000000000000000794d");    // EXIT
@@ -87,6 +89,10 @@ u128 s2r_lane(uint32_t rd) { return set(set(tpl::s2r, 16, 8, rd), 72, 8, 0); }
 u128 imad_imm(uint32_t rd, uint32_t ra, uint32_t imm) { return set(set(set(tpl::imad, 16, 8, rd), 24, 8, ra), 32, 32, imm); }
 u128 isetp_ne(uint32_t p, uint32_t ra) { return set(set(set(tpl::isetp, 76, 3, 5), 24, 8, ra), 81, 3, p); }
 u128 sel_pred(uint32_t rd, uint32_t p) { return set(set(set(tpl::sel, 16, 8, rd), 87, 3, p), 90, 1, 1); }
+u128 uisetp_ne(uint32_t up, uint32_t ura) { return set(set(tpl::uisetp, 24, 6, ura), 81, 3, up); }
+u128 usel_pred(uint32_t urd, uint32_t up) {
+    return set(set(set(set(set(tpl::usel, 16, 6, urd), 24, 6, 63), 32, 32, 1), 87, 3, up), 90, 1, 1);
+}
 u128 mov_ur(uint32_t rd, uint32_t ur) { return set(set(tpl::movu, 16, 8, rd), 32, 6, ur); }
 u128 ast(uint32_t rb, uint32_t slot) { return set(set(set(tpl::ast, 32, 8, rb), 40, 10, 0x80 + 4 * slot), 74, 2, 0); }
 u128 bra_self() { return set(set(set(tpl::bra, 12, 4, 7), 32, 2, 0), 34, 48, (uint64_t)-4 & ((1ull << 48) - 1)); }
@@ -128,12 +134,15 @@ Micro micro(u128 x) {
     std::vector<uint32_t> temps;
     for (uint32_t n = 159; temps.size() < 2; n--)
         if (!gprs.count(n)) temps.push_back(n);
+    uint32_t urt = 0;
+    while (urs.count(urt)) urt++;
     const uint32_t rt = temps[0], ru = temps[1];
     Micro m;
     auto& v = m.insts;
     v.push_back(s2r_lane(rt));
     v.push_back(imad_imm(rt, rt, kLane));
     for (uint32_t k = 0; k < 7; k++) v.push_back(ldc(ru, rt, kPreds + 4 * k)), v.push_back(isetp_ne(k, ru));
+    for (uint32_t k = 0; k < 7; k++) v.push_back(uldc(urt, kUPreds + 4 * k)), v.push_back(uisetp_ne(k, urt));
     for (uint32_t n : urs) v.push_back(uldc(n, kUniform + 4 * n));
     for (uint32_t n : gprs) v.push_back(ldc(n, rt, 4 * n));
     m.test = (uint32_t)v.size();
@@ -144,6 +153,7 @@ Micro micro(u128 x) {
     for (uint32_t n : gprs) out(n, fmt::format("R{}", n));
     for (uint32_t k = 0; k < 7; k++) v.push_back(sel_pred(ru, k)), out(ru, fmt::format("P{}", k));
     for (uint32_t n : urs) v.push_back(mov_ur(ru, n)), out(ru, fmt::format("UR{}", n));
+    for (uint32_t k = 0; k < 7; k++) v.push_back(usel_pred(urt, k)), v.push_back(mov_ur(ru, urt)), out(ru, fmt::format("UP{}", k));
     v.push_back(tpl::exit);
     v.push_back(bra_self());
     return m;
