@@ -190,6 +190,10 @@ void TranslateOne(Translator& t) {
         return TranslateMemory(t);
     case 0x98e: case 0x3a8: case 0x9a8: case 0x3a9: case 0x38c: case 0x98c: case 0xf8c:
         return TranslateAtomic(t);
+    case 0x919: case 0x9c3: case 0x805:
+        return TranslateSpecial(t);
+    case 0xb1d: case 0x992: case 0x9ab: case 0x98f:
+        return TranslateBarrier(t);
     default:
         break;
     }
@@ -199,7 +203,7 @@ void TranslateOne(Translator& t) {
     case 0x010: case 0x012: case 0x017: case 0x019: case 0x024: case 0x025: case 0x027: case 0x00c: case 0x007:
     case 0x011: case 0x01c: case 0x013: case 0x090:
         return TranslateInteger(t);
-    case 0x002: case 0x005: case 0x119: case 0x082:
+    case 0x002: case 0x082:
         return TranslateMove(t);
     case 0x105: case 0x045:
         return TranslateConversion(t);

@@ -74,6 +74,8 @@ void TranslateTexture(Translator& t);
 void TranslateHalf(Translator& t);
 void TranslateExit(Translator& t);
 void TranslateAtomic(Translator& t);
+void TranslateSpecial(Translator& t);
+void TranslateBarrier(Translator& t);
 
 /// Emits the instructions of [begin, end) into block
 void Translate(Environment& env, IR::Block* block, Location begin, Location end);
