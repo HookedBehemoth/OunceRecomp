@@ -39,8 +39,10 @@ const HELP: &str = "ounce <command> ...
   build <game> --out <dir> --dump <file.nup|folder> [--quality fast|high]
                                          a portable player's game folder made from a dump
   run <game> [--headless] [--seconds N] [--record R | --replay R] [--bench N] [--shots N] [--name N]
-            [--set NAME=VALUE]...       the game from its build; runs write work/<game>/runs/<name>/; --set passes a
-                                         runtime setting (e.g. HOS_FS_OVERLAY=<folder>)
+            [--build <game folder>] [--set NAME=VALUE]...
+                                         the game from its build (or a player's game folder, with its romfs/); runs
+                                         write work/<game>/runs/<name>/; --set passes a runtime setting
+                                         (e.g. HOS_FS_OVERLAY=<folder>)
   test <game> [--name T] [--golden | --golden-reset] [--keep-shots] [--set NAME=VALUE]...
                                          a smoke test of games/<game>/tests.toml: a short headless run against the
                                          golden runs, then a verdict
@@ -67,8 +69,8 @@ const TOOL_HELP: &str = "ounce tool <command> ...
         [--check <obj dir>] [--gen <lift dir> [--gen-parts]] [--map <file>] [--progress] [--root <dir>] [--exefs <dir>]
         [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>]] [--no-textures] [--quality fast|high]
                                        the lift, every compile and the link in this process (feature clang), then
-                                       the texture store: without --dump the game's store in the cache, made when its
-                                       inputs changed, linked as <out>/prepared; --dump makes <out> a game folder: the
+                                       <out>/prepared, the texture store: without --dump kept while current, else copied
+                                       from the main checkout's build or converted; --dump makes <out> a game folder: the
                                        exefs read in memory, romfs/ copied while the lift runs, then its own
                                        prepared/tex and the romfs's texture files with their texels zeroed, user/;
                                        --dump-dir also writes the dump there (exefs/, romfs/ whole) for the developer
@@ -129,7 +131,7 @@ fn exclusive_flags(argv: &mut Vec<String>) {
                 argv.drain(k..k + 2);
             }
             // (a flag's value is never taken for one of these)
-            "--set" | "--name" | "--record" | "--replay" | "--out" | "--dump" => k += 2,
+            "--set" | "--name" | "--record" | "--replay" | "--out" | "--dump" | "--build" => k += 2,
             _ => k += 1,
         }
     }
@@ -588,12 +590,10 @@ fn build(args: &[String]) {
         std::fs::write(&hollowed_list, list).unwrap_or_else(|e| fail(format!("{}: {e}", hollowed_list.display())));
         println!("textures and the romfs's texture files: {:.0} s", t.elapsed().as_secs_f64());
     } else if !no_textures {
-        // (a developer's build: the game's store shared in the cache, made again only when the dump or the settings
-        // changed)
-        stage("textures", "converting the textures");
+        // (a developer's build: its store kept, copied from the main checkout's or converted: textures::dev_store)
+        stage("textures", "preparing the textures");
         let romfs_dir = config.dump(&game.name).unwrap_or_else(|e| fail(e)).join("romfs");
-        let store = textures::shared(&config, &romfs_dir, &game, settings, cjobs).unwrap_or_else(|e| fail(e));
-        textures::link(&out, &store).unwrap_or_else(|e| fail(e));
+        textures::dev_store(&root, &out, &romfs_dir, &game, settings, cjobs).unwrap_or_else(|e| fail(e));
     }
     if game_folder {
         // (the saves: the host keeps them in user/ beside the executable when the folder has one)

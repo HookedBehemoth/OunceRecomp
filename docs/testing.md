@@ -65,7 +65,8 @@ ounce run oot --headless --seconds <n> --exclusive [--set NAME=VALUE ...]
 
 The run writes `work/oot/runs/headless/` (`--name` picks another folder): `shots/` (a screenshot every `--shots`
 presents, default 300), `log.txt`, `stdout.txt`, `timeline.txt` (second, presents, RSS) and `mem.txt` (free and shared
-memory). A headless run keeps its saves in the run folder. `--set` passes a switch to the game
+memory). A headless run keeps its saves in the run folder. `--build <folder>` runs a player's game folder (one
+made with `ounce build <game> --out <folder> --dump <dump>`) with its own `romfs/`. `--set` passes a switch to the game
 ([Switches](switches.md)).
 
 The first run of a build is cold: shaders and pipelines are prepared. Run once more before you compare timings.

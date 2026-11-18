@@ -66,15 +66,17 @@ To test a change, see [Test OunceRecomp](testing.md). To work on the lifter, see
 
 | Path | What it holds |
 |---|---|
-| `work/<game>/game/` | The game folder: the executable, `ounce_renderer.so`, `image.bin`, the shader caches, and `prepared/`, a link to the game's texture store |
+| `work/<game>/game/` | The game folder: the executable, `ounce_renderer.so`, `image.bin`, the shader caches, and `prepared/`, the texture store |
 | `work/<game>/lift/` | The lift's files for the reverse-engineering tools, and the link map |
 | `work/<game>/runs/<name>/` | One run: the log, the timeline and the screenshots |
 | `work/renderer/` | The renderer's Meson build, shared by the games |
-| `~/.cache/ounce/` | The object cache and each game's texture store (`prepared/<game>`), shared by every checkout |
+| `~/.cache/ounce/` | The object cache, shared by every checkout and game |
 | `~/.local/share/ounce/` | Your saves, and per game the smoke tests' golden data and the input recordings |
 
 A worktree needs no setup: `git worktree add` and `ounce build` are enough, because the config, the cache and the data
-live outside the checkout.
+live outside the checkout. A worktree's first build copies the texture store from the main checkout's build of the
+game when that one is current, which takes seconds and, on btrfs, almost no disk; it converts only when no current
+store exists.
 
 ## Where the code is
 

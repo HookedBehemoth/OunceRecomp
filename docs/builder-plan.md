@@ -34,8 +34,8 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 `ounce/tex` makes the store the direct back end maps (`prepared/tex`). [The converters](direct/converters.md) describes
 it; `ounce/tex/src/store.rs` the format.
 
-- `ounce tool textures <out>` writes a store; a developer's build links the game's shared store from the cache, a
-  player's build writes `<out>/prepared/tex` after the link.
+- `ounce tool textures <out>` writes a store; every build writes `<out>/prepared/tex` after the link (a
+  developer's build only when its inputs changed, copied from the main checkout's when that one matches).
 - The game description's `[assets]` names what is the game's: the romfs file of its zstd dictionaries and the folders
   the texture step skips.
 - The encoders are bc7enc_rdo's, built into the builder: bc7e (ISPC) for BC7, and for BC5 (the ASTC normal maps) an

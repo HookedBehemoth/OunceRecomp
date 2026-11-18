@@ -1,6 +1,7 @@
-//! The prepared texture store (ounce-tex) as a build step. Every build makes one: a developer's build shares the game's
-//! store in the cache (`<cache>/prepared/<game>/`, linked from the game folder as `prepared`), made again only when its
-//! inputs change; a player's game folder (`--dump`) gets its own, and its romfs copy's texture files are zeroed.
+//! The prepared texture store (ounce-tex) as a build step. Every build puts one in its game folder's `prepared/`: a
+//! developer's build keeps it while its inputs are unchanged, a worktree's copies the main checkout's when that one
+//! matches, and only otherwise converts; a player's game folder (`--dump`) also gets its romfs copy's texture files
+//! zeroed.
 //! `ounce tool textures` makes one by hand.
 
 use crate::fail;
@@ -30,46 +31,72 @@ pub fn quality(v: &str) -> Settings {
     }
 }
 
-/// The game's shared store in the cache, made from `romfs` when its inputs (inputs_key) changed: made beside and
-/// renamed over the old one, so a game that maps the old one keeps it. Returns its folder (the one holding tex/).
-pub fn shared(config: &ounce_core::config::Config, romfs: &Path, game: &ounce_lift::game::Game, settings: Settings, jobs: usize) -> Result<PathBuf, String> {
-    let base = config.cache_dir().join("prepared").join(&game.name);
+/// The main checkout of the repository `root` is in (git's common folder's parent), when `root` is another worktree.
+fn main_checkout(root: &Path) -> Option<PathBuf> {
+    let o = std::process::Command::new("git").arg("-C").arg(root).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok()?;
+    let common = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+    let main = common.parent()?.to_path_buf();
+    (o.status.success() && main.canonicalize().ok()? != root.canonicalize().ok()?).then_some(main)
+}
+
+/// Copies the files of `from` into `to` (a new folder). std's copy uses copy_file_range, which the kernel makes a
+/// reflink where the file system can (btrfs): the copy shares the data and costs no disk.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for e in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))?.flatten() {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if e.file_type().map_err(|e| e.to_string())?.is_dir() {
+            copy_tree(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst).map_err(|e| format!("{} -> {}: {e}", src.display(), dst.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// A developer's build's store, `folder`/prepared (tex/ and inputs.key): kept when its key (inputs_key) is current;
+/// else copied from the main checkout's build of the game when that one's key matches (a worktree's build); else
+/// converted from `romfs`. Made beside and renamed over the old one, so a game that maps the old one keeps it.
+pub fn dev_store(root: &Path, folder: &Path, romfs: &Path, game: &ounce_lift::game::Game, settings: Settings, jobs: usize) -> Result<(), String> {
+    let at = folder.join("prepared");
     let files = GameFiles { zstd_dictionaries: game.assets.zstd_dictionaries.clone(), skip_dirs: game.assets.texture_skip_dirs.clone() };
     let key = format!("{:016x}\n", ounce_tex::run::inputs_key(&settings, romfs, &files)?);
-    let stamp = |d: &Path| d.join("inputs.key");
-    if base.join("tex/index.bin").is_file() && std::fs::read_to_string(stamp(&base)).ok().as_deref() == Some(key.as_str()) {
-        println!("textures: the store in {} is current", base.display());
-        return Ok(base);
+    let current = |d: &Path| d.join("tex/index.bin").is_file() && std::fs::read_to_string(d.join("inputs.key")).ok().as_deref() == Some(key.as_str());
+    if current(&at) {
+        println!("textures: the store in {} is current", at.display());
+        return Ok(());
     }
-    let (new, old) = (base.with_extension("new"), base.with_extension("old"));
+    let (new, old) = (folder.join("prepared.new"), folder.join("prepared.old"));
     let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     for d in [&new, &old] {
         if d.exists() {
             std::fs::remove_dir_all(d).map_err(|e| io(d, e))?;
         }
     }
-    make(romfs, &new.join("tex"), game, settings, jobs, Vec::new(), None)?;
-    std::fs::write(stamp(&new), &key).map_err(|e| io(&new, e))?;
-    if base.exists() {
-        std::fs::rename(&base, &old).map_err(|e| io(&base, e))?;
+    let main = main_checkout(root).map(|m| m.join("work").join(&game.name).join("game/prepared")).filter(|d| current(d));
+    if let Some(m) = main {
+        let t = Instant::now();
+        copy_tree(&m, &new)?;
+        // (and its renderer caches, warm, where this folder has none)
+        for e in std::fs::read_dir(m.parent().unwrap()).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("ounce_renderer_") && n.ends_with(".bin") && !folder.join(&n).exists() {
+                std::fs::copy(e.path(), folder.join(&n)).map_err(|e| format!("{n}: {e}"))?;
+            }
+        }
+        println!("textures: the store (and the renderer caches) copied from the main checkout's build, {} ({:.1} s)", m.display(), t.elapsed().as_secs_f64());
+    } else {
+        make(romfs, &new.join("tex"), game, settings, jobs, Vec::new(), None)?;
+        std::fs::write(new.join("inputs.key"), &key).map_err(|e| io(&new, e))?;
     }
-    std::fs::rename(&new, &base).map_err(|e| io(&new, e))?;
+    if at.exists() {
+        std::fs::rename(&at, &old).map_err(|e| io(&at, e))?;
+    }
+    std::fs::rename(&new, &at).map_err(|e| io(&new, e))?;
     if old.exists() {
         std::fs::remove_dir_all(&old).map_err(|e| io(&old, e))?;
     }
-    Ok(base)
-}
-
-/// Points `folder`/prepared at `store` (a symbolic link, put in place by a rename).
-pub fn link(folder: &Path, store: &Path) -> Result<(), String> {
-    let at = folder.join("prepared");
-    let tmp = folder.join("prepared.link.tmp");
-    let _ = std::fs::remove_file(&tmp);
-    std::os::unix::fs::symlink(store, &tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    if at.is_dir() && !at.is_symlink() {
-        std::fs::remove_dir_all(&at).map_err(|e| format!("{}: {e}", at.display()))?;
-    }
-    std::fs::rename(&tmp, &at).map_err(|e| format!("{}: {e}", at.display()))
+    Ok(())
 }
 
 /// Makes the store in `out` from `romfs` with the game description's settings for its romfs; with `hollow`, also

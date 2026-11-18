@@ -17,9 +17,9 @@ patches make their texels linear when the game loads them (see [terrain tiles an
 
 ## Run the converter
 
-Every `ounce build <game>` prepares the game's store: one store per game in the cache (`~/.cache/ounce/prepared/<game>`),
-shared by every checkout and linked into the game folder as `prepared/`. A player's game folder (`--dump`) gets a store
-of its own. To make a store by hand, for a check:
+Every `ounce build <game>` puts the game's store in its game folder's `prepared/`. It keeps the store while the dump and
+the settings are unchanged; a worktree's build copies the main checkout's store when that one is current; only
+otherwise does it convert. To make a store by hand, for a check:
 
 1. Prepare the textures:
 

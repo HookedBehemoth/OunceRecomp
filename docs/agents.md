@@ -14,7 +14,8 @@ PC's memory or resetting the GPU under each other.
 - Run games headless and muted (`--headless`), with a time limit (`--seconds`), and read the verdict of `ounce test`,
   not the log.
 - Work in your own worktree, made with `git worktree add work/wt/<name> -b agent/<name>`. It needs no links: the
-  config, the object cache and the data folder are outside the checkout.
+  config, the object cache and the data folder are outside the checkout, and its first `ounce build` copies the main
+  checkout's texture store by itself.
 - To land a branch, rebase it onto the tracking branch and fast-forward the tracking branch to it:
 
   ```sh

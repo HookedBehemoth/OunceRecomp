@@ -149,6 +149,7 @@ pub fn run(args: &[String]) {
             "--shots" => o.shot_every = Some(val().parse().unwrap_or_else(|_| fail("--shots <every N presents>"))),
             "--name" => o.name = Some(val()),
             "--set" => o.set.push(switch(&val())),
+            "--build" => o.build = Some(PathBuf::from(val())),
             _ => fail(format!("run: what is {a}? (ounce help)")),
         }
     }

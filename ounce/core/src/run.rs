@@ -30,6 +30,9 @@ pub struct Options {
     pub name: Option<String>,
     /// a screenshot every this many presents (headless; default 300)
     pub shot_every: Option<u32>,
+    /// another game folder than the checkout's build (a player's folder from `ounce build --out`): its own romfs/
+    /// when it has one
+    pub build: Option<PathBuf>,
 }
 
 pub struct Outcome {
@@ -39,8 +42,8 @@ pub struct Outcome {
 }
 
 /// A warning line when the game folder was built from another commit than the checkout's.
-pub fn stale_warning(layout: &Layout) -> Option<String> {
-    let built = std::fs::read_to_string(layout.build_stamp()).ok()?.lines().next()?.trim().to_string();
+pub fn stale_warning(layout: &Layout, stamp: &Path) -> Option<String> {
+    let built = std::fs::read_to_string(stamp).ok()?.lines().next()?.trim().to_string();
     let head = Command::new("git").arg("-C").arg(&layout.root).args(["rev-parse", "HEAD"]).output().ok()?;
     let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
     (built != head).then(|| {
@@ -105,15 +108,15 @@ fn gpu_resets(since: u64) -> Vec<String> {
 
 /// Runs the game until it ends, or until `seconds`.
 pub fn run(layout: &Layout, config: &Config, game: &Game, o: &Options) -> Result<Outcome, String> {
-    let folder = layout.game_dir();
+    let folder = o.build.clone().unwrap_or_else(|| layout.game_dir());
     let exe = folder.join(&game.exe);
     if !exe.is_file() {
         return Err(format!("no build of {} ({} is missing): run `ounce build {}`", game.name, exe.display(), game.name));
     }
-    if let Some(w) = stale_warning(layout) {
+    if let Some(w) = stale_warning(layout, &folder.join("build.txt")) {
         eprintln!("{w}");
     }
-    let romfs = config.dump(&game.name)?.join("romfs");
+    let romfs = if folder.join("romfs").is_dir() { folder.join("romfs") } else { config.dump(&game.name)?.join("romfs") };
     let name = o.name.clone().unwrap_or_else(|| if o.headless { "headless".into() } else { "play".into() });
     let dir = layout.run_dir(&name);
     let _ = std::fs::remove_dir_all(&dir);
