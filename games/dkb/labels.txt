@@ -3,3 +3,8 @@
 # An entry is a function's entry address in this lift (of the build games/dkb/game.toml names). Add what an analysis
 # finds, with its note (docs/reverse-engineering.md, "Label a function").
 80403180 zstd_decompress_sequences        # games/dkb/game.toml local_continuations: ZSTD_decompressSequences, inferred (ZSTD_DCtx fields at 0x7050-0x7138, adr/br continuations as OoT 801102e0)
+8048f410 net_na_info_load                 # runtime/nn_answers.c nn::account: loads the cached Nintendo Account info (country, region, birthday) into its object, +8 says it was read; any failure leaves it unread
+805e4094 net_bcat_service_ctor            # runtime/nn_answers.c nn::bcat: an object's constructor; bcat::Initialize, then net_bcat_cache_probe, unmounting when it mounted
+805e42b0 net_bcat_cache_probe             # runtime/nn_answers.c nn::bcat: MountDeliveryCacheStorage, retried while it answers TargetLocked (desc 3) within a time budget; true when mounted
+80567080 net_streamplay_reserve_caller    # runtime/nn_answers.c nn::streamplay: ends by reserving the larger of two GetRequiredMemorySize answers (0x805671bc), aligned 0x1000
+818934cc net_streamplay_guest_input       # runtime/nn_answers.c nn::streamplay: reads the GameShare guests' pads, motion and Joy-Con mice; runs only while +0x30 is set
