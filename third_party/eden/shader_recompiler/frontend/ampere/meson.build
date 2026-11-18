@@ -10,6 +10,7 @@ eden_sources += files(
   'translate/half.cpp',
   'translate/int.cpp',
   'translate/isbe.cpp',
+  'translate/matrix.cpp',
   'translate/memory.cpp',
   'translate/move.cpp',
   'translate/predicate.cpp',

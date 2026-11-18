@@ -89,6 +89,7 @@ void TranslateBarrier(Translator& t);
 void TranslateIsbe(Translator& t);
 void TranslatePredicate(Translator& t);
 void TranslateWarp(Translator& t);
+void TranslateMatrix(Translator& t);
 
 /// Emits the instructions of [begin, end) into block
 void Translate(Environment& env, IR::Block* block, Location begin, Location end);

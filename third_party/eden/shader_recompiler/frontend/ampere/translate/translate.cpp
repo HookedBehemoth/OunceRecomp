@@ -256,6 +256,8 @@ void TranslateOne(Translator& t) {
         return TranslateAttribute(t);
     case 0x806: case 0x886: case 0x389: case 0x589: case 0x989: case 0xf89: case 0x3a1: case 0x3c4: case 0x822:
         return TranslateWarp(t);
+    case 0x23c: case 0x83b: case 0x23a:
+        return TranslateMatrix(t);
     default:
         break;
     }
