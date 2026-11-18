@@ -203,3 +203,13 @@
 8032f840 display_settings_update          # games/dkb/patches/widescreen.c: the display settings' update (settings x0, each frame): the mode table at +0xd0 (0x64 bytes a mode, +0x1c4/+0x1c5 the mode), the frame size +0x1a0 (w | h << 32) applied on a mode change or +8 bit 4: window crop (display_window_set_crop), +0x1a8/+0x1ac the scale against the mode's size, the render config's frame size +0x780
 80330618 display_window_set_crop          # games/dkb/patches/widescreen.c: (window, x, y, w, h): the crop at +0xac..+0xb8 and its dirty flag +0xaa (nvnWindowSetCrop in sys_framework_wait_present)
 80330610 display_window_crop_thunk        # games/dkb/patches/widescreen.c: [x0+0x80] (the window), then display_window_set_crop
+# voxel edit results (the 60 / 120 fps dig check, 2026-11-19): a punch's terrain erase is one edit in one frame, two merges, at both rates
+8065e380 voxel_result_merge               # dig check: (parent x0, child x1) merges an edit result into its parent: child list +0x340 (count +0x338), the type +0xd0, per-material sums +0x1d8 / +0x258, the changed volume +0xa8 when +0x312 (negative = erased)
+80527018 voxel_result_add_region          # dig check: an edit's per-region pass: sets +0x311, adds each region's changed voxel count to +0xa8 (0x805271ac, 0x80527448) and sets +0x312; the op's material bytes at [+0x318]; called by the shape ops at 0x81ac..0x81ae
+81afbd50 voxel_result_volume              # dig check: an edit result's changed volume (+0xa8); the voxel-part receivers (e.g. f_80fd47ec) add it to their damage
+81afbd40 voxel_result_pos                 # dig check: an edit result's position (+0xac..+0xb4)
+81afbd80 voxel_result_is_erase            # dig check: true when the type (+0xd0) is 1 or 4..9 and the volume (+0xa8) is negative
+81b0077c voxel_edit_run                   # dig check: runs one voxel edit under the scene's locks: walks the octree (f_81b03bdc), the eraser node pass (f_81b03a18, which merges each result: voxel_result_merge), then the results' dispatch
+81b03a18 voxel_edit_erase_node            # dig check: voxel_edit_run's per-node erase (f_81ac5cc4), its result merged at 0x81b03ae0 (lr 0x81b03ae4: the merge each punch makes once)
+81af9920 voxel_edit_shape_rot             # dig check: an edit with a rotated shape (rotation matrix from a quaternion arg3) through voxel_edit_run; called by actor code 0x810a..0x8111
+81af9bf0 voxel_edit_shape                 # dig check: an edit through voxel_edit_run; wrapped by f_81af9b00, f_81af9e50, f_81af9f40, f_81afa090, f_81afa1a0 (player-side callers at 0x8141..0x8145)
