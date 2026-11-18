@@ -3,134 +3,35 @@
 
 #pragma once
 
-#include <optional>
-#include <span>
-#include <string>
-#include <vector>
-
-#include <boost/container/small_vector.hpp>
-#include <boost/intrusive/set.hpp>
-
 #include "shader_recompiler/environment.h"
-#include "shader_recompiler/frontend/ir/condition.h"
-#include "shader_recompiler/frontend/ir/reg.h"
+#include "shader_recompiler/frontend/common/flow.h"
 #include "shader_recompiler/frontend/maxwell/instruction.h"
-#include "shader_recompiler/frontend/maxwell/location.h"
 #include "shader_recompiler/frontend/maxwell/opcodes.h"
 #include "shader_recompiler/object_pool.h"
 
 namespace Shader::Maxwell::Flow {
 
-struct Block;
+using Shader::Flow::Block;
+using Shader::Flow::EndClass;
+using Shader::Flow::Function;
+using Shader::Flow::FunctionId;
+using Shader::Flow::IndirectBranch;
+using Shader::Flow::Label;
+using Shader::Flow::Stack;
+using Shader::Flow::StackEntry;
+using Shader::Flow::Token;
 
-using FunctionId = size_t;
-
-enum class EndClass {
-    Branch,
-    IndirectBranch,
-    Call,
-    Exit,
-    Return,
-    Kill,
-};
-
-enum class Token {
-    SSY,
-    PBK,
-    PEXIT,
-    PRET,
-    PCNT,
-    PLONGJMP,
-};
-
-struct StackEntry {
-    auto operator<=>(const StackEntry&) const noexcept = default;
-
-    Token token;
-    Location target;
-};
-
-class Stack {
-public:
-    void Push(Token token, Location target);
-    [[nodiscard]] std::pair<Location, Stack> Pop(Token token) const;
-    [[nodiscard]] std::optional<Location> Peek(Token token) const;
-    [[nodiscard]] Stack Remove(Token token) const;
-
-private:
-    std::vector<StackEntry> entries;
-};
-
-struct IndirectBranch {
-    Block* block;
-    u32 address;
-};
-
-struct Block : boost::intrusive::set_base_hook<
-                   // Normal link is ~2.5% faster compared to safe link
-                   boost::intrusive::link_mode<boost::intrusive::normal_link>> {
-    [[nodiscard]] bool Contains(Location pc) const noexcept;
-
-    bool operator<(const Block& rhs) const noexcept {
-        return begin < rhs.begin;
-    }
-
-    Location begin;
-    Location end;
-    EndClass end_class{};
-    IR::Condition cond{};
-    Stack stack;
-    Block* branch_true{};
-    Block* branch_false{};
-    FunctionId function_call{};
-    Block* return_block{};
-    IR::Reg branch_reg{};
-    s32 branch_offset{};
-    std::vector<IndirectBranch> indirect_branches;
-};
-
-struct Label {
-    Location address;
-    Block* block;
-    Stack stack;
-};
-
-struct Function {
-    explicit Function(ObjectPool<Block>& block_pool, Location start_address);
-
-    Location entrypoint;
-    boost::container::small_vector<Label, 16> labels;
-    boost::intrusive::set<Block> blocks;
-};
-
-class CFG {
+/// (fork) The Maxwell front's control flow builder.
+class CFG : public Shader::Flow::CFG {
     enum class AnalysisState {
         Branch,
         Continue,
     };
 
 public:
-    explicit CFG(Environment& env, ObjectPool<Block>& block_pool, Location start_address,
+    /// start_address: the program's first instruction, a Maxwell location
+    explicit CFG(Environment& env, ObjectPool<Block>& block_pool, u32 start_address,
                  bool exits_to_dispatcher = false);
-
-    CFG& operator=(const CFG&) = delete;
-    CFG(const CFG&) = delete;
-
-    CFG& operator=(CFG&&) = delete;
-    CFG(CFG&&) = delete;
-
-    [[nodiscard]] std::string Dot() const;
-
-    [[nodiscard]] std::span<const Function> Functions() const noexcept {
-        return std::span(functions.data(), functions.size());
-    }
-    [[nodiscard]] std::span<Function> Functions() noexcept {
-        return std::span(functions.data(), functions.size());
-    }
-
-    [[nodiscard]] bool ExitsToDispatcher() const {
-        return exits_to_dispatcher;
-    }
 
 private:
     void AnalyzeLabel(FunctionId function_id, Label& label);
@@ -159,9 +60,7 @@ private:
 
     Environment& env;
     ObjectPool<Block>& block_pool;
-    boost::container::small_vector<Function, 1> functions;
     Location program_start;
-    bool exits_to_dispatcher{};
     Block* dispatch_block{};
 };
 

@@ -708,7 +708,7 @@ private:
                 break;
             case StatementType::Code: {
                 ensure_block();
-                Translate(env, current_block, stmt.block->begin.Offset(), stmt.block->end.Offset());
+                Translate(env, current_block, stmt.block->begin, stmt.block->end);
                 break;
             }
             case StatementType::SetVariable: {
