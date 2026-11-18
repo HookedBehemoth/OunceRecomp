@@ -670,12 +670,12 @@ extern "C" __attribute__((visibility("default"))) void gpu_submit(uint64_t queue
     Sub s;
     s.lists.reserve(n);
     for (uint32_t i = 0; i < n; i++) {
-        List* l = (List*)lists[i];
-        if (!l) continue;
+        if (!lists[i]) continue;
+        list_submitted((List*)lists[i]);
+        List* l = list_for_submit((List*)lists[i]);
         list_ref(l);
         if (l->slot && l->slot->frame != UINT64_MAX)
             st_age_submit[std::min<uint64_t>(present_count() - std::min(present_count(), l->slot->frame), 3)].fetch_add(1, std::memory_order_relaxed);
-        list_submitted(l);
         draw_list_submitted(l);   // (M2b: the deferred binds' handles as the game's arrays hold them now)
         compute_list_submitted(l);   // (M4a: and the dispatches')
         s.lists.push_back(l);

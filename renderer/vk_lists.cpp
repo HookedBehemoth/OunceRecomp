@@ -68,7 +68,7 @@ constexpr int kSites = 1024;
 struct Site {
     std::atomic<uint64_t> key{0};
     std::atomic<uint32_t> kind{0}, load_kind{0};
-    std::atomic<int64_t> n{0}, submitted{0}, unrecorded{0};   // (unrecorded: packets of ops submitted, never called)
+    std::atomic<int64_t> n{0}, submitted{0}, self_submitted{0};   // (its packets submitted by themselves, drawn)
     int64_t last_n = 0;   // (the 600-present line's: its thread's alone)
 };
 Site sites[kSites];
@@ -108,6 +108,7 @@ void list_unref(List* l) {
         draw_list_free(x);
         compute_list_free(x);
         query_list_free(x);
+        if (List* d = x->submitted.load(std::memory_order_acquire); d && d->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) work.push_back(d);
         if (x->packet && x->ended) st_pkt_bytes.fetch_sub((int64_t)x->pkt.size(), std::memory_order_relaxed), st_pkt_lists.fetch_sub(1, std::memory_order_relaxed);
         if (x->slot) cmd_slot_drop(x->slot);
         dump_free(x->dumps);
@@ -116,22 +117,34 @@ void list_unref(List* l) {
         st_live.fetch_sub(1, std::memory_order_relaxed);
     }
 }
-std::atomic<int64_t> st_unrecorded{0};
-/// A packet's ops run only where a recording list calls it: one submitted itself has nothing to run, and its ops are
-/// lost (a begin site no At row classified, or one classified as a load list). Counted, named once per begin site, strict's event
+std::atomic<int64_t> st_drawn_submitted{0};
 void list_submitted(const List* l) {
     if (l->site >= 0) sites[l->site].submitted.fetch_add(1, std::memory_order_relaxed);
-    if (!l->packet || !l->pkt_ops) return;
-    st_unrecorded.fetch_add(1, std::memory_order_relaxed);
-    if (l->site < 0 || sites[l->site].unrecorded.fetch_add(1, std::memory_order_relaxed) == 0) {
+}
+List* list_for_submit(List* l) {
+    if (!l->packet || !l->ended || !l->pkt_ops) return l;
+    st_drawn_submitted.fetch_add(1, std::memory_order_relaxed);
+    if (List* d = l->submitted.load(std::memory_order_acquire)) return d;
+    if (l->site < 0 || sites[l->site].self_submitted.fetch_add(1, std::memory_order_relaxed) == 0) {   // (once per begin site)
         char b[400];
         int k = std::snprintf(b, sizeof b, "kind %s from %#llx (fp %#llx), %u ops:", kKindNames[l->info.kind], (unsigned long long)l->info.lr,
                               (unsigned long long)l->info.fp, l->pkt_ops);
         for (int i = 0; i < NOP_COUNT_ && k < 360; i++)
             if (l->counts[i]) k += std::snprintf(b + k, sizeof b - k, " %s %u", kOpNames[i], l->counts[i]);
-        logf("direct: a list submitted but never recorded (a packet nobody called): %s", b);
-        strict_event("a list submitted but never recorded", "%s", b);
+        logf("direct: a packet submitted by itself, drawn as an immediate list: %s", b);
     }
+    gpu_list_info info = l->info;
+    info.kind = GPU_LIST_IMMEDIATE;
+    List* d = new List;
+    d->info = info, d->rec = true;
+    st_live.fetch_add(1, std::memory_order_relaxed);
+    void* const self = l;
+    gpu_list_call(d, &self, 1);
+    gpu_list_end(d);
+    List* none = nullptr;
+    if (l->submitted.compare_exchange_strong(none, d, std::memory_order_acq_rel)) return d;
+    list_unref(d);   // (another thread's submission recorded it first)
+    return none;
 }
 void list_flatten(const List* l, std::vector<const FrameOp*>& out) {
     for (const FrameOp& o : l->ops) {
@@ -205,8 +218,9 @@ void lists_stats(char* out, size_t cap, double frames) {
                        st_pkt_bytes.load() / 1048576.0, st_pkt.take(PK_CALLS) / frames, st_pkt.take(PK_OPS) / frames,
                        st_pkt.take(PK_NESTED) / frames, (long long)st_pkt.total(PK_UNENDED));
     k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, ", calls %.1f; %lld lists live, %lld dropped unended, %lld records "
-                       "of no op or outside a list, %lld submitted but never recorded; ops a frame:", st_calls.exchange(0) / frames,
-                       (long long)st_live.load(), (long long)st_dropped.load(), (long long)st_bad_op.load(), (long long)st_unrecorded.load());
+                       "of no op or outside a list, %.1f packets submitted by themselves (drawn as immediate lists); ops a frame:",
+                       st_calls.exchange(0) / frames, (long long)st_live.load(), (long long)st_dropped.load(), (long long)st_bad_op.load(),
+                       st_drawn_submitted.exchange(0) / frames);
     for (int i = 0; i < NOP_COUNT_; i++) {
         const int64_t n = st_ops[i].exchange(0);
         if (n) k += std::snprintf(out + k, k < (int)cap ? cap - k : 0, " %s %.1f", kOpNames[i], n / frames);

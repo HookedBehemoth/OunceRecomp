@@ -97,6 +97,7 @@ struct List {
     bool packet = false;      // (load-time and unclassified lists: a packet, expanded into each caller at its call)
     std::vector<uint8_t> pkt; // (the packet: per op {op, size} then the payload, 8-byte aligned; callees in place)
     uint32_t pkt_ops = 0;
+    std::atomic<List*> submitted{nullptr};   // (a packet the game submits itself: the immediate list of its ops, list_for_submit)
     bool cap_drawn = false;   // (HOS_DBG=capture: it renders into a 543x306 target)
     uint64_t counted = 0;     // (its bytes as counted to MO_M_LISTS)
     std::vector<const List*> executed;   // (secondaries executed in its renderings: their slots go with its submissions)
@@ -129,5 +130,8 @@ struct SubItem {
 void list_items(const List* l, std::vector<SubItem>& out, std::vector<CmdSlot*>& slots, std::vector<DumpItem*>* dumps);
 /// l handed to gpu_submit (counted by its return address)
 void list_submitted(const List* l);
+/// The list a submission of l runs. A packet submitted by itself runs where it is submitted, as NVN runs a submitted
+/// command list: its ops recorded into an immediate list at its first submission, kept with it for the next ones
+List* list_for_submit(List* l);
 
 }  // namespace hsd
