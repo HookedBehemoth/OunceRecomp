@@ -8,7 +8,7 @@ identity, and each aligned pair gets a verdict from per-tile errors against the 
     direct_picture_check.py pack <run>/log.txt <dump dir> <out dir>        a run's dump packed (pass targets only)
     direct_picture_check.py noise <out noise.json> <packed>...             the run-to-run noise of >= 3 frozen runs, per pass
     direct_picture_check.py compare <golden packed> <packed> [--noise N]   per pass verdicts; exit 1 on any failing pass
-    direct_picture_check.py selftest                                       the metric on synthetic pictures (tests/ runs it)
+    direct_picture_check.py selftest                                       the metric on synthetic pictures (cargo test runs it)
 
 The store. index.json lists the items in dump order with their log fields; each picture is <seq>.zst: the zstd-compressed
 array, in a form that loses nothing of what the target holds: 8-bit UNORM/sRGB targets as uint8 (the dump's float times 255,

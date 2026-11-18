@@ -4,14 +4,14 @@ Synthetic documents only (no dump): every node the writer writes (bool, i32, f32
 dict, empty containers), keys and strings that sort by their UTF-8 bytes, subtrees and 64-bit values that repeat (written
 once, so the file is smaller than with copies), and an int that does not fit an i32 refused unless wrapped.
 
-python -I -B tests/test_byml_write.py
+python -I -B ounce/tests/py/byml_write.py
 """
 import struct
 import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "tools" / "dump"))
 import byml_write as B  # noqa: E402
 

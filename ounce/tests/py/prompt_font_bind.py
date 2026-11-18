@@ -3,7 +3,7 @@ build makes it (tools/prompts/prompt_assets.py cmap4): a bound Switch button's c
 its own, and the pad icons stay. Also the faces' order: games/oot/patches/prompts.c faces[], renderer/api/vk_api.h HOS_PROMPT_* and
 tools/prompts/prompt_faces.py FACES (after the Switch).
 
-python -I -B tests/test_prompt_font_bind.py [--cc gcc]
+python -I -B ounce/tests/py/prompt_font_bind.py [--cc clang]
 """
 import argparse
 import re
@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "tools/prompts"))
 import prompt_assets  # noqa: E402
 import prompt_faces  # noqa: E402
@@ -38,7 +38,7 @@ def block(text, marker):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--cc", default="gcc")
+    p.add_argument("--cc", default="clang")
     a = p.parse_args()
     src = (ROOT / "games/oot/patches/prompts.c").read_text(encoding="utf-8")
     api = (ROOT / "renderer/api/vk_api.h").read_text(encoding="utf-8")
