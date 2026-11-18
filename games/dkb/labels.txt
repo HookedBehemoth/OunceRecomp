@@ -27,3 +27,13 @@
 80e3c6d0 movie_dec_acquire                # runtime/nn_video.c: Acquire*DecoderOutputBuffer by the kind; any failure aborts
 80e3c740 movie_dec_release                # runtime/nn_video.c: Release*DecoderOutputBuffer by the kind (tail calls)
 80e3c790 movie_dec_properties             # runtime/nn_video.c: Get*DecoderOutputBufferProperties by the kind (tail calls)
+80020020 voxel_mesh_worker                # runtime/nn_os_sync.c BroadcastConditionVariable: a VoxelDisplayMes thread's loop: under the first job's mutex takes a job neither empty (+0x42) nor paused (+0x43), else waits on the job's +0x28 condition variable (voxel_mesh_worker_ready)
+8002fa50 voxel_mesh_worker_ready          # runtime/nn_os_sync.c BroadcastConditionVariable: voxel_mesh_worker's wait predicate: a job to take, or every job done (+0x40)
+801d6dac voxel_mark_dirty                 # runtime/nn_os_sync.c BroadcastConditionVariable: marks the 16-voxel blocks a box touches (casalb per block), queues them on the display-mesh job and broadcasts its +0x28 condition variable when it gets work
+801e50e0 voxel_display_update             # runtime/nn_os_sync.c BroadcastConditionVariable: the voxel system's per-frame update (a virtual, run on MainThread); waits for the display-mesh job (job_wait_done) when one is pending
+801e623c job_wait_done                    # runtime/nn_os_sync.c BroadcastConditionVariable: waits on a job's +0x30 condition variable (with the shared mutex at +0x50, else its own) until its done flag (+0x40)
+818b1bec voxel_display_update_caller      # runtime/nn_os_sync.c BroadcastConditionVariable: under its +0x38 mutex, calls +0x58's virtual (voxel_display_update) when +0x10 is set
+81ab80b0 job_set_count                    # runtime/nn_os_sync.c BroadcastConditionVariable: sets a job's empty flag (+0x42), clears +0x41 and the count (+0x48), broadcasts its +0x20 and +0x30 condition variables
+81abf978 job_set_done                     # runtime/nn_os_sync.c BroadcastConditionVariable: sets a job's done flag (+0x40) and broadcasts its +0x20, +0x28 and +0x30 condition variables
+8037f3bc job_resume                       # runtime/nn_os_sync.c BroadcastConditionVariable: clears a job's paused flag (+0x43) and broadcasts its +0x28 condition variable
+80e3ada0 movie_frame_release              # runtime/nn_video.c: gives a frame back: finds it in the in-use list (+0xc30) by its output (+0x30) and aborts when it is not there (lr 0x80e3ae94: DKB's stop after GuidePunch.webm loops)
