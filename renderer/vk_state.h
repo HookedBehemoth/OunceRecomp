@@ -20,6 +20,9 @@ constexpr int kBankStages = kStages;
 constexpr uint32_t kPushBytes = 0x100;
 constexpr int kRootBank = 17;
 
+constexpr nvn_blend_st kBlendDefault{0, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO,
+                                      NVN_BLEND_EQUATION_ADD, NVN_BLEND_EQUATION_ADD};
+
 struct DState {
     nvn_prog prog{};
     bool has_prog = false;
@@ -31,12 +34,15 @@ struct DState {
     uint64_t tex_src[kBankStages][128]{}, samp_src[kBankStages][128]{}, img_src[kBankStages][32]{};
     uint32_t deferred[kBankStages]{};   // (slots of the stage bound deferred now)
     uint8_t push[kBankStages][kPushBytes]{};   // (the graphics stages' push constants: their root tables)
-    nvn_blend_st blend[8]{};
-    nvn_color_st color{};
+    // (the state objects as their SetDefaults make them, runtime/nvn_native.c: a list that binds none draws with these)
+    nvn_blend_st blend[8]{kBlendDefault, kBlendDefault, kBlendDefault, kBlendDefault, kBlendDefault, kBlendDefault,
+                          kBlendDefault, kBlendDefault};
+    nvn_color_st color{0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS};
     nvn_chmask_st chmask{0xffffffffu};
-    nvn_ms_st ms{};
-    nvn_poly_st poly{};
-    nvn_ds_st ds{};
+    nvn_ms_st ms{1};
+    nvn_poly_st poly{NVN_FACE_NONE, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, 0};
+    nvn_ds_st ds{0, 1, NVN_DEPTH_FUNC_LESS, 0, NVN_STENCIL_FUNC_ALWAYS, NVN_STENCIL_FUNC_ALWAYS, NVN_STENCIL_OP_KEEP,
+                 NVN_STENCIL_OP_KEEP, NVN_STENCIL_OP_KEEP, NVN_STENCIL_OP_KEEP, NVN_STENCIL_OP_KEEP, NVN_STENCIL_OP_KEEP};
     uint32_t vattr[16]{};
     int nvattr = 0;
     nvn_vs_st vstream[16]{};
