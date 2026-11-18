@@ -44,14 +44,16 @@ and the texture's index. `ounce/tex/src/store.rs` describes the format.
 | Source | Prepared as |
 |---|---|
 | BC1-BC7, uncompressed formats | kept, deswizzled |
-| ASTC (every block size), linear | BC7 |
-| ASTC (every block size), sRGB | BC7 sRGB |
+| ASTC normal map: linear, two channels read | BC5 |
+| other ASTC, linear | BC7 |
+| other ASTC, sRGB | BC7 sRGB |
+| any ASTC below 35 dB PSNR | encoded again, in the same format, at slower settings |
 
-The prepared format follows from the NVN format alone, never from the content. The back end makes a texture that the
-game creates in an ASTC format in the same format, so the game's copies from loaded textures into it fit texel for
-texel. BC7 is the one BC format with ASTC's four 8-bit channels; NVN has no HDR ASTC formats. A copy, buffer copy or
-texel write that would mix ASTC data with another format, or a copy off BC7's 4x4 blocks (possible with 5-, 6- and
-10-texel ASTC blocks), is a strict event.
+The back end makes a texture that the game creates in an ASTC format as BC7 (sRGB for sRGB), so the game's copies
+from loaded textures into it fit texel for texel. BC7 is the one BC format with ASTC's four 8-bit channels; NVN has no
+HDR ASTC formats. A copy, buffer copy or texel write that would mix ASTC data with another format, or a copy off the
+4x4 blocks (possible with 5-, 6- and 10-texel ASTC blocks), is a strict event. Each BC5 record holds its normals'
+angular error (mean and max degrees, z reconstructed from x and y).
 
 No texture is refused, and every texture keeps its channels where the source has them. The host finds a texture's record when the game loads it; see [texture streaming](texture-streaming.md).
 

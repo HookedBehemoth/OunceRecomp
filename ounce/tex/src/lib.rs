@@ -1,5 +1,5 @@
-//! The prepared texture store: every BNTX texture of a romfs deswizzled to linear blocks, ASTC re-encoded to BC7 (one
-//! format per NVN format, `plan::astc_target`), zstd-compressed into packs with an index, for the renderer to
+//! The prepared texture store: every BNTX texture of a romfs deswizzled to linear blocks, ASTC re-encoded to BC5 (normal
+//! maps) or BC7 (`plan::choose_target`), zstd-compressed into packs with an index, for the renderer to
 //! copy straight into Vulkan images. `run::run` makes a store (and, when asked, the romfs copy's texture files with
 //! their texels zeroed: `hollow`); `compare::compare` checks two against each other.
 

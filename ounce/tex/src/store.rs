@@ -148,7 +148,9 @@ fn tex_record(v: &mut Vec<u8>, file: u32, r: &Rec, name: (u32, u32), mip_first: 
     put_u32(v, r.hdr_blocks);
     v.extend_from_slice(&[r.rule, 0, 0, 0]);
     v.extend_from_slice(&r.psnr_first.to_le_bytes());
-    v.extend_from_slice(&[0; 4]);
+    for d in [r.nrm_mean, r.nrm_max] {
+        put_u16(v, (d * 100.0).round().clamp(0.0, 65535.0) as u16);
+    }
 }
 
 /// The index of `entries` (in their order), written to a temporary and renamed.
@@ -301,6 +303,8 @@ pub fn read_index(path: &Path) -> Result<Index, String> {
             hdr_blocks: u32_(t, 112),
             rule: t[116],
             psnr_first: f32_(t, 120),
+            nrm_mean: u16_(t, 124) as f32 / 100.0,
+            nrm_max: u16_(t, 126) as f32 / 100.0,
         };
         let (mip_first, fr_first, fr_n) = (u32_(t, 60) as usize, u32_(t, 64) as usize, u32_(t, 68) as usize);
         let nm = if status == Status::Ok { rec.mips as usize } else { 0 };

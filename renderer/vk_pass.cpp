@@ -483,14 +483,16 @@ void copy_tt(List* l, const nvn_p_copy_tt& p) {
     const bool colour = s.aspect == VK_IMAGE_ASPECT_COLOR_BIT && d.aspect == VK_IMAGE_ASPECT_COLOR_BIT;
     if (!colour && s.im->format != d.im->format) return copy_skipped("depth of another format", p, s, d);
     auto bc7 = [](VkFormat f) { return f == VK_FORMAT_BC7_UNORM_BLOCK || f == VK_FORMAT_BC7_SRGB_BLOCK; };
-    if ((nvn_astc(s.im->nvn_format) || nvn_astc(d.im->nvn_format)) && !(bc7(s.im->format) && bc7(d.im->format)))
-        return copy_skipped("an ASTC texture's BC7 and another format", p, s, d);
-    if (bc7(d.im->format)) {   // (Vulkan's rule for compressed copies: block-aligned offsets, whole blocks or up to the edge)
+    // (an ASTC texture is BC7, or BC5 for a prepared normal map: a copy between it and another format is the game's ASTC
+    // blocks meeting another encoding)
+    if ((nvn_astc(s.im->nvn_format) || nvn_astc(d.im->nvn_format)) && s.im->format != d.im->format && !(bc7(s.im->format) && bc7(d.im->format)))
+        return copy_skipped("an ASTC texture's BC7 or BC5 and another format", p, s, d);
+    if (d.im->compressed) {   // (Vulkan's rule for compressed copies (BC: 4x4 blocks): block-aligned offsets, whole blocks or up to the edge)
         auto fits = [](const Sub& u) {
             const uint32_t lw = std::max(1u, u.im->width >> u.level), lh = std::max(1u, u.im->height >> u.level);
             return u.x % 4 == 0 && u.y % 4 == 0 && (u.w % 4 == 0 || (uint32_t)u.x + u.w == lw) && (u.h % 4 == 0 || (uint32_t)u.y + u.h == lh);
         };
-        if (!fits(s) || !fits(d)) return copy_skipped("off BC7's 4x4 blocks", p, s, d);
+        if (!fits(s) || !fits(d)) return copy_skipped("off the 4x4 blocks", p, s, d);
     }
     s.layers = d.layers = std::min(s.layers, d.layers);
     const bool same = s.w == d.w && s.h == d.h && s.d == d.d;

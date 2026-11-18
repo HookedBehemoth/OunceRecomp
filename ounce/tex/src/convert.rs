@@ -2,7 +2,7 @@
 
 use crate::bntx::{self, fmt, surface_layout, Tex};
 use crate::native;
-use crate::plan::{choose_target, compared_channels, frames_of, prepare_input, psnr_of, Kind, Plan, SW_A, SW_B, SW_G, SW_R};
+use crate::plan::{choose_target, compared_channels, frames_of, prepare_input, psnr_of, normal_fallback, Enc, Kind, Plan, SW_A, SW_B, SW_G, SW_R};
 use rayon::prelude::*;
 
 pub const FLAG_BH1: u16 = 1;
@@ -25,15 +25,23 @@ pub enum Status {
 pub struct Settings {
     /// bc7e level, 0 ultrafast .. 6 slowest
     pub bc7_level: i32,
+    /// BC5's endpoint search radius
+    pub bc5_radius: i32,
+    /// below this PSNR (dB) a BC7 texture is encoded again at bc7_retry_level, in the same format; a normal map falls
+    /// back as `plan::normal_fallback`
+    pub min_psnr: f64,
+    pub bc7_retry_level: i32,
     pub zstd_level: i32,
     pub frame_kb: u64,
 }
 
 impl Settings {
     /// The store's quality.
-    pub const QUALITY: Settings = Settings { bc7_level: 4, zstd_level: 19, frame_kb: 1024 };
-    /// A quick build: bc7e ultrafast (about 4.5 minutes for OoT on 16 threads).
-    pub const FAST: Settings = Settings { bc7_level: 0, zstd_level: 3, frame_kb: 1024 };
+    pub const QUALITY: Settings =
+        Settings { bc7_level: 4, bc5_radius: 5, min_psnr: 35.0, bc7_retry_level: 6, zstd_level: 19, frame_kb: 1024 };
+    /// A quick build: about 4.5 minutes for OoT on 16 threads.
+    pub const FAST: Settings =
+        Settings { bc7_level: 1, bc5_radius: 1, min_psnr: 35.0, bc7_retry_level: 4, zstd_level: 3, frame_kb: 1024 };
 }
 
 /// A texture record of the index, less where its mips and frames are.
@@ -66,8 +74,13 @@ pub struct Rec {
     pub psnr_min: f32,
     pub alignment: u32,
     pub hdr_blocks: u32,
+    /// below min_psnr: a normal map 1 BC7 of its channels, 2 exact; any other 3 encoded again at the retry settings;
+    /// psnr_first the first encoding's
     pub rule: u8,
     pub psnr_first: f32,
+    /// a normal map (BC5 or its fallback): the angular error of its normals, mean and max degrees (`normal_error`)
+    pub nrm_mean: f32,
+    pub nrm_max: f32,
 }
 
 /// One compressed frame of a texture's raw data (or of a BNTX's metadata).
@@ -158,6 +171,8 @@ fn base_rec(b: &[u8], t: &Tex, index: u32) -> Rec {
         hdr_blocks: 0,
         rule: 0,
         psnr_first: 0.0,
+        nrm_mean: 0.0,
+        nrm_max: 0.0,
     }
 }
 
@@ -193,6 +208,8 @@ fn error_rec(t: &Tex, index: u32) -> Rec {
         hdr_blocks: 0,
         rule: 0,
         psnr_first: 0.0,
+        nrm_mean: 0.0,
+        nrm_max: 0.0,
     }
 }
 
@@ -203,6 +220,51 @@ struct Image {
     vals: u64,
     worst: Option<f64>,
     hdr: [u64; 4],
+    nrm: NormalError,
+}
+
+/// The angle (degrees) between a normal map's source and decoded normals: x and y from two channels (0..255 as -1..1),
+/// z reconstructed as a shader does, sqrt(1 - x^2 - y^2)
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct NormalError {
+    pub sum: f64,
+    pub max: f64,
+    pub n: u64,
+}
+
+impl NormalError {
+    pub fn mean(&self) -> f64 {
+        if self.n == 0 {
+            0.0
+        } else {
+            self.sum / self.n as f64
+        }
+    }
+    fn add(&mut self, o: &NormalError) {
+        self.sum += o.sum;
+        self.max = self.max.max(o.max);
+        self.n += o.n;
+    }
+}
+
+/// xy: (source channel, decoded channel) of x and of y
+pub fn normal_error(src: &[u8], dec: &[u8], xy: [(usize, usize); 2]) -> NormalError {
+    let unit = |x: u8, y: u8| {
+        let (x, y) = (x as f64 / 127.5 - 1.0, y as f64 / 127.5 - 1.0);
+        let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+        let l = (x * x + y * y + z * z).sqrt().max(1e-9);
+        (x / l, y / l, z / l)
+    };
+    let mut e = NormalError::default();
+    for (s, d) in src.chunks_exact(4).zip(dec.chunks_exact(4)) {
+        let a = unit(s[xy[0].0], s[xy[1].0]);
+        let b = unit(d[xy[0].1], d[xy[1].1]);
+        let deg = (a.0 * b.0 + a.1 * b.1 + a.2 * b.2).clamp(-1.0, 1.0).acos().to_degrees();
+        e.sum += deg;
+        e.max = e.max.max(deg);
+        e.n += 1;
+    }
+    e
 }
 
 struct Encoded {
@@ -212,9 +274,11 @@ struct Encoded {
     psnr_min: f64,
     hdr: [u64; 4],
     flags: u16,
+    nrm: NormalError,
 }
 
-fn encode_plan(b: &[u8], t: &Tex, plan: &Plan, s: &Settings, rec_flags: u16) -> Result<Encoded, String> {
+/// level: bc7e's, radius: BC5's search; nrm: a normal map's x and y channels (`normal_error`), measured
+fn encode_plan(b: &[u8], t: &Tex, plan: &Plan, level: i32, radius: i32, rec_flags: u16, nrm: Option<[(usize, usize); 2]>) -> Result<Encoded, String> {
     let (_, bw, bhp, bpb) = fmt(t.format >> 8).unwrap();
     let (lay, stride) = surface_layout(t);
     let base = t.mip_offsets[0];
@@ -234,15 +298,19 @@ fn encode_plan(b: &[u8], t: &Tex, plan: &Plan, s: &Settings, rec_flags: u16) -> 
             let src = if off < b.len() { &b[off..off + size] } else { &[][..] };
             let lin = bntx::to_linear(src, mip.wb * bpb, mip.hb, mip.bh);
             let Some(enc) = plan.enc else {
-                return Ok(Image { data: lin, se: 0.0, vals: 0, worst: None, hdr: [0; 4] });
+                return Ok(Image { data: lin, se: 0.0, vals: 0, worst: None, hdr: [0; 4], nrm: NormalError::default() });
             };
             let mut hdr = [0u64; 4];
             bntx::astc_scan(&lin, &mut hdr);
             let mut rgba = native::astc_decode(&lin, w, h, bw, bhp)?;
             let vals = w as u64 * h as u64 * pairs.len() as u64;
+            if enc == Enc::Raw {
+                let data = rgba.chunks_exact(4).flat_map(|px| plan.pack.iter().map(move |&c| px[c])).collect();
+                return Ok(Image { data, se: 0.0, vals, worst: None, hdr, nrm: NormalError { sum: 0.0, max: 0.0, n: w as u64 * h as u64 } });
+            }
             let src_rgba = rgba.clone();
             prepare_input(&mut rgba, plan);
-            let blk = native::encode(enc, w, h, &rgba, 0, 1, s.bc7_level, 0);
+            let blk = native::encode(enc, w, h, &rgba, plan.c0, plan.c1, level, radius);
             let dec = native::decode(enc, w, h, &blk);
             let mut se = 0.0;
             for &(sc, dc) in &pairs {
@@ -250,12 +318,13 @@ fn encode_plan(b: &[u8], t: &Tex, plan: &Plan, s: &Settings, rec_flags: u16) -> 
                 se += sum as f64;
             }
             let worst = (w as u64 * h as u64 >= 4096 && !pairs.is_empty()).then(|| psnr_of(se, vals));
-            Ok(Image { data: blk, se, vals, worst, hdr })
+            let nrm = nrm.map_or(NormalError::default(), |xy| normal_error(&src_rgba, &dec, xy));
+            Ok(Image { data: blk, se, vals, worst, hdr, nrm })
         })
         .collect::<Result<_, _>>()?;
     let mut raw = Vec::with_capacity(images.iter().map(|i| i.data.len() + 4).sum());
     let mut mips = Vec::with_capacity(lay.len());
-    let (mut se, mut vals, mut worst, mut hdr) = (0.0f64, 0u64, 99.0f64, [0u64; 4]);
+    let (mut se, mut vals, mut worst, mut hdr, mut nrm_e) = (0.0f64, 0u64, 99.0f64, [0u64; 4], NormalError::default());
     for (&(m, _), img) in jobs.iter().zip(images) {
         if mips.len() == m {
             let pad = (MIP_ALIGN - raw.len() as u64 % MIP_ALIGN) % MIP_ALIGN;
@@ -265,6 +334,7 @@ fn encode_plan(b: &[u8], t: &Tex, plan: &Plan, s: &Settings, rec_flags: u16) -> 
         raw.extend_from_slice(&img.data);
         se += img.se;
         vals += img.vals;
+        nrm_e.add(&img.nrm);
         if let Some(p) = img.worst {
             worst = worst.min(p);
         }
@@ -280,7 +350,7 @@ fn encode_plan(b: &[u8], t: &Tex, plan: &Plan, s: &Settings, rec_flags: u16) -> 
     } else {
         (99.0, 0.0)
     };
-    Ok(Encoded { raw, mips, psnr, psnr_min, hdr, flags })
+    Ok(Encoded { raw, mips, psnr, psnr_min, hdr, flags, nrm: nrm_e })
 }
 
 fn convert_texture(b: &[u8], t: &Tex, index: u32, s: &Settings) -> Result<TexOut, String> {
@@ -298,7 +368,39 @@ fn convert_texture(b: &[u8], t: &Tex, index: u32, s: &Settings) -> Result<TexOut
         return Ok(out);
     }
     let Ok(plan) = choose_target(t.format, t.comp_sel) else { return Ok(out) };
-    let e = encode_plan(b, t, &plan, s, rec.flags)?;
+    // (a normal map's x and y: BC5 holds them in R and G; measured whatever its fallback becomes)
+    let normal = plan.enc == Some(Enc::Bc5);
+    let xy = |p: &Plan| match p.enc {
+        Some(Enc::Bc5) => [(p.c0, 0), (p.c1, 1)],
+        Some(Enc::Raw) => [(p.c0, 0), (p.c1, 1)],
+        _ => [(p.c0, p.c0), (p.c1, p.c1)],
+    };
+    let nrm = normal.then(|| xy(&plan));
+    let mut e = encode_plan(b, t, &plan, s.bc7_level, s.bc5_radius, rec.flags, nrm)?;
+    let mut plan = plan;
+    if plan.enc.is_some() && e.psnr < s.min_psnr {
+        let first = e.psnr;
+        if normal {
+            // (a normal map: as before, BC7 of its two channels, then exact)
+            for r in [1u8, 2] {
+                let p = normal_fallback(&plan, r);
+                e = encode_plan(b, t, &p, s.bc7_level, s.bc5_radius, rec.flags, Some(xy(&p)))?;
+                rec.rule = r;
+                if e.psnr >= s.min_psnr || r == 2 {
+                    plan = p;
+                    break;
+                }
+            }
+        } else if s.bc7_retry_level != s.bc7_level {
+            e = encode_plan(b, t, &plan, s.bc7_retry_level, s.bc5_radius, rec.flags, nrm)?;
+            rec.rule = 3;
+        }
+        rec.psnr_first = first as f32;
+    }
+    if normal {   // (as the record holds them: centidegrees)
+        rec.nrm_mean = (e.nrm.mean() * 100.0).round() as f32 / 100.0;
+        rec.nrm_max = (e.nrm.max * 100.0).round() as f32 / 100.0;
+    }
     rec.kind = plan.kind;
     rec.vk_format = plan.vk;
     rec.map = plan.map;

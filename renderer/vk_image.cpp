@@ -385,10 +385,11 @@ Image* make_asset(const nvn_tex* t, const Key& k, const AssetDesc& d, uint32_t r
     im.gpu = t->gpu, im.nvn_format = t->d.format, im.bpb = (int)d.bpb, im.bw = (int)d.bw, im.bh = (int)d.bh;
     im.width = d.width, im.height = d.height, im.levels = d.mips, im.layers = d.layers;
     im.asset = rec, im.asset_view = d.view;
-    if (nvn_astc(t->d.format) && linear_twin(d.format) != linear_twin(vk_format(t->d.format).format))
-        strict_event("a prepared ASTC texture not in the store's format for ASTC", "texture %#llx %ux%u NVN format %#x: record %u is vk "
-                     "%d (a store made before ASTC was BC7 throughout)", (unsigned long long)t->gpu, d.width, d.height, t->d.format,
-                     rec - 1, (int)d.format);
+    // (the store's ASTC: BC7 by the NVN format, or BC5 for a linear normal map; anything else is a store of another rule)
+    if (nvn_astc(t->d.format) && linear_twin(d.format) != linear_twin(vk_format(t->d.format).format) &&
+        !(d.format == VK_FORMAT_BC5_UNORM_BLOCK && t->d.format < 0x87))
+        strict_event("a prepared ASTC texture in neither BC7 nor BC5", "texture %#llx %ux%u NVN format %#x: record %u is vk %d",
+                     (unsigned long long)t->gpu, d.width, d.height, t->d.format, rec - 1, (int)d.format);
     std::memcpy(im.chan_map, d.map, 4);
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // (sRGB and UNORM views)

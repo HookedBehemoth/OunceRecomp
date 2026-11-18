@@ -18,7 +18,7 @@ pub const HOLLOW_LEVEL: i32 = 9;
 /// they are written whole again before the next build reads the romfs.
 pub const HOLLOWED: &str = "hollowed.txt";
 
-/// `--quality fast|high`: the encoder settings (fast, the default; high: slower, smaller packs)
+/// `--quality fast|high`: the encoder settings (fast, the default; high: four times the time, smaller packs)
 pub fn quality(v: &str) -> Settings {
     match v {
         "fast" => Settings::FAST,

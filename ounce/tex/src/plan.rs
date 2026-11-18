@@ -1,4 +1,5 @@
-//! What a texture becomes: the target format by its source format, and what of its content the encoder may change.
+//! What a texture becomes: the target format by its source format and channel swizzle, and what of its content the
+//! encoder may change.
 
 use crate::bntx::{fmt, is_astc, is_bc};
 
@@ -11,6 +12,8 @@ const IDENT: [u8; 4] = [SW_R, SW_G, SW_B, SW_A];
 
 pub const VK_BC7: u32 = 145;
 pub const VK_BC7_SRGB: u32 = 146;
+pub const VK_BC5: u32 = 141;
+pub const VK_RG8: u32 = 16;
 
 /// The kinds of the store's texture records (byte 24).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,6 +41,7 @@ pub enum Enc {
     Bc4,
     Bc5,
     Bc7,
+    Raw,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +49,9 @@ pub struct Plan {
     pub kind: Kind,
     pub vk: u32,
     pub enc: Option<Enc>,
+    /// BC5: the source channels it holds in R and G
+    pub c0: usize,
+    pub c1: usize,
     /// per source channel R..A, the VkComponentSwizzle that reads it from the prepared image
     pub map: [u8; 4],
     pub dropped: u8,
@@ -53,6 +60,8 @@ pub struct Plan {
     /// the channel unused colour channels are filled with
     pub fill: Option<usize>,
     pub force_alpha: bool,
+    /// raw: the source channels in the order the prepared texel holds them
+    pub pack: Vec<usize>,
 }
 
 /// VkFormat of a kept (format high byte, variant)
@@ -115,8 +124,8 @@ pub fn used_channels(comp_sel: [u8; 4]) -> Vec<usize> {
     v
 }
 
-/// The target of a texture. ASTC is one format per NVN format whatever the content (BC7, sRGB for sRGB; see
-/// `astc_target`): a texture the game makes of an ASTC format and fills by copies from loaded ones is made in that format
+/// The target of a texture. ASTC is BC5 for a normal map (two channels read, linear) and otherwise BC7, sRGB for sRGB
+/// (see `astc_target`): a texture the game makes of an ASTC format, and fills by copies from loaded ones, is made in BC7
 /// too. Err: why there is none.
 pub fn choose_target(fmt_code: u32, comp_sel: [u8; 4]) -> Result<Plan, String> {
     let (hi, var) = (fmt_code >> 8, fmt_code & 0xff);
@@ -124,20 +133,36 @@ pub fn choose_target(fmt_code: u32, comp_sel: [u8; 4]) -> Result<Plan, String> {
     if fmt(hi).is_none() {
         return none();
     }
-    let base = Plan { kind: Kind::None, vk: 0, enc: None, map: IDENT, dropped: 0, used: vec![0, 1, 2, 3], fill: None, force_alpha: false };
+    let base = Plan { kind: Kind::None, vk: 0, enc: None, c0: 0, c1: 1, map: IDENT, dropped: 0, used: vec![0, 1, 2, 3], fill: None, force_alpha: false, pack: Vec::new() };
     if !is_astc(fmt_code) {
         let Some(vk) = vk_kept(hi, var) else { return none() };
         return Ok(Plan { kind: if is_bc(fmt_code) { Kind::CopyBc } else { Kind::Copy }, vk, ..base });
     }
+    let srgb = var == 6;
     let used = used_channels(comp_sel);
     let dropped: u8 = (0..4).filter(|c| !used.contains(c)).map(|c| 1u8 << c).sum();
+    if !srgb && used.len() == 2 {
+        let (c0, c1) = (used[0], used[1]);
+        let mut map = [SW_R; 4];
+        map[c1] = SW_G;
+        return Ok(Plan { kind: Kind::Bc5, vk: VK_BC5, enc: Some(Enc::Bc5), c0, c1, map, dropped, used, ..base });
+    }
     let fill = used.iter().copied().find(|&c| c < 3);
     let force_alpha = !used.contains(&3);
-    Ok(Plan { kind: Kind::Bc7, vk: astc_target(var == 6), enc: Some(Enc::Bc7), dropped, used, fill, force_alpha, ..base })
+    Ok(Plan { kind: Kind::Bc7, vk: astc_target(srgb), enc: Some(Enc::Bc7), dropped, used, fill, force_alpha, ..base })
 }
 
-/// The VkFormat of every ASTC texture (renderer/vk_formats.cpp holds the same): BC7, the one BC format with ASTC's
-/// four channels at 8 bits.
+/// A normal map (a BC5 plan) below the PSNR floor: rule 1 BC7 of the two channels read, rule 2 RG8, exact. Like BC5,
+/// RG8 is no format a game-made ASTC texture has: a copy of it into one is a strict event.
+pub fn normal_fallback(p: &Plan, rule: u8) -> Plan {
+    if rule == 1 {
+        return Plan { kind: Kind::Bc7, vk: VK_BC7, enc: Some(Enc::Bc7), map: IDENT, fill: Some(p.c0), force_alpha: !p.used.contains(&3), ..p.clone() };
+    }
+    Plan { kind: Kind::Raw, vk: VK_RG8, enc: Some(Enc::Raw), pack: vec![p.c0, p.c1], ..p.clone() }
+}
+
+/// The VkFormat of an ASTC format's texture the game makes, and of every ASTC texture but the normal maps
+/// (renderer/vk_formats.cpp holds the same): BC7, the one BC format with ASTC's four channels at 8 bits.
 pub fn astc_target(srgb: bool) -> u32 {
     if srgb {
         VK_BC7_SRGB
@@ -147,9 +172,9 @@ pub fn astc_target(srgb: bool) -> u32 {
 }
 
 /// The encoder's input (RGBA8 rows, changed in place): unused colour channels filled with the first used one (or 0),
-/// alpha 255 when it is not read.
+/// alpha 255 when it is not read. Only BC7 plans change it.
 pub fn prepare_input(rgba: &mut [u8], p: &Plan) {
-    if p.enc.is_none() {
+    if p.enc != Some(Enc::Bc7) {
         return;
     }
     let fills: Vec<usize> = (0..3).filter(|c| !p.used.contains(c)).collect();
@@ -168,10 +193,12 @@ pub fn prepare_input(rgba: &mut [u8], p: &Plan) {
 
 /// (source channel, decoded channel) pairs the quality check compares.
 pub fn compared_channels(p: &Plan) -> Vec<(usize, usize)> {
-    if p.enc.is_none() {
-        return Vec::new();
+    match p.enc {
+        Some(Enc::Raw) => p.pack.iter().enumerate().map(|(i, &c)| (c, i)).collect(),
+        Some(Enc::Bc5) => vec![(p.c0, 0), (p.c1, 1)],
+        Some(_) => p.used.iter().map(|&c| (c, c)).collect(),
+        None => Vec::new(),
     }
-    p.used.iter().map(|&c| (c, c)).collect()
 }
 
 /// (raw offset, size) of a texture's frames: each mip of `small` bytes or more in equal parts of at most frame_max
