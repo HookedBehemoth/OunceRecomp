@@ -155,3 +155,6 @@
 80168aa0 ui2d_bounding_copy_ctor          # system survey: nn::ui2d::Bounding (vtable 0x8221f190): Pane init then ui2d_pane_copy_init
 81598908 hid_npad_read                    # system survey: every GetNpadStates (FullKey, Handheld, JoyDual/Left/Right) and six-axis read; no hid mouse import in main
 80492374 opt_camera_params_read           # system survey: "CameraSensitivity_Normal", "CameraShakePower", ... the option's camera parameters # ?
+801e56a0 voxel_display_mesh_lists         # renderer (the geometry stage, not translated): voxel_display_update's per-chunk step; calls voxel_mesh_record_lists
+801e67bc voxel_mesh_record_lists          # renderer (the geometry stage, not translated): records a display-mesh chunk's command buffers: vertex attribute and stream state, vertex buffers, DrawElements, and a DrawElementsIndirect list whose arguments the geometry culling writes
+80197324 voxel_culling_options            # renderer (the geometry stage, not translated): reads the voxel material's enable_voxel_geometry_culling and enable_voxel_geometry_depth_culling options and the voxel_geometry_culling_index_stream16 / _indirect option indices; sets bits 0x20 and 0x40 of +0xa8

@@ -1998,13 +1998,18 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const u32 mode = insn.words[2] & ~(opcode == 0xd05 ? 0x08000000U : 0U);
             // F16 source: bit 72 signs the result as in the other forms, bits 60-61 pick H0/H1.
             const bool half = opcode == 0x305 && (mode & ~0x100U) == 0x0010f000;
-            const bool small = mode == 0x00212800;
+            // (fork) a 16-bit destination (75-77 = 5), signed or not, any rounding (78-79, Maxwell's order)
+            const bool small = (mode & ~0x1c100U) == 0x00202800;
             const bool floor = (mode & ~0x10100U) == 0x00207000;
             const bool nearest = (mode & ~0x10100U) == 0x00203000;
             const bool ceil = (mode & ~0x10100U) == 0x0020b000;   // (fork) round up: Maxwell's mode 2
+            // (fork) an 8-bit destination (75-77 = 4), any rounding (78-79, Maxwell's order), from F32: Maxwell's F2I has
+            // none, so the source is clamped to the byte's range first and converted to 32 bits (the bounds are integers,
+            // so clamping before the rounding gives the same value)
+            const bool byte = (mode & ~0x1c100U) == 0x00202000;
             // (fork) a negated or absolute register source (bits 63, 62), made first
             const bool source_mod = opcode == 0x305 && !half && (insn.words[1] & 0x3fffff00U) == 0;
-            if ((!half && !small && !floor && !nearest && !ceil && (mode & ~0x10100U) != 0x0020f000) ||
+            if ((!half && !small && !floor && !nearest && !ceil && !byte && (mode & ~0x10100U) != 0x0020f000) ||
                 (opcode != 0xb05 && !immediate && !source_mod && (insn.words[1] & (half ? 0xefffff00U : 0xffffff00U))) ||
                 (immediate && insn.Bits(24, 8)) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
@@ -2015,6 +2020,15 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                        : opcode == 0xb05 ? materialize(2, 0, 252, false, false)
                        : opcode == 0xd05 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
             if (source_mod && insn.Bits(62, 2)) source = materialize(0, insn.Bits(32, 8), 249, insn.Bits(62, 1), insn.Bits(63, 1));
+            if (byte) {
+                mov_imm(251, is_signed ? 0x42fe0000U : 0x437f0000U);   // 127 or 255
+                emit(0x5c60000000000000ULL | predicate | 250 | (u64{source} << 8) | (u64{251} << 20) | (u64{7} << 39));
+                mov_imm(251, is_signed ? 0xc3000000U : 0U);            // -128 or 0
+                emit(0x5c60000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{251} << 20) | (u64{7} << 39) | (u64{1} << 42));
+                emit(base(0x5cb0000000000000ULL) | (u64{2} << 8) | (u64{2} << 10) | (u64{is_signed} << 12) | (u64{250} << 20) |
+                     (u64{insn.Bits(78, 2)} << 39) | (u64{insn.Bits(80, 1)} << 44));
+                break;
+            }
             if (half) {
                 extract_half({source, insn.Bits(60, 1) ? 3U : 2U, false, false}, 0, 252);
                 source = 252;
@@ -2038,7 +2052,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             emit(base(0x5cb0000000000000ULL) | (u64{small ? 1U : 2U} << 8) | (u64{2} << 10) |
                  (u64{is_signed} << 12) | (u64{source} << 20) |
-                 (u64{small || nearest ? 0U : floor ? 1U : ceil ? 2U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
+                 (u64{small ? insn.Bits(78, 2) : nearest ? 0U : floor ? 1U : ceil ? 2U : 3U} << 39) | (u64{insn.Bits(80, 1)} << 44));
             if (!is_signed && !small) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));
