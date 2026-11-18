@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <optional>
+
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
 
 namespace Shader::Ampere {
@@ -35,6 +37,15 @@ public:
                 target == s64{index} * 16)
                 return Result::Complete;
         }
+        // (fork) A geometry stage's at-exit hook (geometry.h): LEPC, then MOV Rk, the handler's offset from the
+        // LEPC. The handler follows the last EXIT and ends with its own, so the program reaches at least that far.
+        if (opcode == 0x34e) lepc_index = index;
+        if (opcode == 0x802 && lepc_index && index > *lepc_index && index <= *lepc_index + 8 && !handler_seen) {
+            handler_seen = true;
+            const u32 offset = instruction.words[1];
+            if (offset % 16 == 0 && offset / 16 < MaximumInstructions)
+                last_forward_target = std::max(last_forward_target, *lepc_index + offset / 16);
+        }
         if (opcode == 0x949 || opcode == 0x958) computed_branch = true;
         if (computed_branch) return Result::Continue;
         if (opcode == 0x94d && instruction.Bits(12, 4) == 7 && index >= last_forward_target) {
@@ -52,5 +63,7 @@ private:
     u32 last_forward_target{};
     bool main_exited{};
     bool computed_branch{};
+    std::optional<u32> lepc_index;
+    bool handler_seen{};
 };
 } // namespace Shader::Ampere

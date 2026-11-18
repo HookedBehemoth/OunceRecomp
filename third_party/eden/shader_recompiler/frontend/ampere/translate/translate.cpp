@@ -258,6 +258,8 @@ void TranslateOne(Translator& t) {
         return TranslateWarp(t);
     case 0x23c: case 0x83b: case 0x23a:
         return TranslateMatrix(t);
+    case 0x324: case 0x34e: case 0x357:
+        return TranslateGeometry(t);
     default:
         break;
     }

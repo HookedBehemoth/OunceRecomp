@@ -11,6 +11,7 @@
 
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ampere/control_flow.h"
+#include "shader_recompiler/frontend/ampere/geometry.h"
 
 namespace Shader::Ampere::Flow {
 namespace {
@@ -203,6 +204,7 @@ CFG::CFG(Environment& env_, ObjectPool<Block>& block_pool_, bool exits_to_dispat
         dispatch_block->branch_true = nullptr;
         dispatch_block->branch_false = nullptr;
     }
+    at_exit_prologue_end = AtExitPrologueEnd(env, program_start);
     functions.emplace_back(block_pool, program_start);
     function_links.push_back(RZ);
     for (FunctionId function_id = 0; function_id < functions.size(); ++function_id) {
@@ -294,8 +296,12 @@ CFG::AnalysisState CFG::AnalyzeInst(Block* block, FunctionId function_id, Locati
         return AnalysisState::Branch;
     case 0x34e: // LEPC
     case 0x357: // BMOV.64 ATEXIT_PC
+        if (at_exit_prologue_end && pc < *at_exit_prologue_end) {
+            return AnalysisState::Continue;
+        }
+        Fail(pc, insn, "outside a geometry stage's at-exit prologue");
     case 0x957:
-        Fail(pc, insn, "the geometry stage's at-exit idiom (work/shader-plan MG)");
+        Fail(pc, insn, "outside a geometry stage's at-exit handler");
     default:
         break;
     }

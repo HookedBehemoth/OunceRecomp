@@ -2,11 +2,13 @@
 eden_sources += files(
   'control_flow.cpp',
   'decode.cpp',
+  'geometry.cpp',
   'translate/atomic.cpp',
   'translate/attribute.cpp',
   'translate/barrier.cpp',
   'translate/conversion.cpp',
   'translate/fp.cpp',
+  'translate/geometry.cpp',
   'translate/half.cpp',
   'translate/int.cpp',
   'translate/isbe.cpp',

@@ -5,10 +5,12 @@
 // (with BRA's second predicate), jump tables (BRX/BRXU, the table tracked in the native code), CALL.REL.NOINC with a
 // return link and RET.REL.NODEC as Eden's inlined calls, EXIT, KILL, and every other guarded instruction as a
 // conditional block. Reconvergence (BSSY, BSYNC, BREAK, WARPSYNC) has no data semantics under SPIR-V's structured
-// merges and is ignored; barrier-register moves and anything else that transfers control fail the translation.
+// merges and is ignored. A geometry stage's at-exit hook is dropped (geometry.h); other barrier-register moves and
+// anything else that transfers control fail the translation.
 
 #pragma once
 
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -77,6 +79,8 @@ private:
     Block* dispatch_block{};
     /// Exits without an instruction (EXIT's second predicate), placed after their function's blocks once it is built
     std::vector<std::pair<FunctionId, Block*>> late_exits;
+    /// A geometry stage's at-exit prologue (geometry.h): its LEPC and BMOV are accepted before this location
+    std::optional<Location> at_exit_prologue_end;
     /// Per function: the register holding its return address (main: none)
     std::vector<u32> function_links;
 };
