@@ -8,3 +8,5 @@
 805e42b0 net_bcat_cache_probe             # runtime/nn_answers.c nn::bcat: MountDeliveryCacheStorage, retried while it answers TargetLocked (desc 3) within a time budget; true when mounted
 80567080 net_streamplay_reserve_caller    # runtime/nn_answers.c nn::streamplay: ends by reserving the larger of two GetRequiredMemorySize answers (0x805671bc), aligned 0x1000
 818934cc net_streamplay_guest_input       # runtime/nn_answers.c nn::streamplay: reads the GameShare guests' pads, motion and Joy-Con mice; runs only while +0x30 is set
+806f745c album_orientation_reset_dtor     # runtime/nn_applet.c nn::oe: a destructor (run on the DeleteScene thread after the mode select) that resets the screenshot orientation with SetAlbumImageOrientation(0), then 0x8053d6a0's
+808ca718 gfx_push_screen_size            # runtime/nvn_native.c: (lr 0x808ca7e0) pushes 16 bytes (1/w, 1/h, w, h) with nvnCommandBufferPushGraphicsConstants(cmdbuf, 0, 0, 0x10, &v), a proc the host lacks

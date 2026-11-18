@@ -397,6 +397,8 @@ HLE(_ZN2nn2oe15EnableRecordingEv) {}
 HLE(_ZN2nn2oe16DisableRecordingEv) {}
 HLE(_ZN2nn2oe16EnableScreenShotEv) {}
 HLE(_ZN2nn2oe17DisableScreenShotEv) {}
+/* SetAlbumImageOrientation(album::ImageOrientation): the orientation of the game's screenshots, which we do not take */
+HLE(_ZN2nn2oe24SetAlbumImageOrientationENS_5album16ImageOrientationE) {}
 /* GetDisplayVersion(DisplayVersion*): a 16-byte string */
 HLE(_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE) {
     memset(GP(ARG(0)), 0, 16);
