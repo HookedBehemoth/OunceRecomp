@@ -654,13 +654,24 @@ Id EmitRenderArea(EmitContext& ctx) {
     }
 }
 
+namespace {
+// (fork) A program the environment gave no local memory has no variable for it: an error, not an abort in Sirit
+void RequireLocalMemory(EmitContext& ctx) {
+    if (ctx.local_memory.value == 0) {
+        throw NotImplementedException("local memory access in a program without local memory");
+    }
+}
+} // Anonymous namespace
+
 Id EmitLoadLocal(EmitContext& ctx, Id word_offset) {
+    RequireLocalMemory(ctx);
     const Id pointer{
         ctx.OpAccessChain(ctx.private_u32, ctx.local_memory, word_offset, ctx.Const(0U))};
     return ctx.OpLoad(ctx.U32[1], pointer);
 }
 
 void EmitWriteLocal(EmitContext& ctx, Id word_offset, Id value) {
+    RequireLocalMemory(ctx);
     const Id pointer{
         ctx.OpAccessChain(ctx.private_u32, ctx.local_memory, word_offset, ctx.Const(0U))};
     ctx.OpStore(pointer, value);
