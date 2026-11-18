@@ -423,7 +423,8 @@ void hos_sdl_pads_pump(void) {
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
     static volatile int32_t started;
     if (!started && !os_atomic_xchg(&started, 1)) {
-        if (getenv("HOS_NO_SDL")) return 0;
+        /* (a headless run never opens the PC's controllers: no rumble, and no stray input from a pad in someone's hand) */
+        if (getenv("HOS_NO_SDL") || getenv("HOS_HEADLESS")) return 0;
         if (!hos_sdl_load()) {
             hos_log("hid: no SDL beside the exe or on the system: only XInput controllers (Xbox pads) work");
             return 0;
