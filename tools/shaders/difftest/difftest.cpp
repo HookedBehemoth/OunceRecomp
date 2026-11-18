@@ -1,7 +1,7 @@
 // difftest: the differential between two fronts of the translator (work/shader-plan section 3, D1-D3), each stage
 // translated by front A and front B (seed.h: old or new) and compared; old against old is the harness's own check.
 //
-//   difftest micro <seed>... --out <micro.seed>      D1's programs: one compute stage per masked instruction encoding
+//   difftest micro <seed>... --out <micro.seed>      D1's programs: one vertex stage per masked instruction encoding
 //   difftest micro --insts <file> --out <micro.seed>  the same from a file of instructions (32 hex digits a line)
 //   difftest d1 <micro.seed> [--inputs K]            each micro program run on edge-value inputs, A against B
 //   difftest d2 <seed>                                Shader::Info of each stage, field by field
@@ -13,9 +13,10 @@
 // goes to stderr before each (tools/shaders/difftest/difftest.py runs them sharded and sums them up).
 //
 // A micro program loads every register its instruction may name from c[1] (GPRs per lane, so 32 lanes are 32 operand
-// tuples; uniform registers and both predicate files too), runs the instruction as found in the seed, and stores the
-// same registers to shared memory (layout below); register windows are the 8 GPRs and 4 uniform registers (up to UR27)
-// from each of the fields at bits 16, 24, 32 and 64, which over-covers (an immediate's low byte opens a window too).
+// tuples; uniform registers and predicates too, not the uniform predicates yet), runs the instruction as found in the
+// seed, and writes the same registers to the generic outputs of a vertex stage; register windows are the 8 GPRs and 4
+// uniform registers (up to UR27) from each of the fields at bits 16, 24, 32 and 64, which over-covers (an immediate's low
+// byte opens a window too). The scaffold uses only instructions the direct front translates.
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
@@ -36,11 +37,11 @@ using u128 = unsigned __int128;
 
 // ---- micro programs ----
 
-// (c1 and shared memory: lane l's GPR n at l*kLane + 4n (n < 216), its P k at l*kLane + 0x360 + 4k; UR n at kUniform
-// + 4n, UP k at kUniform + 0x100 + 4k)
-constexpr uint32_t kLane = 0x380, kPreds = 0x360, kUniform = 0x7000, kUPreds = kUniform + 0x100, kC1Size = kUPreds + 0x20;
+// (c1: lane l's GPR n at l*kLane + 4n (n < 216), its P k at l*kLane + 0x360 + 4k; UR n at kUniform + 4n. The results go
+// to the generic outputs, one word a slot in Micro::names order)
+constexpr uint32_t kLane = 0x380, kPreds = 0x360, kUniform = 0x7000, kC1Size = kUniform + 0x100;
 constexpr uint32_t kGprs = 216;   // (R216 up is the lowering's)
-constexpr uint32_t kSharedSize = 0x7200;
+constexpr uint32_t kSlots = 128;  // (generic outputs 0-31, 4 words each)
 constexpr uint32_t kTestAt = 0xd0;   // (the control section's word holding the index of the instruction under test)
 
 u128 hex128(const char* s) {
@@ -71,11 +72,9 @@ const u128 uldc = hex128("000fe40000000a0000019c0000047ab9");    // ULDC.64 (B32
 const u128 s2r = hex128("000e2800000000000000000000057919");     // S2R R, SR_LANEID (SR at 72-79)
 const u128 imad = hex128("000fca00078e02ffbb40e64d20207824");    // IMAD R, Ra, imm32, RZ
 const u128 isetp = hex128("000fda0003f06070000000ff0300720c");   // ISETP.GE.U32.AND P, PT, Ra, RZ, PT (cmp 76-78)
-const u128 uisetp = hex128("000fe4000bf052700000003f0600728c");  // UISETP.NE.U32.AND UP, UPT, URa, URZ, UPT
 const u128 sel = hex128("000fe4000400000000000001ff0e7807");     // SEL R, RZ, 1, !P (pred 87-90)
-const u128 usel = hex128("000fe400080000000000003004047887");    // USEL UR, URa, imm, UP
 const u128 movu = hex128("000fe40008000f000000000500137c02");    // MOV R, UR (UR at 32-37)
-const u128 sts = hex128("000fe200000008000000101201007388");     // STS [Ra + o], Rb: Ra 24, Rb 32, o 40-63
+const u128 ast = hex128("000fe200000004ff00008002ff007322");     // AST a[o], Rb: Ra 24, Rb 32, o 40-49, words - 1 74-75, vertex Rc 64
 const u128 exit = hex128("000fec0003800000000000000000794d");    // EXIT
 const u128 bra = hex128("000fea00038000000000231000000947");     // BRA (offset in words at 34-81)
 }  // namespace tpl
@@ -87,13 +86,9 @@ u128 uldc(uint32_t urd, uint32_t off) { return set(set(set(set(tpl::uldc, 16, 6,
 u128 s2r_lane(uint32_t rd) { return set(set(tpl::s2r, 16, 8, rd), 72, 8, 0); }
 u128 imad_imm(uint32_t rd, uint32_t ra, uint32_t imm) { return set(set(set(tpl::imad, 16, 8, rd), 24, 8, ra), 32, 32, imm); }
 u128 isetp_ne(uint32_t p, uint32_t ra) { return set(set(set(tpl::isetp, 76, 3, 5), 24, 8, ra), 81, 3, p); }
-u128 uisetp_ne(uint32_t up, uint32_t ura) { return set(set(tpl::uisetp, 24, 6, ura), 81, 3, up); }
 u128 sel_pred(uint32_t rd, uint32_t p) { return set(set(set(tpl::sel, 16, 8, rd), 87, 3, p), 90, 1, 1); }
-u128 usel_pred(uint32_t urd, uint32_t up) {
-    return set(set(set(set(set(tpl::usel, 16, 6, urd), 24, 6, 63), 32, 32, 1), 87, 3, up), 90, 1, 1);
-}
 u128 mov_ur(uint32_t rd, uint32_t ur) { return set(set(tpl::movu, 16, 8, rd), 32, 6, ur); }
-u128 sts(uint32_t ra, uint32_t rb, uint32_t off) { return set(set(set(tpl::sts, 24, 8, ra), 32, 8, rb), 40, 24, off); }
+u128 ast(uint32_t rb, uint32_t slot) { return set(set(set(tpl::ast, 32, 8, rb), 40, 10, 0x80 + 4 * slot), 74, 2, 0); }
 u128 bra_self() { return set(set(set(tpl::bra, 12, 4, 7), 32, 2, 0), 34, 48, (uint64_t)-4 & ((1ull << 48) - 1)); }
 
 /// Control flow and the ops that change the program's shape: not micro programs (D3 covers them)
@@ -117,7 +112,8 @@ u128 masked(u128 x) {
 
 struct Micro {
     std::vector<u128> insts;
-    uint32_t test = 0;   // (index of the instruction under test)
+    uint32_t test = 0;                // (index of the instruction under test)
+    std::vector<std::string> names;   // (the register each output slot holds)
 };
 Micro micro(u128 x) {
     std::set<uint32_t> gprs, urs;
@@ -132,43 +128,40 @@ Micro micro(u128 x) {
     std::vector<uint32_t> temps;
     for (uint32_t n = 159; temps.size() < 2; n--)
         if (!gprs.count(n)) temps.push_back(n);
-    uint32_t urt = 0;
-    while (urs.count(urt)) urt++;
     const uint32_t rt = temps[0], ru = temps[1];
     Micro m;
     auto& v = m.insts;
     v.push_back(s2r_lane(rt));
     v.push_back(imad_imm(rt, rt, kLane));
     for (uint32_t k = 0; k < 7; k++) v.push_back(ldc(ru, rt, kPreds + 4 * k)), v.push_back(isetp_ne(k, ru));
-    for (uint32_t k = 0; k < 7; k++) v.push_back(uldc(urt, kUPreds + 4 * k)), v.push_back(uisetp_ne(k, urt));
     for (uint32_t n : urs) v.push_back(uldc(n, kUniform + 4 * n));
     for (uint32_t n : gprs) v.push_back(ldc(n, rt, 4 * n));
     m.test = (uint32_t)v.size();
     v.push_back(x);
-    v.push_back(s2r_lane(rt));
-    v.push_back(imad_imm(rt, rt, kLane));
-    for (uint32_t n : gprs) v.push_back(sts(rt, n, 4 * n));
-    for (uint32_t k = 0; k < 7; k++) v.push_back(sel_pred(ru, k)), v.push_back(sts(rt, ru, kPreds + 4 * k));
-    for (uint32_t n : urs) v.push_back(mov_ur(ru, n)), v.push_back(sts(255, ru, kUniform + 4 * n));
-    for (uint32_t k = 0; k < 7; k++) v.push_back(usel_pred(urt, k)), v.push_back(mov_ur(ru, urt)), v.push_back(sts(255, ru, kUPreds + 4 * k));
+    const auto out = [&](uint32_t r, std::string name) {
+        if (m.names.size() < kSlots) v.push_back(ast(r, (uint32_t)m.names.size())), m.names.push_back(std::move(name));
+    };
+    for (uint32_t n : gprs) out(n, fmt::format("R{}", n));
+    for (uint32_t k = 0; k < 7; k++) v.push_back(sel_pred(ru, k)), out(ru, fmt::format("P{}", k));
+    for (uint32_t n : urs) v.push_back(mov_ur(ru, n)), out(ru, fmt::format("UR{}", n));
     v.push_back(tpl::exit);
     v.push_back(bra_self());
     return m;
 }
 
-/// The micro program as a compute stage: a control section (offline::load's fields) and the code area
+/// The micro program as a vertex stage: a control section (offline::load's fields) and the code area (a program header of
+/// a vertex program, NAK sph.rs: type 1, version 3, shader type 1, then the code)
 seed::Written micro_stage(u128 x) {
     const Micro m = micro(x);
     seed::Written w;
-    w.stage = 5;
+    w.stage = 0;
     w.ctl.assign(offline::kControl, 0);
-    const uint32_t len = (uint32_t)m.insts.size() * 16, c1o = len;   // (c1 empty here: each run gives its own)
-    const uint16_t kind = 5;
-    const uint32_t local[3] = {32, 1, 1}, shared = kSharedSize;
-    std::memcpy(&w.ctl[0x38], &len, 4), std::memcpy(&w.ctl[0x40], &c1o, 4), std::memcpy(&w.ctl[0x56], &kind, 2);
-    std::memcpy(&w.ctl[0x58], local, 12), std::memcpy(&w.ctl[0x64], &shared, 4), std::memcpy(&w.ctl[kTestAt], &m.test, 4);
+    const uint32_t len = offline::kAmpereHeader + (uint32_t)m.insts.size() * 16, c1o = len;   // (c1 empty: each run gives its own)
+    std::memcpy(&w.ctl[0x38], &len, 4), std::memcpy(&w.ctl[0x40], &c1o, 4), std::memcpy(&w.ctl[kTestAt], &m.test, 4);
     w.code.assign(len, 0);
-    std::memcpy(w.code.data(), m.insts.data(), len);
+    const uint32_t sph0 = 1 | 3 << 5 | 1 << 10;
+    std::memcpy(w.code.data(), &sph0, 4);
+    std::memcpy(w.code.data() + offline::kAmpereHeader, m.insts.data(), m.insts.size() * 16);
     return w;
 }
 
@@ -197,12 +190,13 @@ std::vector<uint8_t> micro_c1(uint32_t k) {
     return c1;
 }
 
-/// A shared-memory byte address of a micro program as the register it holds (trace items are word addresses)
-std::string micro_name(uint64_t addr) {
-    if (addr >= kUPreds) return fmt::format("UP{}", (addr - kUPreds) / 4);
-    if (addr >= kUniform) return fmt::format("UR{}", (addr - kUniform) / 4);
-    const uint64_t lane = addr / kLane, at = addr % kLane;
-    return at >= kPreds ? fmt::format("P{} lane {}", (at - kPreds) / 4, lane) : fmt::format("R{} lane {}", at / 4, lane);
+/// An output item of a micro program ("<lane>:<attribute>") as the register it holds
+std::string micro_name(const Micro& m, const std::string& item) {
+    const size_t colon = item.find(':');
+    if (colon == std::string::npos) return item;
+    const uint64_t lane = std::stoull(item.substr(0, colon)), attr = std::stoull(item.substr(colon + 1), nullptr, 16);
+    const uint64_t slot = attr - (uint64_t)Shader::IR::Attribute::Generic0X;
+    return slot < m.names.size() ? fmt::format("{} lane {}", m.names[slot], lane) : item;
 }
 
 // ---- comparing traces ----
@@ -410,11 +404,13 @@ int runs(const seed::Seed& s, const Run& r, bool micro_mode) {
         const auto t0 = std::chrono::steady_clock::now();
         Side a = make(s, id, *r.a, &none), b = make(s, id, *r.b, &r.options_b);
         std::string line = fmt::format("{{\"index\": {}, \"key\": \"{:016x}\", \"kind\": {}", id, st.key(), st.stage);
+        Micro m;
         if (micro_mode) {
             uint32_t at;
             std::memcpy(&at, st.ctl + kTestAt, 4);
             u128 x;
-            std::memcpy(&x, st.code + 16 * at, 16);
+            std::memcpy(&x, st.code + offline::kAmpereHeader + 16 * at, 16);
+            m = micro(x);
             line += fmt::format(", \"op\": \"{:03x}\", \"inst\": \"{}\"", get(x, 0, 12), hex(x));
         }
         line += fmt::format(", \"a\": {}, \"b\": {}", json(status(a)), json(status(b)));
@@ -445,12 +441,12 @@ int runs(const seed::Seed& s, const Run& r, bool micro_mode) {
                 if (r.show && k == 0)
                     for (const auto* t : {&ta, &tb})
                         for (const auto& [key, v] : t->state) {
-                            if (!micro_mode || key != "mem.shared") {
+                            if (!micro_mode || key != "out") {
                                 std::printf("# %s %s %s\n", t == &ta ? "a" : "b", key.c_str(), v.c_str());
                                 continue;
                             }
                             for (const auto& [addr, w] : items(v))
-                                std::printf("# %s %s = %s\n", t == &ta ? "a" : "b", micro_name(4 * std::stoull(addr, nullptr, 16)).c_str(), w.c_str());
+                                std::printf("# %s %s = %s\n", t == &ta ? "a" : "b", micro_name(m, addr).c_str(), w.c_str());
                         }
                 if (first) continue;
                 if (auto d = compare(ta, tb)) first = d, first_input = k;
@@ -460,7 +456,7 @@ int runs(const seed::Seed& s, const Run& r, bool micro_mode) {
             else line += fmt::format(", \"equal\": {}", first ? "false" : "true");
             if (first) {
                 std::string item = first->item;
-                if (micro_mode && first->key == "mem.shared") item = micro_name(4 * std::stoull(item, nullptr, 16));
+                if (micro_mode && first->key == "out") item = micro_name(m, item);
                 line += fmt::format(", \"diff\": {{\"input\": {}, \"key\": {}, \"item\": {}, \"a\": {}, \"b\": {}, \"items\": {}}}", first_input,
                                     json(first->key), json(item), json(first->a.substr(0, 200)), json(first->b.substr(0, 200)), first->items);
             }
@@ -555,7 +551,7 @@ int make_micro(const std::vector<std::string>& seeds, const std::string& insts_f
         while (std::fgets(line, sizeof line, f)) {
             if (line[0] == '#' || std::strlen(line) < 32) continue;
             std::set<u128> here;
-            add(hex128(std::string(line, 32).c_str()), 5, here);
+            add(hex128(std::string(line, 32).c_str()), 0, here);
         }
         std::fclose(f);
     }
