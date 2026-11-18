@@ -6,7 +6,8 @@
 // vote into P or UP), SHFL (every lane and clamp form), MATCH.ALL, REDUX (into a uniform register) and FSWZADD.
 // Semantics as the hardware's (PTX shfl.sync, match.all.sync, redux.sync): SHFL's c packs the clamp (bits 0-4) and the
 // segment mask (8-12), an out-of-bounds lane reads its own value; FSWZADD's swizzle holds lane 0's operation in bits
-// 6-7 and lane 3's in 0-1 (NAK's OpFSwzAdd), 0 a + b, 1 a - b, 2 b - a, 3 b. In fragment stages the quad shuffles
+// 6-7 and lane 3's in 0-1 (NAK's OpFSwzAdd), 0 a + b, 1 a - b, 2 b - a, 3 b; a swizzle of only subtractions is the
+// IR's FSwizzleAdd (the derivative patterns), any other selects and one add. In fragment stages the quad shuffles
 // (c = 0x1c03, an immediate lane) are QuadBroadcast and QuadSwap, so helper lanes take part as derivatives need.
 
 #include <array>
@@ -218,6 +219,21 @@ void FSWZADD(Translator& t) {
         }
     }
     auto& ir{t.ir};
+    static constexpr std::array rounding{IR::FpRounding::RN, IR::FpRounding::RM, IR::FpRounding::RP,
+                                         IR::FpRounding::RZ};
+    const IR::FpRounding round{rounding[t.insn.Field(78, 2)]};
+    const IR::FmzMode fmz{t.insn.Bit(80) ? IR::FmzMode::FTZ : IR::FmzMode::None};
+    if (drop_a == 0 && (negate_a | negate_b) == 0xf) {
+        // a - b or b - a in every lane: the IR's FSwizzleAdd (lane i's operation in bits 2i, 1 a - b, 2 b - a), which
+        // ConstantPropagation turns into DPdxFine/DPdyFine where a is the quad neighbour of b
+        u32 reversed{};
+        for (u32 lane = 0; lane < 4; ++lane) {
+            reversed |= ((swizzle >> (6 - lane * 2)) & 3) << (lane * 2);
+        }
+        const IR::FpControl control{.no_contraction = false, .rounding = round, .fmz_mode = fmz};
+        t.SetF(t.insn.Dst(), ir.FSwizzleAdd(t.F(t.insn.Src0()), t.F(t.insn.Reg64()), ir.Imm32(reversed), control));
+        return;
+    }
     const IR::U32 quad_lane{ir.BitwiseAnd(ir.LaneId(), ir.Imm32(3))};
     const auto in = [&](u32 lanes) {
         return ir.INotEqual(ir.BitFieldExtract(ir.Imm32(lanes), quad_lane, ir.Imm32(1)), ir.Imm32(0));
@@ -234,11 +250,7 @@ void FSWZADD(Translator& t) {
     if (negate_b != 0) {
         b = IR::F32{ir.Select(in(negate_b), ir.FPNeg(b), b)};
     }
-    static constexpr std::array rounding{IR::FpRounding::RN, IR::FpRounding::RM, IR::FpRounding::RP,
-                                         IR::FpRounding::RZ};
-    const IR::FpControl control{.no_contraction = true,
-                                .rounding = rounding[t.insn.Field(78, 2)],
-                                .fmz_mode = t.insn.Bit(80) ? IR::FmzMode::FTZ : IR::FmzMode::None};
+    const IR::FpControl control{.no_contraction = true, .rounding = round, .fmz_mode = fmz};
     t.SetF(t.insn.Dst(), ir.FPAdd(a, b, control));
 }
 } // Anonymous namespace
