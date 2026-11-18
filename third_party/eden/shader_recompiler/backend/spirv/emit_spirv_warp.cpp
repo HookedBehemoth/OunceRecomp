@@ -536,7 +536,7 @@ void DefineSoftwareMatrixFunction(EmitContext& ctx) {
 // lane's fragment registers hold its elements in the console's order (two f16 a word); they go to and come
 // from the device's elements in its own order (mma_layout.h, measured by vk_coopmat.cpp).
 Id EmitMatrixMulAddF16(EmitContext& ctx, Id a, Id b, Id c) {
-    if (mma_software) return ctx.OpFunctionCall(ctx.U32[2], ctx.software_matrix_function, a, b, c);
+    if (SoftwareMatrix(ctx.stage)) return ctx.OpFunctionCall(ctx.U32[2], ctx.software_matrix_function, a, b, c);
     const Id f16{ctx.F16[1]};
     const Id scope{ctx.Const(static_cast<u32>(spv::Scope::Subgroup))};
     const auto type = [&](u32 rows, u32 columns, spv::CooperativeMatrixUse use) {

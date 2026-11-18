@@ -18,6 +18,8 @@
 // stderr, which tools/shaders/late_gate.py reads). --list: a line a stage of the seed (index, kind), nothing translated.
 // --front new: the direct Ampere front instead of the lowering to Maxwell (work/shader-plan's differential phase; a partner
 // stage it cannot translate is left out, its error in "partner_error").
+// --mma-software: matrix multiplies through the software function (emit_spirv_warp.cpp) instead of cooperative matrices,
+// as the renderer chooses on a device without them.
 #include <chrono>
 #include <cinttypes>
 #include <cmath>
@@ -995,6 +997,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--repl") && i + 1 < argc) repl_spv = argv[++i];
         else if (!std::strcmp(argv[i], "--fs-binding-base") && i + 1 < argc) fs_binding_base = (uint32_t)std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--no-ir-guard")) no_ir_guard = true;
+        else if (!std::strcmp(argv[i], "--mma-software")) Shader::Backend::SPIRV::mma_software = true;
         else if (!std::strcmp(argv[i], "--explicit-shared")) offline::explicit_shared = true;
         else if (!std::strcmp(argv[i], "--objects")) make_objects = true;
         else if (!std::strcmp(argv[i], "--spv-only")) spv_only = true;

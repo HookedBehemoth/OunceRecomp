@@ -532,7 +532,7 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
             ctx.AddCapability(spv::Capability::GroupNonUniformClustered);
         }
     }
-    if (info.uses_cooperative_matrix && !mma_software) {
+    if (info.uses_cooperative_matrix && !SoftwareMatrix(ctx.stage)) {
         ctx.AddExtension("SPV_KHR_cooperative_matrix");
         ctx.AddCapability(spv::Capability::CooperativeMatrixKHR);
         ctx.AddExtension("SPV_KHR_vulkan_memory_model");
@@ -540,7 +540,7 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
         ctx.AddCapability(spv::Capability::VulkanMemoryModelDeviceScope);
         ctx.SetMemoryModel(spv::MemoryModel::VulkanKHR);
     }
-    if (info.uses_cooperative_matrix && mma_software) {   // (fork: DefineSoftwareMatrixFunction's)
+    if (info.uses_cooperative_matrix && SoftwareMatrix(ctx.stage)) {   // (fork: DefineSoftwareMatrixFunction's)
         ctx.AddCapability(spv::Capability::GroupNonUniform);
         ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
     }
@@ -693,7 +693,7 @@ void PatchMeshInstructions(std::vector<u32>& code, const EmitContext& ctx) {
 
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info, IR::Program& program, Bindings& bindings) {
     EmitContext ctx{profile, runtime_info, program, bindings};
-    if (program.info.uses_cooperative_matrix && mma_software) DefineSoftwareMatrixFunction(ctx);
+    if (program.info.uses_cooperative_matrix && SoftwareMatrix(ctx.stage)) DefineSoftwareMatrixFunction(ctx);
     Id main{};
     if (runtime_info.mesh_fallback_vertex) {   // (fork: the fallback's generated vertex stage, which reads the records)
         const Id void_function{ctx.TypeFunction(ctx.void_id)};

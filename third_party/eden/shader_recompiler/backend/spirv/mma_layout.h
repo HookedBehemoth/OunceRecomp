@@ -10,12 +10,19 @@
 #include <array>
 #include <cstdint>
 
+#include "shader_recompiler/stage.h"
+
 namespace Shader::Backend::SPIRV {
 
 inline std::array<uint32_t, 8> mma_order_a{0, 1, 2, 3, 4, 5, 6, 7};
 inline std::array<uint32_t, 4> mma_order_b{0, 1, 2, 3};
 inline std::array<uint32_t, 4> mma_order_c{0, 1, 2, 3};
 inline bool mma_software = false;   // (HMMA_nx2 in software: emit_spirv_warp.cpp, RX_VK_MMA_SOFTWARE=1)
+/// Cooperative matrices run in compute stages only (the drivers' cooperativeMatrixSupportedStages): a matrix multiply
+/// elsewhere, or on a device without them, is the software function
+inline bool SoftwareMatrix(Shader::Stage stage) {
+    return mma_software || stage != Shader::Stage::Compute;
+}
 // (amd-fix) float colour outputs carry no NaN or infinity to their target (EmitSetFragColor): one NaN texel spreads
 // through bloom/blur/downsample averages into glowing blocks (OoT's flowers on AMD, issue 606). On for every
 // card but NVIDIA (vk_coopmat.cpp coopmat_init); RX_VK_NO_NAN_GUARD=1 turns it off. Idea from NX2navi patch 0027.
