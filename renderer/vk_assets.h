@@ -1,5 +1,5 @@
 // Prepared assets: the texture store of
-// ounce-builder textures (index.bin and pack_NNN.bin, mapped; ounce/tex/src/store.rs describes the format) and the links from
+// ounce tool textures (index.bin and pack_NNN.bin, mapped; ounce/tex/src/store.rs describes the format) and the links from
 // the host's loader hooks (gpu_asset_load: a texture object -> its record) to the images vk_image makes. An asset
 // texture's image is made in the record's format when the texture is initialized, keyed by the record's content, and
 // filled from the packs on the initializing thread (its uploads, sent at once with their own timeline values): so before

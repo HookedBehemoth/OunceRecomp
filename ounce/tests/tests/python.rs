@@ -10,7 +10,7 @@ fn byml_write() {
     python("ounce/tests/py/byml_write.py", &[]);
 }
 
-/// scripts/oot_saves.py: every emulator's folders found, import and export, the backups, the guards (temporary folders).
+/// tools/oot_saves.py: every emulator's folders found, import and export, the backups, the guards (temporary folders).
 #[test]
 fn oot_saves() {
     python("ounce/tests/py/oot_saves.py", &[]);
@@ -28,12 +28,12 @@ fn prompt_font_bind() {
     python("ounce/tests/py/prompt_font_bind.py", &["--cc", &cc()]);
 }
 
-/// scripts/direct_picture_check.py's selftest on synthetic pictures: the same picture passes; a difference that cancels
+/// tools/direct_picture_check.py's selftest on synthetic pictures: the same picture passes; a difference that cancels
 /// in the mean, one flat channel, one wrong 16 x 16 tile, a missing state and a NaN fail; a cleared state never lines
 /// up with a drawn one; a float target of tiny values negated fails while rounding noise passes.
 #[test]
 fn picture_check() {
-    let out = python("scripts/direct_picture_check.py", &["selftest"]);
+    let out = python("tools/direct_picture_check.py", &["selftest"]);
     let stdout = text(&out.stdout);
     let lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with("selftest:")).collect();
     assert!(lines.len() >= 7 && lines.iter().all(|l| l.ends_with(": ok")), "direct_picture_check selftest:\n{stdout}");

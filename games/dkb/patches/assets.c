@@ -1,7 +1,7 @@
 /* The host's side of prepared assets for the direct back end, direct mode only (HOS_DBG=noassets turns every patch
    here off, for a before/after).
 
-   The store: HOS_PREPARED=<folder> (default the game folder's prepared/, else <romfs>/../../prepared): <folder>/tex is
+   The store: HOS_PREPARED=<folder> (default the game folder's prepared/, which every ounce build makes): <folder>/tex is
    the texture store the back end maps (gpu_assets_open).
 
    Texture loads (agl::TextureData), each tied to its BNTX record and handed to the back end (gpu_asset_load) before the
@@ -55,16 +55,12 @@ static char prepared[1024];
 static const char *prepared_dir(void) {
     const char *e = getenv("HOS_PREPARED");
     if (e && *e) snprintf(prepared, sizeof prepared, "%s", e);
-    else {   /* (the game folder's prepared/, then beside the romfs) */
-        char exe[1024], probe[1100];
+    else {   /* (the game folder's prepared/: ounce build makes it) */
+        char exe[1024];
         const int n = os_exe_path(exe, sizeof exe);
         char *slash = n ? strrchr(exe, '/') : NULL;
-        if (slash) {
-            *slash = 0;
-            snprintf(probe, sizeof probe, "%s/prepared/tex/index.bin", exe);
-            if (os_path_kind(probe) != OS_PATH_NONE) snprintf(prepared, sizeof prepared, "%s/prepared", exe);
-        }
-        if (!prepared[0]) snprintf(prepared, sizeof prepared, "%s/../../prepared", hos_romfs_dir ? hos_romfs_dir : "romfs");
+        if (slash) *slash = 0;
+        snprintf(prepared, sizeof prepared, "%s/prepared", slash ? exe : ".");
     }
     char real[1024];
     if (realpath(prepared, real)) snprintf(prepared, sizeof prepared, "%s", real);

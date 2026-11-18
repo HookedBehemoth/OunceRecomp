@@ -2,14 +2,17 @@
 Game-derived output: local only.
 
 usage: work/venv/bin/python tools/dump/make_zoo.py <scene.toml> <out_dir> [--romfs DIR]
+       work/venv/bin/python tools/dump/make_zoo.py <name>
+The second form is the scene games/oot/zoo/<name>.toml into work/overlay/<name>, made only when that is missing or older
+than its description or this tool; it prints the overlay's folder (for `ounce run oot --set HOS_FS_OVERLAY=<folder>`).
 
 The scene description (games/oot/zoo/*.toml) holds actor names and numbers only:
     base = "SageRoom"            an existing map (its GameBancParam name); its two bancs are rewritten in the overlay
     start = ""                   the StartPos (its Name) the player starts at; "" the map's unnamed one
     keep = ["StartPos", ...]     the base map's actors kept, by Gyaml name ("*" every one); the rest are left out
     hour = 12                    the time of day the run sets (0-23): the overlay's live.txt holds the host command
-                                 ("!cheat 1<hour>", the Cheats page's Set time) for HOS_INPUT_LIVE; scripts/run-vk.sh
-                                 and scripts/play.sh pass it (optional; a new game's field is at night)
+                                 ("!cheat 1<hour>", the Cheats page's Set time), passed with
+                                 --set HOS_INPUT_LIVE=<overlay>/live.txt (optional; a new game's field is at night)
     [[actor]]                    one entry per actor, or per grid of copies
     name = "Obj_Pot_A_01"        the actor (Pack/Actor/<name>.pack.zs)
     translate = [x, y, z]        metres; rotate = [x, y, z] degrees; scale = [x, y, z] (both optional)
@@ -75,10 +78,31 @@ def actors(scene, desc):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('scene')
-    ap.add_argument('out')
+    ap.add_argument('scene', help='a scene description, or the name of one in games/oot/zoo')
+    ap.add_argument('out', nargs='?', help='the overlay folder (default with a name: work/overlay/<name>)')
     ap.add_argument('--romfs', help="the romfs folder (default: the config's oot dump + /romfs)")
     a = ap.parse_args()
+    if a.out is None:
+        if a.scene.endswith('.toml') or os.sep in a.scene:
+            sys.exit('make_zoo.py <scene.toml> <out_dir>, or make_zoo.py <name> (games/oot/zoo/<name>.toml)')
+        name = a.scene
+        a.scene = os.path.join(ROOT, 'games', 'oot', 'zoo', name + '.toml')
+        a.out = os.path.join(ROOT, 'work', 'overlay', name)
+        if not os.path.exists(a.scene):
+            sys.exit(f'no scene {a.scene}')
+        mark = os.path.join(a.out, MARK)
+        if os.path.exists(mark) and os.path.getmtime(mark) >= max(os.path.getmtime(a.scene), os.path.getmtime(__file__)):
+            print(a.out)
+            return
+        sys.stdout = sys.stderr   # (the tool's report; the folder alone goes to stdout)
+        build(a)
+        sys.stdout = sys.__stdout__
+        print(a.out)
+        return
+    build(a)
+
+
+def build(a):
     romfs = a.romfs or default_romfs()
     desc = tomllib.load(open(a.scene, 'rb'))
     scene = os.path.splitext(os.path.basename(a.scene))[0]
@@ -96,7 +120,7 @@ def main():
         shutil.rmtree(a.out)
     os.makedirs(a.out)
     subprocess.run([sys.executable, '-I', os.path.join(HERE, 'make_chisel_overlay.py'), a.out, '--route', 'newgame',
-                    '--banc', base, '--start', start, '--romfs', romfs], check=True)
+                    '--banc', base, '--start', start, '--romfs', romfs], check=True, stdout=sys.stdout)
 
     main_path = B.load(open(param, 'rb').read())['Banc']['Main']   # Work/Banc/Scene/<dir>/<banc>.bcett.json
     folder, banc = main_path.split('/')[-2], main_path.split('/')[-1].split('.')[0]

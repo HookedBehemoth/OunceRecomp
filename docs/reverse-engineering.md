@@ -3,7 +3,7 @@
 This page shows you where to look when you need to understand a piece of the game's code or data, and how to record
 what you found so profiles and backtraces show it. Read it before you analyze a game function or write a patch for one.
 
-Everything these tools read or write comes from your dump and stays in `work/`.
+Everything these tools read or write comes from your dump and stays on your PC.
 
 ## Read a function
 
@@ -12,7 +12,7 @@ Everything these tools read or write comes from your dump and stays in `work/`.
   ([Build and iterate](lifter-build.md#inspect-a-function)).
 - **A patch site:** `ounce/target/release/ounce-lift site --game games/oot <address or label>` shows the instruction, the paths
   into it and the registers live there ([Write a patch](patches.md)).
-- **Exports and module layout:** `work/sa/image/image.json` lists the image's modules and exported symbols. The main
+- **Exports and module layout:** `work/<game>/lift/image/image.json` lists the image's modules and exported symbols. The main
   module is loaded at `0x80020000`.
 - **Searches in the main module:** the scripts in `tools/re` disassemble around an offset, find code that references
   an address or a string, and find a function's callers ([tools/re](../tools/re/README.md)).
@@ -20,7 +20,7 @@ Everything these tools read or write comes from your dump and stays in `work/`.
   patches sequence graphs for test boots ([tools/dump](../tools/dump/README.md)).
 
 A call site, a return address or a patch site lies inside a function. To find which, look the address up in
-`work/sa/build/Ocarina of Time.map`.
+the build's link map, `work/<game>/lift/<exe>.map`.
 
 ## Label a function
 

@@ -282,7 +282,7 @@ void write_item(DumpItem& it, int n_seq) {
         if (*c == ' ' || *c == ':' || *c == '/') *c = '_';
     write_png(path, rgba.data(), it.w, it.h);
     // (HOS_DBG=dumpraw: a float item's values beside its PNG, <name>.f32: u32 width, u32 height, then RGBA32F rows; the
-    // dark values of HDR targets that the PNG rounds to 0. With dumpw:4096, the full-resolution dump scripts/direct_picture_check.py packs)
+    // dark values of HDR targets that the PNG rounds to 0. With dumpw:4096, the full-resolution dump tools/direct_picture_check.py packs)
     static const bool raw = dbg("dumpraw");
     if (raw && it.kind == 0) {   // (M6b: depth too, as the frozen back end's RX_VK_DUMP_RAW writes it: its value in R, G and B)
         std::snprintf(path + std::strlen(path) - 4, 5, ".f32");

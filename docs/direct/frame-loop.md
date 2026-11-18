@@ -89,4 +89,4 @@ tasks on the BaseProc executors; see [Havok](havok.md).
 | present | `frame_present_submit` on the Presentation Thread |
 
 To see the frame's critical path, run with `HOS_DBG=crit`: it writes `crit.bin` in the run folder, and
-`scripts/crit_path.py` reads it.
+`tools/crit_path.py` reads it.

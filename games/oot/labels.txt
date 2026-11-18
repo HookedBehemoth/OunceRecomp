@@ -816,9 +816,9 @@
 854fa2b0 movie_mkv_video_track_get_width  # tools/re/image.py exports (sdk): mkvparser::VideoTrack::GetWidth
 851047f0 os_lock_mutex                    # runtime/nn_os_sync.c (HLE import stub): nn::os::LockMutex; f_80364080 calls it once per instance slot
 851048a0 os_unlock_mutex                  # runtime/nn_os_sync.c (HLE import stub): nn::os::UnlockMutex
-851063b0 os_convert_to_time_span          # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::ConvertToTimeSpan
-85106220 os_sleep_thread                  # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::SleepThread
-851095f0 os_get_tls_value                 # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::GetTlsValue
+851063b0 os_convert_to_time_span          # the lift's a64_hooks (HLE import stub): nn::os::ConvertToTimeSpan
+85106220 os_sleep_thread                  # the lift's a64_hooks (HLE import stub): nn::os::SleepThread
+851095f0 os_get_tls_value                 # the lift's a64_hooks (HLE import stub): nn::os::GetTlsValue
 85101180 os_broadcast_condition_variable  # tools/re/image.py exports (sdk): nn::os::BroadcastConditionVariable
 851052f0 os_broadcast_slim_condition_variable # tools/re/image.py exports (sdk): nn::os::BroadcastSlimConditionVariable
 8510ce10 os_broadcast_to_address          # tools/re/image.py exports (sdk): nn::os::BroadcastToAddress

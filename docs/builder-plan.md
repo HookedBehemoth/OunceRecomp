@@ -1,12 +1,12 @@
 # The player builder
 
-This page is the plan for `ounce-builder` (`ounce/builder`, in the `ounce` cargo workspace with the lifter): one
+This page is the plan for the player's build in `ounce` (`ounce/builder`, in the `ounce` cargo workspace with the lifter): one
 Rust executable that turns a player's dump (a `.nup`, or an `exefs/` and `romfs/` folder) into a portable game folder,
 with no Python and no compiler on the player's PC. Read it before you work on the builder; [builder notes](builder-notes.md) has the facts earlier builders learned.
 
 ## What ships
 
-- `ounce-builder.AppImage`: the builder, `libLLVM.so.23` and lld (linked dynamically), the prebuilt host (its
+- `ounce.AppImage`: the builder, `libLLVM.so.23` and lld (linked dynamically), the prebuilt host (its
   objects and `ounce_renderer.so`, built in CI), and the link's sysroot (glibc 2.35's start files and stub libraries).
   `ounce-gui` (`ounce/gui`) is its window: it runs the builder as a child process and reads its `@@` lines
   ([the window](#the-window)).
@@ -26,7 +26,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte the objects of `opt \| clang` with the same flags | 164 s at 16 jobs |
 | Host C | `runtime/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
-| Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BC7 and BC5, packed (`ounce-builder textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
+| Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BC7 and BC5, packed (`ounce tool textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
 
 ## The prepared assets
@@ -34,12 +34,13 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 `ounce/tex` makes the store the direct back end maps (`prepared/tex`). [The converters](direct/converters.md) describes
 it; `ounce/tex/src/store.rs` the format.
 
-- `ounce-builder textures <out>` writes the store; `build --prepared <dir>` writes `<dir>/tex` after the link.
+- `ounce tool textures <out>` writes a store; a developer's build links the game's shared store from the cache, a
+  player's build writes `<out>/prepared/tex` after the link.
 - The game description's `[assets]` names what is the game's: the romfs file of its zstd dictionaries and the folders
   the texture step skips.
 - The encoders are bc7enc_rdo's, built into the builder: bc7e (ISPC) for BC7, and for BC5 (the ASTC normal maps) an
   AVX2 search that gives rgbcx's blocks. The sources are `third_party/bc7enc_rdo`; ISPC, a tool, comes from
-  `work/deps/ispc` (`OUNCE_BC7ENC`, `OUNCE_ISPC`).
+  the `PATH` or `ISPC`, and its version is part of the store's key (`OUNCE_BC7ENC` overrides the sources).
 - zstd is `ounce/dump`'s (1.5.7, its symbols local). A frame's bytes depend on the zstd version, so a store made with
   another version differs in its packs but not in its content.
 - Files are converted in parallel, largest first, each admitted by the memory gate; the textures, images and bands of
@@ -48,7 +49,7 @@ it; `ounce/tex/src/store.rs` the format.
   at BC7 level 4 or radius 5; `--quality high` is BC7 level 4, radius 5 and zstd 19 (again at level 6 or radius 8),
   with packs smaller in four times the time.
 - ASTC is always re-encoded: desktop GPUs do not sample it, so the builder does not look for a GPU that does. The records and frames depend on nothing but the settings and the romfs;
-  where a frame lies in the packs follows the order files finish. `ounce-builder textures --compare <a> <b>` checks
+  where a frame lies in the packs follows the order files finish. `ounce tool textures --compare <a> <b>` checks
   two stores field by field and frame by frame.
 - The index and every texture record are held until the end; files are written to the packs as they finish.
 
@@ -58,11 +59,11 @@ it; `ounce/tex/src/store.rs` the format.
 the romfs is copied into the game folder. Nothing at run time reads the exefs: the game runs from `image.bin`, which
 holds everything the lift took from it (the modules, and `main.npdm`'s program id, stack and priority).
 
-- `ounce-builder dump <file.nup|folder>` lists the titles; `--check [--game <dir>]` reads the exefs in memory and
+- `ounce dump <file.nup|folder>` lists the titles; `--check [--game <dir>]` reads the exefs in memory and
   checks it against `game.toml`'s identity, as a build does first (`@@dump`, `@@identity` lines); `--verify` checks the package (its table of contents,
   every member's extent and SHA-256, the game's zstd header of each `.zs` file) without writing; `--extract <dir>`
   writes the newest title (`--title` picks another, `--only` one part).
-- `ounce-builder build <out> --dump <file.nup|folder>` reads the exefs into memory (its modules made whole and
+- `ounce tool build <out> --dump <file.nup|folder>` reads the exefs into memory (its modules made whole and
   plain, as an extraction does), checks it against `game.toml`'s identity, and hands it to the lift; the romfs is
   copied into `<out>/romfs` on a thread while the host's C and the lift run.
 - `--dump-dir <dir>` also writes the dump there whole (`exefs/`, `romfs/`), for the developer tools that read
@@ -84,12 +85,12 @@ holds everything the lift took from it (the modules, and `main.npdm`'s program i
 - `-rotation-max-header-size` is a global LLVM reads while LoopRotate runs: 0 for the hot partitions, 16 (the
   default) for the cold ones. The compile runs hot and cold partitions apart (a gate in `compile.rs`).
 - The target machine has clang's options (PIC, function sections, addrsig); the module's name is `<stdin>`, so the
-  object's file symbol is the one of IR piped to clang. `ounce-builder compile-all <lift dir> <out> --check <obj
+  object's file symbol is the one of IR piped to clang. `ounce tool compile-all <lift dir> <out> --check <obj
   dir>` compares every object (the partitions' and gen/'s) with the folder's.
 
 ## The lift in this process
 
-- `ounce-builder lift-compile <out> [--check <obj dir>]` runs the lift and hands every partition and generated
+- `ounce tool lift-compile <out> [--check <obj dir>]` runs the lift and hands every partition and generated
   module to the compile threads, so no IR is written to disk. With `--check`, every object is compared with
   the folder's.
 - The lift hands the hot partitions over first and the builder holds the cold generated modules until they are out:
@@ -98,14 +99,13 @@ holds everything the lift took from it (the modules, and `main.npdm`'s program i
 
 ## The build
 
-`ounce-builder build <out> --direct <ounce_renderer.so>` builds the game in one process: the host's C
+`ounce tool build <out> --direct <ounce_renderer.so>` builds the game in one process: the host's C
 (`runtime/*.c`, libopus and `rt64/a64_rt.c`, each with its flags and `-fstack-protector-strong`), the lift and its
 compile, the link and the labels. `<out>` holds the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so` and `image.bin`, where the game
-looks without an argument; `scripts/run-vk.sh` and `scripts/play.sh` take the image from beside the executable when
-it is there. With `--dump`, `<out>` is a whole game folder (below).
+looks without an argument; `ounce run` takes the image from beside the executable. With `--dump`, `<out>` is a whole game folder (below).
 
 - The version text (the release name and a fingerprint of the sources) is computed by the builder
-  (`ounce-builder version`); `--version` replaces it.
+  (`ounce tool version`); `--version` replaces it.
 - `--gen <dir>` also writes the lift's files for the RE tools and diffout: `gen/*.ll`, `gen/functions.txt`,
   `lift_answers.ll` and `facts.tsv`.
 - `--progress` prints the lines a front end reads ([the window](#the-window) lists them).
@@ -119,7 +119,7 @@ it is there. With `--dump`, `<out>` is a whole game folder (below).
   smaller of MemAvailable and the room in a capped cgroup), less what compiles started in the last 3 s may still
   take, keeps its need and `OUNCE_MEM_RESERVE_GB` (1.5) free. A partition needs about eight times its IR (the
   largest, 42 MB of IR, peaks at 360 MB), a C file 300 MB. `OUNCE_MEM_GATE=0` turns it off.
-- Objects are cached in `work/builder-cache`. A module is found by its IR, recipe and the partitions' options; a C file by a manifest of the files
+- Objects are cached in the object cache (`~/.cache/ounce`). A module is found by its IR, recipe and the partitions' options; a C file by a manifest of the files
   its last compile read (clang's dependency list) and their contents; both keys name the LLVM version and the
   builder's recipes. Files no build used for `OUNCE_OBJCACHE_DAYS` (3) days are removed at the end of a build.
   A rebuild with nothing changed takes 8 to 10 s, most of it the lift.
@@ -127,10 +127,10 @@ it is there. With `--dump`, `<out>` is a whole game folder (below).
 
 ## Building the builder
 
-- Development: `cargo build --release -p ounce-builder` (the default `clang` feature) links the system's
+- Development: `cargo build --release -p ounce` (the default `clang` feature) links the system's
   `libLLVM.so` and `libclang-cpp.so` of LLVM 23, and uses the system clang's resource headers.
-- Shipping: `scripts/linux/static-llvm.sh` builds a static LLVM, clang and lld of the pinned release for
-  x86-64-v3; `LLVM_STATIC_DIR=<its build> cargo build --release -p ounce-builder --features static-llvm,clang`
+- Shipping: `ounce tool static-llvm` builds a static LLVM, clang and lld of the pinned release for
+  x86-64-v3; `LLVM_STATIC_DIR=<its build> cargo build --release -p ounce --features static-llvm,clang`
   links them. LTO is not set up: the archives would hold bitcode, and the Rust link would have to run LTO.
 
 ## The link
@@ -140,20 +140,20 @@ it is there. With `--dump`, `<out>` is a whole game folder (below).
   (`os_*`, `hos_mem_ledger`).
 - The link order (`hot_order.bin`) becomes lld's symbol-ordering file, `hot_order.txt` beside the executable.
 - The labels rename `f_<address>` to `<label>.f_<address>` in the symbol table only.
-- `ounce-builder link <out> <objs.rsp> --order <hot_order.bin> --labels <labels.txt> -- <libs>` links a list of
+- `ounce tool link <out> <objs.rsp> --order <hot_order.bin> --labels <labels.txt> -- <libs>` links a list of
   objects alone.
 
 ## The generated code
 
 `ounce-lift` writes the runtime's tables, the image's description, the import stops and the NVN routes as IR
 (`gen/*.ll`); the builder compiles them as it compiles `lift_answers`. Each object equals clang's object of the C these files replace in its loaded sections, symbols and
-relocations (`ounce-builder objeq <a.o> <b.o>`). The guest model's runtime (`rt64/a64_rt.c`) reads no dump: it is
+relocations (`ounce tool objeq <a.o> <b.o>`). The guest model's runtime (`rt64/a64_rt.c`) reads no dump: it is
 built with the host.
 
 ## LLVM linked statically
 
 `--features static-llvm` links LLVM and lld from a static build tree (`LLVM_STATIC_DIR`: Release, X86 only, clang
-and lld projects, no tools); `--features clang` adds clang's libraries and `ounce-builder compile-c`, a C file
+and lld projects, no tools); `--features clang` adds clang's libraries and `ounce tool compile-c`, a C file
 compiled in this process. Its objects equal the system clang's for every host C file when
 `-fstack-protector-strong` is given (the distribution's clang turns it on by default). Sizes of the stripped builder
 (the lifter included):
@@ -172,7 +172,7 @@ The host's C needs 153 of clang's resource headers (3.3 MB, 0.2 MB compressed); 
 
 ## The game folder
 
-`ounce-builder build <out> --direct <ounce_renderer.so> --dump <file.nup|folder>` makes a folder that holds the
+`ounce tool build <out> --direct <ounce_renderer.so> --dump <file.nup|folder>` makes a folder that holds the
 whole game:
 
 | Path | What |
@@ -184,10 +184,9 @@ whole game:
 | `user/` | the saves |
 
 - The host takes everything from beside the executable when it starts with no arguments: the image, `romfs/`,
-  `prepared/` and `user/`. A folder without `user/` keeps its saves in `~/.local/share/ounce`. The development
-  scripts pass the image, the romfs and the saves folder on the command line, and their builds find
-  `work/prepared`.
-- The build's own files (objects, the map, the link order) go to `<work>/game-build`, not into the folder.
+  `prepared/` and `user/`. A folder without `user/` keeps its saves in `~/.local/share/ounce`. `ounce run`
+  passes the image, the romfs and the saves folder on the command line.
+- The build's own files (objects, the map, the link order) go to `--obj`, not into the folder.
 - `--quality high` uses the slower texture settings; `--no-textures` leaves the store and the romfs's texels as
   they are.
 
@@ -208,13 +207,13 @@ the romfs copy is 15.9 GB instead of 25.0 GB, and the folder about 30 GB with it
   their texels linear from the loaded file ([terrain tiles](direct/terrain-texels.md)).
 - A BNTX inside a compressed member of an archive is left whole.
 - A rebuild writes the files `prepared/hollowed.txt` lists whole again before the texture step reads the romfs.
-  `ounce-builder textures` refuses a game folder's romfs: make a store from the dump.
+  `ounce tool textures` refuses a game folder's romfs: make a store from the dump.
 
 ## The window
 
 `ounce-gui` picks the dump and the game folder, runs `dump --check` and `probe`, then `build --dump --progress`,
-each as a child process, so a step that crashes never takes the window down. It finds `ounce-builder` beside
-itself or in `ounce/target/release`, and the source folder above itself (`OUNCE_BUILDER`, `OUNCE_ROOT`).
+each as a child process, so a step that crashes never takes the window down. It runs `ounce build <game> --out <dir> --dump <dump>`
+from beside itself or `ounce/target/release`, and lists the games under the checkout's `games/`.
 It is built on its own, `cargo build --profile gui -p ounce-gui`, without LTO (34 s cold, 7.0 MB); the
 workspace's default members leave it out. eframe has only glow, X11 and its default fonts (Wayland desktops run it
 through XWayland; the `wayland` feature adds 7 s and 1.4 MB). The file dialogs are rfd's desktop portal over a
@@ -243,7 +242,7 @@ Stopping a build kills the process, and a build run again over the same folder f
 
 ## The device check
 
-`ounce-builder probe` checks the GPU the back end would pick (the first discrete GPU with Vulkan 1.3), with
+`ounce probe` checks the GPU the back end would pick (the first discrete GPU with Vulkan 1.3), with
 libvulkan loaded at run time and no Vulkan crate. It prints one line per item, `@@probe <key> <pass|fail|warn|info>
 <value>`, and last `@@probe verdict <pass|fail> <failed keys>`; it exits 1 when an item fails.
 
@@ -267,7 +266,7 @@ without is a warning.
 
 1. The compile, lld and the generated code as IR in this process (done).
 2. `ounce-lift` as a library, the partitions handed to the compile in memory (done).
-3. The builder as the development build too (done: `scripts/build.sh`).
+3. The builder as the development build too (done: `ounce build`).
 4. CI: the host and `ounce_renderer.so` prebuilt; the sysroot.
 5. The dump reader in Rust (done: `ounce/dump`).
 6. The texture converter in Rust (done: `ounce/tex`).

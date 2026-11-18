@@ -20,7 +20,7 @@ patches = ["patches/list_kinds.c", "patches/eng_jobs.c", "patches/passes.c", "pa
 build_id = "e25c90c1c136638885659fd55bf8a03b3403489d"
 main_sha256 = "6e8a88c70a17a1f6a005ec53d621d3c8d53dddc3a8c51f21a0caa5f4c329784e"
 
-# the prepared assets (ounce-builder textures): no zstd dictionary file (the romfs's .zs frames name none), and the
+# the prepared assets (ounce tool textures): no zstd dictionary file (the romfs's .zs frames name none), and the
 # top-level folders that hold no BNTX (audio, movies, voxel geometry, physics, the clustered-rendering data)
 [assets]
 texture_skip_dirs = ["Sound", "Voice", "Movie", "Voxel", "Phive", "ClusteredRendering"]

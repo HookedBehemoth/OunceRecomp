@@ -17,12 +17,12 @@ off, or neutral, unless set, and costs nothing while off.
 To find a switch that this page does not list, search the code for its prefix:
 
 ```sh
-git grep -n 'getenv("HOS_' -- host
-git grep -n 'getenv("RX_' -- host renderer
+git grep -n 'getenv("HOS_' -- runtime
+git grep -n 'getenv("RX_' -- runtime renderer
 ```
 
 The build's own switches are in [Build and iterate on the lifter](lifter-build.md#lifter-switches) and in
-`ounce-builder`'s help.
+`ounce help`.
 
 ## Common runtime switches
 
@@ -37,7 +37,7 @@ The build's own switches are in [Build and iterate on the lifter](lifter-build.m
 | `HOS_NO_MOVIES` | Reports movie files as missing, so the game goes on without them |
 | `HOS_TRACE=1` | Logs every Horizon call, like `--trace` |
 | `HOS_FPS_MAX=<fps>` | The frame-rate cap (60 to 240), over the option; above 60 frames are paced up to the display's refresh rate and the game is told the display has a variable refresh |
-| `HOS_BENCH=<frames>[,<ready frames>]` | A benchmark run (`scripts/bench.sh` sets it) |
+| `HOS_BENCH=<frames>[,<ready frames>]` | A benchmark run (`ounce run --bench` sets it) |
 | `RX_VK_SHOTS=<dir>`, `RX_VK_SHOT_EVERY=<n>` | Saves a PNG of the presented frame every `n` presents |
 
 ## Drive the game with scripted input
@@ -71,7 +71,7 @@ while off. These are the ones you reach for first:
 | `dump:<present>[+<frames>]` | Saves every pass's targets of the frame after that present as PNGs |
 | `frames`, `gputime` | `frames.csv`: a row per present, with the GPU's busy and idle time |
 | `marks` | GPU breadcrumbs for a lost device: the unfinished draws are logged |
-| `crit[:<first>[:<presents>]]` | A trace of every guest thread over a window of presents, for `scripts/crit_path.py` |
+| `crit[:<first>[:<presents>]]` | A trace of every guest thread over a window of presents, for `tools/crit_path.py` |
 | `resize:<w>x<h>@<present>[+...]` | Resizes the window (or the headless image) at that present, as a drag would |
 | `noassets` | Turns off the prepared-asset patches, for a before-and-after comparison |
 

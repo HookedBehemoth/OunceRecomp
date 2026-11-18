@@ -1,8 +1,8 @@
 """An offset in the game's executable (a backtrace's <exe>+<offset>) -> the function there (f_<guest address>, its
 label, or a runtime function) + offset, from the executable's symbol table (nm).
 
-Usage:  python -I tools/re/samap.py [--exe <executable>] <hex offset> [...]
-        (default: work/oot/game/<the game's exe>, games/oot/game.toml's exe)
+Usage:  python -I tools/re/samap.py (--game <game> | --exe <executable>) <hex offset> [...]
+        (--game: work/<game>/game/<the game's exe>, the exe of games/<game>/game.toml)
 """
 import bisect
 import os
@@ -13,16 +13,18 @@ import tomllib
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def default_exe():
-    with open(os.path.join(ROOT, "games", "oot", "game.toml"), "rb") as f:
-        return os.path.join(ROOT, "work", "oot", "game", tomllib.load(f)["exe"])
+def game_exe(game):
+    with open(os.path.join(ROOT, "games", game, "game.toml"), "rb") as f:
+        return os.path.join(ROOT, "work", game, "game", tomllib.load(f)["exe"])
 
 
 def main(argv):
-    exe = default_exe()
-    if argv[:1] == ["--exe"]:
+    exe = None
+    if argv[:1] == ["--exe"] and len(argv) > 1:
         exe, argv = argv[1], argv[2:]
-    if not argv:
+    elif argv[:1] == ["--game"] and len(argv) > 1:
+        exe, argv = game_exe(argv[1]), argv[2:]
+    if exe is None or not argv:
         sys.exit(__doc__)
     out = subprocess.run(["nm", "-n", "--defined-only", exe], capture_output=True, text=True, check=True).stdout
     rows = []

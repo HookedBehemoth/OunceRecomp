@@ -108,11 +108,23 @@ pub fn walk(romfs: &Path, skip: &[String], only: &[String]) -> Result<Vec<(Strin
     Ok(out)
 }
 
-/// The configuration hash in the index header: the store's bytes follow from these.
+/// What a store made from `romfs` with `s` follows from: the configuration hash and every file `walk` finds (its path,
+/// size and modification time). A store whose key is this one needs no conversion.
+pub fn inputs_key(s: &Settings, romfs: &Path, game: &GameFiles) -> Result<u64, String> {
+    let files = walk(romfs, &game.skip_dirs, &[])?;
+    let mut text = format!("{:016x} {}\n", config_hash(s), romfs.display());
+    for (p, n, t) in &files {
+        text.push_str(&format!("{p} {n} {t}\n"));
+    }
+    Ok(hash64(&[text.as_bytes()]))
+}
+
+/// The configuration hash in the index header: the store's bytes follow from these, and from the ISPC that built the
+/// BC7 encoder.
 pub fn config_hash(s: &Settings) -> u64 {
     let text = format!(
-        "ounce-tex 2 astc bc7 {} bc5 radius {} floor {} retry {} zstd {} frame {} ispc sse2,sse4,avx,avx2",
-        s.bc7_level, s.bc5_radius, s.min_psnr, s.bc7_retry_level, s.zstd_level, s.frame_kb
+        "ounce-tex 2 astc bc7 {} bc5 radius {} floor {} retry {} zstd {} frame {} ispc {} sse2,sse4,avx,avx2",
+        s.bc7_level, s.bc5_radius, s.min_psnr, s.bc7_retry_level, s.zstd_level, s.frame_kb, env!("OUNCE_ISPC_VERSION")
     );
     hash64(&[text.as_bytes()])
 }

@@ -1,6 +1,6 @@
-"""Launch times of a scripts/run-vk.sh run (chiseled boot): when the first gameplay frames came, and when it was playable.
+"""Launch times of a headless run (ounce run <game> --headless) (chiseled boot): when the first gameplay frames came, and when it was playable.
 
-    python -I scripts/launch_time.py work/runs/<name> [...]
+    python -I tools/launch_time.py work/<game>/runs/<name> [...]
 
 - gameplay: the time the first 120-present block with over 100 draws a frame ended (the renderer's "<n> presents" lines,
   timed by the run's timeline.txt: seconds, last present count logged), so within ~2 s.

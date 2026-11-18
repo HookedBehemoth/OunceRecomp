@@ -1,4 +1,4 @@
-"""scripts/oot_saves.py, game-free: finding every emulator's folders, importing and exporting, the backups, the guards.
+"""tools/oot_saves.py, game-free: finding every emulator's folders, importing and exporting, the backups, the guards.
 Temp folders only: HOME, XDG_DATA_HOME, APPDATA and LOCALAPPDATA all point into one.
 
 python -I -B ounce/tests/py/oot_saves.py
@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
-spec = importlib.util.spec_from_file_location("oot_saves", ROOT / "scripts" / "oot_saves.py")
+spec = importlib.util.spec_from_file_location("oot_saves", ROOT / "tools" / "oot_saves.py")
 oot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oot)
 

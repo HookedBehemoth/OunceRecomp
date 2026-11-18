@@ -2,8 +2,9 @@
 
 ## re
 
-`tools/re/re [--game games/oot|games/dkb] <command>` reads one game's executable as compact text, each output but
-`fn` within a fixed budget. The project skill `.claude/skills/re` says how to use it.
+`tools/re/re --game <game> <command>` reads one game's executable as compact text, each output but `fn` within a
+fixed budget. `--game` (`oot`, `dkb` or `games/<game>`) is required; without it `re` stops and names the
+games. The project skill `.claude/skills/re` says how to use it.
 
 | command | what it prints |
 |---|---|

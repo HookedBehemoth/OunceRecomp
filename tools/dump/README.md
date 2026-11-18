@@ -27,4 +27,4 @@ To make a chiseled boot into Kokiri Forest from a new game and run it:
 
 `--route load` continues the save instead; `--start NAME` picks a start position (the market overlay is a start in
 Hyrule Field at the drawbridge); `--skip-fades` and `--skip-title` cut the loading fades and the title movie.
-[Test in the game](../../docs/testing.md#start-in-a-scene) shows how the test scripts use the overlays.
+[Test in the game](../../docs/testing.md#start-in-a-scene) shows how runs and smoke tests use the overlays.

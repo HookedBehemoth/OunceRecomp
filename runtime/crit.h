@@ -3,7 +3,7 @@
    blocks (hos_block_begin/end: what it waited on, its guest caller), the wakes of
    the objects it waits on, and every call into the direct back end (the record emits merged into bursts) are spans
    with TSC times. At the window's end they go to crit.bin in the working directory (the run folder), the thread names to
-   crit_threads.txt; scripts/crit_path.py reads them. With HOS_DBG unset, or without "crit", nothing is recorded and the
+   crit_threads.txt; tools/crit_path.py reads them. With HOS_DBG unset, or without "crit", nothing is recorded and the
    back end's calls are not wrapped. */
 #ifndef OUNCE_DIRECT_CRIT_H
 #define OUNCE_DIRECT_CRIT_H

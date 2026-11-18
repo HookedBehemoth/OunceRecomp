@@ -9,26 +9,29 @@ patches make their texels linear when the game loads them (see [terrain tiles an
 
 ## Rules the converter keeps
 
-- It reads the romfs in place (default: `work/dump/romfs`) and writes only into the folder you name. What it writes
+- It reads the romfs in place (default: the romfs of the game's dump in the config) and writes only into the folder you name. What it writes
   is made from the game: it never leaves the PC and is never committed.
-- It runs in `ounce-builder` on every CPU and starts a file only when the memory gate has room for it.
-- It is not incremental: each run replaces the whole output (about 4 minutes for OoT on 16 threads).
+- It runs in `ounce` on every CPU and starts a file only when the memory gate has room for it.
+- A conversion is not incremental: it replaces the whole store (about 4 minutes for OoT on 16 threads). `ounce build`
+  converts only when the dump's files or the encoder settings changed.
 
 ## Run the converter
+
+Every `ounce build <game>` prepares the game's store: one store per game in the cache (`~/.cache/ounce/prepared/<game>`),
+shared by every checkout and linked into the game folder as `prepared/`. A player's game folder (`--dump`) gets a store
+of its own. To make a store by hand, for a check:
 
 1. Prepare the textures:
 
    ```
-   ounce-builder textures work/prepared/tex
+   ounce tool textures <folder>/tex --game games/<game>
    ```
 
    `--quality high` uses slower encoder settings (several times the time; smaller packs, higher PSNR).
    `--only <romfs prefix>` writes a store of those files alone, for a quick check.
 
-2. Or do it in a game build: `ounce-builder build <out> ... --dump <dump>` writes `<out>/prepared/tex`, and
-   `--prepared <folder>` writes `<folder>/tex` from `work/dump/romfs`.
 
-To check a store against another one, run `ounce-builder textures --compare <a> <b>`: it compares every index field
+To check a store against another one, run `ounce tool textures --compare <a> <b>`: it compares every index field
 except where the frames lie in the packs, and every frame's bytes.
 
 ## What the game description sets
@@ -59,5 +62,5 @@ No texture is refused, and every texture keeps its channels where the source has
 
 ## Point the game at the output
 
-The host finds the store in the game folder's `prepared/`, else in `work/prepared` beside the build. To use another folder, set `HOS_PREPARED=<folder>`:
+The host finds the store in the game folder's `prepared/`. To use another folder, set `HOS_PREPARED=<folder>`:
 `<folder>/tex` is the texture store.

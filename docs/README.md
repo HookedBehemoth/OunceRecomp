@@ -5,12 +5,14 @@ new to the code.
 
 ## Get started
 
-- [Development guide](development.md): set up, build, run, and the change-and-rebuild loop.
+- [Development guide](development.md): install, configure, build and run, and where things go.
+- [Rules for agents](agents.md): `--exclusive`, one build or game run at a time, and landing a branch.
 - [Design](design.md): how the parts fit, and the rules every change keeps.
 
 ## Test and debug
 
-- [Test OunceRecomp](testing.md): the game-free checks, test runs, the smoke test, benchmarks, recordings and profiles.
+- [Test OunceRecomp](testing.md): the game-free checks, headless runs (`ounce run --headless`), the smoke test
+  (`ounce test`), benchmarks, recordings and profiles.
 - [Switches](switches.md): environment switches, `HOS_DBG` debug aids, and the log format.
 - [Reverse engineering](reverse-engineering.md): reading the game's code and files, and labeling functions.
 
@@ -32,5 +34,5 @@ new to the code.
 
 - [Parked patches](parked-patches.md): removed features, with what you need to rebuild them.
 - [Player builder notes](builder-notes.md): what a new player-facing builder needs.
-- [The player builder](builder-plan.md): `ounce-builder`, the dump to a portable game folder in one process.
+- [The player builder](builder-plan.md): `ounce`'s player build, the dump to a portable game folder in one process.
 - [Using a save from an emulator](saves.md): moving saves between OunceRecomp and emulators.

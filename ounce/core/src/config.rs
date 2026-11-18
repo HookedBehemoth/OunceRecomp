@@ -1,5 +1,5 @@
 //! The user's config file, `~/.config/ounce/config.toml` (`$XDG_CONFIG_HOME/ounce/config.toml` when that is set):
-//! each game's dump, the shared cache and data folders, and the tools ounce calls. Every key is optional; only a
+//! each game's dump, the shared cache and data folders, and the limits of builds and runs. Every key is optional; only a
 //! game's `dump` is needed before that game can be built or run.
 //!
 //! ```toml
@@ -8,12 +8,11 @@
 //! [paths]
 //! cache = "~/.cache/ounce"        # the object cache, shared by every checkout and game
 //! data = "~/.local/share/ounce"   # saves, and per game: golden/, rec/
-//! [tools]
-//! python = "/path/to/venv/bin/python"
 //! [limits]
 //! jobs = 0                        # 0: every CPU
 //! cache_days = 3
 //! run_free_mem_gb = 14
+//! build_mem = "18G"              # the memory cap of an --exclusive build
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -24,7 +23,7 @@ pub struct Config {
 }
 
 /// The sections a key may name; `<game>.<key>` is short for `games.<game>.<key>`.
-const SECTIONS: [&str; 4] = ["games", "paths", "tools", "limits"];
+const SECTIONS: [&str; 3] = ["games", "paths", "limits"];
 
 fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
@@ -91,14 +90,16 @@ impl Config {
         self.get(key).and_then(|v| v.as_integer())
     }
 
-    /// Sets a key and writes the file. Values under `limits` are numbers, every other value is text.
+    /// Sets a key and writes the file. Values under `limits` are numbers (but build_mem, a size), every other value is text.
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
         let key = full_key(key);
         let parts: Vec<&str> = key.split('.').collect();
         if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
             return Err(format!("{key}: a key is <section>.<name> or <game>.<name>"));
         }
-        let value = if parts[0] == "limits" {
+        let value = if key == "limits.build_mem" {
+            toml::Value::String(value.to_string())
+        } else if parts[0] == "limits" {
             toml::Value::Integer(value.parse().map_err(|_| format!("{key}: {value} is not a whole number"))?)
         } else {
             toml::Value::String(value.to_string())
@@ -155,11 +156,6 @@ impl Config {
         })
     }
 
-    /// The Python the Python tools run with (`tools.python`, default python3).
-    pub fn python(&self) -> PathBuf {
-        self.get_str("tools.python").map(expand).unwrap_or_else(|| PathBuf::from("python3"))
-    }
-
     /// Compile jobs (`limits.jobs`; 0 or unset: every CPU).
     pub fn jobs(&self) -> Option<usize> {
         self.get_int("limits.jobs").filter(|&n| n > 0).map(|n| n as usize)
@@ -168,6 +164,15 @@ impl Config {
     /// Days an unused cached object is kept (`limits.cache_days`, default 3).
     pub fn cache_days(&self) -> f64 {
         self.get_int("limits.cache_days").map_or(3.0, |n| n as f64)
+    }
+
+    /// The memory cap of an `--exclusive` build (`limits.build_mem`, default 18G; "0" or "none": no cap).
+    pub fn build_mem(&self) -> Option<String> {
+        match self.get_str("limits.build_mem") {
+            Some("0" | "none") => None,
+            Some(s) => Some(s.to_string()),
+            None => Some("18G".into()),
+        }
     }
 
     /// The free memory a game run waits for (`limits.run_free_mem_gb`, default 14; 0: no wait).

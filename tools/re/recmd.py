@@ -1,7 +1,7 @@
 """re: the reverse engineering command. One game's executable as compact text, each output (but fn's) within a fixed
 budget (cut with a note). Run through tools/re/re (work/venv's python -I).
 
-  re [--game games/oot|games/dkb] <command> ...
+  re --game <game> [--exefs <dir>] <command> ...      (the game: oot, dkb, or games/<game>)
     fn <addr|label>                   the whole annotated listing: blocks, callees with their arguments, strings,
                                       globals, NVN procs called through their slots; above FN_LIMIT instructions an
                                       error instead of a cut listing
@@ -14,7 +14,7 @@ budget (cut with a note). Run through tools/re/re (work/venv's python -I).
     asm <addr|label> [n]              raw instructions with their words: for patch sites only
     export                            refresh the lifter's view (work/re/<game>/export, ounce-lift re-export)
 
-The default game is games/oot (OUNCE_RE_GAME sets another). The lifter's view (function bodies, jump tables, PLT,
+There is no default game. The lifter's view (function bodies, jump tables, PLT,
 symbols) is made once by ounce-lift re-export from the game's exefs: --exefs <dir>, else the dump the user's config
 names for the game (ounce config). Addresses are guest addresses (Eden layout), labels
 those of games/<game>/labels.txt.
@@ -976,8 +976,7 @@ def cmd_export(g, args):
 
 
 def main(argv):
-    gamedir = os.environ.get("OUNCE_RE_GAME", "games/oot")
-    exefs = None
+    gamedir, exefs = None, None
     while argv and argv[0].startswith("--"):
         if argv[0] == "--game":
             gamedir, argv = argv[1], argv[2:]
@@ -988,8 +987,13 @@ def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
         return
+    games = sorted(d for d in os.listdir(os.path.join(ROOT, "games")) if os.path.exists(os.path.join(ROOT, "games", d, "game.toml")))
+    if gamedir is None:
+        sys.exit("re: which game? pass --game <game> first, one of: %s" % ", ".join(games))
     if not os.path.isabs(gamedir) and not os.path.exists(gamedir):
-        gamedir = os.path.join(ROOT, gamedir)
+        gamedir = os.path.join(ROOT, gamedir if os.sep in gamedir else os.path.join("games", gamedir))
+    if not os.path.exists(os.path.join(gamedir, "game.toml")):
+        sys.exit("re: no game %s: the games are %s" % (gamedir, ", ".join(games)))
     cmd, args = argv[0], argv[1:]
     if cmd == "export":
         print(export(gamedir, os.path.basename(os.path.normpath(gamedir)), exefs))

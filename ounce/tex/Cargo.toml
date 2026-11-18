@@ -15,4 +15,3 @@ texture2ddecoder = "0.1"
 
 [build-dependencies]
 cc = "1"
-ounce-core = { path = "../core" }

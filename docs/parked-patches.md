@@ -100,8 +100,7 @@ teleport and age:
 **To rebuild.** Heart protection is two `before` rows at the CAS instructions that return `w12`. The free camera is a
 row at the loop head with a typed `GameplayView` write. Flight is rows for the pose and rotation writes plus a host
 function that calls `phys_cct_change_position` through `guest(...)` and `guest_call`, with its argument on the guest
-stack; the Cheats page's actions need the same kind of guest calls. `scripts/direct_scene_cycle.sh` still sends the
-live commands.
+stack; the Cheats page's actions need the same kind of guest calls.
 
 ## The summary verification build
 

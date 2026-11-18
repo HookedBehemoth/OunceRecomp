@@ -1624,6 +1624,9 @@ dependencies = [
  "ounce-dump",
  "ounce-lift",
  "ounce-tex",
+ "png",
+ "regex",
+ "serde_json",
  "sha1",
 ]
 
@@ -1689,7 +1692,6 @@ dependencies = [
  "blake2b_simd",
  "cc",
  "memchr",
- "ounce-core",
  "ounce-dump",
  "rayon",
  "sha2",

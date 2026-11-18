@@ -34,7 +34,7 @@ void  gpu_queue_wait_fence(uint64_t queue, uint64_t fence);               /* nvn
 void  gpu_present_queue(uint64_t queue);   /* the queue of the present that follows on this thread (nvnQueuePresentTexture) */
 
 /* Prepared assets. The host's loader hooks name each texture load's BNTX texture;
-   the back end makes that texture's image from the prepared store (ounce-builder textures) when it is initialized,
+   the back end makes that texture's image from the prepared store (ounce tool textures) when it is initialized,
    filled on the initializing thread. Any thread (the game's loaders). */
 typedef struct gpu_asset_key {
     const void *tex;               /* the NVNtexture the load initializes next (host pointer of the guest object) */

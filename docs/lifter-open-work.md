@@ -1,7 +1,7 @@
 # Open lifter work
 
 This page is the queue of planned improvements to the lifter's output. Each item says what changes, the source the
-idea comes from, when the change is sound, and the first step that one on/off run of `scripts/bench.sh market 600` can
+idea comes from, when the change is sound, and the first step that one on/off benchmark run of the market scene ([Benchmark a scene](testing.md#benchmark-a-scene)) can
 measure. Read it before you start lifter work, so you pick up an item rather than repeat a ruled-out one. The current
 costs these items address are in [Pessimizations and constraints](lifter-costs.md).
 

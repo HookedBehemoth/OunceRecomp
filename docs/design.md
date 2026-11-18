@@ -10,14 +10,14 @@ work runs on Vulkan. No CPU or GPU is emulated at any point.
 ## From dump to executable
 
 ```
-exefs/{rtld,main,subsdk0,sdk} + romfs/       your dump, read where it lies (work/dump.txt)
-      |  ounce-builder dump (ounce/dump): extract the package, make compressed modules plain
+exefs/{rtld,main,subsdk0,sdk} + romfs/       your dump, read where it lies (the config's <game>.dump)
+      |  ounce dump (ounce/dump): extract the package, make compressed modules plain
       v
 image: modules loaded at 0x80000000 and relocated, imports bound, replaced SDK functions hooked   (ounce/lift)
       |  discovery and the plan: the functions, the partitions
       v
 lifter: AArch64 -> typed SSA IR -> LLVM IR, one module per partition                          (ounce/lift)
-      |  ounce-builder build (scripts/build.sh): LLVM and clang in one process, then lld
+      |  ounce build: LLVM and clang in one process, then lld
       v
 <exe>               the lifted game + runtime/ (Horizon: threads, memory, files, input, audio, display, NVN2)
 ounce_renderer.so  the direct back end (renderer), loaded by the host at start

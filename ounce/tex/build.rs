@@ -1,15 +1,22 @@
 // The BC encoders (src/encoders.cpp over bc7enc_rdo: rgbcx, bc7decomp and bc7e.ispc) built into one static library.
-// The sources: OUNCE_BC7ENC (for packaging), else third_party/bc7enc_rdo; ISPC (a tool, not vendored): the user's config
-// `tools.ispc` (ounce config set tools.ispc <path>), else `ispc` on the PATH. The ISPC targets and options decide the
-// BC7 bytes: changing them changes every prepared BC7 texture.
+// The sources: OUNCE_BC7ENC (for packaging), else third_party/bc7enc_rdo; ISPC (a tool, not vendored): `ispc` on the
+// PATH, or ISPC (as CC and CXX). The ISPC version, targets and options decide the BC7 bytes: the version goes to the
+// crate as OUNCE_ISPC_VERSION, into the texture store's key (run.rs), so another ISPC makes a new store.
 use std::path::PathBuf;
 use std::process::Command;
 
-fn ispc() -> PathBuf {
-    let config = ounce_core::config::Config::default_path();
-    println!("cargo:rerun-if-changed={}", config.display());
-    let c = ounce_core::config::Config::load().unwrap_or_else(|e| panic!("{e}"));
-    c.show("tools.ispc").map_or_else(|| "ispc".into(), PathBuf::from)
+/// ISPC and its version ("1.24.0")
+fn ispc() -> (PathBuf, String) {
+    println!("cargo:rerun-if-env-changed=ISPC");
+    println!("cargo:rerun-if-env-changed=PATH");
+    let exe = std::env::var_os("ISPC").filter(|v| !v.is_empty()).map_or_else(|| PathBuf::from("ispc"), PathBuf::from);
+    let out = Command::new(&exe).arg("--version").output();
+    let Ok(out) = out.as_ref().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()) else {
+        panic!("ispc not found: install it (e.g. pacman -S ispc), or set ISPC=<path>")
+    };
+    // ("Intel(r) Implicit SPMD Program Compiler (Intel(r) ISPC), 1.24.0 (build ...)")
+    let version = out.split(", ").nth(1).and_then(|r| r.split_whitespace().next()).unwrap_or(out.trim()).to_string();
+    (exe, version)
 }
 
 fn main() {
@@ -22,7 +29,8 @@ fn main() {
         assert!(src.join(f).exists(), "bc7enc_rdo sources not found in {} (OUNCE_BC7ENC)", src.display());
         println!("cargo:rerun-if-changed={}", src.join(f).display());
     }
-    let exe = ispc();
+    let (exe, version) = ispc();
+    println!("cargo:rustc-env=OUNCE_ISPC_VERSION={version}");
     let st = Command::new(&exe)
         .arg("-O2")
         .arg(src.join("bc7e.ispc"))
@@ -32,7 +40,7 @@ fn main() {
         .arg(out.join("bc7e_ispc.h"))
         .args(["--target=sse2,sse4,avx,avx2", "--opt=fast-math", "--opt=disable-assertions", "--pic", "--woff"])
         .status()
-        .unwrap_or_else(|e| panic!("{}: {e} (ispc: ounce config set tools.ispc <path>)", exe.display()));
+        .unwrap_or_else(|e| panic!("{}: {e}", exe.display()));
     assert!(st.success(), "ISPC failed on bc7e.ispc");
     let mut b = cc::Build::new();
     b.cpp(true)

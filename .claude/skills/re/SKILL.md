@@ -5,13 +5,14 @@ description: Reverse engineering of game code (games/oot, games/dkb) with tools/
 
 # Reverse engineering game code
 
-Read the game's code yourself with `tools/re/re --game <games/oot|games/dkb> <command>`. Do not delegate it.
+Read the game's code yourself with `tools/re/re --game <oot|dkb> <command>`. Do not delegate it. `--game` is required:
+there is no default game.
 
 ## Order of work
 
 1. Read `games/<game>/labels.txt` first (grep it for the subsystem). A label with a note may already answer the
    question.
-2. Find the code with the one-line commands: `re callers <fn>`, `re tree <fn> [--depth N]`, `re xref <string|addr>`,
+2. Find the code with the one-line commands (each after `re --game <game>`): `re callers <fn>`, `re tree <fn> [--depth N]`, `re xref <string|addr>`,
    `re field <offset>`.
 3. Read the function with `re fn <fn>`: one instruction a line, the blocks marked, and at every call the callee's
    name and its arguments. The arguments are named from the NVN headers or the SDK symbol's signature when there is

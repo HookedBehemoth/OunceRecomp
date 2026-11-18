@@ -2,7 +2,7 @@
 
 This page shows you how to carry a save between OunceRecomp and the emulators and ports that run the Switch 2 Ocarina of
 Time. They all keep the game's saves as the same files, so nothing is converted: the files are copied across, and you
-continue at the same spot. `scripts/oot_saves.py` finds the folders and does the copy safely.
+continue at the same spot. `tools/oot_saves.py` finds the folders and does the copy safely.
 
 You need your own copy of the game. Nothing here comes with game files.
 
@@ -47,7 +47,7 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
   `--force`). NX2navi's launcher also has its own **Import Saves**, which takes an emulator's save folder.
 - `$XDG_DATA_HOME` replaces `~/.local/share` when it is set. OunceRecomp's `--user <folder>` puts its saves in
   `<folder>/save/<user id>/` ([Build and run](../readme.md#build-and-run)). For a game folder's saves, give
-  `scripts/oot_saves.py` `--ounce <game folder>/user`.
+  `tools/oot_saves.py` `--ounce <game folder>/user`.
 - The emulator paths come from each one's `src/common/fs/fs_paths.h`, `path_util.cpp` and
   `src/core/file_sys/savedata_factory.cpp`. Official Eden does not run Switch 2 games; its name is accepted because
   the forks above use its folder.
@@ -56,15 +56,15 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
 
 ## Copy with the script
 
-`scripts/oot_saves.py` (Python 3, nothing to install) copies the slots, `account.sav` and `option.sav` one way, after
+`tools/oot_saves.py` (Python 3, nothing to install) copies the slots, `account.sav` and `option.sav` one way, after
 backing up the side it overwrites. From the OunceRecomp folder (or a clone):
 
 ```sh
-python -I scripts/oot_saves.py list              # every save it finds, its slots and when each was saved
-python -I scripts/oot_saves.py import lichii     # Lichii -> OunceRecomp
-python -I scripts/oot_saves.py export lichii     # OunceRecomp -> Lichii
-python -I scripts/oot_saves.py import --from ~/Downloads/my-save   # any folder holding a save -> OunceRecomp
-python -I scripts/oot_saves.py export --to ~/Lichii/user           # OunceRecomp -> a portable emulator
+python -I tools/oot_saves.py list              # every save it finds, its slots and when each was saved
+python -I tools/oot_saves.py import lichii     # Lichii -> OunceRecomp
+python -I tools/oot_saves.py export lichii     # OunceRecomp -> Lichii
+python -I tools/oot_saves.py import --from ~/Downloads/my-save   # any folder holding a save -> OunceRecomp
+python -I tools/oot_saves.py export --to ~/Lichii/user           # OunceRecomp -> a portable emulator
 ```
 
 The names are `lichii`, `frizti` (or `fritchii`), `orchid`, `pokedinner`, `eden`, `eglantine` and `nx2navi`.

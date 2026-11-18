@@ -26,8 +26,8 @@ The lift and the build are two separate steps:
    *plan*: each function's instructions and its partition. It writes the runtime's tables as IR (`gen/`).
 2. It computes the whole-program summaries and lifts every function from the plan into LLVM IR, one module per
    partition, in parallel.
-3. `ounce-builder build` runs both as a library, compiles each module with LLVM as it is made, compiles the host's
-   C with clang, and links everything with lld, in one process (`scripts/build.sh`).
+3. `ounce build` runs both as a library, compiles each module with LLVM as it is made, compiles the host's
+   C with clang, and links everything with lld, in one process.
 
 Every build lifts again (about 8 s); objects whose IR did not change come from the cache.
 

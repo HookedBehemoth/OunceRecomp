@@ -2,8 +2,8 @@
    the ones traced in work/assets/native/asset-path.md 3.4 and 7.3, on branch agent/assets1). Direct mode only
    (HOS_DBG=noassets turns every patch here off, for a before/after).
 
-   The store: HOS_PREPARED=<folder> (default the game folder's prepared/, else <the executable's folder>/../../prepared,
-   i.e. work/prepared beside a build in work/sa/<build>, else <romfs>/../../prepared): <folder>/tex is the texture store the back end maps (gpu_assets_open).
+   The store: HOS_PREPARED=<folder> (default the game folder's prepared/, which every ounce build makes): <folder>/tex is
+   the texture store the back end maps (gpu_assets_open).
 
    Texture loads (agl::TextureData), each tied to its BNTX record and handed to the back end (gpu_asset_load) before the
    texture's nvnTextureInitialize, which then makes the image from the store:
@@ -76,18 +76,12 @@ static const char *prepared_dir(void) {
     done = 1;
     const char *e = getenv("HOS_PREPARED");
     if (e && *e) snprintf(prepared, sizeof prepared, "%s", e);
-    else {   /* (the game folder's prepared/, then work/prepared beside a build, then beside the dump) */
-        char exe[1024], probe[1100];
+    else {   /* (the game folder's prepared/: ounce build makes it) */
+        char exe[1024];
         const int n = os_exe_path(exe, sizeof exe);
         char *slash = n ? strrchr(exe, '/') : NULL;
         if (slash) *slash = 0;
-        static const char *const beside[] = {"%s/prepared", "%s/../../prepared"};
-        for (int i = 0; slash && i < 2 && !prepared[0]; i++) {
-            snprintf(probe, sizeof probe, beside[i], exe);
-            snprintf(probe + strlen(probe), sizeof probe - strlen(probe), "/tex/index.bin");
-            if (os_path_kind(probe) != OS_PATH_NONE) snprintf(prepared, sizeof prepared, beside[i], exe);
-        }
-        if (!prepared[0]) snprintf(prepared, sizeof prepared, "%s/../../prepared", hos_romfs_dir ? hos_romfs_dir : "romfs");
+        snprintf(prepared, sizeof prepared, "%s/prepared", slash ? exe : ".");
     }
     char real[1024];
     if (realpath(prepared, real)) snprintf(prepared, sizeof prepared, "%s", real);

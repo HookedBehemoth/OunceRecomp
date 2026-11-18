@@ -1,136 +1,88 @@
 # Development guide
 
-This page gets you from a dump of the game to a running build, and shows the loop you use while changing OunceRecomp:
-what to rebuild after a change, how to run it, and where things live. Read it before your first build.
+This page gets you from a dump of a game to a running build, and says where everything goes. Read it before your first
+build.
 
-OunceRecomp lifts the game's AArch64 code to native x86-64 code, implements the console's operating system (Horizon) and
-graphics API (NVN2) in `runtime/`, and replays the game's GPU work on Vulkan with the direct back end in `renderer`. It
-runs on Linux only, and the renderer is developed on Mesa RADV.
+OunceRecomp lifts a game's AArch64 code to native x86-64 code, implements the console's operating system (Horizon) and
+graphics API (NVN2) in `runtime/`, and runs the game's GPU work on Vulkan with the direct back end in `renderer/`. It
+runs on Linux only, and the renderer is developed on Mesa RADV. One program, `ounce`, builds, runs and tests every game
+that has a `games/<game>/game.toml`.
 
-No game files are in this repository. The build reads your dump where it lies, and everything made from it goes to
-`work/`, which git ignores and which never leaves your PC.
+No game files are in this repository. The build reads your dump where it lies, and everything made from it stays on
+your PC.
 
-## Set up
+## Install
 
-1. Install the tools from your distribution: clang and lld from LLVM 23 (the lifter refuses another major version),
-   Rust, Meson, Ninja, `glslangValidator`, the Vulkan headers, FFmpeg with dav1d, SDL2 or SDL3, and ISPC for the
-   texture encoder (`OUNCE_ISPC`, else `work/deps/ispc/*/bin/ispc`, else the `PATH`). The SPIR-V headers, VMA and
-   bc7enc_rdo are in `third_party/`.
-2. Create a Python environment for the development and RE tools:
+Install these from your distribution:
 
-   ```sh
-   python3 -m venv work/venv
-   work/venv/bin/pip install -r requirements.txt
-   ```
+- clang and lld from LLVM 23 (the lifter refuses another major version), Rust, and ISPC (the texture encoder's
+  compiler; `ISPC=<path>` picks another one, as `CC` does);
+- Meson, Ninja and `glslangValidator`, for the renderer;
+- the Vulkan headers, FFmpeg with dav1d, and SDL2 or SDL3.
 
-   Run every Python tool with `-I` from the repository root, as `work/venv/bin/python -I ...`.
-3. Extract your dump and record where it is:
+For the Python tools, make a virtual environment with `python3 -m venv work/venv` and
+`work/venv/bin/pip install -r requirements.txt`. Then build `ounce`:
 
-   ```sh
-   cargo build --release -p ounce-builder --manifest-path ounce/Cargo.toml
-   ounce/target/release/ounce-builder dump <your-game.nup> --extract work/dump
-   python -I tools/re/dump.py --dump work/dump --set
-   ```
-
-   `tools/re/dump.py` checks that the dump is the supported build: program `0400486024DEC000`, update v131072, build
-   `e0f3ccfa`. Other versions are refused. `--set` writes the path to `work/dump.txt`.
-4. The renderer's build takes the Vulkan headers from `/usr` and the SPIR-V and VMA headers from `third_party/`.
-   Other places are Meson options (below).
+```sh
+cargo build --release -p ounce --manifest-path ounce/Cargo.toml
+export PATH=$PWD/ounce/target/release:$PATH
+```
 
 A build needs about 60 GB of disk, and a running game about 10 GB of memory.
 
+## Configure
+
+Tell `ounce` where your dump is: a folder that holds `exefs/` and `romfs/`.
+
+```sh
+ounce config set oot.dump <folder>
+```
+
+To extract a dump file and record it in one step, run `ounce dump <file.nup> --extract <folder> --set`. `ounce dump`
+names the game a dump is, and refuses a version the game does not support.
+
+`ounce config` shows the whole file, `~/.config/ounce/config.toml`.
+
 ## Build and run
 
-To lift the game and build it, run:
-
 ```sh
-scripts/build.sh
+ounce build oot
+ounce run oot
 ```
 
-It builds the renderer with Meson (`work/sa/meson`), the builder with cargo (`ounce/target`), then runs
-`ounce-builder build`: the lift, the host's C, every compile and the link, in one process. The game folder is
-`work/sa/build`: the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so`, `image.bin` and the shader caches beside them. A rebuild with
-nothing changed takes about 10 seconds. To run the game in a window:
+`ounce build` builds the renderer with Meson, then lifts the game, compiles it and links it, and prepares the game's
+texture store from the dump. A rebuild does only what changed: the renderer through Ninja, the code through the object
+cache, and the store only when the dump or the encoder changed. The first build of a game converts its textures,
+which takes several minutes. `ounce run` opens a window with sound and
+uses your own saves; it warns when the build is older than the checkout.
 
-```sh
-"work/sa/build/Ocarina of Time" --romfs work/dump/romfs --user work/user
-```
+On a shared PC, and always as an agent, pass `--exclusive` to `build`, `run` and `test`: it waits until no other build
+or game run is going. See [Rules for agents](agents.md).
 
-The game's own arguments are `image.bin` (default: the one beside the executable), `--romfs <folder>`, `--user <folder>` (saves, caches and temporary files)
-and `--trace` (log every Horizon call). The first line of `ounce_log.txt` names the build.
+To test a change, see [Test OunceRecomp](testing.md). To work on the lifter, see
+[Build and iterate on the lifter](lifter-build.md).
 
-## Iterate quickly
-
-After a change, rebuild only what the change needs:
-
-| You changed | Run |
-|---|---|
-| `runtime/`, `renderer/`, the lifter, including patch declarations | `scripts/build.sh`: what changed is compiled again |
-| Only the renderer | `ninja -C work/sa/meson` (below): builds `ounce_renderer.so` alone |
-| The hot list, the dump or the toolchain | `scripts/relift.sh` |
-
-The details, including what the object cache keeps, are in [Build and iterate on the lifter](lifter-build.md). A new
-runtime file belongs in `runtime/sources.txt`, a new patch file in the `patches` list of `games/oot/game.toml`.
-
-Then test the change in the game. [Test OunceRecomp](testing.md) covers the headless test run, the smoke test, the
-benchmark and profiling.
-
-To keep two builds side by side, copy the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so`, `<exe>.map` and the caches (`*.bin`) to
-`work/sa/<name>/` and run with `EXE="work/sa/<name>/Ocarina of Time"`.
-
-### Build the renderer with Meson
-
-Meson builds the renderer, `ounce_renderer.so`; `scripts/build.sh` runs it first. It needs clang, lld, Meson,
-Ninja and `glslangValidator`. To build it alone, run:
-
-```sh
-meson setup --native-file renderer/meson/clang.ini -Dexe="work/sa/build/Ocarina of Time" work/sa/meson
-ninja -C work/sa/meson
-```
-
-The library is `work/sa/meson/renderer/ounce_renderer.so`; `ounce-builder build` copies it beside the game's executable. A clean build takes
-about 40 seconds with six jobs.
-
-- The options `vulkan_headers`, `spirv_headers` and `vma_headers` name the header packages. They default to `/usr`,
-  `third_party/SPIRV-Headers` and `third_party/VulkanMemoryAllocator`.
-- `march` sets the CPU level (default `x86-64-v3`).
-- `exe` names the executable to check the library against. Every symbol the library leaves undefined must be one the
-  executable exports (`os_*` or `hos_mem_ledger`); otherwise the build fails. Without `exe`, only the names are
-  checked.
-- The SPIR-V headers of `renderer/shaders` are compiled from their sources in the build folder. `meson test -C
-  work/sa/meson` checks that the copies in the source tree are still equal to them.
-
-### Work in an agent worktree
-
-To work without disturbing the main checkout's build, run `scripts/agent-worktree.sh new <name>`. It creates
-`work/wt/<name>` on branch `agent/<name>`. Its `work/` shares the main dump, runs, overlays, virtual environment,
-locks and object cache (`work/builder-cache`), but has its own `work/sa` (the game folder, the lift's files and the
-Meson folder), so a host-only build is quick. Run with
-`EXE="work/sa/build/Ocarina of Time"` from inside it. `land <name>` rebases the branch onto the main checkout's branch and
-fast-forwards it; `drop <name>` removes the worktree and the branch once it has landed.
-
-### Play the current build
-
-`scripts/play.sh [title|kokiri|hf|market|<zoo scene>]` plays the main checkout's build with window and sound, and
-`scripts/play.sh record <name> ...` also records the input. `scripts/play-refresh.sh` keeps that build at the head of
-the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It refuses a dirty tree or another branch.
-`--install-hook` adds a local `post-merge` hook that refreshes in the background after each merge.
-
-## Where things are
+## Where things go
 
 | Path | What it holds |
 |---|---|
-| `ounce/` | The lifter (`ounce/lift`), the builder (`ounce/builder`) and the game-free checks (`ounce/tests`), one cargo workspace ([The lifter](lifter.md)) |
-| `runtime/` | The generic runtime: Horizon, the NVN2 layer (`nvn_native.c`), the hook points a game's patches fill (`game_hooks.h`); `runtime/os` is its operating-system layer (`os.h`), `runtime/media` the SDL shim (window, sound, controllers, dialogs) |
-| `renderer/` | The direct back end ([Renderer docs](direct/README.md)); `renderer/api/` is what the runtime and the back end share: the versioned interface (`vk_api.h`), the list calls (`vk_list_api.h`) and the NVN command records |
-| `games/oot/` | The game: its description (`game.toml`), its patch files (`patches/`), the labels, the hot list, the icon and the test scenes (`zoo/`) |
-| `scripts/` | Test runs, the play build, log and profile readers, the save copier |
-| `tools/` | Readers for the game's formats (`tools/dump`), reverse-engineering tools (`tools/re`: the dump check, the labels, the disassemblers and searches), the button-prompt generator (`tools/prompts`), the shader tools (`tools/shaders`: the register gate, the offline translator, the replacement stage's build) and the shader census (`tools/shadercensus`) |
-| `third_party/` | Upstream code with its own licenses, one folder each: Eden's shader translator (our fork) and Sirit, a64-kit's guest model and loader, SPIRV-Headers, VulkanMemoryAllocator, bc7enc_rdo, Opus, zstd, zbic, SDL2's license, Kenney's input prompts |
+| `work/<game>/game/` | The game folder: the executable, `ounce_renderer.so`, `image.bin`, the shader caches, and `prepared/`, a link to the game's texture store |
+| `work/<game>/lift/` | The lift's files for the reverse-engineering tools, and the link map |
+| `work/<game>/runs/<name>/` | One run: the log, the timeline and the screenshots |
+| `work/renderer/` | The renderer's Meson build, shared by the games |
+| `~/.cache/ounce/` | The object cache and each game's texture store (`prepared/<game>`), shared by every checkout |
+| `~/.local/share/ounce/` | Your saves, and per game the smoke tests' golden data and the input recordings |
 
-## More pages
+A worktree needs no setup: `git worktree add` and `ounce build` are enough, because the config, the cache and the data
+live outside the checkout.
 
-- [Test OunceRecomp](testing.md): test runs, smoke test, benchmarks, recordings, profiles.
-- [Switches](switches.md): the environment switches for tests and debugging, and the log format.
-- [Reverse engineering](reverse-engineering.md): function labels and the tools for reading the game's code and files.
-- [Design](design.md): how the parts fit, and the rules every change keeps.
+## Where the code is
+
+| Path | What it holds |
+|---|---|
+| `ounce/` | `ounce` itself (`ounce/builder`), the lifter (`ounce/lift`), the window (`ounce/gui`) and the game-free checks (`ounce/tests`) |
+| `runtime/` | Horizon, the NVN2 layer, and the hook points a game's patches fill; `runtime/os` is the operating-system layer, `runtime/media` the window, sound and controllers |
+| `renderer/` | The direct back end ([Renderer docs](direct/README.md)) |
+| `games/<game>/` | A game: its description, its patches, its labels and its smoke tests |
+| `tools/` | Readers for the game's files (`tools/dump`), reverse-engineering tools (`tools/re`), the shader tools, and the run readers (`crit_path.py`, `launch_time.py`, `direct_picture_check.py`) and the save copier (`oot_saves.py`) |
+| `third_party/` | Upstream code with its own licenses |

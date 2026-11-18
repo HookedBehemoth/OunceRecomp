@@ -82,4 +82,4 @@ The source file exists only during the load, so the host must find the prepared 
 | `HOS_DBG=noassets` | turns the asset patches off, for a before/after comparison |
 | `HOS_DBG=nodata[:<name part>]` | logs every load with no data; with a name part, watches those textures' slots for CPU writes |
 | `HOS_DBG=texwatch` | finds code that writes texels with the CPU (each write to a texture's pages faults once) |
-| `HOS_PREPARED=<folder>` | the prepared store's folder (default `work/prepared` beside the build) |
+| `HOS_PREPARED=<folder>` | the prepared store's folder (default the game folder's `prepared/`) |

@@ -18,5 +18,5 @@ if ls "$root"/work/renderer/third_party/eden/libdx_eden.a > /dev/null 2>&1; then
     clang++ -o "$out/meshtool" "$out/meshtool.o" "$root"/work/renderer/third_party/eden/libdx_eden.a "$root"/work/renderer/third_party/sirit/libdx_sirit.a -lpthread
     echo "built $out/meshtool"
 else
-    echo "meshtool: no translator objects (work/renderer: libdx_eden.a, libdx_sirit.a): build the renderer first (scripts/build.sh; the libraries are built on demand: ninja -C work/renderer third_party/eden/libdx_eden.a third_party/sirit/libdx_sirit.a)"
+    echo "meshtool: no translator objects (work/renderer: libdx_eden.a, libdx_sirit.a): build the renderer first (ounce build <game>; the libraries are built on demand: ninja -C work/renderer third_party/eden/libdx_eden.a third_party/sirit/libdx_sirit.a)"
 fi

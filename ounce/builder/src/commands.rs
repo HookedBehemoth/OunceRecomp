@@ -165,19 +165,21 @@ pub fn run(args: &[String]) {
     }
 }
 
-/// `ounce test <game> [--name T] [--golden] [--keep-shots] [--set NAME=VALUE]...`: the smoke test T of
-/// games/<game>/tests.toml. One headless run with the test's settings, then scripts/smoke.py's verdict against the data
-/// folder's `<game>/golden/<T>/` (--golden adds the run to the golden set). Exits with the verdict's status.
+/// `ounce test <game> [--name T] [--golden | --golden-reset] [--keep-shots] [--set NAME=VALUE]...`: the smoke test T
+/// of games/<game>/tests.toml. One headless run with the test's settings, then the verdict (smoke.rs) against the data
+/// folder's `<game>/golden/<T>/` (--golden adds the run to the golden set, --golden-reset starts the set with it).
+/// Exits 0 when it passes.
 pub fn test(args: &[String]) {
     let (layout, game, rest) = game_args("test", args);
     let config = config();
-    let (mut name, mut golden, mut keep, mut set) = (game.default_test.clone(), false, false, Vec::new());
+    let (mut name, mut golden, mut reset, mut keep, mut set) = (game.default_test.clone(), false, false, false, Vec::new());
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().cloned().unwrap_or_else(|| fail(format!("{a} wants a value")));
         match a.as_str() {
             "--name" => name = Some(val()),
             "--golden" => golden = true,
+            "--golden-reset" => (golden, reset) = (true, true),
             "--keep-shots" => keep = true,
             "--set" => set.push(switch(&val())),
             _ => fail(format!("test: what is {a}? (ounce help)")),
@@ -207,17 +209,15 @@ pub fn test(args: &[String]) {
     std::fs::write(r.dir.join("run.out"), format!("{}\n", r.summary)).unwrap_or_else(|e| fail(e));
     // (the saves and caches the run made)
     let _ = std::fs::remove_dir_all(r.dir.join("user"));
-    let mut c = Command::new(config.python());
-    c.arg("-I").arg(layout.root.join("scripts/smoke.py")).arg(&r.dir).arg(&gd);
-    if golden {
-        c.arg("--golden");
+    let (lines, pass) = crate::smoke::verdict(&r.dir, &gd, t.smoke_skip as u64, golden, reset).unwrap_or_else(|e| fail(e));
+    for l in &lines {
+        println!("{l}");
     }
-    c.env("SMOKE_SKIP", t.smoke_skip.to_string());
-    let st = c.status().unwrap_or_else(|e| fail(format!("{}: {e} (set tools.python: ounce config set tools.python <python>)", config.python().display())));
+    let _ = std::fs::write(r.dir.join("verdict.txt"), lines.join("\n") + "\n");
     if !keep && !golden {
         let _ = std::fs::remove_dir_all(r.dir.join("shots"));
     }
-    std::process::exit(st.code().unwrap_or(1));
+    std::process::exit(if pass { 0 } else { 1 });
 }
 
 /// `ounce config [path | get <key> | set <key> <value>]`

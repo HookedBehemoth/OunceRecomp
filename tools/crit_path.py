@@ -1,7 +1,7 @@
 """The frame's critical path from a HOS_DBG=crit trace (runtime/crit.c).
 
-    python -I scripts/crit_path.py <run folder> [--marks evsig|present] [--frames N] [--top 25] [--dump F|-2 [--merged]]
-    CRIT_GANTT=<frame> [CRIT_RES=0.1] [CRIT_FRAMES=1] python -I scripts/crit_path.py <run folder>   (one frame as rows of characters)
+    python -I tools/crit_path.py <run folder> [--marks evsig|present] [--frames N] [--top 25] [--dump F|-2 [--merged]]
+    CRIT_GANTT=<frame> [CRIT_RES=0.1] [CRIT_FRAMES=1] python -I tools/crit_path.py <run folder>   (one frame as rows of characters)
 
 The run folder holds crit.bin and crit_threads.txt. Every guest thread's time is running (it holds a virtual core: game
 code, the host's NVN layer, the direct back end), blocked (on a condition variable, the kernel's arbiter, a sleep, or

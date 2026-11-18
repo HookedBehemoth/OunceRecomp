@@ -42,7 +42,7 @@ Each item is open at the time of writing. Remove an item when you close it.
 
 ### Correctness
 
-- **Pictures.** The per-pass picture checks (`scripts/direct_check.sh`, `scripts/direct_picture_check.py`) do not pass
+- **Pictures.** The per-pass picture checks (`tools/direct_picture_check.py`) do not pass
   on every scene yet. Work through the failing pass states, earliest pass first.
 - **Eviction destroys textures still drawn.** The VRAM eviction patch (`games/oot/patches/texdata.c`, a 1.5 GB margin) can
   destroy a texture that the game released in the same present while recorded draws still sample it ("texture with no
@@ -94,9 +94,8 @@ Each item is open at the time of writing. Remove an item when you close it.
 
 | What | How |
 |---|---|
-| Quick run | `scripts/smoke.sh` |
-| Scene routes | `scripts/direct_walk_check.sh`, `scripts/direct_check.sh`; `scripts/direct_scene_cycle.sh` needs the removed `!warp` and `!cheat` commands ([parked patches](parked-patches.md)) |
-| Pictures per pass | `HOS_DBG=dump:<present>` dumps the targets; `scripts/direct_dump_compare.py` and `scripts/direct_picture_check.py` compare them with stored references |
+| Quick run | `ounce test oot --exclusive` |
+| Pictures per pass | `HOS_DBG=dump:<present>` dumps the targets; `tools/direct_picture_check.py` compares them with stored references |
 | Validation | `HOS_DBG=validation` runs the Vulkan validation layers with synchronization validation; any message is a failure |
 | Counters | the `direct:` log lines every 600 presents: skipped draws and jobs, unclassified lists, objects created a frame, cross-list uniform overlaps; all 0 in steady play |
 | Game patches | `HOS_DBG=logpatch`: one line per patch every 600 presents, which shows that it still applies |

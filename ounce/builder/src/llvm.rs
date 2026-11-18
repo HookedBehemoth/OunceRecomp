@@ -38,7 +38,7 @@ pub fn version() -> String {
 /// LLVM's command line options (clang's -mllvm ones) for the process; the first call sets them, later ones only
 /// report the first's result
 pub fn init(options: &[&str]) -> Result<(), String> {
-    let args: Vec<CString> = std::iter::once("ounce-builder").chain(options.iter().copied()).map(|s| CString::new(s).unwrap()).collect();
+    let args: Vec<CString> = std::iter::once("ounce").chain(options.iter().copied()).map(|s| CString::new(s).unwrap()).collect();
     let argv: Vec<*const c_char> = args.iter().map(|a| a.as_ptr()).collect();
     let mut err = std::ptr::null_mut();
     if unsafe { hk_llvm_init(argv.as_ptr(), argv.len() as c_int, &mut err) } != 0 {

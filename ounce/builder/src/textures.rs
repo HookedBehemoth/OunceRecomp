@@ -1,4 +1,7 @@
-//! The prepared texture store (ounce-tex) as a builder step: `ounce tool textures`, and `build --textures`.
+//! The prepared texture store (ounce-tex) as a build step. Every build makes one: a developer's build shares the game's
+//! store in the cache (`<cache>/prepared/<game>/`, linked from the game folder as `prepared`), made again only when its
+//! inputs change; a player's game folder (`--dump`) gets its own, and its romfs copy's texture files are zeroed.
+//! `ounce tool textures` makes one by hand.
 
 use crate::fail;
 use crate::gate::Gate;
@@ -25,6 +28,48 @@ pub fn quality(v: &str) -> Settings {
         "high" => Settings::QUALITY,
         o => fail(format!("--quality fast|high, not {o}")),
     }
+}
+
+/// The game's shared store in the cache, made from `romfs` when its inputs (inputs_key) changed: made beside and
+/// renamed over the old one, so a game that maps the old one keeps it. Returns its folder (the one holding tex/).
+pub fn shared(config: &ounce_core::config::Config, romfs: &Path, game: &ounce_lift::game::Game, settings: Settings, jobs: usize) -> Result<PathBuf, String> {
+    let base = config.cache_dir().join("prepared").join(&game.name);
+    let files = GameFiles { zstd_dictionaries: game.assets.zstd_dictionaries.clone(), skip_dirs: game.assets.texture_skip_dirs.clone() };
+    let key = format!("{:016x}\n", ounce_tex::run::inputs_key(&settings, romfs, &files)?);
+    let stamp = |d: &Path| d.join("inputs.key");
+    if base.join("tex/index.bin").is_file() && std::fs::read_to_string(stamp(&base)).ok().as_deref() == Some(key.as_str()) {
+        println!("textures: the store in {} is current", base.display());
+        return Ok(base);
+    }
+    let (new, old) = (base.with_extension("new"), base.with_extension("old"));
+    let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    for d in [&new, &old] {
+        if d.exists() {
+            std::fs::remove_dir_all(d).map_err(|e| io(d, e))?;
+        }
+    }
+    make(romfs, &new.join("tex"), game, settings, jobs, Vec::new(), None)?;
+    std::fs::write(stamp(&new), &key).map_err(|e| io(&new, e))?;
+    if base.exists() {
+        std::fs::rename(&base, &old).map_err(|e| io(&base, e))?;
+    }
+    std::fs::rename(&new, &base).map_err(|e| io(&new, e))?;
+    if old.exists() {
+        std::fs::remove_dir_all(&old).map_err(|e| io(&old, e))?;
+    }
+    Ok(base)
+}
+
+/// Points `folder`/prepared at `store` (a symbolic link, put in place by a rename).
+pub fn link(folder: &Path, store: &Path) -> Result<(), String> {
+    let at = folder.join("prepared");
+    let tmp = folder.join("prepared.link.tmp");
+    let _ = std::fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(store, &tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    if at.is_dir() && !at.is_symlink() {
+        std::fs::remove_dir_all(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+    }
+    std::fs::rename(&tmp, &at).map_err(|e| format!("{}: {e}", at.display()))
 }
 
 /// Makes the store in `out` from `romfs` with the game description's settings for its romfs; with `hollow`, also
