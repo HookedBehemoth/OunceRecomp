@@ -4,7 +4,6 @@ eden_sources += files(
   'decode.cpp',
   'indirect_branch_table_track.cpp',
   'opcodes.cpp',
-  'structured_control_flow.cpp',
 )
 subdir('translate/impl')
 eden_sources += files(

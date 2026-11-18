@@ -19,12 +19,11 @@
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
-#include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
-#include "shader_recompiler/frontend/maxwell/translate/translate.h"
+#include "shader_recompiler/frontend/common/structured_control_flow.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/object_pool.h"
 
-namespace Shader::Maxwell {
+namespace Shader {
 namespace {
 struct Statement;
 
@@ -673,10 +672,11 @@ private:
 class TranslatePass {
 public:
     TranslatePass(ObjectPool<IR::Inst>& inst_pool_, ObjectPool<IR::Block>& block_pool_,
-                  ObjectPool<Statement>& stmt_pool_, Environment& env_, Statement& root_stmt,
-                  IR::AbstractSyntaxList& syntax_list_, const HostTranslateInfo& host_info)
-        : stmt_pool{stmt_pool_}, inst_pool{inst_pool_}, block_pool{block_pool_}, env{env_},
-          syntax_list{syntax_list_} {
+                  ObjectPool<Statement>& stmt_pool_, Statement& root_stmt,
+                  IR::AbstractSyntaxList& syntax_list_, const HostTranslateInfo& host_info,
+                  const TranslateBlock& translate_)
+        : stmt_pool{stmt_pool_}, inst_pool{inst_pool_}, block_pool{block_pool_},
+          syntax_list{syntax_list_}, translate{translate_} {
         Visit(root_stmt, nullptr, nullptr);
 
         IR::Block& first_block{*syntax_list.front().data.block};
@@ -708,7 +708,7 @@ private:
                 break;
             case StatementType::Code: {
                 ensure_block();
-                Translate(env, current_block, stmt.block->begin, stmt.block->end);
+                translate(*current_block, *stmt.block);
                 break;
             }
             case StatementType::SetVariable: {
@@ -998,8 +998,8 @@ private:
     ObjectPool<Statement>& stmt_pool;
     ObjectPool<IR::Inst>& inst_pool;
     ObjectPool<IR::Block>& block_pool;
-    Environment& env;
     IR::AbstractSyntaxList& syntax_list;
+    const TranslateBlock& translate;
     bool uses_demote_to_helper{};
     const Flow::Block dummy_flow_block{};
 };
@@ -1007,15 +1007,15 @@ private:
 
 IR::AbstractSyntaxList BuildASL(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Block>& block_pool,
                                 Environment& env, Flow::CFG& cfg,
-                                const HostTranslateInfo& host_info) {
+                                const HostTranslateInfo& host_info, const TranslateBlock& translate) {
     ObjectPool<Statement> stmt_pool{64};
     const Stage stage{env.ShaderStage()};
     GotoPass goto_pass{cfg, stmt_pool, stage == Stage::Task || stage == Stage::Mesh};
     Statement& root{goto_pass.RootStatement()};
     IR::AbstractSyntaxList syntax_list;
-    TranslatePass{inst_pool, block_pool, stmt_pool, env, root, syntax_list, host_info};
+    TranslatePass{inst_pool, block_pool, stmt_pool, root, syntax_list, host_info, translate};
     stmt_pool.ReleaseContents();
     return syntax_list;
 }
 
-} // namespace Shader::Maxwell
+} // namespace Shader

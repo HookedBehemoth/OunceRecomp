@@ -19,7 +19,7 @@
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
 #include "shader_recompiler/frontend/ir/post_order.h"
-#include "shader_recompiler/frontend/maxwell/structured_control_flow.h"
+#include "shader_recompiler/frontend/common/structured_control_flow.h"
 #include "shader_recompiler/frontend/maxwell/translate/translate.h"
 #include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
@@ -440,7 +440,10 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     normalized_host_info.ApplyDescriptorLimitPolicy();
 
     IR::Program program;
-    program.syntax_list = BuildASL(inst_pool, block_pool, env, cfg, normalized_host_info);
+    const TranslateBlock translate{[&env](IR::Block& block, const Shader::Flow::Block& flow_block) {
+        Translate(env, &block, flow_block.begin, flow_block.end);
+    }};
+    program.syntax_list = BuildASL(inst_pool, block_pool, env, cfg, normalized_host_info, translate);
     program.blocks = GenerateBlocks(program.syntax_list);
     program.post_order_blocks = PostOrder(program.syntax_list.front());
     program.stage = env.ShaderStage();
