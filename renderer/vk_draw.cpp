@@ -1106,6 +1106,9 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
         if (size < sizeof u) return;
         std::memcpy(&u, data, sizeof u);
         const uint64_t n = std::min<uint64_t>(u.size, size - sizeof u);
+        if (meshlog_on())
+            logf("direct: meshlog update buffer %#llx +%llu in list kind %u lr %#llx", (unsigned long long)u.dst, (unsigned long long)n,
+                 l->info.kind, (unsigned long long)l->info.lr);
         ListDraw& x = ctx(l);
         x.updates.push_back({u.dst, (uint32_t)n, (uint32_t)x.update_bytes.size()});
         x.update_bytes.insert(x.update_bytes.end(), (const uint8_t*)data + sizeof u, (const uint8_t*)data + sizeof u + n);
@@ -1396,6 +1399,13 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     drawlog(l, gated ? (ind ? "drawn gated indirect" : indexed ? "drawn gated indexed" : "drawn gated") : (ind ? "drawn indirect" : indexed ? "drawn indexed" : "drawn"),
             prog, &x.dyn,
             ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count);
+    if (ind && drawlog_on()) {
+        uint32_t w[5]{};
+        host->gpu_read(dn.indirect, w, sizeof w);
+        logf("direct: drawlog indirect: arguments %#llx (stride %u, count at %#llx; %u %u %u %u %u when recorded), indices %#llx",
+             (unsigned long long)dn.indirect, stride, (unsigned long long)count_addr, w[0], w[1], w[2], w[3], w[4],
+             indexed ? (unsigned long long)dn.ibuf : 0ull);
+    }
     const uint32_t mk = marks_on() ? mark_before(cb, ind ? "draw indirect" : indexed ? "draw indexed" : "draw", prog->key, l->info.kind, l->info.lr,
                                                  ind ? nargs : op == NOP_DRAW_IDX ? (uint32_t)di.count : (uint32_t)dr.count,
                                                  ind ? 0 : (uint32_t)std::max(1, op == NOP_DRAW_IDX ? di.instances : dr.instances)) : 0;   // 

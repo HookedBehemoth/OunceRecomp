@@ -39,7 +39,7 @@ struct DrawProg {
     bool task = false;
     VkShaderEXT ts = VK_NULL_HANDLE;
     uint32_t task_threads = 0, task_payload_words = 0;
-    uint64_t codes[3]{};   // (vertex or mesh, fragment, header-only)
+    uint64_t codes[3]{};   // (vertex or mesh, fragment, header-only or geometry)
     uint64_t task_code = 0;   // (a task+mesh program's task stage code key)
     uint16_t ssbo_slots[8]{};   // (M4b: by NVN stage, the storage buffer slots its stages read through the driver bank's table)
     mutable std::atomic<bool> used{false};

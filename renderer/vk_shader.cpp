@@ -1560,7 +1560,7 @@ void scan_slot(Slot* s) {
             continue;
         v->d.variant = 0;
         for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
-        v->d.codes[0] = s->vs.key, v->d.codes[1] = s->has_fs ? s->fs.key : 0, v->d.codes[2] = s->has_prim ? s->prim.key : 0;
+        v->d.codes[0] = s->vs.key, v->d.codes[1] = s->has_fs ? s->fs.key : 0, v->d.codes[2] = s->has_prim ? s->prim.key : s->has_gs ? s->gs.key : 0;
         v->d.task_code = s->task ? s->task_key : 0;
         if (!finish(*v)) continue;
         st_from_disk.fetch_add(1, std::memory_order_relaxed);
@@ -1737,7 +1737,7 @@ const DrawProg* shader_pick(const DState& s, const uint8_t color_types[8], Shade
         if (made) {
             for (const RawAnswer& a : v->answers) v->d.variant = (v->d.variant ^ ((uint64_t)a.stage << 32 | (uint64_t)a.desc << 16 | a.type)) * 1099511628211ull;
             disk_save(*v, slot_pair(sl));
-            v->d.codes[0] = sl.vs.key, v->d.codes[1] = sl.has_fs ? sl.fs.key : 0, v->d.codes[2] = sl.has_prim ? sl.prim.key : 0;
+            v->d.codes[0] = sl.vs.key, v->d.codes[1] = sl.has_fs ? sl.fs.key : 0, v->d.codes[2] = sl.has_prim ? sl.prim.key : sl.has_gs ? sl.gs.key : 0;
             v->d.task_code = sl.task ? sl.task_key : 0;
             ok = finish(*v);
         }
