@@ -70,6 +70,7 @@ struct Frame {
     Mem* shot_mem = nullptr;
     void* shot_map = nullptr;
     int64_t shot_present = 0;   // (0: none waiting)
+    uint32_t shot_w = 0, shot_h = 0;   // (the waiting shot's size: the presented image's shape, its long side kShotMax)
 };
 
 // Shots of the presented frame (gpu_shots: the host's RX_VK_SHOTS / RX_VK_SHOT_EVERY, as the frozen back end reads
@@ -77,7 +78,7 @@ struct Frame {
 // scaled into a 1280x720 RGBA8 image and copied into the frame slot's buffer; once that slot's fence has passed (three
 // presents later, where the present waits for it anyway) the pixels go to <dir>/vk_<present>.png on a thread of its own.
 // The image and the three buffers are made at the first shot; nothing is made or recorded when shots are off.
-constexpr uint32_t kShotW = 1280, kShotH = 720;
+constexpr uint32_t kShotMax = 1280;   // (a shot's long side; the shot image and buffers hold kShotMax x kShotMax)
 std::string shot_dir;
 int shot_every = 0;
 VkImage shot_image = VK_NULL_HANDLE;
@@ -233,7 +234,7 @@ bool shots_ready() {
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ii.imageType = VK_IMAGE_TYPE_2D;
     ii.format = VK_FORMAT_R8G8B8A8_UNORM;
-    ii.extent = {kShotW, kShotH, 1};
+    ii.extent = {kShotMax, kShotMax, 1};
     ii.mipLevels = ii.arrayLayers = 1;
     ii.samples = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -244,28 +245,28 @@ bool shots_ready() {
         return false;
     }
     for (Frame& f : frames)
-        if (!mem_buffer((uint64_t)kShotW * kShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, f.shot_buf, f.shot_mem, &f.shot_map) || !f.shot_map) {
+        if (!mem_buffer((uint64_t)kShotMax * kShotMax * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, f.shot_buf, f.shot_mem, &f.shot_map) || !f.shot_map) {
             logf("direct: shots: no readback buffer");
             return false;
         }
     shot_failed = false;
-    logf("direct: shots of the presented frame every %d presents, %ux%u, into %s", shot_every, kShotW, kShotH, shot_dir.c_str());
+    logf("direct: shots of the presented frame every %d presents, the presented shape at %u on its long side, into %s", shot_every, kShotMax, shot_dir.c_str());
     return true;
 }
 
 void shot_write(Frame& f) {   // (its fence has passed)
     if (!f.shot_present) return;
     mem_invalidate(f.shot_mem);
-    auto px = std::make_shared<std::vector<uint8_t>>((const uint8_t*)f.shot_map, (const uint8_t*)f.shot_map + (size_t)kShotW * kShotH * 4);
+    auto px = std::make_shared<std::vector<uint8_t>>((const uint8_t*)f.shot_map, (const uint8_t*)f.shot_map + (size_t)f.shot_w * f.shot_h * 4);
     char path[1200];
     std::snprintf(path, sizeof path, "%s/vk_%06lld.png", shot_dir.c_str(), (long long)f.shot_present);
     f.shot_present = 0;
-    struct Job { std::shared_ptr<std::vector<uint8_t>> px; std::string p; };
-    Job* job = new Job{px, path};
+    struct Job { std::shared_ptr<std::vector<uint8_t>> px; std::string p; uint32_t w, h; };
+    Job* job = new Job{px, path, f.shot_w, f.shot_h};
     os_thread* t = os_thread_start([](void* arg) {
         const std::unique_ptr<Job> j((Job*)arg);
         for (size_t i = 3; i < j->px->size(); i += 4) (*j->px)[i] = 255;   // (opaque, as shown)
-        if (!dump_write_png(j->p.c_str(), j->px->data(), kShotW, kShotH)) logf("direct: shots: %s not written", j->p.c_str());
+        if (!dump_write_png(j->p.c_str(), j->px->data(), j->w, j->h)) logf("direct: shots: %s not written", j->p.c_str());
     }, job, 0, "direct shot");
     if (t) os_thread_release(t);
     else delete job;
@@ -273,6 +274,9 @@ void shot_write(Frame& f) {   // (its fence has passed)
 
 // the presented image dst (TRANSFER_DST, its blit done) into the shot image and f's buffer; dst back in TRANSFER_DST
 void shot_record(Frame& f, VkImage dst) {
+    const uint32_t ew = extent.width ? extent.width : 1, eh = extent.height ? extent.height : 1;
+    f.shot_w = ew >= eh ? kShotMax : std::max(1u, (uint32_t)((uint64_t)kShotMax * ew / eh));
+    f.shot_h = ew >= eh ? std::max(1u, (uint32_t)((uint64_t)kShotMax * eh / ew)) : kShotMax;
     barrier(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     barrier(f.cmd, shot_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
@@ -280,13 +284,13 @@ void shot_record(Frame& f, VkImage dst) {
     VkImageBlit b{};
     b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     b.srcOffsets[1] = {(int)extent.width, (int)extent.height, 1};
-    b.dstOffsets[1] = {(int)kShotW, (int)kShotH, 1};
+    b.dstOffsets[1] = {(int)f.shot_w, (int)f.shot_h, 1};
     vkCmdBlitImage(f.cmd, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
     barrier(f.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     VkBufferImageCopy c{};
     c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    c.imageExtent = {kShotW, kShotH, 1};
+    c.imageExtent = {f.shot_w, f.shot_h, 1};
     vkCmdCopyImageToBuffer(f.cmd, shot_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, f.shot_buf, 1, &c);
     VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;

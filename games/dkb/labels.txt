@@ -213,3 +213,19 @@
 81b03a18 voxel_edit_erase_node            # dig check: voxel_edit_run's per-node erase (f_81ac5cc4), its result merged at 0x81b03ae0 (lr 0x81b03ae4: the merge each punch makes once)
 81af9920 voxel_edit_shape_rot             # dig check: an edit with a rotated shape (rotation matrix from a quaternion arg3) through voxel_edit_run; called by actor code 0x810a..0x8111
 81af9bf0 voxel_edit_shape                 # dig check: an edit through voxel_edit_run; wrapped by f_81af9b00, f_81af9e50, f_81af9f40, f_81afa090, f_81afa1a0 (player-side callers at 0x8141..0x8145)
+800d1358 proj_update_matrix               # games/dkb/patches/widescreen.c: sead::Projection's matrix update (projection x0): when dirty (+8), doUpdateMatrix (vtable +0x58; the ortho one inlined) into +0xc, then the device matrix +0x4c
+815ad3f8 persp_proj_do_update_matrix      # games/dkb/patches/widescreen.c: sead::PerspectiveProjection (vtable 0x823de710) doUpdateMatrix: near +0x98, far +0x9c, tan(fovy/2) +0xac, aspect +0xb0, offset +0xb4: m00 = 1/(tan*aspect), m11 = 1/tan
+815ad770 ortho_proj_do_update_matrix      # games/dkb/patches/widescreen.c: sead::OrthoProjection (vtable 0x823de790) doUpdateMatrix: top +0xa0, bottom +0xa4, left +0xa8, right +0xac
+815ad324 persp_proj_set_fovy              # games/dkb/patches/widescreen.c: (projection, fovy radians): +0xa0 fovy, sin / cos / tan of its half at +0xa4 / +0xa8 / +0xac, dirty
+815ad388 persp_proj_set                   # games/dkb/patches/widescreen.c: (projection, near, far, fovy, aspect): +0x98, +0x9c, +0xa0 (its half's sin, cos, tan), +0xb0, dirty
+806dca70 persp_proj_ctor                  # games/dkb/patches/widescreen.c: sead::PerspectiveProjection's constructor (near, far, fovy, aspect)
+804a0330 ortho_proj_ctor                  # games/dkb/patches/widescreen.c: sead::OrthoProjection's constructor: top 0.5, bottom -0.5, left -0.5, right 0.5
+8047e204 cam_update_projection            # games/dkb/patches/widescreen.c: an al camera's projection (camera x0: near +0xf8, far +0xfc, aspect +0x100, fovy degrees +0x104, projection [+0xe8]) filled and updated; after cam_set_near / cam_set_far
+8047d710 cam_set_near                     # games/dkb/patches/widescreen.c: (camera holder, near, view index): the view's camera +0xf8, then cam_update_projection
+8047d780 cam_set_far                      # games/dkb/patches/widescreen.c: (camera holder, far, view index): the view's camera +0xfc, then cam_update_projection
+804fb588 cam_update                       # games/dkb/patches/widescreen.c: a camera's update each frame; fills its projection (as cam_update_projection, inline at 0x804fb8a0) with the poser's fovy and the camera's aspect +0x100 (16:9) # ?
+8033f294 scene_cam_copy                   # games/dkb/patches/widescreen.c: the scene camera takes a camera table entry's look-at (+8) and projection (+0x10), the latter by scene_proj_copy
+8033f570 scene_proj_copy                  # games/dkb/patches/widescreen.c: (scene projection, source projection): near, far, the frustum (l r b t, aspect, fovy) from the source, its matrices updated and copied (+0xc0.., +0x140..)
+800d1000 layout_ortho_matrix              # games/dkb/patches/widescreen.c: (out, width s0, height s1): an ortho projection of +-width/2, +-height/2 (a layout's size, 1920 x 1080 for the HUD) and its matrices
+800d0ef4 layout_draw_projection           # games/dkb/patches/widescreen.c: a layout's draw projection from its size +0x50 / +0x54 (layout_ortho_matrix, or a perspective one with +0xe8 bit 8) # ?
+8109fc64 vignette_params                  # games/dkb/patches/widescreen.c: the vignette pass's "VignettingParam" buffer: a scale times 16:9 (0x81ca9e54) and the aspect 16:9 (mov / movk at 0x8109fdcc)
