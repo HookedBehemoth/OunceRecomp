@@ -628,3 +628,27 @@ fn main() -> eframe::Result {
     };
     eframe::run_native("hookshot-gui", opts, Box::new(|_| Ok(Box::new(App::new(args)))))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_build() {
+        let mut b = Build::new(None);
+        for l in ["@@stages dump host lift link romfs textures", "@@stage lift lifting", "@@plan 4 4", "@@file lift_h0 2.0 new", "@@eta 30", "build: 16 jobs"] {
+            b.read(Line::Out(l.into()));
+        }
+        assert_eq!(b.stages.len(), 6);
+        let (p, left) = b.progress();
+        assert_eq!(p, Some(0.25));
+        assert!(left.is_some_and(|s| s <= 30.0 && s > 29.0));
+        assert_eq!(b.log.back().map(String::as_str), Some("build: 16 jobs"));
+        b.read(Line::Out("@@stage textures converting".into()));
+        b.read(Line::Out("@@tex 10 100 500 1000 Tex/a b.bntx.zs".into()));
+        assert_eq!(b.progress().0, Some(0.5));
+        assert_eq!(b.current, "Tex/a b.bntx.zs");
+        b.read(Line::Out("@@error the link failed".into()));
+        assert_eq!(b.error.as_deref(), Some("the link failed"));
+    }
+}

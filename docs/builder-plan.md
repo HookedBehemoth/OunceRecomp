@@ -214,8 +214,10 @@ the romfs copy is 15.9 GB instead of 25.0 GB, and the folder about 30 GB with it
 `hookshot-gui` picks the dump and the game folder, runs `dump --check` and `probe`, then `build --dump --progress`,
 each as a child process, so a step that crashes never takes the window down. It finds `hookshot-builder` beside
 itself or in `ounce/target/release`, and the source folder above itself (`HOOKSHOT_BUILDER`, `HOOKSHOT_ROOT`).
-It is built on its own, `cargo build --profile gui -p hookshot-gui`, without LTO; the workspace's default members
-leave it out.
+It is built on its own, `cargo build --profile gui -p hookshot-gui`, without LTO (34 s cold, 7.0 MB); the
+workspace's default members leave it out. eframe has only glow, X11 and its default fonts (Wayland desktops run it
+through XWayland; the `wayland` feature adds 7 s and 1.4 MB). The file dialogs are rfd's desktop portal over a
+`dlopen`ed libdbus, with zenity as the fallback; the path fields take a typed path too.
 
 The lines it reads, one per line on standard output:
 
