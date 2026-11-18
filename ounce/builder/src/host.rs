@@ -16,10 +16,10 @@ pub struct CJob {
 
 const CPU: [&str; 2] = ["-march=x86-64-v3", "-ffp-contract=off"];
 
-/// the target flags every C compile starts with: the CPU, and HOOKSHOT_SYSROOT's --sysroot (the AppImage's glibc)
+/// the target flags every C compile starts with: the CPU, and OUNCE_SYSROOT's --sysroot (the AppImage's glibc)
 fn target() -> Vec<String> {
     let mut f: Vec<String> = CPU.iter().map(|x| x.to_string()).collect();
-    if let Some(r) = std::env::var_os("HOOKSHOT_SYSROOT").filter(|v| !v.is_empty()) {
+    if let Some(r) = std::env::var_os("OUNCE_SYSROOT").filter(|v| !v.is_empty()) {
         f.push(format!("--sysroot={}", r.to_string_lossy()));
     }
     f
@@ -30,7 +30,7 @@ fn s(p: &Path) -> String {
 }
 
 /// the runtime's and the patches' C (`sources`, Game::sources) and libopus, in the link's order; `version` is
-/// hos_main.c's HOOKSHOT_VERSION
+/// hos_main.c's OUNCE_VERSION
 pub fn host_jobs(root: &Path, rt64: &Path, sources: &[PathBuf], version: &str) -> Result<Vec<CJob>, String> {
     let rt = root.join("runtime");
     let opus = root.join("third_party/opus");
@@ -46,7 +46,7 @@ pub fn host_jobs(root: &Path, rt64: &Path, sources: &[PathBuf], version: &str) -
             let stem = src.file_stem().unwrap().to_string_lossy().into_owned();
             let mut f = fl.clone();
             if stem == "hos_main" {
-                f.push(format!("-DHOOKSHOT_VERSION=\"{version}\""));
+                f.push(format!("-DOUNCE_VERSION=\"{version}\""));
             }
             CJob { obj: format!("host_{stem}.o"), src, flags: f }
         })

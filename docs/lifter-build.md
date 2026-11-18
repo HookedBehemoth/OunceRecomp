@@ -25,9 +25,9 @@ that build. Its log is `work/sa/relift.log` (in the main checkout, `work/play/re
   [Game description files](lifter.md#game-description-files).
 - **Object cache.** Each partition's object is kept in `work/builder-cache` under a key of its IR, its recipe and
   the LLVM version; a C file's under the files its compile read. An unchanged partition is not compiled again.
-  Objects that no build used are removed after `HOOKSHOT_OBJCACHE_DAYS` days (default 3).
+  Objects that no build used are removed after `OUNCE_OBJCACHE_DAYS` days (default 3).
 - **Parallelism.** The build starts a compile only when free memory holds its estimate, so memory, not core count,
-  sets how many run at once. `HOOKSHOT_JOBS` or `-j` caps the number.
+  sets how many run at once. `OUNCE_JOBS` or `-j` caps the number.
 - **The lift's files.** The build writes `work/sa/gen/`, `work/sa/facts.tsv` and `work/sa/image/` for the tools.
   The partitions' IR (`work/sa/lift_*.ll`, which `ounce/lift/tools/diffout.py` and the dump tools read) only with
   `scripts/build.sh --gen-parts`.
@@ -49,17 +49,17 @@ It writes the guest code, the lifter's IR, the LLVM IR and, with the options, th
 |---|---|---|
 | `cargo test --manifest-path ounce/Cargo.toml` | The lifter's decoder and lift | No |
 
-In the game, the smoke test and a benchmark are the landing checks ([Test Hookshot](testing.md)).
+In the game, the smoke test and a benchmark are the landing checks ([Test OunceRecomp](testing.md)).
 
 ## Lifter switches
 
 | Switch | When | What it does |
 |---|---|---|
 | `--game games/<game>` | Lift, build, tools | The game description. Required. |
-| `scripts/build.sh -j N`, `HOOKSHOT_JOBS` | Build | Parallel compiles at most |
-| `HOOKSHOT_MEM_RESERVE_GB`, `HOOKSHOT_MEM_GATE=0` | Build | Memory the build leaves free (default 1.5); no memory gate |
+| `scripts/build.sh -j N`, `OUNCE_JOBS` | Build | Parallel compiles at most |
+| `OUNCE_MEM_RESERVE_GB`, `OUNCE_MEM_GATE=0` | Build | Memory the build leaves free (default 1.5); no memory gate |
 | `scripts/build.sh --gen-parts` | Build | The partitions' IR in `work/sa` for diffout and the dump tools |
-| `HOOKSHOT_LIFT_SUMMARY_JOBS` | Build | The summary job's workers (default 8) |
+| `OUNCE_LIFT_SUMMARY_JOBS` | Build | The summary job's workers (default 8) |
 | `LIFT2_DEFAULT_NAN=1` | Lift | ARM's default NaN for NaNs made from non-NaN operands |
-| `HOOKSHOT_LLVM_BIN` | Lift, build | Where clang and the LLVM tools are |
+| `OUNCE_LLVM_BIN` | Lift, build | Where clang and the LLVM tools are |
 | `ounce-lift --max-func N` | Lift | Split functions larger than N instructions where no branch crosses |

@@ -4,7 +4,7 @@ The pass keeps a block's new order by its own count of the values held; what dec
 register allocation. So before the pass is on (and after a change to it, to the translator or to the driver) RADV's
 compile of every stage is held against it:
 
-    late_gate.py seed --censustool <censustool> --seed <hookshot_shaders.bin> --out <dir> [--spvlate <spvlate>]
+    late_gate.py seed --censustool <censustool> --seed <ounce_shaders.bin> --out <dir> [--spvlate <spvlate>]
                       [--kinds mesh] [--margin 8] [--jobs 6] [--budget N] [--sink-peak N]
         every stage of these kinds in the game's shader seed (nx2/shader_census.py: all scenes, visited or not) translated
         offline (tools/shadercensus) and made as the game's shader object, before and after. Compile only.

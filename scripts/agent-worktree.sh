@@ -15,7 +15,7 @@
 #   scripts/agent-worktree.sh drop <name>         remove the worktree and its branch, if the branch has landed
 #
 # Build inside the worktree with scripts/build.sh (docs/development.md, "Work in an agent worktree"); run with
-# EXE=work/sa/build/hookshot from it.
+# EXE="work/sa/build/<the game's exe>" from it.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cmd=${1:?new|land|drop}; name=${2:?name}
@@ -36,7 +36,7 @@ new)
     done
     [ ! -d "$root/work/sa/build" ] || cp -a --reflink=auto "$root/work/sa/build" "$wt/work/sa/build"
     rm -f "$wt/work/sa/build/"*.lock
-    echo "worktree $wt on $branch (from $base); build there, run with EXE=$wt/work/sa/build/hookshot"
+    echo "worktree $wt on $branch (from $base); build there, run with EXE=\"$wt/work/sa/build/<the game's exe>\""
     ;;
 land)
     git -C "$wt" diff --quiet && git -C "$wt" diff --cached --quiet || { echo "$wt has uncommitted changes"; exit 1; }

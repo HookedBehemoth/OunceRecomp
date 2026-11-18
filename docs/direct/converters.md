@@ -11,7 +11,7 @@ patches make their texels linear when the game loads them (see [terrain tiles an
 
 - It reads the romfs in place (default: `work/dump/romfs`) and writes only into the folder you name. What it writes
   is made from the game: it never leaves the PC and is never committed.
-- It runs in `hookshot-builder` on every CPU and starts a file only when the memory gate has room for it.
+- It runs in `ounce-builder` on every CPU and starts a file only when the memory gate has room for it.
 - It is not incremental: each run replaces the whole output (about 4 minutes on 16 threads, 18 with `--quality high`).
 
 ## Run the converter
@@ -19,16 +19,16 @@ patches make their texels linear when the game loads them (see [terrain tiles an
 1. Prepare the textures:
 
    ```
-   hookshot-builder textures work/prepared/tex
+   ounce-builder textures work/prepared/tex
    ```
 
    `--quality high` uses slower encoder settings (four times the time; packs about 4 % smaller).
    `--only <romfs prefix>` writes a store of those files alone, for a quick check.
 
-2. Or do it in a game build: `hookshot-builder build <out> ... --dump <dump>` writes `<out>/prepared/tex`, and
+2. Or do it in a game build: `ounce-builder build <out> ... --dump <dump>` writes `<out>/prepared/tex`, and
    `--prepared <folder>` writes `<folder>/tex` from `work/dump/romfs`.
 
-To check a store against another one, run `hookshot-builder textures --compare <a> <b>`: it compares every index field
+To check a store against another one, run `ounce-builder textures --compare <a> <b>`: it compares every index field
 except where the frames lie in the packs, and every frame's bytes.
 
 ## What the game description sets

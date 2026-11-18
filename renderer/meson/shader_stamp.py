@@ -8,7 +8,7 @@ shared for the compute programs.
 Paths are hashed relative to their folder (a translator file as <folder name>/<path in it>, a back end file by its name),
 so moving the folders does not change the stamp.
 
-<toolchain> names the compiler and the flags that build the translator, which the stamp also hashes. It writes `#define HOOKSHOT_DIRECT_SHADER_STAMP` (graphics) or `HOOKSHOT_DIRECT_COMPUTE_STAMP` (compute) and a depfile naming
+<toolchain> names the compiler and the flags that build the translator, which the stamp also hashes. It writes `#define OUNCE_RENDERER_SHADER_STAMP` (graphics) or `OUNCE_RENDERER_COMPUTE_STAMP` (compute) and a depfile naming
 every file and folder the stamp read, so a new translator file makes it again.
 """
 import hashlib
@@ -20,9 +20,9 @@ DIRECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (kind -> the define, the files hashed whole besides the translator, and the stamp regions of each file)
 KINDS = {
-    "graphics": ("HOOKSHOT_DIRECT_SHADER_STAMP", ("vk_state.h", "vk_spv_late.cpp", "vk_spv_late.h"),
+    "graphics": ("OUNCE_RENDERER_SHADER_STAMP", ("vk_state.h", "vk_spv_late.cpp", "vk_spv_late.h"),
                  (("vk_shader.cpp", {"graphics", "shared"}),)),
-    "compute": ("HOOKSHOT_DIRECT_COMPUTE_STAMP", (),
+    "compute": ("OUNCE_RENDERER_COMPUTE_STAMP", (),
                 (("vk_shader.cpp", {"shared"}), ("vk_compute.cpp", {"compute"}))),
 }
 

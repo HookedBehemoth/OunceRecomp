@@ -1,4 +1,4 @@
-/* (hookshot) The guest's FP mode on the host: MXCSR follows the guest FPCR, and the FP routines the lifted code calls.
+/* (runtime) The guest's FP mode on the host: MXCSR follows the guest FPCR, and the FP routines the lifted code calls.
 
    The lifted code (docs/lifter-output.md, "FP and NEON") computes FP natively, so the host's MXCSR is the guest's FPCR on every
    thread while guest code runs: FPCR.FZ is MXCSR.DAZ|FTZ, RMode is RC, every exception stays masked. It is set where

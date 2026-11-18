@@ -35,8 +35,8 @@
    For layer 1's next stages: the header is where record-time translation (S2) keeps a recording's packets (made once
    per recording, kept as long as its bytes: the precompiled lists' per-handle translation), and NOP_CALL is the
    reference to a callee's packets; the replay's call stack is what parallel emission (S4) saves at each segment cut. */
-#ifndef HOOKSHOT_NVN_LIST_H
-#define HOOKSHOT_NVN_LIST_H
+#ifndef OUNCE_NVN_LIST_H
+#define OUNCE_NVN_LIST_H
 #include <stddef.h>
 #include <stdint.h>
 

@@ -9,7 +9,7 @@ void rx_wait_writebacks_reading(const void *p, uint64_t n);   /* renderer/api/rx
 #define WAIT_WRITEBACKS(p, n) ((void)0)
 #endif
 
-/* (hookshot) a range outside the guest window is a fatal stop: the game's own copy could not reach it either (the
+/* (runtime) a range outside the guest window is a fatal stop: the game's own copy could not reach it either (the
    lifted code's addresses are the window's), and the host's would read or write host memory */
 static void *range_of(const char *fn, uint64_t a, uint64_t n, uint64_t lr) {
     void *p = hos_guest_range(a, n);

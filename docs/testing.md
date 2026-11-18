@@ -1,4 +1,4 @@
-# Test Hookshot
+# Test OunceRecomp
 
 This page shows you how to check a change: the game-free checks that CI runs, and runs of the built game (a headless
 run with screenshots, the smoke test, a benchmark, a recorded session, and a profile). Read it before you land a
@@ -21,8 +21,8 @@ Many checks read source text: they cut a function out of a source file and compi
 reshaped function can break a check far from your change. Update the check in the same change rather than weakening
 it.
 
-Some checks need a compiler, `spirv-val`, the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS`, default
-`third_party/SPIRV-Headers`; `HOOKSHOT_VULKAN_HEADERS`), or the `zstandard` package. A check whose tool is missing is skipped and says
+Some checks need a compiler, `spirv-val`, the SPIR-V or Vulkan headers (`OUNCE_SPIRV_HEADERS`, default
+`third_party/SPIRV-Headers`; `OUNCE_VULKAN_HEADERS`), or the `zstandard` package. A check whose tool is missing is skipped and says
 so; `--strict` (as in CI) fails it instead. The skip list at the top of `tests/run_all.py` names the checks that cannot
 run in CI; `--no-skip` runs them anyway.
 

@@ -6,12 +6,12 @@ than this page lists, and the comment beside each read says what it does.
 
 ## Set a switch
 
-The game reads its switches from the environment, or from `hookshot_env.txt` beside `image.bin` (one `NAME=VALUE` a
-line, `#` for notes). `HOS_ENV_FILE=<path>` reads another file instead. `hookshot_env.txt` is a file players pass
-around, so it accepts only the game's own prefixes (`HOS_`, `RX_`, `HOOKSHOT_` and a few others) and never a switch
+The game reads its switches from the environment, or from `ounce_env.txt` beside `image.bin` (one `NAME=VALUE` a
+line, `#` for notes). `HOS_ENV_FILE=<path>` reads another file instead. `ounce_env.txt` is a file players pass
+around, so it accepts only the game's own prefixes (`HOS_`, `RX_`, `OUNCE_` and a few others) and never a switch
 that names a file to write. The test scripts pass switches after `--`.
 
-Runtime switches start with `HOS_`, renderer switches with `RX_`, build switches with `HOOKSHOT_` or `RX_`. A switch is
+Runtime switches start with `HOS_`, renderer switches with `RX_`, build switches with `OUNCE_` or `RX_`. A switch is
 off, or neutral, unless set, and costs nothing while off.
 
 To find a switch that this page does not list, search the code for its prefix:
@@ -22,7 +22,7 @@ git grep -n 'getenv("RX_' -- host renderer
 ```
 
 The build's own switches are in [Build and iterate on the lifter](lifter-build.md#lifter-switches) and in
-`hookshot-builder`'s help.
+`ounce-builder`'s help.
 
 ## Common runtime switches
 
@@ -79,7 +79,7 @@ To find every item, search `runtime/` and `renderer/` for `dbg_has`, `dbg_log` a
 
 ## Read the log
 
-Every line of `hookshot_log.txt` (or a test run's `log.txt`) starts with `[hos <seconds> p<present> <thread>]`.
+Every line of `ounce_log.txt` (or a test run's `log.txt`) starts with `[hos <seconds> p<present> <thread>]`.
 `HOS_LOG_TIME=0` leaves out the time and present. A line longer than 4 KB ends in `~`.
 
 - The first line names the build as `<version> (source <hash>)`. The hash is a fingerprint of `runtime/`, `renderer/` and
@@ -94,5 +94,5 @@ Every line of `hookshot_log.txt` (or a test run's `log.txt`) starts with `[hos <
 
 ## The options file
 
-`hookshot_options.ini` beside the game holds `<key>=<number>` lines. The host reads `output_res` (0 to 4, as
+`ounce_options.ini` beside the game holds `<key>=<number>` lines. The host reads `output_res` (0 to 4, as
 `HOS_OUTPUT_RES`), `handheld_profile` (0 or 1) and `frame_rate_cap` (an index into 60, 90, 120, 144, 165, 240).

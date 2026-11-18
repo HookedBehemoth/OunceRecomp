@@ -1,13 +1,11 @@
-/* The game folder's path, for the files the game keeps there (image.bin, romfs, saves, settings, caches, logs).
-   On Windows the game is bin\hookshot.exe since the launcher came: hookshot.exe in the folder is the launcher (the builder's
-   setup in launch mode), the game and its DLLs are in bin\, the game's files stay in the folder. hos_game_path_a answers as
-   os_exe_path does, but with the folder's path when the exe is in a "bin" folder beside image.bin, so code that strips the
-   exe's name and adds a file's finds the folder's file. Modules are still loaded from beside the exe itself. */
+/* The game folder's path, for the files the game keeps there (image.bin, romfs, saves, settings, caches, logs, the
+   title and the icon). hos_game_path_a answers as os_exe_path does, but with the folder's path when the executable is in
+   a "bin" folder beside image.bin (a packaged folder whose own entry is a launcher), so code that strips the
+   executable's name and adds a file's finds the folder's file. Modules are still loaded from beside the executable. */
 #pragma once
 #include <string.h>
 #include "os.h"
-/* (Linux) the same bin/ layout when the folder was built by the packaged builder: hookshot in the folder is the
-   launcher script, and the game is bin/hookshot. A development build has no bin/ and this is os_exe_path. */
+/* (a development build has no bin/: this is os_exe_path) */
 static inline uint32_t hos_game_path_a(char *buf, uint32_t size) {
     uint32_t n = (uint32_t)os_exe_path(buf, size);
     if (!n || n >= size) return n;

@@ -48,7 +48,7 @@ extern "C" int hk_llvm_init(const char *const *argv, int argc, char **err) {
         LLVMInitializeX86AsmPrinter();
         std::string msg;
         raw_string_ostream os(msg);
-        if (!cl::ParseCommandLineOptions(argc, argv, "hookshot-builder", &os))
+        if (!cl::ParseCommandLineOptions(argc, argv, "ounce-builder", &os))
             init_error = "the LLVM options: " + msg;
     });
     if (!init_error.empty()) {

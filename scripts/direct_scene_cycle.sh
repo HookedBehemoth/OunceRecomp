@@ -14,6 +14,7 @@
 #   RUN=timing (the GPU lock: a stop may lose the device). Summary: grep . <run>/stops.txt; <run>/cycle.txt the misses.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/game.sh"
 cd "$root"
 name=${1:?name}; shift
 maps=${MAPS:-work/scenecycle/maps.txt}
@@ -31,7 +32,7 @@ live=$root/work/scenecycle/$name.live; mkdir -p "$(dirname "$live")"; : > "$live
 log=$run_dir/log.txt
 args=(HOS_INPUT_LIVE="$live" HOS_INPUT_EXCLUSIVE=1 HOS_INPUT_SCRIPT_BACKGROUND=1 HOS_LOG_TIME=1)
 args+=(HOS_DBG=strict,strictall)
-RUN=${RUN:-timing} OVERLAY=${OVERLAY:-work/overlay/chisel_kokiri} EXE=${EXE:-work/sa/build/hookshot} SHOT_EVERY=${SHOT_EVERY:-120} \
+RUN=${RUN:-timing} OVERLAY=${OVERLAY:-work/overlay/chisel_kokiri} EXE=${EXE:-$game_exe} SHOT_EVERY=${SHOT_EVERY:-120} \
   scripts/run-vk.sh "$name" "${SECONDS_MAX:-3600}" -- "${args[@]}" "$@" &
 run=$!
 card=$(ls -d /sys/class/drm/card*/device 2>/dev/null | while read -r d; do [ -f "$d/mem_info_vram_used" ] && echo "$d" && break; done)

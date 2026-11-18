@@ -74,12 +74,12 @@ void a64_trap(Ctx *c, uint64_t pc, uint32_t insn) {
 /* Addresses the OS layer made at run time (host calls: e.g. NVN procs handed out by nvnDeviceGetProcAddress) are
    not in the lifted function table; the OS layer claims them here. Returns 1 if it ran the call. */
 A64_WEAK int a64_call_miss(Ctx *c, uint64_t target) { (void)c; (void)target; return 0; }
-/* (hookshot) every BR that is not a jump table and misses its site's cache asks this first: a longjmp's BR to a
+/* (fork) every BR that is not a jump table and misses its site's cache asks this first: a longjmp's BR to a
    setjmp return address (host/hos_setjmp.c), which is an entry as well, must unwind the host stack rather than
    call that entry (it does not return when it is one). Targets it takes are never cached at the site. */
 A64_WEAK void a64_ijump_hook(Ctx *c, uint64_t target) { (void)c; (void)target; }
 
-/* (hookshot) Code pointers are host function pointers: translated where they originate (docs/lifter.md, "Indirect
+/* (fork) Code pointers are host function pointers: translated where they originate (docs/lifter.md, "Indirect
    calls and jumps": the relocated slots, written at load from gen/a64_code_slots.c; the lifted code's ADR / ADRP+ADD of
    a function entry; what the host hands out). Guest code addresses are below 4 GB and host code is far above, so a
    target with high bits set is called as it is. A guest address still takes the lookup below. */
@@ -118,7 +118,7 @@ void a64_ijump(Ctx *c, uint64_t target) {
     f(c);
 }
 
-/* (hookshot) The lifted BLR and BR call a host pointer directly and come here only with a guest address
+/* (fork) The lifted BLR and BR call a host pointer directly and come here only with a guest address
    (a64_icall_guest / a64_ijump_guest, the site's pc passed): a code pointer whose origin was not translated, a
    setjmp return address (longjmp), a host call with user data, 0. Every call is counted and every site is reported
    once (a64_old_path_site, the host's log); host/code_ptrs.c prints the counts. When they stay zero over long play,

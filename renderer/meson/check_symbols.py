@@ -1,4 +1,4 @@
-"""Checks that hookshot_direct.so loads: the host dlopens it with RTLD_NOW, so one unresolved symbol stops the renderer
+"""Checks that ounce_renderer.so loads: the host dlopens it with RTLD_NOW, so one unresolved symbol stops the renderer
 with no symbol named. Every undefined, non-weak symbol that is not the C or C++ runtime's must be one the executable
 exports (os_* and hos_mem_ledger, its --export-dynamic-symbol patterns) and, when the executable is given, one it
 defines. A failure usually means a host function lacks __attribute__((weak)), or an extern of one of our globals sits

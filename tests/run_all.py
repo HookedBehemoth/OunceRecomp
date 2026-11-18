@@ -53,7 +53,7 @@ MODULES = {
 SKIP = {
     # (a GPU)
     # (Linux only)
-    "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows Hookshot's saves are in the game folder: --hookshot)"),
+    "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows the runtime's saves are in the game folder: --ounce)"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
 for _name in ("tests/test_draw_parameters.py", "tests/test_spirv_struct_identity.py"):
@@ -81,8 +81,8 @@ def header_dir(env, vendored, probe):
 
 def find_tools():
     return {
-        "spirv_headers": header_dir("HOOKSHOT_SPIRV_HEADERS", "SPIRV-Headers", os.path.join("spirv", "unified1", "spirv.h")),
-        "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", None, os.path.join("vulkan", "vulkan.h")),
+        "spirv_headers": header_dir("OUNCE_SPIRV_HEADERS", "SPIRV-Headers", os.path.join("spirv", "unified1", "spirv.h")),
+        "vulkan_headers": header_dir("OUNCE_VULKAN_HEADERS", None, os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
         "glslang": which("glslangValidator", "glslang"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),

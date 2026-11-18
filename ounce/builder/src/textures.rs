@@ -1,4 +1,4 @@
-//! The prepared texture store (ounce-tex) as a builder step: `hookshot-builder textures`, and `build --textures`.
+//! The prepared texture store (ounce-tex) as a builder step: `ounce-builder textures`, and `build --textures`.
 
 use crate::fail;
 use crate::gate::Gate;

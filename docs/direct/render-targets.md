@@ -23,7 +23,7 @@ swapchain, so a window resize only remakes the swapchain.
 
 | Switch | Effect |
 |---|---|
-| `HOS_OUTPUT_RES=<n>` or `output_res=<n>` in `hookshot_options.ini` | `O`: 0 the game's 2048 x 1152 frame, 1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440 |
+| `HOS_OUTPUT_RES=<n>` or `output_res=<n>` in `ounce_options.ini` | `O`: 0 the game's 2048 x 1152 frame, 1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440 |
 | `HOS_SCENE_NATIVE=1` | the scene's base scale 1.0 instead of the game's 0.8 |
 | `HOS_RES_SCALE=<s>` | the fixed 3D scale (up to 2.0) |
 | `HOS_DYNRES=1` | the game's own dynamic resolution, driven by GPU time |

@@ -1,4 +1,4 @@
-# The runtime's C files, relative to this folder, in the link's order. hookshot-builder compiles them with the game's
+# The runtime's C files, relative to this folder, in the link's order. ounce-builder compiles them with the game's
 # patch files (its game.toml's `patches`), and the lift's patch scan reads both.
 bench.c
 game_hooks.c

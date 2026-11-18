@@ -1,8 +1,8 @@
 /* The direct back end's list calls on the host's side (renderer/api/vk_list_api.h).
-   Direct mode is the only mode (rx_backend.c loads hookshot_direct.so). runtime/nvn_native.c hands every record to the back end through hsd_scratch / hsd_flush, the list's kind from
+   Direct mode is the only mode (rx_backend.c loads ounce_renderer.so). runtime/nvn_native.c hands every record to the back end through hsd_scratch / hsd_flush, the list's kind from
    hsd_classify. */
-#ifndef HOOKSHOT_HOST_DIRECT_H
-#define HOOKSHOT_HOST_DIRECT_H
+#ifndef OUNCE_HOST_DIRECT_H
+#define OUNCE_HOST_DIRECT_H
 #include <stdint.h>
 #include "hos.h"
 #include "vk_list_api.h"

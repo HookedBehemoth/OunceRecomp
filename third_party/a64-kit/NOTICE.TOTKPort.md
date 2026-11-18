@@ -4,7 +4,7 @@ Rexcomp and the AArch64 kit are by NotRexed. This repository includes:
 
 | What | Where | License |
 |---|---|---|
-| suyu's AArch64 -> C translator (`arm64_to_c.h`, unmodified), from the mk8-recomp fork of suyu (`dougchansan/suyu-v0.0.4`, branch `mk8-recomp`, commit `89c5e72412b28c788557991a86f471ea3332f62a`) | `a64-kit/lift/suyu/` (removed from Hookshot with the lifter) | GPL-2.0-or-later |
+| suyu's AArch64 -> C translator (`arm64_to_c.h`, unmodified), from the mk8-recomp fork of suyu (`dougchansan/suyu-v0.0.4`, branch `mk8-recomp`, commit `89c5e72412b28c788557991a86f471ea3332f62a`) | `a64-kit/lift/suyu/` (removed from OunceRecomp with the lifter) | GPL-2.0-or-later |
 | suyu / yuzu shader recompiler, common and video_core parts, with Rexcomp's WGSL backend and changes | `a64-kit/gpu/third_party/suyu/` | GPL-2.0-or-later and GPL-3.0-or-later per file (SPDX headers; texts next to it) |
 | Small stand-ins for boost, fmt and ankerl::unordered_dense headers | `a64-kit/gpu/compat/` | see each file |
 | wgpu-native v29.0.1.1, Windows x64 release | `third_party/wgpu-native/` | MIT or Apache-2.0 (`LICENSE.md` there) |

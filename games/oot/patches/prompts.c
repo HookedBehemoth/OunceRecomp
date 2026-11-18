@@ -1,10 +1,10 @@
-/* (hookshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf,
+/* (patch) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf,
    every icon in a text: dialogue, the control hints, menus) served from prompts/<face>/External.bfotf in the game folder,
    which tools/prompts/prompt_assets.py draws per controller face at build time, with each Switch button's icon pointed at the icon of
    the pad input bound to it (runtime/nn_hid.c's controls, the menu's Layout preset and Controls page). So the icons say which
    button to press on this pad, custom controls too.
 
-   The face: hookshot_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's name
+   The face: ounce_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's name
    (SDL), else 1 Switch, 2 Xbox, 3 PlayStation 4, 4 PlayStation 5, 5 Steam Deck. The game reads the font once, at its start:
    a new face or new controls show at the next start.
 
@@ -60,7 +60,7 @@ static int contains(const char *text, const char *word) {   /* (any case) */
 static int choose_face(const char *dir) {
     char path[OS_PATH_MAX], line[80];
     int choice = 0;
-    snprintf(path, sizeof path, "%shookshot_options.ini", dir);
+    snprintf(path, sizeof path, "%sounce_options.ini", dir);
     FILE *f = fopen(path, "r");
     if (f) {
         while (fgets(line, sizeof line, f))

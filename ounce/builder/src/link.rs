@@ -1,5 +1,5 @@
 //! The game's link: lld in this process (src/lld_shim.cpp), with the command line clang's driver gives ld.lld for
-//! `clang -fuse-ld=lld -o hookshot ...` (a PIE against glibc, libgcc's start and end files).
+//! `clang -fuse-ld=lld -o <exe> ...` (a PIE against glibc, libgcc's start and end files).
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ pub fn lld(args: &[String]) -> Result<String, String> {
     if code == 0 { Ok(text) } else { Err(text) }
 }
 
-/// Where the start files and the system's libraries are: the AppImage's sysroot (HOOKSHOT_SYSROOT: start files and
+/// Where the start files and the system's libraries are: the AppImage's sysroot (OUNCE_SYSROOT: start files and
 /// libraries in its lib/), else this system's (glibc's in /usr/lib64 or /usr/lib, libgcc's in its gcc folder)
 pub struct Sysroot {
     /// Scrt1.o, crti.o, crtn.o
@@ -35,7 +35,7 @@ pub struct Sysroot {
 
 impl Sysroot {
     pub fn find() -> Result<Sysroot, String> {
-        if let Some(r) = std::env::var_os("HOOKSHOT_SYSROOT").filter(|v| !v.is_empty()) {
+        if let Some(r) = std::env::var_os("OUNCE_SYSROOT").filter(|v| !v.is_empty()) {
             let lib = PathBuf::from(r).join("lib");
             return Ok(Sysroot { crt: lib.clone(), gcc: lib.clone(), lib: vec![lib] });
         }
@@ -43,7 +43,7 @@ impl Sysroot {
             .iter()
             .map(PathBuf::from)
             .find(|d| d.join("Scrt1.o").exists())
-            .ok_or("no Scrt1.o (glibc's start file) in /usr/lib64, /usr/lib/x86_64-linux-gnu or /usr/lib: set HOOKSHOT_SYSROOT")?;
+            .ok_or("no Scrt1.o (glibc's start file) in /usr/lib64, /usr/lib/x86_64-linux-gnu or /usr/lib: set OUNCE_SYSROOT")?;
         // (the newest gcc's folder: /usr/lib{,64}/gcc/x86_64-*/<version>/crtbeginS.o)
         let mut gccs: Vec<(Vec<u32>, PathBuf)> = Vec::new();
         for base in ["/usr/lib/gcc", "/usr/lib64/gcc"] {
@@ -60,7 +60,7 @@ impl Sysroot {
             }
         }
         gccs.sort();
-        let gcc = gccs.pop().ok_or("no gcc folder with crtbeginS.o (libgcc's start file): set HOOKSHOT_SYSROOT")?.1;
+        let gcc = gccs.pop().ok_or("no gcc folder with crtbeginS.o (libgcc's start file): set OUNCE_SYSROOT")?.1;
         let mut lib = vec![gcc.clone(), crt.clone()];
         for d in ["/lib64", "/usr/lib64", "/lib", "/usr/lib"] {
             let d = PathBuf::from(d);
@@ -115,7 +115,7 @@ pub fn exe_args(x: &Exe, s: &Sysroot) -> Vec<String> {
     if let Some(m) = x.map {
         a.push(format!("-Map={}", p(m)));
     }
-    // (--export-dynamic-symbol: what hookshot_direct.so calls in the executable: os.h's and os_guest.h's os_*, and
+    // (--export-dynamic-symbol: what ounce_renderer.so calls in the executable: os.h's and os_guest.h's os_*, and
     // hos_mem_ledger)
     a.push("--gc-sections".into());
     a.push("--export-dynamic-symbol=os_*".into());

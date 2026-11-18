@@ -6,12 +6,12 @@
 // address pushed), not ring descriptors; a texture whose handle is a game buffer's word reads it there through the buffer's
 // pushed address, as a driver bank's; textures and samplers are the registration-time entries.
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
-// - hookshot_direct_programs.bin: translated variants by code pair. Stamped by the translation's code only
-//   (HOOKSHOT_DIRECT_SHADER_STAMP, renderer/meson/shader_stamp.py: the translator, the compiler and flags that build it,
+// - ounce_renderer_programs.bin: translated variants by code pair. Stamped by the translation's code only
+//   (OUNCE_RENDERER_SHADER_STAMP, renderer/meson/shader_stamp.py: the translator, the compiler and flags that build it,
 //   and the regions marked "stamp graphics" and "stamp shared" here, direct_spv_late.*, vk_state.h), the record format
 //   (kDiskFormat), the device's answers and the switches that change the translation; a file of another stamp is made
 //   again. Edits outside the marked regions keep it.
-// - hookshot_direct_shader_objects.bin: driver binaries by create info, under the driver's binary UUID and version (sobin).
+// - ounce_renderer_shader_objects.bin: driver binaries by create info, under the driver's binary UUID and version (sobin).
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -60,8 +60,8 @@
 #include "vk_shader_parts.h"
 #include "vk_work.h"
 
-#ifndef HOOKSHOT_DIRECT_SHADER_STAMP
-#define HOOKSHOT_DIRECT_SHADER_STAMP 0ull
+#ifndef OUNCE_RENDERER_SHADER_STAMP
+#define OUNCE_RENDERER_SHADER_STAMP 0ull
 #endif
 
 namespace hsd {
@@ -691,12 +691,12 @@ uint64_t device_stamp() {
     return h;
 }
 
-/// The program cache's stamp: the translation's code (HOOKSHOT_DIRECT_SHADER_STAMP), the record format (kDiskFormat), the
+/// The program cache's stamp: the translation's code (OUNCE_RENDERER_SHADER_STAMP), the record format (kDiskFormat), the
 /// device, and the switches that change the graphics translation
 uint64_t disk_stamp() {
     uint64_t h = device_stamp();
     const auto add = [&h](const void* d, size_t n) { h = hash_bytes(d, n, h); };
-    const uint64_t translator[2] = {HOOKSHOT_DIRECT_SHADER_STAMP, kDiskFormat};
+    const uint64_t translator[2] = {OUNCE_RENDERER_SHADER_STAMP, kDiskFormat};
     add(translator, sizeof translator);
     const uint32_t depth = host->depth_minus_w() != 0;
     add(&depth, sizeof depth);
@@ -715,11 +715,11 @@ std::string exe_dir() {
 void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
-        const std::string path = exe_dir() + "hookshot_direct_programs.bin";
+        const std::string path = exe_dir() + "ounce_renderer_programs.bin";
         os_file* lock = os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr);   // (held for the process's life)
         if (!lock || !os_file_trylock(lock)) {
             os_file_close(lock);
-            logf("direct: program cache %s: another Hookshot is using it: this one runs without it", path.c_str());
+            logf("direct: program cache %s: another game is using it: this one runs without it", path.c_str());
             return;
         }
         const uint64_t stamp = disk_stamp();
@@ -888,14 +888,14 @@ VkDescriptorSetAndBindingMappingEXT null_map(uint32_t b, uint32_t stride) {
     return m;
 }
 
-// ---- the shader objects' binaries, graphics and compute: hookshot_direct_shader_objects.bin ----
+// ---- the shader objects' binaries, graphics and compute: ounce_renderer_shader_objects.bin ----
 // A vkCreateShadersEXT from SPIR-V is paid once per driver: each object made from SPIR-V has its binary
 // (vkGetShaderBinaryDataEXT) appended, keyed by a hash of everything its create info carries (stage, next stage, flags, the
 // subgroup size, the SPIR-V, the heap mappings); a later make with the same key creates it from the binary. No build stamp
 // is in it: a translation that changed comes out as other SPIR-V, another key. VK_EXT_shader_object ties a binary to shaderBinaryUUID and
 // shaderBinaryVersion: the file's header holds them, and a file of another driver is made again. A binary the driver still
 // refuses (VK_INCOMPATIBLE_SHADER_BINARY_EXT) is a cache miss: the SPIR-V is compiled, counted. The file is locked as the
-// program cache is (another Hookshot: none). Records: {key, size} then the bytes.
+// program cache is (another game: none). Records: {key, size} then the bytes.
 namespace sobin {
 constexpr uint32_t kMagic = 0x4f445348;   // "HSDO"
 constexpr uint32_t kVersion = 1;
@@ -925,12 +925,12 @@ Header want() {
 void init() {
     std::call_once(once, [] {
         get_binary = (PFN_vkGetShaderBinaryDataEXT)vkGetDeviceProcAddr(dev.device, "vkGetShaderBinaryDataEXT");
-        const std::string path = exe_dir() + "hookshot_direct_shader_objects.bin";
+        const std::string path = exe_dir() + "ounce_renderer_shader_objects.bin";
         os_file* lock = get_binary ? os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr) : nullptr;
         if (!lock || !os_file_trylock(lock)) {   // (the lock is held for the process's life)
             os_file_close(lock);
             logf("direct: shader object binaries %s: %s: none kept or saved", path.c_str(),
-                 get_binary ? "another Hookshot is using it" : "no vkGetShaderBinaryDataEXT");
+                 get_binary ? "another game is using it" : "no vkGetShaderBinaryDataEXT");
             return;
         }
         const Header h = want();

@@ -1,4 +1,4 @@
-# hookshot_direct.so: the direct back end's sources in this folder, linked with the translator (third_party/eden,
+# ounce_renderer.so: the direct back end's sources in this folder, linked with the translator (third_party/eden,
 # third_party/sirit) and zstd's decoder. api/ holds what the runtime and the back end share.
 
 # (the generated headers' folder: include_directories('.') puts the build folder before the source folder, so
@@ -60,20 +60,20 @@ foreach kind, src : {'graphics': 'vk_shader.cpp', 'compute': 'vk_compute.cpp'}
     implicit_include_directories: false, pic: true, build_by_default: false)
 endforeach
 
-direct_so = shared_module('hookshot_direct', direct_sources, spv_headers,
+direct_so = shared_module('ounce_renderer', direct_sources, spv_headers,
   cpp_args: direct_args, include_directories: direct_incs, dependencies: direct_deps,
   implicit_include_directories: false,
   link_whole: [eden_lib, sirit_lib, zstd_lib] + stamped,
   name_prefix: '',
-  link_args: target_args + ['-fuse-ld=lld', '-Wl,-Map=' + meson.current_build_dir() / 'hookshot_direct.so.map',
+  link_args: target_args + ['-fuse-ld=lld', '-Wl,-Map=' + meson.current_build_dir() / 'ounce_renderer.so.map',
                             '-Wl,-Bsymbolic', '-Wl,--gc-sections', '-static-libstdc++', '-static-libgcc',
                             '-ldl', '-lpthread', '-lm'])
 
 # (the host dlopens it with RTLD_NOW: an unresolved symbol is a failed build here, not a black window)
 exe = get_option('exe') == '' ? '' : root / get_option('exe')
-custom_target('hookshot_direct.so.symbols',
+custom_target('ounce_renderer.so.symbols',
   input: direct_so,
-  output: 'hookshot_direct.so.symbols',
+  output: 'ounce_renderer.so.symbols',
   command: [python, '-I', files('meson/check_symbols.py'), nm, '@INPUT@', '@OUTPUT@', exe],
   depend_files: exe == '' ? [] : [exe],
   build_by_default: true)

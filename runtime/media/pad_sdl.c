@@ -8,7 +8,7 @@
    changes. HOS_NO_SDL=1 leaves SDL out. The inputs go by position (HOS_PAD_*, SDL's own order: the bottom face button
    first, cross on a DualSense, A on an Xbox pad); nn_hid.c's controls make them the Switch's buttons.
 
-   (hookshot) Motion: with the Insert menu's Motion controls on (the default), the open pad with a gyroscope and an
+   (runtime) Motion: with the Insert menu's Motion controls on (the default), the open pad with a gyroscope and an
    accelerometer (Switch Pro and pads in Switch mode, DualSense, DualShock 4, others) that was used last has them read
    each poll and turned into the six-axis state OoT aims with (runtime/media/hos_motion.h), which nn_hid.c's
    GetSixAxisSensorStates gives the game; Motion sensitivity X/Y and Invert motion X/Y apply there. Off, or with no such pad, the game sees the pad
@@ -45,7 +45,7 @@ static struct {
     int motion, motion_on;
     int64_t motion_retry_ns, used_ns;
     uint64_t input_sig;
-    unsigned rested;   /* (hookshot) the sticks' axes seen at rest since it was opened, a bit each: only those steer */
+    unsigned rested;   /* (runtime) the sticks' axes seen at rest since it was opened, a bit each: only those steer */
     signed char held[4];   /* (the way each axis was last held, -1, 0 or 1: one held the other way has passed its rest) */
     uint32_t serial;
     float bias[3], bias_t;
@@ -355,7 +355,7 @@ static void pads_poll(void) {
                             stick_value(hos_sdl_pad_axis(gc, AX_LY), 1, z),
                             stick_value(hos_sdl_pad_axis(gc, AX_RX), inv_x, z),
                             stick_value(hos_sdl_pad_axis(gc, AX_RY), inv_y ? 0 : 1, z)};
-            /* (hookshot) An axis steers once it has been seen at rest (inside the dead zone) since the pad was opened. The sticks are
+            /* (runtime) An axis steers once it has been seen at rest (inside the dead zone) since the pad was opened. The sticks are
                the strongest of all the pads', so a device whose axis reads held for good (a mapping that puts a trigger or an
                unused axis on a stick, a second virtual pad) turned the camera or walked Link in circles on its own, with the
                player's pad at rest (#1673: Xbox 360 pad, CachyOS; #1661: GameSir 2 Lite, wired). A real stick rests at the start. */

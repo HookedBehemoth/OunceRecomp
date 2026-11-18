@@ -6,7 +6,7 @@
 #   OVERLAY=work/overlay/<dir>   patched game files read first (HOS_FS_OVERLAY: the chiseled boot)
 #   ZOO=<scene>                  the actor-zoo scene games/oot/zoo/<scene>.toml as the overlay (made on demand: scripts/zoo-overlay.sh)
 #   USER_FROM=<folder>           copied into the run's own user folder first (a save to start from)
-#   EXE=<path>                   another build (default work/sa/build/hookshot; its caches are beside it)
+#   EXE=<path>                   another build (default work/sa/build/<the game's exe>; its caches are beside it)
 #   ROMFS=<dir>                  another romfs (default the dump's, work/dump.txt; a game folder's: <folder>/romfs)
 #   WINDOW=1 SOUND=1 SHOT_EVERY=300
 #   RUN=timing|check             the script takes the GPU lock itself; do not wrap it in flock then:
@@ -15,12 +15,13 @@
 #     check   shared (flock -s work/run.lock) plus one of RUN_SLOTS (default 1) slots: counters, screenshots,
 #             censuses. Runs on a private reflink copy of the build's folder, so the caches beside the executable
 #             are not raced (cache updates made by the run are not kept)
-#   (RUN unset: as before; the caller holds `flock work/run.lock`, and no other hookshot may run)
+#   (RUN unset: as before; the caller holds `flock work/run.lock`, and no other game may run)
 set -euo pipefail
 # (the whole script is read before any of it runs, so editing this file while runs use it cannot break them: bash
 # reads a script as it goes, and an edit made under a running copy shifted it into a syntax error, orphaning its game)
 {
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/game.sh"
 name=${1:?name}; seconds=${2:-90}; shift $(( $# >= 2 ? 2 : 1 )) || true
 [ "${1:-}" = "--" ] && shift
 mode=${RUN:-}
@@ -60,7 +61,7 @@ done
 out=$root/work/runs/$name
 rm -rf "$out"; mkdir -p "$out/shots" "$out/user"
 [ -n "${USER_FROM:-}" ] && cp -r "$USER_FROM"/. "$out/user/"
-if [ "$mode" != check ] && pgrep -x hookshot >/dev/null; then echo "another hookshot runs"; exit 1; fi
+if [ "$mode" != check ] && game_running; then echo "another game runs"; exit 1; fi
 romfs=${ROMFS:-$(grep -v '^#' "$root/work/dump.txt" | head -1)/romfs}
 env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}")
 [ "${WINDOW:-0}" = 1 ] || env_args+=(HOS_HEADLESS=1)
@@ -69,8 +70,8 @@ env_args=(RX_VK_SHOTS="$out/shots" RX_VK_SHOT_EVERY="${SHOT_EVERY:-300}")
 [ -n "${OVERLAY:-}" ] && env_args+=(HOS_FS_OVERLAY="$(cd "$OVERLAY" && pwd)")
 # (an actor-zoo overlay's live.txt: host commands the scene needs, e.g. its time of day)
 [ -n "${OVERLAY:-}" ] && [ -f "$OVERLAY/live.txt" ] && env_args+=(HOS_INPUT_LIVE="$(cd "$OVERLAY" && pwd)/live.txt")
-exe=$(realpath "${EXE:-$root/work/sa/build/hookshot}")
-# (the image beside the executable, as a game folder has it; work/sa/image/ for a build.py build)
+exe=$(realpath "${EXE:-$game_exe}")
+# (the image beside the executable, as a game folder has it; else work/sa/image/)
 img=$(dirname "$exe")/image.bin; [ -f "$img" ] || img=$root/work/sa/image/image.bin
 if [ "$mode" = check ]; then   # (a private copy of the build's files: the executable, the renderer, the caches)
   mkdir -p "$out/bin"
@@ -98,13 +99,13 @@ for ((t = 0; t < seconds; t++)); do
 done
 if kill -0 $pid 2>/dev/null; then kill $pid; sleep 2; kill -9 $pid 2>/dev/null || true
     wait $pid 2>/dev/null || true
-    # (gone before the next run; with RUN=check other runs' hookshots are not waited for)
+    # (gone before the next run; with RUN=check other runs' games are not waited for)
     if [ "$mode" = check ]; then while kill -0 $pid 2>/dev/null; do sleep 0.5; done
-    else while pgrep -x hookshot >/dev/null; do sleep 0.5; done; fi
+    else while game_running; do sleep 0.5; done; fi
     how="stopped after $seconds s"
 else wait $pid && how="exited with 0" || how="exited with $?"; fi
 if [ "$mode" = check ]; then
-  [ -f "$out/bin/hookshot_frames.csv" ] && cp "$out/bin/hookshot_frames.csv" "$out/frames_trace.csv"
+  [ -f "$out/bin/ounce_frames.csv" ] && cp "$out/bin/ounce_frames.csv" "$out/frames_trace.csv"
   rm -rf "$out/bin"
 fi
 echo "run '$name': $(( $(date +%s) - t0 )) s, $how, peak RSS $peak MB${mode:+ (RUN=$mode)}"

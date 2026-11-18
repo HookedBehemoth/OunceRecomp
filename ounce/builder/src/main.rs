@@ -1,4 +1,4 @@
-//! hookshot-builder: a player's dump -> a portable game folder (docs/builder-plan.md).
+//! ounce-builder: a player's dump -> a portable game folder (docs/builder-plan.md).
 
 #[cfg(feature = "clang")]
 mod clang;
@@ -28,12 +28,12 @@ use std::time::Instant;
 #[cfg(feature = "clang")]
 const LLVM_MAJOR: u32 = 23;
 
-const HELP: &str = "hookshot-builder <command> ...
+const HELP: &str = "ounce-builder <command> ...
   compile-ll <in.ll> <out.o> [--hot]   one partition's IR -> its object
   compile-all <lift dir> <out dir> [-j N] [--check <obj dir>]
   lift-compile <out dir> [-j N] [--check <obj dir>] [--cache <dir>] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>]
                                        the lift and the compile of every partition and generated module, in memory
-  build <out dir> --direct <hookshot_direct.so> [-j N] [--cache <dir>] [--version <text>] [--check <obj dir>]
+  build <out dir> --direct <ounce_renderer.so> [-j N] [--cache <dir>] [--version <text>] [--check <obj dir>]
         [--gen <lift dir> [--gen-parts]] [--progress] [--game <dir>] [--work <dir>] [--root <dir>] [--exefs <dir>] [--obj <dir>]
         [--dump <file.nup|folder> [--title <t>] [--dump-dir <dir>] [--no-textures]] [--quality fast|high]
         [--prepared <dir> [--romfs <dir>]]
@@ -66,7 +66,7 @@ pub fn fail(msg: impl std::fmt::Display) -> ! {
     if progress_on() {
         println!("@@error {}", msg.to_string().replace('\n', "; "));
     }
-    eprintln!("hookshot-builder: {msg}");
+    eprintln!("ounce-builder: {msg}");
     std::process::exit(1)
 }
 
@@ -299,11 +299,11 @@ fn lift_compile(args: &[String]) {
 #[cfg(feature = "clang")]
 const RESOURCE_DIR: &str = env!("HK_CLANG_RESOURCE_DIR");
 
-/// `build <out dir> --direct <so> ...`: the game folder (hookshot, hookshot_direct.so, image.bin) from the dump,
+/// `build <out dir> --direct <so> ...`: the game folder (builder, ounce_renderer.so, image.bin) from the dump,
 /// and its checks
 #[cfg(feature = "clang")]
 /// Puts `from` (moved, or copied beside `to` first) at `to` as a new file: synced, then renamed over the old one. A game
-/// running from the folder maps hookshot_direct.so and the executable; a copy over them in place (truncate + write)
+/// running from the folder maps ounce_renderer.so and the executable; a copy over them in place (truncate + write)
 /// changed its code under it and crashed it. The rename leaves it the old files.
 fn install(from: &std::path::Path, to: &std::path::Path, moved: bool) -> Result<(), String> {
     let err = |p: &std::path::Path, e: std::io::Error| format!("{}: {e}", p.display());
@@ -363,7 +363,7 @@ fn build(args: &[String]) {
             hook(info)
         }));
     }
-    let (Some(out), Some(direct)) = (out, direct) else { fail("build <out dir> --direct <hookshot_direct.so> [...]") };
+    let (Some(out), Some(direct)) = (out, direct) else { fail("build <out dir> --direct <ounce_renderer.so> [...]") };
     let major = llvm::version().split('.').next().and_then(|m| m.parse::<u32>().ok());
     if major != Some(LLVM_MAJOR) {
         fail(format!("this process runs LLVM {}, but the lifter's IR is written for LLVM {LLVM_MAJOR}", llvm::version()));
@@ -415,7 +415,7 @@ fn build(args: &[String]) {
         }
     }
     let aux = lift::Aux { gen: gen.as_deref(), gen_parts, gate: &gate, progress: Some(&prog) };
-    println!("build: {version}; {cjobs} jobs, the memory gate {}", if std::env::var("HOOKSHOT_MEM_GATE").is_ok_and(|v| v == "0") { "off" } else { "on" });
+    println!("build: {version}; {cjobs} jobs, the memory gate {}", if std::env::var("OUNCE_MEM_GATE").is_ok_and(|v| v == "0") { "off" } else { "on" });
     compile::init().unwrap_or_else(|e| fail(e));
     let game = ounce_lift::game::Game::load(&run.opts.game).unwrap_or_else(|e| fail(e));
     // (the host's C at LLVM's defaults, then the runtime at its two -mllvm options, then the lift and its compile)
@@ -456,8 +456,8 @@ fn build(args: &[String]) {
     objects.push(obj.join(&rt.obj));
     objects.extend(host_jobs.iter().map(|j| obj.join(&j.obj)));
     // (linked and labelled beside, then renamed over the old one: see install)
-    let exe = out.join("hookshot.new");
-    let map = inter.join("hookshot.map");
+    let exe = out.join(format!("{}.new", game.exe));
+    let map = inter.join(format!("{}.map", game.exe));
     let game_dir = if run.opts.game.is_dir() { run.opts.game.clone() } else { run.opts.game.parent().unwrap().to_path_buf() };
     let order_bin = game_dir.join("hot_order.bin");
     let order = order_bin.exists().then(|| link::order_file(&order_bin, &inter).unwrap_or_else(|e| fail(e)));
@@ -471,15 +471,15 @@ fn build(args: &[String]) {
     }
     let l = labels::read(&game.labels).unwrap_or_else(|e| fail(e));
     let (n, _) = labels::apply(&exe, &l).unwrap_or_else(|e| fail(e));
-    println!("linked {} ({} MB, {n} functions named) in {:.1} s", out.join("hookshot").display(), std::fs::metadata(&exe).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
+    println!("linked {} ({} MB, {n} functions named) in {:.1} s", out.join(&game.exe).display(), std::fs::metadata(&exe).map_or(0, |m| m.len() >> 20), t.elapsed().as_secs_f64());
     checks::backend_symbols(&direct, &exe).unwrap_or_else(|e| fail(e));
     // (the folder the game runs from: the image beside the executable, where hos_main.c looks without an argument)
-    for (from, to) in [(direct.clone(), out.join("hookshot_direct.so")), (obj.join("image.bin"), out.join("image.bin"))] {
+    for (from, to) in [(direct.clone(), out.join("ounce_renderer.so")), (obj.join("image.bin"), out.join("image.bin"))] {
         if from != to {
             install(&from, &to, false).unwrap_or_else(|e| fail(e));
         }
     }
-    install(&exe, &out.join("hookshot"), true).unwrap_or_else(|e| fail(e));
+    install(&exe, &out.join(&game.exe), true).unwrap_or_else(|e| fail(e));
     // (the window's title and icon, which the runtime reads beside the executable)
     std::fs::write(out.join("title.txt"), format!("{}\n", game.title)).unwrap_or_else(|e| fail(format!("title.txt: {e}")));
     if let Some(icon) = &game.icon {
@@ -510,7 +510,7 @@ fn build(args: &[String]) {
         let user = out.join("user");
         std::fs::create_dir_all(&user).unwrap_or_else(|e| fail(format!("{}: {e}", user.display())));
     }
-    let days: f64 = std::env::var("HOOKSHOT_OBJCACHE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
+    let days: f64 = std::env::var("OUNCE_OBJCACHE_DAYS").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
     let (pn, pf, pk) = cache.prune(days);
     let (cpu, hwm) = ounce_lift::pipeline::usage();
     println!(

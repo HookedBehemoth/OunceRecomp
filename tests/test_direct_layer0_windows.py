@@ -30,7 +30,7 @@ class DirectLayer0WindowTests(unittest.TestCase):
         compiler = shutil.which("g++") or shutil.which("clang++")
         if not compiler:
             self.skipTest("no C++ compiler")
-        with tempfile.TemporaryDirectory(prefix="hookshot-direct-layer0-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="ounce-direct-layer0-") as tmp:
             binary = Path(tmp) / "direct_layer0_windows_test"
             build = subprocess.run(
                 [compiler, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-pthread", "-I", str(ROOT / "renderer"),

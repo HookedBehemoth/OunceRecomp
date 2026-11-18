@@ -954,27 +954,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
-name = "hookshot-builder"
-version = "0.1.0"
-dependencies = [
- "cc",
- "libc",
- "lz4_flex",
- "ounce-dump",
- "ounce-lift",
- "ounce-tex",
- "sha1",
-]
-
-[[package]]
-name = "hookshot-gui"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "rfd",
-]
-
-[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1626,6 +1605,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ounce-builder"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+ "lz4_flex",
+ "ounce-dump",
+ "ounce-lift",
+ "ounce-tex",
+ "sha1",
+]
+
+[[package]]
 name = "ounce-decode"
 version = "0.1.0"
 
@@ -1636,6 +1628,14 @@ dependencies = [
  "cc",
  "libc",
  "sha2",
+]
+
+[[package]]
+name = "ounce-gui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "rfd",
 ]
 
 [[package]]

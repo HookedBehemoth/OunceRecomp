@@ -1,8 +1,8 @@
 /* The guest window: the game's address space reserved at a fixed host address, its pages made on first touch, and
    ranges of it handed to the GPU without a copy. Implemented by os_guest_linux.c (a memfd's shared mapping, exported as
    dma-bufs through udmabuf; anonymous memory when the GPU cannot take those). */
-#ifndef HOOKSHOT_OS_GUEST_H
-#define HOOKSHOT_OS_GUEST_H
+#ifndef OUNCE_OS_GUEST_H
+#define OUNCE_OS_GUEST_H
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

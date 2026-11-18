@@ -20,7 +20,7 @@ Everything these tools read or write comes from your dump and stays in `work/`.
   patches sequence graphs for test boots ([tools/dump](../tools/dump/README.md)).
 
 A call site, a return address or a patch site lies inside a function. To find which, look the address up in
-`work/sa/build/hookshot.map`.
+`work/sa/build/Ocarina of Time.map`.
 
 ## Label a function
 

@@ -1,4 +1,4 @@
-//! `hookshot-builder probe`: whether this PC's GPU runs the direct back end. Loads libvulkan, picks the device the
+//! `ounce-builder probe`: whether this PC's GPU runs the direct back end. Loads libvulkan, picks the device the
 //! back end picks (renderer/vk_main.cpp: the first discrete GPU of Vulkan 1.3, else the first of 1.3) and checks
 //! what it needs. An item fails only when the back end refuses to start without it, or starts and draws nothing;
 //! what it starts without and works around is a warning. One line per item, for a front end:
@@ -148,7 +148,7 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
             out.push(item("vulkan", false, "the loader has no vkCreateInstance"));
             return;
         };
-        let app = AppInfo { s_type: ST_APP_INFO, next: null(), app: c"hookshot-probe".as_ptr(), app_version: 0, engine: null(), engine_version: 0, api: API_1_4 };
+        let app = AppInfo { s_type: ST_APP_INFO, next: null(), app: c"ounce-probe".as_ptr(), app_version: 0, engine: null(), engine_version: 0, api: API_1_4 };
         let ci = InstanceCi { s_type: ST_INSTANCE_CI, next: null(), flags: 0, app: &app, layers: 0, layer_names: null(), exts: 0, ext_names: null() };
         let r = create(&ci, null(), &mut vk.instance);
         if r != 0 {

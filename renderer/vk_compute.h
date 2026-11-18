@@ -8,7 +8,7 @@
 // arena, the push data, vkCmdDispatch or vkCmdDispatchIndirect on the arguments in layer 0 (the grid reaches the program as
 // NumWorkgroups: the translator folds c0's grid words into it, so the GPU reads an indirect dispatch's counts). Programs are
 // translated by the forked translator with the step-B interface on the shared shader workers (vk_work.h; a missing variant skips the
-// dispatch, counted), kept in hookshot_direct_compute.bin, and their kept variants made when the game sets the program.
+// dispatch, counted), kept in ounce_renderer_compute.bin, and their kept variants made when the game sets the program.
 // Copies between buffers and buffer clears are recorded where they are, outside a rendering.
 #pragma once
 

@@ -14,11 +14,11 @@
    hands out (image, system region, heap, address regions: hos_commit) needs nothing more than to be the guest's. */
 void hos_commit(uint64_t addr, uint64_t size) {
     if (!size) return;
-    if (!hos_guest_range(addr, size))   /* (hookshot: guest pages only) */
+    if (!hos_guest_range(addr, size))   /* (runtime: guest pages only) */
         hos_log("mem: commit of %#llx bytes at %#llx: outside the guest window", (unsigned long long)size, (unsigned long long)addr);
 }
 
-/* A crash nothing handles: what, where (hookshot+offset: tools/re/samap.py names the lifted function), and the guest
+/* A crash nothing handles: what, where (<exe>+offset: tools/re/samap.py names the lifted function), and the guest
    state of the thread, as of its last call out of lifted code, with its frame chain from x29. */
 static uint64_t peek_guest(uint64_t a) {
     if (a >= HOS_GUEST_SPACE - 8 || !hos_guest_range(a, 8)) return 0;
@@ -35,7 +35,7 @@ static int report_crash(const os_fault *f) {
     hos_log("CRASH: %s (%s %#llx, guest %#llx) at %s+%#llx", kinds[f->kind >= 1 && f->kind <= 4 ? f->kind : 0],
             f->write ? "write" : "read", (unsigned long long)addr, (unsigned long long)(addr - (uint64_t)A64_MEM),
             base ? base + 1 : name, (unsigned long long)(f->pc - mod));
-    {   /* (hookshot) the host stack as module+offset, from glibc (the frames above the signal's included) */
+    {   /* (runtime) the host stack as module+offset, from glibc (the frames above the signal's included) */
         void *pcs[24];
         const int got = backtrace(pcs, 24);
         char hb[1024];
@@ -126,7 +126,7 @@ void hos_commit_init(void) {
 /* ---- stand-ins --------------------------------------------------------------------------------------------- */
 void hos_mem_checkpoint(const char *what) { (void)what; }        /* (hos_prof.c: HOS_MEM_TIMELINE) */
 uint64_t hos_frame_step_buttons(uint64_t buttons) { return buttons; }   /* (nn_vi.c) */
-/* (hookshot) hos_sdl_pads, hos_sdl_rumble: runtime/media/pad_sdl.c (from TOTKPort) */
+/* (runtime) hos_sdl_pads, hos_sdl_rumble: runtime/media/pad_sdl.c (from TOTKPort) */
 
 /* TOTK's emulated GPU (gpu.c, its Maxwell command processor), which nvdrv.c and the debug commands call into: MKW
    has none (its NVN2 calls go to nvn_native.c), so a submission is only counted. */

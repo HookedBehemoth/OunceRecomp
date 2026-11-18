@@ -1,9 +1,9 @@
 # Development guide
 
-This page gets you from a dump of the game to a running build, and shows the loop you use while changing Hookshot:
+This page gets you from a dump of the game to a running build, and shows the loop you use while changing OunceRecomp:
 what to rebuild after a change, how to run it, and where things live. Read it before your first build.
 
-Hookshot lifts the game's AArch64 code to native x86-64 code, implements the console's operating system (Horizon) and
+OunceRecomp lifts the game's AArch64 code to native x86-64 code, implements the console's operating system (Horizon) and
 graphics API (NVN2) in `runtime/`, and replays the game's GPU work on Vulkan with the direct back end in `renderer`. It
 runs on Linux only, and the renderer is developed on Mesa RADV.
 
@@ -14,7 +14,7 @@ No game files are in this repository. The build reads your dump where it lies, a
 
 1. Install the tools from your distribution: clang and lld from LLVM 23 (the lifter refuses another major version),
    Rust, Meson, Ninja, `glslangValidator`, the Vulkan headers, FFmpeg with dav1d, SDL2 or SDL3, and ISPC for the
-   texture encoder (`HOOKSHOT_ISPC`, else `work/deps/ispc/*/bin/ispc`, else the `PATH`). The SPIR-V headers, VMA and
+   texture encoder (`OUNCE_ISPC`, else `work/deps/ispc/*/bin/ispc`, else the `PATH`). The SPIR-V headers, VMA and
    bc7enc_rdo are in `third_party/`.
 2. Create a Python environment for the development and RE tools:
 
@@ -27,8 +27,8 @@ No game files are in this repository. The build reads your dump where it lies, a
 3. Extract your dump and record where it is:
 
    ```sh
-   cargo build --release -p hookshot-builder --manifest-path ounce/Cargo.toml
-   ounce/target/release/hookshot-builder dump <your-game.nup> --extract work/dump
+   cargo build --release -p ounce-builder --manifest-path ounce/Cargo.toml
+   ounce/target/release/ounce-builder dump <your-game.nup> --extract work/dump
    python -I tools/re/dump.py --dump work/dump --set
    ```
 
@@ -48,16 +48,16 @@ scripts/build.sh
 ```
 
 It builds the renderer with Meson (`work/sa/meson`), the builder with cargo (`ounce/target`), then runs
-`hookshot-builder build`: the lift, the host's C, every compile and the link, in one process. The game folder is
-`work/sa/build`: `hookshot`, `hookshot_direct.so`, `image.bin` and the shader caches beside them. A rebuild with
+`ounce-builder build`: the lift, the host's C, every compile and the link, in one process. The game folder is
+`work/sa/build`: the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so`, `image.bin` and the shader caches beside them. A rebuild with
 nothing changed takes about 10 seconds. To run the game in a window:
 
 ```sh
-work/sa/build/hookshot --romfs work/dump/romfs --user work/user
+"work/sa/build/Ocarina of Time" --romfs work/dump/romfs --user work/user
 ```
 
 The game's own arguments are `image.bin` (default: the one beside the executable), `--romfs <folder>`, `--user <folder>` (saves, caches and temporary files)
-and `--trace` (log every Horizon call). The first line of `hookshot_log.txt` names the build.
+and `--trace` (log every Horizon call). The first line of `ounce_log.txt` names the build.
 
 ## Iterate quickly
 
@@ -66,29 +66,29 @@ After a change, rebuild only what the change needs:
 | You changed | Run |
 |---|---|
 | `runtime/`, `renderer/`, the lifter, including patch declarations | `scripts/build.sh`: what changed is compiled again |
-| Only the renderer | `ninja -C work/sa/meson` (below): builds `hookshot_direct.so` alone |
+| Only the renderer | `ninja -C work/sa/meson` (below): builds `ounce_renderer.so` alone |
 | The hot list, the dump or the toolchain | `scripts/relift.sh` |
 
 The details, including what the object cache keeps, are in [Build and iterate on the lifter](lifter-build.md). A new
 runtime file belongs in `runtime/sources.txt`, a new patch file in the `patches` list of `games/oot/game.toml`.
 
-Then test the change in the game. [Test Hookshot](testing.md) covers the headless test run, the smoke test, the
+Then test the change in the game. [Test OunceRecomp](testing.md) covers the headless test run, the smoke test, the
 benchmark and profiling.
 
-To keep two builds side by side, copy `hookshot`, `hookshot_direct.so`, `hookshot.map` and the caches (`*.bin`) to
-`work/sa/<name>/` and run with `EXE=work/sa/<name>/hookshot`.
+To keep two builds side by side, copy the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so`, `<exe>.map` and the caches (`*.bin`) to
+`work/sa/<name>/` and run with `EXE="work/sa/<name>/Ocarina of Time"`.
 
 ### Build the renderer with Meson
 
-Meson builds the renderer, `hookshot_direct.so`; `scripts/build.sh` runs it first. It needs clang, lld, Meson,
+Meson builds the renderer, `ounce_renderer.so`; `scripts/build.sh` runs it first. It needs clang, lld, Meson,
 Ninja and `glslangValidator`. To build it alone, run:
 
 ```sh
-meson setup --native-file renderer/meson/clang.ini -Dexe=work/sa/build/hookshot work/sa/meson
+meson setup --native-file renderer/meson/clang.ini -Dexe="work/sa/build/Ocarina of Time" work/sa/meson
 ninja -C work/sa/meson
 ```
 
-The library is `work/sa/meson/renderer/hookshot_direct.so`; `hookshot-builder build` copies it beside `hookshot`. A clean build takes
+The library is `work/sa/meson/renderer/ounce_renderer.so`; `ounce-builder build` copies it beside the game's executable. A clean build takes
 about 40 seconds with six jobs.
 
 - The options `vulkan_headers`, `spirv_headers` and `vma_headers` name the header packages. They default to `/usr`,
@@ -106,7 +106,7 @@ To work without disturbing the main checkout's build, run `scripts/agent-worktre
 `work/wt/<name>` on branch `agent/<name>`. Its `work/` shares the main dump, runs, overlays, virtual environment,
 locks and object cache (`work/builder-cache`), but has its own `work/sa` (the game folder, the lift's files and the
 Meson folder), so a host-only build is quick. Run with
-`EXE=work/sa/build/hookshot` from inside it. `land <name>` rebases the branch onto the main checkout's branch and
+`EXE="work/sa/build/Ocarina of Time"` from inside it. `land <name>` rebases the branch onto the main checkout's branch and
 fast-forwards it; `drop <name>` removes the worktree and the branch once it has landed.
 
 ### Play the current build
@@ -131,7 +131,7 @@ the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It ref
 
 ## More pages
 
-- [Test Hookshot](testing.md): test runs, smoke test, benchmarks, recordings, profiles.
+- [Test OunceRecomp](testing.md): test runs, smoke test, benchmarks, recordings, profiles.
 - [Switches](switches.md): the environment switches for tests and debugging, and the log format.
 - [Reverse engineering](reverse-engineering.md): function labels and the tools for reading the game's code and files.
 - [Design](design.md): how the parts fit, and the rules every change keeps.

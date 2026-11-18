@@ -24,7 +24,7 @@ static std::bitset<8> clip_distance_written;
 
 using Sirit::Id;
 
-/// (hookshot, RX_VK_BDA_CHECK) the id the checked accesses of the program being translated record (vk_shader.cpp: the low word
+/// (fork, RX_VK_BDA_CHECK) the id the checked accesses of the program being translated record (vk_shader.cpp: the low word
 /// of its key), this thread's
 extern thread_local u32 bda_check_id;
 
@@ -122,7 +122,7 @@ struct UniformDefinitions {
 struct StorageTypeDefinition {
     Id array{};
     Id element{};
-    Id value{};   // (hookshot, Info::ssbo_bda: the element's own type; array and element are then PhysicalStorageBuffer pointers)
+    Id value{};   // (fork, Info::ssbo_bda: the element's own type; array and element are then PhysicalStorageBuffer pointers)
 };
 
 struct StorageTypeDefinitions {
@@ -282,7 +282,7 @@ public:
     Id sample_id{};
     Id is_helper_invocation{};
     Id subgroup_local_invocation_id{};
-    Id software_matrix_function{};   // (hookshot: emit_spirv_warp.cpp)
+    Id software_matrix_function{};   // (fork: emit_spirv_warp.cpp)
     Id subgroup_mask_eq{};
     Id subgroup_mask_lt{};
     Id subgroup_mask_le{};
@@ -317,17 +317,17 @@ public:
     u32 rescaling_textures_member_index{};
     u32 rescaling_images_member_index{};
     u32 rescaling_downfactor_member_index{};
-    u32 guest_pages_member_index{};   // (hookshot: GUEST_PAGES_PUSH_OFFSET's member, compute only)
+    u32 guest_pages_member_index{};   // (fork: GUEST_PAGES_PUSH_OFFSET's member, compute only)
     bool wants_guest_pages{};
     Id probe_log{};   // (EvilOOT, RX_VK_BLOCK_PROBE: the miss log's U32 storage buffer, per-block entry counters at word 128+)
-    u32 mesh_first_member_index{};    // (hookshot: MESH_FIRST_PUSH_OFFSET's member, task programs)
+    u32 mesh_first_member_index{};    // (fork: MESH_FIRST_PUSH_OFFSET's member, task programs)
     bool wants_mesh_first{};
     Id mesh_first_block_pointer{};    // (a PhysicalStorageBuffer pointer to a block of one u32, and to its member)
     Id mesh_first_member_pointer{};
     u32 texture_rescaling_index{};
     u32 image_rescaling_index{};
 
-    // (hookshot, RX_VK_DESC_HEAP_BDA: Info::ssbo_bda) the storage buffers through device addresses (bda_emit.h)
+    // (fork, RX_VK_DESC_HEAP_BDA: Info::ssbo_bda) the storage buffers through device addresses (bda_emit.h)
     bool ssbo_bda{};
     bool ssbo_bda_check{};
     bool bda_render_area{};           // (RX_VK_DESC_HEAP_BDA=2: a render-area stage, its area in ResolutionInfo at offset 0)
@@ -378,7 +378,7 @@ public:
 
     Id write_storage_cas_loop_func{};
 
-    // (hookshot) storage buffer tables (Info::global_tables): one array variable a type, which only the global
+    // (fork) storage buffer tables (Info::global_tables): one array variable a type, which only the global
     // memory fallbacks use; and those fallbacks for the 32-bit atomics (IAdd SMin UMin SMax UMax And Or Xor Exchange)
     struct GlobalTableVars {
         u32 cbuf_index{};
@@ -388,7 +388,7 @@ public:
     };
     std::vector<GlobalTableVars> ssbo_tables;
     std::array<Id, 9> atomic_global_func_u32{};
-    Id atomic_global_cas_func_u32{};   // (hookshot) (address, comparator, value) -> the old value
+    Id atomic_global_cas_func_u32{};   // (fork) (address, comparator, value) -> the old value
 
     Id load_global_func_u32{};
     Id load_global_func_u32x2{};
@@ -397,7 +397,7 @@ public:
     Id write_global_func_u32x2{};
     Id write_global_func_u32x4{};
     Id write_global_cas_loop_func{};
-    Id atomic_global_add_f32_func{};   // (hookshot) (address, value) -> the old value
+    Id atomic_global_add_f32_func{};   // (fork) (address, value) -> the old value
 
     bool need_input_position_indirect{};
     Id input_position{};
@@ -412,7 +412,7 @@ public:
     std::array<Id, 30> patches{};
 
     std::array<Id, 8> frag_color{};
-    // (hookshot direct, M6b) a colour output whose location has no attachment (color_output_types Disabled): a private
+    // (renderer, M6b) a colour output whose location has no attachment (color_output_types Disabled): a private
     // variable, not an output, so the writes the program makes there are not written to an interface nothing reads (the
     // alpha test still reads the first one)
     std::array<bool, 8> frag_color_private{};
@@ -436,7 +436,7 @@ public:
     Id mesh_attributes{};
     Id mesh_map{};
     Id mesh_primitive_count{};
-    /// (hookshot) a fallback mesh workgroup's slot (task workgroup * threads + its index), read from the task's map in the
+    /// (fork) a fallback mesh workgroup's slot (task workgroup * threads + its index), read from the task's map in the
     /// entry block (EmitMeshPrologue); invalid without a task program, where the slot is the workgroup id
     Id mesh_fallback_slot{};
     Id mesh_shared_u32{};   ///< pointer type to one workgroup word
@@ -447,7 +447,7 @@ public:
     u32 mesh_map_bytes{};
     u32 mesh_primitive_base{}; ///< first word of the per-primitive groups
     std::vector<MeshLineTarget> mesh_vertex_targets;
-    // (hookshot) a vertex generic output and the components no vertex line writes: they get (0,0,0,1) as in the vertex stage
+    // (fork) a vertex generic output and the components no vertex line writes: they get (0,0,0,1) as in the vertex stage
     struct MeshDefault {
         Id variable;
         u32 missing;
@@ -455,14 +455,14 @@ public:
     std::vector<MeshDefault> mesh_vertex_defaults;
     std::vector<MeshLineTarget> mesh_primitive_targets;
     std::array<Id, 2> mesh_outputs_marker{};
-    bool mesh_zero_outputs_marker{};   ///< (hookshot) OpStore(zero, zero): OpSetMeshOutputsEXT 0 0 where a branch has no target
+    bool mesh_zero_outputs_marker{};   ///< (fork) OpStore(zero, zero): OpSetMeshOutputsEXT 0 0 where a branch has no target
     std::array<Id, 4> mesh_tasks_marker{};
 
-    // (hookshot) a GPU without VK_EXT_mesh_shader: Task and Mesh are compute shaders. Their stage buffer outputs go to
+    // (fork) a GPU without VK_EXT_mesh_shader: Task and Mesh are compute shaders. Their stage buffer outputs go to
     // the payload, map and record buffers, pushed as device addresses; a generated vertex stage reads the records.
     bool mesh_fallback{};
     bool wants_mesh_fallback{};
-    /// (hookshot, direct M4c, RuntimeInfo::task_buffer) the task stage as compute (mesh_fallback too) or the native mesh stage
+    /// (fork, direct M4c, RuntimeInfo::task_buffer) the task stage as compute (mesh_fallback too) or the native mesh stage
     /// reading the draw's task header; the mesh stage's map entry and payload base, read in its entry block
     bool task_buffer{};
     Id task_buffer_task{};      ///< (mesh) its task workgroup

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# The static LLVM that the shipped hookshot-builder links (`--features static-llvm,clang`): LLVM, clang and lld of
+# The static LLVM that the shipped ounce-builder links (`--features static-llvm,clang`): LLVM, clang and lld of
 # one pinned release, X86 only, the libraries alone (no tools, tests, docs, bindings, terminfo, libxml2, zlib or
 # zstd), built for x86-64-v3 like the game. Then:
-#   LLVM_STATIC_DIR=<dir>/build cargo build --release -p hookshot-builder --features static-llvm,clang
+#   LLVM_STATIC_DIR=<dir>/build cargo build --release -p ounce-builder --features static-llvm,clang
 #
 #   scripts/linux/static-llvm.sh [<dir>]    default work/llvm-static: <dir>/src (a shallow clone of the tag), <dir>/build
 #

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// What names the compiler: its LLVM version and the builder's recipes. Bump RECIPES when a recipe or a flag set
 /// changes in a way the keys do not show.
 pub fn compiler_id() -> String {
-    const RECIPES: &str = "hookshot-builder recipes 1";
+    const RECIPES: &str = "ounce-builder recipes 1";
     format!("{RECIPES}; LLVM {}", crate::llvm::version())
 }
 
@@ -97,7 +97,7 @@ impl Cache {
         Ok((o, false))
     }
 
-    /// Removes what no build used for `days` days (HOOKSHOT_OBJCACHE_DAYS, 3): (files removed, bytes, bytes kept)
+    /// Removes what no build used for `days` days (OUNCE_OBJCACHE_DAYS, 3): (files removed, bytes, bytes kept)
     pub fn prune(&self, days: f64) -> (usize, u64, u64) {
         let age = std::time::Duration::from_secs_f64(days * 86400.0);
         let now = std::time::SystemTime::now();

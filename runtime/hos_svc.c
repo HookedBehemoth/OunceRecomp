@@ -37,7 +37,7 @@ static uint64_t get_info(uint32_t id0, uint64_t id1, int *ok) {
     case 15: return HOS_SYSTEM_END - HOS_SYSTEM_BASE;      /* StackRegionSize */
     case 16: case 17: return 0;                            /* SystemResourceSize total / used */
     case 18: return hos_program_id;                        /* ProgramId (main.npdm's, gen/hos_image.c) */
-    case 20: {   /* UserExceptionContextAddress: (hookshot) OoT's nn::os::SetDyingMessageRegionPrivate writes its
+    case 20: {   /* UserExceptionContextAddress: (runtime) OoT's nn::os::SetDyingMessageRegionPrivate writes its
                     dying-message region into it; a zeroed page, made once */
         static uint64_t ctx_page;
         if (!ctx_page) ctx_page = hos_sys_alloc(0x1000, 0x1000);
@@ -221,7 +221,7 @@ static void signal_key(uint64_t key, int32_t count) {
     os_mutex_unlock(&klock);
 }
 
-/* ---- (hookshot) the address arbiter: svcWaitForAddress / svcSignalToAddress -----------------------------------
+/* ---- (runtime) the address arbiter: svcWaitForAddress / svcSignalToAddress -----------------------------------
    OoT's SDK (22.2.8) uses them; MKW's never did. Waiters share the table above (on_key 2, key = the address) and klock,
    so the condition check and the sleep are atomic against a signal, as in Horizon's KAddressArbiter (mesosphere).
    Wait types: 0 WaitIfLessThan, 1 DecrementAndWaitIfLessThan, 2 WaitIfEqual (32-bit), 3 WaitIfEqual64 (21.0+).
@@ -351,7 +351,7 @@ static HosThread *thread_handle(uint32_t h) { return h == CUR_THREAD ? hos_self(
    switchbrew's tables and Atmosphere's svc_definition_macro.hpp give them; the inputs only those the host uses); an
    svc of any other number is lifted as a stop, hos_svc_stop. "-": a register the svc does not read. */
 SVC(0x01, SetHeapSize, 2, 2) {   /* (-, size) -> (result, heap address) */
-    int hos_heap_size_fits(uint64_t size);   /* (hookshot, hos_mem.c: the heap stays in the guest window) */
+    int hos_heap_size_fits(uint64_t size);   /* (runtime, hos_mem.c: the heap stays in the guest window) */
     if (!hos_heap_size_fits(c->x[1])) {
         c->x[0] = 0xCA01;   /* svc::ResultOutOfMemory */
         return;
@@ -413,10 +413,10 @@ SVC(0x1B, ArbitrateUnlock, 1, 1) { c->x[0] = arbitrate_unlock(c->x[0]); }
 SVC(0x1C, WaitProcessWideKeyAtomic, 4, 1) {   /* (mutex, key, tag, timeout) */
     c->x[0] = wait_key(c->x[0], c->x[1], (uint32_t)c->x[2], (int64_t)c->x[3]);
 }
-SVC(0x34, WaitForAddress, 4, 1) {   /* (address, type, value, timeout) (hookshot) */
+SVC(0x34, WaitForAddress, 4, 1) {   /* (address, type, value, timeout) (runtime) */
     c->x[0] = wait_address(c->x[0], (uint32_t)c->x[1], c->x[2], (int64_t)c->x[3]);
 }
-SVC(0x35, SignalToAddress, 4, 1) {   /* (address, type, value, count) (hookshot) */
+SVC(0x35, SignalToAddress, 4, 1) {   /* (address, type, value, count) (runtime) */
     c->x[0] = signal_address(c->x[0], (uint32_t)c->x[1], (int32_t)c->x[2], (int32_t)c->x[3]);
 }
 SVC(0x1D, SignalProcessWideKey, 2, 0) { signal_key(c->x[0], (int32_t)c->x[1]); }   /* (key, count) */
@@ -449,7 +449,7 @@ SVC(0x2C, MapPhysicalMemory, 2, 1) {   /* (address, size) */
     c->x[0] = R_OK;
 }
 SVC(0x2D, UnmapPhysicalMemory, 2, 1) {   /* (address, size): the pages read as zero if mapped again */
-    if (!hos_guest_range(c->x[0], c->x[1])) {   /* (hookshot: guest pages only) */
+    if (!hos_guest_range(c->x[0], c->x[1])) {   /* (runtime: guest pages only) */
         c->x[0] = 0xCA01;
         return;
     }
@@ -460,7 +460,7 @@ SVC(0x2D, UnmapPhysicalMemory, 2, 1) {   /* (address, size): the pages read as z
     else os_guest_discard(GP(lo), (size_t)(hi - lo));
     c->x[0] = R_OK;
 }
-/* (-, name) -> (result, session handle): (hookshot) SDK code that resolves a service through "sm:" (nn::sm::Initialize,
+/* (-, name) -> (result, session handle): (runtime) SDK code that resolves a service through "sm:" (nn::sm::Initialize,
    from nn::nsd's HIPC client in OoT) gets a session whose requests svc 0x21 answers empty, as for any service the
    runtime does not emulate. */
 SVC(0x1F, ConnectToNamedPort, 2, 2) {

@@ -186,6 +186,7 @@ impl Base {
             labels: PathBuf::new(),
             hot: PathBuf::new(),
             identity: crate::game::Identity { build_id: String::new(), main_sha256: String::new() },
+            exe: String::new(),
             title: String::new(),
             icon: None,
             patches: Vec::new(),

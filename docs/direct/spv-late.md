@@ -39,7 +39,7 @@ command) but off: it made some stages spill more.
 | `HOS_DBG=nolate` | the translator's order, unchanged (a diagnosis) |
 | `HOS_DBG=latevertex` | the pass on vertex stages too (a trial; off by default) |
 
-The translated SPIR-V is kept in `hookshot_direct_programs.bin`. The pass's source is part of the shader stamp, and both
+The translated SPIR-V is kept in `ounce_renderer_programs.bin`. The pass's source is part of the shader stamp, and both
 switches are part of the cache's stamp. So a build that changes the pass, or a run that flips a switch, translates
 every program once more on its first start. You don't need to delete anything.
 
@@ -49,7 +49,7 @@ The pass's count of live values is not ACO's register allocation. `tools/shaders
 other. Run it before you change the pass's defaults, after a translator change and after a driver update:
 
 ```
-python3 -I tools/shaders/late_gate.py seed --censustool <censustool> --spvlate <spvlate> --seed <hookshot_shaders.bin> --out <dir> --kinds mesh
+python3 -I tools/shaders/late_gate.py seed --censustool <censustool> --spvlate <spvlate> --seed <ounce_shaders.bin> --out <dir> --kinds mesh
 ```
 
 It compiles every mesh stage of the game's shader seed before and after the pass. The gate fails when a stage starts

@@ -6,10 +6,11 @@
 #   scene: kokiri, hf, market (the chiseled boots of scripts/play.sh), an actor-zoo scene (games/oot/zoo/<name>.toml: run-vk.sh's ZOO=,
 #   with its live.txt) or a folder name under work/overlay
 #   NAME=<run name> (default bench-<scene>), READY=<frames settled in a row> (60), SECS=<longest run> (110), EXE=<build>
-#   as for run-vk.sh. RUN=timing: exclusive, one game at a time; it waits for any other hookshot to end first.
+#   as for run-vk.sh. RUN=timing: exclusive, one game at a time; it waits for any other game to end first.
 set -euo pipefail
 {
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/game.sh"
 scene=${1:?scene}; shift
 frames=600; if [ $# -gt 0 ] && [ "$1" != "--" ]; then frames=$1; shift; fi
 [ "${1:-}" = "--" ] && shift
@@ -24,8 +25,8 @@ esac
 name=${NAME:-bench-$scene}
 # (another game, a run of another checkout or a play session, is waited for: two at once would measure each other)
 said=
-while pgrep -x hookshot > /dev/null; do
-  [ -n "$said" ] || { echo "bench: waiting for another hookshot to end"; said=1; }
+while game_running; do
+  [ -n "$said" ] || { echo "bench: waiting for another game to end"; said=1; }
   sleep 2
 done
 ZOO=$zoo OVERLAY=$overlay SHOT_EVERY=${SHOT_EVERY:-1000000} RUN=timing "$root/scripts/run-vk.sh" "$name" "${SECS:-110}" -- \

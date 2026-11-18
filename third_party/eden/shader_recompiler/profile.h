@@ -113,11 +113,11 @@ struct Profile {
     bool has_broken_robust{};
 
     u64 min_ssbo_alignment{};
-    /// (hookshot, RX_VK_DESC_HEAP_BDA=1 with layer 0) storage buffers through device addresses where a stage allows it
+    /// (fork, RX_VK_DESC_HEAP_BDA=1 with layer 0) storage buffers through device addresses where a stage allows it
     /// (Info::ssbo_bda); ssbo_bda_check (RX_VK_BDA_CHECK=1): each such access checked against its buffer's size
     bool ssbo_bda{};
     bool ssbo_bda_check{};
-    /// (hookshot, RX_VK_DESC_HEAP_BDA=2) and the stages =1 leaves on descriptors for a reason a by-address form exists for:
+    /// (fork, RX_VK_DESC_HEAP_BDA=2) and the stages =1 leaves on descriptors for a reason a by-address form exists for:
     /// storage tables (count > 1), the render area's push block, the CAS-loop atomics, Info::native_global_bounds, no u32
     /// constant buffer view (bda_emit.h kWideAllowed)
     bool ssbo_bda_wide{};

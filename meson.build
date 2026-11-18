@@ -1,7 +1,7 @@
-# The renderer, hookshot_direct.so: renderer/ with the shader translator (third_party/eden, third_party/sirit), built
+# The renderer, ounce_renderer.so: renderer/ with the shader translator (third_party/eden, third_party/sirit), built
 # with clang and lld. The game's
 # executable is built by the builder (ounce/builder), not here.
-project('hookshot-renderer', 'c', 'cpp',
+project('ounce-renderer', 'c', 'cpp',
   meson_version: '>= 1.3',
   default_options: ['buildtype=plain', 'warning_level=0', 'b_ndebug=true',
                     'b_lundef=false', 'b_asneeded=false'])

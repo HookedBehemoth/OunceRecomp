@@ -10,6 +10,7 @@
 #   KEEP=1: the raw dump is kept (otherwise deleted once packed); EXTRA="NAME=VALUE ..." more settings for the run
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/game.sh"
 scene=${1:?scene: title, kokiri, hf or market}
 py=$root/work/venv/bin/python
 case "$scene" in
@@ -20,7 +21,7 @@ case "$scene" in
   *) echo "scene: title, kokiri, hf or market"; exit 2 ;;
 esac
 golden=$root/work/golden/$scene
-exe=${EXE:-$root/work/sa/build/hookshot}
+exe=${EXE:-$game_exe}
 
 # one run with its dump packed: <name> <backend settings...>
 dump_run() {

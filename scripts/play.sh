@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Plays the main checkout's build (work/sa/build, kept at native-vk's head by scripts/play-refresh.sh): direct back end, window and sound on.
 #   scripts/play.sh [record <name>] [title|kokiri|hf|market|zoo_<scene>|<overlay folder name under work/overlay>] [-- NAME=VALUE ...]
-# Takes the GPU lock scripts/run-vk.sh uses and waits for a running build; saves in Hookshot's own folder
-# (~/.local/share/hookshot/save, docs/saves.md), log in work/play/log.txt.
+# Takes the GPU lock scripts/run-vk.sh uses and waits for a running build; saves in the runtime's own folder
+# (~/.local/share/ounce/save, docs/saves.md), log in work/play/log.txt.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # (the main checkout, also when this copy is run from an agent's worktree)
 common=$(git -C "$here" rev-parse --path-format=absolute --git-common-dir); root=${common%/.git}
+. "$here/game.sh"
 play=$root/work/play; mkdir -p "$play"
 rec=
 if [ "${1:-}" = record ]; then
@@ -44,13 +45,13 @@ flock -n 6 || { echo "waiting for the build of $(git -C "$root" rev-parse --shor
 exec 6>&-
 label=$(head -1 "$bin/BUILD.txt" 2>/dev/null || echo none); want=$(git -C "$root" rev-parse --short native-vk)
 [ "$label" = "$want" ] || echo "STALE: this build is $label, native-vk is $want (a failed or missing build: see work/play/refresh.log)"
-[ -x "$bin/hookshot" ] || { echo "no build $bin"; exit 2; }
-# (the folder a packaged Hookshot keeps its saves in: one set of saves for every build)
-user=${XDG_DATA_HOME:-$HOME/.local/share}/hookshot; mkdir -p "$user"
+[ -x "$bin/$GAME_EXE" ] || { echo "no build $bin/$GAME_EXE"; exit 2; }
+# (the folder a game folder without user/ keeps its saves in: one set of saves for every build)
+user=${XDG_DATA_HOME:-$HOME/.local/share}/ounce; mkdir -p "$user"
 cd "$play"
 echo "playing $label ${scene:-title}; log: $play/log.txt"
-# (the image beside the executable, as a game folder has it; work/sa/image/ for a build.py build)
+# (the image beside the executable, as a game folder has it; else work/sa/image/)
 img=$bin/image.bin; [ -f "$img" ] || img=$root/work/sa/image/image.bin
-env "${args[@]}" "$@" "$bin/hookshot" "$img" --romfs "$romfs" --user "$user" > stdout.txt 2> log.txt || echo "exited with $?"
+env "${args[@]}" "$@" "$bin/$GAME_EXE" "$img" --romfs "$romfs" --user "$user" > stdout.txt 2> log.txt || echo "exited with $?"
 [ -z "$rec" ] || echo "recorded input: $rec"
 journalctl -k -b --no-pager 2>/dev/null | grep -E 'ring .* timeout|GPU reset\(' | tail -2 || true

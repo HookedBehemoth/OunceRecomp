@@ -22,9 +22,9 @@ mkw-recomp's changes, kept here:
 - `nvn_native.c` is TOTKPort's native NVN layer extended to NVN2: the Switch 2 driver's device limits, GPU addresses
   over the 64-bit window, program builders, native images and sparse tile layouts. `nn_vi.c` is mkw-recomp's own.
 
-Hookshot's changes since: the direct back end is the only renderer (`rx_backend.c` loads it); every guest thread runs
+OunceRecomp's changes since: the direct back end is the only renderer (`rx_backend.c` loads it); every guest thread runs
 on its own host thread with no scheduler; patches are declarations (`patch.h`); a call of an import or NVN proc the
 host lacks stops the game. Files bound to TOTK or its Maxwell GPU were left out. `mods.c` is the RomFS part of
 Skybound's mod loader (`NotRexed/SkyboundTotk`, MIT).
 
-Licensing: GPL-3.0-or-later, as the rest of Hookshot. `third_party/a64-kit/NOTICE.TOTKPort.md` has the kit's history.
+Licensing: GPL-3.0-or-later, as the rest of OunceRecomp. `third_party/a64-kit/NOTICE.TOTKPort.md` has the kit's history.

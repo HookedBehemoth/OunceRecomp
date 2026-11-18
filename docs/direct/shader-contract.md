@@ -57,9 +57,9 @@ read; you don't need to delete one.
 
 | File | Holds | Made again when |
 |---|---|---|
-| `hookshot_direct_programs.bin` | translated graphics variants (SPIR-V, interface info, answers) | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `vk_shader.cpp`, `vk_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
-| `hookshot_direct_compute.bin` | translated compute variants | the compute stamp (the translator, the compiler and flags, the stamped regions), the record version, the device's answers or `loopcap` change |
-| `hookshot_direct_shader_objects.bin` | driver binaries of the shader objects | the driver's binary UUID or version changes; a binary the driver refuses is compiled again |
+| `ounce_renderer_programs.bin` | translated graphics variants (SPIR-V, interface info, answers) | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `vk_shader.cpp`, `vk_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
+| `ounce_renderer_compute.bin` | translated compute variants | the compute stamp (the translator, the compiler and flags, the stamped regions), the record version, the device's answers or `loopcap` change |
+| `ounce_renderer_shader_objects.bin` | driver binaries of the shader objects | the driver's binary UUID or version changes; a binary the driver refuses is compiled again |
 
 The build computes the stamps (`renderer/meson/shader_stamp.py`) by hashing the compiler's name, version and flags,
 the translator's files (its `meson.build` files excepted) and the regions marked `// <stamp graphics>`,

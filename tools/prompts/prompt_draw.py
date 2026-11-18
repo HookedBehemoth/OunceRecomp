@@ -1,4 +1,4 @@
-"""(hookshot) Each face's controller for the pause menu's controls page, drawn like the game's Pro Controller (Controller_Pro: flat
+"""(prompts) Each face's controller for the pause menu's controls page, drawn like the game's Pro Controller (Controller_Pro: flat
 greys, a black outline), at the build from the user's RomFS: tools/prompts/prompt_assets.py calls picture(). Its look is the drawing in each
 face's entry of tools/prompts/prompt_faces.py; a hand-made picture in tools/prompts/prompt_faces/<face>/Controller_Pro.png takes its place.
 

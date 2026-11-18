@@ -5,7 +5,7 @@
    guest main thread, run every module's DT_INIT in rtld's order (the SDK crt's _init: TLS registration with musl,
    then the module's constructors), then nninitStartup and nnMain.
 
-   Usage: hookshot [image.bin] [--romfs <dir>] [--user <dir>] [--trace]
+   Usage: <the game's exe> [image.bin] [--romfs <dir>] [--user <dir>] [--trace]
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
@@ -16,10 +16,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef HOOKSHOT_VERSION   /* (ounce/builder gives it: the release and a fingerprint of the sources, ounce/builder/src/version.rs) */
-#define HOOKSHOT_VERSION "unknown"
+#ifndef OUNCE_VERSION   /* (ounce/builder gives it: the release and a fingerprint of the sources, ounce/builder/src/version.rs) */
+#define OUNCE_VERSION "unknown"
 #endif
-const char *hos_version(void) { return HOOKSHOT_VERSION; }
+const char *hos_version(void) { return OUNCE_VERSION; }
 #include "os.h"
 #include "os_guest.h"
 #include "hos_sdl.h"
@@ -137,12 +137,12 @@ static void delete_tree(const char *p) {
     os_rmdir(p);
 }
 /* (linux) Saves live in the game folder's user/ when it has one (the builder makes it), so the folder holds the whole
-   game; else in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot). --user still wins. */
+   game; else in $XDG_DATA_HOME/ounce (~/.local/share/ounce). --user still wins. */
 static const char *saves_dir(const char *beside) {
     static char dir[OS_PATH_MAX];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
-    if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s/hookshot", xdg);
-    else if (home && home[0] == '/') snprintf(dir, sizeof dir, "%s/.local/share/hookshot", home);
+    if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s/ounce", xdg);
+    else if (home && home[0] == '/') snprintf(dir, sizeof dir, "%s/.local/share/ounce", home);
     else dir[0] = 0;
     if (is_dir(beside)) {
         char old[OS_PATH_MAX + 8], mine[OS_PATH_MAX + 8];
@@ -162,37 +162,37 @@ static const char *saves_dir(const char *beside) {
     return os_path_kind(dir) == OS_PATH_NONE ? beside : dir;
 }
 
-/* hookshot_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
+/* ounce_env.txt beside the game: NAME=VALUE lines set as environment variables before anything reads them, for the
    switches players are asked to test (RX_VK_NOOPT and the rest). Lines starting with # are notes. On Linux this runs
    before the window, so HOS_HEADLESS and HOS_WINDOW_SIZE are already set when the window is made.
    HOS_ENV_FILE=<path> reads that file instead: a scripted or A/B test run brings its own switches and leaves the
-   player's hookshot_env.txt as it is.
-   (hookshot) hookshot_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
-   HOOKSHOT_, EDEN_, NVN_, TOTK_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
+   player's ounce_env.txt as it is.
+   (runtime) ounce_env.txt is a file players pass around, so it sets only the game's own switches (RX_, HOS_,
+   OUNCE_, EDEN_, NVN_, TOTK_ and SDL_ names), never HOS_ENV_FILE or SDL's library override, and no value that is a
    path: the system's variables (the Vulkan loader's layers, PATH and the like) can load code, and
    the dump switches write files where they name. The file HOS_ENV_FILE names sets anything. */
 static int env_line_allowed(const char *name, const char *value) {
-    static const char *const prefixes[] = {"RX_", "HOS_", "HOOKSHOT_", "EDEN_", "NVN_", "TOTK_", "SDL_"};
+    static const char *const prefixes[] = {"RX_", "HOS_", "OUNCE_", "EDEN_", "NVN_", "TOTK_", "SDL_"};
     int ok = 0;
     for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) ok |= !strncmp(name, prefixes[i], strlen(prefixes[i]));
     if (!ok || !strcmp(name, "HOS_ENV_FILE") || !strcmp(name, "SDL_DYNAMIC_API")) return 0;
-    /* (hookshot) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
+    /* (runtime) nor the libraries SDL loads by name (SDL_VULKAN_LIBRARY, SDL_OPENGL_LIBRARY, SDL_VIDEO_GL_DRIVER,
        SDL_VIDEO_EGL_DRIVER...): a bare file name is looked for beside the game and in the current folder on Windows */
     if (!strncmp(name, "SDL_", 4) && (strstr(name, "_LIB") || strstr(name, "GL_DRIVER"))) return 0;
     for (const char *p = name; *p; p++)
         if (!((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')) return 0;
-    /* (hookshot) the switches that name a file to write or a folder take no value here, not even a bare name: one
-       resolves in the game's folder (a dump file named hookshot_direct.so emptied the renderer) */
+    /* (runtime) the switches that name a file to write or a folder take no value here, not even a bare name: one
+       resolves in the game's folder (a dump file named ounce_renderer.so emptied the renderer) */
     const size_t nl = strlen(name);
     int names_file = (nl > 5 && (!strcmp(name + nl - 5, "_FILE") || !strcmp(name + nl - 4, "_DIR"))) ||
                      !strcmp(name, "RX_VK_FRAME_LOG") || !strcmp(name, "HOS_PRESENT_TRACE");
-    /* (hookshot) and the test switches whose value is a file or folder under another name (HOS_AUDIO_DUMP=image.bin
+    /* (runtime) and the test switches whose value is a file or folder under another name (HOS_AUDIO_DUMP=image.bin
        overwrote the game's image), or that press buttons and menu keys on a timer (a shared file erased a save from
        the file select) */
     static const char *const by_name[] = {
         "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
         "HOS_INPUT_SCRIPT", "HOS_INPUT_RECORD",
-        "HOS_INPUT_REPLAY", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
+        "HOS_INPUT_REPLAY", "OUNCE_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
         "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
         "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
         "RX_WGSL_OVERRIDE"};
@@ -200,7 +200,7 @@ static int env_line_allowed(const char *name, const char *value) {
     if (names_file) return 0;
     return !strchr(value, '/') && value[0] != '~' && strcmp(value, ".") && strcmp(value, "..");
 }
-static void load_hookshot_env(void) {
+static void load_ounce_env(void) {
     char path[OS_PATH_MAX + 32];
     const char *other = getenv("HOS_ENV_FILE");
     if (other && *other) {
@@ -208,7 +208,7 @@ static void load_hookshot_env(void) {
     } else {
         uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
         while (n && path[n - 1] != '/') n--;
-        memcpy(path + n, "hookshot_env.txt", 17);
+        memcpy(path + n, "ounce_env.txt", 17);
     }
     FILE *f = fopen(path, "r");
     if (!f) return;
@@ -223,7 +223,7 @@ static void load_hookshot_env(void) {
         char *eq = strchr(s, '=');
         *eq = 0;
         if (!(other && *other) && !env_line_allowed(s, eq + 1)) {
-            fprintf(stderr, "env: hookshot_env.txt: %s left out (only the game's switches, and no paths, are taken from it)\n", s);
+            fprintf(stderr, "env: ounce_env.txt: %s left out (only the game's switches, and no paths, are taken from it)\n", s);
             continue;
         }
         setenv(s, eq + 1, 1);
@@ -239,14 +239,14 @@ volatile uint64_t hos_wide_out, hos_wide_scene;
 volatile int hos_native_scene;
 volatile int hos_fix_res;   /* (games/oot/patches/oot_probes.c's cached-scale refresh: HOS_FIX_RES=1; #849's fixed-scale patch does it by default) */
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
-/* (games/oot/patches/oot_probes.c hos_oot_occlusion_flag) read by the game's code where it decides to make occlusion queries: 1, none (HOOKSHOT_OCCLUSION_OFF=1) */
+/* (games/oot/patches/oot_probes.c hos_oot_occlusion_flag) read by the game's code where it decides to make occlusion queries: 1, none (OUNCE_OCCLUSION_OFF=1) */
 volatile int hos_occlusion_off;
 static void occlusion_switch(void) {
-    const char *e = getenv("HOOKSHOT_OCCLUSION_OFF");
+    const char *e = getenv("OUNCE_OCCLUSION_OFF");
     hos_occlusion_off = e && e[0] == '1';
-    if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (HOOKSHOT_OCCLUSION_OFF=1)");
+    if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (OUNCE_OCCLUSION_OFF=1)");
 }
-/* (hookshot, issue 1241) The game needs about 10 GB of memory and swap together (the page file on Windows): on 8 GB of RAM
+/* (runtime, issue 1241) The game needs about 10 GB of memory and swap together (the page file on Windows): on 8 GB of RAM
    and no swap it closed before the title with no word of why, and adding swap let it play. Below that, the log says so and
    a message says it once at boot; the game starts anyway. The text, or 0 when there is enough */
 #define HOS_MEMORY_NEEDED_MB 10240ull
@@ -271,30 +271,30 @@ static void memory_notice(void) {
     }
     hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
     if (getenv("HOS_HEADLESS")) return;
-    hos_sdl_message_box("Hookshot", text);
+    hos_sdl_message_box("OunceRecomp", text);
 }
 #endif
 static int game_main(int argc, char **argv) {
     occlusion_switch();
-    {   // (started from its icon the game has nowhere to log to: hookshot_log.txt beside it, last run only, for players to send in)
+    {   // (started from its icon the game has nowhere to log to: ounce_log.txt beside it, last run only, for players to send in)
         if (!os_stderr_shown()) {
             char path[OS_PATH_MAX + 32];
             uint32_t n = hos_game_path_a(path, OS_PATH_MAX);
             while (n && path[n - 1] != '/') n--;
-            /* (the four runs before stay as hookshot_log.1.txt (the last) to .4.txt: a player who started the game again after a
+            /* (the four runs before stay as ounce_log.1.txt (the last) to .4.txt: a player who started the game again after a
                crash sent in the new run's log, and the crash was gone) */
             char from[OS_PATH_MAX + 32], to[OS_PATH_MAX + 32];
             for (int k = 4; k >= 1; k--) {
-                if (k == 1) memcpy(from + n, "hookshot_log.txt", 17), memcpy(from, path, n);
-                else memcpy(from, path, n), snprintf(from + n, 32, "hookshot_log.%d.txt", k - 1);
-                memcpy(to, path, n), snprintf(to + n, 32, "hookshot_log.%d.txt", k);
+                if (k == 1) memcpy(from + n, "ounce_log.txt", 17), memcpy(from, path, n);
+                else memcpy(from, path, n), snprintf(from + n, 32, "ounce_log.%d.txt", k - 1);
+                memcpy(to, path, n), snprintf(to + n, 32, "ounce_log.%d.txt", k);
                 os_rename(from, to, true);
             }
-            memcpy(path + n, "hookshot_log.txt", 17);
+            memcpy(path + n, "ounce_log.txt", 17);
             if (freopen(path, "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);
         }
     }
-    hos_log("hookshot %s", HOOKSHOT_VERSION);   /* (the log's first line: which build a report comes from) */
+    hos_log("runtime %s", OUNCE_VERSION);   /* (the log's first line: which build a report comes from) */
     const char *image = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
@@ -303,7 +303,7 @@ static int game_main(int argc, char **argv) {
         else if (!image) image = argv[i];
     }
     static char beside_image[OS_PATH_MAX], beside_romfs[OS_PATH_MAX], beside_user[OS_PATH_MAX];
-    if (!image) {   /* (hookshot) started with nothing, as a game is: everything beside the executable (the builder's folder) */
+    if (!image) {   /* (runtime) started with nothing, as a game is: everything beside the executable (the builder's folder) */
         char dir[OS_PATH_MAX];
         const uint32_t len = hos_game_path_a(dir, OS_PATH_MAX);
         char *slash = len ? strrchr(dir, '/') : NULL;
@@ -380,7 +380,7 @@ static int game_main(int argc, char **argv) {
     hos_mem_init(hos_image_end);
     void hos_code_ptrs_init(void);
     hos_code_ptrs_init();   /* code_ptrs.c */
-    {   /* (hookshot) The game's frame follows the window (games/oot/patches/oot_probes.c's rows): its pixels are the window's (at most
+    {   /* (runtime) The game's frame follows the window (games/oot/patches/oot_probes.c's rows): its pixels are the window's (at most
            3840 x 2160's count, the shape kept) and the main camera, HUD and movies take its shape; a resize, once settled,
            sizes the frame again (runtime/media/display_sdl.c). The game draws its frame into a corner of its picture (the window
            textures), so the picture is made once as large as any frame: the monitor's size, at least 3840 x 2160. With
@@ -485,7 +485,7 @@ static void game_thread(void *p) {
 int main(int argc, char **argv) {
     int hos_display_init(void);
     void hos_display_loop(void);
-    load_hookshot_env();
+    load_ounce_env();
     game_argc = argc, game_argv = argv;
     const int window = hos_display_init();
     if (window < 0) {

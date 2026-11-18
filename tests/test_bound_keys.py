@@ -2,7 +2,7 @@
 the Switch's buttons (runtime/nn_hid.c).
 
 runtime/nn_hid.c's binding table and its bound_down are compiled alone, against fake key states and a fake
-hookshot_options.ini: the defaults (WASD, the arrows, the mouse's left button Y and right button ZL), a mouse button
+ounce_options.ini: the defaults (WASD, the arrows, the mouse's left button Y and right button ZL), a mouse button
 only while the mouse is captured and only once the click that captured it was let go, key_move_up from the file, a
 pad_ line for a keys-only control ignored, a key taken from the control that had it, and Enter with Alt still no key.
 python -I -B tests/test_bound_keys.py   (needs a C compiler)
@@ -51,7 +51,7 @@ PRELUDE = r"""
 void os_once_run(os_once *o, void (*fn)(void *), void *arg) { if (!o->state) { o->state = 3; fn(arg); } }
 static void hos_log(const char *f, ...) { (void)f; }
 static const char *ini_dir;
-static uint32_t hos_game_path_a(char *b, uint32_t n) { return (uint32_t)snprintf(b, n, "%s/hookshot.exe", ini_dir); }
+static uint32_t hos_game_path_a(char *b, uint32_t n) { return (uint32_t)snprintf(b, n, "%s/game", ini_dir); }
 static int held[256];
 static int key(int vk) { return held[vk & 255]; }
 """
@@ -111,9 +111,9 @@ class BoundKeysTests(unittest.TestCase):
         for needle in ("bound_down(HOS_KEY_MOVE_UP,", "bound_down(HOS_KEY_CAM_RIGHT,", "mouse_buttons_arm(", "bound_down(i, 1)"):
             self.assertIn(needle, read, "read_input does not read the bound keys: " + needle)
         self.assertNotIn("key('W')", read, "read_input still reads WASD itself")
-        with tempfile.TemporaryDirectory(prefix="hookshot-bound-keys-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="ounce-bound-keys-") as tmp:
             tmp = Path(tmp)
-            (tmp / "hookshot_options.ini").write_text("key_move_up=90,0\npad_move_up=0\n", encoding="utf-8")
+            (tmp / "ounce_options.ini").write_text("key_move_up=90,0\npad_move_up=0\n", encoding="utf-8")
             (tmp / "t.c").write_text(PRELUDE + code + MAIN, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
             build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wno-unused-function", "-I", str(ROOT / "renderer/api"),

@@ -47,9 +47,9 @@ void hos_system_event_signal(uint64_t key);
 typedef struct {
     int w, h, format, count;
     uint8_t *rgba, *nv12;
-    uint64_t mem, mem_size;   /* (hookshot) the pool's guest memory: where the hardware decoder writes its pictures */
-    int rgba_stale;           /* (hookshot) its NV12 picture not converted to RGBA yet (pool_rgba, when it is asked for) */
-    int read_by_api;          /* (hookshot) read through ReadDecoderOutputImage*: no copy into its memory (dec_acquire) */
+    uint64_t mem, mem_size;   /* (runtime) the pool's guest memory: where the hardware decoder writes its pictures */
+    int rgba_stale;           /* (runtime) its NV12 picture not converted to RGBA yet (pool_rgba, when it is asked for) */
+    int read_by_api;          /* (runtime) read through ReadDecoderOutputImage*: no copy into its memory (dec_acquire) */
     struct SwsContext *sws;   /* (that conversion's) */
 } Pool;
 /* the preference MakeDecodeImagePreference returns (the caller's buffer is larger: only these fields are ours) */
@@ -91,7 +91,7 @@ typedef struct {
     int ngot;
 } Dec;
 
-/* (hookshot) the host objects of the game's pool and decoder objects, by the guest object's address: kept here, not in
+/* (runtime) the host objects of the game's pool and decoder objects, by the guest object's address: kept here, not in
    the guest object (guest memory). Few at a time (a movie's decoder and its pools). */
 typedef struct { uint64_t obj; uint32_t magic; void *p; } HostObj;
 static HostObj *host_objs;
@@ -160,9 +160,9 @@ HLE(_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPv
     o->format = p->magic == PREF_MAGIC ? (int)p->format : 2;
     o->count = (int)ARG(4) > 0 ? (int)ARG(4) : 1;
     o->rgba = (uint8_t *)hos_ledger_took(HL_VIDEO, calloc((size_t)o->count, (size_t)o->w * o->h * 4));
-    /* (hookshot, issue 342: an allocation that failed went on as a NULL picture, and the movie thread read address 0) */
+    /* (runtime, issue 342: an allocation that failed went on as a NULL picture, and the movie thread read address 0) */
     o->nv12 = (uint8_t *)hos_ledger_took(HL_VIDEO, calloc((size_t)o->count, (size_t)o->w * o->h * 3 / 2));
-    /* (hookshot) video black, not zeros. A buffer the game takes before the decoder's first picture is shown as it is
+    /* (runtime) video black, not zeros. A buffer the game takes before the decoder's first picture is shown as it is
        (dec_acquire: "nothing decoded, the buffer again", up to ~100 ms into a movie's start), and NV12 zeros are bright
        green (luma 0 with no chroma): one green frame at each scene change that opens a movie. Luma 16, chroma 128 is
        black; the RGBA opaque black */
@@ -188,7 +188,7 @@ HLE(_ZN2nn5codec24FinalizeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeE) {
     if (o) hos_ledger_frees(HL_VIDEO, o->rgba), hos_ledger_frees(HL_VIDEO, o->nv12), free(o->rgba), free(o->nv12), free(o);
     set_host(ARG(0), POOL_MAGIC, NULL);
 }
-/* (hookshot) the pool's picture as RGBA, from its NV12, if it was not made yet. Each 1080p frame of OoT's movies was
+/* (runtime) the pool's picture as RGBA, from its NV12, if it was not made yet. Each 1080p frame of OoT's movies was
    converted on the movie thread, in plain C, though OoT reads only the NV12: nearly half that thread's time, which put the
    picture behind the sound */
 static os_mutex pool_rgba_lock = OS_MUTEX_INIT;
@@ -211,7 +211,7 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEj
     Pool *o = (Pool *)host_of(ARG(0), POOL_MAGIC);
     const uint32_t i = (uint32_t)ARG(1), x = (uint16_t)ARG(2), y = (uint16_t)ARG(3), w = (uint16_t)ARG(4), h = (uint16_t)ARG(5);
     const uint64_t dst = ARG(6), stride = ARG(7) ? ARG(7) : (uint64_t)w * 4;
-    {   /* (hookshot, HOS_VIDEO_LOG) the first reads, with where they go */
+    {   /* (runtime, HOS_VIDEO_LOG) the first reads, with where they go */
         static volatile int32_t n;
         if (video_log() && os_atomic_inc(&n) <= 4)
             hos_log("video: ReadDecoderOutputImageRgba(pool %s, index %u, %u,%u %ux%u, dst %#llx stride %llu)",
@@ -223,7 +223,7 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageRgbaEPKNS0_25VideoDecoderImagePoolTypeEj
     const uint8_t *src = o->rgba + (size_t)i * o->w * o->h * 4;
     const uint32_t cw = x + w <= (uint32_t)o->w ? w : o->w - x;
     for (uint32_t r = 0; r < h && y + r < (uint32_t)o->h; r++) {
-        void *row = hos_guest_range(dst + r * stride, (size_t)cw * 4);   /* (hookshot: only into guest memory) */
+        void *row = hos_guest_range(dst + r * stride, (size_t)cw * 4);   /* (runtime: only into guest memory) */
         if (row) memcpy(row, src + ((size_t)(y + r) * o->w + x) * 4, (size_t)cw * 4);
     }
     RET(0);
@@ -248,13 +248,13 @@ HLE(_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoolTypeEj
                     (unsigned long long)c->x[30]);
         }
     }
-    /* (hookshot) and no NV12 when its allocation failed: o->nv12 + offset was then any host address, copied to the game */
+    /* (runtime) and no NV12 when its allocation failed: o->nv12 + offset was then any host address, copied to the game */
     if (!o || !o->nv12 || i >= (uint32_t)o->count || x >= (uint32_t)o->w) { RET(0); return; }
     o->read_by_api = 1;
     const uint8_t *yp = o->nv12 + (size_t)i * o->w * o->h * 3 / 2, *uvp = yp + (size_t)o->w * o->h;
     const uint32_t cw = x + w <= (uint32_t)o->w ? w : o->w - x;
     for (uint32_t r = 0; ydst && r < h && y + r < (uint32_t)o->h; r++) {
-        void *row = hos_guest_range(ydst + r * ystride, cw);   /* (hookshot: only into guest memory) */
+        void *row = hos_guest_range(ydst + r * ystride, cw);   /* (runtime: only into guest memory) */
         if (row) memcpy(row, yp + (size_t)(y + r) * o->w + x, cw);
     }
     for (uint32_t r = 0; uvdst && r < h / 2 && y / 2 + r < (uint32_t)o->h / 2; r++) {
@@ -459,7 +459,7 @@ static void ready_update(Dec *d) {
     if (d->ready && dec_room(d)) hos_system_event_signal(d->ready);
     os_cond_broadcast(&d->wake);
 }
-/* (hookshot) Sync handles. An input handle (SubmitXDecoderInputBuffer's id) is reached at once: the packet is copied.
+/* (runtime) Sync handles. An input handle (SubmitXDecoderInputBuffer's id) is reached at once: the packet is copied.
    An output handle is the hardware's fence for a buffer handed out before its picture is decoded: AcquireXDecoderOutputBuffer
    returns at once (the library aborts on any failure there), and the buffer is filled with the next picture decoded
    (dec_fill), which reaches its fence. A buffer handed out with its picture in it gets 0, reached. The movie library waits for
@@ -551,7 +551,7 @@ static void deliver(Dec *d, int slot) {
             memcpy(o->nv12 + (size_t)o->w * o->h + (size_t)y * o->w, p->nv12 + (size_t)p->w * p->h + (size_t)y * p->w,
                    (size_t)w);
         o->rgba_stale = !p->rgba;
-        /* (hookshot) and into the pool's guest memory, as the hardware decoder leaves it (NV12, pitch = width, chroma right
+        /* (runtime) and into the pool's guest memory, as the hardware decoder leaves it (NV12, pitch = width, chroma right
            after the luma rows; RGBA when the memory has room for it and the pool's format is not NV12's). Not once the
            game reads the pool through ReadDecoderOutputImageNv12 / Rgba, as OoT's movie library does: its pools are
            format 3, so each 1080p picture was made RGBA and copied there for nothing (the movie is the same without it) */
@@ -559,7 +559,7 @@ static void deliver(Dec *d, int slot) {
             const size_t nv12_size = (size_t)o->w * o->h * 3 / 2, rgba_size = (size_t)o->w * o->h * 4;
             const int rgba = o->format != 0 && o->mem_size >= rgba_size;   /* (VideoDecoderOutputFormat 0: NV12) */
             const size_t need = rgba ? rgba_size : nv12_size;
-            void *to = hos_guest_range(o->mem, need);   /* (hookshot: only into guest memory) */
+            void *to = hos_guest_range(o->mem, need);   /* (runtime: only into guest memory) */
             if (o->mem_size >= need && ok && to && (rgba ? o->rgba != NULL : 1)) {
                 if (rgba && o->rgba_stale) pool_rgba(o);
                 memcpy(to, rgba ? o->rgba : o->nv12, need);
@@ -625,7 +625,7 @@ static void dec_submit(Ctx *c) {
     if (ARG(0)) G64(ARG(0)) = id;
     if (!d || !d->ctx) { RET(0); return; }
     os_mutex_lock(&d->lock);
-    /* (hookshot) the size is 64-bit: one past what an AVPacket holds was cut to a small packet and copied in whole; and
+    /* (runtime) the size is 64-bit: one past what an AVPacket holds was cut to a small packet and copied in whole; and
        the data must lie in guest memory */
     const void *data = ARG(2) && ARG(3) && ARG(3) <= INT_MAX - AV_INPUT_BUFFER_PADDING_SIZE ? hos_guest_range(ARG(2), ARG(3)) : NULL;
     if (ARG(2) && ARG(3) && !data) hos_log("video: submit of %#llx bytes at %#llx left out", (unsigned long long)ARG(3),
@@ -790,7 +790,7 @@ HLE(_ZN2nn5codec29AcquireVp9DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0
 HLE(_ZN2nn5codec29ReleaseVp9DecoderOutputBufferEPNS0_14Vp9DecoderTypeEjNS_2gs16NativeSyncHandleE) { dec_release(c); }
 HLE(_ZN2nn5codec35GetVp9DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Vp9DecoderTypeEj) { dec_properties(c); }
 
-/* (hookshot) AV1: OoT's movies. FFmpeg's AV1 decoder (dav1d or libaom).
+/* (runtime) AV1: OoT's movies. FFmpeg's AV1 decoder (dav1d or libaom).
    Initialize...ByTransferMemory(decoder, memory, size, ?, u16 width, u16 height, ...), ...ByRemoteMemory(decoder,
    size, u16 width, u16 height, ...) */
 HLE(_ZN2nn5codec36InitializeAv1DecoderByTransferMemoryEPNS0_14Av1DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatENS0_22VideoDecoderOutputModeE) {

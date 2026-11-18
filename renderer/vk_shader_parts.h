@@ -26,7 +26,7 @@ void info_put(std::vector<uint8_t>& o, const Shader::Info& i);
 bool info_get(const uint8_t*& p, const uint8_t* end, Shader::Info& i);
 /// What translated code depends on besides the translator's own code: the device's subgroup answers, the record layout
 uint64_t device_stamp();
-/// The driver binaries of shader objects (hookshot_direct_shader_objects.bin), by a hash of the create info
+/// The driver binaries of shader objects (ounce_renderer_shader_objects.bin), by a hash of the create info
 uint64_t object_key(const VkShaderCreateInfoEXT& ci, const VkShaderDescriptorSetAndBindingMappingInfoEXT& mi, bool size32);
 /// The binary kept for key, or empty
 std::vector<uint8_t> object_binary(uint64_t key);

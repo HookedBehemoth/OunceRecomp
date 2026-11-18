@@ -1,8 +1,8 @@
-//! hookshot-gui: the builder's window. The player picks the dump and the game folder, the dump and the PC are
-//! checked, the game folder is built and then played; every step is a `hookshot-builder` child process whose `@@`
+//! ounce-gui: the builder's window. The player picks the dump and the game folder, the dump and the PC are
+//! checked, the game folder is built and then played; every step is a `ounce-builder` child process whose `@@`
 //! lines the window reads (docs/builder-plan.md, "The window").
 //!
-//! `hookshot-gui [<dump> [<game folder>]]` fills the two fields.
+//! `ounce-gui [<dump> [<game folder>]]` fills the two fields.
 
 mod child;
 
@@ -25,8 +25,8 @@ enum Screen {
     Done,
 }
 
-/// The builder and what it reads: found beside this executable or above it, or from HOOKSHOT_BUILDER,
-/// HOOKSHOT_ROOT, HOOKSHOT_DIRECT and HOOKSHOT_WORK.
+/// The builder and what it reads: found beside this executable or above it, or from OUNCE_BUILDER,
+/// OUNCE_ROOT, OUNCE_DIRECT and OUNCE_WORK.
 struct Paths {
     builder: String,
     root: String,
@@ -39,18 +39,28 @@ impl Paths {
         let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).map(PathBuf::from);
         let first = |c: [PathBuf; 2]| c.iter().find(|p| p.is_file()).unwrap_or(&c[0]).clone();
-        let root = env("HOOKSHOT_ROOT")
+        let root = env("OUNCE_ROOT")
             .or_else(|| dir.ancestors().find(|d| d.join("games/oot/game.toml").is_file()).map(Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("."));
-        let builder = env("HOOKSHOT_BUILDER").unwrap_or_else(|| first([dir.join("hookshot-builder"), root.join("ounce/target/release/hookshot-builder")]));
-        let direct = env("HOOKSHOT_DIRECT").unwrap_or_else(|| first([dir.join("hookshot_direct.so"), root.join("work/sa/meson/renderer/hookshot_direct.so")]));
-        let work = env("HOOKSHOT_WORK").unwrap_or_else(|| root.join("work"));
+        let builder = env("OUNCE_BUILDER").unwrap_or_else(|| first([dir.join("ounce-builder"), root.join("ounce/target/release/ounce-builder")]));
+        let direct = env("OUNCE_DIRECT").unwrap_or_else(|| first([dir.join("ounce_renderer.so"), root.join("work/sa/meson/renderer/ounce_renderer.so")]));
+        let work = env("OUNCE_WORK").unwrap_or_else(|| root.join("work"));
         let s = |p: PathBuf| p.to_string_lossy().into_owned();
         Paths { builder: s(builder), root: s(root), direct: s(direct), work: s(work) }
     }
 
     fn game(&self) -> String {
         Path::new(&self.root).join("games/oot").to_string_lossy().into_owned()
+    }
+
+    /// the game's executable name: its description's `exe = "..."` line
+    fn exe(&self) -> Result<String, String> {
+        let toml = Path::new(&self.game()).join("game.toml");
+        let text = std::fs::read_to_string(&toml).map_err(|e| format!("{}: {e}", toml.display()))?;
+        text.lines()
+            .find_map(|l| l.trim().strip_prefix("exe").map(str::trim).and_then(|r| r.strip_prefix('=')).map(str::trim))
+            .and_then(|v| v.strip_prefix('"')?.strip_suffix('"').map(String::from))
+            .ok_or_else(|| format!("{}: no exe", toml.display()))
     }
 }
 
@@ -240,7 +250,7 @@ impl App {
             paths: Paths::find(),
             screen: Screen::Game,
             dump: args.first().cloned().unwrap_or_default(),
-            out: args.get(1).cloned().unwrap_or_else(|| format!("{home}/Games/hookshot")),
+            out: args.get(1).cloned().unwrap_or_else(|| format!("{home}/Games/ocarina-of-time")),
             high: false,
             identity: Identity::default(),
             checked: String::new(),
@@ -309,7 +319,7 @@ impl App {
                 }
             }
             if let Some(st) = c.exit {
-                self.identity.result.get_or_insert_with(|| Err(format!("hookshot-builder dump ended with {st}")));
+                self.identity.result.get_or_insert_with(|| Err(format!("ounce-builder dump ended with {st}")));
                 self.identity.child = None;
             }
         }
@@ -345,7 +355,7 @@ impl App {
                     b.outcome = Some(if st.success() && b.stage == "done" {
                         Outcome::Done
                     } else {
-                        Outcome::Failed(b.error.clone().unwrap_or_else(|| format!("hookshot-builder ended with {st}")))
+                        Outcome::Failed(b.error.clone().unwrap_or_else(|| format!("ounce-builder ended with {st}")))
                     });
                 }
                 if matches!(b.outcome, Some(Outcome::Done)) {
@@ -394,7 +404,7 @@ impl eframe::App for App {
         egui::Panel::top("steps").show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.heading("Hookshot");
+                ui.heading("OunceRecomp");
                 ui.add_space(16.0);
                 for (s, name) in [(Screen::Game, "1  Game"), (Screen::Device, "2  This PC"), (Screen::Build, "3  Build"), (Screen::Done, "4  Play")] {
                     let t = RichText::new(name);
@@ -445,9 +455,9 @@ impl App {
         egui::CollapsingHeader::new("The builder").show(ui, |ui| {
             egui::Grid::new("paths").num_columns(2).show(ui, |ui| {
                 for (k, v) in [
-                    ("hookshot-builder", &mut self.paths.builder),
+                    ("ounce-builder", &mut self.paths.builder),
                     ("Sources", &mut self.paths.root),
-                    ("hookshot_direct.so", &mut self.paths.direct),
+                    ("ounce_renderer.so", &mut self.paths.direct),
                     ("Work folder", &mut self.paths.work),
                 ] {
                     ui.label(k);
@@ -602,10 +612,15 @@ impl App {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             if ui.button("Play").clicked() {
-                let exe = Path::new(&self.out).join("hookshot");
-                match std::process::Command::new(&exe).current_dir(&self.out).spawn() {
-                    Ok(c) => self.played.push(c),
-                    Err(e) => self.note = format!("{}: {e}", exe.display()),
+                match self.paths.exe() {
+                    Ok(name) => {
+                        let exe = Path::new(&self.out).join(name);
+                        match std::process::Command::new(&exe).current_dir(&self.out).spawn() {
+                            Ok(c) => self.played.push(c),
+                            Err(e) => self.note = format!("{}: {e}", exe.display()),
+                        }
+                    }
+                    Err(e) => self.note = e,
                 }
             }
             if ui.button("Open folder").clicked() {
@@ -623,10 +638,10 @@ impl App {
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([780.0, 560.0]).with_title("Hookshot"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([780.0, 560.0]).with_title("OunceRecomp"),
         ..Default::default()
     };
-    eframe::run_native("hookshot-gui", opts, Box::new(|_| Ok(Box::new(App::new(args)))))
+    eframe::run_native("ounce-gui", opts, Box::new(|_| Ok(Box::new(App::new(args)))))
 }
 
 #[cfg(test)]

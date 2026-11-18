@@ -194,7 +194,7 @@ static Obj *obj(uint64_t key, int kind) { return obj_nockpt(key, kind); }
 /* (the lookup itself; obj was once the scheduling point of every nn::os call, which a lookup under a host lock had to
    avoid: wait_any's scan under mw_lock looks up with this) */
 static Obj *obj_nockpt(uint64_t key, int kind) {
-    /* (hookshot: 128 still missed: obj_lookup was the busiest leaf in dense Kokiri, 3.2% of all samples, 4.3% of the instants when one
+    /* (runtime: 128 still missed: obj_lookup was the busiest leaf in dense Kokiri, 3.2% of all samples, 4.3% of the instants when one
        thread alone ran; each actor has its own mutexes) */
     static _Thread_local struct { uint64_t key; Obj *o; } cache[1024];
     const unsigned i = (unsigned)((key * 0x9E3779B97F4A7C15ULL) >> 54);
@@ -947,7 +947,7 @@ HLE(_ZN2nn2os24InitializeLightSemaphoreEPNS0_18LightSemaphoreTypeEii) { sema_ini
 HLE(_ZN2nn2os22FinalizeLightSemaphoreEPNS0_18LightSemaphoreTypeE) { drop(ARG(0)); }
 HLE(_ZN2nn2os21AcquireLightSemaphoreEPNS0_18LightSemaphoreTypeE) { sema_acquire(obj(ARG(0), K_SEMA)); }
 HLE(_ZN2nn2os21ReleaseLightSemaphoreEPNS0_18LightSemaphoreTypeE) { sema_release(obj(ARG(0), K_SEMA), 1); }
-/* (hookshot) the count overload, which OoT imports: left to the guest SDK it would bypass the host's state */
+/* (runtime) the count overload, which OoT imports: left to the guest SDK it would bypass the host's state */
 HLE(_ZN2nn2os21ReleaseLightSemaphoreEPNS0_18LightSemaphoreTypeEi) { sema_release(obj(ARG(0), K_SEMA), (int)ARG(1)); }
 
 /* ---- message queues (normal and light): the guest's buffer size is the capacity ------------------------------ */
@@ -955,7 +955,7 @@ static void queue_init(uint64_t key, int capacity) {
     Obj *q = fresh(key, K_QUEUE);
     q->qcap = capacity > 0 ? capacity : 1;
     q->q = (uint64_t *)calloc(q->qcap, 8);
-    if (!q->q) hos_fatal(NULL, "os: message queue of %d entries", q->qcap);   /* (hookshot: was written through NULL) */
+    if (!q->q) hos_fatal(NULL, "os: message queue of %d entries", q->qcap);   /* (runtime: was written through NULL) */
 }
 /* (mkw-recomp) HOS_QUEUE_TRACE=1: the first 400 puts (thread, queue, value) */
 static void queue_trace(Obj *q, uint64_t v, const char *what) {

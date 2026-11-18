@@ -1,4 +1,4 @@
-/* The direct back end's loader and the rx_* calls the host makes (renderer/api/vk_api.h): hookshot_direct.so beside the executable
+/* The direct back end's loader and the rx_* calls the host makes (renderer/api/vk_api.h): ounce_renderer.so beside the executable
    is loaded at the first call (NVN records before the window's thread starts the renderer), its device made at rx_start.
    A library that does not load or start ends the game. Calls made before rx_start that the back end needs are kept and given
    to it at the start, in order. */
@@ -130,13 +130,13 @@ static void flush_early(void) {
     os_mutex_unlock(&early_lock);
 }
 
-/* The direct back end, hookshot_direct.so: the version-14 table for the object layer, sync and present, and the list calls the
+/* The direct back end, ounce_renderer.so: the version-14 table for the object layer, sync and present, and the list calls the
    host finds by name (runtime/renderer.h). Read once, at the first call. */
 static hsd_fns direct_fns;
 static volatile int32_t direct_state;   /* 0 not loaded yet, 2 loaded */
 static os_mutex direct_lock = OS_MUTEX_INIT;
 static os_lib *direct_module;
-static const char kDirectLib[] = "hookshot_direct.so";
+static const char kDirectLib[] = "ounce_renderer.so";
 const hsd_fns *rx_direct(void) {
     if (direct_state) return &direct_fns;
     os_mutex_lock(&direct_lock);
@@ -204,7 +204,7 @@ int rx_start(void *hwnd) {
     flush_early();
     return 1;
 }
-/* (hookshot) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
+/* (runtime) the window is being closed: a back end still preparing its shaders stops and keeps what it made first (a few
    seconds at most). One without the export (an older one) has nothing to keep */
 void rx_close_asked(void) {
     if (!direct_module) return;

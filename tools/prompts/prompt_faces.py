@@ -1,4 +1,4 @@
-"""(hookshot) The button-prompt faces: everything that differs between controllers, in one place (tools/prompts/prompt_assets.py builds them).
+"""(prompts) The button-prompt faces: everything that differs between controllers, in one place (tools/prompts/prompt_assets.py builds them).
 
 To add a face: an entry in FACES below, its HOS_PROMPT_* in renderer/api/vk_api.h (in this order, after the Switch), its name in
 games/oot/patches/prompts.c's faces[], and the Insert menu's names for it (gpu/legacy/vk/vk_menu.cpp tx_prompts, pad_name;

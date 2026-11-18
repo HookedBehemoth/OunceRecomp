@@ -100,7 +100,7 @@ public:
     [[nodiscard]] U32 WorkgroupIdX();
     [[nodiscard]] U32 WorkgroupIdY();
     [[nodiscard]] U32 WorkgroupIdZ();
-    [[nodiscard]] U32 NumWorkgroups(u32 component);   // (hookshot direct, M4a: a compute grid read from c0+0..0xB)
+    [[nodiscard]] U32 NumWorkgroups(u32 component);   // (renderer, M4a: a compute grid read from c0+0..0xB)
 
     [[nodiscard]] Value LocalInvocationId();
     [[nodiscard]] U32 LocalInvocationIdX();
@@ -162,7 +162,7 @@ public:
                                const Value& false_value);
 
     void Barrier();
-    void SubgroupBarrier();   // (hookshot: the warp's lanes meet, their shared memory accesses ordered: Ampere LDSM)
+    void SubgroupBarrier();   // (fork: the warp's lanes meet, their shared memory accesses ordered: Ampere LDSM)
     void WorkgroupMemoryBarrier();
     void DeviceMemoryBarrier();
 
@@ -403,7 +403,7 @@ public:
     [[nodiscard]] U32 ShuffleButterfly(const IR::U32& value, const IR::U32& index,
                                        const IR::U32& clamp, const IR::U32& seg_mask);
     [[nodiscard]] U32 QuadBroadcast(const IR::U32& value, const IR::U32& lane);
-    // (hookshot) the subgroup's 16x8x16 f16 matrix multiply: a U32x4, b and c U32x2 fragments
+    // (fork) the subgroup's 16x8x16 f16 matrix multiply: a U32x4, b and c U32x2 fragments
     [[nodiscard]] Value MatrixMulAddF16(const Value& a, const Value& b, const Value& c);
     [[nodiscard]] U32 QuadSwap(const IR::U32& value, const IR::U32& direction);
     [[nodiscard]] F32 FSwizzleAdd(const F32& a, const F32& b, const U32& swizzle,

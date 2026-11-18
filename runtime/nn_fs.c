@@ -13,7 +13,7 @@
 #include "os.h"
 #include <strings.h>
 
-/* (hookshot, #1468) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
+/* (runtime, #1468) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
    Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, UTF-8 as the
    game's strings are. */
 #define HOS_FS_PATH 1024
@@ -36,7 +36,7 @@ static int mount(const char *name, const char *root, int writable) {   /* 0: the
     os_rwlock_lock(&mount_lock);
     int i;
     for (i = 0; i < nmounts && strcmp(mounts[i].name, name); i++) {}
-    if (i == nmounts) {   /* (hookshot: a 17th name was written past the table) */
+    if (i == nmounts) {   /* (runtime: a 17th name was written past the table) */
         if (nmounts == 16) {
             os_rwlock_unlock(&mount_lock);
             hos_log("fs: %s: not mounted (16 mounts already)", name);
@@ -56,7 +56,7 @@ static int mount(const char *name, const char *root, int writable) {   /* 0: the
 int hos_mods_romfs(const char *rel, char *out, size_t cap);   /* mods.c */
 int hos_mods_dir_extras(const char *rel, const char *base_dir, void (*fn)(void *, const char *, int, uint64_t), void *arg);
 
-/* (hookshot) a guest path below its mount stays below it on the host: no "." or ".." part, no control characters */
+/* (runtime) a guest path below its mount stays below it on the host: no "." or ".." part, no control characters */
 static int guest_path_ok(const char *rest) {
     for (const char *p = rest; *p;) {
         const char *e = strchr(p, '/');
@@ -73,7 +73,7 @@ static int guest_path_ok(const char *rest) {
 /* "mount:/a/b" -> host path (a mod's file instead of the RomFS one, when a mod has it: mods.c). Returns 0 if the mount
    is unknown, or the path leaves it (guest_path_ok). */
 static int host_path(const char *guest_mem, char *out, size_t cap, int *writable) {
-    /* (hookshot) one copy of the path, read once: another guest thread may change guest memory between the check and
+    /* (runtime) one copy of the path, read once: another guest thread may change guest memory between the check and
        the use */
     char guest[FS_PATH_MAX];
     if ((size_t)snprintf(guest, sizeof guest, "%s", guest_mem) >= sizeof guest) return 0;
@@ -99,7 +99,7 @@ static int host_path(const char *guest_mem, char *out, size_t cap, int *writable
 }
 
 
-/* (hookshot) a guest string: "" unless it lies in guest memory and ends within FS_PATH_MAX bytes */
+/* (runtime) a guest string: "" unless it lies in guest memory and ends within FS_PATH_MAX bytes */
 static const char *gstr(uint64_t a) {
     if (!a || a >= (uint64_t)HOS_SPACE_END) return "";
     const uint64_t room = (uint64_t)HOS_SPACE_END - a;
@@ -149,7 +149,7 @@ HLE(_ZN2nn2fs8MountRomEPKcPvm) {
     if (!hos_romfs_dir) hos_fatal(c, "fs: MountRom but no RomFS folder given (--romfs)");
     RET(mount(gstr(ARG(0)), hos_romfs_dir, 0) ? 0 : R_NOT_MOUNTED);
 }
-/* (hookshot) MountRom(char const* name): the cacheless overload OoT uses (SDK 22). Left to the SDK it opens the
+/* (runtime) MountRom(char const* name): the cacheless overload OoT uses (SDK 22). Left to the SDK it opens the
    file-system proxy over IPC and aborts on the empty reply. */
 HLE(_ZN2nn2fs8MountRomEPKc) {
     if (!hos_romfs_dir) hos_fatal(c, "fs: MountRom but no RomFS folder given (--romfs)");
@@ -289,7 +289,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
 static uint64_t read_at(Ctx *c, uint64_t id, int64_t off, uint64_t buf, uint64_t size) {
     Handle *fh = get_handle(c, id);
     uint64_t done = 0;
-    if (!hos_guest_range(buf, size)) return 0;   /* (hookshot: the file's bytes go into guest memory only) */
+    if (!hos_guest_range(buf, size)) return 0;   /* (runtime: the file's bytes go into guest memory only) */
     if (hos_bench_on()) hos_bench_fs_read();   /* (HOS_BENCH's "no streaming") */
     static int64_t delay_ns = -1, delay_after_ns;   /* HOS_FS_DELAY_MS=<ms>[,<after s>] (experiment): slower reads */
     if (delay_ns < 0) {
@@ -342,7 +342,7 @@ HLE(_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE) {
 }
 /* GetFileSize(long*, FileHandle) */
 HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
-    const int64_t sz = os_file_size(get_handle(c, ARG(1))->f);   /* (hookshot: none known: 0, not the host stack's bytes) */
+    const int64_t sz = os_file_size(get_handle(c, ARG(1))->f);   /* (runtime: none known: 0, not the host stack's bytes) */
     G64(ARG(0)) = sz > 0 ? (uint64_t)sz : 0;
     RET(0);
 }
@@ -350,7 +350,7 @@ HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE) {
 HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {
     Handle *fh = get_handle(c, ARG(0));
     int64_t put = 0;
-    /* (hookshot) from guest memory only, and the whole size: a 32-bit cut wrote less than asked and said so */
+    /* (runtime) from guest memory only, and the whole size: a 32-bit cut wrote less than asked and said so */
     if (ARG(3) <= 0xFFFFFFFFu && hos_guest_range(ARG(2), ARG(3))) put = os_file_write_at(fh->f, GP(ARG(2)), (size_t)ARG(3), ARG(1));
     RET(put >= 0 && (uint64_t)put == ARG(3) ? 0 : 0x2EE202);
 }
@@ -399,7 +399,7 @@ static void delete_tree(const char *dir) {
     while (d && os_dir_next(d, &e)) {
         char sub[HOS_FS_PATH];
         snprintf(sub, sizeof sub, "%s/%s", dir, e.name);
-        /* (hookshot) a link (a symbolic link, a junction) goes itself: never what it points to */
+        /* (runtime) a link (a symbolic link, a junction) goes itself: never what it points to */
         if (e.kind & OS_PATH_LINK) { if (os_remove(sub)) os_rmdir(sub); }
         else if (e.kind & OS_PATH_DIR) delete_tree(sub);
         else os_remove(sub);
@@ -411,7 +411,7 @@ HLE(_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc) {
     char path[HOS_FS_PATH];
     int writable = 0;
     if (!host_path(gstr(ARG(0)), path, sizeof path, &writable) || !writable) { RET(R_PATH_NOT_FOUND); return; }
-    /* (hookshot) the folder named itself a link: the link goes, never what it points to (as for the links inside) */
+    /* (runtime) the folder named itself a link: the link goes, never what it points to (as for the links inside) */
     if (os_path_kind(path) & OS_PATH_LINK) {
         if (os_remove(path)) os_rmdir(path);
         RET(0);
@@ -519,7 +519,7 @@ HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
     G64(ARG(0)) = (uint64_t)n;
     RET(0);
 }
-/* (hookshot) GetDirectoryEntryCount(long* count, DirectoryHandle): every entry the open mode lists, read or not */
+/* (runtime) GetDirectoryEntryCount(long* count, DirectoryHandle): every entry the open mode lists, read or not */
 HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
     Handle *dh = get_handle(c, ARG(1));
     int64_t n = 0;

@@ -1,25 +1,25 @@
 <h1 align="center">
   <br>
   <a>
-  <img src="assets/hookshot.png" alt="Hookshot" width="200">
+  <img src="assets/logo.png" alt="OunceRecomp" width="200">
 </a>
 
   <br>
-  <b>Hookshot</b>
+  <b>OunceRecomp</b>
   <br>
 </h1>
 
 <h4 align="center">The Legend of Zelda: Ocarina of Time (Nintendo Switch 2) running natively on Linux, with no emulator.
 </h4>
 
-Hookshot is a static recompilation. The game's code is translated ahead of time and compiled into a Linux program,
+OunceRecomp is a static recompilation. The game's code is translated ahead of time and compiled into a Linux program,
 the console's system software is reimplemented, and the Switch 2 graphics calls run on Vulkan through one renderer, the
 direct back end. It is developed and tested on Linux with Mesa RADV on an AMD RX 6950 XT. All of this happens **on your
 PC, from your own copy of the game**.
 
 > [!IMPORTANT]
 > This repository **does not contain the game, keys or an executable**, and it does not explain how to get them. You
-> need your own copy. Everything the build creates (`hookshot`, the generated code, the caches and your saves) comes
+> need your own copy. Everything the build creates (the game's executable, the generated code, the caches and your saves) comes
 > from your game and stays on your PC. Never share those files.
 
 ## Build and run
@@ -29,17 +29,17 @@ A build takes tens of minutes and about 60 GB of disk; a run uses about 10 GB of
 in the [development guide](docs/development.md#set-up).
 
 ```sh
-cargo build --release -p hookshot-builder --manifest-path ounce/Cargo.toml
-ounce/target/release/hookshot-builder dump <your-game.nup> --extract work/dump
+cargo build --release -p ounce-builder --manifest-path ounce/Cargo.toml
+ounce/target/release/ounce-builder dump <your-game.nup> --extract work/dump
 python -I tools/re/dump.py --dump work/dump --set
 scripts/build.sh                           # the renderer (Meson), then the lift, compile and link
 ```
 
-The build writes the game folder `work/sa/build`: `hookshot`, `hookshot_direct.so` and `image.bin`. Run it with the
+The build writes the game folder `work/sa/build`: the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so` and `image.bin`. Run it with the
 RomFS and a folder for the saves:
 
 ```sh
-work/sa/build/hookshot --romfs work/dump/romfs --user work/user
+"work/sa/build/Ocarina of Time" --romfs work/dump/romfs --user work/user
 ```
 
 | Argument | What it does |
@@ -54,7 +54,7 @@ The [development guide](docs/development.md) has the build and run loop and the 
 
 ## How it works
 
-1. `hookshot-builder` (`ounce/`) translates the game's AArch64 code to LLVM IR and compiles it to native code
+1. `ounce-builder` (`ounce/`) translates the game's AArch64 code to LLVM IR and compiles it to native code
    ([the lifter](docs/lifter.md)).
 2. `runtime/` plays the part of the console's system software and is linked with the lifted code and the game's
    patches (`games/oot/patches`).
@@ -65,9 +65,9 @@ The [design page](docs/design.md) shows how the parts fit.
 
 ## Credits
 
-Hookshot exists thanks to the work of many people:
+OunceRecomp exists thanks to the work of many people:
 
-- **NotRexed**: Hookshot, BlueShell (Mario Kart World), Skybound (Tears of the Kingdom) and the a64-kit tools.
+- **NotRexed**: OunceRecomp (formerly Hookshot), BlueShell (Mario Kart World), Skybound (Tears of the Kingdom) and the a64-kit tools.
 - **[Eden](https://git.eden-emu.dev/eden-emu/eden)** and **Eglantine**: the shader recompiler and Switch 2 shader work.
 - **suyu**: the graphics decoders, and the AArch64 translator the first lifter used.
 - **[seedds/nxnative](https://github.com/seedds/nxnative)**: reference for how task and mesh shaders work.
@@ -87,10 +87,10 @@ Hookshot exists thanks to the work of many people:
 
 ## License
 
-Hookshot is free software under the [GNU General Public License, version 3 or later](LICENSE) (GPL-3.0-or-later).
+OunceRecomp is free software under the [GNU General Public License, version 3 or later](LICENSE) (GPL-3.0-or-later).
 It includes code from Eden, suyu and Orchid, which are under the GPL too. Third-party parts under other licenses that
 work with the GPL (Sirit, the Vulkan Memory Allocator, SDL, Opus, zstd, zbic and the
 a64-kit tools) keep their own notices in their folders.
 
-Hookshot is an unofficial fan project, not affiliated with or endorsed by Nintendo. The Legend of Zelda and Ocarina of
+OunceRecomp is an unofficial fan project, not affiliated with or endorsed by Nintendo. The Legend of Zelda and Ocarina of
 Time are trademarks of Nintendo.

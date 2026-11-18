@@ -136,7 +136,7 @@ bool create_instance() {
     for (const char* want : {"VK_KHR_xlib_surface", "VK_KHR_xcb_surface", "VK_KHR_wayland_surface"})
         if (has_extension(all, want)) exts.push_back(want);
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = "hookshot-direct";
+    app.pApplicationName = "ounce-renderer";
     app.apiVersion = VK_API_VERSION_1_4;
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;

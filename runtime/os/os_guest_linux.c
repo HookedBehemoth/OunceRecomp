@@ -38,7 +38,7 @@ int os_guest_reserve(void *base, uint64_t size, int share, const char **note) {
     if (note) *note = NULL;
     const int can = udmabuf_open(note);
     if (share == OS_GUEST_SHARE_ON || (share == OS_GUEST_SHARE_AUTO && can)) {
-        const int fd = (int)syscall(SYS_memfd_create, "hookshot-guest", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+        const int fd = (int)syscall(SYS_memfd_create, "ounce-guest", MFD_CLOEXEC | MFD_ALLOW_SEALING);
         if (fd >= 0 && ftruncate(fd, (off_t)size) == 0) {
             fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW);
             void *p = mmap(base, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE | MAP_NORESERVE, fd, 0);

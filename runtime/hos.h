@@ -54,7 +54,7 @@ extern uint64_t hos_space_end;   /* web: the guest window ends where the host's 
 #else
 #define HOS_SPACE_END 0x8000000000ULL
 #endif
-/* (hookshot) host pointer of the n guest bytes at a, NULL unless all of them lie in the guest window. For addresses
+/* (runtime) host pointer of the n guest bytes at a, NULL unless all of them lie in the guest window. For addresses
    and sizes host code takes from guest memory or arguments before it reads or writes there: GP alone wraps around
    to any host address. */
 static inline void *hos_guest_range(uint64_t a, uint64_t n) {

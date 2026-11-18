@@ -51,7 +51,7 @@ Id StoragePointer(EmitContext& ctx, const StorageTypeDefinition& type_def,
     return ctx.OpAccessChain(type_def.element, ssbo, ctx.u32_zero_value, index);
 }
 
-// (hookshot, RX_VK_DESC_HEAP_BDA=2) a CAS-loop atomic of a by-address stage: the loop (Bda::DefineCasLoop) on the word's device
+// (fork, RX_VK_DESC_HEAP_BDA=2) a CAS-loop atomic of a by-address stage: the loop (Bda::DefineCasLoop) on the word's device
 // address; checked: 0 out of range (the loop ran on the scratch words)
 Id BdaCas(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id fn, Id result_type, Id value) {
     const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32, sizeof(u32))};
@@ -73,7 +73,7 @@ Id SharedAtomicU32(EmitContext& ctx, Id offset, Id value,
 
 Id StorageAtomicU32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id value,
                     Id (Sirit::Module::*atomic_func)(Id, Id, Id, Id, Id)) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA: through the buffer's device address; checked: 0 out of range)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA: through the buffer's device address; checked: 0 out of range)
         const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32, sizeof(u32))};
         const auto [scope, semantics]{AtomicArgs(ctx)};
         return Bda::Result(ctx, a, ctx.U32[1], (ctx.*atomic_func)(ctx.U32[1], a.pointer, scope, semantics, value));
@@ -92,7 +92,7 @@ Id StorageAtomicU64(EmitContext& ctx, const IR::Value& binding, const IR::Value&
         return ctx.ConstantNull(ctx.U64);
     }
 
-    if (ctx.profile.support_int64_atomics && ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+    if (ctx.profile.support_int64_atomics && ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA)
         const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U64, sizeof(u64))};
         const auto [scope, semantics]{AtomicArgs(ctx)};
         return Bda::Result(ctx, a, ctx.U64, (ctx.*atomic_func)(ctx.U64, a.pointer, scope, semantics, value));
@@ -104,7 +104,7 @@ Id StorageAtomicU64(EmitContext& ctx, const IR::Value& binding, const IR::Value&
         return (ctx.*atomic_func)(ctx.U64, pointer, scope, semantics, value);
     }
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA)
         const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
         const Id original_value{ctx.OpBitcast(ctx.U64, Bda::Load(ctx, a, ctx.U32[2]))};
         Bda::Store(ctx, a, ctx.OpBitcast(ctx.U32[2], (ctx.*non_atomic_func)(ctx.U64, value, original_value)));
@@ -126,7 +126,7 @@ Id StorageAtomicU32x2(EmitContext& ctx, const IR::Value& binding, const IR::Valu
     }
 
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA)
         const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
         const Id original_value{Bda::Load(ctx, a, ctx.U32[2])};
         Bda::Store(ctx, a, (ctx.*non_atomic_func)(ctx.U32[2], value, original_value));
@@ -248,7 +248,7 @@ Id EmitStorageAtomicUMax32(EmitContext& ctx, const IR::Value& binding, const IR:
 
 Id EmitStorageAtomicInc32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                           Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return BdaCas(ctx, binding, offset, ctx.increment_cas_ssbo, ctx.U32[1], value);
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -258,7 +258,7 @@ Id EmitStorageAtomicInc32(EmitContext& ctx, const IR::Value& binding, const IR::
 
 Id EmitStorageAtomicDec32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                           Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return BdaCas(ctx, binding, offset, ctx.decrement_cas_ssbo, ctx.U32[1], value);
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -287,8 +287,8 @@ Id EmitStorageAtomicExchange32(EmitContext& ctx, const IR::Value& binding, const
 }
 
 Id EmitStorageAtomicCompareExchange32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
-                                      Id comparator, Id value) {   // (hookshot: ATOMG.CAS)
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+                                      Id comparator, Id value) {   // (fork: ATOMG.CAS)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA)
         const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32, sizeof(u32))};
         const auto [scope, semantics]{AtomicArgs(ctx)};
         return Bda::Result(ctx, a, ctx.U32[1],
@@ -350,7 +350,7 @@ Id EmitStorageAtomicXor64(EmitContext& ctx, const IR::Value& binding, const IR::
 
 Id EmitStorageAtomicExchange64(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                                Id value) {
-    if (ctx.profile.support_int64_atomics && ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+    if (ctx.profile.support_int64_atomics && ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA)
         const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U64, sizeof(u64))};
         const auto [scope, semantics]{AtomicArgs(ctx)};
         return Bda::Result(ctx, a, ctx.U64, ctx.OpAtomicExchange(ctx.U64, a.pointer, scope, semantics, value));
@@ -362,7 +362,7 @@ Id EmitStorageAtomicExchange64(EmitContext& ctx, const IR::Value& binding, const
         return ctx.OpAtomicExchange(ctx.U64, pointer, scope, semantics, value);
     }
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA)
         const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
         const Id original{ctx.OpBitcast(ctx.U64, Bda::Load(ctx, a, ctx.U32[2]))};
         Bda::Store(ctx, a, ctx.OpBitcast(ctx.U32[2], value));
@@ -418,7 +418,7 @@ Id EmitStorageAtomicXor32x2(EmitContext& ctx, const IR::Value& binding, const IR
 Id EmitStorageAtomicExchange32x2(EmitContext& ctx, const IR::Value& binding,
                                  const IR::Value& offset, Id value) {
     LOG_WARNING(Shader_SPIRV, "Int64 atomics not supported, fallback to non-atomic");
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA)
         const Bda::Access a{ctx.BdaAccess(binding, offset, ctx.storage_types.U32x2, sizeof(u32[2]))};
         const Id original{Bda::Load(ctx, a, ctx.U32[2])};
         Bda::Store(ctx, a, value);
@@ -433,7 +433,7 @@ Id EmitStorageAtomicExchange32x2(EmitContext& ctx, const IR::Value& binding,
 
 Id EmitStorageAtomicAddF32(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                            Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return BdaCas(ctx, binding, offset, ctx.f32_add_cas, ctx.F32[1], value);
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -443,7 +443,7 @@ Id EmitStorageAtomicAddF32(EmitContext& ctx, const IR::Value& binding, const IR:
 
 Id EmitStorageAtomicAddF16x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return ctx.OpBitcast(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f16x2_add_cas, ctx.F16[2], value));
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -454,7 +454,7 @@ Id EmitStorageAtomicAddF16x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicAddF32x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return ctx.OpPackHalf2x16(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f32x2_add_cas, ctx.F32[2], value));
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -465,7 +465,7 @@ Id EmitStorageAtomicAddF32x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicMinF16x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return ctx.OpBitcast(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f16x2_min_cas, ctx.F16[2], value));
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -476,7 +476,7 @@ Id EmitStorageAtomicMinF16x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicMinF32x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return ctx.OpPackHalf2x16(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f32x2_min_cas, ctx.F32[2], value));
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -487,7 +487,7 @@ Id EmitStorageAtomicMinF32x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicMaxF16x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return ctx.OpBitcast(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f16x2_max_cas, ctx.F16[2], value));
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -498,7 +498,7 @@ Id EmitStorageAtomicMaxF16x2(EmitContext& ctx, const IR::Value& binding, const I
 
 Id EmitStorageAtomicMaxF32x2(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset,
                              Id value) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA=2)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA=2)
         return ctx.OpPackHalf2x16(ctx.U32[1], BdaCas(ctx, binding, offset, ctx.f32x2_max_cas, ctx.F32[2], value));
     }
     const Id ssbo{ctx.ssbos[binding.U32()].U32};
@@ -507,35 +507,35 @@ Id EmitStorageAtomicMaxF32x2(EmitContext& ctx, const IR::Value& binding, const I
     return ctx.OpPackHalf2x16(ctx.U32[1], result);
 }
 
-Id EmitGlobalAtomicIAdd32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicIAdd32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[0])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
     return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_global_func_u32[0], address, value);
 }
 
-Id EmitGlobalAtomicSMin32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicSMin32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[1])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
     return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_global_func_u32[1], address, value);
 }
 
-Id EmitGlobalAtomicUMin32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicUMin32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[2])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
     return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_global_func_u32[2], address, value);
 }
 
-Id EmitGlobalAtomicSMax32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicSMax32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[3])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
     return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_global_func_u32[3], address, value);
 }
 
-Id EmitGlobalAtomicUMax32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicUMax32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[4])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
@@ -550,35 +550,35 @@ Id EmitGlobalAtomicDec32(EmitContext&) {
     throw NotImplementedException("SPIR-V Instruction");
 }
 
-Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicAnd32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[5])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
     return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_global_func_u32[5], address, value);
 }
 
-Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicOr32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[6])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
     return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_global_func_u32[6], address, value);
 }
 
-Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicXor32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[7])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
     return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_global_func_u32[7], address, value);
 }
 
-Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicExchange32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_func_u32[8])) {
         throw NotImplementedException("SPIR-V Instruction");
     }
     return ctx.OpFunctionCall(ctx.U32[1], ctx.atomic_global_func_u32[8], address, value);
 }
 
-Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, Id address, Id comparator, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicCompareExchange32(EmitContext& ctx, Id address, Id comparator, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_cas_func_u32)) {
         throw NotImplementedException("SPIR-V Instruction");
     }
@@ -673,7 +673,7 @@ Id EmitGlobalAtomicExchange32x2(EmitContext&) {
     throw NotImplementedException("SPIR-V Instruction");
 }
 
-Id EmitGlobalAtomicAddF32(EmitContext& ctx, Id address, Id value) {   // (hookshot: the fallback)
+Id EmitGlobalAtomicAddF32(EmitContext& ctx, Id address, Id value) {   // (fork: the fallback)
     if (!Sirit::ValidId(ctx.atomic_global_add_f32_func)) {
         throw NotImplementedException("SPIR-V Instruction");
     }

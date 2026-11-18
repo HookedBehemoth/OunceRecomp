@@ -309,7 +309,7 @@ Id EmitGetAttribute(EmitContext& ctx, IR::Attribute attr, Id vertex) {
     if (IR::IsGeneric(attr)) {
         const u32 index{IR::GenericAttributeIndex(attr)};
         if (ctx.stage == Stage::Fragment && ctx.runtime_info.point_coord_generics.test(index)) {
-            // (hookshot) the point sprite's coordinate in place of the generic (RuntimeInfo::point_coord_generics)
+            // (fork) the point sprite's coordinate in place of the generic (RuntimeInfo::point_coord_generics)
             if (element < 2) {
                 return ctx.OpLoad(ctx.F32[1],
                                   ctx.OpAccessChain(ctx.input_f32, ctx.point_coord, ctx.Const(element)));
@@ -497,7 +497,7 @@ void EmitSetPatch(EmitContext& ctx, IR::Patch patch, Id value) {
 
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, Id value) {
     const Id component_id{ctx.Const(component)};
-    if (ctx.frag_color_private.at(index)) {   // (hookshot direct, M6b: no attachment there: the private variable)
+    if (ctx.frag_color_private.at(index)) {   // (renderer, M6b: no attachment there: the private variable)
         const Id pointer{ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::Private, ctx.F32[1]), ctx.frag_color.at(index), component_id)};
         ctx.OpStore(pointer, value);
         return;
@@ -578,7 +578,7 @@ Id EmitNumWorkgroups(EmitContext& ctx) {
 Id EmitWorkgroupId(EmitContext& ctx) {
     const Id id{ctx.OpLoad(ctx.U32[3], ctx.workgroup_id)};
     if (ctx.mesh_fallback && ctx.stage == Stage::Mesh && ctx.runtime_info.mesh_fallback_task) {
-        // (hookshot) a fallback mesh workgroup is a slot (its task's map gives it, EmitMeshPrologue): its id is its index in its
+        // (fork) a fallback mesh workgroup is a slot (its task's map gives it, EmitMeshPrologue): its id is its index in its
         // task, as a task launches them from 0
         const Id slot{Sirit::ValidId(ctx.mesh_fallback_slot) ? ctx.mesh_fallback_slot
                                                              : ctx.OpCompositeExtract(ctx.U32[1], id, 0U)};

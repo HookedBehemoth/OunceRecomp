@@ -17,6 +17,7 @@
 # sampled every second while the run's game is alive; the verdict prints its steady value per scene window.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/game.sh"
 route=${1:?route: walk or scenes}
 py=$root/work/venv/bin/python
 overlay=$root/work/overlay/chisel_hf_market
@@ -28,7 +29,7 @@ case "$route" in
 esac
 name=${2:-walk_${route}_$(date +%H%M%S)}
 run=$root/work/runs/$name
-exe=${EXE:-$root/work/sa/build/hookshot}
+exe=${EXE:-$game_exe}
 args=("HOS_INPUT_SCRIPT=$input" HOS_INPUT_EXCLUSIVE=1 HOS_INPUT_SCRIPT_BACKGROUND=1)
 args+=("HOS_DBG=strict${DBG:+,$DBG}")
 

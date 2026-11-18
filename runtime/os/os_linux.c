@@ -1,4 +1,4 @@
-/* os.h on Linux (glibc). Depends on nothing of Hookshot's: libc, the kernel's futexes, and libdl. */
+/* os.h on Linux (glibc). Depends on nothing of the runtime's: libc, the kernel's futexes, and libdl. */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif

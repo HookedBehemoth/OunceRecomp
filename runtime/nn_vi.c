@@ -51,7 +51,7 @@ HLE(_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE) {
 /* nn::vi::GetDisplayVsyncEvent(nn::os::SystemEventType*, nn::vi::Display*) -> Result */
 HLE(_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE) {
     hos_system_event_init(ARG(0), 1);
-    {   /* (hookshot) under a lock: two threads checked the count at once and wrote past the table (the thread's start too) */
+    {   /* (runtime) under a lock: two threads checked the count at once and wrote past the table (the thread's start too) */
         static os_mutex vsync_lock = OS_MUTEX_INIT;
         os_mutex_lock(&vsync_lock);
         if (nvsync < (int32_t)(sizeof vsync_events / sizeof vsync_events[0])) {
@@ -65,7 +65,7 @@ HLE(_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE) {
 }
 
 /* nn::vi::QueryDisplayHdrStatus(bool* on, HdrOutputFormat*, unsigned short* max nits, Display const*) -> Result */
-/* (hookshot) the Insert menu's HDR set to Native on an HDR10 swapchain: an HDR10 display (format 1, which makes the game present PQ
+/* (runtime) the Insert menu's HDR set to Native on an HDR10 swapchain: an HDR10 display (format 1, which makes the game present PQ
    codes in 10 bits) of the menu's peak; otherwise SDR, as a desktop window is */
 HLE(_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE) {
     const int native = rx_option(HOS_OPT_HDR_NATIVE, 0);
@@ -106,7 +106,7 @@ HLE(_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE) {
    interval's vsyncs (1: 60 fps, 2: 30) after the last present, so the game runs at the display's rate.
    HOS_NO_PACING=1: as fast as it can. */
 static volatile int present_interval = 1;
-/* (hookshot) HOS_FPS_MAX=<61-240>: the frame rate cap past the console's 60 (opt-in, a test): the display pacing's interval, the game's
+/* (runtime) HOS_FPS_MAX=<61-240>: the frame rate cap past the console's 60 (opt-in, a test): the display pacing's interval, the game's
    own limiter (+0xfc) and the vsync event go up to it, and the game's time step is the frames' own time (realtime_step), so the game is
    not sped up. Unset or 60: 60, as on the console */
 int hos_ini_option(const char *key, int otherwise);   /* (nn_applet.c) */
@@ -129,7 +129,7 @@ static volatile int64_t presents;
 long long hos_vi_present_number(void) { return __atomic_load_n(&presents, __ATOMIC_RELAXED); }
 int hos_vi_native_interval(Ctx *c, int requested) {
     (void)c;
-    /* (hookshot) OoT's frame-rate controller asks for 2, 3 or 4 vsyncs a frame whenever one runs long (480 changes a minute
+    /* (runtime) OoT's frame-rate controller asks for 2, 3 or 4 vsyncs a frame whenever one runs long (480 changes a minute
        in Kokiri): paced to them, frames snapped to 33, 50 and 67 ms, the stutter, and the frame rate sat far under what the
        PC managed. With game time following the clock (the Insert menu's Real time, realtime_step), a frame is shown as soon
        as it is ready, 60 at most; the game still reads back its own interval. HOS_GAME_INTERVAL=1, or Game speed Per frame:
@@ -141,7 +141,7 @@ int hos_vi_native_interval(Ctx *c, int requested) {
     present_interval = game_interval || !rx_option(0, 1) ? clamped : 1;
     return requested;
 }
-/* (hookshot) The window's textures as the console's display queue has them: each present is shown at its display
+/* (runtime) The window's textures as the console's display queue has them: each present is shown at its display
    time, the later of its present and one interval after the frame shown before it, and a texture is free again once
    the frame presented after it is shown. The acquire of a frame waits for its texture: with `active` textures, the
    texture of the frame `active` back, freed when the frame after that one is shown. With three (OoT) a frame slower
@@ -193,7 +193,7 @@ static void scan_dt(long long presents) {
     fclose(f);
     hos_log("vi: scan %s: %zu floats", name, hits);
 }
-/* (hookshot) Game time follows the clock. The engine steps every frame by ratio = 60 / <the graphics module's nominal fps,
+/* (runtime) Game time follows the clock. The engine steps every frame by ratio = 60 / <the graphics module's nominal fps,
    an int at +0x2c8> (main+0x6e6cc4, f_83b6e300 makes seconds = ratio / 60 and the rest), so at 50 fps the game ran at 83%
    speed: walking the same 8 s at 52 and 33 fps went as far as those rates. Each present writes the rate of the last 5
    display intervals there, the rounding error carried to the next frame so that no time is lost; a step is at most
@@ -349,7 +349,7 @@ static void realtime_step(int64_t now) {
     }
     const uint64_t mod = hos_gfx_module;
     if (!mod) return;
-    {   /* (hookshot) The frame limiter (f_8042cd20 sleeps to 1 / +0xfc). The engine's adaptive controller writes +0xfc when
+    {   /* (runtime) The frame limiter (f_8042cd20 sleeps to 1 / +0xfc). The engine's adaptive controller writes +0xfc when
            variable refresh is on (+0x231, f_804fc0f0), any rate from 40 up. HOS_FPS_TARGET=<fps>: that rate kept, 0: left alone;
            HOS_FPS_LOG=1: what the game asks for, every 300 presents */
         static int target = -1, log_on = -1;
@@ -400,7 +400,7 @@ static void realtime_step(int64_t now) {
     if (count < (unsigned)window) count++;
     double sum = 0;
     for (unsigned i = 0; i < count; i++) sum += samples[i];
-    /* (hookshot) A cap above 60: the engine's own rate is 60 / <whole display intervals>, and its controller puts 60 back over a
+    /* (runtime) A cap above 60: the engine's own rate is 60 / <whole display intervals>, and its controller puts 60 back over a
        higher +0x2c8 before the step is made from it, so every frame still stepped 1/60 s and the game ran fps / 60 times too fast.
        The step is then the frames' own time at the two places the engine makes it (games/oot/patches/oot_probes.c, hos_frame_seconds_bits):
        this same average, at most 1/15 s as below and at least 1/240 s, and the rate under it stays the engine's, 60 at most.

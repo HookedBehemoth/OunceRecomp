@@ -5,8 +5,8 @@
    with TSC times. At the window's end they go to crit.bin in the working directory (the run folder), the thread names to
    crit_threads.txt; scripts/crit_path.py reads them. With HOS_DBG unset, or without "crit", nothing is recorded and the
    back end's calls are not wrapped. */
-#ifndef HOOKSHOT_DIRECT_CRIT_H
-#define HOOKSHOT_DIRECT_CRIT_H
+#ifndef OUNCE_DIRECT_CRIT_H
+#define OUNCE_DIRECT_CRIT_H
 #include <stdint.h>
 #if defined(__x86_64__) || defined(_M_X64)
 #include <x86intrin.h>

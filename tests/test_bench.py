@@ -70,7 +70,7 @@ class BenchTests(unittest.TestCase):
         compiler = shutil.which("gcc") or shutil.which("clang")
         if not compiler:
             self.skipTest("no C compiler")
-        with tempfile.TemporaryDirectory(prefix="hookshot-bench-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="ounce-bench-") as tmp:
             tmp = Path(tmp)
             (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"

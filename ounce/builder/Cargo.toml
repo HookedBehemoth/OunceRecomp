@@ -1,12 +1,12 @@
 [package]
-name = "hookshot-builder"
+name = "ounce-builder"
 version = "0.1.0"
 edition = "2021"
 description = "The player's builder: a dump (.nup, or exefs/ + romfs/) -> a portable game folder, in one process"
 publish = false
 
 [[bin]]
-name = "hookshot-builder"
+name = "ounce-builder"
 path = "src/main.rs"
 
 [dependencies]

@@ -348,7 +348,7 @@ PATCH_AT(0x82c41728, word(0xf9000bea), after, none, hos_oot_player_update, as(x1
    shape, all 0 for a 16:9 window: the game as shipped.
    The sites come from NX2navi's recomp/patches-v111.txt, where they are credited to Ivan0xFF (MIT, "The matrix-update,
    UI and movie sites: Copyright (c) 2026 Ivan0xFF"); the picture and scene size sites are the same constants that file
-   names; the save picture's site is Hookshot's own (issue 952). */
+   names; the save picture's site is the patches' own (issue 952). */
 
 extern volatile uint64_t hos_wide_out, hos_wide_scene;
 extern volatile float hos_wide_ratio, hos_wide_margin, hos_wide_squeeze;
@@ -697,7 +697,7 @@ PATCH_AT(0x802a4824, word(0xf9400108), after, none, hos_oot_wide_save_picture, i
    z-prepass occlusion queries and its samples-passed queries, each by a byte it loads; that byte reads 0, so the game
    makes no occlusion queries and draws every candidate object */
 
-/* the byte that decides whether the game makes its occlusion queries, just loaded: 0 with HOOKSHOT_OCCLUSION_OFF=1 */
+/* the byte that decides whether the game makes its occlusion queries, just loaded: 0 with OUNCE_OCCLUSION_OFF=1 */
 PATCH_AT(0x811cce68, word(0x39400008), after, w8, hos_oot_occlusion_flag, as(w8, flag)) {
     extern volatile int hos_occlusion_off;
     return hos_occlusion_off ? 0 : flag;

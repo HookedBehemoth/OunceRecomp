@@ -1,11 +1,11 @@
 // The BC encoders (src/encoders.cpp over bc7enc_rdo: rgbcx, bc7decomp and bc7e.ispc) built into one static library.
-// The sources: HOOKSHOT_BC7ENC, else third_party/bc7enc_rdo; ISPC (a tool, not vendored): HOOKSHOT_ISPC, else work/deps/ispc/*/bin/ispc, else
+// The sources: OUNCE_BC7ENC, else third_party/bc7enc_rdo; ISPC (a tool, not vendored): OUNCE_ISPC, else work/deps/ispc/*/bin/ispc, else
 // the PATH. The ISPC targets and options decide the BC7 bytes: changing them changes every prepared BC7 texture.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn ispc(root: &Path) -> PathBuf {
-    if let Some(p) = std::env::var_os("HOOKSHOT_ISPC") {
+    if let Some(p) = std::env::var_os("OUNCE_ISPC") {
         return p.into();
     }
     if let Ok(rd) = std::fs::read_dir(root.join("work/deps/ispc")) {
@@ -21,12 +21,12 @@ fn ispc(root: &Path) -> PathBuf {
 fn main() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let src = std::env::var_os("HOOKSHOT_BC7ENC").map(PathBuf::from).unwrap_or_else(|| root.join("third_party/bc7enc_rdo"));
+    let src = std::env::var_os("OUNCE_BC7ENC").map(PathBuf::from).unwrap_or_else(|| root.join("third_party/bc7enc_rdo"));
     println!("cargo:rerun-if-changed=src/encoders.cpp");
-    println!("cargo:rerun-if-env-changed=HOOKSHOT_BC7ENC");
-    println!("cargo:rerun-if-env-changed=HOOKSHOT_ISPC");
+    println!("cargo:rerun-if-env-changed=OUNCE_BC7ENC");
+    println!("cargo:rerun-if-env-changed=OUNCE_ISPC");
     for f in ["rgbcx.cpp", "bc7decomp.cpp", "bc7e.ispc"] {
-        assert!(src.join(f).exists(), "bc7enc_rdo sources not found in {} (HOOKSHOT_BC7ENC)", src.display());
+        assert!(src.join(f).exists(), "bc7enc_rdo sources not found in {} (OUNCE_BC7ENC)", src.display());
         println!("cargo:rerun-if-changed={}", src.join(f).display());
     }
     let exe = ispc(&root);
@@ -39,7 +39,7 @@ fn main() {
         .arg(out.join("bc7e_ispc.h"))
         .args(["--target=sse2,sse4,avx,avx2", "--opt=fast-math", "--opt=disable-assertions", "--pic", "--woff"])
         .status()
-        .unwrap_or_else(|e| panic!("{}: {e} (HOOKSHOT_ISPC)", exe.display()));
+        .unwrap_or_else(|e| panic!("{}: {e} (OUNCE_ISPC)", exe.display()));
     assert!(st.success(), "ISPC failed on bc7e.ispc");
     let mut b = cc::Build::new();
     b.cpp(true)

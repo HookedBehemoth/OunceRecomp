@@ -1,7 +1,7 @@
-/* Hookshot's OS layer: everything the host runtime asks of the operating system, under names of its own. The host's
+/* The runtime's OS layer: everything it asks of the operating system, under names of its own. The host's
    C files reach the system through this header (no <pthread.h>, <sys/mman.h> or <dlfcn.h> of their own; the few
    Linux-only details, such as the guest memory's memfd, stay where they are used); its implementation is os_linux.c,
-   which depends on nothing of Hookshot's.
+   which depends on nothing of the runtime's.
 
    Conventions:
    - timeouts are nanoseconds, OS_FOREVER (any negative value) waits without end;
@@ -10,8 +10,8 @@
      _INIT), never allocated by this layer. They are futex words: a wake makes a system call only when a thread sleeps
      on the word (each counts its sleepers), and an uncontended lock or unlock is one atomic instruction;
    - paths are UTF-8, with '/' as the separator. */
-#ifndef HOOKSHOT_OS_H
-#define HOOKSHOT_OS_H
+#ifndef OUNCE_OS_H
+#define OUNCE_OS_H
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

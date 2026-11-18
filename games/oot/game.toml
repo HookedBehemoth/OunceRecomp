@@ -8,7 +8,9 @@ labels = "labels.txt"
 hot = "hot_funcs.bin"
 hot_order = "hot_order.bin"
 
-# the window's title, and its icon (a BMP beside this file): the builder puts both into the game folder
+# the game's executable in its folder (a file name), the window's title, and its icon (a BMP beside this file): the
+# builder puts the title and the icon into the game folder beside the executable
+exe = "Ocarina of Time"
 title = "The Legend of Zelda: Ocarina of Time"
 icon = "icon.bmp"
 
@@ -30,7 +32,7 @@ patches = [
 build_id = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"
 main_sha256 = "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de"
 
-# the prepared assets (hookshot-builder textures): the romfs file of the game's zstd dictionaries, and the top-level
+# the prepared assets (ounce-builder textures): the romfs file of the game's zstd dictionaries, and the top-level
 # folders that hold no BNTX (audio; TerrainArc's TARB tiles)
 [assets]
 zstd_dictionaries = "Pack/ZsDic.pack.zs"

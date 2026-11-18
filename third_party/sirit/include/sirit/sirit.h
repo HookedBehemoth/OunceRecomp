@@ -142,7 +142,7 @@ public:
     /// Returns type vector.
     Id TypeVector(Id component_type, int component_count);
 
-    /// (hookshot) SPV_KHR_cooperative_matrix: scope, rows, columns and use are constant ids.
+    /// (fork) SPV_KHR_cooperative_matrix: scope, rows, columns and use are constant ids.
     Id TypeCooperativeMatrixKHR(Id component_type, Id scope, Id rows, Id columns, Id use);
 
     /// Returns type matrix.
@@ -714,9 +714,9 @@ public:
     /// Floating-point multiplication of Operand 1 and Operand 2.
     Id OpFMul(Id result_type, Id operand_1, Id operand_2);
 
-    /// (hookshot) SPV_KHR_cooperative_matrix: result = a * b + c over the subgroup.
+    /// (fork) SPV_KHR_cooperative_matrix: result = a * b + c over the subgroup.
     Id OpCooperativeMatrixMulAddKHR(Id result_type, Id a, Id b, Id c);
-    /// (hookshot) SPV_KHR_cooperative_matrix: load from memory (layout and stride are ids).
+    /// (fork) SPV_KHR_cooperative_matrix: load from memory (layout and stride are ids).
     Id OpCooperativeMatrixLoadKHR(Id result_type, Id pointer, Id layout, Id stride);
 
     /// Full signed interger multiplication of Operand 1 and Operand 2.

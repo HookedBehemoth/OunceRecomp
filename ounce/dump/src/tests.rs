@@ -739,15 +739,15 @@ fn dump_from_a_package_and_from_a_folder() {
     assert!(d3.romfs(&mut p).unwrap().in_place);
 }
 
-/// A .nup of a real exefs and a part of a romfs (HOOKSHOT_NUP_FROM=<dump folder>, HOOKSHOT_NUP_TO=<file>,
-/// HOOKSHOT_NUP_ROMFS_MB=<romfs MB>): main ZBIC-compressed, members alternately raw and codec 1. For the reader's
+/// A .nup of a real exefs and a part of a romfs (OUNCE_NUP_FROM=<dump folder>, OUNCE_NUP_TO=<file>,
+/// OUNCE_NUP_ROMFS_MB=<romfs MB>): main ZBIC-compressed, members alternately raw and codec 1. For the reader's
 /// proof on game data; nothing of it is kept in the tree.
 #[test]
 #[ignore]
 fn make_proof_nup() {
-    let from = PathBuf::from(std::env::var("HOOKSHOT_NUP_FROM").unwrap());
-    let to = PathBuf::from(std::env::var("HOOKSHOT_NUP_TO").unwrap());
-    let budget: u64 = std::env::var("HOOKSHOT_NUP_ROMFS_MB").map_or(1024, |v| v.parse().unwrap()) << 20;
+    let from = PathBuf::from(std::env::var("OUNCE_NUP_FROM").unwrap());
+    let to = PathBuf::from(std::env::var("OUNCE_NUP_TO").unwrap());
+    let budget: u64 = std::env::var("OUNCE_NUP_ROMFS_MB").map_or(1024, |v| v.parse().unwrap()) << 20;
     let mut rows = Vec::new();
     for (rel, size) in extract::list_folder(&from.join("exefs")).unwrap() {
         let mut data = std::fs::read(from.join("exefs").join(&rel)).unwrap();

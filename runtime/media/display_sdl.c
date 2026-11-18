@@ -11,7 +11,7 @@
 #include "hos_sdl.h"
 
 /* (the window's app id: a desktop entry names it as its StartupWMClass) */
-#define HOS_APP_ID "io.github.NotRexed.Hookshot"
+#define HOS_APP_ID "io.github.NotRexed.OunceRecomp"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -179,11 +179,11 @@ static void game_file(char *out, size_t cap, const char *name) {
     while (n && out[n - 1] != '/') n--;
     snprintf(out + n, cap - n, "%s", name);
 }
-/* the window's title: title.txt's first line, the game's name; "Hookshot" without one */
+/* the window's title: title.txt's first line, the game's name; "OunceRecomp" without one */
 static void window_title(char *out, size_t cap) {
     char path[OS_PATH_MAX];
     game_file(path, sizeof path, "title.txt");
-    snprintf(out, cap, "Hookshot");
+    snprintf(out, cap, "OunceRecomp");
     FILE *f = fopen(path, "r");
     if (!f) return;
     char line[256];
@@ -207,7 +207,7 @@ int hos_display_init(void) {
         fprintf(stderr, "display: no SDL: no window\n");
         return -1;
     }
-    hos_sdl_identity("Hookshot", HOS_APP_ID);
+    hos_sdl_identity("OunceRecomp", HOS_APP_ID);
     hos_sdl_hint("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0");
     hos_sdl_hint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
     /* (bundled SDL tries x11 before wayland. NVIDIA's X11 surface has no mailbox, and an immediate

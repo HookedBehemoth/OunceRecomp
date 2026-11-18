@@ -1,4 +1,4 @@
-//! The dump step: `hookshot-builder dump`, and the exefs-then-romfs order `build --dump` runs.
+//! The dump step: `ounce-builder dump`, and the exefs-then-romfs order `build --dump` runs.
 
 use crate::fail;
 use ounce_dump::extract::Progress;

@@ -401,7 +401,7 @@ int hos_sdl_audio_channels(void) {
     return n > 0 ? n : 2;
 }
 
-/* ---- (hookshot) microphones: SDL3's recording devices, or SDL2's capture devices (the Linux AppImage carries SDL2): a
+/* ---- (runtime) microphones: SDL3's recording devices, or SDL2's capture devices (the Linux AppImage carries SDL2): a
    stream each opened, in the format asked for, read as the game asks ---- */
 static struct {
     void *GetDevices, *DeviceName, *Available, *GetData, *Clear, *Destroy;   /* (SDL3) */

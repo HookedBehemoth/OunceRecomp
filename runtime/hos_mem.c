@@ -115,7 +115,7 @@ static void pages_mark_used_locked(uint64_t addr, uint64_t size) {
 }
 
 static void discard_pages(uint64_t addr, uint64_t size) {
-    if (!hos_guest_range(addr, size)) return;   /* (hookshot: guest pages only; a discard zeroes what it is given) */
+    if (!hos_guest_range(addr, size)) return;   /* (runtime: guest pages only; a discard zeroes what it is given) */
     const uint64_t lo = (addr + 0xFFF) & ~0xFFFULL, hi = (addr + size) & ~0xFFFULL;
     static int keep = -1;
     if (keep < 0) keep = getenv("HOS_KEEP_FREED_PAGES") != NULL;
@@ -148,7 +148,7 @@ void hos_region_free(uint64_t addr) {
 
 /* ---- nn::os memory -------------------------------------------------------------------------------------- */
 
-/* (hookshot) a heap of size bytes ends below the address regions and the guest window's end (no wrap-around: the size
+/* (runtime) a heap of size bytes ends below the address regions and the guest window's end (no wrap-around: the size
    comes from the game). Also svc SetHeapSize's check (hos_svc.c) */
 int hos_heap_size_fits(uint64_t size) {
     const uint64_t limit = region_floor < HOS_SPACE_END ? region_floor : HOS_SPACE_END;
@@ -216,7 +216,7 @@ HLE(_ZN2nn2os17FreeAddressRegionEm) {
 HLE(_ZN2nn2os19AllocateMemoryPagesEmm) {
     HOS_TRACE_CALL("AllocateMemoryPages");
     const uint64_t a = ARG(0), n = ARG(1), end = a + n;
-    if (!hos_guest_range(a, n)) {   /* (hookshot: a range that wrapped around was zeroed whole, past the guest window) */
+    if (!hos_guest_range(a, n)) {   /* (runtime: a range that wrapped around was zeroed whole, past the guest window) */
         hos_log("AllocateMemoryPages(%#llx, %#llx): outside the guest window", (unsigned long long)a, (unsigned long long)n);
         RET(0xCA01);   /* svc::ResultOutOfMemory */
         return;
@@ -260,7 +260,7 @@ HLE(_ZN2nn2os19AllocateMemoryPagesEmm) {
 /* nn::os::FreeMemoryPages(unsigned long, unsigned long) -> Result */
 HLE(_ZN2nn2os15FreeMemoryPagesEmm) {
     HOS_TRACE_CALL("FreeMemoryPages");
-    if (!hos_guest_range(ARG(0), ARG(1))) {   /* (hookshot: decommitted or discarded: guest pages only) */
+    if (!hos_guest_range(ARG(0), ARG(1))) {   /* (runtime: decommitted or discarded: guest pages only) */
         hos_log("FreeMemoryPages(%#llx, %#llx): outside the guest window", (unsigned long long)ARG(0), (unsigned long long)ARG(1));
         RET(0xCA01);
         return;

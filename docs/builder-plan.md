@@ -1,14 +1,14 @@
 # The player builder
 
-This page is the plan for `hookshot-builder` (`ounce/builder`, in the `ounce` cargo workspace with the lifter): one
+This page is the plan for `ounce-builder` (`ounce/builder`, in the `ounce` cargo workspace with the lifter): one
 Rust executable that turns a player's dump (a `.nup`, or an `exefs/` and `romfs/` folder) into a portable game folder,
 with no Python and no compiler on the player's PC. Read it before you work on the builder; [builder notes](builder-notes.md) has the facts earlier builders learned.
 
 ## What ships
 
-- `hookshot-builder.AppImage`: the builder, `libLLVM.so.23` and lld (linked dynamically), the prebuilt host (its
-  objects and `hookshot_direct.so`, built in CI), and the link's sysroot (glibc 2.35's start files and stub libraries).
-  `hookshot-gui` (`ounce/gui`) is its window: it runs the builder as a child process and reads its `@@` lines
+- `ounce-builder.AppImage`: the builder, `libLLVM.so.23` and lld (linked dynamically), the prebuilt host (its
+  objects and `ounce_renderer.so`, built in CI), and the link's sysroot (glibc 2.35's start files and stub libraries).
+  `ounce-gui` (`ounce/gui`) is its window: it runs the builder as a child process and reads its `@@` lines
   ([the window](#the-window)).
 - A folder of the source the lift reads: `runtime/` (its C files and `sources.txt`), `games/oot/` (`game.toml`, the labels,
   the hot list `hot_funcs.bin` and the link order `hot_order.bin`), `ounce/lift/data/horizon.toml` and
@@ -26,7 +26,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 | Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte the objects of `opt \| clang` with the same flags | 164 s at 16 jobs |
 | Host C | `runtime/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
-| Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BCn, packed (`hookshot-builder textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
+| Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BCn, packed (`ounce-builder textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
 
 ## The prepared assets
@@ -34,12 +34,12 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 `ounce/tex` makes the store the direct back end maps (`prepared/tex`). [The converters](direct/converters.md) describes
 it; `ounce/tex/src/store.rs` the format.
 
-- `hookshot-builder textures <out>` writes the store; `build --prepared <dir>` writes `<dir>/tex` after the link.
+- `ounce-builder textures <out>` writes the store; `build --prepared <dir>` writes `<dir>/tex` after the link.
 - The game description's `[assets]` names what is the game's: the romfs file of its zstd dictionaries and the folders
   the texture step skips.
 - The encoders are bc7enc_rdo's, built into the builder: bc7e (ISPC) for BC7, and for BC4 and BC5 an AVX2 search that
   gives rgbcx's blocks. The sources are `third_party/bc7enc_rdo`; ISPC, a tool, comes from `work/deps/ispc`
-  (`HOOKSHOT_BC7ENC`, `HOOKSHOT_ISPC`).
+  (`OUNCE_BC7ENC`, `OUNCE_ISPC`).
 - zstd is `ounce/dump`'s (1.5.7, its symbols local). A frame's bytes depend on the zstd version, so a store made with
   another version differs in its packs but not in its content.
 - Files are converted in parallel, largest first, each admitted by the memory gate; the textures, images and bands of
@@ -47,7 +47,7 @@ it; `ounce/tex/src/store.rs` the format.
 - The default settings (fast) are BC7 level 1, BC4 and BC5 radius 1 and zstd 3; `--quality high` is BC7 level 4,
   radius 5 and zstd 19, with packs 4 % smaller in four times the time.
 - ASTC is always re-encoded: desktop GPUs do not sample it, so the builder does not look for a GPU that does. The records and frames depend on nothing but the settings and the romfs;
-  where a frame lies in the packs follows the order files finish. `hookshot-builder textures --compare <a> <b>` checks
+  where a frame lies in the packs follows the order files finish. `ounce-builder textures --compare <a> <b>` checks
   two stores field by field and frame by frame.
 - The index and every texture record are held until the end; files are written to the packs as they finish.
 
@@ -57,11 +57,11 @@ it; `ounce/tex/src/store.rs` the format.
 the romfs is copied into the game folder. Nothing at run time reads the exefs: the game runs from `image.bin`, which
 holds everything the lift took from it (the modules, and `main.npdm`'s program id, stack and priority).
 
-- `hookshot-builder dump <file.nup|folder>` lists the titles; `--check [--game <dir>]` reads the exefs in memory and
+- `ounce-builder dump <file.nup|folder>` lists the titles; `--check [--game <dir>]` reads the exefs in memory and
   checks it against `game.toml`'s identity, as a build does first (`@@dump`, `@@identity` lines); `--verify` checks the package (its table of contents,
   every member's extent and SHA-256, the game's zstd header of each `.zs` file) without writing; `--extract <dir>`
   writes the newest title (`--title` picks another, `--only` one part).
-- `hookshot-builder build <out> --dump <file.nup|folder>` reads the exefs into memory (its modules made whole and
+- `ounce-builder build <out> --dump <file.nup|folder>` reads the exefs into memory (its modules made whole and
   plain, as an extraction does), checks it against `game.toml`'s identity, and hands it to the lift; the romfs is
   copied into `<out>/romfs` on a thread while the host's C and the lift run.
 - `--dump-dir <dir>` also writes the dump there whole (`exefs/`, `romfs/`), for the developer tools that read
@@ -83,12 +83,12 @@ holds everything the lift took from it (the modules, and `main.npdm`'s program i
 - `-rotation-max-header-size` is a global LLVM reads while LoopRotate runs: 0 for the hot partitions, 16 (the
   default) for the cold ones. The compile runs hot and cold partitions apart (a gate in `compile.rs`).
 - The target machine has clang's options (PIC, function sections, addrsig); the module's name is `<stdin>`, so the
-  object's file symbol is the one of IR piped to clang. `hookshot-builder compile-all <lift dir> <out> --check <obj
+  object's file symbol is the one of IR piped to clang. `ounce-builder compile-all <lift dir> <out> --check <obj
   dir>` compares every object (the partitions' and gen/'s) with the folder's.
 
 ## The lift in this process
 
-- `hookshot-builder lift-compile <out> [--check <obj dir>]` runs the lift and hands every partition and generated
+- `ounce-builder lift-compile <out> [--check <obj dir>]` runs the lift and hands every partition and generated
   module to the compile threads, so no IR is written to disk. With `--check`, every object is compared with
   the folder's.
 - The lift hands the hot partitions over first and the builder holds the cold generated modules until they are out:
@@ -97,14 +97,14 @@ holds everything the lift took from it (the modules, and `main.npdm`'s program i
 
 ## The build
 
-`hookshot-builder build <out> --direct <hookshot_direct.so>` builds the game in one process: the host's C
+`ounce-builder build <out> --direct <ounce_renderer.so>` builds the game in one process: the host's C
 (`runtime/*.c`, libopus and `rt64/a64_rt.c`, each with its flags and `-fstack-protector-strong`), the lift and its
-compile, the link and the labels. `<out>` holds `hookshot`, `hookshot_direct.so` and `image.bin`, where the game
+compile, the link and the labels. `<out>` holds the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so` and `image.bin`, where the game
 looks without an argument; `scripts/run-vk.sh` and `scripts/play.sh` take the image from beside the executable when
 it is there. With `--dump`, `<out>` is a whole game folder (below).
 
 - The version text (the release name and a fingerprint of the sources) is computed by the builder
-  (`hookshot-builder version`); `--version` replaces it.
+  (`ounce-builder version`); `--version` replaces it.
 - `--gen <dir>` also writes the lift's files for the RE tools and diffout: `gen/*.ll`, `gen/functions.txt`,
   `lift_answers.ll` and `facts.tsv`.
 - `--progress` prints the lines a front end reads ([the window](#the-window) lists them).
@@ -114,45 +114,45 @@ it is there. With `--dump`, `<out>` is a whole game folder (below).
   defaults, then the runtime at its two options, then the partitions at theirs.
 - The lift hands every module over LZ4-compressed and ends within seconds; its state is freed before the compiles
   are done.
-- Jobs: `-j`, else `HOOKSHOT_JOBS`, else every CPU. A memory gate holds a compile back until the memory free (the
+- Jobs: `-j`, else `OUNCE_JOBS`, else every CPU. A memory gate holds a compile back until the memory free (the
   smaller of MemAvailable and the room in a capped cgroup), less what compiles started in the last 3 s may still
-  take, keeps its need and `HOOKSHOT_MEM_RESERVE_GB` (1.5) free. A partition needs about eight times its IR (the
-  largest, 42 MB of IR, peaks at 360 MB), a C file 300 MB. `HOOKSHOT_MEM_GATE=0` turns it off.
+  take, keeps its need and `OUNCE_MEM_RESERVE_GB` (1.5) free. A partition needs about eight times its IR (the
+  largest, 42 MB of IR, peaks at 360 MB), a C file 300 MB. `OUNCE_MEM_GATE=0` turns it off.
 - Objects are cached in `work/builder-cache`. A module is found by its IR, recipe and the partitions' options; a C file by a manifest of the files
   its last compile read (clang's dependency list) and their contents; both keys name the LLVM version and the
-  builder's recipes. Files no build used for `HOOKSHOT_OBJCACHE_DAYS` (3) days are removed at the end of a build.
+  builder's recipes. Files no build used for `OUNCE_OBJCACHE_DAYS` (3) days are removed at the end of a build.
   A rebuild with nothing changed takes 8 to 10 s, most of it the lift.
-- `HOOKSHOT_SYSROOT` gives the link and the C compiles a sysroot (the AppImage's glibc).
+- `OUNCE_SYSROOT` gives the link and the C compiles a sysroot (the AppImage's glibc).
 
 ## Building the builder
 
-- Development: `cargo build --release -p hookshot-builder` (the default `clang` feature) links the system's
+- Development: `cargo build --release -p ounce-builder` (the default `clang` feature) links the system's
   `libLLVM.so` and `libclang-cpp.so` of LLVM 23, and uses the system clang's resource headers.
 - Shipping: `scripts/linux/static-llvm.sh` builds a static LLVM, clang and lld of the pinned release for
-  x86-64-v3; `LLVM_STATIC_DIR=<its build> cargo build --release -p hookshot-builder --features static-llvm,clang`
+  x86-64-v3; `LLVM_STATIC_DIR=<its build> cargo build --release -p ounce-builder --features static-llvm,clang`
   links them. LTO is not set up: the archives would hold bitcode, and the Rust link would have to run LTO.
 
 ## The link
 
 - The command line is the one clang's driver gives `ld.lld` for `clang -fuse-ld=lld`: a PIE against glibc with libgcc's
-  start and end files, `--gc-sections`, and the symbols `hookshot_direct.so` calls in the executable exported
+  start and end files, `--gc-sections`, and the symbols `ounce_renderer.so` calls in the executable exported
   (`os_*`, `hos_mem_ledger`).
 - The link order (`hot_order.bin`) becomes lld's symbol-ordering file, `hot_order.txt` beside the executable.
 - The labels rename `f_<address>` to `<label>.f_<address>` in the symbol table only.
-- `hookshot-builder link <out> <objs.rsp> --order <hot_order.bin> --labels <labels.txt> -- <libs>` links a list of
+- `ounce-builder link <out> <objs.rsp> --order <hot_order.bin> --labels <labels.txt> -- <libs>` links a list of
   objects alone.
 
 ## The generated code
 
 `ounce-lift` writes the runtime's tables, the image's description, the import stops and the NVN routes as IR
 (`gen/*.ll`); the builder compiles them as it compiles `lift_answers`. Each object equals clang's object of the C these files replace in its loaded sections, symbols and
-relocations (`hookshot-builder objeq <a.o> <b.o>`). The guest model's runtime (`rt64/a64_rt.c`) reads no dump: it is
+relocations (`ounce-builder objeq <a.o> <b.o>`). The guest model's runtime (`rt64/a64_rt.c`) reads no dump: it is
 built with the host.
 
 ## LLVM linked statically
 
 `--features static-llvm` links LLVM and lld from a static build tree (`LLVM_STATIC_DIR`: Release, X86 only, clang
-and lld projects, no tools); `--features clang` adds clang's libraries and `hookshot-builder compile-c`, a C file
+and lld projects, no tools); `--features clang` adds clang's libraries and `ounce-builder compile-c`, a C file
 compiled in this process. Its objects equal the system clang's for every host C file when
 `-fstack-protector-strong` is given (the distribution's clang turns it on by default). Sizes of the stripped builder
 (the lifter included):
@@ -171,19 +171,19 @@ The host's C needs 153 of clang's resource headers (3.3 MB, 0.2 MB compressed); 
 
 ## The game folder
 
-`hookshot-builder build <out> --direct <hookshot_direct.so> --dump <file.nup|folder>` makes a folder that holds the
+`ounce-builder build <out> --direct <ounce_renderer.so> --dump <file.nup|folder>` makes a folder that holds the
 whole game:
 
 | Path | What |
 |---|---|
-| `hookshot`, `hookshot_direct.so`, `image.bin` | the game, its renderer and its image |
+| the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so`, `image.bin` | the game, its renderer and its image |
 | `romfs/` | the dump's romfs; its texture files hold their headers, their texels are zeroed |
 | `prepared/tex/` | the texture store; `prepared/hollowed.txt` lists the romfs files whose texels it holds |
-| `hookshot_direct_*.bin` | the shader caches, written by the game beside the executable |
+| `ounce_renderer_*.bin` | the shader caches, written by the game beside the executable |
 | `user/` | the saves |
 
 - The host takes everything from beside the executable when it starts with no arguments: the image, `romfs/`,
-  `prepared/` and `user/`. A folder without `user/` keeps its saves in `~/.local/share/hookshot`. The development
+  `prepared/` and `user/`. A folder without `user/` keeps its saves in `~/.local/share/ounce`. The development
   scripts pass the image, the romfs and the saves folder on the command line, and their builds find
   `work/prepared`.
 - The build's own files (objects, the map, the link order) go to `<work>/game-build`, not into the folder.
@@ -207,14 +207,14 @@ the romfs copy is 15.9 GB instead of 25.0 GB, and the folder about 30 GB with it
   their texels linear from the loaded file ([terrain tiles](direct/terrain-texels.md)).
 - A BNTX inside a compressed member of an archive is left whole.
 - A rebuild writes the files `prepared/hollowed.txt` lists whole again before the texture step reads the romfs.
-  `hookshot-builder textures` refuses a game folder's romfs: make a store from the dump.
+  `ounce-builder textures` refuses a game folder's romfs: make a store from the dump.
 
 ## The window
 
-`hookshot-gui` picks the dump and the game folder, runs `dump --check` and `probe`, then `build --dump --progress`,
-each as a child process, so a step that crashes never takes the window down. It finds `hookshot-builder` beside
-itself or in `ounce/target/release`, and the source folder above itself (`HOOKSHOT_BUILDER`, `HOOKSHOT_ROOT`).
-It is built on its own, `cargo build --profile gui -p hookshot-gui`, without LTO (34 s cold, 7.0 MB); the
+`ounce-gui` picks the dump and the game folder, runs `dump --check` and `probe`, then `build --dump --progress`,
+each as a child process, so a step that crashes never takes the window down. It finds `ounce-builder` beside
+itself or in `ounce/target/release`, and the source folder above itself (`OUNCE_BUILDER`, `OUNCE_ROOT`).
+It is built on its own, `cargo build --profile gui -p ounce-gui`, without LTO (34 s cold, 7.0 MB); the
 workspace's default members leave it out. eframe has only glow, X11 and its default fonts (Wayland desktops run it
 through XWayland; the `wayland` feature adds 7 s and 1.4 MB). The file dialogs are rfd's desktop portal over a
 `dlopen`ed libdbus, with zenity as the fallback; the path fields take a typed path too.
@@ -233,7 +233,7 @@ The lines it reads, one per line on standard output:
 
 Stopping a build kills the process, and a build run again over the same folder finishes it:
 
-- `hookshot`, `hookshot_direct.so` and `image.bin` are installed by a rename; objects and cached files are written
+- the game's executable (game.toml's `exe`, `Ocarina of Time`), `ounce_renderer.so` and `image.bin` are installed by a rename; objects and cached files are written
   beside and renamed.
 - The romfs copy keeps a file only when its size is the dump's, and writes through a `.part` file. A texture file
   whose texels were zeroed is smaller than the dump's, so it is written whole again.
@@ -242,7 +242,7 @@ Stopping a build kills the process, and a build run again over the same folder f
 
 ## The device check
 
-`hookshot-builder probe` checks the GPU the back end would pick (the first discrete GPU with Vulkan 1.3), with
+`ounce-builder probe` checks the GPU the back end would pick (the first discrete GPU with Vulkan 1.3), with
 libvulkan loaded at run time and no Vulkan crate. It prints one line per item, `@@probe <key> <pass|fail|warn|info>
 <value>`, and last `@@probe verdict <pass|fail> <failed keys>`; it exits 1 when an item fails.
 
@@ -267,7 +267,7 @@ without is a warning.
 1. The compile, lld and the generated code as IR in this process (done).
 2. `ounce-lift` as a library, the partitions handed to the compile in memory (done).
 3. The builder as the development build too (done: `scripts/build.sh`).
-4. CI: the host and `hookshot_direct.so` prebuilt; the sysroot.
+4. CI: the host and `ounce_renderer.so` prebuilt; the sysroot.
 5. The dump reader in Rust (done: `ounce/dump`).
 6. The texture converter in Rust (done: `ounce/tex`).
 7. The game folder and the host's defaults for it (done); the AppImage.

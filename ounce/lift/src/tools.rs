@@ -82,9 +82,9 @@ fn patches(b: &Base, ps: &PatchSet) -> Patches {
     b.patches(ps).unwrap_or_else(|e| fail(e))
 }
 
-/// an LLVM tool: HOOKSHOT_LLVM_BIN/<name>, else the PATH's
+/// an LLVM tool: OUNCE_LLVM_BIN/<name>, else the PATH's
 fn llvm_tool(name: &str) -> PathBuf {
-    if let Some(d) = std::env::var_os("HOOKSHOT_LLVM_BIN").filter(|v| !v.is_empty()) {
+    if let Some(d) = std::env::var_os("OUNCE_LLVM_BIN").filter(|v| !v.is_empty()) {
         let p = PathBuf::from(d).join(name);
         if p.exists() {
             return p;

@@ -34,6 +34,7 @@ struct Raw {
     labels: String,
     hot: String,
     identity: Identity,
+    exe: String,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -53,6 +54,8 @@ pub struct Game {
     /// the hot list (one `f_<address>` a line), resolved against the folder of game.toml
     pub hot: PathBuf,
     pub identity: Identity,
+    /// the game's executable in its folder: a file name (no '/', '\\' or ':'; spaces are fine)
+    pub exe: String,
     /// the window's title (the game's name); the description's `name` when it has none
     pub title: String,
     /// the window's icon (a BMP), resolved against the folder of game.toml
@@ -71,7 +74,11 @@ impl Game {
         let text = std::fs::read_to_string(&file).map_err(|e| format!("no game description at {}: {e}", file.display()))?;
         let raw: Raw = toml::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
         let folder = file.parent().unwrap_or(Path::new(""));
+        if raw.exe.is_empty() || raw.exe.contains(['/', '\\', ':']) || raw.exe.starts_with('.') {
+            return Err(format!("{}: exe {:?} is not a file name", file.display(), raw.exe));
+        }
         Ok(Game {
+            exe: raw.exe,
             title: raw.title.unwrap_or_else(|| raw.name.clone()),
             icon: raw.icon.map(|i| folder.join(i)),
             patches: raw.patches.iter().map(|p| folder.join(p)).collect(),
@@ -161,6 +168,7 @@ mod tests {
         assert!(g.patches.iter().any(|p| p.ends_with("games/oot/patches/oot_probes.c")));
         assert!(g.icon.as_ref().unwrap().ends_with("games/oot/icon.bmp") && g.icon.as_ref().unwrap().is_file());
         assert!(g.title.contains("Ocarina of Time"));
+        assert_eq!(g.exe, "Ocarina of Time");
         assert_eq!(g.local_continuations, vec![(0x8011060C, 0x10FFFCA7), (0x80110694, 0x10000047)]);
         let s = g.sources(&repo()).unwrap();
         assert!(s.iter().all(|p| p.is_file()), "{s:?}");

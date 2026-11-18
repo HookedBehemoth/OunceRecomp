@@ -211,7 +211,7 @@ equal. In the game: smoke test in Kokiri passes (pictures within 2 of 64 bits of
 gen/ holds IR instead of C: a64_table, a64_hooks, a64_code_slots, a64_stubs, hos_image and nvn2_exports `.ll`, the
 build compiling them as it compiles lift_answers. The lift no longer writes rt64/: `ounce-lift rt64` does, before
 the lift, as it reads no dump. Each object equals clang's of the C it replaces in its allocated sections, symbols but
-the file symbol, and relocations (`hookshot-builder objeq`, .text and .eh_frame included); the executable built so
+the file symbol, and relocations (`ounce-builder objeq`, .text and .eh_frame included); the executable built so
 equals the one before in every loaded byte but the build ID, with the version stamp held equal. An answered hook is a
 comment in a64_hooks.ll, `; f_<address> answers <symbol>: lifted IR`.
 

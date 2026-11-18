@@ -22,7 +22,7 @@
 #include <string.h>
 #include "os.h"
 #include "hos_sdl.h"
-#include "hos_paths.h"   /* (the game folder: hookshot_options.ini, au_menu_output) */
+#include "hos_paths.h"   /* (the game folder: ounce_options.ini, au_menu_output) */
 
 void hos_system_event_init(uint64_t key, int autoclear);
 void hos_system_event_signal(uint64_t key);
@@ -307,7 +307,7 @@ static void reverb_frame(Reverb *rv, Mix *m) {
     const float refl = rv->refl > -10000 ? mb_gain(rv->refl) : 0.0f;
     const float late = rv->reverb > -10000 ? mb_gain(rv->reverb) : 0.0f;
     const float dry = rv->dry;
-    /* (hookshot) the game's delays are any 64-bit TimeSpan: clamped as doubles, before they become ints, and from both
+    /* (runtime) the game's delays are any 64-bit TimeSpan: clamped as doubles, before they become ints, and from both
        sides (a negative late delay read before the line) */
     const double pre_f = (double)rv->refl_delay_ns * RATE / 1e9, late_f = (double)rv->late_delay_ns * RATE / 1e9;
     const int pre_d = pre_f > 0 ? (pre_f < REV_PRE / 2 - 1 ? (int)pre_f : REV_PRE / 2 - 1) : 0;
@@ -575,7 +575,7 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
 static uint64_t au_ms(void) { return (uint64_t)(os_now_ns() / 1000000); }
 /* The default output's channels (SDL's default device); 2 when unknown. */
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
-/* (hookshot) The Insert menu's Audio output (gpu/legacy/vk/vk_menu.cpp): audio_output= in hookshot_options.ini beside the game,
+/* (runtime) The Insert menu's Audio output (gpu/legacy/vk/vk_menu.cpp): audio_output= in ounce_options.ini beside the game,
    0 Auto, 1 Stereo, 2 5.1 (a number past them is the nearest, as the menu reads it). Read from the file, as
    runtime/nn_applet.c reads the Handheld profile: the game asks for its speakers only once, at its start */
 static int au_menu_output(void) {
@@ -583,7 +583,7 @@ static int au_menu_output(void) {
     const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);
     char *slash = len ? strrchr(path, '/') : NULL;
     if (!slash) return 0;
-    snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "hookshot_options.ini");
+    snprintf(slash + 1, (size_t)(path + OS_PATH_MAX - slash - 1), "ounce_options.ini");
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     char line[80];
@@ -1034,7 +1034,7 @@ HLE(_ZN2nn5audio17GetSampleByteSizeENS0_12SampleFormatE) {
    a handle only. The three words written into it before overwrote the 16 bytes after it: MKW keeps pool objects
    where those bytes are a heap's links (its "Sound" heap's free list broke). */
 static struct { uint64_t addr, size; int used; } au_pools[1024];
-/* (hookshot) the handle lives in the game's MemoryPoolType (guest memory): its index is checked against the table */
+/* (runtime) the handle lives in the game's MemoryPoolType (guest memory): its index is checked against the table */
 static int pool_index(uint64_t obj) {
     const int i = get_handle(obj, K_POOL);
     return i >= 0 && i < 1024 && au_pools[i].used ? i : -1;

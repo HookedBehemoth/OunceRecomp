@@ -1,11 +1,11 @@
-/* The direct back end's list calls (hookshot_direct.so): what runtime/nvn_native.c hands it as the game
+/* The direct back end's list calls (ounce_renderer.so): what runtime/nvn_native.c hands it as the game
    records, besides the object layer, sync and present of renderer/api/vk_api.h's table (version 14), which it answers too.
    C, included by the host; the host finds these by name in the library.
 
    A list is begun, filled and ended on one recording thread at a time (game workers, concurrently with other lists),
    released from any thread, and submitted from the guest's submitting threads (the Presentation Thread, Main). */
-#ifndef HOOKSHOT_DIRECT_API_H
-#define HOOKSHOT_DIRECT_API_H
+#ifndef OUNCE_DIRECT_API_H
+#define OUNCE_DIRECT_API_H
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -34,7 +34,7 @@ void  hsd_queue_wait_fence(uint64_t queue, uint64_t fence);               /* nvn
 void  hsd_present_queue(uint64_t queue);   /* the queue of the present that follows on this thread (nvnQueuePresentTexture) */
 
 /* Prepared assets. The host's loader hooks name each texture load's BNTX texture;
-   the back end makes that texture's image from the prepared store (hookshot-builder textures) when it is initialized,
+   the back end makes that texture's image from the prepared store (ounce-builder textures) when it is initialized,
    filled on the initializing thread. Any thread (the game's loaders). */
 typedef struct hsd_asset_key {
     const void *tex;               /* the NVNtexture the load initializes next (host pointer of the guest object) */

@@ -9,4 +9,4 @@ option('march', type: 'string', value: 'x86-64-v3',
 option('sysroot', type: 'string', value: '',
   description: 'A sysroot to compile and link against (--sysroot)')
 option('exe', type: 'string', value: '',
-  description: 'The hookshot executable whose exports the renderer\'s undefined symbols are checked against; empty: the export patterns only')
+  description: 'The game executable whose exports the renderer\'s undefined symbols are checked against; empty: the export patterns only')

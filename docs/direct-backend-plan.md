@@ -10,7 +10,7 @@ works, see [the back end's architecture](direct/architecture.md); for what is kn
 The direct back end is the only renderer in the tree. It records the game's NVN commands as Vulkan commands. NVN is the
 console's graphics API; the back end replaces it on a PC with Vulkan.
 
-- It lives in `renderer` and builds as `hookshot_direct.so`, which `runtime/rx_backend.c` loads.
+- It lives in `renderer` and builds as `ounce_renderer.so`, which `runtime/rx_backend.c` loads.
 - It shares its interface with the host through `renderer/api` (`vk_api.h`, `rx_nvn.h`) and `renderer/api/vk_list_api.h`.
 - It targets one PC: an AMD RX 6950 XT on Mesa's RADV driver, with every extension Mesa offers. RADV is Mesa's Vulkan
   driver for AMD GPUs.

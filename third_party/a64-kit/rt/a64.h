@@ -1,6 +1,6 @@
 /* a64-kit guest model: what lifted AArch64 code and the host runtime see of a guest thread: the context
    (`GuestContext`), guest memory (`A64_PTR`, `recomp_load*` / `recomp_store*`) and the runtime's
-   entry points (a64_rt.c). Hookshot's copy is generated from this by nx2/rtgen.py (the 64-bit guest window). */
+   entry points (a64_rt.c). The lifter's copy is generated from this (ounce/lift/src/gen.rs) (the 64-bit guest window). */
 #ifndef A64_H
 #define A64_H
 #include <stdint.h>
@@ -87,14 +87,14 @@ A64_INLINE void recomp_stp64(GuestContext *c, uint64_t a, uint64_t v0, uint64_t 
 typedef void (*A64Fn)(Ctx *A64_NOESC);
 A64Fn a64_lookup(uint64_t addr);                    /* function at a guest address, or NULL */
 void a64_icall(Ctx *A64_NOESC c, uint64_t target);            /* BLR: indirect call */
-/* (hookshot) setjmp in lifted code: a call of a function that calls __setjmp is wrapped in a host __builtin_setjmp
+/* (fork) setjmp in lifted code: a call of a function that calls __setjmp is wrapped in a host __builtin_setjmp
    on a slot (pushed per thread with that function's setjmp return addresses, popped after the call); the guest
    longjmp's final BR to one of them comes back to the newest such slot through the host's a64_call_miss
    (host/hos_setjmp.c), and the caller runs the function's code from that address (recomp_sj_target) */
 void **recomp_sj_push(Ctx *A64_NOESC c, uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3);
 uint64_t recomp_sj_target(void **slot);
 void recomp_sj_pop(void **slot);
-void hos_sj_call(Ctx *A64_NOESC c, void (*f)(Ctx *), uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3);   /* (hookshot: lift 2's form) */
+void hos_sj_call(Ctx *A64_NOESC c, void (*f)(Ctx *), uint64_t r0, uint64_t r1, uint64_t r2, uint64_t r3);   /* (fork: lift 2's form) */
 void a64_ijump(Ctx *A64_NOESC c, uint64_t target);            /* BR that is not a jump table: indirect tail call */
 /* The lifted BLR / BR: a cache per call site, filled by its first target (the guest address in the top 32 bits, the
    function as an offset from a64_lookup in the low 32). A site calling that target again reads no shared table and
@@ -120,10 +120,10 @@ void a64_ijump_site(Ctx *A64_NOESC c, uint64_t target, uint64_t *site);
 void a64_svc(Ctx *A64_NOESC c, uint32_t imm);                 /* SVC #imm (sdk only) */
 void a64_trap(Ctx *A64_NOESC c, uint64_t pc, uint32_t insn);  /* BRK, HLT, UDF and words that are not code */
 void a64_ret_mismatch(Ctx *A64_NOESC c, uint64_t pc);         /* RET to something other than the caller (debug builds) */
-/* (hookshot) the guest's FP mode on the host (host/hos_fp.c): MXCSR follows FPCR; lift 2's MRS/MSR FPCR/FPSR */
+/* (fork) the guest's FP mode on the host (host/hos_fp.c): MXCSR follows FPCR; lift 2's MRS/MSR FPCR/FPSR */
 unsigned hos_fp_mxcsr(uint64_t fpcr);
 void a64_fpcr_sync(Ctx *A64_NOESC c);                          /* MXCSR = c->fpcr */
-/* (hookshot) the counter (a64_rt.c), also for host/hos_thread.c */
+/* (fork) the counter (a64_rt.c), also for host/hos_thread.c */
 uint64_t recomp_cntpct(GuestContext *c);
 uint64_t a64_fpcr_read(Ctx *A64_NOESC c);
 void a64_fpcr_write(Ctx *A64_NOESC c, uint64_t v);

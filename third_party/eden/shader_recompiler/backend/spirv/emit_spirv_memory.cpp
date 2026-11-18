@@ -47,7 +47,7 @@ Id StoragePointer(EmitContext& ctx, const IR::Value& binding, const IR::Value& o
 Id LoadStorage(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id result_type,
                const StorageTypeDefinition& type_def, size_t element_size,
                Id StorageDefinitions::*member_ptr, u32 index_offset = 0) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA: through the buffer's device address)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA: through the buffer's device address)
         return Bda::Load(ctx, ctx.BdaAccess(binding, offset, type_def, static_cast<u32>(element_size), index_offset), result_type);
     }
     const Id pointer{
@@ -64,7 +64,7 @@ Id LoadStorage32(EmitContext& ctx, const IR::Value& binding, const IR::Value& of
 void WriteStorage(EmitContext& ctx, const IR::Value& binding, const IR::Value& offset, Id value,
                   const StorageTypeDefinition& type_def, size_t element_size,
                   Id StorageDefinitions::*member_ptr, u32 index_offset = 0) {
-    if (ctx.ssbo_bda) {   // (hookshot, RX_VK_DESC_HEAP_BDA)
+    if (ctx.ssbo_bda) {   // (fork, RX_VK_DESC_HEAP_BDA)
         Bda::Store(ctx, ctx.BdaAccess(binding, offset, type_def, static_cast<u32>(element_size), index_offset), value);
         return;
     }
@@ -88,7 +88,7 @@ void WriteStorageByCasLoop(EmitContext& ctx, const IR::Value& binding, const IR:
 }
 } // Anonymous namespace
 
-// (hookshot) 8- and 16-bit loads through a pointer no storage buffer was found for: the aligned 32-bit word by the same
+// (fork) 8- and 16-bit loads through a pointer no storage buffer was found for: the aligned 32-bit word by the same
 // search as LoadGlobal32, and the byte or half of it the address names (the console's loads are naturally aligned). They
 // threw "not implemented": 30 of OoT's mesh programs (LoadGlobalS16) were left untranslated on every card, issue 351
 namespace {
@@ -146,7 +146,7 @@ Id EmitLoadGlobal128(EmitContext& ctx, Id address) {
     return ctx.Const(0u, 0u, 0u, 0u);
 }
 
-// (hookshot) 8- and 16-bit stores through a pointer no storage buffer was found for: the aligned 32-bit word by the same
+// (fork) 8- and 16-bit stores through a pointer no storage buffer was found for: the aligned 32-bit word by the same
 // search as LoadGlobal32, changed in place with a compare-exchange loop (spirv_emit_context.cpp). They threw "not
 // implemented", the same gap as the narrow loads (issue 192)
 namespace {

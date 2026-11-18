@@ -1,6 +1,6 @@
 //! The memory gate: a compile starts when the memory free, less what the compiles that
-//! started a moment ago may still take, keeps its own need and a reserve (HOOKSHOT_MEM_RESERVE_GB, 1.5) free. At least
-//! one compile always runs. HOOKSHOT_MEM_GATE=0 turns it off. The free memory is the smaller of MemAvailable and the
+//! started a moment ago may still take, keeps its own need and a reserve (OUNCE_MEM_RESERVE_GB, 1.5) free. At least
+//! one compile always runs. OUNCE_MEM_GATE=0 turns it off. The free memory is the smaller of MemAvailable and the
 //! room under the tightest memory.max of this process's cgroups (a capped scope).
 #![cfg_attr(not(feature = "clang"), allow(dead_code))]
 
@@ -75,8 +75,8 @@ fn cgroup_room_mb() -> Option<u64> {
 
 impl Gate {
     pub fn new() -> Gate {
-        let on = std::env::var("HOOKSHOT_MEM_GATE").map_or(true, |v| v != "0");
-        let reserve_gb: f64 = std::env::var("HOOKSHOT_MEM_RESERVE_GB").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+        let on = std::env::var("OUNCE_MEM_GATE").map_or(true, |v| v != "0");
+        let reserve_gb: f64 = std::env::var("OUNCE_MEM_RESERVE_GB").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
         Gate { on, reserve_mb: (reserve_gb * 1024.0) as u64, running: Mutex::new(Vec::new()), cv: Condvar::new(), next: Mutex::new(0) }
     }
 
@@ -102,9 +102,9 @@ impl Gate {
     }
 }
 
-/// the compile threads by default: HOOKSHOT_JOBS, else every CPU (the gate holds compiles back when memory is short)
+/// the compile threads by default: OUNCE_JOBS, else every CPU (the gate holds compiles back when memory is short)
 pub fn default_jobs() -> usize {
-    std::env::var("HOOKSHOT_JOBS")
+    std::env::var("OUNCE_JOBS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))

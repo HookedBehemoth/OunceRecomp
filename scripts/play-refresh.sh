@@ -6,7 +6,7 @@
 # work/builder-cache. A change the
 # commit does not show (the hot list, the dump) needs scripts/relift.sh, which builds even when BUILD.txt names HEAD. Heavy
 # work takes work/heavy.lock (one heavy job on the machine at a time) and runs in a memory-capped scope
-# (HOOKSHOT_REFRESH_MEM, 18G). A game running from work/sa/build keeps going: the builder renames each new file over
+# (OUNCE_REFRESH_MEM, 18G). A game running from work/sa/build keeps going: the builder renames each new file over
 # the old one, so the game keeps the files it started with until it is restarted.
 #   scripts/play-refresh.sh [--install-hook]   --install-hook writes .git/hooks/post-merge (a refresh in the background after a merge onto native-vk)
 set -uo pipefail
@@ -34,13 +34,13 @@ fi
 
 fail() { echo "play-refresh: $1; BUILD.txt untouched (see $log)"; exit 1; }
 cd "$root" || exit 1
-if [ -z "${HOOKSHOT_HEAVY_HELD:-}" ]; then   # (one heavy job at a time: the agents' and this one's; relift.sh holds it already)
+if [ -z "${OUNCE_HEAVY_HELD:-}" ]; then   # (one heavy job at a time: the agents' and this one's; relift.sh holds it already)
   mkdir -p "$root/work"
-  exec env HOOKSHOT_HEAVY_HELD=1 flock "$root/work/heavy.lock" "$0" "$@"
+  exec env OUNCE_HEAVY_HELD=1 flock "$root/work/heavy.lock" "$0" "$@"
 fi
 capped() {   # (a memory-capped scope where systemd can make one, else plain)
   if systemd-run --user --scope -q true 2>/dev/null; then
-    systemd-run --user --scope -q -p MemoryMax="${HOOKSHOT_REFRESH_MEM:-18G}" -p MemorySwapMax=0 "$@"
+    systemd-run --user --scope -q -p MemoryMax="${OUNCE_REFRESH_MEM:-18G}" -p MemorySwapMax=0 "$@"
   else "$@"; fi
 }
 mkdir -p "$play"

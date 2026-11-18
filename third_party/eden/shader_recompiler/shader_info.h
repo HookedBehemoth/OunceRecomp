@@ -26,7 +26,7 @@ enum class ReplaceConstant : u32 {
     BaseInstance,
     BaseVertex,
     DrawID,
-    NumWorkgroupsX,   // (hookshot direct, M4a: NVN2 compute's grid at c0+0x0 / 0x4 / 0x8, read as the dispatch gives it)
+    NumWorkgroupsX,   // (renderer, M4a: NVN2 compute's grid at c0+0x0 / 0x4 / 0x8, read as the dispatch gives it)
     NumWorkgroupsY,
     NumWorkgroupsZ,
 };
@@ -281,14 +281,14 @@ struct MeshInfo {
 struct Info {
     static constexpr size_t MAX_INDIRECT_CBUFS{14};
     static constexpr size_t MAX_CBUFS{18};
-    // (hookshot, as Lichii #434: 64. Fritchii's pass binds every candidate pointer of an ambiguous access; the back end's
+    // (fork, as Lichii #434: 64. Fritchii's pass binds every candidate pointer of an ambiguous access; the back end's
     // layouts are built from the list, gpu/vk/vk_draw.cpp ensure_layout)
     static constexpr size_t MAX_SSBOS{64};
 
     bool is_task{}; ///< Switch 2 task program (Stage::Task)
     bool is_mesh{}; ///< Switch 2 mesh program (Stage::Mesh)
     bool uses_workgroup_id{};
-    bool uses_num_workgroups{};   ///< (hookshot direct, M4a) the grid as the dispatch gives it
+    bool uses_num_workgroups{};   ///< (renderer, M4a) the grid as the dispatch gives it
     bool uses_local_invocation_id{};
     bool uses_invocation_id{};
     bool uses_invocation_info{};
@@ -327,7 +327,7 @@ struct Info {
     bool uses_local_memory{};
 
     bool uses_fp16{};
-    bool uses_cooperative_matrix{};   // (hookshot: HMMA_nx2)
+    bool uses_cooperative_matrix{};   // (fork: HMMA_nx2)
     bool uses_fp64{};
     bool uses_fp16_denorms_flush{};
     bool uses_fp16_denorms_preserve{};
@@ -367,11 +367,11 @@ struct Info {
     bool uses_rescaling_uniform{};
     bool uses_cbuf_indirect{};
     bool uses_render_area{};
-    /// (hookshot, RX_VK_DESC_HEAP_BDA) the stage reads and writes its storage buffers through device addresses: each one's
+    /// (fork, RX_VK_DESC_HEAP_BDA) the stage reads and writes its storage buffers through device addresses: each one's
     /// guest address from its constant buffer, translated by the layer-0 window table (backend/spirv/bda_emit.h). Set by
     /// the SPIR-V back end; the stage's storage buffer bindings are reserved but declare no variable, and need no descriptor
     bool ssbo_bda{};
-    /// (hookshot, RX_VK_DESC_HEAP_BDA) why the stage's storage buffers stayed on descriptors: bda_emit.h's Why bits, every
+    /// (fork, RX_VK_DESC_HEAP_BDA) why the stage's storage buffers stayed on descriptors: bda_emit.h's Why bits, every
     /// condition the stage meets (0 when ssbo_bda, or when the back end was not asked)
     u32 bda_why{};
 
@@ -382,7 +382,7 @@ struct Info {
     u32 constant_buffer_mask{};
     std::array<u32, MAX_CBUFS> constant_buffer_used_sizes{};
     u32 nvn_buffer_base{};
-    // (hookshot) storage buffer tables: NVN descriptors (address, size) at cbuf_offset + 16k of a constant buffer,
+    // (fork) storage buffer tables: NVN descriptors (address, size) at cbuf_offset + 16k of a constant buffer,
     // which global memory accesses pick at run time (OoT's froxel fog: c4 + 0xe0 + 16 * a loop index). The global
     // memory fallbacks search their kGlobalTableSize entries (AddNVNStorageBuffers adds them as descriptors).
     static constexpr u32 kGlobalTableSize{16};

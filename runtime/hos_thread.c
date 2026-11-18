@@ -29,7 +29,7 @@ struct HosThread {
     /* (hos_thread_dump) how often it asked for its core number, the guest callers of its first and last asks */
     int64_t core_asks;
     uint64_t core_ask_lr, core_ask_last_lr;
-    /* (hookshot) fibers: the context running now (NULL: ctx, the thread's own), the thread's host fiber once it
+    /* (runtime) fibers: the context running now (NULL: ctx, the thread's own), the thread's host fiber once it
        switched to a guest fiber */
     Ctx *volatile run_ctx;
     os_fiber *host_fiber;
@@ -212,7 +212,7 @@ static void setup_guest(HosThread *t) {
     G64(t->tlr + 0x1F8) = t->guest_tt;
     t->kernel_handle = (uint32_t)os_atomic_inc(&next_handle);
     G32(t->guest_tt + TT_HANDLE) = t->kernel_handle;
-    /* (hookshot) SDK 22's InternalCriticalSection::IsLockedByCurrentThread reads the owner handle from TLR+0x110
+    /* (runtime) SDK 22's InternalCriticalSection::IsLockedByCurrentThread reads the owner handle from TLR+0x110
        directly (SDK 21: ThreadType+0x1B0 through TLR+0x1F8). Left 0, every free mutex looked held by the caller
        and the first heap lock aborted in pthread_mutex_lock. */
     G32(t->tlr + 0x110) = t->kernel_handle;
@@ -468,7 +468,7 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
 /* The last physical core (its logical processors' mask), kept for the back end's replay thread: the game's threads run on the others. The replay is on the frame's critical path
    (MKW waits for the last frame's GPU work before it submits the next), and on a core shared with game threads
    it ran ~1.7x slower than alone. Only on machines with 8+ logical processors; HOS_RESERVE_CORE=0: none.
-   (hookshot) On a CPU with cores of more than one kind, the last core of the fastest kind: the last core of all is an
+   (runtime) On a CPU with cores of more than one kind, the last core of the fastest kind: the last core of all is an
    efficiency core on Intel's hybrid CPUs (an i7-12700K's logical processors 16-19), the slowest place for the replay
    (an i7-13700K's Kokiri Forest: 48.7 fps with it there, 60 on a performance core). EfficiencyClass is higher the faster
    the core, and the same for every core of a CPU of one kind (the last core, as before). Only with 4+ cores of the
@@ -580,7 +580,7 @@ HLE(_ZN2nn2os12CreateThreadEPNS0_10ThreadTypeEPFvPvES3_S3_mi) {
 }
 
 /* nn::os::CreateThread(ThreadType*, void (*)(void*), void* arg, void* stack, unsigned long size, int prio,
-   int idealCore) (hookshot: OoT's Porter thread pool uses this overload; left to the guest SDK it reached
+   int idealCore) (runtime: OoT's Porter thread pool uses this overload; left to the guest SDK it reached
    ThreadManagerImplByHorizon::MapAliasStack, which needs svcMapMemory, and aborted) */
 HLE(_ZN2nn2os12CreateThreadEPNS0_10ThreadTypeEPFvPvES3_S3_mii) {
     HOS_TRACE_CALL("CreateThread");
@@ -731,7 +731,7 @@ HLE(_ZN2nn2os17ConvertToTimeSpanENS0_4TickE) {
     RET(t * (int64_t)(1000000000ULL / HOS_TICK_HZ));
 }
 
-/* ---- fibers (hookshot: nn::async's FiberTaskCoordinator, on OoT's nn.npln threads) ----------------------------
+/* ---- fibers (runtime: nn::async's FiberTaskCoordinator, on OoT's nn.npln threads) ----------------------------
    A guest fiber is a host fiber (os.h) with its own guest context: the lifted frames on its host stack keep using that
    context wherever it runs, so a fiber may resume on another thread. Switching in, it takes the running thread's
    identity (TLS registers, host thread object); the thread's own context stays in HosThread.ctx. The fiber function

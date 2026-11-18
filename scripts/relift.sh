@@ -11,20 +11,23 @@
 # the main checkout, work/sa/relift.log in a worktree.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/game.sh"
 common=$(git -C "$root" rev-parse --path-format=absolute --git-common-dir) || exit 1
 main=${common%/.git}
 bd=$root/work/sa/build
 if [ "$root" = "$main" ]; then log=$root/work/play/relift.log; else log=$root/work/sa/relift.log; fi
 mkdir -p "$(dirname "$log")" "$bd"
 cd "$root" || exit 1
-if [ -z "${HOOKSHOT_HEAVY_HELD:-}" ]; then   # (one heavy job on the machine at a time: work/heavy.lock; play-refresh.sh inherits it)
+if [ -z "${OUNCE_HEAVY_HELD:-}" ]; then   # (one heavy job on the machine at a time: work/heavy.lock; play-refresh.sh inherits it)
   mkdir -p "$root/work"
-  exec env HOOKSHOT_HEAVY_HELD=1 flock "$root/work/heavy.lock" "$0" "$@"
+  exec env OUNCE_HEAVY_HELD=1 flock "$root/work/heavy.lock" "$0" "$@"
 fi
 
 # (a game started from this build: play.sh and run-vk.sh name its path; run-vk.sh's check runs use a copy elsewhere)
-if pgrep -af "$bd/hookshot( |$)" > /dev/null; then
-    echo "relift: a game runs from $bd: not started"; pgrep -af "$bd/hookshot( |$)"; exit 1
+# (its path in a process's command line, as a literal: the name may hold spaces and other characters)
+running=$(pgrep -a -x -- "${GAME_EXE:0:15}" | grep -F -- "$bd/$GAME_EXE" || true)
+if [ -n "$running" ]; then
+    echo "relift: a game runs from $bd: not started"; echo "$running"; exit 1
 fi
 game=games/oot
 start=$(date +%s)

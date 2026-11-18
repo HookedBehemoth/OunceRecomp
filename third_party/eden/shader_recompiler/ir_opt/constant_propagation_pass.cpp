@@ -961,7 +961,7 @@ void FoldConstBuffer(Environment& env, IR::Block& block, IR::Inst& inst) {
         return;
     }
     if (*replacement == ReplaceConstant::NumWorkgroupsX || *replacement == ReplaceConstant::NumWorkgroupsY ||
-        *replacement == ReplaceConstant::NumWorkgroupsZ) {   // (hookshot direct, M4a)
+        *replacement == ReplaceConstant::NumWorkgroupsZ) {   // (renderer, M4a)
         IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
         const IR::U32 n{ir.NumWorkgroups(static_cast<u32>(*replacement) - static_cast<u32>(ReplaceConstant::NumWorkgroupsX))};
         inst.ReplaceUsesWith(inst.GetOpcode() == IR::Opcode::GetCbufU32 ? IR::Value{n} : IR::Value{ir.BitCast<IR::F32>(n)});

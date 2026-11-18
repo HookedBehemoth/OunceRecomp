@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: Copyright 2026 Hookshot contributors
+// SPDX-FileCopyrightText: Copyright 2026 OunceRecomp contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-// (hookshot, native-vk, RX_VK_DESC_HEAP_BDA=1 with layer 0) Storage buffers read through device addresses. Layer 0 shows guest
+// (fork, native-vk, RX_VK_DESC_HEAP_BDA=1 with layer 0) Storage buffers read through device addresses. Layer 0 shows guest
 // memory to the GPU through 4 GB window buffers, one every 2 GB of guest space (gpu/vk/layer0_windows.h), so guest address g
 // is at window[g >> 31] + (g & 0x7fffffff) whatever pool it is in. A stage's storage buffer is then its guest address, read
 // from the constant buffer word Eden's storage buffer pass found for it, translated through a table of the windows' device
@@ -52,7 +52,7 @@ enum Why : std::uint32_t {
     kWhyCaps = 1u << 12,           // (the device lacks int64/8/16-bit storage or descriptor aliasing)
 };
 constexpr std::uint32_t kWhyBits = 13;
-// (hookshot, E6 fallbacks.md 3: the compute fallback's task and mesh stages too: their push block holds the fallback's addresses
+// (fork, E6 fallbacks.md 3: the compute fallback's task and mesh stages too: their push block holds the fallback's addresses
 // below the window table's words (MESH_FALLBACK_PUSH_END = WINDOW_TABLE_PUSH_OFFSET), so a job thread can make their descriptors
 // as a heap program's; the generated vertex stage has no storage buffers)
 constexpr std::uint32_t kWideAllowed = kWhyRenderArea | kWhyNativeBounds | kWhyCasLoop | kWhyNoU32View | kWhyTable | kWhyMeshFallback;

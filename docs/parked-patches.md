@@ -105,7 +105,7 @@ live commands.
 
 ## The summary verification build
 
-**What it did.** With `HOOKSHOT_LIFT_VERIFY=1` the Python lifter wrapped every function with a full summary in
+**What it did.** With `OUNCE_LIFT_VERIFY=1` the Python lifter wrapped every function with a full summary in
 checks (`host/lift2_verify.c`): registers the summary says are not read were poisoned at entry; a returning noreturn
 function, a changed preserved register or a write the summary does not allow was reported at exit; context fields the
 lifter decided no one reads were poisoned before each call; calls of replaced SDK functions went through a stub that

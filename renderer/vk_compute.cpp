@@ -53,8 +53,8 @@ extern thread_local u32 g_nvn2_compute_ssbo_count;
 extern thread_local u32 g_nvn2_compute_layout_end;
 }  // namespace Shader::Optimization
 
-#ifndef HOOKSHOT_DIRECT_COMPUTE_STAMP
-#define HOOKSHOT_DIRECT_COMPUTE_STAMP 0ull
+#ifndef OUNCE_RENDERER_COMPUTE_STAMP
+#define OUNCE_RENDERER_COMPUTE_STAMP 0ull
 #endif
 
 namespace hsd {
@@ -263,7 +263,7 @@ Slot* slot_find(uint64_t serial) {
     return nullptr;
 }
 
-// ---- the cache file (hookshot_direct_compute.bin: records by code key) ----
+// ---- the cache file (ounce_renderer_compute.bin: records by code key) ----
 constexpr uint32_t kDiskMagic = 0x43445348;   // ('HSDC')
 constexpr uint64_t kDiskVersion = 2;   // (the record's layout, disk_save: a change to it changes this)
 std::mutex disk_mu;
@@ -275,22 +275,22 @@ struct DiskRecord {
     size_t size;
 };
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_key;
-/// The cache's stamp: the compute translation's code (HOOKSHOT_DIRECT_COMPUTE_STAMP, renderer/meson/shader_stamp.py: the
+/// The cache's stamp: the compute translation's code (OUNCE_RENDERER_COMPUTE_STAMP, renderer/meson/shader_stamp.py: the
 /// regions marked "stamp compute" here and "stamp shared" in vk_shader.cpp, the translator and the compiler and flags
 /// that build it), the record format (kDiskVersion), the device (parts::device_stamp, the loop cap among it), and the
 /// matrix multiplies' form
 uint64_t disk_stamp() {
-    const uint64_t s[4] = {HOOKSHOT_DIRECT_COMPUTE_STAMP, parts::device_stamp(), kDiskVersion, Shader::Backend::SPIRV::mma_software ? 1ull : 0ull};
+    const uint64_t s[4] = {OUNCE_RENDERER_COMPUTE_STAMP, parts::device_stamp(), kDiskVersion, Shader::Backend::SPIRV::mma_software ? 1ull : 0ull};
     return hash_bytes(s, sizeof s);
 }
 void disk_init() {
     static std::once_flag once;
     std::call_once(once, [] {
-        const std::string path = parts::program_dir() + "hookshot_direct_compute.bin";
+        const std::string path = parts::program_dir() + "ounce_renderer_compute.bin";
         os_file* lock = os_file_open((path + ".lock").c_str(), OS_READ | OS_WRITE | OS_CREATE, nullptr);   // (held for the process's life)
         if (!lock || !os_file_trylock(lock)) {
             os_file_close(lock);
-            return logf("direct: compute cache %s: in use by another Hookshot: none", path.c_str());
+            return logf("direct: compute cache %s: in use by another game: none", path.c_str());
         }
         const uint64_t stamp = disk_stamp();
         int64_t good = 0, whole = 0;
@@ -329,7 +329,7 @@ void disk_init() {
         disk_on = disk_out && disk_in;
         logf("direct: compute cache %s: %zu variants kept%s", path.c_str(), records, whole && !good ? "; another stamp's file was truncated" : "");
         // (the compute objects' binaries are kept with the graphics ones, by create info: an earlier separate file is removed)
-        os_remove((parts::program_dir() + "hookshot_direct_compute_objects.bin").c_str());
+        os_remove((parts::program_dir() + "ounce_renderer_compute_objects.bin").c_str());
     });
 }
 template <class T> void put(std::vector<uint8_t>& o, const T& v) { o.insert(o.end(), (const uint8_t*)&v, (const uint8_t*)&v + sizeof v); }

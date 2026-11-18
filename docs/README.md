@@ -1,4 +1,4 @@
-# Hookshot documentation
+# OunceRecomp documentation
 
 This page lists the documentation pages, grouped by what you want to do. Start with the development guide if you are
 new to the code.
@@ -10,7 +10,7 @@ new to the code.
 
 ## Test and debug
 
-- [Test Hookshot](testing.md): the game-free checks, test runs, the smoke test, benchmarks, recordings and profiles.
+- [Test OunceRecomp](testing.md): the game-free checks, test runs, the smoke test, benchmarks, recordings and profiles.
 - [Switches](switches.md): environment switches, `HOS_DBG` debug aids, and the log format.
 - [Reverse engineering](reverse-engineering.md): reading the game's code and files, and labeling functions.
 
@@ -32,5 +32,5 @@ new to the code.
 
 - [Parked patches](parked-patches.md): removed features, with what you need to rebuild them.
 - [Player builder notes](builder-notes.md): what a new player-facing builder needs.
-- [The player builder](builder-plan.md): `hookshot-builder`, the dump to a portable game folder in one process.
-- [Using a save from an emulator](saves.md): moving saves between Hookshot and emulators.
+- [The player builder](builder-plan.md): `ounce-builder`, the dump to a portable game folder in one process.
+- [Using a save from an emulator](saves.md): moving saves between OunceRecomp and emulators.

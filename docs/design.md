@@ -1,9 +1,9 @@
 # Design
 
-This page is the statement of Hookshot's design: how the parts fit, from your dump to a running game, and the rules
+This page is the statement of OunceRecomp's design: how the parts fit, from your dump to a running game, and the rules
 the design keeps, each with the reason for it. Read it before you work on any part; each part's own pages go deeper.
 
-Hookshot is a native x86-64 Linux build of the Switch 2 *The Legend of Zelda: Ocarina of Time*. The game's AArch64 code
+OunceRecomp is a native x86-64 Linux build of the Switch 2 *The Legend of Zelda: Ocarina of Time*. The game's AArch64 code
 is translated ahead of time, the console's operating system and graphics API are implemented natively, and the GPU
 work runs on Vulkan. No CPU or GPU is emulated at any point.
 
@@ -11,16 +11,16 @@ work runs on Vulkan. No CPU or GPU is emulated at any point.
 
 ```
 exefs/{rtld,main,subsdk0,sdk} + romfs/       your dump, read where it lies (work/dump.txt)
-      |  hookshot-builder dump (ounce/dump): extract the package, make compressed modules plain
+      |  ounce-builder dump (ounce/dump): extract the package, make compressed modules plain
       v
 image: modules loaded at 0x80000000 and relocated, imports bound, replaced SDK functions hooked   (ounce/lift)
       |  discovery and the plan: the functions, the partitions
       v
 lifter: AArch64 -> typed SSA IR -> LLVM IR, one module per partition                          (ounce/lift)
-      |  hookshot-builder build (scripts/build.sh): LLVM and clang in one process, then lld
+      |  ounce-builder build (scripts/build.sh): LLVM and clang in one process, then lld
       v
-hookshot            the lifted game + runtime/ (Horizon: threads, memory, files, input, audio, display, NVN2)
-hookshot_direct.so  the direct back end (renderer), loaded by the host at start
+<exe>               the lifted game + runtime/ (Horizon: threads, memory, files, input, audio, display, NVN2)
+ounce_renderer.so  the direct back end (renderer), loaded by the host at start
 ```
 
 - **The game is a parameter.** Every lift, build and lifter tool takes one game description, `games/oot/game.toml`,
@@ -72,13 +72,13 @@ its rules and open work in the [direct back end plan](direct-backend-plan.md).
   threads have lowered the frame rate before. Measure thread counts (with a system profiler) rather than
   raising them by default.
 - **The back end's interface is versioned.** A change to `MkwVkHost` or `MkwVkRenderer` in `renderer/api/vk_api.h` bumps
-  `MKWVK_API_VERSION`, because the host and `hookshot_direct.so` are built and loaded separately.
+  `MKWVK_API_VERSION`, because the host and `ounce_renderer.so` are built and loaded separately.
 - **Generated files are regenerated, not edited.** The SPIR-V headers in `renderer/shaders/` (`*_spv.h`) are compiled
   from the shader beside them with glslang; an edit by hand is lost at the next regeneration.
 - **`third_party/` stays as upstream ships it.** Its parts keep their own licenses and notices; add a folder rather than
   editing one, so upstream updates stay a copy.
 - **Checks run without the game.** CI has no dump, so every check reads source or synthetic data; a run in the game is
-  done locally and reported ([Test Hookshot](testing.md)).
+  done locally and reported ([Test OunceRecomp](testing.md)).
 - **Docs are short guides.** A page says what a part is for, how to do a task and what to expect; it does not narrate
   code, repeat what a tool prints, or keep history. Removed features are recorded in
   [parked patches](parked-patches.md).

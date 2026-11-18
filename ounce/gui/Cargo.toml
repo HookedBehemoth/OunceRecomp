@@ -1,8 +1,8 @@
 [package]
-name = "hookshot-gui"
+name = "ounce-gui"
 version = "0.1.0"
 edition = "2021"
-description = "The builder's window: runs hookshot-builder as a child and shows its progress lines"
+description = "The builder's window: runs ounce-builder as a child and shows its progress lines"
 publish = false
 
 [dependencies]

@@ -36,7 +36,7 @@ a result.
 ## Run the offline census
 
 1. Build the tool: `tools/shadercensus/build.sh`.
-2. Make the shader seed, `hookshot_shaders.bin`, from the romfs. No tool in the tree makes it.
+2. Make the shader seed, `ounce_shaders.bin`, from the romfs. No tool in the tree makes it.
 3. Run the census, which is sharded and resumable:
 
    ```
