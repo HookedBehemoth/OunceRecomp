@@ -200,3 +200,6 @@
 8086a540 gfx_memory_pool_flush            # games/dkb/patches/assets.c: after a glyph's writes (font_glyph_plot 0x80768508) # ?
 806c6f64 gpu_tex_storage_zeroed_make      # 2026-11-18 analysis: allocates a texture's storage (0x804e0908), memsets it to 0 and flushes it (0x804aafa0) before the texture object is made over it (0x804df598, 0x80488b2c); the 64x64x18 R11G11B10F cube array of HOS_DBG=texwatch (memset lr 0x806c7094)
 804ddbd0 gpu_tex_storage_zeroed_make2     # 2026-11-18 analysis: the same allocate-memset(0) idiom over [obj+0x10] + the pool's CPU base, [obj+0x50] bytes; texwatch's 1x1 RGBA32F textures (memset lr 0x804dec10)
+8032f840 display_settings_update          # games/dkb/patches/widescreen.c: the display settings' update (settings x0, each frame): the mode table at +0xd0 (0x64 bytes a mode, +0x1c4/+0x1c5 the mode), the frame size +0x1a0 (w | h << 32) applied on a mode change or +8 bit 4: window crop (display_window_set_crop), +0x1a8/+0x1ac the scale against the mode's size, the render config's frame size +0x780
+80330618 display_window_set_crop          # games/dkb/patches/widescreen.c: (window, x, y, w, h): the crop at +0xac..+0xb8 and its dirty flag +0xaa (nvnWindowSetCrop in sys_framework_wait_present)
+80330610 display_window_crop_thunk        # games/dkb/patches/widescreen.c: [x0+0x80] (the window), then display_window_set_crop
