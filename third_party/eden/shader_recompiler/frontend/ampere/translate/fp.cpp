@@ -151,11 +151,23 @@ void FSEL(Translator& t) {
 }
 
 void MUFU(Translator& t) {
-    // 74-79 the function; 73 an F16 source; COS and SIN take the angle in turns
+    // 74-79 the function; COS and SIN take the angle in turns
     const u32 function{t.insn.Field(74, 6)};
-    t.Expect(73, 1, 0, "MUFU F16 source");
     t.Expect(80, 11, 0, "MUFU mode");
-    const IR::F32 x{t.Float(t.Src1())};
+    // .F16 (73): the source the half 60 selects, the result an F16 in the low half (the high half 0)
+    const bool half{t.insn.Bit(73)};
+    IR::F32 x;
+    if (half) {
+        if (t.insn.Form() != AluForm::RegReg) {
+            t.Fail("MUFU F16 source form");
+        }
+        t.Expect(61, 1, 0, "MUFU F16 source swizzle");
+        const IR::Value halves{t.ir.UnpackFloat2x16(t.R(t.insn.Reg32()))};
+        const IR::F16 h{t.ir.CompositeExtract(halves, t.insn.Field(60, 1))};
+        x = IR::F32{t.ir.FPAbsNeg(IR::F32{t.ir.FPConvert(32, h)}, t.insn.Bit(62), t.insn.Bit(63))};
+    } else {
+        x = t.Float(t.Src1());
+    }
     const auto radians{[&] { return t.ir.FPMul(x, t.ir.Imm32(2.0f * std::numbers::pi_v<f32>)); }};
     IR::F32 value;
     switch (function) {
@@ -182,6 +194,11 @@ void MUFU(Translator& t) {
         break;
     default:
         t.Fail("MUFU function");
+    }
+    if (half) {
+        const IR::F16F32F64 zero{t.ir.FPConvert(16, t.ir.Imm32(0.0f))};
+        t.SetR(t.insn.Dst(), t.ir.PackFloat2x16(t.ir.CompositeConstruct(t.ir.FPConvert(16, value), zero)));
+        return;
     }
     t.SetF(t.insn.Dst(), value);
 }
