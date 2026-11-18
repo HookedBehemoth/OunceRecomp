@@ -1,6 +1,7 @@
 // Small IR programs through the translator fork's passes and SPIR-V back end: the uniform registers and predicates
 // through the SSA rewrite, SubgroupReadFirstLane and the eight SubgroupReduce ops, and the maximal-reconvergence mode.
-// Writes one module per case into the folder it is given; the test validates and disassembles them.
+// Writes one module per case into the folder it is given; the test validates and disassembles them. A stage with no
+// subgroup operations must fail to translate: its error goes to <case>.err.
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -36,6 +37,7 @@ struct Env final : Environment {
 struct Case {
     bool wider;            // (the profile's subgroup may be wider than the guest's 32 lanes)
     bool reconvergence;    // (the profile supports maximal reconvergence)
+    bool subgroups{true};  // (the profile gives the stage subgroup operations)
 };
 
 std::vector<u32> module(const Case& c) {
@@ -78,7 +80,7 @@ std::vector<u32> module(const Case& c) {
     Profile profile{};
     profile.supported_spirv = 0x00010600;
     profile.support_vote = true;
-    profile.supported_subgroup_stages = ~0u;
+    profile.supported_subgroup_stages = c.subgroups ? ~0u : 0u;
     profile.support_int64 = true;
     profile.warp_size_potentially_larger_than_guest = c.wider;
     profile.max_subgroup_size = c.wider ? 64 : 32;
@@ -88,17 +90,28 @@ std::vector<u32> module(const Case& c) {
 
 int main(int argc, char** argv) {
     if (argc != 2) return 1;
-    const Case cases[]{{false, true}, {true, true}, {false, false}};
+    const Case cases[]{{false, true}, {true, true}, {false, false}, {false, true, false}};
     for (size_t i = 0; i < std::size(cases); ++i) {
         std::vector<u32> code;
+        const std::string base{std::string(argv[1]) + "/" + std::to_string(i)};
         try {
             code = module(cases[i]);
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "case %zu: %s\n", i, e.what());
-            return 2;
+            if (cases[i].subgroups) {
+                std::fprintf(stderr, "case %zu: %s\n", i, e.what());
+                return 2;
+            }
+            FILE* f{std::fopen((base + ".err").c_str(), "w")};
+            if (!f) return 3;
+            std::fputs(e.what(), f);
+            std::fclose(f);
+            continue;
         }
-        const std::string name{std::string(argv[1]) + "/" + std::to_string(i) + ".spv"};
-        FILE* f{std::fopen(name.c_str(), "wb")};
+        if (!cases[i].subgroups) {
+            std::fprintf(stderr, "case %zu: translated without subgroup operations\n", i);
+            return 5;
+        }
+        FILE* f{std::fopen((base + ".spv").c_str(), "wb")};
         if (!f) return 3;
         const size_t n{std::fwrite(code.data(), 4, code.size(), f)};
         std::fclose(f);

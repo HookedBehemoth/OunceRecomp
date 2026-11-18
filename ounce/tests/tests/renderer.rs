@@ -777,8 +777,9 @@ fn spirv_struct_identity() {
 
 /// IR programs as an Ampere front writes them, through the translator's passes and SPIR-V back end
 /// (fixtures/subgroup_ir_ops.cpp): the uniform registers and predicates through the SSA rewrite, SubgroupReadFirstLane and
-/// the eight SubgroupReduce ops, valid SPIR-V on a 32-lane subgroup and on a wider one (clusters of 32), and
-/// MaximallyReconvergesKHR only where the profile supports it.
+/// the eight SubgroupReduce ops, valid SPIR-V on a 32-lane subgroup and on a wider one (clusters of 32),
+/// MaximallyReconvergesKHR only where the profile supports it, and a translation error (not the lane's own value) in a
+/// stage without subgroup operations.
 #[test]
 fn subgroup_ir_ops() {
     let val = tool("spirv-val");
@@ -810,4 +811,6 @@ fn subgroup_ir_ops() {
         assert!(has("MaximallyReconvergesKHR") == reconverges, "case {case}: MaximallyReconvergesKHR");
         assert!(has("\"SPV_KHR_maximal_reconvergence\"") == reconverges, "case {case}: the extension");
     }
+    let err = std::fs::read_to_string(t.join("3.err")).expect("case 3 (no subgroup operations) gave no error");
+    assert!(err.contains("SubgroupReadFirstLane") && err.contains("without subgroup operations"), "case 3's error: {err}");
 }
