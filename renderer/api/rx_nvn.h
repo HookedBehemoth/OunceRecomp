@@ -157,7 +157,7 @@ enum {
     NOP_DRAW_INDIRECT, NOP_DISPATCH_INDIRECT,   /* (mkw-recomp: NVN2's GPU-driven draws) */
     NOP_DRAW_MESH,                              /* (mkw-recomp: NVN2 mesh shading) */
     NOP_WAIT_EVENT,                             /* (mkw-recomp: a wait for an event another queue's work signals) */
-    NOP_PUSH_CONST,                             /* (renderer: nvnCommandBufferPushComputeConstants) */
+    NOP_PUSH_CONST,                             /* (renderer: nvnCommandBufferPush{Compute,Graphics}Constants) */
     NOP_CLEAR_BUF,                              /* (renderer: nvnCommandBufferClearBuffer) */
     NOP_COUNT_
 };
@@ -196,8 +196,8 @@ typedef struct { uint64_t type, addr; } nvn_p_counter;
 #define NVN_COUNTER_WRITTEN (1ull << 32)   /* (type: the report's counter word is in memory already: a clear flag, runtime/nvn_native.c) */
 typedef struct { uint64_t src, dst, size; } nvn_p_copy_bb;
 typedef struct { uint64_t dst, size; /* data follows */ } nvn_p_update_ub;
-/* (renderer) compute push constants: the bytes at offset in the compute driver bank's push area */
-typedef struct { uint32_t offset, size; /* data follows */ } nvn_p_push_const;
+/* (renderer) push constants of an NVN stage: compute's in its driver bank's push area, a graphics stage's in its root table */
+typedef struct { uint32_t stage, offset, size; /* data follows */ } nvn_p_push_const;
 /* (renderer) a buffer range filled with a 32-bit value */
 typedef struct { uint64_t dst, size; uint32_t value, pad; } nvn_p_clear_buf;
 typedef struct { int32_t enable, index; } nvn_p_restart;

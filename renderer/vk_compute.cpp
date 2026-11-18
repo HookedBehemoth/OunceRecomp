@@ -1028,7 +1028,7 @@ void compute_state(List* l, uint32_t op, const void* a, uint32_t size) {
         nvn_p_push_const u{};
         if (size < sizeof u) return;
         std::memcpy(&u, a, sizeof u);
-        if (!u.size || u.size > size - sizeof u || (uint64_t)u.offset + u.size > sizeof ListComp::push) return;
+        if (u.stage != 5 || !u.size || u.size > size - sizeof u || (uint64_t)u.offset + u.size > sizeof ListComp::push) return;
         ListComp& c = ctx(l);
         std::memcpy(c.push + u.offset, (const uint8_t*)a + sizeof u, u.size);
         c.push_n = std::max<uint32_t>(c.push_n, u.offset + u.size);

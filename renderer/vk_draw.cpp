@@ -243,7 +243,7 @@ struct ListDraw {
     uint8_t push[256];
     uint32_t push_n = 0;
     // (the list's: in its slot's arena, good while the list lives)
-    BankCopy bank[kBankStages][2];
+    BankCopy bank[kBankStages][3];   // (c0, c2, the root table)
     const DrawProg* table_prog = nullptr;
     uint32_t table_ubo_gen = ~0u, table_bank_gen[kBankStages]{~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
     VkDeviceAddress table_addr = 0;
@@ -593,10 +593,10 @@ void set_vertex_input(ListDraw& x, VkCommandBuffer cb, const DState& s, const Dr
     }
 }
 
-/// A graphics stage's driver bank (c0 / c2) in the list's arena, made again when the stage's binds changed; its deferred words
-/// noted for the submit
+/// A graphics stage's driver bank (c0 / c2) or root table in the list's arena, made again when the stage's binds changed; its
+/// deferred words noted for the submit
 bool bank_copy(List* l, ListDraw& x, int stage, int bank, uint32_t bytes, VkDeviceAddress& out) {
-    BankCopy& c = x.bank[stage][bank == 2];
+    BankCopy& c = x.bank[stage][bank == kRootBank ? 2 : bank == 2];
     if (c.addr && c.gen == x.s.bank_gen[stage] && c.bytes >= bytes) return out = c.addr, true;
     uint8_t* map;
     VkDeviceAddress a;
@@ -667,7 +667,7 @@ const uint8_t* shadow_of(ListDraw& x, uint64_t addr, uint64_t size, uint64_t n) 
 /// The address a uniform buffer of the variant reads (0 and a reason: none)
 Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo& u, VkDeviceAddress& a) {
     if (u.stage >= kBankStages) return R_STEP_A;
-    if (u.index == 0 || u.index == 2) return bank_copy(l, x, u.stage, u.index, u.bytes, a) ? R_DRAWN : R_ARENA;
+    if (u.index == 0 || u.index == 2 || u.index == kRootBank) return bank_copy(l, x, u.stage, u.index, u.bytes, a) ? R_DRAWN : R_ARENA;
     if (u.index == 1) return a = p.c1[u.stage] ? p.c1[u.stage] : zero_address, R_DRAWN;
     if (u.index >= 3 + 16) return a = zero_address, R_DRAWN;
     const nvn_p_bind_buf& b = x.s.ubo[u.stage][u.index - 3];
@@ -1084,7 +1084,7 @@ void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_VIEWPORTS: case NOP_SCISSOR: case NOP_DEPTH_RANGE: case NOP_BIND_PROGRAM: case NOP_BIND_STATE: case NOP_BIND_VATTR:
     case NOP_BIND_VSTREAM: case NOP_BIND_VBUF: case NOP_BIND_BUFS: case NOP_BIND_UBO: case NOP_BIND_SSBO: case NOP_BIND_TEX:
     case NOP_BIND_SAMP: case NOP_BIND_IMG: case NOP_STENCIL: case NOP_POLY_OFFSET: case NOP_BLEND_COLOR: case NOP_PRIMITIVE_RESTART:
-    case NOP_DEPTH_CLAMP: case NOP_RASTER_DISCARD: case NOP_RENDER_ENABLE: case NOP_RENDER_COND:
+    case NOP_DEPTH_CLAMP: case NOP_RASTER_DISCARD: case NOP_RENDER_ENABLE: case NOP_RENDER_COND: case NOP_PUSH_CONST:
         state_emit(ctx(l).s, op, data, size);
         return;
     case NOP_DISPATCH: case NOP_DISPATCH_INDIRECT: dispatch_log(l, op, data, size); return;

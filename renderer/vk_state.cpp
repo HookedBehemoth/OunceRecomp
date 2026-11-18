@@ -1,5 +1,5 @@
 // The NVN state of a list (vk_state.h): the ops as the frozen job walk applies them (gpu/legacy/vk/eng_job.cpp 956-1086), and
-// the graphics stages' driver banks (gpu/legacy/vk/vk_bank.cpp driver_bank_word / driver_bank_fill, graphics stages only: compute's
+// the graphics stages' driver banks and root tables (gpu/legacy/vk/vk_bank.cpp driver_bank_word / driver_bank_fill, graphics stages only: compute's
 // packed bank and the task / mesh pointer table are not this stage's).
 #include <algorithm>
 #include <bit>
@@ -150,6 +150,15 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
         if (b.src) st.add(ST_DEFERRED, n);
         return true;
     }
+    case NOP_PUSH_CONST: {   // (compute's are vk_compute.cpp's; the runtime sends only what the driver would)
+        nvn_p_push_const u{};
+        if (size < sizeof u) return true;
+        std::memcpy(&u, a, sizeof u);
+        if (u.stage == 5 || u.stage >= (uint32_t)kBankStages || u.size > size - sizeof u || u.offset + u.size > kPushBytes) return true;
+        std::memcpy(s.push[u.stage] + u.offset, (const uint8_t*)a + sizeof u, u.size);
+        s.bank_gen[u.stage]++;
+        return true;
+    }
     case NOP_STENCIL: {
         const auto st = payload<nvn_p_stencil>(a, size);
         for (int f = 0; f < 2; f++) {
@@ -210,6 +219,10 @@ uint32_t bank_word(const DState& s, int bank, int stage, uint32_t offset) {
 void bank_fill(const DState& s, int bank, int stage, uint8_t* d, uint32_t n) {
     std::memset(d, 0, n);
     if (stage < 0 || stage >= kBankStages) return;
+    if (bank == kRootBank) {
+        std::memcpy(d, s.push[stage], std::min(n, kPushBytes));
+        return;
+    }
     auto put = [&](uint32_t off, uint32_t v) {
         if (off + 4 <= n) std::memcpy(d + off, &v, 4);
     };

@@ -9,4 +9,5 @@
 80567080 net_streamplay_reserve_caller    # runtime/nn_answers.c nn::streamplay: ends by reserving the larger of two GetRequiredMemorySize answers (0x805671bc), aligned 0x1000
 818934cc net_streamplay_guest_input       # runtime/nn_answers.c nn::streamplay: reads the GameShare guests' pads, motion and Joy-Con mice; runs only while +0x30 is set
 806f745c album_orientation_reset_dtor     # runtime/nn_applet.c nn::oe: a destructor (run on the DeleteScene thread after the mode select) that resets the screenshot orientation with SetAlbumImageOrientation(0), then 0x8053d6a0's
-808ca718 gfx_push_screen_size            # runtime/nvn_native.c: (lr 0x808ca7e0) pushes 16 bytes (1/w, 1/h, w, h) with nvnCommandBufferPushGraphicsConstants(cmdbuf, 0, 0, 0x10, &v), a proc the host lacks
+808ca718 gfx_push_screen_size            # runtime/nvn_native.c nvnCommandBufferPushGraphicsConstants: (lr 0x808ca7e0) pushes a target's (1/w, 1/h, w, h) to the vertex stage's root table (stage 0, offset 0, 0x10 bytes), then sets up and draws a fullscreen pass; its vertex programs read them as bank 24
+80345fe0 gfx_push_screen_size_caller     # runtime/nvn_native.c nvnCommandBufferPushGraphicsConstants: gathers four texture handles through an NVN proc into an argument block, then calls gfx_push_screen_size

@@ -2038,20 +2038,35 @@ NV(nvnCommandBufferWaitSync) {
     const int32_t k = os_atomic_inc(&n);
     if (lognvn() && (k <= 40 || k % 5000 == 0)) hos_log("nvn: CommandBufferWaitSync #%ld (lr %#llx)", (long)k, (unsigned long long)c->x[30]);
 }
-/* (runtime) nvnCommandBufferPushComputeConstants(cmdbuf, int ?, offset, size, const void* data): compute push
-   constants, which NVN2 compute programs read from their driver bank (c0) after the workgroup counts. OoT pushes a
-   colour matrix (0x40 bytes) for the shader that turns its movie's NV12 planes into RGBA. Copied at record time, as
-   UpdateUniformBuffer; the replay keeps them in the compute state (vk_bank.cpp serves them). */
-NV(nvnCommandBufferPushComputeConstants) {
-    const uint64_t off = U64(2), n = U32(3);
-    if (!P(4) || !n || n > 0x400 || off > 0x400) return;
+/* (runtime) nvnCommandBufferPush{Compute,Graphics}Constants(cmdbuf, stage, offset, size, const void *data): push constants.
+   The NVN2 driver sends at most 0x100 bytes, in whole words, and nothing below one word. Compute programs read them from
+   their driver bank (c0) after the workgroup counts: OoT pushes a colour matrix (0x40 bytes) for the shader that turns its
+   movie's NV12 planes into RGBA. Graphics ones go to the stage's root table 0 (3D method 0x504, its first word the stage's
+   low 3 bits and the offset's low 8), which Ampere shaders read as bank 24: DKB pushes a target's (1/w, 1/h, w, h) to the
+   vertex stage for its fullscreen passes. Only that use is known; another stage or offset stops the game until its
+   numbering and unit are known. Copied at record time, as UpdateUniformBuffer; the replay keeps them in the list's
+   state (renderer/vk_compute.cpp, renderer/vk_state.cpp). */
+static void push_const(Ctx *c, uint32_t stage, uint32_t off) {
+    const uint32_t n = (U32(3) < 0x100 ? U32(3) : 0x100) & ~3u;
+    if (!n) return;
+    if (!P(4)) die("push constants from a null pointer (lr %#llx)", (unsigned long long)c->x[30]);
     nvn_cmd *o = CB(P(0));
     const uint32_t sz = (uint32_t)(8 + sizeof(nvn_p_push_const) + n);
     uint8_t *p = cmd_alloc(o, sz);
     put_hdr(p, NOP_PUSH_CONST, (sz + 7) & ~7u);
-    nvn_p_push_const u = {(uint32_t)off, (uint32_t)n};
+    nvn_p_push_const u = {stage, off, n};
     memcpy(p + 8, &u, sizeof u);
     memcpy(p + 8 + sizeof u, PN(4, n), n);
+}
+NV(nvnCommandBufferPushComputeConstants) {
+    if (U64(2) > 0x400) die("compute push constants at offset %#llx (lr %#llx)", (unsigned long long)U64(2), (unsigned long long)c->x[30]);
+    push_const(c, 5, (uint32_t)U64(2));
+}
+NV(nvnCommandBufferPushGraphicsConstants) {
+    if ((U32(1) & 7) != 0 || (U32(2) & 0xff) != 0)
+        die("graphics push constants for stage %u at offset %#x: only the vertex stage at 0 is known (lr %#llx)", U32(1) & 7,
+            U32(2) & 0xff, (unsigned long long)c->x[30]);
+    push_const(c, 0, 0);
 }
 /* (runtime) nvnQueueWaitSync(queue, sync): the queue's later work waits on the GPU for the sync's fence. Every
    NVN queue replays in one stream in submit order, so a fence submitted before this already came first; a sync not
@@ -3277,6 +3292,7 @@ static const nvn_impl impls[] = {
     {"nvnCommandBufferWaitSync", n_nvnCommandBufferWaitSync},
     {"nvnQueueWaitSync", n_nvnQueueWaitSync},
     {"nvnCommandBufferPushComputeConstants", n_nvnCommandBufferPushComputeConstants},
+    {"nvnCommandBufferPushGraphicsConstants", n_nvnCommandBufferPushGraphicsConstants},
     {"nvnCommandBufferResetCounter", n_nvnCommandBufferResetCounter},
     {"nvnCommandBufferReportCounter", n_nvnCommandBufferReportCounter},
     {"nvnCommandBufferCopyBufferToBuffer", n_nvnCommandBufferCopyBufferToBuffer},

@@ -1037,7 +1037,7 @@ bool finish(Variant& v) {
             }
             m.push_back(x);
             const uint32_t used = c.index < info.constant_buffer_used_sizes.size() ? info.constant_buffer_used_sizes[c.index] : 0;
-            d.ubos.push_back({stage, (uint8_t)c.index, c.index == 0 || c.index == 2 ? std::clamp<uint32_t>((used + 15) & ~15u, 16, 0xA00) : used});
+            d.ubos.push_back({stage, (uint8_t)c.index, c.index == 0 || c.index == 2 || c.index == kRootBank ? std::clamp<uint32_t>((used + 15) & ~15u, 16, 0xA00) : used});
             cb += c.count;
         }
         binding += (uint32_t)info.constant_buffer_descriptors.size();

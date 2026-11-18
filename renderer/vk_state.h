@@ -15,6 +15,10 @@ namespace hsd {
 constexpr int kStages = 8;
 /// The stages a bank is kept for, by NVN stage (M4b: every one; the mesh stage's draws read theirs)
 constexpr int kBankStages = kStages;
+/// A stage's push constants (nvnCommandBufferPushGraphicsConstants), at most: the NVN2 driver sends no more. They are root
+/// table 0, which Ampere shaders read as bank 24 and the translator lowers to bank 17 (Maxwell's last)
+constexpr uint32_t kPushBytes = 0x100;
+constexpr int kRootBank = 17;
 
 struct DState {
     nvn_prog prog{};
@@ -26,6 +30,7 @@ struct DState {
     // immediate. Kept for the stages whose banks a draw makes)
     uint64_t tex_src[kBankStages][128]{}, samp_src[kBankStages][128]{}, img_src[kBankStages][32]{};
     uint32_t deferred[kBankStages]{};   // (slots of the stage bound deferred now)
+    uint8_t push[kBankStages][kPushBytes]{};   // (the graphics stages' push constants: their root tables)
     nvn_blend_st blend[8]{};
     nvn_color_st color{};
     nvn_chmask_st chmask{0xffffffffu};
@@ -46,7 +51,7 @@ struct DState {
     bool depth_clamp = false, raster_discard = false, render_enabled = true;
     bool conditional = false;   // (a render condition is set: the draws after it are skipped until RENDER_ENABLE)
     // (what changed: bumped by the ops)
-    uint32_t bank_gen[kBankStages]{};   // (a stage's textures, samplers, images or storage buffers: its c0 / c2 banks)
+    uint32_t bank_gen[kBankStages]{};   // (a stage's textures, samplers, images, storage buffers or push constants: its banks)
     uint32_t ubo_gen = 0;               // (any uniform buffer)
     uint32_t vtx_gen = 0;               // (vertex attributes: what the pick reads of the vertex state)
     uint32_t prog_gen = 0;
@@ -59,7 +64,7 @@ bool state_emit(DState& s, uint32_t op, const void* data, uint32_t size);
 /// A driver bank word (c0 / c2) as the NVN driver lays it out for the graphics stage (shader-contract.md section 2,
 /// "Banks"; vk_bank.cpp driver_bank_word)
 uint32_t bank_word(const DState& s, int bank, int stage, uint32_t offset);
-/// The first n bytes of a graphics stage's driver bank
+/// The first n bytes of a graphics stage's driver bank (c0, c2) or root table (kRootBank)
 void bank_fill(const DState& s, int bank, int stage, uint8_t* d, uint32_t n);
 
 void state_stats(char* out, size_t cap, double frames);

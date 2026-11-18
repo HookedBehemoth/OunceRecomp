@@ -29,6 +29,7 @@ translator's push-data layout in `third_party/eden/shader_recompiler/backend/spi
 | c0 and c2, the driver banks (storage-buffer table, texture and sampler handles) | copied into the frame arena when the stage's binds change; reached through the address table |
 | c1, the program's own constants | a buffer made when the program loads |
 | c3 and up, the game's uniform buffers | the guest address, through the address table |
+| bank 24 (translated as c17), a stage's root table: its graphics push constants | the bytes the game last pushed for the stage, copied into the frame arena with the banks |
 | storage buffers | by device address: the shader loads the address from its bank and translates it through the guest-window table |
 | textures and samplers | descriptor-heap index = the NVN pool id, written at registration; the shader reads the handle from the bank |
 | a handle stored in a game buffer | read by the shader through that buffer's pushed address |

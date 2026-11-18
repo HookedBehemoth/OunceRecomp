@@ -353,8 +353,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         u64 predicate = u64{guarded_uniform ? ((native_predicate & 8) | guard_slot) : native_predicate} << 16;
         const u64 dest = insn.Bits(16, 8);
         const auto base = [&](u64 opcode_bits) { return opcode_bits | predicate | dest; };
-        // NVN2 fullscreen vertex shaders read bank 24, which the game never binds (the console reads
-        // zeros from an unbound bank); Maxwell has 18, so read it from bank 17, also never bound.
+        // NVN2 shaders read root table 0, their stage's graphics push constants, as bank 24; Maxwell
+        // has 18 banks, so read it from bank 17, which games never bind (renderer/vk_state.h kRootBank).
         const auto bank = [&]() -> u32 {
             const u32 value = insn.Bits(54, 5);
             return value == 24 ? 17U : value;
