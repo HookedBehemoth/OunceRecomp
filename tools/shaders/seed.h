@@ -1,6 +1,6 @@
 // A shader seed (tools/shadercensus/seed.py: "HKSEED01", the stages, then the programs) read and written, and its stages
 // translated as the back end translates them (offline.h) by a front: the old one (the lowering to Maxwell) or the direct
-// Ampere front (work/shader-plan M3). Shared by irexec's command and the differential (tools/shaders/difftest).
+// Ampere front (work/shader-plan M3, offline::new_front). Shared by irexec's command and the differential (tools/shaders/difftest).
 #pragma once
 #include <cstdint>
 #include <cstdio>
@@ -106,13 +106,19 @@ struct Front {
 };
 inline const Front kOld{"old", offline::load, offline::translate};
 
-/// The direct Ampere front (work/shader-plan M3). Until it lands, choosing it fails here, before any stage is read.
-inline constexpr bool kNewFrontBuilt = false;
-inline offline::Code new_load(const uint8_t*, const uint8_t*, size_t) {
-    throw Shader::LogicError("the new front is not built in (tools/shaders/seed.h new_load, work/shader-plan M3)");
+/// The direct Ampere front (work/shader-plan M3): offline.h's load and translate with offline::new_front set for the call
+inline constexpr bool kNewFrontBuilt = true;
+struct NewFrontScope {
+    NewFrontScope() { offline::new_front = true; }
+    ~NewFrontScope() { offline::new_front = false; }
+};
+inline offline::Code new_load(const uint8_t* ctl, const uint8_t* area, size_t n) {
+    NewFrontScope on;
+    return offline::load(ctl, area, n);
 }
-inline std::unique_ptr<offline::Translation> new_translate(offline::Env&) {
-    throw Shader::LogicError("the new front is not built in (tools/shaders/seed.h new_translate, work/shader-plan M3)");
+inline std::unique_ptr<offline::Translation> new_translate(offline::Env& env) {
+    NewFrontScope on;
+    return offline::translate(env);
 }
 inline const Front kNew{"new", new_load, new_translate};
 
