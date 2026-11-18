@@ -594,6 +594,14 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     case NOP_DRAW: case NOP_DRAW_IDX: case NOP_DRAW_INDIRECT: case NOP_DRAW_MESH:
         count(S_DRAWS);
         l->draws = true;
+        // (a draw before the list's first SetRenderTargets: NVN draws it with the queue's targets, which a list does not know
+        // when it records. Drawn with no attachments over the viewport's area, as a SetRenderTargets of none: its stages'
+        // memory writes happen, its colour and depth are lost. DKB resets its voxel culling records so, every frame)
+        if (records(l) && !p.noted && !l->secondary) {
+            count(S_EMPTY_RT);
+            p.n = 0, p.bare = p.noted = true;
+            bare_area(p);
+        }
         if (records(l) && p.noted && !p.begun) begin(l);
         if (records(l) && (p.begun || l->secondary)) query_draw(l, l->cur);   // (M5: its counter's query, its condition)
         if (l->secondary) {   // (M3a: a job's first draw sets all its state: timed apart)
