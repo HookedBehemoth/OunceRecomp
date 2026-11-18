@@ -225,10 +225,14 @@ static int64_t script_t0, script_end_ms;
 static int script_frame_clock;
 static int64_t script_frame0;
 extern volatile int64_t hos_present_count;   /* native game presents, not generated frames or HID polls */
-/* HOS_INPUT_FRAME_CLOCK=1: the existing script seconds/millisecond holds advance at 60 native frames per second.
-   Live-file polling and HID diagnostics keep their wall clocks. Default/0/empty retains wall-clock scripts. */
+/* HOS_INPUT_FRAME_CLOCK=1: the existing script seconds/millisecond holds advance at 60 native frames per second;
+   =game: by the game's own clock (game_hooks.h game_clock, in 1/60 s), so a press lands at the same moment of game
+   time at any frame rate. Live-file polling and HID diagnostics keep their wall clocks. Default/0/empty retains
+   wall-clock scripts. */
+static double script_clock0;
 static int64_t script_elapsed_ms(int64_t now) {
     if (!script_frame_clock) return (now - script_t0) / 1000000;
+    if (script_frame_clock == 2) return (int64_t)((game_clock() - script_clock0) * 1000.0 / 60.0);
     const int64_t frames = os_atomic_load(&hos_present_count) - script_frame0;
     return frames * 1000 / 60;
 }
@@ -246,8 +250,8 @@ static void parse_script(void) {
     script_t0 = hos_now_ns();
     {
         const char *e = getenv("HOS_INPUT_FRAME_CLOCK");
-        script_frame_clock = e && atoi(e) != 0;
-        if (script_frame_clock) script_frame0 = os_atomic_load(&hos_present_count);
+        script_frame_clock = e && !strcmp(e, "game") ? 2 : e && atoi(e) != 0;
+        if (script_frame_clock) script_frame0 = os_atomic_load(&hos_present_count), script_clock0 = game_clock();
     }
     parse_presses(getenv("HOS_INPUT_SCRIPT"), 0, 0);
     if (npresses)

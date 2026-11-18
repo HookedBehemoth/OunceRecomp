@@ -65,9 +65,9 @@ void game_frame_timing(int64_t now) {
     const uint64_t c = controller;
     if (at_before && now > at_before) {
         const double wall = (double)(now - at_before) / 1e9;
-        hos_log("fps: %.1f fps, controller %d (bounds %d-%d), step %.3f, game speed %.3f", 300.0 / wall,
+        hos_log("fps: %.1f fps, controller %d (bounds %d-%d), step %.3f, game speed %.3f, game clock %.1f s", 300.0 / wall,
                 c ? *(int32_t *)GP(c + 0x50) : 0, c ? *(int32_t *)GP(c + 0x20) : 0, c ? *(int32_t *)GP(c + 0x24) : 0,
-                (double)step, (clock_60ths - clock_before) / 60.0 / wall);
+                (double)step, (clock_60ths - clock_before) / 60.0 / wall, clock_60ths / 60.0);
     }
     clock_before = clock_60ths, at_before = now;
 }
