@@ -324,6 +324,7 @@ Shader::Profile make_profile() {
     p.lower_left_origin_mode = false;
     p.need_declared_frag_colors = false;
     p.max_subgroup_size = p.warp_size_potentially_larger_than_guest ? caps.subgroup_max : 32;
+    p.support_maximal_reconvergence = caps.maximal_reconvergence;
     p.has_broken_spirv_fragment_shuffle = caps.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
     p.min_ssbo_alignment = dev.props.limits.minStorageBufferOffsetAlignment;
     p.ssbo_bda = true;
@@ -671,13 +672,13 @@ void schedule_late(std::vector<uint32_t>& spirv, bool on) {
 // </stamp graphics>
 
 /// What translated code depends on besides the translator's source: the device's subgroup answers, the loop cap
-/// (HOS_DBG=loopcap), the compiler that built the translator, the record's in-memory layout
+/// (HOS_DBG=loopcap), maximal reconvergence, the compiler that built the translator, the record's in-memory layout
 uint64_t device_stamp() {
     uint64_t h = 0xCBF29CE484222325ull;
     const auto add = [&h](const void* d, size_t n) { h = hash_bytes(d, n, h); };
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)caps.sg32_stages,
-                              (uint32_t)Settings::values.shader_loop_safety_count};
+                              (uint32_t)Settings::values.shader_loop_safety_count, caps.maximal_reconvergence ? 1u : 0u};
     add(lanes, sizeof lanes);
     add(__VERSION__, sizeof __VERSION__);
     const uint32_t abi[] = {(uint32_t)sizeof(Shader::Info), (uint32_t)sizeof(std::vector<uint32_t>),

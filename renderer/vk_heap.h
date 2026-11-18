@@ -53,6 +53,7 @@ struct DrawCaps {
     uint32_t max_push = 0;
     VkDriverId driver_id{};
     bool mesh = false;   // (M4b: VK_EXT_mesh_shader's mesh stage (never the task stage))
+    bool maximal_reconvergence = false;   // (VK_KHR_shader_maximal_reconvergence, enabled when the device has it)
     bool mesh_queries = false;   // (M6h: mesh shader invocations counted, for HOS_DBG=pstats only)
 };
 extern DrawCaps caps;

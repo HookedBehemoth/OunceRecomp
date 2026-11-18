@@ -42,8 +42,10 @@ VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af{VK_STRUCTURE_TYPE_PHYSICAL_DEVIC
 // (M4b: mesh shading with the mesh stage only. The task stage is never enabled: native task-stage draws lose the device on this
 // GPU (docs/direct/task-mesh.md); with the feature off no task shader object can be made at all)
 VkPhysicalDeviceMeshShaderFeaturesEXT mesh_feat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
-bool has_ext[8]{};
-enum { E_SHOBJ, E_HEAP, E_EDS3, E_PV, E_STENCIL, E_ATOMIC_FLOAT, E_M5, E_MESH };
+// (the translator's MaximallyReconvergesKHR, for the stages whose front asks for it)
+VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR reconv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR};
+bool has_ext[9]{};
+enum { E_SHOBJ, E_HEAP, E_EDS3, E_PV, E_STENCIL, E_ATOMIC_FLOAT, E_M5, E_MESH, E_RECONV };
 
 VkPhysicalDeviceDescriptorHeapPropertiesEXT hprops{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
 
@@ -389,7 +391,8 @@ void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std:
         {E_SHOBJ, VK_EXT_SHADER_OBJECT_EXTENSION_NAME}, {E_HEAP, VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME},
         {E_EDS3, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME}, {E_PV, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME},
         {E_STENCIL, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME}, {E_ATOMIC_FLOAT, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME},
-        {E_M5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME}, {E_MESH, VK_EXT_MESH_SHADER_EXTENSION_NAME}};
+        {E_M5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME}, {E_MESH, VK_EXT_MESH_SHADER_EXTENSION_NAME},
+        {E_RECONV, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME}};
     for (const auto& e : list)
         if ((has_ext[e.k] = has(exts, e.name))) want.push_back(e.name);
     if (has_ext[E_SHOBJ]) *tail = &shobj, tail = &shobj.pNext;
@@ -398,6 +401,7 @@ void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std:
     if (has_ext[E_PV]) *tail = &pv, tail = &pv.pNext;
     if (has_ext[E_ATOMIC_FLOAT]) *tail = &af, tail = &af.pNext;
     if (has_ext[E_MESH]) *tail = &mesh_feat, tail = &mesh_feat.pNext;
+    if (has_ext[E_RECONV]) *tail = &reconv, tail = &reconv.pNext;
 }
 
 void draw_features_resolved(const VkPhysicalDeviceVulkan14Features* f14) {
@@ -410,6 +414,7 @@ void draw_features_resolved(const VkPhysicalDeviceVulkan14Features* f14) {
     caps.mesh_queries = mesh_queries;
     caps.mesh = has_ext[E_MESH] && mesh_feat.meshShader;
     if (!caps.mesh) mesh_feat.meshShader = VK_FALSE;
+    caps.maximal_reconvergence = has_ext[E_RECONV] && reconv.shaderMaximalReconvergence;
     caps.index_uint8 = f14 && f14->indexTypeUint8;
     caps.vertex_divisor = f14 && f14->vertexAttributeInstanceRateDivisor;
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
