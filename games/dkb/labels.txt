@@ -1,0 +1,5 @@
+# Labels for the lifted game's functions (tools/re/labels.py): <guest address> <label> [# where it is documented: what]
+# Descriptions of ours, not the game's names. Lower case, digits, underscores; every address and label once.
+# An entry is a function's entry address in this lift (of the build games/dkb/game.toml names). Add what an analysis
+# finds, with its note (docs/reverse-engineering.md, "Label a function").
+80403180 zstd_decompress_sequences        # games/dkb/game.toml local_continuations: ZSTD_decompressSequences, inferred (ZSTD_DCtx fields at 0x7050-0x7138, adr/br continuations as OoT 801102e0)

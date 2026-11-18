@@ -781,7 +781,7 @@ impl<'r> Resolver<'r> {
             other => panic!("jump table at {br_pc:#x}: a table address of shape {other:?} (Python fails here too)"),
         };
         let (lo, hi) = self.function_extent(br_pc);
-        let count = bound.and_then(|b| b.1).filter(|&c| c > 0 && c <= 4096);
+        let count = bound.and_then(|b| b.1).or_else(|| self.branch_bound(ld.pc, idx)).filter(|&c| c > 0 && c <= 4096);
         let read = |table: u64, limit: u64, strict: bool| -> Option<Vec<u64>> {
             let mut out = Vec::new();
             for i in 0..limit {
@@ -846,6 +846,43 @@ impl<'r> Resolver<'r> {
             }
         }
         Some(targets)
+    }
+
+    /// the entry count a branch into the table's block gives: the block that holds the load at ld_pc is entered only by
+    /// `cmp idx, #imm; b.ls` (imm + 1) or `b.lo` (imm), and idx is not written in it before the load
+    fn branch_bound(&mut self, ld_pc: u64, idx: u32) -> Option<u64> {
+        let img = self.img;
+        let (lo, hi) = self.function_extent(ld_pc);
+        if Self::too_big(lo, hi) {
+            return None;
+        }
+        self.preds(lo, hi);
+        let preds = &self.preds[&lo];
+        let only_from = |q: u64, p: u64| preds.get(&q).is_some_and(|v| v.iter().all(|&x| x == p));
+        let mut start = ld_pc;
+        while start > lo && start + 64 > ld_pc && only_from(start, start - 4) && img.in_code(start - 4) {
+            let w = img.word(start - 4);
+            if classify(w, start - 4) != Ck::Op || writes(w, idx) {
+                break;
+            }
+            start -= 4;
+        }
+        let before = start.wrapping_sub(4);
+        if img.in_code(before) && !matches!(classify(img.word(before), before), Ck::B(_) | Ck::Br(_) | Ck::Ret | Ck::Trap) {
+            return None;
+        }
+        let Some(&[p]) = preds.get(&start).map(|v| &v[..]) else { return None };
+        let (w, c) = (img.word(p), img.word(p.wrapping_sub(4)));
+        let is_cmp = c & 0x7F80001F == 0x7100001F && (c >> 5) & 31 == idx && (c >> 22) & 1 == 0;
+        if w & 0xFF000010 != 0x54000000 || !is_cmp {
+            return None;
+        }
+        let imm = ((c >> 10) & 0xFFF) as u64;
+        match w & 15 {
+            9 => Some(imm + 1),
+            3 => Some(imm),
+            _ => None,
+        }
     }
 
     fn preds(&mut self, lo: u64, hi: u64) -> &Map<u64, Vec<u64>> {

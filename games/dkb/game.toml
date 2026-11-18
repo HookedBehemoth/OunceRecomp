@@ -1,0 +1,35 @@
+# Donkey Kong Bananza (the Switch 2 build, update 458752, SDK 20.5.19), as the lift and the build take it.
+name = "dkb"
+
+# guest address -> our label (a file beside this one)
+labels = "labels.txt"
+
+# the hot list (docs/lifter.md, "Game description files"): empty until a profile makes one; no link order yet
+hot = "hot_funcs.bin"
+
+# the game's executable in its folder (a file name) and the window's title
+exe = "Donkey Kong Bananza"
+title = "Donkey Kong Bananza"
+
+# the game's patch files (C, beside this file): none yet (runtime/game_hooks.c's weak hook points are neutral)
+patches = []
+
+# the main module's build id and the SHA-256 of exefs/main: another dump stops the lift and the build
+[identity]
+build_id = "e25c90c1c136638885659fd55bf8a03b3403489d"
+main_sha256 = "6e8a88c70a17a1f6a005ec53d621d3c8d53dddc3a8c51f21a0caa5f4c329784e"
+
+# the prepared assets (ounce-builder textures): no zstd dictionary file (the romfs's .zs frames name none), and the
+# top-level folders that hold no BNTX (audio, movies, voxel geometry)
+[assets]
+texture_skip_dirs = ["Sound", "Voice", "Movie", "Voxel"]
+
+# zstd_decompress_sequences' local continuations (f_80403180): `adr x19, <label>` ... `br x19` inside the function, pc:
+# word; the code pointer audit accepts them, ounce/lift/src/plan.rs
+[[local_continuations]]
+pc = 0x80403498
+word = 0x10FFFCB3
+
+[[local_continuations]]
+pc = 0x80403520
+word = 0x10000053
