@@ -14,14 +14,14 @@
 namespace seed {
 
 struct Stage {
-    uint32_t stage = 0;   // (NVN kind: 0 vertex, 1 fragment, 5 compute, 6 task, 7 mesh)
+    uint32_t stage = 0;   // (NVN kind: 0 vertex, 1 fragment, 2 geometry, 5 compute, 6 task, 7 mesh)
     const uint8_t* ctl = nullptr;
     const uint8_t* code = nullptr;
     size_t ctl_n = 0, code_n = 0;
     uint64_t key() const { return offline::fnv(code, code_n, offline::fnv(ctl, offline::kControl)); }
 };
-struct Partners {   // (the first program that uses a stage: a mesh stage's task, a task stage's mesh)
-    int task = -1, mesh = -1;
+struct Partners {   // (the first program that uses a stage: a mesh stage's task, a task stage's mesh, a geometry stage's vertex)
+    int task = -1, mesh = -1, vertex = -1;
 };
 struct Seed {
     std::vector<uint8_t> blob;
@@ -65,6 +65,7 @@ inline bool read(const char* path, Seed& s) {
         for (uint32_t id : prog) {
             if (s.stages[id].stage == 6) p.task = (int)id;
             if (s.stages[id].stage == 7) p.mesh = (int)id;
+            if (s.stages[id].stage == 0) p.vertex = (int)id;
         }
         for (uint32_t id : prog)
             if (!seen[id]) seen[id] = true, s.partners[id] = p;
@@ -161,6 +162,12 @@ inline Translated translate(const Seed& s, int id, const Front& f) {
     } else if (st == 6) {
         const offline::Code mc = pa.mesh >= 0 ? code_of(pa.mesh) : offline::Code{};
         offline::Env env(r.code, Shader::Stage::Task, offline::regs_of(mc, &r.code));
+        r.t = f.translate(env);
+    } else if (st == 2) {
+        if (pa.vertex < 0) throw Shader::RuntimeError("geometry stage without a vertex stage");
+        const Translated vs = translate(s, pa.vertex, f);
+        offline::Env env(r.code, Shader::Stage::Geometry);
+        env.pass_through(vs.t->program.info.stores);
         r.t = f.translate(env);
     } else if (st == 5) {
         offline::Env env(r.code, Shader::Stage::Compute);

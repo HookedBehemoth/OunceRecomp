@@ -7,7 +7,8 @@
 //
 // Choices where the SPIR-V leaves one (the same for any two programs compared):
 // - one subgroup: lanes are invocations 0-31 of the workgroup (fewer if it is smaller); barriers are no-ops; fragment
-//   lanes are 8 quads (lane bit 0 x, bit 1 y), vertex lanes are vertices; workgroup and draw ids are small hashes
+//   lanes are 8 quads (lane bit 0 x, bit 1 y), vertex lanes are vertices, geometry lanes are primitives (all with
+//   Inputs::primitive_vertices vertices); workgroup and draw ids are small hashes
 // - inputs: constant banks (bank 1 the program's own when given), attributes, storage, global, shared and local memory
 //   and texels are hashes of the input seed and where they are read, shaped as floats in [-2, 2), [0, 1), small
 //   integers or raw bits; memory that was written reads back what was written; constant reads past 64 KiB (past c1's
@@ -556,6 +557,7 @@ private:
     // ---- inputs ----
     u32 synth(u64 a0, u64 a1, u64 a2 = 0, u64 a3 = 0) const { return shaped(h(h(seed, a0, a1), a2, a3)); }
     u32 cbuf_word(u32 bank, u32 offset) const {   // (offset aligned to 4)
+        if (const auto it = in.cbuf.find({bank, offset}); it != in.cbuf.end()) return it->second;
         if (bank == 1 && in.c1) {
             u32 w = 0;
             if ((size_t)offset + 4 <= in.c1->size()) std::memcpy(&w, in.c1->data() + offset, 4);
@@ -602,6 +604,9 @@ private:
             const u32 ox = (u32)(seed % 64) * 8, oy = (u32)(seed / 64 % 64) * 4;
             return fbits((float)((at == At::PositionX ? x + ox : y + oy)) + 0.5f);
         }
+        if (!in.attributes.empty())
+            for (const u32 lane : {(u32)l, ~0u})
+                if (const auto it = in.attributes.find({lane, vertex, (u32)attr}); it != in.attributes.end()) return it->second;
         return synth('A', attr, vertex, (u64)l);
     }
     u32 lane_index(int l, int k) const {   // (LocalInvocationId's components of lane l)
@@ -907,7 +912,9 @@ void Machine::exec(const Op& op, u32 mask) {
     case Opcode::NumWorkgroups: EACH R(op.dst, 0, l) = 3, R(op.dst, 1, l) = 2, R(op.dst, 2, l) = 1; return;
     case Opcode::LocalInvocationId: EACH for (int k = 0; k < 3; k++) R(op.dst, k, l) = lane_index((int)l, k); return;
     case Opcode::InvocationId: case Opcode::SampleId: EACH R(op.dst, 0, l) = 0; return;
-    case Opcode::InvocationInfo: EACH R(op.dst, 0, l) = synth('V', 0, 0); return;
+    case Opcode::InvocationInfo:   // (geometry: the input primitive's vertex count in byte 2, as the SPIR-V back end)
+        EACH R(op.dst, 0, l) = p.stage == Stage::Geometry ? in.primitive_vertices << 16 : synth('V', 0, 0);
+        return;
     case Opcode::IsHelperInvocation: EACH R(op.dst, 0, l) = demoted >> l & 1; return;
     case Opcode::SR_WScaleFactorXY: case Opcode::SR_WScaleFactorZ: EACH R(op.dst, 0, l) = synth('W', (u64)o, 0); return;
     case Opcode::YDirection: case Opcode::ResolutionDownFactor: EACH R(op.dst, 0, l) = fbits(1.0f); return;

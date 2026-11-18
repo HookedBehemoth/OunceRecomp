@@ -10,6 +10,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace Shader::IR {
@@ -28,6 +29,9 @@ struct Inputs {
     uint32_t lanes = 32;                        // (lanes that start; the rest are inactive from the start)
     uint64_t max_steps = 1u << 16;              // (block entries of the subgroup before the run stops as capped)
     bool log = false;                           // (keep the ordered event log as text)
+    uint32_t primitive_vertices = 3;            // (a geometry stage's input primitive: its vertex count, as InvocationInfo gives it)
+    std::map<std::tuple<uint32_t, uint32_t, uint32_t>, uint32_t> attributes;   // ((lane or ~0 for every lane, input vertex, attribute) -> bits: instead of a hash)
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> cbuf;         // ((bank, offset of a word) -> bits: instead of a hash)
 };
 
 struct Trace {

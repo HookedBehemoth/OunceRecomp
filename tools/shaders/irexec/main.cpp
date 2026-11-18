@@ -7,6 +7,9 @@
 //   irexec <seed> --opcodes [--first F] [--count C]            the post-pass opcodes of the stages: stages and uses each
 //   --alias <a>=<b>: constant bank a read and keyed as bank b (irexec::Options::bank_alias)
 //   --front old|new: the front that translates (seed.h; old, the lowering to Maxwell, by default)
+//   --lanes N: lanes that start (32); --vertices N: a geometry stage's input primitive's vertex count (3)
+//   --attr <lane|*>,<vertex>,<byte address>=<value>: an input attribute (the address as ALD's, 0x70 position x)
+//   --cbuf <bank>,<offset>=<value>: a constant word; a value is hex bits (0x3f800000) or a float (1.5f)
 //   irexec --supported                                         the opcodes the interpreter executes
 // "@@stage <index>" goes to stderr before each stage (a crash names its stage).
 #include <chrono>
@@ -34,13 +37,40 @@ double ms_since(std::chrono::steady_clock::time_point t0) {
 }
 
 irexec::Options options;
+irexec::Inputs base;   // (the inputs every run starts from: --lanes, --vertices, --attr, --cbuf)
+
+uint32_t value_of(const std::string& v) {
+    if (!v.empty() && v.back() == 'f') {
+        const float f = std::stof(v.substr(0, v.size() - 1));
+        uint32_t b;
+        std::memcpy(&b, &f, 4);
+        return b;
+    }
+    return (uint32_t)std::stoul(v, nullptr, 0);
+}
+/// "a,b,c=value" split into its numbers before '=' ('*' is ~0) and the value
+std::vector<uint32_t> fields_of(const std::string& a, uint32_t& value) {
+    const size_t eq = a.find('=');
+    if (eq == std::string::npos) throw Shader::LogicError("{}: no value", a);
+    value = value_of(a.substr(eq + 1));
+    std::vector<uint32_t> out;
+    size_t at = 0;
+    while (at <= eq) {
+        size_t end = a.find(',', at);
+        if (end == std::string::npos || end > eq) end = eq;
+        const std::string f = a.substr(at, end - at);
+        out.push_back(f == "*" ? ~0u : (uint32_t)std::stoul(f, nullptr, 0));
+        at = end + 1;
+    }
+    return out;
+}
 
 int one(int id, int inputs, bool trace, bool ir) {
     seed::Translated s = translate(id);
     if (ir) std::printf("%s\n", Shader::IR::DumpProgram(s.t->program).c_str());
     const auto c = irexec::compile(s.t->program, options);
     for (int k = 0; k < inputs; k++) {
-        irexec::Inputs in;
+        irexec::Inputs in = base;
         in.seed = (uint64_t)k;
         in.c1 = &s.code.c1;
         in.log = trace;
@@ -79,7 +109,7 @@ int all(int first, int count, int inputs) {
         try {
             const auto c = irexec::compile(s.t->program, options);
             for (int k = 0; k < inputs; k++) {
-                irexec::Inputs in;
+                irexec::Inputs in = base;
                 in.seed = (uint64_t)k;
                 in.c1 = &s.code.c1;
                 const irexec::Trace tr = irexec::run(*c, in);
@@ -160,6 +190,15 @@ int main(int argc, char** argv) {
             if (eq == std::string::npos) return std::fprintf(stderr, "--alias <a>=<b>\n"), 2;
             options.bank_alias[(uint32_t)std::stoul(v.substr(0, eq))] = (uint32_t)std::stoul(v.substr(eq + 1));
         } else if (a == "--front" && more) front = &seed::front(argv[++i]);
+        else if (a == "--lanes" && more) base.lanes = (uint32_t)std::atoi(argv[++i]);
+        else if (a == "--vertices" && more) base.primitive_vertices = (uint32_t)std::atoi(argv[++i]);
+        else if ((a == "--attr" || a == "--cbuf") && more) {
+            uint32_t value;
+            const std::vector<uint32_t> f = fields_of(argv[++i], value);
+            if (a == "--attr" && f.size() == 3) base.attributes[{f[0], f[1], f[2] / 4}] = value;
+            else if (a == "--cbuf" && f.size() == 2) base.cbuf[{f[0], f[1] & ~3u}] = value;
+            else return std::fprintf(stderr, "%s: %s\n", a.c_str(), argv[i]), 2;
+        }
         else if (a == "--trace") trace = true;
         else if (a == "--ir") ir = true;
         else if (a == "--all") do_all = true;

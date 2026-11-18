@@ -4,8 +4,8 @@
 // compile of its SPIR-V with the back end's heap mappings (vk_shader.cpp finish) and the driver's statistics of it
 // (VK_KHR_pipeline_executable_properties: ACO's instruction count, code size, registers, LDS, scratch, its latency and throughput
 // estimates). The back end makes unlinked shader objects, which report no statistics; the tool makes a pipeline instead: a
-// graphics stage with the partner stage of the first program that uses it (vertex + fragment, mesh + fragment), a task or compute
-// stage alone. For the shader census (docs/direct/shader-costs.md); nothing of the game is in this file.
+// graphics stage with the partner stage of the first program that uses it (vertex + fragment, mesh + fragment; a geometry stage
+// between its program's vertex and fragment stages), a task or compute stage alone. For the shader census (docs/direct/shader-costs.md); nothing of the game is in this file.
 //
 //   censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...] [--front old|new]
 //              [--late <kinds>] [--budget N] [--sink-peak N] [--objects] [--list]
@@ -536,10 +536,11 @@ struct Made {   // (a stage translated: what a pipeline needs of it)
     std::vector<uint32_t> spv;
     std::unique_ptr<offline::Translation> t;
     offline::Code code;
+    Shader::InputTopology input{};   // (a geometry stage's)
 };
 std::string json_str(const std::string& s);
 /// The pipeline of a stage (and its partner) and the driver's statistics of every executable, as JSON
-std::string compile(const Made& a, const Made* b, int& result) {
+std::string compile(const Made& a, const Made* b, int& result, const Made* c = nullptr) {
     struct StageIn {
         std::vector<VkDescriptorSetAndBindingMappingEXT> maps;
         VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};
@@ -548,6 +549,7 @@ std::string compile(const Made& a, const Made* b, int& result) {
     };
     std::vector<const Made*> made{&a};
     if (b) made.push_back(b);
+    if (c) made.push_back(c);
     std::vector<StageIn> in(made.size());
     std::vector<VkPipelineShaderStageCreateInfo> st(made.size());
     for (size_t k = 0; k < made.size(); k++) {
@@ -571,10 +573,11 @@ std::string compile(const Made& a, const Made* b, int& result) {
         result = (int)vkCreateComputePipelines(gdev.dev, VK_NULL_HANDLE, 1, &ci, nullptr, &pl);
     } else {
         const Made* fs = nullptr;
-        bool vertex = false;
+        bool vertex = false, lines = false;
         for (const Made* m : made) {
             if (m->vk == VK_SHADER_STAGE_FRAGMENT_BIT) fs = m;
             if (m->vk == VK_SHADER_STAGE_VERTEX_BIT) vertex = true;
+            if (m->vk == VK_SHADER_STAGE_GEOMETRY_BIT) lines = m->input == Shader::InputTopology::Lines;
         }
         std::vector<VkVertexInputAttributeDescription> attrs;
         VkVertexInputBindingDescription bind{0, 16, VK_VERTEX_INPUT_RATE_VERTEX};
@@ -586,7 +589,7 @@ std::string compile(const Made& a, const Made* b, int& result) {
         vi.vertexBindingDescriptionCount = attrs.empty() ? 0 : 1, vi.pVertexBindingDescriptions = &bind;
         vi.vertexAttributeDescriptionCount = (uint32_t)attrs.size(), vi.pVertexAttributeDescriptions = attrs.data();
         VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        ia.topology = lines ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
         vp.viewportCount = vp.scissorCount = 1;
         VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
@@ -668,7 +671,7 @@ int spirv_instructions(const std::vector<uint32_t>& spv) {
 
 // ---- one stage, as the back end translates it in the first program that uses it ----
 struct Partners {
-    int vs = -1, fs = -1, task = -1, mesh = -1;
+    int vs = -1, fs = -1, task = -1, mesh = -1, gs = -1;
     int program = -1;
 };
 std::vector<Partners> partners;
@@ -684,6 +687,7 @@ void partners_make() {
             else if (st == 1) p.fs = (int)id;
             else if (st == 6) p.task = (int)id;
             else if (st == 7) p.mesh = (int)id;
+            else if (st == 2) p.gs = (int)id;
         }
         p.program = (int)pi;
         for (uint32_t id : seed.programs[pi]) {
@@ -699,15 +703,15 @@ offline::Code code_of(int id) {
 
 // (each kind of stage translated as the back end translates it: vk_shader.cpp translate_variant,
 // translate_mesh_variant, translate_task_mesh_variant; vk_compute.cpp translate_variant)
-void make_vs(Made& m, int id) {
+void make_vs(Made& m, int id, bool before_gs = false) {
     m.code = code_of(id);
     offline::Env env(m.code, Shader::Stage::VertexB);
     m.t = offline::translate(env);
     Shader::RuntimeInfo rt{};
-    if (!m.t->program.info.stores[Attribute::PointSize]) rt.fixed_state_point_size = 1.0f;
+    if (!before_gs && !m.t->program.info.stores[Attribute::PointSize]) rt.fixed_state_point_size = 1.0f;
     for (int i = 0; i < 16; i++) rt.generic_input_types[i] = Shader::AttributeType::Float;   // (offline: no attribute bound)
     rt.previous_stage_stores.mask.set();
-    rt.convert_depth_mode = true;
+    rt.convert_depth_mode = !before_gs;   // (in the last stage before the rasterizer)
     Shader::Backend::Bindings b{};
     m.spv = Shader::Backend::SPIRV::EmitSPIRV(offline::profile(), rt, m.t->program, b);
     m.vk = VK_SHADER_STAGE_VERTEX_BIT;
@@ -726,6 +730,23 @@ void make_mesh(Made& m, int id, int task) {
     Shader::Backend::Bindings b{};
     m.spv = Shader::Backend::SPIRV::EmitSPIRV(offline::profile(), rt, m.t->program, b);
     m.vk = VK_SHADER_STAGE_MESH_BIT_EXT;
+}
+/// A geometry stage after its program's vertex stage (vs), which it passes on when it is a passthrough stage. Input:
+/// triangles for a passthrough stage, else lines (the seeds' other geometry stages read two input vertices; the draw's
+/// topology decides in the back end)
+void make_gs(Made& m, int id, const Made& vs) {
+    m.code = code_of(id);
+    offline::Env env(m.code, Shader::Stage::Geometry);
+    env.pass_through(vs.t->program.info.stores);
+    m.t = offline::translate(env);
+    Shader::RuntimeInfo rt{};
+    rt.previous_stage_stores = vs.t->program.info.stores;
+    m.input = env.SPH().common0.geometry_passthrough ? Shader::InputTopology::Triangles : Shader::InputTopology::Lines;
+    rt.input_topology = m.input;
+    rt.convert_depth_mode = true;
+    Shader::Backend::Bindings b{};
+    m.spv = Shader::Backend::SPIRV::EmitSPIRV(offline::profile(), rt, m.t->program, b);
+    m.vk = VK_SHADER_STAGE_GEOMETRY_BIT;
 }
 uint32_t fs_binding_base = 0;   // (--fs-binding-base N: the fragment stage's bindings after N, as the game's program numbers them)
 bool no_ir_guard = false;       // (--no-ir-guard: the translator-fix prototype: GuardFragmentOutputs left out, frag_nan_guard kept)
@@ -803,7 +824,8 @@ int make_object(const Made& m) {
     ci.flags = VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
     if (m.vk == VK_SHADER_STAGE_MESH_BIT_EXT) ci.flags |= VK_SHADER_CREATE_NO_TASK_SHADER_BIT_EXT;
     ci.stage = m.vk;
-    ci.nextStage = m.vk == VK_SHADER_STAGE_MESH_BIT_EXT || m.vk == VK_SHADER_STAGE_VERTEX_BIT ? VK_SHADER_STAGE_FRAGMENT_BIT : 0;
+    ci.nextStage = m.vk == VK_SHADER_STAGE_MESH_BIT_EXT || m.vk == VK_SHADER_STAGE_VERTEX_BIT || m.vk == VK_SHADER_STAGE_GEOMETRY_BIT
+                       ? VK_SHADER_STAGE_FRAGMENT_BIT : 0;
     ci.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
     ci.codeSize = m.spv.size() * 4, ci.pCode = m.spv.data(), ci.pName = "main";
     if (gdev.sg32 & m.vk) sz.pNext = &mi, ci.pNext = &sz;
@@ -851,7 +873,7 @@ void one(int id, bool do_compile, const char* spv_dir) {
         return;
     }
     try {
-        Made m, partner;
+        Made m, partner, vertex;
         bool has_partner = false;
         std::string extra;
         // (--front new: a partner the new front does not translate yet is left out, the stage translated alone)
@@ -880,6 +902,14 @@ void one(int id, bool do_compile, const char* spv_dir) {
             extra += ",\"max_vertices\":" + std::to_string(mp.max_vertices) + ",\"max_primitives\":" + std::to_string(mp.max_primitives) +
                      ",\"payload_words\":" + std::to_string(mp.payload_words) + ",\"vertex_lines\":" + std::to_string(mp.vertex_lines.size()) +
                      ",\"primitive_lines\":" + std::to_string(mp.primitive_lines.size()) + ",\"topology\":" + std::to_string((int)mp.topology);
+        } else if (s.stage == 2) {
+            if (pa.vs < 0) throw Shader::RuntimeError("geometry stage without a vertex stage");
+            make_vs(vertex, pa.vs, true);
+            make_gs(m, id, vertex);
+            if (pa.fs >= 0) has_partner = partnered([&] { make_fs(partner, pa.fs, &m); });
+            extra += std::string(",\"passthrough\":") + (m.t->program.is_geometry_passthrough ? "true" : "false") +
+                     ",\"output_vertices\":" + std::to_string(m.t->program.output_vertices) + ",\"output_topology\":" +
+                     std::to_string((int)m.t->program.output_topology);
         } else if (s.stage == 6) {
             make_task(m, id, pa.mesh);
             extra += ",\"payload_words\":" + std::to_string(m.t->program.mesh.payload_words);
@@ -959,11 +989,12 @@ void one(int id, bool do_compile, const char* spv_dir) {
         }
         if (do_compile) {
             int res = 0;
-            const std::string st = compile(m, has_partner ? &partner : nullptr, res);
+            const std::string st = s.stage == 2 ? compile(vertex, &m, res, has_partner ? &partner : nullptr)
+                                                : compile(m, has_partner ? &partner : nullptr, res);
             out += ",\"compiled\":" + std::to_string(res) + ",\"radv\":" + st;
         }
         if (make_objects) {
-            const char* kind = s.stage == 0 ? "vertex" : s.stage == 1 ? "fragment" : s.stage == 7 ? "mesh" : s.stage == 6 ? "task" : "compute";
+            const char* kind = s.stage == 0 ? "vertex" : s.stage == 1 ? "fragment" : s.stage == 2 ? "geometry" : s.stage == 7 ? "mesh" : s.stage == 6 ? "task" : "compute";
             std::fflush(stdout);
             std::fprintf(stderr, "@@object %d %s %s\n", id, key, kind);
             std::fflush(stderr);

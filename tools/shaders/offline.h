@@ -154,6 +154,12 @@ public:
         is_proprietary_driver = true;
         mesh_registers = regs;
     }
+    /// (a passthrough geometry stage) the attributes it passes on: those the vertex stage before it stores
+    void pass_through(const Shader::VaryingState& vertex_stores) {
+        gp_passthrough_mask.fill(0);
+        for (size_t i = 0; i < gp_passthrough_mask.size() * 32; i++)
+            if (!vertex_stores.mask[i]) gp_passthrough_mask[i / 32] |= 1u << (i % 32);
+    }
     u64 ReadInstruction(u32 a) override { return a / 8 < nvn.code.size() ? nvn.code[a / 8] : 0; }
     u128 ReadInstruction128(u32 a) override {
         if (a % 16 != 0 || a / 16 >= nvn.native_code.size()) throw Shader::RuntimeError("instruction read past the program at {:#x}", a);
