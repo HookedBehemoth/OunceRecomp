@@ -30,6 +30,13 @@ struct Instruction {
 };
 static_assert(sizeof(Instruction) == 16);
 
+// (fork) A relative branch's offset in bytes from the next instruction: bits 34-81, signed, in 32-bit words (NAK
+// OpBra, nv_isa_solver BRA). Bits 32-33 are BRA's .U/.DIV/.CONV; BRX, CALL.REL and RET.REL keep them zero.
+inline s64 BranchOffset(const Instruction& insn) {
+    const u64 words = (insn.words[1] >> 2) | (u64{insn.words[2] & 0x3ffff} << 30);
+    return (static_cast<s64>(words << 16) >> 16) * 4;
+}
+
 // (fork) set by the Vulkan back end when the GPU's cooperative matrices passed its self-test
 // (vk_coopmat.cpp): HMMA.16816.F16 then lowers to the HMMA_nx2 pseudo instruction (one subgroup
 // matrix multiply on the host's tensor cores) instead of the shuffle expansion.
@@ -3286,10 +3293,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             break;
         }
         case 0x949: case 0x958: { // Captured BRX / BRXU with absolute native-PC table values
-            if (insn.Bits(12, 4) != 7 || (insn.words[2] & ~0x3ffffU) != (opcode == 0x958 ? 0x0b800000U : 0x03800000U))
+            if (insn.Bits(12, 4) != 7 || insn.Bits(32, 2) != 0 ||
+                (insn.words[2] & ~0x3ffffU) != (opcode == 0x958 ? 0x0b800000U : 0x03800000U))
                 return fail(index, "native computed branch mode");
-            const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
-            const s64 relative = static_cast<s64>(raw << 14) >> 14;
+            const s64 relative = BranchOffset(insn);
             if (s64{index} * 16 + 16 + relative != 0)
                 return fail(index, "native computed branch relative base");
             const s64 offset = -s64{address_of(static_cast<u32>(result.instructions.size()))} - 8;
@@ -3346,10 +3353,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             for (u32 k = setup + 1; !clobbered && k < index; ++k)
                 clobbered = writes_link(code[k], code[setup].Bits(16, 8));
             if (main_exited || index == 0 || insn.words[0] != 0x7944 ||
-                (insn.words[2] & ~0x3ffffU) != 0x03c00000 || clobbered)
+                (insn.words[2] & ~0x3ffffU) != 0x03c00000 || insn.Bits(32, 2) != 0 || clobbered)
                 return fail(index, "native call linkage mode");
-            const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
-            const s64 relative = static_cast<s64>(raw << 14) >> 14;
+            const s64 relative = BranchOffset(insn);
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native call destination alignment");
             const u32 link = code[setup].Bits(16, 8);
@@ -3388,10 +3394,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
             if (!main_exited || !linked ||
                 (insn.words[0] & 0x00ffffffU) != 0x00007950 || return_reg >= 249 ||
-                (insn.words[2] & ~0x3ffffU) != 0x03c00000 || !barrier_tokens.empty())
+                (insn.words[2] & ~0x3ffffU) != 0x03c00000 || insn.Bits(32, 2) != 0 || !barrier_tokens.empty())
                 return fail(index, "native return linkage mode");
-            const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
-            const s64 relative = static_cast<s64>(raw << 14) >> 14;
+            const s64 relative = BranchOffset(insn);
             if (s64{index} * 16 + 16 + relative != 0)
                 return fail(index, "native return relative base");
             emit(0xe32000000007000fULL);
@@ -3417,8 +3422,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             } else if (insn.Bits(87, 4) != 7) {
                 return fail(index, "native extra branch condition");
             }
-            const u64 raw = insn.words[1] | (u64{insn.words[2] & 0x3ffff} << 32);
-            const s64 relative = static_cast<s64>(raw << 14) >> 14;
+            // (fork) bits 32-33: .U (1) only says every thread agrees, a plain branch here; .DIV and .CONV
+            // branch on the warp's divergence, and 85-86 (.INC/.DEC) count reconvergence: none are lowered
+            if (insn.Bits(32, 2) > 1 || insn.Bits(85, 2) != 0)
+                return fail(index, "native branch divergence mode");
+            const s64 relative = BranchOffset(insn);
             const s64 target = s64{index} * 16 + 16 + relative;
             if (target < 0 || target % 16) return fail(index, "native branch destination alignment");
             relocations.push_back({static_cast<u32>(result.instructions.size()), target / 16});

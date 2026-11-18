@@ -57,11 +57,12 @@ def instructions(stage, control, code):
         yield x
         op, guard = x & 0xfff, (x >> 12) & 0xf
         if op in (0x944, 0x947, 0x945):
+            # (words from bit 34, BSSY's to 63; 32-33 are BRA's .U/.DIV/.CONV)
             if op == 0x945:
-                rel = struct.unpack("<i", struct.pack("<I", (x >> 32) & 0xffffffff))[0]
+                raw, bits = (x >> 34) & ((1 << 30) - 1), 30
             else:
-                raw = (x >> 32) & ((1 << 50) - 1)
-                rel = raw - (1 << 50) if raw >> 49 else raw
+                raw, bits = (x >> 34) & ((1 << 48) - 1), 48
+            rel = 4 * (raw - (1 << bits) if raw >> (bits - 1) else raw)
             target = i * 16 + 16 + rel
             if op == 0x944 and not (x >> 86) & 1:
                 last_call = max(last_call, target // 16)

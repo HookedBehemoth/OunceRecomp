@@ -13,11 +13,13 @@ public:
     Result Observe(const Instruction& instruction, u32 index) {
         const u32 opcode = instruction.Bits(0, 12);
         if (opcode == 0x944 || opcode == 0x947 || opcode == 0x945) {
-            const u64 raw = instruction.words[1] | (u64{instruction.words[2] & 0x3ffff} << 32);
-            const s64 relative = opcode == 0x945 ? static_cast<s32>(instruction.words[1])
-                                                : static_cast<s64>(raw << 14) >> 14;
+            // (fork) the offset in words from bit 34 (BSSY's to 63); bits 32-33 are BRA's .U/.DIV/.CONV, zero
+            // in the others
+            const s64 relative = opcode == 0x945 ? s64{static_cast<s32>(instruction.words[1] & ~3U)}
+                                                 : BranchOffset(instruction);
             const s64 target = s64{index} * 16 + 16 + relative;
-            if (target < 0 || target % 16 || target >= MaximumInstructions * 16)
+            if ((opcode != 0x947 && instruction.Bits(32, 2) != 0) || target < 0 || target % 16 ||
+                target >= MaximumInstructions * 16)
                 return Result::InvalidTarget;
             // CALL.REL.NOINC (bit 86) pushes no return address: the compiler uses it as a jump
             // (the lowering treats it as one), so it never pairs with a RET.
