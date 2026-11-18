@@ -11,3 +11,19 @@
 806f745c album_orientation_reset_dtor     # runtime/nn_applet.c nn::oe: a destructor (run on the DeleteScene thread after the mode select) that resets the screenshot orientation with SetAlbumImageOrientation(0), then 0x8053d6a0's
 808ca718 gfx_push_screen_size            # runtime/nvn_native.c nvnCommandBufferPushGraphicsConstants: (lr 0x808ca7e0) pushes a target's (1/w, 1/h, w, h) to the vertex stage's root table (stage 0, offset 0, 0x10 bytes), then sets up and draws a fullscreen pass; its vertex programs read them as bank 24
 80345fe0 gfx_push_screen_size_caller     # runtime/nvn_native.c nvnCommandBufferPushGraphicsConstants: gathers four texture handles through an NVN proc into an argument block, then calls gfx_push_screen_size
+80e39e00 movie_decoder_open               # runtime/nn_video.c: sizes the two picture pools (movie_pool_size), the work buffer (movie_dec_work_buffer), initializes the decoder by its kind and takes its submission-ready event
+80e3aa40 movie_frame_take                 # runtime/nn_video.c: a decoded buffer's properties (movie_dec_properties); the output's mode 1 reads the picture into its CPU buffer (movie_pool_read), mode 3 hands it GetDecoderImagePoolNativeImageHandle's handle
+80e3be60 movie_pool_size                  # runtime/nn_video.c: MakeDecodeImagePreference(w, h, format, CodecMode) and CalculateDecoderImagePoolBuffer for one image (lr 0x80e3be94: the SDK 20 codec stop)
+80e3bec8 movie_pool_init                  # runtime/nn_video.c: MakeDecodeImagePreference and InitializeDecoderImagePool (one image, CodecMode); keeps w, h, mode and format at +0x20..+0x28
+80e3bf74 movie_pool_read                  # runtime/nn_video.c: reads the pool's image 0 into a CPU buffer: format 3 or 6 as NV12 (chroma right after the luma), 2 as RGBA
+80e3c040 movie_dec_work_buffer            # runtime/nn_video.c: Calculate{H264,Av1,Vp8,Vp9}DecoderWorkBuffer by the codec kind (0..4)
+80e3c0b0 movie_dec_init                   # runtime/nn_video.c: Initialize{H264,Av1,Vp8,Vp9}Decoder (transfer memory) by the decoder's kind at +0x400
+80e3c1d0 movie_dec_init_remote            # runtime/nn_video.c: Initialize{H264,Av1,Vp8,Vp9}Decoder (remote memory) by the decoder's kind at +0x400
+80e3c380 movie_dec_register               # runtime/nn_video.c: Register{H264,Av1,Vp8,Vp9}DecoderBuffer by the decoder's kind
+80e3c3f0 movie_dec_start                  # runtime/nn_video.c: Start{H264,Av1,Vp8,Vp9}Decoder by the decoder's kind
+80e3c4e0 movie_dec_flush                  # runtime/nn_video.c: Flush{H264,Av1,Vp8,Vp9}Decoder by the decoder's kind
+80e3c570 movie_dec_ready_event            # runtime/nn_video.c: Get{H264,Av1,Vp8,Vp9}DecoderSubmissionReadyEvent (the SDK 20 form: SystemEventType** out, decoder)
+80e3c5e0 movie_dec_submit                 # runtime/nn_video.c: Submit*DecoderInputBuffer by the kind; result 0x1c266f (input full) is 0x79, a retry; 0x1c246f and 0xfa86f abort, any other failure aborts
+80e3c6d0 movie_dec_acquire                # runtime/nn_video.c: Acquire*DecoderOutputBuffer by the kind; any failure aborts
+80e3c740 movie_dec_release                # runtime/nn_video.c: Release*DecoderOutputBuffer by the kind (tail calls)
+80e3c790 movie_dec_properties             # runtime/nn_video.c: Get*DecoderOutputBufferProperties by the kind (tail calls)

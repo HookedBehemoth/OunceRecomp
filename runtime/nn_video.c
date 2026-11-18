@@ -1,6 +1,7 @@
 /* nn::codec's hardware video decoders (VP8/VP9 here) and their image pools, on FFmpeg's libavcodec (the static
    libraries in Eglantine's package cache: work/eg/.cache/cpm/ffmpeg). MKW's movie library (subsdk0, movie::) plays
-   its WebM movies through them: the cup openings, the courses' billboards, the emblems.
+   its WebM movies through them: the cup openings, the courses' billboards, the emblems. DKB's movie player (main,
+   SDK 20: the forms tagged sdk(20, 21)) plays its VP9 WebM movies the same way.
 
    How the library uses them (subsdk0, movie::detail::VideoDecoderBuffer): each picture buffer is an image pool of
    one image, sized by MakeDecodeImagePreference + CalculateDecoderImagePoolBuffer, registered with the decoder by
@@ -136,13 +137,16 @@ HLE(_ZN2nn5codec5video10InitializeEv) {
 HLE(_ZN2nn5codec5video8FinalizeEv) { RET(0); }
 
 /* ---- image pools ---- */
-/* MakeDecodeImagePreference(u16 w, u16 h, OutputFormat, TilingMode) -> the preference (returned through x8) */
-HLE(_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_15ImageTilingModeE, sdk(22)) {
+/* MakeDecodeImagePreference(u16 w, u16 h, OutputFormat, TilingMode or, before SDK 22, CodecMode) -> the preference
+   (returned through x8; the caller's 0x40 bytes) */
+static void make_pref(Ctx *c) {
     const uint64_t out = c->x[8];
     Pref p = {PREF_MAGIC, (uint16_t)ARG(0), (uint16_t)ARG(1), (uint32_t)ARG(2), (uint32_t)ARG(3)};
     if (out) memcpy(GP(out), &p, sizeof p);
     RET(out);
 }
+HLE(_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_15ImageTilingModeE, sdk(22)) { make_pref(c); }
+HLE(_ZN2nn5codec25MakeDecodeImagePreferenceEttNS0_24VideoDecoderOutputFormatENS0_9CodecModeE, sdk(20, 21)) { make_pref(c); }
 /* CalculateDecoderImagePoolBuffer(u64* size, u64* alignment, Preference const&, u32 count) */
 HLE(_ZN2nn5codec31CalculateDecoderImagePoolBufferEPmS1_RKNS0_27VideoDecoderImagePreferenceEj) {
     const Pref *p = (const Pref *)GP(ARG(2));
@@ -151,8 +155,8 @@ HLE(_ZN2nn5codec31CalculateDecoderImagePoolBufferEPmS1_RKNS0_27VideoDecoderImage
     if (ARG(1)) G64(ARG(1)) = 0x1000;
     RET(0);
 }
-/* InitializeDecoderImagePool(pool, void* memory, size, Preference const&, u32 count) */
-HLE(_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEj, sdk(22)) {
+/* InitializeDecoderImagePool(pool, void* memory, size, Preference const&, u32 count[, CodecMode before SDK 22]) */
+static void pool_init(Ctx *c) {
     const Pref *p = (const Pref *)GP(ARG(3));
     Pool *o = (Pool *)calloc(1, sizeof *o);
     if (!o) hos_fatal(NULL, "video: out of memory for an image pool");
@@ -181,6 +185,10 @@ HLE(_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPv
                 o->w, o->h, o->format, o->count, (unsigned long long)o->mem, (unsigned long long)o->mem_size);
     set_host(ARG(0), POOL_MAGIC, o);
     RET(0);
+}
+HLE(_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEj, sdk(22)) { pool_init(c); }
+HLE(_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEjNS0_9CodecModeE, sdk(20, 21)) {
+    pool_init(c);
 }
 HLE(_ZN2nn5codec24FinalizeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeE) {
     Pool *o = (Pool *)host_of(ARG(0), POOL_MAGIC);
@@ -752,9 +760,10 @@ static void dec_properties(Ctx *c) {
     }
     RET(0);
 }
-/* GetXDecoderSubmissionReadyEvent(decoder): the decoder's own (dec_room) */
-static uint64_t ready_event(Ctx *c) {
-    Dec *d = (Dec *)host_of(ARG(0), DEC_MAGIC);
+/* GetXDecoderSubmissionReadyEvent(decoder) -> event, before SDK 22 (SystemEventType** event, decoder) -> Result: the
+   decoder's own (dec_room) */
+static uint64_t ready_event(uint64_t dec) {
+    Dec *d = (Dec *)host_of(dec, DEC_MAGIC);
     if (!d) return 0;
     os_mutex_lock(&d->lock);
     if (!d->ready) {
@@ -779,7 +788,7 @@ HLE(_ZN2nn5codec26UnregisterVp9DecoderBufferEPNS0_14Vp9DecoderTypeEj) { dec_unre
 HLE(_ZN2nn5codec15StartVp9DecoderEPNS0_14Vp9DecoderTypeE) { RET(0); }
 HLE(_ZN2nn5codec14StopVp9DecoderEPNS0_14Vp9DecoderTypeE) { dec_flush(c, "Stop"); }
 HLE(_ZN2nn5codec15FlushVp9DecoderEPNS0_14Vp9DecoderTypeE) { dec_flush(c, "Flush"); }
-HLE(_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPNS0_14Vp9DecoderTypeE, sdk(22)) { RET(ready_event(c)); }
+HLE(_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPNS0_14Vp9DecoderTypeE, sdk(22)) { RET(ready_event(ARG(0))); }
 HLE(_ZN2nn5codec27SubmitVp9DecoderInputBufferEPmPNS0_14Vp9DecoderTypeEPKvmNS_8TimeSpanEb) { dec_submit(c); }
 HLE(_ZN2nn5codec36SubmitEncryptedVp9DecoderInputBufferEPmPNS0_14Vp9DecoderTypeEPKNS0_18EncryptionPropertyEPKvmNS_8TimeSpanEb) {
     const uint64_t id = submitted();
@@ -804,7 +813,7 @@ HLE(_ZN2nn5codec24RegisterAv1DecoderBufferEPNS0_14Av1DecoderTypeEjPNS0_25VideoDe
 HLE(_ZN2nn5codec15StartAv1DecoderEPNS0_14Av1DecoderTypeE) { RET(0); }
 HLE(_ZN2nn5codec14StopAv1DecoderEPNS0_14Av1DecoderTypeE) { dec_flush(c, "Stop"); }
 HLE(_ZN2nn5codec15FlushAv1DecoderEPNS0_14Av1DecoderTypeE) { dec_flush(c, "Flush"); }
-HLE(_ZN2nn5codec33GetAv1DecoderSubmissionReadyEventEPNS0_14Av1DecoderTypeE, sdk(22)) { RET(ready_event(c)); }
+HLE(_ZN2nn5codec33GetAv1DecoderSubmissionReadyEventEPNS0_14Av1DecoderTypeE, sdk(22)) { RET(ready_event(ARG(0))); }
 HLE(_ZN2nn5codec27SubmitAv1DecoderInputBufferEPmPNS0_14Av1DecoderTypeEPKvmNS_8TimeSpanEb) { dec_submit(c); }
 HLE(_ZN2nn5codec29AcquireAv1DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_14Av1DecoderTypeE) { dec_acquire(c); }
 HLE(_ZN2nn5codec29ReleaseAv1DecoderOutputBufferEPNS0_14Av1DecoderTypeEjNS_2gs16NativeSyncHandleE) { dec_release(c); }
@@ -819,8 +828,45 @@ HLE(_ZN2nn5codec26UnregisterVp8DecoderBufferEPNS0_14Vp8DecoderTypeEj) { dec_unre
 HLE(_ZN2nn5codec15StartVp8DecoderEPNS0_14Vp8DecoderTypeE) { RET(0); }
 HLE(_ZN2nn5codec14StopVp8DecoderEPNS0_14Vp8DecoderTypeE) { dec_flush(c, "Stop"); }
 HLE(_ZN2nn5codec15FlushVp8DecoderEPNS0_14Vp8DecoderTypeE) { dec_flush(c, "Flush"); }
-HLE(_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPNS0_14Vp8DecoderTypeE, sdk(22)) { RET(ready_event(c)); }
+HLE(_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPNS0_14Vp8DecoderTypeE, sdk(22)) { RET(ready_event(ARG(0))); }
 HLE(_ZN2nn5codec27SubmitVp8DecoderInputBufferEPmPNS0_14Vp8DecoderTypeEPKvmNS_8TimeSpanEb) { dec_submit(c); }
 HLE(_ZN2nn5codec29AcquireVp8DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_14Vp8DecoderTypeE) { dec_acquire(c); }
 HLE(_ZN2nn5codec29ReleaseVp8DecoderOutputBufferEPNS0_14Vp8DecoderTypeEjNS_2gs16NativeSyncHandleE) { dec_release(c); }
 HLE(_ZN2nn5codec35GetVp8DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Vp8DecoderTypeEj) { dec_properties(c); }
+
+/* before SDK 22: Initialize(decoder, memory, size, ?, u16 width, u16 height, ...) and (decoder, size, u16 width, u16
+   height, ...); the work buffer CalculateXDecoderWorkBuffer(u64* size, u64* alignment, ?, u16, u16) sizes as the SDK's
+   (100 MB, page-aligned; the game allocates it, the decoder here leaves it unused) */
+static void ready_event_out(Ctx *c) {
+    if (ARG(0)) G64(ARG(0)) = ready_event(ARG(1));
+    RET(0);
+}
+static void work_buffer(Ctx *c) {
+    if (ARG(0)) G64(ARG(0)) = 0x6400000;
+    if (ARG(1)) G64(ARG(1)) = 0x1000;
+    RET(0);
+}
+HLE(_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
+    dec_init_sized(c, AV_CODEC_ID_VP9, "VP9", (int)(uint16_t)ARG(4), (int)(uint16_t)ARG(5));
+}
+HLE(_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
+    dec_init_sized(c, AV_CODEC_ID_VP9, "VP9", (int)(uint16_t)ARG(2), (int)(uint16_t)ARG(3));
+}
+HLE(_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Vp9DecoderTypeE, sdk(20, 21)) { ready_event_out(c); }
+HLE(_ZN2nn5codec29CalculateVp9DecoderWorkBufferEPmS1_mtt, sdk(20, 21)) { work_buffer(c); }
+HLE(_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
+    dec_init_sized(c, AV_CODEC_ID_VP8, "VP8", (int)(uint16_t)ARG(4), (int)(uint16_t)ARG(5));
+}
+HLE(_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
+    dec_init_sized(c, AV_CODEC_ID_VP8, "VP8", (int)(uint16_t)ARG(2), (int)(uint16_t)ARG(3));
+}
+HLE(_ZN2nn5codec33GetVp8DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Vp8DecoderTypeE, sdk(20, 21)) { ready_event_out(c); }
+HLE(_ZN2nn5codec29CalculateVp8DecoderWorkBufferEPmS1_mtt, sdk(20, 21)) { work_buffer(c); }
+HLE(_ZN2nn5codec20InitializeAv1DecoderEPNS0_14Av1DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
+    dec_init_sized(c, AV_CODEC_ID_AV1, "AV1", (int)(uint16_t)ARG(4), (int)(uint16_t)ARG(5));
+}
+HLE(_ZN2nn5codec20InitializeAv1DecoderEPNS0_14Av1DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE, sdk(20, 21)) {
+    dec_init_sized(c, AV_CODEC_ID_AV1, "AV1", (int)(uint16_t)ARG(2), (int)(uint16_t)ARG(3));
+}
+HLE(_ZN2nn5codec33GetAv1DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Av1DecoderTypeE, sdk(20, 21)) { ready_event_out(c); }
+HLE(_ZN2nn5codec29CalculateAv1DecoderWorkBufferEPmS1_mtt, sdk(20, 21)) { work_buffer(c); }
