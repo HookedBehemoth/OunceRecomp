@@ -10,8 +10,12 @@ translator's push-data layout in `third_party/eden/shader_recompiler/backend/spi
 
 ## Programs and variants
 
-- A program is a slot found by its NVN serial in a table read without a lock. Its stages are read and lowered when the
-  game sets them (`nvnProgramSetShaders`), on a worker.
+- A program is a slot found by its NVN serial in a table read without a lock. Its stages are read when the game sets
+  them (`nvnProgramSetShaders`), on a worker, and translated from their native Ampere instructions by the direct front
+  (`third_party/eden/shader_recompiler/frontend/ampere`).
+- A program has a vertex stage, optionally a geometry stage after it, and a fragment stage; or a mesh stage, optionally
+  after a task stage. A geometry stage is translated for triangle input, so a draw of such a program with another
+  topology is skipped and counted.
 - A draw finds its **variant** by a key made of the stages' code, the vertex input types the vertex stage reads and the
   color-target types the fragment stage writes, plus the bound textures' **answers**: each texture's type and whether
   it is an integer format, as the translation assumed them. A draw checks the answers it depends on before it draws.
@@ -29,7 +33,7 @@ translator's push-data layout in `third_party/eden/shader_recompiler/backend/spi
 | c0 and c2, the driver banks (storage-buffer table, texture and sampler handles) | copied into the frame arena when the stage's binds change; reached through the address table |
 | c1, the program's own constants | a buffer made when the program loads |
 | c3 and up, the game's uniform buffers | the guest address, through the address table |
-| bank 24 (translated as c17), a stage's root table: its graphics push constants | the bytes the game last pushed for the stage, copied into the frame arena with the banks |
+| bank 24, a stage's root table: its graphics push constants | the bytes the game pushed for the stage, copied into the frame arena with the banks; for a stage the list pushed nothing for, the console's blit block for the render area (texel size, size, UV scale and clamp, source rectangle) |
 | storage buffers | by device address: the shader loads the address from its bank and translates it through the guest-window table |
 | textures and samplers | descriptor-heap index = the NVN pool id, written at registration; the shader reads the handle from the bank |
 | a handle stored in a game buffer | read by the shader through that buffer's pushed address |

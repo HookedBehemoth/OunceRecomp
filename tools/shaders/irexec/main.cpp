@@ -6,7 +6,7 @@
 //   irexec <seed> --all [--first F] [--count C] [--inputs N]   every stage: a line per failure, then the totals
 //   irexec <seed> --opcodes [--first F] [--count C]            the post-pass opcodes of the stages: stages and uses each
 //   --alias <a>=<b>: constant bank a read and keyed as bank b (irexec::Options::bank_alias)
-//   --front old|new: the front that translates (seed.h; old, the lowering to Maxwell, by default)
+//   --front old|new: the front that translates (seed.h; new, the renderer's, by default)
 //   --lanes N: lanes that start (32); --vertices N: a geometry stage's input primitive's vertex count (3)
 //   --attr <lane|*>,<vertex>,<byte address>=<value>: an input attribute (the address as ALD's, 0x70 position x)
 //   --cbuf <bank>,<offset>=<value>: a constant word; a value is hex bits (0x3f800000) or a float (1.5f)
@@ -28,7 +28,7 @@ namespace {
 using namespace Shader::IR;
 
 seed::Seed sd;
-const seed::Front* front = &seed::kOld;
+const seed::Front* front = &seed::kNew;
 uint64_t key_of(const seed::Stage& s) { return s.key(); }
 seed::Translated translate(int id) { return seed::translate(sd, id, *front); }
 

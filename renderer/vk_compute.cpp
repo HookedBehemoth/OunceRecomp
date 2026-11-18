@@ -29,12 +29,10 @@
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
-#include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
-#include "shader_recompiler/frontend/ampere/program_address_map.h"
+#include "shader_recompiler/frontend/ampere/control_flow.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
+#include "shader_recompiler/frontend/ampere/translate_program.h"
 #include "shader_recompiler/frontend/ir/program.h"
-#include "shader_recompiler/frontend/maxwell/control_flow.h"
-#include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/object_pool.h"
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/runtime_info.h"
@@ -265,7 +263,7 @@ Slot* slot_find(uint64_t serial) {
 
 // ---- the cache file (ounce_renderer_compute.bin: records by code key) ----
 constexpr uint32_t kDiskMagic = 0x43445348;   // ('HSDC')
-constexpr uint64_t kDiskVersion = 2;   // (the record's layout, disk_save: a change to it changes this)
+constexpr uint64_t kDiskVersion = 3;   // (the record's layout, disk_save: a change to it changes this)
 std::mutex disk_mu;
 FILE* disk_out = nullptr;
 FILE* disk_in = nullptr;
@@ -381,14 +379,13 @@ bool disk_read(const DiskRecord& d, Variant& v) {
 // ---- the translator's questions (vk_shader.cpp Env, compute: handles in c0, the grid folded into NumWorkgroups) ----
 struct Code {
     uint64_t key = 0;
-    std::vector<uint64_t> code;
+    std::vector<u128> code;   // (the native instructions)
     std::vector<uint8_t> c1;
-    uint32_t texture_bound = ~0u, local[3]{}, shared = 0;
+    uint32_t local[3]{}, shared = 0, local_mem = 0;
     Layout lay;
 };
-/// The compute stage lowered to Maxwell (vk_shader.cpp parse_code; the matrix multiplies kept whole: HMMA_nx2, which the SPIR-V
-/// back end runs in software here)
-bool lower(const nvn_stage_data& sd, Code& c) {
+/// The compute stage's native instructions up to the program's end, and what its control section says of it
+bool read_code(const nvn_stage_data& sd, Code& c) {
     uint8_t ctl[kControlSize];
     std::vector<uint8_t> area;
     if (!parts::read_stage(sd, ctl, area)) return false;
@@ -398,36 +395,23 @@ bool lower(const nvn_stage_data& sd, Code& c) {
     if (st != 5) return false;
     c.key = hash_bytes(area.data(), area.size(), hash_bytes(ctl, kControlSize));
     using Shader::Ampere::Instruction;
-    std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
     for (uint32_t i = 0; (i + 1) * sizeof(Instruction) <= len; i++) {
-        Instruction& insn = native.emplace_back();
+        Instruction insn;
         std::memcpy(&insn, area.data() + i * sizeof(Instruction), sizeof insn);
+        c.code.push_back({uint64_t(insn.words[0]) | uint64_t(insn.words[1]) << 32, uint64_t(insn.words[2]) | uint64_t(insn.words[3]) << 32});
         const auto r = capture.Observe(insn, i);
-        if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) return false;
+        if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+            static std::atomic<int> told{0};
+            if (told++ < 40) logf("direct: compute program %016llx: a branch target outside the program at +%#x", (unsigned long long)c.key, i * 16);
+            return false;
+        }
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
-    Shader::Ampere::native_matrix_multiply = true;
-    const auto lowered = Shader::Ampere::LowerToMaxwell(native);
-    Shader::Ampere::native_matrix_multiply = false;
-    if (!lowered) {
-        static std::atomic<int> told{0};
-        if (told++ < 40)
-            logf("direct: compute program %016llx does not lower at +%#x: %s", (unsigned long long)c.key, lowered.error_offset,
-                 std::string(lowered.error).c_str());
-        return false;
-    }
-    c.texture_bound = lowered.required_texture_buffer;
-    c.code.assign(sizeof(Shader::ProgramHeader) / 8, 0);
-    for (const uint64_t instruction : lowered.instructions) {
-        if (c.code.size() * 8 % 32 == 0) c.code.push_back(0);   // (the Maxwell scheduling word)
-        c.code.push_back(instruction);
-    }
-    c.code.push_back(0);
-    Shader::Ampere::AppendNativeAddressMap(c.code, lowered.source_instruction_offsets);
     c.c1.assign(area.begin() + c1o, area.end());
     std::memcpy(c.local, ctl + 0x58, 12);
     std::memcpy(&c.shared, ctl + 0x64, 4);
+    std::memcpy(&c.local_mem, ctl + 0x68, 4);   // (the QMD's local memory per thread)
     c.lay = layout_of(ctl);
     return true;
 }
@@ -439,10 +423,10 @@ public:
         start_address = 0;
         is_proprietary_driver = true;
     }
-    u64 ReadInstruction(u32 address) override { return address / 8 < nvn.code.size() ? nvn.code[address / 8] : 0; }
-    u32 TranslateProgramAddress(u32 address) const override {
-        if (const auto t = Shader::Ampere::NativeProgramAddress(nvn.code, address)) return *t;
-        throw Shader::RuntimeError("indirect branch to native address {:#x}, not in the program", address);
+    u64 ReadInstruction(u32 address) override { throw Shader::LogicError("a 64-bit instruction read at {:#x}", address); }
+    u128 ReadInstruction128(u32 address) override {
+        if (address % 16 || address / 16 >= nvn.code.size()) throw Shader::RuntimeError("instruction read past the program at {:#x}", address);
+        return nvn.code[address / 16];
     }
     u32 ReadCbufValue(u32 index, u32 offset) override {
         uint32_t v = 0;
@@ -461,8 +445,8 @@ public:
         return handle && (parts::answer_of(handle) & 0x80);
     }
     u32 ReadViewportTransformState() override { return 1; }
-    u32 TextureBoundBuffer() const override { return nvn.texture_bound != ~0u ? nvn.texture_bound : 0; }   // (NVN2 compute: c0)
-    u32 LocalMemorySize() const override { return 0; }
+    u32 TextureBoundBuffer() const override { return 0; }   // (NVN2 compute: c0)
+    u32 LocalMemorySize() const override { return nvn.local_mem; }
     u32 SharedMemorySize() const override { return nvn.shared; }
     std::array<u32, 3> WorkgroupSize() const override {
         return {std::max(1u, nvn.local[0]), std::max(1u, nvn.local[1]), std::max(1u, nvn.local[2])};
@@ -495,7 +479,7 @@ private:
 struct Translation {
     Shader::ObjectPool<Shader::IR::Inst> insts;
     Shader::ObjectPool<Shader::IR::Block> blocks;
-    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_blocks;
+    Shader::ObjectPool<Shader::Flow::Block> flow_blocks;
     Shader::IR::Program program;
 };
 
@@ -532,8 +516,8 @@ bool translate_variant(Variant& v, const Code& c, const uint8_t* bank, uint32_t 
             }
         } reset;
         auto t = std::make_unique<Translation>();
-        Shader::Maxwell::Flow::CFG cfg{env, t->flow_blocks, static_cast<u32>(sizeof(Shader::ProgramHeader)), false};
-        t->program = Shader::Maxwell::TranslateProgram(t->insts, t->blocks, env, cfg, parts::translate_info());
+        Shader::Ampere::Flow::CFG cfg{env, t->flow_blocks, false};
+        t->program = Shader::Ampere::TranslateProgram(t->insts, t->blocks, env, cfg, parts::translate_info());
         if (const int left = grid_reads_left(t->program)) {
             st_grid_left.fetch_add(1, std::memory_order_relaxed);
             logf("direct: compute program %016llx reads c0's grid words %d times otherwise than by a constant offset: an indirect "
@@ -724,7 +708,7 @@ void start_variant(Family* f, std::shared_ptr<std::vector<uint8_t>> copy, uint64
         Code code;
         auto nv = std::make_unique<Variant>();
         nv->key = f->key;
-        bool ok = lower(f->sd, code) && code.key == f->key && translate_variant(*nv, code, copy->data(), (uint32_t)copy->size());
+        bool ok = read_code(f->sd, code) && code.key == f->key && translate_variant(*nv, code, copy->data(), (uint32_t)copy->size());
         if (ok) disk_save(*nv), ok = finish(*nv, f->lay);
         st_translate_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - t1).count(), std::memory_order_relaxed);
         (ok ? st_translated : st_failed).fetch_add(1, std::memory_order_relaxed);

@@ -1,6 +1,6 @@
 // A shader seed (tools/shadercensus/seed.py: "HKSEED01", the stages, then the programs) read and written, and its stages
-// translated as the back end translates them (offline.h) by a front: the old one (the lowering to Maxwell) or the direct
-// Ampere front (work/shader-plan M3, offline::new_front). Shared by irexec's command and the differential (tools/shaders/difftest).
+// translated as the back end translates them (offline.h) by a front: the direct Ampere front (the renderer's) or the old one
+// (the lowering to Maxwell, for comparisons; offline::new_front). Shared by irexec's command and the differential (tools/shaders/difftest).
 #pragma once
 #include <cstdint>
 #include <cstdio>
@@ -105,23 +105,26 @@ struct Front {
     offline::Code (*load)(const uint8_t* ctl, const uint8_t* area, size_t n);
     std::unique_ptr<offline::Translation> (*translate)(offline::Env& env);
 };
-inline const Front kOld{"old", offline::load, offline::translate};
-
-/// The direct Ampere front (work/shader-plan M3): offline.h's load and translate with offline::new_front set for the call
+/// offline.h's load and translate with offline::new_front set for the call
 inline constexpr bool kNewFrontBuilt = true;
-struct NewFrontScope {
-    NewFrontScope() { offline::new_front = true; }
-    ~NewFrontScope() { offline::new_front = false; }
+template <bool New>
+struct FrontScope {
+    bool was = offline::new_front;
+    FrontScope() { offline::new_front = New; }
+    ~FrontScope() { offline::new_front = was; }
 };
-inline offline::Code new_load(const uint8_t* ctl, const uint8_t* area, size_t n) {
-    NewFrontScope on;
+template <bool New>
+offline::Code front_load(const uint8_t* ctl, const uint8_t* area, size_t n) {
+    FrontScope<New> on;
     return offline::load(ctl, area, n);
 }
-inline std::unique_ptr<offline::Translation> new_translate(offline::Env& env) {
-    NewFrontScope on;
+template <bool New>
+std::unique_ptr<offline::Translation> front_translate(offline::Env& env) {
+    FrontScope<New> on;
     return offline::translate(env);
 }
-inline const Front kNew{"new", new_load, new_translate};
+inline const Front kOld{"old", front_load<false>, front_translate<false>};
+inline const Front kNew{"new", front_load<true>, front_translate<true>};
 
 inline const Front& front(const std::string& name) {
     if (name == "old") return kOld;

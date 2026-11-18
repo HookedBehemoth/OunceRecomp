@@ -40,9 +40,8 @@ namespace offline {
 
 constexpr uint32_t kControl = 0xd8, kAmpereHeader = 128;
 
-/// (the differential phase of work/shader-plan, M3-M9: censustool --front new) the direct Ampere front instead of the
-/// lowering to Maxwell
-inline bool new_front = false;
+/// The direct Ampere front, as the renderer translates; false: the lowering to Maxwell (--front old, for comparisons)
+inline bool new_front = true;
 
 inline uint64_t fnv(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull) {   // (vk_shader.cpp hash_bytes)
     for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)p)[i]) * 0x100000001b3ull;

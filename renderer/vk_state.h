@@ -16,9 +16,9 @@ constexpr int kStages = 8;
 /// The stages a bank is kept for, by NVN stage (M4b: every one; the mesh stage's draws read theirs)
 constexpr int kBankStages = kStages;
 /// A stage's push constants (nvnCommandBufferPushGraphicsConstants), at most: the NVN2 driver sends no more. They are root
-/// table 0, which Ampere shaders read as bank 24 and the translator lowers to bank 17 (Maxwell's last)
+/// table 0, which Ampere shaders read as bank 24
 constexpr uint32_t kPushBytes = 0x100;
-constexpr int kRootBank = 17;
+constexpr int kRootBank = 24;
 
 constexpr nvn_blend_st kBlendDefault{0, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO,
                                       NVN_BLEND_EQUATION_ADD, NVN_BLEND_EQUATION_ADD};
@@ -34,6 +34,7 @@ struct DState {
     uint64_t tex_src[kBankStages][128]{}, samp_src[kBankStages][128]{}, img_src[kBankStages][32]{};
     uint32_t deferred[kBankStages]{};   // (slots of the stage bound deferred now)
     uint8_t push[kBankStages][kPushBytes]{};   // (the graphics stages' push constants: their root tables)
+    uint32_t pushed = 0;                       // (the stages the list pushed constants for, by bit)
     // (the state objects as their SetDefaults make them, runtime/nvn_native.c: a list that binds none draws with these)
     nvn_blend_st blend[8]{kBlendDefault, kBlendDefault, kBlendDefault, kBlendDefault, kBlendDefault, kBlendDefault,
                           kBlendDefault, kBlendDefault};
@@ -70,8 +71,9 @@ bool state_emit(DState& s, uint32_t op, const void* data, uint32_t size);
 /// A driver bank word (c0 / c2) as the NVN driver lays it out for the graphics stage (shader-contract.md section 2,
 /// "Banks"; vk_bank.cpp driver_bank_word)
 uint32_t bank_word(const DState& s, int bank, int stage, uint32_t offset);
-/// The first n bytes of a graphics stage's driver bank (c0, c2) or root table (kRootBank)
-void bank_fill(const DState& s, int bank, int stage, uint8_t* d, uint32_t n);
+/// The first n bytes of a graphics stage's driver bank (c0, c2) or root table (kRootBank). A stage the list pushed no
+/// constants for has the console's blit block there, for a render area of w x h (shader-contract.md, "Banks")
+void bank_fill(const DState& s, int bank, int stage, uint8_t* d, uint32_t n, uint32_t w, uint32_t h);
 
 void state_stats(char* out, size_t cap, double frames);
 

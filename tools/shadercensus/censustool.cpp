@@ -16,8 +16,8 @@
 // or not it is applied. --objects: the stage also made as the shader object the game makes of it (unlinked; RADV reports no
 // statistics of those: with RADV_DEBUG=shaders its compile is printed between "@@object <index> <key> <kind>" and "@@end" on
 // stderr, which tools/shaders/late_gate.py reads). --list: a line a stage of the seed (index, kind), nothing translated.
-// --front new: the direct Ampere front instead of the lowering to Maxwell (work/shader-plan's differential phase; a partner
-// stage it cannot translate is left out, its error in "partner_error").
+// --front new (the default, the renderer's) or old (the lowering to Maxwell, for comparisons). With the new front a partner
+// stage it cannot translate is left out, its error in "partner_error".
 // --mma-software: matrix multiplies through the software function (emit_spirv_warp.cpp) instead of cooperative matrices,
 // as the renderer chooses on a device without them.
 #include <chrono>

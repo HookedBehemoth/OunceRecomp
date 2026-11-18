@@ -518,7 +518,6 @@ IR::Program FinishProgram(IR::AbstractSyntaxList&& syntax_list, Environment& env
     Optimization::ConstantPropagationPass(env, program);
 
     Optimization::PositionPass(env, program);
-    Optimization::BlitConstantsPass(env, program);
 
     Optimization::GlobalMemoryToStorageBufferPass(env, program, normalized_host_info);
     Optimization::GeometryCompactionPass(program, normalized_host_info);

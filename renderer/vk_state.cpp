@@ -156,6 +156,7 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
         std::memcpy(&u, a, sizeof u);
         if (u.stage == 5 || u.stage >= (uint32_t)kBankStages || u.size > size - sizeof u || u.offset + u.size > kPushBytes) return true;
         std::memcpy(s.push[u.stage] + u.offset, (const uint8_t*)a + sizeof u, u.size);
+        s.pushed |= 1u << u.stage;
         s.bank_gen[u.stage]++;
         return true;
     }
@@ -216,16 +217,27 @@ uint32_t bank_word(const DState& s, int bank, int stage, uint32_t offset) {
     return 0;
 }
 
-void bank_fill(const DState& s, int bank, int stage, uint8_t* d, uint32_t n) {
+void bank_fill(const DState& s, int bank, int stage, uint8_t* d, uint32_t n, uint32_t w, uint32_t h) {
     std::memset(d, 0, n);
     if (stage < 0 || stage >= kBankStages) return;
-    if (bank == kRootBank) {
-        std::memcpy(d, s.push[stage], std::min(n, kPushBytes));
-        return;
-    }
     auto put = [&](uint32_t off, uint32_t v) {
         if (off + 4 <= n) std::memcpy(d + off, &v, 4);
     };
+    if (bank == kRootBank) {
+        if (s.pushed >> stage & 1) {
+            std::memcpy(d, s.push[stage], std::min(n, kPushBytes));
+            return;
+        }
+        // (the blit block of a blit over the whole render area: texel size, size, texel size, UV scale 1, the UV clamp
+        // rectangle 0,0..1,1, a zero dither bias, the source rectangle 0,0..w-1,h-1)
+        const float fw = (float)std::max(w, 1u), fh = (float)std::max(h, 1u);
+        const auto f = [](float v) { return std::bit_cast<uint32_t>(v); };
+        put(0x0, f(1.0f / fw)), put(0x4, f(1.0f / fh)), put(0x8, f(fw)), put(0xc, f(fh));
+        put(0x10, f(1.0f / fw)), put(0x14, f(1.0f / fh)), put(0x18, f(1.0f)), put(0x1c, f(1.0f));
+        put(0x38, f(1.0f)), put(0x3c, f(1.0f));
+        put(0x58, (uint32_t)fw - 1), put(0x5c, (uint32_t)fh - 1);
+        return;
+    }
     if (bank == 2) {
         for (uint32_t i = 0; i < 32 && 0x20 + 8 * i < n; i++) put(0x20 + 8 * i, (uint32_t)s.tex[stage][i]);
         for (uint32_t i = 0; i < 9 && 0x120 + 8 * i < n; i++) put(0x120 + 8 * i, (uint32_t)s.img[stage][i]);

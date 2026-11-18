@@ -220,7 +220,7 @@ struct Dyn {
     VkColorComponentFlags wm[8];
 };
 struct BankCopy {
-    uint32_t gen = ~0u, bytes = 0;
+    uint32_t gen = ~0u, bytes = 0, area = ~0u;   // (area: the render area's generation a blit block was made for)
     VkDeviceAddress addr = 0;
 };
 }  // namespace
@@ -244,8 +244,9 @@ struct ListDraw {
     uint32_t push_n = 0;
     // (the list's: in its slot's arena, good while the list lives)
     BankCopy bank[kBankStages][3];   // (c0, c2, the root table)
+    uint32_t area_w = 0, area_h = 0, area_gen = 0;   // (the render area, for the root tables of stages without push constants)
     const DrawProg* table_prog = nullptr;
-    uint32_t table_ubo_gen = ~0u, table_bank_gen[kBankStages]{~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+    uint32_t table_ubo_gen = ~0u, table_area_gen = ~0u, table_bank_gen[kBankStages]{~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
     VkDeviceAddress table_addr = 0;
     std::vector<VkDeviceAddress> table_entries;
     std::vector<Fixup> fixups;
@@ -597,11 +598,12 @@ void set_vertex_input(ListDraw& x, VkCommandBuffer cb, const DState& s, const Dr
 /// deferred words noted for the submit
 bool bank_copy(List* l, ListDraw& x, int stage, int bank, uint32_t bytes, VkDeviceAddress& out) {
     BankCopy& c = x.bank[stage][bank == kRootBank ? 2 : bank == 2];
-    if (c.addr && c.gen == x.s.bank_gen[stage] && c.bytes >= bytes) return out = c.addr, true;
+    const uint32_t area = bank == kRootBank && !(x.s.pushed >> stage & 1) ? x.area_gen : ~0u;
+    if (c.addr && c.gen == x.s.bank_gen[stage] && c.area == area && c.bytes >= bytes) return out = c.addr, true;
     uint8_t* map;
     VkDeviceAddress a;
     if (!arena_alloc(l->slot, bytes, map, a)) return false;
-    bank_fill(x.s, bank, stage, map, bytes);
+    bank_fill(x.s, bank, stage, map, bytes, x.area_w, x.area_h);
     if (bank == 2 && x.s.deferred[stage]) {   // (the handles the game's arrays hold at its submit: copied then)
         auto note = [&](uint32_t off, uint64_t src) {
             if (!src || off + 4 > bytes) return;
@@ -622,7 +624,7 @@ bool bank_copy(List* l, ListDraw& x, int stage, int bank, uint32_t bytes, VkDevi
             VkDeviceAddress unused;
             if (b.addr && !layer0_address(b.addr, std::max<uint64_t>(b.size, 16), unused)) st_ssbo_unbound.fetch_add(1, std::memory_order_relaxed);
         }
-    c.gen = x.s.bank_gen[stage], c.bytes = bytes, c.addr = a;
+    c.gen = x.s.bank_gen[stage], c.area = area, c.bytes = bytes, c.addr = a;
     bump(me().banks);
     return out = a, true;
 }
@@ -753,8 +755,11 @@ Reason ubo_address(List* l, ListDraw& x, const DrawProg& p, const DrawProg::Ubo&
 
 /// The address table and the pushed addresses (push data from 120); false: a reason
 Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
-    const bool same = x.table_prog == &p && x.table_ubo_gen == x.s.ubo_gen &&
-                      !std::memcmp(x.table_bank_gen, x.s.bank_gen, sizeof x.table_bank_gen);
+    bool same = x.table_prog == &p && x.table_ubo_gen == x.s.ubo_gen &&
+                !std::memcmp(x.table_bank_gen, x.s.bank_gen, sizeof x.table_bank_gen);
+    if (same && x.table_area_gen != x.area_gen)   // (a root table holding the blit block is made again for another render area)
+        for (const DrawProg::Ubo& u : p.ubos)
+            if (u.index == kRootBank && !(x.s.pushed >> u.stage & 1)) same = false;
     if (!same) {
         x.table_entries.resize(p.ubos.size());
         for (size_t i = 0; i < p.ubos.size(); i++) {
@@ -765,7 +770,7 @@ Reason bind_data(List* l, ListDraw& x, const DrawProg& p, uint8_t push[256]) {
         VkDeviceAddress a;
         if (!arena_alloc(l->slot, std::max<uint32_t>(8, 8 * (uint32_t)p.ubos.size()), map, a)) return x.table_prog = nullptr, R_ARENA;
         std::memcpy(map, x.table_entries.data(), 8 * p.ubos.size());
-        x.table_addr = a, x.table_prog = &p, x.table_ubo_gen = x.s.ubo_gen;
+        x.table_addr = a, x.table_prog = &p, x.table_ubo_gen = x.s.ubo_gen, x.table_area_gen = x.area_gen;
         std::memcpy(x.table_bank_gen, x.s.bank_gen, sizeof x.table_bank_gen);
         bump(me().tables);
     }
@@ -1187,8 +1192,13 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     if (prog->mesh != mesh) return count(l, R_KIND);
     // (a geometry stage is translated for triangle input)
     if (prog->gs && topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP &&
-        topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN)
+        topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN) {
+        static std::atomic<int> told{0};
+        if (told.load(std::memory_order_relaxed) < 8 && told++ < 8)
+            logf("direct: program %016llx has a geometry stage translated for triangle input, drawn with topology %d: not drawn",
+                 (unsigned long long)prog->key, (int)topo);
         return count(l, R_KIND);
+    }
     if (prog->skip) {
         count_step_a(prog->skip, l->info.kind);
         return count(l, R_STEP_A);
@@ -1258,6 +1268,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     }
     uint8_t push[256];
     std::memset(push, 0, prog->push_bytes);
+    if (p.w != x.area_w || p.h != x.area_h) x.area_w = p.w, x.area_h = p.h, x.area_gen++;
     if (const Reason r = bind_data(l, x, *prog, push); r != R_DRAWN) return count(l, r);
     {   // (Eden's block: the render area, the down factor, the window table; a mesh draw's first workgroup)
         const float one = 1.0f;

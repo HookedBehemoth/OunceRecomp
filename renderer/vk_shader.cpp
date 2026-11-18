@@ -37,12 +37,10 @@
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/exception.h"
-#include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
-#include "shader_recompiler/frontend/ampere/program_address_map.h"
+#include "shader_recompiler/frontend/ampere/control_flow.h"
 #include "shader_recompiler/frontend/ampere/program_capture.h"
+#include "shader_recompiler/frontend/ampere/translate_program.h"
 #include "shader_recompiler/frontend/ir/program.h"
-#include "shader_recompiler/frontend/maxwell/control_flow.h"
-#include "shader_recompiler/frontend/maxwell/translate_program.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/ir_opt/oot_visual_workaround.h"
 #include "shader_recompiler/ir_opt/passes.h"
@@ -92,9 +90,8 @@ std::string hex16(uint64_t v) {
 struct Code {
     int stage = -1;   // (NVN stage)
     uint64_t key = 0;
-    std::vector<uint64_t> code;   // (header, Maxwell instructions, native address map)
+    std::vector<u128> code;   // (the native instructions, up to the program's end)
     std::vector<uint8_t> c1;
-    uint32_t texture_bound = ~0u;
     bool header_only = false;
     uint8_t sph[sizeof(Shader::ProgramHeader)]{};
     bool ok = false;
@@ -140,7 +137,7 @@ bool scan_code(const nvn_stage_data& sd, Code& c) {
     mesh_fields(ctl, c);
     return true;
 }
-/// The stage lowered to Maxwell, as the translator reads it
+/// The stage's native instructions up to the program's end, as the translator reads them
 bool parse_code(const nvn_stage_data& sd, Code& c) {
     uint8_t ctl[kControlSize];
     std::vector<uint8_t> area;
@@ -156,33 +153,19 @@ bool parse_code(const nvn_stage_data& sd, Code& c) {
     if (graphics) std::memcpy(c.sph, area.data(), std::min<size_t>(sizeof c.sph, area.size()));
     if (graphics && len <= hdr + 16) return c.header_only = true, c.ok = true;
     using Shader::Ampere::Instruction;
-    std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
     for (uint32_t i = 0; hdr + (i + 1) * sizeof(Instruction) <= len; i++) {
-        Instruction& insn = native.emplace_back();
+        Instruction insn;
         std::memcpy(&insn, area.data() + hdr + i * sizeof(Instruction), sizeof insn);
+        c.code.push_back({uint64_t(insn.words[0]) | uint64_t(insn.words[1]) << 32, uint64_t(insn.words[2]) | uint64_t(insn.words[3]) << 32});
         const auto r = capture.Observe(insn, i);
-        if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) return false;
+        if (r == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget) {
+            static std::atomic<int> told{0};
+            if (told++ < 40) logf("direct: program stage %016llx (NVN stage %u): a branch target outside the program at +%#x", (unsigned long long)c.key, st, i * 16);
+            return false;
+        }
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
-    Shader::Ampere::native_matrix_multiply = false;   // (graphics stages: the exact expansion)
-    const auto lowered = Shader::Ampere::LowerToMaxwell(native);
-    if (!lowered) {
-        static std::atomic<int> told{0};
-        if (told++ < 40)
-            logf("direct: program stage %016llx (NVN stage %u) does not lower at +%#x: %s", (unsigned long long)c.key, st,
-                 lowered.error_offset, std::string(lowered.error).c_str());
-        return false;
-    }
-    c.texture_bound = lowered.required_texture_buffer;
-    c.code.assign(sizeof(Shader::ProgramHeader) / 8, 0);
-    if (graphics) std::memcpy(c.code.data(), area.data(), sizeof(Shader::ProgramHeader));
-    for (const uint64_t instruction : lowered.instructions) {
-        if (c.code.size() * 8 % 32 == 0) c.code.push_back(0);   // (the Maxwell scheduling word)
-        c.code.push_back(instruction);
-    }
-    c.code.push_back(0);
-    Shader::Ampere::AppendNativeAddressMap(c.code, lowered.source_instruction_offsets);
     c.c1.assign(area.begin() + c1o, area.end());
     return c.ok = true;
 }
@@ -211,7 +194,7 @@ public:
     Env(const DState& state, const Code& c, Shader::Stage st) : s{state}, nvn{c} {
         stage = st;
         start_address = 0;
-        std::memcpy(&sph, reinterpret_cast<const uint8_t*>(nvn.code.data()), sizeof sph);
+        std::memcpy(&sph, nvn.sph, sizeof sph);
         local_memory = static_cast<uint32_t>(sph.LocalMemorySize()) + sph.common3.shader_local_memory_crs_size;
         is_proprietary_driver = true;
     }
@@ -221,10 +204,10 @@ public:
         for (size_t i = 0; i < gp_passthrough_mask.size() * 32; i++)
             if (!vertex_stores.mask[i]) gp_passthrough_mask[i / 32] |= 1u << (i % 32);
     }
-    u64 ReadInstruction(u32 address) override { return address / 8 < nvn.code.size() ? nvn.code[address / 8] : 0; }
-    u32 TranslateProgramAddress(u32 address) const override {
-        if (const auto t = Shader::Ampere::NativeProgramAddress(nvn.code, address)) return *t;
-        throw Shader::RuntimeError("indirect branch to native address {:#x}, not in the program", address);
+    u64 ReadInstruction(u32 address) override { throw Shader::LogicError("a 64-bit instruction read at {:#x}", address); }
+    u128 ReadInstruction128(u32 address) override {
+        if (address % 16 || address / 16 >= nvn.code.size()) throw Shader::RuntimeError("instruction read past the program at {:#x}", address);
+        return nvn.code[address / 16];
     }
     u32 ReadCbufValue(u32 index, u32 offset) override {
         if (index == 1) {
@@ -248,7 +231,7 @@ public:
         return handle && (live_answer(handle) & 0x80);
     }
     u32 ReadViewportTransformState() override { return 1; }
-    u32 TextureBoundBuffer() const override { return nvn.texture_bound != ~0u ? nvn.texture_bound : 2; }
+    u32 TextureBoundBuffer() const override { return 2; }
     u32 LocalMemorySize() const override { return local_memory; }
     u32 SharedMemorySize() const override { return 0; }
     std::array<u32, 3> WorkgroupSize() const override { return {1, 1, 1}; }
@@ -371,14 +354,14 @@ Shader::HostTranslateInfo host_info() {
 struct Translation {
     Shader::ObjectPool<Shader::IR::Inst> insts;
     Shader::ObjectPool<Shader::IR::Block> blocks;
-    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_blocks;
+    Shader::ObjectPool<Shader::Flow::Block> flow_blocks;
     Shader::IR::Program program;
 };
 std::unique_ptr<Translation> translate(Env& env, bool one_exit = false) {
     auto t = std::make_unique<Translation>();
     // (M4b: a mesh program gets one exit: its counts are set there, as the frozen back end translates it)
-    Shader::Maxwell::Flow::CFG cfg{env, t->flow_blocks, env.StartAddress() + static_cast<u32>(sizeof(Shader::ProgramHeader)), one_exit};
-    t->program = Shader::Maxwell::TranslateProgram(t->insts, t->blocks, env, cfg, host_info());
+    Shader::Ampere::Flow::CFG cfg{env, t->flow_blocks, one_exit};
+    t->program = Shader::Ampere::TranslateProgram(t->insts, t->blocks, env, cfg, host_info());
     return t;
 }
 
@@ -554,7 +537,7 @@ Slot* slot_find(uint64_t serial) {
 
 // ---- the program cache file (its record: vk_shader.cpp's put_info / get_info, the rest this back end's) ----
 constexpr uint32_t kDiskMagic = 0x50445348;   // ('HSDP')
-constexpr uint64_t kDiskFormat = 2;            // (the record's layout below: a change to it changes this)
+constexpr uint64_t kDiskFormat = 3;            // (the record's layout below: a change to it changes this)
 std::mutex disk_mu;
 FILE* disk_out = nullptr;
 FILE* disk_in = nullptr;
