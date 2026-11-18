@@ -623,17 +623,14 @@ SAVED = {"x%d" % k for k in range(19, 29)} | {"fp", "lr", "x29", "x30"} | {"d%d"
 
 
 def frame_insn(i):
-    """the prologue's and epilogue's own instructions: pointer authentication, the frame, saves of x19-x30/d8-d15"""
+    """the prologue's and epilogue's own instructions: pointer authentication, the sp adjustment, saves of x19-x30/d8-d15
+    (the frame pointer's set-up stays: locals are addressed through it)"""
     mn = i.mnemonic
     if mn in ("pacibsp", "paciasp", "autibsp", "autiasp", "bti"):
         return True
     ops = i.operands
     if mn in ("sub", "add") and len(ops) == 3 and ops[0].type == pseudo.A.ARM64_OP_REG and \
             i.reg_name(ops[0].reg) == "sp" and i.reg_name(ops[1].reg) == "sp" and ops[2].type == pseudo.A.ARM64_OP_IMM:
-        return True
-    if mn == "add" and len(ops) == 3 and i.reg_name(ops[0].reg) in ("x29", "fp") and i.reg_name(ops[1].reg) == "sp":
-        return True
-    if mn == "mov" and len(ops) == 2 and i.reg_name(ops[0].reg) in ("x29", "fp") and i.reg_name(ops[1].reg) == "sp":
         return True
     if mn in ("stp", "ldp", "str", "ldr"):
         regs = [i.reg_name(o.reg) for o in ops if o.type == pseudo.A.ARM64_OP_REG]
