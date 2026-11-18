@@ -171,6 +171,8 @@ HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
              (unsigned long long)G64(ARG(1)));
     RET(os_path_kind(root) != OS_PATH_NONE);
 }
+/* EnsureSaveData(account::Uid const&) -> Result: the save folder is made at its mount */
+HLE(_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE) { RET(0); }
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
     char sub[64];
@@ -221,6 +223,14 @@ HLE(_ZN2nn2fs7UnmountEPKc) {
     for (int i = 0; i < nmounts; i++)
         if (!strcmp(mounts[i].name, gstr(ARG(0)))) { mounts[i] = mounts[--nmounts]; break; }
     os_rwlock_unlock(&mount_lock);
+}
+/* IsMounted(char const*) -> bool */
+HLE(_ZN2nn2fs9IsMountedEPKc) {
+    int found = 0;
+    os_rwlock_lock_shared(&mount_lock);
+    for (int i = 0; i < nmounts && !found; i++) found = !strcmp(mounts[i].name, gstr(ARG(0)));
+    os_rwlock_unlock_shared(&mount_lock);
+    RET(found);
 }
 HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
