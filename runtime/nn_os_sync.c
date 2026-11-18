@@ -643,6 +643,15 @@ HLE(_ZN2nn2os23SignalConditionVariableEPNS0_21ConditionVariableTypeE) {
     os_mutex_unlock(&cv->lk);
     crit_wake(&cv->cv), os_cond_signal(&cv->cv);
 }
+/* every waiter; none is owed the mutex: they take it in turn */
+HLE(_ZN2nn2os26BroadcastConditionVariableEPNS0_21ConditionVariableTypeE) {
+    Obj *cv = obj(ARG(0), K_COND);
+    if (watched_cv(ARG(0))) watch_log("broadcast", watch_mutex(), ARG(0), c, NULL);
+    os_mutex_lock(&cv->lk);
+    cv->gen++;
+    os_mutex_unlock(&cv->lk);
+    crit_wake(&cv->cv), os_cond_broadcast(&cv->cv);
+}
 HLE(_ZN2nn2os21WaitConditionVariableEPNS0_21ConditionVariableTypeEPNS0_9MutexTypeE) {
     Obj *cv = obj(ARG(0), K_COND), *m = obj(ARG(1), K_MUTEX);
     const int w = watched(ARG(1));
