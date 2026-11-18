@@ -1,5 +1,6 @@
 //! The direct back end (renderer/) without a game or a GPU: layer 0's window scheme, strict mode, the register-pressure
-//! pass on SPIR-V (vk_spv_late.cpp), and the Sirit parts the translator relies on (DrawParameters, struct identity).
+//! pass on SPIR-V (vk_spv_late.cpp), the Sirit parts the translator relies on (DrawParameters, struct identity), and IR
+//! programs through the translator itself (its subgroup operations).
 
 use ounce_tests::*;
 use regex::Regex;
@@ -642,60 +643,103 @@ fn fnv(h: &mut u64, b: &[u8]) {
     }
 }
 
-/// Sirit's objects, compiled once in parallel and kept in the target folder under a hash of its sources, the SPIR-V
-/// headers' path and the flags
+fn all_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            all_files(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+/// Objects of `files` (under `base`), compiled once in parallel and kept in the target folder under a hash of every file
+/// in `hashed`, the SPIR-V headers' path, the compiler and the flags
+fn cached_objects(tag: &str, base: &Path, mut files: Vec<PathBuf>, hashed: &[PathBuf], flags: &[String]) -> Vec<PathBuf> {
+    let mut all = vec![];
+    for d in hashed {
+        all_files(d, &mut all);
+    }
+    all.sort();
+    files.sort();
+    let mut h = 0xcbf29ce484222325u64;
+    for p in &all {
+        fnv(&mut h, p.to_string_lossy().as_bytes());
+        fnv(&mut h, &std::fs::read(p).unwrap());
+    }
+    fnv(&mut h, spirv_headers().to_string_lossy().as_bytes());
+    fnv(&mut h, cxx().as_bytes());
+    for f in flags {
+        fnv(&mut h, f.as_bytes());
+    }
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("{tag}-{h:016x}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let objs: Vec<PathBuf> = files
+        .iter()
+        .map(|f| dir.join(f.strip_prefix(base).unwrap().to_string_lossy().replace(['/', '\\'], "_").replace(".cpp", ".o")))
+        .collect();
+    // (as many compilers at once as there are cores: the translator's sources are many and large)
+    let todo: Vec<(&PathBuf, &PathBuf)> = files.iter().zip(&objs).filter(|(_, o)| !o.is_file()).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(todo.len());
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                while let Some(&(src, obj)) = todo.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    // (written beside, then renamed: a run stopped halfway leaves no half object)
+                    let part = obj.with_extension(format!("o.{}", std::process::id()));
+                    run(Command::new(cxx()).args(flags).arg("-c").arg(src).arg("-o").arg(&part));
+                    std::fs::rename(&part, obj).unwrap();
+                }
+            });
+        }
+    });
+    objs
+}
+
+/// Sirit's objects (cached_objects)
 fn sirit_objects() -> &'static [PathBuf] {
     static OBJS: OnceLock<Vec<PathBuf>> = OnceLock::new();
     OBJS.get_or_init(|| {
         let sirit = path("third_party/sirit");
         let mut files = vec![];
         cpp_files(&sirit.join("src"), &mut files);
-        let mut hashed = vec![];
-        for dir in ["include", "src"] {
-            let mut stack = vec![sirit.join(dir)];
-            while let Some(d) = stack.pop() {
-                for e in std::fs::read_dir(&d).unwrap() {
-                    let p = e.unwrap().path();
-                    if p.is_dir() {
-                        stack.push(p);
-                    } else {
-                        hashed.push(p);
-                    }
-                }
-            }
+        let flags: Vec<String> = SIRIT_FLAGS.iter().map(|f| f.to_string()).chain(sirit_includes()).collect();
+        cached_objects("sirit", &sirit, files, &[sirit.join("include"), sirit.join("src")], &flags)
+    })
+}
+
+/// The flags tools/shadercensus/build.sh builds the translator's callers with
+fn eden_flags() -> Vec<String> {
+    let mut f: Vec<String> = ["-std=c++20", "-O1", "-g0", "-D_GNU_SOURCE", "-Wno-everything", "-DMKWVK_BUILDING", "-DMKWVK_INCLUDES=2"]
+        .iter()
+        .map(|f| f.to_string())
+        .collect();
+    for h in ["algorithm", "cstdio", "cstdlib", "cstring", "functional", "string", "vector"] {
+        f.extend(["-include".to_string(), h.to_string()]);
+    }
+    f.extend([inc("third_party/eden/compat"), inc("third_party/eden"), inc("runtime/os")]);
+    f.extend(sirit_includes());
+    f.push(format!("-I{}", spirv_headers().join("spirv/unified1").display()));
+    f
+}
+
+/// The translator's objects (cached_objects): the sources its meson.build files list
+fn eden_objects() -> &'static [PathBuf] {
+    static OBJS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    OBJS.get_or_init(|| {
+        let eden = path("third_party/eden");
+        let listed = Regex::new(r"'([\w/]+\.cpp)'").unwrap();
+        let mut all = vec![];
+        all_files(&eden.join("shader_recompiler"), &mut all);
+        let mut files = vec![];
+        for m in all.iter().filter(|p| p.file_name().is_some_and(|n| n == "meson.build")) {
+            let text = std::fs::read_to_string(m).unwrap();
+            files.extend(listed.captures_iter(&text).map(|c| m.parent().unwrap().join(&c[1])));
         }
-        hashed.sort();
-        files.sort();
-        let mut h = 0xcbf29ce484222325u64;
-        for p in &hashed {
-            fnv(&mut h, p.to_string_lossy().as_bytes());
-            fnv(&mut h, &std::fs::read(p).unwrap());
-        }
-        fnv(&mut h, spirv_headers().to_string_lossy().as_bytes());
-        fnv(&mut h, cxx().as_bytes());
-        for f in SIRIT_FLAGS {
-            fnv(&mut h, f.as_bytes());
-        }
-        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("sirit-{h:016x}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        let objs: Vec<PathBuf> = files
-            .iter()
-            .map(|f| dir.join(f.strip_prefix(&sirit).unwrap().to_string_lossy().replace(['/', '\\'], "_").replace(".cpp", ".o")))
-            .collect();
-        std::thread::scope(|s| {
-            for (src, obj) in files.iter().zip(&objs) {
-                if obj.is_file() {
-                    continue;
-                }
-                s.spawn(move || {
-                    // (written beside, then renamed: a run stopped halfway leaves no half object)
-                    let part = obj.with_extension(format!("o.{}", std::process::id()));
-                    run(Command::new(cxx()).args(SIRIT_FLAGS).args(sirit_includes()).arg("-c").arg(src).arg("-o").arg(&part));
-                    std::fs::rename(&part, obj).unwrap();
-                });
-            }
-        });
-        objs
+        assert!(files.len() > 100, "the translator's meson.build files list {} sources", files.len());
+        cached_objects("eden", &eden, files, &[eden.clone(), path("third_party/sirit"), path("runtime/os")], &eden_flags())
     })
 }
 
@@ -729,4 +773,41 @@ fn draw_parameters() {
 #[test]
 fn spirv_struct_identity() {
     sirit_fixture("struct-identity", &fixture("spirv_struct_identity.cpp"), 2);
+}
+
+/// IR programs as an Ampere front writes them, through the translator's passes and SPIR-V back end
+/// (fixtures/subgroup_ir_ops.cpp): the uniform registers and predicates through the SSA rewrite, SubgroupReadFirstLane and
+/// the eight SubgroupReduce ops, valid SPIR-V on a 32-lane subgroup and on a wider one (clusters of 32), and
+/// MaximallyReconvergesKHR only where the profile supports it.
+#[test]
+fn subgroup_ir_ops() {
+    let val = tool("spirv-val");
+    let dis = tool("spirv-dis");
+    let t = Tmp::new("subgroup-ir-ops");
+    let exe = t.join("fixture");
+    run(Command::new(cxx())
+        .args(eden_flags())
+        .arg(fixture_path("subgroup_ir_ops.cpp"))
+        .args(eden_objects())
+        .args(sirit_objects())
+        .arg("-lpthread")
+        .arg("-o")
+        .arg(&exe));
+    run(Command::new(&exe).arg(t.path()));
+    let reduces = ["IAdd", "UMin", "UMax", "SMin", "SMax", "BitwiseAnd", "BitwiseOr", "BitwiseXor"];
+    for (case, wider, reconverges) in [(0, false, true), (1, true, true), (2, false, false)] {
+        let spv = t.join(&format!("{case}.spv"));
+        run(Command::new(&val).args(["--target-env", "vulkan1.3"]).arg(&spv));
+        let asm = text(&run(Command::new(&dis).arg(&spv)).stdout);
+        let has = |s: &str| asm.contains(s);
+        assert!(has("OpCapability GroupNonUniformArithmetic"), "case {case}: no GroupNonUniformArithmetic");
+        assert!(has("OpGroupNonUniformBroadcastFirst") != wider, "case {case}: the first lane's read");
+        let group = if wider { "ClusteredReduce" } else { "Reduce" };
+        for r in reduces {
+            let want = format!("= OpGroupNonUniform{r} %u32 %u32_3 {group} ");
+            assert!(has(&want), "case {case}: no {want}");
+        }
+        assert!(has("MaximallyReconvergesKHR") == reconverges, "case {case}: MaximallyReconvergesKHR");
+        assert!(has("\"SPV_KHR_maximal_reconvergence\"") == reconverges, "case {case}: the extension");
+    }
 }

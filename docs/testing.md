@@ -25,7 +25,7 @@ only, name part of their path, for example `cargo test --manifest-path ounce/Car
 | `input` | Key bindings, rumble, motion, the mouse camera, the sticks' rest, headless shutdown |
 | `nvn` | The NVN layer's pools, buffers, textures and host tables, the render-target slots, host copies into guest memory |
 | `os` | The operating-system layer, the guest FPCR, `setjmp` calls, threads' cores, mutexes and multi-waits, the file system's links |
-| `renderer` | Layer 0's windows, strict mode, the register-pressure pass, Sirit's SPIR-V |
+| `renderer` | Layer 0's windows, strict mode, the register-pressure pass, Sirit's SPIR-V, the translator's subgroup IR operations |
 | `host_reads` | What the host reads of the guest context against what its patch declarations say |
 | `source` | Rules read from the source text, such as UTF-8 paths |
 | `python` | The Python tools' own tests (`ounce/tests/py`) and a byte-compile of every tracked Python file |
