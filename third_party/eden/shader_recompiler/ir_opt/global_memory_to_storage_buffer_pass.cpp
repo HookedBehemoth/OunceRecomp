@@ -36,12 +36,8 @@ namespace Shader::Optimization {
 ///   tracked   bound to a constant buffer pointer, the address made from constant buffer words only
 ///   fallback  not tracked: the run-time search (NVN slots, tables, the mesh pointer table), table = a table was found
 ///   mixed     bound to a constant buffer pointer although part of the address comes from memory (often only an index)
-///   split     bound to a constant buffer pointer while a select or phi gives the address either from constant buffer
-///             words or from memory (a pointer loaded through it): EvilOOT's near-leaf bug (zortos293/Lichii #410), the
-///             loaded pointer's reads go to the wrong buffer
-///   fallback_split  the same pattern among the fallbacks
 struct PointerDiag {
-    u32 tracked, fallback, fallback_table, mixed, split, fallback_split;
+    u32 tracked, fallback, fallback_table, mixed;
 };
 thread_local PointerDiag g_pointer_diag{};
 // (collect_shader_info_pass.cpp: NVN2 compute's storage buffer slots for the program translated on this thread, 0: not compute)
@@ -55,7 +51,7 @@ bool PointerDiagOn() {
     static const bool on = Common::NoEnv("RX_VK_PTR_DIAG") != nullptr && std::atoi(Common::NoEnv("RX_VK_PTR_DIAG")) != 0;
     return on;
 }
-/// (EvilOOT) a split address (see PointerDiag) is not bound to the constant buffer pointer on one side of its select or phi;
+/// (EvilOOT) a split address (AddressSources::Splits) is not bound to the constant buffer pointer on one side of its select or phi;
 /// it is left to the run-time search, which finds whichever bound buffer (or table entry, or pointer table pool) the
 /// address really falls in. #410's bug class (EvilOOT's near leaves): bound to one side, the other side's reads went to
 /// the wrong buffer. On by default since the search covers whole pools (OoT's culling: characters, fallen leaves and
@@ -1191,91 +1187,157 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
     return candidates;
 }
 
-/// (EvilOOT, RX_VK_PTR_DIAG) Where an address comes from: constant buffer words, memory (a global load: a pointer loaded
-/// from memory), and whether a select or phi joins values on the way. The walk stops at both kinds of source.
-/// split: a select or phi with a side from constant buffer words only and a side from memory (#410's pattern: the
-/// pointer is c0[x] or *c0[x], and only c0[x] gets bound). An index loaded from memory into a constant buffer
-/// pointer's offset is not split.
-struct AddrOrigins {
-    bool cbuf{}, load{}, branch{}, split{};
-};
-/// (11-07) One walk for the whole program, each instruction's origins kept: the first version walked up to 1024
-/// instructions per address and walked each side of every select or phi again, nested three deep, which on a compute
-/// shader with many loop phis ran for minutes on the submit's thread (the freeze after Load, vk_hangdump.cpp found it).
-/// Origins of an instruction = the union of its arguments' (a select's condition left out); split where a select or
-/// phi joins a side from constant buffer words only with a side from memory, or below. A phi's argument still being
-/// walked (a loop) adds nothing.
-thread_local std::unordered_map<const IR::Inst*, AddrOrigins> g_origins;
-AddrOrigins Origins(const IR::Value& root) {
-    if (root.IsImmediate()) {
-        return {};
-    }
-    const IR::Inst* const top{root.InstRecursive()};
-    if (const auto it{g_origins.find(top)}; it != g_origins.end()) {
-        return it->second;
-    }
-    const auto is_cbuf{[](IR::Opcode op) { return op == IR::Opcode::GetCbufU32 || op == IR::Opcode::GetCbufU32x2; }};
-    const auto first_arg{[](IR::Opcode op) -> size_t {
-        return op == IR::Opcode::SelectU32 || op == IR::Opcode::SelectU64 ? 1 : 0;   // (not the condition)
-    }};
-    struct Frame {
-        const IR::Inst* inst;
-        size_t next;
-    };
-    std::vector<Frame> stack{{top, first_arg(top->GetOpcode())}};
-    std::unordered_set<const IR::Inst*> walking{top};
-    while (!stack.empty()) {
-        const IR::Inst* const inst{stack.back().inst};
-        const IR::Opcode op{inst->GetOpcode()};
-        const bool source{is_cbuf(op) || IsGlobalMemory(*inst)};
-        const IR::Inst* child{};
-        while (!source && !child && stack.back().next < inst->NumArgs()) {
-            const IR::Value arg{inst->Arg(stack.back().next++)};
-            if (arg.IsImmediate()) {
+/// (fork, from EvilOOT and Lichii #410) What an address is computed from: its instructions along every argument but a
+/// select's condition (Walk::Values), or only along the operations a pointer passes through (Walk::Pointer: additions,
+/// the minuend of a subtraction, joins, word packing and bit casts; not shifts, masks or products, which make indices).
+/// The walk stops at the two kinds of source, constant buffer reads and global memory accesses (a value loaded from
+/// memory). Results are reachabilities and shortest distances over the whole graph, loops included, so they do not
+/// depend on the order of the walk.
+class AddressSources {
+public:
+    enum class Walk { Values, Pointer };
+
+    AddressSources(const IR::Value& root, Walk walk) {
+        if (root.IsImmediate()) {
+            return;
+        }
+        nodes.push_back(root.InstRecursive());
+        nodes_info.emplace(nodes.front(), Node{});
+        for (size_t next = 0; next < nodes.size(); ++next) {
+            const IR::Inst* const inst{nodes[next]};
+            if (IsSource(*inst)) {
                 continue;
             }
-            const IR::Inst* const a{arg.InstRecursive()};
-            if (!g_origins.contains(a) && !walking.contains(a)) {
-                child = a;
+            const u32 depth{nodes_info.at(inst).depth + 1};
+            const auto [first, end]{Followed(*inst, walk)};
+            for (size_t i = first; i < end; ++i) {
+                const IR::Value arg{inst->Arg(i)};
+                if (arg.IsImmediate()) {
+                    continue;
+                }
+                const IR::Inst* const a{arg.InstRecursive()};
+                const auto [it, added]{nodes_info.try_emplace(a, Node{.depth = depth})};
+                it->second.users.push_back(inst);
+                if (added) {
+                    nodes.push_back(a);
+                }
             }
         }
-        if (child) {
-            stack.push_back({child, first_arg(child->GetOpcode())});
-            walking.insert(child);
-            continue;
+    }
+
+    bool ReadsMemory() const {
+        return std::ranges::any_of(nodes, [](const IR::Inst* inst) { return IsGlobalMemory(*inst); });
+    }
+
+    enum class Base { Pointer, Split, Offset };
+
+    /// Whether `base` is the pointer of a Walk::Pointer of the low address. Offset: the walk does not reach it, so Track
+    /// took it from an offset term (an index's constant, while the pointer comes from memory or an indexed constant
+    /// buffer); bound to it, the access reads or writes another buffer (OoT 522's c5[0], 1285's c0[128]).
+    /// Split: #410's pattern: the pointer is the constant buffer pointer `base` or a pointer loaded from memory (OoT's near-leaf
+    /// pass reads its placement records from c0[12] or from *c0[12]), and only `base` would be bound. On a Walk::Pointer
+    /// of the low address: split when a select or phi on the base's chain has another input that does not reach `base`
+    /// and reaches a load. The chain is every shortest way to `base`, the nearest pointer, as Track takes it. Off it: a
+    /// join in the offset (an index loaded from memory, a loop counter) and a register that held something else on
+    /// another path (an index, a float) where it is not added as a pointer.
+    Base Classify(StorageBufferAddr base) const {
+        const auto is_base{[base](const IR::Inst* inst) {
+            if (inst->GetOpcode() == IR::Opcode::GetCbufU32x2 && inst->Arg(0).IsImmediate() &&
+                inst->Arg(1).IsImmediate()) {
+                return StorageBufferAddr{inst->Arg(0).U32(), inst->Arg(1).U32()} == base;
+            }
+            return CbufWord(inst) == base;
+        }};
+        const std::unordered_map<const IR::Inst*, u32> to_base{Distances(is_base)};
+        const auto root_distance{nodes.empty() ? to_base.end() : to_base.find(nodes.front())};
+        if (root_distance == to_base.end()) {
+            return Base::Offset;
         }
-        AddrOrigins o;
-        if (is_cbuf(op)) {
-            o.cbuf = true;
-        } else if (IsGlobalMemory(*inst)) {
-            o.load = true;
-        } else {
-            const size_t first{first_arg(op)};
-            const bool joins{op == IR::Opcode::Phi || first == 1};
-            bool cbuf_only{}, from_memory{};
-            o.branch = joins;
+        const std::unordered_map<const IR::Inst*, u32> to_memory{
+            Distances([](const IR::Inst* inst) { return IsGlobalMemory(*inst); })};
+        for (const auto& [inst, distance] : to_base) {
+            const size_t first{FirstValueArg(*inst)};
+            if ((inst->GetOpcode() != IR::Opcode::Phi && first == 0) ||
+                nodes_info.at(inst).depth + distance != root_distance->second) {
+                continue;
+            }
             for (size_t i = first; i < inst->NumArgs(); ++i) {
                 const IR::Value arg{inst->Arg(i)};
                 if (arg.IsImmediate()) {
                     continue;
                 }
-                const auto it{g_origins.find(arg.InstRecursive())};
-                if (it == g_origins.end()) {
-                    continue;   // (a loop's phi, still being walked)
+                const IR::Inst* const side{arg.InstRecursive()};
+                if (!to_base.contains(side) && to_memory.contains(side)) {
+                    return Base::Split;
                 }
-                const AddrOrigins& side{it->second};
-                o.cbuf |= side.cbuf, o.load |= side.load, o.branch |= side.branch, o.split |= side.split;
-                cbuf_only |= side.cbuf && !side.load;
-                from_memory |= side.load;
             }
-            o.split |= joins && cbuf_only && from_memory;
         }
-        g_origins.emplace(inst, o);
-        walking.erase(inst);
-        stack.pop_back();
+        return Base::Pointer;
     }
-    return g_origins[top];
-}
+
+private:
+    struct Node {
+        u32 depth{};                            // (from the address)
+        std::vector<const IR::Inst*> users;     // (the walked instructions that take it as an argument)
+    };
+
+    static bool IsSource(const IR::Inst& inst) {
+        return inst.GetOpcode() == IR::Opcode::GetCbufU32 || inst.GetOpcode() == IR::Opcode::GetCbufU32x2 ||
+               IsGlobalMemory(inst);
+    }
+    static size_t FirstValueArg(const IR::Inst& inst) {
+        return inst.GetOpcode() == IR::Opcode::SelectU32 || inst.GetOpcode() == IR::Opcode::SelectU64 ? 1 : 0;
+    }
+    /// The arguments the walk follows: [first, end)
+    static std::pair<size_t, size_t> Followed(const IR::Inst& inst, Walk walk) {
+        const size_t first{FirstValueArg(inst)};
+        if (walk == Walk::Values || first == 1) {
+            return {first, inst.NumArgs()};
+        }
+        switch (inst.GetOpcode()) {
+        case IR::Opcode::IAdd32:
+        case IR::Opcode::IAdd64:
+        case IR::Opcode::Phi:
+        case IR::Opcode::CompositeConstructU32x2:
+        case IR::Opcode::PackUint2x32:
+        case IR::Opcode::UnpackUint2x32:
+        case IR::Opcode::BitCastU32F32:
+        case IR::Opcode::BitCastF32U32:
+            return {0, inst.NumArgs()};
+        case IR::Opcode::ISub32:
+        case IR::Opcode::ISub64:
+        case IR::Opcode::CompositeExtractU32x2:
+            return {0, 1};
+        default:
+            return {0, 0};
+        }
+    }
+    /// The instructions from which one that `target` accepts is reached, with the fewest steps to it
+    template <typename Pred>
+    std::unordered_map<const IR::Inst*, u32> Distances(Pred&& target) const {
+        std::vector<const IR::Inst*> pending;
+        std::unordered_map<const IR::Inst*, u32> reached;
+        for (const IR::Inst* const inst : nodes) {
+            if (target(inst)) {
+                pending.push_back(inst);
+                reached.emplace(inst, 0);
+            }
+        }
+        for (size_t next = 0; next < pending.size(); ++next) {
+            const IR::Inst* const inst{pending[next]};
+            const u32 distance{reached.at(inst) + 1};
+            for (const IR::Inst* const user : nodes_info.at(inst).users) {
+                if (reached.try_emplace(user, distance).second) {
+                    pending.push_back(user);
+                }
+            }
+        }
+        return reached;
+    }
+
+    std::vector<const IR::Inst*> nodes;   // (in the order of the walk, breadth first: the address first)
+    std::unordered_map<const IR::Inst*, Node> nodes_info;
+};
 /// (fork, from Lichii b8d81e20) Whether an address is a select or phi of which one input is a pointer loaded from memory: Ocarina's foliage
 /// placement records are read from c0[12] or from *c0[12]. Tracked to the constant buffer pointer alone, the loaded path read out of bounds
 /// as zeros, the near-leaf pass wrote NaN positions, and trees had no leaves. Such a load stays global: the backend's page table reads it
@@ -1339,12 +1401,14 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     // (EvilOOT, RX_VK_PTR_DIAG) counted on every way out of here
     const bool diag{PointerDiagOn()};
     const bool split_fallback{SplitFallbackOn()};
-    const AddrOrigins origins{diag || split_fallback ? Origins(inst.Arg(0)) : AddrOrigins{}};
+    std::optional<AddressSources> sources_walk;   // (of the whole address)
+    const auto sources{[&]() -> const AddressSources& {
+        return sources_walk ? *sources_walk : sources_walk.emplace(inst.Arg(0), AddressSources::Walk::Values);
+    }};
     const auto count_fallback{[&](bool table) {
         if (diag) {
             ++g_pointer_diag.fallback;
             g_pointer_diag.fallback_table += table ? 1 : 0;
-            g_pointer_diag.fallback_split += origins.split ? 1 : 0;
         }
     }};
     // Track the low address of the instruction
@@ -1506,12 +1570,17 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         // read zeros and drew the plants without colour (white/sky-blue "mirror" ferns, glowing flowers). Left to the run-time
         // search. RX_VK_NO_CBUF_LOAD_RULE=1: off
         static const bool cbuf_load_rule{Common::NoEnv("RX_VK_NO_CBUF_LOAD_RULE") == nullptr};
-        if (cbuf_load_rule && storage_buffer->index != 0 && g_graphics_stage && Origins(inst.Arg(0)).load) {
+        if (cbuf_load_rule && storage_buffer->index != 0 && g_graphics_stage && sources().ReadsMemory()) {
             leave_global();
             return;
         }
     }
-    if (split_fallback && origins.split) {
+    const AddressSources::Base base{AddressSources{low_addr, AddressSources::Walk::Pointer}.Classify(*storage_buffer)};
+    if (base == AddressSources::Base::Offset) {
+        leave_global();
+        return;
+    }
+    if (split_fallback && base == AddressSources::Base::Split) {
         // (Lichii #410, Duck912, adapted) The tracked pointer is one side of a select or phi whose other side is a pointer
         // loaded from memory: bound too, so that the run-time search finds the accesses through it in every stage (the
         // loaded side's are the page table's, where the stage has one). OoT's near-leaf pass reads its placement records
@@ -1529,8 +1598,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     }
     if (diag) {
         ++g_pointer_diag.tracked;
-        g_pointer_diag.mixed += origins.load ? 1 : 0;
-        g_pointer_diag.split += origins.split ? 1 : 0;
+        g_pointer_diag.mixed += sources().ReadsMemory() ? 1 : 0;
     }
     // Collect storage buffer and the instruction
     if (IsGlobalMemoryWrite(inst)) {
@@ -1673,7 +1741,6 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     g_follow_stage = program.stage == Stage::Compute || (!no_mesh && (program.stage == Stage::Task || program.stage == Stage::Mesh));
     // (geometry stages only: with the fragment stage too, the sky drew black rectangles and the lighting went too bright at the castle)
     g_graphics_stage = program.stage != Stage::Compute && program.stage != Stage::Fragment;
-    g_origins.clear();   // (EvilOOT: Origins' walk, kept per program)
     const bool pairing{!GmLegacyFor(program.stage)};
     std::optional<TrackingConditions> conditions;
     StorageInfo info;
