@@ -29,6 +29,8 @@ struct Compare {
 
 constexpr u32 OP_BRA = 0x947, OP_BRX = 0x949, OP_BRXU = 0x958, OP_EXIT = 0x94d, OP_KILL = 0x95b, OP_CALL = 0x944,
               OP_RET = 0x950, OP_BSSY = 0x945, OP_BSYNC = 0x941, OP_BREAK = 0x942, OP_WARPSYNC = 0x948;
+/// The longest program (program_capture.h's MaximumInstructions)
+constexpr s64 MAX_PROGRAM_BYTES{s64{16} << 20};
 
 [[noreturn]] void Fail(Location pc, const Insn& insn, std::string_view reason) {
     throw NotImplementedException("Ampere {:03x} {} at {:#x}: {}", insn.Opcode(), OpcodeName(insn.Opcode()),
@@ -184,6 +186,106 @@ std::optional<JumpTable> TrackJumpTable(Environment& env, Location begin, Locati
         return std::nullopt;
     }
     return JumpTable{ldc.CbufBank(), ldc.CbufOffset(), limit + 1};
+}
+
+/// Whether insn may write uniform register ureg (conservative): the uniform datapath's results at 16-23, and the
+/// instructions that move into URs from elsewhere
+bool MayWriteUniform(const Insn& insn, u32 ureg) {
+    const u32 op{insn.Opcode()};
+    if (insn.NeverExecutes()) {
+        return false;
+    }
+    const bool moves_in{op == 0x9c3 || op == 0x3c2 || op == 0x3c4}; // S2UR, R2UR, REDUX
+    if (!moves_in && !insn.IsUniformDatapath()) {
+        return false;
+    }
+    const u32 alu{insn.AluOp()};
+    if (!moves_in && (alu == 0x08c || alu == 0x09c)) { // UISETP, UPLOP3: predicates only
+        return false;
+    }
+    const bool wide{!moves_in && (alu == 0x0a5 || ((op == 0xab9 || op == 0xabb) && insn.Field(73, 3) == 5))};
+    const u32 span{wide ? 2U : 1U}; // UIMAD.WIDE, ULDC.64
+    const u32 dst{insn.Dst()};
+    return dst != URZ && ureg >= dst && ureg < dst + span;
+}
+
+/// Whether insn may write uniform predicate up (conservative: any uniform datapath instruction naming it as one of the
+/// two predicate destinations, 81-83 and 84-86)
+bool MayWriteUniformPred(const Insn& insn, u32 up) {
+    return !insn.NeverExecutes() && (insn.IsUniformDatapath() || insn.Opcode() == 0x886) &&
+           (insn.PredDst(81) == up || insn.PredDst(84) == up);
+}
+
+/// The jump table a BRXU's uniform register comes from: ULDC URt = c[bank][URx + offset] (0xabb), URx = URs << 2
+/// (USHF.L), URs = USEL(URi, N, UPp) after UISETP.LT.U32 UPp = URi < N, N an immediate (N + 1 entries) or a uniform
+/// register (a bound from the game's data: the table is measured)
+std::optional<JumpTable> TrackUniformJumpTable(Environment& env, Location begin, Location pc, u32 target_reg,
+                                               std::string& seen) {
+    constexpr int MAX_DISTANCE{96};
+    const auto find{[&](Location from, auto&& writes) -> std::optional<std::pair<Location, Insn>> {
+        Location at{from};
+        for (int k = 0; k < MAX_DISTANCE && at > begin; ++k) {
+            --at;
+            const Insn insn{ReadInsn(env, at)};
+            if (writes(insn)) {
+                seen += fmt::format(" {:#x}:{:03x}", ByteOffsetOf(at), insn.Opcode());
+                return std::pair{at, insn};
+            }
+        }
+        return std::nullopt;
+    }};
+    const auto ureg_writer{[&](Location from, u32 ureg) {
+        return find(from, [ureg](const Insn& insn) { return MayWriteUniform(insn, ureg); });
+    }};
+    const auto load{ureg_writer(pc, target_reg)};
+    if (!load || load->second.Opcode() != 0xabb || !load->second.AlwaysExecutes() ||
+        load->second.Field(73, 3) != 4 || !load->second.Bit(91)) {
+        return std::nullopt;
+    }
+    const Insn& uldc{load->second};
+    const auto scale{ureg_writer(load->first, uldc.Src0())};
+    if (!scale || !scale->second.AlwaysExecutes()) {
+        return std::nullopt;
+    }
+    const Insn& shl{scale->second};
+    if (shl.Opcode() != 0x899 || shl.Reg64() != URZ || shl.Imm32() != 2 || shl.Bit(76) || shl.Bit(80) ||
+        shl.Field(73, 2) != 3) {
+        return std::nullopt;
+    }
+    const auto clamp{ureg_writer(scale->first, shl.Src0())};
+    if (!clamp || !clamp->second.AlwaysExecutes()) {
+        return std::nullopt;
+    }
+    const Insn& sel{clamp->second};
+    const bool imm_bound{sel.Opcode() == 0x887};
+    if ((!imm_bound && sel.Opcode() != 0x287) || sel.Bit(90) || sel.PredSrc(87) == PT) {
+        return std::nullopt;
+    }
+    const u32 index{sel.Src0()};
+    const u32 bound{imm_bound ? sel.Imm32() : sel.UReg32()};
+    const u32 up{sel.PredSrc(87)};
+    const auto compare{find(clamp->first, [up](const Insn& insn) { return MayWriteUniformPred(insn, up); })};
+    if (!compare || !compare->second.AlwaysExecutes()) {
+        return std::nullopt;
+    }
+    const Insn& setp{compare->second};
+    if (setp.Opcode() != (imm_bound ? 0x88cU : 0x28cU) || setp.PredDst(81) != up || setp.PredDst(84) != PT ||
+        setp.Src0() != index || (imm_bound ? setp.Imm32() : setp.UReg32()) != bound || setp.Bit(72) ||
+        setp.Field(73, 3) != 0 || setp.Field(76, 3) != 1 || setp.PredSrc(87) != PT || setp.Bit(90)) {
+        return std::nullopt;
+    }
+    for (Location k{compare->first + 1}; k < clamp->first; ++k) {
+        if (MayWriteUniform(ReadInsn(env, k), index) || (!imm_bound && MayWriteUniform(ReadInsn(env, k), bound))) {
+            return std::nullopt;
+        }
+    }
+    if (imm_bound) {
+        if (bound >= 0x1000) {
+            return std::nullopt;
+        }
+        return JumpTable{uldc.CbufBank(), uldc.CbufOffset(), bound + 1};
+    }
+    return JumpTable{uldc.CbufBank(), uldc.CbufOffset(), 0};
 }
 } // Anonymous namespace
 
@@ -353,7 +455,7 @@ Block* CFG::AnalyzeCondInst(Block* block, FunctionId function_id, Location pc, E
 
 Location CFG::BranchTarget(Location pc, const Insn& insn) const {
     const s64 target{s64{ByteOffsetOf(pc)} + 16 + insn.BranchOffset()};
-    if (target < 0 || target % 16 != 0 || target >= 0x100000) {
+    if (target < 0 || target % 16 != 0 || target >= MAX_PROGRAM_BYTES) {
         Fail(pc, insn, fmt::format("branch target {:#x}", target));
     }
     return LocationOf(static_cast<u32>(target));
@@ -400,17 +502,34 @@ CFG::AnalysisState CFG::AnalyzeBRX(Block* block, FunctionId function_id, Locatio
     }
     const u32 reg{insn.Src0()};
     std::string seen;
-    const std::optional<JumpTable> table{
-        uniform ? std::nullopt : TrackJumpTable(env, functions[function_id].entrypoint, pc, reg, seen)};
+    const Location entry{functions[function_id].entrypoint};
+    const std::optional<JumpTable> table{uniform ? TrackUniformJumpTable(env, entry, pc, reg, seen)
+                                                 : TrackJumpTable(env, entry, pc, reg, seen)};
     if (!table) {
         Fail(pc, insn, fmt::format("jump table not found (writers:{})", seen));
     }
     // The target is the register plus the next instruction's offset plus the encoded one
     const s64 base{s64{ByteOffsetOf(pc)} + 16 + insn.BranchOffset()};
+    const auto target_of{[&](u32 i) {
+        return base + static_cast<s32>(env.ReadCbufValue(table->bank, table->offset + i * 4));
+    }};
+    const auto plausible{[&](s64 target) {
+        return target > s64{ByteOffsetOf(pc)} && target % 16 == 0 && target < MAX_PROGRAM_BYTES;
+    }};
     std::vector<u32> targets;
+    if (table->entries == 0) {
+        // A bound from the game's data: the table runs while its entries are cases (after the BRXU, as every table
+        // with a constant bound in the seeds)
+        for (u32 i = 0; i < 256 && plausible(target_of(i)); ++i) {
+            targets.push_back(static_cast<u32>(target_of(i)));
+        }
+        if (targets.empty()) {
+            Fail(pc, insn, "data-bounded jump table without a case");
+        }
+    }
     for (u32 i = 0; i < table->entries; ++i) {
-        const s64 target{base + env.ReadCbufValue(table->bank, table->offset + i * 4)};
-        if (target < 0 || target % 16 != 0 || target >= 0x100000) {
+        const s64 target{target_of(i)};
+        if (!plausible(target)) {
             Fail(pc, insn, fmt::format("jump table entry {} is {:#x}", i, target));
         }
         targets.push_back(static_cast<u32>(target));
