@@ -14,7 +14,10 @@
      - the compaction step f_815f0820 (worker): its movers (f_815efb08, f_815efd34, f_815f064c) copy a moved texture's
        bytes only when byte [worker+0x1c11] is 1; it is cleared at every step, so compaction moves no texels.
    Packaged texture data (nvnTextureBuilderSetPackagedTextureData) is not copied into the storage (nvn_native.c).
-   Not covered yet: in-place BNTX and ui2d resource files, and the font glyph cache (their texels stay unwritten). */
+   In-place files (a BNTX kept whole in memory): ui2d's layout textures (f_8088e790) and a font's BNTX (f_808aa478) note
+   their file for this thread; at TextureImpl::Initialize f_80210fdc inside them, the texture is found in the store by
+   its name, index and mip 0's offset in that file.
+   Not covered yet: the font glyph cache (its texels stay unwritten). */
 #include "hos.h"
 #include "patches.h"
 #include "rx_nvn.h"
@@ -27,7 +30,7 @@ int hos_gpu_pools(uint64_t (*out)[2], int max);
 extern const char *hos_romfs_dir;
 
 static volatile int64_t n_loads, n_load_skipped, n_load_bytes, n_rebind, n_compaction, n_compaction_cleared, n_pkg,
-    n_pkg_bytes;
+    n_pkg_bytes, n_inplace, n_inplace_bad;
 
 static int dbg_has(const char *name) {
     const char *d = getenv("HOS_DBG");
@@ -71,9 +74,11 @@ void assets_log(void) {
     char b[512];
     texdata_line(b, sizeof b);
     hos_log("assets: copies skipped: loads %lld of %lld (%lld MB), packaged %lld (%lld MB), compaction steps %lld (copy flag "
-            "cleared %lld); rebinds %lld%s; %s", (long long)n_load_skipped, (long long)n_loads, (long long)(n_load_bytes >> 20),
+            "cleared %lld); rebinds %lld; in-place textures %lld (not their file's %lld)%s; %s", (long long)n_load_skipped,
+            (long long)n_loads, (long long)(n_load_bytes >> 20),
             (long long)n_pkg, (long long)(n_pkg_bytes >> 20), (long long)n_compaction, (long long)n_compaction_cleared,
-            (long long)n_rebind, assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)", b);
+            (long long)n_rebind, (long long)n_inplace, (long long)n_inplace_bad,
+            assets_on() ? "" : " (HOS_DBG=noassets: the patches are off)", b);
 }
 
 static volatile int32_t started;
@@ -184,6 +189,69 @@ PATCH_AT(0x815f0820, word(0xd503237f), before, none, assets_compaction, as(x0, w
         *(uint8_t *)GP(w + 0x1c11) = 0;
         os_atomic_inc(&n_compaction_cleared);
     }
+}
+
+/* ---- in-place files: a BNTX the game keeps whole in memory, its textures initialized over the file's own pool ----
+   Each caller of TextureImpl::Initialize that initializes an in-place file's texture notes the file for this thread
+   while its body runs; the Initialize entry then hands the texture to the back end by its name, index and mip 0's
+   offset in that file. */
+static _Thread_local uint64_t tl_inplace;
+static uint64_t run_inplace(GuestFn *orig, uint64_t bntx) {
+    if (tl_inplace || !ready()) return guest_orig(orig);
+    tl_inplace = bntx;
+    const uint64_t r = guest_orig(orig);
+    tl_inplace = 0;
+    return r;
+}
+/* (a texture's BRTI +0x68 is its file's 'NX  ' header, the BNTX +0x20: the game reads the file's pool through it) */
+static uint64_t bntx_of(uint64_t brti) {
+    return hos_guest_range(brti, 0xa0) ? G64(brti + 0x68) - 0x20 : 0;
+}
+/* ui2d's texture by name in a layout's timg/__Combined.bntx (f_8043bf18, the resource accessor's lookup, tail-calls it
+   through f_8043c0d0): (obj, device, BRTI) */
+PATCH_FUNC(0x8088e790, word(0xd503237f), body(0x21fbddced3eded15), aapcs, x0, assets_ui2d_texture, orig, as(x2, brti)) {
+    return run_inplace(orig, bntx_of(brti));
+}
+/* a font's BNTX in place (the bffnt's sheets, f_8057f61c): (obj, device, pool, offset), the file at [obj+8] */
+PATCH_FUNC(0x808aa478, word(0xd503237f), body(0xba0dde2aaaa72996), aapcs, x0, assets_font_bntx, orig, as(x0, obj)) {
+    return run_inplace(orig, hos_guest_range(obj, 0x10) ? G64(obj + 8) : 0);
+}
+
+static int index_in(uint64_t bntx, uint64_t brti) {
+    const uint32_t n = G32(bntx + 0x24);
+    const uint64_t tbl = G64(bntx + 0x28);
+    for (uint32_t i = 0; i < n && hos_guest_range(tbl + 8 * i, 8); i++)
+        if (G64(tbl + 8 * i) == brti) return (int)i;
+    return -1;
+}
+/* nn::gfx TextureImpl<NVN>::Initialize(obj, device, info, pool, offset, size): info is the BRTI + 0x10, the NVN texture
+   obj + 0x10 */
+PATCH_AT(0x80210fdc, word(0xd503237f), before, none, assets_inplace_init, as(x0, obj), as(x2, info)) {
+    const uint64_t bntx = tl_inplace;
+    if (!bntx) return;
+    const uint64_t brti = info - 0x10;
+    int index = -1;
+    if (hos_guest_range(bntx, 0x40) && G32(bntx) == 0x58544e42u && hos_guest_range(brti, 0xa0) && G32(brti) == 0x49545242u &&
+        bntx_of(brti) == bntx)   /* ('BNTX', 'BRTI') */
+        index = index_in(bntx, brti);
+    if (index < 0) {
+        if (os_atomic_inc(&n_inplace_bad) <= 5)
+            hos_log("assets: in place: texture info %#llx is not a texture of the BNTX %#llx noted", (unsigned long long)info,
+                    (unsigned long long)bntx);
+        return;
+    }
+    gpu_asset_key k;
+    memset(&k, 0, sizeof k);
+    k.tex = GP(obj + 0x10);
+    k.path = GPU_ASSET_INPLACE;
+    key_of_brti(&k, brti);
+    uint32_t nl = 0;
+    const char *nm = bstr(G64(brti + 0x60), &nl);
+    const uint64_t mt = G64(brti + 0x70);
+    const uint64_t mip0 = hos_guest_range(mt, 8) ? G64(mt) : 0;
+    if (nm && mip0 > bntx) k.name = nm, k.name_len = nl, k.index = (uint32_t)index, k.data_offset = (uint32_t)(mip0 - bntx);
+    rx_direct()->asset_load(&k);
+    os_atomic_inc(&n_inplace);
 }
 
 int game_skips_packaged_texels(uint64_t bytes) {

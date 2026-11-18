@@ -104,7 +104,7 @@
 806b7654 texdata_destroy                  # render survey: OoT texdata_destroy shape (0.27); called by texdata_evict and 0x815ed008 (make_alias)
 806b7890 texdata_finalize_texture         # render survey: an nvnTextureFinalize user called from texdata_init_nvn_texture
 815f0934 texheap_mark_evictable           # render survey: (heap, block = [td+0x18], evictable): DKB's signature differs from OoT's (&td->slot, evictable) # ?
-808aa478 texdata_load_in_place            # render survey: res texture file + memory pool + TextureImpl::Initialize + view init, as OoT's in-place loaders # ?
+808aa478 font_bntx_texture_init           # games/dkb/patches/assets.c: a font's BNTX in place (obj, device, pool, offset), the file at [obj+8]: ResCast, pool, its first texture's TextureImpl::Initialize and view
 806e1ec4 sky_skybin_setup                 # render survey: 'AglSky.skybin' string; how the file's data reaches textures not traced # ?
 # static survey of DKB's frame, system and resolution sites (2026-11-18): system survey notes; '# ?' marks a guess
 8008a360 job_calc_runner                  # system survey: as OoT f_800998a0: sub-stages claimed by ldset bit masks at +0x278/+0x27c/+0x280, polled with SleepThread(tick freq / 50000 = 20 us) at 0x8008a544, 0x8008a97c, 0x8008ac5c (each after ConvertToTimeSpan); called from f_8007e2a0
@@ -158,3 +158,16 @@
 801e56a0 voxel_display_mesh_lists         # renderer (the geometry stage, not translated): voxel_display_update's per-chunk step; calls voxel_mesh_record_lists
 801e67bc voxel_mesh_record_lists          # renderer (the geometry stage, not translated): records a display-mesh chunk's command buffers: vertex attribute and stream state, vertex buffers, DrawElements, and a DrawElementsIndirect list whose arguments the geometry culling writes
 80197324 voxel_culling_options            # renderer (the geometry stage, not translated): reads the voxel material's enable_voxel_geometry_culling and enable_voxel_geometry_depth_culling options and the voxel_geometry_culling_index_stream16 / _indirect option indices; sets bits 0x20 and 0x40 of +0xa8
+8088e790 ui2d_texture_init                # games/dkb/patches/assets.c: ui2d's texture of an in-place layout BNTX (obj, device, BRTI): TextureImpl::Initialize and view unless [BRTI+0x80] is set
+8043bf18 ui2d_texture_find                # games/dkb/patches/assets.c: the layout resource accessor's lookup of a texture by name in its list of ResTextureFiles ([node+0x48]); tail-calls ui2d_texture_init through 0x8043c0d0
+8043c0d0 ui2d_texture_init_thunk          # games/dkb/patches/assets.c: calls ui2d_texture_init, returns 1
+8052f7b0 layout_combined_bntx_load        # games/dkb/patches/assets.c: a layout archive's timg/__Combined.bntx: ResCast and the file's memory pool (textures initialized later by name, ui2d_texture_find)
+8020f468 gfx_res_texture_file             # games/dkb/patches/assets.c: nn::gfx ResTextureFile::ResCast (relocates the BNTX in place, returns it)
+8052f8a8 gfx_memory_pool_init             # games/dkb/patches/assets.c: nn::gfx MemoryPool init over a file's GPU section (as OoT 80792e30)
+808aa2a8 font_bntx_textures_init          # games/dkb/patches/assets.c: calls font_bntx_texture_init (from 0x8057f61c, the font loader) # ?
+8057ea0c font_archive_load                # games/dkb/patches/assets.c: reads 'font/%s' of an fcpx font archive # ?
+805a1580 font_texture_cache_update        # games/dkb/patches/assets.c: nn::font TextureCache's update on the UpdateTextureCacheThread (0x80573e7c), initializes the glyph atlas textures # ?
+80573e7c font_texture_cache_thread        # games/dkb/patches/assets.c: the 'UpdateTextureCacheThread' body # ?
+8029d220 g3d_textures_bntx_init           # games/dkb/patches/assets.c: a g3d resource's embedded 'textures.bntx': ResCast, pool, texdata_init_nvn_texture per texture (not patched yet)
+808d1060 vfx2_texture_init_a              # games/dkb/patches/assets.c: nn::vfx2 texture with 'NnVfx2GfxTexture' pool: TextureImpl::Initialize (not patched yet)
+808e9b40 vfx2_texture_init_b              # games/dkb/patches/assets.c: nn::vfx2 emitter set's BNTX: ResCast, pool, TextureImpl::Initialize (not patched yet)
