@@ -1,6 +1,6 @@
 /* (M6f) Game patch, direct mode only: textures the game loads with no data, its UnifyTex aliases.
 
-   agl::TextureData loadImage_ (f_80798690, hooked in direct_assets.c) copies a texture's bytes into its slot in the texture
+   agl::TextureData loadImage_ (f_80798690, hooked in assets.c) copies a texture's bytes into its slot in the texture
    heap ([td+0x18]+0x10). A texture loaded with no data (src 0; Kokiri: Link's `Player_Child_Hairs_Alb` and 140 more) is an
    alias of System/Gfx/UnifyTex.Product.100.byml (5,186 names, 333 targets): f_807974f0 gives it a TextureData of its own
    that shares its target's slot and copies its target's BRTI, appends it to the target's alias chain (td+0x188 prev,

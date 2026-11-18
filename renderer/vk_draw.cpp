@@ -1,4 +1,4 @@
-// A draw (direct_draw.h). The state's conversion is gpu/legacy/vk/vk_draw.cpp's (dynamic_state, so_state, so_bind, push_bytes,
+// A draw (vk_draw.h). The state's conversion is gpu/legacy/vk/vk_draw.cpp's (dynamic_state, so_state, so_bind, push_bytes,
 // topology, vertex_format, target_write_mask) and the calls gpu/legacy/vk/eng_job.cpp's (on_draw), without the replay's diff caches
 // (each command buffer sets everything once: RADV inherits no dynamic state) and without its special cases (the shadow and
 // cascade depth biases, the EQ bias, footprints: plan rule 8).
@@ -13,26 +13,26 @@
 #include <unordered_set>
 #include <vector>
 
-#include "direct_pass.h"
-#include "direct_check.h"
-#include "direct_cmd.h"
-#include "direct_counters.h"
-#include "direct_marks.h"
-#include "direct_pstats.h"
-#include "direct_draw.h"
-#include "direct_heap.h"
-#include "direct_image.h"
-#include "direct_shader.h"
-#include "direct_state.h"
-#include "direct_task.h"
+#include "vk_pass.h"
+#include "vk_check.h"
+#include "vk_cmd.h"
+#include "vk_counters.h"
+#include "vk_marks.h"
+#include "vk_pstats.h"
+#include "vk_draw.h"
+#include "vk_heap.h"
+#include "vk_image.h"
+#include "vk_shader.h"
+#include "vk_state.h"
+#include "vk_task.h"
 
 namespace hsd {
 struct List;
-bool cap_pass(const List* l);   // (direct_pass.cpp, HOS_DBG=capture)
+bool cap_pass(const List* l);   // (vk_pass.cpp, HOS_DBG=capture)
 }
 
 namespace hsd {
-bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)
+bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (vk_pools.cpp)
 
 // ---- the frame arena ----
 struct Arena {
@@ -954,7 +954,7 @@ void count(List* l, Reason r) {
     bump(me().by_kind[l->info.kind][r]);
     if (l->info.kind == HSD_LIST_LAYER || l->info.kind == HSD_LIST_GATE) count_site(l->info.lr, r);
 }
-/// A draw not drawn, for strict mode (direct_check.h): what (the reason, the program as the list's state names it) and where
+/// A draw not drawn, for strict mode (vk_check.h): what (the reason, the program as the list's state names it) and where
 void strict_draw(List* l, Reason r) {
     char where[512], prog[400] = "";
     pass_where(l, where, sizeof where);
@@ -1080,7 +1080,7 @@ void dispatch_log(const List* l, uint32_t op, const void* data, uint32_t size) {
 bool draw_log_frame() { return drawlog_on(); }
 
 void draw_state(List* l, uint32_t op, const void* data, uint32_t size) {
-    switch (op) {   // (direct_state.cpp's ops: a list's state is made at its first one)
+    switch (op) {   // (vk_state.cpp's ops: a list's state is made at its first one)
     case NOP_VIEWPORTS: case NOP_SCISSOR: case NOP_DEPTH_RANGE: case NOP_BIND_PROGRAM: case NOP_BIND_STATE: case NOP_BIND_VATTR:
     case NOP_BIND_VSTREAM: case NOP_BIND_VBUF: case NOP_BIND_BUFS: case NOP_BIND_UBO: case NOP_BIND_SSBO: case NOP_BIND_TEX:
     case NOP_BIND_SAMP: case NOP_BIND_IMG: case NOP_STENCIL: case NOP_POLY_OFFSET: case NOP_BLEND_COLOR: case NOP_PRIMITIVE_RESTART:
@@ -1146,7 +1146,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
     const PassRec& p = l->pass;
     const bool records = l->rec;   // (M3a: jobs with their pass's formats too)
     if (records && !p.noted) return count(l, R_NO_TARGETS);
-    const bool gated = s.conditional;   // (M5: a render condition is evaluated on the GPU: direct_query.cpp begins it before the draw)
+    const bool gated = s.conditional;   // (M5: a render condition is evaluated on the GPU: vk_query.cpp begins it before the draw)
     if (!s.render_enabled) return count(l, R_DISABLED);
     VkPrimitiveTopology topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;   // (a mesh draw: its program's own, none set)
     if (!mesh) {
@@ -1269,7 +1269,7 @@ void draw_emit(List* l, uint32_t op, const void* data, uint32_t size, bool recor
             if (first && !prog->task) bump(me().mesh_first);   // (M4b: a direct mesh draw from a first past 0: counted, see the report)
         }
     }
-    // (M4c: a task+mesh draw's task stage, a compute step outside the rendering (direct_task.h); its mesh draw reads the header)
+    // (M4c: a task+mesh draw's task stage, a compute step outside the rendering (vk_task.h); its mesh draw reads the header)
     VkBuffer task_hb = VK_NULL_HANDLE;
     VkDeviceSize task_ho = 0;
     if (prog->task) {
@@ -1447,7 +1447,7 @@ void draw_window_made(uint32_t k, uint64_t a) {
     if (window_table && k < kWindows) __atomic_store_n(&window_table[k], a, __ATOMIC_RELEASE);
 }
 
-/// (direct_heap.cpp draw_device_created) the window table: an entry a layer-0 window, the null window past them; the zero buffer
+/// (vk_heap.cpp draw_device_created) the window table: an entry a layer-0 window, the null window past them; the zero buffer
 double seconds_since_device() { return (host->now_ns() - t_device) / 1e9; }
 void draw_window_table_init() {
     t_device = host->now_ns(), tsc_device = __builtin_ia32_rdtsc();
@@ -1565,7 +1565,7 @@ void draw_log(double frames) {
     }
 }
 
-// ---- what the dispatches share with the draws (direct_compute.cpp) ----
+// ---- what the dispatches share with the draws (vk_compute.cpp) ----
 bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr) { return arena_alloc(slot, bytes, map, addr); }
 bool draw_arena_buffer(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr, VkBuffer& buf, VkDeviceSize& off) {
     return arena_alloc(slot, bytes, map, addr, &buf, &off);

@@ -12,7 +12,7 @@
 #include <string.h>
 #include "os.h"
 void f_80084de0(Ctx *);   /* (lifted functions the host calls by name: a code pointer is a host function pointer) */
-void direct_layer_ahead_job_done(uint64_t range, uint64_t lr);   /* direct_layer_ahead.c */
+void direct_layer_ahead_job_done(uint64_t range, uint64_t lr);   /* layer_ahead.c */
 
 
 typedef struct {
@@ -56,14 +56,14 @@ static int eng_jobs_begin(uint64_t cmd) {   /* (a JOB list's BeginRecording: f_8
     return 1;
 }
 
-/* (games/oot/patches/direct_job_sync.c) the guest command buffer of the job this thread records now and its view record (0: none) */
+/* (games/oot/patches/job_sync.c) the guest command buffer of the job this thread records now and its view record (0: none) */
 uint64_t eng_jobs_current(uint64_t *view) {
     if (!jt.active || !jt.tagged) return 0;
     if (view) *view = jt.view;
     return jt_cmd;
 }
 
-/* (games/oot/patches/direct_mesh_system.c) the draw context of the job this thread records now (0: none) */
+/* (games/oot/patches/mesh_system.c) the draw context of the job this thread records now (0: none) */
 uint64_t eng_jobs_drawctx(void) { return jt.active ? jt.drawctx : 0; }
 
 int game_job_list(uint64_t cmd, uint64_t *key, uint64_t *view) {

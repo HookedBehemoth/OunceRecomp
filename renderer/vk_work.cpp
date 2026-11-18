@@ -1,5 +1,5 @@
-// The shader workers (direct_work.h).
-#include "direct_work.h"
+// The shader workers (vk_work.h).
+#include "vk_work.h"
 
 #include <algorithm>
 #include <atomic>
@@ -9,7 +9,7 @@
 #include <deque>
 #include <mutex>
 
-#include "direct_internal.h"
+#include "vk_internal.h"
 #include "os.h"
 
 namespace hsd::work {

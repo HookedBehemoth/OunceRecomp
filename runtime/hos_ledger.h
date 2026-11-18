@@ -8,7 +8,7 @@
 enum {
     HL_NVN_LISTS,   /* (nvn_list.c: the recordings' blocks, live or cached) */
     HL_NVN_CMD,     /* (nvn_native.c: the command buffers' recording memory, in use or pooled) */
-    HL_TILES,       /* (direct_assets.c: terrain tiles kept until their image takes them) */
+    HL_TILES,       /* (assets.c: terrain tiles kept until their image takes them) */
     HL_VIDEO,       /* (nn_video.c: the decoder's image pools and pictures waiting) */
     HL_N
 };

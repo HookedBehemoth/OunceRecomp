@@ -1,13 +1,13 @@
-// Per-thread command pools by frame slot, and the per-thread upload ring (direct_cmd.h).
+// Per-thread command pools by frame slot, and the per-thread upload ring (vk_cmd.h).
 #include <chrono>
 #include <algorithm>
 #include <cstdio>
 #include <memory>
 
-#include "direct_check.h"
-#include "direct_cmd.h"
-#include "direct_draw.h"
-#include "direct_lists.h"
+#include "vk_check.h"
+#include "vk_cmd.h"
+#include "vk_draw.h"
+#include "vk_lists.h"
 
 namespace hsd {
 namespace {

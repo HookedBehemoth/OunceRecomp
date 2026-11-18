@@ -1,4 +1,4 @@
-// The descriptor heap and M2b's device part (direct_heap.h). The heaps and their encodings from gpu/legacy/vk/vk_desc_heap.cpp
+// The descriptor heap and M2b's device part (vk_heap.h). The heaps and their encodings from gpu/legacy/vk/vk_desc_heap.cpp
 // (make_heap, the device half, encode image / sampler), cut to what registration-time entries need: no ring, no lazy
 // resolves, no classic descriptor commands. The sampled view rules from gpu/legacy/vk/vk_texture.cpp texture_view and the sampler
 // from gpu/legacy/vk/vk_draw.cpp sampler_make, without their switches and without the shadow filter's PCF (a picture change, not
@@ -10,14 +10,14 @@
 #include <memory>
 #include <mutex>
 
-#include "direct_marks.h"
-#include "direct_pstats.h"
-#include "direct_check.h"
+#include "vk_marks.h"
+#include "vk_pstats.h"
+#include "vk_check.h"
 #include "shader_recompiler/shader_info.h"
 
-#include "direct_heap.h"
-#include "direct_image.h"
-#include "direct_assets.h"
+#include "vk_heap.h"
+#include "vk_image.h"
+#include "vk_assets.h"
 
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {
@@ -29,7 +29,7 @@ HSD_VK_M4B(HSD_VK_DEFINE)
 namespace hsd {
 
 DrawCaps caps;
-void draw_window_table_init();   // (direct_draw.cpp)
+void draw_window_table_init();   // (vk_draw.cpp)
 
 namespace {
 

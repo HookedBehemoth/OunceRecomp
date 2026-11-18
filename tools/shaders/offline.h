@@ -1,6 +1,6 @@
 // The direct back end's translation of one NVN2 stage, offline (no device, no game state): its code read from a control
-// section and code area (as the romfs seed holds them), the translator's questions answered as direct_shader.cpp /
-// direct_compute.cpp answer them with nothing bound, and the profile they translate with on this card. Shared by meshtool
+// section and code area (as the romfs seed holds them), the translator's questions answered as vk_shader.cpp /
+// vk_compute.cpp answer them with nothing bound, and the profile they translate with on this card. Shared by meshtool
 // (tools/shaders/meshtool.cpp) and the shader census (tools/shadercensus). Nothing of the game is in this file.
 #pragma once
 #include <algorithm>
@@ -30,7 +30,7 @@
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/ir_opt/oot_visual_workaround.h"
 
-namespace Shader::Optimization {   // (the compute bank's layout the global-memory pass reads: direct_compute.cpp sets them)
+namespace Shader::Optimization {   // (the compute bank's layout the global-memory pass reads: vk_compute.cpp sets them)
 extern thread_local u32 g_nvn2_compute_ssbo_base, g_nvn2_compute_ssbo_count, g_nvn2_compute_layout_end;
 }
 
@@ -38,7 +38,7 @@ namespace offline {
 
 constexpr uint32_t kControl = 0xd8, kAmpereHeader = 128;
 
-inline uint64_t fnv(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull) {   // (direct_shader.cpp hash_bytes)
+inline uint64_t fnv(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull) {   // (vk_shader.cpp hash_bytes)
     for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)p)[i]) * 0x100000001b3ull;
     return h;
 }
@@ -48,7 +48,7 @@ struct Code {
     uint64_t key = 0;     // (the back end's code key: the control section and code area hashed)
     uint32_t threads = 0, payload_bytes = 0, max_vertices = 0, max_primitives = 0, topology = 0, native = 0, local_mem = 0;
     uint32_t texture_bound = ~0u, local[3]{1, 1, 1}, shared = 0;
-    uint32_t cs_ubo = 0, cs_ssbo = 0, cs_tex = 0, cs_img = 0, cs_push = 0;   // (compute: direct_compute.cpp Layout)
+    uint32_t cs_ubo = 0, cs_ssbo = 0, cs_tex = 0, cs_img = 0, cs_push = 0;   // (compute: vk_compute.cpp Layout)
     bool header_only = false;
     std::vector<uint64_t> code;
     std::vector<uint8_t> c1;
@@ -56,7 +56,7 @@ struct Code {
     uint32_t cs_ssbo_at() const { return 0x10 + cs_push + 16 * cs_ubo; }
 };
 
-/// A stage from its control section (kControl bytes) and code area (as direct_shader.cpp parse_code / direct_compute.cpp lower)
+/// A stage from its control section (kControl bytes) and code area (as vk_shader.cpp parse_code / vk_compute.cpp lower)
 inline Code load(const uint8_t* ctl, const uint8_t* area_p, size_t area_n) {
     Code c;
     std::vector<uint8_t> area(area_p, area_p + area_n);
@@ -94,7 +94,7 @@ inline Code load(const uint8_t* ctl, const uint8_t* area_p, size_t area_n) {
         if (r == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
     }
     c.native = (uint32_t)native.size();
-    Shader::Ampere::native_matrix_multiply = !graphics;   // (compute: the matrix multiplies kept whole, as direct_compute.cpp)
+    Shader::Ampere::native_matrix_multiply = !graphics;   // (compute: the matrix multiplies kept whole, as vk_compute.cpp)
     const auto lowered = Shader::Ampere::LowerToMaxwell(native);
     Shader::Ampere::native_matrix_multiply = false;
     if (!lowered) throw Shader::RuntimeError("lowering failed at {:#x}: {}", lowered.error_offset, lowered.error);
@@ -123,7 +123,7 @@ inline Code load_file(const char* path) {
     return load(b.data(), b.data() + kControl, b.size() - kControl);
 }
 
-/// The translator's questions with nothing bound (direct_shader.cpp Env / direct_compute.cpp Env): driver bank words 0, game
+/// The translator's questions with nothing bound (vk_shader.cpp Env / vk_compute.cpp Env): driver bank words 0, game
 /// buffers not read, c1 the program's own, the storage tables as direct's
 class Env final : public Shader::Environment {
 public:
@@ -195,7 +195,7 @@ public:
     int game_words = 0;
 };
 
-/// direct_shader.cpp make_profile on this card (RX 6950 XT, RADV), pinned to 32 lanes as profile_graphics; and its
+/// vk_shader.cpp make_profile on this card (RX 6950 XT, RADV), pinned to 32 lanes as profile_graphics; and its
 /// per-GPU settings (frag_nan_guard, position_invariant on AMD)
 inline bool explicit_shared = false;   // (the translator-fix prototype: shared memory in explicit layout, typed 8/16-bit access)
 inline Shader::Profile profile() {
@@ -235,7 +235,7 @@ inline Shader::HostTranslateInfo host_info() {
     return h;
 }
 
-inline std::array<u32, 3> regs_of(const Code& m, const Code* t) {   // (direct_shader.cpp mesh_registers_of)
+inline std::array<u32, 3> regs_of(const Code& m, const Code* t) {   // (vk_shader.cpp mesh_registers_of)
     const uint32_t topology = m.topology == 3 ? 4 : m.topology == 1 ? 0 : m.topology;
     const uint32_t most = std::max(m.max_vertices, m.max_primitives);
     const uint32_t lines = t ? (t->payload_bytes + 127) / 128 : 0;
@@ -255,7 +255,7 @@ inline std::unique_ptr<Translation> translate(Env& env) {
     auto t = std::make_unique<Translation>();
     const bool cs = env.ShaderStage() == Shader::Stage::Compute;
     const bool one_exit = env.ShaderStage() == Shader::Stage::Mesh || env.ShaderStage() == Shader::Stage::Task;
-    if (cs) {   // (direct_compute.cpp translate_variant: the bank's storage table for the global-memory pass)
+    if (cs) {   // (vk_compute.cpp translate_variant: the bank's storage table for the global-memory pass)
         Shader::Optimization::g_nvn2_compute_ssbo_base = env.nvn.cs_ssbo ? env.nvn.cs_ssbo_at() : 0;
         Shader::Optimization::g_nvn2_compute_ssbo_count = env.nvn.cs_ssbo ? env.nvn.cs_ssbo : 16;
         Shader::Optimization::g_nvn2_compute_layout_end = 0;

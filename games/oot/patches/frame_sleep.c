@@ -1,7 +1,7 @@
 /* The game's frame loop and the clock: its present's event poll and its calc jobs' waits slept the host's way, and its
    frame-end clock read, which names the graphics module (runtime/hos_thread.c's sleeps and ticks). */
 #include "hos.h"
-#include "direct_crit.h"
+#include "crit.h"
 #include "os.h"
 #include <stdlib.h>
 #include <string.h>

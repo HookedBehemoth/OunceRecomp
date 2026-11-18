@@ -1,6 +1,6 @@
 // The guest's submits, its fences and its events. One Vulkan queue with one
 // timeline semaphore. An NVN submission's command buffers and frame-level ops are run in their order (the lists cut
-// their command buffers at each event signal and wait: direct_pass.cpp pass_cut), and its command buffers are sent in
+// their command buffers at each event signal and wait: vk_pass.cpp pass_cut), and its command buffers are sent in
 // chunks: the ones before an event signal are sent before the signal is written, so another queue's work after its wait for
 // that signal is sent after them, as the console's GPU runs it; a chunk after an event wait waits on the GPU for everything
 // sent before it (the signal's work and its writes). Each chunk is one submit info that signals the next value.
@@ -10,7 +10,7 @@
 // thread at nvnEventSignal) do not wait in the kernel's submit. Whoever submits on the queue otherwise (the present) sends
 // what is handed over first. A CPU wait for a value given and not yet submitted is a timeline wait like any other.
 //
-// An NVN queue's submissions run in order. A submission's frame-level ops (direct_lists.cpp) are applied when it runs: an
+// An NVN queue's submissions run in order. A submission's frame-level ops (vk_lists.cpp) are applied when it runs: an
 // event signal writes the event's word in guest memory (the value the game polls), a report writes its counter, and a wait
 // whose event does not hold the value yet stops that queue there (held on the host, as the console's GPU would stall the
 // queue) until another queue's signal or the CPU's (nvnEventSignal) meets it. nvnQueueWaitSync holds the queue's next
@@ -26,14 +26,14 @@
 
 #include "os.h"
 
-#include "direct_cmd.h"
-#include "direct_compute.h"
-#include "direct_draw.h"
-#include "direct_dump.h"
-#include "direct_internal.h"
-#include "direct_lists.h"
-#include "direct_marks.h"
-#include "direct_pass.h"
+#include "vk_cmd.h"
+#include "vk_compute.h"
+#include "vk_draw.h"
+#include "vk_dump.h"
+#include "vk_internal.h"
+#include "vk_lists.h"
+#include "vk_marks.h"
+#include "vk_pass.h"
 
 namespace hsd {
 std::atomic<int64_t> st_send_ns{0}, st_send_n{0};
@@ -225,7 +225,7 @@ void sender_drain_at_exit() {
 // buffer is bracketed by two timestamps (top of pipe before its first command, all commands after its last). In the
 // queue's order these give the time the queue had work (the union of the brackets) and its idle gaps: the GPU waiting
 // for the CPU. Read once available, at the presents; every 600 presents a line, and with HOS_DBG=frames each present's
-// row in direct_frames.csv (direct_present.cpp)
+// row in direct_frames.csv (vk_present.cpp)
 struct GpuTime {
     bool on = false;
     VkQueryPool pool = VK_NULL_HANDLE;
@@ -243,7 +243,7 @@ struct GpuTime {
     double busy_ns = 0, idle_ns = 0, frame_busy = 0, frame_idle = 0, last_present_end = 0;
     int64_t idle_gaps = 0, presents = 0;
     double longest_gap = 0;
-    // (per present, for direct_present.cpp's rows: GPU frame time, busy, idle)
+    // (per present, for vk_present.cpp's rows: GPU frame time, busy, idle)
     std::deque<std::array<double, 3>> rows;
 };
 GpuTime gt;
@@ -550,7 +550,7 @@ void nvn_event_signal(uint64_t, uint32_t) {   // (the host wrote the value: the 
 
 }  // namespace
 
-// for direct_present.cpp
+// for vk_present.cpp
 bool gputime_on() { return gt.on; }
 void gputime_present_begin(VkCommandBuffer cb, uint32_t& slot) {
     slot = gputime_slot(1);

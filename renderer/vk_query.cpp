@@ -1,4 +1,4 @@
-// Reports and render conditions on the GPU (direct_query.h has the rules).
+// Reports and render conditions on the GPU (vk_query.h has the rules).
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -6,14 +6,14 @@
 #include <cstdlib>
 #include <mutex>
 
-#include "direct_check.h"
+#include "vk_check.h"
 #include "os.h"
-#include "direct_cmd.h"
-#include "direct_compute.h"
-#include "direct_counters.h"
-#include "direct_draw.h"
-#include "direct_heap.h"
-#include "direct_query.h"
+#include "vk_cmd.h"
+#include "vk_compute.h"
+#include "vk_counters.h"
+#include "vk_draw.h"
+#include "vk_heap.h"
+#include "vk_query.h"
 #include <shaders/report_resolve_spv.h>
 
 namespace hsd {

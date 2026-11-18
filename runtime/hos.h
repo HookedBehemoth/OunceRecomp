@@ -110,7 +110,7 @@ uint64_t hos_thread_mask(HosThread *t);
 int hos_thread_priority(HosThread *t, int set, int value);
 int hos_thread_core(HosThread *t);
 int hos_cores(void);
-/* (HOS_DBG=crit: direct_crit.h) a guest thread's block in a host call: hos_block_begin names it (1 if recorded), and
+/* (HOS_DBG=crit: crit.h) a guest thread's block in a host call: hos_block_begin names it (1 if recorded), and
    hos_block_end after it records the span. No scheduler: guest threads run freely on their host threads (hos_thread.c) */
 int hos_block_begin(int why, const void *key);
 void hos_block_end(void);

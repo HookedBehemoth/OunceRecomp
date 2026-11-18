@@ -7,7 +7,7 @@
 // values reach guest memory at the end of the rendering they were recorded in (a job's: its caller's rendering), in
 // the list's order: the queries' results are copied into the slot's buffer and one compute step writes each report's
 // 16 bytes at its guest address (report_resolve.comp), so the game's CPU readers read plain memory. Query pools and
-// the record buffer belong to the thread's command slot (direct_cmd.h) and are reset with it, on the host.
+// the record buffer belong to the thread's command slot (vk_cmd.h) and are reset with it, on the host.
 //
 // SetRenderEnableConditional(mode, addr) renders when the counters at addr and addr + 16 are equal (0) or differ (1).
 // The second word is written by the CPU only, and is 0 in every case seen (HOS_DBG=condcheck counts the others), so
@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "direct_lists.h"
+#include "vk_lists.h"
 
 namespace hsd {
 

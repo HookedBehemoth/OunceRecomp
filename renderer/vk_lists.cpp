@@ -1,5 +1,5 @@
-// The list calls (direct_api.h) at M1: every NVN record is counted by op and dropped, but the ops the frame level needs
-// (event signals and waits, reports, calls), which hsd_submit runs (direct_sync.cpp). The counts of the lists ended,
+// The list calls (vk_list_api.h) at M1: every NVN record is counted by op and dropped, but the ops the frame level needs
+// (event signals and waits, reports, calls), which hsd_submit runs (vk_sync.cpp). The counts of the lists ended,
 // by kind, of their records, by op, and of the return addresses each kind was begun from, go in the 600-present line.
 #include <cstdio>
 #include <cstring>
@@ -7,17 +7,17 @@
 #include <chrono>
 #include <thread>
 
-#include "direct_assets.h"
-#include "direct_check.h"
-#include "direct_cmd.h"
-#include "direct_compute.h"
-#include "direct_draw.h"
-#include "direct_dump.h"
-#include "direct_counters.h"
-#include "direct_internal.h"
-#include "direct_lists.h"
-#include "direct_pass.h"
-#include "direct_query.h"
+#include "vk_assets.h"
+#include "vk_check.h"
+#include "vk_cmd.h"
+#include "vk_compute.h"
+#include "vk_draw.h"
+#include "vk_dump.h"
+#include "vk_counters.h"
+#include "vk_internal.h"
+#include "vk_lists.h"
+#include "vk_pass.h"
+#include "vk_query.h"
 
 namespace hsd {
 namespace {
@@ -267,7 +267,7 @@ void emit_one(List* l, uint32_t op, const void* payload, uint32_t size) {
         l->ops.push_back(o);
         break;
     }
-    // (M5: REPORT_COUNTER and RESET_COUNTER are GPU work in the list's command buffers: direct_query.cpp)
+    // (M5: REPORT_COUNTER and RESET_COUNTER are GPU work in the list's command buffers: vk_query.cpp)
     default: break;
     }
 }

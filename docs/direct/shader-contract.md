@@ -2,10 +2,10 @@
 
 This page describes what a program translated by the back end expects at a draw, and what the back end provides: how
 programs are identified, how buffers, textures and state reach the shader, and where the caches live. Read it before
-you change `renderer/direct_shader.cpp`, `renderer/direct_draw.cpp`, `renderer/direct_compute.cpp` or the
+you change `renderer/vk_shader.cpp`, `renderer/vk_draw.cpp`, `renderer/vk_compute.cpp` or the
 translator fork in `renderer/eden`.
 
-The authoritative definitions are `renderer/direct_shader.h` (the program variant a draw reads, `DrawProg`) and the
+The authoritative definitions are `renderer/vk_shader.h` (the program variant a draw reads, `DrawProg`) and the
 translator's push-data layout in `third_party/eden/shader_recompiler/backend/spirv/emit_spirv.h`.
 
 ## Programs and variants
@@ -18,7 +18,7 @@ translator's push-data layout in `third_party/eden/shader_recompiler/backend/spi
   In practice there is one variant per program.
 - A draw with no ready variant is skipped and counted, and the translation is queued. Workers run four classes of jobs,
   most urgent first: what a load waits for, what a draw misses now, programs the game set at load, and speculative
-  variants (`renderer/direct_work.h`).
+  variants (`renderer/vk_work.h`).
 - Variants are only ever added, and shader objects are never destroyed.
 
 ## What a draw provides
@@ -57,7 +57,7 @@ read; you don't need to delete one.
 
 | File | Holds | Made again when |
 |---|---|---|
-| `hookshot_direct_programs.bin` | translated graphics variants (SPIR-V, interface info, answers) | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `direct_shader.cpp`, `direct_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
+| `hookshot_direct_programs.bin` | translated graphics variants (SPIR-V, interface info, answers) | the shader stamp changes (the translator, the compiler and flags that build it, the stamped regions of `vk_shader.cpp`, `vk_state.h`, the register-pressure pass), the record format, the device's subgroup answers, the depth mode, or the translation switches `nolate`, `latevertex` and `loopcap` |
 | `hookshot_direct_compute.bin` | translated compute variants | the compute stamp (the translator, the compiler and flags, the stamped regions), the record version, the device's answers or `loopcap` change |
 | `hookshot_direct_shader_objects.bin` | driver binaries of the shader objects | the driver's binary UUID or version changes; a binary the driver refuses is compiled again |
 

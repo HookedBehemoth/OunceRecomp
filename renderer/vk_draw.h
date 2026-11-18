@@ -1,7 +1,7 @@
 // A draw: the list's program variant, its
 // dynamic state, the vertex and index buffers by layer 0, the uniform buffers' address table and the driver banks in the
 // frame arena, the push data, the draw call, on the recording thread in the list's command buffer inside the pass
-// direct_pass.cpp opened. Ordinary vertex and fragment draws (DRAW, DRAW_IDX) of every list are attempted: in a list that
+// vk_pass.cpp opened. Ordinary vertex and fragment draws (DRAW, DRAW_IDX) of every list are attempted: in a list that
 // records no command buffer yet (jobs, load-time lists: M3) the draw is resolved up to its Vulkan calls and counted.
 // Whatever skips a draw is counted by reason. Deferred handle binds: the bank words they fill are copied from the game's
 // array at the guest's submit (draw_list_submitted).
@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-#include "direct_lists.h"
+#include "vk_lists.h"
 
 namespace hsd {
 
@@ -28,10 +28,10 @@ void draw_push_invalidate(List* l);
 void draw_list_free(List* l);
 /// (hsd_submit, the guest's submit) the deferred binds' bank words of l and its callees copied from the game's arrays now
 void draw_list_submitted(const List* l);
-/// (direct_pools.cpp) layer 0's window k made at device address a: the BDA window table's entry
+/// (vk_pools.cpp) layer 0's window k made at device address a: the BDA window table's entry
 void draw_window_made(uint32_t k, uint64_t a);
 
-/// The frame arena of a command slot (direct_cmd.h): bump allocations in mapped device memory, reset with the slot
+/// The frame arena of a command slot (vk_cmd.h): bump allocations in mapped device memory, reset with the slot
 struct Arena;
 void arena_reset(Arena* a);
 
@@ -40,7 +40,7 @@ void draw_log(double frames);
 /// Since the start, all threads: draws recorded, and draws skipped because their program or variant was not ready yet (read or
 /// translated by the shader workers). Any thread; the counts of a thread drawing meanwhile may be a draw behind
 void draw_totals(int64_t* drawn, int64_t* waiting);
-/// (direct_compute.cpp) bytes of the slot's frame arena; the BDA window table's address; 64 KB of zeros
+/// (vk_compute.cpp) bytes of the slot's frame arena; the BDA window table's address; 64 KB of zeros
 struct CmdSlot;
 bool draw_arena(CmdSlot* slot, uint32_t bytes, uint8_t*& map, VkDeviceAddress& addr);
 /// the same, with the arena chunk's buffer and the offset in it (an indirect draw's arguments)

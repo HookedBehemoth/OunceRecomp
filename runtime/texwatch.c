@@ -10,7 +10,7 @@
    logged by a thread of their own ("texwatch: ..."), and a summary every 600 presents. The fault costs a page's
    protection change: a debug run only. With HOS_DBG unset nothing here runs. */
 #include "hos.h"
-#include "direct.h"
+#include "renderer.h"
 #include "rx_nvn.h"
 #include <stdio.h>
 #include <stdlib.h>

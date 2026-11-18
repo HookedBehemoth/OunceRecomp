@@ -19,12 +19,12 @@
    own procs (program builders, native images, sparse tile layouts, recording modes). The SDK's exports reach the
    same functions as the proc table (nvn2_dispatch, from gen/nvn2_exports.c). */
 #include "hos.h"
-#include "direct_crit.h"
+#include "crit.h"
 #include "rx_nvn.h"
 #include "nvn_list.h"
 #include "hos_ledger.h"
 #include "game_hooks.h"
-#include "direct.h"
+#include "renderer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -742,7 +742,7 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out) {
     os_rwlock_unlock_shared(&live_lock);
     return found;
 }
-/* (games/oot/patches/direct_assets.c) the live texture whose storage holds gpu (a walk of the table: rare calls) */
+/* (games/oot/patches/assets.c) the live texture whose storage holds gpu (a walk of the table: rare calls) */
 int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out) {
     int found = 0;
     os_rwlock_lock_shared(&live_lock);
@@ -817,7 +817,7 @@ NV(nvnTextureInitialize) {
 NV(nvnTextureFinalize) {
     nvn_tex *o = TX(P(0));
     if (rx_direct() && o == game_texture_moving() && o->magic == NVN_MAGIC('T', 'E', 'X', 0)) {
-        /* a compaction move (direct_texdata.c): the back end keeps the texture's image and registration; the
+        /* a compaction move (texdata.c): the back end keeps the texture's image and registration; the
            initialization that follows over the new storage keeps its serial */
         tl_moved_serial = o->serial;
         live_del(o);
@@ -1376,7 +1376,7 @@ typedef struct {
     uint64_t owner;
     union { struct { uint8_t *seg, *cur, *end; }; nvn_lw lw; };
     void *volatile dl;             /* (direct mode) the open recording's list in the back end (NULL: none open) */
-    volatile int32_t dl_pending;   /* (direct mode) its last record waits on a thread for its flush (runtime/direct.c) */
+    volatile int32_t dl_pending;   /* (direct mode) its last record waits on a thread for its flush (runtime/render_lists.c) */
 } cmd_rec;
 #define CMD_CHUNK_BITS 10
 #define CMD_CHUNKS 4096u                     /* (4M command buffers at once) */
@@ -1487,7 +1487,7 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
 }
 static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size);
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size);
-/* (direct mode, M3a game patches: games/oot/patches/direct_passes.c, direct_job_sync.c) the back end's open list of the guest command
+/* (direct mode, M3a game patches: games/oot/patches/passes.c, job_sync.c) the back end's open list of the guest command
    buffer at cmd (this thread's waiting record handed over first, so the list has every record before this point); NULL:
    none, or not direct mode */
 void *direct_cmd_list(uint64_t cmd) {
@@ -1534,7 +1534,7 @@ NV(nvnCommandBufferSetDebugLabel) {}
 
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) { nvn_op_hdr h = {op, size}; memcpy(p, &h, sizeof h); }
 static void cmd_reserve_rec(cmd_rec *o, size_t need) {
-    if (rx_direct()) return;   /* (no bytes: the records go to the back end, runtime/direct.c) */
+    if (rx_direct()) return;   /* (no bytes: the records go to the back end, runtime/render_lists.c) */
     if (o->seg && need + OP_RESERVE <= (size_t)(o->end - o->cur)) return;
     const size_t used = o->seg ? (size_t)(o->cur - o->seg) : 0;
     size_t cap = o->seg ? (size_t)(o->end - o->seg) : 0;
@@ -1765,7 +1765,7 @@ NV(nvnCommandBufferGetCommandMemoryUsed) { const nvn_cmd *o = CB(P(0)); RET(o->h
 NV(nvnCommandBufferGetCommandMemoryFree) { const nvn_cmd *o = CB(P(0)); RET(o->game_size - (o->hw_used < o->game_size ? o->hw_used : o->game_size)); }
 
 NV(nvnCommandBufferBeginRecording,
-   reads(x29, "the frame pointer kept with the list's info as a log label (runtime/direct.c hsd_classify)")) {
+   reads(x29, "the frame pointer kept with the list's info as a log label (runtime/render_lists.c hsd_classify)")) {
     nvn_cmd *o = CB(P(0));
     if (o->recording) hos_log("nvn: BeginRecording while recording");
     o->recording = 1;
@@ -2063,7 +2063,7 @@ NV(nvnQueueWaitSync) {
     if (s && !s->fenced && os_atomic_inc(&n) <= 8)
         hos_log("nvn: QueueWaitSync on a sync not fenced yet (%p, lr %#llx): not waited for", (void *)s,
                 (unsigned long long)c->x[30]);
-    /* (direct mode) the queue's next submission waits for the fence's (renderer/direct_sync.cpp) */
+    /* (direct mode) the queue's next submission waits for the fence's (renderer/vk_sync.cpp) */
     if (rx_direct() && s && s->fenced == 1 && s->fence) rx_direct()->queue_wait_fence((uint64_t)(uintptr_t)P(0), s->fence);
 }
 NV(nvnCommandBufferResetCounter) { REC(CB(P(0)), NOP_RESET_COUNTER, nvn_p_counter)->type = U32(1); }

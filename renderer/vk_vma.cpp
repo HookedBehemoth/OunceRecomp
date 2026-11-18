@@ -3,8 +3,8 @@
 #define VMA_IMPLEMENTATION
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
-#include "direct_check.h"
-#include "direct_internal.h"
+#include "vk_check.h"
+#include "vk_internal.h"
 #include "os.h"
 extern "C" size_t hos_mem_ledger(char* out, size_t cap, uint64_t* ours, uint64_t* guest_committed);   // (runtime/hos_mem.c, exported)
 #include <vk_mem_alloc.h>

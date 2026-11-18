@@ -6,9 +6,9 @@
 // Everything is in VK_IMAGE_LAYOUT_GENERAL. Draws, dispatches, mesh draws and conditions are counted and skipped.
 //
 // Lists of the layer, gate, compute and queue-head kinds record into command buffers of their thread's slot
-// (direct_cmd.h). Job, load and unclassified lists record none at this stage (jobs as secondaries and packets are M3):
+// (vk_cmd.h). Job, load and unclassified lists record none at this stage (jobs as secondaries and packets are M3):
 // what they would have recorded is counted. A call of a list that has command buffers cuts the caller's: the rendering
-// is ended, the caller's buffer too, and the callee's buffers run between (direct_lists.cpp list_buffers).
+// is ended, the caller's buffer too, and the callee's buffers run between (vk_lists.cpp list_buffers).
 
 #include <chrono>
 #include <mutex>
@@ -18,17 +18,17 @@
 #include <cstdio>
 #include <cstring>
 
-#include "direct_counters.h"
+#include "vk_counters.h"
 
-#include "direct_check.h"
-#include "direct_cmd.h"
-#include "direct_compute.h"
-#include "direct_draw.h"
-#include "direct_dump.h"
-#include "direct_image.h"
-#include "direct_pass.h"
-#include "direct_query.h"
-#include "direct_task.h"
+#include "vk_check.h"
+#include "vk_cmd.h"
+#include "vk_compute.h"
+#include "vk_draw.h"
+#include "vk_dump.h"
+#include "vk_image.h"
+#include "vk_pass.h"
+#include "vk_query.h"
+#include "vk_task.h"
 #include "os.h"
 
 namespace hsd {
@@ -666,7 +666,7 @@ void pass_emit(List* l, uint32_t op, const void* data, uint32_t size) {
     }
 }
 
-/// A job's task step (the compute work of its task+mesh draws, direct_task.cpp) executed in its caller before the job,
+/// A job's task step (the compute work of its task+mesh draws, vk_task.cpp) executed in its caller before the job,
 /// outside the caller's rendering: ended first when it is begun (counted); its headers reset and made, a barrier, its task
 /// dispatches, a barrier that makes the headers, maps and payloads visible to the mesh draws (indirect arguments, mesh shader
 /// reads). Each call of the job runs it (a job called again: counted)
@@ -858,7 +858,7 @@ void pass_stats(char* out, size_t cap, double frames) {
 
 using namespace hsd;
 
-/// The job recorder's entry (games/oot/patches/direct_passes.c): 1 the pass key's formats are known (the job records a secondary),
+/// The job recorder's entry (games/oot/patches/passes.c): 1 the pass key's formats are known (the job records a secondary),
 /// 0 not (the recorder takes the game's own early return; the layer list draws the pass inline)
 extern "C" __attribute__((visibility("default"))) int hsd_pass_known(uint64_t key) {
     const KeySlot* ks = key_slot(key, false);

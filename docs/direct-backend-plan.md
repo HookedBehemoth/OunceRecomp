@@ -11,7 +11,7 @@ The direct back end is the only renderer in the tree. It records the game's NVN 
 console's graphics API; the back end replaces it on a PC with Vulkan.
 
 - It lives in `renderer` and builds as `hookshot_direct.so`, which `runtime/rx_backend.c` loads.
-- It shares its interface with the host through `renderer/api` (`vk_api.h`, `rx_nvn.h`) and `renderer/api/direct_api.h`.
+- It shares its interface with the host through `renderer/api` (`vk_api.h`, `rx_nvn.h`) and `renderer/api/vk_list_api.h`.
 - It targets one PC: an AMD RX 6950 XT on Mesa's RADV driver, with every extension Mesa offers. RADV is Mesa's Vulkan
   driver for AMD GPUs.
 - It runs one game build, the one `games/oot/game.py` names.
@@ -44,7 +44,7 @@ Each item is open at the time of writing. Remove an item when you close it.
 
 - **Pictures.** The per-pass picture checks (`scripts/direct_check.sh`, `scripts/direct_picture_check.py`) do not pass
   on every scene yet. Work through the failing pass states, earliest pass first.
-- **Eviction destroys textures still drawn.** The VRAM eviction patch (`games/oot/patches/direct_texdata.c`, a 1.5 GB margin) can
+- **Eviction destroys textures still drawn.** The VRAM eviction patch (`games/oot/patches/texdata.c`, a 1.5 GB margin) can
   destroy a texture that the game released in the same present while recorded draws still sample it ("texture with no
   image sampled"). Fix the patch so it does not, or lower the margin. The margin was sized when render targets still
   cost VRAM at a scene change; the [transient pool](direct/transient-pool.md) now holds them at a constant size.
@@ -52,7 +52,7 @@ Each item is open at the time of writing. Remove an item when you close it.
   scale shows the previous picture at the old scale in the top-left part of the screen. Find which image the final
   upscale reads on that frame: either the game's own one-frame lag, or a target made again at the larger size over the
   old target's storage while the pass still reads the old image.
-- **The render-target id patch** (`games/oot/patches/direct_rt_ids.c`, log line "direct patch rt ids") keeps no calls: the
+- **The render-target id patch** (`games/oot/patches/rt_ids.c`, log line "direct patch rt ids") keeps no calls: the
   system-texture entry it watches arrives with a changed id every frame, so every call takes the game's path. The
   submit-time snapshot of the deferred tables covers it. Find what resets the id, or delete the patch.
 - **The SMAA edge list.** The SMAA pass uses a transient render target's storage address as a buffer
@@ -73,7 +73,7 @@ Each item is open at the time of writing. Remove an item when you close it.
 
 - **A hitch when a command slot is added in play.** In the market benchmark, after a frame with a double game step,
   three recording threads each create a fourth command slot, with new command buffers and query pools. The frame that
-  does it costs about 17-18 ms. Create the slots up front so no slot is made in play (`renderer/direct_cmd.cpp`).
+  does it costs about 17-18 ms. Create the slots up front so no slot is made in play (`renderer/vk_cmd.cpp`).
 - **The long layer of calc stage C** records alone at the end of the stage. `HOS_LAYER_AHEAD` starts it with the render
   jobs and saves 0.2-0.5 ms a frame in the market; Hyrule Field shows no gain and has bursts. See
   [the frame loop](direct/frame-loop.md).

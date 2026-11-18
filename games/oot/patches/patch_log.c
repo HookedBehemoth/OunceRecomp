@@ -1,5 +1,5 @@
-/* The direct back end's game patches (games/oot/patches/direct_passes.c, direct_job_sync.c, direct_rt_ids.c,
-   direct_depth_copy.c, direct_mesh_args.c, direct_mesh_binds.c, direct_mesh_system.c, direct_mesh_lists.c, direct_sky_lut.c, direct_layer_ahead.c): one log line each every 600 presents with HOS_DBG=logpatch, called from the present in direct mode only. */
+/* The direct back end's game patches (games/oot/patches/passes.c, job_sync.c, rt_ids.c,
+   depth_copy.c, mesh_args.c, mesh_binds.c, mesh_system.c, mesh_lists.c, sky_lut.c, layer_ahead.c): one log line each every 600 presents with HOS_DBG=logpatch, called from the present in direct mode only. */
 #include "patches.h"
 
 void direct_passes_log(double frames);

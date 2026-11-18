@@ -25,7 +25,7 @@ void marks_init();
 uint32_t mark_before(VkCommandBuffer cb, const char* what, uint64_t key, uint32_t kind, uint64_t lr, uint32_t a, uint32_t b);
 /// A CPU pointer to the command's task header (task+mesh draws), dumped at a lost device
 void mark_header(uint32_t entry, const void* header);
-extern thread_local const uint8_t* task_last_header;   // (direct_task.cpp: the header of this thread's last task step)
+extern thread_local const uint8_t* task_last_header;   // (vk_task.cpp: the header of this thread's last task step)
 /// After it: the bottom-of-pipe marker of the entry
 void mark_after(VkCommandBuffer cb, uint32_t entry);
 /// At a lost device: the commands started and not finished (logged; the log flushed by the caller)

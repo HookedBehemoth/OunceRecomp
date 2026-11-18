@@ -1,4 +1,4 @@
-// The NVN state of a list (direct_state.h): the ops as the frozen job walk applies them (gpu/legacy/vk/eng_job.cpp 956-1086), and
+// The NVN state of a list (vk_state.h): the ops as the frozen job walk applies them (gpu/legacy/vk/eng_job.cpp 956-1086), and
 // the graphics stages' driver banks (gpu/legacy/vk/vk_bank.cpp driver_bank_word / driver_bank_fill, graphics stages only: compute's
 // packed bank and the task / mesh pointer table are not this stage's).
 #include <algorithm>
@@ -6,8 +6,8 @@
 #include <cstdio>
 #include <cstring>
 
-#include "direct_counters.h"
-#include "direct_state.h"
+#include "vk_counters.h"
+#include "vk_state.h"
 
 namespace hsd {
 namespace {
@@ -51,7 +51,7 @@ bool state_emit(DState& s, uint32_t op, const void* a, uint32_t size) {
     }
     case NOP_BIND_PROGRAM: {
         const auto b = payload<nvn_p_bind_program>(a, size);
-        // (M4a: a compute program is bound beside the graphics one, not over it: direct_compute.cpp keeps it)
+        // (M4a: a compute program is bound beside the graphics one, not over it: vk_compute.cpp keeps it)
         if ((b.stages & NVN_SHADER_STAGE_COMPUTE_BIT) && !(b.stages & ~NVN_SHADER_STAGE_COMPUTE_BIT)) return true;
         const bool had = s.has_prog;
         const uint64_t was = s.prog.serial;

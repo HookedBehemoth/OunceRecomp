@@ -10,8 +10,8 @@
 #include "os.h"
 
 #include "vk_api.h"
-#include "direct.h"
-#include "direct_crit.h"
+#include "renderer.h"
+#include "crit.h"
 int rx_option(int id, int otherwise);   /* (defined below) */
 
 /* what the back end is given */
@@ -131,7 +131,7 @@ static void flush_early(void) {
 }
 
 /* The direct back end, hookshot_direct.so: the version-14 table for the object layer, sync and present, and the list calls the
-   host finds by name (runtime/direct.h). Read once, at the first call. */
+   host finds by name (runtime/renderer.h). Read once, at the first call. */
 static hsd_fns direct_fns;
 static volatile int32_t direct_state;   /* 0 not loaded yet, 2 loaded */
 static os_mutex direct_lock = OS_MUTEX_INIT;
@@ -177,7 +177,7 @@ const hsd_fns *rx_direct(void) {
         DIRECT_FN(vram_free, "hsd_vram_free")
 #undef DIRECT_FN
         hos_log("rx: the direct back end: %s", path);
-        {   /* (HOS_DBG=crit: the calls timed, direct_crit.c) */
+        {   /* (HOS_DBG=crit: the calls timed, crit.c) */
             void crit_wrap(hsd_fns *f);
             if (crit_wanted()) crit_wrap(&direct_fns);
         }

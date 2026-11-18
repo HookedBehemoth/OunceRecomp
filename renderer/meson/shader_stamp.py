@@ -1,5 +1,5 @@
 """The direct back end's shader stamps: a hash of the translator (third_party/eden, third_party/sirit) and of the code that decides the
-translation's output, which keys the program caches. Code inside direct_shader.cpp and direct_compute.cpp counts when it
+translation's output, which keys the program caches. Code inside vk_shader.cpp and vk_compute.cpp counts when it
 sits between "// <stamp NAME>" and "// </stamp NAME>" lines: graphics and shared for the graphics programs, compute and
 shared for the compute programs.
 
@@ -20,10 +20,10 @@ DIRECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # (kind -> the define, the files hashed whole besides the translator, and the stamp regions of each file)
 KINDS = {
-    "graphics": ("HOOKSHOT_DIRECT_SHADER_STAMP", ("direct_state.h", "direct_spv_late.cpp", "direct_spv_late.h"),
-                 (("direct_shader.cpp", {"graphics", "shared"}),)),
+    "graphics": ("HOOKSHOT_DIRECT_SHADER_STAMP", ("vk_state.h", "vk_spv_late.cpp", "vk_spv_late.h"),
+                 (("vk_shader.cpp", {"graphics", "shared"}),)),
     "compute": ("HOOKSHOT_DIRECT_COMPUTE_STAMP", (),
-                (("direct_shader.cpp", {"shared"}), ("direct_compute.cpp", {"compute"}))),
+                (("vk_shader.cpp", {"shared"}), ("vk_compute.cpp", {"compute"}))),
 }
 
 

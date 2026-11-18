@@ -9,7 +9,7 @@ The rules the back end keeps and the open work are in [the direct back end plan]
 The host's NVN layer, `runtime/nvn_native.c`, keeps the NVN objects: device, memory pools, buffers, textures, samplers,
 syncs and events. Its command functions append a record to the command buffer. That append is the seam: at a flush
 point, on the calling thread, the record goes to the back end in the format of `renderer/api/rx_nvn.h`. The back end's
-interface is `renderer/api/direct_api.h` on its side and `runtime/direct.h` on the host's.
+interface is `renderer/api/vk_list_api.h` on its side and `runtime/renderer.h` on the host's.
 
 NVN alone does not say everything the back end needs. For example, a render job's command list is anonymous. Each
 missing fact comes from a hook on the engine function that has it:
@@ -27,7 +27,7 @@ When a command needs something NVN does not carry, hook the engine function that
 
 ## What a command list becomes
 
-The kind of a list is decided at `BeginRecording` from its caller (`HSD_LIST_*` in `direct_api.h`).
+The kind of a list is decided at `BeginRecording` from its caller (`HSD_LIST_*` in `vk_list_api.h`).
 
 | NVN list | About this many a frame | Becomes |
 |---|---|---|
@@ -107,7 +107,7 @@ Occlusion queries are real Vulkan queries. At the end of the rendering they were
 and one compute step writes each report's 16 bytes (counter and timestamp) at its guest address. The game's CPU readers
 then read plain memory. A render condition is Vulkan conditional rendering on the low word of the report's first
 counter; `HOS_DBG=condcheck` counts conditions that need more than that (none seen). The details are in
-`renderer/direct_query.h`.
+`renderer/vk_query.h`.
 
 ## Submission
 
@@ -119,7 +119,7 @@ is held on the host. An NVN sync is the timeline value of its submission's last 
 
 Each recording thread has a command pool, a frame arena, query pools and a task pool per command slot, three slots in
 rotation. A slot is reset as a whole once the GPU is past its last submission. A list kept alive longer (a pause, for
-example) sets its slot aside, and the thread gets one slot more (`renderer/direct_cmd.h`).
+example) sets its slot aside, and the thread gets one slot more (`renderer/vk_cmd.h`).
 
 ## Engine code replaced above NVN
 

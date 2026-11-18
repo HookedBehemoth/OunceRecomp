@@ -92,7 +92,7 @@ local cost of every declaration, costliest first, in about half a minute, and ea
 To change what a BLR (or a BR that is a tail call) does, put an `instead` row on that instruction. Pass the target
 register as an operand, and assert in the host function that it is the proc you expect. To keep the original behavior,
 call the target through `guest_call`, declared with `guest(computed)`. A row never rewrites a code pointer, and no
-host-call slot is handed to the game for a patch. `games/oot/patches/direct_job_sync.c` and `games/oot/patches/direct_depth_copy.c` are worked
+host-call slot is handed to the game for a patch. `games/oot/patches/job_sync.c` and `games/oot/patches/depth_copy.c` are worked
 examples.
 
 `guest(computed)` counts as reading every register, so such a row costs more than one that names its guest callees;

@@ -1,7 +1,7 @@
-/* Direct mode's host side (direct.h): where a recording is classified, and the thread's record that waits for
+/* Direct mode's host side (renderer.h): where a recording is classified, and the thread's record that waits for
    its payload. An NVN command function takes its record from cmd_alloc and fills the payload after it returns, so a record
    goes to the back end at the next cmd_alloc on the same thread, or at the flush points. */
-#include "direct.h"
+#include "renderer.h"
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"

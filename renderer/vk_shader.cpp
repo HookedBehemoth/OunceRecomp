@@ -1,4 +1,4 @@
-// Programs to shader objects (direct_shader.h). Lifted from gpu/legacy/vk/vk_shader.cpp (the code's reading and lowering, Env, the
+// Programs to shader objects (vk_shader.h). Lifted from gpu/legacy/vk/vk_shader.cpp (the code's reading and lowering, Env, the
 // profile, the graphics translation, the key, the answers, the cache's record format) with its switches as the constants
 // the frozen back end runs with (RX_VK_DESC_HEAP_BDA=2: storage buffers by address, wide), and from vk_desc_heap.cpp
 // make_program (the heap mapping) and vk_shader_object.cpp so_make (the shader objects). What differs (docs/direct/shader-contract.md,
@@ -8,7 +8,7 @@
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
 // - hookshot_direct_programs.bin: translated variants by code pair. Stamped by the translation's code only
 //   (HOOKSHOT_DIRECT_SHADER_STAMP, renderer/meson/shader_stamp.py: the translator, the compiler and flags that build it,
-//   and the regions marked "stamp graphics" and "stamp shared" here, direct_spv_late.*, direct_state.h), the record format
+//   and the regions marked "stamp graphics" and "stamp shared" here, direct_spv_late.*, vk_state.h), the record format
 //   (kDiskFormat), the device's answers and the switches that change the translation; a file of another stamp is made
 //   again. Edits outside the marked regions keep it.
 // - hookshot_direct_shader_objects.bin: driver binaries by create info, under the driver's binary UUID and version (sobin).
@@ -29,9 +29,9 @@
 #include <unordered_set>
 #include <vector>
 
-#include "direct_check.h"
+#include "vk_check.h"
 #include "os.h"
-#include "direct_spv_late.h"
+#include "vk_spv_late.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -52,13 +52,13 @@
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/runtime_info.h"
 
-#include "direct_heap.h"
-#include "direct_image.h"
-#include "direct_compute.h"
-#include "direct_shader.h"
-#include "direct_state.h"
-#include "direct_shader_parts.h"
-#include "direct_work.h"
+#include "vk_heap.h"
+#include "vk_image.h"
+#include "vk_compute.h"
+#include "vk_shader.h"
+#include "vk_state.h"
+#include "vk_shader_parts.h"
+#include "vk_work.h"
 
 #ifndef HOOKSHOT_DIRECT_SHADER_STAMP
 #define HOOKSHOT_DIRECT_SHADER_STAMP 0ull
@@ -66,7 +66,7 @@
 
 namespace hsd {
 static_assert(kMeshFirstPush == Shader::Backend::SPIRV::MESH_FIRST_PUSH_OFFSET, "the mesh draw's first: Eden's push offset");
-double seconds_since_device();   // (direct_draw.cpp)
+double seconds_since_device();   // (vk_draw.cpp)
 
 namespace {
 
@@ -644,7 +644,7 @@ void get_info(Reader& r, Shader::Info& i) {
 }
 
 // <stamp graphics>
-/// The register-pressure pass on mesh stages' SPIR-V (direct_spv_late.h; docs/direct/spv-late.md): on, unless
+/// The register-pressure pass on mesh stages' SPIR-V (vk_spv_late.h; docs/direct/spv-late.md): on, unless
 /// HOS_DBG=nolate (a diagnosis: the translator's order as it is; the program cache is stamped by it, so the two do not mix)
 bool late_mesh() {
     static const bool on = !dbg("nolate");
@@ -1761,7 +1761,7 @@ void shader_stats(char* out, size_t cap, double frames) {
 
 }  // namespace hsd
 
-// ---- the pieces compute programs share with these (direct_shader_parts.h; direct_compute.cpp) ----
+// ---- the pieces compute programs share with these (vk_shader_parts.h; vk_compute.cpp) ----
 namespace hsd::shader_parts {
 bool read_stage(const nvn_stage_data& sd, uint8_t ctl[0xd8], std::vector<uint8_t>& area) { return read_package(sd, ctl, area); }
 const Shader::Profile& stage_profile(VkShaderStageFlags stage) { return profile_graphics(stage); }

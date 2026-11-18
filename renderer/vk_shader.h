@@ -13,14 +13,14 @@
 #include <cstdint>
 #include <vector>
 
-#include "direct_internal.h"
+#include "vk_internal.h"
 #include "rx_nvn.h"
 
 namespace hsd {
 
 struct DState;
 
-/// Why a draw has no program to draw with (direct_draw.cpp counts them)
+/// Why a draw has no program to draw with (vk_draw.cpp counts them)
 enum ShaderMiss : uint8_t {
     SM_NONE, SM_NO_PROGRAM, SM_NOT_PARSED, SM_NOT_GRAPHICS, SM_TRANSLATING, SM_FAILED, SM_UNSUPPORTED, SM_TASK_MESH, SM_COUNT
 };

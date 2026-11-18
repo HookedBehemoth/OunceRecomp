@@ -6,7 +6,7 @@
    hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (os_file_read_at), so any number
    of guest threads can read one file at once. Results: switchbrew "Error codes" (module 2 = fs). */
 #include "hos.h"
-#include "direct_crit.h"
+#include "crit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

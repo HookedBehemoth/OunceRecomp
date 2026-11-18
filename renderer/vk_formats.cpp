@@ -1,9 +1,9 @@
-// (renderer: a copy of gpu/legacy/vk/vk_formats.cpp; ASTC where the GPU has no ASTC is astc = true, which direct_image.cpp
+// (renderer: a copy of gpu/legacy/vk/vk_formats.cpp; ASTC where the GPU has no ASTC is astc = true, which vk_image.cpp
 // gives the placeholder: there is no decoder in the direct back end)
 // NVN texture formats (renderer/api/nvn_api.h) as Vulkan formats, after nvn_pixel_format of the old renderer
 // (gpu/legacy/render/rx_nvn.cpp): the same NVN -> suyu pixel format table, each suyu format as its Vulkan one. ASTC, which
 // desktop GPUs do not sample, is decoded to RGBA8 (astc: the block size).
-#include "direct_image.h"
+#include "vk_image.h"
 
 namespace hsd {
 

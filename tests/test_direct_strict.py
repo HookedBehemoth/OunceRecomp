@@ -31,8 +31,8 @@ def c_strings(text):
 class StrictTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.check = (D / "direct_check.cpp").read_text(encoding="utf-8")
-        cls.header = (D / "direct_check.h").read_text(encoding="utf-8")
+        cls.check = (D / "vk_check.cpp").read_text(encoding="utf-8")
+        cls.header = (D / "vk_check.h").read_text(encoding="utf-8")
         cls.sources = {p.name: p.read_text(encoding="utf-8") for p in D.glob("*.cpp")}
 
     def known(self):
@@ -82,18 +82,18 @@ class StrictTests(unittest.TestCase):
         self.assertIn("kStrictQuiet", self.header)
         arm = block(self.check, "void strict_present(uint64_t present) {")
         self.assertIn("m + kStrictQuiet", arm)
-        self.assertIn("strict_present(n)", self.sources["direct_present.cpp"])
+        self.assertIn("strict_present(n)", self.sources["vk_present.cpp"])
 
     def test_switches(self):
         for name, text in self.sources.items():
             if "getenv" in text:
-                self.assertEqual(name, "direct_main.cpp", name + " reads the environment")
+                self.assertEqual(name, "vk_main.cpp", name + " reads the environment")
                 for m in re.finditer(r'getenv\("([^"]+)"\)', text):
                     self.assertEqual(m.group(1), "HOS_DBG")
         self.assertIn('dbg("strict")', self.check)
 
     def test_every_skip_is_an_event(self):
-        draw = self.sources["direct_draw.cpp"]
+        draw = self.sources["vk_draw.cpp"]
         count = block(draw, "void count(List* l, Reason r) {")
         self.assertIn("if (r != R_DRAWN && strict_on()) strict_draw(l, r);", count)
         sd = block(draw, "void strict_draw(List* l, Reason r) {")
@@ -104,10 +104,10 @@ class StrictTests(unittest.TestCase):
         for m in re.finditer(r"return ([^;]*);", emit):
             body = m.group(1)
             self.assertTrue(body == "" or body.startswith("count(l, "), "draw_emit returns without counting: " + body)
-        comp = self.sources["direct_compute.cpp"]
+        comp = self.sources["vk_compute.cpp"]
         cc = block(comp, "void count(List* l, Reason r) {")
         self.assertIn("strict_dispatch(l, r)", cc)
-        passes = self.sources["direct_pass.cpp"]
+        passes = self.sources["vk_pass.cpp"]
         pc = block(passes, "void count(int k) {")
         for k in ("S_NO_IMAGE", "S_MASKED", "S_CLEAR_NO_TARGET", "S_CLEAR_DISABLED", "S_COPY_SKIPPED", "S_CLEAR_TEX_SKIPPED", "S_UNRECORDED",
                   "S_JOB_OUTSIDE"):
@@ -116,16 +116,16 @@ class StrictTests(unittest.TestCase):
         for k in ("J_NO_FORMATS", "J_MISMATCH", "J_UNENDED", "J_NOT_SECONDARY", "J_NO_PASS"):
             self.assertIn(k, jc)
         self.assertIn("strict_event(kJobNames[J_MISSED]", block(passes, 'extern "C" __attribute__((visibility("default"))) int hsd_pass_known('))
-        q = self.sources["direct_query.cpp"]
+        q = self.sources["vk_query.cpp"]
         qc = block(q, "void count(int k, int64_t n = 1) {")
         for k in ("Q_NO_ROOM", "Q_NOT_MEMORY", "Q_UNRECORDED", "Q_TOO_MANY"):
             self.assertIn(k, qc)
         # (Vulkan objects: one counter, made only through object_made)
         for name, text in self.sources.items():
-            if name != "direct_check.cpp":
+            if name != "vk_check.cpp":
                 self.assertNotIn("st_objects.fetch_add", text, name)
-        self.assertIn("const DebugObjects debug_aid;", self.sources["direct_dump.cpp"])
-        t = self.sources["direct_task.cpp"]
+        self.assertIn("const DebugObjects debug_aid;", self.sources["vk_dump.cpp"])
+        t = self.sources["vk_task.cpp"]
         self.assertIn("strict_event(kNames[T_REFUSED]", t)
 
 

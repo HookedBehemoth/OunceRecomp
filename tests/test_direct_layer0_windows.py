@@ -2,7 +2,7 @@
 
 Builds tests/direct_layer0_windows_test.cpp against renderer/layer0_windows.h (its windows a granule short of 4 GB: the
 longest whole range, the last granule of a stretch in one window only, pieces cut at a window's end), and checks in the source that
-renderer/direct_pools.cpp binds through the pieces (cut at the window's end), imports outside its lock, publishes a chunk's
+renderer/vk_pools.cpp binds through the pieces (cut at the window's end), imports outside its lock, publishes a chunk's
 bits only after its binds were waited for, and reads no environment.
 python -I -B tests/test_direct_layer0_windows.py
 """
@@ -41,8 +41,8 @@ class DirectLayer0WindowTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_pools(self):
-        pools = (ROOT / "renderer/direct_pools.cpp").read_text(encoding="utf-8")
-        self.assertNotIn("getenv", pools)   # (no switch but HOS_DBG, and that is read in direct_main.cpp)
+        pools = (ROOT / "renderer/vk_pools.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("getenv", pools)   # (no switch but HOS_DBG, and that is read in vk_main.cpp)
         # every bind goes through range_places (pieces cut at the window's end); chunk_places only names the windows to make
         add = block(pools, "void add_binds(")
         self.assertIn("l0::range_places(lo, hi, ps)", add)

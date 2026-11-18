@@ -12,11 +12,11 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "direct_internal.h"
+#include "vk_internal.h"
 
 namespace hsd {
 
-// ---- formats (direct_formats.cpp, a copy of gpu/legacy/vk/vk_formats.cpp) ----
+// ---- formats (vk_formats.cpp, a copy of gpu/legacy/vk/vk_formats.cpp) ----
 struct FormatInfo {
     VkFormat format;
     bool astc;   // (ASTC on a GPU that does not sample it: the placeholder)
@@ -38,7 +38,7 @@ struct Image {
     int nvn_format = 0, bpb = 0, bw = 1, bh = 1;
     uint64_t gpu = 0;
     uint64_t span = 0;   // (an image of its own memory: its texture's storage bytes from gpu)
-    bool held = false;   // (dead, kept for its storage's content: direct_image.cpp kHeldBytes)
+    bool held = false;   // (dead, kept for its storage's content: vk_image.cpp kHeldBytes)
     uint32_t id = 0;
     bool placeholder = false;
     bool compressed = false;
@@ -114,7 +114,7 @@ void image_sweep(uint64_t present);
 void image_stats(char* out, size_t cap);
 void image_pool_stats(char* out, size_t cap);   // (the transient pool's line of the 600-present block)
 
-// ---- one side of a copy (direct_image.cpp): a level, its layers or slices, and a region in texels ----
+// ---- one side of a copy (vk_image.cpp): a level, its layers or slices, and a region in texels ----
 struct Sub {
     Image* im = nullptr;
     VkImageAspectFlags aspect = 0;

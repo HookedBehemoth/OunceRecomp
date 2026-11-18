@@ -1,5 +1,5 @@
 //! `hookshot-builder probe`: whether this PC's GPU runs the direct back end. Loads libvulkan, picks the device the
-//! back end picks (renderer/direct_main.cpp: the first discrete GPU of Vulkan 1.3, else the first of 1.3) and checks
+//! back end picks (renderer/vk_main.cpp: the first discrete GPU of Vulkan 1.3, else the first of 1.3) and checks
 //! what it needs. An item fails only when the back end refuses to start without it, or starts and draws nothing;
 //! what it starts without and works around is a warning. One line per item, for a front end:
 //!
@@ -273,7 +273,7 @@ unsafe fn device_checks(vk: &mut Vk, out: &mut Vec<Item>) {
             out.push(item("descriptor_heap_feature", dh.on[0] != 0, "descriptorHeap"));
         }
         if has("VK_EXT_extended_dynamic_state3") {
-            // (direct_heap.cpp's eds3_ok: polygon mode, depth clamp, blend enable, equation, write mask, alpha to
+            // (vk_heap.cpp's eds3_ok: polygon mode, depth clamp, blend enable, equation, write mask, alpha to
             // coverage, samples, sample mask, alpha to one, logic op)
             let want = [(2, "PolygonMode"), (1, "DepthClampEnable"), (8, "ColorBlendEnable"), (9, "ColorBlendEquation"), (10, "ColorWriteMask"), (5, "AlphaToCoverageEnable"), (3, "RasterizationSamples"), (4, "SampleMask"), (6, "AlphaToOneEnable"), (7, "LogicOpEnable")];
             let missing: Vec<&str> = want.iter().filter(|w| e3.on[w.0] == 0).map(|w| w.1).collect();

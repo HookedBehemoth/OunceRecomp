@@ -16,15 +16,15 @@
 #include <memory>
 #include <thread>
 
-#include "direct_internal.h"
-#include "direct_query.h"
+#include "vk_internal.h"
+#include "vk_query.h"
 #include "layer0_windows.h"
-#include "direct_assets.h"
+#include "vk_assets.h"
 #include "os.h"
 #include "os_guest.h"
 
 namespace hsd {
-void draw_window_made(uint32_t k, uint64_t a);   // (direct_draw.cpp)
+void draw_window_made(uint32_t k, uint64_t a);   // (vk_draw.cpp)
 }
 
 namespace hsd {
@@ -527,7 +527,7 @@ void vram_pool_made(uint64_t base, uint64_t size, uint32_t flags, uint64_t key) 
 /// GPU-readable pool may be read with no binding naming it; before, only pools up to 64 MB were bound ahead and the rest
 /// at a binding's use, and memory reached only by a stored pointer read the null window: zeros. Not bound: pools the GPU
 /// cannot read, virtual pools (GPU addresses past layer 0's window: their physical pools are what is bound), shader code
-/// (translated, never read), and one named pool: the texture data pool (games/oot/patches/direct_assets.c names it at its creation),
+/// (translated, never read), and one named pool: the texture data pool (games/oot/patches/assets.c names it at its creation),
 /// whose texels come from the store and are never read from guest memory, bound at its uses as before. A VRAM-class pool's
 /// interior granules are in VRAM already (vram_pool_made); its partial edge granules are host and bound here. One line a
 /// pool of a chunk or more, the rest counted (mu held)

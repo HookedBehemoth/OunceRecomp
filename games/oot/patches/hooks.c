@@ -23,7 +23,7 @@ void game_texture_initializing(uint64_t obj, uint64_t gpu, const void *desc, uin
 }
 
 void game_texture_initialized(const void *nvn_texture) {
-    /* (direct_assets.c: a terrain tile given before its texture) */
+    /* (assets.c: a terrain tile given before its texture) */
     if (direct_assets_tiles_pending || direct_assets_tilelog) direct_assets_texture_init(nvn_texture);
 }
 

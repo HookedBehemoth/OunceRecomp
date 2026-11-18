@@ -1,7 +1,7 @@
 // censustool: every stage of the game's shader seed (hookshot_shaders.bin, nx2/shader_census.py) through the direct back end's
 // translator fork as the back end translates it (tools/shaders/offline.h), a static profile of each from the IR (inputs and
 // outputs, texture samples by kind and by where they sit, memory, control flow and loop bounds) and, with --compile, RADV's
-// compile of its SPIR-V with the back end's heap mappings (direct_shader.cpp finish) and the driver's statistics of it
+// compile of its SPIR-V with the back end's heap mappings (vk_shader.cpp finish) and the driver's statistics of it
 // (VK_KHR_pipeline_executable_properties: ACO's instruction count, code size, registers, LDS, scratch, its latency and throughput
 // estimates). The back end makes unlinked shader objects, which report no statistics; the tool makes a pipeline instead: a
 // graphics stage with the partner stage of the first program that uses it (vertex + fragment, mesh + fragment), a task or compute
@@ -10,7 +10,7 @@
 //   censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...]
 //              [--late <kinds>] [--budget N] [--sink-peak N] [--objects] [--list]
 // One JSON line a stage on stdout; "@@stage <index>" on stderr before each (a crash names its stage).
-// --late <kinds>: the back end's register-pressure pass (renderer/direct_spv_late.h) on the stages of these kinds (a comma
+// --late <kinds>: the back end's register-pressure pass (renderer/vk_spv_late.h) on the stages of these kinds (a comma
 // list of vertex, fragment, mesh, task, compute; "all"), as the game applies it after EmitSPIRV. Every line carries the pass's
 // own count for the stage ("late": the most 32-bit values held before and after, instructions moved, the pass's time), whether
 // or not it is applied. --objects: the stage also made as the shader object the game makes of it (unlinked; RADV reports no
@@ -31,7 +31,7 @@
 #include <vulkan/vulkan.h>
 
 #include "../shaders/offline.h"
-#include "../../renderer/direct_spv_late.cpp"
+#include "../../renderer/vk_spv_late.cpp"
 #include "../shaders/ir_pretty.h"
 #include "shader_recompiler/frontend/ir/abstract_syntax_list.h"
 #include "shader_recompiler/frontend/ir/modifiers.h"
@@ -462,10 +462,10 @@ bool dev_init() {
     p2.pNext = &sc;
     vkGetPhysicalDeviceProperties2(gdev.phys, &p2);
     gdev.sg32 = sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 ? sc.requiredSubgroupSizeStages : 0;
-    gdev.heap_tail = 2ull * 7 * 65536 * 64;   // (direct_heap.cpp: tail_at)
+    gdev.heap_tail = 2ull * 7 * 65536 * 64;   // (vk_heap.cpp: tail_at)
     return true;
 }
-// (direct_shader.cpp finish: one stage's heap mappings, its bindings numbered from 0 as its own Bindings numbered them)
+// (vk_shader.cpp finish: one stage's heap mappings, its bindings numbered from 0 as its own Bindings numbered them)
 std::vector<VkDescriptorSetAndBindingMappingEXT> mappings(const Shader::Info& info) {
     constexpr uint32_t kSlots = 65536, kImageDesc = 64, kSamplerDesc = 16, kSamplers = 4096, kRegions = 7, kTablePush = 120;
     std::vector<VkDescriptorSetAndBindingMappingEXT> m;
@@ -693,8 +693,8 @@ offline::Code code_of(int id) {
     return offline::load(s.ctl, s.code, s.code_n);
 }
 
-// (each kind of stage translated as the back end translates it: direct_shader.cpp translate_variant,
-// translate_mesh_variant, translate_task_mesh_variant; direct_compute.cpp translate_variant)
+// (each kind of stage translated as the back end translates it: vk_shader.cpp translate_variant,
+// translate_mesh_variant, translate_task_mesh_variant; vk_compute.cpp translate_variant)
 void make_vs(Made& m, int id) {
     m.code = code_of(id);
     offline::Env env(m.code, Shader::Stage::VertexB);
@@ -788,7 +788,7 @@ std::string late(Made& m, bool task) {
                   r.moved, r.sunk, r.blocks, r.blocks_changed, r.peak_before, r.peak_after, ms);
     return b;
 }
-/// The stage as the shader object the game makes of it (direct_shader.cpp finish)
+/// The stage as the shader object the game makes of it (vk_shader.cpp finish)
 int make_object(const Made& m) {
     const auto maps = mappings(m.t->program.info);
     VkShaderDescriptorSetAndBindingMappingInfoEXT mi{VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT};

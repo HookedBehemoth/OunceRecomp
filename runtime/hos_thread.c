@@ -6,7 +6,7 @@
    +0x1F8, so lifted SDK code that reads it inline finds the same thread the HLE knows. */
 #include "hos.h"
 #include <xmmintrin.h>
-#include "direct_crit.h"
+#include "crit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,7 +55,7 @@ int hos_thread_prio(HosThread *t) { return t->priority; }
 int hos_trace;
 extern const uint64_t hos_thread_start_hook, hos_thread_exit_hook;   /* gen/hos_image.c */
 static _Thread_local HosThread *cur;
-/* (HOS_DBG=crit: direct_crit.h) what the block that gives the core up waits on, set by the blocking call before it */
+/* (HOS_DBG=crit: crit.h) what the block that gives the core up waits on, set by the blocking call before it */
 static _Thread_local int crit_why = CRIT_BLOCK_OTHER;
 static _Thread_local uint64_t crit_key, crit_away_t, crit_away_lr;
 static os_rwlock threads_lock = OS_RWLOCK_INIT;
@@ -874,7 +874,7 @@ void hos_thread_log_handles(void) {
    the actor job system's per-core rings (pushed and popped without a lock); games/oot/patches/oot_probes.c asserts that each ring has
    one writer (hos_oot_ring_write). */
 
-/* A block (HOS_DBG=crit: direct_crit.h): its start, what it waits on and its guest caller; 1 if recorded, and then
+/* A block (HOS_DBG=crit: crit.h): its start, what it waits on and its guest caller; 1 if recorded, and then
    hos_block_end records the span */
 int hos_block_begin(int why, const void *key) {
     HosThread *t = cur;

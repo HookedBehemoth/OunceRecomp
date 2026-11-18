@@ -1,6 +1,6 @@
 // The window : each present blits the NVN window texture, with the host's crop, into the swapchain's next image
 // (letterboxed by renderer/api/vk_present_rect.h); with no window (HOS_HEADLESS) into an image of its own. The host's call is
-// noted and its GPU work runs in its queue's order (direct_sync.cpp): after every submission handed to that queue
+// noted and its GPU work runs in its queue's order (vk_sync.cpp): after every submission handed to that queue
 // before it. The swapchain as gpu/legacy/vk/vk_main.cpp makes it, without HDR, the
 // overlays' views or Reflex. Every 600 presents: the frame time and the counts of the other parts, one log line each.
 #include <algorithm>
@@ -12,26 +12,26 @@
 #include <thread>
 #include <vector>
 
-#include "direct_compute.h"
+#include "vk_compute.h"
 #include "os.h"
-#include "direct_assets.h"
-#include "direct_cmd.h"
-#include "direct_draw.h"
-#include "direct_task.h"
-#include "direct_dump.h"
-#include "direct_heap.h"
-#include "direct_shader.h"
-#include "direct_image.h"
-#include "direct_internal.h"
-#include "direct_pass.h"
-#include "direct_query.h"
-#include "direct_check.h"
-#include "direct_marks.h"
-#include "direct_pstats.h"
+#include "vk_assets.h"
+#include "vk_cmd.h"
+#include "vk_draw.h"
+#include "vk_task.h"
+#include "vk_dump.h"
+#include "vk_heap.h"
+#include "vk_shader.h"
+#include "vk_image.h"
+#include "vk_internal.h"
+#include "vk_pass.h"
+#include "vk_query.h"
+#include "vk_check.h"
+#include "vk_marks.h"
+#include "vk_pstats.h"
 #include "vk_present_rect.h"
 
 namespace hsd {
-// (direct_sync.cpp: HOS_DBG=gputime / frames, measurement)
+// (vk_sync.cpp: HOS_DBG=gputime / frames, measurement)
 bool gputime_on();
 void gputime_present_begin(VkCommandBuffer cb, uint32_t& slot);
 void gputime_present_end(VkCommandBuffer cb, uint32_t slot);
@@ -440,7 +440,7 @@ void present(const nvn_tex* t, const int* crop) {   // (the guest's Presentation
     sync_present(t, crop);
 }
 
-void present_run(const nvn_tex& t, const int crop[4]) {   // (direct_sync.cpp's mu held: one at a time)
+void present_run(const nvn_tex& t, const int crop[4]) {   // (vk_sync.cpp's mu held: one at a time)
     draw_meshlog_after();   // (M4a: HOS_DBG=meshlog's GPU-side records)
     if (const uint64_t want = dev.offscreen ? resize_to.exchange(0, std::memory_order_acquire) : 0; want)
         if (!resize_offscreen((uint32_t)(want >> 32), (uint32_t)want)) return;

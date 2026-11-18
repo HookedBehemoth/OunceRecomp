@@ -5,8 +5,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "direct_api.h"
-#include "direct_internal.h"
+#include "vk_list_api.h"
+#include "vk_internal.h"
 #include "rx_nvn.h"
 
 namespace hsd {
@@ -24,10 +24,10 @@ struct FrameOp {
 struct Image;
 struct CmdSlot;
 struct DumpItem;
-struct ListDraw;   // (direct_draw.cpp: its state and draw caches)
-struct ListComp;   // (direct_compute.cpp: its compute state)
-struct ListQuery;  // (direct_query.cpp: its counter and condition)
-/// A pass's attachment (direct_pass.cpp)
+struct ListDraw;   // (vk_draw.cpp: its state and draw caches)
+struct ListComp;   // (vk_compute.cpp: its compute state)
+struct ListQuery;  // (vk_query.cpp: its counter and condition)
+/// A pass's attachment (vk_pass.cpp)
 struct Target {
     Image* im = nullptr;
     VkImageView view = VK_NULL_HANDLE;
@@ -35,7 +35,7 @@ struct Target {
     VkImageAspectFlags aspect = 0;
     uint32_t level = 0, layer = 0, w = 0, h = 0;
 };
-/// A pass's formats, what a job's rendering secondary inherits (direct_pass.cpp's format table keeps them by pass key)
+/// A pass's formats, what a job's rendering secondary inherits (vk_pass.cpp's format table keeps them by pass key)
 struct PassFormats {
     uint32_t n = 0;
     VkFormat color[8]{};
@@ -45,7 +45,7 @@ struct PassFormats {
     uint32_t w = 0, h = 0;   // (the size the job's draws assume: not part of the match)
     bool same(const PassFormats& o) const;
 };
-/// A list's recording state (direct_pass.cpp): the targets SetRenderTargets noted, whether the rendering is begun, the
+/// A list's recording state (vk_pass.cpp): the targets SetRenderTargets noted, whether the rendering is begun, the
 /// clears waiting to be its load ops, and the NVN state clears and copies read
 struct PassRec {
     bool noted = false, begun = false, rendered = false;

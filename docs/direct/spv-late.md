@@ -1,7 +1,7 @@
 # The register-pressure pass
 
 This page explains the pass that reorders translated mesh stages so fewer values are live at once, how to check it
-after a change, and its limits. Read it before you change `renderer/direct_spv_late.cpp`, the translator, or the
+after a change, and its limits. Read it before you change `renderer/vk_spv_late.cpp`, the translator, or the
 pass's defaults, and after a driver update.
 
 ## Why it exists

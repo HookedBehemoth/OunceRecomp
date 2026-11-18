@@ -18,7 +18,7 @@ void game_texture_initialized(const void *nvn_texture);
 /* the texture (an nvn_tex) this thread is moving for the game, whose Finalize and Initialize are one move; NULL */
 const void *game_texture_moving(void);
 
-/* ---- command lists and draws (nvn_native.c, direct.c) ---- */
+/* ---- command lists and draws (nvn_native.c, render_lists.c) ---- */
 /* a recording that was named a job's list: 1 and its pass key and view record when the game's job recorder runs it
    on this thread; 0 */
 int game_job_list(uint64_t cmd, uint64_t *key, uint64_t *view);

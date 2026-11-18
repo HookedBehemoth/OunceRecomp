@@ -4,7 +4,7 @@
    declaration below, which the lifter calls with values; any other is lifted as a stop that names the svc number and
    its address, so the log says what to do next. Numbers: switchbrew.org "SVC". */
 #include "hos.h"
-#include "direct_crit.h"
+#include "crit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

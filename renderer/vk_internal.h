@@ -79,9 +79,9 @@ struct Device {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
 };
 extern Device dev;
-extern PFN_vkGetInstanceProcAddr get_instance_proc;   // (direct_main.cpp: VMA's functions come from it)
+extern PFN_vkGetInstanceProcAddr get_instance_proc;   // (vk_main.cpp: VMA's functions come from it)
 
-// ---- direct_vma.cpp: images and buffers in VMA's blocks ----
+// ---- vk_vma.cpp: images and buffers in VMA's blocks ----
 struct Mem;   // (a VmaAllocation)
 bool vma_init();
 /// Memory by owner. Each allocation of device memory and each of the back end's larger heap allocations is counted to an
@@ -140,14 +140,14 @@ void mem_budget_sample(int64_t pending);   // (M6f: free VRAM once a present, wi
 extern std::atomic<int64_t> vram_free_now;   // (M6f: the heaps' usage and budget, VMA's blocks)
 extern std::atomic<int64_t> st_objects;   // (Vulkan objects made since the start: images, views, buffers, pools, command buffers)
 
-// ---- direct_heap.cpp: mapped buffers with an allocation of their own ----
+// ---- vk_heap.cpp: mapped buffers with an allocation of their own ----
 /// A buffer in device-local, host-visible memory (the BAR) where there is one, mapped, with its device address
 bool mapped_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer& buffer, VkDeviceMemory& memory, uint8_t*& map,
                    VkDeviceAddress& address, MemOwner owner);
 /// One of them destroyed and its memory freed (the GPU is past it)
 void mapped_buffer_free(VkBuffer buffer, VkDeviceMemory memory, MemOwner owner);
 
-// ---- direct_sync.cpp: the queue's timeline, NVN fences, the guest's submits ----
+// ---- vk_sync.cpp: the queue's timeline, NVN fences, the guest's submits ----
 bool sync_init();
 uint64_t sync_pushed();      // (timeline values sent)
 uint64_t sync_completed();   // (reached on the GPU)
@@ -162,22 +162,22 @@ void sync_age_stats(char* out, size_t cap);   // (the transient pool: how late l
 /// The host's present, run in its queue's order (present_run)
 void sync_present(const nvn_tex* t, const int crop[4]);   // (the submits' part of the 600-present line)
 
-// ---- direct_lists.cpp ----
+// ---- vk_lists.cpp ----
 void lists_stats(char* out, size_t cap, double frames);
 void sites_stats(char* out, size_t cap, double frames);
 
-// ---- direct_main.cpp ----
+// ---- vk_main.cpp ----
 void regs_stats(char* out, size_t cap);
 
-// ---- direct_present.cpp ----
+// ---- vk_present.cpp ----
 int present_start(void* hwnd);
 void present_resize(int width, int height);
 void present(const nvn_tex* t, const int crop[4]);   // (the host's call: noted, run in the queue's order)
-/// The present's GPU work, when every submission handed to its queue before it has been sent (direct_sync.cpp's mu held)
+/// The present's GPU work, when every submission handed to its queue before it has been sent (vk_sync.cpp's mu held)
 void present_run(const nvn_tex& t, const int crop[4]);
 uint64_t present_count();   // (presents the host asked for so far: the frame number)
 
-// ---- direct_pools.cpp: layer 0 ----
+// ---- vk_pools.cpp: layer 0 ----
 bool layer0_on();
 void layer0_pool_created(uint64_t gpu, uint64_t size);
 void layer0_pool_native(uint64_t gpu, uint64_t size, uint32_t flags, uint64_t key, int on);

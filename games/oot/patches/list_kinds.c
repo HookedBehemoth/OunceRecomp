@@ -1,4 +1,4 @@
-/* The kinds of the game's command lists for the direct back end (runtime/direct.c hsd_name_next_list): the function that
+/* The kinds of the game's command lists for the direct back end (runtime/render_lists.c hsd_name_next_list): the function that
    begins a recording names it, by an At row just before its BeginRecording call.
    1-6: the game's load-time lists (the list's load kind): 1 vertex list (f_80457e60, at its call of agl_cmdbuf_begin
    f_804581b0), 2 draw list (f_80293890 <- f_804566e0), 3 per-instance shape list (f_806002e0 <- f_8009bb80), 4 material

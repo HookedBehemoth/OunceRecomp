@@ -229,7 +229,7 @@ static int load_image(uint64_t td, uint64_t src) {
     const char *nm = bstr(G64(brti + 0x60), &nl);
     if (nm) k.name = nm, k.name_len = nl;
     k.data = src && hos_guest_range(src, 1) ? GP(src) : NULL;
-    /* (M6f: a load with no data is an alias of another texture: its target's texels, direct_tex_dedup.c) */
+    /* (M6f: a load with no data is an alias of another texture: its target's texels, tex_dedup.c) */
     const int alias = !src && direct_tex_alias(td, &k);
     rx_direct()->asset_load(&k);
     direct_texdata_created(td, alias);   /* (M6f: the event table) */
@@ -346,7 +346,7 @@ int game_skips_packaged_texels(uint64_t bytes) {
 /* The texture data pool (pool 127, 2.4 GB) is made by agl::TextureDataMgr, whose nvnMemoryPoolInitialize returns to
    0x80f6cb20 (HOS_NVN_LOG_POOLS=1, run m4f_pl_d: the only pool made from there). The direct back end takes every texel of
    it from the store and never reads it, so its layer 0 leaves it unbound: named here, at its creation, before layer 0
-   binds pools (direct_pools.cpp layer0_pool_native). The manager makes more than one (Kokiri: 2432 MB at boot, 201 MB and
+   binds pools (vk_pools.cpp layer0_pool_native). The manager makes more than one (Kokiri: 2432 MB at boot, 201 MB and
    2 MB at the scene load): each is named. find_heap still names the asset heap's pool (127) to the asset path, as before. */
 /* f_80f6c9d0 (lr 0x80f6cb20) is agl's generic pool wrapper (tera's pools and Replace requests use it too:
    docs/direct/texture-streaming.md): the texture heap is the pool it makes inside agl::TextureDataMgr::InitializeHeap

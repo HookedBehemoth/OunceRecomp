@@ -1,4 +1,4 @@
-// spvlate: the back end's late scheduling of a stage's SPIR-V (renderer/direct_spv_late.h) as a command, for the gate
+// spvlate: the back end's late scheduling of a stage's SPIR-V (renderer/vk_spv_late.h) as a command, for the gate
 // (tools/shaders/late_gate.py) and tests/test_direct_spv_late.py:
 //   spvlate <in.spv> <out.spv> [--budget N] [--sink-peak N] [--reps N] [--blocks]   (--blocks: a line a block looked at)
 //   spvlate --dir <in dir> <out dir> [--budget N]      every *.spv of a folder
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-#include "../../renderer/direct_spv_late.cpp"
+#include "../../renderer/vk_spv_late.cpp"
 
 static bool read_words(const std::string& path, std::vector<uint32_t>& words) {
     FILE* f = std::fopen(path.c_str(), "rb");

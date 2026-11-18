@@ -1,4 +1,4 @@
-// Prepared assets (direct_assets.h). The store is the builder's (FORMAT_VERSION 1; ounce/tex/src/store.rs describes the
+// Prepared assets (vk_assets.h). The store is the builder's (FORMAT_VERSION 1; ounce/tex/src/store.rs describes the
 // format): index.bin and the packs are mapped read-only once; a texture's frames are standard zstd frames (third_party/zstd,
 // linked into this library) decompressed straight into the upload's staging, mip by mip, by the thread that initializes
 // the texture. Debug aids (HOS_DBG): assetcheck:<n> reads back n prepared images and the sampled terrain and glyph uploads
@@ -20,13 +20,13 @@
 
 #include <zstd.h>
 
-#include "direct_api.h"
+#include "vk_list_api.h"
 #include "os.h"
-#include "direct_check.h"
-#include "direct_assets.h"
-#include "direct_cmd.h"
-#include "direct_dump.h"
-#include "direct_image.h"
+#include "vk_check.h"
+#include "vk_assets.h"
+#include "vk_cmd.h"
+#include "vk_dump.h"
+#include "vk_image.h"
 
 namespace hsd {
 namespace {

@@ -9,7 +9,7 @@
 
 #include <cstdint>
 
-#include "direct_internal.h"
+#include "vk_internal.h"
 
 namespace hsd {
 

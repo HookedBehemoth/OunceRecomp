@@ -2,7 +2,7 @@
 
 This page explains how the game's transient render targets get device memory: one constant allocation in which the
 targets alias each other, as they do on the console. Read it before you change `games/oot/patches/rt_slots.c`, the pool code in
-`renderer/direct_vma.cpp` and `renderer/direct_image.cpp`, or anything that decides when an image's memory may be
+`renderer/vk_vma.cpp` and `renderer/vk_image.cpp`, or anything that decides when an image's memory may be
 reused. What the targets are is in [render targets](render-targets.md).
 
 ## Why one allocation

@@ -1,6 +1,6 @@
-// What direct_shader.cpp shares with the compute programs (direct_compute.cpp): reading a stage's package,
+// What vk_shader.cpp shares with the compute programs (vk_compute.cpp): reading a stage's package,
 // the translator's profile and host settings, the programs' constants (c1) in device memory, the cache records' Info format,
-// the device's part of the caches' stamps, the driver binaries' file, the bound textures' answers. Thin calls into direct_shader.cpp's own (one copy of each).
+// the device's part of the caches' stamps, the driver binaries' file, the bound textures' answers. Thin calls into vk_shader.cpp's own (one copy of each).
 #pragma once
 
 #include <cstdint>
@@ -11,7 +11,7 @@
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/shader_info.h"
 
-#include "direct_internal.h"
+#include "vk_internal.h"
 #include "rx_nvn.h"
 
 namespace hsd::shader_parts {

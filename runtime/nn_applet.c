@@ -2,7 +2,7 @@
    The answers describe a docked console in English (HOS_LANGUAGE / language.txt: another language) with one user,
    "Player". */
 #include "hos.h"
-#include "direct_crit.h"
+#include "crit.h"
 #include "hos_paths.h"
 #include <stdio.h>
 #include <stdlib.h>

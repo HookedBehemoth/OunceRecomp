@@ -1,6 +1,6 @@
 /* The direct back end's view of the game's render-job recorder f_80084de0 (games/oot/patches/eng_jobs.c): which recording a job's is,
-   its pass key and its view record, and what the job being recorded on a thread is (for games/oot/patches/direct_job_sync.c and
-   games/oot/patches/direct_mesh_system.c). */
+   its pass key and its view record, and what the job being recorded on a thread is (for games/oot/patches/job_sync.c and
+   games/oot/patches/mesh_system.c). */
 #ifndef HOOKSHOT_ENG_JOBS_H
 #define HOOKSHOT_ENG_JOBS_H
 #include <stdint.h>

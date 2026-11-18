@@ -7,7 +7,7 @@
    initializers) is created on first use. Mutexes are always recursive: relocking a non-recursive nn::os mutex
    would be a game bug on hardware anyway. */
 #include "hos.h"
-#include "direct_crit.h"
+#include "crit.h"
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>

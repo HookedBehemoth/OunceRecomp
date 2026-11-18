@@ -38,7 +38,7 @@ DEF = re.compile(r"^define [^@]*@([\w.$]+)\((.*)\)[^{]*\{")
 GUEST = re.compile(r"^(a64_icall|a64_ijump|hos_call_guest|hos_sj_call)$")
 # (lr comparisons that only label or count: allowed)
 LR_LABELS = {
-    "games/oot/patches/direct_layer_ahead.c": "jobs recorded from another caller (a count for the log)",
+    "games/oot/patches/layer_ahead.c": "jobs recorded from another caller (a count for the log)",
 }
 
 

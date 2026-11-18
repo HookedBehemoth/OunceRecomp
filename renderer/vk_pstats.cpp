@@ -1,12 +1,12 @@
-// What each draw and dispatch of one frame made the GPU run (direct_pstats.h).
+// What each draw and dispatch of one frame made the GPU run (vk_pstats.h).
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
-#include "direct_internal.h"
-#include "direct_pstats.h"
+#include "vk_internal.h"
+#include "vk_pstats.h"
 
 namespace hsd {
 

@@ -7,27 +7,27 @@
 // uniform and storage buffer tables, the texture and image handles) and its uniform buffers' address table in the frame
 // arena, the push data, vkCmdDispatch or vkCmdDispatchIndirect on the arguments in layer 0 (the grid reaches the program as
 // NumWorkgroups: the translator folds c0's grid words into it, so the GPU reads an indirect dispatch's counts). Programs are
-// translated by the forked translator with the step-B interface on the shared shader workers (direct_work.h; a missing variant skips the
+// translated by the forked translator with the step-B interface on the shared shader workers (vk_work.h; a missing variant skips the
 // dispatch, counted), kept in hookshot_direct_compute.bin, and their kept variants made when the game sets the program.
 // Copies between buffers and buffer clears are recorded where they are, outside a rendering.
 #pragma once
 
 #include <cstdint>
 
-#include "direct_lists.h"
+#include "vk_lists.h"
 
 namespace hsd {
 
 /// Any op of a list that records (its compute state)
 void compute_state(List* l, uint32_t op, const void* data, uint32_t size);
-/// The list's command buffer (direct_pass.cpp's: a waiting barrier recorded first)
+/// The list's command buffer (vk_pass.cpp's: a waiting barrier recorded first)
 using CmdOf = VkCommandBuffer (*)(List*);
 /// DISPATCH / DISPATCH_INDIRECT in a list that records, its rendering ended
 void compute_dispatch(List* l, uint32_t op, const void* data, uint32_t size, CmdOf cmd);
 /// COPY_B2B / CLEAR_BUF in a list that records, its rendering ended
 void compute_buffer_op(List* l, uint32_t op, const void* data, uint32_t size, CmdOf cmd);
 void compute_list_free(List* l);
-/// Another compute program was bound in the list's command buffer (direct_query.cpp's resolve step)
+/// Another compute program was bound in the list's command buffer (vk_query.cpp's resolve step)
 void compute_invalidate(List* l);
 /// (hsd_submit) the deferred handle words of l's and its callees' banks copied from the game's arrays now
 void compute_list_submitted(const List* l);

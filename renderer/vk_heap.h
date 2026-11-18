@@ -14,7 +14,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "direct_internal.h"
+#include "vk_internal.h"
 
 namespace hsd {
 
@@ -57,7 +57,7 @@ struct DrawCaps {
 };
 extern DrawCaps caps;
 
-/// (direct_main.cpp create_device) the extensions M2b needs, its feature structures chained at *tail
+/// (vk_main.cpp create_device) the extensions M2b needs, its feature structures chained at *tail
 void draw_device_extensions(const std::vector<VkExtensionProperties>& exts, std::vector<const char*>& want, void**& tail);
 /// (after vkGetPhysicalDeviceFeatures2) what the device has; features not to enable turned off
 void draw_features_resolved(const VkPhysicalDeviceVulkan14Features* f14);
@@ -85,7 +85,7 @@ void heap_push(VkCommandBuffer cb, const void* data, uint32_t bytes);
 void heap_texture_registered(int id, const nvn_tex* t, const nvn_view* v);
 void heap_sampler_registered(int id, const nvn_samp_par* p);
 struct Image;
-/// (direct_image.cpp, an image destroyed) the entries that hold it nulled
+/// (vk_image.cpp, an image destroyed) the entries that hold it nulled
 void heap_image_gone(const Image* im);
 /// The answer byte of texture id: the translator's texture type | 0x80 for an integer format (0xFF: none registered)
 uint8_t heap_answer(uint32_t id);

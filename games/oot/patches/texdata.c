@@ -1,7 +1,7 @@
 /* agl::TextureDataMgr's own texture events, hooked (direct mode only; docs/direct/texture-streaming.md).
    One table keyed by the TextureData (td), written only by these hooks:
-     - created with data, or as a UnifyTex alias: f_80798690 loadImage_ (direct_assets.c calls direct_texdata_created; an
-       alias's target is the head of its chain, direct_tex_dedup.c);
+     - created with data, or as a UnifyTex alias: f_80798690 loadImage_ (assets.c calls direct_texdata_created; an
+       alias's target is the head of its chain, tex_dedup.c);
      - moved by compaction (the frame update f_80797da0 -> f_807981f0(td, ctx) for each moved texture and each alias):
        the rebind's nvnTextureFinalize + nvnTextureInitialize of the td's own NVN object reach the back end as nothing at
        all: the object keeps its serial, so its image (keyed by its record or plain image, never by storage) and its
@@ -12,7 +12,7 @@
    What frees VRAM is the game's own destroy: f_8079bbe0 -> f_8079c220 finalizes the texture's NVN object (an alias at its
    release, f_80517d80, likewise), and that finalize releases the texture's hold on its image; an image (shared by every
    texture of its content) is destroyed, with its views and heap entries, once its last texture is gone and the frames
-   that may still read it have completed (direct_image.cpp, image_sweep). Released to the LRU cache is not a free: the
+   that may still read it have completed (vk_image.cpp, image_sweep). Released to the LRU cache is not a free: the
    game may take the texture back without a load, so its image stays. The back end has no eviction policy of its own (the
    user: no own eviction, no async upload). */
 #include "hos.h"

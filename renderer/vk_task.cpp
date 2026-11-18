@@ -1,4 +1,4 @@
-// The task stage as a compute step (direct_task.h).
+// The task stage as a compute step (vk_task.h).
 #include <algorithm>
 #include <cstdlib>
 #include <vector>
@@ -6,19 +6,19 @@
 #include <cstring>
 #include <mutex>
 
-#include "direct_check.h"
-#include "direct_cmd.h"
-#include "direct_draw.h"
-#include "direct_heap.h"
-#include "direct_marks.h"
-#include "direct_pstats.h"
-#include "direct_pass.h"
-#include "direct_shader.h"
-#include "direct_task.h"
+#include "vk_check.h"
+#include "vk_cmd.h"
+#include "vk_draw.h"
+#include "vk_heap.h"
+#include "vk_marks.h"
+#include "vk_pstats.h"
+#include "vk_pass.h"
+#include "vk_shader.h"
+#include "vk_task.h"
 #include <shaders/task_prep_spv.h>
 
 namespace hsd {
-bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)
+bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (vk_pools.cpp)
 
 /// A recording thread's task pool for one frame slot: the indirect draws' maps and payload areas, taken by the GPU (the prep
 /// step's atomic on word 0); word 1 counts the draws that did not fit. Reset with its slot, when the GPU is past the slot's

@@ -1,6 +1,6 @@
-/* HOS_DBG=crit: the trace for the frame's critical path (direct_crit.h). Measurement only. */
-#include "direct_crit.h"
-#include "direct.h"
+/* HOS_DBG=crit: the trace for the frame's critical path (crit.h). Measurement only. */
+#include "crit.h"
+#include "renderer.h"
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>

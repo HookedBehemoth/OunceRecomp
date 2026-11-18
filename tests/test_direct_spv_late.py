@@ -1,4 +1,4 @@
-"""The direct back end's register-pressure pass on a stage's SPIR-V (renderer/direct_spv_late.cpp), without a game or a GPU.
+"""The direct back end's register-pressure pass on a stage's SPIR-V (renderer/vk_spv_late.cpp), without a game or a GPU.
 
 Modules built here have the shape the translator emits (the native code's order: everything loaded first, used later):
 

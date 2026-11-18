@@ -14,13 +14,13 @@
 //
 // A compute step cannot run inside a rendering. In a job (a rendering secondary) the step is recorded into the job's own
 // two plain secondaries (List::task_pre, task_cb), which the layer list executes at the job's call before executing the job,
-// outside its rendering (direct_pass.cpp task_job_step: a begun rendering is ended there and begun again, counted). In a
+// outside its rendering (vk_pass.cpp task_job_step: a begun rendering is ended there and begun again, counted). In a
 // list that owns its rendering (a layer list's inline draw) the rendering is ended before the step and begun again after it
 // (counted). Either way the step's order against the game's own work is the draw's: after every barrier and dispatch
 // recorded before the job call or the draw.
 #pragma once
 
-#include "direct_lists.h"
+#include "vk_lists.h"
 
 namespace hsd {
 

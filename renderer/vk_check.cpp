@@ -1,4 +1,4 @@
-// The validation messenger and strict mode (direct_check.h).
+// The validation messenger and strict mode (vk_check.h).
 
 #include <algorithm>
 #include <atomic>
@@ -10,9 +10,9 @@
 #include <mutex>
 #include <string>
 
-#include "direct_check.h"
+#include "vk_check.h"
 #include "os.h"
-#include "direct_internal.h"
+#include "vk_internal.h"
 
 namespace hsd {
 

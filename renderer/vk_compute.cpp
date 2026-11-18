@@ -1,6 +1,6 @@
-// Dispatches and the buffer ops (direct_compute.h). The compute half of gpu/legacy/vk/vk_shader.cpp translate_into, Env and
+// Dispatches and the buffer ops (vk_compute.h). The compute half of gpu/legacy/vk/vk_shader.cpp translate_into, Env and
 // vk_bank.cpp's compute bank (cs_layout, driver_bank_fill's stage 5), on the step-B interface of the graphics programs
-// (direct_shader.cpp): handles read by the shader from c0, storage buffers and global memory by address, uniform buffers
+// (vk_shader.cpp): handles read by the shader from c0, storage buffers and global memory by address, uniform buffers
 // through an address table. What differs from the frozen back end: the grid is NumWorkgroups (no CPU read of an indirect
 // dispatch's counts, no copy into c0), the 0x880 pointer table is not made (global memory is translated by address), and
 // the networks run as the game has them (the matrix multiplies in software on this card): no stand-ins (plan rule 8).
@@ -20,10 +20,10 @@
 #include <unordered_set>
 #include <vector>
 
-#include "direct_marks.h"
+#include "vk_marks.h"
 #include "os.h"
-#include "direct_pstats.h"
-#include "direct_check.h"
+#include "vk_pstats.h"
+#include "vk_check.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
@@ -39,13 +39,13 @@
 #include "shader_recompiler/program_header.h"
 #include "shader_recompiler/runtime_info.h"
 
-#include "direct_cmd.h"
-#include "direct_compute.h"
-#include "direct_draw.h"
-#include "direct_heap.h"
-#include "direct_shader.h"
-#include "direct_shader_parts.h"
-#include "direct_work.h"
+#include "vk_cmd.h"
+#include "vk_compute.h"
+#include "vk_draw.h"
+#include "vk_heap.h"
+#include "vk_shader.h"
+#include "vk_shader_parts.h"
+#include "vk_work.h"
 
 namespace Shader::Optimization {   // (collect_shader_info_pass.cpp: NVN2 compute's storage buffer table, this thread's program)
 extern thread_local u32 g_nvn2_compute_ssbo_base;
@@ -58,9 +58,9 @@ extern thread_local u32 g_nvn2_compute_layout_end;
 #endif
 
 namespace hsd {
-bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (direct_pools.cpp)
-bool layer0_bound(uint64_t lo, uint64_t hi);   // (direct_pools.cpp)
-double seconds_since_device();                                         // (direct_draw.cpp)
+bool layer0_address(uint64_t gpu, uint64_t size, VkDeviceAddress& a);   // (vk_pools.cpp)
+bool layer0_bound(uint64_t lo, uint64_t hi);   // (vk_pools.cpp)
+double seconds_since_device();                                         // (vk_draw.cpp)
 
 namespace {
 
@@ -84,7 +84,7 @@ void load_functions() {
     });
 }
 
-uint64_t hash_bytes(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull) {   // (direct_shader.cpp's: the same code keys)
+uint64_t hash_bytes(const void* p, size_t n, uint64_t h = 0xcbf29ce484222325ull) {   // (vk_shader.cpp's: the same code keys)
     const uint8_t* b = (const uint8_t*)p;
     for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 0x100000001b3ull;
     return h;
@@ -142,7 +142,7 @@ const char* const kReasons[D_COUNT] = {
     "recorded", "of them indirect", "no compute program bound", "program not read yet", "program has no compute stage",
     "variant being translated", "variant does not translate", "variant cannot be dispatched", "a uniform buffer not in layer 0",
     "the frame arena full", "indirect arguments not in layer 0", "empty grid"};
-struct TStats {   // (the recording thread's own, summed by compute_log: as direct_draw.cpp's)
+struct TStats {   // (the recording thread's own, summed by compute_log: as vk_draw.cpp's)
     std::atomic<int64_t> by_kind[HSD_LIST_KINDS][D_COUNT];
     std::atomic<int64_t> ticks, past_range, updated_ubo, buf_ops[4];
     int64_t seen_by_kind[HSD_LIST_KINDS][D_COUNT];
@@ -276,7 +276,7 @@ struct DiskRecord {
 };
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_by_key;
 /// The cache's stamp: the compute translation's code (HOOKSHOT_DIRECT_COMPUTE_STAMP, renderer/meson/shader_stamp.py: the
-/// regions marked "stamp compute" here and "stamp shared" in direct_shader.cpp, the translator and the compiler and flags
+/// regions marked "stamp compute" here and "stamp shared" in vk_shader.cpp, the translator and the compiler and flags
 /// that build it), the record format (kDiskVersion), the device (parts::device_stamp, the loop cap among it), and the
 /// matrix multiplies' form
 uint64_t disk_stamp() {
@@ -570,7 +570,7 @@ bool translate_variant(Variant& v, const Code& c, const uint8_t* bank, uint32_t 
 
 // </stamp compute>
 
-// ---- the heap mapping and the shader object (direct_shader.cpp finish's, one compute stage) ----
+// ---- the heap mapping and the shader object (vk_shader.cpp finish's, one compute stage) ----
 VkImageViewType view_type(Shader::TextureType t) {
     switch (t) {
     case Shader::TextureType::Color1D: return VK_IMAGE_VIEW_TYPE_1D;

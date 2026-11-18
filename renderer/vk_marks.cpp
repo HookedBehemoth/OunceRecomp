@@ -1,11 +1,11 @@
-// GPU breadcrumbs for a lost device (direct_marks.h).
+// GPU breadcrumbs for a lost device (vk_marks.h).
 #include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <vector>
 
-#include "direct_internal.h"
-#include "direct_marks.h"
+#include "vk_internal.h"
+#include "vk_marks.h"
 
 namespace hsd {
 

@@ -1,4 +1,4 @@
-// Images of NVN textures (direct_image.h). Lifted from gpu/legacy/vk/vk_texture.cpp (texture_key, create's usage and flags,
+// Images of NVN textures (vk_image.h). Lifted from gpu/legacy/vk/vk_texture.cpp (texture_key, create's usage and flags,
 // format_class, linear_twin, widened) and gpu/legacy/vk/vk_xfer.cpp (resolve), without its cache's uploads, decoders, eviction,
 // sparse images and pools. An image made is initialized at once on the making thread's upload: moved to GENERAL and,
 // for an uncompressed one, cleared to zero (an asset's content is not set here).
@@ -11,11 +11,11 @@
 #include <unordered_set>
 #include <vector>
 
-#include "direct_check.h"
-#include "direct_assets.h"
-#include "direct_cmd.h"
-#include "direct_heap.h"
-#include "direct_image.h"
+#include "vk_check.h"
+#include "vk_assets.h"
+#include "vk_cmd.h"
+#include "vk_heap.h"
+#include "vk_image.h"
 
 namespace hsd {
 namespace {
@@ -84,7 +84,7 @@ std::vector<Image*> dying;   // (refs 0: destroyed by image_sweep)
 // image overlaps its storage or is over kHeldBytes (images_mu).
 constexpr int64_t kHeldBytes = 256ll << 20;
 int64_t held_bytes = 0;
-// The transient pool (direct_image.h, docs/direct/transient-pool.md): the range of storage addresses the host named
+// The transient pool (vk_image.h, docs/direct/transient-pool.md): the range of storage addresses the host named
 // (games/oot/patches/rt_slots.c's slots), its images, and the slot sizes the host told (images_mu; on, lo and hi are set once before
 // the first texture in the range is initialized).
 struct Pool {

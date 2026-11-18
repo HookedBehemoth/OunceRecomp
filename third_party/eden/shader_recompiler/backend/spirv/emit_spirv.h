@@ -71,7 +71,7 @@ constexpr u32 MESH_FALLBACK_DISPATCH_WORD = 5;
 constexpr u32 MESH_FALLBACK_HEADER_WORDS = 8;
 constexpr u32 MESH_FALLBACK_RECORD_WORDS = 16u << 20;   // (64 MB: ~47k grass primitives of 31 words are 17 MB)
 // (hookshot, direct back end M4c, RuntimeInfo::task_buffer) a task+mesh draw's task header, 64 bytes the host writes before the
-// draw (renderer/direct_task.cpp): words 0-2 the mesh draw's VkDrawMeshTasksIndirectCommandEXT {groups, 1, 1}, the groups
+// draw (renderer/vk_task.cpp): words 0-2 the mesh draw's VkDrawMeshTasksIndirectCommandEXT {groups, 1, 1}, the groups
 // raised by the task workgroups as they place their mesh workgroups; then what the task and mesh stages read
 constexpr u32 TASK_HEADER_GROUPS = 0;     // (the mesh workgroups placed in the map: atomicMax of each task's end)
 constexpr u32 TASK_HEADER_TAKEN = 3;      // (the mesh workgroups asked for: atomicAdd; past TASK_HEADER_MAP_CAP not placed)

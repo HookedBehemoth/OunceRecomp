@@ -10,19 +10,19 @@
 #include <mutex>
 #include <string>
 
-#include "direct_compute.h"
-#include "direct_marks.h"
-#include "direct_pstats.h"
-#include "direct_internal.h"
+#include "vk_compute.h"
+#include "vk_marks.h"
+#include "vk_pstats.h"
+#include "vk_internal.h"
 #include "os.h"
-#include "direct_api.h"
-#include "direct_image.h"
-#include "direct_heap.h"
-#include "direct_shader.h"
-#include "direct_query.h"
-#include "direct_check.h"
-#include "direct_draw.h"
-#include "direct_work.h"
+#include "vk_list_api.h"
+#include "vk_image.h"
+#include "vk_heap.h"
+#include "vk_shader.h"
+#include "vk_query.h"
+#include "vk_check.h"
+#include "vk_draw.h"
+#include "vk_work.h"
 
 #define HSD_VK_DEFINE(f) PFN_##f f;
 namespace hsd::vkfn {

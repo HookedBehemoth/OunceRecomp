@@ -4,9 +4,9 @@ bench.c
 game_hooks.c
 code_ptrs.c
 cxx_throw.c
-direct.c
-direct_crit.c
-direct_texwatch.c
+render_lists.c
+crit.c
+texwatch.c
 hos_fp.c
 hos_hostcall.c
 hos_main.c

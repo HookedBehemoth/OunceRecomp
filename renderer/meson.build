@@ -15,28 +15,28 @@ spv_headers = []
 subdir('shaders')
 
 direct_sources = files(
-  'direct_assets.cpp',
-  'direct_check.cpp',
-  'direct_cmd.cpp',
-  'direct_draw.cpp',
-  'direct_dump.cpp',
-  'direct_formats.cpp',
-  'direct_heap.cpp',
-  'direct_image.cpp',
-  'direct_lists.cpp',
-  'direct_main.cpp',
-  'direct_marks.cpp',
-  'direct_pass.cpp',
-  'direct_pools.cpp',
-  'direct_present.cpp',
-  'direct_pstats.cpp',
-  'direct_query.cpp',
-  'direct_spv_late.cpp',
-  'direct_state.cpp',
-  'direct_sync.cpp',
-  'direct_task.cpp',
-  'direct_vma.cpp',
-  'direct_work.cpp',
+  'vk_assets.cpp',
+  'vk_check.cpp',
+  'vk_cmd.cpp',
+  'vk_draw.cpp',
+  'vk_dump.cpp',
+  'vk_formats.cpp',
+  'vk_heap.cpp',
+  'vk_image.cpp',
+  'vk_lists.cpp',
+  'vk_main.cpp',
+  'vk_marks.cpp',
+  'vk_pass.cpp',
+  'vk_pools.cpp',
+  'vk_present.cpp',
+  'vk_pstats.cpp',
+  'vk_query.cpp',
+  'vk_spv_late.cpp',
+  'vk_state.cpp',
+  'vk_sync.cpp',
+  'vk_task.cpp',
+  'vk_vma.cpp',
+  'vk_work.cpp',
 )
 direct_args = renderer_cpp_args
 direct_deps = [eden_dep, zstd_dep]
@@ -48,7 +48,7 @@ direct_incs = [direct_inc, gpu_api_inc, host_os_inc, headers_inc]
 cpp = meson.get_compiler('cpp')
 toolchain = [cpp.get_id(), cpp.version()] + renderer_cpp_args
 stamped = []
-foreach kind, src : {'graphics': 'direct_shader.cpp', 'compute': 'direct_compute.cpp'}
+foreach kind, src : {'graphics': 'vk_shader.cpp', 'compute': 'vk_compute.cpp'}
   stamp = custom_target('shader_stamp_' + kind + '.h',
     output: 'shader_stamp_' + kind + '.h',
     depfile: 'shader_stamp_' + kind + '.h.d',

@@ -11,13 +11,13 @@
 #include <cstdint>
 #include <vector>
 
-#include "direct_internal.h"
+#include "vk_internal.h"
 
 namespace hsd {
 
-struct Arena;   // (direct_draw.cpp)
-struct QSlot;   // (direct_query.cpp)
-struct TaskPool;   // (direct_task.cpp)
+struct Arena;   // (vk_draw.cpp)
+struct QSlot;   // (vk_query.cpp)
+struct TaskPool;   // (vk_task.cpp)
 void query_slot_reset(QSlot* q);
 void arena_reset(Arena* a);
 void task_pool_reset(TaskPool* p);
