@@ -188,6 +188,8 @@ void TranslateOne(Translator& t) {
     case 0xb82: case 0xab9: case 0xabb: case 0x381: case 0x981: case 0x386: case 0x986: case 0x983: case 0x387:
     case 0x987: case 0x984: case 0x388: case 0x988:
         return TranslateMemory(t);
+    case 0x98e: case 0x3a8: case 0x9a8: case 0x3a9: case 0x38c: case 0x98c: case 0xf8c:
+        return TranslateAtomic(t);
     default:
         break;
     }

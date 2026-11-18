@@ -2,6 +2,7 @@
 eden_sources += files(
   'control_flow.cpp',
   'decode.cpp',
+  'translate/atomic.cpp',
   'translate/attribute.cpp',
   'translate/conversion.cpp',
   'translate/fp.cpp',
