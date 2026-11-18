@@ -4,7 +4,7 @@ This page gets you from a dump of the game to a running build, and shows the loo
 what to rebuild after a change, how to run it, and where things live. Read it before your first build.
 
 Hookshot lifts the game's AArch64 code to native x86-64 code, implements the console's operating system (Horizon) and
-graphics API (NVN2) in `host/`, and replays the game's GPU work on Vulkan with the direct back end in `gpu/direct`. It
+graphics API (NVN2) in `runtime/`, and replays the game's GPU work on Vulkan with the direct back end in `renderer`. It
 runs on Linux only, and the renderer is developed on Mesa RADV.
 
 No game files are in this repository. The build reads your dump where it lies, and everything made from it goes to
@@ -64,12 +64,12 @@ After a change, rebuild only what the change needs:
 
 | You changed | Run |
 |---|---|
-| `host/`, `gpu/direct/`, the lifter, including patch declarations | `scripts/build.sh`: what changed is compiled again |
+| `runtime/`, `renderer/`, the lifter, including patch declarations | `scripts/build.sh`: what changed is compiled again |
 | Only the renderer | `ninja -C work/sa/meson` (below): builds `hookshot_direct.so` alone |
 | The hot list, the dump or the toolchain | `scripts/relift.sh` |
 
 The details, including what the object cache keeps, are in [Build and iterate on the lifter](lifter-build.md). A new
-file in `host/` belongs in the `host` list of `games/oot/game.py`.
+file in `runtime/` belongs in the `host` list of `games/oot/game.py`.
 
 Then test the change in the game. [Test Hookshot](testing.md) covers the headless test run, the smoke test, the
 benchmark and profiling.
@@ -83,7 +83,7 @@ Meson builds the renderer, `hookshot_direct.so`; `scripts/build.sh` runs it firs
 Ninja and `glslangValidator`. To build it alone, run:
 
 ```sh
-meson setup --native-file gpu/direct/meson/clang.ini -Dexe=work/sa/build/hookshot work/sa/meson
+meson setup --native-file renderer/meson/clang.ini -Dexe=work/sa/build/hookshot work/sa/meson
 ninja -C work/sa/meson
 ```
 
@@ -96,7 +96,7 @@ about 40 seconds with six jobs.
 - `exe` names the executable to check the library against. Every symbol the library leaves undefined must be one the
   executable exports (`os_*` or `hos_mem_ledger`); otherwise the build fails. Without `exe`, only the names are
   checked.
-- The SPIR-V headers of `gpu/direct/shaders` are compiled from their sources in the build folder. `meson test -C
+- The SPIR-V headers of `renderer/shaders` are compiled from their sources in the build folder. `meson test -C
   work/sa/meson` checks that the copies in the source tree are still equal to them.
 
 ### Work in an agent worktree
@@ -122,9 +122,9 @@ the tracking branch and writes `work/sa/build/BUILD.txt` when it is done. It ref
 | `ounce/` | The lifter (`ounce/lift`) and the builder (`ounce/builder`), one cargo workspace ([The lifter](lifter.md)) |
 | `nx2/` | The dump tools and the asset converters |
 | `games/oot/` | The game description and the function labels |
-| `host/` | The Horizon runtime, the NVN2 layer (`nvn_native.c`), and the game patches; `host/os` is its operating-system layer (`os.h`) |
-| `gpu/direct/` | The direct back end, with its fork of Eden's shader recompiler in `eden/` ([Renderer docs](direct/README.md)) |
-| `gpu/api/` | What the host and the back end share: the versioned interface (`vk_api.h`) and the NVN command records |
+| `runtime/` | The Horizon runtime, the NVN2 layer (`nvn_native.c`), and the game patches; `runtime/os` is its operating-system layer (`os.h`) |
+| `renderer/` | The direct back end, with its fork of Eden's shader recompiler in `eden/` ([Renderer docs](direct/README.md)) |
+| `renderer/api/` | What the host and the back end share: the versioned interface (`vk_api.h`) and the NVN command records |
 | `scripts/` | Test runs, the play build, log and profile readers, the save copier |
 | `tools/` | Readers for the game's formats (`tools/dump`), reverse-engineering searches (`tools/re`), the shader tools (`tools/shaders`: the register gate, the offline translator, the replacement stage's build) and the shader census (`tools/shadercensus`) |
 | `tests/` | The game-free checks, all run by `tests/run_all.py` |

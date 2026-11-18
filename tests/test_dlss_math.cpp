@@ -1,4 +1,4 @@
-#include "../host/dlss_math.h"
+#include "../runtime/dlss_math.h"
 
 #include <cmath>
 #include <cstdio>
@@ -63,7 +63,7 @@ int main() {
         dlss_jitter_pixels(3, phases, a), dlss_jitter_pixels(3 + phases, phases, b);
         CHECK("the sequence repeats", a[0] == b[0] && a[1] == b[1]);
     }
-    {   // (the same as host/rx_backend.c's sequence before it moved here)
+    {   // (the same as runtime/rx_backend.c's sequence before it moved here)
         for (int frame = 0; frame < 40; frame++) {
             const int i = frame % 16 + 1;
             float x = 0.0f, y = 0.0f, f = 0.5f;

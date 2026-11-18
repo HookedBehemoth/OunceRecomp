@@ -1,5 +1,5 @@
-//! The host's C, compiled in this process by clang's libraries: host/*.c (the game description's list and the
-//! platform files), libopus 1.5.2 and the guest model's runtime (rt64/a64_rt.c), each with its flags, -fstack-protector-strong explicit (the distribution's clang has it on by default; ours does not).
+//! The host's C, compiled in this process by clang's libraries: the runtime's files and the game's patch files
+//! (Game::sources), libopus 1.5.2 and the guest model's runtime (rt64/a64_rt.c), each with its flags, -fstack-protector-strong explicit (the distribution's clang has it on by default; ours does not).
 //! Objects are cached by the files the compile read (its dependency list) and the flags.
 
 use crate::cache::{Cache, Key};
@@ -29,21 +29,19 @@ fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// host/*.c and libopus, in the link's order; `version` is hos_main.c's HOOKSHOT_VERSION
-pub fn host_jobs(root: &Path, rt64: &Path, host: &[String], version: &str) -> Result<Vec<CJob>, String> {
-    let h = root.join("host");
+/// the runtime's and the patches' C (`sources`, Game::sources) and libopus, in the link's order; `version` is
+/// hos_main.c's HOOKSHOT_VERSION
+pub fn host_jobs(root: &Path, rt64: &Path, sources: &[PathBuf], version: &str) -> Result<Vec<CJob>, String> {
+    let rt = root.join("runtime");
     let opus = root.join("third_party/opus");
     let mut fl = target();
-    fl.extend([format!("-I{}", s(&h.join("os"))), "-D_GNU_SOURCE".into(), format!("-I{}", s(&h)), format!("-I{}", s(rt64))]);
+    fl.extend([format!("-I{}", s(&rt.join("os"))), "-D_GNU_SOURCE".into(), format!("-I{}", s(&rt)), format!("-I{}", s(&rt.join("media")))]);
+    fl.extend([format!("-I{}", s(&root.join("renderer/api"))), format!("-I{}", s(&root.join("third_party"))), format!("-I{}", s(rt64))]);
     fl.extend(["-Wno-everything", "-O2", "-g0", "-mcx16", "-Werror=implicit-function-declaration", "-Werror=incompatible-pointer-types"].map(String::from));
     fl.push(format!("-I{}", s(&opus.join("include"))));
-    let srcs: Vec<PathBuf> = host
+    let mut jobs: Vec<CJob> = sources
         .iter()
-        .map(|f| h.join(f))
-        .chain([h.join("posix/display_sdl.c"), h.join("os/os_linux.c"), h.join("os/os_guest_linux.c")])
-        .collect();
-    let mut jobs: Vec<CJob> = srcs
-        .into_iter()
+        .cloned()
         .map(|src| {
             let stem = src.file_stem().unwrap().to_string_lossy().into_owned();
             let mut f = fl.clone();

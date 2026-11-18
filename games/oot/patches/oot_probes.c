@@ -1,5 +1,5 @@
 /* Frame-rate and resolution patches of Ocarina of Time 1.1.1: the lifter's At probes, each declared
-   here by its PATCH_AT (host/patch.h, one row each: a guest instruction, the registers passed here, the register given the result). Plain values and
+   here by its PATCH_AT (runtime/patch.h, one row each: a guest instruction, the registers passed here, the register given the result). Plain values and
    guest addresses in, a value out; no guest context. Each is a runtime switch where it can be, so the game's own path
    stays reachable.
 
@@ -27,8 +27,8 @@
      it the game clock for its log (HOS_FPS_LOG=1).
    - A movie's frame count above a 60 cap (issue 1742): the movie player counts its updates (f_83b7c710, +760 of the
      player), a cutscene places its narration, rumble and end by that count, and the movie itself follows the clock; the
-     count grows by the frames' time instead (hos_movie_frames, host/nn_vi.c).
-   - Output size (host/nn_applet.c hos_output_size: the Insert menu's Output resolution, 2560 x 1440 as shipped): nnMain
+     count grows by the frames' time instead (hos_movie_frames, runtime/nn_vi.c).
+   - Output size (runtime/nn_applet.c hos_output_size: the Insert menu's Output resolution, 2560 x 1440 as shipped): nnMain
      (f_81222ce0) puts the display size in the framework's create arg (the window textures); f_810a7b70 sets up the
      display-size object from a config whose docked size list (+8, first 2560 x 1440) is the frame's base; f_80ea2f30
      takes the 3D's largest size, ResolutionParam's BaseResolution (or 1920 x 1080 as constants), 3/4 of 2560 x 1440, above
@@ -59,7 +59,7 @@ uint32_t hos_movie_frames(uint64_t player);
    strict aliasing (nx2/build.py host_fl, unlike the lifted code's -fno-strict-aliasing): the structs are may_alias. */
 #define GUEST(type, addr) ((type *)A64_PTR(addr))
 
-/* scene_resolution_update's object (f_831f3200: the scene's update; host/nn_vi.c logs its scale) */
+/* scene_resolution_update's object (f_831f3200: the scene's update; runtime/nn_vi.c logs its scale) */
 typedef struct __attribute__((may_alias)) {
     uint8_t _0[0xe20];
     uint64_t flags;        /* +0xe20: bits 3/4, a hardcoded 0.75 / 0.5 in place of the scale */
@@ -110,7 +110,7 @@ static float fixed_scale(void) { float f; const uint32_t u = hos_fixed_scale_bit
 /* f_80825aa0, after the config's flags load (bit 0: the dynamic path): bit 0 clear while the resolution is fixed */
 PATCH_AT(0x80825bcc, word(0xb9409508), after, w8, hos_oot_dynres_flags, as(w8, flags)) {   /* ldr w8, [x8, #148] */
     if (hos_fixed_resolution) return flags & ~1u;
-    if (flags & 1) hos_dynres_runs++;   /* (the dynamic path's frames: host/nn_vi.c waits for 30 before fixing it) */
+    if (flags & 1) hos_dynres_runs++;   /* (the dynamic path's frames: runtime/nn_vi.c waits for 30 before fixing it) */
     return flags;
 }
 
@@ -129,7 +129,7 @@ PATCH_AT(0x831f3efc, word(0xb94e2e89), after, w8, hos_oot_scale_recompute, as(x2
 
 /* f_831f3200, its flags +0xe20 just loaded: bits 3/4 (0.75 / 0.5 in place of the scale) not looked at while fixed */
 PATCH_AT(0x831f3f08, word(0xf9471288), after, x8, hos_oot_scale_flags, as(x20, module), as(x8, flags)) {   /* ldr x8, [x20, #3616] */
-    hos_res_module = module;   /* (host/nn_vi.c logs the 3D's scale from it) */
+    hos_res_module = module;   /* (runtime/nn_vi.c logs the 3D's scale from it) */
     return hos_fixed_resolution ? flags & ~0x18ULL : flags;
 }
 
@@ -202,7 +202,7 @@ PATCH_AT(0x80b1e1bc, word(0x37201528), before, s0, hos_oot_text_time, as(s0, tim
 /* ---- output size */
 
 /* the frame's width (0) or height (1): the window's when the frame follows it (hos_oot_frame_set), else the widescreen
-   picture's (host/hos_main.c), else the output's */
+   picture's (runtime/hos_main.c), else the output's */
 static volatile uint64_t frame_size;   /* (width | height << 32; 0: the frame does not follow the window) */
 static uint32_t picture_size(int height) {
     extern volatile uint64_t hos_wide_out;
@@ -266,7 +266,7 @@ PATCH_AT(0x80b723a4, word(0x52800024), after, x0, hos_oot_rt_rest, as(x0, size))
     return size > g ? size - g : size;
 }
 
-/* ---- the player's update, for HOS_BENCH's "in play" (host/bench.c hos_bench_player): Link updated, no map loading
+/* ---- the player's update, for HOS_BENCH's "in play" (runtime/bench.c hos_bench_player): Link updated, no map loading
    and no event playing. Read by the game's own structures, no guest call */
 
 typedef struct __attribute__((may_alias)) { uint64_t vtable; uint8_t _0[616]; uint64_t components; } OotPlayerActor;
@@ -340,11 +340,11 @@ PATCH_AT(0x82c41728, word(0xf9000bea), after, none, hos_oot_player_update, as(x1
 }
 
 /* ---- widescreen and ultrawide. The game draws a 2560x1440 picture whatever the screen and renders its scene at
-   1920x1080; its cameras use a 16:9 ratio. With these rows (PATCH_AT declarations, host/patch.h) the picture takes the window's shape
+   1920x1080; its cameras use a 16:9 ratio. With these rows (PATCH_AT declarations, runtime/patch.h) the picture takes the window's shape
    (the height stays the game's, the width grows on an ultrawide screen and shrinks on a 16:10 or 4:3 one), the main
    camera takes the picture's ratio, the HUD and menus keep their 16:9 shape in the middle of a wider picture (a narrower
    one: its whole width), pre-rendered movies play in that middle 16:9, and the picture a save keeps shows that middle
-   16:9 (a narrower picture: its middle band, at the texture's shape). host/hos_main.c sets the globals from the window's
+   16:9 (a narrower picture: its middle band, at the texture's shape). runtime/hos_main.c sets the globals from the window's
    shape, all 0 for a 16:9 window: the game as shipped.
    The sites come from NX2navi's recomp/patches-v111.txt, where they are credited to Ivan0xFF (MIT, "The matrix-update,
    UI and movie sites: Copyright (c) 2026 Ivan0xFF"); the picture and scene size sites are the same constants that file
@@ -377,7 +377,7 @@ PATCH_AT(0x8114c604, word(0xf8687928), after, x8, hos_oot_frame_max, as(x8, size
     return (uint64_t)h << 32 | (uint32_t)((uint64_t)h * pw / ph);
 }
 
-/* host/hos_main.c (start), host/posix/display_sdl.c (a settled resize): the game's frame is
+/* runtime/hos_main.c (start), runtime/media/display_sdl.c (a settled resize): the game's frame is
    now w x h (the window's pixels, at most 3840 x 2160's count, at most the picture's size): the main camera, HUD and
    movies take its shape, and the game sizes its frame and targets again */
 void hos_oot_frame_set(uint32_t w, uint32_t h, int start) {
@@ -764,7 +764,7 @@ PATCH_AT_SITE(0x83af5d9c, word(0xb900210a), after, none, hos_oot_ring_write, x8,
 
 /* (a bench run's end: who owns each ring, and its pushes and pops per present so far) */
 void hos_oot_ring_report(void) {
-    extern volatile int64_t hos_present_count;   /* (host/posix/display_sdl.c) */
+    extern volatile int64_t hos_present_count;   /* (runtime/media/display_sdl.c) */
     const double frames = hos_present_count > 0 ? (double)hos_present_count : 1.0;
     char line[1024];
     int n = snprintf(line, sizeof line, "rings: second writers %lld;", (long long)ring_conflicts);

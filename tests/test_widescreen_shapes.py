@@ -1,4 +1,4 @@
-"""host/hos_main.c's widescreen sizes, game-free: the picture, scene, camera ratio and HUD for screens wider and
+"""runtime/hos_main.c's widescreen sizes, game-free: the picture, scene, camera ratio and HUD for screens wider and
 narrower than 16:9 (a 4:3 CRT, 16:10, 5:4 and narrower, 21:9, 32:9), and the game's own picture for 16:9.
 
     python -I -B tests/test_widescreen_shapes.py [--cc gcc]
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def block():
     """The sizes, from the 16:9 constant to the else branch's log line, as hos_main.c has them"""
-    src = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
+    src = (ROOT / "runtime/hos_main.c").read_text(encoding="utf-8")
     start = src.index("        const double game = 16.0 / 9.0;")
     end = src.index("\n", src.index("hos_log(\"boot: widescreen: a %.4f screen", start))
     return src[start:end] + "\n        }\n"

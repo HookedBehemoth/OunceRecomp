@@ -1,5 +1,5 @@
-/* The direct back end's list calls (hookshot_direct.so): what host/nvn_native.c hands it as the game
-   records, besides the object layer, sync and present of gpu/api/vk_api.h's table (version 14), which it answers too.
+/* The direct back end's list calls (hookshot_direct.so): what runtime/nvn_native.c hands it as the game
+   records, besides the object layer, sync and present of renderer/api/vk_api.h's table (version 14), which it answers too.
    C, included by the host; the host finds these by name in the library.
 
    A list is begun, filled and ended on one recording thread at a time (game workers, concurrently with other lists),
@@ -16,14 +16,14 @@ enum { HSD_LIST_PACKET, HSD_LIST_LOAD, HSD_LIST_JOB, HSD_LIST_LAYER, HSD_LIST_GA
        HSD_LIST_IMMEDIATE, HSD_LIST_KINDS };   /* IMMEDIATE: a one-shot list the game submits itself and waits for */
 typedef struct hsd_list_info {
     uint32_t kind;        /* HSD_LIST_*; PACKET = not classified (counted, its lr logged once) */
-    uint32_t load_kind;   /* HSD_LIST_LOAD: 1 vertex, 2 draw, 3 shape, 4 material, 5 and 6 the measuring copies of 1 and 2 (host/direct.c) */
+    uint32_t load_kind;   /* HSD_LIST_LOAD: 1 vertex, 2 draw, 3 shape, 4 material, 5 and 6 the measuring copies of 1 and 2 (runtime/direct.c) */
     uint64_t lr, fp;      /* the guest return address and frame pointer of BeginRecording */
     uint64_t cmd;         /* the guest NVNcommandBuffer object */
     uint64_t pass_key;    /* HSD_LIST_JOB: the recorder's pass key pointer (x3 of f_80084de0: docs/direct/jobs.md) */
     uint64_t view;        /* HSD_LIST_JOB: the view record (x25 at BeginRecording), for logs only */
 } hsd_list_info;
 
-/* op and payload are gpu/api/rx_nvn.h's records (NOP_*, the payload after the 8-byte header) */
+/* op and payload are renderer/api/rx_nvn.h's records (NOP_*, the payload after the 8-byte header) */
 void *hsd_list_begin(const hsd_list_info *info);                         /* recording thread */
 void  hsd_emit(void *list, uint32_t op, const void *payload, uint32_t size);   /* recording thread; payload valid during the call */
 void  hsd_list_call(void *list, void *const *callees, uint32_t n);       /* CallCommands / CopyCommands, in order */
@@ -72,7 +72,7 @@ void hsd_texels(uint32_t source, const void *tex, unsigned level, unsigned layer
 int  hsd_pass_known(uint64_t key);
 void hsd_pass_inline(void *list, uint64_t key);
 
-/* The transient pool (docs/direct/transient-pool.md; host/rt_slots.c). The game's transient render targets (agl's
+/* The transient pool (docs/direct/transient-pool.md; games/oot/patches/rt_slots.c). The game's transient render targets (agl's
    DynamicTextureAllocator) live in one range of storage addresses that the host names once, before the first texture is
    initialized in it: the back end allocates that many bytes of device memory then, and never again for these targets. A
    texture initialized in the range gets an image bound in that memory at its storage offset; images whose ranges overlap

@@ -1,4 +1,4 @@
-//! The host's patch declarations, read from its C source (nx2/lift2/patch_scan.py; host/patch.h says how each is
+//! The host's patch declarations, read from its C source (nx2/lift2/patch_scan.py; runtime/patch.h says how each is
 //! written): a token scanner of a fixed grammar (comments, literals, line continuations, nested parentheses; no C
 //! parser), the declarations' grammar and cross-checks, each error with file:line exactly as the Python side words
 //! it; the rows they make (probes.Value, probes.At) resolved to their functions over the plan with the lift's checks
@@ -697,7 +697,7 @@ impl Func {
         };
         let ops: Vec<&Vec<Tok>> = rest[3..].iter().filter(|x| !x.is_empty()).collect();
         if ops.len() > 16 {
-            return fail(at, format!("{} operands: host/patch.h takes at most 16", ops.len()));
+            return fail(at, format!("{} operands: runtime/patch.h takes at most 16", ops.len()));
         }
         for (k, x) in ops.iter().enumerate() {
             if x.len() == 1 && x[0].text == "orig" {
@@ -780,7 +780,7 @@ impl Answer {
     }
 }
 
-/// an SVC: the host's answer to `svc #number`, hos_svc_<number>(ctx, x0..x7, pc) -> x0 | x1 << 64 (host/patch.h)
+/// an SVC: the host's answer to `svc #number`, hos_svc_<number>(ctx, x0..x7, pc) -> x0 | x1 << 64 (runtime/patch.h)
 #[derive(Clone, Debug)]
 pub struct Svc {
     pub at: Where,
@@ -938,13 +938,12 @@ pub fn scan_texts(texts: &[(String, String)]) -> Res<PatchSet> {
     Ok(ps)
 }
 
-/// the host's declarations: game.toml's host files under root/host (patch_scan.scan), read as UTF-8 with replacement
-pub fn scan(root: &Path, files: &[String]) -> Res<PatchSet> {
+/// the declarations of `files` (Game::sources), read as UTF-8 with replacement; named by their paths under `root`
+pub fn scan(root: &Path, files: &[std::path::PathBuf]) -> Res<PatchSet> {
     let mut texts = Vec::new();
-    for f in files {
-        let p = root.join("host").join(f);
-        let b = std::fs::read(&p).map_err(|e| format!("patch declarations: {}: {e}", p.display()))?;
-        texts.push((format!("host/{f}"), String::from_utf8_lossy(&b).into_owned()));
+    for p in files {
+        let b = std::fs::read(p).map_err(|e| format!("patch declarations: {}: {e}", p.display()))?;
+        texts.push((crate::game::shown(root, p), String::from_utf8_lossy(&b).into_owned()));
     }
     scan_texts(&texts)
 }
@@ -1511,7 +1510,7 @@ mod tests {
 
     /// the one row of a declaration, at its function func
     fn row(decl: &str, func: u64) -> Row {
-        let ps = scan_texts(&[("host/t.c".into(), format!("{decl} {{}}"))]).unwrap();
+        let ps = scan_texts(&[("runtime/t.c".into(), format!("{decl} {{}}"))]).unwrap();
         let mut r = rows(&ps.sites).unwrap().remove(0);
         r.func = func;
         r
@@ -1523,7 +1522,7 @@ mod tests {
         // before it, follows a call that returns, or replaces a call or a tail call)
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let game = crate::game::Game::load(&root.join("games/oot")).unwrap();
-        let ps = scan(&root, &game.host).unwrap();
+        let ps = scan(&root, &game.sources(&root).unwrap()).unwrap();
         let rs = rows(&ps.sites).unwrap();
         assert!(rs.iter().filter(|r| !r.value).count() > 100);
         assert!(rs.iter().any(|r| r.value));
@@ -1531,7 +1530,7 @@ mod tests {
             let i = ounce_decode::decode(r.word).unwrap_or_else(|| panic!("{:#x}: its word does not decode", r.pc));
             let branch = TERMINATORS.contains(&i.enc.template);
             assert!(r.value || r.mode == "before" || !branch || is_call(r.word) || (r.mode == "instead" && is_tail(r.word)), "{:#x} is a branch", r.pc);
-            assert!(r.at.0.starts_with("host/") && r.at.1 > 0);
+            assert!((r.at.0.starts_with("runtime/") || r.at.0.starts_with("games/oot/patches/")) && r.at.1 > 0, "{:?}", r.at);
         }
     }
 
@@ -1653,9 +1652,9 @@ fn record_key(text: &str) -> Res<Vec<String>> {
 }
 
 /// an error unless the hos_patch records of the host's objects are the declarations the scan reads in `files`
-/// (root/host/<file>; as many, the same text as tokens): a declaration the compiler saw and the scan did not (or the
+/// (Game::sources; as many, the same text as tokens): a declaration the compiler saw and the scan did not (or the
 /// reverse) cannot ship. Ok: the report line.
-pub fn check_records(root: &Path, files: &[String], objects: &[std::path::PathBuf]) -> Res<String> {
+pub fn check_records(root: &Path, files: &[std::path::PathBuf], objects: &[std::path::PathBuf]) -> Res<String> {
     let mut got: BTreeMap<Vec<String>, i64> = BTreeMap::new();
     for o in objects {
         for r in elf_sections(o, b"hos_patch")?.split(|&b| b == 0).filter(|r| !r.is_empty()) {
@@ -1663,11 +1662,10 @@ pub fn check_records(root: &Path, files: &[String], objects: &[std::path::PathBu
         }
     }
     let mut want: BTreeMap<Vec<String>, i64> = BTreeMap::new();
-    for f in files {
-        let p = root.join("host").join(f);
-        let b = std::fs::read(&p).map_err(|e| format!("patch declarations: {}: {e}", p.display()))?;
+    for p in files {
+        let b = std::fs::read(p).map_err(|e| format!("patch declarations: {}: {e}", p.display()))?;
         let text = String::from_utf8_lossy(&b);
-        for d in declarations(&text, &format!("host/{f}"))? {
+        for d in declarations(&text, &crate::game::shown(root, p))? {
             let canon = format!(
                 "{}({})",
                 d.kind,
@@ -1701,7 +1699,7 @@ pub fn check_records(root: &Path, files: &[String], objects: &[std::path::PathBu
 
 // ---- the C a declaration's macro generates (the patch tools' suggestion)
 
-/// (C type, parameter name) of one operand as host/patch.h makes it (patch_scan.param)
+/// (C type, parameter name) of one operand as runtime/patch.h makes it (patch_scan.param)
 fn param(arg: &[Tok], at: &Where) -> Res<(String, String)> {
     if let Some(inner) = call(arg, "as") {
         if inner.len() == 2 {

@@ -86,12 +86,12 @@ guaranteed. First step: the leaf subset, on/off.
 - **STLR as a release store**: see the constraints table for its experiment.
 - **Remove the old code-pointer resolver path** once a long play session logs zero guest-address calls (see the
   constraints table).
-- **The null-call skip in the runtime's call-miss handler** (`a64_call_miss`, `host/hos_hostcall.c`) exists for a game
+- **The null-call skip in the runtime's call-miss handler** (`a64_call_miss`, `runtime/hos_hostcall.c`) exists for a game
   site nobody has identified. Find the site and patch it there, or remove the skip.
-- **The host reads the caller's frame chain** in `pool_creation_key` (`host/nvn_native.c`), and the render-target slot
-  family key hashes the caller's return address (`host/rt_slots.c`). Both tie the host to the guest's frames and return
+- **The host reads the caller's frame chain** in `pool_creation_key` (`runtime/nvn_native.c`), and the render-target slot
+  family key hashes the caller's return address (`games/oot/patches/rt_slots.c`). Both tie the host to the guest's frames and return
   addresses; a row at the calling site would say it explicitly.
-- **Split `host/`** into the OS layer, the renderer's host side and a per-game folder.
+- **Split `runtime/`** into the OS layer, the renderer's host side and a per-game folder.
 - **Build.** `-fsplit-machine-functions` with a profile, hot and cold wrappers, and 2 MB text pages for the lifted code.
   None measured.
 

@@ -1,7 +1,7 @@
-"""The game's file system stays inside its mounts and never works through links (host/nn_fs.c, host/mods.c).
+"""The game's file system stays inside its mounts and never works through links (runtime/nn_fs.c, runtime/mods.c).
 
 Linux only. Builds, from the sources as they are, nn_fs.c's guest_path_ok and delete_tree and mods.c's RomFS walk over
-host/os (os_linux.c's file functions), then checks:
+runtime/os (os_linux.c's file functions), then checks:
 
 - guest paths with ".." parts, a \\ or a : are refused, ordinary ones kept;
 - DeleteDirectoryRecursively's walk removes a link inside the save, not the folder or file it points to;
@@ -37,8 +37,8 @@ def main():
     if os.name == "nt" or sys.platform == "darwin":
         print("SKIP: the checks run on Linux")
         return
-    fs = (ROOT / "host/nn_fs.c").read_text(encoding="utf-8")
-    mods = (ROOT / "host/mods.c").read_text(encoding="utf-8")
+    fs = (ROOT / "runtime/nn_fs.c").read_text(encoding="utf-8")
+    mods = (ROOT / "runtime/mods.c").read_text(encoding="utf-8")
     pieces = [
         block(fs, "static int guest_path_ok(const char *rest) {"),
         block(fs, "static void delete_tree(const char *dir) {"),
@@ -53,7 +53,7 @@ def main():
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#define HOS_FS_PATH 1024   /* (host/nn_fs.c's path buffers, #1497) */
+#define HOS_FS_PATH 1024   /* (runtime/nn_fs.c's path buffers, #1497) */
 static void hos_log(const char *f, ...) { (void)f; }
 static void lower(char *s) { (void)s; }
 static int nput;
@@ -103,8 +103,8 @@ int main(int argc, char **argv) {
         src = tmp / "fixture.c"
         src.write_text(fixture, encoding="utf-8")
         exe = tmp / "fixture"
-        subprocess.run([a.cc, "-std=gnu11", "-I", str(ROOT / "host/os"), "-Wno-unused-function", str(src),
-                        str(ROOT / "host/os/os_linux.c"), "-o", str(exe), "-lpthread", "-ldl"], check=True)
+        subprocess.run([a.cc, "-std=gnu11", "-I", str(ROOT / "runtime/os"), "-Wno-unused-function", str(src),
+                        str(ROOT / "runtime/os/os_linux.c"), "-o", str(exe), "-lpthread", "-ldl"], check=True)
         work = tmp / "work"
         work.mkdir()
         r = subprocess.run([str(exe), str(work)], capture_output=True, text=True, timeout=60)

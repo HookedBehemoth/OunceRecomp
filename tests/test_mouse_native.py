@@ -1,4 +1,4 @@
-"""Native mouse look turns the player camera's own angles (host/mouse_native.c).
+"""Native mouse look turns the player camera's own angles (games/oot/patches/mouse_native.c).
 
 The file is compiled on its own against a fake guest memory that holds one player camera: its pitch limits at +0x178, its
 pitch at +0x18c and its yaw at +0x1a4. hos_mouse_camera is what the camera's update (f_80644c80, the lifter's At probe) calls
@@ -133,11 +133,11 @@ class MouseNativeTests(unittest.TestCase):
             tmp = Path(tmp)
             (tmp / "hos.h").write_text(HOS_H, encoding="utf-8")
             # (beside the stand-in hos.h, so its #include "hos.h" finds that one)
-            shutil.copy(ROOT / "host" / "mouse_native.c", tmp / "mouse_native.c")
-            shutil.copy(ROOT / "host" / "patch.h", tmp / "patch.h")   # (its declaration: PATCH_AT)
+            shutil.copy(ROOT / "games/oot/patches/mouse_native.c", tmp / "mouse_native.c")
+            shutil.copy(ROOT / "runtime/patch.h", tmp / "patch.h")   # (its declaration: PATCH_AT)
             (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-g", "-I", str(tmp), "-I", str(ROOT / "host" / "os"),
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-g", "-I", str(tmp), "-I", str(ROOT / "runtime/os"),
                                     str(tmp / "t.c"), str(tmp / "mouse_native.c"), "-o", str(binary), "-lm"],
                                    text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)

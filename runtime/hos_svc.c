@@ -114,7 +114,7 @@ static void release_locked(uint64_t mutex) {
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
 #include <emmintrin.h>
 static int spin_for_release(uint64_t mutex, uint32_t held) {
-    const int64_t limit = hos_spin_ns();   /* (HOS_SPIN_US, host/nn_os_sync.c) */
+    const int64_t limit = hos_spin_ns();   /* (HOS_SPIN_US, runtime/nn_os_sync.c) */
     static int misses[256], tries[256];
     const unsigned slot = (unsigned)(mutex >> 3 ^ mutex >> 11) & 255;
     const int m = __atomic_load_n(&misses[slot], __ATOMIC_RELAXED);
@@ -347,7 +347,7 @@ static void query_memory(uint64_t out, uint64_t addr) {
 #define CUR_THREAD 0xFFFF8000u
 static HosThread *thread_handle(uint32_t h) { return h == CUR_THREAD ? hos_self() : hos_thread_by_handle(h); }
 
-/* Each SVC the host answers (host/patch.h SVC: number, name, the registers it reads from x0 and writes from x0, as
+/* Each SVC the host answers (runtime/patch.h SVC: number, name, the registers it reads from x0 and writes from x0, as
    switchbrew's tables and Atmosphere's svc_definition_macro.hpp give them; the inputs only those the host uses); an
    svc of any other number is lifted as a stop, hos_svc_stop. "-": a register the svc does not read. */
 SVC(0x01, SetHeapSize, 2, 2) {   /* (-, size) -> (result, heap address) */
@@ -504,6 +504,6 @@ SVC(0x29, GetInfo, 4, 2) {   /* (-, id0, handle, id1) -> (result, value) */
 /* An svc no SVC declares: the lifter stops there (it is the end of the code after it, as a noreturn call) */
 void hos_svc_stop(uint32_t imm, uint64_t pc) __attribute__((noreturn));
 void hos_svc_stop(uint32_t imm, uint64_t pc) {
-    hos_fatal_lr(pc, "svc %#x is not implemented (no SVC declaration in host/hos_svc.c) at %#llx", imm,
+    hos_fatal_lr(pc, "svc %#x is not implemented (no SVC declaration in runtime/hos_svc.c) at %#llx", imm,
                  (unsigned long long)pc);
 }

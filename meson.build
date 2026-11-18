@@ -1,4 +1,5 @@
-# The renderer, hookshot_direct.so: gpu/direct with its translator fork, built with clang and lld. The game's
+# The renderer, hookshot_direct.so: renderer/ with the shader translator (third_party/eden, third_party/sirit), built
+# with clang and lld. The game's
 # executable is built by the builder (ounce/builder), not here.
 project('hookshot-renderer', 'c', 'cpp',
   meson_version: '>= 1.3',
@@ -7,7 +8,7 @@ project('hookshot-renderer', 'c', 'cpp',
 
 foreach lang : ['c', 'cpp']
   if meson.get_compiler(lang).get_id() != 'clang'
-    error('the renderer is built with clang: meson setup --native-file gpu/direct/meson/clang.ini <build dir>')
+    error('the renderer is built with clang: meson setup --native-file renderer/meson/clang.ini <build dir>')
   endif
 endforeach
 
@@ -44,7 +45,9 @@ foreach pkg : [['spirv', 'spirv/unified1/spirv.h'], ['vulkan', 'vulkan/vulkan.h'
   endif
 endforeach
 headers_inc = include_directories(header_dirs)
-host_os_inc = include_directories('host/os')
+host_os_inc = include_directories('runtime/os')
 
 subdir('third_party/zstd')
-subdir('gpu')
+subdir('third_party/sirit')
+subdir('third_party/eden')
+subdir('renderer')

@@ -1,9 +1,12 @@
-"""The direct back end's shader stamps: a hash of the translator (gpu/direct/eden) and of the code that decides the
+"""The direct back end's shader stamps: a hash of the translator (third_party/eden, third_party/sirit) and of the code that decides the
 translation's output, which keys the program caches. Code inside direct_shader.cpp and direct_compute.cpp counts when it
 sits between "// <stamp NAME>" and "// </stamp NAME>" lines: graphics and shared for the graphics programs, compute and
 shared for the compute programs.
 
-    shader_stamp.py graphics|compute <out header> <depfile> <toolchain>
+    shader_stamp.py graphics|compute <out header> <depfile> <translator folder>... -- <toolchain>
+
+Paths are hashed relative to their folder (a translator file as <folder name>/<path in it>, a back end file by its name),
+so moving the folders does not change the stamp.
 
 <toolchain> names the compiler and the flags that build the translator, which the stamp also hashes. It writes `#define HOOKSHOT_DIRECT_SHADER_STAMP` (graphics) or `HOOKSHOT_DIRECT_COMPUTE_STAMP` (compute) and a depfile naming
 every file and folder the stamp read, so a new translator file makes it again.
@@ -14,8 +17,6 @@ import re
 import sys
 
 DIRECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GPU = os.path.dirname(DIRECT)
-EDEN = os.path.join(DIRECT, "eden")
 
 # (kind -> the define, the files hashed whole besides the translator, and the stamp regions of each file)
 KINDS = {
@@ -45,26 +46,30 @@ def stamp_regions(path, names):
     return "\n".join(out).encode()
 
 
-def translator():
-    """every file under gpu/direct/eden but the build's meson.build files, and the folders walked"""
+def translator(roots):
+    """(name, path) of every file under the translator's folders but the build's meson.build files, named
+    <folder name>/<path in it>; and the folders walked"""
     dirs = []
     files = []
-    for d, _, fs in os.walk(EDEN):
-        dirs.append(d)
-        files += [os.path.join(d, f) for f in fs if f != "meson.build"]
+    for root in roots:
+        root = os.path.abspath(root)
+        for d, _, fs in os.walk(root):
+            dirs.append(d)
+            files += [(os.path.join(os.path.basename(root), os.path.relpath(os.path.join(d, f), root)), os.path.join(d, f))
+                      for f in fs if f != "meson.build"]
     return sorted(files), dirs
 
 
-def stamp(kind, toolchain=""):
+def stamp(kind, roots, toolchain=""):
     """the stamp's 16 hex digits and the paths it read"""
     _, whole, regions = KINDS[kind]
-    files, dirs = translator()
+    files, dirs = translator(roots)
     read = list(dirs)
     h = hashlib.sha1(usedforsecurity=False)
     h.update(b"toolchain " + toolchain.encode() + b"\n")
-    for f in files + [os.path.join(DIRECT, n) for n in whole]:
+    for name, f in files + [(n, os.path.join(DIRECT, n)) for n in whole]:
         if os.path.isfile(f):
-            h.update(os.path.relpath(f, GPU).replace("\\", "/").encode() + lf(f))
+            h.update(name.replace("\\", "/").encode() + lf(f))
             read.append(f)
     for name, which in regions:
         h.update(name.encode() + stamp_regions(os.path.join(DIRECT, name), which))
@@ -74,7 +79,9 @@ def stamp(kind, toolchain=""):
 
 def main():
     kind, out, dep = sys.argv[1:4]
-    digits, read = stamp(kind, " ".join(sys.argv[4:]))
+    rest = sys.argv[4:]
+    cut = rest.index("--")
+    digits, read = stamp(kind, rest[:cut], " ".join(rest[cut + 1:]))
     text = "#define %s 0x%sull\n" % (KINDS[kind][0], digits)
     # (unchanged text keeps the header's time: the one file that includes it is not compiled again)
     if not os.path.exists(out) or open(out).read() != text:

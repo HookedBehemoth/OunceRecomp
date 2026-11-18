@@ -1,4 +1,4 @@
-"""The core number a guest thread is told (host/hos_thread.c hos_thread_core, hos_cores), compiled with a stub HosThread:
+"""The core number a guest thread is told (runtime/hos_thread.c hos_thread_core, hos_cores), compiled with a stub HosThread:
 a one-core mask's core; else the ideal core when the mask has it (or there is no mask); else the mask's lowest core;
 never a core outside the mask; six cores.
 
@@ -57,7 +57,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cc", default="gcc")
     a = ap.parse_args()
-    src = (ROOT / "host/hos_thread.c").read_text(encoding="utf-8")
+    src = (ROOT / "runtime/hos_thread.c").read_text(encoding="utf-8")
     code = HARNESS.replace("CUT_CORES", block(src, "int hos_cores(void) {")).replace("CUT_CORE\n", block(src, "int hos_thread_core(HosThread *t) {") + "\n")
     cc = shutil.which(a.cc)
     if not cc:

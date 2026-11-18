@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A benchmark run (HOS_BENCH, host/bench.c): one scene, headless and muted, at a fixed 1/60 s game step and unpaced; from the
+# A benchmark run (HOS_BENCH, runtime/bench.c): one scene, headless and muted, at a fixed 1/60 s game step and unpaced; from the
 # moment the scene is ready it measures <frames> frames, writes bench.csv in the run's folder and exits. Prints the summary.
 #
 #   scripts/bench.sh <scene> [frames] [-- NAME=VALUE ...]     the extra variables go to the game (switches)

@@ -1,5 +1,5 @@
 // The direct back end's start: libvulkan, the instance, the device (one graphics and compute
-// queue, the sparse-binding queue for layer 0), and the version-14 table the host calls (gpu/api/vk_api.h). Cut down from
+// queue, the sparse-binding queue for layer 0), and the version-14 table the host calls (renderer/api/vk_api.h). Cut down from
 // gpu/legacy/vk/vk_main.cpp: no start-up screen, menu, upscalers, vendor hooks or switches.
 
 #include <cstdarg>
@@ -320,7 +320,7 @@ extern "C" __attribute__((visibility("default"))) int64_t hsd_vram_free(void) { 
 extern "C" __attribute__((visibility("default"))) void hsd_texture_cached(const void* t, int cached) {   // 
     hsd::image_texture_cached((const nvn_tex*)t, cached != 0);
 }
-// (the transient pool, docs/direct/transient-pool.md: host/rt_slots.c's calls)
+// (the transient pool, docs/direct/transient-pool.md: games/oot/patches/rt_slots.c's calls)
 extern "C" __attribute__((visibility("default"))) int hsd_transient_pool(uint64_t lo, uint64_t hi) {
     return hsd::image_pool_range(lo, hi) ? 1 : 0;
 }

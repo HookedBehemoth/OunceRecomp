@@ -8,8 +8,8 @@ inspect and test what the lifter produced. For the general build and run loop, s
 
 | You changed | Run | Typical time |
 |---|---|---|
-| A file in `host/`, including `PATCH_AT`, `PATCH_FUNC` and `NV` declarations | `scripts/build.sh` | Seconds; plus the partitions a declaration touches |
-| A file in `gpu/direct/` | `scripts/build.sh` | The renderer's files, then the link |
+| A file in `runtime/`, including `PATCH_AT`, `PATCH_FUNC` and `NV` declarations | `scripts/build.sh` | Seconds; plus the partitions a declaration touches |
+| A file in `renderer/` | `scripts/build.sh` | The renderer's files, then the link |
 | The lifter (`ounce/lift`) | `scripts/build.sh` | Every partition whose IR changed is compiled again: up to three minutes |
 | The hot list, the dump or the toolchain | `scripts/relift.sh` | The same build, also when `BUILD.txt` names the commit |
 

@@ -1,7 +1,7 @@
 """Alt+Enter toggles fullscreen and presses no button (Enter is Plus by default, and any button can be bound to it; issue #390).
 
-The bound keys' helper (host/nn_hid.c's kmap_down) is compiled alone against fake key states; the window's
-event handling (host/posix/display_sdl.c) is checked to toggle on Alt+Enter, once per press.
+The bound keys' helper (runtime/nn_hid.c's kmap_down) is compiled alone against fake key states; the window's
+event handling (runtime/media/display_sdl.c) is checked to toggle on Alt+Enter, once per press.
 
 python -I -B tests/test_alt_enter.py [--cc gcc]
 """
@@ -31,7 +31,7 @@ def case(text, label):
 
 
 def check_linux():
-    src = (ROOT / "host" / "posix" / "display_sdl.c").read_text(encoding="utf-8")
+    src = (ROOT / "runtime/media/display_sdl.c").read_text(encoding="utf-8")
     if "scancode == 40 && (mod & 0x300)" not in src:
         raise SystemExit("display_sdl.c: Alt+Enter no longer toggles fullscreen")
 
@@ -67,7 +67,7 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
     check_linux()
-    hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
+    hid = (ROOT / "runtime/nn_hid.c").read_text(encoding="utf-8")
     fn = block(hid, "static int kmap_down(")
     if "kmap_down(key_bind[i][k], key)" not in hid:
         raise SystemExit("nn_hid.c: the bound keys no longer go through kmap_down")

@@ -9,10 +9,10 @@
      slot 3: f_80100210([L + 0xc00], [info + 0xb0], 0xfb030303), L = [[[0x84c9e740]] + 0x1e8]
    with V = [[info + 0xe0] + 8], the scene's view object (each buffer object picks its own frame's copy). f_801060f0 reads
    only info + 0xb0 (the draw context, whose + 0xd8 is the command buffer) and info + 0xbc (the kind: 0x20 binds otherwise).
-   So the patch needs only V, which a row at the binder's entry notes, and the job's draw context (host/eng_jobs.c).
+   So the patch needs only V, which a row at the binder's entry notes, and the job's draw context (games/oot/patches/eng_jobs.c).
    One V a frame is the game's: a frame whose binder calls see a second V is counted and logged, since its jobs would
    bind the last one, not their own pass's. The splice sits after the job prologue's SetDepthRange
-   (the call returning to 0x800855ac in f_80084de0: an At row, a PATCH_AT declaration, host/patch.h, that calls guest code), as the
+   (the call returning to 0x800855ac in f_80084de0: an At row, a PATCH_AT declaration, runtime/patch.h, that calls guest code), as the
    M3 survey placed it; the four binds go to the job's own command buffer through a 0x100-byte block on the guest stack
    below the job's SP (info + 0xb0 = the job's draw context, + 0xbc = 0).
 

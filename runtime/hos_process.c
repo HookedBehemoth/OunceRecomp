@@ -1,6 +1,6 @@
 /* The process around the guest (was mkw_glue.c): the 64-bit guest window's commit (a range check: the window is mapped
    whole), crash reports with the guest's state, the guest backtrace, HOS_STATS_AFTER, the Switch 2's counter
-   (CNTPCT_EL0), and stand-ins for the hooks of TOTKPort files not taken into host/ (its profiler's memory checkpoints,
+   (CNTPCT_EL0), and stand-ins for the hooks of TOTKPort files not taken into runtime/ (its profiler's memory checkpoints,
    its emulated GPU's submissions, a frame-step input filter). */
 #include "hos.h"
 #include <stdio.h>
@@ -126,7 +126,7 @@ void hos_commit_init(void) {
 /* ---- stand-ins --------------------------------------------------------------------------------------------- */
 void hos_mem_checkpoint(const char *what) { (void)what; }        /* (hos_prof.c: HOS_MEM_TIMELINE) */
 uint64_t hos_frame_step_buttons(uint64_t buttons) { return buttons; }   /* (nn_vi.c) */
-/* (hookshot) hos_sdl_pads, hos_sdl_rumble: host/pad_sdl.c (from TOTKPort) */
+/* (hookshot) hos_sdl_pads, hos_sdl_rumble: runtime/media/pad_sdl.c (from TOTKPort) */
 
 /* TOTK's emulated GPU (gpu.c, its Maxwell command processor), which nvdrv.c and the debug commands call into: MKW
    has none (its NVN2 calls go to nvn_native.c), so a submission is only counted. */

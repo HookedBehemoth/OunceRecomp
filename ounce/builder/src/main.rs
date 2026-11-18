@@ -421,14 +421,15 @@ fn build(args: &[String]) {
     // (the host's C at LLVM's defaults, then the runtime at its two -mllvm options, then the lift and its compile)
     stage("host", "compiling the host's C");
     let t = Instant::now();
-    let host_jobs = host::host_jobs(&root, &rt64, &game.host, &version).unwrap_or_else(|e| fail(e));
+    let sources = game.sources(&root).unwrap_or_else(|e| fail(e));
+    let host_jobs = host::host_jobs(&root, &rt64, &sources, &version).unwrap_or_else(|e| fail(e));
     let rt = host::rt_job(&root, &rt64);
     let hits = host::compile(&host_jobs, &obj, cjobs, Some(&cache), &resource, &aux).unwrap_or_else(|e| fail(e))
         + host::compile(std::slice::from_ref(&rt), &obj, 1, Some(&cache), &resource, &aux).unwrap_or_else(|e| fail(e));
     println!("host C: {} files ({hits} from the cache) in {:.1} s", host_jobs.len() + 1, t.elapsed().as_secs_f64());
     // (the patch declarations the lift scans, against what the compiler made of them)
     let host_objs: Vec<PathBuf> = host_jobs.iter().filter(|j| j.obj.starts_with("host_")).map(|j| obj.join(&j.obj)).collect();
-    match ounce_lift::patch::check_records(&root, &game.host, &host_objs) {
+    match ounce_lift::patch::check_records(&root, &sources, &host_objs) {
         Ok(line) => println!("{line}"),
         Err(e) => fail(e),
     }
@@ -479,6 +480,11 @@ fn build(args: &[String]) {
         }
     }
     install(&exe, &out.join("hookshot"), true).unwrap_or_else(|e| fail(e));
+    // (the window's title and icon, which the runtime reads beside the executable)
+    std::fs::write(out.join("title.txt"), format!("{}\n", game.title)).unwrap_or_else(|e| fail(format!("title.txt: {e}")));
+    if let Some(icon) = &game.icon {
+        std::fs::copy(icon, out.join("icon.bmp")).unwrap_or_else(|e| fail(format!("{}: {e}", icon.display())));
+    }
     if let Some(r) = romfs {
         stage("romfs", "copying the romfs");
         dump::finish_romfs(r).unwrap_or_else(|e| fail(e));

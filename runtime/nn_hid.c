@@ -33,7 +33,7 @@
 #include "os.h"
 #include "hos_keys.h"
 #include "hos_sdl.h"
-#include "../gpu/api/vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
+#include "vk_api.h"   /* (the controls' names: HOS_SW_*, HOS_PAD_*) */
 #include "hos_motion.h"
 
 enum { B_A = 0, B_B, B_X, B_Y, B_LS, B_RS, B_L, B_R, B_ZL, B_ZR, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN };
@@ -200,7 +200,7 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
     return 1;
 }
 
-/* A bound key is down: Enter held with Alt is no button (Alt+Enter is fullscreen, host/posix/display_sdl.c). tests/test_alt_enter.py */
+/* A bound key is down: Enter held with Alt is no button (Alt+Enter is fullscreen, runtime/media/display_sdl.c). tests/test_alt_enter.py */
 static int kmap_down(int vk, int (*down)(int)) { return down(vk) && !(vk == VK_RETURN && down(VK_MENU)); }
 
 static int game_in_front(void) {
@@ -795,8 +795,8 @@ HLE(_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util1
 }
 /* SixAxisSensorState, 0x60 bytes: {i64 delta time (ns), i64 sampling number, f32 acceleration[3] (G), angular velocity[3]
    (revolutions a second), angle[3] (revolutions), direction[3][3], u32 attributes (1 connected), pad}. Newest first.
-   (hookshot) With Motion controls on and a pad with a gyroscope (host/pad_sdl.c), the state OoT aims with
-   (host/hos_motion.h: the full state, as the console and Eden build it); else a pad lying still. */
+   (hookshot) With Motion controls on and a pad with a gyroscope (runtime/media/pad_sdl.c), the state OoT aims with
+   (runtime/media/hos_motion.h: the full state, as the console and Eden build it); else a pad lying still. */
 HLE(_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE) {
     /* (the sampling number goes up once per reading, as the hardware's does: while live it is the readings' own count,
        moved on past the last number handed out; each entry is its own reading, with the time since the one before) */

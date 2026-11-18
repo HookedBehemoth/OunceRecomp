@@ -1,4 +1,4 @@
-//! The store the renderer maps (gpu/direct/direct_assets.cpp), all little-endian, format version 1:
+//! The store the renderer maps (renderer/direct_assets.cpp), all little-endian, format version 1:
 //! - `pack_NNN.bin`: a 64-byte header ("HKTXPAK1", u32 version, u32 pack id), then standard zstd frames back to back,
 //!   up to the pack limit.
 //! - `index.bin`: a 128-byte header, then the file, texture, mip and frame records and the string table.

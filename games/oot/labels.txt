@@ -17,8 +17,8 @@
 80798920 gfx_texture_initialize           # docs/direct/texture-streaming.md, work/assets/native/asset-path.md: nn::gfx TextureImpl::Initialize (also the in-place paths) # ? was texdata_load_in_place_c
 80798a20 gfx_texture_view_initialize      # docs/direct/texture-streaming.md: TextureView init (SetLevels, SetLayers)
 8051d820 texdata_alloc                    # docs/direct/texture-streaming.md: a td from "aglTextureDataMgr::Unit", evicts the LRU when full
-80797240 texdata_cache_reject_per_frame   # docs/direct/texture-streaming.md, host/direct_texdata.c: evicts while the heap has < TextureCacheRejectionThreshold free (M6f: patched by free VRAM)
-80798690 texdata_copy_texels              # docs/direct/texture-streaming.md, host/direct_assets.c: agl::TextureData::loadImage_, the memcpy of the whole image (hooked)
+80797240 texdata_cache_reject_per_frame   # docs/direct/texture-streaming.md, games/oot/patches/direct_texdata.c: evicts while the heap has < TextureCacheRejectionThreshold free (M6f: patched by free VRAM)
+80798690 texdata_copy_texels              # docs/direct/texture-streaming.md, games/oot/patches/direct_assets.c: agl::TextureData::loadImage_, the memcpy of the whole image (hooked)
 80bd22b0 texdata_copy_to_buffer           # work/assets/native/block-linear.md: its own CopyTextureToBuffer + submit (capture)
 8353d560 texdata_cpu_copy_region          # work/assets/native/block-linear.md: ReadTexels from one texture, WriteTexels into another
 809e6760 texdata_cpu_lut                  # a LUT computed on the CPU into a buffer a texture names
@@ -38,9 +38,9 @@
 809ea090 texdata_init_jpg                 # docs/direct/terrain-texels.md: TextureDataInitializerJPG: decodes on the CPU
 807987d0 texdata_init_nvn_texture         # docs/direct/texture-streaming.md: nvnTextureInitialize, view, pool registration
 80798b60 texdata_load_in_place_a          # docs/direct/texture-streaming.md: ui2d in-place files
-80792bd0 texdata_load_in_place_b          # docs/direct/texture-streaming.md, host/direct_assets.c: BNTX in place (in-place files)
+80792bd0 texdata_load_in_place_b          # docs/direct/texture-streaming.md, games/oot/patches/direct_assets.c: BNTX in place (in-place files)
 807974f0 texdata_make_alias               # docs/direct/texture-streaming.md: a no-data load: shares its target's slot, joins its chain
-80ddab00 texdata_model_procedural         # work/assets/native/block-linear.md: ModelProcedural; makes the two sky LUT sets (host/direct_sky_lut.c)
+80ddab00 texdata_model_procedural         # work/assets/native/block-linear.md: ModelProcedural; makes the two sky LUT sets (games/oot/patches/direct_sky_lut.c)
 809eb4a0 texdata_noise_generators         # docs/direct-backend-plan.md
 809eb720 texdata_noise_textures           # makes the noise generators' textures
 807982f0 texdata_rebind                   # docs/direct/texture-streaming.md: a moved texture under the same descriptor id
@@ -76,7 +76,7 @@
 807db4a0 texheap_compaction_move_c        # docs/direct/texture-streaming.md: state 2
 807da590 texheap_compaction_start         # docs/direct/texture-streaming.md: the policy for starting a new compaction
 807da3f0 texheap_compaction_thread        # docs/direct/texture-streaming.md: aglTextureDataMgr::Compaction thread handler
-807da480 texheap_compaction_worker        # docs/direct/texture-streaming.md, host/direct_assets.c: the compaction step (states 0-3)
+807da480 texheap_compaction_worker        # docs/direct/texture-streaming.md, games/oot/patches/direct_assets.c: the compaction step (states 0-3)
 8079aa20 texheap_mark_evictable           # docs/direct/texture-streaming.md: (&td->slot = td+0x18, 1) to the LRU cache / (.., 0) taken back (hooked)
 83538b70 texheap_owner_tag                # docs/direct/texture-streaming.md: a block's owner tag
 8051d560 texres_acquire                   # docs/direct/texture-streaming.md: (mgr, BRTI, key, listener): lookup, refcount, unlinks from the LRU
@@ -95,19 +95,19 @@
 807978c0 ui2d_textures_init_b             # work/assets/native/asset-path.md: (agl-called ResTextureFile path)
 
 # --- render targets: agl::utl::DynamicTextureAllocator
-8005ed00 dta_alloc                        # host/rt_slots.c, work/assets/native/rt-alloc.md: DTA::alloc (dta, ctx, desc, flags); docs/direct/transient-pool.md: computes a target's size itself (never asks nvnTextureBuilderGetStorageSize on the transient path); the entry it returns names its texture object through its descriptor id (+0x68 -> agl's record +0x18 -> holder -> object)
+8005ed00 dta_alloc                        # games/oot/patches/rt_slots.c, work/assets/native/rt-alloc.md: DTA::alloc (dta, ctx, desc, flags); docs/direct/transient-pool.md: computes a target's size itself (never asks nvnTextureBuilderGetStorageSize on the transient path); the entry it returns names its texture object through its descriptor id (+0x68 -> agl's record +0x18 -> holder -> object)
 80065b10 dta_alloc_b                      # work/assets/native/block-linear.md: the other DynamicTextureAllocator entry
-80062c50 dta_alloc_persistent             # host/rt_slots.c, work/assets/native/rt-alloc.md: the persistent path's fit, from the top of a free block
+80062c50 dta_alloc_persistent             # games/oot/patches/rt_slots.c, work/assets/native/rt-alloc.md: the persistent path's fit, from the top of a free block
 80063090 dta_arena_init                   # work/assets/native/rt-alloc.md: one of the pool record's 7 arenas
-8006ec60 pass_pause_texture               # host/oot_probes.c (widescreen): allocates render targets (dta_alloc/dta_free), sets viewports and renders with an inlined projection update (0x8006f1e8); names "pause texture": the pause background capture # ? was dta_arena_stats (work/assets/native/cores.md), which the decompile does not show
-80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, host/oot_probes.c: -> DTA::initialize
-802737a0 dta_free                         # host/rt_slots.c; docs/direct/transient-pool.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
+8006ec60 pass_pause_texture               # games/oot/patches/oot_probes.c (widescreen): allocates render targets (dta_alloc/dta_free), sets viewports and renders with an inlined projection update (0x8006f1e8); names "pause texture": the pause background capture # ? was dta_arena_stats (work/assets/native/cores.md), which the decompile does not show
+80c4a1c0 dta_create                       # work/assets/native/rt-alloc.md, games/oot/patches/oot_probes.c: -> DTA::initialize
+802737a0 dta_free                         # games/oot/patches/rt_slots.c; docs/direct/transient-pool.md: leaves the entry's texture object and id as they are; the back end is told nothing at it
 80c49070 dta_initialize                   # work/assets/native/rt-alloc.md: DTA::initialize: entries, 7 lanes, pool record
-836ce9d0 dta_pool_config_read             # host/oot_probes.c: reads the render-target pool size, makes the pools
+836ce9d0 dta_pool_config_read             # games/oot/patches/oot_probes.c: reads the render-target pool size, makes the pools
 80c49380 dta_pool_record_create           # work/assets/native/rt-alloc.md: physical pool + 7 arenas + virtual pools
 80064180 dta_resize_a                     # work/assets/native/rt-alloc.md open questions: a "resize" path, not traced
 810c7530 dta_resize_b                     # work/assets/native/rt-alloc.md: the bit-10 path, "resize" (not traced)
-811c9ba0 dta_virtual_pool_create          # host/oot_probes.c
+811c9ba0 dta_virtual_pool_create          # games/oot/patches/oot_probes.c
 
 # --- descriptors and the per-view system textures
 80557420 desc_deferred_free_drain         # docs/direct/texture-streaming.md: returns freed descriptor ids after the flip
@@ -118,34 +118,34 @@
 834bf9b0 desc_id_release                  # docs/direct/texture-streaming.md: an id's count down; at 0 onto the deferred list (+0xa00 by +0xa60) that f_80557420 drains
 800656b0 desc_texture_slot_b              # work/assets/native/rt-alloc.md, work/assets/native/cores.md: texture descriptor slot, with f_80064920 and f_80065880: texture object, builder from TextureData, register
 80065880 desc_texture_slot_c              # work/assets/native/rt-alloc.md, work/assets/native/nvn-callpaths.md: (same group; also re-made transient targets each frame)
-80667d20 system_texture_table_write       # docs/direct/texture-streaming.md, the 30-slot table per view; its bl f_800634b0 at 0x806680d8 replaced by an At row with a guest call (host/direct_rt_ids.c)
+80667d20 system_texture_table_write       # docs/direct/texture-streaming.md, the 30-slot table per view; its bl f_800634b0 at 0x806680d8 replaced by an At row with a guest call (games/oot/patches/direct_rt_ids.c)
 800662e0 texview_mip_chain_register       # work/assets/native/descriptor-heap.md, work/assets/native/nvn-callpaths.md: Hi-Z / mip chain per-level image views
 
 # --- the frame: heads, the gate, submits, present
-806650d0 frame_compute_list_begin         # host/direct.c, work/assets/native/engine-frame.md: an async-compute list's begin
+806650d0 frame_compute_list_begin         # runtime/direct.c, work/assets/native/engine-frame.md: an async-compute list's begin
 8066fc80 frame_draw_tv                    # work/assets/native/engine-frame.md, work/assets/native/engine-layers.md: "Draw(TV)": frame begin .. end
 802eacc0 sead_method_tree_call            # docs/direct/frame-loop.md: the method tree's recursive call (calc and draw trees)
 802eb020 frame_proc_draw                  # docs/direct/frame-loop.md: procDraw: gate primary, the draw tree, message to the Presentation Thread
-802eb390 frame_gate_primary               # host/direct.c, work/assets/native/command-lists.md: the CPU gate list: nvnEventSignal + WaitEvent a frame
-83b6ea90 frame_global_step                # host/oot_probes.c: the global step the engine reads
-83b7c710 movie_player_update              # host/oot_probes.c: a movie player's update, counts its frames at +760 (movie frames patch)
-80665980 frame_head_begin                 # host/direct.c, work/assets/native/command-lists.md: a queue's head (frame primary) begin
+802eb390 frame_gate_primary               # runtime/direct.c, work/assets/native/command-lists.md: the CPU gate list: nvnEventSignal + WaitEvent a frame
+83b6ea90 frame_global_step                # games/oot/patches/oot_probes.c: the global step the engine reads
+83b7c710 movie_player_update              # games/oot/patches/oot_probes.c: a movie player's update, counts its frames at +760 (movie frames patch)
+80665980 frame_head_begin                 # runtime/direct.c, work/assets/native/command-lists.md: a queue's head (frame primary) begin
 8042cd20 frame_end_wait_and_gate          # docs/direct/frame-loop.md: frame end: frame callback, fence and window/vsync waits, the CPU gate signal (tail call); sleeps only without a present
 806668b0 frame_list_end_submit            # work/assets/native/command-lists.md: End, submit, FenceSync, SyncWait
-8348c680 frame_body                       # docs/direct/frame-loop.md: the frame body, tail-called each frame from f_83b6ea90; its frame-end GetSystemTick call (bl at 0x8348c76c) replaced by an At row that also notes x19, the graphics module (host/hos_thread.c hos_oot_frame_end_tick)
-805902c0 frame_present_submit             # work/assets/native/engine-frame.md: Presentation thread: QueueWaitSync, submit, FenceSync; its event poll SleepThread (bl at 0x8059051c) replaced by an At row (host/hos_thread.c hos_oot_present_sleep, HOS_PRESENT_POLL)
+8348c680 frame_body                       # docs/direct/frame-loop.md: the frame body, tail-called each frame from f_83b6ea90; its frame-end GetSystemTick call (bl at 0x8348c76c) replaced by an At row that also notes x19, the graphics module (runtime/hos_thread.c hos_oot_frame_end_tick)
+805902c0 frame_present_submit             # work/assets/native/engine-frame.md: Presentation thread: QueueWaitSync, submit, FenceSync; its event poll SleepThread (bl at 0x8059051c) replaced by an At row (runtime/hos_thread.c hos_oot_present_sleep, HOS_PRESENT_POLL)
 80547f20 frame_queue_present              # work/assets/native/engine-frame.md: QueuePresentTexture
-83b6e300 frame_seconds_from_ratio         # host/nn_vi.c, nx2/step_readers.py: seconds = ratio / 60; fills the frame-time object (**0x84c9e890): +16 ratio, +24, +28 an integer cut of the step (INFERRED: a whole-frame count)
+83b6e300 frame_seconds_from_ratio         # runtime/nn_vi.c, nx2/step_readers.py: seconds = ratio / 60; fills the frame-time object (**0x84c9e890): +16 ratio, +24, +28 an integer cut of the step (INFERRED: a whole-frame count)
 83b6e7b0 frame_step_getter_a              # nx2/step_readers.py: returns a step of the frame-time object in s0
 83b6e9c0 frame_step_getter_b              # nx2/step_readers.py: returns a step of the frame-time object in s0 (compares it)
 8306f530 frame_time_object_getter         # nx2/step_readers.py: returns the frame-time object in x0
 80706be0 module_calc                      # docs/direct/frame-loop.md: moduleCalc_: the three module-graph stages of a frame (A game logic, B, C jobs and layer lists)
 80527f00 frame_submit_queues              # work/assets/native/command-lists.md, work/assets/native/engine-frame.md: Presentation thread: submits compute + heads
-804fc0f0 frame_variable_refresh           # host/nn_vi.c: variable refresh (+0x231)
+804fc0f0 frame_variable_refresh           # runtime/nn_vi.c: variable refresh (+0x231)
 
 # --- jobs: the task graph, the scheduler, render jobs and their sync
 800ad2b0 job_calc_once_a                  # docs/direct/frame-loop.md: once a frame in the calc runner (one thread, ~0.3 ms): f_836c06d0 over 14 object lists of [0x84ca2bc8]
-800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md, docs/direct/frame-loop.md: calc jobs runner on main and ModuleSystemWorker1-5: sub-stages claimed by bit masks, polled with SleepThread(20 us) (host/hos_thread.c calc_poll_nap: the three calls replaced by At rows, hos_oot_calc_sleep): the grid occluder, then the shape culler f_8009bb80 over ~290 items # ? work/assets/native/engine-layers.md says the model scene job
+800998a0 job_calc_runner                  # work/assets/native/engine-jobs.md, docs/direct/frame-loop.md: calc jobs runner on main and ModuleSystemWorker1-5: sub-stages claimed by bit masks, polled with SleepThread(20 us) (runtime/hos_thread.c calc_poll_nap: the three calls replaced by At rows, hos_oot_calc_sleep): the grid occluder, then the shape culler f_8009bb80 over ~290 items # ? work/assets/native/engine-layers.md says the model scene job
 8007de00 job_gpu_sync                     # work/assets/native/command-lists.md: a synchronous GPU job: record, submit, fence, wait
 80070ea0 job_graph_build                  # work/assets/native/engine-jobs.md: (pool, graph, desc): the frame's task graph
 80070d30 job_graph_kick                   # work/assets/native/engine-jobs.md: virtual, vtable 0x84c85738
@@ -158,12 +158,12 @@
 80435300 job_mtx_set                      # work/assets/native/cpu-to-gpu.md: property / mtx-set lookups job
 8067c310 job_occlusion_grid_dispatch      # docs/direct/jobs.md: the occlusion grid's DispatchCompute
 800766e0 job_phase_per_list               # work/assets/native/engine-jobs.md: scheduler's bit-8 phase, per list
-8007fe60 job_scheduler                    # work/assets/native/engine-jobs.md, host/eng_jobs.c: the job runner (agl::lyr::Renderer begin/end, render-job loop)
+8007fe60 job_scheduler                    # work/assets/native/engine-jobs.md, games/oot/patches/eng_jobs.c: the job runner (agl::lyr::Renderer begin/end, render-job loop)
 80083580 job_scheduler_sibling            # work/assets/native/engine-layers.md, docs/direct/jobs.md: a sibling of the job body; [[item] + 0x10] of the layer phase's queue items (vtable 0x84c227d0), run by f_8007fe60
-80083960 job_scheduler_virtual            # work/assets/native/engine-jobs.md, host/eng_jobs.c: the scheduler's virtual twin
+80083960 job_scheduler_virtual            # work/assets/native/engine-jobs.md, games/oot/patches/eng_jobs.c: the scheduler's virtual twin
 82c02f20 job_sync_pre_draw_a              # docs/direct/jobs.md: pre-draw hook: waits for GPU culling (WaitEvent b00 + Barrier)
 82c03170 job_sync_pre_draw_b              # docs/direct/jobs.md: same code, WaitEvent b48
-831fa4a0 job_sync_water_wait              # host/direct_job_sync.c, [renderer+0x150]: tail-jumps to WaitEvent (br x4 at 0x831fa588, replaced by an instead row)
+831fa4a0 job_sync_water_wait              # games/oot/patches/direct_job_sync.c, [renderer+0x150]: tail-jumps to WaitEvent (br x4 at 0x831fa588, replaced by an instead row)
 8007fe10 job_worker_calc                  # work/assets/native/engine-jobs.md: worker thread's calc_(msg): msg 1 runs the scheduler
 800711c0 job_workers_post                 # work/assets/native/engine-jobs.md: INFERRED: posts msg 1 to the workers
 80084de0 render_job_record                # docs/direct-backend-plan.md, docs/direct/jobs.md: a render job's recorder (x3: the pass key)
@@ -174,8 +174,8 @@
 8006e160 layer_item_step                  # docs/direct/jobs.md, docs/direct/frame-loop.md: one step of a layer by kind (0, 1, 2 decals, 4 opaque/xlu, 5 scene layers, 7 post, 9)
 8007b520 layer_list_begin_unused          # docs/direct/jobs.md, begins a list for every layer job; never submitted
 8007da20 layer_list_end_b                 # work/assets/native/engine-frame.md, work/assets/native/engine-jobs.md: layer list end (0x8007dabc)
-8007ad40 layer_list_record_b              # host/direct.c, agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
-8006cd60 layer_list_record_post           # host/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
+8007ad40 layer_list_record_b              # runtime/direct.c, agl::lyr::Renderer layer list begun at 0x8007b0c8 (the long list)
+8006cd60 layer_list_record_post           # runtime/direct.c: agl::lyr layer list recording job ("Post"), begins at 0x8006d258
 8006fe10 layer_step_kind0                 # docs/direct/frame-loop.md: layer_item_step's handler for step kind 0
 806dc280 layer_step_kind1                 # docs/direct/frame-loop.md: layer_item_step's handler for step kind 1
 802702e0 layer_step_kind9                 # docs/direct/frame-loop.md: layer_item_step's handler for step kind 9
@@ -220,7 +220,7 @@
 8086e790 pass_cubemap_filter_caller       # work/assets/native/engine-frame.md
 8066bec0 pass_deferred_lighting           # work/assets/native/engine-frame.md: deferred lighting / composite
 8065c660 pass_depth_buffer                # work/assets/native/engine-frame.md, work/assets/native/rt-alloc.md: "DepthBuffer", "Reprojection"
-8028a2a0 pass_key_draw                    # docs/direct/jobs.md, host/direct_passes.c: (owner, drawctx, key): draws a pass by its key, inline through pass_draw_inline (0x8028a588); shared by the depth probes, fog half depth, fog pre-pass depth, skin shading and others (was pass_depth_probe_list, its first caller)
+8028a2a0 pass_key_draw                    # docs/direct/jobs.md, games/oot/patches/direct_passes.c: (owner, drawctx, key): draws a pass by its key, inline through pass_draw_inline (0x8028a588); shared by the depth probes, fog half depth, fog pre-pass depth, skin shading and others (was pass_depth_probe_list, its first caller)
 802867f0 pass_depth_probes                # work/assets/native/engine-frame.md: "inner/outer_depth_probe_tex"
 80280270 pass_dof                         # work/assets/native/engine-frame.md: DOF / bilateral grid group
 80681320 pass_draw_inline                 # docs/direct-backend-plan.md, docs/direct/jobs.md: the layer list drawing a pass itself
@@ -230,7 +230,7 @@
 802631a0 pass_env_cubemap_face            # work/assets/native/engine-frame.md: one prefilter draw
 80285b00 pass_final_blit                  # work/assets/native/engine-frame.md: the final draw to the window texture
 802ad020 pass_fluid_depth                 # work/assets/native/engine-frame.md: "Fluid 2dVolume New Depth"
-80289590 pass_fog_half_depth              # host/direct_depth_copy.c: FogPrePass::HalfDepth (its depth copy, blr at 0x80289cc0, replaced by an instead row)
+80289590 pass_fog_half_depth              # games/oot/patches/direct_depth_copy.c: FogPrePass::HalfDepth (its depth copy, blr at 0x80289cc0, replaced by an instead row)
 8028a7f0 pass_fog_prepass_depth           # work/assets/native/engine-frame.md: " Depth For FogPrePass "
 8028b110 pass_fog_water                   # work/assets/native/engine-frame.md: "FogPrePass AfterWater/BeforeWataer"
 802a3700 pass_half_color                  # work/assets/native/engine-frame.md: "gsys::RenderBuffer::Color(half)"
@@ -239,7 +239,7 @@
 802a9520 pass_linear_depth                # work/assets/native/engine-frame.md: linear depth
 8067d7a0 pass_linear_depth_grid           # work/assets/native/engine-frame.md: linear depth, HalfNld, grid dispatches
 80255be0 pass_local_shadow                # work/assets/native/engine-frame.md, docs/direct/render-targets.md: "LocalDepthShadow::drawDepth": each light of its list with +0x5f8 bit 2 draws its map, then bit 3 is set
-802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, host/rt_slots.c, docs/direct/render-targets.md: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/transient-pool.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
+802640a0 pass_local_shadow_depth          # work/assets/native/engine-frame.md, games/oot/patches/rt_slots.c, docs/direct/render-targets.md: "local_shadow_depth" (target sized by the light); takes the map's descriptor id twice (obj +0x288, +0x450), dropping the last frame's; docs/direct/transient-pool.md: ENTRY_HOOK notes the shadow object (x0) for the size class of the alloc it makes
 800672e0 pass_mip_chain_compute           # work/assets/native/engine-frame.md, nx2/lift2/probes.py (WHOLE_SITES): the async-compute interaction wave sim (water ripples; called in the Deku Tree web room too), (int)step x substeps (+76) dispatches a frame, its mip chain by compute, 2 barriers per level
 802ad740 pass_occlusion_depth             # work/assets/native/engine-frame.md, work/assets/native/readback.md: agl::utl::DepthBufferEx::OcclusionDepthBuffer, 11 reports
 8067d890 pass_occlusion_grid_gather       # work/assets/native/engine-frame.md: occlusion grid gather dispatch
@@ -262,7 +262,7 @@
 802722b0 pass_smaa_args                   # docs/direct/terrain-texels.md: the SMAA pass's argument block
 80271be0 pass_smaa_edge                   # work/assets/native/engine-frame.md, docs/direct/terrain-texels.md: "ndsr::smaa_edge/blendweights", edge list as a buffer
 802715b0 pass_smaa_output                 # work/assets/native/engine-frame.md: "smaa_output"
-80666d20 pass_soft_edge_depth             # host/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy, blr at 0x806675d8, replaced by an instead row)
+80666d20 pass_soft_edge_depth             # games/oot/patches/direct_depth_copy.c: gsys::RenderBuffer::SoftEdgeDepth (its depth copy, blr at 0x806675d8, replaced by an instead row)
 80668fc0 pass_sun_shadow                  # work/assets/native/engine-frame.md: sun shadow cascades (x3)
 80669460 pass_sun_shadow_alloc            # work/assets/native/engine-frame.md, docs/direct/render-targets.md: "shadow_map_depth" array (transient when +0x110 is 0, size +0x70 x +0x90, layers = cascades)
 80f76a20 pass_local_shadow_static         # docs/direct/render-targets.md: "LocalDepthShadow::drawStaticDepth": f_802640a0 with flag 1
@@ -312,9 +312,9 @@
 8008b3e0 draw_state_polygon               # work/assets/native/engine-layers.md: agl driver helper: polygon state
 80104de0 draw_texture_handle              # work/assets/native/engine-layers.md: agl driver helper: texture handle
 80265350 draw_viewport                    # work/assets/native/engine-layers.md: agl driver helper: viewport
-802a46e0 draw_viewport_scissor            # host/oot_probes.c hos_oot_wide_save_picture: SetScissor then SetViewport (At row at 0x802a4824, io w1-w4)
-801a2d70 mesh_bind_name4                  # docs/direct/jobs.md, host/direct_mesh_binds.c: binds resource name 4 of a mesh drawer (ctx, item, 4, ..)
-801a6a40 mesh_bind_name5                  # docs/direct/jobs.md, host/direct_mesh_binds.c: binds resource name 5 (ctx, item, 5, ..)
+802a46e0 draw_viewport_scissor            # games/oot/patches/oot_probes.c hos_oot_wide_save_picture: SetScissor then SetViewport (At row at 0x802a4824, io w1-w4)
+801a2d70 mesh_bind_name4                  # docs/direct/jobs.md, games/oot/patches/direct_mesh_binds.c: binds resource name 4 of a mesh drawer (ctx, item, 4, ..)
+801a6a40 mesh_bind_name5                  # docs/direct/jobs.md, games/oot/patches/direct_mesh_binds.c: binds resource name 5 (ctx, item, 5, ..)
 801a43e0 mesh_drawer_a                    # docs/direct/jobs.md: a mesh-task drawer that binds neither task slot
 801a46a0 mesh_drawer_b                    # docs/direct/jobs.md: (same)
 801a60f0 mesh_drawer_c                    # docs/direct/jobs.md: (same, stage 7 slot 1)
@@ -326,20 +326,20 @@
 83607730 occl_gating_b                    # work/assets/native/engine-jobs.md
 83607e80 occl_gating_c                    # work/assets/native/engine-jobs.md
 8067c110 occl_grid_item_callback          # docs/direct/jobs.md: an item's draw callback; tail-calls the grid dispatch
-80293890 shape_list_build_draw            # host/eng_lists.c, work/assets/native/engine-cut-plan.md: precompiled list: one indexed/mesh draw
-806002e0 shape_list_build_instance        # gpu/legacy/render/nvn_pkt.h, host/eng_lists.c: per-instance shape list (model instance x pass x variant)
-80445020 shape_list_build_material        # host/eng_lists.c, gpu/legacy/render/nvn_pkt.h: a material list (never called in play)
-80293190 shape_list_build_scratch         # host/eng_lists.c, work/assets/native/engine-materials.md: precompiled draw (scratch) list at load
-804581b0 agl_cmdbuf_begin                 # host/direct.c: begins an agl command buffer (command and control memory, BeginRecording at 0x804582a8); shared: the vertex lists (f_80457e60), the save picture (texdata_copy_to_buffer), the immediate context (f_834bb830, f_83a6d390)
-8044e8e0 shape_list_build_vertex_scratch  # host/eng_lists.c: vertex scratch list
+80293890 shape_list_build_draw            # runtime/eng_lists.c, work/assets/native/engine-cut-plan.md: precompiled list: one indexed/mesh draw
+806002e0 shape_list_build_instance        # gpu/legacy/render/nvn_pkt.h, runtime/eng_lists.c: per-instance shape list (model instance x pass x variant)
+80445020 shape_list_build_material        # runtime/eng_lists.c, gpu/legacy/render/nvn_pkt.h: a material list (never called in play)
+80293190 shape_list_build_scratch         # runtime/eng_lists.c, work/assets/native/engine-materials.md: precompiled draw (scratch) list at load
+804581b0 agl_cmdbuf_begin                 # runtime/direct.c: begins an agl command buffer (command and control memory, BeginRecording at 0x804582a8); shared: the vertex lists (f_80457e60), the save picture (texdata_copy_to_buffer), the immediate context (f_834bb830, f_83a6d390)
+8044e8e0 shape_list_build_vertex_scratch  # runtime/eng_lists.c: vertex scratch list
 804566e0 shape_list_draw_driver           # work/assets/native/engine-materials.md: gsys::ModelResource(DisplayList), drives f_80293890
-8044cb30 shape_list_scratch_driver        # host/eng_lists.c: drives f_80293190
-80457e60 shape_list_vertex_driver         # host/eng_lists.c: drives f_804581b0
-8044e020 shape_list_vertex_scratch_driver # host/eng_lists.c: drives f_8044e8e0
+8044cb30 shape_list_scratch_driver        # runtime/eng_lists.c: drives f_80293190
+80457e60 shape_list_vertex_driver         # runtime/eng_lists.c: drives f_804581b0
+8044e020 shape_list_vertex_scratch_driver # runtime/eng_lists.c: drives f_8044e8e0
 80443000 shape_material_list_driver       # work/assets/native/engine-materials.md: reads the material's bfsha options, drives f_80445020
 80602520 shape_model_texture_bind         # work/assets/native/engine-materials.md: model-texture side of the material binding
-801060f0 sysbind_slot                     # host/direct_mesh_system.c, binds a system slot (slots 0-2)
-80100210 sysbind_slot3                    # host/direct_mesh_system.c: system uniform slot 3 binder
+801060f0 sysbind_slot                     # games/oot/patches/direct_mesh_system.c, binds a system slot (slots 0-2)
+80100210 sysbind_slot3                    # games/oot/patches/direct_mesh_system.c: system uniform slot 3 binder
 80101ec0 sysbind_system                   # docs/direct/jobs.md: the system binder (from the layer list, 0x8027caa0)
 
 # --- uniform and other GPU data writers, GPU pools
@@ -365,15 +365,15 @@
 812342c0 cull_cpu_occlusion_reader        # work/assets/native/engine-layers.md, work/assets/native/nvn-callpaths.md: the CPU culler: per-shape visibility from the occlusion report slots; wraps ring slots as NVNbuffers
 8009bb80 cull_cpu_shapes                  # the CPU culler (calls f_812342c0)
 80364080 cull_gpu_dispatch                # work/assets/native/alloc-transfer.md: dispatches the GPU-culling compute, 112 KB instance list
-80361a00 cull_gpu_list_reset_one          # host/direct_mesh_lists.c, resets one list's first record (an At row after it)
-80361c80 cull_gpu_lists_reset             # host/direct_mesh_lists.c, once a frame, resets the first record of each GPU culling list (At rows after them)
+80361a00 cull_gpu_list_reset_one          # games/oot/patches/direct_mesh_lists.c, resets one list's first record (an At row after it)
+80361c80 cull_gpu_lists_reset             # games/oot/patches/direct_mesh_lists.c, once a frame, resets the first record of each GPU culling list (At rows after them)
 80822260 cull_grid_occluder               # docs/direct/frame-loop.md: the grid's CPU occluder: one view's grid from the GPU depth grid (f_80365f00) and its camera
 8035d5a0 cull_grid_view_rebuild           # work/assets/native/readback.md: rebuilds the producing frame's camera view
 800a8120 cull_submesh_next_visible        # docs/direct/frame-loop.md: next sub-mesh bounds (0x20-byte AABBs) of a shape's LOD that passes the frustum test of f_80029240
 82bde830 cull_precomputed                 # work/assets/native/engine-layers.md: precomputed culling
 8034dac0 dynres_a                         # work/assets/native/cpu-to-gpu.md: dynamic resolution
-831f41d0 dynres_fixed_flag                # host/oot_probes.c
-80825aa0 dynres_config_update             # host/oot_probes.c: reads the config flag +0x94 (bit 0: the dynamic path), the fixed path's scale (dynamic resolution patch)
+831f41d0 dynres_fixed_flag                # games/oot/patches/oot_probes.c
+80825aa0 dynres_config_update             # games/oot/patches/oot_probes.c: reads the config flag +0x94 (bit 0: the dynamic path), the fixed path's scale (dynamic resolution patch)
 8074b190 dynres_gpu_timestamps            # TIMESTAMP_TOP / TIMESTAMP reports for the dynamic resolution's GPU time
 8034f440 dynres_gpu_timing_read           # work/assets/native/engine-layers.md, work/assets/native/alloc-transfer.md: GPU timing results (8 KB pool) for dynamic resolution
 80076e60 dynres_ratio_listener            # work/assets/native/engine-layers.md 6.1: "p_dynamic_resolution_ratio", 12 callers
@@ -381,7 +381,7 @@
 8007c120 dynres_update                    # work/assets/native/engine-layers.md: dynamic resolution (reads GPU timestamps)
 83485280 exposure_compute                 # work/assets/native/readback2.md: the exposure / adaptation
 80354060 report_gpu_timestamps_read       # work/assets/native/engine-layers.md, work/assets/native/readback2.md: 29 x 64-byte readbacks (agl GPU timestamps)
-80365f00 report_reader_a                  # host/nvn_native.c: (the occlusion grid reader, agl::utl::DepthBufferEx); ENTRY_HOOK marks its run: its 0x3980-byte invalidates do not wait
+80365f00 report_reader_a                  # runtime/nvn_native.c: (the occlusion grid reader, agl::utl::DepthBufferEx); ENTRY_HOOK marks its run: its 0x3980-byte invalidates do not wait
 80362ff0 report_reader_b                  # docs/direct/task-mesh.md: (GPU-culling append counters, read-and-zero)
 80357060 report_reader_c                  # work/assets/native/engine-layers.md: (the exposure reader, luminance rings)
 
@@ -402,7 +402,7 @@
 80c4da80 agl_dynamic_block_alloc_c        # work/assets/native/engine-layers.md: (same group)
 80c4fd10 agl_gpu_timestamp_array          # work/assets/native/engine-layers.md: agl::perf::GPUTimeStampArray
 80f46f80 agl_init_params                  # work/assets/native/engine-layers.md: "AglWork", "AglFrame", "DynamicTextureAllocatorMem" ..
-80f6c9d0 agl_memory_pool_create           # docs/direct/texture-streaming.md: agl's generic pool wrapper, five callers; an At row before its nvnMemoryPoolInitialize (0x80f6cb18) names the pool (host/direct_assets.c direct_assets_agl_pool)
+80f6c9d0 agl_memory_pool_create           # docs/direct/texture-streaming.md: agl's generic pool wrapper, five callers; an At row before its nvnMemoryPoolInitialize (0x80f6cb18) names the pool (games/oot/patches/direct_assets.c direct_assets_agl_pool)
 80f6cf50 agl_memory_pool_create_b         # docs/direct/texture-streaming.md: pool wrapper used by the tera manager
 809e9300 agl_primitive_texture            # work/assets/native/block-linear.md: agl::PrimitiveTexture (WriteTexels caller)
 809ed030 agl_render_display               # work/assets/native/rt-alloc.md: agl::RenderDisplay(color/depth)
@@ -411,44 +411,44 @@
 831cb8b0 config_gfx_param_c0              # docs/direct/texture-streaming.md: gfx ModuleInitializeParam getter (+0xc0)
 805c2630 config_heapdef_read              # docs/direct/texture-streaming.md: reads HeapDef.byml values
 831cb910 config_texture_reject_threshold  # docs/direct/texture-streaming.md: TextureCacheRejectionThreshold getter
-80ea2f30 display_base_resolution          # host/oot_probes.c: ResolutionParam's BaseResolution; writes the scene module's +0xe50 (the height the 3D scale is taken against: mode size x scale, w21), +0xe54/+0xe58 (the frame clamped by BaseResolution)
-806702e0 display_scale_mode_select        # host/oot_probes.c: picks the graphics scale mode (scale table), notifies the resources (patched); sizes the frame (mode size x scale, clamped by display_frame_max_size, to f_810a7f40 at 0x80670600) and queues the window crop (display_window_crop_set); a mode that compares unequal makes it size the frame and its targets again
-810a7b70 display_size_setup               # host/oot_probes.c: sets up the display-size object from a config
-8114c5e0 display_frame_max_size           # host/oot_probes.c hos_oot_frame_max: the frame's largest size by mode and operation mode, from a table of 16:9 sizes at 0x83f78540 (640x480 ... 3840x2160)
-80eba850 display_window_crop_set          # host/oot_probes.c (found by a crop probe): stores a window crop (x, y, w, h) in [x0 + 0x80] + 0xac and marks it for frame_wait_present_acquire, which calls nvnWindowSetCrop
+80ea2f30 display_base_resolution          # games/oot/patches/oot_probes.c: ResolutionParam's BaseResolution; writes the scene module's +0xe50 (the height the 3D scale is taken against: mode size x scale, w21), +0xe54/+0xe58 (the frame clamped by BaseResolution)
+806702e0 display_scale_mode_select        # games/oot/patches/oot_probes.c: picks the graphics scale mode (scale table), notifies the resources (patched); sizes the frame (mode size x scale, clamped by display_frame_max_size, to f_810a7f40 at 0x80670600) and queues the window crop (display_window_crop_set); a mode that compares unequal makes it size the frame and its targets again
+810a7b70 display_size_setup               # games/oot/patches/oot_probes.c: sets up the display-size object from a config
+8114c5e0 display_frame_max_size           # games/oot/patches/oot_probes.c hos_oot_frame_max: the frame's largest size by mode and operation mode, from a table of 16:9 sizes at 0x83f78540 (640x480 ... 3840x2160)
+80eba850 display_window_crop_set          # games/oot/patches/oot_probes.c (found by a crop probe): stores a window crop (x, y, w, h) in [x0 + 0x80] + 0xac and marks it for frame_wait_present_acquire, which calls nvnWindowSetCrop
 80eba860 display_window_crop_store        # the same stores on the window object itself
-810a7f40 display_frame_size_set           # host/oot_probes.c: the frame size display_scale_mode_select computed (its argument at sp + 16) # ? role from the call site only
+810a7f40 display_frame_size_set           # games/oot/patches/oot_probes.c: the frame size display_scale_mode_select computed (its argument at sp + 16) # ? role from the call site only
 812bda40 gfx_copy_buffer_to_texture       # work/assets/native/block-linear.md: CopyBufferToTexture (Vfx3 noise)
-836cf4b0 gfx_graphics_init                # host/oot_probes.c: the graphics init
+836cf4b0 gfx_graphics_init                # games/oot/patches/oot_probes.c: the graphics init
 80941b20 gfx_memory_pool_finalize_b       # docs/direct/texture-streaming.md: finalizes a Replace request's pool # ? role from the call only
 80792e30 gfx_memory_pool_init             # work/assets/native/shader-stream.md, work/assets/native/asset-loading.md: nn::gfx MemoryPool init (in-place pools: bfsha, BNSH, BFRES)
 80eeb4b0 gfx_module_init_register         # work/assets/native/engine-layers.md: the game's gfx module init: registers pipeline hook listeners
 80792df0 gfx_res_texture_file             # work/assets/native/asset-path.md: the ResTextureFile of a ui2d file
 831dd780 gfx_system_init                  # docs/direct/texture-streaming.md, work/assets/native/engine-layers.md: gfx system init
 831dfe10 gfx_system_update                # docs/direct/texture-streaming.md: calls the texture per-frame update
-80b72340 heap_graphics_rest               # host/oot_probes.c: a heap of what the Graphics heap can still give
-83b7b340 heap_module_heaps_create         # host/oot_probes.c: makes the module heaps, checks budgets
+80b72340 heap_graphics_rest               # games/oot/patches/oot_probes.c: a heap of what the Graphics heap can still give
+83b7b340 heap_module_heaps_create         # games/oot/patches/oot_probes.c: makes the module heaps, checks budgets
 8005eb20 heap_new_in_heap                 # work/assets/native/engine-layers.md: operator new(size, heap, align), 276 callers
 83b797e0 module_system_prepare            # docs/direct/boot-to-main-loop.md: ModuleSystem's prepare: modules, threads, Pack/Bootup (boot's single-threaded window)
 83b7a2c0 module_bootup_pack_load          # docs/direct/boot-to-main-loop.md: the Pack/Bootup loader the prepare uses
 80f69040 sead_device_queue_pools          # work/assets/native/engine-layers.md: device/queue pools
 809df700 sead_exp_heap_create             # work/assets/native/engine-layers.md: sead::ExpHeap::create(size, name, parent, align, dir, lock)
-809df710 sead_exp_heap_create_b           # host/oot_probes.c: the module heaps' create (patched for the Graphics heap)
+809df710 sead_exp_heap_create_b           # games/oot/patches/oot_probes.c: the module heaps' create (patched for the Graphics heap)
 809e00a0 sead_frame_heap_create           # work/assets/native/engine-layers.md: FrameHeap::create
 8348be50 sead_framework_graphics_init     # docs/direct/boot-to-main-loop.md: the framework's graphics init: NVN device, vi, the window textures, the Presentation Thread
 80f48c30 sead_framework_run               # docs/direct/boot-to-main-loop.md: the framework's run: MethodTreeMgr, TaskMgr, the startup loop; never returns
 80f47bc0 sead_method_tree_names           # work/assets/native/engine-layers.md: names RootCalc/SysCalc/AppCalc/RootDraw/SysDraw
 80f477b0 sead_method_tree_names_b         # work/assets/native/engine-layers.md
-8351c280 sys_abort_budget                 # host/oot_probes.c: aborts below zero budget
-81222ce0 sys_nn_main_body                 # host/oot_probes.c: nnMain per the patch notes (display size into the framework create arg) # ? the export table puts nnMain at 0x81222cd0
+8351c280 sys_abort_budget                 # games/oot/patches/oot_probes.c: aborts below zero budget
+81222ce0 sys_nn_main_body                 # games/oot/patches/oot_probes.c: nnMain per the patch notes (display size into the framework create arg) # ? the export table puts nnMain at 0x81222cd0
 824c5560 sys_printf_char_out              # nx2/adr_entries.py: character-output callback of a printf-style formatter
-81681670 sys_setjmp_wrapper               # host/hos_setjmp.c: returns setjmp's result
+81681670 sys_setjmp_wrapper               # runtime/hos_setjmp.c: returns setjmp's result
 80b5e9e0 thread_baseproc_executor         # work/assets/native/engine-layers.md: BaseProcExecutor0-5 threads
 80dbcd70 thread_module_workers_create     # work/assets/native/engine-jobs.md: ModuleSystemWorker pool ("ThreadPoolHeap")
 80f6ecf0 thread_navmesh_worker_a          # work/assets/native/engine-layers.md: NavMeshCAStepDepWorker / NavMeshDepWorker
 8102f6e0 thread_navmesh_worker_b          # work/assets/native/engine-layers.md
 834a2e50 thread_sead_entry                # work/assets/native/engine-layers.md: sead thread entry
-834a3060 sead_message_queue_receive       # docs/direct/frame-loop.md, host/bench.c: sead's message-queue receive (queue, w1 0: blocking, else a try); where every idle worker thread waits (lr 0x834a3084)
+834a3060 sead_message_queue_receive       # docs/direct/frame-loop.md, runtime/bench.c: sead's message-queue receive (queue, w1 0: blocking, else a try); where every idle worker thread waits (lr 0x834a3084)
 80df25c0 thread_sead_loop_a               # work/assets/native/engine-layers.md: thread loop (every sead thread)
 80df2680 thread_sead_loop_b               # work/assets/native/engine-layers.md: thread loop (every sead thread; the Presentation thread's)
 80df5760 thread_sead_main                 # work/assets/native/engine-layers.md: sead::MainThread
@@ -461,17 +461,17 @@
 
 # --- terrain, sky, vegetation
 80101060 sky_inscatter_ubo_write          # work/assets/native/uniform-buffers.md: the sky ("SkyInscatter") uniform writes (sites 0x80101174..0x80101294)
-80846070 sky_lut_copy                     # host/direct_sky_lut.c: memcpys the skybin's three LUT parts into textures (patched)
-80845d80 sky_lut_scene_load               # host/direct_sky_lut.c: the scene's skybin into both LUT sets ([+0xc98], [+0xca0]) through sky_lut_copy
-80dde4f0 sky_lut_set_setup                # host/direct_sky_lut.c: a LUT set's textures; calls sky_lut_copy only for a blob in its argument block (+0x48), which texdata_model_procedural's two calls leave zero
-80cfc060 sky_lut_set_construct            # host/direct_sky_lut.c: constructs a LUT set (0xfd0 bytes) before sky_lut_set_setup
+80846070 sky_lut_copy                     # games/oot/patches/direct_sky_lut.c: memcpys the skybin's three LUT parts into textures (patched)
+80845d80 sky_lut_scene_load               # games/oot/patches/direct_sky_lut.c: the scene's skybin into both LUT sets ([+0xc98], [+0xca0]) through sky_lut_copy
+80dde4f0 sky_lut_set_setup                # games/oot/patches/direct_sky_lut.c: a LUT set's textures; calls sky_lut_copy only for a blob in its argument block (+0x48), which texdata_model_procedural's two calls leave zero
+80cfc060 sky_lut_set_construct            # games/oot/patches/direct_sky_lut.c: constructs a LUT set (0xfd0 bytes) before sky_lut_set_setup
 80eb8460 terrain_decode_cpu_copy          # docs/direct/terrain-texels.md: decodes a terrain layer's CPU copy
 83a6d170 terrain_polish_readback          # work/assets/native/block-linear.md
 83a6b210 terrain_polish_readback_caller   # work/assets/native/block-linear.md
 83a6d540 terrain_read_texels              # docs/direct/terrain-texels.md: InvalidateTexels + ReadTexels, or CopyTextureToBuffer
 809e3350 terrain_tera_mgr_init            # docs/direct/terrain-texels.md, docs/direct/texture-streaming.md: the tera manager: device bytes, its own pools
 80d7e090 terrain_tera_polish              # docs/direct/terrain-texels.md: tera polish
-80c17040 terrain_tile_load                # docs/direct/terrain-texels.md: its memcpy at +0x544 is an At row (host/direct_assets.c direct_assets_tile)
+80c17040 terrain_tile_load                # docs/direct/terrain-texels.md: its memcpy at +0x544 is an At row (games/oot/patches/direct_assets.c direct_assets_tile)
 83a6d8f0 terrain_write_texels             # docs/direct/terrain-texels.md, work/assets/native/block-linear.md: WriteTexels + Flush (w3 0) or CopyBufferToTexture
 808833e0 vegetation_mesh_placement        # work/assets/native/engine-layers.md: SsboMeshPlacement
 
@@ -527,7 +527,7 @@
 821056c0 ndve_create                      # docs/direct/movie-player.md: makes the NDVE network from the resource blob and the movie's size (movie_player_renderer_init)
 821057c0 ndve_output_size                 # docs/direct/movie-player.md: the network's output size, stored at renderer+0x2e0 # ?
 821056f0 ndve_destroy                     # docs/direct/movie-player.md: frees the NDVE object (movie_renderer release, f_83b82dc0)
-83b827e0 movie_media_source_client_open   # docs/direct/movie-player.md (MovieMediaSourceClient), host/nn_video.c: opens the movie file (nn::fs OpenFile, GetFileSize) and asks nn::movie::MediaExtractor for its media-source-mode events
+83b827e0 movie_media_source_client_open   # docs/direct/movie-player.md (MovieMediaSourceClient), runtime/nn_video.c: opens the movie file (nn::fs OpenFile, GetFileSize) and asks nn::movie::MediaExtractor for its media-source-mode events
 83b7cec0 movie_player_init                # docs/direct/movie-player.md: the movie player's constructor (zeroes its 0x468 bytes, sets up its heap and events)
 8210a8c0 ndve_programs_init_a             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the compute programs it makes at 0x8210aa40
 82105e20 ndve_programs_init_b             # work/assets/native/shader-stream.md 1.2: NDVE movie upscaler, the programs it makes at 0x821062ac # ?
@@ -553,9 +553,9 @@
 80bd1820 ui_serialize_capture             # work/assets/native/block-linear.md: ui::SerializeCapture
 833ac950 ui_serialize_capture_b           # work/assets/native/block-linear.md: ui::SerializeCapture
 8088ffc0 ui_set_focus                     # (found for the menus' mouse, since removed): (screen, button, flag): the focus setter
-81681690 ui_text_box_texture_thread       # host/hos_setjmp.c: UpdateTextBoxTextureThread (setjmp)
-80b1e140 ui_text_letter_anim              # host/oot_probes.c: steps a text pane's letter animation (text speed patch)
-80794b00 ui_text_skip                     # host/oot_probes.c (text speed): the game's own skip on A
+81681690 ui_text_box_texture_thread       # runtime/hos_setjmp.c: UpdateTextBoxTextureThread (setjmp)
+80b1e140 ui_text_letter_anim              # games/oot/patches/oot_probes.c: steps a text pane's letter animation (text speed patch)
+80794b00 ui_text_skip                     # games/oot/patches/oot_probes.c (text speed): the game's own skip on A
 
 # --- game: actors, physics, camera, events, game data, world
 8004ab40 actor_baseproc_executor          # work/assets/native/cpu-to-gpu.md: BaseProc executor: actors, physics, animation
@@ -565,10 +565,10 @@
 82c1d340 actor_records_read_b             # work/assets/native/alloc-transfer.md
 80186a00 actor_update_a                   # work/assets/native/cpu-to-gpu.md: actor update, per actor
 80168320 actor_update_b                   # work/assets/native/cpu-to-gpu.md: actor update, per actor
-80644c80 camera_player_update             # host/mouse_native.c: the player camera's update (patched: mouse look)
-8064b770 camera_stick_pitch               # host/mouse_native.c: turns pitch by the right stick
-80649c10 camera_stick_yaw                 # host/mouse_native.c: turns yaw by the right stick
-804e48c0 camera_view_loop                 # docs/parked-patches.md, host/oot_probes.c hos_oot_wide_ratio: the view's loop (the free camera's site, 0x804e5068); copies the camera's ratio (+0x140) to its projection's aspect ([[cam + 0x18] + 0x10] + 0xb0, 0x804e5334)
+80644c80 camera_player_update             # games/oot/patches/mouse_native.c: the player camera's update (patched: mouse look)
+8064b770 camera_stick_pitch               # games/oot/patches/mouse_native.c: turns pitch by the right stick
+80649c10 camera_stick_yaw                 # games/oot/patches/mouse_native.c: turns yaw by the right stick
+804e48c0 camera_view_loop                 # docs/parked-patches.md, games/oot/patches/oot_probes.c hos_oot_wide_ratio: the view's loop (the free camera's site, 0x804e5068); copies the camera's ratio (+0x140) to its projection's aspect ([[cam + 0x18] + 0x10] + 0xb0, 0x804e5334)
 829df380 event_banc_change_arg            # docs/parked-patches.md: QueryBancChangeEventRequestArg: fills an EventRequestArg
 80d99f10 event_make_arg                   # docs/parked-patches.md (the teleport cheat): used by the teleport cheat
 8022b6f0 event_release_link               # docs/parked-patches.md (the teleport cheat): used by the teleport cheat (release_link)
@@ -578,8 +578,8 @@
 8022d9c0 gamedata_get_bool                # docs/parked-patches.md: GameDataMgr bool by MurMur3 name hash
 80cd0ea0 gamedata_get_string              # docs/parked-patches.md: GameDataMgr String64 by MurMur3 name hash
 8342a460 map_player_pos                   # work/assets/native/engine-layers.md: map player pos
-8243f470 net_env_id_check                 # host/nn_applet.c: checks the nsd environment id for a "t-" prefix (site 0x8243f490)
-8214e9a0 net_npln_worker                  # host/nn_applet.c: OoT's npln worker (site 0x8214eac0 waits on the account AsyncContext)
+8243f470 net_env_id_check                 # runtime/nn_applet.c: checks the nsd environment id for a "t-" prefix (site 0x8243f490)
+8214e9a0 net_npln_worker                  # runtime/nn_applet.c: OoT's npln worker (site 0x8214eac0 waits on the account AsyncContext)
 820da77c phys_ai_avoidance_a              # work/assets/native/cpu-to-gpu.md, work/assets/native/engine-layers.md: Havok AI collision avoidance (NavMesh step)
 820d94ac phys_ai_avoidance_b              # work/assets/native/engine-layers.md: Havok AI collision avoidance
 806d2530 phys_cct_change_position         # docs/parked-patches.md: OneShotPhysicsCctChangePosition (vtable 0x84c54f10 +0xe8)
@@ -605,24 +605,24 @@
 82c415e0 player_movement                  # docs/parked-patches.md: movement step (the flight's sites)
 80494360 scene_env_state                  # work/assets/native/cpu-to-gpu.md: scene state (volume mask, depth probes "depth valid")
 83bca670 scene_params                     # work/assets/native/engine-layers.md: scene params
-831f3200 scene_resolution_update          # host/oot_probes.c: the scene's update: cached scale, fixed path (patched)
+831f3200 scene_resolution_update          # games/oot/patches/oot_probes.c: the scene's update: cached scale, fixed path (patched)
 832ee450 seq_clear_texture_cache_all      # docs/direct/texture-streaming.md: INFERRED: SeqOneShotClearTextureCacheAll
 834722d0 world_set_time                   # docs/parked-patches.md: ExecuteWmSetTime: seconds since midnight
 
 # --- zstd and resource loading (work/assets/zstd.md: the decoder's map)
-80108da0 fs_ares_load_zstd                # work/assets/native/asset-loading.md, host/nn_zstd.c: the ARes loader (virtual): reads a file, zstd-decodes it
+80108da0 fs_ares_load_zstd                # work/assets/native/asset-loading.md, games/oot/patches/nn_zstd.c: the ARes loader (virtual): reads a file, zstd-decodes it
 80455bc0 res_bfsha_load                   # work/assets/native/second-map.md: "bfsha" resource load
 804563b0 res_inplace_pool                 # work/assets/native/asset-loading.md: makes a pool over a decompressed file's GPU section
 834ab610 zstd_begin_using_ddict           # work/assets/zstd.md: inferred
 8010ffc0 zstd_build_fse_table             # work/assets/zstd.md: ZSTD_buildFSETable, inferred
 834ab740 zstd_create_ddict                # work/assets/zstd.md: ZSTD_createDDict_advanced
 834ac540 zstd_ddict_lookup                # work/assets/zstd.md: (decompressor, dictID) -> DDict, binary tree
-80115c80 zstd_decomp_stream_chunk         # host/nn_zstd.c, work/assets/zstd.md: a ParallelDecompThread's step through a larger file (hooked: host/nn_zstd.c)
+80115c80 zstd_decomp_stream_chunk         # games/oot/patches/nn_zstd.c, work/assets/zstd.md: a ParallelDecompThread's step through a larger file (hooked: games/oot/patches/nn_zstd.c)
 80115bf0 zstd_decomp_thread_step          # work/assets/zstd.md: ParallelDecompThread job step (vtable 0x84c377d0)
 80116490 zstd_decompress_block            # work/assets/zstd.md: ZSTD_decompressBlock_internal, inferred
 80113880 zstd_decompress_continue         # work/assets/zstd.md: inferred
-8010b380 zstd_decompress_multi_frame      # work/assets/zstd.md: ZSTD_decompressMultiFrame (hooked: host/nn_zstd.c)
-801102e0 zstd_decompress_sequences        # work/assets/zstd.md, host/nn_zstd.c: the hot one, inferred # ? gpu/legacy/vk/vk_pools.cpp calls it the compute-constant ring's
+8010b380 zstd_decompress_multi_frame      # work/assets/zstd.md: ZSTD_decompressMultiFrame (hooked: games/oot/patches/nn_zstd.c)
+801102e0 zstd_decompress_sequences        # work/assets/zstd.md, games/oot/patches/nn_zstd.c: the hot one, inferred # ? gpu/legacy/vk/vk_pools.cpp calls it the compute-constant ring's
 80f700d0 zstd_decompress_wrapper          # work/assets/zstd.md: (src, size, dst, cap, workspace, DDict)
 8349fef0 zstd_dict_file_read              # work/assets/zstd.md: fills a buffer from the dict file
 83bb1520 zstd_dict_free                   # work/assets/zstd.md: frees it (ZSTD_freeDDict)
@@ -806,8 +806,8 @@
 85754d90 math_truncf                      # nx2/image.py exports (sdk): truncf
 854fa9f0 movie_mkv_audio_track_get_bit_depth # nx2/image.py exports (sdk): mkvparser::AudioTrack::GetBitDepth
 854fa2b0 movie_mkv_video_track_get_width  # nx2/image.py exports (sdk): mkvparser::VideoTrack::GetWidth
-851047f0 os_lock_mutex                    # host/nn_os_sync.c (HLE import stub): nn::os::LockMutex; f_80364080 calls it once per instance slot
-851048a0 os_unlock_mutex                  # host/nn_os_sync.c (HLE import stub): nn::os::UnlockMutex
+851047f0 os_lock_mutex                    # runtime/nn_os_sync.c (HLE import stub): nn::os::LockMutex; f_80364080 calls it once per instance slot
+851048a0 os_unlock_mutex                  # runtime/nn_os_sync.c (HLE import stub): nn::os::UnlockMutex
 851063b0 os_convert_to_time_span          # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::ConvertToTimeSpan
 85106220 os_sleep_thread                  # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::SleepThread
 851095f0 os_get_tls_value                 # work/sa/gen/a64_hooks.c (HLE import stub): nn::os::GetTlsValue
@@ -880,11 +880,11 @@
 80140700 actor_after_calcs_job_d         # the fourth; the physics phase follows (role)
 801d99a0 model_anim_eval_large           # the largest function of the player's calc before actor_update_a (string UseRotatedTranslate) # ? animation, inferred
 83af6150 actor_calc_late_one              # one actor's late (post-physics) calc in the second BaseProc step; the player's ends the step
-800aff80 actor_calc_one_b                 # host/oot_probes.c (ring owner): pushes and pops the per-core ring of the singleton at **0x84c9e890 around its work, as actor_calc_one (role)
-800b73d0 actor_calc_one_c                 # host/oot_probes.c (ring owner): the same per-core ring push and pop as actor_calc_one (role)
-8073a090 actor_core_ring_push             # host/oot_probes.c (ring owner): a push onto the per-core ring of the singleton at **0x84c9e890 alone (role)
-8073c900 actor_core_ring_pop              # host/oot_probes.c (ring owner): the matching pop of actor_core_ring_push (role)
-83af59c0 actor_calc_late_one_b            # host/oot_probes.c (ring owner): the same per-core ring push and pop as actor_calc_late_one (role)
+800aff80 actor_calc_one_b                 # games/oot/patches/oot_probes.c (ring owner): pushes and pops the per-core ring of the singleton at **0x84c9e890 around its work, as actor_calc_one (role)
+800b73d0 actor_calc_one_c                 # games/oot/patches/oot_probes.c (ring owner): the same per-core ring push and pop as actor_calc_one (role)
+8073a090 actor_core_ring_push             # games/oot/patches/oot_probes.c (ring owner): a push onto the per-core ring of the singleton at **0x84c9e890 alone (role)
+8073c900 actor_core_ring_pop              # games/oot/patches/oot_probes.c (ring owner): the matching pop of actor_core_ring_push (role)
+83af59c0 actor_calc_late_one_b            # games/oot/patches/oot_probes.c (ring owner): the same per-core ring push and pop as actor_calc_late_one (role)
 82c43780 actor_baseproc_post_phys_job     # one actor's post-physics step, ~90 a frame after the physics phase of the second step
 804352d0 module_stage_a_last_job_a        # one of the two jobs that end stage A (role)
 83b525b0 module_stage_a_last_job_b        # the other job that ends stage A; reads the system tick, light events (role)
@@ -1029,24 +1029,24 @@
 83c61df0 libcxx_verbose_abort             # docs/lifter2-abi-census.md: called with the message by both aborts above (role)
 82118640 cxx_call_terminate               # docs/lifter2-abi-census.md: __clang_call_terminate: __cxa_begin_catch then std::terminate, noreturn
 # --- widescreen and occlusion off (lift 2 At probes and C after instructions)
-83213890 display_settings_build           # host/oot_probes.c (widescreen): builds {2560, 1440} (0x832139f8) and {1920, 1080} (0x83213a04) in x8
-834a5cc0 sead_persp_proj_update           # host/oot_probes.c (widescreen): sead's perspective projection's matrix update, ldp s0, s1, [x0, #0xac] first (aspect +0xb0; not patched: the main camera's ratio is set in camera_view_loop)
-8025b910 sead_persp_proj_inline_a         # host/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8025b9a8)
-8035a8c0 sead_persp_proj_inline_b         # host/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8035b82c)
-811cc790 occl_query_decide                # host/oot_probes.c (occlusion off): loads the byte that decides the occlusion queries, at six places
-80794330 ui2d_canvas_setup                # host/oot_probes.c hos_oot_wide_hud: the 2D canvas setup, the layout's projection rows (HUD site 0x80794368); runs when a screen is made, not each frame; stores projection x view at canvas + 8 and its y-negated copy at + 72
-834bb830 gfx_immediate_begin              # host/direct.c: locks the shared immediate command buffer (global+0x500, mutex +0x4e0) and begins it through agl_cmdbuf_begin
-83a6d390 gfx_immediate_context_begin      # host/direct.c: begins a context's one-shot list: gfx_immediate_begin, or the second command buffer (global+0x990) through agl_cmdbuf_begin; for terrain_read_texels and terrain_write_texels
-80bd2690 gfx_immediate_end                # host/direct.c: ends the immediate command buffer (EndRecording, memory used, pool flush) and unlocks it
-812bd720 vfx_noise_list_begin             # host/direct.c: begins the command buffer of vfx_curl_noise_staging's one-shot upload (its only caller), which submits and finishes it
-80a87e50 frame_counter_whole_step         # host/nn_vi.c: a virtual update that turns the frame step into whole frames for its counter at x19+864 (fcvtzs at 0x80a88300, hos_frame_whole)
+83213890 display_settings_build           # games/oot/patches/oot_probes.c (widescreen): builds {2560, 1440} (0x832139f8) and {1920, 1080} (0x83213a04) in x8
+834a5cc0 sead_persp_proj_update           # games/oot/patches/oot_probes.c (widescreen): sead's perspective projection's matrix update, ldp s0, s1, [x0, #0xac] first (aspect +0xb0; not patched: the main camera's ratio is set in camera_view_loop)
+8025b910 sead_persp_proj_inline_a         # games/oot/patches/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8025b9a8)
+8035a8c0 sead_persp_proj_inline_b         # games/oot/patches/oot_probes.c (widescreen): holds an inlined copy of the projection's matrix update (0x8035b82c)
+811cc790 occl_query_decide                # games/oot/patches/oot_probes.c (occlusion off): loads the byte that decides the occlusion queries, at six places
+80794330 ui2d_canvas_setup                # games/oot/patches/oot_probes.c hos_oot_wide_hud: the 2D canvas setup, the layout's projection rows (HUD site 0x80794368); runs when a screen is made, not each frame; stores projection x view at canvas + 8 and its y-negated copy at + 72
+834bb830 gfx_immediate_begin              # runtime/direct.c: locks the shared immediate command buffer (global+0x500, mutex +0x4e0) and begins it through agl_cmdbuf_begin
+83a6d390 gfx_immediate_context_begin      # runtime/direct.c: begins a context's one-shot list: gfx_immediate_begin, or the second command buffer (global+0x990) through agl_cmdbuf_begin; for terrain_read_texels and terrain_write_texels
+80bd2690 gfx_immediate_end                # runtime/direct.c: ends the immediate command buffer (EndRecording, memory used, pool flush) and unlocks it
+812bd720 vfx_noise_list_begin             # runtime/direct.c: begins the command buffer of vfx_curl_noise_staging's one-shot upload (its only caller), which submits and finishes it
+80a87e50 frame_counter_whole_step         # runtime/nn_vi.c: a virtual update that turns the frame step into whole frames for its counter at x19+864 (fcvtzs at 0x80a88300, hos_frame_whole)
 
 # --- UI layouts (Nintendo.Ui): a layout's panes, 0xb0 bytes each at layout + 0x100, its record at layout + 0xf8
-81549620 ui_pane_build                    # host/oot_probes.c hos_oot_hud_anchor: a pane made from its layout record (translate +0x6c, size +0x58) or copied from a template; HUD site 0x81549918
-8045b1f0 ui_layout_pane_at                # host/oot_probes.c: (layout, index) -> layout + 0x100's pane at index * 0xb0
-815476d0 ui_layout_pane_index             # host/oot_probes.c: (layout, pane) -> its index
-8045e300 ui_layout_pane_by_name           # host/oot_probes.c: (layout, name) -> pane, by the record's name hashes (+0x30) and names (+0x20)
-80791cf0 ui_layout_pane_name              # host/oot_probes.c: (layout, index) -> the pane's name and length
-8045c040 ui_layout_wrapper_layout         # host/oot_probes.c: a layout wrapper's layout (+0x40)
-815457d0 ui_pane_changed_notify           # host/oot_probes.c: after a pane's changed bits (+0) gain watched ones (+4): its capture and redraw follow-ups
-8078fbe0 ui_pane_slide_update             # host/oot_probes.c: a slider sets a pane's translate (+0x6c, +0x70) from a value, then marks bit 0x40 changed
+81549620 ui_pane_build                    # games/oot/patches/oot_probes.c hos_oot_hud_anchor: a pane made from its layout record (translate +0x6c, size +0x58) or copied from a template; HUD site 0x81549918
+8045b1f0 ui_layout_pane_at                # games/oot/patches/oot_probes.c: (layout, index) -> layout + 0x100's pane at index * 0xb0
+815476d0 ui_layout_pane_index             # games/oot/patches/oot_probes.c: (layout, pane) -> its index
+8045e300 ui_layout_pane_by_name           # games/oot/patches/oot_probes.c: (layout, name) -> pane, by the record's name hashes (+0x30) and names (+0x20)
+80791cf0 ui_layout_pane_name              # games/oot/patches/oot_probes.c: (layout, index) -> the pane's name and length
+8045c040 ui_layout_wrapper_layout         # games/oot/patches/oot_probes.c: a layout wrapper's layout (+0x40)
+815457d0 ui_pane_changed_notify           # games/oot/patches/oot_probes.c: after a pane's changed bits (+0) gain watched ones (+4): its capture and redraw follow-ups
+8078fbe0 ui_pane_slide_update             # games/oot/patches/oot_probes.c: a slider sets a pane's translate (+0x6c, +0x70) from a value, then marks bit 0x40 changed

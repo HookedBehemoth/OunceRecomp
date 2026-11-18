@@ -1,5 +1,5 @@
 /* NVN texture storage: size, alignment and level offsets of the Tegra X1 block-linear layout (the native NVN layer,
-   gpu/api/rx_nvn.h). The game allocates texture storage by these numbers and copies its packaged (pre-tiled) data
+   renderer/api/rx_nvn.h). The game allocates texture storage by these numbers and copies its packaged (pre-tiled) data
    into it, so they must be the real driver's.
    From the NVN layer of d2r-mobile / MacNativeGames (jhaizhou, MIT), itself based on deko3d source/dk_image.cpp
    (zlib license, Copyright (C) 2018-2020 fincs; altered: the NVN SDK's integer rounding for the automatic block height,
@@ -8,7 +8,7 @@
    nibble = log2 of the block height, its high nibble = log2 of the block depth (3D). CUBEMAP_ARRAY depth already counts
    layer-faces (a multiple of 6), and linear textures are sized in pixel rows, block-compressed ones too (MacNativeGames
    3c482a7, found against the original driver under emulation: nxnative PR 11). */
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>

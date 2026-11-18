@@ -7,7 +7,7 @@
 // pushed address, as a driver bank's; textures and samplers are the registration-time entries.
 // The caches beside the executable (docs/direct/shader-contract.md, "The caches"):
 // - hookshot_direct_programs.bin: translated variants by code pair. Stamped by the translation's code only
-//   (HOOKSHOT_DIRECT_SHADER_STAMP, gpu/direct/meson/shader_stamp.py: the translator, the compiler and flags that build it,
+//   (HOOKSHOT_DIRECT_SHADER_STAMP, renderer/meson/shader_stamp.py: the translator, the compiler and flags that build it,
 //   and the regions marked "stamp graphics" and "stamp shared" here, direct_spv_late.*, direct_state.h), the record format
 //   (kDiskFormat), the device's answers and the switches that change the translation; a file of another stamp is made
 //   again. Edits outside the marked regions keep it.

@@ -1,5 +1,5 @@
 // The BC encoders (src/encoders.cpp over bc7enc_rdo: rgbcx, bc7decomp and bc7e.ispc) built into one static library.
-// The sources: HOOKSHOT_BC7ENC, else work/deps/bc7enc_rdo; ISPC: HOOKSHOT_ISPC, else work/deps/ispc/*/bin/ispc, else
+// The sources: HOOKSHOT_BC7ENC, else third_party/bc7enc_rdo; ISPC (a tool, not vendored): HOOKSHOT_ISPC, else work/deps/ispc/*/bin/ispc, else
 // the PATH. The ISPC targets and options decide the BC7 bytes: changing them changes every prepared BC7 texture.
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,7 +21,7 @@ fn ispc(root: &Path) -> PathBuf {
 fn main() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let src = std::env::var_os("HOOKSHOT_BC7ENC").map(PathBuf::from).unwrap_or_else(|| root.join("work/deps/bc7enc_rdo"));
+    let src = std::env::var_os("HOOKSHOT_BC7ENC").map(PathBuf::from).unwrap_or_else(|| root.join("third_party/bc7enc_rdo"));
     println!("cargo:rerun-if-changed=src/encoders.cpp");
     println!("cargo:rerun-if-env-changed=HOOKSHOT_BC7ENC");
     println!("cargo:rerun-if-env-changed=HOOKSHOT_ISPC");

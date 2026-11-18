@@ -1,5 +1,5 @@
 """Check Sirit keeps independently decorated structures separate.
-python nx2/test_spirv_struct_identity.py --headers <SPIRV-Headers/include> --spirv-val spirv-val
+python tests/test_spirv_struct_identity.py --headers <SPIRV-Headers/include> --spirv-val spirv-val
 No GPU or game files needed. Requires a configured C++ compiler.
 """
 import argparse
@@ -55,7 +55,7 @@ int main(int argc,char** argv) {
 '''
     work=ROOT/'work';work.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='struct-identity-',dir=work) as temp:
-        folder=Path(temp).resolve();cpp=folder/'fixture.cpp';exe=folder/'fixture.exe';cpp.write_text(fixture,encoding='utf-8');sirit=ROOT/'gpu/legacy/vk/sirit'
+        folder=Path(temp).resolve();cpp=folder/'fixture.cpp';exe=folder/'fixture.exe';cpp.write_text(fixture,encoding='utf-8');sirit=ROOT/'third_party/sirit'
         subprocess.run([a.cxx,'-std=c++20','-O1','-I'+str(sirit/'include'),'-I'+str(sirit/'src'),'-I'+str(a.headers),str(cpp),*map(str,sorted((sirit/'src').rglob('*.cpp'))),'-o',str(exe)],check=True)
         subprocess.run([str(exe),str(folder)],check=True)
         for case in range(2):subprocess.run([a.spirv_val,'--target-env','vulkan1.3',str(folder/f'{case}.spv')],check=True)

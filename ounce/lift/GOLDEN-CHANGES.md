@@ -136,7 +136,7 @@ registers to the context before the call, though the callee only saves and resto
 value into a frame slot the register is restored from, the slot read by nothing else, the register preserved and no
 save_ptr, is now no use of the register: liveness runs without those uses, and the inputs (and the records' reads)
 lose the registers that only such saves read, up the call graph. The callee then saves and restores a stale context
-value no one reads (C++ unwinding stops, host/cxx_throw.c; backtraces are replaced, host/nn_diag.c); a caller keeps
+value no one reads (C++ unwinding stops, runtime/cxx_throw.c; backtraces are replaced, runtime/nn_diag.c); a caller keeps
 its value in SSA (the register is in the record's keeps). The frame address being taken does not matter: only an
 out-of-bounds read reaches a save slot. inconsistent asks the inputs with the saves counted: the summary's saved, the
 registers it or a callee reads only to save.
@@ -190,8 +190,8 @@ only, each counted apart from the unexplained ones.
 
 ## v2.10: SVCs called with values, without the context; the undeclared ones stops
 
-`svc #n` was a context call of `a64_svc(ctx, n)`. Now host/hos_svc.c declares each SVC it answers,
-SVC(number, name, inputs, results) (host/patch.h): the lift calls hos_svc_0x<NN>(x0..x7, pc, more) -> i128, no
+`svc #n` was a context call of `a64_svc(ctx, n)`. Now runtime/hos_svc.c declares each SVC it answers,
+SVC(number, name, inputs, results) (runtime/patch.h): the lift calls hos_svc_0x<NN>(x0..x7, pc, more) -> i128, no
 context: x0 up to inputs as values (poison beyond), x0 and x1 from the result, x2 up through `more` (a local array
 holding the registers' values before; GetThreadCoreMask only); every other register keeps its value, nothing is
 written to or reloaded from the context. The summaries take a declared svc as reading x0..inputs-1 and writing

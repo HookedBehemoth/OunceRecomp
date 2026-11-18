@@ -30,7 +30,7 @@
 #include "hos.h"
 #include "direct.h"
 #include "hos_ledger.h"
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -476,7 +476,7 @@ void direct_assets_texture_init(const void *tex) {
     if (other) os_atomic_inc(&n_tile_kept_other);
 }
 
-/* (an At row, a PATCH_AT declaration, host/patch.h) f_80c17040+0x544: memcpy(x0 the tile texture's storage, x1 the record's
+/* (an At row, a PATCH_AT declaration, runtime/patch.h) f_80c17040+0x544: memcpy(x0 the tile texture's storage, x1 the record's
    blob B, x2 its size), x11 the record. Returns the size the memcpy copies: 0 when the tile went to its texture */
 PATCH_AT(0x80c17580, word(0x9a8803e1), after, x2, direct_assets_tile, as(x0, dst), as(x1, src), as(x2, size), as(x11, rec)) {
     if (!direct_assets_on()) return size;

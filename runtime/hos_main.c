@@ -10,7 +10,7 @@
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
 #include "hos_paths.h"
-#include "../gpu/api/vk_api.h"
+#include "vk_api.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -230,15 +230,15 @@ static void load_hookshot_env(void) {
     fclose(f);
 }
 
-float hos_aspect_ratio = 0;   /* (the window's default shape: host/display.c) */
-/* (host/oot_probes.c, the widescreen rows) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
+float hos_aspect_ratio = 0;   /* (the window's default shape: runtime/display.c) */
+/* (games/oot/patches/oot_probes.c, the widescreen rows) read by the widescreen patches in the game's code; 0: the game's own 16:9 */
 volatile uint64_t hos_wide_out, hos_wide_scene;
-/* (host/oot_probes.c) mode 1's scene base scale 1.0 instead of 0.8: Resolution 100% (host/nn_vi.c keeps it current),
+/* (games/oot/patches/oot_probes.c) mode 1's scene base scale 1.0 instead of 0.8: Resolution 100% (runtime/nn_vi.c keeps it current),
    HOS_SCENE_NATIVE=0/1 over it */
 volatile int hos_native_scene;
-volatile int hos_fix_res;   /* (host/oot_probes.c's cached-scale refresh: HOS_FIX_RES=1; #849's fixed-scale patch does it by default) */
+volatile int hos_fix_res;   /* (games/oot/patches/oot_probes.c's cached-scale refresh: HOS_FIX_RES=1; #849's fixed-scale patch does it by default) */
 volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
-/* (host/oot_probes.c hos_oot_occlusion_flag) read by the game's code where it decides to make occlusion queries: 1, none (HOOKSHOT_OCCLUSION_OFF=1) */
+/* (games/oot/patches/oot_probes.c hos_oot_occlusion_flag) read by the game's code where it decides to make occlusion queries: 1, none (HOOKSHOT_OCCLUSION_OFF=1) */
 volatile int hos_occlusion_off;
 static void occlusion_switch(void) {
     const char *e = getenv("HOOKSHOT_OCCLUSION_OFF");
@@ -379,9 +379,9 @@ static int game_main(int argc, char **argv) {
     hos_mem_init(hos_image_end);
     void hos_code_ptrs_init(void);
     hos_code_ptrs_init();   /* code_ptrs.c */
-    {   /* (hookshot) The game's frame follows the window (host/oot_probes.c's rows): its pixels are the window's (at most
+    {   /* (hookshot) The game's frame follows the window (games/oot/patches/oot_probes.c's rows): its pixels are the window's (at most
            3840 x 2160's count, the shape kept) and the main camera, HUD and movies take its shape; a resize, once settled,
-           sizes the frame again (host/posix/display_sdl.c). The game draws its frame into a corner of its picture (the window
+           sizes the frame again (runtime/media/display_sdl.c). The game draws its frame into a corner of its picture (the window
            textures), so the picture is made once as large as any frame: the monitor's size, at least 3840 x 2160. With
            HOS_ASPECT=<ratio> or an explicit Output resolution (HOS_OUTPUT_RES, output_res) the frame is the game's instead:
            its picture takes that shape (or the window's) at the output's height, and a resize letterboxes it.
@@ -401,7 +401,7 @@ static int game_main(int argc, char **argv) {
         if (hos_native_scene) hos_log("boot: HOS_SCENE_NATIVE=1: the scene's base scale 1.0 (the game's 0.8 otherwise)");
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
-        int hos_output_res_set(void);   /* (host/nn_applet.c: an Output resolution was chosen) */
+        int hos_output_res_set(void);   /* (runtime/nn_applet.c: an Output resolution was chosen) */
         const double game = 16.0 / 9.0;
         if (!e && !hos_output_res_set()) {
             const unsigned pw = (unsigned)(dw > 3840 ? dw : 3840), ph = (unsigned)(dh > 2160 ? dh : 2160);
@@ -416,10 +416,10 @@ static int game_main(int argc, char **argv) {
                camera takes its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3
                CRT at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
             double r = want > 32.0 / 9.0 ? 32.0 / 9.0 : want < 5.0 / 4.0 ? 5.0 / 4.0 : want;
-            uint32_t hos_output_size(int height);   /* (host/nn_applet.c: the Output resolution's height, 1440 as shipped) */
+            uint32_t hos_output_size(int height);   /* (runtime/nn_applet.c: the Output resolution's height, 1440 as shipped) */
             unsigned oh = hos_output_size(1), ow = (unsigned)(oh * r / 8 + 0.5) * 8;   /* (whole multiples of 8 pixels) */
             /* (at most 3840 x 2160's pixels, the shape kept: the game's render targets come from a pool sized for its picture
-               (host/nn_applet.c hos_rt_pool_size), and a 32:9 screen at the 4K output made a 7680 x 2160 one. Its pool at the
+               (runtime/nn_applet.c hos_rt_pool_size), and a 32:9 screen at the 4K output made a 7680 x 2160 one. Its pool at the
                output's size ran out as Kokiri Forest loaded (a null pointer, issue 1031); a pool for the whole picture, 1.4 GB,
                failed the game's own reservation at boot. 5400 x 1520 there, more than the 5120 x 1440 screens it was seen on) */
             if ((double)ow * oh > 3840.0 * 2160.0) {
@@ -475,7 +475,7 @@ static int game_main(int argc, char **argv) {
 }
 
 /* (linux) The window belongs on the process's main thread (SDL), so the game runs on a thread of its own, with the
-   stack the guest main thread's lifted code needs (the main thread has the system's 8 MB): host/posix/display_sdl.c */
+   stack the guest main thread's lifted code needs (the main thread has the system's 8 MB): runtime/media/display_sdl.c */
 static int game_argc;
 static char **game_argv;
 static void game_thread(void *p) {

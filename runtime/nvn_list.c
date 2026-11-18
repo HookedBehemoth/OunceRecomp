@@ -1,9 +1,9 @@
 /* (native-vk layer 1, stage S1) Command lists by reference, HOS_NVN_LIST_REF=1: see nvn_list.h for the design and the
-   lifetime rules. Used by host/nvn_native.c only; no guest code and no renderer state here, so tests/list_ref_test.c
+   lifetime rules. Used by runtime/nvn_native.c only; no guest code and no renderer state here, so tests/list_ref_test.c
    builds this file as it is. */
 #include "nvn_list.h"
 #include "hos_ledger.h"
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"

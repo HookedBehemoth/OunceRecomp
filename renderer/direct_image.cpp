@@ -85,7 +85,7 @@ std::vector<Image*> dying;   // (refs 0: destroyed by image_sweep)
 constexpr int64_t kHeldBytes = 256ll << 20;
 int64_t held_bytes = 0;
 // The transient pool (direct_image.h, docs/direct/transient-pool.md): the range of storage addresses the host named
-// (host/rt_slots.c's slots), its images, and the slot sizes the host told (images_mu; on, lo and hi are set once before
+// (games/oot/patches/rt_slots.c's slots), its images, and the slot sizes the host told (images_mu; on, lo and hi are set once before
 // the first texture in the range is initialized).
 struct Pool {
     std::atomic<bool> on{false};
@@ -492,7 +492,7 @@ namespace {
 /// im takes its range of the pool (images_mu held exclusively): nothing if it is the owner; else every owner of memory it
 /// overlaps stops being one (its content is undefined from here), and im is discarded and cleared on this thread's
 /// upload, which is sent at once: after every list sent before, before every list sent later. The host's slots never
-/// give a range to another target while lists that use the last one may be unsent (host/rt_slots.c); an owner claimed
+/// give a range to another target while lists that use the last one may be unsent (games/oot/patches/rt_slots.c); an owner claimed
 /// within kPoolInUse presents that loses its range is a strict event
 void claim(Image* im, const char* how) {
     const uint64_t now = present_count();

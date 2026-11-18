@@ -1,4 +1,4 @@
-"""Compile host/hos_motion.h with synthetic SDL readings and check the Switch six-axis state it makes.
+"""Compile runtime/media/hos_motion.h with synthetic SDL readings and check the Switch six-axis state it makes.
 
 python -I -B tests/test_motion.py [--cc clang]
 """
@@ -29,7 +29,7 @@ def main():
     folder = Path(temporary.name).resolve()
     try:
         executable = folder / "fixture.exe"
-        run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT / "host"),
+        run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT / "runtime/media"),
              str(ROOT / "tests/motion_test.c"), "-o", str(executable), "-lm"])
         run([str(executable)])
     finally:

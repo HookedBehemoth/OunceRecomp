@@ -1,5 +1,5 @@
-/* SDL3 or SDL2 behind one set of calls (host/hos_sdl.c): the window (host/posix/display_sdl.c), the sound
-   (host/nn_audio.c) and the controllers (host/pad_sdl.c) call these, whichever SDL loaded. One library for the whole
+/* SDL3 or SDL2 behind one set of calls (runtime/media/hos_sdl.c): the window (runtime/media/display_sdl.c), the sound
+   (runtime/nn_audio.c) and the controllers (runtime/media/pad_sdl.c) call these, whichever SDL loaded. One library for the whole
    process, loaded at run time: SDL3 beside the executable, else the system's, else SDL2 the same way (libSDL3.so.0,
    libSDL2-2.0.so.0). HOS_SDL_VERSION=2 takes SDL2 even with an SDL3 there. */
 #pragma once
@@ -29,7 +29,7 @@ uint32_t hos_sdl_mouse_buttons(void);   /* 1 left, 2 middle, 4 right */
 void hos_sdl_window_size(void *window, int *width, int *height);   /* (in the units of the mouse's position, not pixels) */
 void hos_sdl_icon(void *window, const char *png);   /* (SDL 3.4's PNG loader: nothing on SDL2 or an older SDL3) */
 
-/* ---- the window's state, kept by its loop (host/posix/display_sdl.c): for the input and the menus ---- */
+/* ---- the window's state, kept by its loop (runtime/media/display_sdl.c): for the input and the menus ---- */
 int hos_key_down(int vk);    /* a key (hos_keys.h's virtual-key numbers) or mouse button down in the focused window */
 int hos_window_focused(void);
 void hos_screen_size(int *width, int *height);   /* the desktop's, 0 x 0 without a window */
@@ -57,7 +57,7 @@ int hos_sdl_audio_open(int freq, int channels, int s16, void (*pull)(void *user,
 int hos_sdl_audio_channels(void);   /* the default output's channels (6 for 5.1); 2 when SDL cannot say */
 
 /* ---- (hookshot) microphones: SDL3's recording devices or SDL2's capture devices, for the game's input streams
-   (host/nn_audio_in.c). The device's sound comes out converted to the format asked for (SDL resamples and mixes the
+   (runtime/nn_audio_in.c). The device's sound comes out converted to the format asked for (SDL resamples and mixes the
    channels down) ---- */
 int hos_sdl_mic_list(uint32_t *ids, char (*names)[128], int max);   /* the recording devices now: their count */
 void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format);   /* id 0: the system's default; NULL
@@ -78,7 +78,7 @@ int16_t hos_sdl_pad_axis(void *pad, int axis);
 const char *hos_sdl_pad_name(void *pad);
 int32_t hos_sdl_pad_id(void *pad);
 void hos_sdl_pad_rumble(void *pad, uint16_t low, uint16_t high, uint32_t ms);
-/* (HD rumble, host/pad_sdl.c) the pad's SDL_GetGamepadType / SDL_GameControllerGetType, in the loaded SDL's numbers (0
+/* (HD rumble, runtime/media/pad_sdl.c) the pad's SDL_GetGamepadType / SDL_GameControllerGetType, in the loaded SDL's numbers (0
    unknown, or no such call); whether the SDL has the effect call; a raw effect sent (SDL_SendGamepadEffect /
    SDL_GameControllerSendEffect): 1 when SDL took it */
 int hos_sdl_pad_type(void *pad);

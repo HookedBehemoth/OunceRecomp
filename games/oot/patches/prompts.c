@@ -1,7 +1,7 @@
 /* (hookshot) The button prompts of the controller in use: the game's button-icon font (Font2/Scalable/External.*.bfotf,
    every icon in a text: dialogue, the control hints, menus) served from prompts/<face>/External.bfotf in the game folder,
    which nx2/prompt_assets.py draws per controller face at build time, with each Switch button's icon pointed at the icon of
-   the pad input bound to it (host/nn_hid.c's controls, the menu's Layout preset and Controls page). So the icons say which
+   the pad input bound to it (runtime/nn_hid.c's controls, the menu's Layout preset and Controls page). So the icons say which
    button to press on this pad, custom controls too.
 
    The face: hookshot_options.ini's button_prompts (the menu's Button prompts row): 0 Auto, from the first controller's name
@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"
-#include "../gpu/api/vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
+#include "vk_api.h"   /* (HOS_SW_*, HOS_PAD_*, HOS_BIND_PAD) */
 
 int hos_binding(int set, int button, int slot);   /* nn_hid.c */
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]);   /* pad_sdl.c */

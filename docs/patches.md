@@ -1,12 +1,12 @@
 # Write a patch
 
 This page shows you how to change what the game does: run host code at a guest instruction, replace a guest function,
-or stand in for an SDK function. Read it before you add or change a declaration in `host/`.
+or stand in for an SDK function. Read it before you add or change a declaration in `runtime/`.
 
 A patch is a C declaration at file scope in a host source file, next to the host function it runs. The lifter reads
 the declarations with a fixed-grammar scanner (`ounce/lift/src/patch.rs`); the compiler expands the same text into the
 host function's prototype. The authoritative description of every macro, mode and operand is the comment at the top of
-`host/patch.h`.
+`runtime/patch.h`.
 
 ## Choose the kind of patch
 
@@ -18,7 +18,7 @@ host function's prototype. The authoritative description of every macro, mode an
 | Replace a function the image exports by name | `PATCH_FUNC_SYM(symbol, aapcs, result, fn, ...) { ... }` | No |
 | Implement an SDK function the game imports | `HLE(symbol, effect...) { ... }` | Yes |
 | Answer an SDK function with a constant (no host code: each direct call becomes the constant) | `PATCH_ANSWER(symbol, value, "why");` | Yes |
-| Implement an NVN proc | `NV(name, effect...) { ... }` in `host/nvn_native.c` | No |
+| Implement an NVN proc | `NV(name, effect...) { ... }` in `runtime/nvn_native.c` | No |
 
 A few real declarations, one per kind:
 
@@ -92,7 +92,7 @@ local cost of every declaration, costliest first, in about half a minute, and ea
 To change what a BLR (or a BR that is a tail call) does, put an `instead` row on that instruction. Pass the target
 register as an operand, and assert in the host function that it is the proc you expect. To keep the original behavior,
 call the target through `guest_call`, declared with `guest(computed)`. A row never rewrites a code pointer, and no
-host-call slot is handed to the game for a patch. `host/direct_job_sync.c` and `host/direct_depth_copy.c` are worked
+host-call slot is handed to the game for a patch. `games/oot/patches/direct_job_sync.c` and `games/oot/patches/direct_depth_copy.c` are worked
 examples.
 
 `guest(computed)` counts as reading every register, so such a row costs more than one that names its guest callees;

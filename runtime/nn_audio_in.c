@@ -9,7 +9,7 @@
 
    Here there is always one device of each kind (as on the console, whose microphone is always there). The started streams
    of one format share a source: one microphone opened once, through SDL3, or SDL2 as the Linux AppImage carries
-   (host/hos_sdl.c), converted to that format; what it records goes to each stream's own buffer, the newest capacity's
+   (runtime/media/hos_sdl.c), converted to that format; what it records goes to each stream's own buffer, the newest capacity's
    worth kept. Which one is the Insert menu's choice (gpu/legacy/vk/vk_menu.cpp, Gameplay: Microphone), told by hos_mic_select:
    off, the system's default, or a microphone by its name. One that is not there, does not open, stops sending, or is no
    longer listed (pulled out: looked for every 5 s, as one pulled out can go on sending zeros): the default stands in for
@@ -76,7 +76,7 @@ static char sel_name[128];
 static int sel_index = -1;
 static int log_on = -1;
 
-/* ---- the devices, for the menu (gpu/api/vk_api.h: MkwVkHost mic_count, mic_name) ---- */
+/* ---- the devices, for the menu (renderer/api/vk_api.h: MkwVkHost mic_count, mic_name) ---- */
 int hos_mic_count(void) {   /* (lists them again: a microphone plugged in since shows; SDL asked without a lock held) */
     uint32_t ids[MAX_DEVICES];
     char names[MAX_DEVICES][128];

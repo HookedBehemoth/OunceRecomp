@@ -1,11 +1,11 @@
 //! Which Hookshot a build is: the release name (HOOKSHOT_VERSION, a VERSION file, or `git describe` of a checkout)
-//! and a fingerprint of the sources in host/, gpu/ and nx2/ (line endings aside), as the game prints it in its log
+//! and a fingerprint of the sources in runtime/, renderer/ and games/ (line endings aside), as the game prints it in its log
 //! and the Insert menu.
 
 use sha1::{Digest, Sha1};
 use std::path::Path;
 
-const SOURCES: [&str; 3] = ["host", "gpu", "nx2"];
+const SOURCES: [&str; 3] = ["runtime", "renderer", "games"];
 const SOURCE_EXT: [&str; 12] = [".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".py", ".glsl", ".comp", ".vert", ".frag", ".spv"];
 
 /// HOOKSHOT_VERSION, else the first line of VERSION or version.txt, else `git describe` of a checkout; "unknown"
@@ -99,7 +99,7 @@ mod tests {
     use super::*;
 
     fn tree(root: &Path, eol: &str) {
-        for rel in ["host/a.c", "gpu/direct/b.cpp", "nx2/c.py"] {
+        for rel in ["runtime/a.c", "renderer/b.cpp", "games/g/c.c"] {
             let p = root.join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, format!("line one{eol}line two{eol}")).unwrap();
@@ -116,7 +116,7 @@ mod tests {
         std::env::remove_var("HOOKSHOT_VERSION");
         assert_eq!(release(&lf), "unknown");
         assert_eq!(fingerprint(&lf), fingerprint(&crlf), "line endings changed the fingerprint");
-        std::fs::write(lf.join("nx2/c.py"), "line one\nline two\nchanged\n").unwrap();
+        std::fs::write(lf.join("games/g/c.c"), "line one\nline two\nchanged\n").unwrap();
         assert_ne!(fingerprint(&lf), fingerprint(&crlf), "a changed source kept the fingerprint");
         std::fs::write(lf.join("VERSION"), "movie-sync\nignored second line\n").unwrap();
         assert_eq!(release(&lf), "movie-sync");

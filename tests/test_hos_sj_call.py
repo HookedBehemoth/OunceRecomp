@@ -1,4 +1,4 @@
-"""host/hos_setjmp.c's hos_sj_call without the game: the lifted code's call of a setjmp owner (nx2/lift2/game.py sjcall_<owner>).
+"""runtime/hos_setjmp.c's hos_sj_call without the game: the lifted code's call of a setjmp owner (nx2/lift2/game.py sjcall_<owner>).
 Synthetic owners: one that returns, one whose callee longjmps back to the owner's setjmp (the host comes back to
 hos_sj_call, which runs the code at the return address through a64_icall), and nested owners where the inner one's
 callee longjmps to the outer owner (the inner slot dropped) or to its own.
@@ -14,7 +14,7 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SETJMP = os.path.join(ROOT, "host", "hos_setjmp.c")
+SETJMP = os.path.join(ROOT, "runtime", "hos_setjmp.c")
 
 STUB_HOS = r"""
 #include <stdint.h>
@@ -108,7 +108,7 @@ class SjCallTests(unittest.TestCase):
                 f.write(HARNESS)
             shutil.copy(SETJMP, d)   # (beside the stub hos.h: its #include "hos.h" looks in its own directory first)
             exe = os.path.join(d, "t")
-            r = subprocess.run([cc(), opt, "-w", "-I", d, "-I", os.path.join(ROOT, "host", "os"), "-o", exe,
+            r = subprocess.run([cc(), opt, "-w", "-I", d, "-I", os.path.join(ROOT, "runtime", "os"), "-o", exe,
                                 os.path.join(d, "t.c")], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
             r = subprocess.run([exe], capture_output=True, text=True, timeout=60)

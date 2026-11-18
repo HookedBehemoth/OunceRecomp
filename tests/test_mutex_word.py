@@ -1,4 +1,4 @@
-"""nn::os mutexes keep their lock in the guest's MutexType (host/nn_os_sync.c, "mutex state in the guest's MutexType"):
+"""nn::os mutexes keep their lock in the guest's MutexType (runtime/nn_os_sync.c, "mutex state in the guest's MutexType"):
 the owner's id, the recursion count and MX_SLOW in the u32 at +0x18. The section is cut out of the source and compiled
 with a pthread harness: threads lock and unlock shared mutexes (recursively too) around plain counters, sleepers are
 woken, a mutex reserved for a condition variable's waiter is not taken by others, counts past the field go to the
@@ -144,7 +144,7 @@ def main():
     if os.name == "nt":
         print("SKIP: the harness uses pthreads")
         return
-    source = (ROOT / "host" / "nn_os_sync.c").read_text(encoding="utf-8")
+    source = (ROOT / "runtime/nn_os_sync.c").read_text(encoding="utf-8")
     if START not in source or END not in source:
         raise SystemExit("FAIL: the mutex word section's markers are gone: update the test")
     section = source[source.index(START):source.index(END)]

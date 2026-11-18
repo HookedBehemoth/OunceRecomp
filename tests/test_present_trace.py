@@ -43,7 +43,7 @@ static void realtime_step(int64_t now) { (void)now; ++steps; }
 static int hos_bench_on(void) { return 0; }   /* (HOS_BENCH off) */
 static void hos_bench_present(int64_t now) { (void)now; }
 static void hos_thread_fp_log(long long present) { (void)present; }   /* (HOS_FP_LOG off) */
-void hos_code_ptr_report(void) {}   /* (host/code_ptrs.c) */
+void hos_code_ptr_report(void) {}   /* (runtime/code_ptrs.c) */
 static void hos_log(const char *fmt, ...) { (void)fmt; }
 static int hos_log_switch(const char *item) { (void)item; return 0; }
 static int fps_max(void) { return 60; }   /* (nn_vi.c's Frame rate cap: the console's 60 here) */
@@ -82,7 +82,7 @@ def main():
     parser.add_argument("--source", type=Path, default=ROOT)
     parser.add_argument("--cxx", default="clang++")
     args = parser.parse_args()
-    source = (args.source / "host/nn_vi.c").read_text(encoding="utf-8")
+    source = (args.source / "runtime/nn_vi.c").read_text(encoding="utf-8")
     helper = block(source, "static void present_trace(") if "static void present_trace(" in source else ""
     actual = block(source, "void hos_vi_native_presented(")
     states = []

@@ -1,6 +1,6 @@
-/* (native-vk layer 1, stage S1) HOS_NVN_LIST_REF=1: command lists by reference (host/nvn_list.c).
+/* (native-vk layer 1, stage S1) HOS_NVN_LIST_REF=1: command lists by reference (runtime/nvn_list.c).
 
-   What it replaces (host/nvn_native.c, the default path): a recording written into its command buffer's segment and
+   What it replaces (runtime/nvn_native.c, the default path): a recording written into its command buffer's segment and
    copied whole at EndRecording (`flatten`), filed by a malloc'd node in a table under one exclusive lock (`copy_lock`),
    every CallCommands copying the callee into the caller (`inline_recording`), and AddControlMemory walking that table
    under the same lock (`release_copies`). Here:
@@ -10,7 +10,7 @@
      guess of a size was wrong: grown by doubling, or shrunk once at its end when it used less than a quarter).
    - Its handle is an id in a table that needs no lock to read (chunks never freed), with a generation: a handle the
      game passes back is used only when its slot still holds it, never by what memory at some address holds.
-   - CallCommands and CopyCommands record NOP_CALL (gpu/api/rx_nvn.h nvn_p_call) naming the callee, and take a
+   - CallCommands and CopyCommands record NOP_CALL (renderer/api/rx_nvn.h nvn_p_call) naming the callee, and take a
      reference on it. The replay walks into the callee and back (gpu/legacy/vk/vk_replay.cpp replay(): a call stack, saved
      with every place it stops at or cuts a segment at).
    - Recordings are filed by their control memory position in buckets of 64 KiB blocks, each run of 256 buckets under
@@ -75,10 +75,10 @@ struct nvn_lrec {   /* a recording: this header, then BEGIN ... END */
     uint64_t reached;        /* (check) the newest submit that walks it */
     uint64_t hash;           /* (check) its bytes at EndRecording, the deferred arrays left out */
     uint8_t *shadow;         /* (check) the default path's copy: BEGIN .. END, callees copied in */
-    void *user;              /* (HOS_ENG_LISTS, host/eng_lists.c) its packet: told when the handle goes and when the bytes go */
+    void *user;              /* (HOS_ENG_LISTS, runtime/eng_lists.c) its packet: told when the handle goes and when the bytes go */
 };
 
-/* a command buffer's recording place (in host/nvn_native.c's cmd_rec): seg the open recording's BEGIN, cur where the
+/* a command buffer's recording place (in runtime/nvn_native.c's cmd_rec): seg the open recording's BEGIN, cur where the
    next record goes, end its allocation's end; rec its header (NULL: none open) */
 typedef struct nvn_lw {
     uint8_t *seg, *cur, *end;

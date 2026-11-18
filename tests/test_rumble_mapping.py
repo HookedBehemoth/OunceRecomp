@@ -1,9 +1,9 @@
 """The game's HD rumble goes to a controller's heavy and light motors by frequency, scaled by the menu's Rumble strength.
 
-host/nn_hid.c rumble_map: each band's strength (rumble_motor) is split between the heavy and light motors by its
+runtime/nn_hid.c rumble_map: each band's strength (rumble_motor) is split between the heavy and light motors by its
 frequency (rumble_heavy_share: all heavy up to 160 Hz, all light from 200 Hz, a constant-power crossfade between, on a
 log scale). At the Switch's default frequencies and the ones OoT sends, every band lands on the motor it did before, at
-the same strength. host/pad_sdl.c rumble_strength: the Insert menu's Rumble strength, in percent, on the motors'
+the same strength. runtime/media/pad_sdl.c rumble_strength: the Insert menu's Rumble strength, in percent, on the motors'
 0..65535; above 100% both motors are scaled by the same factor when the stronger would pass the top.
 
 Run with: python -I -B tests/test_rumble_mapping.py
@@ -17,8 +17,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HID = ROOT / "host" / "nn_hid.c"
-PAD = ROOT / "host" / "pad_sdl.c"
+HID = ROOT / "runtime/nn_hid.c"
+PAD = ROOT / "runtime/media/pad_sdl.c"
 
 
 def function(path, name):

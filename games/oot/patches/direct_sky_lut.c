@@ -9,12 +9,12 @@
    blob, but both of f_80ddab00's calls pass none (the block's +0x48 and +0x50 are stored zero).
 
    Why it is changed: the direct back end never reads texture storage, so the LUT pass read zeros (black) and the
-   scene's ambient light followed. Here (an At row, a PATCH_AT declaration, host/patch.h), before each of the three
+   scene's ambient light followed. Here (an At row, a PATCH_AT declaration, runtime/patch.h), before each of the three
    memcpys (x0 the storage, x1 the part, x2 its size), the part's level 0 is deswizzled and goes to its texture's image,
    and the memcpy copies nothing. A part that is not its texture's storage size leaves the site alone, logged.
    Check that it applies: the 600-present line "direct patch sky lut" (uploads 6 at the boot, 6 more each scene load). */
 #include "direct.h"
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include "os.h"
 
 int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);

@@ -1,4 +1,4 @@
-"""The core hos_reserved_cpus keeps for the replay (host/hos_thread.c pick_reserved_core): the last core of the fastest kind.
+"""The core hos_reserved_cpus keeps for the replay (runtime/hos_thread.c pick_reserved_core): the last core of the fastest kind.
 
 On a CPU of one kind every core has the same EfficiencyClass and the last core is kept, as before; on Intel's hybrid CPUs
 the efficiency cores come last and have the lower class, so the last performance core is kept instead. None is kept with
@@ -27,7 +27,7 @@ def block(text, marker):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cxx', default='g++')
-    parser.add_argument('--source', type=Path, default=ROOT / 'host/hos_thread.c')
+    parser.add_argument('--source', type=Path, default=ROOT / 'runtime/hos_thread.c')
     args = parser.parse_args()
     helper = block(args.source.read_text(encoding='utf-8'), 'static uint64_t pick_reserved_core(')
     fixture = r'''

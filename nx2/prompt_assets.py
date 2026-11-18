@@ -6,8 +6,8 @@ and Kenney's Input Prompts (CC0, third_party/kenney_input).
 Writes <out>/<face>/External.bfotf for each face (switch, xbox, ps4, ps5, steamdeck). Every text in the game draws its button icons
 from Font2/Scalable/External.*.bfotf (dialogue, the control hints, menus): A B X Y at U+E040..E043, L R ZL ZR at E044..E047, Plus
 and Minus at E04B and E04C, the stick presses at E056 and E057, the d-pad at E060..E063. Each written font has one icon per pad
-input at U+F700 + HOS_PAD_* (gpu/api/vk_api.h), and each of those Switch buttons' code points in a cmap segment of its own: the
-game (host/prompts.c) points each one at the icon of the pad input bound to that button when it serves the font, so the icons
+input at U+F700 + HOS_PAD_* (renderer/api/vk_api.h), and each of those Switch buttons' code points in a cmap segment of its own: the
+game (games/oot/patches/prompts.c) points each one at the icon of the pad input bound to that button when it serves the font, so the icons
 follow the controls, changed ones too.
 
 The textures with button icons (the ocarina's notes, the letters on black, the controller in the pause menu) the same way, with
@@ -41,11 +41,11 @@ FONT = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs"
 MAGIC = 0x18029A7F
 PAD_BASE = 0xF700
 WIDE = 1.6   # (how much wider than the game's icon a wide Kenney icon may be)
-# the HOS_PAD_* inputs (gpu/api/vk_api.h), in order
+# the HOS_PAD_* inputs (renderer/api/vk_api.h), in order
 PADS = ["south", "east", "west", "north", "back", "guide", "start", "lstick", "rstick", "lshoulder", "rshoulder", "up", "down", "left",
         "right", "ltrigger", "rtrigger"]
 # the Switch buttons' code points, in HOS_SW_* order (A B X Y LS RS L R ZL ZR Plus Minus Left Up Right Down), and hookshot's
-# default controls for them (host/nn_hid.c pad_default: by position, A the right face button)
+# default controls for them (runtime/nn_hid.c pad_default: by position, A the right face button)
 SWITCH = [0xE040, 0xE041, 0xE042, 0xE043, 0xE056, 0xE057, 0xE044, 0xE045, 0xE046, 0xE047, 0xE04B, 0xE04C, 0xE062, 0xE060, 0xE063,
           0xE061]
 DEFAULT = ["east", "south", "north", "west", "lstick", "rstick", "lshoulder", "rshoulder", "ltrigger", "rtrigger", "start", "back",
@@ -237,7 +237,7 @@ def face_font(otf, face):
 
 # ---- the textures with button icons (UI/Layout2Archive/Common.*.bntx: 878 textures, ASTC 4x4 and BC4, the Switch 2's block-linear
 # layout). prompts/Common.bntx is the game's file, decompressed; prompts/<face>/textures.bin the blocks to write over it, for each
-# Switch button and each pad input it can be bound to (host/prompts.c writes those of the controls in use):
+# Switch button and each pad input it can be bound to (games/oot/patches/prompts.c writes those of the controls in use):
 #     "HPTX", u32 count, then count times: u8 Switch button (HOS_SW_*), u8 pad input (HOS_PAD_*), u16 0, u32 runs,
 #     runs times: u32 offset in the file, u32 length, the bytes
 # Each face's images are made first, as layers (face_layers), then encoded: --dump writes the layers as PNG, and a PNG of the same
@@ -714,7 +714,7 @@ def guide_layers(game, face):
 
 def guide_layers_of(b, tex, face):
     """the layers of the page's leader lines: each texture's lines that stay (0xff), then each Switch button's line for each pad
-    input, drawn over them (host/prompts.c writes the entries in order)"""
+    input, drawn over them (games/oot/patches/prompts.c writes the entries in order)"""
     from PIL import Image, ImageChops
     if not parts(face):
         return []
@@ -765,7 +765,7 @@ def write_textures(path, entries):
 # ---- the Talk ring (DoCommand_00 in UI/Layout2Archive/Common.*.blarc, a BFFH layout, four copies): one group per Switch button
 # an action can be on, N_A/B/X/Y_00, each its base, its big button and the three others' letters (KeyTexFont) at the Switch's
 # places. prompts/Common.blarc is the game's file decompressed, prompts/ring.bin what to write over it to put each one where its
-# pad input is (host/prompts.c picks the places by the controls): "HPRG", u32 count, then count times: u8 group (HOS_SW_A..Y),
+# pad input is (games/oot/patches/prompts.c picks the places by the controls): "HPRG", u32 count, then count times: u8 group (HOS_SW_A..Y),
 # u8 the Switch button placed (the group's own: its big button and base), u8 place (RING_PLACES), u8 0, u32 runs, the runs
 # (u32 offset, u32 length, the bytes)
 LAYOUTS = "UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.blarc.zs"
@@ -824,7 +824,7 @@ def write_ring(path, entries):
 
 # ---- the ocarina's hints ("Play a note" and the notes' icons: PaGuideKeyOcarinaInput_00 and _01, and PaGuideKeyCapture_00 while a
 # song is taught to the scarecrow, in the same archive, four copies each): each icon a text pane of its own, drawn from its left,
-# 90 apart, room for the game's icons. A wider one (the Xbox's LB and RB pills) runs into the next, so host/prompts.c moves each
+# 90 apart, room for the game's icons. A wider one (the Xbox's LB and RB pills) runs into the next, so games/oot/patches/prompts.c moves each
 # icon on by the extra width of the icons bound before it: the last one stays, the others and the text move left. prompts/<face>/hint.bin: "HPHN", u32 count of PADS, each pad input's icon's extra width (f32, layout units), u32
 # panes, then each: u32 offset (its x in prompts/Common.blarc), u8 slot (0-4 the notes' icons in the hint's order, 5 the text),
 # u8 0 x3, f32 its x

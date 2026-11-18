@@ -1,4 +1,4 @@
-"""The game says at boot when the PC has too little memory and swap for it (host/hos_main.c memory_notice, issue 1241).
+"""The game says at boot when the PC has too little memory and swap for it (runtime/hos_main.c memory_notice, issue 1241).
 
 On 8 GB of RAM and no swap the game closed before the title with no word of why; adding swap let it play. Memory and
 swap (the page file on Windows) together below about 10 GB now give a LOW MEMORY line in the log and a message once at
@@ -48,7 +48,7 @@ static void hos_sdl_message_box(const char *title, const char *text) {
     (void)title, (void)text;
     ++boxes;
 }
-static int os_mem_available(uint64_t *ram, uint64_t *swap) {   /* (host/os/os_linux.c's) */
+static int os_mem_available(uint64_t *ram, uint64_t *swap) {   /* (runtime/os/os_linux.c's) */
     struct sysinfo si;
     if (sysinfo(&si)) return -1;
     *ram = (uint64_t)si.totalram * si.mem_unit, *swap = (uint64_t)si.totalswap * si.mem_unit;
@@ -77,13 +77,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
-    src = (ROOT / "host" / "hos_main.c").read_text(encoding="utf-8")
+    src = (ROOT / "runtime/hos_main.c").read_text(encoding="utf-8")
     boot = src.index('hos_log("boot: image %zu MB')
     call = src.find("memory_notice();", boot)
     if call < 0 or call > src.index("hos_mods_init(image);", boot):
         raise SystemExit("FAIL: the game does not check its memory at boot")
     if "os_mem_available(" not in src:
-        raise SystemExit("FAIL: host/hos_main.c does not read the machine's memory (os_mem_available)")
+        raise SystemExit("FAIL: runtime/hos_main.c does not read the machine's memory (os_mem_available)")
     if os.name == "nt":
         print("PASS (source only): the fixture reads Linux's memory")
         return

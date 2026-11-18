@@ -2,12 +2,12 @@
    layer, and the display's vsync event, signaled at 60 Hz by a host thread. HDR and VRR are reported unsupported,
    so the game takes its SDR path. Frames are paced at the native NVN layer's window acquire (the end of this file). */
 #include "hos.h"
-#include "../gpu/api/vk_api.h"   /* (HOS_OPT_HDR_*: the Insert menu's HDR, answered by the renderer) */
+#include "vk_api.h"   /* (HOS_OPT_HDR_*: the Insert menu's HDR, answered by the renderer) */
 #include "os.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-int rx_option(int id, int otherwise);   /* (host/rx_backend.c) */
+int rx_option(int id, int otherwise);   /* (runtime/rx_backend.c) */
 
 void hos_system_event_init(uint64_t key, int autoclear);   /* nn_os_sync.c */
 void hos_system_event_signal(uint64_t key);
@@ -200,10 +200,10 @@ static void scan_dt(long long presents) {
    1/15 s, as TotK Recomp's frame_rate.c (slower frames slow the game down, as on the console), at least 1/60 s (the game's
    own limit holds it at 60). HOS_REALTIME_STEP=0: the shipping whole steps. */
 extern volatile uint64_t hos_gfx_module;
-volatile int hos_fixed_resolution = 0;   /* (the lifted code reads these: host/oot_probes.c) */
+volatile int hos_fixed_resolution = 0;   /* (the lifted code reads these: games/oot/patches/oot_probes.c) */
 volatile uint32_t hos_fixed_scale_bits = 0x3f800000;   /* (HOS_RES_SCALE: the fixed path's scale) */
 volatile int hos_dynres_runs = 0;   /* (the dynamic path's frames: it fills fields the 3D reads, +8 +16 +168) */
-volatile float hos_text_scale = 1.0f;   /* (the letters' clock of a text pane, f_80b1e140: host/oot_probes.c hos_oot_text_time) */
+volatile float hos_text_scale = 1.0f;   /* (the letters' clock of a text pane, f_80b1e140: games/oot/patches/oot_probes.c hos_oot_text_time) */
 /* The Insert menu's Text speed (0 Normal, 1 2x, 2 4x, 3 Instant), HOS_TEXT_SPEED=<0..3> over it: what the time of a letter
    animation's step is multiplied by. Instant: the page at once, as the game's own skip on A */
 static float text_scale(const char *env, int menu) {
@@ -211,12 +211,12 @@ static float text_scale(const char *env, int menu) {
     return v == 1 ? 2.0f : v == 2 ? 4.0f : v >= 3 ? 1e6f : 1.0f;
 }
 volatile uint64_t hos_step_probe = 0;   /* (f_80706be0's object, set by the lifted code's frame-time hook; its
-                                            +0xd58 is the game clock in 1/60 s: host/oot_probes.c) */
+                                            +0xd58 is the game clock in 1/60 s: games/oot/patches/oot_probes.c) */
 volatile uint32_t hos_frame_seconds_bits = 0;   /* (the frame's seconds as a float's bits for that hook, 0: the game's own step) */
 /* A movie's frame count while the frames' time is given (a Frame rate cap above 60): how many 60ths of a second this update of
    that movie player is worth, the rest carried to its next one, so the count the cutscene's cues are placed by keeps the clock
    as the movie's picture does (issue 1742: the narration ran ahead above 60 fps). 1, the game's own step, otherwise, and with
-   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (host/oot_probes.c). */
+   HOS_FPS_MOVIE=0 (for comparisons). Called by the lifted f_83b7c710 (games/oot/patches/oot_probes.c). */
 /* HOS_DBG=movie (diagnostic): every 5 s of wall time while a movie counts, its updates and the frames they counted, per
    second */
 static uint32_t movie_log(uint32_t n) {
@@ -273,9 +273,9 @@ uint32_t hos_movie_frames(uint64_t player) {
     os_mutex_unlock(&lock);
     return movie_log(n);
 }
-/* (the lifter's Value probes: PATCH_AT ... instead, host/patch.h) the whole frames a game counter at `at` takes for an amount of the frame
+/* (the lifter's Value probes: PATCH_AT ... instead, runtime/patch.h) the whole frames a game counter at `at` takes for an amount of the frame
    step: with the frames' own time as the step, their fractions carried per counter; else cut as the game cuts it */
-#include "frame_whole.h"
+#include "../games/oot/patches/frame_whole.h"
 static FrameWhole frame_whole_state;
 static os_mutex frame_whole_lock = OS_MUTEX_INIT;   /* (the game's update threads) */
 PATCH_AT(0x80a88300, word(0x1e38000c), instead, w12, hos_frame_whole, as(add(x19, 864), at), as(s0, amount)) {   /* fcvtzs w12, s0 */
@@ -295,7 +295,7 @@ PATCH_AT(0x80a88300, word(0x1e38000c), instead, w12, hos_frame_whole, as(add(x19
     return whole;
 }
 PATCH_AT_SITE(0x800675f8, word(0x1e380009), instead, w9, hos_frame_whole, x21, s0);   /* fcvtzs w9, s0 */
-volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: host/oot_probes.c) */
+volatile uint64_t hos_res_module = 0;   /* (f_831f3200's object, whose +0xe5c is the 3D's scale: games/oot/patches/oot_probes.c) */
 /* Quantize the time step to the engine's integer nominal rate. Keep debt from a short frame even when the minimum
    step is 1/60: discarding it made alternating short/long frames advance more game time than elapsed wall time.
    Keep at most four nominal frames of debt so unpaced fast presents cannot leave a long recovery. Steps beyond
@@ -424,10 +424,10 @@ static void realtime_step(int64_t now) {
     for (unsigned i = 0; i < count; i++) sum += samples[i];
     /* (hookshot) A cap above 60: the engine's own rate is 60 / <whole display intervals>, and its controller puts 60 back over a
        higher +0x2c8 before the step is made from it, so every frame still stepped 1/60 s and the game ran fps / 60 times too fast.
-       The step is then the frames' own time at the two places the engine makes it (host/oot_probes.c, hos_frame_seconds_bits):
+       The step is then the frames' own time at the two places the engine makes it (games/oot/patches/oot_probes.c, hos_frame_seconds_bits):
        this same average, at most 1/15 s as below and at least 1/240 s, and the rate under it stays the engine's, 60 at most.
        HOS_FPS_STEP=0 (for comparisons): the rate up to the cap. The lift stops when the hook's divides are not there
-       (their PATCH_AT declarations, host/oot_probes.c), so every build has it */
+       (their PATCH_AT declarations, games/oot/patches/oot_probes.c), so every build has it */
     static int timed_step = -1;
     if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
     const int timed = fps_max() > 60 && timed_step;

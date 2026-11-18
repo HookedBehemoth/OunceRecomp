@@ -1,6 +1,6 @@
 /* The native NVN layer: TOTK's graphics API implemented directly (HOS_NVN_NATIVE=1), with no Switch GPU in between.
-   host/nvn_native.c is the API: objects live in place in the memory the game gives NVN objects, state-only and GPU work
-   is recorded as commands in host memory, and the recordings go to the back end (gpu/direct). This header is shared by
+   runtime/nvn_native.c is the API: objects live in place in the memory the game gives NVN objects, state-only and GPU work
+   is recorded as commands in host memory, and the recordings go to the back end (renderer). This header is shared by
    both (C and C++).
 
    Design and TOTK specifics follow the MIT-licensed NVN layer of d2r-mobile / MacNativeGames (jhaizhou), which runs
@@ -110,7 +110,7 @@ typedef struct {
 
 /* a command buffer: records go to a growable host buffer (never into the game's command memory) */
 /* (hookshot) The object is guest memory: the recording buffer's pointers (seg, cur, end) are kept in a host table
-   (host/nvn_native.c cmd_rec), and the object holds only its slot there, which names the object it belongs to. */
+   (runtime/nvn_native.c cmd_rec), and the object holds only its slot there, which names the object it belongs to. */
 typedef struct {
     uint32_t magic, recording;
     uint32_t slot, slot_pad;              /* the host table's slot (0: none yet) */
@@ -193,7 +193,7 @@ typedef struct { float rgba[4]; } nvn_p_blend_color;
 typedef struct { uint64_t gpu; uint32_t mode, value; } nvn_p_signal;   /* event: its 32-bit value's GPU address */
 typedef struct { uint64_t gpu; uint32_t mode, value; } nvn_p_wait_event;   /* (the same, and the wait's condition) */
 typedef struct { uint64_t type, addr; } nvn_p_counter;
-#define NVN_COUNTER_WRITTEN (1ull << 32)   /* (type: the report's counter word is in memory already: a clear flag, host/nvn_native.c) */
+#define NVN_COUNTER_WRITTEN (1ull << 32)   /* (type: the report's counter word is in memory already: a clear flag, runtime/nvn_native.c) */
 typedef struct { uint64_t src, dst, size; } nvn_p_copy_bb;
 typedef struct { uint64_t dst, size; /* data follows */ } nvn_p_update_ub;
 /* (hookshot) compute push constants: the bytes at offset in the compute driver bank's push area */
@@ -201,7 +201,7 @@ typedef struct { uint32_t offset, size; /* data follows */ } nvn_p_push_const;
 /* (hookshot) a buffer range filled with a 32-bit value */
 typedef struct { uint64_t dst, size; uint32_t value, pad; } nvn_p_clear_buf;
 typedef struct { int32_t enable, index; } nvn_p_restart;
-/* a called list by reference (host/nvn_list.c, direct mode): target is the callee's BEGIN, the records run to its END and
+/* a called list by reference (runtime/nvn_list.c, direct mode): target is the callee's BEGIN, the records run to its END and
    go on after this one. next: the caller's next NOP_CALL (offset from its BEGIN, 0: none), bytes: the callee's BEGIN .. END */
 typedef struct { const uint8_t *target; uint32_t next, bytes; } nvn_p_call;
 /* (mkw-recomp) indirect draws: up to max draws of `stride`-byte arguments at `indirect` (indexed: count, instances,
@@ -229,7 +229,7 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out);
 /* NVN_DEPTH_MODE_NEAR_IS_MINUS_W (GL clip z) was selected */
 int nvn_depth_minus_w(void);
 
-/* ---- the back end (host/rx_backend.c forwards these) ---- */
+/* ---- the back end (runtime/rx_backend.c forwards these) ---- */
 /* the recordings of a submit, in order (handles: host pointers of NOP_BEGIN records), replayed now */
 void rx_nvn_submit(const uint64_t *handles, int n);
 /* (the same with the queue it came from: the game's queues have their own state and order each other with events) */

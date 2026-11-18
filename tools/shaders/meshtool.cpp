@@ -1,4 +1,4 @@
-// meshtool: one NVN2 mesh stage (and the task stage before it) through the direct back end's translator fork (gpu/direct/eden),
+// meshtool: one NVN2 mesh stage (and the task stage before it) through the direct back end's translator fork (renderer/eden),
 // as direct_shader.cpp translates a task+mesh or mesh-only program, offline: the IR (as the translator reads the game's code),
 // a structured print of it, the mesh stage's SPIR-V, and a summary of what the stage reads and writes. For the
 // decompilation of the game's mesh stages; nothing of the game is in this file.

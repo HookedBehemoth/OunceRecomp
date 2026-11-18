@@ -1,11 +1,11 @@
-/* The direct back end's list calls on the host's side (gpu/direct/direct_api.h).
-   Direct mode is the only mode (rx_backend.c loads hookshot_direct.so). host/nvn_native.c hands every record to the back end through hsd_scratch / hsd_flush, the list's kind from
+/* The direct back end's list calls on the host's side (renderer/api/direct_api.h).
+   Direct mode is the only mode (rx_backend.c loads hookshot_direct.so). runtime/nvn_native.c hands every record to the back end through hsd_scratch / hsd_flush, the list's kind from
    hsd_classify. */
 #ifndef HOOKSHOT_HOST_DIRECT_H
 #define HOOKSHOT_HOST_DIRECT_H
 #include <stdint.h>
 #include "hos.h"
-#include "../gpu/direct/direct_api.h"
+#include "direct_api.h"
 
 typedef struct {
     void *(*list_begin)(const hsd_list_info *info);
@@ -16,7 +16,7 @@ typedef struct {
     void (*submit)(uint64_t queue, void *const *lists, uint32_t n);
     void (*queue_wait_fence)(uint64_t queue, uint64_t fence);
     void (*present_queue)(uint64_t queue);
-    /* prepared assets: host/direct_assets.c's loader hooks and game patches */
+    /* prepared assets: games/oot/patches/direct_assets.c's loader hooks and game patches */
     int (*assets_open)(const char *dir);
     int (*asset_load)(const hsd_asset_key *k);
     void (*asset_rebind)(const void *tex);
@@ -29,7 +29,7 @@ typedef struct {
     void (*pass_inline)(void *list, uint64_t key);
     /* shots of the presented frame */
     void (*shots)(const char *dir, int every);
-    /* the transient pool (rt_slots.c; gpu/direct/direct_api.h) */
+    /* the transient pool (rt_slots.c; renderer/api/direct_api.h) */
     int (*transient_pool)(uint64_t lo, uint64_t hi);
     uint64_t (*image_need)(const void *desc, uint64_t *align);
     void (*transient_slot)(uint64_t gpu, uint64_t cap);

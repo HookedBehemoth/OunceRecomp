@@ -18,7 +18,7 @@
 
      PATCH_FUNC(0x8005ed00)       DTA::alloc(dta, ctx, desc, flags): note lr/name/shape for this thread (flags bit 0:
                                   transient); the first call shrinks the arenas; the game's alloc (orig) runs.
-     At rows in f_8005ed00 (a PATCH_AT declaration, host/patch.h) after the two lines (0x8005fb74, 0x80061814) that store block
+     At rows in f_8005ed00 (a PATCH_AT declaration, runtime/patch.h) after the two lines (0x8005fb74, 0x80061814) that store block
                                   +0x38 = the aligned offset: x23 block, x10 offset, x8 the block's pool, the alignment
                                   in the frame at [sp + 192]. Both (x10 and block +0x38) are rewritten to the slot.
      PATCH_FUNC(0x802737a0)       DTA::free(dta, entry): the slot of entry +0xc0's block is free again.
@@ -47,7 +47,7 @@
    presents were not skipped. Addresses and offsets are the build's games/oot/game.toml names;
    the rows' instruction words stop the lift on another build. */
 #include "hos.h"
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include "direct.h"
 #include <stddef.h>
 #include <stdio.h>

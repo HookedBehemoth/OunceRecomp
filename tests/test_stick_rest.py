@@ -1,6 +1,6 @@
-"""A stick axis steers only once it has been seen at rest (host/pad_sdl.c, #1673, #1661).
+"""A stick axis steers only once it has been seen at rest (runtime/media/pad_sdl.c, #1673, #1661).
 
-The block from host/pad_sdl.c's poll that clears an axis not yet seen at rest is compiled over a stand-in pad, then checked:
+The block from runtime/media/pad_sdl.c's poll that clears an axis not yet seen at rest is compiled over a stand-in pad, then checked:
 
 - an axis read as held from the start (a phantom device, a trigger mapped onto a stick) never steers;
 - a stick seen inside the dead zone steers from then on, held either way;
@@ -21,7 +21,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
-    src = (ROOT / "host/pad_sdl.c").read_text(encoding="utf-8")
+    src = (ROOT / "runtime/media/pad_sdl.c").read_text(encoding="utf-8")
     start = src.index("            /* (a worn stick resting just past a small dead zone")
     end = src.index("if (!(pads[i].rested >> k & 1)) v[k] = 0;", start)
     end = src.index("}", end) + 1

@@ -34,7 +34,7 @@
        operand.
      HLE(symbol, effect...) { body }     NV(name, effect...) { body }     HLE_EFFECTS(symbol, effect...);
        a function the image replaces: void imp_<symbol>(Ctx *c) (hooked where the game imports it and at the SDK's
-       definition); an NVN proc, static void n_<name>(Ctx *c, void *u_) (host/nvn_native.c's table); the effects of a
+       definition); an NVN proc, static void n_<name>(Ctx *c, void *u_) (runtime/nvn_native.c's table); the effects of a
        replaced function whose body is not declared here (a generated stub or dispatch). effects: reads(reg..., "why")
        the registers a call reads beyond the AAPCS arguments, x8, v0-v7, sp and x30; clobbers("why") a call keeps no
        register.

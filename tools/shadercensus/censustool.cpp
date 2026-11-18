@@ -10,7 +10,7 @@
 //   censustool <seed> <first> <count> [--compile] [--spv <dir>] [--only <index>...]
 //              [--late <kinds>] [--budget N] [--sink-peak N] [--objects] [--list]
 // One JSON line a stage on stdout; "@@stage <index>" on stderr before each (a crash names its stage).
-// --late <kinds>: the back end's register-pressure pass (gpu/direct/direct_spv_late.h) on the stages of these kinds (a comma
+// --late <kinds>: the back end's register-pressure pass (renderer/direct_spv_late.h) on the stages of these kinds (a comma
 // list of vertex, fragment, mesh, task, compute; "all"), as the game applies it after EmitSPIRV. Every line carries the pass's
 // own count for the stage ("late": the most 32-bit values held before and after, instructions moved, the pass's time), whether
 // or not it is applied. --objects: the stage also made as the shader object the game makes of it (unlinked; RADV reports no
@@ -31,7 +31,7 @@
 #include <vulkan/vulkan.h>
 
 #include "../shaders/offline.h"
-#include "../../gpu/direct/direct_spv_late.cpp"
+#include "../../renderer/direct_spv_late.cpp"
 #include "../shaders/ir_pretty.h"
 #include "shader_recompiler/frontend/ir/abstract_syntax_list.h"
 #include "shader_recompiler/frontend/ir/modifiers.h"

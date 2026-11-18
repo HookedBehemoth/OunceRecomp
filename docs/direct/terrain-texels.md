@@ -14,7 +14,7 @@ manager. Each file holds the tile's GPU texels in the console's block-linear lay
 one `memcpy` into the tile texture's storage.
 
 1. The game loads and decompresses the file itself, as shipped.
-2. A patch in `host/direct_assets.c` replaces that `memcpy`: it makes level 0 of the blob linear, using the layout
+2. A patch in `games/oot/patches/direct_assets.c` replaces that `memcpy`: it makes level 0 of the blob linear, using the layout
    of the texture the blob is copied into, and uploads it into the tile's image.
 3. A blob that is not the size of its texture's storage draws the placeholder and is counted.
 
@@ -25,7 +25,7 @@ five tile kinds have no CPU copy to upload.
 ## The sky lookup tables
 
 At boot and at each scene load, the game copies a block-linear blob of three RGBA16F textures out of
-`Env/GameScene.Nin_Ounce_NVN2.genvb.zs`. `host/direct_sky_lut.c` makes each part linear in the same way and uploads it
+`Env/GameScene.Nin_Ounce_NVN2.genvb.zs`. `games/oot/patches/direct_sky_lut.c` makes each part linear in the same way and uploads it
 instead of the `memcpy`. Without it, the scene's ambient light is black. Log line: "direct patch sky lut" (6 uploads
 at boot, 6 at each scene load).
 
@@ -33,7 +33,7 @@ at boot, 6 at each scene load).
 
 The font renderer clears a glyph's cell in a small pitch-linear R8 atlas and plots the glyph into it with plain CPU
 stores: no NVN call carries those bytes. A patch on the shelf packer notes each cell, and a patch after the glyph
-writer uploads the cell's rows to the atlas image (`host/direct_assets.c`). The labels start with `font_`.
+writer uploads the cell's rows to the atlas image (`games/oot/patches/direct_assets.c`). The labels start with `font_`.
 
 ## Texels through NVN calls
 

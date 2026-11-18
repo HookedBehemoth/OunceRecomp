@@ -31,7 +31,7 @@ static void put(uint64_t rec) {
     G32(rec + 4) = 1, G32(rec + 8) = 1;
 }
 
-/* (At rows, a PATCH_AT declaration, host/patch.h) f_80361c80: after each `str xzr, [x19, x8]`; f_80361a00: after its
+/* (At rows, a PATCH_AT declaration, runtime/patch.h) f_80361c80: after each `str xzr, [x19, x8]`; f_80361a00: after its
    `str xzr, [x22, x8]` (a list's first record, w0 and w1, zeroed): the list and the record's offset */
 PATCH_AT(0x80361d5c, word(0xf8286a7f), after, none, direct_mesh_lists_reset, as(x19, list), as(x8, off)) {
     put(list + off);

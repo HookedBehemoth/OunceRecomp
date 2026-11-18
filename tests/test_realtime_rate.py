@@ -23,7 +23,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="gcc")
     args = parser.parse_args()
-    source = (ROOT / "host/nn_vi.c").read_text(encoding="utf-8")
+    source = (ROOT / "runtime/nn_vi.c").read_text(encoding="utf-8")
     if "realtime_rate(" not in block(source, "static void realtime_step("):
         raise SystemExit("the present path does not use the tested clock quantizer")
     fixture = r'''

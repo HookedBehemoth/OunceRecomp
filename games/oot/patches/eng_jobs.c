@@ -37,7 +37,7 @@ PATCH_FUNC(0x80084de0, word(0xd503237f), body(0x961fa51430550d71), aapcs, x0, en
     return r;
 }
 
-/* (an At row in f_80084de0 before BeginRecording's blr, a PATCH_AT declaration, host/patch.h) the view record in x25 */
+/* (an At row in f_80084de0 before BeginRecording's blr, a PATCH_AT declaration, runtime/patch.h) the view record in x25 */
 static _Thread_local uint64_t jt_view_arg;
 PATCH_AT(0x80085334, word(0xf9400108), after, none, eng_jobs_view, as(x25, view)) { jt_view_arg = view; }
 
@@ -56,14 +56,14 @@ static int eng_jobs_begin(uint64_t cmd) {   /* (a JOB list's BeginRecording: f_8
     return 1;
 }
 
-/* (host/direct_job_sync.c) the guest command buffer of the job this thread records now and its view record (0: none) */
+/* (games/oot/patches/direct_job_sync.c) the guest command buffer of the job this thread records now and its view record (0: none) */
 uint64_t eng_jobs_current(uint64_t *view) {
     if (!jt.active || !jt.tagged) return 0;
     if (view) *view = jt.view;
     return jt_cmd;
 }
 
-/* (host/direct_mesh_system.c) the draw context of the job this thread records now (0: none) */
+/* (games/oot/patches/direct_mesh_system.c) the draw context of the job this thread records now (0: none) */
 uint64_t eng_jobs_drawctx(void) { return jt.active ? jt.drawctx : 0; }
 
 int eng_jobs_tag(uint64_t cmd, uint64_t *key, uint64_t *view) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # (M6f; promoted from work/proto/scenecycle/cycle.sh) The scene cycle for the direct back end: one boot into Kokiri
 # (chisel_kokiri), then the stops of the maps list in turn through "!warp <banc> <startpos> -" lines on HOS_INPUT_LIVE
-# (host/nn_hid.c, host/hos_main.c: the log's "scene: ready <banc>"). At each stop: pan right 1 s, walk 2 s, pan left 1 s,
+# (runtime/nn_hid.c, runtime/hos_main.c: the log's "scene: ready <banc>"). At each stop: pan right 1 s, walk 2 s, pan left 1 s,
 # then wait for the back end's next 600-present block and note the stop's state in <run>/stops.txt (a line per stop:
 # the device-local heap's driver usage and VMA blocks, live images and their MB and the store's share, images held only
 # by agl's LRU cache, the VRAM eviction patch's free VRAM and evictions, the whole device's VRAM from sysfs) and its

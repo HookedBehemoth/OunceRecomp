@@ -51,7 +51,7 @@ impl<'a> Records<'a> {
         let sym = Sym::Entry(c);
         let tail = sym;
         if self.sj.binary_search(&c).is_ok() {
-            // (hos_sj_call through a per-owner stub, host/hos_setjmp.c)
+            // (hos_sj_call through a per-owner stub, runtime/hos_setjmp.c)
             return unknown(BoundKind::SetjmpOwner, c, Sym::SjCall(c), tail);
         }
         if let Some(h) = self.prog.hook(c) {

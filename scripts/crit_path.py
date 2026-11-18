@@ -1,4 +1,4 @@
-"""The frame's critical path from a HOS_DBG=crit trace (host/direct_crit.c).
+"""The frame's critical path from a HOS_DBG=crit trace (runtime/direct_crit.c).
 
     python -I scripts/crit_path.py <run folder> [--marks evsig|present] [--frames N] [--top 25] [--dump F|-2 [--merged]]
     CRIT_GANTT=<frame> [CRIT_RES=0.1] [CRIT_FRAMES=1] python -I scripts/crit_path.py <run folder>   (one frame as rows of characters)

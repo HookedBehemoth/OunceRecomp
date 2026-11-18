@@ -6,7 +6,7 @@
 #include "direct_check.h"
 #include "direct_internal.h"
 #include "os.h"
-extern "C" size_t hos_mem_ledger(char* out, size_t cap, uint64_t* ours, uint64_t* guest_committed);   // (host/hos_mem.c, exported)
+extern "C" size_t hos_mem_ledger(char* out, size_t cap, uint64_t* ours, uint64_t* guest_committed);   // (runtime/hos_mem.c, exported)
 #include <vk_mem_alloc.h>
 
 
@@ -82,7 +82,7 @@ void mem_image_free(VkImage image, Mem* mem) {
 }
 
 // ---- the transient pool (docs/direct/transient-pool.md) ----
-// One device allocation for the game's transient render targets (host/rt_slots.c's slot range), made once when the host
+// One device allocation for the game's transient render targets (games/oot/patches/rt_slots.c's slot range), made once when the host
 // names the range. A target's image is bound in it at its storage offset, so targets alias as on the console and no
 // device memory is allocated or freed for them in play. Its own vkAllocateMemory, outside VMA's blocks: nothing else
 // may land in it.

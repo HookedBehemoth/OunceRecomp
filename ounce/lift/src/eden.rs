@@ -91,7 +91,7 @@ pub fn build(mut mods: Vec<Nso>, implemented: &BTreeSet<String>, stubbed: &BTree
             if let Some(o) = hooks.get(&a) {
                 let other = &hook_syms[o];
                 if implemented.contains(sym) {
-                    return Err(format!("host/ replaces both {other} and {sym}, one function at {a:#x}: replace one of them"));
+                    return Err(format!("the host replaces both {other} and {sym}, one function at {a:#x}: replace one of them"));
                 }
                 continue;
             }
@@ -331,7 +331,7 @@ pub fn hle_set(mods: &[Nso], implemented: &BTreeSet<String>, namespaces: &[Strin
     let known: HashSet<&str> = mods.iter().flat_map(|m| m.symbols.iter().filter(|s| !s.name.is_empty()).map(|s| s.name.as_str())).collect();
     let missing: Vec<&String> = implemented.iter().filter(|s| !known.contains(s.as_str())).collect();
     if !missing.is_empty() {
-        return Err(format!("host/ replaces {} functions no module of this image has (HLE / PATCH_ANSWER): {:?}", missing.len(), missing));
+        return Err(format!("the host replaces {} functions no module of this image has (HLE / PATCH_ANSWER): {:?}", missing.len(), missing));
     }
     let mut kind: HashMap<&str, u8> = HashMap::new();
     for m in mods {

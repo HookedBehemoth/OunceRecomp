@@ -1,5 +1,5 @@
 # Sirit's SPIR-V instruction emitters.
-eden_sources += files(
+sirit_sources += files(
   'annotation.cpp',
   'arithmetic.cpp',
   'atomic.cpp',

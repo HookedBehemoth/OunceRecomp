@@ -152,7 +152,7 @@ pub fn lift(r: &Run, out: &dyn Out) -> Result<Stats, String> {
     let (c_plan, m_plan) = usage();
     let t_plan = tp.elapsed().as_secs_f64();
     let tm = base.times;
-    println!("patch scan: {} files, {} sites, {} functions, {} HLE / {} NV / {} effects, {} answers; {:.3} s", game.host.len(), ps.sites.len(), ps.funcs.len(), ps.hle.len(), ps.nv.len(), ps.declared.len(), ps.answers.len(), tm.scan);
+    println!("patch scan: {} files, {} sites, {} functions, {} HLE / {} NV / {} effects, {} answers; {:.3} s", game.sources(&r.opts.root).map_or(0, |s| s.len()), ps.sites.len(), ps.funcs.len(), ps.hle.len(), ps.nv.len(), ps.declared.len(), ps.answers.len(), tm.scan);
     println!(
         "image: exefs loaded in {:.2} s, built in {:.2} s; {} hooks ({} HLE, {} stubbed), {} entries, {} more from ADR / ADRP+ADD; {:.2} s wall",
         tm.load,

@@ -25,8 +25,8 @@ its pass even allocates its targets. Everything on this page follows from that.
   and records the pass itself through the game's inline path, on its own thread. The next frame records jobs. No job is
   ever recorded against a guessed format.
 
-Code: `host/eng_jobs.c` (the recorder hook), `host/direct_passes.c` (the key and the inline path), the job half of
-`gpu/direct/direct_pass.cpp`. Log lines: "direct patch passes" and the back end's "jobs a frame" line.
+Code: `games/oot/patches/eng_jobs.c` (the recorder hook), `games/oot/patches/direct_passes.c` (the key and the inline path), the job half of
+`renderer/direct_pass.cpp`. Log lines: "direct patch passes" and the back end's "jobs a frame" line.
 
 ## What a job inherits
 
@@ -36,15 +36,15 @@ Vulkan secondary starts from nothing. The game's jobs set almost everything them
 - Ordinary draws bind their own vertex state. Fixed-function state that a job does not set is at its defaults whenever
   the game relies on it.
 - **GPU-culled mesh draws read task and mesh storage buffers they did not bind.** Two patches make each job bind them:
-  - `host/direct_mesh_system.c` runs the game's system binder at the start of every job, so storage slots 0-3 of the
+  - `games/oot/patches/direct_mesh_system.c` runs the game's system binder at the start of every job, so storage slots 0-3 of the
     task and mesh stages start at the system values.
-  - `host/direct_mesh_binds.c` makes three culled-mesh drawers bind the two buffers that the culled-instance drawer
+  - `games/oot/patches/direct_mesh_binds.c` makes three culled-mesh drawers bind the two buffers that the culled-instance drawer
     binds for itself. A binder binds nothing when the program has no slot for the name, so other programs don't change.
 
 ## Work moved out of jobs
 
 A few jobs record work that a rendering secondary cannot hold: event waits, barriers and the occlusion-grid dispatch.
-`host/direct_job_sync.c` keeps that work out of the job and records it on the layer list that calls the job:
+`games/oot/patches/direct_job_sync.c` keeps that work out of the job and records it on the layer list that calls the job:
 
 | Work | Where it goes |
 |---|---|
@@ -61,7 +61,7 @@ Log line: "direct patch job sync" (work kept and placed a frame, by kind).
 ## The long layer runs ahead
 
 Stage C's task graph opens the layer-list phase only after every render-job loop has ended. The 3D layer (the scene
-pipeline and post effects) then records alone for about 2 ms in the market. `host/direct_layer_ahead.c` starts that
+pipeline and post effects) then records alone for about 2 ms in the market. `games/oot/patches/direct_layer_ahead.c` starts that
 layer on the first thread that enters a job loop:
 
 1. The job list is reordered into the order the layer called its passes the frame before.

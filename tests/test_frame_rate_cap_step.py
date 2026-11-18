@@ -2,7 +2,7 @@
 
 The engine's rate is a whole number of display intervals, 60 at most, and it puts 60 back over a higher one: with only the
 rate raised, every frame above 60 fps still stepped 1/60 s. The lifter's At probes (ounce-lift scan's At rows) give the
-engine's two step divides the host's measured frame time (host/oot_probes.c hos_oot_frame_step, after each FDIV), and host/nn_vi.c realtime_step publishes it while the cap is above
+engine's two step divides the host's measured frame time (games/oot/patches/oot_probes.c hos_oot_frame_step, after each FDIV), and runtime/nn_vi.c realtime_step publishes it while the cap is above
 60 and the hook is in the build. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
 code differs keeps its own code (both divides or neither) and the build goes on with a message.
 
@@ -118,17 +118,17 @@ def main():
     check((sites[0x83b6eaf8].pc, sites[0x83b6eaf8].word, sites[0x83b6eaf8].fn, sites[0x83b6eaf8].args, sites[0x83b6eaf8].result)
           == (0x83b6eaf8, 0x1e201820, "hos_oot_frame_step", ("s1", "s0"), "s0"),
           "the global step: s0 := hos_oot_frame_step(s1, s0) after fdiv s0, s1, s0")
-    oot = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
+    oot = (ROOT / "games/oot/patches/oot_probes.c").read_text(encoding="utf-8")
     hooks = "\n".join(definition(oot, m) for m in ("PATCH_AT(0x83b6eaf8, word(0x1e201820), after, s0, hos_oot_frame_step,", "PATCH_AT(0x80706cc4, word(0x1e201828), after, s8, hos_oot_frame_step_probe,"))
 
-    vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
+    vi = (ROOT / "runtime/nn_vi.c").read_text(encoding="utf-8")
     host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("))
     fixture = FIXTURE.replace("@HOST@", host).replace("@PROBES@", hooks)
     with tempfile.TemporaryDirectory(prefix="cap-step-") as tmp:
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
         c.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"), str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "runtime"), str(c), "-o", str(exe)], check=True)
         for mode, cap, step in (("cap 120", "120", None), ("cap 60", None, None), ("step off", "120", "0")):
             env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
             if cap:

@@ -1,6 +1,6 @@
 # Renderer pages
 
-These pages explain the direct back end, the Vulkan renderer in `gpu/direct`, and the parts of the game it depends on.
+These pages explain the direct back end, the Vulkan renderer in `renderer`, and the parts of the game it depends on.
 Start with [the direct back end plan](../direct-backend-plan.md) for the rules the back end keeps and the open work,
 then read [the architecture](architecture.md).
 

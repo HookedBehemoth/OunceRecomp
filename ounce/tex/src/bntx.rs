@@ -148,7 +148,7 @@ pub fn parse(b: &[u8]) -> Result<Bntx, String> {
     Ok(Bntx { rlt_off, brtd, textures })
 }
 
-/// A mip's block height (log2 GOBs): halved while the mip's rows fit in half a block (host/nvn_layout.c adj_tile).
+/// A mip's block height (log2 GOBs): halved while the mip's rows fit in half a block (runtime/nvn_layout.c adj_tile).
 pub fn mip_block_height(rows: u32, mut bh_log2: u32) -> u32 {
     while bh_log2 > 0 && rows <= (8 << bh_log2) / 2 {
         bh_log2 -= 1;

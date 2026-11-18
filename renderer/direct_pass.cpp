@@ -858,7 +858,7 @@ void pass_stats(char* out, size_t cap, double frames) {
 
 using namespace hsd;
 
-/// The job recorder's entry (host/direct_passes.c): 1 the pass key's formats are known (the job records a secondary),
+/// The job recorder's entry (games/oot/patches/direct_passes.c): 1 the pass key's formats are known (the job records a secondary),
 /// 0 not (the recorder takes the game's own early return; the layer list draws the pass inline)
 extern "C" __attribute__((visibility("default"))) int hsd_pass_known(uint64_t key) {
     const KeySlot* ks = key_slot(key, false);

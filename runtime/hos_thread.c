@@ -273,7 +273,7 @@ void hos_thread_dump(void) {
 }
 
 /* HOS_FP_LOG=1 (debugging, nn_vi.c at presents 1, 60 and 600): the presenting thread's guest FPCR and the host's MXCSR,
-   which host/hos_fp.c keeps equal to it (FZ: 0x9FC0 plus sticky bits) */
+   which runtime/hos_fp.c keeps equal to it (FZ: 0x9FC0 plus sticky bits) */
 extern void (*hos_fp_log_hook)(unsigned long long fpcr, unsigned from, unsigned to);
 static void fp_mode_log(unsigned long long fpcr, unsigned from, unsigned to) {
     static volatile int32_t n;
@@ -958,7 +958,7 @@ void hos_thread_log_handles(void) {
    threads from running at once. On the console threads of one priority on one core run cooperatively (the kernel
    rotates a priority's queue only at its preemption priorities, 59 and 63, and none of the game's threads sits there)
    and a better thread preempts at any instruction. The one structure found that relies on one thread per core number is
-   the actor job system's per-core rings (pushed and popped without a lock); host/oot_probes.c asserts that each ring has
+   the actor job system's per-core rings (pushed and popped without a lock); games/oot/patches/oot_probes.c asserts that each ring has
    one writer (hos_oot_ring_write). */
 
 /* A block (HOS_DBG=crit: direct_crit.h): its start, what it waits on and its guest caller; 1 if recorded, and then

@@ -1,5 +1,5 @@
 /* The native NVN layer's API (HOS_NVN_NATIVE=1): TOTK's NVN calls are answered here instead of by the lifted NVN
-   driver over an emulated Switch GPU (hos/gpu.c). See gpu/api/rx_nvn.h for the design; the replay of what is
+   driver over an emulated Switch GPU (hos/gpu.c). See renderer/api/rx_nvn.h for the design; the replay of what is
    recorded here is gpu/legacy/render/rx_nvn.cpp.
 
    - Objects with semantics (device, memory pools, buffers, textures, samplers, descriptor pools, queue, window, sync,
@@ -20,10 +20,10 @@
    same functions as the proc table (nvn2_dispatch, from gen/nvn2_exports.c). */
 #include "hos.h"
 #include "direct_crit.h"
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include "nvn_list.h"
 #include "hos_ledger.h"
-#include "eng_jobs.h"
+#include "../games/oot/patches/eng_jobs.h"
 #include "direct.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -761,7 +761,7 @@ int nvn_tex_live_at(uint64_t gpu, nvn_tex *out) {
     os_rwlock_unlock_shared(&live_lock);
     return found;
 }
-/* (host/direct_assets.c) the live texture whose storage holds gpu (a walk of the table: rare calls) */
+/* (games/oot/patches/direct_assets.c) the live texture whose storage holds gpu (a walk of the table: rare calls) */
 int nvn_tex_live_containing(uint64_t gpu, nvn_tex *out) {
     int found = 0;
     os_rwlock_lock_shared(&live_lock);
@@ -1309,7 +1309,7 @@ NV(nvnQueueSetDebugLabel) {}
 static void *rec(nvn_cmd *o, uint32_t op, size_t payload);
 #define OP_RESERVE 24
 
-/* Direct mode keeps each recording as a list by reference (host/nvn_list.h has the design and the lifetime rules): a
+/* Direct mode keeps each recording as a list by reference (runtime/nvn_list.h has the design and the lifetime rules): a
    recording is written once into an allocation of its own and its handle names it; CallCommands and CopyCommands hand the
    callee's list to the back end instead of copying records; no copy_lock, no rec_node, no copy at EndRecording. The back
    end's list of each one is in its user. The renderers that replay records take the copies below. */
@@ -1398,12 +1398,12 @@ static void pool_put(void *b, unsigned cls) {
    object (guest memory). The object holds its slot's number; a slot names the object it belongs to, so a slot number
    that is not the object's own is not used: the object gets a new slot, as an object never initialized does. Slots are
    in chunks that are never freed, so a lookup needs no lock (a command buffer records on one thread at a time). */
-/* (HOS_NVN_LIST_REF=1, host/nvn_list.h) seg, cur and end are the open recording's place in its own allocation (lw) */
+/* (HOS_NVN_LIST_REF=1, runtime/nvn_list.h) seg, cur and end are the open recording's place in its own allocation (lw) */
 typedef struct {
     uint64_t owner;
     union { struct { uint8_t *seg, *cur, *end; }; nvn_lw lw; };
     void *volatile dl;             /* (direct mode) the open recording's list in the back end (NULL: none open) */
-    volatile int32_t dl_pending;   /* (direct mode) its last record waits on a thread for its flush (host/direct.c) */
+    volatile int32_t dl_pending;   /* (direct mode) its last record waits on a thread for its flush (runtime/direct.c) */
 } cmd_rec;
 #define CMD_CHUNK_BITS 10
 #define CMD_CHUNKS 4096u                     /* (4M command buffers at once) */
@@ -1514,7 +1514,7 @@ static void cmd_release(nvn_cmd *o) {   /* the object's slot and recording buffe
 }
 static uint8_t *cmd_alloc(nvn_cmd *o, uint32_t size);
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size);
-/* (direct mode, M3a game patches: host/direct_passes.c, direct_job_sync.c) the back end's open list of the guest command
+/* (direct mode, M3a game patches: games/oot/patches/direct_passes.c, direct_job_sync.c) the back end's open list of the guest command
    buffer at cmd (this thread's waiting record handed over first, so the list has every record before this point); NULL:
    none, or not direct mode */
 void *direct_cmd_list(uint64_t cmd) {
@@ -1561,7 +1561,7 @@ NV(nvnCommandBufferSetDebugLabel) {}
 
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) { nvn_op_hdr h = {op, size}; memcpy(p, &h, sizeof h); }
 static void cmd_reserve_rec(cmd_rec *o, size_t need) {
-    if (rx_direct()) return;   /* (no bytes: the records go to the back end, host/direct.c) */
+    if (rx_direct()) return;   /* (no bytes: the records go to the back end, runtime/direct.c) */
     if (o->seg && need + OP_RESERVE <= (size_t)(o->end - o->cur)) return;
     const size_t used = o->seg ? (size_t)(o->cur - o->seg) : 0;
     size_t cap = o->seg ? (size_t)(o->end - o->seg) : 0;
@@ -1792,7 +1792,7 @@ NV(nvnCommandBufferGetCommandMemoryUsed) { const nvn_cmd *o = CB(P(0)); RET(o->h
 NV(nvnCommandBufferGetCommandMemoryFree) { const nvn_cmd *o = CB(P(0)); RET(o->game_size - (o->hw_used < o->game_size ? o->hw_used : o->game_size)); }
 
 NV(nvnCommandBufferBeginRecording,
-   reads(x29, "the frame pointer kept with the list's info as a log label (host/direct.c hsd_classify)")) {
+   reads(x29, "the frame pointer kept with the list's info as a log label (runtime/direct.c hsd_classify)")) {
     nvn_cmd *o = CB(P(0));
     if (o->recording) hos_log("nvn: BeginRecording while recording");
     o->recording = 1;
@@ -2090,7 +2090,7 @@ NV(nvnQueueWaitSync) {
     if (s && !s->fenced && os_atomic_inc(&n) <= 8)
         hos_log("nvn: QueueWaitSync on a sync not fenced yet (%p, lr %#llx): not waited for", (void *)s,
                 (unsigned long long)c->x[30]);
-    /* (direct mode) the queue's next submission waits for the fence's (gpu/direct/direct_sync.cpp) */
+    /* (direct mode) the queue's next submission waits for the fence's (renderer/direct_sync.cpp) */
     if (rx_direct() && s && s->fenced == 1 && s->fence) rx_direct()->queue_wait_fence((uint64_t)(uintptr_t)P(0), s->fence);
 }
 NV(nvnCommandBufferResetCounter) { REC(CB(P(0)), NOP_RESET_COUNTER, nvn_p_counter)->type = U32(1); }
@@ -2751,7 +2751,7 @@ NV(nvnQueueSubmitCommands) {
         rx_direct()->submit((uint64_t)(uintptr_t)q, lists, (uint32_t)n);
         return;
     }
-    if (list_ref()) {   /* (the handles' BEGIN records for the replay, their deferred binds read now: host/nvn_list.c) */
+    if (list_ref()) {   /* (the handles' BEGIN records for the replay, their deferred binds read now: runtime/nvn_list.c) */
         const uint64_t done = rx_nvn_replayed();
         __atomic_store_n(&list_done, done, __ATOMIC_RELEASE);
         const int bad = nvn_list_submit(h, h, n, done, gw);

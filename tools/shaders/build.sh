@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the shader tools into work/shaders/: spvlate (the back end's register-pressure pass as a command:
-# gpu/direct/direct_spv_late.cpp) and, from the standalone build's translator objects (work/sa/build/obj/dx_eden_*.o),
+# renderer/direct_spv_late.cpp) and, from the standalone build's translator objects (work/sa/build/obj/dx_eden_*.o),
 # meshtool (one stage through the translator fork, offline).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)

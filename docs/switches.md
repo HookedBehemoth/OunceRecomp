@@ -18,7 +18,7 @@ To find a switch that this page does not list, search the code for its prefix:
 
 ```sh
 git grep -n 'getenv("HOS_' -- host
-git grep -n 'getenv("RX_' -- host gpu/direct
+git grep -n 'getenv("RX_' -- host renderer
 ```
 
 The build's own switches are in [Build and iterate on the lifter](lifter-build.md#lifter-switches) and in
@@ -75,14 +75,14 @@ while off. These are the ones you reach for first:
 | `resize:<w>x<h>@<present>[+...]` | Resizes the window (or the headless image) at that present, as a drag would |
 | `noassets` | Turns off the prepared-asset patches, for a before-and-after comparison |
 
-To find every item, search `host/` and `gpu/direct/` for `dbg_has`, `dbg_log` and `hos_dbg_item`.
+To find every item, search `runtime/` and `renderer/` for `dbg_has`, `dbg_log` and `hos_dbg_item`.
 
 ## Read the log
 
 Every line of `hookshot_log.txt` (or a test run's `log.txt`) starts with `[hos <seconds> p<present> <thread>]`.
 `HOS_LOG_TIME=0` leaves out the time and present. A line longer than 4 KB ends in `~`.
 
-- The first line names the build as `<version> (source <hash>)`. The hash is a fingerprint of `host/`, `gpu/` and
+- The first line names the build as `<version> (source <hash>)`. The hash is a fingerprint of `runtime/`, `gpu/` and
   `nx2/`, so it tells apart two builds of one commit.
 - `vk: <n> presents, <x> fps` gives the frame rate.
 - `FATAL: the game threw a C++ exception of type <name> from <address>` means a throw stopped the game: the lifted code

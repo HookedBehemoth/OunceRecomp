@@ -8,7 +8,7 @@
    layer recorded by f_8006cd60, layer at item + 0x18) and the scheduler runs it as [[item] + 0x10](item). Queue 1's first
    item is the 3D layer (the pipeline, post effects: 3.6 ms in the market); the counters are reset at stage C's start.
 
-   An At row (a PATCH_AT declaration, host/patch.h, a guest call) sits where a thread enters a render-job loop node (the bit-10 branch of f_8007fe60): the first thread of
+   An At row (a PATCH_AT declaration, runtime/patch.h, a guest call) sits where a thread enters a render-job loop node (the bit-10 branch of f_8007fe60): the first thread of
    the frame that may take queue 1 claims its item 0 there (the same counter, 0 -> 1) and runs it before its job loop,
    so the five other threads record the jobs meanwhile. The rest of both queues stays with the layer phase.
 
@@ -16,7 +16,7 @@
    view record up by its key's first 0x70 bytes and, with none yet, draw the pass inline (f_80681320) while its jobs are
    recorded for nothing. So on the thread running the layer ahead, both sites wait first until every render-job list entry
    with that key's bytes (entry + 0x10: the recorder's key pointer) has been through the recorder this frame (stamped in
-   host/eng_jobs.c's hook). Keys at the sites: f_806688c0(owner, drawctx, i) x0 + 0x3830 + i * 0xd0; f_8028a2a0(owner,
+   games/oot/patches/eng_jobs.c's hook). Keys at the sites: f_806688c0(owner, drawctx, i) x0 + 0x3830 + i * 0xd0; f_8028a2a0(owner,
    drawctx, key) x2. The wait sleeps on a condition variable that each recorded job wakes, and
    falls through after 50 ms (counted), as the game's own path would go on. */
 #include "direct.h"
@@ -55,7 +55,7 @@ static uint64_t job_lists(uint32_t *nl) {
     return G64(r + 0x38);
 }
 
-/* (host/eng_jobs.c) the recorder took the entry whose range is at x5 (entry + 0x18), recorded or not */
+/* (games/oot/patches/eng_jobs.c) the recorder took the entry whose range is at x5 (entry + 0x18), recorded or not */
 void direct_layer_ahead_job_done(uint64_t range, uint64_t lr) {
     if (!enabled()) return;
     if (lr != 0x8008154cull) os_atomic_inc(&n.other_caller);   /* (not f_8007fe60's job loop: f_80083960's twin) */

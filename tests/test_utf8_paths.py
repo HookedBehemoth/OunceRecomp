@@ -1,4 +1,4 @@
-"""Paths are UTF-8: host/ and gpu/direct convert no text with an ANSI code page (CP_ACP and the like): the game's char strings are
+"""Paths are UTF-8: runtime/ and renderer convert no text with an ANSI code page (CP_ACP and the like): the game's char strings are
 UTF-8, and a folder named outside a legacy code page (Japanese, an emoji) must work wherever the host runs.
 
     python -I -B tests/test_utf8_paths.py
@@ -9,8 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 # (the game's own sources: not the vendored compiler code)
-SOURCES = [ROOT / "host", ROOT / "gpu" / "direct"]
-VENDORED = ("gpu/direct/eden/",)
+SOURCES = [ROOT / "runtime", ROOT / "renderer"]
+VENDORED = ("third_party/eden/",)
 ANSI = re.compile(r"\b(CP_ACP|CP_OEMCP|CP_THREAD_ACP|CP_MACCP|SetFileApisToOEM|SetFileApisToANSI)\b")
 
 
@@ -29,4 +29,4 @@ def check_no_ansi_code_page():
 
 if __name__ == "__main__":
     check_no_ansi_code_page()
-    print("ok: no ANSI code page conversions in host/ and gpu/direct")
+    print("ok: no ANSI code page conversions in runtime/ and renderer")

@@ -1,15 +1,15 @@
 # How the direct back end works
 
 This page explains how the game's NVN commands become Vulkan work: where the back end takes over, what each kind of
-command list becomes, how a draw finds its data, and how a frame is submitted. Read it before you work in `gpu/direct`.
+command list becomes, how a draw finds its data, and how a frame is submitted. Read it before you work in `renderer`.
 The rules the back end keeps and the open work are in [the direct back end plan](../direct-backend-plan.md).
 
 ## The seam
 
-The host's NVN layer, `host/nvn_native.c`, keeps the NVN objects: device, memory pools, buffers, textures, samplers,
+The host's NVN layer, `runtime/nvn_native.c`, keeps the NVN objects: device, memory pools, buffers, textures, samplers,
 syncs and events. Its command functions append a record to the command buffer. That append is the seam: at a flush
-point, on the calling thread, the record goes to the back end in the format of `gpu/api/rx_nvn.h`. The back end's
-interface is `gpu/direct/direct_api.h` on its side and `host/direct.h` on the host's.
+point, on the calling thread, the record goes to the back end in the format of `renderer/api/rx_nvn.h`. The back end's
+interface is `renderer/api/direct_api.h` on its side and `runtime/direct.h` on the host's.
 
 NVN alone does not say everything the back end needs. For example, a render job's command list is anonymous. Each
 missing fact comes from a hook on the engine function that has it:
@@ -75,7 +75,7 @@ What a translated program expects at a draw is in [the shader contract](shader-c
 
 ## Programs
 
-All programs are in the romfs. The back end translates them with its fork of Eden's recompiler (`gpu/direct/eden`) and
+All programs are in the romfs. The back end translates them with its fork of Eden's recompiler (`renderer/eden`) and
 keeps shader objects in caches beside the executable. A table keyed by the NVN program's serial holds the variants and
 is read without locks. A program missing at load is compiled then, and the load waits. A program the game set but the
 workers have not read yet is read at its first draw or dispatch, which waits for it: a draw the game makes once, such
@@ -87,7 +87,7 @@ the background.
 - **Asset textures** are images made at registration from the prepared pack (`hookshot-builder textures`). The loader
   hook skips the game's texel copy, so guest texel pages stay unbacked. The back end follows the game's own texture
   events and frees an image when the game destroys its texture. See [texture streaming](texture-streaming.md).
-- **Render targets** have an image per stable slot of the game's allocator (`host/rt_slots.c`). Transient targets live
+- **Render targets** have an image per stable slot of the game's allocator (`games/oot/patches/rt_slots.c`). Transient targets live
   in one constant allocation; see [the transient pool](transient-pool.md) and [render targets](render-targets.md).
 - **Terrain tiles and other CPU-written texels** arrive linear and are copied into the image at the call; see
   [terrain tiles and CPU texels](terrain-texels.md).
@@ -107,7 +107,7 @@ Occlusion queries are real Vulkan queries. At the end of the rendering they were
 and one compute step writes each report's 16 bytes (counter and timestamp) at its guest address. The game's CPU readers
 then read plain memory. A render condition is Vulkan conditional rendering on the low word of the report's first
 counter; `HOS_DBG=condcheck` counts conditions that need more than that (none seen). The details are in
-`gpu/direct/direct_query.h`.
+`renderer/direct_query.h`.
 
 ## Submission
 
@@ -119,14 +119,14 @@ is held on the host. An NVN sync is the timeline value of its submission's last 
 
 Each recording thread has a command pool, a frame arena, query pools and a task pool per command slot, three slots in
 rotation. A slot is reset as a whole once the GPU is past its last submission. A list kept alive longer (a pause, for
-example) sets its slot aside, and the thread gets one slot more (`gpu/direct/direct_cmd.h`).
+example) sets its slot aside, and the thread gets one slot more (`renderer/direct_cmd.h`).
 
 ## Engine code replaced above NVN
 
 | What | Why NVN cannot stay |
 |---|---|
 | texture loading | it keeps a resident CPU copy of every texel |
-| render-target placement (`host/rt_slots.c`) | the game makes new objects at new addresses every frame |
+| render-target placement (`games/oot/patches/rt_slots.c`) | the game makes new objects at new addresses every frame |
 
-The game patches the back end relies on are declared in the `host/direct_*.c` files and `host/rt_slots.c`. To list
+The game patches the back end relies on are declared in the `runtime/direct_*.c` files and `games/oot/patches/rt_slots.c`. To list
 every patch and the site it applies to, run `python -m nx2.patch --game games/oot report`.

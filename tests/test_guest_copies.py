@@ -1,8 +1,8 @@
-"""Host copies the game asks for stay in guest memory (host/nn_libc.c, host/nn_fs.c, host/nn_video.c).
+"""Host copies the game asks for stay in guest memory (runtime/nn_libc.c, runtime/nn_fs.c, runtime/nn_video.c).
 
 - The memcpy, memmove and memset replacements (PATCH_FUNC_SYM): inside the guest window the host copies; a range
   outside it is a fatal stop naming the function, the range and the caller (the game's own copy could not reach it
-  either). Built from host/nn_libc.c and host/patch.h as they are, over a small window with a page after it.
+  either). Built from runtime/nn_libc.c and runtime/patch.h as they are, over a small window with a page after it.
 - nn::fs reads and writes take guest buffers only, and GetFileSize answers 0 for a handle with no size.
 - ReadDecoderOutputImageNv12 reads nothing when the pool's NV12 allocation failed (its NULL plus an offset was any host
   address, copied to the game).
@@ -113,14 +113,14 @@ def main():
     p.add_argument("--cc", default="gcc")
     a = p.parse_args()
 
-    fs = (ROOT / "host" / "nn_fs.c").read_text(encoding="utf-8")
+    fs = (ROOT / "runtime/nn_fs.c").read_text(encoding="utf-8")
     read_at = block(fs, "static uint64_t read_at(")
     check("if (!hos_guest_range(buf, size)) return 0;" in read_at, "read_at writes into a buffer it did not check")
     write = block(fs, "HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE)")
     check("hos_guest_range(ARG(2), ARG(3))" in write, "WriteFile reads a buffer it did not check")
     size = block(fs, "HLE(_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE)")
     check("sz > 0 ? (uint64_t)sz : 0" in size, "GetFileSize can answer with the host stack's bytes")
-    video = (ROOT / "host" / "nn_video.c").read_text(encoding="utf-8")
+    video = (ROOT / "runtime/nn_video.c").read_text(encoding="utf-8")
     nv12 = block(video, "HLE(_ZN2nn5codec26ReadDecoderOutputImageNv12E")
     check("!o->nv12" in nv12, "ReadDecoderOutputImageNv12 reads a pool whose NV12 was not allocated")
     print("PASS: nn::fs and the NV12 reader check their buffers")
@@ -133,9 +133,9 @@ def main():
         (tmp / "hos.h").write_text(HOS_H, encoding="utf-8")
         (tmp / "fixture.c").write_text(FIXTURE, encoding="utf-8")
         # (beside the stand-in hos.h: an include in quotes looks in the including file's folder first)
-        (tmp / "nn_libc.c").write_text((ROOT / "host" / "nn_libc.c").read_text(encoding="utf-8"), encoding="utf-8")
+        (tmp / "nn_libc.c").write_text((ROOT / "runtime/nn_libc.c").read_text(encoding="utf-8"), encoding="utf-8")
         exe = tmp / "fixture"
-        subprocess.run([a.cc, "-std=gnu11", "-Wall", "-Wextra", "-I", str(tmp), "-I", str(ROOT / "host"),
+        subprocess.run([a.cc, "-std=gnu11", "-Wall", "-Wextra", "-I", str(tmp), "-I", str(ROOT / "runtime"),
                         str(tmp / "fixture.c"), "-o", str(exe)],
                        check=True)
         subprocess.run([str(exe)], check=True)

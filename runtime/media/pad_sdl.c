@@ -1,4 +1,4 @@
-/* Game controllers through SDL (host/hos_sdl.c: SDL3, else SDL2; zlib license, loaded at
+/* Game controllers through SDL (runtime/media/hos_sdl.c: SDL3, else SDL2; zlib license, loaded at
    run time): DualSense, DualShock 4, Switch Pro, Xbox and most other pads, over USB or Bluetooth. XInput alone sees
    only Xbox-style pads.
 
@@ -10,7 +10,7 @@
 
    (hookshot) Motion: with the Insert menu's Motion controls on (the default), the open pad with a gyroscope and an
    accelerometer (Switch Pro and pads in Switch mode, DualSense, DualShock 4, others) that was used last has them read
-   each poll and turned into the six-axis state OoT aims with (host/hos_motion.h), which nn_hid.c's
+   each poll and turned into the six-axis state OoT aims with (runtime/media/hos_motion.h), which nn_hid.c's
    GetSixAxisSensorStates gives the game; Motion sensitivity X/Y and Invert motion X/Y apply there. Off, or with no such pad, the game sees the pad
    lying still, as before. */
 #include "hos.h"
@@ -21,7 +21,7 @@
 #include "hos_sdl.h"
 #include "hd_rumble.h"
 #include "hos_motion.h"
-#include "../gpu/api/vk_api.h"   /* (HOS_PAD_*) */
+#include "vk_api.h"   /* (HOS_PAD_*) */
 
 void hos_host_thread_register_self(const char *name);   /* hos_prof.c */
 
@@ -56,7 +56,7 @@ static os_rwlock state_lock = OS_RWLOCK_INIT;
 static uint64_t state_buttons;
 static int32_t state_stick[4];
 static int state_count;
-static char state_name[128];   /* the first controller's name (host/prompts.c: the button prompts' Auto) */
+static char state_name[128];   /* the first controller's name (games/oot/patches/prompts.c: the button prompts' Auto) */
 static volatile int32_t rumble_low, rumble_high;   /* 0..65535, set by the vibration HLE */
 /* the game's own vibration values per side (0 left, 1 right: {amp_low, freq_low, amp_high, freq_high}), for the pads
    that play HD rumble; silence until the game sends one */
@@ -407,8 +407,8 @@ static void pad_main(void *arg) {
         os_sleep_ns(4LL * 1000000);
     }
 }
-int hos_display_owns_sdl(void);   /* host/posix/display_sdl.c */
-/* (linux) SDL also runs the window (host/posix/display_sdl.c), and its event queue is not for two threads. Polled
+int hos_display_owns_sdl(void);   /* runtime/media/display_sdl.c */
+/* (linux) SDL also runs the window (runtime/media/display_sdl.c), and its event queue is not for two threads. Polled
    from the window's thread, between its events. Two threads pumping it corrupted the heap once a controller was
    attached. */
 static volatile int32_t pads_loaded;

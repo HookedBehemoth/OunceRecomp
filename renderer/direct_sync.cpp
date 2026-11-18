@@ -90,7 +90,7 @@ int64_t st_freed_cpu = 0, st_freed_queue = 0;   // (M5: holds ended by the CPU's
 bool in_cpu_signal = false;   // (progress() runs for nvnEventSignal; mu held)
 int64_t st_sig_flush_ns = 0, st_sig_flush_n = 0;   // (the batch sends made for nvnEventSignal, on the game's thread; mu held)
 std::atomic<int64_t> st_submit_ns{0}, st_submit_max_ns{0}, st_cpu_waits{0}, st_cpu_wait_ns{0}, st_cpu_signals{0};
-// (the transient pool's rule, host/rt_slots.c REUSE_AFTER: how late a list reaches the queue. Presents between a list's
+// (the transient pool's rule, games/oot/patches/rt_slots.c REUSE_AFTER: how late a list reaches the queue. Presents between a list's
 // first command buffer and its hsd_submit, and between the hsd_submit and its chunks' vkQueueSubmit2: 0, 1, 2, more)
 std::atomic<int64_t> st_age_submit[4], st_age_sent[4];
 

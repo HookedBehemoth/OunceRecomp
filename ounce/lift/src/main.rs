@@ -50,7 +50,8 @@ fn records(argv: Vec<String>) {
         }
     }
     let game = Game::load(&game_dir).unwrap_or_else(|e| fail(e));
-    match patch::check_records(&root, &game.host, &objs) {
+    let files = game.sources(&root).unwrap_or_else(|e| fail(e));
+    match patch::check_records(&root, &files, &objs) {
         Ok(line) => println!("{line}"),
         Err(e) => fail(e),
     }

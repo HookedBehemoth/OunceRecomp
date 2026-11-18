@@ -17,7 +17,7 @@ CASES = ("normal", "busy", "partial", "behind", "open", "stall", "surround", "fa
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", default="cc")
-    parser.add_argument("--source", type=Path, default=ROOT / "host/nn_audio.c")
+    parser.add_argument("--source", type=Path, default=ROOT / "runtime/nn_audio.c")
     parser.add_argument("--case", choices=CASES)
     args = parser.parse_args()
     process_flags = (subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS) if os.name == "nt" else 0
@@ -42,7 +42,7 @@ def main():
         assert folder.parent == Path(tempfile.gettempdir()).resolve() and folder.name.startswith("audio-output-")
         (folder / "audio_output.inc").write_text(actual, encoding="utf-8")
         executable = folder / "fixture.exe"
-        run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(folder), "-I" + str(ROOT / "host/os"),
+        run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(folder), "-I" + str(ROOT / "runtime/os"),
              str(ROOT / "tests/audio_output_errors_test.c"), "-o", str(executable)])
         for case in ((args.case,) if args.case else CASES):
             run([str(executable), case])

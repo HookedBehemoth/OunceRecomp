@@ -34,7 +34,11 @@ struct Raw {
     labels: String,
     hot: String,
     identity: Identity,
-    host: Vec<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    patches: Vec<String>,
     #[serde(default)]
     local_continuations: Vec<Continuation>,
     #[serde(default)]
@@ -49,8 +53,12 @@ pub struct Game {
     /// the hot list (one `f_<address>` a line), resolved against the folder of game.toml
     pub hot: PathBuf,
     pub identity: Identity,
-    /// the host's C files (in host/)
-    pub host: Vec<String>,
+    /// the window's title (the game's name); the description's `name` when it has none
+    pub title: String,
+    /// the window's icon (a BMP), resolved against the folder of game.toml
+    pub icon: Option<PathBuf>,
+    /// the game's patch files (C), resolved against the folder of game.toml
+    pub patches: Vec<PathBuf>,
     /// `adr xN, <label>` ... `br xN` inside one function: (pc, word)
     pub local_continuations: Vec<(u64, u32)>,
     pub assets: Assets,
@@ -64,19 +72,25 @@ impl Game {
         let raw: Raw = toml::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
         let folder = file.parent().unwrap_or(Path::new(""));
         Ok(Game {
+            title: raw.title.unwrap_or_else(|| raw.name.clone()),
+            icon: raw.icon.map(|i| folder.join(i)),
+            patches: raw.patches.iter().map(|p| folder.join(p)).collect(),
             name: raw.name,
             labels: folder.join(raw.labels),
             hot: folder.join(raw.hot),
             identity: Identity { build_id: raw.identity.build_id.to_lowercase(), main_sha256: raw.identity.main_sha256.to_lowercase() },
-            host: raw.host,
             local_continuations: raw.local_continuations.into_iter().map(|c| (c.pc, c.word)).collect(),
             assets: raw.assets,
         })
     }
 
-    /// the host's C files, as paths under `root`/host, in the build's order
-    pub fn host_sources(&self, root: &Path) -> Vec<PathBuf> {
-        self.host.iter().map(|f| root.join("host").join(f)).collect()
+    /// the C the game is built from, in the build's order: the runtime's files (`root`/runtime/sources.txt, one path
+    /// relative to runtime/ a line) and then the game's patch files. The patch scan reads all of them.
+    pub fn sources(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
+        let list = root.join("runtime/sources.txt");
+        let text = std::fs::read_to_string(&list).map_err(|e| format!("{}: {e}", list.display()))?;
+        let runtime = text.lines().map(|l| l.split('#').next().unwrap().trim()).filter(|l| !l.is_empty());
+        Ok(runtime.map(|f| root.join("runtime").join(f)).chain(self.patches.iter().cloned()).collect())
     }
 
     /// the hot list's guest addresses (the file's format: docs/lifter.md, "Game description files")
@@ -113,6 +127,11 @@ impl Game {
     }
 }
 
+/// a source's name in messages: its path under `root`, else as given
+pub fn shown(root: &Path, p: &Path) -> String {
+    p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
+}
+
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
@@ -139,12 +158,14 @@ mod tests {
         assert_eq!(g.assets.zstd_dictionaries.as_deref(), Some("Pack/ZsDic.pack.zs"));
         assert!(g.assets.texture_skip_dirs.iter().any(|d| d == "TerrainArc"));
         assert_eq!(g.identity.main_sha256, "2591fb99008d0814f8056c3f36b36790048ed857ff0ae2bb3a4c1e37b960a4de");
-        assert_eq!(g.host.len(), 60);
-        assert_eq!(g.host[0], "bench.c");
+        assert!(g.patches.iter().any(|p| p.ends_with("games/oot/patches/oot_probes.c")));
+        assert!(g.icon.as_ref().unwrap().ends_with("games/oot/icon.bmp") && g.icon.as_ref().unwrap().is_file());
+        assert!(g.title.contains("Ocarina of Time"));
         assert_eq!(g.local_continuations, vec![(0x8011060C, 0x10FFFCA7), (0x80110694, 0x10000047)]);
-        let s = g.host_sources(Path::new("/r"));
-        assert_eq!(s[0], Path::new("/r/host/bench.c"));
-        assert_eq!(s.len(), g.host.len());
+        let s = g.sources(&repo()).unwrap();
+        assert!(s.iter().all(|p| p.is_file()), "{s:?}");
+        assert!(s[0].starts_with(repo().join("runtime")));
+        assert_eq!(s.len(), s.iter().map(|p| p.file_stem()).collect::<std::collections::BTreeSet<_>>().len(), "two sources of one name");
     }
 
     // a synthetic NSO header: 0x54 bytes, "NSO0", build id bytes 0..20 at 0x40

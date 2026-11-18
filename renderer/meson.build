@@ -1,5 +1,5 @@
-# hookshot_direct.so: the direct back end's sources in this folder, linked with the translator (eden) and zstd's
-# decoder.
+# hookshot_direct.so: the direct back end's sources in this folder, linked with the translator (third_party/eden,
+# third_party/sirit) and zstd's decoder. api/ holds what the runtime and the back end share.
 
 # (the generated headers' folder: include_directories('.') puts the build folder before the source folder, so
 # <shaders/...> finds the SPIR-V headers made there, not the checked-in copies. Meson names it relative to the build
@@ -7,8 +7,7 @@
 # objects one build late. The stamp headers' -include below is named the same way)
 direct_inc = include_directories('.')
 gen_dir = fs.relative_to(meson.current_build_dir(), meson.project_build_root())
-
-subdir('eden')
+gpu_api_inc = include_directories('api')
 
 # (the checked-in *_spv.h copies: `meson test` keeps them equal to the sources)
 cmp = find_program('cmp')
@@ -53,7 +52,8 @@ foreach kind, src : {'graphics': 'direct_shader.cpp', 'compute': 'direct_compute
   stamp = custom_target('shader_stamp_' + kind + '.h',
     output: 'shader_stamp_' + kind + '.h',
     depfile: 'shader_stamp_' + kind + '.h.d',
-    command: [python, '-I', files('meson/shader_stamp.py'), kind, '@OUTPUT@', '@DEPFILE@'] + toolchain)
+    command: [python, '-I', files('meson/shader_stamp.py'), kind, '@OUTPUT@', '@DEPFILE@',
+              root / 'third_party/eden', root / 'third_party/sirit', '--'] + toolchain)
   stamped += static_library('dx_' + fs.stem(src), [src, stamp] + spv_headers,
     cpp_args: direct_args + ['-include', gen_dir / 'shader_stamp_' + kind + '.h'],
     include_directories: direct_incs, dependencies: direct_deps,
@@ -63,7 +63,7 @@ endforeach
 direct_so = shared_module('hookshot_direct', direct_sources, spv_headers,
   cpp_args: direct_args, include_directories: direct_incs, dependencies: direct_deps,
   implicit_include_directories: false,
-  link_whole: [eden_lib, zstd_lib] + stamped,
+  link_whole: [eden_lib, sirit_lib, zstd_lib] + stamped,
   name_prefix: '',
   link_args: target_args + ['-fuse-ld=lld', '-Wl,-Map=' + meson.current_build_dir() / 'hookshot_direct.so.map',
                             '-Wl,-Bsymbolic', '-Wl,--gc-sections', '-static-libstdc++', '-static-libgcc',

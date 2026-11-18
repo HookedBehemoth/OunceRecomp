@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SDL = ROOT / "host" / "hos_sdl.c"
-AUDIO = ROOT / "host" / "nn_audio.c"
+SDL = ROOT / "runtime/media/hos_sdl.c"
+AUDIO = ROOT / "runtime/nn_audio.c"
 
 
 class SdlAudioLibraryTests(unittest.TestCase):

@@ -10,7 +10,7 @@ with no Python and no compiler on the player's PC. Read it before you work on th
   objects and `hookshot_direct.so`, built in CI), and the link's sysroot (glibc 2.35's start files and stub libraries).
   `hookshot-gui` (`ounce/gui`) is its window: it runs the builder as a child process and reads its `@@` lines
   ([the window](#the-window)).
-- A folder of the source the lift reads: `host/*.c` (the patch declarations), `games/oot/` (`game.toml`, the labels,
+- A folder of the source the lift reads: `runtime/` (its C files and `sources.txt`), `games/oot/` (`game.toml`, the labels,
   the hot list `hot_funcs.bin` and the link order `hot_order.bin`), `ounce/lift/data/horizon.toml` and
   `third_party/a64-kit/rt/`.
 
@@ -24,7 +24,7 @@ The target is 15 minutes on a 16-thread PC. Measured on a Ryzen 7 5800X3D (16 th
 |---|---|---|
 | Read the dump | `.nup` or folder (`ounce/dump`); the exefs into memory first, then the romfs into the game folder on a thread while the lift runs | exefs under 1 s; romfs 30 s (folder) |
 | Lift and compile | `ounce-lift` as a library (`ounce/lift/src/pipeline.rs`), each partition and generated module compiled as it is made (`ounce/builder/src/lift.rs`), byte for byte the objects of `opt \| clang` with the same flags | 164 s at 16 jobs |
-| Host C | `host/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
+| Host C | `runtime/*.c`, libopus and the runtime by clang in this process (`ounce/builder/src/host.rs`) | 4 s |
 | Link | lld in this process (`ounce/builder/src/link.rs`), against the prebuilt host and the sysroot; then the labels | 1 s |
 | Textures | `ounce/tex`: every BNTX texture deswizzled, ASTC re-encoded to BCn, packed (`hookshot-builder textures`); the romfs copy's texture files written with their texels zeroed | 258 s (fast, the default); 1055 s with `--quality high` (16,000 CPU-s, 2.6 GB peak) |
 | Shaders | optional: the game translates its programs ahead of time into the folder's caches | not written |
@@ -98,7 +98,7 @@ holds everything the lift took from it (the modules, and `main.npdm`'s program i
 ## The build
 
 `hookshot-builder build <out> --direct <hookshot_direct.so>` builds the game in one process: the host's C
-(`host/*.c`, libopus and `rt64/a64_rt.c`, each with its flags and `-fstack-protector-strong`), the lift and its
+(`runtime/*.c`, libopus and `rt64/a64_rt.c`, each with its flags and `-fstack-protector-strong`), the lift and its
 compile, the link and the labels. `<out>` holds `hookshot`, `hookshot_direct.so` and `image.bin`, where the game
 looks without an argument; `scripts/run-vk.sh` and `scripts/play.sh` take the image from beside the executable when
 it is there. With `--dump`, `<out>` is a whole game folder (below).

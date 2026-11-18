@@ -1,4 +1,4 @@
-"""Strict mode and the validation messenger of the direct back end (gpu/direct/direct_check.{h,cpp}), read from the source.
+"""Strict mode and the validation messenger of the direct back end (renderer/direct_check.{h,cpp}), read from the source.
 
 The known list is one table, each entry an event reason the back end really raises (or a validation message id) with a reason
 why it is known; strict ends the run with a nonzero code on any other event once armed, and on any validation warning or error;
@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-D = ROOT / "gpu" / "direct"
+D = ROOT / "renderer"
 
 
 def block(text, marker):

@@ -1,5 +1,5 @@
-"""host/hos_fp.c without the game: MXCSR follows the guest FPCR, the MRS/MSR FPCR/FPSR helpers the lifted code calls, and
-MXCSR across a fiber switch (host/os/os_linux.c's fibers, switched the way host/hos_thread.c's fiber_switch does it,
+"""runtime/hos_fp.c without the game: MXCSR follows the guest FPCR, the MRS/MSR FPCR/FPSR helpers the lifted code calls, and
+MXCSR across a fiber switch (runtime/os/os_linux.c's fibers, switched the way runtime/hos_thread.c's fiber_switch does it,
 which this test also checks by text).
 
 python -I -B tests/test_hos_fp.py      (the compile-and-run cases need a C compiler on x86-64 Linux)
@@ -13,9 +13,9 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOS_FP = os.path.join(ROOT, "host", "hos_fp.c")
-THREAD = os.path.join(ROOT, "host", "hos_thread.c")
-OS_LINUX = os.path.join(ROOT, "host", "os", "os_linux.c")
+HOS_FP = os.path.join(ROOT, "runtime", "hos_fp.c")
+THREAD = os.path.join(ROOT, "runtime", "hos_thread.c")
+OS_LINUX = os.path.join(ROOT, "runtime", "os", "os_linux.c")
 
 
 def read(path):
@@ -134,7 +134,7 @@ class Run(unittest.TestCase):
             c, exe = os.path.join(d, "t.c"), os.path.join(d, "t")
             with open(c, "w") as f:
                 f.write(HARNESS)
-            subprocess.run([cc(), "-O1", "-w", "-D_GNU_SOURCE", "-I" + os.path.join(ROOT, "host"), "-I" + os.path.join(ROOT, "host", "os"),
+            subprocess.run([cc(), "-O1", "-w", "-D_GNU_SOURCE", "-I" + os.path.join(ROOT, "runtime"), "-I" + os.path.join(ROOT, "runtime", "os"),
                             c, OS_LINUX, "-o", exe, "-lpthread"], check=True)
             r = subprocess.run([exe], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

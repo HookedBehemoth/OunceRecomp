@@ -2,7 +2,7 @@
 
 This page explains how the game plays its movies (the title and the intro): how the file reaches the decoder, how frames
 are chosen, and how they are drawn. Read it when a movie stutters, jumps or shows wrong colors, or before you change
-`host/nn_video.c` or `host/direct_movie.c`. The player's functions carry the prefixes `movie_` and `ndve_` in
+`runtime/nn_video.c` or `games/oot/patches/direct_movie.c`. The player's functions carry the prefixes `movie_` and `ndve_` in
 `games/oot/labels.txt`.
 
 The movie files are AV1, video only. Their sound is a separate stream file that the sound system plays.
@@ -14,7 +14,7 @@ The movie files are AV1, video only. Their sound is a separate stream file that 
 2. The movie's input thread reads samples and submits them to the video decoder. A full decoder answers "busy"; the
    thread keeps the sample and waits for the decoder's input-ready event.
 
-The pace of reading is therefore the decoder's. The host's decoder (`host/nn_video.c`) refuses input while it holds as
+The pace of reading is therefore the decoder's. The host's decoder (`runtime/nn_video.c`) refuses input while it holds as
 many submissions as the hardware's queue would, and signals the event when it has room again. If it took everything
 at once, the reader would drain the cache between two refills and the movie's first seconds would jump.
 
@@ -36,5 +36,5 @@ With an NDVE resource, the game builds a renderer that runs NDVE, an enhancement
 Without one, it builds a plain renderer that draws the two planes, converting BT.709 video range to RGB in the movie
 layer.
 
-`host/direct_movie.c` passes no NDVE resource, so every movie takes the plain path and shows the picture as decoded.
+`games/oot/patches/direct_movie.c` passes no NDVE resource, so every movie takes the plain path and shows the picture as decoded.
 `HOS_NDVE=1` leaves the resource to the game, for a comparison.

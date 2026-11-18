@@ -64,7 +64,7 @@ thread, and nothing depends on lifted code calling into the host regularly.
 - **RET** is `ret void`.
 - **PLT stubs** are resolved: a call of a stub calls its target.
 - **setjmp callers** are called through a host stub that saves a host `setjmp`. A guest `longjmp` returns there and
-  resumes the caller at the setjmp return address (`host/hos_setjmp.c`).
+  resumes the caller at the setjmp return address (`runtime/hos_setjmp.c`).
 - **A BL to an answered function** (`PATCH_ANSWER`) makes no call: `x0` gets the answer and `x30` the return
   address, and nothing else changes. A tail branch to one returns with the answer in `x0`. An indirect call reaches a
   small lifted function that does the same.
@@ -80,7 +80,7 @@ thread, and nothing depends on lifted code calling into the host regularly.
 Code pointers are host function pointers. The lifter translates them where they originate:
 
 - Every relocated slot of the image that holds a function's address is listed at lift time, and the host writes the
-  function's host pointer into it right after loading `image.bin` (`host/code_ptrs.c`).
+  function's host pointer into it right after loading `image.bin` (`runtime/code_ptrs.c`).
 - Where the code forms a function's address with `ADR` or `ADRP`+`ADD`, the lifter emits the address of `f_<entry>`.
   The build stops if the number of translated sites differs from the census, or if code forms an entry's address any
   other way.
@@ -108,7 +108,7 @@ index out of range takes the indirect-jump path.
 FP arithmetic is native LLVM FP and is correctly rounded, so it equals ARM's in every rounding mode. The emitter
 writes no `contract` flags and the build passes `-ffp-contract=off`, so nothing the guest kept separate is fused.
 
-The host's MXCSR follows the guest's FPCR (`host/hos_fp.c`): FZ sets DAZ and FTZ, RMode sets the rounding control, and
+The host's MXCSR follows the guest's FPCR (`runtime/hos_fp.c`): FZ sets DAZ and FTZ, RMode sets the rounding control, and
 all exceptions stay masked. The game sets FZ on its main thread, and results differ without it.
 
 Where x86 differs from ARM, the emitter uses an exact replacement: `llvm.minimum` and `llvm.maximum` for FMIN and
@@ -139,8 +139,8 @@ Half-precision FZ16 and AHP are not supported.
 
 ## Fibers and C++ exceptions
 
-- The SDK's fiber functions are replaced by the host (`host/hos_thread.c`): a guest fiber is a host fiber with its own
+- The SDK's fiber functions are replaced by the host (`runtime/hos_thread.c`): a guest fiber is a host fiber with its own
   guest context. The SDK's fiber assembly never runs.
-- A C++ throw stops the game with the exception's type and the caller's address (`host/cxx_throw.c`). Unwinding
+- A C++ throw stops the game with the exception's type and the caller's address (`runtime/cxx_throw.c`). Unwinding
   through lifted frames cannot work, because lifted frames do not keep the return addresses an unwinder needs. The
   game throws only on error paths, and normal play throws nothing.

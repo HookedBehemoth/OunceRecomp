@@ -1,13 +1,13 @@
-/* The game's window on SDL (host/hos_sdl.c: SDL3, Wayland when there is one, else X11; or SDL2). The window lives on the process's main thread, as SDL wants it (hos_main.c runs the
-   game on a thread of its own); the Vulkan back end makes its surface through SDL (gpu/api/vk_api.h
+/* The game's window on SDL (runtime/media/hos_sdl.c: SDL3, Wayland when there is one, else X11; or SDL2). The window lives on the process's main thread, as SDL wants it (hos_main.c runs the
+   game on a thread of its own); the Vulkan back end makes its surface through SDL (renderer/api/vk_api.h
    MkwVkWindow), on a thread of its own so the window keeps answering while the shaders are prepared.
 
    The keyboard's state, the window's focus and the screen's size are kept here for nn_hid.c (hos_key_down,
    hos_window_focused, hos_screen_size: hos_sdl.h).
    HOS_HEADLESS=1: no window. HOS_WINDOW_SIZE=<w>x<h>: its size (default 1280x720). F11: fullscreen (HOS_FULLSCREEN=1 to
    start so). Mouse: a click in the window captures it (relative motion, for nn_hid.c), Esc or leaving releases it. */
-#include "../hos.h"
-#include "../hos_sdl.h"
+#include "hos.h"
+#include "hos_sdl.h"
 
 /* (the window's app id: a desktop entry names it as its StartupWMClass) */
 #define HOS_APP_ID "io.github.NotRexed.Hookshot"
@@ -15,13 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"
-#include "../hos_keys.h"
-#include "../../gpu/api/vk_api.h"
+#include "hos_keys.h"
+#include "vk_api.h"
 
 int rx_start(void *hwnd);
 void rx_resize(int width, int height);
 void rx_close_asked(void);
-void hos_sdl_pads_pump(void);   /* host/pad_sdl.c: controllers, on this thread, as SDL's queue wants */
+void hos_sdl_pads_pump(void);   /* runtime/media/pad_sdl.c: controllers, on this thread, as SDL's queue wants */
 
 volatile int64_t hos_present_count;   /* (nvn_native.c: the game's presents) */
 static volatile uint8_t keys[256];
@@ -43,7 +43,7 @@ void hos_mouse_give_back(int32_t dx, int32_t dy) {
     os_atomic_fetch_add(&mouse_dy, dy);
 }
 
-/* ---- the free mouse (gpu/api/vk_api.h MkwVkPointer): set on the main thread, read on the renderer's ---- */
+/* ---- the free mouse (renderer/api/vk_api.h MkwVkPointer): set on the main thread, read on the renderer's ---- */
 static volatile int32_t ptr_x, ptr_y, ptr_in, ptr_held;   /* (x, y in window units) */
 static void *window;
 int hos_mouse_pointer(MkwVkPointer *out) {
@@ -168,7 +168,7 @@ void hos_display_presented(void) {   /* (the Presentation Thread, after each pre
     const uint64_t size = __atomic_load_n(&resize_size, __ATOMIC_ACQUIRE);
     if (!size || os_now_ns() - __atomic_load_n(&resize_ns, __ATOMIC_RELAXED) < 250 * 1000000LL) return;
     if (!__atomic_compare_exchange_n(&resize_size, &(uint64_t){size}, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) return;
-    void hos_oot_frame_set(uint32_t w, uint32_t h, int start);   /* (host/oot_probes.c) */
+    void hos_oot_frame_set(uint32_t w, uint32_t h, int start);   /* (games/oot/patches/oot_probes.c) */
     hos_oot_frame_set((uint32_t)size, (uint32_t)(size >> 32), 0);
 }
 

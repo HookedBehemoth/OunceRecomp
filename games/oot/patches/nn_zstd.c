@@ -18,16 +18,16 @@
 #define ZSTD_MULTITHREAD 0
 #define ZSTD_STATIC_LINKING_ONLY 1
 #define DEBUGLEVEL 0
-#include "../third_party/zstd/lib/common/debug.c"
-#include "../third_party/zstd/lib/common/entropy_common.c"
-#include "../third_party/zstd/lib/common/error_private.c"
-#include "../third_party/zstd/lib/common/fse_decompress.c"
-#include "../third_party/zstd/lib/common/xxhash.c"
-#include "../third_party/zstd/lib/common/zstd_common.c"
-#include "../third_party/zstd/lib/decompress/huf_decompress.c"
-#include "../third_party/zstd/lib/decompress/zstd_ddict.c"
-#include "../third_party/zstd/lib/decompress/zstd_decompress.c"
-#include "../third_party/zstd/lib/decompress/zstd_decompress_block.c"
+#include "zstd/lib/common/debug.c"
+#include "zstd/lib/common/entropy_common.c"
+#include "zstd/lib/common/error_private.c"
+#include "zstd/lib/common/fse_decompress.c"
+#include "zstd/lib/common/xxhash.c"
+#include "zstd/lib/common/zstd_common.c"
+#include "zstd/lib/decompress/huf_decompress.c"
+#include "zstd/lib/decompress/zstd_ddict.c"
+#include "zstd/lib/decompress/zstd_decompress.c"
+#include "zstd/lib/decompress/zstd_decompress_block.c"
 
 #include "hos.h"
 #include <stdlib.h>

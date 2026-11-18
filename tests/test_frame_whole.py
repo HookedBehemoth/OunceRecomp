@@ -1,5 +1,5 @@
 """Game counters that add the frame step, or the step times a whole number, cut to whole frames keep counting above 60 fps
-(host/frame_whole.h; the lifter calls it at the two counters' instructions: nx2/lift2/probes.py WHOLE).
+(games/oot/patches/frame_whole.h; the lifter calls it at the two counters' instructions: nx2/lift2/probes.py WHOLE).
 
 The pick-up indicator above Link's head (f_80a87e50) moves the count it shows toward the wallet's by (int)(step * per) and fades
 when they meet. Under a Frame rate cap above 60 the step is the frame's own
@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "nx2"))
+sys.path.insert(0, str(ROOT / "tools/re"))
 
 FIXTURE = r"""
 #include "frame_whole.h"
@@ -69,7 +69,7 @@ class FrameWholeTests(unittest.TestCase):
             tmp = Path(tmp)
             (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-I", str(ROOT / "host"), str(tmp / "t.c"),
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-I", str(ROOT / "games/oot/patches"), str(tmp / "t.c"),
                                     "-o", str(binary), "-lm"], text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)

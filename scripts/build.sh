@@ -6,15 +6,15 @@
 #
 #   scripts/build.sh [hookshot-builder build options...]     e.g. --gen-parts (work/sa/lift_*.ll), -j N
 #
-# The Vulkan, SPIR-V and VMA headers are meson.options' defaults (/usr, work/deps/...: scripts/linux/deps.sh).
+# The Vulkan headers come from /usr, the SPIR-V and VMA headers from third_party/ (meson.options' defaults).
 # scripts/play-refresh.sh and scripts/relift.sh call this under work/heavy.lock in a memory-capped scope.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 md=work/sa/meson
-[ -f "$md/build.ninja" ] || meson setup --native-file gpu/direct/meson/clang.ini "$md"
+[ -f "$md/build.ninja" ] || meson setup --native-file renderer/meson/clang.ini "$md"
 ninja -C "$md"
 cargo=$(command -v cargo || echo "$HOME/.cargo/bin/cargo")
 "$cargo" build --release --quiet -p hookshot-builder --manifest-path ounce/Cargo.toml
-ounce/target/release/hookshot-builder build work/sa/build --direct "$md/gpu/direct/hookshot_direct.so" \
+ounce/target/release/hookshot-builder build work/sa/build --direct "$md/renderer/hookshot_direct.so" \
   --gen work/sa --progress --game games/oot --work work --root . "$@"

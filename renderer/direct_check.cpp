@@ -22,7 +22,7 @@ namespace hsd {
 const StrictKnown kStrictKnown[] = {
     {"Vulkan object made in steady play: an image for a texture the game made (renderable)",
      "the game makes render targets in play: a light's shadow map changes its size class, the dynamic resolution takes a level "
-     "not seen before, a slot is made at a new offset (host/rt_slots.c). A transient target's image is an object bound in the "
+     "not seen before, a slot is made at a new offset (games/oot/patches/rt_slots.c). A transient target's image is an object bound in the "
      "transient pool at its storage offset: no device memory is allocated for it, and the object is kept for the next texture "
      "of that storage and shape (docs/direct/transient-pool.md)"},
     {"Vulkan object made in steady play: an attachment view of a game's texture",

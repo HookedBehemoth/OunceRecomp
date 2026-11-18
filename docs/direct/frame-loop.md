@@ -84,7 +84,7 @@ tasks on the BaseProc executors; see [Havok](havok.md).
 | a frame | entry of `frame_global_step` |
 | the frame's CPU work ends | the tail `nvnEventSignal(value 1)` of `frame_end_wait_and_gate` |
 | a job stage | entry and return of `job_graph_run_and_join` on the main thread |
-| one render job | `render_job_record` (already hooked by `host/eng_jobs.c`) |
+| one render job | `render_job_record` (already hooked by `games/oot/patches/eng_jobs.c`) |
 | present wait and acquire | `frame_wait_present_acquire` |
 | present | `frame_present_submit` on the Presentation Thread |
 

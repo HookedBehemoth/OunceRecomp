@@ -120,7 +120,7 @@ impl CastOp {
 pub enum Sym {
     Entry(u64),
     SjCall(u64),
-    /// a declared SVC's host function, `hos_svc_0x<NN>` (host/patch.h SVC)
+    /// a declared SVC's host function, `hos_svc_0x<NN>` (runtime/patch.h SVC)
     Svc(u32),
     Name(u32),
 }

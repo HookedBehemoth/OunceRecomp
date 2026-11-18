@@ -1,6 +1,6 @@
-# host/: provenance
+# runtime/: provenance
 
-This page records where the standalone runtime in `host/` came from and what changed on the way, for anyone comparing
+This page records where the standalone runtime in `runtime/` came from and what changed on the way, for anyone comparing
 it with its upstreams or applying a fix from them.
 
 The runtime is a fork of the Horizon OS layer of NotRexed's a64-kit (`hos/`, from TOTKPort commit `e88744a`), the

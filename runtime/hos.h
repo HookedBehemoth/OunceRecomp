@@ -1,6 +1,6 @@
 /* Horizon OS layer (HLE of the Nintendo SDK at the nn:: boundary) for a64-kit games.
 
-   An import or SDK function the game calls is a C function `void imp_<mangled name>(Ctx *c)` (HLE(...), host/patch.h):
+   An import or SDK function the game calls is a C function `void imp_<mangled name>(Ctx *c)` (HLE(...), runtime/patch.h):
    arguments in c->x[0..7], the result in c->x[0]. A symbol with such a definition is hooked both where the game
    imports it and at the sdk's own definition, so lifted SDK code reaching it lands here too (nx_image.py).
    Everything without a definition gets a generated stub that logs its first call and returns 0.
@@ -24,7 +24,7 @@ A64Fn a64_fn_of(uint64_t v);
 void a64_call_received(Ctx *c, uint64_t v);
 uint64_t a64_guest_of(uint64_t v);
 #define CODE_PTR(f) ((uint64_t)(uintptr_t)(f))   /* (a lifted function, f_<address>, as the game sees it) */
-/* At rows and replaced functions (PATCH_AT, PATCH_FUNC, host/patch.h): host functions of plain values; a 16-byte vector
+/* At rows and replaced functions (PATCH_AT, PATCH_FUNC, runtime/patch.h): host functions of plain values; a 16-byte vector
    register ("qN") is a hos_q. One declared to call guest code gets a GuestCall first: guest_call runs guest code at fn
    with the arguments, SP sp and LR 0, and puts every register back as it was (the row or function writes none); its
    x0 */
@@ -70,7 +70,7 @@ void hos_log_flush(void);
 long long hos_vi_present_number(void);   /* (nn_vi.c) */
 int hos_dbg_item(const char *item);
 int hos_log_switch(const char *item);
-/* HOS_BENCH (host/bench.c): the frames to measure, 0 when off; the game's file reads, its player updates, the presents */
+/* HOS_BENCH (runtime/bench.c): the frames to measure, 0 when off; the game's file reads, its player updates, the presents */
 int hos_bench_on(void);
 void hos_bench_fs_read(void);
 void hos_bench_player(int loading, int event_playing);

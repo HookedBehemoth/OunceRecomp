@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cc", help="C compiler (otherwise clang, gcc or cc from PATH)")
-    parser.add_argument("--source", type=Path, default=ROOT / "host/nvn_native.c")
+    parser.add_argument("--source", type=Path, default=ROOT / "runtime/nvn_native.c")
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location("null_pool", ROOT / "tests/test_nvn_null_pool.py")
     helpers = importlib.util.module_from_spec(spec)

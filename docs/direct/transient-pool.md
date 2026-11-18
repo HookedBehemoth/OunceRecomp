@@ -1,8 +1,8 @@
 # The transient pool
 
 This page explains how the game's transient render targets get device memory: one constant allocation in which the
-targets alias each other, as they do on the console. Read it before you change `host/rt_slots.c`, the pool code in
-`gpu/direct/direct_vma.cpp` and `gpu/direct/direct_image.cpp`, or anything that decides when an image's memory may be
+targets alias each other, as they do on the console. Read it before you change `games/oot/patches/rt_slots.c`, the pool code in
+`renderer/direct_vma.cpp` and `renderer/direct_image.cpp`, or anything that decides when an image's memory may be
 reused. What the targets are is in [render targets](render-targets.md).
 
 ## Why one allocation
@@ -16,7 +16,7 @@ of VRAM, made once, and nothing is allocated or freed for them in play.
 ## How it works
 
 1. **The host names the range once.** In direct mode the allocator's slots lie past the end of the game's pool, at
-   GPU addresses `host/nvn_native.c` leaves unused. The slot range is twice the game's pool, and at least 512 MB
+   GPU addresses `runtime/nvn_native.c` leaves unused. The slot range is twice the game's pool, and at least 512 MB
    (`RX_RT_SLOTS_MB` overrides it). The host hands the range to the back end (`hsd_transient_pool`), which allocates it
    with one `vkAllocateMemory`.
 2. **Slots are sized by the device's need.** Before placing a target, the host asks the back end how much memory an

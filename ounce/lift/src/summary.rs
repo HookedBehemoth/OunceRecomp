@@ -305,7 +305,7 @@ pub struct Program<'a> {
     pub rows: Vec<Rows>,
     /// the noreturn seeds, sorted (by name, then with the callers' evidence)
     pub noret: Vec<u64>,
-    /// (number, inputs, results) of the declared SVCs (host/hos_svc.c), by number
+    /// (number, inputs, results) of the declared SVCs (runtime/hos_svc.c), by number
     pub svcs: Vec<(u32, u32, u32)>,
 }
 
@@ -1648,7 +1648,7 @@ fn analyse(f: &Flow, s: &Sums, sc: &mut Scratch) -> Summary {
     // (a save of x19-x29's entry value into a frame slot the register is restored from, the slot read by nothing
     // else, the register preserved: no read of the register. A caller that keeps it in SSA need not write it to the
     // context: the save stores a stale value and the restore brings it back, which no one reads (C++ unwinding and
-    // backtraces stop or are replaced, host/cxx_throw.c, nn_diag.c))
+    // backtraces stop or are replaced, runtime/cxx_throw.c, nn_diag.c))
     let mut regs = if out.returns && fr.reasons & why::SAVE_PTR == 0 { fr.preserved & range(19, 30) } else { 0 };
     let mut saved = save_uses(f.n, &sc.frame, regs, &mut sc.unuse);
     liveness_less(f, s, 0, &mut sc.live, &sc.unuse);

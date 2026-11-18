@@ -1,7 +1,7 @@
 /* Game patch, direct mode only: a render job is recorded only when its pass's target formats are known
 .
 
-   f_80084de0 (the job recorder) is replaced by host/eng_jobs.c's PATCH_FUNC; in direct mode it asks here first. Its
+   f_80084de0 (the job recorder) is replaced by games/oot/patches/eng_jobs.c's PATCH_FUNC; in direct mode it asks here first. Its
    pass key (x3) is the pass's identity. If the back end's format table does not know the key, the recorder returns at entry,
    as its own early return at 0x8008693c does (no view record, no slot): the layer list then finds no record and draws the
    pass through the game's inline path f_80681320, after its own SetRenderTargets. At rows before its two calls name
@@ -92,7 +92,7 @@ int direct_passes_recorder(uint64_t key) {
 }
 
 /* The game's inline path of a pass, f_80681320(queue, drawctx, &key, owner, ...), from its two callers: At rows just
-   before each call (a PATCH_AT declaration, host/patch.h) hand over the key and the list's draw context */
+   before each call (a PATCH_AT declaration, runtime/patch.h) hand over the key and the list's draw context */
 static void inline_pass(int site, int nk, const uint64_t *ks, uint64_t drawctx) {
     const hsd_fns *d = rx_direct();
     if (!d) return;

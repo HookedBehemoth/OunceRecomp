@@ -1,4 +1,4 @@
-"""Every game-free check in one run: each tests/test_*.py and nx2/test_*.py in its own process, and a byte-compile of every tracked Python file. All of them run even when one fails; the failures are
+"""Every game-free check in one run: each tests/test_*.py in its own process, and a byte-compile of every tracked Python file. All of them run even when one fails; the failures are
 printed whole at the end, with a table of every check (slowest first), also to $GITHUB_STEP_SUMMARY when it is set.
 Exits 1 when anything failed.
 
@@ -40,8 +40,8 @@ ARGS = {
     "tests/test_motion.py": ["--cc", "gcc"],
     "tests/test_nvn_deswizzle.py": ["--cc", "gcc"],
     "tests/test_low_memory_notice.py": ["--cc", "gcc"],
-    "nx2/test_draw_parameters.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
-    "nx2/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
+    "tests/test_draw_parameters.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
+    "tests/test_spirv_struct_identity.py": ["--headers", "{spirv_headers}", "--spirv-val", "{spirv_val}"],
 }
 
 # Python packages some tests import (CI installs them; the runner itself needs none)
@@ -56,7 +56,7 @@ SKIP = {
     "tests/test_oot_saves.py": ({"windows"}, "the save script's folder discovery is the Linux one (on Windows Hookshot's saves are in the game folder: --hookshot)"),
 }
 # (spirv-val: SPIRV-Tools comes with the Linux runner's packages, not on Windows)
-for _name in ("nx2/test_draw_parameters.py", "nx2/test_spirv_struct_identity.py"):
+for _name in ("tests/test_draw_parameters.py", "tests/test_spirv_struct_identity.py"):
     SKIP[_name] = ({"windows"}, "needs spirv-val: checked on Linux")
 
 
@@ -68,23 +68,21 @@ def which(*names):
     return None
 
 
-def header_dir(env, cpm_name, probe):
-    """A headers folder: the environment variable, else the CPM cache (RX_CPM, build-linux/deps/cpm)"""
+def header_dir(env, vendored, probe):
+    """A headers folder: the environment variable, else the vendored copy (third_party/<vendored>/include)"""
     if os.environ.get(env):
         return os.environ[env]
-    for cpm in (os.environ.get("RX_CPM"), os.path.join(ROOT, "build-linux", "deps", "cpm")):
-        d = os.path.join(cpm or "", cpm_name)
-        if cpm and os.path.isdir(d) and os.listdir(d):
-            inc = os.path.join(d, sorted(os.listdir(d))[-1], "include")
-            if os.path.exists(os.path.join(inc, probe)):
-                return inc
+    if vendored:
+        inc = os.path.join(ROOT, "third_party", vendored, "include")
+        if os.path.exists(os.path.join(inc, probe)):
+            return inc
     return None
 
 
 def find_tools():
     return {
-        "spirv_headers": header_dir("HOOKSHOT_SPIRV_HEADERS", "spirv-headers", os.path.join("spirv", "unified1", "spirv.h")),
-        "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
+        "spirv_headers": header_dir("HOOKSHOT_SPIRV_HEADERS", "SPIRV-Headers", os.path.join("spirv", "unified1", "spirv.h")),
+        "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", None, os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
         "glslang": which("glslangValidator", "glslang"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
@@ -152,7 +150,7 @@ def main():
     tools = find_tools()
 
     checks = []
-    tests = sorted(d + "/" + f for d in ("tests", "nx2") for f in os.listdir(os.path.join(ROOT, d))
+    tests = sorted(d + "/" + f for d in ("tests",) for f in os.listdir(os.path.join(ROOT, d))
                    if f.startswith("test_") and f.endswith(".py"))
     for rel in tests:
         oses, reason = SKIP.get(rel, (set(), ""))

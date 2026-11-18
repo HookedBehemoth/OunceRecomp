@@ -1,6 +1,6 @@
-/* host/nvn_layout.c's nvn_tex_level0_linear against a byte-by-byte block-linear address, for the shapes the game's
+/* runtime/nvn_layout.c's nvn_tex_level0_linear against a byte-by-byte block-linear address, for the shapes the game's
    patches deswizzle (the sky tables: 2D and 3D RGBA16F; terrain tiles: 260 x 260 arrays, BC and plain) and odd widths */
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

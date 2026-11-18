@@ -1,4 +1,4 @@
-/* The direct back end's loader and the rx_* calls the host makes (gpu/api/vk_api.h): hookshot_direct.so beside the executable
+/* The direct back end's loader and the rx_* calls the host makes (renderer/api/vk_api.h): hookshot_direct.so beside the executable
    is loaded at the first call (NVN records before the window's thread starts the renderer), its device made at rx_start.
    A library that does not load or start ends the game. Calls made before rx_start that the back end needs are kept and given
    to it at the start, in order. */
@@ -8,7 +8,7 @@
 #include <string.h>
 #include "os.h"
 
-#include "../gpu/api/vk_api.h"
+#include "vk_api.h"
 #include "direct.h"
 #include "direct_crit.h"
 int rx_option(int id, int otherwise);   /* (defined below) */
@@ -131,7 +131,7 @@ static void flush_early(void) {
 }
 
 /* The direct back end, hookshot_direct.so: the version-14 table for the object layer, sync and present, and the list calls the
-   host finds by name (host/direct.h). Read once, at the first call. */
+   host finds by name (runtime/direct.h). Read once, at the first call. */
 static hsd_fns direct_fns;
 static volatile int32_t direct_state;   /* 0 not loaded yet, 2 loaded */
 static os_mutex direct_lock = OS_MUTEX_INIT;

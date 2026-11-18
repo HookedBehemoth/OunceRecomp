@@ -1,5 +1,5 @@
-"""What the host reads of the guest context, against what it declares (its patch declarations, host/patch.h, as
-ounce-lift scan reads them; the rules in ounce/lift/src/patch.rs): host/*.c compiled to LLVM IR (-O1, no
+"""What the host reads of the guest context, against what it declares (its patch declarations, runtime/patch.h, as
+ounce-lift scan reads them; the rules in ounce/lift/src/patch.rs): runtime/*.c compiled to LLVM IR (-O1, no
 inlining), and every load from a context pointer traced through the functions it is passed to.
 
 - A replaced function's adapter (PATCH_FUNC: hos_func_0x*, hos_func_sym_*) reads only its declared operands of the
@@ -7,7 +7,7 @@ inlining), and every load from a context pointer traced through the functions it
 - An HLE'd function (HLE: imp_*, and the NVN procs NV: n_nvn*) reads x19-x29 or v8-v15 of its caller only where its
   declaration's reads(...) says so.
 - No host function compares the return address with a guest address any more except as a label: checked by the source
-  (host/*.c) having no `x[30] ==` / `x[30] !=` / `lr ==` / `lr !=` against a literal outside the listed diagnostics.
+  (runtime/*.c) having no `x[30] ==` / `x[30] !=` / `lr ==` / `lr !=` against a literal outside the listed diagnostics.
 - Every guest function a replaced function's or an At row's host function enters, on any path through the host's
   calls, is declared (the summaries read its inputs there): a constant target in its guest(...), a computed one as
   guest(computed) (rows). A replaced function's own body, orig, needs none (its record joins the function's). Guest
@@ -30,7 +30,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "nx2"))
+sys.path.insert(0, os.path.join(ROOT, "tools/re"))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 import lift_scan  # noqa: E402  (the host's declarations as the lifter reads them: ounce-lift scan)
 
@@ -38,7 +38,7 @@ DEF = re.compile(r"^define [^@]*@([\w.$]+)\((.*)\)[^{]*\{")
 GUEST = re.compile(r"^(a64_icall|a64_ijump|hos_call_guest|hos_sj_call)$")
 # (lr comparisons that only label or count: allowed)
 LR_LABELS = {
-    "host/direct_layer_ahead.c": "jobs recorded from another caller (a count for the log)",
+    "games/oot/patches/direct_layer_ahead.c": "jobs recorded from another caller (a count for the log)",
 }
 
 
@@ -237,8 +237,9 @@ class HostReads(unittest.TestCase):
         rt = lift_scan.rt64(os.path.join(d, "rt64"))
         cls.scan = lift_scan.load()
         flags = ["-S", "-emit-llvm", "-O1", "-fno-inline", "-g0", "-Wno-everything", "-D_GNU_SOURCE",
-                 "-I" + os.path.join(ROOT, "host", "os"), "-I" + os.path.join(ROOT, "host"), "-I" + rt,
-                 "-I" + os.path.join(ROOT, "gpu", "api")]
+                 "-I" + os.path.join(ROOT, "runtime", "os"), "-I" + os.path.join(ROOT, "runtime"), "-I" + rt,
+                 "-I" + os.path.join(ROOT, "renderer", "api"),
+                 "-I" + os.path.join(ROOT, "runtime", "media"), "-I" + os.path.join(ROOT, "third_party")]
 
         def one(src):
             out = os.path.join(d, os.path.basename(src)[:-2] + ".ll")
@@ -246,7 +247,8 @@ class HostReads(unittest.TestCase):
             return src, r.returncode, r.stderr
 
         with ThreadPoolExecutor(8) as ex:
-            res = list(ex.map(one, sorted(glob.glob(os.path.join(ROOT, "host", "*.c")))))
+            res = list(ex.map(one, sorted(glob.glob(os.path.join(ROOT, "runtime", "*.c")) + glob.glob(os.path.join(ROOT, "runtime", "media", "*.c"))
+                                     + glob.glob(os.path.join(ROOT, "games", "*", "patches", "*.c")))))
         # (a file whose third-party headers this PC lacks is left out: the check covers what compiles)
         cls.missing = [os.path.basename(s) for s, rc, err in res if rc and "file not found" in err]
         bad = [(s, err) for s, rc, err in res if rc and "file not found" not in err]
@@ -285,7 +287,7 @@ class HostReads(unittest.TestCase):
         self.assertGreater(len(roots), 60)
         bad = []
         for name, (what, decl, own) in sorted(roots.items()):
-            self.assertIn(name, self.graph, "%s is not defined in host/*.c" % name)
+            self.assertIn(name, self.graph, "%s is not defined in runtime/*.c" % name)
             for how, t, path in guest_entries(self.graph, name):
                 if decl == "computed" or (t is not None and t in decl):
                     continue
@@ -322,9 +324,9 @@ class HostReads(unittest.TestCase):
         self.assertGreater(n, 300)
 
     def test_svc_inputs(self):
-        """an SVC (host/patch.h) reads no register beyond its declared inputs: the lift passes poison there (a result
+        """an SVC (runtime/patch.h) reads no register beyond its declared inputs: the lift passes poison there (a result
         it leaves unwritten is the input it was, so such a register is an input too)"""
-        with open(os.path.join(ROOT, "host", "hos_svc.c"), encoding="utf-8") as f:
+        with open(os.path.join(ROOT, "runtime", "hos_svc.c"), encoding="utf-8") as f:
             decls = re.findall(r"^SVC\((0x[0-9A-F]{2}), (\w+), (\d+), (\d+)\)", f.read(), re.M)
         self.assertGreater(len(decls), 25)
         bad = []
@@ -341,7 +343,7 @@ class HostReads(unittest.TestCase):
         """no host behaviour keyed on a guest return address (the caller's patch is an At row at its call site)"""
         pat = re.compile(r"(x\[30\]|\blr\b|->lr)\s*(==|!=)\s*0x8[0-9a-f]{7}|0x8[0-9a-f]{7}(ull|ULL)?\s*(==|!=)\s*"
                          r"(c->x\[30\]|\blr\b)")
-        for path in sorted(glob.glob(os.path.join(ROOT, "host", "*.c"))):
+        for path in sorted(glob.glob(os.path.join(ROOT, "runtime", "*.c")) + glob.glob(os.path.join(ROOT, "games", "*", "patches", "*.c"))):
             rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
             with open(path, encoding="utf-8", errors="replace") as f:
                 hits = [ln for ln in f if pat.search(ln)]

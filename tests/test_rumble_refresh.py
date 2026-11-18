@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 
-SOURCE = Path(__file__).resolve().parents[1] / "host" / "pad_sdl.c"
+SOURCE = Path(__file__).resolve().parents[1] / "runtime/media/pad_sdl.c"
 HALF = 500000000
 
 

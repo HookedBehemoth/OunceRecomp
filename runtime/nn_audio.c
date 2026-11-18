@@ -577,7 +577,7 @@ static uint64_t au_ms(void) { return (uint64_t)(os_now_ns() / 1000000); }
 static int au_device_channels(void) { return hos_sdl_audio_channels(); }
 /* (hookshot) The Insert menu's Audio output (gpu/legacy/vk/vk_menu.cpp): audio_output= in hookshot_options.ini beside the game,
    0 Auto, 1 Stereo, 2 5.1 (a number past them is the nearest, as the menu reads it). Read from the file, as
-   host/nn_applet.c reads the Handheld profile: the game asks for its speakers only once, at its start */
+   runtime/nn_applet.c reads the Handheld profile: the game asks for its speakers only once, at its start */
 static int au_menu_output(void) {
     char path[OS_PATH_MAX];
     const uint32_t len = hos_game_path_a(path, OS_PATH_MAX);

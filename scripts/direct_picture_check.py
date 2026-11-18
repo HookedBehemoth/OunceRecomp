@@ -16,7 +16,7 @@ exact), 16-bit float, B10G11R11F and smaller floats as float16 (exact: their man
 RGBA32F as float32, integer targets as the dump's PNG (8 bits, each channel stretched over its range by the dump itself).
 
 The pass identity. A target is (slot c<i> or depth, Vulkan format, width, height) and its rank among the targets of that
-signature in the order they first appear in the frame: guest addresses are not used, because the slots host/rt_slots.c gives
+signature in the order they first appear in the frame: guest addresses are not used, because the slots games/oot/patches/rt_slots.c gives
 transient targets are made in the order the game's threads ask for them and move by a slot between runs (M6b: 120 of 281
 states of two frozen Kokiri runs had another address), while their order in the frame does not move. A target's states are its
 dumps in order; each is named by the program of its rendering's last draw (both back ends log it; 0: no draw, a cleared
@@ -86,7 +86,7 @@ def read_log(path):
                     frames = int(d.group(1))
                 continue
             seq, what, slot, prog, gpu, fmt, w, h, rest = m.groups()
-            items.append({"seq": int(seq), "what": what.strip(), "slot": slot, "prog": prog, "gpu": gpu, "format": int(fmt),
+            items.append({"seq": int(seq), "what": what.strip(), "slot": slot, "prog": prog, "renderer": gpu, "format": int(fmt),
                           "w": int(w), "h": int(h), "rest": rest.strip()})
     return items
 
@@ -264,9 +264,9 @@ def by_target(items):
             continue
         sig = signature(it)
         r = ranks.setdefault(sig, {})
-        if it["gpu"] not in r:
-            r[it["gpu"]] = len(r)
-        out.setdefault("%s t%d" % (sig, r[it["gpu"]]), []).append(it)
+        if it["renderer"] not in r:
+            r[it["renderer"]] = len(r)
+        out.setdefault("%s t%d" % (sig, r[it["renderer"]]), []).append(it)
     return out
 
 
@@ -283,8 +283,8 @@ def pass_ends(items):
         rend[-1].append((slot, it))
     kept, merged = [], []
     for n, r in enumerate(rend):
-        key = tuple((s, i["gpu"]) for s, i in r)
-        nxt = tuple((s, i["gpu"]) for s, i in rend[n + 1]) if n + 1 < len(rend) else None
+        key = tuple((s, i["renderer"]) for s, i in r)
+        nxt = tuple((s, i["renderer"]) for s, i in rend[n + 1]) if n + 1 < len(rend) else None
         (merged if key == nxt else kept).extend(i for _, i in r)
     return kept, merged
 
@@ -476,7 +476,7 @@ def selftest():
     base = rng.random((64, 96, 4), dtype=N.float32) * 0.5 + 0.25
 
     def item(seq, prog, fmt=97, slot="c0", gpu="0x1000"):
-        return {"seq": seq, "what": "pass %s prog %s" % (slot, prog), "slot": slot, "prog": prog, "gpu": gpu, "format": fmt,
+        return {"seq": seq, "what": "pass %s prog %s" % (slot, prog), "slot": slot, "prog": prog, "renderer": gpu, "format": fmt,
                 "w": 96, "h": 64, "rest": ""}
 
     def write(d, items_arrays):

@@ -93,7 +93,7 @@ few seconds. The build prints how many call sites keep registers and why the oth
 ## The verification build
 
 To check that the summaries are conservative enough, build with `HOOKSHOT_LIFT_VERIFY=1`. Every function with a full
-summary is then wrapped (`host/lift2_verify.c`):
+summary is then wrapped (`runtime/lift2_verify.c`):
 
 - At entry, registers the summary says are not read are poisoned.
 - At exit, a returning noreturn function, a changed preserved register, or a write the summary does not allow is

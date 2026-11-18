@@ -1,4 +1,4 @@
-"""host/rt_slots.c's slot allocator (HOS_NATIVE_TEXALLOC and the default): compiles its typedefs, place / take / steal
+"""games/oot/patches/rt_slots.c's slot allocator (HOS_NATIVE_TEXALLOC and the default): compiles its typedefs, place / take / steal
 and list_bad from the source as it is, with guest memory as host memory, and checks
 
 - slots are 64 KB aligned, inside [lo, hi), never overlapping; a freed slot goes back to its family;
@@ -142,7 +142,7 @@ def main():
     cc = shutil.which(a.cc) or shutil.which("gcc") or shutil.which("clang")
     if not cc:
         raise SystemExit("no C compiler")
-    src = (ROOT / "host/rt_slots.c").read_text(encoding="utf-8")
+    src = (ROOT / "games/oot/patches/rt_slots.c").read_text(encoding="utf-8")
     parts = [
         until(src, "static _Thread_local int tl_local_shadow;", "\n"),
         until(src, "#define REUSE_AFTER", "\n"),

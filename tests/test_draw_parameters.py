@@ -1,6 +1,6 @@
 """Validate the actual DrawParameters capability block across input/profile combinations; no game or GPU.
 
-python nx2/test_draw_parameters.py --headers <SPIRV-Headers/include> [--cxx clang++] [--spirv-val spirv-val]
+python tests/test_draw_parameters.py --headers <SPIRV-Headers/include> [--cxx clang++] [--spirv-val spirv-val]
 """
 import argparse
 from pathlib import Path
@@ -9,7 +9,7 @@ import subprocess,tempfile
 ROOT=Path(__file__).resolve().parents[1]
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--headers',type=Path,required=True);p.add_argument('--cxx',default='clang++');p.add_argument('--spirv-val',default='spirv-val');a=p.parse_args()
-    source=(ROOT/'gpu/legacy/vk/eden/shader_recompiler/backend/spirv/emit_spirv.cpp').read_text(encoding='utf-8')
+    source=(ROOT/'third_party/eden/shader_recompiler/backend/spirv/emit_spirv.cpp').read_text(encoding='utf-8')
     end=source.index('ctx.AddCapability(spv::Capability::DrawParameters);')
     start=source.rfind('\n    if (',0,end)+1;end=source.index('\n    }',end)+6
     capability=source[start:end]
@@ -23,7 +23,7 @@ namespace IR { enum Attribute { InstanceId, VertexId, BaseInstance, BaseVertex, 
 std::vector<uint32_t> program(unsigned mask,bool supported) {
     using namespace Sirit;
     // (EmitContext's own member the block reads: a task program's DrawIndex; off here, as for every vertex program)
-    struct Ctx : Module { using Module::Module; bool wants_mesh_first{}; } ctx{0x00010600};ctx.AddCapability(spv::Capability::Shader);
+    struct Ctx : Module { using Module::Module; bool wants_mesh_first{}, mesh_fallback{}; } ctx{0x00010600};ctx.AddCapability(spv::Capability::Shader);
     ctx.SetMemoryModel(spv::AddressingModel::Logical,spv::MemoryModel::GLSL450);
     struct { bool support_vertex_instance_id; } profile{supported};
     struct { std::array<bool,5> loads; } info{};
@@ -53,7 +53,7 @@ int main(int argc,char**argv) {
 '''
     work=ROOT/'work';work.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='draw-parameters-',dir=work) as temp:
-        directory=Path(temp).resolve();directory.relative_to(work.resolve());cpp=directory/'fixture.cpp';exe=directory/'fixture.exe';cpp.write_text(fixture,encoding='utf-8');sirit=ROOT/'gpu/legacy/vk/sirit'
+        directory=Path(temp).resolve();directory.relative_to(work.resolve());cpp=directory/'fixture.cpp';exe=directory/'fixture.exe';cpp.write_text(fixture,encoding='utf-8');sirit=ROOT/'third_party/sirit'
         subprocess.run([a.cxx,'-std=c++20','-O1','-I'+str(sirit/'include'),'-I'+str(sirit/'src'),'-I'+str(a.headers),str(cpp),*map(str,sorted((sirit/'src').rglob('*.cpp'))),'-o',str(exe)],check=True)
         subprocess.run([str(exe),str(directory)],check=True)
         for case in range(64):subprocess.run([a.spirv_val,'--target-env','vulkan1.3',str(directory/f'{case}.spv')],check=True)

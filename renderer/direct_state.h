@@ -7,7 +7,7 @@
 #include <cstdint>
 
 #include "direct_internal.h"
-#include "../api/rx_nvn.h"
+#include "rx_nvn.h"
 
 namespace hsd {
 

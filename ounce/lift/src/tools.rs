@@ -917,7 +917,7 @@ PATCH_AT(0x80001004, word(0x8b020020), after, x19, t_x19, x1) { return x1; }
     }
 
     fn base(decls: &str) -> Base {
-        Base::synthetic(&code(), &[("host/t.c".into(), decls.into())], &root()).unwrap()
+        Base::synthetic(&code(), &[("runtime/t.c".into(), decls.into())], &root()).unwrap()
     }
 
     fn labels() -> BTreeMap<u64, String> {
@@ -932,7 +932,7 @@ PATCH_AT(0x80001004, word(0x8b020020), after, x19, t_x19, x1) { return x1; }
         assert!(t.contains("a branch at 0x80001000"), "{t}");
         assert!(t.contains("(to f_80002000)"), "{t}");
         assert!(t.contains("instead, x0, my_fn, x0, x1)"), "{t}"); // (the callee's reads and result)
-        assert!(t.contains("host/t.c:2 PATCH_AT 0x80001008 before t_before  <- this instruction"), "{t}");
+        assert!(t.contains("runtime/t.c:2 PATCH_AT 0x80001008 before t_before  <- this instruction"), "{t}");
         let t = site_text(&b, &labels(), &[0x8000_1004]).unwrap();
         assert!(t.contains("paths into it other than from the instruction before: none"), "{t}");
         assert!(t.contains("live in:  x1-x2"), "{t}"); // (the add reads x1, x2; the row t_after its x0)
@@ -953,10 +953,10 @@ PATCH_AT(0x80001004, word(0x8b020020), after, x19, t_x19, x1) { return x1; }
         let b = base(DECLS);
         let errs: Vec<String> = b.errors(&b.ps).unwrap().into_iter().map(|(w, m)| format!("{}: {m}", wh(&w))).collect();
         assert_eq!(errs.len(), 4, "{errs:?}");
-        assert!(errs[0].starts_with("host/t.c:2: ") && errs[0].contains("a branch target"), "{}", errs[0]);
-        assert!(errs[1].starts_with("host/t.c:3: ") && errs[1].contains("another game version"), "{}", errs[1]);
-        assert!(errs[2].starts_with("host/t.c:4: ") && errs[2].contains("no lifted function"), "{}", errs[2]);
-        assert!(errs[3].starts_with("host/t.c:5: ") && errs[3].contains("x19"), "{}", errs[3]);
+        assert!(errs[0].starts_with("runtime/t.c:2: ") && errs[0].contains("a branch target"), "{}", errs[0]);
+        assert!(errs[1].starts_with("runtime/t.c:3: ") && errs[1].contains("another game version"), "{}", errs[1]);
+        assert!(errs[2].starts_with("runtime/t.c:4: ") && errs[2].contains("no lifted function"), "{}", errs[2]);
+        assert!(errs[3].starts_with("runtime/t.c:5: ") && errs[3].contains("x19"), "{}", errs[3]);
         assert_eq!(b.usable(&b.ps).unwrap().sites.len(), 1);
     }
 
@@ -964,7 +964,7 @@ PATCH_AT(0x80001004, word(0x8b020020), after, x19, t_x19, x1) { return x1; }
     fn report() {
         let b = base(DECLS);
         let lines = report_lines(&b, &labels()).unwrap();
-        let first = lines.iter().find(|l| l.3 == Where("host/t.c".into(), 1)).unwrap();
+        let first = lines.iter().find(|l| l.3 == Where("runtime/t.c".into(), 1)).unwrap();
         assert!(first.7.contains("reads -, writes - beyond the instruction"), "{}", first.7); // (it reads the add's x0 and x1)
         assert_eq!(lines.iter().filter(|l| l.4 == "error").count(), 4);
     }
@@ -973,7 +973,7 @@ PATCH_AT(0x80001004, word(0x8b020020), after, x19, t_x19, x1) { return x1; }
     fn diff() {
         // (a row at C's add that reads x5: C, and F that calls it, read x5; C's one BL site keeps other registers)
         let b = base("");
-        let after = patch::scan_texts(&[("host/t.c".into(), "PATCH_AT(0x80002000, word(0x8b010000), after, none, t_c, x5) {}\n".into())]).unwrap();
+        let after = patch::scan_texts(&[("runtime/t.c".into(), "PATCH_AT(0x80002000, word(0x8b010000), after, none, t_c, x5) {}\n".into())]).unwrap();
         let mut o = String::new();
         let (n, sites) = cost(&b, &b.ps, &after, &Names(&labels()), &mut o).unwrap();
         assert!(n >= 1 && sites == 1, "{n} {sites}\n{o}");

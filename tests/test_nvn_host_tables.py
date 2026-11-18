@@ -1,8 +1,8 @@
 """The native NVN layer keeps its host pointers in host tables, and checks guest ranges against the guest window.
 
-Compiles the real functions from host/nvn_native.c and host/hos.h (the guest window range check, the command
+Compiles the real functions from runtime/nvn_native.c and runtime/hos.h (the guest window range check, the command
 buffers' slot table, the recording handle set) against a small guest window of test memory, with the real object
-layouts of gpu/api/rx_nvn.h. Checks:
+layouts of renderer/api/rx_nvn.h. Checks:
 
 - a guest range is accepted only inside the window, including ranges that wrap around;
 - a command buffer's recording buffer is found through its own slot only: a slot number another object owns, or one
@@ -35,8 +35,8 @@ def main():
     helpers = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helpers)
     block = helpers.block
-    nvn = (ROOT / "host/nvn_native.c").read_text(encoding="utf-8")
-    hos = (ROOT / "host/hos.h").read_text(encoding="utf-8")
+    nvn = (ROOT / "runtime/nvn_native.c").read_text(encoding="utf-8")
+    hos = (ROOT / "runtime/hos.h").read_text(encoding="utf-8")
     start = nvn.rindex("typedef struct {", 0, nvn.index("} cmd_rec;"))
     table_decls = nvn[start:nvn.index("static cmd_rec *cmd_slot(", start)]
     live_decls_start = nvn.index("static uint64_t *live_handles;")
@@ -195,7 +195,7 @@ int main(void) {
         authored = path / "fixture.c"
         executable = path / "fixture.exe"
         authored.write_text(fixture, encoding="utf-8")
-        subprocess.run([cc, "-std=gnu11", "-O1", "-fno-strict-aliasing", "-I", str(ROOT / "gpu/api"), "-I", str(ROOT / "host"), str(authored),
+        subprocess.run([cc, "-std=gnu11", "-O1", "-fno-strict-aliasing", "-I", str(ROOT / "renderer/api"), "-I", str(ROOT / "runtime"), str(authored),
                         "-o", str(executable)], check=True)
         result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
         print(result.stdout, end="")

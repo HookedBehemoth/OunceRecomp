@@ -9,14 +9,14 @@ python -I -B tests/test_headless_sigterm.py
 import re
 from pathlib import Path
 
-PAD = Path(__file__).resolve().parents[1] / "host" / "pad_sdl.c"
+PAD = Path(__file__).resolve().parents[1] / "runtime/media/pad_sdl.c"
 
 
 def main():
     text = PAD.read_text(encoding="utf-8")
     m = re.search(r"static int pads_start\(void\) \{(.*?)\n\}", text, re.S)
     if not m:
-        raise SystemExit("host/pad_sdl.c: no pads_start")
+        raise SystemExit("runtime/media/pad_sdl.c: no pads_start")
     body = m.group(1)
     # (sdl.SetHint/sdl.Init, or since PR 328 the SDL2/SDL3 wrappers hos_sdl_hint/hos_sdl_init)
     hint = max(body.find('sdl.SetHint("SDL_NO_SIGNAL_HANDLERS", "1")'), body.find('hos_sdl_hint("SDL_NO_SIGNAL_HANDLERS", "1")'))

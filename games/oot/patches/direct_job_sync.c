@@ -7,8 +7,8 @@
    - f_80279400 (water): its call at 0x80279448 of f_831fa4a0, which tail-jumps to WaitEvent (return 0x8027944c);
    - f_8067c310 (the occlusion grid's dispatch), tail-called by f_8067c110 from a job's item callback.
    Each of those calls the NVN proc through a register loaded just before the call (BLR x8). An instead row on that BLR
-   (host/patch.h PATCH_AT) calls a host function with the proc and the call's arguments in its place, which, when the
-   command buffer is the job's own (host/eng_jobs.c: the job this thread records), keeps (event, mode, value) or the
+   (runtime/patch.h PATCH_AT) calls a host function with the proc and the call's arguments in its place, which, when the
+   command buffer is the job's own (games/oot/patches/eng_jobs.c: the job this thread records), keeps (event, mode, value) or the
    barrier bits for the job's view record, and else calls the proc (guest_call). f_831fa4a0 tail-jumps to the proc (BR
    x4): the same row stands in place of that tail call, and the function returns after it. f_8067c310 is replaced (PATCH_FUNC, its body the orig):
    inside a job its call (entry, flags) is kept the same way. The CPU side of the hooks (the event slot and value

@@ -11,7 +11,7 @@
    protection change: a debug run only. With HOS_DBG unset nothing here runs. */
 #include "hos.h"
 #include "direct.h"
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

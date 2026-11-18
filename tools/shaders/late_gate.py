@@ -1,4 +1,4 @@
-"""The gate of the back end's register-pressure pass (gpu/direct/direct_spv_late.h; docs/direct/spv-late.md).
+"""The gate of the back end's register-pressure pass (renderer/direct_spv_late.h; docs/direct/spv-late.md).
 
 The pass keeps a block's new order by its own count of the values held; what decides whether a stage spills is ACO's
 register allocation. So before the pass is on (and after a change to it, to the translator or to the driver) RADV's
@@ -245,7 +245,7 @@ def main():
     s.add_argument("--kinds", default="mesh")
     s.add_argument("--shard", type=int, default=10)
     s.add_argument("--only", help="stage indices of the seed, comma separated")
-    s.add_argument("--budget", type=int, default=160, help="LateOptions::budget (gpu/direct/direct_spv_late.h)")
+    s.add_argument("--budget", type=int, default=160, help="LateOptions::budget (renderer/direct_spv_late.h)")
     s.add_argument("--sink-peak", type=int, default=0, help="LateOptions::sink_peak")
     for p in (s,):
         p.add_argument("--out", required=True)

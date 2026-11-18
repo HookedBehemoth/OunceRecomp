@@ -1,7 +1,7 @@
 //! The generated sources of a standalone lift, as IR (gen/*.ll), so the build needs no C compiler for them: the
 //! runtime's tables (a64_table: every function; a64_hooks: the hooked addresses; a64_code_slots: the relocated slots
 //! holding a function), the image's description (hos_image), the import stops (a64_stubs) and the NVN functions
-//! routed to host/nvn2.c (nvn2_exports); functions.txt; and the guest model rt64/a64.h, a64_rt.c (a64-kit's runtime
+//! routed to runtime/nvn2.c (nvn2_exports); functions.txt; and the guest model rt64/a64.h, a64_rt.c (a64-kit's runtime
 //! with the 64-bit guest window), which reads no dump.
 
 use crate::eden::{nvn_proc_name, Facts};
@@ -192,7 +192,7 @@ pub fn functions_txt(sizes: &[(u64, usize)]) -> String {
     s
 }
 
-/// nvn2_exports.ll: imp_<symbol> of each NVN function the SDK has, routed to host/nvn2.c's nvn2_dispatch
+/// nvn2_exports.ll: imp_<symbol> of each NVN function the SDK has, routed to runtime/nvn2.c's nvn2_dispatch
 pub fn nvn_exports_ll(names: &[String]) -> String {
     let mut m = Ll::new();
     let mut calls = Vec::new();

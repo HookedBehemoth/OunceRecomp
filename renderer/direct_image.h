@@ -1,6 +1,6 @@
 // One image per NVN texture: made when the texture is initialized (or
 // registered, if it was not seen first), never at a draw; kept by its storage and shape, so a texture the game
-// initializes again every frame over the same storage (the transient targets, host/rt_slots.c) keeps its image.
+// initializes again every frame over the same storage (the transient targets, games/oot/patches/rt_slots.c) keeps its image.
 // An image lives while a texture is initialized over it, and 8 presents more. The transient targets' images are bound
 // in one device allocation at their storage offsets (the transient pool) and are kept as objects up to a bound.
 // Every image lives in VK_IMAGE_LAYOUT_GENERAL. A texture with no image this GPU can hold (ASTC, a format with no Vulkan

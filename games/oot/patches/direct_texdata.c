@@ -17,7 +17,7 @@
    user: no own eviction, no async upload). */
 #include "hos.h"
 #include "direct.h"
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include <stdio.h>
 #include <string.h>
 #include "os.h"

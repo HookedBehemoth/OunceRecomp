@@ -7,7 +7,7 @@
 #include "os.h"
 
 /* ---- the list kinds: the function that begins a recording names it, by an At row just before its BeginRecording call
-   (a PATCH_AT declaration, host/patch.h: direct_list_kind); a recording no row named is a PACKET list (counted, named in the log).
+   (a PATCH_AT declaration, runtime/patch.h: direct_list_kind); a recording no row named is a PACKET list (counted, named in the log).
    1-6: the game's load-time lists (the list's load kind): 1 vertex list (f_80457e60, at its call of agl_cmdbuf_begin
    f_804581b0), 2 draw list (f_80293890 <- f_804566e0), 3 per-instance shape list (f_806002e0 <- f_8009bb80), 4 material
    list (f_80445020 <- f_80443000), 5 the vertex list's measuring copy (f_8044e8e0 <- f_8044e020), 6 the draw list's

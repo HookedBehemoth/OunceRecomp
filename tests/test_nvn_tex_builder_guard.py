@@ -5,11 +5,11 @@ ocarina note sheet's first build, combat in Hyrule Field), and nvnTextureBuilder
 A64_MEM + 0x5c (guest 0x5c) and took an access violation (issue 500).  The fix turns a null builder
 into a zeroed scratch builder, says so once in the log, and leaves a real builder alone.
 
-The fixture is built from the actual function bodies in host/nvn_native.c, at -O2.  With the pre-fix
+The fixture is built from the actual function bodies in runtime/nvn_native.c, at -O2.  With the pre-fix
 source the null call crashes the fixture; with the fix it logs once, and a real builder still keeps
 its swizzle.
 
-python tests/test_nvn_tex_builder_guard.py [--cc clang] [--source host/nvn_native.c]
+python tests/test_nvn_tex_builder_guard.py [--cc clang] [--source runtime/nvn_native.c]
 """
 import argparse
 from pathlib import Path
@@ -34,7 +34,7 @@ def block(text, marker):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="clang", help="C compiler (clang or gcc)")
-    p.add_argument("--source", default=str(ROOT / "host" / "nvn_native.c"), type=Path,
+    p.add_argument("--source", default=str(ROOT / "runtime/nvn_native.c"), type=Path,
                    help="nvn_native.c to test (the pre-fix file shows the crash)")
     a = p.parse_args()
 

@@ -6,11 +6,11 @@ P(0) returns NULL for a 0 argument, but dereferencing it is undefined behaviour,
 check away (and did: the shipped code read 0x100000000004).  The fix guards before the dereference.
 
 Every accessor that checks no_pool is covered here: flags, size, map, buffer address and invalidate mapped range.
-The fixture is built from the actual function bodies in host/nvn_native.c, at -O2.  With the pre-fix source the
+The fixture is built from the actual function bodies in runtime/nvn_native.c, at -O2.  With the pre-fix source the
 null calls crash the fixture; with the fix they answer 0 (or return without touching anything) and a real pool
 still answers with its flags, size, CPU mapping and GPU address.
 
-python tests/test_nvn_null_pool.py [--cc clang] [--source host/nvn_native.c]
+python tests/test_nvn_null_pool.py [--cc clang] [--source runtime/nvn_native.c]
 """
 import argparse
 from pathlib import Path
@@ -35,7 +35,7 @@ def block(text, marker):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cc", default="clang", help="C compiler (clang or gcc)")
-    p.add_argument("--source", default=str(ROOT / "host" / "nvn_native.c"), type=Path,
+    p.add_argument("--source", default=str(ROOT / "runtime/nvn_native.c"), type=Path,
                    help="nvn_native.c to test (the pre-fix file shows the crash)")
     a = p.parse_args()
 

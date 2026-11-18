@@ -2,7 +2,7 @@
 
 This page explains where the game's render targets come from, what sets their sizes and formats, which switches change
 them, and where the host can take control. Read it before you change an output size, the shadow resolution, the
-upscaling path or `host/rt_slots.c`. How transient targets get device memory is in
+upscaling path or `games/oot/patches/rt_slots.c`. How transient targets get device memory is in
 [the transient pool](transient-pool.md).
 
 ## Sizes
@@ -11,7 +11,7 @@ Four sizes decide every target:
 
 | Size | Meaning | Default |
 |---|---|---|
-| Output size `O` | the display size the host tells the game (`hos_output_size`, `host/nn_applet.c`) | 2560 x 1440 |
+| Output size `O` | the display size the host tells the game (`hos_output_size`, `runtime/nn_applet.c`) | 2560 x 1440 |
 | Frame size `F` | the picture the game composes: `O` times the game's graphics scale (0.8 in output mode 0, otherwise 1.0) | 2048 x 1152 |
 | Scene size `S` | the size the 3D renders at: 3/4 of `O`, times the graphics scale, times the 3D scale `s` | 1536 x 864 |
 | 3D scale `s` | the game's dynamic-resolution factor; fixed at 1.0 unless dynamic resolution is on | 1.0 |
@@ -38,7 +38,7 @@ Every render target the game makes in play comes from agl's dynamic texture allo
 `games/oot/labels.txt`). Its descriptor carries the target's name, format, type, size, depth or layers and levels. A
 flag marks a target as transient: it is freed within the frame (`dta_free`). Without the flag it is persistent.
 
-The host hooks the allocator in `host/rt_slots.c`:
+The host hooks the allocator in `games/oot/patches/rt_slots.c`:
 
 - Transient targets get a stable slot each, so a logical target lands at the same address every frame. In direct mode
   the slots are the [transient pool](transient-pool.md).

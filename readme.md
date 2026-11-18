@@ -56,9 +56,9 @@ The [development guide](docs/development.md) has the build and run loop and the 
 
 1. `hookshot-builder` (`ounce/`) translates the game's AArch64 code to LLVM IR and compiles it to native code
    ([the lifter](docs/lifter.md)).
-2. `host/` plays the part of the console's system software and is linked with the lifted code.
-3. `host/nvn_native.c` records the game's NVN2 graphics calls, and `gpu/direct` replays them on Vulkan.
-4. A fork of Eden's shader recompiler (`gpu/direct/eden`) translates the Switch 2 shaders to SPIR-V.
+2. `runtime/` plays the part of the console's system software and is linked with the lifted code.
+3. `runtime/nvn_native.c` records the game's NVN2 graphics calls, and `renderer` replays them on Vulkan.
+4. A fork of Eden's shader recompiler (`renderer/eden`) translates the Switch 2 shaders to SPIR-V.
 
 The [design page](docs/design.md) shows how the parts fit.
 

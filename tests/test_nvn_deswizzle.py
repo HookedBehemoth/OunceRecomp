@@ -1,4 +1,4 @@
-"""Compile host/nvn_layout.c with tests/nvn_deswizzle_test.c and check its block-linear to linear copy.
+"""Compile runtime/nvn_layout.c with tests/nvn_deswizzle_test.c and check its block-linear to linear copy.
 
 python -I -B tests/test_nvn_deswizzle.py [--cc clang]
 """
@@ -29,8 +29,8 @@ def main():
     folder = Path(temporary.name).resolve()
     try:
         executable = folder / "fixture.exe"
-        run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT / "host"), "-Wno-unused-parameter", "-Wno-sign-compare",
-             str(ROOT / "tests/nvn_deswizzle_test.c"), str(ROOT / "host/nvn_layout.c"), "-o", str(executable)])
+        run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(ROOT / "runtime"), "-I" + str(ROOT / "renderer/api"), "-Wno-unused-parameter", "-Wno-sign-compare",
+             str(ROOT / "tests/nvn_deswizzle_test.c"), str(ROOT / "runtime/nvn_layout.c"), "-o", str(executable)])
         run([str(executable)])
     finally:
         temporary.cleanup()

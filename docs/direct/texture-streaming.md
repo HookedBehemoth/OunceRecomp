@@ -1,8 +1,8 @@
 # Texture streaming
 
 This page explains how the game loads, caches, moves and frees its asset textures, and how the host and the back end
-follow those events without keeping a CPU copy of any texel. Read it before you change `host/direct_assets.c`,
-`host/direct_texdata.c`, `host/direct_tex_dedup.c` or the back end's image lifetime (`gpu/direct/direct_image.cpp`).
+follow those events without keeping a CPU copy of any texel. Read it before you change `games/oot/patches/direct_assets.c`,
+`games/oot/patches/direct_texdata.c`, `games/oot/patches/direct_tex_dedup.c` or the back end's image lifetime (`renderer/direct_image.cpp`).
 
 The game's texture code is agl's `TextureDataMgr`. Its functions carry the prefixes `texdata_`, `texheap_`, `texres_`
 and `gfx_texture_` in `games/oot/labels.txt`.
@@ -31,13 +31,13 @@ The back end never reads texture storage. It follows the game's own texture even
 
 | Game event | What happens |
 |---|---|
-| load with data | the host finds the texture's record in the prepared store and hands it to the back end before `nvnTextureInitialize`; the game's texel copy into its heap is skipped (`host/direct_assets.c`) |
-| load of an alias | the alias's target is read from the alias's own chain and handed over as the same image (`host/direct_tex_dedup.c`) |
+| load with data | the host finds the texture's record in the prepared store and hands it to the back end before `nvnTextureInitialize`; the game's texel copy into its heap is skipped (`games/oot/patches/direct_assets.c`) |
+| load of an alias | the alias's target is read from the alias's own chain and handed over as the same image (`games/oot/patches/direct_tex_dedup.c`) |
 | compaction move | the texture object keeps its identity, so its image and registration follow it; the movers copy no bytes |
 | released to the cache, taken back | counted; the image stays, because the game may use the texture again without a load |
 | destroyed | its `nvnTextureFinalize` releases the image; the image goes once no texture uses it and the frames that may read it have completed |
 
-The table of texture states lives in `host/direct_texdata.c`. The back end holds no eviction policy of its own.
+The table of texture states lives in `games/oot/patches/direct_texdata.c`. The back end holds no eviction policy of its own.
 
 ### Eviction by free VRAM
 

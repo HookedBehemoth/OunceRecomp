@@ -1,5 +1,5 @@
-/* (hookshot) A controller's motion sensors as the Switch reports its six-axis state (host/pad_sdl.c fills it from
-   SDL, host/nn_hid.c hands it to the game's GetSixAxisSensorStates). Header-only, no SDL or Windows, so
+/* (hookshot) A controller's motion sensors as the Switch reports its six-axis state (runtime/media/pad_sdl.c fills it from
+   SDL, runtime/nn_hid.c hands it to the game's GetSixAxisSensorStates). Header-only, no SDL or Windows, so
    tests/test_motion.py runs it as it is.
 
    This is Eden's (and yuzu's) motion, the emulators OoT aims right with: SDL's readings turned into the Switch's frame
@@ -38,7 +38,7 @@ typedef struct {
 } HosMotionState;
 
 /* one reading's state as GetSixAxisSensorStates hands it out: n counts the readings, dt_ns is the time since the one
-   before (host/pad_sdl.c keeps the last HOS_MOTION_HISTORY) */
+   before (runtime/media/pad_sdl.c keeps the last HOS_MOTION_HISTORY) */
 typedef struct {
     HosMotionState st;
     int64_t n, dt_ns;

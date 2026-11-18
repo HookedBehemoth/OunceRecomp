@@ -8,13 +8,13 @@ Function names are labels from `games/oot/labels.txt`.
 
 ## The host
 
-1. The process's `main` (`host/hos_main.c`) reads `hookshot_env.txt`, opens the SDL window on the process thread, and
+1. The process's `main` (`runtime/hos_main.c`) reads `hookshot_env.txt`, opens the SDL window on the process thread, and
    starts the game on a thread of its own. The process thread then runs the window's events.
 2. The game thread reserves the 512 GB guest window, reads `image.bin` (the lifted image) to its base address, and
    becomes the guest's main thread.
 3. It calls the guest's start-up functions in the order the console's `nn::init` uses: the C library's three steps,
    `nnosInitialize`, `nninitStartup`, every module's `DT_INIT`, then `nnMain`. The SDK module's own service set-up is
-   not run: every `nn::*` service the game calls is implemented by the host (`host/nn_*.c`). A call of an SDK function
+   not run: every `nn::*` service the game calls is implemented by the host (`runtime/nn_*.c`). A call of an SDK function
    the host does not implement stops the game and names the function.
 
 Every guest thread runs on its own host thread. There is no scheduler: `hos_cores()` answers 6, the game's own number,

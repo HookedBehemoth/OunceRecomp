@@ -1,4 +1,4 @@
-/* HD rumble for Nintendo Switch Pro Controllers and Joy-Cons, through SDL's effect call (host/pad_sdl.c).
+/* HD rumble for Nintendo Switch Pro Controllers and Joy-Cons, through SDL's effect call (runtime/media/pad_sdl.c).
 
    The game's vibration values (nn::hid VibrationValue: {amp_low, freq_low, amp_high, freq_high}, amplitudes 0 to 1,
    frequencies in Hz, one per side of the controller) are what the Switch sends its controllers, so a Switch controller
@@ -116,7 +116,7 @@ static inline void hd_rumble_encode(const float v[4], int percent, uint8_t out[4
 
 /* The packet SDL's effect call takes, from the game's left and right sides' bytes: a Pro Controller (and a pair)
    plays each side on its own; a single Joy-Con plays its own side (SDL's packet has both: it gets it in both). For a
-   single Joy-Con, host/pad_sdl.c passes the two sides merged (hd_rumble_merge) as both. */
+   single Joy-Con, runtime/media/pad_sdl.c passes the two sides merged (hd_rumble_merge) as both. */
 static inline void hd_rumble_packet(int kind, const uint8_t left[4], const uint8_t right[4], uint8_t out[HD_RUMBLE_PACKET_SIZE]) {
     out[0] = HD_RUMBLE_REPORT;
     out[1] = 0;   /* (SDL numbers the packets itself) */

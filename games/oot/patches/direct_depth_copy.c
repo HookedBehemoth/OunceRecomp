@@ -5,7 +5,7 @@
    rendered it, in the list begun from 0x8007b0c8 (f_8007ad40), with an event signal and wait but no barrier: on the
    console the copy engine follows the 3D engine in order; Vulkan needs the copy to wait for the rendering's depth store
    (read after write), for the last pass that used the destination (write after write), and the next pass for the copy's
-   read (write after read). An instead row on each copy's BLR x8 (host/patch.h PATCH_AT) calls a host function with the
+   read (write after read). An instead row on each copy's BLR x8 (runtime/patch.h PATCH_AT) calls a host function with the
    proc and the copy's eight arguments in its place, which records Barrier(ORDER_FRAGMENTS | INVALIDATE_TEXTURE), the
    copy, and the same barrier again, on the list's command buffer; it asserts the proc is the copy.
 

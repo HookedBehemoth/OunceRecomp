@@ -1,4 +1,4 @@
-"""HOS_BENCH (host/bench.c, host/bench.h): a benchmark run steps the game by exactly 1/60 s a frame and presents unpaced; it
+"""HOS_BENCH (runtime/bench.c, runtime/bench.h): a benchmark run steps the game by exactly 1/60 s a frame and presents unpaced; it
 measures from the frame the scene has been ready for a number of frames in a row.
 
 The ready condition counts frames with every part settled in a row and starts again at any frame with one part not; the summary
@@ -74,14 +74,14 @@ class BenchTests(unittest.TestCase):
             tmp = Path(tmp)
             (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
             binary = tmp / "t.exe"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-I", str(ROOT / "host"), str(tmp / "t.c"),
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-I", str(ROOT / "runtime"), str(tmp / "t.c"),
                                     "-o", str(binary)], text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_fixed_step_and_unpaced(self):
-        vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
+        vi = (ROOT / "runtime/nn_vi.c").read_text(encoding="utf-8")
         step = body(vi, "static void realtime_step(int64_t now) {")
         branch = step[step.index("if ((!rx_option(0, 1) && fps_max() <= 60) || hos_bench_on())"):]
         branch = branch[:branch.index("return;")]
@@ -90,7 +90,7 @@ class BenchTests(unittest.TestCase):
         acquire = body(vi, "void hos_vi_native_acquire(int active) {")
         self.assertRegex(acquire, r"no_pacing = getenv\(\"HOS_NO_PACING\"\) != NULL \|\| hos_bench_on\(\);")
         self.assertIn("if (hos_bench_on()) hos_bench_present(now);", body(vi, "void hos_vi_native_presented(void) {"))
-        rx = (ROOT / "host" / "rx_backend.c").read_text(encoding="utf-8")
+        rx = (ROOT / "runtime/rx_backend.c").read_text(encoding="utf-8")
         option = body(rx, "int rx_option(int id, int otherwise) {")
         self.assertIn("|| hos_bench_on();", option)
         self.assertIn("if (id == 0 && per_frame) return 0;", option)

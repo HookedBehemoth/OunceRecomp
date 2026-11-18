@@ -3,7 +3,7 @@
 The game's movie player counts its updates while a movie plays, and a cutscene that shows a movie places its narration, its
 rumble and its end by that count. The movie's picture and sound follow the clock, so at 120 fps the cues came twice too early:
 narration lines started over each other. The lifter's At probe (ounce-lift scan's At rows) makes the count's step hos_movie_frames(player)
-(host/oot_probes.c hos_oot_movie_count after the update's add w8, w8, #1, which takes the one back), and host/nn_vi.c
+(games/oot/patches/oot_probes.c hos_oot_movie_count after the update's add w8, w8, #1, which takes the one back), and runtime/nn_vi.c
 answers 1 while the host gives no frame time (a cap of 60: as shipped) and the frames' time in 60ths, the rest carried to the
 player's next update, while it does (HOS_FPS_MOVIE=0: 1 then too, for comparisons). A game version whose code differs keeps
 its own code and the build goes on with a message.
@@ -33,7 +33,7 @@ HOST_ANCHOR = "uint32_t hos_movie_frames(uint64_t player) {"
 
 def block(source, marker):
     if marker not in source:
-        raise SystemExit("FAIL: host/nn_vi.c has no '%s'" % marker)
+        raise SystemExit("FAIL: runtime/nn_vi.c has no '%s'" % marker)
     start = source.index(marker)
     return source[start:start + re.search(r"^}", source[start:], re.M).end()]
 
@@ -182,18 +182,18 @@ def main():
     p0 = rows[0]
     check((p0.pc, p0.word, p0.fn, p0.args, p0.result) == (0x83b7c7c8, 0x11000508, "hos_oot_movie_count", ("w8", "x20"), "w8"),
           "the probe is w8 := hos_oot_movie_count(w8, x20) after the update's add w8, w8, #1")
-    oot = (ROOT / "host" / "oot_probes.c").read_text(encoding="utf-8")
+    oot = (ROOT / "games/oot/patches/oot_probes.c").read_text(encoding="utf-8")
     count = oot[oot.index("PATCH_AT(0x83b7c7c8, word(0x11000508), after, w8, hos_oot_movie_count,"):]
     count = count[:count.index("\n")]
 
-    vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
+    vi = (ROOT / "runtime/nn_vi.c").read_text(encoding="utf-8")
     lifted = LOAD_ADD + "    c->x[8] = hos_oot_movie_count((uint32_t)c->x[8], c->x[20]);\n" + STORE
     fixture = FIXTURE.replace("@HOST@", block(vi, "static uint32_t movie_log(") + "\n" + block(vi, HOST_ANCHOR) + "\n" + count).replace("@LIFTED@", lifted)
     with tempfile.TemporaryDirectory(prefix="movie-count-") as tmp:
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
         c.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "host"), str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "runtime"), str(c), "-o", str(exe)], check=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
         subprocess.run([str(exe)], env=env, check=True)
         subprocess.run([str(exe)], env=dict(env, HOS_FPS_MOVIE="1"), check=True)   # (read by its value: 1 is on)
@@ -204,7 +204,7 @@ def main():
         plain = Path(tmp) / "plain.c"
         plain.write_text(FIXTURE.replace("@HOST@", block(vi, "static uint32_t movie_log(") + "\n" + block(vi, HOST_ANCHOR)).replace("@LIFTED@", LOAD_ADD + STORE),
                          encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "host"), str(plain), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "runtime"), str(plain), "-o", str(exe)], check=True)
         r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
         check(r.returncode != 0 and "FAIL:" in r.stderr, "the unpatched count passes the checks: they prove nothing")
 

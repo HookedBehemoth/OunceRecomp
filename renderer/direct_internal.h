@@ -1,4 +1,4 @@
-// The direct back end's shared state (gpu/direct, hookshot_direct.so; docs/direct-backend-plan.md). Linux and RADV only.
+// The direct back end's shared state (renderer, hookshot_direct.so; docs/direct-backend-plan.md). Linux and RADV only.
 // Vulkan is loaded from libvulkan.so.1 at start (VK_NO_PROTOTYPES, nx2/build.py): the functions below, global, instance
 // and device level.
 #pragma once
@@ -10,7 +10,7 @@
 
 #include <vulkan/vulkan.h>
 
-#include "../api/vk_api.h"   // (the table the host calls)
+#include "vk_api.h"   // (the table the host calls)
 
 #define HSD_VK_GLOBAL(X) X(vkCreateInstance) X(vkEnumerateInstanceExtensionProperties) X(vkEnumerateInstanceVersion)
 #define HSD_VK_INSTANCE(X)                                                                                             \

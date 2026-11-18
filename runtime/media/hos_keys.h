@@ -1,5 +1,5 @@
 /* Virtual-key numbers: Windows' numbering, the one the host's key tables use (the window's code fills the key state by
-   them: host/posix/display_sdl.c, hos_key_down in hos_sdl.h). 'A'..'Z' and '0'..'9' are their characters. */
+   them: runtime/media/display_sdl.c, hos_key_down in hos_sdl.h). 'A'..'Z' and '0'..'9' are their characters. */
 #ifndef HOS_KEYS_H
 #define HOS_KEYS_H
 #define VK_LBUTTON 0x01

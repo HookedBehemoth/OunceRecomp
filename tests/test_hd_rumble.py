@@ -1,9 +1,9 @@
 """HD rumble for Switch Pro Controllers and Joy-Cons: the game's vibration values encoded as the Switch's rumble data.
 
-host/hd_rumble.h turns the game's nn::hid VibrationValue {amp_low, freq_low, amp_high, freq_high} into the 4 bytes a
+runtime/media/hd_rumble.h turns the game's nn::hid VibrationValue {amp_low, freq_low, amp_high, freq_high} into the 4 bytes a
 Switch controller plays per side, and builds the rumble report SDL's Switch driver takes (SDL_SendGamepadEffect). The
 values below are rows of the community's documented tables (dekuNukem's Nintendo_Switch_Reverse_Engineering
-rumble_data_table.md, Switchbrew's HID "Rumble data"). host/pad_sdl.c sends a pad its packet at a steady cadence, and
+rumble_data_table.md, Switchbrew's HID "Rumble data"). runtime/media/pad_sdl.c sends a pad its packet at a steady cadence, and
 falls back to the motor rumble for a pad whose SDL refuses it; its hd_open and hd_poll run here against a fake SDL.
 
 Run with: python -I -B tests/test_hd_rumble.py
@@ -17,9 +17,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HEADER = ROOT / "host" / "hd_rumble.h"
-PAD = ROOT / "host" / "pad_sdl.c"
-HID = ROOT / "host" / "nn_hid.c"
+HEADER = ROOT / "runtime/media/hd_rumble.h"
+PAD = ROOT / "runtime/media/pad_sdl.c"
+HID = ROOT / "runtime/nn_hid.c"
 
 
 def function(path, name):
@@ -337,7 +337,7 @@ def build_and_run(test, source, extra=()):
             f.write(source)
         exe = os.path.join(d, "hd")
         cc = os.environ.get("CC", "cc")
-        made = subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", *extra, "-I", str(ROOT / "host"), path,
+        made = subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", *extra, "-I", str(ROOT / "runtime/media"), path,
                                "-o", exe, "-lm"], capture_output=True, text=True)
         test.assertEqual(made.returncode, 0, made.stderr)
         ran = subprocess.run([exe], capture_output=True, text=True)

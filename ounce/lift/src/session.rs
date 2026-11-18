@@ -46,13 +46,12 @@ pub fn dump_exefs(work: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(line).join("exefs"))
 }
 
-/// the host's C texts of the game (root/host/<file>), as the scan reads them
+/// the C texts of the game (the runtime's and the patches': Game::sources), as the scan reads them
 pub fn host_texts(root: &Path, game: &Game) -> Result<Vec<(String, String)>, String> {
     let mut texts = Vec::new();
-    for f in &game.host {
-        let p = root.join("host").join(f);
+    for p in game.sources(root)? {
         let b = std::fs::read(&p).map_err(|e| format!("patch declarations: {}: {e}", p.display()))?;
-        texts.push((format!("host/{f}"), String::from_utf8_lossy(&b).into_owned()));
+        texts.push((crate::game::shown(root, &p), String::from_utf8_lossy(&b).into_owned()));
     }
     Ok(texts)
 }
@@ -187,7 +186,9 @@ impl Base {
             labels: PathBuf::new(),
             hot: PathBuf::new(),
             identity: crate::game::Identity { build_id: String::new(), main_sha256: String::new() },
-            host: Vec::new(),
+            title: String::new(),
+            icon: None,
+            patches: Vec::new(),
             local_continuations: Vec::new(),
             assets: Default::default(),
         };

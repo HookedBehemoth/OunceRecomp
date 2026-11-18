@@ -1,7 +1,7 @@
 # Task and mesh shaders
 
 This page explains how the back end draws the game's task+mesh and mesh-only programs and what to check before you
-change anything in that path. Read it before you touch `gpu/direct/direct_task.cpp` or the translator's handling of
+change anything in that path. Read it before you touch `renderer/direct_task.cpp` or the translator's handling of
 mesh stages. Every mesh stage is drawn as the translator emits it.
 
 ## How a task+mesh draw runs
@@ -27,8 +27,8 @@ Folding the task stage into the mesh stage is not possible: one task workgroup f
 
 The game's GPU culling writes the indirect mesh-draw records. NVN reads a record as `{count, first}`, Vulkan as
 `{x, y, z}`. Two patches make the game's CPU reset write `{0, 1, 1, 0}` instead of zeros, so the culling shaders leave
-a valid Vulkan record in place and no conversion copy is needed: `host/direct_mesh_args.c` and
-`host/direct_mesh_lists.c` (log lines "direct patch mesh args", "direct patch mesh lists").
+a valid Vulkan record in place and no conversion copy is needed: `games/oot/patches/direct_mesh_args.c` and
+`games/oot/patches/direct_mesh_lists.c` (log lines "direct patch mesh args", "direct patch mesh lists").
 
 ## What the task stages do
 

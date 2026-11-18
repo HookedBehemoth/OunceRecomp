@@ -5,7 +5,7 @@
    f_800634b0(entry, view, 0) at 0x806680d8 (return 0x806680dc) with a texture view built on its stack. Given a view,
    f_800634b0 frees the entry's id (+0x68) and registers the texture again under a new one (agl's descriptor ring), even when
    nothing changed: table word 4 gets a fresh id every frame, a heap entry is written and the deferred table copied at the
-   submit changes. Here, at that call only (an At row in place of the BL, a PATCH_AT declaration, host/patch.h; it makes the call
+   submit changes. Here, at that call only (an At row in place of the BL, a PATCH_AT declaration, runtime/patch.h; it makes the call
    itself through guest_call when the call is to run): when the entry has an id, and the entry's first 0xc0 bytes (the texture
    pointer and settings at +0x00..+0x64, the id at +0x68, the copies f_800634b0 keeps of them from +0x70), the view's 16
    bytes and the texture object (descriptor, layout, storage address) are all what they were right after this row last let
@@ -14,7 +14,7 @@
 
    Check that it applies: the 600-present line "direct patch rt ids" (calls kept / run, and why run). */
 #include "direct.h"
-#include "../gpu/api/rx_nvn.h"
+#include "rx_nvn.h"
 #include <stddef.h>
 #include <string.h>
 #include "os.h"

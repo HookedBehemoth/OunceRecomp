@@ -1,7 +1,7 @@
 """The keys-only controls (the left stick's and the camera's directions) and the mouse's buttons are bindings like
-the Switch's buttons (host/nn_hid.c).
+the Switch's buttons (runtime/nn_hid.c).
 
-host/nn_hid.c's binding table and its bound_down are compiled alone, against fake key states and a fake
+runtime/nn_hid.c's binding table and its bound_down are compiled alone, against fake key states and a fake
 hookshot_options.ini: the defaults (WASD, the arrows, the mouse's left button Y and right button ZL), a mouse button
 only while the mouse is captured and only once the click that captured it was let go, key_move_up from the file, a
 pad_ line for a keys-only control ignored, a key taken from the control that had it, and Enter with Alt still no key.
@@ -102,7 +102,7 @@ class BoundKeysTests(unittest.TestCase):
         compiler = shutil.which("gcc") or shutil.which("clang")
         if not compiler:
             self.skipTest("no C compiler")
-        hid = (ROOT / "host" / "nn_hid.c").read_text(encoding="utf-8")
+        hid = (ROOT / "runtime/nn_hid.c").read_text(encoding="utf-8")
         code = [block(hid, "static int kmap_down("),
                 between(hid, "static const char *const bind_names[HOS_KEY_N]", "void hos_bind("),
                 between(hid, "static int mouse_vk_slot(", "static int bound_down(")]
@@ -116,9 +116,9 @@ class BoundKeysTests(unittest.TestCase):
             (tmp / "hookshot_options.ini").write_text("key_move_up=90,0\npad_move_up=0\n", encoding="utf-8")
             (tmp / "t.c").write_text(PRELUDE + code + MAIN, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wno-unused-function", "-I", str(ROOT / "gpu" / "api"),
-                                    "-I", str(ROOT / "gpu"), "-I", str(ROOT / "host" / "os"),
-                                    "-I", str(ROOT / "host"), str(tmp / "t.c"), "-o", str(binary)], text=True, capture_output=True)
+            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-Wno-unused-function", "-I", str(ROOT / "renderer/api"),
+                                    "-I", str(ROOT / "renderer"), "-I", str(ROOT / "runtime/os"),
+                                    "-I", str(ROOT / "runtime"), "-I", str(ROOT / "runtime/media"), str(tmp / "t.c"), "-o", str(binary)], text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             run = subprocess.run([str(binary), str(tmp)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

@@ -1,4 +1,4 @@
-"""A WaitAny is woken only by an object some holder links into a multi-wait (host/nn_os_sync.c poke_multiwait). The actual
+"""A WaitAny is woken only by an object some holder links into a multi-wait (runtime/nn_os_sync.c poke_multiwait). The actual
 functions (the watched-address table, poke_multiwait, holder_watch, Link/Unlink/UnlinkAll/MoveAll) are compiled with a
 harness that counts WakeAllConditionVariable and every object lookup: a change to an object no holder links wakes no WaitAny.
 
@@ -216,7 +216,7 @@ def fixture(source):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="clang++")
-    parser.add_argument("--source", type=Path, default=ROOT / "host/nn_os_sync.c")
+    parser.add_argument("--source", type=Path, default=ROOT / "runtime/nn_os_sync.c")
     args = parser.parse_args()
     source = args.source.read_text(encoding="utf-8")
 

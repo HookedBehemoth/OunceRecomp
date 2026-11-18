@@ -19,7 +19,7 @@ static struct {
     void *OpenAudioDevice, *PauseAudioDevice, *OpenAudioDeviceStream, *ResumeAudioStreamDevice, *PutAudioStreamData;
     /* controllers */
     void *PadOpen, *PadClose, *PadConnected, *PadsUpdate, *PadButton, *PadAxis, *PadName, *PadRumble;
-    void *PadType, *PadEffect;   /* (optional: HD rumble, host/pad_sdl.c) */
+    void *PadType, *PadEffect;   /* (optional: HD rumble, runtime/media/pad_sdl.c) */
     void *PadHasSensor, *PadSensorEnable, *PadSensorData;   /* (motion: optional, NULL in an SDL without them) */
     void *GetGamepads, *GetGamepadID, *Free;   /* (SDL3) */
     void *NumJoysticks, *IsGameController, *DeviceInstanceID, *GetJoystick, *JoystickInstanceID;   /* (SDL2) */
@@ -485,7 +485,7 @@ void *hos_sdl_mic_open(uint32_t id, int freq, int channels, uint16_t sdl_format)
         want.freq = freq, want.format = sdl_format, want.channels = (uint8_t)channels, want.samples = 512;
         want.callback = mic2_push, want.userdata = m;
         /* (no changes allowed: SDL converts the device's sound to this. SDL2's id is a place in its list, so the caller takes
-           it from a list made just before (host/nn_audio_in.c find_device). SDL2 opens a device by its name: of two with one
+           it from a list made just before (runtime/nn_audio_in.c find_device). SDL2 opens a device by its name: of two with one
            name it takes the first, whichever was chosen; telling them apart is SDL3's) */
         const char *name = id ? ((const char *(*)(int, int))rec.DeviceName2)((int)id - 1, 1) : NULL;
         m->dev = CALL(uint32_t (*)(const char *, int, const void *, void *, int), OpenAudioDevice)(name, 1, &want, &have, 0);
