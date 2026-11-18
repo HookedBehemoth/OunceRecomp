@@ -79,27 +79,36 @@ void IADD3(Translator& t) {
         set_result(sum);
         return;
     }
-    // with carries: the sum in 64 bits (a negation is ~x + 1, or ~x with .X)
-    IR::U64 sum{};
-    for (int i = 0; i < 3; ++i) {
-        IR::U64 value{t.ir.UConvert(64, negate[i] ? t.ir.BitwiseNot(src[i]) : src[i])};
-        if (negate[i] && !extended) {
-            value = IR::U64{t.ir.IAdd(value, t.ir.Imm64(u64{1}))};
+    // with carries: 32-bit adds, counting each add's carry (a negation is ~x + 1, or ~x with .X)
+    auto& ir{t.ir};
+    IR::U32 sum{}, high{ir.Imm32(0)};
+    bool first{true};
+    const auto add{[&](const IR::U32& term) {
+        if (first) {
+            sum = term;
+            first = false;
+            return;
         }
-        sum = i == 0 ? value : IR::U64{t.ir.IAdd(sum, value)};
+        const IR::U32 next{ir.IAdd(sum, term)};
+        high = IR::U32{ir.IAdd(high, One(t, ir.ILessThan(next, sum, false)))};
+        sum = next;
+    }};
+    for (int i = 0; i < 3; ++i) {
+        add(negate[i] ? ir.BitwiseNot(src[i]) : src[i]);
+        if (negate[i] && !extended) {
+            add(ir.Imm32(1));
+        }
     }
     if (extended) {
         for (const u32 bit : {87U, 77U}) {
             if (t.insn.Field(bit, 4) != 0xf) {
-                sum = IR::U64{t.ir.IAdd(sum, t.ir.UConvert(64, One(t, pred_src(bit))))};
+                add(One(t, pred_src(bit)));
             }
         }
     }
-    const IR::Value words{t.ir.UnpackUint2x32(sum)};
-    const IR::U32 high{t.ir.CompositeExtract(words, 1)};
-    set_result(IR::U32{t.ir.CompositeExtract(words, 0)});
-    set_pred(carry_out[0], t.ir.INotEqual(high, t.ir.Imm32(0)));
-    set_pred(carry_out[1], t.ir.IGreaterThanEqual(high, t.ir.Imm32(2), false));
+    set_result(sum);
+    set_pred(carry_out[0], ir.INotEqual(high, ir.Imm32(0)));
+    set_pred(carry_out[1], ir.IGreaterThanEqual(high, ir.Imm32(2), false));
 }
 
 /// The high word of the 64-bit product a * b (16-bit pieces; each partial sum fits 32 bits)
@@ -211,16 +220,18 @@ void IMAD_WIDE(Translator& t, bool wide) {
     default:
         t.Fail("IMAD.WIDE source form");
     }
-    const IR::U64 product{t.ir.PackUint2x32(t.ir.CompositeConstruct(t.ir.IMul(a, b), MulHigh(t, a, b, is_signed)))};
-    const IR::U64 sum{t.ir.IAdd(product, t.ir.PackUint2x32(t.ir.CompositeConstruct(c_low, c_high)))};
-    const IR::Value words{t.ir.UnpackUint2x32(sum)};
+    // the 64-bit sum in two words (no 64-bit integers): the low word's carry into the high
+    const IR::U32 product_low{t.ir.IMul(a, b)};
+    const IR::U32 low{t.ir.IAdd(product_low, c_low)};
+    const IR::U32 carry{One(t, t.ir.ILessThan(low, product_low, false))};
+    const IR::U32 high{t.ir.IAdd(t.ir.IAdd(MulHigh(t, a, b, is_signed), c_high), carry)};
     if (wide) {
-        t.SetX(dst, IR::U32{t.ir.CompositeExtract(words, 0)});
+        t.SetX(dst, low);
         if (!t.XIsZero(dst)) {
-            t.SetX(dst + 1, IR::U32{t.ir.CompositeExtract(words, 1)});
+            t.SetX(dst + 1, high);
         }
     } else {
-        t.SetX(dst, IR::U32{t.ir.CompositeExtract(words, 1)});
+        t.SetX(dst, high);
     }
 }
 
@@ -332,23 +343,38 @@ void SHF(Translator& t) {
             return;
         }
     }
-    // the general case in 64 bits; a shift by 64 or more gives 0 or the sign
-    const IR::U64 x{ir.PackUint2x32(ir.CompositeConstruct(lo, hi))};
+    // the general case on the two words (s in 0-64); a shift by 64 gives 0 or the sign
     IR::U32 s{shift_operand.value};
     s = wrap ? ir.BitwiseAnd(s, ir.Imm32(bits - 1)) : ir.UMin(s, ir.Imm32(bits));
-    const IR::U32 s63{ir.UMin(s, ir.Imm32(63))};
-    IR::U64 shifted;
-    if (right) {
-        shifted = is_signed ? ir.ShiftRightArithmetic(x, s63) : ir.ShiftRightLogical(x, s63);
-        if (!is_signed) {
-            shifted = IR::U64{ir.Select(ir.IGreaterThanEqual(s, ir.Imm32(64), false), ir.Imm64(u64{0}), shifted)};
-        }
+    const IR::U32 zero{ir.Imm32(0)}, thirty_two{ir.Imm32(32)};
+    // x shifted by n in 0-32 (by 32: 0, or the sign for an arithmetic right shift)
+    const auto shl{[&](const IR::U32& x, const IR::U32& n) {
+        return IR::U32{ir.Select(ir.IGreaterThanEqual(n, thirty_two, false), zero,
+                                 ir.ShiftLeftLogical(x, ir.BitwiseAnd(n, ir.Imm32(31))))};
+    }};
+    const auto shr{[&](const IR::U32& x, const IR::U32& n, bool arithmetic) {
+        const IR::U32 by_32{arithmetic ? IR::U32{ir.ShiftRightArithmetic(x, ir.Imm32(31))} : zero};
+        const IR::U32 n31{ir.BitwiseAnd(n, ir.Imm32(31))};
+        return IR::U32{ir.Select(ir.IGreaterThanEqual(n, thirty_two, false), by_32,
+                                 arithmetic ? ir.ShiftRightArithmetic(x, n31) : ir.ShiftRightLogical(x, n31))};
+    }};
+    const IR::U1 small{ir.ILessThan(s, thirty_two, false)};
+    const IR::U32 rest{ir.ISub(thirty_two, s)};      // for s < 32
+    const IR::U32 beyond{ir.ISub(s, thirty_two)};    // for s >= 32
+    const IR::U32 s31{ir.BitwiseAnd(s, ir.Imm32(31))};
+    IR::U32 value;
+    if (right && !high_word) {
+        value = IR::U32{ir.Select(small, ir.BitwiseOr(ir.ShiftRightLogical(lo, s31), shl(hi, rest)),
+                                  shr(hi, beyond, is_signed))};
+    } else if (right) {
+        value = shr(hi, s, is_signed);
+    } else if (!high_word) {
+        value = shl(lo, s);
     } else {
-        shifted = IR::U64{ir.Select(ir.IGreaterThanEqual(s, ir.Imm32(64), false), ir.Imm64(u64{0}),
-                                    ir.ShiftLeftLogical(x, s63))};
+        value = IR::U32{ir.Select(small, ir.BitwiseOr(ir.ShiftLeftLogical(hi, s31), shr(lo, rest, false)),
+                                  shl(lo, beyond))};
     }
-    const IR::Value words{ir.UnpackUint2x32(shifted)};
-    t.SetX(t.insn.Dst(), IR::U32{ir.CompositeExtract(words, high_word ? 1 : 0)});
+    t.SetX(t.insn.Dst(), value);
 }
 
 void SEL(Translator& t) {
@@ -446,13 +472,12 @@ void PRMT(Translator& t) {
     const Operand selector{t.Src1()};
     if (!selector.immediate) {
         IR::U32 result{ir.Imm32(0)};
-        const IR::U64 pair{ir.PackUint2x32(ir.CompositeConstruct(sources[0], sources[1]))};
         for (u32 i = 0; i < 4; ++i) {
             const IR::U32 nibble{ir.BitFieldExtract(selector.value, ir.Imm32(i * 4), ir.Imm32(4))};
-            const IR::U32 position{ir.ShiftLeftLogical(ir.BitwiseAnd(nibble, ir.Imm32(7)), ir.Imm32(3))};
-            const IR::U32 byte{ir.BitwiseAnd(IR::U32{ir.CompositeExtract(
-                                                 ir.UnpackUint2x32(ir.ShiftRightLogical(pair, position)), 0)},
-                                             ir.Imm32(0xff))};
+            const IR::U32 source{ir.Select(ir.INotEqual(ir.BitwiseAnd(nibble, ir.Imm32(4)), ir.Imm32(0)), sources[1],
+                                           sources[0])};
+            const IR::U32 position{ir.ShiftLeftLogical(ir.BitwiseAnd(nibble, ir.Imm32(3)), ir.Imm32(3))};
+            const IR::U32 byte{ir.BitFieldExtract(source, position, ir.Imm32(8))};
             const IR::U32 sign{ir.BitFieldExtract(byte, ir.Imm32(7), ir.Imm32(1), true)};
             const IR::U1 replicate{ir.INotEqual(ir.BitwiseAnd(nibble, ir.Imm32(8)), ir.Imm32(0))};
             result = ir.BitFieldInsert(result, IR::U32{ir.Select(replicate, sign, byte)}, ir.Imm32(i * 8), ir.Imm32(8));
