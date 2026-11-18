@@ -59,9 +59,9 @@ FOLDER = Program("folder", "the folder", {"linux": [], "windows": []}, [], [])
 LAYOUTS = (
     ("nand", "user", "save", "account", "<id>", TITLE, "0"),   # Eden's newer layout: used first when it exists
     ("nand", "user", "save", NO_ACCOUNT, "<id>", TITLE),        # Eden and its forks (Lichii, Eglantine, ...)
+    ("user", "save", TITLE, "<id>"),                             # OunceRecomp's game folder on Windows
+    ("save", TITLE, "<id>"),                                     # OunceRecomp's data folder
     ("profile", "save", "<id>"),                                 # NX2navi's game folder
-    ("user", "save", "<id>"),                                    # OunceRecomp's game folder on Windows
-    ("save", "<id>"),                                            # OunceRecomp's data folder
 )
 
 
@@ -104,6 +104,13 @@ def is_save_folder(path):
     return os.path.isfile(os.path.join(path, "account.sav")) or bool(slots(path))
 
 
+def ounce_title_folder(path):
+    """OunceRecomp's title id folder (save/<title id>/), which holds the profiles rather than being a save itself"""
+    norm = os.path.normpath(path)
+    return (os.path.basename(norm).upper() == TITLE and os.path.basename(os.path.dirname(norm)).lower() == "save"
+            and not is_save_folder(norm))
+
+
 def walk(root, parts, key):
     if not parts:
         yield key, root
@@ -119,7 +126,8 @@ def find_saves(root):
     """The game's save folders under root, as {profile id: path}; root may be the save folder itself."""
     norm = os.path.normpath(os.path.abspath(root))
     title_folder = os.path.basename(norm).upper() == TITLE
-    if is_save_folder(norm) or title_folder and "0" not in subdirs(norm):
+    # (a title id folder is the save itself, Eden's, unless it holds Eden's "0" or is OunceRecomp's)
+    if is_save_folder(norm) or title_folder and "0" not in subdirs(norm) and not ounce_title_folder(norm):
         key = norm
         while os.path.basename(key).upper() in (TITLE, "0") and os.path.dirname(key) != key:
             key = os.path.dirname(key)
@@ -139,7 +147,8 @@ def find_saves(root):
             for k, path in walk(norm, layout[start:], key):
                 # A folder named by the layout (the title id folder) counts as soon as it is there: the game may not
                 # have saved yet. A profile folder counts only when it holds a save (Eden's profile folders do not).
-                if (layout[-1] != "<id>" or is_save_folder(path)) and k not in found and path not in found.values():
+                if ((layout[-1] != "<id>" or is_save_folder(path)) and not ounce_title_folder(path) and k not in found
+                        and path not in found.values()):
                     found[k] = path
     return found
 

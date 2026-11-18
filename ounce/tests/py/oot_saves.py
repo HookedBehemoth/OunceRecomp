@@ -49,7 +49,7 @@ class Case(unittest.TestCase):
         self.data = self.home / ".local" / "share"
         self.appdata = self.home / "AppData" / "Roaming"
         self.localappdata = self.home / "AppData" / "Local"
-        self.hs = self.data / "ounce" / "save" / UID
+        self.hs = self.data / "ounce" / "save" / oot.TITLE.lower() / UID
         self.li = eden_save(self.data / "eden")
         make_save(self.hs, b"HS")
         make_save(self.li, b"LI", slots=("slot_00",))
@@ -100,8 +100,8 @@ class Discovery(Case):
                 oot.locate(oot.OUNCE, None, "--ounce")
             self.assertIn("--ounce", str(e.exception))
             game = self.tmp / "OunceRecomp"
-            make_save(game / "user" / "save" / UID, b"W")
-            self.assertEqual(oot.locate(oot.OUNCE, str(game), "--ounce")[1], {UID: str(game / "user" / "save" / UID)})
+            make_save(game / "user" / "save" / oot.TITLE.lower() / UID, b"W")
+            self.assertEqual(oot.locate(oot.OUNCE, str(game), "--ounce")[1], {UID: str(game / "user" / "save" / oot.TITLE.lower() / UID)})
 
     def test_aliases_of_names(self):
         self.assertIs(oot.program_named("Fritchii"), oot.program_named("frizti"))

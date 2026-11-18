@@ -137,7 +137,8 @@ static void delete_tree(const char *p) {
     os_rmdir(p);
 }
 /* (linux) Saves live in the game folder's user/ when it has one (the builder makes it), so the folder holds the whole
-   game; else in $XDG_DATA_HOME/ounce (~/.local/share/ounce). --user still wins. */
+   game; else in $XDG_DATA_HOME/ounce (~/.local/share/ounce). --user still wins. Either folder holds every title's saves
+   apart, in save/<program id>/ (nn_fs.c). */
 static const char *saves_dir(const char *beside) {
     static char dir[OS_PATH_MAX];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
@@ -145,9 +146,9 @@ static const char *saves_dir(const char *beside) {
     else if (home && home[0] == '/') snprintf(dir, sizeof dir, "%s/.local/share/ounce", home);
     else dir[0] = 0;
     if (is_dir(beside)) {
-        char old[OS_PATH_MAX + 8], mine[OS_PATH_MAX + 8];
-        snprintf(old, sizeof old, "%s/save", dir);
-        snprintf(mine, sizeof mine, "%s/save", beside);
+        char old[OS_PATH_MAX + 32], mine[OS_PATH_MAX + 32];
+        snprintf(old, sizeof old, "%s/save/%016llx", dir, (unsigned long long)hos_program_id);
+        snprintf(mine, sizeof mine, "%s/save/%016llx", beside, (unsigned long long)hos_program_id);
         if (dir[0] && is_dir(old) && !is_dir(mine)) hos_log("saves: in %s; an earlier build's are in %s (copy them over to continue them)", beside, dir);
         return beside;
     }

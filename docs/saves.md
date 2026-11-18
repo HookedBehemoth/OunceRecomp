@@ -24,7 +24,7 @@ Only the folder they are in differs.
 
 | Program | Linux | Windows | How sure |
 |---|---|---|---|
-| OunceRecomp | `<game folder>/user/save/<user id>/`; a folder without `user/`: `~/.local/share/ounce/save/<user id>/` | (Linux only) | OunceRecomp's source; tested |
+| OunceRecomp | `<game folder>/user/save/0400486024dec000/<user id>/`; a folder without `user/`: `~/.local/share/ounce/save/0400486024dec000/<user id>/` | (Linux only) | OunceRecomp's source; tested |
 | [Lichii](https://github.com/zortos293/Lichii) | `~/.local/share/eden/` + Eden's save path below | `%APPDATA%\eden\` + Eden's save path | Lichii's source; Linux tested, Windows not |
 | [Frizti (Fritchii)](https://github.com/Frizti/Lichii), a Lichii fork | (Windows only) | `%APPDATA%\eden\` + Eden's save path | its source (`fritchii-v5.5`); not tried |
 | [Orchid](https://github.com/MythosOfs/Orchid) | `~/.local/share/eden/` + Eden's save path | `%APPDATA%\eden\` + Eden's save path | its source; not tried |
@@ -34,7 +34,10 @@ Only the folder they are in differs.
 
 Eden's save path, under that data folder: `nand/user/save/0000000000000000/<profile id>/0400486024DEC000/`.
 
-- `0400486024DEC000` is the game's title id. Eden's `<profile id>` is the Switch user profile you play with;
+- `0400486024DEC000` is the game's title id. OunceRecomp keeps each game's saves in a folder named by its title id,
+  as the console does, so games that share a data folder keep their saves apart. Donkey Kong Bananza's are in
+  `save/040074a01bf12000/<user id>/`. Its temporary and cache storage are kept the same way, in
+  `temp/<title id>/` and `cache/<title id>/`. Eden's `<profile id>` is the Switch user profile you play with;
   OunceRecomp's `<user id>` and NX2navi's `<account>` are one folder with a 32-character hex name.
 - **Lichii, Frizti, Orchid and PokeDinner share one folder**, Eden's (`eden`): a save there is the same save in all of
   them. Eglantine has its own (`eglantine`).
@@ -46,7 +49,7 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
   that is the save the game loads next, so the script refuses to copy until NX2navi has been started and quit (or
   `--force`). NX2navi's launcher also has its own **Import Saves**, which takes an emulator's save folder.
 - `$XDG_DATA_HOME` replaces `~/.local/share` when it is set. OunceRecomp's `--user <folder>` puts its saves in
-  `<folder>/save/<user id>/` ([Build and run](../readme.md#build-and-run)). For a game folder's saves, give
+  `<folder>/save/0400486024dec000/<user id>/` ([Build and run](../readme.md#build-and-run)). For a game folder's saves, give
   `tools/oot_saves.py` `--ounce <game folder>/user`.
 - The emulator paths come from each one's `src/common/fs/fs_paths.h`, `path_util.cpp` and
   `src/core/file_sys/savedata_factory.cpp`. Official Eden does not run Switch 2 games; its name is accepted because
@@ -76,7 +79,7 @@ The names are `lichii`, `frizti` (or `fritchii`), `orchid`, `pokedinner`, `eden`
 | `--keep-settings` | Leaves the target's `option.sav` alone, so each program keeps its own settings |
 | `--profile <id>` | The emulator's profile to use. Needed when more than one profile has saves: the script lists them and stops rather than pick one |
 | `--from <folder>`, `--to <folder>` | The emulator's side: the save folder itself, or a folder above it to search (a data folder, a portable `user` folder, NX2navi's game folder). With a name, it replaces where that emulator is looked for; without one, any folder works |
-| `--ounce <folder>` | OunceRecomp's data folder, or its `save/<user id>` folder |
+| `--ounce <folder>` | OunceRecomp's data folder, or its `save/0400486024dec000/<user id>` folder |
 | `--backup-dir <folder>` | Where the backup goes, outside the target save folder |
 | `--force` | Copies even if a game seems to be running, or NX2navi has a save waiting |
 

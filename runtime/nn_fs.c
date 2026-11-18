@@ -1,8 +1,10 @@
 /* nn::fs: mounts map to host folders.
      rom:      the game's RomFS (extracted by tools/nx.py romfs), read-only
-     save:     <user>/save/<uid>     (MountSaveData / MountSaveDataReadOnly)
-     cache:    <user>/cache/<index>  (MountCacheStorage)
-     temp:     <user>/temp           (MountTemporaryStorage)
+     save:     <user>/save/<program id>/<uid>     (MountSaveData / MountSaveDataReadOnly)
+     cache:    <user>/cache/<program id>/<index>  (MountCacheStorage)
+     temp:     <user>/temp/<program id>           (MountTemporaryStorage)
+   Each is kept per title, as the console keys them: <program id> is main.npdm's (hos_program_id), or the
+   ApplicationId the call names; ids are 16 lower-case hex digits, a uid 32 (its high half first).
    hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (os_file_read_at), so any number
    of guest threads can read one file at once. Results: switchbrew "Error codes" (module 2 = fs). */
 #include "hos.h"
@@ -164,11 +166,20 @@ static int user_mount(const char *name, const char *sub) {
     return mount(name, root, 1);
 }
 
+/* "save/<program id>/<uid>": uid is an account::Uid (two u64s, the high one at +8) */
+static void save_sub(char *sub, size_t n, uint64_t app, uint64_t uid) {
+    snprintf(sub, n, "save/%016llx/%016llx%016llx", (unsigned long long)app, (unsigned long long)G64(uid + 8),
+             (unsigned long long)G64(uid));
+}
+static void cache_sub(char *sub, size_t n, int index) {
+    snprintf(sub, n, "cache/%016llx/%d", (unsigned long long)hos_program_id, index);
+}
+
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
 HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
-    char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s/save/%016llx%016llx", hos_user_dir, (unsigned long long)G64(ARG(1) + 8),
-             (unsigned long long)G64(ARG(1)));
+    char sub[64], root[HOS_FS_PATH];
+    save_sub(sub, sizeof sub, ARG(0), ARG(1));
+    snprintf(root, sizeof root, "%s/%s", hos_user_dir, sub);
     RET(os_path_kind(root) != OS_PATH_NONE);
 }
 /* EnsureSaveData(account::Uid const&) -> Result: the save folder is made at its mount */
@@ -176,26 +187,31 @@ HLE(_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE) { RET(0); }
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
     char sub[64];
-    snprintf(sub, sizeof sub, "save/%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
+    save_sub(sub, sizeof sub, hos_program_id, ARG(1));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* MountSaveDataReadOnly(char const*, ApplicationId, account::Uid const&) */
 HLE(_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE) {
     char sub[64];
-    snprintf(sub, sizeof sub, "save/%016llx%016llx", (unsigned long long)G64(ARG(2) + 8), (unsigned long long)G64(ARG(2)));
+    save_sub(sub, sizeof sub, ARG(1), ARG(2));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
-HLE(_ZN2nn2fs21MountTemporaryStorageEPKc) { RET(user_mount(gstr(ARG(0)), "temp") ? 0 : R_NOT_MOUNTED); }
+HLE(_ZN2nn2fs21MountTemporaryStorageEPKc) {
+    char sub[32];
+    snprintf(sub, sizeof sub, "temp/%016llx", (unsigned long long)hos_program_id);
+    RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
+}
 /* MountCacheStorage(char const*, int index) */
 HLE(_ZN2nn2fs17MountCacheStorageEPKci) {
-    char sub[32];
-    snprintf(sub, sizeof sub, "cache/%d", (int)ARG(1));
+    char sub[48];
+    cache_sub(sub, sizeof sub, (int)ARG(1));
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* CreateCacheStorage(int index, long size, long journal) */
 HLE(_ZN2nn2fs18CreateCacheStorageEill) {
-    char root[HOS_FS_PATH];
-    snprintf(root, sizeof root, "%s/cache/%d/", hos_user_dir, (int)ARG(0));
+    char sub[48], root[HOS_FS_PATH];
+    cache_sub(sub, sizeof sub, (int)ARG(0));
+    snprintf(root, sizeof root, "%s/%s/", hos_user_dir, sub);
     make_dirs(root);
     RET(0);
 }
@@ -206,8 +222,9 @@ HLE(_ZN2nn2fs20OpenCacheStorageListEPNS0_22CacheStorageListHandleE) { G64(ARG(0)
 HLE(_ZN2nn2fs20ReadCacheStorageListEPiPNS0_16CacheStorageInfoENS0_22CacheStorageListHandleEi) {
     int n = 0, max = (int)ARG(3);
     for (; cache_list_pos < 16 && n < max; cache_list_pos++) {
-        char root[HOS_FS_PATH];
-        snprintf(root, sizeof root, "%s/cache/%d", hos_user_dir, cache_list_pos);
+        char sub[48], root[HOS_FS_PATH];
+        cache_sub(sub, sizeof sub, cache_list_pos);
+        snprintf(root, sizeof root, "%s/%s", hos_user_dir, sub);
         if (os_path_kind(root) != OS_PATH_NONE) {
             memset(GP(ARG(1) + 0x20 * n), 0, 0x20);
             G32(ARG(1) + 0x20 * n) = (uint32_t)cache_list_pos;
