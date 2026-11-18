@@ -3,6 +3,7 @@
 eden_inc = include_directories('compat', '.')
 eden_sources = []
 subdir('shader_recompiler/backend/spirv')
+subdir('shader_recompiler/frontend/ampere')
 subdir('shader_recompiler/frontend/common')
 subdir('shader_recompiler/frontend/ir')
 subdir('shader_recompiler/frontend/maxwell')

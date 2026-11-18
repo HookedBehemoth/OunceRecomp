@@ -1,0 +1,15 @@
+# (fork) The translator's direct Ampere front: native decoding, control flow and the instruction families in translate/.
+eden_sources += files(
+  'control_flow.cpp',
+  'decode.cpp',
+  'translate/attribute.cpp',
+  'translate/conversion.cpp',
+  'translate/fp.cpp',
+  'translate/half.cpp',
+  'translate/int.cpp',
+  'translate/memory.cpp',
+  'translate/move.cpp',
+  'translate/texture.cpp',
+  'translate/translate.cpp',
+  'translate_program.cpp',
+)
