@@ -298,6 +298,16 @@ PREC = {"||": 1, "&&": 2, "|": 3, "^": 4, "&": 5, "==": 6, "!=": 6, "<": 7, ">":
 class Render:
     def __init__(self, g):
         self.g = g
+        self.slotvars = {}      # variable -> the proc slot address it holds (its only value in the function)
+
+    def proc_of(self, a):
+        """the proc whose slot the address expression a is, or None"""
+        procs = self.g.procs()
+        if isinstance(a, Const) and a.addr:
+            return procs.get(a.v)
+        if isinstance(a, Var) and a.n in self.slotvars:
+            return procs.get(self.slotvars[a.n])
+        return None
 
     def addr(self, v):
         return self.g.addr_text(v)
@@ -325,6 +335,8 @@ class Render:
             return "%s%s" % (e.op, r(e.a, 11))
         if isinstance(e, Ld):
             a = e.a
+            if self.proc_of(a):
+                return "pfn_" + self.proc_of(a)
             if isinstance(a, Const) and a.addr:
                 return "%s:%s" % (self.g.data_text(a.v), e.ty)
             if isinstance(a, Var) and a.n == "sp":
@@ -338,7 +350,9 @@ class Render:
         if isinstance(e, Call):
             if isinstance(e.f, E):
                 f = e.f
-                if isinstance(f, Ld) and isinstance(f.a, Bin) and isinstance(f.a.a, Ld) and isinstance(f.a.b, Const):
+                if isinstance(f, Ld) and self.proc_of(f.a):
+                    fn = self.proc_of(f.a)                                  # a call through a proc slot
+                elif isinstance(f, Ld) and isinstance(f.a, Bin) and isinstance(f.a.a, Ld) and isinstance(f.a.b, Const):
                     fn = "%s->vt[%#x]" % (r(f.a.a.a, 12), f.a.b.v)        # (*(obj->vtable + off))(...)
                 elif isinstance(f, Ld) and isinstance(f.a, Ld):
                     fn = "%s->vt[0]" % r(f.a.a, 12)
@@ -682,6 +696,13 @@ class Fn:
         self.calls = []     # (pc, callee address or None)
         eb = self.bmap.get(entry)
         self.args = list(range(g.callee_inputs(entry)))
+        self.ndefs = {}     # definitions per register (not the epilogue's restores)
+        for pc in self.pcs:
+            x = self.ins[pc]
+            if x.i is not None and x.mn.startswith("ld") and "[sp" in x.i.op_str:
+                continue
+            for k in x.defs:
+                self.ndefs[k] = self.ndefs.get(k, 0) + 1
         for b in self.blocks:
             self.translate(b)
 
@@ -776,6 +797,8 @@ class Fn:
             self.materialize(q, busy)
         e = self.st.get(k)
         self.emit("%s = %s;" % (name, self.r(e)))
+        if isinstance(e, Const) and e.addr and e.v in self.g.procs() and self.ndefs.get(k) == 1:
+            self.r.slotvars[name] = e.v
         self.st[k] = Var(name)
 
     def flush_loads(self, keep_clobbered=True):
@@ -1033,6 +1056,8 @@ class Fn:
             if k not in self.live:
                 continue
             e = Ld(addr, ty)
+            if isinstance(addr, Const) and addr.addr and ty == "u64" and self.g.u64(addr.v) in self.g.procs():
+                e = Const(self.g.u64(addr.v), True)        # (a GOT entry: the proc slot's address)
             self.materialize_dependents(k)
             if excl:
                 self.st[k] = Call(mn, [addr])

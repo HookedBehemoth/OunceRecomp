@@ -724,7 +724,7 @@
 85745480 libc_bsearch                     # tools/re/image.py exports (sdk): bsearch
 8504ed50 libc_longjmp                     # tools/re/image.py exports (sdk): longjmp
 8572e9a0 libc_memchr                      # tools/re/image.py exports (sdk): memchr
-8575d280 libc_memcmp                      # tools/re/image.py exports (sdk): memcmp # ? wn/engine-frame.md, wn/engine-jobs.md call it the job poll; its code is memcmp (tools/re/image_disasm.py)
+8575d280 libc_memcmp                      # tools/re/image.py exports (sdk): memcmp # ? wn/engine-frame.md, wn/engine-jobs.md call it the job poll; its code is memcmp (re fn)
 8572f020 libc_memcpy                      # tools/re/image.py exports (sdk): memcpy
 8575cdc0 libc_memcpy_aarch64              # tools/re/image.py exports (sdk): __memcpy_aarch64
 8572f040 libc_memmove                     # tools/re/image.py exports (sdk): memmove

@@ -8,10 +8,9 @@ a cheap model) build on it.
 
 | command | what it prints |
 |---|---|
-| `fn <addr\|label>` | the function's annotated listing: blocks, callee names and their stored notes, strings, globals |
-| `tree <fn> [--depth N]` | the callee tree: labelled, SDK, read before (a note), or unread |
+| `fn <addr\|label>` | the function's annotated listing: blocks, callee names (with a stored reading's name), strings, globals, NVN procs |
+| `tree <fn> [--depth N]` | the callee tree: labelled, SDK, read (the stored pseudo-C's name), or unread |
 | `pseudo <fn> [--set <file\|->]` | the stored pseudo-C (the re agent writes it) |
-| `note <fn> [<text\|->]` | the stored summary (name, what, fields, effects, confidence) |
 | `callers`, `callees <fn>` | one line per caller (BL, tail B, pointers) or callee |
 | `xref <string\|addr>` | code that takes the address (ADRP+ADD/LDR), and pointers to it |
 | `field <offset> [--all]` | functions that load, store or add that offset |
@@ -21,17 +20,13 @@ a cheap model) build on it.
 | `export` | refresh the lifter's view |
 
 The lifter's view (function bodies, jump tables, PLT, symbols) comes from `ounce-lift re-export` and is cached in
-`work/re/<game>/export`, with the call and ADRP indexes beside it. Stored notes and pseudo-C live in
-`work/re/<game>/{notes,pseudo}`, keyed by the function's body hash: a changed body shows them as stale. The exefs is
-`--exefs`, `OUNCE_RE_EXEFS`, the first line of `work/<game>/dump.txt`, or (OoT) `work/dump.txt`.
+`work/re/<game>/export`, with the call and ADRP indexes beside it. Stored pseudo-C lives in `work/re/<game>/pseudo`,
+keyed by the function's body hash: a changed body shows it as stale. Its signature line carries the suggested name
+that `fn` and `tree` show for the function.
 
-## Older scripts
+Calls through the game's proc tables show the proc's name: `nvnCommandBufferBindVertexBuffer(...)` in `pc`, `; nvn...`
+on the `blr` in `fn`, and `pfn_<proc>` for the slot. The slots come from the game's own loaders (a call with a proc
+name string as its argument whose result is stored to a fixed address, as in nvnDeviceGetProcAddress loops), cached in
+`work/re/<game>/procs.tsv`.
 
-Searches for reverse engineering in the main executable's flat image (`work/re/main.bin`, made from the dump's exefs; `MAIN_BIN=<file>` for
-another). Offsets are file offsets (virtual address minus the 0x80020000 base). Run with `work/venv/bin/python`.
-
-| script | what it is |
-|---|---|
-| `disasm.py <hex_off> [before] [after]` | AArch64 disassembly around an offset, with ADRP+ADD string references named (needs `capstone`) |
-| `xref.py <hex_off> ...` or `-s <string> ...` | code that references an address or a string through ADRP+ADD |
-| `callers.py <hex_off> ...` | BL/B callers of a function and 8-byte pointers to it |
+The exefs is `--exefs`, `OUNCE_RE_EXEFS`, the first line of `work/<game>/dump.txt`, or (OoT) `work/dump.txt`.
