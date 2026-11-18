@@ -1,39 +1,8 @@
-"""Frame-time jitter must not make the real-time game clock run fast."""
-import argparse
-import subprocess
-import tempfile
-from pathlib import Path
-
-RUN_ALL_ARGS = ["--cc", "gcc"]
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cc", default="gcc")
-    args = parser.parse_args()
-    source = (ROOT / "runtime/nn_vi.c").read_text(encoding="utf-8")
-    if "realtime_rate(" not in block(source, "static void realtime_step("):
-        raise SystemExit("the present path does not use the tested clock quantizer")
-    fixture = r'''
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"FAIL:%d %s\n",__LINE__,#x); exit(1); } } while(0)
-'''
-    fixture += block(source, "static int realtime_rate(")
-    fixture += r'''
+@RATE@
 int main(void) {
     double carry = 0, elapsed = 0, game = 0;
     // The old clamp erased the short frame's debt and sped this clock up by ~8%.
@@ -102,14 +71,3 @@ int main(void) {
     CHECK(realtime_rate(1.0, 60, &carry) == 60);
     puts("PASS: jitter preserves elapsed time; slow and high-rate steps stay bounded");
 }
-'''
-    with tempfile.TemporaryDirectory(prefix="realtime-rate-") as tmp:
-        c = Path(tmp) / "fixture.c"
-        exe = Path(tmp) / "fixture"
-        c.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", str(c), "-lm", "-o", str(exe)], check=True)
-        subprocess.run([str(exe)], check=True)
-
-
-if __name__ == "__main__":
-    main()

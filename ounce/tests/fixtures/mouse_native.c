@@ -1,39 +1,3 @@
-"""Native mouse look turns the player camera's own angles (games/oot/patches/mouse_native.c).
-
-The file is compiled on its own against a fake guest memory that holds one player camera: its pitch limits at +0x178, its
-pitch at +0x18c and its yaw at +0x1a4. hos_mouse_camera is what the camera's update (f_80644c80, the lifter's At probe) calls
-each frame. Until it has run the mouse's motion is the right stick's (game_mouse_camera gives -1); then it turns yaw and
-pitch by 0.1 degrees a count at sensitivity 1, pitch kept within the limits and yaw wrapped at 180, up and down swapped
-with the menu's Invert mouse vertical (option 8), and the controller reads leave the motion to the camera. Without the
-menu's Mouse camera (option 6), or on an object that is not a camera, it does nothing; 150 ms without the camera (the
-pause menu, another camera) give the motion back to the stick. The camera takes the mouse only in its states 3 and 4 (at
-+0x204: following Link, turned by the player): aiming in first person leaves it updating with state 0 while another
-camera draws, and the motion is then the stick's.
-python -I -B tests/test_mouse_native.py
-"""
-import shutil
-import subprocess
-import tempfile
-import unittest
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-
-HOS_H = r"""
-#pragma once
-#include <stdint.h>
-#include <stddef.h>
-#include "patch.h"
-extern uint8_t *fake_heap;
-#define HOS_HEAP_BASE 0x1000000000ULL
-#define A64_PTR(a) (fake_heap + ((uint64_t)(a) - HOS_HEAP_BASE))
-#define GP(a) ((void *)A64_PTR(a))
-extern uint64_t hos_heap_size;
-void hos_log(const char *fmt, ...);
-int64_t hos_now_ns(void);
-"""
-
-FIXTURE = r"""
 #include "hos.h"
 #include <math.h>
 #include <stdarg.h>
@@ -121,29 +85,3 @@ int main(void) {
     if (!fails) printf("PASS\n");
     return fails != 0;
 }
-"""
-
-
-class MouseNativeTests(unittest.TestCase):
-    def test_turns_the_player_camera(self):
-        compiler = shutil.which("gcc") or shutil.which("clang")
-        if not compiler:
-            self.skipTest("no C compiler")
-        with tempfile.TemporaryDirectory(prefix="ounce-mouse-native-") as tmp:
-            tmp = Path(tmp)
-            (tmp / "hos.h").write_text(HOS_H, encoding="utf-8")
-            # (beside the stand-in hos.h, so its #include "hos.h" finds that one)
-            shutil.copy(ROOT / "games/oot/patches/mouse_native.c", tmp / "mouse_native.c")
-            shutil.copy(ROOT / "runtime/patch.h", tmp / "patch.h")   # (its declaration: PATCH_AT)
-            (tmp / "t.c").write_text(FIXTURE, encoding="utf-8")
-            binary = tmp / "t"
-            build = subprocess.run([compiler, "-std=gnu11", "-Wall", "-O1", "-g", "-I", str(tmp), "-I", str(ROOT / "runtime/os"),
-                                    str(tmp / "t.c"), str(tmp / "mouse_native.c"), "-o", str(binary), "-lm"],
-                                   text=True, capture_output=True)
-            self.assertEqual(build.returncode, 0, build.stderr)
-            run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
-            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-
-
-if __name__ == "__main__":
-    raise SystemExit(unittest.main(verbosity=1))
