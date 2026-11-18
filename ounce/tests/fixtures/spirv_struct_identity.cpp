@@ -1,19 +1,3 @@
-"""Check Sirit keeps independently decorated structures separate.
-python tests/test_spirv_struct_identity.py --headers <SPIRV-Headers/include> --spirv-val spirv-val
-No GPU or game files needed. Requires a configured C++ compiler.
-"""
-import argparse
-from pathlib import Path
-import subprocess
-import tempfile
-
-ROOT=Path(__file__).resolve().parents[1]
-
-
-def main():
-    p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--headers',type=Path,required=True);p.add_argument('--spirv-val',required=True);p.add_argument('--cxx',default='clang++');a=p.parse_args()
-    fixture=r'''
 #include <sirit/sirit.h>
 #include <cstdio>
 #include <string>
@@ -52,14 +36,3 @@ int main(int argc,char** argv) {
         if(m.TypeUInt(32).value!=u32.value || m.TypePointer(spv::StorageClass::PhysicalStorageBuffer,u32).value!=member.value)return 4;
     }
 }
-'''
-    work=ROOT/'work';work.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='struct-identity-',dir=work) as temp:
-        folder=Path(temp).resolve();cpp=folder/'fixture.cpp';exe=folder/'fixture.exe';cpp.write_text(fixture,encoding='utf-8');sirit=ROOT/'third_party/sirit'
-        subprocess.run([a.cxx,'-std=c++20','-O1','-I'+str(sirit/'include'),'-I'+str(sirit/'src'),'-I'+str(a.headers),str(cpp),*map(str,sorted((sirit/'src').rglob('*.cpp'))),'-o',str(exe)],check=True)
-        subprocess.run([str(exe),str(folder)],check=True)
-        for case in range(2):subprocess.run([a.spirv_val,'--target-env','vulkan1.3',str(folder/f'{case}.spv')],check=True)
-    print('PASS: two physical-buffer modules, with/without Private local memory; scalar/pointer reuse preserved')
-
-
-if __name__=='__main__':main()
